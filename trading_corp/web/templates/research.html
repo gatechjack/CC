@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block title %}Research — Trading Corp{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+  <header class="flex items-baseline justify-between">
+    <div>
+      <h1 class="text-xl font-semibold text-mono">Research firm</h1>
+      <p class="text-muted text-xs mt-1">
+        Phase 1a-1 (<code>CandidateRecommendation</code>) +
+        Phase 1b (<code>Thesis</code> Board ad-hoc) shipped. Other product
+        types in subsequent phases (see
+        <code>planning/research_firm_design.md</code>).
+      </p>
+    </div>
+    <div class="text-muted text-[11px] font-mono">
+      engagements: {{ view.engagement_count }} ·
+      events: {{ view.engagement_log | length }}
+    </div>
+  </header>
+
+  {# ── ENGAGEMENT LATENCY VIEW (P50 / P95 / P99 + weekly P95) ──────── #}
+  <section class="bg-pane border border-edge rounded-lg">
+    <div class="border-b border-edge px-4 py-2 flex items-baseline justify-between">
+      <h2 class="text-sm font-semibold text-mono">Engagement latency</h2>
+      <span class="text-muted text-[11px]">
+        Q11: durations from <code>engagement_started_ts</code> /
+        <code>engagement_completed_ts</code> on terminal rows.
+      </span>
+    </div>
+
+    {% if not view.latency.groups %}
+      <div class="px-4 py-6 text-muted text-sm italic">
+        No completed engagements yet.
+      </div>
+    {% else %}
+      <div class="px-4 py-3 overflow-x-auto">
+        <table class="w-full text-xs font-mono">
+          <thead class="text-muted">
+            <tr class="border-b border-edge">
+              <th class="text-left py-1 pr-4">product_type</th>
+              <th class="text-left py-1 pr-4">asset_class</th>
+              <th class="text-right py-1 pr-4">N</th>
+              <th class="text-right py-1 pr-4">P50 (s)</th>
+              <th class="text-right py-1 pr-4">P95 (s)</th>
+              <th class="text-right py-1">P99 (s)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for g in view.latency.groups %}
+              <tr class="border-b border-edge/30">
+                <td class="py-1 pr-4">{{ g.product_type }}</td>
+                <td class="py-1 pr-4 text-muted">{{ g.asset_class }}</td>
+                <td class="py-1 pr-4 text-right">{{ g.n }}</td>
+                <td class="py-1 pr-4 text-right">
+                  {{ '%.2f' % g.p50_seconds if g.p50_seconds is not none else '—' }}
+                </td>
+                <td class="py-1 pr-4 text-right">
+                  {{ '%.2f' % g.p95_seconds if g.p95_seconds is not none else '—' }}
+                </td>
+                <td class="py-1 text-right">
+                  {{ '%.2f' % g.p99_seconds if g.p99_seconds is not none else '—' }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {# Weekly P95 time-series (Refinement 5) #}
+      {% if view.latency.weekly %}
+        <details class="border-t border-edge">
+          <summary class="px-4 py-2 text-[11px] text-muted cursor-pointer">
+            Weekly P95 time-series (Refinement 5 — drift detection)
+          </summary>
+          <div class="px-4 py-2 overflow-x-auto">
+            <table class="w-full text-xs font-mono">
+              <thead class="text-muted">
+                <tr class="border-b border-edge">
+                  <th class="text-left py-1 pr-4">product_type</th>
+                  <th class="text-left py-1 pr-4">asset_class</th>
+                  <th class="text-left py-1 pr-4">week</th>
+                  <th class="text-right py-1 pr-4">N</th>
+                  <th class="text-right py-1">P95 (s)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for w in view.latency.weekly %}
+                  <tr class="border-b border-edge/30">
+                    <td class="py-1 pr-4">{{ w.product_type }}</td>
+                    <td class="py-1 pr-4 text-muted">{{ w.asset_class }}</td>
+                    <td class="py-1 pr-4">{{ w.week }}</td>
+                    <td class="py-1 pr-4 text-right">{{ w.n }}</td>
+                    <td class="py-1 text-right">
+                      {{ '%.2f' % w.p95_seconds if w.p95_seconds is not none else '—' }}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      {% endif %}
+    {% endif %}
+  </section>
+
+  {# ── RECOMMENDATION OUTCOMES VIEW (§7.2) ────────────────────────── #}
+  <section class="bg-pane border border-edge rounded-lg">
+    <div class="border-b border-edge px-4 py-2 flex items-baseline justify-between">
+      <h2 class="text-sm font-semibold text-mono">Recommendation outcomes</h2>
+      <span class="text-muted text-[11px]">
+        Joins engagement-side rows to division-side
+        <code>research_candidate_acted_on</code> /
+        <code>research_candidate_skipped</code> by <code>engagement_id</code>.
+      </span>
+    </div>
+    {% if not view.outcomes %}
+      <div class="px-4 py-6 text-muted text-sm italic">
+        No division-side outcome rows yet.
+        <span class="block mt-1 text-[11px]">
+          PMCC scout integration (Phase 1a-2) writes these per consumed
+          candidate. Phase 1a-1 emits the recommendation; downstream act/skip
+          tracking lands in 1a-2.
+        </span>
+      </div>
+    {% else %}
+      <div class="divide-y divide-edge">
+        {% for row in view.outcomes %}
+          <div class="px-4 py-2 flex items-baseline gap-3 text-sm">
+            <span class="text-muted text-[11px] font-mono shrink-0 w-44">
+              {{ row.ts[:19] if row.ts else '' }}
+            </span>
+            <span class="font-mono text-[11px] shrink-0 w-24 text-mono">
+              {{ row.requesting_division or '—' }}
+            </span>
+            <span class="font-mono text-[11px] shrink-0">
+              {{ row.engagement_id[:8] if row.engagement_id else '' }}
+            </span>
+            <span class="text-mono text-xs flex-1">
+              <span class="text-gain">{{ row.acted_on }} acted</span> /
+              <span class="text-muted">{{ row.skipped }} skipped</span>
+              <span class="text-muted ml-2">
+                act_rate = {{ '%.0f%%' % (row.act_rate * 100) }}
+              </span>
+            </span>
+            {% if row.skip_reasons %}
+              <span class="text-muted text-[11px] font-mono">
+                {% for r, c in row.skip_reasons.items() %}{{ r }}={{ c }}{% if not loop.last %}, {% endif %}{% endfor %}
+              </span>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  {# ── ENGAGEMENTS LOG ──────────────────────────────────────────────── #}
+  <section class="bg-pane border border-edge rounded-lg">
+    <div class="border-b border-edge px-4 py-2">
+      <h2 class="text-sm font-semibold text-mono">Engagements log</h2>
+    </div>
+    {% if not view.engagement_log %}
+      <div class="px-4 py-6 text-muted text-sm italic">
+        No research activity yet. Run
+        <code>/research candidate robinhood_pmcc 3</code> via Telegram to
+        emit one.
+      </div>
+    {% else %}
+      <div class="divide-y divide-edge max-h-[600px] overflow-y-auto">
+        {% for row in view.engagement_log %}
+          <div class="px-4 py-2 flex items-baseline gap-3 text-sm">
+            <span class="text-muted text-[11px] font-mono shrink-0 w-44">
+              {{ row.ts[:19] if row.ts else '' }}
+            </span>
+            <span class="font-mono text-[11px] shrink-0 w-72
+                  {% if 'aborted' in row.kind or 'rejected' in row.kind or 'failed' in row.kind %}text-loss
+                  {% elif 'completed' in row.kind or 'emitted' in row.kind %}text-gain
+                  {% else %}text-muted{% endif %}">
+              {{ row.kind }}
+            </span>
+            <span class="text-mono text-xs flex-1 truncate">
+              {{ row.summary }}
+            </span>
+            <span class="text-muted text-[11px] font-mono shrink-0">
+              {% if row.engagement_id %}{{ row.engagement_id[:8] }}{% endif %}
+            </span>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  {# ── THESIS LIBRARY (§7.4 — Phase 1b) ─────────────────────────────── #}
+  <section class="bg-pane border border-edge rounded-lg">
+    <div class="border-b border-edge px-4 py-2 flex items-baseline justify-between">
+      <h2 class="text-sm font-semibold text-mono">Thesis library</h2>
+      <span class="text-muted text-[11px]">
+        Board ad-hoc — read-only history of
+        <code>research_thesis_emitted</code> rows.
+        Triggering UI deferred; engagement runs via the runner.
+      </span>
+    </div>
+    {% if not view.theses %}
+      <div class="px-4 py-6 text-muted text-sm italic">
+        No theses emitted yet. Engagement runs via
+        <code>run_engagement(spec, deps=...)</code> with a
+        <code>ThesisScope</code>; emitted Theses appear here.
+      </div>
+    {% else %}
+      <div class="divide-y divide-edge max-h-[500px] overflow-y-auto">
+        {% for t in view.theses %}
+          <details class="px-4 py-2 group">
+            <summary class="cursor-pointer flex items-baseline gap-3 text-sm">
+              <span class="text-muted text-[11px] font-mono shrink-0 w-44">
+                {{ t.ts[:19] if t.ts else '' }}
+              </span>
+              <span class="font-mono font-semibold text-mono shrink-0 w-24">
+                {{ t.symbol }}
+              </span>
+              <span class="text-muted text-[11px] font-mono shrink-0 w-20">
+                {{ t.asset_class or '—' }}
+              </span>
+              {% if t.earnings_window_clear is false %}
+                <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded bg-warn/15 text-warn">
+                  earnings within window
+                </span>
+              {% endif %}
+              <span class="text-mono text-xs flex-1 truncate text-muted">
+                {{ t.summary[:140] }}{% if t.summary|length > 140 %}…{% endif %}
+              </span>
+              <span class="text-muted text-[11px] font-mono shrink-0">
+                {% if t.engagement_id %}{{ t.engagement_id[:8] }}{% endif %}
+              </span>
+              <span class="text-muted/60 text-xs transition-transform group-open:rotate-90">▶</span>
+            </summary>
+            <div class="mt-3 pl-44 pr-2 pb-2 text-xs space-y-3">
+              <div>
+                <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Summary</div>
+                <div class="text-mono whitespace-pre-line">{{ t.summary }}</div>
+              </div>
+              {% if t.key_drivers %}
+                <div>
+                  <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Key drivers</div>
+                  <ul class="list-disc list-inside text-mono space-y-0.5">
+                    {% for d in t.key_drivers %}<li>{{ d }}</li>{% endfor %}
+                  </ul>
+                </div>
+              {% endif %}
+              {% if t.key_risks %}
+                <div>
+                  <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Key risks</div>
+                  <ul class="list-disc list-inside text-mono space-y-0.5">
+                    {% for r in t.key_risks %}<li>{{ r }}</li>{% endfor %}
+                  </ul>
+                </div>
+              {% endif %}
+              <div class="text-muted text-[11px] font-mono">
+                earnings_window_clear:
+                <span class="{% if t.earnings_window_clear %}text-gain{% elif t.earnings_window_clear is false %}text-warn{% else %}text-muted{% endif %}">
+                  {{ t.earnings_window_clear }}
+                </span>
+                {% if t.cost_dollars is not none %}
+                  · cost: ${{ '%.2f' % t.cost_dollars }}
+                {% endif %}
+              </div>
+            </div>
+          </details>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  {# ── PHASE PLACEHOLDERS ──────────────────────────────────────────── #}
+  <section class="bg-pane/40 border border-edge/50 rounded-lg p-4 text-xs text-muted">
+    <strong class="text-mono">Coming in later phases:</strong>
+    PMCC scout integration + extended-outage alerting (1a-2) ·
+    Real fundamental + sentiment experts (1c) ·
+    Position-context audit trail (1d) ·
+    TradeConfirmation + Otter / Cypher webhook integration (1e) ·
+    Bull/bear debate layer (1f)
+  </section>
+</div>
+{% endblock %}
