@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}{{ view.division.name }} — Trading Corp{% endblock %}
+
+{% block content %}
+<!-- ── Header bar: back / name / status ────────────────────────────── -->
+<div class="flex items-center gap-4 mb-4">
+  <a href="/" class="text-muted hover:text-mono transition-colors text-sm font-mono">
+    ← Command Center
+  </a>
+  <div class="h-5 w-px bg-edge"></div>
+  <div class="flex items-baseline gap-3 flex-wrap">
+    <h1 class="text-mono text-xl font-semibold tracking-tight">{{ view.division.name }}</h1>
+    {% set intent_color = {
+      'aggressive': 'bg-loss/15 text-loss',
+      'retirement': 'bg-accent/15 text-accent',
+      'balanced':   'bg-warn/15 text-warn',
+    } %}
+    <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                 {{ intent_color.get(view.division.intent, 'bg-edge text-muted') }}">
+      {{ view.division.intent }}
+    </span>
+    <span class="text-[11px] text-muted font-mono">
+      {{ view.division.broker | capitalize }} · {{ view.division.account_filter }}
+    </span>
+  </div>
+</div>
+
+<!-- ── Stat cards: Equity / Cash / BP / Today's P&L ────────────────── -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Equity</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.equity | money }}</div>
+  </div>
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Cash</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.cash | money }}</div>
+  </div>
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Buying power</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.buying_power | money }}</div>
+  </div>
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Today's P&amp;L</div>
+    {% if view.todays_pnl is not none %}
+      <div class="text-2xl font-mono font-semibold mt-1
+        {% if view.todays_pnl > 0 %}text-gain
+        {% elif view.todays_pnl < 0 %}text-loss
+        {% else %}text-mono{% endif %}">
+        {{ view.todays_pnl | money_signed }}
+      </div>
+      {% if view.todays_pnl_pct is not none %}
+        <div class="text-[11px] mt-0.5
+          {% if view.todays_pnl_pct > 0 %}text-gain
+          {% elif view.todays_pnl_pct < 0 %}text-loss
+          {% else %}text-muted{% endif %}">
+          {{ view.todays_pnl_pct | pct_signed }}
+        </div>
+      {% endif %}
+    {% else %}
+      <div class="text-2xl font-mono font-semibold text-muted/60 mt-1">—</div>
+      <div class="text-[11px] text-muted/50 mt-0.5">no prior snapshot</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Two-column main grid ──────────────────────────────────────── -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+  <!-- LEFT (2 cols): Position rows + Activity -->
+  <div class="lg:col-span-2 flex flex-col gap-4">
+
+    <!-- Position list — every pair as click-to-expand row, sorted by priority -->
+    {% if view.pmcc_pairs %}
+      <section>
+        <header class="flex items-baseline justify-between mb-2">
+          <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Positions</h2>
+          <div class="flex items-center gap-3 text-[11px] text-muted font-mono">
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-loss"></span>urgent
+            </span>
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-warn"></span>elevated
+            </span>
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-muted/40"></span>routine
+            </span>
+            <span>· sorted by priority</span>
+          </div>
+        </header>
+        <div id="pair-list" class="flex flex-col gap-2">
+          {% for pair in view.pmcc_pairs %}
+            {% include "partials/pmcc_pair.html" %}
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
+    <!-- Holdings (stock + crypto). Cost-basis / P&L deliberately omitted —
+         this window is "what do I own and what is it worth right now."
+         PMCC pair / option-leg sections handle cost-basis math where it
+         matters. Crypto rows arrive from RobinhoodBroker.snapshot in
+         unified {CODE}/USD form (matching Coinbase). -->
+    {% if view.stock_holdings %}
+      <section class="bg-pane border border-edge rounded-lg overflow-hidden">
+        <header class="px-4 py-3 border-b border-edge flex items-baseline justify-between">
+          <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Holdings</h2>
+          <span class="text-[11px] text-muted font-mono">{{ view.stock_holdings|length }} positions</span>
+        </header>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="text-[10px] uppercase tracking-wider text-muted bg-pane-2/40">
+              <tr>
+                <th class="text-left px-4 py-2">Symbol</th>
+                <th class="text-right px-4 py-2">Qty</th>
+                <th class="text-right px-4 py-2">Last</th>
+                <th class="text-right px-4 py-2 pr-4">Mkt Value</th>
+              </tr>
+            </thead>
+            <tbody class="font-mono">
+              {% for h in view.stock_holdings %}
+                <tr class="border-t border-edge/40 hover:bg-pane-2/40">
+                  <td class="px-4 py-2 font-semibold">{{ h.symbol }}</td>
+                  <td class="text-right px-4 py-2">{{ '%g' % h.qty }}</td>
+                  <td class="text-right px-4 py-2">
+                    {{ h.last | money if h.last is not none else '—' }}
+                  </td>
+                  <td class="text-right px-4 py-2 pr-4">
+                    {{ h.market_value | money if h.market_value is not none else '—' }}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% endif %}
+
+    <!-- Empty state -->
+    {% if not view.pmcc_pairs and not view.stock_holdings %}
+      <section class="bg-pane border border-edge rounded-lg p-12 text-center">
+        <div class="text-muted text-sm">
+          No positions detected for this division yet.
+        </div>
+      </section>
+    {% endif %}
+
+    <!-- Scout — fresh PMCC opening candidates (Robinhood PMCC only) -->
+    {% if view.division.slug == 'robinhood_pmcc' %}
+      <div
+        hx-get="/division/{{ view.division.slug }}/scout"
+        hx-trigger="load"
+        hx-swap="innerHTML">
+        <section class="bg-pane border border-edge rounded-lg p-6 text-center">
+          <div class="text-muted text-sm font-mono italic">
+            Scanning market for new PMCC candidates…
+          </div>
+          <div class="text-[11px] text-muted/60 font-mono mt-1">
+            Surveys configured universe, filters held positions, ranks by weekly yield.
+          </div>
+        </section>
+      </div>
+    {% endif %}
+
+    <!-- Manual order entry — Phase B: Coinbase Spot only.
+         Lets the Board fire ad-hoc trades through the same risk + audit
+         pipeline as strategy-driven orders. Strategy bots replace this for
+         the common cases later (Phase D), but the manual path stays for
+         opportunistic / one-off trades and for pipeline validation. -->
+    {% if view.division.slug == 'coinbase_spot' %}
+      {% include "partials/manual_order.html" %}
+    {% endif %}
+
+    <!-- Recent activity -->
+    <section class="bg-pane border border-edge rounded-lg p-4">
+      <header class="flex items-baseline justify-between mb-3">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Recent activity</h2>
+        <span class="text-[11px] text-muted font-mono">{{ view.recent_activity|length }} events</span>
+      </header>
+      {% if view.recent_activity %}
+        <div class="space-y-2 max-h-[400px] overflow-y-auto pr-1 custom-scroll">
+          {% for evt in view.recent_activity %}
+            <div class="bg-pane-2/40 border border-edge rounded-md px-3 py-2">
+              <div class="flex items-center gap-2 text-[11px] font-mono">
+                <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                  {{ evt.kind | replace('_', ' ') }}
+                </span>
+                <span class="ml-auto text-muted">{{ evt.ts_short }} ago</span>
+              </div>
+              {% if evt.symbol %}
+                <div class="mt-1 flex items-center gap-2 text-sm">
+                  <span class="font-mono font-semibold text-mono">{{ evt.symbol }}</span>
+                  {% if evt.side %}
+                    <span class="text-[11px] uppercase font-mono px-1.5 py-0.5 rounded
+                      {% if evt.side == 'buy' %}bg-gain/15 text-gain
+                      {% elif evt.side == 'sell' %}bg-loss/15 text-loss
+                      {% else %}bg-edge text-muted{% endif %}">
+                      {{ evt.side }}
+                    </span>
+                  {% endif %}
+                  {% if evt.qty %}
+                    <span class="text-muted text-xs font-mono">×{{ evt.qty }}</span>
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% if evt.reason %}
+                <div class="mt-1 text-[11px] text-muted leading-snug line-clamp-2">
+                  {{ evt.reason }}
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-muted/60 text-sm italic text-center py-6">
+          No recent activity for this division.
+        </div>
+      {% endif %}
+    </section>
+
+  </div>
+
+  <!-- RIGHT (1 col): Equity curve + DYNAMIC LLM analysis -->
+  <aside class="lg:col-span-1 flex flex-col gap-4">
+
+    <!-- (Equity curve removed pending account_state_history wiring.
+         Reinstate when historical equity is available — TODO Phase 3.) -->
+
+    <!-- Dynamic per-pair expert analysis.
+         Architecture: fixed-height box that sticks to the viewport top.
+         The HEADER ("EXPERT ANALYSIS · SYMBOL") is OUTSIDE the scroll
+         container, so it cannot be scrolled past. The content body
+         (#pair-analysis) is the scroll container — wheeling inside it
+         scrolls the analysis text without moving the page or the header. -->
+    <section class="bg-pane border border-edge rounded-lg overflow-hidden
+                    lg:sticky lg:top-20
+                    flex flex-col
+                    lg:max-h-[calc(100vh-6rem)]">
+      <!-- Fixed header — not part of the scroll area, so the analysis
+           text physically cannot scroll past it. -->
+      <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge bg-pane shrink-0">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+          Expert analysis
+        </h2>
+        <span id="pair-analysis-symbol"
+              class="text-[11px] text-muted font-mono uppercase tracking-wider">
+          select a position
+        </span>
+      </header>
+      <!-- Scrolling content. min-h-0 is the flexbox quirk needed for
+           overflow-y-auto to actually clip inside a flex parent. -->
+      <div id="pair-analysis"
+           class="px-4 py-4 min-h-[120px] overflow-y-auto custom-scroll min-h-0 flex-1">
+        <div class="text-muted text-sm italic text-center py-8">
+          Click any position on the left to see its expert analysis here.
+        </div>
+      </div>
+    </section>
+
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pair_list.js"></script>
+{% endblock %}
