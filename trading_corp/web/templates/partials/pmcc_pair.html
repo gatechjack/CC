@@ -1,0 +1,326 @@
+<!-- One position pair as expandable row.
+     Collapsed: just the header bar (symbol + spot + priority + combined P&L).
+     Expanded:  LEAP + short call + extras detail.
+     Click on the summary fires HTMX to swap the right-rail expert analysis.
+-->
+{% set leap = pair.leap %}
+{% set short = pair.short_call %}
+{% set combo = pair.combined_pnl %}
+{% set prio = pair.priority_label %}
+{% set prio_color = {
+  'urgent':   'bg-loss',
+  'elevated': 'bg-warn',
+  'routine':  'bg-muted/40',
+  'healthy':  'bg-gain/40',
+}.get(prio, 'bg-muted/30') %}
+{% set struct = pair.structure_type %}
+{% set struct_label = {
+  'pmcc':           'PMCC',
+  'covered_call':   'covered call',
+  'uncovered_leap': 'uncovered LEAP',
+  'naked_call':     'long call only',
+  'short_only':     'short only',
+  'other':          'other',
+}.get(struct, struct) %}
+
+<details class="pmcc-row group bg-pane border border-edge rounded-lg overflow-hidden">
+  <summary
+    class="cursor-pointer select-none px-4 py-3 flex items-center gap-3
+           hover:bg-pane-2/60 transition-colors list-none"
+    hx-get="/division/{{ view.division.slug }}/pair-analysis/{{ pair.underlying }}"
+    hx-target="#pair-analysis"
+    hx-swap="innerHTML"
+    hx-sync="closest #pair-list:replace"
+    data-symbol="{{ pair.underlying }}">
+
+    <!-- Priority dot -->
+    <span class="w-2 h-2 rounded-full {{ prio_color }} shrink-0
+                 {% if prio == 'urgent' %}animate-pulse{% endif %}"
+          title="{{ prio }} priority"></span>
+
+    <!-- Symbol + spot -->
+    <span class="font-mono font-bold text-mono text-base">{{ pair.underlying }}</span>
+    {% if pair.underlying_price is not none %}
+      <span class="font-mono text-xs text-muted">
+        spot ${{ '%.2f' % pair.underlying_price }}
+      </span>
+    {% endif %}
+
+    <!-- Structure type badge -->
+    <span class="hidden sm:inline-block text-[10px] uppercase font-mono tracking-wider
+                 px-1.5 py-0.5 rounded bg-edge text-muted">
+      {{ struct_label }}
+    </span>
+
+    <!-- Recommended action pill (deterministic preview; LLM refines on click) -->
+    {% set action_label, action_urgency = pair.recommended_action %}
+    {% set action_classes = {
+      'urgent':   'bg-loss/15 text-loss border border-loss/30',
+      'elevated': 'bg-warn/15 text-warn border border-warn/30',
+      'routine':  'bg-edge text-muted border border-edge',
+    }.get(action_urgency, 'bg-edge text-muted border border-edge') %}
+    <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+                 px-1.5 py-0.5 rounded font-semibold {{ action_classes }}"
+          title="Recommended action ({{ action_urgency }}) — click row for full LLM analysis.">
+      {{ action_label }}
+    </span>
+
+    <!-- Short-leg DTE — surfaces "how urgent is this roll?" on the collapsed row.
+         Only renders when there's a short with a known DTE (uncovered_leap /
+         naked_call structures don't have one). Color tracks the same urgency
+         tiers used elsewhere: 0 DTE=loss, ≤7=warn, 8+=muted. -->
+    {% if short and short.dte is not none %}
+      <span class="hidden sm:inline-block text-[11px] font-mono
+                   {% if short.dte == 0 %}text-loss font-semibold
+                   {% elif short.dte <= 7 %}text-warn
+                   {% else %}text-muted{% endif %}"
+            title="Short leg expires in {{ short.dte }} day{{ '' if short.dte == 1 else 's' }}">
+        {{ short.dte }} DTE
+      </span>
+    {% endif %}
+
+    <!-- Combined P&L (right) -->
+    <div class="ml-auto text-right">
+      <div class="text-[10px] uppercase tracking-wider text-muted">Combined P&amp;L</div>
+      {% if combo is not none %}
+        <div class="font-mono text-sm font-semibold
+          {% if combo > 0 %}text-gain{% elif combo < 0 %}text-loss{% else %}text-mono{% endif %}">
+          {{ combo | money_signed }}
+        </div>
+      {% else %}
+        <div class="font-mono text-sm text-muted">—</div>
+      {% endif %}
+    </div>
+
+    <!-- Expand chevron -->
+    <span class="text-muted/60 text-sm transition-transform group-open:rotate-90">▶</span>
+  </summary>
+
+  <!-- Expanded body: LEAP + short side-by-side -->
+  <div class="border-t border-edge grid grid-cols-1 sm:grid-cols-2 sm:divide-x divide-edge">
+
+    <!-- LEAP / long-call leg -->
+    {% if leap %}
+      <div class="p-4">
+        <div class="flex items-center gap-2 mb-2">
+          {% if (leap.dte or 0) >= 180 %}
+            <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                         bg-accent/15 text-accent">LEAP</span>
+          {% else %}
+            <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                         bg-edge text-muted">long call</span>
+          {% endif %}
+          <span class="text-[11px] text-muted font-mono">{{ leap.dte }}d to expiry</span>
+          {% if leap.delta is not none and leap.delta < 0.65 %}
+            <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                         bg-warn/15 text-warn">δ low</span>
+          {% endif %}
+        </div>
+        <div class="font-mono text-sm font-semibold text-mono">
+          {{ leap.expiry }} · {{ leap.strike | strike }}{{ leap.option_type[:1].upper() }}
+        </div>
+        <div class="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-[11px] font-mono">
+          <div class="text-muted">Qty</div>
+          <div class="text-right">{{ '%g' % leap.qty }}</div>
+          <div class="text-muted">Delta</div>
+          <div class="text-right">
+            {% if leap.delta is not none %}{{ '%.2f' % leap.delta }}{% else %}—{% endif %}
+          </div>
+          <div class="text-muted">Avg/sh</div>
+          <div class="text-right"><span class="private-money">${{ '%.2f' % leap.avg_per_share }}</span></div>
+          <div class="text-muted">Mark/sh</div>
+          <div class="text-right">
+            {% if leap.mark_per_share is not none %}<span class="private-money">${{ '%.2f' % leap.mark_per_share }}</span>{% else %}—{% endif %}
+          </div>
+          <div class="text-muted">Mkt value</div>
+          <div class="text-right">{{ leap.market_value | money }}</div>
+          <div class="text-muted pt-1 border-t border-edge/40">P&amp;L</div>
+          <div class="text-right pt-1 border-t border-edge/40 font-semibold
+            {% if leap.unrealized_pnl is not none and leap.unrealized_pnl > 0 %}text-gain
+            {% elif leap.unrealized_pnl is not none and leap.unrealized_pnl < 0 %}text-loss{% endif %}">
+            {% if leap.unrealized_pnl is not none %}
+              {{ leap.unrealized_pnl | money_signed }}
+              {% if leap.unrealized_pnl_pct is not none %}
+                <span class="text-muted/70 text-[10px]">
+                  ({{ leap.unrealized_pnl_pct | pct_signed(0) }})
+                </span>
+              {% endif %}
+            {% else %}—{% endif %}
+          </div>
+        </div>
+      </div>
+    {% else %}
+      <div class="p-4 flex items-center justify-center text-muted/60 text-sm italic min-h-[140px]">
+        No long call held
+      </div>
+    {% endif %}
+
+    <!-- Short-call leg -->
+    {% if short %}
+      <div class="p-4">
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                       bg-warn/15 text-warn">Short call</span>
+          <span class="text-[11px] text-muted font-mono">{{ short.dte }}d to expiry</span>
+          {% if short.dte is not none and short.dte <= 7 %}
+            <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                         bg-loss/15 text-loss">roll soon</span>
+          {% endif %}
+          {% if pair.underlying_price is not none and short.strike > 0 and pair.underlying_price > short.strike %}
+            <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                         bg-loss/15 text-loss">ITM</span>
+          {% endif %}
+        </div>
+        <div class="font-mono text-sm font-semibold text-mono">
+          {{ short.expiry }} · {{ short.strike | strike }}{{ short.option_type[:1].upper() }}
+        </div>
+        <div class="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-[11px] font-mono">
+          <div class="text-muted">Qty</div>
+          <div class="text-right">{{ '%g' % short.qty }}</div>
+          <div class="text-muted">Delta</div>
+          <div class="text-right">
+            {% if short.delta is not none %}{{ '%.2f' % short.delta }}{% else %}—{% endif %}
+          </div>
+          <div class="text-muted">Credit/sh</div>
+          <div class="text-right"><span class="private-money">${{ '%.2f' % short.avg_per_share }}</span></div>
+          <div class="text-muted">Mark/sh</div>
+          <div class="text-right">
+            {% if short.mark_per_share is not none %}<span class="private-money">${{ '%.2f' % short.mark_per_share }}</span>{% else %}—{% endif %}
+          </div>
+          <div class="text-muted">Intrinsic</div>
+          <div class="text-right"><span class="private-money">${{ '%.2f' % short.intrinsic_per_share }}</span></div>
+          <div class="text-muted">Extrinsic</div>
+          <div class="text-right">
+            {% if short.extrinsic_per_share is not none %}<span class="private-money">${{ '%.2f' % short.extrinsic_per_share }}</span>{% else %}—{% endif %}
+          </div>
+          <div class="text-muted pt-1 border-t border-edge/40">P&amp;L</div>
+          <div class="text-right pt-1 border-t border-edge/40 font-semibold
+            {% if short.unrealized_pnl is not none and short.unrealized_pnl > 0 %}text-gain
+            {% elif short.unrealized_pnl is not none and short.unrealized_pnl < 0 %}text-loss{% endif %}">
+            {% if short.unrealized_pnl is not none %}
+              {{ short.unrealized_pnl | money_signed }}
+              {% if short.unrealized_pnl_pct is not none %}
+                <span class="text-muted/70 text-[10px]">
+                  ({{ short.unrealized_pnl_pct | pct_signed(0) }})
+                </span>
+              {% endif %}
+            {% else %}—{% endif %}
+          </div>
+        </div>
+      </div>
+    {% else %}
+      <div class="p-4 flex items-center justify-center text-loss/80 text-sm italic min-h-[140px]">
+        ⚠️ uncovered — no short call sold
+      </div>
+    {% endif %}
+
+  </div>
+
+  {% if pair.extras %}
+    <!-- Other positions on this underlying — full leg-by-leg detail.
+         These are option positions on the same symbol that didn't pair into
+         the primary LEAP+short structure: e.g. additional LEAPs at different
+         strikes, multiple weekly shorts, calendar spreads, etc. -->
+    <div class="border-t border-edge bg-pane-2/30">
+      <div class="px-4 py-2 flex items-baseline justify-between">
+        <span class="text-[10px] uppercase tracking-wider text-muted font-mono font-semibold">
+          + {{ pair.extras|length }} additional leg{{ '' if pair.extras|length == 1 else 's' }} on {{ pair.underlying }}
+        </span>
+        <span class="text-[10px] text-muted/60 font-mono">
+          counted in combined P&amp;L above
+        </span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-[11px] font-mono">
+          <thead class="text-[9px] uppercase tracking-wider text-muted/60 bg-pane-2/40">
+            <tr>
+              <th class="text-left px-4 py-1.5">Type</th>
+              <th class="text-left px-2 py-1.5">Expiry</th>
+              <th class="text-right px-2 py-1.5">Strike</th>
+              <th class="text-right px-2 py-1.5">DTE</th>
+              <th class="text-right px-2 py-1.5">Qty</th>
+              <th class="text-right px-2 py-1.5">δ</th>
+              <th class="text-right px-2 py-1.5">Avg/sh</th>
+              <th class="text-right px-2 py-1.5">Mark/sh</th>
+              <th class="text-right px-2 py-1.5">Intrinsic</th>
+              <th class="text-right px-2 py-1.5">Extrinsic</th>
+              <th class="text-right px-2 py-1.5">Mkt Value</th>
+              <th class="text-right px-4 py-1.5">P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for x in pair.extras %}
+              {# Type/role pill #}
+              {% if x.is_long %}
+                {% if x.is_leap %}
+                  {% set xtype_class = 'bg-accent/15 text-accent' %}
+                  {% set xtype_label = 'LEAP' %}
+                {% else %}
+                  {% set xtype_class = 'bg-edge text-muted' %}
+                  {% set xtype_label = 'long' %}
+                {% endif %}
+              {% else %}
+                {% set xtype_class = 'bg-warn/15 text-warn' %}
+                {% set xtype_label = 'short' %}
+              {% endif %}
+              {# ITM flag #}
+              {% set is_itm = (
+                pair.underlying_price is not none and x.strike > 0
+                and (
+                  (x.option_type == 'call' and pair.underlying_price > x.strike)
+                  or (x.option_type == 'put' and pair.underlying_price < x.strike)
+                )
+              ) %}
+              <tr class="border-t border-edge/30 hover:bg-pane-2/40">
+                <td class="px-4 py-1.5">
+                  <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded {{ xtype_class }}">
+                    {{ xtype_label }}
+                  </span>
+                  {% if is_itm %}
+                    <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded ml-1 bg-loss/15 text-loss">
+                      ITM
+                    </span>
+                  {% endif %}
+                </td>
+                <td class="px-2 py-1.5 text-mono">{{ x.expiry }}</td>
+                <td class="text-right px-2 py-1.5 text-mono">
+                  {{ x.strike | strike }}{{ x.option_type[:1].upper() }}
+                </td>
+                <td class="text-right px-2 py-1.5 text-muted">
+                  {{ x.dte if x.dte is not none else '—' }}{% if x.dte is not none %}d{% endif %}
+                </td>
+                <td class="text-right px-2 py-1.5">{{ '%g' % x.qty }}</td>
+                <td class="text-right px-2 py-1.5">
+                  {% if x.delta is not none %}{{ '%.2f' % x.delta }}{% else %}—{% endif %}
+                </td>
+                <td class="text-right px-2 py-1.5"><span class="private-money">${{ '%.2f' % x.avg_per_share }}</span></td>
+                <td class="text-right px-2 py-1.5">
+                  {% if x.mark_per_share is not none %}<span class="private-money">${{ '%.2f' % x.mark_per_share }}</span>{% else %}—{% endif %}
+                </td>
+                <td class="text-right px-2 py-1.5 text-muted"><span class="private-money">${{ '%.2f' % x.intrinsic_per_share }}</span></td>
+                <td class="text-right px-2 py-1.5 text-muted">
+                  {% if x.extrinsic_per_share is not none %}<span class="private-money">${{ '%.2f' % x.extrinsic_per_share }}</span>{% else %}—{% endif %}
+                </td>
+                <td class="text-right px-2 py-1.5">
+                  {% if x.market_value is not none %}{{ x.market_value | money_signed }}{% else %}—{% endif %}
+                </td>
+                <td class="text-right px-4 py-1.5 font-semibold
+                  {% if x.unrealized_pnl is not none and x.unrealized_pnl > 0 %}text-gain
+                  {% elif x.unrealized_pnl is not none and x.unrealized_pnl < 0 %}text-loss{% endif %}">
+                  {% if x.unrealized_pnl is not none %}
+                    {{ x.unrealized_pnl | money_signed }}
+                    {% if x.unrealized_pnl_pct is not none %}
+                      <span class="text-muted/70 text-[10px] block">
+                        ({{ x.unrealized_pnl_pct | pct_signed(0) }})
+                      </span>
+                    {% endif %}
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+</details>
