@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  {# viewport-fit=cover unlocks env(safe-area-inset-*) on iOS so the app
+     can paint into the notch/Dynamic Island area when installed. #}
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>{% block title %}Trading Corp{% endblock %}</title>
+
+  {# ── PWA wiring ──────────────────────────────────────────────────────
+     manifest.webmanifest declares the app metadata browsers/iOS need to
+     install it as a standalone app. The apple-touch-icon and apple-mobile-
+     web-app-* meta tags are iOS-specific — they trigger the proper
+     home-screen installable behavior on Safari iOS. #}
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <meta name="theme-color" content="#0a0e1a" />
+  <meta name="application-name" content="Trading Corp" />
+
+  {# iOS-specific install affordances. iOS doesn't fully honor the
+     manifest yet (improving each release) so we set these explicitly. #}
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Trading Corp" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon-180.png" />
+  <link rel="apple-touch-icon" sizes="167x167" href="/static/icons/apple-touch-icon-167.png" />
+  <link rel="apple-touch-icon" sizes="152x152" href="/static/icons/apple-touch-icon-152.png" />
+
+  {# Generic favicons (browser tabs) #}
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png" />
+
+  <!-- Tailwind via Play CDN (no build step). Configured via window.tailwind below. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Tailwind config: dark mode + custom palette tuned for trading-desk feel
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            'bg': '#070b14',          // deepest pane bg
+            'pane': '#0f172a',        // card bg (slate-900)
+            'pane-2': '#1e293b',      // card hover bg
+            'edge': '#1f2937',        // borders
+            'edge-2': '#334155',      // hover borders
+            'accent': '#3b82f6',      // primary blue
+            'gain': '#10b981',        // emerald-500
+            'loss': '#f43f5e',        // rose-500
+            'warn': '#f59e0b',        // amber-500
+            'muted': '#94a3b8',       // slate-400
+            'mono': '#e2e8f0',        // slate-200
+          },
+          fontFamily: {
+            'sans': ['Inter', 'system-ui', 'sans-serif'],
+            'mono': ['JetBrains Mono', 'Consolas', 'monospace'],
+          },
+        }
+      }
+    }
+  </script>
+
+  <!-- Inter + JetBrains Mono — webfont -->
+  <link rel="preconnect" href="https://rsms.me/" />
+  <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono/web/css/jetbrains-mono.css"
+  />
+
+  <!-- HTMX for partial-page updates (server-rendered fragments) -->
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+
+  <!-- Lightweight Charts for equity curve -->
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+
+  <!-- Custom CSS — minor tweaks Tailwind can't do declaratively -->
+  <link rel="stylesheet" href="/static/css/app.css" />
+
+  <!-- Privacy mode CSS: when <html> has .privacy-on, every span tagged
+       .private-money (output by money / money_signed / compact_num filters)
+       is blurred so dollar amounts can't be read. Strikes / percentages /
+       contract counts stay visible because they're strategy info, not
+       personal financial state. -->
+  <style>
+    html.privacy-on .private-money {
+      filter: blur(7px);
+      user-select: none;
+      cursor: help;
+      transition: filter 120ms ease-out;
+    }
+    /* Hover on a single value to peek at it briefly without exiting privacy mode */
+    html.privacy-on .private-money:hover {
+      filter: blur(0);
+    }
+  </style>
+
+  <!-- Apply saved privacy state BEFORE first paint to avoid an unmasked
+       flash. Reads localStorage synchronously in <head>; the class lands
+       on <html> (not <body>, which doesn't exist yet) so CSS matches
+       immediately. -->
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem('tc-privacy') === 'on') {
+          document.documentElement.classList.add('privacy-on');
+        }
+      } catch (e) { /* localStorage blocked — ignore */ }
+    })();
+  </script>
+</head>
+<body class="bg-bg text-mono font-sans antialiased min-h-screen flex flex-col">
+
+  <!-- ── HEADER ─────────────────────────────────────────────────────────── -->
+  <header class="border-b border-edge bg-pane/40 backdrop-blur-sm sticky top-0 z-30">
+    <div class="px-4 sm:px-6 py-3 flex items-center gap-3 sm:gap-6">
+      <a href="/" class="flex items-center gap-3 group shrink-0">
+        <div class="w-8 h-8 rounded-md bg-gradient-to-br from-accent to-emerald-400
+                    flex items-center justify-center font-bold text-bg text-sm">
+          TC
+        </div>
+        <div class="leading-tight hidden sm:block pwa-hide-when-installed">
+          <div class="text-mono font-semibold text-sm tracking-tight">Trading Corp</div>
+          <div class="text-muted text-[11px] uppercase tracking-widest">Command Center</div>
+        </div>
+      </a>
+
+      {% set nav = [
+        ('/', 'Overview'),
+        ('/trades', 'Trades'),
+        ('/research', 'Research'),
+        ('/system', 'System'),
+      ] %}
+      <!-- Desktop nav (md+) -->
+      <nav class="hidden md:flex gap-1 ml-2">
+        {% for href, label in nav %}
+          <a href="{{ href }}"
+             class="px-3 py-1.5 rounded-md text-sm text-muted hover:text-mono
+                    hover:bg-pane-2 transition-colors
+                    {% if request.url.path == href %}bg-pane-2 text-mono{% endif %}">
+            {{ label }}
+          </a>
+        {% endfor %}
+      </nav>
+
+      <div class="ml-auto flex items-center gap-2 sm:gap-4">
+        {% block header_extras %}{% endblock %}
+
+        <!-- Privacy toggle: blurs all dollar values site-wide.
+             Persists across pages via localStorage; survives reload.
+             Click to flip, hover any blurred value to peek at it briefly. -->
+        <button id="tc-privacy-toggle"
+                type="button"
+                onclick="window.tcTogglePrivacy()"
+                title="Toggle privacy — blur all dollar values for screen-sharing. Hover any value to peek."
+                class="px-2 py-1 rounded-md text-[11px] font-mono uppercase tracking-wider
+                       bg-pane-2 text-muted border border-edge
+                       hover:bg-edge-2 hover:text-mono transition-colors
+                       flex items-center gap-1.5">
+          <span id="tc-privacy-icon" aria-hidden="true">👁</span>
+          <span id="tc-privacy-label">show $</span>
+        </button>
+
+        <span class="px-2 py-1 rounded-md text-[11px] font-mono uppercase tracking-wider
+                     {% if snap and snap.mode == 'LIVE' %}bg-loss/20 text-loss border border-loss/40
+                     {% else %}bg-pane-2 text-muted border border-edge{% endif %}">
+          {{ (snap.mode if snap else 'paper') | lower }}
+        </span>
+        {% if snap and snap.dry_run %}
+          <span title="DRY-RUN: real auth + reads + risk gates run, but broker.place_order() is skipped. Synthetic fills only."
+                class="px-2 py-1 rounded-md text-[11px] font-mono uppercase tracking-wider
+                       bg-warn/20 text-warn border border-warn/40">
+            dry-run
+          </span>
+        {% endif %}
+
+        <!-- Mobile hamburger (md and below) -->
+        <button class="md:hidden p-1.5 rounded-md text-muted hover:text-mono hover:bg-pane-2"
+                onclick="document.getElementById('mobile-nav').classList.toggle('hidden')"
+                aria-label="Toggle nav">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Mobile nav drawer -->
+    <nav id="mobile-nav" class="hidden md:hidden border-t border-edge bg-pane">
+      {% for href, label in nav %}
+        <a href="{{ href }}"
+           class="block px-6 py-3 text-sm text-muted hover:text-mono hover:bg-pane-2
+                  border-b border-edge/50
+                  {% if request.url.path == href %}bg-pane-2 text-mono{% endif %}">
+          {{ label }}
+        </a>
+      {% endfor %}
+    </nav>
+  </header>
+
+  <!-- ── MAIN ───────────────────────────────────────────────────────────── -->
+  <main class="flex-1 px-6 py-6 max-w-[1800px] w-full mx-auto">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- ── FOOTER (system health strip) ───────────────────────────────────── -->
+  <footer class="border-t border-edge bg-pane/40 mt-auto">
+    <div class="px-6 py-2 flex items-center gap-6 text-[11px] text-muted font-mono">
+      {% block footer %}
+        {% if snap %}
+          <span>regime: <span class="text-mono">{{ snap.regime }}</span></span>
+          <span>vix: <span class="text-mono">{{ '%.2f' % snap.vix if snap.vix else '—' }}</span></span>
+          {% for b in snap.health.brokers %}
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full
+                {% if b.connected %}bg-gain{% else %}bg-loss{% endif %}"></span>
+              {{ b.division }}
+              {% if b.paper %}<span class="text-muted/60">(paper)</span>{% endif %}
+            </span>
+          {% endfor %}
+          {% if snap.health.scheduler.last_run %}
+            <span>sched: <span class="text-mono">{{ snap.health.scheduler.last_run[11:19] }}Z</span></span>
+          {% endif %}
+        {% endif %}
+      {% endblock %}
+      <span class="ml-auto opacity-60">v0.4 · phase 1</span>
+    </div>
+  </footer>
+
+  <!-- Privacy toggle wiring. The early <head> script already applied the
+       saved class before paint; this just keeps the button label in sync
+       and exposes the toggle function. -->
+  <script>
+    (function () {
+      const root = document.documentElement;
+      const btn = document.getElementById('tc-privacy-toggle');
+      const icon = document.getElementById('tc-privacy-icon');
+      const label = document.getElementById('tc-privacy-label');
+
+      function syncButton() {
+        const on = root.classList.contains('privacy-on');
+        if (icon)  icon.textContent  = on ? '🙈' : '👁';
+        if (label) label.textContent = on ? 'masked' : 'show $';
+        if (btn) {
+          if (on) {
+            btn.classList.add('bg-warn/15', 'text-warn', 'border-warn/30');
+            btn.classList.remove('bg-pane-2', 'text-muted', 'border-edge');
+          } else {
+            btn.classList.remove('bg-warn/15', 'text-warn', 'border-warn/30');
+            btn.classList.add('bg-pane-2', 'text-muted', 'border-edge');
+          }
+        }
+      }
+
+      window.tcTogglePrivacy = function () {
+        const turningOn = !root.classList.contains('privacy-on');
+        root.classList.toggle('privacy-on', turningOn);
+        try {
+          localStorage.setItem('tc-privacy', turningOn ? 'on' : 'off');
+        } catch (e) { /* ignore */ }
+        syncButton();
+      };
+
+      syncButton();
+    })();
+  </script>
+
+  {# Service worker registration — registers /sw.js at root scope so it
+     can intercept fetches across the whole app. Runs after window load
+     so it doesn't fight initial paint. Safe to ship in dev too — the
+     SW will only activate on HTTPS or localhost (browser security
+     model), so non-HTTPS deployments simply don't get a service worker. #}
+  <script src="/static/js/pwa.js" defer></script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

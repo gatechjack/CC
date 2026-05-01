@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tradingview": {
+      "command": "C:\\Users\\AA Incorporado\\.local\\bin\\tradingview-mcp.exe",
+      "args": [],
+      "type": "stdio"
+    }
+  }
+}

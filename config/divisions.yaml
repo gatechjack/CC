@@ -1,0 +1,105 @@
+# Division registry — defines every account/sub-portfolio the corp manages.
+#
+# A "division" = one account + one strategic intent. Multiple divisions can
+# share a broker login (Robinhood Joint + IRA + PMCC under one RH account;
+# Fidelity Joint + 401k + Individual under one Fidelity login).
+#
+# Schema:
+#   slug                  unique URL/route identifier (lowercase, snake_case)
+#   name                  human display name
+#   broker                broker family: robinhood | fidelity | coinbase | paper
+#   account_filter        how to pick this account within the broker:
+#                           - robinhood: account_type ("individual","ira_roth","joint")
+#                                        OR account_number substring
+#                           - fidelity: case-insensitive substring of account name
+#                           - coinbase: "spot" | "futures"
+#   intent                aggressive | balanced | retirement
+#                           drives goal-aware coloring + benchmark thresholds
+#   benchmark             ticker symbol for benchmark comparison (yfinance)
+#   target_annual_return  fraction (0.30 = 30%) — optional, used for tile context
+#   enabled               bool — disabled divisions don't render in UI
+#   strategy              optional — strategy block from strategies.yaml that
+#                           operates on this account (informational for now)
+
+divisions:
+  # ── Robinhood (single login, multiple sub-accounts) ─────────────────────
+  - slug: robinhood_pmcc
+    name: Robinhood PMCC
+    broker: robinhood
+    account_filter: individual
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.30
+    strategy: robinhood_pmcc
+    enabled: true
+
+  - slug: robinhood_ira
+    name: Robinhood IRA
+    broker: robinhood
+    # Robinhood returned brokerage_account_type='ira_traditional' for this
+    # account on 2026-04-27 (RH account #2 = 934310442). Other valid filter
+    # values: 'ira_roth', 'ira_trad', 'ira', or the literal account_number
+    # substring (more reliable than type keywords if you have multiple IRAs).
+    account_filter: ira_traditional
+    intent: retirement
+    benchmark: SPY
+    target_annual_return: 0.08
+    enabled: true
+
+  - slug: robinhood_joint
+    name: Robinhood Joint
+    broker: robinhood
+    account_filter: joint
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.20
+    enabled: true
+
+  # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────
+  - slug: fidelity_joint
+    name: Fidelity Joint
+    broker: fidelity
+    account_filter: Joint
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.20
+    strategy: fidelity_options
+    enabled: true
+
+  - slug: fidelity_401k
+    name: Fidelity 401(k)
+    broker: fidelity
+    account_filter: "401k"
+    intent: retirement
+    benchmark: SPY
+    target_annual_return: 0.08
+    enabled: true
+
+  - slug: fidelity_individual
+    name: Fidelity Individual
+    broker: fidelity
+    account_filter: Individual
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.20
+    enabled: true
+
+  # ── Coinbase (one login, two trading modes) ────────────────────────────
+  - slug: coinbase_spot
+    name: Coinbase Spot
+    broker: coinbase
+    account_filter: spot
+    intent: aggressive
+    benchmark: BTC-USD
+    target_annual_return: 0.40
+    enabled: true
+
+  - slug: coinbase_futures
+    name: Coinbase Futures
+    broker: coinbase
+    account_filter: futures
+    intent: aggressive
+    benchmark: BTC-USD
+    target_annual_return: 0.50
+    strategy: crypto_futures
+    enabled: true

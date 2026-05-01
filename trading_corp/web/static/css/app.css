@@ -1,0 +1,154 @@
+/* Custom CSS overrides for trading-desk feel.
+   Tailwind handles the heavy lifting; this file is for things Tailwind
+   can't do declaratively (scrollbar styling, font feature settings, etc.) */
+
+:root {
+  font-feature-settings: 'tnum' 1, 'cv11' 1, 'ss03' 1;  /* tabular numerals */
+}
+
+/* Numeric content uses tabular figures so columns align */
+.font-mono, code, pre, [data-numeric] {
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+/* Custom thin dark scrollbar for trade-flow rail */
+.custom-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: #1f2937;
+  border-radius: 3px;
+}
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* HTMX request indicator — fades target while in-flight */
+.htmx-request {
+  opacity: 0.6;
+  transition: opacity 0.1s ease-in-out;
+}
+
+/* Smoother HTMX swap — brief fade on incoming content */
+.htmx-swapping {
+  opacity: 0;
+  transition: opacity 0.1s ease-in-out;
+}
+.htmx-settling {
+  opacity: 1;
+  transition: opacity 0.2s ease-in-out;
+}
+
+/* Typography refinement: tighter heading spacing */
+h1, h2, h3 { letter-spacing: -0.011em; }
+
+/* Ambient glow for live-status dots */
+@keyframes subtle-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+  50%      { opacity: 0.7; box-shadow: 0 0 8px 2px rgba(16, 185, 129, 0.2); }
+}
+.animate-pulse-soft {
+  animation: subtle-pulse 2s ease-in-out infinite;
+}
+
+/* Suppress browser's default focus ring on links/buttons inside cards;
+   we apply explicit focus-visible rings via Tailwind where needed */
+a:focus, button:focus { outline: none; }
+a:focus-visible, button:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Markdown rendering for LLM analysis ──────────────────────────────── */
+.markdown-content h1 { font-size: 1rem;  font-weight: 600; color: #e2e8f0; margin: 0.5rem 0 0.25rem; }
+.markdown-content h2 { font-size: 0.92rem; font-weight: 600; color: #e2e8f0; margin: 0.5rem 0 0.25rem; }
+.markdown-content h3 { font-size: 0.85rem; font-weight: 600; color: #e2e8f0; margin: 0.4rem 0 0.2rem; }
+.markdown-content p  { margin: 0.25rem 0; color: #cbd5e1; }
+.markdown-content ul,
+.markdown-content ol { margin: 0.25rem 0 0.5rem 1.25rem; color: #cbd5e1; }
+.markdown-content li { margin-bottom: 0.15rem; }
+.markdown-content strong { color: #f1f5f9; font-weight: 600; }
+.markdown-content em     { color: #94a3b8; font-style: italic; }
+.markdown-content code {
+  background: #1e293b;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.markdown-content hr { border: 0; border-top: 1px solid #1f2937; margin: 0.75rem 0; }
+
+/* ──────────────────────────────────────────────────────────────────────
+   PWA / mobile tweaks.
+   Active when the app is installed (or just on small viewports).
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Honor iPhone safe area insets when running in standalone (installed)
+   mode. The notch/Dynamic Island and bottom home indicator both eat
+   pixels we'd otherwise put content into. The viewport-fit=cover meta
+   tag is what unlocks env(safe-area-inset-*) on iOS. */
+:root {
+  --safe-top:    env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left:   env(safe-area-inset-left, 0px);
+  --safe-right:  env(safe-area-inset-right, 0px);
+}
+
+/* Apply safe-area padding when installed as a PWA so content doesn't
+   slide under the notch. We do NOT apply this to the regular browser
+   view — would just look weird with insets that don't match anything. */
+html.pwa-installed body { padding-top: var(--safe-top); }
+html.pwa-installed footer {
+  padding-bottom: max(0.5rem, var(--safe-bottom));
+}
+html.pwa-installed header {
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+html.pwa-installed main {
+  padding-left: max(1rem, var(--safe-left));
+  padding-right: max(1rem, var(--safe-right));
+}
+
+/* Larger tap targets on touch devices. Apple HIG recommends 44pt; we go
+   a bit larger because trading orders should never be accidentally
+   tapped. Applies to anything explicitly tagged or natural buttons. */
+@media (pointer: coarse) {
+  button:not([class*="text-"]),
+  a[role="button"],
+  input[type="submit"] {
+    min-height: 44px;
+  }
+  /* Form inputs need 16px+ font-size or iOS Safari zooms on focus.
+     Without this, tapping any number/text input on iPhone forces a
+     jarring page zoom that's a known PWA UX wart. */
+  input, select, textarea {
+    font-size: max(16px, 1em) !important;
+  }
+}
+
+/* Disable iOS callout (long-press) on UI chrome — it's distracting and
+   we don't have anything useful to show in it. Inputs/selectable text
+   keep the default behavior. */
+header, footer, nav, button, [role="button"] {
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Smooth-scroll snap fallback so position rows feel right on mobile when
+   the user flicks the list. */
+@media (max-width: 640px) {
+  /* Tighter section spacing on phones — reclaim vertical real estate */
+  main { padding-top: 1rem; padding-bottom: 1rem; }
+  /* Make sticky headers sit flush below safe-area on installed iOS */
+  .sticky.top-0 { top: var(--safe-top); }
+}
+
+/* Standalone-only: hide the header's external "Trading Corp" wordmark
+   block to free up horizontal space (the TC logo square is enough). */
+html.pwa-installed header .pwa-hide-when-installed { display: none; }
+

@@ -1,0 +1,251 @@
+"""Env-var-based secrets loader. Refuses to start LIVE mode without required keys."""
+from __future__ import annotations
+
+import logging
+import os
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+log = logging.getLogger(__name__)
+
+# Keys that, if present in a string, must be redacted from logs.
+_SECRET_KEY_NAMES = (
+    "ANTHROPIC_API_KEY",
+    "TELEGRAM_BOT_TOKEN",
+    "ROBINHOOD_PASSWORD",
+    "ROBINHOOD_MFA_SECRET",
+    "COINBASE_API_KEY",
+    "COINBASE_API_SECRET",
+    "COINBASE_PASSPHRASE",
+    "COINBASE_FUTURES_API_KEY",
+    "COINBASE_FUTURES_API_SECRET",
+    "COINBASE_FUTURES_PASSPHRASE",
+    "FIDELITY_PASSWORD",
+)
+
+
+@dataclass(frozen=True)
+class Secrets:
+    anthropic_api_key: str | None
+    telegram_bot_token: str | None
+    telegram_chat_id: str | None
+    robinhood_username: str | None
+    robinhood_password: str | None
+    robinhood_mfa_secret: str | None
+    coinbase_api_key: str | None
+    coinbase_api_secret: str | None
+    coinbase_passphrase: str | None
+    # Separate credentials for the FCM futures endpoint. Spot keys are
+    # rejected by futures endpoints (and vice versa) — different portfolios
+    # in Coinbase, different signing scopes. If unset, the futures division
+    # initializes as a stub.
+    coinbase_futures_api_key: str | None
+    coinbase_futures_api_secret: str | None
+    coinbase_futures_passphrase: str | None
+    fidelity_username: str | None
+    fidelity_password: str | None
+    fidelity_account: str | None   # account name substring to filter, e.g. "Joint"
+    db_url: str
+
+    @property
+    def has_telegram(self) -> bool:
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+
+def _env(name: str, default: str | None = None) -> str | None:
+    """Read an env var and strip whitespace.
+
+    .env files are notoriously prone to invisible whitespace bugs — a stray
+    space after `=` (e.g. `ANTHROPIC_API_KEY= sk-ant-...`) becomes part of
+    the value and breaks API auth in non-obvious ways. We strip all leading
+    and trailing whitespace from every secret on load. Returns None for
+    empty-string values so `if secrets.X:` truthiness checks behave sanely.
+    """
+    raw = os.getenv(name, default)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    return stripped if stripped else None
+
+
+def _populate_from_keyvault(vault_uri: str) -> None:
+    """Pull every known secret from Azure Key Vault into os.environ.
+
+    Used on Azure deployments. The VM has a system-assigned Managed
+    Identity that's been granted "Key Vault Secrets User" role; the
+    Azure SDK's DefaultAzureCredential picks that up automatically.
+
+    Auth resolution order (DefaultAzureCredential):
+      1. EnvironmentCredential   (CI/CD service principals, env vars)
+      2. WorkloadIdentityCredential (AKS pod identity)
+      3. ManagedIdentityCredential (Azure VMs, App Service) ← what we use
+      4. AzureCliCredential       (local dev with `az login`)
+      etc.
+
+    Secret-name translation: Azure Key Vault doesn't allow underscores
+    in secret names, so we translate `ANTHROPIC_API_KEY` ↔ `ANTHROPIC-API-KEY`.
+
+    Existing env values (from .env or the process env) take precedence
+    over KV — useful for one-off local overrides without touching the vault.
+    Missing secrets in the vault are silently skipped (debug-logged) so
+    bootstrapping works incrementally.
+    """
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+    except ImportError:
+        log.warning(
+            "KEY_VAULT_URI is set but azure-identity / azure-keyvault-secrets "
+            "are not installed. Run: pip install azure-identity azure-keyvault-secrets"
+        )
+        return
+
+    try:
+        credential = DefaultAzureCredential()
+        client = SecretClient(vault_url=vault_uri, credential=credential)
+    except Exception as e:
+        log.warning("Key Vault client init failed: %s", e)
+        return
+
+    # All env var names we want to populate from KV. Mirrors the
+    # field set in `Secrets` plus a few config flags also stored in
+    # the vault for centralized management.
+    expected_env_vars = (
+        "ANTHROPIC_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "ROBINHOOD_USERNAME",
+        "ROBINHOOD_PASSWORD",
+        "ROBINHOOD_MFA_SECRET",
+        "COINBASE_API_KEY",
+        "COINBASE_API_SECRET",
+        "COINBASE_PASSPHRASE",
+        "COINBASE_FUTURES_API_KEY",
+        "COINBASE_FUTURES_API_SECRET",
+        "COINBASE_FUTURES_PASSPHRASE",
+        "FIDELITY_USERNAME",
+        "FIDELITY_PASSWORD",
+        "FIDELITY_ACCOUNT",
+        "TRADING_CORP_DB_URL",
+        "LORD_OTTER_WEBHOOK_SECRET",
+        "LORD_OTTER_DISABLE_IP_CHECK",
+        "MARKET_CYPHER_WEBHOOK_SECRET",
+        "MARKET_CYPHER_DISABLE_IP_CHECK",
+        "ENABLE_TRADINGVIEW",
+    )
+
+    loaded = 0
+    for env_name in expected_env_vars:
+        if os.getenv(env_name):
+            # Already set — env takes precedence so local overrides work
+            continue
+        kv_name = env_name.replace("_", "-")
+        try:
+            secret = client.get_secret(kv_name)
+            if secret.value:
+                os.environ[env_name] = secret.value
+                loaded += 1
+        except Exception as e:
+            # Secret not in vault, or transient auth failure — degrade gracefully
+            log.debug("Key Vault: skipped %s (%s): %s",
+                      kv_name, type(e).__name__, str(e)[:120])
+
+    log.info("Key Vault: loaded %d secrets from %s", loaded, vault_uri)
+
+
+def load_secrets(env_file: Path | None = None) -> Secrets:
+    """Load .env (if present) and return a Secrets object.
+
+    NOTE: uses `override=True` so .env always wins over the existing process
+    environment. Without this, a stale or empty value left in the parent
+    shell (e.g. from a previous session that set ANTHROPIC_API_KEY="") will
+    silently shadow a freshly-edited .env. We always want the file as the
+    authoritative source.
+
+    Azure mode: if `KEY_VAULT_URI` env var is set, also pull secrets from
+    Azure Key Vault using the host's Managed Identity. KV is queried AFTER
+    .env so .env values take precedence (useful for local debugging without
+    touching prod KV). Missing-from-KV secrets degrade silently.
+    """
+    if env_file is None:
+        env_file = Path.cwd() / ".env"
+    if env_file.exists():
+        load_dotenv(env_file, override=True)
+
+    kv_uri = os.getenv("KEY_VAULT_URI")
+    if kv_uri:
+        _populate_from_keyvault(kv_uri)
+
+    return Secrets(
+        anthropic_api_key=_env("ANTHROPIC_API_KEY"),
+        telegram_bot_token=_env("TELEGRAM_BOT_TOKEN"),
+        telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
+        robinhood_username=_env("ROBINHOOD_USERNAME"),
+        robinhood_password=_env("ROBINHOOD_PASSWORD"),
+        robinhood_mfa_secret=_env("ROBINHOOD_MFA_SECRET"),
+        coinbase_api_key=_env("COINBASE_API_KEY"),
+        coinbase_api_secret=_env("COINBASE_API_SECRET"),
+        coinbase_passphrase=_env("COINBASE_PASSPHRASE"),
+        coinbase_futures_api_key=_env("COINBASE_FUTURES_API_KEY"),
+        coinbase_futures_api_secret=_env("COINBASE_FUTURES_API_SECRET"),
+        coinbase_futures_passphrase=_env("COINBASE_FUTURES_PASSPHRASE"),
+        fidelity_username=_env("FIDELITY_USERNAME"),
+        fidelity_password=_env("FIDELITY_PASSWORD"),
+        fidelity_account=_env("FIDELITY_ACCOUNT"),
+        db_url=_env("TRADING_CORP_DB_URL") or "sqlite:///data/trading_corp.db",
+    )
+
+
+def assert_live_ready(secrets: Secrets, brokers_required: tuple[str, ...]) -> None:
+    """Raise RuntimeError if any required-for-LIVE credential is missing.
+
+    `brokers_required` is e.g. ("robinhood", "coinbase").
+    """
+    if not secrets.anthropic_api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY missing — required for LIVE mode (and PAPER too).")
+    missing: list[str] = []
+    if "robinhood" in brokers_required:
+        if not secrets.robinhood_username or not secrets.robinhood_password:
+            missing.append("ROBINHOOD_USERNAME/PASSWORD")
+    if "coinbase" in brokers_required:
+        if not (secrets.coinbase_api_key and secrets.coinbase_api_secret):
+            missing.append("COINBASE_API_KEY/SECRET")
+    if "fidelity" in brokers_required:
+        if not (secrets.fidelity_username and secrets.fidelity_password):
+            missing.append("FIDELITY_USERNAME/PASSWORD")
+    if missing:
+        raise RuntimeError(
+            "LIVE mode requested but missing credentials for: "
+            + ", ".join(missing)
+            + ". Set them in .env or run in PAPER mode."
+        )
+
+
+_REDACT_PATTERN = re.compile(
+    r"(?P<key>" + "|".join(_SECRET_KEY_NAMES) + r")\s*=\s*[^\s,;}]+",
+    re.IGNORECASE,
+)
+
+
+def redact(text: str) -> str:
+    """Replace secret-looking key=value substrings with key=***REDACTED***."""
+    return _REDACT_PATTERN.sub(lambda m: f"{m.group('key')}=***REDACTED***", text)
+
+
+class RedactingFilter(logging.Filter):
+    """Logging filter that redacts secret values from emitted records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        if isinstance(record.msg, str):
+            record.msg = redact(record.msg)
+        if record.args:
+            try:
+                record.args = tuple(
+                    redact(a) if isinstance(a, str) else a for a in record.args
+                )
+            except Exception:
+                pass
+        return True

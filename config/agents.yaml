@@ -1,0 +1,31 @@
+# LLM model assignments per agent. Model IDs from the approved Phase 1 plan.
+# Sonnet 4.6 default for routine reasoning; Opus 4.7 for backtesting + EOD debate.
+
+models:
+  default: claude-sonnet-4-6
+  reasoning: claude-opus-4-7   # used for backtesting and end-of-day debate
+
+agents:
+  ceo:              { model: claude-sonnet-4-6, temperature: 0.2 }
+  trend_regime:     { model: claude-sonnet-4-6, temperature: 0.0 }
+  risk:             { model: claude-sonnet-4-6, temperature: 0.0 }
+  backtester:       { model: claude-opus-4-7,   temperature: 0.1 }
+  portfolio:        { model: claude-sonnet-4-6, temperature: 0.1 }
+  pmcc_robinhood:   { model: claude-sonnet-4-6, temperature: 0.1 }
+  fidelity_options: { model: claude-sonnet-4-6, temperature: 0.1 }
+  crypto_scalper:   { model: claude-sonnet-4-6, temperature: 0.0 }
+  crypto_swing:     { model: claude-sonnet-4-6, temperature: 0.1 }
+  crypto_vwap:      { model: claude-sonnet-4-6, temperature: 0.0 }
+  crypto_quarter:   { model: claude-sonnet-4-6, temperature: 0.1 }
+  eod_debate:       { model: claude-opus-4-7,   temperature: 0.3 }
+
+  # ── Research firm (per planning/research_firm_design.md §5.5 / Q9) ──
+  # Experts: Sonnet — per-candidate fan-out makes per-call cost dominate.
+  # Synthesis: Sonnet — structured generation against a fixed product schema.
+  # Judge: Opus — argument-quality scoring (Phase 1f; defined here for forward-compat).
+  research_expert:    { model: claude-sonnet-4-6, temperature: 0.1 }
+  research_synthesis: { model: claude-sonnet-4-6, temperature: 0.2 }
+  research_judge:     { model: claude-opus-4-7,   temperature: 0.0 }
+
+# Prompt caching is enabled by default in the Anthropic client wrapper —
+# system prompts and the rolling market-context block are cached.

@@ -1,0 +1,233 @@
+{# ──────────────────────────────────────────────────────────────────
+   pmcc_scout.html — Scout panel: fresh PMCC opening candidates.
+
+   Rendered by GET /division/{slug}/scout. Bound variables:
+     slug          — division slug (e.g. "robinhood_pmcc")
+     scout         — ScoutReport (status + candidates)
+     fmt_age_sec   — seconds since this report was generated (0 if fresh)
+   ────────────────────────────────────────────────────────────────── #}
+
+{% set state = scout.status.state %}
+{% set state_color = {'go':'gain','hold':'warn','halt':'loss'}.get(state,'muted') %}
+{% set state_icon  = {'go':'🟢','hold':'🟡','halt':'🔴'}.get(state,'⚪') %}
+
+<div id="scout-section">
+<section class="bg-pane border border-edge rounded-lg overflow-hidden">
+
+  {# ── Header ────────────────────────────────────────────────── #}
+  <header class="px-4 py-3 border-b border-edge flex items-baseline justify-between gap-4">
+    <div class="flex items-baseline gap-3 flex-wrap">
+      <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+        Scout · open new PMCC
+      </h2>
+      <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                   bg-{{ state_color }}/15 text-{{ state_color }} border border-{{ state_color }}/30">
+        {{ state }}
+      </span>
+      <span class="text-[11px] text-muted font-mono">
+        {{ scout.candidates|length }} candidate{{ '' if scout.candidates|length == 1 else 's' }}
+        · scanned {{ scout.universe_scanned|length }}
+      </span>
+    </div>
+    <div class="flex items-baseline gap-3">
+      <span class="text-[11px] text-muted font-mono">
+        {% if fmt_age_sec == 0 %}fresh{% else %}{{ fmt_age_sec }}s ago{% endif %}
+      </span>
+      <button
+        hx-post="/division/{{ slug }}/scout/refresh"
+        hx-target="#scout-section"
+        hx-swap="outerHTML"
+        class="text-[11px] text-muted hover:text-mono font-mono">
+        ↻ refresh
+      </button>
+    </div>
+  </header>
+
+  {# ── Status banner ─────────────────────────────────────────── #}
+  <div class="px-4 py-3 border-b border-edge bg-{{ state_color }}/5">
+    <div class="flex items-center gap-2">
+      <span class="text-base">{{ state_icon }}</span>
+      <span class="text-{{ state_color }} font-mono font-semibold text-sm">
+        {{ scout.status.headline }}
+      </span>
+      <span class="text-[11px] text-muted ml-auto font-mono">
+        {{ scout.status.open_positions }} of {{ scout.status.max_positions }} slots
+        {% if scout.status.pct_allocated %}
+          · {{ scout.status.pct_allocated | pct }} allocated
+        {% endif %}
+      </span>
+    </div>
+    <div class="text-[11px] text-muted leading-snug mt-1">{{ scout.status.detail }}</div>
+    {% if scout.status.blockers %}
+      <ul class="text-[11px] text-warn font-mono mt-2 space-y-0.5">
+        {% for b in scout.status.blockers %}
+          <li class="flex gap-1.5"><span>⚠</span><span>{{ b }}</span></li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    <div class="text-[10px] text-muted/60 font-mono mt-2 italic">
+      Per Board policy: candidates always shown, even when at capacity.
+    </div>
+  </div>
+
+  {# ── Candidate cards ───────────────────────────────────────── #}
+  {% if scout.candidates %}
+    <div class="divide-y divide-edge/40">
+      {% for c in scout.candidates %}
+        {% set has_blockers = c.blockers|length > 0 %}
+        <div class="px-4 py-3 {% if has_blockers %}opacity-60{% endif %}">
+
+          {# ── Card header: symbol + spot + tags ── #}
+          <div class="flex items-baseline gap-3 flex-wrap mb-2">
+            <span class="font-mono text-mono font-semibold text-base">{{ c.symbol }}</span>
+            {% if c.spot_price is not none %}
+              <span class="text-[11px] text-muted font-mono">
+                spot {{ c.spot_price | money }}
+              </span>
+            {% endif %}
+            {% if c.is_black_sheep %}
+              <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                           bg-warn/15 text-warn border border-warn/30">
+                Black Sheep
+              </span>
+            {% endif %}
+            {% if c.weekly_yield_pct is not none %}
+              {% set yc = 'gain' if c.weekly_yield_pct >= 0.02 else 'warn' if c.weekly_yield_pct >= 0.01 else 'muted' %}
+              <span class="text-[11px] font-mono text-{{ yc }} ml-auto">
+                {{ c.weekly_yield_pct | pct }} weekly
+                {% if c.annualized_yield_pct is not none %}
+                  · ~{{ c.annualized_yield_pct | pct(0) }} annualized
+                {% endif %}
+              </span>
+            {% endif %}
+          </div>
+
+          {# ── Legs (LEAP + Short) ── #}
+          {% if c.leap_leg or c.short_leg %}
+            <div class="rounded-md bg-pane-2/40 border border-edge/60 px-3 py-2 mb-2">
+
+              {% if c.leap_leg %}
+                {% set leg = c.leap_leg %}
+                <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] font-mono py-1 border-b border-edge/40 last:border-0">
+                  <span class="text-mono font-semibold w-[78px] shrink-0">{{ leg.action_label }}</span>
+                  <span class="text-mono">{{ leg.underlying }}</span>
+                  <span class="text-muted">
+                    {{ leg.expiry }} · {{ leg.strike | strike }}C
+                    {% if leg.dte is not none %}· {{ leg.dte }}d{% endif %}
+                    {% if leg.delta is not none %}· δ{{ '%.2f' % leg.delta }}{% endif %}
+                  </span>
+                  <span class="text-muted">×{{ leg.qty }}</span>
+                  <span class="text-muted">
+                    @ {% if leg.mark_per_share is not none %}{{ leg.mark_per_share | money }}/sh{% else %}—{% endif %}
+                  </span>
+                  <span class="ml-auto font-semibold text-loss">
+                    <span class="private-money">-${{ '%.2f' % c.leap_debit_dollars }}</span>
+                  </span>
+                </div>
+              {% endif %}
+
+              {% if c.short_leg %}
+                {% set leg = c.short_leg %}
+                <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] font-mono py-1 border-b border-edge/40 last:border-0">
+                  <span class="text-mono font-semibold w-[78px] shrink-0">{{ leg.action_label }}</span>
+                  <span class="text-mono">{{ leg.underlying }}</span>
+                  <span class="text-muted">
+                    {{ leg.expiry }} · {{ leg.strike | strike }}C
+                    {% if leg.dte is not none %}· {{ leg.dte }}d{% endif %}
+                    {% if leg.delta is not none %}· δ{{ '%.2f' % leg.delta }}{% endif %}
+                  </span>
+                  <span class="text-muted">×{{ leg.qty }}</span>
+                  <span class="text-muted">
+                    @ {% if leg.mark_per_share is not none %}{{ leg.mark_per_share | money }}/sh{% else %}—{% endif %}
+                  </span>
+                  <span class="ml-auto font-semibold text-gain">
+                    <span class="private-money">+${{ '%.2f' % c.short_credit_dollars }}</span>
+                  </span>
+                </div>
+              {% endif %}
+
+              {# Net opening debit #}
+              <div class="flex items-baseline justify-between mt-2 pt-2 border-t border-edge font-mono text-sm">
+                <span class="text-muted text-xs">Net opening debit</span>
+                <span class="font-semibold {% if c.net_opening_debit > 0 %}text-loss{% else %}text-gain{% endif %}">
+                  <span class="private-money">{% if c.net_opening_debit >= 0 %}-{% else %}+{% endif %}${{ '%.2f' % (c.net_opening_debit | abs) }}</span>
+                </span>
+              </div>
+            </div>
+          {% endif %}
+
+          {# ── Notes (informational) ── #}
+          {% if c.notes %}
+            <ul class="text-[11px] text-muted/90 font-mono space-y-0.5 mb-2">
+              {% for n in c.notes %}
+                <li class="flex gap-1.5"><span class="text-gain">✓</span><span>{{ n }}</span></li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          {# ── Blockers (why we can't trade this now) ── #}
+          {% if c.blockers %}
+            <ul class="text-[11px] text-warn font-mono space-y-0.5 mb-2">
+              {% for b in c.blockers %}
+                <li class="flex gap-1.5"><span>⚠</span><span>{{ b }}</span></li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          {# ── Action button ── #}
+          {% if not has_blockers and c.leap_leg and c.short_leg %}
+            <form
+              hx-post="/division/{{ slug }}/scout/{{ c.symbol }}/execute"
+              hx-target="#scout-exec-{{ c.symbol }}"
+              hx-swap="innerHTML"
+              hx-confirm="Open new PMCC on {{ c.symbol }}? Net debit ~${{ '%.2f' % c.net_opening_debit }} (1 LEAP + 1 short)."
+              class="mt-1">
+              <button type="submit"
+                {% if state != 'go' %}
+                  title="Status is {{ state }} — opening will hit risk gates and may be rejected/resized."
+                {% endif %}
+                class="px-3 py-1.5 rounded-md font-mono text-xs font-semibold
+                       {% if state == 'go' %}
+                         bg-accent text-white hover:bg-accent/85
+                       {% else %}
+                         bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono border border-edge
+                       {% endif %}
+                       transition-colors">
+                {% if state == 'go' %}
+                  + Open PMCC · {{ c.symbol }}
+                {% else %}
+                  + Open anyway (risk gate will decide)
+                {% endif %}
+              </button>
+            </form>
+            <div id="scout-exec-{{ c.symbol }}" class="mt-2"></div>
+          {% else %}
+            <div class="text-[11px] text-muted/60 font-mono italic mt-1">
+              Informational only — not currently executable.
+            </div>
+          {% endif %}
+
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="p-6 text-center text-muted text-sm italic">
+      No symbols cleared the chain / liquidity / earnings gates today.
+      <div class="text-[11px] text-muted/60 mt-1 font-mono">
+        Universe scanned: {{ scout.universe_scanned|join(', ') if scout.universe_scanned else '(empty)' }}
+      </div>
+    </div>
+  {% endif %}
+
+  {# ── Footer: excluded existing positions ── #}
+  {% if scout.excluded_existing %}
+    <footer class="px-4 py-2 border-t border-edge bg-pane-2/30">
+      <div class="text-[10px] text-muted/70 font-mono">
+        Excluded (already held as PMCC):
+        <span class="text-muted">{{ scout.excluded_existing|join(', ') }}</span>
+      </div>
+    </footer>
+  {% endif %}
+
+</section>
+</div>

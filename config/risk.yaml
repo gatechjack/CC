@@ -1,0 +1,50 @@
+# Aggressive-but-capped risk profile (Phase 1 confirmed)
+# All percentages are decimals: 0.015 = 1.5%
+# Hot-reloaded by Risk Agent on file mtime change.
+
+global:
+  per_trade_risk_pct: 0.015          # max % of account equity at risk per trade
+  per_strategy_daily_loss_pct: 0.03  # halt strategy for the day at this realized loss
+  per_account_max_drawdown_pct: 0.15 # auto-flatten + global halt at this peak DD
+  correlation_cap: 0.7               # reject incremental adds above this 30d-return correlation
+  target_annualized_vol: 0.25        # used by vol-scalar; size *= min(1, target/realized)
+
+trend_alignment:
+  counter_trend_size_multiplier: 0.5 # counter-trend trades get half size
+
+pmcc:
+  contracts_per_25k_equity: 1        # 1 contract per $25k account equity per underlying
+  short_call_roll_dte: 21            # roll short call when <= 21 DTE
+  short_call_roll_profit_pct: 0.50   # ...or when 50% of credit captured
+  long_call_min_dte: 365             # LEAP target: >= 1 year DTE
+  long_call_min_delta: 0.80          # deep ITM
+  short_call_target_delta: 0.30      # OTM weekly
+  # Phase 1a-2 (design §3.6 + §8.A clause c): N consecutive
+  # `pmcc_scan_research_unavailable` rows before the scout emits a
+  # `pmcc_research_extended_outage` audit kind + Telegram-notifies the
+  # Board. Counter resets on any successful engagement. Default 3.
+  research_outage_alert_threshold: 3
+
+# Per-strategy overrides — leave empty to inherit `global`.
+overrides:
+  fidelity_options: {}
+  crypto_scalper:
+    per_trade_risk_pct: 0.005        # scalper trades smaller per trade, higher frequency
+  crypto_swing: {}
+  crypto_vwap: {}
+  crypto_quarter: {}
+
+  # Lord Otter — TradingView-driven scalping on Coinbase. Diamond-tier
+  # setups size at 5% of equity (the per-trade cap), so this override
+  # lets Diamond fire unmodified. Lower tiers stay well under 5%.
+  lord_otter:
+    per_trade_risk_pct: 0.05         # 5% per-trade cap (max conviction Diamond tier)
+    per_strategy_daily_loss_pct: 0.02  # halt strategy at 2% daily realized loss
+
+  # Manual ad-hoc orders via the Coinbase Spot dashboard form.
+  # Lifted from the global 1.5% so you can place small-to-medium
+  # discretionary trades without the gate auto-resizing. The
+  # dashboard form is a deliberate Board action, so the cap is the
+  # account-level safety valve, not the per-trade default.
+  manual_coinbase_spot:
+    per_trade_risk_pct: 0.05         # 5% per-trade cap on manual entries

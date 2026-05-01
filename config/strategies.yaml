@@ -1,0 +1,743 @@
+# Strategy enablement + watchlists. auto_execute is OFF everywhere by default.
+# Flipping auto_execute to true requires Board approval per the project's HITL rules.
+
+robinhood_pmcc:
+  enabled: true
+  auto_execute: false
+  auto_max_notional: 0
+  # Source for the underlying universe.
+  # "positions" (default): pull live Robinhood holdings at scan time and run
+  #   PMCC logic on whatever the account actually owns. Existing PMCC legs are
+  #   detected and managed (roll/close). New LEAP + short-call setups are only
+  #   proposed on names already held (long stock or long LEAP).
+  # "watchlist": use the explicit list below instead (useful for paper-only
+  #   testing before the live account is connected).
+  # "research_on_demand" (Phase 1a-2 — design §8.A): existing-leg roll/close
+  #   continues from held positions, BUT new opens are sourced per scan from
+  #   the research firm via run_engagement(CandidateScope). Capacity is
+  #   governed by buying power (cash_reserve_floor_pct) — there is no
+  #   hard count cap on positions. Requires research_firm_deps wired into
+  #   PMCCAgent at construction time (main.py); without that the new-opens
+  #   path no-ops with a warning. Backwards compatible — flip per account
+  #   when ready, leave others on "positions".
+  universe_source: positions    # "positions" | "watchlist" | "research_on_demand"
+  watchlist: []                 # only used when universe_source: watchlist
+  # Filters applied when universe_source: positions
+  position_exclude: []
+  position_min_shares: 1
+  scan_schedule: "daily_pre_open"   # daily oversight required for 7-DTE shorts
+
+  # ============================================================
+  # SCOUT — surveys the market for new PMCC opening candidates
+  # Independent of `universe_source` (which controls existing-position scans).
+  # The scout always runs against this universe, filters out symbols already
+  # held as PMCCs, and scores remaining names by weekly-yield economics.
+  # ============================================================
+  scout:
+    enabled: true
+    # Symbols the scout considers for fresh PMCC entries.
+    # Default mix: high-IV crypto-levered + high-beta momentum names that
+    # match the strategy's underlying_criteria. Extend / override here.
+    universe:
+      - NVDA
+      - TSLA
+      - AAPL
+      - MSFT
+      - AMD
+      - MSTR
+      - HOOD
+      - MARA
+      - RIOT
+      - ASTS
+      - RKLB
+      - SMR
+    # Hard caps the scout enforces when deciding "GO / HOLD / HALT"
+    max_concurrent_pmccs: 8        # absolute ceiling on open PMCC pairs
+    capital_per_position_dollars: 25000   # 1 contract per $25k equity (matches risk.yaml)
+    cash_reserve_floor_pct: 0.10   # never let cash drop below this fraction of equity
+    # Scoring weights (heuristic ranking of candidates)
+    weights:
+      weekly_yield_pct: 1.00       # primary signal
+      delta_distance_to_target: 0.30  # closer to target delta = better
+      earnings_distance_days: 0.10    # more days from earnings = safer
+      black_sheep_penalty: 0.15       # slight de-prioritization (not exclusion)
+
+  # ============================================================
+  # Auto-execution caps (apply when auto_execute is flipped to true)
+  # Any action exceeding these caps requires Board approval per HITL rules
+  # ============================================================
+  auto_execute_caps:
+    # Per-action dollar caps
+    max_roll_debit_dollars: 500           # max debit on a single roll without approval
+    max_new_position_debit_dollars: 2000  # max debit to open new PMCC without approval
+    max_single_short_credit_dollars: null # no cap on credits (selling premium)
+    max_close_debit_dollars: 1000         # max to close a losing position without approval
+
+    # Daily aggregate caps
+    max_daily_total_debit_dollars: 1500   # cumulative debits across all actions per day
+    max_daily_actions: 10                 # max number of orders per day
+
+    # Required approval triggers (always require approval, regardless of dollar amount)
+    require_approval_for:
+      - "any_action_on_black_sheep_symbols"   # TSLA, MSTR always need eyes
+      - "closing_any_leap"                     # closing longs is consequential
+      - "opening_new_pmcc_on_new_symbol"       # new underlying = thesis decision
+      - "any_action_when_vix_above_30"         # high-vol regime needs human judgment
+      - "rolling_for_debit_above_5_pct_of_long" # large debit rolls
+      - "any_neutral_strategy_open_or_close"   # iron condors / credit spreads
+
+  # ============================================================
+  # Strategy: Aggressive Weekly Income on High-Beta / Crypto-Levered Names
+  # Thesis: LEAP captures explosive upside, weekly short milks high IV
+  # Risk profile: leveraged, volatile — NOT a retirement strategy
+  # Target: 1.5–3% weekly portfolio yield from short premium
+  # ============================================================
+  strategy:
+
+    # ----- Allocation & sizing -----
+    allocation:
+      pmcc_max_pct: 0.70
+      neutral_max_pct: 0.15
+      cash_reserve_min_pct: 0.10
+      cash_reserve_target_pct: 0.15
+
+    sizing:
+      max_risk_per_trade_pct: 0.05
+      max_pmcc_positions: 15
+      weekly_yield_target_low: 0.015
+      weekly_yield_target_high: 0.03
+      expected_breach_rate: 0.20
+
+    # ----- IV regime (high-IV names only) -----
+    iv_filters:
+      pmcc_iv_min: 0.60               # FLOOR — need high IV for thesis
+      pmcc_iv_preferred: 0.80
+      pmcc_iv_max: 2.00
+      neutral_iv_rank_min: 0.80
+      hedge_vix_trigger: 25
+
+    # ----- Underlying selection (applies to NEW positions only) -----
+    underlying_criteria:
+      acceptable_categories:
+        - "crypto_miners"             # MARA, RIOT, CIFR, IREN, BULL
+        - "crypto_proxies"             # MSTR, HOOD, BLSH
+        - "high_beta_momentum"         # ASTS, RKLB, SMR
+        - "high_iv_specialty"          # OPEN, etc.
+      trend_required: "long_term_uptrend_or_breakout"
+      market_cap_min: null
+      beta_range: null
+      dividend_yield_max: 0.01
+      earnings_buffer_days: 7
+
+    # ============================================================
+    # BLACK SHEEP — high-IV names where assignment is not an option
+    # Strategy: roll halfway, never buy back fully, ride mean reversion
+    # Cash-constrained: cannot accept 100-share assignment
+    # ============================================================
+    black_sheep:
+      symbols:
+        - symbol: "TSLA"
+          rationale: "long-term conviction; high IV mean-reverts reliably"
+          intent: "perpetual_roll_no_assignment"
+        - symbol: "MSTR"
+          rationale: "core BTC-leverage; high IV mean-reverts reliably"
+          intent: "perpetual_roll_no_assignment"
+
+      eligibility_criteria:
+        min_options_iv: 0.70
+        min_avg_options_volume: 10000
+        min_underlying_avg_volume: 5_000_000
+        mean_reversion_history: true
+        early_assignment_risk: "low"
+
+      management_rules:
+        cash_available_for_assignment: false
+        never_allow_assignment: true
+        leap_exercise_allowed: false
+        leap_protection: "preserve_at_all_costs"
+        leap_drawdown_close_threshold: null
+        leap_thesis_check_only: true
+        short_leg_required: true
+        short_leg_dte_target: 7
+        short_leg_initial_delta: [0.20, 0.35]
+
+      rolling_rules:
+        philosophy: |
+          NEVER buy back fully and re-sell OTM at a loss.
+          ALWAYS roll, always for credit, always to a higher strike.
+          Use "halfway roll" when stock has moved aggressively against you.
+          Trust mean reversion on high-IV names within 1-3 weekly cycles.
+
+        roll_trigger_dte: 2
+        roll_trigger_dte_otm: 1
+        roll_trigger_itm_intraday: false
+
+        halfway_roll:
+          when_to_use: "short_strike_breached_by_more_than_3_pct"
+          new_strike_logic: "halfway_between_current_short_strike_and_underlying_price"
+          new_dte: 7
+          require_credit: true
+          minimum_credit: 0.05
+          fallback_extend_dte: 14
+          fallback_extend_dte_max: 21
+
+        standard_roll:
+          when_to_use: "short_within_3_pct_of_underlying"
+          new_strike_logic: "match_or_slightly_above_underlying_price"
+          new_dte: 7
+          require_credit: true
+
+        otm_roll:
+          when_to_use: "short_otm_at_50_pct_profit_or_more"
+          action: "close_at_70_pct_profit_then_open_new_7dte"
+          new_strike_delta: [0.20, 0.30]
+
+        forbidden_actions:
+          - action: "buy_back_short_fully_at_loss_then_resell_otm"
+            reason: "locks in loss right before mean-reversion whipsaw"
+          - action: "close_full_pmcc_to_recover_short_loss"
+            reason: "abandons the long thesis to fix a short — backwards"
+          - action: "accept_assignment"
+            reason: "no cash to fund 100 shares; would force LEAP exercise at loss"
+          - action: "roll_for_debit_to_chase_otm"
+            reason: "high IV means credit rolls are nearly always available"
+
+        mean_reversion:
+          expected_pullback_window: "1_to_3_weekly_cycles"
+          expected_pullback_pct: 0.05
+          do_not_panic_within: "2_weekly_cycles"
+
+      black_sheep_breach:
+        philosophy: |
+          High-IV names breach constantly. The breach is not the problem —
+          panic management is. Roll halfway, collect credit, wait for MR.
+
+        minor_breach:
+          definition: "underlying 0-3% above short strike"
+          preferred_action: "standard_roll_at_2_dte"
+          alternate_action: "let_expire_if_at_strike_and_dte_0"
+
+        major_breach:
+          definition: "underlying 3-10% above short strike"
+          preferred_action: "halfway_roll"
+          require_credit: true
+
+        runaway_breach:
+          definition: "underlying 10%+ above short strike"
+          preferred_action: "halfway_roll_with_extended_dte"
+          new_dte: 14
+          require_credit: true
+          forbidden: ["close_leap", "buy_back_at_full_loss", "accept_assignment"]
+
+      exit_when:
+        - "underlying_thesis_explicitly_broken"
+        - "leap_dte < 90 AND no_roll_available_for_credit"
+        - "fundamental_deterioration_confirmed"
+        - "roll_no_longer_yields_credit_after_3_attempts"
+
+      leap_management:
+        roll_out_trigger_dte: 180
+        roll_out_method: "diagonal_credit_or_minimum_debit"
+        max_debit_pct_of_position: 0.15
+
+    # ----- LEAP (long leg) — for non-black-sheep positions -----
+    long_leg:
+      dte_min: 365
+      dte_max: 720
+      delta_min: 0.55
+      delta_max: 0.80
+      delta_high_conviction: 0.70
+      delta_speculative: 0.55
+      roll_down_trigger_delta: 0.40
+      roll_out_trigger_dte: 120
+
+    # ----- Weekly short (short leg) — for non-black-sheep positions -----
+    short_leg:
+      dte_target: 7
+      dte_secondary: 14
+      dte_extended: 45
+      delta_aggressive: [0.30, 0.45]
+      delta_balanced: [0.20, 0.30]
+      delta_defensive: [0.10, 0.20]
+      short_strike_above_long_cost: false
+      short_strike_logic: "above_long_breakeven_OR_above_recent_high"
+
+    # ----- Trade management -----
+    management:
+      profit_take_pct: 0.50
+      profit_take_pct_late: 0.75
+      stop_loss_pct: null
+      roll_dte_trigger: 2
+      roll_itm_trigger: true
+
+    # ----- Terminal-DTE rules: theta dynamics override breach mechanics -----
+    # When a short call has very little time left, the entire mark is mostly
+    # extrinsic value that will evaporate by close. Rolling at this stage
+    # locks in extrinsic that you'd otherwise collect for free. These rules
+    # tell the analyzer to default to HOLD (let theta work) for ATM/near-ATM
+    # shorts in the final 1-2 days, unless the position genuinely breaches
+    # the strike or there's overnight gap risk we can't accept.
+    terminal_dte_rules:
+      enabled: true
+      short_dte_threshold: 2          # rules apply when short DTE <= this
+      atm_band_pct: 0.015             # ±1.5% from strike = "ATM zone"
+      default_action_in_atm_zone: "hold"
+      override_if_breach_pct: 0.015   # close/roll if underlying > strike × (1 + this)
+      rationale: |
+        Time value collapses rapidly in the final 24-48h. When ATM/near-ATM
+        with ≤2 DTE, theta dynamics dominate over breach mechanics. Rolling
+        locks in extrinsic that would otherwise evaporate. Override only if:
+          (a) underlying breaches strike by more than `override_if_breach_pct`
+          (b) realized overnight gap exceeds 1σ implied move
+          (c) account cannot tolerate assignment risk
+
+    # ----- Breach policy (standard, for non-black-sheep) -----
+    breach_policy:
+      philosophy: "breaches are expected, not emergencies — evaluate combined P/L"
+      classification:
+        minor_breach_pct: 0.03
+        major_breach_pct: 0.08
+        runaway_breach_pct: 0.08
+      evaluate_combined_pl: true
+      combined_profit_take_threshold: 0.30
+
+      responses:
+        minor:
+          preferred_action: "roll_up_and_out"
+          new_short_dte: 7
+          new_short_delta: [0.25, 0.35]
+          require_credit: false
+          max_debit_pct_of_long: 0.08
+          fallback: "hold_to_expiry"
+
+        major:
+          preferred_action: "roll_up_and_out_longer_dte"
+          new_short_dte: 21
+          new_short_delta: [0.30, 0.40]
+          require_credit: true
+          alternative_action: "close_full_pmcc_if_profitable"
+          close_threshold_combined_pl: 0.25
+
+        runaway:
+          preferred_action: "close_short_only_hold_leap_naked"
+          conditions_required:
+            - "leap_dte > 270"
+            - "long_term_thesis_intact"
+            - "vix < 30"
+          alternative_action: "close_full_pmcc_lock_gains"
+          use_alternative_when:
+            - "leap_dte < 270"
+            - "combined_pl > 0.40"
+            - "broader_market_topping"
+          forbidden_action: "chase_with_higher_strike_short_same_week"
+
+      hard_rules:
+        - "never roll for debit > 8% of LEAP current value"
+        - "if LEAP delta > 0.95, treat as deep ITM equity — close or roll deep"
+        - "log breach event + outcome for monthly review"
+
+    # ----- Off-criteria positions (non-black-sheep) -----
+    off_criteria_positions:
+      policy: "manage_to_completion_no_renewal"
+      description: |
+        Positions on symbols that don't match underlying_criteria but aren't
+        marked as black_sheep. Continue normal management until LEAP expiry
+        or the thesis breaks. Do NOT propose new PMCC setups on these names
+        after the existing one closes — rotate capital to compliant names.
+      flag_for_review: true
+      block_new_entries_on_symbol: true
+
+    # ----- Liquidity gates -----
+    liquidity:
+      max_bid_ask_spread_pct: 0.10
+      min_open_interest: 100
+      min_avg_volume: 50
+
+    # ----- Hedging -----
+    hedging:
+      vix_above_25: "consider_index_puts_not_individual"
+      btc_drawdown_trigger_pct: 0.15
+      correlation_warning: true
+
+    # ----- Position review priorities -----
+    review_priorities:
+      high:
+        - "any short showing -100% or worse open P/L (non-black-sheep)"
+        - "any short with delta > 0.60 (non-black-sheep)"
+        - "any short within 2 days of expiry and ITM"
+      medium:
+        - "shorts at 50%+ profit (close candidates)"
+        - "LEAPs down >40% from cost (thesis check, EXCLUDING black_sheep)"
+      black_sheep_specific:
+        - "any black_sheep LEAP with DTE < 90 (exercise/roll decision needed)"
+        - "any black_sheep short approaching ITM near expiry"
+
+    # ----- Hard rules -----
+    hard_rules:
+      - "respect max_risk_per_trade_pct on every entry"
+      - "always verify real-time pricing before recommending action"
+      - "always state full expiry date (YYYY-MM-DD) for every strike"
+      - "no new short premium within 7 DTE of underlying earnings"
+      - "on breach, evaluate combined PMCC P/L — never act on short leg alone"
+      - "black_sheep positions follow black_sheep rules, NOT standard breach policy"
+      - "off_criteria positions: manage to completion, no new entries on same symbol"
+      - "never accept assignment on any black_sheep position"
+      - "never close a black_sheep LEAP to fund a short buyback"
+      - "respect auto_execute_caps when auto_execute is true"
+
+
+fidelity_options:
+  enabled: true
+  auto_execute: false
+  auto_max_notional: 0
+
+  watchlist: [SPY, QQQ, IWM]    # symbols to scan each cycle
+
+  # Strategy selection thresholds
+  iv_rank_threshold: 0.50        # above = sell premium (condors/credit spreads), below = buy
+  short_strike_delta: 0.30       # target delta for short legs in spreads / condors
+  long_strike_delta: 0.15        # target delta for wing/protection legs
+
+  # DTE targeting
+  target_dte_low: 25             # minimum DTE to open a new position
+  target_dte_high: 50            # maximum DTE to open a new position
+  calendar_near_dte_low: 7       # near leg for calendar spreads
+  calendar_near_dte_high: 21     # near leg for calendar spreads
+
+  scan_schedule: "weekly_monday_pre_open"
+
+crypto_futures:
+  enabled: false                 # Phase 3
+  auto_execute: false
+  auto_max_notional: 0
+  venue: coinbase                # ccxt id
+  pairs: ["BTC/USD", "ETH/USD"]
+  strategies:
+    scalper: { enabled: false }
+    swing:   { enabled: false }
+    vwap:    { enabled: false }
+    quarter: { enabled: false }
+
+
+# ============================================================
+# LORD OTTER — TradingView-driven scalping strategy
+#
+# Receives webhook alerts from TradingView when the Lord Otter
+# indicator fires signals (Otter, Spoon, Pink Box, Water, Money
+# Bag, CVD flip, 90m bias). The agent maintains per-symbol state,
+# classifies the alert chain into a conviction tier (Diamond →
+# Premium → Standard → Solo Otter), and emits a ProposedOrder
+# sized by tier. All orders flow through the standard risk gate
+# + audit pipeline.
+#
+# Phase 1: spot longs only on Coinbase (buy → close → wait).
+# Phase 2 (future): leverage shorts via coinbase_futures.
+# ============================================================
+lord_otter:
+  enabled: true
+  # auto_execute: when true, ProposedOrders fire through the risk
+  # gate straight to the broker (no HITL approval). Leave FALSE
+  # while you build trust in the strategy. When false, alerts are
+  # received + classified + audited but orders are NOT placed —
+  # they're logged as "would_have_placed" and pushed to Telegram
+  # for visibility.
+  auto_execute: false
+  # Webhook auth secret env-var name. Generate a random 32+ char
+  # string (e.g. `python -c "import secrets;print(secrets.token_urlsafe(32))"`)
+  # and put it in .env as LORD_OTTER_WEBHOOK_SECRET=...
+  webhook_secret_env: LORD_OTTER_WEBHOOK_SECRET
+
+  # Which division (account) orders route to. Phase 1: Coinbase Spot.
+  # Phase 2: also coinbase_futures once that broker is wired (Phase C
+  # of the Coinbase wiring work).
+  division: coinbase_spot
+
+  # Symbols this strategy operates on. Each symbol gets its own state
+  # machine. Phase 1: BTC only. Add ETH/FET when you're ready.
+  symbols:
+    - "BTC/USD"
+
+  # Direction policy. "long_only" = spot semantics (buy = open long;
+  # bear signals close existing longs but never open shorts).
+  # "both" = futures-style (open longs AND shorts). Set to "both"
+  # only after coinbase_futures is wired.
+  direction_policy: long_only
+
+  # Arming window: Pink Box / Spoon "arm" the agent for an Otter
+  # trigger within this many bars. After expiry, an Otter alone
+  # only qualifies for Solo / Standard tier.
+  arming_window_bars: 5
+
+  # Same-direction cooldown — drop duplicate alerts that fire within
+  # this many seconds of the last one. Prevents the same signal
+  # cluster from firing 3 orders in a row.
+  cooldown_seconds: 180
+
+  # ============================================================
+  # Tier sizing — % of equity at risk per trade.
+  # Diamond tier matches the lord_otter override in risk.yaml
+  # (per_trade_risk_pct: 0.05 = 5%). Lower tiers stay well
+  # under that cap. Risk gate will resize down if a tier ever
+  # exceeds the per-trade cap.
+  # ============================================================
+  tier_sizes:
+    diamond:    0.050   # 5.0% — max conviction (full setup chain + Money Bag or Large Water)
+    premium:    0.030   # 3.0% — bias + arming + Otter + CVD flip
+    water_large: 0.030  # 3.0% — Large Water multi-TF aligned
+    water_small: 0.020  # 2.0% — Small Water + Otter or Money Bag confirm
+    standard:   0.015   # 1.5% — bias + Otter + CVD flip (no prior arming)
+    money_bag:  0.015   # 1.5% — Money Bag with bias
+    solo_otter: 0.0075  # 0.75% — Otter alone, bias-aligned, no other confirms
+
+  # ============================================================
+  # Stop loss — Phase 1.5: trigger-bar stop with max-loss cap.
+  #
+  # The simplest reliable scalp stop is a few basis points beyond the
+  # trigger bar's swing extreme:
+  #   long  → stop = bar_low  × (1 - swing_buffer_pct)
+  #   short → stop = bar_high × (1 + swing_buffer_pct)
+  #
+  # Then enforce a HARD max-loss cap. If the technical stop distance
+  # would breach max_loss_pct_equity, we SHRINK qty (never widen the
+  # stop). The user's risk profile says 0.5% per-scalp dollar loss cap.
+  #
+  # Phase 1.6 will add real ATR(14) from broker.fetch_ohlcv + multi-bar
+  # swing-pivot detection. Until then, this single-bar stop works for
+  # the typical Lord Otter scalp setup because the trigger bar IS the
+  # structural pivot.
+  # ============================================================
+  stop_loss:
+    method: "trigger_bar"
+    swing_buffer_pct: 0.001         # 0.1% beyond the trigger bar's high/low
+    max_loss_pct_equity: 0.005      # 0.5% of equity max per trade — qty shrinks to fit
+    # Fallback if bar OHLC isn't in the alert payload (shouldn't happen
+    # but defensive): use a fixed % from entry price.
+    fallback_stop_distance_pct: 0.003   # 0.3% from entry
+
+  # ============================================================
+  # Take-profit targets (Phase A of the Otter/Cypher trade-spec
+  # enrichment, BACKLOG.md 2026-05-01). R-multiple of stop distance
+  # per tier — TP_price = entry ± stop_distance * r_multiple.
+  #
+  # Otter scalps 3-min bars and aims to capture quickly. Default 2R
+  # across all tiers; tune higher for max-conviction setups (Diamond
+  # can run further on a strong reversal) or lower for choppier tiers.
+  # No TP order is placed automatically yet — these values populate the
+  # `would_have_placed` push card and (Phase B) the paper_trade_record
+  # table for win/loss replay analysis.
+  # ============================================================
+  take_profit:
+    default_r_multiple: 2.0         # used when tier-specific value missing
+    tier_r_multiples:
+      diamond:    2.5               # max conviction — let it run a little
+      premium:    2.0
+      water_large: 2.0
+      water_small: 1.5
+      standard:   1.5
+      money_bag:  1.5
+      solo_otter: 1.5
+
+  # ============================================================
+  # Close-existing-longs (Phase 1.5).
+  # When in long_only mode and a bear signal fires, the agent now
+  # closes a fraction of the held position (instead of ignoring).
+  # Conviction-tiered: a Diamond bear is a stronger reversal call
+  # than a Solo Otter bear, so it closes more.
+  # ============================================================
+  tier_close_fractions:
+    diamond:    1.00     # max conviction reversal — full close
+    premium:    0.75     # strong reversal — most of the position
+    water_large: 0.75    # multi-TF aligned bear — most
+    water_small: 0.50    # half close
+    standard:   0.50
+    money_bag:  0.75     # precision top — most
+    solo_otter: 0.25     # weakest signal — small de-risk only
+
+  # ============================================================
+  # Profit target — scale out at 1R, trail the runner.
+  # ============================================================
+  profit_target:
+    scale_out_pct_at_1r: 0.50        # close 50% of position at 1R
+    final_target_r: 3.0              # close all at 3R
+    move_stop_to_breakeven_at_r: 0.5 # at 0.5R, move stop to entry
+
+  # ============================================================
+  # Halt conditions — deterministic shutdown rules.
+  # ============================================================
+  halt_conditions:
+    consecutive_losses: 3
+    consecutive_loss_pause_hours: 4
+    daily_loss_pct: 0.02             # 2% strategy daily loss → halt for the day
+    # Two opposite-direction alerts within this window = chop;
+    # ignore both. Indicator is showing noise.
+    chop_window_seconds: 60
+
+  # ============================================================
+  # Time-of-day modifiers — boost size during high-liquidity
+  # opens, shrink during weekend dead zones.
+  # All times in UTC. The agent applies these on top of tier_sizes.
+  # ============================================================
+  time_modifiers:
+    enabled: true
+    windows:
+      - name: "ny_open"
+        utc_hour: 13                 # 13:30 UTC = 9:30 ET (covers DST drift loosely)
+        utc_minute: 0
+        window_minutes: 90           # ±30min around 13:30
+        size_multiplier: 1.2
+      - name: "london_open"
+        utc_hour: 7
+        utc_minute: 0
+        window_minutes: 60
+        size_multiplier: 1.1
+    # Weekend liquidity drought (Fri 22:00 UTC → Sun 22:00 UTC)
+    weekend_size_multiplier: 0.5
+
+  # ============================================================
+  # News halt — pause trading around macro releases.
+  # Free macro calendar source pulled from config/macro_calendar.yaml.
+  # Real fetcher (FRED FOMC dates + ForexFactory CPI/NFP) lands in
+  # Phase 1.5; for now the calendar is hand-maintained YAML.
+  # ============================================================
+  news_halt:
+    enabled: true
+    halt_window_minutes: 30          # ±30min around each event
+    calendar_path: "config/macro_calendar.yaml"
+    halt_impact_levels: ["high"]     # only "high" impact halts (FOMC, CPI, NFP)
+
+
+# =============================================================================
+# Market Cypher — TradingView-driven SWING strategy on BTC/USD.
+# Independent of Lord Otter; can run alongside it. Different timescale (4h
+# primary triggers, 1D bias) catches regime-level moves Otter's 3m scalp
+# misses. See trading_corp/agents/divisions/market_cypher.py for full
+# strategy logic + the conversation history that birthed it on 2026-04-30.
+# =============================================================================
+market_cypher:
+  enabled: true
+  # `auto_execute=false` is the default for any new strategy. Flip to true
+  # only after Board (you) reviews enough paper-mode `would_have_placed`
+  # entries in the audit log to trust the tier classifier. HITL on every
+  # order until then.
+  auto_execute: false
+
+  # Webhook auth secret env var name. We set MARKET_CYPHER_WEBHOOK_SECRET
+  # in Key Vault on 2026-04-30 (separate from Lord Otter's secret per the
+  # design decision to run agents independently with rotatable creds).
+  webhook_secret_env: MARKET_CYPHER_WEBHOOK_SECRET
+
+  # Which division (account) orders route to. Phase 1: Coinbase Spot
+  # (long-only). Phase 2: maybe coinbase_futures for both-sided trading.
+  division: coinbase_spot
+
+  # Symbols this strategy operates on. Each gets its own state machine.
+  # Phase 1: BTC only (matches Lord Otter's symbol scope).
+  symbols:
+    - "BTC/USD"
+
+  # Direction policy — same as Otter on Spot. Bear signals close longs,
+  # never open shorts.
+  direction_policy: long_only
+
+  # Arming window: Bluetriangle on 4h chart arms long-side for this many
+  # bars (default 3 × 4h = 12 hours). After expiry, a follow-up Cipher B
+  # trigger gets BIG_CIRCLE / STANDARD tier instead of DIAMOND / PREMIUM.
+  arming_window_bars: 3
+
+  # Same-direction cooldown — much wider than Otter's because Cypher
+  # trades hold for hours/days. 4h = 14400 seconds. Don't fire two
+  # bullish entries within 4 hours of each other (would just be doubling
+  # down on the same setup).
+  cooldown_seconds: 14400
+
+  # ============================================================
+  # Tier sizing — % of equity at risk per trade.
+  # Wider than Otter because trades hold longer (hours-days vs minutes).
+  # Top tier (gold) goes higher than Otter's diamond because GOLD circle
+  # is the rarest, highest-conviction signal in the entire Cipher suite.
+  # ============================================================
+  tier_sizes:
+    gold:        0.075   # 7.5% — GOLD circle (RSI<30 + WT≤-80 + div, indicator-stacked)
+    diamond:     0.050   # 5.0% — Big green circle + Div + Cipher A confirm
+    premium:     0.040   # 4.0% — Big green circle + Div, no Cipher A confirm
+    big_circle:  0.030   # 3.0% — Big green circle + Cipher A confirm (no div)
+    standard:    0.020   # 2.0% — Big green circle alone, bias-aligned
+    ema_flip:    0.020   # 2.0% — Longema fires (catching the regime turn)
+    solo:        0.0075  # 0.75% — Small green dot, bias-aligned
+
+  # ============================================================
+  # Bear close fractions — what % of held position to close on each
+  # bear-tier signal. Mirrors Otter's pattern but tuned for swing
+  # holds (more decisive on high-conviction bear, lighter on noise).
+  # ============================================================
+  tier_close_fractions:
+    blood_diamond:  1.00     # full close — Red X + Red Diamond stacked
+    big_red_div:    1.00     # full close — Big red circle + divergence
+    big_red:        0.75     # most of position — Big red + bias=bear or Cipher A bear confirm
+    cipher_a_bear:  0.75     # most — Red Diamond + (RedX or YellowX) within 12h
+    standard_bear:  0.50     # half — Big red circle alone
+    caution:        0.25     # small de-risk — Red Diamond / RedX / YellowX alone
+    small_dot:      0.15     # minor de-risk — Small red dot
+
+  # ============================================================
+  # Stop loss — wider than Otter's because swing-hold trades need
+  # room to breathe through normal counter-bar movement.
+  # ============================================================
+  stop_loss:
+    method: "trigger_bar"
+    swing_buffer_pct: 0.005          # 0.5% beyond the trigger bar's high/low
+    max_loss_pct_equity: 0.02        # 2% of equity max per trade — qty shrinks to fit
+    fallback_stop_distance_pct: 0.02 # 2% from entry if bar OHLC missing
+
+  # ============================================================
+  # Take-profit targets (Phase A of the Otter/Cypher trade-spec
+  # enrichment, BACKLOG.md 2026-05-01). R-multiple of stop distance
+  # per tier — TP_price = entry ± stop_distance * r_multiple.
+  #
+  # Cypher swings 4h/1D bars — trades hold longer and have more room
+  # to extend, so default targets are higher than Otter (2.5R baseline,
+  # 3.0R+ for Gold / Diamond max-conviction setups). No TP order is
+  # placed automatically yet — these populate the `would_have_placed`
+  # push card and (Phase B) the paper_trade_record replay table.
+  # ============================================================
+  take_profit:
+    default_r_multiple: 2.5         # used when tier-specific value missing
+    tier_r_multiples:
+      gold:        3.0              # rarest signal in the suite — let it work
+      diamond:     3.0
+      premium:     2.5
+      big_circle:  2.5
+      standard:    2.0
+      ema_flip:    2.0
+      solo:        1.5
+
+  # ============================================================
+  # Halt conditions — wider than Otter (4% daily loss vs 2%) because
+  # Cypher's per-trade size is bigger and a single bad trade can
+  # legitimately move the daily P&L several %.
+  # ============================================================
+  halt_conditions:
+    consecutive_losses: 3
+    consecutive_loss_pause_hours: 12
+    daily_loss_pct: 0.04
+    # Opposite-direction signals within this window = chop. Wider than
+    # Otter's 60s because Cypher signals are slower (4h bars).
+    chop_window_seconds: 1800        # 30 minutes
+
+  # ============================================================
+  # Time-of-day modifiers — disabled by default for Cypher because
+  # swing trades aren't sensitive to session opens the way scalps are.
+  # Enable later if backtesting shows session-edge performance.
+  # ============================================================
+  time_modifiers:
+    enabled: false
+    weekend_size_multiplier: 1.0
+
+  # ============================================================
+  # News halt — same shape as Otter, also pauses around FOMC/CPI/NFP.
+  # ============================================================
+  news_halt:
+    enabled: true
+    halt_window_minutes: 60          # wider window than Otter (swing trades hold through release)
+    calendar_path: "config/macro_calendar.yaml"
+    halt_impact_levels: ["high"]

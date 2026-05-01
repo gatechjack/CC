@@ -1,0 +1,56 @@
+{
+  "name": "Trading Corp Command Center",
+  "short_name": "Trading Corp",
+  "description": "Multi-agent trading system — risk-gated, audited, HITL-friendly.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#070b14",
+  "theme_color": "#0a0e1a",
+  "categories": ["finance", "productivity"],
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Coinbase Spot",
+      "short_name": "Coinbase",
+      "description": "Crypto spot dashboard + manual order form",
+      "url": "/division/coinbase_spot",
+      "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]
+    },
+    {
+      "name": "Robinhood PMCC",
+      "short_name": "PMCC",
+      "description": "Equity options PMCC strategy",
+      "url": "/division/robinhood_pmcc",
+      "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]
+    }
+  ]
+}

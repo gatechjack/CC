@@ -1,0 +1,45 @@
+<div id="trade-flow"
+     hx-get="/partials/trade-flow"
+     hx-trigger="every 5s"
+     hx-swap="outerHTML"
+     class="space-y-2 max-h-[640px] overflow-y-auto pr-1 custom-scroll">
+
+  {% if not flow %}
+    <div class="text-muted text-xs text-center py-8 italic">
+      No trade activity yet. Trigger a scan from Telegram (/scan) to seed it.
+    </div>
+  {% endif %}
+
+  {% for evt in flow %}
+    <div class="bg-pane-2/40 border border-edge rounded-md px-3 py-2
+                hover:bg-pane-2 transition-colors">
+      <div class="flex items-center gap-2 text-[11px] font-mono">
+        <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+          {{ evt.kind | replace('_', ' ') }}
+        </span>
+        <span class="ml-auto text-muted">{{ evt.ts_short }} ago</span>
+      </div>
+      {% if evt.symbol %}
+        <div class="mt-1 flex items-center gap-2 text-sm">
+          <span class="font-mono font-semibold text-mono">{{ evt.symbol }}</span>
+          {% if evt.side %}
+            <span class="text-[11px] uppercase font-mono px-1.5 py-0.5 rounded
+              {% if evt.side == 'buy' %}bg-gain/15 text-gain
+              {% elif evt.side == 'sell' %}bg-loss/15 text-loss
+              {% else %}bg-edge text-muted{% endif %}">
+              {{ evt.side }}
+            </span>
+          {% endif %}
+          {% if evt.qty %}
+            <span class="text-muted text-xs font-mono">×{{ evt.qty }}</span>
+          {% endif %}
+        </div>
+      {% endif %}
+      {% if evt.reason %}
+        <div class="mt-1 text-[11px] text-muted leading-snug line-clamp-2">
+          {{ evt.reason }}
+        </div>
+      {% endif %}
+    </div>
+  {% endfor %}
+</div>

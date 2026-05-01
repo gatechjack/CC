@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading_corp"
+version = "0.2.0"
+description = "AI-Powered Trading Corporation: multi-agent system for PMCC, options, and crypto futures."
+requires-python = ">=3.12"
+authors = [{ name = "AA Incorporado" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.setuptools]
+packages = ["trading_corp"]

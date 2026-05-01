@@ -1,0 +1,123 @@
+{# ──────────────────────────────────────────────────────────────────
+   manual_order.html — Direct order entry for divisions where ad-hoc
+   trades make sense (Phase B: Coinbase Spot only).
+
+   Submit routes through the same risk gate + logging path as
+   strategy-driven orders (PMCC scout, etc.). On submit:
+     1. POST /division/{slug}/order/manual with form fields
+     2. Server builds ProposedOrder, runs risk_agent.evaluate()
+     3. If approved, calls data_exec.place() to fire the broker
+     4. Result HTML swaps into #manual-order-result below the form
+
+   Strategy bots will eventually replace this for the common cases,
+   but a manual entry path is always useful for ad-hoc trades and
+   for validating the broker pipeline end-to-end.
+   ────────────────────────────────────────────────────────────────── #}
+
+<section class="bg-pane border border-edge rounded-lg overflow-hidden">
+  <header class="px-4 py-3 border-b border-edge">
+    <div class="flex items-baseline justify-between gap-4 flex-wrap">
+      <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+        Manual order
+      </h2>
+      <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                   bg-warn/15 text-warn border border-warn/30">
+        ad-hoc
+      </span>
+    </div>
+    <div class="text-[11px] text-muted leading-snug mt-1">
+      Direct order entry. Routes through the risk gate before any order hits the broker.
+      For ad-hoc trades — automated strategy bots land in Phase D.
+    </div>
+  </header>
+
+  <div class="px-4 py-3">
+    <form
+      hx-post="/division/{{ view.division.slug }}/order/manual"
+      hx-target="#manual-order-result"
+      hx-swap="innerHTML"
+      hx-confirm="Submit this order? Risk gate will evaluate, then it routes to the live broker."
+      class="space-y-2 font-mono text-sm">
+
+      {# ── Row 1: side · symbol · qty ── #}
+      <div class="grid grid-cols-12 gap-2">
+        <div class="col-span-3">
+          <label class="text-[10px] uppercase tracking-wider text-muted">Side</label>
+          <select name="side" required
+            class="w-full mt-1 px-2 py-1.5 bg-pane-2 border border-edge rounded text-mono">
+            <option value="buy">Buy</option>
+            <option value="sell">Sell</option>
+          </select>
+        </div>
+        <div class="col-span-4">
+          <label class="text-[10px] uppercase tracking-wider text-muted">Symbol</label>
+          <input type="text" name="symbol" required
+                 placeholder="BTC/USD" value="BTC/USD"
+                 autocomplete="off" autocapitalize="characters"
+            class="w-full mt-1 px-2 py-1.5 bg-pane-2 border border-edge rounded text-mono uppercase" />
+        </div>
+        <div class="col-span-5">
+          <label class="text-[10px] uppercase tracking-wider text-muted">Quantity</label>
+          <input type="number" name="qty" required
+                 step="any" min="0"
+                 placeholder="0.001"
+            class="w-full mt-1 px-2 py-1.5 bg-pane-2 border border-edge rounded text-mono" />
+        </div>
+      </div>
+
+      {# ── Row 2: type · limit price ── #}
+      <div class="grid grid-cols-12 gap-2">
+        <div class="col-span-4">
+          <label class="text-[10px] uppercase tracking-wider text-muted">Type</label>
+          {# When user picks Market, we disable the limit field client-side so
+             the form can't submit a stale price. The server still validates. #}
+          <select name="order_type" required id="manual-order-type"
+            onchange="(function(s){
+                        var lp = document.getElementById('manual-limit-price');
+                        if (!lp) return;
+                        lp.disabled = (s.value === 'market');
+                        if (s.value === 'market') { lp.value = ''; lp.required = false; }
+                        else { lp.required = true; }
+                      })(this);"
+            class="w-full mt-1 px-2 py-1.5 bg-pane-2 border border-edge rounded text-mono">
+            <option value="limit" selected>Limit</option>
+            <option value="market">Market</option>
+          </select>
+        </div>
+        <div class="col-span-8">
+          <label class="text-[10px] uppercase tracking-wider text-muted">Limit price (USD)</label>
+          <input type="number" name="limit_price" id="manual-limit-price" required
+                 step="0.01" min="0"
+                 placeholder="required for limit orders"
+            class="w-full mt-1 px-2 py-1.5 bg-pane-2 border border-edge rounded text-mono" />
+        </div>
+      </div>
+
+      {# ── Row 3: rationale (optional) ── #}
+      <div>
+        <label class="text-[10px] uppercase tracking-wider text-muted">Rationale (optional)</label>
+        <input type="text" name="rationale" maxlength="200"
+               placeholder="why this order? logged for the audit trail"
+          class="w-full mt-1 px-2 py-1.5 bg-pane-2 border border-edge rounded text-mono" />
+      </div>
+
+      {# ── Submit + safety footnote ── #}
+      <div class="flex items-center gap-3 pt-2 flex-wrap">
+        <button type="submit"
+          class="px-3 py-1.5 rounded-md font-mono text-xs font-semibold
+                 bg-accent text-white hover:bg-accent/85 transition-colors">
+          Submit order →
+        </button>
+        <span class="text-[10px] text-muted/70 font-mono leading-snug">
+          Risk gate enforces sizing + drawdown caps before any order hits the broker.
+          {% if snap and snap.dry_run %}
+          DRY-RUN active — broker call short-circuits to a synthetic fill.
+          {% endif %}
+        </span>
+      </div>
+    </form>
+
+    {# Result panel — replaced on each submit. Empty until the first order. #}
+    <div id="manual-order-result" class="mt-3"></div>
+  </div>
+</section>

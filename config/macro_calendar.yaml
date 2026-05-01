@@ -1,0 +1,36 @@
+# Macro events that trigger a trading halt.
+#
+# Phase 1: hand-maintained. Add upcoming releases here (FOMC, CPI,
+# NFP, Fed speakers).  The Lord Otter agent (and any other strategy
+# wired to the macro calendar) will halt trading ±halt_window_minutes
+# around each event.
+#
+# Phase 1.5: a fetcher will scrape ForexFactory + FRED's FOMC schedule
+# and emit this same YAML shape automatically. Until then, refresh
+# this file weekly. Stale events are harmless (date check filters).
+#
+# Schema:
+#   - ts:     ISO 8601 datetime in UTC
+#     impact: "high" | "medium" | "low"   (only "high" halts by default)
+#     name:   short human label
+#     source: where you got it (FOMC schedule URL, BLS calendar, etc.)
+#
+# Times must be in UTC. The Lord Otter agent reads UTC; conversion
+# is the calendar's job to keep code simple.
+
+events:
+  # Example seed entries — replace with real upcoming dates.
+  - ts: "2026-05-07T18:00:00Z"
+    impact: "high"
+    name: "FOMC Rate Decision"
+    source: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+
+  - ts: "2026-05-13T12:30:00Z"
+    impact: "high"
+    name: "US CPI"
+    source: "https://www.bls.gov/schedule/news_release/cpi.htm"
+
+  - ts: "2026-05-02T12:30:00Z"
+    impact: "high"
+    name: "US Non-Farm Payrolls"
+    source: "https://www.bls.gov/schedule/news_release/empsit.htm"

@@ -1,0 +1,57 @@
+# Research firm — knobs that the research subgraph reads at engagement time.
+#
+# This file is hot-reloadable (mtime-cached, ~5s reload window) on the same
+# pattern as risk.yaml / strategies.yaml / macro_calendar.yaml. There is NO
+# validation of the YAML — typos silently fall back to defaults; watch the
+# audit log + startup warnings for missing-block notices.
+#
+# Phase 1a-1 uses ONLY the `cost_caps` and `debate_gate` blocks. The other
+# blocks scaffold for forward compatibility (1d/1e/1f) so revisions don't
+# need a code change later. See planning/research_firm_design.md §6.6, §9.
+
+# ============================================================================
+# Cost caps (design §6.6 / Q8) — abort engagements that overspend.
+# Soft cap: emit `research_engagement_cost_warning` audit + Telegram notify,
+#           continue running.
+# Hard cap: emit `research_engagement_no_action` (reason=cost_cap_exceeded),
+#           abort.
+# Phases 1a-1 → 1c: dollars are LLM API spend only (data sources are free).
+# Phase 1c onward: includes paid sentiment/fundamental data spend; re-tune.
+# ============================================================================
+cost_caps:
+  candidate_recommendation:
+    soft_dollars: 1.00
+    hard_dollars: 2.50
+  trade_confirmation:
+    # Tight because TradeConfirmation runs synchronously inline with
+    # TV-driven trades (Phase 1e) — cap and latency reinforce each other.
+    soft_dollars: 0.30
+    hard_dollars: 0.75
+  position_context:
+    soft_dollars: 0.50
+    hard_dollars: 1.00
+  thesis:
+    soft_dollars: 0.50
+    hard_dollars: 1.50
+
+# ============================================================================
+# Debate gate (Phase 1f uses this; Phase 1a-1 reads it but never invokes the
+# debate path because the layer doesn't exist yet). Defined here so Phase 1f
+# doesn't re-litigate the threshold. Tunable without code change.
+# ============================================================================
+debate_gate:
+  # Variance over `confidence_score` ([0,1]) across non-refused experts.
+  variance_threshold: 0.25
+  # If at least this many experts hold a different `directional_lean`,
+  # debate fires regardless of variance.
+  min_disagreeing_experts: 2
+
+# ============================================================================
+# PositionContext cache TTLs (Phase 1d, per Q7). Phase 1a-1 writes this block
+# for forward-compat; the consuming agents read it in 1d.
+# ============================================================================
+position_context_ttls:
+  lord_otter: 3600        # 1h — scalp horizon
+  market_cypher: 14400    # 4h — swing horizon
+  # Default applied when a division slug is missing here: 3600s.
+  # Cache miss = "no signal" (consumer ignores), NOT "small bearish signal".

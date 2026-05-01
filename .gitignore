@@ -20,8 +20,12 @@ env/
 *.pem
 *.key
 
-# Runtime data
-data/
+# Runtime data — exclude DB / lock / browser-session artifacts but
+# keep checked-in starter universes (data/research_starter_universes/*)
+data/*.db
+data/*.db-journal
+data/*.pid
+data/fidelity_session/
 data_localtest/
 logs/
 *.db
