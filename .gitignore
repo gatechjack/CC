@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Secrets — never commit
+.env
+*.env.local
+*.pem
+*.key
+
+# Runtime data
+data/
+logs/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Per-machine Claude Code state
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
