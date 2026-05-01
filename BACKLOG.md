@@ -1196,53 +1196,20 @@ Conditional on Fidelity staying long-term.
 
 ---
 
-## P0 — Auth portal in front of trading.jacksumner.com  *(NEW — 2026-04-30)*
+## ✅ DONE — Auth portal in front of trading.jacksumner.com  *(2026-04-30)*
 
-**Goal:** access the dashboard from any location (phone hotspot, coffee
-shop, work network), not only the home Comcast IP. Today the NSG opens
-443 to `Internet` so the *site itself* is reachable from anywhere — the
-gap is that there's no app-level auth, so anyone who guesses the URL hits
-the dashboard. We need a real login wall.
+**Shipped:** Caddy + forward_auth + Authelia in production on the Azure
+VM (CLAUDE.md "behind Caddy + Authelia"). Recovery procedures captured
+in [runbooks/auth_lockout_recovery.md](runbooks/auth_lockout_recovery.md)
+covering lost-phone, forgot-password, lost-both, Authelia-down, and
+SSH-unreachable scenarios. The runbook references a
+`Caddyfile.pre-authelia.bak` backup taken 2026-04-30, confirming the
+flip date.
 
-**Recommended path — Caddy + forward_auth + Authelia (or Pocket-ID):**
-- Run Authelia (or a similar single-binary IdP — Pocket-ID, Authentik) as
-  a sidecar systemd unit on the same VM, bound to localhost:9091.
-- Caddy config: `forward_auth localhost:9091 { uri /api/verify }` in
-  front of `reverse_proxy localhost:8000`. Unauthenticated requests get
-  bounced to `auth.jacksumner.com` → password + TOTP → cookie → through.
-- DNS: add a second A record `auth.jacksumner.com → 20.51.145.253` (or
-  use a path-prefix on the same hostname).
-- TOTP enrollment: one-time scan into your phone's authenticator app.
-- Webhook path (`/webhook/tradingview/lord-otter`) gets a Caddy
-  `@webhook` matcher that bypasses forward_auth — TradingView posts
-  there with `LORD_OTTER_WEBHOOK_SECRET`, and that's its own auth layer.
-
-**Alternatives considered:**
-- *Cloudflare Zero Trust / Access*: simplest from a config standpoint,
-  but couples another vendor in front of every request. Free tier
-  supports up to 50 users — fine. Worth doing if Authelia is too much
-  yak-shaving.
-- *Tailscale-only access* (private VPN, no public 443): most secure, but
-  fails the "any location, any device" goal — phone has to be on the
-  tailnet, and TradingView webhooks couldn't reach the server.
-
-**Edge cases to handle in the implementation:**
-- PWA install flow needs the manifest + service worker to be reachable
-  pre-auth (otherwise iOS Add-to-Home-Screen breaks). Whitelist
-  `/manifest.json`, `/sw.js`, `/icons/*` in Caddy.
-- `/healthz` (or whatever liveness probe Healthchecks.io hits — once
-  that's wired up) bypasses auth.
-- TradingView webhook path bypasses forward_auth (HMAC is its auth).
-- Existing IP-allowlist NSG rule on 22 stays — auth is for the web app,
-  SSH stays IP-locked.
-
-**Acceptance:** dashboard from a phone on cell data prompts for password
-+ TOTP, lets you in, and remembers the session for ~30 days via a secure
-cookie. SSH still IP-locked. TV webhook still functions. PWA still
-installable.
-
-**Priority:** P0 once Robinhood + Fidelity broker connections are stable
-on the VM. Until then the dashboard is mostly noise anyway.
+**Open follow-ups carried in their own items:**
+- "Real SMTP for Authelia notifications" (P1, below) — TOTP enrollment
+  + password-reset emails currently dump to `/var/lib/authelia/notification.txt`
+  rather than send.
 
 ---
 
