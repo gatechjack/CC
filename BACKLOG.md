@@ -69,56 +69,42 @@ proper fallbacks. All green.
 
 ---
 
-## P0 — PMCC roll-DB schema: stable pair-lifetime identifier  *(NEW — 2026-04-30)*
+## ✅ DONE — PMCC roll-DB schema: stable pair-lifetime identifier  *(2026-05-01)*
 
-**Background:** tonight's `_build_position_context` (Telegram approval
-Phase 2 #1) added `_query_prior_rolls(symbol)` that groups fills by
-`pmcc_pair_id` to count rolls and sum prior credits. The current
-v1 has a known limitation:
+**Shipped:** stable per-LEAP identifier `leap_lifetime_key =
+"{symbol}:{strike:.2f}:{expiry}"` written to `proposed_order.extra_json`
+on every roll. No DB schema change.
 
-> Treats all rolls on the SAME UNDERLYING as one pair history. If
-> you have multiple LEAPs on one underlying, the count aggregates
-> across them. Rare in practice; refine later if it bites.
+**Producer side** ([trading_corp/agents/divisions/pmcc_robinhood.py](trading_corp/agents/divisions/pmcc_robinhood.py)):
+- `_compute_leap_lifetime_key(leg)` static helper with deterministic
+  2-decimal strike formatting.
+- `_propose_roll_short` writes the key to BOTH legs.
+- `_propose_sell_weekly` writes when `leg` is supplied (the path that
+  already passes position_context).
+- `_make_option_order` accepts an optional `leap_lifetime_key` kwarg
+  and stashes it on `extra` (omitted when None — preserves legacy
+  pair behavior).
 
-This becomes a real correctness issue when the user holds multiple
-LEAPs on one symbol (e.g. two RKLB LEAPs at different strikes /
-expirations).
+**Query side:** `_query_prior_rolls(symbol, leap_lifetime_key=None)`
+now scopes when the key is provided. Critical compromise: pre-fix
+rows (no key) still count when scoped — losing them would silently
+drop history. Only pairs tagged with a DIFFERENT key are filtered
+out. Without a key arg, behaves exactly as before (full backward
+compat — `_build_position_context` is the only caller wiring the
+key today, others can adopt later).
 
-**Why it's structurally limited:** each ROLL gets a NEW `pmcc_pair_id`
-(uuid, regenerated in `_propose_roll_short`). So `pmcc_pair_id`
-identifies a single roll session, not a pair lifetime. To query
-"total rolls on the same pair" we need a stable identifier shared
-across all rolls on the same `(symbol, leap_strike, leap_expiry)`.
+**Backfill:** none. Pre-fix rows fall through the "no key" branch and
+continue to aggregate by symbol — explicitly tested. A backfill
+script could be added if cross-LEAP contamination is found in
+practice on existing rows; today's data has no multi-LEAP underliers
+so it's not worth the script.
 
-**Fix:**
-
-1. At order construction in `_propose_roll_short` (and
-   `_propose_sell_weekly` when `leg` is supplied), capture the LEAP's
-   identifying triple in `extra`:
-   ```python
-   extra["leap_lifetime_key"] = f"{symbol}:{leap_strike}:{leap_expiry}"
-   ```
-   No DB schema change required — the existing `extra_json` field
-   on `proposed_order` carries it.
-
-2. Update `_query_prior_rolls` to filter on `leap_lifetime_key` (via
-   `extra_json LIKE`) in addition to symbol. Pair history then only
-   counts rolls on the SAME underlying LEAP.
-
-3. Migration: existing roll rows in the DB don't have this field.
-   Either backfill (synthesize `leap_lifetime_key` from `extra` if
-   leap fields exist) or accept that pre-fix history aggregates by
-   symbol only. A backfill script in `scripts/` is ~30 lines.
-
-**Tests:** extend `tests/test_pmcc_position_context.py` with a
-multi-LEAP scenario — two LEAPs on RKLB at different strikes, each
-with its own roll history; query should return the right count for
-each independently.
-
-**Priority:** P0 because the user explicitly asked. In practice, low
-real-world exposure today (you don't currently have multi-LEAPs on
-one underlying), but the fix is small and prevents the issue from
-silently misleading future-you.
+**Tests:** 8 new in `tests/test_pmcc_position_context.py`:
+key-format pin, None-input handling, two-LEAPs-one-symbol scoping,
+no-key aggregates all, pre-fix preservation, other-key exclusion,
+end-to-end `_build_position_context` scoping, producer stashes the
+key on `extra`. All 21 in the file green; full suite (177 tests)
+green except the pre-existing P2 PMCC scan failures.
 
 ---
 
