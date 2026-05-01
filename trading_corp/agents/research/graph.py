@@ -46,8 +46,8 @@ import yaml
 from trading_corp.agents.logger import LoggerAgent
 from trading_corp.agents.research import schemas as rs
 from trading_corp.agents.research.experts import (
-    EXPERT_REGISTRY, MacroExpert, TechnicalExpert, experts_for,
-    stub_expert_report,
+    EXPERT_REGISTRY, FundamentalExpert, MacroExpert, SentimentExpert,
+    TechnicalExpert, experts_for, stub_expert_report,
 )
 from trading_corp.agents.research.experts.base import Expert
 from trading_corp.agents.research.kill_switch import is_kill_switch_present
@@ -157,14 +157,16 @@ def build_engagement_graph(
 ):
     """Compile and return the engagement subgraph.
 
-    Phase 1a-1 wires `CandidateRecommendation` end-to-end. Other product
-    types route to a no-op terminal via Layer 1's phase-pointer reject so
-    callers don't crash if they request a not-yet-implemented type.
+    Phase 1a-1 wires `CandidateRecommendation` end-to-end; Phase 1b
+    adds `Thesis`. Other product types route to a no-op terminal via
+    Layer 1's phase-pointer reject so callers don't crash if they
+    request a not-yet-implemented type.
 
-    `experts` maps role-string → Expert instance. Missing roles fall back
-    to `stub_expert_report(role, ...)`. Default supplies real `technical`
-    and `macro`; `fundamental` and `sentiment` are stubbed in 1a-1
-    (Phase 1c).
+    `experts` maps role-string → Expert instance. Missing roles fall
+    back to `stub_expert_report(role, ...)`. Post-Phase 1c default
+    supplies real `technical`, `macro`, `fundamental`, `sentiment`
+    (all yfinance-backed; fundamental + sentiment refuse on
+    non-equity symbols).
 
     Production builds with `checkpointer=None` per design §2.4.
     """
@@ -174,6 +176,8 @@ def build_engagement_graph(
         experts = {
             "technical": TechnicalExpert(),
             "macro": MacroExpert(),
+            "fundamental": FundamentalExpert(),
+            "sentiment": SentimentExpert(),
         }
 
     g = StateGraph(EngagementState)

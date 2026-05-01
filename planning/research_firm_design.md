@@ -27,6 +27,15 @@ runs via `run_engagement(spec, deps=...)` regardless of trigger.
 Reprioritize when there's a live consumer for the Telegram surface;
 the dispatch is one function in `main.py`.
 
+**v3.4 amendment 2026-05-01** (post-1c ship): Q5 / Q6 / Phase 1c Ship
+list — both real experts shipped. Sentiment = yfinance-light
+(analyst-and-headline read with explicit "not crowd sentiment"
+disclosure); Fundamental = yfinance `.info`. Both refuse gracefully on
+non-equity symbols. Cost-cap re-tune deferred — no paid-data spend
+this phase. Default `build_research_firm_deps()` now wires all four
+roles real; stub fallback retained for tests injecting partial expert
+sets.
+
 **Scope of this doc:** architecture only. No code changes in this
 session. This is the contract the implementation session will follow.
 
@@ -1670,18 +1679,31 @@ block (or whatever the division uses for fit context) and passes the
 dict into `CandidateScope.mandate`. The synthesis prompt format-strings
 the dict keys into the candidate-fit narrative. Locked.
 
-**Q5 (CARRIED FROM v2 Q4). Sentiment data source.**
+**Q5 (CARRIED FROM v2 Q4). Sentiment data source. — LOCKED 2026-05-01.**
 
-Options: NewsAPI (~$0/$50/mo tiers), Polygon News (~$200/mo), Reddit
-+ HN scraping (free, noisy), broker analyst-rating snapshots (stale,
-free). Phase 1c. Confirm provider + budget then.
+**Decision: yfinance-light** (`.recommendations` + `.news` headlines +
+`.info["targetMeanPrice"]`). Free, no new API key, already a dep.
+Surface caveat: this is **analyst-driven sentiment, not crowd
+sentiment** — the SentimentExpert summary states this disclosure
+explicitly so consuming divisions weight it appropriately. Recommends
+swap to a paid feed (NewsAPI, Polygon News, or a crypto-news vendor)
+when one of: (a) crowd sentiment is identified as the engagement-
+quality bottleneck on a specific division, (b) crypto_spot
+engagements need real signal (today the SentimentExpert refuses on
+crypto symbols since yfinance is unreliable there). The Expert
+protocol is unchanged across the swap.
 
-**Q6 (CARRIED FROM v2 Q5). Fundamental data source.**
+**Q6 (CARRIED FROM v2 Q5). Fundamental data source. — LOCKED 2026-05-01.**
 
-Options: yfinance (free, unreliable shape), Alpha Vantage (free
-rate-limited), SimplyWall.st (paid), FactSet (enterprise). Scoped to:
-needed for `CandidateRecommendation` candidates (equity); not needed
-for `crypto_spot`. Phase 1c. Confirm provider + budget then.
+**Decision: yfinance** (`Ticker.info` snapshot). Free, already a dep.
+The "unreliable shape" caveat is handled by tolerant field-name
+extraction (`_f(snap, "trailingPE", "forwardPE")` style) and a
+"sparse-snapshot → refuse" guard so delisted/unknown symbols emit
+`data_sufficiency=False` rather than fabricated values. Scoped to
+equity; FundamentalExpert refuses on non-equity symbols (registry
+already excludes `(fundamental, crypto_spot)`, but the expert
+double-guards). Cost-cap re-tune deferred — yfinance is free, no
+data-API spend joins the LLM accumulator this phase.
 
 **Q7 (CARRIED FROM v2 Q7). PositionContext cache TTLs + miss
 semantics.**
