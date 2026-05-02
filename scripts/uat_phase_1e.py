@@ -38,6 +38,15 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
+# Auto-load .env so ANTHROPIC_API_KEY (and other secrets) are picked up
+# without the user having to export them. Production main.py loads via
+# load_secrets(); the UAT just needs the keys, not the full Secrets shape.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_REPO_ROOT / ".env")
+except ImportError:
+    pass  # python-dotenv is in requirements.txt; only skip on a bare install
+
 from trading_corp.agents.logger import LoggerAgent
 from trading_corp.agents.research import schemas
 from trading_corp.agents.research.engagement import (
