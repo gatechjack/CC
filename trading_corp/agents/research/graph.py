@@ -63,6 +63,9 @@ from trading_corp.agents.research.synthesis.thesis import synthesize_thesis
 from trading_corp.agents.research.synthesis.position_context import (
     synthesize_position_context,
 )
+from trading_corp.agents.research.synthesis.trade_confirmation import (
+    synthesize_trade_confirmation,
+)
 from trading_corp.utils.time import iso, now_utc
 
 log = logging.getLogger(__name__)
@@ -321,15 +324,18 @@ def build_engagement_graph(
                 "final_reason": reason,
             }
         update: dict = {"expert_roles": roles}
-        if ptype in ("thesis", "position_context"):
+        if ptype in ("thesis", "position_context", "trade_confirmation"):
             try:
                 spec = EngagementSpec.model_validate(state["engagement_spec"])
             except Exception:
                 spec = None
-            if spec is not None and isinstance(
-                spec.scope, (ThesisScope, PositionContextScope)
-            ):
-                update["candidates"] = [spec.scope.symbol]
+            if spec is not None:
+                if isinstance(spec.scope, (ThesisScope, PositionContextScope)):
+                    update["candidates"] = [spec.scope.symbol]
+                elif isinstance(spec.scope, TradeConfirmationScope):
+                    sym = (spec.scope.proposed_action or {}).get("symbol")
+                    if sym:
+                        update["candidates"] = [str(sym)]
         return {**state, **update}
 
     def registry_route(state: EngagementState) -> str:
@@ -338,10 +344,11 @@ def build_engagement_graph(
         ptype = state.get("product_type")
         if ptype == "candidate_recommendation":
             return "shortlist"
-        # Thesis and PositionContext are single-symbol; registry_lookup
-        # populated candidates already, so they go straight to analyze.
-        # Other product types haven't shipped — fall through to no_action.
-        if ptype in ("thesis", "position_context"):
+        # Thesis, PositionContext, and TradeConfirmation are single-symbol;
+        # registry_lookup populated candidates already, so they go straight
+        # to analyze. Other product types haven't shipped — fall through
+        # to no_action.
+        if ptype in ("thesis", "position_context", "trade_confirmation"):
             return "analyze"
         return "no_action"
 
@@ -588,6 +595,18 @@ def build_engagement_graph(
                 expert_audit_row_ids=list(state.get("expert_audit_row_ids") or []),
             )
             product_d = pc.model_dump()
+        elif state["product_type"] == "trade_confirmation":
+            # TradeConfirmation is single-symbol; symbol comes from the
+            # proposed_action dict on the scope.
+            assert isinstance(spec.scope, TradeConfirmationScope)
+            symbol = (spec.scope.proposed_action or {}).get("symbol", "")
+            sym_reports = reports_by_sym.get(symbol, [])
+            tc, llm_cost = await synthesize_trade_confirmation(
+                spec=spec,
+                reports=sym_reports,
+                expert_audit_row_ids=list(state.get("expert_audit_row_ids") or []),
+            )
+            product_d = tc.model_dump()
         else:
             # Defensive — Layer 1 should have rejected. Route to no_action.
             ts = iso(now_utc())
@@ -665,6 +684,8 @@ def build_engagement_graph(
             return "emit_thesis"
         if ptype == "position_context":
             return "emit_position_context"
+        if ptype == "trade_confirmation":
+            return "emit_trade_confirmation"
         return "no_action"
 
     async def emit_candidate_node(state: EngagementState) -> EngagementState:
@@ -731,6 +752,28 @@ def build_engagement_graph(
             "final_reason": None,
         }
 
+    async def emit_trade_confirmation_node(state: EngagementState) -> EngagementState:
+        """Audit the TradeConfirmation product before marking final_status
+        (Phase 1e). The verdict is recorded in the audit payload so
+        downstream analysis can join engagement_id ↔ order outcome."""
+        ts = iso(now_utc())
+        product_d = state.get("product") or {}
+        _audit(
+            state,
+            rs.AUDIT_KIND_TRADE_CONFIRMATION_EMITTED,
+            _terminal_payload(
+                state, ts,
+                product=product_d,
+                cost_dollars=float(state.get("cost_dollars") or 0.0),
+            ),
+        )
+        return {
+            **state,
+            "engagement_completed_ts": ts,
+            "final_status": "trade_confirmation_emitted",
+            "final_reason": None,
+        }
+
     async def no_action_node(state: EngagementState) -> EngagementState:
         if state.get("final_status") is None:
             ts = iso(now_utc())
@@ -763,6 +806,7 @@ def build_engagement_graph(
     g.add_node("emit_candidate", emit_candidate_node)
     g.add_node("emit_thesis", emit_thesis_node)
     g.add_node("emit_position_context", emit_position_context_node)
+    g.add_node("emit_trade_confirmation", emit_trade_confirmation_node)
     g.add_node("no_action", no_action_node)
 
     g.add_edge(START, "kill_switch_check")
@@ -792,11 +836,13 @@ def build_engagement_graph(
         "post_validate", post_validate_route,
         {"emit_candidate": "emit_candidate", "emit_thesis": "emit_thesis",
          "emit_position_context": "emit_position_context",
+         "emit_trade_confirmation": "emit_trade_confirmation",
          "no_action": "no_action", "end": END},
     )
     g.add_edge("emit_candidate", END)
     g.add_edge("emit_thesis", END)
     g.add_edge("emit_position_context", END)
+    g.add_edge("emit_trade_confirmation", END)
     g.add_edge("no_action", END)
 
     return (
@@ -883,14 +929,17 @@ def _validate_scope_layer1(spec: EngagementSpec) -> tuple[bool, str]:
         return True, ""
 
     if isinstance(spec.scope, TradeConfirmationScope):
-        # Phase 1e wires the synthesis path; Layer 1 still validates shape so
-        # 1e doesn't need to re-add the check.
         action = spec.scope.proposed_action or {}
         if not action.get("symbol"):
             return False, "TradeConfirmationScope.proposed_action.symbol required"
         if not action.get("side"):
             return False, "TradeConfirmationScope.proposed_action.side required"
-        return False, "trade_confirmation is implemented in Phase 1e"
+        if action.get("side") not in ("buy", "sell"):
+            return False, (
+                f"TradeConfirmationScope.proposed_action.side must be "
+                f"'buy' or 'sell', got {action.get('side')!r}"
+            )
+        return True, ""
 
     if isinstance(spec.scope, PositionContextScope):
         scope = spec.scope

@@ -1489,6 +1489,37 @@ Specifically:
 
 ---
 
+## P4 — Research firm: minimum-coverage quorum gate for TradeConfirmation  *(NEW — 2026-05-01)*
+
+Phase 1e's `synthesize_trade_confirmation` deterministic path emits a
+`confirm` verdict whenever fewer than all valid experts lean against the
+proposed direction. If 2 of 3 experts refused (no data) and the single
+valid expert leans bullish, we still confirm — based on one signal.
+
+Acceptable for now (the existing risk gate + HITL is the safety net,
+per design's "advice, not a gate" framing), but worth considering a
+"minimum coverage" rule before live wiring lands. Options:
+
+- Hard rule: if `data_sufficiency=True` count < N (e.g. 2), force
+  verdict=confirm with an explicit `coverage_floor` risk_flag — making
+  the gap visible without changing decisions.
+- Soft rule: emit `confirm` but add `low_expert_coverage` to
+  `risks_flagged` so the audit + dashboard can filter on it.
+- No-op: leave as-is, document in design doc that low-coverage runs
+  are silently treated as confirm-bias.
+
+**Trigger to revisit**: once `auto_execute=true` is on the table for
+either Otter or Cypher (then a 1-expert confirm is actually risky,
+not just an audit gap).
+
+**Where**:
+- `trading_corp/agents/research/synthesis/trade_confirmation.py`
+  `_deterministic_verdict`
+- Possibly extend `config/research.yaml` with a `trade_confirmation:
+  min_valid_experts: 2` knob
+
+---
+
 ## P5 — Mobile-responsive layout audit
 
 PWA scaffolding shipped. Concrete layout tightening probably needed

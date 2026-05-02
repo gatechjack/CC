@@ -159,7 +159,10 @@ def test_layer1_position_context_rejects_blank_symbol():
     assert "symbol" in reason
 
 
-def test_layer1_trade_confirmation_phase_pointer():
+def test_layer1_trade_confirmation_accepts_valid_scope():
+    """Phase 1e shipped. Layer 1 now accepts a well-formed
+    TradeConfirmationScope; the structural guards are symbol present
+    and side in {buy, sell}."""
     spec = _spec(
         schemas.TradeConfirmationScope(
             proposed_action={"symbol": "AAPL", "side": "buy"},
@@ -167,13 +170,10 @@ def test_layer1_trade_confirmation_phase_pointer():
         product_type="trade_confirmation",
     )
     ok, reason = _validate_scope_layer1(spec)
-    assert not ok
-    assert "Phase 1e" in reason
+    assert ok, reason
 
 
 def test_layer1_trade_confirmation_missing_symbol_rejects():
-    """Even before the phase-pointer reject, Layer 1 catches structural
-    holes so Phase 1e doesn't need to re-add the check."""
     spec = _spec(
         schemas.TradeConfirmationScope(
             proposed_action={"side": "buy"},   # symbol missing
@@ -183,3 +183,15 @@ def test_layer1_trade_confirmation_missing_symbol_rejects():
     ok, reason = _validate_scope_layer1(spec)
     assert not ok
     assert "symbol" in reason
+
+
+def test_layer1_trade_confirmation_invalid_side_rejects():
+    spec = _spec(
+        schemas.TradeConfirmationScope(
+            proposed_action={"symbol": "AAPL", "side": "long"},  # not buy/sell
+        ),
+        product_type="trade_confirmation",
+    )
+    ok, reason = _validate_scope_layer1(spec)
+    assert not ok
+    assert "side" in reason

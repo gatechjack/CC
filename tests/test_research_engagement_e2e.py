@@ -679,3 +679,185 @@ async def test_e2e_position_context_layer2_blocks_symbol_drift(
     assert product is None
     kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
     assert "research_engagement_validation_failed" in kinds
+
+
+# ── Phase 1e — TradeConfirmation tests ──────────────────────────────────
+
+
+def _trade_confirmation_spec(
+    *,
+    symbol: str = "AAPL",
+    side: str = "buy",
+    asset_class: str = "equity",
+    requesting_division: str = "lord_otter",
+) -> schemas.EngagementSpec:
+    return schemas.EngagementSpec(
+        requesting_division=requesting_division,
+        product_type="trade_confirmation",
+        asset_class=asset_class,
+        scope=schemas.TradeConfirmationScope(
+            proposed_action={
+                "symbol": symbol,
+                "side": side,
+                "size_pct_equity": 0.02,
+                "entry_price": 150.0,
+                "tier": "standard",
+            },
+            context={"alert_signal": "otter_buy"},
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+async def test_e2e_trade_confirmation_happy_path_emits_confirm(
+    initialized_db: str, stub_universe,
+):
+    """Phase 1e happy path: bullish technical + macro experts on a 'buy'
+    proposal → deterministic verdict='confirm', audit row written."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
+        "macro": FakeMacroExpert(lean="bullish", confidence=0.6),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    product = await run_engagement(_trade_confirmation_spec(), deps=deps)
+    assert isinstance(product, schemas.TradeConfirmation)
+    assert product.subject_action.get("symbol") == "AAPL"
+    assert product.verdict == "confirm"
+    assert product.rationale
+    assert product.suggested_modifications is None
+
+    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
+    assert "research_trade_confirmation_emitted" in kinds
+
+
+async def test_e2e_trade_confirmation_all_bearish_pushes_back(
+    initialized_db: str, stub_universe,
+):
+    """All valid experts bearish on a 'buy' proposal → push_back verdict.
+    The deterministic path uses this as the conservative quorum rule."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(lean="bearish", confidence=0.8),
+        "macro": FakeMacroExpert(lean="bearish", confidence=0.7),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    product = await run_engagement(_trade_confirmation_spec(), deps=deps)
+    assert isinstance(product, schemas.TradeConfirmation)
+    assert product.verdict == "push_back"
+    # Bearish leans should be in risks_flagged for downstream visibility.
+    flags_text = " ".join(product.risks_flagged).lower()
+    assert "bearish" in flags_text
+
+
+async def test_e2e_trade_confirmation_skips_shortlist(
+    initialized_db: str, stub_universe,
+):
+    """TradeConfirmation is single-symbol; the shortlist node must NOT
+    run. Pin against future refactors that would route through the
+    candidate path."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(),
+        "macro": FakeMacroExpert(),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    # ZZZZ would never appear in a starter universe; if shortlist ran
+    # we'd get no_action. TradeConfirmation must reach experts → synthesis.
+    product = await run_engagement(
+        _trade_confirmation_spec(symbol="ZZZZ"), deps=deps,
+    )
+    assert isinstance(product, schemas.TradeConfirmation)
+    assert product.subject_action.get("symbol") == "ZZZZ"
+
+
+async def test_e2e_trade_confirmation_layer2_blocks_subject_action_drift(
+    initialized_db: str, stub_universe, monkeypatch,
+):
+    """Force the synthesizer to emit a TradeConfirmation whose
+    subject_action.symbol doesn't match the spec — Layer 2's drift
+    guard must short-circuit with validation_failed and None return."""
+    from trading_corp.agents.research import graph as graph_mod
+
+    async def _bad_synth(*, spec, reports, expert_audit_row_ids):
+        bad = schemas.TradeConfirmation(
+            engagement_id=spec.engagement_id,
+            requesting_division=spec.requesting_division,
+            subject_action={"symbol": "WRONG_SYMBOL", "side": "buy"},
+            verdict="confirm",
+            rationale="r",
+            risks_flagged=[],
+            suggested_modifications=None,
+        )
+        return bad, 0.0
+
+    monkeypatch.setattr(graph_mod, "synthesize_trade_confirmation", _bad_synth)
+
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(),
+        "macro": FakeMacroExpert(),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    product = await run_engagement(_trade_confirmation_spec(), deps=deps)
+    assert product is None
+    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
+    assert "research_engagement_validation_failed" in kinds
+
+
+async def test_e2e_trade_confirmation_invalid_side_rejected_at_layer1(
+    initialized_db: str, stub_universe,
+):
+    """Layer 1 catches invalid side values before any expert runs."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(),
+        "macro": FakeMacroExpert(),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    spec = schemas.EngagementSpec(
+        requesting_division="lord_otter",
+        product_type="trade_confirmation",
+        asset_class="equity",
+        scope=schemas.TradeConfirmationScope(
+            proposed_action={"symbol": "AAPL", "side": "long"},  # invalid
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert product is None
+    kinds = [e["kind"] for e in logger_agent.recent_events(limit=20)]
+    assert "research_engagement_aborted_out_of_scope" in kinds
+    assert not any(k == "research_expert_completed" for k in kinds)
