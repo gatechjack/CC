@@ -49,11 +49,18 @@ async def synthesize_thesis(
     spec: EngagementSpec,
     reports: list[ExpertReport],
     expert_audit_row_ids: list[int],
+    debate_outcome: dict | None = None,
+    debate_audit_row_id: int | None = None,
 ) -> tuple[Thesis, float]:
     """Return (thesis, llm_dollars).
 
     `reports` is the flat list of ExpertReports for the single symbol
     in scope (one per registered role; refusals included).
+
+    Phase 1f: when the debate gate fired, `debate_outcome` is a
+    DebateOutcome.model_dump() with bull_case/bear_case/judge scores/
+    synthesis. Synthesis surfaces the judge's synthesis line in
+    key_drivers/key_risks; the audit row id is tagged on the product.
     """
     if not isinstance(spec.scope, ThesisScope):
         raise ValueError(
@@ -78,14 +85,30 @@ async def synthesize_thesis(
     narrated_drivers: list[str] | None = None
     narrated_risks: list[str] | None = None
     narrated = await _narrate_thesis_if_available(
-        spec, symbol, valid, refused, earnings_clear,
+        spec, symbol, valid, refused, earnings_clear, debate_outcome,
     )
     if narrated is not None:
         (narrated_summary, narrated_drivers, narrated_risks), llm_cost = narrated
 
     summary = narrated_summary or deterministic_summary
-    key_drivers = narrated_drivers if narrated_drivers else deterministic_drivers
-    key_risks = narrated_risks if narrated_risks else deterministic_risks
+    key_drivers = list(
+        narrated_drivers if narrated_drivers else deterministic_drivers
+    )
+    key_risks = list(
+        narrated_risks if narrated_risks else deterministic_risks
+    )
+
+    # Phase 1f: ALWAYS surface the debate synthesis as a key_drivers
+    # entry when the gate fired, regardless of whether LLM narration
+    # also incorporated debate context into other drivers. This is
+    # metadata for the dashboard / consumers that the debate ran —
+    # consistency with PositionContext's risk_flags surface, and
+    # tests can pin the marker without depending on LLM output.
+    if debate_outcome and debate_outcome.get("synthesis"):
+        key_drivers.insert(
+            0,
+            f"debate (gate fired): {debate_outcome.get('synthesis', '')}",
+        )
 
     thesis = Thesis(
         engagement_id=spec.engagement_id,
@@ -95,7 +118,7 @@ async def synthesize_thesis(
         key_risks=key_risks,
         earnings_window_clear=earnings_clear,
         expert_audit_row_ids=list(expert_audit_row_ids),
-        debate_audit_row_id=None,
+        debate_audit_row_id=debate_audit_row_id,
     )
     return thesis, llm_cost
 
@@ -186,9 +209,17 @@ async def _narrate_thesis_if_available(
     valid: list[ExpertReport],
     refused: list[ExpertReport],
     earnings_clear: bool,
+    debate_outcome: dict | None = None,
 ) -> tuple[tuple[str, list[str], list[str]], float] | None:
     """Best-effort LLM narration. Returns ((summary, drivers, risks), cost)
-    or None on any failure. Tests bypass via no-API-key."""
+    or None on any failure. Tests bypass via no-API-key.
+
+    When `debate_outcome` is provided, the prompt includes the judge's
+    synthesis line + the two quality scores so the LLM can incorporate
+    debate context into the narrated drivers/risks. Per Phase 1f
+    decision, only the judge synthesis is included (not the full
+    bull/bear texts) — those are recorded in the audit log; what's
+    actionable for the narrative is the synthesis."""
     from trading_corp.agents.llm import is_llm_available
     if not is_llm_available():
         return None
@@ -220,11 +251,14 @@ async def _narrate_thesis_if_available(
         else "Write a standard read (3-4 sentences in summary)."
     )
 
+    debate_block = _format_debate_block(debate_outcome)
+
     prompt = (
         f"You are an analyst on a research desk. The Board has asked for a "
         f"thesis on `{symbol}` (asset_class={spec.asset_class}). "
         f"Calendar: {earnings_blurb}.\n\n"
         f"{depth_line}\n\n"
+        f"{debate_block}"
         f"Return a single JSON object with exactly these keys:\n"
         f'  {{"summary": "...", "key_drivers": ["...", "..."], '
         f'"key_risks": ["...", "..."]}}\n\n'
@@ -266,3 +300,30 @@ async def _narrate_thesis_if_available(
     except Exception as e:
         log.debug("thesis narration LLM call failed: %s", e)
         return None
+
+
+def _format_debate_block(debate_outcome: dict | None) -> str:
+    """Format the debate-context block for inclusion in the synthesis
+    prompt. Returns a trailing-newline string when debate fired,
+    empty string when it didn't. Per Phase 1f decision, only the judge
+    synthesis line + the two quality scores are included — full
+    bull/bear texts live in the audit log."""
+    if not debate_outcome:
+        return ""
+    bull = debate_outcome.get("judge_bull_score") or {}
+    bear = debate_outcome.get("judge_bear_score") or {}
+    return (
+        "Debate-gate fired (variance/disagreement among experts). "
+        "Judge synthesis (NOT a verdict — neutral summary of where the "
+        "bull/bear cases converge or diverge):\n"
+        f"  {debate_outcome.get('synthesis', '')}\n"
+        f"Judge quality scores — "
+        f"bull: evidence={bull.get('evidence_quality', 0):.2f} "
+        f"logic={bull.get('logical_consistency', 0):.2f} "
+        f"falsifiability={bull.get('falsifiability', 0):.2f}; "
+        f"bear: evidence={bear.get('evidence_quality', 0):.2f} "
+        f"logic={bear.get('logical_consistency', 0):.2f} "
+        f"falsifiability={bear.get('falsifiability', 0):.2f}.\n"
+        "Incorporate this into your read; treat the judge's synthesis "
+        "as factually neutral.\n\n"
+    )

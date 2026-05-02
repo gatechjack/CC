@@ -387,7 +387,7 @@ async def test_consult_conditional_applies_modifications(
     from trading_corp.agents.research import graph as graph_mod
     from trading_corp.agents.research.schemas import SuggestedModifications
 
-    async def conditional_synth(*, spec, reports, expert_audit_row_ids):
+    async def conditional_synth(*, spec, reports, expert_audit_row_ids, **_kwargs):
         tc = schemas.TradeConfirmation(
             engagement_id=spec.engagement_id,
             requesting_division=spec.requesting_division,

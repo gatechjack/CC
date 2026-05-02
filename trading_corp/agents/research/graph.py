@@ -193,9 +193,11 @@ def build_engagement_graph(
     # ── Helpers used inside nodes ────────────────────────────────────────
 
     def _audit(state: EngagementState, kind: str, payload: dict) -> int | None:
-        """Write a research-firm audit row. Returns row id (best-effort —
-        None if we can't read it back, which is fine; the design uses
-        engagement_id to join, not row ids)."""
+        """Write a research-firm audit row. Returns the new row id
+        (or None on write failure). Phase 1f's debate_audit_row_id on
+        emitted products needs the id to tag downstream — most other
+        callers ignore the return value and just rely on engagement_id
+        to join."""
         merged = {
             "engagement_id": state.get("engagement_id"),
             "requesting_division": state.get("requesting_division"),
@@ -205,10 +207,10 @@ def build_engagement_graph(
             **payload,
         }
         try:
-            logger.log_event(actor=rs.RESEARCH_ACTOR, kind=kind, payload=merged)
+            return logger.log_event(actor=rs.RESEARCH_ACTOR, kind=kind, payload=merged)
         except Exception as e:
             log.warning("research audit write failed (%s): %s", kind, e)
-        return None
+            return None
 
     def _terminal_payload(state: EngagementState, completed_ts: str, **extra) -> dict:
         """Q11: terminal rows pin both started + completed ts in payload."""
@@ -713,6 +715,10 @@ def build_engagement_graph(
         product_d: dict | None = None
         llm_cost = 0.0
 
+        # Phase 1f: thread debate context (None when gate skipped).
+        debate_outcome_d = state.get("debate_outcome")
+        debate_audit_row_id = state.get("debate_audit_row_id")
+
         if state["product_type"] == "candidate_recommendation":
             rec, llm_cost = await synthesize_candidate_recommendation(
                 spec=spec,
@@ -728,6 +734,8 @@ def build_engagement_graph(
                 spec=spec,
                 reports=sym_reports,
                 expert_audit_row_ids=list(state.get("expert_audit_row_ids") or []),
+                debate_outcome=debate_outcome_d,
+                debate_audit_row_id=debate_audit_row_id,
             )
             product_d = thesis.model_dump()
         elif state["product_type"] == "position_context":
@@ -738,6 +746,7 @@ def build_engagement_graph(
                 spec=spec,
                 reports=sym_reports,
                 expert_audit_row_ids=list(state.get("expert_audit_row_ids") or []),
+                debate_outcome=debate_outcome_d,
             )
             product_d = pc.model_dump()
         elif state["product_type"] == "trade_confirmation":
@@ -750,6 +759,8 @@ def build_engagement_graph(
                 spec=spec,
                 reports=sym_reports,
                 expert_audit_row_ids=list(state.get("expert_audit_row_ids") or []),
+                debate_outcome=debate_outcome_d,
+                debate_audit_row_id=debate_audit_row_id,
             )
             product_d = tc.model_dump()
         else:

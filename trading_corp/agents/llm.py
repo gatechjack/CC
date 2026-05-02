@@ -33,11 +33,26 @@ def get_model_for(agent_name: str, agents_yaml: str = str(DEFAULT_AGENTS_YAML)) 
     return model, temperature
 
 
+_TEMPERATURE_REJECTING_MODELS = {
+    # Opus 4.7 deprecated the temperature parameter; passing it returns
+    # 400 invalid_request_error. The Sonnet line still accepts it.
+    # Add new model IDs here as Anthropic deprecates temperature on more
+    # models. Caught 2026-05-02 by Phase 1f UAT against the judge role.
+    "claude-opus-4-7",
+}
+
+
 def build_chat_model(agent_name: str, *, max_tokens: int = 1024):
     """Return a langchain_anthropic.ChatAnthropic instance for `agent_name`.
 
     Imported lazily so test envs without langchain-anthropic still import the
     package (callers should fall back to deterministic-only behavior).
+
+    Temperature handling: Opus 4.7 (and any other model in
+    _TEMPERATURE_REJECTING_MODELS) deprecated the temperature parameter
+    — we omit it on the constructor, falling back to the model's
+    server-side default. Other models still receive the configured
+    temperature from agents.yaml.
     """
     try:
         from langchain_anthropic import ChatAnthropic  # type: ignore
@@ -48,13 +63,15 @@ def build_chat_model(agent_name: str, *, max_tokens: int = 1024):
         ) from e
 
     model, temperature = get_model_for(agent_name)
-    return ChatAnthropic(
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
+    kwargs: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
         # Prompt caching is configured per-message via cache_control headers
         # in callers; this constructor honors them when set.
-    )
+    }
+    if model not in _TEMPERATURE_REJECTING_MODELS:
+        kwargs["temperature"] = temperature
+    return ChatAnthropic(**kwargs)
 
 
 def is_llm_available() -> bool:

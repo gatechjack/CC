@@ -20,14 +20,25 @@ class LoggerAgent:
     def __init__(self, db_url: str = "sqlite:///data/trading_corp.db") -> None:
         self.db_url = db_url
 
-    def log_event(self, actor: str, kind: str, payload: dict[str, Any]) -> None:
+    def log_event(self, actor: str, kind: str, payload: dict[str, Any]) -> int | None:
+        """Insert an audit_event row. Returns the new row id (best-effort
+        — None if SQLite's lastrowid isn't available, which shouldn't
+        happen for a successful INSERT but the audit path must never
+        raise on read-back). Phase 1f's debate_audit_row_id needs the id
+        to tag products that join the debate row."""
         evt = AuditEvent(actor=actor, kind=kind, payload=payload)
+        row_id: int | None = None
         with db.connect(self.db_url) as conn:
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO audit_event(ts, actor, kind, payload_json) VALUES(:ts,:actor,:kind,:payload_json)",
                 evt.to_db_row(),
             )
+            try:
+                row_id = int(cur.lastrowid) if cur.lastrowid else None
+            except Exception:
+                row_id = None
         log.info("[audit] %s/%s %s", actor, kind, _short(payload))
+        return row_id
 
     def log_proposed_order(self, order: ProposedOrder) -> None:
         with db.connect(self.db_url) as conn:

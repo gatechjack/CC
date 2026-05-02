@@ -53,11 +53,20 @@ async def synthesize_trade_confirmation(
     spec: EngagementSpec,
     reports: list[ExpertReport],
     expert_audit_row_ids: list[int],
+    debate_outcome: dict | None = None,
+    debate_audit_row_id: int | None = None,
 ) -> tuple[TradeConfirmation, float]:
     """Return (trade_confirmation, llm_dollars).
 
     `reports` is the flat list of ExpertReports for the single symbol
     in scope (one per registered role; refusals included).
+
+    Phase 1f: when the debate gate fired, `debate_outcome` carries the
+    DebateOutcome dump. The deterministic verdict logic is unchanged
+    (still raw expert leans -> push_back/confirm); only the LLM
+    narration receives debate context as a richer prompt input. Per
+    Phase 1f decision, the prompt includes only the judge synthesis +
+    the two quality scores — full bull/bear texts live in the audit log.
     """
     if not isinstance(spec.scope, TradeConfirmationScope):
         raise ValueError(
@@ -74,7 +83,7 @@ async def synthesize_trade_confirmation(
 
     llm_cost = 0.0
     llm_result = await _narrate_trade_confirmation_if_available(
-        spec, proposed_action, valid, refused,
+        spec, proposed_action, valid, refused, debate_outcome,
     )
 
     if llm_result is not None:
@@ -108,7 +117,7 @@ async def synthesize_trade_confirmation(
         risks_flagged=risks_flagged,
         suggested_modifications=suggested_modifications,
         expert_audit_row_ids=list(expert_audit_row_ids),
-        debate_audit_row_id=None,
+        debate_audit_row_id=debate_audit_row_id,
     )
     return tc, llm_cost
 
@@ -201,6 +210,7 @@ async def _narrate_trade_confirmation_if_available(
     proposed_action: dict,
     valid: list[ExpertReport],
     refused: list[ExpertReport],
+    debate_outcome: dict | None = None,
 ) -> tuple[dict, float] | None:
     """Best-effort LLM call. Returns (parsed_result_dict, cost) or None on
     any failure path. The result dict has keys:
@@ -208,6 +218,12 @@ async def _narrate_trade_confirmation_if_available(
       rationale: str
       risks_flagged: list[str]
       suggested_modifications: SuggestedModifications | None
+
+    Phase 1f: when `debate_outcome` is supplied, the prompt includes
+    the judge synthesis line + quality scores so the verdict can be
+    informed by the contested view. Per Phase 1f decision, only the
+    judge synthesis is included (not the full bull/bear texts) — the
+    full content lives in the audit log.
     """
     from trading_corp.agents.llm import is_llm_available
     if not is_llm_available():
@@ -233,6 +249,7 @@ async def _narrate_trade_confirmation_if_available(
         dict(spec.scope.context or {}), sort_keys=True, default=str,
     )
     division = spec.requesting_division
+    debate_block = _format_debate_block(debate_outcome)
 
     prompt = (
         f"You are a research analyst on a trading desk. The {division} "
@@ -240,6 +257,7 @@ async def _narrate_trade_confirmation_if_available(
         f"sanity check before placing it.\n\n"
         f"Proposed action (JSON):\n  {action_str}\n\n"
         f"Surrounding context (JSON):\n  {context_str}\n\n"
+        f"{debate_block}"
         f"Expert reports:\n" + "\n".join(rep_lines) + "\n\n"
         f"Decide a verdict:\n"
         f"  - 'confirm': the trade is reasonable as proposed.\n"
@@ -316,3 +334,30 @@ async def _narrate_trade_confirmation_if_available(
     except Exception as e:
         log.debug("trade_confirmation narration LLM call failed: %s", e)
         return None
+
+
+def _format_debate_block(debate_outcome: dict | None) -> str:
+    """Format the debate-context block for inclusion in the verdict
+    prompt. Returns trailing-newline string when debate fired, empty
+    string when it didn't. Per Phase 1f decision, only the judge
+    synthesis line + the two quality scores are surfaced — the full
+    bull/bear texts live in the audit log."""
+    if not debate_outcome:
+        return ""
+    bull = debate_outcome.get("judge_bull_score") or {}
+    bear = debate_outcome.get("judge_bear_score") or {}
+    return (
+        "Debate-gate fired (variance/disagreement among experts). "
+        "Judge synthesis (NOT a verdict — neutral summary of where the "
+        "bull/bear cases converge or diverge):\n"
+        f"  {debate_outcome.get('synthesis', '')}\n"
+        f"Judge quality scores — "
+        f"bull: evidence={bull.get('evidence_quality', 0):.2f} "
+        f"logic={bull.get('logical_consistency', 0):.2f} "
+        f"falsifiability={bull.get('falsifiability', 0):.2f}; "
+        f"bear: evidence={bear.get('evidence_quality', 0):.2f} "
+        f"logic={bear.get('logical_consistency', 0):.2f} "
+        f"falsifiability={bear.get('falsifiability', 0):.2f}.\n"
+        "Treat the debate as a signal of contested ground; let the "
+        "expert evidence, NOT the debate scores, drive your verdict.\n\n"
+    )

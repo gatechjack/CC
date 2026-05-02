@@ -43,11 +43,19 @@ async def synthesize_position_context(
     spec: EngagementSpec,
     reports: list[ExpertReport],
     expert_audit_row_ids: list[int],
+    debate_outcome: dict | None = None,
 ) -> tuple[PositionContext, float]:
     """Return (position_context, llm_dollars).
 
     `reports` is the flat list of ExpertReports for the single symbol
     in scope (one per registered role; refusals included).
+
+    Phase 1f: when `debate_outcome` is provided (gate fired on
+    macro+sentiment disagreement), the judge synthesis surfaces as an
+    extra `risk_flags` entry so the consuming division (Otter/Cypher)
+    sees that the macro+sentiment view was contested. PositionContext
+    has no debate_audit_row_id field per design — the row is joinable
+    via engagement_id from the dashboard.
     """
     if not isinstance(spec.scope, PositionContextScope):
         raise ValueError(
@@ -85,7 +93,18 @@ async def synthesize_position_context(
 
     macro_summary = narrated_macro or deterministic_macro
     sentiment_summary = narrated_sentiment or deterministic_sentiment
-    risk_flags = narrated_flags if narrated_flags else deterministic_flags
+    risk_flags = list(narrated_flags if narrated_flags else deterministic_flags)
+
+    # Phase 1f: when the debate gate fired, surface the judge's
+    # synthesis as an extra risk_flags entry so the consuming division
+    # sees that the macro+sentiment view was contested. The full
+    # bull/bear/judge content lives in audit log; the flag just signals
+    # "look at the audit row for the debate" with a one-line summary.
+    if debate_outcome and debate_outcome.get("synthesis"):
+        risk_flags.insert(
+            0,
+            f"debate fired: {debate_outcome.get('synthesis', '')}",
+        )
 
     confidence_score = (
         sum(r.confidence_score for r in valid) / len(valid)

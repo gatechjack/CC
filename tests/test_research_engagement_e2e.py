@@ -473,7 +473,7 @@ async def test_e2e_thesis_layer2_blocks_symbol_drift(deps_with_fakes, monkeypatc
     validation_failed and None return."""
     from trading_corp.agents.research import graph as graph_mod
 
-    async def _bad_synth(*, spec, reports, expert_audit_row_ids):
+    async def _bad_synth(*, spec, reports, expert_audit_row_ids, **_kwargs):
         bad = schemas.Thesis(
             engagement_id=spec.engagement_id,
             symbol="WRONG_SYMBOL",  # spec asked for AAPL
@@ -639,7 +639,7 @@ async def test_e2e_position_context_layer2_blocks_symbol_drift(
     short-circuit with validation_failed and None return."""
     from trading_corp.agents.research import graph as graph_mod
 
-    async def _bad_synth(*, spec, reports, expert_audit_row_ids):
+    async def _bad_synth(*, spec, reports, expert_audit_row_ids, **_kwargs):
         bad = schemas.PositionContext(
             engagement_id=spec.engagement_id,
             requesting_division=spec.requesting_division,
@@ -798,7 +798,7 @@ async def test_e2e_trade_confirmation_layer2_blocks_subject_action_drift(
     guard must short-circuit with validation_failed and None return."""
     from trading_corp.agents.research import graph as graph_mod
 
-    async def _bad_synth(*, spec, reports, expert_audit_row_ids):
+    async def _bad_synth(*, spec, reports, expert_audit_row_ids, **_kwargs):
         bad = schemas.TradeConfirmation(
             engagement_id=spec.engagement_id,
             requesting_division=spec.requesting_division,
@@ -1013,9 +1013,7 @@ async def test_e2e_debate_gate_fires_on_trade_confirmation(
     initialized_db: str, stub_universe,
 ):
     """TradeConfirmation with disagreeing experts fires the gate +
-    debate_audit_row_id flows through (NOT YET — Task 28). For now we
-    just pin that the gate fires; product field threading lands in the
-    next commit."""
+    debate_audit_row_id flows through to the product."""
     logger_agent = LoggerAgent(initialized_db)
     experts = {
         "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
@@ -1040,6 +1038,115 @@ async def test_e2e_debate_gate_fires_on_trade_confirmation(
     )
     product = await run_engagement(spec, deps=deps)
     assert isinstance(product, schemas.TradeConfirmation)
+    # Phase 1f part 2: debate_audit_row_id MUST tag on the product so
+    # the dashboard can join product -> debate audit row directly.
+    assert product.debate_audit_row_id is not None
     kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
     assert "research_debate_invoked" in kinds
     assert "research_debate_completed" in kinds
+
+
+# ── Phase 1f part 2 — synthesizer integration tests ─────────────────────
+
+
+async def test_e2e_thesis_carries_debate_audit_row_id_when_gate_fires(
+    initialized_db: str, stub_universe,
+):
+    """Thesis with disagreeing experts -> gate fires -> Thesis product
+    carries debate_audit_row_id and key_drivers includes the synthesis
+    line (deterministic-narration path; LLM path is unit-tested)."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
+        "macro": FakeMacroExpert(lean="bearish", confidence=0.65),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+    spec = schemas.EngagementSpec(
+        requesting_division="board",
+        product_type="thesis",
+        asset_class="equity",
+        scope=schemas.ThesisScope(symbol="AAPL"),
+        triggered_by="telegram",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.Thesis)
+    assert product.debate_audit_row_id is not None
+    # Deterministic narration path inserts a debate-driver entry.
+    assert any("debate" in d.lower() for d in product.key_drivers), (
+        f"expected debate-tagged key_driver, got {product.key_drivers}"
+    )
+
+
+async def test_e2e_thesis_no_debate_field_when_gate_skips(
+    initialized_db: str, stub_universe,
+):
+    """When gate skips (aligned experts), Thesis MUST NOT carry a
+    debate_audit_row_id and MUST NOT mention 'debate' in drivers."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
+        "macro": FakeMacroExpert(lean="bullish", confidence=0.65),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+    spec = schemas.EngagementSpec(
+        requesting_division="board",
+        product_type="thesis",
+        asset_class="equity",
+        scope=schemas.ThesisScope(symbol="AAPL"),
+        triggered_by="telegram",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.Thesis)
+    assert product.debate_audit_row_id is None
+    assert not any("debate fired" in d.lower() for d in product.key_drivers)
+
+
+async def test_e2e_position_context_surfaces_debate_in_risk_flags(
+    initialized_db: str, stub_universe,
+):
+    """When the gate fires on a PositionContext engagement, the judge
+    synthesis line shows up in risk_flags. PositionContext has no
+    debate_audit_row_id field per design — the audit row is joinable
+    via engagement_id."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "macro": FakeMacroExpert(lean="bullish", confidence=0.7),
+        "sentiment": FakeSentimentExpert(lean="bearish", confidence=0.6),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+    spec = schemas.EngagementSpec(
+        requesting_division="lord_otter",
+        product_type="position_context",
+        asset_class="equity",
+        scope=schemas.PositionContextScope(
+            symbol="AAPL",
+            time_horizon_hours=4,
+            current_position_qty=100.0,
+            current_position_avg_price=150.0,
+            current_position_age_hours=12.0,
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.PositionContext)
+    assert any("debate" in f.lower() for f in product.risk_flags), (
+        f"expected debate-tagged risk_flag, got {product.risk_flags}"
+    )
