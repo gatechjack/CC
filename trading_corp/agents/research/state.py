@@ -49,10 +49,11 @@ class EngagementState(TypedDict, total=False):
     expert_reports: list[dict]        # ExpertReport.model_dump() entries
     expert_audit_row_ids: list[int]
 
-    # Debate (Phase 1f — placeholders unused in 1a-1)
+    # Debate (Phase 1f)
     debate_invoked: bool
     debate_invoked_reason: str | None
-    debate_outcome: dict | None
+    debate_outcome: dict | None              # DebateOutcome.model_dump()
+    debate_audit_row_id: int | None          # research_debate_completed row
 
     # Product
     product: dict | None              # serialized ResearchProduct

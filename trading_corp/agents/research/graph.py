@@ -49,7 +49,9 @@ from trading_corp.agents.research.experts import (
     EXPERT_REGISTRY, FundamentalExpert, MacroExpert, SentimentExpert,
     TechnicalExpert, experts_for, stub_expert_report,
 )
+from trading_corp.agents.research.debate_gate import evaluate_debate_gate
 from trading_corp.agents.research.experts.base import Expert
+from trading_corp.agents.research.experts.debate import run_bear, run_bull, run_judge
 from trading_corp.agents.research.kill_switch import is_kill_switch_present
 from trading_corp.agents.research.schemas import (
     CandidateRecommendation, CandidateScope, EngagementSpec, ExpertReport,
@@ -552,7 +554,150 @@ def build_engagement_graph(
         }
 
     def analyze_route(state: EngagementState) -> str:
-        return "end" if state.get("final_status") == "no_action" else "synthesize"
+        return "end" if state.get("final_status") == "no_action" else "debate_gate"
+
+    async def debate_gate_node(state: EngagementState) -> EngagementState:
+        """Variance/disagreement gate (Phase 1f, design §2.1 + Q10).
+
+        Implementation note: the design diagram shows DEBATE_GATE +
+        BULL + BEAR + JUDGE as four separate boxes. Collapsed here into
+        one node — the audit rows (`research_debate_invoked` /
+        `research_debate_completed`) make the structure observable in
+        the dashboard without leaking transient `bull_case`/`bear_case`
+        keys through the graph state.
+
+        Multi-symbol products (CandidateRecommendation) skip the gate
+        for first-cut: per-candidate debates are high-cost and the
+        existing single-DebateOutcome state shape doesn't accommodate
+        per-symbol mappings cleanly. If per-candidate debates become
+        useful later, that's a Phase 1g+ extension; for now,
+        CandidateRecommendation.debate_audit_row_id stays None.
+        """
+        ptype = state.get("product_type") or ""
+        if ptype not in ("trade_confirmation", "position_context", "thesis"):
+            return {
+                **state,
+                "debate_invoked": False,
+                "debate_invoked_reason": None,
+                "debate_outcome": None,
+                "debate_audit_row_id": None,
+            }
+
+        spec = EngagementSpec.model_validate(state["engagement_spec"])
+        # Single-symbol resolution per scope shape.
+        if isinstance(spec.scope, (ThesisScope, PositionContextScope)):
+            symbol = spec.scope.symbol
+        elif isinstance(spec.scope, TradeConfirmationScope):
+            symbol = (spec.scope.proposed_action or {}).get("symbol", "")
+        else:
+            symbol = ""
+
+        reports_dicts = state.get("expert_reports") or []
+        reports = [
+            ExpertReport.model_validate(d)
+            for d in reports_dicts
+            if d.get("symbol") == symbol
+        ]
+
+        should_fire, reason = evaluate_debate_gate(reports)
+        if not should_fire:
+            return {
+                **state,
+                "debate_invoked": False,
+                "debate_invoked_reason": None,
+                "debate_outcome": None,
+                "debate_audit_row_id": None,
+            }
+
+        # Cost gate: don't fire the (Opus-judged) debate if we're
+        # already at hard cap. The synthesis cost gate downstream
+        # double-checks anyway, but skipping the debate spend here is
+        # the cheapest mitigation when budget is exhausted.
+        soft_cap, hard_cap = _cost_caps(ptype)
+        cost = float(state.get("cost_dollars") or 0.0)
+        if cost >= hard_cap:
+            return {
+                **state,
+                "debate_invoked": False,
+                "debate_invoked_reason": (
+                    f"gate would have fired ({reason}) but cost cap "
+                    f"reached pre-debate"
+                ),
+                "debate_outcome": None,
+                "debate_audit_row_id": None,
+            }
+
+        # Audit the gate firing BEFORE running bull/bear/judge so a
+        # mid-debate crash still leaves the trail showing why the
+        # debate was attempted.
+        _audit(state, rs.AUDIT_KIND_DEBATE_INVOKED, {
+            "engagement_id": spec.engagement_id,
+            "symbol": symbol,
+            "reason": reason,
+            "expert_count": len(reports),
+        })
+
+        # Run bull + bear in parallel; judge sequentially after.
+        try:
+            (bull_text, bull_cost), (bear_text, bear_cost) = await asyncio.gather(
+                run_bull(symbol=symbol, invoked_reason=reason or "", reports=reports),
+                run_bear(symbol=symbol, invoked_reason=reason or "", reports=reports),
+            )
+        except Exception as e:
+            log.warning("debate_gate: bull/bear failed: %s", e)
+            return {
+                **state,
+                "debate_invoked": True,
+                "debate_invoked_reason": reason,
+                "debate_outcome": None,
+                "debate_audit_row_id": None,
+                "cost_dollars": cost,
+            }
+
+        cost += float(bull_cost) + float(bear_cost)
+
+        try:
+            outcome, judge_cost = await run_judge(
+                engagement_id=spec.engagement_id,
+                symbol=symbol,
+                invoked_reason=reason or "",
+                bull_case=bull_text,
+                bear_case=bear_text,
+            )
+        except Exception as e:
+            log.warning("debate_gate: judge failed: %s", e)
+            return {
+                **state,
+                "debate_invoked": True,
+                "debate_invoked_reason": reason,
+                "debate_outcome": None,
+                "debate_audit_row_id": None,
+                "cost_dollars": cost,
+            }
+
+        cost += float(judge_cost)
+        outcome_d = outcome.model_dump()
+        debate_row_id = _audit(state, rs.AUDIT_KIND_DEBATE_COMPLETED, {
+            "engagement_id": spec.engagement_id,
+            "symbol": symbol,
+            "outcome": outcome_d,
+            "cost_dollars_delta": float(bull_cost) + float(bear_cost) + float(judge_cost),
+        })
+
+        return {
+            **state,
+            "debate_invoked": True,
+            "debate_invoked_reason": reason,
+            "debate_outcome": outcome_d,
+            "debate_audit_row_id": debate_row_id,
+            "cost_dollars": cost,
+        }
+
+    def debate_gate_route(state: EngagementState) -> str:
+        # debate_gate_node never aborts the engagement on its own —
+        # synthesis runs whether or not the debate fired. (A debate
+        # crash leaves debate_outcome=None; synthesis handles that.)
+        return "synthesize"
 
     async def synthesize_node(state: EngagementState) -> EngagementState:
         """Dispatch synthesis per product_type. Phase 1a-1 only wires
@@ -801,6 +946,7 @@ def build_engagement_graph(
     g.add_node("registry_lookup", registry_lookup_node)
     g.add_node("shortlist", shortlist_node)
     g.add_node("analyze", analyze_node)
+    g.add_node("debate_gate", debate_gate_node)
     g.add_node("synthesize", synthesize_node)
     g.add_node("post_validate", post_validate_node)
     g.add_node("emit_candidate", emit_candidate_node)
@@ -829,7 +975,11 @@ def build_engagement_graph(
     )
     g.add_conditional_edges(
         "analyze", analyze_route,
-        {"synthesize": "synthesize", "end": END},
+        {"debate_gate": "debate_gate", "end": END},
+    )
+    g.add_conditional_edges(
+        "debate_gate", debate_gate_route,
+        {"synthesize": "synthesize"},
     )
     g.add_edge("synthesize", "post_validate")
     g.add_conditional_edges(

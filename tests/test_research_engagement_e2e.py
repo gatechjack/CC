@@ -861,3 +861,185 @@ async def test_e2e_trade_confirmation_invalid_side_rejected_at_layer1(
     kinds = [e["kind"] for e in logger_agent.recent_events(limit=20)]
     assert "research_engagement_aborted_out_of_scope" in kinds
     assert not any(k == "research_expert_completed" for k in kinds)
+
+
+# ── Phase 1f — Debate gate e2e tests ────────────────────────────────────
+
+
+async def test_e2e_debate_gate_skips_on_aligned_experts(
+    initialized_db: str, stub_universe,
+):
+    """All experts bullish + same confidence band → gate skips silently.
+    No research_debate_invoked / research_debate_completed audit rows."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
+        "macro": FakeMacroExpert(lean="bullish", confidence=0.65),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+    spec = schemas.EngagementSpec(
+        requesting_division="board",
+        product_type="thesis",
+        asset_class="equity",
+        scope=schemas.ThesisScope(symbol="AAPL"),
+        triggered_by="telegram",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.Thesis)
+    assert product.debate_audit_row_id is None
+    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
+    assert "research_debate_invoked" not in kinds
+    assert "research_debate_completed" not in kinds
+
+
+async def test_e2e_debate_gate_fires_on_disagreement(
+    initialized_db: str, stub_universe,
+):
+    """Bullish + bearish experts → gate fires → debate runs → both audit
+    rows land + state.debate_outcome populated."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
+        "macro": FakeMacroExpert(lean="bearish", confidence=0.65),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+    spec = schemas.EngagementSpec(
+        requesting_division="board",
+        product_type="thesis",
+        asset_class="equity",
+        scope=schemas.ThesisScope(symbol="AAPL"),
+        triggered_by="telegram",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.Thesis)
+
+    events = logger_agent.recent_events(limit=40)
+    kinds = [e["kind"] for e in events]
+    assert "research_debate_invoked" in kinds
+    assert "research_debate_completed" in kinds
+    # The completion row carries the DebateOutcome dump.
+    completed = next(e for e in events if e["kind"] == "research_debate_completed")
+    payload = completed["payload"] or {}
+    outcome = payload.get("outcome") or {}
+    assert outcome.get("symbol") == "AAPL"
+    assert outcome.get("invoked_reason")
+    assert outcome.get("bull_case")
+    assert outcome.get("bear_case")
+    assert outcome.get("judge_bull_score")
+    assert outcome.get("judge_bear_score")
+
+
+async def test_e2e_debate_gate_skips_for_candidate_recommendation(
+    deps_with_fakes,
+):
+    """Multi-symbol products skip the gate by design (Phase 1f decision —
+    per-candidate debates would need multi-DebateOutcome state)."""
+    # Push experts into disagreement; the gate would fire on a single-
+    # symbol product but must skip on candidate_recommendation.
+    deps_with_fakes.experts["technical"] = FakeTechnicalExpert(
+        lean="bullish", confidence=0.8,
+    )
+    deps_with_fakes.experts["macro"] = FakeMacroExpert(
+        lean="bearish", confidence=0.7,
+    )
+    deps_with_fakes.graph = build_engagement_graph(
+        deps_with_fakes.logger_agent,
+        experts=deps_with_fakes.experts,
+        checkpointer=None,
+    )
+
+    spec = _candidate_spec(n=2)
+    rec = await run_engagement(spec, deps=deps_with_fakes)
+    assert rec is None or isinstance(rec, schemas.CandidateRecommendation)
+    if isinstance(rec, schemas.CandidateRecommendation):
+        assert rec.debate_audit_row_id is None
+    kinds = [
+        e["kind"] for e in deps_with_fakes.logger_agent.recent_events(limit=80)
+    ]
+    assert "research_debate_invoked" not in kinds
+    assert "research_debate_completed" not in kinds
+
+
+async def test_e2e_debate_gate_fires_on_position_context(
+    initialized_db: str, stub_universe,
+):
+    """Position context with disagreeing macro+sentiment fires the gate
+    even though PositionContext has no debate_audit_row_id field."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "macro": FakeMacroExpert(lean="bullish", confidence=0.7),
+        "sentiment": FakeSentimentExpert(lean="bearish", confidence=0.6),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+    spec = schemas.EngagementSpec(
+        requesting_division="lord_otter",
+        product_type="position_context",
+        asset_class="equity",
+        scope=schemas.PositionContextScope(
+            symbol="AAPL",
+            time_horizon_hours=4,
+            current_position_qty=100.0,
+            current_position_avg_price=150.0,
+            current_position_age_hours=12.0,
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.PositionContext)
+    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
+    assert "research_debate_invoked" in kinds
+    assert "research_debate_completed" in kinds
+
+
+async def test_e2e_debate_gate_fires_on_trade_confirmation(
+    initialized_db: str, stub_universe,
+):
+    """TradeConfirmation with disagreeing experts fires the gate +
+    debate_audit_row_id flows through (NOT YET — Task 28). For now we
+    just pin that the gate fires; product field threading lands in the
+    next commit."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
+        "macro": FakeMacroExpert(lean="bearish", confidence=0.65),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+    spec = schemas.EngagementSpec(
+        requesting_division="lord_otter",
+        product_type="trade_confirmation",
+        asset_class="equity",
+        scope=schemas.TradeConfirmationScope(
+            proposed_action={"symbol": "AAPL", "side": "buy",
+                             "size_pct_equity": 0.02, "tier": "standard"},
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.TradeConfirmation)
+    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
+    assert "research_debate_invoked" in kinds
+    assert "research_debate_completed" in kinds
