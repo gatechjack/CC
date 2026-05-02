@@ -342,4 +342,12 @@ AUDIT_KIND_CANDIDATE_ACTED_ON = "research_candidate_acted_on"
 AUDIT_KIND_CANDIDATE_SKIPPED = "research_candidate_skipped"
 AUDIT_KIND_RESEARCH_EXTENDED_OUTAGE = "pmcc_research_extended_outage"
 
+# Division-side TradeConfirmation outcomes (Phase 1e). Division writes
+# one of these after the consult helper returns; engagement-id tagged
+# in payload for join traceability per design Q12.
+AUDIT_KIND_TRADECONF_PUSHBACK_ACTED_ON = "research_tradeconf_pushback_acted_on"
+AUDIT_KIND_TRADECONF_MODIFICATIONS_APPLIED = "research_modifications_applied"
+AUDIT_KIND_TRADECONF_TIMEOUT = "research_tradeconf_timeout"
+AUDIT_KIND_TRADECONF_ERROR = "research_tradeconf_error"
+
 RESEARCH_ACTOR = "research_firm"

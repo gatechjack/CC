@@ -55,3 +55,16 @@ position_context_ttls:
   market_cypher: 14400    # 4h — swing horizon
   # Default applied when a division slug is missing here: 3600s.
   # Cache miss = "no signal" (consumer ignores), NOT "small bearish signal".
+
+# ============================================================================
+# TradeConfirmation latency budget (Phase 1e, per Q11). Webhook handlers run
+# the consult synchronously between agent.on_alert and the risk gate; the
+# hard timeout is what bounds Telegram alert→order placement under research
+# load. 8s is the design's starting point pending P95 calibration from Phase
+# 1a-1c data; revise downward once measured. Fail-open on timeout — the
+# existing risk gate + HITL is the safety net.
+# ============================================================================
+trade_confirmation:
+  timeout_seconds: 8.0
+  enabled: true   # global kill-switch for the consult; set false to bypass
+                  # research entirely without removing the wiring.

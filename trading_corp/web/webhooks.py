@@ -308,6 +308,49 @@ def register(app: FastAPI) -> None:
             return JSONResponse({"status": "ignored", "reason": decision})
 
         # ------------------------------------------------------------------
+        # 8b. Research firm TradeConfirmation consult (Phase 1e).
+        #     Runs synchronously between agent.on_alert and the risk gate.
+        #     Hard-timeouts at config/research.yaml:trade_confirmation
+        #     .timeout_seconds (default 8s); fail-open on timeout/error.
+        #     push_back -> skip the order entirely + Telegram notify.
+        #     conditional -> apply suggested_modifications then continue.
+        # ------------------------------------------------------------------
+        from trading_corp.agents.research.trade_confirmation_consult import (
+            consult_research_for_trade_confirmation,
+        )
+        consult = await consult_research_for_trade_confirmation(
+            order=order,
+            payload=payload,
+            research_firm=getattr(deps, "research_firm", None),
+            logger_agent=deps.logger_agent,
+            division_slug="lord_otter",
+            asset_class="crypto_spot",
+            account_equity=account_equity,
+        )
+        if consult.decision == "skip":
+            await _telegram_notify(
+                deps,
+                (
+                    f"\U0001F6D1 lord-otter: research vetoed "
+                    f"{order.side} {order.symbol}\n"
+                    f"{consult.rationale}"
+                ),
+                log_prefix="lord-otter",
+            )
+            return JSONResponse({
+                "status": "skipped_by_research",
+                "reason": consult.rationale,
+                "verdict": consult.verdict_kind,
+            })
+        # proceed: order may have been mutated by suggested_modifications.
+        order = consult.order  # type: ignore[assignment]
+        if consult.verdict_kind == "conditional":
+            log.info(
+                "lord-otter: research applied modifications: %s",
+                consult.applied_changes,
+            )
+
+        # ------------------------------------------------------------------
         # 9. Risk gate (same path as scout / manual order).
         #    Reuses the snapshot fetched in step 7 — broker is the same
         #    handle, no need for a second round-trip. If broker was None
@@ -673,6 +716,42 @@ def register(app: FastAPI) -> None:
                 },
             )
             return JSONResponse({"status": "ignored", "reason": decision})
+
+        # 8b. Research firm TradeConfirmation consult (Phase 1e). See the
+        # parallel block in lord_otter_webhook for the rationale.
+        from trading_corp.agents.research.trade_confirmation_consult import (
+            consult_research_for_trade_confirmation,
+        )
+        consult = await consult_research_for_trade_confirmation(
+            order=order,
+            payload=payload,
+            research_firm=getattr(deps, "research_firm", None),
+            logger_agent=deps.logger_agent,
+            division_slug="market_cypher",
+            asset_class="crypto_spot",
+            account_equity=account_equity,
+        )
+        if consult.decision == "skip":
+            await _telegram_notify(
+                deps,
+                (
+                    f"\U0001F6D1 market-cypher: research vetoed "
+                    f"{order.side} {order.symbol}\n"
+                    f"{consult.rationale}"
+                ),
+                log_prefix="market-cypher",
+            )
+            return JSONResponse({
+                "status": "skipped_by_research",
+                "reason": consult.rationale,
+                "verdict": consult.verdict_kind,
+            })
+        order = consult.order  # type: ignore[assignment]
+        if consult.verdict_kind == "conditional":
+            log.info(
+                "market-cypher: research applied modifications: %s",
+                consult.applied_changes,
+            )
 
         # 9. Risk gate — same as Otter
         if broker is None:
