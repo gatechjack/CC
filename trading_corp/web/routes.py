@@ -1230,7 +1230,10 @@ def _summary_for_event(e: dict) -> str:
     if kind == "research_engagement_validation_failed":
         return f"validation failed: {(payload.get('reason') or '')[:80]}"
     if kind == "research_data_fetch_attempted":
-        return f"FETCH FAIL: {payload.get('source')} ({payload.get('error', '')[:60]})"
+        # Experts may write `error=None` explicitly on success-path failures,
+        # so `.get('error', '')` returns None — guard before slicing.
+        err = (payload.get("error") or "")
+        return f"FETCH FAIL: {payload.get('source')} ({err[:60]})"
     return kind
 
 
