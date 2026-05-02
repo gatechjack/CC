@@ -128,7 +128,9 @@ def test_layer1_thesis_rejects_blank_symbol():
     assert "symbol" in reason
 
 
-def test_layer1_position_context_phase_pointer():
+def test_layer1_position_context_accepts_valid_scope():
+    """Phase 1d shipped. Layer 1 now accepts a well-formed
+    PositionContextScope; the structural guard is symbol non-empty."""
     spec = _spec(
         schemas.PositionContextScope(
             symbol="BTC/USD", time_horizon_hours=24,
@@ -139,8 +141,22 @@ def test_layer1_position_context_phase_pointer():
         asset_class="crypto_spot",
     )
     ok, reason = _validate_scope_layer1(spec)
+    assert ok, reason
+
+
+def test_layer1_position_context_rejects_blank_symbol():
+    spec = _spec(
+        schemas.PositionContextScope(
+            symbol="   ", time_horizon_hours=24,
+            current_position_qty=0.5, current_position_avg_price=60000.0,
+            current_position_age_hours=12.0,
+        ),
+        product_type="position_context",
+        asset_class="equity",
+    )
+    ok, reason = _validate_scope_layer1(spec)
     assert not ok
-    assert "Phase 1d" in reason
+    assert "symbol" in reason
 
 
 def test_layer1_trade_confirmation_phase_pointer():

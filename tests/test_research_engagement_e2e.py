@@ -112,6 +112,45 @@ class FakeMacroExpert:
         )
 
 
+class FakeSentimentExpert:
+    role = "sentiment"
+
+    def __init__(
+        self,
+        *,
+        confidence: float = 0.5,
+        lean: str | None = "neutral",
+        sufficient: bool = True,
+        cost_per_call: float = 0.0,
+    ) -> None:
+        self.confidence = confidence
+        self.lean = lean
+        self.sufficient = sufficient
+        self.cost_per_call = cost_per_call
+
+    async def analyze(self, *, engagement_id, symbol, context=None, on_data_fetch=None):
+        if not self.sufficient:
+            return (
+                schemas.ExpertReport(
+                    role="sentiment", engagement_id=engagement_id, symbol=symbol,
+                    summary="[REFUSED] sentiment: simulated outage",
+                    data_sufficiency=False,
+                    refusal_reason="simulated outage",
+                ),
+                self.cost_per_call,
+            )
+        return (
+            schemas.ExpertReport(
+                role="sentiment", engagement_id=engagement_id, symbol=symbol,
+                summary=f"{symbol}: sentiment lean={self.lean} (FAKE)",
+                confidence_score=self.confidence,
+                directional_lean=self.lean,
+                data_sufficiency=True,
+            ),
+            self.cost_per_call,
+        )
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────────
 
 
@@ -474,3 +513,169 @@ async def test_e2e_dropped_division_audit_kinds_not_emitted(deps_with_fakes):
     kinds = [e["kind"] for e in events]
     assert "research_candidate_acted_on" not in kinds
     assert "research_candidate_skipped" not in kinds
+
+
+async def test_e2e_position_context_happy_path_emits_position_context(
+    initialized_db: str, stub_universe,
+):
+    """Phase 1d happy path: PositionContextScope on a single symbol →
+    PositionContext product with macro_summary, sentiment_summary,
+    confidence_score, and the audit row written."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {"macro": FakeMacroExpert(), "sentiment": FakeSentimentExpert()}
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    spec = schemas.EngagementSpec(
+        requesting_division="lord_otter",
+        product_type="position_context",
+        asset_class="equity",
+        scope=schemas.PositionContextScope(
+            symbol="AAPL",
+            time_horizon_hours=4,
+            current_position_qty=100.0,
+            current_position_avg_price=150.0,
+            current_position_age_hours=12.0,
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert product is not None
+    assert isinstance(product, schemas.PositionContext)
+    assert product.symbol == "AAPL"
+    assert product.requesting_division == "lord_otter"
+    assert product.time_horizon_hours == 4
+    assert product.macro_summary
+    assert product.sentiment_summary
+    assert 0.0 <= product.confidence_score <= 1.0
+
+    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
+    assert "research_position_context_emitted" in kinds
+
+
+async def test_e2e_position_context_skips_shortlist(
+    initialized_db: str, stub_universe,
+):
+    """PositionContext is single-symbol; the shortlist node must NOT run.
+    Pinning this prevents a future refactor from accidentally routing
+    position_context through the candidate path."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {"macro": FakeMacroExpert(), "sentiment": FakeSentimentExpert()}
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    spec = schemas.EngagementSpec(
+        requesting_division="market_cypher",
+        product_type="position_context",
+        asset_class="equity",
+        scope=schemas.PositionContextScope(
+            symbol="ZZZZ",  # not in any starter universe
+            time_horizon_hours=24,
+            current_position_qty=1.0,
+            current_position_avg_price=10.0,
+            current_position_age_hours=1.0,
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.PositionContext)
+    assert product.symbol == "ZZZZ"
+
+
+async def test_e2e_position_context_all_experts_refuse_still_emits(
+    initialized_db: str, stub_universe,
+):
+    """When every expert refuses, we still emit a PositionContext (with
+    refusals as risk_flags + confidence_score=0.0). Caller decides what
+    to do with it; the audit trail records what we told them."""
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {
+        "macro": FakeMacroExpert(sufficient=False),
+        "sentiment": FakeSentimentExpert(sufficient=False),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    spec = schemas.EngagementSpec(
+        requesting_division="lord_otter",
+        product_type="position_context",
+        asset_class="equity",
+        scope=schemas.PositionContextScope(
+            symbol="MSFT",
+            time_horizon_hours=4,
+            current_position_qty=50.0,
+            current_position_avg_price=300.0,
+            current_position_age_hours=2.0,
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert isinstance(product, schemas.PositionContext)
+    assert product.confidence_score == 0.0
+    flags_text = " ".join(product.risk_flags).lower()
+    assert "data unavailable" in flags_text or "refused" in flags_text
+
+
+async def test_e2e_position_context_layer2_blocks_symbol_drift(
+    initialized_db: str, stub_universe, monkeypatch,
+):
+    """Force the synthesizer to emit a PositionContext whose symbol
+    doesn't match the spec — Layer 2's symbol-drift guard must
+    short-circuit with validation_failed and None return."""
+    from trading_corp.agents.research import graph as graph_mod
+
+    async def _bad_synth(*, spec, reports, expert_audit_row_ids):
+        bad = schemas.PositionContext(
+            engagement_id=spec.engagement_id,
+            requesting_division=spec.requesting_division,
+            symbol="WRONG_SYMBOL",  # spec asked for AAPL
+            time_horizon_hours=spec.scope.time_horizon_hours,
+            macro_summary="m", sentiment_summary="s",
+            risk_flags=[], confidence_score=0.5,
+        )
+        return bad, 0.0
+
+    monkeypatch.setattr(graph_mod, "synthesize_position_context", _bad_synth)
+
+    logger_agent = LoggerAgent(initialized_db)
+    experts = {"macro": FakeMacroExpert(), "sentiment": FakeSentimentExpert()}
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    deps = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    spec = schemas.EngagementSpec(
+        requesting_division="lord_otter",
+        product_type="position_context",
+        asset_class="equity",
+        scope=schemas.PositionContextScope(
+            symbol="AAPL",
+            time_horizon_hours=4,
+            current_position_qty=100.0,
+            current_position_avg_price=150.0,
+            current_position_age_hours=12.0,
+        ),
+        triggered_by="division_agent",
+        triggered_ts=datetime.now(timezone.utc).isoformat(),
+    )
+    product = await run_engagement(spec, deps=deps)
+    assert product is None
+    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
+    assert "research_engagement_validation_failed" in kinds

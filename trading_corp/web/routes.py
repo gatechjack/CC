@@ -1051,6 +1051,35 @@ def _build_research_view(deps) -> dict:
         })
     # research_rows is already newest-first, so theses inherits that order.
 
+    # ── PositionContext audit trail (design §7.5 — Phase 1d) ──
+    # Read-only audit-trail view: what the research firm told each
+    # division and when. Required by design Q7's "universal-write" rule —
+    # the audit row is written even when the consuming agent never
+    # surfaces the result, and the dashboard is the surface that makes
+    # it visible.
+    position_contexts: list[dict] = []
+    for e in research_rows:
+        if e.get("kind") != "research_position_context_emitted":
+            continue
+        payload = e.get("payload") or {}
+        product = payload.get("product") or {}
+        symbol = product.get("symbol")
+        if not symbol:
+            continue
+        position_contexts.append({
+            "ts": e.get("ts"),
+            "engagement_id": payload.get("engagement_id"),
+            "symbol": symbol,
+            "requesting_division": product.get("requesting_division"),
+            "asset_class": payload.get("asset_class"),
+            "time_horizon_hours": product.get("time_horizon_hours"),
+            "macro_summary": product.get("macro_summary") or "",
+            "sentiment_summary": product.get("sentiment_summary") or "",
+            "risk_flags": product.get("risk_flags") or [],
+            "confidence_score": product.get("confidence_score"),
+            "cost_dollars": payload.get("cost_dollars"),
+        })
+
     return {
         "engagement_log": engagement_log,
         "engagements_by_id": engagements_by_id,
@@ -1058,6 +1087,7 @@ def _build_research_view(deps) -> dict:
         "outcomes": outcomes,
         "latency": latency,
         "theses": theses,
+        "position_contexts": position_contexts,
     }
 
 
@@ -1069,6 +1099,7 @@ def _empty_research_view() -> dict:
         "outcomes": [],
         "latency": {"groups": [], "weekly": []},
         "theses": [],
+        "position_contexts": [],
     }
 
 

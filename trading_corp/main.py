@@ -563,6 +563,33 @@ async def run(argv: list[str] | None = None) -> int:
             notify_callback=_pmcc_outage_notify,
         )
 
+        # Phase 1d: prime the PositionContext cache for each TV-driven
+        # division on startup (Q7). On-alert reads in Otter/Cypher are
+        # fail-soft on miss, so a failed prime isn't a blocker — it just
+        # means the next alert runs uninformed until we re-prime. Run
+        # in the background so startup isn't gated on yfinance latency.
+        from trading_corp.agents.research.prime import (
+            prime_all_division_position_contexts,
+        )
+        asyncio.create_task(prime_all_division_position_contexts(
+            research_firm=research_firm,
+            db_url=secrets.db_url,
+            divisions=[
+                {
+                    "slug": lord_otter_agent.name,
+                    "asset_class": "crypto_spot",
+                    "symbols": lord_otter_agent.configured_symbols(),
+                    "horizon_hours": lord_otter_agent.POSITION_CONTEXT_HORIZON_HOURS,
+                },
+                {
+                    "slug": market_cypher_agent.name,
+                    "asset_class": "crypto_spot",
+                    "symbols": market_cypher_agent.configured_symbols(),
+                    "horizon_hours": market_cypher_agent.POSITION_CONTEXT_HORIZON_HOURS,
+                },
+            ],
+        ))
+
         if args.demo:
             await _run_demo_order(graph, channel, logger_agent)
 

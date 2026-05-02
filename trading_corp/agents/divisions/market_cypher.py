@@ -60,6 +60,10 @@ from typing import Any
 
 import yaml
 
+from trading_corp.agents.research.position_context_cache import (
+    read_position_context,
+)
+from trading_corp.agents.research.schemas import PositionContext
 from trading_corp.data.macro_calendar import MacroCalendar
 from trading_corp.persistence.models import ProposedOrder
 from trading_corp.utils.time import iso, now_utc
@@ -166,6 +170,11 @@ class SymbolState:
     halted_until: datetime | None = None
     halt_reason: str | None = None
     open_long_qty: float = 0.0
+    # Phase 1d: most-recent PositionContext consulted on alert. Read
+    # from the pre-emptive cache; None on miss/stale (per Q7, miss is
+    # "no signal", NOT "small bearish signal"). Not yet gating behavior
+    # — surfaced for audit and future sizing rules.
+    last_position_context: PositionContext | None = None
 
 
 # --------------------------------------------------------------------
@@ -204,6 +213,9 @@ class MarketCypherAgent:
     # Persistence keys for the agent_state table (see persistence/db.py).
     BIAS_STATE_AGENT_NAME = "market_cypher"
     BIAS_STATE_KEY_PREFIX = "bias:"        # full key: f"bias:{symbol}"
+    # Phase 1d: horizon used when reading PositionContext from cache.
+    # Must match what the prime path writes (24h is swing-relevant).
+    POSITION_CONTEXT_HORIZON_HOURS = 24
     SOMMI_STATE_KEY_PREFIX = "sommi:"      # full key: f"sommi:{symbol}"
     # Discard persisted state older than this on restart. Cypher's
     # bias is set by 1D events (Longema, Blood Diamond) — anything
@@ -285,6 +297,12 @@ class MarketCypherAgent:
         allowed = {s.upper() for s in (self._cfg.get("symbols") or [])}
         return symbol.upper() in allowed
 
+    def configured_symbols(self) -> list[str]:
+        """Return the symbols this agent is configured to trade. Used by
+        the Phase 1d PositionContext prime loop on startup."""
+        self._reload()
+        return [s.upper() for s in (self._cfg.get("symbols") or [])]
+
     # ------------------------------------------------------------------
     # State accessors
     # ------------------------------------------------------------------
@@ -295,6 +313,34 @@ class MarketCypherAgent:
             s = SymbolState(symbol=symbol)
             self._states[symbol] = s
         return s
+
+    # ------------------------------------------------------------------
+    # PositionContext cache read (Phase 1d, design Q7)
+    # ------------------------------------------------------------------
+
+    def _fetch_position_context(self, symbol: str) -> PositionContext | None:
+        """Read the most recent PositionContext for `symbol` from the
+        pre-emptive cache. Returns None on miss / stale / no DB.
+
+        Per design Q7: miss is "no signal", NOT "small bearish signal".
+        Caller treats None as a no-op. Fail-soft on every error path —
+        the alert pipeline must not block on research-firm availability.
+        """
+        if not self._db_url:
+            return None
+        try:
+            return read_position_context(
+                self.name,
+                symbol,
+                self.POSITION_CONTEXT_HORIZON_HOURS,
+                db_url=self._db_url,
+            )
+        except Exception as e:
+            log.warning(
+                "MarketCypherAgent: position_context read failed for %s: %s",
+                symbol, e,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Bias + Sommi persistence (see persistence/db.py agent_state table)
@@ -490,6 +536,7 @@ class MarketCypherAgent:
         # Update state for EVERY alert (regardless of trade outcome).
         self._record_alert(state, signal, direction, price, payload, ts)
         self._refresh_state_from_signal(state, signal, direction, ts)
+        state.last_position_context = self._fetch_position_context(symbol)
 
         # Halt checks
         if state.halted_until and ts < state.halted_until:

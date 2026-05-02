@@ -60,6 +60,9 @@ from trading_corp.agents.research.synthesis.candidate import (
     synthesize_candidate_recommendation,
 )
 from trading_corp.agents.research.synthesis.thesis import synthesize_thesis
+from trading_corp.agents.research.synthesis.position_context import (
+    synthesize_position_context,
+)
 from trading_corp.utils.time import iso, now_utc
 
 log = logging.getLogger(__name__)
@@ -318,12 +321,14 @@ def build_engagement_graph(
                 "final_reason": reason,
             }
         update: dict = {"expert_roles": roles}
-        if ptype == "thesis":
+        if ptype in ("thesis", "position_context"):
             try:
                 spec = EngagementSpec.model_validate(state["engagement_spec"])
             except Exception:
                 spec = None
-            if spec is not None and isinstance(spec.scope, ThesisScope):
+            if spec is not None and isinstance(
+                spec.scope, (ThesisScope, PositionContextScope)
+            ):
                 update["candidates"] = [spec.scope.symbol]
         return {**state, **update}
 
@@ -333,10 +338,10 @@ def build_engagement_graph(
         ptype = state.get("product_type")
         if ptype == "candidate_recommendation":
             return "shortlist"
-        # Thesis is single-symbol; registry_lookup populated candidates
-        # already, so it goes straight to analyze. Other product types
-        # haven't shipped — fall through to no_action.
-        if ptype == "thesis":
+        # Thesis and PositionContext are single-symbol; registry_lookup
+        # populated candidates already, so they go straight to analyze.
+        # Other product types haven't shipped — fall through to no_action.
+        if ptype in ("thesis", "position_context"):
             return "analyze"
         return "no_action"
 
@@ -573,6 +578,16 @@ def build_engagement_graph(
                 expert_audit_row_ids=list(state.get("expert_audit_row_ids") or []),
             )
             product_d = thesis.model_dump()
+        elif state["product_type"] == "position_context":
+            # PositionContext is single-symbol; flatten reports for the symbol.
+            assert isinstance(spec.scope, PositionContextScope)
+            sym_reports = reports_by_sym.get(spec.scope.symbol, [])
+            pc, llm_cost = await synthesize_position_context(
+                spec=spec,
+                reports=sym_reports,
+                expert_audit_row_ids=list(state.get("expert_audit_row_ids") or []),
+            )
+            product_d = pc.model_dump()
         else:
             # Defensive — Layer 1 should have rejected. Route to no_action.
             ts = iso(now_utc())
@@ -648,6 +663,8 @@ def build_engagement_graph(
             return "emit_candidate"
         if ptype == "thesis":
             return "emit_thesis"
+        if ptype == "position_context":
+            return "emit_position_context"
         return "no_action"
 
     async def emit_candidate_node(state: EngagementState) -> EngagementState:
@@ -691,6 +708,29 @@ def build_engagement_graph(
             "final_reason": None,
         }
 
+    async def emit_position_context_node(state: EngagementState) -> EngagementState:
+        """Audit the PositionContext product before marking final_status
+        (Phase 1d). Universal-write rule from §3.4.5: audit fires
+        regardless of whether the caller surfaces or consumes the
+        result."""
+        ts = iso(now_utc())
+        product_d = state.get("product") or {}
+        _audit(
+            state,
+            rs.AUDIT_KIND_POSITION_CONTEXT_EMITTED,
+            _terminal_payload(
+                state, ts,
+                product=product_d,
+                cost_dollars=float(state.get("cost_dollars") or 0.0),
+            ),
+        )
+        return {
+            **state,
+            "engagement_completed_ts": ts,
+            "final_status": "position_context_emitted",
+            "final_reason": None,
+        }
+
     async def no_action_node(state: EngagementState) -> EngagementState:
         if state.get("final_status") is None:
             ts = iso(now_utc())
@@ -722,6 +762,7 @@ def build_engagement_graph(
     g.add_node("post_validate", post_validate_node)
     g.add_node("emit_candidate", emit_candidate_node)
     g.add_node("emit_thesis", emit_thesis_node)
+    g.add_node("emit_position_context", emit_position_context_node)
     g.add_node("no_action", no_action_node)
 
     g.add_edge(START, "kill_switch_check")
@@ -750,10 +791,12 @@ def build_engagement_graph(
     g.add_conditional_edges(
         "post_validate", post_validate_route,
         {"emit_candidate": "emit_candidate", "emit_thesis": "emit_thesis",
+         "emit_position_context": "emit_position_context",
          "no_action": "no_action", "end": END},
     )
     g.add_edge("emit_candidate", END)
     g.add_edge("emit_thesis", END)
+    g.add_edge("emit_position_context", END)
     g.add_edge("no_action", END)
 
     return (
@@ -850,7 +893,10 @@ def _validate_scope_layer1(spec: EngagementSpec) -> tuple[bool, str]:
         return False, "trade_confirmation is implemented in Phase 1e"
 
     if isinstance(spec.scope, PositionContextScope):
-        return False, "position_context is implemented in Phase 1d"
+        scope = spec.scope
+        if not (scope.symbol or "").strip():
+            return False, "PositionContextScope.symbol required"
+        return True, ""
 
     if isinstance(spec.scope, ThesisScope):
         scope = spec.scope

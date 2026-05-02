@@ -38,6 +38,10 @@ from typing import Any
 
 import yaml
 
+from trading_corp.agents.research.position_context_cache import (
+    read_position_context,
+)
+from trading_corp.agents.research.schemas import PositionContext
 from trading_corp.data.macro_calendar import MacroCalendar
 from trading_corp.persistence.models import ProposedOrder
 from trading_corp.utils.time import iso, now_utc
@@ -136,6 +140,11 @@ class SymbolState:
     # Track last placed buy and last sell price so the agent can
     # tell whether we have an open spot position to close.
     open_long_qty: float = 0.0
+    # Phase 1d: most-recent PositionContext consulted on alert. Read
+    # from the pre-emptive cache; None on miss/stale (per Q7, miss is
+    # "no signal", NOT "small bearish signal"). Not yet gating behavior
+    # — surfaced for audit and future sizing rules.
+    last_position_context: PositionContext | None = None
 
 
 # --------------------------------------------------------------------
@@ -181,6 +190,9 @@ class LordOtterAgent:
     # cross, which can be hours or days away.
     BIAS_STATE_AGENT_NAME = "lord_otter"
     BIAS_STATE_KEY_PREFIX = "bias:"      # full key is f"bias:{symbol}"
+    # Phase 1d: horizon used when reading PositionContext from cache.
+    # Must match what the prime path writes (4h is scalp-relevant).
+    POSITION_CONTEXT_HORIZON_HOURS = 4
     # Drop persisted bias older than this. A regime that's older than
     # 12h on restart probably no longer reflects current market
     # conditions, and we'd rather wait for a fresh signal than act on
@@ -261,6 +273,12 @@ class LordOtterAgent:
         allowed = {s.upper() for s in (self._cfg.get("symbols") or [])}
         return symbol.upper() in allowed
 
+    def configured_symbols(self) -> list[str]:
+        """Return the symbols this agent is configured to trade. Used by
+        the Phase 1d PositionContext prime loop on startup."""
+        self._reload()
+        return [s.upper() for s in (self._cfg.get("symbols") or [])]
+
     # ------------------------------------------------------------------
     # State accessors
     # ------------------------------------------------------------------
@@ -271,6 +289,35 @@ class LordOtterAgent:
             s = SymbolState(symbol=symbol)
             self._states[symbol] = s
         return s
+
+    # ------------------------------------------------------------------
+    # PositionContext cache read (Phase 1d, design Q7)
+    # ------------------------------------------------------------------
+
+    def _fetch_position_context(self, symbol: str) -> PositionContext | None:
+        """Read the most recent PositionContext for `symbol` from the
+        pre-emptive cache. Returns None on miss / stale / no DB.
+
+        Per design Q7: miss is "no signal", NOT "small bearish signal".
+        Caller treats None as a no-op. This is fail-soft on every error
+        path — the alert pipeline must not block on research-firm
+        availability.
+        """
+        if not self._db_url:
+            return None
+        try:
+            return read_position_context(
+                self.name,
+                symbol,
+                self.POSITION_CONTEXT_HORIZON_HOURS,
+                db_url=self._db_url,
+            )
+        except Exception as e:
+            log.warning(
+                "LordOtterAgent: position_context read failed for %s: %s",
+                symbol, e,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Bias persistence (DB-backed, see persistence/db.py agent_state table)
@@ -427,6 +474,7 @@ class LordOtterAgent:
         # --- Update state from this alert (regardless of whether we trade) ---
         self._record_alert(state, signal, direction, price, payload, ts)
         self._refresh_state_from_signal(state, signal, direction, ts)
+        state.last_position_context = self._fetch_position_context(symbol)
 
         # --- Halt checks ---
         if state.halted_until and ts < state.halted_until:
