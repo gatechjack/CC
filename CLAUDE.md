@@ -151,6 +151,33 @@ constraints: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
   approval AND a migration plan.** The `extra: dict` field on
   `ProposedOrder` (→ `extra_json`) is the escape hatch for
   strategy-specific data — use it before proposing schema changes.
+- **Before any deploy-adjacent task, verify prod state.** There is no
+  git on the prod VM, and `BACKLOG.md` describes intent (what we want),
+  not state (what's shipped). Recurring failure mode pre-2026-05-02:
+  starting work on a feature that already shipped — bundled into a
+  prior bulk-track commit, scaffolded forward-compat in an earlier
+  phase, or implemented before the `BACKLOG.md` entry was retired.
+  Mitigation:
+  1. **Read [runbooks/deploy_log.md](runbooks/deploy_log.md) first.**
+     It's the single source of truth for what's running on prod right
+     now. Look for `**Features shipped:**` lines that match your task.
+  2. **md5-diff target files against prod** before writing any new
+     code on a feature you can't 100% verify is unimplemented. Files
+     that MATCH are likely already done — investigate before assuming
+     new code is needed:
+     ```bash
+     for f in <files>; do
+       l=$(md5sum "$f" | awk '{print $1}')
+       p=$(ssh azureuser@trading.jacksumner.com "md5sum /home/azureuser/trading_corp/$f 2>/dev/null | awk '{print \$1}'")
+       [ "$l" = "$p" ] && echo "MATCH $f" || echo "DIFFER $f"
+     done
+     ```
+  3. **After every successful deploy, append an entry to
+     [runbooks/deploy_log.md](runbooks/deploy_log.md)** per the
+     template at the top of that file — including `**Features
+     shipped:**` and `**Notable code changes:**` lines that future-you
+     can grep for. This is the load-bearing step that prevents the
+     next session from re-doing the work.
 
 ---
 
