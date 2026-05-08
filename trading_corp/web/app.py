@@ -56,6 +56,13 @@ class WebDeps:
     # function is the public entry point; this dataclass holds the
     # compiled LangGraph + analysts so build cost is paid once at startup.
     research_firm: Any = None       # ResearchFirmDeps from agents/research/engagement.py
+    # Phase B.1 of HITL-in-app — process-wide PendingApprovalRegistry.
+    # The /approvals routes read this for the index/detail and resolve
+    # via it for POST /decide. Constructed in main.py before
+    # TelegramChannel so the channel can register its message-send as
+    # a notifier. None in test envs that don't exercise the web HITL
+    # surface.
+    pending_registry: Any = None    # PendingApprovalRegistry from comms/pending_registry.py
 
 
 def create_app(deps: WebDeps) -> FastAPI:

@@ -438,6 +438,7 @@ def build_trade_graph(
             "decision": decision.decision,
             "reason": decision.reason,
             "new_qty": decision.new_qty,
+            "new_limit_price": decision.new_limit_price,
         }}
 
     def approval_route(state: TradeFlowState) -> str:
@@ -451,11 +452,29 @@ def build_trade_graph(
 
     async def modify_then_risk_node(state: TradeFlowState) -> TradeFlowState:
         order = _order_from_state(state)
-        new_qty = (state.get("board_decision") or {}).get("new_qty")
-        if new_qty is None or new_qty <= 0:
+        bd = state.get("board_decision") or {}
+        new_qty = bd.get("new_qty")
+        new_limit_price = bd.get("new_limit_price")
+        # B.5 — at least one of new_qty / new_limit_price must be supplied.
+        # Both being None means the modify carried no actual change → reject
+        # rather than silently re-running risk on the same shape (which would
+        # loop forever if the Board kept hitting Modify with no inputs).
+        if new_qty is None and new_limit_price is None:
             return {**state, "final_status": "board_rejected"}
-        order.qty = float(new_qty)
-        order.rationale = (order.rationale + " | board-modified").strip()
+        changes: list[str] = []
+        if new_qty is not None:
+            if new_qty <= 0:
+                return {**state, "final_status": "board_rejected"}
+            order.qty = float(new_qty)
+            changes.append(f"qty={float(new_qty):g}")
+        if new_limit_price is not None:
+            if new_limit_price <= 0:
+                return {**state, "final_status": "board_rejected"}
+            order.limit_price = float(new_limit_price)
+            changes.append(f"limit=${float(new_limit_price):.2f}")
+        order.rationale = (
+            order.rationale + f" | board-modified ({', '.join(changes)})"
+        ).strip()
         return {
             **state,
             "proposed_order": order.to_db_row() | {"extra": order.extra},
@@ -514,6 +533,18 @@ def build_trade_graph(
     g.add_node("execute", execute_node)
     g.add_node("end_rejected", end_rejected_node)
 
+    def modify_then_risk_route(state: TradeFlowState) -> str:
+        # B.5 — when modify_then_risk_node bails (no usable new fields, or
+        # invalid values), it pre-sets final_status='board_rejected' and
+        # we route directly to end_rejected. Otherwise the modified order
+        # re-runs through the risk gate as before. Without this branch
+        # the unconditional edge to "risk" overwrote final_status and
+        # the graph re-paused at approval — silently looping on no-op
+        # modifies.
+        if state.get("final_status") == "board_rejected":
+            return "end_rejected"
+        return "risk"
+
     g.add_edge(START, "risk")
     g.add_conditional_edges("risk", risk_route, {
         "approval": "approval", "end_rejected": "end_rejected",
@@ -523,7 +554,10 @@ def build_trade_graph(
         "modify_then_risk": "modify_then_risk",
         "end_rejected": "end_rejected",
     })
-    g.add_edge("modify_then_risk", "risk")
+    g.add_conditional_edges("modify_then_risk", modify_then_risk_route, {
+        "risk": "risk",
+        "end_rejected": "end_rejected",
+    })
     g.add_edge("execute", END)
     g.add_edge("end_rejected", END)
 

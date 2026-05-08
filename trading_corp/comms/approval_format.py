@@ -23,6 +23,68 @@ log = logging.getLogger(__name__)
 # Public entry point
 # --------------------------------------------------------------------
 
+DEFAULT_DASHBOARD_BASE_URL = "https://trading.jacksumner.com"
+
+
+def format_slim_approval_notification(
+    order: Any,
+    order_id: str,
+    division: str | None = None,
+    base_url: str = DEFAULT_DASHBOARD_BASE_URL,
+) -> str:
+    """Phase A of the HITL-in-app direction (Board, 2026-05-03).
+
+    Slim Telegram notification body: short headline + deeplink to the
+    web app's approval page. No order detail in the body — the
+    dashboard renders that. Used when TelegramChannel is constructed
+    with `notification_only=True`.
+
+    Format (Telegram-Markdown-safe, legacy parse mode):
+
+        🎲 *Approval needed*
+        ROLL SHORT · MSTR · robinhood_pmcc
+
+        [Review on dashboard →](https://trading.jacksumner.com/approvals/{order_id})
+
+    The caller (TelegramChannel.request_approval) wraps this in the
+    standard `*Approval requested*\\n...` shell + inline keyboard.
+    During Phase A the inline keyboard stays so approve/reject still
+    works while the web app's `/approvals/{id}` page is being built;
+    Phase B drops the keyboard once the web flow is end-to-end.
+
+    Args:
+        order: ProposedOrder (or DB-row dict with the same shape).
+        order_id: the order id used in the deeplink path. Caller
+            passes this explicitly because the order shape may not
+            carry the id consistently across callers.
+        division: optional division slug for the headline (e.g.
+            "robinhood_pmcc"). Omitted from the body when None.
+        base_url: dashboard base URL. Defaults to production; tests
+            and dev environments override.
+    """
+    extra = _extra(order)
+    sym = extra.get("underlying", "") or _attr(order, "symbol", "")
+    action_label = _action_label(order, extra)
+    headline_parts = [action_label]
+    if sym:
+        headline_parts.append(f"`{sym}`")
+    if division:
+        # Backtick-wrap so underscores in slugs (e.g. `robinhood_pmcc`)
+        # aren't parsed as italic markers by Telegram legacy-Markdown.
+        # An unmatched `_` further trips the parser because the trailer
+        # line ("_Tap Approve... link._") adds two more, making the
+        # total odd. Pre-fix this caused "Can't parse entities" on
+        # every approval - rendering literal still works in code spans.
+        headline_parts.append(f"`{division}`")
+    headline = " · ".join(p for p in headline_parts if p)
+    url = f"{base_url.rstrip('/')}/approvals/{order_id}"
+    return (
+        f"{headline}\n"
+        f"\n"
+        f"[Review on dashboard →]({url})"
+    )
+
+
 def format_approval_message(
     order: Any,
     risk_verdict: dict | None = None,

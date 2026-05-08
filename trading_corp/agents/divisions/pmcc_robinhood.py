@@ -99,6 +99,35 @@ This symbol is designated BLACK SHEEP. Apply these rules INSTEAD of standard PMC
    - Minor (0-3% above strike): standard roll at 2 DTE.
    - Major (3-10% above strike): halfway roll, must collect credit.
    - Runaway (10%+ above strike): halfway roll with 14-DTE extension.
+   COOLDOWN (back-to-back halfway-roll guard): When ROLL HISTORY
+   shows a recent halfway roll (positive strike_change >= $1 within
+   `cooldown_days`, default 7) AND the current short_leg_dte > 2
+   AND extrinsic > `extrinsic_floor` ($0.50/sh default) — choose
+   `hold` directly. The expectation after a halfway roll is "collect
+   theta + wait for whipsaw"; back-to-back halfway rolls in one
+   weekly cycle compound slippage and lock in losses.
+   Override `hold` and choose roll_short ONLY if the breach has
+   ACCELERATED past the prior roll's projected range — concretely:
+   spot now > prior_short_strike_after + |prior_strike_change|. (i.e.
+   the underlying has moved at least as far again as the prior
+   roll caught it, so the prior roll's "new range" is already
+   breached.)
+   BACKSTOP: deterministic Python guard (`_recent_halfway_roll_cooldown`)
+   downgrades roll_short → hold when the cooldown conditions hold,
+   regardless of LLM judgment. If the LLM picks roll_short despite
+   the conditions, the guard rewrites the action and the
+   recommendation card shows a HOLD with a cooldown warning — but
+   the LLM's rationale text will read as "roll", which is
+   confusing. So: HONOR the cooldown directly when ROLL HISTORY
+   shows a recent halfway roll; let the backstop catch only the
+   genuine acceleration-override-vs-cooldown edge cases.
+   STRIKE TARGETING: when prescribing a halfway roll, ALSO populate
+   `target_strike` in the JSON response with the computed midpoint
+   (rounded to the nearest listed strike). Without `target_strike`
+   the picker falls back to `target_delta` ranking, which on a
+   high-IV underlying typically picks a strike well above the
+   halfway midpoint and silently breaks the rule. Setting
+   `target_strike` makes the strike picker honor the rule directly.
 7. TERMINAL-DTE OVERRIDE (CRITICAL — applies before breach rules above):
    When the short has ≤2 DTE AND the underlying is within ±1.5% of the strike
    (the "ATM zone"), DEFAULT TO HOLD. The mark is almost entirely extrinsic
@@ -109,11 +138,20 @@ This symbol is designated BLACK SHEEP. Apply these rules INSTEAD of standard PMC
      (b) Overnight gap risk is unacceptable for this account size
      (c) IV pricing suggests a >1σ implied move before expiration
    When in doubt with ≤2 DTE ATM short: HOLD and re-evaluate at next session.
-   NOTE: deterministic Python wall-clock gate (`_terminal_dte_time_release`)
-   overrides this rule for 0-DTE positions past 15:00 ET regardless of LLM
-   judgment — Override releases at 15:00 ET (forces roll_short), hard close
-   deadline at 15:30 ET (forces close_short urgent). LLM should narrate the
-   override when it fires; the override warning is appended to analysis.warnings.
+   NOTE: deterministic Python guard (`_terminal_dte_time_release`)
+   overrides this rule for 0-DTE positions regardless of LLM judgment.
+   Two release paths, both calendar- and config-aware:
+     - **Time gate.** Anchored to the actual session close from
+       NYSE calendar. release = close - release_offset_min (default
+       60m); hard_deadline = close - hard_deadline_offset_min (30m).
+       On 16:00 close that's 15:00/15:30 ET; on 13:00 half-days
+       12:00/12:30 ET. Inside the release window: forces roll_short.
+       Past hard_deadline: forces close_short with urgency='urgent'.
+     - **Cycle-continuity.** If short_leg_mark <=
+       cycle_continuity_extrinsic_threshold ($/share, default $0.15)
+       AND short_leg_dte == 0, force roll_short regardless of time.
+   LLM should narrate the override when it fires; the override
+   warning is appended to analysis.warnings.
 8. FORBIDDEN ACTIONS (recommend "watch" or "roll_short_early" instead):
    - Buy back fully at a loss then resell OTM (locks in loss before MR whipsaw).
    - Close full PMCC to recover a short loss (abandons long thesis).
@@ -121,6 +159,18 @@ This symbol is designated BLACK SHEEP. Apply these rules INSTEAD of standard PMC
    - Roll for debit to chase OTM.
 9. EXIT ONLY when: thesis explicitly broken, LEAP DTE < 90 with no credit roll
    available, fundamental deterioration, or 3 attempts yielded no credit.
+   NOTE: a deterministic Python guard
+   (`_promote_to_roll_leap_if_hard_rule`) promotes any roll_short →
+   roll_leap when LEAP delta >= 0.95 OR long_leg_dte < 120, regardless
+   of regime. For BLACK SHEEP this guard fires more aggressively than
+   BS philosophy normally would (BS defers LEAP exit until DTE < 90
+   with no credit roll). The guard's intent is to surface a 4-leg
+   compound recommendation (close short + close LEAP + open new LEAP +
+   open new short) so the user sees ALL the legs — they can still
+   reject the LEAP roll and approve only the short roll if BS perpetual-
+   roll philosophy applies. To AVOID the guard firing on a BS position
+   you don't want to roll deep, choose `hold` or `watch` instead of
+   `roll_short` until DTE crosses below the BS exit threshold.
 
 For BLACK SHEEP: prefer "roll_short_early" or "roll_short" over "close_short".
 Use "close_all" only as a last resort when exit conditions are met.
@@ -139,6 +189,28 @@ _STANDARD_RULES = """\
    - Runaway (8%+ above strike): consider closing short and holding LEAP naked
      ONLY IF LEAP DTE > 270 AND thesis intact AND VIX < 30.
      Otherwise close full PMCC.
+   COOLDOWN (back-to-back roll-up guard): When ROLL HISTORY shows a
+   recent roll-up (positive strike_change >= $1 within `cooldown_days`,
+   default 7) AND the current short_leg_dte > 2 AND extrinsic >
+   `extrinsic_floor` ($0.50/sh default) — choose `hold` directly.
+   Back-to-back roll-ups in one weekly cycle compound bid-ask cost
+   and lock in the prior roll's debit.
+   Override `hold` and choose roll_short ONLY if the breach has
+   ACCELERATED past the prior roll's projected range — concretely:
+   spot now > prior_short_strike_after + |prior_strike_change|.
+   BACKSTOP: deterministic Python guard
+   (`_recent_halfway_roll_cooldown`) downgrades roll_short → hold
+   when the cooldown conditions hold, regardless of LLM judgment.
+   HONOR the cooldown directly when ROLL HISTORY shows a recent
+   roll-up; let the backstop catch only the acceleration-override
+   edge cases.
+   STRIKE TARGETING: when prescribing a specific strike in your
+   rationale (e.g. "roll above $200 resistance" or a rule-cited
+   level), ALSO populate `target_strike` in the JSON response with
+   that value. Without `target_strike` the picker uses `target_delta`
+   ranking, which can land well away from your cited strike on
+   high-IV names. Leave `target_strike` null for normal cycle rolls
+   where the delta target IS the strike-selection criterion.
 4. TERMINAL-DTE OVERRIDE (CRITICAL — applies before breach rules above):
    When the short has ≤2 DTE AND the underlying is within ±1.5% of the strike
    (the "ATM zone"), DEFAULT TO HOLD. The mark is almost entirely extrinsic
@@ -154,16 +226,33 @@ _STANDARD_RULES = """\
      (b) Account cannot tolerate overnight assignment risk
      (c) IV pricing suggests a >1σ implied move before expiration
    When in doubt with ≤2 DTE ATM short: HOLD and re-evaluate at next session.
-   NOTE: deterministic Python wall-clock gate (`_terminal_dte_time_release`)
-   overrides this rule for 0-DTE positions past 15:00 ET regardless of LLM
-   judgment — Override releases at 15:00 ET (forces roll_short), hard close
-   deadline at 15:30 ET (forces close_short urgent). LLM should narrate the
-   override when it fires; the override warning is appended to analysis.warnings.
+   NOTE: deterministic Python guard (`_terminal_dte_time_release`)
+   overrides this rule for 0-DTE positions regardless of LLM judgment.
+   Two release paths, both calendar- and config-aware:
+     - **Time gate.** Anchored to the actual session close from
+       NYSE calendar. release = close - release_offset_min (default
+       60m); hard_deadline = close - hard_deadline_offset_min (30m).
+       On 16:00 close that's 15:00/15:30 ET; on 13:00 half-days
+       12:00/12:30 ET. Inside the release window: forces roll_short.
+       Past hard_deadline: forces close_short with urgency='urgent'.
+     - **Cycle-continuity.** If short_leg_mark <=
+       cycle_continuity_extrinsic_threshold ($/share, default $0.15)
+       AND short_leg_dte == 0, force roll_short regardless of time.
+   LLM should narrate the override when it fires; the override
+   warning is appended to analysis.warnings.
 5. HARD RULES:
    - Never roll for debit > 8% of LEAP value.
    - If LEAP delta > 0.95, treat as deep ITM equity — close or roll deep.
    - No new short premium within 7 DTE of earnings.
    - On breach, evaluate combined PMCC P/L — never act on short leg alone.
+   NOTE: deterministic Python guard
+   (`_promote_to_roll_leap_if_hard_rule`) promotes roll_short →
+   roll_leap when LEAP delta >= 0.95 OR long_leg_dte < 120,
+   regardless of LLM judgment. The promotion ensures the
+   recommendation card includes the LEAP roll legs (close short +
+   close LEAP + open new LEAP + open new short on the new LEAP),
+   not just the short roll, so a distracted approval doesn't leave
+   a fresh short on a dying LEAP.
 6. LEAP MANAGEMENT:
    - Roll out at 120 DTE.
    - Roll down if LEAP delta < 0.40.
@@ -303,6 +392,14 @@ class PMCCAnalysis:
     warnings: list[str] = field(default_factory=list)
     target_delta: float | None = None   # LLM-suggested short call delta
     target_dte: int | None = None       # LLM-suggested short call DTE
+    # LLM-suggested short call STRIKE (Item 3 — 2026-05-03). When set,
+    # `_find_best_weekly` picks the listed strike CLOSEST to this value
+    # subject to the standard liquidity gate, overriding the
+    # delta-distance ranking. Used when a rule (e.g. Major Breach
+    # halfway-roll) prescribes a specific strike target that the
+    # delta-only picker would miss. None = fall back to delta-distance
+    # ranking (original behavior).
+    target_strike: float | None = None
 
     def format_brief(self) -> str:
         """Single-line summary for scan preamble messages."""
@@ -399,8 +496,34 @@ def _select_leap_strike(calls: list[dict]) -> dict | None:
     return None
 
 
-def _select_weekly_strike(calls: list[dict], target_delta: float = 0.30) -> dict | None:
-    """Pick weekly short strike: delta closest to target but below 0.40 (OTM only)."""
+def _select_weekly_strike(
+    calls: list[dict],
+    target_delta: float = 0.30,
+    target_strike: float | None = None,
+) -> dict | None:
+    """Pick weekly short strike.
+
+    When `target_strike` is set: pick the listed strike CLOSEST to
+    target_strike, regardless of delta. Used when a rule (e.g. halfway-
+    roll on a Major Breach) prescribes a specific strike that the
+    delta-only ranking would miss. Caller is responsible for sanity —
+    we don't second-guess (the LLM cited the strike per its rules).
+
+    When `target_strike` is None (default): pick the strike whose delta
+    is closest to `target_delta` but below 0.40 (OTM only), falling
+    back to the full delta pool if no OTM strikes exist. Original
+    behavior, preserved for backwards-compat.
+
+    Returns None if no eligible strike (no `delta` field, or no calls).
+    """
+    if target_strike is not None:
+        with_strike = [c for c in calls if c.get("strike_price") is not None]
+        if not with_strike:
+            return None
+        return min(
+            with_strike,
+            key=lambda c: abs(float(c["strike_price"]) - target_strike),
+        )
     otm = [c for c in calls if c.get("delta") is not None and c["delta"] < 0.40]
     pool = otm if otm else [c for c in calls if c.get("delta") is not None]
     if not pool:
@@ -852,6 +975,13 @@ class PMCCAgent:
         else:
             rules_block = _STANDARD_RULES.format(symbol=pos.symbol)
 
+        # ROLL HISTORY block — tell the LLM what just happened to this LEAP
+        # so it doesn't recommend back-to-back halfway rolls. The
+        # underlying data also feeds `_recent_halfway_roll_cooldown`'s
+        # deterministic guard; the prompt presence keeps the LLM's
+        # narration coherent with what the guard does.
+        history_block = self._format_roll_history_block(pos)
+
         prompt = f"""Analyze this PMCC (Poor Man's Covered Call) position and recommend a specific action.
 
 {rules_block}
@@ -872,6 +1002,7 @@ class PMCCAgent:
 ## Short Call (Weekly income leg)
 {short_section}
 
+{history_block}
 Respond with ONLY this JSON (no other text, no markdown):
 {{
   "action": "<hold|roll_short|roll_short_early|roll_leap|close_short|open_short|watch|close_all>",
@@ -881,7 +1012,8 @@ Respond with ONLY this JSON (no other text, no markdown):
   "rationale": "<2-4 sentences with specific Greek / IV / structural reasoning>",
   "warnings": ["<specific risk>", "<specific risk>"],
   "target_delta": <recommended short call delta as float, or null>,
-  "target_dte": <recommended short call DTE target as integer, or null>
+  "target_dte": <recommended short call DTE target as integer, or null>,
+  "target_strike": <recommended short call STRIKE as float, or null — set this when a rule prescribes a specific strike (e.g. halfway-roll midpoint per BREACH HANDLING). When set, the strike picker honors this directly, overriding delta-distance ranking. Leave null when delta-targeting is correct (standard cycles).>
 }}
 
 Action reference:
@@ -922,6 +1054,7 @@ Action reference:
                 warnings=list(data.get("warnings", []) or []),
                 target_delta=float(data["target_delta"]) if data.get("target_delta") is not None else None,
                 target_dte=int(data["target_dte"]) if data.get("target_dte") is not None else None,
+                target_strike=float(data["target_strike"]) if data.get("target_strike") is not None else None,
             )
         except Exception as e:
             log.warning("PMCCAgent: LLM analysis failed for %s: %s", pos.symbol, e)
@@ -979,6 +1112,17 @@ Action reference:
         # the position isn't 0-DTE; otherwise may rewrite hold/watch →
         # roll_short (15:00–15:30 ET) or close_short urgent (>= 15:30 ET).
         analysis = self._terminal_dte_time_release(analysis, pos)
+        # Apply LEAP Hard Rule promotion (Item 2 — 2026-05-02). When LEAP
+        # delta>=0.95 OR long_leg_dte<120, promote roll_short → roll_leap
+        # so the recommendation includes the LEAP roll legs, not just
+        # the short roll. Order: AFTER terminal-DTE (which may have
+        # promoted hold→roll_short and now needs Hard-Rule lifting too).
+        analysis = self._promote_to_roll_leap_if_hard_rule(analysis, pos)
+        # Apply halfway-roll cooldown (Item 1 — 2026-05-02). Downgrades
+        # roll_short → hold when a recent roll-up was executed. Order:
+        # AFTER Hard-Rule promotion (which may have already moved past
+        # roll_short to roll_leap — cooldown is a no-op on roll_leap).
+        analysis = self._recent_halfway_roll_cooldown(analysis, pos)
 
         action = (analysis.action or "").lower()
         if action in ("hold", "watch"):
@@ -1084,6 +1228,46 @@ Action reference:
                     ),
                     pair_id=pair_id,
                 ))
+                # 4. Open new short on the new LEAP (Item 2 — 2026-05-02).
+                # Prevents the 3-leg compound from leaving the user with a
+                # fresh LEAP and no income leg. Skipped if no qualifying
+                # weekly chain — the next scan cycle will catch the
+                # uncovered LEAP via the open_short branch.
+                new_weekly = await self._find_best_weekly(
+                    symbol, broker,
+                    target_delta=analysis.target_delta if analysis else None,
+                    target_dte=analysis.target_dte if analysis else None,
+                    target_strike=analysis.target_strike if analysis else None,
+                )
+                if new_weekly:
+                    orders.append(self._make_option_order(
+                        underlying=symbol, side="sell", contracts=contracts,
+                        expiry=new_weekly["expiration_date"],
+                        strike=new_weekly["strike_price"],
+                        mark_price=(
+                            new_weekly.get("mark_price")
+                            or new_weekly.get("bid") or 0
+                        ),
+                        bid=new_weekly.get("bid"), ask=new_weekly.get("ask"),
+                        position_effect="open",
+                        action="roll_leap_open_short",
+                        delta=new_weekly.get("delta"),
+                        dte=new_weekly.get("dte"),
+                        rationale=self._build_rationale(
+                            f"Roll LEAP: sell new short on the fresh LEAP "
+                            f"{symbol} {new_weekly['expiration_date']} "
+                            f"C{new_weekly['strike_price']:.2f}",
+                            analysis,
+                        ),
+                        pair_id=pair_id,
+                    ))
+                else:
+                    log.info(
+                        "PMCCAgent: roll_leap on %s — new LEAP selected but "
+                        "no qualifying weekly for the income leg; the next "
+                        "scan will cover the uncovered LEAP",
+                        symbol,
+                    )
             return orders
 
         # ── Close everything on this underlying ──
@@ -1502,9 +1686,21 @@ Action reference:
         from trading_corp.utils.market_data import get_vix
         vix = get_vix()
 
-        # Run LLM analysis for all positions in parallel
+        # Run LLM analysis with bounded concurrency. Same rationale as
+        # scan(): Anthropic's 30k input-tokens/min org cap on
+        # claude-sonnet-4-6 produced 429s when 13 legs fired in parallel
+        # on 2026-05-08. Tunable via strategies.yaml `pmcc.llm_concurrency`.
+        llm_concurrency = max(1, int(self._cfg.get("llm_concurrency", 3)))
+        sem = asyncio.Semaphore(llm_concurrency)
+
+        async def _analyze_one(p):
+            async with sem:
+                return await self._llm_analyze_position(
+                    p, prices.get(p.symbol), regime, vix=vix,
+                )
+
         raw_analyses = await asyncio.gather(
-            *[self._llm_analyze_position(p, prices.get(p.symbol), regime, vix=vix) for p in positions],
+            *[_analyze_one(p) for p in positions],
             return_exceptions=True,
         )
         analyses: list[PMCCAnalysis | None] = [
@@ -1588,6 +1784,13 @@ Action reference:
         for pos in snap.positions:
             if " " in pos.symbol or "#" in pos.symbol:
                 continue   # skip options
+            if "/" in pos.symbol:
+                # Crypto held as HODL store-of-value (e.g. ETH/USD,
+                # BTC/USD from RobinhoodBroker.snapshot's crypto branch
+                # added 2026-05-01). Visible in dashboard equity, not
+                # tradeable as PMCC underlyings — skip from scan universe
+                # so they don't pre-empt the leg-underlyings fallback.
+                continue
             if pos.symbol in self.position_exclude:
                 continue
             if abs(pos.qty) < self._cfg.get("position_min_shares", 1):
@@ -1739,21 +1942,35 @@ Action reference:
 
         snap = await broker.snapshot()
         universe = await self.get_universe(broker)
-        # Phase 1a-2: empty universe is OK when research_on_demand is
-        # active — new-opens come from the research firm, not from
-        # held positions. Don't early-return in that case.
-        if not universe and self.universe_source != "research_on_demand":
-            log.info("PMCCAgent: empty universe; nothing to scan")
-            return []
 
+        # Detect legs before the early-return: an account can have
+        # held PMCC legs even when get_universe() returns empty (e.g.
+        # if the stock-position branch fired with a sparse universe
+        # that excludes those underlyings). Legs always need
+        # management regardless of universe shape.
         existing = await self.detect_existing_legs(broker)
         legs_by_symbol: dict[str, PMCCPosition] = {leg.symbol: leg for leg in existing}
 
-        # Stock position lookup for sizing new PMCCs
+        # Phase 1a-2: empty universe is OK when research_on_demand is
+        # active — new-opens come from the research firm, not from
+        # held positions. Also OK when held legs exist — the loop
+        # below iterates universe ∪ legs so leg management still runs.
+        if (
+            not universe
+            and not legs_by_symbol
+            and self.universe_source != "research_on_demand"
+        ):
+            log.info("PMCCAgent: empty universe and no existing legs; nothing to scan")
+            return []
+
+        # Stock position lookup for sizing new PMCCs.
+        # Excludes options (" ", "#") and HODL crypto ("/").
         stock_qty: dict[str, float] = {
             pos.symbol: abs(pos.qty)
             for pos in snap.positions
-            if " " not in pos.symbol and "#" not in pos.symbol
+            if " " not in pos.symbol
+            and "#" not in pos.symbol
+            and "/" not in pos.symbol
         }
         equity = snap.equity
 
@@ -1765,13 +1982,27 @@ Action reference:
         from trading_corp.utils.market_data import get_vix
         vix = get_vix()
 
-        # Run LLM analysis for all existing legs in parallel
+        # Run LLM analysis for all existing legs with bounded concurrency.
+        # Anthropic org rate limit on claude-sonnet-4-6 is 30k input
+        # tokens/min; firing all legs in parallel produced 429s on
+        # 2026-05-08 (5 of 13 legs lost their verdict). A semaphore
+        # caps the in-flight burst so peak token usage stays under
+        # the cap. Tunable via strategies.yaml `pmcc.llm_concurrency`
+        # (default 3).
         analyses: dict[str, PMCCAnalysis | None] = {}
         if legs_by_symbol:
             syms = list(legs_by_symbol.keys())
+            llm_concurrency = max(1, int(self._cfg.get("llm_concurrency", 3)))
+            sem = asyncio.Semaphore(llm_concurrency)
+
+            async def _analyze_one(s: str):
+                async with sem:
+                    return await self._llm_analyze_position(
+                        legs_by_symbol[s], prices.get(s), regime, vix=vix,
+                    )
+
             raw = await asyncio.gather(
-                *[self._llm_analyze_position(legs_by_symbol[s], prices.get(s), regime, vix=vix)
-                  for s in syms],
+                *[_analyze_one(s) for s in syms],
                 return_exceptions=True,
             )
             for sym, res in zip(syms, raw):
@@ -1790,15 +2021,36 @@ Action reference:
         # Apply Board's 0-DTE wall-clock time gates to every analysis
         # (Board direction 2026-05-01 — see _terminal_dte_time_release).
         # No-op for non-0-DTE positions and for non-HOLD/WATCH actions.
+        # Then LEAP Hard Rule promotion (Item 2) and halfway-roll
+        # cooldown (Item 1) — same composition order as
+        # propose_orders_for_pair so the dashboard "Approve & Execute"
+        # path and the scheduled-scan path apply the same overrides.
         for sym in list(analyses.keys()):
             if sym in legs_by_symbol:
-                analyses[sym] = self._terminal_dte_time_release(
+                a = self._terminal_dte_time_release(
                     analyses[sym], legs_by_symbol[sym],
                 )
+                a = self._promote_to_roll_leap_if_hard_rule(
+                    a, legs_by_symbol[sym],
+                )
+                a = self._recent_halfway_roll_cooldown(
+                    a, legs_by_symbol[sym],
+                )
+                analyses[sym] = a
 
         orders: list[ProposedOrder] = []
 
-        for symbol in universe:
+        # Iterate union of universe ∪ legs_by_symbol. Held legs always
+        # need management even when get_universe() returns a list that
+        # doesn't include their underlyings (e.g. a sparse stock-position
+        # universe that excludes leg symbols). Order is preserved:
+        # universe symbols first (drives new-opens branch), then
+        # leg-only symbols (always hits the legs_by_symbol branch).
+        scan_symbols = list(dict.fromkeys(
+            list(universe) + [s for s in legs_by_symbol if s not in universe]
+        ))
+
+        for symbol in scan_symbols:
             max_contracts = max(1, int(equity / 25_000))
             analysis = analyses.get(symbol)
 
@@ -1912,12 +2164,60 @@ Action reference:
                             delta=new_leap.get("delta"),
                             dte=new_leap.get("dte"),
                             rationale=self._build_rationale(
-                                f"Roll LEAP (3/3): buy new LEAP {symbol} "
+                                f"Roll LEAP (3/4): buy new LEAP {symbol} "
                                 f"{new_leap['expiration_date']} C{new_leap['strike_price']:.2f}",
                                 analysis,
                             ),
                             pair_id=pair_id,
                         ))
+                        # Step 4: sell new short on the fresh LEAP (Item 2 —
+                        # 2026-05-02). Skipped if no qualifying weekly chain;
+                        # next scan cycle covers the uncovered LEAP.
+                        new_weekly = await self._find_best_weekly(
+                            symbol, broker,
+                            target_delta=(
+                                analysis.target_delta if analysis else None
+                            ),
+                            target_dte=(
+                                analysis.target_dte if analysis else None
+                            ),
+                            target_strike=(
+                                analysis.target_strike if analysis else None
+                            ),
+                        )
+                        if new_weekly:
+                            orders.append(self._make_option_order(
+                                underlying=symbol, side="sell",
+                                contracts=contracts,
+                                expiry=new_weekly["expiration_date"],
+                                strike=new_weekly["strike_price"],
+                                mark_price=(
+                                    new_weekly.get("mark_price")
+                                    or new_weekly.get("bid") or 0
+                                ),
+                                bid=new_weekly.get("bid"),
+                                ask=new_weekly.get("ask"),
+                                position_effect="open",
+                                action="roll_leap_open_short",
+                                delta=new_weekly.get("delta"),
+                                dte=new_weekly.get("dte"),
+                                rationale=self._build_rationale(
+                                    f"Roll LEAP (4/4): sell new short on "
+                                    f"fresh LEAP {symbol} "
+                                    f"{new_weekly['expiration_date']} "
+                                    f"C{new_weekly['strike_price']:.2f}",
+                                    analysis,
+                                ),
+                                pair_id=pair_id,
+                            ))
+                        else:
+                            log.info(
+                                "PMCCAgent: roll_leap scan on %s — new LEAP "
+                                "selected but no qualifying weekly for the "
+                                "income leg; next scan will cover the "
+                                "uncovered LEAP",
+                                symbol,
+                            )
                     continue  # skip normal deterministic block
 
                 # ── LLM-detected early roll (before DTE/profit trigger) ──
@@ -2017,15 +2317,34 @@ Action reference:
         leg: "PMCCPosition | None",
         *,
         now_et_dt: datetime | None = None,
+        calendar: Any = None,
     ) -> "PMCCAnalysis | None":
-        """Override action when 0-DTE wall-clock gates fire.
+        """Override action when 0-DTE release conditions fire.
 
-        No-op when:
-          - analysis or leg is None
-          - leg.short_leg_dte != 0
-          - now < 15:00 ET
-          - analysis.action is already on a non-HOLD/WATCH path (don't
-            interfere with explicit roll/close decisions)
+        Two release paths, both triggered only when leg.short_leg_dte == 0
+        AND analysis.action is HOLD/WATCH:
+
+          - **(P0) Time gate.** Driven by the actual session close
+            from the NYSE market calendar, not hardcoded clock time.
+            release_threshold = close - release_offset_min;
+            hard_deadline   = close - hard_deadline_offset_min.
+            On a regular 4pm-close day with default offsets these
+            land at 15:00 ET / 15:30 ET. On a half-day 1pm close
+            they correctly slide to 12:00 / 12:30 ET. On a
+            Thursday-before-Friday-holiday they fire at the
+            Thursday close.
+
+          - **(P1) Cycle-continuity.** If the short leg's mark has
+            already decayed at or below
+            `cycle_continuity_extrinsic_threshold` $/share, force
+            roll_short regardless of time. Mark <= threshold
+            implies intrinsic == 0 by no-arbitrage. Trade-off:
+            forfeit ~$threshold/contract residual decay for
+            immediate next-cycle premium + no coverage gap.
+
+        Offsets and threshold are config-driven via
+        `config/strategies.yaml:robinhood_pmcc.zero_dte`. Defaults
+        match the Board's 2026-05-01 direction (60/30 min, $0.15/sh).
 
         Returns a possibly-modified PMCCAnalysis (dataclasses.replace).
         Adds a warning explaining the override so the audit trail and
@@ -2039,40 +2358,296 @@ Action reference:
         if leg.short_leg_dte != 0:
             return analysis
 
-        when = (now_et_dt or _now_et()).astimezone(ET)
-        if when.hour < 15:
-            return analysis
-
         action = (analysis.action or "").lower()
         if action not in ("hold", "watch"):
             return analysis
 
-        past_330 = when.hour > 15 or (when.hour == 15 and when.minute >= 30)
-        if past_330:
+        cfg_zd = (self._cfg.get("zero_dte") or {}) if hasattr(self, "_cfg") else {}
+        release_offset_min = int(cfg_zd.get("release_offset_min", 60))
+        hard_offset_min = int(cfg_zd.get("hard_deadline_offset_min", 30))
+        cyc_threshold = float(
+            cfg_zd.get("cycle_continuity_extrinsic_threshold", 0.15) or 0.0
+        )
+
+        # ── (P1) cycle-continuity: extrinsic-near-zero release ──────
+        mark = leg.short_leg_mark
+        if (
+            cyc_threshold > 0
+            and mark is not None
+            and float(mark) <= cyc_threshold
+        ):
+            return dataclasses.replace(
+                analysis,
+                action="roll_short",
+                warnings=list(analysis.warnings) + [
+                    f"Cycle-continuity release: short_leg_mark "
+                    f"${float(mark):.2f}/sh <= threshold "
+                    f"${cyc_threshold:.2f}/sh AND short_leg_dte=0. "
+                    f"Original action '{action}' overridden to "
+                    f"'roll_short' to capture next-cycle premium and "
+                    f"avoid post-expiry coverage gap."
+                ],
+            )
+
+        # ── (P0) time gate: close-relative thresholds via NYSE calendar ──
+        from trading_corp.utils.market_hours import default_calendar
+        cal = calendar if calendar is not None else default_calendar()
+
+        when = (now_et_dt or _now_et()).astimezone(ET)
+        close_dt = cal.close_time_et(when)
+        if close_dt is None:
+            # Closed market today — no time-gate fires.
+            return analysis
+
+        from datetime import timedelta as _td
+        release_threshold = close_dt - _td(minutes=release_offset_min)
+        hard_deadline = close_dt - _td(minutes=hard_offset_min)
+
+        if when < release_threshold:
+            return analysis  # too early; let the LLM HOLD stand
+
+        if when >= hard_deadline:
             return dataclasses.replace(
                 analysis,
                 action="close_short",
                 urgency="urgent",
                 warnings=list(analysis.warnings) + [
                     f"Terminal-DTE hard deadline breached "
-                    f"({when.strftime('%H:%M ET')} >= 15:30 ET). Override "
-                    f"forced action='close_short' urgency='urgent' — order "
-                    f"book is thin past 15:30; roll combo unlikely to fill, "
-                    f"prefer single-leg buy-to-close to avoid expiration risk."
+                    f"({when.strftime('%H:%M ET')} >= "
+                    f"{hard_deadline.strftime('%H:%M ET')} = close - "
+                    f"{hard_offset_min}m). Override forced "
+                    f"action='close_short' urgency='urgent' — order book "
+                    f"is thin past this point; roll combo unlikely to "
+                    f"fill, prefer single-leg buy-to-close to avoid "
+                    f"expiration risk."
                 ],
             )
 
-        # 15:00–15:30 ET — Override released, start the roll
+        # release window: roll
         return dataclasses.replace(
             analysis,
             action="roll_short",
             warnings=list(analysis.warnings) + [
                 f"Terminal-DTE Override released at "
-                f"{when.strftime('%H:%M ET')} (>= 15:00 ET wall-clock gate). "
-                f"Original action '{action}' overridden to 'roll_short' to "
-                f"start the cycle before the 15:30 ET hard close deadline."
+                f"{when.strftime('%H:%M ET')} (>= "
+                f"{release_threshold.strftime('%H:%M ET')} = close - "
+                f"{release_offset_min}m). Original action '{action}' "
+                f"overridden to 'roll_short' to start the cycle before "
+                f"the {hard_deadline.strftime('%H:%M ET')} hard close "
+                f"deadline."
             ],
         )
+
+    # -- LEAP Hard Rule promotion (Item 2 — 2026-05-02) ----------------------
+
+    def _promote_to_roll_leap_if_hard_rule(
+        self,
+        analysis: "PMCCAnalysis | None",
+        leg: "PMCCPosition | None",
+    ) -> "PMCCAnalysis | None":
+        """Promote roll_short / roll_short_early → roll_leap when the
+        LEAP Hard Rule fires.
+
+        Conditions (either is sufficient):
+          - leg.long_leg_delta >= 0.95 (Standard Rule 5: deep ITM equity)
+          - leg.long_leg_dte < 120 (LEAP Management Rule: roll out at 120 DTE)
+
+        Why: today the LLM analyzer correctly cites these rules in
+        warnings but still emits action='roll_short'. Approving that
+        leaves the user with a fresh weekly short on a dying LEAP —
+        exactly the naked-short exposure the warning text said to
+        avoid. Promoting to roll_leap routes through the 4-leg
+        compound recommendation (close short + close LEAP + open new
+        LEAP + open new short on the new LEAP).
+
+        Returns possibly-modified analysis (dataclasses.replace) with
+        an explanatory warning appended.
+        """
+        import dataclasses
+        if analysis is None or leg is None:
+            return analysis
+        action = (analysis.action or "").lower()
+        if action not in ("roll_short", "roll_short_early"):
+            return analysis
+
+        delta = leg.long_leg_delta
+        dte = leg.long_leg_dte
+        deep_itm = delta is not None and delta >= 0.95
+        near_expiry = dte is not None and dte < 120
+        if not (deep_itm or near_expiry):
+            return analysis
+
+        reasons = []
+        if deep_itm:
+            reasons.append(f"LEAP delta {delta:.2f} >= 0.95 (deep ITM equity)")
+        if near_expiry:
+            reasons.append(f"LEAP DTE {dte} < 120 (roll-out threshold)")
+        reason_str = " AND ".join(reasons)
+
+        return dataclasses.replace(
+            analysis,
+            action="roll_leap",
+            warnings=list(analysis.warnings) + [
+                f"LEAP Hard Rule promotion: {reason_str}. Original "
+                f"action '{action}' overridden to 'roll_leap' so the "
+                f"recommendation includes the LEAP roll legs (close "
+                f"short + close LEAP + open new LEAP + open new short), "
+                f"not just the short roll."
+            ],
+        )
+
+    # -- Halfway-roll cooldown (Item 1 — 2026-05-02) -------------------------
+
+    def _recent_halfway_roll_cooldown(
+        self,
+        analysis: "PMCCAnalysis | None",
+        leg: "PMCCPosition | None",
+    ) -> "PMCCAnalysis | None":
+        """Downgrade roll_short → hold when a recent roll-up was
+        executed and the cooldown conditions hold.
+
+        Backstop for the LLM rule clause (BREACH HANDLING COOLDOWN).
+        The LLM has the ROLL HISTORY block in its prompt and should
+        already prefer HOLD; this guard catches the case where it
+        doesn't.
+
+        Conditions (all must hold for cooldown to fire):
+          - analysis.action in ("roll_short", "roll_short_early")
+          - leg.short_leg_dte > terminal_dte_floor (default 2) —
+            never block deadline-driven rolls; the terminal-DTE
+            override owns those
+          - leg.short_leg_mark > extrinsic_floor (default $0.50/sh) —
+            if extrinsic is already near zero, cycle-continuity wants
+            to roll
+          - days_since_last_roll <= cooldown_days (default 7)
+          - last roll was a roll-up: strike_change >= min_strike_change
+            (default $1.00) — excludes near-zero strike adjustments
+            that are normal cycle drift, captures halfway-style
+            up-rolls into a breach
+
+        No spot-acceleration check in the deterministic guard — that
+        belongs in the LLM rule clause where regime/IV context is
+        available. False-positive cooldown (block a legit re-roll)
+        costs "user overrides via Telegram"; false-negative costs
+        "back-to-back halfway-roll waste." Bias toward HOLD.
+
+        Returns possibly-modified analysis (dataclasses.replace) with
+        a warning explaining the cooldown.
+        """
+        import dataclasses
+        if analysis is None or leg is None:
+            return analysis
+        action = (analysis.action or "").lower()
+        if action not in ("roll_short", "roll_short_early"):
+            return analysis
+
+        cfg = (self._cfg.get("roll_cooldown") or {}) if hasattr(self, "_cfg") else {}
+        cooldown_days = int(cfg.get("cooldown_days", 7))
+        extrinsic_floor = float(cfg.get("extrinsic_floor", 0.50))
+        min_strike_change = float(cfg.get("min_strike_change", 1.0))
+        terminal_dte_floor = int(cfg.get("terminal_dte_floor", 2))
+
+        # Gate: never block a deadline-driven roll
+        if leg.short_leg_dte is None or leg.short_leg_dte <= terminal_dte_floor:
+            return analysis
+        # Gate: never block a near-zero-extrinsic roll (cycle continuity wants it)
+        if leg.short_leg_mark is None or float(leg.short_leg_mark) <= extrinsic_floor:
+            return analysis
+
+        # Pull roll history for THIS LEAP (scoped by leap_lifetime_key)
+        leap_key = self._compute_leap_lifetime_key(leg)
+        try:
+            hist = self._query_prior_rolls_detailed(
+                leg.symbol, leap_lifetime_key=leap_key,
+            )
+        except Exception as e:
+            log.debug(
+                "PMCCAgent: cooldown query failed for %s: %s — guard inactive",
+                leg.symbol, e,
+            )
+            return analysis
+
+        days_since = hist.get("days_since_last_roll")
+        strike_change = hist.get("last_roll_strike_change")
+        if days_since is None or strike_change is None:
+            return analysis
+        if days_since > cooldown_days:
+            return analysis
+        if strike_change < min_strike_change:
+            return analysis
+
+        return dataclasses.replace(
+            analysis,
+            action="hold",
+            warnings=list(analysis.warnings) + [
+                f"Halfway-roll cooldown: prior roll-up "
+                f"${hist.get('last_roll_short_strike_before'):.2f} → "
+                f"${hist.get('last_roll_short_strike_after'):.2f} "
+                f"(+${strike_change:.2f}) was {days_since}d ago, "
+                f"within cooldown_days={cooldown_days}. Short DTE "
+                f"{leg.short_leg_dte}d > {terminal_dte_floor}d AND "
+                f"extrinsic ${float(leg.short_leg_mark):.2f}/sh > "
+                f"${extrinsic_floor:.2f}/sh. Original action "
+                f"'{action}' overridden to 'hold' to let the new "
+                f"strike collect theta and avoid back-to-back "
+                f"slippage. Override via Telegram if breach has "
+                f"ACCELERATED past the prior roll's range."
+            ],
+        )
+
+    # -- ROLL HISTORY prompt block (Item 1 — 2026-05-02) ---------------------
+
+    def _format_roll_history_block(self, leg: "PMCCPosition") -> str:
+        """Format the ROLL HISTORY section injected into the LLM prompt.
+
+        Pulls from `_query_prior_rolls_detailed` scoped to this LEAP's
+        lifetime key. Returns an empty string if no DB or no history,
+        so the prompt stays clean for fresh positions.
+        """
+        if not self._db_url:
+            return ""
+        try:
+            leap_key = self._compute_leap_lifetime_key(leg)
+            hist = self._query_prior_rolls_detailed(
+                leg.symbol, leap_lifetime_key=leap_key,
+            )
+        except Exception as e:
+            log.debug(
+                "PMCCAgent: roll-history query failed for %s: %s",
+                leg.symbol, e,
+            )
+            return ""
+        if hist["roll_count"] == 0:
+            return (
+                "## ROLL HISTORY (this LEAP)\n"
+                "- No prior rolls recorded for this LEAP.\n"
+            )
+        lines = [
+            "## ROLL HISTORY (this LEAP)",
+            f"- Total prior rolls: {hist['roll_count']}",
+            f"- Net credit collected from rolls: ${hist['net_dollars']:+,.0f}",
+        ]
+        if hist["last_roll_ts"]:
+            days = hist["days_since_last_roll"]
+            day_str = "today" if days == 0 else f"{days}d ago"
+            before = hist["last_roll_short_strike_before"]
+            after = hist["last_roll_short_strike_after"]
+            change = hist["last_roll_strike_change"]
+            if before is not None and after is not None and change is not None:
+                if change > 0:
+                    label = "roll-up"
+                elif change < 0:
+                    label = "roll-down"
+                else:
+                    label = "same-strike"
+                lines.append(
+                    f"- Most recent roll: {day_str} — "
+                    f"${before:.2f} → ${after:.2f} "
+                    f"(${change:+.2f} = {label})"
+                )
+            else:
+                lines.append(f"- Most recent roll: {day_str}")
+        return "\n".join(lines) + "\n"
 
     # -- Rationale builder ---------------------------------------------------
 
@@ -2242,6 +2817,155 @@ Action reference:
 
         return len(pair_nets), sum(pair_nets.values())
 
+    def _query_prior_rolls_detailed(
+        self,
+        symbol: str,
+        leap_lifetime_key: str | None = None,
+    ) -> dict:
+        """Detailed view of prior rolls for prompt-injection + cooldown gate.
+
+        Same SQL/grouping as `_query_prior_rolls` but returns per-pair
+        metadata for the most recent roll:
+
+          - roll_count: int (same as _query_prior_rolls' first tuple slot)
+          - net_dollars: float (same as second slot)
+          - last_roll_ts: ISO ts of the max fill_ts across all pairs (None
+            if no rolls)
+          - last_roll_short_strike_before: short strike that was CLOSED
+            in the most recent roll (None if not recoverable)
+          - last_roll_short_strike_after: short strike that was OPENED
+            (None if the roll's open leg didn't fill or wasn't recorded)
+          - last_roll_strike_change: after - before (positive = roll-up,
+            negative = roll-down). None if either side is missing.
+          - days_since_last_roll: int days from last_roll_ts to now_utc
+            (None if no rolls)
+
+        `leap_lifetime_key` scoping mirrors `_query_prior_rolls` —
+        pairs with NULL keys (pre-fix history) are kept; pairs tagged
+        with a different key are filtered out.
+
+        Used by `_format_roll_history_block` (LLM prompt) and
+        `_recent_halfway_roll_cooldown` (deterministic guard). Returns
+        all-zero/None defaults if db_url unset or query fails.
+        """
+        from datetime import datetime, timezone
+        from trading_corp.persistence import db
+
+        out = {
+            "roll_count": 0,
+            "net_dollars": 0.0,
+            "last_roll_ts": None,
+            "last_roll_short_strike_before": None,
+            "last_roll_short_strike_after": None,
+            "last_roll_strike_change": None,
+            "days_since_last_roll": None,
+        }
+        if not self._db_url:
+            return out
+
+        sql = """
+            SELECT side, qty, fill_price, fill_ts, extra_json
+            FROM proposed_order
+            WHERE strategy='robinhood_pmcc'
+              AND symbol=?
+              AND status='filled'
+              AND fill_price IS NOT NULL
+              AND extra_json LIKE '%roll_short_call%'
+            ORDER BY fill_ts ASC
+        """
+        try:
+            with db.connect(self._db_url) as conn:
+                rows = conn.execute(sql, (symbol,)).fetchall()
+        except Exception as e:
+            log.debug(
+                "PMCCAgent: detailed prior-roll query failed for %s: %s",
+                symbol, e,
+            )
+            return out
+
+        pair_nets: dict[str, float] = {}
+        pair_keys: dict[str, str] = {}
+        pair_max_ts: dict[str, str] = {}
+        pair_close_strike: dict[str, float] = {}
+        pair_open_strike: dict[str, float] = {}
+
+        for r in rows:
+            try:
+                extra = json.loads(r["extra_json"] or "{}")
+                pair_id = extra.get("pmcc_pair_id")
+                if not pair_id:
+                    continue
+                qty = float(r["qty"] or 0)
+                price = float(r["fill_price"] or 0)
+                sign = 1 if r["side"] == "sell" else -1
+                pair_nets[pair_id] = (
+                    pair_nets.get(pair_id, 0.0) + sign * qty * price * 100
+                )
+
+                row_key = extra.get("leap_lifetime_key")
+                if row_key and pair_id not in pair_keys:
+                    pair_keys[pair_id] = row_key
+
+                ts = r["fill_ts"]
+                if ts and (pair_id not in pair_max_ts or ts > pair_max_ts[pair_id]):
+                    pair_max_ts[pair_id] = ts
+
+                strike_raw = extra.get("strike")
+                action = (extra.get("action") or "").lower()
+                if strike_raw is not None:
+                    try:
+                        strike = float(strike_raw)
+                    except (TypeError, ValueError):
+                        strike = None
+                    if strike is not None:
+                        # Buy-to-close on a roll = the OLD short being closed
+                        if r["side"] == "buy" and "close" in action:
+                            pair_close_strike[pair_id] = strike
+                        # Sell-to-open on a roll = the NEW short being opened
+                        elif r["side"] == "sell" and "open" in action:
+                            pair_open_strike[pair_id] = strike
+            except Exception:
+                continue
+
+        # Apply leap_lifetime_key scoping (same rule as _query_prior_rolls)
+        if leap_lifetime_key:
+            keep = {
+                pid for pid in pair_nets
+                if pair_keys.get(pid) in (None, leap_lifetime_key)
+            }
+            pair_nets = {pid: v for pid, v in pair_nets.items() if pid in keep}
+            pair_max_ts = {pid: v for pid, v in pair_max_ts.items() if pid in keep}
+            pair_close_strike = {
+                pid: v for pid, v in pair_close_strike.items() if pid in keep
+            }
+            pair_open_strike = {
+                pid: v for pid, v in pair_open_strike.items() if pid in keep
+            }
+
+        out["roll_count"] = len(pair_nets)
+        out["net_dollars"] = sum(pair_nets.values())
+
+        if pair_max_ts:
+            last_pair_id = max(pair_max_ts, key=pair_max_ts.get)
+            last_ts = pair_max_ts[last_pair_id]
+            out["last_roll_ts"] = last_ts
+            before = pair_close_strike.get(last_pair_id)
+            after = pair_open_strike.get(last_pair_id)
+            out["last_roll_short_strike_before"] = before
+            out["last_roll_short_strike_after"] = after
+            if before is not None and after is not None:
+                out["last_roll_strike_change"] = after - before
+            try:
+                last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                delta_sec = (datetime.now(timezone.utc) - last_dt).total_seconds()
+                out["days_since_last_roll"] = max(0, int(delta_sec // 86400))
+            except Exception:
+                pass
+
+        return out
+
     async def _propose_open_pmcc(
         self,
         symbol: str,
@@ -2275,6 +2999,7 @@ Action reference:
             symbol, broker,
             target_delta=analysis.target_delta if analysis else None,
             target_dte=analysis.target_dte if analysis else None,
+            target_strike=analysis.target_strike if analysis else None,
         )
 
         orders: list[ProposedOrder] = []
@@ -2368,6 +3093,7 @@ Action reference:
             symbol, broker,
             target_delta=analysis.target_delta if analysis else None,
             target_dte=analysis.target_dte if analysis else None,
+            target_strike=analysis.target_strike if analysis else None,
         )
         if not weekly_call:
             log.warning("PMCCAgent: no weekly call found for uncovered LEAP on %s", symbol)
@@ -2439,6 +3165,7 @@ Action reference:
             symbol, broker,
             target_delta=analysis.target_delta if analysis else None,
             target_dte=analysis.target_dte if analysis else None,
+            target_strike=analysis.target_strike if analysis else None,
         )
         if new_weekly:
             orders.append(self._make_option_order(
@@ -2497,8 +3224,17 @@ Action reference:
         broker: Broker,
         target_delta: float | None = None,
         target_dte: int | None = None,
+        target_strike: float | None = None,
     ) -> dict | None:
-        """Find the best weekly short call, optionally using LLM-suggested delta/DTE."""
+        """Find the best weekly short call, optionally using LLM-suggested
+        delta / DTE / strike.
+
+        `target_strike` (Item 3 — 2026-05-03): when set, the strike picker
+        selects the listed strike CLOSEST to target_strike (subject to
+        liquidity gate), overriding the delta-distance ranking. Used when
+        a rule (e.g. Major Breach halfway-roll) prescribes a specific
+        strike that the delta-only picker would miss. None = original
+        delta-distance behavior."""
         if not isinstance(broker, OptionBroker):
             return None
         dates = await broker.get_expiration_dates(symbol)
@@ -2531,9 +3267,11 @@ Action reference:
             )
             return None
 
-        # Use LLM-suggested delta if provided
+        # Use LLM-suggested delta if provided. When target_strike is set,
+        # _select_weekly_strike honors it directly and ignores delta —
+        # see the helper's docstring.
         delta = target_delta if target_delta is not None else self._short_target_delta
-        best = _select_weekly_strike(liquid, delta)
+        best = _select_weekly_strike(liquid, delta, target_strike=target_strike)
         if best:
             best["expiration_date"] = target_date
             best["dte"] = _days_to(target_date)

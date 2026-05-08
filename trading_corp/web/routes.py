@@ -17,6 +17,7 @@ Phases 3+ will add /trades, /system.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from threading import Lock
@@ -46,6 +47,100 @@ _LLM_LOCK = Lock()
 # new analysis for that (slug, symbol) for this many hours. Stored as audit
 # events (kind=pair_deferred) so it survives restarts and is auditable.
 _DEFER_TTL_HOURS = 24
+
+
+def _group_index_entries(entries: list) -> list[dict]:
+    """Group `/approvals` index entries by pmcc_pair_id (Phase B.3).
+
+    Solo entries pass through as `kind='solo'` rows. Pairs (two entries
+    sharing pmcc_pair_id) collapse into ONE `kind='paired'` row whose
+    `primary_order_id` is the close leg (action contains 'close') if
+    discoverable, else the first entry encountered. The list preserves
+    newest-first ordering by the row's most-recent added_at.
+    """
+    by_pair: dict[str, list] = {}
+    solos: list[dict] = []
+    for e in entries:
+        pid = e.pmcc_pair_id
+        if not pid:
+            solos.append({
+                "kind": "solo",
+                "entries": [e],
+                "is_paired": False,
+                "primary_order_id": e.request.order_id,
+                "division": e.division,
+                "summary": e.request.summary,
+                "added_at": e.added_at,
+                "pair_id": None,
+            })
+            continue
+        by_pair.setdefault(pid, []).append(e)
+
+    rows: list[dict] = list(solos)
+    for pid, group in by_pair.items():
+        if len(group) == 1:
+            e = group[0]
+            rows.append({
+                "kind": "solo",
+                "entries": [e],
+                "is_paired": False,
+                "primary_order_id": e.request.order_id,
+                "division": e.division,
+                "summary": e.request.summary,
+                "added_at": e.added_at,
+                "pair_id": pid,
+            })
+            continue
+        # Two-leg pair (or more, defensively) — pick the 'close' leg as
+        # the primary so the URL anchors there. If neither leg has a
+        # parseable action, just use the first.
+        close_leg = next(
+            (e for e in group if "close" in (
+                _summary_action_hint(e.request.summary).lower()
+            )),
+            group[0],
+        )
+        sym = _summary_symbol(close_leg.request.summary)
+        combined_summary = (
+            f"ROLL · {sym} · close + open" if sym else "ROLL · close + open"
+        )
+        rows.append({
+            "kind": "paired",
+            "entries": group,
+            "is_paired": True,
+            "primary_order_id": close_leg.request.order_id,
+            "division": close_leg.division,
+            "summary": combined_summary,
+            "added_at": min(e.added_at for e in group),
+            "pair_id": pid,
+        })
+
+    rows.sort(key=lambda r: r["added_at"], reverse=True)
+    return rows
+
+
+def _summary_action_hint(summary: str) -> str:
+    """Best-effort: pull an action token out of the rich approval summary.
+    Used purely to pick a 'close leg' anchor for paired index rows.
+    Returns empty string when the format isn't recognized."""
+    if not summary:
+        return ""
+    head = summary.split("\n", 1)[0]
+    return head
+
+
+def _summary_symbol(summary: str) -> str:
+    r"""Best-effort: pull the underlying symbol out of the approval
+    summary's first line. The format-style is `📤 *ROLL: BUY TO CLOSE*
+    · \`MSTR\` · robinhood_pmcc`. Returns the first backtick-wrapped
+    token or empty string."""
+    if not summary:
+        return ""
+    head = summary.split("\n", 1)[0]
+    # Find the first `...` token.
+    import re
+    m = re.search(r"`([^`]+)`", head)
+    return m.group(1) if m else ""
 
 
 def register(app: FastAPI) -> None:
@@ -675,6 +770,71 @@ def register(app: FastAPI) -> None:
 
     # ── Manual order entry (Phase B: Coinbase Spot) ──────────────────────
 
+    @app.post("/audit/{audit_id}/replay-research", response_class=HTMLResponse)
+    async def replay_signal_to_research(audit_id: int):
+        """Re-run the research firm consult against a past TV-signal audit row.
+
+        Loads the audit_event by id, synthesizes a placeholder ProposedOrder
+        from its payload, and routes through `consult_research_for_trade_confirmation`.
+        Writes a `research_replay_completed` audit row tagged with the source
+        audit_event id. Returns an HTML fragment suitable for htmx swap into
+        the originating dashboard tile.
+
+        Authorization: behind Authelia at the reverse-proxy layer (no
+        additional check here).
+        """
+        from trading_corp.agents.research.signal_replay import replay_signal_research
+
+        with data.db.connect(deps.db_url) as conn:
+            row = conn.execute(
+                "SELECT id, ts, actor, kind, payload_json "
+                "FROM audit_event WHERE id = ?",
+                (audit_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"audit_event id={audit_id} not found")
+        row_dict = dict(row)
+
+        # Only allow replay on TV-signal-shaped audit rows.
+        allowed_kinds = {"webhook_received", "alert_ignored", "would_have_placed"}
+        if row_dict.get("kind") not in allowed_kinds:
+            raise HTTPException(
+                status_code=400,
+                detail=f"audit_event kind '{row_dict.get('kind')}' is not replayable",
+            )
+
+        result = await replay_signal_research(
+            row_dict,
+            research_firm=deps.research_firm,
+            logger_agent=deps.logger_agent,
+        )
+
+        # Render a compact HTML fragment. htmx swap target on the
+        # dashboard side decides where this lands.
+        verdict = (result.verdict_kind or "?").upper()
+        decision = (result.decision or "?").upper()
+        rationale = (result.rationale or "(no rationale)").replace("<", "&lt;").replace(">", "&gt;")
+        verdict_color = {
+            "confirm": "text-gain",
+            "conditional": "text-warn",
+            "push_back": "text-loss",
+            "no_research": "text-muted",
+            "timeout": "text-warn",
+            "error": "text-loss",
+        }.get(result.verdict_kind, "text-muted")
+
+        html = (
+            f'<div class="border-l-2 border-edge pl-3 mt-2 text-[11px] font-mono">'
+            f'  <div class="flex gap-2 items-baseline">'
+            f'    <span class="text-muted uppercase tracking-wider">research →</span>'
+            f'    <span class="{verdict_color} font-semibold uppercase">{verdict}</span>'
+            f'    <span class="text-muted">decision={decision.lower()}</span>'
+            f'  </div>'
+            f'  <div class="mt-1 text-mono leading-snug whitespace-pre-wrap">{rationale}</div>'
+            f'</div>'
+        )
+        return HTMLResponse(html)
+
     @app.post("/division/{slug}/order/manual", response_class=HTMLResponse)
     async def submit_manual_order(slug: str, request: Request):
         """Submit a manual ad-hoc order through the risk + execution pipeline.
@@ -878,6 +1038,209 @@ def register(app: FastAPI) -> None:
             {"title": "System", "phase": "later"},
         )
 
+    # ── HITL approval surface (Phase B.1 → B.3) ──────────────────────────
+    # The dashboard surface for Board approvals. Reads + resolves the
+    # in-process PendingApprovalRegistry held on deps.pending_registry
+    # (constructed in main.py). Coexists with the Telegram inline-keyboard
+    # path during the soak window — first decision wins, second one gets
+    # a 409 (web) or "already decided" (Telegram). B.2 added rich
+    # rendering via comms/position_context. B.3 added pair-coalescing —
+    # paired-roll legs render in ONE card with ONE atomic decision.
+
+    @app.get("/approvals", response_class=HTMLResponse)
+    async def approvals_index(request: Request):
+        """Index of pending approvals. Empty state when none, or
+        explanatory note when the registry isn't wired (CLI dev /
+        no-Telegram fallback). B.3 — paired entries (same pmcc_pair_id)
+        are grouped into a single row with a combined headline."""
+        snap = await data.build_command_center(deps)
+        registry = deps.pending_registry
+        entries = registry.list_pending() if registry is not None else []
+        rows = _group_index_entries(entries)
+        return templates.TemplateResponse(
+            request, "approvals.html",
+            {
+                "snap": snap,
+                "rows": rows,
+                "total_legs": len(entries),
+                "registry_unavailable": registry is None,
+            },
+        )
+
+    @app.get("/approvals/{order_id}", response_class=HTMLResponse)
+    async def approval_detail(request: Request, order_id: str):
+        """Detail page for a single pending approval. 404 when the
+        order is no longer pending (already resolved or never
+        registered). B.3 — when the order has a paired sibling
+        currently pending, both legs render in ONE card with combined
+        Net Debit/Credit and ONE Approve button."""
+        from trading_corp.comms.position_context import (
+            build_approval_view, coalesce_paired_view,
+        )
+        registry = deps.pending_registry
+        if registry is None:
+            raise HTTPException(
+                status_code=404, detail="approval registry unavailable",
+            )
+        entry = registry.get_entry(order_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=404, detail=f"order_id {order_id} not pending",
+            )
+        primary_view = build_approval_view(entry.request.detail or {})
+        primary_view["_order_id"] = order_id
+
+        sibling_view = None
+        sibling_req = registry.find_sibling(order_id)
+        if sibling_req is not None:
+            sibling_view = build_approval_view(sibling_req.detail or {})
+            sibling_view["_order_id"] = sibling_req.order_id
+            view = coalesce_paired_view([primary_view, sibling_view])
+            view["_order_id"] = order_id   # POST target stays primary
+        else:
+            view = primary_view
+
+        snap = await data.build_command_center(deps)
+        return templates.TemplateResponse(
+            request, "approval_detail.html",
+            {
+                "snap": snap,
+                "entry": entry,
+                "req": entry.request,
+                "view": view,
+                "is_paired": bool(sibling_view),
+                "sibling_order_id": (
+                    sibling_view["_order_id"] if sibling_view else None
+                ),
+            },
+        )
+
+    @app.post("/approvals/{order_id}/decide", response_class=HTMLResponse)
+    async def approval_decide(request: Request, order_id: str):
+        """POST decision endpoint.
+
+        Body (form-encoded from the in-page form OR JSON for API
+        callers):
+          - `decision`: "approve" | "reject" | "modify"
+          - `reason`:   optional string
+          - `new_qty`:  required when decision=="modify" (float > 0)
+          - `also_resolve_paired`: optional bool (B.3) — when truthy
+            AND the order has a paired sibling currently pending, the
+            sibling is resolved with the SAME decision in the same
+            call. The detail-page form sets this when rendering a
+            paired card.
+
+        Returns 200 + a small HTML fragment on accept; 409 if the
+        registry entry was already resolved (Telegram or another
+        browser tab won the race); 400 on invalid decision / missing
+        new_qty for modify; 404 if the registry is not wired.
+        """
+        from trading_corp.graph.interrupts import BoardDecision
+        registry = deps.pending_registry
+        if registry is None:
+            raise HTTPException(
+                status_code=404, detail="approval registry unavailable",
+            )
+        ctype = (request.headers.get("content-type") or "").lower()
+        if ctype.startswith("application/json"):
+            body = await request.json()
+            decision_str = body.get("decision")
+            reason = body.get("reason") or ""
+            new_qty_raw = body.get("new_qty")
+            new_limit_raw = body.get("new_limit_price")
+            also_paired = bool(body.get("also_resolve_paired"))
+        else:
+            form = await request.form()
+            decision_str = form.get("decision")
+            reason = form.get("reason") or ""
+            new_qty_raw = form.get("new_qty")
+            new_limit_raw = form.get("new_limit_price")
+            also_paired = (form.get("also_resolve_paired") or "").lower() in (
+                "1", "true", "on", "yes",
+            )
+        if decision_str not in ("approve", "reject", "modify"):
+            raise HTTPException(
+                status_code=400,
+                detail="decision must be 'approve', 'reject', or 'modify'",
+            )
+        new_qty: float | None = None
+        new_limit: float | None = None
+        if decision_str == "modify":
+            # B.5 — modify accepts new_qty AND/OR new_limit_price.
+            # Either alone (or both together) is valid; at least one is
+            # required. Quick-modify buttons in the UI typically set
+            # only one (½× size sets new_qty; limit-5% sets new_limit).
+            if (new_qty_raw is None or new_qty_raw == "") and (
+                new_limit_raw is None or new_limit_raw == ""
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "modify requires at least one of new_qty / "
+                        "new_limit_price"
+                    ),
+                )
+            if new_qty_raw not in (None, ""):
+                try:
+                    new_qty = float(new_qty_raw)
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"new_qty must be a number (got {new_qty_raw!r})",
+                    )
+                if new_qty <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"new_qty must be > 0 (got {new_qty})",
+                    )
+            if new_limit_raw not in (None, ""):
+                try:
+                    new_limit = float(new_limit_raw)
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"new_limit_price must be a number (got {new_limit_raw!r})",
+                    )
+                if new_limit <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"new_limit_price must be > 0 (got {new_limit})",
+                    )
+        decision = BoardDecision(
+            decision=decision_str,
+            reason=reason or "via web",
+            new_qty=new_qty,
+            new_limit_price=new_limit,
+        )
+        accepted = registry.resolve(
+            order_id, decision, source="web",
+            also_resolve_paired=also_paired,
+        )
+        if not accepted:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"order_id {order_id} already resolved or not pending"
+                ),
+            )
+        bits = []
+        if new_qty is not None:
+            bits.append(f"qty={new_qty:g}")
+        if new_limit is not None:
+            bits.append(f"limit=${new_limit:.2f}")
+        modify_suffix = f" ({', '.join(bits)})" if bits else ""
+        msg = (
+            f"Decision recorded: {decision_str.upper()}"
+            + modify_suffix
+            + (" · both legs resolved" if also_paired else "")
+        )
+        return HTMLResponse(
+            f'<div class="text-gain text-sm font-mono">'
+            f'{msg}. '
+            f'<a href="/approvals" class="underline">Back to pending list</a>.'
+            f'</div>'
+        )
+
     # ── Research firm dashboard (v3 — read-only) ─────────────────────────
 
     @app.get("/research", response_class=HTMLResponse)
@@ -975,6 +1338,7 @@ def _build_research_view(deps) -> dict:
             "product_type": payload.get("product_type"),
             "asset_class": payload.get("asset_class"),
             "summary": _summary_for_event(e),
+            "payload_pretty": json.dumps(payload, indent=2, default=str, sort_keys=True),
         })
 
     # ── Recommendation outcomes view (design §7.2) ──
@@ -1088,6 +1452,7 @@ def _build_research_view(deps) -> dict:
         "latency": latency,
         "theses": theses,
         "position_contexts": position_contexts,
+        "pmcc_validation": _build_pmcc_validation_view(deps),
     }
 
 
@@ -1100,6 +1465,188 @@ def _empty_research_view() -> dict:
         "latency": {"groups": [], "weekly": []},
         "theses": [],
         "position_contexts": [],
+        "pmcc_validation": _empty_pmcc_validation_view(),
+    }
+
+
+# ── PMCC research-as-consultant validation view (2026-05-02 realignment) ──
+# Read-only review surface that joins:
+#   research_candidate_recommendation_emitted  (per engagement; candidate list)
+#   research_candidate_acted_on / _skipped     (per-candidate division outcome)
+#   proposed_order.status                      (downstream lifecycle for acted_on)
+#
+# The realignment memo phrased the 05-05 criterion as "count of candidates
+# that produced `would_have_placed` rows." That kind is Otter/Cypher-only
+# (the webhook path writes it). PMCC's HITL flow runs through LangGraph
+# and goes proposed → risk_approved → board_approved → filled — there is
+# no `would_have_placed` row on this path. This view surfaces the actual
+# proposed_order lifecycle status for each acted_on candidate, which is
+# the equivalent decision-quality signal.
+PMCC_OBSERVATION_PERIOD_START = "2026-05-02T00:00:00Z"
+
+
+def _build_pmcc_validation_view(deps) -> dict:
+    if deps.logger_agent is None:
+        return _empty_pmcc_validation_view()
+    try:
+        events = deps.logger_agent.events_since(PMCC_OBSERVATION_PERIOD_START)
+    except Exception as e:
+        log.warning("pmcc validation view: failed to read audit log: %s", e)
+        return _empty_pmcc_validation_view()
+
+    # Engagement-level rows: one per PMCC research_candidate_recommendation_emitted.
+    emitted_by_eid: dict[str, dict] = {}
+    for e in events:
+        if e.get("actor") != "research_firm":
+            continue
+        if e.get("kind") != "research_candidate_recommendation_emitted":
+            continue
+        payload = e.get("payload") or {}
+        if payload.get("requesting_division") != "robinhood_pmcc":
+            continue
+        eid = payload.get("engagement_id")
+        if not eid:
+            continue
+        product = payload.get("product") or {}
+        emitted_by_eid[eid] = {
+            "engagement_id": eid,
+            "ts": e.get("ts"),
+            "candidates": product.get("candidates") or [],
+        }
+
+    # Per-candidate division outcome rows, keyed by (engagement_id, symbol).
+    # Symbol is the join key because acted_on/skipped both carry it; the
+    # per-engagement candidate_index is also stable but symbol is what the
+    # Board reads first.
+    outcome_rows: dict[tuple[str, str], dict] = {}
+    for e in events:
+        if e.get("actor") != "robinhood_pmcc":
+            continue
+        kind = e.get("kind")
+        if kind not in ("research_candidate_acted_on", "research_candidate_skipped"):
+            continue
+        payload = e.get("payload") or {}
+        eid = payload.get("engagement_id")
+        symbol = (payload.get("symbol") or "").upper()
+        if not eid or not symbol:
+            continue
+        outcome_rows[(eid, symbol)] = {
+            "kind": kind,
+            "ts": e.get("ts"),
+            "skip_reason": payload.get("reason"),
+            "proposed_order_id": payload.get("proposed_order_id"),
+        }
+
+    # Bulk lookup of proposed_order.status for the acted_on rows' order ids.
+    order_ids = [
+        r["proposed_order_id"] for r in outcome_rows.values()
+        if r["kind"] == "research_candidate_acted_on" and r.get("proposed_order_id")
+    ]
+    order_statuses = _lookup_order_statuses(deps, order_ids)
+
+    engagements: list[dict] = []
+    n_acted_on = 0
+    n_skipped = 0
+    n_board_approved_or_filled = 0
+    n_filled = 0
+    n_candidates_total = 0
+    skip_reasons: dict[str, int] = {}
+
+    for eid, eng in emitted_by_eid.items():
+        candidates_view = []
+        for cand in eng["candidates"]:
+            sym = (cand.get("symbol") or "").upper()
+            row = outcome_rows.get((eid, sym))
+            if row is None:
+                status = "no_outcome"
+                skip_reason = None
+                order_status = None
+                proposed_order_id = None
+            elif row["kind"] == "research_candidate_acted_on":
+                status = "acted_on"
+                skip_reason = None
+                n_acted_on += 1
+                proposed_order_id = row.get("proposed_order_id")
+                order_status = order_statuses.get(proposed_order_id)
+                if order_status in ("board_approved", "filled"):
+                    n_board_approved_or_filled += 1
+                if order_status == "filled":
+                    n_filled += 1
+            else:
+                status = "skipped"
+                skip_reason = row.get("skip_reason")
+                n_skipped += 1
+                proposed_order_id = None
+                order_status = None
+                if skip_reason:
+                    skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
+            candidates_view.append({
+                "symbol": sym,
+                "thesis": cand.get("thesis") or "",
+                "conviction": cand.get("conviction"),
+                "fit_score": cand.get("fit_score"),
+                "fit_rationale": cand.get("fit_rationale") or "",
+                "status": status,
+                "skip_reason": skip_reason,
+                "proposed_order_id": proposed_order_id,
+                "order_status": order_status,
+            })
+            n_candidates_total += 1
+        engagements.append({
+            "engagement_id": eid,
+            "ts": eng["ts"],
+            "n_candidates": len(eng["candidates"]),
+            "candidates": candidates_view,
+        })
+    engagements.sort(key=lambda r: r["ts"] or "", reverse=True)
+
+    top_skip_reasons = sorted(skip_reasons.items(), key=lambda kv: kv[1], reverse=True)
+
+    return {
+        "observation_start": PMCC_OBSERVATION_PERIOD_START,
+        "n_engagements": len(emitted_by_eid),
+        "n_candidates": n_candidates_total,
+        "n_acted_on": n_acted_on,
+        "n_skipped": n_skipped,
+        "n_board_approved_or_filled": n_board_approved_or_filled,
+        "n_filled": n_filled,
+        "top_skip_reasons": [{"reason": r, "count": c} for r, c in top_skip_reasons],
+        "engagements": engagements,
+    }
+
+
+def _lookup_order_statuses(deps, order_ids: list[str]) -> dict[str, str]:
+    """Bulk lookup proposed_order.status for the given ids.
+    Returns {order_id -> status}; missing ids are absent."""
+    if not order_ids:
+        return {}
+    from trading_corp.persistence import db
+    out: dict[str, str] = {}
+    try:
+        with db.connect(deps.logger_agent.db_url) as conn:
+            placeholders = ",".join("?" * len(order_ids))
+            rows = conn.execute(
+                f"SELECT id, status FROM proposed_order WHERE id IN ({placeholders})",
+                order_ids,
+            ).fetchall()
+            for r in rows:
+                out[r["id"]] = r["status"]
+    except Exception as e:
+        log.warning("pmcc validation view: order status lookup failed: %s", e)
+    return out
+
+
+def _empty_pmcc_validation_view() -> dict:
+    return {
+        "observation_start": PMCC_OBSERVATION_PERIOD_START,
+        "n_engagements": 0,
+        "n_candidates": 0,
+        "n_acted_on": 0,
+        "n_skipped": 0,
+        "n_board_approved_or_filled": 0,
+        "n_filled": 0,
+        "top_skip_reasons": [],
+        "engagements": [],
     }
 
 

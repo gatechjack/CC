@@ -5,6 +5,53 @@ robinhood_pmcc:
   enabled: true
   auto_execute: false
   auto_max_notional: 0
+  # ============================================================
+  # 0-DTE Terminal-DTE Override gates (Board direction 2026-05-01).
+  # When the short leg has 0 DTE, deterministic Python guards override
+  # the LLM's HOLD/WATCH recommendation under two release conditions:
+  #
+  #   (P0) Time-of-day: as the trading-day close approaches, force a
+  #        roll. After Robinhood's auto-close window opens, escalate
+  #        to a single-leg close with urgency=urgent.
+  #
+  #   (P1) Cycle-continuity: if the short's mark has already decayed
+  #        below `cycle_continuity_extrinsic_threshold` per share AND
+  #        intrinsic is zero (mark <= threshold implies intrinsic == 0
+  #        by no-arbitrage), capture next-cycle premium NOW instead of
+  #        waiting for the time gate — better mid-day liquidity, no
+  #        post-expiry coverage gap.
+  #
+  # All three offsets are configurable so the operational behaviour
+  # can be tuned without a code deploy (e.g. widen the release window
+  # if order-execution issues are observed).
+  # ============================================================
+  zero_dte:
+    # Minutes before market close at which the Override releases and
+    # rolls start. Computed against the actual close time for the day
+    # (16:00 ET on regular days; 13:00 ET on half-days; the deadline
+    # rotates onto Thursday when Friday is a market holiday).
+    release_offset_min: 60        # 1h before close
+    # Minutes before market close at which we escalate to close_short
+    # urgency=urgent. Matches Robinhood's auto-close trigger window.
+    hard_deadline_offset_min: 30  # 30m before close
+    # Cycle-continuity release: if a 0-DTE short's mark is at or below
+    # this dollar-per-share threshold, the helper rewrites HOLD/WATCH
+    # to roll_short regardless of time. The trade-off is forfeiting
+    # ~$threshold/contract of residual decay in exchange for
+    # immediate next-cycle premium and no post-expiry coverage gap.
+    cycle_continuity_extrinsic_threshold: 0.15  # $/share
+
+  # Halfway-roll cooldown (Item 1 — 2026-05-02). Backstop guard that
+  # downgrades roll_short → hold when a recent roll-up was executed
+  # and the conditions below all hold. Prevents back-to-back halfway
+  # rolls within a single weekly cycle (which compound bid-ask cost
+  # and lock in the prior roll's debit).
+  roll_cooldown:
+    cooldown_days: 7              # only fires if last roll was within this many days
+    extrinsic_floor: 0.50         # $/share — below this, cycle-continuity wants the roll
+    min_strike_change: 1.0        # $/share — strike_change above this counts as "halfway-style"
+    terminal_dte_floor: 2         # never block a roll on short_leg_dte <= this (deadline-driven)
+
   # Source for the underlying universe.
   # "positions" (default): pull live Robinhood holdings at scan time and run
   #   PMCC logic on whatever the account actually owns. Existing PMCC legs are
@@ -473,6 +520,16 @@ lord_otter:
   # cluster from firing 3 orders in a row.
   cooldown_seconds: 180
 
+  # Paper-trade replay window. Phase B/C of the would_have_placed
+  # enrichment (BACKLOG.md 2026-05-01): the replay job walks each
+  # `paper_trade_record` row forward from alert_ts checking whether spot
+  # touched the TP or SL price first. If neither hits within this many
+  # seconds, the trade is marked `result='expired'` instead of staying
+  # `open`. Otter is a 3m scalp; 24h is generous coverage. Frozen onto
+  # each record at write-time so changing this here doesn't retroactively
+  # alter past trades.
+  max_hold_seconds: 86400  # 24h
+
   # ============================================================
   # Tier sizing — % of equity at risk per trade.
   # Diamond tier matches the lord_otter override in risk.yaml
@@ -610,7 +667,7 @@ lord_otter:
 # Market Cypher — TradingView-driven SWING strategy on BTC/USD.
 # Independent of Lord Otter; can run alongside it. Different timescale (4h
 # primary triggers, 1D bias) catches regime-level moves Otter's 3m scalp
-# misses. See trading_corp/agents/divisions/market_cypher.py for full
+# misses. See trading_corp/agents/strategies/market_cypher.py for full
 # strategy logic + the conversation history that birthed it on 2026-04-30.
 # =============================================================================
 market_cypher:
@@ -649,6 +706,11 @@ market_cypher:
   # bullish entries within 4 hours of each other (would just be doubling
   # down on the same setup).
   cooldown_seconds: 14400
+
+  # Paper-trade replay window. See lord_otter.max_hold_seconds for the
+  # full rationale. Cypher is a 4h/1D swing; 7d covers typical hold
+  # before a stop or target gets hit on the 4h timeframe.
+  max_hold_seconds: 604800  # 7d
 
   # ============================================================
   # Tier sizing — % of equity at risk per trade.

@@ -21,10 +21,10 @@ from pathlib import Path
 
 import pytest
 
-from trading_corp.agents.divisions.lord_otter import (
+from trading_corp.agents.strategies.lord_otter import (
     LordOtterAgent, TierVerdict,
 )
-from trading_corp.agents.divisions.market_cypher import MarketCypherAgent
+from trading_corp.agents.strategies.market_cypher import MarketCypherAgent
 from trading_corp.persistence.models import ProposedOrder
 from trading_corp.web.webhooks import (
     _format_trade_card,

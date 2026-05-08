@@ -30,10 +30,11 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from trading_corp.persistence.models import AccountState, StrategyState
+from trading_corp.persistence import db as _db
+from trading_corp.persistence.models import AccountState, PaperTradeRecord, StrategyState
 from trading_corp.utils.time import iso, now_utc
 
 log = logging.getLogger(__name__)
@@ -93,14 +94,28 @@ def register(app: FastAPI) -> None:
     )
 
     @app.post("/webhook/tradingview/lord-otter")
-    async def lord_otter_webhook(request: Request) -> JSONResponse:
+    async def lord_otter_webhook(
+        request: Request, background_tasks: BackgroundTasks,
+    ) -> JSONResponse:
         """Receive a TradingView alert and route it through Lord Otter agent.
 
-        Response shape:
-          200 + {"status":"accepted", "decision":"...", "order_id":"..."} on success
-          200 + {"status":"ignored", "reason":"..."} when agent chooses not to act
+        **Return-fast architecture (2026-05-02):** the synchronous phase
+        of this handler does only validation + the `webhook_received`
+        audit row, then dispatches the heavy processing
+        (broker snapshot → agent.on_alert → research consult → risk
+        gate → place/notify) onto a FastAPI background task and returns
+        HTTP 200 in well under TradingView's 10s timeout. Background
+        task writes its own audit rows for each branch (alert_ignored,
+        risk_rejected, would_have_placed, filled, execution_error)
+        and Telegram-notifies on terminal states. If the background
+        task crashes, an `agent_error` audit row is written and the
+        Board is notified via Telegram.
+
+        Response shape (all 200/4xx/5xx happen in the SYNC phase):
+          200 + {"status":"accepted", "signal":"..."} when validation passes
           401 / 403 on auth failures
           400 on malformed body
+          503 on misconfiguration (agent not wired, server-side secret unset)
         """
         agent = getattr(deps, "lord_otter_agent", None)
         if agent is None:
@@ -242,253 +257,20 @@ def register(app: FastAPI) -> None:
         )
 
         # ------------------------------------------------------------------
-        # 7. Snapshot broker for equity-aware sizing + held-qty lookup.
-        #    Done BEFORE agent dispatch (Phase 1.5) so the agent can size
-        #    real notional against current equity and know how much BTC
-        #    we hold (for bear-signal close paths). The same snapshot is
-        #    reused by the risk gate downstream — single broker call.
+        # 7. Dispatch heavy processing onto a background task and return
+        #    HTTP 200 immediately. TradingView's 10s timeout no longer
+        #    matters — even if the research-firm consult takes 30s, we've
+        #    already responded.
         # ------------------------------------------------------------------
-        snap = None
-        account_equity = 0.0
-        held_qty: dict[str, float] = {}
-        broker = (
-            deps.data_exec.brokers.get(agent.division)
-            if deps.data_exec else None
+        background_tasks.add_task(
+            _process_lord_otter_alert,
+            deps=deps, agent=agent, payload=payload, symbol=symbol,
         )
-        if broker is not None:
-            try:
-                snap = await broker.snapshot()
-                account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
-                for pos in (getattr(snap, "positions", []) or []):
-                    sym = getattr(pos, "symbol", "")
-                    if sym:
-                        held_qty[sym] = float(getattr(pos, "qty", 0) or 0)
-            except Exception as e:
-                log.warning(
-                    "lord-otter: snapshot failed for sizing/held lookup: %s", e,
-                )
-
-        # ------------------------------------------------------------------
-        # 8. Hand to the agent state machine.
-        # ------------------------------------------------------------------
-        try:
-            order, decision = agent.on_alert(
-                payload,
-                account_equity=account_equity,
-                held_qty=held_qty,
-            )
-        except Exception as e:
-            log.exception("lord-otter agent.on_alert raised")
-            deps.logger_agent.log_event(
-                actor="lord_otter", kind="agent_error",
-                payload={
-                    "strategy": "lord_otter",
-                    "division": agent.division,
-                    "signal": payload.get("signal"), "error": str(e),
-                },
-            )
-            return JSONResponse(
-                {"status": "error", "reason": f"agent error: {e}"},
-                status_code=500,
-            )
-
-        if order is None:
-            log.info("lord-otter ignored: %s [signal=%s symbol=%s]",
-                     decision, payload.get("signal"), symbol)
-            deps.logger_agent.log_event(
-                actor="lord_otter", kind="alert_ignored",
-                payload={
-                    "strategy": "lord_otter",
-                    "division": agent.division,
-                    "signal": payload.get("signal"),
-                    "symbol": symbol,
-                    "reason": decision,
-                },
-            )
-            return JSONResponse({"status": "ignored", "reason": decision})
-
-        # ------------------------------------------------------------------
-        # 8b. Research firm TradeConfirmation consult (Phase 1e).
-        #     Runs synchronously between agent.on_alert and the risk gate.
-        #     Hard-timeouts at config/research.yaml:trade_confirmation
-        #     .timeout_seconds (default 8s); fail-open on timeout/error.
-        #     push_back -> skip the order entirely + Telegram notify.
-        #     conditional -> apply suggested_modifications then continue.
-        # ------------------------------------------------------------------
-        from trading_corp.agents.research.trade_confirmation_consult import (
-            consult_research_for_trade_confirmation,
-        )
-        consult = await consult_research_for_trade_confirmation(
-            order=order,
-            payload=payload,
-            research_firm=getattr(deps, "research_firm", None),
-            logger_agent=deps.logger_agent,
-            division_slug="lord_otter",
-            asset_class="crypto_spot",
-            account_equity=account_equity,
-        )
-        if consult.decision == "skip":
-            await _telegram_notify(
-                deps,
-                (
-                    f"\U0001F6D1 lord-otter: research vetoed "
-                    f"{order.side} {order.symbol}\n"
-                    f"{consult.rationale}"
-                ),
-                log_prefix="lord-otter",
-            )
-            return JSONResponse({
-                "status": "skipped_by_research",
-                "reason": consult.rationale,
-                "verdict": consult.verdict_kind,
-            })
-        # proceed: order may have been mutated by suggested_modifications.
-        order = consult.order  # type: ignore[assignment]
-        if consult.verdict_kind == "conditional":
-            log.info(
-                "lord-otter: research applied modifications: %s",
-                consult.applied_changes,
-            )
-
-        # ------------------------------------------------------------------
-        # 9. Risk gate (same path as scout / manual order).
-        #    Reuses the snapshot fetched in step 7 — broker is the same
-        #    handle, no need for a second round-trip. If broker was None
-        #    earlier we still need to bail here because the risk gate
-        #    needs an account context (and place() needs a broker too).
-        # ------------------------------------------------------------------
-        if broker is None:
-            log.warning("lord-otter: broker for division=%s not registered", agent.division)
-            deps.logger_agent.log_event(
-                actor="lord_otter", kind="execution_error",
-                payload={"order_id": order.id, "reason": "broker not registered"},
-            )
-            return JSONResponse(
-                {"status": "error", "reason": f"no broker for {agent.division}"},
-                status_code=503,
-            )
-
-        account = AccountState(
-            account=getattr(snap, "account", agent.division) if snap else agent.division,
-            equity=account_equity or 100_000.0,
-            peak_equity=account_equity or 100_000.0,
-        )
-        strat_state = StrategyState(strategy=order.strategy)
-        regime = "unknown"
-        if deps.trend_agent is not None:
-            try:
-                regime = getattr(deps.trend_agent.read(), "regime", "unknown") or "unknown"
-            except Exception:
-                regime = "unknown"
-
-        verdict = deps.risk_agent.evaluate(order, account, strat_state, regime, None)
-        order.risk_reason = verdict.reason
-
-        if verdict.verdict == "reject":
-            order.status = "risk_rejected"
-            deps.logger_agent.log_proposed_order(order)
-            deps.logger_agent.log_event(
-                actor="risk", kind="risk_rejected",
-                payload={
-                    "order_id": order.id, "symbol": order.symbol,
-                    "reason": verdict.reason, "via": "lord_otter_webhook",
-                    "tier": (order.extra or {}).get("tier"),
-                },
-            )
-            log.info("lord-otter risk-rejected: %s [%s]", verdict.reason, order.id)
-            return JSONResponse({
-                "status": "risk_rejected",
-                "reason": verdict.reason,
-                "decision": decision,
-                "order_id": order.id,
-            })
-
-        if verdict.verdict == "resize" and verdict.new_qty is not None:
-            log.info(
-                "lord-otter risk resized: %s qty %s → %s",
-                order.symbol, order.qty, verdict.new_qty,
-            )
-            order.qty = float(verdict.new_qty)
-
-        # ------------------------------------------------------------------
-        # 9. Place vs notify (driven by auto_execute config)
-        # ------------------------------------------------------------------
-        if not agent.auto_execute:
-            # Phase 1 default: do NOT place. Log "would have placed"
-            # and push to Telegram so the Board sees it.
-            order.status = "would_have_placed"
-            deps.logger_agent.log_proposed_order(order)
-            deps.logger_agent.log_event(
-                actor="lord_otter", kind="would_have_placed",
-                payload={
-                    "strategy": "lord_otter",
-                    "division": agent.division,
-                    "order_id": order.id,
-                    "symbol": order.symbol,
-                    "side": order.side,
-                    "qty": order.qty,
-                    "rationale": order.rationale,
-                    "tier": (order.extra or {}).get("tier"),
-                    "decision": decision,
-                },
-            )
-            await _telegram_notify(
-                deps,
-                _format_would_have_placed_msg(order, decision),
-            )
-            return JSONResponse({
-                "status": "would_have_placed",
-                "decision": decision,
-                "order_id": order.id,
-                "qty": order.qty,
-                "side": order.side,
-                "symbol": order.symbol,
-            })
-
-        # auto_execute=true → fire it
-        order.status = "board_approved"
-        order.board_reason = "lord_otter auto_execute=true"
-        deps.logger_agent.log_proposed_order(order)
-        deps.logger_agent.log_event(
-            actor="board", kind="board_approved",
-            payload={
-                "order_id": order.id, "symbol": order.symbol,
-                "via": "lord_otter_webhook", "auto_execute": True,
-                "tier": (order.extra or {}).get("tier"),
-            },
-        )
-
-        try:
-            fill = await deps.data_exec.place(order, division=agent.division)
-            log.info(
-                "lord-otter placed: %s %s qty=%s fill=$%.2f venue=%s",
-                order.side, order.symbol, order.qty, fill.price, fill.venue,
-            )
-            await _telegram_notify(
-                deps,
-                _format_filled_msg(order, fill, decision),
-            )
-            return JSONResponse({
-                "status": "filled",
-                "decision": decision,
-                "order_id": order.id,
-                "fill_price": fill.price,
-                "venue": fill.venue,
-            })
-        except Exception as e:
-            log.warning("lord-otter place(%s) failed: %s", order.id, e)
-            deps.logger_agent.log_event(
-                actor="data_exec", kind="execution_error",
-                payload={
-                    "order_id": order.id, "symbol": order.symbol,
-                    "error": str(e), "via": "lord_otter_webhook",
-                },
-            )
-            return JSONResponse({
-                "status": "execute_error",
-                "reason": str(e)[:200],
-                "order_id": order.id,
-            }, status_code=500)
+        return JSONResponse({
+            "status": "accepted",
+            "signal": payload.get("signal"),
+            "symbol": symbol,
+        })
 
     # ============================================================
     # Market Cypher webhook — second TV-driven agent.
@@ -508,13 +290,22 @@ def register(app: FastAPI) -> None:
     )
 
     @app.post("/webhook/tradingview/market-cypher")
-    async def market_cypher_webhook(request: Request) -> JSONResponse:
+    async def market_cypher_webhook(
+        request: Request, background_tasks: BackgroundTasks,
+    ) -> JSONResponse:
         """Receive a TradingView alert and route through Market Cypher agent.
 
-        Same response shape as lord-otter:
-          200 + {"status":"accepted", "decision":"...", "order_id":"..."} on success
-          200 + {"status":"ignored", "reason":"..."} when agent chooses not to act
+        Same return-fast architecture as `lord_otter_webhook` (see that
+        handler's docstring for the rationale). Synchronous phase
+        validates + audits webhook_received; the heavy processing
+        (broker snapshot → on_alert → research consult → risk gate →
+        place/notify) runs as a FastAPI background task. TV gets a fast
+        200 in <500ms regardless of downstream load.
+
+        Response shape (all 200/4xx/5xx happen in the SYNC phase):
+          200 + {"status":"accepted", "signal":"..."} when validation passes
           401 / 403 on auth failures, 400 on malformed body
+          503 on misconfiguration (agent not wired, server-side secret unset)
         """
         agent = getattr(deps, "market_cypher_agent", None)
         if agent is None:
@@ -659,7 +450,285 @@ def register(app: FastAPI) -> None:
             },
         )
 
-        # 7. Snapshot broker for equity-aware sizing + held qty
+        # 7. Dispatch heavy processing onto a background task and return
+        #    HTTP 200 immediately. See the parallel comment in
+        #    lord_otter_webhook for the architectural rationale.
+        background_tasks.add_task(
+            _process_market_cypher_alert,
+            deps=deps, agent=agent, payload=payload, symbol=symbol,
+        )
+        return JSONResponse({
+            "status": "accepted",
+            "signal": payload.get("signal"),
+            "symbol": symbol,
+        })
+
+
+# ----------------------------------------------------------------------
+# Background-processing helpers (return-fast architecture, 2026-05-02)
+# ----------------------------------------------------------------------
+#
+# These run after the webhook handler has already responded HTTP 200 to
+# TradingView. They do the heavy lifting: broker snapshot, agent state
+# machine, research-firm consult (multi-LLM, can be 15-30s), risk gate,
+# Telegram notify, and (when auto_execute=true) actual order placement.
+#
+# Whatever happens here, the caller is gone. Outcomes are observable
+# only via:
+#   - audit_event rows (alert_ignored, risk_rejected, would_have_placed,
+#     filled, execution_error, agent_error)
+#   - Telegram notifications (would_have_placed, filled, research veto,
+#     and the catch-all background-crash notify added below)
+#
+# Any unhandled exception MUST be caught + audited + Telegram-notified
+# so a silent crash can't masquerade as "TV got 200, I'm done." The
+# wrapping `try/except` at the bottom of each function is the contract.
+
+
+async def _process_lord_otter_alert(
+    *, deps: Any, agent: Any, payload: dict, symbol: str,
+) -> None:
+    """Background processing of a Lord Otter TV alert.
+
+    Runs after the webhook handler returned 200 to TradingView. Writes
+    audit rows for every decision branch (alert_ignored, risk_rejected,
+    would_have_placed, filled, execution_error). Telegram-notifies the
+    Board on terminal states. On any unhandled exception, writes an
+    `agent_error` audit row + Telegram-notifies, so silent crashes are
+    impossible.
+    """
+    try:
+        # ── Broker snapshot for sizing + held-qty lookup ─────────────
+        snap = None
+        account_equity = 0.0
+        held_qty: dict[str, float] = {}
+        broker = (
+            deps.data_exec.brokers.get(agent.division)
+            if deps.data_exec else None
+        )
+        if broker is not None:
+            try:
+                snap = await broker.snapshot()
+                account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+                for pos in (getattr(snap, "positions", []) or []):
+                    sym = getattr(pos, "symbol", "")
+                    if sym:
+                        held_qty[sym] = float(getattr(pos, "qty", 0) or 0)
+            except Exception as e:
+                log.warning(
+                    "lord-otter: snapshot failed for sizing/held lookup: %s", e,
+                )
+
+        # ── Agent state machine ───────────────────────────────────────
+        try:
+            order, decision = agent.on_alert(
+                payload,
+                account_equity=account_equity,
+                held_qty=held_qty,
+            )
+        except Exception as e:
+            log.exception("lord-otter agent.on_alert raised")
+            deps.logger_agent.log_event(
+                actor="lord_otter", kind="agent_error",
+                payload={
+                    "strategy": "lord_otter",
+                    "division": agent.division,
+                    "signal": payload.get("signal"), "error": str(e),
+                },
+            )
+            return
+
+        if order is None:
+            log.info("lord-otter ignored: %s [signal=%s symbol=%s]",
+                     decision, payload.get("signal"), symbol)
+            deps.logger_agent.log_event(
+                actor="lord_otter", kind="alert_ignored",
+                payload={
+                    "strategy": "lord_otter",
+                    "division": agent.division,
+                    "signal": payload.get("signal"),
+                    "symbol": symbol,
+                    "reason": decision,
+                },
+            )
+            return
+
+        # ── Research firm TradeConfirmation consult (Phase 1e) ───────
+        from trading_corp.agents.research.trade_confirmation_consult import (
+            consult_research_for_trade_confirmation,
+        )
+        consult = await consult_research_for_trade_confirmation(
+            order=order,
+            payload=payload,
+            research_firm=getattr(deps, "research_firm", None),
+            logger_agent=deps.logger_agent,
+            division_slug="lord_otter",
+            asset_class="crypto_spot",
+            account_equity=account_equity,
+        )
+        if consult.decision == "skip":
+            await _telegram_notify(
+                deps,
+                (
+                    f"\U0001F6D1 lord-otter: research vetoed "
+                    f"{order.side} {order.symbol}\n"
+                    f"{consult.rationale}"
+                ),
+                log_prefix="lord-otter",
+            )
+            return
+        order = consult.order  # type: ignore[assignment]
+        if consult.verdict_kind == "conditional":
+            log.info(
+                "lord-otter: research applied modifications: %s",
+                consult.applied_changes,
+            )
+
+        # ── Risk gate ─────────────────────────────────────────────────
+        if broker is None:
+            log.warning("lord-otter: broker for division=%s not registered",
+                        agent.division)
+            deps.logger_agent.log_event(
+                actor="lord_otter", kind="execution_error",
+                payload={"order_id": order.id, "reason": "broker not registered"},
+            )
+            return
+
+        account = AccountState(
+            account=getattr(snap, "account", agent.division) if snap else agent.division,
+            equity=account_equity or 100_000.0,
+            peak_equity=account_equity or 100_000.0,
+        )
+        strat_state = StrategyState(strategy=order.strategy)
+        regime = "unknown"
+        if deps.trend_agent is not None:
+            try:
+                regime = getattr(deps.trend_agent.read(), "regime", "unknown") or "unknown"
+            except Exception:
+                regime = "unknown"
+
+        verdict = deps.risk_agent.evaluate(order, account, strat_state, regime, None)
+        order.risk_reason = verdict.reason
+
+        if verdict.verdict == "reject":
+            order.status = "risk_rejected"
+            deps.logger_agent.log_proposed_order(order)
+            deps.logger_agent.log_event(
+                actor="risk", kind="risk_rejected",
+                payload={
+                    "order_id": order.id, "symbol": order.symbol,
+                    "reason": verdict.reason, "via": "lord_otter_webhook",
+                    "tier": (order.extra or {}).get("tier"),
+                },
+            )
+            log.info("lord-otter risk-rejected: %s [%s]", verdict.reason, order.id)
+            return
+
+        if verdict.verdict == "resize" and verdict.new_qty is not None:
+            log.info(
+                "lord-otter risk resized: %s qty %s → %s",
+                order.symbol, order.qty, verdict.new_qty,
+            )
+            order.qty = float(verdict.new_qty)
+
+        # ── Place vs notify ───────────────────────────────────────────
+        if not agent.auto_execute:
+            order.status = "would_have_placed"
+            deps.logger_agent.log_proposed_order(order)
+            deps.logger_agent.log_event(
+                actor="lord_otter", kind="would_have_placed",
+                payload={
+                    "strategy": "lord_otter",
+                    "division": agent.division,
+                    "order_id": order.id,
+                    "symbol": order.symbol,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "rationale": order.rationale,
+                    "tier": (order.extra or {}).get("tier"),
+                    "decision": decision,
+                },
+            )
+            _record_paper_trade(deps, order, "lord_otter", agent)
+            await _telegram_notify(
+                deps,
+                _format_would_have_placed_msg(order, decision),
+            )
+            return
+
+        # auto_execute=true → fire it
+        order.status = "board_approved"
+        order.board_reason = "lord_otter auto_execute=true"
+        deps.logger_agent.log_proposed_order(order)
+        deps.logger_agent.log_event(
+            actor="board", kind="board_approved",
+            payload={
+                "order_id": order.id, "symbol": order.symbol,
+                "via": "lord_otter_webhook", "auto_execute": True,
+                "tier": (order.extra or {}).get("tier"),
+            },
+        )
+
+        try:
+            fill = await deps.data_exec.place(order, division=agent.division)
+            log.info(
+                "lord-otter placed: %s %s qty=%s fill=$%.2f venue=%s",
+                order.side, order.symbol, order.qty, fill.price, fill.venue,
+            )
+            await _telegram_notify(
+                deps,
+                _format_filled_msg(order, fill, decision),
+            )
+        except Exception as e:
+            log.warning("lord-otter place(%s) failed: %s", order.id, e)
+            deps.logger_agent.log_event(
+                actor="data_exec", kind="execution_error",
+                payload={
+                    "order_id": order.id, "symbol": order.symbol,
+                    "error": str(e), "via": "lord_otter_webhook",
+                },
+            )
+
+    except Exception as e:
+        # Catch-all so a background crash never goes silent. Audit row
+        # + Telegram so the Board sees it.
+        log.exception("lord-otter background processing crashed")
+        try:
+            deps.logger_agent.log_event(
+                actor="lord_otter", kind="agent_error",
+                payload={
+                    "strategy": "lord_otter",
+                    "division": getattr(agent, "division", "unknown"),
+                    "signal": (payload or {}).get("signal"),
+                    "error": str(e),
+                    "phase": "background_processing",
+                },
+            )
+        except Exception:
+            log.exception("lord-otter background: even the audit-write failed")
+        try:
+            await _telegram_notify(
+                deps,
+                f"⚠️ lord-otter background crash on "
+                f"signal={(payload or {}).get('signal')!r}: {type(e).__name__}: {e}",
+                log_prefix="lord-otter",
+            )
+        except Exception:
+            pass
+
+
+async def _process_market_cypher_alert(
+    *, deps: Any, agent: Any, payload: dict, symbol: str,
+) -> None:
+    """Background processing of a Market Cypher TV alert.
+
+    Architectural twin of `_process_lord_otter_alert` — see that function's
+    docstring for the rationale. Differences are strategy-specific
+    audit-row tags ('market_cypher' vs 'lord_otter') and Telegram-notify
+    formatters; the orchestration is identical.
+    """
+    try:
+        # ── Broker snapshot ──────────────────────────────────────────
         snap = None
         account_equity = 0.0
         held_qty: dict[str, float] = {}
@@ -680,7 +749,7 @@ def register(app: FastAPI) -> None:
                     "market-cypher: snapshot failed for sizing/held lookup: %s", e,
                 )
 
-        # 8. Hand to the agent state machine
+        # ── Agent state machine ──────────────────────────────────────
         try:
             order, decision = agent.on_alert(
                 payload,
@@ -697,10 +766,7 @@ def register(app: FastAPI) -> None:
                     "signal": payload.get("signal"), "error": str(e),
                 },
             )
-            return JSONResponse(
-                {"status": "error", "reason": f"agent error: {e}"},
-                status_code=500,
-            )
+            return
 
         if order is None:
             log.info("market-cypher ignored: %s [signal=%s symbol=%s]",
@@ -715,10 +781,9 @@ def register(app: FastAPI) -> None:
                     "reason": decision,
                 },
             )
-            return JSONResponse({"status": "ignored", "reason": decision})
+            return
 
-        # 8b. Research firm TradeConfirmation consult (Phase 1e). See the
-        # parallel block in lord_otter_webhook for the rationale.
+        # ── Research firm consult ────────────────────────────────────
         from trading_corp.agents.research.trade_confirmation_consult import (
             consult_research_for_trade_confirmation,
         )
@@ -741,11 +806,7 @@ def register(app: FastAPI) -> None:
                 ),
                 log_prefix="market-cypher",
             )
-            return JSONResponse({
-                "status": "skipped_by_research",
-                "reason": consult.rationale,
-                "verdict": consult.verdict_kind,
-            })
+            return
         order = consult.order  # type: ignore[assignment]
         if consult.verdict_kind == "conditional":
             log.info(
@@ -753,17 +814,15 @@ def register(app: FastAPI) -> None:
                 consult.applied_changes,
             )
 
-        # 9. Risk gate — same as Otter
+        # ── Risk gate ────────────────────────────────────────────────
         if broker is None:
-            log.warning("market-cypher: broker for division=%s not registered", agent.division)
+            log.warning("market-cypher: broker for division=%s not registered",
+                        agent.division)
             deps.logger_agent.log_event(
                 actor="market_cypher", kind="execution_error",
                 payload={"order_id": order.id, "reason": "broker not registered"},
             )
-            return JSONResponse(
-                {"status": "error", "reason": f"no broker for {agent.division}"},
-                status_code=503,
-            )
+            return
 
         account = AccountState(
             account=getattr(snap, "account", agent.division) if snap else agent.division,
@@ -793,12 +852,7 @@ def register(app: FastAPI) -> None:
                 },
             )
             log.info("market-cypher risk-rejected: %s [%s]", verdict.reason, order.id)
-            return JSONResponse({
-                "status": "risk_rejected",
-                "reason": verdict.reason,
-                "decision": decision,
-                "order_id": order.id,
-            })
+            return
 
         if verdict.verdict == "resize" and verdict.new_qty is not None:
             log.info(
@@ -807,7 +861,7 @@ def register(app: FastAPI) -> None:
             )
             order.qty = float(verdict.new_qty)
 
-        # 10. Place vs notify
+        # ── Place vs notify ──────────────────────────────────────────
         if not agent.auto_execute:
             order.status = "would_have_placed"
             deps.logger_agent.log_proposed_order(order)
@@ -825,19 +879,13 @@ def register(app: FastAPI) -> None:
                     "decision": decision,
                 },
             )
+            _record_paper_trade(deps, order, "market_cypher", agent)
             await _telegram_notify(
                 deps,
                 _format_would_have_placed_msg_cypher(order, decision),
                 log_prefix="market-cypher",
             )
-            return JSONResponse({
-                "status": "would_have_placed",
-                "decision": decision,
-                "order_id": order.id,
-                "qty": order.qty,
-                "side": order.side,
-                "symbol": order.symbol,
-            })
+            return
 
         # auto_execute=true → fire it
         order.status = "board_approved"
@@ -863,13 +911,6 @@ def register(app: FastAPI) -> None:
                 _format_filled_msg_cypher(order, fill, decision),
                 log_prefix="market-cypher",
             )
-            return JSONResponse({
-                "status": "filled",
-                "decision": decision,
-                "order_id": order.id,
-                "fill_price": fill.price,
-                "venue": fill.venue,
-            })
         except Exception as e:
             log.warning("market-cypher place(%s) failed: %s", order.id, e)
             deps.logger_agent.log_event(
@@ -879,11 +920,31 @@ def register(app: FastAPI) -> None:
                     "error": str(e), "via": "market_cypher_webhook",
                 },
             )
-            return JSONResponse({
-                "status": "execute_error",
-                "reason": str(e)[:200],
-                "order_id": order.id,
-            }, status_code=500)
+
+    except Exception as e:
+        log.exception("market-cypher background processing crashed")
+        try:
+            deps.logger_agent.log_event(
+                actor="market_cypher", kind="agent_error",
+                payload={
+                    "strategy": "market_cypher",
+                    "division": getattr(agent, "division", "unknown"),
+                    "signal": (payload or {}).get("signal"),
+                    "error": str(e),
+                    "phase": "background_processing",
+                },
+            )
+        except Exception:
+            log.exception("market-cypher background: audit-write failed")
+        try:
+            await _telegram_notify(
+                deps,
+                f"⚠️ market-cypher background crash on "
+                f"signal={(payload or {}).get('signal')!r}: {type(e).__name__}: {e}",
+                log_prefix="market-cypher",
+            )
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------------
@@ -952,6 +1013,28 @@ def _normalize_symbol(ticker: str) -> str:
         if ticker.endswith(quote) and len(ticker) > len(quote):
             return f"{ticker[:-len(quote)]}/{quote}"
     return ticker.upper()
+
+
+def _record_paper_trade(deps, order, strategy: str, agent) -> None:
+    """Write the structured paper_trade_record row at would_have_placed time.
+
+    Phase B (BACKLOG.md 2026-05-01): captures the trade specs alongside the
+    audit row so the Phase C replay job can JOIN against price history and
+    populate result fields. Failures here are logged but don't abort the
+    push — the audit_event row is still the source of truth, this table is
+    a denormalized convenience.
+    """
+    try:
+        max_hold = int(getattr(agent, "max_hold_seconds", 0) or 0) or None
+        record = PaperTradeRecord.from_order(
+            order,
+            strategy=strategy,
+            division=agent.division,
+            max_hold_seconds=max_hold,
+        )
+        _db.insert_paper_trade_record(record.to_db_row(), db_url=deps.db_url)
+    except Exception as e:
+        log.warning("paper_trade_record write failed for %s: %s", order.id, e)
 
 
 def _format_would_have_placed_msg(order, decision: str) -> str:

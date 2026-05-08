@@ -94,13 +94,13 @@ class TelegramCommands:
                 )
             lines.append("")
 
-        if snap.broker_groups:
-            lines.append("*By broker*")
-            broker_emoji = {
-                "robinhood": "📈", "fidelity": "🏦", "coinbase": "🪙",
+        if snap.investment_groups:
+            lines.append("*By investment type*")
+            group_emoji = {
+                "individual": "💼", "crypto": "🪙", "retirement": "🛡",
             }
-            for grp in snap.broker_groups:
-                ico = broker_emoji.get(grp.key, "•")
+            for grp in snap.investment_groups:
+                ico = group_emoji.get(grp.key, "•")
                 eq_str = _money(grp.total_equity) if grp.total_equity else "—"
                 lines.append(
                     f"  {ico} {grp.label:<11} {eq_str:>14}  "

@@ -74,6 +74,26 @@ class LoggerAgent:
             })
         return out
 
+    def events_since(self, ts_iso: str, limit: int = 5000) -> list[dict]:
+        """Date-scoped audit fetch for multi-day windows that would
+        overflow recent_events()'s default limit. Returns newest-first.
+        Used by the PMCC research-as-consultant validation view, which
+        needs the full observation period (≥3 days) regardless of how
+        many other audit rows landed in the same window."""
+        with db.connect(self.db_url) as conn:
+            rows = conn.execute(
+                "SELECT id, ts, actor, kind, payload_json FROM audit_event "
+                "WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+                (ts_iso, limit),
+            ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "id": r["id"], "ts": r["ts"], "actor": r["actor"],
+                "kind": r["kind"], "payload": json.loads(r["payload_json"]),
+            })
+        return out
+
 
 def _short(d: dict) -> str:
     s = json.dumps(d, default=str)

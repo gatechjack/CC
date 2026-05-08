@@ -23,6 +23,8 @@ _SECRET_KEY_NAMES = (
     "COINBASE_FUTURES_API_KEY",
     "COINBASE_FUTURES_API_SECRET",
     "COINBASE_FUTURES_PASSPHRASE",
+    "BITUNIX_FUTURES_API_KEY",
+    "BITUNIX_FUTURES_API_SECRET",
     "FIDELITY_PASSWORD",
 )
 
@@ -45,6 +47,11 @@ class Secrets:
     coinbase_futures_api_key: str | None
     coinbase_futures_api_secret: str | None
     coinbase_futures_passphrase: str | None
+    # BitUnix Futures (Phase 1 read-only). No passphrase — BitUnix's auth
+    # is SHA256-double-sign, not HMAC+passphrase. If unset, the broker
+    # initializes as a stub returning $0 / no positions.
+    bitunix_futures_api_key: str | None
+    bitunix_futures_api_secret: str | None
     fidelity_username: str | None
     fidelity_password: str | None
     fidelity_account: str | None   # account name substring to filter, e.g. "Joint"
@@ -126,6 +133,8 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "COINBASE_FUTURES_API_KEY",
         "COINBASE_FUTURES_API_SECRET",
         "COINBASE_FUTURES_PASSPHRASE",
+        "BITUNIX_FUTURES_API_KEY",
+        "BITUNIX_FUTURES_API_SECRET",
         "FIDELITY_USERNAME",
         "FIDELITY_PASSWORD",
         "FIDELITY_ACCOUNT",
@@ -192,6 +201,8 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         coinbase_futures_api_key=_env("COINBASE_FUTURES_API_KEY"),
         coinbase_futures_api_secret=_env("COINBASE_FUTURES_API_SECRET"),
         coinbase_futures_passphrase=_env("COINBASE_FUTURES_PASSPHRASE"),
+        bitunix_futures_api_key=_env("BITUNIX_FUTURES_API_KEY"),
+        bitunix_futures_api_secret=_env("BITUNIX_FUTURES_API_SECRET"),
         fidelity_username=_env("FIDELITY_USERNAME"),
         fidelity_password=_env("FIDELITY_PASSWORD"),
         fidelity_account=_env("FIDELITY_ACCOUNT"),

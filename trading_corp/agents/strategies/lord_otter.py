@@ -268,6 +268,11 @@ class LordOtterAgent:
         self._reload()
         return str(self._cfg.get("webhook_secret_env", "LORD_OTTER_WEBHOOK_SECRET"))
 
+    @property
+    def max_hold_seconds(self) -> int:
+        self._reload()
+        return int(self._cfg.get("max_hold_seconds", 86400))
+
     def is_symbol_allowed(self, symbol: str) -> bool:
         self._reload()
         allowed = {s.upper() for s in (self._cfg.get("symbols") or [])}

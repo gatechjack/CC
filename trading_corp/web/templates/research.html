@@ -39,10 +39,10 @@
         <table class="w-full text-xs font-mono">
           <thead class="text-muted">
             <tr class="border-b border-edge">
-              <th class="text-left py-1 pr-4">product_type</th>
-              <th class="text-left py-1 pr-4">asset_class</th>
-              <th class="text-right py-1 pr-4">N</th>
-              <th class="text-right py-1 pr-4">P50 (s)</th>
+              <th class="text-left py-1 pr-4">Product</th>
+              <th class="text-left py-1 pr-4">Asset Class</th>
+              <th class="text-right py-1 pr-4">Samples</th>
+              <th class="text-right py-1 pr-4">Median (s)</th>
               <th class="text-right py-1 pr-4">P95 (s)</th>
               <th class="text-right py-1">P99 (s)</th>
             </tr>
@@ -78,10 +78,10 @@
             <table class="w-full text-xs font-mono">
               <thead class="text-muted">
                 <tr class="border-b border-edge">
-                  <th class="text-left py-1 pr-4">product_type</th>
-                  <th class="text-left py-1 pr-4">asset_class</th>
-                  <th class="text-left py-1 pr-4">week</th>
-                  <th class="text-right py-1 pr-4">N</th>
+                  <th class="text-left py-1 pr-4">Product</th>
+                  <th class="text-left py-1 pr-4">Asset Class</th>
+                  <th class="text-left py-1 pr-4">Week</th>
+                  <th class="text-right py-1 pr-4">Samples</th>
                   <th class="text-right py-1">P95 (s)</th>
                 </tr>
               </thead>
@@ -102,6 +102,138 @@
           </div>
         </details>
       {% endif %}
+    {% endif %}
+  </section>
+
+  {# ── PMCC RESEARCH-AS-CONSULTANT VALIDATION (2026-05-02 → 05-05) ─── #}
+  {% set pv = view.pmcc_validation %}
+  <section class="bg-pane border border-edge rounded-lg">
+    <div class="border-b border-edge px-4 py-2 flex items-baseline justify-between">
+      <h2 class="text-sm font-semibold text-mono">
+        PMCC research-as-consultant validation
+      </h2>
+      <span class="text-muted text-[11px]">
+        observation since <code>{{ pv.observation_start[:10] }}</code> ·
+        decision date 2026-05-05
+      </span>
+    </div>
+
+    <div class="px-4 py-3 grid grid-cols-2 md:grid-cols-5 gap-3 text-xs font-mono border-b border-edge/40">
+      <div>
+        <div class="text-muted text-[10px] uppercase tracking-wider">Engagements</div>
+        <div class="text-mono text-base">{{ pv.n_engagements }}</div>
+      </div>
+      <div>
+        <div class="text-muted text-[10px] uppercase tracking-wider">Candidates</div>
+        <div class="text-mono text-base">{{ pv.n_candidates }}</div>
+      </div>
+      <div>
+        <div class="text-muted text-[10px] uppercase tracking-wider">Acted on</div>
+        <div class="text-gain text-base">{{ pv.n_acted_on }}</div>
+      </div>
+      <div>
+        <div class="text-muted text-[10px] uppercase tracking-wider">Skipped</div>
+        <div class="text-muted text-base">{{ pv.n_skipped }}</div>
+      </div>
+      <div>
+        <div class="text-muted text-[10px] uppercase tracking-wider">Approved/filled</div>
+        <div class="text-base">
+          <span class="text-gain">{{ pv.n_board_approved_or_filled }}</span>
+          {% if pv.n_filled %}
+            <span class="text-muted text-[11px]">({{ pv.n_filled }} filled)</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {% if pv.top_skip_reasons %}
+      <div class="px-4 py-2 text-[11px] font-mono text-muted border-b border-edge/40">
+        skip reasons:
+        {% for r in pv.top_skip_reasons %}<span class="ml-2">{{ r.reason }}={{ r.count }}</span>{% endfor %}
+      </div>
+    {% endif %}
+
+    {% if not pv.engagements %}
+      <div class="px-4 py-6 text-muted text-sm italic">
+        No PMCC research engagements yet in the observation window.
+        <span class="block mt-1 text-[11px]">
+          PMCC scout fires <code>universe_source: research_on_demand</code>
+          on its scheduled scan; this view populates as engagements complete.
+        </span>
+      </div>
+    {% else %}
+      <div class="divide-y divide-edge">
+        {% for eng in pv.engagements %}
+          <details class="group" {% if loop.first %}open{% endif %}>
+            <summary class="px-4 py-2 cursor-pointer flex items-baseline gap-3 text-sm
+                            list-none [&::-webkit-details-marker]:hidden">
+              <span class="text-muted text-[11px] font-mono shrink-0 w-44">
+                {{ eng.ts[:19] if eng.ts else '' }}
+              </span>
+              <span class="font-mono text-[11px] shrink-0 text-muted">
+                {{ eng.engagement_id[:8] }}
+              </span>
+              <span class="text-mono text-xs flex-1">
+                {{ eng.n_candidates }} candidate{{ '' if eng.n_candidates == 1 else 's' }}
+              </span>
+              <span class="text-muted/60 text-xs transition-transform group-open:rotate-90">▶</span>
+            </summary>
+            <div class="px-4 pb-3 pt-1 overflow-x-auto">
+              <table class="w-full text-xs font-mono">
+                <thead class="text-muted">
+                  <tr class="border-b border-edge">
+                    <th class="text-left py-1 pr-3">Symbol</th>
+                    <th class="text-left py-1 pr-3">Conviction</th>
+                    <th class="text-right py-1 pr-3">Fit</th>
+                    <th class="text-left py-1 pr-3">Status</th>
+                    <th class="text-left py-1 pr-3">Order status</th>
+                    <th class="text-left py-1">Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for c in eng.candidates %}
+                    <tr class="border-b border-edge/30 align-top">
+                      <td class="py-1 pr-3 text-mono">{{ c.symbol }}</td>
+                      <td class="py-1 pr-3
+                          {% if c.conviction == 'high' %}text-gain
+                          {% elif c.conviction == 'low' %}text-muted
+                          {% else %}text-mono{% endif %}">
+                        {{ c.conviction or '—' }}
+                      </td>
+                      <td class="py-1 pr-3 text-right">
+                        {% if c.fit_score is not none %}{{ '%.2f' % c.fit_score }}{% else %}—{% endif %}
+                      </td>
+                      <td class="py-1 pr-3">
+                        {% if c.status == 'acted_on' %}
+                          <span class="text-gain">acted</span>
+                        {% elif c.status == 'skipped' %}
+                          <span class="text-warn">skipped</span>
+                        {% else %}
+                          <span class="text-muted">—</span>
+                        {% endif %}
+                      </td>
+                      <td class="py-1 pr-3
+                          {% if c.order_status == 'filled' %}text-gain
+                          {% elif c.order_status in ('cancelled', 'risk_rejected', 'board_rejected') %}text-loss
+                          {% else %}text-muted{% endif %}">
+                        {{ c.order_status or '—' }}
+                      </td>
+                      <td class="py-1 text-muted text-[11px] max-w-[40ch] truncate"
+                          title="{{ c.skip_reason or c.thesis }}">
+                        {% if c.skip_reason %}
+                          {{ c.skip_reason }}
+                        {% elif c.thesis %}
+                          {{ c.thesis }}
+                        {% endif %}
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        {% endfor %}
+      </div>
     {% endif %}
   </section>
 
@@ -169,23 +301,29 @@
     {% else %}
       <div class="divide-y divide-edge max-h-[600px] overflow-y-auto">
         {% for row in view.engagement_log %}
-          <div class="px-4 py-2 flex items-baseline gap-3 text-sm">
-            <span class="text-muted text-[11px] font-mono shrink-0 w-44">
-              {{ row.ts[:19] if row.ts else '' }}
-            </span>
-            <span class="font-mono text-[11px] shrink-0 w-72
-                  {% if 'aborted' in row.kind or 'rejected' in row.kind or 'failed' in row.kind %}text-loss
-                  {% elif 'completed' in row.kind or 'emitted' in row.kind %}text-gain
-                  {% else %}text-muted{% endif %}">
-              {{ row.kind }}
-            </span>
-            <span class="text-mono text-xs flex-1 truncate">
-              {{ row.summary }}
-            </span>
-            <span class="text-muted text-[11px] font-mono shrink-0">
-              {% if row.engagement_id %}{{ row.engagement_id[:8] }}{% endif %}
-            </span>
-          </div>
+          <details class="px-4 py-2 group">
+            <summary class="cursor-pointer flex items-baseline gap-3 text-sm">
+              <span class="text-muted text-[11px] font-mono shrink-0 w-44">
+                {{ row.ts[:19] if row.ts else '' }}
+              </span>
+              <span class="font-mono text-[11px] shrink-0 w-72
+                    {% if 'aborted' in row.kind or 'rejected' in row.kind or 'failed' in row.kind %}text-loss
+                    {% elif 'completed' in row.kind or 'emitted' in row.kind %}text-gain
+                    {% else %}text-muted{% endif %}">
+                {{ row.kind }}
+              </span>
+              <span class="text-mono text-xs flex-1 truncate">
+                {{ row.summary }}
+              </span>
+              <span class="text-muted text-[11px] font-mono shrink-0">
+                {% if row.engagement_id %}{{ row.engagement_id[:8] }}{% endif %}
+              </span>
+              <span class="text-muted/60 text-xs transition-transform group-open:rotate-90">▶</span>
+            </summary>
+            <div class="mt-3 pl-44 pr-2 pb-2">
+              <pre class="text-mono whitespace-pre overflow-x-auto bg-pane-2/40 border border-edge rounded px-3 py-2 text-[11px] leading-relaxed">{{ row.payload_pretty }}</pre>
+            </div>
+          </details>
         {% endfor %}
       </div>
     {% endif %}

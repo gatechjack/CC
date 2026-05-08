@@ -99,6 +99,53 @@ CREATE TABLE IF NOT EXISTS agent_state (
     updated_ts  TEXT NOT NULL,           -- ISO-8601 UTC
     PRIMARY KEY (agent, key)
 );
+
+-- Structured paper-trade record. Written on every `would_have_placed`
+-- emission (Otter + Cypher today, future TV-driven divisions when added).
+-- Phase B of the would_have_placed enrichment (BACKLOG.md 2026-05-01):
+-- captures the full trade specifics at emit time so a Phase C replay job
+-- can join against minute-bar history and populate result_* columns.
+--
+-- Result columns (result, result_ts, result_price, actual_pnl_dollars,
+-- actual_r_multiple, bars_to_resolution) are NULL until the replay job
+-- writes them. `result` values: 'win' (TP hit first), 'loss' (SL hit
+-- first), 'open' (neither hit yet), 'expired' (max_hold_seconds elapsed
+-- without resolution).
+--
+-- Why a separate table vs. squeezing into audit_event.payload: replay
+-- analysis is a JOIN on price history, and the dashboard panels filter
+-- on (strategy, tier, result) — awkward against JSON LIKE queries.
+CREATE TABLE IF NOT EXISTS paper_trade_record (
+    order_id              TEXT PRIMARY KEY,        -- = proposed_order.id
+    ts                    TEXT NOT NULL,           -- alert/emit ts (ISO UTC)
+    strategy              TEXT NOT NULL,           -- 'lord_otter' | 'market_cypher'
+    division              TEXT NOT NULL,           -- division slug
+    symbol                TEXT NOT NULL,
+    side                  TEXT NOT NULL,
+    qty                   REAL NOT NULL,
+    tier                  TEXT,
+    source_signal         TEXT,
+    entry_reference_price REAL,
+    stop_price            REAL,
+    tp_price              REAL,
+    tp_r_multiple         REAL,
+    expected_loss         REAL,                    -- = -max_dollar_risk
+    expected_gain         REAL,
+    rr_ratio              REAL,                    -- expected_gain / max_dollar_risk
+    max_hold_seconds      INTEGER,                 -- frozen at write-time from strategy config
+    -- Phase C fields, NULL until replay populates
+    result                TEXT,                    -- 'win' | 'loss' | 'open' | 'expired'
+    result_ts             TEXT,
+    result_price          REAL,
+    actual_pnl_dollars    REAL,
+    actual_r_multiple     REAL,
+    bars_to_resolution    INTEGER,
+    extra_json            TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_paper_trade_record_strategy_ts
+    ON paper_trade_record(strategy, ts);
+CREATE INDEX IF NOT EXISTS ix_paper_trade_record_result
+    ON paper_trade_record(result);
 """
 
 
@@ -193,6 +240,26 @@ def load_agent_state(
     if row is None:
         return None
     return json.loads(row["value_json"]), datetime.fromisoformat(row["updated_ts"])
+
+
+def insert_paper_trade_record(
+    record: dict,
+    db_url: str = "sqlite:///data/trading_corp.db",
+) -> None:
+    """INSERT OR IGNORE one paper_trade_record row.
+
+    `record` is the dict produced by `PaperTradeRecord.to_db_row()`. We use
+    INSERT OR IGNORE keyed on order_id so the backfill script and the
+    write-on-emit path don't collide — whichever wrote first wins.
+    """
+    cols = list(record.keys())
+    placeholders = ",".join("?" for _ in cols)
+    sql = (
+        f"INSERT OR IGNORE INTO paper_trade_record ({','.join(cols)}) "
+        f"VALUES ({placeholders})"
+    )
+    with connect(db_url) as conn:
+        conn.execute(sql, [record[c] for c in cols])
 
 
 def delete_agent_state(

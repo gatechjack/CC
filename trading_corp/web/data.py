@@ -15,7 +15,7 @@ from typing import Any
 
 from trading_corp.persistence import db
 from trading_corp.utils.divisions import (
-    BrokerGroup, Division, group_by_broker, load_divisions,
+    Division, InvestmentGroup, group_by_investment_type, load_divisions,
 )
 from trading_corp.utils.market_data import (
     get_benchmark_change, get_market_intraday, get_market_quote, get_vix,
@@ -435,6 +435,7 @@ class DivisionViewSnapshot:
 
     recent_activity: list[dict]
     equity_curve: list[dict]
+    paper_trade_summary: dict | None = None
 
 
 @dataclass
@@ -446,7 +447,7 @@ class CommandCenterSnapshot:
     vix: float | None
     regime: str
     buckets: list[IntentBucket]     # one per intent (in order)
-    broker_groups: list[BrokerGroup]
+    investment_groups: list[InvestmentGroup]
     health: dict
     equity_curve: list[dict]
     # Market overview ribbon at top: SPY / QQQ / BTC-USD / VIX
@@ -479,9 +480,9 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
     """
     db_url = deps.db_url
 
-    # Load divisions and prepare broker groups
+    # Load divisions and prepare investment-type groups
     divisions = load_divisions()
-    broker_groups = group_by_broker(divisions)
+    investment_groups = group_by_investment_type(divisions)
 
     # Run parallel data fetches
     db_results = await asyncio.gather(
@@ -512,8 +513,8 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
     # page where a benchmark comparison makes more sense at scale.
     # await _hydrate_benchmarks(divisions)
 
-    # Aggregate by broker group + by intent bucket
-    for grp in broker_groups:
+    # Aggregate by investment-type group + by intent bucket
+    for grp in investment_groups:
         grp.total_equity = sum(d.equity or 0.0 for d in grp.divisions)
         grp.total_pnl_today = sum(d.pnl_today or 0.0 for d in grp.divisions)
 
@@ -536,7 +537,7 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         vix=vix if isinstance(vix, (int, float)) else None,
         regime=regime if isinstance(regime, str) else "unknown",
         buckets=buckets,
-        broker_groups=broker_groups,
+        investment_groups=investment_groups,
         health=health,
         equity_curve=eq_curve,
         market_ribbon=ribbon,
@@ -823,12 +824,80 @@ def _positions_from_snap(snap: Any) -> list[Any]:
     return list(getattr(snap, "positions", []) or [])
 
 
+# ── Paper-trade summary (Phase C of would_have_placed enrichment) ────────
+
+
+def paper_trade_summary(db_url: str, division: str) -> dict:
+    """Per-division paper-trade win-rate summary for the dashboard panel.
+
+    Returns a dict shaped:
+      {
+        "division": "<slug>",
+        "windows": [
+          {"label": "7d",  "rows": [...]},
+          {"label": "30d", "rows": [...]},
+          {"label": "all", "rows": [...]},
+        ],
+        "totals": {
+          "7d":  {"n": N, "wins": W, "losses": L, "expired": E,
+                  "open": O, "win_rate_pct": float, "sim_pnl": $, ...},
+          "30d": {...},
+          "all": {...},
+        },
+      }
+
+    `pre_phase_a` rows are excluded from win-rate math (we have no TP/SL
+    on them, so they're not part of the "what would my track record
+    look like?" answer). They're still counted in the raw row count
+    under `n_pre_phase_a` for transparency.
+    """
+    cutoffs = {
+        "7d":  (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),
+        "30d": (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(),
+        "all": "1970-01-01T00:00:00+00:00",
+    }
+    out = {"division": division, "windows": [], "totals": {}}
+    for label, cutoff in cutoffs.items():
+        rows = _query(
+            db_url,
+            """SELECT tier, result,
+                      COUNT(*) AS n,
+                      COALESCE(SUM(actual_pnl_dollars), 0) AS sim_pnl
+               FROM paper_trade_record
+               WHERE division = ? AND ts >= ?
+               GROUP BY tier, result
+               ORDER BY tier ASC""",
+            (division, cutoff),
+        )
+        out["windows"].append({"label": label, "rows": rows})
+
+        wins = sum(r["n"] for r in rows if r["result"] == "win")
+        losses = sum(r["n"] for r in rows if r["result"] == "loss")
+        expired = sum(r["n"] for r in rows if r["result"] == "expired")
+        open_n = sum(r["n"] for r in rows if r["result"] is None)
+        pre_a = sum(r["n"] for r in rows if r["result"] == "pre_phase_a")
+        decided = wins + losses
+        total_n = sum(r["n"] for r in rows)
+        sim_pnl = sum(r["sim_pnl"] or 0.0 for r in rows)
+        out["totals"][label] = {
+            "n": total_n,
+            "wins": wins,
+            "losses": losses,
+            "expired": expired,
+            "open": open_n,
+            "n_pre_phase_a": pre_a,
+            "win_rate_pct": (100.0 * wins / decided) if decided else None,
+            "sim_pnl": round(sim_pnl, 2),
+        }
+    return out
+
+
 # ── Trade flow ────────────────────────────────────────────────────────────
 
 def trade_flow(db_url: str, limit: int = 20) -> list[dict]:
     rows = _query(
         db_url,
-        """SELECT ts, actor, kind, payload_json
+        """SELECT id, ts, actor, kind, payload_json
            FROM audit_event
            WHERE kind IN (
              'risk_approved','risk_rejected',
@@ -851,6 +920,7 @@ def trade_flow(db_url: str, limit: int = 20) -> list[dict]:
         except Exception:
             payload = {}
         out.append({
+            "id": r["id"],
             "ts": r["ts"],
             "ts_short": _humanize_ts(r["ts"]),
             "actor": r["actor"],
@@ -860,6 +930,7 @@ def trade_flow(db_url: str, limit: int = 20) -> list[dict]:
             "qty": payload.get("qty", ""),
             "reason": payload.get("reason", "")[:120],
             "color": _color_for(r["kind"]),
+            "payload_pretty": json.dumps(payload, indent=2, default=str, sort_keys=True),
         })
     return out
 
@@ -1010,6 +1081,15 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     # Today's P&L: best-effort against most-recent prior account_state row
     todays_pnl, todays_pnl_pct = _approx_todays_pnl(equity_curve, equity)
 
+    # Paper-trade win-rate panel (Phase C). Cheap query, only meaningful
+    # for divisions that emit `would_have_placed` rows (Otter / Cypher
+    # today on `coinbase_spot`). Other divisions return zeros silently.
+    try:
+        pt_summary = paper_trade_summary(deps.db_url, slug)
+    except Exception as e:
+        log.warning("paper_trade_summary for %s failed: %s", slug, e)
+        pt_summary = None
+
     return DivisionViewSnapshot(
         division=division,
         equity=equity,
@@ -1022,6 +1102,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         other_options=other_options,
         recent_activity=activity,
         equity_curve=equity_curve,
+        paper_trade_summary=pt_summary,
     )
 
 
@@ -1128,7 +1209,7 @@ def _query_division_activity(
     """
     rows = _query(
         db_url,
-        """SELECT ts, actor, kind, payload_json
+        """SELECT id, ts, actor, kind, payload_json
            FROM audit_event
            WHERE kind IN (
              'risk_approved','risk_rejected',
@@ -1163,6 +1244,7 @@ def _query_division_activity(
         if not matches:
             continue
         out.append({
+            "id": r["id"],   # exposed so the template can build /audit/{id}/replay-research
             "ts": r["ts"],
             "ts_short": _humanize_ts(r["ts"]),
             "actor": r["actor"],
@@ -1170,6 +1252,7 @@ def _query_division_activity(
             "symbol": payload.get("symbol", ""),
             "side": payload.get("side", ""),
             "qty": payload.get("qty", ""),
+            "signal": payload.get("signal", ""),
             "reason": (payload.get("reason") or "")[:140],
             "color": _color_for(r["kind"]),
         })

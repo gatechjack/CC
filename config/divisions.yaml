@@ -75,6 +75,9 @@ divisions:
     target_annual_return: 0.08
     enabled: true
 
+  # Deactivated 2026-05-03 per BitUnix vision conversation: division
+  # disabled so no signals trigger it; YAML entry kept as deadcode for
+  # easy revival if needed. See trading_corp_bitunix_vision.md.
   - slug: fidelity_individual
     name: Fidelity Individual
     broker: fidelity
@@ -82,7 +85,7 @@ divisions:
     intent: aggressive
     benchmark: SPY
     target_annual_return: 0.20
-    enabled: true
+    enabled: false
 
   # ── Coinbase (one login, two trading modes) ────────────────────────────
   - slug: coinbase_spot
@@ -94,6 +97,8 @@ divisions:
     target_annual_return: 0.40
     enabled: true
 
+  # Marked standby 2026-05-03: no order path active; kept for $-balance
+  # reads + manual promote later if BitUnix proves out.
   - slug: coinbase_futures
     name: Coinbase Futures
     broker: coinbase
@@ -102,4 +107,16 @@ divisions:
     benchmark: BTC-USD
     target_annual_return: 0.50
     strategy: crypto_futures
+    standby: true
+    enabled: true
+
+  # ── BitUnix Futures (added 2026-05-03; broker adapter ships in Phase 1) ─
+  - slug: bitunix_futures
+    name: BitUnix Futures
+    broker: bitunix
+    account_filter: futures
+    intent: aggressive
+    benchmark: BTC-USD
+    target_annual_return: 0.50
+    standby: true
     enabled: true

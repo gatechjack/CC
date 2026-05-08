@@ -95,6 +95,7 @@ from trading_corp.agents.trend_regime import TrendAgent
 from trading_corp.brokers.paper import PaperBroker, PaperExecutionBroker
 from trading_corp.brokers.robinhood import RobinhoodBroker
 from trading_corp.comms.cli import CLIChannel
+from trading_corp.comms.pending_registry import PendingApprovalRegistry
 from trading_corp.comms.telegram_bot import TelegramChannel
 from trading_corp.graph.ceo_graph import build_trade_graph
 from trading_corp.persistence import db
@@ -209,6 +210,13 @@ async def run(argv: list[str] | None = None) -> int:
     data_exec = DataExecAgent(logger_agent, dry_run=dry_run)
     portfolio = PortfolioAgent(data_exec)
     ceo = CEOAgent()
+
+    # Phase B.1 of HITL-in-app — process-wide registry of pending
+    # approvals. TelegramChannel registers its message-send as a
+    # notifier on .start(); the web /approvals routes read + resolve
+    # via the same registry. ONE instance per process; tests
+    # construct their own per case.
+    pending_registry = PendingApprovalRegistry(logger_agent=logger_agent)
     # PMCC: pass db_url for Phase 2 Telegram approval enrichment — agent
     # queries proposed_order table for prior-roll history when building
     # position_context on roll/sell-weekly proposals. No-op when None.
@@ -219,7 +227,7 @@ async def run(argv: list[str] | None = None) -> int:
     # webhook endpoint will refuse traffic until `lord_otter.enabled`
     # is true in strategies.yaml AND a valid LORD_OTTER_WEBHOOK_SECRET
     # is set in the environment.
-    from trading_corp.agents.divisions.lord_otter import LordOtterAgent
+    from trading_corp.agents.strategies.lord_otter import LordOtterAgent
     # Pass the DB URL so the agent can persist + restore its bias latch
     # across restarts. Without this, every restart wipes the bias state
     # and the strategy goes mute until the next regime-change cross
@@ -232,7 +240,7 @@ async def run(argv: list[str] | None = None) -> int:
     # Otter). Same persistence pattern as Otter; bias + sommi state both
     # survive restarts via the agent_state table. 3-day staleness gate
     # since Cypher's bias is set on 1D events.
-    from trading_corp.agents.divisions.market_cypher import MarketCypherAgent
+    from trading_corp.agents.strategies.market_cypher import MarketCypherAgent
     market_cypher_agent = MarketCypherAgent(db_url=secrets.db_url)
 
     # --- Brokers (one per division, driven by config/divisions.yaml) ---
@@ -302,14 +310,39 @@ async def run(argv: list[str] | None = None) -> int:
         await channel.push(
             f"PMCC scan: *{len(orders)}* order(s) proposed. Routing for approval..."
         )
-        for order in orders:
-            status = await _run_order(
-                _graph_holder[0], channel, logger_agent, order, division="robinhood_pmcc"
-            )
-            logger_agent.log_event(
-                "pmcc", "scan_order_result",
-                {"order_id": order.id, "symbol": order.symbol, "status": status},
-            )
+        # Phase B.3 — group orders by pmcc_pair_id so paired rolls
+        # (close + open sharing the same pair_id) launch in parallel.
+        # Both ApprovalRequests land in the registry simultaneously,
+        # which lets the web /approvals/{order_id} detail page
+        # coalesce siblings into ONE card with Net Debit/Credit and
+        # ONE Approve button (eliminating the "approve close, reject
+        # open → naked short" failure mode). Solo orders (no pair_id)
+        # remain sequential — same blast-radius bound as pre-B.3.
+        groups = _group_orders_by_pair_id(orders)
+        for group in groups:
+            if len(group) == 1:
+                order = group[0]
+                status = await _run_order(
+                    _graph_holder[0], channel, logger_agent, order,
+                    division="robinhood_pmcc",
+                )
+                logger_agent.log_event(
+                    "pmcc", "scan_order_result",
+                    {"order_id": order.id, "symbol": order.symbol, "status": status},
+                )
+            else:
+                statuses = await asyncio.gather(*(
+                    _run_order(
+                        _graph_holder[0], channel, logger_agent, o,
+                        division="robinhood_pmcc",
+                    )
+                    for o in group
+                ))
+                for o, s in zip(group, statuses):
+                    logger_agent.log_event(
+                        "pmcc", "scan_order_result",
+                        {"order_id": o.id, "symbol": o.symbol, "status": s},
+                    )
         return f"PMCC scan complete: {len(orders)} order(s) processed."
 
     if secrets.has_telegram:
@@ -365,6 +398,7 @@ async def run(argv: list[str] | None = None) -> int:
             paper_broker=paper_broker,
             secrets=secrets,
             risk_agent=risk_agent,
+            pending_registry=pending_registry,
         )
         tg_commands = TelegramCommands(tg_deps)
 
@@ -496,6 +530,15 @@ async def run(argv: list[str] | None = None) -> int:
             )
             return "\n".join(lines)
 
+        # Phase A of HITL-in-app direction (Board, 2026-05-03):
+        # TELEGRAM_NOTIFICATION_ONLY=true → slim notification + deeplink
+        # body. Defaults False (current rich format preserved). Flip
+        # ON the day Phase B's web /approvals/{id} page is in place.
+        # DASHBOARD_BASE_URL overrides the production default for dev.
+        _tg_notify_only = (
+            os.getenv("TELEGRAM_NOTIFICATION_ONLY", "false").lower() == "true"
+        )
+        _dashboard_base = os.getenv("DASHBOARD_BASE_URL") or None
         channel = TelegramChannel(
             secrets.telegram_bot_token,  # type: ignore[arg-type]
             secrets.telegram_chat_id,    # type: ignore[arg-type]
@@ -505,6 +548,9 @@ async def run(argv: list[str] | None = None) -> int:
             on_fidelity_scan_command=_on_fidelity_scan,
             commands=tg_commands,
             on_research_command=_on_research,
+            notification_only=_tg_notify_only,
+            dashboard_base_url=_dashboard_base,
+            registry=pending_registry,
         )
     else:
         channel = CLIChannel()
@@ -598,6 +644,26 @@ async def run(argv: list[str] | None = None) -> int:
             _scheduled_pmcc_scan_loop(_on_scan, channel, logger_agent)
         )
 
+        # --- Paper-trade replay (Phase C of would_have_placed enrichment) ---
+        # One-shot startup catch-up: mark legacy pre-Phase-A rows + replay
+        # any pending rows that landed during the last downtime. Then spawn
+        # a 15-min periodic loop. Failures here are logged but never block
+        # main startup — replay is read-only enrichment, not an ordering path.
+        from trading_corp.agents.paper_trade_replay import (
+            mark_pre_phase_a_rows,
+            replay_pending_paper_trades_async,
+            start_replay_loop,
+        )
+        try:
+            mark_pre_phase_a_rows(secrets.db_url)
+            startup_counts = await replay_pending_paper_trades_async(secrets.db_url)
+            # f-string (not %s) — RedactingFilter rewrites dict args
+            # into their keys, producing a TypeError on % formatting.
+            log.info(f"paper_trade_replay startup catch-up: {startup_counts}")
+        except Exception:
+            log.exception("paper_trade_replay startup catch-up failed (continuing)")
+        replay_task = start_replay_loop(secrets.db_url, interval_sec=900)
+
         # --- Web command center (FastAPI on :8000, in-process) ---
         web_server, web_task = await _start_web_server(
             mode=mode,
@@ -617,6 +683,7 @@ async def run(argv: list[str] | None = None) -> int:
             market_cypher_agent=market_cypher_agent,
             telegram_channel=channel,
             research_firm=research_firm,
+            pending_registry=pending_registry,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -647,6 +714,11 @@ async def run(argv: list[str] | None = None) -> int:
             scheduler_task.cancel()
             try:
                 await scheduler_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            replay_task.cancel()
+            try:
+                await replay_task
             except (asyncio.CancelledError, Exception):
                 pass
             # Stop the web server cleanly
@@ -736,6 +808,23 @@ def _build_broker_for_division(
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(cb, paper)
 
+    if family == "bitunix":
+        # Phase 1 read-only. BitUnix Futures broker provides snapshot + quote
+        # against the live API; place_order raises NotImplementedError as a
+        # backstop. In PAPER mode (default) we wrap with PaperExecutionBroker
+        # so the real BitUnix balance/positions render on the dashboard while
+        # any orders simulate via PaperBroker. Live order placement lands in
+        # Phase 4 per `trading_corp_bitunix_vision.md`.
+        from trading_corp.brokers.bitunix import BitunixBroker
+        bx = BitunixBroker(
+            api_key=secrets.bitunix_futures_api_key,
+            api_secret=secrets.bitunix_futures_api_secret,
+        )
+        if is_live_family:
+            return bx
+        paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
+        return PaperExecutionBroker(bx, paper)
+
     if family == "paper":
         return PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
 
@@ -762,6 +851,7 @@ async def _start_web_server(
     market_cypher_agent: Any = None,
     telegram_channel: Any = None,
     research_firm: Any = None,
+    pending_registry: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -791,6 +881,7 @@ async def _start_web_server(
         market_cypher_agent=market_cypher_agent,
         telegram_channel=telegram_channel,
         research_firm=research_firm,
+        pending_registry=pending_registry,
     )
     app = create_app(deps)
     config = uvicorn.Config(
@@ -919,6 +1010,30 @@ async def _make_morning_brief(trend_agent, portfolio, ceo, logger_agent) -> str:
     return brief.body_md
 
 
+def _group_orders_by_pair_id(
+    orders: list[ProposedOrder],
+) -> list[list[ProposedOrder]]:
+    """Group `orders` so paired rolls (close + open sharing the same
+    `pmcc_pair_id` in `order.extra`) end up in the same sub-list.
+    Solo orders (no pair_id) become singleton lists. Result preserves
+    the original order's first appearance — the iteration order users
+    see in audit logs is unchanged for solo orders, and pair groups
+    appear at the position of the first leg's first sighting.
+    """
+    pair_groups: dict[str, list[ProposedOrder]] = {}
+    output: list[list[ProposedOrder]] = []
+    for o in orders:
+        pid = (o.extra or {}).get("pmcc_pair_id") if isinstance(o.extra, dict) else None
+        if not pid:
+            output.append([o])
+            continue
+        if pid not in pair_groups:
+            pair_groups[pid] = []
+            output.append(pair_groups[pid])
+        pair_groups[pid].append(o)
+    return output
+
+
 async def _run_order(
     graph, channel, logger_agent, order: ProposedOrder, division: str = "default"
 ) -> str:
@@ -952,6 +1067,7 @@ async def _run_order(
                 "decision": decision.decision,
                 "reason": decision.reason,
                 "new_qty": decision.new_qty,
+                "new_limit_price": decision.new_limit_price,
             }),
             config=config,
         )

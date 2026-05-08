@@ -29,7 +29,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from trading_corp.agents.divisions.lord_otter import LordOtterAgent
+from trading_corp.agents.strategies.lord_otter import LordOtterAgent
 from trading_corp.agents.logger import LoggerAgent
 from trading_corp.agents.research import schemas
 from trading_corp.agents.research.engagement import ResearchFirmDeps
@@ -192,11 +192,14 @@ def test_push_back_skips_order_and_notifies_board(
         "/webhook/tradingview/lord-otter", json=_alert_payload(),
     )
 
+    # Return-fast architecture (2026-05-02): the HTTP response is now
+    # uniform `{"status":"accepted"}`. The push_back outcome lands in the
+    # audit + Telegram side-effects below, which is the load-bearing
+    # contract for downstream consumers (dashboard reads audit rows;
+    # the Board reads Telegram). Tests now assert on those side effects.
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "skipped_by_research"
-    assert body["verdict"] == "push_back"
-    assert body.get("reason")  # rationale is populated
+    assert body["status"] == "accepted"
 
     # Risk gate MUST not have been called — the order is dead.
     risk_agent.evaluate.assert_not_called()
@@ -261,11 +264,13 @@ def test_no_research_firm_falls_through_to_existing_flow(
         "/webhook/tradingview/lord-otter", json=_alert_payload(),
     )
 
-    # Whatever the response, it must NOT be skipped_by_research — the
-    # consult is invisible without research_firm wired.
+    # Return-fast: HTTP body is uniformly {"status":"accepted"}.
+    # Pre-refactor this asserted body wasn't `skipped_by_research`;
+    # post-refactor that's tautologically true (always `accepted`),
+    # so the load-bearing contract is the absence of research_*
+    # audit rows + Telegram NOT being called, asserted further down.
     body = r.json()
-    assert body.get("status") != "skipped_by_research"
-    assert "verdict" not in body  # only present on the skip path
+    assert body.get("status") == "accepted"
 
     # Telegram notify must NOT fire on the no-research path.
     telegram.push.assert_not_called()

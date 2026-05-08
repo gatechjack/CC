@@ -1,8 +1,9 @@
 """Division registry loader.
 
 Reads `config/divisions.yaml` and returns typed `Division` records grouped
-by broker. Used by the web dashboard, the CEO's morning brief, and (later)
-broker-account routing logic.
+by investment type (Individual / Crypto / Retirement). Used by the web
+dashboard, the CEO's morning brief, and (later) broker-account routing
+logic.
 """
 from __future__ import annotations
 
@@ -19,13 +20,13 @@ log = logging.getLogger(__name__)
 _DEFAULT_PATH = Path("config/divisions.yaml")
 
 # Visual order — sections render in this order on the dashboard.
-_BROKER_ORDER = ["robinhood", "fidelity", "coinbase", "paper"]
-_BROKER_LABELS = {
-    "robinhood": "Robinhood",
-    "fidelity":  "Fidelity",
-    "coinbase":  "Coinbase",
-    "paper":     "Paper",
+_INVESTMENT_TYPE_ORDER = ["individual", "crypto", "retirement"]
+_INVESTMENT_TYPE_LABELS = {
+    "individual": "Individual",
+    "crypto":     "Crypto",
+    "retirement": "Retirement",
 }
+_CRYPTO_BROKERS = {"coinbase", "bitunix"}
 
 
 @dataclass
@@ -39,6 +40,7 @@ class Division:
     target_annual_return: float | None = None
     strategy: str | None = None
     enabled: bool = True
+    standby: bool = False       # true = no order path; UI shows STANDBY badge
 
     # Filled in at runtime by the dashboard data layer; kept here for type
     # convenience so templates can iterate `division.equity` etc. directly.
@@ -62,11 +64,20 @@ class Division:
         return self.intent == "retirement"
 
 
+def classify_investment_type(d: Division) -> str:
+    """Map a division to its investment-type group."""
+    if d.intent == "retirement":
+        return "retirement"
+    if d.broker in _CRYPTO_BROKERS:
+        return "crypto"
+    return "individual"
+
+
 @dataclass
-class BrokerGroup:
-    """One broker's bundled divisions plus aggregate metrics."""
-    key: str                    # "robinhood"
-    label: str                  # "Robinhood"
+class InvestmentGroup:
+    """One investment-type bundle (Individual / Crypto / Retirement)."""
+    key: str                    # "individual" | "crypto" | "retirement"
+    label: str                  # "Individual" | "Crypto" | "Retirement"
     divisions: list[Division]
     total_equity: float = 0.0
     total_pnl_today: float = 0.0
@@ -102,6 +113,7 @@ def load_divisions(path: Path = _DEFAULT_PATH) -> list[Division]:
                 ),
                 strategy=entry.get("strategy"),
                 enabled=bool(entry.get("enabled", True)),
+                standby=bool(entry.get("standby", False)),
             )
         except KeyError as e:
             log.warning("divisions.yaml: skipping entry missing key %s — %r", e, entry)
@@ -111,29 +123,29 @@ def load_divisions(path: Path = _DEFAULT_PATH) -> list[Division]:
     return out
 
 
-def group_by_broker(divisions: Iterable[Division]) -> list[BrokerGroup]:
-    """Bundle divisions by broker, ordered by `_BROKER_ORDER`."""
+def group_by_investment_type(divisions: Iterable[Division]) -> list[InvestmentGroup]:
+    """Bundle divisions by investment type, ordered per `_INVESTMENT_TYPE_ORDER`."""
     by_key: dict[str, list[Division]] = {}
     for d in divisions:
-        by_key.setdefault(d.broker, []).append(d)
+        by_key.setdefault(classify_investment_type(d), []).append(d)
 
-    out: list[BrokerGroup] = []
+    out: list[InvestmentGroup] = []
     seen: set[str] = set()
-    for key in _BROKER_ORDER:
+    for key in _INVESTMENT_TYPE_ORDER:
         if key in by_key:
-            out.append(BrokerGroup(
+            out.append(InvestmentGroup(
                 key=key,
-                label=_BROKER_LABELS.get(key, key.title()),
+                label=_INVESTMENT_TYPE_LABELS.get(key, key.title()),
                 divisions=by_key[key],
             ))
             seen.add(key)
-    # Any unrecognized broker keys go at the end
+    # Any unrecognized investment-type keys go at the end (defensive)
     for key, ds in by_key.items():
         if key in seen:
             continue
-        out.append(BrokerGroup(
+        out.append(InvestmentGroup(
             key=key,
-            label=_BROKER_LABELS.get(key, key.title()),
+            label=_INVESTMENT_TYPE_LABELS.get(key, key.title()),
             divisions=ds,
         ))
     return out
@@ -145,6 +157,6 @@ def reload_cache() -> None:
 
 
 __all__ = [
-    "Division", "BrokerGroup",
-    "load_divisions", "group_by_broker", "reload_cache",
+    "Division", "InvestmentGroup", "classify_investment_type",
+    "load_divisions", "group_by_investment_type", "reload_cache",
 ]

@@ -22,7 +22,8 @@ class ApprovalRequest:
 class BoardDecision:
     decision: Decision
     reason: str = ""
-    new_qty: float | None = None  # only used when decision='modify'
+    new_qty: float | None = None           # only used when decision='modify'
+    new_limit_price: float | None = None   # B.5 — only used when decision='modify'
 
 
 def request_board_approval(req: ApprovalRequest) -> BoardDecision:
@@ -51,4 +52,5 @@ def request_board_approval(req: ApprovalRequest) -> BoardDecision:
         decision=decision,
         reason=payload.get("reason", ""),
         new_qty=payload.get("new_qty"),
+        new_limit_price=payload.get("new_limit_price"),
     )

@@ -260,7 +260,7 @@ These are the design commitments everything else falls out of:
 | Principle | What it means | Where you see it |
 |---|---|---|
 | **Layered, with strict downward dependencies** | Web/comms layer never imports brokers; brokers never import strategies; persistence depends on nothing internal. Reverse imports are bugs. | `web/` → `agents/` → `brokers/` → `persistence/` → `utils/` |
-| **Divisions, not "the bot"** | Each broker × strategy combo is its own division. They share scaffolding but are independently configured, halted, and risk-gated. | `agents/divisions/{pmcc_robinhood, lord_otter, market_cypher, fidelity_options}.py` + `config/divisions.yaml` |
+| **Divisions and strategies** | Division = one (brokerage × accounts) portfolio manager — `robinhood_pmcc`, `coinbase_spot`, `fidelity_options`. Strategy = how that division decides what to trade; one division can run multiple strategies (e.g. `coinbase_spot` runs both `lord_otter` and `market_cypher`). They share scaffolding but are independently configured, halted, and risk-gated. *(Vocabulary clarified 2026-05-02; see CLAUDE.md § Module map. Earlier text in this doc may use "broker × strategy = division" framing — that has been superseded.)* | `agents/divisions/{pmcc_robinhood, fidelity_options}.py` (division wiring) + `agents/strategies/{lord_otter, market_cypher}.py` (TV-driven strategies inside `coinbase_spot`) + `config/divisions.yaml` |
 | **Paper-default, risk-gated, HITL on every live order until trust earned** | Three orthogonal switches: paper/live mode flag, `auto_execute` per-strategy, risk-cap evaluation. ANY of them blocking = no trade. | `main.py` mode arg, `strategies.yaml::auto_execute`, `agents/risk.py` |
 | **Deterministic caps + LLM narration, not LLM judgment** | Risk caps are Python code (so reproducible & testable). LLMs only narrate why something was approved/rejected. Same for sizing math. | `agents/risk.py` evaluates, `agents/risk.py::_narrate` explains |
 
@@ -299,11 +299,13 @@ trading_corp/
 │   ├── portfolio.py       aggregate exposure / P&L / correlation
 │   ├── data_exec.py       broker registry + place_order
 │   ├── logger.py          audit event writer (single source of truth)
-│   └── divisions/         strategy implementations
-│       ├── pmcc_robinhood.py     (RH options PMCC)
-│       ├── lord_otter.py         (BTC scalp via TV)
-│       ├── market_cypher.py      (BTC swing via TV)
-│       └── fidelity_options.py   (paper-fallback)
+│   ├── divisions/         brokerage/account-level division wiring
+│   │   ├── pmcc_robinhood.py     (RH options PMCC; mixes strategy logic — sharp edge)
+│   │   └── fidelity_options.py   (paper-fallback; same conflation)
+│   ├── strategies/        TV-driven strategies inside coinbase_spot division
+│   │   ├── lord_otter.py         (BTC scalp via TV — 3m)
+│   │   └── market_cypher.py      (BTC swing via TV — 4h/1D)
+│   └── research/          shared research-firm consultant (see CLAUDE.md § Research consultation)
 │
 ├── brokers/  ──────────── Execution adapters
 │   ├── base.py            Broker / OptionBroker abstract interfaces
@@ -357,7 +359,8 @@ runbooks/  ────────────── Ops playbooks (introduced 
                        │
                        ▼
  ┌─────────────────────────────────────────────────────────────┐
- │ STATE UPDATE (agents/divisions/*.py)                        │
+ │ STATE UPDATE (agents/strategies/*.py for TV-driven, or       │
+ │   agents/divisions/*.py for division-level scan flows)      │
  │  • record_alert → ring buffer                               │
  │  • _refresh_state_from_signal:                              │
  │      bias ← signals that flip the latch                     │

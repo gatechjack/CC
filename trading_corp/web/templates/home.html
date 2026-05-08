@@ -32,8 +32,8 @@
       </div>
     </section>
 
-    <!-- Divisions, grouped by broker -->
-    {% for grp in snap.broker_groups %}
+    <!-- Divisions, grouped by investment type (Individual / Crypto / Retirement) -->
+    {% for grp in snap.investment_groups %}
       <section>
         <header class="flex items-baseline justify-between mb-2 mt-2">
           <div class="flex items-baseline gap-3">
@@ -69,12 +69,19 @@
                                  {{ intent_color.get(d.intent, 'bg-edge text-muted') }}">
                       {{ d.intent }}
                     </span>
-                    <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
-                      {% if d.status == 'online' %}bg-gain/15 text-gain
-                      {% elif d.status == 'not_wired' %}bg-edge text-muted/60
-                      {% else %}bg-edge text-muted{% endif %}">
-                      {{ d.status | replace('_',' ') }}
-                    </span>
+                    {% if d.standby %}
+                      <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                                   bg-warn/15 text-warn">
+                        standby
+                      </span>
+                    {% else %}
+                      <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                        {% if d.status == 'online' %}bg-gain/15 text-gain
+                        {% elif d.status == 'not_wired' %}bg-edge text-muted/60
+                        {% else %}bg-edge text-muted{% endif %}">
+                        {{ d.status | replace('_',' ') }}
+                      </span>
+                    {% endif %}
                   </div>
                 </div>
               </div>
@@ -124,4 +131,5 @@
 
 {% block scripts %}
 <script src="/static/js/equity_chart.js"></script>
+<script src="/static/js/trade_flow_state.js"></script>
 {% endblock %}

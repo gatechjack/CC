@@ -16,8 +16,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from trading_corp.agents.divisions.lord_otter import LordOtterAgent
-from trading_corp.agents.divisions.market_cypher import MarketCypherAgent
+from trading_corp.agents.strategies.lord_otter import LordOtterAgent
+from trading_corp.agents.strategies.market_cypher import MarketCypherAgent
 from trading_corp.agents.logger import LoggerAgent
 from trading_corp.persistence.db import init_db
 from trading_corp.web import webhooks

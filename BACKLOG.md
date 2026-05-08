@@ -8,6 +8,98 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## ✅ DONE — Phase A: HITL slim-Telegram bridge + PMCC prompt-text refinements  *(2026-05-03 02:09 UTC)*
+
+Shipped the dormant `notification_only` switch on `TelegramChannel` +
+slim-format builder + env-var wiring + 4 PMCC prompt-text edits
+(COOLDOWN reframing in BS+STD blocks, BLACK_SHEEP LEAP-Hard-Rule
+NOTE, STANDARD STRIKE TARGETING regime-appropriate example). Skipped
+the original "wait for Monday's 13:30 UTC PMCC scan validation" gate
+because slim mode is dormant by default and prompt edits are
+LLM-facing only — first signal after deploy is the live validation.
+Backup tag `.pre-phase-a-slim-telegram-20260503-0209`. PID
+113881→115197, port 8000 up ~33s, GET / + /research both 200, zero
+new errors in journalctl. Full entry in
+[runbooks/deploy_log.md](runbooks/deploy_log.md) at "2026-05-03
+02:09 UTC". Phase B (`/approvals/{id}` web page) is the next P0
+work — see `planning/hitl_in_app_design.md`.
+
+**Do NOT flip `TELEGRAM_NOTIFICATION_ONLY=true`** until Phase B's
+`/approvals/{id}` route exists on prod. The deeplink target doesn't
+exist yet; flipping early would point users at 404s.
+
+---
+
+## ⏸ PAUSED — Lord Otter + Market Cypher feature work  *(2026-05-02 — Board direction)*
+
+Both crypto strategies are in **maintenance mode** until the PMCC
+research-as-consultant pattern has been observed in production for
+long enough to validate (or invalidate) the research firm's
+cross-division knowledge-work value proposition.
+
+**What "paused" means concretely:**
+- Existing code stays running. `auto_execute: false` (no live trades).
+  Paper-mode `would_have_placed` rows continue writing to audit_event;
+  Telegram pushes continue. Bias / sommi / arming state machines
+  continue updating. **No behavioral change.**
+- **No new features** on Otter or Cypher: no new TV signal vocabulary,
+  no contract enrichment, no new tier rules, no rich `context` packet
+  for TradeConfirmation, no pink-box image integration on the agent
+  side, no intraday-TA expert build-out.
+- Bug fixes still allowed where the bug is breaking the existing
+  paper-mode pipeline. New work that would *expand* either strategy is
+  out of scope.
+
+**Why:**
+- The 2026-05-02 vision realignment (see CLAUDE.md § Research
+  consultation) found that we'd over-built the research firm relative
+  to its actual current value. Of the four research products
+  (`CandidateRecommendation`, `Thesis`, `PositionContext`,
+  `TradeConfirmation`), only PMCC's `CandidateRecommendation` use
+  (via `universe_source: research_on_demand`) is doing real
+  cross-division knowledge work today.
+- Otter's `TradeConfirmation` consults are scaffolded but the
+  underlying intraday-TA capability isn't built — most consults
+  fail-open as no-ops. Continuing to layer features on that
+  foundation would compound the rework cost.
+- The right move is to operate PMCC's research integration in
+  production, observe whether research delivers signal that PMCC
+  wouldn't have produced via its deterministic scout, and use that
+  data to decide whether (and how) to bring research to crypto.
+
+**Observation period:**
+- Start: 2026-05-02.
+- Decision date: **2026-05-05** (3 days, per Board direction).
+- What to look at on 05-05: count of `research_candidate_recommendation_emitted`
+  rows from PMCC scout, count of those that produced
+  `would_have_placed` rows, qualitative assessment of whether the
+  research-recommended candidates are ones PMCC would have surfaced
+  on its own. If research isn't visibly pulling weight by then,
+  open a Board decision item to scope research down rather than
+  expand it.
+
+**Code state on pause (as of 2026-05-02):**
+- File rename: [agents/strategies/lord_otter.py](trading_corp/agents/strategies/lord_otter.py)
+  and [agents/strategies/market_cypher.py](trading_corp/agents/strategies/market_cypher.py).
+  These were previously under `agents/divisions/` — the new path
+  reflects the corrected vocabulary (division = portfolio manager;
+  strategy = how a division operates). 8 import sites updated.
+- Research rule codified in [CLAUDE.md § Research consultation](CLAUDE.md).
+
+**Out of scope for this pause:**
+- PMCC work continues normally.
+- Dashboard P5 polish items (engagement-log expand, trade-flow expand,
+  latency-rename) — those are dashboard surface, not Otter/Cypher
+  feature work. Continue per existing BACKLOG entries.
+
+**To resume:** explicit Board greenlight after 2026-05-05 review,
+naming the specific research integration shape that would unpause
+work (e.g. "build intraday-TA expert because the macro thesis
+integration showed value", or "build pink-box image vision because
+PMCC scout's Thesis consumption proved the surface").
+
+---
+
 ## ✅ DONE — Robinhood symbol-resolution log spam  *(P0, 2026-04-30)*
 
 **Problem:** every snapshot poll (~14s) emitted a WARNING for crypto
@@ -120,7 +212,15 @@ Tooltip is plural-aware ("1 day" / "N days").
 
 ---
 
-## P1 — Otter / Cypher: enrich `would_have_placed` push with full trade specifics + post-alert win/loss replay  *(NEW — 2026-05-01)*
+## ✅ DONE — Otter / Cypher: enrich `would_have_placed` push with full trade specifics + post-alert win/loss replay  *(Phase A 2026-05-02 03:30 UTC, Phase B 2026-05-02 05:45 UTC, Phase C 2026-05-02 14:56 UTC)*
+
+All three phases shipped per [runbooks/deploy_log.md](runbooks/deploy_log.md):
+
+- **Phase A** — push enrichment + TP fields in order.extra; trade card via `_format_trade_card`.
+- **Phase B** — `paper_trade_record` table + write-on-emit hook in webhooks; backfill landed 5 historical rows.
+- **Phase C** — replay job (15-min loop + startup catch-up) + per-division "Paper-trade win rate" dashboard panel. Conservative same-bar-both-hit tie = loss. 5 historical rows correctly fell through to `pre_phase_a` (NULL stop/tp from pre-Phase-A alert times).
+
+---
 
 **Three asks, layered:**
 
@@ -133,7 +233,7 @@ push.** Today's Telegram message
 target size %. It DOES NOT show entry, stop, take-profit, max
 dollar risk, or position context — even though most of that data
 IS already in the order's `extra` block (per
-[lord_otter.py:1042-1063](trading_corp/agents/divisions/lord_otter.py:1042):
+[lord_otter.py:1042-1063](trading_corp/agents/strategies/lord_otter.py:1042):
 `stop_price`, `stop_distance_dollars`, `stop_distance_pct`,
 `max_dollar_risk`, `notional_target`, `tv_payload.bar_low/high`).
 
@@ -248,7 +348,129 @@ performance evidence is the gating data. Today both are stuck on
 
 ---
 
-## P0 — 0-DTE positions: Terminal-DTE Override must release at 3:00 PM ET, hard close deadline 3:30 PM ET  *(NEW — 2026-05-01)*
+## ✅ DONE — Webhooks refactored to return-fast (TV 10s-timeout fix)  *(2026-05-02 16:01 UTC)*
+
+Shipped per [runbooks/deploy_log.md](runbooks/deploy_log.md). Both
+TV webhook handlers (`lord_otter_webhook`, `market_cypher_webhook`)
+now do ONLY validation + `webhook_received` audit synchronously,
+then dispatch the heavy processing (broker snapshot → agent.on_alert
+→ research consult → risk gate → place/notify) onto a FastAPI
+BackgroundTask. HTTP 200 returned in <200ms regardless of downstream
+load. Live verification: `POST https://trading.jacksumner.com/webhook/tradingview/market-cypher`
+returned in 0.119s. Catch-all in each background helper writes an
+`agent_error` audit (phase=background_processing) + Telegram notify
+on any unhandled exception so silent crashes are impossible. 5 new
+tests in `tests/test_webhooks_return_fast.py`. Sister item P4
+"investigate 04:00 UTC scout firing" still open as a separate
+diagnostic.
+
+---
+
+## ✅ DONE — Manual research-firm replay endpoint + dashboard button  *(2026-05-02 15:31 UTC)*
+
+Shipped per [runbooks/deploy_log.md](runbooks/deploy_log.md). Each
+`webhook_received` / `alert_ignored` / `would_have_placed` row in the
+per-division Recent Activity panel now has a "Send to research →"
+button. Click → POST `/audit/{id}/replay-research` → htmx swap renders
+the firm's verdict + rationale inline. Synthesized order is marked
+`extra.synthetic=True` and never reaches data_exec — purely
+informational. Caught + fixed during deploy: `EngagementSpec.requesting_division`
+misnaming (filed for cleanup) and an 8s default consult timeout that
+was too tight for multi-expert engagements (replay path uses 60s).
+
+---
+
+## P5 — Rename `EngagementSpec.requesting_division` → `requesting_strategy`  *(NEW — 2026-05-02)*
+
+**Symptom:** the `requesting_division` field on
+`trading_corp/agents/research/schemas.py:EngagementSpec` actually expects
+the strategy/agent slug (lord_otter, market_cypher, robinhood_pmcc,
+etc.), NOT the broker-account division slug (coinbase_spot,
+robinhood_pmcc, etc.). The naming caused a `ValidationError` during the
+2026-05-02 15:31 UTC deploy of the manual research-firm replay endpoint
+(passed `coinbase_spot` as `requesting_division` → pydantic literal_error).
+
+**Fix sketch:** rename the field to `requesting_strategy` (or
+`requesting_agent`) across:
+- The schema definition
+- Every call site (`run_engagement`, `consult_research_for_trade_confirmation`,
+  any other `EngagementSpec(...)` constructions)
+- Every audit row that includes the field in its payload (rename the
+  payload key too, with a backwards-compat fallback for existing rows
+  if any reader filters on it)
+
+**Why:** prevents the same foot-shoot when more callers wire into the
+engagement system. The current name suggests "broker-account slug"
+which is the natural thing to pass.
+
+**Priority:** P5 — cleanup/clarity, no functional issue once you know
+the contract. Not blocking anything.
+
+---
+
+## P5 — Realignment-memo wording: `would_have_placed` is Otter/Cypher-only, NOT a PMCC signal  *(NEW — 2026-05-02)*
+
+**Symptom:** the 2026-05-02 vision-realignment memo (memory entry
+`trading_corp_2026_05_02_realignment.md`) phrases the 05-05 PMCC
+research-as-consultant decision criteria as "count of those that
+produced `would_have_placed` rows." That kind is **Otter/Cypher-only**
+— it's written by the TV webhook handlers in
+[web/webhooks.py](trading_corp/web/webhooks.py:639) /
+[web/webhooks.py](trading_corp/web/webhooks.py:869) when
+`auto_execute=false` and risk approves. PMCC's HITL flow goes through
+[graph/ceo_graph.py](trading_corp/graph/ceo_graph.py) (build_trade_graph
++ approval_node interrupt) and the lifecycle is tracked on
+`proposed_order.status` (`proposed → risk_approved → board_approved →
+filled` or `cancelled`/`risk_rejected`/`board_rejected`). There is
+**no `would_have_placed` audit kind on the PMCC path**. Anyone running
+the 05-05 review by literally counting `would_have_placed` rows tagged
+to PMCC would correctly find zero — and might wrongly conclude no
+PMCC research engagement produced an order.
+
+**Where this lives correctly today:**
+- [trading_corp/web/routes.py](trading_corp/web/routes.py)
+  `_build_pmcc_validation_view` surfaces the actual PMCC signal
+  (`proposed_order.status` joined to `research_candidate_acted_on`
+  rows) under the "Approved/filled" scoreboard tile on `/research`.
+  The function docstring documents the semantic mismatch.
+- [runbooks/deploy_log.md](runbooks/deploy_log.md) 2026-05-02 23:03 UTC
+  entry's "Notable code changes" callout.
+
+**Fix sketch (when next touched):** update the realignment memory
+file to say "`research_candidate_acted_on` rows that reached
+`proposed_order.status in (board_approved, filled)`" instead of
+"`would_have_placed` rows." Same correction in any PROJECT_CONTEXT.md
+references if they exist. Don't write code-level changes for this —
+the validation surface already does the right thing.
+
+**Why:** prevents the next session that reads the realignment memo
+in isolation from re-litigating the validation criteria with the
+wrong audit kind in mind. The trap is that "would_have_placed" reads
+as a generic concept when it is actually a strategy-specific
+implementation choice.
+
+**Priority:** P5 — documentation/wording. No code path is wrong.
+Only blocking if a future session reads the memo and not the code.
+
+---
+
+## ✅ DONE — 0-DTE Terminal-DTE Override: NYSE-calendar-aware time gates + P1 cycle-continuity release  *(2026-05-02 14:56 UTC)*
+
+Shipped per [runbooks/deploy_log.md](runbooks/deploy_log.md). Original
+hardcoded 15:00/15:30 ET helper at `_terminal_dte_time_release`
+refactored to pull session close from `pandas_market_calendars` (NYSE)
+so half-days (13:00 close → 12:00/12:30 deadline) and Friday-holiday
+rotations (deadline → Thursday close) work correctly. Bundled the
+P1 cycle-continuity release (mark ≤ $0.15/share AND short_leg_dte == 0
+→ roll_short, regardless of time) into the same helper. Offsets +
+threshold config-driven via `config/strategies.yaml:robinhood_pmcc.zero_dte`.
+New `trading_corp/utils/market_hours.py` wraps the calendar with
+graceful fallback. 7 existing tests refactored + 8 new (half-day,
+closed-day, P1 release, P0/P1 interaction).
+
+---
+
+## P0 — 0-DTE positions: Terminal-DTE Override must release at 3:00 PM ET, hard close deadline 3:30 PM ET  *(ORIGINAL ENTRY — superseded by ✅ DONE entry above; preserved for context)*
 
 **Rule (Board direction, 2026-05-01):**
 
@@ -347,9 +569,23 @@ sub-optimal cycle.
 
 ---
 
-## P1 — Terminal-DTE Override should release on near-zero-extrinsic, near-expiry shorts (preserve cycle continuity)  *(NEW — 2026-05-01)*
+## ✅ DONE — Terminal-DTE Override should release on near-zero-extrinsic, near-expiry shorts (preserve cycle continuity)  *(2026-05-02 14:56 UTC)*
 
-**Symptom (observed on CIFR in production dashboard, 2026-05-01):**
+Shipped per [runbooks/deploy_log.md](runbooks/deploy_log.md) bundled
+into the NYSE-calendar-aware time-gate refactor entry. Implementation
+recommended option (2) — deterministic Python guard. Lives in
+`_terminal_dte_time_release` as the cycle-continuity branch: when
+`leg.short_leg_mark <= cycle_continuity_extrinsic_threshold` (default
+$0.15/share, configurable in `config/strategies.yaml >
+robinhood_pmcc.zero_dte.cycle_continuity_extrinsic_threshold`) AND
+`leg.short_leg_dte == 0` AND analysis.action is HOLD/WATCH, force
+`roll_short` regardless of time-gate state. Fires P1 cycle-continuity
+release before the P0 time-gate so the warning text correctly cites
+which release path triggered. Tests pinned in
+`tests/test_pmcc_logic.py:test_cycle_continuity_*` (4 tests).
+Stale BACKLOG entry caught + marked DONE 2026-05-03 housekeeping.
+
+**Original symptom (preserved for context):**
 
 Expert Analysis recommends `HOLD` (93% conf) on a CIFR short call:
 - Short: $18.00 strike, 0 DTE, intrinsic = $0.00, extrinsic = $0.12
@@ -442,9 +678,43 @@ escalate to P0 if Monday-re-open friction causes a missed cycle.
 
 ---
 
-## P1 — PMCC roll: LLM analyzer is blind to recent roll history (recommends back-to-back halfway rolls)  *(NEW — 2026-05-01)*
+## ✅ DONE — PMCC roll: LLM analyzer is blind to recent roll history (recommends back-to-back halfway rolls)  *(2026-05-03 00:05 UTC)*
 
-**Symptom (observed on MSTR in production dashboard, 2026-05-01):**
+Shipped per [runbooks/deploy_log.md](runbooks/deploy_log.md). Three
+load-bearing additions to `trading_corp/agents/divisions/pmcc_robinhood.py`:
+(1) `_query_prior_rolls_detailed(symbol, leap_lifetime_key)` —
+sister to `_query_prior_rolls`, returns `last_roll_ts`, before/after
+strikes, `last_roll_strike_change`, `days_since_last_roll`. (2) ROLL
+HISTORY block injected into `_llm_analyze_position`'s prompt before
+the JSON-response request — pulls from the detailed query, scoped by
+`leap_lifetime_key`. Empty for fresh positions; "No prior rolls
+recorded" copy when DB present but empty for this LEAP; otherwise
+count + net dollars + most-recent strike change with roll-up /
+roll-down label. (3) `_recent_halfway_roll_cooldown(analysis, leg)`
+deterministic backstop — downgrades `roll_short` →
+`hold` when last roll was a roll-up (>=`min_strike_change`, default
+$1) within `cooldown_days` (default 7) AND short DTE >
+`terminal_dte_floor` (default 2) AND extrinsic >
+`extrinsic_floor` (default $0.50/sh). Wired into both call sites of
+`_terminal_dte_time_release` (propose_orders_for_pair line ~999, scan
+path line ~1813). Composition order: terminal-DTE → Hard-Rule
+promotion → cooldown. Rule clause added to `_BLACK_SHEEP_RULES` Rule 6
+(BREACH HANDLING) and `_STANDARD_RULES` BREACH POLICY so the LLM
+narrates the cooldown coherently with what the deterministic guard
+does. Knobs in `config/strategies.yaml > robinhood_pmcc.roll_cooldown`.
+11 new tests in `tests/test_pmcc_logic.py` covering fire/no-fire
+conditions, the detailed query shape, and the prompt formatter.
+Today the cooldown is dormant on production traffic (paper mode, no
+filled rolls) — exercises only via tests until auto_execute flips or
+the Board approves a real roll via Telegram. Sister entry below
+(LEAP-roll-missing) shipped in the same deploy.
+
+**Original symptom (preserved for context):**
+
+Position state per the screenshot:
+- Spot $178.34, short $162.50C @ 7 DTE, intrinsic $15.83 (9.7% breach)
+- This $162.50 short is itself the result of a **prior halfway roll
+  ~7 days ago** (the original short was much higher; rolled DOWN-and-
 
 Position state per the screenshot:
 - Spot $178.34, short $162.50C @ 7 DTE, intrinsic $15.83 (9.7% breach)
@@ -563,9 +833,27 @@ suboptimal recommendation actually got executed).
 
 ---
 
-## P1 — PMCC roll: Recommended strike ignores the halfway-rule the expert text cites  *(NEW — 2026-05-01)*
+## ✅ DONE — PMCC roll: Recommended strike ignores the halfway-rule the expert text cites  *(2026-05-03 00:36 UTC)*
 
-**Symptom (observed on MSTR in production dashboard, 2026-05-01):**
+Shipped per [runbooks/deploy_log.md](runbooks/deploy_log.md). Took
+the BACKLOG-recommended option (1): added `target_strike: float | None`
+to `PMCCAnalysis` dataclass; threaded through `_select_weekly_strike`,
+`_find_best_weekly`, and all 5 callers (`_propose_roll_short`,
+`_propose_open_pmcc`, `_propose_sell_weekly`, both `roll_leap` 4th-leg
+sites). When set, the strike picker selects the listed strike closest
+to `target_strike` (subject to liquidity gate), overriding the
+delta-distance ranking. When None, original delta-distance behavior —
+backwards-compat preserved (pinned by
+`test_propose_roll_short_falls_back_to_delta_when_target_strike_none`).
+LLM prompt JSON schema gained the new field with annotation; rule
+corpus (`_BLACK_SHEEP_RULES` Rule 6, `_STANDARD_RULES` BREACH POLICY)
+gained a STRIKE TARGETING clause instructing the LLM to populate
+`target_strike` when narrating a specific strike (e.g. halfway
+midpoint). 10 new tests in `tests/test_pmcc_logic.py`. Closes the
+PMCC roll-correctness triple shipped this session (sister DONE
+entries: roll-history blindness above + LEAP-roll-missing below).
+
+**Original symptom (preserved for context):**
 
 The Expert Analysis text correctly identifies a Major Breach (Rule 6)
 and prescribes a halfway roll to a specific strike:
@@ -665,9 +953,35 @@ strike disagree by more than 5%.
 
 ---
 
-## P1 — PMCC drilldown: Recommended Trade omits the LEAP roll when both legs need to roll  *(NEW — 2026-05-01)*
+## ✅ DONE — PMCC drilldown: Recommended Trade omits the LEAP roll when both legs need to roll  *(2026-05-03 00:05 UTC)*
 
-**Symptom (observed on RIOT in production dashboard, 2026-05-01):**
+Shipped per [runbooks/deploy_log.md](runbooks/deploy_log.md). Two
+load-bearing changes to `trading_corp/agents/divisions/pmcc_robinhood.py`:
+(1) New deterministic post-processor `_promote_to_roll_leap_if_hard_rule(analysis, leg)`
+promotes `roll_short` / `roll_short_early` → `roll_leap` when
+`leg.long_leg_delta >= 0.95` (Standard Rule 5: deep ITM equity) OR
+`leg.long_leg_dte < 120` (LEAP Management roll-out threshold). Wired
+into both call sites of `_terminal_dte_time_release` (propose_orders_for_pair
+line ~999, scan path line ~1813). Adds an explanatory warning to
+`analysis.warnings` so audit + Telegram render the reason. (2) Both
+`roll_leap` action branches (`propose_orders_for_pair` line ~1085
+and the inline scan-path branch line ~1921) extended to emit a 4th
+order: `roll_leap_open_short` — sell-to-open a new weekly call on
+the new LEAP. Skipped gracefully if no qualifying weekly chain (next
+scan picks up the uncovered LEAP via the `open_short` branch). The
+4-leg compound matches the BACKLOG verification text and prevents
+the failure mode where promoting `roll_short` → `roll_leap` would
+leave the user with a fresh LEAP and no income leg. Composition
+order at both call sites: terminal-DTE → Hard-Rule promotion →
+cooldown (cooldown is a no-op on `roll_leap` so a needed LEAP roll
+isn't silently vetoed). `_STANDARD_RULES` Rule 5 gained a NOTE about
+the deterministic guard so the LLM narrates the promotion coherently.
+9 new tests in `tests/test_pmcc_logic.py` covering both new methods +
+the 4-leg emission integration test (mirrors the BACKLOG-cited RIOT
+scenario) + the composition-order pin. Sister entry above (roll-history
+blindness) shipped in the same deploy.
+
+**Original symptom (preserved for context):**
 Expert Analysis correctly identifies that BOTH legs need to roll —
 - Top-line action: `ROLL SHORT` (93% conf)
 - Warning #1: *"LEAP has only 48 DTE — well below the 120 DTE roll
@@ -826,7 +1140,7 @@ If yes to any of those → ship the −RBD bias-setter. If Blood Diamond
 turns out to fire every couple weeks naturally, leave it alone.
 
 **Where to wire it (when picked up):**
-- `trading_corp/agents/divisions/market_cypher.py` — add to the bias
+- `trading_corp/agents/strategies/market_cypher.py` — add to the bias
   state-update logic (mirror of `_refresh_state_from_signal` in Otter
   but with Cypher's signal vocabulary)
 - The signal name should arrive as `mc_b_div_bear_strong_1d` (note
@@ -919,7 +1233,67 @@ test suite is hygiene. Do during a quiet pass.
 
 ---
 
-## P1 — Fidelity broker: read-only + analysis on Azure VM  *(SCOPE-NARROWED — 2026-04-30)*
+## P1 — Fidelity broker: read-only + analysis on Azure VM  *(DEFERRED — 2026-05-03; was SCOPE-NARROWED 2026-04-30)*
+
+### Update 2026-05-03 — skip path chosen, revisit pending Plaid investigation
+
+**Decision:** option (E) Skip Fidelity for now. The 2026-04-30 plan
+(residential proxy + stealth login from `kennyboy106/fidelity-api`)
+is **not the path forward** — it's adversarial, fragile, and carries
+ongoing cost. User explicitly backed off it.
+
+**Path under user investigation:** Fidelity Access via Plaid (option
+(D) in the 2026-05-03 conversation). Fidelity Access is Fidelity's
+official OAuth-mediated data-sharing service, but only through
+licensed aggregators. Akoya / Yodlee / MX are institution-only;
+**Plaid is the only aggregator practically accessible to an
+individual developer**. Per `https://www.fidelity.com/security/fidelity-access-data-security`.
+
+**Plaid blocker — options-position detail:** Fidelity Joint runs
+Plaid-unfriendly instruments. The Plaid `/investments/holdings/get`
+endpoint returns positions/balances/cost basis cleanly, BUT options
+positions are often returned as generic "OPTION" entries with the
+OCC symbol — strike/expiry detail may not survive cleanly enough to
+drive PMCC analysis or covered-call cycle tracking. **User's call:
+Plaid is worthless without reliable options coverage** (Fidelity Joint
+is options-heavy). Need to verify Plaid options fidelity against the
+actual Fidelity Joint holdings before committing 6-10h integration +
+1-3d Plaid Production approval.
+
+**Long-term consolidation option (still on the table):** move the
+Fidelity Joint and Fidelity 401(k) accounts to Robinhood entirely,
+removing the need for any Fidelity integration at all. This was
+mentioned in the 2026-04-30 entry below ("Future state may move
+the Fidelity account to Robinhood entirely") and remains a viable
+escape hatch.
+
+**Current prod state:**
+- Fidelity divisions (`fidelity_joint`, `fidelity_401k`) deployed
+  in the new investment-type UI grouping (2026-05-03 16:25 UTC),
+  but broker connect fails on Azure VM IP (Fidelity bot-detection
+  rejects the login session). Cards render as offline/not_wired.
+- Each `trading-corp` restart triggers another Fidelity login attempt
+  → another rejection. Acceptable nuisance for now; doesn't affect
+  other divisions.
+- Plaid OAuth is a separate channel from the Playwright login, so
+  ongoing IP rejections **don't burn future Plaid eligibility**.
+
+**When this comes back:**
+1. User confirms Plaid investigation outcome (does options fidelity
+   meet bar?) OR commits to consolidation to Robinhood
+2. If Plaid: ~6-10h to integrate (Plaid Link auth, replace
+   FidelityBroker with PlaidFidelityBroker, snapshot→dashboard
+   hydration)
+3. If Robinhood consolidation: zero-code on our side; user-side
+   account move + YAML division removal once empty
+
+**Don't restart the residential-proxy / stealth-login path below
+without an explicit user reversal.** That section is preserved for
+context only.
+
+---
+
+### Original entry (2026-04-30) — preserved for context
 
 **New scope (decided 2026-04-30):** Fidelity acts like Robinhood PMCC for
 *analysis* (positions display, Expert Analysis ingestion, recommended-
@@ -1147,6 +1521,63 @@ time someone touches the drilldown templates.
 
 ---
 
+## P3 — Robinhood IRA drilldown: not a LEAP / PMCC strategy  *(NEW — 2026-05-03)*
+
+**Problem:** the per-division drilldown
+([trading_corp/web/templates/division.html](trading_corp/web/templates/division.html))
+treats any account with options as a PMCC candidate — the page renders
+`view.pmcc_pairs` at the top
+([division.html:73-92](trading_corp/web/templates/division.html:73)) and
+the right rail's sticky "Expert Analysis" panel is PMCC-pair-driven.
+Per the user (2026-05-03), **Robinhood IRA does not run a LEAP-based
+PMCC strategy**. Its actual strategy is:
+- Pure stock + ETF holdings (long-term)
+- Weekly covered calls written against a subset of those stock
+  positions to harvest premium
+
+The current drilldown for `robinhood_ira` is misleading because:
+1. Any short call the IRA writes risks getting paired with an unrelated
+   long-dated call as a "PMCC pair" by the data layer's pairing logic
+   (see `_build_pmcc_pairs` in `trading_corp/web/data.py`).
+2. The Expert Analysis right rail is dead weight — IRA has no PMCC
+   pairs to analyze.
+3. There's no surface for the actual IRA primitives: stock holdings
+   and the covered-call cycle (which short-call expiry is upcoming,
+   which long stock positions are uncovered, premium captured this
+   month, etc.).
+
+**Fix sketch (defer detailed design to pull-in time):**
+- Branch division.html on `view.division.slug == 'robinhood_ira'` (or
+  better — on a `division.strategy_kind` field if we generalize):
+  - **Left column:** stock/ETF holdings table with a "covered" column
+    showing the short call (if any) tied to each underlying. Fall
+    through to current `view.stock_holdings` for the holdings list,
+    add a covered-call enrichment.
+  - **Right rail:** swap Expert Analysis for a Covered-Call Cycle
+    panel — upcoming expiries, premium captured MTD, uncovered
+    positions list.
+- **Data layer:** `_build_pmcc_pairs` should be gated to divisions
+  whose strategy is PMCC. For IRA, build a `covered_call_pairs`
+  structure instead (long stock + short call by underlying), or just
+  surface short calls under their underlying in the holdings table.
+- The simplest first cut: gate the PMCC pair build on
+  `division.slug in {'robinhood_pmcc', ...future PMCC slugs}` and
+  let the IRA drilldown render as a plain stock-holdings page until
+  the covered-call surface is designed properly.
+
+**Acceptance:** open `/division/robinhood_ira` and see no PMCC pair
+rows, no Expert Analysis right rail, holdings rendered as a clean
+list (eventually with covered-call enrichment).
+
+**Estimate:** ~1-2h depending on whether the covered-call cycle
+panel ships in this same pass or in a follow-up. The PMCC-gating
+step alone is ~30 min.
+
+**Priority:** P3 — UX accuracy, not blocking trades. Pull in next
+time someone is doing IRA-related work or touching division.html.
+
+---
+
 ## P3 — Migrate `FidelityBroker` onto a `ReadOnlyBroker` ABC  *(NEW — 2026-05-01)*
 
 **Status update on CLAUDE.md §7's pending sharp edge:** the doc says
@@ -1225,33 +1656,187 @@ unrealized_pnl_pct). Verified live on dashboard: RKLB Combined P&L now
 
 ---
 
-## P0 — Telegram approval message enrichment  *(PARTIALLY DONE — 2026-04-29)*
+## P0 — HITL approval flow lives in the web app; Telegram becomes notification-with-deeplink  *(NEW — 2026-05-03)*
 
-**Status:** Phase 1 shipped. `trading_corp/comms/approval_format.py` produces
-rich multi-line messages for option, crypto-spot, and stock orders. Wired
-into `graph/ceo_graph.py` and `comms/telegram_bot.py`. Format covers:
-side, qty, strike, expiration, DTE, delta, mark, bid/ask, debit/credit
-dollars, Lord Otter tier + stop + dollar risk, risk-verdict status.
+**Direction (Board, 2026-05-03):** the web app at
+`https://trading.jacksumner.com` is the primary HITL surface for all
+Approve / Reject / Modify decisions. The dashboard is already
+mobile-friendly (htmx + Tailwind responsive layout). Telegram is
+demoted to a **push-notification channel only** — it tells the Board
+"something needs your attention" with a deeplink to the relevant
+page on the dashboard, not the order detail itself. This is the
+**only HITL approval surface** until the web app gains its own push
+notifications (web push subscription flow, far future).
 
-**Phase 2 progress:**
+**End-state shape:**
 
-1. ✅ **DONE 2026-04-30 — Position context block.** PMCC agent now
-   populates `order.extra["position_context"]` on rolls and
-   sell-weekly proposals. `_build_position_context(leg)` composes
-   LEAP basics, mark, unrealized P&L, prior-roll history (audit-log
-   query via new `_query_prior_rolls`). 12 regression tests in
-   `tests/test_pmcc_position_context.py`. Days-held intentionally
-   skipped — Robinhood's option snapshot doesn't expose opened_ts
-   cleanly; defer if ever bites.
-2. **Net-debit/credit roll-up for paired roll orders** — today, a roll
-   fires as TWO separate approvals (close + open). Should fire as ONE
-   approval with both legs and a Net Debit/Credit summary. Requires
-   coordination at the order-emission point (PMCC agent groups paired
-   orders before submitting to the graph). **Safety implication**:
-   approving close + rejecting open leaves the position naked.
-3. **Approve / Modify quick replies** — Telegram inline keyboard could
-   include "+½ size" / "−½ size" / "limit −5%" buttons for fast modify
-   actions instead of typing `/modify <id> <qty>`.
+```
+Telegram message (short, ping-style):
+  🎲 ROLL SHORT · MSTR · approval needed
+  https://trading.jacksumner.com/approvals/f61faa3f
+```
+
+Tap the link → mobile-responsive web page with full order detail,
+position context, risk verdict, Approve / Reject / Modify buttons.
+On approval, the existing risk → execute path runs.
+
+**Why this is the right shape (Board direction):**
+
+- Telegram is push, not interactive. Inline keyboards / reply parsing
+  / Markdown formatting are workarounds for "Telegram isn't a UI."
+  Mobile web app is a UI.
+- One canonical surface for HITL → no parity burden between Telegram
+  formatter and dashboard formatter; Phase 2 net-debit/credit
+  roll-up + Approve/Modify buttons live in the web app once,
+  consumed by mobile + desktop browsers.
+- LangGraph TradeFlowState change for paired-roll coalescing
+  becomes unnecessary: the web app's approval UI groups orders by
+  `pmcc_pair_id` at render time and submits a single decision; the
+  graph still operates per-order under the hood. Removes the §6
+  "ask before changing TradeFlowState" trigger entirely.
+- Future state: web push notifications (PWA service worker +
+  subscription flow) replace Telegram entirely. Until then, Telegram
+  is the bridge channel.
+
+**Phases:**
+
+- **Phase A — Telegram messages slim down to notification + deeplink.**  *(✅ shipped 2026-05-03 02:09 UTC — slim-format builder + dormant `notification_only` switch on prod; flag stays OFF until Phase B's `/approvals/{id}` route exists)*
+  Each `ApprovalRequest` Telegram message becomes a short ping with
+  the URL `https://trading.jacksumner.com/approvals/{order_id}`
+  (or `/approvals/pair/{pmcc_pair_id}` for paired rolls). Rich
+  format (`comms/approval_format.py`) stays as the bridge until
+  Phase B's web-app approval page exists; once Phase B ships,
+  switch the Telegram producer to the slim format.
+- **Phase B — Web-app `/approvals/{id}` and `/approvals` index pages.**  *(B.1 ✅ 03:50 UTC; B.2 + B.3 ✅ 04:20 UTC; B.5 ✅ 05:07 UTC — quick-modify ½×/2× size + limit ±5% presets + new_limit_price plumbing live; **B.4 ✅ 2026-05-05 01:34 UTC — `TELEGRAM_NOTIFICATION_ONLY=true` flipped on prod systemd unit; slim Telegram body + deeplink now live for new approvals; rich format superseded; inline keyboard remains as belt-and-suspenders fallback**; original "wait for live PMCC-scan-emitted approval" gate not met — Mon scan emitted zero approvals — flipped on the fallback rationale that paper-mode + keyboard fallback bound real-money risk to zero regardless)*
+  Mobile-responsive routes that render: order detail, position
+  context, risk verdict, sibling-leg coalescing for paired rolls,
+  and Approve / Reject / Modify buttons. Approve POSTs to an
+  endpoint that resumes the LangGraph `interrupt()` with the same
+  decision shape `request_board_approval` expects today (so the
+  LangGraph internals are unchanged). Authelia gates the routes
+  the same way the rest of the dashboard is gated. **Detailed
+  design:** [planning/hitl_in_app_design.md](planning/hitl_in_app_design.md)
+  — covers PendingApprovalRegistry abstraction, route shape,
+  pair-coalescing strategy, audit chain, edge cases, test plan,
+  files-to-touch, and the B.1 → B.5 phasing within Phase B.
+- **Phase C — Paired-roll grouping in the approval UI.**  *(✅ folded into B.3 above and shipped 2026-05-03 04:20 UTC — paired close+open render as ONE card with combined Net Debit/Credit + ONE Approve button; resolves both Futures atomically via `also_resolve_paired=True`. Telegram inline-keyboard path still per-leg.)*  When two
+  orders share a `pmcc_pair_id`, render as ONE card with both legs
+  + Net Debit/Credit summary + ONE approve button. Single decision
+  triggers approval on both order_ids. Removes the safety hole
+  ("approve close, reject open → naked short"). Replaces the
+  superseded Phase 2 item 2 of the prior P0.
+- **Phase D — Quick-modify controls.**  *(✅ folded into B.5 and shipped 2026-05-03 05:07 UTC — ½×/2× size + limit ±5% presets live on the detail page; one-tap modify; new_limit_price plumbed end-to-end; paired-mode disabled for now per B.2 decision.)*  "+½ size / −½ size / limit
+  −5%" buttons on the approval card. Submits a modified decision
+  through the same resume-interrupt endpoint with `new_qty` /
+  `new_limit`. Replaces the superseded Phase 2 item 3 of the prior P0.
+- **Phase E (deferred) — Web push notifications.** PWA service
+  worker + push subscription. When this lands, drop Telegram
+  notifications entirely (or keep as belt-and-suspenders).
+
+**Files to touch (Phase A, smallest cut):**
+
+- `trading_corp/comms/telegram_bot.py` — new short-format builder
+  that takes an `ApprovalRequest` + dashboard base URL, emits
+  the ping. Bridge mode: when feature flag `telegram_slim_format`
+  is False, emit the rich format from `approval_format.py`; when
+  True, emit the slim ping. Lets us flip the switch the day
+  Phase B ships without redeploying the producer.
+- `trading_corp/comms/approval_format.py` — keep as-is for now;
+  unwire after Phase B.
+- New: a config knob (`config/agents.yaml > telegram.notification_only`
+  or similar) for the bridge flag.
+
+**Files to touch (Phase B, the real work):**
+
+- `trading_corp/web/routes.py` — new `GET /approvals` (index of
+  pending) + `GET /approvals/{order_id}` (detail) +
+  `POST /approvals/{order_id}/decision` (approve/reject/modify).
+  Authelia-gated like the rest of the dashboard.
+- `trading_corp/web/templates/approvals.html` + `approval_detail.html`
+  — mobile-responsive Tailwind layouts.
+- `trading_corp/comms/approval_bridge.py` — translates a web-side
+  decision POST into the same resume-interrupt shape the LangGraph
+  approval_node expects. This is the load-bearing seam: as long
+  as the resume payload matches `BoardDecision`'s contract, the
+  graph internals don't change.
+- Pending-approval list source: query the LangGraph SqliteSaver
+  checkpointer for threads in interrupted state, OR write a
+  parallel `pending_approval` audit kind that the index page
+  reads. Pick one in the design pass.
+
+**Safety implication preserved:** Phase C's pair-coalescing in the
+web UI inherits the same "approve close, reject open → naked
+short" guarantee that the original Phase 2 item 2 was meant to fix.
+The fix just lives in the dashboard now, not in the LangGraph
+state shape.
+
+**Why this avoids the §6 trigger:** the previous plan required
+extending `TradeFlowState` to carry `proposed_orders: list` for
+paired rolls. The new plan keeps `TradeFlowState` per-order
+unchanged; pair-coalescing is purely a render-time concern in the
+web UI. The web-app's POST endpoint resumes each interrupt with
+the same `BoardDecision` payload the existing approval_node
+expects. **Zero LangGraph state-shape changes.**
+
+**Acceptance criteria:**
+
+- Phase A: Telegram pings include a tap-able URL; tapping opens the
+  approval page (even before Phase B ships, the URL can render a
+  placeholder with order_id + "view in dashboard for now").
+- Phase B: a Board member receives a Telegram ping, taps the link,
+  approves the order on a phone screen, and the LangGraph resumes
+  → risk → execute path runs to completion. Audit chain unchanged.
+- Phase C: a paired roll fires ONE notification, the page shows
+  both legs + Net Debit/Credit, ONE approve click executes both;
+  reject leaves neither.
+- All phases gated behind Authelia (existing dashboard auth).
+
+**Priority:** P0 — gates `auto_execute=true` on every strategy.
+Until the Board can confidently approve from a phone screen, no
+strategy can flip to auto. (Auto skips HITL but the same
+infrastructure is what surfaces the audit trail when something
+goes wrong; the web app is the always-available view.)
+
+**Web-push deferred:** Phase E lands when the PWA shell + service
+worker + push subscription flow exists. Backlog has separate
+"Web push subscription flow" item — promote when the dashboard
+is ready to be installed as a PWA.
+
+---
+
+## P0 — Telegram approval message enrichment  *(REDIRECTED — 2026-05-03; HITL moves to web app)*
+
+**Direction change (Board, 2026-05-03):** Telegram is being demoted to
+informational / notification-only. Approve / Reject / Modify
+interactivity moves to the web app at `https://trading.jacksumner.com`,
+which is already mobile-friendly (htmx + Tailwind responsive). Long-term
+the dashboard is the primary HITL surface; Telegram is the push
+channel that signals "something needs you." See sister entry below
+("HITL approval flow lives in the web app + Telegram becomes
+notification-with-deeplink") for the new shape.
+
+**Status of this entry's original scope:**
+
+- ✅ **Phase 1 shipped (kept as interim).** `trading_corp/comms/approval_format.py`
+  produces rich multi-line messages for option / crypto-spot / stock
+  orders. Continues to ship until the web-app /approvals page is
+  built — without that page the Board has no other surface to read
+  the order detail from. Treat as the bridge format.
+- ✅ **Phase 2 item 1 — Position context block (DONE 2026-04-30).**
+  PMCC agent populates `order.extra["position_context"]`; renders in
+  the rich Telegram message + will render in the future web-app
+  approval page (same dict, different surface). Stays.
+- ❌ **Phase 2 item 2 — Net-debit/credit roll-up for paired roll
+  orders (SUPERSEDED).** The "approving close + rejecting open
+  leaves position naked" safety concern is real, but the fix moves
+  to the web app: pair-coalescing happens in the dashboard's
+  approval UI where both legs render as ONE card with a single
+  Approve/Reject button, no LangGraph TradeFlowState change required.
+  See sister entry's Phase B.
+- ❌ **Phase 2 item 3 — Approve / Modify quick-reply buttons in
+  Telegram (SUPERSEDED).** Quick replies move to the web-app
+  approval UI (real buttons, not Telegram inline keyboard
+  workarounds). See sister entry's Phase B.
 
 **Original problem statement** (kept for reference):
 
@@ -1344,51 +1929,61 @@ seen 24h of real signals flow. Sometime this week.
 
 ---
 
-## P0 — Request Bsv2 vCPU quota for cost optimization  *(NEW — 2026-04-30)*
+## P3 — Cost-optimize tc-prod-vm away from Standard_D2s_v3  *(REVISED — 2026-05-02; original entry's plan was wrong)*
 
-**Why**: Initial Azure deploy used `Standard_D2s_v3` (~$95/mo) because
-the default PAYG subscription ships with **0 quota for the Bsv2 family**
-(which contains B2ms, B2s, etc.). Bsv2 sizes are burstable and cheaper
-(~$60/mo for B2ms, same 8GB RAM), so worth requesting quota once the
-bot is verified running.
+**Why**: tc-prod-vm runs on `Standard_D2s_v3` (~$95/mo). A burstable
+SKU should be ~30-40% cheaper for this 24/7 intraday signal-processing
+workload.
 
-**Prereq**: bot must be running on D2s_v3 first (or whatever current
-SKU). Don't start this until that's stable.
+**Original plan (2026-04-30) was: request Bsv2 quota → `az vm resize
+--size Standard_B2ms`. This DOES NOT WORK and is captured here so a
+future session doesn't re-walk it.**
 
-**Steps**:
-1. Azure portal → top search → **Subscriptions** → click `Azure subscription 1`
-2. Left sidebar → **Usage + quotas**
-3. Filter dropdown: select **Compute** provider, region **East US**
-4. Search for `Bsv2` in the search box
-5. Find row `Standard Bsv2 Family vCPUs` (default Limit: 0)
-6. Click the pencil/edit icon next to it
-7. New limit: 4 or 8 (4 covers 2× B2ms; 8 gives headroom for a future
-   second VM)
-8. Justify the request: "personal trading infrastructure, replacing
-   D-series VM for cost optimization"
-9. Submit
+**What we learned (verified via az CLI, 2026-05-02):**
+1. `Standard_B2ms` is in the **Bs v1** family, not Bsv2 — different
+   quota. The Bsv2 quota request would not have unlocked B2ms anyway.
+2. The subscription already has `Standard BS Family vCPUs: 0/10`
+   (no Bs-v1 quota request needed).
+3. **Neither x86 Bsv2 nor Bs-v1 SKUs are deployable in `eastus`** —
+   `az vm list-skus --location eastus` shows only ARM-based Bsv2
+   (`Standard_B2ps_v2`, `Standard_B2pts_v2`, etc.) and zero Bs-v1
+   SKUs at all.
+4. The portal's "Availability: Unavailable in this region" warning on
+   the Bsv2 quota edit page was correct.
 
-**Auto-approval window**: usually within minutes for small amounts (<10
-vCPUs). Larger requests can take a few hours.
+**Three real paths forward (pick one when revisiting):**
 
-**After approval — resize the VM** (~5-min reboot, no Bicep change):
+**A. ARM Bsv2 in eastus (`Standard_B2ps_v2`).**
+- Bsv2 quota request still required (current 0/0).
+- Requires rebuilding VM on arm64 Ubuntu.
+- Most of the Python stack is pure Python (ccxt, robin_stocks, anthropic,
+  yfinance, langchain, fastapi) → fine on arm64.
+- `playwright` does have arm64 Linux builds. Fidelity (the only
+  Playwright user) is already paper-fallback-only on Azure VM IP via
+  Akamai bot-block — so a flakier arm64 headed Firefox does not
+  regress critical paths.
+- Risk: small but real around lxml / cryptography native deps; verify
+  pip install resolves cleanly on arm64 before committing.
 
-```powershell
-az vm resize `
-  --resource-group rg-shared-prod `
-  --name tc-prod-vm `
-  --size Standard_B2ms
-```
+**B. Move tc-prod-vm to eastus2, x86 Bsv2 (`Standard_B2s_v2`).**
+- Bsv2 quota request still required (per-region; eastus2 is also 0).
+- No runtime / arch risk — same x86 Linux.
+- Region migration = disk snapshot → recreate VM in eastus2 →
+  reattach disk → new public IP → re-point DNS (`trading.jacksumner.com`)
+  → re-issue Caddy/Let's Encrypt cert → verify Authelia. ~half-day of
+  ops.
 
-VM stops, resizes, restarts. Disk + IP + identity all preserved.
+**C. Different Ds-family SKU in eastus (cheaper than D2s_v3).**
+- E.g. `Standard_D2as_v5` (AMD) tends to undercut Intel D2s_v3 by
+  10-15%. No quota issue, no arch change. Cheapest deferral path.
+- Lower headline savings vs A/B (~$10-15/mo vs $35/mo).
 
-**Priority**: LOW. Cost optimization only — saves ~$35/mo. No reason to
-do this before the bot is running stably. Could push to month 2-3 of
-production.
+**My recommendation when revisiting:** start with C (smallest blast
+radius, banks half the savings instantly). A is the right end-state if
+arm64 verification passes. B should only happen if A's rebuild blocks.
 
-**Same quota request also unlocks**:
-- `Standard_B2s` (4GB RAM, ~$30/mo — fine for a smaller second bot)
-- `Standard_B4ms` (16GB RAM, ~$120/mo — more memory headroom)
+**Original 5-min portal-task framing was wrong; this is now half-day
+to one-day work depending on path. Bumping to P3 from P0.**
 
 If you later want Dv5/v6 sizes (newer generation), separate quota
 request for `Standard DSv5 Family vCPUs` etc. Same procedure.
@@ -1517,6 +2112,324 @@ not just an audit gap).
   `_deterministic_verdict`
 - Possibly extend `config/research.yaml` with a `trade_confirmation:
   min_valid_experts: 2` knob
+
+---
+
+## ✅ DONE — Research screen: humanize "Engagement latency" panel column labels  *(2026-05-02)*
+
+The Research screen's `Engagement latency` panel (Q11 — durations from
+`engagement_started_ts` / `engagement_completed_ts`) used raw
+identifier-style column headers: `product_type`, `asset_class`, `N`,
+`P50 (s)`, `P95 (s)`, `P99 (s)`. Fine for engineers, not great as a
+Board-facing dashboard surface.
+
+**Renames applied (local only):**
+
+| Before        | After          |
+|---------------|----------------|
+| `product_type` | `Product`      |
+| `asset_class`  | `Asset Class`  |
+| `N`            | `Samples`      |
+| `P50 (s)`      | `Median (s)`   |
+| `P95 (s)`      | `P95 (s)`      |
+| `P99 (s)`      | `P99 (s)`      |
+
+**Code state — sitting on local working tree, NOT deployed:**
+- [trading_corp/web/templates/research.html:42-47](trading_corp/web/templates/research.html:42)
+  — collapsed Engagement latency table headers relabeled.
+- [trading_corp/web/templates/research.html:81-86](trading_corp/web/templates/research.html:81)
+  — same renames inside the "Weekly P95 time-series (Refinement 5 —
+  drift detection)" collapsible. Also capitalized `week` → `Week` so
+  the row doesn't read mixed-case next to `Product` / `Asset Class` /
+  `Samples`.
+
+Pure template text — no route or view-model changes.
+
+**To finish this item:**
+1. Deploy the template changes to prod (Azure VM).
+2. Add an entry to `runbooks/deploy_log.md` per the deploy-gate convention.
+3. Take screenshots of both views (collapsed Engagement latency table
+   + expanded weekly time-series) for Board-facing acceptance.
+4. Flip this heading to `## ✅ DONE — … *(YYYY-MM-DD)*`.
+
+**Out of scope (unchanged):** the Engagements log section below the
+latency panel still uses tech-y identifier strings
+(`research_position_context_emitted`, `research_expert_completed`,
+etc.). Scope was explicitly the Engagement latency panel only.
+
+---
+
+## ✅ DONE — Research screen: expand-on-click rows in Engagements log  *(2026-05-02)*
+
+The Engagements log on the Research screen
+([trading_corp/web/templates/research.html:170-190](trading_corp/web/templates/research.html:170))
+shows one-line summaries: timestamp · kind · `summary` text ·
+`engagement_id` short hash. Useful for scanning, but the row's actual
+`audit_event.payload_json` is much richer (LLM rationale, expert
+verdicts, key drivers, refusal reasons, full PositionContext bodies)
+and there's no way to see it from the dashboard today — Board has to
+SSH and `sqlite3` the DB, or scrape the audit log file.
+
+**Ask:** make each engagement-log row clickable. On click, the row
+expands inline (accordion) to reveal the full payload underneath.
+Click again to collapse.
+
+**Concrete shape:**
+- **Behavior:** accordion, inline. Multiple rows can be open at once.
+  No modal, no side drawer.
+- **Content:** full `payload_json` pretty-printed in a `<pre><code>`
+  block. Raw is fine for v1; future polish can curate per-`kind`
+  fields, but that's explicitly out of scope here.
+- **Indicator:** chevron / disclosure caret on the left edge of each
+  row showing collapsed/expanded state. The row itself becomes the
+  click target (entire row, not just the caret).
+
+**Data-layer change required:**
+- [trading_corp/web/routes.py:967-978](trading_corp/web/routes.py:967)
+  builds the `engagement_log` dicts from `research_rows` and currently
+  drops `payload_json` (only keeps the curated `summary`, `engagement_id`,
+  `requesting_division`, `product_type`, `asset_class` fields). Add a
+  `"payload": payload` key (or `"payload_pretty": json.dumps(payload,
+  indent=2, default=str)` if rendering convenience matters). Up to 120
+  rows × typical payload size — should fit in the SSR response
+  comfortably.
+
+**Template change:**
+- [trading_corp/web/templates/research.html:172-188](trading_corp/web/templates/research.html:172)
+  — wrap the existing `<div class="px-4 py-2 ...">` in a `<details>`
+  element (free accordion behavior, no JS required) with a `<summary>`
+  for the current one-liner and a `<pre>` body underneath rendering
+  `{{ row.payload_pretty }}`. `<details>` is the simplest path —
+  htmx not needed, no state to manage, accessible by default. If you
+  want fancier styling or a JS-driven caret, drop in Alpine.js
+  `x-data="{open: false}"` instead.
+
+**Out of scope (file as separate items if desired):**
+- Curated per-`kind` payload views (e.g. for `research_expert_completed`
+  surface `directional_lean`, `confidence`, `key_drivers` as a tidy
+  card instead of raw JSON).
+- Cross-row engagement_id linking (click one row, highlight all
+  siblings in the same engagement).
+- Search/filter inside the engagement log.
+
+**Acceptance:** click a row, full payload renders below; click again,
+collapses. Multiple rows open simultaneously work correctly.
+Performance acceptable on the current 120-row cap (no JS perf
+regression on scroll).
+
+**Code state — sitting on local working tree, NOT deployed:**
+- [trading_corp/web/routes.py:23](trading_corp/web/routes.py:23) — added
+  `import json` (was not previously imported in this module).
+- [trading_corp/web/routes.py:1035-1044](trading_corp/web/routes.py:1035)
+  — `engagement_log` dict now carries
+  `"payload_pretty": json.dumps(payload, indent=2, default=str, sort_keys=True)`.
+  `sort_keys=True` so the rendered JSON has a stable field order across
+  reloads (easier for the eye to scan repeated kinds).
+- [trading_corp/web/templates/research.html:170-194](trading_corp/web/templates/research.html:170)
+  — converted the row `<div>` into `<details class="px-4 py-2 group">` /
+  `<summary>` matching the thesis-library pattern directly below
+  (chevron `▶` rotating with `group-open:rotate-90`). Body is a `<pre>`
+  with `whitespace-pre overflow-x-auto bg-pane-2/40 border border-edge`
+  — wide payloads get a horizontal scrollbar instead of wrapping.
+  Parent's `divide-y divide-edge` continues to draw separators between
+  `<details>` siblings; `max-h-[600px] overflow-y-auto` panel scroll
+  preserved.
+
+**To finish this item:**
+1. Deploy to prod (Azure VM) per the deploy-gate convention.
+2. Add an entry to `runbooks/deploy_log.md`.
+3. Open one row of each terminal kind (`research_thesis_emitted`,
+   `research_engagement_aborted`, `research_expert_completed`) in the
+   browser to confirm payload renders cleanly with no JS errors.
+4. Flip this heading to `## ✅ DONE — … *(YYYY-MM-DD)*`.
+
+**Known visual quirk (intentional, not blocking):** the `<summary>`
+inherits a redundant default browser disclosure marker on top of the
+custom `▶` chevron, same as the existing thesis-library `<details>`
+elements on this page. Hiding the default marker is a one-line CSS rule
+(`summary { list-style: none; } summary::-webkit-details-marker
+{ display: none; }`) that should be applied site-wide if/when desired —
+explicitly out of scope here to keep this change purely additive.
+
+---
+
+## ✅ DONE — Live trade flow: expand-on-click tiles  *(2026-05-02)*
+
+The "Live trade flow" panel on the Overview screen renders trade-flow
+events as compact tiles (status pill, symbol/side/qty, optional
+truncated `reason`, "Xm ago"). The underlying `audit_event.payload`
+holds substantially more (full proposed-order shape, risk-cap details,
+execution metadata, error tracebacks for `*_error` kinds) — none of
+which is reachable from the dashboard today.
+
+**Ask:** make each trade-flow tile clickable. On click, the tile
+expands inline (accordion) to reveal the full audit payload
+underneath. Click again to collapse. Apply the expand behavior
+**everywhere the same partial renders**, not just the Overview screen
+— see "Scope" below.
+
+**Concrete shape:**
+- **Behavior:** accordion, inline. Multiple tiles can be open at once
+  (consistent with the Engagements log expand pattern).
+- **Content:** raw `payload_json` pretty-printed in a `<pre><code>`
+  block underneath the existing tile body. Curated per-`kind` views
+  (e.g. full Phase A trade card for `would_have_placed`, risk-cap
+  detail for `risk_rejected`) explicitly out of scope here — file as a
+  follow-up if the raw JSON proves unwieldy in practice.
+- **Indicator:** chevron / disclosure caret on the tile, or use a
+  native `<details>` with the existing tile body as the `<summary>`.
+
+**Scope — "everywhere the trade-flow partial renders":**
+- [trading_corp/web/templates/partials/trade_flow.html](trading_corp/web/templates/partials/trade_flow.html)
+  is the single component. It's `{% include %}`-ed from
+  [trading_corp/web/templates/home.html:118](trading_corp/web/templates/home.html:118).
+- Confirm via grep before implementing — if a per-division page later
+  starts including the same partial, the expand behavior is inherited
+  automatically (the whole point of changing the partial).
+
+**Data-layer change required:**
+- [trading_corp/web/data.py:828-864](trading_corp/web/data.py:828)
+  `trade_flow()` builds the dict list from `audit_event` and currently
+  drops `payload_json` after extracting curated fields (`symbol`,
+  `side`, `qty`, truncated `reason`). Add a key like
+  `"payload_pretty": json.dumps(payload, indent=2, default=str)` to
+  each row so the template has the data on hand without a second DB
+  hit.
+- Default `limit` is 20 rows — small enough that pretty-printed
+  payloads fit comfortably in the SSR response. The htmx
+  `every 5s` refresh tick continues to swap the whole partial — open
+  tiles will collapse on refresh unless the JS preserves state.
+  Decision: accept the collapse-on-refresh; if it gets annoying, add
+  a `localStorage` open-set keyed by audit_event row id later.
+
+**Template change:**
+- [trading_corp/web/templates/partials/trade_flow.html:13-43](trading_corp/web/templates/partials/trade_flow.html:13)
+  — wrap the existing `<div class="bg-pane-2/40 ...">` body in a
+  `<details>` element. The summary is the current tile content
+  (status row + symbol row + reason). The body is the new
+  `<pre>{{ evt.payload_pretty }}</pre>`. `<details>` gets free
+  accordion + accessible disclosure; no JS needed for v1.
+
+**Out of scope (file separately if desired):**
+- Curated per-`kind` detail panels (would_have_placed → trade card;
+  risk_rejected → which cap fired + value vs. cap; *_error → error +
+  traceback as syntax-highlighted block).
+- State preservation across the 5s htmx refresh.
+- Expanding a tile to scroll the Engagements log to the matching
+  engagement_id (cross-panel linking).
+
+**Acceptance:** click any tile, full payload renders below; click
+again, collapses. Multiple open tiles work. Behavior present
+everywhere the `partials/trade_flow.html` partial is rendered.
+
+**Code state — sitting on local working tree, NOT deployed:**
+- [trading_corp/web/data.py:931](trading_corp/web/data.py:931) — added
+  `"payload_pretty": json.dumps(payload, indent=2, default=str, sort_keys=True)`
+  to the dict built in `trade_flow()`. (`json` was already imported.)
+- [trading_corp/web/templates/partials/trade_flow.html:13-46](trading_corp/web/templates/partials/trade_flow.html:13)
+  — converted the tile `<div>` into `<details>` / `<summary>`. Default
+  browser disclosure marker suppressed via Tailwind arbitrary variant
+  (`list-none [&::-webkit-details-marker]:hidden` on the `<summary>`)
+  so the only indicator is the custom `▶` chevron rotating with
+  `group-open:rotate-90`. This differs intentionally from the
+  Engagements-log row pattern (which kept the dual marker to match the
+  thesis-library precedent on the same screen) — tile UI looks weirder
+  with a stray default triangle inside the styled box than a list row
+  does. A future pass should normalize both with one site-wide rule.
+- Both the initial paint (`home.html:118` include) and the htmx 5s
+  refresh swap (`/partials/trade-flow` endpoint at
+  [trading_corp/web/routes.py:121-126](trading_corp/web/routes.py:121))
+  render the same partial, so this change covers both surfaces.
+- Open tiles collapse on the 5s tick — explicitly accepted per spec.
+
+**To finish this item:**
+1. Deploy to prod (Azure VM) per the deploy-gate convention.
+2. Add an entry to `runbooks/deploy_log.md`.
+3. Open one tile of each terminal kind (`fill`, `risk_rejected`,
+   `execution_error`, `would_have_placed`) in the browser to confirm
+   payload renders cleanly with no JS errors and the chevron toggles.
+4. Confirm the 5s htmx tick visibly collapses an open tile (matches
+   accepted behavior, not a regression to flag).
+5. Flip this heading to `## ✅ DONE — … *(YYYY-MM-DD)*`.
+
+---
+
+## P4 — Investigate: PMCC scout fired at 04:03 UTC outside the 8:30-9:25 ET scheduler window  *(NEW — 2026-05-02)*
+
+**Symptom (logs around 2026-05-02 04:00-04:05 UTC):** PMCC scout
+activity ran outside the documented daily scheduler window
+(`weekdays 08:30–09:25 ET` per `_scheduled_pmcc_scan_loop` log line).
+Sequence captured:
+- 04:02:50 onwards — ~25 Robinhood symbol-resolution warnings
+- 04:03:47 — risk_rejected for AMD
+- 04:03:47 — board_approved + filled for a different AMD order
+  (`via: scout_button`)
+
+**Why it matters:** the heavy in-process work blocked the FastAPI
+event loop just as TV fired its 04:00 UTC 4h-bar Cypher alerts —
+TV reported "request took too long and timed out" on those alerts.
+The return-fast webhook refactor (separate item) makes this no
+longer load-bearing for webhook delivery, BUT the underlying
+question stays: **why is scout firing at 4 AM UTC?** Should be
+either documented or fixed.
+
+**Possible causes to investigate:**
+1. Cron / scheduler misconfig — second scheduler somewhere we didn't
+   account for. Grep for `BackgroundScheduler` / `asyncio.create_task` /
+   `apscheduler` / similar across the codebase.
+2. A long-running PMCC scan that started during the 8:30-9:25 ET
+   window and stretched into the next morning. Look at scan duration —
+   should be minutes, not hours.
+3. Manual `via: scout_button` firing — was someone (you?) clicking
+   the scout button at 4 AM ET? (The audit row's `via` field literally
+   says `scout_button` — that's the dashboard manual-scan button.)
+4. Telegram-bot command that triggers a scout — `/scan` or similar.
+   Look for commands at the same timestamp.
+
+**Where to start:**
+- `journalctl -u trading-corp --since '2026-05-02 03:55 UTC' --until '2026-05-02 04:05 UTC' --no-pager | grep -iE 'scan|scout|button|telegram|/scan'`
+- audit_event WHERE actor='scheduler' AND ts BETWEEN ... — check if
+  scheduled_scan_done fired (would mean the regular cron, off-window)
+- audit_event WHERE payload_json LIKE '%scout_button%' AND ts BETWEEN ...
+  — count how often the manual button has been clicked
+
+**Priority:** P4 — diagnostic / documentation. The webhook return-fast
+refactor handles the load-bearing user-facing impact. This item is
+about understanding the box's actual behavior so future debugging
+isn't surprised again.
+
+---
+
+## P4 — Logging: RedactingFilter mangles dict args in %-style log calls  *(NEW — 2026-05-02)*
+
+**Symptom (caught during Phase C deploy 2026-05-02 14:51 UTC):** any
+`log.info("foo: %s", some_dict)` raises `TypeError: not all arguments
+converted during string formatting` and emits a `--- Logging error ---`
+traceback to stderr. The dict argument is rewritten by the harness's
+`RedactingFilter` (root logger) into a tuple of its keys, so the
+remaining `%s` slot has more args than placeholders.
+
+**Workaround in-tree:** f-string formatting in
+[trading_corp/main.py:617](trading_corp/main.py:617) and
+[trading_corp/agents/paper_trade_replay.py:295](trading_corp/agents/paper_trade_replay.py:295).
+Sidesteps the filter entirely.
+
+**Real fix:** the `RedactingFilter` (in `trading_corp/utils/secrets.py`
+or wherever it lives — grep for `RedactingFilter` / `Redacting`) should
+not rewrite dict-shaped log args. It should walk values for redaction
+without flattening the container.
+
+**Where**: search for `class RedactingFilter` or `class Redacting` in
+`trading_corp/utils/`. Likely a `__call__` / `filter` method that
+unpacks `record.args` and forgets that dict args are valid `%s` inputs.
+
+**Not a regression** — this bug has been latent. It only surfaces when
+a caller passes a dict via %-style logging, which is uncommon. Phase C
+exposed it because the replay tick logs counts dicts.
+
+**Priority:** P4 — cosmetic noise (the dict is also rendered as
+something useless: just its keys), but the stderr traceback is annoying
+in log scans. Not blocking any feature.
 
 ---
 

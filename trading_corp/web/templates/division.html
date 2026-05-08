@@ -170,6 +170,48 @@
       {% include "partials/manual_order.html" %}
     {% endif %}
 
+    <!-- Paper-trade win rate (Phase C of would_have_placed enrichment) -->
+    {% if view.paper_trade_summary and view.paper_trade_summary.totals.all.n %}
+    <section class="bg-pane border border-edge rounded-lg p-4">
+      <header class="flex items-baseline justify-between mb-3">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Paper-trade win rate</h2>
+        <span class="text-[11px] text-muted font-mono">
+          would-have-placed alerts replayed against post-alert price action
+        </span>
+      </header>
+      <div class="grid grid-cols-3 gap-3">
+        {% for window in ['7d', '30d', 'all'] %}
+          {% set t = view.paper_trade_summary.totals[window] %}
+          <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+            <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+              {{ window }}
+            </div>
+            <div class="text-2xl font-mono font-semibold
+                  {% if t.win_rate_pct is none %}text-muted
+                  {% elif t.win_rate_pct >= 50 %}text-gain
+                  {% else %}text-loss{% endif %}">
+              {% if t.win_rate_pct is none %}—{% else %}{{ '%.0f'|format(t.win_rate_pct) }}%{% endif %}
+            </div>
+            <div class="text-[11px] text-muted font-mono mt-1">
+              {{ t.wins }}W / {{ t.losses }}L / {{ t.expired }}E
+              {% if t.open %}({{ t.open }} open){% endif %}
+            </div>
+            <div class="text-[11px] font-mono mt-2
+                  {% if t.sim_pnl > 0 %}text-gain{% elif t.sim_pnl < 0 %}text-loss{% else %}text-muted{% endif %}">
+              sim P&amp;L: ${{ '%.2f'|format(t.sim_pnl) }}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      {% if view.paper_trade_summary.totals.all.n_pre_phase_a %}
+        <div class="text-[10px] text-muted/70 font-mono mt-3 italic">
+          {{ view.paper_trade_summary.totals.all.n_pre_phase_a }} pre-Phase-A row(s)
+          excluded from win-rate math (no TP/SL recorded at alert time).
+        </div>
+      {% endif %}
+    </section>
+    {% endif %}
+
     <!-- Recent activity -->
     <section class="bg-pane border border-edge rounded-lg p-4">
       <header class="flex items-baseline justify-between mb-3">
@@ -206,6 +248,26 @@
                 <div class="mt-1 text-[11px] text-muted leading-snug line-clamp-2">
                   {{ evt.reason }}
                 </div>
+              {% endif %}
+              {# Manual research-firm replay (BACKLOG.md 2026-05-02). #}
+              {# Lets the Board send a past TV signal into the research firm   #}
+              {# consult so the existing engagement code path runs against it. #}
+              {# Visible only on signal-shaped rows where it makes sense.       #}
+              {% if evt.id and evt.kind in ['webhook_received', 'alert_ignored', 'would_have_placed'] %}
+                <div class="mt-2 flex items-center gap-3">
+                  <button
+                    class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                    hx-post="/audit/{{ evt.id }}/replay-research"
+                    hx-target="next .replay-result"
+                    hx-swap="innerHTML"
+                    hx-indicator="next .replay-indicator">
+                    Send to research →
+                  </button>
+                  <span class="replay-indicator htmx-indicator text-[10px] text-muted font-mono italic">
+                    consulting…
+                  </span>
+                </div>
+                <div class="replay-result"></div>
               {% endif %}
             </div>
           {% endfor %}

@@ -116,6 +116,107 @@ class StrategyState:
 
 
 @dataclass
+class PaperTradeRecord:
+    """Structured row in `paper_trade_record` — one per `would_have_placed`
+    emission. Phase C replay job populates the result_* fields later."""
+    order_id: str
+    ts: str
+    strategy: str
+    division: str
+    symbol: str
+    side: OrderSide
+    qty: float
+    tier: str | None = None
+    source_signal: str | None = None
+    entry_reference_price: float | None = None
+    stop_price: float | None = None
+    tp_price: float | None = None
+    tp_r_multiple: float | None = None
+    expected_loss: float | None = None
+    expected_gain: float | None = None
+    rr_ratio: float | None = None
+    max_hold_seconds: int | None = None
+    result: str | None = None
+    result_ts: str | None = None
+    result_price: float | None = None
+    actual_pnl_dollars: float | None = None
+    actual_r_multiple: float | None = None
+    bars_to_resolution: int | None = None
+    extra: dict = field(default_factory=dict)
+
+    def to_db_row(self) -> dict:
+        return {
+            "order_id": self.order_id,
+            "ts": self.ts,
+            "strategy": self.strategy,
+            "division": self.division,
+            "symbol": self.symbol,
+            "side": self.side,
+            "qty": self.qty,
+            "tier": self.tier,
+            "source_signal": self.source_signal,
+            "entry_reference_price": self.entry_reference_price,
+            "stop_price": self.stop_price,
+            "tp_price": self.tp_price,
+            "tp_r_multiple": self.tp_r_multiple,
+            "expected_loss": self.expected_loss,
+            "expected_gain": self.expected_gain,
+            "rr_ratio": self.rr_ratio,
+            "max_hold_seconds": self.max_hold_seconds,
+            "result": self.result,
+            "result_ts": self.result_ts,
+            "result_price": self.result_price,
+            "actual_pnl_dollars": self.actual_pnl_dollars,
+            "actual_r_multiple": self.actual_r_multiple,
+            "bars_to_resolution": self.bars_to_resolution,
+            "extra_json": json.dumps(self.extra) if self.extra else None,
+        }
+
+    @classmethod
+    def from_order(
+        cls,
+        order: "ProposedOrder",
+        *,
+        strategy: str,
+        division: str,
+        max_hold_seconds: int | None,
+    ) -> "PaperTradeRecord":
+        """Build a record from a ProposedOrder + strategy context, pulling
+        the Phase A trade-card fields out of `order.extra`. Missing fields
+        degrade to None (legacy orders predating Phase A still write a row,
+        just with NULLs in the trade-spec columns)."""
+        extra = order.extra or {}
+        max_dollar_risk = extra.get("max_dollar_risk")
+        expected_loss = -float(max_dollar_risk) if max_dollar_risk is not None else None
+        expected_gain = extra.get("expected_gain_if_tp_hit")
+        rr_ratio = None
+        if max_dollar_risk and expected_gain:
+            try:
+                rr_ratio = float(expected_gain) / float(max_dollar_risk)
+            except (TypeError, ValueError, ZeroDivisionError):
+                rr_ratio = None
+        return cls(
+            order_id=order.id,
+            ts=order.ts,
+            strategy=strategy,
+            division=division,
+            symbol=order.symbol,
+            side=order.side,
+            qty=order.qty,
+            tier=extra.get("tier"),
+            source_signal=extra.get("source_signal"),
+            entry_reference_price=extra.get("entry_reference_price"),
+            stop_price=extra.get("stop_price"),
+            tp_price=extra.get("take_profit_price"),
+            tp_r_multiple=extra.get("tp_r_multiple"),
+            expected_loss=expected_loss,
+            expected_gain=float(expected_gain) if expected_gain is not None else None,
+            rr_ratio=rr_ratio,
+            max_hold_seconds=max_hold_seconds,
+        )
+
+
+@dataclass
 class AccountState:
     account: str
     equity: float

@@ -292,6 +292,11 @@ class MarketCypherAgent:
         self._reload()
         return str(self._cfg.get("webhook_secret_env", "MARKET_CYPHER_WEBHOOK_SECRET"))
 
+    @property
+    def max_hold_seconds(self) -> int:
+        self._reload()
+        return int(self._cfg.get("max_hold_seconds", 604800))
+
     def is_symbol_allowed(self, symbol: str) -> bool:
         self._reload()
         allowed = {s.upper() for s in (self._cfg.get("symbols") or [])}

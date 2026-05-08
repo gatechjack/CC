@@ -164,7 +164,7 @@ async def main() -> int:
 
         # --- 4. Otter on_alert populates state.last_position_context ---
         _section("3. Lord Otter on_alert -> state.last_position_context")
-        from trading_corp.agents.divisions.lord_otter import LordOtterAgent
+        from trading_corp.agents.strategies.lord_otter import LordOtterAgent
 
         otter = LordOtterAgent(db_url=db_url)
         # Direct unit-level read -the simplest path that demonstrates the cache

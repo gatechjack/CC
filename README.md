@@ -1,47 +1,58 @@
 # AI-Powered Trading Corporation
 
-A multi-agent Python system that runs three trading divisions (Robinhood PMCC, Fidelity options, crypto futures) under a CEO agent you converse with via Telegram, CLI, and Claude Projects.
+A multi-agent Python system that runs trading divisions across Robinhood
+(PMCC options + IRA stocks/CCs + Joint), Coinbase (BTC spot, futures
+STANDBY), BitUnix (futures read-only Phase 1; Phase 4 live trading
+ahead), and Fidelity (paper-fallback, bot-blocked from Azure — P1
+DEFERRED pending Plaid investigation). Live in production on Azure
+VM `tc-prod-vm` at
+https://trading.jacksumner.com behind Caddy + Authelia. Every order
+flows through a deterministic risk gate plus HITL Board approval.
 
-> **DISCLAIMER:** Trading involves substantial risk of loss. This software is experimental. The Board (you) accept all responsibility for any actions taken in LIVE mode. **The system defaults to PAPER mode on every startup.**
+> **DISCLAIMER:** Trading involves substantial risk of loss. This software
+> is experimental. The Board (the operator) accepts all responsibility
+> for any actions taken in LIVE mode. **The system defaults to PAPER mode
+> on every startup.** All strategies today are `auto_execute: false`.
 
-## Phase status
+## Read order for new contributors
 
-- **Phase 1** — Architecture approved (see `.claude/plans/you-are-an-elite-compressed-micali.md`).
-- **Phase 2** — *current.* Core framework + shared agents + paper-mode end-to-end.
-- **Phase 3** — Robinhood PMCC division → Fidelity options → Crypto futures (each behind backtest gate).
-- **Phase 4+** — Web dashboard, AWS deployment, sentiment agent.
+1. **[CLAUDE.md](CLAUDE.md)** — load-bearing invariants, working
+   agreements, module map, sharp edges, things-to-ask-before-doing.
+   Auto-loaded into every Claude Code session.
+2. **[PROJECT_CONTEXT.md](PROJECT_CONTEXT.md)** — what Trading Corp is,
+   tech-stack decisions, risk profile, production state, glossary.
+3. **[BACKLOG.md](BACKLOG.md)** — prioritized work items + the current
+   ⏸ PAUSED notices.
+4. **[runbooks/deploy_log.md](runbooks/deploy_log.md)** — single source
+   of truth for what's running on prod right now (no git on prod).
 
-## Setup
+## Setup (local development)
 
 Requires Python **3.12+**.
 
 ```bash
-# 1. (Recommended) Create a virtualenv
 python -m venv .venv
 source .venv/bin/activate           # macOS/Linux
 .venv\Scripts\activate              # Windows
 
-# 2. Install deps
 pip install -r requirements.txt
 
-# 3. Configure secrets — copy and fill .env
 cp .env.example .env
-# Edit .env with at least ANTHROPIC_API_KEY (other keys are Phase 3+).
+# Fill .env — at minimum ANTHROPIC_API_KEY for LLM-narrated paths
 ```
 
 ### Environment variables
 
 | Var | When required |
 |---|---|
-| `ANTHROPIC_API_KEY` | Always (Phase 2: optional — system falls back to deterministic mode if absent) |
-| `TELEGRAM_BOT_TOKEN` | Optional (CEO falls back to CLI if absent) |
-| `TELEGRAM_CHAT_ID` | Optional (paired with token) |
-| `ROBINHOOD_USERNAME` / `_PASSWORD` / `_MFA_SECRET` | LIVE mode + Robinhood division (Phase 3) |
-| `COINBASE_API_KEY` / `_SECRET` / `_PASSPHRASE` | LIVE mode + crypto division (Phase 3) |
-| `FIDELITY_USERNAME` / `_PASSWORD` | LIVE mode + Fidelity division (Phase 3) |
-| `TRADING_CORP_DB_URL` | Override SQLite path (default: `sqlite:///data/trading_corp.db`) |
-| `ALLOW_SKELETON_BACKTEST=1` | Phase 2 only — bypass the Phase-2 backtester skeleton |
-| `ENABLE_TRADINGVIEW=1` | Opt-in to unofficial TradingView WS (Phase 4) |
+| `ANTHROPIC_API_KEY` | LLM narration paths (research firm, risk narration). Optional — system falls back to deterministic-only mode if absent. |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Optional. Approval channel; CLI fallback otherwise. |
+| `ROBINHOOD_USERNAME` / `_PASSWORD` / `_MFA_SECRET` | LIVE Robinhood broker connection (PMCC). |
+| `COINBASE_API_KEY` / `_SECRET` | LIVE Coinbase broker connection. |
+| `BITUNIX_FUTURES_API_KEY` / `_SECRET` | BitUnix Futures connection. Read-only today (Phase 1); Phase 4 unlocks live order placement. |
+| `FIDELITY_USERNAME` / `_PASSWORD` | LIVE Fidelity (currently bot-blocked from Azure VM IP — P1 DEFERRED pending Plaid investigation). |
+| `LORD_OTTER_WEBHOOK_SECRET` / `MARKET_CYPHER_WEBHOOK_SECRET` | TradingView webhook auth. |
+| `TRADING_CORP_DB_URL` | Override SQLite path (default: `sqlite:///data/trading_corp.db`). |
 
 ## Running
 
@@ -58,69 +69,132 @@ python -m trading_corp --demo
 
 ### Talking to the CEO
 
-- **Telegram (recommended):** create a bot via [@BotFather](https://telegram.me/BotFather), put the token + your chat id in `.env`, then chat with the bot. Commands:
-  - `/brief` — daily morning brief
-  - `/status` — pending approvals + state
-  - `/approve <order_id>` / `/reject <order_id>` / `/modify <order_id> <qty>`
-  - Any other message — free-form chat with the CEO
-  - Approval requests come with inline `Approve` / `Reject` buttons.
-- **CLI:** when Telegram isn't configured, the same content is printed to stdout. Approvals are read from stdin.
-- **Claude Projects:** every brief is also written to `data/briefs/`. Paste it into your Claude Project for deeper analysis.
+- **Telegram:** approval requests with inline `Approve` / `Reject`
+  buttons. Commands: `/brief`, `/status`, `/approve <id>`,
+  `/reject <id>`, `/modify <id> <qty>`, free-form chat.
+- **Dashboard:** https://trading.jacksumner.com (Authelia-gated).
+  Live trade flow, research engagement log, position tables, equity
+  curves.
 
-## Architecture (one-liner)
+## Architecture
 
 ```
-You (Board) ──▶ CEO Agent ──▶ Division bots (PMCC / Fidelity / Crypto)
-                  ▲                │
-                  │                ▼
-            Trend / Risk / Backtest / Portfolio / Data&Execution / Logger
+┌─ TradingView webhooks ──┐
+│  /webhook/tradingview/* │  ─┐
+└─────────────────────────┘   │
+                              ▼
+                        ┌──────────────────────────────────┐
+                        │  Strategy code (per-strategy)    │
+                        │   agents/strategies/*.py         │
+                        │   (lord_otter, market_cypher)    │
+                        │                                  │
+                        │   agents/divisions/*.py          │
+                        │   (pmcc_robinhood,               │
+                        │    fidelity_options)             │
+                        └─────────────────┬────────────────┘
+                                          │ ProposedOrder
+                                          ▼
+            ┌─────────────────────────────────────────────────┐
+            │  Research firm consult (advisory, fail-open)    │
+            │  agents/research/  — see CLAUDE.md § Research   │
+            └─────────────────────────┬───────────────────────┘
+                                      │
+                                      ▼
+            ┌─────────────────────────────────────────────────┐
+            │  Risk gate (deterministic, single chokepoint)   │
+            │  agents/risk.py — hot-reloads config/risk.yaml  │
+            └─────────────────────────┬───────────────────────┘
+                                      │
+                  auto_execute=false  │  auto_execute=true
+                                      ▼
+            ┌──────────────────┐  ┌─────────────────────────────┐
+            │ Telegram push    │  │ broker.place_order(...)     │
+            │ + would_have_    │  │ + audit + Telegram fill     │
+            │   placed audit   │  │   notify                    │
+            └──────────────────┘  └─────────────────────────────┘
 ```
 
-LangGraph with `interrupt()` gates every live order behind Board approval; SQLite checkpointing means a crash mid-trade resumes from exactly the same state. Risk caps are enforced **deterministically in code**; the LLM only narrates rationales.
+LangGraph with `interrupt()` gates every live order behind Board
+approval (PMCC scan + Telegram-driven flows). The TV webhook flow uses
+inline risk gating with FastAPI `BackgroundTasks` for return-fast
+behavior. SQLite checkpointing means a crash mid-trade resumes from
+exactly the same state. Risk caps are enforced **deterministically in
+code**; the LLM only narrates rationales.
 
-Full architecture lives in `.claude/plans/you-are-an-elite-compressed-micali.md`.
+Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Project layout
 
 ```
 trading_corp/
-├── main.py             # entrypoint
-├── graph/              # LangGraph CEO graph + HITL interrupts
-├── agents/             # CEO, Risk, Trend, Backtester, Portfolio, Data&Exec, Logger, divisions
-├── brokers/            # Broker interface + paper / robinhood / coinbase / fidelity
-├── data/               # WS aggregator, yfinance fallback, TradingView (optional)
-├── comms/              # Telegram + CLI Board channels
-├── persistence/        # SQLite engine + dataclass models + LangGraph checkpointer
-└── utils/              # Secrets loader (with redaction), time helpers
+├── main.py                 # entrypoint
+├── graph/                  # LangGraph CEO graph + HITL interrupts
+├── agents/
+│   ├── divisions/          # brokerage/account-level division wiring
+│   │   ├── pmcc_robinhood.py
+│   │   └── fidelity_options.py
+│   ├── strategies/         # TV-driven strategies inside coinbase_spot division
+│   │   ├── lord_otter.py
+│   │   └── market_cypher.py
+│   ├── research/           # shared research-firm consultant
+│   ├── risk.py             # deterministic risk caps
+│   ├── data_exec.py        # broker dispatch + dry-run
+│   └── ...                 # CEO, Trend, Backtester, Portfolio, Logger
+├── brokers/                # Broker interface + paper / robinhood / coinbase / bitunix / fidelity
+├── data/                   # WS aggregator, yfinance fallback, macro calendar
+├── comms/                  # Telegram bot + CLI Board channels
+├── persistence/            # SQLite engine + dataclass models + LangGraph checkpointer
+├── utils/                  # Secrets loader (KV + redaction), time helpers
+└── web/                    # FastAPI app: dashboard, webhooks, htmx partials
+
 config/
-├── risk.yaml           # aggressive-but-capped risk profile
-├── strategies.yaml     # division enablement + watchlists
-└── agents.yaml         # LLM model assignment per agent
-tests/                  # pytest suite
+├── risk.yaml               # global caps + per-strategy overrides
+├── strategies.yaml         # per-strategy enabled/auto_execute/tiers
+├── divisions.yaml          # broker × account routing
+├── agents.yaml             # LLM model assignment per agent
+├── research.yaml           # research firm cost caps + consult timeouts
+└── macro_calendar.yaml     # hand-maintained news halt calendar
+
+runbooks/                   # operational playbooks (no-edit by default)
+infra/                      # Bicep IaC (edit-with-deploy-plan only)
+docs/ARCHITECTURE.md        # full architecture reference
 ```
 
 ## Testing
 
 ```bash
-pytest                                                          # full suite
-pytest tests/test_risk_gates.py                                # risk caps
-pytest tests/test_paper_trading_default.py                     # safety
-pytest tests/test_graph_hitl.py                                # HITL graph
+pytest                                                  # full suite
+pytest tests/test_risk_gates.py                        # risk caps
+pytest tests/test_paper_trading_default.py             # paper safety
+pytest tests/test_graph_hitl.py                        # HITL graph
+pytest tests/test_lord_otter_bias_persistence.py       # Otter state machine
+pytest tests/test_webhooks_return_fast.py              # webhook timing contract
 ```
 
 ## Safety invariants (do not break)
 
-1. **PAPER is the default on every startup.** Going LIVE requires `--live` AND interactive confirmation AND broker creds.
-2. **Every live order requires Board approval** until per-strategy `auto_execute: true` is set in `config/strategies.yaml` (and even then, only under `auto_max_notional`).
-3. **Risk caps are deterministic in code.** The LLM never overrides the Risk Agent.
-4. **New strategies need backtest approval** before paper or live deploy.
-5. **No credentials in logs.** Logger applies `RedactingFilter` automatically.
+1. **PAPER is the default on every startup.** Going LIVE requires
+   `--live` AND interactive confirmation AND non-empty broker creds.
+2. **Every live order requires Board approval** until per-strategy
+   `auto_execute: true` is set in `config/strategies.yaml`. Currently
+   `false` everywhere.
+3. **Risk caps are deterministic in code.** The LLM never overrides
+   the Risk Agent.
+4. **No credentials in logs.** Logger applies `RedactingFilter` on the
+   root logger.
+5. **Audit log writes BEFORE every decision branch, not after.**
+   `audit_event` is the source of truth; the dashboard renders
+   snapshots.
+6. **Single risk chokepoint:** `RiskAgent.evaluate()`. No code path
+   may bypass it.
 
-## Where to go next (Phase 3)
+See [CLAUDE.md § STOP AND READ](CLAUDE.md) for the full invariant list.
 
-When you're ready to wire the Robinhood PMCC division live:
-1. Set Robinhood env vars in `.env`.
-2. Implement `trading_corp/brokers/robinhood.py` (skeleton already in place).
-3. Implement `trading_corp/agents/divisions/pmcc_robinhood.py` — emits `ProposedOrder`s.
-4. Run the Backtesting Agent's full impl (Phase 3) on the strategy.
-5. Start in PAPER first; flip live only after multiple paper sessions look right to you.
+## Current status
+
+System is live in production on Azure. Paper-mode on every strategy.
+Active focus through 2026-05-05 is observing PMCC's research-as-
+consultant pattern in production to decide whether to extend the
+research firm to crypto strategies; until that decision lands,
+Lord Otter and Market Cypher feature work is paused (existing code
+continues running paper-mode). See `BACKLOG.md` ⏸ PAUSED notice.

@@ -553,6 +553,36 @@ async def test_universe_fallback_ignores_short_positions(agent: PMCCAgent):
 
 
 @pytest.mark.asyncio
+async def test_universe_skips_hodl_crypto_positions(agent: PMCCAgent):
+    """Crypto held as HODL (e.g. ETH/USD from Robinhood crypto branch
+    added 2026-05-01) must NOT enter the PMCC scan universe and must
+    NOT pre-empt the leg-underlyings fallback. Reproduces the
+    2026-05-04→05-08 prod regression where a single ETH/USD position
+    masked all 13 PMCC legs from the order-construction loop."""
+    opt_positions = [
+        _opt_position("ASTS", expiry_days=400, strike=30.0, qty=1.0, delta=0.85),
+        _opt_position("MARA", expiry_days=400, strike=20.0, qty=1.0, delta=0.85),
+    ]
+    crypto_position = Position(
+        account="mock",
+        symbol="ETH/USD",
+        qty=0.5,
+        avg_price=3000.0,
+        opened_ts="2026-05-01T00:00:00+00:00",
+        extra={"asset_type": "crypto"},
+    )
+    broker = MockOptionBroker(
+        option_positions=opt_positions,
+        stock_positions=[crypto_position],
+        equity=100_000.0,
+    )
+    universe = await agent.get_universe(broker)
+    # Crypto excluded; falls through to long-call-underlyings branch
+    assert "ETH/USD" not in universe
+    assert set(universe) == {"ASTS", "MARA"}
+
+
+@pytest.mark.asyncio
 async def test_scan_rolls_existing_pmcc_in_options_only_account(agent: PMCCAgent):
     """Options-only account with a PMCC needing a roll → 2 roll orders."""
     opt_positions = [
@@ -581,11 +611,46 @@ async def test_scan_rolls_existing_pmcc_in_options_only_account(agent: PMCCAgent
 
 # ---------------------------------------------------------------------------
 # Terminal-DTE wall-clock time gate (Board direction 2026-05-01)
+#
+# Phase 2 (2026-05-02): refactored from hardcoded 15:00/15:30 ET to
+# market-calendar-aware (close - release_offset_min, close - hard_offset_min)
+# + cycle-continuity release on extrinsic <= threshold. Tests below pin both
+# paths and the P1 release condition.
 # ---------------------------------------------------------------------------
 
-def _0dte_pmcc(action: str = "hold", urgency: str = "routine") -> tuple[PMCCPosition, PMCCAnalysis]:
+class _FakeCalendar:
+    """Test double for MarketHoursCalendar. Returns a fixed close time
+    in ET for any date — simpler than mocking pandas_market_calendars.
+    Set close=None to simulate a closed market day."""
+    def __init__(self, close_hour: int = 16, close_minute: int = 0,
+                 closed: bool = False):
+        self.close_hour = close_hour
+        self.close_minute = close_minute
+        self.closed = closed
+
+    def close_time_et(self, when):
+        if self.closed:
+            return None
+        from datetime import datetime as _dt
+        from trading_corp.utils.time import ET as _ET
+        d = when.date() if hasattr(when, "date") else when
+        return _dt(d.year, d.month, d.day, self.close_hour, self.close_minute,
+                   tzinfo=_ET)
+
+
+# Default fake calendar for tests: regular 4pm ET close.
+_REGULAR_CAL = _FakeCalendar(close_hour=16, close_minute=0)
+
+
+def _0dte_pmcc(action: str = "hold", urgency: str = "routine",
+               short_leg_mark: float = 0.50) -> tuple[PMCCPosition, PMCCAnalysis]:
     """Build a (leg, analysis) pair where the short is 0 DTE inside the
-    ATM zone — the canonical scenario the time gate guards."""
+    ATM zone — the canonical scenario the time gate guards.
+
+    Default `short_leg_mark=0.50` is ABOVE the cycle-continuity threshold
+    ($0.15) so time-gate tests aren't accidentally triggering the P1
+    release. P1 tests pass `short_leg_mark=0.10` explicitly.
+    """
     leg = PMCCPosition(
         symbol="CIFR",
         long_leg_expiry=_future(259), long_leg_strike=7.0,
@@ -593,7 +658,7 @@ def _0dte_pmcc(action: str = "hold", urgency: str = "routine") -> tuple[PMCCPosi
         long_leg_avg_price=7.35, long_leg_symbol="CIFR ... C 7.00",
         short_leg_expiry=_future(0), short_leg_strike=18.0,
         short_leg_dte=0, short_leg_pnl_pct=0.92,
-        short_leg_qty=-2.0, short_leg_mark=0.12,
+        short_leg_qty=-2.0, short_leg_mark=short_leg_mark,
         short_leg_avg_price=1.58, short_leg_symbol="CIFR ... C 18.00",
     )
     analysis = PMCCAnalysis(
@@ -611,20 +676,26 @@ def _et(hour: int, minute: int):
     return datetime(2026, 5, 1, hour, minute, 0, tzinfo=ET)
 
 
-def test_time_gate_no_op_before_15_00_ET(agent: PMCCAgent):
-    """Before 3:00 PM ET, the gate is inactive — HOLD stays HOLD even
-    on a 0-DTE position inside the ATM zone."""
+def test_time_gate_no_op_before_release_threshold(agent: PMCCAgent):
+    """Before close - release_offset (default 60min) the gate is
+    inactive — HOLD stays HOLD even on a 0-DTE position inside the
+    ATM zone. On a regular 16:00 ET close that's anything < 15:00 ET."""
     leg, analysis = _0dte_pmcc(action="hold")
-    out = agent._terminal_dte_time_release(analysis, leg, now_et_dt=_et(14, 59))
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(14, 59), calendar=_REGULAR_CAL,
+    )
     assert out.action == "hold"
     assert out.urgency == "routine"
 
 
 def test_time_gate_no_op_when_dte_not_zero(agent: PMCCAgent):
-    """The gate only fires on 0 DTE. A 1-DTE HOLD past 3:00 ET stays HOLD."""
+    """The gate only fires on 0 DTE. A 1-DTE HOLD past the release
+    threshold stays HOLD."""
     leg, analysis = _0dte_pmcc(action="hold")
     leg = PMCCPosition(**{**leg.__dict__, "short_leg_dte": 1})
-    out = agent._terminal_dte_time_release(analysis, leg, now_et_dt=_et(15, 30))
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(15, 30), calendar=_REGULAR_CAL,
+    )
     assert out.action == "hold"
 
 
@@ -632,83 +703,1045 @@ def test_time_gate_no_op_when_action_already_roll(agent: PMCCAgent):
     """If the LLM already chose roll_short, the gate doesn't interfere
     (don't downgrade urgency / overwrite an already-correct decision)."""
     leg, analysis = _0dte_pmcc(action="roll_short", urgency="elevated")
-    out = agent._terminal_dte_time_release(analysis, leg, now_et_dt=_et(15, 45))
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(15, 45), calendar=_REGULAR_CAL,
+    )
     assert out.action == "roll_short"
     assert out.urgency == "elevated"   # unchanged
 
 
-def test_time_gate_releases_at_15_00_ET_forces_roll_short(agent: PMCCAgent):
-    """At exactly 3:00 PM ET, HOLD on a 0-DTE position becomes roll_short.
-    A warning is appended explaining the override."""
+def test_time_gate_releases_at_close_minus_60_forces_roll_short(agent: PMCCAgent):
+    """On a regular 16:00 ET close day: at 15:00 ET (= close - 60min),
+    HOLD on a 0-DTE position becomes roll_short."""
     leg, analysis = _0dte_pmcc(action="hold")
-    out = agent._terminal_dte_time_release(analysis, leg, now_et_dt=_et(15, 0))
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(15, 0), calendar=_REGULAR_CAL,
+    )
     assert out.action == "roll_short"
-    # Original warnings preserved + override explanation appended
+    # Override explanation appended
     assert any("Terminal-DTE Override released" in w for w in out.warnings)
 
 
-def test_time_gate_releases_in_window_15_00_to_15_30(agent: PMCCAgent):
-    """Anywhere in [15:00, 15:30) ET: HOLD/WATCH → roll_short."""
+def test_time_gate_releases_in_window_release_to_hard(agent: PMCCAgent):
+    """Anywhere in [release_threshold, hard_deadline) ET: HOLD/WATCH → roll_short.
+    On 16:00 close that window is [15:00, 15:30)."""
     leg, analysis = _0dte_pmcc(action="watch")
-    out = agent._terminal_dte_time_release(analysis, leg, now_et_dt=_et(15, 15))
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(15, 15), calendar=_REGULAR_CAL,
+    )
     assert out.action == "roll_short"
 
 
-def test_time_gate_hard_deadline_at_15_30_forces_close_urgent(agent: PMCCAgent):
-    """At 3:30 PM ET sharp, the hard deadline fires: action becomes
-    close_short, urgency escalates to urgent."""
+def test_time_gate_hard_deadline_forces_close_urgent(agent: PMCCAgent):
+    """At hard_deadline (close - 30min, i.e. 15:30 ET on regular days):
+    action becomes close_short, urgency escalates to urgent."""
     leg, analysis = _0dte_pmcc(action="hold")
-    out = agent._terminal_dte_time_release(analysis, leg, now_et_dt=_et(15, 30))
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(15, 30), calendar=_REGULAR_CAL,
+    )
     assert out.action == "close_short"
     assert out.urgency == "urgent"
     assert any("hard deadline breached" in w for w in out.warnings)
 
 
-def test_time_gate_past_15_30_still_hard_deadline(agent: PMCCAgent):
-    """Past 3:30 ET (e.g. 3:45) the hard-deadline branch keeps firing."""
+def test_time_gate_past_hard_deadline_still_close_urgent(agent: PMCCAgent):
+    """Past hard_deadline (e.g. 15:45 ET on a regular day) the
+    hard-deadline branch keeps firing."""
     leg, analysis = _0dte_pmcc(action="hold")
-    out = agent._terminal_dte_time_release(analysis, leg, now_et_dt=_et(15, 45))
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(15, 45), calendar=_REGULAR_CAL,
+    )
     assert out.action == "close_short"
     assert out.urgency == "urgent"
 
 
 def test_time_gate_no_op_when_analysis_or_leg_none(agent: PMCCAgent):
     """Defensive: missing analysis or leg returns the input unchanged."""
-    assert agent._terminal_dte_time_release(None, _0dte_pmcc()[0]) is None
+    assert agent._terminal_dte_time_release(
+        None, _0dte_pmcc()[0], calendar=_REGULAR_CAL,
+    ) is None
     leg, analysis = _0dte_pmcc()
-    assert agent._terminal_dte_time_release(analysis, None).action == "hold"
+    assert agent._terminal_dte_time_release(
+        analysis, None, calendar=_REGULAR_CAL,
+    ).action == "hold"
+
+
+# ── Half-day / holiday-aware tests ──────────────────────────────────
+
+
+def test_time_gate_half_day_close_shifts_thresholds_to_1pm(agent: PMCCAgent):
+    """On a 13:00 ET half-day close (e.g. day after Thanksgiving), the
+    release threshold is 12:00 ET and the hard deadline is 12:30 ET.
+    A 12:15 HOLD must become roll_short, a 12:35 must become close_short."""
+    half_day_cal = _FakeCalendar(close_hour=13, close_minute=0)
+    leg, analysis = _0dte_pmcc(action="hold")
+
+    # Before 12:00 ET — too early
+    pre = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(11, 59), calendar=half_day_cal,
+    )
+    assert pre.action == "hold"
+
+    # 12:15 ET is in the [12:00, 12:30) release window
+    rel = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(12, 15), calendar=half_day_cal,
+    )
+    assert rel.action == "roll_short"
+
+    # 12:35 ET is past hard_deadline
+    hard = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(12, 35), calendar=half_day_cal,
+    )
+    assert hard.action == "close_short"
+    assert hard.urgency == "urgent"
+
+
+def test_time_gate_no_op_on_closed_market_day(agent: PMCCAgent):
+    """If the calendar reports the market is closed (holiday, weekend),
+    the time gate doesn't fire even past the would-be threshold —
+    there's nothing to roll on a closed day."""
+    closed_cal = _FakeCalendar(closed=True)
+    leg, analysis = _0dte_pmcc(action="hold")
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(15, 30), calendar=closed_cal,
+    )
+    assert out.action == "hold"
+
+
+# ── P1: cycle-continuity release ────────────────────────────────────
+
+
+def test_cycle_continuity_release_on_low_extrinsic(agent: PMCCAgent):
+    """Mark <= cycle_continuity_extrinsic_threshold ($0.15 default) on a
+    0-DTE short forces roll_short regardless of time. This is the
+    P1 path: capture next-cycle premium NOW instead of waiting for the
+    time gate."""
+    # 11 AM ET — well before any time-gate fires. Mark 0.10 <= 0.15.
+    leg, analysis = _0dte_pmcc(action="hold", short_leg_mark=0.10)
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(11, 0), calendar=_REGULAR_CAL,
+    )
+    assert out.action == "roll_short"
+    assert any("Cycle-continuity release" in w for w in out.warnings)
+
+
+def test_cycle_continuity_no_fire_above_threshold(agent: PMCCAgent):
+    """Mark above threshold doesn't trigger the P1 release. At 11 AM
+    with no time-gate fire, HOLD stays HOLD."""
+    leg, analysis = _0dte_pmcc(action="hold", short_leg_mark=0.50)
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(11, 0), calendar=_REGULAR_CAL,
+    )
+    assert out.action == "hold"
+
+
+def test_cycle_continuity_takes_precedence_over_time_gate(agent: PMCCAgent):
+    """When BOTH conditions are true (mark<=threshold AND past
+    release_threshold), P1 fires first — the warning text mentions
+    cycle-continuity, not the time-gate."""
+    leg, analysis = _0dte_pmcc(action="hold", short_leg_mark=0.10)
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(15, 15), calendar=_REGULAR_CAL,
+    )
+    assert out.action == "roll_short"
+    # P1 wording wins
+    assert any("Cycle-continuity release" in w for w in out.warnings)
+
+
+def test_cycle_continuity_no_fire_when_dte_not_zero(agent: PMCCAgent):
+    """Cycle-continuity is gated on short_leg_dte == 0 — same as time
+    gate. A 1-DTE position with mark $0.10 should NOT roll early."""
+    leg, analysis = _0dte_pmcc(action="hold", short_leg_mark=0.10)
+    leg = PMCCPosition(**{**leg.__dict__, "short_leg_dte": 1})
+    out = agent._terminal_dte_time_release(
+        analysis, leg, now_et_dt=_et(11, 0), calendar=_REGULAR_CAL,
+    )
+    assert out.action == "hold"
 
 
 def test_time_gate_dst_aware_uses_local_eastern_clock():
-    """The 15:00 ET threshold must track local Eastern time across DST.
-    Construct datetimes from the same UTC instant on either side of a
-    DST boundary; the gate output must follow LOCAL ET wall-clock,
+    """The release threshold must track local Eastern time across DST.
+    Construct datetimes from the same wall-clock ET on either side of
+    the DST boundary; the gate output must follow LOCAL ET wall-clock,
     not UTC offset.
 
     DST for America/New_York: EST (UTC-5) Nov→Mar, EDT (UTC-4) Mar→Nov.
-    A UTC instant of 2026-03-08 19:30 → 14:30 EST (gate INACTIVE)
-    The same wall-clock 14:30 in ET should be inactive regardless of
-    the season — the helper uses .astimezone(ET) so the wall-clock
-    interpretation is what matters.
-    """
+    The helper computes thresholds via close_dt - timedelta — the
+    arithmetic operates on tz-aware ET datetimes, so the result is
+    stable across DST."""
     from datetime import datetime
     from trading_corp.utils.time import ET
 
-    # Force a specific ET wall-clock; helper reads .hour/.minute on ET.
-    # DST boundary in 2026: spring-forward at 2026-03-08 02:00 ET.
-    # Test points: one in EST window, one in EDT window — both at the
-    # same wall-clock 14:59 ET, both should be no-op.
     pre_dst = datetime(2026, 2, 1, 14, 59, 0, tzinfo=ET)   # EST
     post_dst = datetime(2026, 6, 1, 14, 59, 0, tzinfo=ET)  # EDT
 
     p = PMCCAgent.__new__(PMCCAgent)   # bare instance — no config needed
+    p._cfg = {}                        # required by the helper's cfg lookup
     leg, analysis = _0dte_pmcc(action="hold")
-    assert p._terminal_dte_time_release(analysis, leg, now_et_dt=pre_dst).action == "hold"
-    assert p._terminal_dte_time_release(analysis, leg, now_et_dt=post_dst).action == "hold"
+    assert p._terminal_dte_time_release(
+        analysis, leg, now_et_dt=pre_dst, calendar=_REGULAR_CAL,
+    ).action == "hold"
+    assert p._terminal_dte_time_release(
+        analysis, leg, now_et_dt=post_dst, calendar=_REGULAR_CAL,
+    ).action == "hold"
 
-    # Same wall-clock 15:00 ET — both should fire the release regardless of season
+    # Same wall-clock 15:00 ET — both fire release regardless of season
     pre_dst_active = datetime(2026, 2, 1, 15, 0, 0, tzinfo=ET)
     post_dst_active = datetime(2026, 6, 1, 15, 0, 0, tzinfo=ET)
-    assert p._terminal_dte_time_release(analysis, leg, now_et_dt=pre_dst_active).action == "roll_short"
-    assert p._terminal_dte_time_release(analysis, leg, now_et_dt=post_dst_active).action == "roll_short"
+    assert p._terminal_dte_time_release(
+        analysis, leg, now_et_dt=pre_dst_active, calendar=_REGULAR_CAL,
+    ).action == "roll_short"
+    assert p._terminal_dte_time_release(
+        analysis, leg, now_et_dt=post_dst_active, calendar=_REGULAR_CAL,
+    ).action == "roll_short"
 
+
+# ---------------------------------------------------------------------------
+# Item 2 (2026-05-02) — LEAP Hard Rule promotion
+#   Promotes roll_short / roll_short_early → roll_leap when LEAP delta>=0.95
+#   OR long_leg_dte<120. Standard Rule 5 / LEAP Management Rule.
+# ---------------------------------------------------------------------------
+
+
+def _leg_with_leap(
+    *, long_delta: float = 0.85, long_dte: int = 400,
+    short_dte: int = 7, short_strike: float = 175.0,
+    short_mark: float = 1.50,
+) -> PMCCPosition:
+    """Construct a PMCCPosition with full LEAP + short, with knobs for the
+    Hard-Rule and cooldown gates."""
+    return PMCCPosition(
+        symbol="MSTR",
+        long_leg_expiry=_future(long_dte), long_leg_strike=160.0,
+        long_leg_delta=long_delta, long_leg_dte=long_dte, long_leg_qty=1.0,
+        long_leg_avg_price=2380.0, long_leg_symbol="MSTR ... C 160.00",
+        long_leg_mark=58.05,
+        short_leg_expiry=_future(short_dte), short_leg_strike=short_strike,
+        short_leg_dte=short_dte, short_leg_pnl_pct=0.20,
+        short_leg_qty=-1.0, short_leg_mark=short_mark,
+        short_leg_avg_price=2.50, short_leg_symbol="MSTR ... C 175.00",
+    )
+
+
+def test_leap_promote_fires_on_high_delta(agent: PMCCAgent):
+    """LEAP delta >= 0.95 with action=roll_short → action=roll_leap.
+    Warning text mentions the delta reason."""
+    leg = _leg_with_leap(long_delta=0.96)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.80,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent._promote_to_roll_leap_if_hard_rule(analysis, leg)
+    assert out.action == "roll_leap"
+    assert any("LEAP delta" in w and "0.96" in w for w in out.warnings)
+
+
+def test_leap_promote_fires_on_low_dte(agent: PMCCAgent):
+    """long_leg_dte < 120 with action=roll_short → action=roll_leap.
+    Warning text mentions the DTE reason."""
+    leg = _leg_with_leap(long_dte=100)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.80,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent._promote_to_roll_leap_if_hard_rule(analysis, leg)
+    assert out.action == "roll_leap"
+    assert any("DTE" in w and "120" in w for w in out.warnings)
+
+
+def test_leap_promote_fires_on_both_conditions(agent: PMCCAgent):
+    """Both delta and DTE conditions hold — warning lists both reasons."""
+    leg = _leg_with_leap(long_delta=0.97, long_dte=80)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.80,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent._promote_to_roll_leap_if_hard_rule(analysis, leg)
+    assert out.action == "roll_leap"
+    w = " ".join(out.warnings)
+    assert "0.97" in w and "80" in w
+
+
+def test_leap_promote_no_op_below_thresholds(agent: PMCCAgent):
+    """Healthy LEAP (delta 0.85, DTE 400) → action stays roll_short."""
+    leg = _leg_with_leap(long_delta=0.85, long_dte=400)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.80,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent._promote_to_roll_leap_if_hard_rule(analysis, leg)
+    assert out.action == "roll_short"
+    assert out.warnings == []
+
+
+def test_leap_promote_no_op_when_action_not_roll_short(agent: PMCCAgent):
+    """A 'hold' on a deep-ITM LEAP shouldn't be promoted to roll_leap —
+    the promotion only lifts roll_short / roll_short_early."""
+    leg = _leg_with_leap(long_delta=0.96)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="hold", confidence=0.80,
+        urgency="routine", summary="...", rationale="...",
+    )
+    out = agent._promote_to_roll_leap_if_hard_rule(analysis, leg)
+    assert out.action == "hold"
+
+
+def test_leap_promote_lifts_roll_short_early(agent: PMCCAgent):
+    """roll_short_early is also lifted (same dispatch arm in
+    propose_orders_for_pair as roll_short)."""
+    leg = _leg_with_leap(long_dte=100)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short_early", confidence=0.80,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent._promote_to_roll_leap_if_hard_rule(analysis, leg)
+    assert out.action == "roll_leap"
+
+
+def test_leap_promote_no_op_on_none_inputs(agent: PMCCAgent):
+    """Defensive: missing analysis or leg returns the input unchanged."""
+    leg = _leg_with_leap(long_delta=0.96)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.80,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    assert agent._promote_to_roll_leap_if_hard_rule(None, leg) is None
+    out = agent._promote_to_roll_leap_if_hard_rule(analysis, None)
+    assert out.action == "roll_short"
+
+
+# ---------------------------------------------------------------------------
+# Item 1 (2026-05-02) — Halfway-roll cooldown + ROLL HISTORY prompt block
+#   Backstop for the COOLDOWN clause in Rule 6 / BREACH POLICY: downgrade
+#   roll_short → hold when a recent roll-up was executed within the
+#   cooldown window AND short DTE > 2 AND extrinsic > floor.
+# ---------------------------------------------------------------------------
+
+import json as _json
+import sqlite3 as _sqlite3
+from pathlib import Path as _Path
+
+from trading_corp.persistence.db import init_db as _init_db
+from trading_corp.persistence.db import resolve_db_path as _resolve_db_path
+
+
+def _insert_roll_pair_with_strikes(
+    db_url: str,
+    pair_id: str,
+    symbol: str,
+    *,
+    close_strike: float,
+    open_strike: float,
+    fill_ts: str,
+    close_price: float = 1.00,
+    open_price: float = 1.50,
+    leap_lifetime_key: str | None = None,
+) -> None:
+    """Seed a synthetic roll pair carrying the strike fields the
+    detailed-history query reads. Identical SQL shape to the existing
+    test_pmcc_position_context._insert_roll_pair helper but populates
+    extra.strike + extra.action='roll_short_call_close' / '..._open'."""
+    path = _resolve_db_path(db_url)
+    extra_close = {
+        "is_option": True, "underlying": symbol,
+        "action": "roll_short_call_close",
+        "pmcc_pair_id": pair_id,
+        "strike": close_strike,
+    }
+    extra_open = {
+        "is_option": True, "underlying": symbol,
+        "action": "roll_short_call_open",
+        "pmcc_pair_id": pair_id,
+        "strike": open_strike,
+    }
+    if leap_lifetime_key:
+        extra_close["leap_lifetime_key"] = leap_lifetime_key
+        extra_open["leap_lifetime_key"] = leap_lifetime_key
+    with _sqlite3.connect(path) as conn:
+        conn.execute(
+            """INSERT INTO proposed_order
+               (id, ts, strategy, symbol, side, qty, order_type, limit_price,
+                rationale, status, fill_price, fill_ts, extra_json)
+               VALUES (?, ?, 'robinhood_pmcc', ?, 'buy', 1, 'limit', NULL,
+                       'roll close', 'filled', ?, ?, ?)""",
+            (f"close-{pair_id}", fill_ts, symbol, close_price, fill_ts,
+             _json.dumps(extra_close)),
+        )
+        conn.execute(
+            """INSERT INTO proposed_order
+               (id, ts, strategy, symbol, side, qty, order_type, limit_price,
+                rationale, status, fill_price, fill_ts, extra_json)
+               VALUES (?, ?, 'robinhood_pmcc', ?, 'sell', 1, 'limit', NULL,
+                       'roll open', 'filled', ?, ?, ?)""",
+            (f"open-{pair_id}", fill_ts, symbol, open_price, fill_ts,
+             _json.dumps(extra_open)),
+        )
+        conn.commit()
+
+
+def _ts_days_ago(days: int) -> str:
+    """ISO ts N days before now_utc — for synthesizing recent rolls."""
+    from datetime import datetime, timedelta, timezone
+    return (
+        datetime.now(timezone.utc) - timedelta(days=days)
+    ).isoformat(timespec="seconds")
+
+
+@pytest.fixture
+def agent_with_db(strategies_yaml: _Path, risk_yaml: _Path, tmp_db: str) -> PMCCAgent:
+    """PMCCAgent variant with db_url wired so cooldown queries work."""
+    _init_db(tmp_db)
+    return PMCCAgent(
+        strategies_yaml=strategies_yaml, risk_yaml=risk_yaml, db_url=tmp_db,
+    )
+
+
+def test_query_prior_rolls_detailed_returns_full_metadata(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """Single roll pair → detailed query returns count, net_dollars,
+    last_roll_ts, before/after strikes, strike_change, days_since."""
+    fill_ts = _ts_days_ago(3)
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=160.0, open_strike=170.0,
+        fill_ts=fill_ts, close_price=1.00, open_price=2.00,
+    )
+    out = agent_with_db._query_prior_rolls_detailed("MSTR")
+    assert out["roll_count"] == 1
+    assert out["net_dollars"] == pytest.approx(100.0)  # -100 + 200
+    assert out["last_roll_ts"] == fill_ts
+    assert out["last_roll_short_strike_before"] == pytest.approx(160.0)
+    assert out["last_roll_short_strike_after"] == pytest.approx(170.0)
+    assert out["last_roll_strike_change"] == pytest.approx(10.0)
+    assert out["days_since_last_roll"] in (2, 3)  # tolerance for clock drift
+
+
+def test_query_prior_rolls_detailed_picks_most_recent_pair(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """Two rolls 10d and 2d ago → last_roll_* reflects the 2d-ago pair."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "old", "MSTR",
+        close_strike=140.0, open_strike=150.0,
+        fill_ts=_ts_days_ago(10),
+    )
+    _insert_roll_pair_with_strikes(
+        tmp_db, "new", "MSTR",
+        close_strike=170.0, open_strike=180.0,
+        fill_ts=_ts_days_ago(2),
+    )
+    out = agent_with_db._query_prior_rolls_detailed("MSTR")
+    assert out["roll_count"] == 2
+    assert out["last_roll_short_strike_before"] == pytest.approx(170.0)
+    assert out["last_roll_short_strike_after"] == pytest.approx(180.0)
+    assert out["days_since_last_roll"] in (1, 2)
+
+
+def test_query_prior_rolls_detailed_empty_db_returns_zeros(
+    agent_with_db: PMCCAgent,
+):
+    """No rolls in DB → all fields return defaults, no exception."""
+    out = agent_with_db._query_prior_rolls_detailed("MSTR")
+    assert out["roll_count"] == 0
+    assert out["net_dollars"] == 0.0
+    assert out["last_roll_ts"] is None
+    assert out["last_roll_strike_change"] is None
+    assert out["days_since_last_roll"] is None
+
+
+def test_query_prior_rolls_detailed_no_db_returns_zeros(agent: PMCCAgent):
+    """db_url=None → returns defaults, doesn't try to query."""
+    out = agent._query_prior_rolls_detailed("MSTR")
+    assert out["roll_count"] == 0
+    assert out["last_roll_ts"] is None
+
+
+def test_cooldown_fires_within_window_with_recent_rollup(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """Recent roll-up (3d ago, +$10 strike change), short DTE 5,
+    extrinsic $1.50/sh, action=roll_short → action=hold + cooldown
+    warning."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=160.0, open_strike=170.0,
+        fill_ts=_ts_days_ago(3),
+    )
+    leg = _leg_with_leap(short_dte=5, short_mark=1.50)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, leg)
+    assert out.action == "hold"
+    assert any("cooldown" in w.lower() for w in out.warnings)
+    assert any("$160.00" in w and "$170.00" in w for w in out.warnings)
+
+
+def test_cooldown_no_fire_outside_window(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """Roll 10 days ago > cooldown_days(7) → no override."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=160.0, open_strike=170.0,
+        fill_ts=_ts_days_ago(10),
+    )
+    leg = _leg_with_leap(short_dte=5, short_mark=1.50)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, leg)
+    assert out.action == "roll_short"
+    assert out.warnings == []
+
+
+def test_cooldown_no_fire_when_short_dte_at_floor(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """short_leg_dte == terminal_dte_floor (default 2) → don't block
+    deadline-driven roll. The terminal-DTE override owns this case."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=160.0, open_strike=170.0,
+        fill_ts=_ts_days_ago(3),
+    )
+    leg = _leg_with_leap(short_dte=2, short_mark=1.50)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, leg)
+    assert out.action == "roll_short"
+
+
+def test_cooldown_no_fire_when_extrinsic_below_floor(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """short_leg_mark <= extrinsic_floor (0.50) → don't block; the
+    cycle-continuity gate elsewhere wants the roll."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=160.0, open_strike=170.0,
+        fill_ts=_ts_days_ago(3),
+    )
+    leg = _leg_with_leap(short_dte=5, short_mark=0.30)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, leg)
+    assert out.action == "roll_short"
+
+
+def test_cooldown_no_fire_when_strike_change_too_small(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """Last roll moved strike by $0.50 < min_strike_change(1.0) — that's
+    normal cycle drift, not a halfway-style roll-up. Don't block."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=170.0, open_strike=170.50,
+        fill_ts=_ts_days_ago(3),
+    )
+    leg = _leg_with_leap(short_dte=5, short_mark=1.50)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, leg)
+    assert out.action == "roll_short"
+
+
+def test_cooldown_no_fire_on_roll_down(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """Roll-DOWN (negative strike_change) is a defensive close, not a
+    halfway-style up-roll. Don't block."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=180.0, open_strike=170.0,  # rolled DOWN $10
+        fill_ts=_ts_days_ago(3),
+    )
+    leg = _leg_with_leap(short_dte=5, short_mark=1.50)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, leg)
+    assert out.action == "roll_short"
+
+
+def test_cooldown_no_fire_when_no_history(
+    agent_with_db: PMCCAgent,
+):
+    """Empty DB → cooldown can't compute days_since_last_roll, no-op."""
+    leg = _leg_with_leap(short_dte=5, short_mark=1.50)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, leg)
+    assert out.action == "roll_short"
+
+
+def test_cooldown_no_fire_when_action_not_roll_short(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """action='hold' → cooldown is a no-op (nothing to downgrade)."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=160.0, open_strike=170.0,
+        fill_ts=_ts_days_ago(3),
+    )
+    leg = _leg_with_leap(short_dte=5, short_mark=1.50)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="hold", confidence=0.85,
+        urgency="routine", summary="...", rationale="...",
+    )
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, leg)
+    assert out.action == "hold"
+
+
+def test_cooldown_no_op_on_none_inputs(agent_with_db: PMCCAgent):
+    leg = _leg_with_leap()
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    assert agent_with_db._recent_halfway_roll_cooldown(None, leg) is None
+    out = agent_with_db._recent_halfway_roll_cooldown(analysis, None)
+    assert out.action == "roll_short"
+
+
+# ---------------------------------------------------------------------------
+# Item 1 — ROLL HISTORY prompt block formatter
+# ---------------------------------------------------------------------------
+
+
+def test_format_roll_history_block_no_history(agent_with_db: PMCCAgent):
+    """No prior rolls in DB → returns 'No prior rolls' empty-state copy."""
+    leg = _leg_with_leap()
+    block = agent_with_db._format_roll_history_block(leg)
+    assert "ROLL HISTORY" in block
+    assert "No prior rolls" in block
+
+
+def test_format_roll_history_block_with_recent_rollup(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """One recent roll-up → block includes count, net dollars, the
+    most-recent strike change with 'roll-up' label."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=160.0, open_strike=170.0,
+        fill_ts=_ts_days_ago(3),
+        close_price=1.00, open_price=2.00,
+    )
+    leg = _leg_with_leap()
+    block = agent_with_db._format_roll_history_block(leg)
+    assert "Total prior rolls: 1" in block
+    assert "$+100" in block or "$+100.00" in block or "+$100" in block or "$100" in block
+    assert "$160.00" in block and "$170.00" in block
+    assert "roll-up" in block
+
+
+def test_format_roll_history_block_no_db_returns_empty(agent: PMCCAgent):
+    """db_url=None → returns empty string (don't pollute prompt for
+    fixture/test code paths)."""
+    leg = _leg_with_leap()
+    block = agent._format_roll_history_block(leg)
+    assert block == ""
+
+
+# ---------------------------------------------------------------------------
+# Item 2 — roll_leap action produces 4-leg compound (close short + close
+# LEAP + open new LEAP + open new short)
+# ---------------------------------------------------------------------------
+
+
+def _liquid_call(strike: float, delta: float, mark: float, dte: int = 14) -> dict:
+    """Like _call but also populates open_interest + volume so the test
+    chains pass _passes_liquidity (default min OI=100, min vol=50,
+    max spread=10%). The shared _call helper omits those, which is why
+    the pre-existing test_pmcc_logic scan tests fail at liquidity."""
+    return {
+        "strike_price": strike,
+        "delta": delta,
+        "mark_price": mark,
+        "bid": round(mark - 0.05, 2),
+        "ask": round(mark + 0.05, 2),
+        "dte": dte,
+        "open_interest": 5000,
+        "volume": 1000,
+        "option_id": f"liquid_{strike}_{dte}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_roll_leap_propose_emits_4_legs(agent: PMCCAgent):
+    """When propose_orders_for_pair gets action=roll_leap and the broker
+    has both a qualifying new LEAP and a qualifying new weekly,
+    4 ProposedOrders are emitted (vs the prior 3-leg compound):
+       1. buy-to-close existing short
+       2. sell-to-close existing LEAP
+       3. buy-to-open new LEAP
+       4. sell-to-open new short on the new LEAP
+    Mirrors the BACKLOG verification: "the same RIOT scenario today
+    should produce a 4-leg recommendation"."""
+    today = date.today()
+    leap_expiry = (today + timedelta(days=400)).isoformat()
+    new_leap_expiry = (today + timedelta(days=500)).isoformat()
+    new_weekly_expiry = (today + timedelta(days=7)).isoformat()
+
+    broker = MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 100, 160.0, qty=1.0, delta=0.97,
+                          avg_price=23.80, mark_price=58.05),  # LEAP
+            _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30,
+                          avg_price=2.50, mark_price=1.50),    # short
+        ],
+        expiry_dates={"MSTR": [new_weekly_expiry, new_leap_expiry]},
+        calls={
+            ("MSTR", new_leap_expiry): [
+                _liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500),
+            ],
+            ("MSTR", new_weekly_expiry): [
+                _liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=7),
+            ],
+        },
+    )
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_leap", confidence=0.92,
+        urgency="elevated", summary="...", rationale="...",
+        target_delta=0.30, target_dte=7,
+    )
+
+    orders = await agent.propose_orders_for_pair(broker, "MSTR", analysis)
+
+    assert len(orders) == 4, (
+        f"Expected 4 legs (close short + close LEAP + open new LEAP + "
+        f"open new short on new LEAP), got {len(orders)}: "
+        f"{[o.extra.get('action') for o in orders]}"
+    )
+    actions = [o.extra.get("action") for o in orders]
+    assert actions == [
+        "roll_leap_close_short",
+        "roll_leap_close",
+        "roll_leap_open",
+        "roll_leap_open_short",
+    ]
+    # All 4 legs share the same pmcc_pair_id (compound-roll lineage)
+    pair_ids = {o.extra.get("pmcc_pair_id") for o in orders}
+    assert len(pair_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_roll_leap_emits_3_legs_when_no_qualifying_weekly(agent: PMCCAgent):
+    """If no qualifying weekly chain for the new short, the 4th leg is
+    skipped — the 3-leg compound still ships and the next scan picks
+    up the uncovered LEAP via the open_short branch. Documents the
+    fallback behavior."""
+    today = date.today()
+    new_leap_expiry = (today + timedelta(days=500)).isoformat()
+
+    broker = MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 100, 160.0, qty=1.0, delta=0.97,
+                          avg_price=23.80, mark_price=58.05),
+            _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30,
+                          avg_price=2.50, mark_price=1.50),
+        ],
+        expiry_dates={"MSTR": [new_leap_expiry]},  # no weekly expiry
+        calls={
+            ("MSTR", new_leap_expiry): [
+                _liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500),
+            ],
+        },
+    )
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_leap", confidence=0.92,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    orders = await agent.propose_orders_for_pair(broker, "MSTR", analysis)
+
+    actions = [o.extra.get("action") for o in orders]
+    # 3-leg fallback: close short + close LEAP + open new LEAP. The new
+    # weekly fallback in _find_best_weekly will pick the LEAP date as the
+    # only future expiry and likely fail liquidity / not be desired —
+    # accept either 3 (no weekly fallback fired) or 4 (weekly used the
+    # LEAP date as its target) but verify the close+close+open are present.
+    assert "roll_leap_close_short" in actions
+    assert "roll_leap_close" in actions
+    assert "roll_leap_open" in actions
+
+
+# ---------------------------------------------------------------------------
+# Composition: terminal-DTE → Hard-Rule promotion → cooldown ordering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_propose_orders_promotes_roll_short_to_roll_leap_via_hard_rule(
+    agent: PMCCAgent,
+):
+    """End-to-end: LLM emits action=roll_short on a position with a
+    deep-ITM LEAP (delta 0.96). propose_orders_for_pair applies the
+    Hard-Rule promotion before dispatch, so the resulting orders are
+    the 4-leg roll_leap compound, not the 2-leg roll_short."""
+    today = date.today()
+    new_leap_expiry = (today + timedelta(days=500)).isoformat()
+    new_weekly_expiry = (today + timedelta(days=7)).isoformat()
+
+    broker = MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 100, 160.0, qty=1.0, delta=0.97,
+                          avg_price=23.80, mark_price=58.05),
+            _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30,
+                          avg_price=2.50, mark_price=1.50),
+        ],
+        expiry_dates={"MSTR": [new_weekly_expiry, new_leap_expiry]},
+        calls={
+            ("MSTR", new_leap_expiry): [
+                _liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500),
+            ],
+            ("MSTR", new_weekly_expiry): [
+                _liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=7),
+            ],
+        },
+    )
+    # LLM emitted roll_short — Hard-Rule promotion should lift it.
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+        target_delta=0.30, target_dte=7,
+    )
+    orders = await agent.propose_orders_for_pair(broker, "MSTR", analysis)
+
+    actions = [o.extra.get("action") for o in orders]
+    assert actions == [
+        "roll_leap_close_short", "roll_leap_close",
+        "roll_leap_open", "roll_leap_open_short",
+    ], (
+        "Expected Hard-Rule promotion to route roll_short → roll_leap → "
+        f"4-leg compound. Got {actions}"
+    )
+
+
+def test_cooldown_does_not_fire_after_hard_rule_promotion(
+    agent_with_db: PMCCAgent, tmp_db: str,
+):
+    """When BOTH guards would apply, Hard-Rule promotion runs first and
+    moves action to roll_leap; cooldown is then a no-op (it only acts
+    on roll_short / roll_short_early). Pin the composition order
+    that propose_orders_for_pair uses so a future re-order doesn't
+    silently let cooldown veto a needed LEAP roll."""
+    _insert_roll_pair_with_strikes(
+        tmp_db, "p1", "MSTR",
+        close_strike=160.0, open_strike=170.0,
+        fill_ts=_ts_days_ago(3),
+    )
+    leg = _leg_with_leap(long_delta=0.97, short_dte=5, short_mark=1.50)
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+    )
+    promoted = agent_with_db._promote_to_roll_leap_if_hard_rule(analysis, leg)
+    assert promoted.action == "roll_leap"
+    after_cooldown = agent_with_db._recent_halfway_roll_cooldown(promoted, leg)
+    assert after_cooldown.action == "roll_leap", (
+        "Cooldown must be a no-op on roll_leap so a needed LEAP roll "
+        "isn't silently vetoed by the back-to-back-halfway guard."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item 3 (2026-05-03) — target_strike honors LLM's rule-driven strike
+# (halfway-rule strike drift fix). Adds target_strike to PMCCAnalysis +
+# threads through _select_weekly_strike + _find_best_weekly so a Major
+# Breach halfway midpoint isn't silently overridden by delta ranking.
+# ---------------------------------------------------------------------------
+
+
+def test_select_weekly_strike_honors_target_strike():
+    """When target_strike is set, picker selects the listed strike
+    closest to it — even if its delta is far from target_delta."""
+    calls = [
+        _liquid_call(strike=170.0, delta=0.45, mark=4.00, dte=7),  # closest to 169
+        _liquid_call(strike=180.0, delta=0.35, mark=2.50, dte=7),
+        _liquid_call(strike=190.0, delta=0.25, mark=1.50, dte=7),
+    ]
+    best = _select_weekly_strike(calls, target_delta=0.30, target_strike=169.0)
+    assert best is not None
+    assert best["strike_price"] == 170.0   # honored target_strike, not target_delta
+
+
+def test_select_weekly_strike_falls_back_to_delta_when_no_target_strike():
+    """target_strike=None → original delta-distance behavior (OTM-only)."""
+    calls = [
+        _liquid_call(strike=170.0, delta=0.45, mark=4.00, dte=7),  # ITM/borderline
+        _liquid_call(strike=180.0, delta=0.30, mark=2.50, dte=7),  # closest to 0.30
+        _liquid_call(strike=190.0, delta=0.20, mark=1.50, dte=7),
+    ]
+    best = _select_weekly_strike(calls, target_delta=0.30, target_strike=None)
+    assert best is not None
+    assert best["strike_price"] == 180.0
+
+
+def test_select_weekly_strike_target_strike_picks_nearest_listed():
+    """Target $169.25 between listed strikes — picks the closer one."""
+    calls = [
+        _liquid_call(strike=165.0, delta=0.55, mark=8.00, dte=7),
+        _liquid_call(strike=167.5, delta=0.50, mark=6.50, dte=7),  # 1.75 from 169.25
+        _liquid_call(strike=170.0, delta=0.45, mark=5.00, dte=7),  # 0.75 from 169.25
+        _liquid_call(strike=172.5, delta=0.40, mark=4.00, dte=7),
+    ]
+    best = _select_weekly_strike(calls, target_strike=169.25)
+    assert best is not None
+    assert best["strike_price"] == 170.0
+
+
+def test_select_weekly_strike_target_strike_honors_even_itm():
+    """target_strike doesn't second-guess: if the LLM cites an ITM
+    strike (e.g. defensive halfway-roll INTO the breach), picker
+    honors it. Caller is responsible for sanity — the LLM cited it
+    per the rules."""
+    calls = [
+        _liquid_call(strike=160.0, delta=0.60, mark=10.0, dte=7),  # ITM
+        _liquid_call(strike=180.0, delta=0.30, mark=2.50, dte=7),
+    ]
+    best = _select_weekly_strike(calls, target_strike=162.0)
+    assert best is not None
+    assert best["strike_price"] == 160.0
+
+
+def test_pmcc_analysis_dataclass_default_target_strike_none():
+    """PMCCAnalysis instances without target_strike default to None
+    (backwards-compat for callers that don't supply it)."""
+    a = PMCCAnalysis(
+        symbol="X", action="hold", confidence=0.5, urgency="routine",
+        summary="", rationale="",
+    )
+    assert a.target_strike is None
+
+
+def test_pmcc_analysis_carries_target_strike_when_set():
+    a = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+        target_delta=0.35, target_dte=7, target_strike=169.25,
+    )
+    assert a.target_strike == 169.25
+
+
+@pytest.mark.asyncio
+async def test_find_best_weekly_threads_target_strike_through(agent: PMCCAgent):
+    """End-to-end: _find_best_weekly with target_strike set picks the
+    listed strike closest to it, ignoring target_delta."""
+    today = date.today()
+    expiry = (today + timedelta(days=7)).isoformat()
+    broker = MockOptionBroker(
+        expiry_dates={"MSTR": [expiry]},
+        calls={
+            ("MSTR", expiry): [
+                _liquid_call(strike=170.0, delta=0.45, mark=4.00, dte=7),
+                _liquid_call(strike=180.0, delta=0.30, mark=2.50, dte=7),
+                _liquid_call(strike=190.0, delta=0.25, mark=1.50, dte=7),
+            ],
+        },
+    )
+    best = await agent._find_best_weekly(
+        "MSTR", broker, target_delta=0.30, target_dte=7, target_strike=169.0,
+    )
+    assert best is not None
+    assert best["strike_price"] == 170.0   # not 180 (the delta-best)
+
+
+@pytest.mark.asyncio
+async def test_propose_roll_short_uses_target_strike_when_set(agent: PMCCAgent):
+    """End-to-end through _propose_roll_short: when analysis.target_strike
+    is set (e.g. LLM cited halfway midpoint $169.00), the open leg is
+    sold at the listed strike closest to $169.00 — not the 0.30-delta
+    default. Mirrors the BACKLOG-cited MSTR symptom."""
+    today = date.today()
+    new_weekly_expiry = (today + timedelta(days=7)).isoformat()
+    broker = MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 400, 160.0, qty=1.0, delta=0.85,
+                          avg_price=23.80, mark_price=58.05),
+            _opt_position("MSTR", 0, 162.50, qty=-1.0, delta=0.95,
+                          avg_price=15.83, mark_price=17.80),  # the breached short
+        ],
+        expiry_dates={"MSTR": [new_weekly_expiry]},
+        calls={
+            ("MSTR", new_weekly_expiry): [
+                _liquid_call(strike=170.0, delta=0.45, mark=10.5, dte=7),
+                _liquid_call(strike=180.0, delta=0.35, mark=6.50, dte=7),
+                _liquid_call(strike=187.5, delta=0.30, mark=4.50, dte=7),  # 0.30-delta default
+            ],
+        },
+    )
+    legs = await agent.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "MSTR")
+
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated",
+        summary="Major Breach — halfway roll to ~$169",
+        rationale="...", target_delta=0.30, target_dte=7,
+        target_strike=169.0,
+    )
+    orders = await agent._propose_roll_short("MSTR", pos, broker, analysis)
+    open_leg = next(o for o in orders if o.extra.get("action") == "roll_short_call_open")
+    assert open_leg.extra["strike"] == 170.0, (
+        f"Expected open strike 170.0 (closest to target_strike=169.0); "
+        f"got {open_leg.extra['strike']} (likely the 0.30-delta default)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_propose_roll_short_falls_back_to_delta_when_target_strike_none(
+    agent: PMCCAgent,
+):
+    """No target_strike set → original delta-distance behavior. Pin
+    backwards-compat so existing recommendations don't shift."""
+    today = date.today()
+    new_weekly_expiry = (today + timedelta(days=7)).isoformat()
+    broker = MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 400, 160.0, qty=1.0, delta=0.85,
+                          avg_price=23.80, mark_price=58.05),
+            _opt_position("MSTR", 0, 162.50, qty=-1.0, delta=0.95,
+                          avg_price=15.83, mark_price=17.80),
+        ],
+        expiry_dates={"MSTR": [new_weekly_expiry]},
+        calls={
+            ("MSTR", new_weekly_expiry): [
+                _liquid_call(strike=170.0, delta=0.45, mark=10.5, dte=7),
+                _liquid_call(strike=180.0, delta=0.35, mark=6.50, dte=7),
+                _liquid_call(strike=187.5, delta=0.30, mark=4.50, dte=7),
+            ],
+        },
+    )
+    legs = await agent.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "MSTR")
+
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85,
+        urgency="elevated", summary="...", rationale="...",
+        target_delta=0.30, target_dte=7,
+        # target_strike NOT set
+    )
+    orders = await agent._propose_roll_short("MSTR", pos, broker, analysis)
+    open_leg = next(o for o in orders if o.extra.get("action") == "roll_short_call_open")
+    assert open_leg.extra["strike"] == 187.5  # delta-distance pick
+
+
+def test_select_weekly_strike_handles_calls_without_strike():
+    """Defensive: if the call dict somehow lacks strike_price, the
+    target_strike branch falls through gracefully (returns None)."""
+    calls = [{"delta": 0.30, "mark_price": 1.0}]  # no strike_price
+    best = _select_weekly_strike(calls, target_strike=170.0)
+    assert best is None

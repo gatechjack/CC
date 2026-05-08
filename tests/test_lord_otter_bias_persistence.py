@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from trading_corp.agents.divisions.lord_otter import LordOtterAgent
+from trading_corp.agents.strategies.lord_otter import LordOtterAgent
 from trading_corp.persistence.db import (
     init_db, load_agent_state, set_agent_state,
 )

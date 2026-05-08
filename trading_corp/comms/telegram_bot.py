@@ -10,6 +10,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from trading_corp.comms.base import BoardChannel
+from trading_corp.comms.pending_registry import PendingApprovalRegistry
 from trading_corp.graph.interrupts import ApprovalRequest, BoardDecision
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,9 @@ class TelegramChannel(BoardChannel):
         on_fidelity_scan_command: OnCommand | None = None,
         commands: Any = None,
         on_research_command: OnResearchCommand | None = None,
+        notification_only: bool = False,
+        dashboard_base_url: str | None = None,
+        registry: PendingApprovalRegistry | None = None,
     ) -> None:
         self._token = token
         self._chat_id = int(chat_id)
@@ -49,6 +53,26 @@ class TelegramChannel(BoardChannel):
         self._commands = commands
         # Research firm hooks (v3 — CandidateRecommendation only in 1a-1).
         self._on_research = on_research_command
+        # Phase A of the HITL-in-app direction (Board, 2026-05-03).
+        # When True, request_approval emits a slim notification + deeplink
+        # instead of the full rich approval body. Inline keyboard stays
+        # in both modes during Phase A so approve/reject keeps working
+        # while the web app's /approvals/{id} page is being built;
+        # Phase B drops the keyboard once the web bridge is in place.
+        # Defaults to False — current behavior preserved.
+        self._notification_only = bool(notification_only)
+        from trading_corp.comms.approval_format import DEFAULT_DASHBOARD_BASE_URL
+        self._dashboard_base_url = (
+            dashboard_base_url or DEFAULT_DASHBOARD_BASE_URL
+        )
+        # Phase B.1 — when a PendingApprovalRegistry is wired, the
+        # registry owns the per-order Future. TelegramChannel becomes
+        # a notifier (sends the message) + a resolver (inline keyboard
+        # / /approve|/reject|/modify commands call registry.resolve).
+        # Legacy `_pending` dict is preserved as a fallback for paths
+        # that construct a TelegramChannel without a registry (tests,
+        # CLI dev) so existing behavior doesn't regress.
+        self._registry = registry
         self._pending: dict[str, asyncio.Future[BoardDecision]] = {}
         self._app = None
         # Set when the polling loop hits an unrecoverable error (e.g. another
@@ -123,6 +147,12 @@ class TelegramChannel(BoardChannel):
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling()
+        # Phase B.1 — register as a notifier on the shared registry so
+        # registry.wait(req) fan-out triggers a Telegram message. The
+        # bot must be started before this so _notify_approval can hit
+        # self._app.bot.send_message.
+        if self._registry is not None:
+            self._registry.register_notifier(self._notify_approval)
         log.info("Telegram channel online (chat_id=%s)", self._chat_id)
 
     async def wait_for_shutdown_signal(self) -> None:
@@ -154,19 +184,51 @@ class TelegramChannel(BoardChannel):
             parse_mode="Markdown",
         )
 
-    async def request_approval(
-        self, req: ApprovalRequest, timeout_s: float = 3600.0,
-    ) -> BoardDecision:
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup  # type: ignore
+    def _build_approval_message(self, req: ApprovalRequest):
+        """Build the Telegram message text + (optional) inline keyboard
+        for an ApprovalRequest. Factored out of `request_approval` so
+        that `_notify_approval` (the registry-fan-out path) and the
+        legacy in-channel path produce byte-identical bodies.
 
+        Returns (text, InlineKeyboardMarkup | None). Notification-only
+        mode returns None for the markup - Telegram is one-way per
+        the HITL-surface direction (CLAUDE.md HITL); approvals happen
+        only on the web app at `/approvals/{order_id}`.
+        """
+        if self._notification_only:
+            # Notification-only: slim deeplink, no keyboard. Per
+            # CLAUDE.md HITL surface direction, Telegram does not
+            # accept Approve/Reject replies and does not run inline
+            # keyboards - those would mislead the Board into thinking
+            # Telegram is a decision surface. The dashboard is.
+            from trading_corp.comms.approval_format import (
+                format_slim_approval_notification,
+            )
+            order_obj = (req.detail or {}).get("order")
+            slim_body = format_slim_approval_notification(
+                order=order_obj if order_obj is not None else {},
+                order_id=req.order_id,
+                division=(req.detail or {}).get("division"),
+                base_url=self._dashboard_base_url,
+            )
+            text = (
+                "🎲 *Approval needed*\n"
+                f"{slim_body}\n\n"
+                f"🆔 `{req.order_id}`"
+            )
+            return text, None
+
+        # Rich mode (legacy). Inline keyboard is the user-facing
+        # decision surface here.
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup  # type: ignore
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("Approve", callback_data=f"approve|{req.order_id}"),
             InlineKeyboardButton("Reject",  callback_data=f"reject|{req.order_id}"),
         ]])
-        # The summary is now a multi-line Telegram-Markdown-safe body
-        # produced by trading_corp.comms.approval_format. Render it as a
-        # plain block (no surrounding backticks — those broke multi-line
-        # rendering and made every char monospaced).
+        # The summary is the multi-line Telegram-Markdown-safe body
+        # produced by trading_corp.comms.approval_format. Render it
+        # as a plain block (no surrounding backticks - those broke
+        # multi-line rendering and made every char monospaced).
         text = (
             "*Approval requested*\n"
             f"{req.summary}\n\n"
@@ -174,10 +236,42 @@ class TelegramChannel(BoardChannel):
             "_Tap Approve / Reject below, or use_ "
             "`/approve <id>` `/reject <id>` `/modify <id> <qty>`"
         )
+        return text, kb
+
+    async def _notify_approval(self, req: ApprovalRequest) -> None:
+        """Phase B.1 notifier hook — registered on the shared
+        PendingApprovalRegistry in `start()`. registry.wait(req) fan-out
+        invokes this; we just send the Telegram message. The Future +
+        decision routing live on the registry.
+        """
         if self._app is None:
             raise RuntimeError("Telegram not started")
+        text, kb = self._build_approval_message(req)
         await self._app.bot.send_message(
-            chat_id=self._chat_id, text=text, reply_markup=kb, parse_mode="Markdown",
+            chat_id=self._chat_id, text=text, reply_markup=kb,
+            parse_mode="Markdown",
+        )
+
+    async def request_approval(
+        self, req: ApprovalRequest, timeout_s: float = 3600.0,
+    ) -> BoardDecision:
+        # Phase B.1 — when a registry is wired, delegate the entire
+        # wait+fan-out to the registry. The registered notifier (this
+        # channel's _notify_approval) sends the Telegram message; web
+        # POST + inline keyboard both resolve via the same Future.
+        # Without a registry (legacy CLI tests) fall back to the
+        # in-channel _pending dict so existing behavior doesn't regress.
+        if self._registry is not None:
+            return await self._registry.wait(req, timeout_s=timeout_s)
+
+        # Legacy path — kept verbatim so callers without a registry
+        # see identical behavior to pre-B.1.
+        if self._app is None:
+            raise RuntimeError("Telegram not started")
+        text, kb = self._build_approval_message(req)
+        await self._app.bot.send_message(
+            chat_id=self._chat_id, text=text, reply_markup=kb,
+            parse_mode="Markdown",
         )
 
         loop = asyncio.get_running_loop()
@@ -215,14 +309,32 @@ class TelegramChannel(BoardChannel):
             decision_str, order_id = data.split("|", 1)
             if decision_str not in ("approve", "reject"):
                 return
-            fut = self._pending.get(order_id)
-            if fut is not None and not fut.done():
-                fut.set_result(BoardDecision(
-                    decision=decision_str, reason="via Telegram button",
-                ))
+            decision = BoardDecision(
+                decision=decision_str, reason="via Telegram button",
+            )
+            # Phase B.1 — registry is the source of truth when wired;
+            # falls through to legacy _pending only when no registry
+            # (CLI dev / older tests).
+            resolved = False
+            if self._registry is not None:
+                resolved = self._registry.resolve(
+                    order_id, decision, source="telegram",
+                )
+            if not resolved:
+                fut = self._pending.get(order_id)
+                if fut is not None and not fut.done():
+                    fut.set_result(decision)
+                    resolved = True
             try:
+                if resolved:
+                    suffix = f"\n\n→ Board: {decision_str.upper()}"
+                else:
+                    suffix = (
+                        f"\n\n→ Board: {decision_str.upper()} "
+                        "(no pending approval — already decided?)"
+                    )
                 await cq.edit_message_text(
-                    cq.message.text + f"\n\n→ Board: {decision_str.upper()}",
+                    cq.message.text + suffix,
                     parse_mode="Markdown",
                 )
             except Exception:
@@ -348,8 +460,14 @@ class TelegramChannel(BoardChannel):
         await update.message.reply_text(text[:4000], parse_mode="Markdown")
 
     async def _on_status_cmd(self, update, context) -> None:
+        # Pending count: prefer the registry when wired (canonical post-B.1);
+        # fall back to the legacy _pending dict for non-registry paths.
+        if self._registry is not None:
+            pending_count = self._registry.pending_count()
+        else:
+            pending_count = len(self._pending)
         await update.message.reply_text(
-            f"CEO online. Pending approvals: {len(self._pending)}."
+            f"CEO online. Pending approvals: {pending_count}."
         )
 
     async def _on_research_cmd(self, update, context) -> None:
@@ -388,9 +506,10 @@ class TelegramChannel(BoardChannel):
                     qty = float(parts[2])
                 except ValueError:
                     return await update.message.reply_text("modify: invalid qty")
-                fut = self._pending.get(order_id)
-                if fut and not fut.done():
-                    fut.set_result(BoardDecision(decision="modify", reason="via cmd", new_qty=qty))
+                decision = BoardDecision(
+                    decision="modify", reason="via cmd", new_qty=qty,
+                )
+                if self._resolve_decision(order_id, decision):
                     return await update.message.reply_text(f"modify {order_id} -> {qty}")
                 return await update.message.reply_text("no pending approval with that id")
         if self._on_message is None:
@@ -401,10 +520,24 @@ class TelegramChannel(BoardChannel):
             reply = f"CEO error: {e}"
         await update.message.reply_text(reply[:4000], parse_mode="Markdown")
 
-    async def _handle_inline_decision(self, update, decision: str, order_id: str) -> None:
+    def _resolve_decision(self, order_id: str, decision: BoardDecision) -> bool:
+        """Phase B.1 helper — resolve a decision against the registry
+        when wired; fall through to legacy _pending otherwise. Returns
+        True if a pending entry was resolved, False if none found."""
+        if self._registry is not None:
+            if self._registry.resolve(order_id, decision, source="telegram"):
+                return True
         fut = self._pending.get(order_id)
         if fut and not fut.done():
-            fut.set_result(BoardDecision(decision=decision, reason=f"via /{decision}"))
-            await update.message.reply_text(f"{decision} {order_id}")
+            fut.set_result(decision)
+            return True
+        return False
+
+    async def _handle_inline_decision(self, update, decision_str: str, order_id: str) -> None:
+        decision = BoardDecision(
+            decision=decision_str, reason=f"via /{decision_str}",
+        )
+        if self._resolve_decision(order_id, decision):
+            await update.message.reply_text(f"{decision_str} {order_id}")
         else:
             await update.message.reply_text("no pending approval with that id")

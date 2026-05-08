@@ -12,18 +12,31 @@
 
 ## 1. What Trading Corp is
 
-A multi-agent automated trading system. The core architecture is one
-**LangGraph CEO agent** that routes between several **division agents**, each
-of which manages a separate brokerage account running its own strategy.
-Every proposed order flows through a deterministic **risk gate** (code, not
-LLM judgment) and then through a **HITL Board approval gate** before reaching
-a broker. Default mode is PAPER on every startup. LIVE mode requires
-explicit `--live` flag plus a confirmation prompt.
+A multi-agent automated trading system. The architecture is "invest in
+everything": one platform, multiple **divisions** (each a brokerage ×
+account portfolio manager), each running one or more **strategies** (the
+trade-decision logic). Today's divisions are `robinhood_pmcc`,
+`robinhood_ira`, `robinhood_joint`, `coinbase_spot` (running both
+`lord_otter` and `market_cypher` strategies), `coinbase_futures`
+(`STANDBY` — kept as failover), `bitunix_futures` (read-only Phase 1
+SHIPPED 2026-05-03; Phase 4 live ahead), `fidelity_joint`, and
+`fidelity_401k` (Fidelity paper-fallback — bot-blocked from Azure VM
+IP, P1 DEFERRED 2026-05-03 pending Plaid investigation; `fidelity_individual`
+deactivated same day). Dashboard groups them into Individual / Crypto /
+Retirement (UI reorg shipped 2026-05-03 16:25 UTC).
+A shared **research firm** is consulted by divisions for cross-division
+knowledge work; see CLAUDE.md § Research consultation for the rule on
+when. Every proposed order flows through a deterministic **risk gate**
+(code, not LLM judgment) and then through a **HITL Board approval gate**
+before reaching a broker. Default mode is PAPER on every startup. LIVE
+mode requires explicit `--live` flag plus a confirmation prompt.
 
-End goal: a personal infrastructure platform that runs trading bots for the
-Board (Jack), eventually expanding to family member accounts (wife, kids)
-and other non-trading apps. Long-term plan is multi-tenant on Azure with
-proper isolation.
+System is live in production on Azure VM `tc-prod-vm` at
+https://trading.jacksumner.com behind Caddy + Authelia, single-tenant
+today. End goal: a personal infrastructure platform that runs trading
+bots for the Board (Jack), eventually expanding to family member
+accounts (wife, kids) and other non-trading apps. Long-term plan is
+multi-tenant on Azure with proper isolation.
 
 ## 2. The Board (the user)
 
@@ -55,7 +68,7 @@ relevant things to know:
 | LLM | Anthropic Claude (Sonnet 4.6 default; Opus 4.7 for Backtesting + EOD Debate) | Quality + tool use |
 | Brokers | ccxt (Coinbase), robin_stocks (Robinhood), Playwright/Firefox (Fidelity) | Best-in-class for each |
 | Database | SQLite local → Postgres on Azure (planned) | Schema portable across both |
-| Push | Telegram | Reliable; lock-screen UX is good enough on iOS |
+| Push | Telegram (notification-only; deeplink to web app) | Bridge channel until web push lands; HITL UX lives in the web app at trading.jacksumner.com |
 | Hosting | **Azure** (East US, single VM B2ms initially) | Career synergy + multi-tenant security |
 | Domain/DNS | jacksumner.com → Azure DNS | Stable URL for TV webhooks; trading.jacksumner.com is the target |
 | Reverse proxy | Caddy (Let's Encrypt auto) | Simpler than nginx; single binary |
@@ -104,9 +117,23 @@ These are baked-in. Don't propose changes without raising a flag.
 
 ## 6. Lord Otter strategy specifics
 
-The flagship scalping strategy. Built on TradingView's webhook alerts
-firing into our system. Some non-obvious decisions captured here so we
-don't relitigate them.
+A TradingView-webhook-driven 3-min scalp strategy on `coinbase_spot`,
+running alongside Market Cypher (4h/1D swing on the same division).
+Some non-obvious decisions captured here so we don't relitigate them.
+
+> **⏸ Feature work paused 2026-05-02.** No new tier rules, signal
+> vocabulary, contract enrichment, or research integration changes
+> until the PMCC research-as-consultant pattern has been validated in
+> production. See BACKLOG.md `## ⏸ PAUSED — Lord Otter + Market
+> Cypher feature work` and CLAUDE.md § Research consultation. Existing
+> code continues running paper-mode and generating audit data; only
+> EXPANSION work is on hold.
+
+> **Path note:** as of 2026-05-02 these strategies live at
+> `trading_corp/agents/strategies/{lord_otter,market_cypher}.py`, not
+> the old `agents/divisions/` path. The rename reflects the corrected
+> vocabulary (division = portfolio manager; strategy = how a division
+> operates).
 
 ### Alert configuration that actually works
 
@@ -175,28 +202,53 @@ Bear signals in long-only mode close held positions:
 | Coinbase Spot | Phase A (read-only ccxt) DONE. Phase B (orders via ccxt `create_order`) DONE — uses `quote_size` for market buys (account-config quirk discovered empirically). |
 | Coinbase Futures | Phase C — stub only. Will use `coinbase-advanced-py` SDK because ccxt's coinbase driver doesn't fully cover US FCM futures. |
 
-## 8. Active deployment phase (`as of 2026-04-30`)
+## 8. Production state (`as of 2026-05-02`)
 
-Mid-Azure-deployment-prep, paused pending blockers below:
+System is live on Azure: VM `tc-prod-vm` (Standard_D2s_v3, eastus,
+resource group `rg-shared-prod`), reachable at
+https://trading.jacksumner.com (Caddy + Authelia, Let's Encrypt auto).
+Webhook URLs (auth-bypassed for TradingView):
+- `https://trading.jacksumner.com/webhook/tradingview/lord-otter`
+- `https://trading.jacksumner.com/webhook/tradingview/market-cypher`
 
-- **Step A (Azure account)** — done
-- **Step B (MFA + non-root Entra ID user `jack@<tenant>.onmicrosoft.com`)** — done
-- **Step C ($150/mo budget alert)** — done
-- **Step D (DNS delegation jacksumner.com → Azure DNS)** — pending
-- **Step E (Azure CLI on laptop)** — pending
-- **Deploy session (~3-4 hr): Bicep IaC, VM B2ms East US, VNet/NSG, Key Vault, Front Door + WAF, Azure Backup, Defender Plan 1, Caddy on VM, migrate 14 TV alerts to `https://trading.jacksumner.com`** — pending
+App runs as `trading-corp.service` (systemd, wraps `xvfb-run` for
+Fidelity's Playwright dependency). Restart takes 30-90s to reach "web
+up" (Fidelity browser login is the long pole). SQLite DB at
+`/home/azureuser/trading_corp/data/trading_corp.db`. Secrets from Azure
+Key Vault `kv-tc-vtwbowt3wtkpy` via managed identity — no `.env` on prod.
+
+Auto-execute is `false` on every strategy. Every order is a paper-mode
+`would_have_placed` row + Telegram push to the Board. Three-broker
+status: Robinhood live (PMCC reads + paper-execute), Coinbase Spot live
+(reads), Fidelity bot-blocked from Azure VM IP (paper-fallback only —
+Akamai pre-JS layer rejects datacenter IPs; residential proxy is the
+unblock path, deferred).
+
+**`runbooks/deploy_log.md` is the single source of truth for what's
+running on prod right now.** Prod has no git; the deploy log is how we
+know what shipped when. Always check it before assuming a feature isn't
+implemented.
 
 ## 9. Active blockers / known pain
 
-1. **Cloudflared quick tunnel keeps dying overnight.** Free quick tunnels
-   are not durable. Every restart rotates the URL, requiring all 14 TV
-   alerts to be reconfigured. This blocks accumulating organic signal
-   data — we can't grade the strategy until alerts reach the system reliably.
-   The Azure deployment is the fix. Until then, accept that overnight
-   signals are lost.
-2. **No organic Lord Otter signal data yet.** Every event in the audit log
-   to date is from manual test-script runs. Real strategy validation can't
-   start until Cloudflared dies-and-rotates issue is solved (i.e., post-Azure).
+1. **Fidelity browser automation is bot-blocked from Azure VM IP**
+   (Akamai pre-JS layer flags datacenter IPs at network layer). Falls
+   back to paper. Residential proxy is the documented fix; deferred.
+2. **Otter/Cypher feature work paused until 2026-05-05** pending PMCC
+   research-as-consultant validation. See BACKLOG.md ⏸ PAUSED notice.
+3. **Research firm's intraday TA capability isn't built.** The
+   technical expert (`agents/research/experts/technical.py`) is
+   yfinance-daily-bar with 5 indicators (RSI, MA cross, ATR, returns).
+   Otter's `TradeConfirmation` consults pass through a generic LLM
+   synthesis without harmonic-pattern / Fibonacci / structure / vision
+   capability. Treat those consults as ceremonial fail-open until that
+   gap is decided post-2026-05-05.
+4. **`auto_execute_caps` asymmetry between webhook and LangGraph
+   paths** (see CLAUDE.md § 1). The TV webhook flow gates on a single
+   `agent.auto_execute` bool; the LangGraph path uses the rich
+   `auto_execute_caps` structure (VIX, LEAP-debit, black-sheep, daily
+   aggregates). Harmonize before flipping any TV strategy to
+   `auto_execute=true`.
 
 ## 10. Communication style (lessons learned, please respect)
 
@@ -247,23 +299,45 @@ explicitly rather than silently sliding past.
 
 ## 12. What's deferred (won't surprise you when raised)
 
-These are real items, just not active:
+These are real items, just not active. See BACKLOG.md for prioritized
+detail; this list captures the long-shape items.
 
-- Phase 1.6 of Lord Otter: real ATR/swing-pivot stops, profit-target
-  tracking, win/loss feedback into halt counters
-- Telegram approval message enrichment Phase 2: position context (LEAP
-  details, days held, prior-roll history, unrealized P&L)
-- Paired-roll combination: today PMCC rolls fire as 2 separate approvals;
-  should be 1 with both legs + net debit/credit
-- Coinbase Futures wiring (Phase C, requires `coinbase-advanced-py`)
-- Multi-tenant family expansion: separate Azure environments per family
-  member
-- Real macro calendar fetcher (FRED FOMC + BLS scraping into the existing
-  `config/macro_calendar.yaml` format)
-- JSON `/api/v1/*` endpoints (only if PWA isn't enough — currently not
-  scoped)
-- Authentication beyond shared-secret (Sign in with Apple or magic-link
-  email, before public exposure)
+- **Otter/Cypher feature expansion**: paused 2026-05-02 → 2026-05-05;
+  resumes (or not) based on PMCC research-as-consultant validation
+  outcome.
+- **Research firm intraday TA**: harmonic patterns (3 drives, ABCD,
+  etc.), Fibonacci (golden pocket / golden ratio), price-action
+  structure (HH/HL/LH/LL), order blocks, divergences, vision-capable
+  expert for pink-box image analysis. Decided post-2026-05-05.
+- **PMCC strategy isolation**: `pmcc_robinhood.py` and
+  `fidelity_options.py` still conflate division-level and strategy-level
+  concerns. Future cleanup: extract strategy logic to
+  `agents/strategies/` once a second strategy lands on either broker.
+  See CLAUDE.md § Known sharp edges.
+- **`docs/ARCHITECTURE.md § 1 principle 2` quote drift**: original
+  framing ("broker × strategy combo is its own division") superseded
+  2026-05-02 by the new vocabulary in CLAUDE.md.
+- **Phase 1.6 of Lord Otter**: real ATR/swing-pivot stops, profit-target
+  tracking, win/loss feedback into halt counters. Subsumed by the
+  Otter feature-work pause.
+- **HITL approval flow → web app** (Board direction 2026-05-03):
+  Approve / Reject / Modify moves to `trading.jacksumner.com`
+  (mobile-friendly already). Telegram becomes notification-only with
+  deeplink to the dashboard's approval page. Subsumes the prior
+  "Telegram approval enrichment Phase 2" + "Paired-roll combination"
+  items — pair-coalescing happens at render-time in the web UI, no
+  LangGraph state-shape change. See BACKLOG.md
+  "P0 — HITL approval flow lives in the web app".
+- **Coinbase Futures wiring** (Phase C, requires `coinbase-advanced-py`).
+- **Multi-tenant family expansion**: separate Azure environments per
+  family member.
+- **Real macro calendar fetcher** (FRED FOMC + BLS scraping into the
+  existing `config/macro_calendar.yaml` format).
+- **JSON `/api/v1/*` endpoints** (only if PWA isn't enough — currently
+  not scoped).
+- **Authentication beyond shared-secret** (Sign in with Apple or
+  magic-link email, before any public-internet exposure beyond TV
+  webhook IPs).
 
 ## 13. File-tree pointers
 
@@ -280,10 +354,13 @@ trading_corp/main.py                ← entry point, CLI flags, agent wiring
 trading_corp/graph/ceo_graph.py     ← LangGraph trade flow + HITL
 trading_corp/agents/risk.py         ← deterministic risk caps
 trading_corp/agents/data_exec.py    ← broker dispatch + dry-run
-trading_corp/agents/divisions/      ← per-strategy agents
-   pmcc_robinhood.py                  PMCC strategy
-   fidelity_options.py                Fidelity options
-   lord_otter.py                      TradingView-driven scalper
+trading_corp/agents/divisions/      ← brokerage/account-level division wiring
+   pmcc_robinhood.py                  PMCC division (mixes strategy logic — sharp edge)
+   fidelity_options.py                Fidelity division (same conflation)
+trading_corp/agents/strategies/     ← TV-driven strategies inside coinbase_spot division
+   lord_otter.py                      3-min scalp
+   market_cypher.py                   4h/1D swing
+trading_corp/agents/research/       ← shared research-firm consultant (see CLAUDE.md § Research consultation)
 trading_corp/brokers/                ← broker implementations
    base.py                            abstract Broker interface
    paper.py                           PaperBroker + PaperExecutionBroker
@@ -308,11 +385,24 @@ scripts/generate_pwa_icons.py        ← PWA icon generator from SVG
 
 ## 14. Glossary (short, project-specific)
 
-- **Board** — the user (Jack). Approves or rejects orders via Telegram or dashboard.
-- **Division** — one account at a broker (e.g., `robinhood_pmcc`, `coinbase_spot`).
-- **Strategy** — logic that operates on a division and emits ProposedOrders.
+- **Board** — the user (Jack). Approves or rejects orders via the
+  web app at `trading.jacksumner.com` (primary HITL surface;
+  mobile-friendly). Telegram is the notification channel that pings
+  with a deeplink to the dashboard.
+- **Division** — a brokerage × accounts portfolio manager. One per investing
+  surface (`robinhood_pmcc`, `coinbase_spot`, `fidelity_options`). Future:
+  Polymarket, crypto futures, etc.
+- **Strategy** — the trade-decision logic running inside a division. One
+  division can host multiple strategies (e.g. `coinbase_spot` runs both
+  `lord_otter` and `market_cypher`). Lives in `agents/strategies/` (TV-driven)
+  or inside the division module itself (PMCC, Fidelity — sharp edge).
+- **Research firm** — shared LLM-driven consultant any division can call for
+  cross-division knowledge work (`CandidateRecommendation`, `Thesis`,
+  `PositionContext`, `TradeConfirmation`). NOT a decision-maker. See
+  CLAUDE.md § Research consultation for when to call it.
 - **HITL** — Human-in-the-loop. The Board-approval gate.
-- **Tier** (Lord Otter context) — conviction level for a signal cluster, drives sizing.
+- **Tier** (Lord Otter / Market Cypher context) — conviction level for a
+  signal cluster, drives sizing.
 - **Arming** — Pre-trigger state set by Pink Box / Spoon, lasts N bars.
 - **Black Sheep** — PMCC underlyings (TSLA, MSTR) that follow special rules
   (perpetual roll, never accept assignment).
@@ -321,4 +411,6 @@ scripts/generate_pwa_icons.py        ← PWA icon generator from SVG
 
 ---
 
-*Last meaningful update: 2026-04-30 — initial draft after the Phase 1.5 + Telegram enrichment + Azure prep session.*
+*Last meaningful update: 2026-05-02 — vocabulary realignment (divisions
+vs strategies), research firm consultation rule codified, Otter/Cypher
+feature work paused, Azure production state captured.*

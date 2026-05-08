@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+{% block title %}Approve · {{ req.order_id[:8] }}… — Trading Corp{% endblock %}
+
+{% block content %}
+<a href="/approvals" class="text-muted text-xs font-mono hover:text-mono">← back to pending</a>
+
+<section class="bg-pane border border-edge rounded-lg p-5 mt-3 max-w-3xl">
+  {# ── Header ────────────────────────────────────────────────────── #}
+  <header class="mb-4">
+    <div class="flex items-baseline justify-between gap-3 flex-wrap">
+      <h2 class="text-mono text-base font-semibold flex items-baseline gap-2 flex-wrap">
+        <span>{{ view.headline.emoji }}</span>
+        <span>{{ view.headline.label }}</span>
+        {% if view.headline.symbol %}
+          <span class="text-muted">·</span>
+          <span class="font-mono">{{ view.headline.symbol }}</span>
+        {% endif %}
+        {% if is_paired %}
+          <span class="ml-2 px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider
+                       bg-accent/15 text-accent border border-accent/30">
+            paired roll
+          </span>
+        {% endif %}
+      </h2>
+      <span class="text-[11px] text-muted font-mono uppercase tracking-wider whitespace-nowrap">
+        HITL · phase B
+      </span>
+    </div>
+    <div class="text-[11px] text-muted font-mono mt-1 break-all">
+      <span>{{ view.headline.division | default('—', true) }}</span>
+      <span class="mx-1">·</span>
+      <span>{{ req.order_id }}</span>
+      {% if is_paired %}
+        <span class="mx-1">·</span>
+        <span>+ sibling {{ sibling_order_id[:12] }}…</span>
+      {% endif %}
+      <span class="mx-1">·</span>
+      <span>{{ entry.added_at.strftime('%H:%M:%SZ') }}</span>
+    </div>
+  </header>
+
+  {# ── Trade legs ────────────────────────────────────────────────── #}
+  <div class="border border-edge rounded-md p-3 mb-3 bg-pane-2/40">
+    <div class="text-[10px] text-muted uppercase tracking-wider mb-2">trade</div>
+    {% for leg in view.trade.legs %}
+      <div class="{% if not loop.first %}mt-3 pt-3 border-t border-edge/60{% endif %}">
+        <div class="flex items-baseline gap-2 flex-wrap text-mono text-sm">
+          <span class="font-semibold {% if leg.side == 'sell' %}text-gain{% else %}text-loss{% endif %}">
+            {{ leg.side|upper }}
+          </span>
+          <span class="text-muted">×</span>
+          <span class="font-semibold">{{ leg.qty_str }}</span>
+          {% if leg.option %}
+            <span class="font-mono text-mono">
+              {{ leg.symbol }} {{ leg.option.strike | strike }}{{ leg.option.option_type[:1] }} {{ leg.option.expiration }}
+            </span>
+          {% else %}
+            <span class="font-mono text-mono">{{ leg.symbol }}</span>
+          {% endif %}
+        </div>
+        <div class="text-[11px] text-muted font-mono mt-1 flex items-baseline gap-3 flex-wrap">
+          {% if leg.option %}
+            {% if leg.option.dte is not none %}<span>{{ leg.option.dte }}d</span>{% endif %}
+            {% if leg.option.delta is not none %}<span>δ {{ '%+.2f' % leg.option.delta }}</span>{% endif %}
+          {% endif %}
+          {% if leg.mark is not none %}
+            <span>@ {{ leg.mark | strike }}/{% if leg.option %}sh{% else %}unit{% endif %}</span>
+          {% endif %}
+          {% if leg.bid is not none and leg.ask is not none %}
+            <span class="text-muted/70">bid {{ leg.bid | strike }} · ask {{ leg.ask | strike }}</span>
+          {% endif %}
+          {% if leg.gross_dollars %}
+            <span class="ml-auto font-semibold {% if leg.side_sign > 0 %}text-gain{% else %}text-loss{% endif %}">
+              {% if leg.side_sign > 0 %}+{% else %}−{% endif %}{{ leg.gross_dollars | money }}
+              {% if leg.side_sign > 0 %}credit{% else %}debit{% endif %}
+            </span>
+          {% endif %}
+        </div>
+        {% if leg.rationale %}
+          <div class="text-[11px] text-muted font-mono mt-1 italic">{{ leg.rationale }}</div>
+        {% endif %}
+      </div>
+    {% endfor %}
+    {% if view.trade.legs | length > 1 %}
+      <div class="mt-3 pt-2 border-t border-edge text-mono text-sm flex items-baseline justify-between">
+        <span class="text-[10px] text-muted uppercase tracking-wider">net</span>
+        <span class="font-semibold {% if view.trade.net_dollars >= 0 %}text-gain{% else %}text-loss{% endif %}">
+          {% if view.trade.net_dollars >= 0 %}+{% else %}−{% endif %}{{ view.trade.net_dollars | abs | money }}
+          {% if view.trade.net_dollars >= 0 %}credit{% else %}debit{% endif %}
+        </span>
+      </div>
+    {% endif %}
+  </div>
+
+  {# ── Position context (LEAP, prior rolls) — when present ─────── #}
+  {% if view.context %}
+    <div class="border border-edge rounded-md p-3 mb-3 bg-pane-2/40">
+      <div class="text-[10px] text-muted uppercase tracking-wider mb-2">position context</div>
+      {% if view.context.leap %}
+        {% set L = view.context.leap %}
+        <div class="text-mono text-sm">
+          <span class="text-muted text-[10px] uppercase tracking-wider mr-2">LEAP</span>
+          <span class="font-mono">{{ L.underlying }} {{ L.strike | strike }}C {{ L.expiration }}</span>
+        </div>
+        <div class="text-[11px] text-muted font-mono mt-1 flex items-baseline gap-3 flex-wrap">
+          {% if L.dte is not none %}<span>{{ L.dte }}d</span>{% endif %}
+          {% if L.days_held is not none %}<span>held {{ L.days_held }}d</span>{% endif %}
+          {% if L.cost_basis is not none %}<span>cost {{ L.cost_basis | strike }}</span>{% endif %}
+          {% if L.mark is not none %}<span>mark {{ L.mark | strike }}</span>{% endif %}
+          {% if L.pnl_pct is not none %}
+            <span class="{% if L.pnl_pct >= 0 %}text-gain{% else %}text-loss{% endif %}">
+              {% if L.pnl_pct >= 0 %}+{% else %}−{% endif %}{{ '%.1f' % (L.pnl_pct | abs) }}%
+            </span>
+          {% endif %}
+        </div>
+      {% endif %}
+      {% if view.context.unrealized_pnl_dollars is not none %}
+        <div class="text-[11px] font-mono mt-2 flex items-baseline gap-2">
+          <span class="text-muted">unrealized</span>
+          <span class="font-semibold {% if view.context.unrealized_pnl_dollars >= 0 %}text-gain{% else %}text-loss{% endif %}">
+            {{ view.context.unrealized_pnl_dollars | money_signed }}
+            {% if view.context.unrealized_pnl_pct is not none %}
+              ({{ view.context.unrealized_pnl_pct | pct_signed }})
+            {% endif %}
+          </span>
+        </div>
+      {% endif %}
+      {% if view.context.roll_count is not none %}
+        <div class="text-[11px] text-muted font-mono mt-1">
+          Roll #{{ view.context.roll_count + 1 }} on this pair
+          {% if view.context.prior_credit_total is not none %}
+            · prior {{ view.context.roll_count }} netted {{ view.context.prior_credit_total | money_signed }}
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {# ── Risk verdict ────────────────────────────────────────────── #}
+  <div class="border border-edge rounded-md p-3 mb-3 bg-pane-2/40">
+    <div class="flex items-baseline gap-2">
+      <span class="text-[10px] text-muted uppercase tracking-wider">risk</span>
+      <span class="font-mono text-sm font-semibold text-{{ view.risk.color }}">
+        {{ view.risk.icon }} {{ view.risk.verdict|upper }}
+      </span>
+    </div>
+    {% if view.risk.reason %}
+      <div class="text-[11px] text-muted font-mono mt-1">{{ view.risk.reason }}</div>
+    {% endif %}
+  </div>
+
+  {# ── Warnings ─────────────────────────────────────────────────── #}
+  {% if view.warnings %}
+    <div class="border border-warn/40 bg-warn/10 rounded-md p-3 mb-3">
+      <div class="text-[10px] text-warn uppercase tracking-wider mb-1">warnings</div>
+      <ul class="text-[11px] font-mono text-mono space-y-1">
+        {% for w in view.warnings %}
+          <li>⚠ {{ w }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {# ── Decision form ───────────────────────────────────────────── #}
+  <form method="POST" action="/approvals/{{ req.order_id }}/decide"
+        class="mt-4" id="decision-form">
+    {% if is_paired %}
+      <input type="hidden" name="also_resolve_paired" value="true" />
+    {% endif %}
+    <div class="flex flex-col sm:flex-row gap-2">
+      <button name="decision" value="approve" type="submit"
+              class="flex-1 px-4 py-3 rounded-md text-sm font-mono font-semibold
+                     bg-gain/15 text-gain border border-gain/40
+                     hover:bg-gain/25 transition-colors">
+        ✓ Approve{% if is_paired %} both{% endif %}
+      </button>
+      <button name="decision" value="reject" type="submit"
+              class="flex-1 px-4 py-3 rounded-md text-sm font-mono font-semibold
+                     bg-loss/15 text-loss border border-loss/40
+                     hover:bg-loss/25 transition-colors">
+        ✗ Reject{% if is_paired %} both{% endif %}
+      </button>
+      <button type="button" id="modify-toggle"
+              {% if is_paired %}disabled title="Modify on paired rolls is B.x — use Telegram /modify for now"{% endif %}
+              class="flex-1 px-4 py-3 rounded-md text-sm font-mono font-semibold
+                     bg-pane-2 text-mono border border-edge
+                     hover:bg-edge-2 hover:border-edge-2 transition-colors
+                     disabled:opacity-40 disabled:cursor-not-allowed">
+        ✎ Modify
+      </button>
+    </div>
+    {# Inline modify form, hidden until toggled — only when not paired. #}
+    {% if not is_paired %}
+      {% set qty_now = view.trade.legs[0].qty %}
+      {% set price_now = view.trade.legs[0].mark %}
+      <div id="modify-form" class="hidden mt-3 border border-edge rounded-md p-3 bg-pane-2/40">
+        {# B.5 — Quick-modify presets. One tap = compute + submit.
+           Disabled when the relevant value isn't applicable (e.g. limit
+           buttons disabled if the order has no limit_price/mark). #}
+        <div class="text-[10px] text-muted uppercase tracking-wider mb-2">quick modify</div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+          <button type="button" data-preset-kind="qty-half"
+                  data-preset-value="{{ '%g' % (qty_now / 2) if qty_now else '' }}"
+                  {% if not qty_now %}disabled{% endif %}
+                  class="px-3 py-2 rounded-md text-xs font-mono font-semibold
+                         bg-warn/10 text-warn border border-warn/30
+                         hover:bg-warn/20 transition-colors text-center
+                         disabled:opacity-40 disabled:cursor-not-allowed">
+            ½× size
+            {% if qty_now %}<br><span class="text-[10px] opacity-70">→ {{ '%g' % (qty_now / 2) }}</span>{% endif %}
+          </button>
+          <button type="button" data-preset-kind="qty-double"
+                  data-preset-value="{{ '%g' % (qty_now * 2) if qty_now else '' }}"
+                  {% if not qty_now %}disabled{% endif %}
+                  class="px-3 py-2 rounded-md text-xs font-mono font-semibold
+                         bg-warn/10 text-warn border border-warn/30
+                         hover:bg-warn/20 transition-colors text-center
+                         disabled:opacity-40 disabled:cursor-not-allowed">
+            2× size
+            {% if qty_now %}<br><span class="text-[10px] opacity-70">→ {{ '%g' % (qty_now * 2) }}</span>{% endif %}
+          </button>
+          <button type="button" data-preset-kind="limit-down"
+                  data-preset-value="{{ '%.2f' % (price_now * 0.95) if price_now else '' }}"
+                  {% if not price_now %}disabled title="no limit_price on this order"{% endif %}
+                  class="px-3 py-2 rounded-md text-xs font-mono font-semibold
+                         bg-warn/10 text-warn border border-warn/30
+                         hover:bg-warn/20 transition-colors text-center
+                         disabled:opacity-40 disabled:cursor-not-allowed">
+            limit −5%
+            {% if price_now %}<br><span class="text-[10px] opacity-70">→ ${{ '%.2f' % (price_now * 0.95) }}</span>{% endif %}
+          </button>
+          <button type="button" data-preset-kind="limit-up"
+                  data-preset-value="{{ '%.2f' % (price_now * 1.05) if price_now else '' }}"
+                  {% if not price_now %}disabled title="no limit_price on this order"{% endif %}
+                  class="px-3 py-2 rounded-md text-xs font-mono font-semibold
+                         bg-warn/10 text-warn border border-warn/30
+                         hover:bg-warn/20 transition-colors text-center
+                         disabled:opacity-40 disabled:cursor-not-allowed">
+            limit +5%
+            {% if price_now %}<br><span class="text-[10px] opacity-70">→ ${{ '%.2f' % (price_now * 1.05) }}</span>{% endif %}
+          </button>
+        </div>
+
+        <div class="text-[10px] text-muted uppercase tracking-wider mb-1">custom</div>
+        <label class="text-[11px] text-muted block mb-1" for="new-qty">
+          new qty (current: {{ view.trade.legs[0].qty_str }})
+        </label>
+        <div class="flex gap-2">
+          <input id="new-qty" name="new_qty" type="number" step="any" min="0"
+                 placeholder="qty"
+                 class="flex-1 px-3 py-2 rounded-md text-sm font-mono
+                        bg-pane border border-edge focus:border-accent
+                        focus:outline-none text-mono" />
+          <button name="decision" value="modify" type="submit"
+                  class="px-4 py-2 rounded-md text-sm font-mono font-semibold
+                         bg-warn/15 text-warn border border-warn/40
+                         hover:bg-warn/25 transition-colors">
+            Submit modify
+          </button>
+        </div>
+        {% if price_now %}
+          <label class="text-[11px] text-muted block mb-1 mt-2" for="new-limit">
+            new limit price (current: ${{ '%.2f' % price_now }})
+          </label>
+          <input id="new-limit" name="new_limit_price" type="number" step="any" min="0"
+                 placeholder="limit price"
+                 class="w-full px-3 py-2 rounded-md text-sm font-mono
+                        bg-pane border border-edge focus:border-accent
+                        focus:outline-none text-mono" />
+        {% endif %}
+        <input type="text" name="reason" placeholder="reason (optional)"
+               class="w-full mt-2 px-3 py-2 rounded-md text-sm font-mono
+                      bg-pane border border-edge focus:border-accent
+                      focus:outline-none text-mono" />
+      </div>
+    {% endif %}
+  </form>
+  <div id="decision-result" class="mt-3 text-sm font-mono"></div>
+
+  {# ── Raw detail dump (debug) ─────────────────────────────────── #}
+  <details class="mt-4">
+    <summary class="text-[11px] text-muted font-mono uppercase tracking-wider cursor-pointer hover:text-mono">
+      raw detail (debug)
+    </summary>
+    <pre class="text-[11px] text-mono font-mono whitespace-pre-wrap break-all mt-2 p-3 bg-pane-2/40 border border-edge rounded-md overflow-x-auto">{{ req.detail | tojson(indent=2) }}</pre>
+  </details>
+</section>
+
+<script>
+  // Modify toggle.
+  (function () {
+    const tog = document.getElementById('modify-toggle');
+    const form = document.getElementById('modify-form');
+    if (tog && form && !tog.disabled) {
+      tog.addEventListener('click', () => {
+        form.classList.toggle('hidden');
+        if (!form.classList.contains('hidden')) {
+          document.getElementById('new-qty').focus();
+        }
+      });
+    }
+  })();
+
+  // B.5 — Quick-modify presets. Each tap fills the appropriate hidden
+  // field and POSTs the modify decision in one shot. Bypasses the
+  // explicit "fill input + tap Submit" two-step.
+  (function () {
+    const form = document.getElementById('decision-form');
+    if (!form) return;
+    form.querySelectorAll('button[data-preset-kind]').forEach((btn) => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        const kind = btn.getAttribute('data-preset-kind');
+        const value = btn.getAttribute('data-preset-value');
+        if (!value) return;
+        // Send a one-shot modify POST with only the relevant field set.
+        // Other fields (custom inputs) are deliberately ignored — the
+        // preset's intent is one-tap.
+        _submitDecision('modify', {
+          [kind.startsWith('qty') ? 'new_qty' : 'new_limit_price']: value,
+          reason: 'preset:' + kind,
+        });
+      });
+    });
+  })();
+
+  // Shared submit helper. Bypasses the form's default submit so we can
+  // POST in background + swap the result on the page (mobile UX).
+  async function _submitDecision(decision, extras) {
+    const form = document.getElementById('decision-form');
+    const result = document.getElementById('decision-result');
+    result.textContent = 'Submitting...';
+    result.className = 'mt-3 text-sm font-mono text-muted';
+    const params = new URLSearchParams();
+    params.set('decision', decision);
+    for (const [k, v] of Object.entries(extras || {})) {
+      if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+    }
+    const alsoPaired = form.querySelector('input[name="also_resolve_paired"]');
+    if (alsoPaired) params.set('also_resolve_paired', alsoPaired.value);
+    try {
+      const res = await fetch(form.action, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: params.toString(),
+      });
+      const html = await res.text();
+      if (res.ok) {
+        result.innerHTML = html;
+        result.className = 'mt-3 text-sm font-mono';
+        for (const btn of form.querySelectorAll('button')) btn.disabled = true;
+      } else if (res.status === 409) {
+        result.textContent = 'Already decided (Telegram or another tab won the race).';
+        result.className = 'mt-3 text-sm font-mono text-warn';
+      } else if (res.status === 400) {
+        result.textContent = 'Invalid: ' + html.replace(/<[^>]+>/g, '').slice(0, 200);
+        result.className = 'mt-3 text-sm font-mono text-loss';
+      } else {
+        result.textContent = 'Error: ' + res.status;
+        result.className = 'mt-3 text-sm font-mono text-loss';
+      }
+    } catch (e) {
+      result.textContent = 'Network error: ' + e.message;
+      result.className = 'mt-3 text-sm font-mono text-loss';
+    }
+  }
+
+  // Form submit intercept: POST in background + swap result so the
+  // user stays on the page (mobile UX — pending list one tap away).
+  (function () {
+    const form = document.getElementById('decision-form');
+    if (!form) return;
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const submitter = ev.submitter;
+      const decision = submitter ? submitter.value : 'approve';
+
+      // Build the extras dict from the explicit inputs (for the
+      // custom-input modify form). Presets bypass this path entirely.
+      const extras = {};
+      if (decision === 'modify') {
+        const newQty = form.querySelector('input[name="new_qty"]');
+        const newLim = form.querySelector('input[name="new_limit_price"]');
+        if (newQty && newQty.value) extras.new_qty = newQty.value;
+        if (newLim && newLim.value) extras.new_limit_price = newLim.value;
+      }
+      const reason = form.querySelector('input[name="reason"]');
+      if (reason && reason.value) extras.reason = reason.value;
+
+      await _submitDecision(decision, extras);
+    });
+  })();
+</script>
+{% endblock %}

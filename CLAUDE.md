@@ -99,7 +99,7 @@ constraints: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
   3d). Don't introduce new tables without a migration plan.
 - **Stale latches are deleted on restore, not patched with defaults.**
   See `_restore_bias_state` pattern in
-  [agents/divisions/lord_otter.py](trading_corp/agents/divisions/lord_otter.py).
+  [agents/strategies/lord_otter.py](trading_corp/agents/strategies/lord_otter.py).
 
 ### Code path isolation
 
@@ -141,6 +141,78 @@ constraints: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
 - **Webhook flow audits inbound BEFORE agent dispatch.** See
   [web/webhooks.py:220](trading_corp/web/webhooks.py). If the agent
   throws, we still have a record.
+
+### HITL surface direction (Board, 2026-05-03)
+
+- **The web app at `https://trading.jacksumner.com` is the primary
+  HITL surface.** Approve / Reject / Modify decisions belong in the
+  dashboard. The dashboard is mobile-friendly (htmx + Tailwind
+  responsive layout); on a phone it's the canonical UI.
+- **Telegram is a notification-only channel.** When something needs
+  Board attention (approval, fill notification, error, halt), Telegram
+  emits a short ping with a deeplink to the relevant page on the
+  dashboard. Telegram messages do not carry order detail, do not
+  accept Approve/Reject replies, do not run inline keyboards. The
+  dashboard is what the Board reads + acts in.
+- **State today (post-B.4 flip 2026-05-05 01:34 UTC):** slim
+  Telegram body is the live default — short ping with deeplink to
+  `https://trading.jacksumner.com/approvals/{order_id}`. Set on
+  prod via `Environment=TELEGRAM_NOTIFICATION_ONLY=true` in the
+  systemd drop-in `/etc/systemd/system/trading-corp.service.d/override.conf`.
+  Rich-format code (`comms/approval_format.py`) remains in the
+  binary as dead-on-prod fallback; inline keyboard remains as
+  belt-and-suspenders (resolves the same `PendingApprovalRegistry`,
+  first-decision-wins). Don't enrich Telegram messages further;
+  new HITL UX work goes into the web app. Phase E (PWA + web push)
+  is the next deferred phase — when it lands, Telegram can be
+  dropped entirely.
+- **No new LangGraph TradeFlowState changes for HITL.** Pair-coalescing
+  for paired roll orders happens at render time in the web app (group
+  by `pmcc_pair_id`), not by extending `TradeFlowState`. The web-app
+  POST endpoint resumes the existing `interrupt()` per order with the
+  same `BoardDecision` shape `request_board_approval` returns today;
+  graph internals unchanged. This deliberately avoids the §6 trigger
+  for "Change the LangGraph checkpointer or `TradeFlowState` shape."
+- **Web push notifications are deferred (Phase E in the BACKLOG entry).**
+  When the dashboard adds PWA + push subscription flow, Telegram can
+  be dropped or kept as belt-and-suspenders. Until then, Telegram is
+  the bridge channel.
+
+### Research consultation
+
+The research firm
+([agents/research/](trading_corp/agents/research/)) is a knowledge-work
+consultant that any division can call. It is **not** a decision-maker.
+This rule was codified 2026-05-02 after a vision realignment that found
+the firm had been over-scaffolded relative to its actual cross-division
+value; protect it from re-expansion.
+
+- **A division calls research when ALL of:**
+  - The question requires cross-source LLM synthesis — not deterministic
+    rule application.
+  - The latency budget tolerates 5–60s for an answer.
+  - Multiple divisions could plausibly ask the same question, OR the
+    answer is high-value enough to justify research overhead for one.
+- **A division does NOT call research for:**
+  - Per-alert tier / sizing / stop / direction decisions. Strategy code.
+  - Mechanics the strategy itself can answer — RSI, ATR, breach %,
+    position-size formula, halt conditions, cooldown windows. Strategy
+    code, no LLM.
+  - Anything in a sub-second loop.
+- **Research's surface is the four structured products:**
+  `CandidateRecommendation`, `Thesis`, `PositionContext`,
+  `TradeConfirmation`. New product types require explicit Board approval
+  before scaffolding — adding products has been the failure mode.
+- **Today only PMCC's `research_on_demand` candidate path is doing
+  real cross-division knowledge work.** TradeConfirmation consults
+  from Otter/Cypher are scaffolded but the underlying intraday-TA
+  expert isn't built — treat those consults as ceremonial (fail-open
+  no-ops most of the time) until either the TA capability lands or
+  the consult surface is removed. Don't add features that depend on
+  TradeConfirmation actually returning useful verdicts for crypto.
+- **The decision rule, applied retroactively, would have flagged
+  per-alert TradeConfirmation as wrong-fit and saved a phase of work.**
+  Apply it forward when scoping new division/research interactions.
 - **Webhook risk gate uses an equity fallback (`100_000.0`) when
   broker snapshot fails.** This is a known soft-fail — risk-cap math
   runs on a placeholder equity rather than rejecting the alert.
@@ -219,7 +291,9 @@ ORDER CONSTRUCTION
 RISK GATE   (agents/risk.py)  ← single chokepoint
   approve / reject / resize
        ↓
-auto_execute=false → HITL push (Telegram + would_have_placed audit)
+auto_execute=false → HITL approval (web app at trading.jacksumner.com,
+                     Telegram = notification ping with deeplink to
+                     the approval page) + would_have_placed audit
 auto_execute=true  → broker.place_order + Telegram fill notify
 ```
 
@@ -253,7 +327,9 @@ decisions), read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | [trading_corp/comms/](trading_corp/comms/) | Telegram bot, CLI fallback, rich approval-message builder. |
 | [trading_corp/graph/](trading_corp/graph/) | LangGraph CEO trade flow + `interrupt()` for HITL. Uses `SqliteSaver` checkpointer. |
 | [trading_corp/agents/](trading_corp/agents/) | Decision-makers: CEO, Risk, Trend, Backtester, Portfolio, DataExec, Logger. |
-| [trading_corp/agents/divisions/](trading_corp/agents/divisions/) | Strategy implementations (see below). |
+| [trading_corp/agents/divisions/](trading_corp/agents/divisions/) | Brokerage/account-level division wiring. Today: `pmcc_robinhood.py`, `fidelity_options.py`. These mix portfolio-management with strategy logic — see § Known sharp edges. |
+| [trading_corp/agents/strategies/](trading_corp/agents/strategies/) | TV-driven strategy implementations. Today: `lord_otter.py` (3m scalp), `market_cypher.py` (4h/1D swing). Both run inside the `coinbase_spot` division. Carved out of `agents/divisions/` 2026-05-02 to match the vision (division = portfolio manager; strategy = how that division operates). |
+| [trading_corp/agents/research/](trading_corp/agents/research/) | Shared knowledge-work consultant. See § Research consultation for when to call it. |
 | [trading_corp/brokers/](trading_corp/brokers/) | Adapters (see below). |
 | [trading_corp/persistence/](trading_corp/persistence/) | SQLite engine, dataclass models, LangGraph checkpointer, `agent_state` kv store. |
 | [trading_corp/data/](trading_corp/data/) | WS aggregator skeleton, macro calendar lookup, TradingView WS supplement. |
@@ -264,14 +340,21 @@ decisions), read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | [scripts/](scripts/) | Utilities: webhook test harness, PWA icon gen, KV upload. |
 | [docs/](docs/) | Architecture reference (`ARCHITECTURE.md`). |
 
-### Current divisions (`agents/divisions/`)
+### Current divisions and the strategies they run
 
-| Division | Broker family | Status |
-|---|---|---|
-| `pmcc_robinhood` (PMCCAgent) | robinhood (Individual + IRA + Joint via `account_filter`) | Live broker reads, paper-execute, HITL on every order |
-| `lord_otter` (LordOtterAgent) | coinbase spot | TV-driven scalp on 3m. `auto_execute: false`. 14 alerts. |
-| `market_cypher` (MarketCypherAgent) | coinbase spot | TV-driven swing on 4h/1D. `auto_execute: false`. 15 alerts. |
-| `fidelity_options` (FidelityOptionsAgent) | fidelity | Bot-blocked on Azure VM IP — paper-fallback only. |
+A division is a (brokerage × account) portfolio manager. A strategy is
+how a division decides what to trade. One division can run multiple
+strategies. This vocabulary was clarified 2026-05-02 — earlier code +
+docs sometimes called Otter and Cypher "divisions"; that was wrong.
+They are strategies inside the `coinbase_spot` division.
+
+| Division | Brokerage / accounts | Strategies running there | Status |
+|---|---|---|---|
+| `robinhood` (`pmcc_robinhood.py`) | Robinhood Individual (PMCC) + IRA (stocks/ETFs + weekly covered calls — see [BACKLOG.md "Robinhood IRA drilldown"](BACKLOG.md)) + Joint via `account_filter` | PMCC on Individual today; IRA + Joint surface in dashboard but no automated strategy yet | Live broker reads, paper-execute, HITL on every order |
+| `coinbase_spot` | Coinbase spot | Lord Otter (3m scalp, [strategies/lord_otter.py](trading_corp/agents/strategies/lord_otter.py)), Market Cypher (4h/1D swing, [strategies/market_cypher.py](trading_corp/agents/strategies/market_cypher.py)) | Both `auto_execute: false`. **Feature work paused 2026-05-02** pending PMCC research-as-consultant validation. |
+| `coinbase_futures` | Coinbase futures | None today (kept as failover) | UI shows `STANDBY` badge (deploy 2026-05-03 16:25 UTC). Order path is still active in code today; behavioral disable is a follow-up. |
+| `bitunix_futures` | BitUnix Futures (USDT + USDC margined) | None today (Phase 3 will wire division-entry filters + signal fan-out) | Read-only Phase 1 SHIPPED 2026-05-03 17:54 UTC. Live `place_order` raises `NotImplementedError` until Phase 4 (gated on stop-loss strategy + conviction → leverage map). See `~/.claude/.../memory/trading_corp_bitunix_vision.md`. |
+| `fidelity` (`fidelity_options.py`) | Fidelity Joint + 401(k) (Individual deactivated 2026-05-03 — `enabled: false` in YAML) | Fidelity options | Bot-blocked from Azure VM IP — paper-fallback only. P1 backlog **DEFERRED 2026-05-03** pending Plaid investigation. |
 
 ### Brokers (`brokers/`)
 
@@ -281,6 +364,7 @@ decisions), read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | `paper.py:PaperExecutionBroker` | Wraps a real read-only broker: real snapshots, simulated fills. Used in PAPER mode for any live-cred division. |
 | `robinhood.py:RobinhoodBroker` | `robin_stocks`, multi-account via `account_filter`, persistent session pickle. |
 | `coinbase.py:CoinbaseBroker` | ccxt-based. Spot live, futures stub. Separate API keys per portfolio. |
+| `bitunix.py:BitunixBroker` | BitUnix Futures, async httpx, SHA256-double-sign auth (no passphrase). Read-only Phase 1: `snapshot()` + `quote()` only; `place_order` / `cancel_order` raise `NotImplementedError` until Phase 4. Multi-margin-coin balance aggregation (USDT + USDC summed; BTC/ETH-margined deferred). |
 | `fidelity.py:FidelityBroker` | Playwright/Firefox browser automation. Currently bot-blocked from Azure VM IP. **Subclasses full `Broker` ABC — predates the read-only-by-ABC rule; see § Known sharp edges.** |
 
 New read-only adapters: subclass a `ReadOnlyBroker` ABC (no
@@ -320,17 +404,39 @@ unless noted.
 
 ## 5. Common tasks — canonical patterns
 
-### Adding a new strategy / division
-1. Create `agents/divisions/<name>.py` modeled on `lord_otter.py` or
-   `market_cypher.py` (TV-driven) or `pmcc_robinhood.py` (scan-driven).
+### Adding a new strategy or division
+
+These are two different tasks now (see § Module map). Pick the right one.
+
+**A new STRATEGY** runs inside an existing division (e.g. a second
+crypto strategy alongside Otter and Cypher in `coinbase_spot`):
+1. Create `agents/strategies/<name>.py` modeled on `lord_otter.py` or
+   `market_cypher.py` for TV-driven, or copy the scan-driven shape
+   from `agents/divisions/pmcc_robinhood.py`.
 2. Add the agent class with `enabled` / `auto_execute` / `division`
    properties reading from `config/strategies.yaml` (mtime-cached).
-3. Add the division to [config/divisions.yaml](config/divisions.yaml)
-   (broker + account_filter + slug).
-4. Wire into [main.py](trading_corp/main.py) deps + `WebDeps`.
-5. **`auto_execute: false`** in `strategies.yaml` until paper-track
+3. Wire into [main.py](trading_corp/main.py) deps + `WebDeps`.
+4. **`auto_execute: false`** in `strategies.yaml` until paper-track
    record is earned.
-6. New persistent state → `agent_state` table with a staleness gate.
+5. New persistent state → `agent_state` table with a staleness gate.
+6. **Before scoping research consultation, read § Research
+   consultation.** Most strategies should not be calling research
+   per-alert.
+
+**A new DIVISION** is a new brokerage/account surface (e.g. Polymarket,
+crypto futures, a different equity broker):
+1. Create `agents/divisions/<name>.py` modeled on `pmcc_robinhood.py`.
+   Division code does portfolio-manager work — universe sizing,
+   per-account allocation, capacity gates — and routes to one or more
+   strategy modules under `agents/strategies/` for the actual
+   trade-decision logic.
+2. Add the division to [config/divisions.yaml](config/divisions.yaml)
+   (broker + account_filter + slug).
+3. New broker adapter if the venue is new — see "Adding a new broker
+   adapter" below.
+4. **Don't design a new division speculatively.** Build only after an
+   existing division's pattern is validated in production. Premature
+   division design was the failure mode pre-2026-05-02.
 
 ### Adding a new broker adapter
 1. **Read-write?** Subclass `Broker` in
@@ -363,7 +469,9 @@ unless noted.
    `(ProposedOrder | None, decision_str)`.
 6. Risk gate inline:
    `deps.risk_agent.evaluate(order, account, strat_state, regime, None)`.
-7. `auto_execute=false` → `would_have_placed` audit + Telegram push.
+7. `auto_execute=false` → `would_have_placed` audit + Telegram
+   notification ping (deeplink to web-app approval page; see § HITL
+   surface direction).
    `auto_execute=true` → `data_exec.place(order, division=...)` +
    fill notify. Before flipping any new TV division to
    `auto_execute=true`, harmonize the webhook gate with the
@@ -476,6 +584,22 @@ approval.
   [docs/ARCHITECTURE.md § 6 design decision 6](docs/ARCHITECTURE.md)).
   Pro: simple test harness. Con: can't visualize strategy internals
   in graph traces.
+- **`pmcc_robinhood.py` and `fidelity_options.py` conflate
+  division-level and strategy-level concerns.** Otter and Cypher were
+  carved out into `agents/strategies/` on 2026-05-02; PMCC and Fidelity
+  remain mixed. Future work should follow the Otter/Cypher precedent
+  when it becomes load-bearing — extract strategy logic from PMCC into
+  `agents/strategies/pmcc.py` once a second Robinhood strategy is
+  needed. Don't refactor speculatively.
+- **`docs/ARCHITECTURE.md § 1 principle 2` quote drift.** ARCHITECTURE
+  says "Each broker × strategy combo is its own division." That was
+  the original framing. The 2026-05-02 vision realignment refined it
+  to "division = brokerage/account portfolio manager; strategies are
+  internal to a division." CLAUDE.md and the module map reflect the
+  new framing; ARCHITECTURE.md still has the old text. Don't
+  re-litigate the principle in code reviews — the new framing wins
+  until ARCHITECTURE.md is updated (a separate Board-approved doc
+  pass).
 - **`extra_json` is unqueryable by SQL columns.** The trade-off:
   schema-stable, strategy-specific bag, but `LIKE`-based queries
   (e.g. `_query_prior_rolls` filtering on `pmcc_pair_id`) are
@@ -488,8 +612,33 @@ approval.
   snapshot fails.** Means risk caps run on a placeholder rather than
   rejecting. The snapshot-failure log is the trail.
 - **`FidelityBroker` is bot-blocked from Azure VM IP** (Akamai
-  layer, pre-JS). Falls back to paper. Datacenter IPs flagged at
-  network layer. Residential proxy required to fix — see backlog.
+  layer, pre-JS). Falls back to paper. Residential-proxy plan
+  **DEFERRED 2026-05-03**; user investigating Plaid integration
+  as a legitimate alternative. See P1 BACKLOG entry "Fidelity
+  broker: read-only + analysis on Azure VM".
+- **BitUnix accepts the Azure VM IP fine** — no anti-bot at the
+  network layer. Useful contrast with Fidelity. Phase 1 broker
+  uses SHA256-double-sign auth (no HMAC, no passphrase). The
+  `transfer` field in `/api/v1/futures/account` is **additive**
+  to total equity, NOT a duplicate of `available` (verified
+  2026-05-03 against the BitUnix UI: $1250 available + $1250
+  transfer = $2500 total). Crypto-margined balances (BTC/ETH
+  margin) need quote conversion to USD; stablecoins (USDT/USDC)
+  are summed 1:1.
+- **Investment-type UI grouping is divisions-aware, not
+  broker-aware.** `classify_investment_type(d)` in
+  `trading_corp/utils/divisions.py` maps each division to
+  Individual / Crypto / Retirement using a small rule
+  (intent=retirement → retirement; broker in {coinbase, bitunix}
+  → crypto; else individual). New broker families decide their
+  group via `_CRYPTO_BROKERS` set membership. New retirement-style
+  intents reuse the existing `intent: retirement` YAML field.
+- **STANDBY badge is UI-only** (Coinbase Futures + BitUnix Futures
+  today). Setting `standby: true` in `divisions.yaml` does NOT
+  disable order routing or broker registration. The signal that
+  "this division doesn't trade live today" is enforced separately:
+  for BitUnix via `BitunixBroker.place_order` raising; for Coinbase
+  Futures it's not enforced today (still order-capable in code).
 - **Backtester approval gate is documented but not code-enforced.**
   [PROJECT_CONTEXT.md § 11](PROJECT_CONTEXT.md) and § 6 above say
   "new strategies need backtest approval"; today the path doesn't
