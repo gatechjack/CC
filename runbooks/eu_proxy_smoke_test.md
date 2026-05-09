@@ -51,30 +51,47 @@ Plus one control:
 
 1. **Azure CLI logged in** (`az login` — uses your existing admin creds).
 2. **Current tc-prod-vm reachable via SSH** (`ssh azureuser@trading.jacksumner.com`).
-3. **Your current laptop public IP** (for SSH to the throwaway VM):
+3. **tc-prod-vm's public IP** — used as the SSH source-IP whitelist on the
+   throwaway VM (so your laptop's Comcast/Xfinity IP rotation never locks
+   you out, and the recovery model is the same as your existing
+   `auth_lockout_recovery.md`):
    ```bash
-   curl -s https://api.ipify.org
+   TC_PROD_IP=$(ssh azureuser@trading.jacksumner.com 'curl -s https://api.ipify.org')
+   echo "tc-prod-vm public IP: $TC_PROD_IP"
    ```
-   Save it as `LAPTOP_IP` for the commands below.
+
+**Why tc-prod-vm's IP and not your laptop's:** if your laptop IP rotates
+mid-test, you'd lose SSH to a VM that's still billing. tc-prod-vm has a
+stable Azure-attached public IP (DNS-anchored at trading.jacksumner.com)
+with documented recovery if it ever does change. Chained SSH
+(`laptop → tc-prod-vm → eu-smoke`) adds one hop; that's worth the
+robustness.
+
+**If tc-prod-vm's IP itself ever changes:** you'd also lose the EU VM's
+SSH, but you can update the NSG rule from Azure Cloud Shell (browser-
+based, no IP whitelist) — see Stage 1e Troubleshooting below.
 
 ---
 
 ## Stage 1a — Spin up throwaway EU VM
 
-One B1s VM in `northeurope` (Dublin), no public IP cost (uses dynamic),
-deleted within an hour.
+One B1s VM in `northeurope` (Dublin), deleted within an hour.
 
 ```bash
-# --- copy-paste, edit LAPTOP_IP ---
-LAPTOP_IP="<paste your IP from curl https://api.ipify.org>"
+# --- copy-paste from your laptop after running the prereqs block ---
 RG="rg-eu-smoke-test"
 VM_NAME="eu-smoke"
 LOCATION="northeurope"
 
+# TC_PROD_IP must be set from the prerequisites block above
+echo "Using SSH source-IP whitelist: $TC_PROD_IP"
+
 # Resource group (will be deleted whole at teardown — clean blast radius)
 az group create --name "$RG" --location "$LOCATION"
 
-# VM with public IP + SSH locked to your laptop only
+# VM with public IP + SSH locked to tc-prod-vm only.
+# --generate-ssh-keys reuses or creates ~/.ssh/id_rsa.pub on your laptop;
+# we'll copy that key to tc-prod-vm in Stage 1b so it can hop in.
 az vm create \
   --resource-group "$RG" \
   --name "$VM_NAME" \
@@ -86,30 +103,48 @@ az vm create \
   --nsg-rule SSH \
   --location "$LOCATION"
 
-# Tighten the auto-created NSG: SSH from your laptop ONLY
+# Tighten the auto-created NSG: SSH from tc-prod-vm ONLY
 NSG_NAME=$(az network nsg list --resource-group "$RG" --query '[0].name' -o tsv)
 az network nsg rule update \
   --resource-group "$RG" \
   --nsg-name "$NSG_NAME" \
   --name default-allow-ssh \
-  --source-address-prefixes "$LAPTOP_IP/32"
+  --source-address-prefixes "$TC_PROD_IP/32"
 
 # Get the VM's public IP — record it for the SSH step below
 EU_VM_IP=$(az vm show -d --resource-group "$RG" --name "$VM_NAME" --query publicIps -o tsv)
 echo "EU VM IP: $EU_VM_IP"
 ```
 
-**Verify NSG is locked:** `az network nsg rule show --resource-group "$RG" --nsg-name "$NSG_NAME" --name default-allow-ssh --query sourceAddressPrefixes -o tsv` should print just your laptop's IP, not `*` or `Internet`.
+**Verify NSG is locked:**
+```bash
+az network nsg rule show --resource-group "$RG" --nsg-name "$NSG_NAME" \
+  --name default-allow-ssh --query sourceAddressPrefixes -o tsv
+```
+Should print just `$TC_PROD_IP`, not `*` / `Internet` / your laptop IP.
 
 ---
 
-## Stage 1b — Smoke test from the EU VM
+## Stage 1b — Smoke test from the EU VM (via tc-prod-vm)
 
-SSH in:
+The EU VM's NSG only allows SSH from tc-prod-vm. Hop through:
 
 ```bash
-ssh -o StrictHostKeyChecking=no azureuser@$EU_VM_IP
+# From your laptop: copy your SSH key to tc-prod-vm so it can hop into
+# the EU VM. (One-time per laptop key.) `az vm create --generate-ssh-keys`
+# already added your laptop's public key to the EU VM under azureuser;
+# we just need tc-prod-vm to have your private key so it can use it.
+scp ~/.ssh/id_rsa azureuser@trading.jacksumner.com:~/.ssh/eu_smoke_key
+ssh azureuser@trading.jacksumner.com 'chmod 600 ~/.ssh/eu_smoke_key'
+
+# SSH from your laptop into tc-prod-vm, then from tc-prod-vm into the EU VM
+ssh -t azureuser@trading.jacksumner.com \
+  "ssh -o StrictHostKeyChecking=no -i ~/.ssh/eu_smoke_key azureuser@$EU_VM_IP"
 ```
+
+(Alternative if the chained SSH gives you trouble: enable SSH agent
+forwarding with `ssh -A azureuser@trading.jacksumner.com` and then SSH
+to `$EU_VM_IP` from inside tc-prod-vm without copying the key.)
 
 Inside the EU VM, run the smoke script. Save its output verbatim — you'll diff it against tc-prod-vm later.
 
@@ -211,6 +246,29 @@ Wait ~2 min, then verify:
 ```bash
 az group show --name "rg-eu-smoke-test" 2>&1 | grep -i 'could not be found' && echo "OK — torn down"
 ```
+
+### Troubleshooting: locked out of the EU VM mid-run
+
+If tc-prod-vm's IP rotated mid-test (Azure VM IPs are normally stable
+but it can happen on dealloc / region issues), or if you provisioned
+with the wrong source IP, you can update the EU VM's NSG without
+needing SSH access:
+
+1. Open https://shell.azure.com (Azure Cloud Shell — browser-based,
+   no IP whitelist applies to the control plane).
+2. Run:
+   ```bash
+   RG="rg-eu-smoke-test"
+   NSG_NAME=$(az network nsg list --resource-group "$RG" --query '[0].name' -o tsv)
+   NEW_IP=$(curl -s https://api.ipify.org)   # or paste the correct IP
+   az network nsg rule update \
+     --resource-group "$RG" --nsg-name "$NSG_NAME" \
+     --name default-allow-ssh --source-address-prefixes "$NEW_IP/32"
+   ```
+3. SSH in as before, finish the test, tear down.
+
+Same recovery applies if you ever lose SSH to the persistent Stage 2
+proxy VM.
 
 ---
 
