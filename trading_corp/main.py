@@ -897,6 +897,21 @@ def _build_broker_for_division(
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(bx, paper)
 
+    if family == "polymarket":
+        # Phase 1 read-only Polymarket adapter. PolymarketBroker subclasses
+        # ReadOnlyBroker (NOT Broker) — there is no `place_order` method to
+        # call. Live order placement is Phase 3 work and will land as a
+        # separate `Broker` subclass when the Backtester verdict +
+        # auto_execute_caps memo greenlight it. Until then, no
+        # PaperExecutionBroker wrap is needed: read-only adapters don't
+        # have an order surface to simulate.
+        from trading_corp.brokers.polymarket import PolymarketBroker
+        return PolymarketBroker(
+            private_key=secrets.polymarket_private_key,
+            funder_address=secrets.polymarket_funder_address,
+            polygon_rpc_url=secrets.polygon_rpc_url,
+        )
+
     if family == "paper":
         return PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
 

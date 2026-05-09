@@ -20,13 +20,22 @@ log = logging.getLogger(__name__)
 _DEFAULT_PATH = Path("config/divisions.yaml")
 
 # Visual order — sections render in this order on the dashboard.
-_INVESTMENT_TYPE_ORDER = ["individual", "crypto", "retirement"]
+_INVESTMENT_TYPE_ORDER = ["individual", "crypto", "polymarket", "retirement"]
 _INVESTMENT_TYPE_LABELS = {
     "individual": "Individual",
     "crypto":     "Crypto",
+    "polymarket": "Polymarket",
     "retirement": "Retirement",
 }
 _CRYPTO_BROKERS = {"coinbase", "bitunix"}
+# Slug prefix → investment-type group. Polymarket's copy-trading division
+# uses `broker: paper` as a placeholder until Phase 4+ wires the strategy,
+# so it can't be classified by broker family alone. Slug-prefix routes
+# both polymarket_* divisions into the "polymarket" group regardless of
+# their broker family. (Brokers that ARE polymarket — i.e.
+# polymarket_arbitrage's `broker: polymarket` — also land in the group;
+# either path works.)
+_POLYMARKET_SLUG_PREFIX = "polymarket_"
 
 
 @dataclass
@@ -74,6 +83,8 @@ def classify_investment_type(d: Division) -> str:
     """Map a division to its investment-type group."""
     if d.intent == "retirement":
         return "retirement"
+    if d.broker == "polymarket" or d.slug.startswith(_POLYMARKET_SLUG_PREFIX):
+        return "polymarket"
     if d.broker in _CRYPTO_BROKERS:
         return "crypto"
     return "individual"
