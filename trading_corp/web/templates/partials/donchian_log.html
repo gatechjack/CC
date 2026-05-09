@@ -5,8 +5,11 @@
    the resulting decision, and the reason string from the engine.
 
    Populated from `audit_event WHERE actor='coinbase_btc_donchian'
-   AND kind='donchian_evaluated'`. Empty until the live agent is
-   wired to write those rows; that's the correct empty state.
+   AND kind='donchian_evaluated'`. The orchestrator's
+   `_scheduled_donchian_loop` writes one row per 6h-bar close
+   (00/06/12/18 UTC) regardless of decision (BUY/SELL/SKIP) — so
+   absence of a row means the strategy hasn't seen a bar close
+   yet (fresh deploy or restart in the middle of a 6h window).
 #}
 {% if view.donchian %}
 {% set d = view.donchian %}
@@ -89,8 +92,8 @@
     </div>
   {% else %}
     <div class="text-center py-6 text-muted text-[11px] font-mono">
-      No decisions yet — strategy not yet wired into the orchestrator
-      <br/>(or agent has not evaluated a bar since wiring).
+      No decisions logged yet — first row lands at the next 6h-bar
+      close (00/06/12/18 UTC).
     </div>
   {% endif %}
 </section>
