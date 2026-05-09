@@ -806,22 +806,55 @@ market_cypher:
 
 
 # ============================================================
-# Coinbase BTC Accumulator (Phase 1 backtest config — `enabled: false`
-# until backtest validates weights and Board approves wiring).
+# Coinbase BTC Donchian (LOCKED 2026-05-08 — replaces the earlier
+# Otter+Cypher confluence experiment, which failed walk-forward).
 #
-# Strategy: 100% in/out CASH ↔ BTC state machine. TV alerts from
-# Otter (3m) and Cypher (4h/1D) trigger a confluence review —
-# alerts do NOT auto-execute. Buy when accumulated buy-side score
-# clears `min_score_buy`; sell when sell-side clears `min_score_sell`.
-# Symmetric "wait for stabilization" guards penalize selling into
-# fast rises and buying into fast falls.
+# Strategy: Donchian Channel Breakout on Coinbase BTC/USD 6h bars.
+#   - Long when current close > max(high) over last 20 bars (~5 days)
+#   - Flat when current close < min(low) over last 6 bars (~36 hours)
+#   - Trend filter: only enter long if close > SMA(168) (~42d trend)
 #
-# Cypher's HTF signals carry persistent weight (24h TTL on 1D, 4h
-# TTL on 4h). Otter's 3m signals expire fast (15-30min).
+# Validation history (see runbooks/deploy_log.md or commits 072a484+):
+#   - 24mo full corpus: +56.30% vs HODL +30.42% (+25.89% alpha)
+#   - 12mo walk-forward (6mo train + 6mo test): 8/10 top-train configs
+#     beat HODL out-of-sample, median test α +12.86%, best +27.21%.
+#   - 35 round-trips over 24mo, 49% win rate, max DD 16.49%, 25% time
+#     in BTC. Wins bigger than losses — typical trend-following profile.
 #
-# All weights/thresholds tunable here without code change. Backtest
-# tooling at `scripts/backtest_btc_accumulator.py` reads this same
-# config, so weight iteration is a YAML edit + re-run loop.
+# Implementation status:
+#   - Phase 1 (backtest infrastructure): SHIPPED (commit 072a484).
+#   - Phase 2 (live agent module + paper-mode wiring): NOT YET BUILT.
+#     Strategy is `enabled: false` until Phase 2 + Board approval lands.
+# ============================================================
+coinbase_btc_donchian:
+  enabled: false                     # Phase 1 only; Phase 2 builds the live agent
+  auto_execute: false                # paper-mode default per project HITL rules
+  division: coinbase_spot            # this strategy runs on the coinbase_spot division
+  symbol: "BTC/USD"
+  starting_state: auto               # auto = check broker snapshot at startup
+
+  donchian:
+    entry_lookback: 20               # bars-back for the breakout high
+    exit_lookback: 6                 # bars-back for the breakdown low
+    trend_filter_lookback: 168       # 6h * 168 = 42 days SMA filter
+    granularity_seconds: 21600       # 6h bars
+
+  audit:
+    log_skip_decisions: true         # write `donchian_skip` row for every
+                                     # bar the strategy evaluated and didn't
+                                     # fire on. Phase-1 finding: an audit
+                                     # paper-trail of "why we DIDN'T act" is
+                                     # gold for tuning.
+
+# ============================================================
+# Coinbase BTC Accumulator (DEPRECATED — confluence approach failed
+# walk-forward; see commit cd26a75 for the negative result that drove
+# the pivot to Donchian above).
+#
+# Block kept here as historical reference only — the YAML is parsed
+# but `enabled: false` so nothing wires up. Remove on a future cleanup
+# pass if the Donchian strategy is fully validated and the confluence
+# path is permanently abandoned.
 # ============================================================
 btc_accumulator:
   enabled: false                     # Phase 1: backtest only, no live wiring
