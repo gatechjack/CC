@@ -59,6 +59,87 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-09 06:25 UTC — Dashboard timestamps converted to ET
+
+**Commits:** local-only at deploy time (8 files modified; will be batched in the session-wrap commit).
+**Triggered by:** Board direction 2026-05-09 — "change all times to eastern timezone." Board reads dashboards from ET; UTC display required mental conversion on every glance.
+**Backup:** prod tarball at `/home/azureuser/backups/pre-et-20260509-0625.tar.gz` (54K, 8 files).
+
+**Files deployed (8 modified):**
+
+- `trading_corp/utils/time.py` — added display formatters: `to_et()`, `format_et_short()` ('MM-DD HH:MM ET'), `format_et_hm()` ('HH:MM ET'), `format_et_hms()` ('HH:MM:SS ET'), `format_et_full()` ('YYYY-MM-DD HH:MM ET'). All use the existing `ET = ZoneInfo("America/New_York")` constant; DST handled automatically.
+- `trading_corp/web/data.py` — `build_donchian_view`: converted `ts_short` (decision log), `last_bar_short` (state card), `next_bar_short` (state card), `buy_ts_short` / `sell_ts_short` (round-trips tile) to ET via `format_et_short` / `format_et_hm`.
+- `trading_corp/web/app.py` — registered new Jinja filters `et_hms`, `et_short`, `et_full` so templates can format datetime objects directly.
+- `trading_corp/web/routes.py` — `expires_at.strftime("%Y-%m-%d %H:%M UTC")` → `format_et_full(expires_at)`.
+- `trading_corp/web/templates/partials/donchian_log.html` — header `bar (UTC)` → `bar (ET)`; empty-state copy `(00/06/12/18 UTC)` → `(20:00 / 02:00 / 08:00 / 14:00 ET)`; docstring caption updated.
+- `trading_corp/web/templates/partials/donchian_state.html` — caption `UTC` removed (ET label is baked into the formatted value via `format_et_short`).
+- `trading_corp/web/templates/approvals.html` + `approval_detail.html` — `{{ row.added_at.strftime('%H:%M:%SZ') }}` → `{{ row.added_at | et_hms }}`.
+
+**Storage layer unchanged.** All `audit_event.ts` / `agent_state.updated_ts` / order-status timestamps stay UTC (ISO-8601 with timezone). The conversion is display-layer only — `to_et()` reads any UTC ISO string or naive-assumed-UTC datetime. Round-trips through restart/cache cleanly.
+
+**Verification:**
+
+- Pre-restart PID 164965 → post-restart 167195.
+- All 8 files md5-match end-to-end after SCP (LF-normalized).
+- `Donchian scheduler online: ... sleeping 20120s until next bar close` post-restart — math: 06:26:39 UTC + 20120s ≈ 12:02:00 UTC = 08:02 ET ✓.
+- `CoinbaseBTCDonchianAgent: reconciled to CASH state` — DB persistence survived the restart cleanly.
+- Dashboard render checks (curl localhost:8000):
+  - Home tile: dial unchanged (no timestamps), `left: 27.3%` needle position preserved.
+  - Division detail: column header reads `bar (ET)`, first row's `ts_short` reads `05-09 02:02 ET`. State card "Last decision" + "Next 6h close" both render in ET.
+
+**Pre-existing surface bug surfaced (decision needed before next deploy):**
+
+- The decision-log column header reads `bar (ET)` but the `ts_short` it displays is the **audit-row write time** (bar close + ~2min), not the bar's open time. Was masked under UTC display ("06:02 UTC" is close enough to bar close). Now in ET it reads `05-09 02:02 ET` while the same row's `reason` text references `@ 2026-05-09T00:00:00+00:00` (bar open). Captured as a decision point under the BACKLOG entry "P3 — Coinbase BTC HODL division-detail UI cleanup". Two paths: (a) switch `data.py` to read `payload.bar_ts` instead of `r["ts"]` (~2-line fix; aligns column with reason text); (b) leave the data, change the column header to "evaluated (ET)". Pick before the UI-cleanup deploy lands.
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-et-20260509-0625
+BASE=/home/azureuser/trading_corp
+cd \$BASE
+tar xzf /home/azureuser/backups/\${TAG}.tar.gz
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-09 06:02 UTC — Donchian Phase 2 validation gate ✅ CLOSED
+
+**Not a deploy** — validation milestone. The 02:53 UTC Phase 2 wiring deploy left an open validation gate: "first `donchian_evaluated` audit row should land at ~06:02 UTC." It did, exactly on schedule.
+
+**First bar evaluation (2026-05-09T00:00:00 UTC bar; evaluated 06:02:03 UTC = 02:02:03 EDT):**
+
+- **Decision: SKIP.** `close = $80,374.00 ≤ 20-bar high = $82,814.23` — no breakout, agent stays in CASH (correct given startup state).
+- **Channel values:** donchian_low $79,456.00 / current_close $80,374.00 / donchian_high $82,814.23 / trend_filter_sma ~$74,xxx (truncated in audit row but >0 = trend filter passes for future entries).
+- **Dial position math verified:** `(80374 - 79456) / (82814.23 - 79456) = 918 / 3358.23 ≈ 0.273` → home-tile needle rendered at `left: 27.3%` ✓.
+- **Dedup pointer advanced:** `agent_state` row `last_bar_ts: 2026-05-09T00:00:00+00:00` (the bar that just closed).
+- **Scheduler armed for next bar:** `sleeping 21596s` post-evaluation → next wake ~12:02 UTC.
+
+**End-to-end Phase 2 deploy is fully validated.** All UI surfaces operating against real production data:
+- Home tile placeholder gone, dial proper rendering with channel values + state-aware edge marker.
+- Division-detail decision-log tile populated with row 1.
+- agent_state persistence + broker-snapshot reconcile working across the restart cycle.
+
+---
+
+## 2026-05-09 04:26 UTC — Donchian decision-log empty-state copy refresh
+
+**Commits:** `9de5902` (committed before deploy).
+**Triggered by:** Board flag during the wait-for-validation window — Phase 1 partial said "strategy not yet wired into the orchestrator," cosmetically stale after Phase 2 shipped.
+**Mechanism:** template-only, deployed via `tr -d '\r' | ssh ... 'cat > target'` stdin pipe. **No service restart** — Jinja autoreloaded the template on the next request. Useful precedent: pure-template changes on prod don't require the 30-90s Fidelity-login restart cycle.
+
+**Files deployed (1 modified):**
+
+- `trading_corp/web/templates/partials/donchian_log.html` — empty-state copy: "strategy not yet wired into the orchestrator" → "No decisions logged yet — first row lands at the next 6h-bar close (00/06/12/18 UTC)". Top-of-file docstring updated to describe the orchestrator's per-bar write contract. (Note: ET update later in same session further refined the copy to ET-formatted boundaries.)
+
+**Backup:** prod copy at `/home/azureuser/backups/donchian_log.html.pre-copy-fix-20260509-0426.bak` (separate file, not a tarball — the stdin-pipe deploy used a single-file backup).
+
+**Verification:** `curl localhost:8000/division/coinbase_spot | grep "No decisions"` returned the new copy on the next request, confirming Jinja autoreload.
+
+---
+
 ## 2026-05-09 03:40 UTC — Coinbase BTC HODL rename + revert intent to aggressive
 
 **Commits:** local-only at deploy time.
@@ -220,7 +301,7 @@ sudo systemctl restart trading-corp
 
 **Inert / dormant on current traffic:**
 
-- **First `donchian_evaluated` audit row will land at ~06:02 UTC 2026-05-09** (3h after this deploy, at the next 6h-bar boundary + 2min buffer). Until then the per-bar log tile is empty — that's the correct state. The deploy gate is "did the first row land?"; check `/division/coinbase_spot` after 06:02 UTC.
+- ~~**First `donchian_evaluated` audit row will land at ~06:02 UTC 2026-05-09**~~ → **✅ CLOSED 2026-05-09 06:02:03 UTC.** First bar evaluated SKIP (close $80,374 ≤ 20-bar high $82,814.23 — stay in CASH). See the dedicated "06:02 UTC validation gate" entry above for full details.
 - **Lord Otter / Market Cypher webhook endpoints (`/webhook/tradingview/lord-otter` and `.../market-cypher`) still accept POSTs.** Agents short-circuit on `enabled: false` before order construction; the audit trail still records `webhook_received` / `alert_ignored`. No Telegram pushes will fire from these strategies.
 
 **Rollback recipe:**

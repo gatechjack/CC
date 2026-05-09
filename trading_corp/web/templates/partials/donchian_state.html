@@ -56,7 +56,7 @@
         {% endif %}
       </div>
       <div class="text-[11px] text-muted font-mono mt-1">
-        {% if d.last_bar_short %}UTC{% else %}awaiting first eval{% endif %}
+        {% if d.last_bar_short %}{# ET label baked into the formatted value #}{% else %}awaiting first eval{% endif %}
       </div>
     </div>
 

@@ -35,7 +35,7 @@
         <span>+ sibling {{ sibling_order_id[:12] }}…</span>
       {% endif %}
       <span class="mx-1">·</span>
-      <span>{{ entry.added_at.strftime('%H:%M:%SZ') }}</span>
+      <span>{{ entry.added_at | et_hms }}</span>
     </div>
   </header>
 

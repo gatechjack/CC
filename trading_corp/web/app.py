@@ -85,6 +85,11 @@ def create_app(deps: WebDeps) -> FastAPI:
     templates.env.filters["pct"] = _fmt_pct
     templates.env.filters["pct_signed"] = _fmt_pct_signed
     templates.env.filters["compact_num"] = _fmt_compact
+    # ET timestamp formatters (Board direction 2026-05-09: dashboard times in ET)
+    from trading_corp.utils.time import format_et_hms, format_et_short, format_et_full
+    templates.env.filters["et_hms"] = format_et_hms
+    templates.env.filters["et_short"] = format_et_short
+    templates.env.filters["et_full"] = format_et_full
     app.state.templates = templates
 
     # Static

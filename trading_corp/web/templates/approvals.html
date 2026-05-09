@@ -55,7 +55,7 @@
                     <span>{{ row.primary_order_id[:12] }}…</span>
                   {% endif %}
                   <span class="mx-1">·</span>
-                  <span>{{ row.added_at.strftime('%H:%M:%SZ') }}</span>
+                  <span>{{ row.added_at | et_hms }}</span>
                 </div>
               </div>
               <span class="text-accent text-xs font-mono shrink-0 whitespace-nowrap">Review →</span>

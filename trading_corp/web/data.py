@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from trading_corp.persistence import db
+from trading_corp.utils.time import format_et_full, format_et_hm, format_et_short
 from trading_corp.utils.divisions import (
     Division, InvestmentGroup, group_by_investment_type, load_divisions,
 )
@@ -1129,7 +1130,7 @@ def build_donchian_view(db_url: str) -> dict | None:
                 p = json.loads(r["payload_json"])
                 decisions.append({
                     "ts": r["ts"],
-                    "ts_short": r["ts"][:16].replace("T", " "),
+                    "ts_short": format_et_short(r["ts"]),
                     "decision": p.get("decision", "skip"),
                     "current_close": p.get("current_close"),
                     "donchian_high": p.get("donchian_high"),
@@ -1175,10 +1176,10 @@ def build_donchian_view(db_url: str) -> dict | None:
                     )
                     round_trips.append({
                         "buy_ts": open_buy["buy_ts"],
-                        "buy_ts_short": open_buy["buy_ts"][:16].replace("T", " "),
+                        "buy_ts_short": format_et_short(open_buy["buy_ts"]),
                         "buy_price": open_buy["buy_price"],
                         "sell_ts": r["ts"],
-                        "sell_ts_short": r["ts"][:16].replace("T", " "),
+                        "sell_ts_short": format_et_short(r["ts"]),
                         "sell_price": price,
                         "qty": qty or open_buy["qty"],
                         "realized_pnl": realized,
@@ -1197,9 +1198,9 @@ def build_donchian_view(db_url: str) -> dict | None:
         "state": (state_value or {}).get("state", "cash"),
         "cost_basis": (state_value or {}).get("cost_basis"),
         "last_bar_ts": last_bar_ts,
-        "last_bar_short": last_bar_ts[:16].replace("T", " ") if last_bar_ts else None,
+        "last_bar_short": format_et_short(last_bar_ts) if last_bar_ts else None,
         "next_bar_ts": next_bar.isoformat(),
-        "next_bar_short": next_bar.strftime("%H:%M UTC"),
+        "next_bar_short": format_et_hm(next_bar),
         "next_bar_countdown": countdown_str,
         "donchian": {
             "entry_lookback": donchian_params.get("entry_lookback"),

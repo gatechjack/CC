@@ -29,6 +29,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from trading_corp.persistence.models import AccountState, StrategyState
+from trading_corp.utils.time import format_et_full
 
 from trading_corp.web import data
 
@@ -1885,7 +1886,7 @@ def _render_deferred_panel(slug: str, symbol: str, fresh: bool, expires_at: date
                 f'<div class="text-[11px] text-muted/80 font-mono mt-1">'
                 f'Auto-resumes {rel} '
                 f'<span class="text-muted/60">'
-                f'({expires_at.strftime("%Y-%m-%d %H:%M UTC")})'
+                f'({format_et_full(expires_at)})'
                 f'</span></div>'
             )
     return (

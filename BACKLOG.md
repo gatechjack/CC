@@ -1550,6 +1550,25 @@ viz piece, all on the same template.
    - Build with real data the morning after the first audit row
      lands (next session post-validation gate).
 
+**Decision points to resolve before shipping:**
+
+- **`ts_short` in the decision-log tile shows audit-row write time, not
+  bar open time.** Surfaced 2026-05-09 06:25 UTC after the dashboard ET
+  conversion. Column header reads `bar (ET)` and renders `05-09 02:02 ET`,
+  but the same row's `reason` text references `@ 2026-05-09T00:00:00+00:00`
+  (the bar's open time, 6h earlier = `05-08 20:00 ET`). They look like
+  different times but refer to the same bar. Two paths:
+  - **(a)** Switch `data.py:build_donchian_view` to read
+    `payload.bar_ts` instead of `r["ts"]` for the `ts_short` field
+    (~2-line fix; column then reads `05-08 20:00 ET`, consistent with
+    `reason` text).
+  - **(b)** Leave the data, change the column header to
+    `evaluated (ET)` so the audit-row time interpretation is explicit.
+  - Lean: (a). The column's natural meaning is "which bar." Bar open
+    is the canonical bar identifier (matches TradingView, matches
+    `donchian_btc.py`'s `now` argument that's embedded in the reason
+    string). Pick before the UI-cleanup deploy lands.
+
 **Out of scope (intentionally):**
 - The prior entry's "promote Recent Activity to right rail, demote
   Manual Trading to bottom" plan is **partially superseded** by ask

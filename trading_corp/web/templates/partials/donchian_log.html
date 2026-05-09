@@ -7,9 +7,10 @@
    Populated from `audit_event WHERE actor='coinbase_btc_donchian'
    AND kind='donchian_evaluated'`. The orchestrator's
    `_scheduled_donchian_loop` writes one row per 6h-bar close
-   (00/06/12/18 UTC) regardless of decision (BUY/SELL/SKIP) — so
-   absence of a row means the strategy hasn't seen a bar close
-   yet (fresh deploy or restart in the middle of a 6h window).
+   (00/06/12/18 UTC = 20:00/02:00/08:00/14:00 ET) regardless of
+   decision (BUY/SELL/SKIP) — so absence of a row means the
+   strategy hasn't seen a bar close yet (fresh deploy or restart
+   in the middle of a 6h window).
 #}
 {% if view.donchian %}
 {% set d = view.donchian %}
@@ -28,7 +29,7 @@
       <table class="w-full text-[11px] font-mono">
         <thead class="text-muted">
           <tr class="border-b border-edge">
-            <th class="text-left  py-1 pr-3">bar (UTC)</th>
+            <th class="text-left  py-1 pr-3">bar (ET)</th>
             <th class="text-right py-1 pr-3">close</th>
             <th class="text-right py-1 pr-3">{{ d.donchian.entry_lookback }}-bar high</th>
             <th class="text-right py-1 pr-3">{{ d.donchian.exit_lookback }}-bar low</th>
@@ -93,7 +94,7 @@
   {% else %}
     <div class="text-center py-6 text-muted text-[11px] font-mono">
       No decisions logged yet — first row lands at the next 6h-bar
-      close (00/06/12/18 UTC).
+      close (20:00 / 02:00 / 08:00 / 14:00 ET).
     </div>
   {% endif %}
 </section>
