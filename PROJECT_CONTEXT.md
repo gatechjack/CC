@@ -16,14 +16,17 @@ A multi-agent automated trading system. The architecture is "invest in
 everything": one platform, multiple **divisions** (each a brokerage ×
 account portfolio manager), each running one or more **strategies** (the
 trade-decision logic). Today's divisions are `robinhood_pmcc`,
-`robinhood_ira`, `robinhood_joint`, `coinbase_spot` (running both
-`lord_otter` and `market_cypher` strategies), `coinbase_futures`
-(`STANDBY` — kept as failover), `bitunix_futures` (read-only Phase 1
-SHIPPED 2026-05-03; Phase 4 live ahead), `fidelity_joint`, and
-`fidelity_401k` (Fidelity paper-fallback — bot-blocked from Azure VM
-IP, P1 DEFERRED 2026-05-03 pending Plaid investigation; `fidelity_individual`
-deactivated same day). Dashboard groups them into Individual / Crypto /
-Retirement (UI reorg shipped 2026-05-03 16:25 UTC).
+`robinhood_ira`, `robinhood_joint`, `coinbase_spot` (running
+`coinbase_btc_donchian` — 6h Donchian Channel Breakout, paper-mode,
+shipped 2026-05-09 02:53 UTC; replaced the prior Otter+Cypher confluence
+which failed walk-forward), `coinbase_futures` (`STANDBY` — kept as
+failover), `bitunix_futures` (read-only Phase 1 SHIPPED 2026-05-03;
+Phase 4 live ahead), `fidelity_joint`, and `fidelity_401k` (Fidelity
+paper-fallback — bot-blocked from Azure VM IP, P1 DEFERRED 2026-05-03
+pending Plaid investigation; `fidelity_individual` deactivated same day).
+Dashboard groups them into Individual / Crypto / Retirement (UI reorg
+shipped 2026-05-03 16:25 UTC; the `coinbase_spot` tile shows a
+CASH/BTC badge + state-aware Donchian dial — shipped 2026-05-09 03:30 UTC).
 A shared **research firm** is consulted by divisions for cross-division
 knowledge work; see CLAUDE.md § Research consultation for the rule on
 when. Every proposed order flows through a deterministic **risk gate**
@@ -106,28 +109,33 @@ These are baked-in. Don't propose changes without raising a flag.
 
 | Cap | Global | Per-strategy overrides |
 |---|---|---|
-| Per-trade risk | 1.5% of equity | `lord_otter`: 5% · `manual_coinbase_spot`: 5% · `crypto_scalper`: 0.5% |
-| Per-strategy daily loss | 3% (halts strategy for the day) | `lord_otter`: 2% |
-| Per-account max DD | 15% (auto-flatten + global halt) | none |
+| Per-trade risk | 1.5% of equity | `coinbase_btc_donchian`: 100% (full sleeve sizing — strategy is 100%-in/out by design) · `lord_otter`: 5% · `manual_coinbase_spot`: 5% · `crypto_scalper`: 0.5% |
+| Per-strategy daily loss | 3% (halts strategy for the day) | `coinbase_btc_donchian`: 100% (effectively disabled — see note below) · `lord_otter`: 2% |
+| Per-account max DD | 15% (auto-flatten + global halt) | `coinbase_btc_donchian`: opt-out via `max_drawdown_disabled: true` (24mo backtest max DD 16.49% — the cap would have force-flattened mid-run; see [agents/risk.py](trading_corp/agents/risk.py) section 4) |
 | Correlation cap (30d returns) | 0.7 between concurrent positions | none |
 | Counter-trend size | 0.5× — **stocks only** (not options or crypto) | n/a |
 | Vol scalar | `min(1, target/realized)` — **stocks only** | n/a |
 | PMCC sizing | 1 contract per $25k equity per underlying | n/a |
 | PMCC roll | 21 DTE or 50% profit | n/a |
 
-## 6. Lord Otter strategy specifics
+## 6. Lord Otter strategy specifics  *(disabled 2026-05-09 — reference only)*
 
 A TradingView-webhook-driven 3-min scalp strategy on `coinbase_spot`,
-running alongside Market Cypher (4h/1D swing on the same division).
-Some non-obvious decisions captured here so we don't relitigate them.
+historically running alongside Market Cypher (4h/1D swing on the same
+division). Both flipped to `enabled: false` on 2026-05-09 with the
+Donchian pivot deploy. Files preserved for future BitUnix Futures
+wiring per memory `trading_corp_bitunix_vision.md`. Some non-obvious
+decisions captured here so we don't relitigate them if/when the
+strategy is revived for futures.
 
-> **⏸ Feature work paused 2026-05-02.** No new tier rules, signal
-> vocabulary, contract enrichment, or research integration changes
-> until the PMCC research-as-consultant pattern has been validated in
-> production. See BACKLOG.md `## ⏸ PAUSED — Lord Otter + Market
-> Cypher feature work` and CLAUDE.md § Research consultation. Existing
-> code continues running paper-mode and generating audit data; only
-> EXPANSION work is on hold.
+> **⏸ Disabled 2026-05-09 (superseded the 2026-05-02 pause).** Walk-forward
+> testing (commit `cd26a75`) showed the Otter+Cypher confluence approach
+> on `coinbase_spot` had no demonstrable out-of-sample edge. Board pivoted
+> the division to a single Coinbase BTC Donchian Channel Breakout strategy.
+> Otter+Cypher webhook endpoints still accept POSTs (agents short-circuit
+> on `enabled: false` before order construction); no Telegram pushes fire.
+> Strategy logic + tier sizing below remains accurate as a reference for
+> the eventual BitUnix Futures revival.
 
 > **Path note:** as of 2026-05-02 these strategies live at
 > `trading_corp/agents/strategies/{lord_otter,market_cypher}.py`, not
@@ -234,15 +242,17 @@ implemented.
 1. **Fidelity browser automation is bot-blocked from Azure VM IP**
    (Akamai pre-JS layer flags datacenter IPs at network layer). Falls
    back to paper. Residential proxy is the documented fix; deferred.
-2. **Otter/Cypher feature work paused until 2026-05-05** pending PMCC
-   research-as-consultant validation. See BACKLOG.md ⏸ PAUSED notice.
+2. **Otter/Cypher disabled on `coinbase_spot` 2026-05-09** — superseded
+   the original 2026-05-05 pause/review. Walk-forward (commit `cd26a75`)
+   showed no out-of-sample edge; division pivoted to Donchian. Otter +
+   Cypher files preserved for eventual BitUnix Futures revival, agents
+   `enabled: false`.
 3. **Research firm's intraday TA capability isn't built.** The
    technical expert (`agents/research/experts/technical.py`) is
    yfinance-daily-bar with 5 indicators (RSI, MA cross, ATR, returns).
-   Otter's `TradeConfirmation` consults pass through a generic LLM
-   synthesis without harmonic-pattern / Fibonacci / structure / vision
-   capability. Treat those consults as ceremonial fail-open until that
-   gap is decided post-2026-05-05.
+   Now mostly inert on prod since Otter+Cypher are disabled — their
+   `TradeConfirmation` consults are no longer firing. The capability
+   gap remains relevant if/when Otter+Cypher revive on BitUnix Futures.
 4. **`auto_execute_caps` asymmetry between webhook and LangGraph
    paths** (see CLAUDE.md § 1). The TV webhook flow gates on a single
    `agent.auto_execute` bool; the LangGraph path uses the rich
@@ -302,13 +312,13 @@ explicitly rather than silently sliding past.
 These are real items, just not active. See BACKLOG.md for prioritized
 detail; this list captures the long-shape items.
 
-- **Otter/Cypher feature expansion**: paused 2026-05-02 → 2026-05-05.
-  **2026-05-08 update**: Board pivoted `coinbase_spot` to a Donchian
-  Channel Breakout strategy (see BACKLOG.md "🟡 ACTIVE — Coinbase BTC
-  Donchian"). Walk-forward testing showed the Otter+Cypher confluence
-  approach had no demonstrable out-of-sample edge. Otter+Cypher files
-  preserved for future BitUnix Futures wiring; their `enabled` flag
-  on `coinbase_spot` flips to `false` in the Phase 2 wiring deploy.
+- **Otter/Cypher feature expansion**: paused 2026-05-02; superseded
+  2026-05-09 when Coinbase BTC Donchian shipped to prod (see BACKLOG.md
+  "✅ DONE — Coinbase BTC Donchian Phase 2"). Walk-forward (commit
+  `cd26a75`) showed the Otter+Cypher confluence approach had no
+  demonstrable out-of-sample edge. Both strategies flipped to
+  `enabled: false` on `coinbase_spot`; files preserved for future
+  BitUnix Futures wiring (memory `trading_corp_bitunix_vision.md`).
 - **Research firm intraday TA**: harmonic patterns (3 drives, ABCD,
   etc.), Fibonacci (golden pocket / golden ratio), price-action
   structure (HH/HL/LH/LL), order blocks, divergences, vision-capable
@@ -361,9 +371,11 @@ trading_corp/agents/data_exec.py    ← broker dispatch + dry-run
 trading_corp/agents/divisions/      ← brokerage/account-level division wiring
    pmcc_robinhood.py                  PMCC division (mixes strategy logic — sharp edge)
    fidelity_options.py                Fidelity division (same conflation)
-trading_corp/agents/strategies/     ← TV-driven strategies inside coinbase_spot division
-   lord_otter.py                      3-min scalp
-   market_cypher.py                   4h/1D swing
+trading_corp/agents/strategies/     ← strategies inside coinbase_spot division
+   donchian_btc.py                    ACTIVE: Donchian Channel Breakout decision module (pure-function)
+   coinbase_btc_donchian_agent.py     ACTIVE: 6h-poll agent wrapper (state persistence + ProposedOrder build)
+   lord_otter.py                      DISABLED 2026-05-09: 3-min scalp (preserved for BitUnix Futures revival)
+   market_cypher.py                   DISABLED 2026-05-09: 4h/1D swing (preserved for BitUnix Futures revival)
 trading_corp/agents/research/       ← shared research-firm consultant (see CLAUDE.md § Research consultation)
 trading_corp/brokers/                ← broker implementations
    base.py                            abstract Broker interface
@@ -415,6 +427,8 @@ scripts/generate_pwa_icons.py        ← PWA icon generator from SVG
 
 ---
 
-*Last meaningful update: 2026-05-02 — vocabulary realignment (divisions
-vs strategies), research firm consultation rule codified, Otter/Cypher
-feature work paused, Azure production state captured.*
+*Last meaningful update: 2026-05-09 — Coinbase BTC Donchian Phase 2
+shipped to prod, Otter+Cypher disabled (files preserved for BitUnix
+revival), home-tile CASH/BTC badge + state-aware Donchian dial added.
+Prior major update 2026-05-02 — vocabulary realignment (divisions vs
+strategies), research firm consultation rule codified.*

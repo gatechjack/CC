@@ -515,6 +515,14 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
     # Hydrate each division with broker snapshot data
     await _hydrate_division_metrics(divisions, deps)
 
+    # Donchian overview (CASH/BTC badge + state-aware dial on the home tile).
+    # Only attaches to divisions running a Donchian strategy — coinbase_spot
+    # today; other divisions stay at .donchian = None.
+    try:
+        _hydrate_donchian_overview(divisions, db_url)
+    except Exception as e:
+        log.debug("donchian overview hydration failed (continuing): %s", e)
+
     # Note: benchmark hydration disabled — was only consumed by per-tile
     # YTD comparison, which is now redundant with the top market ribbon.
     # Keep _hydrate_benchmarks around for the Phase 2 division drill-down
@@ -652,6 +660,76 @@ async def _hydrate_division_metrics(divisions: list[Division], deps) -> None:
         division.position_count = len(positions)
         division.pnl_today = None       # will compute in Phase 2 from cost basis
         division.status = "online" if equity is not None else "offline"
+
+
+def _hydrate_donchian_overview(divisions: list[Division], db_url: str) -> None:
+    """Attach a small Donchian overview dict to each division running a
+    Donchian strategy (today: coinbase_spot). Reads agent_state for the
+    CASH/BTC state and the most recent `donchian_evaluated` audit row for
+    the channel high/low + current close. Pre-computes a 0..1 dial
+    position so the template stays dumb.
+
+    Tolerant of missing data — pre-first-eval the audit row may not exist
+    yet; in that case state still renders (from agent_state) but
+    dial_position is None and the dial chrome hides.
+    """
+    target = next((d for d in divisions if d.slug == "coinbase_spot"), None)
+    if target is None:
+        return
+
+    import json
+    state, cost_basis = None, None
+    state_rows = _query(
+        db_url,
+        "SELECT value_json FROM agent_state "
+        "WHERE agent='coinbase_btc_donchian' AND key='state'",
+    )
+    if state_rows:
+        try:
+            v = json.loads(state_rows[0]["value_json"])
+            state = v.get("state")
+            cost_basis = v.get("cost_basis")
+        except (ValueError, TypeError):
+            pass
+    if state is None:
+        return  # strategy not configured / no state — leave .donchian = None
+
+    current_close, donchian_high, donchian_low, last_ts = None, None, None, None
+    audit_rows = _query(
+        db_url,
+        "SELECT ts, payload_json FROM audit_event "
+        "WHERE actor='coinbase_btc_donchian' AND kind='donchian_evaluated' "
+        "ORDER BY ts DESC LIMIT 1",
+    )
+    if audit_rows:
+        try:
+            p = json.loads(audit_rows[0]["payload_json"])
+            current_close = p.get("current_close")
+            donchian_high = p.get("donchian_high")
+            donchian_low = p.get("donchian_low")
+            last_ts = audit_rows[0]["ts"]
+        except (ValueError, TypeError):
+            pass
+
+    dial_position: float | None = None
+    if (
+        current_close is not None
+        and donchian_high is not None
+        and donchian_low is not None
+        and donchian_high > donchian_low
+    ):
+        raw = (current_close - donchian_low) / (donchian_high - donchian_low)
+        dial_position = max(0.0, min(1.0, raw))
+
+    target.donchian = {
+        "state": state,
+        "cost_basis": cost_basis,
+        "current_close": current_close,
+        "donchian_high": donchian_high,
+        "donchian_low": donchian_low,
+        "dial_position": dial_position,
+        "last_eval_ts": last_ts,
+    }
 
 
 async def _hydrate_benchmarks(divisions: list[Division]) -> None:

@@ -30,85 +30,54 @@ exist yet; flipping early would point users at 404s.
 
 ---
 
-## 🟡 ACTIVE — Coinbase BTC Donchian (Phase 2 wiring + paper-mode deploy)  *(2026-05-08 — Board direction)*
+## ✅ DONE — Coinbase BTC Donchian Phase 2 (wiring + paper-mode deploy)  *(2026-05-09 02:53 UTC)*
 
-The Coinbase Spot division pivots from Otter+Cypher confluence trading to a
-single 100%-in/out CASH↔BTC Donchian Channel Breakout strategy. Validated
-via walk-forward; locked config in `strategies.yaml`. Phase 1 (backtest
-infrastructure + agent module + UI scaffolding) is **DONE**. Phase 2 (wiring
-+ paper-mode deploy) is the active pickup point.
+Shipped. Phase 1 + Phase 2 both deployed in one deploy (Phase 1 commits
+`072a484` / `0eb7692` / `fe1cee8` / `f9277e9` had never reached prod; Phase 2
+wiring is `a606685`). Donchian scheduler online (`enabled=true`,
+`auto_execute=false`); first `donchian_evaluated` audit row lands at
+~06:02 UTC 2026-05-09 (next 6h-bar boundary + 2min). Otter and Cypher set
+to `enabled: false` — files preserve for future BitUnix Futures wiring per
+`trading_corp_bitunix_vision.md`. Backup tarball
+`pre-donchian-phase2-20260509-0252.tar.gz`. PID 157638→161955, port 8000
+up ~41s, `/division/coinbase_spot` HTTP 200 with state card / log /
+round-trips tiles all rendering correct empty states. Full entry in
+[runbooks/deploy_log.md](runbooks/deploy_log.md) at "2026-05-09 02:53 UTC".
 
-**Why this strategy:**
-- Otter+Cypher confluence approach was tested in walk-forward (commit
-  `cd26a75`) — 0/10 top-train configs beat HODL out-of-sample.
-  Strategy had no demonstrable edge.
-- Donchian (commit `072a484`) walk-forward on 12mo BTC: 8/10 top-train
-  configs beat HODL out-of-sample, median test α +12.86%, best +27.21%.
-  24mo full corpus: +56.30% vs HODL +30.42% → +25.89% alpha.
-- Locked config: `entry_lookback=20, exit_lookback=6,
-  trend_filter_lookback=168 (~42d SMA), granularity=21600s (6h)`.
+**Strategy summary** (kept here for grep-ability — full validation history
+in the deploy_log + `coinbase_btc_donchian` block in `strategies.yaml`):
+- Donchian Channel Breakout on Coinbase BTC/USD 6h bars. Long when close
+  > max(high) over 20 bars; flat when close < min(low) over 6 bars; trend
+  filter requires close > SMA(168) (~42d) for entries.
+- Walk-forward 12mo: 8/10 top-train configs beat HODL out-of-sample,
+  median test α +12.86%. 24mo full corpus: +56.30% vs HODL +30.42%
+  (+25.89% alpha). 49% win rate, max DD 16.49%, 25% time in BTC.
 
-**Phase 1 status (DONE — local commits):**
-- `commit 072a484` — Donchian decision module + backtest harness +
-  walk-forward tool. 6h Coinbase BTC bars, multi-granularity validation
-  (1h/6h/1d all show OOS edge).
-- `commit 0eb7692` — Locked config in `config/strategies.yaml` under
-  `coinbase_btc_donchian` (still `enabled: false`).
-- `commit fe1cee8` — Agent module
-  `trading_corp/agents/strategies/coinbase_btc_donchian_agent.py`
-  + 16 unit tests (`tests/test_coinbase_btc_donchian_agent.py`)
-  + BacktesterAgent registry pass for `coinbase_btc_donchian`.
-- `commit f9277e9` — Division-page UI tiles: state card, per-bar
-  decision log, realized round-trips. Render empty states until wiring.
+**Validation gate (open until verified):** check `/division/coinbase_spot`
+on or after 06:02 UTC 2026-05-09 — first `donchian_evaluated` row should
+populate the per-bar decision-log tile. If it doesn't materialize within
+~30 minutes of the boundary, check journalctl for ccxt fetch errors or
+broker snapshot exceptions.
 
-**Phase 2 pickup brief (DO NOT SKIP STEPS):**
-
-1. **`agents/risk.py`** — add per-strategy `max_drawdown_disabled: true`
-   flag honoring (~10 lines, isolated change).
-2. **`config/risk.yaml`** — `coinbase_btc_donchian` per-strategy
-   override block: per-trade=100%, daily-loss=null, max-DD=disabled.
-3. **`trading_corp/main.py`** — 6h poll loop wiring. Use
-   `_scheduled_pmcc_scan_loop` as structural template:
-     - Wakes at 00/06/12/18 UTC (the canonical 6h-bar boundaries)
-     - Reads broker snapshot for account_equity + held BTC qty
-     - Fetches recent BTC OHLCV (need ≥168 bars for trend filter +
-       buffer; 200 bars is safe)
-     - Calls `agent.on_bar_close(bars, account_equity=..., held_btc=...)`
-     - Routes any returned `ProposedOrder` through risk + HITL
-       pipeline (existing infrastructure, unchanged)
-     - **WRITES `donchian_evaluated` audit row regardless of
-       decision** — that's what populates the dashboard's per-bar
-       log tile (UI scaffolding from f9277e9 expects this).
-4. **`config/strategies.yaml`** — flip `coinbase_btc_donchian.enabled`
-   to `true`; set Otter+Cypher to `enabled: false` on `coinbase_spot`.
-   Files preserve (Otter+Cypher eventually move to BitUnix futures —
-   see existing PAUSED entry below).
-5. **md5-diff prod, patch onto prod content** per the established
-   drift pattern (see memory `trading_corp_prod_git_drift.md`).
-   Several files touched today probably differ from prod.
-6. **Deploy with backup tags**, restart `trading-corp.service`,
-   verify scheduler-online line, wait for first 6h-bar boundary
-   (00/06/12/18 UTC), confirm `donchian_evaluated` row lands.
-7. **Smoke**: dashboard `https://trading.jacksumner.com/division/coinbase_spot`
-   should render the 3 new tiles, log tile populated with the first
-   bar's evaluation.
-
-**Deferred until after Phase 2 lands:**
+**Deferred — pull into a future session:**
 - 6h price chart with Donchian band overlay + buy/sell markers +
-  current-bar-highlight (originally item 4 in the UI list — pulled
-  out tonight to scope realistically; build with real data the next
-  morning post-deploy).
-- Approval-card extensions for Donchian metadata in the
+  current-bar-highlight (originally item 4 in the Phase 1 UI list —
+  pulled out to scope the wiring deploy realistically; build with real
+  data the morning after the first bar lands).
+- Approval-card extensions for Donchian metadata in
   `comms/position_context.py` view-builder + a partial for
-  `approval_detail.html`. Not urgent — until Phase 2 is enabled,
-  no Donchian approvals fire anyway.
-
-**Risk profile of Phase 2 deploy:**
-- Strategy stays paper-mode (`auto_execute: false`); every order
-  routes to HITL approval. Real-money risk = zero.
-- The risk.py change is the only safety-adjacent edit. Per CLAUDE.md
-  §6, that requires explicit Board approval IN-SESSION. Step 1
-  above will pause and confirm before editing.
+  `approval_detail.html`. Donchian stays paper-mode (`auto_execute: false`)
+  and routes through HITL via the web app, but the approval-detail page
+  won't show Donchian-specific context (channel highs/lows, trend-filter
+  SMA, cost basis) until this lands. Build when an actual approval fires
+  and the gap shows up.
+- Decision-log tile empty-state copy fix: the partial says "strategy
+  not yet wired into the orchestrator" — cosmetically stale post-deploy.
+  One-line edit on a future surface pass.
+- Backport prod/git drift to git: per memory `trading_corp_prod_git_drift.md`,
+  `pmcc_robinhood.py` / `approval_format.py` / `telegram_bot.py` have
+  prod-only content not in HEAD. Separate cleanup task — don't bundle
+  with feature work.
 
 ---
 

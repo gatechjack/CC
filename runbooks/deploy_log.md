@@ -59,6 +59,189 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-09 03:40 UTC — Coinbase BTC HODL rename + revert intent to aggressive
+
+**Commits:** local-only at deploy time.
+**Triggered by:** Board reaction to the 03:30 UTC deploy — wanted the tile back in the CRYPTO group (alongside Coinbase Futures + BitUnix Futures) and the name updated to `Coinbase BTC HODL` (broker-prefixed pattern).
+**Backup:** prod copy of `divisions.yaml` saved to `/home/azureuser/backups/divisions.yaml.pre-rename-20260509-0339.bak` (5.1K).
+
+**Files deployed (1 modified):**
+
+- `config/divisions.yaml` — `coinbase_spot`:
+  - `name: Bitcoin HODL` → `Coinbase BTC HODL`.
+  - `intent: retirement` → `aggressive`. Tile moves back from Retirement → Crypto group on the home page (since `classify_investment_type` falls through to the broker-rule when intent is not retirement; `coinbase` is in `_CRYPTO_BROKERS`).
+  - Comments removed (the prior "retirement-aligned" rationale block is no longer accurate).
+  - `target_annual_return: 0.40` unchanged — still consistent with `aggressive` intent.
+
+**Verification:**
+
+- Pre-restart PID 164009 → post-restart 164965.
+- md5 round-trip MATCH on `divisions.yaml`.
+- `Web command center listening on http://0.0.0.0:8000` + `Donchian scheduler online: ... enabled=True` post-restart.
+- `GET /` HTTP 200 (~3.1s, 76.5 KB).
+- "Coinbase BTC HODL" appears 1×, "Bitcoin HODL" 0× — clean rename.
+- Group section order on home page: `Individual` → `Crypto` → `Retirement`. Coinbase BTC HODL is now in `Crypto`.
+- Tile badges: `aggressive` (loss/red), `online` (gain/green), `○ CASH` (edge/gray) — Donchian widget code from the 03:30 deploy is unchanged, badge + dial scaffolding remain.
+
+**Inert / dormant on current traffic:**
+
+- Donchian dial proper still pending the first `donchian_evaluated` audit row at ~06:02 UTC (sleep 8731s post-restart, math: 03:40:25 + 8731s ≈ 06:02:00 UTC ✓).
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+cp /home/azureuser/backups/divisions.yaml.pre-rename-20260509-0339.bak \
+   /home/azureuser/trading_corp/config/divisions.yaml
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-09 03:30 UTC — "Bitcoin HODL" rename + retirement reclass + home-tile Donchian widget
+
+**Commits:** local-only at deploy time (4 files modified in working tree, awaiting Board commit decision).
+**Triggered by:** Board reaction to the home-page tile post-Phase-2 — flagged that the tile didn't reflect the new strategy. Asked for: (a) CASH/BTC badge on the home tile (originally part of Phase 1 design intent but only built into the division-detail page), (b) v0 "Dial of Donchian" with state-aware geometry, (c) rename `Coinbase Spot` → `Bitcoin HODL`, (d) reclass intent `aggressive` → `retirement`.
+**Backup tag:** `pre-donchian-tile-20260509-0328` (tarball at `/home/azureuser/backups/pre-donchian-tile-20260509-0328.tar.gz`, 22K, 4 modified files).
+
+**Files deployed (4 modified, 0 new):**
+
+- `trading_corp/utils/divisions.py` — added `donchian: dict | None = None` field to the `Division` dataclass. Hydrated only for divisions running a Donchian strategy (today: `coinbase_spot`); other divisions stay `None`.
+- `trading_corp/web/data.py` — new `_hydrate_donchian_overview(divisions, db_url)` helper invoked from `build_command_center` after `_hydrate_division_metrics`. Reads `agent_state` for the CASH/BTC state + `cost_basis`, then the most recent `audit_event` row of kind `donchian_evaluated` for `current_close` / `donchian_high` / `donchian_low`. Pre-computes a 0..1 dial position (`(close - low) / (high - low)` clamped). Tolerant of missing data — pre-first-eval, state still renders but dial chrome hides.
+- `trading_corp/web/templates/home.html` — division-tile additions:
+  - **CASH/BTC badge** in the header row alongside the existing intent + status badges. `● BTC` (green) when in BTC, `○ CASH` (gray) when in CASH. Renders only when `d.donchian` is set.
+  - **State-aware Donchian dial** below equity: horizontal gradient bar (loss-tinted left → edge-color middle → gain-tinted right), white needle at `dial_position * 100%` width, state-aware "fires here" edge marker (CASH state → green tick at right edge with hover-tooltip "BUY fires when close breaks above the entry-channel high"; BTC state → red tick at left edge with "SELL fires …"). Numeric trio (`low / close / high`) underneath. Shows `awaiting first 6h-bar evaluation` placeholder when state exists but no audit row has landed yet.
+- `config/divisions.yaml` — `coinbase_spot`:
+  - `name: Coinbase Spot` → `Bitcoin HODL` (per Board pick).
+  - `intent: aggressive` → `retirement`. Side effect: `classify_investment_type` checks `intent == "retirement"` BEFORE the crypto-broker rule, so the home tile **moves out of the CRYPTO group into the RETIREMENT group** alongside Robinhood IRA + Fidelity 401(k). Coinbase Futures + BitUnix Futures remain in CRYPTO (their intent is still `aggressive`).
+  - `target_annual_return: 0.40` left UNCHANGED (flagged for Board call — 40% reads aggressive for a retirement-classed division).
+
+**Features shipped:**
+
+- **Bitcoin HODL renamed + reclassed.** Home page now shows the division in the Retirement section with a blue `RETIREMENT` badge.
+- **CASH/BTC badge live on the home tile.** Currently shows `○ CASH` (the agent's persisted state from the 02:54 UTC startup reconcile).
+- **State-aware Donchian dial scaffolded.** Until the first `donchian_evaluated` row lands at ~06:02 UTC, the placeholder reads "awaiting first 6h-bar evaluation". After 06:02 UTC the dial replaces the placeholder automatically (next page load) — no further deploy needed.
+
+**Notable code changes:**
+
+- **`Division.donchian` is the per-tile pivot point.** Today only `coinbase_spot` is populated. If a future second Donchian strategy lands on a different division, the hydration helper needs broadening (currently hardcoded to `coinbase_spot` slug).
+- **Dial geometry is single-channel, state-aware labels** (option 2 from the in-session design discussion). Needle position uses the full `[donchian_low, donchian_high]` channel regardless of state; only the "fires here" edge marker swaps sides. Trade-off: visually the same dial whether in CASH or BTC, with one threshold "active" — keeps the at-a-glance signal consistent across state flips.
+- **Dial computation lives in Python (`_hydrate_donchian_overview`), not Jinja.** Template stays dumb. Edge cases (degenerate channel where high <= low) handled in Python; template only checks `dial_position is not none`.
+
+**Verification:**
+
+- Pre-restart PID 161969 → post-restart 164009.
+- All 4 files md5-match end-to-end after SCP (LF-normalized).
+- `Donchian scheduler online: ... sleeping 9116s until next bar close` — math: 03:30:03 UTC + 9116s ≈ 06:02:00 UTC ✓.
+- `CoinbaseBTCDonchianAgent: restored state=cash cost_basis=None last_bar=None` — DB persistence survived the restart (state row was written at the 02:54 UTC reconcile + persists to `agent_state`).
+- `CoinbaseBTCDonchianAgent: reconciled to CASH state — held=0.00000000 BTC < $1.00 dust threshold` — broker reconcile pass ran clean.
+- `GET /` HTTP 200 (~2.8s).
+- Home page render check: "Bitcoin HODL" appears once; "Coinbase Spot" appears 0 times. Tile is in the Retirement group section (group order: Individual → Crypto → Retirement; Bitcoin HODL appears after the Crypto section). Badges visible: `retirement` (blue), `online` (green), `○ CASH` (gray). Dial chrome shows the placeholder.
+- 25 unit tests pass (risk_gates + coinbase_btc_donchian_agent).
+
+**Inert / dormant on current traffic:**
+
+- **The dial proper (gradient bar + needle + price triplet) is dormant until 06:02 UTC** when the first `donchian_evaluated` audit row lands. The placeholder is the visible state; no JS / refresh needed — next page load post-06:02 will replace it.
+- **`target_annual_return: 0.40` is now visually inconsistent with the retirement intent.** No code path consumes this value for risk-gating (retirement-aligned caps come from `intent: retirement` not from this number); it's tile-context-only. Cosmetic, but should be revisited.
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-donchian-tile-20260509-0328
+BASE=/home/azureuser/trading_corp
+cd \$BASE
+tar xzf /home/azureuser/backups/\${TAG}.tar.gz
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-09 02:53 UTC — Coinbase BTC Donchian Phase 2 (live wiring + paper-mode deploy)
+
+**Commits:** `a606685` (Phase 2 wiring), preceded by Phase 1 commits `072a484` / `0eb7692` / `fe1cee8` / `f9277e9` — none of the Phase 1 commits had been deployed prior, so this deploy ships Phase 1 + Phase 2 together.
+**Triggered by:** Board pickup of the BACKLOG.md "🟡 ACTIVE — Coinbase BTC Donchian (Phase 2 wiring + paper-mode deploy)" brief. coinbase_spot pivots from the Otter+Cypher confluence experiment (no walk-forward edge) to a single 100%-in/out Donchian Channel Breakout strategy (24mo backtest +25.89% alpha vs HODL; 8/10 walk-forward OOS configs beat HODL).
+**Backup tag:** `pre-donchian-phase2-20260509-0252` (local git tag on `85d6a80`, the pickup-brief commit). Prod backup as tarball at `/home/azureuser/backups/pre-donchian-phase2-20260509-0252.tar.gz` (48K, 6 modified files).
+
+**Files deployed (11 = 6 modified + 5 net-new):**
+
+- `trading_corp/agents/risk.py` (modified) — section 4 (account max-DD) wrapped in `if not bool(params.get("max_drawdown_disabled", False))` guard. Default-safe; opt-in only.
+- `trading_corp/agents/strategies/coinbase_btc_donchian_agent.py` (NEW on prod; locally extended) — agent class from Phase 1 commit fe1cee8 plus a small `last_verdict` attribute exposed for the orchestrator's audit-row write (so SKIP decisions also get the channel highs/lows logged, not just BUY/SELL via order extras).
+- `trading_corp/agents/strategies/donchian_btc.py` (NEW on prod) — pure-function decision module from Phase 1 commit 072a484. Both backtest harness and live agent import this same module.
+- `trading_corp/main.py` (modified) — construct `CoinbaseBTCDonchianAgent` at startup, reconcile state from `coinbase_spot` snapshot post-`connect_all`, spawn `_scheduled_donchian_loop` alongside the PMCC scheduler. New helpers `_seconds_until_next_6h_boundary` (00/06/12/18 UTC + 2min buffer) + `_fetch_recent_btc_6h_bars` (public ccxt; drops in-progress bar) + `_run_donchian_bar` (one cycle, extracted for ad-hoc trigger). Cancels `donchian_task` cleanly on shutdown.
+- `config/risk.yaml` (modified) — `overrides.coinbase_btc_donchian` block: `per_trade_risk_pct=1.0` (full sleeve), `per_strategy_daily_loss_pct=1.0` (effectively-disabled — risk.py reads via `float()` so literal `null` would raise), `max_drawdown_disabled=true`.
+- `config/strategies.yaml` (modified) — `lord_otter.enabled` and `market_cypher.enabled` flipped to `false` (paused per 2026-05-08 vision direction; files preserved for future BitUnix Futures wiring); `coinbase_btc_donchian.enabled` flipped to `true`. `auto_execute=false` everywhere.
+- `trading_corp/web/data.py` (modified) — `build_donchian_view` from Phase 1 commit f9277e9 (state card data, per-bar decision-log query, realized round-trip pairing).
+- `trading_corp/web/templates/division.html` (modified) — donchian tile includes for the `coinbase_spot` division page.
+- `trading_corp/web/templates/partials/donchian_state.html` (NEW)
+- `trading_corp/web/templates/partials/donchian_log.html` (NEW)
+- `trading_corp/web/templates/partials/donchian_trades.html` (NEW)
+
+**Local-only (NOT deployed):**
+
+- `tests/test_risk_gates.py` — new `test_max_drawdown_disabled_flag_skips_cap` locks in default-safe + opt-out semantics for the new flag. Existing `test_max_drawdown_triggers_flatten` already covers the default-on path.
+
+**Features shipped:**
+
+- **Coinbase BTC Donchian goes live in paper mode.** Agent module + locked config (`entry=20, exit=6, trend_filter=168, granularity=21600`) + 6h-bar-close scheduler + risk overrides + UI tiles all on prod. `auto_execute: false` — every BUY/SELL routes through HITL via the web app.
+- **`max_drawdown_disabled` per-strategy opt-out for the account-level 15% auto-flatten** — first user is Donchian (24mo backtest max DD 16.49% would have force-flattened the strategy mid-run). Default-safe; no other strategy is opted in.
+- **`donchian_evaluated` audit kind starts landing on every 6h-bar boundary**, regardless of decision. The `coinbase_spot` division page's per-bar decision-log tile is its only consumer today.
+- **Otter and Cypher disabled on `coinbase_spot`.** Webhook endpoints still accept POSTs (web/webhooks.py is unchanged) but the agents short-circuit on `enabled: false` before ProposedOrder construction. Files preserved per `trading_corp_bitunix_vision.md` — Otter+Cypher ultimately move to BitUnix futures.
+
+**Notable code changes:**
+
+- **`agents/risk.py` section 4 is now opt-out-able per strategy.** This is the only safety-adjacent edit in this deploy; new flag defaults to `False` so existing strategies (PMCC, lord_otter override, manual_coinbase_spot, etc.) are unchanged. Reviewers / future-Claude: the gate's wrapper guards both the `params.get(...)` cap read AND the verdict construction. Don't unwrap one without the other.
+- **`coinbase_btc_donchian_agent.py:_last_verdict` is the orchestrator-write hook.** `on_bar_close` short-circuits BEFORE `evaluate_donchian` for `disabled` / `no-bars` / dedup cases — `last_verdict` is only refreshed when the decision module ran, so the orchestrator's `if new_verdict is not None and new_verdict is not prev_verdict` check correctly skips audit writes for short-circuit paths.
+- **`_scheduled_donchian_loop` uses ccxt's PUBLIC endpoint for OHLCV** (no auth), same pattern as `paper_trade_replay._default_ccxt_fetcher`. The Coinbase broker's authenticated client (`_exchange.fetch_ohlcv`) was deliberately NOT used — keeps ohlcv read decoupled from broker-auth lifecycle, and the public endpoint has no rate-limit pressure for one call/6h.
+- **Bar-boundary math (`_seconds_until_next_6h_boundary`) finds the *strict-greater-than-now* next boundary** — guarantees no double-fire if the loop wakes exactly on a boundary. Combined with the agent's internal `last_bar_ts` dedup, double-fires are double-prevented.
+- **On a paper or live "filled" status, the orchestrator calls `agent.mark_filled(side, fill_price=order.limit_price)`.** `limit_price` is the bar-close price the agent used to size the order (set inside `on_bar_close`). For paper-execute fills this is exact; for live fills it's an approximation (real fill price comes from the FillEvent — currently not threaded back to the agent because `_run_order` returns only the status string). Acceptable for Phase 2 paper-mode; revisit if/when `auto_execute` flips.
+- **The decision-log tile's empty-state copy says "strategy not yet wired into the orchestrator" — cosmetically stale post-deploy.** Tile was scaffolded in Phase 1 (commit f9277e9) for the pre-wiring state. Will read correct once the first audit row lands at 06:02 UTC. Worth a one-line copy fix on a future surface pass; not blocking.
+
+**Verification:**
+
+- Pre-restart PID 157638 → post-restart 161955 (PID change confirms restart took).
+- All 11 files md5-match end-to-end after SCP (LF-normalized).
+- journalctl from 02:53:33 → 02:54:14 UTC, full startup sequence:
+  - `RiskAgent reloaded config/risk.yaml` — new override block parses cleanly.
+  - `LordOtterAgent reloaded config: enabled=False` — Otter disabled.
+  - `MarketCypherAgent reloaded config: enabled=False` — Cypher disabled.
+  - `CoinbaseBTCDonchianAgent reloaded: enabled=True auto_execute=False entry=20 exit=6 trend_filter=168 granularity=21600` — Donchian config loads with the locked params.
+  - `CoinbaseBTCDonchianAgent: no persisted state; defaulting to CASH` — first-boot clean.
+  - `CoinbaseBroker(spot) connected (markets_loaded=True)` — Coinbase live (real-read, paper-execute wraps).
+  - `CoinbaseBTCDonchianAgent: reconciled to CASH state — held=0.00000000 BTC < $1.00 dust threshold` — broker reconcile snippet ran successfully.
+  - `Web command center listening on http://0.0.0.0:8000`.
+  - `PMCC scan scheduler online: weekdays 08:30–09:25 ET` — existing scheduler intact.
+  - `Donchian scheduler online: wakes at 00/06/12/18 UTC + ~2min (strategy enabled=True, auto_execute=False)`.
+  - `Donchian scheduler: sleeping 11266s until next bar close` — math: 11266s ≈ 3h 8m from 02:54 UTC → wakes at 06:02:00 UTC ✓.
+- Dashboard smoke (localhost:8000, auth-bypass): `GET /division/coinbase_spot` HTTP 200, 61.7KB. State card renders `○ CASH`, `BTC/USD`, `entry: 20-bar high`, `exit: 6-bar low`, `SMA(168)`, `6h bars`. Per-bar log tile + round-trips tile both render with correct empty states.
+- Pre-existing errors only — Fidelity bot-block (paper-fallback to data_exec).
+
+**Inert / dormant on current traffic:**
+
+- **First `donchian_evaluated` audit row will land at ~06:02 UTC 2026-05-09** (3h after this deploy, at the next 6h-bar boundary + 2min buffer). Until then the per-bar log tile is empty — that's the correct state. The deploy gate is "did the first row land?"; check `/division/coinbase_spot` after 06:02 UTC.
+- **Lord Otter / Market Cypher webhook endpoints (`/webhook/tradingview/lord-otter` and `.../market-cypher`) still accept POSTs.** Agents short-circuit on `enabled: false` before order construction; the audit trail still records `webhook_received` / `alert_ignored`. No Telegram pushes will fire from these strategies.
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-donchian-phase2-20260509-0252
+BASE=/home/azureuser/trading_corp
+cd \$BASE
+tar xzf /home/azureuser/backups/\${TAG}.tar.gz
+rm -f trading_corp/agents/strategies/coinbase_btc_donchian_agent.py \
+      trading_corp/agents/strategies/donchian_btc.py \
+      trading_corp/web/templates/partials/donchian_state.html \
+      trading_corp/web/templates/partials/donchian_log.html \
+      trading_corp/web/templates/partials/donchian_trades.html
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
 ## 2026-05-08 22:04 UTC — Telegram inline-keyboard removed in notification-only mode
 
 **Commits:** local-only (uncommitted at deploy time). Local working tree of `comms/telegram_bot.py` diverges from HEAD by ~133 net lines that match prod's pre-edit content — the file has prod-only changes that were never backported to git (see § Notable code changes below).

@@ -50,6 +50,12 @@ class Division:
     benchmark_pct: float | None = None
     position_count: int = 0
     status: str = "unknown"     # online | offline | not_wired
+    # Donchian-strategy overview for the home tile widget. Only set on
+    # divisions running a Donchian strategy (today: coinbase_spot). Keys:
+    # state ('cash'|'btc'), cost_basis, current_close, donchian_low,
+    # donchian_high, dial_position (0..1 clamped, None pre-first-eval),
+    # last_eval_ts. None for everyone else.
+    donchian: dict | None = None
 
     @property
     def intent_label(self) -> str:

@@ -89,7 +89,7 @@ divisions:
 
   # ── Coinbase (one login, two trading modes) ────────────────────────────
   - slug: coinbase_spot
-    name: Coinbase Spot
+    name: Coinbase BTC HODL
     broker: coinbase
     account_filter: spot
     intent: aggressive
