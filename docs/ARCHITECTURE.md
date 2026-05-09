@@ -28,11 +28,17 @@
  │ PMCCAgent    │ │deter-│ │ regime │ │aggregate│ │audit_  │ │ broker   │
  │ (RH options) │ │minist│ │ label  │ │ exposure│ │event   │ │ registry │
  │              │ │ caps │ │        │ │         │ │ writer │ │          │
- │ LordOtter    │ │ +    │ │        │ │         │ │        │ │          │
- │ (BTC scalp)  │ │ LLM  │ │        │ │         │ │        │ │          │
- │              │ │narra-│ │        │ │         │ │        │ │          │
- │ MarketCypher │ │ tion │ │        │ │         │ │        │ │          │
- │ (BTC swing)  │ │      │ │        │ │         │ │        │ │          │
+ │ Coinbase BTC │ │ +    │ │        │ │         │ │        │ │          │
+ │ Donchian     │ │ LLM  │ │        │ │         │ │        │ │          │
+ │ (BTC 6h)     │ │narra-│ │        │ │         │ │        │ │          │
+ │              │ │ tion │ │        │ │         │ │        │ │          │
+ │ LordOtter    │ │      │ │        │ │         │ │        │ │          │
+ │ (off 2026-   │ │      │ │        │ │         │ │        │ │          │
+ │  05-09)      │ │      │ │        │ │         │ │        │ │          │
+ │              │ │      │ │        │ │         │ │        │ │          │
+ │ MarketCypher │ │      │ │        │ │         │ │        │ │          │
+ │ (off 2026-   │ │      │ │        │ │         │ │        │ │          │
+ │  05-09)      │ │      │ │        │ │         │ │        │ │          │
  │              │ │      │ │        │ │         │ │        │ │          │
  │ FidelityOpts │ │      │ │        │ │         │ │        │ │          │
  │ (paper-only) │ │      │ │        │ │         │ │        │ │          │
@@ -122,13 +128,19 @@ position          ─── Cached position snapshots (account, symbol,
                       qty, avg_price)
 account_state     ─── Equity + peak + halt state per account
 strategy_state    ─── Per-strategy halt + realized P&L + daily reset
-agent_state       ─── NEW (2026-04-30). Generic key/value JSON
-                      store for agent state needing persistence.
-                      Currently:
+agent_state       ─── Generic key/value JSON store for agent state
+                      needing persistence (added 2026-04-30).
+                      Currently active:
+                       ('coinbase_btc_donchian', 'state')
+                          → {state: cash|btc, cost_basis: float|None}
+                       ('coinbase_btc_donchian', 'last_bar_ts')
+                          → {ts: ISO 6h-bar boundary} (dedup pointer)
+                      Dormant (Otter/Cypher disabled 2026-05-09; rows
+                      may persist from prior runs):
                        ('lord_otter',    'bias:BTC/USD')
                        ('market_cypher', 'bias:BTC/USD')
                        ('market_cypher', 'sommi:BTC/USD')
-                      Staleness gates: 12h Otter, 3d Cypher
+                      Staleness gates: 7d Donchian, 12h Otter, 3d Cypher
 daily_brief       ─── Morning + EOD generated reports
 ```
 
@@ -260,7 +272,7 @@ These are the design commitments everything else falls out of:
 | Principle | What it means | Where you see it |
 |---|---|---|
 | **Layered, with strict downward dependencies** | Web/comms layer never imports brokers; brokers never import strategies; persistence depends on nothing internal. Reverse imports are bugs. | `web/` → `agents/` → `brokers/` → `persistence/` → `utils/` |
-| **Divisions and strategies** | Division = one (brokerage × accounts) portfolio manager — `robinhood_pmcc`, `coinbase_spot`, `fidelity_options`. Strategy = how that division decides what to trade; one division can run multiple strategies (e.g. `coinbase_spot` runs both `lord_otter` and `market_cypher`). They share scaffolding but are independently configured, halted, and risk-gated. *(Vocabulary clarified 2026-05-02; see CLAUDE.md § Module map. Earlier text in this doc may use "broker × strategy = division" framing — that has been superseded.)* | `agents/divisions/{pmcc_robinhood, fidelity_options}.py` (division wiring) + `agents/strategies/{lord_otter, market_cypher}.py` (TV-driven strategies inside `coinbase_spot`) + `config/divisions.yaml` |
+| **Divisions and strategies** | Division = one (brokerage × accounts) portfolio manager — `robinhood_pmcc`, `coinbase_spot`, `fidelity_options`. Strategy = how that division decides what to trade; one division can run multiple strategies. Today `coinbase_spot` runs `coinbase_btc_donchian` (6h Donchian Channel Breakout — shipped 2026-05-09); the prior `lord_otter` + `market_cypher` strategies are `enabled: false` but files preserved for future BitUnix Futures wiring. Divisions share scaffolding but are independently configured, halted, and risk-gated. | `agents/divisions/{pmcc_robinhood, fidelity_options}.py` (division wiring) + `agents/strategies/{donchian_btc, coinbase_btc_donchian_agent, lord_otter, market_cypher}.py` (strategies that route to a division) + `config/divisions.yaml` |
 | **Paper-default, risk-gated, HITL on every live order until trust earned** | Three orthogonal switches: paper/live mode flag, `auto_execute` per-strategy, risk-cap evaluation. ANY of them blocking = no trade. | `main.py` mode arg, `strategies.yaml::auto_execute`, `agents/risk.py` |
 | **Deterministic caps + LLM narration, not LLM judgment** | Risk caps are Python code (so reproducible & testable). LLMs only narrate why something was approved/rejected. Same for sizing math. | `agents/risk.py` evaluates, `agents/risk.py::_narrate` explains |
 
@@ -302,9 +314,11 @@ trading_corp/
 │   ├── divisions/         brokerage/account-level division wiring
 │   │   ├── pmcc_robinhood.py     (RH options PMCC; mixes strategy logic — sharp edge)
 │   │   └── fidelity_options.py   (paper-fallback; same conflation)
-│   ├── strategies/        TV-driven strategies inside coinbase_spot division
-│   │   ├── lord_otter.py         (BTC scalp via TV — 3m)
-│   │   └── market_cypher.py      (BTC swing via TV — 4h/1D)
+│   ├── strategies/        strategies inside coinbase_spot division
+│   │   ├── donchian_btc.py                    ★ ACTIVE: pure-function decision module (Donchian Channel Breakout)
+│   │   ├── coinbase_btc_donchian_agent.py     ★ ACTIVE: 6h-poll agent wrapper + state persistence
+│   │   ├── lord_otter.py                      (off 2026-05-09: BTC 3m scalp; preserved for BitUnix)
+│   │   └── market_cypher.py                   (off 2026-05-09: BTC 4h/1D swing; preserved for BitUnix)
 │   └── research/          shared research-firm consultant (see CLAUDE.md § Research consultation)
 │
 ├── brokers/  ──────────── Execution adapters
@@ -502,7 +516,11 @@ The relationships:
 ┌───────────────────────────────────────────────────────────────┐
 │ Process memory (lost on restart unless persisted)              │
 │ ─────────────────────────────────────────────────────────────  │
+│  • CoinbaseBTCDonchianAgent._state (CASH/BTC + cost_basis +    │
+│    last_bar_ts) ← also persisted via agent_state, restored on  │
+│    startup + reconciled against broker snapshot                │
 │  • LordOtterAgent._states / MarketCypherAgent._states          │
+│    (dormant — agents disabled 2026-05-09)                      │
 │  • PMCCAgent caches                                            │
 │  • LangGraph checkpoint state (paused interrupts) ← survives   │
 │    via SqliteSaver                                             │
@@ -585,3 +603,11 @@ the layers, the invariants.
 saved to this file as the canonical architecture reference.
 [CLAUDE.md](../CLAUDE.md) links here for the full body; do not duplicate
 content in CLAUDE.md.*
+
+*Revision history:*
+- *2026-04-30 — initial draft.*
+- *2026-05-09 — refresh after Donchian Phase 2 deploy: principle 2
+  vocabulary caveat removed (body was already current; no actual
+  drift to caveat against), topology diagram + persistence-tables
+  + module layout + state-model updated to reflect Donchian active
+  on `coinbase_spot` and Otter/Cypher disabled.*

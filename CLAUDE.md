@@ -591,15 +591,6 @@ approval.
   when it becomes load-bearing — extract strategy logic from PMCC into
   `agents/strategies/pmcc.py` once a second Robinhood strategy is
   needed. Don't refactor speculatively.
-- **`docs/ARCHITECTURE.md § 1 principle 2` quote drift.** ARCHITECTURE
-  says "Each broker × strategy combo is its own division." That was
-  the original framing. The 2026-05-02 vision realignment refined it
-  to "division = brokerage/account portfolio manager; strategies are
-  internal to a division." CLAUDE.md and the module map reflect the
-  new framing; ARCHITECTURE.md still has the old text. Don't
-  re-litigate the principle in code reviews — the new framing wins
-  until ARCHITECTURE.md is updated (a separate Board-approved doc
-  pass).
 - **`extra_json` is unqueryable by SQL columns.** The trade-off:
   schema-stable, strategy-specific bag, but `LIKE`-based queries
   (e.g. `_query_prior_rolls` filtering on `pmcc_pair_id`) are

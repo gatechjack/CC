@@ -328,12 +328,10 @@ detail; this list captures the long-shape items.
   concerns. Future cleanup: extract strategy logic to
   `agents/strategies/` once a second strategy lands on either broker.
   See CLAUDE.md § Known sharp edges.
-- **`docs/ARCHITECTURE.md § 1 principle 2` quote drift**: original
-  framing ("broker × strategy combo is its own division") superseded
-  2026-05-02 by the new vocabulary in CLAUDE.md.
 - **Phase 1.6 of Lord Otter**: real ATR/swing-pivot stops, profit-target
   tracking, win/loss feedback into halt counters. Subsumed by the
-  Otter feature-work pause.
+  Otter disable on 2026-05-09; revival path is BitUnix Futures, not
+  Coinbase. Re-evaluate when BitUnix Phase 4 lands.
 - **HITL approval flow → web app** (Board direction 2026-05-03):
   Approve / Reject / Modify moves to `trading.jacksumner.com`
   (mobile-friendly already). Telegram becomes notification-only with
