@@ -43,3 +43,7 @@ logs/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+# Backtest tooling outputs (large, regenerable)
+data/historical_alerts/cache_*.json
+data/backtest_runs/

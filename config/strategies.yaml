@@ -803,3 +803,108 @@ market_cypher:
     halt_window_minutes: 60          # wider window than Otter (swing trades hold through release)
     calendar_path: "config/macro_calendar.yaml"
     halt_impact_levels: ["high"]
+
+
+# ============================================================
+# Coinbase BTC Accumulator (Phase 1 backtest config — `enabled: false`
+# until backtest validates weights and Board approves wiring).
+#
+# Strategy: 100% in/out CASH ↔ BTC state machine. TV alerts from
+# Otter (3m) and Cypher (4h/1D) trigger a confluence review —
+# alerts do NOT auto-execute. Buy when accumulated buy-side score
+# clears `min_score_buy`; sell when sell-side clears `min_score_sell`.
+# Symmetric "wait for stabilization" guards penalize selling into
+# fast rises and buying into fast falls.
+#
+# Cypher's HTF signals carry persistent weight (24h TTL on 1D, 4h
+# TTL on 4h). Otter's 3m signals expire fast (15-30min).
+#
+# All weights/thresholds tunable here without code change. Backtest
+# tooling at `scripts/backtest_btc_accumulator.py` reads this same
+# config, so weight iteration is a YAML edit + re-run loop.
+# ============================================================
+btc_accumulator:
+  enabled: false                     # Phase 1: backtest only, no live wiring
+  auto_execute: false                # paper-mode default per project HITL rules
+  division: coinbase_spot            # which division this strategy runs in
+  symbol: "BTC/USD"                  # single-instrument accumulator
+  starting_state: auto               # auto = check broker snapshot at startup;
+                                     # alternatives: cash | btc
+
+  confluence:
+    min_score_buy: 6                 # placeholder — backtest will tune
+    min_score_sell: 6                # placeholder — backtest will tune
+
+    # Per-signal weights. Factor keys are the EXACT `signal` field
+    # value from the TradingView webhook payload (verified against
+    # prod's audit_event log on 2026-05-08). `side: buy` adds to
+    # buy_score, `side: sell` adds to sell_score. `ttl_minutes` =
+    # how long the signal stays "live" in the rolling state after
+    # firing — Cypher HTF gets long persistence, Otter LTF expires
+    # fast.
+    #
+    # Initial weights are placeholders; the backtest harness at
+    # scripts/backtest_btc_accumulator.py reads this same block,
+    # so weight tuning is a YAML edit + re-run loop.
+    factors:
+      # ── Cypher A-panel (presumed 1D — heavy weight per Board direction) ──
+      mc_a_bluetriangle:    { weight: 3, side: buy,  ttl_minutes: 1440 }
+      mc_a_red_diamond:     { weight: 4, side: sell, ttl_minutes: 1440 }
+      mc_a_redx:            { weight: 2, side: sell, ttl_minutes: 1440 }
+
+      # ── Cypher B-panel (presumed 4h) ──
+      mc_b_gold_buy:        { weight: 4, side: buy,  ttl_minutes: 240 }
+      mc_b_buy_dot:         { weight: 3, side: buy,  ttl_minutes: 240 }
+      mc_b_sell_circle:     { weight: 3, side: sell, ttl_minutes: 240 }
+
+      # ── Otter 3m (entry timing — fast TTLs) ──
+      bias_bull:            { weight: 2, side: buy,  ttl_minutes: 90 }   # 90m HTF bias on Otter chart
+      pink_box_bull:        { weight: 2, side: buy,  ttl_minutes: 30 }
+      pink_box_bear:        { weight: 2, side: sell, ttl_minutes: 30 }
+      spoon_bull:           { weight: 2, side: buy,  ttl_minutes: 30 }   # arming (replaces pink_box per vision)
+      spoon_bear:           { weight: 2, side: sell, ttl_minutes: 30 }
+      cvd_bull_flip:        { weight: 2, side: buy,  ttl_minutes: 15 }   # CVD momentum flip
+      cvd_bear_flip:        { weight: 2, side: sell, ttl_minutes: 15 }
+      otter_buy:            { weight: 3, side: buy,  ttl_minutes: 15 }   # core Otter signal — tier carrier
+      otter_sell:           { weight: 3, side: sell, ttl_minutes: 15 }
+      money_bag_bottom:     { weight: 2, side: buy,  ttl_minutes: 30 }
+      money_bag_top:        { weight: 2, side: sell, ttl_minutes: 30 }
+      water_buy_large:      { weight: 2, side: buy,  ttl_minutes: 30 }
+      water_sell_large:     { weight: 2, side: sell, ttl_minutes: 30 }
+
+      # ── Price-action factors (computed from OHLCV in Phase 1+) ──
+      # Held back from the Phase 1 backtest MVP — alerts alone are
+      # plenty of signal to validate the engine. Phase 2 enables.
+      # above_session_vwap:     { weight: 1, side: buy }
+      # below_session_vwap:     { weight: 1, side: sell }
+      # higher_highs_4h:        { weight: 2, side: buy }
+      # lower_lows_4h:          { weight: 2, side: sell }
+      # volume_above_20bar_avg: { weight: 1, side: directional }
+
+  # Symmetric "wait for stabilization" guards — applied as score
+  # penalties, NOT hard filters. So a strong-confluence sell (score
+  # 9) into a 4% rush (penalty -2) still fires at score 7; a weak
+  # sell (5) into the same rush (3) gets blocked. This lets the
+  # weight system express "don't sell on a heater unless conviction
+  # is overwhelming" without a binary veto.
+  guards:
+    sell_on_rush:                    # penalize sells when BTC just rose
+      window_minutes: 60
+      brackets:
+        - { upto_pct: 1.0, penalty: 0 }
+        - { upto_pct: 3.0, penalty: -1 }
+        - { upto_pct: 5.0, penalty: -2 }
+        - { upto_pct: 999, penalty: -3 }
+    buy_on_fall:                     # penalize buys when BTC just fell
+      window_minutes: 60
+      brackets:
+        - { upto_drop_pct: 1.0, penalty: 0 }
+        - { upto_drop_pct: 3.0, penalty: -1 }
+        - { upto_drop_pct: 5.0, penalty: -2 }
+        - { upto_drop_pct: 999, penalty: -3 }
+
+  # Audit hooks. Per Board direction, log confluence-NEGATIVE
+  # decisions too (review happened, score didn't clear) so we have
+  # a paper trail of "why we didn't act" for tuning.
+  audit:
+    log_confluence_negative: true
