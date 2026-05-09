@@ -1,0 +1,52 @@
+{# Coinbase BTC Donchian — 6h price chart with band overlay.
+
+   Data is fetched async from /partials/donchian-chart/coinbase_spot
+   (returns {candles, donchian_high, donchian_low, sma, markers,
+   current_bar_ts}). The fetch happens in donchian_chart.js, which
+   renders into the container below via Lightweight Charts.
+
+   Channel semantics displayed:
+   - {{ d.donchian.entry_lookback }}-bar high (entry channel ceiling) —
+     close > this AND trend OK = BUY signal.
+   - {{ d.donchian.exit_lookback }}-bar low (exit channel floor) —
+     close < this while in BTC = SELL signal.
+   - {{ d.donchian.trend_filter_lookback }}-bar SMA — trend filter;
+     close > SMA gates entries (skip BUY in downtrends).
+
+   Markers on past BUY/SELL fills come from `audit_event` rows
+   (`would_have_placed` paper + `filled` live). The current-bar
+   marker / price line shows where live price sits relative to the
+   channels. Empty-state renders if the OHLCV fetch fails or the
+   strategy isn't configured (returns `{empty: true}`). #}
+{% if view.donchian %}
+{% set d = view.donchian %}
+<section class="bg-pane border border-edge rounded-lg overflow-hidden">
+  <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      {{ d.donchian.granularity_hours }}h price · Donchian channels
+    </h2>
+    <div class="flex items-center gap-3 text-[11px] font-mono text-muted">
+      <span class="flex items-center gap-1.5">
+        <span class="inline-block w-3 h-px bg-loss"></span>
+        {{ d.donchian.entry_lookback }}-bar high
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="inline-block w-3 h-px bg-gain"></span>
+        {{ d.donchian.exit_lookback }}-bar low
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="inline-block w-3 h-px bg-accent/70"></span>
+        SMA({{ d.donchian.trend_filter_lookback }})
+      </span>
+    </div>
+  </header>
+  <div id="donchian-chart"
+       data-division="coinbase_spot"
+       class="h-[360px] w-full"></div>
+  <div id="donchian-chart-empty"
+       class="hidden p-8 text-center text-muted text-[11px] font-mono italic">
+    Price chart unavailable — Coinbase OHLCV fetch failed.
+    Will retry on next refresh.
+  </div>
+</section>
+{% endif %}

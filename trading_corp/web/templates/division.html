@@ -25,8 +25,12 @@
   </div>
 </div>
 
-<!-- ── Stat cards: Equity / Cash / BP / Today's P&L ────────────────── -->
-<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+<!-- ── Stat cards: Equity / Cash / [BP] / Today's P&L ──────────────
+     Buying Power tile is dropped for coinbase_spot — on a spot crypto
+     account cash == buying_power and the second value is redundant.
+     Other divisions (margin / options) keep all four. -->
+{% set _hide_bp = view.division.slug == 'coinbase_spot' %}
+<div class="grid grid-cols-2 {% if _hide_bp %}lg:grid-cols-3{% else %}lg:grid-cols-4{% endif %} gap-3 mb-4">
   <div class="bg-pane border border-edge rounded-lg p-4">
     <div class="text-[11px] text-muted uppercase tracking-wider">Equity</div>
     <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.equity | money }}</div>
@@ -35,10 +39,12 @@
     <div class="text-[11px] text-muted uppercase tracking-wider">Cash</div>
     <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.cash | money }}</div>
   </div>
+  {% if not _hide_bp %}
   <div class="bg-pane border border-edge rounded-lg p-4">
     <div class="text-[11px] text-muted uppercase tracking-wider">Buying power</div>
     <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.buying_power | money }}</div>
   </div>
+  {% endif %}
   <div class="bg-pane border border-edge rounded-lg p-4">
     <div class="text-[11px] text-muted uppercase tracking-wider">Today's P&amp;L</div>
     {% if view.todays_pnl is not none %}
@@ -161,21 +167,20 @@
       </div>
     {% endif %}
 
-    <!-- Manual order entry — Phase B: Coinbase Spot only.
-         Lets the Board fire ad-hoc trades through the same risk + audit
-         pipeline as strategy-driven orders. Strategy bots replace this for
-         the common cases later (Phase D), but the manual path stays for
-         opportunistic / one-off trades and for pipeline validation. -->
-    {% if view.division.slug == 'coinbase_spot' %}
-      {% include "partials/manual_order.html" %}
-    {% endif %}
+    <!-- Manual order entry — kept available for any future division that
+         needs an ad-hoc trade-entry UI. NOT rendered on coinbase_spot:
+         that division now runs Coinbase BTC Donchian + HITL, so all
+         orders flow through strategy → web-app approval. The partial
+         file `partials/manual_order.html` is preserved untouched. -->
 
-    <!-- Coinbase BTC Donchian — strategy state, per-bar decision log,
-         realized round-trips. Only renders for coinbase_spot AND only
-         when the strategy is configured in strategies.yaml. Tiles
-         render cleanly with empty states until the agent is wired. -->
+    <!-- Coinbase BTC Donchian — strategy state, 6h price chart with
+         channel overlay, per-bar decision log, realized round-trips.
+         Only renders for coinbase_spot AND only when the strategy is
+         configured in strategies.yaml. Tiles render cleanly with
+         empty states until the agent is wired. -->
     {% if view.division.slug == 'coinbase_spot' and view.donchian %}
       {% include "partials/donchian_state.html" %}
+      {% include "partials/donchian_chart.html" %}
       {% include "partials/donchian_log.html" %}
       {% include "partials/donchian_trades.html" %}
     {% endif %}
@@ -334,4 +339,11 @@
 
 {% block scripts %}
 <script src="/static/js/pair_list.js"></script>
+{# Donchian chart — only loaded on coinbase_spot. The script is a
+   self-running IIFE that no-ops if its container isn't in the DOM,
+   so it's harmless on other division pages, but gating keeps the
+   bytes off the wire where they aren't needed. #}
+{% if view.division.slug == 'coinbase_spot' and view.donchian %}
+<script src="/static/js/donchian_chart.js"></script>
+{% endif %}
 {% endblock %}

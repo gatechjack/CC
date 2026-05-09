@@ -11,6 +11,7 @@ Phase 2 adds:
   GET /division/{slug}                  Drill-down page for a division
   GET /division/{slug}/llm-analysis     Lazy HTMX-loaded LLM analysis for PMCC
   GET /partials/division-equity-curve/{slug}  JSON for per-account equity chart
+  GET /partials/donchian-chart/{slug}         JSON for the Donchian 6h price chart
 
 Phases 3+ will add /trades, /system.
 """
@@ -311,6 +312,18 @@ def register(app: FastAPI) -> None:
         if view is None:
             raise HTTPException(status_code=404)
         return JSONResponse({"points": view.equity_curve})
+
+    @app.get("/partials/donchian-chart/{slug}")
+    async def partial_donchian_chart(slug: str):
+        """OHLCV + Donchian band overlay + fill markers for the
+        coinbase_spot division chart. Returns 404 for any other slug —
+        the chart tile is currently single-strategy."""
+        if slug != "coinbase_spot":
+            raise HTTPException(status_code=404)
+        payload = await data.build_donchian_chart_data(deps.db_url)
+        if payload is None:
+            return JSONResponse({"empty": True})
+        return JSONResponse(payload)
 
     # Per-pair LLM analysis cache: (slug, symbol) → (html, ts).
     _pair_cache: dict[tuple[str, str], tuple[str, float]] = {}

@@ -1130,7 +1130,10 @@ def build_donchian_view(db_url: str) -> dict | None:
                 p = json.loads(r["payload_json"])
                 decisions.append({
                     "ts": r["ts"],
-                    "ts_short": format_et_short(r["ts"]),
+                    # Display the bar's open time (canonical bar identifier,
+                    # matches the timestamp embedded in `reason`), not the
+                    # audit-row write time which is bar close + ~2 min.
+                    "ts_short": format_et_short(p.get("bar_ts") or r["ts"]),
                     "decision": p.get("decision", "skip"),
                     "current_close": p.get("current_close"),
                     "donchian_high": p.get("donchian_high"),
@@ -1210,6 +1213,180 @@ def build_donchian_view(db_url: str) -> dict | None:
         },
         "decisions": decisions,                  # most recent first; max 60
         "round_trips": list(reversed(round_trips)),   # most recent first
+    }
+
+
+async def build_donchian_chart_data(db_url: str, display_bars: int = 50) -> dict | None:
+    """OHLCV + Donchian band overlays + fill markers for the
+    `/division/coinbase_spot` chart tile.
+
+    Fetches recent 6h bars via Coinbase's public ccxt endpoint (the same
+    path the strategy orchestrator uses), computes the rolling 20-bar
+    high / 6-bar low / 168-bar SMA exactly as `donchian_btc.evaluate`
+    does (preceding-window — current bar excluded), and pairs in
+    BUY/SELL fills from `audit_event` so they render as markers on the
+    chart at the right timestamp.
+
+    Returns None if the strategy isn't configured, the OHLCV fetch
+    fails, or there aren't enough bars to satisfy any lookback. The
+    caller should treat None as "show empty state."
+    """
+    import sqlite3
+    from pathlib import Path
+    import yaml
+
+    cfg_path = Path("config/strategies.yaml")
+    try:
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    block = (cfg or {}).get("coinbase_btc_donchian")
+    if not block:
+        return None
+    dp = block.get("donchian", {}) or {}
+    entry_lookback = int(dp.get("entry_lookback", 20))
+    exit_lookback = int(dp.get("exit_lookback", 6))
+    sma_lookback = int(dp.get("trend_filter_lookback", 168))
+    symbol = block.get("symbol", "BTC/USD")
+
+    # OHLCV fetch — async ccxt against Coinbase public endpoint. Pull
+    # enough history that the SMA(168) window has data on the oldest
+    # display bar (display_bars + sma_lookback).
+    fetch_limit = display_bars + sma_lookback + 5
+    try:
+        import ccxt.async_support as ccxt_async
+        exchange = ccxt_async.coinbase({"enableRateLimit": True})
+        try:
+            raw = await exchange.fetch_ohlcv(symbol, timeframe="6h", limit=fetch_limit)
+        finally:
+            await exchange.close()
+    except Exception as e:
+        log.warning("donchian chart: OHLCV fetch failed: %s", e)
+        return None
+
+    granularity_sec = 6 * 3600
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    bars: list[dict] = []
+    for row in raw or []:
+        ts_ms, o, h, l, c, v = row
+        # Drop any in-progress bar (close still in the future). Mirrors
+        # the orchestrator's `_fetch_recent_btc_6h_bars` filter.
+        if int(ts_ms) + granularity_sec * 1000 > now_ms:
+            continue
+        bars.append({
+            "ts": int(ts_ms) // 1000,   # unix-seconds — Lightweight Charts time
+            "open": float(o), "high": float(h), "low": float(l),
+            "close": float(c), "volume": float(v),
+        })
+    if len(bars) < max(entry_lookback, exit_lookback) + 1:
+        return None
+
+    # Rolling Donchian high/low/SMA — preceding-window semantics
+    # (excludes current bar) to mirror donchian_btc.evaluate.
+    n = len(bars)
+    donchian_high: list[float | None] = [None] * n
+    donchian_low: list[float | None] = [None] * n
+    sma: list[float | None] = [None] * n
+    for i in range(n):
+        if i >= entry_lookback:
+            donchian_high[i] = max(b["high"] for b in bars[i - entry_lookback:i])
+        if i >= exit_lookback:
+            donchian_low[i] = min(b["low"] for b in bars[i - exit_lookback:i])
+        if i >= sma_lookback:
+            sma[i] = sum(b["close"] for b in bars[i - sma_lookback:i]) / sma_lookback
+
+    # Trim to the display window (most-recent N bars).
+    start = max(0, n - display_bars)
+    candles = [
+        {
+            "time": b["ts"],
+            "open": b["open"], "high": b["high"],
+            "low": b["low"], "close": b["close"],
+        }
+        for b in bars[start:]
+    ]
+    high_line = [
+        {"time": bars[i]["ts"], "value": donchian_high[i]}
+        for i in range(start, n) if donchian_high[i] is not None
+    ]
+    low_line = [
+        {"time": bars[i]["ts"], "value": donchian_low[i]}
+        for i in range(start, n) if donchian_low[i] is not None
+    ]
+    sma_line = [
+        {"time": bars[i]["ts"], "value": sma[i]}
+        for i in range(start, n) if sma[i] is not None
+    ]
+
+    # Fill markers — BUY/SELL events from the strategy's audit log.
+    # `would_have_placed` (paper mode) and `filled` (live) both qualify;
+    # snap each to its bar's open time so the marker lines up cleanly
+    # with the candle, not 2-3 minutes downstream of bar close.
+    markers: list[dict] = []
+    db_path = db_url.replace("sqlite:///", "")
+    visible_ts = {c["time"] for c in candles}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "SELECT ts, kind, payload_json FROM audit_event "
+                "WHERE actor='coinbase_btc_donchian' "
+                "AND kind IN ('would_have_placed','filled') "
+                "ORDER BY ts ASC",
+            )
+            for r in cur.fetchall():
+                p = json.loads(r["payload_json"])
+                side = (p.get("side") or "").lower()
+                if side not in ("buy", "sell"):
+                    continue
+                # Snap to bar open: prefer payload bar_ts (set by the
+                # orchestrator on `donchian_evaluated`; some order rows
+                # also have it). Fall back to the audit row's `ts`
+                # quantized to the nearest preceding 6h boundary.
+                bar_ts_iso = p.get("bar_ts")
+                if bar_ts_iso:
+                    try:
+                        bar_unix = int(datetime.fromisoformat(bar_ts_iso).timestamp())
+                    except Exception:
+                        bar_unix = None
+                else:
+                    bar_unix = None
+                if bar_unix is None:
+                    try:
+                        ts_dt = datetime.fromisoformat(r["ts"])
+                        if ts_dt.tzinfo is None:
+                            ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                        u = int(ts_dt.timestamp())
+                        bar_unix = u - (u % granularity_sec)
+                    except Exception:
+                        continue
+                if bar_unix not in visible_ts:
+                    continue
+                markers.append({
+                    "time": bar_unix,
+                    "side": side,
+                    "price": p.get("fill_price") or p.get("price") or p.get("limit_price"),
+                    "qty": p.get("qty"),
+                })
+    except Exception as e:
+        log.debug("donchian chart: markers read failed: %s", e)
+
+    # The "current" bar is the most recent fully-closed bar — same
+    # one the strategy will evaluate next. Exposed so the chart JS
+    # can highlight it.
+    current_bar_ts = candles[-1]["time"] if candles else None
+
+    return {
+        "symbol": symbol,
+        "entry_lookback": entry_lookback,
+        "exit_lookback": exit_lookback,
+        "sma_lookback": sma_lookback,
+        "candles": candles,
+        "donchian_high": high_line,
+        "donchian_low": low_line,
+        "sma": sma_line,
+        "markers": markers,
+        "current_bar_ts": current_bar_ts,
     }
 
 
