@@ -59,6 +59,81 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-09 16:42 UTC — Donchian: observe Board-driven balance changes; state-as-source-of-truth
+
+**Commits:** `78e57a0` (committed before deploy).
+**Triggered by:** Board direction (chat 2026-05-09 post-UI-cleanup) — recurring weekly BTC buys + occasional cash deposits land on the coinbase_spot account outside the strategy's knowledge. The strategy must observe these (log them, attribute to Board) but NOT auto-flip state in response. Strategy state is now the source of truth for portfolio composition; the broker's balance is normalized to it at the next BUY/SELL signal, not via a forced rebalance trade.
+**Backup tag:** `pre-balance-tracking-20260509-utc-pre.tar.gz` at `/home/azureuser/backups/` (43K, 4 modified files; no new files).
+**Pre-deploy DB mutation:** `UPDATE agent_state SET value_json='{"state":"cash","cost_basis":null}' WHERE agent='coinbase_btc_donchian' AND key='state';` ran ~1 min before the systemctl restart. Today's earlier startup reconcile (15:23 UTC deploy) had set state=BTC with cost_basis=$80,371.17 — but per the new model, the 0.595 BTC was always Board's, not the strategy's, so CASH is the correct strategy view. Previous values preserved in deploy_log + the row's prior `updated_ts` for rollback.
+
+**Files deployed (4 modified):**
+
+- `trading_corp/agents/strategies/coinbase_btc_donchian_agent.py`:
+  - `PersistedState` gains `last_known_cash` + `last_known_btc_qty` (defaults None) — baselines for delta detection.
+  - New persistence key `last_known_balances` (alongside existing `state` + `last_bar_ts`).
+  - `_loaded_from_db: bool` flag — flips True when `_restore_from_db` finds a state row.
+  - `restore_from_broker` now short-circuits when `_loaded_from_db` is True (any subsequent restart trusts persisted state). Also accepts a `cash` arg for first-bring-up baseline seeding.
+  - New public method `record_balance_snapshot(*, cash, btc_qty, threshold_usd=1.0, threshold_btc=0.0001) -> dict | None` — compares to last-known, returns audit-payload dict on material delta and advances baseline. First call after bring-up just seeds (no false-positive delta).
+  - `on_bar_close` gains optional `cash` kwarg. When supplied, BUY sizing uses cash (not account_equity) — the strategy never double-counts the Board's pre-existing BTC into a new buy notional. Back-compat: `cash=None` falls back to account_equity.
+- `trading_corp/main.py`:
+  - `_run_donchian_bar` extracts `cash` from `snap.cash`, calls `agent.record_balance_snapshot(cash=cash, btc_qty=held_btc)` BEFORE `on_bar_close`. On material delta, writes a `balance_change` audit-event row (kind=`balance_change`, actor=`coinbase_btc_donchian`).
+  - `on_bar_close` now passes `cash=cash`.
+  - Startup reconcile call site updated to pass `cash=cash`. Comment block rewritten to document the no-op-after-bring-up semantics.
+- `trading_corp/web/data.py`:
+  - `build_donchian_view` SQL widened to `kind IN ('donchian_evaluated','balance_change')`. Row build branches on `kind`, producing two distinct shapes: existing decision shape, OR `{kind: 'balance_change', ts_short, attribution, state_at_observation, delta_cash, delta_btc, new_cash, new_btc_qty}`.
+- `trading_corp/web/templates/partials/donchian_log.html`:
+  - Row loop branches on `r.kind`. balance_change rows render full-width with a BAL CHG tag, signed delta amounts (gain-green for +, loss-red for −), and "→ new totals · state=X" trailer. Subtle warn-tinted bg (changes are normal, not alerts). donchian_evaluated rows unchanged.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+
+- The strategy is now safe against parallel Board trading. Recurring weekly buys + cash deposits land as `balance_change` audit rows; the strategy passively absorbs whatever the broker reports at the next BUY (sizes off cash, sweeps Board's pre-existing BTC into the position via broker-side aggregation) or next SELL (held_btc from snapshot includes all coins, regardless of who put them there).
+- Strategy state (CASH↔BTC) is now persisted-state authoritative. `restore_from_broker` is reserved for first-ever bring-up; subsequent restarts preserve the strategy's view. Today's mid-day flip from BTC (set by 15:23 UTC reconcile) → CASH (manual reset 16:42 UTC) was a one-time correction; future deploys should never need to touch the state row directly.
+- Decision-log surface now shows two row kinds interleaved chronologically — strategy decisions + Board-attributed balance deltas — giving a single timeline of "what happened on this account" since the strategy's perspective.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+
+- BUY sizing changed semantics: `qty = cash / current_close` (when `cash` supplied) instead of `qty = account_equity / current_close`. Tests that don't pass `cash` keep the old behavior (back-compat). If you ever change `on_bar_close`'s signature, mind the back-compat.
+- `record_balance_snapshot` advances the baseline EVEN ON sub-threshold deltas. So a slow drift (e.g., $0.50/day fee bleed) won't accumulate over many bars and eventually trip the threshold as a false aggregate event. If that's ever wanted, change the post-detection update path.
+- The strategy's `cost_basis` on a BUY is the fill price of the strategy's own buy — NOT a weighted avg with any pre-existing Board BTC. P&L estimates at the next SELL will be measured from the strategy's fill, which is the cleanest accounting given the strategy can't know what the Board paid.
+
+**Verification:**
+
+- Pre-restart PID 170308 → post-restart 171746.
+- All 4 files md5 round-trip MATCH after LF-normalization.
+- Boot log:
+  - `restored state=cash cost_basis=None last_bar=2026-05-09 06:00:00+00:00 last_known_cash=None last_known_btc=None` — picked up the reset CASH state cleanly; balances correctly None pre-first-snapshot.
+  - `persisted state present (state=cash, cost_basis=None) — skipping broker reconcile. Board-driven broker deltas will be observed via record_balance_snapshot per bar.` — new short-circuit fired exactly as designed. Broker showed 0.595 BTC + $39K cash; state stays CASH.
+  - `Donchian scheduler: sleeping 4743s until next bar close` — math: 16:42:56 + 4743s ≈ 18:01:59 UTC = 14:02 ET. Next bar evaluation arrives on schedule.
+- `GET /division/coinbase_spot`: HTTP 200, 62.5KB, 3.5s. Buying Power tile gone, Donchian chart container present, existing decision-log rows (`05-09 02:00 ET`, `05-08 20:00 ET`) preserved, no BAL CHG rows yet (no balance changes have fired in the new code path).
+- `GET /partials/donchian-chart/coinbase_spot`: HTTP 200, 10.3KB, 2.1s. 50 candles, current_bar_ts=2026-05-09T06:00:00 UTC, 0 markers.
+- 16 existing agent unit tests pass unchanged. New behavior smoke-tested locally: first-bring-up still reconciles; post-bring-up reconcile is no-op; first record_balance_snapshot seeds without delta; material delta returns payload + advances baseline; sub-threshold returns None + advances baseline; BUY sizes off cash when supplied; back-compat cash=None still works.
+
+**Inert / dormant on current traffic:**
+
+- `last_known_balances` agent_state row will appear after the first `record_balance_snapshot` call (next bar at 18:02 UTC = 14:02 ET). Until then, the row doesn't exist.
+- BAL CHG tile rows will appear when the Board's recurring weekly buy or a cash deposit lands. Initial seeding at 18:02 UTC will NOT generate a BAL CHG row (first call seeds without firing delta — by design).
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-balance-tracking-20260509-utc-pre
+BASE=/home/azureuser/trading_corp
+cd \$BASE
+tar xzf /home/azureuser/backups/\${TAG}.tar.gz
+# Restore prior state row (state=BTC, cost_basis=80371.17)
+sqlite3 \$BASE/data/trading_corp.db \\
+  \"UPDATE agent_state SET value_json='{\\\"state\\\":\\\"btc\\\",\\\"cost_basis\\\":80371.17}' \\
+   WHERE agent='coinbase_btc_donchian' AND key='state';\"
+# Drop the new last_known_balances row if it landed
+sqlite3 \$BASE/data/trading_corp.db \\
+  \"DELETE FROM agent_state WHERE agent='coinbase_btc_donchian' AND key='last_known_balances';\"
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
 ## 2026-05-09 15:23 UTC — Coinbase BTC HODL division-detail UI cleanup
 
 **Commits:** `a9c0461` (committed before deploy).
