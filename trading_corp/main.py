@@ -279,12 +279,13 @@ async def run(argv: list[str] | None = None) -> int:
     # level session sharing in their respective broker modules.
     await data_exec.connect_all()
 
-    # Reconcile Donchian state vs the live coinbase_spot snapshot. If the
-    # process was restarted mid-position, the agent_state row may already
-    # have the correct (state=BTC, cost_basis=$X) — but the broker is the
-    # source of truth for held_btc. Per the agent's restore_from_broker
-    # contract: held_btc > dust threshold seeds state=BTC at cost_basis=
-    # current_price (Board direction — no historical-entry tracking).
+    # Bring-up reconcile vs the live coinbase_spot snapshot. As of
+    # 2026-05-09, this is a NO-OP whenever a persisted state row exists
+    # (the agent's `restore_from_broker` short-circuits) — the strategy's
+    # view is the source of truth from the first persist onward, and
+    # Board-driven broker deltas are observed (logged as `balance_change`
+    # audit rows) rather than absorbed (state-flipped). The reconcile
+    # only fires on a fresh install or after a stale-state purge.
     cb_spot_broker = data_exec.brokers.get("coinbase_spot")
     if cb_spot_broker is not None:
         try:
@@ -294,6 +295,7 @@ async def run(argv: list[str] | None = None) -> int:
                 if pos.symbol == donchian_agent.symbol:
                     held_btc = float(pos.qty or 0.0)
                     break
+            cash = float(getattr(snap, "cash", 0.0) or 0.0)
             current_price = 0.0
             try:
                 current_price = float(
@@ -306,6 +308,7 @@ async def run(argv: list[str] | None = None) -> int:
                     account_equity=float(snap.equity or 0.0),
                     held_btc=held_btc,
                     current_price=current_price,
+                    cash=cash,
                 )
             else:
                 log.warning(
@@ -1176,10 +1179,32 @@ async def _run_donchian_bar(
             held_btc = float(pos.qty or 0.0)
             break
     account_equity = float(snap.equity or 0.0)
+    cash = float(getattr(snap, "cash", 0.0) or 0.0)
+
+    # Detect Board-driven balance changes (recurring deposits, manual
+    # BTC purchases) by diffing this snapshot against the agent's
+    # last-known balances. The strategy's own fills update tracked
+    # balances via a different path (mark_filled + the next bar's
+    # snapshot will already match the post-fill state). Material
+    # deltas land as `balance_change` audit rows, attributed to the
+    # Board. State is NEVER auto-flipped here — the strategy passively
+    # absorbs whatever's on the account at the next BUY/SELL signal.
+    delta = agent.record_balance_snapshot(cash=cash, btc_qty=held_btc)
+    if delta is not None:
+        logger_agent.log_event(agent.name, "balance_change", delta)
+        log.info(
+            "Donchian balance_change: state=%s delta_cash=%+.2f delta_btc=%+.8f "
+            "(new cash=$%.2f, btc=%.8f)",
+            delta["state_at_observation"],
+            delta["delta_cash"],
+            delta["delta_btc"],
+            delta["new_cash"],
+            delta["new_btc_qty"],
+        )
 
     prev_verdict = agent.last_verdict
     order, reason = agent.on_bar_close(
-        bars, account_equity=account_equity, held_btc=held_btc,
+        bars, account_equity=account_equity, held_btc=held_btc, cash=cash,
     )
     new_verdict = agent.last_verdict
 

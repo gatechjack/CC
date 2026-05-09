@@ -61,8 +61,9 @@ log = logging.getLogger(__name__)
 # ── Persistence ────────────────────────────────────────────────────
 
 
-_STATE_KEY = "state"           # value: {"state": "cash"|"btc", "cost_basis": float|None}
-_LAST_BAR_KEY = "last_bar_ts"  # ISO ts of the last bar we evaluated — dedup guard
+_STATE_KEY = "state"                       # value: {"state": "cash"|"btc", "cost_basis": float|None}
+_LAST_BAR_KEY = "last_bar_ts"              # ISO ts of the last bar we evaluated — dedup guard
+_LAST_KNOWN_BALANCES_KEY = "last_known_balances"  # value: {"cash": float, "btc_qty": float}
 
 
 @dataclass
@@ -70,6 +71,15 @@ class PersistedState:
     state: State
     cost_basis: float | None
     last_bar_ts: datetime | None
+    # Most recently observed broker balances. Used by the orchestrator
+    # to detect Board-driven adds/removes between bar evaluations
+    # (recurring deposits, manual BTC purchases). When the delta exceeds
+    # threshold the orchestrator emits a `balance_change` audit row;
+    # the strategy state never auto-flips in response — the strategy
+    # passively absorbs whatever the broker reports at the next BUY/SELL.
+    # `None` until the first balance snapshot (no comparison baseline).
+    last_known_cash: float | None = None
+    last_known_btc_qty: float | None = None
 
     def to_value(self) -> dict:
         return {
@@ -79,7 +89,10 @@ class PersistedState:
 
     @classmethod
     def cash_default(cls) -> PersistedState:
-        return cls(state=State.CASH, cost_basis=None, last_bar_ts=None)
+        return cls(
+            state=State.CASH, cost_basis=None, last_bar_ts=None,
+            last_known_cash=None, last_known_btc_qty=None,
+        )
 
 
 # ── Agent ──────────────────────────────────────────────────────────
@@ -128,6 +141,12 @@ class CoinbaseBTCDonchianAgent:
         # `donchian_evaluated` audit row with the channel highs/lows even
         # on SKIP decisions, where no ProposedOrder is emitted.
         self._last_verdict: Any = None
+        # Flips True when `_restore_from_db` finds and loads a persisted
+        # state row. Used by `restore_from_broker` to skip the broker
+        # reconcile on subsequent restarts — persisted state is the
+        # source of truth from then on. The reconcile is reserved for
+        # first-ever bring-up only (fresh install or stale-state purge).
+        self._loaded_from_db: bool = False
         self._reload()
         if self._db_url:
             self._restore_from_db()
@@ -254,14 +273,34 @@ class CoinbaseBTCDonchianAgent:
                 last_bar_ts = datetime.fromisoformat(last_bar_value.get("ts"))
             except (TypeError, ValueError):
                 last_bar_ts = None
+        # Last-known broker balances (Board-change detection baseline).
+        # Optional — agents that pre-date the balance-tracking feature
+        # won't have this row; first call to `record_balance_snapshot`
+        # will seed it without firing a false-positive delta.
+        last_known_cash: float | None = None
+        last_known_btc_qty: float | None = None
+        bal_row = load_agent_state(self.name, _LAST_KNOWN_BALANCES_KEY, db_url=self._db_url)
+        if bal_row is not None:
+            bal_value, _ = bal_row
+            try:
+                last_known_cash = float(bal_value.get("cash")) if bal_value.get("cash") is not None else None
+                last_known_btc_qty = float(bal_value.get("btc_qty")) if bal_value.get("btc_qty") is not None else None
+            except (TypeError, ValueError):
+                last_known_cash = None
+                last_known_btc_qty = None
         self._state = PersistedState(
             state=state,
             cost_basis=float(cost_basis) if cost_basis is not None else None,
             last_bar_ts=last_bar_ts,
+            last_known_cash=last_known_cash,
+            last_known_btc_qty=last_known_btc_qty,
         )
+        self._loaded_from_db = True
         log.info(
-            "CoinbaseBTCDonchianAgent: restored state=%s cost_basis=%s last_bar=%s",
+            "CoinbaseBTCDonchianAgent: restored state=%s cost_basis=%s last_bar=%s "
+            "last_known_cash=%s last_known_btc=%s",
             self._state.state.value, self._state.cost_basis, self._state.last_bar_ts,
+            self._state.last_known_cash, self._state.last_known_btc_qty,
         )
 
     def _persist_state(self, last_bar_ts: datetime | None = None) -> None:
@@ -281,24 +320,44 @@ class CoinbaseBTCDonchianAgent:
     # -- Startup reconciliation -------------------------------------
 
     def restore_from_broker(
-        self, *, account_equity: float, held_btc: float, current_price: float,
+        self,
+        *,
+        account_equity: float,
+        held_btc: float,
+        current_price: float,
+        cash: float | None = None,
     ) -> None:
-        """Reconcile in-memory state with what the broker actually
-        reports. Per Board direction (chat 2026-05-08): if we boot
-        holding BTC, cost_basis is seeded to the CURRENT market
-        price — we don't try to track historical entry across
-        restarts. Subsequent sells benchmark vs that price.
+        """Reconcile in-memory state with what the broker reports —
+        BUT only on first-ever bring-up. After persisted state exists,
+        the strategy's view is the source of truth and Board-driven
+        broker changes are observed (logged) rather than absorbed
+        (state-flipped). See `record_balance_snapshot`.
 
         Args:
-            account_equity: total USD equity from broker snapshot
-                (cash + held_btc × current_price).
-            held_btc: BTC quantity from broker snapshot. 0.0 means
-                we're in CASH.
+            account_equity: total USD equity from broker snapshot.
+            held_btc: BTC quantity from broker snapshot.
             current_price: BTC/USD spot at the moment of reconciliation.
+            cash: USD cash from broker snapshot. Optional — when
+                provided, seeds the balance-change detection baseline
+                so the first post-bring-up balance check has something
+                to compare against. (Older callers that don't pass
+                `cash` will seed on the first `record_balance_snapshot`
+                call instead, which is also fine — first call always
+                seeds without emitting a delta.)
         """
-        # Threshold: anything below this is treated as dust/rounding,
-        # NOT a real position. Protects against tiny leftover BTC from
-        # imperfect fills that would otherwise pin us in BTC state.
+        if self._loaded_from_db:
+            log.info(
+                "CoinbaseBTCDonchianAgent: persisted state present "
+                "(state=%s, cost_basis=%s) — skipping broker reconcile. "
+                "Board-driven broker deltas will be observed via "
+                "record_balance_snapshot per bar.",
+                self._state.state.value, self._state.cost_basis,
+            )
+            return
+
+        # First-ever bring-up: no persisted state, so use the broker
+        # snapshot to seed our initial state + cost_basis. After this
+        # one bootstrap, restarts trust the persisted state.
         DUST_USD_THRESHOLD = 1.0
         held_value_usd = held_btc * current_price
         if held_value_usd > DUST_USD_THRESHOLD:
@@ -306,9 +365,11 @@ class CoinbaseBTCDonchianAgent:
                 state=State.BTC,
                 cost_basis=current_price,
                 last_bar_ts=self._state.last_bar_ts,
+                last_known_cash=cash,
+                last_known_btc_qty=held_btc,
             )
             log.info(
-                "CoinbaseBTCDonchianAgent: reconciled to BTC state — "
+                "CoinbaseBTCDonchianAgent: first-bring-up reconcile to BTC — "
                 "held=%.8f BTC ($%.2f) @ cost_basis=$%.2f",
                 held_btc, held_value_usd, current_price,
             )
@@ -317,13 +378,96 @@ class CoinbaseBTCDonchianAgent:
                 state=State.CASH,
                 cost_basis=None,
                 last_bar_ts=self._state.last_bar_ts,
+                last_known_cash=cash,
+                last_known_btc_qty=held_btc,
             )
             log.info(
-                "CoinbaseBTCDonchianAgent: reconciled to CASH state — "
+                "CoinbaseBTCDonchianAgent: first-bring-up reconcile to CASH — "
                 "held=%.8f BTC < $%.2f dust threshold",
                 held_btc, DUST_USD_THRESHOLD,
             )
         self._persist_state()
+        self._persist_last_known_balances()
+
+    # -- Board-driven broker delta detection ------------------------
+
+    def record_balance_snapshot(
+        self,
+        *,
+        cash: float,
+        btc_qty: float,
+        threshold_usd: float = 1.0,
+        threshold_btc: float = 0.0001,
+    ) -> dict | None:
+        """Compare a fresh broker snapshot to last-known balances and
+        report any material delta — attributed to the Board, since
+        the strategy's own fills are routed through `mark_filled`
+        (which the orchestrator updates separately).
+
+        Returns a dict ready for the orchestrator to write as a
+        `balance_change` audit-event payload, or None when there's
+        no material change (or this is the first call after bring-up
+        and there's no baseline to compare against).
+
+        Updates `_state.last_known_cash` / `_state.last_known_btc_qty`
+        on every call (whether or not a delta crossed threshold) and
+        persists. The strategy state (CASH/BTC) is NEVER touched here
+        — Board changes are observed, not absorbed.
+        """
+        prev_cash = self._state.last_known_cash
+        prev_btc = self._state.last_known_btc_qty
+
+        # First call after bring-up — no baseline, just seed.
+        # (restore_from_broker may have already seeded these; if so
+        # this branch is harmless.)
+        if prev_cash is None or prev_btc is None:
+            self._state.last_known_cash = float(cash)
+            self._state.last_known_btc_qty = float(btc_qty)
+            self._persist_last_known_balances()
+            return None
+
+        delta_cash = float(cash) - float(prev_cash)
+        delta_btc = float(btc_qty) - float(prev_btc)
+        material = (
+            abs(delta_cash) > threshold_usd
+            or abs(delta_btc) > threshold_btc
+        )
+
+        # Always advance the baseline so we don't re-report the same
+        # delta on the next bar.
+        self._state.last_known_cash = float(cash)
+        self._state.last_known_btc_qty = float(btc_qty)
+        self._persist_last_known_balances()
+
+        if not material:
+            return None
+
+        return {
+            "strategy": self.name,
+            "division": self.division,
+            "attribution": "board",
+            "state_at_observation": self._state.state.value,
+            "delta_cash": delta_cash,
+            "delta_btc": delta_btc,
+            "new_cash": float(cash),
+            "new_btc_qty": float(btc_qty),
+            "prev_cash": float(prev_cash),
+            "prev_btc_qty": float(prev_btc),
+            "threshold_usd": threshold_usd,
+            "threshold_btc": threshold_btc,
+        }
+
+    def _persist_last_known_balances(self) -> None:
+        if not self._db_url:
+            return
+        set_agent_state(
+            self.name, _LAST_KNOWN_BALANCES_KEY,
+            {
+                "cash": self._state.last_known_cash,
+                "btc_qty": self._state.last_known_btc_qty,
+            },
+            db_url=self._db_url,
+        )
 
     # -- Main entry point -------------------------------------------
 
@@ -333,6 +477,7 @@ class CoinbaseBTCDonchianAgent:
         *,
         account_equity: float,
         held_btc: float,
+        cash: float | None = None,
     ) -> tuple[ProposedOrder | None, str]:
         """Evaluate one bar-close. Caller MUST supply chronologically-
         sorted OHLCV bars ending with the bar just closed (no future
@@ -344,9 +489,19 @@ class CoinbaseBTCDonchianAgent:
                 Length must be ≥ max(entry_lookback, exit_lookback,
                 trend_filter_lookback or 0) + 1, else returns SKIP.
             account_equity: total USD equity (cash + BTC value).
-                Used to size BUYs (full equity → BTC).
+                Retained for back-compat; used as the BUY-sizing
+                fallback when `cash` is not supplied.
             held_btc: BTC qty held. Used to size SELLs (close 100%
-                of position).
+                of position — the strategy adopts whatever the broker
+                reports, including any BTC the Board added between
+                bars).
+            cash: USD cash from broker snapshot. When provided, BUYs
+                are sized off cash ONLY — Board-added BTC sitting on
+                the account while state=CASH is ignored at BUY time
+                and absorbed naturally on the broker side (next SELL
+                will close 100% of held_btc, including the Board's
+                pre-existing coins). When None, falls back to
+                account_equity for sizing (back-compat for tests).
 
         Returns (ProposedOrder | None, reason). The reason string is
         always populated so the caller can audit-log it whether or
@@ -390,9 +545,16 @@ class CoinbaseBTCDonchianAgent:
         # Build ProposedOrder
         current_close = current_bar["close"]
         if verdict.decision == Decision.BUY:
-            if account_equity <= 0:
-                return None, f"buy fired but account_equity={account_equity} ≤ 0"
-            qty = account_equity / current_close
+            # Size BUYs off cash only when supplied — Board-added BTC
+            # already sitting on the account is ignored at sizing time
+            # (the strategy's cost_basis tracks ITS fill price; the
+            # Board's pre-existing BTC gets folded into the position
+            # at the broker level and rides the next SELL). Falls back
+            # to account_equity for back-compat with older callers.
+            sizing_basis = cash if cash is not None else account_equity
+            if sizing_basis <= 0:
+                return None, f"buy fired but cash={sizing_basis} ≤ 0"
+            qty = sizing_basis / current_close
             order = ProposedOrder(
                 strategy=self.name,
                 symbol=self.symbol,

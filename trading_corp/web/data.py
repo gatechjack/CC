@@ -1112,36 +1112,60 @@ def build_donchian_view(db_url: str) -> dict | None:
     minutes = remainder // 60
     countdown_str = f"{hours}h {minutes}m"
 
-    # Per-bar decision log (audit kind = 'donchian_evaluated', actor =
-    # 'coinbase_btc_donchian'). Populated by the orchestrator after
-    # wiring; empty until then.
+    # Per-bar decision log. Two row kinds interleaved chronologically:
+    #   - `donchian_evaluated`: per-bar SKIP/BUY/SELL evaluation with
+    #     channel snapshot + reason text.
+    #   - `balance_change`: Board-driven cash/BTC delta detected at the
+    #     start of a bar (recurring deposits, manual purchases). State
+    #     is NOT auto-flipped — this is observation only.
+    # Both kinds emit from actor=`coinbase_btc_donchian`, so a single
+    # query captures both and the template branches on `kind`.
     decisions: list[dict] = []
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.execute(
-                "SELECT ts, payload_json FROM audit_event "
+                "SELECT ts, kind, payload_json FROM audit_event "
                 "WHERE actor='coinbase_btc_donchian' "
-                "AND kind='donchian_evaluated' "
+                "AND kind IN ('donchian_evaluated','balance_change') "
                 "ORDER BY ts DESC LIMIT 60",
             )
             import json
             for r in cur.fetchall():
                 p = json.loads(r["payload_json"])
-                decisions.append({
-                    "ts": r["ts"],
-                    # Display the bar's open time (canonical bar identifier,
-                    # matches the timestamp embedded in `reason`), not the
-                    # audit-row write time which is bar close + ~2 min.
-                    "ts_short": format_et_short(p.get("bar_ts") or r["ts"]),
-                    "decision": p.get("decision", "skip"),
-                    "current_close": p.get("current_close"),
-                    "donchian_high": p.get("donchian_high"),
-                    "donchian_low": p.get("donchian_low"),
-                    "trend_filter_sma": p.get("trend_filter_sma"),
-                    "trend_filter_passed": p.get("trend_filter_passed", False),
-                    "reason": p.get("reason", ""),
-                })
+                if r["kind"] == "balance_change":
+                    # Balance-change rows show "as of" the audit-row
+                    # write time (= the bar boundary detection moment).
+                    # No bar_ts on the row payload — the delta isn't
+                    # tied to a bar's OHLCV, just to the moment of
+                    # observation.
+                    decisions.append({
+                        "kind": "balance_change",
+                        "ts": r["ts"],
+                        "ts_short": format_et_short(r["ts"]),
+                        "attribution": p.get("attribution", "board"),
+                        "state_at_observation": p.get("state_at_observation", "?"),
+                        "delta_cash": p.get("delta_cash"),
+                        "delta_btc": p.get("delta_btc"),
+                        "new_cash": p.get("new_cash"),
+                        "new_btc_qty": p.get("new_btc_qty"),
+                    })
+                else:
+                    decisions.append({
+                        "kind": "donchian_evaluated",
+                        "ts": r["ts"],
+                        # Display the bar's open time (canonical bar identifier,
+                        # matches the timestamp embedded in `reason`), not the
+                        # audit-row write time which is bar close + ~2 min.
+                        "ts_short": format_et_short(p.get("bar_ts") or r["ts"]),
+                        "decision": p.get("decision", "skip"),
+                        "current_close": p.get("current_close"),
+                        "donchian_high": p.get("donchian_high"),
+                        "donchian_low": p.get("donchian_low"),
+                        "trend_filter_sma": p.get("trend_filter_sma"),
+                        "trend_filter_passed": p.get("trend_filter_passed", False),
+                        "reason": p.get("reason", ""),
+                    })
     except Exception as e:
         log.debug("donchian decisions read failed: %s", e)
 

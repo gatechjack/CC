@@ -1,16 +1,26 @@
 {# Coinbase BTC Donchian — per-bar decision log tile.
 
-   One row per evaluated 6h bar. Shows the raw inputs the strategy
-   used (close, donchian high/low, trend-filter SMA + pass/fail),
-   the resulting decision, and the reason string from the engine.
+   Two row kinds interleaved chronologically (most-recent first):
+
+   - donchian_evaluated: one per evaluated 6h bar. Shows the raw
+     inputs the strategy used (close, donchian high/low, trend-
+     filter SMA + pass/fail), the resulting decision, and the
+     reason string from the engine.
+
+   - balance_change: Board-driven cash/BTC delta detected at the
+     start of a bar (recurring deposits, manual BTC purchases).
+     Renders as a single row with the BAL CHG tag, the deltas, and
+     the state at observation. State is NEVER auto-flipped on
+     balance changes — they're observation-only; the strategy
+     absorbs whatever's on the account at the next BUY/SELL
+     signal.
 
    Populated from `audit_event WHERE actor='coinbase_btc_donchian'
-   AND kind='donchian_evaluated'`. The orchestrator's
-   `_scheduled_donchian_loop` writes one row per 6h-bar close
-   (00/06/12/18 UTC = 20:00/02:00/08:00/14:00 ET) regardless of
-   decision (BUY/SELL/SKIP) — so absence of a row means the
-   strategy hasn't seen a bar close yet (fresh deploy or restart
-   in the middle of a 6h window).
+   AND kind IN ('donchian_evaluated','balance_change')`. The
+   orchestrator's `_scheduled_donchian_loop` writes both kinds —
+   one evaluated per 6h-bar close (00/06/12/18 UTC = 20:00 /
+   02:00 / 08:00 / 14:00 ET) regardless of decision, and zero or
+   one balance_change row when a delta crosses threshold.
 #}
 {% if view.donchian %}
 {% set d = view.donchian %}
@@ -41,52 +51,85 @@
         </thead>
         <tbody>
           {% for r in d.decisions %}
-            <tr class="border-b border-edge/40
-                       {% if r.decision == 'buy' %}bg-gain/5
-                       {% elif r.decision == 'sell' %}bg-loss/5{% endif %}">
-              <td class="py-1 pr-3">{{ r.ts_short }}</td>
-              <td class="py-1 pr-3 text-right">
-                {% if r.current_close is not none %}
-                  ${{ '%.2f' | format(r.current_close) }}
-                {% else %}—{% endif %}
-              </td>
-              <td class="py-1 pr-3 text-right">
-                {% if r.donchian_high is not none %}
-                  ${{ '%.2f' | format(r.donchian_high) }}
-                {% else %}—{% endif %}
-              </td>
-              <td class="py-1 pr-3 text-right">
-                {% if r.donchian_low is not none %}
-                  ${{ '%.2f' | format(r.donchian_low) }}
-                {% else %}—{% endif %}
-              </td>
-              <td class="py-1 pr-3 text-right">
-                {% if r.trend_filter_sma is not none %}
-                  ${{ '%.2f' | format(r.trend_filter_sma) }}
-                {% else %}<span class="text-muted">off</span>{% endif %}
-              </td>
-              <td class="py-1 pr-3 text-center">
-                {% if r.trend_filter_sma is not none %}
-                  {% if r.trend_filter_passed %}
-                    <span class="text-gain">✓</span>
-                  {% else %}
-                    <span class="text-loss">✗</span>
+            {% if r.kind == 'balance_change' %}
+              {# Board-driven balance change — single full-width row
+                 with deltas + new totals. Subtle warn-tinted bg to
+                 separate visually from strategy decisions; not an
+                 alert (changes are normal). #}
+              <tr class="border-b border-edge/40 bg-warn/5">
+                <td class="py-1 pr-3">{{ r.ts_short }}</td>
+                <td colspan="7" class="py-1 text-[11px] font-mono">
+                  <span class="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider
+                               bg-warn/15 text-warn font-semibold mr-2">
+                    BAL CHG
+                  </span>
+                  <span class="text-muted">{{ r.attribution }} ·</span>
+                  {% if r.delta_cash is not none and r.delta_cash != 0 %}
+                    <span class="{% if r.delta_cash > 0 %}text-gain{% else %}text-loss{% endif %} font-semibold">
+                      {% if r.delta_cash > 0 %}+${{ '%.2f' | format(r.delta_cash) }}{% else %}-${{ '%.2f' | format(-r.delta_cash) }}{% endif %} cash
+                    </span>
                   {% endif %}
-                {% else %}<span class="text-muted">—</span>{% endif %}
-              </td>
-              <td class="py-1 pr-3 text-center">
-                {% if r.decision == 'buy' %}
-                  <span class="text-gain font-semibold">BUY</span>
-                {% elif r.decision == 'sell' %}
-                  <span class="text-loss font-semibold">SELL</span>
-                {% else %}
-                  <span class="text-muted">skip</span>
-                {% endif %}
-              </td>
-              <td class="py-1 text-muted truncate max-w-md" title="{{ r.reason }}">
-                {{ r.reason }}
-              </td>
-            </tr>
+                  {% if r.delta_btc is not none and r.delta_btc != 0 %}
+                    {% if r.delta_cash is not none and r.delta_cash != 0 %}<span class="text-muted">·</span>{% endif %}
+                    <span class="{% if r.delta_btc > 0 %}text-gain{% else %}text-loss{% endif %} font-semibold">
+                      {% if r.delta_btc > 0 %}+{% endif %}{{ '%.8f' | format(r.delta_btc) }} BTC
+                    </span>
+                  {% endif %}
+                  <span class="text-muted ml-3">
+                    → ${{ '%.2f' | format(r.new_cash or 0) }} / {{ '%.8f' | format(r.new_btc_qty or 0) }} BTC
+                    · state={{ r.state_at_observation }}
+                  </span>
+                </td>
+              </tr>
+            {% else %}
+              {# donchian_evaluated row — the original layout. #}
+              <tr class="border-b border-edge/40
+                         {% if r.decision == 'buy' %}bg-gain/5
+                         {% elif r.decision == 'sell' %}bg-loss/5{% endif %}">
+                <td class="py-1 pr-3">{{ r.ts_short }}</td>
+                <td class="py-1 pr-3 text-right">
+                  {% if r.current_close is not none %}
+                    ${{ '%.2f' | format(r.current_close) }}
+                  {% else %}—{% endif %}
+                </td>
+                <td class="py-1 pr-3 text-right">
+                  {% if r.donchian_high is not none %}
+                    ${{ '%.2f' | format(r.donchian_high) }}
+                  {% else %}—{% endif %}
+                </td>
+                <td class="py-1 pr-3 text-right">
+                  {% if r.donchian_low is not none %}
+                    ${{ '%.2f' | format(r.donchian_low) }}
+                  {% else %}—{% endif %}
+                </td>
+                <td class="py-1 pr-3 text-right">
+                  {% if r.trend_filter_sma is not none %}
+                    ${{ '%.2f' | format(r.trend_filter_sma) }}
+                  {% else %}<span class="text-muted">off</span>{% endif %}
+                </td>
+                <td class="py-1 pr-3 text-center">
+                  {% if r.trend_filter_sma is not none %}
+                    {% if r.trend_filter_passed %}
+                      <span class="text-gain">✓</span>
+                    {% else %}
+                      <span class="text-loss">✗</span>
+                    {% endif %}
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </td>
+                <td class="py-1 pr-3 text-center">
+                  {% if r.decision == 'buy' %}
+                    <span class="text-gain font-semibold">BUY</span>
+                  {% elif r.decision == 'sell' %}
+                    <span class="text-loss font-semibold">SELL</span>
+                  {% else %}
+                    <span class="text-muted">skip</span>
+                  {% endif %}
+                </td>
+                <td class="py-1 text-muted truncate max-w-md" title="{{ r.reason }}">
+                  {{ r.reason }}
+                </td>
+              </tr>
+            {% endif %}
           {% endfor %}
         </tbody>
       </table>
