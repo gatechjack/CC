@@ -1,5 +1,22 @@
 # EU egress smoke test for Polymarket — Phase 0.5 Stage 1
 
+> **EXECUTED 2026-05-09 ~19:15 UTC. Result: NO-GO on Phase 0.5 Stage 2
+> (no proxy needed for Phases 1-2).** Polymarket's public read APIs
+> (`gamma-api`, `clob`, `data-api`) returned **identical 200 OK
+> responses from both tc-prod-vm (Washington VA, AS8075) and a Dublin IE
+> Azure VM**, hitting the same Cloudflare edge IPs. The geo-block
+> applies to the consumer-facing trading website (residential US IPs)
+> but NOT to Azure VM US IPs hitting the API hosts directly. Phase 1
+> broker adapter connects directly from tc-prod-vm — no proxy, no
+> extra VM, no extra secrets, no extra runbook. **Caveat for Phase 3:**
+> only READ endpoints were tested; order placement (signed tx to CLOB)
+> may still hit auth/write geo-checks. Re-run this smoke against an
+> authed endpoint before Phase 3 ships live orders. Tracked as task
+> #31. Throwaway VM (D2s_v3 in northeurope, IP 74.234.63.94) torn
+> down within 25 min of provisioning.
+
+
+
 **Purpose.** Polymarket geo-blocks US IPs. Before standing up a persistent
 EU proxy VM ($12/mo, ongoing operational surface), verify that an EU IP
 is *sufficient* to reach the Polymarket endpoints we need. If Polymarket
