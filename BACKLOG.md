@@ -60,10 +60,9 @@ populate the per-bar decision-log tile. If it doesn't materialize within
 broker snapshot exceptions.
 
 **Deferred — pull into a future session:**
-- 6h price chart with Donchian band overlay + buy/sell markers +
-  current-bar-highlight (originally item 4 in the Phase 1 UI list —
-  pulled out to scope the wiring deploy realistically; build with real
-  data the morning after the first bar lands).
+- **Coinbase BTC HODL division-detail UI cleanup** (consolidated into a
+  P3 entry below — covers 6h chart with band overlay + fill markers,
+  Manual Order tile removal, Buying Power tile removal).
 - Approval-card extensions for Donchian metadata in
   `comms/position_context.py` view-builder + a partial for
   `approval_detail.html`. Donchian stays paper-mode (`auto_execute: false`)
@@ -71,92 +70,52 @@ broker snapshot exceptions.
   won't show Donchian-specific context (channel highs/lows, trend-filter
   SMA, cost basis) until this lands. Build when an actual approval fires
   and the gap shows up.
-- Decision-log tile empty-state copy fix: the partial says "strategy
-  not yet wired into the orchestrator" — cosmetically stale post-deploy.
-  One-line edit on a future surface pass.
 - Backport prod/git drift to git: per memory `trading_corp_prod_git_drift.md`,
   `pmcc_robinhood.py` / `approval_format.py` / `telegram_bot.py` have
   prod-only content not in HEAD. Separate cleanup task — don't bundle
   with feature work.
 
+*(Decision-log tile empty-state copy fix shipped 2026-05-09 — commit
+`9de5902`.)*
+
 ---
 
-## ⏸ PAUSED — Lord Otter + Market Cypher feature work  *(2026-05-02 — Board direction; superseded 2026-05-08 by Donchian pivot)*
+## ✅ DISABLED-PRESERVED — Lord Otter + Market Cypher  *(disabled on `coinbase_spot` 2026-05-09 with the Donchian pivot deploy; files preserved for BitUnix Futures revival)*
 
-**Update 2026-05-08:** the original "pause pending PMCC research-as-consultant
-validation" deadline (2026-05-05) passed without a clean validation signal.
-Separately, walk-forward testing showed the Otter+Cypher confluence approach
-on `coinbase_spot` had no demonstrable edge (commit `cd26a75`). Board
-direction (this session) pivots `coinbase_spot` to the Donchian strategy
-above; Otter+Cypher feature work remains paused indefinitely. Files preserve
-for future BitUnix Futures wiring (see `trading_corp_bitunix_vision.md`
-memory entry).
+**Final state (2026-05-09):** both strategies set `enabled: false` on
+`coinbase_spot` in the Donchian Phase 2 deploy. Webhook endpoints still
+accept POSTs, but agents short-circuit on `enabled: false` before order
+construction — no `would_have_placed` rows, no Telegram pings, no bias
+state updates from inbound alerts. `agent_state` rows from prior runs
+may still be present in SQLite; staleness gates handle them on read.
 
-Both crypto strategies are in **maintenance mode** until the PMCC
-research-as-consultant pattern has been observed in production for
-long enough to validate (or invalidate) the research firm's
-cross-division knowledge-work value proposition.
+**Path traveled:**
+- 2026-05-02: feature work paused pending PMCC research-as-consultant
+  validation (deadline 2026-05-05).
+- 2026-05-05: validation deadline passed without clean signal.
+- 2026-05-08: walk-forward testing (commit `cd26a75`) showed the
+  Otter+Cypher confluence approach on `coinbase_spot` had no
+  demonstrable out-of-sample edge.
+- 2026-05-09: Donchian Phase 2 ships; Otter+Cypher flipped to
+  `enabled: false` in the same deploy.
 
-**What "paused" means concretely:**
-- Existing code stays running. `auto_execute: false` (no live trades).
-  Paper-mode `would_have_placed` rows continue writing to audit_event;
-  Telegram pushes continue. Bias / sommi / arming state machines
-  continue updating. **No behavioral change.**
-- **No new features** on Otter or Cypher: no new TV signal vocabulary,
-  no contract enrichment, no new tier rules, no rich `context` packet
-  for TradeConfirmation, no pink-box image integration on the agent
-  side, no intraday-TA expert build-out.
-- Bug fixes still allowed where the bug is breaking the existing
-  paper-mode pipeline. New work that would *expand* either strategy is
-  out of scope.
+**Files preserved (do not delete):**
+- [trading_corp/agents/strategies/lord_otter.py](trading_corp/agents/strategies/lord_otter.py)
+- [trading_corp/agents/strategies/market_cypher.py](trading_corp/agents/strategies/market_cypher.py)
+- All TV webhook handler code + per-strategy YAML blocks in `strategies.yaml`
 
-**Why:**
-- The 2026-05-02 vision realignment (see CLAUDE.md § Research
-  consultation) found that we'd over-built the research firm relative
-  to its actual current value. Of the four research products
-  (`CandidateRecommendation`, `Thesis`, `PositionContext`,
-  `TradeConfirmation`), only PMCC's `CandidateRecommendation` use
-  (via `universe_source: research_on_demand`) is doing real
-  cross-division knowledge work today.
-- Otter's `TradeConfirmation` consults are scaffolded but the
-  underlying intraday-TA capability isn't built — most consults
-  fail-open as no-ops. Continuing to layer features on that
-  foundation would compound the rework cost.
-- The right move is to operate PMCC's research integration in
-  production, observe whether research delivers signal that PMCC
-  wouldn't have produced via its deterministic scout, and use that
-  data to decide whether (and how) to bring research to crypto.
+**Revival path: BitUnix Futures Phase 4.** The strategies' tier-classifier
++ arming + bias state machines + close-existing-longs logic are reusable
+for BitUnix's leveraged BTC/SOL/ETH both-direction trading. See memory
+`trading_corp_bitunix_vision.md` for the BitUnix phase plan; revival
+work happens there, not back on `coinbase_spot` (that division now
+owns the Donchian-only strategy).
 
-**Observation period:**
-- Start: 2026-05-02.
-- Decision date: **2026-05-05** (3 days, per Board direction).
-- What to look at on 05-05: count of `research_candidate_recommendation_emitted`
-  rows from PMCC scout, count of those that produced
-  `would_have_placed` rows, qualitative assessment of whether the
-  research-recommended candidates are ones PMCC would have surfaced
-  on its own. If research isn't visibly pulling weight by then,
-  open a Board decision item to scope research down rather than
-  expand it.
-
-**Code state on pause (as of 2026-05-02):**
-- File rename: [agents/strategies/lord_otter.py](trading_corp/agents/strategies/lord_otter.py)
-  and [agents/strategies/market_cypher.py](trading_corp/agents/strategies/market_cypher.py).
-  These were previously under `agents/divisions/` — the new path
-  reflects the corrected vocabulary (division = portfolio manager;
-  strategy = how a division operates). 8 import sites updated.
-- Research rule codified in [CLAUDE.md § Research consultation](CLAUDE.md).
-
-**Out of scope for this pause:**
-- PMCC work continues normally.
-- Dashboard P5 polish items (engagement-log expand, trade-flow expand,
-  latency-rename) — those are dashboard surface, not Otter/Cypher
-  feature work. Continue per existing BACKLOG entries.
-
-**To resume:** explicit Board greenlight after 2026-05-05 review,
-naming the specific research integration shape that would unpause
-work (e.g. "build intraday-TA expert because the macro thesis
-integration showed value", or "build pink-box image vision because
-PMCC scout's Thesis consumption proved the surface").
+**Don't re-enable on `coinbase_spot`.** The `coinbase_spot` division
+has a single resident strategy by design (Coinbase BTC HODL —
+Donchian). Adding Otter/Cypher back would reintroduce signal noise on
+a 100%-in/out trend follower that was specifically designed against
+that approach.
 
 ---
 
@@ -468,7 +427,17 @@ the contract. Not blocking anything.
 
 ---
 
-## P5 — Realignment-memo wording: `would_have_placed` is Otter/Cypher-only, NOT a PMCC signal  *(NEW — 2026-05-02)*
+## ✅ DONE — Realignment-memo wording: `would_have_placed` is Otter/Cypher-only, NOT a PMCC signal  *(2026-05-09 — confirmed corrected in memo)*
+
+The memory file `trading_corp_2026_05_02_realignment.md` now carries both
+halves: it flags the `would_have_placed` kind as "Otter/Cypher-only" and
+points to `proposed_order.status in (board_approved, filled)` as the
+correct PMCC-side signal. No code change ever needed (the validation
+surface already used the right query); only doc clarity. Closed.
+
+---
+
+## P5 — Realignment-memo wording: `would_have_placed` is Otter/Cypher-only, NOT a PMCC signal  *(ORIGINAL ENTRY — 2026-05-02; superseded by ✅ DONE entry above; preserved for context)*
 
 **Symptom:** the 2026-05-02 vision-realignment memo (memory entry
 `trading_corp_2026_05_02_realignment.md`) phrases the 05-05 PMCC
@@ -1166,7 +1135,17 @@ strategy is actively trading and watchlist freshness matters more).
 
 ---
 
-## P2 — Market Cypher: add bear-bias backup if Blood Diamond too rare  *(NEW — 2026-04-30)*
+## ⏸ DEFERRED — Market Cypher: add bear-bias backup if Blood Diamond too rare  *(originally P2 — 2026-04-30; deferred 2026-05-09 with the Cypher disable on `coinbase_spot`)*
+
+Market Cypher is `enabled: false` on `coinbase_spot` since the 2026-05-09
+Donchian pivot. The bear-bias-backup refinement was scoped for
+production tuning of Cypher's bias state machine on Coinbase; that
+target no longer exists. **Revival path: BitUnix Futures Phase 4** —
+the asymmetric bias logic still applies if/when Cypher is wired onto
+BitUnix. Re-pull when BitUnix Phase 4 starts.
+
+**Original entry (preserved for reference):**
+
 
 **Context:** the Market Cypher agent's bias derivation is asymmetric by
 design — `Longema` on 1D sets bias=bull (early, single-signal), and
@@ -1523,61 +1502,81 @@ impact. Pull it in when investigating any audit-log noise complaint
 
 ---
 
-## P3 — Coinbase Spot drilldown: promote Recent Activity, demote Manual Trading  *(NEW — 2026-05-01)*
+## P3 — Coinbase BTC HODL division-detail UI cleanup  *(NEW — 2026-05-09; supersedes the prior "promote Recent Activity, demote Manual Trading" entry)*
 
-**Problem:** the Coinbase Spot drilldown
-([trading_corp/web/templates/division.html](trading_corp/web/templates/division.html))
-inherits the generic two-column drilldown layout where the right rail
-holds the prominent sticky "Expert Analysis" panel
-([division.html:240-261](trading_corp/web/templates/division.html:240)).
-That panel is meaningful on the PMCC drilldown (click a position →
-analysis populates) but is **dead weight on Coinbase Spot** — no
-PMCC pairs to click, no per-position analysis to render.
+**Context:** the `coinbase_spot` (now displayed as "Coinbase BTC HODL")
+division-detail page at `/division/coinbase_spot` inherits the generic
+two-column drilldown layout from `web/templates/division.html`. The
+generic layout was designed for PMCC; it carries widgets that don't
+fit a 100%-in/out Donchian strategy. Three cleanup items + one new
+viz piece, all on the same template.
 
-Meanwhile in the left column the order is:
-1. Stat cards
-2. Positions (PMCC pairs / stock holdings)
-3. **Manual order entry** ([division.html:170-177](trading_corp/web/templates/division.html:170)) — Coinbase-Spot-only
-4. **Recent activity** ([division.html:179-224](trading_corp/web/templates/division.html:179))
+**Asks (Board, 2026-05-09):**
 
-For day-to-day Coinbase Spot use, Recent Activity (recent fills,
-webhook events, halts) is the most-checked surface — it should be
-the visually prominent panel. Manual Trading is used for pipeline
-testing of new signals; valuable but not daily.
+1. **Remove the Manual Order tile.** Lives at
+   `division.html:170-177` (`{% include "partials/manual_order.html" %}`
+   block, gated on `coinbase_spot`). Originally built during Phase B
+   Coinbase Spot bring-up for real-trade pipeline testing. Now
+   redundant: the Donchian strategy fires every 6h-bar boundary and
+   routes through HITL; one-off Board trades go via the Telegram →
+   web-app approval surface, not via a per-division order form.
+   **Remove the include for `coinbase_spot` specifically** (keep the
+   partial available in case another division wants it later) or
+   remove the partial entirely if no other division uses it (verify
+   first).
 
-**Fix:** for `view.division.slug == "coinbase_spot"`, restructure
-the layout so:
-- **Recent Activity moves to the right rail**, taking the slot
-  currently held by the (empty-on-Coinbase) Expert Analysis sticky
-  panel. Same sticky-top + max-height treatment so the activity
-  stream stays visible while scrolling positions.
-- **Manual Order Entry moves to the bottom of the left column**,
-  below Positions and below where Recent Activity used to be. Stays
-  available, just out of the primary scan path.
-- Pseudo-layout in `division.html`:
-  ```jinja
-  {% if view.division.slug == 'coinbase_spot' %}
-    {# left col: stats → positions → recent activity stub link →
-       (last) manual order entry #}
-    {# right col: recent activity (sticky) instead of expert analysis #}
-  {% else %}
-    {# existing layout for PMCC and others #}
-  {% endif %}
-  ```
+2. **Remove the Buying Power tile.** Lives in the stat-cards trio
+   (Equity / Cash / Buying Power) at the top of the page (rendered
+   from `web/templates/partials/stat_cards.html`). For a spot crypto
+   account, `buying_power == cash` — the second value is redundant.
+   Drop it; keep Equity + Cash only. Likely a small edit gated on
+   `view.division.slug == "coinbase_spot"` (or remove for the entire
+   Crypto group via `_CRYPTO_BROKERS` membership in
+   `utils/divisions.py` if no crypto division benefits from it).
 
-Long-term Manual Order Entry may be removed entirely — it was built
-for real-trade pipeline testing during Phase B (Coinbase Spot
-bring-up). Once Otter and Cypher are auto-executing organically,
-the Manual path's only remaining use is opportunistic one-off Board
-trades. Don't remove yet — just deprioritize position.
+3. **6h price chart with Donchian band overlay** *(originally listed
+   in the Phase 2 DONE entry's "Deferred — pull into a future
+   session" block; consolidating here):*
+   - 6h BTC/USD candlesticks (last ~30-50 bars).
+   - Overlay: rolling 20-bar Donchian high (entry channel ceiling)
+     + rolling 6-bar Donchian low (exit channel floor) +
+     SMA(168) trend filter.
+   - Markers on past BUY/SELL fills (queryable from `audit_event`
+     `actor='coinbase_btc_donchian' AND kind in ('would_have_placed','filled')`).
+   - Highlight the current/in-progress bar so the relationship
+     between live price and the channels is visible.
+   - Consider Lightweight Charts (already a dep — used for the
+     equity curve on home).
+   - Build with real data the morning after the first audit row
+     lands (next session post-validation gate).
 
-**Estimate:** ~30-min Jinja restructure. No agent / data-shape
-changes (Recent Activity already in `view.recent_activity`, Manual
-Order partial unchanged). One screenshot before/after for visual
-review.
+**Out of scope (intentionally):**
+- The prior entry's "promote Recent Activity to right rail, demote
+  Manual Trading to bottom" plan is **partially superseded** by ask
+  #1 (Manual Trading removed entirely, not deprioritized). If
+  Recent Activity should still move to the right rail (where the
+  empty-on-Coinbase Expert Analysis panel currently sits), that's
+  a cleaner fit for a Donchian-only division — but it's a separate
+  decision; not in the asks above. Flag-and-defer.
 
-**Priority:** P3 — UX polish, no functional change. Pull in next
-time someone touches the drilldown templates.
+**Files to touch:**
+- `trading_corp/web/templates/division.html` — remove or gate the
+  `manual_order.html` include for `coinbase_spot`.
+- `trading_corp/web/templates/partials/stat_cards.html` — drop
+  Buying Power for `coinbase_spot` (or for crypto group).
+- New partial: `trading_corp/web/templates/partials/donchian_chart.html`
+  — 6h candles + band overlay + fill markers.
+- `trading_corp/web/data.py:build_donchian_view` — extend to surface
+  the OHLCV window + fill events (likely fetch via the same public
+  ccxt path the orchestrator uses for `_fetch_recent_btc_6h_bars`).
+
+**Priority:** P3 — visual polish + new chart. Asks #1 and #2 are
+~5-min edits each. Ask #3 is the bigger piece (~1-2h, depending on
+chart-library ergonomics).
+
+**Pull when:** the Donchian dial has been validated post-first-eval
+and the page is being touched anyway. Bundle all three asks into one
+deploy to minimize template-change cycles.
 
 ---
 
@@ -1716,7 +1715,78 @@ unrealized_pnl_pct). Verified live on dashboard: RKLB Combined P&L now
 
 ---
 
-## P0 — HITL approval flow lives in the web app; Telegram becomes notification-with-deeplink  *(NEW — 2026-05-03)*
+## ✅ DONE — HITL approval flow lives in the web app; Telegram becomes notification-with-deeplink  *(Phases A–D shipped 2026-05-03 → 2026-05-05; Phase E web push deferred — see entry below)*
+
+**Outcome:** the web app at `https://trading.jacksumner.com` is the
+sole HITL surface for Approve / Reject / Modify decisions. Telegram is
+notification-only — short ping with a deeplink to
+`https://trading.jacksumner.com/approvals/{order_id}` (or
+`/approvals/pair/{pmcc_pair_id}` for paired rolls). The web-app
+approval page renders order detail, position context, risk verdict,
+sibling-leg coalescing for paired rolls, and Approve / Reject /
+Modify buttons; POSTing a decision resumes the LangGraph `interrupt()`
+with the same `BoardDecision` shape the existing `approval_node`
+expects. Zero LangGraph state-shape changes.
+
+**Phase trail:**
+- **Phase A** (2026-05-03 02:09 UTC) — slim-format Telegram builder +
+  dormant `notification_only` switch. Rich format remained as bridge.
+- **Phases B.1, B.2, B.3, B.5** (2026-05-03 03:50→05:07 UTC) — web-app
+  routes (`/approvals` index + `/approvals/{order_id}` detail +
+  `POST .../decision`); pair-coalescing in B.3 resolves both legs of
+  a paired roll atomically; B.5 quick-modify (½×/2× size + limit ±5%)
+  with `new_qty` / `new_limit_price` plumbed end-to-end.
+- **Phase C** (folded into B.3) — paired roll renders as ONE card,
+  one Approve button, both `pmcc_pair_id` legs resolved on a single
+  decision. Eliminates the "approve close, reject open → naked
+  short" failure mode.
+- **Phase D** (folded into B.5) — quick-modify presets live.
+- **Phase B.4 flag flip** (2026-05-05 01:34 UTC) —
+  `TELEGRAM_NOTIFICATION_ONLY=true` set on the prod systemd unit;
+  slim Telegram body became the live default. Inline keyboard
+  retained as belt-and-suspenders fallback initially; dropped
+  2026-05-08 22:04 UTC per Board direction. Telegram is now strictly
+  one-way notification.
+
+**Documents + memory:**
+- Memory `trading_corp_hitl_in_app.md` — current end-state.
+- Design doc `planning/hitl_in_app_design.md` — PendingApprovalRegistry
+  abstraction, route shape, pair-coalescing strategy, audit chain,
+  test plan, files-to-touch.
+- Multiple deploy_log.md entries 2026-05-03 → 2026-05-08 covering
+  each phase.
+
+**Acceptance criteria all met:** Board receives ping → taps deeplink
+→ approves on phone → LangGraph resumes → risk + execute paths run.
+Paired rolls: one notification, one card, one Approve, both legs
+atomic. Authelia gates the routes. Audit chain unchanged.
+
+---
+
+## ⏸ DEFERRED — Phase E: PWA + web push subscription flow  *(broken out 2026-05-09 from the HITL approval flow DONE entry above)*
+
+**Goal:** PWA service worker + push subscription flow on the web app,
+so Telegram can be dropped entirely (or kept as belt-and-suspenders).
+Until Phase E lands, Telegram remains the bridge notification channel.
+
+**Why deferred:** Telegram works fine as the bridge today. Web push
+adds complexity (service worker registration, VAPID keys, browser
+permission flow, iOS Safari quirks) for a marginal UX gain. Pull in
+when there's a concrete reason — e.g., Telegram outages, multi-device
+ergonomics, or expanding to family member accounts where each user
+needs a separate notification surface.
+
+**Originally scoped under the HITL approval flow umbrella** — the
+DONE entry above describes Phases A–D in full. Phase E was always
+"deferred"; this stub keeps it visible without polluting the DONE
+entry.
+
+**Priority:** P3 — quality-of-life, no functional gap until Telegram
+is no longer trustworthy as a push channel.
+
+---
+
+## (HITL approval flow — original P0 entry collapsed into ✅ DONE above; full phase detail moved to runbooks/deploy_log.md)
 
 **Direction (Board, 2026-05-03):** the web app at
 `https://trading.jacksumner.com` is the primary HITL surface for all
@@ -1864,7 +1934,19 @@ is ready to be installed as a PWA.
 
 ---
 
-## P0 — Telegram approval message enrichment  *(REDIRECTED — 2026-05-03; HITL moves to web app)*
+## ✅ SUPERSEDED — Telegram approval message enrichment  *(superseded by web-app HITL flow shipped 2026-05-03 → 2026-05-08; see ✅ DONE entry above)*
+
+Phase 1 (rich Telegram approval format) and Phase 2 item 1 (position
+context block) shipped per their original scope. Phase 2 items 2 + 3
+(net-debit roll-up + Approve/Modify quick-replies) were superseded by
+the web-app HITL flow — pair-coalescing now happens at render time
+in the dashboard's approval card, and Approve/Modify use real web
+buttons instead of Telegram inline keyboards. Telegram is
+notification-only on prod since 2026-05-05 01:34 UTC; the rich format
+is dead-on-prod fallback in the binary. Closed; no further work.
+
+**Original entry retained below for context — direction change and
+"target format" mockup were load-bearing in shaping the web-app UI:**
 
 **Direction change (Board, 2026-05-03):** Telegram is being demoted to
 informational / notification-only. Approve / Reject / Modify
@@ -2050,7 +2132,18 @@ request for `Standard DSv5 Family vCPUs` etc. Same procedure.
 
 ---
 
-## P1 — Lord Otter Phase 1.5 (equity-aware sizing + real stops)
+## ⏸ DEFERRED — Lord Otter Phase 1.5 (equity-aware sizing + real stops)  *(originally P1 — 2026-04-30; deferred 2026-05-09 with the Otter disable on `coinbase_spot`)*
+
+Lord Otter is `enabled: false` on `coinbase_spot` since the 2026-05-09
+Donchian pivot. Phase 1.5 was scoped against Otter on Coinbase Spot
+specifically; that target no longer exists. **Revival path: BitUnix
+Futures Phase 4** (per memory `trading_corp_bitunix_vision.md`) — the
+sizing + stop-loss mechanics designed below DO inform BitUnix work
+(Phase 4 explicitly gates on a stop-loss strategy + conviction →
+leverage map). Re-pull this entry when BitUnix Phase 4 starts; until
+then, no work needed on the Coinbase side.
+
+**Original Phase 1.5 design (preserved for reference):**
 
 Current Phase 1 placeholder: `qty = $50 × tier_factor / price`. Tiny on
 purpose so first live alerts can't accidentally place a giant order.
@@ -2548,11 +2641,11 @@ HTMX/HTML routes. Skip unless committed to native build.
 
 - Multi-region active-active deploy — overkill for personal trading
 - Kubernetes — overkill, single VPS is right
-- Web push subscription flow — Telegram works fine, revisit if it stops working
 - Pure-native iOS app — PWA is sufficient
 - Reverse-engineering Lord Otter's signals — defeats paying for it
 
 ---
 
-_Last updated: 2026-04-29. Prepend new items at the top of the appropriate
-section. Mark items DONE rather than deleting so we have a record._
+_Last updated: 2026-05-09 (Donchian Phase 2 deploy + grooming pass).
+Prepend new items at the top of the appropriate section. Mark items DONE
+rather than deleting so we have a record._
