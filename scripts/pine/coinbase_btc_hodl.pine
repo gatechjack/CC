@@ -1,0 +1,86 @@
+// Coinbase BTC HODL — Donchian Channel Breakout (Pine Script v6 strategy)
+//
+// Visualization + backtest companion to the production agent at
+// trading_corp/agents/strategies/coinbase_btc_donchian_agent.py
+// (decision module: trading_corp/agents/strategies/donchian_btc.py).
+//
+// Use:
+//   1. Load chart at COINBASE:BTCUSD
+//   2. Set timeframe to 6h (production granularity)
+//   3. Paste into TradingView Pine Editor → Add to chart
+//   4. Strategy Tester tab shows the backtest
+//
+// Locked production config (config/strategies.yaml > coinbase_btc_donchian):
+//   entry_lookback=20, exit_lookback=6, trend_filter_lookback=168,
+//   granularity_seconds=21600 (6h)
+//
+// Walk-forward validation reference (24mo BTC, see commit 072a484):
+//   +56.30% vs HODL +30.42% → +25.89% alpha
+//   8/10 top-train configs beat HODL out-of-sample
+//   35 round-trips, 49% win rate, max DD 16.49%, 25% time in BTC
+//
+// Divergences from production worth knowing:
+//   - TradingView's Coinbase feed != ccxt's Coinbase feed; expect minor
+//     (≤1%) divergence on the same backtest window.
+//   - commission_value default = 0.6% (Coinbase retail spot taker tier);
+//     the Python walk-forward harness used 0%. Tune to match for
+//     head-to-head numeric comparisons.
+//   - process_orders_on_close=true matches the agent's "evaluate at
+//     bar close" semantics. Without this Pine fills at next-bar-open
+//     and the results diverge meaningfully.
+//   - Look-ahead guard: high[1] / low[1] exclude the current bar from
+//     the channels, same as the Python module's bars_window[-(N+1):-1]
+//     slicing. Keep this if forking — without it, an intra-bar tick
+//     can both set the threshold AND trigger the breakout.
+
+//@version=6
+strategy("Coinbase BTC HODL — Donchian Channel Breakout",
+     overlay              = true,
+     initial_capital      = 10000,
+     default_qty_type     = strategy.percent_of_equity,
+     default_qty_value    = 100,
+     pyramiding           = 0,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.6,
+     calc_on_every_tick   = false,
+     process_orders_on_close = true)
+
+// ─── Inputs ──────────────────────────────────────────────────
+entry_lookback        = input.int(20,  "Entry channel lookback (bars)",    minval=2, group="Donchian")
+exit_lookback         = input.int(6,   "Exit channel lookback (bars)",     minval=2, group="Donchian")
+trend_filter_lookback = input.int(168, "Trend filter SMA lookback (bars)", minval=0, group="Donchian",
+                                  tooltip="0 disables; production uses 168 (~42d on 6h bars).")
+
+use_trend_filter = trend_filter_lookback > 0
+
+// ─── Channel computation ─────────────────────────────────────
+// Exclude the CURRENT bar from both channels so an intra-bar tick can't
+// simultaneously set the threshold AND trigger the breakout. Same
+// look-ahead guard as the production decision module.
+donchian_high = ta.highest(high[1], entry_lookback)
+donchian_low  = ta.lowest(low[1],   exit_lookback)
+
+// ─── Trend filter ────────────────────────────────────────────
+// Production includes the current bar in the SMA; ta.sma(close, N) matches.
+trend_sma = use_trend_filter ? ta.sma(close, trend_filter_lookback) : na
+trend_ok  = use_trend_filter ? (close > trend_sma) : true
+
+// ─── Decision logic (CASH↔BTC, long-only) ────────────────────
+long_signal = close > donchian_high and trend_ok
+exit_signal = close < donchian_low
+
+if long_signal and strategy.position_size == 0
+    strategy.entry("LONG", strategy.long, comment="BUY breakout")
+
+if exit_signal and strategy.position_size > 0
+    strategy.close("LONG", comment="SELL breakdown")
+
+// ─── Visualization ───────────────────────────────────────────
+plot(donchian_high, color=color.new(color.green, 30), linewidth=2,
+     title="Donchian high (entry channel)")
+plot(donchian_low,  color=color.new(color.red,   30), linewidth=2,
+     title="Donchian low (exit channel)")
+plot(use_trend_filter ? trend_sma : na, color=color.new(color.blue, 50), linewidth=1,
+     title="Trend filter SMA")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 92) : na, title="In-BTC zone")
