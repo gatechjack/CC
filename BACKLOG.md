@@ -1243,6 +1243,76 @@ primary auth gate for live trading.
 
 ---
 
+## P2 — BitUnix equity is double-counting: `transfer` field is being added on top of `available`  *(NEW — 2026-05-09)*
+
+**Symptom:** dashboard tile + division-detail page render BitUnix Futures
+equity at exactly 2× the cash balance. Verified by Board on 2026-05-09:
+home tile shows `$6,763.94`, division detail shows `Cash $3,381.97 /
+Equity $6,763.94`. Math: `6,763.94 / 3,381.97 = 2.000`.
+
+**Root cause (high confidence):** `trading_corp/brokers/bitunix.py:213-225`
+sums seven fields from `/api/v1/futures/account` per stablecoin into
+`coin_equity`:
+
+```python
+coin_equity = (
+    _to_float(d.get("available"))     +
+    _to_float(d.get("frozen"))        +
+    _to_float(d.get("margin"))        +
+    _to_float(d.get("transfer"))      +
+    _to_float(d.get("crossUnrealizedPNL"))    +
+    _to_float(d.get("isolationUnrealizedPNL")) +
+    _to_float(d.get("bonus"))
+)
+```
+
+With no open positions, `frozen / margin / *PNL / bonus` are all 0, and
+`transfer` ends up equal to `available` — so `coin_equity ≈ 2 ×
+available`. The 2026-05-03 deploy comment says the Board verified
+`available + transfer = total UI equity` at deploy time, but that
+reconciliation either doesn't hold today or was specific to an
+in-flight deposit state we can't reproduce.
+
+**Memory `trading_corp_bitunix_vision.md` claims `transfer` is additive,
+NOT a duplicate of `available`.** That memory is now suspect — needs
+re-verification before fix.
+
+**Fix candidates (decide after re-verifying API response):**
+
+1. **Drop `transfer` from the sum.** Equity becomes
+   `available + frozen + margin + *PNL + bonus`. Matches the literal
+   meaning ("available + locked-in-orders + locked-in-positions +
+   unrealized PNL + promotional credit"). `transfer` becomes a logged-
+   only field for visibility.
+2. **Make `transfer` conditional.** Some BitUnix UI explanations
+   describe `transfer` as "in-transit transfers from spot wallet" —
+   if so, it's transient (counted only during the transfer's pending
+   window). Hard to detect from the response alone; option 1 is safer.
+3. **Read `equity` directly** if the API response includes it as a
+   computed field (some BitUnix endpoints return both `available`
+   and `equity` separately). Verify against the v1 docs.
+
+**Verification step before fix:**
+- SSH to tc-prod-vm, hit `/api/v1/futures/account?marginCoin=USDT` with
+  the live signed request, dump the raw JSON.
+- Cross-check each field's value against the BitUnix UI's "Total Equity"
+  display.
+- Confirm whether `transfer` is currently equal to `available` (current
+  hypothesis) or a separate balance.
+
+**Files to touch:** `trading_corp/brokers/bitunix.py` (probably ~5-line
+change to the `coin_equity` formula). Update the comment block at
+lines 213-225 with the corrected mapping. Update memory
+`trading_corp_bitunix_vision.md` to retract the 2026-05-03 claim.
+
+**Priority:** P2 today (display-only — BitUnix is read-only standby and
+no sizing math reads this number yet). **Becomes P0 before BitUnix Phase
+4** (live order placement) ships, because risk caps + `auto_execute_caps`
+sizing percentages would all be off by 2×, leading to oversized orders.
+Resolve before that phase greenlights.
+
+---
+
 ## P2 — 5 PMCC scan tests failing on liquidity gate  *(NEW — 2026-04-30)*
 
 `tests/test_pmcc_logic.py` has 5 failing tests, all caused by mock
