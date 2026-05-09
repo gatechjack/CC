@@ -30,7 +30,98 @@ exist yet; flipping early would point users at 404s.
 
 ---
 
-## ⏸ PAUSED — Lord Otter + Market Cypher feature work  *(2026-05-02 — Board direction)*
+## 🟡 ACTIVE — Coinbase BTC Donchian (Phase 2 wiring + paper-mode deploy)  *(2026-05-08 — Board direction)*
+
+The Coinbase Spot division pivots from Otter+Cypher confluence trading to a
+single 100%-in/out CASH↔BTC Donchian Channel Breakout strategy. Validated
+via walk-forward; locked config in `strategies.yaml`. Phase 1 (backtest
+infrastructure + agent module + UI scaffolding) is **DONE**. Phase 2 (wiring
++ paper-mode deploy) is the active pickup point.
+
+**Why this strategy:**
+- Otter+Cypher confluence approach was tested in walk-forward (commit
+  `cd26a75`) — 0/10 top-train configs beat HODL out-of-sample.
+  Strategy had no demonstrable edge.
+- Donchian (commit `072a484`) walk-forward on 12mo BTC: 8/10 top-train
+  configs beat HODL out-of-sample, median test α +12.86%, best +27.21%.
+  24mo full corpus: +56.30% vs HODL +30.42% → +25.89% alpha.
+- Locked config: `entry_lookback=20, exit_lookback=6,
+  trend_filter_lookback=168 (~42d SMA), granularity=21600s (6h)`.
+
+**Phase 1 status (DONE — local commits):**
+- `commit 072a484` — Donchian decision module + backtest harness +
+  walk-forward tool. 6h Coinbase BTC bars, multi-granularity validation
+  (1h/6h/1d all show OOS edge).
+- `commit 0eb7692` — Locked config in `config/strategies.yaml` under
+  `coinbase_btc_donchian` (still `enabled: false`).
+- `commit fe1cee8` — Agent module
+  `trading_corp/agents/strategies/coinbase_btc_donchian_agent.py`
+  + 16 unit tests (`tests/test_coinbase_btc_donchian_agent.py`)
+  + BacktesterAgent registry pass for `coinbase_btc_donchian`.
+- `commit f9277e9` — Division-page UI tiles: state card, per-bar
+  decision log, realized round-trips. Render empty states until wiring.
+
+**Phase 2 pickup brief (DO NOT SKIP STEPS):**
+
+1. **`agents/risk.py`** — add per-strategy `max_drawdown_disabled: true`
+   flag honoring (~10 lines, isolated change).
+2. **`config/risk.yaml`** — `coinbase_btc_donchian` per-strategy
+   override block: per-trade=100%, daily-loss=null, max-DD=disabled.
+3. **`trading_corp/main.py`** — 6h poll loop wiring. Use
+   `_scheduled_pmcc_scan_loop` as structural template:
+     - Wakes at 00/06/12/18 UTC (the canonical 6h-bar boundaries)
+     - Reads broker snapshot for account_equity + held BTC qty
+     - Fetches recent BTC OHLCV (need ≥168 bars for trend filter +
+       buffer; 200 bars is safe)
+     - Calls `agent.on_bar_close(bars, account_equity=..., held_btc=...)`
+     - Routes any returned `ProposedOrder` through risk + HITL
+       pipeline (existing infrastructure, unchanged)
+     - **WRITES `donchian_evaluated` audit row regardless of
+       decision** — that's what populates the dashboard's per-bar
+       log tile (UI scaffolding from f9277e9 expects this).
+4. **`config/strategies.yaml`** — flip `coinbase_btc_donchian.enabled`
+   to `true`; set Otter+Cypher to `enabled: false` on `coinbase_spot`.
+   Files preserve (Otter+Cypher eventually move to BitUnix futures —
+   see existing PAUSED entry below).
+5. **md5-diff prod, patch onto prod content** per the established
+   drift pattern (see memory `trading_corp_prod_git_drift.md`).
+   Several files touched today probably differ from prod.
+6. **Deploy with backup tags**, restart `trading-corp.service`,
+   verify scheduler-online line, wait for first 6h-bar boundary
+   (00/06/12/18 UTC), confirm `donchian_evaluated` row lands.
+7. **Smoke**: dashboard `https://trading.jacksumner.com/division/coinbase_spot`
+   should render the 3 new tiles, log tile populated with the first
+   bar's evaluation.
+
+**Deferred until after Phase 2 lands:**
+- 6h price chart with Donchian band overlay + buy/sell markers +
+  current-bar-highlight (originally item 4 in the UI list — pulled
+  out tonight to scope realistically; build with real data the next
+  morning post-deploy).
+- Approval-card extensions for Donchian metadata in the
+  `comms/position_context.py` view-builder + a partial for
+  `approval_detail.html`. Not urgent — until Phase 2 is enabled,
+  no Donchian approvals fire anyway.
+
+**Risk profile of Phase 2 deploy:**
+- Strategy stays paper-mode (`auto_execute: false`); every order
+  routes to HITL approval. Real-money risk = zero.
+- The risk.py change is the only safety-adjacent edit. Per CLAUDE.md
+  §6, that requires explicit Board approval IN-SESSION. Step 1
+  above will pause and confirm before editing.
+
+---
+
+## ⏸ PAUSED — Lord Otter + Market Cypher feature work  *(2026-05-02 — Board direction; superseded 2026-05-08 by Donchian pivot)*
+
+**Update 2026-05-08:** the original "pause pending PMCC research-as-consultant
+validation" deadline (2026-05-05) passed without a clean validation signal.
+Separately, walk-forward testing showed the Otter+Cypher confluence approach
+on `coinbase_spot` had no demonstrable edge (commit `cd26a75`). Board
+direction (this session) pivots `coinbase_spot` to the Donchian strategy
+above; Otter+Cypher feature work remains paused indefinitely. Files preserve
+for future BitUnix Futures wiring (see `trading_corp_bitunix_vision.md`
+memory entry).
 
 Both crypto strategies are in **maintenance mode** until the PMCC
 research-as-consultant pattern has been observed in production for

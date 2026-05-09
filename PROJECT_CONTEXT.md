@@ -302,9 +302,13 @@ explicitly rather than silently sliding past.
 These are real items, just not active. See BACKLOG.md for prioritized
 detail; this list captures the long-shape items.
 
-- **Otter/Cypher feature expansion**: paused 2026-05-02 → 2026-05-05;
-  resumes (or not) based on PMCC research-as-consultant validation
-  outcome.
+- **Otter/Cypher feature expansion**: paused 2026-05-02 → 2026-05-05.
+  **2026-05-08 update**: Board pivoted `coinbase_spot` to a Donchian
+  Channel Breakout strategy (see BACKLOG.md "🟡 ACTIVE — Coinbase BTC
+  Donchian"). Walk-forward testing showed the Otter+Cypher confluence
+  approach had no demonstrable out-of-sample edge. Otter+Cypher files
+  preserved for future BitUnix Futures wiring; their `enabled` flag
+  on `coinbase_spot` flips to `false` in the Phase 2 wiring deploy.
 - **Research firm intraday TA**: harmonic patterns (3 drives, ABCD,
   etc.), Fibonacci (golden pocket / golden ratio), price-action
   structure (HH/HL/LH/LL), order blocks, divergences, vision-capable
