@@ -25,6 +25,25 @@ pmcc:
   # Board. Counter resets on any successful engagement. Default 3.
   research_outage_alert_threshold: 3
 
+# Polymarket prediction-market caps. Read by:
+#   - polymarket_arbitrage strategy (universe pre-filter)
+#   - RiskAgent.evaluate (atomic per-order + aggregate caps)
+# All caps Board-confirmed 2026-05-09 (Phase 2a memo answer 1).
+polymarket:
+  # ── Universe pre-filter (strategy-side, also re-checked at risk gate) ──
+  min_market_24h_volume_usd: 50_000.0  # drop low-volume / low-liquidity markets
+  max_spread_cents: 3.0                # drop markets with bid-ask > 3¢
+  min_hours_to_resolution: 24.0        # drop near-resolution markets
+  min_implied_probability: 0.05        # reject markets at extreme tails
+  max_implied_probability: 0.95
+  # ── Per-order risk caps (RiskAgent atomic check) ──
+  max_pct_division_equity_per_position: 0.05   # forward-compat — fixed $1 dominates today
+  max_single_market_notional_usd: 250.0        # forward-compat — fixed $1 dominates today
+  # ── Aggregate caps (RiskAgent queries audit_event for in-flight + filled) ──
+  daily_aggregate_max_pct_of_equity: 0.25      # 25% of polymarket division equity
+  daily_aggregate_cap_usd: 1_000.0             # but never more than $1K/day in NEW notional
+  total_open_aggregate_cap_usd: 1_000.0        # max $1K notional across all open positions
+
 # Per-strategy overrides — leave empty to inherit `global`.
 overrides:
   fidelity_options: {}

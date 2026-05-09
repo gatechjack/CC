@@ -711,6 +711,26 @@ async def run(argv: list[str] | None = None) -> int:
             )
         )
 
+        # --- Polymarket Arbitrage scanner (every 30s) ---
+        # Phase 2a: pulls open Polymarket markets, deterministic-filters,
+        # caps to K=10 survivors, calls Anthropic for a calibrated YES
+        # probability per survivor, emits ProposedOrders on divergence.
+        # Disabled by default in strategies.yaml — the loop wakes every
+        # 30s but does nothing while `enabled: false`.
+        from trading_corp.agents.strategies.polymarket_arbitrage import (
+            PolymarketArbitrageAgent,
+        )
+        polymarket_arb_agent = PolymarketArbitrageAgent(db_url=secrets.db_url)
+        polymarket_arb_task = asyncio.create_task(
+            _scheduled_polymarket_arb_loop(
+                polymarket_arb_agent,
+                graph=graph,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+            )
+        )
+
         # --- Paper-trade replay (Phase C of would_have_placed enrichment) ---
         # One-shot startup catch-up: mark legacy pre-Phase-A rows + replay
         # any pending rows that landed during the last downtime. Then spawn
@@ -781,6 +801,11 @@ async def run(argv: list[str] | None = None) -> int:
             scheduler_task.cancel()
             try:
                 await scheduler_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            polymarket_arb_task.cancel()
+            try:
+                await polymarket_arb_task
             except (asyncio.CancelledError, Exception):
                 pass
             donchian_task.cancel()
@@ -1293,6 +1318,114 @@ async def _run_donchian_bar(
     # the snapshot lags.
     if final_status == "filled":
         agent.mark_filled(side=order.side, fill_price=float(order.limit_price or 0.0))
+
+
+async def _scheduled_polymarket_arb_loop(
+    agent,
+    *,
+    graph,
+    channel,
+    logger_agent,
+    data_exec,
+) -> None:
+    """Polymarket Arbitrage scanner loop (Phase 2a).
+
+    Wakes every `poll_interval_sec` (default 30s; from strategies.yaml).
+    On each tick:
+      - If the strategy is `enabled: false`, no-op and sleep.
+      - Otherwise call `agent.run_scan_cycle(broker)` which pulls markets,
+        deterministic-filters, calls Anthropic per survivor, emits
+        ProposedOrders on divergence ≥ min_divergence_pct.
+      - Each ProposedOrder routes through the standard risk + HITL graph.
+
+    Phase 2a posture: strategy ships disabled. Scheduler is harmless until
+    the Board flips `enabled: true` in strategies.yaml AND the KV secrets
+    land. Cooldown TTL prevents re-burning Anthropic calls on the same
+    market within a 6h window.
+    """
+    log.info(
+        "Polymarket arbitrage scanner online (enabled=%s, auto_execute=%s)",
+        agent.enabled, agent.auto_execute,
+    )
+    while True:
+        try:
+            # Re-read interval each tick so changes in strategies.yaml
+            # take effect without a restart.
+            poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 30))
+            await asyncio.sleep(max(5.0, poll_sec))
+
+            if not agent.enabled:
+                continue
+
+            broker = data_exec.brokers.get(agent.division)
+            if broker is None:
+                log.debug(
+                    "Polymarket scanner: no broker registered for division=%s; skipping cycle",
+                    agent.division,
+                )
+                continue
+
+            try:
+                orders = await agent.run_scan_cycle(
+                    broker, logger_agent=logger_agent,
+                )
+            except Exception as e:
+                log.exception("Polymarket scanner: run_scan_cycle failed: %s", e)
+                continue
+
+            if not orders:
+                continue
+
+            log.info(
+                "Polymarket scanner: %d divergence-based ProposedOrder(s) emitted",
+                len(orders),
+            )
+            for order in orders:
+                logger_agent.log_proposed_order(order)
+                logger_agent.log_event(
+                    agent.name, "polymarket_order_proposed",
+                    {
+                        "strategy": agent.name,
+                        "division": agent.division,
+                        "order_id": order.id,
+                        "side": order.side,
+                        "qty": order.qty,
+                        "limit_price": order.limit_price,
+                        "rationale": order.rationale,
+                        "category": (order.extra or {}).get("category"),
+                        "market_slug": (order.extra or {}).get("market_slug"),
+                        "divergence_pct": (order.extra or {}).get("divergence_pct"),
+                    },
+                )
+                try:
+                    await channel.push(
+                        f"📊 Polymarket {order.side.upper()} signal: "
+                        f"{order.symbol} (divergence "
+                        f"{(order.extra or {}).get('divergence_pct', 0):.1f}%) — "
+                        f"routing for approval..."
+                    )
+                except Exception as e:
+                    log.warning("Polymarket channel push failed: %s", e)
+
+                final_status = await _run_order(
+                    graph, channel, logger_agent, order, division=agent.division,
+                )
+                logger_agent.log_event(
+                    agent.name, "polymarket_order_result",
+                    {
+                        "strategy": agent.name,
+                        "division": agent.division,
+                        "order_id": order.id,
+                        "final_status": final_status,
+                    },
+                )
+
+        except asyncio.CancelledError:
+            log.info("Polymarket arbitrage scanner cancelled.")
+            return
+        except Exception as e:
+            log.exception("Polymarket scanner loop error (continuing): %s", e)
+            await asyncio.sleep(30)
 
 
 async def _build_context_md(trend_agent, portfolio, logger_agent) -> str:

@@ -951,3 +951,41 @@ btc_accumulator:
   # a paper trail of "why we didn't act" for tuning.
   audit:
     log_confluence_negative: true
+
+
+# ── Polymarket Arbitrage (Phase 2a, 2026-05-09) ──
+# LLM-divergence detection on Polymarket prediction markets.
+#   - Pre-filter universe via risk.yaml polymarket.* (volume / spread / ttr)
+#   - Cap to K markets/cycle (Anthropic call ceiling)
+#   - Direct Anthropic call per survivor (NOT through Research firm —
+#     Path B chosen 2026-05-09; cross-division knowledge work isn't
+#     this strategy's question)
+#   - Emit ProposedOrder when |LLM prob - implied prob| × 100 ≥ min_divergence_pct
+#
+# Phase 2a ships with enabled:false. Flip to true after:
+#   1. Board funds the Polymarket wallet ($500 USDC)
+#   2. KV holds POLYMARKET-PRIVATE-KEY / POLYMARKET-FUNDER-ADDRESS / POLYGON-RPC-URL
+#   3. Phase 2.5 Backtester verdict cleared
+polymarket_arbitrage:
+  enabled: false                    # Board flip to enable; see precondition list above
+  auto_execute: false               # HITL approval via web app per CLAUDE.md
+  division: polymarket_arbitrage    # which division this strategy operates on
+  poll_interval_sec: 30             # scanner cycle cadence
+  k_markets_per_cycle: 10           # max Anthropic calls per cycle (Q3 answer 'a')
+  market_cooldown_hours: 6          # don't re-evaluate the same market within 6h
+  min_divergence_pct: 10.0          # |LLM prob - implied prob| × 100 ≥ this → emit order
+  time_horizon_max_days: 7          # short-tail only per Q2; long-tail deferred
+  sizing:
+    mode: "fixed_usdc"              # forward-compat: "pct_with_confidence" reserved
+    fixed_amount: 1.0               # $1 USDC per shakedown trade
+
+
+# ── Polymarket Copy Trading (Phase 4+ placeholder; not yet implemented) ──
+# Documented here so future-Claude knows the slot exists. The
+# polymarket_copy_trading division uses broker:paper today as a
+# STANDBY placeholder. When the strategy lands, this block grows
+# into the real config and the division flips broker:paper → polymarket.
+polymarket_copy_trading:
+  enabled: false                    # Phase 4+ — strategy not built yet
+  auto_execute: false
+  division: polymarket_copy_trading

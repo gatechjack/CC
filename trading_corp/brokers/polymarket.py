@@ -1,4 +1,4 @@
-"""Polymarket broker — Phase 1 read-only.
+"""Polymarket broker — Phase 1 read-only + Phase 2a market discovery.
 
 Subclasses `ReadOnlyBroker`: there is no `place_order` method on this class.
 A code path that tries to place orders against a Polymarket adapter is a
@@ -40,8 +40,10 @@ mapping and corrected if needed.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime, timezone
+import random
+from datetime import datetime, timezone, timedelta
 
 import httpx
 
@@ -69,6 +71,16 @@ _BALANCE_OF_SELECTOR = "0x70a08231"
 
 _DEFAULT_TIMEOUT_S = 15.0
 
+# Phase 2a defensive HTTP posture. Polymarket's CLOB documents ~10-30
+# req/sec for public reads; gamma-api is similar. We keep our outbound
+# concurrency well below the published limit so the scanner doesn't
+# saturate on a single 30s tick. 429s are rare in practice but the
+# backoff is the right behavior if they ever fire.
+_HTTP_CONCURRENCY_LIMIT = 6
+_HTTP_BACKOFF_BASE_S = 1.0
+_HTTP_BACKOFF_MAX_S = 30.0
+_HTTP_MAX_RETRIES = 4
+
 
 def _erc20_balanceof_calldata(address: str) -> str:
     """Build the eth_call `data` field for `USDC.balanceOf(address)`.
@@ -86,6 +98,20 @@ def _hex_uint_to_int(hex_str: str) -> int:
     if not hex_str or hex_str in ("0x", "0x0"):
         return 0
     return int(hex_str, 16)
+
+
+def _to_float(v) -> float:
+    """Coerce string-or-number to float, defaulting to 0.0 on garbage.
+
+    Polymarket API responses sometimes return numeric fields as strings
+    (volume24hr=\"13730.55\") and sometimes as numbers; this normalizes.
+    """
+    if v is None or v == "":
+        return 0.0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class PolymarketBroker(ReadOnlyBroker):
@@ -113,6 +139,11 @@ class PolymarketBroker(ReadOnlyBroker):
         self._stub = not (funder_address and polygon_rpc_url)
         self._client: httpx.AsyncClient | None = None
         self._connected = False
+        # Phase 2a — outbound concurrency cap. Bound the number of
+        # in-flight HTTP requests so a Phase 2 scanner cycle that
+        # touches K=10 markets in parallel doesn't burst above
+        # Polymarket's published rate limits.
+        self._http_sem = asyncio.Semaphore(_HTTP_CONCURRENCY_LIMIT)
 
     async def connect(self) -> None:
         if self._stub:
@@ -243,6 +274,172 @@ class PolymarketBroker(ReadOnlyBroker):
         except Exception as e:
             log.debug("PolymarketBroker.quote(%r) failed: %s", symbol, e)
             return 0.0
+
+    # ── Phase 2a — market discovery for the arbitrage scanner ─────────
+
+    async def list_markets(
+        self,
+        *,
+        min_volume_24h_usd: float = 0.0,
+        max_spread_cents: float = 100.0,
+        min_hours_to_resolution: float = 0.0,
+        max_days_to_resolution: float | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Return open / accepting-orders Polymarket markets matching the
+        deterministic pre-filter. Used by the polymarket_arbitrage scanner
+        to narrow the universe before any LLM probability calls.
+
+        Filters applied (all in Python on top of gamma-api results;
+        gamma-api's own query-param filtering is inconsistently documented,
+        so we do it client-side for predictability):
+
+          - active=true, closed=false, archived=false, accepting_orders=true
+          - liquidity (24h volume proxy) >= min_volume_24h_usd
+          - bid-ask spread <= max_spread_cents
+          - hours-to-resolution within [min_hours, max_days × 24]
+          - implied probability bounds enforced by the strategy AFTER
+            this call (needs token-id-level last-trade lookup)
+
+        Returns a list of market dicts with the gamma-api fields plus
+        derived helpers (`hours_to_resolution`, `category` if extractable).
+        Returns [] in stub mode or on any HTTP failure.
+        """
+        if self._stub or not self._client:
+            return []
+
+        # Gamma-api supports `closed=false&active=true&limit=N` reliably.
+        # Other params (liquidity_min, end_date_max, etc.) we don't trust;
+        # filter client-side instead.
+        params = {
+            "closed": "false",
+            "active": "true",
+            "archived": "false",
+            "limit": str(int(limit)),
+        }
+        try:
+            data = await self._http_get_json(f"{_GAMMA_API}/markets", params=params)
+        except Exception as e:
+            log.warning("PolymarketBroker.list_markets: gamma fetch failed: %s", e)
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        now = datetime.now(timezone.utc)
+        max_horizon = (
+            now + timedelta(days=float(max_days_to_resolution))
+            if max_days_to_resolution is not None else None
+        )
+        min_horizon = now + timedelta(hours=float(min_hours_to_resolution))
+
+        out: list[dict] = []
+        for m in data:
+            if not isinstance(m, dict):
+                continue
+            # Gamma-api doesn't always expose `accepting_orders`; if absent,
+            # treat as accepting. Strategy can re-check via CLOB if needed.
+            if m.get("acceptingOrders") is False or m.get("accepting_orders") is False:
+                continue
+            # Volume / liquidity. Gamma-api's `liquidity` and `volume24hr`
+            # are both surfaced — prefer 24hr where available.
+            vol = _to_float(m.get("volume24hr") or m.get("volume_24hr") or m.get("liquidity"))
+            if vol < float(min_volume_24h_usd):
+                continue
+            # Bid-ask spread. Gamma-api returns `spread` as a fraction
+            # (0.01 = 1 cent on a $0-1 market). Some markets omit it
+            # (use the CLOB orderbook for true spread). We keep markets
+            # with missing spread and let the strategy verify via CLOB.
+            spread = m.get("spread")
+            if spread is not None:
+                # Normalize: if returned as 0-1 fraction, convert to cents.
+                spread_cents = _to_float(spread) * 100.0
+                if spread_cents > float(max_spread_cents):
+                    continue
+            # Time-to-resolution. End date may be `endDate` (gamma).
+            end_iso = m.get("endDate") or m.get("end_date")
+            try:
+                end_dt = datetime.fromisoformat(str(end_iso).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                # No usable end date — exclude rather than include unbounded markets.
+                continue
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            if end_dt < min_horizon:
+                continue
+            if max_horizon is not None and end_dt > max_horizon:
+                continue
+            hours_to_res = (end_dt - now).total_seconds() / 3600.0
+            # Best-effort category extraction. Gamma-api's market schema has
+            # evolved; defend against multiple shapes.
+            category = (
+                m.get("category")
+                or (m.get("tags") or [None])[0]
+                or m.get("eventCategory")
+                or "uncategorized"
+            )
+            out.append({
+                **m,
+                "hours_to_resolution": hours_to_res,
+                "category": str(category) if category is not None else "uncategorized",
+                "_volume_24h_used": vol,
+            })
+
+        return out
+
+    async def _http_get_json(
+        self,
+        url: str,
+        params: dict[str, str] | None = None,
+    ) -> dict | list:
+        """GET with concurrency-cap + 429 backoff + jitter. Returns parsed JSON.
+
+        Reused by list_markets and quote(); could replace the existing inline
+        client.get calls in those paths for consistency, but those work today
+        and we don't refactor without reason.
+        """
+        if not self._client:
+            raise RuntimeError("client not connected")
+        attempt = 0
+        async with self._http_sem:
+            while True:
+                attempt += 1
+                try:
+                    r = await self._client.get(url, params=params)
+                    if r.status_code == 429 and attempt <= _HTTP_MAX_RETRIES:
+                        # Exponential backoff with jitter. Honor Retry-After
+                        # if the server returns it; otherwise compute.
+                        retry_after = r.headers.get("Retry-After")
+                        if retry_after:
+                            try:
+                                delay = float(retry_after)
+                            except ValueError:
+                                delay = _HTTP_BACKOFF_BASE_S * (2 ** (attempt - 1))
+                        else:
+                            delay = _HTTP_BACKOFF_BASE_S * (2 ** (attempt - 1))
+                        delay = min(delay, _HTTP_BACKOFF_MAX_S)
+                        # +/- 25% jitter to avoid thundering-herd retries
+                        delay *= (0.75 + random.random() * 0.5)
+                        log.info(
+                            "PolymarketBroker: 429 from %s; backoff %.1fs (attempt %d/%d)",
+                            url, delay, attempt, _HTTP_MAX_RETRIES,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    r.raise_for_status()
+                    return r.json()
+                except (httpx.ConnectError, httpx.ReadTimeout) as e:
+                    if attempt <= _HTTP_MAX_RETRIES:
+                        delay = _HTTP_BACKOFF_BASE_S * (2 ** (attempt - 1))
+                        delay = min(delay, _HTTP_BACKOFF_MAX_S)
+                        delay *= (0.75 + random.random() * 0.5)
+                        log.info(
+                            "PolymarketBroker: %s on %s; backoff %.1fs (attempt %d/%d)",
+                            type(e).__name__, url, delay, attempt, _HTTP_MAX_RETRIES,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
 
     # ── helpers ────────────────────────────────────────────────────────
 

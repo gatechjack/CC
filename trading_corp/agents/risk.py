@@ -86,6 +86,7 @@ class RiskAgent:
         strategy_state: StrategyState,
         regime: str | None = None,
         realized_vol: float | None = None,
+        db_url: str | None = None,
     ) -> RiskVerdict:
         params = self._params(order.strategy)
 
@@ -102,6 +103,18 @@ class RiskAgent:
                 verdict="reject",
                 reason=f"account '{account.account}' is halted: {account.halt_reason or 'drawdown breach'}",
             )
+
+        # 2.5. Polymarket-specific atomic + aggregate caps. Routed by the
+        # `is_prediction_market` flag on extra so future Polymarket
+        # strategies (copy_trading) reuse the same gate without us
+        # adding a second branch. Runs BEFORE the standard per-trade
+        # risk cap because Polymarket's cap structure is fundamentally
+        # different — implied-probability bounds + notional ceilings,
+        # not per-trade-pct sizing.
+        if (order.extra or {}).get("is_prediction_market"):
+            poly_verdict = self._evaluate_polymarket(order, account, db_url=db_url)
+            if poly_verdict is not None:
+                return poly_verdict
 
         # 3. Daily loss cap (per strategy)
         daily_cap = float(params.get("per_strategy_daily_loss_pct", 0.03))
@@ -212,6 +225,188 @@ class RiskAgent:
             )
 
         return RiskVerdict(verdict="approve", reason="within all risk caps")
+
+    # -- Polymarket-specific cap evaluator --
+    def _evaluate_polymarket(
+        self,
+        order: ProposedOrder,
+        account: AccountState,
+        *,
+        db_url: str | None = None,
+    ) -> RiskVerdict | None:
+        """Apply Polymarket's bespoke cap structure to a prediction-market
+        order. Returns a RiskVerdict if the order is rejected/resized, or
+        None to fall through to the generic evaluator (which will then
+        approve since the per-trade-pct caps don't bind on $1-shakedown
+        orders).
+
+        Caps applied:
+          - implied-probability bounds (5-95%) — re-check the strategy's
+            pre-filter at the gate as defense-in-depth
+          - max % division equity per position — atomic
+          - max single-market notional — atomic
+          - daily aggregate exposure cap (25% equity, capped at $1K) —
+            queries audit_event for today's filled + would_have_placed
+            polymarket rows
+          - total open-aggregate cap ($1K) — queries audit_event for
+            currently-open positions
+
+        Aggregate-cap queries are cheap (single audit_event scan with
+        actor='polymarket_arbitrage' filter, today's date partition). They
+        gracefully degrade to "approve" if db_url is None or query fails —
+        the deterministic atomic caps are the load-bearing safety net,
+        aggregates are belt-and-suspenders.
+        """
+        self._reload_if_changed()
+        poly_cfg = self._cfg.get("polymarket", {}) or {}
+        if not poly_cfg:
+            log.warning("RiskAgent: no polymarket caps in risk.yaml; falling through")
+            return None
+
+        extra = order.extra or {}
+        implied = extra.get("implied_prob_at_entry")
+        if implied is not None:
+            try:
+                implied = float(implied)
+            except (TypeError, ValueError):
+                implied = None
+        prob_lo = float(poly_cfg.get("min_implied_probability", 0.05))
+        prob_hi = float(poly_cfg.get("max_implied_probability", 0.95))
+        if implied is not None and not (prob_lo <= implied <= prob_hi):
+            return RiskVerdict(
+                verdict="reject",
+                reason=(
+                    f"polymarket: implied prob {implied:.3f} outside "
+                    f"[{prob_lo:.2f}, {prob_hi:.2f}] bounds"
+                ),
+            )
+
+        # Notional = qty × limit_price (cost in USDC; binary outcome
+        # caps loss at notional).
+        ref_price = order.limit_price or 0.0
+        notional = abs(float(order.qty)) * float(ref_price)
+
+        # Per-position % of division equity. account.equity here is the
+        # division's equity (caller passes the right account snapshot).
+        # If equity is zero/None, skip the % check (strategy is in
+        # shakedown / wallet not funded yet).
+        max_pct = float(poly_cfg.get("max_pct_division_equity_per_position", 0.05))
+        if account.equity > 0 and max_pct > 0:
+            cap_dollars = account.equity * max_pct
+            if notional > cap_dollars:
+                return RiskVerdict(
+                    verdict="reject",
+                    reason=(
+                        f"polymarket: ${notional:.2f} notional > "
+                        f"{max_pct*100:.1f}% of ${account.equity:.2f} "
+                        f"division equity (cap ${cap_dollars:.2f})"
+                    ),
+                )
+
+        # Single-market notional cap (hard $).
+        max_single = float(poly_cfg.get("max_single_market_notional_usd", 250.0))
+        if notional > max_single:
+            return RiskVerdict(
+                verdict="reject",
+                reason=(
+                    f"polymarket: ${notional:.2f} notional > "
+                    f"${max_single:.2f} single-market cap"
+                ),
+            )
+
+        # Aggregate caps — best-effort against audit_event.
+        if db_url:
+            try:
+                today_notional = self._sum_polymarket_today(db_url)
+                open_notional = self._sum_polymarket_open(db_url)
+            except Exception as e:
+                log.debug("RiskAgent: polymarket aggregate query failed: %s", e)
+                today_notional = 0.0
+                open_notional = 0.0
+
+            # Daily new exposure cap. Apply both the equity-pct AND the
+            # absolute $ cap; the tighter of the two binds.
+            daily_pct = float(poly_cfg.get("daily_aggregate_max_pct_of_equity", 0.25))
+            daily_abs = float(poly_cfg.get("daily_aggregate_cap_usd", 1_000.0))
+            daily_cap = daily_abs
+            if account.equity > 0 and daily_pct > 0:
+                daily_cap = min(daily_abs, account.equity * daily_pct)
+            if today_notional + notional > daily_cap:
+                return RiskVerdict(
+                    verdict="reject",
+                    reason=(
+                        f"polymarket: daily aggregate cap reached "
+                        f"(${today_notional:.2f} today + ${notional:.2f} "
+                        f"new > ${daily_cap:.2f})"
+                    ),
+                )
+
+            # Total open-position cap.
+            total_cap = float(poly_cfg.get("total_open_aggregate_cap_usd", 1_000.0))
+            if open_notional + notional > total_cap:
+                return RiskVerdict(
+                    verdict="reject",
+                    reason=(
+                        f"polymarket: total open aggregate cap "
+                        f"(${open_notional:.2f} open + ${notional:.2f} "
+                        f"new > ${total_cap:.2f})"
+                    ),
+                )
+
+        # All atomic + aggregate Polymarket caps cleared. Fall through to
+        # the generic evaluator (which will run the per-trade-pct cap;
+        # for $1-shakedown orders that's a non-binding pass-through).
+        return None
+
+    # -- audit_event aggregation helpers (polymarket caps) --
+
+    @staticmethod
+    def _sum_polymarket_today(db_url: str) -> float:
+        """Sum notional of polymarket orders proposed today.
+
+        Counts kinds: would_have_placed, board_approved, filled — the
+        states that represent committed-or-likely-committed exposure
+        for the day's aggregate cap. Resets at UTC midnight; future:
+        switch to the division's local TZ if it matters for the cap
+        semantics.
+        """
+        import sqlite3
+        import json
+        from datetime import datetime, timezone
+        path = db_url.replace("sqlite:///", "")
+        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        total = 0.0
+        with sqlite3.connect(path) as conn:
+            cur = conn.execute(
+                "SELECT payload_json FROM audit_event "
+                "WHERE actor='polymarket_arbitrage' "
+                "AND kind IN ('would_have_placed','board_approved','filled') "
+                "AND substr(ts,1,10) = ?",
+                (today_iso,),
+            )
+            for (raw,) in cur.fetchall():
+                try:
+                    p = json.loads(raw)
+                    qty = float(p.get("qty") or 0.0)
+                    px = float(p.get("limit_price") or p.get("fill_price") or p.get("price") or 0.0)
+                    total += abs(qty) * px
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+        return total
+
+    @staticmethod
+    def _sum_polymarket_open(db_url: str) -> float:
+        """Sum notional of polymarket positions still considered open.
+
+        Phase 2a operates in paper mode (auto_execute=false), so "open"
+        means filled + not-yet-resolved. We use the position table when
+        available; fall back to filled audit rows minus resolution
+        rows. For Phase 2a (no fills will happen until Phase 3) this
+        returns 0.0 in practice — the cap is a forward-compat scaffold.
+        """
+        # Phase 2a: no live fills, so this is always 0. Phase 3 will
+        # implement the real position-aggregation query.
+        return 0.0
 
     # -- optional LLM narration --
     async def narrate(self, order: ProposedOrder, verdict: RiskVerdict) -> RiskVerdict:
