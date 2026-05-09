@@ -59,6 +59,62 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-09 15:23 UTC — Coinbase BTC HODL division-detail UI cleanup
+
+**Commits:** `a9c0461` (committed before deploy).
+**Triggered by:** BACKLOG P3 — "Coinbase BTC HODL division-detail UI cleanup" (the top-section P3 added 2026-05-09). Bundles four asks Board greenlit at session start: (1) ts_short fix, (2) Manual Order tile removal, (3) Buying Power tile removal, (4) 6h Donchian price chart.
+**Backup tag:** `pre-donchian-uicleanup-20260509-utc-pre.tar.gz` at `/home/azureuser/backups/` (49K, 3 modified files; the 2 new files have no pre-state to preserve).
+
+**Files deployed (3 modified, 2 new):**
+
+- `trading_corp/web/data.py` — `build_donchian_view`: `ts_short` now reads `payload.bar_ts` (canonical bar identifier) with `r["ts"]` fallback for legacy rows. New async helper `build_donchian_chart_data(db_url, display_bars=50)` fetches ~50 6h Coinbase OHLCV bars via ccxt public endpoint, computes rolling 20-bar Donchian high / 6-bar Donchian low / 168-bar SMA mirroring `donchian_btc.evaluate` semantics (preceding-window, current bar excluded), pulls BUY/SELL fill markers from `audit_event` (`would_have_placed` paper + `filled` live; both snap to bar-open via payload `bar_ts`), and returns the full chart payload.
+- `trading_corp/web/routes.py` — new endpoint `GET /partials/donchian-chart/{slug}` returns the JSON payload from `build_donchian_chart_data`. 404s for any slug other than `coinbase_spot` (chart is single-strategy at this point); returns `{empty: true}` on OHLCV fetch failure.
+- `trading_corp/web/templates/division.html` — Buying Power stat card now hidden for `coinbase_spot` (cash == buying_power on spot crypto); grid drops from 4 to 3 cols when `_hide_bp` is true. Manual Order include block deleted (was gated on coinbase_spot only — partial file preserved untouched). New chart partial included between donchian_state and donchian_log; new `donchian_chart.js` script tag included gated on coinbase_spot.
+- `trading_corp/web/templates/partials/donchian_chart.html` — new partial. Header with channel-legend chips + 360px chart container (`#donchian-chart`, `data-division="coinbase_spot"`) + empty-state div for OHLCV-fetch-fail case.
+- `trading_corp/web/static/js/donchian_chart.js` — new file. Self-running IIFE: Lightweight Charts setup with candlestick series + 2 dashed line series (20-bar high red / 6-bar low green) + solid SMA series (accent blue), fetches `/partials/donchian-chart/coinbase_spot`, sets candle data + 3 line series + markers, draws horizontal price line at last close + circle marker on current bar. 60s refresh interval. ResizeObserver wired so the chart matches container width.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+
+- Decision-log column `bar (ET)` now renders bar-open time (e.g. `05-09 02:00 ET`), matching the timestamp embedded in `reason`. Verified live: most recent row shows `05-09 02:00 ET` not `05-09 08:02 ET` (which would be the audit-row write time of the 12:02 UTC eval that happened during deploy).
+- Division-detail UI is purpose-built for Donchian: stat trio is Equity / Cash / Today's P&L (no BP), no Manual Order tile, full price-chart visibility into the channel state the strategy is reading.
+- 6h price chart with all four BACKLOG-asked overlays: candles, entry-channel ceiling (20-bar high), exit-channel floor (6-bar low), SMA(168) trend filter, plus current-bar highlight (circle marker + last-close horizontal price line). Markers infrastructure is wired but the array is empty until the strategy places its first BUY (next breakout above the 20-bar high while above the SMA).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+
+- `build_donchian_chart_data` is the canonical place for chart-side rolling window math. If anyone changes the lookback semantics in `donchian_btc.evaluate`, mirror it here too (preceding-window, current bar excluded — current bar's high/low DOES NOT count toward its own donchian_high/low).
+- The chart endpoint runs a fresh ccxt OHLCV fetch on every request (no caching). At Coinbase public-rate-limited 1 RPS-ish that's fine for a Board-only dashboard, but if traffic ever grows we should add a short TTL cache (60s would line up with the JS refresh interval).
+- `setMarkers` on the candle series is the chosen current-bar highlight mechanism — Lightweight Charts v4 has no native vertical line at a time. The "now" circle + last-close horizontal price line together give the visual anchor.
+
+**Verification:**
+
+- Pre-restart PID 167181 → post-restart 170308.
+- All 5 files md5 round-trip MATCH after LF-normalization (Windows working copy carried CRLF; LF-normalized in-place on prod to keep convention).
+- `CoinbaseBTCDonchianAgent reloaded: enabled=True auto_execute=False entry=20 exit=6 trend_filter=168 granularity=21600` post-restart — config preserved.
+- `CoinbaseBTCDonchianAgent: restored state=cash cost_basis=None last_bar=2026-05-09 06:00:00+00:00` — DB persistence survived; the bar evaluated by the 12:02 UTC scheduler tick is reflected.
+- `GET /partials/donchian-chart/coinbase_spot`: HTTP 200, 10.3 KB, 1.99s. Returns 50 candles + 50 high/low/sma points + 0 markers + `current_bar_ts: 1778306400` (= 2026-05-09T06:00:00 UTC). Latest values: close $80,315.98, 20-hi $82,814.23, 6-lo $79,520.44 — close < high so still in CASH.
+- `GET /division/coinbase_spot`: HTTP 200, 62 KB, 7.5s. Spot-checks: Buying Power tile NOT in HTML, `id="donchian-chart"` container present, `donchian_chart.js` script include present, first decision-log row's ts_short = `05-09 02:00 ET` (bar-open time, NOT the audit-row write time `05-09 08:02 ET`).
+
+**Inert / dormant on current traffic:**
+
+- The `markers` array on the chart payload is empty — the strategy hasn't placed any orders yet (every bar so far has been SKIP). First BUY will land a green up-arrow `belowBar` at the bar-open time of the entering bar. Will be visible end-to-end on the next breakout.
+- `donchian_chart.js` is wrapped in a self-running IIFE that no-ops when `#donchian-chart` isn't in the DOM, so it's harmless on other division pages — but the script tag is gated on coinbase_spot to keep the bytes off the wire where unused.
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-donchian-uicleanup-20260509-utc-pre
+BASE=/home/azureuser/trading_corp
+cd \$BASE
+tar xzf /home/azureuser/backups/\${TAG}.tar.gz
+rm -f trading_corp/web/templates/partials/donchian_chart.html \
+      trading_corp/web/static/js/donchian_chart.js
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
 ## 2026-05-09 06:25 UTC — Dashboard timestamps converted to ET
 
 **Commits:** local-only at deploy time (8 files modified; will be batched in the session-wrap commit).

@@ -1502,7 +1502,19 @@ impact. Pull it in when investigating any audit-log noise complaint
 
 ---
 
-## P3 — Coinbase BTC HODL division-detail UI cleanup  *(NEW — 2026-05-09; supersedes the prior "promote Recent Activity, demote Manual Trading" entry)*
+## ✅ DONE 2026-05-09 — Coinbase BTC HODL division-detail UI cleanup *(commit a9c0461; deployed 15:23 UTC; see runbooks/deploy_log.md "2026-05-09 15:23 UTC" entry)*
+
+All four asks shipped in one deploy:
+1. ts_short reads `payload.bar_ts` — column matches the bar-open time in `reason` (verified live: row shows `05-09 02:00 ET`, not the `05-09 08:02 ET` audit-row write time).
+2. Manual Order tile removed for `coinbase_spot` (partial preserved untouched for future use).
+3. Buying Power tile removed for `coinbase_spot` (3-col stat trio: Equity / Cash / Today's P&L).
+4. 6h Donchian price chart shipped: candles + 20-bar high (red dashed) + 6-bar low (green dashed) + SMA(168) trend filter (accent blue) + current-bar highlight (circle marker + last-close horizontal line). Markers infrastructure ready for first BUY/SELL fill.
+
+Chart payload exposed at `/partials/donchian-chart/{slug}` (single-strategy: 404s for non-coinbase_spot). Refreshes 60s in the browser; ccxt fetch is fresh each request. 50 candles, 50 high/low/sma points; markers empty until the strategy fires.
+
+The "promote Recent Activity to right rail, demote Manual Trading" plan was *partially* superseded — Manual Trading is gone, but Recent Activity placement is still the generic mid-column. If the right rail (currently empty Expert Analysis on coinbase_spot) should host Recent Activity instead, that's a separate item — not in scope here.
+
+## ~~P3 — Coinbase BTC HODL division-detail UI cleanup~~  *(NEW — 2026-05-09; supersedes the prior "promote Recent Activity, demote Manual Trading" entry)*
 
 **Context:** the `coinbase_spot` (now displayed as "Coinbase BTC HODL")
 division-detail page at `/division/coinbase_spot` inherits the generic
