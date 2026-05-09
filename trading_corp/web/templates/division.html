@@ -170,6 +170,16 @@
       {% include "partials/manual_order.html" %}
     {% endif %}
 
+    <!-- Coinbase BTC Donchian — strategy state, per-bar decision log,
+         realized round-trips. Only renders for coinbase_spot AND only
+         when the strategy is configured in strategies.yaml. Tiles
+         render cleanly with empty states until the agent is wired. -->
+    {% if view.division.slug == 'coinbase_spot' and view.donchian %}
+      {% include "partials/donchian_state.html" %}
+      {% include "partials/donchian_log.html" %}
+      {% include "partials/donchian_trades.html" %}
+    {% endif %}
+
     <!-- Paper-trade win rate (Phase C of would_have_placed enrichment) -->
     {% if view.paper_trade_summary and view.paper_trade_summary.totals.all.n %}
     <section class="bg-pane border border-edge rounded-lg p-4">

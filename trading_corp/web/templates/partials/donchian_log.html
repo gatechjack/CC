@@ -1,0 +1,97 @@
+{# Coinbase BTC Donchian — per-bar decision log tile.
+
+   One row per evaluated 6h bar. Shows the raw inputs the strategy
+   used (close, donchian high/low, trend-filter SMA + pass/fail),
+   the resulting decision, and the reason string from the engine.
+
+   Populated from `audit_event WHERE actor='coinbase_btc_donchian'
+   AND kind='donchian_evaluated'`. Empty until the live agent is
+   wired to write those rows; that's the correct empty state.
+#}
+{% if view.donchian %}
+{% set d = view.donchian %}
+<section class="bg-pane border border-edge rounded-lg p-4">
+  <header class="flex items-baseline justify-between mb-3">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      6h decision log
+    </h2>
+    <span class="text-[11px] text-muted font-mono">
+      {{ d.decisions|length }} bar(s) · most recent first
+    </span>
+  </header>
+
+  {% if d.decisions %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-[11px] font-mono">
+        <thead class="text-muted">
+          <tr class="border-b border-edge">
+            <th class="text-left  py-1 pr-3">bar (UTC)</th>
+            <th class="text-right py-1 pr-3">close</th>
+            <th class="text-right py-1 pr-3">{{ d.donchian.entry_lookback }}-bar high</th>
+            <th class="text-right py-1 pr-3">{{ d.donchian.exit_lookback }}-bar low</th>
+            <th class="text-right py-1 pr-3">SMA</th>
+            <th class="text-center py-1 pr-3">trend OK</th>
+            <th class="text-center py-1 pr-3">decision</th>
+            <th class="text-left  py-1">reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in d.decisions %}
+            <tr class="border-b border-edge/40
+                       {% if r.decision == 'buy' %}bg-gain/5
+                       {% elif r.decision == 'sell' %}bg-loss/5{% endif %}">
+              <td class="py-1 pr-3">{{ r.ts_short }}</td>
+              <td class="py-1 pr-3 text-right">
+                {% if r.current_close is not none %}
+                  ${{ '%.2f' | format(r.current_close) }}
+                {% else %}—{% endif %}
+              </td>
+              <td class="py-1 pr-3 text-right">
+                {% if r.donchian_high is not none %}
+                  ${{ '%.2f' | format(r.donchian_high) }}
+                {% else %}—{% endif %}
+              </td>
+              <td class="py-1 pr-3 text-right">
+                {% if r.donchian_low is not none %}
+                  ${{ '%.2f' | format(r.donchian_low) }}
+                {% else %}—{% endif %}
+              </td>
+              <td class="py-1 pr-3 text-right">
+                {% if r.trend_filter_sma is not none %}
+                  ${{ '%.2f' | format(r.trend_filter_sma) }}
+                {% else %}<span class="text-muted">off</span>{% endif %}
+              </td>
+              <td class="py-1 pr-3 text-center">
+                {% if r.trend_filter_sma is not none %}
+                  {% if r.trend_filter_passed %}
+                    <span class="text-gain">✓</span>
+                  {% else %}
+                    <span class="text-loss">✗</span>
+                  {% endif %}
+                {% else %}<span class="text-muted">—</span>{% endif %}
+              </td>
+              <td class="py-1 pr-3 text-center">
+                {% if r.decision == 'buy' %}
+                  <span class="text-gain font-semibold">BUY</span>
+                {% elif r.decision == 'sell' %}
+                  <span class="text-loss font-semibold">SELL</span>
+                {% else %}
+                  <span class="text-muted">skip</span>
+                {% endif %}
+              </td>
+              <td class="py-1 text-muted truncate max-w-md" title="{{ r.reason }}">
+                {{ r.reason }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="text-center py-6 text-muted text-[11px] font-mono">
+      No decisions yet — strategy not yet wired into the orchestrator
+      <br/>(or agent has not evaluated a bar since wiring).
+    </div>
+  {% endif %}
+</section>
+{% endif %}

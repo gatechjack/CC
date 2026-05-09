@@ -436,6 +436,14 @@ class DivisionViewSnapshot:
     recent_activity: list[dict]
     equity_curve: list[dict]
     paper_trade_summary: dict | None = None
+    # Coinbase BTC Donchian — only populated for `coinbase_spot`
+    # division. Shape: {state: 'cash'|'btc', cost_basis: float|None,
+    # last_decision_ts: str|None, last_decision_age: str|None,
+    # next_bar_ts: str, next_bar_countdown: str, enabled: bool,
+    # auto_execute: bool, donchian: {entry_lookback,exit_lookback,
+    # trend_filter_lookback,granularity_seconds}, decisions: list,
+    # round_trips: list}.
+    donchian: dict | None = None
 
 
 @dataclass
@@ -962,6 +970,170 @@ def _color_for(kind: str) -> str:
 
 # ── Division drill-down view builder ──────────────────────────────────────
 
+def build_donchian_view(db_url: str) -> dict | None:
+    """Compose the `coinbase_btc_donchian` block for the
+    coinbase_spot division page.
+
+    Returns None if the strategy isn't configured. Otherwise a dict
+    with: state / cost_basis / last_decision_ts / next_bar_ts /
+    decisions (per-bar log) / round_trips (realized).
+
+    Phase 2 status: until the live agent is wired in `main.py`, the
+    `decisions` and `round_trips` lists will be empty — that's the
+    correct empty state. The card scaffolding is ready so the wiring
+    deploy immediately surfaces real data.
+    """
+    import sqlite3
+    from datetime import datetime, timezone, timedelta
+    from pathlib import Path
+    import yaml
+
+    # Load YAML to confirm strategy is configured + read params
+    cfg_path = Path("config/strategies.yaml")
+    try:
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    block = (cfg or {}).get("coinbase_btc_donchian")
+    if not block:
+        return None
+    donchian_params = block.get("donchian", {}) or {}
+
+    # Read state from agent_state table (best-effort)
+    state_value: dict | None = None
+    last_bar_ts: str | None = None
+    db_path = db_url.replace("sqlite:///", "")
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT value_json FROM agent_state "
+                "WHERE agent='coinbase_btc_donchian' AND key='state'",
+            ).fetchone()
+            if row:
+                import json
+                state_value = json.loads(row[0])
+            row2 = conn.execute(
+                "SELECT value_json FROM agent_state "
+                "WHERE agent='coinbase_btc_donchian' AND key='last_bar_ts'",
+            ).fetchone()
+            if row2:
+                import json
+                last_bar_ts = json.loads(row2[0]).get("ts")
+    except Exception as e:
+        log.debug("donchian state read failed: %s", e)
+
+    # Compute next 6h-bar boundary (00:00 / 06:00 / 12:00 / 18:00 UTC)
+    now = datetime.now(timezone.utc)
+    granularity_sec = int(donchian_params.get("granularity_seconds", 21600))
+    bucket_hour = (now.hour // (granularity_sec // 3600)) * (granularity_sec // 3600)
+    next_bar = now.replace(hour=bucket_hour, minute=0, second=0, microsecond=0) \
+        + timedelta(seconds=granularity_sec)
+    countdown = next_bar - now
+    hours, remainder = divmod(int(countdown.total_seconds()), 3600)
+    minutes = remainder // 60
+    countdown_str = f"{hours}h {minutes}m"
+
+    # Per-bar decision log (audit kind = 'donchian_evaluated', actor =
+    # 'coinbase_btc_donchian'). Populated by the orchestrator after
+    # wiring; empty until then.
+    decisions: list[dict] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE actor='coinbase_btc_donchian' "
+                "AND kind='donchian_evaluated' "
+                "ORDER BY ts DESC LIMIT 60",
+            )
+            import json
+            for r in cur.fetchall():
+                p = json.loads(r["payload_json"])
+                decisions.append({
+                    "ts": r["ts"],
+                    "ts_short": r["ts"][:16].replace("T", " "),
+                    "decision": p.get("decision", "skip"),
+                    "current_close": p.get("current_close"),
+                    "donchian_high": p.get("donchian_high"),
+                    "donchian_low": p.get("donchian_low"),
+                    "trend_filter_sma": p.get("trend_filter_sma"),
+                    "trend_filter_passed": p.get("trend_filter_passed", False),
+                    "reason": p.get("reason", ""),
+                })
+    except Exception as e:
+        log.debug("donchian decisions read failed: %s", e)
+
+    # Realized round-trips: pair BUY → SELL fills via the strategy
+    # tag. We use `would_have_placed` (paper) + `filled` (live) audit
+    # kinds, both filtered to strategy='coinbase_btc_donchian'. The
+    # round-trip pairs SELLs to the most recent prior BUY.
+    round_trips: list[dict] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "SELECT ts, kind, payload_json FROM audit_event "
+                "WHERE actor='coinbase_btc_donchian' "
+                "AND kind IN ('would_have_placed','filled') "
+                "ORDER BY ts ASC",
+            )
+            import json
+            open_buy: dict | None = None
+            for r in cur.fetchall():
+                p = json.loads(r["payload_json"])
+                side = p.get("side")
+                price = p.get("fill_price") or p.get("price") or p.get("limit_price")
+                qty = p.get("qty")
+                if side == "buy" and open_buy is None:
+                    open_buy = {
+                        "buy_ts": r["ts"],
+                        "buy_price": price,
+                        "qty": qty,
+                    }
+                elif side == "sell" and open_buy is not None:
+                    realized = (
+                        ((price or 0) - (open_buy["buy_price"] or 0))
+                        * (qty or open_buy["qty"] or 0)
+                    )
+                    round_trips.append({
+                        "buy_ts": open_buy["buy_ts"],
+                        "buy_ts_short": open_buy["buy_ts"][:16].replace("T", " "),
+                        "buy_price": open_buy["buy_price"],
+                        "sell_ts": r["ts"],
+                        "sell_ts_short": r["ts"][:16].replace("T", " "),
+                        "sell_price": price,
+                        "qty": qty or open_buy["qty"],
+                        "realized_pnl": realized,
+                        "pct_return": (
+                            ((price - open_buy["buy_price"]) / open_buy["buy_price"] * 100)
+                            if open_buy["buy_price"] else None
+                        ),
+                    })
+                    open_buy = None
+    except Exception as e:
+        log.debug("donchian trades read failed: %s", e)
+
+    return {
+        "enabled": bool(block.get("enabled", False)),
+        "auto_execute": bool(block.get("auto_execute", False)),
+        "state": (state_value or {}).get("state", "cash"),
+        "cost_basis": (state_value or {}).get("cost_basis"),
+        "last_bar_ts": last_bar_ts,
+        "last_bar_short": last_bar_ts[:16].replace("T", " ") if last_bar_ts else None,
+        "next_bar_ts": next_bar.isoformat(),
+        "next_bar_short": next_bar.strftime("%H:%M UTC"),
+        "next_bar_countdown": countdown_str,
+        "donchian": {
+            "entry_lookback": donchian_params.get("entry_lookback"),
+            "exit_lookback": donchian_params.get("exit_lookback"),
+            "trend_filter_lookback": donchian_params.get("trend_filter_lookback"),
+            "granularity_hours": granularity_sec // 3600,
+        },
+        "decisions": decisions,                  # most recent first; max 60
+        "round_trips": list(reversed(round_trips)),   # most recent first
+    }
+
+
 async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     """Fan out everything needed for the /division/{slug} page.
 
@@ -1090,6 +1262,17 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         log.warning("paper_trade_summary for %s failed: %s", slug, e)
         pt_summary = None
 
+    # Coinbase BTC Donchian view block — populated only for the
+    # coinbase_spot division and only if the strategy is configured
+    # in strategies.yaml. Tiles render empty states until the live
+    # agent is wired in main.py and starts writing audit rows.
+    donchian_view: dict | None = None
+    if slug == "coinbase_spot":
+        try:
+            donchian_view = build_donchian_view(deps.db_url)
+        except Exception as e:
+            log.warning("donchian view for %s failed: %s", slug, e)
+
     return DivisionViewSnapshot(
         division=division,
         equity=equity,
@@ -1103,6 +1286,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         recent_activity=activity,
         equity_curve=equity_curve,
         paper_trade_summary=pt_summary,
+        donchian=donchian_view,
     )
 
 

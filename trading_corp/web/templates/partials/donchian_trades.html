@@ -1,0 +1,120 @@
+{# Coinbase BTC Donchian — past trades tile.
+
+   Realized round-trips (BUY→SELL pairs) with entry/exit prices,
+   duration, and realized P&L. Pulls from audit_event
+   `would_have_placed` (paper) and `filled` (live) rows tagged
+   strategy='coinbase_btc_donchian'.
+
+   Empty until the strategy starts firing orders.
+#}
+{% if view.donchian %}
+{% set d = view.donchian %}
+<section class="bg-pane border border-edge rounded-lg p-4">
+  <header class="flex items-baseline justify-between mb-3">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Realized round-trips
+    </h2>
+    <span class="text-[11px] text-muted font-mono">
+      {{ d.round_trips|length }} round-trip(s)
+    </span>
+  </header>
+
+  {% if d.round_trips %}
+    {# Aggregate stats banner #}
+    {% set wins = d.round_trips | selectattr('realized_pnl', 'gt', 0) | list | length %}
+    {% set losses = d.round_trips | selectattr('realized_pnl', 'lt', 0) | list | length %}
+    {% set total_pnl = d.round_trips | sum(attribute='realized_pnl') %}
+    <div class="grid grid-cols-3 gap-3 mb-3">
+      <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+        <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+          win rate
+        </div>
+        <div class="text-2xl font-mono font-semibold
+                    {% if wins > losses %}text-gain
+                    {% elif losses > wins %}text-loss
+                    {% else %}text-mono{% endif %}">
+          {% if d.round_trips %}
+            {{ '%.0f' | format(wins / d.round_trips|length * 100) }}%
+          {% else %}—{% endif %}
+        </div>
+        <div class="text-[11px] text-muted font-mono mt-1">
+          {{ wins }}W / {{ losses }}L
+        </div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+        <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+          total realized
+        </div>
+        <div class="text-2xl font-mono font-semibold
+                    {% if total_pnl > 0 %}text-gain
+                    {% elif total_pnl < 0 %}text-loss
+                    {% else %}text-mono{% endif %}">
+          {% if total_pnl >= 0 %}+{% else %}−{% endif %}${{ '%.2f' | format(total_pnl | abs) }}
+        </div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+        <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+          avg per trade
+        </div>
+        <div class="text-2xl font-mono font-semibold
+                    {% if total_pnl > 0 %}text-gain
+                    {% elif total_pnl < 0 %}text-loss
+                    {% else %}text-mono{% endif %}">
+          {% set avg = total_pnl / d.round_trips|length %}
+          {% if avg >= 0 %}+{% else %}−{% endif %}${{ '%.2f' | format(avg | abs) }}
+        </div>
+      </div>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-[11px] font-mono">
+        <thead class="text-muted">
+          <tr class="border-b border-edge">
+            <th class="text-left  py-1 pr-3">buy</th>
+            <th class="text-right py-1 pr-3">@ price</th>
+            <th class="text-left  py-1 pr-3">sell</th>
+            <th class="text-right py-1 pr-3">@ price</th>
+            <th class="text-right py-1 pr-3">qty BTC</th>
+            <th class="text-right py-1 pr-3">% return</th>
+            <th class="text-right py-1">realized P&amp;L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rt in d.round_trips %}
+            <tr class="border-b border-edge/40">
+              <td class="py-1 pr-3">{{ rt.buy_ts_short }}</td>
+              <td class="py-1 pr-3 text-right">
+                {% if rt.buy_price %}${{ '%.2f' | format(rt.buy_price) }}{% else %}—{% endif %}
+              </td>
+              <td class="py-1 pr-3">{{ rt.sell_ts_short }}</td>
+              <td class="py-1 pr-3 text-right">
+                {% if rt.sell_price %}${{ '%.2f' | format(rt.sell_price) }}{% else %}—{% endif %}
+              </td>
+              <td class="py-1 pr-3 text-right">
+                {% if rt.qty %}{{ '%.6f' | format(rt.qty) }}{% else %}—{% endif %}
+              </td>
+              <td class="py-1 pr-3 text-right
+                         {% if rt.pct_return is not none and rt.pct_return > 0 %}text-gain
+                         {% elif rt.pct_return is not none and rt.pct_return < 0 %}text-loss{% endif %}">
+                {% if rt.pct_return is not none %}
+                  {% if rt.pct_return >= 0 %}+{% endif %}{{ '%.2f' | format(rt.pct_return) }}%
+                {% else %}—{% endif %}
+              </td>
+              <td class="py-1 text-right
+                         {% if rt.realized_pnl > 0 %}text-gain
+                         {% elif rt.realized_pnl < 0 %}text-loss{% endif %}">
+                {% if rt.realized_pnl >= 0 %}+{% else %}−{% endif %}${{ '%.2f' | format(rt.realized_pnl | abs) }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="text-center py-6 text-muted text-[11px] font-mono">
+      No round-trips yet — strategy hasn't fired any orders.
+      <br/>First decision will populate this tile.
+    </div>
+  {% endif %}
+</section>
+{% endif %}

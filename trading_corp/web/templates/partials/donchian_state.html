@@ -1,0 +1,97 @@
+{# Coinbase BTC Donchian — strategy state card.
+
+   Shows current CASH/BTC state, cost_basis if BTC, last decision
+   timestamp, and a countdown to the next 6h-bar boundary.
+
+   Empty-state aware: renders cleanly even when no decisions have
+   landed yet (pre-wiring scaffolding).
+#}
+{% if view.donchian %}
+{% set d = view.donchian %}
+<section class="bg-pane border border-edge rounded-lg p-4">
+  <header class="flex items-baseline justify-between mb-3">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Coinbase BTC Donchian
+    </h2>
+    <div class="flex items-center gap-2 text-[11px] font-mono">
+      {% if d.enabled %}
+        <span class="text-gain font-semibold">● ENABLED</span>
+      {% else %}
+        <span class="text-muted">○ DISABLED</span>
+      {% endif %}
+      <span class="text-muted">·</span>
+      <span class="text-muted">
+        {% if d.auto_execute %}auto-execute ON{% else %}HITL approval{% endif %}
+      </span>
+    </div>
+  </header>
+
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+    {# Current state #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        State
+      </div>
+      <div class="text-2xl font-mono font-semibold
+                  {% if d.state == 'btc' %}text-gain{% else %}text-mono{% endif %}">
+        {% if d.state == 'btc' %}● BTC{% else %}○ CASH{% endif %}
+      </div>
+      {% if d.state == 'btc' and d.cost_basis %}
+        <div class="text-[11px] text-muted font-mono mt-1">
+          cost basis ${{ '%.2f' | format(d.cost_basis) }}
+        </div>
+      {% endif %}
+    </div>
+
+    {# Last decision #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Last decision
+      </div>
+      <div class="text-sm font-mono font-semibold">
+        {% if d.last_bar_short %}
+          {{ d.last_bar_short }}
+        {% else %}
+          <span class="text-muted">— never —</span>
+        {% endif %}
+      </div>
+      <div class="text-[11px] text-muted font-mono mt-1">
+        {% if d.last_bar_short %}UTC{% else %}awaiting first eval{% endif %}
+      </div>
+    </div>
+
+    {# Next bar boundary #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Next 6h close
+      </div>
+      <div class="text-sm font-mono font-semibold">
+        {{ d.next_bar_short }}
+      </div>
+      <div class="text-[11px] text-muted font-mono mt-1">
+        in {{ d.next_bar_countdown }}
+      </div>
+    </div>
+
+    {# Config #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Config
+      </div>
+      <div class="text-[11px] font-mono leading-tight space-y-0.5">
+        <div>entry: {{ d.donchian.entry_lookback }}-bar high</div>
+        <div>exit: {{ d.donchian.exit_lookback }}-bar low</div>
+        <div>
+          trend:
+          {% if d.donchian.trend_filter_lookback %}
+            SMA({{ d.donchian.trend_filter_lookback }})
+          {% else %}
+            <span class="text-muted">none</span>
+          {% endif %}
+        </div>
+        <div class="text-muted">{{ d.donchian.granularity_hours }}h bars</div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endif %}
