@@ -47,3 +47,12 @@ logs/
 # Backtest tooling outputs (large, regenerable)
 data/historical_alerts/cache_*.json
 data/backtest_runs/
+
+# Pending strategy specs — Board's research notes for future strategy work.
+# Tracked by memory entry `trading_corp_pending_strategy_specs.md`, not git.
+# These pull into the active session when Board greenlights the strategy.
+/# Bitcoin Leveraged Scalping Strate.txt
+/# Poor Man's Covered Call (PMCC) St.txt
+
+# Local deploy staging (md5-diff scratch dir; safe to delete anytime)
+.deploy_tmp/
