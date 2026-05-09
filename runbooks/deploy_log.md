@@ -59,6 +59,77 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-09 20:13 UTC — Polymarket Phase 1: read-only broker + division wiring (+ Phase 0 secrets backfill caught at deploy)
+
+**Commits:** `db1f0cd` (Phase 0 secrets, never previously deployed) + `d7cbea2` (Phase 1 broker + wiring, committed pre-deploy).
+**Triggered by:** Polymarket Arbitrage division scope (multi-message in-session brief; see CLAUDE.md §6 STOP-AND-ASK items resolved 2026-05-09 ~17:30-19:00 UTC). Phase 0.5 EU egress proxy was scoped, then ruled NO-GO by the smoke test — Polymarket's read APIs serve tc-prod-vm's US-east IP without geo-block. Phase 1 ships read-only adapter + tile rendering inert; goes live the moment the KV secrets land.
+**Backup tag:** `pre-polymarket-phase1-20260509.tar.gz` (21K, 4 modified files) at `/home/azureuser/backups/`. Plus an extra `secrets.py.pre-polymarket-phase1-20260509.bak` snapshot for the secrets.py rollback (because Phase 0 was caught mid-deploy — see Notable below).
+
+**Files deployed (5 modified, 1 new):**
+
+- `trading_corp/utils/secrets.py` — Phase 0 backfill caught at deploy time. Three new fields on `Secrets` (`polymarket_private_key`, `polymarket_funder_address`, `polygon_rpc_url`). New `register_redact_literal()` mechanism + `_REDACT_LITERALS` set for value-substring scrubbing of secrets that third-party libs may log raw. KV expected_env_vars extended. Three new entries on `_SECRET_KEY_NAMES` for KEY=value redaction.
+- `trading_corp/brokers/base.py` — `ReadOnlyBroker` ABC extracted (connect/disconnect/snapshot/quote). `Broker` now subclasses it (adds place_order + cancel_order). Behavior-zero change for existing brokers; PolymarketBroker is the first ReadOnlyBroker subclass.
+- `trading_corp/brokers/polymarket.py` — **NEW.** PolymarketBroker(ReadOnlyBroker). Stub mode if creds missing. snapshot() = USDC balance via Polygon RPC `eth_call` + positions via data-api. quote() = gamma-api slug→token_id then clob last-trade-price. `signature_type=EOA` pattern (signer == funder, no Polymarket proxy/SAFE) — Path A wallet model. NO place_order method exists; ABC enforces read-only.
+- `trading_corp/main.py` — `_build_broker_for_division` polymarket family branch. No PaperExecutionBroker wrap (ReadOnlyBroker has no order surface to simulate).
+- `trading_corp/utils/divisions.py` — new "polymarket" investment-type group between Crypto and Retirement. Slug-prefix classification handles the paper-fallback copy-trading division (broker=paper but slug starts with `polymarket_`).
+- `config/divisions.yaml` — two new entries: `polymarket_arbitrage` (broker=polymarket, real adapter, standby) + `polymarket_copy_trading` (broker=paper, $0 placeholder for Phase 4+ copy-trading strategy, standby).
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+
+- Home dashboard renders a new "Polymarket" investment-type group (4th group, between Crypto and Retirement) with TWO tiles: "Polymarket Arbitrage" + "Polymarket Copy Trading". Both render STANDBY today.
+- ReadOnlyBroker ABC is now in the codebase. The Fidelity migration TODO from CLAUDE.md §7 sharp edges is now strictly possible (separate cleanup; not done here).
+- Phase 0 secrets-loader for Polymarket creds + literal-value redaction is live on prod.
+- The 2026-05-09 EU-egress smoke test runbook (`runbooks/eu_proxy_smoke_test.md`) is preserved as the starting point if Phase 3 trade placement turns out to need a proxy.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+
+- **Phase 0 was caught at deploy time, not pre-deploy.** I shipped Phase 1 first thinking Phase 0 was already on prod (it was committed locally as `db1f0cd` but never SCP'd — I made a "bundle the deploy with Phase 1" call earlier in the session and forgot to honor it). The service crash-looped on `AttributeError: 'Secrets' object has no attribute 'polymarket_private_key'` for ~90s before I caught it via boot-log inspection, SCP'd `secrets.py`, and restarted clean. Lesson: when a code commit references new fields on a shared dataclass, deploy the dataclass file BEFORE the consumer file, OR deploy as one atomic batch.
+- The `polymarket_copy_trading` division uses `broker: paper` deliberately. Both polymarket_* divisions land in the new "Polymarket" investment-type group via slug-prefix classification (utils/divisions.py:_POLYMARKET_SLUG_PREFIX). The arbitrage division's paper-fallback would conflict with broker:polymarket on the same wallet (both tiles would show the same balance) — broker:paper for the second tile keeps it visibly distinct ($0 STANDBY) until Phase 4+ wires the real strategy.
+- PolymarketBroker is NOT wrapped in PaperExecutionBroker. The convention for PAPER mode (wrap-real-broker-with-paper-fills) doesn't apply to ReadOnlyBroker subclasses — there's no order surface to simulate. If a future Polymarket division needs paper-mode order simulation (Phase 2 strategy paper-track), the new code path will be `PolymarketLiveBroker(Broker)` in Phase 3, and PaperExecutionBroker will wrap THAT.
+- The `private_key` constructor arg on PolymarketBroker is accepted but unused in Phase 1. Phase 3 signing will read from the same arg without a constructor change.
+
+**Latent bugs caught + fixed (if any):** none new. The pre-existing `secrets.py.pre-polymarket-phase1-20260509.bak` confirms prod was running the pre-Phase-0 file before this deploy — no drift content beyond "version skew due to my earlier deferral."
+
+**Verification:**
+
+- Pre-restart PID 171746 → post-restart 175242 (clean).
+- All 5 prod files match local LF-normalized md5s exactly after SCP.
+- Boot log:
+  - `PolymarketBroker connected as STUB (missing funder or RPC URL)` — expected with no KV secrets yet.
+  - `PaperBroker connected (account=paper_polymarket_copy_trading, equity=$0.00)` — copy-trading placeholder healthy.
+  - `Registered polymarket broker for division=polymarket_arbitrage (paper=False)` ✓
+  - `Registered paper broker for division=polymarket_copy_trading (paper=True)` ✓
+  - KV fetches for `POLYMARKET-PRIVATE-KEY` / `POLYMARKET-FUNDER-ADDRESS` / `POLYGON-RPC-URL` returned empty (Board hasn't uploaded yet — graceful degradation to stub mode is the design).
+- `GET /` returned HTTP 200 in 4.87s, 87.2 KB.
+- `<h2>` headers in document order: `Individual` → `Crypto` → `Polymarket` → `Retirement`. Section order matches `_INVESTMENT_TYPE_ORDER`.
+- Both Polymarket tiles render with STANDBY badges. 4 STANDBY badges total on home page (2 new Polymarket + 2 existing: Coinbase Futures, BitUnix Futures).
+
+**Inert / dormant on current traffic:**
+
+- PolymarketBroker `snapshot()` and `quote()` return zeros / empty until KV holds the three secrets. After Board uploads them, next service restart brings the arbitrage tile live with real wallet balance + open positions (initially: $500 USDC, 0 positions).
+- PolymarketBroker.quote() field-mapping (gamma-api `clobTokenIds` / `outcomes`) is best-effort against unverified shape — first non-empty response from a real market should be eyeballed to confirm. Field names in `_fetch_positions` similarly defensive (.get() with fallbacks); first funded-wallet response should be sanity-checked.
+- Phase 3 follow-up tracked as task #31: re-test geo-block on authed/write CLOB endpoints before live order placement. If writes are blocked, revive `runbooks/eu_proxy_smoke_test.md`.
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-polymarket-phase1-20260509
+BASE=/home/azureuser/trading_corp
+cd \$BASE
+tar xzf /home/azureuser/backups/\${TAG}.tar.gz
+# Phase 0 secrets.py rollback (separate backup since the tarball was made
+# pre-Phase-0-discovery; the pre-Phase-0 file is in its own .bak):
+cp /home/azureuser/backups/secrets.py.pre-polymarket-phase1-20260509.bak \
+   trading_corp/utils/secrets.py
+# Drop the new file:
+rm -f trading_corp/brokers/polymarket.py
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
 ## 2026-05-09 16:42 UTC — Donchian: observe Board-driven balance changes; state-as-source-of-truth
 
 **Commits:** `78e57a0` (committed before deploy).
