@@ -206,11 +206,12 @@ Bear signals in long-only mode close held positions:
 | Broker | Status |
 |---|---|
 | Robinhood | Live for PMCC. Stock + options orders work. |
-| Fidelity | Browser automation (Playwright/Firefox). Phase A login session caching wired. Phase B/C session refresh logic is sensitive to UI changes. |
+| Fidelity | Browser automation (Playwright/Firefox). Phase A login session caching wired. Phase B/C session refresh logic is sensitive to UI changes. **Bot-blocked from Azure VM IP since 2026-05-01** (Akamai pre-JS layer rejects datacenter IPs); paper-fallback only. P1 backlog DEFERRED 2026-05-03 pending Plaid investigation. |
 | Coinbase Spot | Phase A (read-only ccxt) DONE. Phase B (orders via ccxt `create_order`) DONE — uses `quote_size` for market buys (account-config quirk discovered empirically). |
-| Coinbase Futures | Phase C — stub only. Will use `coinbase-advanced-py` SDK because ccxt's coinbase driver doesn't fully cover US FCM futures. |
+| Coinbase Futures | Phase C — stub only. Will use `coinbase-advanced-py` SDK because ccxt's coinbase driver doesn't fully cover US FCM futures. UI shows STANDBY badge since 2026-05-03 16:25 UTC. |
+| BitUnix Futures | Read-only Phase 1 SHIPPED 2026-05-03 17:54 UTC (`brokers/bitunix.py`): `snapshot()` + `quote()` against live BitUnix Futures API (`https://fapi.bitunix.com`), SHA256-double-sign auth (no passphrase), multi-margin-coin balance aggregation across USDT + USDC. Azure VM IP works against BitUnix (unlike Fidelity). Phase 2 paper-orders shipped via `PaperExecutionBroker` wrapping in same deploy. `place_order` / `cancel_order` raise `NotImplementedError` until Phase 4 (gated on stop-loss strategy + conviction → leverage map). See memory `trading_corp_bitunix_vision.md`. |
 
-## 8. Production state (`as of 2026-05-02`)
+## 8. Production state (`as of 2026-05-09`)
 
 System is live on Azure: VM `tc-prod-vm` (Standard_D2s_v3, eastus,
 resource group `rg-shared-prod`), reachable at
@@ -219,18 +220,32 @@ Webhook URLs (auth-bypassed for TradingView):
 - `https://trading.jacksumner.com/webhook/tradingview/lord-otter`
 - `https://trading.jacksumner.com/webhook/tradingview/market-cypher`
 
+(Both endpoints still accept POSTs; the agents short-circuit on
+`enabled: false` before order construction since the 2026-05-09
+Donchian pivot. Files preserved for eventual BitUnix Futures
+revival per memory `trading_corp_bitunix_vision.md`.)
+
 App runs as `trading-corp.service` (systemd, wraps `xvfb-run` for
 Fidelity's Playwright dependency). Restart takes 30-90s to reach "web
 up" (Fidelity browser login is the long pole). SQLite DB at
 `/home/azureuser/trading_corp/data/trading_corp.db`. Secrets from Azure
 Key Vault `kv-tc-vtwbowt3wtkpy` via managed identity — no `.env` on prod.
 
-Auto-execute is `false` on every strategy. Every order is a paper-mode
-`would_have_placed` row + Telegram push to the Board. Three-broker
-status: Robinhood live (PMCC reads + paper-execute), Coinbase Spot live
-(reads), Fidelity bot-blocked from Azure VM IP (paper-fallback only —
-Akamai pre-JS layer rejects datacenter IPs; residential proxy is the
-unblock path, deferred).
+Auto-execute is `false` on every strategy. Every approved order routes
+through HITL via the **web app at `https://trading.jacksumner.com`**
+(primary HITL surface as of the 2026-05-03 Board direction; mobile-
+friendly htmx + Tailwind). Telegram is **notification-only** since the
+2026-05-05 01:34 UTC slim-flag flip — short ping with deeplink to
+`/approvals/{order_id}`, no order detail in the body. Web push (Phase E)
+is the deferred next step. Four-broker status: Robinhood live (PMCC
+reads + paper-execute on Individual; IRA + Joint surface in dashboard
+without automated strategy yet), Coinbase Spot live (reads + Coinbase
+BTC Donchian Channel Breakout strategy in paper-mode since 2026-05-09
+02:53 UTC), BitUnix Futures live (read-only Phase 1, paper-orders via
+`PaperExecutionBroker` wrap), Fidelity bot-blocked from Azure VM IP
+(paper-fallback only — Akamai pre-JS layer rejects datacenter IPs;
+residential proxy is the unblock path, deferred — Plaid investigation
+ongoing).
 
 **`runbooks/deploy_log.md` is the single source of truth for what's
 running on prod right now.** Prod has no git; the deploy log is how we
@@ -381,6 +396,7 @@ trading_corp/brokers/                ← broker implementations
    robinhood.py
    fidelity.py
    coinbase.py
+   bitunix.py                         BitUnix Futures (read-only Phase 1; place_order raises until Phase 4)
 trading_corp/web/                    ← FastAPI app
    app.py                             app factory + WebDeps dataclass
    routes.py                          dashboard routes
@@ -425,8 +441,14 @@ scripts/generate_pwa_icons.py        ← PWA icon generator from SVG
 
 ---
 
-*Last meaningful update: 2026-05-09 — Coinbase BTC Donchian Phase 2
-shipped to prod, Otter+Cypher disabled (files preserved for BitUnix
-revival), home-tile CASH/BTC badge + state-aware Donchian dial added.
-Prior major update 2026-05-02 — vocabulary realignment (divisions vs
+*Last meaningful update: 2026-05-09 (later same day) — backfill of
+stale §7/§8/§13: BitUnix Futures broker added to broker phases table
++ file-tree pointers; §8 production-state date refreshed and re-
+written to capture the HITL flip (web app primary, Telegram
+notification-only via deeplink), Donchian-on-coinbase_spot status,
+four-broker count, and the Otter/Cypher endpoints-still-accept-POSTs
+nuance. Earlier same day — Coinbase BTC Donchian Phase 2 shipped to
+prod, Otter+Cypher disabled (files preserved for BitUnix revival),
+home-tile CASH/BTC badge + state-aware Donchian dial added. Prior
+major update 2026-05-02 — vocabulary realignment (divisions vs
 strategies), research firm consultation rule codified.*
