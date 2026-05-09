@@ -45,6 +45,36 @@ def test_max_drawdown_triggers_flatten(tmp_risk_yaml):
     assert v.flatten_account is True
 
 
+def test_max_drawdown_disabled_flag_skips_cap(tmp_path):
+    """Per-strategy `max_drawdown_disabled: true` opts a strategy out of the
+    account-level auto-flatten — required for 100%-in/out strategies (e.g.
+    coinbase_btc_donchian) whose edge needs to ride volatility to the next
+    exit signal. With the flag set, a drawdown past the global cap must NOT
+    trigger reject/flatten.
+    """
+    yaml_path = tmp_path / "risk.yaml"
+    yaml_path.write_text(
+        """
+global:
+  per_trade_risk_pct: 0.015
+  per_strategy_daily_loss_pct: 0.03
+  per_account_max_drawdown_pct: 0.15
+trend_alignment:
+  counter_trend_size_multiplier: 0.5
+overrides:
+  demo:
+    max_drawdown_disabled: true
+""".strip(),
+        encoding="utf-8",
+    )
+    risk = RiskAgent(risk_yaml=yaml_path, narrator_enabled=False)
+    # 20% DD — would normally trigger flatten/reject. With opt-out, approves.
+    acct = _account(equity=80_000, peak=100_000)
+    v = risk.evaluate(_order(qty=1, price=500), acct, _strategy())
+    assert v.verdict == "approve"
+    assert v.flatten_account is False
+
+
 def test_per_trade_cap_triggers_resize(tmp_risk_yaml):
     risk = RiskAgent(risk_yaml=tmp_risk_yaml, narrator_enabled=False)
     # Equity 100k * 0.015 = 1500 risk cap.

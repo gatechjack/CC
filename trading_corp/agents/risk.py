@@ -117,13 +117,18 @@ class RiskAgent:
             )
 
         # 4. Account max drawdown
-        max_dd = float(params.get("per_account_max_drawdown_pct", 0.15))
-        if account.drawdown_pct() >= max_dd:
-            return RiskVerdict(
-                verdict="reject",
-                reason=f"account drawdown {account.drawdown_pct()*100:.1f}% ≥ {max_dd*100:.1f}% cap — flatten and halt",
-                flatten_account=True,
-            )
+        # Per-strategy opt-out for 100%-in/out strategies (e.g.
+        # coinbase_btc_donchian) whose edge requires riding through volatility
+        # to the next exit signal — auto-flattening mid-position would defeat
+        # the strategy. Opt-in only; unset/false preserves today's safety net.
+        if not bool(params.get("max_drawdown_disabled", False)):
+            max_dd = float(params.get("per_account_max_drawdown_pct", 0.15))
+            if account.drawdown_pct() >= max_dd:
+                return RiskVerdict(
+                    verdict="reject",
+                    reason=f"account drawdown {account.drawdown_pct()*100:.1f}% ≥ {max_dd*100:.1f}% cap — flatten and halt",
+                    flatten_account=True,
+                )
 
         # Detect options up-front — several caps below have option-specific
         # semantics (covered-call sells aren't bearish; contracts must be whole).

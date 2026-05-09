@@ -243,6 +243,17 @@ async def run(argv: list[str] | None = None) -> int:
     from trading_corp.agents.strategies.market_cypher import MarketCypherAgent
     market_cypher_agent = MarketCypherAgent(db_url=secrets.db_url)
 
+    # Coinbase BTC Donchian — poll-driven 6h bar-close strategy on
+    # coinbase_spot. Unlike Otter/Cypher this is NOT TradingView-webhook
+    # driven; the orchestrator's _scheduled_donchian_loop (below) wakes at
+    # 00/06/12/18 UTC, fetches recent OHLCV, and calls on_bar_close. The
+    # agent persists CASH↔BTC state + cost_basis to the agent_state table
+    # so a restart mid-position resumes correctly.
+    from trading_corp.agents.strategies.coinbase_btc_donchian_agent import (
+        CoinbaseBTCDonchianAgent,
+    )
+    donchian_agent = CoinbaseBTCDonchianAgent(db_url=secrets.db_url)
+
     # --- Brokers (one per division, driven by config/divisions.yaml) ---
     from trading_corp.brokers.coinbase import CoinbaseBroker
     from trading_corp.utils.divisions import load_divisions
@@ -267,6 +278,42 @@ async def run(argv: list[str] | None = None) -> int:
     # exactly once across all instances of the same family thanks to module-
     # level session sharing in their respective broker modules.
     await data_exec.connect_all()
+
+    # Reconcile Donchian state vs the live coinbase_spot snapshot. If the
+    # process was restarted mid-position, the agent_state row may already
+    # have the correct (state=BTC, cost_basis=$X) — but the broker is the
+    # source of truth for held_btc. Per the agent's restore_from_broker
+    # contract: held_btc > dust threshold seeds state=BTC at cost_basis=
+    # current_price (Board direction — no historical-entry tracking).
+    cb_spot_broker = data_exec.brokers.get("coinbase_spot")
+    if cb_spot_broker is not None:
+        try:
+            snap = await cb_spot_broker.snapshot()
+            held_btc = 0.0
+            for pos in (snap.positions or []):
+                if pos.symbol == donchian_agent.symbol:
+                    held_btc = float(pos.qty or 0.0)
+                    break
+            current_price = 0.0
+            try:
+                current_price = float(
+                    await cb_spot_broker.quote(donchian_agent.symbol) or 0.0
+                )
+            except Exception as e:
+                log.warning("Donchian startup quote failed: %s", e)
+            if current_price > 0:
+                donchian_agent.restore_from_broker(
+                    account_equity=float(snap.equity or 0.0),
+                    held_btc=held_btc,
+                    current_price=current_price,
+                )
+            else:
+                log.warning(
+                    "Donchian startup: no price quote available; skipping "
+                    "broker reconciliation (will retry on first bar close)"
+                )
+        except Exception as e:
+            log.exception("Donchian startup reconciliation failed: %s", e)
 
     # --- Comms channel ---
     # _graph_holder is filled after the checkpointer context opens so the scan
@@ -644,6 +691,23 @@ async def run(argv: list[str] | None = None) -> int:
             _scheduled_pmcc_scan_loop(_on_scan, channel, logger_agent)
         )
 
+        # --- Coinbase BTC Donchian 6h-bar scheduler (00/06/12/18 UTC) ---
+        # Wakes shortly after each 6h bar closes, fetches the recent OHLCV
+        # window, calls agent.on_bar_close, writes a `donchian_evaluated`
+        # audit row regardless of decision (UI tile depends on it), and
+        # routes any returned ProposedOrder through the standard risk +
+        # HITL graph. Paper-mode by default — `auto_execute: false` in
+        # strategies.yaml means orders fire HITL approvals via the web app.
+        donchian_task = asyncio.create_task(
+            _scheduled_donchian_loop(
+                donchian_agent,
+                graph=graph,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+            )
+        )
+
         # --- Paper-trade replay (Phase C of would_have_placed enrichment) ---
         # One-shot startup catch-up: mark legacy pre-Phase-A rows + replay
         # any pending rows that landed during the last downtime. Then spawn
@@ -714,6 +778,11 @@ async def run(argv: list[str] | None = None) -> int:
             scheduler_task.cancel()
             try:
                 await scheduler_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            donchian_task.cancel()
+            try:
+                await donchian_task
             except (asyncio.CancelledError, Exception):
                 pass
             replay_task.cancel()
@@ -980,6 +1049,210 @@ async def _scheduled_pmcc_scan_loop(
         except Exception as e:
             log.exception("Scheduler loop error (continuing): %s", e)
             await asyncio.sleep(poll_interval_sec)
+
+
+def _seconds_until_next_6h_boundary(now, *, post_close_buffer_sec: int = 120) -> float:
+    """Seconds from `now` until the next 6h-bar-close boundary plus a small
+    buffer so Coinbase has finalized the closed bar before we fetch it.
+
+    Boundaries: 00:00, 06:00, 12:00, 18:00 UTC. Returns a non-negative float.
+    """
+    from datetime import datetime, timedelta, timezone
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    candidates = []
+    for h in (0, 6, 12, 18):
+        cand_today = now.replace(hour=h, minute=0, second=0, microsecond=0)
+        if cand_today > now:
+            candidates.append(cand_today)
+        candidates.append(cand_today + timedelta(days=1))
+    next_boundary = min(c for c in candidates if c > now)
+    target = next_boundary + timedelta(seconds=post_close_buffer_sec)
+    delta = (target - now).total_seconds()
+    return max(delta, 1.0)
+
+
+async def _fetch_recent_btc_6h_bars(symbol: str, limit: int = 200) -> list[dict]:
+    """Fetch the most recent `limit` 6h OHLCV bars for `symbol` from Coinbase
+    via ccxt's public endpoint (no auth). Returns a chronologically-sorted
+    list of {ts, open, high, low, close, volume} dicts. Drops any in-progress
+    bar whose close time hasn't passed (defensive — depending on the moment
+    we hit the API ccxt may or may not include the live bar).
+    """
+    from datetime import datetime, timezone
+    import ccxt.async_support as ccxt_async  # local import: cold-start cheap
+    exchange = ccxt_async.coinbase({"enableRateLimit": True})
+    try:
+        raw = await exchange.fetch_ohlcv(symbol, timeframe="6h", limit=limit)
+    finally:
+        await exchange.close()
+    bars: list[dict] = []
+    granularity_sec = 6 * 3600
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    for row in raw or []:
+        ts_ms, o, h, l, c, v = row
+        # Drop the in-progress bar (close time still in the future).
+        if int(ts_ms) + granularity_sec * 1000 > now_ms:
+            continue
+        bars.append({
+            "ts": datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc),
+            "open": float(o), "high": float(h), "low": float(l),
+            "close": float(c), "volume": float(v),
+        })
+    return bars
+
+
+async def _scheduled_donchian_loop(
+    agent,
+    *,
+    graph,
+    channel,
+    logger_agent,
+    data_exec,
+) -> None:
+    """6h-bar-close scheduler for the Coinbase BTC Donchian strategy.
+
+    Wakes ~2min after each 00/06/12/18 UTC boundary so Coinbase has finalized
+    the closed bar. On each tick: fetch the rolling OHLCV window, snapshot
+    the coinbase_spot broker for held-BTC + equity, evaluate, audit, and
+    route any ProposedOrder through the standard risk + HITL graph.
+
+    Idempotent on re-fire — the agent's internal last_bar_ts dedup ignores
+    a second call for the same bar.
+    """
+    from datetime import datetime, timezone
+    log.info(
+        "Donchian scheduler online: wakes at 00/06/12/18 UTC + ~2min "
+        "(strategy enabled=%s, auto_execute=%s)",
+        agent.enabled, agent.auto_execute,
+    )
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            sleep_sec = _seconds_until_next_6h_boundary(now)
+            log.info("Donchian scheduler: sleeping %.0fs until next bar close", sleep_sec)
+            await asyncio.sleep(sleep_sec)
+
+            if not agent.enabled:
+                log.info("Donchian disabled in config — skipping this bar.")
+                continue
+
+            await _run_donchian_bar(agent, graph, channel, logger_agent, data_exec)
+
+        except asyncio.CancelledError:
+            log.info("Donchian scheduler cancelled.")
+            return
+        except Exception as e:
+            log.exception("Donchian scheduler loop error (continuing): %s", e)
+            # Brief sleep before retry so a persistent failure doesn't
+            # tight-loop the logs. Next iteration re-computes the sleep
+            # against the next boundary.
+            await asyncio.sleep(60)
+
+
+async def _run_donchian_bar(
+    agent, graph, channel, logger_agent, data_exec,
+) -> None:
+    """One Donchian evaluation cycle. Extracted so tests / manual triggers
+    can run a single bar without the scheduler loop. Writes the
+    `donchian_evaluated` audit row regardless of decision.
+    """
+    from datetime import datetime, timezone
+
+    cb = data_exec.brokers.get("coinbase_spot")
+    if cb is None:
+        log.warning("Donchian: no coinbase_spot broker registered; skipping.")
+        return
+
+    bars = await _fetch_recent_btc_6h_bars(agent.symbol, limit=200)
+    if not bars:
+        log.warning("Donchian: empty OHLCV fetch; skipping bar.")
+        return
+
+    snap = await cb.snapshot()
+    held_btc = 0.0
+    for pos in (snap.positions or []):
+        if pos.symbol == agent.symbol:
+            held_btc = float(pos.qty or 0.0)
+            break
+    account_equity = float(snap.equity or 0.0)
+
+    prev_verdict = agent.last_verdict
+    order, reason = agent.on_bar_close(
+        bars, account_equity=account_equity, held_btc=held_btc,
+    )
+    new_verdict = agent.last_verdict
+
+    # Audit-row write — only when evaluate_donchian actually ran (i.e. not
+    # a disabled / no-bars / dedup short-circuit). The UI tile reads this
+    # kind to populate the per-bar log.
+    if new_verdict is not None and new_verdict is not prev_verdict:
+        bd = new_verdict.breakdown
+        logger_agent.log_event(
+            agent.name, "donchian_evaluated",
+            {
+                "strategy": agent.name,
+                "division": agent.division,
+                "decision": new_verdict.decision.value,
+                "reason": new_verdict.reason,
+                "current_close": bd.current_close,
+                "donchian_high": bd.donchian_high,
+                "donchian_low": bd.donchian_low,
+                "trend_filter_sma": bd.trend_filter_sma,
+                "trend_filter_passed": bd.trend_filter_passed,
+                "bars_considered": bd.bars_considered,
+                "bar_ts": bars[-1]["ts"].isoformat(),
+                "account_equity": account_equity,
+                "held_btc": held_btc,
+            },
+        )
+
+    if order is None:
+        log.info("Donchian @ %s: no order — %s", bars[-1]["ts"].isoformat(), reason)
+        return
+
+    logger_agent.log_proposed_order(order)
+    logger_agent.log_event(
+        agent.name, "donchian_order_proposed",
+        {
+            "strategy": agent.name,
+            "division": agent.division,
+            "order_id": order.id,
+            "side": order.side,
+            "qty": order.qty,
+            "limit_price": order.limit_price,
+            "reason": reason,
+        },
+    )
+    try:
+        await channel.push(
+            f"📊 Donchian {order.side.upper()} signal @ ${order.limit_price:,.2f} — "
+            f"{reason}. Routing for approval..."
+        )
+    except Exception as e:
+        log.warning("Donchian channel push failed: %s", e)
+
+    final_status = await _run_order(
+        graph, channel, logger_agent, order, division=agent.division,
+    )
+    log.info("Donchian order %s → final_status=%s", order.id, final_status)
+    logger_agent.log_event(
+        agent.name, "donchian_order_result",
+        {
+            "strategy": agent.name,
+            "division": agent.division,
+            "order_id": order.id,
+            "side": order.side,
+            "final_status": final_status,
+        },
+    )
+
+    # On a paper or live fill, flip the agent's CASH↔BTC state. The next
+    # bar's broker snapshot will reconcile authoritatively, but updating
+    # in-memory now keeps the next on_bar_close decision consistent if
+    # the snapshot lags.
+    if final_status == "filled":
+        agent.mark_filled(side=order.side, fill_price=float(order.limit_price or 0.0))
 
 
 async def _build_context_md(trend_agent, portfolio, logger_agent) -> str:

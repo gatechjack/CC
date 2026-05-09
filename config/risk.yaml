@@ -48,3 +48,21 @@ overrides:
   # account-level safety valve, not the per-trade default.
   manual_coinbase_spot:
     per_trade_risk_pct: 0.05         # 5% per-trade cap on manual entries
+
+  # Coinbase BTC Donchian — 100%-in/out trend follower (locked config
+  # 2026-05-08; walk-forward 8/10 OOS, +25.89% alpha 24mo). The strategy's
+  # edge IS putting the full BTC sleeve in/out on signal, so the standard
+  # caps must be relaxed:
+  #   - per-trade 100%: a tighter cap would silently shrink entries
+  #     below the size the backtest validated.
+  #   - daily-loss 100%: brief said "null"; risk.py reads via float(),
+  #     so 1.0 acts as effectively-disabled (would require a 100% same-
+  #     day realized loss before halting — never reached pre-liquidation).
+  #     Strategy must hold through volatility to the next 6-bar exit.
+  #   - max_drawdown_disabled (honored at agents/risk.py §4): opts out
+  #     of the account-level 15% auto-flatten. 24mo max DD was 16.49%;
+  #     the cap would have force-flattened the strategy mid-run.
+  coinbase_btc_donchian:
+    per_trade_risk_pct: 1.0
+    per_strategy_daily_loss_pct: 1.0
+    max_drawdown_disabled: true

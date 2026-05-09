@@ -481,7 +481,11 @@ crypto_futures:
 # Phase 2 (future): leverage shorts via coinbase_futures.
 # ============================================================
 lord_otter:
-  enabled: true
+  # Disabled 2026-05-08: coinbase_spot pivots to the Donchian strategy
+  # (block below). Otter+Cypher confluence had no demonstrable edge in
+  # walk-forward (commit cd26a75). Files preserve for future BitUnix
+  # Futures wiring per `trading_corp_bitunix_vision.md`.
+  enabled: false
   # auto_execute: when true, ProposedOrders fire through the risk
   # gate straight to the broker (no HITL approval). Leave FALSE
   # while you build trust in the strategy. When false, alerts are
@@ -671,7 +675,8 @@ lord_otter:
 # strategy logic + the conversation history that birthed it on 2026-04-30.
 # =============================================================================
 market_cypher:
-  enabled: true
+  # Disabled 2026-05-08 alongside Otter — same rationale (Donchian pivot).
+  enabled: false
   # `auto_execute=false` is the default for any new strategy. Flip to true
   # only after Board (you) reviews enough paper-mode `would_have_placed`
   # entries in the audit log to trust the tier classifier. HITL on every
@@ -827,7 +832,7 @@ market_cypher:
 #     Strategy is `enabled: false` until Phase 2 + Board approval lands.
 # ============================================================
 coinbase_btc_donchian:
-  enabled: false                     # Phase 1 only; Phase 2 builds the live agent
+  enabled: true                      # Phase 2 wiring landed 2026-05-08
   auto_execute: false                # paper-mode default per project HITL rules
   division: coinbase_spot            # this strategy runs on the coinbase_spot division
   symbol: "BTC/USD"

@@ -123,6 +123,11 @@ class CoinbaseBTCDonchianAgent:
         self._mtime: float = 0.0
         self._cfg: dict[str, Any] = {}
         self._state: PersistedState = PersistedState.cash_default()
+        # Most recent DonchianVerdict (set inside on_bar_close after the
+        # decision module runs). The orchestrator reads this to write the
+        # `donchian_evaluated` audit row with the channel highs/lows even
+        # on SKIP decisions, where no ProposedOrder is emitted.
+        self._last_verdict: Any = None
         self._reload()
         if self._db_url:
             self._restore_from_db()
@@ -202,6 +207,14 @@ class CoinbaseBTCDonchianAgent:
     def get_state(self) -> tuple[State, float | None]:
         """Current (state, cost_basis). cost_basis is None when in CASH."""
         return self._state.state, self._state.cost_basis
+
+    @property
+    def last_verdict(self):
+        """Most recent DonchianVerdict (or None if no bar has been
+        evaluated yet, or the agent short-circuited on disabled / no-bars
+        / dedup before evaluate_donchian ran). The orchestrator reads
+        this to compose the per-bar `donchian_evaluated` audit row."""
+        return self._last_verdict
 
     # -- State persistence ------------------------------------------
 
@@ -363,6 +376,8 @@ class CoinbaseBTCDonchianAgent:
             config=config,
             now=current_ts,
         )
+        # Stash for orchestrator audit-row write (see __init__ comment).
+        self._last_verdict = verdict
 
         # Persist the bar timestamp regardless — even SKIP decisions
         # advance the dedup pointer so we don't re-evaluate.
