@@ -268,14 +268,123 @@ def pct_change_in_window(
     return (now_bar["close"] - then_bar["close"]) / then_bar["close"] * 100.0
 
 
+def session_vwap_at(bars: list[dict], ts: datetime) -> float | None:
+    """VWAP since 00:00 UTC of ts's date, computed from typical-price
+    × volume / cumulative volume. Returns None if no bars in window."""
+    day_start = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    sum_pv = 0.0
+    sum_v = 0.0
+    for b in bars:
+        if b["ts"] < day_start:
+            continue
+        if b["ts"] > ts:
+            break
+        typical = (b["high"] + b["low"] + b["close"]) / 3.0
+        sum_pv += typical * b["volume"]
+        sum_v += b["volume"]
+    if sum_v == 0:
+        return None
+    return sum_pv / sum_v
+
+
+def _resample_to_4h(bars: list[dict]) -> list[dict]:
+    """Cheap 4h resample. Returns list of {ts, open, high, low,
+    close, volume} aligned to UTC 00:00, 04:00, 08:00, 12:00, 16:00,
+    20:00 boundaries."""
+    if not bars:
+        return []
+    out: list[dict] = []
+    cur: dict | None = None
+    cur_bucket: datetime | None = None
+    for b in bars:
+        bucket = b["ts"].replace(
+            hour=(b["ts"].hour // 4) * 4, minute=0, second=0, microsecond=0,
+        )
+        if cur is None or bucket != cur_bucket:
+            if cur is not None:
+                out.append(cur)
+            cur_bucket = bucket
+            cur = {
+                "ts": bucket,
+                "open": b["open"], "high": b["high"], "low": b["low"],
+                "close": b["close"], "volume": b["volume"],
+            }
+        else:
+            cur["high"] = max(cur["high"], b["high"])
+            cur["low"] = min(cur["low"], b["low"])
+            cur["close"] = b["close"]
+            cur["volume"] += b["volume"]
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def hh_ll_4h_at(
+    bars_4h: list[dict], ts: datetime,
+) -> tuple[bool, bool]:
+    """Returns (higher_highs_4h, lower_lows_4h) flags relative to the
+    PRIOR completed 4h bar. The current (in-progress) 4h bar is
+    excluded from the comparison — only completed bars count, to
+    avoid look-ahead within the bar."""
+    bucket = ts.replace(
+        hour=(ts.hour // 4) * 4, minute=0, second=0, microsecond=0,
+    )
+    # Find the index of the bar matching `bucket` (the in-progress bar)
+    cur_idx = None
+    for i, b in enumerate(bars_4h):
+        if b["ts"] == bucket:
+            cur_idx = i
+            break
+    if cur_idx is None or cur_idx < 2:
+        return False, False
+    # Compare the most-recently-COMPLETED 4h bar to the one before it
+    last_completed = bars_4h[cur_idx - 1]
+    prior         = bars_4h[cur_idx - 2]
+    return (
+        last_completed["high"] > prior["high"],
+        last_completed["low"] < prior["low"],
+    )
+
+
+def volume_above_20bar_avg_at(bars: list[dict], ts: datetime) -> bool:
+    """True iff the bar containing ts has volume > 20-bar trailing
+    average (computed from the 20 PRIOR bars; current bar's volume
+    is the comparison target, not in the average)."""
+    bar = find_bar_at(bars, ts)
+    if bar is None:
+        return False
+    # Find the 20 bars BEFORE this one
+    idx = bars.index(bar)
+    if idx < 20:
+        return False
+    prior20 = bars[idx - 20:idx]
+    avg = sum(b["volume"] for b in prior20) / 20.0
+    return bar["volume"] > avg
+
+
 def build_price_context(
     bars: list[dict], ts: datetime, config: ConfluenceConfig,
+    bars_4h: list[dict] | None = None,
 ) -> PriceContext | None:
     """Compose `PriceContext` for a given timestamp. Returns None if
-    no bar exists for ts (alert outside OHLCV range)."""
+    no bar exists for ts (alert outside OHLCV range).
+
+    `bars_4h` (resampled 4h bars) is precomputed once by the caller
+    and threaded in for HH/LL detection — re-resampling per alert
+    would be wasteful."""
     fill = fill_price_at(bars, ts)
     if fill is None:
         return None
+
+    vwap = session_vwap_at(bars, ts)
+    above_vwap = vwap is not None and fill > vwap
+    below_vwap = vwap is not None and fill < vwap
+
+    if bars_4h:
+        hh4h, ll4h = hh_ll_4h_at(bars_4h, ts)
+    else:
+        hh4h = ll4h = False
+
     return PriceContext(
         current_price=fill,
         pct_change_in_window_sell=pct_change_in_window(
@@ -284,7 +393,11 @@ def build_price_context(
         pct_change_in_window_buy=pct_change_in_window(
             bars, ts, config.buy_on_fall.window_minutes,
         ),
-        # Phase 1: PA factors disabled. Phase 2 enables.
+        above_session_vwap=above_vwap,
+        below_session_vwap=below_vwap,
+        higher_highs_4h=hh4h,
+        lower_lows_4h=ll4h,
+        volume_above_20bar_avg=volume_above_20bar_avg_at(bars, ts),
     )
 
 
@@ -345,6 +458,7 @@ def run_backtest(
     """Walk forward through chronologically-sorted alerts. At each
     alert: filter live window, compute price context, evaluate
     confluence, simulate fill at bar mid. Build ledger + summary."""
+    bars_4h = _resample_to_4h(bars)
     ledger: list[LedgerEntry] = []
 
     state = starting_state
@@ -369,7 +483,7 @@ def run_backtest(
         live = filter_live_alerts(alerts, config, alert.ts)
 
         # Price context at this moment
-        ctx = build_price_context(bars, alert.ts, config)
+        ctx = build_price_context(bars, alert.ts, config, bars_4h=bars_4h)
         if ctx is None:
             # Alert outside OHLCV coverage; record but don't act
             log.debug("No OHLCV at %s; skipping alert %s", alert.ts, alert.signal_name)

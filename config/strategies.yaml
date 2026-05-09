@@ -872,14 +872,19 @@ btc_accumulator:
       water_buy_large:      { weight: 2, side: buy,  ttl_minutes: 30 }
       water_sell_large:     { weight: 2, side: sell, ttl_minutes: 30 }
 
-      # ── Price-action factors (computed from OHLCV in Phase 1+) ──
-      # Held back from the Phase 1 backtest MVP — alerts alone are
-      # plenty of signal to validate the engine. Phase 2 enables.
-      # above_session_vwap:     { weight: 1, side: buy }
-      # below_session_vwap:     { weight: 1, side: sell }
-      # higher_highs_4h:        { weight: 2, side: buy }
-      # lower_lows_4h:          { weight: 2, side: sell }
-      # volume_above_20bar_avg: { weight: 1, side: directional }
+      # ── Price-action factors (computed from OHLCV by harness/agent) ──
+      # Enabled 2026-05-08 (Phase 1.5). Computed deterministically:
+      # - above/below_session_vwap: bar-mid vs session-VWAP since 00:00 UTC
+      # - higher_highs_4h / lower_lows_4h: most-recent COMPLETED 4h bar
+      #   vs prior completed 4h bar (excludes in-progress bar to avoid
+      #   look-ahead within the bucket)
+      # - volume_above_20bar_avg: current bar's volume vs trailing
+      #   20-bar avg (current bar excluded from the avg)
+      above_session_vwap:     { weight: 1, side: buy }
+      below_session_vwap:     { weight: 1, side: sell }
+      higher_highs_4h:        { weight: 2, side: buy }
+      lower_lows_4h:          { weight: 2, side: sell }
+      volume_above_20bar_avg: { weight: 1, side: directional }
 
   # Symmetric "wait for stabilization" guards — applied as score
   # penalties, NOT hard filters. So a strong-confluence sell (score
