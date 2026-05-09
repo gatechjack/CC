@@ -12,6 +12,11 @@ from dotenv import load_dotenv
 log = logging.getLogger(__name__)
 
 # Keys that, if present in a string, must be redacted from logs.
+# Catches "KEY_NAME=value" forms (env echoes, .env-loading messages, etc.).
+# For third-party libraries that log raw secret VALUES without the key
+# prefix (e.g. py-clob-client logging the Polygon private key during
+# signing), also see `register_redact_literal` below — that mechanism
+# handles value-substring redaction for known-loaded secrets.
 _SECRET_KEY_NAMES = (
     "ANTHROPIC_API_KEY",
     "TELEGRAM_BOT_TOKEN",
@@ -26,7 +31,41 @@ _SECRET_KEY_NAMES = (
     "BITUNIX_FUTURES_API_KEY",
     "BITUNIX_FUTURES_API_SECRET",
     "FIDELITY_PASSWORD",
+    # Polymarket / Polygon — Phase 0 of the Polymarket Arbitrage division.
+    # Private key is the most sensitive (signs USDC-spending transactions);
+    # funder address is public-info-by-design but kept on the redact list
+    # for defense-in-depth (link analysis from logs is something to deny);
+    # RPC URL contains an embedded Alchemy API key in its path segment.
+    "POLYMARKET_PRIVATE_KEY",
+    "POLYMARKET_FUNDER_ADDRESS",
+    "POLYGON_RPC_URL",
 )
+
+
+# Module-level set of literal secret VALUES (not key names) that must be
+# redacted wherever they appear in log output, regardless of context.
+# Populated by `register_redact_literal()` after `load_secrets()` resolves
+# each secret's actual value. This is the defense against third-party
+# libraries (py-clob-client, web3.py, etc.) that may log raw key values
+# during DEBUG without the `KEY_NAME=` prefix that `_REDACT_PATTERN`
+# relies on.
+_REDACT_LITERALS: set[str] = set()
+
+
+def register_redact_literal(value: str | None) -> None:
+    """Register a literal secret value to be redacted from log output.
+
+    Called from `load_secrets()` for each sensitive value once it's
+    resolved (from .env or KV). The RedactingFilter then substitutes the
+    exact value with ***REDACTED*** anywhere it appears in any log line,
+    including third-party library output.
+
+    No-op for empty / None / very-short strings (would risk false-positive
+    redactions of non-secret common substrings).
+    """
+    if not value or len(value) < 16:
+        return
+    _REDACT_LITERALS.add(value)
 
 
 @dataclass(frozen=True)
@@ -52,6 +91,15 @@ class Secrets:
     # initializes as a stub returning $0 / no positions.
     bitunix_futures_api_key: str | None
     bitunix_futures_api_secret: str | None
+    # Polymarket / Polygon (Phase 0 — Polymarket Arbitrage division).
+    # Private key signs USDC-spending transactions for the dedicated
+    # Polymarket wallet; funder address is the wallet's public address;
+    # RPC URL is the Alchemy Polygon endpoint with an embedded API key.
+    # All three are pulled from KV at runtime; never written to disk.
+    # If unset, the Polymarket broker initializes as a stub.
+    polymarket_private_key: str | None
+    polymarket_funder_address: str | None
+    polygon_rpc_url: str | None
     fidelity_username: str | None
     fidelity_password: str | None
     fidelity_account: str | None   # account name substring to filter, e.g. "Joint"
@@ -135,6 +183,9 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "COINBASE_FUTURES_PASSPHRASE",
         "BITUNIX_FUTURES_API_KEY",
         "BITUNIX_FUTURES_API_SECRET",
+        "POLYMARKET_PRIVATE_KEY",
+        "POLYMARKET_FUNDER_ADDRESS",
+        "POLYGON_RPC_URL",
         "FIDELITY_USERNAME",
         "FIDELITY_PASSWORD",
         "FIDELITY_ACCOUNT",
@@ -188,7 +239,7 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     if kv_uri:
         _populate_from_keyvault(kv_uri)
 
-    return Secrets(
+    secrets = Secrets(
         anthropic_api_key=_env("ANTHROPIC_API_KEY"),
         telegram_bot_token=_env("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
@@ -203,11 +254,29 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         coinbase_futures_passphrase=_env("COINBASE_FUTURES_PASSPHRASE"),
         bitunix_futures_api_key=_env("BITUNIX_FUTURES_API_KEY"),
         bitunix_futures_api_secret=_env("BITUNIX_FUTURES_API_SECRET"),
+        polymarket_private_key=_env("POLYMARKET_PRIVATE_KEY"),
+        polymarket_funder_address=_env("POLYMARKET_FUNDER_ADDRESS"),
+        polygon_rpc_url=_env("POLYGON_RPC_URL"),
         fidelity_username=_env("FIDELITY_USERNAME"),
         fidelity_password=_env("FIDELITY_PASSWORD"),
         fidelity_account=_env("FIDELITY_ACCOUNT"),
         db_url=_env("TRADING_CORP_DB_URL") or "sqlite:///data/trading_corp.db",
     )
+
+    # Register loaded secret VALUES with the redaction filter so any log
+    # output containing the raw value (including from third-party libs
+    # that don't use our key-name conventions) is scrubbed. The KEY=value
+    # pattern in `_REDACT_PATTERN` covers env-name-prefixed forms; this
+    # covers everything else. Polymarket's private key is the load-bearing
+    # case (py-clob-client signing-path DEBUG); we register the others
+    # for defense-in-depth.
+    register_redact_literal(secrets.polymarket_private_key)
+    register_redact_literal(secrets.polygon_rpc_url)
+    # funder_address is public-info but registering it costs nothing
+    # and prevents trivial address-grepping from log files.
+    register_redact_literal(secrets.polymarket_funder_address)
+
+    return secrets
 
 
 def assert_live_ready(secrets: Secrets, brokers_required: tuple[str, ...]) -> None:
@@ -242,8 +311,24 @@ _REDACT_PATTERN = re.compile(
 
 
 def redact(text: str) -> str:
-    """Replace secret-looking key=value substrings with key=***REDACTED***."""
-    return _REDACT_PATTERN.sub(lambda m: f"{m.group('key')}=***REDACTED***", text)
+    """Replace secret-looking substrings with ***REDACTED***.
+
+    Two passes:
+      1. KEY=value pattern — catches env-style echoes (`POLYMARKET_PRIVATE_KEY=0xabc...`)
+         regardless of whether the value has been loaded yet.
+      2. Literal-value substitution — for any secret value registered via
+         `register_redact_literal()` (called from `load_secrets()`), replace
+         every occurrence with ***REDACTED*** regardless of context. This is
+         the defense against third-party libraries that log raw secret values
+         without our key-name conventions (py-clob-client signing path,
+         web3.py provider URLs, etc.).
+    """
+    text = _REDACT_PATTERN.sub(lambda m: f"{m.group('key')}=***REDACTED***", text)
+    if _REDACT_LITERALS:
+        for literal in _REDACT_LITERALS:
+            if literal in text:
+                text = text.replace(literal, "***REDACTED***")
+    return text
 
 
 class RedactingFilter(logging.Filter):
