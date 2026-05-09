@@ -59,6 +59,85 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-09 21:57 UTC — Polymarket Phase 2a: arbitrage scanner + risk caps + scheduler wiring
+
+**Commits:** `fe757e2` (Phase 2a, committed pre-deploy).
+**Triggered by:** Phase 2 strategy build (greenlit by Board after the Phase 1 ship + 5-question memo answers earlier same day). Path B chosen for the LLM call (direct Anthropic, NOT through Research firm — Thesis schema doesn't fit prediction-market probability queries; Polymarket arbitrage is single-division decision logic, not cross-division knowledge work). All 9 risk caps confirmed verbatim from Q1 answer; K=10 / 6h cooldown from Q3 answer 'a'; 7-day max horizon from Q2; defensive httpx rate-limiting from Q5.
+**Backup tag:** `pre-polymarket-phase2a-20260509.tar.gz` at `/home/azureuser/backups/` (5 modified files; 2 new files have no pre-state).
+**Pre-deploy NSG action:** Board's laptop IP rotated mid-session (Comcast); old `98.231.16.63` → new `73.104.119.214` updated on `tc-prod-nsg/AllowSSHFromHome` via the standard `auth_lockout_recovery.md` Cloud-Shell-or-az-CLI path. Documented as the correct recovery; not a deploy concern.
+
+**Files deployed (5 modified, 2 new):**
+
+- `config/risk.yaml` — new `polymarket:` top-level block. All 9 caps from Q1 answer (universe pre-filter: min volume $50K / max spread 3¢ / min ttr 24h / implied-prob bounds 5-95%; per-order: 5%-of-equity / $250 single-market; aggregate: 25%-equity-cap-$1K daily / $1K total open).
+- `config/strategies.yaml` — new `polymarket_arbitrage:` block (enabled:false, auto_execute:false, K=10, 6h cooldown, 7d horizon, fixed_usdc/$1 sizing). Plus a documented `polymarket_copy_trading:` placeholder for Phase 4+.
+- `trading_corp/agents/risk.py` — new `_evaluate_polymarket()` branch routed by the `is_prediction_market` extra flag. Atomic + aggregate caps; halt checks still run BEFORE the polymarket branch. Daily-aggregate cap queries audit_event for today's `would_have_placed`/`board_approved`/`filled` rows; total-open cap returns 0 in Phase 2a (Phase 3 implements). `evaluate()` signature gained an optional `db_url` kwarg (back-compat: existing callers don't pass it, aggregate checks no-op).
+- `trading_corp/brokers/polymarket.py` — new `list_markets(filters)` method against gamma-api with deterministic Python-side filtering. New `_http_get_json()` helper with concurrency cap (semaphore=6) + 429 backoff (max 4 retries, 1-30s window with jitter).
+- `trading_corp/main.py` — new `_scheduled_polymarket_arb_loop()` spawned alongside `donchian_task`. Re-reads `poll_interval_sec` each tick so config changes don't need a restart. Routes emitted ProposedOrders through `_run_order` (existing risk + HITL graph). Telegram pings on each emission.
+- `trading_corp/agents/strategies/polymarket_arbitrage.py` — **NEW.** PolymarketArbitrageAgent. mtime-cached config, per-market 6h cooldown in agent_state (single-JSON-blob with cleanup-on-load). Direct Anthropic call via `agents.llm.build_chat_model`. Permissive JSON parser handles prose-wrapped output; clamps prob_yes to [0.01, 0.99]; normalizes unknown confidence to "medium". Defensive implied-prob extraction handles outcomePrices-as-string, outcomePrices-as-list, lastTradePrice, price.
+- `trading_corp/agents/strategies/_polymarket_prompts.py` — **NEW.** Shared analyst-persona system prompt (~1554 estimated tokens). Imported by arbitrage today, by future copy_trading later — Anthropic's prompt cache amortizes the input-token cost across both strategies (5-min ephemeral TTL; ≥1024-token threshold cleared with substantive methodology + worked example).
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+
+- The Polymarket scanner loop is online but inert. Boot log:
+  `"Polymarket arbitrage scanner online (enabled=False, auto_execute=False)"`. To activate: Board flips `polymarket_arbitrage.enabled` in `strategies.yaml` AND uploads the 3 KV secrets.
+- Risk gate now routes prediction-market orders by `extra.is_prediction_market` flag — clean separation from PMCC/crypto cap logic.
+- Anthropic prompt-cache-ready system prompt is in the codebase; both Polymarket strategies will share it. ~85% input-token cost reduction on K-1 follow-up calls per cycle.
+- 19 new pytest cases in `tests/test_polymarket_arbitrage.py` regress: config defaults, implied-prob extraction (4 shapes), JSON parse robustness (clean/prose/OOB/garbage/unknown-confidence), risk-gate cap matrix (approve, implied-bound rejects, single-market $ cap, per-position % cap, halt-precedence, non-polymarket-isolation).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+
+- The strategy emits ProposedOrder.extra with `is_prediction_market: True`. **The risk gate routes EXCLUSIVELY off this flag**, not off `order.strategy == "polymarket_arbitrage"`. When `polymarket_copy_trading` ships, it should set the same flag — that single change makes it inherit all 9 caps without modifying risk.py.
+- `RiskAgent.evaluate()` gained an optional `db_url` kwarg for the daily-aggregate cap query. Existing callers (PMCC, donchian, otter, cypher, manual) don't pass it; their behavior is unchanged. The Polymarket scheduler in main.py needs to start passing it once `enabled: true` flips and aggregate caps actually bind.
+- The shared analyst prompt is intentionally substantive — methodology + worked example clear the 1024-token cache threshold. Trimming the prompt below ~1300 tokens would silently disable the cache and quintuple input costs at K=10/30s.
+- Aggregate query (`_sum_polymarket_today`) uses `substr(ts, 1, 10)` for date partitioning. Switches to UTC midnight; if Board ever wants ET-based daily aggregates, that's a single-line change but flag the semantics in audit.
+
+**Verification:**
+
+- Pre-restart PID 175242 → post-restart 176618 (clean).
+- All 7 prod files match local LF-normalized md5s exactly after SCP.
+- Boot log:
+  - `Registered polymarket broker for division=polymarket_arbitrage (paper=False)` ✓
+  - `Registered paper broker for division=polymarket_copy_trading (paper=True)` ✓
+  - `PolymarketBroker connected as STUB (missing funder or RPC URL)` — expected (KV uploads still pending Board action)
+  - `Polymarket arbitrage scanner online (enabled=False, auto_execute=False)` — exactly the inert posture Phase 2a ships
+- KV fetch attempts for `POLYMARKET-PRIVATE-KEY` / `POLYMARKET-FUNDER-ADDRESS` returned empty (graceful fallback to stub).
+- 19 new tests pass; 9 existing risk_gates tests pass unchanged; 508 tests in the broader suite pass.
+- Live test of `list_markets()` against gamma-api (executed pre-deploy): real markets fetched, 7 returned with default filter, 0 returned with Phase 2 caps applied (gamma-api default page sort isn't volume-first; tuning the query is a pre-enable follow-up flagged in the file's docstring).
+
+**Inert / dormant on current traffic:**
+
+- Scanner loop wakes every 30s, no-ops on `enabled: false`. **Zero LLM calls; zero cost.**
+- Cooldown table in agent_state stays empty until first cycle with `enabled: true`.
+- Aggregate-cap query (`_sum_polymarket_today`) returns 0.0 — no Polymarket audit rows yet.
+- `polymarket_copy_trading` tile remains paper-fallback STANDBY $0.
+
+**Pre-enable checklist (Board action):**
+
+1. Generate wallet (`python3 -c "from eth_account import Account; ..."`).
+2. Sign up at alchemy.com, copy Polygon Mainnet HTTPS URL.
+3. Fund EOA with $500 native USDC + ~$5 MATIC on Polygon.
+4. Upload to KV: `POLYMARKET-PRIVATE-KEY` / `POLYMARKET-FUNDER-ADDRESS` / `POLYGON-RPC-URL`.
+5. Tune `gamma-api/markets` query to surface high-volume / short-tail markets (current sort returns long-tail first; Phase 2 caps reject them).
+6. Phase 2.5 Backtester verdict (replay-only minimal-viable; greenlit but not yet built).
+7. Flip `polymarket_arbitrage.enabled: true` in `strategies.yaml` (no service restart needed — mtime-cached).
+8. Watch the activity rail on `/division/polymarket_arbitrage` for `would_have_placed` rows.
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-polymarket-phase2a-20260509
+BASE=/home/azureuser/trading_corp
+cd \$BASE
+tar xzf /home/azureuser/backups/\${TAG}.tar.gz
+rm -f trading_corp/agents/strategies/_polymarket_prompts.py \
+      trading_corp/agents/strategies/polymarket_arbitrage.py
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
 ## 2026-05-09 20:13 UTC — Polymarket Phase 1: read-only broker + division wiring (+ Phase 0 secrets backfill caught at deploy)
 
 **Commits:** `db1f0cd` (Phase 0 secrets, never previously deployed) + `d7cbea2` (Phase 1 broker + wiring, committed pre-deploy).
