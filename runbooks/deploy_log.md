@@ -59,6 +59,17 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-10 01:04 UTC — BAL CHG row ts_short pinned to bar_ts (cosmetic, sibling-row alignment)
+
+**Commit:** `c94df37` — 2 files (`main.py` + `web/data.py`), 17 insertions / 6 deletions.
+**Triggered by:** Board screenshot 2026-05-09 ~20:46 UTC. The BAL CHG row landed at `05-09 20:02 ET` (audit-row write time = bar close + ~2min) while its sibling donchian_evaluated row showed `05-09 14:00 ET` (bar open). Same evaluation cycle, but the 6h visual gap reads as two unrelated events.
+**Fix:** orchestrator (`main.py:_run_donchian_bar`) now stamps `bar_ts` on the balance_change payload before logging; rendering layer (`web/data.py:build_donchian_view`) prefers `payload.bar_ts` over `r["ts"]` for the BAL CHG `ts_short`, mirroring the existing donchian_evaluated logic. Defensive fallback to audit ts for legacy rows that pre-date the stamp.
+**Backup tag:** `pre-balchg-ts-fix-20260510.tar.gz` (38K, 2 modified files).
+**Verification:** PID 177477 → 178354 (clean). All brokers reconnected (Polymarket still $500.00 live, BitUnix $6763.94 — the P2 transfer bug is unchanged, expected). Polymarket scanner online (enabled=False, no-op). Donchian scheduler online (enabled=True). Existing BAL CHG row in the DB at 2026-05-09 20:02 ET will continue displaying its audit-write-time until it ages out of the 60-row window (no payload migration). Next BAL CHG row — when fired — will display the bar's open time aligned with its donchian_evaluated sibling.
+**Rollback:** `tar xzf /home/azureuser/backups/pre-balchg-ts-fix-20260510.tar.gz && sudo systemctl restart trading-corp`.
+
+---
+
 ## 2026-05-10 00:39 UTC — Polymarket wallet went live (KV upload + service restart)
 
 **Not a code deploy** — wallet/secrets bring-up. Board completed steps 1-4 of the Phase 2a pre-enable checklist between 2026-05-09 22:00 UTC and 2026-05-10 00:30 UTC: generated EOA via `eth_account.Account.create()` (regenerated once after losing the first address — wallet wasn't funded, zero loss), Alchemy Polygon Mainnet signup + RPC URL, $500 native USDC + 98 POL funded from Coinbase to the EOA on Polygon mainnet, `az keyvault secret set` for the three secrets.
