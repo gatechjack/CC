@@ -41,6 +41,7 @@ cycle drops by ~85%.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -230,17 +231,46 @@ class PolymarketArbitrageAgent:
             )
 
         # 4. LLM call per survivor + ProposedOrder construction.
+        # Warm-and-fan parallel pattern: serialize the FIRST call so the
+        # Anthropic prompt cache (analyst-persona prefix, ~1554 tokens)
+        # is hot before fanning out the K-1 remaining calls in parallel.
+        # Without warming, parallel calls race the cache write and most
+        # would miss → ~5-10x input-token cost spike. With warming, the
+        # K-1 follow-ups all hit the cache. Cycle time: ~5s (first) +
+        # ~5s (parallel rest) = ~10s vs ~50s sequential.
         orders: list[ProposedOrder] = []
         new_cooldowns = dict(cooldowns)  # mutate a copy
         cooldown_until = (now + timedelta(hours=cooldown_h)).isoformat(timespec="seconds")
 
-        for m in survivors:
-            cid = m.get("conditionId") or m.get("condition_id") or ""
+        estimates: list[_ProbabilityEstimate | None] = []
+        if survivors:
+            # Step 1: warm the cache with one serial call.
             try:
-                est = await self._estimate_probability(m)
+                estimates.append(await self._estimate_probability(survivors[0]))
             except Exception as e:
-                log.warning("polymarket_arbitrage: LLM call failed for %s: %s", cid, e)
-                est = None
+                cid0 = survivors[0].get("conditionId") or survivors[0].get("condition_id") or ""
+                log.warning("polymarket_arbitrage: LLM call failed for %s: %s", cid0, e)
+                estimates.append(None)
+            # Step 2: fan out the remaining K-1 in parallel.
+            if len(survivors) > 1:
+                rest_results = await asyncio.gather(
+                    *(self._estimate_probability(m) for m in survivors[1:]),
+                    return_exceptions=True,
+                )
+                for m, r in zip(survivors[1:], rest_results):
+                    if isinstance(r, BaseException):
+                        cid = m.get("conditionId") or m.get("condition_id") or ""
+                        log.warning("polymarket_arbitrage: LLM call failed for %s: %s", cid, r)
+                        estimates.append(None)
+                    else:
+                        estimates.append(r)
+
+        # Process all results sequentially — keeps audit-row ordering
+        # deterministic + lets the per-market cooldown / divergence /
+        # ProposedOrder logic stay simple. The expensive work (LLM calls)
+        # already happened in parallel above.
+        for m, est in zip(survivors, estimates):
+            cid = m.get("conditionId") or m.get("condition_id") or ""
 
             # Always advance cooldown so a failing/non-divergent market
             # doesn't burn LLM calls on every cycle.

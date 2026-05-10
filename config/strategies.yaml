@@ -980,7 +980,10 @@ polymarket_arbitrage:
   auto_execute: false               # see comment above; today moot until Phase 3
   division: polymarket_arbitrage    # which division this strategy operates on
   poll_interval_sec: 30             # scanner cycle cadence
-  k_markets_per_cycle: 10           # max Anthropic calls per cycle (Q3 answer 'a')
+  # K=20 with warm-and-fan parallel LLM calls (Board direction
+  # 2026-05-10): cycle time ~10s vs sequential ~50s. First call serial
+  # (warms Anthropic prompt cache); remaining 19 fire via asyncio.gather.
+  k_markets_per_cycle: 20
   market_cooldown_hours: 6          # don't re-evaluate the same market within 6h
   min_divergence_pct: 10.0          # |LLM prob - implied prob| × 100 ≥ this → emit order
   time_horizon_max_days: 7          # short-tail only per Q2; long-tail deferred
