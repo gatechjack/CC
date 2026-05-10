@@ -306,6 +306,111 @@ class PolymarketBroker(ReadOnlyBroker):
             positions=positions,
         )
 
+    async def get_market_resolution(
+        self, *, condition_id: str | None = None, slug: str | None = None,
+    ) -> dict:
+        """Look up resolution status for a market. Used by the
+        Backtester to score paper trades against actual outcomes.
+
+        Returns dict with shape:
+            {
+              "status": "resolved" | "pending" | "void" | "not_found",
+              "yes_won": bool | None,         # only meaningful when resolved
+              "outcome_prices": [str, str],   # raw from gamma-api
+              "closed": bool,
+              "end_date": str,                # ISO
+            }
+
+        Resolution decoding (from gamma-api conventions verified
+        2026-05-10): for a resolved market `outcomePrices` becomes
+        `["1","0"]` (YES won) or `["0","1"]` (NO won), and
+        `umaResolutionStatus == "resolved"`. Markets still in flight
+        keep fractional prices and `umaResolutionStatus` empty/missing.
+
+        Lookup precedence: condition_id (most stable) > slug (URL-safe).
+        """
+        if self._stub or not self._client:
+            return {"status": "not_found", "yes_won": None,
+                    "outcome_prices": [], "closed": False, "end_date": ""}
+
+        # Build the lookup key. condition_ids (plural) is the gamma-api
+        # parameter name; condition_id is just the field name on our
+        # ProposedOrder.extra. slug as fallback.
+        base: dict[str, str] = {"limit": "1"}
+        if condition_id:
+            base["condition_ids"] = condition_id
+        elif slug:
+            base["slug"] = slug
+        else:
+            return {"status": "not_found", "yes_won": None,
+                    "outcome_prices": [], "closed": False, "end_date": ""}
+
+        # Two-pass lookup: gamma-api filters out closed markets by default,
+        # so a single `?slug=X` query won't find a RESOLVED market. We
+        # check open markets first (cheaper if it's still in flight),
+        # then closed if not found.
+        m: dict | None = None
+        for closed_flag in ("false", "true"):
+            params = {**base, "closed": closed_flag}
+            try:
+                data = await self._http_get_json(f"{_GAMMA_API}/markets", params=params)
+            except Exception as e:
+                log.warning("PolymarketBroker.get_market_resolution failed: %s", e)
+                continue
+            if isinstance(data, list) and data:
+                m = data[0]
+                break
+
+        if m is None:
+            return {"status": "not_found", "yes_won": None,
+                    "outcome_prices": [], "closed": False, "end_date": ""}
+        prices = m.get("outcomePrices")
+        if isinstance(prices, str):
+            try:
+                import json as _json
+                prices = _json.loads(prices)
+            except (json.JSONDecodeError, ValueError):
+                prices = []
+        if not isinstance(prices, list):
+            prices = []
+
+        uma_status = (m.get("umaResolutionStatus") or "").lower()
+        closed = bool(m.get("closed", False))
+        end_date = str(m.get("endDate") or m.get("end_date") or "")
+
+        # Resolution semantics:
+        #   prices == ["1","0"] AND closed AND uma=resolved → YES won
+        #   prices == ["0","1"] AND closed AND uma=resolved → NO won
+        #   any fractional / closed=false → pending
+        status = "pending"
+        yes_won: bool | None = None
+        if uma_status == "resolved" and closed and len(prices) >= 2:
+            try:
+                p_yes = float(prices[0])
+                p_no = float(prices[1])
+                if p_yes == 1.0 and p_no == 0.0:
+                    status = "resolved"
+                    yes_won = True
+                elif p_yes == 0.0 and p_no == 1.0:
+                    status = "resolved"
+                    yes_won = False
+                else:
+                    # Fractional resolution prices are unusual but Polymarket
+                    # supports partial resolution for some markets. Treat as
+                    # void for backtester purposes — score based on raw
+                    # price movement instead.
+                    status = "void"
+            except (TypeError, ValueError):
+                status = "void"
+
+        return {
+            "status": status,
+            "yes_won": yes_won,
+            "outcome_prices": [str(x) for x in prices],
+            "closed": closed,
+            "end_date": end_date,
+        }
+
     async def quote(self, symbol: str) -> float:
         """Return the last trade price for a Polymarket outcome.
 
