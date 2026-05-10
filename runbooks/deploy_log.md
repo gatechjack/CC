@@ -59,6 +59,25 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-10 01:26 UTC — Polymarket Phase 2a Step 5: gamma-api query tuning + two-layer category mapping
+
+**Commit:** `33169ae` — 2 prod files (`brokers/polymarket.py` + `agents/strategies/polymarket_arbitrage.py`) + 1 test file (210 insertions / 15 deletions).
+**Triggered by:** Phase 2a pre-enable checklist Step 5. Default gamma-api page sort returned long-tail markets first — original `list_markets` query yielded 0 markets within the 7-day cap. Tuned empirically to a server-side query that returns 66+ markets passing all Phase 2 caps per cycle.
+
+**Changes:**
+- `list_markets` now uses `order=volume24hr&ascending=false&end_date_min=NOW+min_hours&end_date_max=NOW+max_days` for server-side filter alignment with the strategy's client-side caps.
+- New `_classify_market(market) -> (top_category, series_subtag)` with 8 keyword-set buckets (sports / politics / geopolitics / finance / crypto / entertainment / celebrity / health / other). Tested empirically against 66 live markets — 100% classified, 0 in "other" bucket.
+- Strategy threads BOTH levels: LLM prompt context (`Category: {top} ({series})` for base-rate priors), `ProposedOrder.extra.category` + `extra.series`, audit row `polymarket_llm_probability_called.{category, series}`.
+
+**Backup tag:** `pre-gamma-tuning-20260510.tar.gz` (13K).
+**Verification:** PID 178354 → 179088 (clean). All brokers reconnected; Polymarket still $500 live + redacted in logs; scanner online (enabled=False). 27 polymarket tests pass (8 new for category classification + 19 existing); 508-test suite green; pre-existing PMCC LEAP-fixture failures unchanged.
+
+**Inert until enable.** Strategy still `enabled: false` in `strategies.yaml` — gates on Phase 2.5 Backtester verdict (next task).
+
+**Rollback:** `tar xzf /home/azureuser/backups/pre-gamma-tuning-20260510.tar.gz && sudo systemctl restart trading-corp`.
+
+---
+
 ## 2026-05-10 01:04 UTC — BAL CHG row ts_short pinned to bar_ts (cosmetic, sibling-row alignment)
 
 **Commit:** `c94df37` — 2 files (`main.py` + `web/data.py`), 17 insertions / 6 deletions.
