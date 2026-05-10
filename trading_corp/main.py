@@ -1231,6 +1231,14 @@ async def _run_donchian_bar(
     # absorbs whatever's on the account at the next BUY/SELL signal.
     delta = agent.record_balance_snapshot(cash=cash, btc_qty=held_btc)
     if delta is not None:
+        # Pin the balance_change row to the bar's open time so the
+        # decision-log displays it adjacent to its sibling
+        # donchian_evaluated row from the same evaluation cycle.
+        # Without this, the BAL CHG row shows the audit-row write time
+        # (~bar close + 2min) while the decision row shows bar open —
+        # both correct, but the 6h visual gap reads as two unrelated
+        # events. data.py:build_donchian_view prefers payload.bar_ts.
+        delta["bar_ts"] = bars[-1]["ts"].isoformat()
         logger_agent.log_event(agent.name, "balance_change", delta)
         log.info(
             "Donchian balance_change: state=%s delta_cash=%+.2f delta_btc=%+.8f "

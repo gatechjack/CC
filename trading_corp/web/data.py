@@ -1134,15 +1134,18 @@ def build_donchian_view(db_url: str) -> dict | None:
             for r in cur.fetchall():
                 p = json.loads(r["payload_json"])
                 if r["kind"] == "balance_change":
-                    # Balance-change rows show "as of" the audit-row
-                    # write time (= the bar boundary detection moment).
-                    # No bar_ts on the row payload — the delta isn't
-                    # tied to a bar's OHLCV, just to the moment of
-                    # observation.
+                    # Pin to the bar's open time so this row aligns
+                    # visually with the sibling donchian_evaluated row
+                    # from the same evaluation cycle. Falls back to
+                    # the audit-row write time for legacy rows that
+                    # pre-date the bar_ts stamp (orchestrator started
+                    # writing it 2026-05-10 to fix the cosmetic
+                    # 6h-visual-gap that made same-cycle rows read
+                    # as independent events).
                     decisions.append({
                         "kind": "balance_change",
                         "ts": r["ts"],
-                        "ts_short": format_et_short(r["ts"]),
+                        "ts_short": format_et_short(p.get("bar_ts") or r["ts"]),
                         "attribution": p.get("attribution", "board"),
                         "state_at_observation": p.get("state_at_observation", "?"),
                         "delta_cash": p.get("delta_cash"),
