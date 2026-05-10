@@ -1471,17 +1471,27 @@ async def _scheduled_polymarket_arb_loop(
                 # Approve / resize → log as would_have_placed (paper).
                 # Phase 3 will branch here on auto_execute_caps to
                 # actually place the order; today everything paper.
+                #
+                # Full LLM reasoning ride-along — preserved on the
+                # would_have_placed row so future analysis (Backtester
+                # post-mortem, fine-tuning data) has the model's
+                # justification at the moment of the trade decision.
+                # Don't truncate; sqlite handles the size.
+                ext = order.extra or {}
                 logger_agent.log_event(
                     agent.name, "would_have_placed",
                     {
                         **base_payload,
                         "qty": order.qty,  # post-resize
-                        "implied_prob_at_entry": (order.extra or {}).get("implied_prob_at_entry"),
-                        "llm_prob_estimate": (order.extra or {}).get("llm_prob_estimate"),
-                        "llm_confidence": (order.extra or {}).get("llm_confidence"),
-                        "outcome": (order.extra or {}).get("outcome"),
-                        "condition_id": (order.extra or {}).get("condition_id"),
-                        "resolves_at": (order.extra or {}).get("resolves_at"),
+                        "implied_prob_at_entry": ext.get("implied_prob_at_entry"),
+                        "llm_prob_estimate": ext.get("llm_prob_estimate"),
+                        "llm_confidence": ext.get("llm_confidence"),
+                        "llm_reasoning": ext.get("llm_reasoning"),
+                        "key_unknowns": ext.get("key_unknowns"),
+                        "outcome": ext.get("outcome"),
+                        "market_question": ext.get("market_question"),
+                        "condition_id": ext.get("condition_id"),
+                        "resolves_at": ext.get("resolves_at"),
                         "risk_verdict": verdict.verdict,
                         "risk_reason": verdict.reason,
                     },

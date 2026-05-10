@@ -258,6 +258,11 @@ class PolymarketArbitrageAgent:
             divergence_pct = abs(divergence) * 100.0
 
             if logger_agent is not None:
+                # Full LLM output preserved here — reasoning text is the
+                # most valuable part for future fine-tuning + post-mortem
+                # of bad calls. Don't trim. Storage is sqlite + cheap;
+                # token-truncation already happens at the LLM layer
+                # (max_tokens=512 in build_chat_model).
                 logger_agent.log_event(
                     self.name, "polymarket_llm_probability_called",
                     {
@@ -265,14 +270,18 @@ class PolymarketArbitrageAgent:
                         "division": self.division,
                         "condition_id": cid,
                         "slug": m.get("slug"),
+                        "question": m.get("question"),       # full market question for context
                         "category": m.get("category"),
                         "series": m.get("series"),
                         "implied_prob_yes": implied,
                         "llm_prob_yes": est.prob_yes,
                         "llm_confidence": est.confidence,
+                        "llm_reasoning": est.reasoning,       # FULL reasoning text
+                        "key_unknowns": est.key_unknowns,
                         "divergence_pct": divergence_pct,
                         "min_divergence_pct": min_div_pct,
-                        "key_unknowns": est.key_unknowns,
+                        "would_emit": divergence_pct >= min_div_pct,
+                        "resolves_at": m.get("endDate") or m.get("end_date"),
                     },
                 )
 
@@ -311,12 +320,15 @@ class PolymarketArbitrageAgent:
                     "category": m.get("category"),       # top-level bucket (sports/politics/...)
                     "series": m.get("series"),           # sub-tag (mlb/atp/eurovision-2026)
                     "market_slug": slug,
+                    "market_question": m.get("question"),  # full text for downstream display
                     "condition_id": cid,
                     "outcome_index": 0 if outcome == "yes" else 1,
                     "market_id": m.get("id") or m.get("market_id"),
                     "implied_prob_at_entry": implied,
                     "llm_prob_estimate": est.prob_yes,
                     "llm_confidence": est.confidence,
+                    "llm_reasoning": est.reasoning,        # full LLM justification text
+                    "key_unknowns": est.key_unknowns,      # info gaps the LLM flagged
                     "divergence_pct": divergence_pct,
                     "resolves_at": m.get("endDate") or m.get("end_date"),
                     "max_dollar_risk": max_dollar_risk,
