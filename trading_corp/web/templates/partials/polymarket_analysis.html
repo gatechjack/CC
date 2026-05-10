@@ -1,0 +1,150 @@
+{# Polymarket LLM analysis right-rail content. Loaded via HTMX from
+   GET /partials/polymarket-analysis/{event_id} when the user clicks
+   "Show analysis →" on any polymarket activity row.
+
+   Shows the point-in-time snapshot of the LLM's reasoning at the
+   moment the trade decision was made — load-bearing for fine-tuning
+   + post-mortem. Audit row payload is the source; nothing here is
+   re-computed.
+#}
+<div class="space-y-4 text-sm">
+  {# Header strip: kind + market + timestamp #}
+  <div>
+    <div class="flex items-baseline justify-between">
+      <span class="
+        {% if event.kind == 'would_have_placed' %}text-gain
+        {% elif event.kind == 'polymarket_order_rejected_by_risk' %}text-loss
+        {% elif event.skipped %}text-muted
+        {% else %}text-mono{% endif %}
+        text-[11px] uppercase tracking-wider font-mono font-semibold">
+        {% if event.kind == 'would_have_placed' %}would have placed
+        {% elif event.kind == 'polymarket_order_rejected_by_risk' %}risk rejected
+        {% elif event.skipped %}evaluated · skipped
+        {% else %}{{ event.kind | replace('_', ' ') }}{% endif %}
+      </span>
+      <span class="text-[10px] text-muted font-mono">{{ event.ts_short }}</span>
+    </div>
+    <div class="mt-2 font-mono font-semibold text-mono break-all">
+      {{ event.market_slug or '(no slug)' }}
+    </div>
+    {% if event.category %}
+      <div class="mt-1 flex items-center gap-1.5 flex-wrap">
+        <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-edge text-muted">
+          {{ event.category }}
+        </span>
+        {% if event.series and event.series != event.category %}
+          <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-edge text-muted">
+            {{ event.series }}
+          </span>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  {# Market question (full text) #}
+  {% if event.market_question %}
+    <div>
+      <div class="text-[10px] text-muted uppercase tracking-wider mb-1">market question</div>
+      <div class="text-[13px] text-mono leading-snug">{{ event.market_question }}</div>
+    </div>
+  {% endif %}
+
+  {# Probability snapshot — the load-bearing decision-time numbers #}
+  <div class="grid grid-cols-3 gap-2">
+    <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+      <div class="text-[10px] text-muted uppercase tracking-wider">LLM YES</div>
+      <div class="text-xl font-mono font-semibold text-mono mt-0.5">
+        {% if event.llm_prob is not none %}{{ '%.0f' | format(event.llm_prob * 100) }}%{% else %}—{% endif %}
+      </div>
+      {% if event.llm_confidence %}
+        <div class="text-[10px] text-muted/70 mt-0.5">conf: {{ event.llm_confidence }}</div>
+      {% endif %}
+    </div>
+    <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+      <div class="text-[10px] text-muted uppercase tracking-wider">market YES</div>
+      <div class="text-xl font-mono font-semibold text-mono mt-0.5">
+        {% if event.implied_prob is not none %}{{ '%.0f' | format(event.implied_prob * 100) }}%{% else %}—{% endif %}
+      </div>
+      <div class="text-[10px] text-muted/70 mt-0.5">implied @ entry</div>
+    </div>
+    <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+      <div class="text-[10px] text-muted uppercase tracking-wider">divergence</div>
+      <div class="text-xl font-mono font-semibold mt-0.5
+        {% if event.divergence_pct is not none and event.divergence_pct >= 50 %}text-warn
+        {% elif event.divergence_pct is not none and event.divergence_pct >= 10 %}text-mono
+        {% else %}text-muted{% endif %}">
+        {% if event.divergence_pct is not none %}{{ '%.1f' | format(event.divergence_pct) }}%{% else %}—{% endif %}
+      </div>
+      <div class="text-[10px] text-muted/70 mt-0.5">
+        threshold: {{ '%.0f' | format(event.min_divergence_pct or 10) }}%
+      </div>
+    </div>
+  </div>
+
+  {# Decision: would_emit + outcome + sizing #}
+  {% if event.outcome or event.qty %}
+    <div>
+      <div class="text-[10px] text-muted uppercase tracking-wider mb-1">decision</div>
+      <div class="text-[13px] font-mono text-mono">
+        {% if event.outcome %}
+          buy <span class="font-semibold
+            {% if event.outcome == 'yes' %}text-gain{% else %}text-loss{% endif %}">
+            {{ event.outcome | upper }}
+          </span>
+        {% endif %}
+        {% if event.qty and event.limit_price %}
+          @ ${{ '%.3f' | format(event.limit_price) }} ×
+          {{ '%.3f' | format(event.qty) }} =
+          <span class="font-semibold">${{ '%.2f' | format(event.qty * event.limit_price) }}</span>
+        {% endif %}
+      </div>
+      {% if event.skipped %}
+        <div class="mt-1 text-[11px] text-muted italic">
+          skipped — divergence below threshold; no order emitted
+        </div>
+      {% endif %}
+      {% if event.risk_verdict and event.risk_verdict != 'approve' %}
+        <div class="mt-1 text-[11px]
+          {% if event.risk_verdict == 'reject' %}text-loss
+          {% else %}text-warn{% endif %}">
+          <span class="font-semibold uppercase">risk {{ event.risk_verdict }}:</span>
+          {{ event.risk_reason or '(no reason)' }}
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {# Reasoning — full text, not preview #}
+  {% if event.llm_reasoning %}
+    <div>
+      <div class="text-[10px] text-muted uppercase tracking-wider mb-1">LLM reasoning</div>
+      <div class="text-[13px] text-mono leading-relaxed whitespace-pre-wrap bg-pane-2/40 border border-edge rounded-md p-3">{{ event.llm_reasoning }}</div>
+    </div>
+  {% endif %}
+
+  {# Key unknowns — info gaps the LLM flagged #}
+  {% if event.key_unknowns %}
+    <div>
+      <div class="text-[10px] text-muted uppercase tracking-wider mb-1">key unknowns</div>
+      <ul class="text-[12px] text-muted leading-snug space-y-1">
+        {% for ku in event.key_unknowns %}
+          <li class="flex gap-1.5">
+            <span class="text-warn">·</span>
+            <span>{{ ku }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {# Resolution + condition_id — useful for cross-referencing on Polymarket #}
+  <div class="text-[10px] text-muted/70 font-mono space-y-0.5 pt-2 border-t border-edge/50">
+    {% if event.resolves_at %}
+      <div>resolves: <span class="text-muted">{{ event.resolves_at[:19] }}Z</span></div>
+    {% endif %}
+    {% if event.condition_id %}
+      <div class="break-all">cid: <span class="text-muted">{{ event.condition_id }}</span></div>
+    {% endif %}
+    <div>audit event id: <span class="text-muted">{{ event.id }}</span></div>
+  </div>
+</div>

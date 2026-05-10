@@ -1692,7 +1692,13 @@ def _query_division_activity(
              'webhook_received','alert_ignored','would_have_placed','agent_error',
              -- Phase 1.5b: surface webhook rejections (bad JSON, auth, etc.)
              -- so silent failures stop being silent.
-             'webhook_rejected'
+             'webhook_rejected',
+             -- Polymarket-arbitrage strategy kinds. polymarket_scan_cycle
+             -- is intentionally OMITTED — fires every 30s and would flood
+             -- the rail. The rail surfaces decisions (LLM-called +
+             -- emit/skip + risk-rejected), not bookkeeping ticks.
+             'polymarket_llm_probability_called',
+             'polymarket_order_rejected_by_risk'
            )
            ORDER BY id DESC LIMIT ?""",
         (limit * 5,),    # over-fetch then filter
@@ -1710,7 +1716,7 @@ def _query_division_activity(
         )
         if not matches:
             continue
-        out.append({
+        evt: dict = {
             "id": r["id"],   # exposed so the template can build /audit/{id}/replay-research
             "ts": r["ts"],
             "ts_short": _humanize_ts(r["ts"]),
@@ -1722,7 +1728,37 @@ def _query_division_activity(
             "signal": payload.get("signal", ""),
             "reason": (payload.get("reason") or "")[:140],
             "color": _color_for(r["kind"]),
-        })
+            "polymarket": None,
+        }
+        # Polymarket-specific enrichment so the activity tile + right
+        # rail can render rich content without a second DB hit. Full
+        # payload (with full LLM reasoning text) is fetched via the
+        # /partials/polymarket-analysis/{id} endpoint when the user
+        # clicks "show analysis"; the truncated preview lives here.
+        if r["actor"] == "polymarket_arbitrage":
+            reasoning_text = payload.get("llm_reasoning") or ""
+            evt["polymarket"] = {
+                "market_slug": payload.get("market_slug") or payload.get("slug"),
+                "market_question": payload.get("market_question") or payload.get("question"),
+                "outcome": payload.get("outcome"),
+                "category": payload.get("category"),
+                "series": payload.get("series"),
+                "implied_prob": payload.get("implied_prob_at_entry") or payload.get("implied_prob_yes"),
+                "llm_prob": payload.get("llm_prob_estimate") or payload.get("llm_prob_yes"),
+                "llm_confidence": payload.get("llm_confidence"),
+                "divergence_pct": payload.get("divergence_pct"),
+                "min_divergence_pct": payload.get("min_divergence_pct"),
+                "would_emit": payload.get("would_emit"),
+                "qty": payload.get("qty"),
+                "limit_price": payload.get("limit_price"),
+                "risk_verdict": payload.get("risk_verdict"),
+                "risk_reason": payload.get("risk_reason"),
+                "reasoning_preview": (reasoning_text[:200] + "…") if len(reasoning_text) > 200 else reasoning_text,
+                "key_unknowns": payload.get("key_unknowns") or [],
+                "resolves_at": payload.get("resolves_at"),
+                "condition_id": payload.get("condition_id"),
+            }
+        out.append(evt)
         if len(out) >= limit:
             break
     return out

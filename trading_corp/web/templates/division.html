@@ -238,51 +238,149 @@
           {% for evt in view.recent_activity %}
             <div class="bg-pane-2/40 border border-edge rounded-md px-3 py-2">
               <div class="flex items-center gap-2 text-[11px] font-mono">
-                <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
-                  {{ evt.kind | replace('_', ' ') }}
-                </span>
-                <span class="ml-auto text-muted">{{ evt.ts_short }} ago</span>
-              </div>
-              {% if evt.symbol %}
-                <div class="mt-1 flex items-center gap-2 text-sm">
-                  <span class="font-mono font-semibold text-mono">{{ evt.symbol }}</span>
-                  {% if evt.side %}
-                    <span class="text-[11px] uppercase font-mono px-1.5 py-0.5 rounded
-                      {% if evt.side == 'buy' %}bg-gain/15 text-gain
-                      {% elif evt.side == 'sell' %}bg-loss/15 text-loss
-                      {% else %}bg-edge text-muted{% endif %}">
-                      {{ evt.side }}
+                {# Polymarket: kind label gets a contextual color so emit / skip / risk-reject read at a glance #}
+                {% if evt.polymarket %}
+                  {% set pm = evt.polymarket %}
+                  {% if evt.kind == 'would_have_placed' %}
+                    <span class="text-gain font-semibold uppercase tracking-wider">would have placed</span>
+                  {% elif evt.kind == 'polymarket_order_rejected_by_risk' %}
+                    <span class="text-loss font-semibold uppercase tracking-wider">risk rejected</span>
+                  {% elif evt.kind == 'polymarket_llm_probability_called' and pm.would_emit == false %}
+                    <span class="text-muted font-semibold uppercase tracking-wider">evaluated · skipped</span>
+                  {% else %}
+                    <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                      {{ evt.kind | replace('_', ' ') }}
                     </span>
                   {% endif %}
-                  {% if evt.qty %}
-                    <span class="text-muted text-xs font-mono">×{{ evt.qty }}</span>
+                {% else %}
+                  <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                    {{ evt.kind | replace('_', ' ') }}
+                  </span>
+                {% endif %}
+                <span class="ml-auto text-muted">{{ evt.ts_short }} ago</span>
+              </div>
+
+              {% if evt.polymarket %}
+                {# ── Polymarket-specific rich layout ─────────────────── #}
+                {% set pm = evt.polymarket %}
+                <div class="mt-1.5 text-sm">
+                  <span class="font-mono font-semibold text-mono">{{ pm.market_slug }}</span>
+                  {% if pm.outcome %}
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1
+                      {% if pm.outcome == 'yes' %}bg-gain/15 text-gain
+                      {% else %}bg-loss/15 text-loss{% endif %}">
+                      buy {{ pm.outcome }}
+                    </span>
+                  {% endif %}
+                  {% if pm.category %}
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                      {{ pm.category }}{% if pm.series %} · {{ pm.series }}{% endif %}
+                    </span>
                   {% endif %}
                 </div>
-              {% endif %}
-              {% if evt.reason %}
-                <div class="mt-1 text-[11px] text-muted leading-snug line-clamp-2">
-                  {{ evt.reason }}
+                {% if pm.market_question %}
+                  <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                    {{ pm.market_question }}
+                  </div>
+                {% endif %}
+                {# Probability strip: LLM vs market + divergence + confidence #}
+                <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                  {% if pm.llm_prob is not none %}
+                    <span>
+                      <span class="text-muted">LLM:</span>
+                      <span class="text-mono font-semibold">{{ '%.0f' | format(pm.llm_prob * 100) }}%</span>
+                      {% if pm.llm_confidence %}
+                        <span class="text-[10px] text-muted/70">({{ pm.llm_confidence }})</span>
+                      {% endif %}
+                    </span>
+                  {% endif %}
+                  {% if pm.implied_prob is not none %}
+                    <span>
+                      <span class="text-muted">market:</span>
+                      <span class="text-mono">{{ '%.0f' | format(pm.implied_prob * 100) }}%</span>
+                    </span>
+                  {% endif %}
+                  {% if pm.divergence_pct is not none %}
+                    <span class="
+                      {% if pm.divergence_pct >= 50 %}text-warn font-semibold
+                      {% elif pm.divergence_pct >= 10 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      Δ {{ '%.1f' | format(pm.divergence_pct) }}%
+                    </span>
+                  {% endif %}
+                  {% if pm.qty and pm.limit_price %}
+                    <span class="text-muted ml-auto">
+                      {{ '%.2f' | format(pm.qty) }} × ${{ '%.3f' | format(pm.limit_price) }}
+                      = ${{ '%.2f' | format(pm.qty * pm.limit_price) }}
+                    </span>
+                  {% endif %}
                 </div>
-              {% endif %}
-              {# Manual research-firm replay (BACKLOG.md 2026-05-02). #}
-              {# Lets the Board send a past TV signal into the research firm   #}
-              {# consult so the existing engagement code path runs against it. #}
-              {# Visible only on signal-shaped rows where it makes sense.       #}
-              {% if evt.id and evt.kind in ['webhook_received', 'alert_ignored', 'would_have_placed'] %}
-                <div class="mt-2 flex items-center gap-3">
-                  <button
-                    class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
-                    hx-post="/audit/{{ evt.id }}/replay-research"
-                    hx-target="next .replay-result"
-                    hx-swap="innerHTML"
-                    hx-indicator="next .replay-indicator">
-                    Send to research →
-                  </button>
-                  <span class="replay-indicator htmx-indicator text-[10px] text-muted font-mono italic">
-                    consulting…
-                  </span>
-                </div>
-                <div class="replay-result"></div>
+                {% if pm.reasoning_preview %}
+                  <div class="mt-1.5 text-[11px] text-muted/90 leading-snug line-clamp-2 italic">
+                    "{{ pm.reasoning_preview }}"
+                  </div>
+                {% endif %}
+                {% if pm.risk_reason and evt.kind == 'polymarket_order_rejected_by_risk' %}
+                  <div class="mt-1.5 text-[11px] text-loss leading-snug">
+                    <span class="font-semibold">Risk:</span> {{ pm.risk_reason }}
+                  </div>
+                {% endif %}
+                {# Click to load full LLM analysis in the right rail. #}
+                {% if evt.id %}
+                  <div class="mt-2">
+                    <button
+                      class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                      hx-get="/partials/polymarket-analysis/{{ evt.id }}"
+                      hx-target="#pair-analysis"
+                      hx-swap="innerHTML"
+                      hx-indicator="#pair-analysis-loading">
+                      Show analysis →
+                    </button>
+                  </div>
+                {% endif %}
+              {% else %}
+                {# ── Existing rendering for non-polymarket events ────── #}
+                {% if evt.symbol %}
+                  <div class="mt-1 flex items-center gap-2 text-sm">
+                    <span class="font-mono font-semibold text-mono">{{ evt.symbol }}</span>
+                    {% if evt.side %}
+                      <span class="text-[11px] uppercase font-mono px-1.5 py-0.5 rounded
+                        {% if evt.side == 'buy' %}bg-gain/15 text-gain
+                        {% elif evt.side == 'sell' %}bg-loss/15 text-loss
+                        {% else %}bg-edge text-muted{% endif %}">
+                        {{ evt.side }}
+                      </span>
+                    {% endif %}
+                    {% if evt.qty %}
+                      <span class="text-muted text-xs font-mono">×{{ evt.qty }}</span>
+                    {% endif %}
+                  </div>
+                {% endif %}
+                {% if evt.reason %}
+                  <div class="mt-1 text-[11px] text-muted leading-snug line-clamp-2">
+                    {{ evt.reason }}
+                  </div>
+                {% endif %}
+                {# Manual research-firm replay (BACKLOG.md 2026-05-02). #}
+                {# Lets the Board send a past TV signal into the research firm   #}
+                {# consult so the existing engagement code path runs against it. #}
+                {# Visible only on signal-shaped rows where it makes sense.       #}
+                {% if evt.id and evt.kind in ['webhook_received', 'alert_ignored', 'would_have_placed'] %}
+                  <div class="mt-2 flex items-center gap-3">
+                    <button
+                      class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                      hx-post="/audit/{{ evt.id }}/replay-research"
+                      hx-target="next .replay-result"
+                      hx-swap="innerHTML"
+                      hx-indicator="next .replay-indicator">
+                      Send to research →
+                    </button>
+                    <span class="replay-indicator htmx-indicator text-[10px] text-muted font-mono italic">
+                      consulting…
+                    </span>
+                  </div>
+                  <div class="replay-result"></div>
+                {% endif %}
               {% endif %}
             </div>
           {% endfor %}
@@ -328,9 +426,18 @@
       <div id="pair-analysis"
            class="px-4 py-4 min-h-[120px] overflow-y-auto custom-scroll min-h-0 flex-1">
         <div class="text-muted text-sm italic text-center py-8">
-          Click any position on the left to see its expert analysis here.
+          {% if view.division.slug.startswith('polymarket_') %}
+            Click "Show analysis →" on any LLM call to see the
+            point-in-time reasoning snapshot here.
+          {% else %}
+            Click any position on the left to see its expert analysis here.
+          {% endif %}
         </div>
       </div>
+      <span id="pair-analysis-loading"
+            class="htmx-indicator absolute top-3 right-3 text-[10px] text-muted font-mono italic">
+        loading…
+      </span>
     </section>
 
   </aside>

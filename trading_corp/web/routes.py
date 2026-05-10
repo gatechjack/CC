@@ -313,6 +313,97 @@ def register(app: FastAPI) -> None:
             raise HTTPException(status_code=404)
         return JSONResponse({"points": view.equity_curve})
 
+    @app.get("/partials/polymarket-analysis/{event_id}", response_class=HTMLResponse)
+    async def partial_polymarket_analysis(event_id: int, request: Request):
+        """Render the full LLM analysis snapshot for one Polymarket
+        audit event. Loaded into the right rail when the user clicks
+        "Show analysis →" on any polymarket activity row.
+
+        Source: audit_event row payload (point-in-time; never recomputed).
+        Contains the LLM's full reasoning text + key unknowns + the
+        decision-time probability snapshot. Critical for fine-tuning
+        + post-mortem of bad calls.
+        """
+        import json as _json
+        import sqlite3
+        path = deps.db_url.replace("sqlite:///", "")
+        try:
+            with sqlite3.connect(path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT id, ts, actor, kind, payload_json FROM audit_event WHERE id = ?",
+                    (int(event_id),),
+                ).fetchone()
+        except Exception as e:
+            return HTMLResponse(
+                f'<div class="text-loss text-sm">Error loading event {event_id}: {e}</div>',
+                status_code=500,
+            )
+        if row is None:
+            return HTMLResponse(
+                f'<div class="text-muted text-sm italic text-center py-8">Audit event {event_id} not found.</div>',
+                status_code=404,
+            )
+        if row["actor"] != "polymarket_arbitrage":
+            return HTMLResponse(
+                f'<div class="text-muted text-sm italic text-center py-8">'
+                f'Event {event_id} is not a Polymarket event (actor={row["actor"]}).'
+                f'</div>',
+                status_code=400,
+            )
+        try:
+            payload = _json.loads(row["payload_json"] or "{}")
+        except (_json.JSONDecodeError, ValueError):
+            payload = {}
+
+        # Flatten the audit-event row + payload into the template's
+        # event dict shape. Keep field names consistent with the data
+        # layer's `_query_division_activity` polymarket sub-dict so the
+        # template can be reused if we ever want to render it inline
+        # in the activity rail too.
+        from datetime import datetime, timezone
+        ts = row["ts"]
+        try:
+            ts_dt = datetime.fromisoformat(ts)
+            if ts_dt.tzinfo is None:
+                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+            ts_short = ts_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (TypeError, ValueError):
+            ts_short = ts
+
+        skipped = (
+            row["kind"] == "polymarket_llm_probability_called"
+            and payload.get("would_emit") is False
+        )
+        event = {
+            "id": row["id"],
+            "ts": ts,
+            "ts_short": ts_short,
+            "kind": row["kind"],
+            "skipped": skipped,
+            "market_slug": payload.get("market_slug") or payload.get("slug"),
+            "market_question": payload.get("market_question") or payload.get("question"),
+            "category": payload.get("category"),
+            "series": payload.get("series"),
+            "outcome": payload.get("outcome"),
+            "implied_prob": payload.get("implied_prob_at_entry") or payload.get("implied_prob_yes"),
+            "llm_prob": payload.get("llm_prob_estimate") or payload.get("llm_prob_yes"),
+            "llm_confidence": payload.get("llm_confidence"),
+            "llm_reasoning": payload.get("llm_reasoning"),
+            "key_unknowns": payload.get("key_unknowns") or [],
+            "divergence_pct": payload.get("divergence_pct"),
+            "min_divergence_pct": payload.get("min_divergence_pct"),
+            "qty": payload.get("qty"),
+            "limit_price": payload.get("limit_price"),
+            "risk_verdict": payload.get("risk_verdict"),
+            "risk_reason": payload.get("risk_reason"),
+            "resolves_at": payload.get("resolves_at"),
+            "condition_id": payload.get("condition_id"),
+        }
+        return templates.TemplateResponse(
+            request, "partials/polymarket_analysis.html", {"event": event},
+        )
+
     @app.get("/partials/donchian-chart/{slug}")
     async def partial_donchian_chart(slug: str):
         """OHLCV + Donchian band overlay + fill markers for the
