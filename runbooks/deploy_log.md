@@ -59,6 +59,31 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-10 01:47 UTC — Polymarket Phase 2.5: Backtester binary-outcome extension
+
+**Commit:** `a01dd4b` — 4 files (1 prod broker + 1 prod script + 1 test + 1 runbook), 799 insertions / 0 deletions.
+**Triggered by:** Phase 2.5 minimal-viable per memo Q4. Phase 2a strategy must accumulate ≥30 days of paper would_have_placed rows before this gate is meaningful; gate is for the future `auto_execute: true` flip, not the `enabled: true` flip (paper-mode HITL is the safe path between).
+
+**Three pieces shipped:**
+- `brokers/polymarket.py` — new `get_market_resolution(condition_id, slug)` two-pass gamma-api lookup. Decodes resolution from `outcomePrices` + `umaResolutionStatus` per gamma-api conventions verified live (resolved/pending/void/not_found).
+- `scripts/backtest_polymarket_arbitrage.py` — replay tool. Reads paper rows over a horizon, computes binary-outcome P&L (`won → qty × (1-price)`, `lost → -qty × price`), aggregates: hit rate / wins-losses / total notional / total P&L / ROI / avg + median P&L / max consecutive-loss DD / per-category breakdown. Heuristic verdict (RECOMMEND_APPROVAL / REJECTION / MIXED_SIGNAL / INSUFFICIENT_DATA).
+- `runbooks/polymarket_arbitrage_backtest.md` — Board runbook: when to run, how to interpret each output section, Board memo template for approval/rejection decisions, FAQ.
+
+**Backup tag:** `pre-backtester-phase25-20260510.tar.gz` (9.6K).
+**Verification:** PID 179088 → 180231 (clean). Polymarket still $500 live + redacted in logs; scanner online (enabled=False). 19 new pytest cases pass (P&L math 4 directions, skip semantics, aggregation incl. monotone-up max-drawdown edge case, all 4 verdict thresholds). Script runs cleanly on prod against live DB — returns `NO_DATA` (correct: strategy disabled, no paper rows yet).
+
+**Post-flip workflow (when Board enables strategy in paper-mode):**
+1. Paper rows accumulate for 30+ days
+2. `python scripts/backtest_polymarket_arbitrage.py --days 30` produces verdict
+3. If `RECOMMEND_APPROVAL`, write Board memo per the template + flip `auto_execute: true`
+4. If `REJECTION`, investigate (per-category breakdown often reveals which strategies-within-strategy work) or stay paper-mode
+
+**Inert until enable.** All Phase 2a + 2.5 infrastructure in place; the gate for `auto_execute: true` exists. Strategy still `enabled: false`.
+
+**Rollback:** `tar xzf /home/azureuser/backups/pre-backtester-phase25-20260510.tar.gz && rm -f scripts/backtest_polymarket_arbitrage.py && sudo systemctl restart trading-corp`.
+
+---
+
 ## 2026-05-10 01:26 UTC — Polymarket Phase 2a Step 5: gamma-api query tuning + two-layer category mapping
 
 **Commit:** `33169ae` — 2 prod files (`brokers/polymarket.py` + `agents/strategies/polymarket_arbitrage.py`) + 1 test file (210 insertions / 15 deletions).
