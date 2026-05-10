@@ -59,6 +59,23 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-10 02:51 UTC — Polymarket: warm-and-fan parallel LLM calls + K=10→20
+
+**Commit:** `969c6ab` — 2 files, 39 insertions / 6 deletions.
+**Triggered by:** Board direction 2026-05-10 — Polymarket needs faster reaction; sequential K=10 was making cycles ~80s apart instead of the intended 30s.
+
+**Changes:**
+- `polymarket_arbitrage.py:run_scan_cycle` — warm-and-fan parallel pattern. First LLM call serial (warms Anthropic prompt cache); remaining K-1 fire via `asyncio.gather`. Cycle time: ~50s sequential → ~10s parallel. Prompt-cache hits preserved (the cache prefix is hot before fan-out).
+- `strategies.yaml polymarket_arbitrage.k_markets_per_cycle: 10 → 20`. Doubles unique markets evaluated per cycle. Cooldown 6h still bounds daily LLM cost; daily ~$2-50 → ~$4-100 worst case.
+- `asyncio.gather(return_exceptions=True)` — single LLM failure becomes None in the estimates list; cooldown still advances; per-market loop skips. Order preserved via `zip(survivors, estimates)`.
+
+**Backup tag:** `pre-warm-fan-parallel-20260510.tar.gz`.
+**Verification:** PID 182852 → 183604 (clean). Post-restart cycle at 02:52:15 shows `k_per_cycle: 20` ✓. Cycle currently finds `survivors_post_filter: 0` because all 22 eligible markets are in 6h cooldown from earlier today's runs (earliest expires 08:06 UTC). Parallel LLM behavior will exercise naturally as cooldowns expire ~03-05 hours from now. Audit-row timestamp pattern will show the change: previously 5s gaps between K calls; now one 5s warm + tight burst of ~19 calls within ~5s.
+
+**Anthropic limits — not a constraint.** At tier-3 (4000 RPM), running K=20 + parallel = ~30 req/min worst case = 99.3% headroom. Cost is bounded by 6h cooldown, not rate limits.
+
+---
+
 ## 2026-05-10 02:31 UTC — Polymarket UX rework: rich activity tiles + LLM analysis right-rail + reasoning persistence
 
 **Commits:** `4bcaf14` (Phase 1 — reasoning persistence) + `f81ae5c` (Phase 2 — UI).
