@@ -59,6 +59,52 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-10 02:05 UTC — Polymarket: skip HITL, flip enabled:true; strategy LIVE in paper-mode
+
+**Commit:** `897607a` — 2 prod files (`main.py` + `config/strategies.yaml`), 118 insertions / 37 deletions.
+**Triggered by:** Board direction 2026-05-10. Per-trade `/approvals/{order_id}` click gate determined to be net-friction without proportionate protection given Polymarket's bounded blast radius ($1 fixed sizing × $1K aggregate cap × deterministic-Python risk gate). Polymarket's fast-moving prices made the HITL latency a real drag on opportunity capture.
+
+**Architecture change:**
+- `_scheduled_polymarket_arb_loop` now calls `risk_agent.evaluate()` inline instead of routing through `_run_order(graph, ...)`. Approved orders log `would_have_placed` directly; rejected orders log `polymarket_order_rejected_by_risk`. Risk gate is still load-bearing per CLAUDE.md §1 — every order flows through the deterministic Python caps; LLM hallucination cannot bypass them.
+- `polymarket_arbitrage.enabled: false → true`. Strategy is live in paper mode (broker still ReadOnlyBroker; nothing actually trades; rows accumulate for Backtester).
+- Telegram message changed from "routing for approval" to "logged to activity rail" — visibility-only, not gating.
+- `auto_execute: false` stays (moot today; Phase 3 will add live signing path + auto_execute_caps + daily kill switch + daily summary digest as the safety scaffolding equivalent to per-trade HITL).
+
+**Backup tag:** `pre-polymarket-direct-log-20260510.tar.gz` (34K).
+**Verification:** PID 180231 → 181134 (clean). Boot log:
+```
+PolymarketBroker connected (funder=***REDACTED***, equity=$500.00, 0 positions)
+Polymarket arbitrage scanner online (enabled=True, auto_execute=False, hitl=DIRECT)
+```
+
+**End-to-end live activity within 2 minutes of restart:**
+- 2 scanner cycles (02:05:19, 02:06:32) — 64 markets pre-filtered each → 10 survivors per cycle
+- 5 LLM calls completed across both cycles, ~5s each (Anthropic prompt cache hit on follow-ups)
+- First cycle's 02:07:46 order-emission burst: **4 `would_have_placed` rows** (3 BUY NO at 0.84/0.16/0.12; 1 BUY YES at 0.05). All sized correctly to ~$1 USDC notional. Risk gate approved all 4 — no rejections.
+- Activity rail on /division/polymarket_arbitrage now showing real-time strategy reasoning chain end-to-end.
+
+**Operational expectations going forward:**
+- Scanner ticks every 30s (`poll_interval_sec`). Each tick runs ~50s when emissions fire (10 sequential Anthropic calls); tick-to-tick spacing absorbs the latency.
+- Daily LLM cost: $2-50/day depending on cooldown saturation.
+- Daily would_have_placed rows: highly variable; 4 in the first cycle is unusually high (LLM is "hot" on extreme-divergence calls). Realistic steady-state TBD as cooldown-bound cycles average out.
+- One sanity-check row in the first burst: mlb-nym-ari at implied 0.05 with LLM-claimed prob 0.95 (90% divergence). Either real value or LLM hallucinated the matchup. Backtester will surface which.
+
+**Phase 2.5 + 2a + Phase 0/1 are now all complete + LIVE.** Backtester will run on accumulating paper rows; verdict gates the eventual Phase 3 (live order placement) decision.
+
+**Rollback:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-polymarket-direct-log-20260510
+BASE=/home/azureuser/trading_corp
+cd \$BASE
+tar xzf /home/azureuser/backups/\${TAG}.tar.gz
+sudo systemctl restart trading-corp
+"
+# This restores the HITL approval flow + sets enabled:false again.
+```
+
+---
+
 ## 2026-05-10 01:47 UTC — Polymarket Phase 2.5: Backtester binary-outcome extension
 
 **Commit:** `a01dd4b` — 4 files (1 prod broker + 1 prod script + 1 test + 1 runbook), 799 insertions / 0 deletions.
