@@ -59,6 +59,60 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-10 00:39 UTC — Polymarket wallet went live (KV upload + service restart)
+
+**Not a code deploy** — wallet/secrets bring-up. Board completed steps 1-4 of the Phase 2a pre-enable checklist between 2026-05-09 22:00 UTC and 2026-05-10 00:30 UTC: generated EOA via `eth_account.Account.create()` (regenerated once after losing the first address — wallet wasn't funded, zero loss), Alchemy Polygon Mainnet signup + RPC URL, $500 native USDC + 98 POL funded from Coinbase to the EOA on Polygon mainnet, `az keyvault secret set` for the three secrets.
+
+**On-chain verification (pre-restart, public RPC):** native USDC `0x3c49…3359` = $500.00, USDC.e bridged = $0.00 (no misrouted tokens), POL/MATIC = 98.375 (~$39 at $0.40/POL — way more than needed for gas).
+
+**KV state confirmed (presence-only, no values exposed):**
+- `POLYMARKET-PRIVATE-KEY`: enabled, length 64 (no `0x` prefix; `eth_account.Account.from_key` accepts both forms — harmless for Phase 1 since signing isn't in the path)
+- `POLYMARKET-FUNDER-ADDRESS`: enabled, length 42 (`0x` + 40 hex ✓)
+- `POLYGON-RPC-URL`: enabled, length 62 (sensible for Alchemy or public RPC)
+
+**Pre-restart NSG actions:** Board's laptop IP rotated TWICE during this session (`98.231.16.63` → `73.104.119.214` mid-session for the Phase 2a code deploy; rotated back to `98.231.16.63` for the wallet bring-up). Both updated cleanly via `az network nsg rule update` per `auth_lockout_recovery.md`.
+
+**Restart:** PID 176618 → 177477 (clean). Boot log:
+
+```
+PolymarketBroker connected (funder=***REDACTED***, equity=$500.00, 0 positions)
+PaperBroker connected (account=paper_polymarket_copy_trading, equity=$0.00)
+Polymarket arbitrage scanner online (enabled=False, auto_execute=False)
+```
+
+**Three things confirmed by that one log line:**
+- USDC balance reads cleanly from Polygon RPC via `eth_call(USDC.balanceOf)`.
+- RedactingFilter scrubs the funder address from log output (literal-value redaction registered in `secrets.py:load_secrets()`; the address is in memory + KV but never in logs).
+- `data-api.polymarket.com/positions?user=…` returned empty — correct for fresh wallet.
+
+**Dashboard verification:**
+- Home tile **Polymarket Arbitrage** = `$500.00` (was `$0 STUB`)
+- `/division/polymarket_arbitrage`: Equity $500.00 / Cash $500.00 / Buying Power $500.00
+- `polymarket_copy_trading` tile = `$0.00 STANDBY` (paper-fallback by design until Phase 4+)
+
+**Phase 2a pre-enable checklist status (steps 5-7 remaining, all server-side):**
+
+| # | What | Status |
+|---|---|---|
+| 5 | Tune gamma-api query (current default page sort returns long-tail markets that fail 7-day cap) | Next session |
+| 6 | Phase 2.5 Backtester (binary-outcome replay, minimal-viable) | Next session — gates Phase 3 |
+| 7 | Flip `polymarket_arbitrage.enabled: true` in `strategies.yaml` | After 5 + 6 + Board "go" |
+
+**Rollback recipe (if needed):**
+
+```bash
+# Rollback the wallet-going-live state by removing the secrets from KV.
+# Service restart after this puts the broker back into stub mode.
+az keyvault secret delete --vault-name kv-tc-vtwbowt3wtkpy --name POLYMARKET-PRIVATE-KEY
+az keyvault secret delete --vault-name kv-tc-vtwbowt3wtkpy --name POLYMARKET-FUNDER-ADDRESS
+az keyvault secret delete --vault-name kv-tc-vtwbowt3wtkpy --name POLYGON-RPC-URL
+ssh azureuser@trading.jacksumner.com "sudo systemctl restart trading-corp"
+```
+
+(The wallet itself remains funded on-chain regardless. Code rollback recipe for the Phase 2a code deploy is in the previous deploy_log entry.)
+
+---
+
 ## 2026-05-09 21:57 UTC — Polymarket Phase 2a: arbitrage scanner + risk caps + scheduler wiring
 
 **Commits:** `fe757e2` (Phase 2a, committed pre-deploy).

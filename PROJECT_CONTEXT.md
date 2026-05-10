@@ -21,12 +21,17 @@ trade-decision logic). Today's divisions are `robinhood_pmcc`,
 shipped 2026-05-09 02:53 UTC; replaced the prior Otter+Cypher confluence
 which failed walk-forward), `coinbase_futures` (`STANDBY` — kept as
 failover), `bitunix_futures` (read-only Phase 1 SHIPPED 2026-05-03;
-Phase 4 live ahead), `fidelity_joint`, and `fidelity_401k` (Fidelity
-paper-fallback — bot-blocked from Azure VM IP, P1 DEFERRED 2026-05-03
-pending Plaid investigation; `fidelity_individual` deactivated same day).
-Dashboard groups them into Individual / Crypto / Retirement (UI reorg
-shipped 2026-05-03 16:25 UTC; the `coinbase_spot` tile shows a
-CASH/BTC badge + state-aware Donchian dial — shipped 2026-05-09 03:30 UTC).
+Phase 4 live ahead), `polymarket_arbitrage` (read-only Phase 1+2a
+SHIPPED 2026-05-09/10; $500 USDC live; strategy `enabled:false` until
+Phase 2.5 backtest verdict), `polymarket_copy_trading` (paper STANDBY
+placeholder for Phase 4+ copy-trader strategy), `fidelity_joint`,
+and `fidelity_401k` (Fidelity paper-fallback — bot-blocked from
+Azure VM IP, P1 DEFERRED 2026-05-03 pending Plaid investigation;
+`fidelity_individual` deactivated same day). Dashboard groups them
+into Individual / Crypto / Polymarket / Retirement (Polymarket added
+2026-05-09; UI reorg originally shipped 2026-05-03 16:25 UTC;
+`coinbase_spot` tile shows a CASH/BTC badge + state-aware Donchian
+dial — shipped 2026-05-09 03:30 UTC).
 A shared **research firm** is consulted by divisions for cross-division
 knowledge work; see CLAUDE.md § Research consultation for the rule on
 when. Every proposed order flows through a deterministic **risk gate**
@@ -209,9 +214,10 @@ Bear signals in long-only mode close held positions:
 | Fidelity | Browser automation (Playwright/Firefox). Phase A login session caching wired. Phase B/C session refresh logic is sensitive to UI changes. **Bot-blocked from Azure VM IP since 2026-05-01** (Akamai pre-JS layer rejects datacenter IPs); paper-fallback only. P1 backlog DEFERRED 2026-05-03 pending Plaid investigation. |
 | Coinbase Spot | Phase A (read-only ccxt) DONE. Phase B (orders via ccxt `create_order`) DONE — uses `quote_size` for market buys (account-config quirk discovered empirically). |
 | Coinbase Futures | Phase C — stub only. Will use `coinbase-advanced-py` SDK because ccxt's coinbase driver doesn't fully cover US FCM futures. UI shows STANDBY badge since 2026-05-03 16:25 UTC. |
-| BitUnix Futures | Read-only Phase 1 SHIPPED 2026-05-03 17:54 UTC (`brokers/bitunix.py`): `snapshot()` + `quote()` against live BitUnix Futures API (`https://fapi.bitunix.com`), SHA256-double-sign auth (no passphrase), multi-margin-coin balance aggregation across USDT + USDC. Azure VM IP works against BitUnix (unlike Fidelity). Phase 2 paper-orders shipped via `PaperExecutionBroker` wrapping in same deploy. `place_order` / `cancel_order` raise `NotImplementedError` until Phase 4 (gated on stop-loss strategy + conviction → leverage map). See memory `trading_corp_bitunix_vision.md`. |
+| BitUnix Futures | Read-only Phase 1 SHIPPED 2026-05-03 17:54 UTC (`brokers/bitunix.py`): `snapshot()` + `quote()` against live BitUnix Futures API (`https://fapi.bitunix.com`), SHA256-double-sign auth (no passphrase), multi-margin-coin balance aggregation across USDT + USDC. Azure VM IP works against BitUnix (unlike Fidelity). Phase 2 paper-orders shipped via `PaperExecutionBroker` wrapping in same deploy. `place_order` / `cancel_order` raise `NotImplementedError` until Phase 4 (gated on stop-loss strategy + conviction → leverage map). See memory `trading_corp_bitunix_vision.md`. **Known bug (P2 BACKLOG, 2026-05-09):** equity formula in `bitunix.py:213-225` adds `transfer` on top of `available`, currently double-counts (UI shows 2× actual cash). Display-only today; becomes P0 before Phase 4 since sizing math reads this value. |
+| Polymarket | Read-only Phase 1+2a SHIPPED 2026-05-09/10 (`brokers/polymarket.py`, subclasses **`ReadOnlyBroker`** — first adapter to use the new ABC; `place_order` doesn't exist on the class, enforced by missing methods). `snapshot()` reads USDC balance via direct Polygon RPC `eth_call` + open positions via `data-api.polymarket.com`. `quote(symbol)` uses gamma-api slug→token_id then `clob.polymarket.com` last-trade-price. Path A wallet pattern: signer == funder (`signature_type=EOA`); single EOA holds USDC + signs orders (Phase 3+). Wallet live at `0x2FC7…ADA11` with $500 native USDC (verified on-chain). httpx concurrency cap (semaphore=6) + 429 backoff baked in. No EU egress proxy needed — 2026-05-09 smoke confirmed Polymarket's read APIs serve tc-prod-vm's US-east IP without geo-block (caveat: Phase 3 trade-placement may still hit write-path geo-checks; task #31 tracks the re-test). See memory `trading_corp_polymarket.md`. |
 
-## 8. Production state (`as of 2026-05-09`)
+## 8. Production state (`as of 2026-05-10`)
 
 System is live on Azure: VM `tc-prod-vm` (Standard_D2s_v3, eastus,
 resource group `rg-shared-prod`), reachable at
@@ -237,15 +243,17 @@ through HITL via the **web app at `https://trading.jacksumner.com`**
 friendly htmx + Tailwind). Telegram is **notification-only** since the
 2026-05-05 01:34 UTC slim-flag flip — short ping with deeplink to
 `/approvals/{order_id}`, no order detail in the body. Web push (Phase E)
-is the deferred next step. Four-broker status: Robinhood live (PMCC
+is the deferred next step. Five-broker status: Robinhood live (PMCC
 reads + paper-execute on Individual; IRA + Joint surface in dashboard
 without automated strategy yet), Coinbase Spot live (reads + Coinbase
 BTC Donchian Channel Breakout strategy in paper-mode since 2026-05-09
 02:53 UTC), BitUnix Futures live (read-only Phase 1, paper-orders via
-`PaperExecutionBroker` wrap), Fidelity bot-blocked from Azure VM IP
-(paper-fallback only — Akamai pre-JS layer rejects datacenter IPs;
-residential proxy is the unblock path, deferred — Plaid investigation
-ongoing).
+`PaperExecutionBroker` wrap), Polymarket live (read-only ReadOnlyBroker
+adapter, $500 USDC funded 2026-05-10 00:39 UTC; arbitrage strategy
+disabled awaiting gamma-api tuning + Phase 2.5 backtest verdict),
+Fidelity bot-blocked from Azure VM IP (paper-fallback only — Akamai
+pre-JS layer rejects datacenter IPs; residential proxy is the unblock
+path, deferred — Plaid investigation ongoing).
 
 **`runbooks/deploy_log.md` is the single source of truth for what's
 running on prod right now.** Prod has no git; the deploy log is how we
@@ -384,19 +392,26 @@ trading_corp/agents/data_exec.py    ← broker dispatch + dry-run
 trading_corp/agents/divisions/      ← brokerage/account-level division wiring
    pmcc_robinhood.py                  PMCC division (mixes strategy logic — sharp edge)
    fidelity_options.py                Fidelity division (same conflation)
-trading_corp/agents/strategies/     ← strategies inside coinbase_spot division
+trading_corp/agents/strategies/     ← strategies inside coinbase_spot + polymarket_arbitrage divisions
    donchian_btc.py                    ACTIVE: Donchian Channel Breakout decision module (pure-function)
    coinbase_btc_donchian_agent.py     ACTIVE: 6h-poll agent wrapper (state persistence + ProposedOrder build)
+   polymarket_arbitrage.py            DISABLED (Phase 2a, 2026-05-09): scan-driven LLM-divergence detector;
+                                      direct Anthropic call per K=10 markets/cycle; emits ProposedOrder when
+                                      |LLM prob - implied prob| × 100 ≥ 10%. Awaits Phase 2.5 backtest before flip.
+   _polymarket_prompts.py             Shared analyst-persona system prompt (~1554 tokens; clears 1024 cache threshold).
+                                      Imported by polymarket_arbitrage today; copy_trading will share.
    lord_otter.py                      DISABLED 2026-05-09: 3-min scalp (preserved for BitUnix Futures revival)
    market_cypher.py                   DISABLED 2026-05-09: 4h/1D swing (preserved for BitUnix Futures revival)
 trading_corp/agents/research/       ← shared research-firm consultant (see CLAUDE.md § Research consultation)
 trading_corp/brokers/                ← broker implementations
-   base.py                            abstract Broker interface
+   base.py                            abstract ReadOnlyBroker + Broker(ReadOnlyBroker) interfaces
    paper.py                           PaperBroker + PaperExecutionBroker
    robinhood.py
    fidelity.py
    coinbase.py
    bitunix.py                         BitUnix Futures (read-only Phase 1; place_order raises until Phase 4)
+   polymarket.py                      Polymarket prediction-markets (ReadOnlyBroker subclass — first to use
+                                      the new ABC; place_order doesn't exist on the class. Phase 1+2a SHIPPED.)
 trading_corp/web/                    ← FastAPI app
    app.py                             app factory + WebDeps dataclass
    routes.py                          dashboard routes
@@ -441,14 +456,16 @@ scripts/generate_pwa_icons.py        ← PWA icon generator from SVG
 
 ---
 
-*Last meaningful update: 2026-05-09 (later same day) — backfill of
-stale §7/§8/§13: BitUnix Futures broker added to broker phases table
-+ file-tree pointers; §8 production-state date refreshed and re-
-written to capture the HITL flip (web app primary, Telegram
-notification-only via deeplink), Donchian-on-coinbase_spot status,
-four-broker count, and the Otter/Cypher endpoints-still-accept-POSTs
-nuance. Earlier same day — Coinbase BTC Donchian Phase 2 shipped to
-prod, Otter+Cypher disabled (files preserved for BitUnix revival),
-home-tile CASH/BTC badge + state-aware Donchian dial added. Prior
-major update 2026-05-02 — vocabulary realignment (divisions vs
+*Last meaningful update: 2026-05-10 — Polymarket Phase 1+2a wrap.
+§1 division list extended (polymarket_arbitrage real, polymarket_copy_trading
+paper-fallback STANDBY, both grouped into new Polymarket investment
+type). §7 broker phases table extended with the Polymarket entry +
+ReadOnlyBroker ABC note; BitUnix entry annotated with the P2 transfer
+double-count bug. §8 production-state date refreshed; four-broker →
+five-broker. §13 file tree extended with brokers/polymarket.py +
+agents/strategies/polymarket_arbitrage.py + _polymarket_prompts.py.
+Earlier same day (2026-05-09) — Polymarket Phase 1+2a shipped (broker
++ scanner + risk caps + scheduler), Coinbase BTC Donchian division-
+detail UI cleanup + balance-change tracking (state-as-source-of-truth).
+Prior major update 2026-05-02 — vocabulary realignment (divisions vs
 strategies), research firm consultation rule codified.*
