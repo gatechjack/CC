@@ -967,8 +967,17 @@ btc_accumulator:
 #   2. KV holds POLYMARKET-PRIVATE-KEY / POLYMARKET-FUNDER-ADDRESS / POLYGON-RPC-URL
 #   3. Phase 2.5 Backtester verdict cleared
 polymarket_arbitrage:
-  enabled: false                    # Board flip to enable; see precondition list above
-  auto_execute: false               # HITL approval via web app per CLAUDE.md
+  enabled: true                     # Board enabled 2026-05-10; paper-mode running
+  # `auto_execute` is irrelevant for Polymarket today — broker is
+  # ReadOnlyBroker (no place_order method). Per-trade HITL approval
+  # was REMOVED 2026-05-10 (Board direction): orders now flow
+  # directly to `would_have_placed` audit rows after passing the
+  # deterministic risk gate. Bounded blast radius ($1 sizing × $1K
+  # aggregate cap) made the per-click gate net-friction. Telegram
+  # pings remain as informational visibility (not gating). When
+  # Phase 3 ships live order placement, a separate execution path
+  # + daily kill switch + daily summary digest will replace HITL.
+  auto_execute: false               # see comment above; today moot until Phase 3
   division: polymarket_arbitrage    # which division this strategy operates on
   poll_interval_sec: 30             # scanner cycle cadence
   k_markets_per_cycle: 10           # max Anthropic calls per cycle (Q3 answer 'a')

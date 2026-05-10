@@ -728,6 +728,8 @@ async def run(argv: list[str] | None = None) -> int:
                 channel=channel,
                 logger_agent=logger_agent,
                 data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
             )
         )
 
@@ -1335,6 +1337,8 @@ async def _scheduled_polymarket_arb_loop(
     channel,
     logger_agent,
     data_exec,
+    risk_agent,
+    db_url: str,
 ) -> None:
     """Polymarket Arbitrage scanner loop (Phase 2a).
 
@@ -1344,15 +1348,28 @@ async def _scheduled_polymarket_arb_loop(
       - Otherwise call `agent.run_scan_cycle(broker)` which pulls markets,
         deterministic-filters, calls Anthropic per survivor, emits
         ProposedOrders on divergence ≥ min_divergence_pct.
-      - Each ProposedOrder routes through the standard risk + HITL graph.
+      - Each ProposedOrder runs through `risk_agent.evaluate()` directly
+        (NOT through the LangGraph trade-graph's HITL approval node).
+        Polymarket arbitrage was Board-approved 2026-05-10 to skip the
+        per-trade approval click given the bounded blast radius
+        ($1 fixed sizing × $1K aggregate cap × deterministic-Python
+        risk gate). Approved orders log `would_have_placed`; rejected
+        orders log `polymarket_order_rejected_by_risk`. Telegram ping
+        remains as informational visibility (not a gate).
 
-    Phase 2a posture: strategy ships disabled. Scheduler is harmless until
-    the Board flips `enabled: true` in strategies.yaml AND the KV secrets
-    land. Cooldown TTL prevents re-burning Anthropic calls on the same
-    market within a 6h window.
+    Phase 3 (live order placement) will add a separate execution path
+    using py-clob-client signing + a daily kill switch + daily summary
+    digest. NOT in scope here — current loop produces paper rows only.
+
+    Risk gate is still load-bearing per CLAUDE.md §1: every order
+    flows through `RiskAgent.evaluate()`. The 9 polymarket caps in
+    `risk.yaml polymarket:` (per-position %, single-market $, daily
+    aggregate, total open aggregate, implied-prob bounds) all apply.
     """
+    from trading_corp.persistence.models import AccountState, StrategyState
+
     log.info(
-        "Polymarket arbitrage scanner online (enabled=%s, auto_execute=%s)",
+        "Polymarket arbitrage scanner online (enabled=%s, auto_execute=%s, hitl=DIRECT)",
         agent.enabled, agent.auto_execute,
     )
     while True:
@@ -1384,49 +1401,104 @@ async def _scheduled_polymarket_arb_loop(
             if not orders:
                 continue
 
+            # Pull account snapshot once for the cycle's risk gate.
+            # Per-position % cap reads account.equity; with $1 sizing
+            # this won't bind, but we feed real equity for correctness.
+            try:
+                snap = await broker.snapshot()
+                account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+            except Exception as e:
+                log.warning("Polymarket scanner: snapshot failed: %s; assuming $0 equity", e)
+                account_equity = 0.0
+
+            # Synthetic AccountState — Polymarket division doesn't track
+            # peak_equity / drawdown separately yet (that's a Phase 3
+            # follow-up if/when we want auto-flatten on the wallet).
+            # peak_equity = current equity ⇒ drawdown_pct = 0.
+            account = AccountState(
+                account=agent.division,
+                equity=account_equity,
+                peak_equity=account_equity,
+                halted=False,
+            )
+            strategy_state = StrategyState(strategy=agent.name, halted=False)
+
             log.info(
                 "Polymarket scanner: %d divergence-based ProposedOrder(s) emitted",
                 len(orders),
             )
             for order in orders:
                 logger_agent.log_proposed_order(order)
+
+                # Risk gate — always runs. Caps in risk.yaml polymarket:
+                # are deterministic Python; LLM hallucination cannot
+                # bypass them.
+                verdict = risk_agent.evaluate(
+                    order, account, strategy_state, db_url=db_url,
+                )
+                base_payload = {
+                    "strategy": agent.name,
+                    "division": agent.division,
+                    "order_id": order.id,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "limit_price": order.limit_price,
+                    "rationale": order.rationale,
+                    "category": (order.extra or {}).get("category"),
+                    "series": (order.extra or {}).get("series"),
+                    "market_slug": (order.extra or {}).get("market_slug"),
+                    "divergence_pct": (order.extra or {}).get("divergence_pct"),
+                }
+
+                if verdict.verdict == "reject":
+                    logger_agent.log_event(
+                        agent.name, "polymarket_order_rejected_by_risk",
+                        {**base_payload, "risk_reason": verdict.reason},
+                    )
+                    log.info(
+                        "Polymarket: risk REJECT %s — %s",
+                        order.symbol, verdict.reason,
+                    )
+                    continue
+
+                if verdict.verdict == "resize" and verdict.new_qty is not None:
+                    log.info(
+                        "Polymarket: risk RESIZE %s qty %.4f -> %.4f (%s)",
+                        order.symbol, order.qty, verdict.new_qty, verdict.reason,
+                    )
+                    order.qty = float(verdict.new_qty)
+
+                # Approve / resize → log as would_have_placed (paper).
+                # Phase 3 will branch here on auto_execute_caps to
+                # actually place the order; today everything paper.
                 logger_agent.log_event(
-                    agent.name, "polymarket_order_proposed",
+                    agent.name, "would_have_placed",
                     {
-                        "strategy": agent.name,
-                        "division": agent.division,
-                        "order_id": order.id,
-                        "side": order.side,
-                        "qty": order.qty,
-                        "limit_price": order.limit_price,
-                        "rationale": order.rationale,
-                        "category": (order.extra or {}).get("category"),
-                        "market_slug": (order.extra or {}).get("market_slug"),
-                        "divergence_pct": (order.extra or {}).get("divergence_pct"),
+                        **base_payload,
+                        "qty": order.qty,  # post-resize
+                        "implied_prob_at_entry": (order.extra or {}).get("implied_prob_at_entry"),
+                        "llm_prob_estimate": (order.extra or {}).get("llm_prob_estimate"),
+                        "llm_confidence": (order.extra or {}).get("llm_confidence"),
+                        "outcome": (order.extra or {}).get("outcome"),
+                        "condition_id": (order.extra or {}).get("condition_id"),
+                        "resolves_at": (order.extra or {}).get("resolves_at"),
+                        "risk_verdict": verdict.verdict,
+                        "risk_reason": verdict.reason,
                     },
                 )
+
+                # Telegram ping — informational only, not a gate. Keep it
+                # slim per the existing notification-only convention.
                 try:
+                    div_pct = float((order.extra or {}).get("divergence_pct", 0))
+                    cat = (order.extra or {}).get("category") or "?"
                     await channel.push(
-                        f"📊 Polymarket {order.side.upper()} signal: "
-                        f"{order.symbol} (divergence "
-                        f"{(order.extra or {}).get('divergence_pct', 0):.1f}%) — "
-                        f"routing for approval..."
+                        f"📊 Polymarket {order.side.upper()} {order.symbol} "
+                        f"(category={cat}, divergence {div_pct:.1f}%) "
+                        f"— logged to activity rail."
                     )
                 except Exception as e:
                     log.warning("Polymarket channel push failed: %s", e)
-
-                final_status = await _run_order(
-                    graph, channel, logger_agent, order, division=agent.division,
-                )
-                logger_agent.log_event(
-                    agent.name, "polymarket_order_result",
-                    {
-                        "strategy": agent.name,
-                        "division": agent.division,
-                        "order_id": order.id,
-                        "final_status": final_status,
-                    },
-                )
 
         except asyncio.CancelledError:
             log.info("Polymarket arbitrage scanner cancelled.")
