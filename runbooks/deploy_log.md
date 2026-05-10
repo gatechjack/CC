@@ -59,6 +59,33 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-10 02:31 UTC — Polymarket UX rework: rich activity tiles + LLM analysis right-rail + reasoning persistence
+
+**Commits:** `4bcaf14` (Phase 1 — reasoning persistence) + `f81ae5c` (Phase 2 — UI).
+**Triggered by:** Board feedback 2026-05-10 ~02:15 UTC: *"WOULD HAVE PLACED tells me nothing about the trade. Expert Analysis tile should show the LLM decision. I would like the expert llm analysis to be saved as a point in time static snapshot."*
+
+**Phase 1 — reasoning persistence (4bcaf14):**
+- `polymarket_llm_probability_called` audit row now carries `llm_reasoning` (full LLM justification text), `key_unknowns`, `question` (full market question), `would_emit` flag, `resolves_at`. Was missing the reasoning text — load-bearing for fine-tuning.
+- ProposedOrder.extra extended with same fields; `would_have_placed` payload pulls them in main.py.
+- Storage cost negligible (~5-20MB/month at K=10/30s saturation).
+
+**Phase 2 — UI rework (f81ae5c):**
+- `_query_division_activity` now includes `polymarket_llm_probability_called` + `polymarket_order_rejected_by_risk` kinds (NOT scan_cycle — would flood). Each row gets a `polymarket: dict | None` sub-shape with all fields needed for rich tile rendering.
+- `division.html` activity-row template branches on `evt.polymarket` for rich layout: market_slug + BUY YES/NO badge + category/series chips + market question (line-clamp-2) + probability strip (LLM% vs market% vs Δ% vs sizing) + 200-char reasoning preview (italic). Risk-rejected variant surfaces risk_reason in red.
+- New endpoint `GET /partials/polymarket-analysis/{event_id}` + `partials/polymarket_analysis.html`. "Show analysis →" button on each tile loads full LLM snapshot into the right rail via HTMX. Right rail shows: kind+ts header, market question, 3-card prob grid (LLM YES / market YES / divergence + threshold), decision (outcome + sizing + skip/risk-reject indicators), full LLM reasoning in preformatted block, key unknowns list, resolution metadata + audit event id.
+- Right rail empty-state copy differentiates Polymarket ("Click 'Show analysis →' on any LLM call…") from PMCC ("Click any position…").
+
+**Backup tag:** `pre-polymarket-rich-ui-20260510.tar.gz` (51K).
+**Verification:** PID 181134 → 182852 (clean restart). Endpoint smoke: `GET /partials/polymarket-analysis/{latest_id}` returns 200 with rendered analysis (sample: hantavirus market, LLM 97% YES). Division detail page returns 200 with "Show analysis" buttons + 7 polymarket rows visible (mix of would_have_placed + evaluated-skipped). 27 polymarket tests pass; full suite green.
+
+**Inert / dormant on current traffic:** none — all changes are live now. Future LLM calls (every 30s) persist full reasoning to audit_event; new tile rendering applies retroactively to existing rows where the data is available, gracefully degrades for rows without the new fields.
+
+**Known gap:** the existing Polymarket audit rows from before commit 4bcaf14 (the 5 LLM-called rows from earlier today) lack `llm_reasoning` in their payload, so their right-rail analysis shows blank reasoning. Future rows complete; not worth backfilling.
+
+**Rollback:** `tar xzf /home/azureuser/backups/pre-polymarket-rich-ui-20260510.tar.gz && rm -f trading_corp/web/templates/partials/polymarket_analysis.html && sudo systemctl restart trading-corp`.
+
+---
+
 ## 2026-05-10 02:05 UTC — Polymarket: skip HITL, flip enabled:true; strategy LIVE in paper-mode
 
 **Commit:** `897607a` — 2 prod files (`main.py` + `config/strategies.yaml`), 118 insertions / 37 deletions.
