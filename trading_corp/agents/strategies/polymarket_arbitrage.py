@@ -266,6 +266,7 @@ class PolymarketArbitrageAgent:
                         "condition_id": cid,
                         "slug": m.get("slug"),
                         "category": m.get("category"),
+                        "series": m.get("series"),
                         "implied_prob_yes": implied,
                         "llm_prob_yes": est.prob_yes,
                         "llm_confidence": est.confidence,
@@ -307,7 +308,8 @@ class PolymarketArbitrageAgent:
                 ),
                 extra={
                     "outcome": outcome,
-                    "category": m.get("category"),
+                    "category": m.get("category"),       # top-level bucket (sports/politics/...)
+                    "series": m.get("series"),           # sub-tag (mlb/atp/eurovision-2026)
                     "market_slug": slug,
                     "condition_id": cid,
                     "outcome_index": 0 if outcome == "yes" else 1,
@@ -360,7 +362,11 @@ class PolymarketArbitrageAgent:
         question = market.get("question") or "(no question text)"
         slug = market.get("slug") or "(no slug)"
         end_iso = market.get("endDate") or market.get("end_date") or "(no end date)"
-        category = market.get("category") or "uncategorized"
+        # Two-layer category surfaced from list_markets: top bucket for
+        # base-rate priors (e.g. sports games are typically near-50/50);
+        # series for finer-grained context (e.g. atp = tennis ATP tour).
+        category = market.get("category") or "other"
+        series = market.get("series") or ""
         implied = market.get("_implied_prob_yes")
         description = market.get("description") or ""
         # Cap description length to bound user-prompt tokens.
@@ -369,7 +375,9 @@ class PolymarketArbitrageAgent:
 
         user_text = (
             f"Market slug: {slug}\n"
-            f"Category: {category}\n"
+            f"Category: {category}"
+            + (f" ({series})" if series else "")
+            + "\n"
             f"Question: {question}\n"
             f"Resolution date: {end_iso}\n"
             f"Implied YES probability (current market): {implied}\n"

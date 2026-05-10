@@ -112,6 +112,79 @@ def test_parse_normalizes_unknown_confidence():
     assert est.confidence == "medium"
 
 
+# ── Category mapping (Phase 2a Step 5) ─────────────────────────────────
+
+
+def test_classify_sports_via_series_slug():
+    from trading_corp.brokers.polymarket import _classify_market
+    m = {"slug": "mlb-oak-bal-2026-05-09",
+         "events": [{"seriesSlug": "mlb"}], "sportsMarketType": "moneyline"}
+    top, sub = _classify_market(m)
+    assert top == "sports"
+    assert sub == "mlb"
+
+
+def test_classify_sports_via_market_type_when_series_missing():
+    from trading_corp.brokers.polymarket import _classify_market
+    m = {"slug": "tennis-some-match", "events": [], "sportsMarketType": "moneyline"}
+    top, _ = _classify_market(m)
+    assert top == "sports"
+
+
+def test_classify_geopolitics_wins_over_politics():
+    """Slugs like 'will-trump-announce-blockade-of-hormuz' could match
+    both — geopolitics check runs first."""
+    from trading_corp.brokers.polymarket import _classify_market
+    m = {"slug": "will-trump-announce-blockade-of-hormuz-by-may", "events": []}
+    top, _ = _classify_market(m)
+    assert top == "geopolitics"
+
+
+def test_classify_celebrity():
+    from trading_corp.brokers.polymarket import _classify_market
+    m = {"slug": "elon-musk-of-tweets-may-9-may-11-90-114",
+         "events": [{"seriesSlug": "elon-tweets"}]}
+    top, sub = _classify_market(m)
+    assert top == "celebrity"
+    assert sub == "elon-tweets"
+
+
+def test_classify_crypto():
+    from trading_corp.brokers.polymarket import _classify_market
+    m = {"slug": "will-bitcoin-reach-84k-may-4-10",
+         "events": [{"seriesSlug": "bitcoin-hit-price-weekly"}]}
+    top, _ = _classify_market(m)
+    assert top == "crypto"
+
+
+def test_classify_entertainment_eurovision():
+    from trading_corp.brokers.polymarket import _classify_market
+    m = {"slug": "will-united-kingdom-win-eurovision-2026",
+         "events": [{"seriesSlug": "eurovision-winner-2026"}]}
+    top, _ = _classify_market(m)
+    assert top == "entertainment"
+
+
+def test_classify_other_fallback():
+    """Any slug that doesn't match any keyword set falls to 'other'."""
+    from trading_corp.brokers.polymarket import _classify_market
+    m = {"slug": "unknown-future-thing", "events": []}
+    top, _ = _classify_market(m)
+    assert top == "other"
+
+
+def test_classify_handles_malformed_input():
+    """Defensive: missing slug, missing events, bad event shapes
+    should never crash the classifier."""
+    from trading_corp.brokers.polymarket import _classify_market
+    # No slug at all
+    assert _classify_market({}) == ("other", "")
+    # events is None
+    assert _classify_market({"slug": "foo", "events": None}) == ("other", "foo")
+    # events[0] is not a dict
+    assert _classify_market({"slug": "bar", "events": ["not-a-dict"]}) == ("other", "bar")
+
+
 # ── Risk gate: polymarket cap matrix ───────────────────────────────────
 
 

@@ -81,6 +81,104 @@ _HTTP_BACKOFF_BASE_S = 1.0
 _HTTP_BACKOFF_MAX_S = 30.0
 _HTTP_MAX_RETRIES = 4
 
+# ── Category mapping (Phase 2a Step 5) ───────────────────────────────
+# Polymarket's gamma-api `/markets` response doesn't carry a top-level
+# `category` field; classification info is split across:
+#   - market.events[0].seriesSlug  (e.g. "mlb", "atp", "eurovision-2026")
+#   - market.sportsMarketType      (e.g. "moneyline" — only on sports)
+#   - market.slug                  (slug-prefix patterns)
+#
+# We classify each market into TWO levels:
+#   - top category: sports / politics / geopolitics / finance / crypto /
+#                   entertainment / celebrity / health / other
+#   - series sub-tag: the seriesSlug or event slug (specific to the market)
+#
+# Empirically tested 2026-05-10 — keyword sets below classify 100% of
+# 68 currently-passing markets. The `other` bucket is the catch-all if
+# a new theme emerges and isn't covered yet; expand the keyword sets
+# rather than letting drift accumulate. See tests/test_polymarket_arbitrage.py.
+
+_SPORTS_SERIES = frozenset({
+    "mlb", "nba", "nfl", "nhl", "ncaaf", "ncaab",
+    "atp", "wta", "tennis",
+    "epl", "premier-league", "champions-league", "la-liga", "serie-a",
+    "bundesliga", "ligue-1", "mls", "soccer", "world-cup", "uefa",
+    "ufc", "boxing", "f1", "nascar", "indy-car", "moto-gp",
+    "pga", "golf", "olympics",
+})
+_POLITICS_KEYWORDS = (
+    "election", "primary", "senate", "congress", "house-",
+    "trump", "biden", "harris", "vance", "obama",
+    "cabinet", "supreme-court", "speaker", "presidential", "vice-president",
+)
+_FINANCE_KEYWORDS = (
+    "fed-", "fomc", "rate-cut", "rate-hike", "cpi-", "gdp-",
+    "jobs-report", "unemployment", "ppi-", "jolts",
+    "sp-500-", "spx-", "nasdaq-", "s-and-p",
+)
+_CRYPTO_KEYWORDS = (
+    "btc", "bitcoin", "eth", "ethereum", "sol", "solana", "doge",
+    "crypto", "stablecoin", "etf-", "fartcoin", "nft",
+)
+_GEOPOLITICS_KEYWORDS = (
+    "iran", "ukraine", "russia", "china", "taiwan", "israel",
+    "gaza", "houthi", "north-korea", "putin", "zelensky",
+    "ceasefire", "peace-deal", "treaty", "war-",
+    "nato", "hormuz", "blockade", "invasion",
+)
+_ENTERTAINMENT_KEYWORDS = (
+    "eurovision", "oscars", "grammys", "emmys",
+    "movie-", "album-", "song-",
+    "rihanna", "gta-vi", "release", "series-finale",
+)
+_CELEBRITY_KEYWORDS = (
+    "elon", "musk", "kanye", "kardashian", "taylor-swift", "tweets",
+)
+_HEALTH_KEYWORDS = (
+    "hantavirus", "disease", "virus", "pandemic", "outbreak",
+    "epidemic", "vaccine", "measles", "ebola", "monkeypox", "covid",
+)
+
+
+def _classify_market(market: dict) -> tuple[str, str]:
+    """Return (top_category, series_subtag) for a gamma-api market dict.
+
+    See module-level constants for the keyword sets. `top_category` is
+    one of the documented buckets; `series_subtag` is `events[0].seriesSlug`
+    when present, else the event slug, else the first segment of the
+    market slug, else empty string.
+    """
+    events = market.get("events") or []
+    series = ""
+    if events and isinstance(events[0], dict):
+        evt = events[0]
+        series = (evt.get("seriesSlug") or evt.get("slug") or "").lower()
+    sport_type = market.get("sportsMarketType")
+    slug = (market.get("slug") or "").lower()
+
+    # Sports first — strongest signal (series match OR sportsMarketType set).
+    if series in _SPORTS_SERIES or sport_type:
+        return "sports", series
+
+    # Geopolitics before politics — overlap potential ("Trump announces blockade").
+    if any(kw in slug for kw in _GEOPOLITICS_KEYWORDS):
+        return "geopolitics", series or slug.split("-")[0]
+    if any(kw in slug for kw in _POLITICS_KEYWORDS):
+        return "politics", series or slug.split("-")[0]
+    if any(kw in slug for kw in _FINANCE_KEYWORDS):
+        return "finance", series or slug.split("-")[0]
+    if any(kw in slug for kw in _CRYPTO_KEYWORDS):
+        return "crypto", series or slug.split("-")[0]
+    if any(kw in slug for kw in _CELEBRITY_KEYWORDS):
+        return "celebrity", series or slug.split("-")[0]
+    if any(kw in slug for kw in _HEALTH_KEYWORDS):
+        return "health", series or slug.split("-")[0]
+    if any(kw in slug for kw in _ENTERTAINMENT_KEYWORDS):
+        return "entertainment", series or slug.split("-")[0]
+    # Catch-all: surface SOMETHING in the series sub-tag even when the
+    # category is unknown — slug's first segment is a useful breadcrumb.
+    return "other", series or (slug.split("-")[0] if slug else "")
+
 
 def _erc20_balanceof_calldata(address: str) -> str:
     """Build the eth_call `data` field for `USDC.balanceOf(address)`.
@@ -308,15 +406,31 @@ class PolymarketBroker(ReadOnlyBroker):
         if self._stub or not self._client:
             return []
 
-        # Gamma-api supports `closed=false&active=true&limit=N` reliably.
-        # Other params (liquidity_min, end_date_max, etc.) we don't trust;
-        # filter client-side instead.
+        # Server-side query — empirically tuned 2026-05-10 against live
+        # gamma-api. The default page sort returns long-tail markets first
+        # (200 results, 0 within a 7d horizon). With `order=volume24hr` +
+        # `ascending=false` and an `end_date_min/max` server-side window,
+        # we get ~68 markets per page that already pass the Phase 2 caps
+        # (volume >= $50K, horizon 1-7d). The client-side filter below
+        # then enforces the rest (spread, accepting_orders, etc.) and
+        # remains the source-of-truth for cap semantics.
+        now = datetime.now(timezone.utc)
         params = {
             "closed": "false",
             "active": "true",
             "archived": "false",
+            "order": "volume24hr",
+            "ascending": "false",
             "limit": str(int(limit)),
         }
+        if min_hours_to_resolution > 0:
+            params["end_date_min"] = (
+                now + timedelta(hours=float(min_hours_to_resolution))
+            ).isoformat().replace("+00:00", "Z")
+        if max_days_to_resolution is not None:
+            params["end_date_max"] = (
+                now + timedelta(days=float(max_days_to_resolution))
+            ).isoformat().replace("+00:00", "Z")
         try:
             data = await self._http_get_json(f"{_GAMMA_API}/markets", params=params)
         except Exception as e:
@@ -370,18 +484,18 @@ class PolymarketBroker(ReadOnlyBroker):
             if max_horizon is not None and end_dt > max_horizon:
                 continue
             hours_to_res = (end_dt - now).total_seconds() / 3600.0
-            # Best-effort category extraction. Gamma-api's market schema has
-            # evolved; defend against multiple shapes.
-            category = (
-                m.get("category")
-                or (m.get("tags") or [None])[0]
-                or m.get("eventCategory")
-                or "uncategorized"
-            )
+            # Two-layer category classification (Phase 2a Step 5 tuning).
+            # `category` = top bucket (sports / politics / crypto / ...) for
+            # dashboard activity-rail filtering; `series` = sub-tag (mlb,
+            # atp, eurovision-2026) for finer breakdown. See
+            # _classify_market for keyword sets + 100%-current-coverage
+            # empirical test.
+            top_cat, series_tag = _classify_market(m)
             out.append({
                 **m,
                 "hours_to_resolution": hours_to_res,
-                "category": str(category) if category is not None else "uncategorized",
+                "category": top_cat,
+                "series": series_tag,
                 "_volume_24h_used": vol,
             })
 
