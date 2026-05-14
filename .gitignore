@@ -56,3 +56,19 @@ data/backtest_runs/
 
 # Local deploy staging (md5-diff scratch dir; safe to delete anytime)
 .deploy_tmp/
+
+# Session-scratch artifacts in runbooks/ — dot-prefixed files that
+# Claude generates inline during a session for one-shot use (deploy
+# patch scripts, base64 transfer dumps, probe scripts). They have no
+# lasting value once the deploy completes; backups land in the
+# prod-VM's filesystem instead. The runbook .md files (session_start_*,
+# deploy_log) ARE tracked — only the dot-prefixed scratch is ignored.
+runbooks/.*.sh
+runbooks/.*.b64
+runbooks/.*.tmp
+
+# Per-run generated analysis artifacts. Append-only CSVs that the
+# weekly TV-CSV-ingest pipeline emits; regeneratable from the SQLite
+# DB so no need to track. If you want a historical snapshot, copy it
+# out and rename.
+data/scalping_3m_analysis_history.csv
