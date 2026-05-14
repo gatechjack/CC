@@ -63,6 +63,10 @@ class WebDeps:
     # a notifier. None in test envs that don't exercise the web HITL
     # surface.
     pending_registry: Any = None    # PendingApprovalRegistry from comms/pending_registry.py
+    # BitUnix Futures Phase 3.0 observer (additive, observer-mode only —
+    # no orders, no risk-gate, just classifies inbound Otter/Cypher
+    # signals into bias-only tiers and writes audit_event rows).
+    bitunix_observer: Any = None    # BitunixFuturesObserver | None
 
 
 def create_app(deps: WebDeps) -> FastAPI:

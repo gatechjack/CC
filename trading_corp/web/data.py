@@ -420,6 +420,194 @@ class PMCCPair:
 
 
 @dataclass
+class CoveredCallPosition:
+    """One underlying with shares + a short call sold against them.
+
+    Retirement-account variant of PMCC: no LEAP — the shares ARE the
+    cover. Allowed in IRAs because the short call is fully secured by
+    owned shares (vs. PMCC which uses a LEAP as cover — disallowed in
+    IRA per IRS Reg 1.401(a) options-on-options rules).
+    """
+    underlying: str
+    underlying_price: float | None
+    shares_qty: float
+    shares_avg_price: float
+    shares_market_value: float | None
+    shares_cost_basis: float
+    shares_pnl: float | None
+    shares_pnl_pct: float | None
+    short_call: OptionLeg
+    coverage_pct: float                # shares / (|short_qty| * 100), 1.0 = fully covered
+
+    @property
+    def is_fully_covered(self) -> bool:
+        return self.coverage_pct >= 1.0
+
+    @property
+    def days_to_expiry(self) -> int | None:
+        return self.short_call.dte
+
+    @property
+    def is_itm(self) -> bool:
+        if self.underlying_price is None:
+            return False
+        return self.underlying_price > self.short_call.strike
+
+    @property
+    def breach_pct(self) -> float | None:
+        """How far ITM as % of strike. Negative = OTM."""
+        if self.underlying_price is None or self.short_call.strike <= 0:
+            return None
+        return (self.underlying_price - self.short_call.strike) / self.short_call.strike
+
+    @property
+    def combined_pnl(self) -> float | None:
+        """Combined P&L: share appreciation + short-call credit/cost."""
+        if self.shares_pnl is None or self.short_call.unrealized_pnl is None:
+            return None
+        return self.shares_pnl + self.short_call.unrealized_pnl
+
+    @property
+    def call_status(self) -> str:
+        """Plain-English status for the short call."""
+        if self.short_call.dte is not None and self.short_call.dte <= 1:
+            return "expiring_today" if self.short_call.dte == 0 else "expiring_tomorrow"
+        if self.is_itm:
+            return "itm"
+        if self.short_call.unrealized_pnl_pct is not None and self.short_call.unrealized_pnl_pct >= 0.70:
+            return "profit_take_candidate"
+        return "open"
+
+    @property
+    def priority_score(self) -> int:
+        """Risk/urgency score for sorting. Higher = more urgent.
+
+        Mirrors the PMCCPair priority idea but simpler — IRA has only
+        one short leg per pair (no LEAP coverage erosion to track).
+        """
+        score = 0
+        s = self.short_call
+        # ITM short → assignment risk
+        if self.is_itm:
+            depth = self.breach_pct or 0.0
+            score += 30 + min(int(depth * 100), 30)
+        # Roll triggers by DTE
+        if s.dte is not None:
+            if s.dte == 0:
+                score += 50
+            elif s.dte <= 2:
+                score += 40
+            elif s.dte <= 7:
+                score += 15
+            elif s.dte <= 14:
+                score += 5
+        # Profit-capture candidates (close-and-resell)
+        if s.unrealized_pnl_pct is not None:
+            if s.unrealized_pnl_pct >= 0.85:
+                score += 20
+            elif s.unrealized_pnl_pct >= 0.70:
+                score += 10
+        return score
+
+    @property
+    def priority_label(self) -> str:
+        """Bucket the score into urgent / elevated / routine / healthy."""
+        s = self.priority_score
+        if s >= 50:
+            return "urgent"
+        if s >= 20:
+            return "elevated"
+        if s >= 5:
+            return "routine"
+        return "healthy"
+
+    @property
+    def recommended_action(self) -> tuple[str, str]:
+        """Deterministic preview of the next action for this pair.
+
+        Returns (label, urgency). Used to render the action pill on the
+        collapsed row. Order matters — first matching rule wins.
+        """
+        s = self.short_call
+        # Same-day expiry with ITM → assignment imminent
+        if s.dte == 0 and self.is_itm:
+            return ("Roll or accept assignment", "urgent")
+        if s.dte == 0:
+            return ("Let expire", "elevated")
+        # Profit take (regardless of DTE)
+        if s.unrealized_pnl_pct is not None and s.unrealized_pnl_pct >= 0.85:
+            return ("Close (≥85% profit)", "elevated")
+        # Short DTE
+        if s.dte is not None and s.dte <= 2:
+            if self.is_itm:
+                return ("Roll up & out", "urgent")
+            return ("Roll out", "elevated")
+        # Profit candidate
+        if s.unrealized_pnl_pct is not None and s.unrealized_pnl_pct >= 0.70:
+            return ("Close (≥70%)", "elevated")
+        # ITM but not expiring
+        if self.is_itm:
+            return ("Watch (ITM)", "elevated")
+        return ("Hold", "routine")
+
+
+@dataclass
+class WheelPutPosition:
+    """One short put sold to acquire shares (cash-secured put / wheel).
+
+    In an IRA the put must be cash-secured — the broker holds the
+    assignment cash. Shown alongside owned positions because if
+    assigned, the user will own `strike * 100 * |qty|` worth of the
+    underlying.
+    """
+    short_put: OptionLeg
+
+    @property
+    def underlying(self) -> str:
+        return self.short_put.underlying
+
+    @property
+    def strike(self) -> float:
+        return self.short_put.strike
+
+    @property
+    def expiry(self) -> str:
+        return self.short_put.expiry
+
+    @property
+    def days_to_expiry(self) -> int | None:
+        return self.short_put.dte
+
+    @property
+    def credit_received(self) -> float:
+        """Total credit received in dollars (per share × 100 × |qty|)."""
+        return self.short_put.avg_per_share * 100 * abs(self.short_put.qty)
+
+    @property
+    def cost_to_close(self) -> float | None:
+        if self.short_put.mark_per_share is None:
+            return None
+        return self.short_put.mark_per_share * 100 * abs(self.short_put.qty)
+
+    @property
+    def is_itm(self) -> bool:
+        """ITM put = underlying < strike (assignment risk)."""
+        if self.short_put.underlying_price is None:
+            return False
+        return self.short_put.underlying_price < self.short_put.strike
+
+    @property
+    def assignment_cost(self) -> float:
+        """If assigned, what the user will pay for the shares."""
+        return self.strike * 100 * abs(self.short_put.qty)
+
+    @property
+    def effective_basis_if_assigned(self) -> float:
+        """Net basis per share if assigned, accounting for credit kept."""
+        return self.strike - self.short_put.avg_per_share
+
+
+@dataclass
 class DivisionViewSnapshot:
     """Everything the /division/{slug} page needs to render."""
     division: Any          # Division dataclass
@@ -445,6 +633,18 @@ class DivisionViewSnapshot:
     # trend_filter_lookback,granularity_seconds}, decisions: list,
     # round_trips: list}.
     donchian: dict | None = None
+    # BitUnix Phase 3.2.3 score panel — only populated for
+    # `bitunix_futures` division. Shape documented on
+    # `build_bitunix_score_view`.
+    bitunix_score: dict | None = None
+    # Robinhood IRA dashboard — only populated for `robinhood_ira`
+    # division. Shape:
+    #   {covered_calls: list[CoveredCallPosition],
+    #    pure_assets:   list[StockHolding],
+    #    wheel_puts:    list[WheelPutPosition]}
+    # When set, division.html renders the IRA dashboard partial instead
+    # of the generic PMCC / Holdings sections.
+    ira_view: dict | None = None
 
 
 @dataclass
@@ -523,6 +723,16 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         _hydrate_donchian_overview(divisions, db_url)
     except Exception as e:
         log.debug("donchian overview hydration failed (continuing): %s", e)
+
+    # Prediction-market tile overview (K2.4). Attaches n_resolved + n_pending
+    # + win_rate + total_realized to the 4 (later 5) prediction-market
+    # divisions so the home tile renders performance stats inline. Single
+    # DB sweep — pulls counts for every prediction-market division in one
+    # pass to avoid N round-trips.
+    try:
+        _hydrate_pm_overview(divisions, db_url)
+    except Exception as e:
+        log.debug("pm overview hydration failed (continuing): %s", e)
 
     # Note: benchmark hydration disabled — was only consumed by per-tile
     # YTD comparison, which is now redundant with the top market ribbon.
@@ -731,6 +941,106 @@ def _hydrate_donchian_overview(divisions: list[Division], db_url: str) -> None:
         "dial_position": dial_position,
         "last_eval_ts": last_ts,
     }
+
+
+def _hydrate_pm_overview(divisions: list[Division], db_url: str) -> None:
+    """Attach `pm_overview` dict to each prediction-market division for the
+    home tile (K2.4). Single sweep — three aggregate queries (polymarket
+    round-trips, kalshi round-trips grouped by division, pending counts)
+    rather than one query per division.
+
+    Keys on the resulting dict:
+        n_resolved, n_pending, n_wins, n_losses, n_voids,
+        win_rate_pct (None pre-first-resolve), total_realized_pnl.
+    """
+    from trading_corp.utils.divisions import classify_investment_type
+
+    pm_divisions = [
+        d for d in divisions
+        if classify_investment_type(d) == "prediction_markets"
+    ]
+    if not pm_divisions:
+        return
+
+    # Init zero-state for every prediction-market division so even ones
+    # with no rows render "0 resolved / 0 pending" rather than dashes.
+    stats: dict[str, dict] = {
+        d.slug: {
+            "n_resolved": 0,
+            "n_pending": 0,
+            "n_wins": 0,
+            "n_losses": 0,
+            "n_voids": 0,
+            "win_rate_pct": None,
+            "total_realized_pnl": 0.0,
+        }
+        for d in pm_divisions
+    }
+
+    # Polymarket round-trips — one row aggregate.
+    if "polymarket_arbitrage" in stats:
+        try:
+            rows = _query(
+                db_url,
+                "SELECT COUNT(*) AS n, "
+                "       SUM(won) AS w, "
+                "       SUM(realized_pnl) AS pnl "
+                "FROM polymarket_round_trips",
+            )
+            if rows and rows[0].get("n"):
+                n = int(rows[0].get("n") or 0)
+                w = int(rows[0].get("w") or 0)
+                pnl = float(rows[0].get("pnl") or 0.0)
+                s = stats["polymarket_arbitrage"]
+                s["n_resolved"] = n
+                s["n_wins"] = w
+                s["n_losses"] = max(0, n - w)   # polymarket has no void column
+                s["total_realized_pnl"] = pnl
+        except Exception as e:
+            log.debug("pm_overview: polymarket roll-up failed: %s", e)
+
+    # Kalshi round-trips — grouped by division (the table has the column).
+    try:
+        rows = _query(
+            db_url,
+            "SELECT division, "
+            "       COUNT(*) AS n, "
+            "       SUM(won) AS w, "
+            "       SUM(CASE WHEN market_result='void' THEN 1 ELSE 0 END) AS v, "
+            "       SUM(realized_pnl) AS pnl "
+            "FROM kalshi_round_trips GROUP BY division",
+        )
+        for r in rows:
+            div = r.get("division") or ""
+            if div not in stats:
+                continue
+            n = int(r.get("n") or 0)
+            w = int(r.get("w") or 0)
+            v = int(r.get("v") or 0)
+            pnl = float(r.get("pnl") or 0.0)
+            s = stats[div]
+            s["n_resolved"] = n
+            s["n_wins"] = w
+            s["n_voids"] = v
+            s["n_losses"] = max(0, n - w - v)
+            s["total_realized_pnl"] = pnl
+    except Exception as e:
+        log.debug("pm_overview: kalshi roll-up failed: %s", e)
+
+    # Pending counts (per-division). One query per division — small;
+    # could be batched if it becomes hot.
+    for d in pm_divisions:
+        try:
+            stats[d.slug]["n_pending"] = _query_pm_pending_count(db_url, [d.slug])
+        except Exception as e:
+            log.debug("pm_overview: pending count failed for %s: %s", d.slug, e)
+
+    # Compute win rate per division, then attach.
+    for d in pm_divisions:
+        s = stats[d.slug]
+        decisive = s["n_wins"] + s["n_losses"]
+        s["win_rate_pct"] = (100.0 * s["n_wins"] / decisive) if decisive > 0 else None
+        d.pm_overview = s
 
 
 async def _hydrate_benchmarks(divisions: list[Division]) -> None:
@@ -1048,6 +1358,307 @@ def _color_for(kind: str) -> str:
 
 
 # ── Division drill-down view builder ──────────────────────────────────────
+
+def build_ira_view(
+    stock_holdings: list[StockHolding],
+    legs: list[OptionLeg],
+    prices: dict[str, float],
+) -> dict:
+    """Group IRA positions into 3 buckets — covered calls, pure assets,
+    wheel puts. Pure-function over already-fetched data; the caller
+    (build_division_view) supplies `stock_holdings`, `legs`, `prices`
+    so we don't double-fetch.
+
+    Returns the shape `DivisionViewSnapshot.ira_view` expects:
+      {covered_calls: [CoveredCallPosition], pure_assets: [StockHolding],
+       wheel_puts: [WheelPutPosition]}.
+    """
+    # Index shares by underlying for O(1) lookup
+    shares_by_symbol: dict[str, StockHolding] = {
+        h.symbol.upper(): h for h in stock_holdings
+    }
+
+    # Partition option legs
+    short_calls_by_underlying: dict[str, list[OptionLeg]] = {}
+    short_puts: list[OptionLeg] = []
+    for leg in legs:
+        if leg.is_long:
+            # Longs (LEAPs etc) shouldn't appear in an IRA per the
+            # strategy. If they do, leave them out of all 3 buckets —
+            # the dashboard's "wheel puts" + "covered calls" sections
+            # render only what they understand.
+            continue
+        if leg.option_type == "call":
+            short_calls_by_underlying.setdefault(leg.underlying.upper(), []).append(leg)
+        elif leg.option_type == "put":
+            short_puts.append(leg)
+
+    # Build covered calls — one CoveredCallPosition per (underlying, short_call).
+    # If multiple short calls exist on the same underlying (different
+    # strikes / expiries), each becomes its own row but they all share
+    # the underlying shares for "coverage" math. We compute coverage
+    # against the TOTAL short contracts on that underlying.
+    covered_calls: list[CoveredCallPosition] = []
+    for underlying, calls in short_calls_by_underlying.items():
+        sh = shares_by_symbol.get(underlying)
+        if sh is None or sh.qty <= 0:
+            # Short call without underlying shares isn't legal in an IRA
+            # (the broker would block it), but defensively skip.
+            continue
+        total_short_qty = sum(abs(c.qty) for c in calls)
+        shares_covered = total_short_qty * 100
+        coverage_pct = (sh.qty / shares_covered) if shares_covered > 0 else 0.0
+        for call in calls:
+            cost_basis = sh.avg_price * sh.qty if sh.avg_price else 0.0
+            # Filter out the RH crypto cost_basis=0 noise — if avg_price
+            # is 0, share P&L is meaningless (RH reports crypto cost
+            # basis as 0). Show market value but suppress P&L %.
+            if cost_basis > 0 and sh.market_value is not None:
+                pnl = sh.market_value - cost_basis
+                pnl_pct = pnl / cost_basis if cost_basis > 0 else None
+            else:
+                pnl = None
+                pnl_pct = None
+            covered_calls.append(CoveredCallPosition(
+                underlying=underlying,
+                underlying_price=prices.get(underlying),
+                shares_qty=sh.qty,
+                shares_avg_price=sh.avg_price,
+                shares_market_value=sh.market_value,
+                shares_cost_basis=cost_basis,
+                shares_pnl=pnl,
+                shares_pnl_pct=pnl_pct,
+                short_call=call,
+                coverage_pct=coverage_pct,
+            ))
+
+    # Sort by priority score descending (urgent first), DTE asc as tiebreaker.
+    covered_calls.sort(key=lambda cc: (
+        -cc.priority_score,
+        cc.short_call.dte if cc.short_call.dte is not None else 999,
+    ))
+
+    # Portfolio — shares NOT used to back a covered call. Simple list.
+    underlyings_with_calls = set(short_calls_by_underlying.keys())
+    portfolio: list[StockHolding] = [
+        h for h in stock_holdings
+        if h.symbol.upper() not in underlyings_with_calls
+    ]
+    portfolio.sort(key=lambda h: (h.market_value or 0.0), reverse=True)
+
+    # Open puts (no wheel framing — these are just open short puts).
+    puts = [WheelPutPosition(short_put=p) for p in short_puts]
+    puts.sort(key=lambda w: (
+        w.days_to_expiry if w.days_to_expiry is not None else 999,
+    ))
+
+    return {
+        "covered_calls": covered_calls,
+        "portfolio": portfolio,
+        "puts": puts,
+    }
+
+
+def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
+    """Phase 3.2.3 — compose the BitUnix Futures score panel block.
+
+    Reads from the audit log + cooldown table + (when available) the
+    live `bitunix_observer`'s bar cache + scoring config. Returns None
+    if scoring isn't configured at all.
+
+    Shape:
+      {
+        scoring_enabled: bool,
+        thresholds: {premium, standard, weak, min_fire, cooldown_sec},
+        last_eval: {ts, signal, tier, side, net, fb, fs, bc, sc, reason,
+                    outcome, age_sec} | None,
+        cooldown: [{side, last_fire_ts, last_tier, remaining_sec}],
+        recent_evals: [...],
+        recent_fires: [{ts, tier, side, qty, entry, stop, tp, net_score}],
+        bar_cache: {bars, last_close, atr_14, last_refresh_error} | None,
+        ledger_window: {rows_last_24h, oldest_live_signal_age_sec},
+      }
+    """
+    observer = getattr(deps, "bitunix_observer", None)
+    scoring = getattr(observer, "scoring_config", None) if observer else None
+    if scoring is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    last_eval: dict | None = None
+    recent_evals: list[dict] = []
+    recent_fires: list[dict] = []
+    cooldown: list[dict] = []
+    ledger_window: dict = {"rows_last_24h": 0, "oldest_live_signal_age_sec": None}
+
+    try:
+        with db.connect(db_url) as conn:
+            rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind='bitunix_score_decided' "
+                "ORDER BY ts DESC LIMIT 20"
+            ).fetchall()
+            for i, r in enumerate(rows):
+                try:
+                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except Exception:
+                    p = {}
+                row_ts = r["ts"]
+                row_dt = _parse_audit_ts(row_ts)
+                age_sec = int((now - row_dt).total_seconds()) if row_dt else None
+                entry = {
+                    "ts": row_ts,
+                    "ts_et": format_et_short(row_ts),
+                    "signal": p.get("trigger_signal"),
+                    "tier": p.get("tier"),
+                    "side": p.get("side"),
+                    "net": p.get("net_score"),
+                    "fb": p.get("final_buy_score"),
+                    "fs": p.get("final_sell_score"),
+                    "bg": p.get("buy_guard_penalty"),
+                    "sg": p.get("sell_guard_penalty"),
+                    "bc": p.get("buy_contributions") or [],
+                    "sc": p.get("sell_contributions") or [],
+                    "outcome": p.get("outcome"),
+                    "reason": p.get("reason"),
+                    "cooldown_blocked": p.get("cooldown_blocked", False),
+                    "age_sec": age_sec,
+                }
+                if i == 0:
+                    last_eval = entry
+                recent_evals.append(entry)
+
+            fire_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind='would_have_placed' "
+                "ORDER BY ts DESC LIMIT 50"
+            ).fetchall()
+            for r in fire_rows:
+                try:
+                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except Exception:
+                    p = {}
+                if p.get("via") != "bitunix_score":
+                    continue
+                recent_fires.append({
+                    "ts": r["ts"],
+                    "ts_et": format_et_short(r["ts"]),
+                    "tier": p.get("tier"),
+                    "side": p.get("side"),
+                    "qty": p.get("qty"),
+                    "entry": p.get("entry_price"),
+                    "stop": p.get("stop_price"),
+                    "tp": p.get("tp_price"),
+                    "net_score": p.get("net_score"),
+                    "trigger_signal": p.get("trigger_signal"),
+                })
+                if len(recent_fires) >= 10:
+                    break
+
+            try:
+                cd_rows = conn.execute(
+                    "SELECT side, last_fire_ts, last_tier FROM bitunix_score_cooldown"
+                ).fetchall()
+                for r in cd_rows:
+                    fire_dt = _parse_audit_ts(r["last_fire_ts"])
+                    elapsed = (now - fire_dt).total_seconds() if fire_dt else None
+                    remaining = max(0, scoring.cooldown_seconds - int(elapsed)) if elapsed is not None else None
+                    cooldown.append({
+                        "side": r["side"],
+                        "last_fire_ts": r["last_fire_ts"],
+                        "last_tier": r["last_tier"],
+                        "remaining_sec": remaining,
+                    })
+            except Exception:
+                pass  # table may not exist yet on first deploy
+
+            try:
+                cutoff = (now - timedelta(hours=24)).isoformat()
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n, MIN(ts) AS oldest FROM bitunix_signal_ledger WHERE ts >= ?",
+                    (cutoff,),
+                ).fetchone()
+                ledger_window["rows_last_24h"] = int(row["n"] or 0)
+                if row["oldest"]:
+                    oldest_dt = _parse_audit_ts(row["oldest"])
+                    if oldest_dt:
+                        ledger_window["oldest_live_signal_age_sec"] = int(
+                            (now - oldest_dt).total_seconds()
+                        )
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning("bitunix score panel query failed: %s", e)
+
+    bar_cache_info: dict | None = None
+    bar_cache = getattr(observer, "bar_cache", None) if observer else None
+    if bar_cache is not None:
+        try:
+            status = bar_cache.status()
+            bar_cache_info = {
+                "bars_cached": status.get("bars_cached"),
+                "last_close": status.get("last_close"),
+                "atr_14": status.get("atr_14"),
+                "last_refresh_error": status.get("last_refresh_error"),
+            }
+        except Exception as e:
+            log.warning("bar_cache.status() failed: %s", e)
+
+    # Compute current live PriceContext for display (best-effort)
+    live_pctx: dict | None = None
+    try:
+        from trading_corp.data.bitunix_price_context import compute_price_context
+        ctx = compute_price_context(
+            bar_cache,
+            sell_on_rush_window_minutes=scoring.sell_on_rush.window_minutes,
+            buy_on_fall_window_minutes=scoring.buy_on_fall.window_minutes,
+        )
+        if ctx is not None:
+            live_pctx = {
+                "current_price": ctx.current_price,
+                "above_session_vwap": ctx.above_session_vwap,
+                "below_session_vwap": ctx.below_session_vwap,
+                "higher_highs_4h": ctx.higher_highs_4h,
+                "lower_lows_4h": ctx.lower_lows_4h,
+                "volume_above_20bar_avg": ctx.volume_above_20bar_avg,
+                "pct_change_sell": ctx.pct_change_in_window_sell,
+                "pct_change_buy": ctx.pct_change_in_window_buy,
+            }
+    except Exception as e:
+        log.warning("live PriceContext for panel failed: %s", e)
+
+    return {
+        "scoring_enabled": bool(scoring.enabled),
+        "thresholds": {
+            "premium": scoring.premium_threshold,
+            "standard": scoring.standard_threshold,
+            "weak": scoring.weak_threshold,
+            "min_fire": scoring.min_score_to_fire,
+            "cooldown_sec": scoring.cooldown_seconds,
+            "dedupe_within_ttl": scoring.dedupe_within_ttl,
+        },
+        "last_eval": last_eval,
+        "cooldown": cooldown,
+        "recent_evals": recent_evals,
+        "recent_fires": recent_fires,
+        "bar_cache": bar_cache_info,
+        "live_pctx": live_pctx,
+        "ledger_window": ledger_window,
+        "factor_count": len(scoring.factors),
+    }
+
+
+def _parse_audit_ts(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        return datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+
 
 def build_donchian_view(db_url: str) -> dict | None:
     """Compose the `coinbase_btc_donchian` block for the
@@ -1556,6 +2167,28 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         except Exception as e:
             log.warning("donchian view for %s failed: %s", slug, e)
 
+    # BitUnix Phase 3.2.3 score panel — only populated for
+    # `bitunix_futures`. Reads from audit log + bitunix_score_cooldown
+    # + the live observer's bar cache. Returns None if scoring config
+    # is unavailable (observer not wired, or YAML scoring block missing).
+    bitunix_score_view: dict | None = None
+    if slug == "bitunix_futures":
+        try:
+            bitunix_score_view = build_bitunix_score_view(deps.db_url, deps)
+        except Exception as e:
+            log.warning("bitunix score view for %s failed: %s", slug, e)
+
+    # Robinhood IRA dashboard — group shares + short calls into covered
+    # calls, identify pure assets (shares without calls), surface short
+    # puts as wheel positions. Reuses the stock_holdings + legs already
+    # built above so no double-fetch. Renders only when slug matches.
+    ira_view_block: dict | None = None
+    if slug == "robinhood_ira":
+        try:
+            ira_view_block = build_ira_view(stock_holdings, legs, prices)
+        except Exception as e:
+            log.warning("ira view for %s failed: %s", slug, e)
+
     return DivisionViewSnapshot(
         division=division,
         equity=equity,
@@ -1570,6 +2203,743 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         equity_curve=equity_curve,
         paper_trade_summary=pt_summary,
         donchian=donchian_view,
+        bitunix_score=bitunix_score_view,
+        ira_view=ira_view_block,
+    )
+
+
+# ── Prediction-markets dashboard (K2.4 Option C) ──────────────────────────
+#
+# Single dashboard parameterized by division (or None for "All Prediction
+# Markets" combined view). One template, one route, one data builder; venue
+# (polymarket vs kalshi) inferred per division. Round-trip + equity-snapshot
+# rows from both venues normalized into a common shape so the template
+# doesn't branch on venue.
+
+@dataclass
+class PMRoundTrip:
+    """One resolved paper trade, normalized across venues."""
+    order_id: str
+    venue: str                       # 'polymarket' | 'kalshi'
+    division: str
+    strategy: str                    # e.g. 'kalshi_llm_arbitrage', 'polymarket_arbitrage'
+    market_title: str                # market_question (poly) or event_title (kalshi)
+    market_id: str                   # slug (poly) or ticker (kalshi)
+    category: str | None
+    outcome_bet: str                 # 'yes' | 'no'
+    qty: float
+    entry_price: float
+    notional: float
+    entry_ts: str
+    resolved_ts: str
+    market_result: str               # 'yes' | 'no' | 'void'
+    won: int                         # 0|1
+    realized_pnl: float
+    roi_pct: float
+    implied_at_entry: float | None
+    llm_prob: float | None
+    divergence_pct: float | None
+    arb_type: str | None             # kalshi only; None for polymarket
+    # Analysis fields parsed from extra_json (kalshi) — None if absent for
+    # legacy rows pre-resolver-enrichment.
+    rationale: str | None
+    llm_reasoning: str | None
+    key_unknowns: list[str]
+    llm_confidence: str | None
+    subtitle: str | None
+    whale_handle: str | None = None  # copy_trader rows only — see PMOpenTrade
+
+
+@dataclass
+class PMOpenTrade:
+    """A would_have_placed paper trade still awaiting market resolution.
+    Sourced from `audit_event` rows that have no corresponding
+    {polymarket,kalshi}_round_trips row yet."""
+    order_id: str
+    venue: str                       # 'polymarket' | 'kalshi'
+    division: str
+    strategy: str
+    emit_ts: str                     # audit-event ts
+    market_title: str
+    market_id: str
+    category: str | None
+    outcome_bet: str                 # 'yes' | 'no'
+    qty: float
+    entry_price: float
+    notional: float
+    divergence_pct: float | None     # llm strategies only
+    edge_cents: float | None         # structural strategies only
+    arb_type: str | None             # kalshi only
+    resolves_at: str | None          # ISO; expires_at (kalshi) / resolves_at (polymarket)
+    age_hours: float                 # convenience for template; computed at query time
+    # Analysis fields surfaced by the expandable row UI.
+    rationale: str | None            # short one-liner; every strategy emits this
+    llm_reasoning: str | None        # full LLM analysis text (LLM strategies only)
+    key_unknowns: list[str]          # LLM-identified gaps in reasoning
+    llm_confidence: str | None       # 'low' | 'medium' | 'high'
+    subtitle: str | None             # kalshi yes/no sub-title (e.g. "-1° or below")
+    leg_date: str | None             # temporal arb leg date
+    # Copy-trader-specific: source whale's handle/wallet so the SIGNAL
+    # column can render `@whale` instead of N/A for copy rows. None for
+    # arb-family strategies. Normalized: whale_user_name (PM payload)
+    # and whale_handle (K3 payload) both surface as this field.
+    whale_handle: str | None = None
+    side_detection_confidence: str | None = None
+
+
+@dataclass
+class PMEquityPoint:
+    """One equity snapshot, normalized. In All-mode, multiple divisions at
+    the same ts are summed BEFORE this dataclass is built."""
+    ts: str
+    division: str | None             # None when in All-mode (aggregated)
+    equity: float
+    cash: float
+    positions_value: float
+
+
+@dataclass
+class PMSummary:
+    """Aggregate cards rendered above the tabs."""
+    current_equity: float | None
+    todays_pnl: float | None
+    todays_pnl_pct: float | None
+    n_resolved: int
+    n_pending: int                   # would_have_placed without round-trip row
+    n_wins: int
+    n_losses: int
+    n_voids: int
+    win_rate_pct: float | None       # over (wins+losses), voids excluded
+    total_realized_pnl: float
+
+
+@dataclass
+class PMDivisionOption:
+    """Dropdown entry."""
+    slug: str
+    display_name: str
+    venue: str                       # 'polymarket' | 'kalshi'
+
+
+@dataclass
+class PMDashboardView:
+    """Everything the prediction_markets_dashboard.html template needs."""
+    selected: str | None             # None == 'All Prediction Markets'
+    selected_label: str
+    available_divisions: list[PMDivisionOption]
+    summary: PMSummary
+    equity_curve: list[PMEquityPoint]
+    round_trips: list[PMRoundTrip]   # most-recent first
+    open_trades: list[PMOpenTrade]   # most-recent emit first
+
+
+_POLYMARKET_PREFIX = "polymarket_"
+_KALSHI_PREFIX = "kalshi_"
+
+
+def _pm_venue(slug: str) -> str:
+    if slug.startswith(_KALSHI_PREFIX):
+        return "kalshi"
+    return "polymarket"   # default; polymarket_* slugs fall here
+
+
+def _pm_divisions_all() -> list[Division]:
+    """Active prediction-market divisions from divisions.yaml, in declared order."""
+    from trading_corp.utils.divisions import classify_investment_type
+    return [
+        d for d in load_divisions()
+        if classify_investment_type(d) == "prediction_markets"
+    ]
+
+
+def _query_pm_round_trips(
+    db_url: str, division_slugs: list[str], limit: int,
+) -> list[PMRoundTrip]:
+    """Pull round-trip rows from both venue tables, filter to the selected
+    divisions, normalize, sort by resolved_ts DESC, cap to `limit`.
+
+    Two SELECTs (polymarket + kalshi) UNIONed in Python — keeps the SQL
+    simple, schema differences explicit, and lets each side use its own
+    indexes.
+    """
+    if not division_slugs:
+        return []
+    out: list[PMRoundTrip] = []
+
+    # polymarket_round_trips gained a `division` column 2026-05-11 when the
+    # polymarket_copy_trader strategy shipped — resolver now stamps it as
+    # 'polymarket_arbitrage' or 'polymarket_copy_trading' per the producing
+    # actor. Legacy pre-column rows may be NULL; COALESCE treats them as
+    # arbitrage (their historical origin) so no backfill migration is needed.
+    poly_slugs = [s for s in division_slugs if s.startswith(_POLYMARKET_PREFIX)]
+    if poly_slugs:
+        poly_ph = ",".join("?" for _ in poly_slugs)
+        poly_rows = _query(
+            db_url,
+            f"SELECT order_id, condition_id, slug, market_question, category, "
+            f"       outcome_bet, qty, entry_price, notional, entry_ts, "
+            f"       resolved_ts, yes_won, won, realized_pnl, roi_pct, "
+            f"       implied_at_entry, llm_prob, divergence_pct, extra_json, "
+            f"       COALESCE(division, 'polymarket_arbitrage') AS division "
+            f"FROM polymarket_round_trips "
+            f"WHERE COALESCE(division, 'polymarket_arbitrage') IN ({poly_ph}) "
+            f"ORDER BY resolved_ts DESC LIMIT ?",
+            (*poly_slugs, limit),
+        )
+        for r in poly_rows:
+            yes_won = int(r.get("yes_won") or 0)
+            div = str(r.get("division") or "polymarket_arbitrage")
+            strat = (
+                "polymarket_copy_trader" if div == "polymarket_copy_trading"
+                else "polymarket_arbitrage"
+            )
+            # extra_json carries whale-closed override + rationale + whale handle
+            # (resolver writes it for whale-closed rows; older market-settle rows
+            # don't have it but query still returns NULL cleanly).
+            try:
+                extra = json.loads(r.get("extra_json") or "{}")
+            except (TypeError, ValueError):
+                extra = {}
+            mr = extra.get("market_result")
+            if mr == "whale_closed":
+                market_result = "whale_closed"
+            else:
+                market_result = "yes" if yes_won else "no"
+            out.append(PMRoundTrip(
+                order_id=str(r.get("order_id") or ""),
+                venue="polymarket",
+                division=div,
+                strategy=strat,
+                market_title=str(r.get("market_question") or r.get("slug") or ""),
+                market_id=str(r.get("slug") or r.get("condition_id") or ""),
+                category=r.get("category"),
+                outcome_bet=str(r.get("outcome_bet") or ""),
+                qty=float(r.get("qty") or 0.0),
+                entry_price=float(r.get("entry_price") or 0.0),
+                notional=float(r.get("notional") or 0.0),
+                entry_ts=str(r.get("entry_ts") or ""),
+                resolved_ts=str(r.get("resolved_ts") or ""),
+                market_result=market_result,
+                won=int(r.get("won") or 0),
+                realized_pnl=float(r.get("realized_pnl") or 0.0),
+                roi_pct=float(r.get("roi_pct") or 0.0),
+                implied_at_entry=(
+                    float(r["implied_at_entry"]) if r.get("implied_at_entry") is not None
+                    else None
+                ),
+                llm_prob=(
+                    float(r["llm_prob"]) if r.get("llm_prob") is not None else None
+                ),
+                divergence_pct=(
+                    float(r["divergence_pct"]) if r.get("divergence_pct") is not None
+                    else None
+                ),
+                arb_type=None,
+                # Whale-closed rows carry exit rationale + whale handle.
+                # Market-settle rows still have these as None.
+                rationale=extra.get("rationale_exit") or extra.get("rationale"),
+                llm_reasoning=None,
+                key_unknowns=[],
+                llm_confidence=None,
+                subtitle=None,
+                whale_handle=extra.get("whale_user_name"),
+            ))
+
+    # kalshi_round_trips DOES have a division column (one table covers all 3
+    # kalshi strategies across both kalshi_arbitrage and kalshi_llm_arbitrage).
+    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    if kalshi_slugs:
+        kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+        kalshi_rows = _query(
+            db_url,
+            f"SELECT order_id, ticker, event_ticker, event_title, category, "
+            f"       strategy, division, arb_type, arb_set_id, outcome_bet, "
+            f"       qty, entry_price, notional, entry_ts, resolved_ts, "
+            f"       market_result, won, realized_pnl, roi_pct, "
+            f"       implied_at_entry, llm_prob, divergence_pct, edge_cents, "
+            f"       extra_json "
+            f"FROM kalshi_round_trips "
+            f"WHERE division IN ({kalshi_ph}) "
+            f"ORDER BY resolved_ts DESC LIMIT ?",
+            (*kalshi_slugs, limit),
+        )
+        for r in kalshi_rows:
+            # Parse extra_json for the analysis fields. Older rows may not
+            # have llm_reasoning / key_unknowns (resolver enrichment landed
+            # 2026-05-11 ~05:30 UTC); we default cleanly.
+            try:
+                extra = json.loads(r.get("extra_json") or "{}")
+            except (TypeError, ValueError):
+                extra = {}
+            key_unknowns = extra.get("key_unknowns")
+            if not isinstance(key_unknowns, list):
+                key_unknowns = []
+            out.append(PMRoundTrip(
+                order_id=str(r.get("order_id") or ""),
+                venue="kalshi",
+                division=str(r.get("division") or ""),
+                strategy=str(r.get("strategy") or ""),
+                market_title=str(r.get("event_title") or r.get("ticker") or ""),
+                market_id=str(r.get("ticker") or ""),
+                category=r.get("category"),
+                outcome_bet=str(r.get("outcome_bet") or ""),
+                qty=float(r.get("qty") or 0.0),
+                entry_price=float(r.get("entry_price") or 0.0),
+                notional=float(r.get("notional") or 0.0),
+                entry_ts=str(r.get("entry_ts") or ""),
+                resolved_ts=str(r.get("resolved_ts") or ""),
+                market_result=str(r.get("market_result") or ""),
+                won=int(r.get("won") or 0),
+                realized_pnl=float(r.get("realized_pnl") or 0.0),
+                roi_pct=float(r.get("roi_pct") or 0.0),
+                implied_at_entry=(
+                    float(r["implied_at_entry"]) if r.get("implied_at_entry") is not None
+                    else None
+                ),
+                llm_prob=(
+                    float(r["llm_prob"]) if r.get("llm_prob") is not None else None
+                ),
+                divergence_pct=(
+                    float(r["divergence_pct"]) if r.get("divergence_pct") is not None
+                    else None
+                ),
+                arb_type=r.get("arb_type"),
+                # Whale-closed K3 rows: prefer exit rationale; otherwise
+                # the regular rationale (or LLM-arbitrage's structural one).
+                rationale=extra.get("rationale_exit") or extra.get("rationale"),
+                llm_reasoning=extra.get("llm_reasoning"),
+                key_unknowns=key_unknowns,
+                llm_confidence=extra.get("llm_confidence"),
+                subtitle=extra.get("subtitle"),
+                whale_handle=extra.get("whale_handle"),
+            ))
+
+    out.sort(key=lambda rt: rt.resolved_ts, reverse=True)
+    return out[:limit]
+
+
+def _query_pm_equity_curve(
+    db_url: str, division_slugs: list[str], days: int,
+) -> list[PMEquityPoint]:
+    """Equity-history points for the selected divisions over `days` of
+    history. In All-mode (multiple selected slugs) we DON'T sum here —
+    return raw per-division points and let the chart layer aggregate.
+    """
+    if not division_slugs:
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    out: list[PMEquityPoint] = []
+
+    poly_slugs = [s for s in division_slugs if s.startswith(_POLYMARKET_PREFIX)]
+    if poly_slugs:
+        poly_ph = ",".join("?" for _ in poly_slugs)
+        poly_rows = _query(
+            db_url,
+            f"SELECT ts, division, equity, cash_usdc, positions_value "
+            f"FROM polymarket_equity_history "
+            f"WHERE ts >= ? AND division IN ({poly_ph}) "
+            f"ORDER BY ts ASC",
+            (cutoff, *poly_slugs),
+        )
+        for r in poly_rows:
+            out.append(PMEquityPoint(
+                ts=str(r.get("ts") or ""),
+                division=str(r.get("division") or ""),
+                equity=float(r.get("equity") or 0.0),
+                cash=float(r.get("cash_usdc") or 0.0),
+                positions_value=float(r.get("positions_value") or 0.0),
+            ))
+
+    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    if kalshi_slugs:
+        kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+        kalshi_rows = _query(
+            db_url,
+            f"SELECT ts, division, equity, cash_usd, positions_value "
+            f"FROM kalshi_equity_history "
+            f"WHERE ts >= ? AND division IN ({kalshi_ph}) "
+            f"ORDER BY ts ASC",
+            (cutoff, *kalshi_slugs),
+        )
+        for r in kalshi_rows:
+            out.append(PMEquityPoint(
+                ts=str(r.get("ts") or ""),
+                division=str(r.get("division") or ""),
+                equity=float(r.get("equity") or 0.0),
+                cash=float(r.get("cash_usd") or 0.0),
+                positions_value=float(r.get("positions_value") or 0.0),
+            ))
+
+    out.sort(key=lambda p: p.ts)
+    return out
+
+
+def _query_pm_open_trades(
+    db_url: str, division_slugs: list[str], limit: int = 200,
+) -> list[PMOpenTrade]:
+    """Pull would_have_placed audit rows that have no round-trip resolution
+    yet, normalize across venues, sort by emit ts DESC, cap to `limit`.
+
+    These are the live paper positions — the trades the dashboard's
+    "OPEN" tab visualizes. Cross-venue UNION mirrors _query_pm_round_trips.
+    """
+    if not division_slugs:
+        return []
+    out: list[PMOpenTrade] = []
+    now = datetime.now(timezone.utc)
+
+    def _age_hours(ts: str) -> float:
+        try:
+            t = datetime.fromisoformat(ts)
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            return max(0.0, (now - t).total_seconds() / 3600.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Polymarket open trades — actor IN (arbitrage, copy_trader); filter on
+    # payload.division so a single-division dashboard view doesn't bleed
+    # rows from the sibling polymarket division. Also exclude:
+    #   - Audit rows linked as the entry leg of a paired round-trip
+    #     (entry_order_id IS NOT NULL) — those are resolved via whale-exit
+    #     pairing, not pending.
+    #   - SELL-side audit rows — they're closing actions, not "open"
+    #     positions; pairing surfaces them via the History tab instead.
+    poly_slugs = [s for s in division_slugs if s.startswith(_POLYMARKET_PREFIX)]
+    if poly_slugs:
+        poly_ph = ",".join("?" for _ in poly_slugs)
+        rows = _query(
+            db_url,
+            f"SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
+            f"FROM audit_event a "
+            f"LEFT JOIN polymarket_round_trips r "
+            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            f"WHERE a.actor IN ('polymarket_arbitrage', 'polymarket_copy_trader') "
+            f"  AND a.kind = 'would_have_placed' "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.division'), 'polymarket_arbitrage') IN ({poly_ph}) "
+            f"  AND r.order_id IS NULL "
+            f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
+            f"    SELECT entry_order_id FROM polymarket_round_trips "
+            f"    WHERE entry_order_id IS NOT NULL"
+            f"  ) "
+            f"ORDER BY a.ts DESC LIMIT ?",
+            (*poly_slugs, limit),
+        )
+        for r in rows:
+            try:
+                p = json.loads(r["payload_json"])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            actor = r["actor"] or ""
+            div = str(p.get("division") or "polymarket_arbitrage")
+            qty = float(p.get("qty") or 0.0)
+            price = float(p.get("limit_price") or 0.0)
+            ku = p.get("key_unknowns")
+            if not isinstance(ku, list):
+                ku = []
+            out.append(PMOpenTrade(
+                order_id=str(p.get("order_id") or ""),
+                venue="polymarket",
+                division=div,
+                strategy=actor or "polymarket_arbitrage",
+                whale_handle=(
+                    str(p["whale_user_name"]) if p.get("whale_user_name") else None
+                ),
+                emit_ts=str(r["ts"] or ""),
+                market_title=str(
+                    p.get("market_question")
+                    or p.get("market_title")
+                    or p.get("market_slug")
+                    or ""
+                ),
+                market_id=str(p.get("market_slug") or p.get("condition_id") or ""),
+                category=p.get("category"),
+                outcome_bet=str(p.get("outcome") or ""),
+                qty=qty,
+                entry_price=price,
+                notional=qty * price,
+                divergence_pct=(
+                    float(p["divergence_pct"]) if p.get("divergence_pct") is not None
+                    else None
+                ),
+                edge_cents=None,
+                arb_type=None,
+                resolves_at=p.get("resolves_at"),
+                age_hours=_age_hours(r["ts"] or ""),
+                rationale=p.get("rationale"),
+                llm_reasoning=p.get("llm_reasoning"),
+                key_unknowns=ku,
+                llm_confidence=p.get("llm_confidence"),
+                subtitle=None,        # polymarket markets have no subtitle field
+                leg_date=None,        # polymarket has no temporal-arb concept
+            ))
+
+    # Kalshi open trades — actor IN 4 strategies (3 arb-family + copy_trader),
+    # filter on payload.division so a single-division view doesn't bleed rows.
+    # Same exclusions as Polymarket: drop SELLs (paired into round-trips by
+    # resolver), drop entries already linked to a paired round-trip.
+    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    if kalshi_slugs:
+        kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+        rows = _query(
+            db_url,
+            f"SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
+            f"FROM audit_event a "
+            f"LEFT JOIN kalshi_round_trips r "
+            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            f"WHERE a.actor IN ('kalshi_tail_price_arb', 'kalshi_temporal_bucket_arb', 'kalshi_llm_arbitrage', 'kalshi_copy_trader') "
+            f"  AND a.kind = 'would_have_placed' "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
+            f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "
+            f"  AND r.order_id IS NULL "
+            f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
+            f"    SELECT entry_order_id FROM kalshi_round_trips "
+            f"    WHERE entry_order_id IS NOT NULL"
+            f"  ) "
+            f"ORDER BY a.ts DESC LIMIT ?",
+            (*kalshi_slugs, limit),
+        )
+        for r in rows:
+            try:
+                p = json.loads(r["payload_json"])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            actor = r["actor"] or ""
+            # Side: kalshi_llm uses `outcome`; structural strategies use
+            # `leg` (yes/no for tail; yes_<ticker>/no_<ticker> for temporal/bucket).
+            outcome = (p.get("outcome") or "").lower()
+            if outcome not in ("yes", "no"):
+                leg = (p.get("leg") or "").lower()
+                outcome = "yes" if leg.startswith("yes") else "no" if leg.startswith("no") else ""
+            qty = float(p.get("qty") or 0.0)
+            price = float(p.get("limit_price") or 0.0)
+            arb_type = p.get("kalshi_arb_type") or (
+                "tail" if actor == "kalshi_tail_price_arb"
+                else "llm_divergence" if actor == "kalshi_llm_arbitrage"
+                else "copy_trade" if actor == "kalshi_copy_trader"
+                else None
+            )
+            ku = p.get("key_unknowns")
+            if not isinstance(ku, list):
+                ku = []
+            out.append(PMOpenTrade(
+                order_id=str(p.get("order_id") or ""),
+                venue="kalshi",
+                division=str(p.get("division") or ""),
+                strategy=actor,
+                whale_handle=(
+                    str(p["whale_handle"]) if p.get("whale_handle") else None
+                ),
+                side_detection_confidence=(
+                    str(p["side_detection_confidence"])
+                    if p.get("side_detection_confidence") else None
+                ),
+                emit_ts=str(r["ts"] or ""),
+                market_title=str(p.get("event_title") or p.get("ticker") or ""),
+                market_id=str(p.get("ticker") or ""),
+                category=p.get("category"),
+                outcome_bet=outcome,
+                qty=qty,
+                entry_price=price,
+                notional=qty * price,
+                divergence_pct=(
+                    float(p["divergence_pct"]) if p.get("divergence_pct") is not None
+                    else None
+                ),
+                edge_cents=(
+                    float(p["edge_cents"]) if p.get("edge_cents") is not None
+                    else None
+                ),
+                arb_type=arb_type,
+                resolves_at=p.get("expires_at"),
+                age_hours=_age_hours(r["ts"] or ""),
+                rationale=p.get("rationale"),
+                llm_reasoning=p.get("llm_reasoning"),
+                key_unknowns=ku,
+                llm_confidence=p.get("llm_confidence"),
+                subtitle=p.get("subtitle"),
+                leg_date=p.get("leg_date"),
+            ))
+
+    out.sort(key=lambda t: t.emit_ts, reverse=True)
+    return out[:limit]
+
+
+def _query_pm_pending_count(
+    db_url: str, division_slugs: list[str],
+) -> int:
+    """Count would_have_placed audit rows without a corresponding
+    round-trip resolution. Cross-venue."""
+    if not division_slugs:
+        return 0
+
+    total = 0
+
+    # Polymarket: would_have_placed rows from polymarket_arbitrage OR
+    # polymarket_copy_trader actors, filtered by payload.division so the
+    # count matches what the same-division Open tab renders. Mirrors the
+    # exclusion clauses in _query_pm_open_trades — drop SELLs and drop
+    # entries linked to a paired round-trip.
+    poly_slugs = [s for s in division_slugs if s.startswith(_POLYMARKET_PREFIX)]
+    if poly_slugs:
+        poly_ph = ",".join("?" for _ in poly_slugs)
+        rows = _query(
+            db_url,
+            f"SELECT COUNT(*) AS n FROM audit_event a "
+            f"LEFT JOIN polymarket_round_trips r "
+            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            f"WHERE a.actor IN ('polymarket_arbitrage', 'polymarket_copy_trader') "
+            f"  AND a.kind = 'would_have_placed' "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.division'), 'polymarket_arbitrage') IN ({poly_ph}) "
+            f"  AND r.order_id IS NULL "
+            f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
+            f"    SELECT entry_order_id FROM polymarket_round_trips "
+            f"    WHERE entry_order_id IS NOT NULL"
+            f"  )",
+            tuple(poly_slugs),
+        )
+        if rows:
+            total += int(rows[0].get("n") or 0)
+
+    # Kalshi: actor IN (4 kalshi strategies: 3 arb-family + copy_trader)
+    # AND no kalshi_round_trips row. The audit-event payload's `division`
+    # field tells us which division the row belongs to so we filter on it.
+    # Same SELL + entry_order_id exclusions as Polymarket.
+    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    if kalshi_slugs:
+        kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+        rows = _query(
+            db_url,
+            f"SELECT COUNT(*) AS n FROM audit_event a "
+            f"LEFT JOIN kalshi_round_trips r "
+            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            f"WHERE a.actor IN ('kalshi_tail_price_arb', 'kalshi_temporal_bucket_arb', 'kalshi_llm_arbitrage', 'kalshi_copy_trader') "
+            f"  AND a.kind = 'would_have_placed' "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
+            f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "
+            f"  AND r.order_id IS NULL "
+            f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
+            f"    SELECT entry_order_id FROM kalshi_round_trips "
+            f"    WHERE entry_order_id IS NOT NULL"
+            f"  )",
+            tuple(kalshi_slugs),
+        )
+        if rows:
+            total += int(rows[0].get("n") or 0)
+
+    return total
+
+
+def _pm_equity_at(curve: list[PMEquityPoint], at_or_before: datetime) -> float | None:
+    """Last equity point at or before the given UTC datetime, summed
+    across divisions present in the curve. Returns None if no points."""
+    if not curve:
+        return None
+    target = at_or_before.isoformat()
+    # Sum the LATEST point per division that is <= target.
+    by_div: dict[str | None, PMEquityPoint] = {}
+    for p in curve:
+        if p.ts <= target:
+            by_div[p.division] = p   # later overwrites earlier (curve is ts-asc)
+    if not by_div:
+        return None
+    return sum(p.equity for p in by_div.values())
+
+
+def _pm_summary(
+    round_trips: list[PMRoundTrip],
+    equity_curve: list[PMEquityPoint],
+    pending_count: int,
+) -> PMSummary:
+    """Compute the summary cards. Returns zeros/Nones cleanly when there's
+    no data so the template doesn't have to guard."""
+    n_wins = sum(1 for rt in round_trips if rt.won == 1)
+    n_resolved = len(round_trips)
+    n_voids = sum(1 for rt in round_trips if rt.market_result == "void")
+    n_losses = n_resolved - n_wins - n_voids
+    decisive = n_wins + n_losses
+    win_rate = (100.0 * n_wins / decisive) if decisive > 0 else None
+    total_pnl = sum(rt.realized_pnl for rt in round_trips)
+
+    now = datetime.now(timezone.utc)
+    current_equity = _pm_equity_at(equity_curve, now)
+    yesterday_equity = _pm_equity_at(equity_curve, now - timedelta(days=1))
+    todays_pnl: float | None = None
+    todays_pnl_pct: float | None = None
+    if current_equity is not None and yesterday_equity is not None and yesterday_equity > 0:
+        todays_pnl = current_equity - yesterday_equity
+        todays_pnl_pct = 100.0 * todays_pnl / yesterday_equity
+
+    return PMSummary(
+        current_equity=current_equity,
+        todays_pnl=todays_pnl,
+        todays_pnl_pct=todays_pnl_pct,
+        n_resolved=n_resolved,
+        n_pending=pending_count,
+        n_wins=n_wins,
+        n_losses=n_losses,
+        n_voids=n_voids,
+        win_rate_pct=win_rate,
+        total_realized_pnl=total_pnl,
+    )
+
+
+async def build_prediction_market_view(
+    deps,
+    division: str | None,
+    *,
+    history_limit: int = 100,
+    equity_curve_days: int = 30,
+) -> PMDashboardView | None:
+    """Build the dashboard view for /prediction-markets/ and
+    /prediction-markets/{division}.
+
+    `division=None` is the "All Prediction Markets" combined view — queries
+    span every active prediction-market division, summary cards aggregate.
+
+    Returns None ONLY if `division` is non-None but not a valid
+    prediction-market slug — the route handler turns that into 404.
+
+    Heavy DB work runs via asyncio.to_thread so the event loop isn't blocked.
+    """
+    all_pm = _pm_divisions_all()
+    available = [
+        PMDivisionOption(slug=d.slug, display_name=d.name, venue=_pm_venue(d.slug))
+        for d in all_pm
+    ]
+
+    if division is not None:
+        target = next((d for d in all_pm if d.slug == division), None)
+        if target is None:
+            return None
+        target_slugs = [target.slug]
+        selected_label = target.name
+    else:
+        target_slugs = [d.slug for d in all_pm]
+        selected_label = "All Prediction Markets"
+
+    db_url = deps.db_url
+
+    round_trips, equity_curve, open_trades = await asyncio.gather(
+        asyncio.to_thread(_query_pm_round_trips, db_url, target_slugs, history_limit),
+        asyncio.to_thread(_query_pm_equity_curve, db_url, target_slugs, equity_curve_days),
+        asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200),
+    )
+
+    # Pending count = len(open_trades). One source of truth — no separate
+    # count query that could go out of sync with the list.
+    summary = _pm_summary(round_trips, equity_curve, len(open_trades))
+
+    return PMDashboardView(
+        selected=division,
+        selected_label=selected_label,
+        available_divisions=available,
+        summary=summary,
+        equity_curve=equity_curve,
+        round_trips=round_trips,
+        open_trades=open_trades,
     )
 
 
@@ -1698,7 +3068,28 @@ def _query_division_activity(
              -- the rail. The rail surfaces decisions (LLM-called +
              -- emit/skip + risk-rejected), not bookkeeping ticks.
              'polymarket_llm_probability_called',
-             'polymarket_order_rejected_by_risk'
+             'polymarket_order_rejected_by_risk',
+             -- Kalshi K2.x strategy kinds. Scan summaries fire every
+             -- 5 min per strategy (2-4 rows / 5 min = manageable rail
+             -- volume vs. polymarket's 30s cadence). Discovery-refreshed
+             -- only fires every 10 min (cache_ttl). Order-rejected-by-risk
+             -- only fires when an opportunity actually triggers.
+             'kalshi_discovery_refreshed',
+             'kalshi_tail_arb_scan',
+             'kalshi_temporal_bucket_scan',
+             'kalshi_market_evaluated',
+             'kalshi_pair_evaluated',
+             'kalshi_bucket_evaluated',
+             'kalshi_order_rejected_by_risk',
+             'kalshi_tb_order_rejected_by_risk',
+             -- Phase K6.1: Kalshi LLM arbitrage strategy. Same per-market
+             -- grain as polymarket. kalshi_llm_scan_cycle is bookkeeping
+             -- (one row per cycle); kalshi_llm_probability_called is the
+             -- rich per-market LLM result (same shape as
+             -- polymarket_llm_probability_called).
+             'kalshi_llm_scan_cycle',
+             'kalshi_llm_probability_called',
+             'kalshi_llm_order_rejected_by_risk'
            )
            ORDER BY id DESC LIMIT ?""",
         (limit * 5,),    # over-fetch then filter
@@ -1729,12 +3120,136 @@ def _query_division_activity(
             "reason": (payload.get("reason") or "")[:140],
             "color": _color_for(r["kind"]),
             "polymarket": None,
+            "kalshi": None,
+            "kalshi_llm": None,
         }
         # Polymarket-specific enrichment so the activity tile + right
         # rail can render rich content without a second DB hit. Full
         # payload (with full LLM reasoning text) is fetched via the
         # /partials/polymarket-analysis/{id} endpoint when the user
         # clicks "show analysis"; the truncated preview lives here.
+        # Kalshi K2.x enrichment — same pattern as polymarket. Different
+        # event kinds have different rich fields so the template can render
+        # contextually (scan summary vs. would_have_placed vs. risk reject).
+        if r["actor"] in ("kalshi_tail_price_arb", "kalshi_temporal_bucket_arb"):
+            kind = r["kind"]
+            kdict: dict = {
+                "actor": r["actor"],
+                "kind": kind,
+                # Common fields available on most kalshi events:
+                "ticker": payload.get("ticker"),
+                "event_ticker": payload.get("event_ticker"),
+                "edge_cents": payload.get("edge_cents"),
+                "edge_dollars": payload.get("edge_dollars"),
+                "leg": payload.get("leg"),
+                "kalshi_pair_id": payload.get("kalshi_pair_id"),
+                "kalshi_arb_set_id": payload.get("kalshi_arb_set_id"),
+                "kalshi_arb_type": payload.get("kalshi_arb_type"),
+                "qty": payload.get("qty"),
+                "limit_price": payload.get("limit_price"),
+                "yes_ask": payload.get("yes_ask"),
+                "no_ask": payload.get("no_ask"),
+                "sum_asks": payload.get("sum_asks") or payload.get("sum_yes_asks"),
+                "tier": payload.get("tier"),
+                "risk_verdict": payload.get("risk_verdict"),
+                "risk_reason": payload.get("risk_reason"),
+                "max_dollar_risk": payload.get("max_dollar_risk"),
+                "expires_at": payload.get("expires_at"),
+                "leg_date": payload.get("leg_date"),
+            }
+            # Per-kind extra fields:
+            if kind == "kalshi_discovery_refreshed":
+                kdict["n_events_total"] = payload.get("n_events_total")
+                kdict["n_markets_total"] = payload.get("n_markets_total")
+                kdict["n_markets_filtered_collection"] = payload.get("n_markets_filtered_collection")
+                kdict["events_by_type"] = payload.get("events_by_type") or {}
+            elif kind == "kalshi_tail_arb_scan":
+                kdict["n_markets_scanned"] = payload.get("n_markets_scanned")
+                kdict["n_tail_candidates"] = payload.get("n_tail_candidates")
+                kdict["n_opportunities_above_threshold"] = payload.get("n_opportunities_above_threshold")
+                kdict["min_edge_cents"] = payload.get("min_edge_cents")
+                kdict["yes_max_for_yes_tail"] = payload.get("yes_max_for_yes_tail")
+                kdict["yes_min_for_no_tail"] = payload.get("yes_min_for_no_tail")
+            elif kind == "kalshi_temporal_bucket_scan":
+                kdict["n_temporal_events_scanned"] = payload.get("n_temporal_events_scanned")
+                kdict["n_bucket_events_scanned"] = payload.get("n_bucket_events_scanned")
+                kdict["n_temporal_opportunities"] = payload.get("n_temporal_opportunities")
+                kdict["n_bucket_opportunities"] = payload.get("n_bucket_opportunities")
+                kdict["n_emitted_after_cap"] = payload.get("n_emitted_after_cap")
+                kdict["n_pairs_examined"] = payload.get("n_pairs_examined")
+                kdict["n_buckets_examined"] = payload.get("n_buckets_examined")
+                kdict["temporal_min_edge_cents"] = payload.get("temporal_min_edge_cents")
+                kdict["bucket_min_edge_cents"] = payload.get("bucket_min_edge_cents")
+            elif kind == "kalshi_market_evaluated":
+                # Per-tail-candidate audit event — rich rail row
+                kdict["event_title"] = payload.get("event_title")
+                kdict["category"] = payload.get("category")
+                kdict["subtitle"] = payload.get("subtitle")
+                kdict["yes_ask"] = payload.get("yes_ask")
+                kdict["no_ask"] = payload.get("no_ask")
+                kdict["yes_bid"] = payload.get("yes_bid")
+                kdict["no_bid"] = payload.get("no_bid")
+                kdict["sum_asks"] = payload.get("sum_asks")
+                kdict["edge_cents"] = payload.get("edge_cents")
+                kdict["would_emit"] = payload.get("would_emit")
+                kdict["min_edge_cents"] = payload.get("min_edge_cents")
+                kdict["in_yes_tail"] = payload.get("in_yes_tail")
+                kdict["in_no_tail"] = payload.get("in_no_tail")
+                kdict["expires_at"] = payload.get("expires_at")
+            elif kind == "kalshi_pair_evaluated":
+                # Per-temporal-pair audit event
+                kdict["event_title"] = payload.get("event_title")
+                kdict["category"] = payload.get("category")
+                kdict["early_ticker"] = payload.get("early_ticker")
+                kdict["early_subtitle"] = payload.get("early_subtitle")
+                kdict["early_date"] = payload.get("early_date")
+                kdict["early_yes_ask"] = payload.get("early_yes_ask")
+                kdict["late_ticker"] = payload.get("late_ticker")
+                kdict["late_subtitle"] = payload.get("late_subtitle")
+                kdict["late_date"] = payload.get("late_date")
+                kdict["late_yes_ask"] = payload.get("late_yes_ask")
+                kdict["edge_cents"] = payload.get("edge_cents")
+                kdict["would_emit"] = payload.get("would_emit")
+                kdict["min_edge_cents"] = payload.get("min_edge_cents")
+            elif kind == "kalshi_bucket_evaluated":
+                # Per-bucket-event audit event
+                kdict["event_title"] = payload.get("event_title")
+                kdict["category"] = payload.get("category")
+                kdict["n_legs"] = payload.get("n_legs")
+                kdict["sum_yes_asks"] = payload.get("sum_yes_asks")
+                kdict["edge_cents"] = payload.get("edge_cents")
+                kdict["would_emit"] = payload.get("would_emit")
+                kdict["min_edge_cents"] = payload.get("min_edge_cents")
+            evt["kalshi"] = kdict
+
+        # Phase K6.1: Kalshi LLM arbitrage enrichment — same shape as
+        # polymarket so the existing rich-rail UI can render it via a
+        # parallel template branch. Field names mirror polymarket's
+        # `polymarket: {...}` dict for consistency.
+        if r["actor"] == "kalshi_llm_arbitrage":
+            reasoning_text = payload.get("llm_reasoning") or ""
+            evt["kalshi_llm"] = {
+                "ticker": payload.get("ticker"),
+                "event_ticker": payload.get("event_ticker"),
+                "event_title": payload.get("event_title"),
+                "subtitle": payload.get("subtitle"),
+                "outcome": payload.get("outcome"),
+                "category": payload.get("category"),
+                "implied_prob": payload.get("implied_prob_at_entry") or payload.get("implied_prob_yes"),
+                "llm_prob": payload.get("llm_prob_estimate") or payload.get("llm_prob_yes"),
+                "llm_confidence": payload.get("llm_confidence"),
+                "divergence_pct": payload.get("divergence_pct"),
+                "min_divergence_pct": payload.get("min_divergence_pct"),
+                "would_emit": payload.get("would_emit"),
+                "qty": payload.get("qty"),
+                "limit_price": payload.get("limit_price"),
+                "risk_verdict": payload.get("risk_verdict"),
+                "risk_reason": payload.get("risk_reason"),
+                "reasoning_preview": (reasoning_text[:200] + "…") if len(reasoning_text) > 200 else reasoning_text,
+                "key_unknowns": payload.get("key_unknowns") or [],
+                "expires_at": payload.get("expires_at"),
+            }
+
         if r["actor"] == "polymarket_arbitrage":
             reasoning_text = payload.get("llm_reasoning") or ""
             evt["polymarket"] = {

@@ -1,0 +1,315 @@
+{# BitUnix Futures — Phase 3.2.3 score panel.
+
+   Surfaces the live state of the confluence score accumulator:
+     - Current scoring config (enabled / thresholds / factor count)
+     - Latest score evaluation (tier / side / net / contributions / reason)
+     - Live PriceContext flags (VWAP / HH-LL / volume / pct change)
+     - Cooldown state per side (remaining seconds before next fire)
+     - Bar cache health (bars cached, last close, ATR, refresh error)
+     - Recent score-path fires (would_have_placed audit rows)
+     - Recent score evaluations (last 10, with tier color coding)
+
+   Refresh: 30s htmx interval. Cheap query path; no LLM calls.
+#}
+{% if view.bitunix_score %}
+{% set bs = view.bitunix_score %}
+
+<section class="bg-pane border border-edge rounded-lg p-4"
+         hx-get="/division/bitunix_futures"
+         hx-trigger="every 30s"
+         hx-select="#bitunix-score-panel"
+         hx-target="#bitunix-score-panel"
+         hx-swap="outerHTML"
+         id="bitunix-score-panel">
+  <header class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Confluence Score (Phase 3.2)
+    </h2>
+    <div class="flex items-center gap-2 text-[11px] font-mono">
+      {% if bs.scoring_enabled %}
+        <span class="text-gain font-semibold">● SCORING ACTIVE</span>
+      {% else %}
+        <span class="text-muted">○ SCORING DORMANT (Phase 3.1 running)</span>
+      {% endif %}
+      <span class="text-muted">·</span>
+      <span class="text-muted">{{ bs.factor_count }} factors</span>
+      <span class="text-muted">·</span>
+      <span class="text-muted">
+        PREMIUM&nbsp;≥&nbsp;{{ bs.thresholds.premium }} ·
+        STANDARD&nbsp;≥&nbsp;{{ bs.thresholds.standard }} ·
+        fire&nbsp;≥&nbsp;{{ bs.thresholds.min_fire }}
+      </span>
+    </div>
+  </header>
+
+  {# ─── Top row of stat cards ─── #}
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+    {# Last evaluation tier #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Last eval
+      </div>
+      {% if bs.last_eval %}
+        <div class="text-2xl font-mono font-semibold
+                    {% if bs.last_eval.tier == 'PREMIUM' %}text-gain
+                    {% elif bs.last_eval.tier == 'STANDARD' %}text-gain
+                    {% elif bs.last_eval.tier == 'WEAK' %}text-mono
+                    {% else %}text-muted{% endif %}">
+          {{ bs.last_eval.tier }}
+        </div>
+        <div class="text-[11px] text-muted font-mono mt-1">
+          {{ bs.last_eval.signal }} ·
+          {% if bs.last_eval.age_sec is not none %}
+            {% if bs.last_eval.age_sec < 60 %}{{ bs.last_eval.age_sec }}s ago
+            {% elif bs.last_eval.age_sec < 3600 %}{{ (bs.last_eval.age_sec / 60) | int }}m ago
+            {% else %}{{ (bs.last_eval.age_sec / 3600) | round(1) }}h ago
+            {% endif %}
+          {% else %}—{% endif %}
+        </div>
+      {% else %}
+        <div class="text-2xl font-mono text-muted">—</div>
+        <div class="text-[11px] text-muted font-mono mt-1">awaiting first webhook</div>
+      {% endif %}
+    </div>
+
+    {# Net score #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Net score
+      </div>
+      {% if bs.last_eval %}
+        <div class="text-2xl font-mono font-semibold
+                    {% if bs.last_eval.side == 'buy' %}text-gain
+                    {% elif bs.last_eval.side == 'sell' %}text-loss
+                    {% else %}text-mono{% endif %}">
+          {% if bs.last_eval.side == 'buy' %}+{% elif bs.last_eval.side == 'sell' %}−{% endif %}{{ bs.last_eval.net }}
+        </div>
+        <div class="text-[11px] text-muted font-mono mt-1">
+          buy={{ bs.last_eval.fb }} · sell={{ bs.last_eval.fs }}
+          {% if bs.last_eval.bg %} · buy_guard={{ bs.last_eval.bg }}{% endif %}
+          {% if bs.last_eval.sg %} · sell_guard={{ bs.last_eval.sg }}{% endif %}
+        </div>
+      {% else %}
+        <div class="text-2xl font-mono text-muted">—</div>
+        <div class="text-[11px] text-muted font-mono mt-1">no data</div>
+      {% endif %}
+    </div>
+
+    {# Cooldown #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Cooldown
+      </div>
+      {% if bs.cooldown %}
+        <div class="text-xs font-mono space-y-1">
+          {% for cd in bs.cooldown %}
+            <div class="flex justify-between">
+              <span class="{% if cd.side == 'buy' %}text-gain{% else %}text-loss{% endif %} font-semibold">
+                {{ cd.side|upper }}
+              </span>
+              {% if cd.remaining_sec is not none and cd.remaining_sec > 0 %}
+                <span class="text-muted">{{ (cd.remaining_sec / 60) | round(1) }}m left</span>
+              {% else %}
+                <span class="text-gain">ready</span>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-sm font-mono text-muted">no fires yet</div>
+        <div class="text-[11px] text-muted font-mono mt-1">both sides ready</div>
+      {% endif %}
+    </div>
+
+    {# Bar cache health #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Bar cache
+      </div>
+      {% if bs.bar_cache %}
+        <div class="text-sm font-mono font-semibold">
+          {{ bs.bar_cache.bars_cached }} bars
+        </div>
+        <div class="text-[11px] text-muted font-mono mt-1">
+          ${{ '%.2f'|format(bs.bar_cache.last_close) if bs.bar_cache.last_close else '—' }}
+          · ATR ${{ '%.0f'|format(bs.bar_cache.atr_14) if bs.bar_cache.atr_14 else '—' }}
+          {% if bs.bar_cache.last_refresh_error %}
+            <br/><span class="text-loss">err: {{ bs.bar_cache.last_refresh_error[:50] }}</span>
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="text-sm font-mono text-muted">no cache</div>
+        <div class="text-[11px] text-muted font-mono mt-1">observer not wired</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ─── Live PriceContext factors strip ─── #}
+  {% if bs.live_pctx %}
+  <div class="bg-pane-2/30 border border-edge rounded-md p-3 mb-3">
+    <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+      Live price-action factors
+    </div>
+    <div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono">
+      <span class="{% if bs.live_pctx.above_session_vwap %}text-gain font-semibold{% else %}text-muted{% endif %}">
+        {% if bs.live_pctx.above_session_vwap %}✓{% else %}○{% endif %} above_vwap (+1 buy)
+      </span>
+      <span class="{% if bs.live_pctx.below_session_vwap %}text-loss font-semibold{% else %}text-muted{% endif %}">
+        {% if bs.live_pctx.below_session_vwap %}✓{% else %}○{% endif %} below_vwap (+1 sell)
+      </span>
+      <span class="{% if bs.live_pctx.higher_highs_4h %}text-gain font-semibold{% else %}text-muted{% endif %}">
+        {% if bs.live_pctx.higher_highs_4h %}✓{% else %}○{% endif %} HH_4h (+2 buy)
+      </span>
+      <span class="{% if bs.live_pctx.lower_lows_4h %}text-loss font-semibold{% else %}text-muted{% endif %}">
+        {% if bs.live_pctx.lower_lows_4h %}✓{% else %}○{% endif %} LL_4h (+2 sell)
+      </span>
+      <span class="{% if bs.live_pctx.volume_above_20bar_avg %}text-mono font-semibold{% else %}text-muted{% endif %}">
+        {% if bs.live_pctx.volume_above_20bar_avg %}✓{% else %}○{% endif %} vol_above_avg (+1 both)
+      </span>
+      <span class="text-muted">·</span>
+      <span class="text-muted">
+        pct_60m: <span class="{% if bs.live_pctx.pct_change_sell > 0 %}text-gain{% else %}text-loss{% endif %}">
+          {{ '%+.3f'|format(bs.live_pctx.pct_change_sell) }}%
+        </span>
+      </span>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ─── Last evaluation contributions ─── #}
+  {% if bs.last_eval and (bs.last_eval.bc or bs.last_eval.sc) %}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+    <div class="bg-pane-2/30 border border-edge rounded-md p-3">
+      <div class="text-gain text-[11px] font-mono uppercase tracking-wider mb-2">
+        Buy contributions ({{ bs.last_eval.fb }})
+      </div>
+      {% if bs.last_eval.bc %}
+        <div class="text-xs font-mono space-y-0.5">
+          {% for item in bs.last_eval.bc %}
+            <div class="flex justify-between">
+              <span class="text-mono">{{ item[0] }}</span>
+              <span class="text-gain">+{{ item[1] }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-xs text-muted font-mono italic">none active</div>
+      {% endif %}
+    </div>
+    <div class="bg-pane-2/30 border border-edge rounded-md p-3">
+      <div class="text-loss text-[11px] font-mono uppercase tracking-wider mb-2">
+        Sell contributions ({{ bs.last_eval.fs }})
+      </div>
+      {% if bs.last_eval.sc %}
+        <div class="text-xs font-mono space-y-0.5">
+          {% for item in bs.last_eval.sc %}
+            <div class="flex justify-between">
+              <span class="text-mono">{{ item[0] }}</span>
+              <span class="text-loss">+{{ item[1] }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-xs text-muted font-mono italic">none active</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ─── Recent fires (would_have_placed from score path) ─── #}
+  {% if bs.recent_fires %}
+  <div class="mb-3">
+    <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+      Recent paper fires ({{ bs.recent_fires|length }})
+    </div>
+    <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
+      <table class="w-full text-xs font-mono">
+        <thead class="text-muted text-[10px] uppercase">
+          <tr class="border-b border-edge">
+            <th class="text-left p-2">When</th>
+            <th class="text-left p-2">Tier</th>
+            <th class="text-left p-2">Side</th>
+            <th class="text-right p-2">Net</th>
+            <th class="text-right p-2">Entry</th>
+            <th class="text-right p-2">Stop</th>
+            <th class="text-right p-2">TP</th>
+            <th class="text-right p-2">Qty</th>
+            <th class="text-left p-2">Trigger</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in bs.recent_fires %}
+          <tr class="border-b border-edge/40 hover:bg-pane-2/30">
+            <td class="p-2 text-muted">{{ f.ts_et }}</td>
+            <td class="p-2 {% if f.tier == 'PREMIUM' %}text-gain{% else %}text-mono{% endif %} font-semibold">
+              {{ f.tier }}
+            </td>
+            <td class="p-2 {% if f.side == 'buy' %}text-gain{% else %}text-loss{% endif %} font-semibold">
+              {{ f.side|upper }}
+            </td>
+            <td class="p-2 text-right">{{ f.net_score }}</td>
+            <td class="p-2 text-right">${{ '%.2f'|format(f.entry) if f.entry else '—' }}</td>
+            <td class="p-2 text-right">${{ '%.2f'|format(f.stop) if f.stop else '—' }}</td>
+            <td class="p-2 text-right">${{ '%.2f'|format(f.tp) if f.tp else '—' }}</td>
+            <td class="p-2 text-right">{{ '%.5f'|format(f.qty) if f.qty else '—' }}</td>
+            <td class="p-2 text-muted">{{ f.trigger_signal }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ─── Recent score evaluations (sparkline-as-table) ─── #}
+  {% if bs.recent_evals %}
+  <div>
+    <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+      Recent evaluations ({{ bs.recent_evals|length }}) · ledger 24h: {{ bs.ledger_window.rows_last_24h }} rows
+    </div>
+    <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
+      <table class="w-full text-xs font-mono">
+        <thead class="text-muted text-[10px] uppercase">
+          <tr class="border-b border-edge">
+            <th class="text-left p-2">When</th>
+            <th class="text-left p-2">Trigger</th>
+            <th class="text-left p-2">Side</th>
+            <th class="text-right p-2">Net</th>
+            <th class="text-right p-2">Buy</th>
+            <th class="text-right p-2">Sell</th>
+            <th class="text-left p-2">Outcome</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in bs.recent_evals %}
+          <tr class="border-b border-edge/40 hover:bg-pane-2/30">
+            <td class="p-2 text-muted">{{ e.ts_et }}</td>
+            <td class="p-2 text-mono">{{ e.signal }}</td>
+            <td class="p-2 {% if e.side == 'buy' %}text-gain{% elif e.side == 'sell' %}text-loss{% else %}text-muted{% endif %}">
+              {{ e.side }}
+            </td>
+            <td class="p-2 text-right
+                       {% if e.tier == 'PREMIUM' %}text-gain font-semibold
+                       {% elif e.tier == 'STANDARD' %}text-gain
+                       {% elif e.tier == 'WEAK' %}text-mono
+                       {% else %}text-muted{% endif %}">
+              {{ e.net }}
+            </td>
+            <td class="p-2 text-right text-muted">{{ e.fb }}</td>
+            <td class="p-2 text-right text-muted">{{ e.fs }}</td>
+            <td class="p-2 text-[11px]
+                       {% if e.outcome == 'placed' %}text-gain font-semibold
+                       {% elif e.outcome == 'skipped_cooldown' %}text-mono
+                       {% elif e.outcome == 'skipped_score' %}text-muted
+                       {% else %}text-muted{% endif %}">
+              {{ e.outcome }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endif %}

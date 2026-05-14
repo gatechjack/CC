@@ -146,6 +146,142 @@ CREATE INDEX IF NOT EXISTS ix_paper_trade_record_strategy_ts
     ON paper_trade_record(strategy, ts);
 CREATE INDEX IF NOT EXISTS ix_paper_trade_record_result
     ON paper_trade_record(result);
+
+-- Polymarket round-trips (resolved paper-mode and, in Phase 3+, live trades).
+-- One row per `would_have_placed` audit event whose market has resolved on
+-- gamma-api. Source of truth for the History tab + hit-rate / best-trade
+-- stats + daily P&L aggregation on the betmoar.fun-style dashboard.
+--
+-- UNIQUE(order_id) so the hourly resolver can re-run safely (INSERT OR
+-- IGNORE keyed on the proposed_order id).
+--
+-- Why a separate table vs. extending audit_event: the dashboard joins
+-- against polymarket_equity_history + filters on (won, category, ts) —
+-- awkward against JSON LIKE. Same rationale as paper_trade_record vs.
+-- audit_event payloads.
+CREATE TABLE IF NOT EXISTS polymarket_round_trips (
+    id              INTEGER PRIMARY KEY,
+    order_id        TEXT    NOT NULL UNIQUE,
+    condition_id    TEXT    NOT NULL,
+    slug            TEXT,
+    market_question TEXT,
+    category        TEXT,
+    series          TEXT,
+    -- `division` lets the same table serve both polymarket_arbitrage and
+    -- polymarket_copy_trading round-trips. Added 2026-05-11 (Polymarket
+    -- copy-trader division). Existing rows (created before the migration)
+    -- default to 'polymarket_arbitrage' since that was the only producer.
+    division        TEXT    NOT NULL DEFAULT 'polymarket_arbitrage',
+    outcome_bet     TEXT    NOT NULL,           -- 'yes' | 'no'
+    qty             REAL    NOT NULL,
+    entry_price     REAL    NOT NULL,
+    notional        REAL    NOT NULL,
+    entry_ts        TEXT    NOT NULL,           -- audit-row ts
+    resolved_ts     TEXT    NOT NULL,           -- when WE recorded the resolution
+    yes_won         INTEGER NOT NULL,           -- 0|1 actual market outcome
+    won             INTEGER NOT NULL,           -- 0|1 our side won
+    realized_pnl    REAL    NOT NULL,
+    roi_pct         REAL    NOT NULL,
+    implied_at_entry REAL,
+    llm_prob        REAL,
+    divergence_pct  REAL,
+    -- `entry_order_id` links a SELL-side round-trip row back to its
+    -- entry's audit-event order_id when the resolver pairs a copy-
+    -- trader's whale-exit with the prior whale-entry (vs. the existing
+    -- market-settlement path where the same order_id is BOTH the entry
+    -- and the resolution). Open-trade queries exclude audit rows whose
+    -- order_id appears here so the matching entry doesn't double-show.
+    entry_order_id  TEXT,
+    extra_json      TEXT
+);
+-- ix_polymarket_round_trips_division — created in init_db() AFTER the
+-- division-column migration, so old DBs upgrading from the pre-division
+-- schema get the column added before the index references it.
+CREATE INDEX IF NOT EXISTS ix_polymarket_round_trips_resolved_ts
+    ON polymarket_round_trips(resolved_ts);
+CREATE INDEX IF NOT EXISTS ix_polymarket_round_trips_category
+    ON polymarket_round_trips(category);
+
+-- Periodic snapshots of polymarket-division equity. 5-min cadence by
+-- default. Source for the equity curve + period-over-period delta cards.
+-- Append-only; ~100k rows/yr at 5-min cadence ≈ ~10 MB — leave alone
+-- and prune offline if it ever gets large.
+CREATE TABLE IF NOT EXISTS polymarket_equity_history (
+    id              INTEGER PRIMARY KEY,
+    ts              TEXT    NOT NULL,           -- ISO UTC
+    division        TEXT    NOT NULL,
+    equity          REAL    NOT NULL,
+    cash_usdc       REAL    NOT NULL,
+    positions_value REAL    NOT NULL,
+    n_positions     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_polymarket_equity_history_division_ts
+    ON polymarket_equity_history(division, ts);
+
+-- Kalshi round-trips (Phase K2.4). Mirrors polymarket_round_trips but a
+-- single table covers ALL three Kalshi strategies — tail-price arb, temporal/
+-- bucket arb, and LLM-divergence arb. They differ in which audit fields are
+-- populated:
+--   * tail_price       : arb_type='tail',     edge_cents set, llm_prob NULL
+--   * temporal_bucket  : arb_type='temporal'|'bucket', edge_cents set, llm_prob NULL
+--   * llm_arbitrage    : arb_type='llm_divergence', llm_prob + divergence set
+--
+-- `strategy` + `division` columns let the dashboard filter to one strategy
+-- or roll up to a division. Kalshi binary contracts settle to $1 (winner) /
+-- $0 (loser) — same P&L math as polymarket per-share.
+CREATE TABLE IF NOT EXISTS kalshi_round_trips (
+    id              INTEGER PRIMARY KEY,
+    order_id        TEXT    NOT NULL UNIQUE,
+    ticker          TEXT    NOT NULL,
+    event_ticker    TEXT,
+    event_title     TEXT,
+    category        TEXT,
+    strategy        TEXT    NOT NULL,
+    division        TEXT    NOT NULL,
+    arb_type        TEXT,
+    arb_set_id      TEXT,
+    outcome_bet     TEXT    NOT NULL,           -- 'yes' | 'no'
+    qty             REAL    NOT NULL,
+    entry_price     REAL    NOT NULL,
+    notional        REAL    NOT NULL,
+    entry_ts        TEXT    NOT NULL,
+    resolved_ts     TEXT    NOT NULL,
+    market_result   TEXT    NOT NULL,           -- 'yes' | 'no' | 'void'
+    won             INTEGER NOT NULL,           -- 0|1; always 0 for void
+    realized_pnl    REAL    NOT NULL,
+    roi_pct         REAL    NOT NULL,
+    implied_at_entry REAL,
+    llm_prob        REAL,
+    divergence_pct  REAL,
+    edge_cents      REAL,
+    -- See polymarket_round_trips.entry_order_id docstring — same purpose
+    -- for the Kalshi side (K3 copy-trader whale-exit pairing).
+    entry_order_id  TEXT,
+    extra_json      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_kalshi_round_trips_resolved_ts
+    ON kalshi_round_trips(resolved_ts);
+CREATE INDEX IF NOT EXISTS ix_kalshi_round_trips_division_ts
+    ON kalshi_round_trips(division, resolved_ts);
+CREATE INDEX IF NOT EXISTS ix_kalshi_round_trips_arb_type
+    ON kalshi_round_trips(arb_type);
+
+-- Kalshi equity snapshots (Phase K2.4). Per-division 5-min snapshots of
+-- broker equity. kalshi_arbitrage and kalshi_llm_arbitrage share the same
+-- Kalshi account today, so both divisions snapshot the same dollar figure —
+-- the division column preserves logical separation for the dashboard and
+-- for the day live broker work assigns per-division sub-accounts.
+CREATE TABLE IF NOT EXISTS kalshi_equity_history (
+    id              INTEGER PRIMARY KEY,
+    ts              TEXT    NOT NULL,
+    division        TEXT    NOT NULL,
+    equity          REAL    NOT NULL,
+    cash_usd        REAL    NOT NULL,
+    positions_value REAL    NOT NULL,
+    n_positions     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_kalshi_equity_history_division_ts
+    ON kalshi_equity_history(division, ts);
 """
 
 
@@ -164,8 +300,55 @@ def init_db(db_url: str = "sqlite:///data/trading_corp.db") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.executescript(SCHEMA)
+        # Idempotent column-add migrations: SQLite doesn't have
+        # ADD COLUMN IF NOT EXISTS, so we probe via PRAGMA table_info.
+        _maybe_add_column(
+            conn, "polymarket_round_trips", "division",
+            "TEXT NOT NULL DEFAULT 'polymarket_arbitrage'",
+        )
+        # entry_order_id: copy-trader whale-exit pairing (2026-05-12).
+        # NULL on legacy/market-settle rows; set on the SELL-side row
+        # produced by `_pair_pending_exits` in the resolvers.
+        _maybe_add_column(
+            conn, "polymarket_round_trips", "entry_order_id", "TEXT",
+        )
+        _maybe_add_column(
+            conn, "kalshi_round_trips", "entry_order_id", "TEXT",
+        )
+        # Indexes that reference columns added by the migration above must
+        # be created here (not in SCHEMA) so they apply AFTER the column
+        # exists on upgraded DBs.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_polymarket_round_trips_division "
+            "ON polymarket_round_trips(division)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_polymarket_round_trips_entry_order_id "
+            "ON polymarket_round_trips(entry_order_id) "
+            "WHERE entry_order_id IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_kalshi_round_trips_entry_order_id "
+            "ON kalshi_round_trips(entry_order_id) "
+            "WHERE entry_order_id IS NOT NULL"
+        )
         conn.commit()
     return path
+
+
+def _maybe_add_column(
+    conn: "sqlite3.Connection", table: str, column: str, decl: str,
+) -> None:
+    """Idempotent ALTER TABLE ADD COLUMN. No-op if the column already exists.
+
+    Used for forward-compat schema migrations on a long-lived prod DB. The
+    canonical `CREATE TABLE IF NOT EXISTS` covers fresh installs; this
+    covers upgrades.
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column in existing:
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 @contextmanager

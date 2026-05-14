@@ -897,9 +897,7 @@ btc_accumulator:
 
       # ── Otter 3m (entry timing — fast TTLs) ──
       bias_bull:            { weight: 2, side: buy,  ttl_minutes: 90 }   # 90m HTF bias on Otter chart
-      pink_box_bull:        { weight: 2, side: buy,  ttl_minutes: 30 }
-      pink_box_bear:        { weight: 2, side: sell, ttl_minutes: 30 }
-      spoon_bull:           { weight: 2, side: buy,  ttl_minutes: 30 }   # arming (replaces pink_box per vision)
+      spoon_bull:           { weight: 2, side: buy,  ttl_minutes: 30 }   # divergence arming
       spoon_bear:           { weight: 2, side: sell, ttl_minutes: 30 }
       cvd_bull_flip:        { weight: 2, side: buy,  ttl_minutes: 15 }   # CVD momentum flip
       cvd_bear_flip:        { weight: 2, side: sell, ttl_minutes: 15 }
@@ -986,10 +984,141 @@ polymarket_arbitrage:
   k_markets_per_cycle: 20
   market_cooldown_hours: 6          # don't re-evaluate the same market within 6h
   min_divergence_pct: 10.0          # |LLM prob - implied prob| × 100 ≥ this → emit order
-  time_horizon_max_days: 7          # short-tail only per Q2; long-tail deferred
+  time_horizon_max_days: 14         # K2.4 retune 2026-05-11: lifted from 7d after observing 0 survivors per cycle. Kalshi LLM 15-30d bucket showed comparable signal quality (26% avg divergence).
+  # Phase K7 (2026-05-11): defensive cap on the K-1 parallel fan to bound
+  # this strategy's contribution to Anthropic's per-account concurrent-
+  # connections ceiling. Mirrors kalshi_llm_arbitrage's cap. See memory
+  # `anthropic_concurrent_connections.md`.
+  llm_concurrency: 8
   sizing:
     mode: "fixed_usdc"              # forward-compat: "pct_with_confidence" reserved
     fixed_amount: 1.0               # $1 USDC per shakedown trade
+
+
+# ── BitUnix Futures (Phase 3.1 — paper-mode auto-execute with board-approved caps) ──
+# Documents the board-approved guardrails for the bitunix_futures division.
+# The actual logic lives in `trading_corp/agents/divisions/bitunix_futures_observer.py`
+# (class name preserved from Phase 3.0; functionally a full division agent).
+#
+# Per board direction 2026-05-10: NO per-trade HITL approval. Risk caps below
+# ARE the gate. When this flips from PAPER to LIVE in Phase 4, the same caps
+# apply — the only addition is real BitunixBroker.place_order() w/ leverage
+# + isolated margin.
+#
+# These values are mirrored in the agent's TIER_SIZING constants today;
+# moving them to YAML is a future refinement (not load-bearing for Phase 3.1).
+bitunix_futures:
+  enabled: true                     # Phase 3.1 paper-mode auto-execute live
+  auto_execute: true                # NO per-trade HITL — caps are the gate
+  division: bitunix_futures
+  symbol: "BTC/USDT.P"              # canonical perp symbol; whitelist BTC-only Phase 3
+  counter_tier_enabled: false       # COUNTER (fade-the-trend) defaults OFF
+  effective_risk_per_trade_pct: 0.005   # 0.5% account equity max per trade
+  daily_risk_kill_pct: 0.03             # 3% account equity per UTC day → halt
+  min_rr_ratio: 1.5                     # refuse trades below this R:R
+  default_tp_r_multiple: 2.0            # take-profit at 2R
+  stop_floor_pct: 0.003                 # 0.3% absolute stop floor
+  bias_decay:
+    timeframe_4h_seconds: 86400         # 24h
+    timeframe_1d_seconds: 604800        # 7d
+  cvd_decay_seconds: 1800               # 30 min — CVD direction stale after this
+  tier_sizing:
+    PREMIUM:  {size_pct: 0.04, leverage: 8.0}
+    STANDARD: {size_pct: 0.02, leverage: 5.0}
+    WEAK:     {size_pct: 0.01, leverage: 2.0}
+    COUNTER:  {size_pct: 0.005, leverage: 2.0}
+
+  # ============================================================
+  # Phase 3.2 — Confluence Score Accumulator (NEW; off by default).
+  # Replaces the single-bar `_tier_for()` classifier with a multi-bar
+  # score accumulator. Signals contribute weights to bull_score /
+  # bear_score within their TTL. Dedupe is on by default: multiple
+  # fires of the SAME signal_name within TTL count once (most recent
+  # fire wins). Net score (winning side − losing side) maps to a tier.
+  # Below `min_score_to_fire`, return SKIP regardless of side.
+  #
+  # Cooldown prevents re-firing the same direction within a window
+  # — protects against stacking on a single setup.
+  #
+  # Weights below are STARTING values for backtest. The replay tool
+  # at scripts/backtest_bitunix_confluence.py reads this block and
+  # walks the historical audit stream + scalping DB to validate.
+  # Re-tune weights here based on backtest verdict, no code change
+  # required.
+  # ============================================================
+  scoring:
+    enabled: true                     # Phase 3.2 LIVE 2026-05-11; backtest verdict +0.29R/trade, 43% WR (21 trades, Apr 30-May 9)
+    # Tuned 2026-05-11 via scripts/backtest_bitunix_confluence.py:
+    # First-pass replay (Apr 30 - May 9, 625 alerts):
+    #   PREMIUM (n=2):  0.0% wins, -1.00 R avg     [too few to judge]
+    #   STANDARD (n=11): 45.5% wins, +0.57 R avg   [edge — keep firing]
+    #   WEAK     (n=34): 23.5% wins, -0.16 R avg   [noise — killed]
+    # Raising min_score_to_fire from 5 -> 8 (=STANDARD floor).
+    # WEAK band kept in YAML for tier-naming clarity but never fires
+    # while min_score_to_fire >= weak threshold.
+    min_score_to_fire: 8              # net_score < this -> SKIP
+    tier_thresholds:                  # net_score >= → tier
+      premium: 12
+      standard: 8
+      weak: 5
+    cooldown_seconds: 1800            # same-direction cooldown
+    dedupe_within_ttl: true           # repeated fires of same signal count once
+    factors:
+      # ── Cypher A-panel (assumed 1D — heavy weight, 24h TTL) ──
+      mc_a_bluetriangle:     {weight: 3, side: buy,  ttl_minutes: 1440}
+      mc_a_longema:          {weight: 2, side: buy,  ttl_minutes: 1440}
+      mc_a_yellow_x:         {weight: 2, side: buy,  ttl_minutes: 1440}
+      mc_a_red_diamond:      {weight: 4, side: sell, ttl_minutes: 1440}
+      mc_a_blood_diamond:    {weight: 5, side: sell, ttl_minutes: 1440}
+      mc_a_redx:             {weight: 2, side: sell, ttl_minutes: 1440}
+      # ── Cypher B-panel (assumed 4h — 4h TTL) ──
+      mc_b_gold_buy:         {weight: 5, side: buy,  ttl_minutes: 240}
+      mc_b_buy_circle_div:   {weight: 4, side: buy,  ttl_minutes: 240}
+      mc_b_buy_circle:       {weight: 3, side: buy,  ttl_minutes: 240}
+      mc_b_sell_circle_div:  {weight: 4, side: sell, ttl_minutes: 240}
+      mc_b_sell_circle:      {weight: 3, side: sell, ttl_minutes: 240}
+      mc_b_buy_dot:          {weight: 2, side: buy,  ttl_minutes: 240}
+      mc_b_sell_dot:         {weight: 2, side: sell, ttl_minutes: 240}
+      # ── Otter (3m — short TTL, entry timing) ──
+      otter_buy:             {weight: 3, side: buy,  ttl_minutes: 15}
+      otter_sell:            {weight: 3, side: sell, ttl_minutes: 15}
+      money_bag_bottom:      {weight: 2, side: buy,  ttl_minutes: 30}
+      money_bag_top:         {weight: 2, side: sell, ttl_minutes: 30}
+      water_buy_large:       {weight: 2, side: buy,  ttl_minutes: 30}
+      water_sell_large:      {weight: 2, side: sell, ttl_minutes: 30}
+      water_buy_small:       {weight: 1, side: buy,  ttl_minutes: 30}
+      water_sell_small:      {weight: 1, side: sell, ttl_minutes: 30}
+      spoon_bull:            {weight: 2, side: buy,  ttl_minutes: 30}
+      spoon_bear:            {weight: 2, side: sell, ttl_minutes: 30}
+      cvd_bull_flip:         {weight: 2, side: buy,  ttl_minutes: 30}
+      cvd_bear_flip:         {weight: 2, side: sell, ttl_minutes: 30}
+      bias_bull:             {weight: 2, side: buy,  ttl_minutes: 90}
+      bias_bear:             {weight: 2, side: sell, ttl_minutes: 90}
+      pink_box_bull:         {weight: 1, side: buy,  ttl_minutes: 30}
+      pink_box_bear:         {weight: 1, side: sell, ttl_minutes: 30}
+      # ── Price-action (computed from OHLCV; no TTL — evaluated fresh) ──
+      above_session_vwap:    {weight: 1, side: buy}
+      below_session_vwap:    {weight: 1, side: sell}
+      higher_highs_4h:       {weight: 2, side: buy}
+      lower_lows_4h:         {weight: 2, side: sell}
+      volume_above_20bar_avg: {weight: 1, side: directional}
+    guards:
+      # Symmetric "wait for stabilization" — score penalties (not vetoes).
+      # A strong-confluence setup still fires into a rush/dip; weak ones get blocked.
+      sell_on_rush:                   # penalize sells when BTC just rose
+        window_minutes: 60
+        brackets:
+          - {upto_pct: 1.0, penalty: 0}
+          - {upto_pct: 3.0, penalty: -1}
+          - {upto_pct: 5.0, penalty: -2}
+          - {upto_pct: 999, penalty: -3}
+      buy_on_fall:                    # penalize buys when BTC just fell
+        window_minutes: 60
+        brackets:
+          - {upto_drop_pct: 1.0, penalty: 0}
+          - {upto_drop_pct: 3.0, penalty: -1}
+          - {upto_drop_pct: 5.0, penalty: -2}
+          - {upto_drop_pct: 999, penalty: -3}
 
 
 # ── Polymarket Copy Trading (Phase 4+ placeholder; not yet implemented) ──
@@ -997,7 +1126,189 @@ polymarket_arbitrage:
 # polymarket_copy_trading division uses broker:paper today as a
 # STANDBY placeholder. When the strategy lands, this block grows
 # into the real config and the division flips broker:paper → polymarket.
+# ── Kalshi Tail-Price Arbitrage (Phase K2.1) ──
+# Detects same-market YES+NO arb at tail prices (yes_mid ≤5¢ or ≥95¢)
+# where Kalshi's per-fill 1¢ rounding floor compresses round-trip cost
+# to ~2¢ (vs 3.5¢ at mid prices, where YES+NO arb is structurally dead).
+# Logic in `trading_corp/agents/strategies/kalshi_tail_price_arb.py`.
+# Discovery is category-targeted via `broker.list_markets()` (Kalshi's
+# bulk OPEN-markets endpoint returns ~all KXMVE* sports parlay noise
+# in the first many pages — `discover_open_markets` is documented dead
+# in `kalshi_market_map.py`).
+#
+# Phase K2.1 ships PAPER-ONLY. Each detection emits a PAIR of
+# ProposedOrders (BUY YES + BUY NO) linked via `kalshi_pair_id`.
+# Both legs flow through `risk_agent.evaluate()`. Approved orders log
+# `would_have_placed`. No live placement until Phase K5+.
+kalshi_tail_price_arb:
+  enabled: true                     # 2026-05-10 23:48 UTC — re-enabled after K2.0 cap fix landed
+  auto_execute: false               # Phase K5+ before this can flip
+  division: kalshi_arbitrage
+  poll_interval_sec: 300            # 5 min — tail prices don't churn
+  discovery:
+    # Category-targeted; empty list -> broker uses DEFAULT_DISCOVERY_CATEGORIES
+    categories:
+      - Politics
+      - Elections
+      - Economics
+      - Financials
+      - Crypto
+      - Climate and Weather
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 600              # re-discover every 10 min
+  tail:
+    yes_max_for_yes_tail: 0.05      # mid YES ≤ this -> long-shot YES side
+    yes_min_for_no_tail: 0.95       # mid YES ≥ this -> long-shot NO side
+    min_edge_cents: 1.0             # ≥ 1¢ under $1 to consider
+  sizing:
+    fixed_usd_per_leg: 1.0          # $1 per leg -> $2 max risk per pair
+  per_cycle:
+    max_pairs: 5                    # cap pairs emitted per cycle
+    cooldown_minutes: 60            # don't re-emit same market within 60min
+
+
+# ── Kalshi Temporal + Bucket Arbitrage (Phase K2.2) ──
+# Two related intra-Kalshi arb patterns sharing one strategy class:
+#   TEMPORAL:  P("X by D1") > P("X by D2") with D2 > D1 -> arb position
+#              (BUY NO on early + BUY YES on late, locked $1 min payout)
+#   BUCKET:    sum(yes_ask) across all markets in event < $1 - threshold ->
+#              buy YES on every leg (guaranteed $1 payout)
+# Per K2 fee research (memory `trading_corp_kalshi.md`): temporal is the
+# single most attractive intra-Kalshi pattern — windows last minutes-to-hours,
+# no head-to-head bot competition documented, dislocations of tens of bps to
+# >1% are observable on related-market pairs. Bucket arb is structurally
+# clean but rarer (depends on N-bucket events with sloppy pricing).
+# Logic in `trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py`.
+# Phase K2.2 ships PAPER-ONLY. Each set emits 2 (temporal) or N (bucket)
+# legs linked via `kalshi_arb_set_id`.
+kalshi_temporal_bucket_arb:
+  enabled: true                     # 2026-05-10 23:48 UTC — Board-flipped for overnight audit data
+  auto_execute: false               # Phase K5+ before this can flip
+  division: kalshi_arbitrage
+  poll_interval_sec: 300            # 5 min — temporal/bucket arbs persist longer
+  discovery:
+    # Same default as kalshi_tail_price_arb; both strategies hit broker.list_markets()
+    # which is cache-aware so they don't double-fetch within ttl.
+    categories:
+      - Politics
+      - Elections
+      - Economics
+      - Financials
+      - Crypto
+      - Climate and Weather
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 600
+  temporal:
+    enabled: true
+    min_edge_cents: 4               # clears 2-leg taker fees ~2-4c
+  bucket:
+    enabled: true
+    min_edge_cents: 5               # clears N-leg fees on multi-bucket events
+  sizing:
+    fixed_usd_per_leg: 1.0          # $1 per leg -> $2 (temporal) or $N (bucket) max risk
+  per_cycle:
+    max_sets: 5                     # cap arb sets emitted per cycle
+    cooldown_minutes: 60            # don't re-emit same event within 60min
+
+
+# ── Kalshi LLM Arbitrage (Phase K6.1) ──
+# LLM-divergence detector mirroring polymarket_arbitrage but pointed at
+# Kalshi. Reuses the polymarket analyst-persona prompt (generic enough
+# for cross-venue prediction-market work) and the warm-and-fan parallel
+# Anthropic call pattern (~10s/cycle vs ~50s sequential). Logic in
+# `trading_corp/agents/strategies/kalshi_llm_arbitrage.py`.
+#
+# Lives on its own division (kalshi_llm_arbitrage) — separate from
+# kalshi_arbitrage which houses the structural tail/temporal/bucket
+# strategies. Both divisions hit the same broker (read-only Kalshi).
+#
+# Phase K6.1 ships PAPER-ONLY. Approved orders log `would_have_placed`
+# audit rows. Phase K7+ adds the live order path.
+kalshi_llm_arbitrage:
+  enabled: true                     # 2026-05-11 01:08 UTC — re-enabled w/ Semaphore(8) cap on LLM fan
+  auto_execute: false               # Phase K7+ before this can flip
+  division: kalshi_llm_arbitrage
+  poll_interval_sec: 60             # match polymarket cadence; LLM divergence can move fast
+  discovery:
+    categories:
+      - Politics
+      - Elections
+      - Economics
+      - Financials
+      - Crypto
+      - Climate and Weather
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 600
+  k_markets_per_cycle: 20           # warm-and-fan pattern; first call serial, K-1 parallel
+  llm_concurrency: 8                # cap concurrent Anthropic calls (Semaphore in strategy)
+  market_cooldown_hours: 6          # don't re-evaluate the same ticker within 6h
+  min_divergence_pct: 10.0          # |LLM prob - implied prob| × 100 ≥ this → emit order
+  time_horizon_max_days: 30         # broader than polymarket (7d) — Kalshi has many longer markets
+  filter:
+    min_implied_probability: 0.05   # skip extreme tails (handled by tail-arb division)
+    max_implied_probability: 0.95
+  sizing:
+    mode: fixed_usdc
+    fixed_amount: 1.0               # $1 per shakedown trade
+
+
+# ── Kalshi Copy Trader (Phase K3 — 2026-05-12) ──
+# Mirrors top Kalshi whales' positions at scaled $1/$2/$3 sizing. Selected
+# whales come from offline Wilson-LCB × ROI × category scoring (see
+# `trading_corp/data/kalshi_whale_stats.py`) and live in
+# `agent_state(selected_whales)`. Side detection uses Kalshi's free public
+# trade tape (KalshiBroker.get_market_trades). Apify Starter ($29/mo) is
+# the data source for whale open_positions polling. Default-off until
+# audit-mode confirms cold-start + delta-detection both fire cleanly.
+kalshi_copy_trader:
+  enabled: false                    # Board-flip after audit-mode validation
+  auto_execute: false               # Phase K5+ before this can flip live
+  division: kalshi_copy_trading
+  # 2026-05-12: throttled 300s → 600s to fit Apify Starter's $200/mo hard
+  # cap. At 5min cadence the 26h observation burn extrapolated to ~$320/mo
+  # (above cap); 10min cadence halves Apify request volume to ~$160/mo,
+  # leaving ~$40/mo headroom for spikes / pool expansion.
+  poll_interval_sec: 600            # 10min — positions don't change fast on Kalshi
+  sizing:
+    # Whale-contract -> our-USD-copy tier breakpoints. Kalshi contracts
+    # trade in [$0.01, $0.99] so contract count is within ~100x of dollar
+    # exposure — coarse but preserves the conviction signal.
+    tier_boundaries_contracts: [100, 1000]
+    tier_sizes_usd: [1.0, 2.0, 3.0]
+  side_detection:
+    # Tolerance on contract-count match between whale's new position and
+    # public trade tape (±5% of whale's contracts, min 1). Higher = more
+    # forgiving match but risks picking up unrelated trades.
+    size_match_tolerance_pct: 5.0
+
+
+# ── Polymarket Copy Trading (Phase 4+ placeholder; deprioritized 2026-05-10) ──
 polymarket_copy_trading:
   enabled: false                    # Phase 4+ — strategy not built yet
   auto_execute: false
   division: polymarket_copy_trading
+
+
+# ── Polymarket Copy Trader (2026-05-11) ──
+# Mirrors top Polymarket whales' positions at scaled USDC sizing. Selected
+# whales come from offline scoring (Wilson-LCB × ROI × category) via
+# `python -m trading_corp.scripts.refresh_polymarket_whales`, persisted to
+# `agent_state(polymarket_copy_trader.selected_whales)`. Data source is
+# Polymarket's free public Data API (`data-api.polymarket.com`) — no
+# Apify, no recurring cost. Activity rows carry explicit side+outcome so
+# no trade-tape-inference dance like Kalshi K3.
+polymarket_copy_trader:
+  enabled: false                    # Board-flip after audit-mode validation
+  auto_execute: false               # Phase 4+ before this can flip live
+  division: polymarket_copy_trading
+  poll_interval_sec: 60             # 60s; free API can sustain faster if needed
+  activity_limit_per_poll: 20
+  sizing:
+    # USDC bet size → our USDC copy size. Polymarket binaries clear in USDC;
+    # whale bet sizes vary 100× more than Kalshi contracts, so the upper
+    # tier is more aggressive ($5 vs Kalshi's $3).
+    tier_boundaries_usdc: [100.0, 1000.0]
+    tier_sizes_usdc: [1.0, 2.0, 5.0]

@@ -1,0 +1,210 @@
+{# IRA covered-call pair — PMCC-style click-to-expand row.
+
+   Collapsed: priority dot + symbol + spot + covered-call badge + DTE + Combined P&L + chevron.
+   Expanded:  LEFT = shares panel (qty / avg cost / mkt value / P&L)
+              RIGHT = short call panel (DTE / strike / credit / mark / intrinsic / extrinsic / P&L)
+
+   Visual parity with partials/pmcc_pair.html for muscle-memory parity —
+   the only structural difference is that the LEFT panel shows owned
+   shares (no LEAP — IRAs can't sell calls against LEAPs).
+#}
+{% set short = cc.short_call %}
+{% set combo = cc.combined_pnl %}
+{% set prio = cc.priority_label %}
+{% set prio_color = {
+  'urgent':   'bg-loss',
+  'elevated': 'bg-warn',
+  'routine':  'bg-muted/40',
+  'healthy':  'bg-gain/40',
+}.get(prio, 'bg-muted/30') %}
+{% set action_label, action_urgency = cc.recommended_action %}
+{% set action_classes = {
+  'urgent':   'bg-loss/15 text-loss border border-loss/30',
+  'elevated': 'bg-warn/15 text-warn border border-warn/30',
+  'routine':  'bg-edge text-muted border border-edge',
+}.get(action_urgency, 'bg-edge text-muted border border-edge') %}
+
+<details class="pmcc-row group bg-pane border border-edge rounded-lg overflow-hidden">
+  <summary
+    class="cursor-pointer select-none px-4 py-3 flex items-center gap-3
+           hover:bg-pane-2/60 transition-colors list-none"
+    hx-get="/division/{{ view.division.slug }}/pair-analysis/{{ cc.underlying }}"
+    hx-target="#pair-analysis"
+    hx-swap="innerHTML"
+    hx-sync="closest #pair-list:replace"
+    data-symbol="{{ cc.underlying }}">
+
+    <!-- Priority dot -->
+    <span class="w-2 h-2 rounded-full {{ prio_color }} shrink-0
+                 {% if prio == 'urgent' %}animate-pulse{% endif %}"
+          title="{{ prio }} priority"></span>
+
+    <!-- Symbol + spot -->
+    <span class="font-mono font-bold text-mono text-base">{{ cc.underlying }}</span>
+    {% if cc.underlying_price is not none %}
+      <span class="font-mono text-xs text-muted">
+        spot ${{ '%.2f' % cc.underlying_price }}
+      </span>
+    {% endif %}
+
+    <!-- Structure badge -->
+    <span class="hidden sm:inline-block text-[10px] uppercase font-mono tracking-wider
+                 px-1.5 py-0.5 rounded bg-edge text-muted">
+      covered call
+    </span>
+
+    <!-- Coverage indicator if partial -->
+    {% if not cc.is_fully_covered %}
+      <span class="hidden sm:inline-block text-[10px] uppercase font-mono tracking-wider
+                   px-1.5 py-0.5 rounded bg-warn/15 text-warn">
+        {{ '%.0f%%' | format(cc.coverage_pct * 100) }} covered
+      </span>
+    {% endif %}
+
+    <!-- Recommended action pill -->
+    <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+                 px-1.5 py-0.5 rounded font-semibold {{ action_classes }}"
+          title="Recommended action ({{ action_urgency }})">
+      {{ action_label }}
+    </span>
+
+    <!-- DTE badge -->
+    {% if short.dte is not none %}
+      <span class="hidden sm:inline-block text-[11px] font-mono
+                   {% if short.dte == 0 %}text-loss font-semibold
+                   {% elif short.dte <= 7 %}text-warn
+                   {% else %}text-muted{% endif %}"
+            title="Short call expires in {{ short.dte }} day{{ '' if short.dte == 1 else 's' }}">
+        {{ short.dte }} DTE
+      </span>
+    {% endif %}
+
+    <!-- Combined P&L (right) -->
+    <div class="ml-auto text-right">
+      <div class="text-[10px] uppercase tracking-wider text-muted">Combined P&amp;L</div>
+      {% if combo is not none %}
+        <div class="font-mono text-sm font-semibold
+          {% if combo > 0 %}text-gain{% elif combo < 0 %}text-loss{% else %}text-mono{% endif %}">
+          {{ combo | money_signed }}
+        </div>
+      {% else %}
+        <div class="font-mono text-sm text-muted">—</div>
+      {% endif %}
+    </div>
+
+    <!-- Expand chevron -->
+    <span class="text-muted/60 text-sm transition-transform group-open:rotate-90">▶</span>
+  </summary>
+
+  <!-- Expanded body: shares (left) + short call (right) -->
+  <div class="border-t border-edge grid grid-cols-1 sm:grid-cols-2 sm:divide-x divide-edge">
+
+    <!-- Shares panel (replaces PMCC's LEAP panel) -->
+    <div class="p-4">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                     bg-accent/15 text-accent">Shares</span>
+        <span class="text-[11px] text-muted font-mono">held in IRA</span>
+      </div>
+      <div class="font-mono text-sm font-semibold text-mono">
+        {{ '%g' % cc.shares_qty }} sh · cost basis
+        {% if cc.shares_avg_price and cc.shares_avg_price > 0 %}
+          <span class="private-money">${{ '%.2f' % cc.shares_avg_price }}</span>/sh
+        {% else %}
+          <span class="text-muted">—</span>
+        {% endif %}
+      </div>
+      <div class="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-[11px] font-mono">
+        <div class="text-muted">Qty</div>
+        <div class="text-right">{{ '%g' % cc.shares_qty }}</div>
+        <div class="text-muted">Avg cost</div>
+        <div class="text-right">
+          {% if cc.shares_avg_price and cc.shares_avg_price > 0 %}
+            <span class="private-money">${{ '%.2f' % cc.shares_avg_price }}</span>
+          {% else %}<span class="text-muted">—</span>{% endif %}
+        </div>
+        <div class="text-muted">Last</div>
+        <div class="text-right">
+          {% if cc.underlying_price is not none %}<span class="private-money">${{ '%.2f' % cc.underlying_price }}</span>{% else %}—{% endif %}
+        </div>
+        <div class="text-muted">Mkt value</div>
+        <div class="text-right">
+          {{ cc.shares_market_value | money if cc.shares_market_value is not none else '—' }}
+        </div>
+        <div class="text-muted">Cost basis</div>
+        <div class="text-right">
+          {% if cc.shares_cost_basis and cc.shares_cost_basis > 0 %}{{ cc.shares_cost_basis | money }}{% else %}<span class="text-muted">—</span>{% endif %}
+        </div>
+        <div class="text-muted pt-1 border-t border-edge/40">P&amp;L</div>
+        <div class="text-right pt-1 border-t border-edge/40 font-semibold
+          {% if cc.shares_pnl is not none and cc.shares_pnl > 0 %}text-gain
+          {% elif cc.shares_pnl is not none and cc.shares_pnl < 0 %}text-loss{% endif %}">
+          {% if cc.shares_pnl is not none %}
+            {{ cc.shares_pnl | money_signed }}
+            {% if cc.shares_pnl_pct is not none %}
+              <span class="text-muted/70 text-[10px]">
+                ({{ cc.shares_pnl_pct | pct_signed(0) }})
+              </span>
+            {% endif %}
+          {% else %}—{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Short-call panel (mirror of PMCC's short-call panel) -->
+    <div class="p-4">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
+        <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                     bg-warn/15 text-warn">Short call</span>
+        <span class="text-[11px] text-muted font-mono">{{ short.dte }}d to expiry</span>
+        {% if short.dte is not none and short.dte <= 7 %}
+          <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                       bg-loss/15 text-loss">roll soon</span>
+        {% endif %}
+        {% if cc.is_itm %}
+          <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                       bg-loss/15 text-loss">ITM
+            {% if cc.breach_pct %}<span class="ml-0.5">+{{ '%.1f%%' | format(cc.breach_pct * 100) }}</span>{% endif %}
+          </span>
+        {% endif %}
+      </div>
+      <div class="font-mono text-sm font-semibold text-mono">
+        {{ short.expiry }} · {{ short.strike | strike }}{{ short.option_type[:1].upper() }}
+      </div>
+      <div class="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-[11px] font-mono">
+        <div class="text-muted">Qty</div>
+        <div class="text-right">{{ '%g' % short.qty }}</div>
+        <div class="text-muted">Delta</div>
+        <div class="text-right">
+          {% if short.delta is not none %}{{ '%.2f' % short.delta }}{% else %}—{% endif %}
+        </div>
+        <div class="text-muted">Credit/sh</div>
+        <div class="text-right"><span class="private-money">${{ '%.2f' % short.avg_per_share }}</span></div>
+        <div class="text-muted">Mark/sh</div>
+        <div class="text-right">
+          {% if short.mark_per_share is not none %}<span class="private-money">${{ '%.2f' % short.mark_per_share }}</span>{% else %}—{% endif %}
+        </div>
+        <div class="text-muted">Intrinsic</div>
+        <div class="text-right"><span class="private-money">${{ '%.2f' % short.intrinsic_per_share }}</span></div>
+        <div class="text-muted">Extrinsic</div>
+        <div class="text-right">
+          {% if short.extrinsic_per_share is not none %}<span class="private-money">${{ '%.2f' % short.extrinsic_per_share }}</span>{% else %}—{% endif %}
+        </div>
+        <div class="text-muted pt-1 border-t border-edge/40">P&amp;L</div>
+        <div class="text-right pt-1 border-t border-edge/40 font-semibold
+          {% if short.unrealized_pnl is not none and short.unrealized_pnl > 0 %}text-gain
+          {% elif short.unrealized_pnl is not none and short.unrealized_pnl < 0 %}text-loss{% endif %}">
+          {% if short.unrealized_pnl is not none %}
+            {{ short.unrealized_pnl | money_signed }}
+            {% if short.unrealized_pnl_pct is not none %}
+              <span class="text-muted/70 text-[10px]">
+                ({{ short.unrealized_pnl_pct | pct_signed(0) }})
+              </span>
+            {% endif %}
+          {% else %}—{% endif %}
+        </div>
+      </div>
+    </div>
+
+  </div>
+</details>

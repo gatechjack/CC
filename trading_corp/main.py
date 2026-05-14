@@ -254,6 +254,58 @@ async def run(argv: list[str] | None = None) -> int:
     )
     donchian_agent = CoinbaseBTCDonchianAgent(db_url=secrets.db_url)
 
+    # BitUnix Futures Phase 3 division agent. Receives Otter+Cypher webhook
+    # signals (additive, runs alongside existing Otter/Cypher agents).
+    #   Phase 3.0 (2026-05-10): bias-only observer, no orders.
+    #   Phase 3.1: full PREMIUM/STANDARD/WEAK ladder + ProposedOrder
+    #              + paper-mode auto-execute (board approves caps, not trades).
+    #   Phase 3.2a: live 3m bar cache (Coinbase) + real ATR(14) for stop sizing
+    #               + writes paper_trade_record so existing replay loop resolves.
+    # Constructed here with the deps available at this point; channel +
+    # full risk-execution wiring attaches via the assignment below
+    # (after channel/risk_agent are ready). See memory
+    # `trading_corp_bitunix_phase3_confluence_model`.
+    from trading_corp.agents.divisions.bitunix_futures_observer import (
+        BitunixFuturesObserver,
+    )
+    from trading_corp.agents.strategies.bitunix_confluence import (
+        BitUnixConfluenceConfig,
+    )
+    from trading_corp.data.live_bar_cache import LiveBarCache
+    # BitUnix native 3m kline (public REST, no auth). Same venue we trade
+    # on — eliminates cross-venue volatility-profile drift. Bybit was the
+    # historical EDA source (TV chart data) but is geo-blocked from US
+    # IPs, so it's not viable as a live feed. Coinbase only supports
+    # {1m, 5m, 15m, 1h, 6h, 1d} — no native 3m.
+    bitunix_bar_cache = LiveBarCache(
+        symbol="BTCUSDT", timeframe="3m", venue="bitunix", max_bars=60,
+    )
+    # Phase 3.2 — confluence score accumulator config (off by default;
+    # flip `bitunix_futures.scoring.enabled: true` in strategies.yaml
+    # after backtest greenlight). When disabled, the observer runs the
+    # Phase 3.1 single-bar `_tier_for` classifier unchanged.
+    try:
+        import yaml as _yaml
+        from pathlib import Path as _Path
+        _strat_path = _Path(__file__).resolve().parent.parent / "config" / "strategies.yaml"
+        with _strat_path.open() as _f:
+            _strat_raw = _yaml.safe_load(_f)
+        _scoring_config = BitUnixConfluenceConfig.from_dict(
+            _strat_raw.get("bitunix_futures", {}),
+        )
+    except Exception as _e:
+        log.warning("bitunix scoring config load failed: %s; running Phase 3.1 only", _e)
+        _scoring_config = None
+    bitunix_observer = BitunixFuturesObserver(
+        db_url=secrets.db_url,
+        risk_agent=risk_agent,
+        data_exec=data_exec,
+        logger_agent=logger_agent,
+        bar_cache=bitunix_bar_cache,
+        scoring_config=_scoring_config,
+        # telegram_channel attached after channel is constructed (below)
+    )
+
     # --- Brokers (one per division, driven by config/divisions.yaml) ---
     from trading_corp.brokers.coinbase import CoinbaseBroker
     from trading_corp.utils.divisions import load_divisions
@@ -605,6 +657,12 @@ async def run(argv: list[str] | None = None) -> int:
     else:
         channel = CLIChannel()
 
+    # Attach the now-constructed Telegram/CLI channel to the bitunix
+    # division agent so it can push paper-trade notifications. Per
+    # board direction, bitunix_futures uses notification (not approval)
+    # via Telegram — risk caps are the gate, not per-trade HITL.
+    bitunix_observer.telegram_channel = channel
+
     await channel.start()
     await channel.push(
         f"CEO online. Mode: *{mode}*. DB: `{db_path}`. "
@@ -733,6 +791,212 @@ async def run(argv: list[str] | None = None) -> int:
             )
         )
 
+        # --- Polymarket Copy Trader scanner (default off) ---
+        # Mirrors top Polymarket whales' positions at scaled USDC sizing.
+        # Selected whales come from `agent_state(selected_whales)`, populated
+        # by `python -m trading_corp.scripts.refresh_polymarket_whales`
+        # quarterly. Uses Polymarket's free public Data API for whale
+        # activity polling (no auth, no recurring cost). Same K3 audit
+        # patterns; division=polymarket_copy_trading, paper-mode initially.
+        from trading_corp.agents.strategies.polymarket_copy_trader import (
+            PolymarketCopyTraderAgent,
+        )
+        polymarket_copy_agent = PolymarketCopyTraderAgent(db_url=secrets.db_url)
+        polymarket_copy_task = asyncio.create_task(
+            _scheduled_polymarket_copy_trader_loop(
+                polymarket_copy_agent,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
+            )
+        )
+
+        # --- Kalshi Tail-Price Arb scanner (Phase K2.1; default off) ---
+        # Detects same-market YES+NO arb at price tails (≤5¢ or ≥95¢)
+        # where Kalshi's 1¢ rounding floor compresses round-trip cost
+        # to ~2¢. Discovery is category-targeted via broker.list_markets().
+        # Each detection emits a PAIR of ProposedOrders (BUY YES + BUY NO)
+        # linked via kalshi_pair_id; both legs flow through risk_agent +
+        # log as `would_have_placed` (paper). Phase K5+ will branch here
+        # to route through a real KalshiLiveBroker.
+        from trading_corp.agents.strategies.kalshi_tail_price_arb import (
+            KalshiTailPriceArbAgent,
+        )
+        kalshi_arb_agent = KalshiTailPriceArbAgent(db_url=secrets.db_url)
+        kalshi_arb_task = asyncio.create_task(
+            _scheduled_kalshi_arb_loop(
+                kalshi_arb_agent,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
+            )
+        )
+
+        # --- Kalshi Temporal + Bucket Arb scanner (Phase K2.2; default off) ---
+        # Sibling of kalshi_tail_price_arb sharing the same broker discovery.
+        # Detects pair-wise constraint violations on TEMPORAL events
+        # (P(early) > P(late) with later-dated cutoff) and bucket-sum
+        # violations on BUCKET events (sum(yes_ask) < $1 - threshold).
+        # Same loop pattern as the tail scanner; emits 2-leg or N-leg
+        # ProposedOrder sets via `kalshi_arb_set_id`.
+        from trading_corp.agents.strategies.kalshi_temporal_bucket_arb import (
+            KalshiTemporalBucketArbAgent,
+        )
+        kalshi_tb_agent = KalshiTemporalBucketArbAgent(db_url=secrets.db_url)
+        kalshi_tb_task = asyncio.create_task(
+            _scheduled_kalshi_tb_arb_loop(
+                kalshi_tb_agent,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
+            )
+        )
+
+        # --- Kalshi LLM Arbitrage scanner (Phase K6.1; default off) ---
+        # LLM-divergence Kalshi strategy mirroring polymarket_arbitrage.
+        # Lives on its own division (kalshi_llm_arbitrage). Reuses
+        # polymarket's analyst-persona prompt + warm-and-fan LLM pattern.
+        # Audit events: kalshi_llm_scan_cycle (per-cycle bookkeeping) +
+        # kalshi_llm_probability_called (per-market LLM result, the rich
+        # one) + would_have_placed (when divergence ≥ threshold).
+        from trading_corp.agents.strategies.kalshi_llm_arbitrage import (
+            KalshiLLMArbitrageAgent,
+        )
+        kalshi_llm_agent = KalshiLLMArbitrageAgent(db_url=secrets.db_url)
+        kalshi_llm_task = asyncio.create_task(
+            _scheduled_kalshi_llm_arb_loop(
+                kalshi_llm_agent,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
+            )
+        )
+
+        # --- Kalshi Copy Trader scanner (Phase K3; default off) ---
+        # Mirrors top Kalshi whales' positions at scaled $1/$2/$3 sizing.
+        # Selected whales live in agent_state(selected_whales) — populated
+        # offline by the Wilson-LCB × ROI × category scoring pass over
+        # Apify leaderboard + closed_positions snapshots. Side detection
+        # uses Kalshi's free public trade tape (anonymous taker_side) via
+        # KalshiBroker.get_market_trades. Apify client lifecycle is owned
+        # by the scheduled loop (opens once at task start). Stub-safe: if
+        # APIFY_API_TOKEN is unset, the client returns empty and the
+        # strategy no-ops cleanly.
+        from trading_corp.agents.strategies.kalshi_copy_trader import (
+            KalshiCopyTraderAgent,
+        )
+        kalshi_copy_agent = KalshiCopyTraderAgent(db_url=secrets.db_url)
+        kalshi_copy_task = asyncio.create_task(
+            _scheduled_kalshi_copy_trader_loop(
+                kalshi_copy_agent,
+                apify_token=secrets.apify_api_token,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
+            )
+        )
+
+        # --- Polymarket round-trip resolver + equity snapshot writer ---
+        # Closes the data gaps for the betmoar-style portfolio dashboard:
+        #   - resolver: hourly walk of `would_have_placed` rows whose
+        #     market has resolved → INSERT into polymarket_round_trips.
+        #   - equity_snapshot: 5-min broker.snapshot() → INSERT into
+        #     polymarket_equity_history (equity curve source data).
+        # Both are read-only enrichment; failures log + skip. If the
+        # broker isn't registered (division wiring missing or stub
+        # mode), both tasks no-op but stay running so a later config
+        # flip starts capturing data without a restart.
+        from trading_corp.agents.polymarket_resolver import (
+            start_equity_snapshot_loop,
+            start_resolver_loop,
+        )
+        polymarket_broker_for_resolver = data_exec.brokers.get(
+            polymarket_arb_agent.division
+        )
+        if polymarket_broker_for_resolver is not None:
+            polymarket_resolver_task = start_resolver_loop(
+                secrets.db_url,
+                polymarket_broker_for_resolver,
+                interval_sec=3600,
+            )
+            polymarket_equity_task = start_equity_snapshot_loop(
+                secrets.db_url,
+                polymarket_arb_agent.division,
+                polymarket_broker_for_resolver,
+                interval_sec=300,
+            )
+        else:
+            log.warning(
+                "Polymarket resolver/equity-snapshot loops not started: "
+                "no broker registered for division=%s",
+                polymarket_arb_agent.division,
+            )
+            polymarket_resolver_task = None
+            polymarket_equity_task = None
+
+        # --- Kalshi round-trip resolver + equity snapshot writers (Phase K2.4) ---
+        # Closes the same data gaps for the two Kalshi divisions
+        # (kalshi_arbitrage and kalshi_llm_arbitrage). One resolver loop scans
+        # would_have_placed rows from ALL THREE Kalshi strategies (tail-price,
+        # temporal-bucket, llm) and writes to the shared kalshi_round_trips
+        # table. Two equity-snapshot loops — one per division — both backed by
+        # the same KalshiBroker (the two divisions share a funded account).
+        from trading_corp.agents.kalshi_resolver import (
+            start_equity_snapshot_loop as start_kalshi_equity_snapshot_loop,
+            start_resolver_loop as start_kalshi_resolver_loop,
+        )
+        kalshi_broker_for_resolver = data_exec.brokers.get(
+            kalshi_arb_agent.division
+        )
+        if kalshi_broker_for_resolver is not None:
+            kalshi_resolver_task = start_kalshi_resolver_loop(
+                secrets.db_url,
+                kalshi_broker_for_resolver,
+                interval_sec=3600,
+            )
+            kalshi_equity_task_arb = start_kalshi_equity_snapshot_loop(
+                secrets.db_url,
+                kalshi_arb_agent.division,
+                kalshi_broker_for_resolver,
+                interval_sec=300,
+            )
+        else:
+            log.warning(
+                "Kalshi resolver/equity-snapshot (kalshi_arbitrage) not started: "
+                "no broker registered for division=%s",
+                kalshi_arb_agent.division,
+            )
+            kalshi_resolver_task = None
+            kalshi_equity_task_arb = None
+
+        kalshi_broker_for_llm = data_exec.brokers.get(
+            kalshi_llm_agent.division
+        )
+        if kalshi_broker_for_llm is not None:
+            kalshi_equity_task_llm = start_kalshi_equity_snapshot_loop(
+                secrets.db_url,
+                kalshi_llm_agent.division,
+                kalshi_broker_for_llm,
+                interval_sec=300,
+            )
+        else:
+            log.warning(
+                "Kalshi equity-snapshot (kalshi_llm_arbitrage) not started: "
+                "no broker registered for division=%s",
+                kalshi_llm_agent.division,
+            )
+            kalshi_equity_task_llm = None
+
         # --- Paper-trade replay (Phase C of would_have_placed enrichment) ---
         # One-shot startup catch-up: mark legacy pre-Phase-A rows + replay
         # any pending rows that landed during the last downtime. Then spawn
@@ -752,6 +1016,23 @@ async def run(argv: list[str] | None = None) -> int:
         except Exception:
             log.exception("paper_trade_replay startup catch-up failed (continuing)")
         replay_task = start_replay_loop(secrets.db_url, interval_sec=900)
+
+        # --- BitUnix 3m bar cache poll (Phase 3.2a) ---
+        # Coinbase 3m OHLCV pulled every 60s, cached in-process. Powers the
+        # real ATR(14) used by the bitunix_futures order proposer for
+        # structural stop sizing. Replaces the 0.04%-of-price placeholder
+        # from Phase 3.0/3.1.
+        # Prime the cache once synchronously so the first inbound trigger
+        # has data; then start the periodic loop.
+        try:
+            await bitunix_bar_cache.refresh()
+            log.info(f"bitunix_bar_cache primed: {bitunix_bar_cache.status()}")
+        except Exception:
+            log.exception("bitunix_bar_cache prime failed (continuing)")
+        bitunix_bar_task = asyncio.create_task(
+            bitunix_bar_cache.run_poll_loop(interval_s=60.0),
+            name="bitunix-bar-cache",
+        )
 
         # --- Web command center (FastAPI on :8000, in-process) ---
         web_server, web_task = await _start_web_server(
@@ -773,6 +1054,7 @@ async def run(argv: list[str] | None = None) -> int:
             telegram_channel=channel,
             research_firm=research_firm,
             pending_registry=pending_registry,
+            bitunix_observer=bitunix_observer,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -810,6 +1092,44 @@ async def run(argv: list[str] | None = None) -> int:
                 await polymarket_arb_task
             except (asyncio.CancelledError, Exception):
                 pass
+            kalshi_arb_task.cancel()
+            try:
+                await kalshi_arb_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            kalshi_tb_task.cancel()
+            try:
+                await kalshi_tb_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            kalshi_llm_task.cancel()
+            try:
+                await kalshi_llm_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            if polymarket_resolver_task is not None:
+                polymarket_resolver_task.cancel()
+                try:
+                    await polymarket_resolver_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if polymarket_equity_task is not None:
+                polymarket_equity_task.cancel()
+                try:
+                    await polymarket_equity_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            for _kalshi_task in (
+                kalshi_resolver_task,
+                kalshi_equity_task_arb,
+                kalshi_equity_task_llm,
+            ):
+                if _kalshi_task is not None:
+                    _kalshi_task.cancel()
+                    try:
+                        await _kalshi_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
             donchian_task.cancel()
             try:
                 await donchian_task
@@ -939,6 +1259,20 @@ def _build_broker_for_division(
             polygon_rpc_url=secrets.polygon_rpc_url,
         )
 
+    if family == "kalshi":
+        # Phase K1 read-only Kalshi adapter. KalshiBroker subclasses
+        # ReadOnlyBroker (same pattern as Polymarket) — no place_order on
+        # the type. Live order placement is Phase K5+ work, gated on
+        # observed paper PnL > 0 across Phase K2 arb + Phase K3 copy
+        # trading. Demo mode toggle via KALSHI_USE_DEMO=1 env var (defaults
+        # to production / kalshi.com).
+        from trading_corp.brokers.kalshi import KalshiBroker
+        return KalshiBroker(
+            api_key_id=secrets.kalshi_api_key_id,
+            private_key_pem=secrets.kalshi_private_key_pem,
+            demo=os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True"),
+        )
+
     if family == "paper":
         return PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
 
@@ -966,6 +1300,7 @@ async def _start_web_server(
     telegram_channel: Any = None,
     research_firm: Any = None,
     pending_registry: Any = None,
+    bitunix_observer: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -996,6 +1331,7 @@ async def _start_web_server(
         telegram_channel=telegram_channel,
         research_firm=research_firm,
         pending_registry=pending_registry,
+        bitunix_observer=bitunix_observer,
     )
     app = create_app(deps)
     config = uvicorn.Config(
@@ -1516,6 +1852,859 @@ async def _scheduled_polymarket_arb_loop(
         except Exception as e:
             log.exception("Polymarket scanner loop error (continuing): %s", e)
             await asyncio.sleep(30)
+
+
+async def _scheduled_kalshi_arb_loop(
+    agent,
+    *,
+    channel,
+    logger_agent,
+    data_exec,
+    risk_agent,
+    db_url: str,
+) -> None:
+    """Kalshi Tail-Price Arb scanner loop (Phase K2.1).
+
+    Wakes every `poll_interval_sec` (default 300s; from strategies.yaml).
+    On each tick:
+      - If `enabled: false`, no-op and sleep.
+      - Otherwise call `agent.run_scan_cycle(broker)` which refreshes the
+        category-targeted discovery cache (every cache_ttl_sec), walks
+        non-COLLECTION events, and emits ProposedOrder PAIRS (BUY YES +
+        BUY NO sharing `kalshi_pair_id`) for tail-price arbs above the
+        per-pair edge threshold.
+      - Each leg runs through `risk_agent.evaluate()` directly (no
+        per-trade HITL — same Board direction as polymarket). Approved
+        legs log `would_have_placed` (paper); rejected legs log
+        `kalshi_order_rejected_by_risk`.
+
+    Phase K5+ will branch on `auto_execute` to route approved orders
+    through a real KalshiLiveBroker (place_order via pykalshi). Until
+    then, every pair is paper-only.
+    """
+    from trading_corp.persistence.models import AccountState, StrategyState
+
+    log.info(
+        "Kalshi arbitrage scanner online (enabled=%s, auto_execute=%s, hitl=DIRECT)",
+        agent.enabled, agent.auto_execute,
+    )
+    while True:
+        try:
+            poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 300))
+            await asyncio.sleep(max(30.0, poll_sec))
+
+            if not agent.enabled:
+                continue
+
+            broker = data_exec.brokers.get(agent.division)
+            if broker is None:
+                log.debug(
+                    "Kalshi scanner: no broker registered for division=%s; skipping",
+                    agent.division,
+                )
+                continue
+
+            try:
+                orders = await agent.run_scan_cycle(
+                    broker, logger_agent=logger_agent,
+                )
+            except Exception as e:
+                log.exception("Kalshi scanner: run_scan_cycle failed: %s", e)
+                continue
+
+            if not orders:
+                continue
+
+            try:
+                snap = await broker.snapshot()
+                account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+            except Exception as e:
+                log.warning("Kalshi scanner: snapshot failed: %s; assuming $0", e)
+                account_equity = 0.0
+
+            account = AccountState(
+                account=agent.division,
+                equity=account_equity,
+                peak_equity=account_equity,
+                halted=False,
+            )
+            strategy_state = StrategyState(strategy=agent.name, halted=False)
+
+            # Pairs are interleaved [yes_leg, no_leg, yes_leg, no_leg, ...].
+            n_pairs = len(orders) // 2
+            log.info(
+                "Kalshi scanner: %d tail-arb pair(s) emitted (%d legs)",
+                n_pairs, len(orders),
+            )
+
+            for order in orders:
+                logger_agent.log_proposed_order(order)
+                ext = order.extra or {}
+                base_payload = {
+                    "strategy": agent.name,
+                    "division": agent.division,
+                    "order_id": order.id,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "limit_price": order.limit_price,
+                    "rationale": order.rationale,
+                    "ticker": ext.get("ticker"),
+                    "event_ticker": ext.get("event_ticker"),
+                    "event_title": ext.get("event_title"),
+                    "kalshi_pair_id": ext.get("kalshi_pair_id"),
+                    "leg": ext.get("leg"),
+                    "edge_cents": ext.get("edge_cents"),
+                    "sum_asks": ext.get("sum_asks"),
+                }
+
+                verdict = risk_agent.evaluate(
+                    order, account, strategy_state, db_url=db_url,
+                )
+
+                if verdict.verdict == "reject":
+                    logger_agent.log_event(
+                        agent.name, "kalshi_order_rejected_by_risk",
+                        {**base_payload, "risk_reason": verdict.reason},
+                    )
+                    log.info("Kalshi: risk REJECT %s — %s", order.symbol, verdict.reason)
+                    continue
+
+                if verdict.verdict == "resize" and verdict.new_qty is not None:
+                    log.info(
+                        "Kalshi: risk RESIZE %s qty %.4f -> %.4f (%s)",
+                        order.symbol, order.qty, verdict.new_qty, verdict.reason,
+                    )
+                    order.qty = float(verdict.new_qty)
+
+                logger_agent.log_event(
+                    agent.name, "would_have_placed",
+                    {
+                        **base_payload,
+                        "qty": order.qty,
+                        "yes_ask": ext.get("yes_ask"),
+                        "no_ask": ext.get("no_ask"),
+                        "edge_dollars": ext.get("edge_dollars"),
+                        "max_dollar_risk": ext.get("max_dollar_risk"),
+                        "expires_at": ext.get("expires_at"),
+                        "tier": ext.get("tier"),
+                        "risk_verdict": verdict.verdict,
+                        "risk_reason": verdict.reason,
+                    },
+                )
+
+            # Telegram ping per PAIR (not per leg) — slim per existing convention.
+            seen_pairs: set[str] = set()
+            for order in orders:
+                pid = (order.extra or {}).get("kalshi_pair_id")
+                if not pid or pid in seen_pairs:
+                    continue
+                seen_pairs.add(pid)
+                try:
+                    ext = order.extra or {}
+                    await channel.push(
+                        f"📊 Kalshi tail arb {ext.get('ticker')} "
+                        f"(edge {ext.get('edge_cents')}¢, pair {pid}) "
+                        f"— logged to activity rail."
+                    )
+                except Exception as e:
+                    log.warning("Kalshi channel push failed: %s", e)
+
+        except asyncio.CancelledError:
+            log.info("Kalshi arbitrage scanner cancelled.")
+            return
+        except Exception as e:
+            log.exception("Kalshi scanner loop error (continuing): %s", e)
+            await asyncio.sleep(30)
+
+
+async def _scheduled_kalshi_tb_arb_loop(
+    agent,
+    *,
+    channel,
+    logger_agent,
+    data_exec,
+    risk_agent,
+    db_url: str,
+) -> None:
+    """Kalshi Temporal + Bucket Arb scanner loop (Phase K2.2).
+
+    Same orchestration shape as `_scheduled_kalshi_arb_loop` — different
+    detection logic. Emits ProposedOrder SETS (2 legs for temporal,
+    N legs for bucket) sharing a `kalshi_arb_set_id`. Each leg flows
+    through the risk gate independently.
+    """
+    from trading_corp.persistence.models import AccountState, StrategyState
+
+    log.info(
+        "Kalshi temporal+bucket arb scanner online (enabled=%s, auto_execute=%s, hitl=DIRECT)",
+        agent.enabled, agent.auto_execute,
+    )
+    while True:
+        try:
+            poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 300))
+            await asyncio.sleep(max(30.0, poll_sec))
+
+            if not agent.enabled:
+                continue
+
+            broker = data_exec.brokers.get(agent.division)
+            if broker is None:
+                log.debug(
+                    "Kalshi TB scanner: no broker registered for division=%s; skipping",
+                    agent.division,
+                )
+                continue
+
+            try:
+                orders = await agent.run_scan_cycle(
+                    broker, logger_agent=logger_agent,
+                )
+            except Exception as e:
+                log.exception("Kalshi TB scanner: run_scan_cycle failed: %s", e)
+                continue
+
+            if not orders:
+                continue
+
+            try:
+                snap = await broker.snapshot()
+                account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+            except Exception as e:
+                log.warning("Kalshi TB scanner: snapshot failed: %s; assuming $0", e)
+                account_equity = 0.0
+
+            account = AccountState(
+                account=agent.division,
+                equity=account_equity,
+                peak_equity=account_equity,
+                halted=False,
+            )
+            strategy_state = StrategyState(strategy=agent.name, halted=False)
+
+            # Group legs by arb_set_id for cleaner audit + telegram.
+            sets: dict[str, list] = {}
+            for o in orders:
+                sid = (o.extra or {}).get("kalshi_arb_set_id") or "unknown"
+                sets.setdefault(sid, []).append(o)
+            log.info(
+                "Kalshi TB scanner: %d arb set(s), %d total legs",
+                len(sets), len(orders),
+            )
+
+            for order in orders:
+                logger_agent.log_proposed_order(order)
+                ext = order.extra or {}
+                base_payload = {
+                    "strategy": agent.name,
+                    "division": agent.division,
+                    "order_id": order.id,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "limit_price": order.limit_price,
+                    "rationale": order.rationale,
+                    "ticker": ext.get("ticker"),
+                    "event_ticker": ext.get("event_ticker"),
+                    "event_title": ext.get("event_title"),
+                    "kalshi_arb_set_id": ext.get("kalshi_arb_set_id"),
+                    "kalshi_arb_type": ext.get("kalshi_arb_type"),
+                    "leg": ext.get("leg"),
+                    "edge_cents": ext.get("edge_cents"),
+                }
+
+                verdict = risk_agent.evaluate(
+                    order, account, strategy_state, db_url=db_url,
+                )
+
+                if verdict.verdict == "reject":
+                    logger_agent.log_event(
+                        agent.name, "kalshi_tb_order_rejected_by_risk",
+                        {**base_payload, "risk_reason": verdict.reason},
+                    )
+                    log.info("Kalshi TB: risk REJECT %s — %s", order.symbol, verdict.reason)
+                    continue
+
+                if verdict.verdict == "resize" and verdict.new_qty is not None:
+                    log.info(
+                        "Kalshi TB: risk RESIZE %s qty %.4f -> %.4f (%s)",
+                        order.symbol, order.qty, verdict.new_qty, verdict.reason,
+                    )
+                    order.qty = float(verdict.new_qty)
+
+                logger_agent.log_event(
+                    agent.name, "would_have_placed",
+                    {
+                        **base_payload,
+                        "qty": order.qty,
+                        "edge_dollars": ext.get("edge_dollars"),
+                        "max_dollar_risk": ext.get("max_dollar_risk"),
+                        "tier": ext.get("tier"),
+                        "leg_date": ext.get("leg_date"),
+                        "sum_yes_asks": ext.get("sum_yes_asks"),
+                        "risk_verdict": verdict.verdict,
+                        "risk_reason": verdict.reason,
+                    },
+                )
+
+            # Telegram: one ping per arb_set (not per leg).
+            for sid, legs in sets.items():
+                try:
+                    first = legs[0].extra or {}
+                    arb_type = first.get("kalshi_arb_type", "?")
+                    edge = first.get("edge_cents", 0)
+                    evt = first.get("event_ticker", "?")
+                    await channel.push(
+                        f"📊 Kalshi {arb_type} arb {evt} "
+                        f"(edge {edge}c, {len(legs)} legs, set {sid}) "
+                        f"— logged to activity rail."
+                    )
+                except Exception as e:
+                    log.warning("Kalshi TB channel push failed: %s", e)
+
+        except asyncio.CancelledError:
+            log.info("Kalshi TB arbitrage scanner cancelled.")
+            return
+        except Exception as e:
+            log.exception("Kalshi TB scanner loop error (continuing): %s", e)
+            await asyncio.sleep(30)
+
+
+async def _scheduled_kalshi_llm_arb_loop(
+    agent,
+    *,
+    channel,
+    logger_agent,
+    data_exec,
+    risk_agent,
+    db_url: str,
+) -> None:
+    """Kalshi LLM Arbitrage scanner loop (Phase K6.1).
+
+    Mirror of `_scheduled_polymarket_arb_loop` pointed at Kalshi.
+    Wakes every `poll_interval_sec` (default 60s; from strategies.yaml).
+    On each tick:
+      - If `enabled: false`, no-op and sleep.
+      - Otherwise call `agent.run_scan_cycle(broker)` which pulls Kalshi
+        markets via discovery, deterministic-filters by prob bounds /
+        cooldown / TTR, calls Anthropic per survivor (warm-and-fan), and
+        emits `ProposedOrder`s on divergence ≥ min_divergence_pct.
+      - Each ProposedOrder runs through `risk_agent.evaluate()` directly
+        (no per-trade HITL — same Board direction as polymarket). Approved
+        orders log `would_have_placed`; rejected log
+        `kalshi_llm_order_rejected_by_risk`. Telegram ping per emit.
+
+    Phase K7+ will branch on `auto_execute` to route approved orders
+    through a real KalshiLiveBroker; today everything is paper.
+    """
+    from trading_corp.persistence.models import AccountState, StrategyState
+
+    log.info(
+        "Kalshi LLM arbitrage scanner online (enabled=%s, auto_execute=%s, hitl=DIRECT)",
+        agent.enabled, agent.auto_execute,
+    )
+    while True:
+        try:
+            poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 60))
+            await asyncio.sleep(max(5.0, poll_sec))
+
+            if not agent.enabled:
+                continue
+
+            broker = data_exec.brokers.get(agent.division)
+            if broker is None:
+                log.debug(
+                    "Kalshi LLM scanner: no broker registered for division=%s; skipping",
+                    agent.division,
+                )
+                continue
+
+            try:
+                orders = await agent.run_scan_cycle(
+                    broker, logger_agent=logger_agent,
+                )
+            except Exception as e:
+                log.exception("Kalshi LLM scanner: run_scan_cycle failed: %s", e)
+                continue
+
+            if not orders:
+                continue
+
+            try:
+                snap = await broker.snapshot()
+                account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+            except Exception as e:
+                log.warning("Kalshi LLM scanner: snapshot failed: %s; assuming $0", e)
+                account_equity = 0.0
+
+            account = AccountState(
+                account=agent.division,
+                equity=account_equity,
+                peak_equity=account_equity,
+                halted=False,
+            )
+            strategy_state = StrategyState(strategy=agent.name, halted=False)
+
+            log.info(
+                "Kalshi LLM scanner: %d divergence-based ProposedOrder(s) emitted",
+                len(orders),
+            )
+
+            for order in orders:
+                logger_agent.log_proposed_order(order)
+                ext = order.extra or {}
+                base_payload = {
+                    "strategy": agent.name,
+                    "division": agent.division,
+                    "order_id": order.id,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "limit_price": order.limit_price,
+                    "rationale": order.rationale,
+                    "ticker": ext.get("ticker"),
+                    "event_ticker": ext.get("event_ticker"),
+                    "event_title": ext.get("event_title"),
+                    "outcome": ext.get("outcome"),
+                    "category": ext.get("category"),
+                    "divergence_pct": ext.get("divergence_pct"),
+                }
+
+                verdict = risk_agent.evaluate(
+                    order, account, strategy_state, db_url=db_url,
+                )
+
+                if verdict.verdict == "reject":
+                    logger_agent.log_event(
+                        agent.name, "kalshi_llm_order_rejected_by_risk",
+                        {**base_payload, "risk_reason": verdict.reason},
+                    )
+                    log.info("Kalshi LLM: risk REJECT %s — %s", order.symbol, verdict.reason)
+                    continue
+
+                if verdict.verdict == "resize" and verdict.new_qty is not None:
+                    log.info(
+                        "Kalshi LLM: risk RESIZE %s qty %.4f -> %.4f (%s)",
+                        order.symbol, order.qty, verdict.new_qty, verdict.reason,
+                    )
+                    order.qty = float(verdict.new_qty)
+
+                logger_agent.log_event(
+                    agent.name, "would_have_placed",
+                    {
+                        **base_payload,
+                        "qty": order.qty,
+                        "implied_prob_at_entry": ext.get("implied_prob_at_entry"),
+                        "llm_prob_estimate": ext.get("llm_prob_estimate"),
+                        "llm_confidence": ext.get("llm_confidence"),
+                        "llm_reasoning": ext.get("llm_reasoning"),
+                        "key_unknowns": ext.get("key_unknowns"),
+                        "subtitle": ext.get("subtitle"),
+                        "expires_at": ext.get("expires_at"),
+                        "risk_verdict": verdict.verdict,
+                        "risk_reason": verdict.reason,
+                    },
+                )
+
+                # Telegram per emit (slim per existing convention).
+                try:
+                    div_pct = float(ext.get("divergence_pct") or 0)
+                    cat = ext.get("category") or "?"
+                    await channel.push(
+                        f"🤖 Kalshi LLM {order.side.upper()} {order.symbol} "
+                        f"(category={cat}, divergence {div_pct:.1f}%) "
+                        f"— logged to activity rail."
+                    )
+                except Exception as e:
+                    log.warning("Kalshi LLM channel push failed: %s", e)
+
+        except asyncio.CancelledError:
+            log.info("Kalshi LLM arbitrage scanner cancelled.")
+            return
+        except Exception as e:
+            log.exception("Kalshi LLM scanner loop error (continuing): %s", e)
+            await asyncio.sleep(30)
+
+
+async def _scheduled_kalshi_copy_trader_loop(
+    agent,
+    *,
+    apify_token: str | None,
+    channel,
+    logger_agent,
+    data_exec,
+    risk_agent,
+    db_url: str,
+) -> None:
+    """Kalshi Copy Trader scanner loop (Phase K3).
+
+    Mirrors top Kalshi traders' positions at scaled-down size. Selected
+    whales come from `agent_state(selected_whales)` (populated by the
+    offline scoring/selection pass — Wilson LCB × ROI × category, see
+    `kalshi_whale_stats`). On each tick:
+
+      - If `enabled: false`, no-op + sleep.
+      - Open Apify client (already context-managed for the lifetime of
+        this task) and call `agent.run_scan_cycle(...)`. The agent fetches
+        current open_positions for selected whales, compares against the
+        last persisted snapshot, and emits ProposedOrders for entries
+        and exits.
+      - Side detection uses Kalshi's public market trade tape (free,
+        anonymous-at-trader-level) via `KalshiBroker.get_market_trades`.
+        The broker is fetched lazily from `data_exec.brokers.get(division)`
+        so the loop survives a startup where the division wiring lands
+        after the task.
+      - Each ProposedOrder runs through `risk_agent.evaluate()` directly
+        (HITL-DIRECT, per Board direction; same as polymarket / kalshi_llm).
+      - Paper-mode log via `would_have_placed`. Phase K5+ branches on
+        `auto_execute` for live order placement.
+
+    Cold-start protection: each whale's first poll records baseline
+    positions without emitting; only deltas on subsequent polls trigger
+    ProposedOrders. This prevents copying stale positions the whale
+    entered long before our bot started watching.
+
+    The Apify client is opened once at task start and reused across
+    cycles — sub-second per-call latency is dominated by Apify's
+    actor-start overhead (~2-5s per call), not network handshake.
+    """
+    from trading_corp.data.kalshi_apify_client import KalshiApifyClient
+    from trading_corp.persistence.models import AccountState, StrategyState
+
+    log.info(
+        "Kalshi copy trader scanner online (enabled=%s, auto_execute=%s, hitl=DIRECT)",
+        agent.enabled, agent.auto_execute,
+    )
+    async with KalshiApifyClient(apify_token) as apify_client:
+        # Lazy-resolved + cached: the first broker exposing `get_market_trades`
+        # (i.e. a real KalshiBroker from any of the kalshi_* divisions). This
+        # is intentionally NOT the kalshi_copy_trading division's broker — that
+        # one is a PaperBroker for paper-mode execution and has no public-trade
+        # API access. The two roles are decoupled here.
+        trade_tape_fetcher = None
+        while True:
+            try:
+                poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 300))
+                await asyncio.sleep(max(60.0, poll_sec))
+
+                if not agent.enabled:
+                    continue
+
+                if trade_tape_fetcher is None:
+                    for div_name, br in data_exec.brokers.items():
+                        if hasattr(br, "get_market_trades"):
+                            trade_tape_fetcher = br
+                            log.info(
+                                "Kalshi copy trader: trade-tape source = %s broker",
+                                div_name,
+                            )
+                            break
+
+                broker = data_exec.brokers.get(agent.division)
+                try:
+                    orders = await agent.run_scan_cycle(
+                        apify_client=apify_client,
+                        trade_tape_fetcher=trade_tape_fetcher,
+                        logger_agent=logger_agent,
+                    )
+                except Exception as e:
+                    log.exception("Kalshi copy trader: run_scan_cycle failed: %s", e)
+                    continue
+
+                if not orders:
+                    continue
+
+                if broker is None:
+                    log.debug(
+                        "Kalshi copy trader: no broker for division=%s; assuming $0 equity",
+                        agent.division,
+                    )
+                    account_equity = 0.0
+                else:
+                    try:
+                        snap = await broker.snapshot()
+                        account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+                    except Exception as e:
+                        log.warning("Kalshi copy trader: snapshot failed: %s; assuming $0", e)
+                        account_equity = 0.0
+
+                account = AccountState(
+                    account=agent.division, equity=account_equity,
+                    peak_equity=account_equity, halted=False,
+                )
+                strategy_state = StrategyState(strategy=agent.name, halted=False)
+
+                log.info(
+                    "Kalshi copy trader: %d copy ProposedOrder(s) emitted",
+                    len(orders),
+                )
+
+                for order in orders:
+                    logger_agent.log_proposed_order(order)
+                    ext = order.extra or {}
+                    # Audit-payload allowlist (memory `trading_corp_audit_
+                    # payload_allowlist`): every field surfaced to audit storage
+                    # has to be explicitly enumerated here. The strategy puts
+                    # these in ProposedOrder.extra; we copy them into the
+                    # base_payload that lands in audit_event.payload_json.
+                    base_payload = {
+                        "strategy": agent.name,
+                        "division": agent.division,
+                        "order_id": order.id,
+                        "side": order.side,
+                        "qty": order.qty,
+                        "limit_price": order.limit_price,
+                        "rationale": order.rationale,
+                        "ticker": ext.get("ticker"),
+                        "outcome": ext.get("outcome"),
+                        "is_entry": ext.get("is_entry"),
+                        "whale_handle": ext.get("whale_handle"),
+                        "whale_position_contracts": ext.get("whale_position_contracts"),
+                        "whale_position_pnl": ext.get("whale_position_pnl"),
+                        # Trade-tape-derived prices (added 2026-05-12). The
+                        # resolver pairing pass joins entry's whale_entry_price
+                        # with the matching exit's whale_exit_price to compute
+                        # realized PnL when the whale closes BEFORE the market
+                        # settles. Without these in the allowlist, audit drops
+                        # them silently (memory: trading_corp_audit_payload_allowlist).
+                        "whale_entry_price": ext.get("whale_entry_price"),
+                        "whale_exit_price": ext.get("whale_exit_price"),
+                        "copy_size_usd": ext.get("copy_size_usd"),
+                        "side_detection_confidence": ext.get("side_detection_confidence"),
+                        "first_seen_iso": ext.get("first_seen_iso"),
+                    }
+
+                    verdict = risk_agent.evaluate(
+                        order, account, strategy_state, db_url=db_url,
+                    )
+
+                    if verdict.verdict == "reject":
+                        logger_agent.log_event(
+                            agent.name, "kalshi_copy_order_rejected_by_risk",
+                            {**base_payload, "risk_reason": verdict.reason},
+                        )
+                        log.info(
+                            "Kalshi copy: risk REJECT %s — %s",
+                            order.symbol, verdict.reason,
+                        )
+                        continue
+
+                    if verdict.verdict == "resize" and verdict.new_qty is not None:
+                        log.info(
+                            "Kalshi copy: risk RESIZE %s qty %.4f -> %.4f (%s)",
+                            order.symbol, order.qty, verdict.new_qty, verdict.reason,
+                        )
+                        order.qty = float(verdict.new_qty)
+
+                    logger_agent.log_event(
+                        agent.name, "would_have_placed",
+                        {
+                            **base_payload,
+                            "qty": order.qty,
+                            "risk_verdict": verdict.verdict,
+                            "risk_reason": verdict.reason,
+                        },
+                    )
+
+                    try:
+                        whale = ext.get("whale_handle") or "?"
+                        action = "ENTRY" if ext.get("is_entry") else "EXIT"
+                        await channel.push(
+                            f"🐋 Kalshi copy {action} {order.side.upper()} "
+                            f"{order.symbol} (@{whale}, ${order.qty:.2f}) — logged."
+                        )
+                    except Exception as e:
+                        log.warning("Kalshi copy channel push failed: %s", e)
+
+            except asyncio.CancelledError:
+                log.info("Kalshi copy trader scanner cancelled.")
+                return
+            except Exception as e:
+                log.exception("Kalshi copy trader loop error (continuing): %s", e)
+                await asyncio.sleep(30)
+
+
+async def _scheduled_polymarket_copy_trader_loop(
+    agent,
+    *,
+    channel,
+    logger_agent,
+    data_exec,
+    risk_agent,
+    db_url: str,
+) -> None:
+    """Polymarket Copy Trader scanner loop.
+
+    Mirrors top Polymarket whales' positions at scaled USDC sizing. Selected
+    whales come from `agent_state(polymarket_copy_trader.selected_whales)` —
+    populated by `trading_corp.scripts.refresh_polymarket_whales` on a
+    quarterly cadence (or ad-hoc). Each whale entry carries `{wallet,
+    user_name, category, score}` so we can ping Telegram with context.
+
+    Per cycle (every `poll_interval_sec`, default 60s on free public API):
+
+      - If `enabled: false`, no-op + sleep.
+      - For each selected whale: fetch `/activity?user=<wallet>&limit=N`
+        (free Polymarket Data API; no auth, no rate limit at our scale).
+      - Filter to TRADE rows newer than `last_seen_ts[whale]` and not in
+        the recent transaction-hash dedup set. Process chronologically.
+      - For each BUY: emit copy ProposedOrder using the explicit
+        `outcome_index` + tiered sizing on `usdc_size`. No size-match
+        side-detection dance like Kalshi — Polymarket activity is rich.
+      - For each SELL of a position WE held: emit close ProposedOrder.
+      - Risk gate via `risk_agent.evaluate()` (HITL-DIRECT, paper-mode).
+      - Paper-mode `would_have_placed` audit; live order placement is
+        Phase 4+ work gated on observed positive paper EV.
+
+    Cold-start protection: first poll per whale records `last_seen_ts =
+    max(activity ts)` without emitting orders.
+
+    The Polymarket Data API has no auth and no published rate limit, so
+    we open one shared `PolymarketDataAPIClient` for the lifetime of the
+    task. Concurrency is gated internally by the client's semaphore.
+    """
+    from trading_corp.data.polymarket_data_api_client import PolymarketDataAPIClient
+    from trading_corp.persistence.models import AccountState, StrategyState
+
+    log.info(
+        "Polymarket copy trader scanner online (enabled=%s, auto_execute=%s, hitl=DIRECT)",
+        agent.enabled, agent.auto_execute,
+    )
+    async with PolymarketDataAPIClient() as data_api_client:
+        while True:
+            try:
+                poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 60))
+                await asyncio.sleep(max(15.0, poll_sec))
+
+                if not agent.enabled:
+                    continue
+
+                try:
+                    orders = await agent.run_scan_cycle(
+                        data_api_client=data_api_client,
+                        logger_agent=logger_agent,
+                    )
+                except Exception as e:
+                    log.exception(
+                        "Polymarket copy trader: run_scan_cycle failed: %s", e,
+                    )
+                    continue
+
+                if not orders:
+                    continue
+
+                broker = data_exec.brokers.get(agent.division)
+                if broker is None:
+                    log.debug(
+                        "Polymarket copy trader: no broker for division=%s; assuming $0 equity",
+                        agent.division,
+                    )
+                    account_equity = 0.0
+                else:
+                    try:
+                        snap = await broker.snapshot()
+                        account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+                    except Exception as e:
+                        log.warning(
+                            "Polymarket copy trader: snapshot failed: %s; assuming $0", e,
+                        )
+                        account_equity = 0.0
+
+                account = AccountState(
+                    account=agent.division, equity=account_equity,
+                    peak_equity=account_equity, halted=False,
+                )
+                strategy_state = StrategyState(strategy=agent.name, halted=False)
+
+                log.info(
+                    "Polymarket copy trader: %d copy ProposedOrder(s) emitted",
+                    len(orders),
+                )
+
+                for order in orders:
+                    logger_agent.log_proposed_order(order)
+                    ext = order.extra or {}
+                    # Audit-payload allowlist (per `trading_corp_audit_payload_
+                    # allowlist` memory): every K3-equivalent field surfaced
+                    # to audit storage MUST be enumerated here.
+                    base_payload = {
+                        "strategy": agent.name,
+                        "division": agent.division,
+                        "order_id": order.id,
+                        "side": order.side,
+                        "qty": order.qty,
+                        "limit_price": order.limit_price,
+                        "rationale": order.rationale,
+                        "is_entry": ext.get("is_entry"),
+                        "outcome": ext.get("outcome"),
+                        "outcome_index": ext.get("outcome_index"),
+                        "condition_id": ext.get("condition_id"),
+                        "whale_wallet": ext.get("whale_wallet"),
+                        "whale_user_name": ext.get("whale_user_name"),
+                        "whale_entry_price": ext.get("whale_entry_price"),
+                        "whale_exit_price": ext.get("whale_exit_price"),
+                        "whale_usdc_size": ext.get("whale_usdc_size"),
+                        "whale_contracts": ext.get("whale_contracts"),
+                        "copy_size_usdc": ext.get("copy_size_usdc"),
+                        "first_seen_ts": ext.get("first_seen_ts"),
+                        "entry_ts": ext.get("entry_ts"),
+                        "exit_ts": ext.get("exit_ts"),
+                        "market_title": ext.get("market_title"),
+                        "market_slug": ext.get("market_slug"),
+                        "event_slug": ext.get("event_slug"),
+                    }
+
+                    verdict = risk_agent.evaluate(
+                        order, account, strategy_state, db_url=db_url,
+                    )
+
+                    if verdict.verdict == "reject":
+                        logger_agent.log_event(
+                            agent.name, "polymarket_copy_order_rejected_by_risk",
+                            {**base_payload, "risk_reason": verdict.reason},
+                        )
+                        log.info(
+                            "Polymarket copy: risk REJECT %s — %s",
+                            order.symbol, verdict.reason,
+                        )
+                        continue
+
+                    if verdict.verdict == "resize" and verdict.new_qty is not None:
+                        log.info(
+                            "Polymarket copy: risk RESIZE %s qty %.4f -> %.4f (%s)",
+                            order.symbol, order.qty, verdict.new_qty, verdict.reason,
+                        )
+                        order.qty = float(verdict.new_qty)
+
+                    logger_agent.log_event(
+                        agent.name, "would_have_placed",
+                        {
+                            **base_payload,
+                            "qty": order.qty,
+                            "risk_verdict": verdict.verdict,
+                            "risk_reason": verdict.reason,
+                        },
+                    )
+
+                    try:
+                        user = ext.get("whale_user_name") or (ext.get("whale_wallet") or "?")[:10]
+                        action = "ENTRY" if ext.get("is_entry") else "EXIT"
+                        title_short = (ext.get("market_title") or order.symbol)[:50]
+                        await channel.push(
+                            f"🟣 Polymarket copy {action} {order.side.upper()} "
+                            f"@{user} (${ext.get('copy_size_usdc', 0):.2f}) "
+                            f"on \"{title_short}\" — logged."
+                        )
+                    except Exception as e:
+                        log.warning(
+                            "Polymarket copy channel push failed: %s", e,
+                        )
+
+            except asyncio.CancelledError:
+                log.info("Polymarket copy trader scanner cancelled.")
+                return
+            except Exception as e:
+                log.exception(
+                    "Polymarket copy trader loop error (continuing): %s", e,
+                )
+                await asyncio.sleep(30)
 
 
 async def _build_context_md(trend_agent, portfolio, logger_agent) -> str:

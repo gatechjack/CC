@@ -242,19 +242,35 @@ class PolymarketArbitrageAgent:
         new_cooldowns = dict(cooldowns)  # mutate a copy
         cooldown_until = (now + timedelta(hours=cooldown_h)).isoformat(timespec="seconds")
 
+        # Concurrency cap on the LLM fan (Phase K7). Anthropic enforces a
+        # per-account concurrent-connections limit separate from RPM/TPM;
+        # when this strategy's K=20 fan overlapped kalshi_llm_arbitrage's
+        # K=20 fan on 2026-05-11 01:02 UTC we hit ~38 simultaneous
+        # connections and 6/20 calls came back 429. Kalshi was capped first;
+        # this is the polymarket-side defensive cap. Configurable via
+        # strategies.yaml `llm_concurrency`; default 8. See memory
+        # `anthropic_concurrent_connections.md`.
+        llm_concurrency = int(self._strat_cfg.get("llm_concurrency", 8))
+        sem = asyncio.Semaphore(max(1, llm_concurrency))
+
+        async def _gated_estimate(m: dict) -> _ProbabilityEstimate | None:
+            async with sem:
+                return await self._estimate_probability(m)
+
         estimates: list[_ProbabilityEstimate | None] = []
         if survivors:
             # Step 1: warm the cache with one serial call.
             try:
-                estimates.append(await self._estimate_probability(survivors[0]))
+                estimates.append(await _gated_estimate(survivors[0]))
             except Exception as e:
                 cid0 = survivors[0].get("conditionId") or survivors[0].get("condition_id") or ""
                 log.warning("polymarket_arbitrage: LLM call failed for %s: %s", cid0, e)
                 estimates.append(None)
-            # Step 2: fan out the remaining K-1 in parallel.
+            # Step 2: fan out the remaining K-1 in parallel, gated by the
+            # semaphore so we never burst above llm_concurrency simultaneously.
             if len(survivors) > 1:
                 rest_results = await asyncio.gather(
-                    *(self._estimate_probability(m) for m in survivors[1:]),
+                    *(_gated_estimate(m) for m in survivors[1:]),
                     return_exceptions=True,
                 )
                 for m, r in zip(survivors[1:], rest_results):

@@ -14,7 +14,7 @@ What it does:
   - Sends one or more synthetic alerts to the running webhook
   - Pretty-prints each response
   - On the "premium" chain, fires the full sequence:
-      bias_bull → pink_box_bull → cvd_bull_flip → otter_buy
+      bias_bull → spoon_bull → cvd_bull_flip → otter_buy
     so you should see the Otter Buy come back with status=would_have_placed,
     tier=premium.
 """
@@ -119,9 +119,9 @@ def fire_one(url: str, secret: str, signal: str) -> None:
 
 
 CHAINS = {
-    "premium": ["bias_bull", "pink_box_bull", "cvd_bull_flip", "otter_buy"],
+    "premium": ["bias_bull", "spoon_bull", "cvd_bull_flip", "otter_buy"],
     "diamond": [
-        "bias_bull", "ribbon_exhaustion_bull", "pink_box_bull",
+        "bias_bull", "ribbon_exhaustion_bull", "spoon_bull",
         "cvd_bull_flip", "money_bag_bottom", "otter_buy",
     ],
     "standard": ["bias_bull", "cvd_bull_flip", "otter_buy"],

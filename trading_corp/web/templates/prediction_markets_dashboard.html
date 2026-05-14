@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Prediction Markets — {{ view.selected_label }}{% endblock %}
+
+{% block content %}
+{# ── Header bar (stays put across HTMX swaps) ───────────────────────── #}
+<div class="flex items-center gap-4 mb-4 flex-wrap">
+  <a href="/" class="text-muted hover:text-mono transition-colors text-sm font-mono">
+    ← Command Center
+  </a>
+  <div class="h-5 w-px bg-edge"></div>
+  <h1 class="text-mono text-xl font-semibold tracking-tight">
+    Prediction Markets
+  </h1>
+
+  <div class="ml-auto flex items-center gap-2">
+    <label for="pm-division-select" class="text-[11px] uppercase tracking-wider text-muted">
+      Division
+    </label>
+    {# Dropdown values are full URLs; the change handler strips out the
+       partial path and swaps via HTMX so we never trigger a full nav
+       through the Authelia auth layer (which adds ~60s per nav). #}
+    <select id="pm-division-select"
+            class="bg-pane border border-edge rounded px-2 py-1 text-sm font-mono text-mono
+                   focus:border-accent focus:outline-none">
+      <option value="/prediction-markets/"
+              {% if view.selected is none %}selected{% endif %}>
+        All Prediction Markets
+      </option>
+      {% for opt in view.available_divisions %}
+        <option value="/prediction-markets/{{ opt.slug }}"
+                {% if view.selected == opt.slug %}selected{% endif %}>
+          {{ opt.display_name }} · {{ opt.venue }}
+        </option>
+      {% endfor %}
+    </select>
+    <span id="pm-loading" class="htmx-indicator text-[11px] text-muted font-mono">
+      loading…
+    </span>
+  </div>
+</div>
+
+{# ── Swappable content area ─────────────────────────────────────────── #}
+<div id="pm-content">
+  {% include "partials/pm_dashboard_body.html" %}
+</div>
+
+{# Lightweight Charts loader exposes window.renderPMChart() so the chart
+   can be re-rendered after every HTMX swap. #}
+<script src="/static/js/prediction_markets_chart.js"></script>
+
+<script>
+  (function () {
+    const select = document.getElementById('pm-division-select');
+    const loading = document.getElementById('pm-loading');
+
+    // Map a full /prediction-markets/{slug} URL → its partial endpoint.
+    function toPartial(url) {
+      // Trailing-slash form maps to /partials/prediction-markets/
+      return url.replace('/prediction-markets/', '/partials/prediction-markets/');
+    }
+
+    // Dropdown change → HTMX swap into #pm-content + push URL.
+    select.addEventListener('change', (e) => {
+      const url = e.target.value;
+      if (!window.htmx) {
+        // HTMX failed to load — fall back to full nav.
+        window.location.href = url;
+        return;
+      }
+      const partial = toPartial(url);
+      htmx.ajax('GET', partial, {
+        target: '#pm-content',
+        swap: 'innerHTML',
+      }).then(() => {
+        history.pushState({ pmUrl: url }, '', url);
+      });
+    });
+
+    // Back/forward button → resync select + swap content.
+    window.addEventListener('popstate', (evt) => {
+      const url = window.location.pathname;
+      // Match the option whose value === pathname.
+      const match = Array.from(select.options).find(o => o.value === url);
+      if (match) select.value = url;
+      if (window.htmx) {
+        htmx.ajax('GET', toPartial(url), {
+          target: '#pm-content',
+          swap: 'innerHTML',
+        });
+      } else {
+        window.location.href = url;
+      }
+    });
+
+    // Tab switching + history filter + row expansion — global listeners so
+    // they survive every HTMX swap (the buttons + rows in the swapped body
+    // re-bind via this delegated handler, not their own per-element listener).
+    document.addEventListener('click', (e) => {
+      // Row expand/collapse on Open + History tables. Anything tagged
+      // `.pm-expand-trigger` with a `data-pm-detail` attribute toggles the
+      // matching `#pm-detail-{id}` row.
+      const expandTrigger = e.target.closest('.pm-expand-trigger');
+      if (expandTrigger) {
+        const id = expandTrigger.dataset.pmDetail;
+        const detail = id ? document.getElementById('pm-detail-' + id) : null;
+        if (detail) {
+          detail.classList.toggle('hidden');
+          const caret = expandTrigger.querySelector('.pm-expand-caret');
+          if (caret) caret.textContent = detail.classList.contains('hidden') ? '▸' : '▾';
+        }
+        return;
+      }
+
+      const tabBtn = e.target.closest('.pm-tab-btn');
+      if (tabBtn) {
+        const target = tabBtn.dataset.pmTab;
+        document.querySelectorAll('.pm-tab-btn').forEach(b => {
+          const active = b.dataset.pmTab === target;
+          b.classList.toggle('border-accent', active);
+          b.classList.toggle('text-accent', active);
+          b.classList.toggle('border-transparent', !active);
+          b.classList.toggle('text-muted', !active);
+        });
+        document.querySelectorAll('.pm-tab-panel').forEach(p => {
+          p.classList.toggle('hidden', p.id !== 'pm-tab-' + target);
+        });
+        return;
+      }
+      const filterBtn = e.target.closest('.pm-history-filter');
+      if (filterBtn) {
+        const mode = filterBtn.dataset.filter;
+        document.querySelectorAll('.pm-history-filter').forEach(b => {
+          const active = b === filterBtn;
+          b.classList.toggle('bg-edge/40', active);
+          b.classList.toggle('text-mono', active);
+          b.classList.toggle('text-muted', !active);
+        });
+        document.querySelectorAll('.pm-history-row').forEach(row => {
+          if (mode === 'all') row.classList.remove('hidden');
+          else if (mode === 'wins') row.classList.toggle('hidden', row.dataset.won !== '1');
+          else if (mode === 'losses') row.classList.toggle(
+            'hidden', !(row.dataset.won === '0' && row.dataset.result !== 'void')
+          );
+        });
+        return;
+      }
+    });
+
+    // After EVERY HTMX swap into #pm-content, re-render the equity chart
+    // (the inline JSON in the partial gets replaced; the chart container
+    // is also replaced so we need a fresh chart instance).
+    document.body.addEventListener('htmx:afterSwap', (evt) => {
+      if (evt.target && evt.target.id === 'pm-content') {
+        if (window.renderPMChart) window.renderPMChart();
+      }
+    });
+
+    // Initial chart render (the partial is already in the DOM from
+    // server-side render; chart JS exposes the function on window).
+    if (window.renderPMChart) window.renderPMChart();
+  })();
+</script>
+{% endblock %}

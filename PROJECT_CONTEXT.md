@@ -16,20 +16,61 @@ A multi-agent automated trading system. The architecture is "invest in
 everything": one platform, multiple **divisions** (each a brokerage ×
 account portfolio manager), each running one or more **strategies** (the
 trade-decision logic). Today's divisions are `robinhood_pmcc`,
-`robinhood_ira`, `robinhood_joint`, `coinbase_spot` (running
+`robinhood_ira` (**dedicated dashboard SHIPPED 2026-05-11 19:00→20:30 UTC**:
+covered-call pairs in PMCC-style click-to-expand rows + Portfolio table
+for pure stocks + Puts section for short puts; expert-analysis right rail
+uses the same `_render_pair_analysis` PMCC renderer fed by the new
+deterministic `_analyze_ira_covered_call` — rule-based decision tree
+[R1-R5] + real broker-fetched next-week chain pricing for roll legs.
+Approve/Defer buttons hidden since IRA has no automated execution wired),
+`robinhood_joint`, `coinbase_spot` (running
 `coinbase_btc_donchian` — 6h Donchian Channel Breakout, paper-mode,
 shipped 2026-05-09 02:53 UTC; replaced the prior Otter+Cypher confluence
 which failed walk-forward), `coinbase_futures` (`STANDBY` — kept as
-failover), `bitunix_futures` (read-only Phase 1 SHIPPED 2026-05-03;
-Phase 4 live ahead), `polymarket_arbitrage` (read-only Phase 1+2a
-SHIPPED 2026-05-09/10; $500 USDC live; strategy `enabled:false` until
-Phase 2.5 backtest verdict), `polymarket_copy_trading` (paper STANDBY
-placeholder for Phase 4+ copy-trader strategy), `fidelity_joint`,
-and `fidelity_401k` (Fidelity paper-fallback — bot-blocked from
-Azure VM IP, P1 DEFERRED 2026-05-03 pending Plaid investigation;
-`fidelity_individual` deactivated same day). Dashboard groups them
-into Individual / Crypto / Polymarket / Retirement (Polymarket added
-2026-05-09; UI reorg originally shipped 2026-05-03 16:25 UTC;
+failover), `bitunix_futures` (Phase 1 SHIPPED 2026-05-03; **equity 2× double-count
+fix SHIPPED 2026-05-10 04:19 UTC; Phase 3.0 observer SHIPPED
+2026-05-10 14:19 UTC; Phase 3.1 full ladder + paper auto-execute
+SHIPPED 2026-05-10 15:00 UTC; Phase 3.2a live BitUnix 3m bar cache +
+real ATR + paper_trade_record SHIPPED 2026-05-10 16:12 UTC; **Phase 3.2
+multi-bar confluence score accumulator SHIPPED 2026-05-11 17:52→18:23 UTC
+in three sub-phases (3.2.1 score engine + ledger + cooldown table, 3.2.2
+price-action factors wired to live bar cache, 3.2.3 dashboard panel at
+/division/bitunix_futures). First STANDARD SELL fired 2026-05-11 18:00 UTC
+exactly as designed.** Score path replaces the Phase 3.1 single-bar
+`_tier_for()` classifier when `bitunix_futures.scoring.enabled=true`
+(Phase 3.1 code retained for fast rollback). Backtest verdict pre-deploy:
++0.29R/trade, 43% win rate, +6R total over 9 days. Division actively
+classifies inbound Otter+Cypher triggers and emits paper trades when
+multi-bar net score ≥ 8; auto_execute=true within 0.5% per-trade + 3%
+daily risk caps; Phase 3.2b multi-leg scale-out queued, Phase 4 real
+BitUnix order placement after that), `polymarket_arbitrage` (read-only Phase
+1+2a SHIPPED 2026-05-09/10; $500 USDC live; strategy `enabled:true` in
+paper-mode 2026-05-10 02:05 UTC; HITL-direct architecture; rich activity
+rail + LLM analysis right-rail SHIPPED 2026-05-10 02:31 UTC; warm-and-fan
+parallel LLM K=20 SHIPPED 2026-05-10 02:51 UTC; data-layer gaps A+B
+[round-trips + 5-min equity snapshots] SHIPPED 2026-05-10 03:28 UTC;
+**prompt cache fix + category priors SHIPPED 2026-05-10 16:56 UTC —
+~2.5× cost reduction per call**; awaiting Phase 2.5 Backtester verdict
+for live-mode greenlight),
+`polymarket_copy_trading` (paper STANDBY
+placeholder; deprioritized 2026-05-10 in favor of Kalshi work),
+**`kalshi_arbitrage`** (read-only Kalshi broker SHIPPED 2026-05-10
+22:29 UTC; structural arb strategies tail-price + temporal + bucket
+SHIPPED 2026-05-10 23:28 → 23:43 UTC; per-candidate audit events
+SHIPPED 2026-05-11 00:13 UTC; $499 USDC funded; both strategies
+`enabled: true` in paper-mode collecting overnight),
+**`kalshi_llm_arbitrage`** (Kalshi LLM-divergence strategy mirroring
+polymarket — SHIPPED 2026-05-11 00:52 UTC; `enabled: true` since
+01:08 UTC after Semaphore(8) added on the K=20 LLM fan to prevent
+Anthropic 429s when both LLM strategies fan simultaneously; first
+3 `would_have_placed` events emitted within minutes of enable),
+`fidelity_joint`, and `fidelity_401k` (Fidelity paper-fallback —
+bot-blocked from Azure VM IP, P1 DEFERRED 2026-05-03 pending Plaid
+investigation; `fidelity_individual` deactivated same day). Dashboard
+groups them into Individual / Crypto / **Prediction Markets** /
+Retirement (group renamed from "Polymarket" to "Prediction Markets"
+2026-05-10 22:29 UTC when Kalshi K1 landed alongside Polymarket;
+UI reorg originally shipped 2026-05-03 16:25 UTC;
 `coinbase_spot` tile shows a CASH/BTC badge + state-aware Donchian
 dial — shipped 2026-05-09 03:30 UTC).
 A shared **research firm** is consulted by divisions for cross-division
@@ -214,8 +255,9 @@ Bear signals in long-only mode close held positions:
 | Fidelity | Browser automation (Playwright/Firefox). Phase A login session caching wired. Phase B/C session refresh logic is sensitive to UI changes. **Bot-blocked from Azure VM IP since 2026-05-01** (Akamai pre-JS layer rejects datacenter IPs); paper-fallback only. P1 backlog DEFERRED 2026-05-03 pending Plaid investigation. |
 | Coinbase Spot | Phase A (read-only ccxt) DONE. Phase B (orders via ccxt `create_order`) DONE — uses `quote_size` for market buys (account-config quirk discovered empirically). |
 | Coinbase Futures | Phase C — stub only. Will use `coinbase-advanced-py` SDK because ccxt's coinbase driver doesn't fully cover US FCM futures. UI shows STANDBY badge since 2026-05-03 16:25 UTC. |
-| BitUnix Futures | Read-only Phase 1 SHIPPED 2026-05-03 17:54 UTC (`brokers/bitunix.py`): `snapshot()` + `quote()` against live BitUnix Futures API (`https://fapi.bitunix.com`), SHA256-double-sign auth (no passphrase), multi-margin-coin balance aggregation across USDT + USDC. Azure VM IP works against BitUnix (unlike Fidelity). Phase 2 paper-orders shipped via `PaperExecutionBroker` wrapping in same deploy. `place_order` / `cancel_order` raise `NotImplementedError` until Phase 4 (gated on stop-loss strategy + conviction → leverage map). See memory `trading_corp_bitunix_vision.md`. **Known bug (P2 BACKLOG, 2026-05-09):** equity formula in `bitunix.py:213-225` adds `transfer` on top of `available`, currently double-counts (UI shows 2× actual cash). Display-only today; becomes P0 before Phase 4 since sizing math reads this value. |
+| BitUnix Futures | Read-only Phase 1 SHIPPED 2026-05-03 17:54 UTC (`brokers/bitunix.py`): `snapshot()` + `quote()` against live BitUnix Futures API (`https://fapi.bitunix.com`), SHA256-double-sign auth (no passphrase), multi-margin-coin balance aggregation across USDT + USDC. Azure VM IP works against BitUnix (unlike Fidelity). Phase 2 paper-orders shipped via `PaperExecutionBroker` wrapping in same deploy. `place_order` / `cancel_order` raise `NotImplementedError` until Phase 4 (gated on stop-loss strategy + conviction → leverage map). **Phase 3.2 confluence score accumulator SHIPPED 2026-05-11 17:52→18:23 UTC** — multi-bar signal scoring with 34 factors + price-action + guards replaces single-bar tier classifier; division agent code in `trading_corp/agents/divisions/bitunix_futures_observer.py`, scorer in `trading_corp/agents/strategies/bitunix_confluence.py`, PA helpers in `trading_corp/data/bitunix_price_context.py`. Equity 2× bug FIXED 2026-05-10 04:19 UTC. See memories `trading_corp_bitunix_vision.md` + `trading_corp_bitunix_phase3_confluence_model.md`. |
 | Polymarket | Read-only Phase 1+2a SHIPPED 2026-05-09/10 (`brokers/polymarket.py`, subclasses **`ReadOnlyBroker`** — first adapter to use the new ABC; `place_order` doesn't exist on the class, enforced by missing methods). `snapshot()` reads USDC balance via direct Polygon RPC `eth_call` + open positions via `data-api.polymarket.com`. `quote(symbol)` uses gamma-api slug→token_id then `clob.polymarket.com` last-trade-price. Path A wallet pattern: signer == funder (`signature_type=EOA`); single EOA holds USDC + signs orders (Phase 3+). Wallet live at `0x2FC7…ADA11` with $500 native USDC (verified on-chain). httpx concurrency cap (semaphore=6) + 429 backoff baked in. No EU egress proxy needed — 2026-05-09 smoke confirmed Polymarket's read APIs serve tc-prod-vm's US-east IP without geo-block (caveat: Phase 3 trade-placement may still hit write-path geo-checks; task #31 tracks the re-test). See memory `trading_corp_polymarket.md`. |
+| Kalshi | Read-only Phase K1 SHIPPED 2026-05-10 22:29 UTC (`brokers/kalshi.py`, subclasses **`ReadOnlyBroker`** — second adapter on the ABC after Polymarket). Built on `pykalshi>=1.0.6` (MIT, async + sync, RSA-PSS auth handled cleanly, REST + WebSocket coverage). `snapshot()` reads `portfolio.get_balance()` (cents → dollars) + positions; `quote(symbol)` returns mid from `market.get_orderbook()`. RSA private key PEM materialized to a restricted-perms `/tmp/kalshi_*.pem` tempfile at connect, deleted on `disconnect()` (pykalshi takes a filesystem path, not bytes). KV-managed credentials (`KALSHI-API-KEY-ID` + `KALSHI-PRIVATE-KEY-PEM`). $499 USDC funded as of session end. **Two divisions on the same broker:** `kalshi_arbitrage` (structural tail+temporal+bucket strategies) and `kalshi_llm_arbitrage` (LLM-divergence strategy mirroring polymarket pattern). Phase K5+ adds `KalshiLiveBroker(Broker)` for live order placement; gated on observed paper PnL. See memory `trading_corp_kalshi.md`. **Lesson logged:** pykalshi's `get_all_series(limit=N)` silently fetches ALL pages despite the limit param; cap consumption at OUR layer + use `inter_call_delay_sec=0.15` between calls to stay under Kalshi rate limit. |
 
 ## 8. Production state (`as of 2026-05-10`)
 
@@ -395,13 +437,54 @@ trading_corp/agents/divisions/      ← brokerage/account-level division wiring
 trading_corp/agents/strategies/     ← strategies inside coinbase_spot + polymarket_arbitrage divisions
    donchian_btc.py                    ACTIVE: Donchian Channel Breakout decision module (pure-function)
    coinbase_btc_donchian_agent.py     ACTIVE: 6h-poll agent wrapper (state persistence + ProposedOrder build)
-   polymarket_arbitrage.py            DISABLED (Phase 2a, 2026-05-09): scan-driven LLM-divergence detector;
-                                      direct Anthropic call per K=10 markets/cycle; emits ProposedOrder when
-                                      |LLM prob - implied prob| × 100 ≥ 10%. Awaits Phase 2.5 backtest before flip.
+   polymarket_arbitrage.py            ENABLED in paper-mode (Phase 2a, 2026-05-10): scan-driven LLM-divergence
+                                      detector; direct Anthropic call per K=20 markets/cycle (warm-and-fan
+                                      parallel); emits ProposedOrder when |LLM prob - implied prob| × 100 ≥ 10%.
+                                      HITL-direct (no Board click); risk gate still load-bearing. Awaits Phase 2.5
+                                      Backtester verdict before live-mode flip.
    _polymarket_prompts.py             Shared analyst-persona system prompt (~1554 tokens; clears 1024 cache threshold).
                                       Imported by polymarket_arbitrage today; copy_trading will share.
+trading_corp/agents/polymarket_resolver.py  ← Two periodic loops feeding the dashboard data layer
+                                      (SHIPPED 2026-05-10 03:28 UTC):
+                                      - resolve_pending_round_trips: hourly. Walks would_have_placed audit rows,
+                                        looks up gamma-api resolution, INSERTs polymarket_round_trips row per
+                                        resolved market. INSERT OR IGNORE keyed on order_id (idempotent).
+                                      - write_equity_snapshot: every 5 min. Calls broker.snapshot(), appends
+                                        polymarket_equity_history row. Source for the equity curve.
    lord_otter.py                      DISABLED 2026-05-09: 3-min scalp (preserved for BitUnix Futures revival)
    market_cypher.py                   DISABLED 2026-05-09: 4h/1D swing (preserved for BitUnix Futures revival)
+   bitunix_confluence.py              ACTIVE: Phase 3.2 score accumulator engine. Pure-function. Imported by
+                                      BitunixFuturesObserver when `bitunix_futures.scoring.enabled=true`.
+                                      Reuses FactorConfig/GuardConfig/AlertEvent/PriceContext dataclasses
+                                      from btc_accumulator.py.
+   btc_accumulator.py                 SCAFFOLD: dataclass + scoring helpers originally built for the
+                                      coinbase_spot accumulator (now abandoned in favor of Donchian). Kept
+                                      because bitunix_confluence imports its dataclasses. Pure-function,
+                                      no side effects on import.
+trading_corp/data/bitunix_price_context.py  ← Phase 3.2.2 helpers: session_vwap, higher_highs_lower_lows_4h,
+                                      volume_above_20bar_avg, pct_change_in_window, _resample_to_4h,
+                                      compute_price_context(bar_cache, ...). Consumed by the observer
+                                      score path at evaluation time.
+trading_corp/agents/divisions/bitunix_futures_observer.py  ← Phase 3.0/3.1/3.2 BitUnix division agent.
+                                      Maintains bias + CVD state; appends every webhook to
+                                      bitunix_signal_ledger; routes to either Phase 3.1 single-bar
+                                      `_tier_for` OR Phase 3.2 `_score_and_maybe_propose` based on
+                                      scoring_config.enabled flag.
+trading_corp/agents/paper_trade_replay.py  ← Phase C replay loop. Walks paper_trade_record rows where
+                                      result IS NULL, fetches OHLCV from the right venue per symbol
+                                      (`_default_router_fetcher` dispatches `.P` suffix → BitUnix
+                                      native kline, else → Coinbase ccxt — venue-aware as of
+                                      2026-05-11 22:30 UTC). Classifier returns 'still_open' (no DB
+                                      write) when neither TP/SL hit AND wall-clock elapsed <
+                                      max_hold_seconds — prevents premature `expired` marking
+                                      (caught 2026-05-11 23:00 UTC).
+trading_corp/web/templates/partials/ira_dashboard.html  ← Robinhood IRA division UI: Covered Calls /
+                                      Portfolio / Puts sections. Replaces the generic Holdings table
+                                      + empty PMCC pairs section that the IRA page used to render.
+trading_corp/web/templates/partials/ira_pair.html  ← PMCC-style click-to-expand row for covered calls.
+                                      Left panel = shares; right panel = short call. Reuses
+                                      `static/js/pair_list.js` (single-open accordion + loading-flash
+                                      feedback) via shared `#pair-list` container id.
 trading_corp/agents/research/       ← shared research-firm consultant (see CLAUDE.md § Research consultation)
 trading_corp/brokers/                ← broker implementations
    base.py                            abstract ReadOnlyBroker + Broker(ReadOnlyBroker) interfaces
@@ -456,7 +539,15 @@ scripts/generate_pwa_icons.py        ← PWA icon generator from SVG
 
 ---
 
-*Last meaningful update: 2026-05-10 — Polymarket Phase 1+2a wrap.
+*Last meaningful update: 2026-05-11 — Kalshi sprint (K1 → K6.1) wrap.
+§1 division list extended (kalshi_arbitrage, kalshi_llm_arbitrage; group
+renamed Polymarket → Prediction Markets). §7 broker phases table extended
+with the Kalshi entry. Six-broker count now includes Kalshi. Memory
+`trading_corp_kalshi.md` carries the full Kalshi phasing; new memory
+`anthropic_concurrent_connections.md` captures the Semaphore lesson from
+the K6.1 first-scan 429 incident. Earlier same day:
+
+Last meaningful update: 2026-05-10 — Polymarket Phase 1+2a wrap.
 §1 division list extended (polymarket_arbitrage real, polymarket_copy_trading
 paper-fallback STANDBY, both grouped into new Polymarket investment
 type). §7 broker phases table extended with the Polymarket entry +

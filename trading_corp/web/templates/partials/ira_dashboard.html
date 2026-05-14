@@ -1,0 +1,186 @@
+{# Robinhood IRA — three-section dashboard.
+
+   Strategy: buy assets + sell weekly calls against them. IRS rules
+   forbid selling calls against LEAPs in retirement accounts, so each
+   short call is backed by owned shares (not a LEAP).
+
+   Sections:
+     1. Covered Calls — click-to-expand rows mirroring PMCC pair UI
+        (shares panel on left, short-call panel on right). When you
+        sell a call against a stock, it moves from Portfolio → here.
+     2. Portfolio — pure stocks (no calls sold against them).
+     3. Puts — open short puts. Hidden when no puts are open (no
+        "wheel" framing — just a simple list of open puts).
+#}
+{% if view.ira_view %}
+{% set iv = view.ira_view %}
+
+{# ─── Covered Calls ─── #}
+{% if iv.covered_calls %}
+<section>
+  <header class="flex items-baseline justify-between mb-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Covered Calls</h2>
+    <div class="flex items-center gap-3 text-[11px] text-muted font-mono">
+      <span class="flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-loss"></span>urgent
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-warn"></span>elevated
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-muted/40"></span>routine
+      </span>
+      <span>· sorted by priority</span>
+    </div>
+  </header>
+  {# id="pair-list" matches the PMCC partial so static/js/pair_list.js
+     handles the single-open accordion + "Loading {symbol}..." feedback
+     for IRA rows too. Only one of (PMCC pair list, IRA covered-call
+     list) renders per division page so the IDs don't collide. #}
+  <div id="pair-list" class="flex flex-col gap-2">
+    {% for cc in iv.covered_calls %}
+      {% include "partials/ira_pair.html" %}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ─── Portfolio (pure stocks — no short call against them) ─── #}
+{% if iv.portfolio %}
+<section class="bg-pane border border-edge rounded-lg overflow-hidden">
+  <header class="px-4 py-3 border-b border-edge flex items-baseline justify-between">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Portfolio</h2>
+    <span class="text-[11px] text-muted font-mono">
+      {{ iv.portfolio|length }} position{% if iv.portfolio|length != 1 %}s{% endif %}
+    </span>
+  </header>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-[10px] uppercase tracking-wider text-muted bg-pane-2/40">
+        <tr>
+          <th class="text-left px-4 py-2">Symbol</th>
+          <th class="text-right px-4 py-2">Qty</th>
+          <th class="text-right px-4 py-2">Avg Cost</th>
+          <th class="text-right px-4 py-2">Last</th>
+          <th class="text-right px-4 py-2">Mkt Value</th>
+          <th class="text-right px-4 py-2 pr-4">Unrealized P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody class="font-mono">
+        {% for h in iv.portfolio %}
+        <tr class="border-t border-edge/40 hover:bg-pane-2/40">
+          <td class="px-4 py-2 font-semibold">{{ h.symbol }}</td>
+          <td class="text-right px-4 py-2">{{ '%g' % h.qty }}</td>
+          <td class="text-right px-4 py-2 text-muted">
+            {% if h.avg_price and h.avg_price > 0 %}
+              {{ h.avg_price | money }}
+            {% else %}<span class="text-muted/60">—</span>{% endif %}
+          </td>
+          <td class="text-right px-4 py-2">
+            {{ h.last | money if h.last is not none else '—' }}
+          </td>
+          <td class="text-right px-4 py-2">
+            {{ h.market_value | money if h.market_value is not none else '—' }}
+          </td>
+          <td class="text-right px-4 py-2 pr-4
+                     {% if h.unrealized_pnl is none %}text-muted
+                     {% elif h.unrealized_pnl > 0 %}text-gain
+                     {% elif h.unrealized_pnl < 0 %}text-loss
+                     {% else %}text-mono{% endif %}">
+            {% if h.unrealized_pnl is not none and h.avg_price and h.avg_price > 0 %}
+              {{ h.unrealized_pnl | money_signed }}
+              {% if h.unrealized_pnl_pct is not none %}
+                <span class="text-[10px] block">{{ h.unrealized_pnl_pct | pct_signed }}</span>
+              {% endif %}
+            {% else %}
+              <span class="text-muted/60">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{# ─── Puts (only renders if any open) ─── #}
+{% if iv.puts %}
+<section class="bg-pane border border-edge rounded-lg overflow-hidden">
+  <header class="px-4 py-3 border-b border-edge flex items-baseline justify-between">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Puts</h2>
+    <span class="text-[11px] text-muted font-mono">
+      {{ iv.puts|length }} open
+    </span>
+  </header>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-[10px] uppercase tracking-wider text-muted bg-pane-2/40">
+        <tr>
+          <th class="text-left px-4 py-2">Underlying</th>
+          <th class="text-right px-4 py-2">Strike</th>
+          <th class="text-right px-4 py-2">Expiry</th>
+          <th class="text-right px-4 py-2">DTE</th>
+          <th class="text-right px-4 py-2">Qty</th>
+          <th class="text-right px-4 py-2">Credit/sh</th>
+          <th class="text-right px-4 py-2">Mark/sh</th>
+          <th class="text-right px-4 py-2">Underlying</th>
+          <th class="text-right px-4 py-2 pr-4">P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody class="font-mono">
+        {% for w in iv.puts %}
+        <tr class="border-t border-edge/40 hover:bg-pane-2/40">
+          <td class="px-4 py-2 font-semibold">{{ w.underlying }}</td>
+          <td class="text-right px-4 py-2
+                     {% if w.is_itm %}text-loss font-semibold{% endif %}">
+            ${{ '%.2f' | format(w.strike) }}
+            {% if w.is_itm %}<span class="text-[10px] block text-loss">ITM</span>{% endif %}
+          </td>
+          <td class="text-right px-4 py-2 text-muted">{{ w.expiry }}</td>
+          <td class="text-right px-4 py-2
+                     {% if w.days_to_expiry is not none and w.days_to_expiry <= 2 %}text-warn font-semibold{% endif %}">
+            {{ w.days_to_expiry if w.days_to_expiry is not none else '—' }}
+          </td>
+          <td class="text-right px-4 py-2">{{ '%g' % w.short_put.qty }}</td>
+          <td class="text-right px-4 py-2 text-gain">
+            ${{ '%.2f' | format(w.short_put.avg_per_share) }}
+          </td>
+          <td class="text-right px-4 py-2">
+            {% if w.short_put.mark_per_share is not none %}
+              ${{ '%.2f' | format(w.short_put.mark_per_share) }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="text-right px-4 py-2">
+            {{ w.short_put.underlying_price | money if w.short_put.underlying_price is not none else '—' }}
+          </td>
+          <td class="text-right px-4 py-2 pr-4
+                     {% if w.short_put.unrealized_pnl is none %}text-muted
+                     {% elif w.short_put.unrealized_pnl > 0 %}text-gain
+                     {% elif w.short_put.unrealized_pnl < 0 %}text-loss
+                     {% else %}text-mono{% endif %}">
+            {% if w.short_put.unrealized_pnl is not none %}
+              {{ w.short_put.unrealized_pnl | money_signed }}
+              {% if w.short_put.unrealized_pnl_pct is not none %}
+                <span class="text-[10px] block">{{ w.short_put.unrealized_pnl_pct | pct_signed }}</span>
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{# ─── Empty state ─── #}
+{% if not iv.covered_calls and not iv.portfolio and not iv.puts %}
+<section class="bg-pane border border-edge rounded-lg p-12 text-center">
+  <div class="text-muted text-sm font-mono">
+    No IRA positions detected yet.
+  </div>
+</section>
+{% endif %}
+
+{% endif %}

@@ -47,3 +47,7 @@ markdown>=3.7              # render LLM analysis (markdown → HTML) on division
 # Requires ENABLE_TRADINGVIEW=1 env var to activate at runtime.
 tvdatafeed                 # historical OHLCV bars via TV WebSocket
 tradingview-ta             # indicator snapshots via TV screener API
+
+# Kalshi (Phase K1+ — Prediction Markets group). MIT-licensed community SDK
+# with both async + sync clients, RSA-PSS request signing, REST + WebSocket.
+pykalshi>=1.0.6

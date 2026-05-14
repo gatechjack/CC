@@ -222,7 +222,7 @@
             </span>
           {% endfor %}
           {% if snap.health.scheduler.last_run %}
-            <span>sched: <span class="text-mono">{{ snap.health.scheduler.last_run[11:19] }}Z</span></span>
+            <span>sched: <span class="text-mono">{{ snap.health.scheduler.last_run | et_hms }}</span></span>
           {% endif %}
         {% endif %}
       {% endblock %}

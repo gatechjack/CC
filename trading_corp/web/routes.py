@@ -240,6 +240,63 @@ def register(app: FastAPI) -> None:
             request, "partials/market_ribbon.html", {"snap": snap},
         )
 
+    # ── Prediction Markets dashboard (K2.4 Option C) ─────────────────────
+    # Single dashboard for all prediction-market divisions with a division
+    # dropdown. `/prediction-markets/` is the "All" combined view; the
+    # slugged variant pre-selects one division. Tiles on the home page
+    # link directly to /prediction-markets/{slug}; the dropdown navigates
+    # within the dashboard. Same template, different data.
+
+    @app.get("/prediction-markets/", response_class=HTMLResponse)
+    async def prediction_markets_all(request: Request):
+        return await _render_pm_dashboard(request, division=None)
+
+    @app.get("/prediction-markets/{division}", response_class=HTMLResponse)
+    async def prediction_markets_one(request: Request, division: str):
+        return await _render_pm_dashboard(request, division=division)
+
+    async def _render_pm_dashboard(request: Request, division: str | None):
+        cmd_snap, view = await asyncio.gather(
+            data.build_command_center(deps),
+            data.build_prediction_market_view(deps, division),
+        )
+        if view is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown prediction-market division: {division}",
+            )
+        return templates.TemplateResponse(
+            request, "prediction_markets_dashboard.html",
+            {"snap": cmd_snap, "view": view},
+        )
+
+    # Partial endpoints — return JUST the dashboard body (no base.html
+    # chrome) for the division-dropdown HTMX swap. Skips build_command_center
+    # too: the outer page's header/footer doesn't change when only the
+    # division does, so a partial swap doesn't need corp-wide snap data.
+    # This is also what makes the swap fast — the heavy broker.snapshot()
+    # fan-out from build_command_center doesn't run on swap.
+
+    @app.get("/partials/prediction-markets/", response_class=HTMLResponse)
+    async def prediction_markets_partial_all(request: Request):
+        return await _render_pm_partial(request, division=None)
+
+    @app.get("/partials/prediction-markets/{division}", response_class=HTMLResponse)
+    async def prediction_markets_partial_one(request: Request, division: str):
+        return await _render_pm_partial(request, division=division)
+
+    async def _render_pm_partial(request: Request, division: str | None):
+        view = await data.build_prediction_market_view(deps, division)
+        if view is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown prediction-market division: {division}",
+            )
+        return templates.TemplateResponse(
+            request, "partials/pm_dashboard_body.html",
+            {"view": view},
+        )
+
     # ── Division drill-down (Phase 2) ────────────────────────────────────
 
     @app.get("/division/{slug}", response_class=HTMLResponse)
@@ -367,7 +424,7 @@ def register(app: FastAPI) -> None:
             ts_dt = datetime.fromisoformat(ts)
             if ts_dt.tzinfo is None:
                 ts_dt = ts_dt.replace(tzinfo=timezone.utc)
-            ts_short = ts_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            ts_short = format_et_full(ts_dt)
         except (TypeError, ValueError):
             ts_short = ts
 
@@ -402,6 +459,166 @@ def register(app: FastAPI) -> None:
         }
         return templates.TemplateResponse(
             request, "partials/polymarket_analysis.html", {"event": event},
+        )
+
+    @app.get("/partials/kalshi-llm-analysis/{event_id}", response_class=HTMLResponse)
+    async def partial_kalshi_llm_analysis(event_id: int, request: Request):
+        """Phase K6.1 — Kalshi LLM analysis right-rail. Loaded via HTMX
+        from "Show analysis →" on any kalshi_llm_arbitrage activity row.
+
+        Same shape as `partial_polymarket_analysis`. Reuses the polymarket
+        analysis template (field names align by design — `event_title`
+        plays polymarket's `market_question` role, `ticker` plays the
+        `market_slug` role).
+        """
+        import json as _json
+        import sqlite3
+        path = deps.db_url.replace("sqlite:///", "")
+        try:
+            with sqlite3.connect(path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT id, ts, actor, kind, payload_json FROM audit_event WHERE id = ?",
+                    (int(event_id),),
+                ).fetchone()
+        except Exception as e:
+            return HTMLResponse(
+                f'<div class="text-loss text-sm">Error loading event {event_id}: {e}</div>',
+                status_code=500,
+            )
+        if row is None:
+            return HTMLResponse(
+                f'<div class="text-muted text-sm italic text-center py-8">Audit event {event_id} not found.</div>',
+                status_code=404,
+            )
+        if row["actor"] != "kalshi_llm_arbitrage":
+            return HTMLResponse(
+                f'<div class="text-muted text-sm italic text-center py-8">'
+                f'Event {event_id} is not a Kalshi LLM event (actor={row["actor"]}).'
+                f'</div>',
+                status_code=400,
+            )
+        try:
+            payload = _json.loads(row["payload_json"] or "{}")
+        except (_json.JSONDecodeError, ValueError):
+            payload = {}
+
+        from datetime import datetime, timezone
+        ts = row["ts"]
+        try:
+            ts_dt = datetime.fromisoformat(ts)
+            if ts_dt.tzinfo is None:
+                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+            ts_short = format_et_full(ts_dt)
+        except (TypeError, ValueError):
+            ts_short = ts
+
+        skipped = (
+            row["kind"] == "kalshi_llm_probability_called"
+            and payload.get("would_emit") is False
+        )
+
+        # Map Kalshi field names onto the polymarket template's expected
+        # field names — same template renders for both venues.
+        event = {
+            "id": row["id"],
+            "ts": ts,
+            "ts_short": ts_short,
+            "kind": row["kind"],
+            "skipped": skipped,
+            "market_slug": payload.get("ticker"),  # polymarket: market_slug → kalshi: ticker
+            "market_question": payload.get("event_title"),
+            "category": payload.get("category"),
+            "series": payload.get("subtitle"),  # subtitle as the secondary tag
+            "outcome": payload.get("outcome"),
+            "implied_prob": payload.get("implied_prob_at_entry") or payload.get("implied_prob_yes"),
+            "llm_prob": payload.get("llm_prob_estimate") or payload.get("llm_prob_yes"),
+            "llm_confidence": payload.get("llm_confidence"),
+            "llm_reasoning": payload.get("llm_reasoning"),
+            "key_unknowns": payload.get("key_unknowns") or [],
+            "divergence_pct": payload.get("divergence_pct"),
+            "min_divergence_pct": payload.get("min_divergence_pct"),
+            "qty": payload.get("qty"),
+            "limit_price": payload.get("limit_price"),
+            "risk_verdict": payload.get("risk_verdict"),
+            "risk_reason": payload.get("risk_reason"),
+            "resolves_at": payload.get("expires_at"),
+            "condition_id": payload.get("event_ticker"),  # event_ticker is the kalshi event id
+        }
+        return templates.TemplateResponse(
+            request, "partials/polymarket_analysis.html", {"event": event},
+        )
+
+    @app.get("/partials/kalshi-analysis/{event_id}", response_class=HTMLResponse)
+    async def partial_kalshi_analysis(event_id: int, request: Request):
+        """Render full payload + raw audit JSON for one Kalshi audit event.
+        Loaded into the right rail when the user clicks "Show details →"
+        on any Kalshi activity row.
+
+        Source: audit_event row payload (point-in-time; never recomputed).
+        Different event kinds have different rich content (scan summaries
+        show counts + thresholds; would_have_placed shows ticker + edge +
+        leg + set/pair linkage; risk_rejected shows the reason).
+        """
+        import json as _json
+        import sqlite3
+        path = deps.db_url.replace("sqlite:///", "")
+        try:
+            with sqlite3.connect(path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT id, ts, actor, kind, payload_json FROM audit_event WHERE id = ?",
+                    (int(event_id),),
+                ).fetchone()
+        except Exception as e:
+            return HTMLResponse(
+                f'<div class="text-loss text-sm">Error loading event {event_id}: {e}</div>',
+                status_code=500,
+            )
+        if row is None:
+            return HTMLResponse(
+                f'<div class="text-muted text-sm italic text-center py-8">Audit event {event_id} not found.</div>',
+                status_code=404,
+            )
+        if row["actor"] not in ("kalshi_tail_price_arb", "kalshi_temporal_bucket_arb"):
+            return HTMLResponse(
+                f'<div class="text-muted text-sm italic text-center py-8">'
+                f'Event {event_id} is not a Kalshi event (actor={row["actor"]}).'
+                f'</div>',
+                status_code=400,
+            )
+        try:
+            payload = _json.loads(row["payload_json"] or "{}")
+        except (_json.JSONDecodeError, ValueError):
+            payload = {}
+
+        from datetime import datetime, timezone
+        ts = row["ts"]
+        try:
+            ts_dt = datetime.fromisoformat(ts)
+            if ts_dt.tzinfo is None:
+                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+            ts_short = format_et_full(ts_dt)
+        except (TypeError, ValueError):
+            ts_short = ts
+
+        # Pretty-print the full payload as JSON for the raw section.
+        try:
+            payload_pretty = _json.dumps(payload, indent=2, sort_keys=True)
+        except Exception:
+            payload_pretty = str(payload)
+
+        event = {
+            "id": row["id"],
+            "ts": ts,
+            "ts_short": ts_short,
+            "actor": row["actor"],
+            "kind": row["kind"],
+            "payload": payload,
+            "payload_pretty": payload_pretty,
+        }
+        return templates.TemplateResponse(
+            request, "partials/kalshi_analysis.html", {"event": event},
         )
 
     @app.get("/partials/donchian-chart/{slug}")
@@ -450,6 +667,44 @@ def register(app: FastAPI) -> None:
                 html, ts = entry
                 if time.time() - ts < _PAIR_CACHE_TTL_SEC:
                     return HTMLResponse(html)
+
+        # Robinhood IRA — deterministic covered-call analysis. Produces
+        # the same PMCCAnalysis + TradeRecommendation shapes PMCC does
+        # and renders via the shared `_render_pair_analysis` so the
+        # panel matches PMCC visually (action header + confidence +
+        # warnings + concrete trade legs with broker-fetched prices).
+        # `show_execute_button=False` because IRA has no automated
+        # execution wired — user executes the recommended trade
+        # manually in Robinhood.
+        if slug == "robinhood_ira":
+            view = await data.build_division_view(deps, slug)
+            if view is None or view.ira_view is None:
+                return HTMLResponse(_pair_unavailable_html(sym, "IRA view unavailable."))
+            cc = next(
+                (c for c in view.ira_view.get("covered_calls", [])
+                 if c.underlying.upper() == sym),
+                None,
+            )
+            if cc is None:
+                return HTMLResponse(_pair_unavailable_html(sym, "No covered call on this symbol."))
+            broker_for_chain = (
+                deps.data_exec.brokers.get(slug) if deps.data_exec is not None else None
+            )
+            try:
+                analysis, recommendation = await _analyze_ira_covered_call(
+                    cc, broker_for_chain, deps,
+                )
+            except Exception as e:
+                log.warning("ira analysis(%s, %s) raised: %s", slug, sym, e, exc_info=True)
+                return HTMLResponse(_pair_unavailable_html(sym, str(e)[:160]))
+            html = _render_pair_analysis(
+                analysis, recommendation=recommendation,
+                slug=slug, symbol=sym,
+                show_execute_button=False,
+            )
+            with _LLM_LOCK:
+                _pair_cache[key] = (html, time.time())
+            return HTMLResponse(html)
 
         if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
             return HTMLResponse(_pair_unavailable_html(sym, "Per-pair analysis is wired for Robinhood PMCC only."))
@@ -2039,7 +2294,530 @@ def _pair_unavailable_html(symbol: str, reason: str) -> str:
     )
 
 
-def _render_pair_analysis(analysis, recommendation=None, slug: str = "", symbol: str = "") -> str:
+async def _analyze_ira_covered_call(cc, broker, deps) -> tuple[Any, Any]:  # noqa: ANN001
+    """Deterministic IRA covered-call analyzer producing the SAME shapes
+    PMCC produces (`PMCCAnalysis` + `TradeRecommendation`) so we can
+    reuse `_render_pair_analysis` for visual parity.
+
+    Rule-based (no LLM cost/latency). Rules applied:
+
+      R1. **Profit-take ≥85%**: close current short (then sell new weekly).
+          Captures most of the premium with negligible remaining decay.
+      R2. **Roll up & out when ITM**: avoid assignment — roll to a higher
+          strike with longer DTE for a credit.
+      R3. **Terminal-DTE (≤2d)**: ITM → roll, OTM → let theta finish.
+      R4. **Roll for credit only**: preserves the cost-basis advantage.
+          If the next-week credit < current cost-to-close, hold instead.
+      R5. **Partial coverage**: warn if shares < contracts×100 (would
+          require selling more shares OR closing some contracts on
+          assignment).
+
+    Returns:
+      (PMCCAnalysis, TradeRecommendation | None) — recommendation is None
+      when the action is hold/watch (nothing to execute).
+    """
+    from trading_corp.agents.divisions.pmcc_robinhood import (
+        PMCCAnalysis, TradeLegDetail, TradeRecommendation, _days_to,
+    )
+
+    short = cc.short_call
+    sym = cc.underlying
+    spot = cc.underlying_price or 0.0
+    dte = short.dte if short.dte is not None else 0
+    contracts = int(abs(short.qty))
+    credit_per_sh = short.avg_per_share
+    mark_per_sh = short.mark_per_share
+    profit_pct = short.unrealized_pnl_pct  # fraction (0.50 = 50%)
+    is_itm = cc.is_itm
+    breach = (cc.breach_pct or 0.0) * 100  # percent
+
+    # ── Decide action via the rules ──
+    action: str
+    urgency: str
+    confidence: float
+    target_strike: float | None = None
+    target_dte: int | None = None
+    target_delta: float | None = None
+    rationale_paras: list[str] = []
+    warnings: list[str] = []
+    benefits: list[str] = []
+    summary: str = ""
+
+    # Rule 1: profit take
+    profit85 = profit_pct is not None and profit_pct >= 0.85
+    profit70 = profit_pct is not None and profit_pct >= 0.70
+
+    if dte == 0 and is_itm:
+        action, urgency, confidence = "roll_short_early", "urgent", 0.95
+        target_strike = max(spot * 1.03, short.strike + 0.50)
+        target_dte = 7
+        summary = (
+            f"{sym} expires TODAY ITM by +{breach:.1f}%. Roll up & out "
+            f"now to avoid assignment at ${short.strike:.2f}."
+        )
+        rationale_paras.append(
+            f"Rule R3 (terminal-DTE ITM): same-day expiry with shares "
+            f"already $-{breach:.1f}% in the money. Without action, the "
+            f"shares will be called away at ${short.strike:.2f} at close. "
+            f"Roll up & out to next-week's expiry at a higher strike to "
+            f"preserve the shares and capture another premium cycle."
+        )
+        warnings.append("Same-day expiry — must act before market close.")
+        warnings.append(
+            f"Assignment locks in cost-basis → ${short.strike:.2f} sale "
+            f"(intrinsic floor)."
+        )
+        benefits.append("Avoids forced assignment + share liquidation.")
+        benefits.append("Captures next-cycle credit instead of accepting strike sale.")
+    elif dte == 0:
+        action, urgency, confidence = "hold", "routine", 0.90
+        summary = f"{sym} expires today OTM. Let it expire — full premium kept."
+        rationale_paras.append(
+            "Rule R3 (terminal-DTE OTM): same-day expiry with the short "
+            "OTM. Let theta finish the job — the entire remaining "
+            f"extrinsic of ${short.extrinsic_per_share or 0:.2f}/sh evaporates today."
+        )
+        benefits.append(
+            f"Captures the full ${credit_per_sh * 100 * contracts:,.2f} credit."
+        )
+    elif profit85:
+        action, urgency, confidence = "close_short", "elevated", 0.85
+        target_dte = 7
+        target_delta = 0.25
+        summary = (
+            f"{sym}: short already at {(profit_pct or 0)*100:.0f}% profit. "
+            f"Close now + sell next weekly."
+        )
+        rationale_paras.append(
+            f"Rule R1 (≥85% profit-take): {(profit_pct or 0)*100:.0f}% of "
+            f"the original credit ${credit_per_sh:.2f}/sh has been "
+            f"captured. Remaining extrinsic is small relative to the "
+            f"assignment-risk + gap-risk you carry by holding through "
+            f"expiry. Close-and-resell harvests the remaining risk-free."
+        )
+        benefits.append("Locks in ~85% of the original premium with no further holding risk.")
+        benefits.append("Frees shares to write a fresh weekly at higher-extrinsic delta.")
+    elif dte <= 2 and is_itm:
+        action, urgency, confidence = "roll_short_early", "urgent", 0.90
+        target_strike = max(spot * 1.03, short.strike + 0.50)
+        target_dte = 7
+        summary = (
+            f"{sym} ITM by +{breach:.1f}% with {dte} DTE — roll up & out "
+            "to preserve shares."
+        )
+        rationale_paras.append(
+            f"Rule R2 + R3 (terminal-DTE ITM): short is ${breach:.1f}% in "
+            f"the money with only {dte} day{'' if dte == 1 else 's'} until "
+            "expiry. Intrinsic dominates extrinsic — limited remaining "
+            "time-decay benefit. Roll up & out to a higher-strike, longer-"
+            "DTE contract for a net credit to preserve cost-basis advantage."
+        )
+        warnings.append(
+            f"ITM by +{breach:.1f}% — assignment risk if held through expiry."
+        )
+        warnings.append("Rule R4: roll must be for net credit; otherwise hold instead.")
+        benefits.append("Avoids likely assignment + share liquidation.")
+        benefits.append("Pushes the short strike up to maintain upside exposure.")
+    elif dte <= 2:
+        action, urgency, confidence = "hold", "routine", 0.80
+        summary = (
+            f"{sym} OTM with {dte} DTE — let theta finish, then sell new weekly."
+        )
+        rationale_paras.append(
+            "Rule R3 (terminal-DTE OTM): short is OTM with ≤2 DTE. "
+            "Almost all remaining value is extrinsic that will evaporate "
+            "by expiry. Holding is the highest-EV move; sell a new "
+            "weekly as soon as this one closes."
+        )
+        benefits.append(
+            f"Captures full ${(credit_per_sh - (mark_per_sh or 0)) * 100 * contracts:,.2f} "
+            "remaining decay."
+        )
+    elif profit70:
+        action, urgency, confidence = "close_short", "elevated", 0.70
+        target_dte = 7
+        target_delta = 0.25
+        summary = (
+            f"{sym}: short at {(profit_pct or 0)*100:.0f}% profit — consider "
+            f"close + reset for fresh premium."
+        )
+        rationale_paras.append(
+            f"Rule R1 (early profit-take): {(profit_pct or 0)*100:.0f}% of "
+            f"the original ${credit_per_sh:.2f}/sh credit captured. "
+            "Remaining extrinsic is small enough that re-selling a fresh "
+            "weekly captures more $/day than holding to maturity."
+        )
+        benefits.append("Opportunistic profit capture.")
+        benefits.append("Resets DTE clock for higher remaining-extrinsic exposure.")
+    elif is_itm:
+        action, urgency, confidence = "watch", "elevated", 0.75
+        summary = (
+            f"{sym} ITM by +{breach:.1f}% but {dte}d to expiry — monitor; "
+            "no urgency yet."
+        )
+        rationale_paras.append(
+            f"Short is ITM by +{breach:.1f}%, but {dte} days remain. "
+            "Not yet in the Rule R2/R3 action window (≤2 DTE or assignment-"
+            "imminent). Monitor: if spot pulls back below strike, theta "
+            "will continue to work. If it stays ITM, plan to roll within "
+            "the terminal-DTE window."
+        )
+        warnings.append(
+            f"Position will trigger Rule R2 if still ITM at ≤2 DTE."
+        )
+    else:
+        action, urgency, confidence = "hold", "routine", 0.80
+        summary = (
+            f"{sym} OTM with {dte}d remaining — let theta work."
+        )
+        rationale_paras.append(
+            f"Short is OTM with {dte}d to expiry — normal time-decay zone. "
+            f"At ${credit_per_sh:.2f}/sh credit and ${mark_per_sh or 0:.2f}/sh "
+            f"current mark, you've captured {(profit_pct or 0)*100:.0f}% of "
+            "the premium with no pressing reason to act. Re-evaluate when "
+            "either profit hits 70% (Rule R1) or DTE drops to 2 (Rule R3)."
+        )
+
+    # Rule R5: partial coverage warning
+    if not cc.is_fully_covered:
+        warnings.append(
+            f"Coverage only {cc.coverage_pct*100:.0f}% "
+            f"({int(cc.shares_qty)} shares vs {contracts*100} required) — "
+            "uncovered contracts carry naked-short exposure on assignment."
+        )
+
+    # Decide whether to build trade legs. Roll/close actions always do;
+    # watch+ITM also builds a HYPOTHETICAL roll preview so the user can
+    # see what a defensive roll would look like even though rules say
+    # "not yet urgent." hold/OTM cases produce no legs.
+    propose_legs = action in ("roll_short_early", "close_short")
+    if action == "watch" and is_itm:
+        propose_legs = True
+        target_strike = max(spot * 1.03, short.strike + 0.50)
+        target_dte = 7
+        benefits.append(
+            "Preview only: rules say WATCH (not yet urgent) — these legs "
+            "show what a defensive roll would look like if you wanted to "
+            "execute today."
+        )
+
+    rationale = "\n\n".join(rationale_paras)
+
+    analysis = PMCCAnalysis(
+        symbol=sym,
+        action=action,
+        confidence=confidence,
+        urgency=urgency,
+        summary=summary,
+        rationale=rationale,
+        warnings=warnings,
+        target_delta=target_delta,
+        target_dte=target_dte,
+        target_strike=target_strike,
+    )
+
+    if not propose_legs:
+        return analysis, None
+
+    legs: list[Any] = []
+    next_weekly: dict | None = None
+
+    # BTC current short (we have the data already — no fetch needed)
+    btc_dollars = (mark_per_sh or 0.0) * 100 * contracts  # debit (positive)
+    legs.append(TradeLegDetail(
+        action_label="Buy to close",
+        side="buy",
+        position_effect="close",
+        underlying=sym,
+        expiry=short.expiry,
+        strike=short.strike,
+        option_type="call",
+        qty=contracts,
+        dte=dte,
+        delta=short.delta,
+        mark_per_share=mark_per_sh,
+        bid=None,
+        ask=None,
+        estimated_dollars=btc_dollars,
+    ))
+
+    # STO new weekly — fetch via broker chain. Fires for both
+    # roll_short_early (real action) and watch+ITM (informational preview).
+    if (action == "roll_short_early" or (action == "watch" and is_itm)) \
+            and broker is not None and target_strike is not None:
+        try:
+            dates = await broker.get_expiration_dates(sym)
+            future = [d for d in dates if _days_to(d) > dte]
+            weekly_dates = [d for d in future if 5 <= _days_to(d) <= 14]
+            target_date = weekly_dates[0] if weekly_dates else (future[0] if future else None)
+            if target_date is not None:
+                calls = await broker.get_calls_for_expiry(sym, target_date)
+                # Pick strike closest to target_strike with decent liquidity
+                ranked = sorted(
+                    [c for c in calls if (c.get("mark_price") or 0) > 0],
+                    key=lambda c: abs((c.get("strike_price") or 0) - target_strike),
+                )
+                next_weekly = ranked[0] if ranked else None
+        except Exception as e:
+            log.warning("IRA chain fetch for %s failed: %s", sym, e)
+
+    if action == "close_short":
+        # Recommendation is just BTC — STO is a follow-on the user does
+        # in the next session once cash settles.
+        pass
+    elif next_weekly is not None:
+        sto_strike = next_weekly.get("strike_price") or 0
+        sto_mark = next_weekly.get("mark_price")
+        sto_bid = next_weekly.get("bid")
+        sto_ask = next_weekly.get("ask")
+        sto_delta = next_weekly.get("delta")
+        sto_expiry = next_weekly.get("expiration_date") or ""
+        sto_dte = next_weekly.get("dte")
+        sto_dollars = -((sto_mark or 0) * 100 * contracts)  # credit (negative)
+        legs.append(TradeLegDetail(
+            action_label="Sell to open",
+            side="sell",
+            position_effect="open",
+            underlying=sym,
+            expiry=sto_expiry,
+            strike=sto_strike,
+            option_type="call",
+            qty=contracts,
+            dte=sto_dte,
+            delta=sto_delta,
+            mark_per_share=sto_mark,
+            bid=sto_bid,
+            ask=sto_ask,
+            estimated_dollars=sto_dollars,
+        ))
+
+    net = sum(leg.estimated_dollars for leg in legs)
+    # Cost confidence: tight if both legs known + small spread; medium otherwise
+    cost_confidence = "medium"
+    if len(legs) >= 2:
+        spreads = [leg.spread_pct for leg in legs if leg.spread_pct is not None]
+        if spreads and all(s < 0.05 for s in spreads):
+            cost_confidence = "high"
+        elif any(s > 0.15 for s in spreads):
+            cost_confidence = "low"
+    if net > 0 and action == "roll_short_early":
+        warnings.append(
+            f"Net DEBIT of ${net:,.2f} on this roll — Rule R4 says hold "
+            "instead unless the new strike position is compelling on its own."
+        )
+
+    recommendation = TradeRecommendation(
+        action=action,
+        legs=legs,
+        net_cost_dollars=net,
+        cost_confidence=cost_confidence,
+        benefits=benefits,
+        wait_alternative=None,
+    )
+    return analysis, recommendation
+
+
+def _render_ira_pair_analysis(cc) -> str:  # noqa: ANN001 — CoveredCallPosition
+    """[DEPRECATED — replaced by _analyze_ira_covered_call + _render_pair_analysis]
+
+    Kept temporarily for rollback safety; not called by the endpoint
+    anymore. Will be removed in a follow-up.
+    """
+    import html as _html
+
+    short = cc.short_call
+    sym = _html.escape(cc.underlying)
+    action_label, action_urgency = cc.recommended_action
+    urgency_emoji = {"routine": "🟢", "elevated": "🟡", "urgent": "🔴"}.get(action_urgency, "⚪")
+    urgency_class = {
+        "urgent":   "bg-loss/15 text-loss border-loss/30",
+        "elevated": "bg-warn/15 text-warn border-warn/30",
+        "routine":  "bg-edge text-muted border-edge",
+    }.get(action_urgency, "bg-edge text-muted border-edge")
+
+    # ── Numbers we need ──
+    spot = cc.underlying_price
+    strike = short.strike
+    credit_per_sh = short.avg_per_share          # $ per share at sale
+    mark_per_sh = short.mark_per_share           # $ per share to close now
+    contracts = abs(short.qty)
+    dte = short.dte or 0
+
+    total_credit = credit_per_sh * 100 * contracts
+    current_close_cost = (mark_per_sh * 100 * contracts) if mark_per_sh is not None else None
+    short_pnl = (credit_per_sh - mark_per_sh) * 100 * contracts if mark_per_sh is not None else None
+
+    # Shares-side breakeven if we treat the call as a hedge: cost basis - credit/share
+    shares_avg = cc.shares_avg_price or 0.0
+    breakeven_per_sh = shares_avg - credit_per_sh if shares_avg > 0 else None
+
+    # Max combined profit IF called away at strike (locks in cost-basis → strike gain + full credit)
+    if shares_avg > 0:
+        called_away_pnl_per_sh = (strike - shares_avg) + credit_per_sh
+        # Apply to all 100×|qty| shares the call covers (which may be < total qty if partial coverage)
+        shares_covered = contracts * 100
+        called_away_pnl = called_away_pnl_per_sh * shares_covered
+    else:
+        called_away_pnl_per_sh = None
+        called_away_pnl = None
+
+    # Theta-decay efficiency: extrinsic / DTE
+    extrinsic = short.extrinsic_per_share
+    daily_decay = (extrinsic * 100 * contracts / dte) if (extrinsic is not None and dte > 0) else None
+
+    # ── Reasoning narrative ──
+    reasons: list[str] = []
+    if short.dte == 0:
+        if cc.is_itm:
+            reasons.append(
+                f"Expires today and is ITM (+{(cc.breach_pct or 0)*100:.1f}%). "
+                "Without action the shares will be called away at ${:.2f}.".format(strike)
+            )
+        else:
+            reasons.append("Expires today, currently OTM — premium will be kept in full.")
+    elif short.dte is not None and short.dte <= 2:
+        if cc.is_itm:
+            reasons.append(
+                "≤2 days to expiry AND ITM — high assignment risk. "
+                "Roll up & out to a higher strike (next-week expiry) for a credit if available."
+            )
+        else:
+            reasons.append("≤2 days to expiry, OTM — let it expire or roll out a week for fresh premium.")
+    elif short.unrealized_pnl_pct is not None and short.unrealized_pnl_pct >= 0.85:
+        reasons.append(
+            f"≥85% of credit captured (currently {short.unrealized_pnl_pct*100:.0f}%). "
+            "Close to free the shares + re-sell next week for fresh premium."
+        )
+    elif cc.is_itm:
+        reasons.append(
+            f"ITM by +{(cc.breach_pct or 0)*100:.1f}%. Not yet in the urgency window "
+            f"({short.dte}d left) but worth watching."
+        )
+    elif short.unrealized_pnl_pct is not None and short.unrealized_pnl_pct >= 0.70:
+        reasons.append(
+            f"{short.unrealized_pnl_pct*100:.0f}% of credit captured. "
+            "Consider closing-and-resell to harvest the remaining decay risk-free."
+        )
+    else:
+        reasons.append("OTM with normal time to expiry — let theta work.")
+
+    # Coverage note if not fully covered
+    if not cc.is_fully_covered:
+        reasons.append(
+            f"Coverage is {cc.coverage_pct*100:.0f}% — only {int(cc.shares_qty)} shares "
+            f"vs. {int(contracts)*100} required for full cover."
+        )
+
+    rationale_html = "".join(
+        f'<div class="text-xs text-mono mb-2 leading-snug">{_html.escape(r)}</div>'
+        for r in reasons
+    )
+
+    # ── Key metrics grid ──
+    rows = []
+
+    def _row(label: str, value: str, value_class: str = "text-mono") -> str:
+        return (
+            f'<div class="flex justify-between text-xs">'
+            f'<span class="text-muted">{label}</span>'
+            f'<span class="font-mono {value_class}">{value}</span></div>'
+        )
+
+    rows.append(_row("Credit received", f"${total_credit:,.2f} total"))
+    if current_close_cost is not None:
+        rows.append(_row("Cost to close now", f"${current_close_cost:,.2f}"))
+    if short_pnl is not None:
+        cls = "text-gain" if short_pnl >= 0 else "text-loss"
+        sign = "+" if short_pnl >= 0 else ""
+        rows.append(_row("Short P&L", f"{sign}${short_pnl:,.2f}", cls))
+    if breakeven_per_sh is not None:
+        rows.append(_row("Effective basis (cost − credit)", f"${breakeven_per_sh:.2f}/sh"))
+    if called_away_pnl_per_sh is not None and called_away_pnl is not None:
+        cls = "text-gain" if called_away_pnl_per_sh >= 0 else "text-loss"
+        sign = "+" if called_away_pnl_per_sh >= 0 else ""
+        rows.append(_row(
+            "If called away at strike",
+            f"{sign}${called_away_pnl:,.2f} ({sign}${called_away_pnl_per_sh:.2f}/sh)",
+            cls,
+        ))
+    if daily_decay is not None:
+        rows.append(_row("Theta-decay $/day", f"${daily_decay:,.2f}/day remaining"))
+
+    metrics_html = (
+        '<div class="mt-3 pt-3 border-t border-edge">'
+        '<div class="text-[10px] uppercase tracking-wider text-muted font-semibold mb-2">'
+        'Key metrics</div>'
+        '<div class="space-y-1">'
+        + "".join(rows)
+        + '</div></div>'
+    )
+
+    # ── Expiry scenarios ──
+    scenarios = []
+    if spot is not None:
+        # OTM scenario
+        scenarios.append(
+            f"<strong>If OTM at expiry (spot &lt; ${strike:.2f}):</strong> "
+            f"shares stay; full premium ${total_credit:,.2f} kept."
+        )
+        # At-strike
+        scenarios.append(
+            f"<strong>If pinned at ${strike:.2f}:</strong> "
+            "uncertain assignment, broker discretion. Roll preemptively if you want certainty."
+        )
+        # ITM
+        if shares_avg > 0:
+            itm_pnl = (strike - shares_avg + credit_per_sh) * 100 * contracts
+            cls = "text-gain" if itm_pnl >= 0 else "text-loss"
+            sign = "+" if itm_pnl >= 0 else ""
+            scenarios.append(
+                f"<strong>If ITM at expiry (spot &gt; ${strike:.2f}):</strong> "
+                f"shares called away at ${strike:.2f}; locked combined P&L "
+                f'<span class="font-mono {cls}">{sign}${itm_pnl:,.2f}</span> on the {int(contracts)*100} covered shares.'
+            )
+    scenarios_html = (
+        '<div class="mt-3 pt-3 border-t border-edge">'
+        '<div class="text-[10px] uppercase tracking-wider text-muted font-semibold mb-2">'
+        'At expiry</div>'
+        '<ul class="space-y-1.5 text-xs text-mono leading-snug">'
+        + "".join(f'<li>{s}</li>' for s in scenarios)
+        + '</ul></div>'
+    )
+
+    return (
+        f'<div class="text-mono">'
+        # Action header
+        f'<div class="flex items-center gap-2 mb-2 flex-wrap">'
+        f'<span class="text-[10px] uppercase font-mono tracking-wider px-2 py-0.5 rounded font-semibold border {urgency_class}">'
+        f'{urgency_emoji} {_html.escape(action_label)}'
+        f'</span>'
+        f'<span class="text-xs text-muted font-mono">{sym} · covered call · {dte}d to expiry</span>'
+        f'</div>'
+        # Position summary
+        f'<div class="text-xs text-mono mb-3 leading-snug">'
+        f'{int(cc.shares_qty)} shares held at <span class="private-money">${shares_avg:.2f}</span>/sh '
+        f'avg cost; short <span class="font-semibold">{int(contracts)}x</span> '
+        f'<span class="font-semibold">{short.expiry} ${strike:.2f}C</span> '
+        f'at <span class="private-money">${credit_per_sh:.2f}</span>/sh credit.'
+        f'</div>'
+        # Rationale
+        f'<div class="mt-3 pt-3 border-t border-edge">'
+        f'<div class="text-[10px] uppercase tracking-wider text-muted font-semibold mb-2">'
+        f'Reasoning</div>'
+        f'{rationale_html}'
+        f'</div>'
+        # Metrics
+        f'{metrics_html}'
+        # Scenarios
+        f'{scenarios_html}'
+        f'</div>'
+    )
+
+
+def _render_pair_analysis(
+    analysis, recommendation=None, slug: str = "", symbol: str = "",
+    show_execute_button: bool = True,
+) -> str:
     """Render a PMCCAnalysis (+ optional TradeRecommendation) as dark-theme HTML.
 
     Layout:
@@ -2116,9 +2894,12 @@ def _render_pair_analysis(analysis, recommendation=None, slug: str = "", symbol:
     # Approve & Execute (primary) + Defer 24h (secondary) buttons.
     # Only render when the action is something we can actually translate
     # into orders. For 'hold' / 'watch' there's nothing to approve/defer.
+    # Callers that have no automation pipeline (e.g. IRA dashboard which
+    # is read-only — user executes manually in Robinhood) pass
+    # show_execute_button=False to hide the buttons.
     button_html = ""
     actionable = action_raw not in ("", "hold", "watch")
-    if actionable and slug and symbol:
+    if actionable and slug and symbol and show_execute_button:
         button_html = (
             '<div class="mt-4 pt-3 border-t border-edge space-y-2">'
             # Approve & Execute (primary)

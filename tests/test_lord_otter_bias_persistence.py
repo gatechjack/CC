@@ -5,7 +5,7 @@ succession (xvfb fix, .tokens dir fix, P&L deploy, etc.) and discovered
 that every restart wiped Lord Otter's in-memory `state.bias` latch. Since
 `bias_bull` is a transition signal that only fires on regime-change
 crosses (not every bar), the strategy went silent for 3+ hours after
-the bias was lost — every pink_box_bull / cvd_bull_flip arrived to a
+the bias was lost — every spoon_bull / cvd_bull_flip arrived to a
 `bias=None` agent and got dismissed for "no bias alignment".
 
 Fix: persist the bias latch in the `agent_state` SQLite table, restore
@@ -144,10 +144,10 @@ def test_bias_bear_signal_triggers_persistence(lord_otter_yaml, initialized_db):
 
 
 def test_non_bias_signal_does_not_persist(lord_otter_yaml, initialized_db):
-    """Signals like pink_box_bull don't update bias and shouldn't write."""
+    """Arming signals like spoon_bull don't update bias and shouldn't write."""
     agent = _make_agent(lord_otter_yaml, initialized_db)
     state = agent.get_state("BTC/USD")
-    agent._refresh_state_from_signal(state, "pink_box_bull", "long", datetime.now(timezone.utc))
+    agent._refresh_state_from_signal(state, "spoon_bull", "long", datetime.now(timezone.utc))
 
     # No bias change
     assert state.bias == "unknown"

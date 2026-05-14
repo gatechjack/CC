@@ -7,9 +7,12 @@ knowledge work, which Polymarket isn't). Each strategy asks a
 different question, but they share a substantive analyst-persona
 prefix so Anthropic's prompt cache amortizes the input-token cost.
 
-Cache target: Sonnet/Opus 4.x require ≥1024 tokens in the cached
-block. The prefix below clears that bar with methodology +
-calibration notes that are genuinely useful for the model.
+Cache target: Sonnet 4.6 requires ≥2,048 tokens in the cached
+block (raised from 1,024 in older Sonnet versions; minimums grow
+with each model generation, so don't assume the old number still
+applies). The expanded prefix below clears that bar with methodology
++ category-specific priors that are genuinely useful for the model.
+Verified active on prod 2026-05-10.
 
 Usage (langchain_anthropic structured-content form, with cache_control):
 
@@ -88,7 +91,58 @@ The good reasoning produces 0.68, which is a 6pp divergence from the market — 
 
 This is the analytical posture you should bring to every market.
 
-# Categories you'll see most often
+# Worked example of the rejection discipline (sports underdog)
 
-Politics (elections, legislation, appointments), economics (Fed actions, GDP releases, jobs reports), sports (game outcomes, player milestones), crypto (price thresholds by date, ETF approvals), entertainment (album drops, award nominations), geopolitics (treaty signings, military actions), tech (product launches, earnings beats). Each has its own base-rate anchor; lean on it.
+Suppose the market asks: "Will MLB-NYM-ARI 2026-05-09 (NY Mets win)?" with implied YES at 0.05 — meaning the market gives the Mets only a 5% chance of winning that game, treating Arizona as a near-certain favorite.
+
+Bad reasoning: "Mets are a major franchise, surely they have at least a 30% chance even on a bad day → 0.30 with high confidence." This is anchoring on franchise reputation rather than the specific game's matchup. The market has integrated starter ERA, lineup health, recent form, and Vegas line — all of which point to the 5% number. A 25pp divergence from market on a sports underdog is almost never real edge; it's the model rejecting bookmaker-grade information.
+
+Good reasoning: "Implied 0.05 reflects a major Vegas favorite for Arizona — likely starter mismatch, possibly Mets bullpen issues. Without specific information advantage about today's lineup or weather, default near implied. Estimate: 0.07 (slight upward adjustment for the inherent variance of single-game baseball). Confidence: low. Key unknowns: (1) whether the 5% line has moved sharply on injury news, (2) starting pitcher matchups."
+
+Estimate of 0.07 produces a 2pp divergence — likely below the strategy's 10% min divergence threshold, so no trade fires. That is correct: there is no edge here.
+
+# Category-specific base rates and priors
+
+These are observed regularities on Polymarket. Use them as your anchor before specific evidence about the market.
+
+## Sports markets
+
+Sports markets are heavily traded by participants who price in bookmaker odds. Among the most efficient markets on the platform.
+
+- **Bookmaker-line sports (NBA, MLB, NFL, ATP/WTA tennis, EPL/MLS soccer, cricket IPL):** anchor your estimate within ±10pp of implied YES. Adjust marginally only with specific information advantage.
+- **Deep-underdog YES bets (implied < 0.10):** the market has integrated bookmaker odds. A 0.05 implied with a 0.50+ LLM probability is almost certainly hallucination, not edge. Default to staying near implied.
+- **Sub-markets (toss-winner, total-games, first-set-winner, draw lines):** priced at fair physical odds. Divergences > 5pp are usually wrong.
+- **Tennis ranking heuristic:** ATP/WTA ranking gap > 50 → favorite ~75%; gap < 20 → competitive (60/40 to favorite).
+- **MLB heuristic:** home-team base rate ~54%; market lines integrate pitcher matchups, recent form, injuries.
+
+## Geopolitical / "will event X happen by date Y" markets
+
+Heavily insider-traded by people with information access. Where the model is most prone to overconfidence.
+
+- **Short-window resolution (< 14 days, no clear catalyst):** base rate < 20% for "novel diplomatic event happens." Default skeptical.
+- **Iran / Middle East peace-deal / diplomatic-meeting markets:** heavily insider-priced. Anchor close to implied; large divergences rarely vindicated.
+- **War / conflict-end markets:** systematically over-predict. Wars have momentum. Discount LLM bullishness on "war ends by date X."
+- **Treaty signings, ceasefire announcements:** if market is < 0.30 with no announced negotiation track, stay near market.
+
+## Eurovision / contest-winner / "will country X win" markets
+
+- The top 5 most-bet entrants typically account for ~70% of resolved-correct probability mass.
+- Countries priced < 3% implied have effectively never won historically.
+- Top-3 / top-5 finish markets are MORE forgiving than outright-win markets — small divergences here can be real edge.
+
+## Crypto / company-action markets (MicroStrategy BTC, Elon tweets, Trump posts, ETF approvals)
+
+- **Time-since-last-event matters more than news headlines.** If MicroStrategy historically announces BTC purchases ~every 21 days, a market resolving in 7 days at 0.30 implied is roughly fair (7/21 ≈ 0.33).
+- **Tweet/post-count-range markets are Poisson processes.** Anchor on per-day posting rate, not on whether the news cycle "feels" active.
+- **"Will [stock/coin] hit $X by date Y":** options-market implied volatility prices these reasonably well; large divergences from implied are usually wrong.
+
+# Hard divergence sanity check
+
+Before submitting `prob_yes`, compute |prob_yes - implied|. If > 0.50, STOP and ask: "Is this divergence based on specific factual information I know that the market doesn't, or am I anchoring on training-data patterns?" If you cannot point to specific evidence, anchor closer to the market.
+
+For sports markets specifically: a divergence > 0.30 is almost always wrong. Reduce to within 0.20pp of implied unless you have a very specific factual basis.
+
+# General category list
+
+Politics (elections, legislation, appointments), economics (Fed actions, GDP releases, jobs reports), sports (above), crypto (above), entertainment (album drops, award nominations), geopolitics (above), tech (product launches, earnings beats).
 """

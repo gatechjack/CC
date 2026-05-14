@@ -56,10 +56,8 @@ log = logging.getLogger(__name__)
 KNOWN_SIGNALS = {
     # Primary triggers
     "otter_buy", "otter_sell",
-    # Divergence early-warning
+    # Divergence early-warning / arming
     "spoon_bull", "spoon_bear",
-    # Reversal arming
-    "pink_box_bull", "pink_box_bear",
     # Multi-TF aligned premium
     "water_buy_small", "water_buy_large",
     "water_sell_small", "water_sell_large",
@@ -75,13 +73,13 @@ KNOWN_SIGNALS = {
 # Each direction maps "bull" signals → long, "bear" signals → short.
 # We use this sign to test bias-alignment.
 _BULL_SIGNALS = {
-    "otter_buy", "spoon_bull", "pink_box_bull",
+    "otter_buy", "spoon_bull",
     "water_buy_small", "water_buy_large",
     "money_bag_bottom",
     "cvd_bull_flip", "bias_bull", "ribbon_exhaustion_bull",
 }
 _BEAR_SIGNALS = {
-    "otter_sell", "spoon_bear", "pink_box_bear",
+    "otter_sell", "spoon_bear",
     "water_sell_small", "water_sell_large",
     "money_bag_top",
     "cvd_bear_flip", "bias_bear", "ribbon_exhaustion_bear",
@@ -103,8 +101,8 @@ def signal_direction(signal: str) -> str:
 
 @dataclass
 class ArmedState:
-    """Set when Pink Box / Spoon fires; expires after N bars."""
-    source: str             # "pink_box" | "spoon"
+    """Set when a Spoon divergence fires; expires after N bars."""
+    source: str             # "spoon"
     armed_at: datetime
     expires_at: datetime
     direction: str          # "long" | "short"
@@ -704,17 +702,17 @@ class LordOtterAgent:
         elif signal == "ribbon_exhaustion_bear":
             state.ribbon_state = "exhaustion"
 
-        # Arming updates (Pink Box + Spoon)
-        if signal in ("pink_box_bull", "spoon_bull"):
+        # Arming updates (Spoon divergence)
+        if signal == "spoon_bull":
             state.armed_long = ArmedState(
-                source=signal.split("_")[0] + ("_box" if "pink" in signal else ""),
+                source="spoon",
                 armed_at=ts,
                 expires_at=ts + self._arming_window_duration(),
                 direction="long",
             )
-        elif signal in ("pink_box_bear", "spoon_bear"):
+        elif signal == "spoon_bear":
             state.armed_short = ArmedState(
-                source=signal.split("_")[0] + ("_box" if "pink" in signal else ""),
+                source="spoon",
                 armed_at=ts,
                 expires_at=ts + self._arming_window_duration(),
                 direction="short",

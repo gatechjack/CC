@@ -497,6 +497,19 @@ async def _process_lord_otter_alert(
     `agent_error` audit row + Telegram-notifies, so silent crashes are
     impossible.
     """
+    # ── BitUnix Phase 3 division agent (additive, never raises) ──────
+    # Phase 3.0 (2026-05-10): bias-only observer.
+    # Phase 3.1 (this): full ladder + ProposedOrder + paper-mode auto-execute
+    # via observe_and_decide. Wraps in try/except so any failure here can't
+    # disrupt the existing real-money path. Per memory
+    # `trading_corp_bitunix_phase3_confluence_model`: no per-trade HITL
+    # for bitunix_futures — risk caps are the gate, not approval.
+    if deps.bitunix_observer is not None:
+        try:
+            await deps.bitunix_observer.observe_and_decide(payload, source="lord_otter")
+        except Exception as e:
+            log.warning("bitunix_observer (otter): %s", e)
+
     try:
         # ── Broker snapshot for sizing + held-qty lookup ─────────────
         snap = None
@@ -727,6 +740,13 @@ async def _process_market_cypher_alert(
     audit-row tags ('market_cypher' vs 'lord_otter') and Telegram-notify
     formatters; the orchestration is identical.
     """
+    # ── BitUnix Phase 3 division agent (additive, never raises) ──────
+    if deps.bitunix_observer is not None:
+        try:
+            await deps.bitunix_observer.observe_and_decide(payload, source="market_cypher")
+        except Exception as e:
+            log.warning("bitunix_observer (cypher): %s", e)
+
     try:
         # ── Broker snapshot ──────────────────────────────────────────
         snap = None

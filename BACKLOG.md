@@ -8,6 +8,296 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P3 — Pink Box S/R confluence integration  *(NEW — 2026-05-10)*
+
+Pink Box is a separate Otter product: a static BTC chart annotated with key support/resistance levels. NOT a TradingView alert — Board receives Pink Box updates as image uploads ~2-3 times/day. (Code cleanup completed 2026-05-10: `pink_box_bull`/`pink_box_bear` removed from `lord_otter.py` `KNOWN_SIGNALS`, `bitunix_futures_observer.py` trigger sets, `strategies.yaml` weights, and tests/scripts. Any future stray webhook with that signal name is now an unknown-signal reject.)
+
+**Use case:** add S/R awareness to the bitunix_futures tier classifier. When an Otter 3m trigger fires NEAR an active Pink Box level (within e.g. ±0.3% of price) AND the trigger direction matches the level type (bull trigger near support, bear trigger near resistance), boost the tier by one notch — STANDARD → PREMIUM, or grant a flat "PINK_BOX_CONFLUENCE" attribute the order proposer respects with sizing.
+
+**Implementation sketch (when picked up):**
+1. **Ingestion path:** decide between (a) manual entry of level prices via a small CLI / web form / paste-into-config, or (b) OCR the uploaded images. (a) is simpler; (b) is sexier but flaky for low cadence. Default to (a).
+2. **New table `pink_box_levels`:** `(uploaded_at TEXT, expires_at TEXT, level_price REAL, level_type TEXT [support/resistance], strength TEXT [strong/medium/weak], notes TEXT)`. Levels expire on next upload (or after 48h, whichever first — S/R levels go stale in volatile markets).
+3. **Observer integration:** at trigger time, query active levels; check `abs(entry_price - level_price) / entry_price < 0.003`; if yes + direction matches, set `extra["pink_box_confluence"] = level_type`.
+4. **Tier classifier patch:** consume the flag — either bump tier or apply a conviction multiplier.
+
+**Priority:** P3 — not blocking Phase 3 or Phase 4. Quality-of-signal enhancement that's only valuable AFTER we've got real BitUnix paper trades flowing and can A/B test "with vs without S/R confluence" on actual outcomes.
+
+---
+
+## ✅ DONE 2026-05-11 — Kalshi K3 Copy Trading + Polymarket Copy Trader (both shipped same day)
+
+**Kalshi K3 — SHIPPED 18:17 UTC, paper-mode live + bug-fix at 18:30 UTC.** Apify Starter $29/mo Bronze data source (saswave leaderboard + profile actors). 4 selected whales from Wilson-LCB × ROI × category scoring (smedtoshi, NovaRex, tom14cat14, 9187234). 5-min poll cadence. Side detection via Kalshi public trade-tape size-match (free, anonymous). Bug surfaced + fixed mid-session: `trade_tape_fetcher` was being set to the kalshi_copy_trading division's PaperBroker (no `get_market_trades`); now lazy-resolves a real KalshiBroker from `data_exec.brokers`. **First-day signal: 12 `would_have_placed` events observed.** Visibility-gradient finding: only ~7% of top-of-leaderboard whales expose closed_positions; mid-tier rank 20-100 is the actual addressable pool. Memory: `trading_corp_kalshi`.
+
+**Polymarket Copy Trader — SHIPPED 20:17 UTC, paper-mode live.** Re-prioritized from "deprioritized" the same day K3 shipped. Polymarket's free Data API (`data-api.polymarket.com/v1/leaderboard` + `/activity` + `/positions`) makes this $0/mo recurring. 12 selected whales via Rule B (top-2 per category × 5 working cats + top-2 global = 12). 60s poll cadence. Side detection EXPLICIT — `/activity` carries side + outcome_index directly (no Kalshi-style inference). USDC sizing tiers $1/$2/$5. New `division` column on `polymarket_round_trips` lets the resolver pipe both arbitrage + copy_trading round-trips into one table. Top whale `248188374`: 197 resolved, 100% WR, $133K lifetime P&L. Cold-start fired clean for 11/12 whales (Talvez10 had empty activity feed; will baseline next cycle). Memory: `trading_corp_polymarket`.
+
+**Cross-venue reuse landed:** `kalshi_whale_stats.py` is venue-agnostic by design (composite = Wilson LCB × edge × category bonus). Polymarket extends it with `wilson_lcb_95_weighted` + `time_weighted_outcomes` (Kish's effective sample size, configurable half-life, default 30d). K3 can opt into time-weighting via a future adapter — non-breaking.
+
+**Open follow-ups (queued, not blocking):**
+- K3 Apify spending limit (~$300/mo cap in Apify dashboard) — Jack's action, ~2 min
+- "Whales" dashboard tab for both venues — surface selected_whales + their open positions + our copies + resolved P&L
+- Multi-leg market resolver extension — `polymarket_resolver._compute_round_trip_row` currently only handles binary YES/NO. Multi-leg sports trades (Spurs/Cavaliers/etc.) land in `audit_event` but skip the resolver. Small extension (~1-2h).
+- Hashdive email response (pending) — if they come back cheap with programmable API, refactor K3 data source
+
+---
+
+## P0 NEXT — Observation + dashboard parity (2026-05-12)
+
+Both copy-trading bots are live and accumulating signal. The right next move is **observation + dashboard tools to make the signal visible**, not another strategy build. K3 already fired 12 `would_have_placed` events on day 1; Polymarket cold-started 12 whales and will emit on next poll cycle as any of those whales places a new bet.
+
+**P0a — Whales dashboard tab (~3-4h).** Both K3 and Polymarket need a UI surface. The PM Dashboard architecture (`pm_dashboard_architecture` memory) supports new tabs cleanly. Build either:
+- **Cross-venue Whales tab** at `/prediction-markets/{division}` showing: selected whale roster + their currently-open positions + our copies (entry / current / paper P&L) + resolved round-trips. Conditional rendering (only shows when division in {kalshi_copy_trading, polymarket_copy_trading}).
+- Per-venue tabs if the data shapes diverge enough.
+
+**P0b — Multi-leg resolver extension (~1-2h).** Polymarket copy-trader is emitting copies on multi-leg sports markets (Spurs/Cavaliers/etc.) that won't auto-resolve. The existing `_compute_round_trip_row` only handles binary YES/NO. Extension: when activity row's `outcome_index` matches resolution's `winning_outcome_index`, mark as win regardless of the human-label outcome string.
+
+**P0c — Validate the copy-trading thesis with real data.** Watch K3 + Polymarket paper PnL accumulate. Goal: ≥10 resolved round-trips per division before deciding next action. Decision tree:
+- If paper PnL trends positive on both → consider scaling whale count (K3: 4 → 12, requires Apify config change only) + tune cadence
+- If only one venue produces positive EV → focus there
+- If neither → step back, re-evaluate selection algorithm or seed-list approach
+
+**Open per-bot follow-ups (P1, queue as needed):**
+- K3: Apify spending limit (Jack's action), expand whale count if BRONZE budget allows after a week of observation
+- Polymarket: time-weighted scoring half-life tuning, observe if 60s cadence is fast enough or excessive
+- Both: cost monitoring — K3 burn at Apify, Polymarket free but watch any rate-limit signals
+
+---
+
+## P0 (parallel) — BitUnix Phase 3.2.x continues
+
+Parallel session has been iterating BitUnix Phase 3.2 → 3.2.3 (price-action factors wired + score dashboard panel) and is the "active build for that team" continuing into 2026-05-12. Next is Phase 3.2b (multi-leg scale-out execution) per prior BACKLOG. Not the copy-trader session's scope.
+
+**Data source — GREEN.** Kalshi shipped a public leaderboard at `kalshi.com/social/leaderboard` (timeframe-filterable: weekly / monthly / all-time). Opt-in profile pages expose positions + PnL. Scrape-only (no official API).
+
+**Seed list of ~7 named whales** as durable fallback if scraping breaks: `@Domahhhh`, `@GaetenD`, `@Foster`, `@cobybets1`, `@theduckguesses`, `@debl00b`, `@PredMTrader`.
+
+**Strategy shape:**
+- Periodic scrape of leaderboard + profile pages.
+- Identify position deltas vs last scrape (new entries, exits, sizing changes).
+- Mirror at scaled-down size (e.g. fixed $1/leg or fixed % of whale's bet size, capped).
+- Same risk gate as other Kalshi strategies.
+- Paper mode initially; live mode gated on observed positive-EV.
+
+**Module layout (per memory `trading_corp_kalshi`):**
+- `trading_corp/data/kalshi_leaderboard_scraper.py` — leaderboard + profile fetcher
+- `trading_corp/agents/strategies/kalshi_copy_trader.py` — strategy
+- New leaderboard view component in the prediction-markets dashboard (genuinely new — no precedent in Trading Corp; will be a 4th tab? side panel? TBD on first design conversation)
+
+**Estimated 5-7h focused work.** Largest risk is scraping fragility (HTML changes break it); seed list is the safety net.
+
+**Prereq scaffold ALREADY in place:**
+- `kalshi_copy_trading` division registered in divisions.yaml (standby)
+- Tile + dashboard URL exist (currently empty-state); auto-populates as strategy writes data
+- Dashboard data layer (PMOpenTrade, PMRoundTrip dataclasses) is venue-aware via slug prefix; no changes needed when K3 starts writing to kalshi_round_trips
+- Cross-venue dashboard `/prediction-markets/kalshi_copy_trading` already works (renders empty Open/History today)
+
+### Other queued Kalshi work (lower priority)
+
+**K4 — Multi-outcome sum<1 detector (~2-3h).** Add to existing `kalshi_temporal_bucket_arb.py`. For events with N>1 markets where outcome space partitions (sum of YES_ask should = $1), detect when sum < $1 - threshold. Buy YES on every leg → guaranteed payout $1. Different from BUCKET — multi-outcome events have N candidates, BUCKET has time-bucketed outcomes. Same arb math, different market shape. Small / self-contained — good warmup task if K3 design conversation runs long.
+
+**K5+ — Live order placement on Kalshi (gated).** Replaces read-only `KalshiBroker` with `KalshiLiveBroker(Broker)` subclass exposing `place_order` via pykalshi. Gated on (a) observed positive-EV in paper across enough cycles, (b) Board greenlight, (c) tested cancel/amend semantics. ~4-6h. Follows BitUnix Phase 4 pattern.
+
+**K2.4 dashboard expansion (Positions / Activity / Report tabs) — DEFERRED.** Portfolio + Open + History tabs shipped 2026-05-11. The remaining tabs from the BACKLOG vision below need data to densify. Best done once ~30+ resolved kalshi round-trips exist.
+
+**Cost monitoring:** polymarket K=20 every 30s + kalshi_llm K=20 every 60s, both with Semaphore(8). Zero 429s observed post-K7. Recent overnight cost: ~617 LLM calls / 5h ≈ $2.50.
+
+---
+
+## P1 — BitUnix Phase 3.2 confluence rule tuning  *(NEW 2026-05-11; deferred by Board for later session)*
+
+Phase 3.2 confluence score accumulator + 3.2.2 PA factors + 3.2.3 panel + 3.2.4-equivalent IRA-analysis-style depth all shipped today. The rule decision tree in `_analyze_ira_covered_call` and the tier thresholds in `bitunix_confluence.py` are first-draft. Board flagged ≤2 DTE / ITM-roll-urgency threshold as one to reconsider — wants the trade fired earlier (e.g. ≤4 DTE + ITM = elevated roll vs. current "watch + preview legs"). When picked up, also revisit:
+
+- **Cooldown duration** (30 min currently) — too long if BTC is fast-moving and intra-bar signal shifts are significant.
+- **Tier thresholds** (PREMIUM ≥12, STANDARD ≥8) — tuned from a 9-day backtest; re-tune as more live data accumulates.
+- **Guard penalty brackets** (sell_on_rush / buy_on_fall % thresholds) — currently kicks in at 1% / 3% / 5%; may want finer granularity now that PA factors are live.
+- **IRA covered-call rules** in `_analyze_ira_covered_call`: when does WATCH become ROLL? Currently triggered only at ≤2 DTE or ≥85% profit. Should also consider profit-take at ≥50% if DTE is "long" (e.g. 21+ DTE = let theta work; 7-21 DTE = ≥50% profit = good close candidate).
+
+**Why deferred:** Rule logic is high-leverage; rushing it adds noise to the backtest baseline. Better to accumulate ~30+ live paper trades + a calibration session looking at the audit log of fired/skipped decisions before adjusting.
+
+**Files:** `config/strategies.yaml` (`bitunix_futures.scoring` block), `trading_corp/agents/strategies/bitunix_confluence.py`, `trading_corp/web/routes.py` (the `_analyze_ira_covered_call` action picker).
+
+---
+
+## P3 — Replay-loop bar-buffer optimization  *(NEW 2026-05-11; nice-to-have)*
+
+When a BitUnix paper trade's `still_open` row gets re-evaluated every 15min, the loop currently fetches the **full** `max_hold_seconds` worth of bars each time (1440 bars for a 24h hold = ~2 BitUnix API calls × 1000-bar pages). Wasteful — could cache the prior fetch + only fetch new bars since the last check. Saves ~96 redundant API calls per trade per day.
+
+Not blocking — the BitUnix kline endpoint is public + uncapped + fast — but worth doing if we add a lot more crypto strategies that share the replay loop.
+
+**Files:** `trading_corp/agents/paper_trade_replay.py` — add a `_last_fetched_until` column on `paper_trade_record` + only fetch bars since that timestamp on subsequent ticks.
+
+---
+
+## ✅ DONE — BitUnix Phase 3.2 confluence score accumulator (3.2.1 + 3.2.2 + 3.2.3)  *(2026-05-11 17:52 → 18:23 UTC)*
+
+Replaces the Phase 3.1 single-bar `_tier_for()` classifier with a multi-bar score accumulator that fixes the recurring "confluence builds across bars but one snapshot misses it" problem. Triggered by a missed PREMIUM SELL at 16:42 UTC today where 4h-bear bias + multiple Cypher A/B bear signals + `money_bag_top` + simultaneous `cvd_bear_flip` should have fired but didn't — the single-bar classifier saw CVD as neutral because the cvd_bear_flip arrived in the same second as the trigger.
+
+**Three sub-phases, three deploys, one cohesive build:**
+
+**Phase 3.2.1 (17:52 UTC):** Score accumulator engine. Every webhook signal appends to a new `bitunix_signal_ledger` table with per-factor TTL. On each alert the scorer pre-filters live signals + dedupes by signal_name (most-recent fire wins) + sums weights per side + applies guards + maps net_score to PREMIUM (≥12) / STANDARD (≥8) / WEAK (≥5) / SKIP. New `bitunix_score_cooldown` table for the 30-min same-side cooldown gate. New `bitunix_score_decided` audit kind with full breakdown. `bitunix_futures.scoring.enabled: true` flag controls Phase 3.1 vs 3.2 dispatch — observer keeps Phase 3.1 code in-place for fast rollback. **First STANDARD SELL fired at 18:00:07 UTC** — exactly as designed — paper short opened at $81,902.50 (qty 0.0038 BTC, 0.5% effective risk).
+
+**Phase 3.2.2 (18:03 UTC):** Wired price-action factors (`above_session_vwap`, `below_session_vwap`, `higher_highs_4h`, `lower_lows_4h`, `volume_above_20bar_avg`) + guard penalties (`sell_on_rush`, `buy_on_fall`) into the live score path. New `trading_corp/data/bitunix_price_context.py` with pure helpers (session VWAP from 3m bars, 4h resampling for HH/LL, 60-min pct_change, 20-bar volume avg). Bumped `LiveBarCache.max_bars: 60 → 500` (BitUnix API actually caps at 200, which still covers ~10h — enough for all PA factors). Verified live: outside-bar case at 18:15 UTC correctly produced both HH_4h+2 buy and LL_4h+2 sell contributions in the same evaluation.
+
+**Phase 3.2.3 (18:23 UTC):** Live dashboard panel at `/division/bitunix_futures`. New `partials/bitunix_score_panel.html` (Tailwind + htmx 30s auto-refresh) surfaces last evaluation tier/side/net + buy+sell contribution breakdown + live PA flags + per-side cooldown countdown + bar cache health + recent paper fires + recent evaluations (with outcome color-coding). New `build_bitunix_score_view(db_url, deps)` data builder in `trading_corp/web/data.py` returns None when scoring config unavailable so the partial gracefully no-ops on dependency drift.
+
+**Backtest verdict (Apr 30 – May 9, 625 alerts, tuned config):** 21 paper trades, 42.9% win rate, +0.286 R avg per trade, +6.0 R total, +0.18% return, 0.25% max DD. STANDARD tier carries edge (+0.33 R, 44% wins, n=18); WEAK band killed via `min_score_to_fire: 8` (was -0.16 R noise). Context: BTC was up 5.79% in window. Saved at `data/backtest_runs/bitunix_20260511T173504/`.
+
+**Files shipped (new):**
+- `trading_corp/agents/strategies/bitunix_confluence.py` — pure-function futures scorer
+- `trading_corp/agents/strategies/btc_accumulator.py` — scaffold module dependency (was local-only, now on prod)
+- `trading_corp/data/bitunix_price_context.py` — PA helpers
+- `trading_corp/web/templates/partials/bitunix_score_panel.html` — dashboard panel
+- `scripts/backtest_bitunix_confluence.py` — replay tool (local-only)
+
+**Files shipped (modified):**
+- `config/strategies.yaml` — new `bitunix_futures.scoring` block (34 factors + thresholds + guards)
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — score path (additive, behind flag)
+- `trading_corp/main.py` — loads scoring config + passes to observer + bumps `max_bars=500`
+- `trading_corp/web/data.py` — `build_bitunix_score_view()` + `DivisionViewSnapshot.bitunix_score` field
+- `trading_corp/web/templates/division.html` — conditional include for bitunix_score panel
+
+**Deploy lessons** (full detail in `runbooks/deploy_log.md` 2026-05-11 17:52 UTC + memory `feedback_surgical_edits_over_whole_file_scp`):
+- Never `scp` an entire file when a surgical edit will do. First Phase 3.2.1 deploy crash-looped because local `main.py` had unrelated in-flight changes (kalshi_copy_trader import not yet shipped). Recovery: rollback + pull-prod-locally + python-patch only the 19 lines we needed + scp back. Cost: ~3 min of restart noise.
+- `btc_accumulator.py` was scaffold for the deprecated coinbase_spot strategy. When `bitunix_confluence.py` imported from it, prod hit ModuleNotFoundError. Pushed it to prod as the second-step recovery — pure-function, no side effects on import.
+
+**Backup tags:**
+- `pre-bitunix-score-20260511-1747` (Phase 3.2.1 — strategies.yaml + observer.py)
+- `pre-bitunix-score-20260511-1747-v2` (Phase 3.2.1 — main.py, post-recovery)
+- `pre-bitunix-322-20260511-1810` (Phase 3.2.2 — main.py + observer.py)
+- `pre-bitunix-323-20260511-1820` (Phase 3.2.3 — data.py + division.html)
+
+Memory: `trading_corp_bitunix_vision.md` updated through Phase 3.2.3. `trading_corp_bitunix_phase3_confluence_model.md` updated with score-accumulator design + factor table + tier thresholds. New `feedback_surgical_edits_over_whole_file_scp.md`.
+
+---
+
+## P0 NEXT — BitUnix Phase 3.2b: multi-leg scale-out execution  *(2026-05-10; queued — prerequisite "1-3 real paper trades" now met as of 2026-05-11 18:00 UTC, but currently deprioritized in favor of Robinhood IRA work)*
+
+Phase 3.2a shipped the foundation today (live BitUnix 3m bar cache + real ATR + paper_trade_record writes so existing replay loop resolves bitunix paper trades). Phase 3.2b adds the multi-leg take-profit strategy the Board described:
+
+**Strategy (decided 2026-05-10 in design conversation):**
+- **Leg 1 (~25% size)** off at +0.5R → move stop on remaining 75% to breakeven
+- **Leg 2 (~50% size)** off at the main TP target (default 2R)
+- **Leg 3 (~25% size)** rides with trailing stop (e.g., 2× ATR trailing) for the home run
+
+**Why this strategy:** captures partial profit early to "lock breakeven" psychology + financial benefit; lets remainder participate in extended trends; improves win rate dramatically (most trades end positive even if Legs 2/3 stop out); reduces avg winning trade size but with higher consistency.
+
+**What's already built (foundation laid in Phase 3.1):**
+- `ProposedOrder.extra.tp_plan` schema is multi-leg-ready — currently a single-leg list `[{fraction: 1.0, target_r: 2.0, stop_action: "noop"}]`
+- Existing `paper_trade_replay.py` is strategy-agnostic; walks `paper_trade_record WHERE result IS NULL`
+
+**What 3.2b adds:**
+- Order proposer populates the 3-leg `tp_plan`
+- Schema extension on `paper_trade_record.extra` to track multi-leg state (per-leg fill_price, fill_ts, status; aggregate result only when all legs done)
+- Replay loop upgrade — walk legs, update partial fills in-place, modify stop after Leg 1 hits, run trailing stop for Leg 3, only mark `result` when all legs resolved
+- Telegram updates on partial fills (optional but nice; informs the Board)
+- Tests for: 3-leg fill cascade, trailing-stop logic, stop-modification-after-leg1, all-legs-stopout edge case
+
+**Estimated 4-5 hours of focused work.** Honest scope: this is the most complex thing left in the BitUnix roadmap before Phase 4.
+
+**Prerequisite:** observe Phase 3.2a working in the wild first. Need at least 1-3 real BitUnix paper trades through paper_trade_record + replay loop before building scale-out on top. If Phase 3.2a's plumbing has a bug, 3.2b inherits it.
+
+**Files to touch:**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — `_build_proposal` populates real 3-leg tp_plan
+- `trading_corp/agents/paper_trade_replay.py` — multi-leg-aware resolution
+- `trading_corp/persistence/models.py` (or extra-only) — schema for multi-leg state
+- `tests/test_bitunix_futures_observer.py` + `tests/test_paper_trade_replay.py` — extend
+
+---
+
+## ✅ DONE — PM Dashboard + analysis surfacing + structural-arb titles  *(2026-05-11 04:00 → 05:30 UTC)*
+
+Cross-venue prediction-markets dashboard shipped, iterated through 5 deploys based on real-use feedback:
+
+- **04:04 UTC — Initial PM dashboard:** new route `/prediction-markets/{division?}` parameterized by division. Single template covers all 4 active divisions + the "All Prediction Markets" combined view. 6 summary cards (equity / today's P&L / win rate / resolved / open / realized). 2 tabs (Portfolio + History). Cross-venue data layer normalizes polymarket_round_trips + kalshi_round_trips into common dataclasses (PMRoundTrip, PMOpenTrade, PMEquityPoint, PMSummary). Home-page tiles upgraded with performance overview (win % · resolved · pending · realized P&L). 18 new tests; 87 total passing.
+- **05:02 UTC — HTMX swap + Open trades tab + kalshi_copy_trading:** dropdown's full-nav was 60-70s blank per division switch (Authelia forward_auth re-validating every full nav through Caddy). Switched to HTMX swap via new partial endpoint `/partials/prediction-markets/{division?}` that skips `build_command_center` — **23ms vs 2.68s**. New Open tab lists pending `would_have_placed` rows (cross-venue). `kalshi_copy_trading` standby placeholder added to divisions.yaml so it auto-appears in dropdown ahead of K3.
+- **06:01 UTC — Expandable rows + LLM analysis surfacing:** clickable rows expand inline with confidence pill + full LLM reasoning + key unknowns + trade context. `kalshi_resolver` enriched to copy `llm_reasoning` + `key_unknowns` into `kalshi_round_trips.extra_json` so historical rows render full analysis going forward. 5 new tests; 92 total.
+- **05:20 UTC — Structural arb event_title (2-deploy fix):** added `event_title` to ProposedOrder.extra in tail_price + temporal_bucket strategies (deploy 1) → still missing from audit payload because `main.py` orchestrator loops use a fixed allowlist (deploy 2 added event_title there too). Lesson saved: memory `trading_corp_audit_payload_allowlist`. Verification pending — waiting on next 5-min scan after restart.
+
+**State at end of session (2026-05-11 ~05:30 UTC):** 4 strategies + 3 K2.4 background tasks + dashboard all running in prod paper-mode. PM dashboard surfaces full LLM analysis on each row. Cross-venue All mode aggregates correctly. 92 tests passing.
+
+**Backup tags this sub-sprint:**
+- `pre-pm-dashboard-20260511-0410` (initial dashboard)
+- `pre-pm-dashboard-htmx-20260511-0500` (HTMX swap + Open tab + kalshi_copy_trading)
+- `pre-pm-analysis-rows-20260511-0600` (expandable rows + resolver enrichment)
+- `pre-structural-event-title-20260511-0700` (strategy event_title)
+- `pre-event-title-mainpy-20260511-0520` (main.py allowlist fix)
+
+Memory: `pm_dashboard_architecture` NEW. `trading_corp_audit_payload_allowlist` NEW. `trading_corp_kalshi` updated through structural-event-title.
+
+---
+
+## ✅ DONE — K7 polymarket semaphore + time-horizon tune A  *(2026-05-11 03:23 UTC)*
+
+Polymarket K=20 fan was uncapped — bit us at 01:02 UTC when polymarket + kalshi_llm fanned simultaneously (~38 concurrent connections, Anthropic 429s). Added `asyncio.Semaphore(8)` to `polymarket_arbitrage.run_scan_cycle` mirroring the kalshi_llm pattern (memory `anthropic_concurrent_connections`). Configurable via `strategies.yaml` `llm_concurrency: 8`.
+
+Tune A (deferred until K7 was live): lifted polymarket `time_horizon_max_days: 7 → 14`. Pre-deploy: 0 survivors/cycle for hours (universe of 46 markets entirely filtered out by 7d horizon + 6h cooldown saturation). Post-deploy: 56 pre-filter → 2 survivors → 2 LLM calls fired cleanly. Diagnosis: cooldown + small universe + horizon all compounded; 14d is conservative but resurrected the strategy. Kalshi LLM 15-30d bucket had been producing 54% of overnight trades at comparable signal quality (26% avg divergence), suggesting the longer horizon is OK.
+
+2 new functional tests (concurrency cap at custom + default values); 69 polymarket+kalshi total passing. Backup: `pre-kalshi-k7-polysemaphore-20260511-0325`.
+
+---
+
+## ✅ DONE — Kalshi sprint K1 → K2.4 (broker + structural arb + dashboard parity + LLM divergence + data layer)  *(2026-05-10/11)*
+
+Six deploys across one extended session shipped the entire Kalshi foundation:
+
+- **K1 (22:29 UTC):** read-only `KalshiBroker` on `pykalshi` SDK. KV-managed credentials (`KALSHI-API-KEY-ID` + `KALSHI-PRIVATE-KEY-PEM`). New "Prediction Markets" investment-type group (renamed from "Polymarket"). Tile shows $499 funded balance.
+- **K2.0 + K2.1 (23:28 UTC):** `kalshi_market_map.py` (category-targeted discovery + classifier — BINARY / MULTI_OUTCOME / TEMPORAL / BUCKET / COLLECTION) + `kalshi_tail_price_arb.py` (YES+NO arb at price tails where 1¢ rounding floor compresses round-trip cost to 2¢).
+- **K2.2 + discovery cap fix (23:43 UTC):** `kalshi_temporal_bucket_arb.py` (constraint violations on temporal series + bucket-sum violations) + emergency fix for runaway 4482-series enumeration (pykalshi's `get_all_series(limit=N)` silently fetches all pages — cap at OUR consumption layer + 150ms inter-call delay). See memory `trading_corp_kalshi.md` for the full lesson.
+- **K2.3 (00:04 UTC):** dashboard parity with polymarket — SQL whitelist for kalshi audit kinds + `evt.kalshi` enrichment dict + `{% elif evt.kalshi %}` template branches + `/partials/kalshi-analysis/{id}` HTMX expansion + `partials/kalshi_analysis.html`.
+- **K2.3.1 (00:13 UTC):** per-candidate audit events for true polymarket-density rail. K2.1 emits `kalshi_market_evaluated` per top-N tail candidate (with ticker + event title + prices + edge). K2.2 emits `kalshi_pair_evaluated` + `kalshi_bucket_evaluated`. Inline rendering branches in the template show ticker + tail-direction badge + category + event title + price strip + edge (color-coded vs threshold).
+- **K6.1 (00:52 UTC):** `kalshi_llm_arbitrage` — third Kalshi strategy on its own division. Structural clone of `polymarket_arbitrage` with Kalshi adapter. Reuses `_polymarket_prompts.ANALYST_SYSTEM_PROMPT`, warm-and-fan parallel LLM, cooldown pattern, risk gate, `polymarket_analysis.html` partial (field-name mapping at HTMX endpoint). K=20 markets/cycle, 60s poll, 10% divergence threshold, 6h ticker cooldown, $1/leg fixed sizing.
+- **K6.1 follow-up (01:08 UTC):** `asyncio.Semaphore(8)` on kalshi_llm's LLM fan after first scan hit Anthropic 429s when polymarket and kalshi_llm fanned simultaneously (~38 concurrent connections > tier ceiling). Configurable via `llm_concurrency` in strategies.yaml. Strategy degrades gracefully on 429 (failed calls return None, cooldowns advance). See memory `anthropic_concurrent_connections.md`.
+- **K2.4 (03:06 UTC):** round-trip resolver + 5-min equity snapshot data layer. New schema: `kalshi_round_trips` (single table across all 3 Kalshi strategies, INSERT OR IGNORE on order_id) + `kalshi_equity_history` (per-division). New `KalshiBroker.get_market_resolution(ticker)` reads pykalshi MarketModel `.result` ("yes"/"no" settled, "void" cancelled, "" in-flight). New `agents/kalshi_resolver.py` (structural clone of polymarket_resolver.py). Side detection across 3 strategies via outcome → leg-prefix fallback. 3 asyncio tasks wired: hourly resolver + two 5-min equity snapshots (one per kalshi division). First resolver tick: scanned 113, resolved 1 (`KXTEMPNYCH` NYC-temp LLM bet NO @ $0.35 lost when market resolved YES → -$1.00 realized). 21 new tests; 67 polymarket+kalshi total passing.
+
+**State at end of session (2026-05-11 03:06 UTC):** 4 scanners + 3 K2.4 background tasks running in prod paper-mode. Round-trip + equity history persisting to DB. Dashboard activity rail renders rich per-candidate detail with HTMX expansion for both polymarket + all kalshi strategies; round-trips + equity-curve dashboard surfacing deferred (data-layer only).
+
+**Backup tags from this sprint** (all in `runbooks/deploy_log.md`):
+- `pre-kalshi-k1-20260510-2229`
+- `pre-kalshi-k2-20260510-2328`
+- `pre-kalshi-k22-discoveryfix-20260510-2343`
+- `pre-kalshi-k23-dashboard-20260511-0004`
+- `pre-kalshi-k231-percandidate-20260511-0012`
+- `pre-kalshi-k61-llm-20260511-0048`
+- `pre-kalshi-k24-resolver-20260511-0240`
+
+Memory: `trading_corp_kalshi.md` updated through K2.4; `anthropic_concurrent_connections.md` NEW.
+
+---
+
+## ✅ DONE — Polymarket prompt cache fix + category priors  *(2026-05-10 16:56 UTC)*
+
+Verified prompt cache was SILENTLY DEAD on Sonnet 4.6 (system prompt 1,427 tokens vs 2,048 minimum). Expanded `_polymarket_prompts.py:ANALYST_SYSTEM_PROMPT` to 2,513 tokens with sports-underdog rejection example + category-specific priors (sports / geopolitical / Eurovision / crypto-action) + hard divergence sanity check (>0.50 divergence forces self-check; sports specifically capped at 0.30). Cache verified active post-deploy: `cache_creation=2513` Call 1, `cache_read=2513` Call 2. Per-call cost ~$0.0091 → ~$0.0035-$0.0044 (~2.5× reduction). Daily $2-50 → $0.80-$20 estimate. Full entry in `runbooks/deploy_log.md` at "2026-05-10 16:56 UTC". Memory `polymarket_arbitrage_division` and new `anthropic_prompt_cache_minimums` updated.
+
+---
+
+## ✅ DONE — BitUnix Phase 3.0/3.1/3.2a: full division agent live in paper auto-execute  *(2026-05-10 14:19 / 15:00 / 16:12 UTC)*
+
+Three deploys, one cohesive build:
+
+**Phase 3.0 (14:19):** observer-mode bias-only tier classifier. Receives Otter + Cypher webhooks (additive, never raises out — wrapped in try/except so cannot disrupt existing real-money paths). New `BitunixFuturesObserver` class in `trading_corp/agents/divisions/bitunix_futures_observer.py`. Bias state machine on 4h+1D fed by Cypher divergence signals; latched + decay (24h on 4h, 7d on 1D); 4 tiers STRONG/MODERATE/COUNTER/NEUTRAL_HTF. Logged-only; no orders.
+
+**Phase 3.1 (15:00):** full `tier = confluence × trend_alignment` ladder (PREMIUM/STANDARD/WEAK/COUNTER/SKIP). Volume axis = CVD direction state machine (30 min decay) fed by `cvd_bull_flip` / `cvd_bear_flip` Otter webhooks. Order proposer with structural stop (`max(1.5×ATR, 0.3%×price)`), 2R take-profit, R:R ≥ 1.5 gate, multi-leg-ready `tp_plan` (single-leg today). Risk caps: 0.5% effective-risk per trade, 3% daily loss kill-switch. **`auto_execute: true`** per Board — risk caps ARE the gate, not per-trade HITL. Telegram on placement only. Two new audit kinds: `bitunix_observer_classified` (every signal) + `bitunix_decided` (every signal's decision: placed / skipped_tier / skipped_daily_kill / rejected_risk / etc.). Three new tables: `bitunix_observer_bias`, `bitunix_observer_cvd`, `bitunix_observer_daily_risk`.
+
+**Phase 3.2a (15:33 + 16:12 venue correction):** live BitUnix 3m bar cache via `/api/v1/futures/market/kline` (no auth, native 3m). Initial deploy mistakenly used Coinbase 5m as bar source — corrected at 16:12 to BitUnix native 3m to match trading venue + historical EDA data. New `trading_corp/data/live_bar_cache.py`; 60-bar cache, 60s poll cadence, `get_atr(period=14)` Wilder's smoothing. Real ATR drives stop sizing (replaces 0.04%-of-price placeholder). **`paper_trade_record` write added at placement** so existing strategy-agnostic `paper_trade_replay` loop resolves bitunix paper trades to win/loss. Order's `extra` keys harmonized (`take_profit_price`, `entry_reference_price`, `source_signal`, `max_dollar_risk`, `expected_gain_if_tp_hit`, `tp_r_multiple`) so `PaperTradeRecord.from_order` populates cleanly.
+
+**Total tests: 60 passing** (8 cache + 52 observer). All three deploys had clean PID rotations and synthetic E2E verification on prod. **No real BitUnix paper trade has fired yet** — synthetic tests passed, but no natural Otter trigger has arrived since deploy that matched a tier with active bias state. First-real-trade observation is the next validation milestone before Phase 3.2b.
+
+Full entries in `runbooks/deploy_log.md` at the three timestamps above. Memory `trading_corp_bitunix_phase3_confluence_model.md` carries the design model + `trading_corp_bitunix_vision.md` updated to reflect Phases 3.0-3.2a SHIPPED state.
+
+---
+
+## ✅ DONE — BTC scalping research database + ingestion + EDA scripts  *(2026-05-10)*
+
+Built the research foundation for BitUnix scalping strategy refinement:
+
+- **`data/btc_scalping.db`** — Bybit BTCUSDT.P historical bars ingested via `scripts/ingest_tv_export.py` (idempotent UPSERT, schema-extension via ALTER TABLE, sha256-based file dedup, source_files metadata table). Three tables: `bars_1d` (2,238 rows / 6.1y), `bars_4h` (2,826 rows / 16mo), `bars_3m` (2,838 rows / 6 days). 93 columns each — Otter ribbon + Vumanchu/Cypher full vocabulary + ATR + MACD + Donchian + Bollinger Bands + CVD candles. Same lineup across all three TFs for clean multi-TF queries.
+- **`scripts/eda_btc_scalping_signals.py`** — Cypher signal-quality EDA on 1D + 4h. Computes forward-return distributions per signal at 5/20-bar horizons. Validated divergence-stack signals (stoch/rsi/wt bullish/bearish divergences) carry 60-88% hit rates; `red_diamond` / `red_cross` / `bull_candle` / `sell_circle` show no edge. Foundation for Phase 3 bias-setter selection.
+- **`scripts/analyze_btc_scalping_3m.py`** — 3m trigger event analysis with bias decay + history CSV. Walks rare Otter triggers (`otter_buy/sell`, `super_*`, `top/bottom_signal`); computes wick stats (MAE/MFE), structural-stop survival rates, tier classification distribution, per-tier forward returns. Re-runnable as data accumulates; appends one row per run to `data/scalping_3m_analysis_history.csv`.
+- **Per-memory `Otter tuned for 3m`:** Otter signal columns are near-empty at 1D/4h BY DESIGN (calibrated for 3m). Saved to memory so future Claude doesn't waste time investigating "why are these 0?".
+
+Workflow for the user: re-export TV charts every few days, run `python scripts/ingest_tv_export.py <files> --report` then `python scripts/analyze_btc_scalping_3m.py`. The 6-day 3m window grows toward credible EDA sample sizes after ~30 days of accumulated bars.
+
+---
+
 ## ✅ DONE — Phase A: HITL slim-Telegram bridge + PMCC prompt-text refinements  *(2026-05-03 02:09 UTC)*
 
 Shipped the dormant `notification_only` switch on `TelegramChannel` +
@@ -1243,73 +1533,28 @@ primary auth gate for live trading.
 
 ---
 
-## P2 — BitUnix equity is double-counting: `transfer` field is being added on top of `available`  *(NEW — 2026-05-09)*
+## ✅ DONE — BitUnix equity 2× double-count: drop `transfer` AND `bonus`  *(2026-05-10)*
 
-**Symptom:** dashboard tile + division-detail page render BitUnix Futures
-equity at exactly 2× the cash balance. Verified by Board on 2026-05-09:
-home tile shows `$6,763.94`, division detail shows `Cash $3,381.97 /
-Equity $6,763.94`. Math: `6,763.94 / 3,381.97 = 2.000`.
+Both `transfer` and `bonus` turned out to be **attribution metadata**
+(amount currently in `available` that arrived via wallet-transfer /
+promo credit) — not separate buckets. Live `/api/v1/futures/account`
+verified on prod via `scripts/verify_bitunix_account_fields.py`:
 
-**Root cause (high confidence):** `trading_corp/brokers/bitunix.py:213-225`
-sums seven fields from `/api/v1/futures/account` per stablecoin into
-`coin_equity`:
+| Coin | available | transfer | bonus | old sum | corrected |
+|---|---|---|---|---|---|
+| USDT | 25.27 | 0 | 25.27 (dup) | 50.55 | 25.27 |
+| USDC | 3356.70 | 3356.70 (dup) | 0 | 6713.39 | 3356.70 |
+| **Total** | | | | **6763.94** | **3381.97** |
 
-```python
-coin_equity = (
-    _to_float(d.get("available"))     +
-    _to_float(d.get("frozen"))        +
-    _to_float(d.get("margin"))        +
-    _to_float(d.get("transfer"))      +
-    _to_float(d.get("crossUnrealizedPNL"))    +
-    _to_float(d.get("isolationUnrealizedPNL")) +
-    _to_float(d.get("bonus"))
-)
-```
+The 2026-05-09 BACKLOG hypothesis was right about `transfer` but missed
+that `bonus` duplicates the same way (BitUnix shows whichever attribution
+applies). Corrected formula:
+`available + frozen + margin + crossUnrealizedPNL + isolationUnrealizedPNL`.
 
-With no open positions, `frozen / margin / *PNL / bonus` are all 0, and
-`transfer` ends up equal to `available` — so `coin_equity ≈ 2 ×
-available`. The 2026-05-03 deploy comment says the Board verified
-`available + transfer = total UI equity` at deploy time, but that
-reconciliation either doesn't hold today or was specific to an
-in-flight deposit state we can't reproduce.
-
-**Memory `trading_corp_bitunix_vision.md` claims `transfer` is additive,
-NOT a duplicate of `available`.** That memory is now suspect — needs
-re-verification before fix.
-
-**Fix candidates (decide after re-verifying API response):**
-
-1. **Drop `transfer` from the sum.** Equity becomes
-   `available + frozen + margin + *PNL + bonus`. Matches the literal
-   meaning ("available + locked-in-orders + locked-in-positions +
-   unrealized PNL + promotional credit"). `transfer` becomes a logged-
-   only field for visibility.
-2. **Make `transfer` conditional.** Some BitUnix UI explanations
-   describe `transfer` as "in-transit transfers from spot wallet" —
-   if so, it's transient (counted only during the transfer's pending
-   window). Hard to detect from the response alone; option 1 is safer.
-3. **Read `equity` directly** if the API response includes it as a
-   computed field (some BitUnix endpoints return both `available`
-   and `equity` separately). Verify against the v1 docs.
-
-**Verification step before fix:**
-- SSH to tc-prod-vm, hit `/api/v1/futures/account?marginCoin=USDT` with
-  the live signed request, dump the raw JSON.
-- Cross-check each field's value against the BitUnix UI's "Total Equity"
-  display.
-- Confirm whether `transfer` is currently equal to `available` (current
-  hypothesis) or a separate balance.
-
-**Files to touch:** `trading_corp/brokers/bitunix.py` (probably ~5-line
-change to the `coin_equity` formula). Update the comment block at
-lines 213-225 with the corrected mapping. Update memory
-`trading_corp_bitunix_vision.md` to retract the 2026-05-03 claim.
-
-**Priority:** P2 today (display-only — BitUnix is read-only standby and
-no sizing math reads this number yet). **Becomes P0 before BitUnix Phase
-4** (live order placement) ships, because risk caps + `auto_execute_caps`
-sizing percentages would all be off by 2×, leading to oversized orders.
-Resolve before that phase greenlights.
+`trading_corp/brokers/bitunix.py:215-220` updated with corrected
+formula + new comment block. Memory `trading_corp_bitunix_vision.md`
+Phase 1 entry updated with retraction. See deploy_log "2026-05-10"
+entry for deploy + verification.
 
 ---
 
@@ -1464,6 +1709,165 @@ this IP. Don't restart trading-corp repeatedly while debugging.
 (positions + Expert Analysis text feeding the agent's roll suggestions).
 The local laptop setup continues to work for development. Estimate:
 ~3-4 hrs once we have a residential proxy provider chosen.
+
+---
+
+## P3 — Polymarket: add `division` column to `polymarket_round_trips` (copy-trading reuse)  *(NEW — 2026-05-09)*
+
+`polymarket_round_trips` was shipped 2026-05-10 03:28 UTC with rows tagged
+implicitly to `polymarket_arbitrage` (the only writer). When the
+`polymarket_copy_trading` division ships, the same table should hold
+its round-trips too — they're the same shape (binary-outcome P&L on a
+condition_id) and the dashboard wants them queryable per-division.
+
+**Companion table is already division-aware:** `polymarket_equity_history`
+ships with a `division TEXT NOT NULL` column today, so copy trading just
+writes its own rows. Only `polymarket_round_trips` needs the addition.
+
+**Change (minimal):**
+
+```sql
+ALTER TABLE polymarket_round_trips ADD COLUMN division TEXT NOT NULL
+    DEFAULT 'polymarket_arbitrage';
+CREATE INDEX IF NOT EXISTS ix_polymarket_round_trips_division_ts
+    ON polymarket_round_trips(division, resolved_ts);
+```
+
+The DEFAULT backfills existing rows correctly (everything written before
+this change came from `polymarket_arbitrage`). Then update
+`trading_corp/agents/polymarket_resolver.py:_compute_round_trip_row` to
+take a `division` arg and stamp it; the resolver loop reads its
+division from a parameter the way the equity loop already does.
+
+The hourly resolver also needs to fan out per-division — either spawn
+one `_resolver_loop` per division, or have the loop iterate over
+registered Polymarket-family brokers each tick. Latter is simpler.
+
+**Estimate:** ~30 min. Do this as part of the copy-trading division
+bring-up, not before — no value to flipping it on while only
+`polymarket_arbitrage` writes.
+
+**Priority:** P3, blocks copy-trading dashboard reads. Pull in alongside
+`polymarket_copy_trading` Phase 1.
+
+---
+
+## P3 — Polymarket Gap C: open-positions cache (paper-mode equivalent)  *(NEW — 2026-05-09)*
+
+Source data already lives in `audit_event` (`would_have_placed`) and
+`polymarket_round_trips` (resolved). Gap C derives the **currently-open
+paper positions** by walking unresolved `would_have_placed` rows, joining
+on `polymarket_round_trips` (exclude resolved), aggregating per
+`condition_id` (sum qty, weighted-avg entry price), and joining the
+current implied-YES price from `gamma-api` to compute unrealized P&L.
+
+**Output shape** (one row per open paper position):
+
+```
+condition_id, slug, market_question, category, series,
+outcome_bet, qty, avg_entry_price, current_price, market_value,
+unrealized_pnl, unrealized_pnl_pct
+```
+
+**Implementation choices:**
+
+- (Recommended) Compute on-demand in `web/data.py` — same pattern as
+  `_query_division_activity`. No table needed; the query is cheap.
+- (Alternative) Snapshot to `polymarket_open_positions` table every 5
+  min (alongside the equity snapshot loop). Faster reads at cost of
+  a write path + staleness. Only worth it if the on-demand query
+  shows up in profiling.
+
+Phase 3 (live trading) replaces this entirely with `broker.snapshot()`
+positions — paper-mode aggregation becomes redundant. So Gap C should
+be a thin computed view, not a heavyweight schema, until then.
+
+Estimate: ~2 hrs (query + a small dataclass + a div-detail template
+section).
+
+**Priority:** P3. Lights up the "Positions" tab on the betmoar-style
+dashboard (see UI item below). Until that dashboard exists, the
+activity rail already shows individual paper trades — open-positions
+view is a nice-to-have, not blocking.
+
+---
+
+## P3 — Polymarket portfolio dashboard (betmoar.fun-inspired, division-reusable)  *(NEW — 2026-05-09)*
+
+Build a **division-parameterized** portfolio-tracker dashboard modeled on
+`betmoar.fun/profile/<wallet>`. The same component renders for any
+Polymarket-family division — `polymarket_arbitrage` first, then
+`polymarket_copy_trading` when it ships. Both write the same row shape
+to `polymarket_round_trips` + `polymarket_equity_history` (after the
+companion BACKLOG item adds `division` to round-trips), so the dashboard
+is one template parameterized by `division: str`.
+
+**Reuse design (load-bearing — don't hardcode the strategy slug):**
+
+- Route: `GET /division/<division_slug>` already exists; this dashboard
+  becomes the renderer for any division whose investment-type group is
+  `polymarket`. `utils/divisions.py` already groups by slug prefix.
+- Data layer: `build_polymarket_portfolio_view(division_slug, db_url)`
+  takes the division as input. Every query filters by `division = ?`.
+- Chart titles, legends, and tile copy read from the division's
+  `display_name` (`divisions.yaml`), not a literal string.
+- The "wallet address" footer (if any) reads from the broker registered
+  for that division — copy-trading might wire a different wallet
+  pattern eventually, so don't bake `polymarket_funder_address` in.
+
+Tabs (same for both divisions):
+
+- **Portfolio** — equity curve (1D / 7D / 30D / 90D periods),
+  daily P&L heatmap calendar, OVERALL P&L summary, USDC balance,
+  total assets, total volume.
+- **Positions** — current open paper positions with avg entry,
+  current price, market value, unrealized P&L (depends on Gap C
+  above).
+- **Activity** — per-trade log with BUY/SELL badge, market, side,
+  shares, price, $ value, ts (already shipped on the activity rail
+  — port to the new tab).
+- **History** — resolved markets table from
+  `polymarket_round_trips`: P&L, ROI, date, market name. Filterable
+  by Gain / Loss / ROI / Recent.
+- **Report** — period delta cards (1h / 6h / 12h / 1d), top P&L /
+  top fills / top price filters, per-market drill (entry → exit
+  price + size).
+
+**Data layer is already shipped (gaps A + B closed 2026-05-09):**
+- `polymarket_round_trips` — resolved-market rows (hourly resolver).
+- `polymarket_equity_history` — 5-min equity snapshots.
+- `audit_event` `would_have_placed` rows — full per-trade activity
+  with LLM reasoning.
+
+**Frontend choices:**
+- Equity curve: Lightweight Charts (already in tree for Donchian
+  6h chart) — same pattern.
+- Calendar: HTMX-rendered grid; one cell per day; aggregate
+  `realized_pnl` from `polymarket_round_trips` grouped by date.
+- Report period deltas: query `polymarket_equity_history` at two
+  ts boundaries, diff.
+
+**Files to touch:**
+- `trading_corp/web/data.py` — new `build_polymarket_portfolio_view`
+  (joins all three sources).
+- `trading_corp/web/templates/division.html` — new tabs OR a new
+  `division_polymarket.html` if the divergence from the standard
+  template gets large.
+- `trading_corp/web/routes.py` — partial endpoints per tab
+  (HTMX-loaded).
+
+**Estimate:** 12-16 hrs. Largest cost: equity-curve chart wiring +
+calendar component + report-tab queries. Activity tab is mostly free
+from existing templates.
+
+**Priority:** P3. Strategy needs to accumulate ~30 resolved
+round-trips before the History/Calendar tabs have meaningful data
+(matches Backtester's `INSUFFICIENT_DATA` threshold). Pull this in
+when the strategy verdict is leaning toward `RECOMMEND_APPROVAL` —
+the dashboard helps the Board read.
+
+Reference: `betmoar.fun/profile/0x6a72f61820b26b1fe4d956e17b6dc2a1ea3033ee`
+(screenshots 2026-05-09).
 
 ---
 

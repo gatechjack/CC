@@ -1,0 +1,335 @@
+{# Kalshi event analysis right-rail content. Loaded via HTMX from
+   GET /partials/kalshi-analysis/{event_id} when the user clicks
+   "Show details →" on any Kalshi activity row.
+
+   Different event kinds have different rich content:
+     - kalshi_discovery_refreshed: event-type breakdown
+     - kalshi_tail_arb_scan: tail-price scan counts + thresholds
+     - kalshi_temporal_bucket_scan: temporal/bucket scan counts
+     - would_have_placed: ticker + edge + leg + sizing + pair/set
+     - kalshi_*_order_rejected_by_risk: above + risk reason
+
+   Always: raw payload JSON at the bottom for full inspection.
+#}
+<div class="space-y-4 text-sm">
+  {# Header strip: kind + actor + timestamp #}
+  <div>
+    <div class="flex items-baseline justify-between">
+      <span class="
+        {% if event.kind == 'would_have_placed' %}text-gain
+        {% elif event.kind in ('kalshi_order_rejected_by_risk', 'kalshi_tb_order_rejected_by_risk') %}text-loss
+        {% elif 'scan' in event.kind %}text-mono
+        {% else %}text-muted{% endif %}
+        text-[11px] uppercase tracking-wider font-mono font-semibold">
+        {{ event.kind | replace('_', ' ') }}
+      </span>
+      <span class="text-[10px] text-muted font-mono">{{ event.ts_short }}</span>
+    </div>
+    <div class="mt-1 text-[11px] text-muted font-mono">
+      strategy: <span class="text-mono">{{ event.actor }}</span>
+    </div>
+  </div>
+
+  {# Per-kind rich panels #}
+  {% set p = event.payload %}
+
+  {% if event.kind == 'kalshi_discovery_refreshed' %}
+    <div class="grid grid-cols-3 gap-2">
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">events</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">{{ p.n_events_total or 0 }}</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">markets</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">{{ p.n_markets_total or 0 }}</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">collection-filtered</div>
+        <div class="text-xl font-mono font-semibold text-muted mt-0.5">{{ p.n_markets_filtered_collection or 0 }}</div>
+      </div>
+    </div>
+    {% if p.events_by_type %}
+      <div>
+        <div class="text-[10px] text-muted uppercase tracking-wider mb-1">events by type</div>
+        <div class="flex flex-wrap gap-1.5">
+          {% for type_name, count in p.events_by_type.items() %}
+            <span class="text-[11px] font-mono px-2 py-1 rounded bg-pane-2/40 border border-edge">
+              {{ type_name }}: <span class="text-mono font-semibold">{{ count }}</span>
+            </span>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+
+  {% elif event.kind == 'kalshi_tail_arb_scan' %}
+    <div class="grid grid-cols-3 gap-2">
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">scanned</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">{{ p.n_markets_scanned or 0 }}</div>
+        <div class="text-[10px] text-muted/70">markets</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">tail candidates</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">{{ p.n_tail_candidates or 0 }}</div>
+        <div class="text-[10px] text-muted/70">at price tails</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">opportunities</div>
+        <div class="text-xl font-mono font-semibold mt-0.5
+          {% if p.n_opportunities_above_threshold and p.n_opportunities_above_threshold > 0 %}text-gain{% else %}text-muted{% endif %}">
+          {{ p.n_opportunities_above_threshold or 0 }}
+        </div>
+        <div class="text-[10px] text-muted/70">≥{{ p.min_edge_cents or '?' }}c edge</div>
+      </div>
+    </div>
+    <div class="text-[11px] text-muted font-mono">
+      tail thresholds: yes_mid ≤ {{ '%.2f' | format(p.yes_max_for_yes_tail or 0) }} or ≥ {{ '%.2f' | format(p.yes_min_for_no_tail or 0) }}
+    </div>
+
+  {% elif event.kind == 'kalshi_market_evaluated' %}
+    {# Per-tail-candidate full detail. #}
+    <div>
+      <div class="text-[10px] text-muted uppercase tracking-wider">market ticker</div>
+      <div class="mt-1 font-mono font-semibold text-mono break-all">{{ p.ticker }}</div>
+      {% if p.event_ticker and p.event_ticker != p.ticker %}
+        <div class="text-[11px] text-muted font-mono mt-0.5">event: {{ p.event_ticker }}</div>
+      {% endif %}
+      {% if p.event_title %}
+        <div class="mt-1 text-[12px] text-mono leading-snug">{{ p.event_title }}</div>
+      {% endif %}
+      {% if p.subtitle %}
+        <div class="mt-0.5 text-[11px] text-muted">{{ p.subtitle }}</div>
+      {% endif %}
+      <div class="mt-1.5 flex items-center gap-1.5 flex-wrap">
+        {% if p.in_yes_tail %}<span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-loss/15 text-loss">YES tail</span>{% endif %}
+        {% if p.in_no_tail %}<span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-gain/15 text-gain">NO tail</span>{% endif %}
+        {% if p.category %}<span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-edge text-muted">{{ p.category }}</span>{% endif %}
+      </div>
+    </div>
+    <div class="grid grid-cols-3 gap-2">
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">YES ask</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">${{ '%.3f' | format(p.yes_ask or 0) }}</div>
+        <div class="text-[10px] text-muted/70">bid: ${{ '%.3f' | format(p.yes_bid or 0) }}</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">NO ask</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">${{ '%.3f' | format(p.no_ask or 0) }}</div>
+        <div class="text-[10px] text-muted/70">bid: ${{ '%.3f' | format(p.no_bid or 0) }}</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">edge</div>
+        <div class="text-xl font-mono font-semibold mt-0.5
+          {% if p.would_emit %}text-gain
+          {% elif p.edge_cents and p.edge_cents >= 0 %}text-mono
+          {% else %}text-muted{% endif %}">
+          {% if p.edge_cents is not none %}{{ p.edge_cents }}c{% else %}—{% endif %}
+        </div>
+        <div class="text-[10px] text-muted/70">threshold: {{ p.min_edge_cents }}c</div>
+      </div>
+    </div>
+    <div class="text-[11px] font-mono text-muted">
+      sum YES+NO ask = <span class="text-mono">${{ '%.3f' | format(p.sum_asks or 0) }}</span>
+      {% if p.would_emit %}
+        — <span class="text-gain font-semibold">would emit arb pair</span>
+      {% else %}
+        — <span class="text-muted">below threshold; no order</span>
+      {% endif %}
+    </div>
+    {% if p.expires_at %}
+      <div class="text-[11px] text-muted/80 font-mono">expires: {{ p.expires_at | et_short }}</div>
+    {% endif %}
+
+  {% elif event.kind == 'kalshi_pair_evaluated' %}
+    {# Per-temporal-pair full detail. #}
+    <div>
+      <div class="text-[10px] text-muted uppercase tracking-wider">event</div>
+      <div class="mt-1 font-mono font-semibold text-mono break-all">{{ p.event_ticker }}</div>
+      {% if p.event_title %}
+        <div class="mt-1 text-[12px] text-mono leading-snug">{{ p.event_title }}</div>
+      {% endif %}
+      {% if p.category %}
+        <div class="mt-1.5">
+          <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-edge text-muted">{{ p.category }}</span>
+        </div>
+      {% endif %}
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">early leg</div>
+        <div class="mt-1 font-mono text-[11px] break-all">{{ p.early_ticker }}</div>
+        <div class="text-[10px] text-muted/70 mt-0.5">{{ p.early_subtitle or p.early_date }}</div>
+        <div class="text-lg font-mono font-semibold text-mono mt-1">P_yes ${{ '%.3f' | format(p.early_yes_ask or 0) }}</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">late leg</div>
+        <div class="mt-1 font-mono text-[11px] break-all">{{ p.late_ticker }}</div>
+        <div class="text-[10px] text-muted/70 mt-0.5">{{ p.late_subtitle or p.late_date }}</div>
+        <div class="text-lg font-mono font-semibold text-mono mt-1">P_yes ${{ '%.3f' | format(p.late_yes_ask or 0) }}</div>
+      </div>
+    </div>
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-[10px] text-muted uppercase tracking-wider mb-1">constraint</div>
+      <div class="text-[12px] font-mono">
+        P(early) ≤ P(late) required.
+        Diff = early - late = <span class="
+          {% if p.would_emit %}text-gain font-semibold
+          {% elif p.edge_cents and p.edge_cents >= 0 %}text-mono
+          {% else %}text-muted{% endif %}">{{ p.edge_cents }}c</span>
+        {% if (p.early_yes_ask or 0) > (p.late_yes_ask or 0) %}
+          (<span class="text-warn">violation</span>)
+        {% else %}
+          (<span class="text-muted">in-bounds</span>)
+        {% endif %}
+      </div>
+      <div class="text-[11px] text-muted mt-1">
+        {% if p.would_emit %}
+          <span class="text-gain font-semibold">Would emit:</span> BUY NO {{ p.early_ticker }} + BUY YES {{ p.late_ticker }}
+        {% else %}
+          Need ≥{{ p.min_edge_cents }}c diff; nothing to emit.
+        {% endif %}
+      </div>
+    </div>
+
+  {% elif event.kind == 'kalshi_bucket_evaluated' %}
+    {# Per-bucket-event full detail. #}
+    <div>
+      <div class="text-[10px] text-muted uppercase tracking-wider">event</div>
+      <div class="mt-1 font-mono font-semibold text-mono break-all">{{ p.event_ticker }}</div>
+      {% if p.event_title %}
+        <div class="mt-1 text-[12px] text-mono leading-snug">{{ p.event_title }}</div>
+      {% endif %}
+      {% if p.category %}
+        <div class="mt-1.5">
+          <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-edge text-muted">{{ p.category }}</span>
+        </div>
+      {% endif %}
+    </div>
+    <div class="grid grid-cols-3 gap-2">
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">legs</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">{{ p.n_legs or 0 }}</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">sum YES asks</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">${{ '%.3f' | format(p.sum_yes_asks or 0) }}</div>
+        <div class="text-[10px] text-muted/70">target: $1.00</div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">edge</div>
+        <div class="text-xl font-mono font-semibold mt-0.5
+          {% if p.would_emit %}text-gain
+          {% elif p.edge_cents and p.edge_cents >= 0 %}text-mono
+          {% else %}text-muted{% endif %}">
+          {% if p.edge_cents is not none %}{{ p.edge_cents }}c{% else %}—{% endif %}
+        </div>
+        <div class="text-[10px] text-muted/70">threshold: {{ p.min_edge_cents }}c</div>
+      </div>
+    </div>
+    <div class="text-[11px] font-mono text-muted">
+      {% if p.would_emit %}
+        <span class="text-gain font-semibold">Would emit:</span> BUY YES on every leg ({{ p.n_legs }} legs).
+      {% else %}
+        Sum of all leg YES asks must be < $1 - {{ p.min_edge_cents }}c. Currently in-bounds; no emit.
+      {% endif %}
+    </div>
+
+  {% elif event.kind == 'kalshi_temporal_bucket_scan' %}
+    <div class="grid grid-cols-2 gap-2">
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">temporal</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">{{ p.n_temporal_events_scanned or 0 }}</div>
+        <div class="text-[10px] text-muted/70">events scanned</div>
+        <div class="text-[11px] mt-1
+          {% if p.n_temporal_opportunities and p.n_temporal_opportunities > 0 %}text-gain font-semibold{% else %}text-muted{% endif %}">
+          {{ p.n_temporal_opportunities or 0 }} opps ≥{{ p.temporal_min_edge_cents or '?' }}c
+        </div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">bucket</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">{{ p.n_bucket_events_scanned or 0 }}</div>
+        <div class="text-[10px] text-muted/70">events scanned</div>
+        <div class="text-[11px] mt-1
+          {% if p.n_bucket_opportunities and p.n_bucket_opportunities > 0 %}text-gain font-semibold{% else %}text-muted{% endif %}">
+          {{ p.n_bucket_opportunities or 0 }} opps ≥{{ p.bucket_min_edge_cents or '?' }}c
+        </div>
+      </div>
+    </div>
+    {% if p.n_emitted_after_cap %}
+      <div class="text-[11px] text-muted font-mono">
+        emitted after per-cycle cap: <span class="text-mono">{{ p.n_emitted_after_cap }}</span>
+      </div>
+    {% endif %}
+
+  {% else %}
+    {# would_have_placed / risk_rejected / other order-shaped event #}
+    {% if p.ticker %}
+      <div>
+        <div class="text-[10px] text-muted uppercase tracking-wider">market ticker</div>
+        <div class="mt-1 font-mono font-semibold text-mono break-all">{{ p.ticker }}</div>
+        {% if p.event_ticker and p.event_ticker != p.ticker %}
+          <div class="text-[11px] text-muted font-mono mt-0.5">event: {{ p.event_ticker }}</div>
+        {% endif %}
+      </div>
+    {% endif %}
+    <div class="grid grid-cols-3 gap-2">
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">edge</div>
+        <div class="text-xl font-mono font-semibold mt-0.5
+          {% if p.edge_cents and p.edge_cents >= 5 %}text-gain
+          {% elif p.edge_cents and p.edge_cents >= 2 %}text-mono
+          {% else %}text-muted{% endif %}">
+          {% if p.edge_cents is not none %}{{ p.edge_cents }}c{% else %}—{% endif %}
+        </div>
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">leg cost</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">
+          {% if p.qty and p.limit_price %}${{ '%.2f' | format(p.qty * p.limit_price) }}{% else %}—{% endif %}
+        </div>
+        {% if p.qty and p.limit_price %}
+          <div class="text-[10px] text-muted/70">{{ '%.2f' | format(p.qty) }} × ${{ '%.3f' | format(p.limit_price) }}</div>
+        {% endif %}
+      </div>
+      <div class="bg-pane-2/40 border border-edge rounded-md p-2">
+        <div class="text-[10px] text-muted uppercase tracking-wider">max risk</div>
+        <div class="text-xl font-mono font-semibold text-mono mt-0.5">
+          {% if p.max_dollar_risk %}${{ '%.2f' | format(p.max_dollar_risk) }}{% else %}—{% endif %}
+        </div>
+        <div class="text-[10px] text-muted/70">total set</div>
+      </div>
+    </div>
+    {% if p.kalshi_pair_id or p.kalshi_arb_set_id or p.kalshi_arb_type or p.leg %}
+      <div class="text-[11px] text-muted font-mono space-y-0.5">
+        {% if p.kalshi_arb_type %}<div>arb type: <span class="text-mono">{{ p.kalshi_arb_type }}</span></div>{% endif %}
+        {% if p.leg %}<div>leg: <span class="text-mono">{{ p.leg }}</span>{% if p.leg_date %} ({{ p.leg_date }}){% endif %}</div>{% endif %}
+        {% if p.kalshi_pair_id %}<div>pair id: <span class="text-mono break-all">{{ p.kalshi_pair_id }}</span></div>{% endif %}
+        {% if p.kalshi_arb_set_id %}<div>set id: <span class="text-mono break-all">{{ p.kalshi_arb_set_id }}</span></div>{% endif %}
+      </div>
+    {% endif %}
+    {% if p.risk_verdict and p.risk_verdict != 'approve' %}
+      <div class="text-[11px]
+        {% if p.risk_verdict == 'reject' %}text-loss{% else %}text-warn{% endif %}">
+        <span class="font-semibold uppercase">risk {{ p.risk_verdict }}:</span>
+        {{ p.risk_reason or '(no reason)' }}
+      </div>
+    {% endif %}
+  {% endif %}
+
+  {# Always: rationale (if present) + raw audit payload at the bottom #}
+  {% if p.rationale %}
+    <div>
+      <div class="text-[10px] text-muted uppercase tracking-wider mb-1">rationale</div>
+      <div class="text-[12px] text-mono leading-snug bg-pane-2/40 border border-edge rounded-md p-2">{{ p.rationale }}</div>
+    </div>
+  {% endif %}
+
+  <details class="border border-edge/50 rounded-md">
+    <summary class="text-[10px] text-muted uppercase tracking-wider px-2 py-1.5 cursor-pointer hover:text-mono select-none">raw audit payload</summary>
+    <pre class="text-[10px] text-muted leading-snug overflow-x-auto bg-pane-2/40 p-2 rounded-b-md">{{ event.payload_pretty }}</pre>
+  </details>
+
+  <div class="text-[10px] text-muted/70 font-mono pt-2 border-t border-edge/50">
+    audit event id: <span class="text-muted">{{ event.id }}</span>
+  </div>
+</div>

@@ -6,6 +6,7 @@ typo in the polymarket: block fails fast.
 """
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -288,3 +289,129 @@ def test_non_polymarket_order_unaffected(risk_agent):
     # If it went through polymarket branch, the reason would mention
     # "polymarket"; verify it didn't.
     assert "polymarket" not in (v.reason or "").lower()
+
+
+# ── Phase K7: LLM-fan concurrency cap (Semaphore) ──────────────────────
+
+
+class _StubPolyBroker:
+    """Returns a canned list of markets. Implements list_markets only."""
+    def __init__(self, markets):
+        self.markets = markets
+
+    async def list_markets(self, **kwargs):
+        return self.markets
+
+
+def _fake_markets(n: int) -> list[dict]:
+    """N markets that all pass the survivor filter:
+       - unique conditionId
+       - lastTradePrice inside (0.05, 0.95)
+    """
+    return [
+        {
+            "conditionId": f"cid-{i:03d}",
+            "slug": f"market-{i:03d}",
+            "question": f"Test market {i}?",
+            "lastTradePrice": 0.50,
+            "events": [],
+            "category": "other",
+        }
+        for i in range(n)
+    ]
+
+
+def test_llm_fan_capped_by_semaphore(tmp_path):
+    """K=10 survivors, llm_concurrency=3 → at most 3 _estimate_probability
+    calls should ever be in flight simultaneously."""
+    strat_yaml = tmp_path / "strategies.yaml"
+    strat_yaml.write_text(
+        "polymarket_arbitrage:\n"
+        "  enabled: true\n"
+        "  division: polymarket_arbitrage\n"
+        "  k_markets_per_cycle: 10\n"
+        "  market_cooldown_hours: 6\n"
+        "  min_divergence_pct: 10.0\n"
+        "  time_horizon_max_days: 7\n"
+        "  llm_concurrency: 3\n"
+        "  sizing: {mode: fixed_usdc, fixed_amount: 1.0}\n"
+    )
+    risk_yaml = tmp_path / "risk.yaml"
+    risk_yaml.write_text(
+        "polymarket: {min_implied_probability: 0.05, max_implied_probability: 0.95,\n"
+        "             min_market_24h_volume_usd: 0, max_spread_cents: 99,\n"
+        "             min_hours_to_resolution: 0}\n"
+    )
+
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat_yaml, risk_yaml=risk_yaml)
+
+    inflight = 0
+    max_inflight = 0
+    lock = asyncio.Lock()
+
+    async def spy_estimate(market: dict):
+        nonlocal inflight, max_inflight
+        async with lock:
+            inflight += 1
+            if inflight > max_inflight:
+                max_inflight = inflight
+        # Sleep so concurrency materializes; not so long the test drags.
+        await asyncio.sleep(0.02)
+        async with lock:
+            inflight -= 1
+        # Return None → caller treats as "no estimate" and skips order build.
+        return None
+
+    agent._estimate_probability = spy_estimate
+    broker = _StubPolyBroker(_fake_markets(10))
+
+    orders = asyncio.run(agent.run_scan_cycle(broker))
+
+    assert max_inflight <= 3, f"Concurrency cap breached: peak inflight={max_inflight}"
+    # All 10 should still have been attempted (cap shapes parallelism, not totals).
+    # With None returns, no orders should be emitted but all estimates were called.
+    assert orders == []
+
+
+def test_llm_fan_default_semaphore_is_8(tmp_path):
+    """When llm_concurrency is unset, default cap = 8."""
+    strat_yaml = tmp_path / "strategies.yaml"
+    strat_yaml.write_text(
+        "polymarket_arbitrage:\n"
+        "  enabled: true\n"
+        "  k_markets_per_cycle: 20\n"
+        "  market_cooldown_hours: 6\n"
+        "  min_divergence_pct: 10.0\n"
+        "  time_horizon_max_days: 7\n"
+        "  sizing: {mode: fixed_usdc, fixed_amount: 1.0}\n"
+    )
+    risk_yaml = tmp_path / "risk.yaml"
+    risk_yaml.write_text(
+        "polymarket: {min_implied_probability: 0.05, max_implied_probability: 0.95,\n"
+        "             min_market_24h_volume_usd: 0, max_spread_cents: 99,\n"
+        "             min_hours_to_resolution: 0}\n"
+    )
+
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat_yaml, risk_yaml=risk_yaml)
+
+    inflight = 0
+    max_inflight = 0
+    lock = asyncio.Lock()
+
+    async def spy_estimate(market: dict):
+        nonlocal inflight, max_inflight
+        async with lock:
+            inflight += 1
+            if inflight > max_inflight:
+                max_inflight = inflight
+        await asyncio.sleep(0.02)
+        async with lock:
+            inflight -= 1
+        return None
+
+    agent._estimate_probability = spy_estimate
+    broker = _StubPolyBroker(_fake_markets(20))
+
+    asyncio.run(agent.run_scan_cycle(broker))
+
+    assert max_inflight <= 8, f"Default cap breached: peak={max_inflight}"

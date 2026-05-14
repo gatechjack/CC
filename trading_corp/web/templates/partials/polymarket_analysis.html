@@ -140,7 +140,7 @@
   {# Resolution + condition_id — useful for cross-referencing on Polymarket #}
   <div class="text-[10px] text-muted/70 font-mono space-y-0.5 pt-2 border-t border-edge/50">
     {% if event.resolves_at %}
-      <div>resolves: <span class="text-muted">{{ event.resolves_at[:19] }}Z</span></div>
+      <div>resolves: <span class="text-muted">{{ event.resolves_at | et_short }}</span></div>
     {% endif %}
     {% if event.condition_id %}
       <div class="break-all">cid: <span class="text-muted">{{ event.condition_id }}</span></div>

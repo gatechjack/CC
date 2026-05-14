@@ -168,7 +168,7 @@
             <summary class="px-4 py-2 cursor-pointer flex items-baseline gap-3 text-sm
                             list-none [&::-webkit-details-marker]:hidden">
               <span class="text-muted text-[11px] font-mono shrink-0 w-44">
-                {{ eng.ts[:19] if eng.ts else '' }}
+                {{ (eng.ts | et_short) if eng.ts else '' }}
               </span>
               <span class="font-mono text-[11px] shrink-0 text-muted">
                 {{ eng.engagement_id[:8] }}
@@ -261,7 +261,7 @@
         {% for row in view.outcomes %}
           <div class="px-4 py-2 flex items-baseline gap-3 text-sm">
             <span class="text-muted text-[11px] font-mono shrink-0 w-44">
-              {{ row.ts[:19] if row.ts else '' }}
+              {{ (row.ts | et_short) if row.ts else '' }}
             </span>
             <span class="font-mono text-[11px] shrink-0 w-24 text-mono">
               {{ row.requesting_division or '—' }}
@@ -304,7 +304,7 @@
           <details class="px-4 py-2 group">
             <summary class="cursor-pointer flex items-baseline gap-3 text-sm">
               <span class="text-muted text-[11px] font-mono shrink-0 w-44">
-                {{ row.ts[:19] if row.ts else '' }}
+                {{ (row.ts | et_short) if row.ts else '' }}
               </span>
               <span class="font-mono text-[11px] shrink-0 w-72
                     {% if 'aborted' in row.kind or 'rejected' in row.kind or 'failed' in row.kind %}text-loss
@@ -351,7 +351,7 @@
           <details class="px-4 py-2 group">
             <summary class="cursor-pointer flex items-baseline gap-3 text-sm">
               <span class="text-muted text-[11px] font-mono shrink-0 w-44">
-                {{ t.ts[:19] if t.ts else '' }}
+                {{ (t.ts | et_short) if t.ts else '' }}
               </span>
               <span class="font-mono font-semibold text-mono shrink-0 w-24">
                 {{ t.symbol }}
@@ -430,7 +430,7 @@
           <details class="px-4 py-2 group">
             <summary class="cursor-pointer flex items-baseline gap-3 text-sm">
               <span class="text-muted text-[11px] font-mono shrink-0 w-44">
-                {{ pc.ts[:19] if pc.ts else '' }}
+                {{ (pc.ts | et_short) if pc.ts else '' }}
               </span>
               <span class="font-mono font-semibold text-mono shrink-0 w-24">
                 {{ pc.symbol }}

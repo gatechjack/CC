@@ -181,16 +181,28 @@ class BitunixBroker(Broker):
         # `/account` returns balance for one coin at a time; we sum stablecoins
         # to get total futures equity in USD-equivalent terms.
         #
-        # Per-coin response shape (verified 2026-05-03 against live API):
-        #   available  — free margin, ready to use
-        #   frozen     — locked in pending orders
-        #   margin     — locked in open positions
-        #   transfer   — in-transit balance crediting the futures wallet (NOT
-        #                a duplicate of `available`; user-confirmed $1250+$1250
-        #                = $2500 reconciled with BitUnix UI)
-        #   crossUnrealizedPNL / isolationUnrealizedPNL — floating PnL
-        #   bonus      — promotional margin credit
-        # All seven sum to total equity for that coin.
+        # Per-coin response shape (verified 2026-05-10 against live API):
+        #   available              — free margin, ready to use (the actual cash)
+        #   frozen                 — locked in pending orders (separate bucket)
+        #   margin                 — locked in open positions (separate bucket)
+        #   crossUnrealizedPNL     — floating PnL on cross-margin positions
+        #   isolationUnrealizedPNL — floating PnL on isolated-margin positions
+        #   transfer               — attribution metadata: amount currently in
+        #                            `available` that arrived via wallet transfer.
+        #                            ALREADY INCLUDED IN `available` — must NOT
+        #                            be added separately.
+        #   bonus                  — attribution metadata: amount currently in
+        #                            `available` that came from promo credit.
+        #                            ALREADY INCLUDED IN `available` — must NOT
+        #                            be added separately.
+        #
+        # Empirical evidence (2026-05-10, no open positions):
+        #   USDT: available=25.27,  transfer=0,        bonus=25.27   → bonus dup
+        #   USDC: available=3356.7, transfer=3356.7,   bonus=0       → transfer dup
+        # Including transfer + bonus produced a 2× equity reading
+        # ($6,763.94 vs real $3,381.97). The 2026-05-03 reconciliation
+        # ("transfer is additive") was incorrect — retracted in memory
+        # `trading_corp_bitunix_vision.md`.
         total_equity = 0.0
         total_cash = 0.0
         for margin_coin in _STABLE_MARGIN_COINS:
@@ -216,10 +228,8 @@ class BitunixBroker(Broker):
                 _to_float(d.get("available")) +
                 _to_float(d.get("frozen")) +
                 _to_float(d.get("margin")) +
-                _to_float(d.get("transfer")) +
                 _to_float(d.get("crossUnrealizedPNL")) +
-                _to_float(d.get("isolationUnrealizedPNL")) +
-                _to_float(d.get("bonus"))
+                _to_float(d.get("isolationUnrealizedPNL"))
             )
             total_equity += coin_equity
             total_cash += _to_float(d.get("available"))

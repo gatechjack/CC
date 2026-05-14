@@ -59,6 +59,1834 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-12 03:45 UTC — Copy-trader exit pairing + K3 price capture + dashboard polish
+
+**Triggered by:** Jack flagged from screenshots: (1) Kalshi dashboard "not legible" — ENTRY column showed $0.000 / SIGNAL & RESOLVES empty for every K3 row, (2) copy-trader exits visible in Telegram but never closed/PnL'd on the dashboard. Two independent issues, both architectural.
+
+**Files deployed (7 modified, 3 backup tags across 3 sub-deploys):**
+
+### Deploy 1 (03:33 UTC, tag `pre-exit-pairing-d1-20260512-0333`): tracked-file patches
+- `trading_corp/persistence/db.py`:
+  - `polymarket_round_trips` + `kalshi_round_trips` schemas + idempotent migration both get a new `entry_order_id TEXT` column. Indexes `ix_*_entry_order_id` (partial: WHERE NOT NULL).
+- `trading_corp/main.py`:
+  - K3 `_scheduled_kalshi_copy_trader_loop` base_payload allowlist gets `whale_entry_price` + `whale_exit_price` (memory `trading_corp_audit_payload_allowlist` — without this the new K3 fields silently drop).
+- `trading_corp/web/data.py`:
+  - `PMRoundTrip` + `PMOpenTrade` dataclasses gain `whale_handle` field (and `side_detection_confidence` on PMOpenTrade).
+  - `_query_pm_round_trips` Polymarket branch reads `extra_json` + overrides `market_result='whale_closed'` when present.
+  - `_query_pm_open_trades` both branches: add `side='buy'` filter (so SELL audit rows render as History, not Open) + exclude rows linked as `entry_order_id` on a paired round-trip.
+  - `_query_pm_pending_count` both branches: same exclusion as Open.
+  - `whale_handle` populated from `whale_user_name` (PM) / `whale_handle` (K3) payload keys.
+  - Earlier `arb_type` copy_trade clause was already-applied (this morning's deploy) — patcher detected and skipped idempotently.
+
+### Deploy 2 (03:34–03:36 UTC, tag `pre-exit-pairing-d2-20260512-*`): untracked-file transfers
+Per-file base64 transfers (one 131KB combined script silently aborted in az — script size limit; split into 4 per-file calls of ~30KB each succeeded):
+- `trading_corp/agents/strategies/kalshi_copy_trader.py`:
+  - `_detect_side` now returns `(side, confidence, price)` — captures the matched trade's price (yes_price_dollars or no_price_dollars based on taker_side).
+  - `_emit_entry` sets `limit_price=entry_price` + adds `whale_entry_price` to extra. Entry rationale includes `@ $X.XX`.
+  - `_emit_exit` becomes **async**, accepts `quote_fetcher` (the trade-tape KalshiBroker), calls `broker.quote(ticker)` for exit price. For NO holdings, inverts: `exit_price = 1 - yes_mid`. Adds `whale_exit_price` to extra. Exit rationale includes `@ $X.XX`.
+  - Per-whale snapshot stores `entry_price` so exits can carry it through.
+  - New helper `_trade_price_for_side`.
+  - Tests updated: `_detect_side` return-tuple now triple instead of pair; assertions added for price.
+- `trading_corp/agents/polymarket_resolver.py`:
+  - New `_pair_pending_exits(db_url)` — pure SQL, no broker calls. Matches SELL audit rows from `polymarket_copy_trader` to most-recent prior BUY by `(whale_wallet, condition_id, outcome_index)`, computes `realized_pnl = qty × (exit_price − entry_price)`, inserts round-trip keyed by SELL's order_id with `entry_order_id` linking back to BUY.
+  - `_fetch_unresolved_orders` gets `side='buy'` filter + `entry_order_id NOT IN` exclusion so SELLs and paired BUYs aren't re-scanned by the market-settle path.
+  - `resolve_pending_round_trips` runs pairing FIRST (pure SQL), then market-settle (gamma-api calls). Counts include `paired`, `pair_scanned`, etc.
+- `trading_corp/agents/kalshi_resolver.py`:
+  - Parallel `_pair_pending_exits` matching on `(whale_handle, ticker, outcome)`.
+  - Same `side='buy'` + entry_order_id exclusion in `_fetch_unresolved_orders`.
+  - Wired into `resolve_pending_round_trips` same way as Polymarket.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html`:
+  - ENTRY column: render `—` (muted) when entry_price is None/0, else `$X.XXX`.
+  - SIGNAL column: prioritize whale_handle (`@name` with side_detection_confidence) over divergence_pct/edge_cents for copy_trader rows.
+  - History tab market_result: render `whale exit` badge (warn color) when `market_result == 'whale_closed'`.
+
+### Deploy 3 (03:45 UTC, tag `pre-k3-pair-relax-20260512-0345`): K3 pre-existing-row pairing relax
+- `trading_corp/agents/kalshi_resolver.py`: relaxed K3 pairing to NOT skip on `exit_price <= 0`. Pre-Fix-A K3 audit rows had `limit_price: null`; this lets the 73 stranded historical exits pair into round-trips with `realized_pnl=0` so they show up in History tab. Going forward, K3 rows have real prices and produce real PnL.
+
+**Features shipped:**
+- **K3 dashboard now renders legibly.** ENTRY column shows real prices going forward; SIGNAL column shows `@whale_handle` + confidence; `whale exit` badge surfaces in History tab.
+- **Copy-trader EXITs now close round-trips.** Both venues. 73 paired K3 round-trips landed immediately on first tick; 1 PM round-trip paired (+$0.20 realized). New exits going forward pair on the next resolver tick (hourly default).
+- **Schema additions are forward-compat.** entry_order_id NULL on all legacy/market-settle rows; only SET on paired whale-closed rows.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- The resolver pairing path runs BEFORE the market-settle path on every tick — pure SQL, no API cost.
+- `_fetch_unresolved_orders` in BOTH resolvers now filters `side='buy'` AND excludes audit rows in `entry_order_id`. Any new strategy that emits SELL audit rows MUST be aware that those don't auto-resolve via market-settle anymore.
+- Dashboard's "whale exit" badge appears when `market_result == 'whale_closed'`. Future round-trip resolvers can use the same sentinel to mark non-settlement closes.
+- The K3 strategy's `_emit_exit` is now ASYNC. Any caller has to `await`.
+
+**Latent bugs caught + fixed:**
+- K3 entry rationale used to say `opened N contracts` with no price; now includes `@ $X.XX` parsed from trade tape. Same for exits (was using copy_size_usd as if it were a price).
+- K3 NO-side exits previously had no price source at all; broker.quote() returns YES mid, so the code inverts to `1 - yes_mid` for NO holdings.
+
+**Verification:**
+- All 137 PM-dashboard + resolver + copy_trader tests pass locally (pytest passing — 8 unrelated failures in PMCC date-drift + webhook _Deps fixture are pre-existing).
+- Post-deploy 3, K3 dashboard at `/prediction-markets/kalshi_copy_trading`: 15 open rows + 147 history rows (73 paired round-trips × main+expand) + 73 "whale exit" badges + @smedtoshi/@tom14cat14 SIGNAL renders.
+- PM resolver tick log: `paired: 0, pair_scanned: 0` (no new PM exits to pair beyond the +$0.20 one from earlier; whales still holding).
+- 1 PM whale-closed round-trip with realized_pnl=+$0.20 (real, prices were captured day-1 on PM side).
+
+**Inert / dormant on current traffic:**
+- The 73 K3 historical pairings show `realized_pnl=0` — accurate given missing pre-Fix-A prices. New K3 round-trips going forward will have real PnL.
+- `whale_handle` field on PMRoundTrip is None for legacy market-settle rows; populated only for whale-closed rows. Template handles None gracefully.
+
+**Rollback recipe:**
+```bash
+# Three layers (most recent first):
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm \
+  --command-id RunShellScript \
+  --scripts "TS=20260512; BASE=/home/azureuser/trading_corp; \
+    # Layer 3 (pair-relax) rollback:
+    mv \$BASE/trading_corp/agents/kalshi_resolver.py.pre-k3-pair-relax-\${TS}-0345 \$BASE/trading_corp/agents/kalshi_resolver.py 2>/dev/null; \
+    # Layer 2 (untracked file transfers) rollback:
+    for f in trading_corp/agents/strategies/kalshi_copy_trader.py trading_corp/agents/polymarket_resolver.py trading_corp/agents/kalshi_resolver.py trading_corp/web/templates/partials/pm_dashboard_body.html; do \
+      BACKUP=\$(ls \$BASE/\$f.pre-exit-pairing-d2-\${TS}-* 2>/dev/null | head -1); \
+      [ -n \"\$BACKUP\" ] && mv \"\$BACKUP\" \"\$BASE/\$f\"; \
+    done; \
+    # Layer 1 (tracked file patches) rollback:
+    mv \$BASE/trading_corp/persistence/db.py.pre-exit-pairing-d1-\${TS}-0333 \$BASE/trading_corp/persistence/db.py; \
+    mv \$BASE/trading_corp/main.py.pre-exit-pairing-d1-\${TS}-0333 \$BASE/trading_corp/main.py; \
+    mv \$BASE/trading_corp/web/data.py.pre-exit-pairing-d1-\${TS}-0333 \$BASE/trading_corp/web/data.py; \
+    sudo systemctl restart trading-corp.service" \
+  --query "value[0].message" -o tsv
+# Note: entry_order_id column stays after rollback (sqlite ALTER not reversible without table rebuild).
+# Old code doesn't reference it so no harm — just unused column on existing rows.
+```
+
+---
+
+## 2026-05-12 02:34 UTC — K3 throttle to fit Apify Starter $200/mo hard cap
+
+**Triggered by:** Session-start Apify probe revealed Starter plan burn at $10.68/day (= ~$320/mo extrapolated) — would exhaust in ~1.6 days. Jack clarified Apify Starter is hard-capped at $200/mo (no plan upgrade), asked me to cut data-request volume to fit.
+
+**Files deployed (1 config, no code, no restart):**
+- `config/strategies.yaml`: `kalshi_copy_trader.poll_interval_sec` 300s → **600s** (5min → 10min cadence). Single-line config change, hot-reloaded via `KalshiCopyTraderAgent._reload` mtime check on next cycle.
+
+**Backup tag:** `pre-k3-throttle-20260512-0234` (yaml-only, single file).
+
+**Math:**
+- K3 makes exactly 1 Apify call per cycle (`fetch_open_positions` with all 4 whales batched in one actor run), so cost scales linearly with cadence.
+- 5min → 10min halves request volume → ~$5.34/day → **~$160/mo** (Apify Starter cap = $200/mo, leaving ~$40/mo buffer for spikes or future whale-pool expansion).
+- 8min (480s) would land right at $200/mo with zero buffer — too tight; 10min chosen for safety.
+
+**Notable behavior change:**
+- K3 position-freshness lag becomes 10min worst-case (was 5min). Per the strategy's `positions don't change fast on Kalshi` design assumption, this is fine — biggest theoretical loss is missing a fast whale entry/exit within a single 10min window, vs. observed 5min.
+
+**Pre-existing memory now stale (separate update made):**
+- `trading_corp_kalshi.md` had "Cost: ~$30-50/mo expected" — actual measured $320/mo at 5min/4-whale (off by ~10x). Memory updated to reflect measured cost + $200 cap + new 10min cadence.
+
+**Yaml drift caught (note for future deploys):**
+- Patch script's primary string-match fell through to the line-only regex fallback — prod's `config/strategies.yaml` had a slightly different comment on the K3 `poll_interval_sec: 300` line than my local. Fallback regex correctly rewrote just the line. Same `trading_corp_prod_git_drift` pattern as the data.py deploy earlier this session.
+
+**Verification:**
+- Backup created (`pre-k3-throttle-20260512-0234`), yaml re-parses cleanly, `poll_interval_sec` confirmed = 600 via `yaml.safe_load`.
+- No systemd restart — mtime hot-reload picks up on next K3 reload cycle (within current 5min sleep window).
+- TODO: re-probe `/v2/users/me/usage/monthly` after 24h to confirm new daily burn ≈ $5.34 (50% of pre-throttle). Cumulative cycle burn at next check should grow by ~$5.34 between check times.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm \
+  --command-id RunShellScript \
+  --scripts "TAG=pre-k3-throttle-20260512-0234; BASE=/home/azureuser/trading_corp; \
+    mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml" \
+  --query "value[0].message" -o tsv
+# No restart needed for rollback either — mtime hot-reload picks up.
+```
+
+---
+
+## 2026-05-12 02:19 UTC — PM dashboard: render copy_trading divisions
+
+**Triggered by:** State-check at session start revealed `/prediction-markets/kalshi_copy_trading` and `/prediction-markets/polymarket_copy_trading` were rendering empty despite K3 (110 audit rows) and Polymarket Copy Trader (54 audit rows) already firing live. Two independent gaps:
+
+1. **Kalshi resolver wiring gap.** `kalshi_resolver._KALSHI_ACTORS` hardcoded the 3 arb-family actors and excluded `kalshi_copy_trader`, so K3 audit rows could never become `kalshi_round_trips`. Polymarket resolver was already wired correctly (memory `trading_corp_polymarket` 2026-05-11 deploy).
+2. **Dashboard data-layer queries didn't know about copy_traders.** `web/data.py`'s 4 PM query functions hardcoded `actor='polymarket_arbitrage'` / the 3-actor Kalshi list, and hardcoded `division='polymarket_arbitrage'` on output rows — so even with a divisions.yaml slug, queries returned zero.
+
+**Files deployed (2 modified, 1 backup tag):**
+
+**Deploy (02:15 UTC, tag `pre-pm-dashboard-copy-20260512-0215`):**
+- `trading_corp/agents/kalshi_resolver.py`:
+  - Added `kalshi_copy_trader` to `_KALSHI_ACTORS`, `_KALSHI_DIVISIONS`, `_ACTOR_TO_DIVISION` (→ `kalshi_copy_trading`), `_ACTOR_TO_ARB_TYPE_DEFAULT` (→ `copy_trade`).
+  - `_detect_side` needed no change — K3 payload's `outcome` field is `"yes"/"no"` which it already handles.
+  - md5 matched local exactly (`618ed95f…`) — prod/local in sync on this file.
+- `trading_corp/web/data.py` (4 functions touched, 7 string-replace edits):
+  - `_query_pm_round_trips` Polymarket branch: read `division` column from `polymarket_round_trips` via `COALESCE(division, 'polymarket_arbitrage')` so legacy pre-column rows still filter as arbitrage; accept any `polymarket_*` slug.
+  - `_query_pm_open_trades` Polymarket branch: actor list expanded to `('polymarket_arbitrage', 'polymarket_copy_trader')`; filter by `payload.division` so single-division view doesn't bleed cross-division rows.
+  - Open-trades title fallback chain extended to read `p.get("market_title")` (the copy_trader payload uses that key; arbitrage uses `market_question`).
+  - `_query_pm_open_trades` Kalshi branch: actor list expanded to include `kalshi_copy_trader`; arb_type derivation gets `copy_trade` clause.
+  - `_query_pm_pending_count`: both branches mirror the open-trades fixes.
+  - `_query_pm_equity_curve` Polymarket branch: switched to IN-clause for forward-compat (when polymarket_copy_trading equity_history rows eventually land they'll auto-render — today there are zero).
+  - Post-patch md5 was `815e1bb8…` ≠ local `3be4eb01…`. Drift is in non-edited regions of data.py — patches applied cleanly (all 7 old_strings matched uniquely) so my edits are correctly in place; the divergence is preserved (no stomp). This is the `trading_corp_prod_git_drift` pattern, expected.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- `/prediction-markets/kalshi_copy_trading` Open tab renders the 110 paper copies (verified 233 `<tr>` in Open tab = 110 trades × main+expand rows + headers).
+- `/prediction-markets/polymarket_copy_trading` Open tab renders the 54 paper copies (verified 121 `<tr>` rows similarly).
+- Kalshi resolver will now convert K3 `would_have_placed` audit rows to `kalshi_round_trips` rows on its hourly tick. First batch lands ~03:19 UTC; resolutions appear in the dashboard's History tab as they accumulate.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- `kalshi_resolver._KALSHI_ACTORS` is now 4 entries, not 3. Any future Kalshi strategy MUST be added here AND to `_ACTOR_TO_DIVISION` AND to the actor list in `web/data.py:_query_pm_open_trades` (Kalshi branch line ~2629/2646) AND `_query_pm_pending_count`. Same applies for Polymarket — add to actor list in the same two functions' Polymarket branches.
+- `polymarket_round_trips.division` column is now LIVE both at write-time (resolver line 92-98) and read-time (data.py uses COALESCE for legacy NULL rows).
+
+**Latent bugs caught + fixed (none new):** none. The Apify burn at $10.68/day (44% of $29 cap in 26h, ~1.6 days to exhaustion) remains an OPEN URGENT item — not addressed in this deploy. Whales tab P0a + multi-leg resolver P0b deferred per scope agreement.
+
+**Verification:**
+- Patch markers: `grep -c 'kalshi_copy_trader' trading_corp/agents/kalshi_resolver.py` = 3 ✓; `grep -c 'polymarket_copy_trader' trading_corp/web/data.py` = 5 ✓; `grep -c 'kalshi_copy_trader' trading_corp/web/data.py` = 3 ✓.
+- Service restart: PID rotated, `systemctl is-active` = `active`, no `ERROR|Traceback|ImportError` in startup log.
+- Dashboard probes via localhost:8000 (bypasses Authelia):
+  - kalshi_copy_trading partial: 200 OK, 436KB, 233 `<tr>` in Open tab, KX* tickers present.
+  - polymarket_copy_trading partial: 200 OK, 214KB, 121 `<tr>` in Open tab.
+  - Regression check on existing PM divisions all clean: polymarket_arbitrage (55 open / 5 history), kalshi_llm_arbitrage (401 open / 59 history), kalshi_arbitrage (133 open / 0 history).
+
+**Inert / dormant on current traffic (if any):**
+- `polymarket_copy_trading` equity curve will be empty until equity-snapshot loops are spawned for the copy_trading divisions (currently zero rows in `polymarket_equity_history` and `kalshi_equity_history` for those divisions). Forward-compat IN-clause is already in place; just need an orchestrator change to start the snapshot loops. Not blocking dashboard utility.
+- `copy_trade` arb_type label appears in `_query_pm_open_trades` but template UI may render it as plain text; no special CSS treatment yet.
+
+**Deploy script gotcha for next time:**
+- The deploy script `runbooks/.deploy_pm_dashboard_copy_trades.sh` had `set -euo pipefail` at the top, which caused bash to exit immediately when the Python heredoc exited non-zero (on the soft md5-mismatch signal) — BEFORE running the rollback / restart blocks. Net effect: first run silently applied patches but didn't restart systemd. Second run reported "NOT FOUND" because prod already had the patches. Workaround: dropped the rollback-on-mismatch (distinguished hard vs soft failures) and re-ran the restart manually. Future deploy scripts should either replace `set -e` with explicit error handling, or use `python3 ... || true` and check `$?` explicitly.
+
+**Rollback recipe:**
+```bash
+# SSH path (blocked from current IP — use az alternative below):
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-pm-dashboard-copy-20260512-0215; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/kalshi_resolver.py.\$TAG \$BASE/trading_corp/agents/kalshi_resolver.py; \
+mv \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+sudo systemctl restart trading-corp.service
+"
+
+# az alternative:
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm \
+  --command-id RunShellScript \
+  --scripts "TAG=pre-pm-dashboard-copy-20260512-0215; BASE=/home/azureuser/trading_corp; \
+    mv \$BASE/trading_corp/agents/kalshi_resolver.py.\$TAG \$BASE/trading_corp/agents/kalshi_resolver.py; \
+    mv \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+    sudo systemctl restart trading-corp.service" \
+  --query "value[0].message" -o tsv
+```
+
+---
+
+## 2026-05-11 23:00 UTC — paper_trade_replay: BitUnix symbol routing + premature-expired fix
+
+**Triggered by:** Board asked when the "Paper-trade win rate" panel on `/division/bitunix_futures` would populate. Investigation found two bugs:
+
+1. **BitUnix paper trades never resolved.** The replay loop was running every 15min but failing on every BitUnix order with `ERROR: coinbase does not have market symbol BTC/USDT.P`. Root cause: single-venue Coinbase ccxt fetcher used for ALL strategies.
+2. **Premature `expired` classification.** Once #1 was fixed and BitUnix bars started flowing, all 4 stuck rows immediately got marked `expired` — but the trades were only 2-6h old with a 24h `max_hold_seconds`. The classifier was treating "ran out of fetched bars" as "trade expired" without checking wall-clock elapsed time.
+
+**Files deployed (1 modified, 2 backup tags):**
+
+**Deploy 1 (22:30 UTC, tag `pre-replay-bitunix-routing-20260511-2230`):** symbol-aware OHLCV router.
+- `trading_corp/agents/paper_trade_replay.py`:
+  - Renamed `_default_ccxt_fetcher` → `_coinbase_ccxt_fetcher` for clarity.
+  - **New `_bitunix_kline_fetcher`** — hits `https://fapi.bitunix.com/api/v1/futures/market/kline` (no auth, same source `LiveBarCache` uses for live ATR). Paginates 1000 bars/call. Returns ccxt-shaped `[ts_ms, o, h, l, c, v]` rows in chronological order.
+  - **New `_to_bitunix_symbol` / `_is_bitunix_symbol`** helpers. Detection rule: symbol ends in `.P` → BitUnix perp; else → Coinbase spot. Symbol normalization: `BTC/USDT.P` → `BTCUSDT` for the REST call.
+  - **New `_default_router_fetcher`** — single entry point that dispatches per-symbol. Replaced `_default_ccxt_fetcher` reference in `_replay_tick_async`.
+  - Smoke-tested against live BitUnix API: 30×1m bars returned chronologically with sane OHLCV.
+
+**Deploy 2 (23:00 UTC, tag `pre-replay-still-open-20260511-2300`):** still_open verdict.
+- `trading_corp/agents/paper_trade_replay.py`:
+  - **New `_Resolved.result` value: `"still_open"`** — transient verdict the caller never writes to DB. Documented in the docstring as "row stays at result=NULL so the next replay tick picks it up again."
+  - `_classify` now computes `elapsed = now - row.ts` and only returns `"expired"` when `elapsed >= max_hold_seconds`. Otherwise returns `"still_open"` (no DB write).
+  - Helper `_parse_row_ts(ts)` for the wall-clock comparison.
+  - `_replay_tick_async` checks for `result == "still_open"` and `continue`s past `_update_row` — leaves row at NULL for the next tick.
+  - New `still_open` bucket in the counts dict for visibility.
+- **DB cleanup step:** UPDATEd 4 prematurely-expired BitUnix rows back to `result=NULL, result_ts=NULL, result_price=NULL, actual_pnl_dollars=NULL, actual_r_multiple=NULL, bars_to_resolution=NULL` so they re-process correctly under the fixed classifier.
+
+**Verification (immediately post-deploy):**
+- Post-restart catch-up tick: `{'scanned': 4, 'resolved_win': 0, 'resolved_loss': 0, 'resolved_expired': 0, 'still_open': 4, 'errors': 0}` ✓
+- All 4 BitUnix rows back to `result=NULL` — will re-evaluate every 15min until either TP/SL hits OR the genuine 24h max_hold elapses.
+
+**4 boundary cases unit-tested locally:**
+- 2h old, 24h hold, no hit → `still_open` ✓
+- 25h old, 24h hold, no hit → `expired` ✓
+- 2h old, TP hit at bar 60 → `win` (bars_to_resolution=61) ✓
+- 2h old, SL hit at bar 30 → `loss` (bars_to_resolution=31) ✓
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-replay-still-open-20260511-2300; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/paper_trade_replay.py.\$TAG \$BASE/trading_corp/agents/paper_trade_replay.py; \
+sudo systemctl restart trading-corp.service
+"
+```
+(Rolls back BOTH fixes — the still_open verdict ride on top of the symbol-routing change. To partially roll back just the still_open fix, use `pre-replay-bitunix-routing-20260511-2230` instead.)
+
+---
+
+## 2026-05-11 21:20–22:00 UTC — Dashboard timezone sweep (all timestamps → Eastern)
+
+**Triggered by:** Board said "the bitunix dashboard you helped me with…it is showing times in zulu time. i need all times on the dashboard to be eastern timezone." Subsequent sweep across all dashboard surfaces to replace UTC literals with ET.
+
+**Approach:** Jinja filters `et_hms` / `et_short` / `et_full` already existed (registered in `web/app.py:94-96`, sourced from `utils/time.py`). Just needed to swap raw timestamp slices for filter calls — no data builder changes for most, one targeted addition for the BitUnix score panel.
+
+**Files deployed (3 modified across 2 sub-deploys, backup tag `pre-tz-sweep-20260511-2145` + `pre-tz-sweep-routes-20260511-2200`):**
+
+**21:20 UTC deploy — BitUnix score panel + four other templates:**
+- `trading_corp/web/data.py` — added `ts_et` field via `format_et_short()` to each `recent_evals` + `recent_fires` entry in `build_bitunix_score_view`. (Pre-formatting in the builder keeps the template branchless and ensures consistency.)
+- `trading_corp/web/templates/partials/bitunix_score_panel.html` — Recent fires + Recent evaluations tables now render `{{ f.ts_et }}` / `{{ e.ts_et }}` (was `{{ f.ts[5:16] }}Z` etc).
+- `trading_corp/web/templates/base.html` — scheduler last_run header: `{{ snap.health.scheduler.last_run | et_hms }}` (was `[11:19]Z`).
+- `trading_corp/web/templates/partials/kalshi_analysis.html` — position `expires_at` uses `| et_short` filter.
+- `trading_corp/web/templates/partials/polymarket_analysis.html` — event `resolves_at` uses `| et_short` filter.
+- `trading_corp/web/templates/research.html` — 5 occurrences of `ts[:19]` → `(ts | et_short)`.
+
+**22:00 UTC deploy — routes.py renderers:**
+- `trading_corp/web/routes.py` — 3 inline `ts_dt.strftime("%Y-%m-%d %H:%M:%S UTC")` calls (PMCC analysis renderers) replaced with `format_et_full(ts_dt)`. Import already present at line 33.
+
+**Verification (post-deploy):**
+- Scheduler header now reads `sched: 08:33:07 ET` (was `12:33:07Z`).
+- BitUnix score panel Recent fires + Recent evaluations tables render `05-11 15:54 ET` (was `05-11T19:54Z`).
+- Final grep sweep confirmed no remaining `}}Z`, no remaining `[:19]` raw slices, no remaining `"UTC"` literals across `trading_corp/web/`.
+
+**Inert / dormant:**
+- The two `_humanize_ts` callers in `data.py` (used for activity-feed "5m ago" relative times in PMCC/IRA recent-activity sections) are unchanged — they're timezone-neutral by construction.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-tz-sweep-20260511-2145; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/templates/base.html.\$TAG \$BASE/trading_corp/web/templates/base.html; \
+mv \$BASE/trading_corp/web/templates/partials/kalshi_analysis.html.\$TAG \$BASE/trading_corp/web/templates/partials/kalshi_analysis.html; \
+mv \$BASE/trading_corp/web/templates/partials/polymarket_analysis.html.\$TAG \$BASE/trading_corp/web/templates/partials/polymarket_analysis.html; \
+mv \$BASE/trading_corp/web/templates/research.html.\$TAG \$BASE/trading_corp/web/templates/research.html; \
+TAG2=pre-tz-sweep-routes-20260511-2200; \
+mv \$BASE/trading_corp/web/routes.py.\$TAG2 \$BASE/trading_corp/web/routes.py; \
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
+## 2026-05-11 19:30–20:30 UTC — Robinhood IRA dashboard reworks (PMCC-style rows + expert analysis parity)
+
+**Triggered by:** Board feedback after the initial 19:00 UTC IRA dashboard ship. Three requested changes consolidated into this entry, three sequential deploys:
+
+1. **PMCC-style click-to-expand rows** (replaced wide horizontal table). User said: "i want the open options UI to work just like robinhood pmcc."
+2. **Section rename** — "Pure Assets" → "Portfolio", "Wheel Puts" → "Puts" with the wheel framing dropped entirely. User said: "there is no need for a wheel section. i do not run a wheel strategy per se."
+3. **Expert Analysis parity** — analysis panel was deterministic but visually different from PMCC. User said: "you did not reuse the code built for robinhood pmcc."
+
+**19:30 UTC deploy — PMCC-style rows + section rename (backup tag `pre-ira-pairs-20260511-1930`):**
+- `trading_corp/web/data.py` — added `priority_score` / `priority_label` / `recommended_action` properties to `CoveredCallPosition` (mirrors `PMCCPair`'s priority model: urgent/elevated/routine/healthy + Roll/Close/Watch/Hold action). Renamed dict keys: `pure_assets` → `portfolio`, `wheel_puts` → `puts`. Sort order changed from "ITM first by DTE" to "priority_score desc, DTE asc as tiebreaker."
+- `trading_corp/web/templates/partials/ira_pair.html` — **NEW**. Click-to-expand row mirroring `pmcc_pair.html`: priority dot + symbol + spot + "covered call" badge + recommended-action pill + DTE badge + Combined P&L on the right + chevron. Expanded body: LEFT panel = shares (qty / avg cost / last / mkt value / cost basis / P&L), RIGHT panel = short call (qty / delta / credit / mark / intrinsic / extrinsic / P&L). Visual parity with PMCC.
+- `trading_corp/web/templates/partials/ira_dashboard.html` — rewritten: three sections renamed to **Covered Calls** (uses `ira_pair.html`) / **Portfolio** / **Puts** (hides entirely when no open puts; no wheel framing). List container renamed `id="pair-list"` so `static/js/pair_list.js` handles single-open accordion + "Loading {symbol}..." flash on the IRA rows too.
+
+**20:00 UTC deploy — Expert Analysis stub renderer (backup tag `pre-ira-analysis-20260511-2000`):**
+- Added htmx hookup to `ira_pair.html` summary (`hx-get="/division/{slug}/pair-analysis/{symbol}"` + target `#pair-analysis` + swap innerHTML). Added IRA dispatch in the existing `division_pair_analysis` endpoint (previously bailed for non-PMCC slugs at line 671). First version used a custom deterministic renderer `_render_ira_pair_analysis(cc)` showing breakeven / max profit / expiry scenarios.
+- **Bug caught during verification:** `hx-sync="closest #ira-cc-list:replace"` was stale from before the list rename. In HTMX 2.x, an unresolvable `closest` selector prevents the request from firing entirely. Fixed to `closest #pair-list:replace` and redeployed.
+
+**20:30 UTC deploy — PMCC renderer parity (backup tag `pre-ira-pmcc-renderer-20260511-2030`):**
+- `trading_corp/web/routes.py`:
+  - New `_analyze_ira_covered_call(cc, broker, deps)` async function. Returns `(PMCCAnalysis, TradeRecommendation | None)` — the SAME dataclass shapes PMCC produces — so `_render_pair_analysis` consumes IRA output without modification.
+  - Rule-based action picker (no LLM call). Decision tree:
+    - `0 DTE + ITM` → roll_short_early urgent (conf 0.95)
+    - `0 DTE OTM` → hold routine (let expire)
+    - `profit ≥85%` → close_short elevated
+    - `≤2 DTE + ITM` → roll_short_early urgent (conf 0.90)
+    - `≤2 DTE OTM` → hold routine (let theta finish)
+    - `profit ≥70%` → close_short elevated
+    - `ITM + >2 DTE` → watch elevated (with **preview-only** roll legs so user sees the trade shape even when not yet urgent)
+    - otherwise → hold routine
+  - Multi-paragraph rationale cites the specific rule (R1–R5) applied. Warnings cover assignment risk, credit-only roll requirement, partial coverage.
+  - **Real chain fetch** via `broker.get_expiration_dates` + `broker.get_calls_for_expiry` for the "Sell to open" next-week leg. Picks the listed strike closest to `max(spot × 1.03, current_strike + 0.50)`. Returns `mark_per_share` / `bid` / `ask` / `delta` so spread-quality dots render. Falls back gracefully on chain-fetch failure (BTC leg only).
+  - `_render_pair_analysis` gained `show_execute_button: bool = True` (default preserves PMCC behavior; IRA passes `False` to hide the Approve/Defer buttons since no IRA automation is wired — user executes manually in Robinhood).
+  - IRA dispatch in `division_pair_analysis` calls the new analyzer, renders via `_render_pair_analysis(analysis, recommendation, slug, sym, show_execute_button=False)`, caches in `_pair_cache` (5-min TTL — same as PMCC).
+  - The original custom `_render_ira_pair_analysis` is now dead code (kept for rollback safety, will be removed in a follow-up).
+
+**Verification (post-20:30 UTC deploy, against real MARA position: 1200 shares avg $16.69, short 12× $13C 4DTE @ $0.92, spot $13.44):**
+- Endpoint output: 3,471 bytes (vs. 1,071 bytes in the 20:00 stub).
+- Markers confirmed: WATCH badge, 75% conf, Warnings, Rule R citations, Buy to close leg, Sell to open leg (real broker-fetched next-week $14C 11DTE @ $0.76), Net debit $252, Expected benefit ("Preview only — rules say WATCH"), MEDIUM cost confidence, no Approve/Defer buttons.
+- Visual parity with PMCC confirmed in user screenshot — same urgency emoji + action badge + confidence + multi-paragraph rationale + warnings list + concrete trade legs + expected benefit structure.
+
+**Inert / dormant:**
+- Old `_render_ira_pair_analysis` function still in routes.py (marked deprecated). Remove on next cleanup pass.
+- Rule tuning is in BACKLOG — current decision tree is the initial cut. Board flagged ≤2 DTE threshold for ITM-roll-urgency may want loosening to ≤4 DTE; deferred to a future tuning pass.
+
+**Rollback recipes** (in reverse-deploy order; pick one):
+```bash
+# Rollback PMCC-renderer integration only (restores 20:00 stub renderer)
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-ira-pmcc-renderer-20260511-2030; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/routes.py.\$TAG \$BASE/trading_corp/web/routes.py; \
+sudo systemctl restart trading-corp.service
+"
+
+# Rollback to the original 19:00 IRA dashboard (wide table + Wheel Puts label)
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-ira-pairs-20260511-1930; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/web/templates/partials/ira_dashboard.html.\$TAG \$BASE/trading_corp/web/templates/partials/ira_dashboard.html; \
+rm -f \$BASE/trading_corp/web/templates/partials/ira_pair.html; \
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
+## 2026-05-11 20:17 UTC — Polymarket Copy Trader division (paper-mode live)
+
+**Commits:** none — files patched onto prod's drifted content (per `trading_corp_prod_git_drift` memory). Parallel BitUnix sprint was running on the same VM; patcher applied K3-equivalent additions on top of prod's current state, not git HEAD.
+**Triggered by:** User re-prioritized `polymarket_copy_trading` from deprioritized → active build the same day K3 shipped. Goal: validate the copy-trading thesis on a SECOND venue in parallel, leveraging Polymarket's free public Data API (no Apify-equivalent cost), explicit side+outcome in `/activity` (no trade-tape inference), and the venue-agnostic scoring engine already built for K3.
+**Backup tags:**
+- `pre-polymarket-copy-20260511-2011` — covers `kalshi_whale_stats.py`, `persistence/db.py`, `polymarket_resolver.py`, `main.py`, `config/strategies.yaml` (5 modified)
+- `pre-pm-enable-20260511-2017` — strategies.yaml backup before flipping `enabled: true`
+
+**Files deployed (5 new, 5 modified):**
+- `trading_corp/data/polymarket_data_api_client.py` — **NEW** (~340 lines). Async wrapper over Polymarket's public REST endpoints at `data-api.polymarket.com`. Dataclasses: `LeaderboardEntry`, `ActivityRow`, `PositionRow`. Endpoints: `/v1/leaderboard?category=<C>&limit=N&offset=N` (discovery, supports 5 working categories — Politics/Sports/Crypto/Tech/Mentions), `/activity?user=<wallet>&limit=N` (per-wallet trade history with explicit side/outcome/price/USDC size), `/positions?user=<wallet>` (current open). Plus `fetch_market_resolutions(condition_ids)` hitting `gamma-api.polymarket.com/markets` in BOTH open + closed variants per chunk (gamma-api defaults to `closed=false` and intersects with `condition_ids` filter — needs two passes to capture both states). `_decode_resolution` distinguishes resolved (one price ≥0.9 → win_idx), void (closed but all-near-zero prices), pending (closed=false). All free, no auth.
+- `trading_corp/data/polymarket_whale_stats.py` — **NEW** (~225 lines). Venue-specific stats adapter. `compute_polymarket_stats(leaderboard_entry, activity_rows, market_resolutions, half_life_days)` builds a `WhaleStats` record by filtering BUY trades through resolution lookup, computing time-weighted Wilson-LCB + ROI from real entry-price + USDC-size math. `_is_win_for_buy` joins activity outcome_index against winning_outcome_index. Reuses venue-agnostic `wilson_lcb_95`, `_edge_factor`, `_category_bonus` from `kalshi_whale_stats`.
+- `trading_corp/agents/strategies/polymarket_copy_trader.py` — **NEW** (~370 lines). Strategy. Per-cycle: load selected whales, fetch `/activity` per whale, filter to TRADE rows newer than `last_seen_ts` + dedup by `transaction_hash`. BUYs emit copy ProposedOrders (sized via USDC bet-size tiers $1/$2/$5), SELLs of held positions emit close orders. **`qty` in CONTRACTS** (`copy_usdc / entry_price`) so the resolver's `notional = qty * price` math is consistent. `limit_price` = whale's entry price. Side detection explicit (no Kalshi-style size-match). Cold-start safe.
+- `trading_corp/scripts/refresh_polymarket_whales.py` — **NEW** (~310 lines). Quarterly selection orchestrator. Rule B: top-2 per cat × 5 cats + top-2 global = 12. Pulls leaderboard per cat + global → enriches via `/activity?limit=200` → batch-fetches market resolutions (gamma-api, 50-id chunks, open+closed variants) → scores per (whale, target_category) → picks rule B. Cost: $0. Time: ~5s for 100+ candidates.
+- `tests/test_polymarket_copy_trader.py` — **NEW** (~340 lines, 23 tests). All pass; full suite 387 tests, zero regressions.
+- `trading_corp/data/kalshi_whale_stats.py` — extended with `wilson_lcb_95_weighted(weighted_wins, n_eff)` (Kish's effective sample size) and `time_weighted_outcomes(samples, now_ts, half_life_days)` (exp decay, default 30d half-life). Venue-agnostic.
+- `trading_corp/persistence/db.py` — added `division TEXT NOT NULL DEFAULT 'polymarket_arbitrage'` column to `polymarket_round_trips` (was implicitly arbitrage-only). New `_maybe_add_column()` helper for idempotent `ALTER TABLE ADD COLUMN` migrations. `init_db` calls it, then creates `ix_polymarket_round_trips_division` index AFTER the migration (intentionally NOT in SCHEMA to avoid CREATE-INDEX-on-missing-column on upgraded DBs). Verified on a pre-migration prod-shaped DB.
+- `trading_corp/agents/polymarket_resolver.py` — `_fetch_unresolved_orders` widened from `actor = 'polymarket_arbitrage'` to `actor IN ('polymarket_arbitrage', 'polymarket_copy_trader')` + carries `_actor` field. `_compute_round_trip_row` stamps `division` from payload, falling back to actor-name inference (`polymarket_copy_trader` → `polymarket_copy_trading`). Slug/title fallbacks for copy-trader payload shape.
+- `trading_corp/main.py` — `_scheduled_polymarket_copy_trader_loop(agent, *, channel, logger_agent, data_exec, risk_agent, db_url)` mirrors `_scheduled_kalshi_copy_trader_loop` shape but takes NO Apify token + NO trade-tape-fetcher. Owns the `PolymarketDataAPIClient` lifecycle. Audit base_payload enumerates 17 K3-equivalent Polymarket fields. Telegram emoji 🟣 (distinguishes from K3's 🐋). Startup wiring sits right after `polymarket_arb_task`.
+- `config/strategies.yaml` — `polymarket_copy_trader:` block appended. Default `enabled: false` → flipped to `true` via in-place sed after first successful restart.
+
+**Features shipped:**
+- New division: `polymarket_copy_trading` flipped from standby-placeholder to active. Same wallet as polymarket_arbitrage shared during paper-mode per CLAUDE.md (separate wallet planned for live-mode per Jack).
+- 12 selected whales committed to `agent_state(polymarket_copy_trader.selected_whales)`. All opt-in public, no anonymity gradient (vs Kalshi K3's ~7%). Top whale `248188374`: 197 resolved, 100% WR, $133K lifetime P&L, Sports specialist.
+- Polymarket Data API wired as first-class data source — discovery + per-wallet enrichment + resolution batch all free, no auth, no Apify-equivalent recurring cost.
+- Time-weighted Wilson LCB in the venue-agnostic scoring engine — Kalshi K3 could opt in too via `half_life_days` param.
+- `polymarket_round_trips.division` column lets the existing resolver pipe BOTH arbitrage and copy_trading round-trips into the same table.
+
+**Notable code decisions:**
+- **Recon agent's `/leaderboards` endpoint was hallucinated.** Real endpoint is `/v1/leaderboard` (singular, with `/v1/` prefix). Documented URL returns 404. Don't trust agent-cited URLs without a fresh probe.
+- **5 working categories, not 12.** Polymarket's taxonomy has 9 top-level but only Politics/Sports/Crypto/Tech/Mentions return leaderboard data. Rule B adjusted from "top-1 per cat × 12 volume cats" to "top-2 per cat × 5 + top-2 global = 12".
+- **gamma-api's `condition_ids` filter intersects with `closed=false` by default.** Required two passes per chunk (open variant + closed variant) to capture both market states.
+- **`qty` in CONTRACTS, not USDC.** Originally emitted in USDC, but the resolver's binary-settlement math requires contracts. Normalization: `contracts = copy_usdc / entry_price`.
+- **Multi-leg sports markets won't auto-resolve in v1.** Resolver's `_compute_round_trip_row` gates on `outcome.lower() in {"yes", "no"}`. Spurs/Cavaliers/etc. land in audit_event but not polymarket_round_trips. Acceptable v1 gap; resolver extension is small follow-up.
+- **No trade-tape inference needed.** Polymarket's `/activity` carries `side: BUY|SELL` + `outcome_index: 0|1` + human `outcome` label directly. K3's size-match dance is venue-specific to Kalshi.
+
+**Verification:**
+- Pre-restart import smoke on prod: all 8 Polymarket modules + `trading_corp.main` import cleanly under prod's venv.
+- PID rotation 260521 → 261879 on first restart, → 262635 on a parallel-session restart 2 min later (BitUnix sprint concurrent; no file collisions).
+- Schema migration verified: `division` column present with DEFAULT `'polymarket_arbitrage'`. Existing rows backfilled.
+- "Polymarket copy trader scanner online (enabled=False)" at 20:13:01, then "(enabled=True)" after the strategies.yaml flip at 20:17.
+- **Cold-start fired at 20:16:24-27 UTC** — 12 `polymarket_copy_cold_start` audit events. 11 whales got populated baselines (15-20 rows each); 1 (`Talvez10`) returned empty (will baseline on next cycle).
+- 23 new unit tests pass; full suite 387 tests, zero regressions.
+
+**First selection (committed to prod 2026-05-11 20:14 UTC):**
+- Sports×2: `248188374` (197 resolved, 100% WR), `ic4cream` (99 resolved, 93% WR)
+- Tech×2: `OnlySafeBets` (107 resolved, 83% WR), `wenzhu` (53 resolved, 79% WR)
+- Crypto×2: `ddssaaas6` (166 resolved, 89% WR), `0xE9Ba96828e513a...` (191 resolved, 77% WR)
+- Politics×2: `VladimirPooper` (130 resolved, 94% WR), `mohahaha` (17 resolved, 88% WR)
+- Mentions×2: `Pedrobeliever47` (11 resolved, 82% WR), `0xe617861a96631d...` (71 resolved, 94% WR)
+- GLOBAL×2: `00xx00xx00` (112 resolved, 58% WR but +$1.08/$ ROI), `Talvez10` (180 resolved, 67% WR)
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-polymarket-copy-20260511-2011; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/data/kalshi_whale_stats.py.\$TAG       \$BASE/trading_corp/data/kalshi_whale_stats.py; \
+mv \$BASE/trading_corp/persistence/db.py.\$TAG                \$BASE/trading_corp/persistence/db.py; \
+mv \$BASE/trading_corp/agents/polymarket_resolver.py.\$TAG    \$BASE/trading_corp/agents/polymarket_resolver.py; \
+mv \$BASE/trading_corp/main.py.\$TAG                          \$BASE/trading_corp/main.py; \
+mv \$BASE/config/strategies.yaml.\$TAG                        \$BASE/config/strategies.yaml; \
+rm -f \$BASE/trading_corp/data/polymarket_data_api_client.py \
+      \$BASE/trading_corp/data/polymarket_whale_stats.py \
+      \$BASE/trading_corp/agents/strategies/polymarket_copy_trader.py \
+      \$BASE/trading_corp/scripts/refresh_polymarket_whales.py \
+      \$BASE/tests/test_polymarket_copy_trader.py; \
+sudo systemctl restart trading-corp
+"
+```
+
+(The `division` column on `polymarket_round_trips` survives the rollback — additive schema, no rollback needed. `agent_state.selected_whales` persists; harmless without the strategy code.)
+
+---
+
+## 2026-05-11 19:00 UTC — Robinhood IRA detailed dashboard (covered calls + pure assets + wheel puts)
+
+**Triggered by:** Board direction — IRA strategy is buy-and-hold + sell weekly covered calls (no LEAPs allowed in retirement accounts; shares must back the short calls). Occasional cash-secured puts as a wheel entry. The existing `/division/robinhood_ira` page used the generic PMCC/Holdings layout which doesn't model this — covered calls weren't grouped with their underlying shares, and the page showed an empty "Positions" section because there are no PMCC pairs in IRA.
+
+**Files deployed (1 new, 2 modified, backup tag `pre-ira-dashboard-20260511-1900`):**
+- `trading_corp/web/templates/partials/ira_dashboard.html` — **NEW**. Three sections:
+  - **Covered Calls** — shares + short call grouped by underlying; one row per (underlying, short_call); columns: Symbol / Shares / Cost / Last / Mkt Value / Share P&L | Call (DTE / Strike / Credit / Mark / Call P&L / Status). Coverage% badge (e.g. "fully covered" or "75% covered" if partial). ITM strikes flagged red with breach %. Sort: ITM-first, then by DTE ascending.
+  - **Pure Assets** — shares without any short call sold against them; columns: Symbol / Qty / Avg Cost / Last / Mkt Value / Unrealized P&L. Suppresses P&L for rows with cost_basis=0 (avoids the RH crypto cost_basis=0 noise — same rule as `feedback_holdings_window_scope` memory). Sort: market value descending.
+  - **Wheel Puts** — short cash-secured puts (acquire-on-assignment); columns: Underlying / Strike / DTE / Qty / Credit Received / Mark / Underlying Px / Net Basis if Assigned / P&L. Renders empty-state when no active puts ("Sell puts to enter on dips and collect premium.").
+- `trading_corp/web/data.py` — added 2 dataclasses + 1 builder:
+  - **`CoveredCallPosition`** — `underlying`, `shares_qty`, `shares_avg_price`, `shares_market_value`, `shares_cost_basis`, `shares_pnl`, `shares_pnl_pct`, `short_call: OptionLeg`, `coverage_pct`. Properties: `is_fully_covered`, `is_itm`, `breach_pct`, `combined_pnl`, `call_status` (itm / expiring_today / expiring_tomorrow / profit_take_candidate / open).
+  - **`WheelPutPosition`** — wraps a short-put `OptionLeg`. Properties: `underlying`, `strike`, `expiry`, `days_to_expiry`, `credit_received`, `cost_to_close`, `is_itm`, `assignment_cost`, `effective_basis_if_assigned`.
+  - **`build_ira_view(stock_holdings, legs, prices) -> dict`** — partitions option legs by type/side, groups short calls with their underlying shares, identifies pure assets (shares with no matching call), wraps short puts as wheel positions. Returns `{covered_calls, pure_assets, wheel_puts}`.
+  - New `ira_view: dict | None` field on `DivisionViewSnapshot`. Wired in `build_division_view` for `slug == 'robinhood_ira'`.
+- `trading_corp/web/templates/division.html` — conditional fork: when `slug == 'robinhood_ira' AND view.ira_view`, include `partials/ira_dashboard.html` and skip the generic PMCC pairs / Holdings tables. Falls back to legacy layout for all other slugs.
+
+**Verification (against real prod IRA data immediately post-deploy):**
+- Real IRA holdings: 7 stocks (IBIT 118.04, MARA 1200, BLOX 18.74, GME+ 100, MSTY 200, STRC 0.97, SATA 0.51) + 1 short call (MARA 2026-05-15 $12.50 ×12, credit $0.92/sh).
+- Grouping result: **1 covered call (MARA, 100% covered, OTM, combined P&L -$4,404)** + **6 pure assets** (sorted by market value desc) + **0 wheel puts** (empty-state rendered).
+- Rendered page: section headers "Covered Calls" / "Pure Assets" / "Wheel Puts" all present; legacy "Positions" / "Holdings" suppressed for IRA slug; "Recent activity" preserved.
+- Specific data points confirmed in HTML: "MARA", "1200", "2026-05-15", "×12", "fully covered" badge.
+
+**Inert / dormant:**
+- Long-call legs (LEAPs) on the IRA broker filter are silently dropped in `build_ira_view` — they shouldn't exist there per the strategy, but defensive.
+- No automated trading wired — this is dashboard-only. Strategy automation is a follow-up.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-ira-dashboard-20260511-1900; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/data.py.\$TAG  \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/web/templates/division.html.\$TAG  \$BASE/trading_corp/web/templates/division.html; \
+rm -f \$BASE/trading_corp/web/templates/partials/ira_dashboard.html; \
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
+## 2026-05-11 18:23 UTC — BitUnix Phase 3.2.3 — live confluence score dashboard panel
+
+**Triggered by:** Phase 3.2 (score accumulator) and 3.2.2 (PA factors) were live but invisible — to understand what the bot was scoring, you had to grep audit_event. Phase 3.2.3 adds a panel to `/division/bitunix_futures` that surfaces it.
+
+**Files deployed (1 new, 2 modified, backup tag `pre-bitunix-323-20260511-1820`):**
+- `trading_corp/web/templates/partials/bitunix_score_panel.html` — **NEW**. Tailwind+htmx panel. Auto-refreshes every 30s via `hx-get` self-referential pattern.
+- `trading_corp/web/data.py` — added `build_bitunix_score_view(db_url, deps)` builder + `_parse_audit_ts(ts)` helper. New `bitunix_score: dict | None` field on `DivisionViewSnapshot`. Wired conditionally in `build_division_view` for `slug == 'bitunix_futures'`.
+- `trading_corp/web/templates/division.html` — added conditional include block (5 lines) mirroring the donchian pattern.
+
+**Panel surfaces:**
+- **Header:** scoring enabled/dormant, factor count (34), tier thresholds, fire threshold (8)
+- **4 stat cards:** Last eval (tier + signal + age), Net score (with buy/sell breakdown + guard penalties), Cooldown (per-side remaining time), Bar cache health (bars cached + last close + ATR + refresh errors)
+- **Live price-action factors strip:** ✓/○ per PA factor (`above_vwap`, `below_vwap`, `HH_4h`, `LL_4h`, `volume_above_avg`) + pct_change(60m) — computed live from `bar_cache` at request time via `compute_price_context()`
+- **Buy/Sell contributions side-by-side** for the latest evaluation, listing every contributing signal name with its weight
+- **Recent paper fires table** (last 10 `would_have_placed` rows with `via=bitunix_score`): ts / tier / side / net_score / entry / stop / TP / qty / trigger
+- **Recent evaluations table** (last 20 `bitunix_score_decided` rows): with tier color coding, outcome (placed / skipped_cooldown / skipped_score)
+- **Ledger window summary:** count of rows in last 24h
+
+**Verification (in prod immediately post-deploy):**
+- `curl localhost:8000/division/bitunix_futures` returned 36,633 bytes ✓
+- `id="bitunix-score-panel"` present in HTML ✓
+- "● SCORING ACTIVE" badge rendered (scoring.enabled=True) ✓
+- Live PA factors strip showed real bool flags: above_vwap=✓, HH_4h=✓, LL_4h=✓ (outside-bar case captured visually) ✓
+- Tier mentions count: 1 PREMIUM (threshold label) + 2 STANDARD (1 label + 1 history row) + 1 SKIP (last eval status) ✓
+- "Recent paper fires (1)" rendered (the 18:00:07 STANDARD SELL) ✓
+- "Recent evaluations (7) · ledger 24h: 7 rows" rendered ✓
+
+**Notable design:**
+- Auto-refresh via `hx-get="/division/bitunix_futures" hx-trigger="every 30s" hx-select="#bitunix-score-panel" hx-target="#bitunix-score-panel"` — re-fetches the whole division page but only swaps the panel subtree. No new endpoint needed.
+- `build_bitunix_score_view` returns `None` when scoring config is unavailable (observer not wired or YAML scoring block missing) → template's `{% if view.bitunix_score %}` gate prevents partial rendering. Safe default.
+- Guard penalties (`bg`, `sg`) and `cooldown_blocked` flag both surfaced — explains "why didn't fire" without grepping logs.
+- 30s refresh is intentional. Bar cache polls every 60s; webhooks arrive a few times per hour during active periods. 30s is the sweet spot for "looks live" without hammering the SQLite reads.
+
+**Inert / dormant:** none. The panel is read-only telemetry; it does not affect order flow.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bitunix-323-20260511-1820; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/data.py.\$TAG  \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/web/templates/division.html.\$TAG  \$BASE/trading_corp/web/templates/division.html; \
+rm -f \$BASE/trading_corp/web/templates/partials/bitunix_score_panel.html; \
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
+## 2026-05-11 18:17 UTC — Kalshi K3 Copy Trading division (paper-mode live)
+
+**Commits:** none — files patched onto prod's already-drifted content (per `trading_corp_prod_git_drift` memory).
+**Triggered by:** K3 sprint per BACKLOG.md "P0 NEXT — Kalshi K3 Copy Trading". Mirror top Kalshi whales' positions at scaled-down size; selected whales come from offline Wilson-LCB × ROI × category scoring; side detection uses Kalshi's free public trade tape.
+**Backup tags:**
+- `pre-kalshi-k3-20260511-1816` — covers `kalshi.py`, `secrets.py`, `main.py` (3 modified)
+- `pre-kalshi-k3-enable-20260511-1819` — covers `strategies.yaml` (enabled-flip backup)
+
+**Files deployed (5 new, 3 modified):**
+- `trading_corp/data/kalshi_apify_client.py` — **NEW** (~260 lines). Async wrapper over Apify's two saswave Kalshi actors (`leaderboard-scraper` + `profile-scraper`). Typed dataclasses (LeaderboardEntry, WhaleProfile, WhalePosition, WhaleTrade), structured error class hierarchy (Auth / OverCap / Timeout), semaphore-gated concurrency, stub-safe when token missing.
+- `trading_corp/data/kalshi_whale_stats.py` — **NEW** (~210 lines). Venue-agnostic scoring engine. Wilson 95% LCB on win rate (penalizes small samples), edge factor from avg pnl-per-contract (clipped), category specialization bonus (1.5x match). `compute_stats` aggregates closed_positions per nickname; `score_whale` produces composite + exclusion reasons. Same math will plug into Polymarket revival.
+- `trading_corp/agents/strategies/kalshi_copy_trader.py` — **NEW** (~360 lines). The Phase K3 strategy. Mirrors `kalshi_llm_arbitrage` shape (mtime-cached config reload, `enabled` / `auto_execute` properties, `run_scan_cycle`). Per-cycle: load selected whales from `agent_state`, fetch their open_positions via Apify, compare to last-known snapshot, emit ProposedOrders for entries (with side detection) and exits. Cold-start safe: first poll per whale records baseline + emits nothing. Side detection conservative: low-confidence → skip entry, never copy wrong side.
+- `trading_corp/scripts/refresh_kalshi_whales.py` — **NEW** (~280 lines). One-off CLI orchestrator for quarterly selection refresh. Pulls leaderboards per category, enriches top-N candidates with profile + closed_positions, scores via Wilson LCB × ROI × category match, writes top whales to `agent_state(kalshi_copy_trader.selected_whales)`. `--dry-run`, `--min-composite` quality floor, fill-up from leftover pool when per-category dedup leaves slots open.
+- `trading_corp/scripts/__init__.py` — **NEW** (empty, package marker).
+- `trading_corp/brokers/kalshi.py` — extended with `KalshiPublicTrade` dataclass + `get_market_trades(ticker, since, until, limit)` method wrapping `pykalshi.AsyncMarket.get_trades`. Free Kalshi public API, anonymous at trader level, returns `taker_side` per trade — the side-detection signal. Strategy depends on a `TradeTapeFetcher` Protocol; `KalshiBroker` structurally satisfies it.
+- `trading_corp/utils/secrets.py` — `APIFY_API_TOKEN` plumbed (5 edits: redact tuple, `Secrets` dataclass field, `expected_env_vars`, `load_secrets()` init, redact-literal registration). Stub-safe — strategy no-ops if token missing.
+- `trading_corp/main.py` — `_scheduled_kalshi_copy_trader_loop` function (~155 lines) + startup wiring after the `kalshi_llm_task` block. Apify client lifecycle owned by the loop (`async with KalshiApifyClient(...) as apify_client`). Audit payload allowlist enumerates 10 K3-specific fields (per `trading_corp_audit_payload_allowlist` gotcha memory): `ticker`, `outcome`, `is_entry`, `whale_handle`, `whale_position_contracts`, `whale_position_pnl`, `copy_size_usd`, `side_detection_confidence`, `first_seen_iso`, plus standard.
+- `config/strategies.yaml` — `kalshi_copy_trader:` block. Already on prod from a parallel session push at md5 d2619e32; flipped `enabled: false → true` per Board direction (paper-mode, so safe).
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- New division: `kalshi_copy_trading` flipped from standby-placeholder to active (strategy live; paper-mode auto-execute on the existing PaperBroker).
+- Selected whales committed to `agent_state(kalshi_copy_trader.selected_whales)`: `['smedtoshi', 'NovaRex', 'tom14cat14', '9187234']`.
+- Apify Starter ($29/mo Bronze) subscription confirmed live; APIFY-API-TOKEN in KV `kv-tc-vtwbowt3wtkpy`; loaded at startup via managed identity.
+- Two-stage discovery+scoring pipeline ships as the standalone `refresh_kalshi_whales` script — re-runnable quarterly.
+- `KalshiBroker.get_market_trades` is the new public side-detection signal source. Free, anonymous-at-trader-level. Will be reused by future Kalshi strategies that need short-window trade context.
+
+**Notable code decisions:**
+- **`max_results` is ignored by saswave's profile actor.** Empirically: `open_positions` returns a 20-row floor per name; `trades` returns a 50-row floor. Cost-model planned around this — opaque whales return 0 rows (free), visible whales return up to 20.
+- **Two-tier polling architecture was DEFERRED.** Original plan used profile-watch (cheap) + on-activity position fetch (expensive). Once we upgraded to Bronze, simple polling at 5min on 4 whales (~$120/mo budget) is cleaner and survives whale-activity bursts. Two-tier code path doesn't exist; could be added back via the `WhaleActivitySource` abstraction if 12-whale config blows the budget.
+- **Side detection is conservative.** When the Kalshi public trade tape can't disambiguate a whale's entry (no size-match or ambiguous matches), the strategy SKIPS the entry rather than guessing. Better to miss a copy than copy the wrong side on real money later.
+- **Cold-start baseline persists with `our_side=""`.** When a whale closes one of those baselined positions, `_emit_exit` correctly short-circuits because there's no `our_side` stored — no phantom close emitted.
+- **Strategy `enabled` and `auto_execute` are independent flags.** `enabled: true` runs the scanner + emits ProposedOrders + logs `would_have_placed` to audit (paper-mode). `auto_execute: true` would route approved orders through a real KalshiLiveBroker (Phase K5+ work; doesn't exist yet).
+
+**Bugs caught + fixed during the session:**
+- `set_agent_state` / `load_agent_state` argument order. The actual signature is `(agent, key, value, db_url=...)` but I wrote `(db_url, agent, key, value)` positionally in both the strategy and the script. First selection-script commit attempt failed with `'list' object has no attribute 'startswith'` because the db_url positional slot got a list. Fixed in both files before deploy.
+- Selection fill-up logic was capping at 3 picks even when 9 viable whales existed. Per-category top-2 was deduping aggressively across categories with the same dominant whales. Fix: after per-category dedup, fill remaining slots from leftover-viable global pool by composite score.
+- No quality floor on composite score. Without one, fill-up was including whales with Wilson LCB ≈ 0 and negative edge (some 0% win-rate whales were in the top 9). Added `--min-composite` CLI flag (default 0.30) — filters Wilson-LCB-zero whales out of selection. Final selection: 4 quality whales instead of 9 mediocre ones.
+
+**Visibility finding (the data, not a bug):**
+- Kalshi has a strong **privacy gradient**. Top-of-leaderboard whales (by `volume`, `projected_pnl`, or `num_markets_traded`) are systematically opaque — 0 of 14 candidates exposed `closed_positions` on the first `--candidates 5` run. Going to `--candidates 30` surfaced 9 visible whales out of 123 candidates (~7% visibility rate). Mid-tier traders (leaderboard rank 20-100) are the actual addressable pool for copy trading.
+- All 4 selected whales are Sports/Crypto specialists. No Politics/Economics/Climate/Financials specialists made the visibility-and-quality-floor cut in this first selection pass.
+
+**Cost projection (Bronze rates):**
+- Apify Starter base: $29/mo (includes $29 prepaid usage)
+- Polling: 4 whales × 20-row floor × $0.0015 × 288 polls/day × 30 = ~$83/mo
+- Quarterly selection refresh: ~$0.30 per run = ~$0.10/mo amortized
+- Expected total: **$30-50/mo** (well under the $300 spending limit Jack should set in Apify dashboard)
+- This session's burn: ~$1.50 (verified via two-test exploration + one final commit run)
+
+**Verification:**
+- PID rotation: 246347 → 249182.
+- Service active, web `/healthz` returns HTTP 200 in 150ms.
+- Pre-restart Python import smoke succeeded on all 7 K3 modules + `trading_corp.main` under prod's venv.
+- "Kalshi copy trader scanner online (enabled=False, auto_execute=False, hitl=DIRECT)" logged at 18:17:50 UTC.
+- `enabled: true` flipped via sed-anchored replacement at 18:19 UTC. Verified no other strategies accidentally toggled (`grep -B 1 "enabled: true"` showed only pre-existing enabled strategies + ours).
+- **Cold-start fired cleanly at 18:22:56 UTC** (first scheduled poll, 300s after restart). Per-whale baselines: smedtoshi=0, NovaRex=0, tom14cat14=14, 9187234=20 open positions. 4 `kalshi_copy_cold_start` audit rows inserted. Zero ProposedOrders emitted (cold-start protection working as designed).
+- 32 K3-specific unit tests pass; full suite (excluding 3 pre-existing-broken test files unrelated to K3) shows 364 tests passing — zero regressions from K3 work.
+
+**Inert / dormant on current traffic:**
+- smedtoshi and NovaRex are currently flat (0 open positions). They'll trigger entries only when they next open a Kalshi position — could be hours or days. tom14cat14 (14 open) and 9187234 (20 open) baselined positions won't trigger phantom exits because `our_side=""` on baseline.
+- Exit-emission code path is wired but won't fire until we successfully emit at least one ENTRY (which requires side-detection to succeed for that ticker). Until that happens, the strategy is effectively read-only on prod.
+- `--metric` defaults to `num_markets_traded` in the refresh script. Future refresh attempts could try `--metric volume` or `--time monthly` to surface different whales. Quarterly refresh is the planned cadence.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k3-20260511-1816; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/brokers/kalshi.py.\$TAG       \$BASE/trading_corp/brokers/kalshi.py; \
+mv \$BASE/trading_corp/utils/secrets.py.\$TAG        \$BASE/trading_corp/utils/secrets.py; \
+mv \$BASE/trading_corp/main.py.\$TAG                 \$BASE/trading_corp/main.py; \
+rm -f \$BASE/trading_corp/data/kalshi_apify_client.py \
+      \$BASE/trading_corp/data/kalshi_whale_stats.py \
+      \$BASE/trading_corp/agents/strategies/kalshi_copy_trader.py \
+      \$BASE/trading_corp/scripts/refresh_kalshi_whales.py \
+      \$BASE/trading_corp/scripts/__init__.py; \
+rmdir \$BASE/trading_corp/scripts 2>/dev/null; \
+ENABLETAG=pre-kalshi-k3-enable-20260511-1819; \
+mv \$BASE/config/strategies.yaml.\$ENABLETAG  \$BASE/config/strategies.yaml; \
+sudo systemctl restart trading-corp
+"
+```
+
+(The selected_whales entry in `agent_state` is left in place by the rollback — harmless data with no code to consume it.)
+
+---
+
+## 2026-05-11 18:03 UTC — BitUnix Phase 3.2.2 — price-action factors wired into score path
+
+**Triggered by:** Phase 3.2.1 (deployed 17:52 UTC) ran with a zero-filled `PriceContext` — the 5 price-action factors (`above_session_vwap`, `below_session_vwap`, `higher_highs_4h`, `lower_lows_4h`, `volume_above_20bar_avg`) and the two guard penalties (`sell_on_rush`, `buy_on_fall`) were defined in YAML but inert in live mode. Phase 3.2.2 wires them.
+
+**Observation between deploys:** Phase 3.2.1's first STANDARD SELL fired at **18:00:07 UTC** (≈8 min after the 17:52 deploy), net_score=11 (sell-side accumulation of `mc_b_sell_circle` + `mc_a_red_diamond` + `mc_b_sell_circle_div`). The multi-bar accumulation design fired as intended on the first real opportunity post-deploy. Paper short opened at $81902.5, qty=0.0038 BTC.
+
+**Files deployed (1 new, 2 modified, 1 backup tag `pre-bitunix-322-20260511-1810`):**
+- `trading_corp/data/bitunix_price_context.py` — **NEW**. Pure helpers: `session_vwap()`, `higher_highs_lower_lows_4h()`, `volume_above_20bar_avg()`, `pct_change_in_window()`, `_resample_to_4h()`. Aggregator `compute_price_context(bar_cache, sell_window_min, buy_window_min)` returns a `PriceContext` or None (None → caller falls back to zero context).
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — `_score_and_maybe_propose()` now calls `compute_price_context(self.bar_cache, ...)` instead of building a zero-filled PriceContext. Graceful fallback on any exception (logs warning, uses zero context).
+- `trading_corp/main.py` — bumped `LiveBarCache(max_bars=60)` → `max_bars=500`. **Surgical edit** (3-line replacement around the constructor). BitUnix API actually caps at 200 bars per request, so live cache settles at 200 bars regardless — but the YAML still requests 500 for forward-compat (if the venue limit ever raises).
+
+**Features shipped:**
+- Live VWAP comparison: each score includes ±1 weight from `above_session_vwap` / `below_session_vwap` based on current price vs day-VWAP (or rolling-10h VWAP at runtime when cache doesn't span the full UTC day).
+- 4h HH/LL: each score includes ±2 weight from comparing last-completed 4h bucket vs prior. Resampling done in-memory at evaluation time from the 3m bars.
+- Volume-above-avg: ±1 (directional — adds to both sides as a strength-of-move indicator).
+- Guard penalties: `sell_on_rush` / `buy_on_fall` now compute actual % change over the 60-min window from cached bars. Tiered penalties (-1 / -2 / -3) suppress sells into rapid rises and buys into rapid drops.
+
+**Notable code changes:**
+- `compute_price_context` is the only public API. Internal helpers (`session_vwap`, etc.) are also exported for unit testing.
+- `_resample_to_4h` aligns 4h buckets to UTC 00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00 — matches the convention in `backtest_btc_accumulator._resample_to_4h`.
+- HH/LL check requires **≥ 3 buckets** (last bucket is in-progress, excluded). At max_bars=200, that's ~10h of 3m bars = 2.5 buckets, JUST enough.
+
+**Verification:**
+- Local synthetic-bar test passed: 500 bars dropping 82000→81002 produced `below_vwap=True`, `LL_4h=True`, `HH_4h=False`, `volume_above_avg=True`, `pct_change=-0.049%`.
+- Prod import test ✓
+- /healthz=200 after warm-up ✓
+- Bar cache primed: 200 bars cached, last_close=$81890.2, atr_14=98.43, poll-loop online (60s interval) ✓
+- Pending: first post-deploy webhook to land a score row with non-zero PA contributions (cooldown blocks sell-side until 18:30:07 from the STANDARD fire at 18:00:07).
+
+**Inert / dormant on current traffic:**
+- `bitunix_futures.scoring.tier_thresholds.weak: 5` band — still never fires (`min_score_to_fire: 8`).
+- Phase 3.1 `_tier_for` classifier + `_maybe_propose` — still retained for fast rollback.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bitunix-322-20260511-1810; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/main.py.\$TAG  \$BASE/trading_corp/main.py; \
+mv \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py.\$TAG  \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py; \
+rm -f \$BASE/trading_corp/data/bitunix_price_context.py; \
+sudo systemctl restart trading-corp.service
+"
+```
+(Phase 3.2.1 state restored — score path still active, PA factors inert again.)
+
+---
+
+## 2026-05-11 17:52 UTC — BitUnix Phase 3.2 confluence score accumulator (paper-mode, multi-deploy)
+
+**Triggered by:** Board ask after the 16:42 UTC missed-short incident — the Phase 3.1 single-bar `_tier_for` classifier dropped a clean PREMIUM SELL setup (4h-bear bias + multiple 4h/1D bear Cypher signals accumulated + simultaneous `money_bag_top` + `cvd_bear_flip`) because CVD agreement check fired at trigger time before the same-second `cvd_bear_flip` updated state. Root cause was structural: classifier evaluates one snapshot at one moment, can't accumulate confluence across bars.
+
+**Replacement design (Phase 3.2):** Score accumulator. Every inbound webhook signal (Otter + Cypher) appends to `bitunix_signal_ledger` with a per-factor TTL. On each new alert, scorer sums weights of all live (in-TTL, deduped by signal_name) signals + price-action factors, applies guard penalties, picks the winning side, maps net_score → PREMIUM (≥12) / STANDARD (≥8) / WEAK (≥5) / SKIP. Cooldown (1800s) prevents stacking same-direction fires. Risk caps unchanged (0.5% per-trade effective risk, 3% daily kill).
+
+**Backtest verdict** (Apr 30 – May 9, 625 alerts, tuned config):
+- 21 paper trades, 42.9% win rate, **+0.286 R avg, +6.0 R total, +0.18% return, 0.25% max DD**
+- STANDARD tier carries edge (+0.33 R, 44%, n=18); WEAK band killed via `min_score_to_fire: 8` (was -0.16 R noise)
+- 16:42 setup fires as PREMIUM SELL (net_score=12) on the new model — validated standalone before deploy
+- Context: BTC was up 5.79% in window (bull); model navigated bullish chop reasonably
+
+**Files deployed (4 new/modified, 2 backup tags):**
+- `config/strategies.yaml` — added `bitunix_futures.scoring` block (34 factors, tier thresholds, guards, dedupe). `enabled: true` at ship.
+- `trading_corp/agents/strategies/bitunix_confluence.py` — **NEW**. Pure-function scorer; reuses `FactorConfig`/`GuardConfig`/`AlertEvent`/`PriceContext` from `btc_accumulator.py`. Adds `BitUnixConfluenceConfig`, `evaluate_confluence_futures()`, `filter_live_alerts_with_dedupe()`.
+- `trading_corp/agents/strategies/btc_accumulator.py` — **NEW on prod** (existed locally as scaffold for the deprecated coinbase_spot accumulator; needed because `bitunix_confluence.py` imports its dataclasses). Pure-function, no side effects.
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — extended. Adds 3 new DDLs (`bitunix_signal_ledger`, `bitunix_score_cooldown` + index). `__init__` accepts optional `scoring_config: BitUnixConfluenceConfig`. `observe_and_decide()` now: (a) always appends to ledger regardless of flag, (b) routes to `_score_and_maybe_propose()` when `scoring_config.enabled=True`, else falls back to Phase 3.1 `_maybe_propose()`. New methods: `_append_to_ledger`, `_read_live_ledger`, `_read_cooldown`, `_record_score_fire`, `_log_score_decision`, `_score_and_maybe_propose`. New audit kind: `bitunix_score_decided` (separate from Phase 3.1's `bitunix_decided`). Score-path fills also tag `would_have_placed` with `via: "bitunix_score"` + `net_score` for filtering.
+- `trading_corp/main.py` — loads `BitUnixConfluenceConfig` from `strategies.yaml`, passes to observer. **Surgical patch** (only the 19 lines around `bitunix_observer = BitunixFuturesObserver(...)`) — see lessons-learned below.
+
+**Features shipped:**
+- Multi-bar confluence accumulation on bitunix_futures: signal weights survive their TTL windows (Otter 15-30 min, Cypher B 4h, Cypher A 24h, Bias 90 min, CVD 30 min). Score updates on every webhook arrival.
+- Per-signal-name dedupe within TTL (repeated `mc_a_red_diamond` fires count once, most-recent wins).
+- Same-direction cooldown gate (1800s) on top of cap math.
+- `bitunix_signal_ledger` table accumulating real prod data — usable for re-tuning weights without code changes.
+- `bitunix_score_decided` audit rows on every alert, with full score breakdown (`final_buy_score`, `final_sell_score`, `net_score`, `buy_contributions`, `sell_contributions`, `cooldown_blocked`, `reason`).
+
+**Notable code changes:**
+- Phase 3.1 `_tier_for` classifier is **fully bypassed when `scoring.enabled=True`** — score path replaces it (single open trade at a time, opposite-side signals do not auto-flip in v1; cooldown handles same-side). The old code remains in-place behind the flag for fast rollback.
+- Price context in live mode is **signal-only for v1** — `PriceContext(pct_change=0, PA flags=False)`. Guards and PA factors (VWAP, HH/LL, volume) inert in prod. Backtest used them; gap is intentional and small (max ±4 score points). Phase 3.2.2 will wire `LiveBarCache` to compute PA factors live.
+- Tier sizing (`TIER_SIZING` constants) shared between Phase 3.1 and 3.2. 0.5% effective-risk cap and 3% daily-kill enforced on the score path identically.
+
+**Latent bugs caught + fixed:**
+- `bitunix_futures_observer.py` import was missing `timedelta` (had `datetime`, `timezone` only) — caught in local E2E test before prod deploy.
+- The score-path code uses `self._read_daily_risk` and `self._build_proposal` — both existed but were defined later in the class; Python resolves at call time, so no import-time impact.
+
+**Verification:**
+- md5 match on all 4 files post-scp ✓
+- Prod-side `python -c 'import trading_corp.main; print("IMPORT OK")'` ✓
+- Systemd active state ✓
+- New tables created: `bitunix_signal_ledger` (0 rows at deploy), `bitunix_score_cooldown` (0 rows) ✓
+- /healthz=200 after warm-up ✓
+- Waiting on first webhook to confirm ledger append + score evaluation (real-data test)
+
+**Lessons learned (load-bearing for future sessions):**
+1. **Never `scp` a whole file when a surgical edit will do.** First deploy attempt scp'd my local `main.py` which had unrelated in-flight changes (`kalshi_copy_trader` import not yet shipped). Service crash-looped on `ModuleNotFoundError`. Recovery: rollback to backup tag, pull prod's `main.py` to local, `python` patch only the 19 lines we needed, scp back. Cost: ~3 minutes of restart noise, no data loss. The CLAUDE.md "filesystem-not-git scope" rule covers this — diff the file first, send only what changed.
+2. **`btc_accumulator.py` was scaffold code that never shipped.** When `bitunix_confluence.py` imported from it, prod hit `ModuleNotFoundError` on the first restart. Pushed `btc_accumulator.py` to prod as the second-step recovery. Reasonable choice (small, pure-function, no side effects on import) but flagged here so future sessions know it's a dependency, not dead code.
+3. **Crash-loop during 1st-attempt deploy was caught by systemd auto-restart** + the immediate `journalctl` check. Two restart cycles within 20s, no permanent state corruption (the new tables were created idempotently via `CREATE TABLE IF NOT EXISTS`).
+
+**Inert / dormant on current traffic:**
+- Price-action factors (`above_session_vwap`, `higher_highs_4h`, `lower_lows_4h`, `volume_above_20bar_avg`) — never evaluated in live mode (all flags=False). Will activate in Phase 3.2.2 when `LiveBarCache` gains the helpers.
+- Guard penalties (`sell_on_rush`, `buy_on_fall`) — never fire in live mode (`pct_change_in_window_*=0`). Same Phase 3.2.2 dependency.
+- `bitunix_futures.scoring.tier_thresholds.weak: 5` band — never fires because `min_score_to_fire=8` filters it out. Kept in YAML for tier-naming clarity and easy re-enable.
+- Phase 3.1 `_tier_for` classifier + `_maybe_propose` — code retained, only reached when `scoring.enabled=False`.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bitunix-score-20260511-1747; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/config/strategies.yaml.\$TAG  \$BASE/config/strategies.yaml; \
+mv \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py.\$TAG  \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py; \
+TAG2=pre-bitunix-score-20260511-1747-v2; \
+mv \$BASE/trading_corp/main.py.\$TAG2  \$BASE/trading_corp/main.py; \
+rm -f \$BASE/trading_corp/agents/strategies/bitunix_confluence.py; \
+rm -f \$BASE/trading_corp/agents/strategies/btc_accumulator.py; \
+sudo systemctl restart trading-corp.service
+"
+```
+(Notes: `strategies.yaml.$TAG` is from the first backup; `main.py.$TAG2` is from the post-recovery backup because the original `main.py.$TAG` was already moved during the rollback step. Removing the two NEW files cleans up; the two new tables in SQLite are kept — they're idempotent and harmless when unused.)
+
+---
+
+## 2026-05-11 07:00 UTC — Structural arb event_title in would_have_placed payload (two-deploy fix)
+
+**Triggered by:** Open paper trades table on the dashboard's `kalshi_arbitrage` view showed raw tickers like `KXTRUMPRUN-28JAN01` in the Market column (gibberish to a human). The data exists — kalshi_temporal_bucket_arb and kalshi_tail_price_arb both carry `event.title` at scan time and DO include it in their `kalshi_*_evaluated` audit events — they just weren't propagating it into the `would_have_placed` payload.
+
+**FIRST DEPLOY (07:00 UTC) — strategy code (2 modified, PID 222245):**
+- `trading_corp/agents/strategies/kalshi_tail_price_arb.py` — added `"event_title": opp.title` to the `common_extra` dict at line 383.
+- `trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py` — added `"event_title": opp.title` to both the temporal-arb `common` dict (~line 570) and the bucket-arb `common` dict (~line 614).
+
+**Post-deploy verification revealed a SECOND bug:** new structural emits at 05:10:17 UTC still had no `event_title` in the audit payload. The strategies were correctly putting it in `ProposedOrder.extra`, but the orchestrator loops in `main.py` build the audit payload from a **fixed allowlist** of `ext.get(...)` keys — `event_title` wasn't in the allowlist, so it was silently dropped:
+
+```python
+base_payload = {
+    "strategy": agent.name, ...
+    "ticker": ext.get("ticker"),
+    "event_ticker": ext.get("event_ticker"),
+    # event_title NOT in allowlist — got dropped here
+    ...
+}
+```
+
+**SECOND DEPLOY (05:20 UTC) — main.py allowlist fix (PID 224389):**
+- `trading_corp/main.py` — added `"event_title": ext.get("event_title")` to the `base_payload` allowlist in BOTH `_scheduled_kalshi_arb_loop` (line 1885) and `_scheduled_kalshi_tb_arb_loop` (line 2039). Same pattern as `event_ticker` — single key-add per loop.
+
+**Backup tags:**
+- `pre-structural-event-title-20260511-0700` (strategy files)
+- `pre-event-title-mainpy-20260511-0520` (main.py allowlist)
+
+**Lesson for future "field not landing in audit row" debugging:**
+- ProposedOrder.extra is NOT a transparent passthrough into audit payloads. Each orchestrator loop (`_scheduled_kalshi_*_loop`, polymarket equivalent) has an explicit allowlist when building the `base_payload`. New fields need to be added at BOTH layers: the strategy file (where the value is computed) AND the main.py loop (where it gets routed into the audit event). Easy to miss because the strategy unit tests would pass — the field IS in extra; it just doesn't reach storage.
+
+**Why this works without dashboard changes:** the dashboard template already prefers `event_title` over the bare ticker:
+
+```jinja
+{{ ot.market_title or ot.market_id }}
+```
+
+…and `_query_pm_open_trades` already populates `PMOpenTrade.market_title` from `p.get("event_title") or p.get("ticker")`. So the moment the strategy starts including `event_title` in its payload, the Market column auto-renders the title. No template / data-layer changes needed.
+
+**Pre-deploy verification:**
+- AST parse on both files.
+- No new tests needed — existing tests don't assert ProposedOrder.extra contents at that level; the change is a single string-keyed addition to a dict that's already plumbed through. Verification happens post-deploy via real audit data.
+
+**Post-deploy verification (prod):**
+- PID rotated 221187 → 222245. Web up after 50s warm-up.
+- File md5/grep confirmed `event_title` in both deployed files (1 new occurrence in tail, 2 new in temporal_bucket).
+- Awaiting next 5-min scan tick (kalshi_temporal_bucket_arb + kalshi_tail_price_arb both poll on 300s cadence) to confirm fresh `would_have_placed` audit rows carry the field.
+
+**Backward compatibility:**
+- Existing 120+ pending structural arb rows in `audit_event` table still have payloads without `event_title` — dashboard falls back to ticker for those (template's `or ot.market_id` branch). New emissions from this restart forward will have readable titles.
+- No schema change; no resolver change; no template change. Just enriched payload going forward.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-structural-event-title-20260511-0700; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/strategies/kalshi_tail_price_arb.py.\$TAG       \$BASE/trading_corp/agents/strategies/kalshi_tail_price_arb.py; \
+mv \$BASE/trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py.\$TAG  \$BASE/trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-11 06:01 UTC — PM dashboard expandable rows + LLM analysis surfacing
+
+**Triggered by:** User feedback after 05:02 UTC deploy:
+1. "Kalshi Arbitrage bot descriptions could use some work" — structural arb (temporal/bucket/tail) rows showed just gibberish tickers like `KXTEMPNYCM-2026-S2`.
+2. "Where is the detailed LLM analysis saved for the kalshi arbitrage bot details? Is there a way to have this information show up on each row?" — kalshi_llm has rich `llm_reasoning` + `key_unknowns` + `llm_confidence` in the audit payload; dashboard wasn't surfacing it.
+
+**Files deployed (4 modified):**
+- `trading_corp/web/data.py`:
+  - **PMOpenTrade** gained `rationale`, `llm_reasoning`, `key_unknowns`, `llm_confidence`, `subtitle`, `leg_date`. Parsed from the would_have_placed payload in `_query_pm_open_trades` (LLM strategies populate everything; structural strategies populate rationale + leg_date).
+  - **PMRoundTrip** gained `rationale`, `llm_reasoning`, `key_unknowns`, `llm_confidence`, `subtitle`. Parsed from `kalshi_round_trips.extra_json` in `_query_pm_round_trips`. `extra_json` column added to the SELECT (was missing).
+  - **Defensive parsing**: malformed `extra_json` strings + missing `key_unknowns` list fields all default cleanly to `None` / `[]`.
+  - Polymarket round-trips don't yet store `extra_json` (different schema), so polymarket PMRoundTrip rows get `None` for the analysis fields. Future polymarket resolver enrichment can fill these in.
+- `trading_corp/agents/kalshi_resolver.py` — `_compute_round_trip_row` now serializes `llm_reasoning` and `key_unknowns` (plus the existing `llm_confidence` and `rationale`) into `extra_json` so future kalshi_round_trips rows carry the full analysis. Pre-2026-05-11 ~05:30 UTC rows just have None for these fields — they render a clear "no detailed analysis stored" message in the expand panel.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html`:
+  - **Open tab table**: every row is now click-to-expand. Added a leading caret column (▸ / ▾) + `pm-expand-trigger` class with `data-pm-detail="ot-{i}"`. Below each row sits a hidden `<tr class="pm-detail-row hidden">` with a 3-column grid (Trade context · Analysis · ...). Columns swap dynamically: dropped the "Cost" column from the main row (moved into expand panel) to make room for the wider Market column.
+  - **History tab table**: same expandable pattern with `rt-{i}` ids + Analysis section that includes implied @ entry + LLM prob + analysis text. Existing wins/losses filter buttons preserved.
+  - **Analysis section contents**: rationale (always shown when present), full LLM reasoning (whitespace-preserved), Key unknowns bullet list, confidence pill (low/medium/high color-coded), subtitle (kalshi sub-title like "-1° or below"). Structural arb rows show the rationale + leg date; LLM rows show everything.
+  - **Trade context section**: market title, ticker, sub-title, category, leg date, strategy, cost, order ID.
+- `trading_corp/web/templates/prediction_markets_dashboard.html` — added expand-trigger handler to the delegated click listener (lives outside the swap target so it persists across HTMX swaps). Toggles the matching `#pm-detail-{id}` row's `hidden` class + flips the caret glyph.
+
+**Backup tag:** `pre-pm-analysis-rows-20260511-0600`
+
+**Pre-deploy verification:**
+- 5 new tests covering: LLM reasoning parsing from open-trades payload, structural arb rationale-without-LLM, round-trip parses extra_json analysis fields, legacy empty extra_json, malformed extra_json.
+- 28 PM dashboard tests pass; 78 total polymarket + kalshi + dashboard tests pass; zero regressions.
+- AST + Jinja parse on all modified files; drift check on prod showed clean additive diffs.
+
+**Post-deploy verification (prod):**
+- PID rotated 219957 → 221187. Web up after 50s warm-up.
+- All routes return 200; partial route stays fast at ~30ms.
+- HTML inspection confirms:
+  - All open-trade rows render with `pm-expand-trigger` class + detail rows below.
+  - kalshi_llm row 0 expand panel shows "medium confidence" pill + reasoning text + "Key unknowns" bulleted list.
+  - kalshi_arbitrage (structural) row 0 expand panel shows ticker + leg date + strategy + cost + order ID + structural rationale ("Temporal arb on KXTRUMPRUN...").
+
+**Notable code decisions:**
+- **Delegated click handler for expansion** (not inline `onclick`). Same pattern as the tab + filter handlers — single listener on `document`, survives every HTMX swap. The swapped-in rows just need the correct `data-pm-detail` attribute.
+- **Single template for both LLM and structural rows.** The analysis section uses `{% if rt.rationale %}` / `{% if rt.llm_reasoning %}` guards so the same template renders cleanly for any strategy. Empty cases get a plain "No detailed analysis stored" message instead of awkward gaps.
+- **Resolver enriched FORWARD only**, not backfilled. The single existing kalshi_round_trips row (the K2.4 NYC-temp loss) doesn't have llm_reasoning in its extra_json — re-resolving requires deleting + waiting for the next hourly tick. Not worth it for one row. New rows from now on carry the full analysis.
+- **`extra_json` column added to the SELECT**. Subtle bug — the old query omitted it, so the new fields-from-extra-json parsing silently returned None for all rows. Caught by tests before deploy.
+
+**Known gap (separate follow-up):**
+- Structural arb strategies (`kalshi_tail_price_arb`, `kalshi_temporal_bucket_arb`) don't put `event_title` in their would_have_placed payloads — so the Market column shows raw tickers like `KXTRUMPRUN-28JAN01` instead of human-readable titles. The data exists in the discovery layer at emit time; small strategy-code edit needed. Tracking this as a future tile-readability pass.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-pm-analysis-rows-20260511-0600; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/data.py.\$TAG                                                          \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/agents/kalshi_resolver.py.\$TAG                                            \$BASE/trading_corp/agents/kalshi_resolver.py; \
+mv \$BASE/trading_corp/web/templates/prediction_markets_dashboard.html.\$TAG                      \$BASE/trading_corp/web/templates/prediction_markets_dashboard.html; \
+mv \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html.\$TAG                        \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-11 05:02 UTC — PM dashboard fixes (HTMX swap + Open trades tab + kalshi_copy_trading)
+
+**Triggered by:** User-reported issues with the dashboard shipped 04:04 UTC:
+1. **60-70s page blank on every division switch** — dropdown `onchange="window.location.href=..."` did a full page nav. Every full nav passes through Authelia forward_auth in Caddy → re-auth + redirect chain → slow.
+2. **`would_have_placed` paper trades not visible** — only the count showed (`Pending: 123`); user wanted to see the trades themselves.
+3. **`kalshi_copy_trading` missing from dropdown** — divisions.yaml didn't have the entry yet (waiting on K3); the dashboard is divisions-list-driven so nothing to show.
+
+**Files deployed (3 modified, 1 new):**
+- `trading_corp/web/data.py` — added `PMOpenTrade` dataclass + `_query_pm_open_trades(db_url, slugs, limit)` (cross-venue UNION on `audit_event WHERE kind='would_have_placed'` LEFT JOIN round-trip tables, excludes resolved). `build_prediction_market_view` now fans 3 queries (round_trips + equity_curve + open_trades); `summary.n_pending = len(open_trades)` so the card count and the table can't drift apart. Side detection in `_query_pm_open_trades` reuses the same outcome/leg-prefix fallback ladder as the resolver. Removed an unused `placeholders` variable in `_query_pm_round_trips`.
+- `trading_corp/web/routes.py` — added partial endpoints `GET /partials/prediction-markets/{division?}` that render JUST `partials/pm_dashboard_body.html` (no base.html chrome). Crucially, the partial handler **skips `build_command_center`** — the corp-wide snap is only needed for the base header/footer, which the partial doesn't include. That's what makes the swap fast (23ms vs 2.7s for the full page).
+- `config/divisions.yaml` — added `kalshi_copy_trading` (broker: paper, standby: true, enabled: true), mirroring the polymarket_copy_trading placeholder pattern. K3 will flip standby:false when the leaderboard scraper + copy-trader strategy ship. The division now appears in the dashboard dropdown, the home-page tile group, and any future cross-venue queries automatically include it.
+- `trading_corp/web/templates/prediction_markets_dashboard.html` — restructured into a thin shell: header + dropdown + `<div id="pm-content">{% include "partials/pm_dashboard_body.html" %}</div>` + a script tag that wires HTMX swap on the dropdown's `change` event. Tab and history-filter handlers moved to delegated `document` click listeners so they survive every HTMX swap (the swapped DOM nodes re-bind automatically). `popstate` handler keeps back/forward button correct. `htmx:afterSwap` listener calls `window.renderPMChart()` to re-create the equity chart on the new container. Fall-through to full nav if HTMX is unavailable.
+- **NEW:** `trading_corp/web/templates/partials/pm_dashboard_body.html` — everything that changes between divisions: selected-label sub-header, 6 summary cards, **3-tab nav (Portfolio + OPEN + History)**, portfolio + open + history panels, inline equity-curve JSON. Used both by the full-page render and by the HTMX swap endpoint.
+- `trading_corp/web/static/js/prediction_markets_chart.js` — refactored from one-shot IIFE to expose `window.renderPMChart()`. Disposes any prior chart instance + ResizeObserver before creating fresh ones — needed because the chart container DOM node is replaced on every HTMX swap.
+
+**Open tab columns:** emitted ts · age (m/h/d) · [division — in All-mode only] · venue · market title · side · qty · entry · cost · signal (divergence % or edge ¢) · resolves-at.
+
+**Backup tag:** `pre-pm-dashboard-htmx-20260511-0500`
+
+**Pre-deploy verification:**
+- AST parse + jinja parse on all modified/new files.
+- 5 new tests covering open-trades query: LLM-payload normalization, temporal/bucket leg-prefix parsing, polymarket payload, resolved-exclusion, All-mode UNION + sort. **23 PM dashboard tests pass; 92 total polymarket + kalshi + dashboard tests pass; zero regressions.**
+- Prod-drift check: all 3 modified files matched my last patched-prod content + my new patches (clean additive diff — verified line-by-line for each file).
+
+**Post-deploy verification (prod):**
+- PID rotated 217797 → 219957. Web up after 50s warm-up.
+- **Speed:** full-page route `/prediction-markets/kalshi_llm_arbitrage` = 2.68s; partial route `/partials/prediction-markets/kalshi_llm_arbitrage` = **23ms** (116× faster). Dropdown switches no longer trigger full nav through Authelia, so user-perceived blank-screen time drops from 60-70s to sub-second.
+- All 5 prediction-market divisions appear in the dropdown: All / Polymarket Arbitrage / Polymarket Copy Trading / Kalshi Arbitrage / Kalshi LLM Arbitrage / **Kalshi Copy Trading** (new).
+- Home page now links to `/prediction-markets/{slug}` for all 5 divisions.
+- 3-tab dashboard renders with Portfolio + OPEN + History tabs; Open tab shows pending paper-trade table populated from the live audit-event data.
+
+**Notable code decisions:**
+- **HTMX over full nav** is the architecturally right answer regardless of Authelia. In-app navigation between divisions of the SAME dashboard shouldn't re-fetch the corp-wide header/footer; partial swap is correct semantics + much faster.
+- **`build_command_center` skipped on partial endpoint.** This is the single biggest contributor to the speed gain — broker.snapshot fan-out across all divisions (especially Fidelity selenium) is the slow part. The partial doesn't need it because the page header/footer don't change.
+- **Delegated event listeners on `document`.** Tab and filter buttons live inside the swappable region; per-element listeners would die on every swap. The delegated handler binds once on the outer scope and works for every swap iteration.
+- **`window.renderPMChart()` exposed globally + disposal-before-render.** Lightweight Charts needs explicit `.remove()` on the old chart before creating a new one on a fresh DOM node. The chart's ResizeObserver is also disposed to avoid orphaned observers piling up.
+- **`open_trades` and `n_pending` share one source of truth.** Summary card and table can't drift — both come from the same query result.
+- **kalshi_copy_trading as standby placeholder.** Division registry-driven dashboard means future K3 work doesn't touch the dashboard layer; flipping `standby: false` is sufficient when the strategy ships.
+
+**Inert / dormant on current traffic:**
+- Open trades tab shows 123 pending for kalshi_llm_arbitrage (matches DB state). New pending trades from the active scanners appear here automatically as their `would_have_placed` rows land.
+- kalshi_copy_trading division shows zero state (no strategy writing to it). When K3 ships, its data populates without dashboard changes.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-pm-dashboard-htmx-20260511-0500; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/data.py.\$TAG                                                                \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/web/routes.py.\$TAG                                                              \$BASE/trading_corp/web/routes.py; \
+mv \$BASE/config/divisions.yaml.\$TAG                                                                   \$BASE/config/divisions.yaml; \
+mv \$BASE/trading_corp/web/templates/prediction_markets_dashboard.html.\$TAG                            \$BASE/trading_corp/web/templates/prediction_markets_dashboard.html; \
+mv \$BASE/trading_corp/web/static/js/prediction_markets_chart.js.\$TAG                                  \$BASE/trading_corp/web/static/js/prediction_markets_chart.js; \
+rm \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-11 04:04 UTC — Prediction Markets dashboard (K2.4 Option C)
+
+**Triggered by:** User vision lock-in for the prediction-markets surface. Single dashboard at `/prediction-markets/{division?}` parameterized by division. Tiles on the home page get a performance overview (win rate / resolved / pending / realized) and link directly to the dashboard with the division pre-selected. Same template + tabs for every division; dropdown switches the data. "All Prediction Markets" combined view aggregates across all 4 (later 5) divisions. Scope is "Option C" — Portfolio + History tabs only; Positions/Activity/Report tabs deferred until data densifies. Forward-compatible: future `kalshi_copy_trading` (Phase K3) auto-appears in the dropdown the moment it registers in `divisions.yaml`.
+
+**Files deployed (4 modified, 3 new):**
+- `trading_corp/web/data.py` — added the prediction-markets dashboard data layer (~390 lines):
+  - **5 new dataclasses:** `PMRoundTrip`, `PMEquityPoint`, `PMSummary`, `PMDivisionOption`, `PMDashboardView`.
+  - **Cross-venue helpers:** `_pm_venue(slug)` (kalshi vs polymarket inference), `_pm_divisions_all()` (filter from divisions.yaml).
+  - **3 query functions:** `_query_pm_round_trips` (UNIONs `polymarket_round_trips` + `kalshi_round_trips`, normalizes to PMRoundTrip), `_query_pm_equity_curve` (cross-venue equity snapshots), `_query_pm_pending_count` (would_have_placed rows without resolution row).
+  - **2 aggregators:** `_pm_equity_at(curve, ts)` (last-equity lookup, sums across divisions for All mode), `_pm_summary` (computes summary cards; voids excluded from win rate denominator).
+  - **Entry point:** `build_prediction_market_view(deps, division)` — `division=None` for All mode, returns None for unknown slug (route turns into 404). Fans 3 queries via `asyncio.to_thread`.
+  - **Home-tile hydration:** new `_hydrate_pm_overview(divisions, db_url)` — single sweep, three aggregate queries; attaches `pm_overview` dict to each prediction-market division. Called from `build_command_center` after the donchian hydration block.
+- `trading_corp/web/routes.py` — added `GET /prediction-markets/` and `GET /prediction-markets/{division}` routes. Both go through `_render_pm_dashboard(request, division)` which fans `build_command_center` + `build_prediction_market_view` in parallel. Returns 404 on unknown division. Old `/division/{slug}` route untouched (legacy access still works for the 4 prediction-market divisions).
+- `trading_corp/utils/divisions.py` — added `pm_overview: dict | None = None` field to the `Division` dataclass for the home-tile hydration target.
+- `trading_corp/web/templates/home.html` — tiles in the `prediction_markets` investment group now link to `/prediction-markets/{slug}` (not `/division/{slug}`) and render an inline performance overview (win % · resolved · pending counters + realized P&L row) when `d.pm_overview` is populated. Other groups (Individual / Crypto / Retirement) unchanged.
+- **NEW:** `trading_corp/web/templates/prediction_markets_dashboard.html` — single template with header bar (← Command Center · Prediction Markets — <label> · division dropdown), 6 summary cards (Equity / Today's P&L / Win rate / Resolved / Pending / Realized), 2-tab nav (Portfolio + History; vanilla JS toggle, no HTMX). Portfolio tab = equity-curve chart container + outcome-breakdown sidebar. History tab = resolved-markets table with venue badge, market title, side, qty, entry, result, P&L, ROI; in All-mode adds a Division column. Wins/Losses/All filter buttons toggle row visibility via `pm-history-row[data-won]` attribute.
+- **NEW:** `trading_corp/web/static/js/prediction_markets_chart.js` — Lightweight Charts wiring for the equity curve. Reads inline JSON from `#pm-equity-data` (server-rendered, no HTTP fetch). In All mode it aggregates per-timestamp across divisions (sum of equity per unique 5-min epoch). Resilient empty-state.
+
+**Backup tag:** `pre-pm-dashboard-20260511-0410`
+
+**Pre-deploy verification:**
+- AST parse on all 3 modified Python files + Jinja parse on `prediction_markets_dashboard.html` + `home.html`.
+- **18 new tests in `tests/test_prediction_markets_dashboard.py`** covering: venue inference, cross-venue UNION query + normalization, division-filtered queries, equity-curve cutoff, pending-count cross-venue, summary win-rate math (voids excluded), tile hydration (only touches prediction-market divisions), invalid-slug → None, All mode aggregates correctly.
+- 87 polymarket + kalshi_resolver + backtest_polymarket + prediction_markets tests combined pass; zero regressions.
+- Prod-drift check: prod's `data.py`, `routes.py`, `divisions.py`, `home.html` all had md5s differing from local HEAD. All 4 patches applied onto PROD content via the `/tmp/k24_prod/*.patched` workflow (memory `trading_corp_prod_git_drift`). Anchor strings verified before each edit.
+
+**Post-deploy verification (prod):**
+- PID rotated 215310 → 217797. Service active; web server up on port 8000 after the usual 30s warm-up (Fidelity bot-detection check is the bottleneck on cold start — pre-existing).
+- HTTP smoke test — all expected status codes:
+  - `GET /` → 200 (home page)
+  - `GET /prediction-markets/` → 200 (All mode)
+  - `GET /prediction-markets/kalshi_llm_arbitrage` → 200
+  - `GET /prediction-markets/kalshi_arbitrage` → 200
+  - `GET /prediction-markets/polymarket_arbitrage` → 200
+  - `GET /prediction-markets/not-real` → **404** (correct)
+  - `GET /static/js/prediction_markets_chart.js` → 200
+- Home-page content check: 4 `/prediction-markets/` links found in tile group (one per active prediction-market division). 
+- Kalshi LLM dashboard at `/prediction-markets/kalshi_llm_arbitrage` shows **1 Resolved · 121 Pending** in the summary cards — matches DB state (1 row in kalshi_round_trips from the K2.4 resolver tick + 121 unresolved would_have_placed entries).
+- Dropdown selected-option check: `selected` attribute lands on "All Prediction Markets" at `/prediction-markets/` and on "kalshi_llm_arbitrage" at the slug URL.
+
+**Notable code decisions:**
+- **One template, one route, one builder.** Cross-venue normalization happens at the data layer; the template is venue-agnostic except for a small venue badge in the History tab.
+- **Vanilla-JS tab toggle, not HTMX.** Tab content is small and pre-rendered server-side — no need for an extra round-trip. Keeps the dashboard fast on first paint and simple to reason about.
+- **Equity-curve data inlined as JSON.** Avoids a second HTTP round-trip; the chart paints instantly once Lightweight Charts loads. In All mode the JS sums per-timestamp.
+- **Division dropdown is full-nav (not HTMX swap).** Bookmark + back button work correctly; the URL is the source of truth for which division is selected.
+- **Voids excluded from win-rate denominator.** Per K2.4 P&L semantics, void markets refund — they're not wins or losses. Win rate = wins / (wins + losses), voids tallied separately.
+- **`Division.pm_overview` attribute, dict not dataclass.** Mirrors the existing `Division.donchian` shape. Keeps the home tile template branch-free (just check truthiness) without dragging more dataclass schema across module boundaries.
+- **Polymarket round-trips have no `division` column.** Today only `polymarket_arbitrage` writes them; we accept that filter assumption explicitly in `_query_pm_round_trips` and `_query_pm_pending_count`. When `polymarket_copy_trading` ships its own resolver path, either add a `division` column to `polymarket_round_trips` or write to a separate table.
+- **Forward-compat for kalshi_copy_trading (Phase K3).** Dropdown reads `load_divisions()` live — when K3 ships and adds the new division to `divisions.yaml`, it auto-appears. The venue inference (`kalshi_` prefix → "kalshi") and the query layer (queries kalshi tables when any `kalshi_*` slug is in the filter) already handle it; only the round-trips/equity tables need K3's strategy to write rows.
+
+**Inert / dormant on current traffic:**
+- Round-trips count is low (1 resolved row total) so the History tab is sparse and the equity curve has ~30 minutes of data points. Both grow over time as resolver ticks land + 5-min snapshots accumulate. The dashboard renders cleanly at this density — empty-state messages cover the zero-data edge.
+- Positions/Activity/Report tabs are deferred — not yet built. Adding them later is additive (new partials, new dropdown items in the tab nav) and doesn't reshape the data layer.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-pm-dashboard-20260511-0410; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/data.py.\$TAG                  \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/web/routes.py.\$TAG                \$BASE/trading_corp/web/routes.py; \
+mv \$BASE/trading_corp/utils/divisions.py.\$TAG           \$BASE/trading_corp/utils/divisions.py; \
+mv \$BASE/trading_corp/web/templates/home.html.\$TAG      \$BASE/trading_corp/web/templates/home.html; \
+rm \$BASE/trading_corp/web/templates/prediction_markets_dashboard.html; \
+rm \$BASE/trading_corp/web/static/js/prediction_markets_chart.js; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-11 03:23 UTC — Kalshi Phase K7 + tune A (polymarket semaphore + lift time horizon 7d→14d)
+
+**Triggered by:** Session-start audit decision tree, branch "B then A" picked by Board after diagnosis. K7 puts a defensive cap on polymarket's K=20 LLM fan; tune A lifts polymarket's `time_horizon_max_days` from 7 → 14 to resurrect survivor counts (was hitting 0/cycle pre-tune). Both shipped in sequence — semaphore first (insurance), tune second (load).
+
+**Background — why both:**
+- Polymarket had 0 survivors per scan cycle for the last hour pre-deploy (universe of 46–48 markets entirely filtered out by 7d horizon + 6h cooldown saturation). Lifting the horizon was the only way to revive evaluation.
+- Resurrecting polymarket evaluation re-introduces the original 429-risk pattern (parallel K=20 fan overlapping kalshi_llm K=20). Kalshi has had Semaphore(8) since 01:08 UTC; polymarket was still uncapped. Insurance first.
+- Kalshi LLM 15-30d bucket showed 26% avg divergence — comparable signal quality to ≤7d's 27%. So extending polymarket modestly to 14d is consistent with where Kalshi finds signal. Not jumping all the way to 30d.
+
+**Files deployed (2 modified):**
+- `trading_corp/agents/strategies/polymarket_arbitrage.py` — `run_scan_cycle()`'s warm-and-fan block now wraps `_estimate_probability` in `_gated_estimate` using `asyncio.Semaphore(llm_concurrency)`. Default 8 per memory `anthropic_concurrent_connections.md`. Both the warm call (`survivors[0]`) and the K-1 parallel fan go through the gate. Failed Anthropic requests still return None and advance cooldowns; semaphore releases on exception. Mirrors `kalshi_llm_arbitrage`'s pattern verbatim.
+- `config/strategies.yaml` — polymarket_arbitrage block:
+  - Added `llm_concurrency: 8` with explanatory comment.
+  - Changed `time_horizon_max_days: 7` → `14`. Comment notes the K2.4 retune rationale.
+
+**Backup tag:** `pre-kalshi-k7-polysemaphore-20260511-0325`
+
+**Pre-deploy verification:**
+- AST parse on patched-prod file. YAML loads correctly with both polymarket + kalshi `llm_concurrency=8` and polymarket `time_horizon_max_days=14`.
+- 2 new functional tests in `tests/test_polymarket_arbitrage.py`:
+  - `test_llm_fan_capped_by_semaphore`: K=10 survivors, `llm_concurrency=3` → asserts peak concurrent ≤ 3 via lock + counter spy on `_estimate_probability`.
+  - `test_llm_fan_default_semaphore_is_8`: K=20 survivors, no `llm_concurrency` key → asserts peak ≤ 8 (default).
+- 69 polymarket + kalshi_resolver + backtest_polymarket tests pass; zero regressions.
+- Prod-drift check: prod's `polymarket_arbitrage.py` md5 differed from local HEAD; prod's `strategies.yaml` md5 differed from local HEAD. Both patches applied onto PROD's content via `/tmp/k24_prod/*.patched` workflow.
+
+**Post-deploy verification (prod):**
+- PID rotated 213825 → 215310; service active.
+- Startup log shows all 4 scanners + 3 K2.4 background tasks online cleanly. No tracebacks related to K7. (Pre-existing Fidelity bot-detection error is unchanged noise.)
+- **A took effect on next polymarket cycle (03:22:49 UTC):** `markets_pre_filter` jumped 47 → 56 (the 7–14d horizon markets surfaced via gamma-api end_date_max parameter); `survivors_post_filter` jumped 0 → 2.
+- **First post-tune LLM calls (03:23:03 UTC):** 2 polymarket markets evaluated — Trump-related politics market + ATP tennis match (both within 14d window). Zero 429s. Semaphore well under cap (peak 2 vs ceiling 8). Strategy producing signal again after going dark for ~hours.
+- `strategies.yaml` is hot-reloaded each scan cycle via `_reload()` — no restart was needed for tune A; the polymarket loop picked it up within 30s. K7 code IS in the restarted process, picked up by every cycle starting at 03:21:48.
+
+**Notable code decisions:**
+- **Semaphore on BOTH calls** (warm + fan), not just the fan. The warm call is single — semaphore allows it instantly — but wrapping it keeps `_gated_estimate` the only path to `_estimate_probability` so future maintenance can't accidentally bypass the cap.
+- **Default 8 matches kalshi.** A future shared LLM-client-layer semaphore would be the architecturally cleaner cap (one global pool); deferred since both strategies are independently capped now and 429s are gone.
+- **Tune-A bumped 7d → 14d, not 30d.** Conservative step. Kalshi LLM's 31-60d bucket has 0 trades overnight (the cap binds there too) — there's a natural plateau where longer horizons stop adding signal. 14d resurrects polymarket without overshooting.
+
+**Inert / dormant on current traffic:**
+- Polymarket cooldown saturates fast — after the first round of evaluations, expect `survivors_post_filter` to drop back to single digits or 0 for ~6h until cooldowns expire. That's by design; semaphore is the insurance for when bursts return.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k7-polysemaphore-20260511-0325; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/strategies/polymarket_arbitrage.py.\$TAG \$BASE/trading_corp/agents/strategies/polymarket_arbitrage.py; \
+mv \$BASE/config/strategies.yaml.\$TAG                                  \$BASE/config/strategies.yaml; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-11 03:06 UTC — Kalshi Phase K2.4 (round-trip resolver + equity snapshot data layer)
+
+**Triggered by:** Session-start audit showed 92 kalshi paper trades overnight (82 LLM + 10 structural temporal/bucket) accumulating without resolution. Decision-tree branch ">30 would_have_placed → ship K2.4 first" applied. Closes the data-layer gap noted in BACKLOG P0 NEXT: both Kalshi divisions previously showed only the $499 broker balance and no historical PnL — paper trades fired but no round-trip resolution existed to surface win/loss expectancy.
+
+**Files deployed (3 modified, 1 new):**
+- `trading_corp/persistence/db.py` — added 2 tables to SCHEMA:
+  - `kalshi_round_trips` — single table covering all three Kalshi strategies (tail/temporal-bucket/llm); columns capture ticker + event_ticker + strategy + division + arb_type + arb_set_id + outcome_bet + qty/price/notional + entry/resolved ts + market_result + won/realized_pnl/roi_pct + implied_at_entry + llm_prob + divergence_pct + edge_cents + extra_json. UNIQUE(order_id) so resolver re-runs are safe.
+  - `kalshi_equity_history` — per-division 5-min equity snapshots; columns ts + division + equity + cash_usd + positions_value + n_positions. Both Kalshi divisions share the same broker today so snapshots reflect identical dollar values; per-division separation preserves dashboard logical grouping and is forward-compatible with a future per-division sub-account split.
+- `trading_corp/brokers/kalshi.py` — added `KalshiBroker.get_market_resolution(ticker)` async method. Looks up market via `client.get_market(ticker)`, reads `.result` field (Kalshi sets to "yes"/"no" at settlement, "void" for cancelled markets, "" while in-flight). Returns `{status: resolved|pending|void|not_found, result, ticker, close_time}`. Stub mode returns `not_found` (caller skips).
+- `trading_corp/main.py` — wired 3 new asyncio tasks after the polymarket resolver block: `kalshi_resolver_task` (1h cadence) + `kalshi_equity_task_arb` (5min, kalshi_arbitrage division) + `kalshi_equity_task_llm` (5min, kalshi_llm_arbitrage division). All three cancellation hooks added in shutdown path via a small loop. Each guarded by `data_exec.brokers.get(division)` — if no broker is registered the task is skipped, never crashes startup.
+- `trading_corp/agents/kalshi_resolver.py` — **NEW.** Structural clone of `polymarket_resolver.py` with Kalshi adapter:
+  - `_fetch_unresolved_orders`: LEFT JOIN audit_event vs. kalshi_round_trips, keyed on `actor IN (kalshi_tail_price_arb, kalshi_temporal_bucket_arb, kalshi_llm_arbitrage)` AND `kind='would_have_placed'` AND no existing round-trip row.
+  - `_detect_side(row)`: fallback ladder — `outcome` (LLM strategy) → `leg` prefix (`yes_*`/`no_*` for temporal_bucket, bare `yes`/`no` for tail_price). Returns 'yes', 'no', or None.
+  - `_compute_round_trip_row`: Kalshi binary contracts pay $1 winner / $0 loser. Won → `qty × (1 - price)`. Lost → `-qty × price`. Void → 0. Skips malformed rows (price ≤0, price ≥1, qty ≤0, undetectable side).
+  - `_insert_round_trip`: INSERT OR IGNORE keyed on order_id (re-run-safe).
+  - `resolve_pending_round_trips(broker, max_per_tick=200)`: one pass; returns `{scanned, resolved, pending, void, not_found, errors}`. `max_per_tick=200` doubled vs polymarket because three Kalshi strategies share the table.
+  - `write_equity_snapshot(db_url, division, broker)`: single snapshot per division.
+  - `_resolver_loop` / `_equity_snapshot_loop`: periodic drivers, log-on-error-continue, asyncio.CancelledError clean exit.
+
+**Backup tag:** `pre-kalshi-k24-resolver-20260511-0240`
+
+**Pre-deploy verification:**
+- AST parse on all 3 patched-prod files + new kalshi_resolver.py.
+- 21 new kalshi_resolver tests pass (side detection × all 3 strategies, P&L math win/loss/void/malformed, INSERT OR IGNORE re-run safety, equity snapshot row shape + broker-error guard).
+- 67 polymarket + kalshi_resolver tests combined pass; zero regressions.
+- Prod-drift check: prod's `db.py` (331 lines vs local HEAD's 275) had extra helper functions; prod's `main.py` had bitunix_observer wiring not in local HEAD; prod's `kalshi.py` was untracked locally. All 3 patches applied onto PROD's content, not local HEAD, per the `trading_corp_prod_git_drift` memory note.
+
+**Post-deploy verification (prod):**
+- PID rotated 210117 → 213839; `systemctl is-active trading-corp` = `active`.
+- `kalshi_round_trips` + `kalshi_equity_history` tables created with all expected columns + 3 indexes.
+- Startup log: 3 new loops online — `kalshi round-trip resolver online (interval=3600s)` + `kalshi equity snapshot writer online (division=kalshi_arbitrage, interval=300s)` + `kalshi equity snapshot writer online (division=kalshi_llm_arbitrage, interval=300s)`.
+- First equity snapshots landed at 03:06:26 UTC: both divisions at $499 cash / $0 positions / 0 n_positions.
+- First resolver tick at 03:06:30 UTC: **scanned=113, resolved=1, pending=112, void=0, not_found=0, errors=0**. The 1 resolved row: order `a84388b6...` from kalshi_llm_arbitrage on `KXTEMPNYCH-26MAY1022-T64.99`, LLM bet NO @ $0.35 × 2.857 qty → market resolved YES → realized_pnl = -$1.00 (-100% ROI). Matches the strategy's $1/leg fixed sizing exactly.
+
+**Notable code decisions:**
+- **Single shared kalshi_round_trips table for all 3 strategies** (vs. one table per strategy). `strategy` + `arb_type` columns enable filtering. Avoids 3× schema duplication; future K4 multi-outcome detector adds rows with `arb_type='multi_outcome'` without DDL changes.
+- **Side-detection via fallback ladder** (outcome → leg prefix). Each strategy serializes side differently in ProposedOrder.extra; resolver normalizes at read time. Tested across all three shapes.
+- **Fees NOT modeled in paper-mode PnL.** Kalshi taker fee `roundup(0.07 × C × P × (1−C))` is mechanical but small relative to $1/leg sizing — gross PnL is the expectancy signal for paper-vs-live decisioning. Fees come in at Phase K5+ live work.
+- **Two equity snapshots per cycle, identical dollars today.** Both divisions read the same Kalshi broker. Each writes its own row keyed by division — dashboard groups cleanly, and a future per-division sub-account split needs no schema change.
+- **No HITL bypass risk.** This is read-only enrichment. No code path here touches order placement, risk caps, or live broker calls. Failure → log + skip + retry next tick.
+
+**Inert / dormant on current traffic:**
+- Resolver only acts on settled markets. Of 113 currently-unresolved kalshi paper trades, 112 are still in-flight (expiration dates ranging June 2026 and later). Resolver re-checks every hour — count will grow as markets settle.
+- Dashboard surfacing of kalshi_round_trips + equity-curve sparkline is **NOT shipped here**; this is data layer only. Becomes the natural follow-up once round-trip counts grow past trivial. Polymarket's surfacing is also still TBD — they'd benefit from a shared partial.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k24-resolver-20260511-0240; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/persistence/db.py.\$TAG \$BASE/trading_corp/persistence/db.py; \
+mv \$BASE/trading_corp/brokers/kalshi.py.\$TAG \$BASE/trading_corp/brokers/kalshi.py; \
+mv \$BASE/trading_corp/main.py.\$TAG          \$BASE/trading_corp/main.py; \
+rm \$BASE/trading_corp/agents/kalshi_resolver.py; \
+sudo systemctl restart trading-corp
+"
+# The two new tables remain in the DB after rollback — they're harmless without
+# the resolver code; sqlite drop is optional.
+```
+
+---
+
+## 2026-05-11 00:52 UTC — Kalshi Phase K6.1 (LLM-divergence strategy, mirroring polymarket)
+
+**Triggered by:** Board ask — "create another kalshi division that is LLM-based reusing what we built for polymarket." Phase K6.1 spins up a third Kalshi strategy (after structural tail + temporal/bucket already shipped) using the same LLM substrate as polymarket_arbitrage. Lives on its own division so dashboard surfaces it separately and risk caps are independent.
+
+**Files deployed (6 modified, 1 new):**
+- `trading_corp/agents/strategies/kalshi_llm_arbitrage.py` — **NEW.** `KalshiLLMArbitrageAgent` class. Clone of `PolymarketArbitrageAgent` with the Kalshi adapter:
+  - Discovery via `KalshiBroker.list_markets()` (cache-aware; shared with the structural arb strategies' discovery cache)
+  - Pre-filter: skip COLLECTION events, skip extreme-tail markets (already handled by `kalshi_tail_price_arb`), enforce min/max implied prob bounds + max time-to-resolution
+  - K=20 markets per cycle, ranked by tightest spread first (LLM call most useful where market is least sure)
+  - **Reuses `_polymarket_prompts.ANALYST_SYSTEM_PROMPT`** — generic enough for cross-venue prediction-market work, though category priors are polymarket-tuned (will revisit if Kalshi-specific priors materially help)
+  - Warm-and-fan parallel LLM pattern: serial first call to hydrate Anthropic prompt cache, K-1 parallel after
+  - Per-ticker 6h cooldown persisted in `agent_state` table (parallel to polymarket's per-condition_id cooldown)
+  - ProposedOrder shape: `BUY YES @ yes_ask` if LLM thinks YES underpriced, `BUY NO @ no_ask` if overpriced. Fixed-USD sizing (default $1/leg).
+- `trading_corp/main.py` — added `KalshiLLMArbitrageAgent` instantiation + `_scheduled_kalshi_llm_arb_loop` (clone of polymarket loop with name swap). Cancellation hook in shutdown path. Loop polls every 60s when enabled (matches polymarket cadence).
+- `config/divisions.yaml` — new `kalshi_llm_arbitrage` division entry. Same Prediction Markets group, same kalshi broker (read-only). `standby: true` until first paper trades validate.
+- `config/strategies.yaml` — new `kalshi_llm_arbitrage:` config block. K=20, cooldown 6h, divergence threshold 10%, time horizon 30d (broader than polymarket's 7d — Kalshi has many longer-horizon markets), prob bounds 0.05-0.95.
+- `trading_corp/web/data.py` — added 3 new event kinds to SQL whitelist (`kalshi_llm_scan_cycle`, `kalshi_llm_probability_called`, `kalshi_llm_order_rejected_by_risk`) + `evt.kalshi_llm` enrichment dict mirroring polymarket's shape so the rich rail UI can render kalshi_llm rows with LLM probability strip + reasoning preview.
+- `trading_corp/web/templates/division.html` — added `{% elif evt.kalshi_llm %}` branches for both kind label and body rendering. Same layout as polymarket: ticker badge + outcome badge + category + event title + LLM/market/divergence strip + reasoning preview + "Show analysis →" button.
+- `trading_corp/web/routes.py` — new `GET /partials/kalshi-llm-analysis/{event_id}` HTMX endpoint. Reuses `partials/polymarket_analysis.html` (field name mapping: ticker→market_slug, event_title→market_question, expires_at→resolves_at, event_ticker→condition_id). Same right-rail rich panel.
+
+**Backup tag:** `pre-kalshi-k61-llm-20260511-0048`
+
+**Pre-deploy verification:**
+- All 5 affected Python files parse cleanly (AST + Jinja).
+- 66 polymarket/kalshi/main/risk tests pass; zero regressions.
+- Local division registry verified: 4 Prediction Markets entries (polymarket_arbitrage, polymarket_copy_trading, kalshi_arbitrage, kalshi_llm_arbitrage).
+
+**Post-deploy verification (prod):**
+- PID changed (clean restart). `systemctl is-active trading-corp` = `active`. Web up on port 8000.
+- Startup log: `Registered kalshi broker for division=kalshi_arbitrage (paper=False)` AND `Registered kalshi broker for division=kalshi_llm_arbitrage (paper=False)` — both divisions wired to the read-only KalshiBroker.
+- Both KalshiBrokers connected to prod, balance=$499.00 (same Kalshi account; division separation is logical not physical).
+- All 4 scanners online: Polymarket (enabled), Kalshi structural (enabled), Kalshi temporal+bucket (enabled), Kalshi LLM (**enabled=False** — Board flips when ready to incur Anthropic cost).
+- Dashboard renders both `/division/kalshi_arbitrage` and `/division/kalshi_llm_arbitrage` tiles in the Prediction Markets group.
+
+**Notable code decisions:**
+- **Reuse over fork:** the strategy file is a structural clone of polymarket_arbitrage, NOT a refactor that generalizes both. Refactoring to a shared base class would be cleaner long-term but riskier in one-shot — easier to keep two parallel strategies for now and refactor when a third venue (or a fundamentally different LLM-divergence variant) lands.
+- **Field-name mapping at the HTMX endpoint** (not in the partial template) keeps `polymarket_analysis.html` venue-agnostic. The endpoint constructs an `event` dict matching the polymarket field shape; template doesn't know it's rendering Kalshi data.
+- **Same risk gate, no kalshi-llm-specific dispatch.** Risk verdict will fall through to default rules until we Board-flip enabled=True and see whether a $1/leg sizing + 10% divergence threshold + 6h cooldown produces useful behavior. Adjust `risk.yaml kalshi:` section caps then if needed.
+- **Cost budget:** roughly doubles polymarket's daily Anthropic spend ($2-50/day → estimated $4-100/day) when enabled. Prompt caching is shared across both polymarket + kalshi_llm calls (same persona prefix), so per-call marginal cost stays low.
+
+**Inert / dormant:**
+- Strategy is `enabled: false` by default. Loop wakes every 60s and no-ops. Discovery isn't triggered until enabled=True. To start: flip `kalshi_llm_arbitrage.enabled` in `strategies.yaml` (hot-reloadable; no restart needed).
+- No live order placement (Phase K7+).
+- No data layer for round-trips / equity snapshots specific to this division (still K2.4 deferred — applies to both Kalshi divisions).
+
+**Memory updates:** `trading_corp_kalshi.md` Phasing block needs K6.1 marked SHIPPED (separate edit).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k61-llm-20260511-0048; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/config/divisions.yaml.\$TAG \$BASE/config/divisions.yaml; \
+mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+mv \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/web/routes.py.\$TAG \$BASE/trading_corp/web/routes.py; \
+mv \$BASE/trading_corp/web/templates/division.html.\$TAG \$BASE/trading_corp/web/templates/division.html; \
+rm \$BASE/trading_corp/agents/strategies/kalshi_llm_arbitrage.py; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-11 00:13 UTC — Kalshi Phase K2.3.1 (per-candidate audit events for true polymarket-density rail)
+
+**Triggered by:** Board's second review of the dashboard found K2.3 still didn't match polymarket density. Root cause: aggregate scan summaries vs. polymarket's per-market rows. The polymarket rail emits `polymarket_llm_probability_called` per market evaluated (10-20 rows per cycle showing market_slug, question, LLM/market/divergence per row). Kalshi was only emitting one summary row per scan ("scanned 620 markets, 0 opps") — missing the per-market grain entirely.
+
+**Files deployed (5 modified):**
+- `trading_corp/agents/strategies/kalshi_tail_price_arb.py` — collect ALL examined tail candidates (not just ones above threshold) into a list with full context (ticker, event_title, category, subtitle, prices, edge_dollars, would_emit, expires_at). After scan, emit `kalshi_market_evaluated` audit event for top-N (default 5) sorted by edge descending. Same UX role as `polymarket_llm_probability_called` minus the LLM cost.
+- `trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py` — parallel additions: emit `kalshi_pair_evaluated` per top-N temporal pair (event_title, early/late ticker + dates + yes_ask, edge_cents, would_emit) and `kalshi_bucket_evaluated` per bucket event (n_legs, sum_yes_asks, edge_cents, would_emit). New config knob `audit_top_n_candidates` (default 5).
+- `trading_corp/web/data.py` — added the 3 new event kinds to the `_query_division_activity` SQL whitelist + per-kind enrichment fields (event_title, category, prices, would_emit etc.).
+- `trading_corp/web/templates/division.html` — added 3 new inline rendering branches for `kalshi_market_evaluated`/`kalshi_pair_evaluated`/`kalshi_bucket_evaluated`. Each row shows ticker + tail/category badges + event title (the load-bearing human-readable text) + prices/sum/edge ratio strip + threshold. ARB-grade events get the gain color; below-threshold ones stay muted. Mirrors polymarket's market_slug → question → LLM/market/divergence layout.
+- `trading_corp/web/templates/partials/kalshi_analysis.html` — added 3 new per-kind rich panels for the right-rail expansion: market_evaluated (3-card grid YES_ask/NO_ask/edge + tail badges + sum line), pair_evaluated (2-card grid early/late + constraint analysis), bucket_evaluated (3-card grid legs/sum/edge + would-emit verdict).
+
+**Backup tag:** `pre-kalshi-k231-percandidate-20260511-0012`
+
+**Pre-deploy verification:**
+- All 4 affected Python/template files parse cleanly.
+- Per-strategy `audit_top_n_candidates` knob defaults to 5; not exposed in strategies.yaml — relies on the default until tuning needed.
+
+**Post-deploy verification (prod):**
+- PID changed (clean restart). `systemctl is-active trading-corp` = `active`. Web server back up on port 8000.
+- Both scanners online with enabled=True.
+- First scan tick after restart fires at +300s; per-candidate audit events expected at +~310s. (Verification after monitor fires.)
+
+**Notable code decisions:**
+- The per-candidate emission DOES NOT change the order-emission path — opportunities above threshold still flow through the existing `_TailOpportunity` / `_TemporalOpportunity` / `_BucketOpportunity` lists into ProposedOrders. The new events are AUDIT-ONLY; they document "what we looked at and why we didn't trade" so the rail has substance even when 0 orders fire.
+- Top-N sort order = edge descending. So the rail surfaces the NARROWEST MISSES first (markets closest to triggering an arb) — actionable visibility into where the strategy is most likely to fire next, vs random sampling.
+- Polymarket's `polymarket_llm_probability_called` event acts as the inspiration. Same per-candidate grain. Different field shape (no LLM reasoning text, just structural pricing + edge).
+- Per-pair audit for K2.2 walks the same date-sorted pairs the detector walks. Cost is O(N²) in markets per event but events are small (≤10 markets typical) so this is cheap.
+
+**Inert / dormant:**
+- Top-N is hard-coded to 5 (configurable via `audit_top_n_candidates` strategies.yaml knob). With both K2.1 + K2.2 + bucket scans firing per cycle = up to 15 audit rows per 5-min cycle. Manageable.
+- Round-trips table + 5-min equity snapshots STILL not shipped — that's K2.4. Will need to land before paper trades start firing for PnL tracking.
+
+**Memory updates:** None — `trading_corp_kalshi.md` K2.3 entry is sufficient; the rail-grain refinement is described in this deploy log only.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k231-percandidate-20260511-0012; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/strategies/kalshi_tail_price_arb.py.\$TAG \$BASE/trading_corp/agents/strategies/kalshi_tail_price_arb.py; \
+mv \$BASE/trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py.\$TAG \$BASE/trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py; \
+mv \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/web/templates/division.html.\$TAG \$BASE/trading_corp/web/templates/division.html; \
+mv \$BASE/trading_corp/web/templates/partials/kalshi_analysis.html.\$TAG \$BASE/trading_corp/web/templates/partials/kalshi_analysis.html; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-11 00:04 UTC — Kalshi Phase K2.3 (dashboard parity with Polymarket)
+
+**Triggered by:** Board flagged that Kalshi Arbitrage division drill-down at `/division/kalshi_arbitrage` showed "useless" rows that didn't expand and had nothing to inspect — vs. Polymarket which has rich inline rendering + HTMX-loaded analysis panel. K2.1 + K2.2 audit events were landing in the table (post-23:55 activity panel-whitelist fix) but only as bare kind-name labels. This deploy closes that gap by mirroring the Polymarket pattern across all four dashboard surfaces (data enrichment, inline rendering, HTMX expansion endpoint, partial template).
+
+**Files deployed (3 modified, 1 new):**
+- `trading_corp/web/data.py` — `_query_division_activity` enriches each kalshi event with a `kalshi: {...}` sub-dict (parallel to `polymarket: {...}`). Per-kind extra fields:
+  - `kalshi_discovery_refreshed`: `n_events_total`, `n_markets_total`, `n_markets_filtered_collection`, `events_by_type`
+  - `kalshi_tail_arb_scan`: `n_markets_scanned`, `n_tail_candidates`, `n_opportunities_above_threshold`, `min_edge_cents`, `yes_max/min_for_*_tail`
+  - `kalshi_temporal_bucket_scan`: `n_temporal/bucket_events_scanned`, `n_temporal/bucket_opportunities`, threshold cents
+  - `would_have_placed` / `kalshi_*_order_rejected_by_risk`: `ticker`, `event_ticker`, `edge_cents`, `leg`, `kalshi_pair_id`/`kalshi_arb_set_id`, `kalshi_arb_type`, `qty`, `limit_price`, `risk_verdict`, `risk_reason`
+- `trading_corp/web/templates/division.html` — added `{% elif evt.kalshi %}` branch in the recent-activity loop. Inline rendering branches per kind:
+  - Scan summaries: counts inline (e.g. "scanned: 620 markets · tail candidates: 259 · opps≥1.0c: 0 · tail≤0.05/≥0.95")
+  - Discovery refreshed: events/markets totals + by-type chips
+  - would_have_placed / risk-rejected: ticker + leg badge + arb-type badge + edge cents (color-coded) + cost + set/pair id
+- `trading_corp/web/routes.py` — new `GET /partials/kalshi-analysis/{event_id}` endpoint mirroring `partial_polymarket_analysis`. Loads audit row, validates actor is one of the kalshi strategies, formats rich event dict, hands off to template.
+- `trading_corp/web/templates/partials/kalshi_analysis.html` — **NEW.** Right-rail partial returned by HTMX. Per-kind rich panels (3-card grids for scan summaries, ticker+edge+max-risk for orders), pair/set linkage, risk reason callout, collapsible raw audit payload at the bottom for full inspection.
+
+**Backup tag:** `pre-kalshi-k23-dashboard-20260511-0004`
+
+**Pre-deploy verification:**
+- All 4 affected files parse cleanly (Python AST + Jinja syntax via FastAPI startup).
+- 7 webhook test failures present BEFORE this deploy — pre-existing `_Deps.bitunix_observer` attribute issue unrelated to dashboard work. 58 division/web/polymarket tests pass.
+
+**Post-deploy verification (prod):**
+- PID changed (clean restart). `systemctl is-active trading-corp` = `active`.
+- `curl http://localhost:8000/division/kalshi_arbitrage` returns rendered HTML with all expected markers: "tail-price scan", "temporal+bucket scan", "discovery refreshed", "tail candidates:", "opps≥1.0c:", "Show details →" buttons on every kalshi row.
+- `curl http://localhost:8000/partials/kalshi-analysis/{id}` returns rich HTML for a kalshi_temporal_bucket_scan event — header strip + 3-card grid (temporal/bucket events scanned + opps vs threshold) + collapsible raw payload. Identical pattern to polymarket-analysis partial.
+
+**Notable code decisions:**
+- The `kalshi: {...}` sub-dict mirrors `polymarket: {...}` shape so future-Claude can reason about the two prediction-market venues symmetrically. Only divergence: kalshi has multiple event-kind shapes (scan, discovery, order) so the dict has more conditional fields.
+- Reused the `#pair-analysis` HTMX target on the right-rail panel — both polymarket and kalshi load into the same slot. The right rail surfaces "the most-recently-clicked event's detail," regardless of venue. Acceptable given the panel is single-purpose.
+- Color contract preserved: green for `would_have_placed`, red for `risk_rejected`, mono for "scan with opportunities found", muted for "scan with 0 opportunities". Edge-cent colors: green ≥5¢, mono ≥2¢, muted <2¢. Matches the polymarket divergence color ladder.
+- Raw payload always available via `<details>` collapsible — escape hatch for debugging without needing to query SQLite.
+
+**Inert / dormant:**
+- The "Expert Analysis" right-rail header still says "Click any position on the left to see its expert analysis here." That copy is for the polymarket use case and reads slightly off for kalshi (which has 0 positions, so there's nothing to click). Cosmetic; can update to "Click any activity row" later. Not blocking.
+- Round-trips table + 5-min equity snapshots for Kalshi still NOT shipped — those are still K2.4 deferred work (need them once `would_have_placed` rows start landing for paper-PnL tracking).
+- Position panel still shows "No positions detected for this division yet" — correct because `KalshiBroker.snapshot()` returns 0 positions (we have no executed orders, only paper would_have_placed rows).
+
+**Memory updates:** `trading_corp_kalshi.md` Phasing block updated to mark K2.3 dashboard parity SHIPPED (separate edit).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k23-dashboard-20260511-0004; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+mv \$BASE/trading_corp/web/routes.py.\$TAG \$BASE/trading_corp/web/routes.py; \
+mv \$BASE/trading_corp/web/templates/division.html.\$TAG \$BASE/trading_corp/web/templates/division.html; \
+rm \$BASE/trading_corp/web/templates/partials/kalshi_analysis.html; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-10 23:43 UTC — Kalshi Phase K2.2 + K2.0 discovery rate-limit hotfix
+
+**Triggered by:** (a) Continuation of Kalshi roadmap immediately after K2.1 ship — K2.2 temporal + bucket arb detector ready to ship, (b) **incident response**: between 23:35 and 23:42 UTC the K2.1 strategy was Board-flipped to `enabled: true` for overnight audit data collection, but the discovery code immediately hit Kalshi's rate limit hard. pykalshi's `get_all_series(category=X, limit=N)` silently fetches ALL series for the category despite the `limit` param (or defaults `fetch_all` somewhere in its pagination logic), so the discovery enumerated **4482 series across 6 categories** instead of the configured 30/category × 6 = 180. Each series then triggered a `get_markets` call, all hitting 429 from Kalshi, retrying 3× per pykalshi's internal handler. Result: ~13K HTTP requests in flight, scan never completing. No financial cost (Kalshi reads are free, no LLM in loop, all 429s are rate-limit pushback not billable failures), but a noisy log + immediate disable required.
+
+**Files deployed (3 modified, 1 new):**
+- `trading_corp/data/kalshi_market_map.py` — **CAP FIX:** `discover_by_categories` now truncates the get_all_series result to `max_series_per_category` BEFORE iterating get_markets — pykalshi's `limit` param is documented as unreliable as a true cap. Added `inter_call_delay_sec=0.15` between get_markets calls (sustained ~6.7 req/s vs. Kalshi's ~5-10 req/s rate limit). Same delay applied between per-event `get_event` calls inside `_build_discovery_result`.
+- `trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py` — **NEW.** `KalshiTemporalBucketArbAgent` strategy. Two detection methods sharing one class:
+  - **TEMPORAL:** for events classified `EventType.TEMPORAL`, parse subtitle dates ("Before July 2026", "Before 2027", "Before Jan 20, 2029" etc — `parse_subtitle_date` handles ISO / Quarter / Month-Day-Year / Month-Year / Year-only formats). Sort markets by date. For each pair (early, late), if `yes_ask_early - yes_ask_late ≥ min_edge_cents` (default 4¢, clears 2-leg taker fees ~2-4¢ typical), emit a 2-leg arb set: BUY NO on early + BUY YES on late. Worst-case payout = $1, profit = edge_cents.
+  - **BUCKET:** for events classified `EventType.BUCKET`, sum yes_ask across all markets in event. If `1 - sum ≥ min_edge_cents` (default 5¢, clears N-leg fees), emit an N-leg arb set: BUY YES on every leg. Guaranteed payout = $1.
+  - Multi-leg ProposedOrders share `kalshi_arb_set_id`, `kalshi_arb_type` (`temporal` | `bucket`), and per-set risk metadata.
+- `trading_corp/main.py` — added `KalshiTemporalBucketArbAgent` instantiation + `_scheduled_kalshi_tb_arb_loop` (parallel to `_scheduled_kalshi_arb_loop`). Both kalshi loops share the same `kalshi_arbitrage` division and broker; pykalshi internal cache means duplicate discovery within ttl is cheap. Cancellation hook added in shutdown path.
+- `config/strategies.yaml` — new `kalshi_temporal_bucket_arb:` block with discovery / temporal / bucket / sizing / per_cycle config, `enabled: false` default. `kalshi_tail_price_arb` flipped back to `enabled: false` as part of incident response (line annotated with disable reason).
+
+**Backup tag:** `pre-kalshi-k22-discoveryfix-20260510-2343`
+
+**Pre-deploy verification:**
+- Local syntax check: all 4 affected Python files parse cleanly.
+- Local pytest: kalshi/main test slice passes — zero regressions.
+
+**Post-deploy verification (prod):**
+- PID changed (clean restart). `systemctl is-active trading-corp` = `active`. The restart immediately killed the in-flight 429 retry storm.
+- Startup log:
+  - `Registered kalshi broker for division=kalshi_arbitrage (paper=False)`
+  - `Polymarket arbitrage scanner online (enabled=True, auto_execute=False, hitl=DIRECT)`
+  - `Kalshi arbitrage scanner online (enabled=False, auto_execute=False, hitl=DIRECT)` ← K2.1, temp-disabled
+  - `Kalshi temporal+bucket arb scanner online (enabled=False, auto_execute=False, hitl=DIRECT)` ← K2.2, default-off
+- Zero 429s in the 60-second window after restart (vs. continuous 429 storm pre-restart).
+- Prod end-to-end K2.2 strategy smoke (forced `enabled: true` via temp config, single cycle, 3 categories × 15 series × 20 markets, ~45 series): **0 arb sets, 0 total legs**. Honest baseline — most TEMPORAL pairs satisfy P(early) ≤ P(late) and most BUCKET sums equal $1 exactly. Real opportunities will surface during dislocations (event windows, news shocks, illiquid hours).
+
+**Notable code decisions:**
+- Cap fix is at OUR consumption layer (`for s_obj in series: if cat_count >= max ...`) rather than relying on pykalshi to enforce — defense in depth against future SDK behavior changes.
+- 150ms inter-call delay is a soft rate limit (~6.7 req/s sustained) chosen to stay comfortably under Kalshi's empirical ~5-10 req/s threshold without artificially slowing discovery. With `max_series_per_category=30 × 6 categories = 180` series + ~50 events post-grouping, total scan cost ≈ (180 + 50) × 0.15s + actual HTTP latency ≈ 60-90 seconds per cycle. Cache-ttl 600s means at most 6 cycles/hour, totally manageable.
+- `parse_subtitle_date` returns the LATEST possible date interpretation ("Before July 2026" → 2026-07-31) so temporal ordering matches the semantic constraint P(by month-end) ≤ P(by later-month-end).
+- TEMPORAL arb position structure (BUY NO early + BUY YES late) is correct because the arb requires capturing the constraint violation regardless of which scenario resolves. Min payout = $1; profit = `yes_ask_early - yes_ask_late` minus fees.
+- BUCKET arb is structurally simpler (sum < $1 = free money) but rarer; risk lives in N-leg fee burden which is why the threshold is set higher (5¢ vs 4¢).
+
+**Inert / dormant:**
+- BOTH Kalshi strategies are `enabled: false` post-deploy. K2.1 was temp-disabled mid-incident; K2.2 default-off awaiting Board review. To start collecting overnight audit data: flip both `enabled: true` in `strategies.yaml` (hot-reloadable, no restart needed — agents re-read on every cycle).
+- No data layer (round-trips table / 5-min equity snapshots) shipped here. Still K2.3, deferred. Until then, the Kalshi Arbitrage tile shows broker-level account balance only.
+- Risk gate still has no kalshi-specific dispatch in `risk.py`; orders fall through to default rules. Acceptable for K2.x while strategies are off; revisit before flipping enabled to true if we want belt-and-suspenders.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k22-discoveryfix-20260510-2343; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/data/kalshi_market_map.py.\$TAG \$BASE/trading_corp/data/kalshi_market_map.py; \
+mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+rm \$BASE/trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py; \
+sudo systemctl restart trading-corp
+"
+```
+*(Rollback restores the unfixed discovery code AND the pre-K2.2 main.py — do NOT re-enable kalshi_tail_price_arb after rollback; the cap fix is required to avoid re-triggering the 429 storm.)*
+
+**Memory update:** `trading_corp_kalshi.md` Phasing block needs K2.2 marked SHIPPED (separate edit).
+
+---
+
+## 2026-05-10 23:28 UTC — Kalshi Phase K2.0 + K2.1 (discovery + tail-price arb scanner)
+
+**Triggered by:** Continuation of Kalshi roadmap after K1 deploy at 22:29 UTC. Locked plan: Option C from the K2 phase-slicing conversation = K2.0 (market discovery + classification) + K2.1 (tail-price YES/NO arb detector) shipped together. Memory `trading_corp_kalshi.md` has the full phasing.
+
+**Files deployed (4 modified, 2 new):**
+- `trading_corp/data/kalshi_market_map.py` — **NEW.** Discovery + classification module. `is_tradeable_market` + `get_market_prices` lifted (MIT) from ryanfrigo/kalshi-ai-trading-bot — handles the API-v2 dollar-floats-vs-legacy-cents-int field-naming drift and the collection-ticker $1/$1 sentinel guard. EventType enum (BINARY / MULTI_OUTCOME / TEMPORAL / BUCKET / COLLECTION / OTHER). MarketRecord + EventRecord dataclasses. Two discovery paths: `discover_by_categories` (PRIMARY — category → series → markets traversal via `get_all_series`/`get_markets`) and `discover_open_markets` (DEPRECATED — bulk OPEN-markets endpoint returns ~all KXMVE* sports parlay containers in the first pages and pagination terminates inside the noise). Subtitle pattern matchers heuristically classify TEMPORAL ("before/by <date>") vs BUCKET ("Q1 2026" / month names).
+- `trading_corp/agents/strategies/kalshi_tail_price_arb.py` — **NEW.** `KalshiTailPriceArbAgent` strategy mirroring the polymarket pattern (mtime-cached config from `strategies.yaml`, cooldown persistence in `agent_state` table). Per-cycle: refresh discovery cache (default ttl 600s), walk all non-COLLECTION events, find markets at YES_mid ≤5¢ or ≥95¢, check YES_ask + NO_ask < $1 - threshold (default 1¢ minimum edge), emit ProposedOrder pairs. Per-pair sizing: $1/leg fixed (paper-only). Each pair shares a `kalshi_pair_id` so audit + future replay can correlate the two legs.
+- `trading_corp/brokers/kalshi.py` — added `list_markets()` method (broker-level abstraction matching PolymarketBroker pattern). Strategies don't talk to pykalshi directly — they call `broker.list_markets()` and get a `DiscoveryResult`.
+- `trading_corp/main.py` — added `KalshiTailPriceArbAgent` instantiation alongside `PolymarketArbitrageAgent`. New `_scheduled_kalshi_arb_loop` (~150 LOC, mirror of `_scheduled_polymarket_arb_loop`) handles per-cycle scan + risk evaluation + audit logging + Telegram ping (per-pair, slim). Cancellation hook added in shutdown path.
+- `config/strategies.yaml` — new `kalshi_tail_price_arb:` block with discovery / tail / sizing / per_cycle config, `enabled: false` default.
+- `config/risk.yaml` — new `kalshi:` section with per-order, daily-aggregate, and total-open caps (intentionally tiny: $5/leg, $50/day, $50 total). Tail-specific universe params (yes_max=0.05, yes_min=0.95, min_edge_cents=1.0).
+
+**Backup tag:** `pre-kalshi-k2-20260510-2328`
+
+**Pre-deploy verification:**
+- md5-diff (CRLF-normalized) all 4 modified files: clean — only my K2 additions, no prod-only drift.
+- 2 new files confirmed absent on prod prior to push.
+- Local pytest: 66 polymarket_arbitrage / risk / main / kalshi tests pass — zero regressions.
+- Local discovery sanity-check (3 categories × 20 series × 20 markets) yielded 88 multi_outcome / 75 temporal / 1 bucket / 1130 tail-candidate-mids events — confirming the classifier picks up real Kalshi structure.
+
+**Post-deploy verification (prod):**
+- PID changed (clean restart). `systemctl is-active trading-corp` = `active`.
+- Startup log:
+  - `Registered kalshi broker for division=kalshi_arbitrage (paper=False)`
+  - `Polymarket arbitrage scanner online (enabled=True, auto_execute=False, hitl=DIRECT)`
+  - `Kalshi arbitrage scanner online (enabled=False, auto_execute=False, hitl=DIRECT)` ← new
+- Zero warnings/errors since restart.
+- Prod end-to-end strategy smoke (forced `enabled: true` via temp config, single cycle): **0 pairs / 0 legs**. Honest baseline — most Kalshi tail markets price efficiently to YES+NO=$1.00; real arb edges only appear during dislocations. Detector is working correctly.
+
+**Notable code decisions:**
+- The KEY_VAULT-backed env loader handles the new `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` already (added in K1). No secrets work needed for K2.
+- `discover_open_markets` deliberately kept as a DEPRECATED audit/exploration tool. Its docstring documents WHY it's not the primary path so a future-Claude doesn't try to revive it.
+- `_TailOpportunity` dataclass internal to the strategy keeps the discovery → ranking → ProposedOrder pipeline readable.
+- Risk gate falls through to default rules when evaluating Kalshi orders today — `risk.yaml kalshi:` section is in place but `risk.py` doesn't yet have a `kalshi`-specific dispatch like polymarket does. Acceptable for K2.1 because (a) strategy is `enabled: false` by default, (b) $1/leg sizing won't bind any reasonable cap. Will add proper kalshi dispatch when we Board-flip enabled to true.
+
+**Inert / dormant:**
+- Strategy is `enabled: false` — discovery does not run, no orders emit. Loop wakes every `poll_interval_sec` (default 300s) and no-ops while disabled. Flip to true via `strategies.yaml` for shakedown.
+- ProposedOrders go to `would_have_placed` audit rows only (paper). Live KalshiLiveBroker.place_order is Phase K5+ — gated on observed positive-EV across paper trades.
+- No data layer (round-trips table / 5-min equity snapshots) shipped here. That's K2.3, deferred. Until then, the Kalshi Arbitrage tile shows broker-level account balance only.
+
+**Memory updates:** `trading_corp_kalshi.md` Phasing block updated to mark K1 / K2.0 / K2.1 as SHIPPED with timestamps + design notes.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k2-20260510-2328; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+mv \$BASE/config/risk.yaml.\$TAG \$BASE/config/risk.yaml; \
+mv \$BASE/trading_corp/brokers/kalshi.py.\$TAG \$BASE/trading_corp/brokers/kalshi.py; \
+rm \$BASE/trading_corp/data/kalshi_market_map.py; \
+rm \$BASE/trading_corp/agents/strategies/kalshi_tail_price_arb.py; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-10 22:29 UTC — Kalshi Phase K1 (read-only broker + Prediction Markets dashboard group)
+
+**Triggered by:** Project pivot to add full Kalshi support, Polymarket copy-trading deprioritized. See memory `trading_corp_kalshi.md` for the locked phasing (K1 read-only broker → K2 intra-Kalshi temporal arb → K3 copy trading via leaderboard scraping → K4 multi-outcome arb → K5+ live orders). This deploy is K1: KalshiBroker (snapshot + quote), dashboard tile, KV-managed credentials, and a vendor-neutral "Prediction Markets" investment-type group housing Polymarket + Kalshi divisions side-by-side.
+
+**Files deployed (4 modified, 1 new):**
+- `trading_corp/brokers/kalshi.py` — **NEW.** `KalshiBroker(ReadOnlyBroker)` on top of `pykalshi.AsyncKalshiClient`. `snapshot()` fetches `portfolio.get_balance()` (cents → dollars, returns equity=cash+portfolio_value, buying_power=cash) plus `get_positions()`. `quote(ticker)` returns mid from `market.get_orderbook()`. RSA private key PEM materialized to a restricted-perms `/tmp/kalshi_*.pem` tempfile at connect, deleted on disconnect (pykalshi requires a filesystem path for the key). Stub mode if either credential is missing — tile renders "online · $0" rather than "not_wired", same pattern as BitUnix/Polymarket bring-up.
+- `trading_corp/utils/secrets.py` — added `kalshi_api_key_id` + `kalshi_private_key_pem` fields, KV expected-vars list (KALSHI-API-KEY-ID, KALSHI-PRIVATE-KEY-PEM), `register_redact_literal(kalshi_private_key_pem)` so the PEM never lands in logs even if a third-party lib echoes it.
+- `trading_corp/main.py` — added `if family == "kalshi"` broker-factory branch mirroring the polymarket pattern (no PaperExecutionBroker wrap — read-only adapters don't need it). Demo-mode toggle via `KALSHI_USE_DEMO=1` env var (defaults off — production / kalshi.com).
+- `config/divisions.yaml` — added `kalshi_arbitrage` placeholder division (broker=kalshi, standby=true, intent=aggressive). Phase K2 wires the actual temporal/bucket arb scanner against this division.
+- `trading_corp/utils/divisions.py` — **renamed group key `polymarket` → `prediction_markets`**, label "Polymarket" → "Prediction Markets". Routing extended via `_PREDICTION_MARKET_BROKERS = {"polymarket","kalshi"}` and `_PREDICTION_MARKET_SLUG_PREFIXES = ("polymarket_","kalshi_")` so both venues' divisions land in the new group regardless of broker family.
+- `requirements.txt` — added `pykalshi>=1.0.6` (MIT, async + sync, RSA-PSS auth handled, REST + WS).
+
+**Backup tag:** `pre-kalshi-k1-20260510-2229`
+
+**Pre-deploy verification:**
+- md5-diff prod vs local (CRLF-normalized) for the 4 modified files: clean — only my additions, no prod-only drift.
+- Local pytest: 17 division/secrets/broker tests pass, zero regressions.
+- Local smoke against real Kalshi prod account: `$499.00` cash, 0 positions, balance + positions endpoints return HTTP 200.
+
+**Secrets uploaded to Azure Key Vault (kv-tc-vtwbowt3wtkpy):**
+- `KALSHI-API-KEY-ID` (UUID)
+- `KALSHI-PRIVATE-KEY-PEM` (1674 chars, multi-line PEM byte-perfect via `az keyvault secret set --file`)
+- Read-back verified both values match local `.env`.
+
+**Post-deploy verification (prod):**
+- PID 199160 → 200767 (clean restart). `systemctl is-active trading-corp` = `active`.
+- Startup log: KV fetched both KALSHI secrets, "Registered kalshi broker for division=kalshi_arbitrage (paper=False)" landed.
+- First dashboard hit triggered `KalshiBroker.connect()` lazily (PolymarketBroker pattern); log shows "KalshiBroker connected (prod) — balance=$499.00 portfolio=$0.00".
+- Dashboard root (`http://localhost:8000/`) renders the **"Prediction Markets"** group header containing the Kalshi Arbitrage tile with `equity = $499.00`, badges `aggressive` + `standby`. Polymarket Arbitrage + Polymarket Copy Trading also render in the same group (group rename was transparent).
+- Zero warnings/errors since restart.
+
+**Notable code decisions:**
+- `KalshiBroker` subclasses `ReadOnlyBroker` (NOT `Broker`) — there is no `place_order` method on the type, so a code path that tries to place orders against Kalshi is a static type error, not a runtime exception. Same isolation guarantee as PolymarketBroker. Live order placement (Phase K5+) will land as a separate `KalshiLiveBroker(Broker)` when greenlit.
+- pykalshi takes a filesystem path to the PEM, not bytes. The materialize-to-tempfile-on-connect pattern keeps the PEM out of the repo and out of any committed file; tempfile is deleted on `disconnect()` and restricted to owner-rw on POSIX.
+- Group rename `polymarket → prediction_markets` was scoped to `utils/divisions.py` only — no template / data-layer references to the group key existed elsewhere in the codebase (the `evt.polymarket` references in `web/data.py` and templates are about polymarket-event analysis, not the group key).
+
+**Inert / dormant:**
+- `kalshi_arbitrage` division is `standby:true` — broker reads $499 balance and 0 positions, but no strategy operates on it yet. Phase K2 wires the temporal/bucket arb scanner.
+- `place_order` / `cancel_order` not present on KalshiBroker by design (ReadOnlyBroker base). Phase K5+ will introduce KalshiLiveBroker.
+- Volume Incentive Program ($0.005/contract cashback on trades 3¢-97¢) is a pending verification item — need to confirm per-side vs per-round-trip + qualification gates before Phase K2 sizing math relies on it.
+
+**Memory updates:** `trading_corp_kalshi.md` already locked the architecture pre-deploy (SDK choice, repo-pillaging shortlist, phasing). No memory edit needed for this entry.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-kalshi-k1-20260510-2229; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/utils/secrets.py.\$TAG \$BASE/trading_corp/utils/secrets.py; \
+mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+mv \$BASE/config/divisions.yaml.\$TAG \$BASE/config/divisions.yaml; \
+mv \$BASE/trading_corp/utils/divisions.py.\$TAG \$BASE/trading_corp/utils/divisions.py; \
+rm \$BASE/trading_corp/brokers/kalshi.py; \
+sudo systemctl restart trading-corp
+"
+```
+*(Rollback restores the "Polymarket" group label and removes the Kalshi tile. Does NOT remove the KV secrets — they stay as orphans, harmless. pykalshi stays pip-installed in the venv, also harmless.)*
+
+---
+
+## 2026-05-10 21:01 UTC — Pink Box signal-name cleanup (dead-code purge)
+
+**Triggered by:** Board re-confirmed end of session that Pink Box is NOT a TradingView alert — it's a static S/R image refreshed 2-3×/day. Today's audit log showed `pink_box_bear` firing 4× in a 9-min window this morning (08:48-09:00 UTC, BTCUSD/3) on what is most likely an old Coinbase TV alert from prior setup. Cleanup directive: remove every code path that treats `pink_box_bull/bear` as a valid arming signal, so any future stray webhook becomes `unknown_signal` (silent reject, audit row, no agent action).
+
+**Files deployed (3):**
+- `trading_corp/agents/strategies/lord_otter.py` — removed `pink_box_bull/bear` from `KNOWN_SIGNALS`, `_BULL_SIGNALS`, `_BEAR_SIGNALS`. Simplified `ArmedState` (source: `"spoon"` only — was `"pink_box" | "spoon"`). Simplified the arming branch in `_refresh_state_from_signal` to a clean `if signal == "spoon_bull"` / `elif signal == "spoon_bear"` (was a dual-membership check with awkward source-string assembly).
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — removed `pink_box_bull/bear` from `OTTER_TRIGGER_BULL` / `OTTER_TRIGGER_BEAR`.
+- `config/strategies.yaml` — removed `pink_box_bull/bear` weight entries; updated `spoon_bull` comment ("divergence arming"; the prior "replaces pink_box per vision" hint is moot).
+
+**Backup tag:** `pre-pink-box-cleanup-20260510-2059`
+
+**Pre-deploy verification:**
+- md5-diff against prod showed clean diffs — only the pink_box-related lines differ (no prod-only drift to preserve).
+- Local pytest: 27/27 affected tests pass; 62/62 broader lord_otter+bitunix slice passes.
+
+**Post-deploy verification:**
+- PID 196773 → 199154 (clean restart). `systemctl is-active trading-corp` = `active`.
+- Startup log clean (`bitunix_futures` broker registered; BitUnix KV secrets fetched). Zero warnings/errors since restart.
+- Forward behavior: any incoming webhook with `signal=pink_box_bull` or `signal=pink_box_bear` will now hit the `KNOWN_SIGNALS` validator and be rejected as `unknown_signal` rather than setting `armed_long/short` state. Strictly safer than the prior behavior.
+
+**Inert / dormant:**
+- The 10 historical `pink_box_bear` audit rows from 08:48-09:00 UTC remain in `audit_event` — append-only, no cleanup. They'll naturally fall off the recency window over time.
+- Dev-only files (`tests/test_lord_otter_bias_persistence.py`, `tests/test_signal_replay.py`, `scripts/test_lord_otter_webhook.py`, `scripts/sweep_btc_accumulator.py`) were also updated locally but are NOT deployed to prod.
+
+**BACKLOG / memory updates:** P3 entry "Pink Box S/R confluence integration" updated — code-cleanup item struck (now DONE); integration design preserved for when we want to wire static S/R levels into the bitunix tier classifier. Memory `trading_corp_otter_tuned_for_3m.md` updated to reflect deployed cleanup status.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-pink-box-cleanup-20260510-2059; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/strategies/lord_otter.py.\$TAG \$BASE/trading_corp/agents/strategies/lord_otter.py; \
+mv \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py.\$TAG \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py; \
+mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+sudo systemctl restart trading-corp
+"
+```
+*(Rollback only if a real Pink Box TV alert turns out to exist and we want it accepted again — Board would need to assert that explicitly.)*
+
+---
+
+## 2026-05-10 16:56 UTC — Polymarket prompt cache fix + category-priors expansion
+
+**Triggered by:** Board cost-optimization review of polymarket_arbitrage LLM spend ($2-50/day per deploy log). Direct prod verification (`/tmp/verify_polymarket_cache.py`) confirmed prompt caching was SILENTLY DEAD on Sonnet 4.6 — `cache_creation_input_tokens=0` and `cache_read_input_tokens=0` on every call since polymarket went live (2026-05-10 02:05 UTC). Root cause: the existing system prompt was 1,427 tokens, below Sonnet 4.6's 2,048-token minimum cacheable prefix. The `cache_control: ephemeral` marker on `_polymarket_prompts.py:ANALYST_SYSTEM_PROMPT` was no-op'd by the API. Fix: expand the system prompt past the threshold with content that's strategically valuable (category-specific priors), not filler.
+
+**Files deployed (1):**
+- `trading_corp/agents/strategies/_polymarket_prompts.py` — prompt expanded from ~1,427 → 2,513 tokens. Three changes: (1) new sports-underdog rejection worked example using the actual losing trade pattern from prod data (`mlb-nym-ari` 5¢ underdog at 90% LLM divergence — our first resolved-loss case), (2) new "Category-specific base rates and priors" section covering sports / geopolitical / Eurovision / crypto-action markets, (3) hard divergence sanity check rule (|prob_yes - implied| > 0.50 forces self-check; sports specifically capped at 0.30). Docstring updated to document the ≥2,048 token Sonnet 4.6 minimum.
+
+**Strategic content added — these are domain priors the model otherwise lacks:**
+- **Sports:** bookmaker-line markets are ~efficient → anchor within ±10pp of implied; deep underdog YES bets (<0.10 implied) are not edge opportunities; sub-markets (toss/total/first-set) priced at fair physical odds; tennis ranking-gap heuristic; MLB home-team base rate
+- **Geopolitical:** short-window event markets default to <20% base rate; Iran/Middle-East markets are insider-priced (anchor near implied); war-end markets systematically over-predict
+- **Eurovision:** top-5 most-bet account for ~70% of resolved-correct mass; <3% implied countries effectively never win
+- **Crypto/company-action:** time-since-last-event > news headlines; tweet-count markets are Poisson; price-target markets follow options-implied vol
+
+**Backup tag:** `pre-polymarket-prompt-cache-fix-20260510-1656`
+
+**Verification — direct prod cache test BEFORE restart:**
+```
+Call 1 (cache write): input_tokens=80   cache_creation_input_tokens=2513   cache_read_input_tokens=0
+Call 2 (cache read):  input_tokens=3    cache_creation_input_tokens=77     cache_read_input_tokens=2513
+```
+Cache is active. ~2,513 system-prompt tokens served from cache at 90% discount on every call after the first in a 5-min window. PID 194680 -> 196773 (clean restart). Service `active`. No errors in startup log.
+
+**Cost analysis:**
+- **Before (broken cache):** ~$0.0091/call (1,827 input × $3/M + 250 output × $15/M); $2-50/day depending on K-cycle activity
+- **After (cache active):** ~$0.0035-$0.0044/call (2,513 cached × $0.30/M + ~150 fresh + 165 output × $15/M); estimated $0.80-$20/day
+- **Savings: ~2.5× per call.** Not as dramatic as a Haiku switch (~10×) but preserves Sonnet 4.6's capability — the load-bearing assumption being that Sonnet's reasoning IS worth paying for if the prompt gives it the priors it lacks.
+
+**Why Sonnet over Haiku:**
+- Polymarket has many categories beyond sports — Sonnet may genuinely be better on politics/economics/long-tail
+- The added priors directly address the empirical sports-underdog failure mode (the only clear LLM hallucination we'd resolved as of deploy time)
+- Cost delta vs Haiku is ~$1/day; flip-to-Haiku remains an option if Phase 2.5 Backtester data shows Sonnet not earning its keep
+- Haiku's minimum cacheable prefix is 4,096 tokens — would require ~doubling the prompt again, with diminishing returns on prior content quality
+
+**Inert / dormant:**
+- The 5-min ephemeral TTL is correct for our 30s scan cadence — every cycle's first call hydrates, the K-1 follow-ups (parallel via warm-and-fan) all hit cache
+- The new sports-underdog rejection example uses real prod-loss data; if a future-Claude reads this and is tempted to fictionalize the example, leave it — citing real losses teaches discipline more effectively than synthetic ones
+
+**Memory updates:** none required. The polymarket vision memory already references prompt-caching strategy generically; the model-specific cache-minimum table belongs in code/docs, not memory.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-polymarket-prompt-cache-fix-20260510-1656; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/strategies/_polymarket_prompts.py.\$TAG \$BASE/trading_corp/agents/strategies/_polymarket_prompts.py; \
+sudo systemctl restart trading-corp
+"
+```
+*(Note: rollback returns to the broken-cache state. Don't roll back unless the new priors cause a measurable regression in win rate.)*
+
+---
+
+## 2026-05-10 16:12 UTC — Phase 3.2a venue correction: Coinbase 5m -> BitUnix native 3m
+
+**Triggered by:** Board flagged that the Phase 3.2a deploy at 15:33 UTC had incorrectly pointed the live bar cache at Coinbase (and downgraded to 5m due to Coinbase's lack of 3m support). The historical EDA + tier thresholds + validated divergence list were all calibrated on BTCUSDT.P (Bybit-sourced TV exports → BitUnix execution venue). Cross-venue volatility-profile drift is the exact thing this would introduce. Fix: live bar source must be BitUnix.
+
+**Decision tree:**
+- **Bybit** would match the historical EDA — but Bybit is geo-blocked from US IPs by Cloudfront. Both my local and the prod Azure VM hit 403. Not viable as a live feed.
+- **BitUnix** is what we trade on — there's no cross-venue gap if data and execution share venue. BitUnix's public REST kline endpoint (`/api/v1/futures/market/kline`) works without auth, supports native 3m, and returned 60 bars cleanly when tested from prod.
+- **Coinbase** (the wrong choice in 15:33 deploy) — only supports {1m, 5m, 15m, 1h, 6h, 1d}. No 3m. Different venue from execution. Keeping as fallback in code only.
+
+**Files changed (2):**
+- `trading_corp/data/live_bar_cache.py` — refactored `refresh()` to dispatch on venue. New `_refresh_bitunix()` method uses `httpx` to call BitUnix REST kline directly (no CCXT — BitUnix isn't in CCXT). New `_refresh_ccxt()` retains Bybit/Coinbase support as fallbacks. Updated module docstring with the venue selection rationale.
+- `trading_corp/main.py` — `LiveBarCache(symbol="BTCUSDT", timeframe="3m", venue="bitunix", max_bars=60)`. Was: `symbol="BTC/USD", timeframe="5m", venue="coinbase"`.
+
+**Backup tag:** none — rolled directly over the 15:33 deploy. Restart was clean.
+
+**Verification:**
+- 60/60 tests still pass (cache tests use direct `bars=` injection, no network — unaffected by venue refactor).
+- PID 193755 → 194694 (clean restart).
+- Bar cache primed live: `{'symbol': 'BTCUSDT', 'timeframe': '3m', 'venue': 'bitunix', 'bars_cached': 60, 'last_close': 81474.9, 'atr_14': 77.34}`. ATR is 0.095% of price — proper 3m volatility profile (5m had been 0.115%).
+- No refresh errors. Poll loop online with 60s cadence.
+
+**What changes:**
+- Stops now use real 3m volatility from the same exchange we trade on. ATR-driven sizing aligns with the historical-EDA-calibrated thresholds.
+- Floor (0.3%) still wins on calm bars (since 1.5×$77 = $116 << 0.3%×$81k = $244), but during news/breakout windows real ATR will exceed floor and dominate as designed.
+
+---
+
+## 2026-05-10 15:33 UTC — BitUnix Phase 3.2a (live OHLCV bar cache + real ATR + paper_trade_record writes)
+
+**Triggered by:** Phase 3.2a per memory `trading_corp_bitunix_phase3_confluence_model`. Foundation work for the eventual scale-out strategy (Phase 3.2b): replaces the 0.04%-of-price ATR placeholder with real ATR(14) from a live OHLCV cache, AND fixes a critical Phase 3.1 gap — bitunix paper trades weren't writing to `paper_trade_record`, so they had no win/loss resolution path. Both fixes here.
+
+**Files deployed (3):**
+- `trading_corp/data/live_bar_cache.py` — NEW. `LiveBarCache` polls Coinbase 3m... actually 5m (see hot-fix note) OHLCV via CCXT every 60s, caches last ~60 bars in-process. `get_atr(period=14)` computes ATR using Wilder's smoothing. `run_poll_loop` is the periodic background task. Drops in-progress (partial) latest bar. Errors logged + swallowed; cache keeps serving last successful snapshot.
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — UPDATED. Constructor takes optional `bar_cache`. `_build_proposal` accepts `atr_3m` parameter; uses real ATR when supplied (with `atr_source="live_atr_14"` marker), falls back to estimate when None (`atr_source="estimate_0.04pct"`). After `would_have_placed`, writes a `paper_trade_record` row via `PaperTradeRecord.from_order` so the existing strategy-agnostic `paper_trade_replay` loop resolves it. Order's `extra` keys harmonized (`take_profit_price`, `entry_reference_price`, `source_signal`, `max_dollar_risk`, `expected_gain_if_tp_hit`, `tp_r_multiple`) so `from_order` populates all PaperTradeRecord fields cleanly.
+- `trading_corp/main.py` — constructs `LiveBarCache` alongside the observer; passes it as `bar_cache=` constructor kwarg; primes the cache synchronously before background loop starts; `bitunix_bar_task = asyncio.create_task(...)` runs the poll loop alongside donchian/polymarket/replay loops. Drift-aware deploy (pulled prod's main.py and patched the additions onto it).
+
+**Hot-fix during deploy:** Initial `timeframe="3m"` failed with Coinbase CCXT (granularity not supported — Coinbase Advanced Trade only exposes {1m, 5m, 15m, 1h, 6h, 1d}). Switched to `timeframe="5m"` as the closest supported value. ATR profile is in the same ballpark; slightly more conservative stops. **Phase 4 will likely switch to Bybit native 3m** to match the historical EDA data we ingested for the EDA scripts (`scripts/eda_btc_scalping_signals.py` etc.).
+
+**Backup tag:** `pre-bitunix-phase3-2a-20260510-1533`
+
+**Verification:**
+- 60/60 tests pass: 8 in `tests/test_live_bar_cache.py` (ATR computation correctness w/ Wilder's smoothing, gap-open TR handling, decay after volatile period, status snapshot, timeframe parsing) + 52 in `tests/test_bitunix_futures_observer.py` (full Phase 3.0/3.1/3.2a coverage including new tests for real-ATR-driven stops, atr_3m fallback, paper_trade_record write, bar_cache error swallowing).
+- PID 192018 → 193147 → 193755 (one extra restart for the 5m hot-fix). Service `active`.
+- **Bar cache primed live on prod:** `{'symbol': 'BTC/USD', 'timeframe': '5m', 'venue': 'coinbase', 'bars_cached': 59, 'last_close': 81332.13, 'atr_14': 93.84}` — ATR is 0.115% of price (5m typical volatility). Below the 0.3% stop floor, so floor still wins on calm bars; on volatile bars (ATR exceeds 200), real ATR will dominate stop sizing as designed.
+- **Synthetic E2E with real ATR:** seeded bias (4h bull + 1D bull) + CVD (bull) + fired Otter `spoon_bull` trigger at $81,332 → observer classified PREMIUM, built order with stop $81,088 (-0.30% floor), TP $81,820 (+0.60% = 2R), wrote paper_trade_record with order_id `e8ad588f-...` showing all fields populated (tier, source_signal, entry_reference_price, stop_price, tp_price, tp_r_multiple). `result IS NULL` so the existing replay loop will pick it up next tick.
+- Synthetic test data cleaned (audit_event, proposed_order, paper_trade_record, all 3 observer state tables).
+
+**What changes for the user:**
+- BitUnix paper trades now have real ATR-based stops instead of always defaulting to the 0.3% floor (will matter once 5m volatility exceeds 0.2% — happens during news/breakout windows).
+- Paper trades will RESOLVE to win/loss via `paper_trade_replay` (next run within 15 min after each placement). Audit log + dashboard will show actual outcomes, not just "would have placed."
+- This unlocks the "weeks of tuning" data collection cycle the board mentioned — we can now measure paper-mode win rates by tier and decide when to flip to live.
+
+**Inert / dormant:**
+- All real-money paths unchanged. BitUnix remains paper-only. Cache failures degrade gracefully (observer falls back to ATR estimate).
+- 5m bars are a proxy for 3m at the venue level. Within-tier bar volatility is in the same ballpark; the real-ATR vs floor-wins decision will rarely flip due to this.
+
+**Memory updates:** `trading_corp_bitunix_phase3_confluence_model.md` — already documents Phase 3.2a (added in this session); now reflects deployed state.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bitunix-phase3-2a-20260510-1533; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+mv \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py.\$TAG \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py; \
+rm -f \$BASE/trading_corp/data/live_bar_cache.py; \
+sudo systemctl restart trading-corp
+"
+```
+*Returns to Phase 3.1 (no live bar cache, ATR placeholder, no paper_trade_record writes for bitunix).*
+
+---
+
+## 2026-05-10 15:00 UTC — BitUnix Phase 3.1 (full ladder + order proposer + paper-mode auto-execute)
+
+**Triggered by:** Phase 3.1 of the BitUnix vision per memory `trading_corp_bitunix_phase3_confluence_model`. Builds on Phase 3.0 (bias-only observer shipped 14:19 UTC same day) by adding the volume confluence axis, full tier ladder (PREMIUM/STANDARD/WEAK/COUNTER/SKIP), order proposer, risk caps, and paper-mode auto-execute (no per-trade HITL — Board approves the GUARDRAILS once; orders flow autonomously inside them).
+
+**Files deployed (4):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — REWRITTEN. Class name preserved (avoid import churn), but functionally now a full division agent. Adds: CVD direction state machine (30 min decay), full PREMIUM/STANDARD/WEAK/COUNTER/SKIP classifier, structural stop calculator (`max(1.5×ATR, 0.3%×price)`), R:R gate (≥1.5), effective-risk cap downsizing (≤0.5% per trade), daily-risk kill-switch (≤3% per UTC day), multi-leg-ready `tp_plan` schema (single leg today; ready for Phase 3.2 scale-out), risk-gate submission, paper placement via data_exec, Telegram notification on placement, and a new `bitunix_decided` audit-event kind that fires for EVERY signal regardless of trade outcome.
+- `trading_corp/web/webhooks.py` — switched both background tasks (`_process_lord_otter_alert`, `_process_market_cypher_alert`) from sync `observer.observe_alert(...)` to `await observer.observe_and_decide(...)`. Still wrapped in try/except — observer cannot disrupt existing real-money paths.
+- `trading_corp/main.py` — observer construction now passes `risk_agent`, `data_exec`, `logger_agent`. Telegram channel attached after channel construction (deferred wire-up). Drift detected vs HEAD; pulled prod's main.py and applied the 2 deltas onto it before redeploying.
+- `config/strategies.yaml` — added `bitunix_futures` strategy block documenting the board-approved caps (effective-risk 0.5%, daily kill 3%, tier sizing PREMIUM 4%/8x, STANDARD 2%/5x, WEAK 1%/2x, COUNTER 0.5%/2x default OFF, R:R ≥ 1.5, TP at 2R, decay windows). Values today live in code constants too; YAML lift-and-shift is a future refinement.
+
+**New tables created at startup:**
+- `bitunix_observer_cvd` — one row per side ('bull'/'bear') tracking the most recent same-side CVD-flip event. Decay: 30 min.
+- `bitunix_observer_daily_risk` — one row per UTC date tracking cumulative effective-at-risk % across all bitunix_futures orders that day. Halt when >= 3%.
+
+**Tier ladder (Phase 3.1):**
+- **PREMIUM** — CVD agrees + 4h agrees + 1D agrees → 4% size × 8x leverage
+- **STANDARD** — CVD agrees + 4h agrees + 1D neutral → 2% × 5x
+- **WEAK** — CVD doesn't agree + 4h+1D agree → 1% × 2x
+- **COUNTER** — CVD agrees + HTF contradicts → 0.5% × 2x; default OFF (`counter_tier_enabled=False`)
+- **SKIP** — anything else (no order)
+
+Effective-risk cap then downsizes any tier whose `target_size × leverage × stop_distance` would exceed 0.5% account equity. R:R gate refuses any trade where TP/SL ratio < 1.5.
+
+**Ops model:**
+- `auto_execute: true` — no per-trade HITL. Risk caps + daily kill ARE the gate. Board approves these once.
+- Telegram notification on every paper placement (not approval).
+- Every signal logs `bitunix_decided` audit row with outcome: `placed | skipped_tier | skipped_no_deps | skipped_no_broker | skipped_no_equity | skipped_sizing | skipped_daily_kill | rejected_risk | error_*`.
+- When this flips PAPER → LIVE in Phase 4, the only addition is real `BitunixBroker.place_order()` w/ leverage + isolated margin. Same caps apply.
+
+**Backup tag:** `pre-bitunix-phase3-1-20260510-1500`
+
+**Verification:**
+- 46/46 tests pass (`tests/test_bitunix_futures_observer.py`) — full tier matrix (12 default + 4 counter-enabled), bias state w/ decay, CVD state w/ decay, order proposer math (sizing + stop + TP + R:R + effective-risk cap), daily-risk accumulation + isolation, async observe_and_decide flow w/ mocked deps (PREMIUM places order, SKIP doesn't, daily kill blocks, risk reject path).
+- PID 190918 -> 192018 (clean restart). Service `active`. All 3 observer tables auto-created at startup.
+- **Synthetic E2E on prod:** seeded bias (4h bull + 1D bull) + CVD (bull) + fired Otter `spoon_bull` trigger → observer correctly:
+  - classified PREMIUM
+  - submitted to risk gate (approved)
+  - logged `would_have_placed` with order_id `f7bb0165-...`, qty 0.0198 BTC at $80,800 entry, 4% × 8x = $1,600 notional, structural stop at 0.3% floor
+  - logged `bitunix_decided` outcome=placed
+  - daily-risk counter incremented (cleaned post-test)
+  - no Telegram (test fixture explicitly skipped to avoid spamming Board)
+- Synthetic test data cleaned post-run (audit_event, proposed_order, all 3 observer tables wiped).
+
+**Inert / dormant — what could go wrong now is bounded:**
+- bitunix_futures broker is registered as `paper-exec` (verified in startup log). All "would have placed" orders simulate via PaperExecutionBroker — no real BitUnix orders issued.
+- COUNTER tier defaulted OFF — no fade-the-trend trades unless explicitly enabled.
+- Daily-risk kill caps the worst-case daily exposure at 3% account equity (cumulative pre-trade risk).
+- Effective-risk-per-trade caps each individual trade at 0.5%.
+- All deps required for order placement (`risk_agent`, `data_exec`, `logger_agent`, `bitunix_futures` broker) — observer skips with audit row if any is missing.
+
+**What changes for the user:**
+- Will start receiving Telegram pings for paper-mode BitUnix placements as Otter alerts fire and align with HTF bias + CVD.
+- Frequency: bounded by Otter trigger rate (~7-15/day in Phase 3.0 observation period) further filtered by tier requirements (most will be SKIP).
+- Every classification is in `audit_event` (kind `bitunix_observer_classified`) and every decision in `bitunix_decided` — visible in the activity rail / queryable in SQL.
+
+**Memory updates:**
+- `trading_corp_bitunix_phase3_confluence_model.md` — already contains the Phase 3.1 design (added in this session); now reflects the deployed state.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bitunix-phase3-1-20260510-1500; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+mv \$BASE/trading_corp/web/webhooks.py.\$TAG \$BASE/trading_corp/web/webhooks.py; \
+mv \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py.\$TAG \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py; \
+mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+sudo systemctl restart trading-corp
+"
+```
+*Rollback returns to Phase 3.0 (bias-only observer, no orders). New tables (`bitunix_observer_cvd`, `bitunix_observer_daily_risk`) stay in DB but are unused — drop manually if you want a clean slate.*
+
+---
+
+## 2026-05-10 14:19 UTC — BitUnix Phase 3.0 observer (bias-only tier classifier, no orders)
+
+**Triggered by:** Phase 3 of the BitUnix vision per memory `trading_corp_bitunix_phase3_confluence_model`. Phase 3.0 ("observer mode") shipped first as a de-risking step before Phase 3.1 (full tier ladder w/ volume axis + ProposedOrder emission) and Phase 4 (real BitUnix order placement).
+
+**Files deployed (4):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — NEW. The Phase 3.0 module. Receives Otter+Cypher webhook signals (additive, runs alongside the existing Otter/Cypher agents). Maintains a persistent bias state machine on 4h+1D timeframes fed by Cypher divergence/cross signals. For each Otter trigger on 3m, classifies into a bias-only tier (STRONG_HTF / MODERATE_HTF / COUNTER_HTF / NEUTRAL_HTF / SKIP) and writes one `audit_event` row with `kind=bitunix_observer_classified`. Emits NO ProposedOrders. Risk gate not invoked. Observer cannot affect real-money paths — every public method wraps in try/except and swallows.
+- `trading_corp/web/app.py` — added `bitunix_observer: Any = None` field to `WebDeps` dataclass.
+- `trading_corp/web/webhooks.py` — added one observer call at the top of each background task (`_process_lord_otter_alert` and `_process_market_cypher_alert`), wrapped in try/except. Observer runs FIRST so it captures every signal even if downstream paths crash.
+- `trading_corp/main.py` — constructed the observer at startup; added `bitunix_observer` parameter to `_start_web_server`; passed it into the `WebDeps` constructor.
+
+**New table created at startup (auto via `BitunixFuturesObserver.__init__`):**
+- `bitunix_observer_bias` — one row per (timeframe, side) tracking the most recent same-side bias-setter event timestamp. Decay applied at lookup time. Schema in `bitunix_futures_observer.py:OBSERVER_BIAS_TABLE_DDL`.
+
+**Tier ladder (bias-only — Phase 3.1 will add volume axis):**
+- **STRONG_HTF** — 4h + 1D both agree with trigger
+- **MODERATE_HTF** — 4h agrees, 1D neutral
+- **COUNTER_HTF** — 4h or 1D contradicts (don't fade trend)
+- **NEUTRAL_HTF** — both HTFs neutral (cold start)
+- **SKIP** — symbol not whitelisted or signal not classifiable
+
+**Bias decay windows:** 4h = 24h half-life; 1D = 7-day half-life. Same-direction signals refresh.
+
+**Bias-setters (Cypher 4h + 1D):** `mc_a_longema`, `mc_a_bluetriangle`, `mc_b_gold_buy`, `mc_b_buy_circle_div`, `mc_b_buy_circle` (bull); `mc_a_blood_diamond`, `mc_a_red_diamond`, `mc_a_redx`, `mc_a_yellow_x`, `mc_b_sell_circle_div`, `mc_b_sell_circle` (bear). Dot signals excluded as too low-conviction.
+
+**Triggers (Otter 3m):** `otter_buy/sell`, `spoon_bull/bear`, `pink_box_bull/bear`, `water_buy_small/large`, `water_sell_small/large`, `money_bag_bottom/top`. CVD flips intentionally held back — they're volume-axis input for Phase 3.1, not entry triggers.
+
+**Symbol whitelist:** BTC only (BTC/USD, BTCUSD, BTCUSDT, BTCUSDT.P).
+
+**Out of scope (deferred to later phases):**
+- Volume confluence axis (Phase 3.1 — uses CVD-flip webhook signals + live OHLCV polled from existing Coinbase/BitUnix broker connections; no new infrastructure)
+- ProposedOrder emission with structural stop, effective-risk cap, daily-loss kill, ATR-tied pullback (Phase 3.1)
+- Real `BitunixBroker.place_order()` w/ leverage + isolated margin (Phase 4)
+- YAML cleanup of Otter+Cypher entries from `coinbase_spot` (Phase 3.1, alongside bitunix_futures division YAML entry + broker registration)
+
+**Backup tag:** `pre-bitunix-phase3-observer-20260510-1419`
+
+**Verification:**
+- 24/24 unit tests pass (`tests/test_bitunix_futures_observer.py`) — tier classifier matrix (12 cases), bias state machine with decay, refresh-on-same-side, opposite-side-takes-most-recent, exception-swallowing, audit-event emission.
+- Drift check before deploy: `main.py` had drift between local HEAD and prod (per memory `trading_corp_prod_git_drift`). Pulled prod's content, applied my 4 additive edits onto it, scp'd back. `webhooks.py` and `app.py` had no drift.
+- PID 186736 -> 190918 (clean restart). Service `active`. Observer table auto-created at startup (verified `.schema bitunix_observer_bias`).
+- **Synthetic E2E test on prod:** seeded bias with a Cypher 4h `mc_b_buy_circle_div` (bull), then fired an Otter 3m `spoon_bull` trigger — observer correctly classified MODERATE_HTF (4h=bull, 1D=neutral). Synthetic test data cleaned from `audit_event` and `bitunix_observer_bias` post-test so the audit trail isn't polluted.
+- Awaiting first real signal: next natural Otter alert will write the first real `bitunix_observer_classified` audit row.
+
+**Inert / dormant:**
+- Observer runs purely for telemetry. No orders, no risk-gate participation, no broker interaction. Failure modes are bounded to "no audit row written" — never "wrong order placed" or "real money lost."
+- Bias state will start populating as Cypher signals arrive. Cypher webhooks ARE active (the strategy agent is `enabled: false`, but the webhook handler always runs the background processor, which now ALWAYS calls the observer first).
+
+**Memory updates:**
+- `trading_corp_bitunix_phase3_confluence_model.md` — already contains the full Phase 3.0 design (added in earlier session); now reflects the deployed state.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bitunix-phase3-observer-20260510-1419; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+mv \$BASE/trading_corp/web/webhooks.py.\$TAG \$BASE/trading_corp/web/webhooks.py; \
+mv \$BASE/trading_corp/web/app.py.\$TAG \$BASE/trading_corp/web/app.py; \
+rm -f \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py; \
+sudo systemctl restart trading-corp
+"
+```
+*(Note: rollback removes the new file but leaves `bitunix_observer_bias` table + any `bitunix_futures_observer` audit rows in the DB — drop manually if you want a clean slate.)*
+
+---
+
+## 2026-05-10 04:19 UTC — BitUnix Futures equity 2× double-count fix
+
+**Triggered by:** Board flagged the dashboard tile + division-detail page rendering BitUnix equity at exactly 2× the cash balance ($6,763.94 vs real $3,381.97). BACKLOG #32 P2. Fixed during a quiet pass while polymarket accumulates trades for the Phase 2.5 Backtester gate.
+
+**Files deployed (1):**
+- `trading_corp/brokers/bitunix.py` — `coin_equity` formula now sums `available + frozen + margin + crossUnrealizedPNL + isolationUnrealizedPNL` (dropped `transfer` AND `bonus`). Comment block at lines ~180-205 rewritten with corrected field semantics + the empirical reconciliation that drove the fix.
+
+**Root cause:**
+Live `/api/v1/futures/account` data showed `transfer` and `bonus` are *attribution metadata* — they describe the share of the current `available` balance that arrived via wallet-transfer (`transfer`) or promo credit (`bonus`). They are ALREADY counted inside `available`, not separate buckets. The 2026-05-03 deploy comment that called transfer "additive" was wrong (one-shot reconciliation that didn't generalize). Per-coin observation:
+
+| Coin | available | transfer | bonus | OLD coin_equity | NEW coin_equity |
+|---|---|---|---|---|---|
+| USDT | 25.27 | 0 | 25.27 (dup) | 50.55 | 25.27 |
+| USDC | 3356.70 | 3356.70 (dup) | 0 | 6713.39 | 3356.70 |
+| **Total** | | | | **$6,763.94** | **$3,381.97** |
+
+Note: BACKLOG #32 hypothesis flagged `transfer` only; `bonus` duplication was discovered during verification. BitUnix shows whichever attribution applies (transfer vs promo) — could be either field for any given coin. Both must be excluded.
+
+**Verification step (one-off, kept as a script):**
+- `scripts/verify_bitunix_account_fields.py` — dumps raw per-coin JSON + per-field breakdown + sum-of-seven vs corrected sum. Read-only; no orders touched. Run via `cd /home/azureuser/trading_corp && PYTHONPATH=$PWD KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/ ./venv/bin/python scripts/verify_bitunix_account_fields.py`. Useful next time BitUnix balance fields look suspect.
+
+**Backup tag:** `pre-bitunix-equity-fix-20260510-0419`
+
+**Verification:**
+- PID 185236 → 186736 (clean restart). Service `active`.
+- Startup log: `BitunixBroker connected (account=bitunix-futures, equity=$3381.97, 0 positions)` ✓
+- Direct broker probe via `BitunixBroker.snapshot()` returns `equity=$3381.97 cash=$3381.97 buying_power=$3381.97 positions=0` — matches BitUnix UI Total Equity.
+- `/` and `/division/bitunix_futures` both HTTP 200 post-deploy.
+- Polymarket resolver + equity snapshot loops still ticking unchanged (resolver: scanned=8 pending=8; same numbers as pre-restart).
+- Fidelity broker errors in journal are pre-existing/unrelated (bot-detection on the Fidelity login page, present since ~16:42 UTC May 09).
+
+**Inert / dormant:**
+- Display-only fix today. BitUnix is read-only standby (Phase 1) — no sizing math, risk caps, or `auto_execute_caps` percentages currently consume this number.
+- **Becomes load-bearing at Phase 4** (live order placement) — risk/sizing math reading the broker's equity would have oversized 2×. Fix lands well before that gate.
+
+**Memory updates:**
+- `trading_corp_bitunix_vision.md` — Phase 1 entry now contains a 2026-05-10 retraction of the 2026-05-03 "transfer is additive" claim, with the corrected formula recorded inline.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bitunix-equity-fix-20260510-0419; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/brokers/bitunix.py.\$TAG \$BASE/trading_corp/brokers/bitunix.py; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
+## 2026-05-10 03:28 UTC — Polymarket dashboard data layer: round-trips + equity-history persistence (gaps A + B)
+
+**Triggered by:** Board reviewed betmoar.fun dashboard 2026-05-09; asked for any data-persistence gaps to be closed NOW so the eventual UI rebuild has a complete dataset to render. Gap analysis identified A (resolved round-trips) + B (5-min equity snapshots) as the two highest-leverage closures. Gap C (open-positions cache) and the dashboard UI itself moved to BACKLOG (P3) — the data layer is the precondition.
+
+**Files deployed (3):**
+- `trading_corp/persistence/db.py` — SCHEMA additions: `polymarket_round_trips` (UNIQUE on order_id, INSERT OR IGNORE-safe) + `polymarket_equity_history` (5-min cadence, append-only). Both protected by `CREATE TABLE IF NOT EXISTS` so init_db() picks them up at startup with no migration script.
+- `trading_corp/agents/polymarket_resolver.py` — NEW. `resolve_pending_round_trips(db_url, broker)` walks `would_have_placed` rows whose order_id is missing from `polymarket_round_trips`, looks up resolution via `broker.get_market_resolution`, computes binary-outcome P&L, INSERTs one row. `write_equity_snapshot(db_url, division, broker)` calls `broker.snapshot()` + appends one row. Plus `start_resolver_loop` (3600s) and `start_equity_snapshot_loop` (300s) helpers. Mirrors paper_trade_replay's pattern.
+- `trading_corp/main.py` — wires both loops alongside polymarket_arb_task. Cancellation handling in finally block. Graceful no-op if broker absent (logs warning, leaves task None).
+
+**Features shipped:**
+- **Hourly resolver (gap A live):** every 60 min, walks unresolved `would_have_placed` rows for `polymarket_arbitrage`, persists resolved P&L to `polymarket_round_trips`. INSERT OR IGNORE keyed on `order_id` so the loop is idempotent. First tick at startup confirmed: scanned=8 / pending=8 / errors=0 (none resolved yet — markets started today).
+- **5-min equity snapshot (gap B live):** every 300s, calls `broker.snapshot()` + appends `(ts, division, equity, cash_usdc, positions_value, n_positions)`. First snapshot landed at `2026-05-10T03:28:18+00:00`: equity=$500.00 / cash_usdc=$500.00 / positions_value=$0 / n_positions=0. Matches the funded wallet state.
+
+**Notable code changes:**
+- The resolver join uses `json_extract(payload_json, '$.order_id')` to LEFT JOIN audit_event against polymarket_round_trips. `_fetch_unresolved_orders` returns only rows where the round-trip is missing, so a tick is bounded by the actual unresolved backlog (typically <100). `max_per_tick=100` clamps gamma-api calls per tick regardless.
+- `positions_value` derived as `max(0, equity - cash)` rather than summing per-position market values — robust against position-shape drift in `data-api.polymarket.com/positions` (the field-name shape isn't pinned to a verified non-empty response yet). Tighten when first non-empty positions response is observed.
+- Backtester (`scripts/backtest_polymarket_arbitrage.py`) is unchanged + still works for ad-hoc Board memo runs. Backtester computes everything in-memory each invocation; the resolver persists for dashboard reads. Slight redundancy is intentional — Backtester is for one-shot decision support, resolver feeds the always-on dashboard.
+
+**Latent bug caught + fixed:**
+- First boot crashed the resolver loop with `TypeError` from `log.info("polymarket_resolver tick: %s", counts)` — the prod RedactingFilter rewrites dict args into their keys, breaking %-style format. Known prod gotcha (per memory `trading_corp_prod_ops`). Fixed by switching to f-string. Two patch deploys for this entry.
+
+**Verification:**
+- PID 184728 → 185250 (final restart with f-string fix). Service `active`. Both loops in startup logs:
+  ```
+  polymarket round-trip resolver online (interval=3600s)
+  polymarket equity snapshot writer online (division=polymarket_arbitrage, interval=300s)
+  polymarket_resolver tick: {'scanned': 8, 'resolved': 0, 'pending': 8, 'void': 0, 'not_found': 0, 'errors': 0}
+  ```
+- DB inspection confirms both tables exist + first equity row landed: 1 row in polymarket_equity_history, 0 rows in polymarket_round_trips (correct — markets haven't resolved).
+
+**Inert / dormant:**
+- `polymarket_round_trips` will start filling as today's paper trades' markets begin resolving (next 12-72 hours depending on category). First wave will be sports markets that resolve same-day or next-day. Politics/longer-tail markets fill in over the week. Dashboard build-out (P3 BACKLOG) blocked on having ~30 resolved rows for meaningful inference.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-polymarket-data-gaps-20260510-0328; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+mv \$BASE/trading_corp/persistence/db.py.\$TAG \$BASE/trading_corp/persistence/db.py; \
+rm -f \$BASE/trading_corp/agents/polymarket_resolver.py; \
+sudo systemctl restart trading-corp
+"
+```
+*(Note: rollback removes the new tables but leaves any data already written in them — `DROP TABLE polymarket_round_trips; DROP TABLE polymarket_equity_history;` if you want a clean slate.)*
+
+---
+
 ## 2026-05-10 02:51 UTC — Polymarket: warm-and-fan parallel LLM calls + K=10→20
 
 **Commit:** `969c6ab` — 2 files, 39 insertions / 6 deletions.

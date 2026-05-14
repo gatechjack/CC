@@ -29,13 +29,11 @@ from trading_corp.agents.research.signal_replay import (
 
 
 @pytest.mark.parametrize("signal,expected", [
-    ("pink_box_bear", "sell"),
     ("cvd_bear_flip", "sell"),
     ("money_bag_top", "sell"),
     ("spoon_bear", "sell"),
     ("mc_a_red_diamond", "sell"),
     ("mc_b_sell_circle", "sell"),
-    ("pink_box_bull", "buy"),
     ("cvd_bull_flip", "buy"),
     ("spoon_bull", "buy"),
     ("money_bag", "buy"),         # bull tier
@@ -86,7 +84,7 @@ def test_synthesize_falls_back_to_ticker_when_symbol_missing():
     """Some webhook payloads use 'ticker' (TV's native field) without
     'symbol'. The synthesizer should still produce a usable order."""
     order = synthesize_order_from_payload(
-        {"signal": "pink_box_bear", "ticker": "BTCUSD"},
+        {"signal": "spoon_bear", "ticker": "BTCUSD"},
     )
     assert order.symbol == "BTCUSD"
     assert order.side == "sell"

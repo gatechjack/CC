@@ -39,6 +39,16 @@ _SECRET_KEY_NAMES = (
     "POLYMARKET_PRIVATE_KEY",
     "POLYMARKET_FUNDER_ADDRESS",
     "POLYGON_RPC_URL",
+    # Kalshi (Phase K1 — read-only). API key ID is a UUID (low sensitivity
+    # alone) but keep on the redact list for defense-in-depth. The RSA
+    # private key PEM is the load-bearing secret — signs every Kalshi
+    # request.
+    "KALSHI_API_KEY_ID",
+    "KALSHI_PRIVATE_KEY_PEM",
+    # Apify (Phase K3 — Kalshi Copy Trading). Token authenticates calls to
+    # the saswave Kalshi leaderboard + profile actors used for whale
+    # discovery and position monitoring. Free/Starter tier; pulled from KV.
+    "APIFY_API_TOKEN",
 )
 
 
@@ -100,6 +110,17 @@ class Secrets:
     polymarket_private_key: str | None
     polymarket_funder_address: str | None
     polygon_rpc_url: str | None
+    # Kalshi (Phase K1 — read-only). api_key_id is a UUID issued by Kalshi;
+    # private_key_pem is the RSA PEM contents (multi-line — quote in .env or
+    # store as multi-line KV secret). If unset, KalshiBroker initializes as
+    # a stub returning $0 / no positions.
+    kalshi_api_key_id: str | None
+    kalshi_private_key_pem: str | None
+    # Apify (Phase K3 — Kalshi Copy Trading). Token authorizes calls to
+    # the saswave leaderboard + profile actors for whale discovery and
+    # ongoing position monitoring. If unset, the Apify client initializes
+    # in stub mode (returns empty results); the strategy no-ops safely.
+    apify_api_token: str | None
     fidelity_username: str | None
     fidelity_password: str | None
     fidelity_account: str | None   # account name substring to filter, e.g. "Joint"
@@ -186,6 +207,9 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "POLYMARKET_PRIVATE_KEY",
         "POLYMARKET_FUNDER_ADDRESS",
         "POLYGON_RPC_URL",
+        "KALSHI_API_KEY_ID",
+        "KALSHI_PRIVATE_KEY_PEM",
+        "APIFY_API_TOKEN",
         "FIDELITY_USERNAME",
         "FIDELITY_PASSWORD",
         "FIDELITY_ACCOUNT",
@@ -257,6 +281,9 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         polymarket_private_key=_env("POLYMARKET_PRIVATE_KEY"),
         polymarket_funder_address=_env("POLYMARKET_FUNDER_ADDRESS"),
         polygon_rpc_url=_env("POLYGON_RPC_URL"),
+        kalshi_api_key_id=_env("KALSHI_API_KEY_ID"),
+        kalshi_private_key_pem=_env("KALSHI_PRIVATE_KEY_PEM"),
+        apify_api_token=_env("APIFY_API_TOKEN"),
         fidelity_username=_env("FIDELITY_USERNAME"),
         fidelity_password=_env("FIDELITY_PASSWORD"),
         fidelity_account=_env("FIDELITY_ACCOUNT"),
@@ -275,6 +302,11 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     # funder_address is public-info but registering it costs nothing
     # and prevents trivial address-grepping from log files.
     register_redact_literal(secrets.polymarket_funder_address)
+    # Kalshi RSA private key — signs every Kalshi request. Same defense
+    # as polymarket_private_key.
+    register_redact_literal(secrets.kalshi_private_key_pem)
+    # Apify token — auth bearer for all saswave Kalshi actor calls. K3.
+    register_redact_literal(secrets.apify_api_token)
 
     return secrets
 

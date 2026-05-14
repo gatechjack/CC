@@ -1,0 +1,582 @@
+{# Swappable body of the prediction-markets dashboard. Used both by
+   prediction_markets_dashboard.html (initial server render) and by the
+   /partials/prediction-markets/{division?} HTMX endpoint (dropdown swap).
+
+   Everything that changes when the user picks a different division goes
+   here. The outer page chrome (base header/footer, division dropdown
+   itself) stays put across swaps. #}
+
+{% set s = view.summary %}
+
+{# Selected-label sub-header — moved out of the dashboard's main header so
+   it lives inside the swap target and updates with each division change. #}
+<div class="flex items-baseline justify-between mb-3">
+  <div class="text-[12px] text-muted font-mono">
+    — {{ view.selected_label }}
+  </div>
+  {# Tiny status hint for the user to know HTMX swap happened cleanly. #}
+  <div id="pm-swap-ts" class="text-[10px] text-muted/40 font-mono"></div>
+</div>
+
+{# ── Summary cards row ────────────────────────────────────────────── #}
+<div class="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-4">
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Equity</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">
+      {% if s.current_equity is not none %}{{ s.current_equity | money }}{% else %}—{% endif %}
+    </div>
+  </div>
+
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Today's P&amp;L</div>
+    {% if s.todays_pnl is not none %}
+      <div class="text-2xl font-mono font-semibold mt-1
+        {% if s.todays_pnl > 0 %}text-gain
+        {% elif s.todays_pnl < 0 %}text-loss
+        {% else %}text-mono{% endif %}">
+        {{ s.todays_pnl | money_signed }}
+      </div>
+      {% if s.todays_pnl_pct is not none %}
+        <div class="text-[11px] mt-0.5
+          {% if s.todays_pnl_pct > 0 %}text-gain
+          {% elif s.todays_pnl_pct < 0 %}text-loss
+          {% else %}text-muted{% endif %}">
+          {{ s.todays_pnl_pct | pct_signed }}
+        </div>
+      {% endif %}
+    {% else %}
+      <div class="text-2xl font-mono font-semibold text-muted/60 mt-1">—</div>
+      <div class="text-[11px] text-muted/50 mt-0.5">no prior snapshot</div>
+    {% endif %}
+  </div>
+
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Win rate</div>
+    {% if s.win_rate_pct is not none %}
+      <div class="text-2xl font-mono font-semibold mt-1
+        {% if s.win_rate_pct >= 50 %}text-gain
+        {% else %}text-loss{% endif %}">
+        {{ '%.0f' | format(s.win_rate_pct) }}%
+      </div>
+      <div class="text-[11px] text-muted mt-0.5">
+        {{ s.n_wins }}W · {{ s.n_losses }}L{% if s.n_voids %} · {{ s.n_voids }}V{% endif %}
+      </div>
+    {% else %}
+      <div class="text-2xl font-mono font-semibold text-muted/60 mt-1">—</div>
+      <div class="text-[11px] text-muted/50 mt-0.5">no resolved trades</div>
+    {% endif %}
+  </div>
+
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Resolved</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ s.n_resolved }}</div>
+  </div>
+
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Open</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ s.n_pending }}</div>
+    <div class="text-[11px] text-muted/70 mt-0.5">awaiting settle</div>
+  </div>
+
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Realized P&amp;L</div>
+    <div class="text-2xl font-mono font-semibold mt-1
+      {% if s.total_realized_pnl > 0 %}text-gain
+      {% elif s.total_realized_pnl < 0 %}text-loss
+      {% else %}text-mono{% endif %}">
+      {{ s.total_realized_pnl | money_signed }}
+    </div>
+    <div class="text-[11px] text-muted/70 mt-0.5">across resolved</div>
+  </div>
+</div>
+
+{# ── Tab nav ────────────────────────────────────────────────────────── #}
+<div class="border-b border-edge mb-4 flex items-center gap-1">
+  <button data-pm-tab="portfolio"
+          class="pm-tab-btn px-4 py-2 text-sm font-mono uppercase tracking-wider
+                 border-b-2 border-accent text-accent">
+    Portfolio
+  </button>
+  <button data-pm-tab="open"
+          class="pm-tab-btn px-4 py-2 text-sm font-mono uppercase tracking-wider
+                 border-b-2 border-transparent text-muted hover:text-mono">
+    Open ({{ view.open_trades | length }})
+  </button>
+  <button data-pm-tab="history"
+          class="pm-tab-btn px-4 py-2 text-sm font-mono uppercase tracking-wider
+                 border-b-2 border-transparent text-muted hover:text-mono">
+    History ({{ view.round_trips | length }})
+  </button>
+</div>
+
+{# ── Portfolio tab ──────────────────────────────────────────────────── #}
+<section id="pm-tab-portfolio" class="pm-tab-panel">
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+    <div class="lg:col-span-2 bg-pane border border-edge rounded-lg overflow-hidden">
+      <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+          Equity curve
+        </h2>
+        <div class="text-[11px] font-mono text-muted">
+          5-min snapshots · last 30 days
+        </div>
+      </header>
+      <div id="pm-equity-chart" class="h-[360px] w-full"></div>
+      <div id="pm-equity-empty"
+           class="hidden p-8 text-center text-muted text-[11px] font-mono italic">
+        No equity snapshots yet. Once divisions accumulate 5-min snapshots
+        this curve populates automatically.
+      </div>
+    </div>
+
+    <div class="bg-pane border border-edge rounded-lg p-4">
+      <header class="mb-3">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+          Outcome breakdown
+        </h2>
+      </header>
+      {% if s.n_resolved > 0 %}
+        <div class="space-y-3 text-sm font-mono">
+          <div class="flex items-center justify-between">
+            <span class="text-muted">Wins</span>
+            <span class="text-gain font-semibold">{{ s.n_wins }}</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-muted">Losses</span>
+            <span class="text-loss font-semibold">{{ s.n_losses }}</span>
+          </div>
+          {% if s.n_voids %}
+            <div class="flex items-center justify-between">
+              <span class="text-muted">Voids</span>
+              <span class="text-warn font-semibold">{{ s.n_voids }}</span>
+            </div>
+          {% endif %}
+          <div class="border-t border-edge pt-3 mt-3 flex items-center justify-between">
+            <span class="text-muted">Total realized</span>
+            <span class="font-semibold
+              {% if s.total_realized_pnl > 0 %}text-gain
+              {% elif s.total_realized_pnl < 0 %}text-loss
+              {% else %}text-mono{% endif %}">
+              {{ s.total_realized_pnl | money_signed }}
+            </span>
+          </div>
+        </div>
+      {% else %}
+        <div class="text-[11px] text-muted/60 italic">
+          No resolved trades yet. Resolver runs hourly; round-trips
+          land once markets settle.
+        </div>
+      {% endif %}
+    </div>
+
+  </div>
+</section>
+
+{# ── Open tab — pending would_have_placed paper trades ──────────────── #}
+{# Column count for the detail-row colspan: 10 base + Division (All-mode). #}
+{% set _open_cols = 11 if view.selected is none else 10 %}
+<section id="pm-tab-open" class="pm-tab-panel hidden">
+  <div class="bg-pane border border-edge rounded-lg overflow-hidden">
+    <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
+      <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+        Open paper trades
+      </h2>
+      <div class="text-[11px] font-mono text-muted">
+        {{ view.open_trades | length }} awaiting market settle · click row to expand
+      </div>
+    </header>
+
+    {% if view.open_trades %}
+      <div class="overflow-x-auto">
+        <table class="w-full text-[12px] font-mono">
+          <thead class="bg-pane-2/40 text-muted uppercase tracking-wider text-[10px]">
+            <tr>
+              <th class="text-left pl-4 pr-1 py-2 font-medium"></th>
+              <th class="text-left pr-3 py-2 font-medium">Emitted</th>
+              <th class="text-left px-3 py-2 font-medium">Age</th>
+              {% if view.selected is none %}
+                <th class="text-left px-3 py-2 font-medium">Division</th>
+              {% endif %}
+              <th class="text-left px-3 py-2 font-medium">Venue</th>
+              <th class="text-left px-3 py-2 font-medium">Market</th>
+              <th class="text-center px-3 py-2 font-medium">Side</th>
+              <th class="text-right px-3 py-2 font-medium">Qty</th>
+              <th class="text-right px-3 py-2 font-medium">Entry</th>
+              <th class="text-right px-3 py-2 font-medium">Signal</th>
+              <th class="text-left px-4 py-2 font-medium">Resolves</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ot in view.open_trades %}
+              {% set row_id = 'ot-' ~ loop.index0 %}
+              <tr class="border-t border-edge/40 pm-expand-trigger cursor-pointer hover:bg-pane-2/40"
+                  data-pm-detail="{{ row_id }}">
+                <td class="pl-4 pr-1 py-2 text-muted/70 text-[10px] pm-expand-caret">▸</td>
+                <td class="pr-3 py-2 text-muted">{{ ot.emit_ts | et_short }}</td>
+                <td class="px-3 py-2 text-muted">
+                  {% if ot.age_hours < 1 %}
+                    {{ '%.0f' | format(ot.age_hours * 60) }}m
+                  {% elif ot.age_hours < 24 %}
+                    {{ '%.1f' | format(ot.age_hours) }}h
+                  {% else %}
+                    {{ '%.1f' | format(ot.age_hours / 24) }}d
+                  {% endif %}
+                </td>
+                {% if view.selected is none %}
+                  <td class="px-3 py-2 text-mono">{{ ot.division }}</td>
+                {% endif %}
+                <td class="px-3 py-2">
+                  <span class="text-[10px] uppercase px-1.5 py-0.5 rounded
+                               {% if ot.venue == 'kalshi' %}bg-accent/15 text-accent
+                               {% else %}bg-warn/15 text-warn{% endif %}">
+                    {{ ot.venue }}
+                  </span>
+                </td>
+                <td class="px-3 py-2 max-w-[320px] truncate text-mono"
+                    title="{{ ot.market_title }}">
+                  {{ ot.market_title or ot.market_id }}
+                  {% if ot.arb_type %}
+                    <span class="text-[10px] text-muted/70 ml-1">[{{ ot.arb_type }}]</span>
+                  {% endif %}
+                </td>
+                <td class="px-3 py-2 text-center uppercase
+                           {% if ot.outcome_bet == 'yes' %}text-gain
+                           {% else %}text-loss{% endif %}">
+                  {{ ot.outcome_bet }}
+                </td>
+                <td class="px-3 py-2 text-right text-mono">{{ '%.2f' | format(ot.qty) }}</td>
+                <td class="px-3 py-2 text-right text-mono">
+                  {% if ot.entry_price and ot.entry_price > 0 %}
+                    ${{ '%.3f' | format(ot.entry_price) }}
+                  {% else %}
+                    <span class="text-muted/50">—</span>
+                  {% endif %}
+                </td>
+                <td class="px-3 py-2 text-right text-mono">
+                  {# Copy-trader rows: whale handle is the meaningful "signal"; #}
+                  {# arb strategies still show divergence_pct / edge_cents. #}
+                  {% if ot.whale_handle %}
+                    <span class="text-warn">@{{ ot.whale_handle }}</span>
+                    {% if ot.side_detection_confidence and ot.side_detection_confidence not in ('n/a','none') %}
+                      <span class="text-[10px] text-muted/60 ml-1">{{ ot.side_detection_confidence }}</span>
+                    {% endif %}
+                  {% elif ot.divergence_pct is not none %}
+                    <span class="text-accent">{{ '%.0f' | format(ot.divergence_pct) }}% div</span>
+                  {% elif ot.edge_cents is not none %}
+                    <span class="text-gain">{{ '%.1f' | format(ot.edge_cents) }}¢ edge</span>
+                  {% else %}
+                    <span class="text-muted/50">—</span>
+                  {% endif %}
+                </td>
+                <td class="px-4 py-2 text-muted">
+                  {% if ot.resolves_at %}{{ ot.resolves_at | et_short }}{% else %}—{% endif %}
+                </td>
+              </tr>
+              <tr id="pm-detail-{{ row_id }}" class="pm-detail-row hidden bg-pane-2/20">
+                <td colspan="{{ _open_cols }}" class="px-6 py-4">
+                  {# Three-column detail grid: trade context, analysis, raw fields #}
+                  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+                    <div class="space-y-2">
+                      <div class="text-[10px] uppercase tracking-wider text-muted">Trade context</div>
+                      <div class="text-[12px] text-mono break-words">
+                        <span class="text-muted">Market:</span> {{ ot.market_title or ot.market_id }}
+                      </div>
+                      <div class="text-[12px] text-mono">
+                        <span class="text-muted">Ticker:</span> {{ ot.market_id }}
+                      </div>
+                      {% if ot.subtitle %}
+                        <div class="text-[12px] text-mono">
+                          <span class="text-muted">Sub-title:</span> {{ ot.subtitle }}
+                        </div>
+                      {% endif %}
+                      {% if ot.category %}
+                        <div class="text-[12px] text-mono">
+                          <span class="text-muted">Category:</span> {{ ot.category }}
+                        </div>
+                      {% endif %}
+                      {% if ot.leg_date %}
+                        <div class="text-[12px] text-mono">
+                          <span class="text-muted">Leg date:</span> {{ ot.leg_date }}
+                        </div>
+                      {% endif %}
+                      <div class="text-[12px] text-mono">
+                        <span class="text-muted">Strategy:</span> {{ ot.strategy }}
+                      </div>
+                      <div class="text-[12px] text-mono">
+                        <span class="text-muted">Cost:</span> ${{ '%.2f' | format(ot.notional) }}
+                      </div>
+                      <div class="text-[12px] text-mono break-all">
+                        <span class="text-muted">Order ID:</span> {{ ot.order_id }}
+                      </div>
+                    </div>
+
+                    <div class="lg:col-span-2 space-y-3">
+                      <div class="text-[10px] uppercase tracking-wider text-muted flex items-center gap-2">
+                        <span>Analysis</span>
+                        {% if ot.llm_confidence %}
+                          <span class="text-[9px] uppercase px-1.5 py-0.5 rounded
+                                       {% if ot.llm_confidence == 'high' %}bg-gain/20 text-gain
+                                       {% elif ot.llm_confidence == 'low' %}bg-loss/20 text-loss
+                                       {% else %}bg-warn/20 text-warn{% endif %}">
+                            {{ ot.llm_confidence }} confidence
+                          </span>
+                        {% endif %}
+                      </div>
+                      {% if ot.rationale %}
+                        <div class="text-[12px] text-mono leading-relaxed">
+                          {{ ot.rationale }}
+                        </div>
+                      {% endif %}
+                      {% if ot.llm_reasoning %}
+                        <div class="text-[12px] text-mono/90 leading-relaxed whitespace-pre-wrap">
+                          {{ ot.llm_reasoning }}
+                        </div>
+                      {% endif %}
+                      {% if ot.key_unknowns %}
+                        <div>
+                          <div class="text-[10px] uppercase tracking-wider text-muted mb-1">
+                            Key unknowns
+                          </div>
+                          <ul class="text-[12px] text-mono/80 list-disc pl-5 space-y-1">
+                            {% for ku in ot.key_unknowns %}
+                              <li>{{ ku }}</li>
+                            {% endfor %}
+                          </ul>
+                        </div>
+                      {% endif %}
+                      {% if not ot.rationale and not ot.llm_reasoning %}
+                        <div class="text-[11px] text-muted/60 italic">
+                          No detailed analysis on this row.
+                        </div>
+                      {% endif %}
+                    </div>
+
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="p-8 text-center text-muted/60 text-[11px] font-mono italic">
+        No open paper trades. Strategies emit `would_have_placed`
+        events when signals exceed the risk-gate thresholds; they appear
+        here until the underlying market resolves.
+      </div>
+    {% endif %}
+  </div>
+</section>
+
+{# ── History tab ────────────────────────────────────────────────────── #}
+<section id="pm-tab-history" class="pm-tab-panel hidden">
+  <div class="bg-pane border border-edge rounded-lg overflow-hidden">
+    <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
+      <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+        Resolved markets
+      </h2>
+      <div class="flex items-center gap-3 text-[11px] font-mono">
+        <button class="pm-history-filter px-2 py-0.5 rounded bg-edge/40 text-mono"
+                data-filter="all">All ({{ view.round_trips | length }})</button>
+        <button class="pm-history-filter px-2 py-0.5 rounded text-muted hover:text-gain"
+                data-filter="wins">Wins ({{ s.n_wins }})</button>
+        <button class="pm-history-filter px-2 py-0.5 rounded text-muted hover:text-loss"
+                data-filter="losses">Losses ({{ s.n_losses }})</button>
+      </div>
+    </header>
+
+    {% set _hist_cols = 11 if view.selected is none else 10 %}
+    {% if view.round_trips %}
+      <div class="overflow-x-auto">
+        <table class="w-full text-[12px] font-mono">
+          <thead class="bg-pane-2/40 text-muted uppercase tracking-wider text-[10px]">
+            <tr>
+              <th class="text-left pl-4 pr-1 py-2 font-medium"></th>
+              <th class="text-left pr-3 py-2 font-medium">Resolved</th>
+              {% if view.selected is none %}
+                <th class="text-left px-3 py-2 font-medium">Division</th>
+              {% endif %}
+              <th class="text-left px-3 py-2 font-medium">Venue</th>
+              <th class="text-left px-3 py-2 font-medium">Market</th>
+              <th class="text-center px-3 py-2 font-medium">Side</th>
+              <th class="text-right px-3 py-2 font-medium">Qty</th>
+              <th class="text-right px-3 py-2 font-medium">Entry</th>
+              <th class="text-center px-3 py-2 font-medium">Result</th>
+              <th class="text-right px-3 py-2 font-medium">P&amp;L</th>
+              <th class="text-right px-4 py-2 font-medium">ROI</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for rt in view.round_trips %}
+              {% set row_id = 'rt-' ~ loop.index0 %}
+              <tr class="border-t border-edge/40 pm-history-row pm-expand-trigger cursor-pointer hover:bg-pane-2/40"
+                  data-won="{{ rt.won }}"
+                  data-result="{{ rt.market_result }}"
+                  data-pm-detail="{{ row_id }}">
+                <td class="pl-4 pr-1 py-2 text-muted/70 text-[10px] pm-expand-caret">▸</td>
+                <td class="pr-3 py-2 text-muted">{{ rt.resolved_ts | et_short }}</td>
+                {% if view.selected is none %}
+                  <td class="px-3 py-2 text-mono">{{ rt.division }}</td>
+                {% endif %}
+                <td class="px-3 py-2">
+                  <span class="text-[10px] uppercase px-1.5 py-0.5 rounded
+                               {% if rt.venue == 'kalshi' %}bg-accent/15 text-accent
+                               {% else %}bg-warn/15 text-warn{% endif %}">
+                    {{ rt.venue }}
+                  </span>
+                </td>
+                <td class="px-3 py-2 max-w-[320px] truncate text-mono"
+                    title="{{ rt.market_title }}">
+                  {{ rt.market_title or rt.market_id }}
+                  {% if rt.arb_type %}
+                    <span class="text-[10px] text-muted/70 ml-1">[{{ rt.arb_type }}]</span>
+                  {% endif %}
+                </td>
+                <td class="px-3 py-2 text-center uppercase
+                           {% if rt.outcome_bet == 'yes' %}text-gain
+                           {% else %}text-loss{% endif %}">
+                  {{ rt.outcome_bet }}
+                </td>
+                <td class="px-3 py-2 text-right text-mono">{{ '%.2f' | format(rt.qty) }}</td>
+                <td class="px-3 py-2 text-right text-mono">
+                  {% if rt.entry_price and rt.entry_price > 0 %}
+                    ${{ '%.3f' | format(rt.entry_price) }}
+                  {% else %}
+                    <span class="text-muted/50">—</span>
+                  {% endif %}
+                </td>
+                <td class="px-3 py-2 text-center uppercase
+                           {% if rt.market_result == 'void' %}text-warn
+                           {% elif rt.market_result == 'whale_closed' %}text-warn
+                           {% elif rt.won %}text-gain
+                           {% else %}text-loss{% endif %}">
+                  {% if rt.market_result == 'whale_closed' %}whale exit{% else %}{{ rt.market_result }}{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right font-semibold
+                           {% if rt.realized_pnl > 0 %}text-gain
+                           {% elif rt.realized_pnl < 0 %}text-loss
+                           {% else %}text-mono{% endif %}">
+                  {{ rt.realized_pnl | money_signed }}
+                </td>
+                <td class="px-4 py-2 text-right
+                           {% if rt.roi_pct > 0 %}text-gain
+                           {% elif rt.roi_pct < 0 %}text-loss
+                           {% else %}text-mono{% endif %}">
+                  {{ '%+.1f' | format(rt.roi_pct) }}%
+                </td>
+              </tr>
+              <tr id="pm-detail-{{ row_id }}" class="pm-detail-row hidden bg-pane-2/20">
+                <td colspan="{{ _hist_cols }}" class="px-6 py-4">
+                  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+                    <div class="space-y-2">
+                      <div class="text-[10px] uppercase tracking-wider text-muted">Trade context</div>
+                      <div class="text-[12px] text-mono break-words">
+                        <span class="text-muted">Market:</span> {{ rt.market_title or rt.market_id }}
+                      </div>
+                      <div class="text-[12px] text-mono">
+                        <span class="text-muted">Ticker:</span> {{ rt.market_id }}
+                      </div>
+                      {% if rt.subtitle %}
+                        <div class="text-[12px] text-mono">
+                          <span class="text-muted">Sub-title:</span> {{ rt.subtitle }}
+                        </div>
+                      {% endif %}
+                      {% if rt.category %}
+                        <div class="text-[12px] text-mono">
+                          <span class="text-muted">Category:</span> {{ rt.category }}
+                        </div>
+                      {% endif %}
+                      <div class="text-[12px] text-mono">
+                        <span class="text-muted">Strategy:</span> {{ rt.strategy }}
+                      </div>
+                      <div class="text-[12px] text-mono">
+                        <span class="text-muted">Notional:</span> ${{ '%.2f' | format(rt.notional) }}
+                      </div>
+                      {% if rt.implied_at_entry is not none %}
+                        <div class="text-[12px] text-mono">
+                          <span class="text-muted">Implied @ entry:</span>
+                          {{ '%.3f' | format(rt.implied_at_entry) }}
+                        </div>
+                      {% endif %}
+                      {% if rt.llm_prob is not none %}
+                        <div class="text-[12px] text-mono">
+                          <span class="text-muted">LLM prob:</span>
+                          {{ '%.3f' | format(rt.llm_prob) }}
+                        </div>
+                      {% endif %}
+                      <div class="text-[12px] text-mono break-all">
+                        <span class="text-muted">Order ID:</span> {{ rt.order_id }}
+                      </div>
+                    </div>
+
+                    <div class="lg:col-span-2 space-y-3">
+                      <div class="text-[10px] uppercase tracking-wider text-muted flex items-center gap-2">
+                        <span>Analysis</span>
+                        {% if rt.llm_confidence %}
+                          <span class="text-[9px] uppercase px-1.5 py-0.5 rounded
+                                       {% if rt.llm_confidence == 'high' %}bg-gain/20 text-gain
+                                       {% elif rt.llm_confidence == 'low' %}bg-loss/20 text-loss
+                                       {% else %}bg-warn/20 text-warn{% endif %}">
+                            {{ rt.llm_confidence }} confidence
+                          </span>
+                        {% endif %}
+                      </div>
+                      {% if rt.rationale %}
+                        <div class="text-[12px] text-mono leading-relaxed">
+                          {{ rt.rationale }}
+                        </div>
+                      {% endif %}
+                      {% if rt.llm_reasoning %}
+                        <div class="text-[12px] text-mono/90 leading-relaxed whitespace-pre-wrap">
+                          {{ rt.llm_reasoning }}
+                        </div>
+                      {% endif %}
+                      {% if rt.key_unknowns %}
+                        <div>
+                          <div class="text-[10px] uppercase tracking-wider text-muted mb-1">
+                            Key unknowns
+                          </div>
+                          <ul class="text-[12px] text-mono/80 list-disc pl-5 space-y-1">
+                            {% for ku in rt.key_unknowns %}
+                              <li>{{ ku }}</li>
+                            {% endfor %}
+                          </ul>
+                        </div>
+                      {% endif %}
+                      {% if not rt.rationale and not rt.llm_reasoning %}
+                        <div class="text-[11px] text-muted/60 italic">
+                          No detailed analysis stored for this row.
+                          (Rows resolved before 2026-05-11 ~05:30 UTC don't
+                          carry the LLM reasoning into the round-trips table.)
+                        </div>
+                      {% endif %}
+                    </div>
+
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="p-8 text-center text-muted/60 text-[11px] font-mono italic">
+        No resolved round-trips yet. Resolver checks hourly; rows appear
+        once markets settle on the venue.
+      </div>
+    {% endif %}
+  </div>
+</section>
+
+{# Inline equity-curve data — re-read by window.renderPMChart() on initial
+   page load AND after every HTMX swap (via the htmx:afterSwap listener
+   in prediction_markets_dashboard.html). #}
+<script type="application/json" id="pm-equity-data">
+[{% for p in view.equity_curve %}
+  {"ts": "{{ p.ts }}", "division": {% if p.division %}"{{ p.division }}"{% else %}null{% endif %}, "equity": {{ p.equity }}}
+  {%- if not loop.last %},{% endif %}
+{% endfor %}]
+</script>

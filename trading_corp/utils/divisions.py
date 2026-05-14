@@ -20,22 +20,23 @@ log = logging.getLogger(__name__)
 _DEFAULT_PATH = Path("config/divisions.yaml")
 
 # Visual order — sections render in this order on the dashboard.
-_INVESTMENT_TYPE_ORDER = ["individual", "crypto", "polymarket", "retirement"]
+_INVESTMENT_TYPE_ORDER = ["individual", "crypto", "prediction_markets", "retirement"]
 _INVESTMENT_TYPE_LABELS = {
-    "individual": "Individual",
-    "crypto":     "Crypto",
-    "polymarket": "Polymarket",
-    "retirement": "Retirement",
+    "individual":          "Individual",
+    "crypto":              "Crypto",
+    "prediction_markets":  "Prediction Markets",
+    "retirement":          "Retirement",
 }
 _CRYPTO_BROKERS = {"coinbase", "bitunix"}
-# Slug prefix → investment-type group. Polymarket's copy-trading division
-# uses `broker: paper` as a placeholder until Phase 4+ wires the strategy,
-# so it can't be classified by broker family alone. Slug-prefix routes
-# both polymarket_* divisions into the "polymarket" group regardless of
-# their broker family. (Brokers that ARE polymarket — i.e.
-# polymarket_arbitrage's `broker: polymarket` — also land in the group;
-# either path works.)
-_POLYMARKET_SLUG_PREFIX = "polymarket_"
+_PREDICTION_MARKET_BROKERS = {"polymarket", "kalshi"}
+# Slug prefixes → "prediction_markets" group. Some prediction-market divisions
+# use `broker: paper` as a placeholder until later phases wire the real
+# strategy (e.g. polymarket_copy_trading), so they can't be classified by
+# broker family alone. Slug-prefix matching routes both polymarket_* and
+# kalshi_* divisions into the "prediction_markets" group regardless of their
+# broker family. (Brokers that ARE polymarket / kalshi also land in the
+# group; either path works.)
+_PREDICTION_MARKET_SLUG_PREFIXES = ("polymarket_", "kalshi_")
 
 
 @dataclass
@@ -65,6 +66,11 @@ class Division:
     # donchian_high, dial_position (0..1 clamped, None pre-first-eval),
     # last_eval_ts. None for everyone else.
     donchian: dict | None = None
+    # Prediction-market tile overview (K2.4 dashboard). Only set on the 4
+    # (later 5) divisions in the "prediction_markets" investment group. Keys:
+    # n_resolved, n_pending, n_wins, n_losses, win_rate_pct (None pre-first
+    # resolve), total_realized_pnl. None for everyone else.
+    pm_overview: dict | None = None
 
     @property
     def intent_label(self) -> str:
@@ -83,8 +89,10 @@ def classify_investment_type(d: Division) -> str:
     """Map a division to its investment-type group."""
     if d.intent == "retirement":
         return "retirement"
-    if d.broker == "polymarket" or d.slug.startswith(_POLYMARKET_SLUG_PREFIX):
-        return "polymarket"
+    if d.broker in _PREDICTION_MARKET_BROKERS or any(
+        d.slug.startswith(p) for p in _PREDICTION_MARKET_SLUG_PREFIXES
+    ):
+        return "prediction_markets"
     if d.broker in _CRYPTO_BROKERS:
         return "crypto"
     return "individual"

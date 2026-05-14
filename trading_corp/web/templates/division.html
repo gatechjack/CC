@@ -75,6 +75,14 @@
   <!-- LEFT (2 cols): Position rows + Activity -->
   <div class="lg:col-span-2 flex flex-col gap-4">
 
+    {# Robinhood IRA gets its own dashboard — shares + covered calls +
+       wheel puts grouped explicitly. Skip the generic PMCC pairs /
+       Holdings tables that follow (they'd render duplicate data with
+       less context). #}
+    {% if view.division.slug == 'robinhood_ira' and view.ira_view %}
+      {% include "partials/ira_dashboard.html" %}
+    {% else %}
+
     <!-- Position list — every pair as click-to-expand row, sorted by priority -->
     {% if view.pmcc_pairs %}
       <section>
@@ -150,6 +158,8 @@
       </section>
     {% endif %}
 
+    {% endif %}  {# end non-IRA branch #}
+
     <!-- Scout — fresh PMCC opening candidates (Robinhood PMCC only) -->
     {% if view.division.slug == 'robinhood_pmcc' %}
       <div
@@ -183,6 +193,13 @@
       {% include "partials/donchian_chart.html" %}
       {% include "partials/donchian_log.html" %}
       {% include "partials/donchian_trades.html" %}
+    {% endif %}
+
+    <!-- BitUnix Phase 3.2.3 — confluence score panel. Renders only for
+         bitunix_futures and only when scoring config is loaded.
+         htmx auto-refresh every 30s baked into the partial. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_score %}
+      {% include "partials/bitunix_score_panel.html" %}
     {% endif %}
 
     <!-- Paper-trade win rate (Phase C of would_have_placed enrichment) -->
@@ -247,6 +264,53 @@
                     <span class="text-loss font-semibold uppercase tracking-wider">risk rejected</span>
                   {% elif evt.kind == 'polymarket_llm_probability_called' and pm.would_emit == false %}
                     <span class="text-muted font-semibold uppercase tracking-wider">evaluated · skipped</span>
+                  {% else %}
+                    <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                      {{ evt.kind | replace('_', ' ') }}
+                    </span>
+                  {% endif %}
+                {% elif evt.kalshi_llm %}
+                  {% set kl = evt.kalshi_llm %}
+                  {% if evt.kind == 'would_have_placed' %}
+                    <span class="text-gain font-semibold uppercase tracking-wider">would have placed</span>
+                  {% elif evt.kind == 'kalshi_llm_order_rejected_by_risk' %}
+                    <span class="text-loss font-semibold uppercase tracking-wider">risk rejected</span>
+                  {% elif evt.kind == 'kalshi_llm_probability_called' and kl.would_emit == false %}
+                    <span class="text-muted font-semibold uppercase tracking-wider">evaluated · skipped</span>
+                  {% else %}
+                    <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                      {{ evt.kind | replace('_', ' ') }}
+                    </span>
+                  {% endif %}
+                {% elif evt.kalshi %}
+                  {% set kx = evt.kalshi %}
+                  {% if evt.kind == 'would_have_placed' %}
+                    <span class="text-gain font-semibold uppercase tracking-wider">would have placed</span>
+                  {% elif evt.kind in ('kalshi_order_rejected_by_risk', 'kalshi_tb_order_rejected_by_risk') %}
+                    <span class="text-loss font-semibold uppercase tracking-wider">risk rejected</span>
+                  {% elif evt.kind == 'kalshi_discovery_refreshed' %}
+                    <span class="text-muted font-semibold uppercase tracking-wider">discovery refreshed</span>
+                  {% elif evt.kind == 'kalshi_tail_arb_scan' %}
+                    <span class="{% if kx.n_opportunities_above_threshold and kx.n_opportunities_above_threshold > 0 %}text-mono{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      tail-price scan
+                    </span>
+                  {% elif evt.kind == 'kalshi_temporal_bucket_scan' %}
+                    {% set t_opps = (kx.n_temporal_opportunities or 0) + (kx.n_bucket_opportunities or 0) %}
+                    <span class="{% if t_opps > 0 %}text-mono{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      temporal+bucket scan
+                    </span>
+                  {% elif evt.kind == 'kalshi_market_evaluated' %}
+                    <span class="{% if kx.would_emit %}text-gain{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      {% if kx.would_emit %}market evaluated · ARB{% else %}market evaluated{% endif %}
+                    </span>
+                  {% elif evt.kind == 'kalshi_pair_evaluated' %}
+                    <span class="{% if kx.would_emit %}text-gain{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      {% if kx.would_emit %}pair evaluated · ARB{% else %}pair evaluated{% endif %}
+                    </span>
+                  {% elif evt.kind == 'kalshi_bucket_evaluated' %}
+                    <span class="{% if kx.would_emit %}text-gain{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      {% if kx.would_emit %}bucket evaluated · ARB{% else %}bucket evaluated{% endif %}
+                    </span>
                   {% else %}
                     <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
                       {{ evt.kind | replace('_', ' ') }}
@@ -335,6 +399,292 @@
                       hx-swap="innerHTML"
                       hx-indicator="#pair-analysis-loading">
                       Show analysis →
+                    </button>
+                  </div>
+                {% endif %}
+              {% elif evt.kalshi_llm %}
+                {# ── Kalshi LLM-divergence rich layout (mirrors polymarket) ── #}
+                {% set kl = evt.kalshi_llm %}
+                <div class="mt-1.5 text-sm">
+                  <span class="font-mono font-semibold text-mono break-all">{{ kl.ticker }}</span>
+                  {% if kl.outcome %}
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1
+                      {% if kl.outcome == 'yes' %}bg-gain/15 text-gain
+                      {% else %}bg-loss/15 text-loss{% endif %}">
+                      buy {{ kl.outcome }}
+                    </span>
+                  {% endif %}
+                  {% if kl.category %}
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                      {{ kl.category }}
+                    </span>
+                  {% endif %}
+                </div>
+                {% if kl.event_title %}
+                  <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                    {{ kl.event_title }}{% if kl.subtitle %} — <span class="text-muted/60">{{ kl.subtitle }}</span>{% endif %}
+                  </div>
+                {% endif %}
+                <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                  {% if kl.llm_prob is not none %}
+                    <span>
+                      <span class="text-muted">LLM:</span>
+                      <span class="text-mono font-semibold">{{ '%.0f' | format(kl.llm_prob * 100) }}%</span>
+                      {% if kl.llm_confidence %}
+                        <span class="text-[10px] text-muted/70">({{ kl.llm_confidence }})</span>
+                      {% endif %}
+                    </span>
+                  {% endif %}
+                  {% if kl.implied_prob is not none %}
+                    <span>
+                      <span class="text-muted">market:</span>
+                      <span class="text-mono">{{ '%.0f' | format(kl.implied_prob * 100) }}%</span>
+                    </span>
+                  {% endif %}
+                  {% if kl.divergence_pct is not none %}
+                    <span class="
+                      {% if kl.divergence_pct >= 50 %}text-warn font-semibold
+                      {% elif kl.divergence_pct >= 10 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      Δ {{ '%.1f' | format(kl.divergence_pct) }}%
+                    </span>
+                  {% endif %}
+                  {% if kl.qty and kl.limit_price %}
+                    <span class="text-muted ml-auto">
+                      {{ '%.2f' | format(kl.qty) }} × ${{ '%.3f' | format(kl.limit_price) }}
+                      = ${{ '%.2f' | format(kl.qty * kl.limit_price) }}
+                    </span>
+                  {% endif %}
+                </div>
+                {% if kl.reasoning_preview %}
+                  <div class="mt-1.5 text-[11px] text-muted/90 leading-snug line-clamp-2 italic">
+                    "{{ kl.reasoning_preview }}"
+                  </div>
+                {% endif %}
+                {% if kl.risk_reason and evt.kind == 'kalshi_llm_order_rejected_by_risk' %}
+                  <div class="mt-1.5 text-[11px] text-loss leading-snug">
+                    <span class="font-semibold">Risk:</span> {{ kl.risk_reason }}
+                  </div>
+                {% endif %}
+                {% if evt.id %}
+                  <div class="mt-2">
+                    <button
+                      class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                      hx-get="/partials/kalshi-llm-analysis/{{ evt.id }}"
+                      hx-target="#pair-analysis"
+                      hx-swap="innerHTML"
+                      hx-indicator="#pair-analysis-loading">
+                      Show analysis →
+                    </button>
+                  </div>
+                {% endif %}
+              {% elif evt.kalshi %}
+                {# ── Kalshi-specific rich layout ──────────────────────── #}
+                {% set kx = evt.kalshi %}
+                {# Per-kind inline rendering. Scan summaries surface counts;
+                   would_have_placed surfaces ticker + edge + leg + set/pair;
+                   discovery_refreshed surfaces by-type breakdown. #}
+                {% if evt.kind == 'kalshi_tail_arb_scan' %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">scanned:</span>
+                      <span class="text-mono font-semibold">{{ kx.n_markets_scanned or 0 }}</span> markets</span>
+                    <span><span class="text-muted">tail candidates:</span>
+                      <span class="text-mono">{{ kx.n_tail_candidates or 0 }}</span></span>
+                    <span class="{% if kx.n_opportunities_above_threshold and kx.n_opportunities_above_threshold > 0 %}text-gain font-semibold{% else %}text-muted{% endif %}">
+                      opps≥{{ kx.min_edge_cents or '?' }}c:
+                      <span class="font-semibold">{{ kx.n_opportunities_above_threshold or 0 }}</span>
+                    </span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      tail≤{{ '%.2f' | format(kx.yes_max_for_yes_tail or 0) }} / ≥{{ '%.2f' | format(kx.yes_min_for_no_tail or 0) }}
+                    </span>
+                  </div>
+                {% elif evt.kind == 'kalshi_temporal_bucket_scan' %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">temporal:</span>
+                      <span class="text-mono">{{ kx.n_temporal_events_scanned or 0 }}</span> evt /
+                      <span class="{% if kx.n_temporal_opportunities and kx.n_temporal_opportunities > 0 %}text-gain font-semibold{% else %}text-muted{% endif %}">{{ kx.n_temporal_opportunities or 0 }}</span> opps</span>
+                    <span><span class="text-muted">bucket:</span>
+                      <span class="text-mono">{{ kx.n_bucket_events_scanned or 0 }}</span> evt /
+                      <span class="{% if kx.n_bucket_opportunities and kx.n_bucket_opportunities > 0 %}text-gain font-semibold{% else %}text-muted{% endif %}">{{ kx.n_bucket_opportunities or 0 }}</span> opps</span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      thresh: T≥{{ kx.temporal_min_edge_cents or '?' }}c B≥{{ kx.bucket_min_edge_cents or '?' }}c
+                    </span>
+                  </div>
+                {% elif evt.kind == 'kalshi_discovery_refreshed' %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">events:</span>
+                      <span class="text-mono font-semibold">{{ kx.n_events_total or 0 }}</span></span>
+                    <span><span class="text-muted">markets:</span>
+                      <span class="text-mono">{{ kx.n_markets_total or 0 }}</span></span>
+                    {% if kx.n_markets_filtered_collection %}
+                      <span class="text-[10px] text-muted/70">({{ kx.n_markets_filtered_collection }} collection-filtered)</span>
+                    {% endif %}
+                  </div>
+                  {% if kx.events_by_type %}
+                    <div class="mt-1 flex items-center gap-1.5 flex-wrap text-[10px] font-mono">
+                      {% for type_name, count in kx.events_by_type.items() %}
+                        {% if count and count > 0 %}
+                          <span class="px-1.5 py-0.5 rounded bg-edge text-muted">
+                            {{ type_name }}: <span class="text-mono">{{ count }}</span>
+                          </span>
+                        {% endif %}
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                {% elif evt.kind == 'kalshi_market_evaluated' %}
+                  {# Per-tail-candidate row — polymarket-density per market. #}
+                  <div class="mt-1.5 text-sm">
+                    <span class="font-mono font-semibold text-mono break-all">{{ kx.ticker }}</span>
+                    {% if kx.in_yes_tail %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-loss/15 text-loss">YES tail</span>
+                    {% elif kx.in_no_tail %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-gain/15 text-gain">NO tail</span>
+                    {% endif %}
+                    {% if kx.category %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.category }}
+                      </span>
+                    {% endif %}
+                  </div>
+                  {% if kx.event_title %}
+                    <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                      {{ kx.event_title }}{% if kx.subtitle %} — <span class="text-muted/60">{{ kx.subtitle }}</span>{% endif %}
+                    </div>
+                  {% endif %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">YES ask:</span>
+                      <span class="text-mono">${{ '%.3f' | format(kx.yes_ask or 0) }}</span></span>
+                    <span><span class="text-muted">NO ask:</span>
+                      <span class="text-mono">${{ '%.3f' | format(kx.no_ask or 0) }}</span></span>
+                    <span><span class="text-muted">sum:</span>
+                      <span class="text-mono">${{ '%.3f' | format(kx.sum_asks or 0) }}</span></span>
+                    <span class="
+                      {% if kx.would_emit %}text-gain font-semibold
+                      {% elif kx.edge_cents and kx.edge_cents >= 0 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      edge: {{ kx.edge_cents }}c
+                    </span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      threshold: {{ kx.min_edge_cents }}c
+                    </span>
+                  </div>
+                {% elif evt.kind == 'kalshi_pair_evaluated' %}
+                  {# Per-temporal-pair row — both leg tickers + dates + edge. #}
+                  <div class="mt-1.5 text-sm">
+                    <span class="font-mono font-semibold text-mono break-all">{{ kx.event_ticker }}</span>
+                    {% if kx.category %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.category }}
+                      </span>
+                    {% endif %}
+                  </div>
+                  {% if kx.event_title %}
+                    <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                      {{ kx.event_title }}
+                    </div>
+                  {% endif %}
+                  <div class="mt-1.5 text-[11px] font-mono space-y-0.5">
+                    <div>
+                      <span class="text-muted">early</span>
+                      <span class="text-mono">{{ kx.early_subtitle or kx.early_date }}</span>:
+                      P_yes = <span class="text-mono font-semibold">{{ '%.3f' | format(kx.early_yes_ask or 0) }}</span>
+                    </div>
+                    <div>
+                      <span class="text-muted">late&nbsp;</span>
+                      <span class="text-mono">{{ kx.late_subtitle or kx.late_date }}</span>:
+                      P_yes = <span class="text-mono font-semibold">{{ '%.3f' | format(kx.late_yes_ask or 0) }}</span>
+                    </div>
+                  </div>
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span class="
+                      {% if kx.would_emit %}text-gain font-semibold
+                      {% elif kx.edge_cents and kx.edge_cents >= 0 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      edge: {{ kx.edge_cents }}c
+                    </span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      threshold: {{ kx.min_edge_cents }}c
+                      ({% if (kx.early_yes_ask or 0) > (kx.late_yes_ask or 0) %}<span class="text-warn">violation</span>{% else %}<span class="text-muted">in-bounds</span>{% endif %})
+                    </span>
+                  </div>
+                {% elif evt.kind == 'kalshi_bucket_evaluated' %}
+                  {# Per-bucket-event row — N legs + sum + edge. #}
+                  <div class="mt-1.5 text-sm">
+                    <span class="font-mono font-semibold text-mono break-all">{{ kx.event_ticker }}</span>
+                    {% if kx.category %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.category }}
+                      </span>
+                    {% endif %}
+                  </div>
+                  {% if kx.event_title %}
+                    <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                      {{ kx.event_title }}
+                    </div>
+                  {% endif %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">{{ kx.n_legs or 0 }} legs sum:</span>
+                      <span class="text-mono">${{ '%.3f' | format(kx.sum_yes_asks or 0) }}</span></span>
+                    <span class="
+                      {% if kx.would_emit %}text-gain font-semibold
+                      {% elif kx.edge_cents and kx.edge_cents >= 0 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      edge: {{ kx.edge_cents }}c
+                    </span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      threshold: {{ kx.min_edge_cents }}c
+                    </span>
+                  </div>
+                {% else %}
+                  {# would_have_placed / risk-rejected / other: ticker + leg + edge #}
+                  <div class="mt-1.5 text-sm">
+                    {% if kx.ticker %}
+                      <span class="font-mono font-semibold text-mono break-all">{{ kx.ticker }}</span>
+                    {% endif %}
+                    {% if kx.leg %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.leg | replace('_', ' ') }}
+                      </span>
+                    {% endif %}
+                    {% if kx.kalshi_arb_type %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.kalshi_arb_type }} arb
+                      </span>
+                    {% endif %}
+                  </div>
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    {% if kx.edge_cents %}
+                      <span class="{% if kx.edge_cents >= 5 %}text-gain font-semibold{% elif kx.edge_cents >= 2 %}text-mono{% else %}text-muted{% endif %}">
+                        edge: {{ kx.edge_cents }}c
+                      </span>
+                    {% endif %}
+                    {% if kx.qty and kx.limit_price %}
+                      <span class="text-muted">
+                        {{ '%.2f' | format(kx.qty) }} × ${{ '%.3f' | format(kx.limit_price) }}
+                        = ${{ '%.2f' | format(kx.qty * kx.limit_price) }}
+                      </span>
+                    {% endif %}
+                    {% set link_id = kx.kalshi_arb_set_id or kx.kalshi_pair_id %}
+                    {% if link_id %}
+                      <span class="ml-auto text-[10px] text-muted/70 break-all">set: {{ link_id }}</span>
+                    {% endif %}
+                  </div>
+                  {% if kx.risk_reason and evt.kind in ('kalshi_order_rejected_by_risk', 'kalshi_tb_order_rejected_by_risk') %}
+                    <div class="mt-1.5 text-[11px] text-loss leading-snug">
+                      <span class="font-semibold">Risk:</span> {{ kx.risk_reason }}
+                    </div>
+                  {% endif %}
+                {% endif %}
+                {# Click to load full payload + raw audit JSON in the right rail. #}
+                {% if evt.id %}
+                  <div class="mt-2">
+                    <button
+                      class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                      hx-get="/partials/kalshi-analysis/{{ evt.id }}"
+                      hx-target="#pair-analysis"
+                      hx-swap="innerHTML"
+                      hx-indicator="#pair-analysis-loading">
+                      Show details →
                     </button>
                   </div>
                 {% endif %}

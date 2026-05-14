@@ -61,7 +61,14 @@ class _PendingRow:
 
 @dataclass
 class _Resolved:
-    result: str                          # 'win' | 'loss' | 'expired' | 'pre_phase_a'
+    # 'win' | 'loss' | 'expired' | 'pre_phase_a' | 'still_open'
+    #
+    # 'still_open' is a TRANSIENT verdict — the trade has neither hit
+    # TP/SL nor exhausted its max_hold window yet. Caller MUST NOT
+    # update the row when it sees this; the row stays at result=NULL
+    # so the next replay tick picks it up again (when more bars are
+    # available from the venue).
+    result: str
     result_ts: str | None
     result_price: float | None
     actual_pnl_dollars: float | None
@@ -202,7 +209,21 @@ def _classify(
                 bars_to_resolution=idx + 1,
             )
 
-    # Walked to the end without a hit → expired.
+    # Walked to the end of available bars without a hit. The verdict
+    # depends on whether the full max_hold window has actually elapsed
+    # in wall-clock time, NOT just whether we ran out of fetched bars:
+    #   - elapsed >= max_hold  → genuinely expired
+    #   - elapsed <  max_hold  → still open (more bars will arrive;
+    #     the next replay tick will re-evaluate)
+    # The previous version unconditionally returned 'expired', which
+    # prematurely marked trades that were still inside their hold
+    # window — caught 2026-05-11 on the bitunix paper trades.
+    max_hold = int(row.max_hold_seconds or 0)
+    alert_dt = _parse_row_ts(row.ts)
+    now = datetime.now(timezone.utc)
+    elapsed = (now - alert_dt).total_seconds() if alert_dt else 0
+    fully_elapsed = max_hold > 0 and elapsed >= max_hold
+
     if not bars:
         last_ts_iso = row.ts
         last_close = None
@@ -215,6 +236,20 @@ def _classify(
         )
         last_close = float(last_bar[4])
         bars_n = len(bars)
+
+    if not fully_elapsed:
+        # Still inside the hold window — leave the row at result=NULL
+        # so we re-evaluate on the next tick (more bars will be live
+        # at the venue by then).
+        return _Resolved(
+            result="still_open",
+            result_ts=last_ts_iso,
+            result_price=last_close,
+            actual_pnl_dollars=None,
+            actual_r_multiple=None,
+            bars_to_resolution=None,
+        )
+
     return _Resolved(
         result="expired",
         result_ts=last_ts_iso,
@@ -225,6 +260,15 @@ def _classify(
     )
 
 
+def _parse_row_ts(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
 # ── async core ─────────────────────────────────────────────────────────
 
 
@@ -233,7 +277,7 @@ async def _replay_tick_async(
     *,
     ohlcv_fetcher: OhlcvFetcher | None,
 ) -> dict:
-    fetcher = ohlcv_fetcher or _default_ccxt_fetcher
+    fetcher = ohlcv_fetcher or _default_router_fetcher
 
     # Mark pre-Phase-A rows first so we don't try to fetch bars for them.
     pre_phase_a_marked = mark_pre_phase_a_rows(db_url)
@@ -267,6 +311,12 @@ async def _replay_tick_async(
                 counts["resolved_expired"] += 1
             elif verdict.result == "pre_phase_a":
                 counts["marked_pre_phase_a"] += 1
+            elif verdict.result == "still_open":
+                # Inside max_hold window — leave row at result=NULL for
+                # the next replay tick to re-evaluate. No DB write.
+                counts.setdefault("still_open", 0)
+                counts["still_open"] += 1
+                continue
 
             _update_row(db_url, row.order_id, verdict)
         except Exception as e:
@@ -299,22 +349,33 @@ async def _replay_loop(
         raise
 
 
-# ── default OHLCV fetcher (Coinbase via ccxt) ──────────────────────────
+# ── OHLCV fetchers — venue-aware router ───────────────────────────────
+#
+# Different strategies trade on different venues, and replay bars MUST
+# come from the same venue the order was placed against (otherwise the
+# win/loss verdict reflects the wrong price tape):
+#   Lord Otter / Market Cypher / Coinbase BTC Donchian → Coinbase BTC/USD
+#   BitUnix Futures observer                          → BitUnix BTC/USDT.P
+#
+# Each concrete fetcher conforms to OhlcvFetcher
+# (symbol, timeframe, since_ms, limit) → list[[ts_ms,o,h,l,c,v]].
+# `_default_router_fetcher` picks the right one per call based on the
+# symbol shape — perps end in `.P`, spot does not.
 
 
-async def _default_ccxt_fetcher(
+async def _coinbase_ccxt_fetcher(
     symbol: str,
     timeframe: str,
     since_ms: int,
     limit: int,
 ) -> list[list[float]]:
-    """Default fetcher: ccxt async coinbase, public endpoint (no auth).
+    """Coinbase spot OHLCV via ccxt public endpoint.
 
     Coinbase's fetch_ohlcv caps at ~300 bars per call, so we page if
     `limit` exceeds that. Cypher's 7-day window in 1m bars = 10080 bars
     → ~34 pages. Cheap, all read-only, no auth required.
     """
-    import ccxt.async_support as ccxt_async  # local import: cold-start cheap
+    import ccxt.async_support as ccxt_async
     exchange = ccxt_async.coinbase({"enableRateLimit": True})
     try:
         out: list[list[float]] = []
@@ -337,6 +398,100 @@ async def _default_ccxt_fetcher(
         return out
     finally:
         await exchange.close()
+
+
+async def _bitunix_kline_fetcher(
+    symbol: str,
+    timeframe: str,
+    since_ms: int,
+    limit: int,
+) -> list[list[float]]:
+    """BitUnix Futures OHLCV via the public kline endpoint (no auth).
+
+    Same data source LiveBarCache uses for live ATR — keeps the
+    replay's price path consistent with what the trade saw at
+    placement. BitUnix accepts up to 1000 bars per call; for the
+    typical bitunix_futures.max_hold_seconds=86400 (24h × 60 = 1440
+    1m bars) we page in two requests.
+    """
+    import httpx
+    bu_symbol = _to_bitunix_symbol(symbol)
+    tf_ms = _timeframe_ms(timeframe)
+    out: list[list[float]] = []
+    cursor = since_ms
+    remaining = limit
+    page_size = 1000
+    async with httpx.AsyncClient(base_url="https://fapi.bitunix.com", timeout=20.0) as client:
+        while remaining > 0:
+            this_page = min(page_size, remaining)
+            end_ms = cursor + this_page * tf_ms
+            r = await client.get(
+                "/api/v1/futures/market/kline",
+                params={
+                    "symbol": bu_symbol,
+                    "interval": timeframe,
+                    "startTime": cursor,
+                    "endTime": end_ms,
+                    "limit": this_page,
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise RuntimeError(
+                    f"bitunix kline err: code={data.get('code')} msg={data.get('msg')!r}"
+                )
+            page = data.get("data") or []
+            if not page:
+                break
+            for row in page:
+                out.append([
+                    int(row["time"]),
+                    float(row["open"]),
+                    float(row["high"]),
+                    float(row["low"]),
+                    float(row["close"]),
+                    # BitUnix returns `baseVol` (USDT notional). Use it
+                    # for parity with ccxt's volume convention.
+                    float(row.get("baseVol") or 0.0),
+                ])
+            last_ts = max(int(row["time"]) for row in page)
+            cursor = last_ts + tf_ms
+            remaining -= len(page)
+            if len(page) < this_page:
+                break
+    # Defensive: ensure chronological order (the replay classifier walks forward)
+    out.sort(key=lambda r: r[0])
+    return out
+
+
+def _to_bitunix_symbol(symbol: str) -> str:
+    """Normalize the order's symbol to BitUnix REST format (no slash, no .P).
+
+    `BTC/USDT.P` → `BTCUSDT`. `BTCUSDT.P` → `BTCUSDT`. `BTCUSDT` → `BTCUSDT`.
+    """
+    s = symbol.replace("/", "").upper()
+    if s.endswith(".P"):
+        s = s[:-2]
+    return s
+
+
+def _is_bitunix_symbol(symbol: str) -> bool:
+    """True iff the symbol is a BitUnix perp (ends in `.P`)."""
+    return symbol.upper().endswith(".P")
+
+
+async def _default_router_fetcher(
+    symbol: str,
+    timeframe: str,
+    since_ms: int,
+    limit: int,
+) -> list[list[float]]:
+    """Symbol-aware default fetcher. Routes BitUnix perps to BitUnix's
+    native kline endpoint and everything else to Coinbase spot via ccxt."""
+    if _is_bitunix_symbol(symbol):
+        return await _bitunix_kline_fetcher(symbol, timeframe, since_ms, limit)
+    return await _coinbase_ccxt_fetcher(symbol, timeframe, since_ms, limit)
 
 
 def _timeframe_ms(tf: str) -> int:

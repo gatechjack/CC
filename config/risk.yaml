@@ -44,6 +44,27 @@ polymarket:
   daily_aggregate_cap_usd: 1_000.0             # but never more than $1K/day in NEW notional
   total_open_aggregate_cap_usd: 1_000.0        # max $1K notional across all open positions
 
+# Kalshi prediction-market caps (Phase K2.1 — tail-price arb, paper-only).
+# Read by:
+#   - kalshi_tail_price_arb strategy (uses its own knobs in strategies.yaml
+#     for tail thresholds; this section is for RiskAgent atomic + aggregate caps)
+#   - RiskAgent.evaluate when evaluating `is_prediction_market: true` orders
+#     tagged with kalshi_pair_id (Phase K2.1 pair structure)
+# Caps are intentionally tiny — Phase K2.1 is paper-shakedown of a $499 account.
+# Bumped when paper data + Board greenlight justify it (Phase K5+).
+kalshi:
+  # ── Per-order caps (RiskAgent atomic check) ──
+  max_pct_division_equity_per_position: 0.02   # 2% of kalshi division equity per leg
+  max_single_market_notional_usd: 5.0          # $5 per leg max ($10 per pair)
+  # ── Aggregate caps (RiskAgent queries audit_event for in-flight + filled) ──
+  daily_aggregate_max_pct_of_equity: 0.10      # 10% of kalshi division equity per UTC day
+  daily_aggregate_cap_usd: 50.0                # never more than $50/day NEW notional
+  total_open_aggregate_cap_usd: 50.0           # max $50 notional open across all kalshi pairs
+  # ── Tail-price-specific universe (consumed by strategy AND re-checked at gate) ──
+  tail_yes_max: 0.05                           # YES mid ≤ this is a yes-side tail
+  tail_yes_min: 0.95                           # YES mid ≥ this is a no-side tail
+  min_edge_cents: 1.0                          # ≥ 1¢ under $1 round-trip required
+
 # Per-strategy overrides — leave empty to inherit `global`.
 overrides:
   fidelity_options: {}

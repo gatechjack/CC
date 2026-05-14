@@ -109,7 +109,7 @@ def _is_otter(name: str) -> bool:
     """Otter-LTF: everything that's not Cypher and not a PA factor."""
     if _is_cypher(name) or _is_pa(name):
         return False
-    return True   # otter_buy/sell, pink_box_*, spoon_*, cvd_*, etc.
+    return True   # otter_buy/sell, spoon_*, cvd_*, etc.
 
 
 def _is_pa(name: str) -> bool:

@@ -148,3 +148,50 @@ divisions:
     target_annual_return: 0.50
     standby: true
     enabled: true
+
+  # ── Kalshi (added 2026-05-10; Phase K1 read-only broker adapter) ──────
+  # Phase K1 ships a single placeholder division anchored to the new
+  # KalshiBroker (read-only, snapshot + quote). Phase K2 wires in
+  # kalshi_arbitrage as the actual division running the temporal/bucket
+  # arb scanner; Phase K3 adds kalshi_copy_trading. Both lands in the
+  # "Prediction Markets" investment-type group alongside Polymarket. See
+  # memory trading_corp_kalshi.md for the full phasing plan.
+  - slug: kalshi_arbitrage
+    name: Kalshi Arbitrage
+    broker: kalshi
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY    # placeholder — prediction-market alpha doesn't have a clean benchmark
+    target_annual_return: 0.50
+    standby: true
+    enabled: true
+
+  # Phase K6.1 (added 2026-05-11): LLM-divergence Kalshi strategy
+  # mirroring polymarket_arbitrage. Different substrate from
+  # kalshi_arbitrage (which houses the structural tail/temporal/bucket
+  # strategies). Same broker, same Prediction Markets group.
+  - slug: kalshi_llm_arbitrage
+    name: Kalshi LLM Arbitrage
+    broker: kalshi
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: true
+    enabled: true
+
+  # Phase K3 placeholder (added 2026-05-11): Kalshi Copy Trading. Mirrors
+  # polymarket_copy_trading — registered now as STANDBY so the dashboard
+  # dropdown + tile + dashboard view exist before the strategy ships. When
+  # K3 lands the leaderboard scraper + copy-trader strategy, flip
+  # standby:false and point broker at `kalshi` (it reuses the same
+  # read-only KalshiBroker until Phase K5+ live placement).
+  - slug: kalshi_copy_trading
+    name: Kalshi Copy Trading
+    broker: paper    # placeholder until Phase K3 wires the copy-trader strategy
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: true
+    enabled: true
