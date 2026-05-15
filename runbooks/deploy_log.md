@@ -4206,3 +4206,157 @@ sudo systemctl restart trading-corp
 # (KV secrets being present is harmless if the broker code is gone — main.py
 # falls back to the "Unknown broker family" warning path.)
 ```
+
+---
+
+## TEMPLATE — `<TIMESTAMP>` UTC — BitUnix PR 3c: HTF regime gate + PA validation gate (shadow mode)
+
+> **Fill in the bracketed `<placeholders>` at deploy time.** This template is pre-populated with everything PR 3c shipped. Replace `<TIMESTAMP>`, `<COMMIT-HASHES>`, `<BACKUP-TAG>`, and the `Verification` section's actuals when you actually deploy. Delete this header line after.
+
+**Commits:** `<COMMIT-HASHES>` (PR 1 + PR 2 + PR 3a + PR 3c bundle, branch `claude/gallant-tereshkova-49ef85`)
+**Triggered by:** Multi-session BitUnix HTF redesign per [BACKLOG.md "P0 NEXT — BitUnix PR 4"](BACKLOG.md) entry. Replaces implicit Cypher 4H/1D HTF context with explicit OHLCV-driven regime classifier; routes pre-trade decisions through a deterministic permission matrix.
+**Backup tag:** `<BACKUP-TAG>` (suggest `pre-bitunix-pr3c-YYYYMMDD-HHMM`)
+
+**Files deployed (12):**
+
+*New files (no existing-file backups needed):*
+- `trading_corp/agents/strategies/bitunix_htf_regime.py` — pure HTF classifier: indicators (EMA / ADX(14) / MACD hist / swing structure / ATR / session), per-TF combiner, composite-regime scorer, permission matrix with hard-zero overrides, SAFE_MODE fail-closed.
+- `trading_corp/agents/strategies/bitunix_htf_regime.md` — README explaining pipeline + matrix + how to interpret the new audit logs.
+- `trading_corp/agents/strategies/bitunix_pa_validation.py` — pure PA gate: vwap_alignment / volume_confirmation / structure_alignment validators + rush/fall hard-rejects.
+- `trading_corp/data/bitunix_htf_context.py` — impure boundary wrapping the three new caches + funding-rate fetch; produces `HTFContext` snapshot + `regime_snapshot()` convenience.
+- `trading_corp/web/templates/partials/bitunix_htf_panel.html` — dashboard panel for `/division/bitunix_futures`: composite regime headline, per-TF breakdown, S/R proximity strip, funding badge, cache health row, GATE OFF/SHADOW/ENFORCE badge.
+- `scripts/replay_pr3_cutover.py` — read-only audit-table analyzer: threshold-change replay (historical) + shadow-audit summary (post-cutover).
+
+*Modified files:*
+- `trading_corp/agents/strategies/bitunix_confluence.py` — `BitUnixConfluenceConfig` gains `score_timeframes`, `factor_ttl_per_tf`, `pa_factors_in_score`, `guards_in_score` (PR 3a backwards-compat). `BitUnixAlertEvent` dataclass added carrying `tf`. `filter_live_alerts_with_dedupe` honors TF filter + per-TF TTL.
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — schema migration (idempotent ALTER TABLE for `tf` column on `bitunix_signal_ledger`); `_normalize_tf` mapping TV interval strings; `_append_to_ledger` captures tf, `_read_live_ledger` returns `BitUnixAlertEvent` with tf. Constructor gains `htf_provider`, `htf_config`, `pa_config`, `htf_gate_mode`. Score path injects PA gate then HTF gate after `evaluate_confluence_futures`. Two new audit-row writers: `_log_pa_validation`, `_log_htf_gate`. HTF size_multiplier applied to `proposed_order.qty` + `effective_risk_pct` only in enforce mode.
+- `trading_corp/brokers/bitunix.py` — new `get_funding_rate(symbol)` method using a transient httpx client (works without auth or `connect()` having run).
+- `trading_corp/main.py` — three new `LiveBarCache(timeframe="1h"|"4h"|"1d", max_bars=250)` instances; `BitUnixHTFContextProvider` constructed with a standalone `BitunixBroker` for funding; loads `PAValidationConfig` + `htf_gate.mode` from YAML; passes new deps to observer; starts four poll loops (3 HTF caches + funding); attaches provider to observer post-construction.
+- `trading_corp/web/app.py` — `bitunix_htf_provider` field on `WebDeps`.
+- `trading_corp/web/data.py` — `build_bitunix_htf_view(deps)` view-builder; `bitunix_htf` field on `DivisionViewSnapshot`; call site in division snapshot builder.
+- `trading_corp/web/templates/division.html` — partial include guarded by `view.bitunix_htf`.
+- `config/strategies.yaml` — **major cutover** under `bitunix_futures`:
+  - `scoring.score_timeframes: ["3m", "15m", "30m"]`
+  - `scoring.pa_factors_in_score: false`, `scoring.guards_in_score: false`
+  - `scoring.tier_thresholds: {premium: 10, standard: 5, weak: 3}` (was 12/8/5)
+  - `scoring.min_score_to_fire: 5` (was 8)
+  - Per-TF TTLs on every `mc_a_*` (30/90/180 for 3m/15m/30m) and `mc_b_*` (15/45/90) factor
+  - New top-level blocks: `pa_validation`, `htf_regime`, `htf_gate.mode: shadow`
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **HTF regime classifier shipped pure-function with full test coverage.** 1H/4H/1D OHLCV → `Regime` enum (STRONG_BULL / BULL / NEUTRAL / BEAR / STRONG_BEAR / SAFE_MODE) + permission matrix + hard-zero overrides for proximity (0.3%), vol_tier=Extreme, funding_extreme on crowded side.
+- **Score engine cut over to 3m + 15m + 30m chart fires only.** Cypher 4H + 1D fires still hit the ledger (visible in dashboard, audited) but contribute 0 to score. The old `mc_a_*`/`mc_b_*` factor weights and TTLs are preserved as per-TF overrides.
+- **PA validation gate live (in shadow).** vwap_alignment + volume_confirmation + structure_alignment all required (`require_all: true`); +5%/-5% 60min rush/fall as binary hard-rejects.
+- **Two new audit kinds: `pa_validation_decision`, `htf_gate_decision`.** Written before every gate decision branch (PR 3a/3c integrated with CLAUDE.md's "audit before branch" invariant).
+- **Schema: `bitunix_signal_ledger.tf` TEXT column added.** Idempotent migration on first boot for existing prod databases. Historical rows have `tf=NULL` (per option (b)(ii) decision in PR 3c plan).
+- **Dashboard panel live at `/division/bitunix_futures`.** Composite regime + per-TF breakdown + cache health + funding badge + GATE mode indicator.
+- **Replay script ready: `py -m scripts.replay_pr3_cutover --since <date>`.** Read-only against the audit table; used to evaluate readiness for PR 4 (enforce flip).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **`htf_gate.mode: shadow` is the default — gates do NOT enforce.** PA + HTF audits write but no trade is blocked or sized down by this deploy. The flip to `enforce` is a separate decision (see [BACKLOG.md "P0 NEXT — BitUnix PR 4"](BACKLOG.md)).
+- **Score engine BEHAVIOR DID change.** Even in shadow mode, the score engine itself uses the new TF filter + new thresholds + no PA/guards in score. Net fire rate vs. pre-PR-3c is unknown until shadow data accumulates — replay script's threshold-change analysis is an upper bound (can't honor TF filter for historical NULL-tf rows).
+- **TF normalization lives in `_normalize_tf`** in observer.py. TV emits `"3"`, `"15"`, `"240"`, `"D"`, `"1D"` etc. — canonical form is `"3m"`, `"15m"`, `"4h"`, `"1d"`. Unknown intervals pass through verbatim so replay can flag misconfigured alerts loud rather than silently drop them.
+- **Funding fetch uses a TRANSIENT httpx client** in `BitunixBroker.get_funding_rate`. Works regardless of stub/connected state because funding is a public endpoint.
+- **HTF context provider is sync `snapshot()` + `regime_snapshot()`.** Funding rate runs on its own poll loop (30 min cadence); cached value flows through to sync calls. This lets the dashboard view-builder stay synchronous.
+- **Per-TF TTLs are per-(signal_name, tf), not per-side.** Stored on `BitUnixConfluenceConfig.factor_ttl_per_tf: dict[str, dict[str, int]]`. The filter looks up `factor_ttl_per_tf[name][tf]` first, falls back to `FactorConfig.ttl_minutes`. YAML omitting the per-TF map is a clean no-op.
+- **`HTFRegimeConfig.defaults()` is the source of HTF knobs in PR 3c.** The YAML `htf_regime` block exists but `HTFRegimeConfig.from_dict` doesn't yet — main.py uses defaults. Future tuning needs the from_dict adapter (small change; left for PR 4 follow-up if knobs need real-time tuning).
+
+**Latent bugs caught + fixed:**
+- None new in PR 3c. PR 3a's backwards-compat tests caught one old assumption (`AlertEvent` had no `tf` attribute) that would have silently broken if I'd just added a field — wrapped in `getattr(alert, "tf", None)` instead.
+
+**Verification (fill in at deploy time):**
+- [ ] Service starts cleanly: `journalctl -u trading-corp.service --since "5 minutes ago" | grep -E "ERROR|Traceback"` returns nothing.
+- [ ] Schema migration succeeded: `sqlite3 /home/azureuser/trading_corp/data/trading_corp.db 'PRAGMA table_info(bitunix_signal_ledger);' | grep tf` shows the new column.
+- [ ] HTF caches primed: `journalctl -u trading-corp.service --since "5 minutes ago" | grep -E "bitunix-(h1|h4|d1)-cache primed"` shows three lines.
+- [ ] Funding rate primed: `journalctl ... | grep "bitunix HTF funding primed"` shows a non-None rate.
+- [ ] Observer wiring logged: `journalctl ... | grep "BitUnix observer wiring"` shows `htf_gate_mode=shadow`, `pa_enabled=True`.
+- [ ] Dashboard panel renders: visit `https://trading.jacksumner.com/division/bitunix_futures` → "HTF Regime (1H · 4H · 1D)" section visible with composite regime + 3-column per-TF breakdown + cache row showing "1H N bars · 4H N bars · 1D N bars" with prices.
+- [ ] Score engine still firing: monitor `bitunix_score_decided` audit rows over the next several hours — fire rate should NOT collapse to zero (would indicate the TF filter is dropping every alert).
+- [ ] First shadow audits land: after the first score-engine fire, `sqlite3 ... "SELECT COUNT(*), kind FROM audit_event WHERE kind IN ('pa_validation_decision', 'htf_gate_decision') GROUP BY kind"` shows non-zero counts.
+- [ ] **No spurious enforcement.** Any `bitunix_score_decided` row with `outcome='placed'` should still be present at the same cadence as pre-deploy. If you see `outcome='skipped_pa_validation'` or `outcome='skipped_htf_gate'` rows, the gate is enforcing somehow — something flipped the mode.
+
+**Inert / dormant on current traffic (deliberate):**
+- **HTF gate enforcement.** `htf_gate.mode: shadow` default. The PA + HTF gate code paths run, write audits, take no action. Will activate when YAML flipped to `enforce` (see PR 4 entry below).
+- **HTF size_multiplier application.** `proposal.proposed_order.qty *= htf_size_multiplier` and `effective_risk_pct *= htf_size_multiplier` only execute in enforce mode. Shadow mode never touches the proposal.
+- **HTFRegimeConfig.from_dict.** Not yet implemented; main.py uses `HTFRegimeConfig.defaults()`. The YAML `htf_regime` block IS parsed by yaml.safe_load but never actually consumed. If you tune the YAML knobs expecting effect — they don't take. PR 4 follow-up adds from_dict.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=<BACKUP-TAG>; BASE=/home/azureuser/trading_corp; \
+# Restore the 8 modified files from backup tag:
+for f in \
+    trading_corp/agents/strategies/bitunix_confluence.py \
+    trading_corp/agents/divisions/bitunix_futures_observer.py \
+    trading_corp/brokers/bitunix.py \
+    trading_corp/main.py \
+    trading_corp/web/app.py \
+    trading_corp/web/data.py \
+    trading_corp/web/templates/division.html \
+    config/strategies.yaml \
+; do mv \$BASE/\$f.\$TAG \$BASE/\$f 2>/dev/null; done; \
+# Remove the 6 new files:
+rm -f \$BASE/trading_corp/agents/strategies/bitunix_htf_regime.py; \
+rm -f \$BASE/trading_corp/agents/strategies/bitunix_htf_regime.md; \
+rm -f \$BASE/trading_corp/agents/strategies/bitunix_pa_validation.py; \
+rm -f \$BASE/trading_corp/data/bitunix_htf_context.py; \
+rm -f \$BASE/trading_corp/web/templates/partials/bitunix_htf_panel.html; \
+rm -f \$BASE/scripts/replay_pr3_cutover.py; \
+sudo systemctl restart trading-corp
+"
+# NOTE: The bitunix_signal_ledger.tf column stays. Old SQLite versions
+# can't DROP COLUMN, and a NULL-able extra column is harmless under the
+# pre-PR-3c code (which never reads it). Leave it; it doesn't bother
+# anyone, and reapplying PR 3c later won't re-add it (idempotent ALTER
+# guard checks PRAGMA table_info first).
+```
+
+---
+
+## TEMPLATE — `<TIMESTAMP>` UTC — BitUnix PR 4: flip `htf_gate.mode` shadow → enforce
+
+> **One-line YAML change.** Use this template after PR 3c shadow data review (per [BACKLOG.md "P0 NEXT — BitUnix PR 4"](BACKLOG.md) prerequisites). Fill in the `<placeholders>` and the `Shadow data summary` section with replay-script output.
+
+**Commits:** `<COMMIT-HASH>` (single-line YAML edit)
+**Triggered by:** Board approval after review of `scripts/replay_pr3_cutover.py` output across <N days> of shadow data showing <X> PA/HTF audit pairs.
+**Backup tag:** `<BACKUP-TAG>` (suggest `pre-htf-enforce-YYYYMMDD-HHMM`)
+
+**Files deployed (1):**
+- `config/strategies.yaml` — `bitunix_futures.htf_gate.mode: shadow` → `enforce`. No other changes.
+
+**Features shipped:**
+- **HTF gate now enforces.** PA `REJECT` short-circuits trades; HTF `size_multiplier` (0.5x for pullback/bounce) applies to qty + effective_risk_pct before the daily-risk kill; hard-zero conditions (regime mismatch, proximity <0.3% of opposing level, vol_tier=Extreme, funding_extreme on crowded side) block placement.
+- **No code change.** This is a config-only flip; the gate code has been deployed in shadow mode since PR 3c.
+
+**Shadow data summary (from `scripts/replay_pr3_cutover.py --since <date>`):**
+
+```
+<paste replay output here at deploy time — both threshold_change_replay
+ and shadow_audit_summary sections — so future-Claude can audit the
+ decision basis>
+```
+
+**Decision rationale (Board memo per CLAUDE.md `auto_execute_caps.require_approval_for` discipline):**
+- (a) What shadow data showed: <e.g., "PA reject rate ~22%, dominated by missing volume_confirmation; HTF gate would have applied 0.5x to ~15% of fires; hard-zero on resistance proximity fired 4 times across 60 evals.">
+- (b) Why we're flipping: <e.g., "PA rejects correlate with the worst-performing 3 of 18 paper trades; gate enforce would have prevented 2 of 3 losers without blocking any winners. HTF 0.5x triggers all landed on losing trades; full-size 1.0x correlate with paper R-multiples >1.">
+- (c) What would tell us the flip was wrong (rollback trigger): <e.g., "Score-engine fire rate drops below 30% of pre-flip rate AND no improvement in paper PnL after 1 week, OR any single PA reject reason exceeds 60% of rejects.">
+
+**Verification (fill in at deploy time):**
+- [ ] Hot-reload picked up the change: tail trading-corp logs around the flip time; next score-eval should log `htf_gate_mode=enforce`. (Or restart the service if config isn't mtime-watched on the gate path.)
+- [ ] First enforced decision lands: monitor for `bitunix_score_decided.outcome='skipped_pa_validation'` or `outcome='skipped_htf_gate'` rows — the first one within a few hours confirms the gate is actively blocking.
+- [ ] First half-size trade: monitor `would_have_placed` rows for an `extra.htf_size_multiplier == 0.5` value, confirming the multiplier path works end-to-end.
+- [ ] Daily-risk kill math is consistent: `at_risk` accumulator should reflect halved risk on 0.5x trades.
+- [ ] Telegram pings still arrive on placed trades (no regression in the existing notification path).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; \
+mv \$BASE/config/strategies.yaml.<BACKUP-TAG> \$BASE/config/strategies.yaml; \
+# YAML is mtime-watched by most agents; observer re-reads at next score-eval.
+# Restart unnecessary unless you also changed broker config or want belt+braces.
+"
+```
+
+**Inert / dormant on current traffic (after this flip):**
+- **None new.** The flip activates everything PR 3c shipped in shadow. Once enforce is on, the only remaining "dormant" surface is the BitUnix `place_order` itself — it still raises `NotImplementedError` (Phase 4 gate). The HTF gate decision affects PAPER placement, which is intentional: validates the gate against paper trades for as long as Phase 4 is unshipped.

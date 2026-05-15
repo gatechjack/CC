@@ -66,6 +66,8 @@ Both copy-trading bots are live and accumulating signal. The right next move is 
 
 Parallel session has been iterating BitUnix Phase 3.2 → 3.2.3 (price-action factors wired + score dashboard panel) and is the "active build for that team" continuing into 2026-05-12. Next is Phase 3.2b (multi-leg scale-out execution) per prior BACKLOG. Not the copy-trader session's scope.
 
+**Update 2026-05-14 — PR 3a/3b/3c shipped (HTF regime gate + PA validation gate).** Order is now: PR 3c deploy → accumulate shadow audits (~30 fires) → run `scripts/replay_pr3_cutover.py` → flip `htf_gate.mode: shadow` → `enforce` (see "P0 NEXT — BitUnix PR 4" entry below) → THEN Phase 3.2b. Building scale-out on an unvalidated gate would couple two unknowns.
+
 **Data source — GREEN.** Kalshi shipped a public leaderboard at `kalshi.com/social/leaderboard` (timeframe-filterable: weekly / monthly / all-time). Opt-in profile pages expose positions + PnL. Scrape-only (no official API).
 
 **Seed list of ~7 named whales** as durable fallback if scraping breaks: `@Domahhhh`, `@GaetenD`, `@Foster`, `@cobybets1`, `@theduckguesses`, `@debl00b`, `@PredMTrader`.
@@ -102,18 +104,92 @@ Parallel session has been iterating BitUnix Phase 3.2 → 3.2.3 (price-action fa
 
 ---
 
-## P1 — BitUnix Phase 3.2 confluence rule tuning  *(NEW 2026-05-11; deferred by Board for later session)*
+## P2 — BitUnix PR 5: backtesting-grade persistence  *(NEW 2026-05-14; precondition for serious post-PR-4 tuning)*
+
+PR 3c shipped audit-grade persistence for every gate decision (`pa_validation_decision`, `htf_gate_decision`) but four load-bearing surfaces are still memory-only — fine for the PR 4 enforce-flip review, **insufficient for the kind of "what if we tune EMA periods?" / "does funding extreme actually correlate with bad fills?" questions Phase 4 will need**. PR 5 closes the gaps.
+
+**The four gaps (per PR 3c persistence audit):**
+
+1. **HIGH — OHLCV bars are memory-only.** `LiveBarCache.bars` (3m / 1H / 4H / 1D) lives in process memory. On restart, all four caches re-fetch from the public BitUnix kline endpoint (cap: 200 bars per request). Fine for warmup; fatal for arbitrary back-dating. The separate `data/btc_scalping.db` has TV CSV exports but is one-shot, not continuous.
+2. **MEDIUM — Funding rate history is one float.** `BitUnixHTFContextProvider._last_funding_rate` is the latest value. The audit captures funding *at fire time* (in `htf_gate_decision`), so we know it for trades, but not for the gaps between fires.
+3. **MEDIUM — HTF regime only computed at fire time.** No continuous snapshot. Cannot answer "what was the regime saying at 14:00 if no fire happened?"
+4. **LOW — Pre-PR-3c ledger rows have `tf=NULL`.** Documented (option (b)(ii)). The new `score_timeframes` filter can't be retroactively applied to pre-cutover signals; threshold-change replay is upper bound.
+
+### Six sub-PRs (each independently landable; total ~150 LOC):
+
+- **PR 5a — `bitunix_bar_history` table + `BitUnixBarArchiver` module.** New table `(ts_ms INTEGER, timeframe TEXT, open/high/low/close/volume REAL, inserted_at TEXT, PRIMARY KEY (ts_ms, timeframe))`. Decoupled from `LiveBarCache` (which is reused by Coinbase Donchian — no contamination): a separate poll loop reads new bars from each BitUnix cache and INSERT-OR-IGNOREs them. Storage: ~200k rows/year across 4 TFs. Unblocks: arbitrary historical re-runs of HTF regime + PA validation against true bars.
+- **PR 5b — `bitunix_funding_history` table.** New table `(ts TEXT, symbol TEXT, rate REAL, PRIMARY KEY (ts, symbol))`. `BitUnixHTFContextProvider.run_funding_poll_loop` writes a row per successful refresh (every 30 min). Storage: ~50 rows/day. Unblocks: backtesting funding-extreme threshold changes; correlating regime decisions with funding state outside fire moments.
+- **PR 5c — Continuous HTF regime snapshot loop.** New `htf_provider.run_regime_snapshot_loop(interval_s=600)` writes `audit_event(kind='htf_regime_snapshot')` every 10 min. Same payload shape as `htf_gate_decision` minus the `permission` field. Storage: ~144 rows/day. Unblocks: tuning regime classifier knobs against time-series data, not just fire-time snapshots.
+- **PR 5d — `scripts/backfill_signal_ledger_tf.py`.** One-shot script: walks `bitunix_signal_ledger WHERE tf IS NULL`, joins to nearest-ts `webhook_received` audit row (within ~5s), extracts `interval` from payload, normalizes via `_normalize_tf`, UPDATE in place. Closes the b-ii caveat — historical replay can then honor the TF filter.
+- **PR 5e — `funding_rate_at_decision` on `proposed_order.extra`.** One line in `_score_and_maybe_propose` after the HTF gate runs: `order.extra["funding_rate_at_decision"] = htf_verdict.funding_rate`. Eliminates the audit-event join needed to reconstruct funding state per trade.
+- **PR 5f — Bar-snapshot pointers in `htf_gate_decision` audit.** Adds `bar_h1_last_close_ms`, `bar_h4_last_close_ms`, `bar_d1_last_close_ms` to the audit payload — cheap pointers into `bitunix_bar_history` for exact replay of what the gate saw. Only useful with PR 5a in place.
+
+**Does NOT block PR 4 enforce-flip.** What's in production today is sufficient for the shadow → enforce decision. PR 5 is the precondition for **serious post-flip tuning**, not for the flip itself. Land in any order; PR 5f is the only one with a dependency (needs 5a).
+
+**Files:**
+- New: `trading_corp/data/bitunix_bar_archiver.py`, `scripts/backfill_signal_ledger_tf.py`
+- Modified: `trading_corp/data/bitunix_htf_context.py` (5b funding write + 5c regime loop), `trading_corp/agents/divisions/bitunix_futures_observer.py` (5e + 5f), `trading_corp/main.py` (wire archiver + regime loop)
+- Tests: `tests/test_bitunix_bar_archiver.py`, additions to `tests/test_bitunix_htf_context.py` and `tests/test_bitunix_observer_pr3c_gates.py`
+
+---
+
+## P0 NEXT — BitUnix PR 4: flip `htf_gate.mode` from `shadow` → `enforce`  *(NEW 2026-05-14, blocks Phase 3.2b live placement)*
+
+PR 3c (2026-05-14) shipped the HTF regime gate + PA validation gate in **shadow mode**: audits get written for every score-engine fire (`pa_validation_decision`, `htf_gate_decision`), but the gates do NOT block trades or alter sizing. The score engine itself is also reshaped (3m/15m/30m TF filter, PA factors moved to validation, lower thresholds).
+
+**PR 4 is the one-line YAML flip:** `bitunix_futures.htf_gate.mode: shadow` → `enforce`. Once flipped:
+- PA `REJECT` short-circuits the trade before risk/sizing.
+- HTF `size_multiplier` (0.5x for pullback/bounce cases per the matrix) gets applied to `proposed_order.qty` and `effective_risk_pct` before the daily-risk kill check.
+- HTF hard-zero conditions (regime mismatch, proximity to opposing level <0.3%, vol_tier=Extreme, funding_extreme on crowded side) block placement.
+
+**Prerequisites (do NOT flip until all are met):**
+1. **Shadow data depth.** At least ~30 score-engine fires producing matching `pa_validation_decision` + `htf_gate_decision` audit pairs. Below that, you can't tell rejection rate from noise.
+2. **Replay-script review.** Run `py -m scripts.replay_pr3_cutover --since <recent_date>` against the prod DB. Inspect:
+   - PA reject rate by reason (vwap, volume, structure, rush_fall) — too high (>50%) suggests over-strict; tune `require_all` or rush/fall thresholds first.
+   - HTF size_multiplier distribution — what fraction of fires would land at 0.5x (pullback/bounce) vs 1.0x vs hard-zero? Hard-zero rate should be <30%; if higher, look at which `hard_zero_reason` is dominating.
+   - Score `winning_side` vs HTF `permission` agreement rate — high agreement (>80%) suggests the gate is mostly redundant; lower agreement is where the gate is genuinely adding signal.
+   - `regime` distribution — is the system seeing a real spread (BULL/NEUTRAL/BEAR) or stuck in NEUTRAL/SAFE_MODE? SAFE_MODE in production means cache health degraded.
+3. **Cache health verified.** `/division/bitunix_futures` panel's "cache" row should show three TFs all with bars + recent close prices + no `last_refresh_error`. SAFE_MODE on cache stale = no trades = unhelpful.
+4. **Board decision logged.** Per CLAUDE.md `auto_execute_caps.require_approval_for` discipline: a memo recording (a) what the shadow data showed, (b) why we're flipping, (c) what would tell us the flip was wrong (so we know what to roll back on).
+
+**The flip itself:**
+```bash
+# On prod:
+ssh azureuser@trading.jacksumner.com "cd /home/azureuser/trading_corp && \
+  cp config/strategies.yaml config/strategies.yaml.pre-htf-enforce-$(date -u +%Y%m%d-%H%M) && \
+  sed -i 's/    mode: shadow$/    mode: enforce/' config/strategies.yaml && \
+  grep -A1 'htf_gate:' config/strategies.yaml"
+# Hot-reload: BitUnixConfluenceConfig is mtime-cached on most agents; the
+# observer re-reads htf_gate_mode at next score-eval. No restart required
+# unless you also change broker config.
+# Append a runbooks/deploy_log.md entry capturing prereq #4 above.
+```
+
+**Rollback:** flip back to `shadow`, no audit-row pruning needed (shadow audits are forward-compatible).
+
+**This is the §6 ask-first moment** per CLAUDE.md — touches the order pipeline on a `auto_execute=true` division. The fact that BitUnix's `place_order` is still `NotImplementedError` (Phase 4 gate) means even in enforce mode this only affects PAPER placement. That's intentional — validates the gate against paper trades for as long as Phase 4 is unshipped.
+
+**Phase 3.2b (multi-leg scale-out) and Phase 4 (live order placement) both depend on this.** Building scale-out on top of an unvalidated gate would couple two unknowns; live placement on an unvalidated gate would risk capital on an unvalidated decision.
+
+**Files:** `config/strategies.yaml` only (one line). `runbooks/deploy_log.md` (append entry).
+
+---
+
+## P1 — BitUnix Phase 3.2 confluence rule tuning  *(NEW 2026-05-11; deferred by Board for later session — partially RESHAPED by PR 3c 2026-05-14)*
 
 Phase 3.2 confluence score accumulator + 3.2.2 PA factors + 3.2.3 panel + 3.2.4-equivalent IRA-analysis-style depth all shipped today. The rule decision tree in `_analyze_ira_covered_call` and the tier thresholds in `bitunix_confluence.py` are first-draft. Board flagged ≤2 DTE / ITM-roll-urgency threshold as one to reconsider — wants the trade fired earlier (e.g. ≤4 DTE + ITM = elevated roll vs. current "watch + preview legs"). When picked up, also revisit:
 
 - **Cooldown duration** (30 min currently) — too long if BTC is fast-moving and intra-bar signal shifts are significant.
-- **Tier thresholds** (PREMIUM ≥12, STANDARD ≥8) — tuned from a 9-day backtest; re-tune as more live data accumulates.
-- **Guard penalty brackets** (sell_on_rush / buy_on_fall % thresholds) — currently kicks in at 1% / 3% / 5%; may want finer granularity now that PA factors are live.
-- **IRA covered-call rules** in `_analyze_ira_covered_call`: when does WATCH become ROLL? Currently triggered only at ≤2 DTE or ≥85% profit. Should also consider profit-take at ≥50% if DTE is "long" (e.g. 21+ DTE = let theta work; 7-21 DTE = ≥50% profit = good close candidate).
+- ~~**Tier thresholds** (PREMIUM ≥12, STANDARD ≥8) — tuned from a 9-day backtest; re-tune as more live data accumulates.~~ **CHANGED in PR 3c (2026-05-14):** premium 12 → 10, standard 8 → 5, min_fire 8 → 5 to compensate for Cypher 4H/1D fires no longer scoring (TF filter `["3m","15m","30m"]`) and PA factors moved to validation gate (`pa_factors_in_score: false`). Re-tune from this new baseline as PR 3c shadow data accumulates.
+- ~~**Guard penalty brackets** (sell_on_rush / buy_on_fall % thresholds) — currently kicks in at 1% / 3% / 5%; may want finer granularity now that PA factors are live.~~ **REPLACED in PR 3c (2026-05-14):** soft-penalty brackets are no longer applied to score (`guards_in_score: false`); the >5% bracket promoted to a binary hard-reject in the new `pa_validation` block. "Finer granularity" idea is moot — the new design is binary not graduated. If shadow data shows the binary 5% threshold is too loose/tight, tune `pa_validation.rush_fall_guards.reject_buy_on_60m_drop_pct` / `reject_sell_on_60m_rise_pct` instead.
+- **IRA covered-call rules** in `_analyze_ira_covered_call`: when does WATCH become ROLL? Currently triggered only at ≤2 DTE or ≥85% profit. Should also consider profit-take at ≥50% if DTE is "long" (e.g. 21+ DTE = let theta work; 7-21 DTE = ≥50% profit = good close candidate). *(Unrelated to PR 3c — separate IRA strategy.)*
+- **NEW (PR 3c)** — **Per-TF TTL tuning.** PR 3c set Cypher A 30/90/180 min and Cypher B 15/45/90 min for 3m/15m/30m charts respectively, mirroring Otter's validated 3m timing. If shadow data shows mc_b confluence misses fires because the 15m TTL expired before an Otter trigger arrived, bump that TF's TTL up.
+- **NEW (PR 3c)** — **PA validator strictness.** Currently `require_all: true` on vwap_alignment / volume_confirmation / structure_alignment. If shadow data shows we're rejecting too many real winners (e.g. low-volume trends that work anyway), soften via `require_all: false` + `min_validators_passed: 2`.
+- **NEW (PR 3c)** — **HTF regime knobs.** EMA periods (20/50/200), ADX threshold (20), composite weights (0.5/0.3/0.2), regime score thresholds (0.7/0.3 each side), proximity_block_pct (0.3%), funding_extreme threshold (0.05%) — none of these have been tuned against live data, only spec-defaulted.
 
-**Why deferred:** Rule logic is high-leverage; rushing it adds noise to the backtest baseline. Better to accumulate ~30+ live paper trades + a calibration session looking at the audit log of fired/skipped decisions before adjusting.
+**Why deferred:** Rule logic is high-leverage; rushing it adds noise to the backtest baseline. Better to accumulate ~30+ live paper trades + a calibration session looking at the audit log of fired/skipped decisions before adjusting. PR 3c shadow audits (`pa_validation_decision`, `htf_gate_decision`) are designed for exactly this purpose — the replay script `scripts/replay_pr3_cutover.py` aggregates them.
 
-**Files:** `config/strategies.yaml` (`bitunix_futures.scoring` block), `trading_corp/agents/strategies/bitunix_confluence.py`, `trading_corp/web/routes.py` (the `_analyze_ira_covered_call` action picker).
+**Files:** `config/strategies.yaml` (`bitunix_futures.scoring`, `bitunix_futures.pa_validation`, `bitunix_futures.htf_regime` blocks), `trading_corp/agents/strategies/bitunix_confluence.py`, `trading_corp/agents/strategies/bitunix_pa_validation.py`, `trading_corp/agents/strategies/bitunix_htf_regime.py`, `trading_corp/web/routes.py` (the `_analyze_ira_covered_call` action picker).
 
 ---
 
