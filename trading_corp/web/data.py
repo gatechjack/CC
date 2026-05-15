@@ -1876,10 +1876,16 @@ def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
                     last_eval = entry
                 recent_evals.append(entry)
 
-            # PR 6 — recent fires sourced from paper_trade_record so we
-            # get extra_json (v2 fields: tp1/tp2/tp3, sl_method, tp2_method,
-            # htf_size_multiplier, funding_rate_at_decision). The legacy
-            # would_have_placed audit doesn't carry these.
+            # PR 6 — recent fires sourced from paper_trade_record (NOT the
+            # legacy `would_have_placed` audit) so we can surface v2
+            # trade-plan extras: tp1/tp2/tp3, sl_method, tp2_method,
+            # htf_size_multiplier, funding_rate_at_decision.
+            #
+            # Tradeoff: pre-PR-5 audit-only fires (where no paper_trade_record
+            # row was written) NO LONGER appear in this panel. Acceptable
+            # today since BitUnix is paper-only and every fire writes a
+            # paper_trade_record row. If a non-paper division ever reuses
+            # this view shape, revisit — they may need a UNION fallback.
             fire_rows = conn.execute(
                 "SELECT order_id, ts, side, qty, entry_reference_price, "
                 "stop_price, tp_price, tier, source_signal, result, "

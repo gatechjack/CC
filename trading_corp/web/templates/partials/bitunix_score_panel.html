@@ -282,7 +282,7 @@
                 {{ '%.2f'|format(f.htf_size_multiplier) }}×
               {% else %}—{% endif %}
               {% if f.fee_floor_dollars %}
-                <div class="text-[9px] text-muted">fee≥${{ '%.2f'|format(f.fee_floor_dollars) }}</div>
+                <div class="text-[9px] text-muted" title="Minimum TP distance needed to clear round-trip fees">min-TP≥${{ '%.2f'|format(f.fee_floor_dollars) }}</div>
               {% endif %}
             </td>
             <td class="p-2 text-muted">
