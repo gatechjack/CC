@@ -192,18 +192,26 @@ Full BitUnix-adjacent suite (`test_bitunix_*` + `test_trade_plan` + `test_swing`
 
 **Architectural note — dormant in paper mode by design:** the legacy paper resolver treats trades as monolithic (single `result` field), so `list_open_positions` returns `filled_legs=[]` for all paper trades. The decision logic only fires when broker truth provides real per-leg fill state — which means PR 5 reconciler is dormant in paper mode until either Phase 4 lands or the resolver-feedback follow-up is wired. Tests inject `filled_legs` directly to exercise the lifecycle.
 
-### trade-plan PR 6 — Dashboard refresh (combined PR-3c semantics + MVP fields)
+### trade-plan PR 6 — Dashboard refresh (combined PR-3c semantics + MVP fields)  ✅ SHIPPED
 
 Single combined dashboard pass per user's "option (iii)" choice 2026-05-15. Originally split as path (a) (refresh for PR-3c) + a later dashboard pass for MVP fields, but combined since revisiting twice = wasted work.
 
-**Edits:**
-- `bitunix_score_panel.html` — relabel PA factors as "validators (not scored)"; drop guard-penalty UI; score-decided contributions list gains TF badge (3m / 15m / 30m / log-only)
-- NEW `bitunix_pa_panel.html` — reads `pa_validation_decision` audit: PASS/REJECT + which validators failed + rush-fall trigger
-- NEW `bitunix_decision_flow.html` — score → PA → HTF → outcome timeline for the latest fire
-- Recent-fires table additions: `htf_size_multiplier` (PR 5f), `funding_rate_at_decision` (PR 5e), `tp1_price` / `tp2_price` / `tp3_price` (trade-plan PR 4), current SL lifecycle state (from reconciler — depends on PR 5), `sl_method`, `tp2_method`, fee floor
-- Files: `bitunix_score_panel.html` (modify), NEW `bitunix_pa_panel.html`, NEW `bitunix_decision_flow.html`, `web/data.py` (extend), `web/templates/division.html` (include partials)
+**Shipped:**
+- `bitunix_score_panel.html` — PA factor weight numbers dropped; guard-penalty UI removed; recent-evals + recent-fires + last-eval all carry TF badge via `_infer_alert_tf` heuristic
+- NEW `bitunix_pa_panel.html` (145 LOC) — reads `pa_validation_decision` audit: PASS/REJECT + passed/failed validators + rush-fall + counts over last 10
+- NEW `bitunix_decision_flow.html` (115 LOC) — score → PA → HTF → outcome timeline for last 5 fires, signal-keyed ±60s join across the three audit kinds
+- `web/data.py` — new builders `build_bitunix_pa_view`, `build_bitunix_decision_flow_view`; helpers `_infer_alert_tf`, `_load_latest_sl_lifecycle_states`, `_bitunix_fee_config`; recent-fires now sources from `paper_trade_record` (not `would_have_placed` audit) so v2 extras come through
+- `web/templates/division.html` — both new partials wired behind `view.bitunix_pa` / `view.bitunix_decision_flow` truthy checks
 
-Estimated: ~1 day.
+### trade-plan PR 6 followups  *(NEW — filed as part of PR 6 commit)*
+
+Minor gaps that didn't block PR 6 ship — pick up before flipping `htf_gate.mode: shadow → enforce`.
+
+- **P3 — Unit tests for new view builders.** `build_bitunix_pa_view` + `build_bitunix_decision_flow_view` have non-trivial SQL + JSON-parse + ±60s join logic and no test coverage. Pre-PR-6 BitUnix suite is 262 tests; PR 6 added 0. Pattern to follow: existing view tests in `tests/test_web_data*.py` (sqlite in-memory + audit-row fixtures). ~1-2h.
+
+- **P3 — Recent-fires data source documentation.** PR 6 switched the recent-fires query from `audit_event(kind='would_have_placed')` to `paper_trade_record WHERE division='bitunix_futures'`. Intentional (v2 extras live in `paper_trade_record.extra_json`, not the legacy audit), but pre-PR-5 audit-only fires no longer appear in the panel. Acceptable today since BitUnix is paper-only, but worth a comment + a CLAUDE.md note before any non-paper division reuses this view shape.
+
+- **P4 — `fee_floor_dollars` column relabeling.** Formula in `build_bitunix_score_view` is `2 * round_trip_cost_pct * entry_px` — represents min-TP-distance-per-unit-base-asset for the fee-clearing floor, not "fee will be at least $X". Header reads `fee≥$X` which is mildly misleading. Rename to `min-TP≥$X` or similar. 1-line cosmetic.
 
 ### Sequencing relative to gate-flip PR 4 below
 

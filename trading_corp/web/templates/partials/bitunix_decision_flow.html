@@ -1,0 +1,115 @@
+{# trade-plan PR 6 — score → PA → HTF → outcome timeline.
+
+   Last 5 score-decided audits joined to the closest pa_validation_decision
+   and htf_gate_decision audits by trigger_signal + ts (within ±60s).
+   Surfaces the full decision chain so a failed fire's "where did this
+   die?" is one glance: did scoring not hit fire threshold, did PA reject,
+   did HTF gate hard-zero, did sizing skip?
+
+   Refresh: 30s htmx interval.
+#}
+{% if view.bitunix_decision_flow %}
+{% set bdf = view.bitunix_decision_flow %}
+
+<section class="bg-pane border border-edge rounded-lg p-4"
+         hx-get="/division/bitunix_futures"
+         hx-trigger="every 30s"
+         hx-select="#bitunix-decision-flow"
+         hx-target="#bitunix-decision-flow"
+         hx-swap="outerHTML"
+         id="bitunix-decision-flow">
+  <header class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Decision flow · score → PA → HTF → outcome (last 5)
+    </h2>
+    <span class="text-[11px] text-muted font-mono">
+      ±60s join window per fire
+    </span>
+  </header>
+
+  {% if bdf.flows %}
+  <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
+    <table class="w-full text-xs font-mono">
+      <thead class="text-muted text-[10px] uppercase">
+        <tr class="border-b border-edge">
+          <th class="text-left p-2">When</th>
+          <th class="text-left p-2">TF</th>
+          <th class="text-left p-2">Trigger</th>
+          <th class="text-left p-2">Score</th>
+          <th class="text-left p-2">PA</th>
+          <th class="text-left p-2">HTF gate</th>
+          <th class="text-left p-2">Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in bdf.flows %}
+        <tr class="border-b border-edge/40 hover:bg-pane-2/30 align-top">
+          <td class="p-2 text-muted">{{ f.ts_et }}</td>
+          <td class="p-2">
+            {% if f.alert_tf %}
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-pane border border-edge">{{ f.alert_tf }}</span>
+            {% else %}<span class="text-muted">—</span>{% endif %}
+          </td>
+          <td class="p-2 text-mono">{{ f.trigger_signal or '—' }}</td>
+          <td class="p-2">
+            <div class="{% if f.score.tier == 'PREMIUM' %}text-gain font-semibold
+                       {% elif f.score.tier == 'STANDARD' %}text-gain
+                       {% elif f.score.tier == 'WEAK' %}text-mono
+                       {% else %}text-muted{% endif %}">
+              {{ f.score.tier or '—' }}
+            </div>
+            <div class="text-[10px] text-muted">
+              {{ f.score.side or '—' }} · net={{ f.score.net if f.score.net is not none else '—' }}
+            </div>
+          </td>
+          <td class="p-2">
+            {% if f.pa %}
+              <div class="font-semibold
+                         {% if f.pa.decision == 'PASS' %}text-gain
+                         {% elif f.pa.decision == 'REJECT' %}text-loss
+                         {% else %}text-muted{% endif %}">
+                {{ f.pa.decision }}
+                {% if f.pa.rush_fall %} <span class="text-[9px] text-loss">⚠RF</span>{% endif %}
+              </div>
+              {% if f.pa.failed %}
+                <div class="text-[10px] text-loss">{{ f.pa.failed|join(', ') }}</div>
+              {% endif %}
+              <div class="text-[9px] text-muted">{{ f.pa.mode or '—' }}</div>
+            {% else %}
+              <span class="text-muted text-[10px] italic">no PA audit</span>
+            {% endif %}
+          </td>
+          <td class="p-2">
+            {% if f.htf %}
+              <div class="text-mono">
+                {{ f.htf.regime or '—' }}
+                <span class="text-muted text-[10px]">
+                  ({{ '%.2f'|format(f.htf.size_multiplier) if f.htf.size_multiplier is not none else '—' }}×)
+                </span>
+              </div>
+              <div class="text-[10px] text-muted">{{ f.htf.permission_reason or '' }}</div>
+              <div class="text-[9px] text-muted">{{ f.htf.mode or '—' }}</div>
+            {% else %}
+              <span class="text-muted text-[10px] italic">no HTF audit</span>
+            {% endif %}
+          </td>
+          <td class="p-2 text-[11px]
+                     {% if f.outcome == 'placed' %}text-gain font-semibold
+                     {% elif f.outcome and f.outcome.startswith('skipped') %}text-muted
+                     {% elif f.outcome and f.outcome.startswith('rejected') %}text-loss
+                     {% elif f.outcome and f.outcome.startswith('error') %}text-loss
+                     {% else %}text-muted{% endif %}">
+            {{ f.outcome or '—' }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="bg-pane-2/30 border border-edge rounded-md p-4 text-xs text-muted font-mono italic">
+    No score evaluations yet — awaiting first webhook.
+  </div>
+  {% endif %}
+</section>
+{% endif %}

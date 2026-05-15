@@ -210,6 +210,19 @@
       {% include "partials/bitunix_htf_panel.html" %}
     {% endif %}
 
+    <!-- trade-plan PR 6 — PA validators (not scored) panel.
+         Surfaces pa_validation_decision audit trail. Renders only when
+         PA config is wired on the observer. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_pa %}
+      {% include "partials/bitunix_pa_panel.html" %}
+    {% endif %}
+
+    <!-- trade-plan PR 6 — score → PA → HTF → outcome decision-flow
+         timeline. Last 5 fires joined across all three audit kinds. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_decision_flow %}
+      {% include "partials/bitunix_decision_flow.html" %}
+    {% endif %}
+
     <!-- Paper-trade win rate (Phase C of would_have_placed enrichment) -->
     {% if view.paper_trade_summary and view.paper_trade_summary.totals.all.n %}
     <section class="bg-pane border border-edge rounded-lg p-4">

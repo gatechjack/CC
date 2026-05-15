@@ -1,0 +1,145 @@
+{# trade-plan PR 6 — PA validators (not scored) panel.
+
+   Surfaces the `pa_validation_decision` audit trail from PR 3c. PA
+   validators are HARD GATES (pass/reject), not scored contributors —
+   they reject trades after scoring decides "would fire" but before
+   the order proposal is built.
+
+   Modes: `shadow` (logged but doesn't block) or `enforce` (rejects).
+
+   Refresh: 30s htmx interval.
+#}
+{% if view.bitunix_pa %}
+{% set bp = view.bitunix_pa %}
+
+<section class="bg-pane border border-edge rounded-lg p-4"
+         hx-get="/division/bitunix_futures"
+         hx-trigger="every 30s"
+         hx-select="#bitunix-pa-panel"
+         hx-target="#bitunix-pa-panel"
+         hx-swap="outerHTML"
+         id="bitunix-pa-panel">
+  <header class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Validators (not scored) · PA gates
+    </h2>
+    <div class="flex items-center gap-2 text-[11px] font-mono">
+      {% if bp.enabled %}
+        <span class="text-gain font-semibold">● PA ACTIVE</span>
+      {% else %}
+        <span class="text-muted">○ PA DORMANT</span>
+      {% endif %}
+      {% if bp.mode %}
+        <span class="text-muted">·</span>
+        <span class="{% if bp.mode == 'enforce' %}text-loss{% else %}text-mono{% endif %} font-semibold">
+          {{ bp.mode|upper }}
+        </span>
+      {% endif %}
+      <span class="text-muted">·</span>
+      <span class="text-muted">
+        last 10: PASS={{ bp.counts.pass }} · REJECT={{ bp.counts.reject }} · rush_fall={{ bp.counts.rush_fall }}
+      </span>
+    </div>
+  </header>
+
+  {% if bp.latest %}
+  {# Latest decision summary card #}
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Latest decision
+      </div>
+      <div class="text-2xl font-mono font-semibold
+                  {% if bp.latest.decision == 'PASS' %}text-gain
+                  {% elif bp.latest.decision == 'REJECT' %}text-loss
+                  {% else %}text-muted{% endif %}">
+        {{ bp.latest.decision or '—' }}
+      </div>
+      <div class="text-[11px] text-muted font-mono mt-1">
+        {{ bp.latest.ts_et }} · {{ bp.latest.trigger_signal or '—' }}
+      </div>
+    </div>
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Passed validators ({{ bp.latest.passed|length }})
+      </div>
+      {% if bp.latest.passed %}
+        <div class="text-xs font-mono text-gain space-y-0.5">
+          {% for v in bp.latest.passed %}<div>✓ {{ v }}</div>{% endfor %}
+        </div>
+      {% else %}
+        <div class="text-xs text-muted font-mono italic">none</div>
+      {% endif %}
+    </div>
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Failed validators ({{ bp.latest.failed|length }})
+      </div>
+      {% if bp.latest.failed %}
+        <div class="text-xs font-mono text-loss space-y-0.5">
+          {% for v in bp.latest.failed %}<div>✗ {{ v }}</div>{% endfor %}
+        </div>
+      {% else %}
+        <div class="text-xs text-muted font-mono italic">none</div>
+      {% endif %}
+      {% if bp.latest.rush_fall_triggered %}
+        <div class="text-[11px] text-loss font-mono mt-2">⚠ rush_fall triggered</div>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="bg-pane-2/30 border border-edge rounded-md p-3 mb-3">
+    <div class="text-xs text-muted font-mono italic">
+      No PA validation decisions yet — awaiting first qualifying score-fire.
+    </div>
+  </div>
+  {% endif %}
+
+  {# Recent decisions table #}
+  {% if bp.recent %}
+  <div>
+    <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+      Recent decisions ({{ bp.recent|length }})
+    </div>
+    <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
+      <table class="w-full text-xs font-mono">
+        <thead class="text-muted text-[10px] uppercase">
+          <tr class="border-b border-edge">
+            <th class="text-left p-2">When</th>
+            <th class="text-left p-2">Trigger</th>
+            <th class="text-left p-2">Score side/tier</th>
+            <th class="text-left p-2">Decision</th>
+            <th class="text-left p-2">Failed</th>
+            <th class="text-left p-2">Mode</th>
+            <th class="text-left p-2">Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in bp.recent %}
+          <tr class="border-b border-edge/40 hover:bg-pane-2/30">
+            <td class="p-2 text-muted">{{ d.ts_et }}</td>
+            <td class="p-2 text-mono">{{ d.trigger_signal or '—' }}</td>
+            <td class="p-2 text-muted">
+              {{ (d.score_side or '—') }} / {{ (d.score_tier or '—') }}
+            </td>
+            <td class="p-2 font-semibold
+                       {% if d.decision == 'PASS' %}text-gain
+                       {% elif d.decision == 'REJECT' %}text-loss
+                       {% else %}text-muted{% endif %}">
+              {{ d.decision }}
+              {% if d.rush_fall_triggered %} <span class="text-[9px] text-loss">⚠RF</span>{% endif %}
+            </td>
+            <td class="p-2 text-loss text-[11px]">
+              {% if d.failed %}{{ d.failed|join(', ') }}{% else %}—{% endif %}
+            </td>
+            <td class="p-2 text-muted">{{ d.mode or '—' }}</td>
+            <td class="p-2 text-muted text-[11px]">{{ d.reason or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
