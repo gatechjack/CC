@@ -293,3 +293,62 @@ def test_invalid_side_raises(cfg, fees):
             resistance=None, support=None,
             cfg=cfg, fees=fees,
         )
+
+
+# ── from_dict (PR 4) ────────────────────────────────────────────────
+
+
+def test_fee_config_from_dict_empty():
+    f = FeeConfig.from_dict({})
+    d = FeeConfig()
+    assert f.taker_fee_pct == d.taker_fee_pct
+    assert f.maker_fee_pct == d.maker_fee_pct
+
+
+def test_fee_config_from_dict_overrides():
+    f = FeeConfig.from_dict({
+        "taker_pct": 0.001,
+        "maker_pct": 0.0005,
+        "slippage_pct": 0.0001,
+        "entry_is_taker": False,
+        "tp_is_maker": True,
+    })
+    assert f.taker_fee_pct == pytest.approx(0.001)
+    assert f.maker_fee_pct == pytest.approx(0.0005)
+    assert f.slippage_pct == pytest.approx(0.0001)
+    assert f.entry_is_taker is False
+    assert f.tp_is_maker is True
+
+
+def test_fee_config_from_dict_none_returns_defaults():
+    f = FeeConfig.from_dict(None)
+    d = FeeConfig()
+    assert f == d
+
+
+def test_strategy_config_from_dict_empty():
+    s = StrategyConfig.from_dict({})
+    d = StrategyConfig()
+    assert s == d
+
+
+def test_strategy_config_from_dict_partial_override():
+    s = StrategyConfig.from_dict({
+        "min_stop_atr_mult": 0.3,
+        "tp1_r_target": 0.7,
+        "htf_minutes": 30,
+    })
+    assert s.min_stop_atr_mult == pytest.approx(0.3)
+    assert s.tp1_r_target == pytest.approx(0.7)
+    assert s.htf_minutes == 30
+    # Other fields fall back to defaults
+    d = StrategyConfig()
+    assert s.max_stop_atr_mult == d.max_stop_atr_mult
+    assert s.tp2_r_default == d.tp2_r_default
+    assert s.tp3_r_target == d.tp3_r_target
+
+
+def test_strategy_config_from_dict_none_returns_defaults():
+    s = StrategyConfig.from_dict(None)
+    d = StrategyConfig()
+    assert s == d

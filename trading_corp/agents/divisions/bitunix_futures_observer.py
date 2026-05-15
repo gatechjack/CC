@@ -70,6 +70,16 @@ from trading_corp.agents.strategies.bitunix_pa_validation import (
     PAValidationDecision,
     evaluate_pa_validation,
 )
+# PR 4 — adaptive trade plan (MVP + Option C). See
+# trading_corp_bitunix_strategy_gaps.md for the decided design.
+from trading_corp.agents.strategies.swing import get_recent_swing
+from trading_corp.agents.strategies.levels import get_htf_levels
+from trading_corp.agents.strategies.trade_plan import (
+    FeeConfig,
+    StrategyConfig,
+    TradePlan,
+    build_trade_plan,
+)
 
 
 # ── PR 3c — chart-timeframe normalization ───────────────────────────────
@@ -201,6 +211,15 @@ TIER_SIZING: dict[str, dict[str, float]] = {
 
 ALLOWED_SYMBOLS = {"BTC/USD", "BTCUSD", "BTCUSDT", "BTCUSDT.P"}
 TRADE_SYMBOL = "BTC/USDT.P"            # canonical symbol used in ProposedOrder
+
+
+# PR 4 — helper for v2 pre-flight guard skips.
+def _make_skip_plan(entry: float, reason: str) -> TradePlan:
+    return TradePlan(
+        entry=entry, stop_loss=0.0, tp1=0.0, tp2=0.0, tp3=0.0,
+        sl_method="", tp2_method="", risk_per_unit=0.0,
+        skip_reason=reason,
+    )
 
 
 # ====================================================================
@@ -416,6 +435,13 @@ class BitunixFuturesObserver:
         htf_config: HTFRegimeConfig | None = None,
         pa_config: PAValidationConfig | None = None,
         htf_gate_mode: str = "off",          # "off" | "shadow" | "enforce"
+        # PR 4 — adaptive trade plan (MVP + Option C). When both configs
+        # are set, the score path uses `_build_proposal_v2` (structure-
+        # preferred SL + 3-leg TP) instead of the legacy geometric path.
+        # Defaults to None on both so callers without YAML still see
+        # pre-PR-4 behavior. Activation = YAML `trade_plan.enabled: true`.
+        trade_plan_config: StrategyConfig | None = None,
+        fee_config: FeeConfig | None = None,
     ) -> None:
         self.db_url = db_url
         self.risk_agent = risk_agent
@@ -431,6 +457,9 @@ class BitunixFuturesObserver:
         self.htf_provider = htf_provider
         self.htf_config = htf_config
         self.pa_config = pa_config
+        # PR 4 — adaptive trade plan configs. None means legacy path.
+        self.trade_plan_config = trade_plan_config
+        self.fee_config = fee_config
         # Normalize the gate mode to one of the three known values.
         self.htf_gate_mode = (
             htf_gate_mode.lower() if isinstance(htf_gate_mode, str) else "off"
@@ -1003,18 +1032,35 @@ class BitunixFuturesObserver:
         # Reuse the Phase 3.1 sizing math — same TIER_SIZING table, same
         # effective-risk cap, same R:R floor.
         trigger_side_str = "bull" if verdict_score.side == _ScoreSide.BUY else "bear"
-        proposal = self._build_proposal(
-            tier=verdict_score.tier.value,
-            trigger_side=trigger_side_str,
-            trigger_signal=(payload.get("signal") or "").strip().lower(),
-            entry_price=entry_price,
-            account_equity=account_equity,
-            atr_3m=atr_3m,
-        )
-        if proposal.proposed_order is None:
-            self._log_score_decision(payload, verdict_score, "skipped_sizing",
-                                     note=proposal.reason)
-            return
+        # PR 4 — dispatch to adaptive trade-plan path when both configs
+        # are wired. Otherwise stick with the legacy geometric path.
+        if self.trade_plan_config is not None and self.fee_config is not None:
+            proposal, plan, structural_inputs = self._build_proposal_v2(
+                tier=verdict_score.tier.value,
+                trigger_side=trigger_side_str,
+                trigger_signal=(payload.get("signal") or "").strip().lower(),
+                entry_price=entry_price,
+                account_equity=account_equity,
+                atr_3m=atr_3m,
+            )
+            self._log_trade_plan_decision(payload, plan, structural_inputs, verdict_score)
+            if proposal.proposed_order is None:
+                self._log_score_decision(payload, verdict_score, "skipped_trade_plan",
+                                         note=plan.skip_reason or proposal.reason)
+                return
+        else:
+            proposal = self._build_proposal(
+                tier=verdict_score.tier.value,
+                trigger_side=trigger_side_str,
+                trigger_signal=(payload.get("signal") or "").strip().lower(),
+                entry_price=entry_price,
+                account_equity=account_equity,
+                atr_3m=atr_3m,
+            )
+            if proposal.proposed_order is None:
+                self._log_score_decision(payload, verdict_score, "skipped_sizing",
+                                         note=proposal.reason)
+                return
 
         # ── PR 3c: apply HTF size multiplier (enforce mode only) ──
         # Pullback / bounce sizes get scaled down per the matrix. The
@@ -1590,6 +1636,237 @@ class BitunixFuturesObserver:
             tp_price=tp_price,
             rr_ratio=rr,
         )
+
+    # ── PR 4 — adaptive trade plan (MVP + Option C) ───────────────────
+
+    def _build_proposal_v2(
+        self,
+        *,
+        tier: str,
+        trigger_side: str,
+        trigger_signal: str,
+        entry_price: float,
+        account_equity: float,
+        atr_3m: float | None = None,
+    ) -> tuple[OrderProposal, TradePlan, dict[str, Any]]:
+        """PR 4 adaptive-trade-plan path. Composes swing.py + levels.py
+        + trade_plan.build_trade_plan to produce a TradePlan, then sizes
+        per existing tier × effective-risk-cap math.
+
+        Returns (OrderProposal, TradePlan, structural_inputs). The plan
+        and inputs are populated even on skips so we can write a full
+        audit row regardless of outcome.
+        """
+        assert self.trade_plan_config is not None and self.fee_config is not None, \
+            "_build_proposal_v2 requires both trade_plan_config and fee_config"
+        cfg = self.trade_plan_config
+        fees = self.fee_config
+
+        # Pre-flight guards (parity with legacy _build_proposal).
+        if tier not in TIER_SIZING:
+            plan = _make_skip_plan(entry_price, "tier_not_sized")
+            return OrderProposal(proposed_order=None, reason=plan.skip_reason), plan, {}
+        if entry_price <= 0:
+            plan = _make_skip_plan(entry_price, "entry_price_le_0")
+            return OrderProposal(proposed_order=None, reason=plan.skip_reason), plan, {}
+        if account_equity <= 0:
+            plan = _make_skip_plan(entry_price, "account_equity_le_0")
+            return OrderProposal(proposed_order=None, reason=plan.skip_reason), plan, {}
+
+        # Structural inputs from the 3m bar cache. Empty cache → all None;
+        # build_trade_plan falls back to ATR-only SL + default 1R TP2.
+        swing_low: float | None = None
+        swing_high: float | None = None
+        resistance: float | None = None
+        support: float | None = None
+        bars = list(self.bar_cache.bars) if self.bar_cache and self.bar_cache.bars else []
+        current_idx = len(bars) - 1
+        if current_idx >= 0:
+            try:
+                swing_low = get_recent_swing(
+                    bars, current_idx, side="low",
+                    n=cfg.swing_n, max_lookback=cfg.swing_max_lookback,
+                )
+                swing_high = get_recent_swing(
+                    bars, current_idx, side="high",
+                    n=cfg.swing_n, max_lookback=cfg.swing_max_lookback,
+                )
+                resistance, support = get_htf_levels(
+                    bars, current_idx,
+                    htf_minutes=cfg.htf_minutes,
+                    lookback_bars_htf=cfg.htf_lookback_bars,
+                    n=cfg.swing_n,
+                )
+            except Exception as e:
+                log.warning("bitunix_observer: structural-input compute failed: %s", e)
+
+        atr_used = atr_3m if (atr_3m is not None and atr_3m > 0) else (entry_price * ATR_FALLBACK_PCT)
+        atr_source = "live_atr_14" if (atr_3m is not None and atr_3m > 0) else "estimate_0.04pct"
+
+        side = "buy" if trigger_side == "bull" else "sell"
+        plan = build_trade_plan(
+            entry=entry_price, side=side, atr=atr_used,
+            swing_low=swing_low, swing_high=swing_high,
+            resistance=resistance, support=support,
+            cfg=cfg, fees=fees,
+        )
+
+        structural_inputs: dict[str, Any] = {
+            "swing_low": swing_low,
+            "swing_high": swing_high,
+            "resistance": resistance,
+            "support": support,
+            "atr_used": atr_used,
+            "atr_source": atr_source,
+        }
+
+        if not plan.should_trade:
+            return (
+                OrderProposal(
+                    proposed_order=None,
+                    reason=plan.skip_reason or "trade_plan_skip",
+                    stop_distance_pct=(plan.risk_per_unit / entry_price) if entry_price > 0 else None,
+                ),
+                plan,
+                structural_inputs,
+            )
+
+        # Sizing — same effective-risk cap math as legacy _build_proposal.
+        tier_cfg = TIER_SIZING[tier]
+        target_size_pct = float(tier_cfg["size_pct"])
+        leverage = float(tier_cfg["leverage"])
+        stop_distance_pct = plan.risk_per_unit / entry_price
+        denominator = leverage * stop_distance_pct
+        if denominator <= 0:
+            return (
+                OrderProposal(proposed_order=None, reason="zero leverage*stop"),
+                plan, structural_inputs,
+            )
+        max_pct_for_risk_cap = EFFECTIVE_RISK_PER_TRADE_PCT / denominator
+        actual_size_pct = min(target_size_pct, max_pct_for_risk_cap)
+        actual_effective_risk = actual_size_pct * leverage * stop_distance_pct
+        notional = account_equity * actual_size_pct * leverage
+        qty = notional / entry_price
+        if qty <= 0:
+            return (
+                OrderProposal(proposed_order=None, reason="qty rounded to 0"),
+                plan, structural_inputs,
+            )
+
+        order_side = side  # "buy" or "sell"
+
+        # 3-leg tp_plan with prices + per-leg stop_action. Read by the
+        # PR 5 reconciler to drive the SL lifecycle (BE → TP1 → trail).
+        def _leg_r(price: float) -> float:
+            return abs(price - plan.entry) / plan.risk_per_unit if plan.risk_per_unit > 0 else 0.0
+
+        tp_plan_payload = [
+            {"leg": "tp1", "fraction": plan.tp1_qty_fraction, "target_r": round(_leg_r(plan.tp1), 3),
+             "price": plan.tp1, "stop_action": "move_to_breakeven"},
+            {"leg": "tp2", "fraction": plan.tp2_qty_fraction, "target_r": round(_leg_r(plan.tp2), 3),
+             "price": plan.tp2, "stop_action": "move_to_tp1"},
+            {"leg": "tp3", "fraction": plan.tp3_qty_fraction, "target_r": round(_leg_r(plan.tp3), 3),
+             "price": plan.tp3, "stop_action": "trail_atr"},
+        ]
+
+        order = ProposedOrder(
+            strategy="bitunix_futures",
+            symbol=TRADE_SYMBOL,
+            side=order_side,
+            qty=qty,
+            order_type="market",
+            rationale=(
+                f"tier={tier}, trigger={trigger_signal}, "
+                f"sl={plan.sl_method}, tp2={plan.tp2_method}, "
+                f"size={actual_size_pct*100:.3f}% @ {leverage:g}x, "
+                f"stop={stop_distance_pct*100:.3f}% (eff_risk={actual_effective_risk*100:.3f}%)"
+            ),
+            extra={
+                "tier": tier,
+                "trigger_signal": trigger_signal,
+                "trigger_side": trigger_side,
+                "leverage": leverage,
+                "size_pct_equity": actual_size_pct,
+                "size_pct_target": target_size_pct,
+                "effective_risk_pct": actual_effective_risk,
+                "stop_distance_pct": stop_distance_pct,
+                "tp_plan": tp_plan_payload,
+                "tp_plan_version": "v2",
+                "sl_method": plan.sl_method,
+                "tp2_method": plan.tp2_method,
+                "atr_source": atr_source,
+                "entry_reference_price": entry_price,
+                "stop_price": plan.stop_loss,
+                "tp1_price": plan.tp1,
+                "tp2_price": plan.tp2,
+                "tp3_price": plan.tp3,
+                "take_profit_price": plan.tp3,  # back-compat with paper_trade_record reader
+                "source_signal": trigger_signal,
+                "max_dollar_risk": account_equity * actual_effective_risk,
+            },
+        )
+
+        return (
+            OrderProposal(
+                proposed_order=order,
+                reason="ok",
+                effective_risk_pct=actual_effective_risk,
+                target_size_pct=target_size_pct,
+                leverage=leverage,
+                stop_distance_pct=stop_distance_pct,
+                stop_price=plan.stop_loss,
+                tp_price=plan.tp3,
+            ),
+            plan,
+            structural_inputs,
+        )
+
+    def _log_trade_plan_decision(
+        self,
+        payload: dict[str, Any],
+        plan: TradePlan,
+        structural_inputs: dict[str, Any],
+        verdict_score: Any,
+    ) -> None:
+        """PR 4 — `trade_plan_decision` audit row. Written for every
+        v2-path eval (skip or not) so post-deploy review can reconstruct
+        WHY a trade fired or got rejected.
+        """
+        try:
+            payload_dict = {
+                "strategy": "bitunix_futures",
+                "division": "bitunix_futures",
+                "trigger_signal": (payload.get("signal") or "").strip().lower(),
+                "trigger_source": payload.get("_source"),
+                "score_side": verdict_score.side.value if hasattr(verdict_score, "side") else None,
+                "score_tier": verdict_score.tier.value if hasattr(verdict_score, "tier") else None,
+                "should_trade": plan.should_trade,
+                "skip_reason": plan.skip_reason,
+                "entry": plan.entry,
+                "stop_loss": plan.stop_loss if plan.should_trade else None,
+                "tp1": plan.tp1 if plan.should_trade else None,
+                "tp2": plan.tp2 if plan.should_trade else None,
+                "tp3": plan.tp3 if plan.should_trade else None,
+                "sl_method": plan.sl_method,
+                "tp2_method": plan.tp2_method,
+                "risk_per_unit": plan.risk_per_unit,
+                "tp1_qty_fraction": plan.tp1_qty_fraction,
+                "tp2_qty_fraction": plan.tp2_qty_fraction,
+                "tp3_qty_fraction": plan.tp3_qty_fraction,
+                "inputs": structural_inputs,
+            }
+            with db.connect(self.db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+                    (
+                        _utc_now_iso(),
+                        "bitunix_futures",
+                        "trade_plan_decision",
+                        json.dumps(payload_dict, default=str),
+                    ),
+                )
+        except Exception as e:
+            log.warning("bitunix_observer: trade_plan_decision audit failed: %s", e)
 
     # ── async order flow: classify → propose → risk → place → notify ─
 

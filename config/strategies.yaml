@@ -1269,6 +1269,61 @@ bitunix_futures:
   htf_gate:
     mode: shadow
 
+  # ============================================================
+  # PR 4 — Adaptive entry/SL/TP plan (MVP + Option C trail).
+  # Decided 2026-05-15 — see trading_corp_bitunix_strategy_gaps.md.
+  # When `trade_plan.enabled: true`, the observer's score path uses
+  # `_build_proposal_v2` instead of the legacy geometric placement:
+  #   * SL: structure-preferred (recent fractal swing ± buffer) with
+  #     ATR fallback when swing distance is out of [min, max] × ATR.
+  #     swing_too_close → skip trade entirely.
+  #   * TP1: max(0.5R, 2 × round-trip fee × entry). 25% qty. Skips
+  #     trade if fee floor exceeds TP2 distance.
+  #   * TP2: 1R default; snap to HTF (15m) resistance/support if level
+  #     falls in [0.5R, 1.3R] band. 50% qty.
+  #   * TP3: fixed 2.5R. 25% qty. Trail handled by PR 5 reconciler
+  #     (move SL to BE after TP1 → to TP1-price after TP2 → Chandelier
+  #     trail post-TP2).
+  # Defaults preserve pre-PR-4 behavior (enabled: false).
+  # ============================================================
+  trade_plan:
+    enabled: false              # PR 4 — flip to true to activate v2 path
+    # Stop-loss placement (ATR-multiple bounds for multi-symbol)
+    min_stop_atr_mult: 0.5
+    max_stop_atr_mult: 2.5
+    atr_multiplier: 1.5
+    swing_buffer_pct: 0.0005    # 0.05% beyond the swing point
+    swing_n: 2                  # fractal symmetry (bars each side)
+    swing_max_lookback: 30      # 3m bars (~90 min)
+    # Take-profit plan
+    tp1_r_target: 0.5
+    tp1_min_profit_multiplier: 2.0
+    tp1_qty_fraction: 0.25
+    tp2_r_default: 1.0
+    tp2_qty_fraction: 0.50
+    tp3_r_target: 2.5
+    tp3_qty_fraction: 0.25
+    # HTF S/R level snap (TP2)
+    htf_minutes: 15
+    htf_lookback_bars: 40
+    resistance_min_r: 0.5
+    resistance_max_r: 1.3
+    resistance_buffer_pct: 0.0005
+
+  # ============================================================
+  # PR 4 — Fee schedule for trade-plan TP1 fee-floor math.
+  # Values are FRACTIONS (0.0004 == 0.04%) per codebase convention.
+  # Defaults are BitUnix Futures VIP3 + Experience Card as of
+  # 2026-05-15. ⚠ Experience Card may be time-limited — verify
+  # whether base VIP3 rate persists after expiry.
+  # ============================================================
+  fees:
+    taker_pct: 0.0004           # 0.04%
+    maker_pct: 0.00014          # 0.014%
+    slippage_pct: 0.00005       # 0.5 bps assumed
+    entry_is_taker: true        # market entry on signal bar
+    tp_is_maker: false          # MVP: market exits; revisit when limit fills mature
+
 
 # ── Polymarket Copy Trading (Phase 4+ placeholder; not yet implemented) ──
 # Documented here so future-Claude knows the slot exists. The

@@ -277,8 +277,12 @@ async def run(argv: list[str] | None = None) -> int:
     # historical EDA source (TV chart data) but is geo-blocked from US
     # IPs, so it's not viable as a live feed. Coinbase only supports
     # {1m, 5m, 15m, 1h, 6h, 1d} — no native 3m.
+    # PR 4 — bumped max_bars 60 → 200 so levels.py has ~40 fifteen-min
+    # buckets after resample for HTF S/R lookback. ATR(14) still works
+    # at any size ≥14 bars; the larger cache is harmless to the existing
+    # consumers.
     bitunix_bar_cache = LiveBarCache(
-        symbol="BTCUSDT", timeframe="3m", venue="bitunix", max_bars=60,
+        symbol="BTCUSDT", timeframe="3m", venue="bitunix", max_bars=200,
     )
     # PR 2 — Higher-Timeframe (HTF) regime caches. Three additional
     # LiveBarCaches polling 1H / 4H / 1D bars; consumed by the new
@@ -314,6 +318,9 @@ async def run(argv: list[str] | None = None) -> int:
     _scoring_config = None
     _pa_config = None
     _htf_gate_mode = "off"
+    _trade_plan_config = None       # PR 4 — adaptive trade plan
+    _fee_config = None              # PR 4 — fee schedule for TP1 fee floor
+    _bx_block: dict = {}            # PR 4 — surfaced outside try for from_dict downstream
     try:
         import yaml as _yaml
         from pathlib import Path as _Path
@@ -323,27 +330,45 @@ async def run(argv: list[str] | None = None) -> int:
         _strat_path = _Path(__file__).resolve().parent.parent / "config" / "strategies.yaml"
         with _strat_path.open() as _f:
             _strat_raw = _yaml.safe_load(_f)
-        _bx_block = _strat_raw.get("bitunix_futures", {})
+        _bx_block = _strat_raw.get("bitunix_futures", {}) or {}
         _scoring_config = BitUnixConfluenceConfig.from_dict(_bx_block)
         _pa_config = PAValidationConfig.from_dict(_bx_block)
         _htf_gate_mode = str(
             (_bx_block.get("htf_gate") or {}).get("mode", "off")
         ).lower()
+        # PR 4 — adaptive trade plan + fees. Activated only when
+        # `bitunix_futures.trade_plan.enabled: true` in YAML. Default
+        # (block missing or enabled=false) leaves the legacy geometric
+        # path active in the observer.
+        _tp_block = _bx_block.get("trade_plan") or {}
+        if _tp_block.get("enabled", False):
+            from trading_corp.agents.strategies.trade_plan import (
+                FeeConfig as _FeeConfig,
+                StrategyConfig as _TradePlanConfig,
+            )
+            _trade_plan_config = _TradePlanConfig.from_dict(_tp_block)
+            _fee_config = _FeeConfig.from_dict(_bx_block.get("fees"))
     except Exception as _e:
         log.warning(
-            "bitunix scoring/pa/htf config load failed: %s; running pre-PR-3c only",
+            "bitunix scoring/pa/htf/trade_plan config load failed: %s; running pre-PR-3c only",
             _e,
         )
-    # HTF regime config — for now use defaults (the pure classifier's
-    # numbers match the YAML block we just shipped). PR 3d can swap to
-    # an HTFRegimeConfig.from_dict if/when knobs need real-time tuning.
+    # PR 4 — HTF regime config from YAML (closes the dormant from_dict
+    # gap surfaced 2026-05-14). Block absent → defaults (with enabled=False).
     from trading_corp.agents.strategies.bitunix_htf_regime import HTFRegimeConfig
-    _htf_config = HTFRegimeConfig.defaults()
+    try:
+        _htf_config = HTFRegimeConfig.from_dict(_bx_block)
+    except Exception as _e:
+        log.warning("HTFRegimeConfig.from_dict failed: %s; using defaults", _e)
+        _htf_config = HTFRegimeConfig.defaults()
     log.info(
-        "BitUnix observer wiring: scoring=%s, pa_enabled=%s, htf_gate_mode=%s",
+        "BitUnix observer wiring: scoring=%s, pa_enabled=%s, htf_gate_mode=%s, "
+        "htf_regime_enabled=%s, trade_plan_active=%s",
         bool(_scoring_config and _scoring_config.enabled),
         bool(_pa_config and _pa_config.enabled),
         _htf_gate_mode,
+        bool(_htf_config and _htf_config.enabled),
+        bool(_trade_plan_config and _fee_config),
     )
     bitunix_observer = BitunixFuturesObserver(
         db_url=secrets.db_url,
@@ -358,6 +383,9 @@ async def run(argv: list[str] | None = None) -> int:
         pa_config=_pa_config,
         htf_config=_htf_config,
         htf_gate_mode=_htf_gate_mode,
+        # PR 4 — adaptive trade plan. Both None unless YAML activates them.
+        trade_plan_config=_trade_plan_config,
+        fee_config=_fee_config,
         # telegram_channel attached after channel is constructed (below)
     )
 

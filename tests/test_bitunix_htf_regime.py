@@ -42,6 +42,48 @@ from trading_corp.agents.strategies.bitunix_htf_regime import (
 )
 
 
+# ── PR 4: HTFRegimeConfig.from_dict ─────────────────────────────────
+
+
+def test_htf_regime_config_from_dict_absent_returns_defaults():
+    cfg = HTFRegimeConfig.from_dict({})
+    d = HTFRegimeConfig.defaults()
+    assert cfg == d
+    assert cfg.enabled is False
+
+
+def test_htf_regime_config_from_dict_present_defaults_enabled_true():
+    cfg = HTFRegimeConfig.from_dict({"htf_regime": {"adx_period": 21}})
+    assert cfg.enabled is True
+    assert cfg.adx_period == 21
+    # Other fields fall back to defaults
+    d = HTFRegimeConfig.defaults()
+    assert cfg.adx_trend_threshold == d.adx_trend_threshold
+    assert cfg.swing_lookback == d.swing_lookback
+
+
+def test_htf_regime_config_from_dict_explicit_enabled_false():
+    cfg = HTFRegimeConfig.from_dict({"htf_regime": {"enabled": False, "adx_period": 21}})
+    assert cfg.enabled is False
+    assert cfg.adx_period == 21
+
+
+def test_htf_regime_config_from_dict_dict_field_merge():
+    cfg = HTFRegimeConfig.from_dict({"htf_regime": {
+        "composite_weights": {"d1": 0.6, "h4": 0.3, "h1": 0.1},
+    }})
+    assert cfg.composite_weights == {"d1": 0.6, "h4": 0.3, "h1": 0.1}
+
+
+def test_htf_regime_config_from_dict_tuple_field_coerced():
+    cfg = HTFRegimeConfig.from_dict({"htf_regime": {
+        "ema_periods": [10, 30, 100],
+        "macd_periods": [8, 21, 5],
+    }})
+    assert cfg.ema_periods == (10, 30, 100)
+    assert cfg.macd_periods == (8, 21, 5)
+
+
 # ─── synthetic-bar helpers ──────────────────────────────────────────────
 
 

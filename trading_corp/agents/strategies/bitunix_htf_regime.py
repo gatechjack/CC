@@ -243,6 +243,34 @@ class HTFRegimeConfig:
             proximity_block_pct=0.3,
         )
 
+    @classmethod
+    def from_dict(cls, bx_block: dict) -> "HTFRegimeConfig":
+        """Parse the bitunix_futures.htf_regime sub-block. Falls back to
+        defaults for any missing key. Returns enabled=False if the
+        htf_regime block is entirely absent (preserving pre-from_dict
+        behavior where the YAML knobs were inert).
+        """
+        htf_block = bx_block.get("htf_regime") or {}
+        if not htf_block:
+            return cls.defaults()
+        d = cls.defaults()
+        ema_raw = htf_block.get("ema_periods", list(d.ema_periods))
+        macd_raw = htf_block.get("macd_periods", list(d.macd_periods))
+        return cls(
+            enabled=bool(htf_block.get("enabled", True)),
+            ema_periods=tuple(int(x) for x in ema_raw),  # type: ignore[arg-type]
+            adx_period=int(htf_block.get("adx_period", d.adx_period)),
+            adx_trend_threshold=float(htf_block.get("adx_trend_threshold", d.adx_trend_threshold)),
+            swing_lookback=int(htf_block.get("swing_lookback", d.swing_lookback)),
+            swing_n=int(htf_block.get("swing_n", d.swing_n)),
+            macd_periods=tuple(int(x) for x in macd_raw),  # type: ignore[arg-type]
+            composite_weights={**d.composite_weights, **(htf_block.get("composite_weights") or {})},
+            regime_thresholds={**d.regime_thresholds, **(htf_block.get("regime_thresholds") or {})},
+            vol_tier_atr_pct={**d.vol_tier_atr_pct, **(htf_block.get("vol_tier_atr_pct") or {})},
+            funding_extreme_pct_per_8h=float(htf_block.get("funding_extreme_pct_per_8h", d.funding_extreme_pct_per_8h)),
+            proximity_block_pct=float(htf_block.get("proximity_block_pct", d.proximity_block_pct)),
+        )
+
 
 # ─── output dataclasses ─────────────────────────────────────────────────
 

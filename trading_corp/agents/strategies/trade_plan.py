@@ -45,6 +45,21 @@ class FeeConfig:
         exit_fee = self.maker_fee_pct if self.tp_is_maker else self.taker_fee_pct
         return entry_fee + exit_fee + 2 * self.slippage_pct
 
+    @classmethod
+    def from_dict(cls, fees_block: dict | None) -> "FeeConfig":
+        """Parse the bitunix_futures.fees YAML block. Falls back to defaults
+        for any missing key. Pass {} or None to get pure defaults.
+        """
+        f = fees_block or {}
+        d = cls()
+        return cls(
+            taker_fee_pct=float(f.get("taker_pct", d.taker_fee_pct)),
+            maker_fee_pct=float(f.get("maker_pct", d.maker_fee_pct)),
+            slippage_pct=float(f.get("slippage_pct", d.slippage_pct)),
+            entry_is_taker=bool(f.get("entry_is_taker", d.entry_is_taker)),
+            tp_is_maker=bool(f.get("tp_is_maker", d.tp_is_maker)),
+        )
+
 
 @dataclass(frozen=True)
 class StrategyConfig:
@@ -55,6 +70,8 @@ class StrategyConfig:
     max_stop_atr_mult: float = 2.5
     atr_multiplier: float = 1.5
     swing_buffer_pct: float = 0.0005
+    swing_n: int = 2
+    swing_max_lookback: int = 30
 
     # TP plan
     tp1_r_target: float = 0.5
@@ -66,9 +83,39 @@ class StrategyConfig:
     tp3_qty_fraction: float = 0.25
 
     # HTF level snap (TP2)
+    htf_minutes: int = 15
+    htf_lookback_bars: int = 40
     resistance_min_r: float = 0.5
     resistance_max_r: float = 1.3
     resistance_buffer_pct: float = 0.0005
+
+    @classmethod
+    def from_dict(cls, tp_block: dict | None) -> "StrategyConfig":
+        """Parse the bitunix_futures.trade_plan YAML block. Falls back to
+        defaults for any missing key. Pass {} or None to get pure defaults.
+        """
+        b = tp_block or {}
+        d = cls()
+        return cls(
+            min_stop_atr_mult=float(b.get("min_stop_atr_mult", d.min_stop_atr_mult)),
+            max_stop_atr_mult=float(b.get("max_stop_atr_mult", d.max_stop_atr_mult)),
+            atr_multiplier=float(b.get("atr_multiplier", d.atr_multiplier)),
+            swing_buffer_pct=float(b.get("swing_buffer_pct", d.swing_buffer_pct)),
+            swing_n=int(b.get("swing_n", d.swing_n)),
+            swing_max_lookback=int(b.get("swing_max_lookback", d.swing_max_lookback)),
+            tp1_r_target=float(b.get("tp1_r_target", d.tp1_r_target)),
+            tp1_min_profit_multiplier=float(b.get("tp1_min_profit_multiplier", d.tp1_min_profit_multiplier)),
+            tp1_qty_fraction=float(b.get("tp1_qty_fraction", d.tp1_qty_fraction)),
+            tp2_r_default=float(b.get("tp2_r_default", d.tp2_r_default)),
+            tp2_qty_fraction=float(b.get("tp2_qty_fraction", d.tp2_qty_fraction)),
+            tp3_r_target=float(b.get("tp3_r_target", d.tp3_r_target)),
+            tp3_qty_fraction=float(b.get("tp3_qty_fraction", d.tp3_qty_fraction)),
+            htf_minutes=int(b.get("htf_minutes", d.htf_minutes)),
+            htf_lookback_bars=int(b.get("htf_lookback_bars", d.htf_lookback_bars)),
+            resistance_min_r=float(b.get("resistance_min_r", d.resistance_min_r)),
+            resistance_max_r=float(b.get("resistance_max_r", d.resistance_max_r)),
+            resistance_buffer_pct=float(b.get("resistance_buffer_pct", d.resistance_buffer_pct)),
+        )
 
 
 @dataclass(frozen=True)
