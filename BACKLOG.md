@@ -104,6 +104,38 @@ Parallel session has been iterating BitUnix Phase 3.2 → 3.2.3 (price-action fa
 
 ---
 
+## P0 NEXT — BitUnix dashboard refresh for post-PR-3c semantics  *(NEW 2026-05-14; should land BEFORE deploy of PR 3c so shadow data is interpretable)*
+
+PR 3c reshaped the score engine but the dashboard wasn't updated. The existing `bitunix_score_panel.html` was built pre-PR-3c and is now actively misleading in several places. Pulling the deploy without refreshing the dashboard means a human reading it during the shadow-data window would get bad signal.
+
+**What's misleading today:**
+
+- **PA factor labels show "+1 buy / +2 sell" weight contributions**, but PR 3c moved them out of scoring (`pa_factors_in_score: false`). They're now binary validators in the new PA gate. The labels imply they still nudge the score; they don't.
+- **Guard penalties shown** as score adjustments, but `guards_in_score: false` post-PR-3c. The brackets in the YAML are dead-on-prod (preserved for one-line revert only). Showing them as if they affect score is wrong.
+- **Score-decided contributions list** doesn't distinguish 3m signals (which actually score) from 4H/1D signals (which hit the ledger but contribute 0 under the `score_timeframes: ["3m","15m","30m"]` filter). A 4H Cypher fire would appear in the ledger view as if it mattered to the score.
+- **Recent fires table missing two PR-5 fields:** `htf_size_multiplier` (so we can see when a half-size pullback trade fired) and `funding_rate_at_decision` (so we can correlate funding state with outcome offline).
+- **No "decision flow" view.** The new HTF panel I built yesterday (`bitunix_htf_panel.html`) sits below the score panel as a separate section. There's no surface that shows the FULL chain for the latest signal: score eval → PA gate result → HTF gate result → outcome. Without that, debugging "why didn't this fire?" requires three audit-table queries.
+
+**Concrete edits proposed:**
+
+1. **Score panel — relabel PA factors** as "validation inputs (not scored)" with their current bool state but no weight numbers. Or: move them entirely OUT of the score panel and into a new PA gate panel (cleaner — see #2).
+2. **Score panel — remove guard-penalty UI**. Replace with a callout: "Rush/fall guards moved to PA gate as binary >5% reject (PR 3c)." Or hide entirely when `guards_in_score: false`.
+3. **NEW PA gate panel** — reads `pa_validation_decision` audit. Shows: latest decision (PASS / REJECT / DISABLED), validators-passed list, validators-failed list, rush_fall trigger if any. Recent N decisions table. Pattern: mirror `bitunix_score_panel.html` shape so they feel coherent.
+4. **Score-decided contributions list — add a TF badge** per signal entry. 3m signals get a normal badge; 15m/30m get muted; 4H/1D get a "log-only" pill. So a reader sees instantly which signals contributed to score.
+5. **Recent fires table** — add columns: `size_mult` (1.0× / 0.5×) reading `proposed_order.extra.htf_size_multiplier`, `funding @ decision` reading `proposed_order.extra.funding_rate_at_decision`. Empty/dash when not present (legacy rows pre-PR-5).
+6. **NEW decision-flow strip** — for the latest score fire, render a timeline: `[score: PREMIUM 12 buy]` → `[PA: PASS 3/3]` → `[HTF: BULL 0.5× pullback]` → `[outcome: would_have_placed @ $X]`. One row, scannable. Pulls from the three audit kinds joined by ts proximity (or by trigger_signal + ts within ~1s).
+
+**Files:**
+- `trading_corp/web/templates/partials/bitunix_score_panel.html` (modify)
+- `trading_corp/web/templates/partials/bitunix_pa_panel.html` (NEW; mirrors htf_panel + score_panel patterns)
+- `trading_corp/web/templates/partials/bitunix_decision_flow.html` (NEW; or roll into the score panel as a header row)
+- `trading_corp/web/data.py` — extend `build_bitunix_score_view()` (or add `build_bitunix_pa_view()` / `build_bitunix_decision_flow_view()`) reading the new audit kinds
+- `trading_corp/web/templates/division.html` — include the new partials
+
+**Estimated:** ~3-5h. Can land before deploy or alongside it. Not strictly blocking the deploy but blocking USEFUL deploy.
+
+---
+
 ## P2 — BitUnix PR 5: backtesting-grade persistence  *(NEW 2026-05-14; precondition for serious post-PR-4 tuning)*
 
 PR 3c shipped audit-grade persistence for every gate decision (`pa_validation_decision`, `htf_gate_decision`) but four load-bearing surfaces are still memory-only — fine for the PR 4 enforce-flip review, **insufficient for the kind of "what if we tune EMA periods?" / "does funding extreme actually correlate with bad fills?" questions Phase 4 will need**. PR 5 closes the gaps.
