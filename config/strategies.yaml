@@ -1048,38 +1048,116 @@ bitunix_futures:
   # ============================================================
   scoring:
     enabled: true                     # Phase 3.2 LIVE 2026-05-11; backtest verdict +0.29R/trade, 43% WR (21 trades, Apr 30-May 9)
-    # Tuned 2026-05-11 via scripts/backtest_bitunix_confluence.py:
-    # First-pass replay (Apr 30 - May 9, 625 alerts):
-    #   PREMIUM (n=2):  0.0% wins, -1.00 R avg     [too few to judge]
-    #   STANDARD (n=11): 45.5% wins, +0.57 R avg   [edge — keep firing]
-    #   WEAK     (n=34): 23.5% wins, -0.16 R avg   [noise — killed]
-    # Raising min_score_to_fire from 5 -> 8 (=STANDARD floor).
-    # WEAK band kept in YAML for tier-naming clarity but never fires
-    # while min_score_to_fire >= weak threshold.
-    min_score_to_fire: 8              # net_score < this -> SKIP
-    tier_thresholds:                  # net_score >= → tier
-      premium: 12
-      standard: 8
-      weak: 5
-    cooldown_seconds: 1800            # same-direction cooldown
+    # PR 3c cutover (2026-05-14) — three structural changes:
+    #
+    # 1. score_timeframes: ["3m","15m","30m"]
+    #    Only 3m / 15m / 30m chart fires score. Cypher 4H + 1D fires
+    #    still hit the ledger (visible in dashboard, audited) but
+    #    contribute 0 to score. The HTF regime gate (htf_regime block
+    #    below) replaces 4h/1d signals as the directional authority.
+    #
+    # 2. pa_factors_in_score: false
+    #    above_session_vwap / higher_highs_4h / volume_above_20bar_avg
+    #    no longer add to score. They become VALIDATORS in the new
+    #    pa_validation block below — binary pass/reject on the trade
+    #    rather than a score nudge. PA factor entries below are kept
+    #    in the dict to silence the unknown-factor warnings; weight
+    #    contribution is gated by `pa_factors_in_score`.
+    #
+    # 3. guards_in_score: false + lower thresholds
+    #    Old: 5pt heavy hitters from 4h/1D Cypher → premium 12 / std 8.
+    #    New (3m only, no PA boost): premium 10 / std 5 / min-fire 5.
+    #    sell_on_rush / buy_on_fall move to pa_validation as binary
+    #    hard-rejects at >5% (the old strongest tier).
+    #
+    # Per-TF TTLs (ttl_per_tf) on Cypher factors: 3m needs short
+    # validity windows (15-30 min ≈ 5-10 bars) to align with the
+    # 30-min cooldown; 15m and 30m chart fires get longer TTLs
+    # proportional to their bar duration.
+    min_score_to_fire: 5              # PR 3c: net_score < this → SKIP
+    tier_thresholds:                  # net_score ≥ → tier
+      premium: 10                     # PR 3c (was 12)
+      standard: 5                     # PR 3c (was 8)
+      weak: 3                         # PR 3c (was 5)
+    cooldown_seconds: 1800            # same-direction cooldown (unchanged)
     dedupe_within_ttl: true           # repeated fires of same signal count once
+    score_timeframes: ["3m", "15m", "30m"]    # PR 3c — chart-TF whitelist
+    pa_factors_in_score: false        # PR 3c — moved to pa_validation
+    guards_in_score: false            # PR 3c — moved to pa_validation
     factors:
-      # ── Cypher A-panel (assumed 1D — heavy weight, 24h TTL) ──
-      mc_a_bluetriangle:     {weight: 3, side: buy,  ttl_minutes: 1440}
-      mc_a_longema:          {weight: 2, side: buy,  ttl_minutes: 1440}
-      mc_a_yellow_x:         {weight: 2, side: buy,  ttl_minutes: 1440}
-      mc_a_red_diamond:      {weight: 4, side: sell, ttl_minutes: 1440}
-      mc_a_blood_diamond:    {weight: 5, side: sell, ttl_minutes: 1440}
-      mc_a_redx:             {weight: 2, side: sell, ttl_minutes: 1440}
-      # ── Cypher B-panel (assumed 4h — 4h TTL) ──
-      mc_b_gold_buy:         {weight: 5, side: buy,  ttl_minutes: 240}
-      mc_b_buy_circle_div:   {weight: 4, side: buy,  ttl_minutes: 240}
-      mc_b_buy_circle:       {weight: 3, side: buy,  ttl_minutes: 240}
-      mc_b_sell_circle_div:  {weight: 4, side: sell, ttl_minutes: 240}
-      mc_b_sell_circle:      {weight: 3, side: sell, ttl_minutes: 240}
-      mc_b_buy_dot:          {weight: 2, side: buy,  ttl_minutes: 240}
-      mc_b_sell_dot:         {weight: 2, side: sell, ttl_minutes: 240}
-      # ── Otter (3m — short TTL, entry timing) ──
+      # ── Cypher A-panel (mc_a_* — structural / bias / EMA) ──
+      # Per-TF TTLs follow ~5-10 bars of the chart's own TF:
+      #   3m → 30 min, 15m → 90 min, 30m → 180 min.
+      # ttl_minutes left as a fallback for any TF not in score_timeframes
+      # (unused while score_timeframes is set — but documents intent).
+      mc_a_bluetriangle:
+        weight: 3
+        side: buy
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      mc_a_longema:
+        weight: 2
+        side: buy
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      mc_a_yellow_x:
+        weight: 2
+        side: buy
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      mc_a_red_diamond:
+        weight: 4
+        side: sell
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      mc_a_blood_diamond:
+        weight: 5
+        side: sell
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      mc_a_redx:
+        weight: 2
+        side: sell
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      # ── Cypher B-panel (mc_b_* — momentum / WT / MFI) ──
+      # Trigger-class on 3m → 15 min (5 bars); proportional on slower TFs.
+      mc_b_gold_buy:
+        weight: 5
+        side: buy
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_buy_circle_div:
+        weight: 4
+        side: buy
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_buy_circle:
+        weight: 3
+        side: buy
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_sell_circle_div:
+        weight: 4
+        side: sell
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_sell_circle:
+        weight: 3
+        side: sell
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_buy_dot:
+        weight: 2
+        side: buy
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_sell_dot:
+        weight: 2
+        side: sell
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      # ── Otter (3m chart only — TTLs unchanged from pre-PR-3c) ──
       otter_buy:             {weight: 3, side: buy,  ttl_minutes: 15}
       otter_sell:            {weight: 3, side: sell, ttl_minutes: 15}
       money_bag_bottom:      {weight: 2, side: buy,  ttl_minutes: 30}
@@ -1096,29 +1174,100 @@ bitunix_futures:
       bias_bear:             {weight: 2, side: sell, ttl_minutes: 90}
       pink_box_bull:         {weight: 1, side: buy,  ttl_minutes: 30}
       pink_box_bear:         {weight: 1, side: sell, ttl_minutes: 30}
-      # ── Price-action (computed from OHLCV; no TTL — evaluated fresh) ──
+      # ── Price-action factors — PRESERVED IN DICT, ZERO CONTRIBUTION ──
+      # `pa_factors_in_score: false` above means the score engine ignores
+      # these. They feed the pa_validation block instead. Kept as factor
+      # entries so future re-enable is one-line (flip the flag).
       above_session_vwap:    {weight: 1, side: buy}
       below_session_vwap:    {weight: 1, side: sell}
       higher_highs_4h:       {weight: 2, side: buy}
       lower_lows_4h:         {weight: 2, side: sell}
       volume_above_20bar_avg: {weight: 1, side: directional}
     guards:
-      # Symmetric "wait for stabilization" — score penalties (not vetoes).
-      # A strong-confluence setup still fires into a rush/dip; weak ones get blocked.
-      sell_on_rush:                   # penalize sells when BTC just rose
+      # PR 3c: `guards_in_score: false` above means these brackets are
+      # not applied as score penalties. The pa_validation block uses
+      # the >5% threshold as a binary hard-reject instead. Brackets
+      # preserved here for future re-enable + replay reference.
+      sell_on_rush:
         window_minutes: 60
         brackets:
           - {upto_pct: 1.0, penalty: 0}
           - {upto_pct: 3.0, penalty: -1}
           - {upto_pct: 5.0, penalty: -2}
           - {upto_pct: 999, penalty: -3}
-      buy_on_fall:                    # penalize buys when BTC just fell
+      buy_on_fall:
         window_minutes: 60
         brackets:
           - {upto_drop_pct: 1.0, penalty: 0}
           - {upto_drop_pct: 3.0, penalty: -1}
           - {upto_drop_pct: 5.0, penalty: -2}
           - {upto_drop_pct: 999, penalty: -3}
+
+  # ============================================================
+  # PR 3c — PA validation gate (post-score, pre-HTF, binary).
+  # Runs after the score engine picks a winning side and tier.
+  # `require_all: true` means any failed validator → reject.
+  # rush_fall_guards are independent hard-rejects (don't catch
+  # falling knife / don't short into a rip).
+  # ============================================================
+  pa_validation:
+    enabled: true
+    require_all: true
+    validators:
+      - vwap_alignment            # buy: above session VWAP; sell: below
+      - volume_confirmation       # current bar's volume > 20-bar avg
+      - structure_alignment       # buy: higher_highs_4h; sell: lower_lows_4h
+    rush_fall_guards:
+      enabled: true
+      reject_buy_on_60m_drop_pct: 5.0
+      reject_sell_on_60m_rise_pct: 5.0
+
+  # ============================================================
+  # PR 3c — HTF regime classifier config. Consumed by
+  # `bitunix_htf_regime.HTFRegimeConfig.from_dict` (when added);
+  # currently parsed via HTFRegimeConfig.defaults() with values
+  # inlined — but keeping the YAML block makes the contract
+  # explicit and tunable later. See:
+  #   trading_corp/agents/strategies/bitunix_htf_regime.md
+  # ============================================================
+  htf_regime:
+    ema_periods: [20, 50, 200]
+    adx_period: 14
+    adx_trend_threshold: 20.0
+    swing_lookback: 20
+    swing_n: 2
+    macd_periods: [12, 26, 9]
+    composite_weights:            # must sum to 1.0
+      d1: 0.5
+      h4: 0.3
+      h1: 0.2
+    regime_thresholds:
+      strong_bull: 0.7
+      bull: 0.3
+      bear: -0.3
+      strong_bear: -0.7
+    vol_tier_atr_pct:             # 1D ATR(14) as % of price
+      low: 0.5
+      normal: 1.5
+      high: 3.0
+      extreme: 5.0
+    funding_extreme_pct_per_8h: 0.05
+    proximity_block_pct: 0.3
+
+  # ============================================================
+  # PR 3c — Gate mode flag.
+  #   off     : gates dormant, observer behaves as pre-PR-3c
+  #   shadow  : audits written (`pa_validation_decision`,
+  #             `htf_gate_decision`) but no enforcement; trades
+  #             still place per pre-PR-3c logic. This is the
+  #             default — needs deliberate flip to enforce after
+  #             review of shadow audit data.
+  #   enforce : PA REJECT short-circuits trade; HTF
+  #             size_multiplier applied to qty before risk gate;
+  #             hard-zero conditions block placement.
+  # ============================================================
+  htf_gate:
+    mode: shadow
 
 
 # ── Polymarket Copy Trading (Phase 4+ placeholder; not yet implemented) ──

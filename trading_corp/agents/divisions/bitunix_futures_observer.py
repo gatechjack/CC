@@ -52,6 +52,7 @@ from trading_corp.persistence.models import (
 # mode before retiring Phase 3.1.
 from trading_corp.agents.strategies.bitunix_confluence import (
     AlertEvent as _ScoreAlertEvent,
+    BitUnixAlertEvent,
     BitUnixConfluenceConfig,
     PriceContext as _ScorePriceContext,
     Side as _ScoreSide,
@@ -59,6 +60,56 @@ from trading_corp.agents.strategies.bitunix_confluence import (
     evaluate_confluence_futures,
     filter_live_alerts_with_dedupe,
 )
+from trading_corp.agents.strategies.bitunix_htf_regime import (
+    HTFRegimeConfig,
+    Regime as _HTFRegime,
+    get_trade_permissions,
+)
+from trading_corp.agents.strategies.bitunix_pa_validation import (
+    PAValidationConfig,
+    PAValidationDecision,
+    evaluate_pa_validation,
+)
+
+
+# ── PR 3c — chart-timeframe normalization ───────────────────────────────
+
+
+def _normalize_tf(raw: Any) -> str | None:
+    """Map TradingView's `{{interval}}` strings to canonical `tf` labels.
+
+    TV emits ints/strings depending on chart: "3", "15", "30", "60",
+    "240", "D" or "1D". Canonical labels match `score_timeframes`:
+    "3m", "15m", "30m", "1h", "4h", "1d".
+
+    Unknown values pass through verbatim (lowercased) — gives the
+    replay script and audit log a chance to spot misconfigured alerts
+    without silently dropping them.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip().lower()
+    if not s:
+        return None
+    # Numeric minutes
+    minute_map = {
+        "1": "1m", "3": "3m", "5": "5m", "15": "15m", "30": "30m",
+        "60": "1h", "120": "2h", "240": "4h", "360": "6h",
+        "480": "8h", "720": "12h",
+    }
+    if s in minute_map:
+        return minute_map[s]
+    if s in ("d", "1d", "day", "daily"):
+        return "1d"
+    if s in ("w", "1w", "week", "weekly"):
+        return "1w"
+    if s in ("m", "1m"):
+        # Ambiguous — TV's "M" is monthly, but "1m" might mean 1-minute.
+        # We've already matched "1" → "1m" above, so a literal "1m"
+        # string here means whatever the alert author wrote; trust it.
+        return s
+    # Already-canonical labels pass through.
+    return s
 
 log = logging.getLogger(__name__)
 
@@ -192,7 +243,8 @@ CREATE TABLE IF NOT EXISTS bitunix_signal_ledger (
     ts           TEXT NOT NULL,        -- event time from payload (or insert ts)
     signal       TEXT NOT NULL,        -- lowercase signal name
     source       TEXT NOT NULL,        -- 'lord_otter' | 'market_cypher'
-    inserted_at  TEXT NOT NULL         -- when we ingested it
+    inserted_at  TEXT NOT NULL,        -- when we ingested it
+    tf           TEXT                  -- PR 3c — chart timeframe ("3m"|"15m"|"1d"|...)
 );
 """
 OBSERVER_SIGNAL_LEDGER_INDEX_DDL = (
@@ -358,6 +410,12 @@ class BitunixFuturesObserver:
         counter_enabled: bool = False,
         max_hold_seconds: int = 24 * 3600,  # default scalp horizon for paper resolution
         scoring_config: BitUnixConfluenceConfig | None = None,
+        # PR 3c — HTF + PA gate plumbing. All optional; observer
+        # reverts to pre-PR-3c behavior when any are None / mode='off'.
+        htf_provider: Any = None,            # BitUnixHTFContextProvider | None
+        htf_config: HTFRegimeConfig | None = None,
+        pa_config: PAValidationConfig | None = None,
+        htf_gate_mode: str = "off",          # "off" | "shadow" | "enforce"
     ) -> None:
         self.db_url = db_url
         self.risk_agent = risk_agent
@@ -368,11 +426,33 @@ class BitunixFuturesObserver:
         self.counter_enabled = counter_enabled
         self.max_hold_seconds = max_hold_seconds
         self.scoring_config = scoring_config
+        # PR 3c additions — all optional so existing callers (tests
+        # constructing the observer with only db_url) keep working.
+        self.htf_provider = htf_provider
+        self.htf_config = htf_config
+        self.pa_config = pa_config
+        # Normalize the gate mode to one of the three known values.
+        self.htf_gate_mode = (
+            htf_gate_mode.lower() if isinstance(htf_gate_mode, str) else "off"
+        )
+        if self.htf_gate_mode not in ("off", "shadow", "enforce"):
+            log.warning(
+                "bitunix_observer: unknown htf_gate_mode %r — defaulting to 'off'",
+                htf_gate_mode,
+            )
+            self.htf_gate_mode = "off"
         # Cache the longest TTL across factors so the ledger read window
         # doesn't drag in stale rows. Falls back to 24h if config absent.
+        # PR 3c: also factor in `factor_ttl_per_tf` overrides — the
+        # 30m chart's 180m TTL is bigger than any base ttl_minutes.
         self._max_ttl_minutes = DEFAULT_MAX_TTL_MINUTES
         if scoring_config is not None and scoring_config.factors:
-            ttls = [f.ttl_minutes for f in scoring_config.factors.values() if f.ttl_minutes > 0]
+            ttls: list[int] = []
+            for f in scoring_config.factors.values():
+                if f.ttl_minutes > 0:
+                    ttls.append(f.ttl_minutes)
+                per_tf = scoring_config.factor_ttl_per_tf.get(f.name) or {}
+                ttls.extend(int(v) for v in per_tf.values() if int(v) > 0)
             if ttls:
                 self._max_ttl_minutes = max(ttls)
         self._ensure_schema()
@@ -386,6 +466,18 @@ class BitunixFuturesObserver:
                 conn.execute(OBSERVER_SIGNAL_LEDGER_DDL)
                 conn.execute(OBSERVER_SIGNAL_LEDGER_INDEX_DDL)
                 conn.execute(OBSERVER_SCORE_COOLDOWN_DDL)
+                # PR 3c — idempotent migration: add `tf` column to
+                # existing ledger tables. CREATE TABLE IF NOT EXISTS
+                # leaves a pre-PR-3c table unchanged, so we ALTER it
+                # on first boot. Historical rows get tf=NULL — replay
+                # script accepts this caveat (see PR 3c b-ii decision).
+                cols = {row[1] for row in conn.execute(
+                    "PRAGMA table_info(bitunix_signal_ledger)"
+                ).fetchall()}
+                if "tf" not in cols:
+                    conn.execute(
+                        "ALTER TABLE bitunix_signal_ledger ADD COLUMN tf TEXT"
+                    )
         except Exception as e:
             log.warning("bitunix_observer: schema init failed: %s", e)
 
@@ -469,30 +561,48 @@ class BitunixFuturesObserver:
             return
         ts = payload.get("time") or _utc_now_iso()
         now = _utc_now_iso()
+        # PR 3c — extract chart TF from the payload's `interval` field.
+        # TradingView's `{{interval}}` placeholder yields strings like
+        # "3", "15", "30", "60", "240", "D" / "1D". Normalize to the
+        # canonical labels used by `score_timeframes` ("3m", "15m",
+        # "30m", "1h", "4h", "1d"). Unknown intervals are stored
+        # verbatim — replay can decide what to do with them.
+        tf = _normalize_tf(payload.get("interval"))
         with db.connect(self.db_url) as conn:
             conn.execute(
-                "INSERT INTO bitunix_signal_ledger (ts, signal, source, inserted_at) "
-                "VALUES (?, ?, ?, ?)",
-                (ts, signal, source, now),
+                "INSERT INTO bitunix_signal_ledger "
+                "(ts, signal, source, inserted_at, tf) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (ts, signal, source, now, tf),
             )
 
-    def _read_live_ledger(self, now: datetime) -> list[_ScoreAlertEvent]:
+    def _read_live_ledger(self, now: datetime) -> list[BitUnixAlertEvent]:
         """Pull ledger rows within `_max_ttl_minutes` of `now` and return
-        as AlertEvent list. The scorer's `filter_live_alerts_with_dedupe`
-        does the per-factor TTL filtering + dedupe."""
+        as BitUnixAlertEvent list (carries `tf`). The scorer's
+        `filter_live_alerts_with_dedupe` handles per-factor TTL,
+        TF filter, and dedupe.
+
+        Historical rows (pre-PR-3c) have `tf=NULL` — they pass through
+        any `score_timeframes` filter as None, which means the filter
+        drops them when active. This is the expected
+        backwards-compat behavior; replay script for the cutover
+        accepts the caveat (option (b)(ii) in PR 3c plan).
+        """
         cutoff = (now - timedelta(minutes=self._max_ttl_minutes)).isoformat()
         with db.connect(self.db_url) as conn:
             rows = conn.execute(
-                "SELECT ts, signal FROM bitunix_signal_ledger "
+                "SELECT ts, signal, tf FROM bitunix_signal_ledger "
                 "WHERE ts >= ? ORDER BY ts",
                 (cutoff,),
             ).fetchall()
-        out: list[_ScoreAlertEvent] = []
+        out: list[BitUnixAlertEvent] = []
         for r in rows:
             ts = _parse_iso(r["ts"])
             if ts is None:
                 continue
-            out.append(_ScoreAlertEvent(ts=ts, signal_name=r["signal"]))
+            out.append(BitUnixAlertEvent(
+                ts=ts, signal_name=r["signal"], tf=r["tf"],
+            ))
         return out
 
     # ── Phase 3.2 — score cooldown state ──────────────────────────────
@@ -570,6 +680,140 @@ class BitunixFuturesObserver:
                     json.dumps(payload_dict, default=str),
                 ),
             )
+
+    def _log_pa_validation(
+        self,
+        payload: dict[str, Any],
+        verdict_score: Any,
+        pa_result: Any,
+        *,
+        enforced: bool,
+    ) -> None:
+        """PR 3c — `pa_validation_decision` audit row.
+
+        Always written when the gate runs (shadow + enforce both),
+        before any branch decision is taken. `enforced=True` means an
+        REJECT actually blocked the trade; `enforced=False` (shadow)
+        means the result was logged but the trade proceeded.
+        """
+        payload_dict = {
+            "strategy": "bitunix_futures",
+            "division": "bitunix_futures",
+            "trigger_signal": (payload.get("signal") or "").strip().lower(),
+            "trigger_source": payload.get("_source"),
+            "score_side": verdict_score.side.value,
+            "score_tier": verdict_score.tier.value,
+            "decision": pa_result.decision.value,
+            "passed": list(pa_result.passed),
+            "failed": list(pa_result.failed),
+            "rush_fall_triggered": pa_result.rush_fall_triggered,
+            "reason": pa_result.reason,
+            "mode": "enforce" if enforced else "shadow",
+        }
+        try:
+            with db.connect(self.db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+                    (
+                        _utc_now_iso(),
+                        "bitunix_futures",
+                        "pa_validation_decision",
+                        json.dumps(payload_dict, default=str),
+                    ),
+                )
+        except Exception as e:
+            log.warning("bitunix_observer: pa_validation_decision write failed: %s", e)
+
+    def _log_htf_gate(
+        self,
+        payload: dict[str, Any],
+        verdict_score: Any,
+        htf_verdict: Any,
+        permission: Any,
+        *,
+        enforced: bool,
+    ) -> None:
+        """PR 3c — `htf_gate_decision` audit row.
+
+        Captures the full chain: per-TF classifications + composite
+        regime + context fields + permission outcome. Written
+        unconditionally when the gate runs so shadow audits have the
+        same shape as enforce audits — the only thing that changes is
+        the `mode` field and whether placement actually saw the
+        size_multiplier applied.
+
+        PR 5f — also captures the most-recent CLOSED bar ts_ms for
+        each HTF cache so the audit row can be joined to
+        `bitunix_bar_history` (PR 5a) for exact-state replay. None
+        when the cache is empty (cold start) or the provider isn't
+        attached.
+        """
+        def _tf_summary(tf_class: Any) -> dict[str, Any]:
+            return {
+                "regime": tf_class.regime.value,
+                "ema_alignment": tf_class.ema_alignment,
+                "structure": tf_class.structure,
+                "adx": tf_class.adx,
+                "macd_hist": tf_class.macd_hist,
+            }
+        # PR 5f — bar-snapshot pointers for replay joins.
+        bar_h1_ts: int | None = None
+        bar_h4_ts: int | None = None
+        bar_d1_ts: int | None = None
+        if self.htf_provider is not None:
+            try:
+                if self.htf_provider.h1_cache.bars:
+                    bar_h1_ts = self.htf_provider.h1_cache.bars[-1].ts_ms
+                if self.htf_provider.h4_cache.bars:
+                    bar_h4_ts = self.htf_provider.h4_cache.bars[-1].ts_ms
+                if self.htf_provider.d1_cache.bars:
+                    bar_d1_ts = self.htf_provider.d1_cache.bars[-1].ts_ms
+            except Exception as e:
+                # Defensive — bar pointers are nice-to-have, never
+                # block the audit write.
+                log.debug("bitunix_observer: bar_pointer capture failed: %s", e)
+        payload_dict = {
+            "strategy": "bitunix_futures",
+            "division": "bitunix_futures",
+            "trigger_signal": (payload.get("signal") or "").strip().lower(),
+            "trigger_source": payload.get("_source"),
+            "score_side": verdict_score.side.value,
+            "score_tier": verdict_score.tier.value,
+            "regime": htf_verdict.regime.value,
+            "composite_score": round(htf_verdict.score, 3),
+            "h1": _tf_summary(htf_verdict.h1),
+            "h4": _tf_summary(htf_verdict.h4),
+            "d1": _tf_summary(htf_verdict.d1),
+            "volatility_tier": htf_verdict.volatility_tier.value,
+            "atr_pct_d1": htf_verdict.atr_pct_d1,
+            "distance_to_resistance_pct": htf_verdict.distance_to_resistance_pct,
+            "distance_to_support_pct": htf_verdict.distance_to_support_pct,
+            "session": htf_verdict.session.value,
+            "funding_rate": htf_verdict.funding_rate,
+            "funding_extreme": htf_verdict.funding_extreme,
+            "safe_mode_reason": htf_verdict.safe_mode_reason,
+            "size_multiplier": permission.size_multiplier,
+            "hard_zero_reason": permission.hard_zero_reason,
+            "permission_reason": permission.reason,
+            "mode": "enforce" if enforced else "shadow",
+            # PR 5f — cheap pointers into bitunix_bar_history (PR 5a).
+            "bar_h1_last_close_ms": bar_h1_ts,
+            "bar_h4_last_close_ms": bar_h4_ts,
+            "bar_d1_last_close_ms": bar_d1_ts,
+        }
+        try:
+            with db.connect(self.db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+                    (
+                        _utc_now_iso(),
+                        "bitunix_futures",
+                        "htf_gate_decision",
+                        json.dumps(payload_dict, default=str),
+                    ),
+                )
+        except Exception as e:
+            log.warning("bitunix_observer: htf_gate_decision write failed: %s", e)
 
     async def _score_and_maybe_propose(
         self,
@@ -650,6 +894,79 @@ class BitunixFuturesObserver:
             )
             return
 
+        # ── PR 3c: PA validation gate ───────────────────────────────────
+        # Runs when configured AND mode != off. Always writes the audit
+        # row (so shadow mode can be analyzed offline). In shadow mode
+        # the result does NOT affect placement; in enforce mode a
+        # REJECT short-circuits the trade before risk/sizing.
+        # PA outcome is binary (PASS/REJECT/DISABLED); no multiplier.
+        side_str = "buy" if verdict_score.side == _ScoreSide.BUY else "sell"
+        if (
+            self.pa_config is not None
+            and self.pa_config.enabled
+            and self.htf_gate_mode in ("shadow", "enforce")
+        ):
+            try:
+                pa_result = evaluate_pa_validation(
+                    side=side_str, price_ctx=ctx, config=self.pa_config,
+                )
+            except Exception as e:
+                log.warning("bitunix_observer: PA validation raised: %s", e)
+                pa_result = None
+            if pa_result is not None:
+                self._log_pa_validation(
+                    payload, verdict_score, pa_result,
+                    enforced=(self.htf_gate_mode == "enforce"),
+                )
+                if (
+                    self.htf_gate_mode == "enforce"
+                    and pa_result.decision == PAValidationDecision.REJECT
+                ):
+                    self._log_score_decision(
+                        payload, verdict_score, "skipped_pa_validation",
+                        note=pa_result.reason,
+                    )
+                    return
+
+        # ── PR 3c: HTF regime gate ──────────────────────────────────────
+        # Same audit-then-act pattern. SAFE_MODE / proximity / vol-extreme
+        # / funding-extreme can force size_multiplier=0 even when the
+        # matrix would otherwise allow a half-size trade.
+        htf_size_multiplier = 1.0
+        htf_funding_rate_at_decision: float | None = None  # PR 5e
+        if (
+            self.htf_provider is not None
+            and self.htf_config is not None
+            and self.htf_gate_mode in ("shadow", "enforce")
+        ):
+            try:
+                htf_verdict = self.htf_provider.regime_snapshot(
+                    self.htf_config, current_price=entry_price or None,
+                )
+                permission = get_trade_permissions(
+                    htf_verdict, side_str, self.htf_config,
+                )
+            except Exception as e:
+                log.warning("bitunix_observer: HTF gate raised: %s", e)
+                htf_verdict = None
+                permission = None
+            if htf_verdict is not None and permission is not None:
+                self._log_htf_gate(
+                    payload, verdict_score, htf_verdict, permission,
+                    enforced=(self.htf_gate_mode == "enforce"),
+                )
+                # PR 5e — capture funding for the eventual proposed_order.
+                # Survives even in shadow mode so backtests have it.
+                htf_funding_rate_at_decision = htf_verdict.funding_rate
+                if self.htf_gate_mode == "enforce":
+                    if permission.size_multiplier <= 0.0:
+                        self._log_score_decision(
+                            payload, verdict_score, "skipped_htf_gate",
+                            note=permission.reason,
+                        )
+                        return
+                    htf_size_multiplier = permission.size_multiplier
+
         # ── deps + broker checks (same gates as Phase 3.1) ──
         if not self.data_exec or not self.risk_agent or not self.logger_agent:
             self._log_score_decision(payload, verdict_score, "skipped_no_deps",
@@ -699,6 +1016,26 @@ class BitunixFuturesObserver:
                                      note=proposal.reason)
             return
 
+        # ── PR 3c: apply HTF size multiplier (enforce mode only) ──
+        # Pullback / bounce sizes get scaled down per the matrix. The
+        # daily-risk kill below uses the scaled effective_risk_pct so
+        # half-size trades correctly count for half their nominal risk.
+        if (
+            self.htf_gate_mode == "enforce"
+            and htf_size_multiplier != 1.0
+            and htf_size_multiplier > 0.0
+        ):
+            proposal.proposed_order.qty = (
+                float(proposal.proposed_order.qty) * htf_size_multiplier
+            )
+            if proposal.effective_risk_pct is not None:
+                proposal.effective_risk_pct = (
+                    proposal.effective_risk_pct * htf_size_multiplier
+                )
+            proposal.proposed_order.extra["htf_size_multiplier"] = (
+                htf_size_multiplier
+            )
+
         # ── daily-risk kill ──
         utc_date = _utc_today_iso_date()
         cur_at_risk, _ = self._read_daily_risk(utc_date)
@@ -736,6 +1073,11 @@ class BitunixFuturesObserver:
         order.rationale = f"[score] {order.rationale}"
         order.extra["score_path"] = True
         order.extra["net_score"] = verdict_score.breakdown.net_score
+        # PR 5e — stash funding rate at decision time so backtests can
+        # reconstruct without joining audit events. None when HTF gate
+        # didn't run (gate_mode='off' or provider missing).
+        if htf_funding_rate_at_decision is not None:
+            order.extra["funding_rate_at_decision"] = htf_funding_rate_at_decision
         self.logger_agent.log_proposed_order(order)
         self.logger_agent.log_event(
             actor="bitunix_futures",
