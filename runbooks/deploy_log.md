@@ -59,6 +59,89 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-15 02:05 UTC — Crypto `strike_type='custom'` ticker-suffix dispatch (P2)
+
+**Triggered by:** Post 01:50 deploy, weather between math fully unlocked weather (0 `no_strike` skips). Crypto was still hitting `no_strike` on all `strike_type='custom'` markets because Kalshi uses "custom" for BOTH bucket (B-suffix) AND single-side threshold (T-suffix) tickers, and leaves `floor_strike`/`cap_strike` as None for both — the strike spec lives only in the ticker suffix.
+
+**Backup tag:** `pre-crypto-custom-dispatch-20260515-0205`
+
+**Files deployed (2):**
+- `trading_corp/data/crypto_spot_provider.py` — new `parse_kalshi_strike_suffix(ticker)` returning `('B', value)` or `('T', value)` or None. Used to extract Kalshi's encoded strike spec when the API doesn't populate `floor_strike`/`cap_strike` (which it doesn't for crypto-category markets).
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — (1) New module-level `_compute_event_bucket_widths(events)` that walks the discovery response and for each `event_ticker` computes the median gap between adjacent B-values. Critical because Kalshi bucket widths vary by asset AND horizon — ETH 1h buckets are ~$20 but ETH Jan-2027 buckets are ~$500. (2) `bucket_width_hint` plumbed into the survivor dict so `_evaluate_market` can derive bounds without a separate lookup. (3) New `elif strike_type == "custom"` fallback branch that, if `parse_kalshi_strike_suffix` returns `('B', center)` and a width hint is available, sets `threshold = center - half`, `threshold_high = center + half`, `direction = 'between'`. T-suffix tickers are intentionally left as `no_strike` skip for now — direction (greater vs less) is ambiguous without parsing `rules_primary` text.
+
+**Verification (post-deploy 02:06 UTC):**
+- `kalshi_crypto_skipped_no_strike` count = **0** since deploy (was 30 in the prior scan).
+- All 22 remaining skips are `no_implied` — pure liquidity (no ask quotes at this hour, ~10pm EDT, Kalshi crypto depth is thin).
+- Bucket-width inference verified working: discovery contains B-tickers like `B88650`/`B88750`/`B88850` for BTC → median gap = 100, correctly applied.
+- Local smoke test confirmed parser behaviors:
+  - `KXDOGE-26MAY1422-B0.157` → `('B', 0.157)`
+  - `KXBTC-26MAY1422-B88850` → `('B', 88850.0)`
+  - `KXSOLE-26MAY1422-T59` → `('T', 59.0)`
+  - `KXSOLMAXMON-SOL-26MAY31-10000` → None (non-T/B suffix, intentional)
+
+**Notable code change:**
+- The width-hint is computed once per scan (one pass over events) and shared across all per-market evaluations in that cycle. Cheap; doesn't add a per-market query.
+
+**Inert / pending:**
+- **T-suffix crypto markets still skip as `no_strike`.** Kalshi doesn't expose direction (≥X vs ≤X) for these via `strike_type` alone; need to parse `rules_primary` text or use implied-prob context. Filed as remaining P3 (smaller follow-up — most crypto markets are bucket-format, T-tickers are minority).
+- **No actual crypto fires yet** because all 22 no-quote markets at deploy time were genuinely unquoted on Kalshi. Daytime scan should produce fires.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp/trading_corp; \
+sudo cp \$BASE/data/crypto_spot_provider.py.pre-crypto-custom-dispatch-20260515-0205 \$BASE/data/crypto_spot_provider.py; \
+sudo cp \$BASE/agents/strategies/kalshi_crypto_arb.py.pre-crypto-custom-dispatch-20260515-0205 \$BASE/agents/strategies/kalshi_crypto_arb.py; \
+sudo rm -rf \$BASE/data/__pycache__ \$BASE/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 01:50 UTC — Weather + crypto unlock (bucket math + crypto broker bugs)
+
+**Triggered by:** "no crypto or weather trades have come in" — observation that both specialized agents shipped 2026-05-14 but had produced **zero** trades. Investigation surfaced 4 distinct bugs across the crypto strategy + a missing math branch for both.
+
+**Backup tags:** `pre-crypto-broker-fix-20260515-0050`, `pre-crypto-prefix-fix-20260515-0125`, `pre-between-math-20260515-0132`
+
+**Files deployed (5):**
+- `trading_corp/main.py` — fixed `_scheduled_kalshi_crypto_arb_loop` broker discovery. (1) Removed nonsensical `and not kalshi_broker == coinbase_broker` clause from elif — Python precedence made the elif **always False** because `None == None → True`. (2) Switched coinbase lookup to `data_exec.brokers.get("coinbase_spot")` because in paper mode the broker is a `PaperExecutionBroker` wrapper, not a raw `CoinbaseBroker` — class-name match never hit. Also bumped the "missing broker" log from DEBUG to INFO so future silent-failure won't hide.
+- `trading_corp/data/crypto_spot_provider.py` — `parse_kalshi_asset_prefix` rewritten as regex `^KX(HYPE|DOGE|BTC|ETH|SOL|XRP|BNB)[A-Z0-9]*-`. Old code matched only `KX{asset}-` / `KX{asset}15M-` — Kalshi has since added suffix codes (E = event-cycle, D = daily, etc.), so tickers like `KXSOLE-`, `KXBTCE-`, `KXDOGED-` were all rejected as "not_crypto." Post-fix the discovery `markets_pre_filter` jumped from 79 → 206.
+- `trading_corp/agents/strategies/_weather_math.py` — added `direction='between'` to `forecast_probability` and `evaluate_weather_market`. New formula `P(low ≤ X ≤ high) = Φ((high-μ)/σ) - Φ((low-μ)/σ)` for bucket markets. Gate 2 (near-threshold) is skipped for between — it doesn't apply to bucket semantics. Smoke test confirmed `P(85≤T≤86 | μ=85.5, σ=2) = 0.1974` (analytic match).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — added `elif strike_type == "between"` branch using `floor_strike` + `cap_strike`. Also added no-ask filter before k_per_cycle cap (Kalshi returns 0.0, not None, for unquoted sides — empty markets were sorting to top of "tightest-spread" and crowding out live ones).
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — same between branch (handles both `strike_type='between'` and `'custom'` since Kalshi uses both interchangeably for bucket markets), plus no-ask filter.
+
+**Bugs caught + fixed:**
+1. **Crypto broker-discovery precedence bug** — `cls == "CoinbaseBroker" and not kalshi_broker == coinbase_broker` always False due to `None == None`. Made the crypto strategy silently skip every tick for 4+ hours after launch.
+2. **Crypto broker-class mismatch** — in paper mode coinbase_spot's registered broker is `PaperExecutionBroker`, not `CoinbaseBroker`. Even after fix #1 the class-name check missed.
+3. **Stale asset-prefix parser** — Kalshi added `E`/`D` suffix codes to ticker prefixes; old `startswith("KXSOL-")` rejected `KXSOLE-`. Recognized 0 SOL/ETH/BTC daily/event markets pre-fix.
+4. **Missing `between` math** — Kalshi structures weather + crypto markets as bucket PMFs (B-suffix tickers). 58% of weather + ~100% of crypto evaluated markets are buckets. Strategy threw all of them away via `no_strike` skip (the comment in old code literally said "rare — skip for v1"; data shows it's the *dominant* shape).
+5. **Empty-market crowding (incidental)** — k_per_cycle sort by `abs(yes_ask - yes_bid)` defaulted None to 0/1 but Kalshi returns 0.0 explicitly, so unquoted markets had spread=0 and sorted FIRST, displacing live ones.
+
+**Live verification (post-deploy):**
+- **Weather (post 01:42 UTC):** `kalshi_weather_skipped_no_strike` count = **0** since deploy (was 644 pre-deploy). 30 evaluated per scan. Remaining skips: 27 no_implied + 3 no_coords. Math path now firing correctly on bucket markets — just blocked by late-night quote availability.
+- **Crypto (post 01:46 UTC):** `markets_pre_filter` 79 → 206 (parser fix); `skipped_unsupported_asset` 45 → 0 (was misclassifying HYPE/BNB). Strategy now correctly recognizes BTC/ETH/SOL/DOGE markets. Tick cadence working (60s).
+- **Math smoke test passed on prod venv:** `forecast_probability(85.5, σ=2.0, [85,86], "between") = 0.1974` ≈ analytic 0.1974.
+
+**Inert / pending:**
+- **No actual fires yet** for either division. Two reasons: (a) most picked buckets have no ask quote at this hour (~9-10pm EDT, low liquidity). Daytime tick should produce fires. (b) Crypto T-suffix tickers (`KXDOGED-26MAY1422-T0.1499999`, single-side threshold) also carry `strike_type='custom'` — same overloaded name as buckets. Strategy's "custom → between" mapping fails for these because floor/cap aren't populated. Needs follow-up: ticker-suffix dispatch (T → greater, B → between) for crypto. See BACKLOG.
+- The 156 "not_crypto" markets per crypto scan are real non-crypto categories Kalshi sometimes returns under the same response (the category filter isn't strict).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp/trading_corp; \
+sudo cp \$BASE/main.py.pre-crypto-broker-fix-20260515-0050 \$BASE/main.py; \
+sudo cp \$BASE/data/crypto_spot_provider.py.pre-crypto-prefix-fix-20260515-0125 \$BASE/data/crypto_spot_provider.py; \
+sudo cp \$BASE/agents/strategies/_weather_math.py.pre-between-math-20260515-0132 \$BASE/agents/strategies/_weather_math.py; \
+sudo cp \$BASE/agents/strategies/kalshi_weather_arb.py.pre-between-math-20260515-0132 \$BASE/agents/strategies/kalshi_weather_arb.py; \
+sudo cp \$BASE/agents/strategies/kalshi_crypto_arb.py.pre-between-math-20260515-0132 \$BASE/agents/strategies/kalshi_crypto_arb.py; \
+sudo rm -rf \$BASE/data/__pycache__ \$BASE/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
 ## 2026-05-14 23:50 UTC — Per-whale auto-pause (P3, formerly manual)
 
 **Triggered by:** Observation pass on 2026-05-14 23:35 UTC showed 79 stale 0xE9Ba RTs flushing -$76 through the multi-leg resolver fix. Whale was already manually dropped from `selected_whales`, but the pattern (single bad whale → -$50-100 paper drawdown before human notices) is exactly the case the BACKLOG P3 auto-pause item was filed for. Codifies last night's manual drops as a circuit breaker.

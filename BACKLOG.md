@@ -47,6 +47,13 @@ Items punted during the day's specialized-agent build sprint. Grouped by priorit
 
 - **K3 strategy redesign** — Apify position-polling has a structural adverse-selection bias (winners auto-settle out of `open_positions` before our 10-min poll sees them). Even with the 2026-05-14 exit-pricing fix that took backfill from 0/253 wins → 149/253, K3 is break-even paper / fee-negative live at current $1-3 sizing. Redesign options: (a) switch to trade-tape-based ingestion (mirror PCT's activity-feed approach), (b) skip markets that resolve <Xmin from observed entry. Estimated 8-12h.
 
+### P2 — added 2026-05-15
+
+- ~~**Crypto `strike_type='custom'` ticker-suffix dispatch**~~ — **B-suffix DONE 2026-05-15 02:05 UTC**. T-suffix still pending (direction ambiguous without `rules_primary` text parsing — see P3 below).
+- ~~**Crypto B-bucket width derivation**~~ — **DONE 2026-05-15 02:05 UTC**. `_compute_event_bucket_widths` derives median gap from neighboring B-tickers in the same event_ticker. No per-asset hardcoding needed.
+
+- **Crypto T-suffix direction inference** — single-side T-tickers like `KXDOGED-26MAY1422-T0.1499999` carry `strike_type='custom'` but no direction signal in API. Need to either: (a) parse `rules_primary` text for "above"/"below" keywords; (b) use implied-prob heuristic (T close to spot with implied ~0.5 → ambiguous, else infer); (c) assume Kalshi convention is uniformly "≤" or "≥" (need to verify). Minority of crypto markets so lower priority. ~1h.
+
 ### P3
 
 - ~~**Per-whale auto-pause**~~ — **DONE 2026-05-14 23:50 UTC**. Shipped via new `_whale_autopause.py` helper + filter step at top of PCT + K3 `run_scan_cycle`. Thresholds: `MIN_RESOLVED_TRADES=30`, `MAX_WIN_RATE_PCT=40.0`, `MAX_TOTAL_PNL=-5.0` (all conjunctive). On trigger: remove from `agent_state(selected_whales)` + emit `polymarket_whale_auto_paused` / `kalshi_whale_auto_paused` audit row with full stats. Dry-run against current prod data: 0 pauses on 14 selected whales (good — bad ones already manually dropped); hypothetical 0xE9Ba (82RT/4.9%WR/-$76.56) → PAUSE; hypothetical tom14cat14 (87RT/39.1%WR/-$1.58) → keep (pnl above -$5; conservative by design).
