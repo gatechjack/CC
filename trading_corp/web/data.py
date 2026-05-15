@@ -645,6 +645,13 @@ class DivisionViewSnapshot:
     # When set, division.html renders the IRA dashboard partial instead
     # of the generic PMCC / Holdings sections.
     ira_view: dict | None = None
+    # BitUnix HTF (higher-timeframe) regime panel — only populated for
+    # `bitunix_futures`. Shape documented on `build_bitunix_htf_view`.
+    # PR 2 ships this as a read-only display; the values are computed
+    # but the observer does NOT yet consult them for trade decisions
+    # (PR 3 wires the gate). Renders an "off" state when the HTF
+    # provider is missing (e.g., test environments).
+    bitunix_htf: dict | None = None
 
 
 @dataclass
@@ -1459,6 +1466,101 @@ def build_ira_view(
     }
 
 
+def build_bitunix_htf_view(deps: Any) -> dict | None:
+    """PR 2 — read-only display of the live HTF regime classification.
+
+    Reads `deps.bitunix_htf_provider`, calls its synchronous
+    `regime_snapshot()` with default config, and shapes the result for
+    the dashboard. Returns None when the provider isn't wired (test
+    envs).
+
+    PR 2 ships this purely observationally — the observer does NOT
+    consult the same data for trade decisions yet. PR 3 wires the gate
+    and adds the `mode: shadow|enforce` flag.
+
+    Shape:
+      {
+        gate_mode: "off",                         # "off" until PR 3
+        regime: "BULL" | ... | "SAFE_MODE",
+        composite_score: float,
+        h1: {regime, ema_alignment, structure, adx, macd_hist, reason},
+        h4: {...},
+        d1: {...},
+        volatility_tier: str,
+        atr_pct_d1: float | None,
+        nearest_support: float | None,
+        nearest_resistance: float | None,
+        distance_to_support_pct: float | None,
+        distance_to_resistance_pct: float | None,
+        session: str,
+        funding_rate: float | None,
+        funding_extreme: bool,
+        safe_mode_reason: str | None,
+        cache_health: {
+          h1: {bars, last_close, last_refresh_error},
+          h4: {...},
+          d1: {...},
+        },
+      }
+    """
+    provider = getattr(deps, "bitunix_htf_provider", None)
+    if provider is None:
+        return None
+
+    from trading_corp.agents.strategies.bitunix_htf_regime import HTFRegimeConfig
+    config = HTFRegimeConfig.defaults()
+
+    try:
+        verdict = provider.regime_snapshot(config)
+    except Exception as e:
+        log.warning("HTF regime snapshot failed: %s", e)
+        return None
+
+    def _tf_block(tf_class) -> dict:
+        return {
+            "regime": tf_class.regime.value,
+            "ema_alignment": tf_class.ema_alignment,
+            "structure": tf_class.structure,
+            "ema20": tf_class.ema20,
+            "ema50": tf_class.ema50,
+            "ema200": tf_class.ema200,
+            "adx": tf_class.adx,
+            "macd_hist": tf_class.macd_hist,
+            "reason": tf_class.reason,
+        }
+
+    def _cache_health(cache) -> dict:
+        return {
+            "bars": len(cache.bars),
+            "last_close": cache.bars[-1].close if cache.bars else None,
+            "last_refresh_error": cache.last_refresh_error,
+        }
+
+    return {
+        "gate_mode": "off",                # PR 3 will read from config
+        "regime": verdict.regime.value,
+        "composite_score": round(verdict.score, 3),
+        "h1": _tf_block(verdict.h1),
+        "h4": _tf_block(verdict.h4),
+        "d1": _tf_block(verdict.d1),
+        "volatility_tier": verdict.volatility_tier.value,
+        "atr_pct_d1": verdict.atr_pct_d1,
+        "nearest_support": verdict.nearest_support,
+        "nearest_resistance": verdict.nearest_resistance,
+        "distance_to_support_pct": verdict.distance_to_support_pct,
+        "distance_to_resistance_pct": verdict.distance_to_resistance_pct,
+        "session": verdict.session.value,
+        "funding_rate": verdict.funding_rate,
+        "funding_extreme": verdict.funding_extreme,
+        "safe_mode_reason": verdict.safe_mode_reason,
+        "cache_health": {
+            "h1": _cache_health(provider.h1_cache),
+            "h4": _cache_health(provider.h4_cache),
+            "d1": _cache_health(provider.d1_cache),
+        },
+    }
+
+
 def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
     """Phase 3.2.3 — compose the BitUnix Futures score panel block.
 
@@ -2172,11 +2274,16 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     # + the live observer's bar cache. Returns None if scoring config
     # is unavailable (observer not wired, or YAML scoring block missing).
     bitunix_score_view: dict | None = None
+    bitunix_htf_view: dict | None = None
     if slug == "bitunix_futures":
         try:
             bitunix_score_view = build_bitunix_score_view(deps.db_url, deps)
         except Exception as e:
             log.warning("bitunix score view for %s failed: %s", slug, e)
+        try:
+            bitunix_htf_view = build_bitunix_htf_view(deps)
+        except Exception as e:
+            log.warning("bitunix HTF view for %s failed: %s", slug, e)
 
     # Robinhood IRA dashboard — group shares + short calls into covered
     # calls, identify pure assets (shares without calls), surface short
@@ -2205,6 +2312,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         donchian=donchian_view,
         bitunix_score=bitunix_score_view,
         ira_view=ira_view_block,
+        bitunix_htf=bitunix_htf_view,
     )
 
 

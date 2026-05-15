@@ -1,0 +1,221 @@
+{# BitUnix Futures — HTF Regime panel (PR 2 read-only).
+
+   Surfaces the live higher-timeframe regime classification:
+     - Composite regime (5-state) + weighted score
+     - Per-TF breakdown (1H / 4H / 1D): EMA alignment, structure, ADX, MACD
+     - Volatility tier from 1D ATR(14) % of price
+     - Nearest support / resistance + distance %
+     - Funding rate + extreme flag
+     - Session
+     - Per-TF cache health
+
+   PR 2 is observational only — the badge says "OFF" because the
+   observer doesn't yet consult these values for trade decisions.
+   PR 3 flips this to "SHADOW" then "ENFORCE" once the gate wiring
+   lands and shadow audits look reasonable.
+
+   Refresh: 30s htmx interval. Read-only; no audit writes.
+#}
+{% if view.bitunix_htf %}
+{% set h = view.bitunix_htf %}
+
+<section class="bg-pane border border-edge rounded-lg p-4"
+         hx-get="/division/bitunix_futures"
+         hx-trigger="every 30s"
+         hx-select="#bitunix-htf-panel"
+         hx-target="#bitunix-htf-panel"
+         hx-swap="outerHTML"
+         id="bitunix-htf-panel">
+  <header class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      HTF Regime (1H · 4H · 1D)
+    </h2>
+    <div class="flex items-center gap-2 text-[11px] font-mono">
+      {% if h.gate_mode == 'enforce' %}
+        <span class="text-gain font-semibold">● GATE ENFORCING</span>
+      {% elif h.gate_mode == 'shadow' %}
+        <span class="text-mono font-semibold">◐ GATE SHADOW</span>
+      {% else %}
+        <span class="text-muted">○ GATE OFF (observational only)</span>
+      {% endif %}
+      <span class="text-muted">·</span>
+      <span class="text-muted">session: {{ h.session }}</span>
+    </div>
+  </header>
+
+  {# ─── Composite regime — large headline ─── #}
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3 lg:col-span-1">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Composite regime
+      </div>
+      <div class="text-3xl font-mono font-semibold
+                  {% if h.regime in ['STRONG_BULL', 'BULL'] %}text-gain
+                  {% elif h.regime in ['STRONG_BEAR', 'BEAR'] %}text-loss
+                  {% elif h.regime == 'SAFE_MODE' %}text-loss
+                  {% else %}text-mono{% endif %}">
+        {{ h.regime }}
+      </div>
+      <div class="text-[11px] text-muted font-mono mt-1">
+        score {% if h.composite_score > 0 %}+{% endif %}{{ h.composite_score }}
+        · weights 1D 0.5 · 4H 0.3 · 1H 0.2
+      </div>
+      {% if h.safe_mode_reason %}
+        <div class="text-[11px] text-loss font-mono mt-2">
+          ⚠ {{ h.safe_mode_reason }}
+        </div>
+      {% endif %}
+    </div>
+
+    {# Volatility tier #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Volatility (1D ATR)
+      </div>
+      <div class="text-2xl font-mono font-semibold
+                  {% if h.volatility_tier == 'extreme' %}text-loss
+                  {% elif h.volatility_tier == 'high' %}text-mono
+                  {% else %}text-gain{% endif %}">
+        {{ h.volatility_tier|upper }}
+      </div>
+      <div class="text-[11px] text-muted font-mono mt-1">
+        {% if h.atr_pct_d1 is not none %}
+          ATR {{ '%.2f'|format(h.atr_pct_d1) }}% of price
+        {% else %}
+          insufficient 1D bars
+        {% endif %}
+      </div>
+    </div>
+
+    {# Funding rate #}
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Funding rate (per 8h)
+      </div>
+      {% if h.funding_rate is not none %}
+        <div class="text-2xl font-mono font-semibold
+                    {% if h.funding_extreme %}text-loss
+                    {% elif h.funding_rate > 0 %}text-gain
+                    {% elif h.funding_rate < 0 %}text-loss
+                    {% else %}text-mono{% endif %}">
+          {% if h.funding_rate > 0 %}+{% endif %}{{ '%.4f'|format(h.funding_rate * 100) }}%
+        </div>
+        <div class="text-[11px] text-muted font-mono mt-1">
+          {% if h.funding_extreme %}
+            <span class="text-loss font-semibold">EXTREME</span> ·
+            {% if h.funding_rate > 0 %}longs crowded{% else %}shorts crowded{% endif %}
+          {% else %}
+            normal positioning
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="text-2xl font-mono text-muted">—</div>
+        <div class="text-[11px] text-muted font-mono mt-1">funding fetch unavailable</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ─── Per-TF breakdown (1H / 4H / 1D as columns) ─── #}
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+    {% for tf_label, tf in [('1H', h.h1), ('4H', h.h4), ('1D', h.d1)] %}
+    <div class="bg-pane-2/30 border border-edge rounded-md p-3">
+      <div class="flex items-baseline justify-between mb-2">
+        <span class="text-muted text-[11px] font-mono uppercase tracking-wider">
+          {{ tf_label }}
+        </span>
+        <span class="text-sm font-mono font-semibold
+                    {% if tf.regime == 'bull' %}text-gain
+                    {% elif tf.regime == 'bear' %}text-loss
+                    {% elif tf.regime == 'insufficient' %}text-loss
+                    {% else %}text-mono{% endif %}">
+          {{ tf.regime|upper }}
+        </span>
+      </div>
+      <div class="text-[11px] font-mono space-y-1">
+        <div class="flex justify-between">
+          <span class="text-muted">EMA align</span>
+          <span class="{% if tf.ema_alignment == 'bull' %}text-gain{% elif tf.ema_alignment == 'bear' %}text-loss{% else %}text-muted{% endif %}">
+            {{ tf.ema_alignment }}
+          </span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-muted">Structure</span>
+          <span class="{% if tf.structure == 'bull' %}text-gain{% elif tf.structure == 'bear' %}text-loss{% else %}text-muted{% endif %}">
+            {{ tf.structure }}
+          </span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-muted">ADX(14)</span>
+          <span>{{ '%.1f'|format(tf.adx) if tf.adx is not none else '—' }}</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-muted">MACD hist</span>
+          <span class="{% if tf.macd_hist is not none and tf.macd_hist > 0 %}text-gain{% elif tf.macd_hist is not none and tf.macd_hist < 0 %}text-loss{% else %}text-muted{% endif %}">
+            {% if tf.macd_hist is not none %}
+              {% if tf.macd_hist > 0 %}+{% endif %}{{ '%.4f'|format(tf.macd_hist) }}
+            {% else %}—{% endif %}
+          </span>
+        </div>
+      </div>
+      <div class="text-[10px] text-muted font-mono mt-2 italic">
+        {{ tf.reason }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ─── S/R levels strip ─── #}
+  <div class="bg-pane-2/30 border border-edge rounded-md p-3 mb-3">
+    <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+      Nearest HTF levels (4H + 1D swings + prior-day H/L)
+    </div>
+    <div class="grid grid-cols-2 gap-3 text-xs font-mono">
+      <div>
+        <span class="text-muted">Resistance: </span>
+        {% if h.nearest_resistance is not none %}
+          <span class="text-loss font-semibold">${{ '%.2f'|format(h.nearest_resistance) }}</span>
+          {% if h.distance_to_resistance_pct is not none %}
+            <span class="text-muted">
+              · {{ '%.2f'|format(h.distance_to_resistance_pct) }}% above
+              {% if h.distance_to_resistance_pct < 0.3 %}
+                <span class="text-loss font-semibold">⚠ within 0.3%</span>
+              {% endif %}
+            </span>
+          {% endif %}
+        {% else %}
+          <span class="text-muted">none above</span>
+        {% endif %}
+      </div>
+      <div>
+        <span class="text-muted">Support: </span>
+        {% if h.nearest_support is not none %}
+          <span class="text-gain font-semibold">${{ '%.2f'|format(h.nearest_support) }}</span>
+          {% if h.distance_to_support_pct is not none %}
+            <span class="text-muted">
+              · {{ '%.2f'|format(h.distance_to_support_pct) }}% below
+              {% if h.distance_to_support_pct < 0.3 %}
+                <span class="text-loss font-semibold">⚠ within 0.3%</span>
+              {% endif %}
+            </span>
+          {% endif %}
+        {% else %}
+          <span class="text-muted">none below</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ─── Cache health row ─── #}
+  <div class="text-[10px] text-muted font-mono">
+    cache:
+    {% for tf_label, ch in [('1H', h.cache_health.h1), ('4H', h.cache_health.h4), ('1D', h.cache_health.d1)] %}
+      <span class="{% if ch.last_refresh_error %}text-loss{% endif %}">
+        {{ tf_label }} {{ ch.bars }} bars
+        {% if ch.last_close %}@ ${{ '%.2f'|format(ch.last_close) }}{% endif %}
+        {% if ch.last_refresh_error %} · err: {{ ch.last_refresh_error[:40] }}{% endif %}
+      </span>
+      {% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}

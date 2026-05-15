@@ -280,22 +280,71 @@ async def run(argv: list[str] | None = None) -> int:
     bitunix_bar_cache = LiveBarCache(
         symbol="BTCUSDT", timeframe="3m", venue="bitunix", max_bars=60,
     )
+    # PR 2 — Higher-Timeframe (HTF) regime caches. Three additional
+    # LiveBarCaches polling 1H / 4H / 1D bars; consumed by the new
+    # `BitUnixHTFContextProvider` (PR 2) and the HTF regime gate
+    # (PR 3). These don't affect the order pipeline today — the
+    # `bitunix_observer` doesn't read the HTF provider until PR 3
+    # wires the gate. For PR 2 they exist purely to:
+    #   (a) build out the data path so a dashboard panel can render
+    #       the live regime classification (read-only),
+    #   (b) prove the BitUnix kline endpoint accepts higher TFs at
+    #       this `max_bars` setting before we start gating on them.
+    # `max_bars=250` gives EMA200 a 50-bar warmup margin. If BitUnix
+    # caps `limit` lower we'll see it in `last_refresh_count`; not
+    # blocking because the classifier handles `Insufficient` per-TF.
+    bitunix_h1_cache = LiveBarCache(
+        symbol="BTCUSDT", timeframe="1h", venue="bitunix", max_bars=250,
+    )
+    bitunix_h4_cache = LiveBarCache(
+        symbol="BTCUSDT", timeframe="4h", venue="bitunix", max_bars=250,
+    )
+    bitunix_d1_cache = LiveBarCache(
+        symbol="BTCUSDT", timeframe="1d", venue="bitunix", max_bars=250,
+    )
     # Phase 3.2 — confluence score accumulator config (off by default;
     # flip `bitunix_futures.scoring.enabled: true` in strategies.yaml
     # after backtest greenlight). When disabled, the observer runs the
     # Phase 3.1 single-bar `_tier_for` classifier unchanged.
+    #
+    # PR 3c additions: also load PA validation + HTF gate-mode + HTF
+    # regime config from the same YAML block. All optional with
+    # disabled defaults — observer reverts to pre-PR-3c behavior if
+    # the YAML block is missing or the gate mode is "off".
+    _scoring_config = None
+    _pa_config = None
+    _htf_gate_mode = "off"
     try:
         import yaml as _yaml
         from pathlib import Path as _Path
+        from trading_corp.agents.strategies.bitunix_pa_validation import (
+            PAValidationConfig,
+        )
         _strat_path = _Path(__file__).resolve().parent.parent / "config" / "strategies.yaml"
         with _strat_path.open() as _f:
             _strat_raw = _yaml.safe_load(_f)
-        _scoring_config = BitUnixConfluenceConfig.from_dict(
-            _strat_raw.get("bitunix_futures", {}),
-        )
+        _bx_block = _strat_raw.get("bitunix_futures", {})
+        _scoring_config = BitUnixConfluenceConfig.from_dict(_bx_block)
+        _pa_config = PAValidationConfig.from_dict(_bx_block)
+        _htf_gate_mode = str(
+            (_bx_block.get("htf_gate") or {}).get("mode", "off")
+        ).lower()
     except Exception as _e:
-        log.warning("bitunix scoring config load failed: %s; running Phase 3.1 only", _e)
-        _scoring_config = None
+        log.warning(
+            "bitunix scoring/pa/htf config load failed: %s; running pre-PR-3c only",
+            _e,
+        )
+    # HTF regime config — for now use defaults (the pure classifier's
+    # numbers match the YAML block we just shipped). PR 3d can swap to
+    # an HTFRegimeConfig.from_dict if/when knobs need real-time tuning.
+    from trading_corp.agents.strategies.bitunix_htf_regime import HTFRegimeConfig
+    _htf_config = HTFRegimeConfig.defaults()
+    log.info(
+        "BitUnix observer wiring: scoring=%s, pa_enabled=%s, htf_gate_mode=%s",
+        bool(_scoring_config and _scoring_config.enabled),
+        bool(_pa_config and _pa_config.enabled),
+        _htf_gate_mode,
+    )
     bitunix_observer = BitunixFuturesObserver(
         db_url=secrets.db_url,
         risk_agent=risk_agent,
@@ -303,8 +352,57 @@ async def run(argv: list[str] | None = None) -> int:
         logger_agent=logger_agent,
         bar_cache=bitunix_bar_cache,
         scoring_config=_scoring_config,
+        # PR 3c — wire HTF gate. htf_provider is constructed below
+        # (it's also reused by the dashboard); attach it after the
+        # provider exists.
+        pa_config=_pa_config,
+        htf_config=_htf_config,
+        htf_gate_mode=_htf_gate_mode,
         # telegram_channel attached after channel is constructed (below)
     )
+
+    # PR 2 — HTF context provider. Wraps the 1H/4H/1D caches plus a
+    # standalone BitunixBroker reference for the public funding-rate
+    # endpoint (no auth required). NOT consumed by the observer in
+    # PR 2 — only by the dashboard panel for read-only display. PR 3
+    # adds the observer integration that gates orders on
+    # `provider.regime_snapshot()`.
+    from trading_corp.brokers.bitunix import BitunixBroker as _BitunixBrokerForFunding
+    from trading_corp.data.bitunix_htf_context import BitUnixHTFContextProvider
+    _bitunix_funding_broker = _BitunixBrokerForFunding(
+        api_key=secrets.bitunix_futures_api_key,
+        api_secret=secrets.bitunix_futures_api_secret,
+    )
+    bitunix_htf_provider = BitUnixHTFContextProvider(
+        h1_cache=bitunix_h1_cache,
+        h4_cache=bitunix_h4_cache,
+        d1_cache=bitunix_d1_cache,
+        broker=_bitunix_funding_broker,
+        symbol="BTCUSDT",
+        # PR 5b/5c — db_url enables funding-history persistence and the
+        # continuous regime-snapshot loop. None = pre-PR-5 behavior.
+        db_url=secrets.db_url,
+    )
+    # PR 5a — bar history archiver. Polls each HTF cache + the existing
+    # 3m bar cache, INSERT OR IGNORE'ing every new closed bar into
+    # `bitunix_bar_history`. Decoupled from LiveBarCache (which is
+    # reused by Coinbase Donchian) so no contamination.
+    from trading_corp.data.bitunix_bar_archiver import BitUnixBarArchiver
+    bitunix_bar_archiver = BitUnixBarArchiver(
+        db_url=secrets.db_url,
+        caches=(
+            bitunix_bar_cache,    # 3m
+            bitunix_h1_cache,
+            bitunix_h4_cache,
+            bitunix_d1_cache,
+        ),
+    )
+    # PR 3c — attach the provider to the observer after construction
+    # (the observer was built before the provider). The observer's
+    # gate logic skips when htf_provider is None or htf_gate_mode is
+    # 'off', so until both are set + the YAML mode is shadow/enforce,
+    # nothing changes.
+    bitunix_observer.htf_provider = bitunix_htf_provider
 
     # --- Brokers (one per division, driven by config/divisions.yaml) ---
     from trading_corp.brokers.coinbase import CoinbaseBroker
@@ -1034,6 +1132,61 @@ async def run(argv: list[str] | None = None) -> int:
             name="bitunix-bar-cache",
         )
 
+        # --- HTF caches (PR 2) — poll 1H/4H/1D bars + funding rate ---
+        # Cadences sized to ~1/3 of each TF's bar duration so a new bar
+        # is picked up promptly after close. Funding rate updates every
+        # 8h on BitUnix; 30 min poll keeps the cached value warm.
+        for _cache, _interval, _name in (
+            (bitunix_h1_cache, 300.0, "bitunix-h1-cache"),    # 5 min
+            (bitunix_h4_cache, 900.0, "bitunix-h4-cache"),    # 15 min
+            (bitunix_d1_cache, 1800.0, "bitunix-d1-cache"),   # 30 min
+        ):
+            try:
+                await _cache.refresh()
+                log.info(f"{_name} primed: {_cache.status()}")
+            except Exception:
+                log.exception(f"{_name} prime failed (continuing)")
+            asyncio.create_task(
+                _cache.run_poll_loop(interval_s=_interval),
+                name=_name,
+            )
+        try:
+            await bitunix_htf_provider.refresh_funding_rate()
+            log.info(
+                f"bitunix HTF funding primed: rate="
+                f"{bitunix_htf_provider._last_funding_rate}"
+            )
+        except Exception:
+            log.exception("bitunix HTF funding prime failed (continuing)")
+        asyncio.create_task(
+            bitunix_htf_provider.run_funding_poll_loop(interval_s=1800.0),
+            name="bitunix-htf-funding",
+        )
+
+        # PR 5a — bar archiver. Mirrors the slowest cache poll cadence
+        # (60s) so we capture each new bar within ~one tick of when
+        # it appears in any cache.
+        try:
+            n_first = bitunix_bar_archiver.archive_once()
+            log.info(f"bitunix_bar_archiver primed: {n_first} bars")
+        except Exception:
+            log.exception("bitunix_bar_archiver prime failed (continuing)")
+        asyncio.create_task(
+            bitunix_bar_archiver.run_loop(interval_s=60.0),
+            name="bitunix-bar-archiver",
+        )
+
+        # PR 5c — continuous HTF regime snapshot loop (10-min cadence).
+        # Provides time-series data on the regime classifier outside of
+        # fire moments. Skips no-op when htf_config is unwired.
+        if _htf_config is not None:
+            asyncio.create_task(
+                bitunix_htf_provider.run_regime_snapshot_loop(
+                    config=_htf_config, interval_s=600.0,
+                ),
+                name="bitunix-htf-regime-snapshot",
+            )
+
         # --- Web command center (FastAPI on :8000, in-process) ---
         web_server, web_task = await _start_web_server(
             mode=mode,
@@ -1055,6 +1208,7 @@ async def run(argv: list[str] | None = None) -> int:
             research_firm=research_firm,
             pending_registry=pending_registry,
             bitunix_observer=bitunix_observer,
+            bitunix_htf_provider=bitunix_htf_provider,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -1301,6 +1455,7 @@ async def _start_web_server(
     research_firm: Any = None,
     pending_registry: Any = None,
     bitunix_observer: Any = None,
+    bitunix_htf_provider: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -1332,6 +1487,7 @@ async def _start_web_server(
         research_firm=research_firm,
         pending_registry=pending_registry,
         bitunix_observer=bitunix_observer,
+        bitunix_htf_provider=bitunix_htf_provider,
     )
     app = create_app(deps)
     config = uvicorn.Config(

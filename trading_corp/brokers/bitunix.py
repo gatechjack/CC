@@ -313,6 +313,61 @@ class BitunixBroker(Broker):
                 )
         return 0.0
 
+    async def get_funding_rate(self, symbol: str) -> float | None:
+        """Return current funding rate for `symbol` as a decimal per 8h
+        period (e.g. 0.0001 = 0.01% per 8h). Public endpoint, no auth.
+
+        Works regardless of broker stub/connected state — funding is a
+        public endpoint, so we construct a transient httpx client here
+        rather than depending on `self._client` (which only exists when
+        the broker has API credentials and `connect()` has run). This
+        lets the HTF context provider call this method even in test /
+        unauthenticated environments.
+
+        Returns None on error so callers can treat "unknown funding"
+        distinctly from "zero funding". The HTF gate's funding-extreme
+        check uses None to skip the override — it does NOT default to
+        the safe direction here because the regime gate's other hard-
+        zero checks still apply.
+
+        BitUnix returns funding-rate fields under varying key names
+        across endpoints; we accept the canonical `fundingRate` plus
+        `funding_rate` as a fallback.
+        """
+        try:
+            async with httpx.AsyncClient(
+                base_url=_BASE_URL, timeout=_DEFAULT_TIMEOUT_S,
+            ) as client:
+                r = await client.get(
+                    "/api/v1/futures/market/funding_rate",
+                    params={"symbol": symbol},
+                )
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            log.warning("BitUnix funding_rate fetch failed for %s: %s", symbol, e)
+            return None
+        if data.get("code") != 0:
+            log.warning(
+                "BitUnix funding_rate error for %s: code=%s msg=%r",
+                symbol, data.get("code"), data.get("msg"),
+            )
+            return None
+        d = data.get("data") or {}
+        # Endpoint returns either a single dict or a list of one dict
+        # depending on BitUnix's response shape; handle both defensively.
+        if isinstance(d, list):
+            d = d[0] if d else {}
+        raw = d.get("fundingRate") if isinstance(d, dict) else None
+        if raw is None and isinstance(d, dict):
+            raw = d.get("funding_rate")
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
     async def place_order(self, order: ProposedOrder) -> FillEvent:
         raise NotImplementedError(
             "BitunixBroker.place_order: Phase 1 is read-only. Live order "

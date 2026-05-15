@@ -202,6 +202,14 @@
       {% include "partials/bitunix_score_panel.html" %}
     {% endif %}
 
+    <!-- BitUnix HTF (higher-timeframe) regime panel — PR 2 read-only.
+         Renders the live composite regime + per-TF breakdown derived
+         from polled 1H/4H/1D bars. Observer does NOT consult these
+         values for trade decisions until PR 3 wires the gate. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_htf %}
+      {% include "partials/bitunix_htf_panel.html" %}
+    {% endif %}
+
     <!-- Paper-trade win rate (Phase C of would_have_placed enrichment) -->
     {% if view.paper_trade_summary and view.paper_trade_summary.totals.all.n %}
     <section class="bg-pane border border-edge rounded-lg p-4">

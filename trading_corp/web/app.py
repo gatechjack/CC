@@ -67,6 +67,12 @@ class WebDeps:
     # no orders, no risk-gate, just classifies inbound Otter/Cypher
     # signals into bias-only tiers and writes audit_event rows).
     bitunix_observer: Any = None    # BitunixFuturesObserver | None
+    # PR 2 — BitUnix HTF context provider. Wraps the 1H/4H/1D
+    # LiveBarCaches plus a funding-rate fetcher. Read-only in PR 2:
+    # the dashboard panel calls `provider.regime_snapshot(config)`
+    # to render the live regime classification. PR 3 wires the
+    # observer to consult it before passing trades through the gate.
+    bitunix_htf_provider: Any = None  # BitUnixHTFContextProvider | None
 
 
 def create_app(deps: WebDeps) -> FastAPI:
