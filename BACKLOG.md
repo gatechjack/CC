@@ -8,6 +8,67 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## END-OF-SESSION SNAPSHOT — 2026-05-14 23:30 UTC
+
+**14 prod deploys today.** All paper-mode; no real-money capital touched. State for tomorrow:
+
+**Live + healthy:**
+- Specialized agents: kalshi_weather (NWS), kalshi_crypto (Coinbase spot), kalshi_sports_scout (read-only, the-odds-api free tier, 1h poll)
+- BitUnix Phase 3.2 with multi-fire fix + HTF gate + Cypher weight cuts (2026-05-14 17:57)
+- K3 (kalshi_copy_trader): exit-pricing fix shipped + 253 RT backfill (-$170 → +$0.58); tom14cat14 dropped from selected_whales (now 3 whales)
+- PCT (polymarket_copy_trader): resolution + drift entry gates; 0xE9Ba96828e... wallet dropped (now 11 whales); multi-leg resolver fix unstuck 49 trades (PCT corrected to +$27.66 / 60% WR)
+- LLM strict gate on Eco/Fin (kalshi_llm_arbitrage); LLM threshold-hallucination fix (uses market.title)
+- Cross-strategy lockdown: weather/crypto/sports stripped from all 3 generic arb strategies; only specialized agents see those categories
+
+**Awaiting first-day data:**
+- kalshi_weather first scans (5min poll; should have hours of data by tomorrow)
+- kalshi_crypto first fires (60s poll; should have lots)
+- kalshi_sports_scout `kalshi_sports_observed` audit accumulation (1h poll; ~24 cycles overnight)
+- BitUnix paper trades under new HTF gate + cooldown lock
+- K3 fires under reduced 3-whale roster + sports skip
+- PCT fires under reduced 11-whale roster + entry gates
+- Whales dashboard tab visibility check (Jack to view at https://trading.jacksumner.com/prediction-markets/)
+
+**Open follow-ups discovered today (queued in this section + below):**
+- ~~Per-whale auto-pause rule~~ **DONE 2026-05-14 23:50 UTC** (see P3 section)
+- PMCC audit (only real-money strategy not touched in today's session)
+
+---
+
+## P2/P3/P4 — 2026-05-14 deferred items from specialized-agent work
+
+Items punted during the day's specialized-agent build sprint. Grouped by priority for easy pick-up.
+
+### P2
+
+- **Crypto vol model v2** — rolling 30d realized vol from Coinbase bars (replaces hard-coded `ANNUAL_VOLS` constants in `trading_corp/data/crypto_spot_provider.py`). Constants today: BTC=60%, ETH=75%, SOL=90%, DOGE=110%, XRP=85%. Real σ varies regime-to-regime; v2 reads `coinbase_broker.get_bars()` for the asset, computes close-to-close σ over last 30 days (rolling), refreshes on a daily cron. Estimated 2-3h. Watch for the moment a fixed-vol miscalibration causes a near-threshold misfire.
+
+- **Sports trading division build** (B or C from 2026-05-14 scoping) — gated on 7-day Sports Scout data. After `kalshi_sports_observed` audit accumulates ~300+ rows, query for: median absolute divergence per league, hit-rate at various divergence thresholds (cross-reference with `kalshi_round_trips` for resolved games). If edge ≥ 5% at meaningful volume in any league: build trading division mirroring `kalshi_crypto_arb` shape (paid the-odds-api $30/mo if needed for quota). Estimated 6-12h depending on scope (MLB-only vs broad).
+
+- **K3 strategy redesign** — Apify position-polling has a structural adverse-selection bias (winners auto-settle out of `open_positions` before our 10-min poll sees them). Even with the 2026-05-14 exit-pricing fix that took backfill from 0/253 wins → 149/253, K3 is break-even paper / fee-negative live at current $1-3 sizing. Redesign options: (a) switch to trade-tape-based ingestion (mirror PCT's activity-feed approach), (b) skip markets that resolve <Xmin from observed entry. Estimated 8-12h.
+
+### P3
+
+- ~~**Per-whale auto-pause**~~ — **DONE 2026-05-14 23:50 UTC**. Shipped via new `_whale_autopause.py` helper + filter step at top of PCT + K3 `run_scan_cycle`. Thresholds: `MIN_RESOLVED_TRADES=30`, `MAX_WIN_RATE_PCT=40.0`, `MAX_TOTAL_PNL=-5.0` (all conjunctive). On trigger: remove from `agent_state(selected_whales)` + emit `polymarket_whale_auto_paused` / `kalshi_whale_auto_paused` audit row with full stats. Dry-run against current prod data: 0 pauses on 14 selected whales (good — bad ones already manually dropped); hypothetical 0xE9Ba (82RT/4.9%WR/-$76.56) → PAUSE; hypothetical tom14cat14 (87RT/39.1%WR/-$1.58) → keep (pnl above -$5; conservative by design).
+
+- **PMCC audit pass** — only real-money strategy not touched in today's specialized-agent sprint. Recent fills, audit-trail health, risk-cap utilization, silent-failure patterns. Periodic check, not bug-driven. ~1-2h.
+
+- **Crypto vol model v3** — Coinbase Derivatives options IV (most accurate; tiny extra latency). Builds on v2 by querying Coinbase's options board for at-the-money IV per asset, using that instead of realized. Only worth it after v2 is deployed and we still see vol-model misfires. ~4-5h.
+
+- **AccuWeather paid integration ($25/mo)** — exact-match-to-resolver. NWS↔AccuWeather drift cushion (`SOURCE_DIVERGENCE_SIGMA_F=2.0` in `_weather_math.py`) currently absorbs the difference. Worth subscribing only if post-deploy data shows we're losing trades on near-threshold markets where NWS read differs from AccuWeather's resolution price. ~2-3h.
+
+- **Financials division** (KXSPY/KXSPX/KXNVDA-style stock-close threshold markets) — same shape as `kalshi_crypto_arb`. Live spot via yfinance (already wired); same Gaussian probability math. Volume in our data is smaller than crypto so payback is slower. Worth doing after we generalize `_weather_math.py` → `_threshold_math.py`. ~6h.
+
+- **PCT honest paper-pricing** — `polymarket_copy_trader._emit_entry` records entry at the WHALE's stale fill price, not the current market price. Even after the 2026-05-14 resolution+drift gates, this overstates our edge when market moves in whale's favor between fill and our poll. Fix: use `market_state_fetcher.quote()` as entry_price when drift ∈ [-0.30, +∞). ~1-2h.
+
+### P4
+
+- **Generalize `_weather_math.py` → `_threshold_math.py`** — currently weather + crypto both call `_weather_math.evaluate_weather_market` (math is unit-agnostic). When Financials lands as a 3rd caller, rename + relocate. Backwards-compat shim from `_weather_math` while strategies migrate. ~30 min.
+
+- **Telegram tile for Sports Scout** — daily/weekly digest of `kalshi_sports_observed` audit summary (median divergence, top-divergence games observed, quota burn). Read-only visibility; no orders. ~1h.
+
+---
+
 ## P3 — Pink Box S/R confluence integration  *(NEW — 2026-05-10)*
 
 Pink Box is a separate Otter product: a static BTC chart annotated with key support/resistance levels. NOT a TradingView alert — Board receives Pink Box updates as image uploads ~2-3 times/day. (Code cleanup completed 2026-05-10: `pink_box_bull`/`pink_box_bear` removed from `lord_otter.py` `KNOWN_SIGNALS`, `bitunix_futures_observer.py` trigger sets, `strategies.yaml` weights, and tests/scripts. Any future stray webhook with that signal name is now an unknown-signal reject.)
