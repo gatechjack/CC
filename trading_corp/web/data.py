@@ -977,27 +977,35 @@ def _hydrate_pm_overview(divisions: list[Division], db_url: str) -> None:
         for d in pm_divisions
     }
 
-    # Polymarket round-trips — one row aggregate.
-    if "polymarket_arbitrage" in stats:
-        try:
-            rows = _query(
-                db_url,
-                "SELECT COUNT(*) AS n, "
-                "       SUM(won) AS w, "
-                "       SUM(realized_pnl) AS pnl "
-                "FROM polymarket_round_trips",
-            )
-            if rows and rows[0].get("n"):
-                n = int(rows[0].get("n") or 0)
-                w = int(rows[0].get("w") or 0)
-                pnl = float(rows[0].get("pnl") or 0.0)
-                s = stats["polymarket_arbitrage"]
-                s["n_resolved"] = n
-                s["n_wins"] = w
-                s["n_losses"] = max(0, n - w)   # polymarket has no void column
-                s["total_realized_pnl"] = pnl
-        except Exception as e:
-            log.debug("pm_overview: polymarket roll-up failed: %s", e)
+    # Polymarket round-trips — grouped by division (Fix 2026-05-14).
+    # Previously this was a table-wide aggregate dumped onto the
+    # `polymarket_arbitrage` tile, which (1) showed the wrong WR for
+    # the arb tile by mixing in copy-trader rows and (2) left the
+    # `polymarket_copy_trading` tile at zero. Mirrors the kalshi
+    # roll-up shape immediately below.
+    try:
+        rows = _query(
+            db_url,
+            "SELECT division, "
+            "       COUNT(*) AS n, "
+            "       SUM(won) AS w, "
+            "       SUM(realized_pnl) AS pnl "
+            "FROM polymarket_round_trips GROUP BY division",
+        )
+        for r in rows:
+            div = r.get("division") or ""
+            if div not in stats:
+                continue
+            n = int(r.get("n") or 0)
+            w = int(r.get("w") or 0)
+            pnl = float(r.get("pnl") or 0.0)
+            s = stats[div]
+            s["n_resolved"] = n
+            s["n_wins"] = w
+            s["n_losses"] = max(0, n - w)   # polymarket has no void column
+            s["total_realized_pnl"] = pnl
+    except Exception as e:
+        log.debug("pm_overview: polymarket roll-up failed: %s", e)
 
     # Kalshi round-trips — grouped by division (the table has the column).
     try:
@@ -2322,6 +2330,52 @@ class PMDivisionOption:
 
 
 @dataclass
+class PMWhaleRow:
+    """One row of the cross-venue Whales tab.
+
+    Aggregates per-whale stats across BOTH our resolved round-trips and
+    currently-open paper positions for the copy-trading divisions
+    (polymarket_copy_trading + kalshi_copy_trading).
+    """
+    handle: str                  # whale handle/username (Pedrobeliever47, smedtoshi, ...)
+    venue: str                   # 'polymarket' | 'kalshi'
+    division: str                # 'polymarket_copy_trading' | 'kalshi_copy_trading'
+    n_resolved: int              # our copies that resolved
+    n_wins: int
+    n_losses: int
+    win_rate_pct: float | None   # None pre-first-resolve
+    total_realized_pnl: float
+    n_open: int                  # OUR copies still open (whale still holds)
+    last_entry_ts: str | None    # ISO; most-recent entry we placed for this whale
+
+
+@dataclass
+class KalshiWatchOnlyRow:
+    """One row of the K3 Watch List panel — whales we observe but do NOT copy.
+
+    Source: `agent_state(kalshi_copy_trader, watch_only_stats)`, refreshed
+    daily by `refresh_kalshi_watchlist_stats.py`. Stats reflect the whale's
+    OWN Kalshi performance (from Apify closed_positions), NOT our copied
+    trades. Promote a row via the (future) `[Promote]` flow to move the
+    handle onto the active `selected_whales` roster.
+    """
+    handle: str
+    tier: int | None                 # 1 = public-name traders, 2 = curators
+    source_x_handle: str | None      # provenance — the X.com handle we sourced from
+    notes: str | None
+    resolved_count: int              # whale's resolved positions visible via Apify
+    wins: int
+    losses: int
+    win_rate_pct: float | None       # None when resolved_count == 0
+    total_pnl: float                 # whale's realized PnL (Apify units — dollars)
+    avg_pnl_per_contract: float
+    top_category: str | None         # first entry of top_categories tuple
+    n_open: int                      # whale's currently-open positions
+    lifetime_markets_traded: int
+    last_refresh_iso: str | None
+
+
+@dataclass
 class PMDashboardView:
     """Everything the prediction_markets_dashboard.html template needs."""
     selected: str | None             # None == 'All Prediction Markets'
@@ -2331,6 +2385,8 @@ class PMDashboardView:
     equity_curve: list[PMEquityPoint]
     round_trips: list[PMRoundTrip]   # most-recent first
     open_trades: list[PMOpenTrade]   # most-recent emit first
+    whales: list[PMWhaleRow]         # populated for copy_trading divisions; empty otherwise
+    kalshi_watch_only: list[KalshiWatchOnlyRow]   # K3 watch-list panel; empty unless kalshi_copy_trading is selected
 
 
 _POLYMARKET_PREFIX = "polymarket_"
@@ -2848,6 +2904,183 @@ def _pm_equity_at(curve: list[PMEquityPoint], at_or_before: datetime) -> float |
     return sum(p.equity for p in by_div.values())
 
 
+def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
+    """Per-whale aggregates for the Whales tab.
+
+    Returns one row per (whale_handle, division). Empty list when no
+    target_slugs is a copy_trading division. Aggregates pull from:
+      - kalshi_round_trips.extra_json.whale_handle  (K3 schema)
+      - polymarket_round_trips.extra_json.whale_user_name (PCT schema)
+    plus open-trade counts from audit_event for would_have_placed BUY
+    rows that don't yet have an entry_order_id linkage.
+    """
+    out: list[PMWhaleRow] = []
+    if not target_slugs:
+        return out
+
+    # Kalshi K3
+    if "kalshi_copy_trading" in target_slugs:
+        try:
+            rows = _query(db_url, """
+              SELECT json_extract(extra_json, '$.whale_handle') AS handle,
+                     COUNT(*) AS n,
+                     SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) AS w,
+                     SUM(CASE WHEN won=0 THEN 1 ELSE 0 END) AS l,
+                     SUM(realized_pnl) AS pnl,
+                     MAX(entry_ts) AS last_ts
+              FROM kalshi_round_trips
+              WHERE division='kalshi_copy_trading' AND won IS NOT NULL
+              GROUP BY handle
+            """)
+            opens = _query(db_url, """
+              SELECT json_extract(payload_json,'$.whale_handle') AS handle,
+                     COUNT(*) AS n
+              FROM audit_event
+              WHERE actor='kalshi_copy_trader'
+                AND kind='would_have_placed'
+                AND json_extract(payload_json,'$.side')='buy'
+                AND json_extract(payload_json,'$.order_id') NOT IN
+                  (SELECT entry_order_id FROM kalshi_round_trips WHERE entry_order_id IS NOT NULL)
+              GROUP BY handle
+            """)
+            opens_map = {r.get("handle"): int(r.get("n") or 0) for r in opens}
+            for r in rows:
+                handle = r.get("handle") or "(unknown)"
+                n = int(r.get("n") or 0)
+                w = int(r.get("w") or 0)
+                ll = int(r.get("l") or 0)
+                decisive = w + ll
+                wr = (100.0 * w / decisive) if decisive > 0 else None
+                out.append(PMWhaleRow(
+                    handle=handle, venue="kalshi",
+                    division="kalshi_copy_trading",
+                    n_resolved=n, n_wins=w, n_losses=ll,
+                    win_rate_pct=wr,
+                    total_realized_pnl=float(r.get("pnl") or 0.0),
+                    n_open=opens_map.get(handle, 0),
+                    last_entry_ts=r.get("last_ts"),
+                ))
+        except Exception as e:
+            log.debug("_query_pm_whales kalshi failed: %s", e)
+
+    # Polymarket Copy Trader
+    if "polymarket_copy_trading" in target_slugs:
+        try:
+            rows = _query(db_url, """
+              SELECT json_extract(extra_json, '$.whale_user_name') AS handle,
+                     COUNT(*) AS n,
+                     SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) AS w,
+                     SUM(CASE WHEN won=0 THEN 1 ELSE 0 END) AS l,
+                     SUM(realized_pnl) AS pnl,
+                     MAX(entry_ts) AS last_ts
+              FROM polymarket_round_trips
+              WHERE division='polymarket_copy_trading' AND won IS NOT NULL
+              GROUP BY handle
+            """)
+            opens = _query(db_url, """
+              SELECT json_extract(payload_json,'$.whale_user_name') AS handle,
+                     COUNT(*) AS n
+              FROM audit_event
+              WHERE kind='would_have_placed'
+                AND json_extract(payload_json,'$.division')='polymarket_copy_trading'
+                AND json_extract(payload_json,'$.side')='buy'
+                AND json_extract(payload_json,'$.order_id') NOT IN
+                  (SELECT entry_order_id FROM polymarket_round_trips WHERE entry_order_id IS NOT NULL)
+              GROUP BY handle
+            """)
+            opens_map = {r.get("handle"): int(r.get("n") or 0) for r in opens}
+            for r in rows:
+                handle = r.get("handle") or "(unknown)"
+                n = int(r.get("n") or 0)
+                w = int(r.get("w") or 0)
+                ll = int(r.get("l") or 0)
+                decisive = w + ll
+                wr = (100.0 * w / decisive) if decisive > 0 else None
+                out.append(PMWhaleRow(
+                    handle=handle, venue="polymarket",
+                    division="polymarket_copy_trading",
+                    n_resolved=n, n_wins=w, n_losses=ll,
+                    win_rate_pct=wr,
+                    total_realized_pnl=float(r.get("pnl") or 0.0),
+                    n_open=opens_map.get(handle, 0),
+                    last_entry_ts=r.get("last_ts"),
+                ))
+            # Also surface whales with OPEN positions but ZERO resolved (so
+            # the silent whales don't disappear from the UI).
+            for handle, n_open in opens_map.items():
+                if not handle:
+                    continue
+                if any(w.handle == handle and w.venue == "polymarket" for w in out):
+                    continue
+                out.append(PMWhaleRow(
+                    handle=handle, venue="polymarket",
+                    division="polymarket_copy_trading",
+                    n_resolved=0, n_wins=0, n_losses=0,
+                    win_rate_pct=None,
+                    total_realized_pnl=0.0,
+                    n_open=n_open,
+                    last_entry_ts=None,
+                ))
+        except Exception as e:
+            log.debug("_query_pm_whales polymarket failed: %s", e)
+
+    # Sort: highest realized PnL first; silent whales (n_resolved=0) at end.
+    out.sort(key=lambda w: (w.n_resolved == 0, -w.total_realized_pnl))
+    return out
+
+
+def _query_kalshi_watch_only_rows(
+    db_url: str, target_slugs: list[str],
+) -> list[KalshiWatchOnlyRow]:
+    """Render the K3 Watch List panel from `agent_state(watch_only_stats)`.
+
+    Only populated when kalshi_copy_trading is in scope — there's no
+    cross-venue watch-list today. Empty list otherwise.
+
+    Sort: tier ascending (Tier 1 first), then total_pnl descending. So the
+    big-name traders cluster at the top regardless of which one is hottest.
+    """
+    if "kalshi_copy_trading" not in target_slugs:
+        return []
+    loaded = db.load_agent_state(
+        "kalshi_copy_trader", "watch_only_stats", db_url=db_url,
+    )
+    if loaded is None:
+        return []
+    stats_by_handle, _updated = loaded
+    if not isinstance(stats_by_handle, dict):
+        return []
+
+    out: list[KalshiWatchOnlyRow] = []
+    for handle, s in stats_by_handle.items():
+        if not isinstance(s, dict):
+            continue
+        decisive = int(s.get("wins") or 0) + int(s.get("losses") or 0)
+        wr_pct: float | None = None
+        if decisive > 0:
+            wr_pct = 100.0 * int(s.get("wins") or 0) / decisive
+        cats = s.get("top_categories") or []
+        top_cat = cats[0] if cats else None
+        out.append(KalshiWatchOnlyRow(
+            handle=str(s.get("handle") or handle),
+            tier=int(s["tier"]) if s.get("tier") is not None else None,
+            source_x_handle=s.get("source_x_handle"),
+            notes=s.get("notes"),
+            resolved_count=int(s.get("resolved_count") or 0),
+            wins=int(s.get("wins") or 0),
+            losses=int(s.get("losses") or 0),
+            win_rate_pct=wr_pct,
+            total_pnl=float(s.get("total_pnl") or 0.0),
+            avg_pnl_per_contract=float(s.get("avg_pnl_per_contract") or 0.0),
+            top_category=top_cat,
+            n_open=int(s.get("n_open") or 0),
+            lifetime_markets_traded=int(s.get("lifetime_markets_traded") or 0),
+            last_refresh_iso=s.get("last_refresh_iso"),
+        ))
+    out.sort(key=lambda w: (w.tier or 99, -w.total_pnl))
+    return out
+
+
 def _pm_summary(
     round_trips: list[PMRoundTrip],
     equity_curve: list[PMEquityPoint],
@@ -2922,10 +3155,12 @@ async def build_prediction_market_view(
 
     db_url = deps.db_url
 
-    round_trips, equity_curve, open_trades = await asyncio.gather(
+    round_trips, equity_curve, open_trades, whales, kalshi_watch_only = await asyncio.gather(
         asyncio.to_thread(_query_pm_round_trips, db_url, target_slugs, history_limit),
         asyncio.to_thread(_query_pm_equity_curve, db_url, target_slugs, equity_curve_days),
         asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200),
+        asyncio.to_thread(_query_pm_whales, db_url, target_slugs),
+        asyncio.to_thread(_query_kalshi_watch_only_rows, db_url, target_slugs),
     )
 
     # Pending count = len(open_trades). One source of truth — no separate
@@ -2940,6 +3175,8 @@ async def build_prediction_market_view(
         equity_curve=equity_curve,
         round_trips=round_trips,
         open_trades=open_trades,
+        whales=whales,
+        kalshi_watch_only=kalshi_watch_only,
     )
 
 

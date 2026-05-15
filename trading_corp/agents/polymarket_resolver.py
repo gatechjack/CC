@@ -79,23 +79,50 @@ def _fetch_unresolved_orders(db_url: str) -> list[dict]:
 
 
 def _compute_round_trip_row(row: dict, res: dict) -> dict | None:
-    """Binary-outcome P&L. Returns the dict to INSERT, or None if the
-    market isn't resolvable yet (status != resolved) or the audit row
-    is malformed."""
+    """P&L for both binary YES/NO and multi-leg outcomes.
+
+    Multi-leg path (2026-05-14): when the audit row's outcome string is
+    something other than yes/no (e.g., "Cincinnati Reds", "Up", "Real
+    Oviedo"), use the row's `outcome_index` against `outcome_prices` to
+    determine the win. Polymarket multi-outcome markets resolve with
+    exactly one entry == "1" and the rest "0"; the broker's
+    `get_market_resolution` now passes through resolved status for
+    these (was previously voided as "fractional").
+
+    Returns the INSERT dict, or None if not yet resolved / malformed.
+    """
     if res.get("status") != "resolved":
         return None
-    yes_won = bool(res.get("yes_won"))
-    outcome = (row.get("outcome") or "yes").lower()
+    outcome = (row.get("outcome") or "yes").strip()
+    outcome_lower = outcome.lower()
     qty = float(row.get("qty") or 0.0)
     price = float(row.get("limit_price") or 0.0)
     if qty <= 0 or price <= 0 or price >= 1.0:
         return None
-    if outcome == "yes":
-        won = yes_won
-    elif outcome == "no":
-        won = not yes_won
+
+    # Binary YES/NO path (legacy + arb strategies).
+    if outcome_lower in ("yes", "no"):
+        yes_won = bool(res.get("yes_won"))
+        won = yes_won if outcome_lower == "yes" else (not yes_won)
     else:
-        return None
+        # Multi-leg path — use outcome_index against outcome_prices.
+        outcome_index_raw = row.get("outcome_index")
+        outcome_prices = res.get("outcome_prices") or []
+        if outcome_index_raw is None or not outcome_prices:
+            return None
+        try:
+            idx = int(outcome_index_raw)
+        except (TypeError, ValueError):
+            return None
+        if idx < 0 or idx >= len(outcome_prices):
+            return None
+        try:
+            won = float(outcome_prices[idx]) == 1.0
+        except (TypeError, ValueError):
+            return None
+        # `yes_won` only meaningful for binary; leave 0 for multi-leg
+        # (consumers that branch on this should also branch on outcome).
+        yes_won = False
     notional = qty * price
     pnl = qty * (1.0 - price) if won else -qty * price
     roi = (100.0 * pnl / notional) if notional > 0 else 0.0
@@ -136,6 +163,14 @@ def _compute_round_trip_row(row: dict, res: dict) -> dict | None:
                 "rationale": row.get("rationale"),
                 "risk_verdict": row.get("risk_verdict"),
                 "llm_confidence": row.get("llm_confidence"),
+                # PCT attribution — preserved here so the Whales dashboard
+                # tab can attribute multi-leg-resolved RTs to the whale
+                # that originated the bet. Pre-2026-05-14 fix these
+                # weren't included; post-fix audit rows are correctly
+                # attributed. Existing rows backfilled separately.
+                "whale_user_name": row.get("whale_user_name"),
+                "whale_wallet": row.get("whale_wallet"),
+                "outcome_index": row.get("outcome_index"),
             },
             default=str,
         ),

@@ -1056,29 +1056,33 @@ bitunix_futures:
     # Raising min_score_to_fire from 5 -> 8 (=STANDARD floor).
     # WEAK band kept in YAML for tier-naming clarity but never fires
     # while min_score_to_fire >= weak threshold.
-    min_score_to_fire: 8              # net_score < this -> SKIP
+    # Fix #3 (2026-05-14): cut Cypher weights + TTLs so 3m signals matter more.
+    # Cypher A/B contribute reduced points; HTF bias gate is enforced separately
+    # in `bitunix_futures_observer._check_htf_alignment` (Fix #2). Thresholds
+    # scaled proportionally so firing frequency doesn't collapse to zero.
+    min_score_to_fire: 4              # was 8
     tier_thresholds:                  # net_score >= → tier
-      premium: 12
-      standard: 8
-      weak: 5
+      premium: 8                      # was 12
+      standard: 4                     # was 8
+      weak: 2                         # was 5
     cooldown_seconds: 1800            # same-direction cooldown
     dedupe_within_ttl: true           # repeated fires of same signal count once
     factors:
-      # ── Cypher A-panel (assumed 1D — heavy weight, 24h TTL) ──
-      mc_a_bluetriangle:     {weight: 3, side: buy,  ttl_minutes: 1440}
-      mc_a_longema:          {weight: 2, side: buy,  ttl_minutes: 1440}
-      mc_a_yellow_x:         {weight: 2, side: buy,  ttl_minutes: 1440}
-      mc_a_red_diamond:      {weight: 4, side: sell, ttl_minutes: 1440}
-      mc_a_blood_diamond:    {weight: 5, side: sell, ttl_minutes: 1440}
-      mc_a_redx:             {weight: 2, side: sell, ttl_minutes: 1440}
-      # ── Cypher B-panel (assumed 4h — 4h TTL) ──
-      mc_b_gold_buy:         {weight: 5, side: buy,  ttl_minutes: 240}
-      mc_b_buy_circle_div:   {weight: 4, side: buy,  ttl_minutes: 240}
-      mc_b_buy_circle:       {weight: 3, side: buy,  ttl_minutes: 240}
-      mc_b_sell_circle_div:  {weight: 4, side: sell, ttl_minutes: 240}
-      mc_b_sell_circle:      {weight: 3, side: sell, ttl_minutes: 240}
-      mc_b_buy_dot:          {weight: 2, side: buy,  ttl_minutes: 240}
-      mc_b_sell_dot:         {weight: 2, side: sell, ttl_minutes: 240}
+      # ── Cypher A-panel (1D — bias-setters; weights cut, TTL 24h→6h) ──
+      mc_a_bluetriangle:     {weight: 2, side: buy,  ttl_minutes: 360}
+      mc_a_longema:          {weight: 1, side: buy,  ttl_minutes: 360}
+      mc_a_yellow_x:         {weight: 1, side: buy,  ttl_minutes: 360}
+      mc_a_red_diamond:      {weight: 2, side: sell, ttl_minutes: 360}
+      mc_a_blood_diamond:    {weight: 2, side: sell, ttl_minutes: 360}
+      mc_a_redx:             {weight: 1, side: sell, ttl_minutes: 360}
+      # ── Cypher B-panel (4h — bias-setters; weights cut, TTL 4h→2h) ──
+      mc_b_gold_buy:         {weight: 2, side: buy,  ttl_minutes: 120}
+      mc_b_buy_circle_div:   {weight: 2, side: buy,  ttl_minutes: 120}
+      mc_b_buy_circle:       {weight: 1, side: buy,  ttl_minutes: 120}
+      mc_b_sell_circle_div:  {weight: 2, side: sell, ttl_minutes: 120}
+      mc_b_sell_circle:      {weight: 1, side: sell, ttl_minutes: 120}
+      mc_b_buy_dot:          {weight: 1, side: buy,  ttl_minutes: 120}
+      mc_b_sell_dot:         {weight: 1, side: sell, ttl_minutes: 120}
       # ── Otter (3m — short TTL, entry timing) ──
       otter_buy:             {weight: 3, side: buy,  ttl_minutes: 15}
       otter_sell:            {weight: 3, side: sell, ttl_minutes: 15}

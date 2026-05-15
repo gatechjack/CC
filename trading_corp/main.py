@@ -2869,18 +2869,8 @@ async def _scheduled_kalshi_weather_arb_loop(
                 log.debug("Kalshi Weather: no live KalshiBroker available; skipping")
                 continue
 
-            try:
-                orders = await agent.run_scan_cycle(
-                    kalshi_broker, logger_agent=logger_agent,
-                )
-            except Exception as e:
-                log.exception("Kalshi Weather: run_scan_cycle failed: %s", e)
-                continue
-
-            if not orders:
-                continue
-
-            # Equity from the agent's own paper-broker division.
+            # Snapshot the division's paper broker BEFORE the scan so the
+            # Kelly sizer has live equity to scale against.
             div_broker = data_exec.brokers.get(agent.division)
             account_equity = 0.0
             if div_broker is not None:
@@ -2889,6 +2879,18 @@ async def _scheduled_kalshi_weather_arb_loop(
                     account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
                 except Exception as e:
                     log.warning("Kalshi Weather snapshot failed: %s; assuming $0", e)
+
+            try:
+                orders = await agent.run_scan_cycle(
+                    kalshi_broker, logger_agent=logger_agent,
+                    account_equity=account_equity,
+                )
+            except Exception as e:
+                log.exception("Kalshi Weather: run_scan_cycle failed: %s", e)
+                continue
+
+            if not orders:
+                continue
 
             account = AccountState(
                 account=agent.division, equity=account_equity,
@@ -2941,13 +2943,26 @@ async def _scheduled_kalshi_weather_arb_loop(
                         "forecast_temp_f": ext.get("forecast_temp_f"),
                         "forecast_sigma_f": ext.get("forecast_sigma_f"),
                         "sigma_used_f": ext.get("sigma_used_f"),
+                        "sigma_source": ext.get("sigma_source"),
+                        "ensemble_n_members": ext.get("ensemble_n_members"),
+                        "ensemble_std_f": ext.get("ensemble_std_f"),
+                        "nowcast_blend_w": ext.get("nowcast_blend_w"),
+                        "metar_station": ext.get("metar_station"),
+                        "metar_latest_temp_f": ext.get("metar_latest_temp_f"),
+                        "metar_extrap_f": ext.get("metar_extrap_f"),
                         "threshold_f": ext.get("threshold_f"),
+                        "threshold_high_f": ext.get("threshold_high_f"),
                         "direction": ext.get("direction"),
                         "horizon_hours": ext.get("horizon_hours"),
                         "delta_f": ext.get("delta_f"),
                         "prob_yes": ext.get("prob_yes"),
                         "expires_at": ext.get("expires_at"),
                         "title": ext.get("title"),
+                        "max_dollar_risk": ext.get("max_dollar_risk"),
+                        "kelly_fraction_used": ext.get("kelly_fraction_used"),
+                        "kelly_full_pct": ext.get("kelly_full_pct"),
+                        "applied_cap": ext.get("applied_cap"),
+                        "account_equity_at_size": ext.get("account_equity_at_size"),
                         "risk_verdict": verdict.verdict,
                         "risk_reason": verdict.reason,
                     },

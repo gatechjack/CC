@@ -107,6 +107,13 @@
                  border-b-2 border-transparent text-muted hover:text-mono">
     History ({{ view.round_trips | length }})
   </button>
+  {% if view.whales or view.kalshi_watch_only %}
+  <button data-pm-tab="whales"
+          class="pm-tab-btn px-4 py-2 text-sm font-mono uppercase tracking-wider
+                 border-b-2 border-transparent text-muted hover:text-mono">
+    Whales ({{ (view.whales | length) + (view.kalshi_watch_only | length) }})
+  </button>
+  {% endif %}
 </div>
 
 {# ── Portfolio tab ──────────────────────────────────────────────────── #}
@@ -570,6 +577,158 @@
     {% endif %}
   </div>
 </section>
+
+{# ── Whales tab — populated only for copy_trading divisions ─────────── #}
+{% if view.whales or view.kalshi_watch_only %}
+<section id="pm-tab-whales" class="pm-tab-panel hidden">
+  {% if view.whales %}
+  <div class="bg-pane border border-edge rounded-lg overflow-hidden">
+    <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
+      <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+        Selected whales — paper performance
+      </h2>
+      <div class="text-[11px] font-mono text-muted">
+        {{ view.whales | length }} whales · sorted by realized P&amp;L
+      </div>
+    </header>
+    <div class="overflow-x-auto">
+      <table class="w-full text-[12px] font-mono">
+        <thead class="bg-pane-2/40 text-muted uppercase tracking-wider text-[10px]">
+          <tr>
+            <th class="text-left px-3 py-2 font-medium">Whale</th>
+            <th class="text-left px-3 py-2 font-medium">Venue</th>
+            <th class="text-right px-3 py-2 font-medium">Resolved</th>
+            <th class="text-right px-3 py-2 font-medium">W</th>
+            <th class="text-right px-3 py-2 font-medium">L</th>
+            <th class="text-right px-3 py-2 font-medium">WR%</th>
+            <th class="text-right px-3 py-2 font-medium">Realized P&amp;L</th>
+            <th class="text-right px-3 py-2 font-medium">Open</th>
+            <th class="text-left px-3 py-2 font-medium">Last entry</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for w in view.whales %}
+          <tr class="border-t border-edge hover:bg-pane-2/40">
+            <td class="px-3 py-2 text-mono font-semibold">@{{ w.handle }}</td>
+            <td class="px-3 py-2 text-muted">{{ w.venue }}</td>
+            <td class="px-3 py-2 text-right">{{ w.n_resolved }}</td>
+            <td class="px-3 py-2 text-right text-gain">{{ w.n_wins }}</td>
+            <td class="px-3 py-2 text-right text-loss">{{ w.n_losses }}</td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.win_rate_pct is none %}text-muted/60
+              {% elif w.win_rate_pct >= 60 %}text-gain
+              {% elif w.win_rate_pct >= 40 %}text-mono
+              {% else %}text-loss{% endif %}">
+              {% if w.win_rate_pct is none %}—{% else %}{{ w.win_rate_pct | round(1) }}%{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.total_realized_pnl > 0 %}text-gain
+              {% elif w.total_realized_pnl < 0 %}text-loss
+              {% else %}text-mono/70{% endif %}">
+              {{ w.total_realized_pnl | money_signed }}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.n_open > 0 %}text-mono{% else %}text-muted/60{% endif %}">
+              {{ w.n_open }}
+            </td>
+            <td class="px-3 py-2 text-muted/80">
+              {% if w.last_entry_ts %}{{ w.last_entry_ts[:19] | replace("T", " ") }}{% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if view.kalshi_watch_only %}
+  <div class="bg-pane border border-edge rounded-lg overflow-hidden {% if view.whales %}mt-6{% endif %}">
+    <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
+      <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+        Watch list — observation only
+      </h2>
+      <div class="text-[11px] font-mono text-muted">
+        {{ view.kalshi_watch_only | length }} whales · self-reported stats from Apify · NOT copy-traded
+      </div>
+    </header>
+    <div class="overflow-x-auto">
+      <table class="w-full text-[12px] font-mono">
+        <thead class="bg-pane-2/40 text-muted uppercase tracking-wider text-[10px]">
+          <tr>
+            <th class="text-left px-3 py-2 font-medium">Whale</th>
+            <th class="text-center px-3 py-2 font-medium">Tier</th>
+            <th class="text-right px-3 py-2 font-medium">Resolved</th>
+            <th class="text-right px-3 py-2 font-medium">WR%</th>
+            <th class="text-right px-3 py-2 font-medium">PnL ($)</th>
+            <th class="text-right px-3 py-2 font-medium">PnL/contract</th>
+            <th class="text-right px-3 py-2 font-medium">Open</th>
+            <th class="text-left px-3 py-2 font-medium">Top Cat</th>
+            <th class="text-left px-3 py-2 font-medium">Last Refresh</th>
+            <th class="text-right px-3 py-2 font-medium">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for w in view.kalshi_watch_only %}
+          <tr class="border-t border-edge hover:bg-pane-2/40"
+              {% if w.notes %}title="{{ w.notes }}"{% endif %}>
+            <td class="px-3 py-2 text-mono font-semibold">
+              {% if w.source_x_handle %}{{ w.source_x_handle }}{% else %}@{{ w.handle }}{% endif %}
+            </td>
+            <td class="px-3 py-2 text-center">
+              {% if w.tier == 1 %}<span class="text-accent">T1</span>
+              {% elif w.tier == 2 %}<span class="text-muted">T2</span>
+              {% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.resolved_count == 0 %}text-muted/60{% else %}text-mono{% endif %}">
+              {{ w.resolved_count }}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.win_rate_pct is none %}text-muted/60
+              {% elif w.win_rate_pct >= 60 %}text-gain
+              {% elif w.win_rate_pct >= 40 %}text-mono
+              {% else %}text-loss{% endif %}">
+              {% if w.win_rate_pct is none %}—{% else %}{{ w.win_rate_pct | round(1) }}%{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.total_pnl > 0 %}text-gain
+              {% elif w.total_pnl < 0 %}text-loss
+              {% else %}text-mono/70{% endif %}">
+              {{ w.total_pnl | money_signed }}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.avg_pnl_per_contract > 0 %}text-gain
+              {% elif w.avg_pnl_per_contract < 0 %}text-loss
+              {% else %}text-mono/70{% endif %}">
+              {{ "%+.4f"|format(w.avg_pnl_per_contract) }}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.n_open > 0 %}text-mono{% else %}text-muted/60{% endif %}">
+              {{ w.n_open }}
+            </td>
+            <td class="px-3 py-2 text-muted/80">
+              {% if w.top_category %}{{ w.top_category }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-muted/80">
+              {% if w.last_refresh_iso %}{{ w.last_refresh_iso[:19] | replace("T", " ") }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right">
+              <button class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-edge text-muted/50 cursor-not-allowed"
+                      disabled
+                      title="Promote flow ships next (WO-4). Will move this whale onto the active selected_whales roster.">
+                Promote
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
 
 {# Inline equity-curve data — re-read by window.renderPMChart() on initial
    page load AND after every HTMX swap (via the htmx:afterSwap listener

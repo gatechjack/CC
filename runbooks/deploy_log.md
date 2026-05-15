@@ -59,6 +59,338 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-15 06:44 UTC — K3 Watch-list deep-scan pivot (replaces manual seed)
+
+**Triggered by:** 06:09 deploy of manual-seed watch-list yielded 2 of 14
+handles (Foster, PredMTrader) — both **visibility-opaque** on Apify. A
+follow-up `refresh_kalshi_whales.py` run with `--watch-only-only` found
+only 1 viable whale in the volume/all_time top-48 (47/48 opaque). Pivoted
+to a deep multi-leaderboard rank-walk with a visibility cache.
+
+**Backup tags (none — only added a new script):**
+
+**Files deployed (2):**
+- `trading_corp/scripts/refresh_kalshi_whales.py` — added `--watch-only-n N`
+  (default 20) and `--watch-only-only` (skips writing selected_whales).
+  Always-on watch_only_whales output: runner-ups from the same scored
+  viable pool. Backup tag `pre-runnerups-20260515-0625`.
+- `trading_corp/scripts/seed_kalshi_watchlist_deep.py` — **NEW**. Walks
+  (categories × time_windows) leaderboards (default 6×3=18), de-duped
+  candidate pool, batch-probes in groups of 10, accepts any handle with
+  `closed_positions_count >= min_sample` (default 5 — lowered from
+  selection's 20 because this is observation, not betting). Stops at
+  `target_n=10` visible OR `max_probe=60` total probes. Persists per-handle
+  visibility decisions to `agent_state(apify_visibility_cache)` with a
+  30-day TTL so re-runs skip known-opaque whales.
+
+**Verification (06:48 UTC):**
+- Deep-scan probed **60 of 910 candidate handles** across 18 leaderboards.
+  **2 visible** (lengthy.starfish, Hispaniola), 58 opaque → confirms
+  Kalshi-wide visibility rate is ~3.3%, not a top-of-leaderboard artifact.
+- `refresh_kalshi_watchlist_stats.py` populated stats for both:
+  - **lengthy.starfish** — Politics/monthly rank #13. 20 resolved
+    (16W/4L = **80% WR**), total PnL **+$3,430.65** over 149K contracts.
+    20 open positions. Top categories: Sports, Elections.
+  - **Hispaniola** — Politics/monthly rank #40. 16 resolved
+    (5W/11L = **31% WR**), total PnL **−$199.07**. 1 open. Top
+    categories: Sports, Politics.
+- Dashboard renders both rows on `/prediction-markets/kalshi_copy_trading`
+  Whales tab (curl HTTP 200; 3 matches for "Watch list/lengthy.starfish/
+  Hispaniola"). The manual-seed survivors (Foster, PredMTrader) were
+  evicted by the deep-scan overwrite — no longer in the panel.
+- Apify visibility cache: 60 entries (58 opaque + 2 visible).
+- Total Apify spend: ~$3 (deep scan) + $0.50 (stats refresh).
+
+**Systemd timers (post-deploy 06:54 UTC):**
+- `trading-corp-watchlist-stats.timer` — daily 12:00 UTC; refresh stats
+  for currently-tracked whales (~$0.50/run).
+- `trading-corp-watchlist-deep.timer` — weekly Sunday 14:00 UTC; deep
+  scan to grow watch_only_whales organically (~$2-3/run with warm cache).
+- Unit files committed to `infra/systemd/`.
+
+**Inert / pending:**
+- **Visibility ceiling.** Even with 18 leaderboards and rank-walk depth,
+  the visibility rate is uniformly ~3.3%. Each weekly cron run probes
+  ~60 NEW candidates (skipping known-opaque via the cache); expect to
+  net +1-3 visible whales/week. Watch list will grow organically.
+- **selection_metadata side effect.** `--watch-only-only` skips writing
+  selected_whales but still overwrites selection_metadata with the
+  latest summary. Minor — the metadata reflects the most-recent
+  scoring run regardless. Doesn't affect K3 behavior.
+- **WO-4 (Promote button)** — still deferred. Disabled stub in UI.
+
+**Rollback recipe (deep scan layer only — selected_whales untouched):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; \
+TAG=pre-runnerups-20260515-0625; \
+sudo cp \$BASE/trading_corp/scripts/refresh_kalshi_whales.py.\$TAG \$BASE/trading_corp/scripts/refresh_kalshi_whales.py; \
+sudo rm -f \$BASE/trading_corp/scripts/seed_kalshi_watchlist_deep.py; \
+sudo rm -rf \$BASE/trading_corp/scripts/__pycache__"
+# Optional: clear the cache + watchlist
+# sqlite3 ... DELETE FROM agent_state WHERE agent='kalshi_copy_trader'
+#   AND key IN ('apify_visibility_cache','watch_only_whales','watch_only_stats','watch_only_deep_metadata');
+```
+
+---
+
+## 2026-05-15 06:09 UTC — K3 Watch-list (observation-only whale tracking)
+
+**Triggered by:** User-supplied watchlist of 14 X-handles (9 Tier-1 public
+traders + 5 Tier-2 curators) — wanted to track their performance without
+copy-trading them. Path is read-only twin of `selected_whales`: same
+Apify data source, never emits ProposedOrders, future `[Promote]` flow
+moves a row onto the live copy roster.
+
+**Backup tag:** `pre-watchlist-20260515-0608`
+
+**Files deployed (5):**
+- `config/kalshi_watchlist_seed.yaml` — NEW. 9 Tier-1 + 5 Tier-2 handles
+  with notes. Edit + re-run seed to add/remove.
+- `trading_corp/scripts/seed_kalshi_watchlist.py` — NEW. One-shot probe.
+  Tier-1 dropped if `fetch_profiles` returns no row for the nickname
+  (log line warns). Tier-2 dropped unless `fetch_trades ≥ 1` row.
+  Writes `agent_state(kalshi_copy_trader, watch_only_whales)` as
+  `list[dict{handle, tier, source_x_handle, notes, included_iso, probe}]`.
+  Idempotent.
+- `trading_corp/scripts/refresh_kalshi_watchlist_stats.py` — NEW. Daily
+  refresh. fetch_profiles + fetch_closed_positions + fetch_open_positions
+  → `compute_stats` → `agent_state(watch_only_stats)`. Logs audit kind
+  `kalshi_watch_only_refresh`. Never emits ProposedOrders.
+- `trading_corp/web/data.py` — added `KalshiWatchOnlyRow` dataclass,
+  `_query_kalshi_watch_only_rows()` (reads agent_state), wired into
+  `PMDashboardView.kalshi_watch_only` via `asyncio.gather` and only
+  populated when `kalshi_copy_trading` is in scope.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — Watch
+  List panel below Selected Whales on the Whales tab. Tab count
+  includes both. `[Promote]` button rendered as **disabled stub**
+  (tooltip: "ships next, WO-4").
+
+**Verification (post-deploy 06:11 UTC):**
+- Service `active` after restart.
+- Seed run: probed 14 handles. **2 survivors** — `Foster` and
+  `PredMTrader`. The other 7 Tier-1 names dropped as
+  `profile_unresolved` (their X handles don't match a Kalshi nickname),
+  all 5 Tier-2 names dropped as `no_trades` (curators/aggregators
+  don't trade on Kalshi). Apify spend ≈ $0.30.
+- Refresh run: both survivors are **visibility-opaque** —
+  `closed_positions=0`, `open_positions=0`. Apify gotcha (documented in
+  `kalshi_apify_client.py`): "Trade/position visibility is per-user
+  opt-in. Top leaderboard names may expose only profile-level data."
+  Foster's profile reports 8,784 lifetime markets and PredMTrader's
+  3,529 — they DO trade, they just opt out of visibility.
+- Dashboard: `curl http://127.0.0.1:8000/prediction-markets/kalshi_copy_trading`
+  returns 200; "Watch list — observation only" panel renders with
+  both rows visible.
+
+**Inert / pending:**
+- **No actual performance data for either survivor yet** — both are
+  visibility-opaque. The watch-list infrastructure is live, but until
+  we (a) find correct Kalshi nicknames for the 7 mismatched Tier-1
+  names, or (b) source data from somewhere other than Apify's profile
+  scraper, the panel will keep showing zero stats.
+- **No cron entry yet** for the daily stats refresh. Script runs
+  manually for now.
+- **WO-4 (Promote button)** — deferred per user. Button is a stub
+  with tooltip pointing forward.
+
+**Cost expectation:** ~$0.50/day Apify at the current 2-survivor list
+size, ~$15/mo. Scales linearly with survivors.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; \
+TAG=pre-watchlist-20260515-0608; \
+sudo cp \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+sudo cp \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html.\$TAG \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html; \
+sudo rm -f \$BASE/config/kalshi_watchlist_seed.yaml \
+            \$BASE/trading_corp/scripts/seed_kalshi_watchlist.py \
+            \$BASE/trading_corp/scripts/refresh_kalshi_watchlist_stats.py; \
+sudo rm -rf \$BASE/trading_corp/web/__pycache__ \$BASE/trading_corp/scripts/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+(Optional cleanup: `DELETE FROM agent_state WHERE agent='kalshi_copy_trader' AND key LIKE 'watch_only_%';`)
+
+---
+
+## 2026-05-15 03:14 UTC — Kalshi Weather city-code aliases (follow-up to Tier-1)
+
+**Triggered by:** First two post-Tier-1 scan cycles showed 0 evaluations
+reaching the new ensemble/Kelly code path because of 100% early-stage
+skips. Audit-mode sweep on `kalshi_weather_skipped_no_coords` payloads
+showed 6 unknown codes: TMIA (42), TCHI (34), TPHIL (29), TLAX (24),
+TNYC (22), NY (10). Each is the Kalshi T-prefix or short-form variant
+of a city we already have in the fallback table.
+
+**Files deployed (1):** `trading_corp/agents/strategies/kalshi_weather_arb.py`
+— added 6 aliases to both `_CITY_COORDS_FALLBACK` and
+`_CITY_TO_METAR_STATION`. Each alias points at the same resolution
+station as its non-T sibling.
+
+**Verification (post-deploy 03:14:22 UTC):**
+- Two scan cycles. `kalshi_weather_skipped_no_coords` count = **0**
+  (was 28 over the prior two cycles).
+- All 60 candidates now reach the implied-prob gate; all 60 still skip
+  there because overnight Kalshi book is sparse (zero quotes on Denver
+  / Miami / Chicago weather buckets at 03:25 UTC = 11:25pm EDT).
+- New `sigma_source` / `ensemble_n_members` / `nowcast_blend_w` /
+  `kelly_full_pct` fields STILL not landed in audit — gated on a market
+  with both valid coords AND active quotes. Expected during daytime hours.
+
+**Inert / dormant on current traffic:**
+- Ensemble σ + nowcast blend + Kelly sizing code paths remain unexercised
+  by the scan loop. Direct prod smoke test of the underlying clients
+  already proven (see prior entry). Audit-row confirmation pending
+  next active-book scan.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+# Re-scp the immediately-prior version of kalshi_weather_arb.py from local
+# git history (commit predates 03:14:22 UTC); then:
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 02:56 UTC — Kalshi Weather Tier-1: ensemble σ + nowcast blend + fractional Kelly
+
+**Triggered by:** Board direction (this session). The earlier specialized-agent
+ship (2026-05-14 20:54) shipped weather with a heuristic σ + flat $1 sizing.
+Tier 1 replaces the σ heuristic with a *measured* cross-model ensemble std,
+adds a METAR nowcast blend for sub-6h horizons, and replaces flat $1 with
+fractional Kelly + per-market / per-day / per-city caps. Validation gate
+(30 RTs, WR ≥ 65%) for `auto_execute: true` flip is UNCHANGED.
+
+**Backup tag:** `pre-weather-kelly-20260515-0255` (strategies.yaml backup tag);
+n/a for the new client files.
+
+**Files deployed (7):**
+- `trading_corp/data/open_meteo_client.py` — **NEW.** Async client for
+  Open-Meteo's `/v1/forecast` multi-model endpoint. Returns
+  `EnsembleObservation(members, models, target_iso)` from any of
+  gfs_global / icon_global / ecmwf_ifs04 / meteofrance_seamless / gem_global
+  that the API has for the location. 30-min in-memory cache keyed on
+  (rounded lat, rounded lon, forecast_days). `get_ensemble_at(lat, lon, target_iso)`
+  for hourly markets; `get_ensemble_daily_extremum(lat, lon, date, kind)`
+  for KXHIGH/KXLOW (per-model daily max/min, then ensemble across models).
+- `trading_corp/data/metar_client.py` — **NEW.** Async client for
+  aviationweather.gov `/api/data/metar`. `get_nowcast(station)` returns
+  `MetarNowcast(latest_temp_f, latest_obs_iso, trend_f_per_hour,
+  n_observations)`. Latest obs + linear trend computed off the last 3h
+  of observations. `extrap_at(target_iso)` performs `latest_temp + trend × Δh`.
+- `trading_corp/agents/strategies/_weather_math.py` — added
+  `kelly_fraction(p_model, market_price)`. Returns `max(0, (p·b − (1−p))/b)`
+  where `b = (1−price)/price`. Unit-agnostic (will also serve
+  `kalshi_crypto_arb` when it switches off flat sizing).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — gutted-and-rewired
+  `_evaluate_market`. Three new layers between forecast lookup and order
+  construction:
+  1. **Ensemble σ.** After NWS forecast lands, call Open-Meteo for the
+     same target. If ≥3 members returned, σ = `max(ensemble.std_f, ensemble_sigma_floor_f)`
+     (floor default 0.5°F). Else fall back to `sigma_for_horizon` heuristic.
+     `sigma_source` field (`open_meteo_ensemble` | `heuristic`) tags every
+     evaluation so we can later A/B the two.
+  2. **METAR nowcast blend.** For horizons 0–6h on hourly markets only
+     (HIGH/LOW excluded — daily extrema aren't well-modelled by current-temp
+     extrapolation): `forecast_temp = w·NWS + (1-w)·METAR_extrap` where
+     `w = clamp(horizon_h / 6.0)`. At horizon=0, pure nowcast; at 6h, pure
+     forecast. Station mapping: new `_CITY_TO_METAR_STATION` parallels
+     `_CITY_COORDS_FALLBACK` (22 city codes → airport METAR codes).
+  3. **Fractional Kelly sizing.** New `_compute_kelly_usd(prob_outcome,
+     share_price, account_equity, city_code, spend)` helper. Cap ladder:
+     `kelly_target = equity × kelly_fraction × full_kelly` → clamp per-market
+     ($cap = 5% × equity) → clamp per-day-remaining (25% × equity − today's spend)
+     → clamp per-city-remaining (15% × equity − city spend) → floor at
+     `min_usd` (default $1). The dominating cap is reported in `applied_cap`.
+     Per-cycle `_SpendCounter` is seeded from `_query_today_spend` (audit-DB
+     query at top of cycle) and incremented in-memory as orders emit so
+     cap consumption within one cycle is correct.
+  Falls-through `sizing.mode: fixed_usd` is still supported (legacy path
+  if config ever rolls back).
+- `trading_corp/main.py` — `_scheduled_kalshi_weather_arb_loop` now
+  snapshots the `kalshi_weather` paper-broker equity BEFORE `run_scan_cycle`
+  (previously the snapshot happened AFTER orders emitted, which was wrong
+  for Kelly-based pre-emission sizing) and passes `account_equity=...`
+  into the scan. `would_have_placed` audit payload allowlist extended for
+  11 new fields: `sigma_source`, `ensemble_n_members`, `ensemble_std_f`,
+  `nowcast_blend_w`, `metar_station`, `metar_latest_temp_f`, `metar_extrap_f`,
+  `threshold_high_f`, `max_dollar_risk`, `kelly_fraction_used`, `kelly_full_pct`,
+  `applied_cap`, `account_equity_at_size`.
+- `scripts/patch_kalshi_weather_kelly_sizing.py` — **NEW.** Idempotent
+  yaml patcher (the `kalshi_weather_arb` block is prod-only per
+  `trading_corp_prod_git_drift.md`). Replaces the `sizing: {mode: fixed_usd,
+  fixed_amount: 1.0}` block with the new `kelly_fractional` block + 4
+  new module-level knobs (`open_meteo_enabled`, `ensemble_sigma_floor_f`,
+  `metar_enabled`, `nowcast_blend_horizon_hours`). Re-runnable on prod
+  (detects already-patched yaml + exits clean).
+- `tests/test_kalshi_weather_sizing.py` — **NEW.** 15 tests covering
+  Kelly edge cases, `_SpendCounter`, cap-clamping ladder, audit-spend
+  SQL, ensemble σ math. All green; full suite (excluding 5 pre-existing
+  PMCC / webhook-return-fast failures unrelated to this work) = 662 pass.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Ensemble σ derivation:** measured cross-model std from Open-Meteo,
+  not heuristic by horizon. Visible: `sigma_source` field on every
+  `kalshi_weather_evaluated` audit row past the early-skip gates.
+- **METAR nowcast blend:** sub-6h hourly markets weight current obs.
+  Visible: `nowcast_blend_w` field (0..1) on hourly-market evaluations.
+- **Fractional Kelly sizing:** $1 flat is gone. Order $ now scales with
+  bankroll × edge × 0.25 fractional × caps. Visible: `kelly_full_pct`
+  + `applied_cap` + `max_dollar_risk` fields on every `would_have_placed`
+  row. Cap ladder: per_market (5%) → per_day (25%) → per_city (15%) → min $1.
+
+**Verification:**
+- md5-diff confirmed on all 5 prod-touching files post-scp.
+- Service restart 02:56:02 UTC; "Kalshi Weather Arbitrage scanner online
+  (enabled=True, auto_execute=False)" at 02:56:43.
+- Two scan cycles since restart (02:56:02 + 03:01:52); 60 evaluations,
+  zero exceptions, zero open-meteo / metar log warnings.
+- **Direct prod smoke test** of the new clients (run via `venv/bin/python -c`
+  on prod): Open-Meteo returned 4 members for KJFK @ 2026-05-15T14
+  (gfs_global / icon_global / meteofrance_seamless / gem_global —
+  ECMWF didn't return for this call), mean=56.80°F, std=1.35°F.
+  METAR KJFK current=57.92°F (obs 03:00 UTC), trend=−1.53°F/h, 3 obs.
+  `kelly_fraction(0.6, 0.5) = 0.20` (matches unit-test).
+- Config-yaml verification: patcher applied; new keys visible in
+  `config/strategies.yaml` on prod.
+
+**Inert / dormant on current traffic:**
+- **No `kalshi_weather_evaluated` row with the new `sigma_source` /
+  ensemble / nowcast / Kelly fields has landed yet** — all 60
+  post-restart evaluations hit early-stage skips: 32× `no_implied` (no
+  bid/ask quotes at this hour — overnight Kalshi book is thin) and
+  28× `no_coords` (the discovered city codes `TCHI` and `NY` aren't in
+  `_CITY_COORDS_FALLBACK`, which has `CHI` and `NYC`). The new pipeline
+  is loaded and verified independently via the direct smoke test;
+  fields will populate as soon as a market with a known city code +
+  valid quotes is discovered. Pre-existing gap (see backlog).
+
+**Latent bugs surfaced (not introduced):**
+- `_CITY_COORDS_FALLBACK` is missing `TCHI` (= Chicago T-prefix variant)
+  and `NY` (= NYC short form). Today's scan candidates are dominated
+  by these. Added as P3 follow-up in BACKLOG.md.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; \
+TAG=pre-weather-kelly-20260515-0255; \
+sudo cp \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+git -C /tmp clone /dev/null 2>/dev/null || true; \
+# Revert code: requires re-scp'ing prior versions from local git history.
+sudo rm -rf \$BASE/trading_corp/__pycache__ \
+            \$BASE/trading_corp/data/__pycache__ \
+            \$BASE/trading_corp/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+(Note: code rollback requires re-deploying the pre-tier-1 versions of
+the 3 edited files. The 2 new client files can simply be deleted.)
+
+---
+
 ## 2026-05-15 02:05 UTC — Crypto `strike_type='custom'` ticker-suffix dispatch (P2)
 
 **Triggered by:** Post 01:50 deploy, weather between math fully unlocked weather (0 `no_strike` skips). Crypto was still hitting `no_strike` on all `strike_type='custom'` markets because Kalshi uses "custom" for BOTH bucket (B-suffix) AND single-side threshold (T-suffix) tickers, and leaves `floor_strike`/`cap_strike` as None for both — the strike spec lives only in the ticker suffix.

@@ -1,0 +1,11 @@
+[Unit]
+Description=K3 watch-only stats refresh — daily 12:00 UTC
+
+[Timer]
+# 12:00 UTC = 08:00 EDT / 07:00 EST — Kalshi is awake and book is liquid.
+OnCalendar=*-*-* 12:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

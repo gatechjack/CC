@@ -187,6 +187,28 @@ def evaluate_weather_market(
     )
 
 
+def kelly_fraction(p_model: float, market_price: float) -> float:
+    """Full-Kelly bankroll fraction for a single-side YES-style bet.
+
+    `market_price` is the per-share cost in dollars (0-1, e.g. 0.42 for a
+    42¢ Kalshi YES). `p_model` is the strategy's calibrated probability
+    that the bet resolves at $1. Caller applies a *fractional* Kelly
+    multiplier (typically 0.25) and any per-market / daily caps.
+
+    Math: payoff b = (1-price)/price; f* = (p·b − (1−p)) / b. Returns 0
+    when no edge (full-Kelly ≤ 0) or price is at the boundary.
+    """
+    if market_price <= 0 or market_price >= 1:
+        return 0.0
+    if p_model <= 0:
+        return 0.0
+    if p_model >= 1:
+        return 1.0
+    b = (1.0 - market_price) / market_price
+    full = (p_model * b - (1.0 - p_model)) / b
+    return max(0.0, full)
+
+
 def sigma_for_horizon(horizon_hours: float) -> float:
     """Heuristic uncertainty estimate by forecast horizon (Fahrenheit).
 

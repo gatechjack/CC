@@ -8,9 +8,45 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-14 23:30 UTC
+## END-OF-SESSION SNAPSHOT — 2026-05-15 07:00 UTC
 
-**14 prod deploys today.** All paper-mode; no real-money capital touched. State for tomorrow:
+**Picks up from 2026-05-14 23:30 snapshot (preserved below).** This session shipped 2 major Kalshi feature blocks across the day:
+
+**2026-05-15 AM/PM session (Kalshi Weather Tier-1 + crypto bug unlock — see memory `trading_corp_kalshi.md` for full detail):**
+- 4 crypto strategy bugs fixed + bucket-PMF math unlock; weather went from 644 no_strike → 0.
+- Kalshi Weather Tier-1 SHIPPED 02:56 UTC: Open-Meteo cross-model ensemble σ + METAR nowcast blend (≤6h) + fractional-Kelly sizing with per_market/per_day/per_city cap ladder.
+- City-code aliases (TMIA/TCHI/TPHIL/TLAX/TNYC/NY) shipped 03:14 UTC.
+
+**2026-05-15 EVE session (K3 watch-only path — see memory `kalshi_watchlist_architecture.md` for full detail):**
+- 5 new files (3 scripts, 1 yaml seed, 2 web layer edits) + 4 systemd unit files SHIPPED 06:09→06:54 UTC.
+- Observation-only watchlist parallel to `selected_whales`; never emits ProposedOrders.
+- Manual-seed YAML path tried first (Foster/PredMTrader survived, both visibility-opaque) → pivoted to **deep multi-leaderboard rank-walk + visibility cache**.
+- **Current watch_only_whales: 2 whales** — `lengthy.starfish` (80% WR, +$3,430.65) + `Hispaniola` (31% WR, −$199.07). Both Politics/monthly leaderboard.
+- Daily stats refresh timer + weekly deep-scan timer both armed + active.
+- Apify visibility ceiling discovered: ~3.3% of leaderboard whales expose closed_positions (Kalshi made opt-in). New memory entry.
+
+**Live + healthy entering tomorrow:**
+- Specialized agents: kalshi_weather (NWS + Open-Meteo + METAR + Kelly), kalshi_crypto (Coinbase spot + bucket math), kalshi_sports_scout (read-only)
+- BitUnix Phase 3.2 + trade-plan PRs 1-5 (legacy path active via `trade_plan.enabled: false`)
+- K3 + watch-only sibling (2 visible whales tracked)
+- PCT (11 whales)
+- LLM strict gate on Eco/Fin
+
+**Tomorrow's pickup candidates (ordered by what we discussed at session end):**
+1. **Verify systemd timers actually fired.** Daily stats timer first fires 12:00 UTC. Confirm `journalctl -u trading-corp-watchlist-stats` shows clean run.
+2. **Eyeball Hispaniola's profile** — 17 lifetime markets but 104K contracts traded is suspicious. Check kalshi.com profile manually before promoting.
+3. **Optional: temporarily flip the deep-scan timer to daily for 2 weeks** to populate the watchlist faster (~$15-30 extra Apify in that window).
+4. **PMCC audit** — still untouched since the 2026-05-14 session; only real-money strategy not visited.
+
+**Deferred / parked:**
+- WO-4 promote button (dashboard has disabled stub).
+- Crypto/weather Tier-2/3 follow-ups (filed below; all gated on accumulated data).
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-14 23:30 UTC  *(preserved — superseded by 2026-05-15 snapshot above)*
+
+**14 prod deploys.** All paper-mode; no real-money capital touched. State for tomorrow:
 
 **Live + healthy:**
 - Specialized agents: kalshi_weather (NWS), kalshi_crypto (Coinbase spot), kalshi_sports_scout (read-only, the-odds-api free tier, 1h poll)
@@ -73,6 +109,206 @@ Items punted during the day's specialized-agent build sprint. Grouped by priorit
 - **Generalize `_weather_math.py` → `_threshold_math.py`** — currently weather + crypto both call `_weather_math.evaluate_weather_market` (math is unit-agnostic). When Financials lands as a 3rd caller, rename + relocate. Backwards-compat shim from `_weather_math` while strategies migrate. ~30 min.
 
 - **Telegram tile for Sports Scout** — daily/weekly digest of `kalshi_sports_observed` audit summary (median divergence, top-divergence games observed, quota burn). Read-only visibility; no orders. ~1h.
+
+---
+
+## P2/P3 — 2026-05-15 K3 Watch-only follow-ups  *(NEW — 2026-05-15)*
+
+Items deferred or surfaced during the 2026-05-15 EVE watch-only ship. The
+infrastructure is live + working; these are the next-level enhancements.
+See memory `kalshi_watchlist_architecture` + deploy_log 2026-05-15 06:44 UTC.
+
+### P2 — WO-4: Promote button
+
+Dashboard `[Promote]` button on watch-list rows is currently a disabled
+stub (tooltip: "ships next, WO-4"). Real implementation:
+- **Endpoint:** HTMX `POST /api/kalshi/watchlist/promote/{handle}` —
+  moves a handle out of `agent_state(watch_only_whales)` and into
+  `agent_state(selected_whales)`.
+- **Refresh-script compatibility:** the weekly deep-scan overwrites
+  `watch_only_whales`. Promote needs to ALSO add the handle to a new
+  `agent_state(pinned_whales)` slot so subsequent scans don't re-add
+  it as a watch-only candidate. `refresh_kalshi_whales.py` should be
+  taught to MERGE pinned into selected (not overwrite away). Otherwise
+  the promote click silently regresses next quarter.
+- **Audit:** new audit kind `kalshi_whale_promoted` capturing
+  `{handle, promoted_at_iso, source_stats_snapshot}` for retrospective
+  analysis of which promotion picks worked.
+- **Demote:** symmetric flow probably also needed. If a promoted whale
+  later flags `whale_autopaused`, surface a `[Demote]` button to move
+  back to watch-only rather than fully drop.
+- **Gated on:** watch_only_whales reaches ≥10 visible whales (so there's
+  meaningfully ranked candidates to promote). ~2-3h.
+
+### P3 — Watch-list operational follow-ups
+
+- **Inspect Hispaniola.** Stats look suspicious — 17 lifetime markets
+  traded but 104,204 contracts. Possible explanations: heavy
+  concentration trader (~6K contracts per market), or a Kalshi profile
+  field semantic we don't fully understand. Worth a 5-min manual
+  visit to `kalshi.com/social/profile/Hispaniola` before treating
+  her stats as load-bearing for any future promote decision. Filed for
+  tomorrow.
+
+- **Temporarily flip deep-scan to daily for 2 weeks.** At weekly cadence
+  and ~1-3 new visible whales per run, reaching ~10 watchable accounts
+  takes 2-3 months. One-line edit to
+  `infra/systemd/trading-corp-watchlist-deep.timer` to
+  `OnCalendar=*-*-* 14:00:00 UTC`, scp + reload, run 14 days, revert.
+  Extra Apify cost ~$15-30. Decision: open — proposed at session end,
+  Jack didn't pick a side.
+
+- **Visibility cache hygiene.** The cache is keyed `handle → {visibility,
+  last_probed_iso, closed_count}` with 30-day TTL. After 6+ months it
+  could grow to hundreds of entries (mostly opaque). The TTL handles
+  re-expiration but never deletes — opaque entries are kept for
+  skip-on-probe. Manual cleanup is `DELETE FROM agent_state WHERE
+  key='apify_visibility_cache'`; the next run rebuilds.
+
+- **Manual-seed YAML cleanup.** `config/kalshi_watchlist_seed.yaml` +
+  `scripts/seed_kalshi_watchlist.py` are inert after the deep-scan
+  pivot (the deep scan overwrites watch_only_whales each Sunday). Two
+  options:
+  1. **Delete both** — simpler codebase. We lose the "manually pin one
+     handle" use case but WO-4's pinned_whales slot would cover it.
+  2. **Keep both** — emergency manual additions for handles that don't
+     surface via the leaderboard rank-walk. Defer until we hit such a
+     case.
+  No urgency either way.
+
+- **Auto-eviction of negative-edge watch handles.** Mirror the existing
+  `_whale_autopause.py` logic for `watch_only_stats`. If a watch handle
+  drops below `MIN_RESOLVED_TRADES` with negative ROI for N consecutive
+  refresh cycles, drop them from `watch_only_whales`. Gated on having
+  enough watch handles for false-eviction risk to matter (~20+).
+
+### P4 — Non-Apify data source exploration *(speculative)*
+
+The ~3.3% visibility ceiling is a hard ceiling for the current data
+layer. Speculative exploration paths if/when we want to grow the
+watchlist faster:
+- **Direct scrape of `kalshi.com/social/profile/<handle>`** — Kalshi's
+  public profile pages might expose more data than Apify's gated actor.
+  Unverified; would need a non-trivial scraper + CAPTCHA / rate-limit
+  research.
+- **Hashdive (if Kalshi-coverage emerges)** — already used as a name
+  in past research; if their Kalshi product launches with closed-position
+  data, it bypasses Apify's gating.
+- Don't pick up unless WO-4 ships AND watch-list has shown clear edge
+  AND we genuinely need faster growth.
+
+---
+
+## P2/P3 — 2026-05-15 Kalshi Weather Tier-2/3 follow-ups  *(NEW — 2026-05-15)*
+
+Conditional follow-ups to the Tier-1 weather upgrade shipped 2026-05-15
+(Open-Meteo cross-model σ + METAR nowcast blend + fractional-Kelly
+sizing). Each entry is gated on a measurable observation from the live
+paper deployment — don't pick these up until the gate condition fires.
+
+### P2
+
+- **Reliability / calibration tracking.** Bin `would_have_placed` audit
+  rows for `actor='kalshi_weather_arb'` by predicted `prob_yes` decile,
+  cross-reference with `kalshi_round_trips` to compute the realized
+  hit-rate per bin. Output: weekly reliability diagram (predicted vs.
+  realized probability) + a JSON summary written to
+  `data/kalshi_weather_calibration.json` (or similar). Becomes
+  load-bearing the day the strategy is considered for `auto_execute:
+  true` — fractional Kelly assumes calibrated probs, and we currently
+  have no proof that's the case. Suggested code home: new module
+  `trading_corp/agents/strategies/_kalshi_weather_calibration.py` +
+  nightly cron in `main.py`. Acceptance: weekly job produces a reliability
+  diagram + the dashboard exposes the latest one on the
+  `/prediction-markets/kalshi_weather` partial. **Gated on:** ≥50
+  resolved `kalshi_round_trips` rows for the `kalshi_weather` division.
+  ~3-4h.
+
+- **Per-station / per-lead-time bias correction.** Replace the flat
+  `SOURCE_DIVERGENCE_SIGMA_F=2.0` cushion in
+  `trading_corp/agents/strategies/_weather_math.py` with a *learned*
+  per-(station, lead-time-bucket) correction. Source: rolling
+  forecast-vs-actual error from each `kalshi_weather_evaluated` audit row
+  (forecast temp at scan time) joined to the resolved actual temperature
+  from `kalshi_round_trips.extra_json` or a parallel NWS-observed lookup.
+  Mechanism: a new `agent_state(actor='kalshi_weather_arb', key='bias_corrections')`
+  JSON keyed on `(station, lead_time_bucket)` storing the running mean
+  error. Applied as a temperature shift in `_evaluate_market` before
+  `evaluate_weather_market`. **Gated on:** ≥30 days of weather scans on
+  prod (the Tier-1 deploy date is 2026-05-15, so earliest pick-up
+  2026-06-15) AND the reliability tracker above shipped — otherwise we
+  can't tell if bias correction actually improved calibration. ~4-6h.
+
+### P3
+
+- ~~**Extend `_CITY_COORDS_FALLBACK` for `TCHI` + `NY`.**~~ **DONE
+  2026-05-15 03:14 UTC.** Audit sweep on `kalshi_weather_skipped_no_coords`
+  surfaced 6 unknown codes (TMIA=42, TCHI=34, TPHIL=29, TLAX=24, TNYC=22,
+  NY=10). Shipped all 6 as aliases in both `_CITY_COORDS_FALLBACK` and
+  `_CITY_TO_METAR_STATION` — each points at the same resolution station
+  as its non-T sibling (TCHI→KORD, TNYC/NY→KJFK, etc.). Post-deploy
+  verification: `no_coords` count dropped from 28 to 0 across the next
+  two cycles. All 60 candidates now reach the implied-prob gate (which
+  is still 0/60 fires overnight — separate issue, just thin Kalshi book).
+
+- **Dashboard UI for kalshi_weather strategy** *(NEW — 2026-05-15)*.
+  No weather-specific rendering exists on the prediction-markets
+  dashboard today. The division appears in the dropdown (auto, via
+  `divisions.yaml`), and the click-to-expand panel renders raw payload
+  JSON (so the new ensemble / nowcast / Kelly fields ARE visible there,
+  unstyled). What's missing:
+  1. **Analysis partial** — `trading_corp/web/templates/partials/kalshi_weather_analysis.html`
+     mirroring `polymarket_analysis.html`. Surfaces `sigma_source`,
+     `ensemble_n_members`, `ensemble_std_f`, `forecast_temp_f`,
+     `threshold_f`/`threshold_high_f`, `direction`, `nowcast_blend_w` +
+     `metar_*`, `prob_yes` vs `implied_yes`, Kelly `applied_cap` +
+     `kelly_full_pct` + `max_dollar_risk`, on expanded `would_have_placed`
+     rows. ~1-2h.
+  2. **Home-page tile** — mirror the existing PM tile pattern (win % ·
+     resolved · pending · realized P&L). Data already flows through
+     `kalshi_round_trips` for the `kalshi_weather` division via the
+     existing resolver. ~1h.
+  3. **Ensemble-agreement micro-chart** *(optional, P4)* — small sparkline
+     on the kalshi_weather division page showing the rolling ensemble σ
+     distribution (per-cycle median + p10/p90 bands). Helps spot
+     model-disagreement spikes. ~3-4h.
+
+  **Gated on:** first ≥10 `would_have_placed` rows in `kalshi_weather`
+  with the new fields populated — the daytime Kalshi book has to wake
+  up and start quoting before there's anything worth styling. UI without
+  data is decoration; data without UI is still in the raw-payload view
+  for now. Pick up item 1 first (analysis partial); items 2 + 3 follow
+  once we have a day of round-trip data.
+
+- **Bracket hedging across an event.** `_evaluate_market` today picks one
+  ticker at a time. For Kalshi KXHIGH/KXLOW bucket events (B-suffix —
+  see `kalshi_market_structure` memory), the strategy should consider
+  ALL markets in a given `event_ticker` jointly: when forecast ± σ
+  spans multiple adjacent buckets, buying them together synthesises a
+  wider-range YES at better effective odds. Refactor: new pass after
+  the per-survivor loop that groups orders by `event_ticker` and
+  re-checks the bucket-coverage math; size each leg via Kelly against
+  the *joint* probability mass rather than each bucket independently.
+  **Gated on:** Tier-2 reliability tracking proves edge persists at
+  the per-bucket level (i.e. we're not just over-fitting one bucket of
+  the PMF). Bracket hedging without that proof would just multiply
+  capital deployment without proving more edge. ~6-8h.
+
+- **Direct ECMWF Open Data GRIB pull.** Currently we lean on Open-Meteo
+  to aggregate ECMWF + GFS + ICON. Open-Meteo is free for non-commercial
+  use; if they ever rate-limit us or our paper-mode use is reclassified,
+  the fallback is fetching ECMWF Open Data directly (free since 2024 —
+  GRIB files, NOAA-style cycles 2× daily). Adds ~3.5h cycle latency vs.
+  Open-Meteo's slightly-faster aggregation, gains independence from a
+  single provider. Suggested home: `trading_corp/data/ecmwf_open_data_client.py`.
+  **Gated on:** observed Open-Meteo 429s in `kalshi_weather_evaluated`
+  audit rows OR Open-Meteo TOS change. ~8-12h (GRIB parsing is the bulk).
+
+- **AccuWeather paid integration ($25/mo).** Already captured at the top
+  of this file under the existing P3 section (2026-05-14 entry). The
+  Tier-1 deploy doesn't change the trigger condition for that entry —
+  it's still "if near-threshold losses show NWS↔AccuWeather drift."
+  Note kept here for cross-reference only; do not duplicate.
 
 ---
 

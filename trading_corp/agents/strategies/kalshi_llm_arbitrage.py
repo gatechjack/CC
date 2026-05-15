@@ -184,6 +184,17 @@ class KalshiLLMArbitrageAgent:
         k_per_cycle = int(self._strat_cfg.get("k_markets_per_cycle", 20))
         cooldown_h = float(self._strat_cfg.get("market_cooldown_hours", 6))
         min_div_pct = float(self._strat_cfg.get("min_divergence_pct", 10.0))
+        # Per-category gates (Fix 2026-05-14): retro on 190 historical trades
+        # showed Economics + Financials threshold markets lose 76% of the
+        # time at moderate confidence — the LLM has no info advantage vs
+        # informed economist participants. Win rate flips positive (72.7%)
+        # ONLY when LLM is extreme (≤0.15 or ≥0.85) AND divergence ≥ 30%.
+        # These two gates encode that finding. Hot-reloadable via yaml.
+        eco_fin_cats = set(self._strat_cfg.get("strict_categories",
+                                               ["Economics", "Financials"]))
+        eco_fin_min_div = float(self._strat_cfg.get("strict_min_divergence_pct", 30.0))
+        eco_fin_llm_extreme_max = float(self._strat_cfg.get(
+            "strict_llm_extreme_max", 0.15))  # llm_prob ≤ this OR ≥ (1 - this)
         max_days_ttr = float(self._strat_cfg.get("time_horizon_max_days", 30))
         sizing_cfg = self._strat_cfg.get("sizing") or {}
         sizing_mode = str(sizing_cfg.get("mode", "fixed_usdc"))
@@ -288,6 +299,16 @@ class KalshiLLMArbitrageAgent:
                     "event_title": event.title,
                     "event_type": event.event_type.value,
                     "category": event.category,
+                    # Per-market `title` carries the EXPLICIT threshold for
+                    # binary-strike markets (e.g. "Will the temp in NYC be
+                    # above 57.99° on May 11, 2026 at 1pm EDT?"). The parent
+                    # event_title typically omits the threshold ("NYC temp
+                    # on May 11 at 1pm EDT?") and `subtitle` is delta-encoded
+                    # ("-1° or below") — which the LLM systematically
+                    # mis-interprets. Surfacing market_title fixes the
+                    # 15-trade KXTEMPNYCH -$6 loss pattern observed
+                    # 2026-05-11.
+                    "market_title": m.title,
                     "subtitle": m.subtitle,
                     "yes_bid": m.yes_bid,
                     "yes_ask": m.yes_ask,
@@ -411,6 +432,31 @@ class KalshiLLMArbitrageAgent:
             if divergence_pct < min_div_pct:
                 continue
 
+            # Per-category strict gate (Eco/Fin): require higher divergence
+            # AND LLM in extreme-confidence band. Logged as audit-only;
+            # `would_emit` already captured the baseline-threshold pass.
+            mkt_category = (m.get("category") or "").strip()
+            if mkt_category in eco_fin_cats:
+                llm_extreme = (
+                    est.prob_yes <= eco_fin_llm_extreme_max
+                    or est.prob_yes >= (1.0 - eco_fin_llm_extreme_max)
+                )
+                if divergence_pct < eco_fin_min_div or not llm_extreme:
+                    if logger_agent is not None:
+                        logger_agent.log_event(
+                            self.name, "kalshi_llm_strict_gate_skip",
+                            {"strategy": self.name, "division": self.division,
+                             "ticker": ticker, "category": mkt_category,
+                             "divergence_pct": divergence_pct,
+                             "llm_prob_yes": est.prob_yes,
+                             "required_min_div": eco_fin_min_div,
+                             "required_llm_extreme_max": eco_fin_llm_extreme_max,
+                             "reason": ("low_divergence"
+                                        if divergence_pct < eco_fin_min_div
+                                        else "llm_not_extreme")},
+                        )
+                    continue
+
             # 3. Build the ProposedOrder. Sizing: fixed-USD per leg.
             # If LLM thinks YES is underpriced -> BUY YES at yes_ask.
             # If LLM thinks YES is overpriced -> BUY NO at no_ask.
@@ -497,17 +543,22 @@ class KalshiLLMArbitrageAgent:
         ])
         ticker = market.get("ticker") or "(no ticker)"
         event_title = market.get("event_title") or "(no event title)"
+        market_title = market.get("market_title") or ""
         subtitle = market.get("subtitle") or ""
         category = market.get("category") or "other"
         end_iso = market.get("expected_expiration_time") or "(no end date)"
         implied = market.get("implied_prob_yes")
 
-        # Phrase as a YES/NO question. event_title is "What/Will/When/Who..."
-        # subtitle is the specific outcome (e.g. "Anthony Edwards: 2+",
-        # "Before July 2026", "Q1 2026"). Combine for the LLM context.
-        question = event_title
-        if subtitle:
-            question = f"{event_title} — outcome: {subtitle}"
+        # Prefer per-market `title` when present — it carries the explicit
+        # threshold in plain English ("Will the temp in NYC be above 57.99°
+        # on May 11, 2026 at 1pm EDT?"). Fall back to event_title + subtitle
+        # for legacy / malformed markets where title is empty.
+        if market_title:
+            question = market_title
+        else:
+            question = event_title
+            if subtitle:
+                question = f"{event_title} — outcome: {subtitle}"
 
         user_text = (
             f"Market ticker: {ticker}\n"

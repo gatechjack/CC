@@ -79,6 +79,8 @@ async def refresh_whale_selection(
     categories: tuple[str, ...] = _DEFAULT_CATEGORIES_INPUT,
     min_sample: int = 20,
     min_composite: float = 0.30,
+    watch_only_n: int = 20,
+    watch_only_only: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run the full discovery → score → select pipeline. Returns a dict
@@ -174,19 +176,23 @@ async def refresh_whale_selection(
                 if existing is None or sw.composite_score > existing.composite_score:
                     best_by_handle[handle] = sw
 
+        # Full viable pool — used for both top-up fill AND the runner-up
+        # watch-only list. Hoisted out of the conditional so the watch-only
+        # path doesn't depend on whether top-up fired.
+        all_scored: dict[str, ScoredWhale] = {}
+        for scored_list in scored_by_category.values():
+            for sw in scored_list:
+                if sw.excluded or sw.composite_score < min_composite:
+                    continue
+                handle = sw.stats.nickname
+                existing = all_scored.get(handle)
+                if existing is None or sw.composite_score > existing.composite_score:
+                    all_scored[handle] = sw
+
         if len(best_by_handle) < top_n_global:
             # Fill remaining slots from the global viable pool — but ONLY
             # whales clearing the `min_composite` quality floor. Bad whales
             # (Wilson LCB ≈ 0, negative edge) shouldn't fill empty slots.
-            all_scored: dict[str, ScoredWhale] = {}
-            for scored_list in scored_by_category.values():
-                for sw in scored_list:
-                    if sw.excluded or sw.composite_score < min_composite:
-                        continue
-                    handle = sw.stats.nickname
-                    existing = all_scored.get(handle)
-                    if existing is None or sw.composite_score > existing.composite_score:
-                        all_scored[handle] = sw
             leftover = [
                 s for h, s in all_scored.items() if h not in best_by_handle
             ]
@@ -199,6 +205,16 @@ async def refresh_whale_selection(
             best_by_handle.values(), key=lambda s: s.composite_score, reverse=True,
         )[:top_n_global]
         selected = [s.stats.nickname for s in finalists]
+        selected_set = set(selected)
+
+        # Runner-ups for the watch-only list — viable scored pool minus
+        # the finalists, top `watch_only_n` by composite score. Shape
+        # mirrors what scripts/seed_kalshi_watchlist.py writes so the
+        # daily stats refresher and dashboard consume both transparently.
+        runner_ups = sorted(
+            (s for h, s in all_scored.items() if h not in selected_set),
+            key=lambda s: s.composite_score, reverse=True,
+        )[:watch_only_n]
 
         summary["selected_whales"] = selected
         summary["selection_details"] = [
@@ -219,6 +235,18 @@ async def refresh_whale_selection(
             }
             for i, s in enumerate(finalists)
         ]
+        summary["runner_ups_count"] = len(runner_ups)
+        summary["runner_ups_details"] = [
+            {
+                "rank_after_top_n": i + 1 + top_n_global,
+                "handle": s.stats.nickname,
+                "composite_score": round(s.composite_score, 4),
+                "best_target_category": s.target_category,
+                "top_categories": list(s.stats.top_categories),
+                "closed_positions": s.stats.closed_positions_count,
+            }
+            for i, s in enumerate(runner_ups)
+        ]
 
         # Diagnostics: how many candidates dropped at each filter stage.
         n_no_visibility = sum(
@@ -238,12 +266,42 @@ async def refresh_whale_selection(
 
     summary["finished_at"] = datetime.now(timezone.utc).isoformat()
 
+    now_iso = summary["finished_at"]
+    watch_only_payload = [
+        {
+            "handle": s.stats.nickname,
+            "tier": None,
+            "source": "leaderboard_runner_up",
+            "source_x_handle": None,
+            "notes": (
+                f"Leaderboard runner-up #{i + 1 + top_n_global} "
+                f"(composite={s.composite_score:.3f}, "
+                f"best fit: {s.target_category or 'generalist'})"
+            ),
+            "included_iso": now_iso,
+            "composite_score": round(s.composite_score, 4),
+            "probe": {
+                "profile_resolved": True,
+                "closed_positions": s.stats.closed_positions_count,
+                "wilson_lcb": round(s.wilson_lcb, 4),
+            },
+        }
+        for i, s in enumerate(runner_ups)
+    ]
+
     if not dry_run:
-        set_agent_state(
-            "kalshi_copy_trader", "selected_whales", selected, db_url=db_url,
-        )
+        if not watch_only_only:
+            set_agent_state(
+                "kalshi_copy_trader", "selected_whales", selected, db_url=db_url,
+            )
         set_agent_state(
             "kalshi_copy_trader", "selection_metadata", summary, db_url=db_url,
+        )
+        # Always overwrite watch_only_whales — the runner-up list IS the
+        # current snapshot of what we observe-but-don't-copy.
+        set_agent_state(
+            "kalshi_copy_trader", "watch_only_whales", watch_only_payload,
+            db_url=db_url,
         )
 
     return summary
@@ -307,6 +365,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Quality floor on composite score (default 0.30). Filters out "
              "whales below this even if they pass sample/visibility filters.",
     )
+    parser.add_argument(
+        "--watch-only-n", type=int, default=20,
+        help="How many runner-up scored whales to persist as watch_only_whales "
+             "(default 20). They appear on the Watch List dashboard panel "
+             "but are NOT copy-traded.",
+    )
+    parser.add_argument(
+        "--watch-only-only", action="store_true",
+        help="Skip writing selected_whales (so the live K3 copy roster is "
+             "untouched). Still writes selection_metadata and watch_only_whales.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -330,6 +399,8 @@ def main(argv: list[str] | None = None) -> int:
         categories=categories,
         min_sample=args.min_sample,
         min_composite=args.min_composite,
+        watch_only_n=args.watch_only_n,
+        watch_only_only=args.watch_only_only,
         dry_run=args.dry_run,
     ))
 
@@ -340,7 +411,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print("(dry-run — NOT written to agent_state)")
         else:
-            print(f"Written to agent_state(kalshi_copy_trader.selected_whales).")
+            if args.watch_only_only:
+                print(
+                    f"Written to agent_state(kalshi_copy_trader.watch_only_whales) "
+                    f"— {summary.get('runner_ups_count', 0)} runner-ups. "
+                    "selected_whales LEFT UNTOUCHED (--watch-only-only)."
+                )
+            else:
+                print(
+                    f"Written to agent_state(kalshi_copy_trader.selected_whales) "
+                    f"({len(summary['selected_whales'])}) and "
+                    f".watch_only_whales ({summary.get('runner_ups_count', 0)})."
+                )
     return 0
 
 

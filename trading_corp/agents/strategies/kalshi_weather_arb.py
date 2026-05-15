@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -35,8 +36,16 @@ from trading_corp.agents.strategies._weather_math import (
     ForecastPoint,
     WeatherVerdict,
     evaluate_weather_market,
+    kelly_fraction,
+    sigma_for_horizon,
+)
+from trading_corp.data.metar_client import MetarClient, MetarNowcast
+from trading_corp.data.open_meteo_client import (
+    EnsembleObservation,
+    OpenMeteoClient,
 )
 from trading_corp.data.weather_forecast import WeatherForecastClient
+from trading_corp.persistence import db
 from trading_corp.persistence.models import ProposedOrder
 
 log = logging.getLogger(__name__)
@@ -72,6 +81,52 @@ _CITY_COORDS_FALLBACK: dict[str, tuple[float, float]] = {
     "THOU": (29.9844, -95.3414),      # IAH
     "TPHX": (33.4373, -112.0078),     # PHX
     "TNOLA": (29.9934, -90.2580),     # MSY
+    # Aliases observed in prod 2026-05-15 — Kalshi uses both the T-prefix
+    # and non-T variants interchangeably across event chains. Each alias
+    # points at the same resolution station as its non-T sibling.
+    "TMIA": (25.7959, -80.2870),      # = MIA (KMIA)
+    "TCHI": (41.9742, -87.9073),      # = CHI (KORD)
+    "TPHIL": (39.8729, -75.2437),     # = PHIL (KPHL)
+    "TLAX": (33.9416, -118.4085),     # = LAX (KLAX)
+    "TNYC": (40.6413, -73.7781),      # = NYC (KJFK)
+    "NY": (40.6413, -73.7781),        # = NYC (KJFK), bare 2-char form
+}
+
+
+# ── City fallback → METAR station code (used for sub-6h nowcast blend) ─
+# Most Kalshi resolution stations are airports already; this map echoes
+# the coords table. Central Park (NYC_CENTRAL) is the one non-airport
+# entry — KNYC is the official METAR site for the park.
+_CITY_TO_METAR_STATION: dict[str, str] = {
+    "NYC_CENTRAL": "KNYC",
+    "NYC": "KJFK",
+    "TBOS": "KBOS",
+    "TDC": "KDCA",
+    "TSEA": "KSEA",
+    "TATL": "KATL",
+    "TDAL": "KDFW",
+    "PHIL": "KPHL",
+    "TOKC": "KOKC",
+    "MIA": "KMIA",
+    "CHI": "KORD",
+    "AUS": "KAUS",
+    "TAUS": "KAUS",
+    "TMIN": "KMSP",
+    "TSATX": "KSAT",
+    "TSFO": "KSFO",
+    "LAX": "KLAX",
+    "DEN": "KDEN",
+    "TDEN": "KDEN",
+    "THOU": "KIAH",
+    "TPHX": "KPHX",
+    "TNOLA": "KMSY",
+    # Aliases for Kalshi's T-prefix + bare-short variants (2026-05-15)
+    "TMIA": "KMIA",
+    "TCHI": "KORD",
+    "TPHIL": "KPHL",
+    "TLAX": "KLAX",
+    "TNYC": "KJFK",
+    "NY": "KJFK",
 }
 
 # Kalshi temperature-market ticker prefixes we handle. Non-US (e.g.
@@ -82,6 +137,20 @@ _NON_US_CITIES = {"TLV"}
 # Rules-primary coordinate extractor (most reliable; preferred over the
 # fallback table).
 _COORDS_RE = re.compile(r"coordinates\s+([-\d\.]+)\s*,\s*([-\d\.]+)")
+
+
+@dataclass
+class _SpendCounter:
+    """Per-cycle Kelly-cap counter — seeded from audit history at the
+    top of `run_scan_cycle`, then incremented in-memory as the cycle
+    emits orders so successive markets in the same cycle see the
+    correct remaining day/city budget."""
+    total_usd: float = 0.0
+    per_city_usd: dict[str, float] = field(default_factory=dict)
+
+    def add(self, *, city: str, usd: float) -> None:
+        self.total_usd += usd
+        self.per_city_usd[city] = self.per_city_usd.get(city, 0.0) + usd
 
 
 # ── Strategy ──────────────────────────────────────────────────────────────
@@ -101,6 +170,8 @@ class KalshiWeatherArbAgent:
         self._strat_mtime: float = 0.0
         self._strat_cfg: dict[str, Any] = {}
         self._forecast_client = WeatherForecastClient()
+        self._open_meteo_client = OpenMeteoClient()
+        self._metar_client = MetarClient()
         self._discovery_cache: Any = None
         self._discovery_ts: datetime | None = None
         self._reload()
@@ -136,6 +207,7 @@ class KalshiWeatherArbAgent:
 
     async def run_scan_cycle(
         self, kalshi_broker: Any, *, logger_agent: Any = None,
+        account_equity: float = 0.0,
     ) -> list[ProposedOrder]:
         """One scan cycle. Returns ProposedOrders.
 
@@ -143,6 +215,9 @@ class KalshiWeatherArbAgent:
         markets (`list_markets` / discovery). The agent's own division is
         broker:paper for equity tracking; this broker is lazy-resolved
         in main.py.
+
+        `account_equity` is the bankroll the Kelly sizer scales against.
+        Caller (main.py loop) snapshots the division's paper broker first.
         """
         self._reload()
         if not self.enabled:
@@ -237,10 +312,19 @@ class KalshiWeatherArbAgent:
                 },
             )
 
-        # 3. Per-market: fetch full Market for strike + rules, forecast,
+        # 3. Pre-compute today's spend for the daily/per-city Kelly caps.
+        # Tallied across this strategy's `would_have_placed` audit rows
+        # since UTC midnight. Refreshed once per cycle so cap consumption
+        # within a single cycle still uses live counters (see `spend` below).
+        day_total_usd, day_per_city_usd = self._query_today_spend(now=now)
+
+        # 4. Per-market: fetch full Market for strike + rules, forecast,
         # evaluate, emit if all gates pass.
         orders: list[ProposedOrder] = []
         new_cooldowns = self._load_cooldowns(now=now)
+        spend = _SpendCounter(
+            total_usd=day_total_usd, per_city_usd=dict(day_per_city_usd),
+        )
         for cand in survivors:
             tkr = cand["ticker"]
             if _is_in_cooldown(tkr, new_cooldowns, now, cooldown_h):
@@ -255,6 +339,7 @@ class KalshiWeatherArbAgent:
             verdict, order, skip_reason, payload = await self._evaluate_market(
                 full=full, cand=cand, min_div_pct=min_div_pct,
                 max_hours=max_hours, now=now,
+                account_equity=account_equity, spend=spend,
             )
 
             if logger_agent is not None:
@@ -278,6 +363,7 @@ class KalshiWeatherArbAgent:
     async def _evaluate_market(
         self, *, full: Any, cand: dict[str, Any], min_div_pct: float,
         max_hours: float, now: datetime,
+        account_equity: float, spend: "_SpendCounter",
     ) -> tuple[WeatherVerdict | None, ProposedOrder | None,
                dict[str, Any] | None, dict[str, Any]]:
         tkr = cand["ticker"]
@@ -349,8 +435,8 @@ class KalshiWeatherArbAgent:
             }
             return None, None, {"code": "bad_target_time", **payload}, payload
 
-        # Forecast lookup. For HIGH/LOW daily markets, use daily extremum;
-        # for hourly TEMP markets, use the hour-containing point.
+        # Forecast lookup — primary source. For HIGH/LOW daily markets use
+        # the daily extremum; for hourly TEMP markets use the hour-period.
         if cand["kind"] in ("HIGH", "LOW"):
             kind_word = "high" if cand["kind"] == "HIGH" else "low"
             forecast = await self._forecast_client.get_daily_extremum(
@@ -369,6 +455,78 @@ class KalshiWeatherArbAgent:
                 "lat": lat, "lon": lon, "target_iso": target_iso,
             }
             return None, None, {"code": "no_forecast", **payload}, payload
+
+        # ── Sigma upgrade: Open-Meteo cross-model ensemble ────────────────
+        # Replace the sigma_for_horizon heuristic with the *measured*
+        # standard deviation across GFS/ICON/ECMWF/etc. when ≥3 models
+        # contributed. Fall back to heuristic when ensemble unavailable.
+        ensemble: EnsembleObservation | None = None
+        if self._open_meteo_enabled():
+            try:
+                if cand["kind"] in ("HIGH", "LOW"):
+                    kind_word = "high" if cand["kind"] == "HIGH" else "low"
+                    ensemble = await self._open_meteo_client.get_ensemble_daily_extremum(
+                        lat, lon, tgt_dt.date().isoformat(), kind=kind_word,
+                    )
+                else:
+                    ensemble = await self._open_meteo_client.get_ensemble_at(
+                        lat, lon, target_iso,
+                    )
+            except Exception as e:
+                log.debug("kalshi_weather_arb: open-meteo lookup failed: %s", e)
+                ensemble = None
+
+        if ensemble is not None and ensemble.n_members >= 3:
+            sigma_floor = float(self._strat_cfg.get("ensemble_sigma_floor_f", 0.5))
+            ensemble_sigma = max(ensemble.std_f, sigma_floor)
+            sigma_source = "open_meteo_ensemble"
+        else:
+            ensemble_sigma = forecast.sigma_f  # heuristic fallback
+            sigma_source = "heuristic"
+
+        # ── Nowcast blend: METAR-derived current-temp extrapolation ───────
+        # For sub-6h horizons, blend the NWS forecast value with the
+        # METAR-extrapolated value (latest obs + linear trend). Weight w
+        # ramps linearly: w=0 at horizon=0 (pure nowcast), w=1 at horizon=6h
+        # (pure forecast). >6h uses forecast alone.
+        nowcast: MetarNowcast | None = None
+        forecast_temp_blended = forecast.temp_f
+        blend_w: float | None = None
+        nowcast_extrap: float | None = None
+        nowcast_horizon_cap = float(
+            self._strat_cfg.get("nowcast_blend_horizon_hours", 6.0)
+        )
+        if (
+            self._metar_enabled()
+            and horizon_h >= 0
+            and horizon_h <= nowcast_horizon_cap
+            and cand["kind"] not in ("HIGH", "LOW")  # daily extrema = no nowcast
+        ):
+            station = _CITY_TO_METAR_STATION.get(cand["city_code"].upper())
+            if station:
+                try:
+                    nowcast = await self._metar_client.get_nowcast(station)
+                except Exception as e:
+                    log.debug("kalshi_weather_arb: metar lookup failed: %s", e)
+                    nowcast = None
+                if nowcast is not None:
+                    nowcast_extrap = nowcast.extrap_at(target_iso)
+                    if nowcast_extrap is not None:
+                        blend_w = max(0.0, min(1.0, horizon_h / nowcast_horizon_cap))
+                        forecast_temp_blended = (
+                            blend_w * forecast.temp_f
+                            + (1.0 - blend_w) * nowcast_extrap
+                        )
+
+        # Rebuild the ForecastPoint with the upgraded sigma + blended temp
+        # so the downstream math gets a single, coherent object.
+        forecast = ForecastPoint(
+            temp_f=forecast_temp_blended,
+            sigma_f=ensemble_sigma,
+            valid_iso=forecast.valid_iso,
+            source=f"{forecast.source}+{sigma_source}"
+                   + ("+metar_blend" if blend_w is not None else ""),
+        )
 
         # Implied: YES probability from yes_ask (cheaper side trades first).
         # Use yes_ask as "buy YES cost" → implied_yes ≈ yes_ask_dollars.
@@ -398,9 +556,20 @@ class KalshiWeatherArbAgent:
             "horizon_hours": round(horizon_h, 2),
             "threshold_f": threshold, "threshold_high_f": threshold_high,
             "direction": direction,
-            "forecast_temp_f": forecast.temp_f,
-            "forecast_sigma_f": forecast.sigma_f,
-            "sigma_used_f": verdict.sigma_used_f,
+            "forecast_temp_f": round(forecast.temp_f, 2),
+            "forecast_sigma_f": round(forecast.sigma_f, 2),
+            "sigma_used_f": round(verdict.sigma_used_f, 2),
+            "sigma_source": sigma_source,
+            "ensemble_n_members": (ensemble.n_members if ensemble else 0),
+            "ensemble_std_f": (round(ensemble.std_f, 2) if ensemble else None),
+            "nowcast_blend_w": (round(blend_w, 2) if blend_w is not None else None),
+            "metar_station": (nowcast.station if nowcast else None),
+            "metar_latest_temp_f": (
+                round(nowcast.latest_temp_f, 2) if nowcast else None
+            ),
+            "metar_extrap_f": (
+                round(nowcast_extrap, 2) if nowcast_extrap is not None else None
+            ),
             "delta_f": round(verdict.delta_f, 2),
             "implied_yes": round(implied_yes, 3),
             "prob_yes": round(verdict.prob_yes, 3),
@@ -425,9 +594,36 @@ class KalshiWeatherArbAgent:
             eval_payload["fired"] = False
             return verdict, None, {"code": "no_edge", **eval_payload}, eval_payload
 
-        sizing = self._strat_cfg.get("sizing") or {}
-        fixed_usd = float(sizing.get("fixed_amount", 1.0))
-        qty = fixed_usd / share_price
+        # ── Sizing: fractional Kelly with per-market / day / city caps ────
+        # Kelly is computed against the outcome side we're actually buying.
+        # For BUY-YES at price p: prob_outcome = verdict.prob_yes.
+        # For BUY-NO  at price p: prob_outcome = 1 - verdict.prob_yes.
+        prob_outcome = (
+            verdict.prob_yes if outcome == "yes" else (1.0 - verdict.prob_yes)
+        )
+        order_usd, kelly_meta = self._compute_kelly_usd(
+            prob_outcome=prob_outcome,
+            share_price=share_price,
+            account_equity=account_equity,
+            city_code=cand["city_code"].upper(),
+            spend=spend,
+        )
+        # Add kelly_meta to eval_payload for visibility regardless of outcome.
+        eval_payload.update(kelly_meta)
+
+        if order_usd <= 0:
+            eval_payload["skip_reason"] = (
+                f"kelly_usd={order_usd:.2f} below floor — "
+                f"{kelly_meta.get('cap_reason', 'no_size')}"
+            )
+            eval_payload["fired"] = False
+            return verdict, None, {"code": "no_size", **eval_payload}, eval_payload
+
+        qty = order_usd / share_price
+        # Update the live cap counters so subsequent markets in this cycle
+        # see the correct remaining day/city budget.
+        spend.add(city=cand["city_code"].upper(), usd=order_usd)
+
         order = ProposedOrder(
             strategy=self.name,
             symbol=f"{tkr}:{outcome}",
@@ -439,7 +635,11 @@ class KalshiWeatherArbAgent:
                 f"Weather: forecast={forecast.temp_f:.1f}±{verdict.sigma_used_f:.1f}°F, "
                 f"threshold={threshold:.2f}°F ({direction}), "
                 f"P(YES)={verdict.prob_yes:.2f} vs implied {implied_yes:.2f} "
-                f"(edge {verdict.edge_pct:.1f}%); buy {outcome.upper()} @ {share_price:.3f}"
+                f"(edge {verdict.edge_pct:.1f}%); buy {outcome.upper()} @ {share_price:.3f}; "
+                f"size ${order_usd:.2f} "
+                f"(kelly_full={kelly_meta['kelly_full_pct']:.1f}%, "
+                f"fraction={kelly_meta['kelly_fraction_used']}, "
+                f"cap={kelly_meta['applied_cap']})"
             ),
             extra={
                 "outcome": outcome,
@@ -452,20 +652,174 @@ class KalshiWeatherArbAgent:
                 "forecast_temp_f": forecast.temp_f,
                 "forecast_sigma_f": forecast.sigma_f,
                 "sigma_used_f": verdict.sigma_used_f,
+                "sigma_source": sigma_source,
+                "ensemble_n_members": (ensemble.n_members if ensemble else 0),
+                "ensemble_std_f": (ensemble.std_f if ensemble else None),
+                "nowcast_blend_w": blend_w,
+                "metar_station": (nowcast.station if nowcast else None),
+                "metar_latest_temp_f": (
+                    nowcast.latest_temp_f if nowcast else None
+                ),
+                "metar_extrap_f": nowcast_extrap,
                 "threshold_f": threshold,
+                "threshold_high_f": threshold_high,
                 "direction": direction,
                 "horizon_hours": round(horizon_h, 2),
                 "delta_f": round(verdict.delta_f, 2),
                 "prob_yes": verdict.prob_yes,
                 "divergence_pct": verdict.edge_pct,
                 "expires_at": cand["expected_expiration_time"],
-                "max_dollar_risk": fixed_usd,
-                "tier": "weather_forecast_fixed_usd",
-                "source_signal": "nws_forecast",
+                "max_dollar_risk": order_usd,
+                "kelly_fraction_used": kelly_meta["kelly_fraction_used"],
+                "kelly_full_pct": kelly_meta["kelly_full_pct"],
+                "applied_cap": kelly_meta["applied_cap"],
+                "account_equity_at_size": account_equity,
+                "tier": "weather_forecast_kelly",
+                "source_signal": "nws+open_meteo+metar",
                 "is_prediction_market": True,
             },
         )
         return verdict, order, None, eval_payload
+
+    # ── Kelly sizing helpers ─────────────────────────────────────────────
+
+    def _open_meteo_enabled(self) -> bool:
+        return bool(self._strat_cfg.get("open_meteo_enabled", True))
+
+    def _metar_enabled(self) -> bool:
+        return bool(self._strat_cfg.get("metar_enabled", True))
+
+    def _compute_kelly_usd(
+        self, *, prob_outcome: float, share_price: float,
+        account_equity: float, city_code: str, spend: "_SpendCounter",
+    ) -> tuple[float, dict[str, Any]]:
+        """Compute the per-order $ size from fractional Kelly + caps.
+
+        Returns `(order_usd, meta)`. `order_usd` is 0 if the Kelly result
+        falls below `min_usd` or the caps leave no headroom. `meta`
+        records the full-Kelly fraction, applied fraction, dominating
+        cap label, and any reason for a zero-size outcome.
+
+        Sizing flow:
+          1. Compute full Kelly fraction `f*`.
+          2. Multiply by `kelly_fraction` (typically 0.25) → fractional
+             Kelly target $.
+          3. Clamp to per-market $ cap = max_per_market_pct × equity.
+          4. Clamp to per-day remaining = max_per_day_pct × equity − today's spend.
+          5. Clamp to per-city remaining = max_per_city_pct × equity − city spend.
+          6. Floor: if < min_usd, return 0.
+        """
+        sizing = self._strat_cfg.get("sizing") or {}
+        mode = str(sizing.get("mode", "kelly_fractional"))
+        if mode == "fixed_usd":
+            fixed_usd = float(sizing.get("fixed_amount", 1.0))
+            return fixed_usd, {
+                "kelly_full_pct": 0.0,
+                "kelly_fraction_used": 0.0,
+                "applied_cap": "fixed_usd",
+                "cap_reason": "",
+            }
+
+        # kelly_fractional path
+        kelly_fraction_cfg = float(sizing.get("kelly_fraction", 0.25))
+        min_usd = float(sizing.get("min_usd", 1.0))
+        max_per_market_pct = float(sizing.get("max_per_market_pct", 5.0))
+        max_per_day_pct = float(sizing.get("max_per_day_pct", 25.0))
+        max_per_city_pct = float(sizing.get("max_per_city_pct", 15.0))
+
+        full_kelly = kelly_fraction(prob_outcome, share_price)
+        kelly_full_pct = full_kelly * 100.0
+        kelly_target = max(0.0, account_equity * kelly_fraction_cfg * full_kelly)
+
+        # Per-market cap (always applied)
+        per_market_cap = account_equity * (max_per_market_pct / 100.0)
+        # Daily remaining
+        day_cap = account_equity * (max_per_day_pct / 100.0)
+        day_remaining = max(0.0, day_cap - spend.total_usd)
+        # Per-city remaining
+        city_cap = account_equity * (max_per_city_pct / 100.0)
+        city_spent = spend.per_city_usd.get(city_code, 0.0)
+        city_remaining = max(0.0, city_cap - city_spent)
+
+        # The dominating cap is whichever shrinks the order most.
+        order_usd = kelly_target
+        applied_cap = "kelly_target"
+        if order_usd > per_market_cap:
+            order_usd = per_market_cap
+            applied_cap = "per_market"
+        if order_usd > day_remaining:
+            order_usd = day_remaining
+            applied_cap = "per_day"
+        if order_usd > city_remaining:
+            order_usd = city_remaining
+            applied_cap = "per_city"
+
+        cap_reason = ""
+        if order_usd < min_usd:
+            cap_reason = (
+                f"below min_usd={min_usd:.2f} "
+                f"(kelly_target={kelly_target:.2f}, "
+                f"per_market={per_market_cap:.2f}, "
+                f"day_remaining={day_remaining:.2f}, "
+                f"city_remaining={city_remaining:.2f})"
+            )
+            order_usd = 0.0
+
+        return order_usd, {
+            "kelly_full_pct": round(kelly_full_pct, 2),
+            "kelly_fraction_used": kelly_fraction_cfg,
+            "applied_cap": applied_cap,
+            "cap_reason": cap_reason,
+        }
+
+    def _query_today_spend(
+        self, *, now: datetime,
+    ) -> tuple[float, dict[str, float]]:
+        """Sum today's `would_have_placed` $ exposure by total + city.
+
+        Reads from `audit_event` since UTC midnight today. Falls back to
+        (0, {}) on any DB error so a transient SQLite hiccup doesn't
+        zero-out the day caps and let through an oversized order — the
+        per-market cap still bounds the worst case.
+        """
+        if not self._db_url:
+            return 0.0, {}
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        total_usd = 0.0
+        per_city: dict[str, float] = {}
+        try:
+            import json as _json
+            with db.connect(self._db_url) as conn:
+                cur = conn.execute(
+                    """
+                    SELECT payload_json FROM audit_event
+                    WHERE actor = ? AND kind = 'would_have_placed' AND ts >= ?
+                    """,
+                    (self.name, day_start.isoformat()),
+                )
+                for (payload_json,) in cur:
+                    try:
+                        p = _json.loads(payload_json or "{}")
+                    except Exception:
+                        continue
+                    try:
+                        qty = float(p.get("qty") or 0.0)
+                        price = float(p.get("limit_price") or 0.0)
+                    except (TypeError, ValueError):
+                        continue
+                    usd = qty * price
+                    if usd <= 0:
+                        continue
+                    total_usd += usd
+                    ticker = str(p.get("ticker") or "")
+                    m = _HANDLED_PREFIX_RE.match(ticker)
+                    if m:
+                        city = m.group(2).upper()
+                        per_city[city] = per_city.get(city, 0.0) + usd
+        except Exception as e:
+            log.warning("kalshi_weather_arb: day-spend query failed: %s", e)
+            return 0.0, {}
+        return total_usd, per_city
 
     # ── cooldown state (in-memory; persistence is best-effort) ────────────
 

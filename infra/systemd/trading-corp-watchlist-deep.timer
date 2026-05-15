@@ -1,0 +1,13 @@
+[Unit]
+Description=K3 watch-only deep-scan — weekly Sunday 14:00 UTC
+
+[Timer]
+# Sunday 14:00 UTC = 10:00 EDT — low system load, Apify usually responsive.
+# Cache amortizes cost: each run probes ~60 NEW candidates, skipping
+# already-known opaque handles in agent_state(apify_visibility_cache).
+OnCalendar=Sun *-*-* 14:00:00 UTC
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target
