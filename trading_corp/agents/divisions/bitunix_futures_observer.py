@@ -32,6 +32,7 @@ Class entry points:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -375,6 +376,10 @@ class BitunixFuturesObserver:
             ttls = [f.ttl_minutes for f in scoring_config.factors.values() if f.ttl_minutes > 0]
             if ttls:
                 self._max_ttl_minutes = max(ttls)
+        # Serializes the score-path critical section (read cooldown → evaluate →
+        # place → write cooldown). Without it, concurrent webhook arrivals
+        # within ~1s all read pre-fire cooldown state and all fire.
+        self._score_lock = asyncio.Lock()
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -571,6 +576,29 @@ class BitunixFuturesObserver:
                 ),
             )
 
+    def _check_htf_alignment(self, winning_side: str, now_iso: str) -> str:
+        """Compare winning side against current 4h + 1D bias state.
+
+        Returns one of: 'agree' | 'partial' | 'neutral' | 'contra'.
+          - agree:   both HTFs match winning_side
+          - partial: one HTF matches; the other is neutral OR contra
+          - neutral: both HTFs neutral
+          - contra:  any HTF contradicts AND none agrees
+        """
+        bias_4h = self._read_bias("4h", now_iso).side
+        bias_1d = self._read_bias("1d", now_iso).side
+        want = "bull" if winning_side == "buy" else "bear"
+        other = "bear" if want == "bull" else "bull"
+        agree = sum(1 for b in (bias_4h, bias_1d) if b == want)
+        contradicts = (bias_4h == other) or (bias_1d == other)
+        if contradicts and agree == 0:
+            return "contra"
+        if agree == 2:
+            return "agree"
+        if agree == 1:
+            return "partial"
+        return "neutral"
+
     async def _score_and_maybe_propose(
         self,
         payload: dict[str, Any],
@@ -579,7 +607,14 @@ class BitunixFuturesObserver:
     ) -> None:
         """Score engine flow. Always emits a `bitunix_score_decided`
         audit row. Falls back silently on deps-missing / no-broker /
-        sizing-rejection — never raises out."""
+        sizing-rejection — never raises out.
+
+        The body runs inside `_score_lock` so the cooldown read → place →
+        cooldown write sequence is atomic against concurrent webhook
+        arrivals. Without the lock, three near-simultaneous evaluations
+        would all read pre-fire cooldown state and all fire (observed
+        7×2-3 trade multi-fire clusters in the 2026-05-11→14 data).
+        """
         if self.scoring_config is None:
             return
 
@@ -587,6 +622,15 @@ class BitunixFuturesObserver:
         if symbol not in ALLOWED_SYMBOLS:
             return
 
+        async with self._score_lock:
+            await self._score_and_maybe_propose_locked(payload, source=source)
+
+    async def _score_and_maybe_propose_locked(
+        self,
+        payload: dict[str, Any],
+        *,
+        source: str,
+    ) -> None:
         now = datetime.now(timezone.utc)
         # Stash source on payload for the audit log (mutates the dict
         # but we never propagate it out beyond logging).
@@ -647,6 +691,26 @@ class BitunixFuturesObserver:
             self._log_score_decision(
                 payload, verdict_score,
                 "skipped_cooldown" if verdict_score.cooldown_blocked else "skipped_score",
+            )
+            return
+
+        # ── HTF-alignment gate (Fix #2; 2026-05-14) ──
+        # Cypher A 1D + Cypher B 4h set BIAS via bitunix_observer_bias.
+        # Refuse trades whose direction conflicts with HTF bias. Asymmetric:
+        # buys need both HTFs to agree (1/9 WR on partial in 2026-05-11→14
+        # paper data); sells need not-contra (1 partial-sell trade also lost).
+        side_str = "buy" if verdict_score.side == _ScoreSide.BUY else "sell"
+        alignment = self._check_htf_alignment(side_str, now.isoformat())
+        if side_str == "buy" and alignment != "agree":
+            self._log_score_decision(
+                payload, verdict_score, "skipped_htf_alignment",
+                note=f"buy requires bias agree; got {alignment}",
+            )
+            return
+        if side_str == "sell" and alignment == "contra":
+            self._log_score_decision(
+                payload, verdict_score, "skipped_htf_alignment",
+                note=f"sell blocked by contra HTF; got {alignment}",
             )
             return
 
