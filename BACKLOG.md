@@ -165,6 +165,51 @@ PR 3c shipped audit-grade persistence for every gate decision (`pa_validation_de
 
 ---
 
+## P0 NEXT — BitUnix trade-plan PR 5 + 6 (Option C reconciler + dashboard refresh)  *(NEW 2026-05-15; trade-plan PRs 1-4 shipped this branch — picks up here next session)*
+
+Continues the adaptive entry/SL/TP MVP series decided 2026-05-15 (see `trading_corp_bitunix_strategy_gaps.md` memory for the full design). **Naming note:** this "trade-plan PR" series is distinct from the HTF-redesign "PR 1-5" series and the gate-flip "PR 4" entry below — those are different epics. Trade-plan PRs 1-4 are commits on this branch; trade-plan PRs 5+6 are next.
+
+**Shipped this branch (2026-05-15):**
+
+| trade-plan PR | Commit | Module | Net tests |
+|---|---|---|---|
+| 1 | `c9442ad` | `agents/strategies/swing.py` (fractal swing helper, re-exports `find_swing_points`) | 9 |
+| 2 | `5035e88` | `agents/strategies/levels.py` (HTF S/R via 3m→15m resample) | 10 |
+| 3 | `e743bfa` | `agents/strategies/trade_plan.py` (`FeeConfig`, `StrategyConfig`, `TradePlan`, `build_trade_plan`) | 24 |
+| 4 | `efa1737` | Observer integration: `_build_proposal_v2` + `_log_trade_plan_decision` + dispatch in `_score_and_maybe_propose_locked` + `HTFRegimeConfig.from_dict` + main.py YAML wiring + `bitunix_futures.trade_plan` + `fees` YAML blocks + 3m bar cache 60→200 | 17 |
+
+Full BitUnix suite **235 passing** post-PR-4 (was 141 pre-series). YAML `bitunix_futures.trade_plan.enabled: false` by default — first deploy is byte-identical to pre-PR-4 (legacy geometric `_build_proposal` stays active). Activation = flip the flag in a follow-up YAML push.
+
+### trade-plan PR 5 — `bitunix_position_reconciler.py` (stateless async task)
+
+60s cadence. Reads broker position state + `bitunix_bar_history`; decides if SL should move (BE after TP1 fill → TP1-price after TP2 fill → Chandelier trail post-TP2 using `max_high_since_TP2_fill − trail_atr_mult × ATR`); calls `modify_position_tp_sl_order` when change > 0 for longs (mirror for shorts). Stateless (reads broker truth + DB each tick); idempotent (re-runs with no-change are no-ops); restart-safe (no in-process state). Reads `tp_plan` from `ProposedOrder.extra` (the 3-leg payload built by `_build_proposal_v2`); each leg's `stop_action` field drives the reconciler's branch (`"move_to_breakeven"` / `"move_to_tp1"` / `"trail_atr"`).
+
+**Design questions to surface tomorrow:**
+1. Where does it live? Proposed: new file `trading_corp/agents/divisions/bitunix_position_reconciler.py`, started as an async task in `main.py` alongside the bar archiver + regime snapshot loop.
+2. `BitunixBroker.modify_position_tp_sl_order` doesn't exist yet (place_order still `NotImplementedError`). For PR 5: add the method as a stub that raises NotImplementedError too, so the reconciler logs the intended action but doesn't actually call. Real wiring lands at Phase 4 (live placement).
+3. Position enumeration source. Today: paper trades resolve via `paper_trade_record`; no live "open positions" concept in the broker. Either extend `BitunixBroker.snapshot()` to expose open positions, OR query a new internal positions view derived from `paper_trade_record` rows that haven't resolved. Reconciler should handle the empty-positions case gracefully.
+
+Estimated: ~1 day. Tests: idempotency, recovery on restart, the SL lifecycle table from the strategy_gaps memory.
+
+### trade-plan PR 6 — Dashboard refresh (combined PR-3c semantics + MVP fields)
+
+Single combined dashboard pass per user's "option (iii)" choice 2026-05-15. Originally split as path (a) (refresh for PR-3c) + a later dashboard pass for MVP fields, but combined since revisiting twice = wasted work.
+
+**Edits:**
+- `bitunix_score_panel.html` — relabel PA factors as "validators (not scored)"; drop guard-penalty UI; score-decided contributions list gains TF badge (3m / 15m / 30m / log-only)
+- NEW `bitunix_pa_panel.html` — reads `pa_validation_decision` audit: PASS/REJECT + which validators failed + rush-fall trigger
+- NEW `bitunix_decision_flow.html` — score → PA → HTF → outcome timeline for the latest fire
+- Recent-fires table additions: `htf_size_multiplier` (PR 5f), `funding_rate_at_decision` (PR 5e), `tp1_price` / `tp2_price` / `tp3_price` (trade-plan PR 4), current SL lifecycle state (from reconciler — depends on PR 5), `sl_method`, `tp2_method`, fee floor
+- Files: `bitunix_score_panel.html` (modify), NEW `bitunix_pa_panel.html`, NEW `bitunix_decision_flow.html`, `web/data.py` (extend), `web/templates/division.html` (include partials)
+
+Estimated: ~1 day.
+
+### Sequencing relative to gate-flip PR 4 below
+
+The gate-flip entry (`htf_gate.mode: shadow → enforce`) at the next section is a SEPARATE PR series — it can flip BEFORE or AFTER the trade-plan series. Recommended: ship trade-plan PR 5 + 6 → re-accumulate shadow data under v2 placement → THEN flip gate to enforce. Flipping gate first would validate enforce against placeholder placement rules, then re-validate after trade-plan ships → compounded unknowns.
+
+---
+
 ## P0 NEXT — BitUnix PR 4: flip `htf_gate.mode` from `shadow` → `enforce`  *(NEW 2026-05-14, blocks Phase 3.2b live placement)*
 
 PR 3c (2026-05-14) shipped the HTF regime gate + PA validation gate in **shadow mode**: audits get written for every score-engine fire (`pa_validation_decision`, `htf_gate_decision`), but the gates do NOT block trades or alter sizing. The score engine itself is also reshaped (3m/15m/30m TF filter, PA factors moved to validation, lower thresholds).
