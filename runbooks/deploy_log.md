@@ -59,6 +59,144 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-15 14:39 UTC — Dashboard actor-whitelist fix (kalshi_weather/crypto now visible)
+
+**Triggered by:** User reported "i see kalshi weather trades on telegram but not on the dashboard ui". Telegram channel is wired off the strategy's ProposedOrder; the dashboard reads from the same audit table but with actor-whitelist filters that hadn't been extended for the new specialized agents.
+
+**Root cause:** Two queries in `trading_corp/web/data.py` filter on a hardcoded actor list `('kalshi_tail_price_arb', 'kalshi_temporal_bucket_arb', 'kalshi_llm_arbitrage', 'kalshi_copy_trader')` — `kalshi_weather_arb` and `kalshi_crypto_arb` were missing. The audit rows exist with correct `division` payload field; the actor filter dropped them.
+
+**Files deployed (1):**
+- `trading_corp/web/data.py` — added `kalshi_weather_arb` + `kalshi_crypto_arb` to:
+  - `_query_pm_open_trades` (line 2747) — Open tab actor whitelist
+  - `_query_pm_pending_count` (line 2876) — tile "pending" count
+  - `arb_type` fallback ladder in the open-trades enrichment (~ line 2775): weather → `"weather_forecast"`, crypto → `"crypto_spot"`
+
+**Notably NOT touched (already correct):**
+- `trading_corp/agents/kalshi_resolver.py` — prod already had `kalshi_weather_arb` + `kalshi_crypto_arb` in `_KALSHI_ACTORS`, `_KALSHI_DIVISIONS`, `_ACTOR_TO_DIVISION`, and `_ACTOR_TO_ARB_TYPE_DEFAULT`. Local was behind prod (single-line `_KALSHI_DIVISIONS` style); synced local TO prod content to clear the drift. So the resolver was already creating round-trip rows for weather/crypto resolutions correctly — the dashboard read side was the only gap.
+
+**Backup tag:** `pre-dashboard-actor-whitelist-20260515-1445`
+
+**Verification (post-restart 14:39 UTC):**
+- Direct call to `_query_pm_open_trades(... ['kalshi_weather'], limit=10)` returns **4 open trades** with proper enrichment: ticker, side='no', qty, price, arb_type='weather_forecast' all populated.
+- `_query_pm_pending_count(... ['kalshi_weather','kalshi_crypto'])` returns 4 (matches the 4 `would_have_placed` audit rows that survived risk gate).
+- No exceptions post-restart.
+
+**Inert / dormant:**
+- **Activity-rail per-strategy enrichment (line 3371 actor list) NOT extended.** That's cosmetic — the basic event still renders, just without the rich kalshi-tail/temporal-bucket-specific badges. Worth a P3 follow-up if the user wants weather-specific row styling.
+- **No styled `kalshi_weather_analysis.html` / `kalshi_crypto_analysis.html` partial.** The right-rail click-to-expand panel currently shows raw payload JSON. Already filed as P3 follow-up in the 2026-05-15 02:56 UTC Tier-1 deploy log entry.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-dashboard-actor-whitelist-20260515-1445; \
+sudo cp /home/azureuser/trading_corp/trading_corp/web/data.py.\$TAG /home/azureuser/trading_corp/trading_corp/web/data.py; \
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/web/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 14:27 UTC — Paper-capital + crypto horizon pre-filter (downstream-gate unblock)
+
+**Triggered by:** Post-14:06 quote-fix deploy, audit showed weather + crypto still producing 0 ProposedOrders. Investigation found two **real bugs** + two legitimate gates:
+- 9/30 weather evaluations had **edges of 28-92%** but Kelly sized to $0 because the kalshi_weather paper broker was instantiated with `starting_equity=0.0`.
+- 150/150 crypto evaluations hit horizon-cap because long-dated SOLMAX/ETHMAX-style markets (~5,535h out) crowded the `k_per_cycle=30` budget via the tightest-spread sort, starving near-term BTC/ETH/XRP markets.
+
+**Backup tag:** `pre-paper-cap-horizon-fix-20260515-1430`
+
+**Files deployed (4 — 3 code + 1 config):**
+- `trading_corp/utils/divisions.py` — added `paper_capital: float = 0.0` field to `Division` dataclass; `load_divisions()` reads it from the yaml entry. Default $0 = legacy behavior (existing paper divisions unaffected unless they opt in).
+- `trading_corp/main.py` — `family == "paper"` branch (line 1329) now passes `division.paper_capital` to `PaperBroker(starting_equity=...)` instead of hardcoded 0.0.
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — new horizon-aware survivor filter between the no-ask filter and the tightest-spread sort. Computes `(expected_expiration_time - now).hours` per survivor via inline `_horizon_hours()` helper; drops anything `> max_horizon_hours` (default 168h). Cheap — one ISO parse per survivor. No new audit fields.
+- `config/divisions.yaml` (**prod-only edit via inline Python patcher**) — added `paper_capital: 500.0` to both `kalshi_weather` and `kalshi_crypto` entries. **Local divisions.yaml does NOT have these entries** (prod-divergent per `trading_corp_prod_git_drift.md`); patch was applied directly to prod via ssh + a small idempotent regex script (kept inline; not durable in scripts/). Re-run safe — skips if `paper_capital` already present.
+
+**Features shipped:**
+- **Weather Kelly sizer now has bankroll to work with.** $500 paper notional × 25% fractional Kelly × edge math, capped per-market (5% = $25), per-day (25% = $125), per-city (15% = $75). Verified: 5 ProposedOrders fired in first post-restart scan cycle (was 0 across the prior 5+ hours).
+- **Crypto discovery no longer starved by long-dated markets.** First post-restart scan: 30/30 evaluations were XRP 0.6h-horizon (the 11am EDT event) — the actual short-term liquidity surface, not 230-day MAXMON noise. 0 horizon-skips (was 150/150).
+
+**Verification (post-restart 14:27:10 UTC):**
+- md5-diff confirmed local=prod on all 3 code files (no drift).
+- Service active 14:27:11; PaperBroker startup logs show `account=paper_kalshi_weather equity=$500.00` (via subsequent snapshot path; service-init log line stops at the `paper-default` broker but div-level brokers come up via DataExec.register).
+- Local `pytest tests/test_kalshi_weather_sizing.py`: 15/15 pass.
+- Audit DB post-restart (one weather scan + 2 crypto scans):
+  - Weather: 30 evaluated, 3 `would_have_placed`, 2 `order_rejected_by_risk`, 22 `no_edge`, 2 `near_threshold`, 1 `no_size` (Kelly worked but daily cap exhausted by the 3 prior fires — exactly the design intent).
+  - Crypto: 30 evaluated, 30 `no_edge` (model agrees with market on tail-strike XRP), **0 horizon skips**.
+  - `proposed_order` table now shows 5 kalshi_weather rows since 14:27:30 (each exactly $25 notional = the per-market cap — Kelly math + cap ladder verified end-to-end).
+
+**Notable code changes / decisions:**
+- **$500 paper_capital** chosen to roughly match the real Kalshi account ($499 live). Each kalshi_* paper division acts as a "what if this strategy had its own $500 sleeve" sim. Once auto_execute flips for any of these, real allocation needs to be carved out of the shared live account.
+- **Horizon filter pre-k-cap** is the right cut point. Doing it after the cap would not help; doing it at discovery-stage (before survivor dict build) is barely cheaper and loses the audit-readability of survivor-stage data.
+- Weather strategy was NOT given a similar horizon pre-filter — its survivors were all within 72h naturally; defense-in-depth deferred until needed.
+
+**Latent bug surfaced (not introduced):**
+- **2 weather ProposedOrders were rejected with `risk_reason: 'polymarket: implied prob 0.010 outside [0.05, 0.95] bounds'`.** The polymarket implied-prob bounds check is firing on **kalshi_weather** orders — wrong-scope leak in the risk gate. Both rejected orders were deep tail markets ($0.01 + $0.03 limits, 1% + 3% implied) so the practical loss is small, but the bound shouldn't apply across venues. Filed as P2 in BACKLOG.md.
+
+**Inert / dormant:**
+- **Crypto: 0 ProposedOrders since deploy** despite the horizon fix working. 30/30 XRP markets at 0.6h horizon all genuinely no_edge: spot=$1.4369, strikes $1.55-$1.64 (5-15% above), model and market both say ~0-1% chance. Legit "no fire — tight market". Different scan-windows will surface different setups.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-paper-cap-horizon-fix-20260515-1430; BASE=/home/azureuser/trading_corp; \
+sudo cp \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+sudo cp \$BASE/trading_corp/utils/divisions.py.\$TAG \$BASE/trading_corp/utils/divisions.py; \
+sudo cp \$BASE/trading_corp/agents/strategies/kalshi_crypto_arb.py.\$TAG \$BASE/trading_corp/agents/strategies/kalshi_crypto_arb.py; \
+sudo cp \$BASE/config/divisions.yaml.\$TAG \$BASE/config/divisions.yaml; \
+sudo rm -rf \$BASE/trading_corp/__pycache__ \$BASE/trading_corp/utils/__pycache__ \$BASE/trading_corp/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 14:06 UTC — Kalshi fractional-trading quote-read fix (weather + crypto)
+
+**Triggered by:** User reported "no rows showing up" for kalshi_weather + kalshi_crypto. Audit DB confirmed: 0 of 4,106 weather evaluations + 0 of 18,520 crypto evaluations passed all gates in prior 12h; every single market hit `skip_code: no_implied`. Other Kalshi strategies (llm_arbitrage, copy_trader, temporal_bucket_arb) were producing rows fine.
+
+**Root cause:** Kalshi flipped weather + crypto markets to `fractional_trading_enabled: true`. The integer-cent fields (`yes_ask`/`no_ask`/`yes_bid`/`no_bid`) are absent from the API response; only the `*_dollars` string fields populate. Both strategies read `getattr(full, "yes_ask", None)` → always `None` → `implied_yes = None` → 100% `no_implied` skip rate. Confirmed via direct prod probe on `KXHIGHCHI-26MAY15-B73.5`: pykalshi market object has `yes_ask_dollars='0.3400'` but `yes_ask` is missing as an attribute entirely.
+
+**Backup tag:** `pre-fractional-quote-fix-20260515-1350`
+
+**Files deployed (3):**
+- `trading_corp/agents/strategies/_weather_math.py` — **NEW helper** `kalshi_quote_dollars(m)` returns `(yes_ask, no_ask, yes_bid, no_bid)` in dollars. Prefers `*_dollars` string fields; falls back to integer cents × 0.01 for legacy non-fractional markets. Returns 0.0 for unparseable/missing sides (matches Kalshi's existing "no quote" convention).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — Import + use `kalshi_quote_dollars` in survivor-dict construction AND in `_evaluate_market`. Removed the now-redundant `(yes_ask_cents or 0) / 100.0` conversion step at line 533.
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — Same pattern, two sites.
+
+**Features shipped:**
+- **Weather strategy now reads quotes correctly on all fractional markets.** 30 evaluations post-restart, all passed the quote layer (was 0/30 pre-fix). Downstream skip distribution: 17 no_edge, 9 no_size, 4 near_threshold — all legitimate market-state outcomes, no quote-layer bug. Full Tier-1 path firing (ensemble σ + Kelly visible in payloads).
+- **Crypto strategy now reads quotes correctly on all fractional markets.** 150 evaluations across 5 scan cycles, all 150 passed the quote layer. Currently all hit `horizon` skip (the 168h max_horizon_hours gate) because discovery is dominated by long-dated SOL markets — that's a separate `k_per_cycle`-ordering issue, not a quote bug.
+
+**Notable code changes:**
+- `getattr(m, "yes_ask", None)` is now NEVER the right read on Kalshi markets that may have `fractional_trading_enabled: true`. Any future strategy/code path reading quote fields should use `kalshi_quote_dollars()` from `_weather_math.py`.
+- Survivor dicts now store dollar values (not cents) under the `yes_ask`/`no_ask`/`yes_bid`/`no_bid` keys — the spread-sort lambda still works because the relative ordering is preserved.
+
+**Verification:**
+- md5-diff confirmed clean on all 3 files (no prod drift — surgical patches applied cleanly).
+- 15/15 tests pass in `tests/test_kalshi_weather_sizing.py`.
+- Local smoke-test of helper across fractional / legacy-cents / empty market objects returns expected dollar values.
+- Service restart 14:06:04 UTC; no exceptions in journalctl post-restart.
+- Audit DB: weather post-restart = 30 evaluated, 0 `no_implied`, 30 `payload_json NOT LIKE '%skip_code%'` (all passed quote layer). Crypto = 150 evaluated, 0 `no_implied`, 150 passed quote layer.
+
+**Inert / dormant on current traffic:**
+- **0 ProposedOrders fired since restart.** Real market-state, not a bug: weather forecasts agree with implied (no_edge), Kelly floors to $0 on tiny edges (no_size), or near-threshold uncertainty (near_threshold). Crypto exhausts k_per_cycle on long-dated SOL markets that fail the 168h horizon gate. Both are legitimate downstream skips — dashboard rows will materialize when a real edge appears.
+
+**Follow-up risk (not blocking):**
+- Crypto discovery ordering: long-dated SOL markets are crowding out near-term BTC/ETH evaluations. Worth tuning the survivor sort (currently tightest-spread first) or adding a horizon-aware pre-filter so the 30-market budget is spent on in-horizon markets.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp/trading_corp/agents/strategies; \
+TAG=pre-fractional-quote-fix-20260515-1350; \
+for f in _weather_math.py kalshi_weather_arb.py kalshi_crypto_arb.py; do
+  sudo cp \$BASE/\$f.\$TAG \$BASE/\$f
+done; \
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/agents/strategies/__pycache__ \
+            /home/azureuser/trading_corp/trading_corp/agents/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
 ## 2026-05-15 06:44 UTC — K3 Watch-list deep-scan pivot (replaces manual seed)
 
 **Triggered by:** 06:09 deploy of manual-seed watch-list yielded 2 of 14

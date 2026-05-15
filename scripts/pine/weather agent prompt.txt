@@ -1,0 +1,250 @@
+
+
+Here's a concrete, buildable architecture. I'll structure it so each layer has a clear contract — same separation-of-concerns approach as your BTC scalper.
+
+## System Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DATA INGESTION LAYER                          │
+│  NOAA GFS  │  NOAA GEFS  │  ECMWF IFS  │  Open-Meteo  │  METAR  │
+└────────────────────┬────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────────┐
+│              FORECAST AGGREGATION LAYER                          │
+│   Station-level bias correction │ Ensemble assembly │ Caching   │
+└────────────────────┬────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────────┐
+│              PROBABILITY ENGINE                                  │
+│   Per-bracket P(temp ∈ bracket) │ Confidence (ensemble spread)  │
+└────────────────────┬────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────────┐
+│              MARKET INTERFACE LAYER                              │
+│   Kalshi market discovery │ Orderbook snapshot │ Fair value     │
+└────────────────────┬────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────────┐
+│              EDGE & SIZING LAYER                                 │
+│   Edge calculation │ Kelly sizing │ Risk caps │ Bracket hedging │
+└────────────────────┬────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────────┐
+│              EXECUTION LAYER                                     │
+│   Order placement │ Position tracking │ Settlement reconciliation│
+└────────────────────┬────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────────┐
+│              MONITORING & STATE                                  │
+│   PnL tracking │ Model calibration │ Decision audit log         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Layer 1: Data Ingestion
+
+**What it does:** Pulls raw forecast data on a schedule.
+
+**Sources (all free):**
+- **NOAA GFS** (Global Forecast System): 31 ensemble members, runs 4x daily (00, 06, 12, 18 UTC). Available ~3.5 hours after each cycle.
+- **NOAA GEFS** (Global Ensemble Forecast System): Higher-quality ensemble, same cadence.
+- **ECMWF Open Data**: Free since 2024, ~50 members, runs 2x daily. Generally the highest-skill model in the world.
+- **Open-Meteo API**: Free wrapper that aggregates multiple models with one HTTP call — fastest way to start. Use this for MVP, then add direct NOAA/ECMWF later for the freshness edge.
+- **METAR observations**: Real-time station data (current temp, dewpoint, wind). Used for nowcasting in the final hours before settlement.
+
+**Schedule:**
+- Poll Open-Meteo every 15 minutes during active forecast windows
+- Pull direct NOAA GRIB files within 5 minutes of release (model run times are public)
+- METAR every 5 minutes in the last 6 hours before settlement
+
+**Output schema (per city, per pull):**
+```python
+{
+  "city": "NYC",
+  "station": "KNYC_CentralPark",
+  "pulled_at": "2026-05-14T18:15:00Z",
+  "target_date": "2026-05-15",
+  "ensemble_members": [
+      {"source": "GFS", "member": 0, "high_temp_f": 72.3},
+      {"source": "GFS", "member": 1, "high_temp_f": 71.8},
+      ...
+      {"source": "ECMWF", "member": 50, "high_temp_f": 73.1}
+  ],
+  "current_obs": {"temp_f": 68.4, "obs_time": "2026-05-14T18:10:00Z"}
+}
+```
+
+## Layer 2: Forecast Aggregation
+
+**What it does:** Cleans and corrects the raw ensemble into a station-specific distribution.
+
+**Critical steps:**
+
+1. **Station targeting.** Each Kalshi market settles on a specific station — Central Park for NYC, Midway for Chicago. Models output gridded data; you need to interpolate to the exact station coordinates. Open-Meteo handles this; if you go direct-to-NOAA, you'll need to do bilinear interpolation yourself.
+
+2. **Bias correction.** Models have systematic biases per station (urban heat island, terrain effects). Track rolling forecast-vs-actual error per (station, lead-time, season) and apply a correction. Even a simple 30-day rolling mean error correction adds measurable skill.
+
+3. **Inter-model weighting.** ECMWF is generally more skillful than GFS. Don't just pool all members equally — weight by historical skill at each lead time. Start naive (equal weight), upgrade to skill-weighted later.
+
+4. **Nowcasting blend.** In the final 6 hours, current observations dominate. Blend ensemble forecast with a persistence/trend model from METAR data: `blended = w(t) * ensemble + (1-w(t)) * nowcast`, where `w(t)` decays as you approach settlement.
+
+**Caching:** Store every pull in a time-series database (Postgres with TimescaleDB, or even just SQLite for MVP). You need this for backtesting and for the calibration loop.
+
+## Layer 3: Probability Engine
+
+**What it does:** Converts the ensemble into a per-bracket probability for every active Kalshi contract.
+
+The core operation is simple — for each bracket `[lo, hi]`:
+```python
+def bracket_probability(ensemble_temps, lo, hi):
+    n = len(ensemble_temps)
+    in_bracket = sum(1 for t in ensemble_temps if lo <= t < hi)
+    return in_bracket / n
+```
+
+**But add these refinements:**
+
+1. **Smooth the empirical CDF.** With 164 members, raw counts are jumpy at bracket boundaries. Fit a normal or kernel density to the ensemble first, then integrate over the bracket. This avoids 0% / 100% pathologies.
+
+2. **Confidence metric.** Output ensemble spread (std dev) alongside probability. When 164 independent forecast simulations disagree, the bot stays out. When they converge, the bot executes. Convergent ensembles = high confidence, big size; divergent = small size or pass.
+
+3. **Lead-time confidence decay.** A forecast 12 hours out is much more reliable than 36 hours out. Track historical RMSE by lead time per station and incorporate as additional uncertainty.
+
+**Output:**
+```python
+{
+  "city": "NYC",
+  "target_date": "2026-05-15",
+  "computed_at": "2026-05-14T18:15:00Z",
+  "brackets": [
+    {"range": "<68", "prob": 0.04, "confidence": "high"},
+    {"range": "68-69", "prob": 0.11, "confidence": "high"},
+    {"range": "70-71", "prob": 0.28, "confidence": "high"},
+    {"range": "72-73", "prob": 0.34, "confidence": "high"},
+    {"range": "74-75", "prob": 0.18, "confidence": "high"},
+    {"range": ">75", "prob": 0.05, "confidence": "high"}
+  ],
+  "ensemble_std": 1.8,
+  "lead_time_hours": 14
+}
+```
+
+## Layer 4: Market Interface
+
+**What it does:** Talks to Kalshi.
+
+**Key endpoints (Kalshi REST API):**
+- `GET /markets` — discover active weather markets. The KXHIGH series tickers are `KXHIGHNY`, `KXHIGHCHI`, `KXHIGHMIA`, `KXHIGHLAX`, `KXHIGHDEN`, etc.
+- `GET /markets/{ticker}/orderbook` — current book
+- `POST /orders` — place orders
+- `GET /portfolio/positions` — track positions
+- WebSocket feed for real-time price/trade updates
+
+**Auth:** Kalshi uses RSA-PSS signed requests (not a simple API key). You generate an RSA keypair, register the public key, and sign every request. Plan for a few hours of setup pain here.
+
+**Fair value calculation:**
+For each market, compare model probability to market mid-price:
+```python
+edge = model_prob - market_price  # positive = yes is underpriced
+```
+
+Track both sides — sometimes the NO side has better edge than YES because of liquidity asymmetry in the book.
+
+## Layer 5: Edge & Sizing
+
+**What it does:** Decides whether to trade and how much.
+
+**Step 1 — Edge gate.** Require minimum edge to overcome fees + slippage:
+- Kalshi fees: ~1-2% per round trip depending on volume
+- Slippage: depends on book depth, but assume 1-2¢ on top of midprice for market orders
+- **Minimum edge to trade: 5-8%** (the public bot uses 8% for weather, 2% for BTC — that's a reasonable starting point)
+
+**Step 2 — Fractional Kelly sizing.**
+
+Full Kelly for a binary bet:
+```
+f* = (p × b - (1-p)) / b
+```
+where `p` is your model probability, `b` is the payoff ratio = `(1-price)/price`.
+
+**Use fractional Kelly — typically 0.25× full Kelly.** Full Kelly is mathematically optimal but assumes you know `p` exactly. You don't. Your model has error. Fractional Kelly is robust to misestimation. Half-Kelly is aggressive; quarter-Kelly is the sane default.
+
+```python
+def kelly_size(p_model, market_price, bankroll, fraction=0.25):
+    b = (1 - market_price) / market_price
+    full_kelly = (p_model * b - (1 - p_model)) / b
+    if full_kelly <= 0:
+        return 0
+    return bankroll * fraction * full_kelly
+```
+
+**Step 3 — Risk caps (apply after Kelly).**
+- Max per-market exposure: e.g., 5% of bankroll
+- Max per-day exposure across all weather markets: 25% of bankroll
+- Max single-city exposure: 15% (correlated brackets in one city)
+- Hard stop on bankroll drawdown: pause trading at -20% from peak
+
+**Step 4 — Bracket hedging.** If you have edge on multiple brackets in the same market (e.g., model says 70-71 AND 72-73 are both underpriced), buy both — you've synthesized a wider-range YES at better effective odds. The math works because adjacent brackets are mutually exclusive but you're long both.
+
+## Layer 6: Execution
+
+**What it does:** Places orders and tracks fills.
+
+**Order strategy:**
+- **Avoid market orders** on thin books — use limit orders at midprice or one tick better
+- **Iceberg large orders** — break into 5-10 smaller orders over a few minutes to avoid signaling
+- **Re-evaluate before each batch** — if a new model run drops between your first and second batch, recompute edge
+
+**State machine per market:**
+```
+DISCOVERED → ANALYZED → EDGE_FOUND → SIZED → ORDERING → POSITION_OPEN
+                ↓                              ↓
+              NO_EDGE                       FAILED
+                                              ↓
+                                         POSITION_OPEN → SETTLED → RECORDED
+```
+
+**Settlement reconciliation:** After NWS posts the daily climate report (usually 7-9am ET next day), Kalshi settles. Pull the settlement, mark your positions, write to PnL log. Don't trust automatic settlement to match your records — reconcile.
+
+## Layer 7: Monitoring & Calibration
+
+This is what separates a working bot from a *good* one.
+
+**Calibration tracking:** Bin your trades by predicted probability (e.g., bets where model said 70%). Of those, did 70% actually win? If not, your model is miscalibrated and Kelly sizing will blow up. Plot a reliability diagram weekly.
+
+**PnL attribution:** Decompose returns into:
+- Edge (model accuracy vs. market)
+- Slippage (fill price vs. expected)
+- Fees
+- Sizing (Kelly variance)
+
+You want to see that *edge* is the dominant positive contributor. If sizing/luck variance is dominating, you don't yet have proven edge.
+
+**Model retraining cadence:** Re-fit bias corrections weekly, re-fit ensemble weights monthly. Don't over-fit to recent data — weather has seasonality, three months of summer data won't help in November.
+
+**Kill switches:**
+- Forecast pull failures → stop trading (don't trade on stale data)
+- Bankroll drawdown threshold → pause and review
+- Calibration drift detection → pause and recalibrate
+- API errors / disconnects → fail-closed
+
+## MVP Build Order
+
+If I were building this from zero, here's the order:
+
+1. **Week 1:** Open-Meteo data pulls + bracket probability for one city (NYC). Store everything. Don't trade yet — just log what you'd do.
+2. **Week 2:** Kalshi auth, market discovery, paper-trading mode. Log paper PnL daily.
+3. **Week 3:** Compare paper PnL against a "always trade market price" baseline. If you're not beating it, fix the model before going further.
+4. **Week 4:** Add Kelly sizing + risk caps + execution. Go live with tiny size ($50–$100 per trade max).
+5. **Week 5–8:** Add ECMWF direct, bias correction, calibration tracking. Scale size as calibration proves out.
+6. **Month 3+:** Add more cities, nowcast blending, bracket hedging.
+
+## Tech Stack Suggestion
+
+- **Python** (matches the BTC scalper, and all the weather/Kalshi tooling is Python-friendly)
+- **Postgres + TimescaleDB** for time-series storage
+- **APScheduler** or **Prefect** for scheduled jobs
+- **httpx** for async API calls
+- **pandas + scipy** for the stats
+- **FastAPI** for an internal dashboard
+- Deploy on a small VPS — this isn't latency-sensitive like crypto scalping

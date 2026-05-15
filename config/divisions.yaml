@@ -186,6 +186,38 @@ divisions:
   # K3 lands the leaderboard scraper + copy-trader strategy, flip
   # standby:false and point broker at `kalshi` (it reuses the same
   # read-only KalshiBroker until Phase K5+ live placement).
+  # Phase Weather (2026-05-14): Kalshi Weather Arbitrage. Forecast-driven
+  # — pulls NWS hourly forecasts and computes deterministic P(YES) vs
+  # threshold. Replaces the generic LLM probability call on Climate/Weather
+  # markets (kalshi_llm_arbitrage now skips that category).
+  - slug: kalshi_weather
+    name: Kalshi Weather
+    broker: paper    # placeholder for equity tracking; lazy-resolves real KalshiBroker
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: false
+    enabled: true
+    paper_capital: 500.0
+
+  # Phase Crypto (2026-05-14): Kalshi Crypto Arbitrage. Live-spot-driven
+  # — pulls Coinbase spot for BTC/ETH/SOL/DOGE/XRP and computes deterministic
+  # P(YES) vs threshold using annualized realized vol. Replaces the generic
+  # LLM probability call on Crypto markets (kalshi_llm_arbitrage now skips
+  # that category for directional bets; structural tail/temporal arb still
+  # see crypto markets for their own patterns).
+  - slug: kalshi_crypto
+    name: Kalshi Crypto
+    broker: paper    # placeholder for equity; lazy-resolves real KalshiBroker + CoinbaseBroker
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: false
+    enabled: true
+    paper_capital: 500.0
+
   - slug: kalshi_copy_trading
     name: Kalshi Copy Trading
     broker: paper    # placeholder until Phase K3 wires the copy-trader strategy

@@ -2744,7 +2744,7 @@ def _query_pm_open_trades(
             f"FROM audit_event a "
             f"LEFT JOIN kalshi_round_trips r "
             f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
-            f"WHERE a.actor IN ('kalshi_tail_price_arb', 'kalshi_temporal_bucket_arb', 'kalshi_llm_arbitrage', 'kalshi_copy_trader') "
+            f"WHERE a.actor IN ('kalshi_tail_price_arb', 'kalshi_temporal_bucket_arb', 'kalshi_llm_arbitrage', 'kalshi_copy_trader', 'kalshi_weather_arb', 'kalshi_crypto_arb') "
             f"  AND a.kind = 'would_have_placed' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "
@@ -2774,6 +2774,8 @@ def _query_pm_open_trades(
                 "tail" if actor == "kalshi_tail_price_arb"
                 else "llm_divergence" if actor == "kalshi_llm_arbitrage"
                 else "copy_trade" if actor == "kalshi_copy_trader"
+                else "weather_forecast" if actor == "kalshi_weather_arb"
+                else "crypto_spot" if actor == "kalshi_crypto_arb"
                 else None
             )
             ku = p.get("key_unknowns")
@@ -2871,7 +2873,7 @@ def _query_pm_pending_count(
             f"SELECT COUNT(*) AS n FROM audit_event a "
             f"LEFT JOIN kalshi_round_trips r "
             f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
-            f"WHERE a.actor IN ('kalshi_tail_price_arb', 'kalshi_temporal_bucket_arb', 'kalshi_llm_arbitrage', 'kalshi_copy_trader') "
+            f"WHERE a.actor IN ('kalshi_tail_price_arb', 'kalshi_temporal_bucket_arb', 'kalshi_llm_arbitrage', 'kalshi_copy_trader', 'kalshi_weather_arb', 'kalshi_crypto_arb') "
             f"  AND a.kind = 'would_have_placed' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "

@@ -38,6 +38,7 @@ import yaml  # type: ignore[import-untyped]
 from trading_corp.agents.strategies._weather_math import (
     ForecastPoint,
     evaluate_weather_market,
+    kalshi_quote_dollars,
 )
 from trading_corp.data.crypto_spot_provider import (
     CryptoSpotProvider,
@@ -207,15 +208,16 @@ class KalshiCryptoArbAgent:
                 if not CryptoSpotProvider.is_supported(asset):
                     n_skipped_unsupported += 1
                     continue
+                yes_ask_d, no_ask_d, yes_bid_d, no_bid_d = kalshi_quote_dollars(m)
                 survivors.append({
                     "ticker": m.ticker,
                     "event_ticker": m.event_ticker,
                     "category": event.category,
                     "asset": asset,
-                    "yes_bid": m.yes_bid,
-                    "yes_ask": m.yes_ask,
-                    "no_bid": m.no_bid,
-                    "no_ask": m.no_ask,
+                    "yes_bid": yes_bid_d,
+                    "yes_ask": yes_ask_d,
+                    "no_bid": no_bid_d,
+                    "no_ask": no_ask_d,
                     "expected_expiration_time": m.expected_expiration_time,
                     "bucket_width_hint": event_bucket_widths.get(m.event_ticker),
                 })
@@ -226,6 +228,25 @@ class KalshiCryptoArbAgent:
         survivors = [
             d for d in survivors
             if (d.get("yes_ask") or 0) > 0 or (d.get("no_ask") or 0) > 0
+        ]
+        # Drop markets past the horizon cap before the k_per_cycle cut —
+        # otherwise long-dated MAXMON markets (~5,535h out) crowd the budget
+        # via tightest-spread sort, starving near-term markets that can
+        # actually fire. Cheap: one ISO parse per survivor.
+        def _horizon_hours(d: dict[str, Any]) -> float | None:
+            iso = d.get("expected_expiration_time")
+            if not iso:
+                return None
+            try:
+                t = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                return (t - now).total_seconds() / 3600.0
+            except (TypeError, ValueError):
+                return None
+        survivors = [
+            d for d in survivors
+            if (_horizon_hours(d) or 0) <= max_hours
         ]
         # Tightest-spread first — most useful to evaluate.
         survivors.sort(
@@ -297,8 +318,7 @@ class KalshiCryptoArbAgent:
         cap_strike = getattr(full, "cap_strike", None)
         strike_type = (getattr(full, "strike_type", None) or "").lower()
         title = getattr(full, "title", None) or ""
-        yes_ask_cents = getattr(full, "yes_ask", None)
-        no_ask_cents = getattr(full, "no_ask", None)
+        yes_ask, no_ask, _, _ = kalshi_quote_dollars(full)
 
         # Kalshi crypto markets use strike_type='custom' for BOTH bucket
         # markets (B-suffix tickers) AND single-side threshold markets
@@ -375,8 +395,6 @@ class KalshiCryptoArbAgent:
         sigma = max(sigma, spot * 1e-6)  # floor — never literally 0
 
         # Implied YES.
-        yes_ask = (yes_ask_cents or 0) / 100.0
-        no_ask = (no_ask_cents or 0) / 100.0
         implied_yes = (
             yes_ask if 0 < yes_ask < 1
             else (1.0 - no_ask if 0 < no_ask < 1 else None)

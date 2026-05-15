@@ -1326,7 +1326,10 @@ def _build_broker_for_division(
         )
 
     if family == "paper":
-        return PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
+        return PaperBroker(
+            account=f"paper_{division.slug}",
+            starting_equity=division.paper_capital,
+        )
 
     log.warning("Unknown broker family %r for division %s", family, division.slug)
     return None

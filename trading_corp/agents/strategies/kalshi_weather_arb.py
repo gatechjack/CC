@@ -36,6 +36,7 @@ from trading_corp.agents.strategies._weather_math import (
     ForecastPoint,
     WeatherVerdict,
     evaluate_weather_market,
+    kalshi_quote_dollars,
     kelly_fraction,
     sigma_for_horizon,
 )
@@ -271,16 +272,17 @@ class KalshiWeatherArbAgent:
                     n_skipped_non_us += 1
                     continue
                 # strike + direction come from per-market fetch (need full Market)
+                yes_ask_d, no_ask_d, yes_bid_d, no_bid_d = kalshi_quote_dollars(m)
                 survivors.append({
                     "ticker": tkr,
                     "event_ticker": m.event_ticker,
                     "category": event.category,
                     "kind": kind,           # HIGH | LOW | TEMP
                     "city_code": city,
-                    "yes_ask": m.yes_ask,
-                    "no_ask": m.no_ask,
-                    "yes_bid": m.yes_bid,
-                    "no_bid": m.no_bid,
+                    "yes_ask": yes_ask_d,
+                    "no_ask": no_ask_d,
+                    "yes_bid": yes_bid_d,
+                    "no_bid": no_bid_d,
                     "expected_expiration_time": m.expected_expiration_time,
                 })
 
@@ -372,8 +374,7 @@ class KalshiWeatherArbAgent:
         cap_strike = getattr(full, "cap_strike", None)
         strike_type = (getattr(full, "strike_type", None) or "").lower()
         title = getattr(full, "title", None) or ""
-        yes_ask_cents = getattr(full, "yes_ask", None)
-        no_ask_cents = getattr(full, "no_ask", None)
+        yes_ask, no_ask, _, _ = kalshi_quote_dollars(full)
 
         # Threshold + direction. Kalshi conventions:
         #   strike_type='greater' → YES if actual > floor_strike
@@ -530,8 +531,6 @@ class KalshiWeatherArbAgent:
 
         # Implied: YES probability from yes_ask (cheaper side trades first).
         # Use yes_ask as "buy YES cost" → implied_yes ≈ yes_ask_dollars.
-        yes_ask = (yes_ask_cents or 0) / 100.0
-        no_ask = (no_ask_cents or 0) / 100.0
         implied_yes = yes_ask if 0 < yes_ask < 1 else (1.0 - no_ask if 0 < no_ask < 1 else None)
         if implied_yes is None:
             payload = {

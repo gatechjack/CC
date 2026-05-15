@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 
 # ── Constants — validation gates ──────────────────────────────────────────
@@ -207,6 +208,38 @@ def kelly_fraction(p_model: float, market_price: float) -> float:
     b = (1.0 - market_price) / market_price
     full = (p_model * b - (1.0 - p_model)) / b
     return max(0.0, full)
+
+
+def kalshi_quote_dollars(m: Any) -> tuple[float, float, float, float]:
+    """Return (yes_ask, no_ask, yes_bid, no_bid) in dollars for a pykalshi Market.
+
+    Why: Kalshi flipped weather + crypto markets to fractional_trading_enabled.
+    The integer-cent fields (yes_ask/no_ask/yes_bid/no_bid) are absent from
+    the API response and pykalshi exposes them as None. Only the *_dollars
+    string fields populate. Prefer *_dollars; fall back to cents × 0.01 for
+    any non-fractional market still in flight. 0.0 = "no quote on this side"
+    (matches Kalshi's existing convention).
+    """
+    def _read(dollars_attr: str, cents_attr: str) -> float:
+        d = getattr(m, dollars_attr, None)
+        if d not in (None, ""):
+            try:
+                return float(d)
+            except (TypeError, ValueError):
+                pass
+        c = getattr(m, cents_attr, None)
+        if c is None:
+            return 0.0
+        try:
+            return float(c) / 100.0
+        except (TypeError, ValueError):
+            return 0.0
+    return (
+        _read("yes_ask_dollars", "yes_ask"),
+        _read("no_ask_dollars", "no_ask"),
+        _read("yes_bid_dollars", "yes_bid"),
+        _read("no_bid_dollars", "no_bid"),
+    )
 
 
 def sigma_for_horizon(horizon_hours: float) -> float:

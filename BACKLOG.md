@@ -8,7 +8,42 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-15 07:00 UTC
+## END-OF-SESSION SNAPSHOT — 2026-05-15 14:50 UTC
+
+**Picks up from 07:00 UTC snapshot below.** Mid-day session reactivated to investigate "no kalshi_weather + kalshi_crypto rows showing up." Three sequential prod deploys solved a chain of issues that had silently zero-fired both strategies for ~11 hours.
+
+**The chain (see `runbooks/deploy_log.md` 14:06 → 14:27 → 14:39 UTC entries for full detail):**
+1. **Quote-read bug — 14:06 UTC.** Kalshi flipped weather + crypto markets to `fractional_trading_enabled: true`, which DROPS the integer-cent `yes_ask`/`no_ask`/`yes_bid`/`no_bid` fields from the API response entirely; only `*_dollars` string fields remain. Both strategies read the missing fields → `implied_yes=None` → 100% silent `no_implied` skip rate (4,106 weather + 18,520 crypto evals in 12h, 0 ProposedOrders). New helper `kalshi_quote_dollars(m)` in `_weather_math.py` reads `*_dollars` preferentially, falls back to cents × 0.01 for legacy markets. Updated memory `kalshi_market_structure.md` with the gotcha — **any future Kalshi code that reads quote fields MUST use this helper**, not direct `getattr(m, "yes_ask", ...)`.
+2. **Paper-broker $0-equity bug — 14:27 UTC.** Post quote-fix, weather had 9 markets with 28-92% edges all sized to $0 because the Tier-1 Kelly sizer (deployed 02:56 UTC) multiplies against `account_equity` and the kalshi_weather paper broker was instantiated with `starting_equity=0.0` (default for `family == "paper"` divisions in `main.py:1329`). Added `paper_capital` field to Division dataclass + main.py wiring; set `paper_capital: 500.0` on kalshi_weather + kalshi_crypto in prod yaml (yaml was prod-divergent; backported to local during 14:50 hygiene pass — now identical). Also fixed crypto's discovery-sort issue (long-dated SOLMAX markets were eating `k_per_cycle=30` budget) with a horizon pre-filter in `kalshi_crypto_arb.py`. First 5 weather ProposedOrders fired same scan cycle, 3 cleared risk gate.
+3. **Dashboard actor-whitelist gap — 14:39 UTC.** Trades were flowing on Telegram but not showing on dashboard. `web/data.py` had two queries (`_query_pm_open_trades`, `_query_pm_pending_count`) filtering on a hardcoded actor list that excluded `kalshi_weather_arb` and `kalshi_crypto_arb`. Added both to the whitelists + the arb_type fallback ladder. Resolver (`agents/kalshi_resolver.py`) was already correct on prod — local synced.
+
+**Latent bug filed as P2:** the polymarket risk-gate prob-bounds check `[0.05, 0.95]` is firing on kalshi_weather orders (wrong-venue scope leak). 2 deep-tail weather orders ($0.01 + $0.03 limits) rejected today. Tail markets on Kalshi can be legitimate plays given the 1¢ rounding floor compressing costs.
+
+**Environment sync at session end (md5-verified local ≡ prod):**
+- 7 code files: `_weather_math.py`, `kalshi_weather_arb.py`, `kalshi_crypto_arb.py`, `main.py`, `utils/divisions.py`, `web/data.py`, `kalshi_resolver.py` — all identical
+- `config/divisions.yaml` — synced (local was missing kalshi_weather/kalshi_crypto/kalshi_copy_trading entries — backported from prod)
+- `config/strategies.yaml` — synced (local had 3 stale category entries in arb-strategy lists that should have been removed when specialized agents shipped + was missing 3 prod-only strategy blocks)
+- `config/risk.yaml` — was already in sync
+
+**Live + healthy entering tomorrow:**
+- All 14 divisions (3 Robinhood, 3 Fidelity, 2 Coinbase, BitUnix, 2 Polymarket, 5 Kalshi)
+- **NEW today: weather + crypto specialized agents firing real ProposedOrders for the first time**. 4 pending kalshi_weather open trades on dashboard
+- Tier-1 weather pipeline (ensemble σ + nowcast + Kelly) confirmed end-to-end working on the post-fix audit rows
+- Crypto: near-term BTC/ETH/XRP markets being discovered correctly; 0 ProposedOrders today (legit no_edge on the XRP-dominated discovery window — different cycles will surface different setups)
+- All other strategies (PMCC, Donchian, BitUnix Phase 3.2, polymarket arb, K3 + watch-only, PCT, LLM strict gate) untouched today, all reported healthy
+
+**Tomorrow's pickup candidates:**
+1. **Resolve the polymarket-risk-bound scope leak** (P2, ~1-2h). Either remove the polymarket-tagged check from non-polymarket strategy paths or generalize/apply per-venue. Tail markets on Kalshi are legit plays — currently being blocked.
+2. **Styled kalshi_weather_analysis.html + kalshi_crypto_analysis.html partials** (P3, ~2-3h). Right-rail click-to-expand currently shows raw payload JSON. Existing `polymarket_analysis.html` is the template; mostly a mapping-layer rewrite.
+3. **Activity-rail per-strategy enrichment for weather/crypto** (cosmetic P3, ~30min). `web/data.py:3371` `kalshi_*_arb` actor list — currently only enriches tail + temporal_bucket. Basic rows do render without this, just no rich badges.
+4. **Verify weather/crypto round-trips actually resolve.** First kalshi_weather buys placed today at 14:33; markets resolve over next 24h. Tomorrow morning check `kalshi_round_trips WHERE division IN ('kalshi_weather','kalshi_crypto')` for real PnL data.
+5. **From prior pickup list** (still open): verify systemd timers for K3 watchlist fired clean; eyeball Hispaniola profile; PMCC audit.
+
+**Deferred / parked (unchanged from morning):** WO-4 promote button; Crypto/weather Tier-2/3 follow-ups (filed in P2/P3 sections below); BitUnix Phase 4 live order placement.
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-15 07:00 UTC *(preserved — superseded by 14:50 UTC snapshot above)*
 
 **Picks up from 2026-05-14 23:30 snapshot (preserved below).** This session shipped 2 major Kalshi feature blocks across the day:
 
@@ -87,6 +122,8 @@ Items punted during the day's specialized-agent build sprint. Grouped by priorit
 
 - ~~**Crypto `strike_type='custom'` ticker-suffix dispatch**~~ — **B-suffix DONE 2026-05-15 02:05 UTC**. T-suffix still pending (direction ambiguous without `rules_primary` text parsing — see P3 below).
 - ~~**Crypto B-bucket width derivation**~~ — **DONE 2026-05-15 02:05 UTC**. `_compute_event_bucket_widths` derives median gap from neighboring B-tickers in the same event_ticker. No per-asset hardcoding needed.
+
+- **Risk-gate scope leak: polymarket implied-prob bound applied to Kalshi orders** — Risk agent rejects kalshi_weather (and presumably other kalshi/non-polymarket) ProposedOrders with `risk_reason: 'polymarket: implied prob 0.010 outside [0.05, 0.95] bounds'`. Observed 2026-05-15 14:30 UTC on 2 deep-tail weather orders ($0.01 + $0.03 limits). Either remove the polymarket-tagged check from non-polymarket strategy paths, OR generalize the bound check and apply per-venue. Tail-strike markets are legitimately a place where Kalshi's 1¢ rounding floor compresses costs and 1-3% implied probs can have real edge — defensible to allow them on Kalshi even if blocked on polymarket. ~1-2h. Filed during the 14:27 paper_capital + crypto-horizon deploy.
 
 - **Crypto T-suffix direction inference** — single-side T-tickers like `KXDOGED-26MAY1422-T0.1499999` carry `strike_type='custom'` but no direction signal in API. Need to either: (a) parse `rules_primary` text for "above"/"below" keywords; (b) use implied-prob heuristic (T close to spot with implied ~0.5 → ambiguous, else infer); (c) assume Kalshi convention is uniformly "≤" or "≥" (need to verify). Minority of crypto markets so lower priority. ~1h.
 
