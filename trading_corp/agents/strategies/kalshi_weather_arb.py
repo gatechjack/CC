@@ -388,6 +388,11 @@ class KalshiWeatherArbAgent:
         elif strike_type == "less":
             threshold = float(cap_strike if cap_strike is not None else floor_strike)
             direction = "less"
+        elif strike_type == "greater_or_equal" and floor_strike is not None:
+            threshold = float(floor_strike); direction = "greater"
+        elif strike_type == "less_or_equal" and (cap_strike is not None or floor_strike is not None):
+            threshold = float(cap_strike if cap_strike is not None else floor_strike)
+            direction = "less"
         elif strike_type == "between" and floor_strike is not None and cap_strike is not None:
             threshold = float(floor_strike)
             threshold_high = float(cap_strike)

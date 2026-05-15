@@ -220,6 +220,11 @@ class KalshiCryptoArbAgent:
                     "no_ask": no_ask_d,
                     "expected_expiration_time": m.expected_expiration_time,
                     "bucket_width_hint": event_bucket_widths.get(m.event_ticker),
+                    # Strike fields surfaced at discovery (used by Fix B strike-
+                    # distance filter below) — avoids a second get_market call.
+                    "floor_strike": getattr(m, "floor_strike", None),
+                    "cap_strike": getattr(m, "cap_strike", None),
+                    "strike_type": (getattr(m, "strike_type", None) or "").lower(),
                 })
 
         # Drop markets without an ASK quote — implied_yes downstream
@@ -248,6 +253,54 @@ class KalshiCryptoArbAgent:
             d for d in survivors
             if (_horizon_hours(d) or 0) <= max_hours
         ]
+        # Strike-distance-from-spot filter (Fix B, 2026-05-15 PM session).
+        # Drop markets where |strike - spot| > K × expected_move_over_horizon.
+        # Outside this band the Gaussian model returns ~0 or ~1; Kalshi's $0.01
+        # pricing floor pins implied to the boundary; we always get sub-threshold
+        # edge noise. Pre-fix, XRP T-tail strikes consumed 51% of k_per_cycle.
+        # Markets with unknown strike (T-suffix custom without direction info)
+        # are kept — let downstream classify them as no_strike.
+        k_sigma = float(self._strat_cfg.get("strike_distance_k_sigma", 3.0))
+        spot_cache: dict[str, float] = {}
+        async def _spot_for(a: str) -> float | None:
+            if a not in spot_cache:
+                s = await spot_provider.get_spot(a)
+                if s is not None and s > 0:
+                    spot_cache[a] = s
+            return spot_cache.get(a)
+        def _strike_point(d: dict[str, Any]) -> float | None:
+            # Discovery market objects don't carry strike_type/floor_strike/
+            # cap_strike — those come from get_market() in _evaluate_market.
+            # For B-/T-suffix tickers (covers most crypto markets) we can
+            # parse the strike directly from the ticker. Distance check
+            # doesn't need direction — just the strike value.
+            # Markets without a parseable ticker suffix (greater_or_equal
+            # SOL15M, etc.) are typically near-spot momentum markets where
+            # the filter wouldn't reject them anyway — let them through.
+            parsed = parse_kalshi_strike_suffix(d.get("ticker") or "")
+            if parsed:
+                return float(parsed[1])
+            return None
+        n_skipped_strike_distance = 0
+        filtered: list[dict[str, Any]] = []
+        for d in survivors:
+            sp = _strike_point(d)
+            if sp is None:
+                filtered.append(d)
+                continue
+            spot = await _spot_for(d["asset"])
+            if spot is None or spot <= 0:
+                filtered.append(d)
+                continue
+            av = spot_provider.get_annual_vol(d["asset"]) or 1.0
+            h = _horizon_hours(d) or 0.0
+            expected_move = spot * av * math.sqrt(max(h, 0.0) / (24.0 * 365.0))
+            expected_move = max(expected_move, spot * 1e-4)
+            if abs(sp - spot) > k_sigma * expected_move:
+                n_skipped_strike_distance += 1
+                continue
+            filtered.append(d)
+        survivors = filtered
         # Tightest-spread first — most useful to evaluate.
         survivors.sort(
             key=lambda d: abs((d.get("yes_ask") or 1) - (d.get("yes_bid") or 0))
@@ -262,6 +315,8 @@ class KalshiCryptoArbAgent:
                     "markets_pre_filter": n_pre_filter,
                     "skipped_not_crypto": n_skipped_not_crypto,
                     "skipped_unsupported_asset": n_skipped_unsupported,
+                    "skipped_strike_distance": n_skipped_strike_distance,
+                    "strike_distance_k_sigma": k_sigma,
                     "candidates": len(survivors),
                     "k_per_cycle": k_per_cycle,
                     "min_divergence_pct": min_div_pct,
@@ -330,6 +385,15 @@ class KalshiCryptoArbAgent:
         if strike_type == "greater" and floor_strike is not None:
             threshold = float(floor_strike); direction = "greater"
         elif strike_type == "less":
+            threshold = float(cap_strike if cap_strike is not None else floor_strike)
+            direction = "less"
+        elif strike_type == "greater_or_equal" and floor_strike is not None:
+            # KXSOL15M-style momentum markets: floor_strike is a snapshot price
+            # from T-15min; YES if avg over the resolution window ≥ that anchor.
+            # Drift-free Gaussian centered on current spot fits the same shape
+            # as the 'greater' branch.
+            threshold = float(floor_strike); direction = "greater"
+        elif strike_type == "less_or_equal" and (cap_strike is not None or floor_strike is not None):
             threshold = float(cap_strike if cap_strike is not None else floor_strike)
             direction = "less"
         elif strike_type in ("between", "custom") and floor_strike is not None and cap_strike is not None:

@@ -59,6 +59,85 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-15 15:41 UTC — Fix B: crypto strike-distance-from-spot curation (3-deploy iteration)
+
+**Triggered by:** Post-Fix-A, crypto still 0 ProposedOrders. Pre-fix audit (155 evals in 2 cycles) showed XRP T-suffix tail strikes consuming the entire `k_per_cycle=30` budget — all deep-OTM at Kalshi's $0.01 pricing floor, guaranteed 1% edge noise, 100% `no_edge` skips. BTC/ETH near-spot markets where real edges could live were starved by tightest-spread sort favoring deep-XRP tails.
+
+**Backup tag:** `pre-strike-distance-fix-20260515-1610`
+
+**Files deployed (1, 3 iterations):**
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — new strike-distance filter between the existing horizon filter and the tightest-spread sort. Computes `expected_move = spot × annual_vol × √(horizon_years)` per survivor; drops anything where `|strike - spot| > K × expected_move` (K=3 default, hot-reloadable via `strategies.yaml kalshi_crypto_arb.strike_distance_k_sigma`). Also surfaced 3 new fields on the survivor dict (`floor_strike`, `cap_strike`, `strike_type`) for downstream use, and added `skipped_strike_distance` + `strike_distance_k_sigma` to the `kalshi_crypto_scan` audit summary.
+
+**Iteration history (all 3 within ~20 min):**
+1. **15:28 UTC.** First version. `_strike_point()` predicate matched on `strike_type` field which the discovery objects don't carry (only `get_market()` does). Result: filter ran but `skipped_strike_distance=0` — all markets had empty `strike_type` → punted as None → kept.
+2. **15:35 UTC.** Extended `_strike_point()` to try ticker-suffix parsing when `strike_type == "custom"`. Still 0 — same root cause: empty strike_type meant `custom` branch never entered.
+3. **15:41 UTC.** Dropped the `strike_type` gate entirely; just try `parse_kalshi_strike_suffix(ticker)` on every survivor. Works for B-/T-suffix tickers (covers ~all crypto markets). Returns None for greater_or_equal SOL15M momentum markets and *MAXMON markets, which are kept (they're near-spot momentum markets where the filter wouldn't reject them anyway).
+
+**Verification (post-15:41 restart, 2 scan cycles):**
+- Scan summaries: `pre=100, skipped_strike_distance=46/47, candidates=5/6` — filter actually filtering now (was 0).
+- Asset mix: ETH, BTC15M, DOGE15M (was 100% BTC tail-T-strikes pre-fix, 100% XRP tail pre-Fix-B).
+- Eval breakdown: 11 evals → 6 `near_threshold` + 5 `no_edge`. **Both are real-math gate decisions, not pre-math drops.** Strategy is now structurally correct.
+- Best edge consistently: `KXETHD-26MAY1512-T2229.99` — spot $2218, strike $2230, 22min horizon, model says 14.5% YES vs market 6% implied = **8.5% edge**. Reaches the divergence gate but just below the 10% `min_divergence_pct` threshold.
+- 0 ProposedOrders yet — legitimate: 8.5% < 10% gate.
+
+**Notable code decisions:**
+- **K=3 starting point** — captures ~99% of the model distribution. Tunable per-strategy via yaml. May tune K=4 if we observe legit edges getting dropped; K=2 if we still see floor noise.
+- **Ticker-suffix parsing was always going to be needed** — discovery objects are intentionally lightweight in pykalshi. A future cleanup could `get_market` once per survivor (cache result, reuse in `_evaluate_market`) instead of two-stage parse, but that doubles discovery latency by 30+ API calls per cycle.
+- **Filter is async** because `spot_provider.get_spot()` is async. Spot cache per cycle (`spot_cache` local dict) means only ~5 unique-asset spot calls per cycle regardless of 30+ survivors.
+
+**Inert / dormant:**
+- **Still 0 ProposedOrders.** Real-math result: 8.5% peak edge < 10% gate. Different scan windows / different assets / closer-to-spot strikes WILL produce ≥10% edges. Let it run.
+- **Fix D (min_divergence_pct tuning)** in BACKLOG, deferred until post-Fix-B audit shows the empirical edge distribution. Today's 2 cycles are insufficient data.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-strike-distance-fix-20260515-1610; \
+sudo cp /home/azureuser/trading_corp/trading_corp/agents/strategies/kalshi_crypto_arb.py.\$TAG \
+        /home/azureuser/trading_corp/trading_corp/agents/strategies/kalshi_crypto_arb.py; \
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 15:10 UTC — Fix A: `greater_or_equal` + `less_or_equal` strike-type handlers (crypto + weather)
+
+**Triggered by:** Post-14:39 dashboard fix, weather firing but crypto producing 0 ProposedOrders. Read-only audit-DB investigation found 155 of 455 (34%) crypto evaluations across 20 scan cycles were being silently dropped at `no_strike` — all `KXSOL15M-26MAY151045-45`-style 15-minute SOL momentum markets with `strike_type='greater_or_equal'`. Strategy only handled `greater | less | between | custom`. Plain-numeric ticker suffix (no B/T prefix) is also not parseable, but the API DOES populate `floor_strike` for these markets (verified via direct Kalshi probe: `floor_strike=89.1007` = the 10:30-snapshot anchor price; market resolves YES if avg over next 15min is ≥ that anchor).
+
+**Backup tag:** `pre-greater-or-equal-fix-20260515-1545`
+
+**Files deployed (2):**
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — added two branches to `_evaluate_market` strike-type dispatch (~line 335): `strike_type == "greater_or_equal"` → `threshold = floor_strike, direction = "greater"`; `strike_type == "less_or_equal"` → mirror with cap/floor. Comment notes the SOL15M momentum-market semantic (drift-free Gaussian centered on current spot fits the same shape).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — same two branches added defensively at line ~391. Weather rarely sees these types today but consistency keeps the dispatch resilient.
+
+**Verification (post-restart 15:10:47 UTC, after 8 scan cycles + 1 weather cycle):**
+- no_strike rate: 160/38 = **4.21/cycle BEFORE** → 10/8 = **1.25/cycle AFTER** (70% reduction).
+- Remaining 10 no_strike are all `KXDOGE-26MAY1512-T0.x` T-suffix custom-direction markets — separate P2 issue (T-suffix direction inference), already in BACKLOG.
+- Weather: no regression. 29 evaluations, 17 no_edge / 7 no_size / 3 near_threshold / 2 risk-rejected (the known polymarket-bound scope leak P2). Same shape as pre-fix.
+- `KXSOLE-26MAY1512-T126.9999`-style markets with direction=greater now reaching the math layer (verified by audit row presence with implied_yes, prob_yes, edge_pct fields populated).
+- SOL15M tickers didn't appear in the post-fix scan window — those markets cycle every 15 min and weren't active during this scan. Will surface on subsequent cycles.
+
+**Inert / dormant:**
+- **Still 0 crypto ProposedOrders.** All 200+ evaluated markets are hitting no_edge — model agrees with market on tail-strike T-tickers. Fix B (strike-distance-from-spot curation at discovery) is the structural unblock for this — filed as P2 in BACKLOG. Today's Fix A removed the dispatch bug; Fix B is needed to put the budget on strikes where edges can actually live.
+
+**Operational notes:**
+- **Service was crash-looping at the moment of restart** due to a `BitunixFuturesObserver.__init__()` `TypeError: got an unexpected keyword argument 'pa_config'` — unrelated to my deploy. Another session was concurrently deploying BitUnix changes; the crash-loop resolved at 15:14 UTC when their deploy stabilized. Service then came up cleanly with all scanners (including kalshi_crypto with $500 paper_capital) online. My deploy was not affected.
+- **BACKLOG additions:** Fix B (strike-distance curation, P2 with detailed shape + K=3 starting point), Fix D (min_divergence_pct tuning, deferred until post-Fix-B data), both filed under the "P2 — added 2026-05-15" section. Fix C (T-suffix direction inference) was already in BACKLOG.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-greater-or-equal-fix-20260515-1545; \
+BASE=/home/azureuser/trading_corp/trading_corp/agents/strategies; \
+sudo cp \$BASE/kalshi_crypto_arb.py.\$TAG \$BASE/kalshi_crypto_arb.py; \
+sudo cp \$BASE/kalshi_weather_arb.py.\$TAG \$BASE/kalshi_weather_arb.py; \
+sudo rm -rf \$BASE/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
 ## 2026-05-15 14:39 UTC — Dashboard actor-whitelist fix (kalshi_weather/crypto now visible)
 
 **Triggered by:** User reported "i see kalshi weather trades on telegram but not on the dashboard ui". Telegram channel is wired off the strategy's ProposedOrder; the dashboard reads from the same audit table but with actor-whitelist filters that hadn't been extended for the new specialized agents.
