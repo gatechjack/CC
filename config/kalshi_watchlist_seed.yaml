@@ -1,0 +1,51 @@
+# Manually curated K3 Kalshi watchlist seed.
+#
+# This list feeds `python -m trading_corp.scripts.seed_kalshi_watchlist`,
+# which probes each handle via Apify and writes survivors to
+# `agent_state(kalshi_copy_trader, watch_only_whales)`. The K3 watch-only
+# path tracks their performance WITHOUT copy-trading them. Add the
+# `[Promote]` button (BACKLOG WO-4) to move a handle from this list onto
+# the live `selected_whales`.
+#
+# Inclusion rules:
+#   - Tier 1: included if `fetch_profile` returns ANY profile row.
+#     These are big-name public traders; track even with sparse data.
+#   - Tier 2: included only if `fetch_trades` returns ≥ 1 row.
+#     Curators / aggregators that don't trade on Kalshi are filtered out.
+#
+# Edit + re-run the script to add/remove handles. It is idempotent —
+# overwrites the agent_state list each run.
+#
+# Source: public X.com posts surveyed 2026-05-15.
+
+tier_1:
+  - x_handle: Domahhhh
+    notes: '"Domer". ~$1.2M reported profit. Generalist. Long-form trade breakdowns.'
+  - x_handle: GaetenD
+    notes: '~$500K-$530K profit. Culture/entertainment specialist (Spotify, awards).'
+  - x_handle: cobybets1
+    notes: '~$640K profit. Sports + politics.'
+  - x_handle: aenews_KT
+    notes: '~$450K profit.'
+  - x_handle: Foster
+    notes: '~$390K profit. Top "mentions" markets trader.'
+  - x_handle: debl00b
+    notes: '~$160M trading volume. High-volume operator.'
+  - x_handle: theduckguesses
+    notes: '$100 → $145K growth story. Smaller account, watchable journey.'
+  - x_handle: PredMTrader
+    notes: 'Live daily trading, ~$50K profit. Posts in real time.'
+  - x_handle: JgaltTweets
+    notes: '$1M+ Kalshi profit. Quieter on X. News-driven, politics-heavy.'
+
+tier_2:
+  - x_handle: aulijk
+    notes: 'Runs recurring "top Kalshi traders to follow" threads.'
+  - x_handle: KalshiTrade
+    notes: 'Community account profiling top performers.'
+  - x_handle: ArbBets20
+    notes: 'Spots Kalshi vs. Polymarket arbitrage opportunities.'
+  - x_handle: predictingtop
+    notes: 'Prediction Market Leaderboard account; surfaces unknown whales.'
+  - x_handle: polymarketbet
+    notes: '"PredictTrader". Covers Polymarket but useful cross-platform context.'

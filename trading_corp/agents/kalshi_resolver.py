@@ -53,18 +53,24 @@ _KALSHI_ACTORS = (
     "kalshi_temporal_bucket_arb",
     "kalshi_llm_arbitrage",
     "kalshi_copy_trader",
+    "kalshi_weather_arb",
+    "kalshi_crypto_arb",
 )
-_KALSHI_DIVISIONS = ("kalshi_arbitrage", "kalshi_llm_arbitrage", "kalshi_copy_trading")
+_KALSHI_DIVISIONS = ("kalshi_arbitrage", "kalshi_llm_arbitrage", "kalshi_copy_trading", "kalshi_weather", "kalshi_crypto")
 _ACTOR_TO_DIVISION = {
     "kalshi_tail_price_arb": "kalshi_arbitrage",
     "kalshi_temporal_bucket_arb": "kalshi_arbitrage",
     "kalshi_llm_arbitrage": "kalshi_llm_arbitrage",
     "kalshi_copy_trader": "kalshi_copy_trading",
+    "kalshi_weather_arb": "kalshi_weather",
+    "kalshi_crypto_arb": "kalshi_crypto",
 }
 _ACTOR_TO_ARB_TYPE_DEFAULT = {
     "kalshi_tail_price_arb": "tail",
     "kalshi_llm_arbitrage": "llm_divergence",
     "kalshi_copy_trader": "copy_trade",
+    "kalshi_weather_arb": "weather_forecast",
+    "kalshi_crypto_arb": "crypto_spot",
     # kalshi_temporal_bucket_arb keeps the payload's own kalshi_arb_type
     # field which is either 'temporal' or 'bucket'.
 }

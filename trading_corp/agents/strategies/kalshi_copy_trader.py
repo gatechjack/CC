@@ -63,10 +63,19 @@ from typing import Any, Protocol, runtime_checkable
 
 import yaml
 
+from trading_corp.agents.strategies._whale_autopause import (
+    MAX_TOTAL_PNL,
+    MAX_WIN_RATE_PCT,
+    MIN_RESOLVED_TRADES,
+    should_autopause,
+    sqlite_path_from_db_url,
+)
 from trading_corp.brokers.kalshi import KalshiPublicTrade
 from trading_corp.data.kalshi_apify_client import KalshiApifyClient, WhalePosition
 from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.persistence.models import ProposedOrder
+
+import sqlite3
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +121,34 @@ class TradeTapeFetcher(Protocol):
         until: datetime,
         limit: int = 100,
     ) -> list[KalshiPublicTrade]: ...
+
+
+
+# Sports ticker families to skip — kalshi_sports_scout owns these (2026-05-14).
+# Add new prefixes here as Kalshi launches new sport categories.
+_SPORTS_TICKER_PREFIXES = (
+    "KXMLB", "KXNBA", "KXNHL", "KXNFL", "KXMLS",
+    "KXATP", "KXWTA", "KXITF",
+    "KXCS2", "KXDOTA", "KXLCS",
+    "KXLIGAMX", "KXARGPREM", "KXCOPADOBRASIL", "KXDIMAYOR",
+    "KXDENSUPERLIGA", "KXSAUDIPL", "KXURYPD", "KXAPFDDH",
+    "KXEPL", "KXUCL", "KXUEL", "KXBUNDESLIGA", "KXLALIGA", "KXSERIEA",
+    "KXLIGUE1", "KXJLEAGUE", "KXNCAAF", "KXNCAAB", "KXUFC", "KXBOXING",
+)
+
+
+def _is_sports_ticker(ticker: str) -> bool:
+    """True if `ticker` is in a known sports market family.
+
+    Used by K3 to route Sports-category trades to `kalshi_sports_scout`
+    (and eventually a dedicated trading division). Kalshi doesn't tag
+    `category` on the activity-feed scraper output, so we prefix-match
+    on the ticker. Maintenance: add new prefixes as Kalshi launches new
+    sport categories.
+    """
+    if not ticker:
+        return False
+    return any(ticker.startswith(p) for p in _SPORTS_TICKER_PREFIXES)
 
 
 class KalshiCopyTraderAgent:
@@ -208,6 +245,13 @@ class KalshiCopyTraderAgent:
             log.info("kalshi_copy_trader: no selected whales in agent_state; no-op")
             return []
 
+        selected = self._apply_autopause_filter(
+            selected, logger_agent=logger_agent,
+        )
+        if not selected:
+            log.info("kalshi_copy_trader: all whales auto-paused; no-op")
+            return []
+
         try:
             current_positions = await apify_client.fetch_open_positions(selected)
         except Exception as e:
@@ -259,6 +303,17 @@ class KalshiCopyTraderAgent:
 
             # Entries: emit ProposedOrder + persist our_side/size if accepted.
             for ticker in new_tickers:
+                # Skip Sports — handled by kalshi_sports_scout (2026-05-14).
+                if _is_sports_ticker(ticker):
+                    if logger_agent is not None:
+                        logger_agent.log_event(
+                            self.name, 'kalshi_copy_entry_skipped_sports',
+                            {'strategy': self.name, 'division': self.division,
+                             'wallet': wallet, 'whale_handle': user_name,
+                             'ticker': ticker,
+                             'reason': 'sports_routed_to_scout'},
+                        )
+                    continue
                 pos = current_by_ticker[ticker]
                 record = {
                     "contracts": pos.contracts, "pnl": pos.pnl,
@@ -395,14 +450,35 @@ class KalshiCopyTraderAgent:
             # We never opened a copy for this ticker (e.g. side detection
             # skipped). Nothing to close — clean stateless drop.
             return None
-        # Exit price = current YES-mid on this market (broker.quote returns
-        # YES side; for a NO holding we exit by INVERTING — exit price is
-        # (1 - yes_mid)). One free REST call per exit; no LLM cost.
-        # None on fetcher failure → limit_price stays None and resolver
-        # pairing logic emits a round-trip row with realized_pnl=0 + a
-        # marker. Better than silently dropping the exit.
+        # Exit price priority (Fix 2026-05-14):
+        #   1. If market has RESOLVED, the exit value is determined:
+        #      $1.00 if our outcome won, $0.00 if it lost, entry-price if void.
+        #      Short-duration Kalshi markets (KX*15M crypto bars, sports games)
+        #      auto-settle within minutes of the whale closing — broker.quote()
+        #      returns $0 on a settled market regardless of which side won,
+        #      so falling straight to quote() systematically records every
+        #      paired exit as a $0 loss. Use resolution first.
+        #   2. If still trading, fall back to current YES-mid (broker.quote
+        #      returns YES side; for a NO holding invert with 1-yes_mid).
+        #   3. None on both failures → resolver pairing emits a round-trip
+        #      with realized_pnl=0 (the pre-2026-05-14 behavior).
         exit_price: float | None = None
-        if quote_fetcher is not None and hasattr(quote_fetcher, "quote"):
+        if quote_fetcher is not None and hasattr(quote_fetcher, "get_market_resolution"):
+            try:
+                res = await quote_fetcher.get_market_resolution(ticker)
+                status = (res or {}).get("status")
+                if status == "resolved":
+                    winner = (res or {}).get("result")
+                    exit_price = 1.0 if winner == our_outcome else 0.0
+                elif status == "void":
+                    # Refund: position closes at the entry price → realized_pnl=0.
+                    entry_price = prev_pos.get("entry_price")
+                    exit_price = float(entry_price) if entry_price else None
+            except Exception as e:
+                log.warning(
+                    "kalshi_copy_trader: resolution lookup failed for %s: %s", ticker, e,
+                )
+        if exit_price is None and quote_fetcher is not None and hasattr(quote_fetcher, "quote"):
             try:
                 yes_mid = await quote_fetcher.quote(ticker)
                 if yes_mid > 0:
@@ -495,6 +571,83 @@ class KalshiCopyTraderAgent:
             if contracts < b:
                 return float(sizes[i])
         return float(sizes[-1])
+
+    # ── Auto-pause filter (2026-05-14 P3) ─────────────────────────────
+
+    def _apply_autopause_filter(
+        self, selected: list[str], *, logger_agent: Any,
+    ) -> list[str]:
+        """Drop whales whose resolved-RT stats trip the auto-pause threshold.
+
+        For each triggered whale: persist updated selected_whales to
+        agent_state and emit `kalshi_whale_auto_paused` audit. Runs
+        BEFORE the Apify call so we don't pay Apify quota on a
+        whale we're about to drop.
+        """
+        db_path = sqlite_path_from_db_url(self._db_url or "")
+        if not db_path:
+            return selected
+
+        keep: list[str] = []
+        paused: list[tuple[str, dict[str, Any]]] = []
+        try:
+            with sqlite3.connect(db_path) as conn:
+                for whale in selected:
+                    triggered, stats = should_autopause(
+                        conn,
+                        whale_name=whale,
+                        table="kalshi_round_trips",
+                        name_field="whale_handle",
+                        division=self.division,
+                    )
+                    if triggered:
+                        paused.append((whale, stats))
+                    else:
+                        keep.append(whale)
+        except Exception as e:
+            log.warning(
+                "kalshi_copy_trader: autopause filter errored: %s", e,
+            )
+            return selected
+
+        if not paused:
+            return keep
+
+        try:
+            set_agent_state(
+                self.name, _AGENT_STATE_SELECTED_WHALES, keep,
+                db_url=self._db_url,
+            )
+        except Exception as e:
+            log.error(
+                "kalshi_copy_trader: failed to persist auto-paused "
+                "selected_whales (will retry next scan): %s", e,
+            )
+            return selected
+
+        for whale, stats in paused:
+            log.warning(
+                "kalshi_copy_trader: auto-pausing %s (%d RT, %.1f%% WR, $%.2f)",
+                whale, stats["n_resolved"],
+                stats["win_rate_pct"] or 0.0, stats["total_realized_pnl"],
+            )
+            if logger_agent is not None:
+                logger_agent.log_event(
+                    self.name, "kalshi_whale_auto_paused",
+                    {
+                        "strategy": self.name,
+                        "division": self.division,
+                        "whale_handle": whale,
+                        "thresholds": {
+                            "min_trades": MIN_RESOLVED_TRADES,
+                            "max_wr_pct": MAX_WIN_RATE_PCT,
+                            "max_pnl": MAX_TOTAL_PNL,
+                        },
+                        "remaining_whales": len(keep),
+                        **stats,
+                    },
+                )
+        return keep
 
     # ── State (agent_state-backed) ────────────────────────────────────
 

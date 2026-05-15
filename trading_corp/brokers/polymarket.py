@@ -378,29 +378,30 @@ class PolymarketBroker(ReadOnlyBroker):
         closed = bool(m.get("closed", False))
         end_date = str(m.get("endDate") or m.get("end_date") or "")
 
-        # Resolution semantics:
-        #   prices == ["1","0"] AND closed AND uma=resolved → YES won
-        #   prices == ["0","1"] AND closed AND uma=resolved → NO won
-        #   any fractional / closed=false → pending
+        # Resolution semantics (multi-leg-aware as of 2026-05-14):
+        #   exactly-one-1 in prices AND closed AND uma=resolved → resolved
+        #     (binary YES/NO and N-leg both fit; caller uses outcome_index
+        #      to look up which entry of outcome_prices is "1")
+        #   fractional / no-clear-winner → void
+        #   closed=false / uma!=resolved → pending
+        # `yes_won` is preserved for binary-only callers (None for multi-leg).
         status = "pending"
         yes_won: bool | None = None
         if uma_status == "resolved" and closed and len(prices) >= 2:
             try:
-                p_yes = float(prices[0])
-                p_no = float(prices[1])
-                if p_yes == 1.0 and p_no == 0.0:
-                    status = "resolved"
-                    yes_won = True
-                elif p_yes == 0.0 and p_no == 1.0:
-                    status = "resolved"
-                    yes_won = False
-                else:
-                    # Fractional resolution prices are unusual but Polymarket
-                    # supports partial resolution for some markets. Treat as
-                    # void for backtester purposes — score based on raw
-                    # price movement instead.
-                    status = "void"
+                prices_f = [float(x) for x in prices]
             except (TypeError, ValueError):
+                prices_f = []
+            n_winners = sum(1 for p in prices_f if p == 1.0)
+            n_losers = sum(1 for p in prices_f if p == 0.0)
+            if prices_f and n_winners == 1 and n_winners + n_losers == len(prices_f):
+                status = "resolved"
+                # Binary backwards-compat: only set yes_won for 2-outcome
+                # markets. Multi-leg callers must use outcome_index.
+                if len(prices_f) == 2:
+                    yes_won = prices_f[0] == 1.0
+            else:
+                # Fractional / partial resolution — treat as void.
                 status = "void"
 
         return {

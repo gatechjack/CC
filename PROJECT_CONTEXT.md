@@ -64,6 +64,27 @@ polymarket — SHIPPED 2026-05-11 00:52 UTC; `enabled: true` since
 01:08 UTC after Semaphore(8) added on the K=20 LLM fan to prevent
 Anthropic 429s when both LLM strategies fan simultaneously; first
 3 `would_have_placed` events emitted within minutes of enable),
+**`kalshi_weather`** (Climate/Weather specialist; forecast-driven
+deterministic math, no LLM — NWS + Open-Meteo cross-model ensemble σ
++ METAR nowcast blend (≤6h); fractional-Kelly sizing with per_market /
+per_day / per_city cap ladder. Phase 1 SHIPPED 2026-05-14 20:54 UTC,
+Tier-1 ensemble/Kelly upgrade 2026-05-15 02:56 UTC, **fractional-trading
+quote-read fix + paper_capital + dashboard wiring all SHIPPED
+2026-05-15 14:06→14:39 UTC** — first ProposedOrders firing today),
+**`kalshi_crypto`** (Crypto specialist; Coinbase spot + Gaussian
+probability with annualized vol; bucket math for B-suffix tickers.
+Phase 1 SHIPPED 2026-05-14 21:19 UTC; horizon pre-filter + quote-fix
+shipped same window as weather 2026-05-15 14:06→14:39 UTC. Currently
+discovering near-term BTC/ETH/XRP markets correctly — no fires yet
+on tight no_edge XRP markets),
+**`kalshi_copy_trading`** (Phase K3 whale-shadow strategy + K3 watch-only
+sibling SHIPPED 2026-05-15 06:09→06:54 UTC — see memory
+`kalshi_watchlist_architecture`; currently 2 selected_whales +
+2 watch_only_whales, weekly deep-scan timer grows watch-list ~1-3
+visible whales/week against the ~3.3% Kalshi visibility ceiling),
+**`kalshi_sports_scout`** (read-only observer SHIPPED 2026-05-14 21:42
+UTC; no division — logs divergence to `kalshi_sports_observed` audit
+for 7-day evaluation pass before deciding on a Sports trading division),
 `fidelity_joint`, and `fidelity_401k` (Fidelity paper-fallback —
 bot-blocked from Azure VM IP, P1 DEFERRED 2026-05-03 pending Plaid
 investigation; `fidelity_individual` deactivated same day). Dashboard
@@ -539,7 +560,20 @@ scripts/generate_pwa_icons.py        ← PWA icon generator from SVG
 
 ---
 
-*Last meaningful update: 2026-05-11 — Kalshi sprint (K1 → K6.1) wrap.
+*Last meaningful update: 2026-05-15 — specialized Kalshi agents wave +
+fractional-trading quote-read unblock. §1 division list extended with
+4 new entries (kalshi_weather, kalshi_crypto, kalshi_copy_trading,
+kalshi_sports_scout). All four were live but blocked from producing
+fires by: (a) Kalshi flipping weather+crypto markets to
+`fractional_trading_enabled: true` which dropped integer-cent quote
+fields, (b) the new Tier-1 Kelly sizer multiplying against `$0` paper
+broker equity, (c) the dashboard actor-whitelist missing the new
+specialized agents. All three fixed today; first weather ProposedOrders
+flowing through the full pipeline + visible on dashboard. Memory
+`kalshi_market_structure.md` updated with the fractional-trading caveat;
+memory `trading_corp_kalshi.md` carries the full per-deploy detail. Earlier same day:
+
+Last meaningful update: 2026-05-11 — Kalshi sprint (K1 → K6.1) wrap.
 §1 division list extended (kalshi_arbitrage, kalshi_llm_arbitrage; group
 renamed Polymarket → Prediction Markets). §7 broker phases table extended
 with the Kalshi entry. Six-broker count now includes Kalshi. Memory

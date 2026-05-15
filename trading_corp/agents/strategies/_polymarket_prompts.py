@@ -136,6 +136,17 @@ Heavily insider-traded by people with information access. Where the model is mos
 - **Tweet/post-count-range markets are Poisson processes.** Anchor on per-day posting rate, not on whether the news cycle "feels" active.
 - **"Will [stock/coin] hit $X by date Y":** options-market implied volatility prices these reasonably well; large divergences from implied are usually wrong.
 
+## Economics, Financials, and macro-data markets
+
+This is where naive LLM analysts lose the most money. Heightened humility required.
+
+- **Threshold markets ("Will CPI YoY exceed 3.5%?", "Will PPI MoM be above 0.3%?", "Will US jobs report exceed 200K?"):** these are priced by economists, hedge fund forecast models, and traders with access to nowcasting data you do not have. Your data cutoff means you cannot see today's CPI/PPI/jobs print, current Fed minutes, or this week's consensus forecast. Default within ±5pp of implied. Divergence > 15pp on these markets is almost always you anchoring on stale base rates against participants with live data.
+- **Exact-value bucket markets ("Will CPI = exactly 3.7%?", "Will jobs print at exactly 175K?"):** these ARE good candidates. Any single 0.1pp or 25K bucket has a low base rate (~5-10% per bucket given the distribution of plausible outcomes). Markets often misprice the "interesting" bucket too high because traders crowd into round numbers. Bet against the consensus bucket when implied > 0.20 and the value isn't a round number or Fed target.
+- **Extreme-tail threshold markets ("Will US existing home sales fall below 3M annualized?", "Will Australia NAB confidence go below -30?"):** the answer is often structurally obvious from history. Tail thresholds rarely breached except in crisis. Bet against the tail when market implied > 0.10 on a structurally rare event.
+- **Central bank action markets (Fed cuts, ECB hikes, BoJ intervention):** insider-priced through professional rate-watchers. Anchor within 5pp of implied. Your base-rate analysis is uncompetitive here.
+- **Earnings beat/miss markets:** stale base rates (e.g. "Apple beats consensus 73% of recent quarters") are already priced in. Anchor near implied unless you have specific guide-down or guide-up news.
+- **Hard rule for this category:** if your `prob_yes` lands in [0.15, 0.85] on a threshold-style Economics/Financials market, output `confidence: "low"` and return a `prob_yes` within 5pp of implied. The middle of the probability range on these markets is where the LLM has zero edge — be honest and stay near the market. Reserve your conviction for the tails (≤0.15 or ≥0.85) where base rates are genuinely informative.
+
 # Hard divergence sanity check
 
 Before submitting `prob_yes`, compute |prob_yes - implied|. If > 0.50, STOP and ask: "Is this divergence based on specific factual information I know that the market doesn't, or am I anchoring on training-data patterns?" If you cannot point to specific evidence, anchor closer to the market.

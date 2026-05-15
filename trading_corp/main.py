@@ -277,12 +277,13 @@ async def run(argv: list[str] | None = None) -> int:
     # historical EDA source (TV chart data) but is geo-blocked from US
     # IPs, so it's not viable as a live feed. Coinbase only supports
     # {1m, 5m, 15m, 1h, 6h, 1d} — no native 3m.
-    # PR 4 — bumped max_bars 60 → 200 so levels.py has ~40 fifteen-min
-    # buckets after resample for HTF S/R lookback. ATR(14) still works
-    # at any size ≥14 bars; the larger cache is harmless to the existing
-    # consumers.
+    # Phase 3.2.2 + PR 4: max_bars=500 covers BOTH the PA-validator
+    # session VWAP needs (24h × 60/3 = 480 3m bars) AND the HTF S/R
+    # levels.py resample (3m→15m, needs ~120 3m bars). ATR(14) still
+    # works at any size ≥14 bars; the larger cache is harmless to all
+    # existing consumers.
     bitunix_bar_cache = LiveBarCache(
-        symbol="BTCUSDT", timeframe="3m", venue="bitunix", max_bars=200,
+        symbol="BTCUSDT", timeframe="3m", venue="bitunix", max_bars=500,
     )
     # PR 2 — Higher-Timeframe (HTF) regime caches. Three additional
     # LiveBarCaches polling 1H / 4H / 1D bars; consumed by the new
@@ -1006,16 +1007,63 @@ async def run(argv: list[str] | None = None) -> int:
             )
         )
 
+        # --- Kalshi Weather Arbitrage (2026-05-14) ---
+        # Forecast-driven Climate/Weather strategy. Replaces the generic
+        # LLM probability call for these markets — uses NWS hourly
+        # forecast + Gaussian probability math, no LLM in path.
+        from trading_corp.agents.strategies.kalshi_weather_arb import (
+            KalshiWeatherArbAgent,
+        )
+        kalshi_weather_agent = KalshiWeatherArbAgent(db_url=secrets.db_url)
+        kalshi_weather_task = asyncio.create_task(
+            _scheduled_kalshi_weather_arb_loop(
+                kalshi_weather_agent,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
+            )
+        )
+
+        # --- Kalshi Crypto Arbitrage (2026-05-14) ---
+        # Live-spot-driven Crypto strategy. Replaces the generic LLM call
+        # for these markets — uses Coinbase spot + Gaussian probability,
+        # no LLM in path.
+        from trading_corp.agents.strategies.kalshi_crypto_arb import (
+            KalshiCryptoArbAgent,
+        )
+        kalshi_crypto_agent = KalshiCryptoArbAgent(db_url=secrets.db_url)
+        kalshi_crypto_task = asyncio.create_task(
+            _scheduled_kalshi_crypto_arb_loop(
+                kalshi_crypto_agent,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
+            )
+        )
+
+        # --- Kalshi Sports Scout (2026-05-14, read-only observer) ---
+        # No order emission. Logs bookmaker vs Kalshi divergence to
+        # `kalshi_sports_observed` audit. 7-day pass to validate edge.
+        from trading_corp.agents.strategies.kalshi_sports_scout import (
+            KalshiSportsScoutAgent,
+        )
+        kalshi_sports_scout_agent = KalshiSportsScoutAgent(
+            odds_api_key=secrets.odds_api_key,
+            db_url=secrets.db_url,
+        )
+        kalshi_sports_scout_task = asyncio.create_task(
+            _scheduled_kalshi_sports_scout_loop(
+                kalshi_sports_scout_agent,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+            )
+        )
+
         # --- Kalshi Copy Trader scanner (Phase K3; default off) ---
-        # Mirrors top Kalshi whales' positions at scaled $1/$2/$3 sizing.
-        # Selected whales live in agent_state(selected_whales) — populated
-        # offline by the Wilson-LCB × ROI × category scoring pass over
-        # Apify leaderboard + closed_positions snapshots. Side detection
-        # uses Kalshi's free public trade tape (anonymous taker_side) via
-        # KalshiBroker.get_market_trades. Apify client lifecycle is owned
-        # by the scheduled loop (opens once at task start). Stub-safe: if
-        # APIFY_API_TOKEN is unset, the client returns empty and the
-        # strategy no-ops cleanly.
         from trading_corp.agents.strategies.kalshi_copy_trader import (
             KalshiCopyTraderAgent,
         )
@@ -1031,6 +1079,7 @@ async def run(argv: list[str] | None = None) -> int:
                 db_url=secrets.db_url,
             )
         )
+
 
         # --- Polymarket round-trip resolver + equity snapshot writer ---
         # Closes the data gaps for the betmoar-style portfolio dashboard:
@@ -1479,7 +1528,10 @@ def _build_broker_for_division(
         )
 
     if family == "paper":
-        return PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
+        return PaperBroker(
+            account=f"paper_{division.slug}",
+            starting_equity=division.paper_capital,
+        )
 
     log.warning("Unknown broker family %r for division %s", family, division.slug)
     return None
@@ -2540,38 +2592,7 @@ async def _scheduled_kalshi_copy_trader_loop(
     risk_agent,
     db_url: str,
 ) -> None:
-    """Kalshi Copy Trader scanner loop (Phase K3).
-
-    Mirrors top Kalshi traders' positions at scaled-down size. Selected
-    whales come from `agent_state(selected_whales)` (populated by the
-    offline scoring/selection pass — Wilson LCB × ROI × category, see
-    `kalshi_whale_stats`). On each tick:
-
-      - If `enabled: false`, no-op + sleep.
-      - Open Apify client (already context-managed for the lifetime of
-        this task) and call `agent.run_scan_cycle(...)`. The agent fetches
-        current open_positions for selected whales, compares against the
-        last persisted snapshot, and emits ProposedOrders for entries
-        and exits.
-      - Side detection uses Kalshi's public market trade tape (free,
-        anonymous-at-trader-level) via `KalshiBroker.get_market_trades`.
-        The broker is fetched lazily from `data_exec.brokers.get(division)`
-        so the loop survives a startup where the division wiring lands
-        after the task.
-      - Each ProposedOrder runs through `risk_agent.evaluate()` directly
-        (HITL-DIRECT, per Board direction; same as polymarket / kalshi_llm).
-      - Paper-mode log via `would_have_placed`. Phase K5+ branches on
-        `auto_execute` for live order placement.
-
-    Cold-start protection: each whale's first poll records baseline
-    positions without emitting; only deltas on subsequent polls trigger
-    ProposedOrders. This prevents copying stale positions the whale
-    entered long before our bot started watching.
-
-    The Apify client is opened once at task start and reused across
-    cycles — sub-second per-call latency is dominated by Apify's
-    actor-start overhead (~2-5s per call), not network handshake.
-    """
+    """Kalshi Copy Trader scanner loop (Phase K3)."""
     from trading_corp.data.kalshi_apify_client import KalshiApifyClient
     from trading_corp.persistence.models import AccountState, StrategyState
 
@@ -2619,10 +2640,6 @@ async def _scheduled_kalshi_copy_trader_loop(
                     continue
 
                 if broker is None:
-                    log.debug(
-                        "Kalshi copy trader: no broker for division=%s; assuming $0 equity",
-                        agent.division,
-                    )
                     account_equity = 0.0
                 else:
                     try:
@@ -2646,11 +2663,6 @@ async def _scheduled_kalshi_copy_trader_loop(
                 for order in orders:
                     logger_agent.log_proposed_order(order)
                     ext = order.extra or {}
-                    # Audit-payload allowlist (memory `trading_corp_audit_
-                    # payload_allowlist`): every field surfaced to audit storage
-                    # has to be explicitly enumerated here. The strategy puts
-                    # these in ProposedOrder.extra; we copy them into the
-                    # base_payload that lands in audit_event.payload_json.
                     base_payload = {
                         "strategy": agent.name,
                         "division": agent.division,
@@ -2737,36 +2749,7 @@ async def _scheduled_polymarket_copy_trader_loop(
     risk_agent,
     db_url: str,
 ) -> None:
-    """Polymarket Copy Trader scanner loop.
-
-    Mirrors top Polymarket whales' positions at scaled USDC sizing. Selected
-    whales come from `agent_state(polymarket_copy_trader.selected_whales)` —
-    populated by `trading_corp.scripts.refresh_polymarket_whales` on a
-    quarterly cadence (or ad-hoc). Each whale entry carries `{wallet,
-    user_name, category, score}` so we can ping Telegram with context.
-
-    Per cycle (every `poll_interval_sec`, default 60s on free public API):
-
-      - If `enabled: false`, no-op + sleep.
-      - For each selected whale: fetch `/activity?user=<wallet>&limit=N`
-        (free Polymarket Data API; no auth, no rate limit at our scale).
-      - Filter to TRADE rows newer than `last_seen_ts[whale]` and not in
-        the recent transaction-hash dedup set. Process chronologically.
-      - For each BUY: emit copy ProposedOrder using the explicit
-        `outcome_index` + tiered sizing on `usdc_size`. No size-match
-        side-detection dance like Kalshi — Polymarket activity is rich.
-      - For each SELL of a position WE held: emit close ProposedOrder.
-      - Risk gate via `risk_agent.evaluate()` (HITL-DIRECT, paper-mode).
-      - Paper-mode `would_have_placed` audit; live order placement is
-        Phase 4+ work gated on observed positive paper EV.
-
-    Cold-start protection: first poll per whale records `last_seen_ts =
-    max(activity ts)` without emitting orders.
-
-    The Polymarket Data API has no auth and no published rate limit, so
-    we open one shared `PolymarketDataAPIClient` for the lifetime of the
-    task. Concurrency is gated internally by the client's semaphore.
-    """
+    """Polymarket Copy Trader scanner loop."""
     from trading_corp.data.polymarket_data_api_client import PolymarketDataAPIClient
     from trading_corp.persistence.models import AccountState, StrategyState
 
@@ -2783,10 +2766,21 @@ async def _scheduled_polymarket_copy_trader_loop(
                 if not agent.enabled:
                     continue
 
+                # Lazy-resolve a real PolymarketBroker for the resolution
+                # check inside _emit_entry. agent.division is broker:paper;
+                # polymarket_arbitrage owns the real PolymarketBroker.
+                # Same lazy-resolve pattern as K3 uses for trade-tape.
+                market_state_fetcher = None
+                for div_name, br in data_exec.brokers.items():
+                    if hasattr(br, 'get_market_resolution'):
+                        market_state_fetcher = br
+                        break
+
                 try:
                     orders = await agent.run_scan_cycle(
                         data_api_client=data_api_client,
                         logger_agent=logger_agent,
+                        market_state_fetcher=market_state_fetcher,
                     )
                 except Exception as e:
                     log.exception(
@@ -2799,10 +2793,6 @@ async def _scheduled_polymarket_copy_trader_loop(
 
                 broker = data_exec.brokers.get(agent.division)
                 if broker is None:
-                    log.debug(
-                        "Polymarket copy trader: no broker for division=%s; assuming $0 equity",
-                        agent.division,
-                    )
                     account_equity = 0.0
                 else:
                     try:
@@ -2828,9 +2818,6 @@ async def _scheduled_polymarket_copy_trader_loop(
                 for order in orders:
                     logger_agent.log_proposed_order(order)
                     ext = order.extra or {}
-                    # Audit-payload allowlist (per `trading_corp_audit_payload_
-                    # allowlist` memory): every K3-equivalent field surfaced
-                    # to audit storage MUST be enumerated here.
                     base_payload = {
                         "strategy": agent.name,
                         "division": agent.division,
@@ -3044,6 +3031,376 @@ def main() -> int:
         return 0
     finally:
         _release_lock()
+
+
+
+
+async def _scheduled_kalshi_weather_arb_loop(
+    agent,
+    *,
+    channel,
+    logger_agent,
+    data_exec,
+    risk_agent,
+    db_url: str,
+) -> None:
+    """Kalshi Weather Arbitrage scanner loop.
+
+    Pulls Climate/Weather markets, fetches NWS forecasts, emits orders
+    when forecast diverges from implied. No LLM in path — pure math.
+
+    Mirror of `_scheduled_kalshi_llm_arb_loop` but uses a forecast-based
+    evaluator instead of the LLM. Risk gate identical (single chokepoint).
+    """
+    from trading_corp.persistence.models import AccountState, StrategyState
+
+    log.info(
+        "Kalshi Weather Arbitrage scanner online (enabled=%s, auto_execute=%s)",
+        agent.enabled, agent.auto_execute,
+    )
+    # Lazy-resolve a real KalshiBroker for market discovery.
+    while True:
+        try:
+            poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 300))
+            await asyncio.sleep(max(15.0, poll_sec))
+
+            if not agent.enabled:
+                continue
+
+            kalshi_broker = None
+            for div_name, br in data_exec.brokers.items():
+                if br.__class__.__name__ == "KalshiBroker" and getattr(br, "_client", None):
+                    kalshi_broker = br
+                    break
+            if kalshi_broker is None:
+                log.debug("Kalshi Weather: no live KalshiBroker available; skipping")
+                continue
+
+            # Snapshot the division's paper broker BEFORE the scan so the
+            # Kelly sizer has live equity to scale against.
+            div_broker = data_exec.brokers.get(agent.division)
+            account_equity = 0.0
+            if div_broker is not None:
+                try:
+                    snap = await div_broker.snapshot()
+                    account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+                except Exception as e:
+                    log.warning("Kalshi Weather snapshot failed: %s; assuming $0", e)
+
+            try:
+                orders = await agent.run_scan_cycle(
+                    kalshi_broker, logger_agent=logger_agent,
+                    account_equity=account_equity,
+                )
+            except Exception as e:
+                log.exception("Kalshi Weather: run_scan_cycle failed: %s", e)
+                continue
+
+            if not orders:
+                continue
+
+            account = AccountState(
+                account=agent.division, equity=account_equity,
+                peak_equity=account_equity, halted=False,
+            )
+            strategy_state = StrategyState(strategy=agent.name, halted=False)
+
+            log.info("Kalshi Weather: %d ProposedOrder(s) emitted", len(orders))
+            for order in orders:
+                logger_agent.log_proposed_order(order)
+                ext = order.extra or {}
+                base_payload = {
+                    "strategy": agent.name,
+                    "division": agent.division,
+                    "order_id": order.id,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "limit_price": order.limit_price,
+                    "rationale": order.rationale,
+                    "ticker": ext.get("ticker"),
+                    "event_ticker": ext.get("event_ticker"),
+                    "event_title": ext.get("event_title"),
+                    "outcome": ext.get("outcome"),
+                    "category": ext.get("category"),
+                    "divergence_pct": ext.get("divergence_pct"),
+                }
+
+                verdict = risk_agent.evaluate(
+                    order, account, strategy_state, db_url=db_url,
+                )
+                if verdict.verdict == "reject":
+                    logger_agent.log_event(
+                        agent.name, "kalshi_weather_order_rejected_by_risk",
+                        {**base_payload, "risk_reason": verdict.reason},
+                    )
+                    log.info("Kalshi Weather: risk REJECT %s — %s",
+                             order.symbol, verdict.reason)
+                    continue
+                if verdict.verdict == "resize" and verdict.new_qty is not None:
+                    log.info("Kalshi Weather: risk RESIZE qty %.4f -> %.4f (%s)",
+                             order.qty, verdict.new_qty, verdict.reason)
+                    order.qty = float(verdict.new_qty)
+
+                logger_agent.log_event(
+                    agent.name, "would_have_placed",
+                    {
+                        **base_payload,
+                        "qty": order.qty,
+                        "implied_prob_at_entry": ext.get("implied_prob_at_entry"),
+                        "forecast_temp_f": ext.get("forecast_temp_f"),
+                        "forecast_sigma_f": ext.get("forecast_sigma_f"),
+                        "sigma_used_f": ext.get("sigma_used_f"),
+                        "sigma_source": ext.get("sigma_source"),
+                        "ensemble_n_members": ext.get("ensemble_n_members"),
+                        "ensemble_std_f": ext.get("ensemble_std_f"),
+                        "nowcast_blend_w": ext.get("nowcast_blend_w"),
+                        "metar_station": ext.get("metar_station"),
+                        "metar_latest_temp_f": ext.get("metar_latest_temp_f"),
+                        "metar_extrap_f": ext.get("metar_extrap_f"),
+                        "threshold_f": ext.get("threshold_f"),
+                        "threshold_high_f": ext.get("threshold_high_f"),
+                        "direction": ext.get("direction"),
+                        "horizon_hours": ext.get("horizon_hours"),
+                        "delta_f": ext.get("delta_f"),
+                        "prob_yes": ext.get("prob_yes"),
+                        "expires_at": ext.get("expires_at"),
+                        "title": ext.get("title"),
+                        "max_dollar_risk": ext.get("max_dollar_risk"),
+                        "kelly_fraction_used": ext.get("kelly_fraction_used"),
+                        "kelly_full_pct": ext.get("kelly_full_pct"),
+                        "applied_cap": ext.get("applied_cap"),
+                        "account_equity_at_size": ext.get("account_equity_at_size"),
+                        "risk_verdict": verdict.verdict,
+                        "risk_reason": verdict.reason,
+                    },
+                )
+                try:
+                    div_pct = float(ext.get("divergence_pct") or 0)
+                    await channel.push(
+                        f"☀️ Kalshi Weather {order.side.upper()} {order.symbol} "
+                        f"(forecast {ext.get('forecast_temp_f','?')}°F vs "
+                        f"threshold {ext.get('threshold_f','?')}°F, "
+                        f"edge {div_pct:.1f}%) — logged to activity rail."
+                    )
+                except Exception as e:
+                    log.warning("Kalshi Weather channel push failed: %s", e)
+
+        except asyncio.CancelledError:
+            log.info("Kalshi Weather Arbitrage scanner cancelled.")
+            return
+        except Exception as e:
+            log.exception("Kalshi Weather loop iteration failed: %s", e)
+            await asyncio.sleep(5.0)
+
+
+
+
+async def _scheduled_kalshi_crypto_arb_loop(
+    agent,
+    *,
+    channel,
+    logger_agent,
+    data_exec,
+    risk_agent,
+    db_url: str,
+) -> None:
+    """Kalshi Crypto Arbitrage scanner loop.
+
+    Pulls Crypto-category markets, fetches Coinbase spot for the asset,
+    computes P(YES) vs threshold via Gaussian vol. No LLM in path.
+    """
+    from trading_corp.persistence.models import AccountState, StrategyState
+
+    log.info(
+        "Kalshi Crypto Arbitrage scanner online (enabled=%s, auto_execute=%s)",
+        agent.enabled, agent.auto_execute,
+    )
+    while True:
+        try:
+            poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 60))
+            await asyncio.sleep(max(15.0, poll_sec))
+
+            if not agent.enabled:
+                continue
+
+            # Lazy-resolve real KalshiBroker + Coinbase quote source.
+            # KalshiBroker lives under kalshi_arbitrage / kalshi_llm_arbitrage
+            # divisions (paper=False), identified by class name + _client.
+            # Coinbase in paper mode is wrapped in PaperExecutionBroker, so
+            # look it up by division key — the wrapper proxies quote()
+            # through to the underlying live CoinbaseBroker.
+            kalshi_broker = None
+            for br in data_exec.brokers.values():
+                if br.__class__.__name__ == "KalshiBroker" and getattr(br, "_client", None):
+                    kalshi_broker = br
+                    break
+            coinbase_broker = data_exec.brokers.get("coinbase_spot")
+            if kalshi_broker is None or coinbase_broker is None:
+                log.info(
+                    "Kalshi Crypto: missing broker (kalshi=%s coinbase=%s); skipping",
+                    bool(kalshi_broker), bool(coinbase_broker),
+                )
+                continue
+
+            try:
+                orders = await agent.run_scan_cycle(
+                    kalshi_broker, coinbase_broker,
+                    logger_agent=logger_agent,
+                )
+            except Exception as e:
+                log.exception("Kalshi Crypto: run_scan_cycle failed: %s", e)
+                continue
+
+            if not orders:
+                continue
+
+            div_broker = data_exec.brokers.get(agent.division)
+            account_equity = 0.0
+            if div_broker is not None:
+                try:
+                    snap = await div_broker.snapshot()
+                    account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+                except Exception as e:
+                    log.warning("Kalshi Crypto snapshot failed: %s; assuming $0", e)
+
+            account = AccountState(
+                account=agent.division, equity=account_equity,
+                peak_equity=account_equity, halted=False,
+            )
+            strategy_state = StrategyState(strategy=agent.name, halted=False)
+
+            log.info("Kalshi Crypto: %d ProposedOrder(s) emitted", len(orders))
+            for order in orders:
+                logger_agent.log_proposed_order(order)
+                ext = order.extra or {}
+                base_payload = {
+                    "strategy": agent.name,
+                    "division": agent.division,
+                    "order_id": order.id,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "limit_price": order.limit_price,
+                    "rationale": order.rationale,
+                    "ticker": ext.get("ticker"),
+                    "event_ticker": ext.get("event_ticker"),
+                    "event_title": ext.get("event_title"),
+                    "outcome": ext.get("outcome"),
+                    "category": ext.get("category"),
+                    "divergence_pct": ext.get("divergence_pct"),
+                }
+
+                verdict = risk_agent.evaluate(
+                    order, account, strategy_state, db_url=db_url,
+                )
+                if verdict.verdict == "reject":
+                    logger_agent.log_event(
+                        agent.name, "kalshi_crypto_order_rejected_by_risk",
+                        {**base_payload, "risk_reason": verdict.reason},
+                    )
+                    log.info("Kalshi Crypto: risk REJECT %s — %s",
+                             order.symbol, verdict.reason)
+                    continue
+                if verdict.verdict == "resize" and verdict.new_qty is not None:
+                    log.info("Kalshi Crypto: risk RESIZE qty %.4f -> %.4f (%s)",
+                             order.qty, verdict.new_qty, verdict.reason)
+                    order.qty = float(verdict.new_qty)
+
+                logger_agent.log_event(
+                    agent.name, "would_have_placed",
+                    {
+                        **base_payload,
+                        "qty": order.qty,
+                        "implied_prob_at_entry": ext.get("implied_prob_at_entry"),
+                        "asset": ext.get("asset"),
+                        "spot_price": ext.get("spot_price"),
+                        "spot_sigma_usd": ext.get("spot_sigma_usd"),
+                        "sigma_used_usd": ext.get("sigma_used_usd"),
+                        "annual_vol": ext.get("annual_vol"),
+                        "threshold_usd": ext.get("threshold_usd"),
+                        "direction": ext.get("direction"),
+                        "horizon_hours": ext.get("horizon_hours"),
+                        "delta_usd": ext.get("delta_usd"),
+                        "prob_yes": ext.get("prob_yes"),
+                        "expires_at": ext.get("expires_at"),
+                        "title": ext.get("title"),
+                        "risk_verdict": verdict.verdict,
+                        "risk_reason": verdict.reason,
+                    },
+                )
+                try:
+                    div_pct = float(ext.get("divergence_pct") or 0)
+                    await channel.push(
+                        f"🪙 Kalshi Crypto {order.side.upper()} {order.symbol} "
+                        f"(spot ${ext.get('spot_price','?')} vs threshold "
+                        f"${ext.get('threshold_usd','?')}, edge {div_pct:.1f}%) "
+                        f"— logged to activity rail."
+                    )
+                except Exception as e:
+                    log.warning("Kalshi Crypto channel push failed: %s", e)
+
+        except asyncio.CancelledError:
+            log.info("Kalshi Crypto Arbitrage scanner cancelled.")
+            return
+        except Exception as e:
+            log.exception("Kalshi Crypto loop iteration failed: %s", e)
+            await asyncio.sleep(5.0)
+
+
+
+
+async def _scheduled_kalshi_sports_scout_loop(
+    agent,
+    *,
+    logger_agent,
+    data_exec,
+) -> None:
+    """Kalshi Sports Scout loop. NO order emission.
+
+    Each cycle: discover Kalshi Sports markets → map to bookmaker games
+    via team-code lookup → fetch the-odds-api lines → log divergence.
+    The agent owns its OddsAPIClient (closed on cancellation).
+    """
+    log.info(
+        "Kalshi Sports Scout online (enabled=%s, has_credentials=%s)",
+        agent.enabled, agent.has_credentials,
+    )
+    try:
+        while True:
+            try:
+                poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 900))
+                await asyncio.sleep(max(30.0, poll_sec))
+
+                if not agent.enabled:
+                    continue
+
+                kalshi_broker = None
+                for div_name, br in data_exec.brokers.items():
+                    if br.__class__.__name__ == "KalshiBroker" and getattr(br, "_client", None):
+                        kalshi_broker = br
+                        break
+                if kalshi_broker is None:
+                    log.debug("Sports Scout: no live KalshiBroker available; skipping")
+                    continue
+
+                try:
+                    await agent.run_scan_cycle(
+                        kalshi_broker, logger_agent=logger_agent,
+                    )
+                except Exception as e:
+                    log.exception("Sports Scout: run_scan_cycle failed: %s", e)
+                    continue
+
+            except asyncio.CancelledError:
+                log.info("Kalshi Sports Scout cancelled.")
+                return
+            except Exception as e:
+                log.exception("Sports Scout loop iteration failed: %s", e)
+                await asyncio.sleep(5.0)
+    finally:
+        try:
+            await agent.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

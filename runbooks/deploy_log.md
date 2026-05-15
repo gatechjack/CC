@@ -59,6 +59,1014 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-15 14:39 UTC — Dashboard actor-whitelist fix (kalshi_weather/crypto now visible)
+
+**Triggered by:** User reported "i see kalshi weather trades on telegram but not on the dashboard ui". Telegram channel is wired off the strategy's ProposedOrder; the dashboard reads from the same audit table but with actor-whitelist filters that hadn't been extended for the new specialized agents.
+
+**Root cause:** Two queries in `trading_corp/web/data.py` filter on a hardcoded actor list `('kalshi_tail_price_arb', 'kalshi_temporal_bucket_arb', 'kalshi_llm_arbitrage', 'kalshi_copy_trader')` — `kalshi_weather_arb` and `kalshi_crypto_arb` were missing. The audit rows exist with correct `division` payload field; the actor filter dropped them.
+
+**Files deployed (1):**
+- `trading_corp/web/data.py` — added `kalshi_weather_arb` + `kalshi_crypto_arb` to:
+  - `_query_pm_open_trades` (line 2747) — Open tab actor whitelist
+  - `_query_pm_pending_count` (line 2876) — tile "pending" count
+  - `arb_type` fallback ladder in the open-trades enrichment (~ line 2775): weather → `"weather_forecast"`, crypto → `"crypto_spot"`
+
+**Notably NOT touched (already correct):**
+- `trading_corp/agents/kalshi_resolver.py` — prod already had `kalshi_weather_arb` + `kalshi_crypto_arb` in `_KALSHI_ACTORS`, `_KALSHI_DIVISIONS`, `_ACTOR_TO_DIVISION`, and `_ACTOR_TO_ARB_TYPE_DEFAULT`. Local was behind prod (single-line `_KALSHI_DIVISIONS` style); synced local TO prod content to clear the drift. So the resolver was already creating round-trip rows for weather/crypto resolutions correctly — the dashboard read side was the only gap.
+
+**Backup tag:** `pre-dashboard-actor-whitelist-20260515-1445`
+
+**Verification (post-restart 14:39 UTC):**
+- Direct call to `_query_pm_open_trades(... ['kalshi_weather'], limit=10)` returns **4 open trades** with proper enrichment: ticker, side='no', qty, price, arb_type='weather_forecast' all populated.
+- `_query_pm_pending_count(... ['kalshi_weather','kalshi_crypto'])` returns 4 (matches the 4 `would_have_placed` audit rows that survived risk gate).
+- No exceptions post-restart.
+
+**Inert / dormant:**
+- **Activity-rail per-strategy enrichment (line 3371 actor list) NOT extended.** That's cosmetic — the basic event still renders, just without the rich kalshi-tail/temporal-bucket-specific badges. Worth a P3 follow-up if the user wants weather-specific row styling.
+- **No styled `kalshi_weather_analysis.html` / `kalshi_crypto_analysis.html` partial.** The right-rail click-to-expand panel currently shows raw payload JSON. Already filed as P3 follow-up in the 2026-05-15 02:56 UTC Tier-1 deploy log entry.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-dashboard-actor-whitelist-20260515-1445; \
+sudo cp /home/azureuser/trading_corp/trading_corp/web/data.py.\$TAG /home/azureuser/trading_corp/trading_corp/web/data.py; \
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/web/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 14:27 UTC — Paper-capital + crypto horizon pre-filter (downstream-gate unblock)
+
+**Triggered by:** Post-14:06 quote-fix deploy, audit showed weather + crypto still producing 0 ProposedOrders. Investigation found two **real bugs** + two legitimate gates:
+- 9/30 weather evaluations had **edges of 28-92%** but Kelly sized to $0 because the kalshi_weather paper broker was instantiated with `starting_equity=0.0`.
+- 150/150 crypto evaluations hit horizon-cap because long-dated SOLMAX/ETHMAX-style markets (~5,535h out) crowded the `k_per_cycle=30` budget via the tightest-spread sort, starving near-term BTC/ETH/XRP markets.
+
+**Backup tag:** `pre-paper-cap-horizon-fix-20260515-1430`
+
+**Files deployed (4 — 3 code + 1 config):**
+- `trading_corp/utils/divisions.py` — added `paper_capital: float = 0.0` field to `Division` dataclass; `load_divisions()` reads it from the yaml entry. Default $0 = legacy behavior (existing paper divisions unaffected unless they opt in).
+- `trading_corp/main.py` — `family == "paper"` branch (line 1329) now passes `division.paper_capital` to `PaperBroker(starting_equity=...)` instead of hardcoded 0.0.
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — new horizon-aware survivor filter between the no-ask filter and the tightest-spread sort. Computes `(expected_expiration_time - now).hours` per survivor via inline `_horizon_hours()` helper; drops anything `> max_horizon_hours` (default 168h). Cheap — one ISO parse per survivor. No new audit fields.
+- `config/divisions.yaml` (**prod-only edit via inline Python patcher**) — added `paper_capital: 500.0` to both `kalshi_weather` and `kalshi_crypto` entries. **Local divisions.yaml does NOT have these entries** (prod-divergent per `trading_corp_prod_git_drift.md`); patch was applied directly to prod via ssh + a small idempotent regex script (kept inline; not durable in scripts/). Re-run safe — skips if `paper_capital` already present.
+
+**Features shipped:**
+- **Weather Kelly sizer now has bankroll to work with.** $500 paper notional × 25% fractional Kelly × edge math, capped per-market (5% = $25), per-day (25% = $125), per-city (15% = $75). Verified: 5 ProposedOrders fired in first post-restart scan cycle (was 0 across the prior 5+ hours).
+- **Crypto discovery no longer starved by long-dated markets.** First post-restart scan: 30/30 evaluations were XRP 0.6h-horizon (the 11am EDT event) — the actual short-term liquidity surface, not 230-day MAXMON noise. 0 horizon-skips (was 150/150).
+
+**Verification (post-restart 14:27:10 UTC):**
+- md5-diff confirmed local=prod on all 3 code files (no drift).
+- Service active 14:27:11; PaperBroker startup logs show `account=paper_kalshi_weather equity=$500.00` (via subsequent snapshot path; service-init log line stops at the `paper-default` broker but div-level brokers come up via DataExec.register).
+- Local `pytest tests/test_kalshi_weather_sizing.py`: 15/15 pass.
+- Audit DB post-restart (one weather scan + 2 crypto scans):
+  - Weather: 30 evaluated, 3 `would_have_placed`, 2 `order_rejected_by_risk`, 22 `no_edge`, 2 `near_threshold`, 1 `no_size` (Kelly worked but daily cap exhausted by the 3 prior fires — exactly the design intent).
+  - Crypto: 30 evaluated, 30 `no_edge` (model agrees with market on tail-strike XRP), **0 horizon skips**.
+  - `proposed_order` table now shows 5 kalshi_weather rows since 14:27:30 (each exactly $25 notional = the per-market cap — Kelly math + cap ladder verified end-to-end).
+
+**Notable code changes / decisions:**
+- **$500 paper_capital** chosen to roughly match the real Kalshi account ($499 live). Each kalshi_* paper division acts as a "what if this strategy had its own $500 sleeve" sim. Once auto_execute flips for any of these, real allocation needs to be carved out of the shared live account.
+- **Horizon filter pre-k-cap** is the right cut point. Doing it after the cap would not help; doing it at discovery-stage (before survivor dict build) is barely cheaper and loses the audit-readability of survivor-stage data.
+- Weather strategy was NOT given a similar horizon pre-filter — its survivors were all within 72h naturally; defense-in-depth deferred until needed.
+
+**Latent bug surfaced (not introduced):**
+- **2 weather ProposedOrders were rejected with `risk_reason: 'polymarket: implied prob 0.010 outside [0.05, 0.95] bounds'`.** The polymarket implied-prob bounds check is firing on **kalshi_weather** orders — wrong-scope leak in the risk gate. Both rejected orders were deep tail markets ($0.01 + $0.03 limits, 1% + 3% implied) so the practical loss is small, but the bound shouldn't apply across venues. Filed as P2 in BACKLOG.md.
+
+**Inert / dormant:**
+- **Crypto: 0 ProposedOrders since deploy** despite the horizon fix working. 30/30 XRP markets at 0.6h horizon all genuinely no_edge: spot=$1.4369, strikes $1.55-$1.64 (5-15% above), model and market both say ~0-1% chance. Legit "no fire — tight market". Different scan-windows will surface different setups.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-paper-cap-horizon-fix-20260515-1430; BASE=/home/azureuser/trading_corp; \
+sudo cp \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+sudo cp \$BASE/trading_corp/utils/divisions.py.\$TAG \$BASE/trading_corp/utils/divisions.py; \
+sudo cp \$BASE/trading_corp/agents/strategies/kalshi_crypto_arb.py.\$TAG \$BASE/trading_corp/agents/strategies/kalshi_crypto_arb.py; \
+sudo cp \$BASE/config/divisions.yaml.\$TAG \$BASE/config/divisions.yaml; \
+sudo rm -rf \$BASE/trading_corp/__pycache__ \$BASE/trading_corp/utils/__pycache__ \$BASE/trading_corp/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 14:06 UTC — Kalshi fractional-trading quote-read fix (weather + crypto)
+
+**Triggered by:** User reported "no rows showing up" for kalshi_weather + kalshi_crypto. Audit DB confirmed: 0 of 4,106 weather evaluations + 0 of 18,520 crypto evaluations passed all gates in prior 12h; every single market hit `skip_code: no_implied`. Other Kalshi strategies (llm_arbitrage, copy_trader, temporal_bucket_arb) were producing rows fine.
+
+**Root cause:** Kalshi flipped weather + crypto markets to `fractional_trading_enabled: true`. The integer-cent fields (`yes_ask`/`no_ask`/`yes_bid`/`no_bid`) are absent from the API response; only the `*_dollars` string fields populate. Both strategies read `getattr(full, "yes_ask", None)` → always `None` → `implied_yes = None` → 100% `no_implied` skip rate. Confirmed via direct prod probe on `KXHIGHCHI-26MAY15-B73.5`: pykalshi market object has `yes_ask_dollars='0.3400'` but `yes_ask` is missing as an attribute entirely.
+
+**Backup tag:** `pre-fractional-quote-fix-20260515-1350`
+
+**Files deployed (3):**
+- `trading_corp/agents/strategies/_weather_math.py` — **NEW helper** `kalshi_quote_dollars(m)` returns `(yes_ask, no_ask, yes_bid, no_bid)` in dollars. Prefers `*_dollars` string fields; falls back to integer cents × 0.01 for legacy non-fractional markets. Returns 0.0 for unparseable/missing sides (matches Kalshi's existing "no quote" convention).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — Import + use `kalshi_quote_dollars` in survivor-dict construction AND in `_evaluate_market`. Removed the now-redundant `(yes_ask_cents or 0) / 100.0` conversion step at line 533.
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — Same pattern, two sites.
+
+**Features shipped:**
+- **Weather strategy now reads quotes correctly on all fractional markets.** 30 evaluations post-restart, all passed the quote layer (was 0/30 pre-fix). Downstream skip distribution: 17 no_edge, 9 no_size, 4 near_threshold — all legitimate market-state outcomes, no quote-layer bug. Full Tier-1 path firing (ensemble σ + Kelly visible in payloads).
+- **Crypto strategy now reads quotes correctly on all fractional markets.** 150 evaluations across 5 scan cycles, all 150 passed the quote layer. Currently all hit `horizon` skip (the 168h max_horizon_hours gate) because discovery is dominated by long-dated SOL markets — that's a separate `k_per_cycle`-ordering issue, not a quote bug.
+
+**Notable code changes:**
+- `getattr(m, "yes_ask", None)` is now NEVER the right read on Kalshi markets that may have `fractional_trading_enabled: true`. Any future strategy/code path reading quote fields should use `kalshi_quote_dollars()` from `_weather_math.py`.
+- Survivor dicts now store dollar values (not cents) under the `yes_ask`/`no_ask`/`yes_bid`/`no_bid` keys — the spread-sort lambda still works because the relative ordering is preserved.
+
+**Verification:**
+- md5-diff confirmed clean on all 3 files (no prod drift — surgical patches applied cleanly).
+- 15/15 tests pass in `tests/test_kalshi_weather_sizing.py`.
+- Local smoke-test of helper across fractional / legacy-cents / empty market objects returns expected dollar values.
+- Service restart 14:06:04 UTC; no exceptions in journalctl post-restart.
+- Audit DB: weather post-restart = 30 evaluated, 0 `no_implied`, 30 `payload_json NOT LIKE '%skip_code%'` (all passed quote layer). Crypto = 150 evaluated, 0 `no_implied`, 150 passed quote layer.
+
+**Inert / dormant on current traffic:**
+- **0 ProposedOrders fired since restart.** Real market-state, not a bug: weather forecasts agree with implied (no_edge), Kelly floors to $0 on tiny edges (no_size), or near-threshold uncertainty (near_threshold). Crypto exhausts k_per_cycle on long-dated SOL markets that fail the 168h horizon gate. Both are legitimate downstream skips — dashboard rows will materialize when a real edge appears.
+
+**Follow-up risk (not blocking):**
+- Crypto discovery ordering: long-dated SOL markets are crowding out near-term BTC/ETH evaluations. Worth tuning the survivor sort (currently tightest-spread first) or adding a horizon-aware pre-filter so the 30-market budget is spent on in-horizon markets.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp/trading_corp/agents/strategies; \
+TAG=pre-fractional-quote-fix-20260515-1350; \
+for f in _weather_math.py kalshi_weather_arb.py kalshi_crypto_arb.py; do
+  sudo cp \$BASE/\$f.\$TAG \$BASE/\$f
+done; \
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/agents/strategies/__pycache__ \
+            /home/azureuser/trading_corp/trading_corp/agents/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 06:44 UTC — K3 Watch-list deep-scan pivot (replaces manual seed)
+
+**Triggered by:** 06:09 deploy of manual-seed watch-list yielded 2 of 14
+handles (Foster, PredMTrader) — both **visibility-opaque** on Apify. A
+follow-up `refresh_kalshi_whales.py` run with `--watch-only-only` found
+only 1 viable whale in the volume/all_time top-48 (47/48 opaque). Pivoted
+to a deep multi-leaderboard rank-walk with a visibility cache.
+
+**Backup tags (none — only added a new script):**
+
+**Files deployed (2):**
+- `trading_corp/scripts/refresh_kalshi_whales.py` — added `--watch-only-n N`
+  (default 20) and `--watch-only-only` (skips writing selected_whales).
+  Always-on watch_only_whales output: runner-ups from the same scored
+  viable pool. Backup tag `pre-runnerups-20260515-0625`.
+- `trading_corp/scripts/seed_kalshi_watchlist_deep.py` — **NEW**. Walks
+  (categories × time_windows) leaderboards (default 6×3=18), de-duped
+  candidate pool, batch-probes in groups of 10, accepts any handle with
+  `closed_positions_count >= min_sample` (default 5 — lowered from
+  selection's 20 because this is observation, not betting). Stops at
+  `target_n=10` visible OR `max_probe=60` total probes. Persists per-handle
+  visibility decisions to `agent_state(apify_visibility_cache)` with a
+  30-day TTL so re-runs skip known-opaque whales.
+
+**Verification (06:48 UTC):**
+- Deep-scan probed **60 of 910 candidate handles** across 18 leaderboards.
+  **2 visible** (lengthy.starfish, Hispaniola), 58 opaque → confirms
+  Kalshi-wide visibility rate is ~3.3%, not a top-of-leaderboard artifact.
+- `refresh_kalshi_watchlist_stats.py` populated stats for both:
+  - **lengthy.starfish** — Politics/monthly rank #13. 20 resolved
+    (16W/4L = **80% WR**), total PnL **+$3,430.65** over 149K contracts.
+    20 open positions. Top categories: Sports, Elections.
+  - **Hispaniola** — Politics/monthly rank #40. 16 resolved
+    (5W/11L = **31% WR**), total PnL **−$199.07**. 1 open. Top
+    categories: Sports, Politics.
+- Dashboard renders both rows on `/prediction-markets/kalshi_copy_trading`
+  Whales tab (curl HTTP 200; 3 matches for "Watch list/lengthy.starfish/
+  Hispaniola"). The manual-seed survivors (Foster, PredMTrader) were
+  evicted by the deep-scan overwrite — no longer in the panel.
+- Apify visibility cache: 60 entries (58 opaque + 2 visible).
+- Total Apify spend: ~$3 (deep scan) + $0.50 (stats refresh).
+
+**Systemd timers (post-deploy 06:54 UTC):**
+- `trading-corp-watchlist-stats.timer` — daily 12:00 UTC; refresh stats
+  for currently-tracked whales (~$0.50/run).
+- `trading-corp-watchlist-deep.timer` — weekly Sunday 14:00 UTC; deep
+  scan to grow watch_only_whales organically (~$2-3/run with warm cache).
+- Unit files committed to `infra/systemd/`.
+
+**Inert / pending:**
+- **Visibility ceiling.** Even with 18 leaderboards and rank-walk depth,
+  the visibility rate is uniformly ~3.3%. Each weekly cron run probes
+  ~60 NEW candidates (skipping known-opaque via the cache); expect to
+  net +1-3 visible whales/week. Watch list will grow organically.
+- **selection_metadata side effect.** `--watch-only-only` skips writing
+  selected_whales but still overwrites selection_metadata with the
+  latest summary. Minor — the metadata reflects the most-recent
+  scoring run regardless. Doesn't affect K3 behavior.
+- **WO-4 (Promote button)** — still deferred. Disabled stub in UI.
+
+**Rollback recipe (deep scan layer only — selected_whales untouched):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; \
+TAG=pre-runnerups-20260515-0625; \
+sudo cp \$BASE/trading_corp/scripts/refresh_kalshi_whales.py.\$TAG \$BASE/trading_corp/scripts/refresh_kalshi_whales.py; \
+sudo rm -f \$BASE/trading_corp/scripts/seed_kalshi_watchlist_deep.py; \
+sudo rm -rf \$BASE/trading_corp/scripts/__pycache__"
+# Optional: clear the cache + watchlist
+# sqlite3 ... DELETE FROM agent_state WHERE agent='kalshi_copy_trader'
+#   AND key IN ('apify_visibility_cache','watch_only_whales','watch_only_stats','watch_only_deep_metadata');
+```
+
+---
+
+## 2026-05-15 06:09 UTC — K3 Watch-list (observation-only whale tracking)
+
+**Triggered by:** User-supplied watchlist of 14 X-handles (9 Tier-1 public
+traders + 5 Tier-2 curators) — wanted to track their performance without
+copy-trading them. Path is read-only twin of `selected_whales`: same
+Apify data source, never emits ProposedOrders, future `[Promote]` flow
+moves a row onto the live copy roster.
+
+**Backup tag:** `pre-watchlist-20260515-0608`
+
+**Files deployed (5):**
+- `config/kalshi_watchlist_seed.yaml` — NEW. 9 Tier-1 + 5 Tier-2 handles
+  with notes. Edit + re-run seed to add/remove.
+- `trading_corp/scripts/seed_kalshi_watchlist.py` — NEW. One-shot probe.
+  Tier-1 dropped if `fetch_profiles` returns no row for the nickname
+  (log line warns). Tier-2 dropped unless `fetch_trades ≥ 1` row.
+  Writes `agent_state(kalshi_copy_trader, watch_only_whales)` as
+  `list[dict{handle, tier, source_x_handle, notes, included_iso, probe}]`.
+  Idempotent.
+- `trading_corp/scripts/refresh_kalshi_watchlist_stats.py` — NEW. Daily
+  refresh. fetch_profiles + fetch_closed_positions + fetch_open_positions
+  → `compute_stats` → `agent_state(watch_only_stats)`. Logs audit kind
+  `kalshi_watch_only_refresh`. Never emits ProposedOrders.
+- `trading_corp/web/data.py` — added `KalshiWatchOnlyRow` dataclass,
+  `_query_kalshi_watch_only_rows()` (reads agent_state), wired into
+  `PMDashboardView.kalshi_watch_only` via `asyncio.gather` and only
+  populated when `kalshi_copy_trading` is in scope.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — Watch
+  List panel below Selected Whales on the Whales tab. Tab count
+  includes both. `[Promote]` button rendered as **disabled stub**
+  (tooltip: "ships next, WO-4").
+
+**Verification (post-deploy 06:11 UTC):**
+- Service `active` after restart.
+- Seed run: probed 14 handles. **2 survivors** — `Foster` and
+  `PredMTrader`. The other 7 Tier-1 names dropped as
+  `profile_unresolved` (their X handles don't match a Kalshi nickname),
+  all 5 Tier-2 names dropped as `no_trades` (curators/aggregators
+  don't trade on Kalshi). Apify spend ≈ $0.30.
+- Refresh run: both survivors are **visibility-opaque** —
+  `closed_positions=0`, `open_positions=0`. Apify gotcha (documented in
+  `kalshi_apify_client.py`): "Trade/position visibility is per-user
+  opt-in. Top leaderboard names may expose only profile-level data."
+  Foster's profile reports 8,784 lifetime markets and PredMTrader's
+  3,529 — they DO trade, they just opt out of visibility.
+- Dashboard: `curl http://127.0.0.1:8000/prediction-markets/kalshi_copy_trading`
+  returns 200; "Watch list — observation only" panel renders with
+  both rows visible.
+
+**Inert / pending:**
+- **No actual performance data for either survivor yet** — both are
+  visibility-opaque. The watch-list infrastructure is live, but until
+  we (a) find correct Kalshi nicknames for the 7 mismatched Tier-1
+  names, or (b) source data from somewhere other than Apify's profile
+  scraper, the panel will keep showing zero stats.
+- **No cron entry yet** for the daily stats refresh. Script runs
+  manually for now.
+- **WO-4 (Promote button)** — deferred per user. Button is a stub
+  with tooltip pointing forward.
+
+**Cost expectation:** ~$0.50/day Apify at the current 2-survivor list
+size, ~$15/mo. Scales linearly with survivors.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; \
+TAG=pre-watchlist-20260515-0608; \
+sudo cp \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+sudo cp \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html.\$TAG \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html; \
+sudo rm -f \$BASE/config/kalshi_watchlist_seed.yaml \
+            \$BASE/trading_corp/scripts/seed_kalshi_watchlist.py \
+            \$BASE/trading_corp/scripts/refresh_kalshi_watchlist_stats.py; \
+sudo rm -rf \$BASE/trading_corp/web/__pycache__ \$BASE/trading_corp/scripts/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+(Optional cleanup: `DELETE FROM agent_state WHERE agent='kalshi_copy_trader' AND key LIKE 'watch_only_%';`)
+
+---
+
+## 2026-05-15 03:14 UTC — Kalshi Weather city-code aliases (follow-up to Tier-1)
+
+**Triggered by:** First two post-Tier-1 scan cycles showed 0 evaluations
+reaching the new ensemble/Kelly code path because of 100% early-stage
+skips. Audit-mode sweep on `kalshi_weather_skipped_no_coords` payloads
+showed 6 unknown codes: TMIA (42), TCHI (34), TPHIL (29), TLAX (24),
+TNYC (22), NY (10). Each is the Kalshi T-prefix or short-form variant
+of a city we already have in the fallback table.
+
+**Files deployed (1):** `trading_corp/agents/strategies/kalshi_weather_arb.py`
+— added 6 aliases to both `_CITY_COORDS_FALLBACK` and
+`_CITY_TO_METAR_STATION`. Each alias points at the same resolution
+station as its non-T sibling.
+
+**Verification (post-deploy 03:14:22 UTC):**
+- Two scan cycles. `kalshi_weather_skipped_no_coords` count = **0**
+  (was 28 over the prior two cycles).
+- All 60 candidates now reach the implied-prob gate; all 60 still skip
+  there because overnight Kalshi book is sparse (zero quotes on Denver
+  / Miami / Chicago weather buckets at 03:25 UTC = 11:25pm EDT).
+- New `sigma_source` / `ensemble_n_members` / `nowcast_blend_w` /
+  `kelly_full_pct` fields STILL not landed in audit — gated on a market
+  with both valid coords AND active quotes. Expected during daytime hours.
+
+**Inert / dormant on current traffic:**
+- Ensemble σ + nowcast blend + Kelly sizing code paths remain unexercised
+  by the scan loop. Direct prod smoke test of the underlying clients
+  already proven (see prior entry). Audit-row confirmation pending
+  next active-book scan.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+# Re-scp the immediately-prior version of kalshi_weather_arb.py from local
+# git history (commit predates 03:14:22 UTC); then:
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 02:56 UTC — Kalshi Weather Tier-1: ensemble σ + nowcast blend + fractional Kelly
+
+**Triggered by:** Board direction (this session). The earlier specialized-agent
+ship (2026-05-14 20:54) shipped weather with a heuristic σ + flat $1 sizing.
+Tier 1 replaces the σ heuristic with a *measured* cross-model ensemble std,
+adds a METAR nowcast blend for sub-6h horizons, and replaces flat $1 with
+fractional Kelly + per-market / per-day / per-city caps. Validation gate
+(30 RTs, WR ≥ 65%) for `auto_execute: true` flip is UNCHANGED.
+
+**Backup tag:** `pre-weather-kelly-20260515-0255` (strategies.yaml backup tag);
+n/a for the new client files.
+
+**Files deployed (7):**
+- `trading_corp/data/open_meteo_client.py` — **NEW.** Async client for
+  Open-Meteo's `/v1/forecast` multi-model endpoint. Returns
+  `EnsembleObservation(members, models, target_iso)` from any of
+  gfs_global / icon_global / ecmwf_ifs04 / meteofrance_seamless / gem_global
+  that the API has for the location. 30-min in-memory cache keyed on
+  (rounded lat, rounded lon, forecast_days). `get_ensemble_at(lat, lon, target_iso)`
+  for hourly markets; `get_ensemble_daily_extremum(lat, lon, date, kind)`
+  for KXHIGH/KXLOW (per-model daily max/min, then ensemble across models).
+- `trading_corp/data/metar_client.py` — **NEW.** Async client for
+  aviationweather.gov `/api/data/metar`. `get_nowcast(station)` returns
+  `MetarNowcast(latest_temp_f, latest_obs_iso, trend_f_per_hour,
+  n_observations)`. Latest obs + linear trend computed off the last 3h
+  of observations. `extrap_at(target_iso)` performs `latest_temp + trend × Δh`.
+- `trading_corp/agents/strategies/_weather_math.py` — added
+  `kelly_fraction(p_model, market_price)`. Returns `max(0, (p·b − (1−p))/b)`
+  where `b = (1−price)/price`. Unit-agnostic (will also serve
+  `kalshi_crypto_arb` when it switches off flat sizing).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — gutted-and-rewired
+  `_evaluate_market`. Three new layers between forecast lookup and order
+  construction:
+  1. **Ensemble σ.** After NWS forecast lands, call Open-Meteo for the
+     same target. If ≥3 members returned, σ = `max(ensemble.std_f, ensemble_sigma_floor_f)`
+     (floor default 0.5°F). Else fall back to `sigma_for_horizon` heuristic.
+     `sigma_source` field (`open_meteo_ensemble` | `heuristic`) tags every
+     evaluation so we can later A/B the two.
+  2. **METAR nowcast blend.** For horizons 0–6h on hourly markets only
+     (HIGH/LOW excluded — daily extrema aren't well-modelled by current-temp
+     extrapolation): `forecast_temp = w·NWS + (1-w)·METAR_extrap` where
+     `w = clamp(horizon_h / 6.0)`. At horizon=0, pure nowcast; at 6h, pure
+     forecast. Station mapping: new `_CITY_TO_METAR_STATION` parallels
+     `_CITY_COORDS_FALLBACK` (22 city codes → airport METAR codes).
+  3. **Fractional Kelly sizing.** New `_compute_kelly_usd(prob_outcome,
+     share_price, account_equity, city_code, spend)` helper. Cap ladder:
+     `kelly_target = equity × kelly_fraction × full_kelly` → clamp per-market
+     ($cap = 5% × equity) → clamp per-day-remaining (25% × equity − today's spend)
+     → clamp per-city-remaining (15% × equity − city spend) → floor at
+     `min_usd` (default $1). The dominating cap is reported in `applied_cap`.
+     Per-cycle `_SpendCounter` is seeded from `_query_today_spend` (audit-DB
+     query at top of cycle) and incremented in-memory as orders emit so
+     cap consumption within one cycle is correct.
+  Falls-through `sizing.mode: fixed_usd` is still supported (legacy path
+  if config ever rolls back).
+- `trading_corp/main.py` — `_scheduled_kalshi_weather_arb_loop` now
+  snapshots the `kalshi_weather` paper-broker equity BEFORE `run_scan_cycle`
+  (previously the snapshot happened AFTER orders emitted, which was wrong
+  for Kelly-based pre-emission sizing) and passes `account_equity=...`
+  into the scan. `would_have_placed` audit payload allowlist extended for
+  11 new fields: `sigma_source`, `ensemble_n_members`, `ensemble_std_f`,
+  `nowcast_blend_w`, `metar_station`, `metar_latest_temp_f`, `metar_extrap_f`,
+  `threshold_high_f`, `max_dollar_risk`, `kelly_fraction_used`, `kelly_full_pct`,
+  `applied_cap`, `account_equity_at_size`.
+- `scripts/patch_kalshi_weather_kelly_sizing.py` — **NEW.** Idempotent
+  yaml patcher (the `kalshi_weather_arb` block is prod-only per
+  `trading_corp_prod_git_drift.md`). Replaces the `sizing: {mode: fixed_usd,
+  fixed_amount: 1.0}` block with the new `kelly_fractional` block + 4
+  new module-level knobs (`open_meteo_enabled`, `ensemble_sigma_floor_f`,
+  `metar_enabled`, `nowcast_blend_horizon_hours`). Re-runnable on prod
+  (detects already-patched yaml + exits clean).
+- `tests/test_kalshi_weather_sizing.py` — **NEW.** 15 tests covering
+  Kelly edge cases, `_SpendCounter`, cap-clamping ladder, audit-spend
+  SQL, ensemble σ math. All green; full suite (excluding 5 pre-existing
+  PMCC / webhook-return-fast failures unrelated to this work) = 662 pass.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Ensemble σ derivation:** measured cross-model std from Open-Meteo,
+  not heuristic by horizon. Visible: `sigma_source` field on every
+  `kalshi_weather_evaluated` audit row past the early-skip gates.
+- **METAR nowcast blend:** sub-6h hourly markets weight current obs.
+  Visible: `nowcast_blend_w` field (0..1) on hourly-market evaluations.
+- **Fractional Kelly sizing:** $1 flat is gone. Order $ now scales with
+  bankroll × edge × 0.25 fractional × caps. Visible: `kelly_full_pct`
+  + `applied_cap` + `max_dollar_risk` fields on every `would_have_placed`
+  row. Cap ladder: per_market (5%) → per_day (25%) → per_city (15%) → min $1.
+
+**Verification:**
+- md5-diff confirmed on all 5 prod-touching files post-scp.
+- Service restart 02:56:02 UTC; "Kalshi Weather Arbitrage scanner online
+  (enabled=True, auto_execute=False)" at 02:56:43.
+- Two scan cycles since restart (02:56:02 + 03:01:52); 60 evaluations,
+  zero exceptions, zero open-meteo / metar log warnings.
+- **Direct prod smoke test** of the new clients (run via `venv/bin/python -c`
+  on prod): Open-Meteo returned 4 members for KJFK @ 2026-05-15T14
+  (gfs_global / icon_global / meteofrance_seamless / gem_global —
+  ECMWF didn't return for this call), mean=56.80°F, std=1.35°F.
+  METAR KJFK current=57.92°F (obs 03:00 UTC), trend=−1.53°F/h, 3 obs.
+  `kelly_fraction(0.6, 0.5) = 0.20` (matches unit-test).
+- Config-yaml verification: patcher applied; new keys visible in
+  `config/strategies.yaml` on prod.
+
+**Inert / dormant on current traffic:**
+- **No `kalshi_weather_evaluated` row with the new `sigma_source` /
+  ensemble / nowcast / Kelly fields has landed yet** — all 60
+  post-restart evaluations hit early-stage skips: 32× `no_implied` (no
+  bid/ask quotes at this hour — overnight Kalshi book is thin) and
+  28× `no_coords` (the discovered city codes `TCHI` and `NY` aren't in
+  `_CITY_COORDS_FALLBACK`, which has `CHI` and `NYC`). The new pipeline
+  is loaded and verified independently via the direct smoke test;
+  fields will populate as soon as a market with a known city code +
+  valid quotes is discovered. Pre-existing gap (see backlog).
+
+**Latent bugs surfaced (not introduced):**
+- `_CITY_COORDS_FALLBACK` is missing `TCHI` (= Chicago T-prefix variant)
+  and `NY` (= NYC short form). Today's scan candidates are dominated
+  by these. Added as P3 follow-up in BACKLOG.md.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; \
+TAG=pre-weather-kelly-20260515-0255; \
+sudo cp \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+git -C /tmp clone /dev/null 2>/dev/null || true; \
+# Revert code: requires re-scp'ing prior versions from local git history.
+sudo rm -rf \$BASE/trading_corp/__pycache__ \
+            \$BASE/trading_corp/data/__pycache__ \
+            \$BASE/trading_corp/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+(Note: code rollback requires re-deploying the pre-tier-1 versions of
+the 3 edited files. The 2 new client files can simply be deleted.)
+
+---
+
+## 2026-05-15 02:05 UTC — Crypto `strike_type='custom'` ticker-suffix dispatch (P2)
+
+**Triggered by:** Post 01:50 deploy, weather between math fully unlocked weather (0 `no_strike` skips). Crypto was still hitting `no_strike` on all `strike_type='custom'` markets because Kalshi uses "custom" for BOTH bucket (B-suffix) AND single-side threshold (T-suffix) tickers, and leaves `floor_strike`/`cap_strike` as None for both — the strike spec lives only in the ticker suffix.
+
+**Backup tag:** `pre-crypto-custom-dispatch-20260515-0205`
+
+**Files deployed (2):**
+- `trading_corp/data/crypto_spot_provider.py` — new `parse_kalshi_strike_suffix(ticker)` returning `('B', value)` or `('T', value)` or None. Used to extract Kalshi's encoded strike spec when the API doesn't populate `floor_strike`/`cap_strike` (which it doesn't for crypto-category markets).
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — (1) New module-level `_compute_event_bucket_widths(events)` that walks the discovery response and for each `event_ticker` computes the median gap between adjacent B-values. Critical because Kalshi bucket widths vary by asset AND horizon — ETH 1h buckets are ~$20 but ETH Jan-2027 buckets are ~$500. (2) `bucket_width_hint` plumbed into the survivor dict so `_evaluate_market` can derive bounds without a separate lookup. (3) New `elif strike_type == "custom"` fallback branch that, if `parse_kalshi_strike_suffix` returns `('B', center)` and a width hint is available, sets `threshold = center - half`, `threshold_high = center + half`, `direction = 'between'`. T-suffix tickers are intentionally left as `no_strike` skip for now — direction (greater vs less) is ambiguous without parsing `rules_primary` text.
+
+**Verification (post-deploy 02:06 UTC):**
+- `kalshi_crypto_skipped_no_strike` count = **0** since deploy (was 30 in the prior scan).
+- All 22 remaining skips are `no_implied` — pure liquidity (no ask quotes at this hour, ~10pm EDT, Kalshi crypto depth is thin).
+- Bucket-width inference verified working: discovery contains B-tickers like `B88650`/`B88750`/`B88850` for BTC → median gap = 100, correctly applied.
+- Local smoke test confirmed parser behaviors:
+  - `KXDOGE-26MAY1422-B0.157` → `('B', 0.157)`
+  - `KXBTC-26MAY1422-B88850` → `('B', 88850.0)`
+  - `KXSOLE-26MAY1422-T59` → `('T', 59.0)`
+  - `KXSOLMAXMON-SOL-26MAY31-10000` → None (non-T/B suffix, intentional)
+
+**Notable code change:**
+- The width-hint is computed once per scan (one pass over events) and shared across all per-market evaluations in that cycle. Cheap; doesn't add a per-market query.
+
+**Inert / pending:**
+- **T-suffix crypto markets still skip as `no_strike`.** Kalshi doesn't expose direction (≥X vs ≤X) for these via `strike_type` alone; need to parse `rules_primary` text or use implied-prob context. Filed as remaining P3 (smaller follow-up — most crypto markets are bucket-format, T-tickers are minority).
+- **No actual crypto fires yet** because all 22 no-quote markets at deploy time were genuinely unquoted on Kalshi. Daytime scan should produce fires.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp/trading_corp; \
+sudo cp \$BASE/data/crypto_spot_provider.py.pre-crypto-custom-dispatch-20260515-0205 \$BASE/data/crypto_spot_provider.py; \
+sudo cp \$BASE/agents/strategies/kalshi_crypto_arb.py.pre-crypto-custom-dispatch-20260515-0205 \$BASE/agents/strategies/kalshi_crypto_arb.py; \
+sudo rm -rf \$BASE/data/__pycache__ \$BASE/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-15 01:50 UTC — Weather + crypto unlock (bucket math + crypto broker bugs)
+
+**Triggered by:** "no crypto or weather trades have come in" — observation that both specialized agents shipped 2026-05-14 but had produced **zero** trades. Investigation surfaced 4 distinct bugs across the crypto strategy + a missing math branch for both.
+
+**Backup tags:** `pre-crypto-broker-fix-20260515-0050`, `pre-crypto-prefix-fix-20260515-0125`, `pre-between-math-20260515-0132`
+
+**Files deployed (5):**
+- `trading_corp/main.py` — fixed `_scheduled_kalshi_crypto_arb_loop` broker discovery. (1) Removed nonsensical `and not kalshi_broker == coinbase_broker` clause from elif — Python precedence made the elif **always False** because `None == None → True`. (2) Switched coinbase lookup to `data_exec.brokers.get("coinbase_spot")` because in paper mode the broker is a `PaperExecutionBroker` wrapper, not a raw `CoinbaseBroker` — class-name match never hit. Also bumped the "missing broker" log from DEBUG to INFO so future silent-failure won't hide.
+- `trading_corp/data/crypto_spot_provider.py` — `parse_kalshi_asset_prefix` rewritten as regex `^KX(HYPE|DOGE|BTC|ETH|SOL|XRP|BNB)[A-Z0-9]*-`. Old code matched only `KX{asset}-` / `KX{asset}15M-` — Kalshi has since added suffix codes (E = event-cycle, D = daily, etc.), so tickers like `KXSOLE-`, `KXBTCE-`, `KXDOGED-` were all rejected as "not_crypto." Post-fix the discovery `markets_pre_filter` jumped from 79 → 206.
+- `trading_corp/agents/strategies/_weather_math.py` — added `direction='between'` to `forecast_probability` and `evaluate_weather_market`. New formula `P(low ≤ X ≤ high) = Φ((high-μ)/σ) - Φ((low-μ)/σ)` for bucket markets. Gate 2 (near-threshold) is skipped for between — it doesn't apply to bucket semantics. Smoke test confirmed `P(85≤T≤86 | μ=85.5, σ=2) = 0.1974` (analytic match).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — added `elif strike_type == "between"` branch using `floor_strike` + `cap_strike`. Also added no-ask filter before k_per_cycle cap (Kalshi returns 0.0, not None, for unquoted sides — empty markets were sorting to top of "tightest-spread" and crowding out live ones).
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — same between branch (handles both `strike_type='between'` and `'custom'` since Kalshi uses both interchangeably for bucket markets), plus no-ask filter.
+
+**Bugs caught + fixed:**
+1. **Crypto broker-discovery precedence bug** — `cls == "CoinbaseBroker" and not kalshi_broker == coinbase_broker` always False due to `None == None`. Made the crypto strategy silently skip every tick for 4+ hours after launch.
+2. **Crypto broker-class mismatch** — in paper mode coinbase_spot's registered broker is `PaperExecutionBroker`, not `CoinbaseBroker`. Even after fix #1 the class-name check missed.
+3. **Stale asset-prefix parser** — Kalshi added `E`/`D` suffix codes to ticker prefixes; old `startswith("KXSOL-")` rejected `KXSOLE-`. Recognized 0 SOL/ETH/BTC daily/event markets pre-fix.
+4. **Missing `between` math** — Kalshi structures weather + crypto markets as bucket PMFs (B-suffix tickers). 58% of weather + ~100% of crypto evaluated markets are buckets. Strategy threw all of them away via `no_strike` skip (the comment in old code literally said "rare — skip for v1"; data shows it's the *dominant* shape).
+5. **Empty-market crowding (incidental)** — k_per_cycle sort by `abs(yes_ask - yes_bid)` defaulted None to 0/1 but Kalshi returns 0.0 explicitly, so unquoted markets had spread=0 and sorted FIRST, displacing live ones.
+
+**Live verification (post-deploy):**
+- **Weather (post 01:42 UTC):** `kalshi_weather_skipped_no_strike` count = **0** since deploy (was 644 pre-deploy). 30 evaluated per scan. Remaining skips: 27 no_implied + 3 no_coords. Math path now firing correctly on bucket markets — just blocked by late-night quote availability.
+- **Crypto (post 01:46 UTC):** `markets_pre_filter` 79 → 206 (parser fix); `skipped_unsupported_asset` 45 → 0 (was misclassifying HYPE/BNB). Strategy now correctly recognizes BTC/ETH/SOL/DOGE markets. Tick cadence working (60s).
+- **Math smoke test passed on prod venv:** `forecast_probability(85.5, σ=2.0, [85,86], "between") = 0.1974` ≈ analytic 0.1974.
+
+**Inert / pending:**
+- **No actual fires yet** for either division. Two reasons: (a) most picked buckets have no ask quote at this hour (~9-10pm EDT, low liquidity). Daytime tick should produce fires. (b) Crypto T-suffix tickers (`KXDOGED-26MAY1422-T0.1499999`, single-side threshold) also carry `strike_type='custom'` — same overloaded name as buckets. Strategy's "custom → between" mapping fails for these because floor/cap aren't populated. Needs follow-up: ticker-suffix dispatch (T → greater, B → between) for crypto. See BACKLOG.
+- The 156 "not_crypto" markets per crypto scan are real non-crypto categories Kalshi sometimes returns under the same response (the category filter isn't strict).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp/trading_corp; \
+sudo cp \$BASE/main.py.pre-crypto-broker-fix-20260515-0050 \$BASE/main.py; \
+sudo cp \$BASE/data/crypto_spot_provider.py.pre-crypto-prefix-fix-20260515-0125 \$BASE/data/crypto_spot_provider.py; \
+sudo cp \$BASE/agents/strategies/_weather_math.py.pre-between-math-20260515-0132 \$BASE/agents/strategies/_weather_math.py; \
+sudo cp \$BASE/agents/strategies/kalshi_weather_arb.py.pre-between-math-20260515-0132 \$BASE/agents/strategies/kalshi_weather_arb.py; \
+sudo cp \$BASE/agents/strategies/kalshi_crypto_arb.py.pre-between-math-20260515-0132 \$BASE/agents/strategies/kalshi_crypto_arb.py; \
+sudo rm -rf \$BASE/data/__pycache__ \$BASE/agents/strategies/__pycache__; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-14 23:50 UTC — Per-whale auto-pause (P3, formerly manual)
+
+**Triggered by:** Observation pass on 2026-05-14 23:35 UTC showed 79 stale 0xE9Ba RTs flushing -$76 through the multi-leg resolver fix. Whale was already manually dropped from `selected_whales`, but the pattern (single bad whale → -$50-100 paper drawdown before human notices) is exactly the case the BACKLOG P3 auto-pause item was filed for. Codifies last night's manual drops as a circuit breaker.
+
+**Backup tag:** `pre-whale-autopause-20260514-2350`
+
+**Files deployed (3):**
+- `trading_corp/agents/strategies/_whale_autopause.py` — **NEW**. `should_autopause(conn, whale_name, table, name_field, division, ...) → (triggered, stats_dict)`. Aggregates resolved round-trips for one whale (`won IS NOT NULL`) and returns trigger boolean + full stats. Thresholds: `MIN_RESOLVED_TRADES=30`, `MAX_WIN_RATE_PCT=40.0`, `MAX_TOTAL_PNL=-5.0` (conjunctive). Also exposes `sqlite_path_from_db_url()` for the strategies to open a raw sqlite conn (json_extract pushdown is faster than re-implementing the agg in Python).
+- `trading_corp/agents/strategies/polymarket_copy_trader.py` — new `_apply_autopause_filter()` method called at top of `run_scan_cycle` right after `_load_selected_whales()` returns. On trigger: persist new `selected_whales` (without paused entries) via `set_agent_state` + emit `polymarket_whale_auto_paused` audit per whale. Returns filtered list; scan continues with survivors.
+- `trading_corp/agents/strategies/kalshi_copy_trader.py` — same pattern, K3-specific. Audit kind `kalshi_whale_auto_paused`. Filter runs BEFORE the Apify `fetch_open_positions` call so we don't pay quota on a whale about to drop. Selected_whales schema is `list[str]` (vs PCT's `list[dict]`), handled accordingly.
+
+**Features shipped:**
+- Both copy-trading divisions now self-prune the `selected_whales` roster. If a whale has 30+ resolved RTs AND WR<40% AND total_pnl<-$5, it's auto-removed on the next scan tick and audited.
+- Audit payload includes full stats (n_resolved, n_wins, n_losses, win_rate_pct, total_realized_pnl, thresholds used, remaining_whales count) for traceability.
+- No `main.py` allowlist touch needed — uses `logger_agent.log_event()` directly (passthrough, not `ProposedOrder.extra` filtered).
+
+**Notable code changes:**
+- Conjunctive thresholds chosen on purpose. Streaky-but-net-profitable (Pedrobeliever47: 62.5% WR, +$6.53) survives. Small-sample (OnlySafeBets: 2 RT, -$1.75) survives. tom14cat14 at session end (87 RT / 39.1% WR / -$1.58) would NOT trigger (pnl above -$5) — Jack's manual drop on that one was a judgment call the conservative rule deliberately leaves to a human.
+- 0xE9Ba's pre-drop snapshot (82 RT / 4.88% WR / -$76.56) WOULD trigger. Confirmed via dry-run.
+- Filter runs once per scan cycle (single sqlite roundtrip per whale + one `set_agent_state` write if anything triggers). Cheap — <100ms for current rosters.
+
+**Dry-run pre-deploy (read-only against prod DB):**
+- PCT 11 selected whales: 0 pauses (all clean per current thresholds)
+- K3 3 selected whales: 0 pauses
+- Hypothetical 0xE9Ba (had it remained selected): PAUSE ✓
+- Hypothetical tom14cat14 (had it remained selected): keep (pnl -$1.58 > -$5)
+
+**Verification (post-deploy, 23:50–00:01 UTC, ~11 min observation):**
+- Service active, PID 350022 (was 346846 → 350022 on restart), NRestarts=0
+- 0 tracebacks in journal since restart
+- PCT: 4 `polymarket_copy_trader/would_have_placed` audit rows emitted — normal scan loop firing
+- K3: `last_poll_ts` updated to `2026-05-14T23:50:35.602946+00:00` (initial post-restart tick) + Apify KV secret re-fetched at 23:56:17 (second tick) → scan loop running
+- 0 `polymarket_whale_auto_paused` / `kalshi_whale_auto_paused` rows (correct: dry-run predicted 0)
+- Import smoke-test passed on prod venv (`from ..._whale_autopause import should_autopause` + both copy_trader agents instantiable)
+
+**Inert / dormant on current traffic:**
+- Nothing this code does fires until a selected whale crosses all 3 thresholds. With current rosters that's unlikely in the short term. Real value is preventing a *future* bad whale (or a recovered + re-added whale that re-degrades) from bleeding $50-$100 unnoticed.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-whale-autopause-20260514-2350; BASE=/home/azureuser/trading_corp/trading_corp/agents/strategies; \
+sudo mv \$BASE/polymarket_copy_trader.py.\$TAG \$BASE/polymarket_copy_trader.py; \
+sudo mv \$BASE/kalshi_copy_trader.py.\$TAG \$BASE/kalshi_copy_trader.py; \
+sudo rm \$BASE/_whale_autopause.py; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-14 23:00 UTC — Polymarket multi-leg resolver fix (P0b)
+
+**Triggered by:** PCT was emitting copies on multi-leg sports/crypto markets ("Cincinnati Reds", "Up", "Real Oviedo", "Thunder", etc.) that couldn't auto-resolve. `_compute_round_trip_row` short-circuited on outcome != "yes"/"no" → return None. Plus `PolymarketBroker.get_market_resolution` was treating multi-leg `outcomePrices` like `["1","0","0"]` as "fractional" → void.
+
+**Backup tag:** `pre-multileg-resolver-20260514-2300`
+
+**Files deployed (2):**
+- `trading_corp/brokers/polymarket.py` — `get_market_resolution()` now returns `status="resolved"` whenever exactly one entry of `outcome_prices` is "1.0" and the rest are "0.0" (binary AND multi-leg). `yes_won` field stays binary-only backwards-compat (None for multi-leg). Fractional/partial resolution still voids.
+- `trading_corp/agents/polymarket_resolver.py` — `_compute_round_trip_row` adds multi-leg path. When outcome isn't yes/no, looks up `outcome_index` (already in audit payload from PCT `_emit_entry`) against `outcome_prices`. won = float(outcome_prices[outcome_index]) == 1.0.
+
+**Immediate impact (manual resolver tick post-deploy):**
+- 49 round-trips resolved in one tick
+- PCT total resolved: 28 → 79 (+51)
+- PCT wins: 15 → 58 (+43)
+- PCT realized PnL: +$3.96 → +$21.12 (**+$17.16 unstuck**)
+- Multi-leg families now resolving: NBA (Thunder/Lakers/Pistons/Cavaliers), MLB (Yankees/Orioles), Bitcoin Up/Down 5min, sports parlays.
+
+**Notable code changes:**
+- Backwards-compat: existing binary YES/NO callers unaffected. `yes_won` field still set for 2-outcome markets.
+- Resolver dispatches on outcome string: yes/no → use yes_won (legacy); else → use outcome_index. `outcome_index` comes from PCT `_emit_entry`'s audit payload (already present per the polymarket Data API activity row schema).
+- Multi-leg trades resolved via this path get `extra_json` from `_compute_round_trip_row` which is a SMALL dict (rationale + risk_verdict + llm_confidence). Does NOT include whale_user_name. Cosmetic side effect: the Whales dashboard tab shows ~95 trades attributed to NULL handle until backfill or extra_json enrichment.
+
+**Verification:** manual `resolve_pending_round_trips` call returned `{'scanned':100, 'resolved':49, 'pending':51, 'void':0, 'not_found':0, 'errors':0}`. Sample queries confirmed `outcome_bet="Thunder"` / `outcome_bet="Cavaliers"` / `outcome_bet="Up"` etc. now have correct won/loss + PnL.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-multileg-resolver-20260514-2300; BASE=/home/azureuser/trading_corp; \
+sudo mv \$BASE/trading_corp/agents/polymarket_resolver.py.\$TAG \$BASE/trading_corp/agents/polymarket_resolver.py; \
+sudo mv \$BASE/trading_corp/brokers/polymarket.py.\$TAG \$BASE/trading_corp/brokers/polymarket.py; \
+sudo systemctl restart trading-corp.service"
+# Note: rollback does NOT reverse the 49 newly-inserted round-trip rows;
+# they remain in polymarket_round_trips. Acceptable since they're correct.
+```
+
+---
+
+## 2026-05-14 22:45 UTC — PM Whales dashboard tab (P0a)
+
+**Triggered by:** Both copy-trading divisions (PCT + K3) had been live for days, accumulating per-whale data, but no UI surface to see whale-level performance. Per BACKLOG P0a entry from 2026-05-12.
+
+**Backup tag:** `pre-whales-tab-20260514-2245`
+
+**Files deployed (2):**
+- `trading_corp/web/data.py` — new `PMWhaleRow` dataclass (handle, venue, division, n_resolved, n_wins, n_losses, win_rate_pct, total_realized_pnl, n_open, last_entry_ts). New `_query_pm_whales(db_url, target_slugs)` aggregates per-whale stats from both `kalshi_round_trips.extra_json.whale_handle` (K3 schema) and `polymarket_round_trips.extra_json.whale_user_name` (PCT schema), plus open-trade counts from audit_event for would_have_placed BUY rows not yet linked. Whales with 0 resolved but open positions surfaced (so silent whales don't disappear). `whales` field added to `PMDashboardView`. `build_prediction_market_view` now calls `_query_pm_whales` in the existing `asyncio.gather`.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — conditional Whales tab nav button (only renders when `view.whales` non-empty) + new `<section id="pm-tab-whales">` with table showing all 9 columns. WR color-coded: green ≥60%, gray 40-60%, red <40%, muted when None.
+
+**Features shipped:**
+- New tab on `/prediction-markets/{division}` for `kalshi_copy_trading` + `polymarket_copy_trading` (and the All-Prediction-Markets cross-venue view). Conditional render: tab hidden for arb-only divisions.
+- Sorts highest realized PnL first; silent whales (n_resolved=0) at bottom.
+- Tab state managed by existing `data-pm-tab` JS in the dashboard's main template; HTMX swap preserves it on partial reloads.
+
+**Notable code changes:**
+- Two queries per copy-trading division: one for round-trip aggregates (joins `won` + `realized_pnl`), one for open-position count (joins audit_event vs round-trip `entry_order_id` to subtract paired exits). Cheap SQL; runs in parallel via the asyncio.gather.
+- Polymarket-side path also lists open-only-no-resolved whales (the 5 silent whales: Talvez10, ic4cream, 00xx00xx00, ddssaaas6, 0xe617861a96631d7cefdb) so the UI surfaces them — addresses earlier visibility concern.
+
+**Verification:** smoke-tested `_query_pm_whales` directly post-deploy; returned 11 rows with correct breakdown. Pedrobeliever47 (PCT) 24/15W +$6.53; smedtoshi (K3) 249/116W +$2.08; etc. PID 343xxx → 344621.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-whales-tab-20260514-2245; BASE=/home/azureuser/trading_corp; \
+sudo mv \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+sudo mv \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html.\$TAG \
+         \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-14 22:28 UTC — Sports Scout poll lift (free-tier preservation)
+
+**Triggered by:** the-odds-api free tier = 500 req/month. Default `poll_interval_sec=900` (15 min) × 5 leagues with 30-min cache → ~120-240 req/day = burns the monthly quota in ~2 days. Lifted to `3600` (1h) to land at ~30-60 req/day so the 7-day scout window fits in free tier with headroom.
+
+**Backup tag:** `pre-sports-poll-bump-20260514-2228` (yaml-only, single-file change).
+
+**Verified:** yaml re-parses cleanly (`poll_interval_sec=3600`); hot-reload picks up via `KalshiSportsScoutAgent._reload` mtime check.
+
+**No restart needed.** Watch `kalshi_sports_scout_scan` audit's `odds_api_quota_remaining` field daily; if approaching 0 with days left, lift further or upgrade to $30/mo paid tier.
+
+---
+
+## 2026-05-14 22:06 UTC — K3 sports-ticker skip
+
+**Triggered by:** Sports Scout shipped as the dedicated sports observer. K3 (kalshi_copy_trader) had no category filter and was firing 80 historical sports trades via whale shadowing. Lockdown for parity with weather/crypto pattern.
+
+**Backup tag:** `pre-k3-skip-sports-20260514-2206`
+
+**File deployed (1):**
+- `trading_corp/agents/strategies/kalshi_copy_trader.py` — module-level `_SPORTS_TICKER_PREFIXES` tuple (31 prefixes: MLB/NBA/NHL/NFL/MLS, ATP/WTA/ITF, CS2/DOTA/LCS, ~20 international soccer leagues, UFC/BOXING/NCAAF/NCAAB) + `_is_sports_ticker()` helper. Skip injected at the top of K3's entries loop in `_process_whale_activity` — emits `kalshi_copy_entry_skipped_sports` audit and `continue`s without calling `_emit_entry`.
+
+**Features shipped:** K3 now blocks all sports tickers, logging skip-reason for visibility. Other 4 strategies that could place sports bets (3 arbs + scout) verified clean.
+
+**Verification:** 10/10 prefix-match test cases pass (sports tickers blocked; non-sports BTC/temp/recession pass through). PID 340089 → 340857 (restart for code reload). Service active.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-k3-skip-sports-20260514-2206; BASE=/home/azureuser/trading_corp; \
+sudo mv \$BASE/trading_corp/agents/strategies/kalshi_copy_trader.py.\$TAG \
+         \$BASE/trading_corp/agents/strategies/kalshi_copy_trader.py; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-14 21:42 UTC — Kalshi Sports Scout (read-only observer, no trading division)
+
+**Triggered by:** Specialized-agent pattern for sports needed validation before committing to a paid data feed + full trading division. Three options scoped (A: scout-first, B: MLB-only v1, C: broad v1). User picked A — observe-first to validate edge magnitude over 7 days.
+
+**Backup tag:** `pre-sports-scout-20260514-2142`
+
+**Files deployed (3 new, 3 patched, +1 secrets-loader bug fix):**
+
+### New
+- `trading_corp/data/odds_api_client.py` — async the-odds-api client. Per-sport 30-min cache. American-odds → vig-removed implied prob (median across books for consensus). H2H markets only v1; spread/total/props deferred. Returns `GameOdds(home_team, away_team, implied_home, implied_away, n_books, median_vig_pct)`.
+- `trading_corp/data/sports_team_mapping.py` — 155 Kalshi 3-letter codes → odds-api full team names across MLB(37) + NBA(30) + NHL(32) + MLS(31) + NFL(32). `parse_sports_ticker()` uses YES-side suffix as anchor to split TEAM1TEAM2 blobs (e.g., `KXMLBGAME-26MAY112010SEAHOU-SEA` → SEA + HOU). Rejects TIE/DRAW for v1; rejects non-listed leagues (ATP/ITF/CS2 etc.).
+- `trading_corp/agents/strategies/kalshi_sports_scout.py` — read-only scout. **No order emission.** Owns its OddsAPIClient lifecycle. Audit kinds: `kalshi_sports_scout_scan` (per-cycle summary w/ quota tracking), `kalshi_sports_observed` (per market: bookmaker_implied vs kalshi_implied + divergence), `kalshi_sports_scout_unmapped` (per market that couldn't be mapped), `kalshi_sports_scout_no_api_key` (stub mode).
+
+### Patched
+- `config/strategies.yaml` — `kalshi_sports_scout:` block (enabled=true, leagues=[MLB, NBA, NHL, MLS, NFL], divergence_log_threshold_pct=1.0)
+- `trading_corp/utils/secrets.py` — `ODDS_API_KEY` added to KV-fetch list, redaction list, Secrets dataclass + factory. **CAUGHT BUG:** patcher applied the redaction-list edit twice (lines 47/48 dup) and missed the `expected_env_vars` list. Manual surgical fix at 22:18 UTC dedupe + insertion at line 214. Going forward, when patching multiple SAME-pattern lists in a single file, anchor with surrounding context (the 8-space indent + adjacent line) instead of relying on `replace(..., 1)` twice.
+- `trading_corp/main.py` — agent setup + `_scheduled_kalshi_sports_scout_loop` (lazy-resolves real KalshiBroker; no risk_agent wiring since no orders flow)
+
+### NOT touched (deliberately)
+- `config/divisions.yaml` — scout doesn't trade; no division
+- `kalshi_resolver.py` — no orders to resolve
+
+**External step required:** API key uploaded to KV manually (Jack's local az CLI run). VM managed identity has read-only KV permission.
+
+```bash
+az keyvault secret set --vault-name kv-tc-vtwbowt3wtkpy --name ODDS-API-KEY --value '<key>' --output none
+```
+
+**Verification:**
+- Parser tests: 10/10 sample tickers parse correctly (incl. correctly rejecting TIE outcomes + non-scope leagues)
+- KV upload confirmed (32 chars, name `ODDS-API-KEY`)
+- Post-fix loader returns `odds_api_key.length=32`
+- "Kalshi Sports Scout online (enabled=True, has_credentials=True)" in journalctl at 22:19:26 UTC
+- PID 339242 → 340089 → 340857 → 341639 → 342228 (multiple restarts during deploy + bug-fix cycle)
+
+**First-week observation gate:** after 7 days, query `kalshi_sports_observed` audit to compute median absolute divergence per league + hit-rate at various divergence thresholds. Decide: full trading division (option B/C from prior scoping), scope-down, or shelve.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-sports-scout-20260514-2142; BASE=/home/azureuser/trading_corp; \
+sudo mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+sudo mv \$BASE/trading_corp/utils/secrets.py.\$TAG \$BASE/trading_corp/utils/secrets.py; \
+sudo mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+sudo rm \$BASE/trading_corp/data/odds_api_client.py \
+        \$BASE/trading_corp/data/sports_team_mapping.py \
+        \$BASE/trading_corp/agents/strategies/kalshi_sports_scout.py; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-14 21:19 UTC — Kalshi Crypto Arbitrage specialized division (forecast-driven)
+
+**Triggered by:** Jack's request to extend the specialized-agent pattern to a second Kalshi category after Kalshi Weather shipped at 20:54 UTC. Crypto chosen because (a) we already have live spot via CoinbaseBroker, (b) K3 lost 192 of 253 trades historically on KX*15M crypto bars where the LLM had no live-price context, (c) high volume on 15-min / daily crypto threshold markets.
+
+**Backup tag:** `pre-crypto-division-20260514-2119`
+
+**Files deployed (2 new, 4 patched):**
+
+### New
+- `trading_corp/data/crypto_spot_provider.py` — Async fetcher: Kalshi asset prefix → Coinbase ccxt symbol → live spot. Hard-coded annualized vols v1 (BTC=60%, ETH=75%, SOL=90%, DOGE=110%, XRP=85%). HYPE/BNB return None (no Coinbase US spot). 10s spot cache.
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — Strategy class mirroring `kalshi_weather_arb` shape. Reuses `_weather_math.evaluate_weather_market` directly (math is unit-agnostic — Fahrenheit + temp ↔ USD + spot). Source-divergence cushion is asset-specific (0.1% of spot vs weather's fixed 2°F).
+
+### Patched
+- `config/divisions.yaml` — new `kalshi_crypto` division (broker:paper; lazy-resolves real KalshiBroker + CoinbaseBroker for discovery + spot)
+- `config/strategies.yaml` — new `kalshi_crypto_arb` block + **Crypto removed from `kalshi_llm_arbitrage` discovery categories** during the patch + **Crypto stripped from kalshi_tail_price_arb + kalshi_temporal_bucket_arb** via post-patch sed (lockdown parity with weather treatment). All three arb strategy `discovery.categories` now: `['Politics', 'Elections', 'Economics', 'Financials']`.
+- `trading_corp/main.py` — `KalshiCryptoArbAgent` setup + `_scheduled_kalshi_crypto_arb_loop`. Lazy-resolves both `KalshiBroker` (discovery via `_client.get_market`) and `CoinbaseBroker` (spot via `quote()`). Skips cycle if either is unavailable.
+- `trading_corp/agents/kalshi_resolver.py` — `kalshi_crypto_arb` added to `_KALSHI_ACTORS` + `_KALSHI_DIVISIONS` + `_ACTOR_TO_DIVISION` ({"kalshi_crypto_arb": "kalshi_crypto"}) + `_ACTOR_TO_ARB_TYPE_DEFAULT` ({"kalshi_crypto_arb": "crypto_spot"})
+
+**Features shipped:**
+- Crypto-category Kalshi markets now exclusively scanned by `kalshi_crypto_arb`. No LLM in path; pure Gaussian probability vs threshold using Coinbase spot.
+- Default config: `poll_interval_sec=60` (crypto churns fast), `min_divergence_pct=10`, `max_horizon_hours=168` (7d), `market_cooldown_hours=1`, `sizing.fixed_amount=$1`.
+- New audit kinds: `kalshi_crypto_scan`, `kalshi_crypto_evaluated`, `kalshi_crypto_skipped_{near_threshold,horizon,no_edge,no_strike,no_target_time,bad_target_time,no_spot,no_implied}`.
+- Telegram fires emit 🪙 prefix.
+
+**Notable code changes:**
+- `evaluate_weather_market` is venue-agnostic — same call works with `(temp_f, sigma_f, threshold_f)` for weather and `(spot, spot×vol×√years, strike)` for crypto. When Financials ships, generalize `_weather_math.py` → `_threshold_math.py`; until then, the awkward name is fine.
+- `parse_kalshi_asset_prefix(ticker)` recognizes HYPE/DOGE/BTC/ETH/SOL/XRP/BNB (longest-match first). HYPE/BNB recognized but `is_supported()` returns False → skipped at scan time.
+- σ floor: `max(sigma, spot * 1e-6)` prevents div-by-zero in degenerate `time_to_resolution=0` cases.
+
+**Verification:**
+- yaml parses; agent constructs; resolver allowlist updated; main.py loop function present (smoke tests pre-restart).
+- Parser tests: `KXBTC15M-26MAY1416-T80000`→BTC, `KXETH-26MAY14-T1900`→ETH, `KXHYPE15M-...`→HYPE, `KXPOLITICS-foo`→None.
+- PID 335679 → 337337; service active.
+- `kalshi_crypto` paper broker registered at 21:20:08 UTC.
+
+**Math sanity:** For BTC at $81,500 spot, threshold $80,000 ('greater'), 30 min to resolution, vol=60%: σ ≈ $300, P(YES) ≈ 99.99%. Implied 0.85 → edge 14.99% → fires.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-crypto-division-20260514-2119; BASE=/home/azureuser/trading_corp; \
+sudo mv \$BASE/config/divisions.yaml.\$TAG \$BASE/config/divisions.yaml; \
+sudo mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+sudo mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+sudo mv \$BASE/trading_corp/agents/kalshi_resolver.py.\$TAG \$BASE/trading_corp/agents/kalshi_resolver.py; \
+sudo rm \$BASE/trading_corp/data/crypto_spot_provider.py \
+        \$BASE/trading_corp/agents/strategies/kalshi_crypto_arb.py; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-14 20:54 UTC — Kalshi Weather Arbitrage specialized division (forecast-driven)
+
+**Triggered by:** Audit of 120 Climate/Weather LLM-arb trades revealed (a) a 15-trade KXTEMPNYCH disaster (-$6.11) where the LLM hallucinated the temperature threshold, and (b) 103 city-high trades winning 66% / +$3.48 but the generic LLM was guessing from training-data climatology rather than today's actual forecast. Decision: build a specialized weather agent that pulls NWS hourly forecasts + deterministic Gaussian math.
+
+**Backup tag:** `pre-weather-division-20260514-2054`
+
+**Files deployed (3 new, 4 patched):**
+
+### New
+- `trading_corp/agents/strategies/_weather_math.py` — Pure math + validation gates. `forecast_probability(forecast_temp, sigma, threshold, direction)` via Normal CDF (`math.erf`). `evaluate_weather_market()` applies three gates: horizon ≤ 72h, |threshold − forecast| ≥ sigma_total, |P(YES) − implied| ≥ min_divergence_pct. Sigma augmented with `SOURCE_DIVERGENCE_SIGMA_F=2.0` (NWS↔AccuWeather drift cushion). Venue-agnostic — crypto strategy (21:19) reuses it byte-for-byte.
+- `trading_corp/data/weather_forecast.py` — NWS async client. Two-step protocol: `/points/{lat,lon}` → gridpoint URL (24h cache) → `/forecast/hourly` (30min cache). Free, no auth, US-only. `get_forecast_at(lat, lon, target_iso)` for hourly markets; `get_daily_extremum(lat, lon, date, kind='high'|'low')` for daily high/low chains.
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — Strategy. Discovers Climate/Weather markets via `kalshi_broker.list_markets()`. Per market: parses lat/lon from `rules_primary` regex (with `_CITY_COORDS_FALLBACK` map for 20+ US cities), threshold from `floor_strike`/`cap_strike`, direction from `strike_type`, target time from `expected_expiration_time` (or ticker-suffix fallback for KXTEMPNYCH-style hourly tickers). Non-US (TLV) skipped at scan time.
+
+### Patched
+- `config/divisions.yaml` — new `kalshi_weather` division
+- `config/strategies.yaml` — new `kalshi_weather_arb` block; **Climate/Weather stripped from all three arb strategies** (kalshi_tail_price_arb, kalshi_temporal_bucket_arb, kalshi_llm_arbitrage). The first patcher invocation removed only one occurrence; followup `sudo sed -i '/^      - Climate and Weather$/d'` cleaned the rest.
+- `trading_corp/main.py` — agent setup + `_scheduled_kalshi_weather_arb_loop` (lazy-resolves real KalshiBroker for discovery)
+- `trading_corp/agents/kalshi_resolver.py` — added `kalshi_weather_arb` to actors + division map + arb_type default `weather_forecast`
+
+**Features shipped:**
+- Climate/Weather-category Kalshi markets now exclusively scanned by `kalshi_weather_arb`. Replaces the LLM path that was hallucinating thresholds.
+- Default config: `poll_interval_sec=300` (5 min — weather doesn't churn), `min_divergence_pct=10`, `max_horizon_hours=72`, `market_cooldown_hours=4`, `sizing.fixed_amount=$1`.
+- New audit kinds: `kalshi_weather_scan`, `kalshi_weather_evaluated`, `kalshi_weather_skipped_{near_threshold,horizon,no_edge,no_strike,no_coords,no_target_time,bad_target_time,no_forecast,no_implied}`.
+- Telegram fires emit ☀️ prefix.
+
+**Notable code changes:**
+- Sigma-by-horizon heuristic: 0-24h=1.5°F, 24-48h=2.5°F, 48-72h=3.5°F. Conservative bands — better to skip noisy near-threshold than fire false-positive.
+- City→coords map covers 20+ US locations with airport-AccuWeather coordinates as Kalshi documents for daily high/low markets; NYC Central Park (40.7812,-73.9665) for the KXTEMPNYCH chain.
+- Resolver knows the new actor → division mapping; round-trips will land in `kalshi_round_trips` with `division='kalshi_weather'` once weather markets resolve.
+
+**Verification:**
+- All imports succeed; agent constructs (enabled=True, division=kalshi_weather)
+- Math sanity-check: forecast 62°F ±1.5°F vs threshold 57.99°F → P(YES)=0.946, edge=14.6%, fires
+- **Live NWS hit succeeded** at smoke-test time: 63.0°F forecast for NYC Central Park, 24h forward
+- PID 330611 → 335679; "Kalshi Weather Arbitrage scanner online (enabled=True, auto_execute=False)" in journalctl
+
+**Cross-divisional lockdown verified:**
+| strategy | weather in categories | recent weather hits (post-restart) |
+|---|---|---:|
+| kalshi_tail_price_arb | ❌ | 0 |
+| kalshi_temporal_bucket_arb | ❌ | 0 |
+| kalshi_llm_arbitrage | ❌ | 0 |
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-weather-division-20260514-2054; BASE=/home/azureuser/trading_corp; \
+sudo mv \$BASE/config/divisions.yaml.\$TAG \$BASE/config/divisions.yaml; \
+sudo mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+sudo mv \$BASE/trading_corp/main.py.\$TAG \$BASE/trading_corp/main.py; \
+sudo mv \$BASE/trading_corp/agents/kalshi_resolver.py.\$TAG \$BASE/trading_corp/agents/kalshi_resolver.py; \
+sudo rm \$BASE/trading_corp/data/weather_forecast.py \
+        \$BASE/trading_corp/agents/strategies/_weather_math.py \
+        \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py; \
+sudo systemctl restart trading-corp.service"
+# Note: if rolling back to the pre-weather state, also restore Climate and Weather
+# + Crypto into the three arb strategies' categories manually.
+```
+
+---
+
+## 2026-05-14 19:12 UTC — Kalshi LLM Arb: surface per-market `title` to fix threshold hallucination
+
+**Triggered by:** Audit on Climate/Weather LLM losses showed the LLM hallucinated thresholds as "-1°C (30°F)" across all 15 KXTEMPNYCH trades because the user prompt sent `event_title` ("New York City temperature on May 11, 2026 at 1pm EDT?") + delta-encoded `subtitle` ("-1° or below"). MarketRecord.title carried the explicit threshold ("Will the temp in NYC be above 57.99° on May 11, 2026 at 1pm EDT?") but wasn't being passed.
+
+**Backup tag:** `pre-llm-mkttitle-20260514-1912`
+
+**File deployed (1):**
+- `trading_corp/agents/strategies/kalshi_llm_arbitrage.py` — survivor dict now includes `market_title=m.title`; `_estimate_probability` prefers it over `event_title + subtitle` fallback.
+
+**Features shipped:**
+- LLM eval prompts now show the explicit threshold in plain English for every binary-strike market.
+- Lesson generalizable to any future Kalshi LLM strategy: surface threshold context explicitly; don't rely on the LLM to decode ticker conventions.
+
+**Verification:** PID 329613 → 330611; service active; no errors.
+
+---
+
+## 2026-05-14 18:45 UTC — Home tile WR fix (Polymarket GROUP BY division)
+
+**Triggered by:** Jack flagged main dashboard tile WR mismatch vs details pages.
+
+**Backup tag:** `pre-pm-tile-wr-fix-20260514-1845`
+
+**File deployed (1):**
+- `trading_corp/web/data.py` — `_hydrate_pm_overview` polymarket roll-up now `GROUP BY division`, mirroring the kalshi roll-up. Pre-fix, ALL polymarket round-trips (both arb + copy_trader) aggregated into the `polymarket_arbitrage` tile; `polymarket_copy_trading` tile rendered zero.
+
+**Features shipped:** every PM division tile now matches its details page on `n_resolved`, WR, PnL. Verified: polymarket_arbitrage 6 RTs 66.7% WR, polymarket_copy_trading 28 RTs 53.6% WR, kalshi_llm_arbitrage 190 RTs 50.5% WR, kalshi_copy_trading 333 RTs 44.7% WR.
+
+---
+
+## 2026-05-14 18:55 UTC — Polymarket Copy Trader resolution + drift checks at entry
+
+**Triggered by:** Analysis of PCT 28 RTs showed Pedrobeliever47 carrying the strategy (22/28, 63.6% WR, +$6.50); other whales noisy. Two failure modes diagnosed: (a) `btc-updown-5m-*` markets where the whale's activity-feed lag means the market already settled by our poll (K3-class trap), (b) Trump/Xi political insider markets where the move happens between whale's fill and our 60s-later poll.
+
+**Backup tags:** `pre-pct-resolfix-20260514-1855`, `pre-pct-driftcheck-20260514-1903`
+
+**Files deployed (2 patched, 1 across two sub-deploys):**
+- `trading_corp/agents/strategies/polymarket_copy_trader.py`:
+  - Resolution check: `_emit_entry` now async, awaits `market_state_fetcher.get_market_resolution(condition_id)`. Skip on resolved/void. New audit `polymarket_copy_entry_skipped_resolved`. Catches the K3-class trap (verified: `btc-updown-5m-1778735400` settled 11+ hours before our poll).
+  - Drift check (sub-deploy at 19:03): `await market_state_fetcher.quote(slug:outcome)`. If `(current - whale)/whale < entry_drift_skip_threshold` (default -0.30), skip. New audit `polymarket_copy_entry_skipped_drift`. Hot-reloadable threshold.
+- `trading_corp/main.py` — `_scheduled_polymarket_copy_trader_loop` now lazy-resolves a PolymarketBroker (with `get_market_resolution`) and passes it as `market_state_fetcher` to `agent.run_scan_cycle`.
+
+**Verification:** PID 327526 → 328963 → 329613; service active; smoke tests pre-restart confirmed both gates wired into `_emit_entry`.
+
+---
+
+## 2026-05-14 18:38 UTC — Kalshi LLM Arb category-aware strict gate + prompt update
+
+**Triggered by:** Audit of 190 LLM-arb RTs: Economics 49 trades / 24.5% WR / -$25.32 (single-category 67% of total loss). Per-config retro: Economics + llm_prob ∈ [0,0.15]∪[0.85,1] = 11 trades / 72.7% WR / +$0.12. The category isn't broken — middle-confidence threshold markets are.
+
+**Backup tag:** `pre-kalshi-llm-strict-20260514-1838`
+
+**Files deployed (2):**
+- `trading_corp/agents/strategies/kalshi_llm_arbitrage.py` — strict gate after baseline divergence check. For category ∈ {Economics, Financials}, require `divergence ≥ 30%` AND `llm_prob ∈ [0, 0.15] ∪ [0.85, 1.0]`. New audit `kalshi_llm_strict_gate_skip`. Hot-reloadable via `strict_categories`, `strict_min_divergence_pct`, `strict_llm_extreme_max` yaml keys.
+- `trading_corp/agents/strategies/_polymarket_prompts.py` — added "Economics, Financials, and macro-data markets" section to `ANALYST_SYSTEM_PROMPT`. Tells LLM: (a) data cutoff = no live CPI/PPI/jobs; (b) threshold markets are economist-priced — anchor near market; (c) exact-buckets + extreme-tails are legit edge; (d) middle of probability range = output `confidence: "low"` and stay within 5pp of implied. Prompt grew 2,513 → ~3,371 tokens (still above 2,048 Sonnet 4.6 cache minimum).
+
+**Verification:** 3 `kalshi_llm_strict_gate_skip` audit events at 18:54 UTC confirmed the gate is firing on middle-divergence Economics markets within minutes of deploy.
+
+---
+
+## 2026-05-14 18:18 UTC — K3 exit-pricing fix + 253-trade backfill
+
+**Triggered by:** Jack flagged K3 (kalshi_copy_trading) as "0/333 wins". Investigation: `_emit_exit` called `broker.quote(ticker)` which returns $0 on settled Kalshi markets regardless of winner. Every paired exit recorded $0 → all trades looked like total losses.
+
+**Backup tag:** `pre-k3-exitfix-20260514-1818`
+
+**File deployed (1) + 1 backfill script:**
+- `trading_corp/agents/strategies/kalshi_copy_trader.py` — `_emit_exit` now checks `get_market_resolution(ticker)` FIRST. If status=resolved, exit_price = $1 if our outcome matches winner else $0. If status=void, exit_price = entry_price (refund). Fall back to `broker.quote()` only when market still trading.
+- `scripts/backfill_k3_exit_prices.py` — backfilled all 253 historical K3 paired round-trips by querying market resolutions. **149 went from "loss" → "win". Net PnL went -$170.42 → +$0.58.** Per-whale corrected: smedtoshi 191 trades 60.2% WR +$2.16; tom14cat14 62 trades 54.8% WR -$1.58.
+
+**Re-enable:** K3 had been disabled on prod (accidental stomp during the 17:57 bitunix deploy, restored to enabled=true at 18:50 UTC after data showed strategy is roughly break-even paper).
+
+**Adverse selection caveat:** Even with correct exit pricing, K3 still suffers from polling-based position observation — winners auto-settle out of `open_positions` before our 10-min poll sees them. Strategy is break-even paper, fee-negative live at $1-3 sizing. Live-mode flip gated on either (a) Plaid/alternative direct-trade-stream data source or (b) Hashdive/Apify schema change that exposes recent closures.
+
+**Verification:** PID 321874 → 324735; service active; post-backfill rollup query confirms 149W/104L on 253 real-entry rows.
+
+---
+
+## 2026-05-14 17:57 UTC — BitUnix Phase 3.2 tuning: multi-fire fix + HTF-alignment gate + Cypher weight/TTL cut
+
+**Triggered by:** Jack flagged BitUnix paper trades as "not looking good" + hypothesis that long-TTL signals persist too long. Audit of 43 trades (Phase 3.2 since 2026-05-11 18:00 UTC) revealed:
+- BUY side: 1/9 wins, -0.67 R avg (all "partial" HTF alignment — 4h bull, 1D bear; relief-rally trap)
+- Multi-fire clusters: 7 clusters of 2-3 trades within ≤60s, 6/7 lost (-9 R combined vs -3 R if dedup'd)
+- Cypher A 1D `mc_a_red_diamond` firing 47× in 24h with oldest still contributing at 23.75h old
+
+Three fixes shipped together. What-if replay on existing 43-trade history projected +6 R from dedup alone, +6 R additional from buy-side HTF gate (Z scenario in `scripts/analyze_bitunix_whatif.py`: 60.7% WR / +0.86 R avg / +24 R total vs current 48.6% / +0.49 / +18 R).
+
+**Backup tag:** `pre-bitunix-fix123-20260514-1757`
+
+**Files deployed (2):**
+
+- `trading_corp/agents/divisions/bitunix_futures_observer.py`:
+  - **Fix #1 (multi-fire race):** Added `import asyncio` + `self._score_lock = asyncio.Lock()` in `__init__`. `_score_and_maybe_propose` now wraps the entire critical section (read cooldown → evaluate → place → write cooldown) in `async with self._score_lock:`. Inner work moved to `_score_and_maybe_propose_locked`. Without this, concurrent webhook arrivals within ~1s all read pre-fire cooldown state and all fire.
+  - **Fix #2 (HTF-alignment gate):** New method `_check_htf_alignment(side, now_iso)` returns `agree|partial|neutral|contra` by comparing winning side against `bitunix_observer_bias` table (already populated by Phase 3.0 `_update_bias`). Inserted in `_score_and_maybe_propose_locked` AFTER the score-SKIP check, BEFORE deps/broker/sizing. Asymmetric rule: BUY requires `agree` (both HTFs match); SELL allows everything except `contra`. New audit outcome `skipped_htf_alignment` with note.
+
+- `config/strategies.yaml` `bitunix_futures.scoring` block:
+  - **Fix #3 (Cypher weight + TTL cut):** mc_a_* weights 5/4/3/2 → 2/2/1/1; mc_b_* weights 5/4/3/2 → 2/2/1/1. mc_a_* TTL 1440 → **360 min** (24h → 6h). mc_b_* TTL 240 → **120 min** (4h → 2h). Thresholds scaled proportionally to preserve firing frequency: min_fire 8 → **4**, premium 12 → **8**, standard 8 → **4**, weak 5 → **2**.
+
+**Features shipped:**
+- Concurrent webhook fan-in now serializes through `_score_lock`. The 7-cluster multi-fire pattern can no longer recur.
+- BUY trades are blocked when HTF bias is anything other than fully bull. SELL trades are blocked only on contra HTF.
+- Cypher A/B signals contribute reduced points; the bias gate (Fix #2) carries the directional veto, not the score sum.
+- TTL on 1D Cypher dropped to 6h — yesterday's 1D bar print no longer contributes to today's score.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- `_score_and_maybe_propose` is now a thin wrapper around `_score_and_maybe_propose_locked`. Any future score-path additions must go INSIDE the lock to inherit the serialization guarantee.
+- HTF alignment uses the **existing bias state machine** (table `bitunix_observer_bias`), NOT the live signal-ledger sum. Means the gate is independent of factor weight tuning.
+- Threshold cuts pair with weight cuts; reverting just the weights without thresholds would silently kill firing frequency.
+
+**Verification:**
+- Smoke test: config parses, observer constructs, `_check_htf_alignment` returns `'neutral'` with empty bias state.
+- Pre-deploy bias state on prod: `1d=bear` (41.9h old, active under 7d decay), `4h=bull` (9.9h, active, set by mc_b_buy_circle) + 4h bear (29.9h, expired). Under new gate this resolves to "partial" for any direction → BUYS BLOCKED, SELLS ALLOWED. Matches the bear-trend regime BTC has been in.
+- PID rotated 274260 → 321874; systemctl `is-active` post-restart.
+- md5 parity: local + prod match on both files.
+
+**Inert / dormant on current traffic:**
+- 6 open SELL trades from pre-deploy remain — paper_trade_replay resolves them independently of the observer code change.
+- Phase 3.1 fallback (`_maybe_propose`) is unchanged; only the score path was modified.
+
+**What I expect to see next:**
+- Replay outcome: post-deploy, BTC rally continuing → bias 4h should flip back to bear (4h bear setter is stale); 1D still bear. Sells will continue firing with `align=partial` (current state) until BOTH HTFs are bear, at which point sells fire as `align=agree`. No buy alignment will exist until 1D Cypher flips bull, which is the kind of regime change we want to wait for.
+- Cooldown will not produce same-second multi-fires.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bitunix-fix123-20260514-1757; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py.\$TAG \$BASE/trading_corp/agents/divisions/bitunix_futures_observer.py; \
+mv \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
 ## 2026-05-12 03:45 UTC — Copy-trader exit pairing + K3 price capture + dashboard polish
 
 **Triggered by:** Jack flagged from screenshots: (1) Kalshi dashboard "not legible" — ENTRY column showed $0.000 / SIGNAL & RESOLVES empty for every K3 row, (2) copy-trader exits visible in Telegram but never closed/PnL'd on the dashboard. Two independent issues, both architectural.

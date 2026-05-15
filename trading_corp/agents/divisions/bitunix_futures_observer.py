@@ -32,6 +32,7 @@ Class entry points:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -484,6 +485,10 @@ class BitunixFuturesObserver:
                 ttls.extend(int(v) for v in per_tf.values() if int(v) > 0)
             if ttls:
                 self._max_ttl_minutes = max(ttls)
+        # Serializes the score-path critical section (read cooldown → evaluate →
+        # place → write cooldown). Without it, concurrent webhook arrivals
+        # within ~1s all read pre-fire cooldown state and all fire.
+        self._score_lock = asyncio.Lock()
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -852,7 +857,14 @@ class BitunixFuturesObserver:
     ) -> None:
         """Score engine flow. Always emits a `bitunix_score_decided`
         audit row. Falls back silently on deps-missing / no-broker /
-        sizing-rejection — never raises out."""
+        sizing-rejection — never raises out.
+
+        The body runs inside `_score_lock` so the cooldown read → place →
+        cooldown write sequence is atomic against concurrent webhook
+        arrivals. Without the lock, three near-simultaneous evaluations
+        would all read pre-fire cooldown state and all fire (observed
+        7×2-3 trade multi-fire clusters in the 2026-05-11→14 data).
+        """
         if self.scoring_config is None:
             return
 
@@ -860,6 +872,15 @@ class BitunixFuturesObserver:
         if symbol not in ALLOWED_SYMBOLS:
             return
 
+        async with self._score_lock:
+            await self._score_and_maybe_propose_locked(payload, source=source)
+
+    async def _score_and_maybe_propose_locked(
+        self,
+        payload: dict[str, Any],
+        *,
+        source: str,
+    ) -> None:
         now = datetime.now(timezone.utc)
         # Stash source on payload for the audit log (mutates the dict
         # but we never propagate it out beyond logging).

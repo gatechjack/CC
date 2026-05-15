@@ -1,0 +1,14 @@
+[Unit]
+Description=K3 watch-only deep-scan (multi-leaderboard rank-walk to expand watch list)
+After=network-online.target trading-corp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/azureuser/trading_corp
+Environment="KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/"
+Environment="PYTHONIOENCODING=utf-8"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/azureuser/trading_corp/venv/bin/python -m trading_corp.scripts.seed_kalshi_watchlist_deep
+TimeoutStartSec=900

@@ -51,6 +51,9 @@ class Division:
     strategy: str | None = None
     enabled: bool = True
     standby: bool = False       # true = no order path; UI shows STANDBY badge
+    paper_capital: float = 0.0  # starting equity for `broker: paper` divisions
+                                # (used by Kelly-sized strategies — see main.py
+                                # `family == "paper"` branch). $0 = legacy default.
 
     # Filled in at runtime by the dashboard data layer; kept here for type
     # convenience so templates can iterate `division.equity` etc. directly.
@@ -139,6 +142,7 @@ def load_divisions(path: Path = _DEFAULT_PATH) -> list[Division]:
                 strategy=entry.get("strategy"),
                 enabled=bool(entry.get("enabled", True)),
                 standby=bool(entry.get("standby", False)),
+                paper_capital=float(entry.get("paper_capital", 0.0) or 0.0),
             )
         except KeyError as e:
             log.warning("divisions.yaml: skipping entry missing key %s — %r", e, entry)

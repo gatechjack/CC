@@ -53,11 +53,20 @@ from typing import Any
 
 import yaml
 
+from trading_corp.agents.strategies._whale_autopause import (
+    MAX_TOTAL_PNL,
+    MAX_WIN_RATE_PCT,
+    MIN_RESOLVED_TRADES,
+    should_autopause,
+    sqlite_path_from_db_url,
+)
 from trading_corp.data.polymarket_data_api_client import (
     ActivityRow, PolymarketDataAPIClient,
 )
 from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.persistence.models import ProposedOrder
+
+import sqlite3
 
 log = logging.getLogger(__name__)
 
@@ -151,10 +160,18 @@ class PolymarketCopyTraderAgent:
         *,
         data_api_client: PolymarketDataAPIClient,
         logger_agent: Any = None,
+        market_state_fetcher: Any = None,
     ) -> list[ProposedOrder]:
         """One copy-trader cycle. Returns ProposedOrders for the risk gate.
 
         `data_api_client` must be an open async-context PolymarketDataAPIClient.
+
+        `market_state_fetcher` is an optional PolymarketBroker-like object
+        exposing async `get_market_resolution(condition_id=...)`. When
+        provided, `_emit_entry` checks resolution status before placing —
+        avoids the K3-class adverse-selection trap where a whale's stale
+        activity-feed entry lands on a market that has already settled
+        (observed on `btc-updown-5m-*` markets, 0/3 wins).
         """
         self._reload()
         if not self.enabled:
@@ -163,6 +180,13 @@ class PolymarketCopyTraderAgent:
         selected_whales = self._load_selected_whales()
         if not selected_whales:
             log.info("polymarket_copy_trader: no selected whales; no-op")
+            return []
+
+        selected_whales = self._apply_autopause_filter(
+            selected_whales, logger_agent=logger_agent,
+        )
+        if not selected_whales:
+            log.info("polymarket_copy_trader: all whales auto-paused; no-op")
             return []
 
         activity_limit = int(self._strat_cfg.get("activity_limit_per_poll",
@@ -184,9 +208,10 @@ class PolymarketCopyTraderAgent:
                 )
                 continue
 
-            whale_proposals = self._process_whale_activity(
+            whale_proposals = await self._process_whale_activity(
                 wallet=wallet, user_name=user_name, rows=rows,
                 logger_agent=logger_agent,
+                market_state_fetcher=market_state_fetcher,
             )
             proposals.extend(whale_proposals)
 
@@ -194,9 +219,10 @@ class PolymarketCopyTraderAgent:
 
     # ── Per-whale processing ──────────────────────────────────────────
 
-    def _process_whale_activity(
+    async def _process_whale_activity(
         self, *, wallet: str, user_name: str,
         rows: list[ActivityRow], logger_agent: Any,
+        market_state_fetcher: Any = None,
     ) -> list[ProposedOrder]:
         """Diff new trades against this whale's persisted state, emit orders."""
         state = self._load_whale_state(wallet)
@@ -241,8 +267,10 @@ class PolymarketCopyTraderAgent:
         proposals: list[ProposedOrder] = []
         for r in new_rows:
             if r.side == "BUY":
-                proposal = self._emit_entry(
+                proposal = await self._emit_entry(
                     wallet=wallet, user_name=user_name, activity=r,
+                    market_state_fetcher=market_state_fetcher,
+                    logger_agent=logger_agent,
                 )
                 if proposal is not None:
                     proposals.append(proposal)
@@ -290,9 +318,91 @@ class PolymarketCopyTraderAgent:
 
     # ── Entry / exit emission ─────────────────────────────────────────
 
-    def _emit_entry(
+    async def _emit_entry(
         self, *, wallet: str, user_name: str, activity: ActivityRow,
+        market_state_fetcher: Any = None,
+        logger_agent: Any = None,
     ) -> ProposedOrder | None:
+        # ── Fix 2026-05-14: skip already-resolved markets ──
+        # The whale's activity feed surfaces trades with a 10-60s lag.
+        # On short-duration markets (e.g. `btc-updown-5m-*`, 5-min bars)
+        # the market may have already settled by the time we poll. Our
+        # paper-trade then 'enters' at the whale's stale price on a
+        # dead market and is guaranteed-loss when paired to a SELL.
+        # Observed: 3/3 losses on `btc-updown-5m-*` markets where the
+        # market's 5-min window had passed >hours before our poll.
+        if market_state_fetcher is not None and hasattr(
+            market_state_fetcher, 'get_market_resolution'
+        ):
+            try:
+                res = await market_state_fetcher.get_market_resolution(
+                    condition_id=activity.condition_id,
+                )
+                status = (res or {}).get('status')
+                if status in ('resolved', 'void'):
+                    if logger_agent is not None:
+                        logger_agent.log_event(
+                            self.name, 'polymarket_copy_entry_skipped_resolved',
+                            {'strategy': self.name, 'division': self.division,
+                             'wallet': wallet, 'whale_user_name': user_name,
+                             'condition_id': activity.condition_id,
+                             'slug': activity.slug,
+                             'outcome': activity.outcome,
+                             'whale_entry_price': activity.price,
+                             'market_status': status,
+                             'yes_won': (res or {}).get('yes_won')},
+                        )
+                    return None
+            except Exception as e:
+                log.warning(
+                    'polymarket_copy_trader: market_state_fetcher failed for %s: %s',
+                    activity.condition_id, e,
+                )
+        # ── Fix 2026-05-14: drift check ──
+        # Activity-feed lag (10-60s+) means by our poll time the market may
+        # have already moved against the whale's bet. Observed pattern in
+        # Pedrobeliever47's political losses (Trump/Xi/Musk insider markets):
+        # whale fills, insiders move price, market resolves opposite within
+        # minutes. We were paper-trading at whale's stale fill price, which
+        # over-states our actual entry. Skip when our outcome's current
+        # price has dropped >threshold%% below whale's fill — alpha is gone.
+        if market_state_fetcher is not None and hasattr(
+            market_state_fetcher, 'quote'
+        ):
+            try:
+                current_price = await market_state_fetcher.quote(
+                    f'{activity.slug}:{activity.outcome}'
+                )
+                if 0.0 < current_price < 1.0:
+                    drift = (current_price - activity.price) / max(
+                        activity.price, 0.01
+                    )
+                    threshold = float(self._strat_cfg.get(
+                        'entry_drift_skip_threshold', -0.30,
+                    ))
+                    if drift < threshold:
+                        if logger_agent is not None:
+                            logger_agent.log_event(
+                                self.name,
+                                'polymarket_copy_entry_skipped_drift',
+                                {'strategy': self.name,
+                                 'division': self.division,
+                                 'wallet': wallet,
+                                 'whale_user_name': user_name,
+                                 'condition_id': activity.condition_id,
+                                 'slug': activity.slug,
+                                 'outcome': activity.outcome,
+                                 'whale_entry_price': activity.price,
+                                 'current_price': current_price,
+                                 'drift_pct': drift * 100,
+                                 'threshold_pct': threshold * 100},
+                            )
+                        return None
+            except Exception as e:
+                log.warning(
+                    'polymarket_copy_trader: quote drift check failed for %s: %s',
+                    activity.condition_id, e,
+                )
         copy_usdc = self._size_tier_usdc(activity.usdc_size)
         # Convert USDC bet size → contract count at the whale's entry price.
         # We mirror at the same price (paper-mode simplification) so our
@@ -397,6 +507,91 @@ class PolymarketCopyTraderAgent:
             if whale_usdc_size < float(b):
                 return float(sizes[i])
         return float(sizes[-1])
+
+    # ── Auto-pause filter (2026-05-14 P3) ─────────────────────────────
+
+    def _apply_autopause_filter(
+        self, selected_whales: list[dict[str, Any]],
+        *, logger_agent: Any,
+    ) -> list[dict[str, Any]]:
+        """Drop whales whose resolved-RT stats trip the auto-pause threshold.
+
+        For each triggered whale: persist updated selected_whales to
+        agent_state and emit `polymarket_whale_auto_paused` audit.
+        Returns the filtered list (a shallow copy of `selected_whales`
+        if nothing triggered).
+        """
+        db_path = sqlite_path_from_db_url(self._db_url or "")
+        if not db_path:
+            return selected_whales
+
+        keep: list[dict[str, Any]] = []
+        paused: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        try:
+            with sqlite3.connect(db_path) as conn:
+                for w in selected_whales:
+                    user_name = (w.get("user_name") or "").strip()
+                    if not user_name:
+                        keep.append(w)
+                        continue
+                    triggered, stats = should_autopause(
+                        conn,
+                        whale_name=user_name,
+                        table="polymarket_round_trips",
+                        name_field="whale_user_name",
+                        division=self.division,
+                    )
+                    if triggered:
+                        paused.append((w, stats))
+                    else:
+                        keep.append(w)
+        except Exception as e:
+            log.warning(
+                "polymarket_copy_trader: autopause filter errored: %s", e,
+            )
+            return selected_whales
+
+        if not paused:
+            return keep
+
+        try:
+            set_agent_state(
+                self.name, _AGENT_STATE_SELECTED_WHALES, keep,
+                db_url=self._db_url,
+            )
+        except Exception as e:
+            log.error(
+                "polymarket_copy_trader: failed to persist auto-paused "
+                "selected_whales (will retry next scan): %s", e,
+            )
+            return selected_whales
+
+        for w, stats in paused:
+            log.warning(
+                "polymarket_copy_trader: auto-pausing %s (%d RT, %.1f%% WR, $%.2f)",
+                w.get("user_name"), stats["n_resolved"],
+                stats["win_rate_pct"] or 0.0, stats["total_realized_pnl"],
+            )
+            if logger_agent is not None:
+                logger_agent.log_event(
+                    self.name, "polymarket_whale_auto_paused",
+                    {
+                        "strategy": self.name,
+                        "division": self.division,
+                        "wallet": w.get("wallet"),
+                        "whale_user_name": w.get("user_name"),
+                        "category": w.get("category"),
+                        "rank": w.get("rank"),
+                        "thresholds": {
+                            "min_trades": MIN_RESOLVED_TRADES,
+                            "max_wr_pct": MAX_WIN_RATE_PCT,
+                            "max_pnl": MAX_TOTAL_PNL,
+                        },
+                        "remaining_whales": len(keep),
+                        **stats,
+                    },
+                )
+        return keep
 
     # ── State (agent_state-backed) ────────────────────────────────────
 

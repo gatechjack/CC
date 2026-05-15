@@ -1074,6 +1074,13 @@ bitunix_futures:
     # validity windows (15-30 min ≈ 5-10 bars) to align with the
     # 30-min cooldown; 15m and 30m chart fires get longer TTLs
     # proportional to their bar duration.
+    #
+    # NOTE: this PR 3c calibration SUPERSEDES the 2026-05-14 "Fix #3"
+    # Cypher weight-cut tuning that lived on prod pre-cutover. The
+    # weight-cut approach solved the same "4h/1d signals overwhelming
+    # 3m" problem via reduced weights; PR 3c solves it via score_timeframes
+    # whitelist + binary PA validators. Once PR 3c lands, the weight
+    # cuts are moot — Cypher 4h/1d no longer score regardless of weight.
     min_score_to_fire: 5              # PR 3c: net_score < this → SKIP
     tier_thresholds:                  # net_score ≥ → tier
       premium: 10                     # PR 3c (was 12)
@@ -1360,8 +1367,6 @@ kalshi_tail_price_arb:
       - Elections
       - Economics
       - Financials
-      - Crypto
-      - Climate and Weather
     max_series_per_category: 30
     max_markets_per_series: 50
     cache_ttl_sec: 600              # re-discover every 10 min
@@ -1403,8 +1408,6 @@ kalshi_temporal_bucket_arb:
       - Elections
       - Economics
       - Financials
-      - Crypto
-      - Climate and Weather
     max_series_per_category: 30
     max_markets_per_series: 50
     cache_ttl_sec: 600
@@ -1445,8 +1448,6 @@ kalshi_llm_arbitrage:
       - Elections
       - Economics
       - Financials
-      - Crypto
-      - Climate and Weather
     max_series_per_category: 30
     max_markets_per_series: 50
     cache_ttl_sec: 600
@@ -1471,8 +1472,85 @@ kalshi_llm_arbitrage:
 # trade tape (KalshiBroker.get_market_trades). Apify Starter ($29/mo) is
 # the data source for whale open_positions polling. Default-off until
 # audit-mode confirms cold-start + delta-detection both fire cleanly.
+
+# ── Kalshi Weather Arbitrage (2026-05-14) ──
+# Forecast-driven strategy on Climate/Weather markets. Pulls NWS hourly
+# forecast for the market's lat/lon + target time; computes deterministic
+# P(YES) via Gaussian probability vs threshold; emits ProposedOrder when
+# divergence ≥ min_divergence_pct. No LLM in path (pure math).
+kalshi_weather_arb:
+  enabled: true
+  auto_execute: false               # paper-mode until validation gate
+  division: kalshi_weather
+  poll_interval_sec: 300            # 5 min — weather markets don't churn
+  discovery:
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 600              # 10 min cache on Kalshi list_markets
+  k_markets_per_cycle: 30           # candidates evaluated per cycle
+  market_cooldown_hours: 4          # don't re-emit same ticker within 4h
+  min_divergence_pct: 10.0          # |P(YES) - implied| × 100 ≥ this → fire
+  max_horizon_hours: 72             # NWS forecast precision degrades past 72h
+  # ── Tier-1 upgrades (2026-05-15) ──────────────────────────────
+  # Open-Meteo cross-model ensemble for measured σ (GFS+ICON+ECMWF+...).
+  # When ≥3 model members are available, σ = max(ensemble_std, floor).
+  # Falls back to sigma_for_horizon heuristic if the API is unavailable.
+  open_meteo_enabled: true
+  ensemble_sigma_floor_f: 0.5       # never go below this even on tight ensembles
+  # METAR nowcast blend on sub-6h horizons. Weight w(t) ramps linearly:
+  #   w=0 at horizon=0 (pure nowcast); w=1 at horizon=horizon_cap (pure forecast).
+  # Daily HIGH/LOW markets are excluded — extrema aren't well-modelled by a
+  # linear trend off the current obs.
+  metar_enabled: true
+  nowcast_blend_horizon_hours: 6.0
+  sizing:
+    mode: kelly_fractional          # was fixed_usd; flipped 2026-05-15
+    kelly_fraction: 0.25            # quarter-Kelly — robust to misestimation
+    min_usd: 1.0                    # below this, skip — sub-$1 = fee-dominated
+    max_per_market_pct: 5.0         # per-order cap (% of bankroll)
+    max_per_day_pct: 25.0           # sum of today's weather $ ≤ this
+    max_per_city_pct: 15.0          # sum per city ≤ this (correlated bets)
+
+
+# ── Kalshi Crypto Arbitrage (2026-05-14) ──
+# Live-spot-driven strategy on Crypto-category markets. Pulls Coinbase
+# spot for BTC/ETH/SOL/DOGE/XRP, computes P(YES) vs threshold via
+# Gaussian probability with annualized vol. No LLM in path.
+kalshi_crypto_arb:
+  enabled: true
+  auto_execute: false               # paper-mode until validation gate
+  division: kalshi_crypto
+  poll_interval_sec: 60             # crypto markets churn fast — short-window
+  discovery:
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 300              # 5 min cache on kalshi list_markets
+  k_markets_per_cycle: 30           # candidates evaluated per cycle
+  market_cooldown_hours: 1          # short cooldown — fast-churning markets
+  min_divergence_pct: 10.0          # |P(YES) - implied| × 100 ≥ this → fire
+  max_horizon_hours: 168            # 7 days — vol model gets noisy past this
+  sizing:
+    mode: fixed_usd
+    fixed_amount: 1.0               # $1 per shakedown trade
+
+
+# ── Kalshi Sports Scout (2026-05-14) ──
+# Read-only observer. Pulls Kalshi Sports markets + bookmaker
+# implied probability from the-odds-api, logs divergence. NO
+# orders. 7-day observation pass to validate edge before deciding
+# whether to build a full trading division.
+kalshi_sports_scout:
+  enabled: true
+  poll_interval_sec: 3600            # 1h — quota-friendly; lift back to 900 if paid tier
+  discovery:
+    max_series_per_category: 50
+    max_markets_per_series: 50
+    cache_ttl_sec: 900
+  leagues: [MLB, NBA, NHL, MLS, NFL]
+  divergence_log_threshold_pct: 1.0  # only log markets w/ |div| >= 1pp
+
 kalshi_copy_trader:
-  enabled: false                    # Board-flip after audit-mode validation
+  enabled: true                    # Board-flip after audit-mode validation
   auto_execute: false               # Phase K5+ before this can flip live
   division: kalshi_copy_trading
   # 2026-05-12: throttled 300s → 600s to fit Apify Starter's $200/mo hard
@@ -1509,7 +1587,7 @@ polymarket_copy_trading:
 # Apify, no recurring cost. Activity rows carry explicit side+outcome so
 # no trade-tape-inference dance like Kalshi K3.
 polymarket_copy_trader:
-  enabled: false                    # Board-flip after audit-mode validation
+  enabled: true                    # Board-flip after audit-mode validation
   auto_execute: false               # Phase 4+ before this can flip live
   division: polymarket_copy_trading
   poll_interval_sec: 60             # 60s; free API can sustain faster if needed
