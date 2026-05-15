@@ -169,7 +169,7 @@ PR 3c shipped audit-grade persistence for every gate decision (`pa_validation_de
 
 Continues the adaptive entry/SL/TP MVP series decided 2026-05-15 (see `trading_corp_bitunix_strategy_gaps.md` memory for the full design). **Naming note:** this "trade-plan PR" series is distinct from the HTF-redesign "PR 1-5" series and the gate-flip "PR 4" entry below — those are different epics. Trade-plan PRs 1-4 are commits on this branch; trade-plan PRs 5+6 are next.
 
-**Shipped this branch (2026-05-15):**
+**Shipped this branch (2026-05-15 → 2026-05-16):**
 
 | trade-plan PR | Commit | Module | Net tests |
 |---|---|---|---|
@@ -177,19 +177,20 @@ Continues the adaptive entry/SL/TP MVP series decided 2026-05-15 (see `trading_c
 | 2 | `5035e88` | `agents/strategies/levels.py` (HTF S/R via 3m→15m resample) | 10 |
 | 3 | `e743bfa` | `agents/strategies/trade_plan.py` (`FeeConfig`, `StrategyConfig`, `TradePlan`, `build_trade_plan`) | 24 |
 | 4 | `efa1737` | Observer integration: `_build_proposal_v2` + `_log_trade_plan_decision` + dispatch in `_score_and_maybe_propose_locked` + `HTFRegimeConfig.from_dict` + main.py YAML wiring + `bitunix_futures.trade_plan` + `fees` YAML blocks + 3m bar cache 60→200 | 17 |
+| 5 | _this commit_ | `agents/divisions/bitunix_position_reconciler.py` (decide_sl_action + reconciler_tick + run_reconciler_loop), `OpenPosition` dataclass, `BitunixBroker.list_open_positions` (paper-mode DB query) + `modify_position_tp_sl_order` NotImplementedError stub, main.py async-task wiring + YAML `trail_atr_mult` / `reconciler_period_seconds` / `reconciler_timeframe` | 28 |
 
-Full BitUnix suite **235 passing** post-PR-4 (was 141 pre-series). YAML `bitunix_futures.trade_plan.enabled: false` by default — first deploy is byte-identical to pre-PR-4 (legacy geometric `_build_proposal` stays active). Activation = flip the flag in a follow-up YAML push.
+Full BitUnix-adjacent suite (`test_bitunix_*` + `test_trade_plan` + `test_swing` + `test_levels`) **262 passing** post-PR-5 (was 234 pre-PR-5; +28). YAML `bitunix_futures.trade_plan.enabled: false` by default — first deploy is byte-identical to pre-PR-4 (legacy geometric `_build_proposal` stays active). Activation = flip the flag in a follow-up YAML push.
 
-### trade-plan PR 5 — `bitunix_position_reconciler.py` (stateless async task)
+### trade-plan PR 5 — `bitunix_position_reconciler.py` (stateless async task)  ✅ SHIPPED
 
-60s cadence. Reads broker position state + `bitunix_bar_history`; decides if SL should move (BE after TP1 fill → TP1-price after TP2 fill → Chandelier trail post-TP2 using `max_high_since_TP2_fill − trail_atr_mult × ATR`); calls `modify_position_tp_sl_order` when change > 0 for longs (mirror for shorts). Stateless (reads broker truth + DB each tick); idempotent (re-runs with no-change are no-ops); restart-safe (no in-process state). Reads `tp_plan` from `ProposedOrder.extra` (the 3-leg payload built by `_build_proposal_v2`); each leg's `stop_action` field drives the reconciler's branch (`"move_to_breakeven"` / `"move_to_tp1"` / `"trail_atr"`).
+60s cadence. Reads broker position state + `bitunix_bar_history`; decides if SL should move (BE after TP1 fill → TP1-price after TP2 fill → Chandelier trail post-TP2 using `max_high_since_TP2_fill − trail_atr_mult × ATR`); emits `position_sl_update` audit row when change is warranted and ratchets in the side-correct direction. Stateless (reads broker truth + DB each tick); idempotent (re-runs with no-change are no-ops); restart-safe (no in-process state). Reads `tp_plan` from `ProposedOrder.extra` (the 3-leg payload built by `_build_proposal_v2`); each leg's `stop_action` field drives the reconciler's branch.
 
-**Design questions to surface tomorrow:**
-1. Where does it live? Proposed: new file `trading_corp/agents/divisions/bitunix_position_reconciler.py`, started as an async task in `main.py` alongside the bar archiver + regime snapshot loop.
-2. `BitunixBroker.modify_position_tp_sl_order` doesn't exist yet (place_order still `NotImplementedError`). For PR 5: add the method as a stub that raises NotImplementedError too, so the reconciler logs the intended action but doesn't actually call. Real wiring lands at Phase 4 (live placement).
-3. Position enumeration source. Today: paper trades resolve via `paper_trade_record`; no live "open positions" concept in the broker. Either extend `BitunixBroker.snapshot()` to expose open positions, OR query a new internal positions view derived from `paper_trade_record` rows that haven't resolved. Reconciler should handle the empty-positions case gracefully.
+**Design decisions (resolved 2026-05-16 in implementation session):**
+1. **File location:** `trading_corp/agents/divisions/bitunix_position_reconciler.py` — agreed.
+2. **`modify_position_tp_sl_order` stub:** added as `NotImplementedError` parallel to `place_order`. PR 5 reconciler does NOT call it — only logs intent via `position_sl_update` audit row. Real Phase 4 wiring will populate the call. Follow-up tracked: paper-aware stub for paper-mode lifecycle validation (resolver feedback loop) — deferred to keep PR 5 scope tight.
+3. **Position enumeration source:** new `BitunixBroker.list_open_positions(db_url)` method. Paper-mode body queries `paper_trade_record WHERE division='bitunix_futures' AND result IS NULL` (filters non-v2 trades via `tp_plan_version != 'v2'`); Phase 4 swap replaces the body with `/api/v1/futures/position` API call — same return shape. Reconciler always calls the broker method, never DB directly. Honors the "broker truth" critical invariant.
 
-Estimated: ~1 day. Tests: idempotency, recovery on restart, the SL lifecycle table from the strategy_gaps memory.
+**Architectural note — dormant in paper mode by design:** the legacy paper resolver treats trades as monolithic (single `result` field), so `list_open_positions` returns `filled_legs=[]` for all paper trades. The decision logic only fires when broker truth provides real per-leg fill state — which means PR 5 reconciler is dormant in paper mode until either Phase 4 lands or the resolver-feedback follow-up is wired. Tests inject `filled_legs` directly to exercise the lifecycle.
 
 ### trade-plan PR 6 — Dashboard refresh (combined PR-3c semantics + MVP fields)
 

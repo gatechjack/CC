@@ -1215,6 +1215,29 @@ async def run(argv: list[str] | None = None) -> int:
                 name="bitunix-htf-regime-snapshot",
             )
 
+        # trade-plan PR 5 — position SL reconciler. Stateless 60s loop
+        # that decides SL moves (BE → tp1 → Chandelier trail) per the
+        # v2 lifecycle and emits `position_sl_update` audit rows. PR 5
+        # does NOT call the broker — Phase 4 wires that. Construct a
+        # fresh stub-mode BitunixBroker for paper-mode DB queries; the
+        # reconciler's `list_open_positions` path is auth-free.
+        if _trade_plan_config is not None:
+            from trading_corp.agents.divisions.bitunix_position_reconciler import (
+                ReconcilerConfig as _ReconcilerConfig,
+                run_reconciler_loop as _run_reconciler_loop,
+            )
+            from trading_corp.brokers.bitunix import BitunixBroker as _BitunixBroker
+            _reconciler_broker = _BitunixBroker(api_key=None, api_secret=None)
+            _reconciler_config = _ReconcilerConfig.from_dict(
+                _bx_block.get("trade_plan") or {}
+            )
+            asyncio.create_task(
+                _run_reconciler_loop(
+                    _reconciler_broker, secrets.db_url, _reconciler_config,
+                ),
+                name="bitunix-position-reconciler",
+            )
+
         # --- Web command center (FastAPI on :8000, in-process) ---
         web_server, web_task = await _start_web_server(
             mode=mode,
