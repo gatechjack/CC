@@ -1508,7 +1508,7 @@ kalshi_weather_arb:
     kelly_fraction: 0.25            # quarter-Kelly — robust to misestimation
     min_usd: 1.0                    # below this, skip — sub-$1 = fee-dominated
     max_per_market_pct: 5.0         # per-order cap (% of bankroll)
-    max_per_day_pct: 25.0           # sum of today's weather $ ≤ this
+    max_per_day_pct: 120.0          # sum of today's weather $ ≤ this; raised on prod 2026-05-15 (hot-patch preserved on Phase 1C ship; backport to main pending)
     max_per_city_pct: 15.0          # sum per city ≤ this (correlated bets)
 
 
