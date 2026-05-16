@@ -46,12 +46,13 @@ Active session work lives in chat — not duplicated here.
 
 **Tomorrow's pickup candidates (ordered by recommended sequence):**
 1. **Watch the kalshi_llm drain finish.** ~555 past-expiration rows still in queue at session-end; should clear at ~50/hour. Confirm `kalshi_llm pending ≈ 1,155` (the long-horizon-only baseline) by ~15:00 UTC.
-2. **Eyeball kalshi_temporal_bucket_arb (kalshi_arbitrage division, 236 pending).** Bug B's expires_at ordering helps ONLY if payloads carry `expires_at`. Temporal-bucket strategy might not — if 0 of the 50-oldest-by-expires drain over multiple ticks, payload audit needed.
-3. **Fix-D empirical analysis** (~30min, P2). Newly viable — kalshi_llm/crypto round-trips are now actually landing. Query divergence_pct distribution vs WR for would_have_placed and skipped_no_edge to decide if 10% gate is correctly calibrated.
-4. **PCT stale-entry pruner cron** (~2-3h, P2). Bug C was a one-shot DELETE; same problem recurs daily as Apify continues missing whale auto-settles. Filing P2 entry below — Path A 24h-cutoff predicate run nightly via systemd timer.
-5. **BitUnix Phase 1D — shadow-data accumulation watch.** Unchanged from 02:40 snapshot. ~30 fires of `pa_validation_decision` + `htf_gate_decision` needed; then `scripts/replay_pr3_cutover.py` + Board-gate enforce flip.
-6. **PMCC audit** — still untouched real-money strategy.
-7. **Dashboard signal-vs-side labeling tweak** — from 02:40 snapshot; still open.
+2. **kalshi_crypto BTC settlement watch — after 21:05 UTC today.** Investigation revealed the 11 resolved RTs (all losses, 8/11 ETH) were a biased short-horizon sample. Full population: BTC 24 fires / ETH 16 / SOL 16 / DOGE 8 / XRP 5 — all 24 BTC fires target the same daily-close event `KXBTC-26MAY1617` expiring 21:05 UTC today. Hypothesis from analysis: fixed `annual_vol=0.75` for ETH (and 0.60 BTC) is too high for the current low-realized-vol regime — model spreads probability across too many buckets, consistently underprices "stays near current price", bets against market consensus and loses. After BTC settles tonight, query the resolved BTC RTs: (a) if most NOs lose (BTC stayed in B79K bucket) and YESes lose (didn't reach $81.5K), vol-miscalibration confirmed; ship "Crypto vol model v2" rolling-realized-vol fix (P2 in BACKLOG line ~210). (b) If BTC moved sharply, the 24 BTC fires were spread across both bet shapes and partial wins/losses are expected — re-eyeball. Jack picked option (a) "wait for data before code change" at 03:55 UTC.
+3. **Eyeball kalshi_temporal_bucket_arb (kalshi_arbitrage division, 236 pending).** Bug B's expires_at ordering helps ONLY if payloads carry `expires_at`. Temporal-bucket strategy might not — if 0 of the 50-oldest-by-expires drain over multiple ticks, payload audit needed.
+4. **Fix-D empirical analysis** (~30min, P2). Newly viable — kalshi_llm/crypto round-trips are now actually landing. Query divergence_pct distribution vs WR for would_have_placed and skipped_no_edge to decide if 10% gate is correctly calibrated.
+5. **PCT stale-entry pruner cron** (~2-3h, P2). Bug C was a one-shot DELETE; same problem recurs daily as Apify continues missing whale auto-settles. Filing P2 entry below — Path A 24h-cutoff predicate run nightly via systemd timer.
+6. **BitUnix Phase 1D — shadow-data accumulation watch.** Unchanged from 02:40 snapshot. ~30 fires of `pa_validation_decision` + `htf_gate_decision` needed; then `scripts/replay_pr3_cutover.py` + Board-gate enforce flip.
+7. **PMCC audit** — still untouched real-money strategy.
+8. **Dashboard signal-vs-side labeling tweak** — from 02:40 snapshot; still open.
 
 **Confirmed-NOT-to-do without explicit re-approval:**
 - Do NOT flip `htf_gate.mode: shadow → enforce` until 1D shadow data accumulates AND replay script confirms.
