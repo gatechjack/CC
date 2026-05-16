@@ -59,6 +59,53 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-16 18:51 UTC — BitUnix scoring H2 re-tune (config-only, hot-reload)
+
+**Triggered by:** research in `reports/scoring_recommendation.md` (H2 — re-weight + Otter precision up). 47-day backtest across 13 candidate configs found H2 has the widest PREMIUM/STANDARD quality gap (+0.114R vs baseline +0.051R, 2.2× wider) and the simplest YAML diff (weight edits only, no formula change, no threshold change). Decision log in `reports/scoring_decision_log.md`.
+
+**Backup on prod:** `/home/azureuser/trading_corp/config/strategies.yaml.bak-h2-20260516T185125`
+
+**Files changed (prod — 1 modify):**
+- `config/strategies.yaml` — 10 weight edits in `bitunix_futures.scoring.factors` via `scripts/patch_bitunix_scoring_h2.py --apply` (Python regex patcher). Pre md5 `da18d6c5180cd09592b4475e4df8893e` → post md5 `6dc03a793e1e6e58df832aa89407ef93`.
+
+**Pre-existing state finding (load-bearing for future "is X done?" checks):**
+- Prod `mc_b_gold_buy` was ALREADY at weight 3 with `# H2: was 5` marker present when this deploy started (mtime 2026-05-16 17:45 UTC, ~1h before this deploy). Origin unknown — either a parallel-session hand-edit or a partial-apply attempt that interrupted before atomic write. The deploy was launched expecting 11/11 fresh edits; dry-run reported 10/11 with `mc_b_gold_buy` skipped (regex looked for `weight: 5`, found `weight: 3`). Per the user's explicit "ABORT IF any factor not patched" rule the deploy paused for re-direction. Jack picked "apply remaining 10". Apply path executed via `EDITS = [e for e in P.EDITS if e[0] != 'mc_b_gold_buy']` monkey-patch around the script's `cmd_apply()`, preserving its atomic write + post-apply weight validation. Final state: all 11 H2 targets verified at weight 3 via `yaml.safe_load` round-trip.
+- Prod `strategies.yaml` also has a SECOND, stale `factors:` block at line 887 (inline-flow style with `ttl_minutes: 1440 / 240 / 90`, pre-PR-3c TTL format) under a different `scoring:` key. YAML last-wins resolves to the line-1094 multi-line block (PR 3c style with `ttl_per_tf` dicts), which is what the score engine actually reads. The 887 block is dead drift and out of scope for H2; flagged for cleanup.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **BitUnix Phase 3.2 scoring weights H2 re-tune.** Caps heavy weights at 3: `mc_a_blood_diamond` 5→3, `mc_a_red_diamond` 4→3, `mc_b_gold_buy` 5→3 (pre-existing hand-edit), `mc_b_buy_circle_div` 4→3, `mc_b_sell_circle_div` 4→3. Up-weights Otter precision family 2→3: `water_buy_large`, `water_sell_large`, `spoon_bull`, `spoon_bear`, `money_bag_bottom`, `money_bag_top`. Subtractive net-score formula and PR 3c thresholds (`min_score_to_fire: 5`, premium 10, standard 5, weak 3) unchanged.
+
+**Notable code changes:**
+- None. YAML weight edits only via `scripts/patch_bitunix_scoring_h2.py` (the patcher itself is new to prod this deploy but is a one-shot tool, not exercised by the running service).
+
+**Verification:**
+- Pre md5: `da18d6c5180cd09592b4475e4df8893e` (with the orphan `mc_b_gold_buy` marker).
+- Post md5: `6dc03a793e1e6e58df832aa89407ef93` (all 11 H2 targets at weight 3).
+- File size delta: 76256 → 76394 bytes (+138 bytes = 10 inline `# H2: was N` markers).
+- `yaml.safe_load` confirms `bitunix_futures.scoring.factors` resolves all 11 targets to `weight: 3`.
+- `trading-corp` service `active` post-deploy; no restart (mtime-cached hot-reload is the design for this YAML).
+- Latest boot wiring line unchanged: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False`.
+- Next `bitunix_score_decided` audit row will be the first observable confirmation that the in-process scorer re-read the YAML; expected within the next score-fire window. Phase 1D enforce + PA validation gate means most candidates short-circuit before reaching the scorer's per-trade audit, so a fire-window may take longer than the typical few-hour cadence pre-1D.
+
+**Deploy-mechanics note:**
+- Hotel-wifi → iPhone hotspot in this session blocked SSH (port 22) at the Azure NSG layer (home-IP allowlist). Added temp NSG rule `AllowSSHFromHotspotTemp` (prio 1001, src `107.123.33.3/32`) — but SSH still timed out (root cause unclear; HTTPS to same VM + `github.com:22` from same network both worked). Pivoted to `az vm run-command invoke` (same Azure control-plane path used by Phase 1C). Temp NSG rule removed at end of session.
+
+**Inert / dormant on current traffic:**
+- The 887-line stale `factors:` block remains. Out of scope for H2; flagged as cleanup candidate.
+
+**Follow-up:**
+- Per `reports/scoring_recommendation.md` falsification criteria: revisit after ≥30 live PREMIUM fires post-H2. PREMIUM mean R on production `paper_trade_record` must be ≥0.05R better than STANDARD mean R; if not, the Otter-precision up-weight was wrong and diamond weights should be partially restored. Filed P1 BACKLOG entry.
+- At current ~3 fires/day pre-1D rate (post-1D rate is much lower because most short-circuit at PA gate), 30 PREMIUM fires is ~10-14 days post-H2; could stretch significantly under enforce mode.
+
+**Revert path:**
+```bash
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript \
+  --scripts "cd /home/azureuser/trading_corp && sudo -u azureuser python3 scripts/patch_bitunix_scoring_h2.py --revert"
+```
+(Restores all `# H2: was N` markers, including the orphan `mc_b_gold_buy`.) Or restore from backup: `cp config/strategies.yaml.bak-h2-20260516T185125 config/strategies.yaml`.
+
+---
+
 ## 2026-05-16 04:14 UTC — BitUnix Phase 1D: htf_gate.mode shadow → enforce
 
 **Triggered by:** Jack — "lets flip it." Original Phase 1D plan was to wait for ~30 shadow audit rows + replay-script review before flipping. Jack pushed back: in paper mode the cost of a wrong reject is an audit row, not a real loss, and enforce-mode rejects are more informative than shadow-mode "would-have-rejected" markers. Recommendation flipped (no pun intended) to ship enforce now, with rollback gated on observable audit patterns.

@@ -708,6 +708,20 @@ Parallel session has been iterating BitUnix Phase 3.2 → 3.2.3 (price-action fa
 
 ---
 
+## P1 — Revisit BitUnix scoring weights after ≥30 live PREMIUM fires post-H2  *(NEW 2026-05-16)*
+
+H2 shipped 2026-05-16 18:51 UTC (see `runbooks/deploy_log.md`). Falsification gate from `reports/scoring_recommendation.md`: **PREMIUM mean R must be ≥0.05R better than STANDARD mean R** on production `paper_trade_record` data after ≥30 live PREMIUM fires. Replay predicted +0.114R (PREMIUM −0.300 vs STANDARD −0.414).
+
+**If the gate passes (≥0.05R):** H2 worked as designed; consider H7 (H2 + unified cooldown) as the next iteration.
+
+**If the gate fails (<0.05R or PREMIUM ≤ STANDARD):** the Otter-precision up-weight was wrong on production data. Restore the original diamond weights with `python3 scripts/patch_bitunix_scoring_h2.py --revert` and re-evaluate. The 11/11 H2 markers (including the one that already existed on prod pre-H2-deploy for `mc_b_gold_buy`, origin unknown) make `--revert` clean.
+
+**ETA to ≥30 fires:** at the pre-Phase-1D ~3 fires/day rate, ~10-14 days. Post-1D enforce mode is short-circuiting most candidates at the PA validation gate (see 2026-05-16 04:55 BACKLOG snapshot), so the real wall-clock may be significantly longer. The gate uses count of PREMIUM-tier fires (not total scorer evaluations), so PA short-circuiting doesn't directly reduce the denominator — but it does reduce the trade-outcome data we need to compute mean R on.
+
+Query: `SELECT json_extract(payload_json,'$.tier'), AVG(CAST(json_extract(payload_json,'$.realized_r') AS REAL)), COUNT(*) FROM audit_event WHERE kind='paper_trade_record' AND actor='bitunix_futures' AND ts >= '2026-05-16T18:51:00+00:00' GROUP BY 1;` (assuming `realized_r` lands in the audit payload; verify schema first).
+
+---
+
 ## P1 — BitUnix Phase 3.2 confluence rule tuning  *(NEW 2026-05-11; deferred by Board for later session)*
 
 Phase 3.2 confluence score accumulator + 3.2.2 PA factors + 3.2.3 panel + 3.2.4-equivalent IRA-analysis-style depth all shipped today. The rule decision tree in `_analyze_ira_covered_call` and the tier thresholds in `bitunix_confluence.py` are first-draft. Board flagged ≤2 DTE / ITM-roll-urgency threshold as one to reconsider — wants the trade fired earlier (e.g. ≤4 DTE + ITM = elevated roll vs. current "watch + preview legs"). When picked up, also revisit:
