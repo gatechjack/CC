@@ -170,7 +170,7 @@ sudo systemctl restart trading-corp
 
 ---
 
-## 2026-05-16 18:51 UTC — BitUnix scoring H2 re-tune (config-only, hot-reload)
+## 2026-05-16 18:51 UTC — BitUnix scoring H2 re-tune (config edit; activated by 19:21 UTC restart)
 
 **Triggered by:** research in `reports/scoring_recommendation.md` (H2 — re-weight + Otter precision up). 47-day backtest across 13 candidate configs found H2 has the widest PREMIUM/STANDARD quality gap (+0.114R vs baseline +0.051R, 2.2× wider) and the simplest YAML diff (weight edits only, no formula change, no threshold change). Decision log in `reports/scoring_decision_log.md`.
 
@@ -194,9 +194,11 @@ sudo systemctl restart trading-corp
 - Post md5: `6dc03a793e1e6e58df832aa89407ef93` (all 11 H2 targets at weight 3).
 - File size delta: 76256 → 76394 bytes (+138 bytes = 10 inline `# H2: was N` markers).
 - `yaml.safe_load` confirms `bitunix_futures.scoring.factors` resolves all 11 targets to `weight: 3`.
-- `trading-corp` service `active` post-deploy; no restart (mtime-cached hot-reload is the design for this YAML).
-- Latest boot wiring line unchanged: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False`.
-- Next `bitunix_score_decided` audit row will be the first observable confirmation that the in-process scorer re-read the YAML; expected within the next score-fire window. Phase 1D enforce + PA validation gate means most candidates short-circuit before reaching the scorer's per-trade audit, so a fire-window may take longer than the typical few-hour cadence pre-1D.
+- `trading-corp` service `active` post-deploy.
+- **Hot-reload assumption was WRONG for BitUnix.** The deploy was launched expecting mtime-cached hot-reload (per CLAUDE.md §5 "config hot-reload" — which is correct for Otter/Cypher/Kalshi/Polymarket/Donchian but NOT BitUnix). Verified: `bitunix_futures_observer.py` builds `ScoringConfig` once at startup in `main.py:380` and holds it in `self.scoring_config`; no mtime check, no reload path. Post-apply check at 19:03 + 19:12 UTC confirmed scorer was still using OLD weights (`mc_a_red_diamond: 4`, `spoon_bear: 2`).
+- **H2 actually went live at 2026-05-16 19:21 UTC** when the parallel kalshi_weather deploy restarted the service. First post-restart `bitunix_score_decided` row at 19:24 UTC showed NEW weights: `mc_a_red_diamond: 3, spoon_bear: 3`. Subsequent 19:45 + 19:54 rows confirmed.
+- A second redundant restart at 19:55 UTC (this session, after the parallel deploy was confirmed done) was effectively a no-op — H2 was already live.
+- Latest boot wiring across all 3 restarts (19:21 / 19:36 / 19:55) unchanged: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False`.
 
 **Deploy-mechanics note:**
 - Hotel-wifi → iPhone hotspot in this session blocked SSH (port 22) at the Azure NSG layer (home-IP allowlist). Added temp NSG rule `AllowSSHFromHotspotTemp` (prio 1001, src `107.123.33.3/32`) — but SSH still timed out (root cause unclear; HTTPS to same VM + `github.com:22` from same network both worked). Pivoted to `az vm run-command invoke` (same Azure control-plane path used by Phase 1C). Temp NSG rule removed at end of session.
