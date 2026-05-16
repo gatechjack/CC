@@ -49,7 +49,63 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-15 14:50 UTC
+## END-OF-SESSION SNAPSHOT — 2026-05-15 21:35 UTC  *(supersedes 15:50)*
+
+**Picks up from 15:50 snapshot below.** Evening session resumed the BitUnix HTF rollout. Shipped the Phase 1B P2 followup (broker file + persistence model) — funding-rate warning silenced, `bitunix_funding_history` table now populating.
+
+**This session's work (in order):**
+
+1. **Scope-check on the (a) task.** The brief framed `brokers/bitunix.py` as a single-file deploy. Diff vs main revealed branch's `bitunix.py` adds three methods (`get_funding_rate`, `list_open_positions`, `modify_position_tp_sl_order`) AND imports `OpenPosition` from `persistence.models` — which doesn't exist on prod. Shipping `bitunix.py` alone would have crashed module load. Flagged, user picked Option 1: ship `brokers/bitunix.py` + `persistence/models.py` as a 2-file coherent bundle.
+
+2. **Phase 1B followup deployed @ 21:33 UTC** (full detail in `runbooks/deploy_log.md` 21:33 entry). PID 434263 → 449440; service stable; healthz 200. Boot log shows `bitunix HTF funding primed: rate=-0.006032` (was every-30min AttributeError pre-deploy). `bitunix_funding_history` table created with 2 rows in the first minute. All Phase 1B dormant flags unchanged (`pa_enabled=False`, `htf_gate_mode=off`, `trade_plan_active=False`).
+
+3. **Deploy mechanics note.** SSH port 22 blocked from local network this session — used `az vm run-command` fallback over HTTPS. `value[0].message` output truncates at 4kb but `--scripts` payload accepts the 24-35kb base64 fine, so single-file uploads work via `B64=$(cat f.b64); az run-command --scripts "echo '$B64' | base64 -d > /tmp/x ..."` pattern. Logged in deploy_log for next time.
+
+**Sync state at session end (md5-verified prod ≡ branch, LF-normalized):**
+- All 13 Phase 1A + 1B + 1B-followup files: byte-identical.
+- Branch HEAD `ef9193c` + new commit (this session); main HEAD `b98da41` unchanged.
+- Prod service PID 449440 stable.
+
+**Original 15:50 snapshot notes preserved below for context.**
+
+**Late-afternoon session (15:50 UTC snapshot):** picked up the BitUnix HTF / trade-plan deploy that had been parked on local-only branch `claude/gallant-tereshkova-49ef85` since 2026-05-15 → 16. Two prod deploys shipped + a clean main↔branch merge to make future deploys file-copy-clean.
+
+**This session's work (in order):**
+
+1. **Caught up main with the parallel session's env-sync work.** Commit `222b831` on main bundles the parallel session's 12 modified files + `scripts/pine/weather agent prompt.txt`. Main is now byte-identical with prod for the kalshi-touched files.
+
+2. **Merged main → branch** (commit `dc1d252` on `claude/gallant-tereshkova-49ef85`). Conflicts resolved:
+   - `config/strategies.yaml` — PR 3c calibration supersedes prod's "Fix #3" Cypher weight-cut tuning (different solutions to same problem; PR 3c's score_timeframes whitelist obsoletes the weight cuts once shipped).
+   - `trading_corp/main.py` — kept max_bars=500 (prod's VWAP need) + branch's HTF caches + new YAML loading.
+   - `trading_corp/agents/divisions/bitunix_futures_observer.py` — branch's PR 3c PA + HTF gates replace prod's `_check_htf_alignment` (older Fix #2 approach).
+   All BitUnix tests pass post-merge (264). The branch is now a clean superset of prod.
+
+3. **Phase 1A deployed** (earlier in session, no restart): 4 pure modules SCP'd — `bitunix_htf_regime.py`, `bitunix_pa_validation.py`, `bitunix_htf_context.py`, `bitunix_bar_archiver.py`. Inert on disk until 1B wires them.
+
+4. **Phase 1B deployed @ 15:35 UTC** (full detail in `runbooks/deploy_log.md` 15:35 entry). 7 files total: `main.py` + `observer.py` + `bitunix_confluence.py` + `web/app.py` (modified) + `swing.py` + `levels.py` + `trade_plan.py` (new). All gates configured-disabled by prod's existing YAML (no `pa_validation` / `htf_gate` / `trade_plan` blocks → `pa.enabled=False, htf_gate_mode=off, trade_plan_active=False`). Trade flow on prod UNCHANGED. New data-path tasks running: 3 HTF caches + bar archiver + regime snapshot loop + funding poll. Service stable post-restart at 15:35:11 UTC.
+
+5. **Deploy scope discovery — two failed attempts before success.** First 1B attempt shipped only `main.py` → crashed on observer kwargs mismatch. Second attempt added `observer.py` + `confluence.py` → crashed on `WebDeps.bitunix_htf_provider` kwarg mismatch. Each crash auto-rolled-back via systemd. The lesson logged in memory + deploy_log: phased deploys against drifted prod should ship the WHOLE coordinated bundle, not subsets — transitive deps are too easy to miss.
+
+**Sync state at session end (md5-verified prod ≡ branch):**
+- All 11 Phase 1A + 1B files: byte-identical.
+- Branch HEAD `dc1d252`; main HEAD `222b831`; worktree + main checkouts both clean.
+- Prod service PID 432373 stable; healthz 200.
+
+**Followups filed (P2 priority — fixable in 10-15 min next session):**
+- ~~Ship `trading_corp/brokers/bitunix.py` to add the `get_funding_rate` method.~~ **DONE 2026-05-15 21:33 UTC** — shipped as 2-file bundle (also `persistence/models.py` for the `OpenPosition` dataclass dependency). Funding-rate warning silenced; `bitunix_funding_history` table populating.
+
+**Tomorrow's pickup candidates (ordered by what we discussed):**
+1. **Phase 1C — deploy branch's strategies.yaml + dashboard files** (web/data.py + 4 partials + division.html) + `bitunix_position_reconciler.py`. **Now an 8-file bundle** (broker + models already shipped). Flips `pa_validation` + `htf_gate` from absent → present in YAML; observer still in shadow mode (gate_mode='shadow' not 'enforce'), so audits get written but trades aren't blocked. Dashboard starts surfacing HTF + PA panels. Prereq: write a full-path smoke test that exercises WebDeps construction (not just imports — see `phased_deploy_lesson.md`). ~30-60 min.
+2. **Phase 1D — wait for shadow data accumulation.** Per `trading_corp_bitunix_strategy_gaps.md` memo: ~30 fires minimum across `pa_validation_decision` + `htf_gate_decision` audits before reviewing. Then run `scripts/replay_pr3_cutover.py` to evaluate reject rates, regime distribution, and decide whether to flip `htf_gate.mode: shadow → enforce`.
+3. **PMCC audit** — still untouched real-money strategy.
+
+**Confirmed-NOT-to-do without explicit re-approval:**
+- Do NOT flip `htf_gate.mode: shadow → enforce` until shadow data has accumulated AND the replay script confirms reasonable reject rates.
+- Do NOT flip `trade_plan.enabled: true` until the gate-flip has shipped + position reconciler is dashboard-visible.
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-15 14:50 UTC  *(preserved — superseded by 15:50)*
 
 **Picks up from 07:00 UTC snapshot below.** Mid-day session reactivated to investigate "no kalshi_weather + kalshi_crypto rows showing up." Three sequential prod deploys solved a chain of issues that had silently zero-fired both strategies for ~11 hours.
 

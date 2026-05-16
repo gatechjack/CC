@@ -645,6 +645,19 @@ class DivisionViewSnapshot:
     # When set, division.html renders the IRA dashboard partial instead
     # of the generic PMCC / Holdings sections.
     ira_view: dict | None = None
+    # BitUnix HTF (higher-timeframe) regime panel — only populated for
+    # `bitunix_futures`. Shape documented on `build_bitunix_htf_view`.
+    # PR 2 ships this as a read-only display; the values are computed
+    # but the observer does NOT yet consult them for trade decisions
+    # (PR 3 wires the gate). Renders an "off" state when the HTF
+    # provider is missing (e.g., test environments).
+    bitunix_htf: dict | None = None
+    # trade-plan PR 6 — PA validators (not scored) panel. Reads
+    # `pa_validation_decision` audit. Shape on `build_bitunix_pa_view`.
+    bitunix_pa: dict | None = None
+    # trade-plan PR 6 — decision flow timeline (last 5 fires showing
+    # score → PA → HTF → outcome). Shape on `build_bitunix_decision_flow_view`.
+    bitunix_decision_flow: dict | None = None
 
 
 @dataclass
@@ -1467,6 +1480,340 @@ def build_ira_view(
     }
 
 
+def build_bitunix_htf_view(deps: Any) -> dict | None:
+    """PR 2 — read-only display of the live HTF regime classification.
+
+    Reads `deps.bitunix_htf_provider`, calls its synchronous
+    `regime_snapshot()` with default config, and shapes the result for
+    the dashboard. Returns None when the provider isn't wired (test
+    envs).
+
+    PR 2 ships this purely observationally — the observer does NOT
+    consult the same data for trade decisions yet. PR 3 wires the gate
+    and adds the `mode: shadow|enforce` flag.
+
+    Shape:
+      {
+        gate_mode: "off",                         # "off" until PR 3
+        regime: "BULL" | ... | "SAFE_MODE",
+        composite_score: float,
+        h1: {regime, ema_alignment, structure, adx, macd_hist, reason},
+        h4: {...},
+        d1: {...},
+        volatility_tier: str,
+        atr_pct_d1: float | None,
+        nearest_support: float | None,
+        nearest_resistance: float | None,
+        distance_to_support_pct: float | None,
+        distance_to_resistance_pct: float | None,
+        session: str,
+        funding_rate: float | None,
+        funding_extreme: bool,
+        safe_mode_reason: str | None,
+        cache_health: {
+          h1: {bars, last_close, last_refresh_error},
+          h4: {...},
+          d1: {...},
+        },
+      }
+    """
+    provider = getattr(deps, "bitunix_htf_provider", None)
+    if provider is None:
+        return None
+
+    from trading_corp.agents.strategies.bitunix_htf_regime import HTFRegimeConfig
+    config = HTFRegimeConfig.defaults()
+
+    try:
+        verdict = provider.regime_snapshot(config)
+    except Exception as e:
+        log.warning("HTF regime snapshot failed: %s", e)
+        return None
+
+    def _tf_block(tf_class) -> dict:
+        return {
+            "regime": tf_class.regime.value,
+            "ema_alignment": tf_class.ema_alignment,
+            "structure": tf_class.structure,
+            "ema20": tf_class.ema20,
+            "ema50": tf_class.ema50,
+            "ema200": tf_class.ema200,
+            "adx": tf_class.adx,
+            "macd_hist": tf_class.macd_hist,
+            "reason": tf_class.reason,
+        }
+
+    def _cache_health(cache) -> dict:
+        return {
+            "bars": len(cache.bars),
+            "last_close": cache.bars[-1].close if cache.bars else None,
+            "last_refresh_error": cache.last_refresh_error,
+        }
+
+    return {
+        "gate_mode": "off",                # PR 3 will read from config
+        "regime": verdict.regime.value,
+        "composite_score": round(verdict.score, 3),
+        "h1": _tf_block(verdict.h1),
+        "h4": _tf_block(verdict.h4),
+        "d1": _tf_block(verdict.d1),
+        "volatility_tier": verdict.volatility_tier.value,
+        "atr_pct_d1": verdict.atr_pct_d1,
+        "nearest_support": verdict.nearest_support,
+        "nearest_resistance": verdict.nearest_resistance,
+        "distance_to_support_pct": verdict.distance_to_support_pct,
+        "distance_to_resistance_pct": verdict.distance_to_resistance_pct,
+        "session": verdict.session.value,
+        "funding_rate": verdict.funding_rate,
+        "funding_extreme": verdict.funding_extreme,
+        "safe_mode_reason": verdict.safe_mode_reason,
+        "cache_health": {
+            "h1": _cache_health(provider.h1_cache),
+            "h4": _cache_health(provider.h4_cache),
+            "d1": _cache_health(provider.d1_cache),
+        },
+    }
+
+
+_TF_TOKENS = ("3m", "5m", "15m", "30m", "1h", "4h", "1d")
+
+
+def _infer_alert_tf(trigger_signal: str | None) -> str | None:
+    """Best-effort TF parse from signal name (e.g. 'otter_3m_pump' → '3m').
+
+    Returns None when no TF token is found. PR 6 dashboard-only — future
+    enhancement could add `alert_tf` directly to the score-decided audit
+    payload to avoid the heuristic.
+    """
+    if not trigger_signal:
+        return None
+    s = trigger_signal.lower()
+    for tok in _TF_TOKENS:
+        if f"_{tok}_" in s or s.endswith(f"_{tok}") or s.startswith(f"{tok}_"):
+            return tok
+    return None
+
+
+def _load_latest_sl_lifecycle_states(conn: Any) -> dict[str, str]:
+    """Return {order_id: lifecycle_state} from the most recent
+    `position_sl_update` audit row per order_id. Empty in paper mode
+    today (reconciler is dormant — see trading_corp_bitunix_strategy_gaps
+    memory). Phase 4 will populate as broker fills come in.
+    """
+    out: dict[str, str] = {}
+    try:
+        rows = conn.execute(
+            "SELECT ts, payload_json FROM audit_event "
+            "WHERE kind = 'position_sl_update' "
+            "ORDER BY ts DESC LIMIT 200"
+        ).fetchall()
+    except Exception:
+        return out
+    for r in rows:
+        try:
+            p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        except Exception:
+            continue
+        oid = p.get("order_id")
+        if oid and oid not in out:
+            out[oid] = p.get("lifecycle_state") or ""
+    return out
+
+
+def _bitunix_fee_config(deps: Any) -> Any:
+    """Fetch the live FeeConfig off the BitUnix observer for fee-floor
+    reconstruction. Returns None when observer or fee_config is unwired.
+    """
+    observer = getattr(deps, "bitunix_observer", None)
+    return getattr(observer, "fee_config", None) if observer else None
+
+
+def build_bitunix_pa_view(db_url: str, deps: Any) -> dict | None:
+    """trade-plan PR 6 — PA validators (not scored) panel.
+
+    Reads recent `pa_validation_decision` audit rows. Returns the latest
+    decision plus the last N for trend review. Returns None if the
+    observer / PA config isn't wired.
+
+    Shape:
+      {
+        enabled: bool,            # PA config present
+        mode: 'shadow'|'enforce', # latest decision's mode
+        latest: {ts, decision, passed, failed, rush_fall_triggered, reason,
+                 mode, score_side, score_tier, trigger_signal} | None,
+        recent: [...latest entries...],  # up to 10
+        counts: {pass: int, reject: int, rush_fall: int},  # over recent
+      }
+    """
+    observer = getattr(deps, "bitunix_observer", None)
+    pa_cfg = getattr(observer, "pa_config", None) if observer else None
+    if pa_cfg is None:
+        return None
+
+    recent: list[dict] = []
+    counts = {"pass": 0, "reject": 0, "rush_fall": 0}
+    try:
+        with db.connect(db_url) as conn:
+            rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind = 'pa_validation_decision' "
+                "ORDER BY ts DESC LIMIT 10"
+            ).fetchall()
+            for r in rows:
+                try:
+                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except Exception:
+                    p = {}
+                decision = (p.get("decision") or "").upper()
+                entry = {
+                    "ts": r["ts"],
+                    "ts_et": format_et_short(r["ts"]),
+                    "decision": decision,
+                    "passed": p.get("passed") or [],
+                    "failed": p.get("failed") or [],
+                    "rush_fall_triggered": bool(p.get("rush_fall_triggered")),
+                    "reason": p.get("reason"),
+                    "mode": p.get("mode"),
+                    "score_side": p.get("score_side"),
+                    "score_tier": p.get("score_tier"),
+                    "trigger_signal": p.get("trigger_signal"),
+                }
+                recent.append(entry)
+                if decision == "PASS":
+                    counts["pass"] += 1
+                elif decision == "REJECT":
+                    counts["reject"] += 1
+                if entry["rush_fall_triggered"]:
+                    counts["rush_fall"] += 1
+    except Exception as e:
+        log.warning("bitunix PA panel query failed: %s", e)
+
+    return {
+        "enabled": bool(getattr(pa_cfg, "enabled", False)),
+        "mode": (recent[0]["mode"] if recent else None),
+        "latest": recent[0] if recent else None,
+        "recent": recent,
+        "counts": counts,
+    }
+
+
+def build_bitunix_decision_flow_view(db_url: str, deps: Any) -> dict | None:
+    """trade-plan PR 6 — score → PA → HTF → outcome timeline (last 5).
+
+    Pulls the last 5 score-decided audits and joins each to the closest
+    `pa_validation_decision` and `htf_gate_decision` audit by trigger
+    timestamp (within ±60s). Outcome comes from the score-decided row's
+    `outcome` field (which captures the final disposition: placed,
+    skipped_*, etc.).
+
+    Returns None if the observer isn't wired. Empty `flows` list is a
+    valid return when the observer is wired but no fires have occurred
+    yet — the panel renders an empty state.
+
+    Shape:
+      {
+        flows: [
+          {ts_et, trigger_signal, alert_tf,
+           score: {tier, side, net},
+           pa: {decision, failed, rush_fall, mode} | None,
+           htf: {regime, size_multiplier, permission_reason, mode} | None,
+           outcome: str},
+          ...up to 5
+        ]
+      }
+    """
+    observer = getattr(deps, "bitunix_observer", None)
+    if observer is None:
+        return None
+
+    flows: list[dict] = []
+    try:
+        with db.connect(db_url) as conn:
+            score_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind = 'bitunix_score_decided' "
+                "ORDER BY ts DESC LIMIT 5"
+            ).fetchall()
+            if not score_rows:
+                return {"flows": []}
+            # Cache the last 100 PA + HTF rows once; nearest-by-ts join
+            # in Python avoids per-fire SQL.
+            pa_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind = 'pa_validation_decision' "
+                "ORDER BY ts DESC LIMIT 100"
+            ).fetchall()
+            htf_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind = 'htf_gate_decision' "
+                "ORDER BY ts DESC LIMIT 100"
+            ).fetchall()
+    except Exception as e:
+        log.warning("bitunix decision flow query failed: %s", e)
+        return {"flows": []}
+
+    def _nearest_by_signal(
+        rows: list[Any], target_ts: str, target_signal: str | None,
+    ) -> dict | None:
+        """Find the audit row with the same trigger_signal whose ts is
+        closest to `target_ts` within 60s. None if no match in window."""
+        target_dt = _parse_audit_ts(target_ts)
+        if target_dt is None:
+            return None
+        best: tuple[float, dict] | None = None
+        for r in rows:
+            try:
+                p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+            except Exception:
+                continue
+            if target_signal and p.get("trigger_signal") != target_signal:
+                continue
+            r_dt = _parse_audit_ts(r["ts"])
+            if r_dt is None:
+                continue
+            delta = abs((r_dt - target_dt).total_seconds())
+            if delta > 60:
+                continue
+            if best is None or delta < best[0]:
+                best = (delta, p)
+        return best[1] if best else None
+
+    for r in score_rows:
+        try:
+            sp = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        except Exception:
+            continue
+        trigger = sp.get("trigger_signal")
+        pa_p = _nearest_by_signal(pa_rows, r["ts"], trigger)
+        htf_p = _nearest_by_signal(htf_rows, r["ts"], trigger)
+        flows.append({
+            "ts": r["ts"],
+            "ts_et": format_et_short(r["ts"]),
+            "trigger_signal": trigger,
+            "alert_tf": _infer_alert_tf(trigger),
+            "score": {
+                "tier": sp.get("tier"),
+                "side": sp.get("side"),
+                "net": sp.get("net_score"),
+            },
+            "pa": ({
+                "decision": (pa_p.get("decision") or "").upper(),
+                "failed": pa_p.get("failed") or [],
+                "rush_fall": bool(pa_p.get("rush_fall_triggered")),
+                "mode": pa_p.get("mode"),
+            } if pa_p else None),
+            "htf": ({
+                "regime": htf_p.get("regime"),
+                "size_multiplier": htf_p.get("size_multiplier"),
+                "permission_reason": htf_p.get("permission_reason"),
+                "mode": htf_p.get("mode"),
+            } if htf_p else None),
+            "outcome": sp.get("outcome"),
+        })
+
+    return {"flows": flows}
+
+
 def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
     """Phase 3.2.3 — compose the BitUnix Futures score panel block.
 
@@ -1515,17 +1862,17 @@ def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
                 row_ts = r["ts"]
                 row_dt = _parse_audit_ts(row_ts)
                 age_sec = int((now - row_dt).total_seconds()) if row_dt else None
+                trigger_signal = p.get("trigger_signal")
                 entry = {
                     "ts": row_ts,
                     "ts_et": format_et_short(row_ts),
-                    "signal": p.get("trigger_signal"),
+                    "signal": trigger_signal,
+                    "alert_tf": _infer_alert_tf(trigger_signal),
                     "tier": p.get("tier"),
                     "side": p.get("side"),
                     "net": p.get("net_score"),
                     "fb": p.get("final_buy_score"),
                     "fs": p.get("final_sell_score"),
-                    "bg": p.get("buy_guard_penalty"),
-                    "sg": p.get("sell_guard_penalty"),
                     "bc": p.get("buy_contributions") or [],
                     "sc": p.get("sell_contributions") or [],
                     "outcome": p.get("outcome"),
@@ -1537,32 +1884,62 @@ def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
                     last_eval = entry
                 recent_evals.append(entry)
 
+            # PR 6 — recent fires sourced from paper_trade_record (NOT the
+            # legacy `would_have_placed` audit) so we can surface v2
+            # trade-plan extras: tp1/tp2/tp3, sl_method, tp2_method,
+            # htf_size_multiplier, funding_rate_at_decision.
+            #
+            # Tradeoff: pre-PR-5 audit-only fires (where no paper_trade_record
+            # row was written) NO LONGER appear in this panel. Acceptable
+            # today since BitUnix is paper-only and every fire writes a
+            # paper_trade_record row. If a non-paper division ever reuses
+            # this view shape, revisit — they may need a UNION fallback.
             fire_rows = conn.execute(
-                "SELECT ts, payload_json FROM audit_event "
-                "WHERE kind='would_have_placed' "
-                "ORDER BY ts DESC LIMIT 50"
+                "SELECT order_id, ts, side, qty, entry_reference_price, "
+                "stop_price, tp_price, tier, source_signal, result, "
+                "extra_json "
+                "FROM paper_trade_record "
+                "WHERE division = 'bitunix_futures' "
+                "ORDER BY ts DESC LIMIT 10"
             ).fetchall()
+            sl_lifecycle_by_order = _load_latest_sl_lifecycle_states(conn)
+            fee_cfg = _bitunix_fee_config(deps)
             for r in fire_rows:
                 try:
-                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                    extra = json.loads(r["extra_json"]) if r["extra_json"] else {}
                 except Exception:
-                    p = {}
-                if p.get("via") != "bitunix_score":
-                    continue
+                    extra = {}
+                entry_px = r["entry_reference_price"]
+                fee_floor = (
+                    2.0 * fee_cfg.round_trip_cost_pct() * float(entry_px)
+                    if fee_cfg is not None and entry_px
+                    else None
+                )
                 recent_fires.append({
+                    "order_id": r["order_id"],
                     "ts": r["ts"],
                     "ts_et": format_et_short(r["ts"]),
-                    "tier": p.get("tier"),
-                    "side": p.get("side"),
-                    "qty": p.get("qty"),
-                    "entry": p.get("entry_price"),
-                    "stop": p.get("stop_price"),
-                    "tp": p.get("tp_price"),
-                    "net_score": p.get("net_score"),
-                    "trigger_signal": p.get("trigger_signal"),
+                    "tier": r["tier"],
+                    "side": r["side"],
+                    "qty": r["qty"],
+                    "entry": entry_px,
+                    "stop": r["stop_price"],
+                    "tp": r["tp_price"],
+                    "tp1": extra.get("tp1_price"),
+                    "tp2": extra.get("tp2_price"),
+                    "tp3": extra.get("tp3_price"),
+                    "sl_method": extra.get("sl_method"),
+                    "tp2_method": extra.get("tp2_method"),
+                    "htf_size_multiplier": extra.get("htf_size_multiplier"),
+                    "funding_rate_at_decision": extra.get("funding_rate_at_decision"),
+                    "fee_floor_dollars": fee_floor,
+                    "sl_lifecycle_state": sl_lifecycle_by_order.get(r["order_id"]),
+                    "result": r["result"],
+                    "net_score": extra.get("net_score"),
+                    "trigger_signal": r["source_signal"],
+                    "alert_tf": _infer_alert_tf(r["source_signal"]),
+                    "tp_plan_version": extra.get("tp_plan_version"),
                 })
-                if len(recent_fires) >= 10:
-                    break
 
             try:
                 cd_rows = conn.execute(
@@ -2180,11 +2557,26 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     # + the live observer's bar cache. Returns None if scoring config
     # is unavailable (observer not wired, or YAML scoring block missing).
     bitunix_score_view: dict | None = None
+    bitunix_htf_view: dict | None = None
+    bitunix_pa_view: dict | None = None
+    bitunix_decision_flow_view: dict | None = None
     if slug == "bitunix_futures":
         try:
             bitunix_score_view = build_bitunix_score_view(deps.db_url, deps)
         except Exception as e:
             log.warning("bitunix score view for %s failed: %s", slug, e)
+        try:
+            bitunix_htf_view = build_bitunix_htf_view(deps)
+        except Exception as e:
+            log.warning("bitunix HTF view for %s failed: %s", slug, e)
+        try:
+            bitunix_pa_view = build_bitunix_pa_view(deps.db_url, deps)
+        except Exception as e:
+            log.warning("bitunix PA view for %s failed: %s", slug, e)
+        try:
+            bitunix_decision_flow_view = build_bitunix_decision_flow_view(deps.db_url, deps)
+        except Exception as e:
+            log.warning("bitunix decision flow view for %s failed: %s", slug, e)
 
     # Robinhood IRA dashboard — group shares + short calls into covered
     # calls, identify pure assets (shares without calls), surface short
@@ -2213,6 +2605,9 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         donchian=donchian_view,
         bitunix_score=bitunix_score_view,
         ira_view=ira_view_block,
+        bitunix_htf=bitunix_htf_view,
+        bitunix_pa=bitunix_pa_view,
+        bitunix_decision_flow=bitunix_decision_flow_view,
     )
 
 

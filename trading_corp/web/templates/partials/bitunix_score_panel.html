@@ -46,8 +46,13 @@
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
     {# Last evaluation tier #}
     <div class="bg-pane-2/40 border border-edge rounded-md p-3">
-      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
-        Last eval
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1 flex items-center gap-2">
+        <span>Last eval</span>
+        {% if bs.last_eval and bs.last_eval.alert_tf %}
+          <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-pane border border-edge text-mono">
+            {{ bs.last_eval.alert_tf }}
+          </span>
+        {% endif %}
       </div>
       {% if bs.last_eval %}
         <div class="text-2xl font-mono font-semibold
@@ -86,8 +91,6 @@
         </div>
         <div class="text-[11px] text-muted font-mono mt-1">
           buy={{ bs.last_eval.fb }} · sell={{ bs.last_eval.fs }}
-          {% if bs.last_eval.bg %} · buy_guard={{ bs.last_eval.bg }}{% endif %}
-          {% if bs.last_eval.sg %} · sell_guard={{ bs.last_eval.sg }}{% endif %}
         </div>
       {% else %}
         <div class="text-2xl font-mono text-muted">—</div>
@@ -216,43 +219,80 @@
   </div>
   {% endif %}
 
-  {# ─── Recent fires (would_have_placed from score path) ─── #}
+  {# ─── Recent fires (paper_trade_record — surfaces v2 trade-plan fields) ─── #}
   {% if bs.recent_fires %}
   <div class="mb-3">
     <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
       Recent paper fires ({{ bs.recent_fires|length }})
+      <span class="text-[9px] ml-2 text-muted">v2 trades show TP1/TP2/TP3 + lifecycle state from reconciler</span>
     </div>
     <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
       <table class="w-full text-xs font-mono">
         <thead class="text-muted text-[10px] uppercase">
           <tr class="border-b border-edge">
             <th class="text-left p-2">When</th>
+            <th class="text-left p-2">TF</th>
             <th class="text-left p-2">Tier</th>
             <th class="text-left p-2">Side</th>
-            <th class="text-right p-2">Net</th>
             <th class="text-right p-2">Entry</th>
-            <th class="text-right p-2">Stop</th>
-            <th class="text-right p-2">TP</th>
-            <th class="text-right p-2">Qty</th>
-            <th class="text-left p-2">Trigger</th>
+            <th class="text-right p-2">SL</th>
+            <th class="text-right p-2">TP1·TP2·TP3</th>
+            <th class="text-left p-2">SL state</th>
+            <th class="text-right p-2">HTF×</th>
+            <th class="text-left p-2">Trigger / Result</th>
           </tr>
         </thead>
         <tbody>
           {% for f in bs.recent_fires %}
           <tr class="border-b border-edge/40 hover:bg-pane-2/30">
             <td class="p-2 text-muted">{{ f.ts_et }}</td>
+            <td class="p-2 text-mono">
+              {% if f.alert_tf %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-pane border border-edge">{{ f.alert_tf }}</span>
+              {% else %}—{% endif %}
+            </td>
             <td class="p-2 {% if f.tier == 'PREMIUM' %}text-gain{% else %}text-mono{% endif %} font-semibold">
-              {{ f.tier }}
+              {{ f.tier or '—' }}
             </td>
             <td class="p-2 {% if f.side == 'buy' %}text-gain{% else %}text-loss{% endif %} font-semibold">
-              {{ f.side|upper }}
+              {{ (f.side or '')|upper }}
             </td>
-            <td class="p-2 text-right">{{ f.net_score }}</td>
             <td class="p-2 text-right">${{ '%.2f'|format(f.entry) if f.entry else '—' }}</td>
-            <td class="p-2 text-right">${{ '%.2f'|format(f.stop) if f.stop else '—' }}</td>
-            <td class="p-2 text-right">${{ '%.2f'|format(f.tp) if f.tp else '—' }}</td>
-            <td class="p-2 text-right">{{ '%.5f'|format(f.qty) if f.qty else '—' }}</td>
-            <td class="p-2 text-muted">{{ f.trigger_signal }}</td>
+            <td class="p-2 text-right">
+              ${{ '%.2f'|format(f.stop) if f.stop else '—' }}
+              {% if f.sl_method %}<div class="text-[9px] text-muted">{{ f.sl_method }}</div>{% endif %}
+            </td>
+            <td class="p-2 text-right">
+              {% if f.tp1 or f.tp2 or f.tp3 %}
+                <div>{{ '%.0f'|format(f.tp1) if f.tp1 else '—' }} · {{ '%.0f'|format(f.tp2) if f.tp2 else '—' }} · {{ '%.0f'|format(f.tp3) if f.tp3 else '—' }}</div>
+                {% if f.tp2_method %}<div class="text-[9px] text-muted">tp2:{{ f.tp2_method }}</div>{% endif %}
+              {% else %}
+                ${{ '%.2f'|format(f.tp) if f.tp else '—' }}
+              {% endif %}
+            </td>
+            <td class="p-2 text-mono text-[10px]">
+              {% if f.sl_lifecycle_state %}
+                <span class="px-1.5 py-0.5 rounded bg-pane border border-edge text-gain">{{ f.sl_lifecycle_state }}</span>
+              {% elif f.tp_plan_version == 'v2' %}
+                <span class="text-muted">open</span>
+              {% else %}—{% endif %}
+            </td>
+            <td class="p-2 text-right text-muted">
+              {% if f.htf_size_multiplier is not none %}
+                {{ '%.2f'|format(f.htf_size_multiplier) }}×
+              {% else %}—{% endif %}
+              {% if f.fee_floor_dollars %}
+                <div class="text-[9px] text-muted" title="Minimum TP distance needed to clear round-trip fees">min-TP≥${{ '%.2f'|format(f.fee_floor_dollars) }}</div>
+              {% endif %}
+            </td>
+            <td class="p-2 text-muted">
+              {{ f.trigger_signal or '—' }}
+              {% if f.result %}
+                <div class="text-[9px] {% if f.result == 'win' %}text-gain{% elif f.result == 'loss' %}text-loss{% else %}text-muted{% endif %}">
+                  {{ f.result }}
+                </div>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
@@ -272,6 +312,7 @@
         <thead class="text-muted text-[10px] uppercase">
           <tr class="border-b border-edge">
             <th class="text-left p-2">When</th>
+            <th class="text-left p-2">TF</th>
             <th class="text-left p-2">Trigger</th>
             <th class="text-left p-2">Side</th>
             <th class="text-right p-2">Net</th>
@@ -284,6 +325,11 @@
           {% for e in bs.recent_evals %}
           <tr class="border-b border-edge/40 hover:bg-pane-2/30">
             <td class="p-2 text-muted">{{ e.ts_et }}</td>
+            <td class="p-2 text-mono">
+              {% if e.alert_tf %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-pane border border-edge">{{ e.alert_tf }}</span>
+              {% else %}<span class="text-muted">—</span>{% endif %}
+            </td>
             <td class="p-2 text-mono">{{ e.signal }}</td>
             <td class="p-2 {% if e.side == 'buy' %}text-gain{% elif e.side == 'sell' %}text-loss{% else %}text-muted{% endif %}">
               {{ e.side }}

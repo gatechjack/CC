@@ -149,6 +149,55 @@ sudo systemctl restart trading-corp"
 
 ---
 
+## 2026-05-15 21:33 UTC — BitUnix HTF Phase 1B followup — brokers/bitunix.py + persistence/models.py
+
+**Triggered by:** P2 followup filed in BACKLOG at the end of the 15:35 Phase 1B deploy. The new funding-rate poll loop emitted `'BitunixBroker' object has no attribute 'get_funding_rate'` every 30 min because Phase 1B shipped main.py + observer.py + web/app.py but not the broker file. `bitunix_funding_history` table couldn't be created until this method existed.
+
+**Backup tag:** `pre-htf-1b-followup-20260515-2133`
+
+**Files deployed (2 — bundled per the Phase 1B lesson on shipping coherent units):**
+- **MODIFIED** `trading_corp/brokers/bitunix.py` — adds `get_funding_rate(symbol) -> float | None` (public endpoint, no auth, transient httpx client so it works regardless of stub/connected state). Also brings forward the PR 5 reconciler-supporting methods `list_open_positions(db_url) -> list[OpenPosition]` and `modify_position_tp_sl_order(...) -> NotImplementedError`. Both are inert on prod: nothing calls them until Phase 1C ships `bitunix_position_reconciler.py`.
+- **MODIFIED** `trading_corp/persistence/models.py` — adds `@dataclass OpenPosition` (reconciler-facing view of one open trade — order_id, symbol, side, qty, entry_price, current_sl, tp_plan, filled_legs, opened_ts). Imported only by `BitunixBroker.list_open_positions`; inert on prod without the reconciler.
+
+**Scope rationale (Option 1 from in-session triage):** Branch's `bitunix.py` imports `OpenPosition` from `persistence.models` at module top — shipping `bitunix.py` alone would have crashed module load with `ImportError` → service crash-loop. Per `phased_deploy_lesson.md` ("ship whole coherent bundles, not subsets"): paired `models.py` in the same deploy. Now prod bitunix.py + models.py are md5-identical to branch (LF-normalized) — Phase 1C drops from 9 files to 8 (no broker / persistence churn needed).
+
+**Verification (post-restart 21:33:35 UTC):**
+- Pre-swap md5: bitunix.py `33235a76ffec973b4e39fcc91f4a31dd`, models.py `cfe089dd009df0274a7965d03f2ca55d` (= main, LF).
+- Post-swap md5: bitunix.py `5b7e186688f6b33052a873977e6bdde9`, models.py `71108b3342ca0b3d4912fec2055f4356` (= branch, LF). Match expected.
+- PID rotation 434263 → 449440 on `systemctl restart`. Service `active (running)`, healthz `HTTP 200`.
+- BitUnix observer wiring log unchanged: `scoring=True, pa_enabled=False, htf_gate_mode=off, htf_regime_enabled=False, trade_plan_active=False` — all Phase 1B-vintage dormant flags still in place.
+- `BitunixBroker connected (account=bitunix-futures, equity=$2819.55, 0 positions)` — real account read still works.
+- **Funding-rate fetch SUCCESS:** boot log shows `bitunix HTF funding primed: rate=-0.006032` (was the every-30min AttributeError pre-deploy).
+- **`bitunix_funding_history` table CREATED** (visible in `sqlite_master`) with 2 rows persisted within the first minute (boot prime + first poll-loop tick).
+- Bar archiver / signal-ledger / observer-bias tables unaffected: `bitunix_bar_history` has 1d=200, 1h=206, 3m=321, 4h=202 rows.
+- 5 min of post-restart logs: zero new `AttributeError` / `has no attribute get_funding_rate` / `funding_rate fetch failed`.
+
+**Behavioral change on prod:** None for trade flow. `get_funding_rate` is consumed only by the HTF context provider's funding-extreme threshold check inside the regime gate, which is dormant (`htf_gate_mode=off`). New observable activity: `bitunix_funding_history` fills at ~48 rows/day (30-min poll). PR 5 reconciler stubs are dead code on prod until Phase 1C lands.
+
+**Inert / dormant on current traffic:**
+- `OpenPosition` dataclass — only consumer is `BitunixBroker.list_open_positions`, which has no caller without the Phase 1C reconciler.
+- `BitunixBroker.modify_position_tp_sl_order` raises `NotImplementedError`; never reached without the reconciler.
+
+**Deploy mechanics callout — `az run-command` over HTTPS:** SSH port 22 blocked from local network this session. Used the `az vm run-command invoke` fallback per `trading_corp_az_run_command.md`. Output is truncated at 4kb but `--scripts` accepts the 24-35kb base64 payload fine; pattern: `B64=$(cat file.b64); az vm run-command --scripts "echo '$B64' | base64 -d > /tmp/x.py && ..."`. Documented for future deploys against restricted networks.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm \
+  --command-id RunShellScript \
+  --scripts "
+TAG=pre-htf-1b-followup-20260515-2133; BASE=/home/azureuser/trading_corp
+cd \$BASE
+for f in trading_corp/brokers/bitunix.py trading_corp/persistence/models.py; do
+  sudo cp \$f.\$TAG \$f
+done
+sudo rm -rf trading_corp/brokers/__pycache__ trading_corp/persistence/__pycache__
+sudo systemctl restart trading-corp.service
+"
+```
+Safe to roll back: removes the new method + `OpenPosition` dataclass. Phase 1B-shipped main.py + observer.py + web/app.py don't import either at module top (the funding poll uses `getattr` dispatch). After rollback the every-30min `get_funding_rate` warning returns; the `bitunix_funding_history` table stays in the DB but stops getting new rows.
+
+---
+
 ## 2026-05-15 15:41 UTC — Fix B: crypto strike-distance-from-spot curation (3-deploy iteration)
 
 **Triggered by:** Post-Fix-A, crypto still 0 ProposedOrders. Pre-fix audit (155 evals in 2 cycles) showed XRP T-suffix tail strikes consuming the entire `k_per_cycle=30` budget — all deep-OTM at Kalshi's $0.01 pricing floor, guaranteed 1% edge noise, 100% `no_edge` skips. BTC/ETH near-spot markets where real edges could live were starved by tightest-spread sort favoring deep-XRP tails.
@@ -188,6 +237,79 @@ sudo cp /home/azureuser/trading_corp/trading_corp/agents/strategies/kalshi_crypt
 sudo rm -rf /home/azureuser/trading_corp/trading_corp/agents/strategies/__pycache__; \
 sudo systemctl restart trading-corp.service"
 ```
+
+---
+
+## 2026-05-15 15:35 UTC — BitUnix HTF Phase 1B — full code surface, dormant mode
+
+**Triggered by:** Phased deploy of branch `claude/gallant-tereshkova-49ef85` (HTF redesign PRs 1/2/3a/3c/5 + trade-plan PRs 1-6). Phase 1A had already landed 4 pure-module files at the top of this session (no service restart, no behavioral change — files were dormant on disk). Phase 1B ships the integration surface so PR 3c's PA + HTF gates and the new bar archiver / regime snapshot loops come online — but kept fully dormant via prod's existing strategies.yaml (no `pa_validation` block → `pa.enabled=False`; no `htf_gate` block → `htf_gate_mode=off`; no `trade_plan` block → reconciler not started). The branch was merged with main at `dc1d252` before deploy, making it a clean superset of prod for these files.
+
+**Backup tags:**
+- `pre-htf-1b-20260515-1529` — first 1B attempt; missed `web/app.py` and rolled back (TypeError: WebDeps got unexpected kwarg `bitunix_htf_provider`)
+- `pre-htf-1b-20260515-1535` — second 1B attempt (THIS ONE) succeeded
+
+**Files deployed (11 total — 4 from Phase 1A earlier + 7 in Phase 1B):**
+
+Phase 1A (deployed earlier in session, pure modules, no restart needed):
+- **NEW** `trading_corp/agents/strategies/bitunix_htf_regime.py` (1021 lines) — HTF regime classifier (pure module): EMA alignment / structure / ADX / MACD per-TF; composite BULL/NEUTRAL/BEAR regime; volatility tier; session classifier; `find_swing_points` helper.
+- **NEW** `trading_corp/agents/strategies/bitunix_pa_validation.py` (310 lines) — PA validators (VWAP / volume / structure / rush_fall binary guards); `PAValidationConfig` reads YAML `bitunix_futures.pa_validation` block; `evaluate_pa_validation()` returns PASS / REJECT / DISABLED.
+- **NEW** `trading_corp/data/bitunix_htf_context.py` (379 lines) — `BitUnixHTFContextProvider` wraps 1H/4H/1D LiveBarCaches + funding-rate fetcher; `snapshot()` returns gating context; `regime_snapshot()` produces RegimeVerdict for the gate; `run_funding_poll_loop()` + `run_regime_snapshot_loop()` async tasks.
+- **NEW** `trading_corp/data/bitunix_bar_archiver.py` (165 lines) — async loop reading new bars from each BitUnix LiveBarCache and INSERT-OR-IGNORE-ing them into `bitunix_bar_history` (self-creates the table on init).
+
+Phase 1B (deployed 15:35 UTC, service restarted):
+- **MODIFIED** `trading_corp/main.py` (+150 lines net) — adds 3 HTF LiveBarCaches (1H/4H/1D @ max_bars=250); constructs `BitUnixHTFContextProvider`; loads `_pa_config` + `_htf_gate_mode` + `_trade_plan_config` + `_fee_config` from YAML; wires the bar archiver + funding poll + regime-snapshot async tasks; passes `bitunix_htf_provider` into `WebDeps`. Backwards-compat: all four new configs default to disabled when their YAML blocks are absent.
+- **MODIFIED** `trading_corp/agents/divisions/bitunix_futures_observer.py` (extensive) — accepts new kwargs (`pa_config`, `htf_config`, `htf_gate_mode`, `htf_provider`, `trade_plan_config`, `fee_config`). New gate logic for PR 3c (PA validation + HTF regime gate) lives at the right spot in `_score_and_maybe_propose` but is bypassed when configs are disabled. New `_log_pa_validation` / `_log_htf_gate` / `_log_trade_plan_decision` audit writers. Imports from `swing.py` / `levels.py` / `trade_plan.py` (the new pure modules below).
+- **MODIFIED** `trading_corp/agents/strategies/bitunix_confluence.py` — exports `BitUnixAlertEvent` (needed by observer); `BitUnixConfluenceConfig.from_dict` reads new optional fields (`score_timeframes`, `pa_factors_in_score`, `guards_in_score`, `ttl_per_tf` per factor) with safe defaults so it works against prod's older YAML.
+- **MODIFIED** `trading_corp/web/app.py` (+6 lines) — adds `bitunix_htf_provider: Any = None` field to `WebDeps` dataclass. Nothing on prod reads it yet (web/data.py is unchanged in this phase).
+- **NEW** `trading_corp/agents/strategies/swing.py` — fractal swing detection helper (re-exports from `bitunix_htf_regime.find_swing_points`).
+- **NEW** `trading_corp/agents/strategies/levels.py` — HTF S/R levels via 3m→15m resample of `bitunix_bar_cache`.
+- **NEW** `trading_corp/agents/strategies/trade_plan.py` — `FeeConfig` + `StrategyConfig` + `TradePlan` + `build_trade_plan` (PR 3 module — imported by observer but only used when `trade_plan.enabled: true`).
+
+**Verification (boot @ 15:35:11 UTC):**
+- `BitUnix observer wiring: scoring=True, pa_enabled=False, htf_gate_mode=off, htf_regime_enabled=False, trade_plan_active=False` — all gates dormant as designed.
+- 3 HTF caches primed with 200 bars each (1H last_close=$79120, 4H last_close=$80582, 1D last_close=$81049). ATR values computed.
+- `bitunix_bar_archiver online (caches=4, interval=60.0s)` — already primed 800 bars (4 caches × 200).
+- `HTF regime-snapshot loop online (interval=600.0s)`.
+- `HTF funding-rate poll online (interval=1800.0s)` — emits a non-fatal warning every 30min: `'BitunixBroker' object has no attribute 'get_funding_rate'` (filed as P2 followup; branch's `brokers/bitunix.py` adds this method but wasn't shipped in 1B). Funding refresh returns None gracefully; `bitunix_funding_history` table will be created once the broker method ships.
+- `bitunix_bar_history` table verified in DB.
+- `/healthz` returns 200.
+- Service stable PID 432373; MainPID unchanged for 5+ min post-boot (no auto-restart).
+
+**Behavioral change on prod:** NONE for trade flow. Score engine, BitUnix observer fire decisions, paper trade replay, all other divisions: unchanged. New code paths exist in dormant state (gates configured-disabled). Net new prod activity = `bitunix_bar_history` table fills at ~1 row per cache per closed bar; `audit_event(kind='htf_regime_snapshot')` rows accumulate at ~1 row per 10min.
+
+**Notable scope discovery — Phase 1B grew from 1 file to 4 files during deploy:**
+- Initial plan: ship only `main.py`. CRASHED on first attempt with `TypeError: BitunixFuturesObserver.__init__() got an unexpected keyword argument 'pa_config'` — branch's main.py calls the observer with new kwargs that prod's observer didn't accept.
+- Forward-fix: add `observer.py` to bundle. Smoke test of observer construction passed, but second deploy CRASHED at `TypeError: WebDeps.__init__() got an unexpected keyword argument 'bitunix_htf_provider'` — branch's main.py also passes a new WebDeps field.
+- Final-fix: add `web/app.py` to bundle. Third deploy succeeded. Bundle = `main.py + observer.py + confluence.py + web/app.py` (4 modified files).
+- Plus 3 new pure modules (`swing.py` + `levels.py` + `trade_plan.py`) needed because branch's observer imports them at module level. SCP'd to prod as fresh files (no backup needed).
+
+**Lesson logged in memory:** ship-by-subset for an integrated branch invites missed transitive deps. For future phased deploys against drifted prod, prefer "ship the whole branch in dormant mode, then flip flags" over "ship N files at a time."
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+cd /home/azureuser/trading_corp
+TS=20260515-1535
+for f in trading_corp/main.py trading_corp/agents/divisions/bitunix_futures_observer.py trading_corp/agents/strategies/bitunix_confluence.py trading_corp/web/app.py; do
+  cp \$f.pre-htf-1b-\$TS \$f
+done
+# swing.py / levels.py / trade_plan.py are new — rm to fully revert
+rm trading_corp/agents/strategies/swing.py trading_corp/agents/strategies/levels.py trading_corp/agents/strategies/trade_plan.py
+rm -rf trading_corp/__pycache__ trading_corp/agents/__pycache__ trading_corp/agents/divisions/__pycache__ trading_corp/agents/strategies/__pycache__ trading_corp/web/__pycache__
+sudo systemctl restart trading-corp
+"
+```
+Note: Phase 1A files (bitunix_htf_regime, _pa_validation, _htf_context, _bar_archiver) are imported by main.py post-1B; rolling back to pre-1B but leaving them in place is fine (they become orphan files again).
+
+**Inert / dormant on current traffic (Phase 1B leaves these for Phase 1C and beyond):**
+- **PA validation gate.** Module loaded, `pa_config` constructed but `pa.enabled=False` because prod YAML lacks `bitunix_futures.pa_validation` block. Phase 1C (deploy branch's strategies.yaml) activates shadow-mode validators.
+- **HTF regime gate.** Module loaded, `htf_config` constructed with defaults, but `htf_gate_mode=off`. Phase 1C activates shadow mode; Phase 1D flips to enforce.
+- **Trade-plan v2 path.** `trade_plan.py` on disk, observer's `_build_proposal_v2` exists but never called (`_trade_plan_config is None`). Legacy `_build_proposal` (Phase 3.2.2 era) handles all trades.
+- **Position reconciler.** Conditional import in main.py gated on `_trade_plan_config is not None` — never imported, async task never started.
+- **Dashboard view builders** for HTF / PA / decision-flow panels are NOT on prod (`web/data.py` and templates still pre-PR-3c). New panels would render data but the views aren't built. Phase 1D ships the dashboard refresh.
+
+**Followups filed in BACKLOG (P2 priority):**
+- Ship `trading_corp/brokers/bitunix.py` to silence the every-30min `get_funding_rate` warning and unlock funding-history persistence.
 
 ---
 

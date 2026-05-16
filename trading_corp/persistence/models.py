@@ -106,6 +106,26 @@ class Position:
 
 
 @dataclass
+class OpenPosition:
+    """Reconciler-facing view of one open trade.
+
+    Distinct from `Position` (venue-aggregated) — one OpenPosition per
+    unresolved `paper_trade_record` row in paper mode, one per active
+    BitUnix position in Phase 4 live mode. `filled_legs` and `current_sl`
+    come from broker truth, never inferred from price + plan.
+    """
+    order_id: str
+    symbol: str
+    side: OrderSide
+    qty: float
+    entry_price: float
+    current_sl: float
+    tp_plan: list[dict]
+    filled_legs: list[str] = field(default_factory=list)
+    opened_ts: str = ""
+
+
+@dataclass
 class StrategyState:
     strategy: str
     halted: bool = False

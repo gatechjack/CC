@@ -49,10 +49,13 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+import json
+
 import httpx
 
 from trading_corp.brokers.base import AccountSnapshot, Broker
-from trading_corp.persistence.models import FillEvent, Position, ProposedOrder
+from trading_corp.persistence import db
+from trading_corp.persistence.models import FillEvent, OpenPosition, Position, ProposedOrder
 
 log = logging.getLogger(__name__)
 
@@ -313,6 +316,61 @@ class BitunixBroker(Broker):
                 )
         return 0.0
 
+    async def get_funding_rate(self, symbol: str) -> float | None:
+        """Return current funding rate for `symbol` as a decimal per 8h
+        period (e.g. 0.0001 = 0.01% per 8h). Public endpoint, no auth.
+
+        Works regardless of broker stub/connected state — funding is a
+        public endpoint, so we construct a transient httpx client here
+        rather than depending on `self._client` (which only exists when
+        the broker has API credentials and `connect()` has run). This
+        lets the HTF context provider call this method even in test /
+        unauthenticated environments.
+
+        Returns None on error so callers can treat "unknown funding"
+        distinctly from "zero funding". The HTF gate's funding-extreme
+        check uses None to skip the override — it does NOT default to
+        the safe direction here because the regime gate's other hard-
+        zero checks still apply.
+
+        BitUnix returns funding-rate fields under varying key names
+        across endpoints; we accept the canonical `fundingRate` plus
+        `funding_rate` as a fallback.
+        """
+        try:
+            async with httpx.AsyncClient(
+                base_url=_BASE_URL, timeout=_DEFAULT_TIMEOUT_S,
+            ) as client:
+                r = await client.get(
+                    "/api/v1/futures/market/funding_rate",
+                    params={"symbol": symbol},
+                )
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            log.warning("BitUnix funding_rate fetch failed for %s: %s", symbol, e)
+            return None
+        if data.get("code") != 0:
+            log.warning(
+                "BitUnix funding_rate error for %s: code=%s msg=%r",
+                symbol, data.get("code"), data.get("msg"),
+            )
+            return None
+        d = data.get("data") or {}
+        # Endpoint returns either a single dict or a list of one dict
+        # depending on BitUnix's response shape; handle both defensively.
+        if isinstance(d, list):
+            d = d[0] if d else {}
+        raw = d.get("fundingRate") if isinstance(d, dict) else None
+        if raw is None and isinstance(d, dict):
+            raw = d.get("funding_rate")
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
     async def place_order(self, order: ProposedOrder) -> FillEvent:
         raise NotImplementedError(
             "BitunixBroker.place_order: Phase 1 is read-only. Live order "
@@ -325,4 +383,71 @@ class BitunixBroker(Broker):
     async def cancel_order(self, order_id: str) -> bool:
         raise NotImplementedError(
             "BitunixBroker.cancel_order: Phase 1 is read-only. See place_order."
+        )
+
+    def list_open_positions(self, db_url: str) -> list[OpenPosition]:
+        """Reconciler-facing enumeration of unresolved positions.
+
+        Paper mode (today): queries `paper_trade_record WHERE division =
+        'bitunix_futures' AND result IS NULL`, hydrates from `extra_json`.
+        Phase 4 swap: replace the SQL with `/api/v1/futures/position`
+        — same `OpenPosition` return shape, different source.
+
+        `filled_legs` is always `[]` in paper mode — the legacy paper
+        resolver treats a trade as monolithic (single `result` field),
+        so no leg has "partially filled" until Phase 4 broker truth
+        provides cumulative-fill state per position.
+        """
+        with db.connect(db_url) as conn:
+            rows = conn.execute(
+                "SELECT order_id, symbol, side, qty, entry_reference_price, "
+                "stop_price, ts, extra_json "
+                "FROM paper_trade_record "
+                "WHERE division = ? AND result IS NULL",
+                ("bitunix_futures",),
+            ).fetchall()
+
+        out: list[OpenPosition] = []
+        for r in rows:
+            try:
+                extra = json.loads(r["extra_json"]) if r["extra_json"] else {}
+            except (TypeError, ValueError):
+                extra = {}
+            tp_plan = extra.get("tp_plan") or []
+            if not tp_plan or extra.get("tp_plan_version") != "v2":
+                # Skip legacy single-leg trades — reconciler only manages
+                # v2 lifecycle. Pre-PR-4 trades retain their original SL.
+                continue
+            out.append(OpenPosition(
+                order_id=r["order_id"],
+                symbol=r["symbol"],
+                side=r["side"],
+                qty=_to_float(r["qty"]),
+                entry_price=_to_float(r["entry_reference_price"]),
+                current_sl=_to_float(r["stop_price"]),
+                tp_plan=tp_plan,
+                filled_legs=[],
+                opened_ts=r["ts"] or "",
+            ))
+        return out
+
+    async def modify_position_tp_sl_order(
+        self,
+        order_id: str,
+        new_sl: float,
+        new_tp: float | None = None,
+    ) -> None:
+        """Adjust SL (and optionally TP) on an open position.
+
+        Phase 1 stub — real wiring lands in Phase 4 alongside
+        `place_order`. The PR 5 reconciler does NOT call this method;
+        it only logs intent via the `position_sl_update` audit row. The
+        stub exists so Phase 4 has a stable surface to implement.
+        """
+        raise NotImplementedError(
+            "BitunixBroker.modify_position_tp_sl_order: Phase 1 is "
+            "read-only. SL lifecycle decisions are emitted as "
+            "`position_sl_update` audit rows by the reconciler; real "
+            "BitUnix `/api/v1/futures/tpsl/modify_position_tp_sl_order` "
+            "calls land in Phase 4."
         )
