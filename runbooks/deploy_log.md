@@ -59,6 +59,130 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-16 03:35 UTC — BitUnix Decision Flow panel reorder: gate-chain on top, legacy score below
+
+**Triggered by:** Jack screenshotted `/division/bitunix_futures` post-UX-fix and the new Phase 1C panels weren't visible above the fold — they were ~33kb of HTML below the legacy Confluence Score panel. Reorder puts the gate chain on top in natural "decide → audit → outcome" reading order.
+
+**Backup tag:** `pre-bitunix-1c-reorder-20260516-0335`
+
+**Files deployed (1 — modify):**
+- `trading_corp/web/templates/division.html` — reorders the 4 BitUnix panels. New order: **HTF Regime → PA Validators → Decision Flow → Confluence Score (legacy)**. Score panel moves from top to bottom of the bitunix_futures stack as the detail/explorer surface. Single comment block added explaining the rationale at the top of the bitunix section.
+
+**Features shipped:**
+- HTF / PA / Decision Flow panels render at byte offsets 14,146 / 22,009 / 25,917 (was 46,699 / 54,562 / 58,470 pre-reorder).
+- Confluence Score moves from byte 13,686 to byte 33,781 — same content, lower position.
+- Decision-flow Net column (from the 03:15 UTC UX fix) is now visible without scrolling for a typical viewport.
+
+**Notable code changes:**
+- Pure include-order swap. No view-builder changes; no panel-internal changes. The 4 panel sections themselves are unchanged.
+
+**Verification:**
+- `az vm run-command create` exit 0, executionState `Succeeded`, end 03:35:48 UTC.
+- Template md5 on prod = `3e97562b1b593212bda2118c1f364fb5` (LF-normalized local matches).
+- Service active.
+- Rendered HTML byte offsets confirm new order: htf-panel(14146) < pa-panel(22009) < decision-flow(25917) < score-panel(33781).
+- Page total 75,159 bytes (was 74,758 — minor delta from comment block).
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts '
+TAG=pre-bitunix-1c-reorder-20260516-0335
+BASE=/home/azureuser/trading_corp
+F=trading_corp/web/templates/division.html
+mv $BASE/$F.$TAG $BASE/$F
+rm -rf $BASE/trading_corp/web/__pycache__
+sudo systemctl restart trading-corp'
+```
+
+---
+
+## 2026-05-16 03:29 UTC — Bug C: one-shot DELETE of stale PCT pending audit rows (no `resolves_at` payload)
+
+**Triggered by:** Post-Bug-A probe showed polymarket_copy_trading with `pending=2431 / resolved=506` (vs e.g. polymarket_arbitrage's `52 / 12`). 100% of PCT pending rows lack `resolves_at` in the payload, so Bug B's expires_at-ordering fix doesn't help them. Root causes: (a) pre-2026-05-14 multi-leg-resolver bug left rows unpairable, (b) Apify's 10-min polling cadence misses fast whale exits (winners auto-settle before our poll sees them — documented in PCT memory `trading_corp_polymarket.md`'s adverse-selection note).
+
+**Backup tag:** `20260516-032942` (in `/tmp/pct_stuck_audit_backup_20260516-032942.{jsonl,sql}` — 1,745 rows; restore via `sqlite3 trading_corp.db < <path>.sql`).
+
+**Changes:** SQL DELETE on `audit_event`, no code changes.
+
+**Predicate (Path A, 24h cutoff per session decision):**
+```sql
+DELETE FROM audit_event
+WHERE actor='polymarket_copy_trader'
+  AND kind='would_have_placed'
+  AND COALESCE(json_extract(payload_json,'$.side'),'buy')='buy'
+  AND ts < datetime('now','-1 day')
+  AND json_extract(payload_json,'$.order_id') NOT IN
+      (SELECT order_id FROM polymarket_round_trips WHERE order_id IS NOT NULL)
+  AND json_extract(payload_json,'$.order_id') NOT IN
+      (SELECT entry_order_id FROM polymarket_round_trips WHERE entry_order_id IS NOT NULL);
+```
+
+**Pre-delete age distribution:**
+- <1d (fresh): 691 rows — protected by 24h cutoff (still in normal pairing flow)
+- 1-3d: 1,604 rows — deleted
+- 3-7d: 141 rows — deleted
+- Total deleted: 1,745
+
+**Verification:**
+- `audit_event` rows for `polymarket_copy_trader` would_have_placed BUY: 2,482 → 737. The residual 739 dashboard-pending number includes ~46 paired-via-entry_order_id rows that have polymarket_round_trips entries (so already excluded from the dashboard tile).
+- Dashboard probe immediately after delete: `polymarket_copy_trading pending=693, resolved=506`. Other divisions unchanged.
+- Backups: 1,745-row JSONL (2.1 MB) + SQL INSERTs (1.9 MB). Owned by root, 0600 perms.
+
+**Decision rationale (recorded for memory):** Path A (straight DELETE) over Path B (synthetic-void round-trips) per Jack's call. Data loss is real but bounded — these rows had no exit price, no resolution, and no `resolves_at` anchor; their EV signal was unrecoverable. The dashboard accuracy + cognitive cost of looking at "2,431 stuck" every page-load outweighed the preservation case.
+
+**Latent followup (filed):**
+- **PCT stale-entry pruner cron** (~2-3h, P2). Otherwise we'll keep accumulating stale entries weekly as Apify continues to miss whale auto-settles. Suggested: nightly cron that runs the same predicate against rows >24h old. Builds the recurring discipline without the manual delete chore. File location: `trading_corp/scripts/prune_stale_pct_entries.py` + new systemd timer.
+- Same shape might apply to `kalshi_copy_trader` over time (current K3 stuck count is only 2, so not urgent — but watch).
+
+**Rollback recipe:**
+```bash
+# 1,745 rows preserved in backup; restore by piping the SQL file back in.
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm --command-id RunShellScript --scripts "
+sqlite3 /home/azureuser/trading_corp/data/trading_corp.db < /tmp/pct_stuck_audit_backup_20260516-032942.sql"
+```
+
+---
+
+## 2026-05-16 03:16 UTC — Bug B: kalshi + polymarket resolver `ORDER BY ts ASC` starvation fix
+
+**Triggered by:** Investigation of kalshi_llm_arbitrage's "stuck-pending" backlog after the 02:10 UTC resolver-wiring deploy revealed the resolver was scanning 50 rows/tick (per-actor budget) but resolving only 0-1 because the OLDEST 50 rows by `audit_event.ts` were all long-horizon Politics bets (KXH100MON-26MAY31, KXPERSONPUBLIC-26JUN01) that don't settle until May 31 - June 1. Meanwhile, ~605 past-expiration rows (Crypto/Climate bets from before the specialized-agent lockdown) had LATER `ts` values and never made the top-50 cut. The "stuck" framing was misleading — markets ARE resolved on Kalshi; the resolver just wasn't reaching their audit rows. Same shape on polymarket_resolver.py:67 (single resolver, no per-actor budget but same ordering bug). Affects ALL prediction-market divisions; PCT (`polymarket_copy_trading`) NOT addressed by this fix because its payloads have no `resolves_at` field (Bug C).
+
+**Backup tag:** `20260516-031555` (in `/tmp/{kalshi_resolver.py,polymarket_resolver.py}.bak-20260516-031555`)
+
+**Files deployed (2, anchored Python patch; kalshi md5 was already prod-identical from 02:10 deploy, polymarket md5 had pre-existing drift):**
+- `trading_corp/agents/kalshi_resolver.py` — `_fetch_unresolved_orders` per-actor SQL ordering changed from `ORDER BY a.ts ASC LIMIT ?` to `ORDER BY (json_extract(...,'$.expires_at') IS NULL), json_extract(...,'$.expires_at') ASC, a.ts ASC LIMIT ?`. Past-expiration rows scanned first; rows without `expires_at` fall to NULLS-LAST priority. Docstring updated.
+- `trading_corp/agents/polymarket_resolver.py` — same shape: `ORDER BY a.ts ASC` → `ORDER BY (resolves_at IS NULL), resolves_at ASC, a.ts ASC`. Polymarket field is `resolves_at` not `expires_at`. Single SQL (no per-actor loop here).
+
+**Features shipped:**
+- Resolvers drain past-expiration backlog ~50 rows/tick (kalshi per-actor) or ~6+/tick (polymarket per-tick). 605 kalshi_llm past-expiration rows projected to clear in ~12h.
+- Future-expiration rows correctly wait for actual market settlement.
+- Rows with no expires_at fall to lowest priority — won't crowd out resolvable rows (Bug C territory; PCT's 2,431 stuck entries unaffected as designed).
+
+**Test added:** `test_fetch_orders_past_expiration_first` injects (old-ts, future-expiration) + (new-ts, past-expiration) + (no-expires_at) rows and asserts order `[past, future, no-exp]`. 23/23 kalshi_resolver tests passing.
+
+**Verification (post-deploy 03:16 UTC):**
+- First resolver tick at 03:16:56 UTC: **scanned 202, resolved 50, pending 152, errors 0** (was: scanned 203 / resolved 11 / pending 192 in the prior tick).
+- First polymarket tick at 03:16:51 UTC: scanned 100 / resolved 6 / pending 94 (was: typically resolved 0-1).
+- kalshi_round_trips for kalshi_llm_arbitrage: **194 → 245** (+51 in 5 min). For kalshi_arbitrage: 0 → 0 (no past-expiration in oldest-by-expires_at for that actor's 50-slot budget yet).
+- polymarket_arbitrage pending: 58 → 52; resolved 6 → 12. polymarket_copy_trading unchanged at 2431/506 (as expected — Bug C).
+- No template-render errors, no `OperationalError`, no `kalshi_resolver tick error` in journal.
+
+**Latent followup:**
+- **Bug C — PCT 2,435 stuck entries with no `resolves_at`.** Ordering fix can't help; need one-shot delete + stale-pruner cron. Filing as the next deploy this session.
+- ~555 more kalshi_llm past-expiration rows still in queue; will drain at ~50/hour over the next ~12 hours. No action needed — natural drainage.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm --command-id RunShellScript --scripts "
+TAG=20260516-031555; \
+sudo cp /tmp/kalshi_resolver.py.bak-\$TAG /home/azureuser/trading_corp/trading_corp/agents/kalshi_resolver.py; \
+sudo cp /tmp/polymarket_resolver.py.bak-\$TAG /home/azureuser/trading_corp/trading_corp/agents/polymarket_resolver.py; \
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/agents/__pycache__; \
+sudo systemctl restart trading-corp"
+```
+
+---
+
 ## 2026-05-16 03:15 UTC — BitUnix Decision Flow UX fix (template-only): Net column + trigger color-code wiring
 
 **Triggered by:** Jack flagged confusion mid-1C-deploy that buy-named TV signals (`mc_a_longema`, `mc_b_buy_circle`, `mc_a_bluetriangle`) showed in the Decision Flow panel next to SELL orders. Behavior is correct (the panel's `signal_name` = the latest contributing TV signal; order side = sign of aggregate score), but the labeling read like a bug. UX fix: option 1 (add explicit Net column) + option 2 (color-code trigger by intrinsic side).

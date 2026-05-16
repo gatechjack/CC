@@ -195,12 +195,13 @@
       {% include "partials/donchian_trades.html" %}
     {% endif %}
 
-    <!-- BitUnix Phase 3.2.3 — confluence score panel. Renders only for
-         bitunix_futures and only when scoring config is loaded.
-         htmx auto-refresh every 30s baked into the partial. -->
-    {% if view.division.slug == 'bitunix_futures' and view.bitunix_score %}
-      {% include "partials/bitunix_score_panel.html" %}
-    {% endif %}
+    <!-- BitUnix gate-chain panels render top-to-bottom in
+         "decide → audit → outcome" reading order:
+           1. HTF regime  (macro context — what's the regime?)
+           2. PA validators (did inputs pass the binary gates?)
+           3. Decision flow (last 5 fires, full chain end-to-end)
+           4. Confluence score (legacy Phase 3.2 detail/explorer below)
+    -->
 
     <!-- BitUnix HTF (higher-timeframe) regime panel — PR 2 read-only.
          Renders the live composite regime + per-TF breakdown derived
@@ -221,6 +222,14 @@
          timeline. Last 5 fires joined across all three audit kinds. -->
     {% if view.division.slug == 'bitunix_futures' and view.bitunix_decision_flow %}
       {% include "partials/bitunix_decision_flow.html" %}
+    {% endif %}
+
+    <!-- BitUnix Phase 3.2.3 — confluence score panel. Renders only for
+         bitunix_futures and only when scoring config is loaded.
+         htmx auto-refresh every 30s baked into the partial.
+         Below the gate-chain panels as the detail/explorer surface. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_score %}
+      {% include "partials/bitunix_score_panel.html" %}
     {% endif %}
 
     <!-- Paper-trade win rate (Phase C of would_have_placed enrichment) -->
