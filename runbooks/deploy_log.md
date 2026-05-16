@@ -59,6 +59,95 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-16 03:15 UTC — BitUnix Decision Flow UX fix (template-only): Net column + trigger color-code wiring
+
+**Triggered by:** Jack flagged confusion mid-1C-deploy that buy-named TV signals (`mc_a_longema`, `mc_b_buy_circle`, `mc_a_bluetriangle`) showed in the Decision Flow panel next to SELL orders. Behavior is correct (the panel's `signal_name` = the latest contributing TV signal; order side = sign of aggregate score), but the labeling read like a bug. UX fix: option 1 (add explicit Net column) + option 2 (color-code trigger by intrinsic side).
+
+**Backup tag:** `pre-bitunix-1c-uxfix-20260516-0240`
+
+**Files deployed (1 — modify):**
+- `trading_corp/web/templates/partials/bitunix_decision_flow.html` — adds a dedicated **Net** column (signed integer, green for +N / red for -N / muted for 0); adds intrinsic-side color-code wiring to the Trigger column (buy=green, sell=red, unknown=muted); subtext under Score now reads `order side: sell/buy` (was `side · net=N`, now redundant with new Net column); column-header tooltip explains "Net = aggregate net confluence score; sign decides order side, magnitude decides tier."
+
+**Scope split:** The full feature pair (#1 + #2) requires `web/data.py` to expose `trigger_side` per flow row. At deploy time the parallel session had ~80 lines of unstaged work in `web/data.py` (`_query_pm_resolved_stats` + related), so deploying my local `data.py` would also push their unfinished work. Template-only deploy was the clean split: **option #1 (Net column) is fully live** now (uses `f.score.net` which the view already passed pre-1C). **Option #2 (trigger color-code) is wired in template but silently no-ops** — `f.trigger_side` is missing from the view dict, so `{% if f.trigger_side == 'buy' %}` falls to `{% else %}text-mono` (visually identical to pre-1C-uxfix). Follow-up: ship the `data.py` half once parallel session's edits commit.
+
+**Features shipped:**
+- **Net column** on Decision Flow panel: signed score (e.g. `-7` or `+12`) with green/red coloring. The "buy signal in a SELL row" disconnect is now explanatory ("net=-7 → bears outweighed the buy contributor") rather than confusing.
+
+**Notable code changes:**
+- The score column's subtext changed from `side · net=N` to `order side: side` — the net moved to its own column for prominence. No data-shape change to the view.
+- Template color-code conditions reuse the existing Tailwind classes `text-gain` / `text-loss` / `text-muted` / `text-mono` for consistency with PA Validators panel + tier coloring.
+- Local `web/data.py` has BOTH my unstaged edits (`_intrinsic_side` helper + `trigger_side` field) AND the parallel session's unstaged work; the local file is NOT in a deployable state until one side commits. The template-only deploy is independent.
+
+**Verification:**
+- `az vm run-command create` exit 0, executionState `Succeeded`, end 03:16:33 UTC.
+- Backup tag present: `bitunix_decision_flow.html.pre-bitunix-1c-uxfix-20260516-0240`.
+- Template md5 on prod = `7e2ee2abb596ac235df3220db3cd1737` (LF-normalized local matches).
+- Service `active` post-restart.
+
+**Inert / dormant:**
+- **Trigger color-code logic in template is dormant** until `data.py` exposes `trigger_side` — currently renders as muted-default (`text-mono`), visually identical to pre-1C-uxfix. First color-code render lands when the `data.py` follow-up deploys.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts '
+TAG=pre-bitunix-1c-uxfix-20260516-0240
+BASE=/home/azureuser/trading_corp
+F=trading_corp/web/templates/partials/bitunix_decision_flow.html
+mv $BASE/$F.$TAG $BASE/$F
+rm -rf $BASE/trading_corp/web/__pycache__
+sudo systemctl restart trading-corp'
+```
+
+---
+
+## 2026-05-16 03:00 UTC — Bug A: PM dashboard tiles + tab labels showing LIMIT values not true counts
+
+**Triggered by:** Jack reported the `/prediction-markets/kalshi_llm_arbitrage` page showed OPEN `200` / RESOLVED `100`, but the DB had 1,761 unresolved would_have_placed rows + 195 resolved round-trips for that division. Root cause at `web/data.py:3565`: `_pm_summary(..., len(open_trades))` was passed list length as `pending_count`, but the list is capped by `_query_pm_open_trades(..., limit=200)`. Same shape for `n_resolved = len(round_trips)` inside `_pm_summary` — capped by `history_limit=100`. The tile and tab labels were literally rendering the query LIMIT value, not actual counts. Affects ALL prediction-market divisions.
+
+**Backup tag:** `20260516-030023` (in `/tmp/{data.py,pm_dashboard_body.html}.bak-20260516-030023`)
+
+**Files deployed (2, via anchored Python patch — both prod-drifted in unrelated parts):**
+- `trading_corp/web/data.py` — 3 anchored edits: (a) new `_query_pm_resolved_stats(db_url, division_slugs) -> dict` (true COUNT/SUM aggregates over `polymarket_round_trips` + `kalshi_round_trips`, no LIMIT); (b) `_pm_summary` signature gains optional `resolved_stats: dict | None = None` kwarg; when provided, n_resolved/n_wins/n_voids/total_realized_pnl come from there instead of from the list. Legacy 3-arg callers still work (legacy path computes from list). (c) `build_pm_dashboard` asyncio.gather grew two tasks: `_query_pm_pending_count` and `_query_pm_resolved_stats`; both passed into `_pm_summary`.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — 3 anchored edits: Open + History tab labels switched from `view.{open_trades,round_trips} | length` to `view.summary.{n_pending,n_resolved}`; Open-tab header now reads "showing N of M awaiting market settle" when list is truncated; History "All" filter button switched to `summary.n_resolved` (Wins/Losses were already correct).
+
+**Features shipped:**
+- All PM division tiles (RESOLVED, OPEN, WIN RATE, REALIZED P&L) now reflect true totals.
+- Tab labels show true counts (Open / History).
+- Open-tab body header transparently signals truncation ("showing 200 of 1761").
+- No new SQL hot paths — 2 added aggregation queries run in parallel via asyncio.gather; both are indexed COUNTs.
+
+**Notable code changes:**
+- `_query_pm_resolved_stats` handles polymarket's missing `market_result` column: voids approximated as `won=0 AND realized_pnl=0.0` (same heuristic the existing `_query_pm_round_trips` uses via the yes_won-derivation path). Kalshi has the column natively.
+- 28 existing `test_prediction_markets_dashboard.py` tests pass; legacy 3-arg `_pm_summary` calls still work via the kwarg default.
+- `_query_pm_pending_count` was already on prod and correct — just never called from `build_pm_dashboard` until now.
+
+**Verification (post-deploy 03:00 UTC):**
+- Direct probe via `_query_pm_pending_count` + `_query_pm_resolved_stats` from service-attached venv (KV creds working):
+  - `kalshi_llm_arbitrage`: 1761 pending / 195 resolved / 100 wins / -$24.95 (was tile: 200 / 100 / 43% / -$15.56)
+  - `kalshi_arbitrage`: 236 pending / 0 resolved
+  - `kalshi_weather`: 100 pending / 0 resolved (markets haven't expired yet)
+  - `kalshi_crypto`: 56 pending / 11 resolved / 0 wins / -$11.00 (matches 02:10 resolver-wiring backfill)
+  - `kalshi_copy_trading`: 2 pending / 391 resolved / 188 wins / +$1.16
+  - `polymarket_arbitrage`: 58 pending / 6 resolved / 4 wins / +$1.52
+  - `polymarket_copy_trading`: **2431 pending / 506 resolved / 209 wins / -$134.26** ← exposed the PCT stuck-entry surface separately
+- Service `active` at 03:00:32 UTC post-restart. No template-render errors in journal.
+
+**Latent bugs surfaced (queued as next deploys this session):**
+- **Bug B — kalshi resolver `ORDER BY ts ASC` starvation.** 1761 kalshi_llm n_pending includes ~605 past-expiration rows whose markets are settled on Kalshi but never make the resolver's top-N-oldest cut (oldest by ts = longest-horizon Politics, not most-likely-resolved). Same pattern on `polymarket_resolver.py:67`. Fix: switch ordering to `expires_at ASC NULLS LAST`. ~10 LOC.
+- **Bug C — PCT 2,431 stuck rows have no `expires_at`.** Whale-mirror entries where SELL pairing failed (Apify poll cadence misses fast whale exits, OR pre-2026-05-14 multi-leg-resolver bug). Needs one-shot delete + stale-pruner cron.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm --command-id RunShellScript --scripts "
+TAG=20260516-030023; \
+sudo cp /tmp/data.py.bak-\$TAG /home/azureuser/trading_corp/trading_corp/web/data.py; \
+sudo cp /tmp/pm_dashboard_body.html.bak-\$TAG /home/azureuser/trading_corp/trading_corp/web/templates/partials/pm_dashboard_body.html; \
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/web/__pycache__; \
+sudo systemctl restart trading-corp"
+```
+
+---
+
 ## 2026-05-16 02:24 UTC — BitUnix HTF Phase 1C — strategies.yaml + dashboard partials + dormant reconciler (shadow mode)
 
 **Commits on main:** `d0f99f4` (merge of `claude/gallant-tereshkova-49ef85`), `00e0c45` (yaml weather-cap hot-patch preserve), `2b0171b` (boot smoke test). No new commit at deploy time — main HEAD `d0f99f4` is byte-identical (LF-normalized) with what shipped.
