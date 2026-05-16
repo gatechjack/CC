@@ -8,6 +8,47 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## END-OF-SESSION SNAPSHOT — 2026-05-16 01:06 UTC
+
+**Picks up from 14:50 UTC snapshot below.** Late-PM session reactivated to audit the post-14:39 weather + crypto state. Three deploys cleared the remaining bottlenecks from the morning's 5-deploy chain.
+
+**Big-picture inversion from the morning's assessment** (uncovered during P1 audit reconciliation): weather wasn't "firing real ProposedOrders end-to-end" past 16:00 UTC — it had silently saturated the $125 day cap at 18 fires and was no_size'ing every market. Crypto wasn't "0 fires gated by 10%" — it was firing 17 + 9 risk-rejected = 26 attempts in 5h, with edges going to 42.9%. The actual single problem was the polymarket-scope-leak (filed P2 in the morning) — its blast radius was 2× what memory captured: 9 weather + 9 crypto rejections today, ALL the asymmetric-EV deep-OTM signals.
+
+**Three sequential deploys (see `runbooks/deploy_log.md` 21:48 → 22:23 → 00:58 UTC entries):**
+1. **Weather day-cap raise — 21:48 UTC.** `config/strategies.yaml kalshi_weather_arb.sizing.max_per_day_pct: 25.0 → 120.0` (day cap $125 → $600 against $500 paper_capital). Per-market stays $25/fire, per-city stays $75 — geographic diversification preserved. Hot-reload, no service restart.
+2. **P2 polymarket-scope-leak fix — 22:23 UTC.** `risk.py:114` — added `and not order.strategy.startswith("kalshi_")` to the polymarket dispatch condition. Kalshi orders fall through to generic `per_trade_risk_pct` path (= $7.50 cap, resize not reject). Verified post-restart: 0 polymarket-scope-leak rejections, 11 weather + 8 crypto `would_have_placed` in first 24min.
+3. **Fix-D sub-fix — 00:58 UTC May 16.** Added `divergence_pct` field to eval_payload in both `kalshi_weather_arb.py` + `kalshi_crypto_arb.py` (alias for existing `edge_pct`). Future Fix-D tuning can query `divergence_pct` consistently across `would_have_placed` AND `skipped_no_edge` audit rows. Verified: 132/132 post-restart no_edge rows have the field.
+
+**P1 NOT a fix — investigation only.** Day-cap math working correctly; $125 was hit precisely because risk-resize floored mid-price fires to $7.50 each (~17-18 fires to $125). The misread was that `proposed_order.qty × limit_price = $515` looked like spend, but proposed_order has the strategy's pre-resize qty (intent), not post-risk-agent qty. `would_have_placed` audit had the correct post-resize spend = $125 exactly.
+
+**Empirical edge distribution now visible (Fix-D readiness):**
+- Crypto no_edge bucket edges 0.4-5.7% in first 4 cycles post-restart — well under 10% gate.
+- Crypto `would_have_placed` edges 10.4-42.9% in the 5h window before this session (per pre-fix audit). Peak edge `KXETH-26MAY1617-B2230 @ 42.87%`.
+- **Conclusion: 10% `min_divergence_pct` gate is NOT too tight.** Fix D as originally posed (lower the threshold) is solving a non-problem. Real bottleneck was P2.
+
+**Local ≡ prod (md5-verified):**
+- `risk.py` — line 114 patched identically on both sides; full-file md5 still differs (drift in unrelated parts, not at the patched line — same prod-git-drift pattern memory captured)
+- `kalshi_weather_arb.py` + `kalshi_crypto_arb.py` — md5 identical post-fix-d-subfix
+- `config/strategies.yaml` — prod-only kalshi_weather_arb block was patched in place (local is missing this entry, as documented in memory)
+
+**Live + healthy entering tomorrow:**
+- All 14 divisions, no service errors in journalctl past hour
+- Weather: actively firing at $600/day cap (was $125), polymarket-tail rejections eliminated, divergence_pct now in all audit kinds
+- Crypto: firing past 10% gate when real edges present, polymarket-tail rejections eliminated, divergence_pct now in all audit kinds
+- Other strategies untouched today
+
+**Tomorrow's pickup candidates (re-ordered after this session):**
+1. **Verify weather + crypto round-trips actually resolve overnight.** First weather buys 14:33 UTC May 15 → KXHIGH-26MAY15 markets resolve ~04-05 UTC May 16. Query: `SELECT * FROM kalshi_round_trips WHERE division IN ('kalshi_weather','kalshi_crypto') AND entry_ts >= '2026-05-15';`. If 0 rows after expected resolution times, debug the resolver path for the new specialized agents.
+2. **Empirical Fix-D analysis** (~30min). With ~24h of fresh data, query `divergence_pct` distribution across no_edge + would_have_placed for kalshi_crypto. If most clearable edges cluster 10-15%, leave gate alone. If a meaningful tail sits 5-10% AND those would have positive WR (cross-ref against round-trips), consider lowering to 8%.
+3. **Styled kalshi_weather_analysis.html + kalshi_crypto_analysis.html partials** (P3, ~2-3h). Right-rail expand still raw JSON.
+4. **Activity-rail per-strategy enrichment for weather/crypto** (cosmetic P3, ~30min). `web/data.py:3371` actor list.
+5. **Build `_evaluate_kalshi` in risk.py** to consume the existing `risk.yaml kalshi:` section caps (per-leg $5, daily $50, total-open $50). Currently dormant; the P2 fix bypasses kalshi orders through the generic per-trade-risk-pct path which is fine for paper but not the long-term gate for live-mode flip.
+6. **From prior pickup list** (still open): K3 watchlist timer health (verify 12:00 UTC stats refresh ran clean); Hispaniola profile eyeball; PMCC audit.
+
+**Deferred / parked (unchanged):** WO-4 promote button; weather/crypto Tier-2/3 follow-ups; BitUnix Phase 4 live order placement.
+
+---
+
 ## END-OF-SESSION SNAPSHOT — 2026-05-15 14:50 UTC
 
 **Picks up from 07:00 UTC snapshot below.** Mid-day session reactivated to investigate "no kalshi_weather + kalshi_crypto rows showing up." Three sequential prod deploys solved a chain of issues that had silently zero-fired both strategies for ~11 hours.

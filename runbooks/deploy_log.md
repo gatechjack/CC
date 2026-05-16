@@ -59,6 +59,96 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-16 00:58 UTC — Fix-D sub-fix: `divergence_pct` on no_edge audit rows
+
+**Triggered by:** Post-Fix-B audit query for "what edges did the 10% gate filter out?" returned null. Field is in `would_have_placed` payloads as `divergence_pct`, but in `kalshi_*_skipped_no_edge` payloads it's named `edge_pct` — same value, two field names. Future Fix-D tuning needs a single field name across all event kinds.
+
+**Backup tag:** `bak-fixd-20260516-005859`
+
+**Files deployed (2):**
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — added `"divergence_pct": round(verdict.edge_pct, 1)` to `eval_payload` (alongside existing `edge_pct`).
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — same one-line addition.
+
+**Features shipped:**
+- All kalshi weather + crypto `evaluated` / `skipped_no_edge` / `skipped_near_threshold` audit rows now carry `divergence_pct` (alias for `edge_pct`). `edge_pct` retained for backwards compat.
+- Empirical Fix-D edge distribution analysis is now a single-field query: `SELECT json_extract(payload_json,'$.divergence_pct')` works across `would_have_placed` AND `skipped_no_edge` rows.
+
+**Verification:**
+- Service restart 00:58:59 UTC May 16; service `active`.
+- Local md5 = prod md5 for both strategy files post-patch (no drift introduced).
+- Audit row verification deferred to next scan cycles (~60s for crypto, ~300s for weather).
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm --command-id RunShellScript --scripts "
+BASE=/home/azureuser/trading_corp/trading_corp/agents/strategies; \
+mv \$BASE/kalshi_weather_arb.py.bak-fixd-20260516-005859 \$BASE/kalshi_weather_arb.py; \
+mv \$BASE/kalshi_crypto_arb.py.bak-fixd-20260516-005859 \$BASE/kalshi_crypto_arb.py; \
+rm -rf \$BASE/__pycache__; \
+sudo systemctl restart trading-corp"
+```
+
+---
+
+## 2026-05-15 22:23 UTC — P2: polymarket-scope-leak fix in `risk.py` (kalshi tail orders unblocked)
+
+**Triggered by:** Audit reconciliation during P1 investigation revealed `risk.py:114` dispatched ALL `is_prediction_market: True` orders through `_evaluate_polymarket`, which enforces a `[0.05, 0.95]` implied-prob bound check designed for Polymarket. Kalshi deep-OTM markets at $0.01/$0.99 implied were systematically rejected — 9 weather + 9 crypto today pre-fix. Memory captured this as a weather-tail-only issue with "practical loss small"; reality was 34% of crypto fires + all the asymmetric-EV signals.
+
+**Backup tag:** `bak-p2-scopeleak-20260515-222357`
+
+**Files deployed (1):**
+- `trading_corp/agents/risk.py` — at the polymarket dispatch site, added `and not order.strategy.startswith("kalshi_")` to the condition + a 5-line comment explaining the venue routing decision. Kalshi orders now fall through to the generic `per_trade_risk_pct` path.
+
+**Features shipped:**
+- All Kalshi strategies (weather, crypto, tail/temporal/llm arb) bypass the polymarket `[0.05, 0.95]` implied-prob bound check.
+- Deep-tail kalshi orders ($0.01-$0.04 or $0.96-$0.99 implied) resize to per-trade-risk-pct cap ($7.50 on $500 paper equity) instead of being rejected outright.
+
+**Notable code changes:**
+- `_evaluate_polymarket` itself unchanged. Only the dispatch condition at risk.py:114 was edited.
+- `risk.yaml kalshi:` section (per-leg + aggregate caps from Phase K2.1) still has no `_evaluate_kalshi` consumer. Building one is load-bearing for future live-mode flip but not blocked by this fix.
+
+**Verification:**
+- Service restart 22:23:57 UTC; service `active`.
+- **0 polymarket-scope-leak rejections** post-restart (was 18 today across weather + crypto pre-fix).
+- 11 weather + 8 crypto `would_have_placed` audit rows in first 24min post-restart.
+- Local risk.py md5 ≠ prod md5 still (drift in other parts of file); patched line is identical on both sides.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm --command-id RunShellScript --scripts "
+mv /home/azureuser/trading_corp/trading_corp/agents/risk.py.bak-p2-scopeleak-20260515-222357 \
+   /home/azureuser/trading_corp/trading_corp/agents/risk.py; \
+rm -rf /home/azureuser/trading_corp/trading_corp/agents/__pycache__; \
+sudo systemctl restart trading-corp"
+```
+
+---
+
+## 2026-05-15 21:48 UTC — Weather day-cap raised $125 → $600 (paper-mode budget unblock)
+
+**Triggered by:** P1 audit reconciliation revealed the day-cap math was working correctly: weather hit exactly $125 (= 25% × $500 paper_capital) in 18 fires today, then no_size'd the rest. Not a bug — the cap was simply binding at intended levels. User requested raising the paper-mode budget to $600 for faster data accumulation pre-live-flip.
+
+**Backup tag:** `bak-day600-20260515-214835`
+
+**Files deployed (1):**
+- `config/strategies.yaml` — `kalshi_weather_arb.sizing.max_per_day_pct: 25.0 → 120.0`
+
+**Features shipped:**
+- Weather daily budget = $600 (= 120% × $500 paper_capital). Per-market stays 5% = $25/fire (single-order size unchanged). Per-city stays 15% = $75 (geographic diversification preserved — day budget must spread across ≥8 cities).
+- Hot-reload via the strategy's `_reload()` mtime check; no service restart needed.
+
+**Notable decisions:**
+- (A) over (B): kept `max_per_city_pct` at 15% rather than bumping it parallel to the day cap. Per-city diversification is load-bearing for the eventual paper→live validation gate ("30+ RTs with WR ≥ 65%") — if paper concentrates by city, the WR metric won't reflect what diversified-live would produce.
+- Crypto NOT touched. Crypto uses `mode: fixed_usd, fixed_amount: 1.0` — daily projection ~$80, no cap binding.
+
+**Verification:**
+- mtime update at 21:48:35 UTC triggers reload on next scan cycle.
+- Combined with P2 fix that landed 35min later, 11 weather `would_have_placed` rows in the first 24min — fires resumed.
+
+**Rollback:** restore from `config/strategies.yaml.bak-day600-20260515-214835`
+
+---
+
 ## 2026-05-15 15:41 UTC — Fix B: crypto strike-distance-from-spot curation (3-deploy iteration)
 
 **Triggered by:** Post-Fix-A, crypto still 0 ProposedOrders. Pre-fix audit (155 evals in 2 cycles) showed XRP T-suffix tail strikes consuming the entire `k_per_cycle=30` budget — all deep-OTM at Kalshi's $0.01 pricing floor, guaranteed 1% edge noise, 100% `no_edge` skips. BTC/ETH near-spot markets where real edges could live were starved by tightest-spread sort favoring deep-XRP tails.

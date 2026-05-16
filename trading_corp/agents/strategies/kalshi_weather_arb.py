@@ -578,6 +578,7 @@ class KalshiWeatherArbAgent:
             "implied_yes": round(implied_yes, 3),
             "prob_yes": round(verdict.prob_yes, 3),
             "edge_pct": round(verdict.edge_pct, 1),
+            "divergence_pct": round(verdict.edge_pct, 1),
             "fired": verdict.fired,
             "skip_reason": verdict.skip_reason,
             "forecast_source": forecast.source,

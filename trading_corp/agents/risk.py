@@ -111,7 +111,12 @@ class RiskAgent:
         # risk cap because Polymarket's cap structure is fundamentally
         # different — implied-probability bounds + notional ceilings,
         # not per-trade-pct sizing.
-        if (order.extra or {}).get("is_prediction_market"):
+        if (order.extra or {}).get("is_prediction_market") and not order.strategy.startswith("kalshi_"):
+            # Kalshi strategies also set is_prediction_market but trade deep-OTM
+            # markets at $0.01/$0.99 implied — polymarket's [0.05, 0.95] bound
+            # would misfire. Kalshi falls through to the generic per-trade-risk-pct
+            # path until a dedicated kalshi evaluator is built (caps already
+            # configured in risk.yaml kalshi: section, awaiting wiring).
             poly_verdict = self._evaluate_polymarket(order, account, db_url=db_url)
             if poly_verdict is not None:
                 return poly_verdict
