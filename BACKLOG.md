@@ -8,7 +8,66 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-16 03:40 UTC  *(supersedes 02:40)*
+## END-OF-SESSION SNAPSHOT — 2026-05-16 04:55 UTC  *(supersedes 03:40)*
+
+**This session focused on the BitUnix division.** Picks up from 03:40's pickup item #6. Phase 1C went from "next to ship" → fully shipped + tuned + Phase 1D enforce flip + TV backtest DB rebuilt for the new score-timeframes. Five BitUnix deploys + one TV backtest data refresh + a small ingester patch:
+
+**1. BitUnix Phase 1C SHIPPED — 04:24 UTC.** 8-file bundle (4 modify + 4 new) via managed `az vm run-command create --script @file` (replaced the chunked `invoke --scripts` pattern that failed at chunk 3 of data.py on the first attempt). New on prod: `pa_validation` + `htf_gate` + `htf_regime` + `trade_plan` + `fees` yaml sub-blocks; HTF Regime / PA Validators / Decision Flow dashboard panels; position reconciler async module (dormant). Trade flow on prod **unchanged** at ship — `trade_plan.enabled: false` keeps v1 score path authoritative. Boot wiring confirmed: `scoring=True, pa_enabled=True, htf_gate_mode=shadow, htf_regime_enabled=True, trade_plan_active=False`. New deploy-mechanics memory captured: `trading_corp_windows_crlf_vs_prod_lf.md` — Windows checkout is CRLF, prod is LF, ALL byte-level deploy ops must `tr -d '\r'` before encoding.
+
+**2. UX fix template-only — 03:15 UTC.** Decision Flow panel got a dedicated **Net column** (signed score, green for +N / red for −N) and **trigger color-code wiring** (template branches on `f.trigger_side`). Wiring was dormant on this deploy because the `data.py` half was blocked by parallel session's unstaged prediction-markets work in the same file.
+
+**3. Panel reorder — 03:35 UTC.** Phase 1C panels (HTF / PA / Decision Flow) moved above the legacy Phase 3.2 Confluence Score panel for natural "decide → audit → outcome" reading order. Byte-offset shift: htf-panel 46699 → 14146, pa-panel 54562 → 22009, decision-flow 58470 → 25917, score-panel 13686 → 33781.
+
+**4. data.py UX fix follow-up — 04:03 UTC.** Once parallel session committed (commit 1083f53 incidentally folded my unstaged `_intrinsic_side` helper in with their work), I deployed the residual delta. Trigger color-code is now LIVE: rendered HTML confirmed 4 sell-named cells with `text-loss` (red) + 1 buy-named cell with `text-gain` (green), all 5 with explanatory tooltip "Intrinsic side of this TV signal: ...".
+
+**5. BitUnix Phase 1D enforce flip SHIPPED — 04:14 UTC.** Single-line yaml change: `bitunix_futures.htf_gate.mode: shadow → enforce`. Jack pushed back on my original "wait for 30 shadow rows" plan: in paper mode (auto_execute=false) the cost of a wrong reject is an audit row, not real money, and enforce-mode rejects are more informative than shadow's hypothetical markers. Boot wiring confirmed: `htf_gate_mode=enforce`. **Behavior observed in 41 min post-flip:** 3 score-fires (cvd_bull_flip, mc_b_buy_circle, mc_a_red_diamond — all STANDARD tier) ALL resolved to `outcome=skipped_pa_validation` — the PA validator is short-circuiting before HTF gate even runs (PA check is first in the observer logic). 0 `htf_gate_decision` rows since flip (because PA already rejected). **Worth investigating tomorrow** — what PA factor(s) are rejecting all three signals.
+
+**6. TV backtest DB rebuilt — 04:25 UTC.** Old `data/btc_scalping.db` had bars_1d (2,242) + bars_4h (2,853) + bars_3m (4,991) — daily/4h tables now obsolete since PR 3c shifted scoring to `[3m, 15m, 30m]`. User provided 14 fresh TradingView CSVs (10× 3m + 2× 15m + 2× 30m) going back to 2026-03-30 (15m + 30m reach further: Dec 2025 + Apr 2025). Ingester patched to add 30m support (was missing `"30" → "30m"` alias). DB backed up to `data/btc_scalping.db.bak-20260516-0425` (gitignored). New db: bars_3m=22,635 / bars_15m=15,571 / bars_30m=18,653 / source_files=14. Now matches PR 3c score_timeframes whitelist exactly.
+
+**Memory updates this session:**
+- `trading_corp_bitunix_strategy_gaps.md` — marked Phase 1A+1B+1B-followup+1C+1D all shipped; documented enforce flip + post-flip observation
+- `trading_corp_windows_crlf_vs_prod_lf.md` (NEW) — Windows CRLF vs prod LF deploy invariant
+- `MEMORY.md` — updated BitUnix index entry, added CRLF entry
+
+**Environment sync state at session end (md5-verified local LF ↔ prod):**
+- ✅ All 8 BitUnix Phase 1C files byte-identical between LF-normalized local and prod
+- ✅ `config/strategies.yaml` (enforce flip) byte-identical
+- ✅ Local working tree clean post-commit (BACKLOG.md staged for this snapshot)
+- Service active; `/healthz` returns `{"status":"ok","mode":"PAPER"}`
+- Boot wiring on prod: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False`
+
+**Commits this session (in order):**
+- `358b657` — Phase 1C shipped
+- `f0f38e0` — UX fix template-only (NOTE: this commit only captured deploy_log; template change deployed but missed git staging — corrected at 029e33a below)
+- `02454d5` — panel reorder
+- `8f2a1f4` — data.py UX fix follow-up
+- `029e33a` — track template that already shipped (docs-of-record fix for f0f38e0 oversight)
+- `ee50a02` — Phase 1D enforce flip
+- `4bcdfe7` — ingester 30m timeframe support
+
+**Tomorrow's pickup candidates (ordered by recommended sequence):**
+
+1. **Investigate post-enforce PA rejection pattern (~15-30 min).** All 3 post-04:14 UTC fires (cvd_bull_flip, mc_b_buy_circle, mc_a_red_diamond) → `skipped_pa_validation`. Query `pa_validation_decision` audit rows for: which PA factors are failing? Is the gate correctly rejecting (e.g. wrong-side VWAP, HH/LL disagreement) or are thresholds too strict? Decision tree: (a) reasons match live regime → gate working as designed, monitor; (b) reasons don't match → roll back enforce flip (1-line yaml + restart) and re-tune PA thresholds. Query: `SELECT ts, json_extract(payload_json,'$.failed'), json_extract(payload_json,'$.reason') FROM audit_event WHERE kind='pa_validation_decision' AND ts >= '2026-05-16T04:14:00+00:00' ORDER BY id DESC;`
+2. **Funding-rate watch.** Live funding was -0.378%/8h at flip time (5.6× extreme threshold). If funding moderates, HTF gate may stop hard-zeroing sell-side fires, and we'll start seeing `htf_gate_decision` audits (currently 0 since flip because PA gate short-circuits first).
+3. **Watch the kalshi_llm drain finish** (from 03:40 snapshot, item #1). ~555 past-expiration rows still in queue at session-end; should clear at ~50/hour. Confirm `kalshi_llm pending ≈ 1,155` baseline by ~15:00 UTC.
+4. **kalshi_crypto BTC settlement watch — after 21:05 UTC today** (from 03:40 snapshot, item #2). 24 BTC fires expire on `KXBTC-26MAY1617`; decide on vol-model-v2 ship based on resolution outcomes.
+5. **Eyeball kalshi_temporal_bucket_arb** (from 03:40 snapshot, item #3). 236 pending; Bug B's expires_at ordering helps ONLY if payloads carry expires_at. If 0 drain over multiple ticks, payload audit needed.
+6. **Re-run backtest with new 3m/15m/30m data.** TV backtest DB is now fresh + matches prod score_timeframes. Re-run `scripts/backtest_bitunix_confluence.py` against the new corpus to see how PR 3c calibration performs on historical data. (May want to update the backtest script to consume 30m as well — currently it imports 3m + 1d/4h paths; 30m table is now available.)
+7. **Fix-D empirical analysis** (~30min, P2). Newly viable; query divergence_pct distribution vs WR.
+8. **PCT stale-entry pruner cron** (~2-3h, P2). Bug C was one-shot.
+9. **PMCC audit** — still untouched real-money strategy.
+10. **Dashboard signal-vs-side labeling tweak** — from 02:40 snapshot; partially closed (Net column + trigger color-code shipped); may need further tuning after watching enforce-mode behavior.
+11. **`data.py` working-tree drift** — local now has both my trigger_side helper (in HEAD) AND parallel session's prediction-markets work (in HEAD via 1083f53). md5 matches prod. No action needed unless future deploys touch data.py.
+
+**Confirmed-NOT-to-do without explicit re-approval:**
+- ~~Do NOT flip `htf_gate.mode: shadow → enforce`~~ — **DONE 2026-05-16 04:14 UTC**.
+- Do NOT flip `trade_plan.enabled: true` until enforce-mode behavior is validated (currently being audited via post-04:14 fire outcomes). Phase 1E is the next gate.
+- Do NOT delete `data/btc_scalping.db.bak-20260516-0425` until tomorrow's backtest re-run succeeds.
+- Do NOT delete additional PCT rows without confirming the 24h cutoff predicate.
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-16 03:40 UTC  *(preserved — superseded by 04:55)*
 
 **Picks up from 02:40 UTC pickup list item #4** ("verify next round of kalshi_weather + kalshi_crypto round-trips actually resolves overnight"). Investigation revealed two latent bugs blocking dashboard accuracy across ALL prediction-market divisions. Four deploys this session:
 
