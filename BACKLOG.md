@@ -786,6 +786,12 @@ Pink Box is a separate Otter product: a static BTC chart annotated with key supp
 
 ---
 
+## P3 — CLAUDE.md inline § references could be anchored links  *(NEW — 2026-05-16)*
+
+Consider upgrading inline § X references within CLAUDE.md to anchored links for clickability. Found during Pass B readthrough but deferred as polish, not correctness.
+
+---
+
 ## ✅ DONE 2026-05-11 — Kalshi K3 Copy Trading + Polymarket Copy Trader (both shipped same day)
 
 **Kalshi K3 — SHIPPED 18:17 UTC, paper-mode live + bug-fix at 18:30 UTC.** Apify Starter $29/mo Bronze data source (saswave leaderboard + profile actors). 4 selected whales from Wilson-LCB × ROI × category scoring (smedtoshi, NovaRex, tom14cat14, 9187234). 5-min poll cadence. Side detection via Kalshi public trade-tape size-match (free, anonymous). Bug surfaced + fixed mid-session: `trade_tape_fetcher` was being set to the kalshi_copy_trading division's PaperBroker (no `get_market_trades`); now lazy-resolves a real KalshiBroker from `data_exec.brokers`. **First-day signal: 12 `would_have_placed` events observed.** Visibility-gradient finding: only ~7% of top-of-leaderboard whales expose closed_positions; mid-tier rank 20-100 is the actual addressable pool. Memory: `trading_corp_kalshi`.
