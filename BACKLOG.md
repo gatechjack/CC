@@ -8,7 +8,40 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-16 01:06 UTC
+## END-OF-SESSION SNAPSHOT — 2026-05-16 02:40 UTC  *(supersedes 01:06)*
+
+**Picks up from 21:35 UTC pickup list ("Phase 1C next").** BitUnix Phase 1C **SHIPPED 2026-05-16 02:24 UTC** (full detail in `runbooks/deploy_log.md`). 8-file bundle (4 modify + 4 new); managed `az vm run-command create --script @file` path replaced the chunked-`invoke` pattern that failed mid-data.py at the first attempt.
+
+**Phase 1C dormant-state on prod (target hit exactly):**
+- `pa_enabled=True` (shadow — audits write, no blocks)
+- `htf_gate_mode=shadow` (audits write, no blocks)
+- `htf_regime_enabled=True` (live regime classifier)
+- `trade_plan_active=False` (v2 path + position reconciler stay dormant)
+- `scoring=True` (Phase 3.2 v1 score path unchanged — IS the live decision path)
+
+**Things now newly observable on prod:**
+- Live HTF Regime panel at `/division/bitunix_futures` (composite regime + per-TF + funding + BTC S/R)
+- PA Validators panel ("awaiting first qualifying score-fire" right now — will populate as fires happen)
+- Decision Flow panel — last 5 fires Score → PA → HTF → outcome (pre-1C fires show "no PA audit / no HTF audit"; post-1C fires will be fully annotated)
+- PR 3c `score_timeframes: [3m, 15m, 30m]` whitelist is active — Cypher 4h/1d signals are audited+ledgered but contribute 0 to score. Tier thresholds raised: PREMIUM 10 / STANDARD 5 / WEAK 3; `min_score_to_fire: 5`. The prod-only Fix-#3 weight cuts are now superseded.
+
+**Latent deploy-mechanics finding (memory candidate):**
+- Local Windows checkout is CRLF, prod is LF. The first chunked deploy attempt got partway through data.py before failing (likely `--scripts` 28k cap or Windows cmd-line limit). The successful path was managed `az vm run-command create` with the entire deploy inline as base64 heredocs after `tr -d '\r'` normalization. Future Trading Corp deploys on this Windows box must LF-normalize before any byte-level operation. (Memory update pending in `phased_deploy_lesson.md` or a new entry.)
+
+**Tomorrow's pickup candidates:**
+1. **Phase 1D: shadow-data accumulation watch.** Wait ~30 fires of `pa_validation_decision` + `htf_gate_decision` (expected accumulation rate ~10-15/day). Then run `scripts/replay_pr3_cutover.py`, inspect reject rates / regime distribution / score-vs-HTF agreement. Board-gate flip `htf_gate.mode: shadow → enforce`.
+2. **Dashboard signal-vs-side labeling tweak** *(filed by Jack mid-deploy)*: Decision Flow panel labels each fire by the latest contributing TV signal name (e.g. `mc_a_longema` = buy-named), but the resulting order side is the sign of the AGGREGATE score (currently net-bearish, so SELL). This is confusing when the labeled signal is buy-named. Possible fix: surface `net_score_sign` next to `signal_name`, or rename column. Pending discussion with Jack.
+3. **PMCC audit** — still untouched real-money strategy.
+4. **From the kalshi resolver wiring (02:10 UTC, see deploy_log):** verify next round of kalshi_weather + kalshi_crypto round-trips actually resolves overnight.
+
+**Confirmed-NOT-to-do without explicit re-approval:**
+- Do NOT flip `htf_gate.mode: shadow → enforce` until shadow data accumulates AND the replay script confirms reasonable reject rates.
+- Do NOT flip `trade_plan.enabled: true` until 1D ships + position reconciler is dashboard-visible.
+- Do NOT remove or re-weight the Cypher 4h/1d signals in YAML — they're audited+ledgered for visibility; weights are inert under PR 3c's `score_timeframes` whitelist.
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-16 01:06 UTC  *(preserved — superseded by 02:40)*
 
 **Picks up from 14:50 UTC snapshot below.** Late-PM session reactivated to audit the post-14:39 weather + crypto state. Three deploys cleared the remaining bottlenecks from the morning's 5-deploy chain.
 

@@ -59,6 +59,131 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-16 02:24 UTC — BitUnix HTF Phase 1C — strategies.yaml + dashboard partials + dormant reconciler (shadow mode)
+
+**Commits on main:** `d0f99f4` (merge of `claude/gallant-tereshkova-49ef85`), `00e0c45` (yaml weather-cap hot-patch preserve), `2b0171b` (boot smoke test). No new commit at deploy time — main HEAD `d0f99f4` is byte-identical (LF-normalized) with what shipped.
+**Triggered by:** Jack — "ship phase 1C." Picks up the queue from the 2026-05-15 21:35 UTC EOS snapshot in BACKLOG.md.
+**Backup tag:** `pre-bitunix-1c-20260516-0202` (on the 4 modify-files; 4 new files have no backup — `rm` on rollback).
+
+**Files deployed (8 — 4 modify, 4 new):**
+- `config/strategies.yaml` (MODIFY, 77,839 bytes LF) — adds `bitunix_futures.pa_validation`, `htf_gate`, `htf_regime`, `trade_plan`, `fees` sub-blocks. Sets `htf_gate.mode: shadow`, `pa_validation.enabled: true`, `trade_plan.enabled: false`. **Supersedes prod's Fix-#3 Cypher weight cuts** (`mc_a_blood_diamond: {weight: 2, ttl_minutes: 360}` etc.) via PR 3c's `score_timeframes: [3m, 15m, 30m]` whitelist — Cypher 4h/1d signals still hit the audit ledger but contribute 0 to score. Tier thresholds raised: PREMIUM 8→10, STANDARD 4→5, WEAK 2→3; `min_score_to_fire` 4→5. The 2026-05-15 21:48 UTC `kalshi_weather.sizing.max_per_day_pct=120.0` hot-patch was preserved (commit `00e0c45`).
+- `trading_corp/web/data.py` (MODIFY, 169,161 bytes LF) — adds `build_bitunix_pa_view`, `build_bitunix_decision_flow_view`, `build_bitunix_htf_view`. Recent-fires data source switched audit→`paper_trade_record` to surface v2 extras (when active).
+- `trading_corp/web/templates/division.html` (MODIFY) — adds `{% include %}` lines for the 3 new BitUnix partials.
+- `trading_corp/web/templates/partials/bitunix_score_panel.html` (MODIFY) — cleanup for the v2 surface; legacy v1 score still renders.
+- `trading_corp/agents/divisions/bitunix_position_reconciler.py` (**NEW**, 11,607 bytes LF) — `decide_sl_action` + `reconciler_tick` + `run_reconciler_loop`. **Dormant on this deploy** — main.py only launches the reconciler async task when `_trade_plan_config is not None`, which is gated on `bitunix_futures.trade_plan.enabled: true` (currently false). Module imports succeed; tests pass; no behavioral effect.
+- `trading_corp/web/templates/partials/bitunix_decision_flow.html` (**NEW**) — Decision Flow panel: per-fire score → PA → HTF → outcome trail (last 5).
+- `trading_corp/web/templates/partials/bitunix_htf_panel.html` (**NEW**) — HTF Regime panel: composite regime, volatility, funding rate, per-TF (1h/4h/1d) sub-states, nearest BTC S/R levels.
+- `trading_corp/web/templates/partials/bitunix_pa_panel.html` (**NEW**) — PA Validators panel: recent PA validation decisions with pass/fail per gate.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **PA validation in shadow mode.** `bitunix_futures.pa_validation.enabled=true`; gates evaluate but don't block trades. Audit kind `pa_validation_decision` starts writing on the next post-deploy score-fire.
+- **HTF regime classifier active + HTF gate in shadow mode.** `bitunix_futures.htf_gate.mode=shadow`; gate evaluates regime alignment + funding extremes + S/R proximity but does NOT reject or resize. Audit kind `htf_gate_decision`. Live regime data flowing: HTF funding poll @ 30min, regime snapshot loop @ 10min.
+- **Decision flow visibility** on `/division/bitunix_futures`: per-fire trail Score → PA → HTF → Outcome, last 5 fires. Pre-1C fires render with "no PA audit / no HTF audit" markers (expected).
+- **PR 3c score_timeframes whitelist active.** Cypher 4h/1d webhooks still acknowledged (audit + ledger) but contribute zero to score. The pre-1C Fix-#3 weight cuts that achieved a similar outcome are obsoleted by this change.
+- **Position reconciler module on disk + import-tested.** Async task is NOT yet started — gated on `trade_plan.enabled: true`. First start happens on Phase 1E.
+- **Boot-smoke test (`tests/test_boot_smoke.py`) is now main's pre-deploy gate.** AST-parses main.py call sites for `BitunixFuturesObserver`, `WebDeps`, `_start_web_server` and asserts kwarg parity with constructor signatures. Catches the class of bug that crashed two 1B attempts.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Boot wiring line is the dormant-state truth.** Watch journalctl for `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=shadow, htf_regime_enabled=True, trade_plan_active=False`. That single line tells you exactly which gates are loaded vs dormant.
+- **`bitunix_position_reconciler.py` is dead code on prod today.** Async task launch is conditionally gated in main.py on `_trade_plan_config is not None`. Smoke test imports the module to catch syntax errors regardless.
+- **Cypher 4h/1d signals are silently weight=0 now.** They still appear in the audit ledger and dashboard (visibility preserved) but contribute 0 to the BitUnix score. If a future deploy needs them to score again, flip `score_timeframes` in `bitunix_futures.htf_regime` (not the weights — weights are moot).
+- **Local-on-Windows files have CRLF line endings** due to git autocrlf; prod is LF. ALL byte-level deploy operations must `tr -d '\r'` (or equivalent) before encoding, else md5s won't match prod and the byte-identical invariant breaks. The deploy used `scripts/build_phase1c_deploy.sh`, which LF-normalizes in the encoder.
+- **Managed `az vm run-command create --script @file` is the right tool for multi-hundred-kb deploys.** The legacy `az vm run-command invoke --scripts "..."` has a ~28k payload cap; chunked uploads through it are unreliable past ~3 chunks. Use the managed RunCommand resource and clean it up after (`az vm run-command delete`).
+
+**Latent bugs caught + fixed (during deploy):**
+- **CRLF line-ending bug surfaced via md5 mismatch.** Caught pre-ship: local repo's checkout had CRLF, prod has LF. The encoder was patched to LF-normalize before base64. New memory candidate.
+- **Initial chunked deploy (legacy `invoke`) aborted at chunk 3 of data.py.** Likely cmd-line-length or `--scripts` payload cap. No prod state change from the failed first attempt (script's `set -euo pipefail` cleanly aborted before any backup or mv ran).
+
+**Verification:**
+- `az vm run-command create` exit code 0, execution state `Succeeded`, end 02:24:37 UTC May 16. Total runtime ~12s on prod.
+- All 8 file md5s on prod match LF-normalized local md5s exactly:
+  - `8c5168dbc99217c9c1ba125df0bc5ba5  config/strategies.yaml`
+  - `a79572de6d3f3b7c0152f405b02d7890  trading_corp/web/data.py`
+  - `c3db1934f1a974072e543e9e19757b4f  trading_corp/web/templates/division.html`
+  - `fdbbe1dc5b93937a21ba4a6e30fc5b1c  trading_corp/web/templates/partials/bitunix_score_panel.html`
+  - `5de73e3bd4f47d7ac3785478da1ca480  trading_corp/agents/divisions/bitunix_position_reconciler.py`
+  - `a2163ad7a37210bd5f92e53859204e25  trading_corp/web/templates/partials/bitunix_decision_flow.html`
+  - `f32d3dce65cb26d3cf846b140cd50fd1  trading_corp/web/templates/partials/bitunix_htf_panel.html`
+  - `3981868045b84583b2ca2483880b9f5c  trading_corp/web/templates/partials/bitunix_pa_panel.html`
+- All 4 backup tags `.pre-bitunix-1c-20260516-0202` present.
+- Service active; `/healthz` returns `{"status":"ok","mode":"PAPER"}`.
+- Web bound on `:8000` at 02:25:18 UTC (53s after restart start — within normal Fidelity-Playwright login budget).
+- **Dormant-state confirmed via journalctl**: `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=shadow, htf_regime_enabled=True, trade_plan_active=False` — exact target state.
+- HTF funding poll online (`bitunix HTF funding primed: rate=-0.003781`); bar archiver online (4 caches, 60s); HTF regime-snapshot loop online (600s).
+- Dashboard screenshot confirmation from Jack: HTF Regime / PA Validators / Decision Flow panels all rendering. NEUTRAL composite regime, HIGH vol, -0.378% funding, BTC nearest S/R $73,974.95 → $79,635.07.
+- **Trade flow on prod UNCHANGED.** Existing `_build_proposal` (v1 path) still active; `_build_proposal_v2` dormant.
+
+**Inert / dormant on current traffic (Phase 1C leaves these for Phase 1D/1E):**
+- **`trade_plan.enabled: false`** — v2 entry/SL/TP path not active; `_build_proposal_v2` not invoked; `bitunix_position_reconciler` async task not started.
+- **`htf_gate.mode: shadow`** — HTF regime gate writes `htf_gate_decision` audits but does not reject or resize any orders. Flipping to `enforce` is Phase 1D, gated on ≥30 shadow audit rows + `scripts/replay_pr3_cutover.py` review.
+- **First shadow audit rows pending the next post-1C score-fire** that produces a PREMIUM/STANDARD tier outcome. Webhook frequency ~5-10/hour; same-direction cooldown is 30 min per side, so realistic accumulation is ~10-15 shadow rows/day. ~3 days to reach 30-row review threshold.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts '
+TAG=pre-bitunix-1c-20260516-0202
+BASE=/home/azureuser/trading_corp
+for f in config/strategies.yaml \
+         trading_corp/web/data.py \
+         trading_corp/web/templates/division.html \
+         trading_corp/web/templates/partials/bitunix_score_panel.html; do
+  mv $BASE/$f.$TAG $BASE/$f
+done
+rm $BASE/trading_corp/agents/divisions/bitunix_position_reconciler.py
+rm $BASE/trading_corp/web/templates/partials/bitunix_decision_flow.html
+rm $BASE/trading_corp/web/templates/partials/bitunix_htf_panel.html
+rm $BASE/trading_corp/web/templates/partials/bitunix_pa_panel.html
+rm -rf $BASE/trading_corp/agents/divisions/__pycache__ $BASE/trading_corp/web/__pycache__
+sudo systemctl restart trading-corp'
+```
+
+---
+
+## 2026-05-16 02:10 UTC — Kalshi resolver wiring: equity writers for kalshi_weather + kalshi_crypto, per-actor scan budget
+
+**Triggered by:** Audit found 0 rows in `kalshi_round_trips` all-time for `kalshi_weather` + `kalshi_crypto` despite both strategies firing ~85 + ~59 `would_have_placed` audit rows in the prior 11h. Two underlying gaps: (a) main.py only spawned equity-snapshot writers for `kalshi_arbitrage` + `kalshi_llm_arbitrage` even though `kalshi_resolver._KALSHI_DIVISIONS` already listed weather + crypto; (b) `_fetch_unresolved_orders` used `WHERE actor IN (...) ORDER BY ts ASC LIMIT 200`, and kalshi_llm_arbitrage's 1,761 stuck-pending backlog meant weather + crypto rows never made the top-200 cut.
+
+**Backup tag:** `20260516-021025` (in `/tmp/{kalshi_resolver.py,main.py}.bak-20260516-021025`)
+
+**Files deployed (2):**
+- `trading_corp/agents/kalshi_resolver.py` — refactored `_fetch_unresolved_orders` to query per-actor with a `max_per_actor` LIMIT (default 50). `resolve_pending_round_trips` gained the same kwarg + `max_per_tick` bumped 200 → 300. Top-of-file docstring updated to mention 6 strategies. Full overwrite (prod md5 was identical to local pre-edit).
+- `trading_corp/main.py` — added two new equity-snapshot-loop blocks for `kalshi_weather` + `kalshi_crypto` after the existing `kalshi_llm_arbitrage` block. Updated stale comment claiming "two Kalshi divisions / ALL THREE strategies." Anchored Python patch via `scripts/patch_kalshi_weather_crypto_equity_writers.py` (prod main.py is drifted in unrelated parts).
+
+**Features shipped:**
+- 4 kalshi equity-snapshot writers now running (was 2): kalshi_arbitrage, kalshi_llm_arbitrage, kalshi_weather, kalshi_crypto — each writes to `kalshi_equity_history` every 5 min off its per-division paper broker.
+- Per-actor resolver scan budget. With 6 actors × max_per_actor=50, each tick scans up to 300 candidates. Prevents any one strategy's stuck-pending backlog from starving others.
+- `kalshi_round_trips` now populating for `kalshi_weather` + `kalshi_crypto` — closes the data-pipeline gap that was blocking the paper→live validation gate (WR ≥ 65% over 30+ RTs).
+
+**Notable code changes:**
+- `_KALSHI_ACTORS` and `_KALSHI_DIVISIONS` were already correct on prod pre-deploy; the bug was the *scan-ordering* and the *equity-loop spawning*, not the actor whitelist. Memory `kalshi_specialized_agent_wiring.md` had #6 ("equity writer registered") partially captured but the more subtle starvation issue was new.
+- Test added: `test_resolve_per_actor_budget_prevents_starvation` injects 120 old LLM rows + 2 fresh weather/crypto, asserts both new rows resolve. Replicates the pre-fix starvation in isolation. 22/22 kalshi_resolver tests passing.
+
+**Latent bug NOT in scope (filed as P2 followup):**
+- `kalshi_llm_arbitrage` has 1,761 unresolved would_have_placed rows from 2026-05-11+ that the resolver reports as pending/not_found tick after tick. Either the markets are genuinely still pending (unlikely for week-old binary markets) or `get_market_resolution` is returning wrong status for them. Worth investigating once weather/crypto-resolution data has accumulated.
+
+**Verification:**
+- Service restart 02:10:30 UTC; service `active`.
+- 4/4 equity-writer "online" log lines confirmed at 02:11:11 UTC.
+- First resolver tick at 02:11:23 UTC: scanned 203 / **resolved 11** / pending 192 / errors 0. Pre-deploy ticks consistently produced resolved=0.
+- `kalshi_equity_history` now has rows for `kalshi_weather` ($500) and `kalshi_crypto` ($500).
+- `kalshi_round_trips` first 10 min: 10 kalshi_crypto rows (all losses, $-10 / 0% WR — small early sample), 6 kalshi_copy_trading (paired exits, 67% WR / +$0.07), 1 kalshi_llm_arbitrage.
+- Weather round-trips not yet appearing — the 14:33 UTC May 15 fires targeted KXHIGH-26MAY15 markets that resolve later (~04-19 UTC May 16 depending on city/expiration). Expected to land naturally on the next 1-2 resolver ticks.
+- BitUnix observer wiring re-confirmed dormant post-restart: `pa_enabled=False, htf_gate_mode=off, htf_regime_enabled=False, trade_plan_active=False`.
+
+**Inert / dormant on current traffic:** None — both new writers and the per-actor budget are exercising on every tick.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm --command-id RunShellScript --scripts "
+TAG=20260516-021025; \
+sudo cp /tmp/kalshi_resolver.py.bak-\$TAG /home/azureuser/trading_corp/trading_corp/agents/kalshi_resolver.py; \
+sudo cp /tmp/main.py.bak-\$TAG /home/azureuser/trading_corp/trading_corp/main.py; \
+sudo rm -rf /home/azureuser/trading_corp/trading_corp/__pycache__ /home/azureuser/trading_corp/trading_corp/agents/__pycache__; \
+sudo systemctl restart trading-corp"
+```
+
+---
+
 ## 2026-05-16 00:58 UTC — Fix-D sub-fix: `divergence_pct` on no_edge audit rows
 
 **Triggered by:** Post-Fix-B audit query for "what edges did the 10% gate filter out?" returned null. Field is in `would_have_placed` payloads as `divergence_pct`, but in `kalshi_*_skipped_no_edge` payloads it's named `edge_pct` — same value, two field names. Future Fix-D tuning needs a single field name across all event kinds.
