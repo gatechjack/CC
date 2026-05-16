@@ -100,12 +100,12 @@
   <button data-pm-tab="open"
           class="pm-tab-btn px-4 py-2 text-sm font-mono uppercase tracking-wider
                  border-b-2 border-transparent text-muted hover:text-mono">
-    Open ({{ view.open_trades | length }})
+    Open ({{ view.summary.n_pending }})
   </button>
   <button data-pm-tab="history"
           class="pm-tab-btn px-4 py-2 text-sm font-mono uppercase tracking-wider
                  border-b-2 border-transparent text-muted hover:text-mono">
-    History ({{ view.round_trips | length }})
+    History ({{ view.summary.n_resolved }})
   </button>
   {% if view.whales or view.kalshi_watch_only %}
   <button data-pm-tab="whales"
@@ -190,7 +190,11 @@
         Open paper trades
       </h2>
       <div class="text-[11px] font-mono text-muted">
-        {{ view.open_trades | length }} awaiting market settle · click row to expand
+        {% if view.summary.n_pending > (view.open_trades | length) -%}
+          showing {{ view.open_trades | length }} of {{ view.summary.n_pending }} awaiting market settle · click row to expand
+        {%- else -%}
+          {{ view.summary.n_pending }} awaiting market settle · click row to expand
+        {%- endif %}
       </div>
     </header>
 
@@ -386,7 +390,7 @@
       </h2>
       <div class="flex items-center gap-3 text-[11px] font-mono">
         <button class="pm-history-filter px-2 py-0.5 rounded bg-edge/40 text-mono"
-                data-filter="all">All ({{ view.round_trips | length }})</button>
+                data-filter="all">All ({{ view.summary.n_resolved }})</button>
         <button class="pm-history-filter px-2 py-0.5 rounded text-muted hover:text-gain"
                 data-filter="wins">Wins ({{ s.n_wins }})</button>
         <button class="pm-history-filter px-2 py-0.5 rounded text-muted hover:text-loss"

@@ -4,11 +4,14 @@ Mirrors `trading_corp.agents.polymarket_resolver`. Two periodic background
 tasks per Kalshi division:
 
   - resolve_pending_round_trips: hourly. Walks `would_have_placed` audit
-    rows for any of the three Kalshi strategies (kalshi_tail_price_arb,
-    kalshi_temporal_bucket_arb, kalshi_llm_arbitrage) that don't yet have
-    a `kalshi_round_trips` row, looks up each market via
+    rows for any of the six Kalshi strategies in `_KALSHI_ACTORS` that
+    don't yet have a `kalshi_round_trips` row, looks up each market via
     `KalshiBroker.get_market_resolution`, and INSERTs one row per resolved
     market. INSERT OR IGNORE keyed on order_id so re-runs are safe.
+    Fetches are per-actor budgeted (max_per_actor) so a strategy with a
+    large stuck-pending backlog cannot starve newer or lower-volume
+    strategies — the original ts-ASC-cap had kalshi_weather_arb +
+    kalshi_crypto_arb invisible behind kalshi_llm_arbitrage's backlog.
 
   - write_equity_snapshot: every 5 min, per division. Calls
     `broker.snapshot()` and appends one row to `kalshi_equity_history`.
@@ -95,7 +98,9 @@ def _detect_side(row: dict) -> str | None:
 # ── round-trip resolver ────────────────────────────────────────────────
 
 
-def _fetch_unresolved_orders(db_url: str) -> list[dict]:
+def _fetch_unresolved_orders(
+    db_url: str, *, max_per_actor: int = 50,
+) -> list[dict]:
     """Return Kalshi `would_have_placed` audit rows without a
     kalshi_round_trips entry. Each dict is the parsed payload plus
     `_ts` and `_actor` carrying audit-event metadata.
@@ -106,35 +111,55 @@ def _fetch_unresolved_orders(db_url: str) -> list[dict]:
     rows already linked as the entry leg of a paired round-trip
     (entry_order_id), so the entry doesn't keep getting scanned after
     pairing resolves it.
+
+    Per-actor budget: each actor in `_KALSHI_ACTORS` fetches up to
+    `max_per_actor` of its unresolved rows. A single
+    `WHERE actor IN (...) ORDER BY ts ASC LIMIT N` query starved newer
+    strategies — when kalshi_llm_arbitrage had 1700+ stuck-pending rows,
+    the global ts-ASC cap meant kalshi_weather_arb + kalshi_crypto_arb
+    rows never made the top-N cut.
+
+    Ordering: `expires_at ASC NULLS LAST` (NULLs synthesized via
+    `(expires_at IS NULL)` since SQLite NULLS LAST is version-conditional).
+    Past-expiration rows scanned first — they're the ones most likely to
+    have a final resolution on Kalshi. The original `ts ASC` ordering
+    prioritized OLDEST audit rows, but oldest-audit ≠ most-likely-resolved
+    — early LLM bets targeted multi-week-out Politics markets that are
+    still pending while later, short-horizon bets already settled. The
+    old ordering left 600+ past-expiration kalshi_llm rows permanently
+    stuck behind the long-horizon backlog.
     """
-    placeholders = ",".join("?" for _ in _KALSHI_ACTORS)
+    rows: list[dict] = []
     with _db.connect(db_url) as conn:
-        cur = conn.execute(
-            f"SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
-            f"FROM audit_event a "
-            f"LEFT JOIN kalshi_round_trips r "
-            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
-            f"WHERE a.actor IN ({placeholders}) "
-            f"  AND a.kind = 'would_have_placed' "
-            f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
-            f"  AND r.order_id IS NULL "
-            f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
-            f"        SELECT entry_order_id FROM kalshi_round_trips "
-            f"        WHERE entry_order_id IS NOT NULL"
-            f"      ) "
-            f"ORDER BY a.ts ASC",
-            _KALSHI_ACTORS,
-        )
-        rows: list[dict] = []
-        for r in cur.fetchall():
-            try:
-                p = json.loads(r["payload_json"])
-                p["_ts"] = r["ts"]
-                p["_actor"] = r["actor"]
-                rows.append(p)
-            except (json.JSONDecodeError, ValueError, TypeError):
-                continue
-        return rows
+        for actor in _KALSHI_ACTORS:
+            cur = conn.execute(
+                "SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
+                "FROM audit_event a "
+                "LEFT JOIN kalshi_round_trips r "
+                "  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+                "WHERE a.actor = ? "
+                "  AND a.kind = 'would_have_placed' "
+                "  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
+                "  AND r.order_id IS NULL "
+                "  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
+                "        SELECT entry_order_id FROM kalshi_round_trips "
+                "        WHERE entry_order_id IS NOT NULL"
+                "      ) "
+                "ORDER BY (json_extract(a.payload_json, '$.expires_at') IS NULL), "
+                "         json_extract(a.payload_json, '$.expires_at') ASC, "
+                "         a.ts ASC "
+                "LIMIT ?",
+                (actor, max_per_actor),
+            )
+            for r in cur.fetchall():
+                try:
+                    p = json.loads(r["payload_json"])
+                    p["_ts"] = r["ts"]
+                    p["_actor"] = r["actor"]
+                    rows.append(p)
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    continue
+    return rows
 
 
 def _compute_round_trip_row(row: dict, res: dict) -> dict | None:
@@ -369,15 +394,21 @@ async def resolve_pending_round_trips(
     db_url: str,
     broker,
     *,
-    max_per_tick: int = 200,
+    max_per_tick: int = 300,
+    max_per_actor: int = 50,
 ) -> dict:
     """One pass. Returns counts: scanned, resolved, pending, void,
     not_found, errors, plus whale-exit pairing counts.
 
-    `max_per_tick` bounds Kalshi API calls per tick. With $1 fixed sizing
-    per leg × cooldowns × natural cycle pace, backlog should stay well
-    under 200 even on multi-day downtime. Default doubled vs. polymarket
-    because three Kalshi strategies share the table.
+    `max_per_actor` is the primary knob: each actor in `_KALSHI_ACTORS`
+    gets up to that many of its oldest unresolved rows per tick. With 6
+    actors × 50 = 300 max scanned per tick — kept low enough that Kalshi
+    API call volume stays trivial, high enough that backlog drains.
+
+    `max_per_tick` is a safety net on the merged-and-truncated total. It
+    must be ≥ `max_per_actor × len(_KALSHI_ACTORS)` to avoid re-introducing
+    starvation (truncation order is by actor order in `_KALSHI_ACTORS`,
+    so actors at the end of the tuple would be cut first).
 
     Two passes per tick:
       1. `_pair_pending_exits`: pair K3 copy-trader SELL audit rows with
@@ -388,7 +419,7 @@ async def resolve_pending_round_trips(
          the market on Kalshi and write a round-trip if settled.
     """
     pair_counts = _pair_pending_exits(db_url)
-    rows = _fetch_unresolved_orders(db_url)
+    rows = _fetch_unresolved_orders(db_url, max_per_actor=max_per_actor)
     rows = rows[:max_per_tick]
     counts = {
         "scanned": len(rows),

@@ -51,6 +51,13 @@ def _fetch_unresolved_orders(db_url: str) -> list[dict]:
         # Also exclude audit rows whose order_id was already linked as an
         # entry to a paired round-trip (entry_order_id), so the entry
         # doesn't keep being scanned after pairing resolves it.
+        # Ordering: `resolves_at ASC NULLS LAST` (NULLs synthesized via
+        # `(resolves_at IS NULL)` since SQLite NULLS LAST is version-
+        # conditional). Past-resolution rows scanned first — they're the
+        # most likely to have a final settlement on Polymarket. The
+        # original `ts ASC` ordering left past-expiration rows stuck
+        # behind long-horizon backlog (same shape as the kalshi_resolver
+        # bug fixed in the same session).
         cur = conn.execute(
             "SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
             "FROM audit_event a "
@@ -64,7 +71,9 @@ def _fetch_unresolved_orders(db_url: str) -> list[dict]:
             "        SELECT entry_order_id FROM polymarket_round_trips "
             "        WHERE entry_order_id IS NOT NULL"
             "      ) "
-            "ORDER BY a.ts ASC"
+            "ORDER BY (json_extract(a.payload_json, '$.resolves_at') IS NULL), "
+            "         json_extract(a.payload_json, '$.resolves_at') ASC, "
+            "         a.ts ASC"
         )
         rows: list[dict] = []
         for r in cur.fetchall():

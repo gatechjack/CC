@@ -68,15 +68,19 @@ Anthropic 429s when both LLM strategies fan simultaneously; first
 deterministic math, no LLM — NWS + Open-Meteo cross-model ensemble σ
 + METAR nowcast blend (≤6h); fractional-Kelly sizing with per_market /
 per_day / per_city cap ladder. Phase 1 SHIPPED 2026-05-14 20:54 UTC,
-Tier-1 ensemble/Kelly upgrade 2026-05-15 02:56 UTC, **fractional-trading
-quote-read fix + paper_capital + dashboard wiring all SHIPPED
-2026-05-15 14:06→14:39 UTC** — first ProposedOrders firing today),
+Tier-1 ensemble/Kelly upgrade 2026-05-15 02:56 UTC, fractional-trading
+quote-read fix + paper_capital + dashboard wiring 2026-05-15 14:06→14:39 UTC,
+day-cap raise to $600 2026-05-15 21:48 UTC. **Equity-snapshot writer + round-trip
+resolver wiring SHIPPED 2026-05-16 02:10 UTC** — first kalshi_round_trips for
+this division now landing; ~107 pending at 03:30 UTC awaiting overnight
+market settlement),
 **`kalshi_crypto`** (Crypto specialist; Coinbase spot + Gaussian
 probability with annualized vol; bucket math for B-suffix tickers.
 Phase 1 SHIPPED 2026-05-14 21:19 UTC; horizon pre-filter + quote-fix
-shipped same window as weather 2026-05-15 14:06→14:39 UTC. Currently
-discovering near-term BTC/ETH/XRP markets correctly — no fires yet
-on tight no_edge XRP markets),
+2026-05-15 14:06→14:39 UTC. **Equity-snapshot writer + round-trip
+resolver wiring SHIPPED 2026-05-16 02:10 UTC** — first 11 round-trips
+landed within minutes of restart; firing past 10% gate when real
+edges present, peak observed 42.9% on KXETH-26MAY1617-B2230),
 **`kalshi_copy_trading`** (Phase K3 whale-shadow strategy + K3 watch-only
 sibling SHIPPED 2026-05-15 06:09→06:54 UTC — see memory
 `kalshi_watchlist_architecture`; currently 2 selected_whales +

@@ -324,6 +324,102 @@ def test_resolve_void_writes_zero_pnl_row(fresh_db):
 # ── equity snapshot ────────────────────────────────────────────────────
 
 
+def test_fetch_orders_past_expiration_first(fresh_db):
+    """Past-expiration rows must be scanned before future-expiration rows
+    of the same actor. Pre-fix `ORDER BY ts ASC` prioritized OLDEST audit
+    rows — but for long-horizon bets, oldest-by-ts means longest-horizon,
+    which means STILL PENDING. Past-expiration rows (which actually have
+    a final result on Kalshi) were starved.
+    """
+    db_url, _ = fresh_db
+    # OLD audit ts but FUTURE expiration (a long-horizon bet placed early):
+    _insert_audit_event(
+        db_url, "kalshi_llm_arbitrage", "would_have_placed",
+        {"order_id": "old-future", "ticker": "KXFUTURE-1", "outcome": "yes",
+         "qty": 1.0, "limit_price": 0.30,
+         "expires_at": "2027-12-31T00:00:00+00:00"},
+        ts="2026-05-01T00:00:00+00:00",
+    )
+    # NEW audit ts but PAST expiration (a short-horizon bet placed recently):
+    _insert_audit_event(
+        db_url, "kalshi_llm_arbitrage", "would_have_placed",
+        {"order_id": "new-past", "ticker": "KXPAST-1", "outcome": "yes",
+         "qty": 1.0, "limit_price": 0.30,
+         "expires_at": "2026-05-10T00:00:00+00:00"},
+        ts="2026-05-08T00:00:00+00:00",
+    )
+    # NEW audit ts with NO expires_at (e.g. legacy payload):
+    _insert_audit_event(
+        db_url, "kalshi_llm_arbitrage", "would_have_placed",
+        {"order_id": "no-exp", "ticker": "KXNOEXP-1", "outcome": "yes",
+         "qty": 1.0, "limit_price": 0.30},
+        ts="2026-05-09T00:00:00+00:00",
+    )
+    rows = kr._fetch_unresolved_orders(db_url, max_per_actor=10)
+    order_ids = [r.get("order_id") for r in rows]
+    # past-expiration first, then future-expiration, then no-expires_at.
+    assert order_ids == ["new-past", "old-future", "no-exp"], (
+        f"Expected past-expiration first; got {order_ids}"
+    )
+
+
+def test_resolve_per_actor_budget_prevents_starvation(fresh_db):
+    """A strategy with a large stuck-pending backlog must not starve
+    newer/lower-volume strategies. Pre-fix, _fetch_unresolved_orders used
+    a single `actor IN (...) ORDER BY ts ASC LIMIT N` query — when LLM had
+    1700+ rows, kalshi_weather_arb + kalshi_crypto_arb never made the
+    top-N cut. Per-actor budget gives each actor its own LIMIT.
+    """
+    db_url, db_path = fresh_db
+    # 120 OLD llm rows (predates everything else) — bigger than any
+    # plausible max_per_actor we'd set.
+    for i in range(120):
+        _insert_audit_event(
+            db_url, "kalshi_llm_arbitrage", "would_have_placed",
+            {"order_id": f"llm-{i}", "ticker": f"KXLLM-{i}", "outcome": "yes",
+             "qty": 1.0, "limit_price": 0.40},
+            ts=f"2026-05-01T00:00:{i:02d}+00:00",
+        )
+    # 2 fresh weather rows (timestamp newer than all llm rows).
+    _insert_audit_event(
+        db_url, "kalshi_weather_arb", "would_have_placed",
+        {"order_id": "w-1", "ticker": "KXW-1", "outcome": "yes",
+         "qty": 1.0, "limit_price": 0.50},
+        ts="2026-05-15T14:33:00+00:00",
+    )
+    _insert_audit_event(
+        db_url, "kalshi_crypto_arb", "would_have_placed",
+        {"order_id": "c-1", "ticker": "KXC-1", "outcome": "no",
+         "qty": 1.0, "limit_price": 0.50},
+        ts="2026-05-15T14:33:01+00:00",
+    )
+
+    broker = _StubKalshiBroker({
+        "KXW-1": {"status": "resolved", "result": "yes",
+                  "ticker": "KXW-1", "close_time": ""},
+        "KXC-1": {"status": "resolved", "result": "no",
+                  "ticker": "KXC-1", "close_time": ""},
+        # All llm tickers default to not_found → simulates stuck-pending.
+    })
+    # max_per_actor=10 caps llm at 10; weather + crypto get scanned too.
+    # Pre-fix (single global ORDER BY ts ASC LIMIT N), only the oldest
+    # llm rows would have been returned.
+    counts = asyncio.run(
+        kr.resolve_pending_round_trips(db_url, broker, max_per_actor=10)
+    )
+    assert counts["resolved"] == 2, (
+        f"Both weather + crypto should resolve; got {counts}"
+    )
+    assert "KXW-1" in broker.calls
+    assert "KXC-1" in broker.calls
+    with sqlite3.connect(db_path) as conn:
+        order_ids = {r[0] for r in conn.execute(
+            "SELECT order_id FROM kalshi_round_trips"
+        )}
+    assert "w-1" in order_ids
+    assert "c-1" in order_ids
+
+
 def test_write_equity_snapshot_inserts_row(fresh_db):
     db_url, db_path = fresh_db
     snap = SimpleNamespace(

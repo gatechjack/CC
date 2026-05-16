@@ -8,7 +8,60 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-16 02:40 UTC  *(supersedes 01:06)*
+## END-OF-SESSION SNAPSHOT — 2026-05-16 03:40 UTC  *(supersedes 02:40)*
+
+**Picks up from 02:40 UTC pickup list item #4** ("verify next round of kalshi_weather + kalshi_crypto round-trips actually resolves overnight"). Investigation revealed two latent bugs blocking dashboard accuracy across ALL prediction-market divisions. Four deploys this session:
+
+**1. Kalshi resolver wiring — 02:10 UTC** (full detail in `runbooks/deploy_log.md`). Closed the gap that left `kalshi_round_trips` empty all-time for `kalshi_weather` + `kalshi_crypto`: main.py only spawned equity-snapshot writers for `kalshi_arbitrage` + `kalshi_llm_arbitrage` despite `_KALSHI_DIVISIONS` listing all four. Also added per-actor scan budget (`max_per_actor=50`, default `max_per_tick=300`) so one strategy's stuck-pending backlog can't starve others. First post-deploy tick resolved 11 (was 0 for hours).
+
+**2. Bug A — dashboard tile values = LIMIT, not true counts — 03:00 UTC.** Jack flagged `/prediction-markets/kalshi_llm_arbitrage` showed `OPEN 200 / RESOLVED 100`. Root cause: `web/data.py:3565` passed `len(open_trades)` (LIMIT 200) to `_pm_summary` as pending_count; same for n_resolved via `len(round_trips)` (LIMIT 100). Added `_query_pm_resolved_stats` (true COUNT/SUM aggregation, no LIMIT) + threaded through summary + template. Tile + tabs now reflect true division totals.
+
+**3. Bug B — kalshi + polymarket resolver `ORDER BY ts ASC` starvation — 03:16 UTC.** kalshi_llm's 1,761 "stuck pending" was misleading: ~605 past-expiration rows existed but the resolver's 50-oldest-by-ts cut was always long-horizon Politics bets (KXH100MON-26MAY31 etc., expiring May 31 → genuinely pending). Past-expiration short-horizon rows had LATER ts and never made the cut. Fix: `ORDER BY (expires_at IS NULL), expires_at ASC, ts ASC` in both kalshi_resolver + polymarket_resolver. First post-deploy tick resolved 50 kalshi_llm rows (vs 0-1 prior).
+
+**4. Bug C — one-shot DELETE of 1,745 stale PCT pending rows — 03:29 UTC.** polymarket_copy_trader had 2,482 pending entries, ALL missing `resolves_at` (Bug B's ordering can't help them). Root cause: pre-2026-05-14 multi-leg-resolver bug + Apify 10-min polling missing fast whale auto-settles. Path A (straight DELETE) over Path B (synthetic void RTs) per Jack's call. 24h cutoff preserves 691 fresh rows still in normal pairing flow. Backups: `/tmp/pct_stuck_audit_backup_20260516-032942.{jsonl,sql}` (1,745 rows, 4MB).
+
+**Dashboard true counts at session end (was → now):**
+- kalshi_llm_arbitrage: tile `200/100` → **`1,711/245`** (real numbers; -50 already drained, ~555 past-expiration left to drain at ~50/hour)
+- kalshi_arbitrage: `200/100` → **`236/0`** (temporal_bucket pending; suspicion: payloads may lack `expires_at` — Bug B may not help this strategy)
+- kalshi_weather: → `107/0` (markets expire ~04-19 UTC May 16; resolutions imminent)
+- kalshi_crypto: → `58/11` (11 RTs from today's wiring)
+- kalshi_copy_trading: → `3/391` (healthy K3)
+- polymarket_arbitrage: `58/6` → **`52/12`** (Bug B drained 6)
+- polymarket_copy_trading: **`2,431/506` → `693/506`** (Bug C cleanup)
+
+**Environment sync state at session end (md5-verified local ↔ prod):**
+- ✅ `agents/kalshi_resolver.py` (`0b95ded5`), `agents/polymarket_resolver.py` (`f0d2bc73`), `web/templates/partials/pm_dashboard_body.html` (`2ad6506b`) — identical both sides.
+- ❌ `main.py` + `web/data.py` — md5 differ; the **lines I touched are identical** (used anchored Python patchers, not file overwrites). Drift is in unrelated parts of both files. This is the known prod-drift pattern from memory `trading_corp_prod_git_drift.md`.
+
+**New scripts this session (gitignored / repo-tracked):**
+- `scripts/patch_kalshi_weather_crypto_equity_writers.py` (Bug A precursor; main.py equity-loop wiring)
+- `scripts/patch_pm_dashboard_true_counts.py` (Bug A)
+- `scripts/patch_resolver_ordering.py` (Bug B)
+- `scripts/probe_kalshi_stuck.py`, `scripts/probe_kalshi_resolver_mimic.py` (one-shot diagnostics; safe to delete)
+
+**Tests added (23/23 passing for `tests/test_kalshi_resolver.py`):**
+- `test_resolve_per_actor_budget_prevents_starvation` (precursor)
+- `test_fetch_orders_past_expiration_first` (Bug B)
+- 28/28 `tests/test_prediction_markets_dashboard.py` passing post-Bug-A.
+
+**Tomorrow's pickup candidates (ordered by recommended sequence):**
+1. **Watch the kalshi_llm drain finish.** ~555 past-expiration rows still in queue at session-end; should clear at ~50/hour. Confirm `kalshi_llm pending ≈ 1,155` (the long-horizon-only baseline) by ~15:00 UTC.
+2. **Eyeball kalshi_temporal_bucket_arb (kalshi_arbitrage division, 236 pending).** Bug B's expires_at ordering helps ONLY if payloads carry `expires_at`. Temporal-bucket strategy might not — if 0 of the 50-oldest-by-expires drain over multiple ticks, payload audit needed.
+3. **Fix-D empirical analysis** (~30min, P2). Newly viable — kalshi_llm/crypto round-trips are now actually landing. Query divergence_pct distribution vs WR for would_have_placed and skipped_no_edge to decide if 10% gate is correctly calibrated.
+4. **PCT stale-entry pruner cron** (~2-3h, P2). Bug C was a one-shot DELETE; same problem recurs daily as Apify continues missing whale auto-settles. Filing P2 entry below — Path A 24h-cutoff predicate run nightly via systemd timer.
+5. **BitUnix Phase 1D — shadow-data accumulation watch.** Unchanged from 02:40 snapshot. ~30 fires of `pa_validation_decision` + `htf_gate_decision` needed; then `scripts/replay_pr3_cutover.py` + Board-gate enforce flip.
+6. **PMCC audit** — still untouched real-money strategy.
+7. **Dashboard signal-vs-side labeling tweak** — from 02:40 snapshot; still open.
+
+**Confirmed-NOT-to-do without explicit re-approval:**
+- Do NOT flip `htf_gate.mode: shadow → enforce` until 1D shadow data accumulates AND replay script confirms.
+- Do NOT flip `trade_plan.enabled: true` until 1D ships.
+- Do NOT delete additional PCT rows without confirming the 24h cutoff predicate; backups for the 03:29 delete are in `/tmp/pct_stuck_audit_backup_20260516-032942.{jsonl,sql}` if rollback needed.
+- Do NOT delete the diagnostic probe scripts in `scripts/probe_kalshi_*.py` until Phase 1D is complete (they're useful templates if resolver behavior regresses).
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-16 02:40 UTC  *(preserved — superseded by 03:40)*
 
 **Picks up from 21:35 UTC pickup list ("Phase 1C next").** BitUnix Phase 1C **SHIPPED 2026-05-16 02:24 UTC** (full detail in `runbooks/deploy_log.md`). 8-file bundle (4 modify + 4 new); managed `az vm run-command create --script @file` path replaced the chunked-`invoke` pattern that failed mid-data.py at the first attempt.
 
@@ -280,6 +333,24 @@ Items punted during the day's specialized-agent build sprint. Grouped by priorit
 - **Generalize `_weather_math.py` → `_threshold_math.py`** — currently weather + crypto both call `_weather_math.evaluate_weather_market` (math is unit-agnostic). When Financials lands as a 3rd caller, rename + relocate. Backwards-compat shim from `_weather_math` while strategies migrate. ~30 min.
 
 - **Telegram tile for Sports Scout** — daily/weekly digest of `kalshi_sports_observed` audit summary (median divergence, top-divergence games observed, quota burn). Read-only visibility; no orders. ~1h.
+
+---
+
+## P2/P3 — 2026-05-16 PM Dashboard hygiene followups  *(NEW — 2026-05-16)*
+
+Items surfaced during the 2026-05-16 03:00-03:30 UTC dashboard-accuracy session (Bugs A/B/C). The dashboard is now honest end-to-end; these are the durable patterns to prevent the same problems from recurring. See `runbooks/deploy_log.md` entries 03:00 / 03:16 / 03:29 UTC + `pm_dashboard_architecture` memory.
+
+### P2
+
+- **PCT stale-entry pruner cron** — Bug C's one-shot DELETE cleared 1,745 stale `polymarket_copy_trader` `would_have_placed` rows (no `resolves_at`, no paired round-trip, >24h old). The root cause is durable: Apify polls every 10 min, whale-managed-position auto-settles complete in seconds, so we systematically miss exits. Without a recurring pruner, the stuck-count creeps back up to thousands within a week. **Build:** new script `trading_corp/scripts/prune_stale_pct_entries.py` reusing the Bug C predicate (BUY-side, no round-trip, no entry_order_id link, `ts < now - 1 day`). Wrap with backup-to-/tmp before DELETE. Add systemd timer + service unit under `infra/systemd/trading-corp-prune-pct.{timer,service}`, daily cadence (e.g. `OnCalendar=*-*-* 04:00:00 UTC`). Audit one row per run to `audit_event` with kind `pct_pruner_tick` for visibility. ~2-3h.
+
+- **kalshi_temporal_bucket_arb payload audit — verify `expires_at` is present** — Bug B's `ORDER BY expires_at` ordering fix relies on the payload carrying `expires_at`. The kalshi_arbitrage division (fed by `kalshi_tail_price_arb` + `kalshi_temporal_bucket_arb`, 236 pending at session end) is suspected to lack the field — would explain why its tick-1 resolved count stayed 0 while kalshi_llm drained 50. **Check:** `SELECT json_extract(payload_json,'$.expires_at') FROM audit_event WHERE actor IN ('kalshi_tail_price_arb','kalshi_temporal_bucket_arb') AND kind='would_have_placed' LIMIT 5`. If null: backfill via the same memory pattern as Bug B for kalshi_llm (audit field allowlist in both `ProposedOrder.extra` AND `main.py`'s strategy-loop payload — see memory `trading_corp_audit_payload_allowlist`). ~30min once confirmed. Strategy file location candidates: `trading_corp/agents/strategies/kalshi_tail_price_arb.py`, `kalshi_temporal_bucket_arb.py`.
+
+### P3
+
+- **`build_pm_dashboard` cached aggregates** — `_query_pm_pending_count` + `_query_pm_resolved_stats` now run on EVERY dashboard render (2 extra COUNTs per division-view in addition to the existing list queries). With current row counts (~1,700 LLM pending, ~500 resolved) the COUNTs are fast (indexed on division + ts). If render latency creeps over 200ms once polymarket_round_trips passes ~10k rows, snapshot to a stats table on the 5-min equity-snapshot tick instead. **Gated on:** observed `/prediction-markets/...` render latency > 200ms in browser devtools OR Caddy access log.
+
+- **Dashboard count-vs-list-length lint check** — add a pytest assertion that scans `web/templates/partials/*.html` for the pattern `{{ view\..*\| length }}` in tile/tab-label contexts and flags occurrences. Bug A escaped review because the LIMIT-truncation was invisible until row counts exceeded the limit. ~1h. File: extend `tests/test_prediction_markets_dashboard.py`.
 
 ---
 
