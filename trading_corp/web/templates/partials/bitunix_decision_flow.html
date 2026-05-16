@@ -35,6 +35,7 @@
           <th class="text-left p-2">When</th>
           <th class="text-left p-2">TF</th>
           <th class="text-left p-2">Trigger</th>
+          <th class="text-right p-2" title="Aggregate net confluence score (signed). Sign decides order side; magnitude decides tier.">Net</th>
           <th class="text-left p-2">Score</th>
           <th class="text-left p-2">PA</th>
           <th class="text-left p-2">HTF gate</th>
@@ -50,7 +51,19 @@
               <span class="text-[10px] px-1.5 py-0.5 rounded bg-pane border border-edge">{{ f.alert_tf }}</span>
             {% else %}<span class="text-muted">—</span>{% endif %}
           </td>
-          <td class="p-2 text-mono">{{ f.trigger_signal or '—' }}</td>
+          <td class="p-2 text-mono
+                     {% if f.trigger_side == 'buy' %}text-gain
+                     {% elif f.trigger_side == 'sell' %}text-loss
+                     {% else %}text-mono{% endif %}"
+              title="{% if f.trigger_side %}Intrinsic side of this TV signal: {{ f.trigger_side }}. The order's side is the sign of the aggregate net score — see the Net column.{% else %}Unknown intrinsic side (guard / PA factor / unmapped signal).{% endif %}">
+            {{ f.trigger_signal or '—' }}
+          </td>
+          <td class="p-2 text-right font-mono font-semibold
+                     {% if f.score.net is not none and f.score.net > 0 %}text-gain
+                     {% elif f.score.net is not none and f.score.net < 0 %}text-loss
+                     {% else %}text-muted{% endif %}">
+            {% if f.score.net is not none %}{{ '%+d'|format(f.score.net) }}{% else %}—{% endif %}
+          </td>
           <td class="p-2">
             <div class="{% if f.score.tier == 'PREMIUM' %}text-gain font-semibold
                        {% elif f.score.tier == 'STANDARD' %}text-gain
@@ -59,7 +72,7 @@
               {{ f.score.tier or '—' }}
             </div>
             <div class="text-[10px] text-muted">
-              {{ f.score.side or '—' }} · net={{ f.score.net if f.score.net is not none else '—' }}
+              order side: {{ f.score.side or '—' }}
             </div>
           </td>
           <td class="p-2">
