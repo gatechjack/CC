@@ -59,6 +59,44 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-16 04:03 UTC — BitUnix Decision Flow UX fix follow-up (data.py): activate trigger color-code
+
+**Triggered by:** The 03:15 UTC UX fix shipped the template half (Net column + trigger color-code wiring). Trigger color-code was wired in template but dormant because `view.bitunix_decision_flow.flows[*].trigger_side` wasn't being populated — the data.py half was blocked by an active parallel session iterating in the same file. Parallel session committed at 1083f53 (incidentally folding my unstaged trigger_side helper in with their prediction-markets work), then deployed their portion to prod independently. This deploy ships the residual delta — just my `_intrinsic_side` helper + `trigger_side` field — on top of prod's already-installed parallel-session changes.
+
+**Backup tag:** `pre-bitunix-1c-uxfix-data-20260516-0345`
+
+**Files deployed (1 — modify):**
+- `trading_corp/web/data.py` (170,581 bytes LF) — adds `_intrinsic_side(signal_name)` helper to `build_bitunix_decision_flow_view`; looks up the trigger signal's intrinsic side from `observer.scoring_config.factors[name].side` (with `_strip_directional_suffix` fallback to match the scorer's `_resolve_factor`). Adds `trigger_side: "buy" | "sell" | None` to each flow dict. Docstring extended. Unknown signals (guards, PA factors, future TV signals) return None and fall to muted-default in the template.
+
+**Features shipped:**
+- **Trigger color-code on Decision Flow panel.** Each Trigger cell is now colored by the signal's intrinsic side: green for buy-named (e.g. `mc_b_buy_circle`, `mc_a_longema`, `mc_a_bluetriangle`), red for sell-named (e.g. `mc_a_red_diamond`, `mc_a_redx`, `mc_a_blood_diamond`), muted-gray for unknown.
+- **Per-cell tooltip explains the dynamic:** "Intrinsic side of this TV signal: sell. The order's side is the sign of the aggregate net score — see the Net column." Closes the "buy-named signal next to SELL row" confusion by making the disconnect explanatory.
+
+**Notable code changes:**
+- Helper uses lazy import of `_strip_directional_suffix` inside the function body to avoid pulling the scorer module at template-render time / app-boot time. Defensive against circular imports.
+- HEAD's data.py = parallel session's `_query_pm_resolved_stats` + related prediction-markets work + my `_intrinsic_side` helper. Prod's pre-deploy data.py had only the parallel session's portion (they shipped via their own surgical patches per commit 1083f53). Post-deploy md5 = `1295bf7d532b61cb4d90cbf1c8668f4a` matches local HEAD's LF md5.
+
+**Verification:**
+- `az vm run-command create` exit 0, executionState `Succeeded`, end 04:03:44 UTC.
+- Backup tag `data.py.pre-bitunix-1c-uxfix-data-20260516-0345` present.
+- Service active; healthz green.
+- Rendered HTML for `/division/bitunix_futures` confirms color-code is live: 4 trigger cells with `text-loss` class (sell signals: `mc_a_red_diamond` x2, `mc_a_redx`, `mc_a_blood_diamond`), 1 with `text-gain` class (`mc_b_buy_circle`); all 5 carry the explanatory `title="Intrinsic side of this TV signal: ..."` tooltip.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts '
+TAG=pre-bitunix-1c-uxfix-data-20260516-0345
+BASE=/home/azureuser/trading_corp
+F=trading_corp/web/data.py
+mv $BASE/$F.$TAG $BASE/$F
+rm -rf $BASE/trading_corp/web/__pycache__
+sudo systemctl restart trading-corp'
+```
+
+Note: rollback restores the pre-1295bf7d data.py which has parallel session's prediction-markets work but NOT my trigger_side helper. Trigger column reverts to muted-gray. Net column unaffected (template-only feature).
+
+---
+
 ## 2026-05-16 03:35 UTC — BitUnix Decision Flow panel reorder: gate-chain on top, legacy score below
 
 **Triggered by:** Jack screenshotted `/division/bitunix_futures` post-UX-fix and the new Phase 1C panels weren't visible above the fold — they were ~33kb of HTML below the legacy Confluence Score panel. Reorder puts the gate chain on top in natural "decide → audit → outcome" reading order.
