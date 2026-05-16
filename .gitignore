@@ -73,3 +73,10 @@ runbooks/.*.tmp
 # DB so no need to track. If you want a historical snapshot, copy it
 # out and rename.
 data/scalping_3m_analysis_history.csv
+
+# Personal working notes — Board's session notes, prompts, goal docs.
+# Lives alongside the repo for convenience; never committed.
+notes/
+Goals/
+tree.txt
+data/*.bak-*
