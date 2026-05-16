@@ -8,7 +8,87 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-16 19:40 UTC  *(supersedes 04:55)*
+## END-OF-SESSION SNAPSHOT — 2026-05-16 20:10 UTC  *(supersedes 19:40 + 04:55)*
+
+**Two parallel sessions today, both shipped.** This top-level snapshot captures BOTH work streams (BitUnix scoring H2 + kalshi_weather/crypto fixes) so tomorrow's pickup has a single source of truth. Detailed kalshi diagnostic trail is preserved in the 19:40 snapshot below (do not delete).
+
+### 1. BitUnix scoring H2 re-tune — SHIPPED, LIVE since 19:21 UTC
+
+**Triggered by:** Out-of-session research in `reports/scoring_*.md` justifying the H2 candidate (cap heavy weights at 3, up-weight Otter precision family 2→3). 47-day backtest across 13 variants found H2 has the widest PREMIUM/STANDARD quality gap (+0.114R vs baseline +0.051R, 2.2× wider).
+
+**Deploy mechanics:**
+- 18:51 UTC — `scripts/patch_bitunix_scoring_h2.py --apply` on prod (10/11 edits; `mc_b_gold_buy` was pre-patched with orphan `# H2: was 5` marker at 17:45 UTC, origin unknown).
+- 19:21 UTC — **H2 actually went live** when parallel kalshi_weather deploy restarted trading-corp. **Important deploy-mechanic lesson:** BitUnix scorer does NOT mtime-cache (counter to CLAUDE.md §5's hot-reload note, which is true for Otter/Cypher/Kalshi/Polymarket/Donchian but NOT BitUnix). `ScoringConfig` is loaded once at `main.py:380`. Future BitUnix YAML deploys must include a restart step. New memory: `feedback_bitunix_no_hot_reload.md`.
+- 19:55 UTC — Redundant second restart (this session, didn't realize parallel session had already restarted).
+
+**Verified live:**
+- `bitunix_score_decided` audit at 19:24 UTC shows `mc_a_red_diamond: 3, spoon_bear: 3` (new weights). Pre-19:21 rows at 19:03/19:12 showed `mc_a_red_diamond: 4, spoon_bear: 2` (old). Cutover unambiguous.
+- All 11 H2 targets confirmed at weight 3 via `yaml.safe_load` round-trip.
+- Boot wiring across all 3 restarts: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False`.
+
+**Falsification gate (P1 BACKLOG line 785):** PREMIUM mean R must be ≥0.05R better than STANDARD mean R after ≥30 live PREMIUM fires post-19:21 UTC. Use `ts >= '2026-05-16T19:21:00+00:00'` in the audit query. At pre-1D ~3 fires/day rate that's ~10-14 days; post-1D-enforce + PA-validation short-circuit, likely longer.
+
+**Deploy-mechanics gotchas captured this session (both new memories):**
+- Hotel-wifi → iPhone hotspot SSH timeout. Adding the new client IP to the NSG didn't fix it (root cause unknown; HTTPS to same VM + github.com:22 from same network both worked). Pivoted to `az vm run-command invoke` and got the deploy done. Memory: `feedback_az_run_command_when_ssh_blocked.md` — rule is "don't debug, pivot."
+- BitUnix scorer no hot-reload (above). Memory: `feedback_bitunix_no_hot_reload.md`.
+
+### 2. kalshi_weather + kalshi_crypto bug-fix bundle — SHIPPED (parallel session)
+
+Full detail in the 19:40 snapshot below. One-line summary: shipped a shared `apply_bucket_guard` pure-fn (in `_weather_math.py`) that stops the strategy from betting against its own forecast when σ > bucket width, plus an off-by-one-day fix in `_parse_target_time` for daily HIGH/LOW markets. Pre-fix weather: 61 RTs, 9.8% WR, -$374. Pre-fix crypto: 91 RTs, 11.0% WR, -$58.88. Validation gate: ≥30 fresh round-trips per division at WR ≥65% before any `auto_execute: true` flip.
+
+### Environment sync at session end
+
+| File | Local md5 (LF) | Prod md5 (LF) | Status |
+|---|---|---|---|
+| `kalshi_weather_arb.py` | `450791247764be89a888057d75beaad1` | `450791247764be89a888057d75beaad1` | ✅ match |
+| `_weather_math.py` | `007790327b43c74f1048276fe7108947` | `007790327b43c74f1048276fe7108947` | ✅ match |
+| `kalshi_crypto_arb.py` | `7e945feb62af330631b79c442798cdfe` | `7e945feb62af330631b79c442798cdfe` | ✅ match |
+| `main.py` | `c33ee9fbb0c32e08beba21c1752e37a9` | `a2b2df5e955fe460b27c9a7762c83157` | ❌ but semantically equivalent (drift in unrelated regions; `bucket_guard` audit fields present on both sides). Known per `trading_corp_prod_git_drift.md`. |
+| `config/strategies.yaml` | `83c2c7a3905f4aee5a493e1f1816b600` (pre-H2 baseline) | `110156c785a631057e15bc403ecd9151` (H2 live + 1-byte mystery edit at 19:24 UTC) | ⚠️ intentional drift — H2 is prod-only YAML edit per task brief. The 1-byte edit at 19:24 UTC happened AFTER H2 apply; H2 weights remain at 3/3/3 (verified via yaml.safe_load). Origin unknown; flagged as P3 follow-up. |
+
+Service active. Latest PID 517485 (post-19:55 restart). Boot wiring: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False`.
+
+### New commits today (latest first)
+
+- `e10e195` — bitunix: correct H2 deploy notes — activated by 19:21 restart, not hot-reload
+- `d854dcf` — kalshi: bucket-aware bet-side guard + off-by-one-day fix (parallel session)
+- `1c395bc` — bitunix: scoring H2 re-tune shipped (10/11 weights, 1 pre-patched)
+
+### New memories this session
+
+- `feedback_az_run_command_when_ssh_blocked.md` — rule + patterns for when SSH is blocked; `az vm run-command invoke` recipes
+- `feedback_bitunix_no_hot_reload.md` — BitUnix YAML deploys require restart, contra CLAUDE.md §5
+
+### Tomorrow's pickup candidates (ordered by recommended sequence)
+
+1. **Verify H2 + weather/crypto fixes overnight.** Single combined query session:
+   - BitUnix: count of post-19:21 UTC `bitunix_score_decided` rows by tier; sanity-check distribution. If any `paper_trade_record` rows for `bitunix_futures` landed overnight, eyeball realized R by tier.
+   - kalshi_weather + kalshi_crypto: count of `bucket_guard` audit field values (`flipped_no_to_yes` / `block_*` / `null`) since 19:18 UTC. Win rate of any fresh `round_trips` rows.
+2. **Investigate post-1D-enforce PA rejection pattern** (~15-30 min, carried over from 04:55 snapshot item #1). Still all 3 post-04:14 UTC fires landed `skipped_pa_validation`. Now with H2 weights live, the relative rejection mix MAY shift. Worth a fresh query.
+3. **Investigate the 19:24 UTC strategies.yaml mystery edit** (~5 min, P3). 1-byte size change after H2 apply. Diff against `config/strategies.yaml.bak-h2-20260516T185125` to see what changed. Likely benign whitespace; document for cleanup.
+4. **Investigate the orphan `mc_b_gold_buy # H2: was 5` marker origin** (~5 min, P3). Was already on prod at 17:45 UTC before H2 deploy started. Either a parallel-session hand-edit or interrupted partial apply. No incident risk; archaeological-only.
+5. **Add target_iso to weather audit allowlist** (~5 min, P3, from 19:40 snapshot item #2).
+6. **kalshi observation tasks** from 19:40 snapshot items 3 + 4 (σ scaling, T-ticker dynamics).
+7. **`config/strategies.yaml` 887-line stale `factors:` block cleanup** (~15 min, P3). Out-of-scope find from H2 deploy. The dead block uses pre-PR-3c inline TTL format; YAML last-wins makes the 1094-line block authoritative. Cosmetic.
+8. **PMCC audit** — still untouched real-money strategy. Perennial.
+
+### Things to NOT do without explicit approval
+
+- Do NOT flip `htf_gate.mode: shadow → enforce` back (it's at `enforce` per the 04:14 UTC deploy log entry; verify intact).
+- Do NOT flip `trade_plan.enabled: true`. Phase 1E gate.
+- Do NOT enable `auto_execute: true` on weather, crypto, or BitUnix until each division's validation gate is hit.
+- Do NOT delete backup tags on prod (kalshi weather/crypto + H2) until ≥24h confirms the new logic.
+- Do NOT relax `config/strategies.yaml` validation guards or schema.
+
+### CLAUDE.md addition proposal (apply manually per § 8 process)
+
+Add to § 7 "Known sharp edges":
+
+> **BitUnix scoring YAML is NOT hot-reloaded.** `bitunix_futures_observer.py` receives its `ScoringConfig` once at construction (`main.py:380`) and holds it in `self.scoring_config`. Mtime-cache pattern from § 5 applies to Otter/Cypher/Kalshi/Polymarket/Donchian, NOT BitUnix. Every `strategies.yaml` edit that touches the `bitunix_futures` block requires `systemctl restart trading-corp` to take effect. Memory: `feedback_bitunix_no_hot_reload.md`.
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-16 19:40 UTC  *(preserved — superseded by 20:10)*
 
 **This session focused on kalshi_weather investigation + fix.** Started with user observation that Denver 5/15 round-trips "didn't look right." Drilled to the root cause(s) and shipped two related fixes to both `kalshi_weather` and `kalshi_crypto`.
 
