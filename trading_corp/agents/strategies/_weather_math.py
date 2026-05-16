@@ -43,6 +43,23 @@ class WeatherVerdict:
     skip_reason: str               # populated when fired=False
 
 
+@dataclass(frozen=True)
+class BucketGuardResult:
+    """Output of the bucket-aware bet-side guard.
+
+    Three cases the caller distinguishes:
+      - outcome == proposed_outcome AND action is None:
+          natural path, no guard intervention.
+      - outcome is set AND action == "flipped_no_to_yes":
+          we changed sides to YES; caller proceeds with new outcome.
+      - outcome is None AND action ∈ {block_no_yes_too_expensive,
+        block_yes_forecast_outside}: caller MUST skip the trade.
+    """
+    outcome: str | None            # "yes" | "no" | None (None = skip)
+    action: str | None             # flag for audit / dashboard
+    skip_reason: str | None        # populated when outcome is None
+
+
 # ── Pure math ─────────────────────────────────────────────────────────────
 
 def _normal_cdf(z: float) -> float:
@@ -265,3 +282,82 @@ def sigma_for_horizon(horizon_hours: float) -> float:
     if horizon_hours <= 72:
         return 3.5
     return 5.0
+
+
+# ── Bucket-aware bet-side guard ──────────────────────────────────────────
+# Failure mode discovered 2026-05-16: σ-vs-bucket-width mismatch on narrow
+# Kalshi temperature buckets caused the strategy to bet against its own
+# forecast. For 1°F buckets with forecast σ=2.7°F, the Gaussian integral
+# over a single bucket is only ~14% even at the forecast center, so the
+# model said "no bucket is high probability" and we sold the modal bucket.
+# 9.8% win rate, -$374 PnL on 61 trades pre-fix.
+
+DEFAULT_FLIP_YES_IMPLIED_CEILING = 0.70
+
+
+def apply_bucket_guard(
+    *,
+    direction: str,
+    forecast_temp_f: float,
+    threshold_f: float,
+    threshold_high_f: float | None,
+    proposed_outcome: str,
+    implied_yes: float,
+    flip_yes_implied_ceiling: float = DEFAULT_FLIP_YES_IMPLIED_CEILING,
+) -> BucketGuardResult:
+    """Decide whether a proposed bet-side is structurally aligned with the
+    own forecast, and reshape (flip to YES) or block when it isn't.
+
+    Rules (all directions):
+      - "forecast predicts YES zone" ≡ the YES side of the market matches
+        our forecast direction. For between: forecast ∈ [floor, cap].
+        For greater: forecast > threshold. For less: forecast < threshold.
+      - If forecast predicts YES AND proposed_outcome == "no":
+          We're betting against our own forecast. Flip to YES if implied
+          is reasonable (≤ ceiling); otherwise skip as too expensive.
+      - If forecast predicts NO AND proposed_outcome == "yes":
+          Long-shot YES on the wrong side of our forecast — a σ-smearing
+          artifact. Skip.
+      - Otherwise: natural path; return unchanged.
+    """
+    proposed_outcome = proposed_outcome.lower()
+    if direction == "between" and threshold_high_f is not None:
+        forecast_predicts_yes = (threshold_f <= forecast_temp_f <= threshold_high_f)
+        zone_repr = f"[{threshold_f},{threshold_high_f}]F"
+    elif direction == "greater":
+        forecast_predicts_yes = (forecast_temp_f > threshold_f)
+        zone_repr = f">{threshold_f}F"
+    elif direction == "less":
+        forecast_predicts_yes = (forecast_temp_f < threshold_f)
+        zone_repr = f"<{threshold_f}F"
+    else:
+        return BucketGuardResult(outcome=proposed_outcome, action=None, skip_reason=None)
+
+    if forecast_predicts_yes and proposed_outcome == "no":
+        if implied_yes <= flip_yes_implied_ceiling:
+            return BucketGuardResult(
+                outcome="yes",
+                action="flipped_no_to_yes",
+                skip_reason=None,
+            )
+        return BucketGuardResult(
+            outcome=None,
+            action="block_no_yes_too_expensive",
+            skip_reason=(
+                f"bucket_guard ({direction}): forecast {forecast_temp_f:.1f}F "
+                f"predicts YES zone {zone_repr} - refused NO; implied_yes "
+                f"{implied_yes:.2f} > flip ceiling {flip_yes_implied_ceiling:.2f}"
+            ),
+        )
+    if (not forecast_predicts_yes) and proposed_outcome == "yes":
+        return BucketGuardResult(
+            outcome=None,
+            action="block_yes_forecast_outside",
+            skip_reason=(
+                f"bucket_guard ({direction}): forecast {forecast_temp_f:.1f}F "
+                f"predicts NO (outside YES zone {zone_repr}) - refused YES "
+                f"(sigma-smearing artifact)"
+            ),
+        )
+    return BucketGuardResult(outcome=proposed_outcome, action=None, skip_reason=None)
+

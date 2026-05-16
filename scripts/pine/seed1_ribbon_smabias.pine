@@ -1,0 +1,245 @@
+// @version=6
+// =====================================================================
+// Seed 1 v4 — Ribbon-stack + SMA bias + funnel diagnostic
+// =====================================================================
+// v4 changes after v3 diagnostic showed Otter source plot is a state
+// line (raw on-bar = 100/100 → edge events = 0/0):
+//   - Default to AUTO mode: compute ribbon cross internally from a
+//     5-EMA stack on the chart timeframe.  No Otter binding required.
+//   - "ribbon bull cross" = bar where ema(fast) > ema(2) > ema(3) >
+//     ema(4) > ema(slow), AND the previous bar was NOT fully bull-stacked.
+//     (Same definition the research describes for ribbon_buy_cross.)
+//   - Keep MANUAL mode as a fallback if/when you bind a real cross-event
+//     plot from another indicator.
+//   - Funnel diagnostic preserved.
+//
+// HOW TO USE
+//   1. Add this strategy to a 3m BTC chart.
+//   2. That's it — auto mode needs no external indicator.
+//   3. Tune EMA periods in Inputs if you want to match a specific
+//      ribbon definition (defaults 8/13/21/34/55 are the conventional
+//      "Lord Otter / VuManChu ribbon" set).
+//   4. If you DO have a clean cross-event plot from another indicator,
+//      switch "Cross Source" to Manual and bind the input.source.
+//
+// AUTO MODE CROSS DEFINITION
+//   bull_stack = ema8 > ema13 > ema21 > ema34 > ema55
+//   bear_stack = ema8 < ema13 < ema21 < ema34 < ema55
+//   ribbon_buy_cross  = bull_stack and not bull_stack[1]
+//   ribbon_sell_cross = bear_stack and not bear_stack[1]
+//
+// FALSIFICATION
+//   - Win rate < 50% over a 30-trade window.
+//   - Average trade flips to under +5 bps net.
+//   - Long-side and short-side P&L diverge sharply.
+// =====================================================================
+
+strategy(
+     title              = "Seed 1 v4: EMA-Ribbon + SMA bias",
+     shorttitle         = "Seed1v4",
+     overlay            = true,
+     pyramiding         = 0,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 100,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.05,
+     slippage           = 2,
+     process_orders_on_close = false,
+     calc_on_every_tick = false)
+
+// ─── Cross source ────────────────────────────────────────────────────
+cross_mode = input.string("Auto (internal EMA-stack)", "Cross Source",
+     options=["Auto (internal EMA-stack)", "Manual (bind external plot)"],
+     tooltip="Auto: compute 5-EMA ribbon cross internally. Manual: bind input.source to an external cross plot (only useful if you have a verified cross-event plot, not a state line).")
+
+// Auto-mode EMA periods (Lord Otter / VuManChu ribbon defaults)
+ema1_len = input.int(8,  "EMA 1 (fastest)", minval=2, maxval=200, group="Auto mode")
+ema2_len = input.int(13, "EMA 2",           minval=2, maxval=200, group="Auto mode")
+ema3_len = input.int(21, "EMA 3",           minval=2, maxval=200, group="Auto mode")
+ema4_len = input.int(34, "EMA 4",           minval=2, maxval=200, group="Auto mode")
+ema5_len = input.int(55, "EMA 5 (slowest)", minval=2, maxval=400, group="Auto mode")
+
+// Manual-mode source bindings
+ribbon_buy_src  = input.source(close, "Ribbon Buy Cross (manual mode only)",  group="Manual mode")
+ribbon_sell_src = input.source(close, "Ribbon Sell Cross (manual mode only)", group="Manual mode")
+
+// ─── Strategy knobs ──────────────────────────────────────────────────
+hold_bars      = input.int(20,  "Hold (bars)", minval=5, maxval=200, group="Strategy")
+cooldown_bars  = input.int(0,   "Cooldown after exit (bars)", minval=0, maxval=100, group="Strategy")
+sma_window     = input.int(24,  "Bias-TF SMA Window", minval=8, maxval=120, group="Strategy")
+bias_tf        = input.timeframe("30", "Bias Timeframe", group="Strategy")
+use_bias       = input.bool(true, "Use HTF bias filter", group="Strategy")
+allow_long     = input.bool(true, "Allow Long",  group="Strategy")
+allow_short    = input.bool(true, "Allow Short", group="Strategy")
+exit_on_flip   = input.bool(true, "Exit on opposite signal", group="Strategy")
+
+use_vol_gate   = input.bool(false, "Use high-volatility gate", group="Vol gate")
+vol_window     = input.int(20,   "Vol window (bars)", minval=5, maxval=200, group="Vol gate")
+vol_pctile_thr = input.float(0.50, "Vol percentile threshold (0-1)", minval=0.0, maxval=1.0, step=0.05, group="Vol gate")
+vol_lookback   = input.int(500,  "Vol percentile lookback (bars)", minval=50, maxval=2000, group="Vol gate")
+
+// ─── HTF bias ────────────────────────────────────────────────────────
+bias_close = request.security(syminfo.tickerid, bias_tf, close, lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+bias_sma   = request.security(syminfo.tickerid, bias_tf, ta.sma(close, sma_window), lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+is_bull = not na(bias_sma) and bias_close > bias_sma
+is_bear = not na(bias_sma) and bias_close < bias_sma
+
+// ─── Auto-mode cross (5-EMA stack reorder) ───────────────────────────
+ema1 = ta.ema(close, ema1_len)
+ema2 = ta.ema(close, ema2_len)
+ema3 = ta.ema(close, ema3_len)
+ema4 = ta.ema(close, ema4_len)
+ema5 = ta.ema(close, ema5_len)
+bull_stack = ema1 > ema2 and ema2 > ema3 and ema3 > ema4 and ema4 > ema5
+bear_stack = ema1 < ema2 and ema2 < ema3 and ema3 < ema4 and ema4 < ema5
+auto_buy_fire  = bull_stack and not bull_stack[1]
+auto_sell_fire = bear_stack and not bear_stack[1]
+
+// ─── Manual-mode source + edge-detect ────────────────────────────────
+m_buy_now   = not na(ribbon_buy_src)     and ribbon_buy_src     != 0
+m_buy_prev  = not na(ribbon_buy_src[1])  and ribbon_buy_src[1]  != 0
+m_sell_now  = not na(ribbon_sell_src)    and ribbon_sell_src    != 0
+m_sell_prev = not na(ribbon_sell_src[1]) and ribbon_sell_src[1] != 0
+manual_buy_fire  = m_buy_now  and not m_buy_prev
+manual_sell_fire = m_sell_now and not m_sell_prev
+
+// Choose mode
+is_auto = cross_mode == "Auto (internal EMA-stack)"
+buy_fire  = is_auto ? auto_buy_fire  : manual_buy_fire
+sell_fire = is_auto ? auto_sell_fire : manual_sell_fire
+
+// Diagnostic "raw on-bar" semantic depends on mode:
+//   Auto:   raw = "is the stack currently bull/bear stacked at all"
+//   Manual: raw = "is the source currently non-zero"
+buy_raw  = is_auto ? bull_stack : (not na(ribbon_buy_src) and ribbon_buy_src != 0)
+sell_raw = is_auto ? bear_stack : (not na(ribbon_sell_src) and ribbon_sell_src != 0)
+
+// ─── Filters ─────────────────────────────────────────────────────────
+bias_ok_long  = not use_bias or is_bull
+bias_ok_short = not use_bias or is_bear
+
+logret    = math.log(close / nz(close[1], close))
+rstd      = ta.stdev(logret, vol_window)
+rstd_thr  = ta.percentile_linear_interpolation(rstd, vol_lookback, vol_pctile_thr * 100)
+is_high_vol = not use_vol_gate or (not na(rstd) and not na(rstd_thr) and rstd > rstd_thr)
+
+// ─── Position / cooldown ────────────────────────────────────────────
+var int bars_since_long  = 0
+var int bars_since_short = 0
+var int bars_since_exit  = 999
+bars_since_exit := bars_since_exit + 1
+if strategy.position_size > 0
+    bars_since_long  := bars_since_long + 1
+    bars_since_short := 0
+else if strategy.position_size < 0
+    bars_since_short := bars_since_short + 1
+    bars_since_long  := 0
+else
+    bars_since_long  := 0
+    bars_since_short := 0
+prev_pos = nz(strategy.position_size[1], 0)
+if prev_pos != 0 and strategy.position_size == 0
+    bars_since_exit := 0
+cooldown_ok = bars_since_exit >= cooldown_bars
+
+// ─── Entries / exits ────────────────────────────────────────────────
+long_entry  = buy_fire  and bias_ok_long  and is_high_vol and cooldown_ok and allow_long
+short_entry = sell_fire and bias_ok_short and is_high_vol and cooldown_ok and allow_short
+
+if strategy.position_size > 0 and bars_since_long >= hold_bars
+    strategy.close("L", comment = "time stop")
+if strategy.position_size < 0 and bars_since_short >= hold_bars
+    strategy.close("S", comment = "time stop")
+if exit_on_flip
+    if strategy.position_size > 0 and sell_fire
+        strategy.close("L", comment = "flip exit")
+    if strategy.position_size < 0 and buy_fire
+        strategy.close("S", comment = "flip exit")
+if long_entry
+    strategy.entry("L", strategy.long,  comment = "long")
+if short_entry
+    strategy.entry("S", strategy.short, comment = "short")
+
+// ─── Funnel diagnostic ──────────────────────────────────────────────
+f_raw_buy   = buy_raw   ? 1 : 0
+f_raw_sell  = sell_raw  ? 1 : 0
+f_edge_buy  = buy_fire  ? 1 : 0
+f_edge_sell = sell_fire ? 1 : 0
+f_bias_buy  = (buy_fire  and bias_ok_long)  ? 1 : 0
+f_bias_sell = (sell_fire and bias_ok_short) ? 1 : 0
+f_vol_buy   = (buy_fire  and bias_ok_long  and is_high_vol) ? 1 : 0
+f_vol_sell  = (sell_fire and bias_ok_short and is_high_vol) ? 1 : 0
+f_cool_buy  = (buy_fire  and bias_ok_long  and is_high_vol and cooldown_ok) ? 1 : 0
+f_cool_sell = (sell_fire and bias_ok_short and is_high_vol and cooldown_ok) ? 1 : 0
+f_entry_buy = long_entry  ? 1 : 0
+f_entry_sell= short_entry ? 1 : 0
+
+sum_raw_buy   = math.sum(f_raw_buy,   100)
+sum_raw_sell  = math.sum(f_raw_sell,  100)
+sum_edge_buy  = math.sum(f_edge_buy,  100)
+sum_edge_sell = math.sum(f_edge_sell, 100)
+sum_bias_buy  = math.sum(f_bias_buy,  100)
+sum_bias_sell = math.sum(f_bias_sell, 100)
+sum_vol_buy   = math.sum(f_vol_buy,   100)
+sum_vol_sell  = math.sum(f_vol_sell,  100)
+sum_cool_buy  = math.sum(f_cool_buy,  100)
+sum_cool_sell = math.sum(f_cool_sell, 100)
+sum_entry_buy = math.sum(f_entry_buy, 100)
+sum_entry_sell= math.sum(f_entry_sell,100)
+
+var table info = table.new(position.top_right, 4, 9, bgcolor=color.new(color.black, 80), border_width=1)
+if barstate.islast
+    table.cell(info, 0, 0, "Funnel (last 100 bars)", text_color=color.white, bgcolor=color.new(color.gray, 50))
+    table.cell(info, 1, 0, "BUY",   text_color=color.white, bgcolor=color.new(color.gray, 50))
+    table.cell(info, 2, 0, "SELL",  text_color=color.white, bgcolor=color.new(color.gray, 50))
+    table.cell(info, 3, 0, "notes", text_color=color.white, bgcolor=color.new(color.gray, 50))
+    table.cell(info, 0, 1, "mode",  text_color=color.white)
+    table.cell(info, 1, 1, is_auto ? "AUTO" : "MANUAL", text_color=color.aqua)
+    table.cell(info, 2, 1, "",      text_color=color.white)
+    table.cell(info, 3, 1, "",      text_color=color.white)
+    table.cell(info, 0, 2, "raw on-bar",  text_color=color.white)
+    table.cell(info, 1, 2, str.tostring(sum_raw_buy),  text_color=color.white)
+    table.cell(info, 2, 2, str.tostring(sum_raw_sell), text_color=color.white)
+    table.cell(info, 3, 2, is_auto ? "% bars stacked" : (sum_raw_buy + sum_raw_sell == 0 ? "BIND SOURCE" : (sum_raw_buy + sum_raw_sell > 60 ? "state-plot - use AUTO" : "ok")),
+       text_color = is_auto ? color.gray : (sum_raw_buy + sum_raw_sell == 0 ? color.red : sum_raw_buy + sum_raw_sell > 60 ? color.orange : color.lime))
+    table.cell(info, 0, 3, "edge events",       text_color=color.white)
+    table.cell(info, 1, 3, str.tostring(sum_edge_buy),  text_color=color.white)
+    table.cell(info, 2, 3, str.tostring(sum_edge_sell), text_color=color.white)
+    table.cell(info, 3, 3, "", text_color=color.white)
+    table.cell(info, 0, 4, "+ bias passes",     text_color=color.white)
+    table.cell(info, 1, 4, str.tostring(sum_bias_buy),  text_color=color.white)
+    table.cell(info, 2, 4, str.tostring(sum_bias_sell), text_color=color.white)
+    table.cell(info, 3, 4, (sum_edge_buy+sum_edge_sell) > 0 and (sum_bias_buy+sum_bias_sell) == 0 ? "bias blocked all" : "", text_color=color.orange)
+    table.cell(info, 0, 5, "+ vol passes",      text_color=color.white)
+    table.cell(info, 1, 5, str.tostring(sum_vol_buy),   text_color=color.white)
+    table.cell(info, 2, 5, str.tostring(sum_vol_sell),  text_color=color.white)
+    table.cell(info, 3, 5, (sum_bias_buy+sum_bias_sell) > 0 and (sum_vol_buy+sum_vol_sell) == 0 ? "vol too tight" : "", text_color=color.orange)
+    table.cell(info, 0, 6, "+ cooldown ok",     text_color=color.white)
+    table.cell(info, 1, 6, str.tostring(sum_cool_buy),  text_color=color.white)
+    table.cell(info, 2, 6, str.tostring(sum_cool_sell), text_color=color.white)
+    table.cell(info, 3, 6, "", text_color=color.white)
+    table.cell(info, 0, 7, "final entries",     text_color=color.white)
+    table.cell(info, 1, 7, str.tostring(sum_entry_buy),  text_color=sum_entry_buy>0  ? color.lime : color.gray)
+    table.cell(info, 2, 7, str.tostring(sum_entry_sell), text_color=sum_entry_sell>0 ? color.lime : color.gray)
+    table.cell(info, 3, 7, "", text_color=color.white)
+    table.cell(info, 0, 8, "HTF bias / vol",    text_color=color.white)
+    table.cell(info, 1, 8, is_bull ? "BULL" : is_bear ? "BEAR" : "NEUT",
+       text_color = is_bull ? color.lime : is_bear ? color.red : color.gray)
+    table.cell(info, 2, 8, use_vol_gate ? (is_high_vol ? "HI" : "LO") : "off",
+       text_color = use_vol_gate ? (is_high_vol ? color.lime : color.orange) : color.gray)
+    table.cell(info, 3, 8, "", text_color=color.white)
+
+// ─── Visualization ──────────────────────────────────────────────────
+plot(is_auto ? ema1 : na, title="ribbon EMA1", color=color.new(color.lime,   80))
+plot(is_auto ? ema2 : na, title="ribbon EMA2", color=color.new(color.green,  70))
+plot(is_auto ? ema3 : na, title="ribbon EMA3", color=color.new(color.yellow, 60))
+plot(is_auto ? ema4 : na, title="ribbon EMA4", color=color.new(color.orange, 50))
+plot(is_auto ? ema5 : na, title="ribbon EMA5", color=color.new(color.red,    40))
+plot(bias_sma, title="bias TF SMA", color=color.new(color.aqua, 0), linewidth=2)
+plotshape(long_entry,  title="Long Entry",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(short_entry, title="Short Entry", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.tiny)
+bgcolor(is_bull ? color.new(color.green, 95) : is_bear ? color.new(color.red, 95) : na, title="HTF Bias Tint")
+
+alertcondition(long_entry,  title="Seed1v4 LONG",  message="Seed1v4 LONG  {{ticker}} @ {{close}}")
+alertcondition(short_entry, title="Seed1v4 SHORT", message="Seed1v4 SHORT {{ticker}} @ {{close}}")

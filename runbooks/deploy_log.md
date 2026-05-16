@@ -59,6 +59,117 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-16 19:37 UTC — kalshi_crypto: bucket-aware bet-side guard
+
+**Triggered by:** parallel investigation of kalshi_weather Denver 5/15 RT resolution. After fixing kalshi_weather (entry 19:18 UTC below), audited kalshi_crypto for the same σ-vs-bucket-width bug pattern. Confirmed bug A applies (same `outcome = "yes" if prob_yes > implied_yes else "no"` at `kalshi_crypto_arb.py:513`); bug B (off-by-one-day) does NOT apply (crypto uses live spot + expiration_time correctly). Pre-fix crypto stats: 91 round-trips, 11.0% WR, -$58.88 PnL. T-tickers + "other" categories: 0/16 wins.
+
+**Files deployed (2 modified):**
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — imports `apply_bucket_guard` from `_weather_math.py` (already deployed in the 19:18 UTC entry); calls guard between `outcome = ...` line and `share_price = ...` line. Passes `spot` as the "forecast" (matches the `evaluate_weather_market` adapter pattern this strategy already uses). `bucket_guard` added to `ProposedOrder.extra`. md5 (LF) `7e945feb62af330631b79c442798cdfe` byte-identical with local.
+- `trading_corp/main.py` — patched-in-place: added `"bucket_guard": ext.get("bucket_guard")` to the `kalshi_crypto_order` audit allowlist at line 3367-3368 (with `CRYPTO_BUCKET_GUARD_INSERTED` marker for future grep). Prod-specific md5 differs from local; the relevant patch is identical.
+
+**Features shipped:**
+- Crypto strategy refuses to bet NO when spot is inside the bucket (between markets) or on the YES-aligned side of the threshold (T-tickers). When NO is refused: flips to YES if implied is reasonable (≤ 0.70 default ceiling), else skips. Mirror: refuses YES when spot is outside the bucket / on the NO-aligned side (long-shot σ-smearing artifact).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- The bucket_guard logic is SHARED between kalshi_weather and kalshi_crypto via `_weather_math.apply_bucket_guard`. Same function, same tests. Crypto's "forecast" is `spot`; weather's "forecast" is `forecast.temp_f`. Both flow through the same Gaussian-integration math.
+- Crypto strategy entry at line 513 (post-fix at 522+) is the seam where this guard inserts. If you re-touch this code, preserve the order: `outcome` decision → `apply_bucket_guard` → `share_price = yes_ask if outcome=="yes" else no_ask`. Reordering breaks the guard.
+- `ProposedOrder.extra["bucket_guard"]` is the audit field. Main.py allowlist at the `kalshi_crypto_order` `would_have_placed` block carries it forward.
+
+**Verification:**
+- Local md5 (LF) of `kalshi_crypto_arb.py` `7e945feb62af330631b79c442798cdfe` == prod (LF-stripped) `7e945feb62af330631b79c442798cdfe`.
+- Service restart at 19:37:25 UTC, PID 516325; both scanners log: `Kalshi Crypto Arbitrage scanner online (enabled=True, auto_execute=False)`.
+- 46 weather tests passing (15 prior + 31 new from `tests/test_kalshi_weather_fixes.py`; same tests cover the crypto code path since they share `apply_bucket_guard`).
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm \
+  --command-id RunShellScript \
+  --scripts "BASE=/home/azureuser/trading_corp; \
+    BAK=\$(ls \$BASE/trading_corp/agents/strategies/kalshi_crypto_arb.py.pre-bucket-guard-* 2>/dev/null | head -1); \
+    [ -n \"\$BAK\" ] && cp \"\$BAK\" \$BASE/trading_corp/agents/strategies/kalshi_crypto_arb.py; \
+    # main.py: remove the CRYPTO_BUCKET_GUARD_INSERTED line + the bucket_guard field below it (no main.py backup needed; the marker is unique). \
+    sudo -u azureuser python3 -c \"
+p='\$BASE/trading_corp/main.py'
+t=open(p).read()
+lines=t.splitlines(keepends=True)
+keep=[]
+skip_next=False
+for ln in lines:
+    if 'CRYPTO_BUCKET_GUARD_INSERTED' in ln:
+        skip_next=True
+        continue
+    if skip_next and 'bucket_guard' in ln:
+        skip_next=False
+        continue
+    skip_next=False
+    keep.append(ln)
+open(p,'w').write(''.join(keep))
+\"; \
+    sudo systemctl restart trading-corp"
+```
+
+**Watch for:**
+- Within next ~10 min, `kalshi_crypto_evaluated` rows should carry a `bucket_guard` field on those that fire (most evaluations will be no-op natural-path). The first `flipped_no_to_yes` or `block_*` audit row confirms the new code path is reachable.
+- Within ~24h, crypto round-trip win rate should rise from 11.0% baseline.
+
+---
+
+## 2026-05-16 19:18 UTC — kalshi_weather: off-by-one-day fix + bucket-aware bet-side guard
+
+**Triggered by:** Jack flagged Denver 5/15 round-trips "didn't look right." Investigation revealed two related bugs in the kalshi_weather strategy. Pre-fix stats: 61 round-trips, 9.8% WR, -$374.21 PnL. Resolver itself was confirmed correct (Kalshi resolved B82.5 YES, NWS KDEN max obs was 82.4°F).
+
+**Bugs fixed:**
+
+1. **Bug B — `_parse_target_time` off-by-one-day.** Used Kalshi's `expected_expiration_time` (typically 14:00 UTC the day AFTER the weather target — the settlement window) as the forecast lookup date. For KXHIGHTBOS-26MAY15-T56, we fetched the May 16 forecast against a market that resolved on May 15 actual. Off-by-one caused 5-20°F systematic forecast errors on the worst cases (Boston 20°F off, Philadelphia 14°F off, Chicago 8°F off). Affected ALL daily HIGH/LOW markets.
+
+2. **Bug A — σ-vs-bucket-width logic.** `outcome = "yes" if prob_yes > implied_yes else "no"` math sees σ=2.73°F integrated over 1°F bucket = 14% model prob, market priced at 51% (modal bucket consensus), concludes "bet NO." Forecast at 82°F was IN the [82,83] bucket — strategy was systematically betting against its own forecast. Same pattern on T-tickers (long-shot YES on tail buckets the model doesn't believe in).
+
+**Files deployed (3 modified):**
+- `trading_corp/agents/strategies/_weather_math.py` — added pure-function `apply_bucket_guard(direction, forecast_temp_f, threshold_f, threshold_high_f, proposed_outcome, implied_yes, flip_yes_implied_ceiling)` returning a `BucketGuardResult` dataclass (`outcome | None`, `action`, `skip_reason`). Logic handles all three Kalshi directions: between (1°F bucket), greater (T-ticker high), less (T-ticker low). When forecast IS on the YES-aligned side and model says NO: flip to YES if `implied_yes ≤ ceiling` (default 0.70), else skip. When forecast IS on the NO-aligned side and model says YES: always skip (σ-smearing artifact). md5 (LF) `007790327b43c74f1048276fe7108947` byte-identical with local.
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — two surgical changes: (a) `_parse_target_time` now parses date from the TICKER (the `26MAY15` segment in `KXHIGHDEN-26MAY15-B82.5`) as PRIMARY source; fallback to `expected_expiration_time` only when ticker parse fails (with a logged warning). Handles both daily-format (`YYMMMDD`) and hourly-format (`YYMMMDDhh`). (b) `_evaluate_market` calls `apply_bucket_guard` between the `outcome = ...` line and the `share_price = ...` line; uses guard's returned outcome or skips on `outcome=None`. `bucket_guard` added to `ProposedOrder.extra`. md5 (LF) `450791247764be89a888057d75beaad1` byte-identical with local.
+- `trading_corp/main.py` — patched-in-place: added `"bucket_guard": ext.get("bucket_guard")` to the kalshi_weather `would_have_placed` allowlist at line 3212-3213 (with `BUCKET_GUARD_INSERTED` marker).
+
+**Features shipped:**
+- **Date-correct forecast lookups.** Daily HIGH/LOW markets now query NWS for the actual resolution date (parsed from ticker), not the settlement date. Forecasts for May 15 markets fetch May 15 forecast.
+- **Bucket-aware bet-side guard.** Refuses to bet against own forecast; flips to YES (when reasonably priced) on the forecast-aligned side; blocks σ-smearing long-shot YES bets on the wrong side of own forecast.
+- **New `bucket_guard` audit field.** Records `flipped_no_to_yes` / `block_no_yes_too_expensive` / `block_yes_forecast_outside` / `None` on every `would_have_placed` row.
+
+**Notable code changes:**
+- `_weather_math.apply_bucket_guard` is venue-agnostic. Designed to be shared with `kalshi_crypto_arb` (planned for follow-up; shipped 19:37 UTC entry above).
+- `_parse_target_time` now has a clear PRIMARY/FALLBACK structure with a logged warning when falling back to `expected_expiration_time` — that path is now the BUG path; the warning surfaces it.
+- Tests cover both fixes including the documented prod failures (Denver B82.5, Seattle T41, Minneapolis T90) — `tests/test_kalshi_weather_fixes.py`, 31 new tests, 100% passing.
+
+**Halt + re-enable cycle:**
+- 17:52 UTC: `kalshi_weather_arb.enabled: false` flipped on prod YAML (mtime-cached, no restart). Strategy stopped firing.
+- 19:18 UTC: deploys above shipped + service restarted (PID 515131).
+- 19:32 UTC: re-enabled `kalshi_weather_arb.enabled: true` (no restart). Next scan tick used new logic.
+
+**Backup tags (rollback recipes):**
+- `kalshi_weather_arb.py.pre-weather-fix-20260516-175233`
+- `_weather_math.py.pre-weather-fix-20260516-175233`
+- `main.py.pre-weather-fix-20260516-175233`
+- `strategies.yaml.pre-weather-halt-<ts>` (restored to enabled after deploy)
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm \
+  --command-id RunShellScript --scripts "
+BASE=/home/azureuser/trading_corp
+TS=20260516-175233
+mv \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py.pre-weather-fix-\$TS \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py
+mv \$BASE/trading_corp/agents/strategies/_weather_math.py.pre-weather-fix-\$TS \$BASE/trading_corp/agents/strategies/_weather_math.py
+mv \$BASE/trading_corp/main.py.pre-weather-fix-\$TS \$BASE/trading_corp/main.py
+sudo systemctl restart trading-corp
+"
+```
+
+**Don't reintroduce:**
+- Adding `bucket_guard` field on ProposedOrder.extra without main.py audit-allowlist update (memory `trading_corp_audit_payload_allowlist`).
+- `_parse_target_time` falling back to `expected_expiration_time` for known daily-ticker shapes — that's the bug path; PRIMARY parse is from the ticker.
+- Inline bucket-guard logic anywhere in the strategy module. Use the pure function in `_weather_math.py` so kalshi_crypto + any future weather-shape strategy share the same behavior.
+
+---
+
 ## 2026-05-16 18:51 UTC — BitUnix scoring H2 re-tune (config-only, hot-reload)
 
 **Triggered by:** research in `reports/scoring_recommendation.md` (H2 — re-weight + Otter precision up). 47-day backtest across 13 candidate configs found H2 has the widest PREMIUM/STANDARD quality gap (+0.114R vs baseline +0.051R, 2.2× wider) and the simplest YAML diff (weight edits only, no formula change, no threshold change). Decision log in `reports/scoring_decision_log.md`.

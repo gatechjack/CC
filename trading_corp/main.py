@@ -3209,6 +3209,11 @@ async def _scheduled_kalshi_weather_arb_loop(
                         "kelly_full_pct": ext.get("kelly_full_pct"),
                         "applied_cap": ext.get("applied_cap"),
                         "account_equity_at_size": ext.get("account_equity_at_size"),
+                        # Bucket-aware bet-side guard (2026-05-16):
+                        # records when the strategy flipped no→yes or
+                        # blocked a smearing-artifact yes. None for
+                        # markets that didn't trigger the guard.
+                        "bucket_guard": ext.get("bucket_guard"),
                         "risk_verdict": verdict.verdict,
                         "risk_reason": verdict.reason,
                     },
@@ -3362,6 +3367,9 @@ async def _scheduled_kalshi_crypto_arb_loop(
                         "prob_yes": ext.get("prob_yes"),
                         "expires_at": ext.get("expires_at"),
                         "title": ext.get("title"),
+                        # Bucket-aware bet-side guard outcome (2026-05-16;
+                        # shared with kalshi_weather).
+                        "bucket_guard": ext.get("bucket_guard"),
                         "risk_verdict": verdict.verdict,
                         "risk_reason": verdict.reason,
                     },

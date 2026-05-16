@@ -33,8 +33,10 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from trading_corp.agents.strategies._weather_math import (
+    BucketGuardResult,
     ForecastPoint,
     WeatherVerdict,
+    apply_bucket_guard,
     evaluate_weather_market,
     kalshi_quote_dollars,
     kelly_fraction,
@@ -593,6 +595,31 @@ class KalshiWeatherArbAgent:
         # Build the ProposedOrder. Buy the cheaper side that matches our
         # P(YES) verdict.
         outcome = "yes" if verdict.prob_yes > implied_yes else "no"
+
+        # Bucket-aware bet-side guard. Pure function in _weather_math.py;
+        # documents the full failure-mode rationale there.
+        guard = apply_bucket_guard(
+            direction=direction,
+            forecast_temp_f=forecast.temp_f,
+            threshold_f=threshold,
+            threshold_high_f=threshold_high,
+            proposed_outcome=outcome,
+            implied_yes=implied_yes,
+            flip_yes_implied_ceiling=float(
+                self._strat_cfg.get("bucket_guard_flip_yes_implied_ceiling", 0.70)
+            ),
+        )
+        bucket_guard_action = guard.action
+        if guard.outcome is None:
+            # Blocked — skip this trade.
+            eval_payload["bucket_guard"] = guard.action
+            eval_payload["skip_reason"] = guard.skip_reason
+            eval_payload["fired"] = False
+            return verdict, None, {"code": "bucket_guard", **eval_payload}, eval_payload
+        outcome = guard.outcome
+        if bucket_guard_action:
+            eval_payload["bucket_guard"] = bucket_guard_action
+
         share_price = yes_ask if outcome == "yes" else no_ask
         if share_price <= 0 or share_price >= 1:
             eval_payload["skip_reason"] = f"share_price out-of-range ({share_price})"
@@ -682,6 +709,11 @@ class KalshiWeatherArbAgent:
                 "tier": "weather_forecast_kelly",
                 "source_signal": "nws+open_meteo+metar",
                 "is_prediction_market": True,
+                # Bucket-aware bet-side guard outcome. None if the trade
+                # took its natural model-driven side; otherwise one of:
+                # "flipped_no_to_yes" / "block_no_yes_too_expensive" /
+                # "block_yes_forecast_outside".
+                "bucket_guard": bucket_guard_action,
             },
         )
         return verdict, order, None, eval_payload
@@ -878,35 +910,80 @@ def _parse_coords(rules_primary: str) -> tuple[float | None, float | None]:
         return None, None
 
 
+_MONTH_MAP = {
+    "JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,
+    "JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12,
+}
+
+
 def _parse_target_time(rules: str, ticker: str, full_market: Any) -> str | None:
-    """Best-effort target time. Prefers `expected_expiration_time` field
-    since it's structured and reliable; falls back to ticker-suffix
-    parsing for unusual chains.
+    """Resolve the target weather time for a Kalshi market.
+
+    Bug fix 2026-05-16: previously preferred `expected_expiration_time`,
+    but Kalshi's expiration is the day AFTER the weather target (the
+    settlement window). Off-by-one-day caused systematic forecast misses
+    of 5-20°F when the weather changed between target and expiration.
+
+    Correct precedence:
+      1. PRIMARY — parse the date segment from the ticker. Ticker shape
+         is `KX(HIGH|LOW|TEMP)<CITY>-<DATE>-<STRIKE>` where <DATE> is
+         `YYMMMDD` (6 chars; daily HIGH/LOW) or `YYMMMDDhh` (8 chars;
+         hourly TEMP). The ticker date IS the resolution date per
+         Kalshi's rules_primary.
+      2. FALLBACK — expected_expiration_time / close_time, but ONLY when
+         ticker parse fails AND the rules string doesn't otherwise pin
+         the date. Logs a warning in that case (caller should investigate).
+
+    Returns ISO 8601 string in UTC. For daily markets, returns the date
+    at 23:59:00 UTC of the target date (so horizon_h computation reflects
+    "end of resolution day"). For hourly markets, returns the specific
+    hour converted from ET to UTC (Kalshi expresses hourly tickers in ET).
     """
-    # 1. Prefer the market's expected_expiration_time (already ISO)
-    t = getattr(full_market, "expected_expiration_time", None) \
-        or getattr(full_market, "expiration_time", None) \
-        or getattr(full_market, "close_time", None)
-    if t:
-        return str(t)
-    # 2. Fall back to ticker-suffix parsing for KXTEMPNYCH-style hourly
-    # tickers: ticker has 'YYMMMDDhh' segment (e.g., '26MAY1113' = May 11 2026 13:00).
+    # 1. PRIMARY: parse from ticker.
+    # 1a. Hourly TEMP: 8-char date segment YYMMMDDhh.
     m = re.search(r"-(\d{2})([A-Z]{3})(\d{2})(\d{2})-", ticker)
     if m:
         try:
             yy = 2000 + int(m.group(1))
-            mon = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,
-                   "JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}[m.group(2)]
+            mon = _MONTH_MAP[m.group(2)]
             dd = int(m.group(3))
             hh = int(m.group(4))
-            # NYC EDT/EST market hours — Kalshi expresses these in ET typically.
-            # Assume EDT (UTC-4) for May-Oct dates, EST (UTC-5) Nov-Apr.
+            # Hourly tickers are ET. EDT = UTC-4 (Mar-Nov), EST = UTC-5.
             offset_hours = 4 if 3 <= mon <= 10 else 5
             target = datetime(yy, mon, dd, hh, 0, 0, tzinfo=timezone.utc) \
                 + timedelta(hours=offset_hours)
             return target.isoformat()
         except (KeyError, ValueError):
-            return None
+            pass
+
+    # 1b. Daily HIGH/LOW: 6-char date segment YYMMMDD. The resolution
+    # uses the official daily climatological report so the target time
+    # is "end of the named UTC date" (close enough — horizon math just
+    # needs sub-day precision; the forecast call uses .date() anyway).
+    m = re.search(r"-(\d{2})([A-Z]{3})(\d{2})-", ticker)
+    if m:
+        try:
+            yy = 2000 + int(m.group(1))
+            mon = _MONTH_MAP[m.group(2)]
+            dd = int(m.group(3))
+            target = datetime(yy, mon, dd, 23, 59, 0, tzinfo=timezone.utc)
+            return target.isoformat()
+        except (KeyError, ValueError):
+            pass
+
+    # 2. FALLBACK ONLY when ticker parse fails. WARNING: Kalshi's
+    # expiration is the day AFTER the weather target — using this for
+    # the forecast lookup will produce a 1-day-off-by-bug.
+    t = getattr(full_market, "expected_expiration_time", None) \
+        or getattr(full_market, "expiration_time", None) \
+        or getattr(full_market, "close_time", None)
+    if t:
+        log.warning(
+            "kalshi_weather_arb: _parse_target_time falling back to "
+            "expected_expiration_time for %s — ticker date parse failed. "
+            "Forecast may be 1 day off.", ticker,
+        )
+        return str(t)
     return None
 
 

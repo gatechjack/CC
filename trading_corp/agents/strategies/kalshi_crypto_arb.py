@@ -37,6 +37,7 @@ import yaml  # type: ignore[import-untyped]
 
 from trading_corp.agents.strategies._weather_math import (
     ForecastPoint,
+    apply_bucket_guard,
     evaluate_weather_market,
     kalshi_quote_dollars,
 )
@@ -511,6 +512,35 @@ class KalshiCryptoArbAgent:
 
         # Build ProposedOrder.
         outcome = "yes" if verdict.prob_yes > implied_yes else "no"
+
+        # Bucket-aware bet-side guard. Same σ-smearing failure mode as
+        # kalshi_weather (deployed 2026-05-16): when the bucket is narrow
+        # relative to σ, prob_yes is structurally low even when spot is
+        # inside the bucket — the math says "no bucket high probability"
+        # and we sell the modal bucket. Spot-here, threshold-there means
+        # we use `spot` (=forecast.temp_f for the underlying weather
+        # function) as the "forecast" for guard purposes.
+        guard = apply_bucket_guard(
+            direction=direction,
+            forecast_temp_f=spot,
+            threshold_f=threshold,
+            threshold_high_f=threshold_high,
+            proposed_outcome=outcome,
+            implied_yes=implied_yes,
+            flip_yes_implied_ceiling=float(
+                self._strat_cfg.get("bucket_guard_flip_yes_implied_ceiling", 0.70)
+            ),
+        )
+        bucket_guard_action = guard.action
+        if guard.outcome is None:
+            eval_payload["bucket_guard"] = guard.action
+            eval_payload["skip_reason"] = guard.skip_reason
+            eval_payload["fired"] = False
+            return None, {"code": "bucket_guard", **eval_payload}, eval_payload
+        outcome = guard.outcome
+        if bucket_guard_action:
+            eval_payload["bucket_guard"] = bucket_guard_action
+
         share_price = yes_ask if outcome == "yes" else no_ask
         if share_price <= 0 or share_price >= 1:
             eval_payload["skip_reason"] = f"share_price out-of-range ({share_price})"
@@ -557,6 +587,9 @@ class KalshiCryptoArbAgent:
                 "tier": "crypto_spot_fixed_usd",
                 "source_signal": "coinbase_spot",
                 "is_prediction_market": True,
+                # Bucket-aware bet-side guard outcome (2026-05-16; shared
+                # with kalshi_weather). None on natural-path trades.
+                "bucket_guard": bucket_guard_action,
             },
         )
         return order, None, eval_payload

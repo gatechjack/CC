@@ -8,6 +8,80 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## END-OF-SESSION SNAPSHOT — 2026-05-16 19:40 UTC  *(supersedes 04:55)*
+
+**This session focused on kalshi_weather investigation + fix.** Started with user observation that Denver 5/15 round-trips "didn't look right." Drilled to the root cause(s) and shipped two related fixes to both `kalshi_weather` and `kalshi_crypto`.
+
+**Diagnostic trail:**
+
+1. **Resolver math verified correct.** Kalshi `B82.5` for Denver-26MAY15 resolved YES at floor=82.0 / cap=83.0; NWS KDEN max obs was 82.4°F at 22:45 UTC. Resolver decoded `won=(side==market_result)` correctly. No bug at the resolver layer.
+
+2. **Empirical calibration (61 round-trips, 9.8% WR, -$374 PnL) revealed two failure modes:**
+   - **Bug A (σ-vs-bucket-width mismatch):** `outcome = "yes" if prob_yes > implied_yes else "no"` produced systematic "bet AGAINST own forecast" when σ (~2.7°F at 22h horizon) was wider than 1°F bucket. 16 trades / -$117 saved by the fix.
+   - **Bug B (off-by-one-day in `_parse_target_time`):** Used Kalshi's `expected_expiration_time` (typically the day AFTER the weather target — Kalshi settles next-day) as the forecast lookup date. Boston market for May 15 was fetching May 16 forecast → 20°F miss. Pure data-pipeline bug; affected ALL daily HIGH/LOW markets.
+
+3. **T-tickers (cumulative-probability markets) were 0/10 wins.** Bug A applies there too in a different shape — "tiny model prob > tiny implied prob = bet YES" on long-shot tail buckets. The bucket guard handles this case identically by checking which side of the threshold the forecast lands on.
+
+4. **kalshi_crypto audit:** Bug B does NOT apply (live-spot pricing uses `expected_expiration_time` correctly — there's no daily NWS lookup). Bug A DOES apply — same `outcome = ... if prob_yes > implied_yes` line at `kalshi_crypto_arb.py:513`. Crypto stats pre-fix: 91 round-trips, 11.0% WR, -$58.88 PnL. T-tickers + other categories: 0/16 wins.
+
+**Two prod deploys, both clean:**
+
+| Time UTC | What | Files |
+|---|---|---|
+| 2026-05-16 ~19:18 | Weather bug-fix bundle | `kalshi_weather_arb.py` + `_weather_math.py` (new `apply_bucket_guard` pure fn + `BucketGuardResult` dataclass) + `main.py` (audit allowlist `bucket_guard` field) |
+| 2026-05-16 ~19:37 | Crypto bug-fix bundle | `kalshi_crypto_arb.py` + `main.py` (audit allowlist) |
+
+Backup tags on prod:
+- `kalshi_weather_arb.py.pre-weather-fix-20260516-175233`
+- `_weather_math.py.pre-weather-fix-20260516-175233`
+- `main.py.pre-weather-fix-20260516-175233`
+- `kalshi_crypto_arb.py.pre-bucket-guard-<ts>`
+
+**Strategy halt + re-enable cycle:**
+- Halted `kalshi_weather_arb.enabled: false` at 17:52 UTC (mtime-cached YAML, no restart)
+- Re-enabled at 19:32 UTC after fix verified
+
+**Environment sync state at session end:**
+
+| File | Local md5 (LF) | Prod md5 (LF) | Match |
+|---|---|---|---|
+| `kalshi_weather_arb.py` | `450791247764be89a888057d75beaad1` | `450791247764be89a888057d75beaad1` | ✅ |
+| `_weather_math.py` | `007790327b43c74f1048276fe7108947` | `007790327b43c74f1048276fe7108947` | ✅ |
+| `kalshi_crypto_arb.py` | `7e945feb62af330631b79c442798cdfe` | `7e945feb62af330631b79c442798cdfe` | ✅ |
+| `main.py` | `c33ee9fbb0c32e08beba21c1752e37a9` | `a2b2df5e955fe460b27c9a7762c83157` | ❌ but semantically equivalent — both have `bucket_guard` audit fields for kalshi_weather (line 3216 local / 3212 prod) + kalshi_crypto (line 3372 local / 3367 prod). Drift is in unrelated regions (known prod-git-drift pattern per memory `trading_corp_prod_git_drift.md`). |
+
+Service active, PID 516325. `kalshi_weather_arb` + `kalshi_crypto_arb` scanners both online + enabled in paper-mode.
+
+**New test coverage:**
+- `tests/test_kalshi_weather_fixes.py` — 31 tests covering `_parse_target_time` (8 cases) and `apply_bucket_guard` (15+ cases including the documented prod failures: Denver B82.5, Seattle T41, Minneapolis T90). All 46 weather tests passing (15 prior + 31 new).
+
+**Memory updates this session:**
+- `trading_corp_kalshi.md` — full 2026-05-16 PM section with both bug diagnoses + fix details
+- `kalshi_market_structure.md` — new caveat about bucket-vs-σ-width mismatch + day-after expiration time
+
+**Tomorrow's pickup candidates (ordered):**
+
+1. **Observe overnight weather + crypto fires.** Watch for `bucket_guard` audit rows in `would_have_placed` and the new skip codes (`bucket_guard`). Expected mix: some `flipped_no_to_yes` (we now bet YES on forecast-aligned buckets), some `block_yes_forecast_outside` (we stop the long-shot YES bets). Win rate should jump materially from 9.8% / 11.0% baseline. Validation gate: after ~30 fresh round-trips per division, compare WR to baseline.
+
+2. **`target_iso` audit-field addition (~5 min, P3).** Main.py weather audit doesn't currently write `target_iso`, so we can't audit-verify the date-parse fix is firing correctly. One-line addition to the audit payload.
+
+3. **Empirical σ scaling (P2, ~1-2h).** With ~30 post-fix round-trips, derive empirical σ-scaling factor (current heuristic gave σ=2.93°F for 22h horizon; empirical 23.5% modal-bucket hit rate back-solves to σ_eff ≈ 1.7°F). Could be a σ multiplier of ~0.6× for between markets.
+
+4. **Watch for T-ticker / crypto T-suffix dynamics** — T-tickers were 0/10 in weather and 0/12 in crypto pre-fix. With the guard, those should now be skipped rather than fired. If fire count drops to zero, the guard is correctly filtering; if there are still T-ticker fires, look for unexpected paths.
+
+5. **BitUnix Phase 1D enforce flip post-PA-rejection investigation** (from prior session's 04:55 UTC snapshot, item #1) — still open, may have accumulated more shadow data overnight.
+
+6. **PMCC audit** — still untouched real-money strategy.
+
+**Confirmed-NOT-to-do without explicit re-approval:**
+- Do NOT flip `htf_gate.mode: shadow → enforce` back if it auto-reverted (the 04:55 snapshot had it at `enforce`; verify post-session).
+- Do NOT delete the backup tags on prod until at least 24h of weather fires confirms the new logic.
+- Do NOT enable `auto_execute: true` on either kalshi_weather or kalshi_crypto until validation gate (≥30 RTs WR ≥65%) is hit per `trading_corp_kalshi.md`.
+
+**Commits this session (in order):** TBD post-commit — single bundle commit covering all 4 modified files + new tests + reports/ + scripts/pine + docs.
+
+---
+
 ## END-OF-SESSION SNAPSHOT — 2026-05-16 04:55 UTC  *(supersedes 03:40)*
 
 **This session focused on the BitUnix division.** Picks up from 03:40's pickup item #6. Phase 1C went from "next to ship" → fully shipped + tuned + Phase 1D enforce flip + TV backtest DB rebuilt for the new score-timeframes. Five BitUnix deploys + one TV backtest data refresh + a small ingester patch:
