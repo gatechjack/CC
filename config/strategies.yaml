@@ -1274,7 +1274,7 @@ bitunix_futures:
   #             hard-zero conditions block placement.
   # ============================================================
   htf_gate:
-    mode: shadow
+    mode: enforce
 
   # ============================================================
   # PR 4 — Adaptive entry/SL/TP plan (MVP + Option C trail).

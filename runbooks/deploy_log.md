@@ -59,6 +59,52 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-16 04:14 UTC — BitUnix Phase 1D: htf_gate.mode shadow → enforce
+
+**Triggered by:** Jack — "lets flip it." Original Phase 1D plan was to wait for ~30 shadow audit rows + replay-script review before flipping. Jack pushed back: in paper mode the cost of a wrong reject is an audit row, not a real loss, and enforce-mode rejects are more informative than shadow-mode "would-have-rejected" markers. Recommendation flipped (no pun intended) to ship enforce now, with rollback gated on observable audit patterns.
+
+**Backup tag:** `pre-bitunix-1d-enforce-20260516-0410`
+
+**Files deployed (1 — modify):**
+- `config/strategies.yaml` — single-line change: `bitunix_futures.htf_gate.mode: shadow → enforce`. Local LF md5 `25c25e526ee8057324ef8a70d1fcefe0`.
+
+**Features shipped:**
+- **HTF regime gate is now load-bearing.** Per the observer (`bitunix_futures_observer.py:1011`): in enforce mode, `permission.size_multiplier <= 0.0` short-circuits the trade with a `skipped_htf_gate` outcome; `0 < multiplier < 1.0` resizes qty before risk gate. Hard-zero triggers: SAFE_MODE / S/R proximity (≤0.3%) / vol-extreme (1D ATR ≥5%) / funding-extreme (≥0.05%/8h on adverse side).
+- **PA validation is now load-bearing.** Same `htf_gate_mode` flag gates both — a `PAValidationDecision.REJECT` now short-circuits the trade with `skipped_pa_validation`.
+- The `enforced` flag in `pa_validation_decision` + `htf_gate_decision` audit payloads is now `true` (was `false` in shadow).
+
+**Notable code changes:**
+- Pure YAML one-line flip. Code path was already shipped on 2026-05-16 02:24 UTC (Phase 1C); just toggling the mode flag from "audit-only" to "audit-and-act."
+- Trade flow is STILL paper-mode (`auto_execute: false`). Real-money risk gate is Phase 4 — at least 2 stages ahead of where this flip puts us.
+- Rollback is also a 1-line yaml flip + restart.
+
+**Expected behavioral consequence on prod TODAY:**
+- Live funding rate on prod is **-0.378%/8h**, which is **5.6× the funding-extreme threshold of 0.05%**. The HTF gate will likely hard-zero sell-side fires while negative funding remains extreme. All recent Phase 1C-era paper fires have been SELL (per the score panel's RECENT PAPER FIRES table), so the immediate observable change is **fewer placed paper trades + more `skipped_htf_gate` audit rows** in the next few hours.
+- This is exactly what enforce is *for* — paper validation that the gate engages on the right scenarios. If we see `skipped_htf_gate` with `reason` text that doesn't match the live regime, rollback. Otherwise, monitor and let the data accumulate.
+
+**Verification:**
+- `az vm run-command create` exit 0, executionState `Succeeded`, end 04:15:28 UTC.
+- yaml line confirmed on prod (`grep -A 1 htf_gate:` returns `mode: enforce`).
+- yaml md5 verified.
+- **Boot wiring on prod:** `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False` — exact target.
+- HTF regime snapshot loop continues firing (last seen 04:15:50 UTC).
+- First post-flip `htf_gate_decision` audit pending the next Cypher webhook → score-fire. Webhook frequency is ~5-10/hr; 30-min per-side cooldown likely the dominant rate-limiter.
+
+**Inert / dormant (still gated):**
+- `trade_plan.enabled: false` — v2 entry/SL/TP path and position reconciler stay dormant. Phase 1E flips that.
+- `auto_execute: false` — every order still HITL (paper-mode placeholder). Phase 4 flips that on real-money flow.
+
+**Rollback recipe** (1-line yaml flip + restart, ~50s):
+```bash
+az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts '
+TAG=pre-bitunix-1d-enforce-20260516-0410
+BASE=/home/azureuser/trading_corp
+mv $BASE/config/strategies.yaml.$TAG $BASE/config/strategies.yaml
+sudo systemctl restart trading-corp'
+```
+
+---
+
 ## 2026-05-16 04:03 UTC — BitUnix Decision Flow UX fix follow-up (data.py): activate trigger color-code
 
 **Triggered by:** The 03:15 UTC UX fix shipped the template half (Net column + trigger color-code wiring). Trigger color-code was wired in template but dormant because `view.bitunix_decision_flow.flows[*].trigger_side` wasn't being populated — the data.py half was blocked by an active parallel session iterating in the same file. Parallel session committed at 1083f53 (incidentally folding my unstaged trigger_side helper in with their prediction-markets work), then deployed their portion to prod independently. This deploy ships the residual delta — just my `_intrinsic_side` helper + `trigger_side` field — on top of prod's already-installed parallel-session changes.
