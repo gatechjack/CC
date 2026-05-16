@@ -19,6 +19,23 @@ this log is the artifact that makes it possible.
 
 ---
 
+## Verifying prod state before a deploy
+
+**md5-diff target files against prod** before writing any new
+code on a feature you can't 100% verify is unimplemented. Files
+that MATCH are likely already done — investigate before assuming
+new code is needed:
+
+```bash
+for f in <files>; do
+  l=$(md5sum "$f" | awk '{print $1}')
+  p=$(ssh azureuser@trading.jacksumner.com "md5sum /home/azureuser/trading_corp/$f 2>/dev/null | awk '{print \$1}'")
+  [ "$l" = "$p" ] && echo "MATCH $f" || echo "DIFFER $f"
+done
+```
+
+---
+
 ## Template for new entries
 
 ```markdown

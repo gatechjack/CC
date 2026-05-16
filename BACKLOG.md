@@ -86,6 +86,8 @@ Add to § 7 "Known sharp edges":
 
 > **BitUnix scoring YAML is NOT hot-reloaded.** `bitunix_futures_observer.py` receives its `ScoringConfig` once at construction (`main.py:380`) and holds it in `self.scoring_config`. Mtime-cache pattern from § 5 applies to Otter/Cypher/Kalshi/Polymarket/Donchian, NOT BitUnix. Every `strategies.yaml` edit that touches the `bitunix_futures` block requires `systemctl restart trading-corp` to take effect. Memory: `feedback_bitunix_no_hot_reload.md`.
 
+APPLIED 2026-05-16: landed in docs/sharp_edges.md#bitunix-scoring-yaml-is-not-hot-reloaded as part of CLAUDE.md refactor (Pass A).
+
 ---
 
 ## END-OF-SESSION SNAPSHOT — 2026-05-16 19:40 UTC  *(preserved — superseded by 20:10)*
