@@ -76,6 +76,56 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 14:43 UTC — Polymarket watchlist seed + dashboard panel
+
+**Commits:** `30f8abe`
+**Triggered by:** User asked to find every Polymarket wallet with 100+ trades and >70% win rate, rank by realized PnL, export top 50 to an observation-only watchlist. Build mirrored the existing Kalshi `watch_only_whales` pattern.
+**Backup tag:** `pre-pm-watchlist-20260517-1443` (3 files: polymarket_data_api_client.py, web/data.py, pm_dashboard_body.html)
+
+**Files deployed (3 modify + 1 new) via gzipped patch -p1 (15.6KB raw → 6KB compressed) + base64-decoded new file:**
+- `trading_corp/data/polymarket_data_api_client.py` — adds `ClosedPositionRow` dataclass + `fetch_closed_positions()` async method. (Kept even though the watchlist seed pivoted away from `/closed-positions` — see below — they remain a valid free-public-API primitive for future use.)
+- `trading_corp/web/data.py` — adds `PolymarketWatchOnlyRow` dataclass + `_query_polymarket_watch_only_rows()` + `PMDashboardView.polymarket_watch_only` field, wired into the `asyncio.gather`. Gates on `"polymarket_copy_trading" in target_slugs`.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — adds a Polymarket Watch List section in the Whales tab parallel to Kalshi's. Profile link points to `polymarket.com/profile/<proxy_wallet>`. Tab visibility condition expanded to include this list.
+- `trading_corp/scripts/seed_polymarket_watchlist_deep.py` (NEW, 16028 bytes) — paginates `/v1/leaderboard` across 5 categories + global (~2.4K unique wallets), fetches `/activity` (default 2 pages × 500/wallet), batch-joins gamma-api resolutions, computes wins/losses via the existing `compute_polymarket_stats` helper, filters wallets with ≥100 resolved positions AND wins/total ≥0.70, ranks by realized PnL on resolved BUYs, writes top 50 to `agent_state(polymarket_copy_trader, watch_only_whales)`. CLI flags: `--candidates --top --min-positions --min-win-rate --activity-limit --activity-pages --dry-run --json`.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Polymarket whale watchlist data slot:** `agent_state(polymarket_copy_trader, watch_only_whales)` now populated/populatable. Observation-only — never emits ProposedOrders.
+- **Polymarket Watch List dashboard panel:** renders at `/prediction-markets/polymarket_copy_trading` once the slot is populated. Columns: rank, whale handle, category, N positions, WR%, realized PnL, leaderboard PnL, leaderboard vol, profile link.
+- **Deep-seed script:** idempotent, free-API ($0/run), re-runnable. ~30–60 min wall-clock for the full 5-category × 500-candidate sweep.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **`/closed-positions` endpoint is biased — DO NOT USE for win-rate computation.** Empirically (probed 2026-05-17 during this build): the endpoint filters out positions with non-positive `realizedPnl`. A wallet's *losing* positions held to zero do not appear. Any WR computed from `/closed-positions` rows will always trend near 100%, and any profit-sum is a one-sided upper bound. The correct path is `/activity` + gamma-api resolution joins via `compute_polymarket_stats` (same as `refresh_polymarket_whales.py` uses for the live PCT roster). Initial agent build went down the `/closed-positions` shortcut; pivot was halfway through the session.
+- **Polymarket leaderboard caps at 50 rows per call** regardless of the `limit` parameter; offset works arbitrarily deep. The seed script paginates via offset until `--candidates` rows accumulate. Earlier `refresh_polymarket_whales.py` has the same single-call bug latent (would silently return 50 even if you pass `--candidates 500`); BACKLOG-worthy fix.
+
+**Verification:**
+- Pre-deploy md5-diff against prod: all three modified files DIFFER (as expected — they had the older state).
+- Patch applied cleanly with `--dry-run` showing no rejects.
+- Post-deploy md5-diff: 3 of 4 files match local exactly; `web/data.py` differs by CRLF-on-local-vs-LF-on-prod only (semantic equivalence confirmed by import test).
+- Service restarted (`systemctl restart trading-corp`); was PID 547556, now PID 588842, active.
+- Import smoke test on prod: `from trading_corp.web.data import _query_polymarket_watch_only_rows, PolymarketWatchOnlyRow` succeeds.
+- Local SQLite slot is already populated with 50 whales from this session (top: everydaymortgage / 90% WR / 577 pos / $1.42M).
+- Prod seed launched as PID 589207 (`nohup ... > /tmp/pm_seed_prod.log 2>&1 &`); first leaderboard pulls confirmed in log. ETA ~30–60 min until prod slot populates.
+
+**Inert / dormant on current traffic:**
+- `ClosedPositionRow` + `fetch_closed_positions()` are exposed on `PolymarketDataAPIClient` but no caller uses them today. Available for future surfaces (e.g., per-whale profile drilldown) without re-deploying the data layer.
+- Polymarket Watch List dashboard panel renders empty until prod seed completes (~14:43 + ~45 min = ~15:30 UTC). After that it auto-renders since `pm_dashboard_body.html` is Jinja and hot-reloads.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG=pre-pm-watchlist-20260517-1443
+BASE=/home/azureuser/trading_corp
+for f in trading_corp/data/polymarket_data_api_client.py trading_corp/web/data.py trading_corp/web/templates/partials/pm_dashboard_body.html; do
+  mv $BASE/$f.$TAG $BASE/$f
+done
+rm -f $BASE/trading_corp/scripts/seed_polymarket_watchlist_deep.py
+sudo systemctl restart trading-corp
+'
+```
+The agent_state slot will remain populated after rollback (it's a data write, not a code dependency). Empty the slot via `set_agent_state(..., None)` if needed.
+
+---
+
 ## 2026-05-17 05:14 UTC — BitUnix trade-plan v2 LIVE — Phase 1E flag flip + paper-mode multi-leg replay + dashboard
 
 **Commits:** `c41e7fd` (Stage A+B code) + YAML flag flip (prod-only — local YAML has known H2-era drift)
