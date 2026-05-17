@@ -1,0 +1,14 @@
+[Unit]
+Description=PCT stale-entry pruner — daily 11:30 UTC
+
+[Timer]
+# 11:30 UTC = 07:30 EDT / 06:30 EST — runs BEFORE the dashboard watchlist
+# refresh at 12:00 UTC, so a Board glance at the morning dashboard sees
+# the cleaned tile counts. Persistent=true → if VM was down, runs on
+# next boot to catch up.
+OnCalendar=*-*-* 11:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

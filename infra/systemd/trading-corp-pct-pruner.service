@@ -1,0 +1,14 @@
+[Unit]
+Description=Polymarket Copy Trader stale-entry pruner (deletes pending BUY audit rows older than 24h that never paired with a round-trip)
+After=network-online.target trading-corp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/azureuser/trading_corp
+Environment="KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/"
+Environment="PYTHONIOENCODING=utf-8"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/azureuser/trading_corp/venv/bin/python -m trading_corp.scripts.prune_stale_pct_entries --apply --cutoff-hours 24 --max-rows 5000
+TimeoutStartSec=300
