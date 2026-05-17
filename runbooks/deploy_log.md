@@ -76,6 +76,118 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-18 21:25 UTC — Promote/Demote UX fix v2 — Selected Whales filter + stop mutating watch_only_whales + tab persistence
+
+**Commits:** (uncommitted at deploy; will commit after user verification — combined v1+v2 patch applied)
+**Triggered by:** v1 (20:36 UTC) made PROMOTE work but exposed three follow-up issues during user smoke test:
+  1. Demoted PM whale `taylorsversion` still appeared on Selected Whales because they had unpaired open BUY audits — the "OPEN positions but ZERO resolved" surfacing block didn't filter by current `selected_whales` membership.
+  2. Kalshi: after demote, page reloaded to default Portfolio tab (tabs are JS-only with no URL fragment; HX-Refresh's `window.location.reload()` lost the tab state).
+  3. Demoted whale's stats were reset to zeros on the Watch List panel (the demote endpoint added a fresh zero-stat entry to `watch_only_whales`).
+
+**Backup tag:** `pre-promote-demote-uxfix-20260518-v2` (3 files captured at the v1-applied state; allows rollback to v1 if v2 misbehaves)
+**Recovery procedure used:** rolled prod files back to the v1's `pre-promote-demote-uxfix-20260518-q1ack` backup tag so the combined v1+v2 patch (generated from local-HEAD vs local-current) could apply cleanly. Final state contains the full v2 codebase.
+
+**Files deployed (3 modify) via gzipped patch -p1 (~3KB compressed, ~12KB raw):**
+- `trading_corp/web/routes.py` — All four promote/demote endpoints now mutate ONLY `selected_whales` + `pinned_whales`. They no longer add/remove entries in `watch_only_whales`. This preserves the original Apify-scraped (Kalshi) / leaderboard-derived (Polymarket) stats so a demoted whale reappears on the Watch List with their full pre-promote stats intact. No API refetch needed for the user-promoted-from-watchlist common case.
+- `trading_corp/web/data.py`:
+  - `_query_pm_whales`: now loads `selected_whales` for both venues upfront and filters all row-emission (round_trips + opens + placeholders) by membership. Demoted whales with lingering unpaired BUYs no longer leak into Selected Whales. Whales' historical activity remains accessible via the History tab.
+  - `_query_kalshi_watch_only_rows`: filters out handles currently in `selected_whales`. A promoted whale hides automatically; demoting them un-hides their original entry from `watch_only_whales` (with stats from `watch_only_stats` still intact).
+  - `_query_polymarket_watch_only_rows`: symmetric filter, keyed by lowercased `proxy_wallet`.
+- `trading_corp/web/templates/prediction_markets_dashboard.html` — Tab clicks now write to `window.location.hash`. A new init-time fragment-reader activates the matching tab on page load. HX-Refresh post-promote/demote preserves the hash so the user stays on the Whales tab.
+
+**Features shipped:**
+- **Demoted whales disappear from Selected Whales.** Demoting a trader with lingering open BUYs no longer leaves them visible.
+- **Demoted whales reappear on Watch List with original stats.** A user-promoted whale who is then demoted now shows their full pre-promote leaderboard PnL, win-rate, top category, etc. No zero placeholder.
+- **Tab selection survives demote/promote.** Click WHALES tab → demote a whale → page reloads → still on WHALES tab.
+
+**Notable code changes:**
+- `selected_whales` is now the single source of truth for "who's currently being copy-traded." Both panels (Selected + Watch List) gate by it. `watch_only_whales` is treated as the immutable observation pool (mutated only by `refresh_polymarket_whales.py` / `refresh_kalshi_whales.py` weekly).
+- The algorithm-selected whales path (from `refresh_polymarket_whales.py`) is unchanged. Those whales are added directly to `selected_whales` without ever being in `watch_only_whales`. If demoted via dashboard, they don't reappear on the Watch List — that's expected; algorithm-selected whales are sourced from the leaderboard, not the watch list.
+- The `_render_action_pill` response now flashes briefly between `outerHTML` swap and the page reload. Visual effect: row disappears → momentary blank → page reloads with both panels updated. The pill itself is rarely visible (reload happens before render in most browsers).
+
+**Verification:**
+- Local pytest: 8/8 smoke tests pass (3 new tests added covering the regression).
+- Pre-deploy md5 captured under `pre-promote-demote-uxfix-20260518-v2` for rollback to v1 state if needed.
+- Pre-v1 rollback applied first so combined patch applied cleanly (no FAILED hunks, no fuzz).
+- Post-patch md5: routes.py `9555b4b0…`, data.py `98ffa1af…`, dashboard.html `02d76023…`. Matches LF-normalized local exactly.
+- Service restarted: PID 614098 → 616794, active.
+- Import smoke green; all three filter blocks present in source.
+- Browser eyeball pending — user to confirm DEMOTE on a whale-with-history, then check (a) trader gone from Selected, (b) trader on Watch List with original stats, (c) Whales tab still active post-reload.
+
+**Inert / dormant on current traffic:**
+- None. All changes execute on every dashboard render.
+
+**Rollback recipe:**
+```bash
+# Roll back to v1 (HX-Refresh only; the v2 regressions return)
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG=pre-promote-demote-uxfix-20260518-v2
+BASE=/home/azureuser/trading_corp
+mv $BASE/trading_corp/web/routes.py.$TAG $BASE/trading_corp/web/routes.py
+mv $BASE/trading_corp/web/data.py.$TAG   $BASE/trading_corp/web/data.py
+mv $BASE/trading_corp/web/templates/prediction_markets_dashboard.html.$TAG $BASE/trading_corp/web/templates/prediction_markets_dashboard.html 2>/dev/null || true
+sudo systemctl restart trading-corp
+'
+
+# Or roll all the way back to pre-feature (no promote/demote at all)
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG=pre-promote-demote-uxfix-20260518-q1ack
+BASE=/home/azureuser/trading_corp
+mv $BASE/trading_corp/web/routes.py.$TAG $BASE/trading_corp/web/routes.py
+mv $BASE/trading_corp/web/data.py.$TAG   $BASE/trading_corp/web/data.py
+sudo systemctl restart trading-corp
+'
+```
+
+---
+
+## 2026-05-18 20:36 UTC — Promote/Demote UX fix — HX-Refresh + Selected Whales placeholders + Kalshi watchlist source-of-truth
+
+**Commits:** (uncommitted at deploy; will commit after user verification — patch applied directly via az vm run-command)
+**Triggered by:** User reported the 2026-05-17 17:18 UTC promote/demote feature was broken end-to-end. Clicking PROMOTE/DEMOTE removed the clicked row but the trader did not visibly move between the Selected Whales and Watch List panels; one venue's response had an acknowledgement pill, the other didn't.
+**Backup tag:** `pre-promote-demote-uxfix-20260518-q1ack` (2 files)
+
+**Files deployed (2 modify) via gzipped patch -p1 (~3KB compressed, ~7KB raw):**
+- `trading_corp/web/routes.py` — `_render_action_pill` now sets `HX-Refresh: true` response header. When htmx receives this, it triggers a full page reload, which re-renders both panels from the updated agent_state slots. Fixes Bug A (cosmetic foster-parenting asymmetry — both venues now reload identically) + Bug D (page never refreshed after action).
+- `trading_corp/web/data.py` — two query changes:
+  - `_query_pm_whales` (Selected Whales panel): after the existing collection from round_trips + opens, walks `selected_whales` for both venues and appends zero-stat placeholder PMWhaleRow entries for any handle not already in the result. Inserted BEFORE the actor_id/is_pinned decoration loop so placeholders also get those fields. Fixes Bug B (freshly-promoted whale was invisible because it had no round_trips or opens yet).
+  - `_query_kalshi_watch_only_rows` (Kalshi Watch List panel): switched source from `watch_only_stats` (dict) to `watch_only_whales` (list[dict]) — the slot the promote/demote endpoints actually write. Stats are now enriched by looking up the matching handle in `watch_only_stats`, falling back to zero/None when not yet enriched. Fixes Bug C (Kalshi watch list rendered the wrong slot, so demoted Kalshi whales never appeared and promoted ones never disappeared).
+
+**Features shipped:**
+- **PROMOTE moves the trader visibly across panels.** Click PROMOTE in either watch list → row disappears → page reloads → trader now appears in Selected Whales (as a zero-stat placeholder if no copy-trade has fired yet, full stats if it has). 📌 badge appears on manually-promoted entries.
+- **DEMOTE moves the trader visibly across panels.** Click DEMOTE on a Selected Whales row → row disappears → page reloads → trader now appears in Watch List (zero stats until the periodic refresh enriches; the existing `notes` field carries "demoted via dashboard" for traceability). Synthetic SELLs still emitted as audits and paired by the resolver (no change to that pipeline).
+- **Kalshi watch-list source-of-truth unified.** Both `_query_kalshi_watch_only_rows` and `refresh_kalshi_watchlist_stats.py` now operate consistently against `watch_only_whales` as the membership truth.
+
+**Notable code changes:**
+- HX-Refresh causes a full page reload (`window.location.reload()` from htmx). The page is small enough that this is fast; the action pill itself never visibly appears (the reload happens before it can render). The visual feedback is the row moving between panels.
+- The placeholder rows for Bug B are tagged with `n_resolved=0, n_open=0, win_rate_pct=None, total_realized_pnl=0.0, last_entry_ts=None`. After decoration they get `actor_id` (so the demote button works) + `is_pinned` (so the 📌 badge renders if the handle is in pinned_whales).
+- Bug C side effect: a handle present in `watch_only_stats` but NOT in `watch_only_whales` no longer renders. Pre-fix this was possible if `watch_only_stats` was richer than `watch_only_whales`. Post-fix, `watch_only_whales` is membership truth; `watch_only_stats` is enrichment-only. Aligns with the Polymarket behavior, where `watch_only_whales` already serves both roles.
+
+**Verification:**
+- Local pytest: 5/5 new smoke tests pass (`tests/test_promote_demote_fixes.py`).
+- Pre-deploy md5 captured + backed up with tag `pre-promote-demote-uxfix-20260518-q1ack`.
+- Patch dry-run on prod: clean (no rejects).
+- Post-patch md5: routes.py `360e71b5…`, data.py `e9f5fba8…`.
+- Service restarted: PID 598297 → 614098, active.
+- Post-restart import smoke: `from trading_corp.web.data import _query_pm_whales, _query_kalshi_watch_only_rows; print('imports green')` succeeded; HX-Refresh present in routes.register source.
+- Browser eyeball pending — user to confirm PROMOTE/DEMOTE on a low-stakes whale.
+
+**Inert / dormant on current traffic:**
+- None. All three changes execute on every dashboard render of the prediction-markets page.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG=pre-promote-demote-uxfix-20260518-q1ack
+BASE=/home/azureuser/trading_corp
+mv $BASE/trading_corp/web/routes.py.$TAG $BASE/trading_corp/web/routes.py
+mv $BASE/trading_corp/web/data.py.$TAG   $BASE/trading_corp/web/data.py
+sudo systemctl restart trading-corp
+'
+```
+
+---
+
 ## 2026-05-17 17:38 UTC — Polymarket watchlist weekly-refresh — Cloudflare 403 retry + --merge + systemd timer
 
 **Commits:** `873e004`

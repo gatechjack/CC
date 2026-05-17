@@ -3851,16 +3851,51 @@ def _pm_equity_at(curve: list[PMEquityPoint], at_or_before: datetime) -> float |
 def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
     """Per-whale aggregates for the Whales tab.
 
-    Returns one row per (whale_handle, division). Empty list when no
-    target_slugs is a copy_trading division. Aggregates pull from:
+    Returns one row per (whale_handle, division). The panel shows whales we
+    are CURRENTLY copy-trading — membership comes from
+    `agent_state(<actor>, selected_whales)`. A whale demoted via the
+    dashboard disappears from the panel even if they have historical
+    round_trips or open paper positions; their history stays accessible
+    via the Trades / History tab.
+
+    Aggregates for current members pull from:
       - kalshi_round_trips.extra_json.whale_handle  (K3 schema)
       - polymarket_round_trips.extra_json.whale_user_name (PCT schema)
     plus open-trade counts from audit_event for would_have_placed BUY
-    rows that don't yet have an entry_order_id linkage.
+    rows that don't yet have an entry_order_id linkage. Members with no
+    historical activity render as zero-stat placeholder rows so freshly
+    promoted whales are visible immediately.
     """
     out: list[PMWhaleRow] = []
     if not target_slugs:
         return out
+
+    # Load current selected-whale rosters first — these gate the panel.
+    kalshi_selected: set[str] = set()
+    if "kalshi_copy_trading" in target_slugs:
+        try:
+            rec = db.load_agent_state(
+                "kalshi_copy_trader", "selected_whales", db_url=db_url,
+            )
+            if rec is not None and isinstance(rec[0], list):
+                kalshi_selected = {str(h) for h in rec[0] if h}
+        except Exception as e:
+            log.debug("_query_pm_whales kalshi selected load failed: %s", e)
+
+    pm_selected_user_names: set[str] = set()
+    if "polymarket_copy_trading" in target_slugs:
+        try:
+            rec = db.load_agent_state(
+                "polymarket_copy_trader", "selected_whales", db_url=db_url,
+            )
+            if rec is not None and isinstance(rec[0], list):
+                for s in rec[0]:
+                    if isinstance(s, dict):
+                        name = str(s.get("user_name") or "")
+                        if name:
+                            pm_selected_user_names.add(name)
+        except Exception as e:
+            log.debug("_query_pm_whales polymarket selected load failed: %s", e)
 
     # Kalshi K3
     if "kalshi_copy_trading" in target_slugs:
@@ -3890,6 +3925,8 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
             opens_map = {r.get("handle"): int(r.get("n") or 0) for r in opens}
             for r in rows:
                 handle = r.get("handle") or "(unknown)"
+                if handle not in kalshi_selected:
+                    continue
                 n = int(r.get("n") or 0)
                 w = int(r.get("w") or 0)
                 ll = int(r.get("l") or 0)
@@ -3935,6 +3972,8 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
             opens_map = {r.get("handle"): int(r.get("n") or 0) for r in opens}
             for r in rows:
                 handle = r.get("handle") or "(unknown)"
+                if handle not in pm_selected_user_names:
+                    continue
                 n = int(r.get("n") or 0)
                 w = int(r.get("w") or 0)
                 ll = int(r.get("l") or 0)
@@ -3949,10 +3988,12 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
                     n_open=opens_map.get(handle, 0),
                     last_entry_ts=r.get("last_ts"),
                 ))
-            # Also surface whales with OPEN positions but ZERO resolved (so
-            # the silent whales don't disappear from the UI).
+            # Surface currently-selected whales with OPEN positions but ZERO
+            # resolved (so silent whales don't disappear from the UI). Filter
+            # by selected_whales membership so a demoted whale's lingering
+            # unpaired BUYs don't keep their row alive.
             for handle, n_open in opens_map.items():
-                if not handle:
+                if not handle or handle not in pm_selected_user_names:
                     continue
                 if any(w.handle == handle and w.venue == "polymarket" for w in out):
                     continue
@@ -3967,6 +4008,59 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
                 ))
         except Exception as e:
             log.debug("_query_pm_whales polymarket failed: %s", e)
+
+    # Surface freshly-promoted whales who have no round_trip activity yet.
+    # The query above only emits rows for whales with resolved round_trips
+    # or open paper positions, so a whale promoted via dashboard-button
+    # won't appear until the next copy-trade poll fires. Walk selected_whales
+    # and append zero-stat placeholders for anyone not already in `out`.
+    if "kalshi_copy_trading" in target_slugs:
+        try:
+            rec = db.load_agent_state(
+                "kalshi_copy_trader", "selected_whales", db_url=db_url,
+            )
+            if rec is not None and isinstance(rec[0], list):
+                existing = {w.handle for w in out if w.venue == "kalshi"}
+                for h in rec[0]:
+                    handle = str(h) if h else ""
+                    if not handle or handle in existing:
+                        continue
+                    out.append(PMWhaleRow(
+                        handle=handle, venue="kalshi",
+                        division="kalshi_copy_trading",
+                        n_resolved=0, n_wins=0, n_losses=0,
+                        win_rate_pct=None,
+                        total_realized_pnl=0.0,
+                        n_open=0,
+                        last_entry_ts=None,
+                    ))
+        except Exception as e:
+            log.debug("_query_pm_whales kalshi selected-placeholder failed: %s", e)
+
+    if "polymarket_copy_trading" in target_slugs:
+        try:
+            rec = db.load_agent_state(
+                "polymarket_copy_trader", "selected_whales", db_url=db_url,
+            )
+            if rec is not None and isinstance(rec[0], list):
+                existing = {w.handle for w in out if w.venue == "polymarket"}
+                for s in rec[0]:
+                    if not isinstance(s, dict):
+                        continue
+                    user_name = str(s.get("user_name") or "")
+                    if not user_name or user_name in existing:
+                        continue
+                    out.append(PMWhaleRow(
+                        handle=user_name, venue="polymarket",
+                        division="polymarket_copy_trading",
+                        n_resolved=0, n_wins=0, n_losses=0,
+                        win_rate_pct=None,
+                        total_realized_pnl=0.0,
+                        n_open=0,
+                        last_entry_ts=None,
+                    ))
+        except Exception as e:
+            log.debug("_query_pm_whales polymarket selected-placeholder failed: %s", e)
 
     # Decorate rows with actor_id (the identifier the demote endpoint
     # consumes) and is_pinned (whether the whale was manually promoted
@@ -4027,40 +4121,76 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
 def _query_kalshi_watch_only_rows(
     db_url: str, target_slugs: list[str],
 ) -> list[KalshiWatchOnlyRow]:
-    """Render the K3 Watch List panel from `agent_state(watch_only_stats)`.
+    """Render the K3 Watch List panel from `agent_state(watch_only_whales)`.
 
-    Only populated when kalshi_copy_trading is in scope — there's no
-    cross-venue watch-list today. Empty list otherwise.
+    `watch_only_whales` (a list[dict]) is the membership of the observation
+    pool — refresh_kalshi_whales.py writes it. `watch_only_stats` (a dict)
+    is an enrichment slot maintained by refresh_kalshi_watchlist_stats.py.
 
-    Sort: tier ascending (Tier 1 first), then total_pnl descending. So the
-    big-name traders cluster at the top regardless of which one is hottest.
+    Entries whose handle is currently in `selected_whales` are filtered out
+    — a promoted whale belongs on the Selected Whales panel, not the watch
+    list. When that whale is later demoted, removing them from
+    `selected_whales` causes them to reappear here with their original
+    enriched stats intact (no API refetch needed).
+
+    Only populated when kalshi_copy_trading is in scope. Empty list
+    otherwise.
+
+    Sort: tier ascending (Tier 1 first), then total_pnl descending.
     """
     if "kalshi_copy_trading" not in target_slugs:
         return []
-    loaded = db.load_agent_state(
+
+    whales_rec = db.load_agent_state(
+        "kalshi_copy_trader", "watch_only_whales", db_url=db_url,
+    )
+    if whales_rec is None or not isinstance(whales_rec[0], list):
+        return []
+    whales_list = whales_rec[0]
+
+    stats_rec = db.load_agent_state(
         "kalshi_copy_trader", "watch_only_stats", db_url=db_url,
     )
-    if loaded is None:
-        return []
-    stats_by_handle, _updated = loaded
-    if not isinstance(stats_by_handle, dict):
-        return []
+    stats_by_handle: dict[str, dict] = {}
+    if stats_rec is not None and isinstance(stats_rec[0], dict):
+        stats_by_handle = stats_rec[0]
+
+    # Exclude handles currently being copy-traded.
+    selected_set: set[str] = set()
+    try:
+        sel_rec = db.load_agent_state(
+            "kalshi_copy_trader", "selected_whales", db_url=db_url,
+        )
+        if sel_rec is not None and isinstance(sel_rec[0], list):
+            selected_set = {str(h) for h in sel_rec[0] if h}
+    except Exception as e:
+        log.debug("_query_kalshi_watch_only_rows selected load failed: %s", e)
 
     out: list[KalshiWatchOnlyRow] = []
-    for handle, s in stats_by_handle.items():
-        if not isinstance(s, dict):
+    for w in whales_list:
+        if not isinstance(w, dict):
             continue
+        handle = str(w.get("handle") or "")
+        if not handle or handle in selected_set:
+            continue
+        s = stats_by_handle.get(handle) or {}
+        if not isinstance(s, dict):
+            s = {}
         decisive = int(s.get("wins") or 0) + int(s.get("losses") or 0)
         wr_pct: float | None = None
         if decisive > 0:
             wr_pct = 100.0 * int(s.get("wins") or 0) / decisive
         cats = s.get("top_categories") or []
         top_cat = cats[0] if cats else None
+        # Prefer fresh stats fields; fall back to whatever the
+        # watch_only_whales list entry recorded (tier/notes/source flagged
+        # by promote/demote or by the refresh script).
+        tier_raw = s.get("tier") if s.get("tier") is not None else w.get("tier")
         out.append(KalshiWatchOnlyRow(
-            handle=str(s.get("handle") or handle),
-            tier=int(s["tier"]) if s.get("tier") is not None else None,
-            source_x_handle=s.get("source_x_handle"),
-            notes=s.get("notes"),
+            handle=handle,
+            tier=int(tier_raw) if tier_raw is not None else None,
+            source_x_handle=s.get("source_x_handle") or w.get("source_x_handle"),
+            notes=s.get("notes") or w.get("notes"),
             resolved_count=int(s.get("resolved_count") or 0),
             wins=int(s.get("wins") or 0),
             losses=int(s.get("losses") or 0),
@@ -4070,7 +4200,7 @@ def _query_kalshi_watch_only_rows(
             top_category=top_cat,
             n_open=int(s.get("n_open") or 0),
             lifetime_markets_traded=int(s.get("lifetime_markets_traded") or 0),
-            last_refresh_iso=s.get("last_refresh_iso"),
+            last_refresh_iso=s.get("last_refresh_iso") or w.get("included_iso"),
         ))
     out.sort(key=lambda w: (w.tier or 99, -w.total_pnl))
     return out
@@ -4081,7 +4211,14 @@ def _query_polymarket_watch_only_rows(
 ) -> list[PolymarketWatchOnlyRow]:
     """Render the Polymarket Watch List panel from `agent_state(watch_only_whales)`.
 
-    Only populated when polymarket_copy_trading is in scope. Empty list otherwise.
+    Entries whose proxy_wallet is currently in `selected_whales` are filtered
+    out — a promoted whale belongs on the Selected Whales panel. Demoting
+    them later (removal from selected_whales) causes them to reappear here
+    with their original leaderboard PnL / win-rate / etc. intact, since the
+    watch_only_whales entry is never mutated by promote/demote.
+
+    Only populated when polymarket_copy_trading is in scope. Empty list
+    otherwise.
 
     Sort: rank ascending (pre-sorted by realized PnL descending by the sweep).
     win_rate is stored as 0..1 in agent_state and converted to 0..100 here for
@@ -4098,9 +4235,27 @@ def _query_polymarket_watch_only_rows(
     if not isinstance(whales_list, list):
         return []
 
+    # Wallets currently being copy-traded — hide from watch list.
+    selected_wallets: set[str] = set()
+    try:
+        sel_rec = db.load_agent_state(
+            "polymarket_copy_trader", "selected_whales", db_url=db_url,
+        )
+        if sel_rec is not None and isinstance(sel_rec[0], list):
+            for s in sel_rec[0]:
+                if isinstance(s, dict):
+                    wallet = str(s.get("wallet") or s.get("proxy_wallet") or "").lower()
+                    if wallet:
+                        selected_wallets.add(wallet)
+    except Exception as e:
+        log.debug("_query_polymarket_watch_only_rows selected load failed: %s", e)
+
     out: list[PolymarketWatchOnlyRow] = []
     for w in whales_list:
         if not isinstance(w, dict):
+            continue
+        proxy_wallet = str(w.get("proxy_wallet") or "").lower()
+        if proxy_wallet and proxy_wallet in selected_wallets:
             continue
         total_resolved = int(w.get("total_resolved_positions") or 0)
         raw_wr = w.get("win_rate")

@@ -114,16 +114,14 @@
       const tabBtn = e.target.closest('.pm-tab-btn');
       if (tabBtn) {
         const target = tabBtn.dataset.pmTab;
-        document.querySelectorAll('.pm-tab-btn').forEach(b => {
-          const active = b.dataset.pmTab === target;
-          b.classList.toggle('border-accent', active);
-          b.classList.toggle('text-accent', active);
-          b.classList.toggle('border-transparent', !active);
-          b.classList.toggle('text-muted', !active);
-        });
-        document.querySelectorAll('.pm-tab-panel').forEach(p => {
-          p.classList.toggle('hidden', p.id !== 'pm-tab-' + target);
-        });
+        activatePMTab(target);
+        // Persist tab in URL fragment so HX-Refresh (post promote/demote)
+        // restores it instead of dumping back to Portfolio.
+        if (history.replaceState) {
+          history.replaceState(null, '', '#' + target);
+        } else {
+          window.location.hash = target;
+        }
         return;
       }
       const filterBtn = e.target.closest('.pm-history-filter');
@@ -158,6 +156,26 @@
     // Initial chart render (the partial is already in the DOM from
     // server-side render; chart JS exposes the function on window).
     if (window.renderPMChart) window.renderPMChart();
+
+    // Pure-DOM tab activation — extracted so we can also call it on
+    // page-load from URL hash. Mirrors the inline click handler above.
+    function activatePMTab(target) {
+      if (!target) return;
+      document.querySelectorAll('.pm-tab-btn').forEach(b => {
+        const active = b.dataset.pmTab === target;
+        b.classList.toggle('border-accent', active);
+        b.classList.toggle('text-accent', active);
+        b.classList.toggle('border-transparent', !active);
+        b.classList.toggle('text-muted', !active);
+      });
+      document.querySelectorAll('.pm-tab-panel').forEach(p => {
+        p.classList.toggle('hidden', p.id !== 'pm-tab-' + target);
+      });
+    }
+    // Restore tab from URL fragment on initial load (handles full-page
+    // reloads triggered by HX-Refresh after promote/demote).
+    const initialHash = (window.location.hash || '').replace(/^#/, '');
+    if (initialHash) activatePMTab(initialHash);
   })();
 </script>
 {% endblock %}

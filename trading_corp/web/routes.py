@@ -1619,9 +1619,15 @@ def register(app: FastAPI) -> None:
 
     def _render_action_pill(msg: str, *, success: bool = True) -> HTMLResponse:
         cls = "text-gain" if success else "text-loss"
+        # HX-Refresh tells htmx to reload the page after this response, which
+        # re-renders both the Selected Whales and Watch List panels from the
+        # updated agent_state slots. Without this, only the clicked row vanishes
+        # (the pill div replaces it via outerHTML) and the user thinks the
+        # action didn't take effect.
         return HTMLResponse(
             f'<div class="{cls} text-[11px] font-mono uppercase tracking-wider">'
-            f'{msg}</div>'
+            f'{msg}</div>',
+            headers={"HX-Refresh": "true"},
         )
 
     def _now_iso() -> str:
@@ -1651,16 +1657,13 @@ def register(app: FastAPI) -> None:
         pinned: list[str] = list(pin_rec[0]) if pin_rec and isinstance(pin_rec[0], list) else []
         if handle not in pinned:
             pinned.append(handle)
-        # watch_only (list[dict], "handle" key)
-        wo_rec = _db_mod.load_agent_state(
-            "kalshi_copy_trader", "watch_only_whales", db_url=db_url,
-        )
-        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
-        watch_only_after = [w for w in watch_only if not (isinstance(w, dict) and w.get("handle") == handle)]
+        # We intentionally do NOT mutate watch_only_whales here. The watch
+        # list panel filters out entries whose handle is in selected_whales,
+        # so promoting hides the row automatically while preserving the
+        # original Apify-scraped stats for if/when the whale is demoted.
 
         _db_mod.set_agent_state("kalshi_copy_trader", "selected_whales", selected, db_url=db_url)
         _db_mod.set_agent_state("kalshi_copy_trader", "pinned_whales", pinned, db_url=db_url)
-        _db_mod.set_agent_state("kalshi_copy_trader", "watch_only_whales", watch_only_after, db_url=db_url)
 
         if deps.logger_agent is not None:
             deps.logger_agent.log_event(
@@ -1702,21 +1705,14 @@ def register(app: FastAPI) -> None:
         pinned: list[str] = list(pin_rec[0]) if pin_rec and isinstance(pin_rec[0], list) else []
         pinned_after = [h for h in pinned if h != handle]
 
-        wo_rec = _db_mod.load_agent_state(
-            "kalshi_copy_trader", "watch_only_whales", db_url=db_url,
-        )
-        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
-        if not any(isinstance(w, dict) and w.get("handle") == handle for w in watch_only):
-            watch_only.append({
-                "handle": handle, "tier": None,
-                "source_x_handle": None, "notes": "demoted via dashboard",
-                "included_iso": _now_iso(),
-                "probe": {"profile_resolved": True, "trades_count": None},
-            })
+        # We intentionally do NOT mutate watch_only_whales here. The watch
+        # list panel includes anyone in watch_only_whales who is NOT in
+        # selected_whales. By only updating selected_whales/pinned_whales,
+        # a previously-promoted whale falls back to its original watch
+        # list entry (with original Apify-scraped stats) automatically.
 
         _db_mod.set_agent_state("kalshi_copy_trader", "selected_whales", selected_after, db_url=db_url)
         _db_mod.set_agent_state("kalshi_copy_trader", "pinned_whales", pinned_after, db_url=db_url)
-        _db_mod.set_agent_state("kalshi_copy_trader", "watch_only_whales", watch_only, db_url=db_url)
 
         if deps.logger_agent is not None:
             deps.logger_agent.log_event(
@@ -1749,6 +1745,11 @@ def register(app: FastAPI) -> None:
         db_url = deps.db_url
         wallet_lower = proxy_wallet.lower()
 
+        # Read user_name / category from the existing watch_only_whales entry
+        # (if present) so we can stamp them onto selected/pinned. We do NOT
+        # delete the watch list entry — the panel filters on selected_whales
+        # membership at render time instead, which preserves the original
+        # leaderboard stats for if/when the whale is demoted.
         wo_rec = _db_mod.load_agent_state(
             "polymarket_copy_trader", "watch_only_whales", db_url=db_url,
         )
@@ -1784,15 +1785,8 @@ def register(app: FastAPI) -> None:
                 "source": "dashboard_button",
             })
 
-        watch_only_after = [
-            w for w in watch_only
-            if not (isinstance(w, dict)
-                    and str(w.get("proxy_wallet") or "").lower() == wallet_lower)
-        ]
-
         _db_mod.set_agent_state("polymarket_copy_trader", "selected_whales", selected, db_url=db_url)
         _db_mod.set_agent_state("polymarket_copy_trader", "pinned_whales", pinned, db_url=db_url)
-        _db_mod.set_agent_state("polymarket_copy_trader", "watch_only_whales", watch_only_after, db_url=db_url)
 
         if deps.logger_agent is not None:
             deps.logger_agent.log_event(
@@ -1854,26 +1848,15 @@ def register(app: FastAPI) -> None:
                     and str(p.get("wallet") or p.get("proxy_wallet") or "").lower() == wallet_lower)
         ]
 
-        wo_rec = _db_mod.load_agent_state(
-            "polymarket_copy_trader", "watch_only_whales", db_url=db_url,
-        )
-        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
-        if not any(isinstance(w, dict) and str(w.get("proxy_wallet") or "").lower() == wallet_lower for w in watch_only):
-            watch_only.append({
-                "rank": None, "proxy_wallet": wallet_lower,
-                "user_name": user_name, "x_username": "", "verified_badge": False,
-                "total_resolved_positions": 0, "wins": 0, "losses": 0,
-                "win_rate": None, "realized_pnl_usdc": 0.0,
-                "total_usdc_size_resolved": 0.0,
-                "lifetime_pnl_from_leaderboard": 0.0,
-                "lifetime_vol_from_leaderboard": 0.0,
-                "best_category": "", "included_iso": _now_iso(),
-                "notes": "demoted via dashboard",
-            })
+        # We intentionally do NOT mutate watch_only_whales here. The watch
+        # list panel includes anyone in watch_only_whales who is NOT in
+        # selected_whales. By only updating selected_whales/pinned_whales,
+        # a previously-promoted whale falls back to its original watch list
+        # entry (with original leaderboard PnL, win-rate, etc.) automatically
+        # — no API refetch needed.
 
         _db_mod.set_agent_state("polymarket_copy_trader", "selected_whales", selected_after, db_url=db_url)
         _db_mod.set_agent_state("polymarket_copy_trader", "pinned_whales", pinned_after, db_url=db_url)
-        _db_mod.set_agent_state("polymarket_copy_trader", "watch_only_whales", watch_only, db_url=db_url)
 
         if deps.logger_agent is not None:
             deps.logger_agent.log_event(
