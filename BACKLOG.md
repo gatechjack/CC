@@ -818,6 +818,26 @@ Items surfaced during the 2026-05-16 03:00-03:30 UTC dashboard-accuracy session 
 
 ---
 
+## P2 — Polymarket watchlist weekly refresh  *(NEW — 2026-05-17)*
+
+The Polymarket watchlist shipped 2026-05-17 (see deploy_log for the same date): `agent_state(polymarket_copy_trader, watch_only_whales)` is populated by `scripts/seed_polymarket_watchlist_deep.py`; dashboard panel renders parallel to Kalshi's at `/prediction-markets/polymarket_copy_trading`. Today's seed was a one-shot — no recurring refresh.
+
+**Goal:** weekly cron that re-runs the deep seed, MERGES newly-discovered wallets into the existing watchlist (keep prior entries; add any wallets that newly pass the ≥100/≥70% gate). Distinct from Kalshi's deep-scan which overwrites — for Polymarket we want accumulation so we can observe track records of older entrants over time.
+
+**Implementation (~1-2h):**
+1. **`seed_polymarket_watchlist_deep.py --merge`** flag — defaults overwrite (current behavior), `--merge` unions by `proxy_wallet`: load existing watchlist, compute new top-N candidates as today, write `existing ∪ new` keeping existing-entry metadata (don't clobber `included_iso`). New entries get fresh `included_iso`.
+2. **systemd timer** — `infra/systemd/trading-corp-pm-watchlist-deep.{service,timer}`, weekly Sunday 13:00 UTC (after Kalshi's deep-scan at 12:00 UTC to avoid concurrent API hits). Persistent=true.
+3. **Top-N cap** — if `--merge` grows the list unbounded, also add `--max-total N` (default 100?) that trims the merged list back to top-N by `realized_pnl_usdc` desc. Otherwise the list grows forever.
+4. No new code outside the seed script + systemd files. Dashboard panel already reads from agent_state correctly.
+
+**Reuse:** dashboard panel done. Seed script done. The work is a flag + a timer.
+
+**Defer for now:** a separate `refresh_polymarket_watchlist_stats.py` daily re-scorer (parallel to Kalshi's). The seed itself re-computes stats on the wallets it pulls each Sunday, so the weekly cadence is sufficient until we want per-day drift visibility. ~2h of work whenever we want it.
+
+**Don't do without thinking:** a "promote to selected_whales" button. PCT (`polymarket_copy_trader`) live roster is selected by `refresh_polymarket_whales.py` (different scoring math — Wilson LCB × ROI × category bonus). Watchlist → selected promotion needs the same protections Kalshi WO-4 calls out (pinned_whales slot, merge-aware refresh) before we wire a button.
+
+---
+
 ## P2/P3 — 2026-05-15 K3 Watch-only follow-ups  *(NEW — 2026-05-15)*
 
 Items deferred or surfaced during the 2026-05-15 EVE watch-only ship. The

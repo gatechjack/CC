@@ -211,6 +211,79 @@ class PositionRow:
         )
 
 
+@dataclass(frozen=True)
+class ClosedPositionRow:
+    """One row from `/closed-positions?user=<wallet>` — a resolved position.
+
+    Each row represents one resolved binary-market position. `cur_price` is
+    the market's final settlement price; values ≥ 0.9 indicate a win (the
+    holder's side resolved YES). `realized_pnl` is the USDC profit/loss after
+    resolution.
+    """
+    proxy_wallet: str
+    asset: str               # ERC1155 token ID
+    condition_id: str
+    avg_price: float         # average entry price [0, 1]
+    total_bought: float      # USDC spent
+    realized_pnl: float      # USDC profit/loss after resolution
+    cur_price: float         # final settlement price (≥0.9 → holder's side won)
+    title: str               # human-readable market question
+    slug: str
+    icon: str
+    event_slug: str
+    outcome: str             # human label ("Yes", "No", "Spurs", etc.)
+    outcome_index: int
+    opposite_outcome: str
+    opposite_asset: str
+    end_date: str            # ISO string or empty
+    timestamp: int           # unix seconds of resolution
+
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_api(cls, row: dict[str, Any]) -> "ClosedPositionRow":
+        def _f(k: str) -> float:
+            v = row.get(k)
+            try:
+                return float(v) if v is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _i(k: str) -> int:
+            v = row.get(k)
+            try:
+                return int(v) if v is not None else 0
+            except (TypeError, ValueError):
+                return 0
+
+        consumed = {
+            "proxyWallet", "asset", "conditionId", "avgPrice", "totalBought",
+            "realizedPnl", "curPrice", "title", "slug", "icon", "eventSlug",
+            "outcome", "outcomeIndex", "oppositeOutcome", "oppositeAsset",
+            "endDate", "timestamp",
+        }
+        return cls(
+            proxy_wallet=str(row.get("proxyWallet") or "").lower(),
+            asset=str(row.get("asset") or ""),
+            condition_id=str(row.get("conditionId") or ""),
+            avg_price=_f("avgPrice"),
+            total_bought=_f("totalBought"),
+            realized_pnl=_f("realizedPnl"),
+            cur_price=_f("curPrice"),
+            title=str(row.get("title") or ""),
+            slug=str(row.get("slug") or ""),
+            icon=str(row.get("icon") or ""),
+            event_slug=str(row.get("eventSlug") or ""),
+            outcome=str(row.get("outcome") or ""),
+            outcome_index=_i("outcomeIndex"),
+            opposite_outcome=str(row.get("oppositeOutcome") or ""),
+            opposite_asset=str(row.get("oppositeAsset") or ""),
+            end_date=str(row.get("endDate") or ""),
+            timestamp=_i("timestamp"),
+            extra={k: v for k, v in row.items() if k not in consumed},
+        )
+
+
 def _decode_resolution(market: dict) -> dict:
     """Map a gamma-api market row to a uniform resolution record.
 
@@ -336,6 +409,33 @@ class PolymarketDataAPIClient:
         if not isinstance(rows, list):
             return []
         return [PositionRow.from_api(r) for r in rows if isinstance(r, dict)]
+
+    async def fetch_closed_positions(
+        self,
+        wallet: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ClosedPositionRow]:
+        """Pull resolved positions for one wallet from `/closed-positions`.
+
+        Each row is one resolved binary-market position. The API hard-caps at
+        50 rows per call (requesting more is silently capped). Paginates via
+        `offset`; the API caps at ~1500 total rows per wallet (offset=2000
+        typically returns empty). Use `limit=50` (the default) to match the
+        hard cap.
+
+        Win detection: `cur_price >= 0.9` means the holder's side resolved as
+        the winner — mirrors `_decode_resolution`'s threshold.
+        """
+        rows = await self._get_json(
+            f"{_DATA_API_BASE}/closed-positions",
+            params={"user": wallet, "limit": int(limit), "offset": int(offset)},
+            label=f"closed-positions[{wallet[:10]}…, limit={limit}, offset={offset}]",
+        )
+        if not isinstance(rows, list):
+            return []
+        return [ClosedPositionRow.from_api(r) for r in rows if isinstance(r, dict)]
 
     async def fetch_market_resolutions(
         self, condition_ids: list[str], *, chunk_size: int = 50,

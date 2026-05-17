@@ -113,11 +113,11 @@
                  border-b-2 border-transparent text-muted hover:text-mono">
     History ({{ view.summary.n_resolved }})
   </button>
-  {% if view.whales or view.kalshi_watch_only %}
+  {% if view.whales or view.kalshi_watch_only or view.polymarket_watch_only %}
   <button data-pm-tab="whales"
           class="pm-tab-btn px-4 py-2 text-sm font-mono uppercase tracking-wider
                  border-b-2 border-transparent text-muted hover:text-mono">
-    Whales ({{ (view.whales | length) + (view.kalshi_watch_only | length) }})
+    Whales ({{ (view.whales | length) + (view.kalshi_watch_only | length) + (view.polymarket_watch_only | length) }})
   </button>
   {% endif %}
 </div>
@@ -589,7 +589,7 @@
 </section>
 
 {# ── Whales tab — populated only for copy_trading divisions ─────────── #}
-{% if view.whales or view.kalshi_watch_only %}
+{% if view.whales or view.kalshi_watch_only or view.polymarket_watch_only %}
 <section id="pm-tab-whales" class="pm-tab-panel hidden">
   {% if view.whales %}
   <div class="bg-pane border border-edge rounded-lg overflow-hidden">
@@ -729,6 +729,83 @@
                       title="Promote flow ships next (WO-4). Will move this whale onto the active selected_whales roster.">
                 Promote
               </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if view.polymarket_watch_only %}
+  <div class="bg-pane border border-edge rounded-lg overflow-hidden {% if view.kalshi_watch_only or view.whales %}mt-6{% endif %}">
+    <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
+      <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+        Polymarket Watch List — observation only
+      </h2>
+      <div class="text-[11px] font-mono text-muted">
+        {{ view.polymarket_watch_only | length }} whales · top-50 by realized PnL · NOT copy-traded
+      </div>
+    </header>
+    <div class="overflow-x-auto">
+      <table class="w-full text-[12px] font-mono">
+        <thead class="bg-pane-2/40 text-muted uppercase tracking-wider text-[10px]">
+          <tr>
+            <th class="text-right px-3 py-2 font-medium">#</th>
+            <th class="text-left px-3 py-2 font-medium">Whale</th>
+            <th class="text-left px-3 py-2 font-medium">Category</th>
+            <th class="text-right px-3 py-2 font-medium">N</th>
+            <th class="text-right px-3 py-2 font-medium">WR%</th>
+            <th class="text-right px-3 py-2 font-medium">Realized PnL</th>
+            <th class="text-right px-3 py-2 font-medium">Leaderboard PnL</th>
+            <th class="text-right px-3 py-2 font-medium">Leaderboard Vol</th>
+            <th class="text-left px-3 py-2 font-medium">Profile</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for w in view.polymarket_watch_only %}
+          <tr class="border-t border-edge hover:bg-pane-2/40">
+            <td class="px-3 py-2 text-right text-muted/60">{{ w.rank }}</td>
+            <td class="px-3 py-2 text-mono font-semibold">
+              {% if w.x_username %}@{{ w.x_username }}{% else %}{{ w.user_name }}{% endif %}
+              {% if w.verified_badge %}<span class="text-accent text-[10px] ml-1">✓</span>{% endif %}
+            </td>
+            <td class="px-3 py-2 text-muted/80">
+              {% if w.best_category %}{{ w.best_category }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.total_resolved_positions == 0 %}text-muted/60{% else %}text-mono{% endif %}">
+              {{ w.total_resolved_positions }}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.win_rate_pct is none %}text-muted/60
+              {% elif w.win_rate_pct >= 60 %}text-gain
+              {% elif w.win_rate_pct >= 40 %}text-mono
+              {% else %}text-loss{% endif %}">
+              {% if w.win_rate_pct is none %}—{% else %}{{ w.win_rate_pct | round(1) }}%{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.realized_pnl_usdc > 0 %}text-gain
+              {% elif w.realized_pnl_usdc < 0 %}text-loss
+              {% else %}text-mono/70{% endif %}">
+              {{ w.realized_pnl_usdc | money_signed }}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.lifetime_pnl_from_leaderboard > 0 %}text-gain
+              {% elif w.lifetime_pnl_from_leaderboard < 0 %}text-loss
+              {% else %}text-mono/70{% endif %}">
+              {{ w.lifetime_pnl_from_leaderboard | money_signed }}
+            </td>
+            <td class="px-3 py-2 text-right text-mono/80">
+              {{ w.lifetime_vol_from_leaderboard | money_signed }}
+            </td>
+            <td class="px-3 py-2">
+              <a href="https://polymarket.com/profile/{{ w.proxy_wallet }}"
+                 target="_blank" rel="noopener noreferrer"
+                 class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1">
+                View ↗
+              </a>
             </td>
           </tr>
           {% endfor %}

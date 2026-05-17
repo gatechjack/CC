@@ -3187,6 +3187,31 @@ class KalshiWatchOnlyRow:
 
 
 @dataclass
+class PolymarketWatchOnlyRow:
+    """One row of the Polymarket Watch List panel — whales we observe but do NOT copy.
+
+    Source: `agent_state(polymarket_copy_trader, watch_only_whales)`, written
+    by the top-50 sweep. Stats reflect each whale's own Polymarket performance
+    from the Gamma/leaderboard API. win_rate_pct is converted from the
+    0..1 source value to 0..100 for template parity with KalshiWatchOnlyRow.
+    """
+    rank: int
+    user_name: str
+    proxy_wallet: str
+    x_username: str | None
+    verified_badge: bool
+    total_resolved_positions: int
+    wins: int
+    losses: int
+    win_rate_pct: float | None        # None when total_resolved_positions == 0; else 0..100
+    realized_pnl_usdc: float
+    lifetime_pnl_from_leaderboard: float
+    lifetime_vol_from_leaderboard: float
+    best_category: str
+    included_iso: str | None
+
+
+@dataclass
 class PMDashboardView:
     """Everything the prediction_markets_dashboard.html template needs."""
     selected: str | None             # None == 'All Prediction Markets'
@@ -3198,6 +3223,7 @@ class PMDashboardView:
     open_trades: list[PMOpenTrade]   # most-recent emit first
     whales: list[PMWhaleRow]         # populated for copy_trading divisions; empty otherwise
     kalshi_watch_only: list[KalshiWatchOnlyRow]   # K3 watch-list panel; empty unless kalshi_copy_trading is selected
+    polymarket_watch_only: list[PolymarketWatchOnlyRow]  # Polymarket watch-list panel; empty unless polymarket_copy_trading is selected
 
 
 _POLYMARKET_PREFIX = "polymarket_"
@@ -3988,6 +4014,57 @@ def _query_kalshi_watch_only_rows(
     return out
 
 
+def _query_polymarket_watch_only_rows(
+    db_url: str, target_slugs: list[str],
+) -> list[PolymarketWatchOnlyRow]:
+    """Render the Polymarket Watch List panel from `agent_state(watch_only_whales)`.
+
+    Only populated when polymarket_copy_trading is in scope. Empty list otherwise.
+
+    Sort: rank ascending (pre-sorted by realized PnL descending by the sweep).
+    win_rate is stored as 0..1 in agent_state and converted to 0..100 here for
+    template parity with KalshiWatchOnlyRow.
+    """
+    if "polymarket_copy_trading" not in target_slugs:
+        return []
+    loaded = db.load_agent_state(
+        "polymarket_copy_trader", "watch_only_whales", db_url=db_url,
+    )
+    if loaded is None:
+        return []
+    whales_list, _updated = loaded
+    if not isinstance(whales_list, list):
+        return []
+
+    out: list[PolymarketWatchOnlyRow] = []
+    for w in whales_list:
+        if not isinstance(w, dict):
+            continue
+        total_resolved = int(w.get("total_resolved_positions") or 0)
+        raw_wr = w.get("win_rate")
+        wr_pct: float | None = None
+        if raw_wr is not None and total_resolved > 0:
+            wr_pct = float(raw_wr) * 100.0
+        out.append(PolymarketWatchOnlyRow(
+            rank=int(w.get("rank") or 0),
+            user_name=str(w.get("user_name") or ""),
+            proxy_wallet=str(w.get("proxy_wallet") or ""),
+            x_username=w.get("x_username") or None,
+            verified_badge=bool(w.get("verified_badge", False)),
+            total_resolved_positions=total_resolved,
+            wins=int(w.get("wins") or 0),
+            losses=int(w.get("losses") or 0),
+            win_rate_pct=wr_pct,
+            realized_pnl_usdc=float(w.get("realized_pnl_usdc") or 0.0),
+            lifetime_pnl_from_leaderboard=float(w.get("lifetime_pnl_from_leaderboard") or 0.0),
+            lifetime_vol_from_leaderboard=float(w.get("lifetime_vol_from_leaderboard") or 0.0),
+            best_category=str(w.get("best_category") or ""),
+            included_iso=w.get("included_iso") or None,
+        ))
+    out.sort(key=lambda w: w.rank)
+    return out
+
+
 def _pm_summary(
     round_trips: list[PMRoundTrip],
     equity_curve: list[PMEquityPoint],
@@ -4077,12 +4154,13 @@ async def build_prediction_market_view(
 
     db_url = deps.db_url
 
-    round_trips, equity_curve, open_trades, whales, kalshi_watch_only, pending_count, resolved_stats = await asyncio.gather(
+    round_trips, equity_curve, open_trades, whales, kalshi_watch_only, polymarket_watch_only, pending_count, resolved_stats = await asyncio.gather(
         asyncio.to_thread(_query_pm_round_trips, db_url, target_slugs, history_limit),
         asyncio.to_thread(_query_pm_equity_curve, db_url, target_slugs, equity_curve_days),
         asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200),
         asyncio.to_thread(_query_pm_whales, db_url, target_slugs),
         asyncio.to_thread(_query_kalshi_watch_only_rows, db_url, target_slugs),
+        asyncio.to_thread(_query_polymarket_watch_only_rows, db_url, target_slugs),
         asyncio.to_thread(_query_pm_pending_count, db_url, target_slugs),
         asyncio.to_thread(_query_pm_resolved_stats, db_url, target_slugs),
     )
@@ -4107,6 +4185,7 @@ async def build_prediction_market_view(
         open_trades=open_trades,
         whales=whales,
         kalshi_watch_only=kalshi_watch_only,
+        polymarket_watch_only=polymarket_watch_only,
     )
 
 
