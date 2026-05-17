@@ -3203,6 +3203,11 @@ async def _scheduled_kalshi_weather_arb_loop(
                         "delta_f": ext.get("delta_f"),
                         "prob_yes": ext.get("prob_yes"),
                         "expires_at": ext.get("expires_at"),
+                        # TARGET_ISO_INSERTED — resolution-date of the
+                        # weather target parsed from ticker (distinct
+                        # from expires_at, which is Kalshi's settlement
+                        # window the day after). Audit-only.
+                        "target_iso": ext.get("target_iso"),
                         "title": ext.get("title"),
                         "max_dollar_risk": ext.get("max_dollar_risk"),
                         "kelly_fraction_used": ext.get("kelly_fraction_used"),

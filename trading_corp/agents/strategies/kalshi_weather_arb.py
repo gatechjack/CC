@@ -701,6 +701,12 @@ class KalshiWeatherArbAgent:
                 "prob_yes": verdict.prob_yes,
                 "divergence_pct": verdict.edge_pct,
                 "expires_at": cand["expected_expiration_time"],
+                # Resolution-date of the weather target (parsed from the
+                # ticker, e.g. KXHIGHDEN-26MAY15-B82.5 → 2026-05-15T...).
+                # Distinct from `expires_at` (Kalshi's settlement window,
+                # usually 14:00 UTC the day after). Audit-only: lets us
+                # verify the date-parse fix is firing on the right day.
+                "target_iso": target_iso,
                 "max_dollar_risk": order_usd,
                 "kelly_fraction_used": kelly_meta["kelly_fraction_used"],
                 "kelly_full_pct": kelly_meta["kelly_full_pct"],
