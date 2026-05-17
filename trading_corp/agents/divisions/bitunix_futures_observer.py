@@ -489,6 +489,15 @@ class BitunixFuturesObserver:
         # place → write cooldown). Without it, concurrent webhook arrivals
         # within ~1s all read pre-fire cooldown state and all fire.
         self._score_lock = asyncio.Lock()
+        # Deferred-fire PA cache. When PA rejects in enforce mode and the
+        # score is otherwise valid, the rejected payload is cached here so
+        # the run_pa_redeem_loop background task can re-evaluate against
+        # fresh bars. Cleared on score SKIP, opposite-side win, PA pass,
+        # or successful fire. Process memory only — rebuilds on next alert
+        # after restart.
+        self._pending_pa_payload: dict[str, Any] | None = None
+        self._pending_pa_side: str | None = None
+        self._pending_pa_cached_at_ts: datetime | None = None
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -758,6 +767,150 @@ class BitunixFuturesObserver:
         except Exception as e:
             log.warning("bitunix_observer: pa_validation_decision write failed: %s", e)
 
+    def _clear_pending_pa(self) -> None:
+        """Deferred-fire helper: drop any cached PA-rejected payload.
+
+        Called when the wait is over (PA passed, opposite side won,
+        score decayed to SKIP, successful fire). Idempotent — safe to
+        call when nothing is cached.
+        """
+        self._pending_pa_payload = None
+        self._pending_pa_side = None
+        self._pending_pa_cached_at_ts = None
+
+    def _log_pa_validation_redeem(
+        self,
+        payload: dict[str, Any],
+        verdict_score: Any,
+        pa_result: Any,
+        order_id: str | None = None,
+    ) -> int | None:
+        """Deferred-fire audit: written when a previously-cached
+        PA-rejected payload finally clears the PA gate from the
+        `bar_tick_redeem` re-eval path.
+
+        Distinct from `pa_validation_decision` (which fires on every
+        evaluation). One redeem row per redeemed signal lets backtests
+        compare deferred-fire performance against immediate fires
+        without joining timestamps.
+
+        Reads `_pending_pa_cached_at_ts` — call BEFORE
+        `_clear_pending_pa()`. Returns the new audit_event row id so
+        the caller can backfill `order_id` once placement completes
+        (the order doesn't exist yet at PA-pass time). Returns None
+        on write failure.
+        """
+        original_cached_at = self._pending_pa_cached_at_ts
+        if original_cached_at is None:
+            return None
+        now = datetime.now(timezone.utc)
+        delta_s = (now - original_cached_at).total_seconds()
+        bars_waited = int(delta_s // 180)
+        seconds_waited = int(delta_s)
+        payload_dict = {
+            "strategy": "bitunix_futures",
+            "division": "bitunix_futures",
+            "trigger_signal": (payload.get("signal") or "").strip().lower(),
+            "trigger_source": payload.get("_source"),
+            "original_cached_at": original_cached_at.isoformat(),
+            "redeem_ts": now.isoformat(),
+            "bars_waited": bars_waited,
+            "seconds_waited": seconds_waited,
+            "final_tier": verdict_score.tier.value,
+            "final_side": verdict_score.side.value,
+            "final_passed": list(pa_result.passed),
+            "order_id": order_id,
+        }
+        try:
+            with db.connect(self.db_url) as conn:
+                cur = conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+                    (
+                        _utc_now_iso(),
+                        "bitunix_futures",
+                        "pa_validation_redeem",
+                        json.dumps(payload_dict, default=str),
+                    ),
+                )
+                return int(cur.lastrowid) if cur.lastrowid else None
+        except Exception as e:
+            log.warning("bitunix_observer: pa_validation_redeem write failed: %s", e)
+            return None
+
+    def _backfill_redeem_order_id(self, audit_row_id: int, order_id: str) -> None:
+        """Gap 1 close: update an existing `pa_validation_redeem` audit
+        row to add the `order_id` (which didn't exist at PA-pass time
+        when the row was written). Best-effort — log + swallow failures
+        because the row is still meaningful without the order_id, and
+        backtests can fall back to the (trigger_signal, ts ~1s) join."""
+        try:
+            with db.connect(self.db_url) as conn:
+                row = conn.execute(
+                    "SELECT payload_json FROM audit_event WHERE id = ?",
+                    (audit_row_id,),
+                ).fetchone()
+                if row is None:
+                    return
+                p = json.loads(row["payload_json"])
+                p["order_id"] = order_id
+                conn.execute(
+                    "UPDATE audit_event SET payload_json = ? WHERE id = ?",
+                    (json.dumps(p, default=str), audit_row_id),
+                )
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: pa_validation_redeem order_id backfill failed: %s", e,
+            )
+
+    def _log_pa_validation_expired(
+        self,
+        reason: str,
+    ) -> None:
+        """Gap 2 close: write `pa_validation_expired` audit row when a
+        cached PA-rejected payload is dropped without firing.
+
+        `reason` is `'score_decay'` (the score evaluation now returns
+        SKIP, so the underlying signal stack is no longer trade-worthy)
+        or `'opposite_side'` (a new alert flipped the winning side, so
+        the prior waiting state is null-and-void per the Board's rule).
+
+        Reads `_pending_pa_payload` / `_pending_pa_side` /
+        `_pending_pa_cached_at_ts` — call BEFORE `_clear_pending_pa()`.
+        No-op when nothing is cached.
+        """
+        cached_at = self._pending_pa_cached_at_ts
+        cached_payload = self._pending_pa_payload
+        cached_side = self._pending_pa_side
+        if cached_at is None or cached_payload is None:
+            return
+        now = datetime.now(timezone.utc)
+        delta_s = (now - cached_at).total_seconds()
+        payload_dict = {
+            "strategy": "bitunix_futures",
+            "division": "bitunix_futures",
+            "trigger_signal": (cached_payload.get("signal") or "").strip().lower(),
+            "trigger_source": cached_payload.get("_source"),
+            "cached_side": cached_side,
+            "original_cached_at": cached_at.isoformat(),
+            "expired_ts": now.isoformat(),
+            "bars_waited": int(delta_s // 180),
+            "seconds_waited": int(delta_s),
+            "reason": reason,
+        }
+        try:
+            with db.connect(self.db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+                    (
+                        _utc_now_iso(),
+                        "bitunix_futures",
+                        "pa_validation_expired",
+                        json.dumps(payload_dict, default=str),
+                    ),
+                )
+        except Exception as e:
+            log.warning("bitunix_observer: pa_validation_expired write failed: %s", e)
+
     def _log_htf_gate(
         self,
         payload: dict[str, Any],
@@ -848,6 +1001,39 @@ class BitunixFuturesObserver:
                 )
         except Exception as e:
             log.warning("bitunix_observer: htf_gate_decision write failed: %s", e)
+
+    async def run_pa_redeem_loop(self, *, interval_s: float = 60.0) -> None:
+        """Deferred-fire background task: every `interval_s` seconds, if
+        a PA-rejected payload is cached, re-run the full score+PA
+        pipeline against fresh bars.
+
+        Idle-cheap: when nothing is cached, the loop wakes, checks the
+        attr, and sleeps again. When a payload IS cached, calls
+        `_score_and_maybe_propose` (which acquires `_score_lock`) with
+        `source='bar_tick_redeem'` — the gate logic inside is unchanged.
+        The wait stops on:
+          - score decay to SKIP → cache cleared in the SKIP branch
+          - opposite-side win → cache cleared in the opposite-side branch
+          - PA pass → cache cleared in the PA-pass branch (and a
+            `pa_validation_redeem` audit row is written)
+
+        Cancels cleanly on shutdown (asyncio.CancelledError propagates).
+        Any other exception is logged and the loop continues — a single
+        failed tick must not kill the redeem mechanism.
+        """
+        while True:
+            try:
+                await asyncio.sleep(interval_s)
+                if self._pending_pa_payload is None:
+                    continue
+                payload = dict(self._pending_pa_payload)
+                await self._score_and_maybe_propose(
+                    payload, source="bar_tick_redeem",
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("bitunix_observer: pa redeem tick failed: %s", e)
 
     async def _score_and_maybe_propose(
         self,
@@ -942,7 +1128,20 @@ class BitunixFuturesObserver:
                 payload, verdict_score,
                 "skipped_cooldown" if verdict_score.cooldown_blocked else "skipped_score",
             )
+            # Deferred-fire: when score is no longer valid for any trade,
+            # the cached PA-rejected payload is also no longer valid.
+            # Audit the expiration before clearing so backtests can
+            # compute "redemption-failure rate by reason."
+            if self._pending_pa_payload is not None:
+                self._log_pa_validation_expired(reason="score_decay")
+            self._clear_pending_pa()
             return
+
+        # Deferred-fire: captured in the PA-PASS branch below when the
+        # source is `bar_tick_redeem`. Used to stamp `order.extra` so
+        # `paper_trade_record.extra_json` carries redemption metadata
+        # for backtests. None for immediate (non-redeemed) fires.
+        redeem_metadata: dict[str, Any] | None = None
 
         # ── PR 3c: PA validation gate ───────────────────────────────────
         # Runs when configured AND mode != off. Always writes the audit
@@ -951,6 +1150,16 @@ class BitunixFuturesObserver:
         # REJECT short-circuits the trade before risk/sizing.
         # PA outcome is binary (PASS/REJECT/DISABLED); no multiplier.
         side_str = "buy" if verdict_score.side == _ScoreSide.BUY else "sell"
+        # Deferred-fire: if a payload was cached on the OPPOSITE side, the
+        # winning side has flipped — per the Board's rule, the original
+        # waiting state is null and void. Audit the invalidation before
+        # clearing so the redemption-failure-by-reason rate is queryable.
+        if (
+            self._pending_pa_side is not None
+            and self._pending_pa_side != side_str
+        ):
+            self._log_pa_validation_expired(reason="opposite_side")
+            self._clear_pending_pa()
         if (
             self.pa_config is not None
             and self.pa_config.enabled
@@ -976,7 +1185,45 @@ class BitunixFuturesObserver:
                         payload, verdict_score, "skipped_pa_validation",
                         note=pa_result.reason,
                     )
+                    # Deferred-fire: cache the payload so the bar-tick
+                    # redeem loop can re-evaluate on subsequent bars.
+                    # Same payload overwrites are fine (no-op transition);
+                    # the cached_at ts is preserved for original-alert age.
+                    if self._pending_pa_payload is None:
+                        self._pending_pa_cached_at_ts = datetime.now(timezone.utc)
+                    self._pending_pa_payload = dict(payload)
+                    self._pending_pa_side = side_str
                     return
+                # PA PASS (or DISABLED, or shadow-mode anything). The wait
+                # is over. If this came from the redeem loop, capture the
+                # metadata so we can stamp it onto `order.extra` (and from
+                # there onto `paper_trade_record.extra_json`) for backtest
+                # joins. Write the `pa_validation_redeem` audit BEFORE
+                # clearing the cache (the helper reads `_pending_pa_cached_at_ts`).
+                if (
+                    payload.get("_source") == "bar_tick_redeem"
+                    and self._pending_pa_cached_at_ts is not None
+                ):
+                    cached_at = self._pending_pa_cached_at_ts
+                    delta_s = (
+                        datetime.now(timezone.utc) - cached_at
+                    ).total_seconds()
+                    audit_row_id = self._log_pa_validation_redeem(
+                        payload, verdict_score, pa_result,
+                    )
+                    redeem_metadata = {
+                        "redeemed": True,
+                        "bars_waited": int(delta_s // 180),
+                        "seconds_waited": int(delta_s),
+                        "original_cached_at": cached_at.isoformat(),
+                        # `audit_row_id` lets the placement section
+                        # backfill the row's order_id after the order
+                        # is built. Stripped from order.extra below
+                        # (it's an internal coordination handle, not
+                        # backtest-relevant).
+                        "audit_row_id": audit_row_id,
+                    }
+                self._clear_pending_pa()
 
         # ── PR 3c: HTF regime gate ──────────────────────────────────────
         # Same audit-then-act pattern. SAFE_MODE / proximity / vol-extreme
@@ -1145,6 +1392,16 @@ class BitunixFuturesObserver:
         # didn't run (gate_mode='off' or provider missing).
         if htf_funding_rate_at_decision is not None:
             order.extra["funding_rate_at_decision"] = htf_funding_rate_at_decision
+        # Deferred-fire: stamp redemption metadata onto order.extra so
+        # `paper_trade_record.extra_json` carries it (see record.extra
+        # passthrough below). Lets backtests segment redeemed vs immediate
+        # fires without joining audit timestamps. Strip the internal
+        # `audit_row_id` coordination handle before it leaks into
+        # order.extra (backtest-irrelevant).
+        if redeem_metadata is not None:
+            order.extra.update(
+                {k: v for k, v in redeem_metadata.items() if k != "audit_row_id"},
+            )
         self.logger_agent.log_proposed_order(order)
         self.logger_agent.log_event(
             actor="bitunix_futures",
@@ -1166,6 +1423,12 @@ class BitunixFuturesObserver:
                 "rationale": order.rationale,
                 "via": "bitunix_score",
                 "net_score": verdict_score.breakdown.net_score,
+                # Deferred-fire: False for immediate fires, True (+ bars_waited)
+                # for redeemed fires. Always present for clean filter queries.
+                "redeemed": bool(redeem_metadata),
+                "bars_waited": (
+                    redeem_metadata["bars_waited"] if redeem_metadata else None
+                ),
             },
         )
         try:
@@ -1173,9 +1436,26 @@ class BitunixFuturesObserver:
                 order, strategy="bitunix_futures", division="bitunix_futures",
                 max_hold_seconds=self.max_hold_seconds,
             )
+            # Carry `order.extra` through to `paper_trade_record.extra_json`.
+            # `from_order` only pulls specific named fields out of `extra`
+            # for the typed columns; without this passthrough, all the
+            # rest (`score_path`, `net_score`, `funding_rate_at_decision`,
+            # `redeemed`, `bars_waited`, `htf_size_multiplier`, etc.)
+            # would be lost on the DB write. Backtests need them.
+            record.extra = dict(order.extra)
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
         except Exception as e:
             log.warning("bitunix_observer: paper_trade_record write failed: %s", e)
+
+        # Deferred-fire gap 1 close: now that `order.id` exists, backfill
+        # the `pa_validation_redeem` audit row's `order_id` field. The
+        # row was written at PA-pass time (before sizing/risk), so
+        # `order_id` was None. Backtests can now one-hop join
+        # `pa_validation_redeem` → `paper_trade_record` by order_id.
+        if redeem_metadata is not None and redeem_metadata.get("audit_row_id"):
+            self._backfill_redeem_order_id(
+                int(redeem_metadata["audit_row_id"]), order.id,
+            )
 
         self._record_daily_risk(utc_date, proposal.effective_risk_pct or 0.0)
         self._record_score_fire(order.side, now.isoformat(), verdict_score.tier.value)

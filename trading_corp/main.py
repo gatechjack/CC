@@ -1303,6 +1303,17 @@ async def run(argv: list[str] | None = None) -> int:
                 name="bitunix-htf-regime-snapshot",
             )
 
+        # Deferred-fire PA redeem loop. When PA rejects a high-score TV
+        # alert in enforce mode, the observer caches the payload; this
+        # loop re-evaluates against fresh bars every 60s until the score
+        # decays (cache cleared in SKIP path) or PA passes (cache cleared,
+        # `pa_validation_redeem` audit row written). See observer
+        # `run_pa_redeem_loop` for the lifecycle.
+        asyncio.create_task(
+            bitunix_observer.run_pa_redeem_loop(interval_s=60.0),
+            name="bitunix-pa-redeem",
+        )
+
         # trade-plan PR 5 — position SL reconciler. Stateless 60s loop
         # that decides SL moves (BE → tp1 → Chandelier trail) per the
         # v2 lifecycle and emits `position_sl_update` audit rows. PR 5
