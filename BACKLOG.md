@@ -8,7 +8,105 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-17 05:40 UTC  *(supersedes 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+## END-OF-SESSION SNAPSHOT — 2026-05-17 17:25 UTC  *(supersedes 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+
+**Two-feature session: Polymarket watchlist (data + dashboard) + Promote/Demote UI for both venues — all shipped to prod.**
+
+Five commits this session, on top of `02f7c76` (the BitUnix EOS snapshot from 05:40 UTC):
+
+```
+30f8abe — polymarket: watchlist seed + dashboard panel + BACKLOG weekly-refresh
+406fe31 — docs: deploy_log — Polymarket watchlist seed + dashboard shipped 2026-05-17 14:43 UTC
+9108d2c — docs: deploy_log + BACKLOG — pm watchlist prod recovery + rate-limit lesson
+af63678 — docs: memo — PA validator structure-TF change (4h → 1h, 4h-as-sizing-bonus)   [PARALLEL SESSION]
+873e004 — polymarket: watchlist weekly refresh — Cloudflare 403 retry + --merge + systemd timer   [PARALLEL SESSION — deployment status unverified]
+efa6dc8 — promote/demote: dashboard buttons + endpoints + pinned-whales merge
+093353e — docs: deploy_log + BACKLOG — promote/demote shipped 2026-05-17 17:18 UTC
+```
+
+`af63678` + `873e004` came from a parallel session running while this one was active — see below.
+
+### What's live on prod that wasn't this morning
+
+1. **Polymarket watchlist data slot.** `agent_state(polymarket_copy_trader, watch_only_whales)` populated with **50 whales** from a 2026-05-17 sweep against the live data-api: top whales by realized PnL on resolved BUYs, satisfying ≥100 resolved positions AND ≥70% win rate. Top: everydaymortgage 90% / 577 / $1.42M. Computed locally and pushed to prod via `set_agent_state` — the prod-side sweep crashed at chunk 1163 with Cloudflare HTTP 403 (Azure VM IP got rate-limited). Workaround documented in deploy_log 2026-05-17 14:43 UTC + recovery 16:29 UTC.
+
+2. **Polymarket watchlist dashboard panel.** Renders below "Selected Whales" in the Whales tab at `/prediction-markets/polymarket_copy_trading`. Mirrors the Kalshi watchlist's layout. Columns: rank, whale, category, N positions, WR%, realized PnL, leaderboard PnL, leaderboard vol, profile link → polymarket.com/profile/<wallet>.
+
+3. **Promote + Demote buttons on both venues.**
+   - Watch list rows: VIEW (link to profile) + PROMOTE (HTMX POST to `/api/<venue>/watchlist/promote/<id>`). Promote moves whale from `watch_only_whales` → `selected_whales` + new `pinned_whales` slot, audits `*_whale_promoted`, strategy picks up on next poll (Polymarket 60s / Kalshi 600s) via existing per-cycle reload + cold-start protection.
+   - Selected Whales rows: new Action column with VIEW + DEMOTE (HTMX POST to `/api/<venue>/whales/demote/<id>`). Demote calls module-level `force_close_whale_positions` which emits synthetic SELL `would_have_placed` audits at entry-price for every tracked open position (the resolver pairs them into round_trips), removes whale from `selected_whales` + `pinned_whales`, adds entry back to `watch_only_whales`, audits `*_whale_demoted`. Synthetic SELLs are zero-PnL paper closes in v1; future iteration could plug in `broker.quote()` for true mark-to-market.
+
+4. **`pinned_whales` slot per venue.** New `agent_state` key keeping manual promotions sticky across `refresh_*_whales.py` runs. Both refresh scripts now MERGE pinned into the algorithm's selected_records before writing — so a manually-promoted whale survives a quarterly re-rank. BACKLOG `WO-4: Promote button` (filed 2026-05-15) closed by this ship.
+
+5. **Polymarket watchlist weekly cron (parallel-session commit `873e004`) — COMMITTED, NOT DEPLOYED.** `seed_polymarket_watchlist_deep.py --merge --max-total 100` flag + Cloudflare 403 retry/backoff in `_get_json` + systemd timer files in `infra/systemd/trading-corp-pm-watchlist-deep.{service,timer}` scheduling Sundays at 13:00 UTC. Confirmed via az run-command 17:24 UTC:
+   - prod `polymarket_data_api_client.py` md5 = `cccbd5cfe332...` vs local `a10c01ddbd2f...` → DIFFER
+   - prod `seed_polymarket_watchlist_deep.py` md5 = `8bf6c9f899e80...` vs local `0c704450164e...` → DIFFER
+   - `/etc/systemd/system/trading-corp-pm-watchlist-deep.*` → does not exist
+   **First action of next session:** ship the 2 modified .py files + the 2 systemd units via `az vm run-command`, then `daemon-reload + enable --now` the timer. Append deploy_log entry.
+
+### Current boot wiring on prod (PID 598297, post-promote/demote restart 17:18 UTC)
+
+```
+BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce,
+                         htf_regime_enabled=True, trade_plan_active=True
+```
+
+(Unchanged from the 05:40 EOS snapshot — this session didn't touch BitUnix code.)
+
+### Environment sync at session end
+
+Prod md5s vs local for the 7 promote/demote files (verified 17:20 UTC):
+- 5 of 7 MATCH exactly: polymarket_copy_trader.py, kalshi_copy_trader.py, pm_dashboard_body.html, refresh_polymarket_whales.py, refresh_kalshi_whales.py
+- 2 differ by CRLF-on-local vs LF-on-prod only (semantic equivalence): web/data.py, web/routes.py
+
+CRLF-vs-LF gotcha: `git diff` always generates LF-only patches, but `routes.py` is CRLF on both local AND prod. Patch fails at LF/CRLF mismatch. Workaround: run `sed -i 's/\r$//' trading_corp/web/routes.py` on prod BEFORE applying any patch that touches routes.py. The other 6 files were already LF on prod. This trap will recur on any future patch deploy that touches routes.py — added to memory `feedback_crlf_routes_py_deploy.md`.
+
+### Backup tags on prod (do NOT delete until ≥24h post-deploy confirms behavior)
+
+- `pre-pm-watchlist-20260517-1443` (3 files: polymarket_data_api_client.py, web/data.py, pm_dashboard_body.html)
+- `pre-promote-demote-20260517-1718` (7 files — see deploy_log entry for full list)
+
+### New memories this session
+
+- `feedback_crlf_routes_py_deploy.md` — CRLF-vs-LF deploy gotcha on routes.py. Future deploys touching this file need a sed normalize step.
+- `trading_corp_polymarket.md` — Polymarket division state at end of session (watchlist live; promote/demote live; weekly cron deployment-status unverified per parallel session).
+- (Implicit update to memory pointers in MEMORY.md.)
+
+### Tomorrow's pickup candidates (ordered by recommended sequence)
+
+1. **Deploy commit `873e004` (weekly cron + Cloudflare retry).** Already verified undeployed (see above). Ship:
+   - `trading_corp/data/polymarket_data_api_client.py` (modified — adds Cloudflare 403 retry/backoff in `_get_json`)
+   - `trading_corp/scripts/seed_polymarket_watchlist_deep.py` (modified — adds `--merge` and `--max-total` flags + a `--max-total` trim step + survives partial gamma-api failures)
+   - `infra/systemd/trading-corp-pm-watchlist-deep.service` (NEW)
+   - `infra/systemd/trading-corp-pm-watchlist-deep.timer` (NEW — Sundays 13:00 UTC)
+   - On prod: copy units to `/etc/systemd/system/`, `daemon-reload`, `enable --now trading-corp-pm-watchlist-deep.timer`, `systemctl restart trading-corp` (for the .py reload).
+   - Append a `deploy_log.md` entry.
+
+2. **Eyeball the watchlist + promote/demote buttons in the browser.** Hard-refresh `https://trading.jacksumner.com/prediction-markets/polymarket_copy_trading` and the Kalshi equivalent. Confirm:
+   - Polymarket Watch List section renders 50 whales below Selected Whales.
+   - PROMOTE button on watch-list rows works (click on a low-stakes test entry → verify state in agent_state).
+   - DEMOTE button on Selected Whales rows works (be careful — demote ON A REAL whale closes its paper book).
+   - 📌 badge appears next to any manually-promoted whales.
+
+3. **Verify resolver pairs the synthetic SELL audits correctly.** After the first real demote of a whale with open positions, check `polymarket_round_trips` / `kalshi_round_trips` for the new rows with `extra_json.is_synthetic_close=true`. If the resolver doesn't pair them (e.g., because of an order_id mismatch), the round_trip will stay unpaired and the dashboard will show dangling opens.
+
+4. **First-ever demote should be a Polymarket Selected Whales row with few or zero open positions.** Lowest-risk smoke test of the synthetic-SELL path. After verifying, exercise on Kalshi.
+
+5. **Optional: live broker quote for the synthetic close price.** v1 uses entry_price (zero-PnL paper close). Plug `broker.quote()` into `force_close_whale_positions` to mark-to-market the close. ~1h, would need a broker reference in the path (currently the helper is module-level + no broker).
+
+### Things to NOT do without explicit approval
+
+- Don't run `python -m trading_corp.scripts.refresh_polymarket_whales` from your local laptop OR prod without first checking if the parallel session's Cloudflare-retry patch landed. The naive script will crash on chunk ~1163 with HTTP 403 on the Azure VM IP. Local IP works for a manual one-shot.
+- Don't demote a whale with significant open paper position count without first verifying the resolver picks up the synthetic SELL audits — orphan opens are recoverable but messy.
+- Don't change the `pinned_whales` schema (currently list[str] for Kalshi, list[dict] for Polymarket — matches `selected_whales` per venue). Both refresh scripts assume the per-venue shape.
+
+### Session-start prompt for next session
+
+(See `~/.claude/.../memory/next_session_prompt_2026_05_17.md` for the full prompt — it pastes cleanly into a new session.)
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-17 05:40 UTC  *(superseded by 17:25)*
 
 **Big session: deferred-fire PA mechanism + dashboard surfaces + trade-plan v2 multi-leg replay + Phase 1E flag flip — all shipped to prod.** Five commits in sequence (after `0ad7542` PCT pruner from the 03:55 snapshot):
 
