@@ -1,212 +1,140 @@
-# Session start — 2026-05-18 (pickup from 2026-05-17 05:40 UTC EOS)
+# Next-session pickup prompt (2026-05-18)
 
-Read `BACKLOG.md` top snapshot first. This file is the operational
-pickup brief — the queries to run, what each one's verifying, decision
-tree per result.
+*This file was rewritten 2026-05-17 17:45 UTC by the Polymarket
+watchlist weekly-refresh session. The previous content described the
+2026-05-17 05:40 UTC EOS (Phase 1E flip + paper-mode multi-leg replay)
+— that snapshot is still in BACKLOG.md if you need its detail; the
+canonical pickup-now state is below.*
 
-## What shipped yesterday (high-level)
+---
 
-Five big things landed on prod 2026-05-17, in sequence:
+Paste this into a fresh Claude Code session in `C:/Users/AA Incorporado/cc`:
 
-1. **Deferred-fire PA mechanism** — when PA rejects a high-score fire,
-   the payload is cached; a 60s `bitunix-pa-redeem` task re-runs the
-   pipeline against fresh bars until score decays or PA passes.
-2. **Deferred-fire dashboard surfaces** — Pending PA panel + redeem/expired
-   aggregates + decision-flow redemption marker on the bitunix division
-   page.
-3. **Paper-mode multi-leg replay** — `paper_trade_replay` is now v2-aware:
-   detects tp1/tp2/tp3 crosses, advances SL per Option C floor lifecycle
-   (BE → tp1-price), emits `position_sl_update` audits with
-   `source='paper_trade_replay'`.
-4. **Trade Plan v2 dashboard panel** — surfaces `trade_plan_decision` +
-   `position_sl_update` audits with entry/SL/tp1/tp2/tp3/sl_method/tp2_method/skip_reason.
-5. **`trade_plan.enabled: true` flag flip (Phase 1E gate lifted)** — observer
-   now dispatches `_build_proposal_v2` (structure-preferred SL + 3-leg TP)
-   as the active placement path. Boot wiring confirms `trade_plan_active=True`.
+---
 
-All paper-mode. No live broker placement (Phase 4 is the next gate).
+Resuming from 2026-05-17 ~17:45 UTC wrap. Two sessions ran in parallel
+yesterday — both finished cleanly. Read the EOS snapshot at the top of
+`BACKLOG.md` first; it supersedes the older 17:25 UTC snapshot left by
+the parallel session.
 
-## First thing to do — verification queries
+## What landed yesterday — three deploys to prod, all reversible
 
-Run these against prod via `az vm run-command invoke` (SSH still
-blocked from this network per `feedback_az_run_command_when_ssh_blocked.md`):
+1. **14:43 UTC — Polymarket watchlist seed + dashboard panel** (commit `30f8abe`).
+   `agent_state(polymarket_copy_trader, watch_only_whales)` = 50 whales. Dashboard renders at `/prediction-markets/polymarket_copy_trading`. Local-IP one-shot — prod sweep crashed at chunk 1163 with Cloudflare 403; recovery shipped data via `set_agent_state` directly.
+
+2. **17:18 UTC — Promote / Demote buttons across both venues + `pinned_whales`** (commit `efa6dc8`).
+   - Watch-list rows: VIEW + PROMOTE (`POST /api/<venue>/watchlist/promote/<id>`).
+   - Selected Whales rows: VIEW + DEMOTE (`POST /api/<venue>/whales/demote/<id>`).
+   - Demote calls module-level `force_close_whale_positions` → synthetic SELL `would_have_placed` audits at entry-price → resolver pairs into round_trips.
+   - New `pinned_whales` slot per venue keeps manual promotions sticky across `refresh_*_whales.py` runs.
+   - New audit kinds: `{polymarket,kalshi}_whale_{promoted,demoted}`. BACKLOG `WO-4` closed.
+
+3. **17:38 UTC — Polymarket watchlist weekly cron + Cloudflare 403 retry** (commit `873e004`).
+   - `_get_json` retries on 403+cf-ray with exponential backoff (30/60/120/240/300s, ~6 attempts). Terminal failure raises `PolymarketRateLimitError`.
+   - `fetch_market_resolutions` per-chunk swallow → partial coverage instead of abort.
+   - `seed_polymarket_watchlist_deep.py --merge --max-total N` for weekly accumulation.
+   - `trading-corp-pm-watchlist-deep.{service,timer}` enabled + active. **Next fire: Sun 2026-05-24 13:02:51 UTC.**
+
+Service is healthy. PID 598297 (post-17:18 restart, not changed by the 17:38 ship — Option 1 deferred the restart). Local git tree clean for both sessions' files.
+
+**One caveat on the 17:38 deploy:** Option 1 was chosen (no `systemctl restart trading-corp`). Live PCT + polymarket_arbitrage still use the pre-patch in-process Polymarket client and will pick up the Cloudflare retry on the next natural restart. Acceptable; failure mode is just an error log on an edge case. The weekly cron's seed already gets the retry because it runs in a fresh Python process.
+
+## Read first
+
+1. `BACKLOG.md` — EOS snapshot at top (2026-05-17 **17:45** UTC; supersedes 17:25).
+2. `runbooks/deploy_log.md` — top 3 entries are yesterday's deploys (14:43, 17:18, 17:38 UTC).
+3. Memory (loaded automatically):
+   - `trading_corp_polymarket.md` (updated — weekly cron now DEPLOYED)
+   - `feedback_crlf_routes_py_deploy.md` (CRLF gotcha if you touch routes.py)
+   - `feedback_parallel_sessions_stop_and_discuss.md`
+   - `feedback_uvicorn_no_reload_in_prod.md`
+
+## FIRST ACTION — three verification queries
+
+SSH likely still blocked from non-home IPs; pivot to `az vm run-command create --script @file` per `feedback_az_run_command_when_ssh_blocked.md`. Windows checkouts are CRLF → `tr -d '\r'` before deploy.
+
+### Q1 — Browser eyeball
+
+Hard-refresh `https://trading.jacksumner.com/prediction-markets/polymarket_copy_trading`. Confirm:
+- Polymarket Watch List section renders 50 whales below Selected Whales (top: `everydaymortgage / 90% / 577 positions / $1.42M`).
+- PROMOTE button on watch-list rows (renders + htmx confirm prompt).
+- DEMOTE button on Selected Whales rows (renders + htmx confirm prompt that mentions synthetic-SELL semantics).
+- 📌 badge on manually-promoted whales (none yet expected — first PROMOTE smoke test will create one).
+
+### Q2 — Weekly timer state
 
 ```bash
-# Build the query block as one az invoke to amortize the ~30s overhead
-az vm run-command invoke -n tc-prod-vm -g rg-shared-prod \
-  --command-id RunShellScript --scripts "
-DB=/home/azureuser/trading_corp/data/trading_corp.db
-SQ='sqlite3 -header -column'
-
-echo '=== Q1: trade_plan_decision audits since flip ==='
-\$SQ \$DB \"
-  SELECT COUNT(*) AS n,
-         SUM(CASE WHEN json_extract(payload_json,'\$.should_trade')=1 THEN 1 ELSE 0 END) AS fired,
-         SUM(CASE WHEN json_extract(payload_json,'\$.should_trade')=0 THEN 1 ELSE 0 END) AS skipped
-    FROM audit_event
-   WHERE kind='trade_plan_decision'
-     AND ts >= '2026-05-17T05:14:00';
-\"
-
-echo '=== Q2: pa_validation_redeem + expired audits since 03:53 UTC ==='
-\$SQ \$DB \"
-  SELECT kind, COUNT(*) AS n
-    FROM audit_event
-   WHERE kind IN ('pa_validation_redeem','pa_validation_expired')
-     AND ts >= '2026-05-17T03:53:00'
-   GROUP BY kind;
-\"
-
-echo '=== Q3: v2 paper_trade_records since flip ==='
-\$SQ \$DB \"
-  SELECT order_id, ts, tier, side, result,
-         json_extract(extra_json,'\$.tp_plan_version') AS tp_v,
-         json_extract(extra_json,'\$.filled_legs') AS legs,
-         json_extract(extra_json,'\$.redeemed') AS redeemed,
-         actual_r_multiple
-    FROM paper_trade_record
-   WHERE division='bitunix_futures' AND ts >= '2026-05-17T05:14:00'
-   ORDER BY ts DESC LIMIT 10;
-\"
-
-echo '=== Q4: position_sl_update audits since 05:14 UTC ==='
-\$SQ \$DB \"
-  SELECT ts, json_extract(payload_json,'\$.lifecycle_state') AS state,
-         json_extract(payload_json,'\$.source') AS source,
-         json_extract(payload_json,'\$.filled_legs') AS legs
-    FROM audit_event WHERE kind='position_sl_update'
-     AND ts >= '2026-05-17T05:14:00'
-   ORDER BY ts DESC LIMIT 10;
-\"
-
-echo '=== Q5: score-engine activity since flip ==='
-\$SQ \$DB \"
-  SELECT json_extract(payload_json,'\$.tier') AS tier,
-         json_extract(payload_json,'\$.outcome') AS outcome, COUNT(*) AS n
-    FROM audit_event
-   WHERE actor='bitunix_futures' AND kind='bitunix_score_decided'
-     AND ts >= '2026-05-17T05:14:00'
-   GROUP BY tier, outcome ORDER BY n DESC;
-\"
-
-echo '=== Q6: boot wiring (should still be trade_plan_active=True) ==='
-journalctl -u trading-corp --since '24 hours ago' --no-pager 2>&1 \
-  | grep 'BitUnix observer wiring' | tail -3
-
-echo '=== Q7: H2 falsification gate progress ==='
-\$SQ \$DB \"
-  SELECT json_extract(payload_json,'\$.tier') AS tier, COUNT(*) AS n
-    FROM audit_event
-   WHERE actor='bitunix_futures' AND kind='bitunix_score_decided'
-     AND ts >= '2026-05-16T19:21:00'
-   GROUP BY tier;
-\"
-" --query "value[0].message" -o tsv
+sqlite3 :memory: 'select 1'  # local sanity
+# then on prod:
+systemctl list-timers trading-corp-pm-watchlist-deep.timer --no-pager
 ```
 
-## Decision tree per result
+Expected: `NEXT Sun 2026-05-24 13:0X:XX UTC` (within 15-min jitter), state `enabled` + `active`. If `inactive` or missing → rollback recipe in `runbooks/deploy_log.md` "2026-05-17 17:38 UTC" entry.
 
-### Q1 (`trade_plan_decision` count)
+### Q3 — Health of yesterday's three deploys end-to-end
 
-- **n=0**: PA is still rejecting 100% of fires; v2 path not exercised yet.
-  Check Q5 — if score-engine IS firing, the rejects are caching (Q2 will
-  show redeem/expired). Mechanism is working; just no fortunate PA-pass
-  yet. Per `feedback_pa_gate_well_calibrated.md`, this is regime-driven,
-  not gate problem. Patience.
-- **n>0, fired=0, skipped=all**: v2 is running but the trade-plan
-  builder itself is skipping (most likely `swing_too_close` or
-  `fees_too_high_for_risk`). Pull the `skip_reason` distribution —
-  query at deploy_log.md "Watch for" section.
-- **n>0, fired>0**: 🎉 v2 trade fired in paper. Verify Q3 has a matching
-  `paper_trade_record` with `tp_plan_version='v2'`. The first such row
-  is the proof-of-life for the whole trade-plan v2 series.
+```bash
+sqlite3 /home/azureuser/trading_corp/data/trading_corp.db <<'SQL'
+-- (a) Polymarket watchlist slot still populated?
+SELECT COUNT(*) AS slot_present
+  FROM agent_state
+ WHERE actor='polymarket_copy_trader' AND key='watch_only_whales';
 
-### Q2 (deferred-fire audits)
+-- (b) Any promote/demote audits since 17:18 UTC?
+SELECT kind, COUNT(*) AS n
+  FROM audit_event
+ WHERE kind IN ('polymarket_whale_promoted','polymarket_whale_demoted',
+                'kalshi_whale_promoted','kalshi_whale_demoted')
+ GROUP BY kind;
 
-- **redeem>0**: deferred-fire mechanism caught a reject + bar-tick
-  re-eval found PA aligned. The redeem audit row has `order_id` (back-
-  filled after placement). Look at `bars_waited` — useful for "is the
-  60s re-eval cadence right?"
-- **expired>0**: cached signals dropped without firing. `reason` field
-  (`score_decay` vs `opposite_side`) tells you why. Pure score_decay =
-  natural ledger TTL expiry. Lots of `opposite_side` = volatile/whipsaw
-  regime where the score keeps flipping.
-- **both=0**: no PA rejects yet OR all of them got immediately re-fired
-  by score SKIP (very rare). Check Q5 for context.
+-- (c) PCT pending count (the 11:30 UTC pruner ran at 11:35 yesterday — should still be cleaning).
+SELECT COUNT(*) AS pct_pending
+  FROM audit_event
+ WHERE actor='polymarket_copy_trader' AND kind='would_have_placed';
+SQL
+```
 
-### Q3 (v2 paper_trade_records)
+Expected: (a) `1`. (b) Empty (no clicks yet) OR small counts if smoke-tested. (c) ~1,800-2,000 (was 1,861 at 14:53 UTC yesterday before the 17:18 restart).
 
-- **First v2 row landing** — confirms the full code path: score → PA pass
-  → HTF pass → `_build_proposal_v2` → `_log_trade_plan_decision` → placement
-  → `paper_trade_record` write with `extra_json.tp_plan_version='v2'`.
-- **`filled_legs` populated** — confirms paper_trade_replay is detecting
-  TP crosses + writing back to extra_json.
-- **`actual_r_multiple` weighted across legs** (0.125 / 0.75 / 1.25
-  for the Option C scenarios) — confirms the multi-leg R aggregation
-  math.
+## Pickup candidates (ordered)
 
-### Q4 (`position_sl_update`)
+1. **Smoke-test PROMOTE end-to-end** — pick the lowest-stakes watch-list whale (smallest `realized_pnl_usdc`), click PROMOTE, verify:
+   - `agent_state(polymarket_copy_trader, selected_whales)` grew by one.
+   - `agent_state(polymarket_copy_trader, pinned_whales)` grew by one.
+   - `polymarket_whale_promoted` audit landed.
+   - Strategy picks it up on the next 60s poll → `polymarket_copy_cold_start` audit on the promoted wallet.
 
-- **rows with `source='paper_trade_replay'`** — multi-leg replay
-  detected a lifecycle transition (tp1 fill → SL to BE, tp2 fill →
-  SL to tp1-price). The reconciler itself stays idempotent in paper
-  mode because replay updates extra_json synchronously.
-- **rows with `source='reconciler'`** — wouldn't expect any until
-  Phase 4 (when broker truth populates filled_legs from live fills).
+2. **Smoke-test DEMOTE end-to-end** — only after PROMOTE works. Pick a whale with zero open paper positions (lowest risk of dangling synthetic SELLs). Verify `polymarket_round_trips` gets new rows with `extra_json.is_synthetic_close=true` and the resolver pairs them. After Polymarket succeeds, exercise on Kalshi.
 
-### Q5 (score-engine activity)
+3. **Optional housekeeping** (each ~5-15 min):
+   - Fix the `apply='true'` query bug in `runbooks/session_start_2026_05_17.md` — `json_extract(...)='true'` doesn't match SQLite integer `1`. Two-line edit; prevents future verification queries returning empty.
+   - Decide on `reports/{backtest_results, data_inventory, decision_log, hypotheses, strategy_candidates}.md → decision_log.zip` archival. Currently shown as deleted in `git status`; commit the archival or restore.
 
-Sanity check that TV alerts are still arriving + observer is processing.
-Pre-deferred-fire baseline was ~5 STANDARD/hour, ~3 SKIP/hour. Should
-look roughly similar.
+4. **Standing backlog** (no urgency from this session):
+   - Kalshi weather dashboard analysis partial (P3, 1-2h; data gate met — 63 rows since target_iso ship).
+   - Kalshi `temporal_bucket_arb` `expires_at` payload audit (P2, ~30 min).
+   - Live broker quote in `force_close_whale_positions` (parallel-session deferred; ~1h, would need a broker reference in the helper path).
+   - PMCC audit (perennial — needs scope-narrowing first).
 
-### Q6 (boot wiring)
+5. **A week out — Sun 2026-05-24**: watch the first weekly cron fire. Verify it merges new whales without clobbering existing `included_iso`. Expected wall-clock ~30-60 min (~2300 gamma-api calls). With the Cloudflare retry now live in the timer's Python process, a partial-rate-limit during the sweep will degrade to partial coverage instead of full abort.
 
-Should read `trade_plan_active=True`. If a parallel session restarted
-trading-corp + something rolled back the YAML, this would catch it.
+## Things to NOT do without explicit approval
 
-### Q7 (H2 falsification gate)
+- Don't `systemctl restart trading-corp` blindly. The live PCT + polymarket_arbitrage retry-resilience is dormant until that happens — only restart if you've decided you want it. ~5-15s blip.
+- Don't disable `trading-corp-pm-watchlist-deep.timer` or change its cadence without ≥1 successful weekly run confirming behavior.
+- Don't delete backup tags `pre-pm-weekly-refresh-20260517-1730`, `pre-promote-demote-20260517-1718`, or `pre-pm-watchlist-20260517-1443` until ≥48h post-deploy.
+- Don't demote a whale with significant open paper position count without first verifying the resolver pairs the synthetic SELLs (low-stakes whale first).
+- Don't change the `pinned_whales` schema or the per-venue `selected_whales` shape.
+- Don't flip BitUnix `htf_gate.mode: enforce → shadow`. Don't flip `trade_plan.enabled: true → false`. Standard BitUnix do-not-touch list applies.
+- Don't deploy via `patch -p1` over a file that touches `routes.py` without prepending `sed -i 's/\r$//' trading_corp/web/routes.py` per `feedback_crlf_routes_py_deploy.md`.
+- Don't disable the PCT stale-pruner timer (`trading-corp-pct-pruner.timer`) — separate from this session, still load-bearing for the watchlist hygiene.
 
-Counts PREMIUM-tier fires since H2 went live (2026-05-16 19:21 UTC).
-Gate is ≥30 PREMIUM with PREMIUM mean R ≥ STANDARD mean R + 0.05R.
-Last check was 1/30 (3.3%). Should accelerate now that deferred-fire
-+ v2 placement are unblocking actual paper trades.
+## Environment notes
 
-## What to NOT do
+- Local Python: `C:\Users\AA Incorporado\AppData\Local\Python\bin\python.exe` (bare `python` is the MS Store stub and breaks).
+- SSH usually blocked from non-home IPs; pivot to `az vm run-command create --script @file` per `feedback_az_run_command_when_ssh_blocked.md`.
+- Windows checkout CRLF; deploy scripts MUST `tr -d '\r'` before `az vm run-command create`.
+- `.py` changes under `trading_corp/` need `systemctl restart trading-corp` to take effect in the live service (uvicorn runs without `--reload` in prod). Templates DO live-reload (Jinja). Timer-driven scripts pick up new code automatically because they spawn fresh Python processes.
+- `az vm run-command create` is single-tenant; `--name` must be unique-per-deploy or `az vm run-command delete --yes` first.
 
-See BACKLOG.md "Things to NOT do without explicit approval" section —
-specifically:
-
-- ⚠️ **Do NOT flip `trade_plan.enabled: false`** without a v2-performance
-  memo. The trade-plan v2 path is the active placement code now;
-  rollback would re-disable it.
-- ⚠️ **Do NOT propose loosening PA gate thresholds when reject rates
-  look high.** Per `feedback_pa_gate_well_calibrated.md`, chart-review
-  evidence argues the gate is correctly catching bad setups; the
-  deferred-fire mechanism is the capture path, not threshold tuning.
-- Do NOT delete the four backup tags from yesterday's deploys until
-  ≥24h confirms behavior (tags listed in BACKLOG snapshot).
-
-## If you need to ship code that touches the score path
-
-CLAUDE.md § 4 still applies — get explicit per-session approval before
-touching TV → broker pipeline, risk gate logic, audit-write ordering,
-secrets handling, broker adapters, LangGraph state, runbooks, infra
-Bicep, VM-side configuration, `_acquire_lock()`, `broker_fallback_to_paper`
-semantics, `auto_execute_caps`, HITL bypass, or default any new strategy
-to `auto_execute: true`.
-
-## Deploy mechanic refresher
-
-SSH is blocked from current network. Use `az vm run-command invoke` per
-`feedback_az_run_command_when_ssh_blocked.md`. For large patches, gzip
-+ base64 fits under the 28KB `--scripts` cap. Surgical patches via
-Python anchored patcher preserve prod drift; full-file replace is OK
-when local md5 == HEAD~1 md5 (no drift). LF-normalize before any
-byte-level op (Windows CRLF vs prod LF per
-`feedback_surgical_edits_over_whole_file_scp.md`).
-
-BitUnix .py + YAML changes ALL need `systemctl restart trading-corp`
-(per `feedback_bitunix_no_hot_reload.md` + `feedback_uvicorn_no_reload_in_prod.md`).
-Templates DO live-reload (Jinja re-reads per request) — only deploy that
-DOESN'T need restart.
+Honest assessment first — don't dive into code until the three verification queries (Q1/Q2/Q3) come back clean.

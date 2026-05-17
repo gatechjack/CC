@@ -8,7 +8,110 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-17 17:25 UTC  *(supersedes 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+## END-OF-SESSION SNAPSHOT — 2026-05-17 17:45 UTC  *(supersedes 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+
+**Wrap of the Polymarket watchlist weekly-refresh session.** This session picked up the BACKLOG P2 entry that the parallel session had marked as "COMMITTED BUT NOT DEPLOYED" at the end of THEIR 17:25 UTC wrap, and shipped it. The 17:25 EOS snapshot was therefore stale by 13 minutes; this one supersedes it.
+
+### Two commits this session
+
+```
+873e004 — polymarket: watchlist weekly refresh — Cloudflare 403 retry + --merge + systemd timer   (committed 17:14 UTC, deployed 17:38 UTC)
+88c772c — docs: deploy_log + BACKLOG — pm watchlist weekly refresh shipped 2026-05-17 17:38 UTC
+```
+
+Plus the parallel session's commits landed alongside this session's work:
+```
+093353e — docs: deploy_log + BACKLOG — promote/demote shipped 2026-05-17 17:18 UTC   [PARALLEL]
+4b010db — docs: BACKLOG — EOS snapshot 2026-05-17 17:25 UTC   [PARALLEL — superseded by this snapshot]
+```
+
+### What's now live on prod that wasn't at the 17:25 UTC parallel snapshot
+
+1. **`polymarket_data_api_client._get_json` retries on Cloudflare 403.** Exponential backoff via module-level `_CLOUDFLARE_RETRY_DELAYS_SEC = (30, 60, 120, 240, 300)` (~6 attempts total). Detection via `_is_cloudflare_block()` (cf-ray header / server=cloudflare header / body marker). Terminal failure raises the existing `PolymarketRateLimitError` — which is now documented as covering 429 AND CF-403-after-budget.
+
+2. **`fetch_market_resolutions` survives chunk rate-limits.** Each chunk's `_get_json` call is now wrapped in try/except `PolymarketRateLimitError`. Failed chunks fall through to the existing `not_found` sentinel; sweep continues with partial coverage. Logs `rate_limited_chunks` summary. Replaces the 2026-05-17 16:00 UTC failure mode (single chunk 403 aborted the whole sweep).
+
+3. **`seed_polymarket_watchlist_deep.py --merge --max-total N`.** Union with existing slot, preserve existing-entry `included_iso`, cap merged list by `realized_pnl_usdc` desc. Cold-start safe (degenerates to overwrite if slot is empty).
+
+4. **`trading-corp-pm-watchlist-deep.{service,timer}` armed.** Weekly Sunday 13:00 UTC + 15-min jitter. Enabled + active. Next fire: **Sun 2026-05-24 13:02:51 UTC**. ExecStart includes `--merge --max-total 100`.
+
+### Current boot wiring on prod (PID 598297, unchanged from 17:25 — no service restart this session)
+
+```
+BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce,
+                         htf_regime_enabled=True, trade_plan_active=True
+```
+
+**Dormant on live traffic** (per Option 1 chosen this session — no service restart):
+- Live PCT + polymarket_arbitrage still use the pre-patch in-process Polymarket client. They'll pick up the Cloudflare retry on the next natural `systemctl restart trading-corp`. Acceptable because those paths rarely hit Cloudflare; failure mode is just an error log on an edge case.
+- The new timer is loaded but won't fire until Sun 2026-05-24 13:00 UTC (+ jitter).
+
+### Environment sync at session end (md5-verified post-deploy)
+
+- `trading_corp/data/polymarket_data_api_client.py`: prod md5 = `a10c01ddbd2f1c451af8c501aec80010` = local `HEAD` exactly ✅
+- `trading_corp/scripts/seed_polymarket_watchlist_deep.py`: prod md5 = `0c704450164e756d94dcf628206d77b3` = local `HEAD` exactly ✅
+- `/etc/systemd/system/trading-corp-pm-watchlist-deep.service` + `.timer`: present, byte-identical to local source.
+- `trading-corp-pm-watchlist-deep.timer`: enabled + active; next-fire Sun 2026-05-24 13:02:51 UTC.
+
+The 7 promote/demote files from the parallel session at 17:18 UTC are unaffected by my session (different files; no overlap). Local git tree clean for my files; parallel session has unstaged work on `.claude/settings.json` + BitUnix backtest scripts + `btc_accumulator.py` (their stuff — leave alone).
+
+### Backup tags on prod (do NOT delete until ≥24h post-deploy confirms behavior)
+
+- `pre-pm-weekly-refresh-20260517-1730` (2 files: polymarket_data_api_client.py, seed_polymarket_watchlist_deep.py)
+- `pre-promote-demote-20260517-1718` (7 files — see 17:18 deploy_log entry)
+- `pre-pm-watchlist-20260517-1443` (3 files — see 14:43 deploy_log entry)
+
+### Surfaced this session — worth noting for future archaeology
+
+- **Prod-side drift on `polymarket_data_api_client.py` pre-deploy.** Pre-patch md5 was `cccbd5c…` — didn't match the 14:43 UTC post-deploy md5 from earlier today, nor any git commit's state. Most likely cause: a recovery edit during the 16:00 UTC Cloudflare incident wrote intermediate Python code that wasn't captured in git. `patch -p1` applied cleanly anyway (no rejects); prod is now byte-identical to local HEAD. Not urgent, but the pattern (uncaptured prod drift) is worth a future archaeology pass if it recurs.
+
+### Memory updates this session
+
+- `trading_corp_polymarket.md` — Weekly cron section flipped from "COMMITTED BUT NOT DEPLOYED" → "DEPLOYED 2026-05-17 17:38 UTC". Added note on Option-1 deferral of `systemctl restart` and the prod drift mystery.
+- `MEMORY.md` — Polymarket index line updated to match.
+- No NEW memory files created this session; the prod-drift observation is captured in the relevant deploy_log entry instead of a separate memory (it's a one-off observation, not a recurring pattern yet).
+
+### Tomorrow's pickup candidates (ordered by recommended sequence)
+
+1. **Eyeball the new weekly timer + watchlist promote/demote in the browser.** Hard-refresh `/prediction-markets/polymarket_copy_trading`. Confirm:
+   - Polymarket Watch List section renders 50 whales below Selected Whales.
+   - PROMOTE button on watch-list rows works on a low-stakes test entry.
+   - DEMOTE button on Selected Whales rows works (careful — demote ON A REAL whale closes its paper book).
+   - 📌 badge appears next to any manually-promoted whales.
+   - `systemctl list-timers trading-corp-pm-watchlist-deep.timer` shows the expected next-fire.
+
+2. **First-ever demote should be on a Polymarket Selected Whales row with few or zero open positions.** Lowest-risk smoke test of the synthetic-SELL path (parallel session's 17:18 ship). After verifying, exercise on Kalshi.
+
+3. **Verify resolver pairs the synthetic SELL audits correctly.** After the first real demote of a whale with open positions, check `polymarket_round_trips` / `kalshi_round_trips` for new rows with `extra_json.is_synthetic_close=true`. If unpaired, the round_trip stays open + dashboard shows dangling opens.
+
+4. **Watch for the first weekly cron fire** (Sun 2026-05-24 13:02:51 UTC ± jitter). Expected behavior: ~30-60 min wall-clock; ends with one `set_agent_state` write that MERGES new whales into `watch_only_whales` while preserving existing `included_iso`. Verify via `agent_state` count + `included_iso` distribution.
+
+5. **Optional cleanup items deferred this session:**
+   - Fix the `apply='true'` query bug in `runbooks/session_start_2026_05_17.md` (`json_extract(...)='true'` doesn't match SQLite integer `1`). Two-line edit; prevents future audits returning empty.
+   - Decide on `reports/{backtest_results, data_inventory, decision_log, hypotheses, strategy_candidates}.md → decision_log.zip` archival — currently shown as deleted in `git status`. Commit the archival or restore.
+
+6. **Optional broker-quote upgrade to `force_close_whale_positions`** — v1 uses entry_price (zero-PnL paper close). Plug `broker.quote()` for true mark-to-market. ~1h, would need a broker reference in the helper path.
+
+7. **The standing backlog** (any time, no urgency from this session): kalshi weather dashboard analysis partial; kalshi temporal_bucket_arb expires_at audit; PMCC audit; the rest of P2/P3 items.
+
+### Things to NOT do without explicit approval
+
+- ~~Don't run `refresh_polymarket_whales.py` from the Azure VM IP until `873e004` is deployed.~~ **DEPLOYED 17:38 UTC.** The script will now retry through Cloudflare 403s automatically. Local-IP runs continue to work.
+- Don't disable `trading-corp-pm-watchlist-deep.timer` or change its 13:00 UTC cadence without ≥1 successful weekly run confirming behavior.
+- Don't delete the `pre-pm-weekly-refresh-20260517-1730` backup tag until ≥48h post-deploy.
+- Don't `systemctl restart trading-corp` blindly — schedule a deliberate restart only if you want live PCT + polymarket_arbitrage to pick up the Cloudflare retry. ~5-15s blip.
+- Don't demote a whale with significant open paper position count without first verifying the resolver picks up the synthetic SELL audits (parallel-session warning preserved).
+- Don't change the `pinned_whales` schema (parallel-session warning preserved).
+- Don't flip `htf_gate.mode: shadow → enforce` back (it's at `enforce`). Don't flip `trade_plan.enabled: false` (Phase 1E live). Standard BitUnix do-not-touch list applies.
+- Don't deploy via `patch -p1` over a file that touches `routes.py` without prepending the CRLF-normalize step (`feedback_crlf_routes_py_deploy.md`).
+
+### Session-start prompt for next session
+
+→ `runbooks/session_start_2026_05_18.md` (canonical) — also mirrored at `memory/next_session_prompt_2026_05_18.md` for memory recall.
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-17 17:25 UTC  *(superseded by 17:45)*
 
 **Two-feature session: Polymarket watchlist (data + dashboard) + Promote/Demote UI for both venues — all shipped to prod.**
 
