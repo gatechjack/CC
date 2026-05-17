@@ -663,6 +663,11 @@ class DivisionViewSnapshot:
     # (even when nothing cached) so the template can show "no signal
     # pending" rather than hiding the panel.
     bitunix_pending_pa: dict | None = None
+    # trade-plan PR 6 — v2 trade-plan decisions + SL lifecycle updates.
+    # Shape on `build_bitunix_trade_plan_view`. Renders empty-state when
+    # `trade_plan.enabled: false` (today's prod state) so the panel is
+    # visible-but-empty pre-flip and starts populating post-flip.
+    bitunix_trade_plan: dict | None = None
 
 
 @dataclass
@@ -1635,6 +1640,170 @@ def _bitunix_fee_config(deps: Any) -> Any:
     """
     observer = getattr(deps, "bitunix_observer", None)
     return getattr(observer, "fee_config", None) if observer else None
+
+
+def build_bitunix_trade_plan_view(db_url: str, deps: Any) -> dict | None:
+    """trade-plan PR 6 — surface trade-plan v2 decisions + SL lifecycle.
+
+    Reads two audit kinds:
+      - `trade_plan_decision`: emitted by observer's `_log_trade_plan_decision`
+        whenever the v2 dispatch path runs (even when `trade_plan.enabled:
+        false` — the observer still computes the plan, just doesn't use
+        it for placement). Shows what v2 WOULD do.
+      - `position_sl_update`: emitted by the position reconciler + the
+        paper-mode v2 replay when SL advances per the Option C lifecycle.
+
+    Returns None when the observer isn't wired (test envs); otherwise
+    a dict that's always renderable — empty lists when no audits exist
+    yet. Operators read this to validate v2 behavior before flipping
+    `trade_plan.enabled: true`, and to monitor it after.
+
+    Shape:
+      {
+        enabled: bool,                  # trade_plan.enabled in observer config
+        fee_config: {...} | None,       # observer.fee_config introspection
+        decisions: [{ts_et, trigger_signal, score_side, score_tier,
+                     should_trade, skip_reason, entry, stop_loss,
+                     tp1, tp2, tp3, sl_method, tp2_method,
+                     risk_per_unit, tp1_frac, tp2_frac, tp3_frac}, ...],
+        sl_updates: [{ts_et, order_id, symbol, side, lifecycle_state,
+                      current_sl, new_sl, reason, filled_legs, source}, ...],
+        counts_24h: {decisions_total, should_trade_true, skipped,
+                     sl_updates_total},
+      }
+    """
+    observer = getattr(deps, "bitunix_observer", None)
+    if observer is None:
+        return None
+    trade_plan_cfg = getattr(observer, "trade_plan_config", None)
+    fee_cfg = getattr(observer, "fee_config", None)
+    enabled = False
+    if trade_plan_cfg is not None:
+        # Both StrategyConfig instances + dict-style configs supported.
+        enabled_attr = getattr(trade_plan_cfg, "enabled", None)
+        if isinstance(trade_plan_cfg, dict):
+            enabled = bool(trade_plan_cfg.get("enabled", False))
+        elif enabled_attr is not None:
+            enabled = bool(enabled_attr)
+        else:
+            # StrategyConfig doesn't carry `enabled` itself; the activation
+            # flag lives at the YAML `trade_plan.enabled` level. If
+            # `trade_plan_config` is set at all, treat the path as live —
+            # main.py only wires it when enabled=true.
+            enabled = True
+
+    fee_summary: dict | None = None
+    if fee_cfg is not None:
+        try:
+            fee_summary = {
+                "taker_pct": float(getattr(fee_cfg, "taker_fee_pct", 0.0)),
+                "maker_pct": float(getattr(fee_cfg, "maker_fee_pct", 0.0)),
+                "slippage_pct": float(getattr(fee_cfg, "slippage_pct", 0.0)),
+                "entry_is_taker": bool(getattr(fee_cfg, "entry_is_taker", True)),
+                "tp_is_maker": bool(getattr(fee_cfg, "tp_is_maker", False)),
+            }
+        except Exception as e:
+            log.warning("bitunix trade_plan fee_config introspection failed: %s", e)
+
+    decisions: list[dict] = []
+    sl_updates: list[dict] = []
+    counts_24h = {
+        "decisions_total": 0,
+        "should_trade_true": 0,
+        "skipped": 0,
+        "sl_updates_total": 0,
+    }
+    try:
+        cutoff_24h = (
+            datetime.now(timezone.utc) - timedelta(hours=24)
+        ).isoformat()
+        with db.connect(db_url) as conn:
+            # Recent decisions list (last 10)
+            dec_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind='trade_plan_decision' "
+                "ORDER BY id DESC LIMIT 10"
+            ).fetchall()
+            for r in dec_rows:
+                try:
+                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except Exception:
+                    continue
+                decisions.append({
+                    "ts_et": format_et_short(r["ts"]),
+                    "trigger_signal": p.get("trigger_signal"),
+                    "score_side": p.get("score_side"),
+                    "score_tier": p.get("score_tier"),
+                    "should_trade": bool(p.get("should_trade")),
+                    "skip_reason": p.get("skip_reason"),
+                    "entry": p.get("entry"),
+                    "stop_loss": p.get("stop_loss"),
+                    "tp1": p.get("tp1"),
+                    "tp2": p.get("tp2"),
+                    "tp3": p.get("tp3"),
+                    "sl_method": p.get("sl_method"),
+                    "tp2_method": p.get("tp2_method"),
+                    "risk_per_unit": p.get("risk_per_unit"),
+                    "tp1_frac": p.get("tp1_qty_fraction"),
+                    "tp2_frac": p.get("tp2_qty_fraction"),
+                    "tp3_frac": p.get("tp3_qty_fraction"),
+                })
+            # 24h decision counts
+            dec_count_rows = conn.execute(
+                "SELECT json_extract(payload_json, '$.should_trade') AS st, "
+                "COUNT(*) AS n FROM audit_event "
+                "WHERE kind='trade_plan_decision' AND ts >= ? "
+                "GROUP BY st",
+                (cutoff_24h,),
+            ).fetchall()
+            for r in dec_count_rows:
+                n = int(r["n"])
+                counts_24h["decisions_total"] += n
+                if r["st"] in (1, "1", "true", True):
+                    counts_24h["should_trade_true"] += n
+                else:
+                    counts_24h["skipped"] += n
+            # Recent SL lifecycle updates (last 10)
+            sl_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind='position_sl_update' "
+                "ORDER BY id DESC LIMIT 10"
+            ).fetchall()
+            for r in sl_rows:
+                try:
+                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except Exception:
+                    continue
+                sl_updates.append({
+                    "ts_et": format_et_short(r["ts"]),
+                    "order_id": p.get("order_id"),
+                    "symbol": p.get("symbol"),
+                    "side": p.get("side"),
+                    "lifecycle_state": p.get("lifecycle_state"),
+                    "current_sl": p.get("current_sl"),
+                    "new_sl": p.get("new_sl"),
+                    "reason": p.get("reason"),
+                    "filled_legs": p.get("filled_legs") or [],
+                    "source": p.get("source") or "reconciler",
+                })
+            # 24h SL update count
+            sl_count_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM audit_event "
+                "WHERE kind='position_sl_update' AND ts >= ?",
+                (cutoff_24h,),
+            ).fetchone()
+            if sl_count_row:
+                counts_24h["sl_updates_total"] = int(sl_count_row["n"])
+    except Exception as e:
+        log.warning("bitunix trade_plan view query failed: %s", e)
+
+    return {
+        "enabled": enabled,
+        "fee_config": fee_summary,
+        "decisions": decisions,
+        "sl_updates": sl_updates,
+        "counts_24h": counts_24h,
+    }
 
 
 def build_bitunix_pending_pa_view(deps: Any) -> dict | None:
@@ -2792,6 +2961,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     bitunix_pa_view: dict | None = None
     bitunix_decision_flow_view: dict | None = None
     bitunix_pending_pa_view: dict | None = None
+    bitunix_trade_plan_view: dict | None = None
     if slug == "bitunix_futures":
         try:
             bitunix_score_view = build_bitunix_score_view(deps.db_url, deps)
@@ -2813,6 +2983,10 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
             bitunix_pending_pa_view = build_bitunix_pending_pa_view(deps)
         except Exception as e:
             log.warning("bitunix pending PA view for %s failed: %s", slug, e)
+        try:
+            bitunix_trade_plan_view = build_bitunix_trade_plan_view(deps.db_url, deps)
+        except Exception as e:
+            log.warning("bitunix trade_plan view for %s failed: %s", slug, e)
 
     # Robinhood IRA dashboard — group shares + short calls into covered
     # calls, identify pure assets (shares without calls), surface short
@@ -2845,6 +3019,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         bitunix_pa=bitunix_pa_view,
         bitunix_decision_flow=bitunix_decision_flow_view,
         bitunix_pending_pa=bitunix_pending_pa_view,
+        bitunix_trade_plan=bitunix_trade_plan_view,
     )
 
 

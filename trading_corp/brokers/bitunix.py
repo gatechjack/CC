@@ -393,10 +393,12 @@ class BitunixBroker(Broker):
         Phase 4 swap: replace the SQL with `/api/v1/futures/position`
         — same `OpenPosition` return shape, different source.
 
-        `filled_legs` is always `[]` in paper mode — the legacy paper
-        resolver treats a trade as monolithic (single `result` field),
-        so no leg has "partially filled" until Phase 4 broker truth
-        provides cumulative-fill state per position.
+        `filled_legs` and `current_sl` are read from `extra_json` when
+        present (paper-mode multi-leg replay writes them back as legs
+        fill and the lifecycle advances). Defaults to `[]` and the
+        original `stop_price` column for trades the replay hasn't yet
+        touched. Legacy single-leg trades (no v2 tp_plan) are filtered
+        out — reconciler only manages v2 lifecycle.
         """
         with db.connect(db_url) as conn:
             rows = conn.execute(
@@ -418,15 +420,34 @@ class BitunixBroker(Broker):
                 # Skip legacy single-leg trades — reconciler only manages
                 # v2 lifecycle. Pre-PR-4 trades retain their original SL.
                 continue
+            # filled_legs: paper-mode replay writes these back into
+            # extra_json as legs fill; live-mode Phase 4 will hydrate
+            # from broker truth instead.
+            filled_legs_raw = extra.get("filled_legs") or []
+            try:
+                filled_legs = [str(x) for x in filled_legs_raw]
+            except (TypeError, ValueError):
+                filled_legs = []
+            # current_sl: replay updates this as lifecycle advances.
+            # Fall back to the structural stop column for trades that
+            # haven't had a tp1 fill yet.
+            sl_from_extra = extra.get("current_sl")
+            if sl_from_extra is not None:
+                try:
+                    current_sl = float(sl_from_extra)
+                except (TypeError, ValueError):
+                    current_sl = _to_float(r["stop_price"])
+            else:
+                current_sl = _to_float(r["stop_price"])
             out.append(OpenPosition(
                 order_id=r["order_id"],
                 symbol=r["symbol"],
                 side=r["side"],
                 qty=_to_float(r["qty"]),
                 entry_price=_to_float(r["entry_reference_price"]),
-                current_sl=_to_float(r["stop_price"]),
+                current_sl=current_sl,
                 tp_plan=tp_plan,
-                filled_legs=[],
+                filled_legs=filled_legs,
                 opened_ts=r["ts"] or "",
             ))
         return out

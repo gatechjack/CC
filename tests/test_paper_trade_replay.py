@@ -18,7 +18,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trading_corp.agents.paper_trade_replay import (
+    _aggregate_multi_leg_r,
     _classify,
+    _classify_v2_multi_leg,
     _PendingRow,
     mark_pre_phase_a_rows,
     replay_pending_paper_trades_async,
@@ -36,13 +38,18 @@ def _bar(ts_ms: int, o: float, h: float, l: float, c: float) -> list[float]:
 
 def _row(side: str, *, tp: float | None = 100.0, stop: float | None = 90.0,
          max_hold: int = 86400, expected_loss: float = -10.0,
-         expected_gain: float = 30.0, tp_r: float = 3.0) -> _PendingRow:
+         expected_gain: float = 30.0, tp_r: float = 3.0,
+         division: str = "coinbase_spot", entry: float | None = None,
+         extra_json: str | None = None) -> _PendingRow:
     return _PendingRow(
         order_id="o1", ts="2026-05-02T00:00:00+00:00",
-        strategy="lord_otter", symbol="BTC/USD",
+        strategy="lord_otter", division=division, symbol="BTC/USD",
         side=side, qty=0.01, stop_price=stop, tp_price=tp,
-        tp_r_multiple=tp_r, expected_loss=expected_loss,
+        tp_r_multiple=tp_r,
+        entry_reference_price=entry,
+        expected_loss=expected_loss,
         expected_gain=expected_gain, max_hold_seconds=max_hold,
+        extra_json=extra_json,
     )
 
 
@@ -378,3 +385,221 @@ async def test_replay_tick_skips_rows_with_zero_max_hold(tmp_db):
 
     assert counts["errors"] == 1
     assert counts["resolved_win"] == 0
+
+
+# ── multi-leg (trade-plan v2) classifier ───────────────────────────────
+
+
+def _v2_row(side: str, *, entry: float = 100.0, stop: float = 95.0,
+            tp1: float = 102.5, tp2: float = 105.0, tp3: float = 112.5,
+            max_hold: int = 86400) -> _PendingRow:
+    """Construct a v2 _PendingRow with a 3-leg tp_plan in extra_json.
+    Defaults are a long: entry=100, stop=95 (R=5), tp1=+0.5R, tp2=+1R, tp3=+2.5R."""
+    tp_plan = [
+        {"leg": "tp1", "fraction": 0.25, "target_r": 0.5, "price": tp1,
+         "stop_action": "move_to_breakeven"},
+        {"leg": "tp2", "fraction": 0.50, "target_r": 1.0, "price": tp2,
+         "stop_action": "move_to_tp1"},
+        {"leg": "tp3", "fraction": 0.25, "target_r": 2.5, "price": tp3,
+         "stop_action": "trail_atr"},
+    ]
+    return _PendingRow(
+        order_id="v2-o1", ts="2026-05-02T00:00:00+00:00",
+        strategy="bitunix_futures", division="bitunix_futures",
+        symbol="BTCUSDT.P", side=side, qty=0.01,
+        stop_price=stop, tp_price=tp3, tp_r_multiple=2.5,
+        entry_reference_price=entry,
+        expected_loss=-50.0, expected_gain=125.0,
+        max_hold_seconds=max_hold,
+        extra_json=__import__("json").dumps({
+            "tp_plan": tp_plan,
+            "tp_plan_version": "v2",
+        }),
+    )
+
+
+def test_v2_buy_all_three_legs_fill_yields_1_25R():
+    """tp1+tp2+tp3 hit in three sequential bars → weighted R = 0.125 + 0.5 + 0.625 = 1.25R."""
+    row = _v2_row("buy")
+    bars = [
+        _bar(0, 100, 102.7, 99.5, 102.5),  # tp1 hit
+        _bar(60_000, 102.5, 105.5, 102.0, 105.0),  # tp2 hit
+        _bar(120_000, 105, 113.0, 104.5, 112.5),   # tp3 hit
+    ]
+    import json as _json
+    extra = _json.loads(row.extra_json)
+    verdict = _classify_v2_multi_leg(row, bars, extra)
+    assert verdict.result == "win"
+    assert verdict.actual_r_multiple == 1.25
+    assert verdict.bars_to_resolution == 3
+    assert verdict.extra_json_updates["filled_legs"] == ["tp1", "tp2", "tp3"]
+
+
+def test_v2_buy_tp1_only_then_sl_at_breakeven_yields_0_125R():
+    """tp1 hits, SL moves to entry, price retraces, SL hit at entry."""
+    row = _v2_row("buy")
+    bars = [
+        _bar(0, 100, 103, 99.5, 102.5),  # tp1 hit
+        _bar(60_000, 102.5, 102.6, 99.9, 100.0),  # touches entry (=BE SL); SL HIT
+    ]
+    import json as _json
+    extra = _json.loads(row.extra_json)
+    verdict = _classify_v2_multi_leg(row, bars, extra)
+    # tp1 filled = 0.5R × 0.25 = 0.125; remainder (0.75) exits at entry = 0R
+    assert verdict.actual_r_multiple == 0.125
+    assert verdict.result == "win"  # net positive
+    assert verdict.extra_json_updates["filled_legs"] == ["tp1"]
+    assert verdict.extra_json_updates["current_sl"] == 100.0  # BE
+
+
+def test_v2_buy_tp1_tp2_then_sl_at_tp1_floor_yields_0_75R():
+    """tp1+tp2 fill → SL moves to tp1 price → retraces → SL hit at tp1."""
+    row = _v2_row("buy")
+    bars = [
+        _bar(0, 100, 102.7, 99.5, 102.5),  # tp1 hit
+        _bar(60_000, 102.5, 105.5, 102.0, 105.0),  # tp2 hit
+        _bar(120_000, 105, 105.1, 102.4, 102.5),  # SL hit at tp1=102.5
+    ]
+    import json as _json
+    extra = _json.loads(row.extra_json)
+    verdict = _classify_v2_multi_leg(row, bars, extra)
+    # tp1: 0.5R × 0.25 = 0.125; tp2: 1.0R × 0.50 = 0.5; tp3 remainder
+    # (0.25) exits at tp1=102.5, which is +0.5R → 0.5 × 0.25 = 0.125
+    # Total = 0.75R
+    assert verdict.actual_r_multiple == 0.75
+    assert verdict.result == "win"
+    assert verdict.extra_json_updates["filled_legs"] == ["tp1", "tp2"]
+    assert verdict.extra_json_updates["current_sl"] == 102.5  # tp1 floor
+
+
+def test_v2_buy_no_legs_then_sl_yields_minus_1R():
+    """No tp hit, original SL hit → full -1R loss (mirrors single-leg)."""
+    row = _v2_row("buy")
+    bars = [
+        _bar(0, 100, 100.5, 94.9, 95.0),  # SL=95 hit
+    ]
+    import json as _json
+    extra = _json.loads(row.extra_json)
+    verdict = _classify_v2_multi_leg(row, bars, extra)
+    assert verdict.result == "loss"
+    assert verdict.actual_r_multiple == -1.0
+    assert verdict.extra_json_updates["filled_legs"] == []
+
+
+def test_v2_sell_all_three_legs_mirror_buy():
+    """Symmetric: short with entry=100, stop=105, tp1=97.5, tp2=95, tp3=87.5."""
+    row = _v2_row("sell", entry=100.0, stop=105.0,
+                  tp1=97.5, tp2=95.0, tp3=87.5)
+    bars = [
+        _bar(0, 100, 100.5, 97.3, 97.5),    # tp1 hit (low <= 97.5)
+        _bar(60_000, 97.5, 98.0, 94.9, 95.0),  # tp2 hit
+        _bar(120_000, 95, 96, 87.0, 87.5),  # tp3 hit
+    ]
+    import json as _json
+    extra = _json.loads(row.extra_json)
+    verdict = _classify_v2_multi_leg(row, bars, extra)
+    assert verdict.result == "win"
+    assert verdict.actual_r_multiple == 1.25
+    assert verdict.extra_json_updates["filled_legs"] == ["tp1", "tp2", "tp3"]
+
+
+def test_v2_resume_from_partial_state_in_extra_json():
+    """Replay should resume from extra_json.filled_legs / current_sl —
+    simulates a second replay tick where tp1 already filled on a prior pass."""
+    row = _v2_row("buy")
+    import json as _json
+    extra = _json.loads(row.extra_json)
+    # Pretend tp1 already filled on a prior tick + SL moved to BE
+    extra["filled_legs"] = ["tp1"]
+    extra["current_sl"] = 100.0
+    bars = [
+        _bar(0, 100, 100.5, 99.9, 100.0),  # SL HIT at BE → close
+    ]
+    verdict = _classify_v2_multi_leg(row, bars, extra)
+    assert verdict.actual_r_multiple == 0.125  # tp1 only, remainder at BE
+    assert verdict.result == "win"
+
+
+def test_v2_same_bar_sl_and_tp_resolves_to_sl_first_loss_bias():
+    """Conservative tie-handling mirrors single-leg: if SL and TP hit in
+    the same bar, assume SL first. Here the bar high reaches tp1 AND
+    the bar low touches the original stop — should resolve to -1R loss."""
+    row = _v2_row("buy")
+    bars = [
+        _bar(0, 100, 102.6, 94.9, 100),  # both tp1 (102.5) and SL (95) hit
+    ]
+    import json as _json
+    extra = _json.loads(row.extra_json)
+    verdict = _classify_v2_multi_leg(row, bars, extra)
+    assert verdict.result == "loss"
+    assert verdict.actual_r_multiple == -1.0
+
+
+def test_v2_still_open_returns_transient_with_extra_updates():
+    """Inside max_hold but no fills → still_open verdict, extra_json
+    updates carry empty filled_legs / unchanged SL so the row doesn't
+    get DB-thrashed every tick (delta detection in _replay_tick_async
+    handles the no-op write)."""
+    # Use a fresh timestamp so the window isn't elapsed
+    from datetime import datetime as _dt, timezone as _tz
+    row = _v2_row("buy")
+    row = _PendingRow(
+        order_id=row.order_id,
+        ts=_dt.now(_tz.utc).isoformat(timespec="seconds"),
+        strategy=row.strategy, division=row.division,
+        symbol=row.symbol, side=row.side, qty=row.qty,
+        stop_price=row.stop_price, tp_price=row.tp_price,
+        tp_r_multiple=row.tp_r_multiple,
+        entry_reference_price=row.entry_reference_price,
+        expected_loss=row.expected_loss,
+        expected_gain=row.expected_gain,
+        max_hold_seconds=row.max_hold_seconds,
+        extra_json=row.extra_json,
+    )
+    bars = [
+        _bar(0, 100, 101, 99, 100.5),
+        _bar(60_000, 100.5, 101, 100, 100.8),
+    ]
+    import json as _json
+    extra = _json.loads(row.extra_json)
+    verdict = _classify_v2_multi_leg(row, bars, extra)
+    assert verdict.result == "still_open"
+    assert verdict.extra_json_updates["filled_legs"] == []
+
+
+def test_v2_aggregate_r_helper_matches_option_c_arithmetic():
+    """Pure-function check on _aggregate_multi_leg_r matches the
+    Option C worst-case scenarios in the strategy_gaps memo."""
+    tp_plan = [
+        {"leg": "tp1", "fraction": 0.25, "target_r": 0.5, "price": 102.5,
+         "stop_action": "move_to_breakeven"},
+        {"leg": "tp2", "fraction": 0.50, "target_r": 1.0, "price": 105.0,
+         "stop_action": "move_to_tp1"},
+        {"leg": "tp3", "fraction": 0.25, "target_r": 2.5, "price": 112.5,
+         "stop_action": "trail_atr"},
+    ]
+    # tp1+tp2 + remainder at BE (entry) → 0.125 + 0.5 + 0 = 0.625
+    r = _aggregate_multi_leg_r(
+        side="buy", entry_price=100.0, original_sl=95.0,
+        tp_plan=tp_plan, filled_legs=["tp1", "tp2"], exit_price=100.0,
+    )
+    assert r == 0.625
+    # tp1+tp2 + remainder at tp1=102.5 → 0.125 + 0.5 + 0.125 = 0.75 (Option C floor)
+    r = _aggregate_multi_leg_r(
+        side="buy", entry_price=100.0, original_sl=95.0,
+        tp_plan=tp_plan, filled_legs=["tp1", "tp2"], exit_price=102.5,
+    )
+    assert r == 0.75
+    # All 3 fill → 0.125 + 0.5 + 0.625 = 1.25
+    r = _aggregate_multi_leg_r(
+        side="buy", entry_price=100.0, original_sl=95.0,
+        tp_plan=tp_plan, filled_legs=["tp1", "tp2", "tp3"],
+        exit_price=112.5,
+    )
+    assert r == 1.25
+    # No fills, exit at original SL → -1R full
+    r = _aggregate_multi_leg_r(
+        side="buy", entry_price=100.0, original_sl=95.0,
+        tp_plan=tp_plan, filled_legs=[], exit_price=95.0,
+    )
+    assert r == -1.0

@@ -232,6 +232,14 @@
       {% include "partials/bitunix_decision_flow.html" %}
     {% endif %}
 
+    <!-- trade-plan PR 6 — v2 trade-plan decisions + SL lifecycle.
+         Renders empty-state when trade_plan.enabled=false; populates
+         post-flip as `trade_plan_decision` + `position_sl_update`
+         audits accumulate. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_trade_plan is not none %}
+      {% include "partials/bitunix_trade_plan_panel.html" %}
+    {% endif %}
+
     <!-- BitUnix Phase 3.2.3 — confluence score panel. Renders only for
          bitunix_futures and only when scoring config is loaded.
          htmx auto-refresh every 30s baked into the partial.

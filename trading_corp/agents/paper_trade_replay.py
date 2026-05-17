@@ -48,15 +48,20 @@ class _PendingRow:
     order_id: str
     ts: str
     strategy: str
+    division: str
     symbol: str
     side: str
     qty: float
     stop_price: float | None
     tp_price: float | None
     tp_r_multiple: float | None
+    entry_reference_price: float | None
     expected_loss: float | None
     expected_gain: float | None
     max_hold_seconds: int | None
+    # `extra_json` raw string from the DB. Parsed lazily by the
+    # multi-leg classifier; legacy single-leg path ignores it.
+    extra_json: str | None
 
 
 @dataclass
@@ -74,6 +79,11 @@ class _Resolved:
     actual_pnl_dollars: float | None
     actual_r_multiple: float | None
     bars_to_resolution: int | None
+    # Multi-leg only: snapshot of what to persist back into
+    # `paper_trade_record.extra_json` so the next replay tick (and the
+    # reconciler) see the updated lifecycle state. None for the
+    # legacy single-leg path.
+    extra_json_updates: dict | None = None
 
 
 # ── public entry points ────────────────────────────────────────────────
@@ -269,6 +279,426 @@ def _parse_row_ts(ts: str | None) -> datetime | None:
         return None
 
 
+# ── multi-leg (trade-plan v2) classifier ───────────────────────────────
+
+
+def _leg_price(tp_plan: list[dict], leg: str) -> float | None:
+    """Find the `price` field for the named leg in a v2 tp_plan."""
+    for entry in tp_plan or []:
+        if entry.get("leg") == leg:
+            p = entry.get("price")
+            try:
+                return float(p) if p is not None else None
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _leg_fraction(tp_plan: list[dict], leg: str) -> float:
+    for entry in tp_plan or []:
+        if entry.get("leg") == leg:
+            try:
+                return float(entry.get("fraction") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
+def _leg_target_r(tp_plan: list[dict], leg: str) -> float:
+    for entry in tp_plan or []:
+        if entry.get("leg") == leg:
+            try:
+                return float(entry.get("target_r") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
+def _r_at_price(
+    side: str, entry: float, original_sl: float, exit_price: float,
+) -> float:
+    """Realized R for the unfilled portion exiting at `exit_price`.
+    R = (exit - entry) / |entry - original_sl|, signed by side."""
+    risk_per_unit = abs(entry - original_sl)
+    if risk_per_unit <= 0:
+        return 0.0
+    sign = 1.0 if side == "buy" else -1.0
+    return sign * (exit_price - entry) / risk_per_unit
+
+
+def _decide_lifecycle_sl(
+    *,
+    side: str,
+    entry_price: float,
+    original_sl: float,
+    current_sl: float,
+    filled_legs: list[str],
+    tp_plan: list[dict],
+) -> tuple[float, str | None, str | None]:
+    """Floor-only lifecycle (no Chandelier trail in paper replay v1 —
+    follow-up if data argues for it):
+      - no tp filled → current_sl unchanged
+      - tp1 filled, tp2 not → SL → entry (BE)
+      - tp2 filled → SL → tp1 price (floor)
+    Returns (new_sl, lifecycle_state, reason). lifecycle_state/reason are
+    None when no transition is warranted (idempotent re-eval).
+    The decision still respects the ratchet rule (long: monotone up;
+    short: monotone down).
+    """
+    filled = set(filled_legs or [])
+
+    def _ratchets(candidate: float) -> bool:
+        if side == "buy":
+            return candidate > current_sl
+        return candidate < current_sl
+
+    if "tp1" not in filled:
+        return current_sl, None, None
+
+    if "tp2" not in filled:
+        if not _ratchets(entry_price):
+            return current_sl, None, None
+        return entry_price, "post_tp1", "tp1 filled → SL to entry (breakeven)"
+
+    tp1_price = _leg_price(tp_plan, "tp1")
+    if tp1_price is None:
+        return current_sl, None, None
+    if not _ratchets(tp1_price):
+        return current_sl, None, None
+    return tp1_price, "post_tp2_floor", "tp2 filled → SL to tp1 price (post-TP2 floor)"
+
+
+def _aggregate_multi_leg_r(
+    *,
+    side: str,
+    entry_price: float,
+    original_sl: float,
+    tp_plan: list[dict],
+    filled_legs: list[str],
+    exit_price: float,
+) -> float:
+    """Weighted R across the 3 legs.
+
+    Each filled leg contributes its `target_r * fraction`; the unfilled
+    remainder exits at `exit_price` and contributes
+    `r_at(exit) * unfilled_fraction`. Mirrors the Option C worst-case
+    arithmetic from the strategy_gaps memo (0.125 + 0.5 + 0.125 = 0.75R
+    when tp2 hits and the runner stops at tp1-price)."""
+    total_r = 0.0
+    filled_fraction = 0.0
+    for leg in ("tp1", "tp2", "tp3"):
+        frac = _leg_fraction(tp_plan, leg)
+        if leg in filled_legs:
+            total_r += _leg_target_r(tp_plan, leg) * frac
+            filled_fraction += frac
+    unfilled_fraction = max(0.0, 1.0 - filled_fraction)
+    if unfilled_fraction > 0:
+        exit_r = _r_at_price(side, entry_price, original_sl, exit_price)
+        total_r += exit_r * unfilled_fraction
+    return total_r
+
+
+def _classify_v2_multi_leg(
+    row: _PendingRow,
+    bars: list[list[float]],
+    extra: dict,
+) -> _Resolved:
+    """v2 lifecycle replay: detect tp1 → tp2 → tp3 fills, advance SL
+    per the Option C floor lifecycle, close the trade when SL is hit or
+    tp3 fills or max_hold elapses. Emits `position_sl_update` audit rows
+    at each lifecycle transition (via the reconciler's helper) so the
+    dashboard reads the same telemetry whether the SL move came from
+    paper-replay or live broker truth.
+
+    Side effects: returns the lifecycle delta in `extra_json_updates` so
+    the caller can persist it back into `paper_trade_record.extra_json`
+    (filled_legs + current_sl). Audit rows are written inline as
+    transitions happen — those persist regardless of whether the final
+    row update lands.
+    """
+    tp_plan = extra.get("tp_plan") or []
+    side = (row.side or "").lower()
+    entry_price = float(
+        row.entry_reference_price
+        if row.entry_reference_price is not None
+        else (extra.get("entry_reference_price") or 0.0)
+    )
+    original_sl = float(row.stop_price or 0.0)
+    if entry_price <= 0 or original_sl <= 0 or not tp_plan:
+        return _Resolved("pre_phase_a", None, None, None, None, None)
+
+    # State at start of replay. `filled_legs` may carry rows from a
+    # prior partial replay (e.g. tp1 filled on yesterday's tick, tp2 not
+    # yet) — load from extra_json and resume.
+    filled_legs: list[str] = list(extra.get("filled_legs") or [])
+    current_sl_raw = extra.get("current_sl")
+    try:
+        current_sl = float(current_sl_raw) if current_sl_raw is not None else original_sl
+    except (TypeError, ValueError):
+        current_sl = original_sl
+
+    expected_loss = float(row.expected_loss or 0.0)
+
+    # Defensive: lazy-import the reconciler's audit helper so test
+    # environments without the reconciler module wired still run the
+    # classifier (audit writes become no-ops by exception swallow).
+    _log_audit = _import_reconciler_logger()
+
+    def _emit_audit(
+        ts_iso: str,
+        new_sl: float,
+        lifecycle_state: str,
+        reason: str,
+    ) -> None:
+        if _log_audit is None:
+            return
+        try:
+            _log_audit(
+                db_url=None,  # placeholder; outer _update_row writes via shared connection
+                order_id=row.order_id,
+                symbol=row.symbol,
+                side=side,
+                current_sl=current_sl,
+                new_sl=new_sl,
+                lifecycle_state=lifecycle_state,
+                reason=reason,
+                filled_legs=list(filled_legs),
+                ts_iso=ts_iso,
+            )
+        except Exception as e:
+            log.warning(
+                "v2 replay: position_sl_update audit failed for order_id=%s: %s",
+                row.order_id, e,
+            )
+
+    leg_targets = {leg: _leg_price(tp_plan, leg) for leg in ("tp1", "tp2", "tp3")}
+    if any(p is None for p in leg_targets.values()):
+        return _Resolved("pre_phase_a", None, None, None, None, None)
+
+    for idx, bar in enumerate(bars):
+        if len(bar) < 5:
+            continue
+        ts_ms = int(bar[0])
+        high = float(bar[2])
+        low = float(bar[3])
+        bar_ts_iso = (
+            datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+            .isoformat(timespec="seconds")
+        )
+
+        # 1. Detect SL hit at start of bar (using the SL from prior bar's
+        #    state — same convention as single-leg: bar's low/high vs
+        #    current_sl). If both TP and SL would hit in the same bar, the
+        #    conservative tie-handling from single-leg replay (assume worse)
+        #    applies — check SL first.
+        sl_hit_this_bar = (
+            (side == "buy" and low <= current_sl) or
+            (side == "sell" and high >= current_sl)
+        )
+
+        # 2. Detect leg fills in order (tp1 → tp2 → tp3).
+        legs_filled_this_bar: list[str] = []
+        for leg_name in ("tp1", "tp2", "tp3"):
+            if leg_name in filled_legs:
+                continue
+            target = leg_targets[leg_name]
+            hit = (
+                (side == "buy" and high >= target) or
+                (side == "sell" and low <= target)
+            )
+            if hit:
+                legs_filled_this_bar.append(leg_name)
+            else:
+                break  # legs are ordered; once one doesn't hit, later ones haven't either
+
+        # Tie handling for same-bar SL + TP: if a TP also hit in this bar,
+        # the conservative assumption is SL hit FIRST (worse outcome).
+        # Mirror single-leg semantics: bias to LOSS on ambiguous bars.
+        if sl_hit_this_bar:
+            # Close at SL price. Any legs that would have filled this bar
+            # don't count (conservative).
+            exit_price = current_sl
+            actual_r = _aggregate_multi_leg_r(
+                side=side, entry_price=entry_price,
+                original_sl=original_sl, tp_plan=tp_plan,
+                filled_legs=filled_legs, exit_price=exit_price,
+            )
+            actual_pnl = expected_loss * abs(actual_r) if actual_r < 0 else 0.0
+            # Use a positive proxy for $-pnl on the partial-win path
+            # (TP1 hit then SL at BE = small positive R; expected_gain
+            # is a per-leg full-fill projection so we scale by realized R).
+            if actual_r > 0 and row.expected_gain:
+                actual_pnl = float(row.expected_gain) * (actual_r / max(1e-9, float(row.tp_r_multiple or 1.0)))
+            result = "win" if actual_r > 0 else "loss"
+            return _Resolved(
+                result=result,
+                result_ts=bar_ts_iso,
+                result_price=exit_price,
+                actual_pnl_dollars=actual_pnl,
+                actual_r_multiple=round(actual_r, 4),
+                bars_to_resolution=idx + 1,
+                extra_json_updates={
+                    "filled_legs": filled_legs,
+                    "current_sl": current_sl,
+                },
+            )
+
+        # 3. Apply leg fills + lifecycle SL transitions.
+        for leg_name in legs_filled_this_bar:
+            filled_legs.append(leg_name)
+            new_sl, lifecycle_state, reason = _decide_lifecycle_sl(
+                side=side,
+                entry_price=entry_price,
+                original_sl=original_sl,
+                current_sl=current_sl,
+                filled_legs=filled_legs,
+                tp_plan=tp_plan,
+            )
+            if lifecycle_state is not None:
+                _emit_audit(bar_ts_iso, new_sl, lifecycle_state, reason or "")
+                current_sl = new_sl
+
+        # 4. If tp3 filled, trade is fully closed.
+        if "tp3" in filled_legs:
+            exit_price = leg_targets["tp3"]
+            actual_r = _aggregate_multi_leg_r(
+                side=side, entry_price=entry_price,
+                original_sl=original_sl, tp_plan=tp_plan,
+                filled_legs=filled_legs, exit_price=exit_price,
+            )
+            actual_pnl = float(row.expected_gain or 0.0) * (
+                actual_r / max(1e-9, float(row.tp_r_multiple or 1.0))
+            ) if row.expected_gain else 0.0
+            return _Resolved(
+                result="win",
+                result_ts=bar_ts_iso,
+                result_price=exit_price,
+                actual_pnl_dollars=actual_pnl,
+                actual_r_multiple=round(actual_r, 4),
+                bars_to_resolution=idx + 1,
+                extra_json_updates={
+                    "filled_legs": filled_legs,
+                    "current_sl": current_sl,
+                },
+            )
+
+    # Walked all bars without finalization. Still-open vs expired check
+    # mirrors the single-leg path.
+    max_hold = int(row.max_hold_seconds or 0)
+    alert_dt = _parse_row_ts(row.ts)
+    now = datetime.now(timezone.utc)
+    elapsed = (now - alert_dt).total_seconds() if alert_dt else 0
+    fully_elapsed = max_hold > 0 and elapsed >= max_hold
+
+    if not bars:
+        last_ts_iso = row.ts
+        last_close = None
+        bars_n = 0
+    else:
+        last_bar = bars[-1]
+        last_ts_iso = (
+            datetime.fromtimestamp(int(last_bar[0]) / 1000.0, tz=timezone.utc)
+            .isoformat(timespec="seconds")
+        )
+        last_close = float(last_bar[4])
+        bars_n = len(bars)
+
+    # Persist filled_legs / current_sl progress even on still_open so the
+    # next replay tick resumes from the latched lifecycle state.
+    extra_updates = {
+        "filled_legs": filled_legs,
+        "current_sl": current_sl,
+    }
+
+    if not fully_elapsed:
+        return _Resolved(
+            result="still_open",
+            result_ts=last_ts_iso,
+            result_price=last_close,
+            actual_pnl_dollars=None,
+            actual_r_multiple=None,
+            bars_to_resolution=None,
+            extra_json_updates=extra_updates,
+        )
+
+    # Expired with partial fills → realize R on the unfilled remainder
+    # exiting at the last bar's close (best-available proxy).
+    exit_price = last_close if last_close is not None else original_sl
+    actual_r = _aggregate_multi_leg_r(
+        side=side, entry_price=entry_price,
+        original_sl=original_sl, tp_plan=tp_plan,
+        filled_legs=filled_legs, exit_price=exit_price,
+    )
+    return _Resolved(
+        result="expired",
+        result_ts=last_ts_iso,
+        result_price=last_close,
+        actual_pnl_dollars=0.0 if not filled_legs else None,
+        actual_r_multiple=round(actual_r, 4) if filled_legs else 0.0,
+        bars_to_resolution=bars_n,
+        extra_json_updates=extra_updates,
+    )
+
+
+def _import_reconciler_logger():
+    """Lazy import of the reconciler's audit helper. Wrapped because
+    test environments may not have the full module graph available."""
+    try:
+        from trading_corp.agents.divisions import bitunix_position_reconciler as _rec
+        return _v2_audit_writer(_rec)
+    except Exception as e:
+        log.debug("v2 replay: reconciler import failed (audits will skip): %s", e)
+        return None
+
+
+def _v2_audit_writer(rec_module):
+    """Adapt the reconciler's `_log_position_sl_update` to a flat-kwarg
+    signature so the replay classifier doesn't need an OpenPosition /
+    SLDecision dance for each emission."""
+    POSITION_SL_UPDATE_KIND = rec_module.POSITION_SL_UPDATE_KIND
+    RECONCILER_ACTOR = rec_module.RECONCILER_ACTOR
+
+    def _write(
+        *, db_url, order_id, symbol, side, current_sl, new_sl,
+        lifecycle_state, reason, filled_legs, ts_iso,
+    ):
+        payload = {
+            "order_id": order_id,
+            "symbol": symbol,
+            "side": side,
+            "lifecycle_state": lifecycle_state,
+            "current_sl": current_sl,
+            "new_sl": new_sl,
+            "reason": reason,
+            "filled_legs": list(filled_legs or []),
+            "would_call_broker": False,
+            "source": "paper_trade_replay",
+        }
+        # Use the module's own DB url — the replay tick passes it in
+        # through a module-level var rather than threading it through
+        # the classifier signature. Set at start of each tick.
+        target_db = _REPLAY_DB_URL_CTX["db_url"]
+        if target_db is None:
+            return
+        try:
+            with _db.connect(target_db) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (ts_iso, RECONCILER_ACTOR, POSITION_SL_UPDATE_KIND, json.dumps(payload, default=str)),
+                )
+        except Exception as e:
+            log.warning("v2 replay: audit write failed: %s", e)
+
+    return _write
+
+
+# Module-level context for db_url passed into the classifier via the
+# audit-emission closure. Replay tick sets this at the start of each
+# pass; tests can poke it directly.
+_REPLAY_DB_URL_CTX: dict[str, str | None] = {"db_url": None}
+
+
 # ── async core ─────────────────────────────────────────────────────────
 
 
@@ -282,6 +712,10 @@ async def _replay_tick_async(
     # Mark pre-Phase-A rows first so we don't try to fetch bars for them.
     pre_phase_a_marked = mark_pre_phase_a_rows(db_url)
 
+    # Stash db_url for the v2 audit-emission closure (avoids threading
+    # it through the pure classifier signature).
+    _REPLAY_DB_URL_CTX["db_url"] = db_url
+
     pending = _load_pending(db_url)
     counts = {
         "scanned": len(pending),
@@ -289,6 +723,7 @@ async def _replay_tick_async(
         "resolved_loss": 0,
         "resolved_expired": 0,
         "marked_pre_phase_a": pre_phase_a_marked,
+        "v2_partial_progress": 0,    # tp1+ filled but trade not yet closed
         "errors": 0,
     }
 
@@ -302,7 +737,20 @@ async def _replay_tick_async(
                 continue
             bars_needed = max(1, max_hold // 60)  # 1m bars
             bars = await fetcher(row.symbol, "1m", since_ts_ms, bars_needed)
-            verdict = _classify(row, bars)
+
+            # Route on v2 marker in extra_json. Legacy single-leg path
+            # stays the default for Otter / Cypher / Donchian / pre-PR-4
+            # bitunix trades.
+            extra = _parse_extra(row.extra_json)
+            is_v2 = (
+                row.division == "bitunix_futures"
+                and bool(extra.get("tp_plan"))
+                and extra.get("tp_plan_version") == "v2"
+            )
+            if is_v2:
+                verdict = _classify_v2_multi_leg(row, bars, extra)
+            else:
+                verdict = _classify(row, bars)
             if verdict.result == "win":
                 counts["resolved_win"] += 1
             elif verdict.result == "loss":
@@ -312,8 +760,17 @@ async def _replay_tick_async(
             elif verdict.result == "pre_phase_a":
                 counts["marked_pre_phase_a"] += 1
             elif verdict.result == "still_open":
-                # Inside max_hold window — leave row at result=NULL for
-                # the next replay tick to re-evaluate. No DB write.
+                # Inside max_hold window — leave the result column NULL.
+                # BUT if multi-leg lifecycle advanced (filled_legs or
+                # current_sl changed), persist the delta back into
+                # extra_json so the next tick + the reconciler resume
+                # from the right state.
+                if verdict.extra_json_updates:
+                    delta = _extra_json_delta(extra, verdict.extra_json_updates)
+                    if delta is not None:
+                        _persist_extra_json(db_url, row.order_id, delta)
+                        if delta.get("filled_legs"):
+                            counts["v2_partial_progress"] += 1
                 counts.setdefault("still_open", 0)
                 counts["still_open"] += 1
                 continue
@@ -323,7 +780,53 @@ async def _replay_tick_async(
             log.exception("replay failed for order_id=%s: %s", row.order_id, e)
             counts["errors"] += 1
 
+    _REPLAY_DB_URL_CTX["db_url"] = None
     return counts
+
+
+def _parse_extra(extra_json: str | None) -> dict:
+    if not extra_json:
+        return {}
+    try:
+        return json.loads(extra_json)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _extra_json_delta(
+    prior: dict, updates: dict,
+) -> dict | None:
+    """Return the merged extra_json IF anything actually changed, else
+    None (caller skips the DB write to keep `still_open` tick free)."""
+    changed = False
+    for k, v in updates.items():
+        if prior.get(k) != v:
+            changed = True
+            break
+    if not changed:
+        return None
+    merged = dict(prior)
+    merged.update(updates)
+    return merged
+
+
+def _persist_extra_json(
+    db_url: str, order_id: str, full_extra: dict,
+) -> None:
+    """Write the merged extra_json back to paper_trade_record. Used by
+    the v2 classifier when lifecycle advances on a still_open tick."""
+    try:
+        with _db.connect(db_url) as conn:
+            conn.execute(
+                "UPDATE paper_trade_record SET extra_json = ? "
+                "WHERE order_id = ?",
+                (json.dumps(full_extra, default=str), order_id),
+            )
+    except Exception as e:
+        log.warning(
+            "v2 replay: extra_json persist failed for order_id=%s: %s",
+            order_id, e,
+        )
 
 
 async def _replay_loop(
@@ -510,22 +1013,26 @@ def _timeframe_ms(tf: str) -> int:
 def _load_pending(db_url: str) -> list[_PendingRow]:
     with _db.connect(db_url) as conn:
         rows = conn.execute(
-            "SELECT order_id, ts, strategy, symbol, side, qty, "
-            "       stop_price, tp_price, tp_r_multiple, expected_loss, "
-            "       expected_gain, max_hold_seconds "
+            "SELECT order_id, ts, strategy, division, symbol, side, qty, "
+            "       stop_price, tp_price, tp_r_multiple, "
+            "       entry_reference_price, expected_loss, "
+            "       expected_gain, max_hold_seconds, extra_json "
             "FROM paper_trade_record WHERE result IS NULL "
             "ORDER BY ts ASC"
         ).fetchall()
     return [
         _PendingRow(
             order_id=r["order_id"], ts=r["ts"],
-            strategy=r["strategy"], symbol=r["symbol"],
+            strategy=r["strategy"], division=r["division"],
+            symbol=r["symbol"],
             side=r["side"], qty=r["qty"],
             stop_price=r["stop_price"], tp_price=r["tp_price"],
             tp_r_multiple=r["tp_r_multiple"],
+            entry_reference_price=r["entry_reference_price"],
             expected_loss=r["expected_loss"],
             expected_gain=r["expected_gain"],
             max_hold_seconds=r["max_hold_seconds"],
+            extra_json=r["extra_json"],
         ) for r in rows
     ]
 
@@ -544,6 +1051,27 @@ def _update_row(db_url: str, order_id: str, v: _Resolved) -> None:
                 v.bars_to_resolution, order_id,
             ),
         )
+        # Multi-leg final-resolution: persist filled_legs + current_sl
+        # so post-mortem queries see the lifecycle state at close. Loads
+        # existing extra_json and merges (other strategy-specific fields
+        # like score_path / net_score must survive).
+        if v.extra_json_updates:
+            row = conn.execute(
+                "SELECT extra_json FROM paper_trade_record WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            prior = {}
+            if row and row["extra_json"]:
+                try:
+                    prior = json.loads(row["extra_json"])
+                except (TypeError, ValueError):
+                    prior = {}
+            merged = dict(prior)
+            merged.update(v.extra_json_updates)
+            conn.execute(
+                "UPDATE paper_trade_record SET extra_json = ? WHERE order_id = ?",
+                (json.dumps(merged, default=str), order_id),
+            )
 
 
 def _iso_to_ms(ts: str) -> int:

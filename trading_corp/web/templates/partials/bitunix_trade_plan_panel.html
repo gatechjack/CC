@@ -1,0 +1,174 @@
+{# trade-plan PR 6 — v2 trade-plan decisions + SL lifecycle panel.
+
+   Two sections in one panel:
+     1. Trade Plan v2 decisions — last 10 `trade_plan_decision` audits
+        (entry / SL / TP1-TP2-TP3 / sl_method / tp2_method / skip_reason)
+     2. SL Lifecycle — last 10 `position_sl_update` audits (lifecycle_state
+        transitions: post_tp1 → post_tp2_floor → post_tp2_trail)
+
+   Renders empty-state messages when no audits exist yet. Active marker
+   in the header tracks `trade_plan.enabled` so the operator knows
+   whether the panel reflects WOULD-DO (enabled=false) vs IS-DOING
+   (enabled=true).
+
+   Refresh: 30s htmx interval — matches the other gate panels.
+#}
+{% if view.bitunix_trade_plan is not none %}
+{% set tp = view.bitunix_trade_plan %}
+
+<section class="bg-pane border border-edge rounded-lg p-4"
+         hx-get="/division/bitunix_futures"
+         hx-trigger="every 30s"
+         hx-select="#bitunix-trade-plan-panel"
+         hx-target="#bitunix-trade-plan-panel"
+         hx-swap="outerHTML"
+         id="bitunix-trade-plan-panel">
+  <header class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Trade Plan v2 · 3-leg TP + Option C SL lifecycle
+    </h2>
+    <div class="flex items-center gap-2 text-[11px] font-mono">
+      {% if tp.enabled %}
+        <span class="text-gain font-semibold">● V2 ACTIVE</span>
+      {% else %}
+        <span class="text-muted">○ V2 DORMANT (legacy path live)</span>
+      {% endif %}
+      {% if tp.fee_config %}
+        <span class="text-muted">·</span>
+        <span class="text-muted" title="Fees used in TP1 floor + tp_plan math">
+          fees: taker {{ (tp.fee_config.taker_pct * 100)|round(3) }}%
+          · maker {{ (tp.fee_config.maker_pct * 100)|round(3) }}%
+          · slip {{ (tp.fee_config.slippage_pct * 100)|round(3) }}%
+        </span>
+      {% endif %}
+      <span class="text-muted">·</span>
+      <span class="text-muted" title="24h activity counters">
+        24h: decisions={{ tp.counts_24h.decisions_total }}
+        · fired={{ tp.counts_24h.should_trade_true }}
+        · skipped={{ tp.counts_24h.skipped }}
+        · sl_updates={{ tp.counts_24h.sl_updates_total }}
+      </span>
+    </div>
+  </header>
+
+  {# ─── Section 1: Recent trade-plan decisions ─── #}
+  <div class="mb-4">
+    <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+      Decisions ({{ tp.decisions|length }} recent · entry → stop → tp1/tp2/tp3)
+    </div>
+    {% if tp.decisions %}
+    <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
+      <table class="w-full text-xs font-mono">
+        <thead class="text-muted text-[10px] uppercase">
+          <tr class="border-b border-edge">
+            <th class="text-left p-2">When</th>
+            <th class="text-left p-2">Trigger</th>
+            <th class="text-left p-2">Side/Tier</th>
+            <th class="text-right p-2">Entry</th>
+            <th class="text-right p-2">SL</th>
+            <th class="text-right p-2">TP1 (25%)</th>
+            <th class="text-right p-2">TP2 (50%)</th>
+            <th class="text-right p-2">TP3 (25%)</th>
+            <th class="text-left p-2">SL method</th>
+            <th class="text-left p-2">TP2 method</th>
+            <th class="text-left p-2">Outcome</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in tp.decisions %}
+          <tr class="border-b border-edge/40 hover:bg-pane-2/30">
+            <td class="p-2 text-muted">{{ d.ts_et }}</td>
+            <td class="p-2 text-mono">{{ d.trigger_signal or '—' }}</td>
+            <td class="p-2 {% if d.score_side == 'buy' %}text-gain{% elif d.score_side == 'sell' %}text-loss{% else %}text-muted{% endif %}">
+              {{ (d.score_side or '—')|upper }} · {{ d.score_tier or '—' }}
+            </td>
+            <td class="p-2 text-right">{{ '%.2f'|format(d.entry) if d.entry is not none else '—' }}</td>
+            <td class="p-2 text-right text-loss">{{ '%.2f'|format(d.stop_loss) if d.stop_loss is not none else '—' }}</td>
+            <td class="p-2 text-right text-gain">{{ '%.2f'|format(d.tp1) if d.tp1 is not none else '—' }}</td>
+            <td class="p-2 text-right text-gain">{{ '%.2f'|format(d.tp2) if d.tp2 is not none else '—' }}</td>
+            <td class="p-2 text-right text-gain">{{ '%.2f'|format(d.tp3) if d.tp3 is not none else '—' }}</td>
+            <td class="p-2 text-[11px] text-muted">{{ d.sl_method or '—' }}</td>
+            <td class="p-2 text-[11px] text-muted">{{ d.tp2_method or '—' }}</td>
+            <td class="p-2 text-[11px]
+                       {% if d.should_trade %}text-gain font-semibold{% else %}text-loss{% endif %}"
+                title="{{ d.skip_reason or '' }}">
+              {% if d.should_trade %}✓ trade
+              {% else %}✗ skip
+                {% if d.skip_reason %}<span class="text-[10px] text-muted block">{{ d.skip_reason }}</span>{% endif %}
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="bg-pane-2/30 border border-edge rounded-md p-3">
+      <div class="text-xs text-muted font-mono italic">
+        No trade_plan_decision audit rows yet — observer hasn't run the v2 dispatch.
+        {% if not tp.enabled %}When `trade_plan.enabled: false`, the v2 path is dormant; the legacy geometric `_build_proposal` runs instead.{% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ─── Section 2: SL lifecycle updates ─── #}
+  <div>
+    <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+      SL Lifecycle ({{ tp.sl_updates|length }} recent · BE → tp1-floor → Chandelier trail)
+    </div>
+    {% if tp.sl_updates %}
+    <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
+      <table class="w-full text-xs font-mono">
+        <thead class="text-muted text-[10px] uppercase">
+          <tr class="border-b border-edge">
+            <th class="text-left p-2">When</th>
+            <th class="text-left p-2">Order</th>
+            <th class="text-left p-2">Side</th>
+            <th class="text-left p-2">State</th>
+            <th class="text-right p-2">Current SL</th>
+            <th class="text-right p-2">New SL</th>
+            <th class="text-left p-2">Legs filled</th>
+            <th class="text-left p-2">Source</th>
+            <th class="text-left p-2">Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in tp.sl_updates %}
+          <tr class="border-b border-edge/40 hover:bg-pane-2/30">
+            <td class="p-2 text-muted">{{ s.ts_et }}</td>
+            <td class="p-2 text-mono text-[10px]" title="{{ s.order_id }}">{{ (s.order_id or '—')[:8] }}…</td>
+            <td class="p-2 {% if s.side == 'buy' %}text-gain{% elif s.side == 'sell' %}text-loss{% else %}text-muted{% endif %}">
+              {{ (s.side or '—')|upper }}
+            </td>
+            <td class="p-2 text-mono text-[11px]
+                       {% if s.lifecycle_state == 'post_tp1' %}text-mono
+                       {% elif s.lifecycle_state == 'post_tp2_floor' %}text-gain
+                       {% elif s.lifecycle_state == 'post_tp2_trail' %}text-gain font-semibold
+                       {% else %}text-muted{% endif %}">
+              {{ s.lifecycle_state or '—' }}
+            </td>
+            <td class="p-2 text-right text-loss">{{ '%.2f'|format(s.current_sl) if s.current_sl is not none else '—' }}</td>
+            <td class="p-2 text-right text-gain">{{ '%.2f'|format(s.new_sl) if s.new_sl is not none else '—' }}</td>
+            <td class="p-2 text-[11px] text-mono">{{ (s.filled_legs|join(', ')) or '—' }}</td>
+            <td class="p-2 text-[10px] text-muted"
+                title="{% if s.source == 'paper_trade_replay' %}Emitted by paper-mode replay simulating leg fills{% else %}Emitted by the live 60s reconciler{% endif %}">
+              {{ s.source }}
+            </td>
+            <td class="p-2 text-[11px] text-muted">{{ s.reason or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="bg-pane-2/30 border border-edge rounded-md p-3">
+      <div class="text-xs text-muted font-mono italic">
+        No position_sl_update audit rows yet — no lifecycle transitions observed.
+        {% if not tp.enabled %}Will populate after `trade_plan.enabled: true` flips AND paper-mode replay simulates a tp1 leg fill.{% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}

@@ -542,3 +542,143 @@ def test_decision_flow_not_redeemed_for_normal_tv_source(db_url: str):
     assert len(view["flows"]) == 1
     assert view["flows"][0]["redeemed"] is False
     assert view["flows"][0]["redeem"] is None
+
+
+# ─── build_bitunix_trade_plan_view (PR 6) ──────────────────────────────
+
+
+from trading_corp.web.data import build_bitunix_trade_plan_view
+
+
+def test_trade_plan_view_returns_none_when_observer_missing():
+    deps = SimpleNamespace(bitunix_observer=None)
+    assert build_bitunix_trade_plan_view("sqlite:///not-used", deps) is None
+
+
+def test_trade_plan_view_empty_state_no_audits(db_url: str):
+    """Observer wired with no trade_plan_config + no audits → renders
+    empty-state shape: dormant, no decisions, no SL updates."""
+    deps = SimpleNamespace(
+        db_url=db_url,
+        bitunix_observer=SimpleNamespace(
+            trade_plan_config=None, fee_config=None,
+        ),
+    )
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    assert view is not None
+    assert view["enabled"] is False
+    assert view["fee_config"] is None
+    assert view["decisions"] == []
+    assert view["sl_updates"] == []
+    assert view["counts_24h"]["decisions_total"] == 0
+    assert view["counts_24h"]["sl_updates_total"] == 0
+
+
+def test_trade_plan_view_renders_decisions_and_sl_updates(db_url: str):
+    """Populated audits → view exposes both lists + 24h counts."""
+    # Use fresh timestamps so the 24h cutoff query includes them.
+    now = datetime.now(timezone.utc)
+    fresh_a = (now - timedelta(minutes=20)).isoformat()
+    fresh_b = (now - timedelta(minutes=10)).isoformat()
+    fresh_c = (now - timedelta(minutes=5)).isoformat()
+    with db.connect(db_url) as conn:
+        # 2 decisions: one fired, one skipped
+        _insert_audit(
+            conn, "trade_plan_decision",
+            {
+                "trigger_signal": "mc_a_red_diamond",
+                "score_side": "sell", "score_tier": "STANDARD",
+                "should_trade": True, "skip_reason": None,
+                "entry": 100.0, "stop_loss": 105.0,
+                "tp1": 97.5, "tp2": 95.0, "tp3": 87.5,
+                "sl_method": "swing", "tp2_method": "default_1r",
+                "risk_per_unit": 5.0,
+                "tp1_qty_fraction": 0.25, "tp2_qty_fraction": 0.5,
+                "tp3_qty_fraction": 0.25,
+            },
+            fresh_a,
+        )
+        _insert_audit(
+            conn, "trade_plan_decision",
+            {
+                "trigger_signal": "spoon_bull",
+                "score_side": "buy", "score_tier": "WEAK",
+                "should_trade": False, "skip_reason": "swing_too_close",
+                "entry": 100.0, "stop_loss": None,
+                "tp1": None, "tp2": None, "tp3": None,
+            },
+            fresh_b,
+        )
+        # 1 SL lifecycle update
+        _insert_audit(
+            conn, "position_sl_update",
+            {
+                "order_id": "abcd-1234", "symbol": "BTCUSDT",
+                "side": "sell", "lifecycle_state": "post_tp1",
+                "current_sl": 105.0, "new_sl": 100.0,
+                "reason": "tp1 filled → SL to entry (breakeven)",
+                "filled_legs": ["tp1"], "source": "paper_trade_replay",
+            },
+            fresh_c,
+        )
+    deps = SimpleNamespace(
+        db_url=db_url,
+        bitunix_observer=SimpleNamespace(
+            trade_plan_config=SimpleNamespace(enabled=True),
+            fee_config=SimpleNamespace(
+                taker_fee_pct=0.0004, maker_fee_pct=0.00014,
+                slippage_pct=0.00005,
+                entry_is_taker=True, tp_is_maker=False,
+            ),
+        ),
+    )
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    assert view is not None
+    assert view["enabled"] is True
+    assert view["fee_config"]["taker_pct"] == 0.0004
+    assert len(view["decisions"]) == 2
+    # ORDER BY id DESC → spoon_bull (later) first
+    assert view["decisions"][0]["trigger_signal"] == "spoon_bull"
+    assert view["decisions"][0]["should_trade"] is False
+    assert view["decisions"][0]["skip_reason"] == "swing_too_close"
+    assert view["decisions"][1]["trigger_signal"] == "mc_a_red_diamond"
+    assert view["decisions"][1]["should_trade"] is True
+    assert view["decisions"][1]["tp1"] == 97.5
+    assert len(view["sl_updates"]) == 1
+    assert view["sl_updates"][0]["lifecycle_state"] == "post_tp1"
+    assert view["sl_updates"][0]["filled_legs"] == ["tp1"]
+    assert view["sl_updates"][0]["source"] == "paper_trade_replay"
+    # 24h counts: both decisions land in window; both should_trade buckets visible
+    assert view["counts_24h"]["decisions_total"] == 2
+    assert view["counts_24h"]["should_trade_true"] == 1
+    assert view["counts_24h"]["skipped"] == 1
+    assert view["counts_24h"]["sl_updates_total"] == 1
+
+
+def test_trade_plan_view_24h_window_excludes_stale_rows(db_url: str):
+    """Old rows (40h) must not count toward `counts_24h`."""
+    now = datetime.now(timezone.utc)
+    with db.connect(db_url) as conn:
+        # Fresh
+        _insert_audit(
+            conn, "trade_plan_decision",
+            {"should_trade": True, "trigger_signal": "x"},
+            (now - timedelta(minutes=10)).isoformat(),
+        )
+        # Stale (40h ago)
+        _insert_audit(
+            conn, "trade_plan_decision",
+            {"should_trade": True, "trigger_signal": "old"},
+            (now - timedelta(hours=40)).isoformat(),
+        )
+    deps = SimpleNamespace(
+        db_url=db_url,
+        bitunix_observer=SimpleNamespace(
+            trade_plan_config=SimpleNamespace(enabled=True), fee_config=None,
+        ),
+    )
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    # 24h count excludes stale; full last-10 list includes it
+    assert view["counts_24h"]["decisions_total"] == 1
+    assert view["counts_24h"]["should_trade_true"] == 1
+    assert len(view["decisions"]) == 2  # both surfaced in recent list
