@@ -824,11 +824,14 @@ The Polymarket watchlist shipped 2026-05-17 (see deploy_log for the same date): 
 
 **Goal:** weekly cron that re-runs the deep seed, MERGES newly-discovered wallets into the existing watchlist (keep prior entries; add any wallets that newly pass the ≥100/≥70% gate). Distinct from Kalshi's deep-scan which overwrites — for Polymarket we want accumulation so we can observe track records of older entrants over time.
 
-**Implementation (~1-2h):**
-1. **`seed_polymarket_watchlist_deep.py --merge`** flag — defaults overwrite (current behavior), `--merge` unions by `proxy_wallet`: load existing watchlist, compute new top-N candidates as today, write `existing ∪ new` keeping existing-entry metadata (don't clobber `included_iso`). New entries get fresh `included_iso`.
-2. **systemd timer** — `infra/systemd/trading-corp-pm-watchlist-deep.{service,timer}`, weekly Sunday 13:00 UTC (after Kalshi's deep-scan at 12:00 UTC to avoid concurrent API hits). Persistent=true.
-3. **Top-N cap** — if `--merge` grows the list unbounded, also add `--max-total N` (default 100?) that trims the merged list back to top-N by `realized_pnl_usdc` desc. Otherwise the list grows forever.
-4. No new code outside the seed script + systemd files. Dashboard panel already reads from agent_state correctly.
+**Implementation (~2-3h, raised from 1-2h after 2026-05-17 prod crash — see below):**
+1. **Cloudflare retry handling** (BLOCKER — discovered 2026-05-17 16:00 UTC). The 2026-05-17 prod sweep crashed at chunk 1163 with HTTP 403 from `gamma-api.polymarket.com`. Cloudflare rate-limited the Azure VM IP (which is shared with PCT live + polymarket_arbitrage live, so the seed adds enough additional load to trip protection). Local IP completed the same sweep fine earlier the same day. The current client raises `PolymarketDataAPIError` on any 4xx/5xx and the seed aborts the entire run. Fix: in `PolymarketDataAPIClient._get_json`, on HTTP 403 + Cloudflare-marker body, retry with exponential backoff (start 30s, double, cap 5 min, ~6 attempts). On terminal failure, raise `PolymarketRateLimitError` but `seed_polymarket_watchlist_deep` should catch it inside `fetch_market_resolutions` and continue with whatever resolutions accumulated so far (the `compute_polymarket_stats` path handles `resolution.status == "not_found"` cleanly — wallets just get partial coverage). Mitigates the failure mode without contaminating data.
+2. **`seed_polymarket_watchlist_deep.py --merge`** flag — defaults overwrite (current behavior), `--merge` unions by `proxy_wallet`: load existing watchlist, compute new top-N candidates as today, write `existing ∪ new` keeping existing-entry metadata (don't clobber `included_iso`). New entries get fresh `included_iso`.
+3. **systemd timer** — `infra/systemd/trading-corp-pm-watchlist-deep.{service,timer}`, weekly Sunday 13:00 UTC (after Kalshi's deep-scan at 12:00 UTC to avoid concurrent API hits). Persistent=true.
+4. **Top-N cap** — if `--merge` grows the list unbounded, also add `--max-total N` (default 100?) that trims the merged list back to top-N by `realized_pnl_usdc` desc. Otherwise the list grows forever.
+5. No new code outside the seed script + systemd files. Dashboard panel already reads from agent_state correctly.
+
+**Workaround used 2026-05-17:** Pushed the locally-computed JSON (50 whales) directly to prod's `agent_state` via `az vm run-command` + `set_agent_state`. Bypasses the prod-side compute entirely. Acceptable for one-off seeding but NOT a path for the weekly cron — the local-IP-only approach doesn't generalize to scheduled prod runs.
 
 **Reuse:** dashboard panel done. Seed script done. The work is a flag + a timer.
 

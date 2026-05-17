@@ -108,7 +108,16 @@ rm -rf <new-files-or-dirs>
 
 **Inert / dormant on current traffic:**
 - `ClosedPositionRow` + `fetch_closed_positions()` are exposed on `PolymarketDataAPIClient` but no caller uses them today. Available for future surfaces (e.g., per-whale profile drilldown) without re-deploying the data layer.
-- Polymarket Watch List dashboard panel renders empty until prod seed completes (~14:43 + ~45 min = ~15:30 UTC). After that it auto-renders since `pm_dashboard_body.html` is Jinja and hot-reloads.
+
+**Recovery action 2026-05-17 16:29 UTC — prod seed crashed; pushed local JSON directly:**
+
+The background prod seed (PID 589207) crashed at chunk 1163 with HTTP 403 from `gamma-api.polymarket.com`. Cloudflare rate-limited the Azure VM IP — likely tripped because the VM IP is shared with PCT live + polymarket_arbitrage live, so the seed's ~2300 gamma calls added enough load to trigger protection. Local IP completed the same sweep cleanly earlier in the session.
+
+**Workaround:** packaged the locally-computed JSON (`reports/polymarket_watchlist_v2_preview.json`, 50 whales) → gzipped + base64 → shipped via `az vm run-command` → decoded + `set_agent_state(polymarket_copy_trader, watch_only_whales)` directly. Bypasses the prod compute entirely.
+
+Post-recovery verification: `load_agent_state` returns 50 whales, updated_ts 2026-05-17 16:29:52 UTC. Top-3 match local: everydaymortgage 90% / westminster 94% / taylorsversion 81%.
+
+**BLOCKER for the weekly cron** (BACKLOG `P2 — Polymarket watchlist weekly refresh`): rate-limit retry handling MUST land before this can run on a schedule. Spec'd: in `PolymarketDataAPIClient._get_json`, exponential backoff on 403+Cloudflare marker; in `seed_polymarket_watchlist_deep`, swallow terminal failure in `fetch_market_resolutions` and continue with partial coverage (`compute_polymarket_stats` handles `not_found` resolutions cleanly).
 
 **Rollback recipe:**
 ```bash
