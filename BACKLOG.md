@@ -8,6 +8,119 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## END-OF-SESSION SNAPSHOT — 2026-05-17 03:25 UTC  *(supersedes 20:10 + 19:40 + 04:55)*
+
+**Continuation of the 20:10 session.** Two clean follow-up deploys after the bucket-guard/H2 ship: a dashboard cutoff filter (so tile + history aggregates stop being dragged down by pre-fix kalshi RTs) and a target_iso audit field (so we can verify the date-parse fix on the wire when tomorrow's weather markets settle). Both reversible, both verified, both logged in `runbooks/deploy_log.md`.
+
+### 1. Dashboard cutoff filter — SHIPPED 02:49 UTC, LIVE
+
+**Triggered by:** Board observed (correctly) that the validation gate (≥30 RTs WR ≥65%) was uninformative against tainted historical aggregates — 152 pre-fix kalshi RTs (61 weather / 91 crypto) were dragging the dashboard tiles to a 9.8% / 11.0% baseline that no longer represents current logic. Chose **filter-by-cutoff over hard-delete** so the pre-fix dataset remains available for σ-scaling work and forensic queries.
+
+**Implementation:**
+- `trading_corp/web/data.py` — module-level `DASHBOARD_RT_CUTOFFS: dict[str, str]` (kalshi_weather: `2026-05-16T19:18:00+00:00`, kalshi_crypto: `2026-05-16T19:37:00+00:00`) + `_kalshi_cutoff_clause(ts_col)` helper. Three queries patched: `pm_overview` roll-up, `_query_pm_round_trips` history list, `_query_pm_resolved_stats` aggregate. `PMSummary` gains `cutoff_ts` + `cutoff_label` (None-default). Set on single-division pages only — combined view shows no badge (no honest single date).
+- `web/templates/partials/pm_dashboard_body.html` + `web/templates/home.html` — "since YYYY-MM-DD · current logic only" badge under Win rate / under home-tile realized PnL.
+
+**Verified on prod:**
+- Per-division pages render the badge (verified by Jack in browser + curl spot-check on 127.0.0.1:8000).
+- `kalshi_llm_arbitrage` page has zero badge instances (correct: no cutoff entry).
+- `n_resolved=0` on both filtered division tiles — correct, because the 4 "post-19:18-fix" crypto RTs from the 19:40 observation entered 19:20–19:28 UTC, **which predates the 19:37 crypto cutoff**. They were placed by the OLD crypto code and are correctly filtered.
+- Single-table source of truth: adding a new cutoff = one entry in `DASHBOARD_RT_CUTOFFS`. Empty dict = full rollback.
+
+**Commits:** `bf1ae7e` (code + tests, 8 new cutoff tests), `cbeb419` (deploy_log).
+**Backup tag on prod:** `.pre-rt-cutoff-20260517-0249`.
+
+### 2. target_iso audit field for kalshi_weather — SHIPPED 03:09 UTC, LIVE
+
+**Triggered by:** P3 carryover from 19:40 EOS. The `kalshi_weather_arb` `would_have_placed` audit allowlist in `main.py` didn't carry `target_iso`, so we had no on-the-wire proof that the 19:18 UTC date-parse fix (Bug B) was firing on the right resolution date. With tomorrow's ~14:00 UTC weather settlements approaching, this needed to ship before then.
+
+**Implementation:**
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — adds `"target_iso": target_iso,` to `ProposedOrder.extra`. Whole-file deploy (md5 match).
+- `trading_corp/main.py` — patched in-place via python-anchor script (preserves prod drift): inserts `"target_iso": ext.get("target_iso"),` after `expires_at` in the kalshi_weather block. Marker `TARGET_ISO_INSERTED` for future grep. Anchors on `forecast_temp_f` to disambiguate from the kalshi_crypto block.
+
+**Verified on prod:**
+- AST parse clean post-deploy.
+- `grep -n target_iso` on prod's `main.py` shows the new line at 3210, right between `expires_at` (3205) and `title` (3211). Same shape on `kalshi_weather_arb.py` line 709.
+- Service restarted (PID 536909), `/healthz` 200.
+- **Audit cross-check pending** — couldn't observe a fresh `would_have_placed` row with `target_iso` populated in the 25 min post-deploy because overnight UTC is quiet for weather. First natural fire (~tomorrow morning) will close the loop.
+
+**Commits:** `1e2b399` (code), `813b000` (deploy_log).
+**Backup tag on prod:** `.pre-target-iso-20260517-0309`.
+
+### Environment sync at session end
+
+| File | Local md5 (LF) | Prod md5 (LF) | Status |
+|---|---|---|---|
+| `web/data.py` | `5b6faaa3c8001633f914714ee4374ad0` | `5b6faaa3c8001633f914714ee4374ad0` | ✅ match |
+| `web/templates/home.html` | `5635930dfb5ff1342d4e9d43a4d0ce6d` | `5635930dfb5ff1342d4e9d43a4d0ce6d` | ✅ match |
+| `web/templates/partials/pm_dashboard_body.html` | `221b1ad4d4cab2a4386a7c5c3df6fa3f` | `221b1ad4d4cab2a4386a7c5c3df6fa3f` | ✅ match |
+| `kalshi_weather_arb.py` | `4bf3005a0f638dae4c0c73d5dd296a09` | `4bf3005a0f638dae4c0c73d5dd296a09` | ✅ match |
+| `main.py` | local — | prod `580a0a08c0ea39add52382874f73476c` | ❌ but semantically equivalent — `TARGET_ISO_INSERTED` + `BUCKET_GUARD_INSERTED` + `CRYPTO_BUCKET_GUARD_INSERTED` markers all present on prod. Drift in unrelated regions per `trading_corp_prod_git_drift.md`. |
+
+Service active, PID 536909 (post-target_iso restart). Boot wiring on prod: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False`.
+
+### New commits this session (latest first)
+
+- `813b000` — docs: deploy_log entry — target_iso audit field shipped 2026-05-17 03:09 UTC
+- `1e2b399` — kalshi_weather: emit target_iso in audit (verify date-parse fix on the wire)
+- `cbeb419` — docs: deploy_log entry — dashboard cutoff filter shipped 2026-05-17 02:49 UTC
+- `bf1ae7e` — dashboard: filter pre-fix kalshi RTs from tiles + history (cutoff dict)
+
+### Sharp-edges re-discovered this session
+
+- **uvicorn does not hot-reload `web/data.py` in prod.** I spec'd "FastAPI worker auto-reloads on next request" — wrong. Prod uvicorn runs with `--reload` off (sane for a real-money process). Same restart-required rule as the BitUnix YAML hot-reload memory, different mechanism. Memory `feedback_uvicorn_no_reload_in_prod.md` filed.
+
+### Operating context for tomorrow's pickup
+
+**The data flowing in overnight is the load-bearing part.** All three fixes (bucket-guard weather + crypto, dashboard cutoff, target_iso audit) are live. Three things to look at first thing tomorrow:
+
+1. **target_iso cross-check.** First fresh `kalshi_weather_arb / would_have_placed` row should have `target_iso` populated. The date segment of the ticker should match (e.g., `KXHIGHDEN-26MAY17-...` → `target_iso='2026-05-17T...'`, NOT `2026-05-18T...`). Query:
+   ```sql
+   SELECT ts, json_extract(payload_json,'$.ticker'),
+          json_extract(payload_json,'$.target_iso'),
+          json_extract(payload_json,'$.expires_at')
+     FROM audit_event
+    WHERE actor='kalshi_weather_arb' AND kind='would_have_placed'
+      AND ts >= '2026-05-17T03:09:30+00:00'
+    ORDER BY ts ASC LIMIT 5;
+   ```
+   If `target_iso` is NULL or matches `expires_at` date instead of ticker date, something regressed.
+
+2. **Post-cutoff RT accumulation.** When May 16 daily HIGH/LOW weather markets settle (~14:00 UTC), the `kalshi_weather` tile will start counting fix-era RTs. The Board needs ≥30 per division at WR ≥65% before any `auto_execute: true` flip. Currently 0 weather + 0 crypto (the 4 visible crypto RTs are pre-cutoff per #1 in this snapshot).
+
+3. **bucket_guard fire distribution.** Today's post-fix counts (as of 02:24 UTC scan):
+   - kalshi_crypto: 29 natural-path + 15 `flipped_no_to_yes` + 105 `kalshi_crypto_skipped_bucket_guard` skips
+   - kalshi_weather: 16 natural-path + 0 flips + 59 `kalshi_weather_skipped_bucket_guard` skips
+   Watch the flip + skip count grow overnight as more markets get evaluated.
+
+### Tomorrow's pickup candidates (ordered by recommended sequence)
+
+1. **Morning observation pass — target_iso cross-check + post-cutoff RT win rate** (~10 min). The three queries from "Operating context" above.
+2. **Investigate post-1D-enforce PA rejection pattern** (~15-30 min). NOTE: parallel session is/was working this — coordinate before duplicating. Pre-H2 finding: all 3 post-04:14 UTC fires landed `skipped_pa_validation`. With H2 live since 19:21 UTC, mix may have shifted.
+3. **Investigate the 19:24 UTC strategies.yaml mystery edit** (~5 min, P3). 1-byte size change after H2 apply. Diff against `config/strategies.yaml.bak-h2-20260516T185125`.
+4. **Investigate orphan `mc_b_gold_buy # H2: was 5` marker origin** (~5 min, P3). Already on prod at 17:45 UTC before H2 deploy started.
+5. **Empirical σ-scaling factor** (P2, ~1-2h). Blocked until ≥30 post-fix RTs accumulated. Heuristic σ=2.93°F median; empirical 23.5% modal-bucket hit rate back-solves to σ_eff ≈ 1.7°F (~0.6× scaling). Pre-fix RTs are still in DB for this analysis — query with explicit `WHERE entry_ts < '2026-05-16T19:18:00+00:00'`.
+6. **Watch for T-ticker / crypto T-suffix dynamics.** Pre-fix 0/10 weather + 0/12 crypto. With the guard, those should be skipped rather than fired. If fire count drops to zero, the guard is correctly filtering.
+7. **`config/strategies.yaml` 887-line stale `factors:` block cleanup** (~15 min, P3). Cosmetic.
+8. **PMCC audit.** Perennial.
+9. **PCT stale-pruner cron** (P2 in BACKLOG, ~2-3h). Nightly Bug-C-predicate run via systemd timer.
+
+### Things to NOT do without explicit approval
+
+- Do NOT flip `htf_gate.mode: shadow → enforce` back (it's at `enforce` per the 04:14 UTC deploy log entry).
+- Do NOT flip `trade_plan.enabled: true`. Phase 1E gate.
+- Do NOT enable `auto_execute: true` on weather, crypto, or BitUnix until each division's validation gate is hit.
+- Do NOT delete backup tags on prod (kalshi weather/crypto + H2 + rt-cutoff + target_iso) until ≥24h confirms the new logic.
+- Do NOT delete pre-cutoff kalshi RTs from `kalshi_round_trips` — they're the σ-scaling dataset. Dashboard already filters them; deleting would lose forensic value.
+- Do NOT relax `config/strategies.yaml` validation guards or schema.
+
+### Proposed CLAUDE.md / sharp_edges addition (apply manually per CLAUDE.md §6)
+
+Add to `docs/sharp_edges.md` (or wherever the BitUnix hot-reload entry lives):
+
+> **uvicorn does not hot-reload `web/data.py` in prod.** Same conclusion as the BitUnix-YAML-no-hot-reload entry, different mechanism. Prod uvicorn runs without `--reload` (sane for a real-money process); any change to a Python module under `trading_corp/` requires `systemctl restart trading-corp` to take effect. Template files (`web/templates/*.html`) DO live-reload because Jinja re-reads them per request. The asymmetry is real: a deploy that touches only templates can skip the restart; one that touches `data.py` cannot. Memory: `feedback_uvicorn_no_reload_in_prod.md`.
+
+---
+
 ## END-OF-SESSION SNAPSHOT — 2026-05-16 20:10 UTC  *(supersedes 19:40 + 04:55)*
 
 **Two parallel sessions today, both shipped.** This top-level snapshot captures BOTH work streams (BitUnix scoring H2 + kalshi_weather/crypto fixes) so tomorrow's pickup has a single source of truth. Detailed kalshi diagnostic trail is preserved in the 19:40 snapshot below (do not delete).

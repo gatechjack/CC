@@ -133,6 +133,10 @@ agents mtime-cache. Inconsistent but not harmful.
 
 `bitunix_futures_observer.py` receives its `ScoringConfig` once at construction (`main.py:380`) and holds it in `self.scoring_config`. Mtime-cache pattern from § 5 applies to Otter/Cypher/Kalshi/Polymarket/Donchian, NOT BitUnix. Every `strategies.yaml` edit that touches the `bitunix_futures` block requires `systemctl restart trading-corp` to take effect. Memory: `feedback_bitunix_no_hot_reload.md`.
 
+### uvicorn does not hot-reload Python modules in prod
+
+Prod uvicorn runs without `--reload` (sane for a real-money process — a syntax-error save shouldn't take down the live service). Any change to a `trading_corp/**/*.py` file requires `systemctl restart trading-corp` to take effect. Template files (`trading_corp/web/templates/**/*.html`) DO live-reload because Jinja re-reads them per request. The asymmetry is real: a deploy that touches only templates can skip the restart; one that touches `web/data.py` (or any other `.py`) cannot. Memory: `feedback_uvicorn_no_reload_in_prod.md` (includes the full hot-reload-or-not table for every config/code surface).
+
 ## UI & classification
 
 ### Investment-type UI grouping is divisions-aware, not broker-aware
