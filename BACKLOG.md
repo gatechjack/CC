@@ -847,27 +847,23 @@ Items deferred or surfaced during the 2026-05-15 EVE watch-only ship. The
 infrastructure is live + working; these are the next-level enhancements.
 See memory `kalshi_watchlist_architecture` + deploy_log 2026-05-15 06:44 UTC.
 
-### P2 — WO-4: Promote button
+### ✅ DONE 2026-05-17 17:18 UTC — WO-4: Promote button (+ Demote, both venues)
 
-Dashboard `[Promote]` button on watch-list rows is currently a disabled
-stub (tooltip: "ships next, WO-4"). Real implementation:
-- **Endpoint:** HTMX `POST /api/kalshi/watchlist/promote/{handle}` —
-  moves a handle out of `agent_state(watch_only_whales)` and into
-  `agent_state(selected_whales)`.
-- **Refresh-script compatibility:** the weekly deep-scan overwrites
-  `watch_only_whales`. Promote needs to ALSO add the handle to a new
-  `agent_state(pinned_whales)` slot so subsequent scans don't re-add
-  it as a watch-only candidate. `refresh_kalshi_whales.py` should be
-  taught to MERGE pinned into selected (not overwrite away). Otherwise
-  the promote click silently regresses next quarter.
-- **Audit:** new audit kind `kalshi_whale_promoted` capturing
-  `{handle, promoted_at_iso, source_stats_snapshot}` for retrospective
-  analysis of which promotion picks worked.
-- **Demote:** symmetric flow probably also needed. If a promoted whale
-  later flags `whale_autopaused`, surface a `[Demote]` button to move
-  back to watch-only rather than fully drop.
-- **Gated on:** watch_only_whales reaches ≥10 visible whales (so there's
-  meaningfully ranked candidates to promote). ~2-3h.
+Shipped both Promote and Demote symmetrically across Kalshi + Polymarket
+in a single deploy (`efa6dc8`). See deploy_log 2026-05-17 17:18 UTC for
+the full entry. All four bullets in the original spec are addressed:
+- **Endpoints:** `/api/kalshi/watchlist/promote/{handle}` +
+  `/api/kalshi/whales/demote/{handle}` (plus the Polymarket pair). All
+  HTMX-driven, return small HTML pill on success.
+- **Refresh-script compatibility:** `pinned_whales` slot per venue +
+  merge step in `refresh_kalshi_whales.py` and
+  `refresh_polymarket_whales.py`. Manual promotions survive the next
+  refresh run.
+- **Audit:** `kalshi_whale_promoted` / `kalshi_whale_demoted` /
+  `polymarket_whale_promoted` / `polymarket_whale_demoted`.
+- **Demote:** demote calls `force_close_whale_positions` which emits
+  synthetic SELL `would_have_placed` audits at entry_price for every
+  tracked open position so the resolver closes the round_trips cleanly.
 
 ### P3 — Watch-list operational follow-ups
 

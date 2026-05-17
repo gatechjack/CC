@@ -76,6 +76,71 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 17:18 UTC — Promote / Demote buttons (Kalshi + Polymarket) + pinned_whales merge
+
+**Commits:** `efa6dc8`
+**Triggered by:** User request to add VIEW + PROMOTE buttons to both watch-list panels and VIEW + DEMOTE buttons to both Selected Whales panels. Symmetric flow across Kalshi and Polymarket copy-trading. BACKLOG WO-4 closed by this ship.
+**Backup tag:** `pre-promote-demote-20260517-1718` (7 files)
+
+**Files deployed (7 modify) via gzipped patch -p1 (38KB raw → 10KB compressed):**
+- `trading_corp/agents/strategies/polymarket_copy_trader.py` — new module-level `force_close_whale_positions(wallet, *, db_url, logger_agent, division, reason)`. Iterates the whale's `whale_state:<wallet>` slot's `our_positions`, emits `would_have_placed` audits with `side=sell` + `is_synthetic_close=True` + `synthetic_close_reason="demoted_via_ui"` so the polymarket_resolver pairs them into round_trips. Resets the slot to a clean baseline (last_seen_ts=now, our_positions={}) so re-promotion does not replay history. v1: synthetic close uses entry_price (zero-PnL paper close).
+- `trading_corp/agents/strategies/kalshi_copy_trader.py` — symmetric `force_close_whale_positions(handle, *, db_url, logger_agent, division, reason)`. Reads the `positions:<nickname>` slot, emits `would_have_placed` with side=sell so kalshi_resolver pairs into round_trips. Clears the slot (empty dict).
+- `trading_corp/web/routes.py` — 4 new POST endpoints inside `register(app)` before the `/research` route:
+  - `/api/kalshi/watchlist/promote/{handle}` — moves handle into selected_whales + pinned_whales, removes from watch_only_whales, audits `kalshi_whale_promoted`.
+  - `/api/kalshi/whales/demote/{handle}` — calls `kalshi_copy_trader.force_close_whale_positions`, removes from selected + pinned, adds back to watch_only_whales, audits `kalshi_whale_demoted`.
+  - `/api/polymarket/watchlist/promote/{proxy_wallet}` — same shape but list[dict] payloads (wallet + user_name + category + promoted_iso + source).
+  - `/api/polymarket/whales/demote/{proxy_wallet}` — same shape, calls polymarket force_close.
+- `trading_corp/web/data.py` — `PMWhaleRow` gains `actor_id` (the demote endpoint's path-id: handle for Kalshi, proxy_wallet for Polymarket) and `is_pinned` (whale is in pinned_whales). `_query_pm_whales` loads both `pinned_whales` slots and (for Polymarket) builds a user_name→wallet map from selected_whales so PMWhaleRow.actor_id can be set without re-fetching.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — four panel changes:
+  - Selected Whales (cross-venue): new "Action" column with View + Demote buttons. View link is venue-aware (`kalshi.com/social/profile/{handle}` vs `polymarket.com/profile/{actor_id}`). Demote button has `hx-confirm` prompt mentioning the synthetic-SELL semantics. 📌 badge appears next to manually-promoted whales (is_pinned=True) for visual distinction from algorithmically-selected ones.
+  - Kalshi Watch List: previously-disabled "Promote" stub button (WO-4 placeholder) is now wired `hx-post=/api/kalshi/watchlist/promote/{handle}` with confirm prompt; new View link to kalshi.com profile added alongside.
+  - Polymarket Watch List: new Promote button placed next to existing View link, `hx-post=/api/polymarket/watchlist/promote/{proxy_wallet}` with confirm prompt.
+- `trading_corp/scripts/refresh_polymarket_whales.py` — before `set_agent_state(selected_whales)`, loads `pinned_whales` and unions it into `selected_records` deduped by lowercased wallet. `summary["pinned_merged"]` records the merge count.
+- `trading_corp/scripts/refresh_kalshi_whales.py` — symmetric merge for the `list[str]` schema. Both refresh scripts now preserve manually-promoted whales across runs.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Promote whale via dashboard:** click in either watch list moves the whale to `selected_whales` + `pinned_whales` and starts copy-trading on the next strategy poll (60s Polymarket, 600s Kalshi) — strategies reload `selected_whales` every cycle so no restart needed. Cold-start protection automatic: the strategy's existing `state is None` check baselines without replaying history.
+- **Demote whale via dashboard:** click on Selected Whales row emits synthetic SELL audits for every tracked open position (so the resolver closes the round_trips), removes from selected + pinned, adds back to watch_only_whales. Copy-trading stops on the next poll.
+- **Pinned-whale protection:** new `agent_state(<actor>, pinned_whales)` slot keyed by handle (Kalshi: list[str]) / wallet (Polymarket: list[dict]). `refresh_*_whales.py` merge pinned into the algorithm's selection so manual promotions survive periodic re-ranking. No more silent eviction.
+- **WO-4 closed:** BACKLOG `WO-4: Promote button` (filed 2026-05-15 with the Kalshi watch-only ship) is implemented and live for both venues simultaneously.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Force-close is module-level, not instance-level.** `force_close_whale_positions` is a module-level function in each copy_trader file (not a method). Callers don't need a strategy instance — they pass `db_url` + `logger_agent` directly. Keeps the demote endpoint decoupled from agent wiring.
+- **Synthetic close is zero-PnL in v1.** Exit price = entry_price; the resolver pairs the synthetic SELL with the original BUY into a round_trip with realized_pnl≈0. Future iteration could plug in `broker.quote()` for a true mark-to-market exit. Tagged with `is_synthetic_close=true` + `synthetic_close_reason="demoted_via_ui"` in the audit payload for retroactive filtering.
+- **State slot is RESET, not deleted, on demote.** Polymarket: writes `{user_name, last_seen_ts=now, last_seen_txhashes=[], our_positions={}}`. Kalshi: writes `{}`. Re-promoting a previously-demoted whale gets a clean baseline with no historical replay risk.
+- **Polymarket needs a user_name → wallet map** for the dashboard to address the demote endpoint by wallet. `_query_pm_whales` builds this from `selected_whales` and exposes the wallet as `PMWhaleRow.actor_id`. If a whale exists in `polymarket_round_trips` but NOT in `selected_whales` (e.g. autopaused or just demoted), actor_id is empty and the template renders a `—` instead of a Demote button (prevents accidental demote on a whale we no longer have a stable ID for).
+- **CRLF-vs-LF deploy gotcha caught + fixed mid-deploy.** First patch attempt failed at routes.py hunk because both prod's and local's `routes.py` are CRLF on disk but `git diff` generates LF-only patches. Workaround: `sed -i 's/\r$//' routes.py` on prod to normalize to LF before applying. The other 6 files were already LF on prod so patch applied to them cleanly. Worth carrying this `sed` step forward into future deploys that touch routes.py.
+
+**New audit kinds (no schema change to audit_event table):**
+- `polymarket_whale_promoted` / `polymarket_whale_demoted`
+- `kalshi_whale_promoted` / `kalshi_whale_demoted`
+
+**Verification:**
+- Pre-deploy md5-diff: all 7 files DIFFER on prod (expected).
+- Local end-to-end tests (paper mode, FastAPI TestClient): seeded test whales for both venues, hit promote → verified selected+pinned populated and watch_only cleared, hit demote → verified selected+pinned cleared and watch_only repopulated, audit events of correct kinds emitted. Cleaned up test entries.
+- Patch dry-run on prod (after LF normalization): all 7 files clean apply.
+- Service restarted: PID 588842 → 598297, active.
+- Prod imports green: `force_close_whale_positions` callable on both copy_trader modules; `PMWhaleRow` has `actor_id` + `is_pinned` fields.
+
+**Inert / dormant on current traffic:**
+- The 4 new endpoints are inert until a Board member clicks a button on the dashboard. They have no autonomous trigger.
+- Demote's force_close emits synthetic SELL audits at entry_price. If no whales are demoted, no synthetic audits land. The resolver will keep pairing organic SELLs as today.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG=pre-promote-demote-20260517-1718
+BASE=/home/azureuser/trading_corp
+for f in trading_corp/agents/strategies/polymarket_copy_trader.py trading_corp/agents/strategies/kalshi_copy_trader.py trading_corp/web/data.py trading_corp/web/routes.py trading_corp/web/templates/partials/pm_dashboard_body.html trading_corp/scripts/refresh_polymarket_whales.py trading_corp/scripts/refresh_kalshi_whales.py; do
+  mv $BASE/$f.$TAG $BASE/$f
+done
+sudo systemctl restart trading-corp
+'
+```
+agent_state slots `pinned_whales` (both venues) survive rollback as inert data. They're only read by the refresh scripts and the dashboard query; with the old code, they're ignored.
+
+---
+
 ## 2026-05-17 14:43 UTC — Polymarket watchlist seed + dashboard panel
 
 **Commits:** `30f8abe`
