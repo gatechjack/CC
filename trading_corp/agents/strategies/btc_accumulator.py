@@ -115,6 +115,10 @@ class AlertEvent:
     out before passing in)."""
     ts: datetime
     signal_name: str    # canonical name matching a key in factors
+    # Added 2026-05-18 for the BitUnix PA validator structure-TF backtest.
+    # Spot strategy ignores tf; bitunix_confluence reads it via getattr for
+    # the score_timeframes PR-3a filter. Default None preserves prior shape.
+    tf: str | None = None
 
 
 @dataclass
@@ -130,6 +134,10 @@ class PriceContext:
     below_session_vwap: bool = False
     higher_highs_4h: bool = False
     lower_lows_4h: bool = False
+    # Added 2026-05-18 for BitUnix PA validator structure-TF backtest. Spot
+    # strategy doesn't consume these (defaults preserve existing behavior).
+    higher_highs_1h: bool = False
+    lower_lows_1h: bool = False
     volume_above_20bar_avg: bool = False
 
 

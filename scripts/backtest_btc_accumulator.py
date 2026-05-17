@@ -147,10 +147,11 @@ def fetch_alerts_from_prod(start: datetime, end: datetime, refresh: bool) -> lis
         cache.write_text(json.dumps(rows, indent=2), encoding="utf-8")
         log.info("Cached %d alert rows to %s", len(rows), cache)
 
-    alerts = [
+    alerts: list[AlertEvent] = [
         AlertEvent(
             ts=datetime.fromisoformat(r["ts"].replace("+00:00", "+00:00")),
             signal_name=r["signal"],
+            tf=r.get("tf"),
         )
         for r in rows
     ]
@@ -346,6 +347,56 @@ def hh_ll_4h_at(
     )
 
 
+def _resample_to_1h(bars: list[dict]) -> list[dict]:
+    """1h resample analog of `_resample_to_4h`. Buckets aligned to
+    UTC :00 of each hour."""
+    if not bars:
+        return []
+    out: list[dict] = []
+    cur: dict | None = None
+    cur_bucket: datetime | None = None
+    for b in bars:
+        bucket = b["ts"].replace(minute=0, second=0, microsecond=0)
+        if cur is None or bucket != cur_bucket:
+            if cur is not None:
+                out.append(cur)
+            cur_bucket = bucket
+            cur = {
+                "ts": bucket,
+                "open": b["open"], "high": b["high"], "low": b["low"],
+                "close": b["close"], "volume": b["volume"],
+            }
+        else:
+            cur["high"] = max(cur["high"], b["high"])
+            cur["low"] = min(cur["low"], b["low"])
+            cur["close"] = b["close"]
+            cur["volume"] += b["volume"]
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def hh_ll_1h_at(
+    bars_1h: list[dict], ts: datetime,
+) -> tuple[bool, bool]:
+    """1h analog of `hh_ll_4h_at`. Same exclude-in-progress-bucket
+    rule as the 4h version (compares last-completed vs prior-completed)."""
+    bucket = ts.replace(minute=0, second=0, microsecond=0)
+    cur_idx = None
+    for i, b in enumerate(bars_1h):
+        if b["ts"] == bucket:
+            cur_idx = i
+            break
+    if cur_idx is None or cur_idx < 2:
+        return False, False
+    last_completed = bars_1h[cur_idx - 1]
+    prior         = bars_1h[cur_idx - 2]
+    return (
+        last_completed["high"] > prior["high"],
+        last_completed["low"] < prior["low"],
+    )
+
+
 def volume_above_20bar_avg_at(bars: list[dict], ts: datetime) -> bool:
     """True iff the bar containing ts has volume > 20-bar trailing
     average (computed from the 20 PRIOR bars; current bar's volume
@@ -365,13 +416,15 @@ def volume_above_20bar_avg_at(bars: list[dict], ts: datetime) -> bool:
 def build_price_context(
     bars: list[dict], ts: datetime, config: ConfluenceConfig,
     bars_4h: list[dict] | None = None,
+    bars_1h: list[dict] | None = None,
 ) -> PriceContext | None:
     """Compose `PriceContext` for a given timestamp. Returns None if
     no bar exists for ts (alert outside OHLCV range).
 
-    `bars_4h` (resampled 4h bars) is precomputed once by the caller
-    and threaded in for HH/LL detection — re-resampling per alert
-    would be wasteful."""
+    `bars_4h` / `bars_1h` (resampled bars) are precomputed once by the
+    caller and threaded in for HH/LL detection — re-resampling per
+    alert would be wasteful. `bars_1h` defaults to None for backward
+    compatibility; spot strategy callers don't need it."""
     fill = fill_price_at(bars, ts)
     if fill is None:
         return None
@@ -385,6 +438,11 @@ def build_price_context(
     else:
         hh4h = ll4h = False
 
+    if bars_1h:
+        hh1h, ll1h = hh_ll_1h_at(bars_1h, ts)
+    else:
+        hh1h = ll1h = False
+
     return PriceContext(
         current_price=fill,
         pct_change_in_window_sell=pct_change_in_window(
@@ -397,6 +455,8 @@ def build_price_context(
         below_session_vwap=below_vwap,
         higher_highs_4h=hh4h,
         lower_lows_4h=ll4h,
+        higher_highs_1h=hh1h,
+        lower_lows_1h=ll1h,
         volume_above_20bar_avg=volume_above_20bar_avg_at(bars, ts),
     )
 

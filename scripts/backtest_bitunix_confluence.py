@@ -45,6 +45,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.backtest_btc_accumulator import (  # noqa: E402
     _ohlcv_cache_path,
+    _resample_to_1h,
     _resample_to_4h,
     build_price_context,
     fetch_alerts_from_prod,
@@ -59,6 +60,11 @@ from trading_corp.agents.strategies.bitunix_confluence import (  # noqa: E402
     Tier,
     evaluate_confluence_futures,
     filter_live_alerts_with_dedupe,
+)
+from trading_corp.agents.strategies.bitunix_pa_validation import (  # noqa: E402
+    PAValidationConfig,
+    PAValidationDecision,
+    evaluate_pa_validation,
 )
 from trading_corp.agents.strategies.btc_accumulator import (  # noqa: E402
     PriceContext,
@@ -160,23 +166,37 @@ class BacktestResult:
     total_r: float
     avg_bars_held: float
 
+    # PR-PA-backtest 2026-05-18 — PA validator arm tracking
+    arm_name: str = ""                          # "4h_baseline" | "1h_with_4h_bonus"
+    structure_tf: str = "4h"                    # "4h" | "1h"
+    pa_4h_bonus_multiplier: float = 1.0
+    n_pa_rejected: int = 0
+    n_pa_passed: int = 0
+    n_pa_passed_with_4h_bonus: int = 0          # 1h-arm only: how many fires got 4h-aligned bonus
+    n_fires_premium_4h_aligned: int = 0
+    n_fires_standard_4h_aligned: int = 0
+
 
 # ── Trade open / resolve ────────────────────────────────────────────
 
 
 def open_trade(
     *, verdict: BitUnixVerdict, alert_ts: datetime, entry_price: float,
-    account_equity: float,
+    account_equity: float, size_multiplier: float = 1.0,
 ) -> PaperTrade | None:
     """Build a paper trade from a fired verdict. Returns None if
-    sizing math rejects (qty rounds to 0 or R:R below floor)."""
+    sizing math rejects (qty rounds to 0 or R:R below floor).
+
+    `size_multiplier` scales `size_pct_target` (default 1.0 = no bonus).
+    Added 2026-05-18 for the PA structure-TF backtest's
+    `pa_4h_aligned → 1.25× size` bonus arm."""
     tier_cfg = TIER_SIZING.get(verdict.tier)
     if tier_cfg is None:
         return None
     if entry_price <= 0 or account_equity <= 0:
         return None
 
-    size_pct_target = float(tier_cfg["size_pct"])
+    size_pct_target = float(tier_cfg["size_pct"]) * float(size_multiplier)
     leverage = float(tier_cfg["leverage"])
 
     atr = entry_price * ATR_FALLBACK_PCT
@@ -301,6 +321,10 @@ def run_backtest(
     bars: list[dict],
     config: BitUnixConfluenceConfig,
     starting_equity: float,
+    structure_tf: str = "4h",
+    pa_config: PAValidationConfig | None = None,
+    pa_4h_bonus_multiplier: float = 1.0,
+    arm_name: str = "",
 ) -> tuple[list[LedgerEntry], list[PaperTrade], BacktestResult]:
     """Walk alerts chronologically, evaluate scorer at each, open/resolve
     paper trades.
@@ -311,8 +335,27 @@ def run_backtest(
     - New opposite-direction signal during open trade → close current
       trade at current bar price, then evaluate new fire normally.
     - Daily-risk-kill caps cumulative-at-risk per UTC day at 3% equity.
+
+    PR-PA-backtest 2026-05-18 — PA validator arms:
+    - `structure_tf` = "4h" (current prod) or "1h" (proposal). When "1h",
+      the validator's `structure_alignment` check reads the 1h HH/LL
+      from PriceContext instead of the 4h fields (achieved by swapping
+      the values on a ctx copy before calling evaluate_pa_validation).
+    - `pa_4h_bonus_multiplier` > 1.0 enables 4h-as-size-bonus: when the
+      proposal-arm trade fires AND the 4h structure is also aligned with
+      the trade side, scale size_pct by the multiplier.
     """
     bars_4h = _resample_to_4h(bars)
+    bars_1h = _resample_to_1h(bars) if structure_tf == "1h" else None
+
+    if pa_config is None:
+        pa_config = PAValidationConfig(
+            enabled=True, require_all=True,
+            validators=("vwap_alignment", "volume_confirmation", "structure_alignment"),
+            rush_fall_enabled=True,
+            reject_buy_on_60m_drop_pct=5.0,
+            reject_sell_on_60m_rise_pct=5.0,
+        )
 
     ledger: list[LedgerEntry] = []
     trades: list[PaperTrade] = []
@@ -329,6 +372,11 @@ def run_backtest(
     n_cooldown_blocked = 0
     n_daily_kill_blocked = 0
     n_skips = 0
+    n_pa_rejected = 0
+    n_pa_passed = 0
+    n_pa_passed_with_4h_bonus = 0
+    n_fires_premium_4h_aligned = 0
+    n_fires_standard_4h_aligned = 0
 
     fires_by_tier = {t.value: 0 for t in Tier if t != Tier.SKIP}
     fires_by_side = {"buy": 0, "sell": 0}
@@ -363,7 +411,10 @@ def run_backtest(
 
         # Pre-filter + dedupe live alerts
         live = filter_live_alerts_with_dedupe(sorted_alerts, config, a.ts)
-        ctx = build_price_context(bars, a.ts, ctx_config(config), bars_4h=bars_4h)
+        ctx = build_price_context(
+            bars, a.ts, ctx_config(config),
+            bars_4h=bars_4h, bars_1h=bars_1h,
+        )
         if ctx is None:
             continue
 
@@ -379,6 +430,65 @@ def run_backtest(
         if verdict.cooldown_blocked:
             n_cooldown_blocked += 1
         elif verdict.tier != Tier.SKIP:
+            # ── PA validation gate (PR-PA-backtest 2026-05-18) ──
+            # For 1h-arm, swap the 4h fields with 1h values on a ctx
+            # copy so evaluate_pa_validation's structure_alignment check
+            # reads 1h HH/LL without modifying the live validator code.
+            side_str = "buy" if verdict.side == Side.BUY else "sell"
+            if structure_tf == "1h":
+                from dataclasses import replace
+                pa_ctx = replace(
+                    ctx,
+                    higher_highs_4h=ctx.higher_highs_1h,
+                    lower_lows_4h=ctx.lower_lows_1h,
+                )
+            else:
+                pa_ctx = ctx
+            pa_result = evaluate_pa_validation(
+                side=side_str, price_ctx=pa_ctx, config=pa_config,
+            )
+            if pa_result.decision == PAValidationDecision.REJECT:
+                n_pa_rejected += 1
+                # Skip the rest of the trade-open path (mirror prod: PA
+                # reject short-circuits before risk/sizing).
+                ledger.append(LedgerEntry(
+                    ts=a.ts.isoformat(),
+                    signal_name=a.signal_name,
+                    tier=verdict.tier.value,
+                    side=verdict.side.value,
+                    cooldown_blocked=verdict.cooldown_blocked,
+                    net_score=verdict.breakdown.net_score,
+                    final_buy_score=verdict.breakdown.final_buy_score,
+                    final_sell_score=verdict.breakdown.final_sell_score,
+                    buy_contributions=verdict.breakdown.buy_contributions,
+                    sell_contributions=verdict.breakdown.sell_contributions,
+                    fired=False, trade_id=None,
+                    reason=f"pa_reject: {pa_result.reason}",
+                ))
+                equity_curve.append((a.ts, equity))
+                continue
+            n_pa_passed += 1
+
+            # Compute 4h alignment for size bonus (1h-arm only). The
+            # ORIGINAL ctx's 4h fields are what matters here (not the
+            # swapped pa_ctx).
+            size_multiplier = 1.0
+            if structure_tf == "1h" and pa_4h_bonus_multiplier > 1.0:
+                if side_str == "buy" and ctx.higher_highs_4h:
+                    size_multiplier = pa_4h_bonus_multiplier
+                    n_pa_passed_with_4h_bonus += 1
+                    if verdict.tier == Tier.PREMIUM:
+                        n_fires_premium_4h_aligned += 1
+                    elif verdict.tier == Tier.STANDARD:
+                        n_fires_standard_4h_aligned += 1
+                elif side_str == "sell" and ctx.lower_lows_4h:
+                    size_multiplier = pa_4h_bonus_multiplier
+                    n_pa_passed_with_4h_bonus += 1
+                    if verdict.tier == Tier.PREMIUM:
+                        n_fires_premium_4h_aligned += 1
+                    elif verdict.tier == Tier.STANDARD:
+                        n_fires_standard_4h_aligned += 1
+
             # Daily kill check
             day_key = a.ts.date().isoformat()
             day_at_risk = daily_at_risk.get(day_key, 0.0)
@@ -386,10 +496,12 @@ def run_backtest(
             # Conservative estimate of effective risk for the kill check.
             # The actual eff_risk is computed in open_trade(); we use the
             # tier's nominal target as a ceiling. Slight over-blocking
-            # is acceptable.
+            # is acceptable. Multiply by size_multiplier for the 4h-bonus arm
+            # so 1.25x sizing correctly trips the daily kill sooner.
             stop_distance_pct = max(STOP_FLOOR_PCT, ATR_MULTIPLIER * ATR_FALLBACK_PCT)
             estimated_eff_risk = min(
-                tier_cfg["size_pct"] * tier_cfg["leverage"] * stop_distance_pct,
+                tier_cfg["size_pct"] * size_multiplier
+                * tier_cfg["leverage"] * stop_distance_pct,
                 EFFECTIVE_RISK_PER_TRADE_PCT,
             )
             if day_at_risk + estimated_eff_risk > DAILY_RISK_KILL_PCT:
@@ -418,6 +530,7 @@ def run_backtest(
                     new_trade = open_trade(
                         verdict=verdict, alert_ts=a.ts,
                         entry_price=ctx.current_price, account_equity=equity,
+                        size_multiplier=size_multiplier,
                     )
                     if new_trade is not None:
                         trades.append(new_trade)
@@ -489,6 +602,14 @@ def run_backtest(
         n_skips=n_skips,
         n_cooldown_blocked=n_cooldown_blocked,
         n_daily_kill_blocked=n_daily_kill_blocked,
+        arm_name=arm_name,
+        structure_tf=structure_tf,
+        pa_4h_bonus_multiplier=pa_4h_bonus_multiplier,
+        n_pa_rejected=n_pa_rejected,
+        n_pa_passed=n_pa_passed,
+        n_pa_passed_with_4h_bonus=n_pa_passed_with_4h_bonus,
+        n_fires_premium_4h_aligned=n_fires_premium_4h_aligned,
+        n_fires_standard_4h_aligned=n_fires_standard_4h_aligned,
         fires_by_tier=fires_by_tier,
         fires_by_side=fires_by_side,
         n_round_trips=len(resolved),
@@ -541,6 +662,8 @@ def write_outputs(
     md = [
         "# BitUnix Futures — Phase 3.2 Confluence Score Backtest",
         "",
+        f"**Arm:** `{summary.arm_name or '(unnamed)'}` · structure_tf=`{summary.structure_tf}` · pa_4h_bonus={summary.pa_4h_bonus_multiplier:.2f}x",
+        "",
         "## Verdict",
         f"- **Starting equity:** ${summary.starting_equity:,.2f}",
         f"- **Final equity:** ${summary.final_equity:,.2f}",
@@ -553,6 +676,9 @@ def write_outputs(
         f"- SKIPs: {summary.n_skips}",
         f"- Cooldown-blocked: {summary.n_cooldown_blocked}",
         f"- Daily-kill-blocked: {summary.n_daily_kill_blocked}",
+        f"- **PA rejected: {summary.n_pa_rejected}** ({(summary.n_pa_rejected / max(1, summary.n_pa_rejected + summary.n_pa_passed)) * 100:.1f}% of score-PASS evals)",
+        f"- PA passed: {summary.n_pa_passed}",
+        f"- PA passed WITH 4h-bonus: {summary.n_pa_passed_with_4h_bonus}  (PREMIUM aligned: {summary.n_fires_premium_4h_aligned} · STANDARD aligned: {summary.n_fires_standard_4h_aligned})",
         "",
         "### Fires by tier",
         *[f"- {tier}: {n}" for tier, n in summary.fires_by_tier.items()],
@@ -595,6 +721,16 @@ def main() -> None:
                         help="bypass alert + OHLCV caches")
     parser.add_argument("--output-dir", default=None,
                         help="override output dir; default data/backtest_runs/bitunix_<ts>/")
+    parser.add_argument("--structure-tf", choices=["4h", "1h"], default="4h",
+                        help="PA validator structure-alignment timeframe. "
+                             "4h matches current prod; 1h is the proposal.")
+    parser.add_argument("--pa-4h-bonus", type=float, default=1.0,
+                        help="Size multiplier applied when PA passes AND 4h "
+                             "structure also aligns with trade side. Default "
+                             "1.0 = no bonus. Proposal uses 1.25.")
+    parser.add_argument("--arm-name", default="",
+                        help="Free-form label written into the summary "
+                             "(e.g. '4h_baseline' or '1h_with_4h_bonus').")
     args = parser.parse_args()
 
     start = datetime.fromisoformat(args.start + "T00:00:00+00:00")
@@ -609,6 +745,10 @@ def main() -> None:
         config.standard_threshold, config.weak_threshold,
         config.min_score_to_fire,
     )
+    log.info(
+        "Arm: name=%r  structure_tf=%s  pa_4h_bonus=%.2f",
+        args.arm_name, args.structure_tf, args.pa_4h_bonus,
+    )
 
     alerts = fetch_alerts_from_prod(start, end, refresh=args.refresh)
     bars = fetch_ohlcv_from_coinbase(start, end, refresh=args.refresh)
@@ -616,16 +756,22 @@ def main() -> None:
     ledger, trades, summary = run_backtest(
         alerts=alerts, bars=bars, config=config,
         starting_equity=args.starting_equity,
+        structure_tf=args.structure_tf,
+        pa_4h_bonus_multiplier=args.pa_4h_bonus,
+        arm_name=args.arm_name,
     )
 
     if args.output_dir is None:
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        output_dir = _REPO_ROOT / "data" / "backtest_runs" / f"bitunix_{ts}"
+        suffix = f"_{args.arm_name}" if args.arm_name else ""
+        output_dir = _REPO_ROOT / "data" / "backtest_runs" / f"bitunix_{ts}{suffix}"
     else:
         output_dir = Path(args.output_dir)
 
     write_outputs(ledger, trades, summary, output_dir)
     print(f"\nVerdict written to {output_dir / 'summary.md'}")
+    print(f"  Arm: {summary.arm_name}  |  structure_tf={summary.structure_tf}  |  4h-bonus={summary.pa_4h_bonus_multiplier:.2f}")
+    print(f"  PA rejected: {summary.n_pa_rejected}  |  PA passed: {summary.n_pa_passed}  |  (with 4h bonus: {summary.n_pa_passed_with_4h_bonus})")
     print(f"  Trades: {summary.n_fires}  |  Round-trips: {summary.n_round_trips}")
     print(f"  Win rate: {summary.win_rate_pct:.1f}%  |  Avg R: {summary.avg_r:+.3f}  |  Total R: {summary.total_r:+.2f}")
     print(f"  Return: {summary.pct_return:+.2f}%  |  Max DD: {summary.max_drawdown_pct:.2f}%")
