@@ -26,13 +26,19 @@ def _future(days: int) -> str:
 
 
 def _call(strike: float, delta: float, mark: float, dte: int = 14) -> dict:
+    # open_interest + volume populated so the test chains pass
+    # _passes_liquidity (default min OI=100, min vol=50, max spread=10%).
+    # Bid/ask is mark ±0.05 (not ±0.10) so low-mark weeklies (~$1.50)
+    # stay inside the 10% spread cap.
     return {
         "strike_price": strike,
         "delta": delta,
         "mark_price": mark,
-        "bid": round(mark - 0.10, 2),
-        "ask": round(mark + 0.10, 2),
+        "bid": round(mark - 0.05, 2),
+        "ask": round(mark + 0.05, 2),
         "dte": dte,
+        "open_interest": 5000,
+        "volume": 1000,
         "option_id": f"opt_{strike}_{dte}",
     }
 
