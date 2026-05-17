@@ -189,6 +189,12 @@
                     {{ pm.total_realized_pnl | money_signed }}
                   </span>
                 </div>
+                {% if pm.cutoff_label %}
+                  <div class="mt-1 text-[10px] text-muted/70 font-mono"
+                       title="Pre-fix round-trips excluded. Rows remain in DB.">
+                    since {{ pm.cutoff_label }}
+                  </div>
+                {% endif %}
               {% endif %}
 
               <!-- Bottom row: positions only (benchmark moved to top ribbon) -->

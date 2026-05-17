@@ -698,3 +698,182 @@ def test_round_trip_handles_malformed_extra_json(fresh_db):
     rts = wd._query_pm_round_trips(db_url, ["kalshi_llm_arbitrage"], 100)
     assert len(rts) == 1
     assert rts[0].rationale is None
+
+
+# ── dashboard cutoff filter ───────────────────────────────────────────
+
+
+def test_kalshi_cutoff_clause_empty_dict_returns_empty(monkeypatch):
+    """Rollback path: an empty DASHBOARD_RT_CUTOFFS produces no SQL."""
+    monkeypatch.setattr(wd, "DASHBOARD_RT_CUTOFFS", {})
+    assert wd._kalshi_cutoff_clause("entry_ts") == ""
+
+
+def test_kalshi_cutoff_clause_emits_per_division_predicate(monkeypatch):
+    """Each entry in DASHBOARD_RT_CUTOFFS adds an AND NOT (...) clause."""
+    monkeypatch.setattr(
+        wd,
+        "DASHBOARD_RT_CUTOFFS",
+        {"kalshi_weather": "2026-05-16T19:18:00+00:00"},
+    )
+    clause = wd._kalshi_cutoff_clause("entry_ts")
+    assert "kalshi_weather" in clause
+    assert "2026-05-16T19:18:00+00:00" in clause
+    assert "entry_ts <" in clause
+    assert clause.lstrip().startswith("AND NOT")
+
+
+def _seed_cutoff_fixture(db_url):
+    """Two pre-cutoff + two post-cutoff rows for kalshi_weather, plus one
+    pre-cutoff row for kalshi_llm_arbitrage (no cutoff → must NOT be filtered)."""
+    # kalshi_weather: pre-cutoff (1 win, 1 loss)
+    _insert_kalshi_round_trip(
+        db_url, order_id="w-pre-W", division="kalshi_weather",
+        strategy="kalshi_weather_arb",
+        entry_ts="2026-05-15T12:00:00+00:00",
+        resolved_ts="2026-05-15T14:00:00+00:00",
+        won=1, realized_pnl=5.0, market_result="yes",
+    )
+    _insert_kalshi_round_trip(
+        db_url, order_id="w-pre-L", division="kalshi_weather",
+        strategy="kalshi_weather_arb",
+        entry_ts="2026-05-15T13:00:00+00:00",
+        resolved_ts="2026-05-15T15:00:00+00:00",
+        won=0, realized_pnl=-3.0, market_result="no",
+    )
+    # kalshi_weather: post-cutoff (1 win, 1 void)
+    _insert_kalshi_round_trip(
+        db_url, order_id="w-post-W", division="kalshi_weather",
+        strategy="kalshi_weather_arb",
+        entry_ts="2026-05-16T20:00:00+00:00",
+        resolved_ts="2026-05-16T22:00:00+00:00",
+        won=1, realized_pnl=4.0, market_result="yes",
+    )
+    _insert_kalshi_round_trip(
+        db_url, order_id="w-post-V", division="kalshi_weather",
+        strategy="kalshi_weather_arb",
+        entry_ts="2026-05-16T20:30:00+00:00",
+        resolved_ts="2026-05-16T22:30:00+00:00",
+        won=0, realized_pnl=0.0, market_result="void",
+    )
+    # kalshi_llm_arbitrage: pre-cutoff date but no cutoff for this division
+    _insert_kalshi_round_trip(
+        db_url, order_id="llm-pre", division="kalshi_llm_arbitrage",
+        strategy="kalshi_llm_arbitrage",
+        entry_ts="2026-05-15T10:00:00+00:00",
+        resolved_ts="2026-05-15T11:00:00+00:00",
+        won=1, realized_pnl=2.0, market_result="yes",
+    )
+
+
+def test_resolved_stats_filters_pre_cutoff_kalshi_rows(fresh_db, monkeypatch):
+    db_url, _ = fresh_db
+    monkeypatch.setattr(
+        wd,
+        "DASHBOARD_RT_CUTOFFS",
+        {"kalshi_weather": "2026-05-16T19:18:00+00:00"},
+    )
+    _seed_cutoff_fixture(db_url)
+
+    stats = wd._query_pm_resolved_stats(db_url, ["kalshi_weather"])
+    assert stats["n_resolved"] == 2     # 2 post-cutoff only
+    assert stats["n_wins"] == 1
+    assert stats["n_voids"] == 1
+    assert stats["total_realized_pnl"] == pytest.approx(4.0)
+
+
+def test_resolved_stats_does_not_filter_division_without_cutoff(
+    fresh_db, monkeypatch,
+):
+    """kalshi_llm_arbitrage has no entry in DASHBOARD_RT_CUTOFFS — its
+    pre-2026-05-16 row must remain in the aggregate."""
+    db_url, _ = fresh_db
+    monkeypatch.setattr(
+        wd,
+        "DASHBOARD_RT_CUTOFFS",
+        {"kalshi_weather": "2026-05-16T19:18:00+00:00"},
+    )
+    _seed_cutoff_fixture(db_url)
+
+    stats = wd._query_pm_resolved_stats(db_url, ["kalshi_llm_arbitrage"])
+    assert stats["n_resolved"] == 1
+    assert stats["n_wins"] == 1
+
+
+def test_round_trips_history_list_filters_pre_cutoff(fresh_db, monkeypatch):
+    db_url, _ = fresh_db
+    monkeypatch.setattr(
+        wd,
+        "DASHBOARD_RT_CUTOFFS",
+        {"kalshi_weather": "2026-05-16T19:18:00+00:00"},
+    )
+    _seed_cutoff_fixture(db_url)
+
+    rts = wd._query_pm_round_trips(db_url, ["kalshi_weather"], 100)
+    assert {rt.order_id for rt in rts} == {"w-post-W", "w-post-V"}
+
+
+def test_summary_attaches_cutoff_label_for_filtered_division(
+    fresh_db, monkeypatch,
+):
+    """End-to-end via build_prediction_market_view: a filtered division
+    surface its cutoff_label on the PMSummary; an unfiltered one doesn't."""
+    db_url, _ = fresh_db
+    monkeypatch.setattr(
+        wd,
+        "DASHBOARD_RT_CUTOFFS",
+        {"kalshi_weather": "2026-05-16T19:18:00+00:00"},
+    )
+    _seed_cutoff_fixture(db_url)
+
+    # Stub _pm_divisions_all to limit scope.
+    fake_div_weather = SimpleNamespace(
+        slug="kalshi_weather", name="Kalshi Weather", pm_overview=None,
+    )
+    fake_div_llm = SimpleNamespace(
+        slug="kalshi_llm_arbitrage", name="Kalshi LLM Arb", pm_overview=None,
+    )
+    monkeypatch.setattr(
+        wd, "_pm_divisions_all",
+        lambda: [fake_div_weather, fake_div_llm],
+    )
+
+    deps = SimpleNamespace(db_url=db_url)
+
+    view_w = asyncio.run(wd.build_prediction_market_view(deps, "kalshi_weather"))
+    assert view_w is not None
+    assert view_w.summary.cutoff_label == "2026-05-16"
+    assert view_w.summary.cutoff_ts == "2026-05-16T19:18:00+00:00"
+    assert view_w.summary.n_resolved == 2   # only post-cutoff counted
+
+    view_llm = asyncio.run(
+        wd.build_prediction_market_view(deps, "kalshi_llm_arbitrage")
+    )
+    assert view_llm is not None
+    assert view_llm.summary.cutoff_label is None
+    assert view_llm.summary.cutoff_ts is None
+
+
+def test_summary_no_cutoff_in_combined_view(fresh_db, monkeypatch):
+    """Combined ("All Prediction Markets") view must NOT show a cutoff
+    label — different divisions have different (or no) cutoffs."""
+    db_url, _ = fresh_db
+    monkeypatch.setattr(
+        wd,
+        "DASHBOARD_RT_CUTOFFS",
+        {"kalshi_weather": "2026-05-16T19:18:00+00:00"},
+    )
+    _seed_cutoff_fixture(db_url)
+
+    fake_div_weather = SimpleNamespace(
+        slug="kalshi_weather", name="Kalshi Weather", pm_overview=None,
+    )
+    monkeypatch.setattr(
+        wd, "_pm_divisions_all", lambda: [fake_div_weather],
+    )
+    deps = SimpleNamespace(db_url=db_url)
+
+    view = asyncio.run(wd.build_prediction_market_view(deps, None))
+    assert view is not None
+    assert view.summary.cutoff_label is None
+    assert view.summary.cutoff_ts is None

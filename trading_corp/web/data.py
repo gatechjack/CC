@@ -1029,7 +1029,9 @@ def _hydrate_pm_overview(divisions: list[Division], db_url: str) -> None:
             "       SUM(won) AS w, "
             "       SUM(CASE WHEN market_result='void' THEN 1 ELSE 0 END) AS v, "
             "       SUM(realized_pnl) AS pnl "
-            "FROM kalshi_round_trips GROUP BY division",
+            "FROM kalshi_round_trips "
+            "WHERE 1=1" + _kalshi_cutoff_clause("entry_ts") + " "
+            "GROUP BY division",
         )
         for r in rows:
             div = r.get("division") or ""
@@ -1061,6 +1063,8 @@ def _hydrate_pm_overview(divisions: list[Division], db_url: str) -> None:
         s = stats[d.slug]
         decisive = s["n_wins"] + s["n_losses"]
         s["win_rate_pct"] = (100.0 * s["n_wins"] / decisive) if decisive > 0 else None
+        cutoff = DASHBOARD_RT_CUTOFFS.get(d.slug)
+        s["cutoff_label"] = cutoff.split("T", 1)[0] if cutoff else None
         d.pm_overview = s
 
 
@@ -2743,6 +2747,10 @@ class PMSummary:
     n_voids: int
     win_rate_pct: float | None       # over (wins+losses), voids excluded
     total_realized_pnl: float
+    # Set when the selected (single) division is in DASHBOARD_RT_CUTOFFS.
+    # cutoff_ts: full ISO; cutoff_label: YYYY-MM-DD for the tile badge.
+    cutoff_ts: str | None = None
+    cutoff_label: str | None = None
 
 
 @dataclass
@@ -2815,6 +2823,38 @@ class PMDashboardView:
 
 _POLYMARKET_PREFIX = "polymarket_"
 _KALSHI_PREFIX = "kalshi_"
+
+# Per-division entry_ts cutoffs. Round-trips with `entry_ts < cutoff` are
+# excluded from dashboard aggregates (tile counts, win rate, history list)
+# because their logic predates a deployed fix and including them would
+# misrepresent current-logic performance. Pre-cutoff rows are NOT deleted
+# — they remain in `kalshi_round_trips` for σ-scaling work and forensic
+# diffs. Rollback = empty this dict.
+#
+# Add a new entry here when you deploy a strategy fix big enough that
+# pre-fix PnL would mislead the dashboard. Don't filter speculatively;
+# only filter when bet-side or sizing math changed.
+DASHBOARD_RT_CUTOFFS: dict[str, str] = {
+    "kalshi_weather": "2026-05-16T19:18:00+00:00",  # bucket-guard + date-parse fix
+    "kalshi_crypto":  "2026-05-16T19:37:00+00:00",  # bucket-guard fix
+}
+
+
+def _kalshi_cutoff_clause(ts_col: str) -> str:
+    """SQL fragment that excludes pre-cutoff `kalshi_round_trips` rows
+    per `DASHBOARD_RT_CUTOFFS`. Returns a string starting with a leading
+    space, suitable to concatenate after any existing WHERE clause.
+    Empty string when the dict is empty (rollback path).
+
+    Cutoffs are hardcoded ISO timestamps — no injection surface, so inline
+    literals are safe.
+    """
+    parts = []
+    for div, cutoff in DASHBOARD_RT_CUTOFFS.items():
+        parts.append(
+            f" AND NOT (division='{div}' AND {ts_col} < '{cutoff}')"
+        )
+    return "".join(parts)
 
 
 def _pm_venue(slug: str) -> str:
@@ -2939,7 +2979,9 @@ def _query_pm_round_trips(
             f"       implied_at_entry, llm_prob, divergence_pct, edge_cents, "
             f"       extra_json "
             f"FROM kalshi_round_trips "
-            f"WHERE division IN ({kalshi_ph}) "
+            f"WHERE division IN ({kalshi_ph})"
+            + _kalshi_cutoff_clause("entry_ts")
+            + " "
             f"ORDER BY resolved_ts DESC LIMIT ?",
             (*kalshi_slugs, limit),
         )
@@ -3361,7 +3403,8 @@ def _query_pm_resolved_stats(
             f"       COALESCE(SUM(CASE WHEN COALESCE(market_result,'') = 'void' THEN 1 ELSE 0 END), 0) AS n_voids, "
             f"       COALESCE(SUM(realized_pnl), 0.0) AS total_pnl "
             f"FROM kalshi_round_trips "
-            f"WHERE division IN ({kalshi_ph})",
+            f"WHERE division IN ({kalshi_ph})"
+            + _kalshi_cutoff_clause("entry_ts"),
             tuple(kalshi_slugs),
         )
         if rows:
@@ -3669,6 +3712,11 @@ async def build_prediction_market_view(
     # are LIMIT-capped (200/history_limit); deriving n_pending/n_resolved
     # from `len()` silently truncated the tiles at the limit values.
     summary = _pm_summary(round_trips, equity_curve, pending_count, resolved_stats)
+    # Only attach cutoff badge for single-division pages. The combined
+    # "All Prediction Markets" aggregate has no honest "since" date.
+    if division is not None and division in DASHBOARD_RT_CUTOFFS:
+        summary.cutoff_ts = DASHBOARD_RT_CUTOFFS[division]
+        summary.cutoff_label = summary.cutoff_ts.split("T", 1)[0]
 
     return PMDashboardView(
         selected=division,
