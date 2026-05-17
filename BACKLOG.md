@@ -8,9 +8,34 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-17 03:25 UTC  *(supersedes 20:10 + 19:40 + 04:55)*
+## END-OF-SESSION SNAPSHOT — 2026-05-17 03:55 UTC  *(supersedes 03:25 + 20:10 + 19:40 + 04:55)*
 
-**Continuation of the 20:10 session.** Two clean follow-up deploys after the bucket-guard/H2 ship: a dashboard cutoff filter (so tile + history aggregates stop being dragged down by pre-fix kalshi RTs) and a target_iso audit field (so we can verify the date-parse fix on the wire when tomorrow's weather markets settle). Both reversible, both verified, both logged in `runbooks/deploy_log.md`.
+**Wrap of the long session.** Five deploys ship-clean tonight after the morning bucket-guard fixes: dashboard cutoff filter (02:49), target_iso audit field (03:09), PCT stale-pruner cron (03:38). Plus one parallel-session BitUnix commit landed (`72bbbe4` — deferred-fire PA mechanism) that I did not touch. All reversible, all md5-verified, all logged in `runbooks/deploy_log.md`. Local git tree clean; prod md5 sync verified on all 5 directly-touched files (`web/data.py`, both templates, `kalshi_weather_arb.py`, `prune_stale_pct_entries.py`). `main.py` has expected prod-side drift (3 patch markers verified: `TARGET_ISO_INSERTED` + `BUCKET_GUARD_INSERTED` + `CRYPTO_BUCKET_GUARD_INSERTED`).
+
+### Session-start prompt
+
+`runbooks/session_start_2026_05_17.md` is the canonical pickup brief for the next session. Read it first.
+
+### 0. PCT stale-pruner cron — SHIPPED 03:38 UTC, LIVE
+
+**Triggered by:** Carryover P2 from 2026-05-16 03:29 UTC one-shot DELETE (1,745 rows removed). Apify's 10-min poll cadence misses fast whale auto-settles → stale PCT pending audit rows re-accumulate at ~70/day. Pruner automates the same predicate as a nightly job.
+
+**Implementation:**
+- `trading_corp/scripts/prune_stale_pct_entries.py` — pure-library + CLI. Predicate exactly matches the 2026-05-16 one-shot: side='buy' (default when key absent), >24h old, order_id NOT IN polymarket_round_trips.{order_id, entry_order_id}. `--dry-run` is default; `--apply` required. `--max-rows` safety cap (default 5000). Self-audits every run via `pct_stale_prune` event.
+- `infra/systemd/trading-corp-pct-pruner.{service,timer}` — daily 11:30 UTC with `RandomizedDelaySec=300`. Before the 12:00 UTC watchlist refresh so morning dashboard reads cleaned counts. Persistent=true.
+- 13 unit tests cover predicate preservation rules.
+
+**Verified on prod:**
+- `systemctl is-enabled trading-corp-pct-pruner.timer` → `enabled`.
+- `systemctl is-active trading-corp-pct-pruner.timer` → `active`.
+- Next fire: `Sun 2026-05-17 11:34:59 UTC` (~7h from this snapshot).
+- Dry-run smoke test: **454 candidates** queued for deletion; 1,168 of 1,707 PCT pending are ≥24h; 714 are paired and correctly preserved.
+- `pct_stale_prune` audit row landed at 03:41:03 UTC, full payload.
+
+**Commits:** `335ecc2` (script + units + tests), `0ad7542` (deploy_log + BACKLOG mark).
+**Backup tag on prod:** `n/a` (all-new files; rollback recipe in deploy_log).
+
+### 1. Dashboard cutoff filter — SHIPPED 02:49 UTC, LIVE
 
 ### 1. Dashboard cutoff filter — SHIPPED 02:49 UTC, LIVE
 
@@ -60,10 +85,16 @@ Service active, PID 536909 (post-target_iso restart). Boot wiring on prod: `scor
 
 ### New commits this session (latest first)
 
+- `0ad7542` — docs: deploy_log + BACKLOG — PCT stale-pruner shipped 2026-05-17 03:38 UTC
+- `335ecc2` — infra: PCT stale-entry pruner script + systemd timer
+- `bd77a01` — docs: EOS snapshot 2026-05-17 03:25 UTC (this entry supersedes it)
 - `813b000` — docs: deploy_log entry — target_iso audit field shipped 2026-05-17 03:09 UTC
 - `1e2b399` — kalshi_weather: emit target_iso in audit (verify date-parse fix on the wire)
 - `cbeb419` — docs: deploy_log entry — dashboard cutoff filter shipped 2026-05-17 02:49 UTC
 - `bf1ae7e` — dashboard: filter pre-fix kalshi RTs from tiles + history (cutoff dict)
+
+**Parallel session commit (not mine):**
+- `72bbbe4` — bitunix: deferred-fire PA mechanism — re-evaluate PA on each bar until score decays
 
 ### Sharp-edges re-discovered this session
 
@@ -94,15 +125,18 @@ Service active, PID 536909 (post-target_iso restart). Boot wiring on prod: `scor
 
 ### Tomorrow's pickup candidates (ordered by recommended sequence)
 
-1. **Morning observation pass — target_iso cross-check + post-cutoff RT win rate** (~10 min). The three queries from "Operating context" above.
-2. **Investigate post-1D-enforce PA rejection pattern** (~15-30 min). NOTE: parallel session is/was working this — coordinate before duplicating. Pre-H2 finding: all 3 post-04:14 UTC fires landed `skipped_pa_validation`. With H2 live since 19:21 UTC, mix may have shifted.
+1. **Morning observation pass — three verification queries** (~10 min). All three queries are in `runbooks/session_start_2026_05_17.md`. They verify:
+   (a) target_iso flowed through and matches ticker date (not expires_at date)
+   (b) PCT pruner fired at ~11:35 UTC, dropped pending count by ~454
+   (c) post-cutoff RT win-rate trajectory on kalshi_weather + kalshi_crypto
+2. **Investigate post-1D-enforce PA rejection pattern** (~15-30 min). NOTE: parallel session shipped `72bbbe4` (deferred-fire PA mechanism) — re-read that commit before continuing this investigation. Pre-72bbbe4 finding: all 3 post-04:14 UTC fires landed `skipped_pa_validation`. The deferred-fire mechanism may have changed the rejection mix.
 3. **Investigate the 19:24 UTC strategies.yaml mystery edit** (~5 min, P3). 1-byte size change after H2 apply. Diff against `config/strategies.yaml.bak-h2-20260516T185125`.
 4. **Investigate orphan `mc_b_gold_buy # H2: was 5` marker origin** (~5 min, P3). Already on prod at 17:45 UTC before H2 deploy started.
 5. **Empirical σ-scaling factor** (P2, ~1-2h). Blocked until ≥30 post-fix RTs accumulated. Heuristic σ=2.93°F median; empirical 23.5% modal-bucket hit rate back-solves to σ_eff ≈ 1.7°F (~0.6× scaling). Pre-fix RTs are still in DB for this analysis — query with explicit `WHERE entry_ts < '2026-05-16T19:18:00+00:00'`.
 6. **Watch for T-ticker / crypto T-suffix dynamics.** Pre-fix 0/10 weather + 0/12 crypto. With the guard, those should be skipped rather than fired. If fire count drops to zero, the guard is correctly filtering.
 7. **`config/strategies.yaml` 887-line stale `factors:` block cleanup** (~15 min, P3). Cosmetic.
 8. **PMCC audit.** Perennial.
-9. ~~**PCT stale-pruner cron** (P2 in BACKLOG, ~2-3h). Nightly Bug-C-predicate run via systemd timer.~~ **SHIPPED 2026-05-17 03:38 UTC, commit `335ecc2`.** systemd timer `trading-corp-pct-pruner.timer` fires daily 11:30 UTC. First real fire today (2026-05-17 ~11:35 UTC) will delete ~454 stale PCT pending audit rows. Self-audited via `pct_stale_prune` event. See `runbooks/deploy_log.md` entry.
+9. **Backport `apply_bucket_guard` to kalshi_llm_arbitrage / kalshi_arbitrage** (~1h, low priority). They use LLM probability, not Gaussian, so the σ-vs-bucket mismatch doesn't directly apply. Skip unless data motivates.
 
 ### Things to NOT do without explicit approval
 
@@ -112,6 +146,7 @@ Service active, PID 536909 (post-target_iso restart). Boot wiring on prod: `scor
 - Do NOT delete backup tags on prod (kalshi weather/crypto + H2 + rt-cutoff + target_iso) until ≥24h confirms the new logic.
 - Do NOT delete pre-cutoff kalshi RTs from `kalshi_round_trips` — they're the σ-scaling dataset. Dashboard already filters them; deleting would lose forensic value.
 - Do NOT relax `config/strategies.yaml` validation guards or schema.
+- Do NOT disable the PCT stale-pruner timer or change its 24h cutoff without ≥48h of confirmed-clean behavior.
 
 ### Proposed CLAUDE.md / sharp_edges addition (apply manually per CLAUDE.md §6)
 
