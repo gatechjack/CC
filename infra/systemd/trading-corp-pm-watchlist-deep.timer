@@ -1,0 +1,18 @@
+[Unit]
+Description=Polymarket watchlist deep-scan — weekly Sunday 13:00 UTC
+
+[Timer]
+# Sunday 13:00 UTC = 09:00 EDT / 08:00 EST. Sits cleanly between the daily
+# 12:00 UTC Kalshi watch-only stats refresh (~5 min) and the Sunday 14:00
+# UTC Kalshi deep-scan, so we don't pile bulk-API traffic concurrently —
+# this one is itself a bulk gamma-api sweep (~2300 calls) that can run for
+# 30-60 min.
+# Persistent=true → if VM was down at fire time, runs on next boot.
+# RandomizedDelaySec=900 → 15-min jitter so we don't always hit Polymarket
+# at the same wall-clock instant week-over-week.
+OnCalendar=Sun *-*-* 13:00:00 UTC
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

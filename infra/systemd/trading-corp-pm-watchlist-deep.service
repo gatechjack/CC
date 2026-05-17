@@ -1,0 +1,14 @@
+[Unit]
+Description=Polymarket watchlist deep-scan (weekly accumulating merge into watch_only_whales)
+After=network-online.target trading-corp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/azureuser/trading_corp
+Environment="KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/"
+Environment="PYTHONIOENCODING=utf-8"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/azureuser/trading_corp/venv/bin/python -m trading_corp.scripts.seed_polymarket_watchlist_deep --merge --max-total 100
+TimeoutStartSec=3600

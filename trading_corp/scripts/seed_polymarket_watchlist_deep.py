@@ -42,6 +42,8 @@ Options:
     --min-win-rate F        Min win rate gate [0.0-1.0] (default 0.70)
     --activity-limit N      /activity rows per call (default 500, max 1000)
     --activity-pages N      Pages of activity per wallet (default 2)
+    --merge                 Union with existing watchlist (weekly-refresh mode)
+    --max-total N           Cap merged list size (only with --merge)
     --dry-run               Print results; don't write to agent_state
     --json                  JSON output instead of human table
 """
@@ -62,7 +64,7 @@ from trading_corp.data.polymarket_data_api_client import (
     PolymarketDataAPIError,
 )
 from trading_corp.data.polymarket_whale_stats import compute_polymarket_stats
-from trading_corp.persistence.db import set_agent_state
+from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
 
 log = logging.getLogger(__name__)
@@ -99,6 +101,62 @@ async def _fetch_wallet_activity(
     return out
 
 
+def _merge_watchlists(
+    existing: list[dict[str, Any]] | None,
+    fresh: list[dict[str, Any]],
+    *,
+    max_total: int | None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Union existing + fresh entries by proxy_wallet for the weekly-refresh
+    accumulation mode.
+
+    Existing entries' `included_iso` is preserved (so we can track how long
+    each wallet has been observed); fresh entries get the new `included_iso`
+    from the current run. Per-wallet stats (wins, losses, win_rate, etc.)
+    always take the FRESH value when both sides see the wallet — we want the
+    most-recent observation, not the oldest.
+
+    Re-ranks the merged list by `realized_pnl_usdc` desc, then trims to
+    `max_total` if set. Returns (merged, stats) where stats reports
+    `preserved`, `added`, `replaced`, `dropped` counts for the summary.
+    """
+    by_wallet: dict[str, dict[str, Any]] = {}
+    for e in existing or []:
+        wallet = e.get("proxy_wallet")
+        if wallet:
+            by_wallet[wallet] = dict(e)
+    stats = {"preserved": 0, "added": 0, "replaced": 0, "dropped": 0}
+    for f in fresh:
+        wallet = f.get("proxy_wallet")
+        if not wallet:
+            continue
+        if wallet in by_wallet:
+            prior_iso = by_wallet[wallet].get("included_iso")
+            merged_entry = dict(f)
+            if prior_iso:
+                merged_entry["included_iso"] = prior_iso
+            by_wallet[wallet] = merged_entry
+            stats["replaced"] += 1
+        else:
+            by_wallet[wallet] = dict(f)
+            stats["added"] += 1
+    stats["preserved"] = max(
+        0, len(by_wallet) - stats["added"] - stats["replaced"],
+    )
+    combined = sorted(
+        by_wallet.values(),
+        key=lambda r: r.get("realized_pnl_usdc", 0.0),
+        reverse=True,
+    )
+    if max_total is not None and len(combined) > max_total:
+        stats["dropped"] = len(combined) - max_total
+        combined = combined[:max_total]
+    # Re-rank in-place so the rank field reflects the merged ordering.
+    for new_rank, entry in enumerate(combined, start=1):
+        entry["rank"] = new_rank
+    return combined, stats
+
+
 async def seed_polymarket_watchlist_deep(
     *,
     db_url: str,
@@ -110,9 +168,19 @@ async def seed_polymarket_watchlist_deep(
     activity_pages: int = 2,
     categories: tuple[str, ...] = POLYMARKET_LEADERBOARD_CATEGORIES,
     dry_run: bool = False,
+    merge: bool = False,
+    max_total: int | None = None,
 ) -> dict[str, Any]:
     """Run the full pipeline. Returns a summary dict; writes to agent_state
-    unless `dry_run=True`."""
+    unless `dry_run=True`.
+
+    `merge=True` unions the freshly-computed top-N with the existing
+    `agent_state(polymarket_copy_trader, watch_only_whales)` slot — used
+    by the weekly cron so the watchlist accumulates over time. New entries
+    get a fresh `included_iso`; previously-seen wallets keep their original
+    `included_iso` so we can track observation duration. `max_total` (if
+    set) caps the merged list by `realized_pnl_usdc` desc.
+    """
     started = datetime.now(timezone.utc)
     summary: dict[str, Any] = {
         "started_at": started.isoformat(),
@@ -124,6 +192,8 @@ async def seed_polymarket_watchlist_deep(
             "activity_limit": activity_limit,
             "activity_pages": activity_pages,
             "categories": list(categories),
+            "merge": merge,
+            "max_total": max_total,
         },
         "leaderboards_pulled": [],
         "unique_candidates": 0,
@@ -277,18 +347,42 @@ async def seed_polymarket_watchlist_deep(
             "included_iso": now_iso,
         })
 
-    summary["watch_only_whales"] = watch_only_payload
+    final_payload = watch_only_payload
+    merge_stats: dict[str, int] | None = None
+    if merge:
+        loaded = load_agent_state(
+            "polymarket_copy_trader", "watch_only_whales", db_url=db_url,
+        )
+        existing_value = loaded[0] if loaded else None
+        existing_list = (
+            existing_value if isinstance(existing_value, list) else []
+        )
+        final_payload, merge_stats = _merge_watchlists(
+            existing_list, watch_only_payload, max_total=max_total,
+        )
+        log.info(
+            "merge: existing=%d fresh=%d added=%d replaced=%d preserved=%d "
+            "dropped=%d final=%d",
+            len(existing_list), len(watch_only_payload),
+            merge_stats["added"], merge_stats["replaced"],
+            merge_stats["preserved"], merge_stats["dropped"], len(final_payload),
+        )
+
+    summary["watch_only_whales"] = final_payload
     summary["finished_at"] = datetime.now(timezone.utc).isoformat()
     summary["stats"] = {
         "candidates": summary["unique_candidates"],
         "with_activity": summary["with_activity"],
         "quality_gate_pass": summary["quality_gate_pass"],
-        "written": len(watch_only_payload),
+        "fresh_top_n": len(watch_only_payload),
+        "written": len(final_payload),
     }
+    if merge_stats is not None:
+        summary["merge_stats"] = merge_stats
 
     if not dry_run:
         set_agent_state(
-            "polymarket_copy_trader", "watch_only_whales", watch_only_payload,
+            "polymarket_copy_trader", "watch_only_whales", final_payload,
             db_url=db_url,
         )
         set_agent_state(
@@ -312,8 +406,17 @@ def _print_human(summary: dict[str, Any]) -> None:
         f"Candidates: {s.get('candidates', 0)}  |  "
         f"With activity: {s.get('with_activity', 0)}  |  "
         f"Quality gate pass: {s.get('quality_gate_pass', 0)}  |  "
+        f"Fresh top-N: {s.get('fresh_top_n', s.get('written', 0))}  |  "
         f"Written: {s.get('written', 0)}"
     )
+    merge_stats = summary.get("merge_stats")
+    if merge_stats:
+        print(
+            f"Merge: added={merge_stats.get('added', 0)}  "
+            f"replaced={merge_stats.get('replaced', 0)}  "
+            f"preserved={merge_stats.get('preserved', 0)}  "
+            f"dropped={merge_stats.get('dropped', 0)}"
+        )
     print()
     whales = summary.get("watch_only_whales", [])
     if not whales:
@@ -369,6 +472,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Pages of /activity to fetch per wallet (default 2).",
     )
     parser.add_argument(
+        "--merge", action="store_true",
+        help=(
+            "Union freshly-computed top-N with the existing "
+            "agent_state(polymarket_copy_trader, watch_only_whales). "
+            "New entries get fresh included_iso; previously-seen wallets "
+            "keep their original included_iso. Used by the weekly cron."
+        ),
+    )
+    parser.add_argument(
+        "--max-total", type=int, default=None,
+        help=(
+            "When --merge is set, cap the merged list to top-N by "
+            "realized_pnl_usdc desc. Without this, the merged list grows "
+            "unbounded as new wallets pass the gate each week."
+        ),
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print results without writing to agent_state.",
     )
@@ -393,6 +513,8 @@ def main(argv: list[str] | None = None) -> int:
         activity_pages=args.activity_pages,
         categories=cats,
         dry_run=args.dry_run,
+        merge=args.merge,
+        max_total=args.max_total,
     ))
 
     if args.json:

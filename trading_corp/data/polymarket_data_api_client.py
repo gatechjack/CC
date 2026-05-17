@@ -49,6 +49,13 @@ _DATA_API_BASE = "https://data-api.polymarket.com"
 _GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 _HTTP_TIMEOUT_SEC = 30.0
 
+# Exponential-backoff schedule for Cloudflare 403 retries. Each delay is the
+# sleep BEFORE the next attempt; 5 entries → up to 6 total attempts. Tests
+# monkeypatch this to shorten the wall-clock cost.
+# Sized for the failure observed 2026-05-17 16:00 UTC on prod's shared-IP
+# gamma-api sweep — Cloudflare blocks typically clear inside 60-300s.
+_CLOUDFLARE_RETRY_DELAYS_SEC: tuple[float, ...] = (30.0, 60.0, 120.0, 240.0, 300.0)
+
 # Categories that empirically return leaderboard rows. Polymarket's taxonomy
 # has more, but most are empty — these 5 are where the data actually lives.
 POLYMARKET_LEADERBOARD_CATEGORIES: tuple[str, ...] = (
@@ -61,7 +68,30 @@ class PolymarketDataAPIError(Exception):
 
 
 class PolymarketRateLimitError(PolymarketDataAPIError):
-    """HTTP 429 — back off and retry."""
+    """HTTP 429, or a Cloudflare 403 that survived the in-client retry budget.
+
+    `_get_json` retries Cloudflare-marked 403 responses on its own with
+    exponential backoff (`_CLOUDFLARE_RETRY_DELAYS_SEC`); only after the
+    budget is exhausted does it raise this. Callers (`fetch_market_resolutions`
+    in particular) catch it and continue with whatever data accumulated, so
+    a single rate-limited chunk doesn't abort a long sweep.
+    """
+
+
+def _is_cloudflare_block(resp: httpx.Response) -> bool:
+    """Detect Cloudflare WAF / rate-limit interstitials on a 4xx response.
+
+    Cloudflare's block pages send a `cf-ray` header and a `Server: cloudflare`
+    header; the body is HTML containing "Cloudflare" or "Attention Required".
+    Either signal is enough — `cf-ray` alone is conclusive.
+    """
+    headers = resp.headers
+    if "cf-ray" in headers or "cf-mitigated" in headers:
+        return True
+    if headers.get("server", "").lower() == "cloudflare":
+        return True
+    body = (resp.text or "")[:2000].lower()
+    return "cloudflare" in body or "attention required" in body
 
 
 @dataclass(frozen=True)
@@ -468,6 +498,7 @@ class PolymarketDataAPIClient:
             return out
 
         unique = list(dict.fromkeys(condition_ids))  # dedupe preserving order
+        rate_limited_chunks = 0
         for i in range(0, len(unique), chunk_size):
             chunk = unique[i:i + chunk_size]
             # Gamma-api default is `closed=false` (active markets only) and
@@ -475,15 +506,29 @@ class PolymarketDataAPIClient:
             # TWO queries per chunk: one for open, one for closed. Merge.
             base_params = [("condition_ids", c) for c in chunk]
             base_params.append(("limit", str(chunk_size)))
+            chunk_rate_limited = False
             for variant in ("open", "closed"):
                 params = list(base_params)
                 if variant == "closed":
                     params.append(("closed", "true"))
-                rows = await self._get_json(
-                    f"{_GAMMA_API_BASE}/markets",
-                    params=params,
-                    label=f"resolutions[{len(chunk)} ids, chunk {i // chunk_size}, {variant}]",
-                )
+                try:
+                    rows = await self._get_json(
+                        f"{_GAMMA_API_BASE}/markets",
+                        params=params,
+                        label=f"resolutions[{len(chunk)} ids, chunk {i // chunk_size}, {variant}]",
+                    )
+                except PolymarketRateLimitError as e:
+                    # Cloudflare 403 (or 429) survived in-client retry. Skip
+                    # this chunk-variant and continue; missing condition_ids
+                    # fall through to the not_found sentinel below so the
+                    # caller still gets a complete dict.
+                    chunk_rate_limited = True
+                    log.warning(
+                        "polymarket-data-api fetch_market_resolutions chunk %d "
+                        "(%s) rate-limited; partial coverage: %s",
+                        i // chunk_size, variant, e,
+                    )
+                    continue
                 if not isinstance(rows, list):
                     continue
                 for m in rows:
@@ -497,6 +542,8 @@ class PolymarketDataAPIClient:
                     # market settles).
                     if variant == "closed" or cid not in out:
                         out[cid] = _decode_resolution(m)
+            if chunk_rate_limited:
+                rate_limited_chunks += 1
         # Fill in "not_found" for any missing condition_ids the caller asked for
         # so downstream code can iterate without KeyError.
         for c in unique:
@@ -504,6 +551,14 @@ class PolymarketDataAPIClient:
                 out[c] = {"status": "not_found", "winning_outcome_index": None,
                           "yes_won": None, "outcomes": [], "outcome_prices": [],
                           "closed": False, "title": ""}
+        if rate_limited_chunks:
+            log.warning(
+                "polymarket-data-api fetch_market_resolutions: %d/%d chunks "
+                "rate-limited; %d/%d condition_ids resolved",
+                rate_limited_chunks, (len(unique) + chunk_size - 1) // chunk_size,
+                sum(1 for c in unique if out[c]["status"] != "not_found"),
+                len(unique),
+            )
         return out
 
     async def _get_json(
@@ -514,31 +569,48 @@ class PolymarketDataAPIClient:
                 "PolymarketDataAPIClient must be used as an async context "
                 "manager: `async with PolymarketDataAPIClient() as client:`"
             )
-        t0 = time.monotonic()
-        async with self._sem:
-            try:
-                resp = await self._client.get(url, params=params)
-            except httpx.TimeoutException as e:
-                raise PolymarketDataAPIError(f"{label}: HTTP timeout") from e
-            except httpx.HTTPError as e:
+        attempt = 0
+        while True:
+            t0 = time.monotonic()
+            async with self._sem:
+                try:
+                    resp = await self._client.get(url, params=params)
+                except httpx.TimeoutException as e:
+                    raise PolymarketDataAPIError(f"{label}: HTTP timeout") from e
+                except httpx.HTTPError as e:
+                    raise PolymarketDataAPIError(
+                        f"{label}: HTTP error {type(e).__name__}: {e}"
+                    ) from e
+            dur_ms = int((time.monotonic() - t0) * 1000)
+            if resp.status_code == 429:
+                raise PolymarketRateLimitError(f"{label}: HTTP 429")
+            if resp.status_code == 403 and _is_cloudflare_block(resp):
+                if attempt >= len(_CLOUDFLARE_RETRY_DELAYS_SEC):
+                    raise PolymarketRateLimitError(
+                        f"{label}: HTTP 403 Cloudflare block survived "
+                        f"{attempt + 1} attempts; giving up"
+                    )
+                delay = _CLOUDFLARE_RETRY_DELAYS_SEC[attempt]
+                log.warning(
+                    "polymarket-data-api %s: HTTP 403 Cloudflare block on "
+                    "attempt %d (%dms); backing off %.0fs",
+                    label, attempt + 1, dur_ms, delay,
+                )
+                attempt += 1
+                await asyncio.sleep(delay)
+                continue
+            if resp.status_code >= 400:
+                body_preview = resp.text[:300] if resp.text else "(empty)"
                 raise PolymarketDataAPIError(
-                    f"{label}: HTTP error {type(e).__name__}: {e}"
+                    f"{label}: HTTP {resp.status_code} — {body_preview}"
+                )
+            try:
+                payload = resp.json()
+            except json.JSONDecodeError as e:
+                raise PolymarketDataAPIError(
+                    f"{label}: non-JSON response (HTTP {resp.status_code}): "
+                    f"{resp.text[:200]}"
                 ) from e
-        dur_ms = int((time.monotonic() - t0) * 1000)
-        if resp.status_code == 429:
-            raise PolymarketRateLimitError(f"{label}: HTTP 429")
-        if resp.status_code >= 400:
-            body_preview = resp.text[:300] if resp.text else "(empty)"
-            raise PolymarketDataAPIError(
-                f"{label}: HTTP {resp.status_code} — {body_preview}"
-            )
-        try:
-            payload = resp.json()
-        except json.JSONDecodeError as e:
-            raise PolymarketDataAPIError(
-                f"{label}: non-JSON response (HTTP {resp.status_code}): "
-                f"{resp.text[:200]}"
-            ) from e
-        n_rows = len(payload) if isinstance(payload, list) else 1
-        log.info("polymarket-data-api %s: %d rows in %dms", label, n_rows, dur_ms)
-        return payload
+            n_rows = len(payload) if isinstance(payload, list) else 1
+            log.info("polymarket-data-api %s: %d rows in %dms", label, n_rows, dur_ms)
+            return payload
