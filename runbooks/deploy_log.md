@@ -76,6 +76,72 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 03:53 UTC — BitUnix deferred-fire PA mechanism
+
+**Commits:** `72bbbe4`
+**Triggered by:** Board direction 2026-05-17 after the H2 + 1D-enforce-flip combo at 19:21 UTC 2026-05-16 produced 36/36 score-fire PA REJECTs (~100% sell-side, `structure_alignment` dominant blocker). Chart review showed the trades would have been winners once PA aligned a few bars later. Rule: when score is high enough to trigger but PA blocks, keep re-evaluating PA on each new bar until the score itself decays. Plan in `~/.claude/plans/i-need-to-work-gentle-honey.md`.
+
+**Backup tags:** `pre-pa-redeem-20260517-0350` (both files)
+
+**Files deployed (2 modify) — via base64 `patch -p1` to preserve prod drift in unrelated regions:**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — adds `_pending_pa_payload` / `_pending_pa_side` / `_pending_pa_cached_at_ts` in-memory cache; new methods `_clear_pending_pa`, `_log_pa_validation_redeem` (returns lastrowid for backfill), `_backfill_redeem_order_id`, `_log_pa_validation_expired`, `run_pa_redeem_loop` (60s background loop). Cache-set on PA REJECT in enforce mode; cache-clear on score SKIP / opposite-side win / PA pass / successful fire. PaperTradeRecord.extra passthrough so `extra_json` is no longer NULL on BitUnix rows. Local LF md5 `406cd632571276d800ac628a27b4adc8` byte-identical with prod after the LF-normalize-then-patch deploy.
+- `trading_corp/main.py` — adds `asyncio.create_task(bitunix_observer.run_pa_redeem_loop(interval_s=60.0), name="bitunix-pa-redeem")` alongside the existing bar/HTF cache tasks (after the HTF regime snapshot loop). Surgical patch; prod md5 `700e3cc2fae4d0851c0f229aae16625a` differs from local because of unrelated prod drift in other regions — preserved by `patch -p1` (NOT clobbered).
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Deferred-fire PA mechanism.** A high-score TV alert that PA rejects in enforce mode is no longer discarded — payload is cached in process memory. `bitunix-pa-redeem` background task wakes every 60s, replays the cached payload through the full pipeline (`_score_and_maybe_propose` with `source="bar_tick_redeem"`). PA finally passes → fires through HTF/sizing/risk/place like any other score-fire. Score decays to SKIP → cache cleared (no fixed TTL; the score engine's factor `ttl_minutes` is the only timing knob).
+- **At most one side waiting at a time.** Opposite-side score win nullifies the prior waiting state per Board's null-and-void rule.
+- **`pa_validation_redeem` audit kind.** One row per redeem-path PA pass. Carries `original_cached_at`, `redeem_ts`, `bars_waited`, `seconds_waited`, `final_tier`, `final_side`, `final_passed`, `order_id` (back-filled after placement via UPDATE; stays NULL if a post-PA gate killed the trade).
+- **`pa_validation_expired` audit kind.** One row per cached payload dropped without firing. `reason ∈ {"score_decay", "opposite_side"}`. Carries `cached_side`, `bars_waited`, `seconds_waited`.
+- **`order.extra` + `paper_trade_record.extra_json` carry redemption metadata.** New fields `redeemed: bool`, `bars_waited: int`, `seconds_waited: int`, `original_cached_at: iso` on redeemed fires. Pre-existing bug: `PaperTradeRecord.from_order` didn't propagate `order.extra` to `extra_json` (so the `score_path`, `net_score`, `funding_rate_at_decision`, `htf_size_multiplier` fields the observer carefully stamped on `order.extra` had been NULL for every BitUnix paper_trade_record row in prod history). Fixed locally in the observer via `record.extra = dict(order.extra)` before the DB insert. Shared `persistence/models.py` deliberately untouched per CLAUDE.md § 4.
+- **`would_have_placed` event** now always carries `redeemed: bool` and `bars_waited: int | None` for queryability.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- The redeem mechanism is **PROCESS MEMORY ONLY** — no `agent_state` table, no SQLite persistence. On restart, the cache rebuilds from the next TV alert that PA rejects. This is intentional (a wait of seconds-to-minutes doesn't need restart-safety).
+- The 60s cadence piggybacks on the existing `bitunix_bar_cache.run_poll_loop(interval_s=60.0)` rhythm — a sibling task, not a wall-clock-aligned bar-close trigger.
+- The PA validator (`bitunix_pa_validation.py`) is **unchanged** — still a stateless pure function. All state lives on the observer.
+- **No YAML changes.** No `pa_validation.deferred_fire` block. The rule "wait while score is valid" is encoded entirely in observer Python.
+- `audit_event` schema unchanged. The two new kinds slot in via the existing append-only INSERT path; no allowlist work needed (per `feedback`-style finding: `main.py` audit allowlist is only for `would_have_placed` extras).
+- `_backfill_redeem_order_id` reads the existing row's `payload_json`, JSON-decodes, sets `order_id`, JSON-encodes, UPDATEs by `id`. Best-effort — swallow + log on failure. Backtests can fall back to `(trigger_signal, ts ~1s)` join if the backfill ever lost a row.
+
+**Latent gap caught + fixed:** `PaperTradeRecord.from_order` (in shared `persistence/models.py`) does NOT propagate `order.extra` to `extra_json`. Effect for prod history: every BitUnix `paper_trade_record` row had `extra_json IS NULL` despite `order.extra` carrying `score_path`, `net_score`, `funding_rate_at_decision`, `htf_size_multiplier`. Closed locally in the observer (`record.extra = dict(order.extra)` before insert). Shared model deliberately not touched in this deploy per CLAUDE.md § 4. Other strategies (Otter / Cypher / PMCC) still write `NULL` to their `extra_json` — file as P3 follow-up if/when a backtest needs the `extra` for those.
+
+**Deploy mechanic:**
+- SSH still blocked from current network (per `feedback_az_run_command_when_ssh_blocked.md`); deployed via `az vm run-command invoke` with base64-encoded unified `git diff HEAD~1..HEAD` shipped to `/tmp`, then `patch -p1 < $F`. Patch -p1 was chosen over wholesale-replace because both files had prod drift from git (observer.py was CRLF-encoded; main.py had unrelated semantic drift in known regions per `trading_corp_prod_git_drift.md`).
+- LF-normalized prod observer in place (`tr -d '\r' < $F > $F.lf && mv`) BEFORE patch because the patch context was LF and prod was CRLF. Backup taken BEFORE normalize. Python parses both line endings identically so normalization is semantically null. After normalize + patch, observer md5 matches local HEAD byte-for-byte.
+
+**Verification:**
+- `az vm run-command create` exit 0; backups present at `pre-pa-redeem-20260517-0350`.
+- Patch applied 9/9 hunks cleanly (after LF-normalize); 0 rejects.
+- Post-patch md5: observer `406cd632571276d800ac628a27b4adc8` (== local LF md5), main `700e3cc2fae4d0851c0f229aae16625a` (preserved drift + my addition).
+- Import test confirms all 5 new methods: `run_pa_redeem_loop`, `_clear_pending_pa`, `_log_pa_validation_redeem`, `_log_pa_validation_expired`, `_backfill_redeem_order_id` all present on `BitunixFuturesObserver`.
+- Service restart 03:53:14 UTC. PID 540809. `systemctl is-active trading-corp` = `active`. Healthz `{"status":"ok","mode":"PAPER"}` (200).
+- Boot wiring: `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False` (target hit).
+- All 4 BitUnix bar caches primed (3m/1h/4h/1d) — 200 bars each.
+- First 90 sec post-restart: 13 `pa_validation_decision` rows landed (TV alerts driving real PA evaluations through the new code path). 0 `pa_validation_redeem` / `pa_validation_expired` rows yet — expected, those need PA-reject-then-{pass|decay} cycles.
+
+**Inert / dormant:**
+- `trade_plan.enabled: false` unchanged — adaptive trade plan still uses legacy geometric path.
+- `auto_execute: false` unchanged — every redeemed fire still goes through paper-mode `would_have_placed` path. **Does NOT unlock any path to auto_execute: true for BitUnix.** Per CLAUDE.md § 5, the webhook risk gate vs LangGraph harmonization gap is still load-bearing for any future flip.
+
+**Watch for (next 24h):**
+- First `pa_validation_redeem` row → confirms full redeem cycle worked end-to-end. Query: `SELECT * FROM audit_event WHERE kind='pa_validation_redeem' ORDER BY id DESC LIMIT 5;`
+- First `pa_validation_expired` row → confirms score-decay or opposite-side clear path. Query: same with `kind='pa_validation_expired'`.
+- First `paper_trade_record` row for `bitunix_futures` with `json_extract(extra_json,'$.redeemed') = 1` → confirms the gap-closure-end-to-end (was 0 since 19:21 UTC 2026-05-16).
+- Redemption success rate: `n_redeemed_fires / (n_redeemed_fires + n_expired_score_decay)`. H2 falsification gate (≥30 PREMIUM fires) is downstream of this — until PA stops being 100% blocking, H2 can't accumulate.
+
+**Rollback recipe (~30s, 1-line restore + restart):**
+```bash
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG=pre-pa-redeem-20260517-0350
+BASE=/home/azureuser/trading_corp
+mv $BASE/trading_corp/agents/divisions/bitunix_futures_observer.py.$TAG $BASE/trading_corp/agents/divisions/bitunix_futures_observer.py
+mv $BASE/trading_corp/main.py.$TAG $BASE/trading_corp/main.py
+sudo systemctl restart trading-corp'
+```
+Note: rollback restores the CRLF observer (the LF-normalize was preserved in the backup file's content since the backup was taken pre-normalize — verify with `file` after rollback if it matters). Either way, Python parses both fine.
+
+---
+
 ## 2026-05-17 03:38 UTC — PCT stale-entry pruner cron (systemd timer)
 
 **Commits:** `335ecc2`
