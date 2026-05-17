@@ -76,6 +76,67 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 02:49 UTC — dashboard cutoff filter for pre-fix kalshi RTs
+
+**Commits:** `bf1ae7e`
+**Triggered by:** Board observation that the post-19:18-fix sample (4 crypto RTs, 0 weather RTs) is uninformative against tainted historical aggregates (61 weather / 91 crypto pre-fix losers). Chose **filter-by-cutoff** over hard-delete to preserve forensic / σ-scaling data. Spec'd in-session; implemented + deployed end-to-end.
+**Backup tag:** `.pre-rt-cutoff-20260517-0249`
+
+**Files deployed (3 modified):**
+- `trading_corp/web/data.py` — adds module-level `DASHBOARD_RT_CUTOFFS: dict[str, str]` (kalshi_weather: 2026-05-16T19:18Z, kalshi_crypto: 2026-05-16T19:37Z) + `_kalshi_cutoff_clause(ts_col)` helper. Three queries patched to append the clause: `pm_overview` kalshi roll-up (~line 1023), `_query_pm_round_trips` kalshi block (~line 2941), `_query_pm_resolved_stats` kalshi block (~line 3363). `PMSummary` gains `cutoff_ts` + `cutoff_label` (None-default). `build_prediction_market_view` sets them on single-division views only. `_hydrate_pm_overview` sets `s["cutoff_label"]` on home-tile dicts. md5 (LF) `5b6faaa3c8001633f914714ee4374ad0` byte-identical with prod.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — adds "since YYYY-MM-DD · current logic only" under the Win rate tile when `s.cutoff_label` is set (per-division page + combined-view conditional). md5 (LF) `221b1ad4d4cab2a4386a7c5c3df6fa3f` byte-identical with prod.
+- `trading_corp/web/templates/home.html` — adds compact "since YYYY-MM-DD" under realized PnL on home overview tile when `pm.cutoff_label` is set. md5 (LF) `5635930dfb5ff1342d4e9d43a4d0ce6d` byte-identical with prod.
+
+**Features shipped:**
+- Dashboard tile + history list for `kalshi_weather` (since 2026-05-16T19:18+00:00) and `kalshi_crypto` (since 2026-05-16T19:37+00:00) now exclude pre-cutoff RTs from win-rate, n_resolved, total PnL aggregates.
+- "since 2026-05-16 · current logic only" badge visible under Win rate on per-division pages (verified via curl 127.0.0.1:8000 on prod).
+- Compact "since 2026-05-16" badge on home overview tiles for the two filtered divisions.
+- `kalshi_round_trips` table untouched — pre-cutoff rows REMAIN in DB for σ-scaling work and forensic queries. Querying with explicit `WHERE entry_ts < cutoff` reaches them as before.
+- `kalshi_llm_arbitrage`, `kalshi_arbitrage`, `kalshi_copy_trading`, polymarket divisions: unaffected (no entry in `DASHBOARD_RT_CUTOFFS`).
+- Combined "All Prediction Markets" view: shows NO badge (different divisions have different / no cutoffs — no honest single "since" date).
+- Equity curve queries (`_query_pm_equity_curve`) NOT filtered — they pull from a separate `*_equity_history` snapshot table, and cutting the integral would create a misleading step discontinuity. Intentional.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- `DASHBOARD_RT_CUTOFFS` is the SINGLE source of truth for the cutoff. Adding a new entry is the entire mechanism to filter a new division. Empty dict = full rollback.
+- Inline-SQL substitution chosen over parameterized because cutoffs are hardcoded constants (no injection surface). `_kalshi_cutoff_clause` returns a leading-space-prefixed fragment to append after `WHERE ... IN (...)`.
+- 8 new tests in `tests/test_prediction_markets_dashboard.py` cover: empty-dict-empty-clause, single-cutoff-emits-predicate, resolved-stats-filters, round-trips-history-filters, no-cutoff-division-unaffected, single-division-PMSummary-attaches-label, combined-view-no-label. Use `monkeypatch.setattr(wd, "DASHBOARD_RT_CUTOFFS", {...})` to isolate.
+
+**Verification:**
+- All 35 dashboard tests pass (27 prior + 8 new) + 31 weather-fix tests pass.
+- Prod md5 match all 3 files (data.py + 2 templates) byte-identical with local LF.
+- Service restarted via deploy script (PID 535103 → confirmed `is-active`).
+- External `/healthz` returns 200 `{"status":"ok","mode":"PAPER"}` post-deploy.
+- `/prediction-markets/kalshi_weather` renders badge + tile shows `n_resolved=0` (correct: no post-cutoff RTs yet, weather settles ~14:00 UTC next-day).
+- `/prediction-markets/kalshi_crypto` renders badge + tile shows `n_resolved=0` (correct: the 4 post-19:18 RTs entered 19:20–19:28, BEFORE the 19:37 crypto cutoff — they predate the crypto-fix and are correctly filtered).
+- `/prediction-markets/kalshi_llm_arbitrage` has zero badge instances (correct: no cutoff entry).
+
+**SHARP EDGE caught in flight:**
+- I spec'd "FastAPI worker auto-reloads on next request" — **wrong**. Prod runs uvicorn under systemd with `--reload` off. `web/data.py` is a Python module loaded into the running process; changes don't take effect without `systemctl restart trading-corp`. Same gotcha as the BitUnix YAML hot-reload memory. The deploy script restarted the service.
+
+**Deploy mechanics (recap for future Claude):**
+- SSH blocked from hotspot IP (consistent with 2026-05-16 outage memory). Pivoted straight to `az vm run-command create --script @file` per `feedback_az_run_command_when_ssh_blocked.md`.
+- Initial deploy.sh had CRLF shebang from Windows heredoc → `bad interpreter: /bin/bash^M`. Fixed by `tr -d '\r'`. Memory `trading_corp_windows_crlf_vs_prod_lf.md` rule applies to deploy scripts, not just payloads.
+- `az vm run-command create` is single-tenant — must delete the named command before re-create or you get "Run command extension execution is in progress" conflicts.
+
+**Rollback recipe:**
+```bash
+az vm run-command create -g rg-shared-prod --vm-name tc-prod-vm \
+  --run-command-name tc-rollback-rt-cutoff \
+  --script 'BASE=/home/azureuser/trading_corp; TAG=pre-rt-cutoff-20260517-0249; \
+    for f in trading_corp/web/data.py trading_corp/web/templates/home.html \
+             trading_corp/web/templates/partials/pm_dashboard_body.html; do \
+      [ -f "$BASE/$f.$TAG" ] && mv "$BASE/$f.$TAG" "$BASE/$f"; \
+    done; \
+    sudo systemctl restart trading-corp'
+```
+(Alternative softer rollback: edit `DASHBOARD_RT_CUTOFFS = {}` on prod's `data.py` + restart. Files keep new shape; filter goes dormant.)
+
+**Watch for:**
+- Tomorrow ~14:00 UTC when May 16 daily-HIGH/LOW weather markets settle: `kalshi_weather` tile should start filling with post-cutoff RTs. Per-tile counts should match `SELECT COUNT(*) FROM kalshi_round_trips WHERE division='kalshi_weather' AND entry_ts >= '2026-05-16T19:18:00+00:00'`.
+- If counts don't match the explicit SQL query, the cutoff isn't reaching one of the 3 patched queries.
+
+---
+
 ## 2026-05-16 19:37 UTC — kalshi_crypto: bucket-aware bet-side guard
 
 **Triggered by:** parallel investigation of kalshi_weather Denver 5/15 RT resolution. After fixing kalshi_weather (entry 19:18 UTC below), audited kalshi_crypto for the same σ-vs-bucket-width bug pattern. Confirmed bug A applies (same `outcome = "yes" if prob_yes > implied_yes else "no"` at `kalshi_crypto_arb.py:513`); bug B (off-by-one-day) does NOT apply (crypto uses live spot + expiration_time correctly). Pre-fix crypto stats: 91 round-trips, 11.0% WR, -$58.88 PnL. T-tickers + "other" categories: 0/16 wins.
