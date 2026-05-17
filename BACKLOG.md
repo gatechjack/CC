@@ -141,8 +141,9 @@ Service active, PID 536909 (post-target_iso restart). Boot wiring on prod: `scor
 ### Things to NOT do without explicit approval
 
 - Do NOT flip `htf_gate.mode: shadow → enforce` back (it's at `enforce` per the 04:14 UTC deploy log entry).
-- Do NOT flip `trade_plan.enabled: true`. Phase 1E gate.
-- Do NOT enable `auto_execute: true` on weather, crypto, or BitUnix until each division's validation gate is hit.
+- ~~Do NOT flip `trade_plan.enabled: true`. Phase 1E gate.~~ **LIFTED 2026-05-17 05:14 UTC** — Phase 1E gate cleared per the trade-plan v2 deploy. Boot wiring now reads `trade_plan_active=True`. Replacement rule: **Do NOT flip `trade_plan.enabled: false`** without a v2-performance memo (rollback would re-disable the active placement path).
+- Do NOT flip `auto_execute: true` to live-broker placement on BitUnix until Phase 4 lands (`BitunixBroker.place_order` real signed REST + cancel/amend semantics validated). The flag is currently `true` but `place_order` raises NotImplementedError, so every fire stays paper-mode. The CLAUDE.md § 5 webhook risk gate vs LangGraph harmonization gap is also load-bearing for any future live flip.
+- Do NOT enable `auto_execute: true` on weather, crypto until each division's validation gate is hit.
 - Do NOT delete backup tags on prod (kalshi weather/crypto + H2 + rt-cutoff + target_iso) until ≥24h confirms the new logic.
 - Do NOT delete pre-cutoff kalshi RTs from `kalshi_round_trips` — they're the σ-scaling dataset. Dashboard already filters them; deleting would lose forensic value.
 - Do NOT relax `config/strategies.yaml` validation guards or schema.

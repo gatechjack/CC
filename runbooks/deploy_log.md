@@ -76,6 +76,105 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 05:14 UTC — BitUnix trade-plan v2 LIVE — Phase 1E flag flip + paper-mode multi-leg replay + dashboard
+
+**Commits:** `c41e7fd` (Stage A+B code) + YAML flag flip (prod-only — local YAML has known H2-era drift)
+**Triggered by:** Board direction "do these 3" (PR 5 reconciler + PR 6 dashboard + Phase 1E flip). Strategy_gaps memory promised trade-plan PRs 1-4 were code-complete 2026-05-15; this deploy closes PRs 5+6 + lifts the dormancy gate. Plan path (a) chosen — paper-mode multi-leg replay extension over the simpler "skip and accept dormancy" alternatives, because (b)/(c) produced misleadingly-worse paper data on v2 trades.
+
+**Three stages in one session, three separate prod writes:**
+
+### Stage A — paper_trade_replay.py multi-leg-aware
+
+**Backup tag:** `pre-trade-plan-v2-20260517-0507` (4 files: bitunix.py, paper_trade_replay.py, web/data.py, division.html)
+
+**Files deployed (4 modify + 1 new) via gzipped patch -p1 (47KB raw → 16KB compressed):**
+- `trading_corp/brokers/bitunix.py` — `list_open_positions` now hydrates `filled_legs` + `current_sl` from `extra_json` (defaults preserved). Reconciler reads real state instead of always-empty `[]`. Local md5 `a7125b2febf2f008cf03dfd82243fe9e` byte-identical with prod.
+- `trading_corp/agents/paper_trade_replay.py` — new `_classify_v2_multi_leg` routes on `extra_json.tp_plan_version == 'v2'`. Walks 1m bars detecting tp1/tp2/tp3 crosses in order, advances SL per Option C floor lifecycle (BE → tp1-price floor; Chandelier trail deferred to follow-up), emits `position_sl_update` audit rows at each transition. Weighted-R aggregation matches Option C arithmetic (tp1+tp2 + remainder at tp1-floor = 0.75R lower bound). Resumable across replay ticks via `extra_json.filled_legs`. Conservative same-bar SL+TP tie-handling preserved (SL first). Local md5 `3510cfbe015d4e092abc37d0a78cab87` byte-identical with prod.
+
+**Features shipped:**
+- **Paper-mode multi-leg fill simulation.** v2 paper trades now resolve as 3-leg cascades, not single-leg TP3. Realized R correctly reflects partial-fill outcomes (0.125R / 0.75R / 1.25R per Option C scenarios).
+- **`position_sl_update` audits now emit in paper mode.** Source tagged `paper_trade_replay` (vs `reconciler` in live mode) so dashboards distinguish synthetic from real broker-fill-driven lifecycle.
+
+### Stage B — Trade Plan v2 + SL Lifecycle dashboard panel
+
+- `trading_corp/web/data.py` — new `build_bitunix_trade_plan_view` queries `trade_plan_decision` + `position_sl_update` audits. Returns last-10 of each + 24h counts (decisions_total / should_trade_true / skipped / sl_updates_total).
+- `trading_corp/web/templates/division.html` — includes new panel after Decision Flow.
+- `trading_corp/web/templates/partials/bitunix_trade_plan_panel.html` (NEW) — 2-section panel: Decisions table (entry / SL / tp1/tp2/tp3 / sl_method / tp2_method / skip_reason) + SL Lifecycle table (state / current→new SL / filled_legs / source). Header shows V2 ACTIVE/DORMANT marker + fee config introspection + 24h counters.
+
+**Verification (Stage B):**
+- Healthz 200 after warmup. Page 90143 bytes (+1k from pre-stage-B).
+- All panel markers present pre-flip: `bitunix-trade-plan-panel` × 3 (htmx triple), "V2 DORMANT" × 1, "No trade_plan_decision audit rows yet" × 1, "24h: decisions" × 1.
+- Zero template errors.
+
+### Stage C — `trade_plan.enabled: false → true` (Phase 1E gate flip)
+
+**Backup tag:** `pre-trade-plan-flip-20260517-0512` (config/strategies.yaml only)
+
+**Surgical YAML edit on prod** (one-line replace via Python anchored patcher; prod YAML has known drift from local per `trading_corp_prod_git_drift.md` so surgical is safer than wholesale-replace):
+```yaml
+# Before:                            After:
+  trade_plan:                          trade_plan:
+    enabled: false  # PR 4 — flip       enabled: true   # Phase 1E — v2 path active (2026-05-17)
+```
+
+`yaml.safe_load` verification on prod: `bitunix_futures.trade_plan.enabled = True`.
+
+**Service restart 05:14:32 UTC** (per `feedback_bitunix_no_hot_reload.md` — BitUnix scorer/observer doesn't mtime-cache; YAML changes need restart). Healthz back at 200 after 5s.
+
+**Boot wiring CHANGED:**
+```
+BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce,
+                         htf_regime_enabled=True, trade_plan_active=True
+```
+`trade_plan_active=True` ← this was `False` on every prior boot since the trade-plan PRs shipped 2026-05-15. Phase 1E gate lifted.
+
+**Dashboard post-flip:**
+- "V2 ACTIVE" marker × 1, "V2 DORMANT" × 0 (correctly read the flag transition).
+- Page 91628 bytes (+1.5k from active-state expansion).
+- `paper_trade_replay` loop online; `bitunix-position-reconciler` task still scheduled at 60s; both will now exercise on v2 trades as they fire.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Trade-plan v2 path is the active placement code on bitunix_futures.** Observer's `_score_and_maybe_propose_locked` now dispatches to `_build_proposal_v2` (structure-preferred SL + 3-leg TP plan) instead of the legacy geometric `_build_proposal`. Every BitUnix paper-fire from this point produces a `tp_plan` payload + 3-leg `paper_trade_record`.
+- **Phase 1E gate lifted.** The "Do NOT flip trade_plan.enabled: true" entry in BACKLOG snapshot's "Things to NOT do" list is no longer active.
+
+**Inert / dormant:**
+- `auto_execute: true` unchanged (already true per Board direction). Per CLAUDE.md § 5, the webhook risk gate vs LangGraph harmonization gap is STILL load-bearing — does NOT unlock any path to real-money placement. Phase 4 (`BitunixBroker.place_order` real signed REST) is still the next gate.
+- Chandelier trail in paper replay deliberately skipped (post-TP2 floor only). Follow-up if data argues for it.
+
+**Watch for (next 24h):**
+- First `trade_plan_decision` audit row → confirms `_build_proposal_v2` dispatch path is exercising on real TV alerts. Query:
+  ```sql
+  SELECT ts, json_extract(payload_json,'$.trigger_signal'), json_extract(payload_json,'$.should_trade'),
+         json_extract(payload_json,'$.skip_reason')
+    FROM audit_event WHERE kind='trade_plan_decision' ORDER BY id DESC LIMIT 10;
+  ```
+- First `paper_trade_record` row with `json_extract(extra_json,'$.tp_plan_version')='v2'` → confirms v2 trade lands in storage with the 3-leg `tp_plan`.
+- First `position_sl_update` audit row with `source='paper_trade_replay'` → confirms the multi-leg replay extension is detecting leg fills + emitting lifecycle audits. Query:
+  ```sql
+  SELECT ts, json_extract(payload_json,'$.lifecycle_state'), json_extract(payload_json,'$.source'),
+         json_extract(payload_json,'$.filled_legs')
+    FROM audit_event WHERE kind='position_sl_update' ORDER BY id DESC LIMIT 10;
+  ```
+- Dashboard panel "V2 ACTIVE" with populated Decisions + SL Lifecycle tables.
+
+**Tests:** 13 new in this PR (9 multi-leg replay + 4 trade-plan view-builder). 185-test adjacent suite green. Tests in `tests/test_paper_trade_replay.py` (new `_v2_*` group) and `tests/test_bitunix_view_builders.py` (new "PR 6" group).
+
+**Rollback recipe (~30s):**
+```bash
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG_CODE=pre-trade-plan-v2-20260517-0507
+TAG_YAML=pre-trade-plan-flip-20260517-0512
+BASE=/home/azureuser/trading_corp
+for f in trading_corp/brokers/bitunix.py trading_corp/agents/paper_trade_replay.py trading_corp/web/data.py trading_corp/web/templates/division.html; do
+  mv $BASE/$f.$TAG_CODE $BASE/$f
+done
+rm -f $BASE/trading_corp/web/templates/partials/bitunix_trade_plan_panel.html
+mv $BASE/config/strategies.yaml.$TAG_YAML $BASE/config/strategies.yaml
+sudo systemctl restart trading-corp'
+```
+
+---
+
 ## 2026-05-17 04:13 UTC — BitUnix dashboard: surface deferred-fire mechanism
 
 **Commits:** `f85ac9f`

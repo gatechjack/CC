@@ -1294,7 +1294,7 @@ bitunix_futures:
   # Defaults preserve pre-PR-4 behavior (enabled: false).
   # ============================================================
   trade_plan:
-    enabled: false              # PR 4 — flip to true to activate v2 path
+    enabled: true               # Phase 1E — v2 path active (2026-05-17)
     # Stop-loss placement (ATR-multiple bounds for multi-symbol)
     min_stop_atr_mult: 0.5
     max_stop_atr_mult: 2.5
