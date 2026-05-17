@@ -76,6 +76,69 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 03:38 UTC — PCT stale-entry pruner cron (systemd timer)
+
+**Commits:** `335ecc2`
+**Triggered by:** Carryover P2 from the 2026-05-16 03:29 UTC one-shot DELETE (which removed 1,745 stale `polymarket_copy_trader` pending audit rows). The root cause — Apify's 10-min poll cadence missing fast whale auto-settles — was not addressed by the DELETE, so stale rows re-accumulate at ~70/day. The pruner cron automates the same predicate as a nightly job.
+
+**Files deployed (4 new):**
+- `trading_corp/scripts/prune_stale_pct_entries.py` — CLI + library. `--dry-run` is default; `--apply` required to actually delete. `--cutoff-hours N` (default 24), `--max-rows N` (default 5000, safety cap). Writes a `pct_stale_prune` audit_event row for EVERY run (dry-run too) tagged with `division=polymarket_copy_trading`, `strategy=pct_stale_pruner`, candidates + deleted counts, applied flag.
+- `/etc/systemd/system/trading-corp-pct-pruner.service` (Type=oneshot, User=root, ExecStart with `--apply --cutoff-hours 24 --max-rows 5000`, env mirrors the existing watchlist-stats unit).
+- `/etc/systemd/system/trading-corp-pct-pruner.timer` (OnCalendar=`*-*-* 11:30:00 UTC`, Persistent=true, RandomizedDelaySec=300). 11:30 UTC is BEFORE the 12:00 UTC watchlist-stats refresh so morning Board glances at the dashboard see cleaned counts.
+
+**Features shipped:**
+- Nightly automated DELETE of `polymarket_copy_trader/would_have_placed` audit rows that are:
+  - side='buy' (default 'buy' when key absent — matches pre-2026-05-14 rows)
+  - ts < now() - 24h
+  - order_id NOT IN polymarket_round_trips.order_id
+  - order_id NOT IN polymarket_round_trips.entry_order_id
+- Sell-side rows preserved. Round-trip-paired rows preserved (via either column). Fresh rows preserved. Non-PCT actors untouched.
+- Every run audits itself via `pct_stale_prune` event — the cron is fully self-observable.
+
+**Notable code changes:**
+- Predicate logic is in `_PREDICATE_WHERE` constant; `prune()` is a pure library function callable from tests and the CLI. 13 unit tests cover every preservation rule + dry-run vs apply + audit-row-shape.
+- `prune()` accepts `db_url` parameter for testability; main() lazy-imports `load_secrets()` only when needed, so unit tests can pass `--db-url sqlite:///tmp/test.db` without touching Key Vault.
+- The systemd unit's `WorkingDirectory=/home/azureuser/trading_corp` is load-bearing — Python 3 `-m` requires CWD to contain the `trading_corp/` package directory. The smoke test below failed initially because I forgot to `cd` first; the systemd unit gets it right.
+
+**Verification (post-deploy 03:41 UTC):**
+- AST parse on prod ✅.
+- `systemctl is-enabled trading-corp-pct-pruner.timer` → `enabled`.
+- `systemctl is-active trading-corp-pct-pruner.timer` → `active`.
+- `systemctl list-timers` shows next fire at `Sun 2026-05-17 11:34:59 UTC` (with the ~5min random delay).
+- Direct `python -m trading_corp.scripts.prune_stale_pct_entries` dry-run from prod: 454 candidates identified, 0 deleted. KV loaded 27 secrets successfully.
+- `pct_stale_prune` audit row written at 03:41:03 UTC, payload as expected.
+- Direct SQL spot-check: 1,707 total PCT pending; 1,168 are >24h old; 454 are unpaired (the delete target). 714 ≥24h-but-paired rows correctly preserved.
+
+**Expected behavior on first real fire (2026-05-17 ~11:35 UTC):**
+- 454 rows deleted (assuming no other PCT rows expire between now and then; the actual count will be slightly higher due to overnight Apify accumulation).
+- One `pct_stale_prune` audit row with `apply=true`, `deleted=N`.
+- Dashboard "Open" tile for `polymarket_copy_trading` drops by ~454 (currently shows 1,707; expect ~1,253 after).
+
+**Rollback recipe:**
+```bash
+# Disable the timer (keeps the script for re-enable later):
+az vm run-command create -g rg-shared-prod --vm-name tc-prod-vm \
+  --run-command-name tc-rollback-pct-pruner \
+  --script 'sudo systemctl disable --now trading-corp-pct-pruner.timer; \
+            sudo rm -f /etc/systemd/system/trading-corp-pct-pruner.{service,timer}; \
+            sudo systemctl daemon-reload; \
+            rm -f /home/azureuser/trading_corp/trading_corp/scripts/prune_stale_pct_entries.py'
+```
+(Soft rollback: just `systemctl stop trading-corp-pct-pruner.timer` to pause; re-enable with `systemctl enable --now`.)
+
+**Watch for tomorrow morning (~11:35 UTC fire):**
+```sql
+-- The fresh audit row:
+SELECT ts, payload_json FROM audit_event
+ WHERE kind='pct_stale_prune' AND apply=true
+ ORDER BY ts DESC LIMIT 1;
+-- Pending-row count should drop by ~454 around that time:
+SELECT COUNT(*) FROM audit_event
+ WHERE actor='polymarket_copy_trader' AND kind='would_have_placed';
+```
+
+---
+
 ## 2026-05-17 03:09 UTC — kalshi_weather: target_iso audit field
 
 **Commits:** `1e2b399`

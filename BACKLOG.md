@@ -102,7 +102,7 @@ Service active, PID 536909 (post-target_iso restart). Boot wiring on prod: `scor
 6. **Watch for T-ticker / crypto T-suffix dynamics.** Pre-fix 0/10 weather + 0/12 crypto. With the guard, those should be skipped rather than fired. If fire count drops to zero, the guard is correctly filtering.
 7. **`config/strategies.yaml` 887-line stale `factors:` block cleanup** (~15 min, P3). Cosmetic.
 8. **PMCC audit.** Perennial.
-9. **PCT stale-pruner cron** (P2 in BACKLOG, ~2-3h). Nightly Bug-C-predicate run via systemd timer.
+9. ~~**PCT stale-pruner cron** (P2 in BACKLOG, ~2-3h). Nightly Bug-C-predicate run via systemd timer.~~ **SHIPPED 2026-05-17 03:38 UTC, commit `335ecc2`.** systemd timer `trading-corp-pct-pruner.timer` fires daily 11:30 UTC. First real fire today (2026-05-17 ~11:35 UTC) will delete ~454 stale PCT pending audit rows. Self-audited via `pct_stale_prune` event. See `runbooks/deploy_log.md` entry.
 
 ### Things to NOT do without explicit approval
 
