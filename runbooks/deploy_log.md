@@ -76,6 +76,50 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 03:09 UTC — kalshi_weather: target_iso audit field
+
+**Commits:** `1e2b399`
+**Triggered by:** Carryover P3 from the 19:40 EOS — the kalshi_weather `would_have_placed` audit allowlist in `main.py` didn't carry `target_iso`, so we had no on-the-wire proof that the 2026-05-16 19:18 UTC date-parse fix (Bug B) was firing on the right resolution date. With overnight weather settlements landing tomorrow ~14:00 UTC, this needed to ship before then so the first natural fires record their target dates.
+**Backup tag:** `.pre-target-iso-20260517-0309`
+
+**Files deployed (2 modified):**
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — adds `"target_iso": target_iso,` to `ProposedOrder.extra` (right after `expires_at`). Distinct from `expires_at` (Kalshi's settlement window, ~14:00 UTC the day after); `target_iso` is the resolution-date parsed from the ticker. md5 (LF) `4bf3005a0f638dae4c0c73d5dd296a09` byte-identical with local.
+- `trading_corp/main.py` — patched in-place: adds `"target_iso": ext.get("target_iso"),` to the `kalshi_weather_order` `would_have_placed` allowlist at lines 3206-3210 (with `TARGET_ISO_INSERTED` marker for future grep). Prod md5 differs from local (known drift per `trading_corp_prod_git_drift.md`); deploy used the surgical python-anchor pattern, NOT whole-file replace, to preserve prod-side diffs.
+
+**Features shipped:**
+- Every new kalshi_weather `would_have_placed` audit row now carries `target_iso`, allowing direct cross-check that "we fetched May 15 forecast for KXHIGHDEN-26MAY15-B82.5" is happening. Pre-fix value would have been May 16 (Kalshi's expiration_time fallback).
+- `kalshi_weather_evaluated` rows already carry `target_iso` (no change there).
+
+**Notable code changes:**
+- The local `main.py` patch + the prod `main.py` patch are SEMANTICALLY identical but at different byte offsets (prod has unrelated drift). The `TARGET_ISO_INSERTED` marker is the canonical grep anchor for future-Claude to verify the line is present without doing a full file diff.
+- Surgical-edit pattern used: a python script on prod anchors on `"forecast_temp_f": ext.get("forecast_temp_f"),` (weather-block-only), walks forward to the next `"expires_at": ext.get("expires_at"),` line, and inserts the new field there. The script is idempotent (early-exits if `TARGET_ISO_INSERTED` is already in the file). Refuses to insert if it would walk past the kalshi_crypto block's `"asset"` field.
+- See `feedback_surgical_edits_over_whole_file_scp.md` for why this matters.
+
+**Verification:**
+- All 31 weather-fix tests + 35 dashboard tests pass locally pre-deploy.
+- AST parse on both files post-deploy on prod (built into the deploy script).
+- Service restarted (PID 536909, `is-active`).
+- External `/healthz` returns 200 `{"status":"ok","mode":"PAPER"}`.
+- `grep -n target_iso` on prod's `main.py` shows the new lines at 3205-3211 (between `expires_at` and `title`).
+- `grep -n target_iso` on prod's `kalshi_weather_arb.py` shows the new line at 709 (in the `extra` dict).
+- Audit cross-check pending: no natural weather fire in the ~25 minutes post-deploy (overnight, low scan-fire rate). Will self-verify with tomorrow morning's weather scans.
+
+**Rollback recipe:**
+```bash
+az vm run-command create -g rg-shared-prod --vm-name tc-prod-vm \
+  --run-command-name tc-rollback-target-iso \
+  --script 'BASE=/home/azureuser/trading_corp; TAG=pre-target-iso-20260517-0309; \
+    for f in trading_corp/agents/strategies/kalshi_weather_arb.py trading_corp/main.py; do \
+      [ -f "$BASE/$f.$TAG" ] && mv "$BASE/$f.$TAG" "$BASE/$f"; \
+    done; \
+    sudo systemctl restart trading-corp'
+```
+
+**Watch for:**
+- Tomorrow's first kalshi_weather `would_have_placed` rows. The `target_iso` value should match the date segment of the ticker (e.g. `KXHIGHDEN-26MAY17-...` → `2026-05-17T...`), NOT the `expires_at` date (which will be ~14:00 UTC the following day).
+
+---
+
 ## 2026-05-17 02:49 UTC — dashboard cutoff filter for pre-fix kalshi RTs
 
 **Commits:** `bf1ae7e`
