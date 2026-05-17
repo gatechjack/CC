@@ -113,6 +113,12 @@
                      {% elif f.outcome and f.outcome.startswith('error') %}text-loss
                      {% else %}text-muted{% endif %}">
             {{ f.outcome or '—' }}
+            {% if f.redeemed %}
+              <div class="text-[9px] font-mono text-gain mt-0.5"
+                   title="This fire came from the bar-tick redeem loop after an earlier PA reject.">
+                ⤴ redeemed{% if f.redeem and f.redeem.bars_waited is not none %} ({{ f.redeem.bars_waited }}b · {{ f.redeem.seconds_waited }}s){% endif %}
+              </div>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}

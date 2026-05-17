@@ -658,6 +658,11 @@ class DivisionViewSnapshot:
     # trade-plan PR 6 — decision flow timeline (last 5 fires showing
     # score → PA → HTF → outcome). Shape on `build_bitunix_decision_flow_view`.
     bitunix_decision_flow: dict | None = None
+    # Deferred-fire — live snapshot of the observer's in-memory PA-rejected
+    # payload cache. Shape on `build_bitunix_pending_pa_view`. Always set
+    # (even when nothing cached) so the template can show "no signal
+    # pending" rather than hiding the panel.
+    bitunix_pending_pa: dict | None = None
 
 
 @dataclass
@@ -1632,6 +1637,98 @@ def _bitunix_fee_config(deps: Any) -> Any:
     return getattr(observer, "fee_config", None) if observer else None
 
 
+def build_bitunix_pending_pa_view(deps: Any) -> dict | None:
+    """Deferred-fire dashboard: live snapshot of the observer's in-memory
+    PA-rejected payload cache. Mirrors the cache lifecycle in
+    `bitunix_futures_observer.py` — populated when PA rejects a high-score
+    fire in enforce mode, cleared on score SKIP / opposite-side win /
+    PA pass / successful fire.
+
+    Returns None when the observer isn't wired (test envs); otherwise a
+    dict that's always renderable — the template shows "no signal
+    pending" when `cached=False`. Operators watching the dashboard during
+    a hot trading window can read this to know "we're currently watching
+    a sell-side signal that's been waiting 4 min for vwap+structure to
+    align."
+
+    Shape:
+      {
+        cached: bool,
+        side: 'buy' | 'sell' | None,
+        signal: str | None,                   # trigger_signal from cached payload
+        cached_at: iso | None,
+        cached_at_et: short str | None,
+        bars_waited: int,                     # 0 when not cached
+        seconds_waited: int,
+        last_failed: [str, ...],              # validators failing as of most recent pa_validation_decision
+        last_pa_decision_reason: str | None,
+      }
+    """
+    observer = getattr(deps, "bitunix_observer", None)
+    if observer is None:
+        return None
+    payload = getattr(observer, "_pending_pa_payload", None)
+    side = getattr(observer, "_pending_pa_side", None)
+    cached_at = getattr(observer, "_pending_pa_cached_at_ts", None)
+    if payload is None or cached_at is None:
+        return {
+            "cached": False,
+            "side": None,
+            "signal": None,
+            "cached_at": None,
+            "cached_at_et": None,
+            "bars_waited": 0,
+            "seconds_waited": 0,
+            "last_failed": [],
+            "last_pa_decision_reason": None,
+        }
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc)
+    delta_s = (now - cached_at).total_seconds()
+    cached_signal = (payload.get("signal") or "").strip().lower() or None
+
+    # Best-effort enrichment: most-recent pa_validation_decision REJECT
+    # for this same trigger_signal. Tells the operator WHICH validators
+    # are blocking right now. Bounded query — 50 rows is plenty.
+    last_failed: list[str] = []
+    last_reason: str | None = None
+    try:
+        db_url = getattr(deps, "db_url", None)
+        if db_url and cached_signal:
+            with db.connect(db_url) as conn:
+                rows = conn.execute(
+                    "SELECT payload_json FROM audit_event "
+                    "WHERE kind = 'pa_validation_decision' "
+                    "ORDER BY id DESC LIMIT 50"
+                ).fetchall()
+            for r in rows:
+                try:
+                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except Exception:
+                    continue
+                if (p.get("trigger_signal") or "").lower() != cached_signal:
+                    continue
+                if (p.get("decision") or "").upper() != "REJECT":
+                    continue
+                last_failed = list(p.get("failed") or [])
+                last_reason = p.get("reason")
+                break
+    except Exception as e:
+        log.warning("bitunix pending PA enrichment query failed: %s", e)
+
+    return {
+        "cached": True,
+        "side": side,
+        "signal": cached_signal,
+        "cached_at": cached_at.isoformat(),
+        "cached_at_et": format_et_short(cached_at.isoformat()),
+        "bars_waited": int(delta_s // 180),
+        "seconds_waited": int(delta_s),
+        "last_failed": last_failed,
+        "last_pa_decision_reason": last_reason,
+    }
+
+
 def build_bitunix_pa_view(db_url: str, deps: Any) -> dict | None:
     """trade-plan PR 6 — PA validators (not scored) panel.
 
@@ -1647,6 +1744,10 @@ def build_bitunix_pa_view(db_url: str, deps: Any) -> dict | None:
                  mode, score_side, score_tier, trigger_signal} | None,
         recent: [...latest entries...],  # up to 10
         counts: {pass: int, reject: int, rush_fall: int},  # over recent
+        redeem_counts: {redeemed_24h: int, expired_score_decay_24h: int,
+                        expired_opposite_side_24h: int},  # deferred-fire
+        recent_redeems: [{ts_et, signal, bars_waited, side, order_id}, ...up to 5],
+        recent_expired: [{ts_et, signal, reason, bars_waited, side}, ...up to 5],
       }
     """
     observer = getattr(deps, "bitunix_observer", None)
@@ -1692,12 +1793,90 @@ def build_bitunix_pa_view(db_url: str, deps: Any) -> dict | None:
     except Exception as e:
         log.warning("bitunix PA panel query failed: %s", e)
 
+    # Deferred-fire aggregates: 24h window counts + recent 5 of each
+    # audit kind. Bounded queries — these are summary tiles, not the
+    # detail timeline.
+    redeem_counts = {
+        "redeemed_24h": 0,
+        "expired_score_decay_24h": 0,
+        "expired_opposite_side_24h": 0,
+    }
+    recent_redeems: list[dict] = []
+    recent_expired: list[dict] = []
+    try:
+        cutoff_24h = (
+            datetime.now(timezone.utc) - timedelta(hours=24)
+        ).isoformat()
+        with db.connect(db_url) as conn:
+            redeem_count_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM audit_event "
+                "WHERE kind='pa_validation_redeem' AND ts >= ?",
+                (cutoff_24h,),
+            ).fetchone()
+            if redeem_count_row:
+                redeem_counts["redeemed_24h"] = int(redeem_count_row["n"])
+            exp_rows = conn.execute(
+                "SELECT json_extract(payload_json, '$.reason') AS reason, "
+                "COUNT(*) AS n FROM audit_event "
+                "WHERE kind='pa_validation_expired' AND ts >= ? "
+                "GROUP BY reason",
+                (cutoff_24h,),
+            ).fetchall()
+            for r in exp_rows:
+                reason = r["reason"] or "unknown"
+                if reason == "score_decay":
+                    redeem_counts["expired_score_decay_24h"] = int(r["n"])
+                elif reason == "opposite_side":
+                    redeem_counts["expired_opposite_side_24h"] = int(r["n"])
+            redeem_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind='pa_validation_redeem' "
+                "ORDER BY id DESC LIMIT 5"
+            ).fetchall()
+            for r in redeem_rows:
+                try:
+                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except Exception:
+                    continue
+                recent_redeems.append({
+                    "ts_et": format_et_short(r["ts"]),
+                    "signal": p.get("trigger_signal"),
+                    "bars_waited": p.get("bars_waited"),
+                    "seconds_waited": p.get("seconds_waited"),
+                    "side": p.get("final_side"),
+                    "tier": p.get("final_tier"),
+                    "order_id": p.get("order_id"),
+                })
+            expired_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind='pa_validation_expired' "
+                "ORDER BY id DESC LIMIT 5"
+            ).fetchall()
+            for r in expired_rows:
+                try:
+                    p = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except Exception:
+                    continue
+                recent_expired.append({
+                    "ts_et": format_et_short(r["ts"]),
+                    "signal": p.get("trigger_signal"),
+                    "reason": p.get("reason"),
+                    "bars_waited": p.get("bars_waited"),
+                    "seconds_waited": p.get("seconds_waited"),
+                    "side": p.get("cached_side"),
+                })
+    except Exception as e:
+        log.warning("bitunix PA redeem aggregate query failed: %s", e)
+
     return {
         "enabled": bool(getattr(pa_cfg, "enabled", False)),
         "mode": (recent[0]["mode"] if recent else None),
         "latest": recent[0] if recent else None,
         "recent": recent,
         "counts": counts,
+        "redeem_counts": redeem_counts,
+        "recent_redeems": recent_redeems,
+        "recent_expired": recent_expired,
     }
 
 
@@ -1780,6 +1959,15 @@ def build_bitunix_decision_flow_view(db_url: str, deps: Any) -> dict | None:
                 "WHERE kind = 'htf_gate_decision' "
                 "ORDER BY ts DESC LIMIT 100"
             ).fetchall()
+            # Deferred-fire: pull recent redeem audits so each fire row
+            # can be tagged "redeemed (waited N bars)" if it came from
+            # the bar-tick re-eval path. Same nearest-by-signal join
+            # pattern as PA/HTF below.
+            redeem_rows = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind = 'pa_validation_redeem' "
+                "ORDER BY ts DESC LIMIT 100"
+            ).fetchall()
     except Exception as e:
         log.warning("bitunix decision flow query failed: %s", e)
         return {"flows": []}
@@ -1818,6 +2006,11 @@ def build_bitunix_decision_flow_view(db_url: str, deps: Any) -> dict | None:
         trigger = sp.get("trigger_signal")
         pa_p = _nearest_by_signal(pa_rows, r["ts"], trigger)
         htf_p = _nearest_by_signal(htf_rows, r["ts"], trigger)
+        redeem_p = _nearest_by_signal(redeem_rows, r["ts"], trigger)
+        # Score-decided's trigger_source field tells us if this fire came
+        # from a redeem tick. The redeem audit row (when present) carries
+        # the bars/seconds-waited metadata.
+        is_redeem_source = (sp.get("trigger_source") == "bar_tick_redeem")
         flows.append({
             "ts": r["ts"],
             "ts_et": format_et_short(r["ts"]),
@@ -1842,6 +2035,11 @@ def build_bitunix_decision_flow_view(db_url: str, deps: Any) -> dict | None:
                 "mode": htf_p.get("mode"),
             } if htf_p else None),
             "outcome": sp.get("outcome"),
+            "redeemed": is_redeem_source,
+            "redeem": ({
+                "bars_waited": redeem_p.get("bars_waited"),
+                "seconds_waited": redeem_p.get("seconds_waited"),
+            } if redeem_p else None),
         })
 
     return {"flows": flows}
@@ -2593,6 +2791,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     bitunix_htf_view: dict | None = None
     bitunix_pa_view: dict | None = None
     bitunix_decision_flow_view: dict | None = None
+    bitunix_pending_pa_view: dict | None = None
     if slug == "bitunix_futures":
         try:
             bitunix_score_view = build_bitunix_score_view(deps.db_url, deps)
@@ -2610,6 +2809,10 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
             bitunix_decision_flow_view = build_bitunix_decision_flow_view(deps.db_url, deps)
         except Exception as e:
             log.warning("bitunix decision flow view for %s failed: %s", slug, e)
+        try:
+            bitunix_pending_pa_view = build_bitunix_pending_pa_view(deps)
+        except Exception as e:
+            log.warning("bitunix pending PA view for %s failed: %s", slug, e)
 
     # Robinhood IRA dashboard — group shares + short calls into covered
     # calls, identify pure assets (shares without calls), surface short
@@ -2641,6 +2844,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         bitunix_htf=bitunix_htf_view,
         bitunix_pa=bitunix_pa_view,
         bitunix_decision_flow=bitunix_decision_flow_view,
+        bitunix_pending_pa=bitunix_pending_pa_view,
     )
 
 

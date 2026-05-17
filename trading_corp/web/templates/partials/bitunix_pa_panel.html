@@ -39,6 +39,14 @@
       <span class="text-muted">
         last 10: PASS={{ bp.counts.pass }} · REJECT={{ bp.counts.reject }} · rush_fall={{ bp.counts.rush_fall }}
       </span>
+      {% if bp.redeem_counts %}
+        <span class="text-muted">·</span>
+        <span class="text-muted" title="Deferred-fire 24h aggregate: redeemed fires that PA finally passed; expired by score-decay vs opposite-side flip.">
+          24h: <span class="text-gain font-semibold">⤴{{ bp.redeem_counts.redeemed_24h }}</span>
+          · <span class="text-mono">⨯{{ bp.redeem_counts.expired_score_decay_24h }}sd</span>
+          · <span class="text-mono">⨯{{ bp.redeem_counts.expired_opposite_side_24h }}os</span>
+        </span>
+      {% endif %}
     </div>
   </header>
 
@@ -138,6 +146,98 @@
           {% endfor %}
         </tbody>
       </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# Deferred-fire — recent redemptions + expirations side-by-side. Each
+     row of "redeemed" represents a previously-rejected signal that the
+     bar-tick re-eval loop carried through to a fire; each row of
+     "expired" represents a cached signal that was dropped (score decayed
+     or opposite side won) without ever firing. #}
+  {% if bp.recent_redeems or bp.recent_expired %}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+    <div>
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+        ⤴ Redeemed fires ({{ bp.recent_redeems|length }} recent)
+      </div>
+      {% if bp.recent_redeems %}
+      <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
+        <table class="w-full text-xs font-mono">
+          <thead class="text-muted text-[10px] uppercase">
+            <tr class="border-b border-edge">
+              <th class="text-left p-2">When</th>
+              <th class="text-left p-2">Side · Tier</th>
+              <th class="text-left p-2">Trigger</th>
+              <th class="text-right p-2">Waited</th>
+              <th class="text-left p-2">Fired</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in bp.recent_redeems %}
+            <tr class="border-b border-edge/40 hover:bg-pane-2/30">
+              <td class="p-2 text-muted">{{ r.ts_et }}</td>
+              <td class="p-2 {% if r.side == 'buy' %}text-gain{% elif r.side == 'sell' %}text-loss{% else %}text-muted{% endif %}">
+                {{ (r.side or '—')|upper }} · {{ r.tier or '—' }}
+              </td>
+              <td class="p-2 text-mono">{{ r.signal or '—' }}</td>
+              <td class="p-2 text-right text-mono">
+                {{ r.bars_waited }}b · {{ r.seconds_waited }}s
+              </td>
+              <td class="p-2 text-[10px]
+                          {% if r.order_id %}text-gain{% else %}text-muted{% endif %}"
+                  title="{% if r.order_id %}Order id: {{ r.order_id }}{% else %}PA passed but a downstream gate (HTF / risk / daily-kill) blocked the fire.{% endif %}">
+                {% if r.order_id %}✓ placed{% else %}post-PA gate blocked{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="bg-pane-2/30 border border-edge rounded-md p-3">
+        <div class="text-xs text-muted font-mono italic">No redemptions yet.</div>
+      </div>
+      {% endif %}
+    </div>
+    <div>
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
+        ⨯ Expired waits ({{ bp.recent_expired|length }} recent)
+      </div>
+      {% if bp.recent_expired %}
+      <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
+        <table class="w-full text-xs font-mono">
+          <thead class="text-muted text-[10px] uppercase">
+            <tr class="border-b border-edge">
+              <th class="text-left p-2">When</th>
+              <th class="text-left p-2">Side</th>
+              <th class="text-left p-2">Trigger</th>
+              <th class="text-right p-2">Waited</th>
+              <th class="text-left p-2">Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in bp.recent_expired %}
+            <tr class="border-b border-edge/40 hover:bg-pane-2/30">
+              <td class="p-2 text-muted">{{ e.ts_et }}</td>
+              <td class="p-2 {% if e.side == 'buy' %}text-gain{% elif e.side == 'sell' %}text-loss{% else %}text-muted{% endif %}">
+                {{ (e.side or '—')|upper }}
+              </td>
+              <td class="p-2 text-mono">{{ e.signal or '—' }}</td>
+              <td class="p-2 text-right text-mono">
+                {{ e.bars_waited }}b · {{ e.seconds_waited }}s
+              </td>
+              <td class="p-2 text-[11px] text-muted">{{ e.reason or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="bg-pane-2/30 border border-edge rounded-md p-3">
+        <div class="text-xs text-muted font-mono italic">No expired waits yet.</div>
+      </div>
+      {% endif %}
     </div>
   </div>
   {% endif %}

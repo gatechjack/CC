@@ -203,6 +203,14 @@
            4. Confluence score (legacy Phase 3.2 detail/explorer below)
     -->
 
+    <!-- Deferred-fire pending-PA panel. Live state of the observer's
+         in-memory PA-rejected payload cache. Above HTF so operators see
+         "what are we currently watching" first. Renders only when the
+         observer is wired (test envs see None and skip). -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_pending_pa is not none %}
+      {% include "partials/bitunix_pending_pa_panel.html" %}
+    {% endif %}
+
     <!-- BitUnix HTF (higher-timeframe) regime panel — PR 2 read-only.
          Renders the live composite regime + per-TF breakdown derived
          from polled 1H/4H/1D bars. Observer does NOT consult these

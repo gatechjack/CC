@@ -1,0 +1,91 @@
+{# Deferred-fire pending PA panel.
+
+   Shows the LIVE state of the observer's in-memory PA-rejected payload
+   cache. When PA rejects a high-score score-engine fire in enforce mode,
+   the payload is cached and a 60s background loop re-evaluates against
+   fresh bars until either PA passes (fires) or the score decays (cache
+   cleared). This panel is the operator's window into that wait.
+
+   Top of the BitUnix section so it reads "we're watching X right now"
+   before the gate-history panels below.
+
+   Refresh: 15s htmx interval — tighter than the gate panels (30s) because
+   this is a real-time wait indicator.
+#}
+{% if view.bitunix_pending_pa is not none %}
+{% set pp = view.bitunix_pending_pa %}
+
+<section class="bg-pane border border-edge rounded-lg p-4"
+         hx-get="/division/bitunix_futures"
+         hx-trigger="every 15s"
+         hx-select="#bitunix-pending-pa"
+         hx-target="#bitunix-pending-pa"
+         hx-swap="outerHTML"
+         id="bitunix-pending-pa">
+  <header class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Pending PA · live deferred-fire watch
+    </h2>
+    {% if pp.cached %}
+      <span class="text-[11px] font-mono text-loss font-semibold">
+        ● WATCHING ({{ pp.bars_waited }} bar{{ '' if pp.bars_waited == 1 else 's' }} elapsed)
+      </span>
+    {% else %}
+      <span class="text-[11px] font-mono text-muted">○ no signal pending</span>
+    {% endif %}
+  </header>
+
+  {% if pp.cached %}
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Side · trigger
+      </div>
+      <div class="text-2xl font-mono font-semibold
+                  {% if pp.side == 'buy' %}text-gain
+                  {% elif pp.side == 'sell' %}text-loss
+                  {% else %}text-muted{% endif %}">
+        {{ (pp.side or '—')|upper }}
+      </div>
+      <div class="text-[11px] text-mono font-mono mt-1">{{ pp.signal or '—' }}</div>
+    </div>
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Wait elapsed
+      </div>
+      <div class="text-2xl font-mono font-semibold text-mono">
+        {{ pp.bars_waited }} bar{{ '' if pp.bars_waited == 1 else 's' }}
+      </div>
+      <div class="text-[11px] text-muted font-mono mt-1">
+        {{ pp.seconds_waited }}s · cached {{ pp.cached_at_et or '—' }}
+      </div>
+    </div>
+    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+        Currently failing ({{ pp.last_failed|length }})
+      </div>
+      {% if pp.last_failed %}
+        <div class="text-xs font-mono text-loss space-y-0.5">
+          {% for v in pp.last_failed %}<div>✗ {{ v }}</div>{% endfor %}
+        </div>
+      {% else %}
+        <div class="text-xs text-muted font-mono italic">unknown — no matching pa_validation_decision audit</div>
+      {% endif %}
+      {% if pp.last_pa_decision_reason %}
+        <div class="text-[10px] text-muted font-mono mt-2 truncate" title="{{ pp.last_pa_decision_reason }}">
+          {{ pp.last_pa_decision_reason }}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="bg-pane-2/30 border border-edge rounded-md p-3">
+    <div class="text-xs text-muted font-mono italic">
+      No PA-rejected signal currently waiting. The cache populates when a
+      score-engine fire hits the PA gate in enforce mode and gets rejected
+      — the next 60s bar-tick will re-evaluate.
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endif %}

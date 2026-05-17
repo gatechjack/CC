@@ -298,3 +298,247 @@ def test_decision_flow_caps_at_5_score_rows(db_url: str):
     # Newest first (ts DESC) → sig_7, sig_6, ..., sig_3
     assert view["flows"][0]["trigger_signal"] == "sig_7"
     assert view["flows"][-1]["trigger_signal"] == "sig_3"
+
+
+# ─── build_bitunix_pending_pa_view (deferred-fire dashboard #1) ────────
+
+
+from trading_corp.web.data import build_bitunix_pending_pa_view
+
+
+def test_pending_pa_view_returns_none_when_observer_missing():
+    deps = SimpleNamespace(bitunix_observer=None)
+    assert build_bitunix_pending_pa_view(deps) is None
+
+
+def test_pending_pa_view_empty_state_when_nothing_cached(db_url: str):
+    """Observer wired but no cached payload → cached=False with default
+    fields so the template renders 'no signal pending' without errors."""
+    deps = SimpleNamespace(
+        db_url=db_url,
+        bitunix_observer=SimpleNamespace(
+            _pending_pa_payload=None,
+            _pending_pa_side=None,
+            _pending_pa_cached_at_ts=None,
+        ),
+    )
+    view = build_bitunix_pending_pa_view(deps)
+    assert view == {
+        "cached": False,
+        "side": None,
+        "signal": None,
+        "cached_at": None,
+        "cached_at_et": None,
+        "bars_waited": 0,
+        "seconds_waited": 0,
+        "last_failed": [],
+        "last_pa_decision_reason": None,
+    }
+
+
+def test_pending_pa_view_populated_when_cache_set(db_url: str):
+    """Cache populated + an existing pa_validation_decision REJECT for the
+    same signal → view returns side/bars_waited/last_failed enrichment."""
+    cached_at = datetime.now(timezone.utc) - timedelta(minutes=12)  # 4 bars
+    with db.connect(db_url) as conn:
+        _insert_audit(
+            conn,
+            "pa_validation_decision",
+            {
+                "decision": "REJECT",
+                "passed": ["vwap_alignment"],
+                "failed": ["volume_confirmation", "structure_alignment"],
+                "rush_fall_triggered": False,
+                "mode": "enforce",
+                "trigger_signal": "mc_a_red_diamond",
+                "reason": "REJECT: require_all (passed 1/3)",
+            },
+            cached_at.isoformat(),
+        )
+    deps = SimpleNamespace(
+        db_url=db_url,
+        bitunix_observer=SimpleNamespace(
+            _pending_pa_payload={
+                "signal": "mc_a_red_diamond", "symbol": "BTCUSDT",
+            },
+            _pending_pa_side="sell",
+            _pending_pa_cached_at_ts=cached_at,
+        ),
+    )
+    view = build_bitunix_pending_pa_view(deps)
+    assert view["cached"] is True
+    assert view["side"] == "sell"
+    assert view["signal"] == "mc_a_red_diamond"
+    assert view["bars_waited"] >= 3  # 12 min wait ~ 4 bars (allow for drift)
+    assert view["seconds_waited"] >= 700
+    assert view["last_failed"] == [
+        "volume_confirmation", "structure_alignment",
+    ]
+    assert "require_all" in (view["last_pa_decision_reason"] or "")
+
+
+# ─── PA view extension: redeem/expired aggregates (dashboard #2) ────────
+
+
+def test_pa_view_redeem_counts_zero_when_no_audit_rows(db_url: str):
+    deps = SimpleNamespace(
+        bitunix_observer=SimpleNamespace(pa_config=SimpleNamespace(enabled=True))
+    )
+    view = build_bitunix_pa_view(db_url, deps)
+    assert view["redeem_counts"] == {
+        "redeemed_24h": 0,
+        "expired_score_decay_24h": 0,
+        "expired_opposite_side_24h": 0,
+    }
+    assert view["recent_redeems"] == []
+    assert view["recent_expired"] == []
+
+
+def test_pa_view_redeem_counts_24h_window(db_url: str):
+    """3 redeemed + 2 expired (score_decay) + 1 expired (opposite_side)
+    in the last 24h. One stale row (40h old) must NOT count."""
+    now = datetime.now(timezone.utc)
+    with db.connect(db_url) as conn:
+        for i in range(3):
+            _insert_audit(
+                conn,
+                "pa_validation_redeem",
+                {
+                    "trigger_signal": "mc_a_red_diamond",
+                    "bars_waited": i + 1,
+                    "seconds_waited": (i + 1) * 180,
+                    "final_side": "sell",
+                    "final_tier": "STANDARD",
+                    "order_id": f"OID-{i}" if i < 2 else None,
+                },
+                (now - timedelta(minutes=10 + i)).isoformat(),
+            )
+        for i in range(2):
+            _insert_audit(
+                conn,
+                "pa_validation_expired",
+                {
+                    "trigger_signal": "spoon_bear",
+                    "reason": "score_decay",
+                    "bars_waited": 5,
+                    "seconds_waited": 900,
+                    "cached_side": "sell",
+                },
+                (now - timedelta(minutes=20 + i)).isoformat(),
+            )
+        _insert_audit(
+            conn,
+            "pa_validation_expired",
+            {
+                "trigger_signal": "spoon_bull",
+                "reason": "opposite_side",
+                "bars_waited": 2,
+                "seconds_waited": 360,
+                "cached_side": "buy",
+            },
+            (now - timedelta(minutes=30)).isoformat(),
+        )
+        # Stale row beyond 24h window — MUST NOT count
+        _insert_audit(
+            conn,
+            "pa_validation_redeem",
+            {
+                "trigger_signal": "ancient_signal",
+                "bars_waited": 99,
+                "seconds_waited": 99 * 180,
+                "final_side": "sell",
+                "final_tier": "STANDARD",
+                "order_id": "OID-ancient",
+            },
+            (now - timedelta(hours=40)).isoformat(),
+        )
+
+    deps = SimpleNamespace(
+        bitunix_observer=SimpleNamespace(pa_config=SimpleNamespace(enabled=True))
+    )
+    view = build_bitunix_pa_view(db_url, deps)
+    # The 24h-windowed COUNT must exclude the 40h-old row
+    assert view["redeem_counts"] == {
+        "redeemed_24h": 3,
+        "expired_score_decay_24h": 2,
+        "expired_opposite_side_24h": 1,
+    }
+    # `recent_redeems` is age-agnostic last-5 (so operators still see
+    # recent activity past the 24h cutoff). 4 redeems inserted total
+    # (3 fresh + 1 ancient) → all 4 surface here.
+    assert len(view["recent_redeems"]) == 4
+    # ORDER BY id DESC → ancient_signal (inserted last) is first
+    assert view["recent_redeems"][0]["signal"] == "ancient_signal"
+    assert view["recent_redeems"][-1]["signal"] == "mc_a_red_diamond"
+    assert view["recent_redeems"][-1]["bars_waited"] == 1
+    assert view["recent_redeems"][-1]["order_id"] == "OID-0"
+    # Expired side: 3 inserted total (2 score_decay + 1 opposite_side).
+    # ORDER BY id DESC → opposite_side (inserted last) is first.
+    assert len(view["recent_expired"]) == 3
+    assert view["recent_expired"][0]["reason"] == "opposite_side"
+
+
+# ─── Decision flow extension: redemption marker (dashboard #3) ──────────
+
+
+def test_decision_flow_marks_redeemed_when_source_matches(db_url: str):
+    """A score-decided row with trigger_source='bar_tick_redeem' AND a
+    matching pa_validation_redeem audit row → flow.redeemed=True with
+    bars_waited populated from the redeem row."""
+    with db.connect(db_url) as conn:
+        _insert_audit(
+            conn,
+            "bitunix_score_decided",
+            {
+                "tier": "STANDARD",
+                "side": "sell",
+                "net_score": -7,
+                "trigger_signal": "mc_a_red_diamond",
+                "trigger_source": "bar_tick_redeem",
+                "outcome": "placed",
+            },
+            _ts(0),
+        )
+        _insert_audit(
+            conn,
+            "pa_validation_redeem",
+            {
+                "trigger_signal": "mc_a_red_diamond",
+                "bars_waited": 4,
+                "seconds_waited": 720,
+                "final_side": "sell",
+                "final_tier": "STANDARD",
+            },
+            _ts(5),
+        )
+    deps = SimpleNamespace(bitunix_observer=SimpleNamespace())
+    view = build_bitunix_decision_flow_view(db_url, deps)
+    assert len(view["flows"]) == 1
+    f = view["flows"][0]
+    assert f["redeemed"] is True
+    assert f["redeem"] == {"bars_waited": 4, "seconds_waited": 720}
+
+
+def test_decision_flow_not_redeemed_for_normal_tv_source(db_url: str):
+    """A score-decided row with trigger_source='lord_otter' → flow.redeemed
+    must be False even if a pa_validation_redeem row exists for a different
+    signal/window."""
+    with db.connect(db_url) as conn:
+        _insert_audit(
+            conn,
+            "bitunix_score_decided",
+            {
+                "tier": "STANDARD",
+                "side": "sell",
+                "net_score": -7,
+                "trigger_signal": "mc_a_red_diamond",
+                "trigger_source": "lord_otter",
+                "outcome": "placed",
+            },
+            _ts(0),
+        )
+    deps = SimpleNamespace(bitunix_observer=SimpleNamespace())
+    view = build_bitunix_decision_flow_view(db_url, deps)
+    assert len(view["flows"]) == 1
+    assert view["flows"][0]["redeemed"] is False
+    assert view["flows"][0]["redeem"] is None
