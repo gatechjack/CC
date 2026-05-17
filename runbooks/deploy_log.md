@@ -76,6 +76,57 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 17:38 UTC — Polymarket watchlist weekly-refresh — Cloudflare 403 retry + --merge + systemd timer
+
+**Commits:** `873e004`
+**Triggered by:** Session pickup of BACKLOG P2 "Polymarket watchlist weekly refresh" added 2026-05-17 16:33 UTC. The 14:43 UTC seed crashed at chunk 1163 with HTTP 403 from gamma-api (Cloudflare rate-limited the Azure VM IP — shared with PCT live + polymarket_arbitrage live). Without these three changes the weekly Sunday cron will fail the same way every week.
+**Backup tag:** `pre-pm-weekly-refresh-20260517-1730` (2 .py files; systemd units are new)
+
+**Files deployed (2 modify + 2 new) via gzipped patch -p1 (20KB raw → 8KB compressed) + base64-decoded systemd units:**
+- `trading_corp/data/polymarket_data_api_client.py` — `_get_json` retries on HTTP 403 with `cf-ray`/Cloudflare-marker body via exponential backoff (`_CLOUDFLARE_RETRY_DELAYS_SEC = (30, 60, 120, 240, 300)`, ~6 total attempts). Terminal failure raises the existing `PolymarketRateLimitError`. New `_is_cloudflare_block(resp)` helper (cf-ray header, server=cloudflare, or body marker). `fetch_market_resolutions` per-chunk swallow on `PolymarketRateLimitError` — failed chunks fall through to the existing `not_found` sentinel, so partial coverage is preserved instead of aborting the sweep. Logs `rate_limited_chunks` summary at the end. Non-Cloudflare 403s are NOT retried (caller's fault — propagate as `PolymarketDataAPIError`).
+- `trading_corp/scripts/seed_polymarket_watchlist_deep.py` — new `_merge_watchlists(existing, fresh, *, max_total)` helper. `seed_polymarket_watchlist_deep` gains `merge: bool` + `max_total: int | None` params. CLI gains `--merge` (union with existing slot; preserve existing-entry `included_iso`; fresh stats win on collisions) and `--max-total N` (cap merged list by `realized_pnl_usdc` desc). Merge stats reported in summary + human print.
+- `infra/systemd/trading-corp-pm-watchlist-deep.service` (NEW) — oneshot, runs `python -m trading_corp.scripts.seed_polymarket_watchlist_deep --merge --max-total 100`. `TimeoutStartSec=3600` (30-60 min wall-clock budget).
+- `infra/systemd/trading-corp-pm-watchlist-deep.timer` (NEW) — `OnCalendar=Sun *-*-* 13:00:00 UTC`, `Persistent=true`, `RandomizedDelaySec=900` (15-min jitter). Sits cleanly between daily 12:00 UTC Kalshi stats-refresh (~5 min) and Sunday 14:00 UTC Kalshi deep-scan to avoid concurrent bulk-API load.
+
+**Features shipped:**
+- **Cloudflare 403 resilience on every Polymarket API call.** All five `_get_json` callers (`fetch_leaderboard`, `fetch_activity`, `fetch_positions`, `fetch_closed_positions`, `fetch_market_resolutions`) inherit the retry transparently. The seed sweep's `fetch_market_resolutions` ALSO gets per-chunk swallow so a single rate-limited chunk doesn't abort a 60+ min sweep.
+- **`--merge` accumulation semantics.** Weekly refreshes now UNION with the existing watchlist instead of overwriting. Newly-discovered wallets get fresh `included_iso`; previously-seen wallets keep their original `included_iso` so we can track observation duration over time. Distinct from Kalshi's deep-scan (which overwrites).
+- **Weekly cron self-driving.** `trading-corp-pm-watchlist-deep.timer` enabled + active. Next fire: Sun 2026-05-24 13:02:51 UTC.
+
+**Notable code changes:**
+- `PolymarketRateLimitError` docstring extended to call out that it is now used for both HTTP 429 AND Cloudflare-403-after-retry-budget — callers should catch both (the seed script's `fetch_market_resolutions` already does, via the new per-chunk handler).
+- `_CLOUDFLARE_RETRY_DELAYS_SEC` is module-level so tests can monkeypatch it to shorten wall-clock. 12 new unit tests in `tests/test_polymarket_data_api_client_retry.py`.
+- The retry loop ONLY triggers on 403 + Cloudflare markers (cf-ray header / server=cloudflare / body marker). Plain 403 (e.g. if Polymarket ever introduces auth) is NOT retried — caller's fault, propagated as generic `PolymarketDataAPIError`.
+- The seed's `--merge` is wired through to a load-then-union path that calls `load_agent_state(polymarket_copy_trader, watch_only_whales)` BEFORE the `set_agent_state` write. If the slot is empty (cold start), the merge degenerates to "all fresh entries → write" identical to the overwrite path. So the same script binary works for both cold-start seeds and weekly accumulations.
+
+**Verification:**
+- Pre-deploy md5s captured + backed up with tag `pre-pm-weekly-refresh-20260517-1730`. (Pre-state had un-tracked drift vs git HEAD~1 — `cccbd5c…` vs `a10c01d…` for the client; mystery drift, likely from a recovery edit during the 16:00 UTC Cloudflare incident. Patch applied cleanly anyway via `patch --dry-run -p1` → no rejects.)
+- Post-deploy md5 (`a10c01d…` for client, `0c70445…` for seed) matches local HEAD exactly.
+- Smoke test on prod: `from trading_corp.data.polymarket_data_api_client import _CLOUDFLARE_RETRY_DELAYS_SEC; print(...)` → `(30.0, 60.0, 120.0, 240.0, 300.0)`. `from trading_corp.scripts.seed_polymarket_watchlist_deep import _merge_watchlists` succeeds.
+- `python -m trading_corp.scripts.seed_polymarket_watchlist_deep --help` shows `--merge` + `--max-total N`.
+- `systemctl is-enabled trading-corp-pm-watchlist-deep.timer` → `enabled`. `is-active` → `active`. `systemctl list-timers` shows `Sun 2026-05-24 13:02:51 UTC` as next fire (within 15-min jitter window).
+- 12 new tests + 52 existing Polymarket tests pass locally (`pytest tests/test_polymarket_data_api_client_retry.py tests/test_polymarket_{copy_trader,arbitrage}.py`).
+- **No service restart** — Option 1 chosen. The seed timer fires its own Python process which picks up the new client code automatically. Live PCT + polymarket_arbitrage continue running with the OLD in-process client until the next natural restart. Acceptable because those paths rarely hit Cloudflare and the failure mode is just an error log on the edge case.
+
+**Inert / dormant on current traffic:**
+- The systemd timer is enabled but won't fire until Sun 2026-05-24 13:00 UTC (+ jitter). Until then, both new files (.service + .timer) are loaded by systemd but exercising nothing.
+- The Cloudflare retry is dormant on live PCT + polymarket_arbitrage (they still use the in-process pre-patch client) until the next `systemctl restart trading-corp`. To activate immediately: `sudo systemctl restart trading-corp` (~5-15s blip).
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG=pre-pm-weekly-refresh-20260517-1730
+BASE=/home/azureuser/trading_corp
+mv $BASE/trading_corp/data/polymarket_data_api_client.py.$TAG $BASE/trading_corp/data/polymarket_data_api_client.py
+mv $BASE/trading_corp/scripts/seed_polymarket_watchlist_deep.py.$TAG $BASE/trading_corp/scripts/seed_polymarket_watchlist_deep.py
+sudo systemctl disable --now trading-corp-pm-watchlist-deep.timer
+sudo rm -f /etc/systemd/system/trading-corp-pm-watchlist-deep.{service,timer}
+sudo systemctl daemon-reload
+'
+```
+
+---
+
 ## 2026-05-17 17:18 UTC — Promote / Demote buttons (Kalshi + Polymarket) + pinned_whales merge
 
 **Commits:** `efa6dc8`

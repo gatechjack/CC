@@ -916,7 +916,21 @@ Items surfaced during the 2026-05-16 03:00-03:30 UTC dashboard-accuracy session 
 
 ---
 
-## P2 — Polymarket watchlist weekly refresh  *(NEW — 2026-05-17)*
+## ✅ DONE 2026-05-17 17:38 UTC — Polymarket watchlist weekly refresh *(commit `873e004`; see runbooks/deploy_log.md "2026-05-17 17:38 UTC" entry)*
+
+All four implementation pieces shipped + timer enabled on prod:
+1. Cloudflare 403 retry in `PolymarketDataAPIClient._get_json` (exponential backoff 30/60/120/240/300s, ~6 attempts) — terminal failure raises `PolymarketRateLimitError`.
+2. Per-chunk swallow in `fetch_market_resolutions` — failed chunks fall through to the existing `not_found` sentinel; sweep continues with partial coverage instead of aborting.
+3. `seed_polymarket_watchlist_deep.py --merge --max-total N` — union with existing slot, preserve existing-entry `included_iso`, cap merged list by `realized_pnl_usdc` desc.
+4. `trading-corp-pm-watchlist-deep.{service,timer}` — weekly Sunday 13:00 UTC (15-min jitter). Next fire: Sun 2026-05-24 13:02:51 UTC.
+
+12 new unit tests in `tests/test_polymarket_data_api_client_retry.py` (all pass; 52 existing Polymarket tests pass too).
+
+**Original entry preserved below for context.**
+
+---
+
+## P2 — Polymarket watchlist weekly refresh  *(NEW — 2026-05-17; SUPERSEDED by ✅ DONE entry above)*
 
 The Polymarket watchlist shipped 2026-05-17 (see deploy_log for the same date): `agent_state(polymarket_copy_trader, watch_only_whales)` is populated by `scripts/seed_polymarket_watchlist_deep.py`; dashboard panel renders parallel to Kalshi's at `/prediction-markets/polymarket_copy_trading`. Today's seed was a one-shot — no recurring refresh.
 
