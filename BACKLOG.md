@@ -1032,18 +1032,20 @@ Query: `SELECT json_extract(payload_json,'$.tier'), AVG(CAST(json_extract(payloa
 
 ---
 
-## P1 — BitUnix Phase 3.2 confluence rule tuning  *(NEW 2026-05-11; deferred by Board for later session)*
+## ✅ SUPERSEDED — BitUnix Phase 3.2 confluence rule tuning  *(NEW 2026-05-11; CLOSED 2026-05-17)*
 
-Phase 3.2 confluence score accumulator + 3.2.2 PA factors + 3.2.3 panel + 3.2.4-equivalent IRA-analysis-style depth all shipped today. The rule decision tree in `_analyze_ira_covered_call` and the tier thresholds in `bitunix_confluence.py` are first-draft. Board flagged ≤2 DTE / ITM-roll-urgency threshold as one to reconsider — wants the trade fired earlier (e.g. ≤4 DTE + ITM = elevated roll vs. current "watch + preview legs"). When picked up, also revisit:
+**Status:** Largely superseded by two shipped 2026-05-16/17:
+- **H2 scoring re-tune** (BACKLOG line ~1021, shipped 2026-05-16 19:21 UTC, commit `1c395bc`) — addressed the tier-threshold + factor-weight calibration concerns. 47-day backtest in `reports/scoring_*.md` recommended H2 (cap heavy weights at 3 + Otter precision family up-weight 2→3). Active falsification gate: ≥30 PREMIUM fires with PREMIUM mean R ≥0.05R better than STANDARD.
+- **Deferred-fire PA mechanism** (shipped 2026-05-17 03:53 UTC, commit `72bbbe4`) — addresses the "rule should fire earlier" concern by re-evaluating PA on each subsequent bar until score decays. No need to lower tier thresholds to capture trades; deferred-fire captures them at the right alignment moment.
 
-- **Cooldown duration** (30 min currently) — too long if BTC is fast-moving and intra-bar signal shifts are significant.
-- **Tier thresholds** (PREMIUM ≥12, STANDARD ≥8) — tuned from a 9-day backtest; re-tune as more live data accumulates.
-- **Guard penalty brackets** (sell_on_rush / buy_on_fall % thresholds) — currently kicks in at 1% / 3% / 5%; may want finer granularity now that PA factors are live.
-- **IRA covered-call rules** in `_analyze_ira_covered_call`: when does WATCH become ROLL? Currently triggered only at ≤2 DTE or ≥85% profit. Should also consider profit-take at ≥50% if DTE is "long" (e.g. 21+ DTE = let theta work; 7-21 DTE = ≥50% profit = good close candidate).
+**Residual concerns NOT yet addressed (would be a fresh ticket if data motivates):**
+- **Cooldown duration** (30 min currently) — re-tune after deferred-fire produces enough paper-trade data to compare fast-cycle BTC regimes vs slow.
+- **Guard penalty brackets** (`sell_on_rush` / `buy_on_fall` % thresholds at 1% / 3% / 5%) — PA factors now also gate, so the additive guards may be redundant. Watch for double-penalty patterns in `bitunix_score_decided` audit rows.
+- **IRA covered-call rules** in `_analyze_ira_covered_call` — wrong scope; this is PMCC/IRA, not BitUnix. Belongs in a PMCC backlog entry; tracked separately.
 
-**Why deferred:** Rule logic is high-leverage; rushing it adds noise to the backtest baseline. Better to accumulate ~30+ live paper trades + a calibration session looking at the audit log of fired/skipped decisions before adjusting.
+Do NOT pick this entry up as-is — open a fresh ticket with the specific surviving question if real data argues for re-tuning.
 
-**Files:** `config/strategies.yaml` (`bitunix_futures.scoring` block), `trading_corp/agents/strategies/bitunix_confluence.py`, `trading_corp/web/routes.py` (the `_analyze_ira_covered_call` action picker).
+**Original framing preserved below for context.** Phase 3.2 confluence score accumulator + 3.2.2 PA factors + 3.2.3 panel shipped 2026-05-11; tier thresholds + cooldown + guard penalties were first-draft from a 9-day backtest.
 
 ---
 
@@ -1099,37 +1101,29 @@ Memory: `trading_corp_bitunix_vision.md` updated through Phase 3.2.3. `trading_c
 
 ---
 
-## P0 NEXT — BitUnix Phase 3.2b: multi-leg scale-out execution  *(2026-05-10; queued — prerequisite "1-3 real paper trades" now met as of 2026-05-11 18:00 UTC, but currently deprioritized in favor of Robinhood IRA work)*
+## ✅ SUPERSEDED — BitUnix Phase 3.2b: multi-leg scale-out execution  *(2026-05-10; CLOSED 2026-05-17)*
 
-Phase 3.2a shipped the foundation today (live BitUnix 3m bar cache + real ATR + paper_trade_record writes so existing replay loop resolves bitunix paper trades). Phase 3.2b adds the multi-leg take-profit strategy the Board described:
+**Status:** Superseded by the trade-plan PR series on `claude/gallant-tereshkova-49ef85` (2026-05-15) — see memory `trading_corp_bitunix_strategy_gaps.md`. The 3-leg TP plan with Option C SL lifecycle (BE → TP1-price → Chandelier trail) is the formal version of what this entry was scoping. Trade-plan PRs 1-4 shipped 2026-05-15:
 
-**Strategy (decided 2026-05-10 in design conversation):**
-- **Leg 1 (~25% size)** off at +0.5R → move stop on remaining 75% to breakeven
-- **Leg 2 (~50% size)** off at the main TP target (default 2R)
-- **Leg 3 (~25% size)** rides with trailing stop (e.g., 2× ATR trailing) for the home run
+- **PR 1** `c9442ad` — `agents/strategies/swing.py` (fractal swing helper for structure-preferred SL).
+- **PR 2** `5035e88` — `agents/strategies/levels.py` (HTF S/R levels via 3m→15m resample).
+- **PR 3** `e743bfa` — `agents/strategies/trade_plan.py` (`FeeConfig` + `StrategyConfig` + `TradePlan` + `build_trade_plan`).
+- **PR 4** `efa1737` — observer integration: `_build_proposal_v2` + `_log_trade_plan_decision` + dispatch in `_score_and_maybe_propose_locked` + YAML wiring.
 
-**Why this strategy:** captures partial profit early to "lock breakeven" psychology + financial benefit; lets remainder participate in extended trends; improves win rate dramatically (most trades end positive even if Legs 2/3 stop out); reduces avg winning trade size but with higher consistency.
+The trade-plan v2 path is **code-complete but inert** behind YAML `trade_plan.enabled: false`. Activation depends on:
+- **trade-plan PR 5** — `bitunix_position_reconciler.py` (stateless 60s SL-lifecycle reconciler — handles BE-after-TP1, TP1-after-TP2, Chandelier trail). NOT YET STARTED.
+- **trade-plan PR 6** — Trade-plan dashboard refresh (surface tp1/tp2/tp3, sl_method, tp2_method, fee floor, current SL lifecycle state). Depends on PR 5. NOT YET STARTED.
+- One-line YAML flip `trade_plan.enabled: true` (Phase 1E gate; depends on PR 5+6 + re-accumulate shadow data).
 
-**What's already built (foundation laid in Phase 3.1):**
-- `ProposedOrder.extra.tp_plan` schema is multi-leg-ready — currently a single-leg list `[{fraction: 1.0, target_r: 2.0, stop_action: "noop"}]`
-- Existing `paper_trade_replay.py` is strategy-agnostic; walks `paper_trade_record WHERE result IS NULL`
+**Why the original framing is moot:**
+- ProposedOrder.extra.tp_plan extension → done in PR 4.
+- Order proposer populates 3-leg tp_plan → done in PR 4 (`_build_proposal_v2`).
+- Schema extension for per-leg state → done in PR 4.
+- Replay-loop multi-leg awareness → done as part of the v2 placement path.
 
-**What 3.2b adds:**
-- Order proposer populates the 3-leg `tp_plan`
-- Schema extension on `paper_trade_record.extra` to track multi-leg state (per-leg fill_price, fill_ts, status; aggregate result only when all legs done)
-- Replay loop upgrade — walk legs, update partial fills in-place, modify stop after Leg 1 hits, run trailing stop for Leg 3, only mark `result` when all legs resolved
-- Telegram updates on partial fills (optional but nice; informs the Board)
-- Tests for: 3-leg fill cascade, trailing-stop logic, stop-modification-after-leg1, all-legs-stopout edge case
+**Open work (what's actually left, in priority order):** see memory `trading_corp_bitunix_strategy_gaps.md` § "What's NEXT (PR 5 + PR 6)" for the design questions to surface — file location for the reconciler, broker method stub vs real, position enumeration source.
 
-**Estimated 4-5 hours of focused work.** Honest scope: this is the most complex thing left in the BitUnix roadmap before Phase 4.
-
-**Prerequisite:** observe Phase 3.2a working in the wild first. Need at least 1-3 real BitUnix paper trades through paper_trade_record + replay loop before building scale-out on top. If Phase 3.2a's plumbing has a bug, 3.2b inherits it.
-
-**Files to touch:**
-- `trading_corp/agents/divisions/bitunix_futures_observer.py` — `_build_proposal` populates real 3-leg tp_plan
-- `trading_corp/agents/paper_trade_replay.py` — multi-leg-aware resolution
-- `trading_corp/persistence/models.py` (or extra-only) — schema for multi-leg state
-- `tests/test_bitunix_futures_observer.py` + `tests/test_paper_trade_replay.py` — extend
+**Original framing preserved below for context.** The 3-leg take-profit strategy was scoped here on 2026-05-10 as Phase 3.2b before the trade-plan PR series formalized it.
 
 ---
 
