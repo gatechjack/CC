@@ -76,6 +76,72 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-17 04:13 UTC — BitUnix dashboard: surface deferred-fire mechanism
+
+**Commits:** `f85ac9f`
+**Triggered by:** Board direction immediately after the 03:53 UTC deferred-fire mechanism deploy. The new audit kinds (`pa_validation_redeem`, `pa_validation_expired`) and the in-memory PA cache state were operator-invisible without SQL tails — adding the dashboard surfaces.
+
+**Backup tag:** `pre-dash-deferred-20260517-0411` (4 existing files; pending-PA panel is new)
+
+**Files deployed (5 — 4 modify + 1 new) via gzipped `patch -p1`:**
+- `trading_corp/web/data.py` — new `build_bitunix_pending_pa_view(deps)` reading observer's in-memory `_pending_pa_payload` / `_pending_pa_side` / `_pending_pa_cached_at_ts` + enriching with most-recent `pa_validation_decision` REJECT for the cached signal. Extended `build_bitunix_pa_view` with `redeem_counts` (24h windowed: redeemed_24h, expired_score_decay_24h, expired_opposite_side_24h) + `recent_redeems` / `recent_expired` last-5 lists (age-agnostic so operators still see activity past the 24h cutoff). Extended `build_bitunix_decision_flow_view` with `redeemed: bool` (sourced from `bitunix_score_decided.trigger_source == 'bar_tick_redeem'`) + `redeem: {bars_waited, seconds_waited}` from joining the matching `pa_validation_redeem` row. Added `bitunix_pending_pa: dict | None` field to `DivisionViewSnapshot`. Local LF md5 `4d3f808357cfeb481ee412bf113b3d53` byte-identical with prod after deploy.
+- `trading_corp/web/templates/division.html` — includes `bitunix_pending_pa_panel.html` at TOP of the BitUnix section (above HTF) so operators read "what are we currently watching" first.
+- `trading_corp/web/templates/partials/bitunix_decision_flow.html` — each flow row's outcome cell shows "⤴ redeemed (Nb · Ns)" inline when `f.redeemed` is True. Existing layout preserved.
+- `trading_corp/web/templates/partials/bitunix_pa_panel.html` — header now shows 24h aggregate counts inline (⤴N · ⨯Nsd · ⨯Nos for redeemed / expired-score-decay / expired-opposite-side). Bottom of panel adds a 2-column grid: "Recent Redeemed Fires" (with `placed` vs `post-PA gate blocked` indicator using the `order_id` populated by the redeem-audit backfill) and "Recent Expired Waits" (with reason field).
+- `trading_corp/web/templates/partials/bitunix_pending_pa_panel.html` (NEW) — live cache state, 15s htmx refresh (tighter than the 30s gate panels). Shows side · trigger / wait elapsed / currently-failing validators. "no signal pending" empty state when cache is empty.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Live "Pending PA" indicator on the BitUnix division page.** Operator can read the deferred-fire wait state in real time without SQL queries. 15s htmx refresh.
+- **24h redemption/expiration aggregates on PA Validators panel** — answers "is the deferred-fire mechanism working?" at a glance.
+- **Per-fire redemption marker on Decision Flow rail** — answers "did THIS fire come from the redeem path?" without joining `paper_trade_record.extra_json`.
+
+**Notable code changes:**
+- The pending-PA view reads observer in-memory state — there's no DB query for the cache itself. The `last_failed` / `last_pa_decision_reason` enrichment IS a bounded DB query (last 50 PA decisions, filtered to the cached signal). View returns a non-None dict even when nothing is cached (`{cached: False, ...}`) so the template always renders ("no signal pending" empty state) rather than hiding the panel.
+- `recent_redeems` / `recent_expired` are **age-agnostic last-5** by design — operators still see recent activity even if it just fell out of the 24h aggregate window. The `redeem_counts` fields ARE 24h-windowed (cutoff via `datetime.now(timezone.utc) - timedelta(hours=24)`).
+- Decision Flow's redeem detection uses **two-stage logic**: `f.redeemed` comes from the score-decided row's `trigger_source` field (cheap, no join); `f.redeem.bars_waited` comes from the `pa_validation_redeem` row joined by signal + ts (±60s window). The flag fires even if the audit row's gone missing.
+
+**Verification:**
+- `patch -p1` applied 5/5 files cleanly (dry-run + apply, 0 rejects).
+- Post-patch md5s match local LF byte-for-byte for all 5 files.
+- Import test confirmed `build_bitunix_pending_pa_view`, `build_bitunix_pa_view`, `build_bitunix_decision_flow_view` all importable.
+- Service restart 04:13:50 UTC. PID change verified. `systemctl is-active trading-corp` = `active`.
+- Boot wiring unchanged: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=False`.
+- Healthz `200 {"status":"ok","mode":"PAPER"}` (after ~20s warmup).
+- `GET /division/bitunix_futures` → 200, 89126 bytes (was ~75k, +14k from new panels). Confirmed markers present:
+  - `bitunix-pending-pa` × 3 (htmx hx-get/select/target tuple)
+  - "Pending PA" × 1 (panel header)
+  - "deferred-fire watch" × 1 (subtitle)
+  - "no signal pending" × 1 (current state — cache is empty as expected)
+  - "24h:" × 2 (aggregate label on PA header)
+  - ⤴ × 5, ⨯ × 2 (redemption/expiration symbols in new tables + header)
+- Zero `TemplateSyntaxError` / `UndefinedError` in journalctl since restart.
+
+**Deploy mechanic:**
+- Same `az vm run-command` path (SSH still blocked). Patch was 24500 bytes raw; gzip → base64 → 8244 bytes (under the 28KB `--scripts` cap). Single-invoke deploy via `echo $B64 | base64 -d | gunzip > /tmp/x.patch && patch -p1 < /tmp/x.patch`.
+- Wholesale-replace would have been simpler but total LF size was 249KB (base64 ~330KB — far over the cap). Patch-based deploy works because prod md5s matched HEAD~1 exactly on all 4 existing files (no drift to preserve).
+
+**Inert / dormant:**
+- All new panels render with empty-state messages until cache events occur in prod. First real "Pending PA" / "Redeemed fires" / "Expired waits" entries will appear within hours as TV alerts continue arriving + PA continues blocking. No code changes need to populate them.
+
+**Watch for (next 24h):**
+- First "WATCHING (N bars elapsed)" on the Pending PA panel → confirms cache state surfaces correctly.
+- First Recent Redeemed Fires row → confirms 24h aggregate query joins to audit rows correctly.
+- First Decision Flow row with "⤴ redeemed (Nb · Ns)" → confirms the trigger_source-based detection works end-to-end.
+
+**Rollback recipe (~30s):**
+```bash
+az vm run-command invoke -n tc-prod-vm -g rg-shared-prod --command-id RunShellScript --scripts '
+TAG=pre-dash-deferred-20260517-0411
+BASE=/home/azureuser/trading_corp
+for f in trading_corp/web/data.py trading_corp/web/templates/division.html trading_corp/web/templates/partials/bitunix_decision_flow.html trading_corp/web/templates/partials/bitunix_pa_panel.html; do
+  mv $BASE/$f.$TAG $BASE/$f
+done
+rm -f $BASE/trading_corp/web/templates/partials/bitunix_pending_pa_panel.html
+sudo systemctl restart trading-corp'
+```
+
+---
+
 ## 2026-05-17 03:53 UTC — BitUnix deferred-fire PA mechanism
 
 **Commits:** `72bbbe4`
