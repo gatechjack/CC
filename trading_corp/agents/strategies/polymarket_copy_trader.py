@@ -642,3 +642,111 @@ class PolymarketCopyTraderAgent:
             self.name, f"{_AGENT_STATE_WHALE_STATE_PREFIX}{wallet}", state,
             db_url=self._db_url,
         )
+
+
+def force_close_whale_positions(
+    wallet: str,
+    *,
+    db_url: str,
+    logger_agent: Any,
+    division: str = "polymarket_copy_trading",
+    reason: str = "demoted_via_ui",
+) -> dict[str, Any]:
+    """Synthesize SELL closes for every tracked open position of a whale.
+
+    Used by the demote endpoint to flatten a whale's paper book before
+    removing them from `selected_whales`. For each entry in the whale's
+    persisted `our_positions`, emit a `would_have_placed` audit row with
+    `side=sell` so `polymarket_resolver` pairs it with the corresponding
+    entry into a `polymarket_round_trips` row.
+
+    Exit price = entry_price (zero-PnL synthetic close v1). Future
+    iteration could plug in `broker.quote()` for true mark-to-market.
+
+    After emission, reset the whale's `whale_state:<wallet>` slot to a
+    fresh-baseline shape (last_seen_ts = now, our_positions = empty) so
+    a future re-promotion does not replay history.
+
+    Returns: ``{"n_closed": int, "wallet": str, "positions": list[dict]}``.
+    """
+    rec = load_agent_state(
+        "polymarket_copy_trader",
+        f"{_AGENT_STATE_WHALE_STATE_PREFIX}{wallet}",
+        db_url=db_url,
+    )
+    if rec is None:
+        return {"n_closed": 0, "wallet": wallet, "positions": []}
+    state = rec[0]
+    if not isinstance(state, dict):
+        return {"n_closed": 0, "wallet": wallet, "positions": []}
+    our_positions = state.get("our_positions") or {}
+    user_name = str(state.get("user_name") or "")
+    closed: list[dict[str, Any]] = []
+    now_unix = int(__import__("time").time())
+    for pos_key, pos in list(our_positions.items()):
+        if not isinstance(pos, dict):
+            continue
+        condition_id = str(pos.get("condition_id") or "")
+        outcome = str(pos.get("outcome") or "")
+        outcome_index = int(pos.get("outcome_index") or 0)
+        entry_price = float(pos.get("entry_price") or 0.0)
+        copy_usdc = float(pos.get("copy_size_usdc") or 0.0)
+        if entry_price <= 0.0 or copy_usdc <= 0.0 or not condition_id:
+            continue
+        contracts = copy_usdc / entry_price
+        order_id = f"synthetic_close:{reason}:{wallet}:{pos_key}:{now_unix}"
+        payload = {
+            "strategy": "polymarket_copy_trader",
+            "division": division,
+            "order_id": order_id,
+            "side": "sell",
+            "symbol": f"{condition_id}:{outcome}",
+            "qty": contracts,
+            "limit_price": entry_price,
+            "is_entry": False,
+            "is_synthetic_close": True,
+            "synthetic_close_reason": reason,
+            "outcome": outcome,
+            "outcome_index": outcome_index,
+            "condition_id": condition_id,
+            "whale_wallet": wallet,
+            "whale_user_name": user_name,
+            "copy_size_usdc": copy_usdc,
+            "entry_ts": int(pos.get("entry_ts") or 0),
+            "rationale": (
+                f"synthetic close ({reason}): @{user_name or wallet[:10]} "
+                f"position flattened on demote"
+            ),
+        }
+        if logger_agent is not None:
+            try:
+                logger_agent.log_event(
+                    "polymarket_copy_trader", "would_have_placed", payload,
+                )
+            except Exception as e:
+                log.warning(
+                    "polymarket force_close: log_event failed for %s/%s: %s",
+                    wallet[:10], pos_key, e,
+                )
+        closed.append({
+            "pos_key": pos_key,
+            "symbol": payload["symbol"],
+            "contracts": contracts,
+            "copy_usdc": copy_usdc,
+            "order_id": order_id,
+        })
+    # Reset state slot so a future re-promotion does not replay history.
+    # Keep last_seen_ts at "now" so the strategy treats subsequent activity
+    # as new (not as a replay window starting from epoch).
+    set_agent_state(
+        "polymarket_copy_trader",
+        f"{_AGENT_STATE_WHALE_STATE_PREFIX}{wallet}",
+        {
+            "user_name": user_name,
+            "last_seen_ts": now_unix,
+            "last_seen_txhashes": [],
+            "our_positions": {},
+        },
+        db_url=db_url,
+    )
+    return {"n_closed": len(closed), "wallet": wallet, "positions": closed}

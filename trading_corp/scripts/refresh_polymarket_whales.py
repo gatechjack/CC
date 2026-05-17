@@ -49,7 +49,7 @@ from trading_corp.data.polymarket_whale_stats import (
     DEFAULT_HALF_LIFE_DAYS, DEFAULT_MIN_RESOLVED,
     compute_polymarket_stats, score_polymarket_whale,
 )
-from trading_corp.persistence.db import set_agent_state
+from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
 
 log = logging.getLogger(__name__)
@@ -246,6 +246,40 @@ async def refresh_polymarket_selection(
         }
 
     summary["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Merge manually-pinned whales (promoted via dashboard) into the
+    # algorithm's selection so they survive this refresh. Dedupe by lower-
+    # cased wallet. Without this step, dashboard promotions would be
+    # silently evicted on every refresh run.
+    try:
+        pin_rec = load_agent_state(
+            "polymarket_copy_trader", "pinned_whales", db_url=db_url,
+        )
+    except Exception:
+        pin_rec = None
+    pinned_entries = pin_rec[0] if (pin_rec and isinstance(pin_rec[0], list)) else []
+    selected_wallets = {
+        str(s.get("wallet") or s.get("proxy_wallet") or "").lower()
+        for s in selected_records if isinstance(s, dict)
+    }
+    n_pinned_merged = 0
+    for p in pinned_entries:
+        if not isinstance(p, dict):
+            continue
+        w_lower = str(p.get("wallet") or p.get("proxy_wallet") or "").lower()
+        if not w_lower or w_lower in selected_wallets:
+            continue
+        selected_records.append({
+            "wallet": w_lower,
+            "user_name": str(p.get("user_name") or ""),
+            "category": str(p.get("category") or "pinned"),
+            "rank": None,
+            "composite_score": None,
+            "source": "pinned_promotion",
+        })
+        selected_wallets.add(w_lower)
+        n_pinned_merged += 1
+    summary["pinned_merged"] = n_pinned_merged
 
     if not dry_run:
         set_agent_state(

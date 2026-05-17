@@ -3158,6 +3158,17 @@ class PMWhaleRow:
     total_realized_pnl: float
     n_open: int                  # OUR copies still open (whale still holds)
     last_entry_ts: str | None    # ISO; most-recent entry we placed for this whale
+    # Identifier the dashboard endpoints use to address this whale.
+    # Kalshi: same as `handle` (nickname). Polymarket: proxy_wallet
+    # (because the Polymarket strategy keys selected_whales/pinned_whales
+    # by wallet, not by user_name). Empty string until the query layer
+    # populates it from the per-venue selected_whales slot.
+    actor_id: str = ""
+    # True when the whale was manually promoted via the dashboard and is
+    # in `agent_state(<actor>, pinned_whales)`. Template renders a 📌
+    # badge so the user can tell algorithm-picked vs manually-managed
+    # entries apart.
+    is_pinned: bool = False
 
 
 @dataclass
@@ -3956,6 +3967,57 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
                 ))
         except Exception as e:
             log.debug("_query_pm_whales polymarket failed: %s", e)
+
+    # Decorate rows with actor_id (the identifier the demote endpoint
+    # consumes) and is_pinned (whether the whale was manually promoted
+    # via the dashboard; pinned whales survive refresh_*_whales.py runs).
+    kalshi_pinned: set[str] = set()
+    pm_pinned_user_names: set[str] = set()
+    pm_user_name_to_wallet: dict[str, str] = {}
+    try:
+        rec = db.load_agent_state(
+            "kalshi_copy_trader", "pinned_whales", db_url=db_url,
+        )
+        if rec is not None and isinstance(rec[0], list):
+            kalshi_pinned = {str(h) for h in rec[0] if h}
+    except Exception as e:
+        log.debug("_query_pm_whales kalshi pinned load failed: %s", e)
+    try:
+        rec = db.load_agent_state(
+            "polymarket_copy_trader", "pinned_whales", db_url=db_url,
+        )
+        if rec is not None and isinstance(rec[0], list):
+            for r in rec[0]:
+                if isinstance(r, dict):
+                    user_name = str(r.get("user_name") or "")
+                    wallet = str(r.get("wallet") or r.get("proxy_wallet") or "")
+                    if user_name:
+                        pm_pinned_user_names.add(user_name)
+                        if wallet:
+                            pm_user_name_to_wallet[user_name] = wallet
+    except Exception as e:
+        log.debug("_query_pm_whales polymarket pinned load failed: %s", e)
+    try:
+        rec = db.load_agent_state(
+            "polymarket_copy_trader", "selected_whales", db_url=db_url,
+        )
+        if rec is not None and isinstance(rec[0], list):
+            for r in rec[0]:
+                if isinstance(r, dict):
+                    user_name = str(r.get("user_name") or "")
+                    wallet = str(r.get("wallet") or r.get("proxy_wallet") or "")
+                    if user_name and wallet:
+                        pm_user_name_to_wallet.setdefault(user_name, wallet)
+    except Exception as e:
+        log.debug("_query_pm_whales polymarket selected load failed: %s", e)
+
+    for w in out:
+        if w.venue == "kalshi":
+            w.actor_id = w.handle
+            w.is_pinned = w.handle in kalshi_pinned
+        elif w.venue == "polymarket":
+            w.actor_id = pm_user_name_to_wallet.get(w.handle, "")
+            w.is_pinned = w.handle in pm_pinned_user_names
 
     # Sort: highest realized PnL first; silent whales (n_resolved=0) at end.
     out.sort(key=lambda w: (w.n_resolved == 0, -w.total_realized_pnl))

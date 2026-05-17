@@ -614,12 +614,16 @@
             <th class="text-right px-3 py-2 font-medium">Realized P&amp;L</th>
             <th class="text-right px-3 py-2 font-medium">Open</th>
             <th class="text-left px-3 py-2 font-medium">Last entry</th>
+            <th class="text-right px-3 py-2 font-medium">Action</th>
           </tr>
         </thead>
         <tbody>
           {% for w in view.whales %}
-          <tr class="border-t border-edge hover:bg-pane-2/40">
-            <td class="px-3 py-2 text-mono font-semibold">@{{ w.handle }}</td>
+          <tr class="border-t border-edge hover:bg-pane-2/40" id="whale-row-{{ w.venue }}-{{ w.actor_id or w.handle }}">
+            <td class="px-3 py-2 text-mono font-semibold">
+              @{{ w.handle }}
+              {% if w.is_pinned %}<span class="text-accent text-[10px] ml-1" title="Manually promoted via dashboard">📌</span>{% endif %}
+            </td>
             <td class="px-3 py-2 text-muted">{{ w.venue }}</td>
             <td class="px-3 py-2 text-right">{{ w.n_resolved }}</td>
             <td class="px-3 py-2 text-right text-gain">{{ w.n_wins }}</td>
@@ -643,6 +647,39 @@
             </td>
             <td class="px-3 py-2 text-muted/80">
               {% if w.last_entry_ts %}{{ w.last_entry_ts[:19] | replace("T", " ") }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right whitespace-nowrap">
+              {% if w.venue == "kalshi" %}
+              <a href="https://kalshi.com/social/profile/{{ w.handle }}"
+                 target="_blank" rel="noopener noreferrer"
+                 class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1 mr-1">
+                View ↗
+              </a>
+              <button hx-post="/api/kalshi/whales/demote/{{ w.handle }}"
+                      hx-target="#whale-row-kalshi-{{ w.actor_id or w.handle }}"
+                      hx-swap="outerHTML"
+                      hx-confirm="Demote @{{ w.handle }}? Synthetic SELLs will close any tracked open positions and copy-trading stops on the next poll."
+                      class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-loss/60 text-loss/80 hover:bg-loss/10 hover:text-loss">
+                Demote
+              </button>
+              {% elif w.venue == "polymarket" %}
+              <a href="https://polymarket.com/profile/{{ w.actor_id or w.handle }}"
+                 target="_blank" rel="noopener noreferrer"
+                 class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1 mr-1">
+                View ↗
+              </a>
+              {% if w.actor_id %}
+              <button hx-post="/api/polymarket/whales/demote/{{ w.actor_id }}"
+                      hx-target="#whale-row-polymarket-{{ w.actor_id }}"
+                      hx-swap="outerHTML"
+                      hx-confirm="Demote @{{ w.handle }}? Synthetic SELLs will close any tracked open positions and copy-trading stops on the next poll."
+                      class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-loss/60 text-loss/80 hover:bg-loss/10 hover:text-loss">
+                Demote
+              </button>
+              {% else %}
+              <span class="text-muted/40 text-[10px]" title="wallet not in selected_whales — cannot demote">—</span>
+              {% endif %}
+              {% else %}—{% endif %}
             </td>
           </tr>
           {% endfor %}
@@ -723,10 +760,17 @@
             <td class="px-3 py-2 text-muted/80">
               {% if w.last_refresh_iso %}{{ w.last_refresh_iso[:19] | replace("T", " ") }}{% else %}—{% endif %}
             </td>
-            <td class="px-3 py-2 text-right">
-              <button class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-edge text-muted/50 cursor-not-allowed"
-                      disabled
-                      title="Promote flow ships next (WO-4). Will move this whale onto the active selected_whales roster.">
+            <td class="px-3 py-2 text-right whitespace-nowrap">
+              <a href="https://kalshi.com/social/profile/{{ w.handle }}"
+                 target="_blank" rel="noopener noreferrer"
+                 class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1 mr-1">
+                View ↗
+              </a>
+              <button hx-post="/api/kalshi/watchlist/promote/{{ w.handle }}"
+                      hx-target="closest tr"
+                      hx-swap="outerHTML"
+                      hx-confirm="Promote @{{ w.handle }} to the live copy-trade roster? Copy-trading starts on the next 10-minute poll."
+                      class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-accent/60 text-accent/80 hover:bg-accent/10 hover:text-accent">
                 Promote
               </button>
             </td>
@@ -800,12 +844,19 @@
             <td class="px-3 py-2 text-right text-mono/80">
               {{ w.lifetime_vol_from_leaderboard | money_signed }}
             </td>
-            <td class="px-3 py-2">
+            <td class="px-3 py-2 whitespace-nowrap">
               <a href="https://polymarket.com/profile/{{ w.proxy_wallet }}"
                  target="_blank" rel="noopener noreferrer"
-                 class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1">
+                 class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1 mr-1">
                 View ↗
               </a>
+              <button hx-post="/api/polymarket/watchlist/promote/{{ w.proxy_wallet }}"
+                      hx-target="closest tr"
+                      hx-swap="outerHTML"
+                      hx-confirm="Promote {{ w.user_name or w.proxy_wallet[:10] }} to the live copy-trade roster? Copy-trading starts on the next 60-second poll."
+                      class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-accent/60 text-accent/80 hover:bg-accent/10 hover:text-accent">
+                Promote
+              </button>
             </td>
           </tr>
           {% endfor %}

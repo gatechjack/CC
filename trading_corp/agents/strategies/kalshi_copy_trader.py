@@ -704,3 +704,101 @@ class KalshiCopyTraderAgent:
         set_agent_state(
             self.name, _AGENT_STATE_LAST_POLL_TS, ts.isoformat(), db_url=self._db_url,
         )
+
+
+def force_close_whale_positions(
+    handle: str,
+    *,
+    db_url: str,
+    logger_agent: Any,
+    division: str = "kalshi_copy_trading",
+    reason: str = "demoted_via_ui",
+) -> dict[str, Any]:
+    """Synthesize SELL closes for every tracked open position of a whale.
+
+    Used by the demote endpoint to flatten a whale's paper book before
+    removing them from `selected_whales`. For each entry in the whale's
+    persisted `positions:<nickname>` snapshot, emit a `would_have_placed`
+    audit row with `side=sell` so `kalshi_resolver` pairs it with the
+    corresponding entry into a `kalshi_round_trips` row.
+
+    Exit price = entry_price (zero-PnL synthetic close v1). Future
+    iteration could plug in `broker.quote()` for true mark-to-market.
+
+    After emission, clear the whale's `positions:<nickname>` slot so a
+    future re-promotion starts from an empty baseline (the strategy's
+    cold-start path treats an empty snapshot the same as never-seen).
+
+    Returns: ``{"n_closed": int, "handle": str, "positions": list[dict]}``.
+    """
+    rec = load_agent_state(
+        "kalshi_copy_trader",
+        f"{_AGENT_STATE_POSITIONS_PREFIX}{handle}",
+        db_url=db_url,
+    )
+    if rec is None:
+        return {"n_closed": 0, "handle": handle, "positions": []}
+    snapshot = rec[0]
+    if not isinstance(snapshot, dict):
+        return {"n_closed": 0, "handle": handle, "positions": []}
+    closed: list[dict[str, Any]] = []
+    now_unix = int(__import__("time").time())
+    for ticker, pos in list(snapshot.items()):
+        if not isinstance(pos, dict):
+            continue
+        our_side = str(pos.get("our_side") or "")
+        entry_price_raw = pos.get("entry_price")
+        copy_usd = float(pos.get("copy_size_usd") or 0.0)
+        if not our_side or copy_usd <= 0.0:
+            continue
+        try:
+            entry_price = float(entry_price_raw) if entry_price_raw is not None else 0.0
+        except (TypeError, ValueError):
+            entry_price = 0.0
+        order_id = f"synthetic_close:{reason}:{handle}:{ticker}:{now_unix}"
+        payload = {
+            "strategy": "kalshi_copy_trader",
+            "division": division,
+            "order_id": order_id,
+            "side": "sell",
+            "symbol": f"{ticker}:{our_side}",
+            "qty": copy_usd,
+            "limit_price": entry_price if entry_price > 0 else None,
+            "is_entry": False,
+            "is_synthetic_close": True,
+            "synthetic_close_reason": reason,
+            "outcome": our_side,
+            "ticker": ticker,
+            "whale_handle": handle,
+            "copy_size_usd": copy_usd,
+            "rationale": (
+                f"synthetic close ({reason}): @{handle} {our_side.upper()} "
+                f"position in {ticker} flattened on demote"
+            ),
+        }
+        if logger_agent is not None:
+            try:
+                logger_agent.log_event(
+                    "kalshi_copy_trader", "would_have_placed", payload,
+                )
+            except Exception as e:
+                log.warning(
+                    "kalshi force_close: log_event failed for %s/%s: %s",
+                    handle, ticker, e,
+                )
+        closed.append({
+            "ticker": ticker,
+            "symbol": payload["symbol"],
+            "copy_usd": copy_usd,
+            "our_side": our_side,
+            "order_id": order_id,
+        })
+    # Clear the whale snapshot slot. Empty dict means no tracked positions
+    # on the next cycle; re-promotion treats this as a clean start.
+    set_agent_state(
+        "kalshi_copy_trader",
+        f"{_AGENT_STATE_POSITIONS_PREFIX}{handle}",
+        {},
+        db_url=db_url,
+    )
+    return {"n_closed": len(closed), "handle": handle, "positions": closed}

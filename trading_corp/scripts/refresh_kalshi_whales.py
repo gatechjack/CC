@@ -52,7 +52,7 @@ from trading_corp.data.kalshi_whale_stats import (
     KALSHI_CATEGORIES, ScoredWhale, WhaleStats,
     compute_stats, filter_leaderboard_for_discovery, score_whale,
 )
-from trading_corp.persistence.db import set_agent_state
+from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
 
 log = logging.getLogger(__name__)
@@ -288,6 +288,28 @@ async def refresh_whale_selection(
         }
         for i, s in enumerate(runner_ups)
     ]
+
+    # Merge manually-pinned whales (promoted via dashboard) into the
+    # algorithm's selection so they survive this refresh. Dedupe by handle.
+    # Without this step, dashboard promotions would be silently evicted on
+    # every refresh run.
+    try:
+        pin_rec = load_agent_state(
+            "kalshi_copy_trader", "pinned_whales", db_url=db_url,
+        )
+    except Exception:
+        pin_rec = None
+    pinned_handles = pin_rec[0] if (pin_rec and isinstance(pin_rec[0], list)) else []
+    selected_set = {str(h) for h in selected if h}
+    n_pinned_merged = 0
+    for h in pinned_handles:
+        h_str = str(h or "")
+        if not h_str or h_str in selected_set:
+            continue
+        selected.append(h_str)
+        selected_set.add(h_str)
+        n_pinned_merged += 1
+    summary["pinned_merged"] = n_pinned_merged
 
     if not dry_run:
         if not watch_only_only:

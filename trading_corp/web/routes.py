@@ -1601,6 +1601,300 @@ def register(app: FastAPI) -> None:
             f'</div>'
         )
 
+    # ── Promote / Demote (watch list ↔ selected whales) ───────────────────
+    # Four endpoints — one promote + one demote per venue. Promote moves a
+    # whale from watch_only_whales into selected_whales AND pins it via
+    # pinned_whales (so the next refresh_*_whales.py run doesn't evict it).
+    # Demote removes from selected + pinned, calls force_close_whale_positions
+    # to flatten the paper book via synthetic SELL audits, and adds the entry
+    # back to watch_only_whales so we keep observing the whale's track record.
+    # Strategy reloads selected_whales every cycle so the change takes effect
+    # on the next poll (Polymarket 60s, Kalshi 600s) without restart.
+    #
+    # Pinning rationale: refresh_*_whales.py scripts overwrite selected_whales
+    # with the algorithm's top-N. Without pinned_whales, any manual promotion
+    # would be silently evicted on the next refresh run.
+
+    from trading_corp.persistence import db as _db_mod
+
+    def _render_action_pill(msg: str, *, success: bool = True) -> HTMLResponse:
+        cls = "text-gain" if success else "text-loss"
+        return HTMLResponse(
+            f'<div class="{cls} text-[11px] font-mono uppercase tracking-wider">'
+            f'{msg}</div>'
+        )
+
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @app.post("/api/kalshi/watchlist/promote/{handle}", response_class=HTMLResponse)
+    async def kalshi_watchlist_promote(handle: str):
+        """Promote a Kalshi whale from watch_only_whales → selected_whales.
+
+        Mutations:
+          - selected_whales (list[str]): append handle (idempotent)
+          - pinned_whales   (list[str]): append handle (idempotent)
+          - watch_only_whales (list[dict]): remove the matching row
+        """
+        db_url = deps.db_url
+        # selected (list[str])
+        sel_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "selected_whales", db_url=db_url,
+        )
+        selected: list[str] = list(sel_rec[0]) if sel_rec and isinstance(sel_rec[0], list) else []
+        if handle not in selected:
+            selected.append(handle)
+        # pinned (list[str])
+        pin_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "pinned_whales", db_url=db_url,
+        )
+        pinned: list[str] = list(pin_rec[0]) if pin_rec and isinstance(pin_rec[0], list) else []
+        if handle not in pinned:
+            pinned.append(handle)
+        # watch_only (list[dict], "handle" key)
+        wo_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "watch_only_whales", db_url=db_url,
+        )
+        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
+        watch_only_after = [w for w in watch_only if not (isinstance(w, dict) and w.get("handle") == handle)]
+
+        _db_mod.set_agent_state("kalshi_copy_trader", "selected_whales", selected, db_url=db_url)
+        _db_mod.set_agent_state("kalshi_copy_trader", "pinned_whales", pinned, db_url=db_url)
+        _db_mod.set_agent_state("kalshi_copy_trader", "watch_only_whales", watch_only_after, db_url=db_url)
+
+        if deps.logger_agent is not None:
+            deps.logger_agent.log_event(
+                "kalshi_copy_trader", "kalshi_whale_promoted",
+                {"strategy": "kalshi_copy_trader",
+                 "division": "kalshi_copy_trading",
+                 "handle": handle,
+                 "promoted_iso": _now_iso(),
+                 "source": "dashboard_button"},
+            )
+        log.info("kalshi_whale_promoted: %s", handle)
+        return _render_action_pill(f"@{handle} promoted")
+
+    @app.post("/api/kalshi/whales/demote/{handle}", response_class=HTMLResponse)
+    async def kalshi_whales_demote(handle: str):
+        """Demote a Kalshi whale: stop copy-trading + flatten paper book.
+
+        Calls `kalshi_copy_trader.force_close_whale_positions` to emit
+        synthetic SELL audits for every tracked open position, then moves
+        the entry from selected_whales/pinned_whales back to
+        watch_only_whales.
+        """
+        from trading_corp.agents.strategies import kalshi_copy_trader
+        db_url = deps.db_url
+
+        close_summary = kalshi_copy_trader.force_close_whale_positions(
+            handle, db_url=db_url, logger_agent=deps.logger_agent,
+        )
+
+        sel_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "selected_whales", db_url=db_url,
+        )
+        selected: list[str] = list(sel_rec[0]) if sel_rec and isinstance(sel_rec[0], list) else []
+        selected_after = [h for h in selected if h != handle]
+
+        pin_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "pinned_whales", db_url=db_url,
+        )
+        pinned: list[str] = list(pin_rec[0]) if pin_rec and isinstance(pin_rec[0], list) else []
+        pinned_after = [h for h in pinned if h != handle]
+
+        wo_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "watch_only_whales", db_url=db_url,
+        )
+        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
+        if not any(isinstance(w, dict) and w.get("handle") == handle for w in watch_only):
+            watch_only.append({
+                "handle": handle, "tier": None,
+                "source_x_handle": None, "notes": "demoted via dashboard",
+                "included_iso": _now_iso(),
+                "probe": {"profile_resolved": True, "trades_count": None},
+            })
+
+        _db_mod.set_agent_state("kalshi_copy_trader", "selected_whales", selected_after, db_url=db_url)
+        _db_mod.set_agent_state("kalshi_copy_trader", "pinned_whales", pinned_after, db_url=db_url)
+        _db_mod.set_agent_state("kalshi_copy_trader", "watch_only_whales", watch_only, db_url=db_url)
+
+        if deps.logger_agent is not None:
+            deps.logger_agent.log_event(
+                "kalshi_copy_trader", "kalshi_whale_demoted",
+                {"strategy": "kalshi_copy_trader",
+                 "division": "kalshi_copy_trading",
+                 "handle": handle,
+                 "demoted_iso": _now_iso(),
+                 "source": "dashboard_button",
+                 "n_synthetic_sells": close_summary.get("n_closed", 0),
+                 "positions_closed": close_summary.get("positions", [])},
+            )
+        log.info(
+            "kalshi_whale_demoted: %s (n_synthetic_sells=%d)",
+            handle, close_summary.get("n_closed", 0),
+        )
+        n = close_summary.get("n_closed", 0)
+        suffix = f" · closed {n} position{'s' if n != 1 else ''}" if n else ""
+        return _render_action_pill(f"@{handle} demoted{suffix}")
+
+    @app.post("/api/polymarket/watchlist/promote/{proxy_wallet}", response_class=HTMLResponse)
+    async def polymarket_watchlist_promote(proxy_wallet: str):
+        """Promote a Polymarket whale from watch_only_whales → selected_whales.
+
+        Mutations:
+          - selected_whales (list[dict {wallet, user_name, ...}]): append (idempotent on wallet)
+          - pinned_whales   (list[dict): append (idempotent on wallet)
+          - watch_only_whales (list[dict {proxy_wallet, ...}]): remove
+        """
+        db_url = deps.db_url
+        wallet_lower = proxy_wallet.lower()
+
+        wo_rec = _db_mod.load_agent_state(
+            "polymarket_copy_trader", "watch_only_whales", db_url=db_url,
+        )
+        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
+        existing = next(
+            (w for w in watch_only
+             if isinstance(w, dict)
+             and str(w.get("proxy_wallet") or "").lower() == wallet_lower),
+            None,
+        )
+        user_name = (existing or {}).get("user_name", "") if existing else ""
+        best_category = (existing or {}).get("best_category", "") if existing else ""
+
+        sel_rec = _db_mod.load_agent_state(
+            "polymarket_copy_trader", "selected_whales", db_url=db_url,
+        )
+        selected: list[dict] = list(sel_rec[0]) if sel_rec and isinstance(sel_rec[0], list) else []
+        if not any(isinstance(s, dict) and str(s.get("wallet") or s.get("proxy_wallet") or "").lower() == wallet_lower for s in selected):
+            selected.append({
+                "wallet": wallet_lower, "user_name": user_name,
+                "category": best_category, "promoted_iso": _now_iso(),
+                "source": "dashboard_button",
+            })
+
+        pin_rec = _db_mod.load_agent_state(
+            "polymarket_copy_trader", "pinned_whales", db_url=db_url,
+        )
+        pinned: list[dict] = list(pin_rec[0]) if pin_rec and isinstance(pin_rec[0], list) else []
+        if not any(isinstance(p, dict) and str(p.get("wallet") or p.get("proxy_wallet") or "").lower() == wallet_lower for p in pinned):
+            pinned.append({
+                "wallet": wallet_lower, "user_name": user_name,
+                "category": best_category, "promoted_iso": _now_iso(),
+                "source": "dashboard_button",
+            })
+
+        watch_only_after = [
+            w for w in watch_only
+            if not (isinstance(w, dict)
+                    and str(w.get("proxy_wallet") or "").lower() == wallet_lower)
+        ]
+
+        _db_mod.set_agent_state("polymarket_copy_trader", "selected_whales", selected, db_url=db_url)
+        _db_mod.set_agent_state("polymarket_copy_trader", "pinned_whales", pinned, db_url=db_url)
+        _db_mod.set_agent_state("polymarket_copy_trader", "watch_only_whales", watch_only_after, db_url=db_url)
+
+        if deps.logger_agent is not None:
+            deps.logger_agent.log_event(
+                "polymarket_copy_trader", "polymarket_whale_promoted",
+                {"strategy": "polymarket_copy_trader",
+                 "division": "polymarket_copy_trading",
+                 "wallet": wallet_lower, "user_name": user_name,
+                 "promoted_iso": _now_iso(),
+                 "source": "dashboard_button"},
+            )
+        log.info("polymarket_whale_promoted: %s (%s)", wallet_lower[:10], user_name)
+        label = user_name or wallet_lower[:10]
+        return _render_action_pill(f"@{label} promoted")
+
+    @app.post("/api/polymarket/whales/demote/{proxy_wallet}", response_class=HTMLResponse)
+    async def polymarket_whales_demote(proxy_wallet: str):
+        """Demote a Polymarket whale: stop copy-trading + flatten paper book.
+
+        Calls `polymarket_copy_trader.force_close_whale_positions` to emit
+        synthetic SELL audits for every tracked open position, then moves
+        the entry from selected_whales/pinned_whales back to
+        watch_only_whales.
+        """
+        from trading_corp.agents.strategies import polymarket_copy_trader
+        db_url = deps.db_url
+        wallet_lower = proxy_wallet.lower()
+
+        close_summary = polymarket_copy_trader.force_close_whale_positions(
+            wallet_lower, db_url=db_url, logger_agent=deps.logger_agent,
+        )
+
+        sel_rec = _db_mod.load_agent_state(
+            "polymarket_copy_trader", "selected_whales", db_url=db_url,
+        )
+        selected: list[dict] = list(sel_rec[0]) if sel_rec and isinstance(sel_rec[0], list) else []
+        # Capture the user_name from the selected list so we can preserve
+        # display identity in watch_only after demotion.
+        existing = next(
+            (s for s in selected
+             if isinstance(s, dict)
+             and str(s.get("wallet") or s.get("proxy_wallet") or "").lower() == wallet_lower),
+            None,
+        )
+        user_name = (existing or {}).get("user_name", "") if existing else ""
+
+        selected_after = [
+            s for s in selected
+            if not (isinstance(s, dict)
+                    and str(s.get("wallet") or s.get("proxy_wallet") or "").lower() == wallet_lower)
+        ]
+
+        pin_rec = _db_mod.load_agent_state(
+            "polymarket_copy_trader", "pinned_whales", db_url=db_url,
+        )
+        pinned: list[dict] = list(pin_rec[0]) if pin_rec and isinstance(pin_rec[0], list) else []
+        pinned_after = [
+            p for p in pinned
+            if not (isinstance(p, dict)
+                    and str(p.get("wallet") or p.get("proxy_wallet") or "").lower() == wallet_lower)
+        ]
+
+        wo_rec = _db_mod.load_agent_state(
+            "polymarket_copy_trader", "watch_only_whales", db_url=db_url,
+        )
+        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
+        if not any(isinstance(w, dict) and str(w.get("proxy_wallet") or "").lower() == wallet_lower for w in watch_only):
+            watch_only.append({
+                "rank": None, "proxy_wallet": wallet_lower,
+                "user_name": user_name, "x_username": "", "verified_badge": False,
+                "total_resolved_positions": 0, "wins": 0, "losses": 0,
+                "win_rate": None, "realized_pnl_usdc": 0.0,
+                "total_usdc_size_resolved": 0.0,
+                "lifetime_pnl_from_leaderboard": 0.0,
+                "lifetime_vol_from_leaderboard": 0.0,
+                "best_category": "", "included_iso": _now_iso(),
+                "notes": "demoted via dashboard",
+            })
+
+        _db_mod.set_agent_state("polymarket_copy_trader", "selected_whales", selected_after, db_url=db_url)
+        _db_mod.set_agent_state("polymarket_copy_trader", "pinned_whales", pinned_after, db_url=db_url)
+        _db_mod.set_agent_state("polymarket_copy_trader", "watch_only_whales", watch_only, db_url=db_url)
+
+        if deps.logger_agent is not None:
+            deps.logger_agent.log_event(
+                "polymarket_copy_trader", "polymarket_whale_demoted",
+                {"strategy": "polymarket_copy_trader",
+                 "division": "polymarket_copy_trading",
+                 "wallet": wallet_lower, "user_name": user_name,
+                 "demoted_iso": _now_iso(),
+                 "source": "dashboard_button",
+                 "n_synthetic_sells": close_summary.get("n_closed", 0),
+                 "positions_closed": close_summary.get("positions", [])},
+            )
+        log.info(
+            "polymarket_whale_demoted: %s (n_synthetic_sells=%d)",
+            wallet_lower[:10], close_summary.get("n_closed", 0),
+        )
+        n = close_summary.get("n_closed", 0)
+        suffix = f" · closed {n} position{'s' if n != 1 else ''}" if n else ""
+        label = user_name or wallet_lower[:10]
+        return _render_action_pill(f"@{label} demoted{suffix}")
+
     # ── Research firm dashboard (v3 — read-only) ─────────────────────────
 
     @app.get("/research", response_class=HTMLResponse)
