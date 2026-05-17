@@ -8,6 +8,105 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## END-OF-SESSION SNAPSHOT — 2026-05-17 05:40 UTC  *(supersedes 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+
+**Big session: deferred-fire PA mechanism + dashboard surfaces + trade-plan v2 multi-leg replay + Phase 1E flag flip — all shipped to prod.** Five commits in sequence (after `0ad7542` PCT pruner from the 03:55 snapshot):
+
+```
+72bbbe4 — deferred-fire PA mechanism (re-evaluate PA on each bar until score decays)
+f85ac9f — dashboard: pending PA + redeem aggregates + decision-flow redemption marker
+c41e7fd — trade-plan v2 paper-mode multi-leg replay + dashboard panel (Stage A+B)
+204c053 — trade-plan v2 LIVE: Phase 1E flag flip (false→true) + deploy log + gate-lift
+ba678de — BACKLOG: mark Phase 3.2 rule tuning + Phase 3.2b multi-leg scale-out SUPERSEDED
+```
+
+Plus a 6th doc commit pending (this snapshot). All deploys via `az vm run-command` (SSH still blocked from this network); each with backup tag for ~30s rollback.
+
+### Current boot wiring on prod (PID 547556, post-Phase-1E restart 05:14:32 UTC)
+
+```
+BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce,
+                         htf_regime_enabled=True, trade_plan_active=True
+```
+
+`trade_plan_active=True` is the new state. Was `False` from 2026-05-15 ship through 2026-05-17 05:13 UTC.
+
+### Five things now live on prod that weren't this morning
+
+1. **Deferred-fire PA mechanism** (`72bbbe4`, deployed 03:53 UTC). When PA rejects a high-score score-engine fire in enforce mode, the payload is cached in observer process memory. `bitunix-pa-redeem` 60s background task re-runs the full pipeline against fresh bars until score decays (cache cleared via SKIP path, `pa_validation_expired` emitted) OR PA passes (fires through HTF/sizing/risk/place, `pa_validation_redeem` emitted, `order_id` back-filled after placement). At most one side waits at a time; opposite-side score-win nullifies prior waiting state. New audit kinds: `pa_validation_redeem`, `pa_validation_expired`. Process memory only; rebuilds on next alert after restart.
+
+2. **Deferred-fire dashboard surfaces** (`f85ac9f`, deployed 04:13 UTC). Three additions to `/division/bitunix_futures`:
+   - **Pending PA panel** (top of section, 15s htmx refresh) — live cache state, "WATCHING (N bars elapsed)" or "no signal pending."
+   - **PA Validators panel** extended with 24h aggregate counters in header (`⤴N · ⨯Nsd · ⨯Nos`) + two new bottom tables ("Recent Redeemed Fires" with `placed`/`post-PA gate blocked` indicator; "Recent Expired Waits" with reason field).
+   - **Decision Flow panel** each row now shows `⤴ redeemed (Nb · Ns)` inline when the fire came from `bar_tick_redeem` path.
+
+3. **Paper-mode multi-leg replay** (`c41e7fd`, deployed 05:08 UTC). `paper_trade_replay._classify_v2_multi_leg` routes on `extra_json.tp_plan_version == 'v2'`. Walks 1m bars detecting tp1/tp2/tp3 crosses; advances SL per Option C floor lifecycle (BE → tp1-price floor; Chandelier trail deferred); emits `position_sl_update` audits tagged `source='paper_trade_replay'`. Weighted R aggregation matches Option C arithmetic (0.125 / 0.75 / 1.25 R). `BitunixBroker.list_open_positions` now hydrates `filled_legs` + `current_sl` from `extra_json`.
+
+4. **Trade Plan v2 dashboard panel** (`c41e7fd`, deployed 05:08 UTC). New `bitunix_trade_plan_panel.html` includes Decisions table (entry/SL/tp1/tp2/tp3/sl_method/tp2_method/skip_reason) + SL Lifecycle table (state/current→new SL/filled_legs/source). Header shows `V2 ACTIVE/DORMANT` + fee config + 24h counters. Renders empty-state messages when no audits yet.
+
+5. **`bitunix_futures.trade_plan.enabled: true`** (`204c053`, deployed 05:14 UTC). One-line YAML flip activated the v2 placement path. Surgical anchored patch on prod (local YAML has known H2-era drift). `yaml.safe_load` confirmed `enabled=True`; service restarted; boot wiring confirms `trade_plan_active=True`; dashboard marker flipped `V2 DORMANT → V2 ACTIVE`.
+
+### Environment sync at session end (md5-verified local LF ↔ prod)
+
+| File | Local md5 (LF) | Prod md5 | Status |
+|---|---|---|---|
+| `bitunix_futures_observer.py` | `406cd632571276d800ac628a27b4adc8` | match | ✅ |
+| `paper_trade_replay.py` | `3510cfbe015d4e092abc37d0a78cab87` | match | ✅ |
+| `brokers/bitunix.py` | `a7125b2febf2f008cf03dfd82243fe9e` | match | ✅ |
+| `web/data.py` | `a707e966f451f5eed1dae70ad9f5109c` | match | ✅ |
+| `web/templates/division.html` | `7eb631a8ba5c7f0095baa49e3a1bb80b` | match | ✅ |
+| `web/templates/partials/bitunix_decision_flow.html` | `a59eb70285a5c35db3032b3c2ab46298` | match | ✅ |
+| `web/templates/partials/bitunix_pa_panel.html` | `a10a40ace04073a3612a14dc9c19e699` | match | ✅ |
+| `web/templates/partials/bitunix_pending_pa_panel.html` | `fbdc3370654a028720779792f0f7b296` | match | ✅ (new file) |
+| `web/templates/partials/bitunix_trade_plan_panel.html` | `2e09074045475504b1e66b2f4680629b` | match | ✅ (new file) |
+| `main.py` | `8069db7cbfa4882a1fbc48d85187dcfc` | `700e3cc2fae4d0851c0f229aae16625a` | ⚠️ semantically equivalent — both have `bitunix-pa-redeem` task wiring + `bucket_guard` + `target_iso` markers; prod drift is in unrelated regions per `trading_corp_prod_git_drift.md` |
+| `config/strategies.yaml` | `0c000c3ed2ce770584386b3f2d6e9cb6` | `0bb502677a8c4c6e9f1b8bd0a5bfb7dc` | ⚠️ functionally equivalent — both have `trade_plan.enabled: true`; prod has H2 weight changes + `kalshi_weather_arb.enabled=true` that aren't in local |
+
+10 of 12 files byte-identical. 2 drift cases are both documented known drift (no remediation needed; backporting prod state to local would be a separate cleanup task).
+
+### Backup tags on prod (do NOT delete until ≥24h post-deploy confirms behavior)
+
+- `pre-pa-redeem-20260517-0350` — observer + main.py (deferred-fire ship)
+- `pre-dash-deferred-20260517-0411` — data.py + division.html + decision_flow + pa_panel (deferred-fire dashboard)
+- `pre-trade-plan-v2-20260517-0507` — observer + paper_trade_replay + bitunix.py + data.py + division.html (trade-plan v2 code)
+- `pre-trade-plan-flip-20260517-0512` — strategies.yaml (Phase 1E flag flip)
+
+### New memories this session
+
+- `feedback_az_run_command_when_ssh_blocked.md` — already filed 2026-05-16; re-used heavily this session.
+- `feedback_bitunix_no_hot_reload.md` — already filed 2026-05-16; re-used heavily this session.
+- `feedback_uvicorn_no_reload_in_prod.md` — filed by parallel session 2026-05-17 03:30 UTC; relevant to every .py change this session.
+- **`feedback_pa_gate_well_calibrated.md` (NEW)** — User chart-reviewed the PA reject at 05:18:02 UTC and confirmed the rejection was correct. PA gate is well-calibrated; 100% reject rate = hostile regime, NOT "gate too strict." Use deferred-fire to capture, NOT threshold loosening. Counter-balance to the prior framing.
+
+### Tomorrow's pickup candidates (ordered by recommended sequence)
+
+1. **Watch for first `trade_plan_decision` audit row** (~passive, the load-bearing verification). Last check at 05:24 UTC: 0 rows yet because only 1 STANDARD-tier score-fire happened in the post-flip window and PA rejected it (then cached → expired via score-decay). The first v2 trade_plan_decision lands when PA passes once — either immediately on a fresh alert OR via deferred-fire redemption. Expected within a few hours at the ~5 STANDARD/hour rate × prevailing PA reject pattern. Queries in `runbooks/session_start_2026_05_18.md`.
+2. **Watch for first `paper_trade_record` with `extra_json.tp_plan_version='v2'`** + `position_sl_update` audit row with `source='paper_trade_replay'`. These confirm the multi-leg replay path is exercising on a real v2 trade.
+3. **Watch for first `pa_validation_redeem` audit row.** Confirms full deferred-fire redemption cycle (cached → PA passes on bar-tick → fires).
+4. **H2 falsification gate progress** (was 1/30 PREMIUM at last check). Should accelerate now that PA isn't 100%-blocking — deferred-fire + (eventually) v2 placement.
+5. **Reports/ archive cleanup** (local-only, low priority). Jack archived `reports/{backtest_results, data_inventory, decision_log, hypotheses, strategy_candidates}.md` → `decision_log.zip`. These show as deleted in `git status`. Decide commit the archival OR restore the files — currently in limbo.
+6. **`config/strategies.yaml` 887-line stale `factors:` block cleanup** (~15 min, P3, cosmetic).
+7. **Backport prod strategies.yaml + main.py drift to local** (~30 min, P3, hygiene). Currently both files have known semantic drift from local (H2 weights, audit-allowlist markers, target_iso). Backport so future deploys can use wholesale-replace instead of patch -p1.
+8. **PMCC audit.** Perennial.
+
+### Things to NOT do without explicit approval
+
+- Do NOT flip `htf_gate.mode: shadow → enforce` back (it's at `enforce`).
+- ~~Do NOT flip `trade_plan.enabled: true`. Phase 1E gate.~~ **LIFTED 2026-05-17 05:14 UTC.** Replacement rule: **Do NOT flip `trade_plan.enabled: false`** without a v2-performance memo (rollback would re-disable the active placement path).
+- Do NOT flip `auto_execute: true` to live-broker placement on BitUnix until Phase 4 lands (`BitunixBroker.place_order` real signed REST + cancel/amend semantics validated). Flag is already `true` but `place_order` raises NotImplementedError, so every fire stays paper-mode. CLAUDE.md § 5 webhook-vs-LangGraph harmonization is also load-bearing for any future live flip.
+- Do NOT enable `auto_execute: true` on weather, crypto until each division's validation gate is hit.
+- Do NOT delete backup tags listed above until ≥24h post-deploy confirms behavior.
+- Do NOT delete pre-cutoff kalshi RTs from `kalshi_round_trips` — they're the σ-scaling dataset.
+- Do NOT relax `config/strategies.yaml` validation guards or schema.
+- Do NOT propose loosening PA gate thresholds when reject rates look high. Per the new `feedback_pa_gate_well_calibrated.md` memory, chart-review evidence so far argues the gate is correctly catching bad setups; the deferred-fire mechanism is the right capture path, not threshold tuning.
+- Do NOT disable the PCT stale-pruner timer.
+
+### Session-start prompt for next session
+
+→ `runbooks/session_start_2026_05_18.md`
+
+---
+
 ## END-OF-SESSION SNAPSHOT — 2026-05-17 03:55 UTC  *(supersedes 03:25 + 20:10 + 19:40 + 04:55)*
 
 **Wrap of the long session.** Five deploys ship-clean tonight after the morning bucket-guard fixes: dashboard cutoff filter (02:49), target_iso audit field (03:09), PCT stale-pruner cron (03:38). Plus one parallel-session BitUnix commit landed (`72bbbe4` — deferred-fire PA mechanism) that I did not touch. All reversible, all md5-verified, all logged in `runbooks/deploy_log.md`. Local git tree clean; prod md5 sync verified on all 5 directly-touched files (`web/data.py`, both templates, `kalshi_weather_arb.py`, `prune_stale_pct_entries.py`). `main.py` has expected prod-side drift (3 patch markers verified: `TARGET_ISO_INSERTED` + `BUCKET_GUARD_INSERTED` + `CRYPTO_BUCKET_GUARD_INSERTED`).
