@@ -8,7 +8,134 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-17 17:45 UTC  *(supersedes 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+## END-OF-SESSION SNAPSHOT — 2026-05-17 22:30 UTC  *(supersedes 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+
+**Two work threads this session: (1) Promote/Demote UX bugs uncovered during smoke test → diagnosed + fixed in two prod deploys (v1 20:36 UTC, v2 21:25 UTC). (2) Strategy review — PMCC test fixture fix, Kalshi crypto post-cutoff review, Kalshi LLM arbitrage performance audit. Closed with a written prompt to spec a new "Kalshi Structure Arb" division.**
+
+### Three commits this session
+
+```
+652b0c3 — pm dashboard: promote/demote round-trip + tab persistence
+b64803c — tests: fix _call helper liquidity fields (5 PMCC scan tests)
+(both deploys above bundled into 652b0c3)
+```
+
+### What's now live on prod that wasn't at 17:45 UTC
+
+1. **Promote/Demote UX, fully round-tripping.** Both venues' watch-list rows and Selected Whales rows behave symmetrically. Click PROMOTE → page reloads with whale moved into Selected (zero-stat placeholder with 📌 badge if no copy-trade has fired yet). Click DEMOTE → page reloads with whale moved back to Watch List with original Apify/leaderboard stats intact. Stays on the WHALES tab post-reload.
+
+2. **`selected_whales` is now the single membership truth.** Promote/demote endpoints only touch `selected_whales` + `pinned_whales`. `watch_only_whales` is treated as the immutable observation pool (mutated only by weekly refresh scripts). Both panels filter at render time: Selected = whales in `selected_whales`, Watch List = whales in `watch_only_whales` ∧ NOT in `selected_whales`. No API refetch needed for the user-promoted-from-watchlist round-trip case.
+
+3. **6 v0-deleted whales recovered** via one-off Polymarket closed-positions API fetch: nojnn (153 resolved, 82% WR, $544K lifetime PnL), everydaymortgage (15, 100%, $6.36M), westminster (65, 72%, $186K), IlIIllIIIllIIl (86, 74%, -$38K), superbeter007 (199, 58%, $640K), ranger44 (20, 90%, $189K). `watch_only_whales` now at 54 entries.
+
+### Service health at session end
+
+```
+PID 616794 (post-21:25 restart from PID 598297)
+trading-corp: active
+trading-corp-pm-watchlist-deep.timer: enabled + active; next fire Sun 2026-05-24 13:02:51 UTC
+```
+
+### Strategy review findings (NOT shipped — analysis only)
+
+**kalshi_crypto_arb (post-bucket-guard-cutoff 2026-05-16 19:37 UTC):**
+- 61 trades, 78.7% WR, +$19.62 PnL. **Strategy is profitable since the bucket-guard fix.** Prior cumulative -$46 came from pre-fix trades.
+- Sweet spot is 20-30% divergence bucket (92.3% WR, +112% ROI).
+- Sub-1-hour markets are coin flips: 7 of 13 losers had <1.1h horizon, **zero winners under 4h.** Adding `min_horizon_hours: 4` would cut 15 trades, eliminate 7 losers, and shift PnL +$19.62 → +$23.91 (+22%).
+- User chose to wait for larger sample (69 open positions still pending) before changing config.
+
+**kalshi_llm_arbitrage (full window 5/11-5/16):**
+- 808 raw trades, 55.3% WR, -$49.02. **NO DASHBOARD_RT_CUTOFFS entry — all 808 count on dashboard.**
+- After user-requested filter excluding Climate/Weather + Crypto categories: 150 trades, 40% WR, -$17.67. Politics is the ONLY profitable category (+$22.19 on 26 trades).
+- **All of the Politics profit comes from ONE event: KXCHINAANNOUNCE-26MAY** (18 trades, 16 wins, +$24.07). Without it, Politics is 8 trades, ~$0 PnL.
+- KXCHINAANNOUNCE is NOT real LLM-judgment edge. It's a structural mispricing the LLM accidentally captured: 7 sub-markets of a multi-outcome event, sum of implied YES probabilities ≈ 4.6 (only ~1 can resolve YES). The LLM's low-p bias made it bet NO across the board, which was the right call by coincidence.
+- **LLM is severely miscalibrated in tails.** Claims p_yes=11% on 677 trades when actual is 48% (+41pt gap). Tail-overconfidence: claims p_yes=92%, actual 33% (-59pt gap on n=9 thin).
+- **US scheduled macro releases (PPI, CPI, airfare CPI, etc.) are systematic losers.** 36 trades, 0 wins, -$36. Markets are efficient against consensus survey expectations.
+- Residual category leak: 10 trades on KXA100W / KXH100W (Atlanta/Houston temp markets categorized as Sci/Tech by Kalshi, not Climate/Weather). User's category filter didn't catch these.
+- May 14 → May 15 activity collapse (155 → 8 trades). Cause not investigated.
+- 1,351 open positions pending resolution (long-tenor up to 30d). Re-run analysis in 2-3 weeks.
+
+### Strategy review findings — what to do with them
+
+1. **kalshi_crypto_arb min_horizon_hours: 4** — Pending. User wants larger sample first.
+2. **kalshi_llm_arbitrage US-release blacklist** — Pending. Would cut 36-trade -$36 chunk; cheapest cut with highest signal.
+3. **kalshi_llm_arbitrage divergence cap** — Pending. The 30-50% and 50%+ buckets together: 37 trades, 11 wins, -$14.15. 50%+ alone is 0/12.
+4. **kalshi_llm_arbitrage residual category leak** — Pending. Exclude KX*100W ticker pattern or expand category exclusion to Sci/Tech.
+5. **NEW DIVISION proposal: kalshi_structure_arb** — Written prompt for a deterministic structural-arb strategy that captures the KXCHINAANNOUNCE-style edge purposefully (sum of sub-market implied YES > 1.5 with K≥3 sub-markets → buy NO on top-3 most-overpriced). Backtester approval required before deploy. **See `runbooks/session_start_2026_05_18.md` for the full prompt.**
+
+### Other completed items this session
+
+- **PMCC test fixture fix (commit `b64803c`):** 5 failing tests in `test_pmcc_logic.py` — `_call` helper missing `open_interest` + `volume`, and bid/ask spread too wide for low-mark fixtures. PMCC production code unchanged. All 80 tests now pass. Yellow flag: scan-path failures had been silently broken since file creation; a parallel `_liquid_call` helper was added later with the gap documented but the shared helper not fixed. Lesson: scan-path test failures should be looked at when they happen, not deferred behind a workaround.
+
+### Environment sync at session end (LF-only md5)
+
+- `trading_corp/web/routes.py`: prod = local = `9555b4b052076c2bb117729c696fdb89` ✅
+- `trading_corp/web/data.py`: prod = local = `98ffa1af9f44b2910fb2929ea8fcaca5` ✅
+- `trading_corp/web/templates/prediction_markets_dashboard.html`: prod = local = `02d760237170a929d4f0b337df01949e` ✅
+- `tests/test_pmcc_logic.py`: local-only fix (tests don't ship to prod). Intentional.
+- `tests/test_promote_demote_fixes.py`: local-only (new). Intentional.
+
+### Backup tags on prod (do NOT delete until ≥48h post-deploy)
+
+- `pre-promote-demote-uxfix-20260518-q1ack` (pre-v1, captured at 20:36 UTC) — 2 files
+- `pre-promote-demote-uxfix-20260518-v2` (pre-v2, captured at 21:25 UTC) — 3 files (rolling-back to v1 only requires the .py files; HTML had no v1 backup)
+
+Older still-live tags from yesterday's deploys:
+- `pre-pm-weekly-refresh-20260517-1730` (2 files)
+- `pre-promote-demote-20260517-1718` (7 files)
+- `pre-pm-watchlist-20260517-1443` (3 files)
+
+### Tomorrow's pickup candidates (ordered by recommended sequence)
+
+1. **Decide on `kalshi_structure_arb` new division.** The prompt in `runbooks/session_start_2026_05_18.md` is ready. Requires Board approval on the backtest before any code lands. Estimated 2-4h with backtest, narrower if just the backtest pass first.
+
+2. **Apply the cheap kalshi_llm_arbitrage cuts.** Two strategy.yaml changes that hot-reload without restart:
+   - US-release ticker prefix blacklist: `KXUSPPI*`, `KXUSCPI*`, `KXAIRFARE*`, `KXAAAGAS*`, etc. (-$36 in -36 trades). Requires a small code addition to read the blacklist + apply.
+   - `max_divergence_pct: 30` cap (the 30-50% + 50%+ buckets lost $14 on 37 trades).
+   - Both small enough to bundle into one PR. Confidence: medium (sample sizes are 30-40 each).
+
+3. **kalshi_crypto_arb `min_horizon_hours: 4`** — re-run the analysis once the 69 open positions resolve. Then flip the config if the pattern holds.
+
+4. **Residual Sci/Tech leak in kalshi_llm_arbitrage.** Add `Science and Technology` to the excluded categories OR pattern-match `KX*100W`. 10-trade exclusion, -$10 cut.
+
+5. **kalshi_llm_arbitrage activity collapse 5/14→5/15.** Diagnose. Could be cooldown saturation, an upstream change, or an error spiral. Worth ~30 min of journalctl + audit_event archaeology.
+
+6. **Algorithm-selected whale fetch-on-demote** — outstanding from earlier today. The 7 PM whales in `selected_whales` from `refresh_polymarket_whales.py` (not from watch_only_whales) will still vanish on demote. Bake the recovery_backfill.py logic into the demote endpoint as a fallback. ~30-45 min.
+
+7. **Standing backlog** (no urgency from this session):
+   - Kalshi weather dashboard analysis partial (P3, ~1-2h).
+   - Kalshi `temporal_bucket_arb` `expires_at` payload audit (P2, ~30 min).
+   - `apply='true'` query bug in `runbooks/session_start_2026_05_17.md` (2-line edit).
+   - Reports/*.md archival decision (parallel-session work, still deleted in `git status`).
+   - PMCC audit (perennial — needs scope-narrowing).
+
+8. **A week out — Sun 2026-05-24 13:02:51 UTC:** watch the first Polymarket weekly cron fire.
+
+### Things to NOT do without explicit approval
+
+- Don't deploy the new `kalshi_structure_arb` strategy without running its backtest and getting Board sign-off first. The prompt in `runbooks/session_start_2026_05_18.md` documents this — follow it.
+- Don't flip `kalshi_llm_arbitrage.auto_execute: false → true`. The strategy is net-negative and the LLM calibration is broken in both tails.
+- Don't flip `kalshi_crypto_arb.auto_execute: false → true` until the sample size is 200+ trades and the post-cutoff trend (+22% PnL boost from min_horizon_hours) is confirmed in a backtest.
+- Don't `systemctl restart trading-corp` blindly. The live PCT + polymarket_arbitrage Cloudflare-retry resilience is still dormant until the next natural restart (see 2026-05-17 17:38 UTC deploy_log entry). ~5-15s blip when you do.
+- Don't disable the `trading-corp-pm-watchlist-deep.timer` (next fire Sun 2026-05-24).
+- Don't delete the backup tags `pre-promote-demote-uxfix-20260518-*` until ≥48h post-deploy.
+- Don't deploy via `patch -p1` over a file that touches `routes.py` without prepending the CRLF-normalize step (per `feedback_crlf_routes_py_deploy.md`).
+- Don't change the `pinned_whales` schema or the per-venue `selected_whales` shape.
+- Don't flip BitUnix `htf_gate.mode: enforce → shadow`. Don't flip `trade_plan.enabled: true → false`. Standard BitUnix do-not-touch list applies.
+
+### Memory updates this session
+
+- New: `kalshi_strategy_analysis.md` — calibration + structural findings for kalshi_llm_arbitrage and kalshi_crypto_arb (post-cutoff). Pending decisions documented.
+- Updated: `trading_corp_polymarket.md` — v2 promote/demote architecture (selected_whales is single membership truth; watch_only_whales immutable).
+- Updated: `MEMORY.md` index.
+
+### Session-start prompt for next session
+
+→ `runbooks/session_start_2026_05_18.md` (canonical, REWRITTEN this session).
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-17 17:45 UTC  *(superseded by 22:30)*
 
 **Wrap of the Polymarket watchlist weekly-refresh session.** This session picked up the BACKLOG P2 entry that the parallel session had marked as "COMMITTED BUT NOT DEPLOYED" at the end of THEIR 17:25 UTC wrap, and shipped it. The 17:25 EOS snapshot was therefore stale by 13 minutes; this one supersedes it.
 
