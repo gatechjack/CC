@@ -8,6 +8,23 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P0 — Crash diagnosis (2026-05-19)
+
+PC has hard-rebooted 11+ times in 30 days, accelerating to 8 crashes in 24 hours on
+5/17–5/18. Diagnostic report at **[docs/diagnostics/2026-05-19_crash_diagnosis.md](docs/diagnostics/2026-05-19_crash_diagnosis.md)**.
+
+Lead hypothesis: 5-year-old Intel RST storage driver (`iaStorAC.sys`), with
+RstDowngradeGuard / OptaneDowngradeGuard blocking updates. RstMwService terminates
+with non-zero status on every reboot post-5/15 (9/9). NVIDIA RTX 3060 driver (Dec
+2021) and Killer Wi-Fi driver (June 2021) are secondary suspects.
+
+**P0 until mitigations are validated.** No project work (IC v1 deconfliction,
+Kalshi SA review, paper-cutover prep) until M1 (capture analyzable minidump) +
+M2 (uninstall Intel RST + downgrade guards) have had 48 hours to validate. See
+report § 3 for the full mitigation list and § 5 for the recommended sequence.
+
+---
+
 ## END-OF-SESSION SNAPSHOT — 2026-05-18 14:30 UTC  *(supersedes 2026-05-18 12:30 + 07:00 + 2026-05-17 22:30 + 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
 
 **One work thread this session: BitUnix Gate v1.1 — Branch A (1m-Bitunix trade-resolution addendum) to disambiguate the v3 bar-fidelity-vs-over-fit hypotheses. Picked up after a python-launcher OOM crash that killed the prior session mid-write. All Branch A deliverables verified on disk (cache, table, runs, addendum, memo § 8 update). v1.1 is now formally PARKED pending paper data — no further local backtest experiments planned. No prod changes. No commits this session (working tree has Branch A's untracked + modified files; commit-or-not decision is the User's).**
