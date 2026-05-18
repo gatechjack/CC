@@ -8,7 +8,74 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-17 22:30 UTC  *(supersedes 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+## END-OF-SESSION SNAPSHOT — 2026-05-18 07:00 UTC  *(supersedes 2026-05-17 22:30 + 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+
+**One work thread this session: BitUnix Confluence Gate v1.1 — v3 Bybit-hybrid backtest. Picked up after a 3rd BSOD (mid-Block-A debug); finished Block A, Block B, Block C. Negative verdict for v1.1 on Bybit-fidelity bars. No prod changes. No code changes other than a `tmp/pull_prod_alerts.sh` cache-skip fix.**
+
+### One commit this session
+
+```
+e565bec — backtest: gate v1.1 v3 Bybit-hybrid report — Blocks A/B/C verdict
+```
+
+### Headline finding
+
+Same v1.1 gate, same 1,306 prod alerts, **Bybit 3m+15m bars instead of Coinbase 1m → PF collapses 2.63 → 1.14, WR 54.8% → 31.2%**. Fire count unchanged (31 → 32). v1.1 on a BitUnix-proximate venue fails 3 of 4 Phase C pre-committed acceptance thresholds (PF, WR, fire-rate; only n≥20 clears).
+
+Block B isolates the cause: synth-17d WR=31.1% matches prod-17d WR=31.2% **exactly** on the same Bybit bars → cause is bar-source + trade-resolution, not alert-source. Per-factor pass rates are stable across windows (max Δ +3.6pp vwap, all others within ±2pp; ±5pp diagnostic flag does NOT fire).
+
+Block C: paper cutover is now the **only path to discriminate** between "bar-fidelity-artifact" and "v1.1 over-fit to Coinbase". Both possibilities should be named explicitly in the paper-cutover decision memo so the 60-day shadow data is read on the correct prior.
+
+### Three load-bearing unknowns (named in report Block C)
+
+1. **Bar-resolution (3m vs 1m).** Testable with a Bybit 1m pull. Likely dominant cause per the Block B hypothesis (3m granularity gives SL-first-when-same-bar more chances to fire).
+2. **Real Bybit CVD vs the OHLCV-proxy tick-rule fallback.** Used 100% of evaluations in this run. Real CVD on Bybit might shift score distribution materially in either direction.
+3. **Regime-fragility.** Synth-31d (truly OOS, mostly pre-Apr-30) has PF=0.74 — hints v1.1 may degrade further outside the 17d hostile-but-cooperative regime.
+
+### Process improvement shipped (not committed; lives in `tmp/`)
+
+`tmp/pull_prod_alerts.sh` cache-skip regex was broken — looked for `"stdout` (with leading quote) but az JSON contains literal `[stdout]`. Result: every BSOD recovery re-pulled all 72 slices. Fixed to grep `\[stdout\]` + accept ≤300-byte empty-window slices as cached. Future BSOD recovery now uses on-disk progress (~2 min to fill the gap, not ~25 min full re-pull).
+
+### Service health at session end
+
+No deploys this session. Prod still running:
+- `bitunix_futures` observer in shadow mode with v1.1 gate (`scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True`)
+- `auto_execute=false` (paper-only)
+- No live `BitunixBroker.place_order` (Phase 4 still blocked on auto_execute_caps harmonization + positive-EV paper data — this session's verdict makes "positive-EV paper data" the load-bearing gate)
+
+### Artifacts produced
+
+- **Report:** `reports/gate_backtest_2026-05-17_v3_bybit_hybrid.md` (348 lines, committed as `e565bec`)
+- **Prod-alert cache:** `data/historical_alerts/cache_alerts_prod_filtered_20260430_20260518.json` (1,717 unique alerts from 72 az-paginated slices; 3 truncation-flagged but merge-guard fired)
+- **Backtest runs:**
+  - `data/backtest_runs/bitunix_20260518T042506_five_factor/` (Block A prod-17d)
+  - `data/backtest_runs/bitunix_20260518T103210_synth_17d/` (Block B comparator)
+  - `data/backtest_runs/bitunix_20260518T103208_synth_31d/` (Block B truly-OOS)
+
+### Environment sync at session end
+
+- Prod **untouched** this session. Last deploy was 2026-05-17 21:25 UTC (Polymarket promote/demote v2 architecture).
+- Local: 1 new commit on `main` (`e565bec`); parallel-session unstaged WIP unchanged. The session's `tmp/pull_prod_alerts.sh` fix lives in `tmp/` (gitignored).
+
+### Tomorrow's pickup candidates (ordered)
+
+1. **Decide on the paper-cutover framing.** The report's Block C names two competing explanations for the verdict-collapse (bar-fidelity vs over-fit). Before paper-cutover happens, the decision memo should name both explicitly so the 60-day shadow data is interpreted correctly. If shadow PF reverts to ≥1.20, that's positive evidence the backtest was bar-fidelity-limited. If shadow PF stays near 1.14, that's positive evidence v1.1 is over-fit to Coinbase. Don't bury this question.
+
+2. **Optional disambiguation: Bybit 1m bar pull + re-run Block A.** If 1m bars are available from Bybit's public REST (kline endpoint, 1000-bar pages), pulling ~24,500 bars for the 17d window is ~25 paginated calls. Re-running Block A with 1m trade-resolution would test the Block B hypothesis directly. ~1-2h of work. Could meaningfully shift the framing if the 1m result lifts WR materially.
+
+3. **kalshi_structure_arb backtest** — this was the priority from the 2026-05-17 22:30 wrap and is still pending. The full prompt remains in `runbooks/session_start_2026_05_18.md` and is intact. If the v1.1 gate decision is parked pending paper data, this is the highest-EV unblocked work item.
+
+4. **Standing kalshi cuts (unchanged from prior wrap):** US-release ticker blacklist, max_divergence_pct cap, residual Sci/Tech leak, min_horizon_hours: 4 for crypto-arb.
+
+### Things to NOT do without explicit approval
+
+(Same list as 2026-05-17 22:30 wrap, plus:)
+- **Don't flip `bitunix_futures.auto_execute: false → true`** even if a single arm of additional backtesting shifts a number favorably. The verdict-collapse is real and reproducible on the data we have. Paper data is the gate now.
+- **Don't paper over the report's negative finding** in subsequent memos. CLAUDE.md and PROJECT_CONTEXT.md hard-rule honesty-over-narrative; the report's TL;DR and Block C are deliberately framed for that.
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-17 22:30 UTC  *(superseded by 2026-05-18 07:00 above)*
 
 **Two work threads this session: (1) Promote/Demote UX bugs uncovered during smoke test → diagnosed + fixed in two prod deploys (v1 20:36 UTC, v2 21:25 UTC). (2) Strategy review — PMCC test fixture fix, Kalshi crypto post-cutoff review, Kalshi LLM arbitrage performance audit. Closed with a written prompt to spec a new "Kalshi Structure Arb" division.**
 
