@@ -46,7 +46,10 @@ sys.path.insert(0, str(_REPO_ROOT))
 from scripts.backtest_btc_accumulator import (  # noqa: E402
     _ohlcv_cache_path,
     _resample_to_1h,
+    _resample_to_3m,
     _resample_to_4h,
+    _resample_to_5m,
+    _resample_to_15m,
     build_price_context,
     fetch_alerts_from_prod,
     fetch_ohlcv_from_coinbase,
@@ -61,6 +64,11 @@ from trading_corp.agents.strategies.bitunix_confluence import (  # noqa: E402
     evaluate_confluence_futures,
     filter_live_alerts_with_dedupe,
 )
+from trading_corp.agents.strategies.bitunix_confluence_gate import (  # noqa: E402
+    ConfluenceGateConfig,
+    GateDecision,
+    evaluate_confluence_gate,
+)
 from trading_corp.agents.strategies.bitunix_pa_validation import (  # noqa: E402
     PAValidationConfig,
     PAValidationDecision,
@@ -68,6 +76,9 @@ from trading_corp.agents.strategies.bitunix_pa_validation import (  # noqa: E402
 )
 from trading_corp.agents.strategies.btc_accumulator import (  # noqa: E402
     PriceContext,
+)
+from trading_corp.data.bitunix_price_context import (  # noqa: E402
+    build_gate_inputs,
 )
 
 
@@ -175,6 +186,76 @@ class BacktestResult:
     n_pa_passed_with_4h_bonus: int = 0          # 1h-arm only: how many fires got 4h-aligned bonus
     n_fires_premium_4h_aligned: int = 0
     n_fires_standard_4h_aligned: int = 0
+
+    # Confluence-gate Phase C — 5-factor arm tracking. Populated only
+    # when `gate="five_factor"`; PA-arm runs leave these at zero.
+    gate_kind: str = "pa_validation"            # "pa_validation" | "five_factor"
+    n_gate_rejected: int = 0
+    n_gate_passed: int = 0
+    n_gate_disabled: int = 0
+    per_factor_pass_counts: dict = field(default_factory=dict)
+    per_factor_eval_counts: dict = field(default_factory=dict)
+    cvd_fallback_evals: int = 0
+    gate_evals_total: int = 0
+
+    # Phase C profit-factor (gross winners / gross losers) — added so
+    # the comparison report can apply the pre-committed PF threshold.
+    profit_factor: float = 0.0
+
+
+# ── Confluence-gate adapters (Phase C) ──────────────────────────────
+
+
+@dataclass
+class _ShimBar:
+    """Mimics `trading_corp.data.live_bar_cache.Bar` for the gate's
+    `build_gate_inputs`. The backtest works with bar dicts (`ts`, `open`,
+    `high`, `low`, `close`, `volume`); the gate consumer needs `ts_ms`.
+    """
+    ts_ms: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+@dataclass
+class _ShimCache:
+    """Mimics the slice of `LiveBarCache` that `build_gate_inputs` reads."""
+    bars: list
+    timeframe_seconds: int
+
+
+def _shim_cache_at(
+    resampled_bars: list[dict], ts: datetime, timeframe_seconds: int,
+    *, max_bars: int,
+) -> _ShimCache:
+    """Build an as-of-`ts` cache slice from the resampled backtest bars.
+
+    Excludes the in-progress bucket (the one whose start <= ts < end)
+    to mirror live-prod behavior — `LiveBarCache.refresh()` drops the
+    partial latest bar. Returns at most `max_bars` of completed bars.
+    """
+    out: list[_ShimBar] = []
+    ts_ms = int(ts.timestamp() * 1000)
+    for b in resampled_bars:
+        bar_ts_ms = int(b["ts"].timestamp() * 1000)
+        bar_end_ms = bar_ts_ms + timeframe_seconds * 1000
+        # Skip the in-progress bucket — the bar whose interval contains ts
+        if bar_ts_ms <= ts_ms < bar_end_ms:
+            continue
+        # Skip future bars
+        if bar_ts_ms > ts_ms:
+            break
+        out.append(_ShimBar(
+            ts_ms=bar_ts_ms,
+            open=b["open"], high=b["high"], low=b["low"],
+            close=b["close"], volume=b["volume"],
+        ))
+    if len(out) > max_bars:
+        out = out[-max_bars:]
+    return _ShimCache(bars=out, timeframe_seconds=timeframe_seconds)
 
 
 # ── Trade open / resolve ────────────────────────────────────────────
@@ -325,6 +406,21 @@ def run_backtest(
     pa_config: PAValidationConfig | None = None,
     pa_4h_bonus_multiplier: float = 1.0,
     arm_name: str = "",
+    gate: str = "pa_validation",
+    gate_config: ConfluenceGateConfig | None = None,
+    # Hybrid bar source — supply pre-computed 3m/5m/15m bars to skip
+    # resampling from `bars`. Used by --bar-source bybit_hybrid where
+    # the bar sources are native (Bybit 3m+15m from btc_scalping.db,
+    # Bitunix 5m from cache) rather than resampled from 1m Coinbase.
+    bars_3m_override: list[dict] | None = None,
+    bars_5m_override: list[dict] | None = None,
+    bars_15m_override: list[dict] | None = None,
+    # 1m trade-resolution arm (v3 addendum Branch A 2026-05-18). When set,
+    # `resolve_trade` walks these bars instead of `bars`, while entry-price
+    # context (`build_price_context(bars, ...)`) still uses `bars`. Default
+    # (None) preserves the existing semantics where the same bar series
+    # serves both price-context and trade-resolution.
+    resolution_bars: list[dict] | None = None,
 ) -> tuple[list[LedgerEntry], list[PaperTrade], BacktestResult]:
     """Walk alerts chronologically, evaluate scorer at each, open/resolve
     paper trades.
@@ -344,9 +440,36 @@ def run_backtest(
     - `pa_4h_bonus_multiplier` > 1.0 enables 4h-as-size-bonus: when the
       proposal-arm trade fires AND the 4h structure is also aligned with
       the trade side, scale size_pct by the multiplier.
+
+    Phase C — confluence-gate arm:
+    - `gate="pa_validation"` (default): legacy PA-only arm; unchanged.
+    - `gate="five_factor"`: PA replaced with the 5-factor confluence
+      gate (`evaluate_confluence_gate`). Per-factor pass counts +
+      CVD-fallback usage rate tracked on the result. `pa_4h_bonus`
+      and `structure_tf` are ignored on this arm.
     """
+    if gate not in ("pa_validation", "five_factor"):
+        raise ValueError(f"unknown gate {gate!r}")
     bars_4h = _resample_to_4h(bars)
     bars_1h = _resample_to_1h(bars) if structure_tf == "1h" else None
+    # _walk_bars is what resolve_trade walks. Defaults to `bars` (the
+    # legacy single-source path); the 1m arm passes a finer-resolution
+    # series here while leaving entry-price context on `bars`.
+    _walk_bars = resolution_bars if resolution_bars is not None else bars
+
+    # Phase C — resample once up front for the 5f arm. Backtest uses
+    # 1m Coinbase data; live prod feeds the gate native 3m / 5m / 15m
+    # BitUnix klines. Apples-to-apples for the comparison purpose; the
+    # report's caveat section names the data-fidelity gap.
+    bars_3m: list[dict] = []
+    bars_5m: list[dict] = []
+    bars_15m: list[dict] = []
+    if gate == "five_factor":
+        bars_3m = bars_3m_override if bars_3m_override is not None else _resample_to_3m(bars)
+        bars_5m = bars_5m_override if bars_5m_override is not None else _resample_to_5m(bars)
+        bars_15m = bars_15m_override if bars_15m_override is not None else _resample_to_15m(bars)
+        if gate_config is None:
+            gate_config = ConfluenceGateConfig(enabled=True, min_gate_score=3)
 
     if pa_config is None:
         pa_config = PAValidationConfig(
@@ -377,6 +500,14 @@ def run_backtest(
     n_pa_passed_with_4h_bonus = 0
     n_fires_premium_4h_aligned = 0
     n_fires_standard_4h_aligned = 0
+    # Phase C — 5f arm tracking
+    n_gate_rejected = 0
+    n_gate_passed = 0
+    n_gate_disabled = 0
+    gate_evals_total = 0
+    cvd_fallback_evals = 0
+    per_factor_pass_counts: dict[str, int] = {}
+    per_factor_eval_counts: dict[str, int] = {}
 
     fires_by_tier = {t.value: 0 for t in Tier if t != Tier.SKIP}
     fires_by_side = {"buy": 0, "sell": 0}
@@ -390,7 +521,7 @@ def run_backtest(
         # or TP would have hit by now.)
         if open_trade_obj is not None and open_trade_obj.outcome is None:
             # Snapshot pre-alert resolution
-            resolve_trade(open_trade_obj, bars, datetime.fromisoformat(open_trade_obj.open_ts))
+            resolve_trade(open_trade_obj, _walk_bars, datetime.fromisoformat(open_trade_obj.open_ts))
             if open_trade_obj.outcome and open_trade_obj.close_ts:
                 close_dt = datetime.fromisoformat(open_trade_obj.close_ts)
                 if close_dt <= a.ts:
@@ -430,27 +561,69 @@ def run_backtest(
         if verdict.cooldown_blocked:
             n_cooldown_blocked += 1
         elif verdict.tier != Tier.SKIP:
-            # ── PA validation gate (PR-PA-backtest 2026-05-18) ──
-            # For 1h-arm, swap the 4h fields with 1h values on a ctx
-            # copy so evaluate_pa_validation's structure_alignment check
-            # reads 1h HH/LL without modifying the live validator code.
             side_str = "buy" if verdict.side == Side.BUY else "sell"
-            if structure_tf == "1h":
-                from dataclasses import replace
-                pa_ctx = replace(
-                    ctx,
-                    higher_highs_4h=ctx.higher_highs_1h,
-                    lower_lows_4h=ctx.lower_lows_1h,
+
+            # ── Gate (PA validator OR 5-factor confluence) ──
+            gate_reject_reason: str | None = None
+            if gate == "pa_validation":
+                # For 1h-arm, swap the 4h fields with 1h values on a ctx
+                # copy so evaluate_pa_validation's structure_alignment
+                # check reads 1h HH/LL without modifying the live validator
+                # code.
+                if structure_tf == "1h":
+                    from dataclasses import replace
+                    pa_ctx = replace(
+                        ctx,
+                        higher_highs_4h=ctx.higher_highs_1h,
+                        lower_lows_4h=ctx.lower_lows_1h,
+                    )
+                else:
+                    pa_ctx = ctx
+                pa_result = evaluate_pa_validation(
+                    side=side_str, price_ctx=pa_ctx, config=pa_config,
                 )
-            else:
-                pa_ctx = ctx
-            pa_result = evaluate_pa_validation(
-                side=side_str, price_ctx=pa_ctx, config=pa_config,
-            )
-            if pa_result.decision == PAValidationDecision.REJECT:
-                n_pa_rejected += 1
-                # Skip the rest of the trade-open path (mirror prod: PA
-                # reject short-circuits before risk/sizing).
+                if pa_result.decision == PAValidationDecision.REJECT:
+                    n_pa_rejected += 1
+                    gate_reject_reason = f"pa_reject: {pa_result.reason}"
+                else:
+                    n_pa_passed += 1
+            else:  # gate == "five_factor"
+                # Build as-of-ts shim caches with max_bars matching prod.
+                # 5m/15m max_bars chosen to cover gate's longest input;
+                # 3m at 500 mirrors `bitunix_bar_cache.max_bars`.
+                shim_3m = _shim_cache_at(bars_3m, a.ts, 180, max_bars=500)
+                shim_5m = _shim_cache_at(bars_5m, a.ts, 300, max_bars=300)
+                shim_15m = _shim_cache_at(bars_15m, a.ts, 900, max_bars=250)
+                gate_inputs = build_gate_inputs(
+                    shim_3m, shim_5m, shim_15m,
+                    side=side_str, config=gate_config,
+                )
+                gate_result = evaluate_confluence_gate(
+                    side=side_str, inputs=gate_inputs, config=gate_config,
+                )
+                gate_evals_total += 1
+                if gate_result.cvd_fallback_used:
+                    cvd_fallback_evals += 1
+                for f in gate_result.factors:
+                    per_factor_eval_counts[f.name] = (
+                        per_factor_eval_counts.get(f.name, 0) + 1
+                    )
+                    if f.passed:
+                        per_factor_pass_counts[f.name] = (
+                            per_factor_pass_counts.get(f.name, 0) + 1
+                        )
+                if gate_result.decision == GateDecision.REJECT:
+                    n_gate_rejected += 1
+                    gate_reject_reason = (
+                        f"five_factor_reject: {gate_result.reason}"
+                    )
+                elif gate_result.decision == GateDecision.DISABLED:
+                    n_gate_disabled += 1
+                else:
+                    n_gate_passed += 1
+
+            if gate_reject_reason is not None:
+                # Mirror prod: gate reject short-circuits before sizing.
                 ledger.append(LedgerEntry(
                     ts=a.ts.isoformat(),
                     signal_name=a.signal_name,
@@ -463,11 +636,10 @@ def run_backtest(
                     buy_contributions=verdict.breakdown.buy_contributions,
                     sell_contributions=verdict.breakdown.sell_contributions,
                     fired=False, trade_id=None,
-                    reason=f"pa_reject: {pa_result.reason}",
+                    reason=gate_reject_reason,
                 ))
                 equity_curve.append((a.ts, equity))
                 continue
-            n_pa_passed += 1
 
             # Compute 4h alignment for size bonus (1h-arm only). The
             # ORIGINAL ctx's 4h fields are what matters here (not the
@@ -568,7 +740,7 @@ def run_backtest(
 
     # Resolve any still-open trade at the last bar
     if open_trade_obj is not None and open_trade_obj.outcome is None:
-        resolve_trade(open_trade_obj, bars, datetime.fromisoformat(open_trade_obj.open_ts))
+        resolve_trade(open_trade_obj, _walk_bars, datetime.fromisoformat(open_trade_obj.open_ts))
         equity += (open_trade_obj.realized_pnl or 0.0)
 
     # Stats
@@ -582,6 +754,12 @@ def run_backtest(
         sum(t.bars_held for t in trades if t.bars_held is not None)
         / max(1, sum(1 for t in trades if t.bars_held is not None))
     )
+    # Profit factor = gross winners / gross losers (in R units). Used by
+    # the Phase C acceptance gate. Returns 0.0 when there are no losers
+    # (degenerate; the acceptance bar's `n>=20` requirement guards this).
+    gross_win_r = sum(t.realized_r for t in resolved if (t.realized_r or 0) > 0)
+    gross_loss_r = sum(-t.realized_r for t in resolved if (t.realized_r or 0) < 0)
+    profit_factor = (gross_win_r / gross_loss_r) if gross_loss_r > 0 else 0.0
 
     # Drawdown
     peak = starting_equity
@@ -610,6 +788,15 @@ def run_backtest(
         n_pa_passed_with_4h_bonus=n_pa_passed_with_4h_bonus,
         n_fires_premium_4h_aligned=n_fires_premium_4h_aligned,
         n_fires_standard_4h_aligned=n_fires_standard_4h_aligned,
+        gate_kind=gate,
+        n_gate_rejected=n_gate_rejected,
+        n_gate_passed=n_gate_passed,
+        n_gate_disabled=n_gate_disabled,
+        per_factor_pass_counts=per_factor_pass_counts,
+        per_factor_eval_counts=per_factor_eval_counts,
+        cvd_fallback_evals=cvd_fallback_evals,
+        gate_evals_total=gate_evals_total,
+        profit_factor=profit_factor,
         fires_by_tier=fires_by_tier,
         fires_by_side=fires_by_side,
         n_round_trips=len(resolved),
@@ -659,16 +846,27 @@ def write_outputs(
         encoding="utf-8",
     )
 
+    cvd_fb_pct = (
+        (summary.cvd_fallback_evals / summary.gate_evals_total * 100.0)
+        if summary.gate_evals_total > 0 else 0.0
+    )
+    factor_lines: list[str] = []
+    for name, evals in sorted(summary.per_factor_eval_counts.items()):
+        passes = summary.per_factor_pass_counts.get(name, 0)
+        rate = (passes / evals * 100.0) if evals > 0 else 0.0
+        factor_lines.append(f"  - {name}: {passes}/{evals} ({rate:.1f}%)")
+
     md = [
         "# BitUnix Futures — Phase 3.2 Confluence Score Backtest",
         "",
-        f"**Arm:** `{summary.arm_name or '(unnamed)'}` · structure_tf=`{summary.structure_tf}` · pa_4h_bonus={summary.pa_4h_bonus_multiplier:.2f}x",
+        f"**Arm:** `{summary.arm_name or '(unnamed)'}` · structure_tf=`{summary.structure_tf}` · pa_4h_bonus={summary.pa_4h_bonus_multiplier:.2f}x · gate=`{summary.gate_kind}`",
         "",
         "## Verdict",
         f"- **Starting equity:** ${summary.starting_equity:,.2f}",
         f"- **Final equity:** ${summary.final_equity:,.2f}",
         f"- **Return:** {summary.pct_return:+.2f}%",
         f"- **Max drawdown:** {summary.max_drawdown_pct:.2f}%",
+        f"- **Profit factor:** {summary.profit_factor:.2f}",
         "",
         "## Decisions",
         f"- Alerts processed: {summary.n_alerts}",
@@ -679,6 +877,11 @@ def write_outputs(
         f"- **PA rejected: {summary.n_pa_rejected}** ({(summary.n_pa_rejected / max(1, summary.n_pa_rejected + summary.n_pa_passed)) * 100:.1f}% of score-PASS evals)",
         f"- PA passed: {summary.n_pa_passed}",
         f"- PA passed WITH 4h-bonus: {summary.n_pa_passed_with_4h_bonus}  (PREMIUM aligned: {summary.n_fires_premium_4h_aligned} · STANDARD aligned: {summary.n_fires_standard_4h_aligned})",
+        f"- **5f-gate rejected: {summary.n_gate_rejected}** · passed: {summary.n_gate_passed} · disabled: {summary.n_gate_disabled}",
+        f"- CVD fallback used: {summary.cvd_fallback_evals}/{summary.gate_evals_total} ({cvd_fb_pct:.1f}%)",
+        "",
+        "### Per-factor pass rates (5f arm only)",
+        *(factor_lines or ["  - (no 5f evals on this arm)"]),
         "",
         "### Fires by tier",
         *[f"- {tier}: {n}" for tier, n in summary.fires_by_tier.items()],
@@ -711,6 +914,319 @@ def write_outputs(
 # ── CLI ─────────────────────────────────────────────────────────────
 
 
+def _load_bybit_hybrid_inputs(
+    db_path: Path, bitunix_5m_cache: Path, prod_alerts_cache: Path,
+    start: datetime, end: datetime,
+) -> tuple[list[AlertEvent], list[dict], list[dict], list[dict], list[dict]]:
+    """Load prod alerts + Bybit 3m/15m DB bars + cached Bitunix 5m bars.
+
+    Returns (alerts, bars_3m_for_resolution, bars_3m_for_gate, bars_5m, bars_15m).
+
+    bars_3m_for_resolution is what the trade-resolution code walks; it's the
+    same as bars_3m_for_gate in this mode (no separate 1m source).
+    """
+    import sqlite3
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    start_s = int(start.timestamp())
+    end_s = int(end.timestamp())
+
+    def _load(table: str) -> list[dict]:
+        rows = cur.execute(
+            f"SELECT ts, open, high, low, close, volume FROM {table} "
+            f"WHERE ts >= ? AND ts < ? ORDER BY ts",
+            (start_s, end_s),
+        ).fetchall()
+        return [{
+            "ts": datetime.fromtimestamp(ts, tz=timezone.utc),
+            "open": o, "high": h, "low": l, "close": c, "volume": v or 0.0,
+        } for ts, o, h, l, c, v in rows]
+    bars_3m = _load("bars_3m")
+    bars_15m = _load("bars_15m")
+    con.close()
+    log.info("Loaded %d 3m + %d 15m Bybit bars from %s",
+             len(bars_3m), len(bars_15m), db_path)
+
+    # Bitunix 5m cache — JSON list of {ts: ISO string, ...}
+    bx5m_raw = json.loads(bitunix_5m_cache.read_text(encoding="utf-8"))
+    bars_5m: list[dict] = []
+    for b in bx5m_raw:
+        ts_dt = datetime.fromisoformat(b["ts"])
+        if start <= ts_dt < end:
+            bars_5m.append({
+                "ts": ts_dt,
+                "open": b["open"], "high": b["high"], "low": b["low"],
+                "close": b["close"], "volume": b["volume"],
+            })
+    log.info("Loaded %d Bitunix 5m bars from cache (windowed)", len(bars_5m))
+
+    # Prod alerts (already pink_box-filtered at ingest)
+    prod_raw = json.loads(prod_alerts_cache.read_text(encoding="utf-8"))
+    alerts: list[AlertEvent] = []
+    for r in prod_raw:
+        ts_dt = datetime.fromisoformat(r["ts"])
+        if not (start <= ts_dt < end):
+            continue
+        alerts.append(AlertEvent(
+            ts=ts_dt, signal_name=r["signal"], tf=r.get("tf"),
+        ))
+    log.info("Loaded %d prod alerts from %s (windowed, pink_box already filtered)",
+             len(alerts), prod_alerts_cache)
+    return alerts, bars_3m, bars_3m, bars_5m, bars_15m
+
+
+def _run_one_arm(
+    *, alerts, bars, config, args, gate: str, arm_label: str,
+    ts_stamp: str,
+    bars_3m_override=None, bars_5m_override=None, bars_15m_override=None,
+    resolution_bars=None,
+) -> tuple[Path, BacktestResult, list[LedgerEntry]]:
+    ledger, trades, summary = run_backtest(
+        alerts=alerts, bars=bars, config=config,
+        starting_equity=args.starting_equity,
+        structure_tf=args.structure_tf,
+        pa_4h_bonus_multiplier=args.pa_4h_bonus,
+        arm_name=arm_label,
+        gate=gate,
+        bars_3m_override=bars_3m_override,
+        bars_5m_override=bars_5m_override,
+        bars_15m_override=bars_15m_override,
+        resolution_bars=resolution_bars,
+    )
+    if args.output_dir is None:
+        output_dir = (
+            _REPO_ROOT / "data" / "backtest_runs"
+            / f"bitunix_{ts_stamp}_{arm_label}"
+        )
+    else:
+        output_dir = Path(args.output_dir) / arm_label
+    write_outputs(ledger, trades, summary, output_dir)
+    return output_dir, summary, ledger
+
+
+def _crosstab_2x2(
+    pa_ledger: list[LedgerEntry], gate_ledger: list[LedgerEntry],
+) -> dict[str, int]:
+    """Cross-tab fire outcomes by (PA-fire, 5f-fire) at each alert ts."""
+    pa_fire_by_ts = {e.ts: e.fired for e in pa_ledger}
+    gate_fire_by_ts = {e.ts: e.fired for e in gate_ledger}
+    tab = {
+        "both_fire": 0, "pa_only": 0, "gate_only": 0, "neither": 0,
+    }
+    all_ts = set(pa_fire_by_ts) | set(gate_fire_by_ts)
+    for ts in all_ts:
+        p = pa_fire_by_ts.get(ts, False)
+        g = gate_fire_by_ts.get(ts, False)
+        if p and g:
+            tab["both_fire"] += 1
+        elif p:
+            tab["pa_only"] += 1
+        elif g:
+            tab["gate_only"] += 1
+        else:
+            tab["neither"] += 1
+    return tab
+
+
+# Phase C pre-committed acceptance thresholds (Board mod #1, locked
+# before running the backtest). Tightening / loosening these AFTER
+# seeing the numbers is the explicit failure mode this commit blocks.
+ACCEPTANCE_THRESHOLDS = {
+    "min_profit_factor": 1.20,
+    "min_win_rate_pct": 45.0,
+    "min_round_trips": 20,
+    "fire_rate_pct_range": (5.0, 50.0),
+    # Relative bar reported but only blocking when PA n>=20.
+    "relative_total_r_floor_vs_pa": True,
+}
+
+
+def _evaluate_acceptance(
+    gate_summary: BacktestResult, pa_summary: BacktestResult,
+) -> dict:
+    """Apply pre-committed thresholds to the 5f arm. Returns a dict of
+    {check: (passed_bool, value, threshold_str)} plus a top-level
+    `passed_all` bool."""
+    t = ACCEPTANCE_THRESHOLDS
+    fire_rate = (
+        (gate_summary.n_fires / gate_summary.n_alerts * 100.0)
+        if gate_summary.n_alerts > 0 else 0.0
+    )
+    checks = {
+        "profit_factor": (
+            gate_summary.profit_factor >= t["min_profit_factor"],
+            gate_summary.profit_factor,
+            f">= {t['min_profit_factor']:.2f}",
+        ),
+        "win_rate": (
+            gate_summary.win_rate_pct >= t["min_win_rate_pct"],
+            gate_summary.win_rate_pct,
+            f">= {t['min_win_rate_pct']:.1f}%",
+        ),
+        "round_trips": (
+            gate_summary.n_round_trips >= t["min_round_trips"],
+            gate_summary.n_round_trips,
+            f">= {t['min_round_trips']}",
+        ),
+        "fire_rate": (
+            t["fire_rate_pct_range"][0]
+            <= fire_rate
+            <= t["fire_rate_pct_range"][1],
+            fire_rate,
+            f"in [{t['fire_rate_pct_range'][0]:.1f}%, "
+            f"{t['fire_rate_pct_range'][1]:.1f}%]",
+        ),
+    }
+    # Relative gate (informational if PA n<20)
+    pa_n = pa_summary.n_round_trips
+    rel_passed = (
+        gate_summary.total_r >= pa_summary.total_r
+        if pa_n >= 20 else True
+    )
+    rel_note = (
+        f"5f total R {gate_summary.total_r:+.2f} vs PA "
+        f"{pa_summary.total_r:+.2f}"
+        + (f" (informational; PA n={pa_n} < 20)" if pa_n < 20 else "")
+    )
+    checks["relative_total_r"] = (rel_passed, rel_note, ">= PA total R")
+    passed_all = all(v[0] for v in checks.values())
+    return {"checks": checks, "passed_all": passed_all}
+
+
+def _write_comparison_report(
+    *, output_path: Path,
+    pa_summary: BacktestResult, gate_summary: BacktestResult,
+    pa_ledger: list[LedgerEntry], gate_ledger: list[LedgerEntry],
+    start: datetime, end: datetime,
+) -> Path:
+    """Write `reports/gate_backtest_<end_date>.md` — the §11 Backtester
+    deliverable. Applies the pre-committed acceptance thresholds and
+    surfaces the recommendation."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tab = _crosstab_2x2(pa_ledger, gate_ledger)
+    accept = _evaluate_acceptance(gate_summary, pa_summary)
+
+    def _fmt_check(name: str, tup: tuple) -> str:
+        passed, val, thresh = tup
+        mark = "PASS" if passed else "FAIL"
+        if isinstance(val, float):
+            val_s = f"{val:.2f}"
+        else:
+            val_s = str(val)
+        return f"- **{mark}** · {name}: {val_s}  (target: {thresh})"
+
+    cvd_fb_pct = (
+        (gate_summary.cvd_fallback_evals / gate_summary.gate_evals_total
+         * 100.0)
+        if gate_summary.gate_evals_total > 0 else 0.0
+    )
+    factor_rows: list[str] = []
+    for name in sorted(gate_summary.per_factor_eval_counts):
+        evals = gate_summary.per_factor_eval_counts[name]
+        passes = gate_summary.per_factor_pass_counts.get(name, 0)
+        rate = (passes / evals * 100.0) if evals > 0 else 0.0
+        factor_rows.append(f"| {name} | {passes}/{evals} | {rate:.1f}% |")
+
+    tier_rows: list[str] = []
+    for tier in ("PREMIUM", "STANDARD", "WEAK"):
+        pa_n = pa_summary.fires_by_tier.get(tier, 0)
+        gn = gate_summary.fires_by_tier.get(tier, 0)
+        tier_rows.append(f"| {tier} | {pa_n} | {gn} |")
+
+    md = [
+        "# BitUnix Confluence-Gate Backtest — PA vs 5-Factor",
+        "",
+        f"**Window:** {start.date().isoformat()} → {end.date().isoformat()}  ·  "
+        f"**Alerts:** {pa_summary.n_alerts}",
+        "",
+        "## Pre-committed acceptance thresholds (Board mod #1)",
+        "",
+        "These were locked before the backtest ran. Moving them after seeing the",
+        "numbers is the explicit failure mode this report blocks.",
+        "",
+        f"- Profit factor ≥ **{ACCEPTANCE_THRESHOLDS['min_profit_factor']:.2f}**",
+        f"- Win rate ≥ **{ACCEPTANCE_THRESHOLDS['min_win_rate_pct']:.1f}%**",
+        f"- Round-trips ≥ **{ACCEPTANCE_THRESHOLDS['min_round_trips']}** "
+        "(statistical floor)",
+        f"- Fire rate ∈ **[{ACCEPTANCE_THRESHOLDS['fire_rate_pct_range'][0]:.1f}%, "
+        f"{ACCEPTANCE_THRESHOLDS['fire_rate_pct_range'][1]:.1f}%]** of alerts",
+        "- Total R ≥ PA's total R (informational only if PA n < 20)",
+        "",
+        "## Acceptance evaluation (5-factor arm)",
+        "",
+        *(_fmt_check(k, v) for k, v in accept["checks"].items()),
+        "",
+        f"**OVERALL: {'PASS' if accept['passed_all'] else 'FAIL'}**",
+        "",
+        "## Side-by-side summary",
+        "",
+        "| Metric | PA arm | 5-factor arm |",
+        "|---|---|---|",
+        f"| Fires | {pa_summary.n_fires} | {gate_summary.n_fires} |",
+        f"| Round-trips | {pa_summary.n_round_trips} | {gate_summary.n_round_trips} |",
+        f"| Win rate | {pa_summary.win_rate_pct:.1f}% | {gate_summary.win_rate_pct:.1f}% |",
+        f"| Avg R | {pa_summary.avg_r:+.3f} | {gate_summary.avg_r:+.3f} |",
+        f"| Total R | {pa_summary.total_r:+.2f} | {gate_summary.total_r:+.2f} |",
+        f"| Profit factor | {pa_summary.profit_factor:.2f} | {gate_summary.profit_factor:.2f} |",
+        f"| Return % | {pa_summary.pct_return:+.2f}% | {gate_summary.pct_return:+.2f}% |",
+        f"| Max DD % | {pa_summary.max_drawdown_pct:.2f}% | {gate_summary.max_drawdown_pct:.2f}% |",
+        "",
+        "## 2×2 outcome cross-tab",
+        "",
+        "| | 5f fires | 5f rejects |",
+        "|---|---|---|",
+        f"| **PA fires** | {tab['both_fire']} (both agree, fire) | {tab['pa_only']} (PA fires alone) |",
+        f"| **PA rejects** | {tab['gate_only']} (5f catches PA misses) | {tab['neither']} (both agree, skip) |",
+        "",
+        "## Per-factor pass rates (5f arm)",
+        "",
+        "| Factor | Passes / Evals | Rate |",
+        "|---|---|---|",
+        *(factor_rows or ["| (no 5f evals) | — | — |"]),
+        "",
+        f"CVD tick-rule fallback used in **{gate_summary.cvd_fallback_evals}/"
+        f"{gate_summary.gate_evals_total} ({cvd_fb_pct:.1f}%)** of 5f evals "
+        "(expected = 100% for v1; flag flips False only when a future "
+        "trade-stream consumer lands).",
+        "",
+        "## Per-tier fire breakdown",
+        "",
+        "| Tier | PA arm | 5-factor arm |",
+        "|---|---|---|",
+        *tier_rows,
+        "",
+        "## Methodology + caveats",
+        "",
+        "- Alerts pulled from prod `audit_event` `webhook_received` rows over",
+        f"  the window above (resolution: per-alert timestamp).",
+        "- OHLCV: Coinbase BTC/USD 1m (NOT BitUnix futures). Live prod feeds",
+        "  the gate native BitUnix 3m/5m/15m kline. Apples-to-apples for the",
+        "  PA-vs-5f relative comparison; absolute trade outcomes carry a",
+        "  cross-venue volatility-profile fidelity gap.",
+        "- CVD: tick-rule fallback (close-direction sign × bar volume).",
+        "  Aggressor-side data is not available from BitUnix public; v1 of",
+        "  the gate accepts this as a known coarse signal. The dashboard",
+        "  banner (Phase D) surfaces `cvd_fallback_used` to operators.",
+        "- Sizing: per-tier nominal × leverage; effective risk capped at",
+        "  0.5%/trade; daily kill at 3% cumulative.",
+        "- Position model: one open trade at a time; opposite-side signal",
+        "  flips. No funding / fees modeled.",
+        "",
+        "## Recommendation",
+        "",
+        "**Cutover criterion:** all four absolute acceptance checks above must",
+        "PASS, and the relative-R check must PASS (or be informational with",
+        "PA n < 20). The Board records the final cutover decision in",
+        "`runbooks/deploy_log.md`; this report is input, not the decision.",
+        "",
+        f"Status from this run: **{'PASS — proceed to Phase D' if accept['passed_all'] else 'FAIL — hold; iterate gate config or tighten factor inputs before cutover'}**.",
+        "",
+    ]
+    output_path.write_text("\n".join(md), encoding="utf-8")
+    log.info("Wrote comparison report to %s", output_path)
+    return output_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start", required=True, help="UTC start date YYYY-MM-DD")
@@ -731,6 +1247,54 @@ def main() -> None:
     parser.add_argument("--arm-name", default="",
                         help="Free-form label written into the summary "
                              "(e.g. '4h_baseline' or '1h_with_4h_bonus').")
+    parser.add_argument(
+        "--bar-source", choices=["coinbase", "bybit_hybrid"], default="coinbase",
+        help="coinbase = 1m Coinbase + resample (legacy v1.0/v1.1 path). "
+             "bybit_hybrid = Bybit 3m/15m from data/btc_scalping.db + "
+             "cached Bitunix 5m, prod alerts from cache_alerts_prod_filtered_*.json. "
+             "Used by the v1.1 hostile-regime backtest.",
+    )
+    parser.add_argument(
+        "--alert-source", choices=["prod_cache", "synth"], default="prod_cache",
+        help="prod_cache = filtered prod webhook alerts (default; Block A). "
+             "synth = synthesized alerts from btc_scalping.db DB columns via "
+             "scripts/research_scoring/synth_ledger.py (Block B internal-"
+             "consistency check; inherits May 16 alertcondition-gap caveats).",
+    )
+    parser.add_argument(
+        "--prod-alerts-cache", default=None,
+        help="Path to filtered prod-alert JSON cache (--bar-source bybit_hybrid only).",
+    )
+    parser.add_argument(
+        "--bybit-db", default=None,
+        help="Path to data/btc_scalping.db (--bar-source bybit_hybrid only).",
+    )
+    parser.add_argument(
+        "--bitunix-5m-cache", default=None,
+        help="Path to Bitunix 5m OHLCV JSON cache (--bar-source bybit_hybrid only).",
+    )
+    parser.add_argument(
+        "--gate", choices=["pa_validation", "five_factor", "both"],
+        default="pa_validation",
+        help="Gate to evaluate. 'both' runs each arm and writes a "
+             "side-by-side comparison report applying the pre-committed "
+             "Phase C acceptance thresholds.",
+    )
+    parser.add_argument(
+        "--report-path", default=None,
+        help="When --gate=both, the comparison report is written here. "
+             "Default: reports/gate_backtest_<end>.md",
+    )
+    parser.add_argument(
+        "--resolution-tf", choices=["3m", "1m"], default="3m",
+        help="Trade-resolution bar source. Default 3m preserves the v3 "
+             "Block A behavior (uses --bar-source's primary bar series for "
+             "both entry-price context and resolve_trade walk). When 1m "
+             "AND --bar-source=bybit_hybrid, loads bars_1m (Bitunix native "
+             "via scripts/ingest_bitunix_1m_to_db.py) for resolve_trade only; "
+             "entry-price context still uses Bybit 3m. Branch A of the v3 "
+             "addendum 2026-05-18.",
+    )
     args = parser.parse_args()
 
     start = datetime.fromisoformat(args.start + "T00:00:00+00:00")
@@ -746,12 +1310,138 @@ def main() -> None:
         config.min_score_to_fire,
     )
     log.info(
-        "Arm: name=%r  structure_tf=%s  pa_4h_bonus=%.2f",
-        args.arm_name, args.structure_tf, args.pa_4h_bonus,
+        "Arm: name=%r  structure_tf=%s  pa_4h_bonus=%.2f  gate=%s",
+        args.arm_name, args.structure_tf, args.pa_4h_bonus, args.gate,
     )
 
-    alerts = fetch_alerts_from_prod(start, end, refresh=args.refresh)
-    bars = fetch_ohlcv_from_coinbase(start, end, refresh=args.refresh)
+    # Bar source: legacy 1m Coinbase OR Bybit-hybrid (DB 3m/15m + cached Bitunix 5m)
+    bars_3m_override = None
+    bars_5m_override = None
+    bars_15m_override = None
+    if args.bar_source == "bybit_hybrid":
+        need = [args.bybit_db, args.bitunix_5m_cache]
+        if args.alert_source == "prod_cache":
+            need.append(args.prod_alerts_cache)
+        if not all(need):
+            parser.error(
+                "--bar-source bybit_hybrid requires --bybit-db, "
+                "--bitunix-5m-cache; prod_cache alert source also needs --prod-alerts-cache"
+            )
+        # bars come from DB regardless of alert source
+        # Reuse hybrid loader for bars; substitute alerts based on alert_source
+        if args.alert_source == "prod_cache":
+            alerts, bars, bars_3m_override, bars_5m_override, bars_15m_override = (
+                _load_bybit_hybrid_inputs(
+                    Path(args.bybit_db), Path(args.bitunix_5m_cache),
+                    Path(args.prod_alerts_cache), start, end,
+                )
+            )
+        else:  # synth
+            # Load bars via a dummy alert path; substitute synth alerts after
+            _, bars, bars_3m_override, bars_5m_override, bars_15m_override = (
+                _load_bybit_hybrid_inputs(
+                    Path(args.bybit_db), Path(args.bitunix_5m_cache),
+                    # Dummy: use any valid prod cache path; alerts get overwritten below
+                    Path(args.prod_alerts_cache) if args.prod_alerts_cache
+                    else Path(_REPO_ROOT / "data" / "historical_alerts"
+                              / "cache_alerts_20260430_20260517.json"),
+                    start, end,
+                )
+            )
+            # Load synth alerts via research_scoring/synth_ledger
+            import sys as _sys
+            _sys.path.insert(0, str(_REPO_ROOT / "scripts" / "research_scoring"))
+            from synth_ledger import load_synth_ledger  # noqa: E402
+            synth_alerts = load_synth_ledger(Path(args.bybit_db))
+            alerts = [
+                AlertEvent(ts=a.ts, signal_name=a.signal_name, tf=a.tf)
+                for a in synth_alerts if start <= a.ts < end
+            ]
+            log.info(
+                "Loaded %d synth alerts (windowed) — May 16 alertcondition-gap "
+                "caveats apply (reports/scoring_backtest_results.md L15-25)",
+                len(alerts),
+            )
+    else:
+        alerts = fetch_alerts_from_prod(start, end, refresh=args.refresh)
+        bars = fetch_ohlcv_from_coinbase(start, end, refresh=args.refresh)
+
+    # --resolution-tf 1m: load bars_1m for the resolve_trade walk while
+    # leaving `bars` (entry-price context) untouched. Only supported in
+    # bybit_hybrid mode today; the Coinbase path is already at 1m so the
+    # arm is meaningless there.
+    resolution_bars = None
+    if args.resolution_tf == "1m":
+        if args.bar_source != "bybit_hybrid":
+            parser.error(
+                "--resolution-tf 1m requires --bar-source bybit_hybrid "
+                "(Coinbase path is already at 1m resolution)"
+            )
+        import sqlite3
+        con = sqlite3.connect(args.bybit_db)
+        try:
+            cur = con.cursor()
+            try:
+                rows = cur.execute(
+                    "SELECT ts, open, high, low, close, volume "
+                    "FROM bars_1m WHERE ts >= ? AND ts < ? ORDER BY ts",
+                    (int(start.timestamp()), int(end.timestamp())),
+                ).fetchall()
+            except sqlite3.OperationalError as e:
+                parser.error(
+                    f"bars_1m table missing or unreadable in {args.bybit_db}: {e}\n"
+                    "Run scripts/ingest_bitunix_1m_to_db.py first."
+                )
+        finally:
+            con.close()
+        resolution_bars = [{
+            "ts": datetime.fromtimestamp(ts, tz=timezone.utc),
+            "open": o, "high": h, "low": l, "close": c, "volume": v or 0.0,
+        } for ts, o, h, l, c, v in rows]
+        log.info(
+            "Loaded %d bars_1m (Bitunix native) for trade resolution "
+            "(entry price still from %d %s bars)",
+            len(resolution_bars), len(bars), args.bar_source,
+        )
+
+    ts_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+    if args.gate == "both":
+        pa_dir, pa_summary, pa_ledger = _run_one_arm(
+            alerts=alerts, bars=bars, config=config, args=args,
+            gate="pa_validation", arm_label=args.arm_name or "pa",
+            ts_stamp=ts_stamp,
+            bars_3m_override=bars_3m_override,
+            bars_5m_override=bars_5m_override,
+            bars_15m_override=bars_15m_override,
+            resolution_bars=resolution_bars,
+        )
+        gate_dir, gate_summary, gate_ledger = _run_one_arm(
+            alerts=alerts, bars=bars, config=config, args=args,
+            gate="five_factor", arm_label="five_factor",
+            ts_stamp=ts_stamp,
+            bars_3m_override=bars_3m_override,
+            bars_5m_override=bars_5m_override,
+            bars_15m_override=bars_15m_override,
+            resolution_bars=resolution_bars,
+        )
+        if args.report_path:
+            report_path = Path(args.report_path)
+        else:
+            report_path = (
+                _REPO_ROOT / "reports"
+                / f"gate_backtest_{end.date().isoformat()}.md"
+            )
+        written = _write_comparison_report(
+            output_path=report_path,
+            pa_summary=pa_summary, gate_summary=gate_summary,
+            pa_ledger=pa_ledger, gate_ledger=gate_ledger,
+            start=start, end=end,
+        )
+        print(f"\nPA arm     : {pa_dir / 'summary.md'}")
+        print(f"5f arm     : {gate_dir / 'summary.md'}")
+        print(f"Comparison : {written}")
+        return
 
     ledger, trades, summary = run_backtest(
         alerts=alerts, bars=bars, config=config,
@@ -759,21 +1449,24 @@ def main() -> None:
         structure_tf=args.structure_tf,
         pa_4h_bonus_multiplier=args.pa_4h_bonus,
         arm_name=args.arm_name,
+        gate=args.gate,
+        bars_3m_override=bars_3m_override,
+        bars_5m_override=bars_5m_override,
+        bars_15m_override=bars_15m_override,
+        resolution_bars=resolution_bars,
     )
 
     if args.output_dir is None:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        suffix = f"_{args.arm_name}" if args.arm_name else ""
-        output_dir = _REPO_ROOT / "data" / "backtest_runs" / f"bitunix_{ts}{suffix}"
+        suffix = f"_{args.arm_name}" if args.arm_name else f"_{args.gate}"
+        output_dir = _REPO_ROOT / "data" / "backtest_runs" / f"bitunix_{ts_stamp}{suffix}"
     else:
         output_dir = Path(args.output_dir)
 
     write_outputs(ledger, trades, summary, output_dir)
     print(f"\nVerdict written to {output_dir / 'summary.md'}")
-    print(f"  Arm: {summary.arm_name}  |  structure_tf={summary.structure_tf}  |  4h-bonus={summary.pa_4h_bonus_multiplier:.2f}")
-    print(f"  PA rejected: {summary.n_pa_rejected}  |  PA passed: {summary.n_pa_passed}  |  (with 4h bonus: {summary.n_pa_passed_with_4h_bonus})")
+    print(f"  Arm: {summary.arm_name}  |  gate={summary.gate_kind}  |  structure_tf={summary.structure_tf}")
     print(f"  Trades: {summary.n_fires}  |  Round-trips: {summary.n_round_trips}")
-    print(f"  Win rate: {summary.win_rate_pct:.1f}%  |  Avg R: {summary.avg_r:+.3f}  |  Total R: {summary.total_r:+.2f}")
+    print(f"  Win rate: {summary.win_rate_pct:.1f}%  |  PF: {summary.profit_factor:.2f}  |  Total R: {summary.total_r:+.2f}")
     print(f"  Return: {summary.pct_return:+.2f}%  |  Max DD: {summary.max_drawdown_pct:.2f}%")
 
 

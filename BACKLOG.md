@@ -8,7 +8,93 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-18 12:30 UTC  *(supersedes 2026-05-18 07:00 + 2026-05-17 22:30 + 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+## END-OF-SESSION SNAPSHOT — 2026-05-18 14:30 UTC  *(supersedes 2026-05-18 12:30 + 07:00 + 2026-05-17 22:30 + 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+
+**One work thread this session: BitUnix Gate v1.1 — Branch A (1m-Bitunix trade-resolution addendum) to disambiguate the v3 bar-fidelity-vs-over-fit hypotheses. Picked up after a python-launcher OOM crash that killed the prior session mid-write. All Branch A deliverables verified on disk (cache, table, runs, addendum, memo § 8 update). v1.1 is now formally PARKED pending paper data — no further local backtest experiments planned. No prod changes. No commits this session (working tree has Branch A's untracked + modified files; commit-or-not decision is the User's).**
+
+### Branch A — what landed (uncommitted; all on disk)
+
+**Headline:** Same v1.1 gate, same prod alerts, same entry-price context (Bybit 3m) — swap only the trade-resolution walk to Bitunix 1m bars. **PF 1.14 → 1.30 (+0.16). WR 31.2% → 35.5% (+4.3 pp).** PF crosses the Phase C 1.20 acceptance bar for the first time on Bitunix-proximate data; WR + fire-rate still fail. 2 of 30 shared trades shifted L/timeout → TP; SL count fell 18 → 17. The asymmetric resolution-statistics caveat (named pre-run) did NOT manifest on this 17d window.
+
+**Three-outcome read (per pre-run framing):** Closest to outcome 1 (H1 partially supported, real but modest). H1 alone cannot bridge the ~1.3-PF / ~20-pp-WR gap to v1.1/Coinbase (PF 2.63 / WR 54.8%). The residual is what H2 (cross-venue alert-time price, CVD-fallback artifacts, gate-input-bar-source artifacts, or over-fit) would need to account for.
+
+**Files touched (additive, no breaking changes):**
+
+```
+NEW   scripts/ingest_bitunix_1m_to_db.py        — JSON cache → bars_1m UPSERT
+NEW   scripts/verify_bars_1m_alignment.py       — cross-venue alignment vs bars_3m
+NEW   data/historical_alerts/cache_ohlcv_bitunix_1m_20260430_20260517.json  — 24,442 bars
+NEW   data/btc_scalping.db :: bars_1m           — 7-col OHLCV subset, 24,442 rows
+NEW   data/backtest_runs/bitunix_20260518T142023_baseline_3m_repro/   — 3m re-baseline
+NEW   data/backtest_runs/bitunix_20260518T142136_resolution_1m_bitunix/ — 1m arm
+M     scripts/backtest_bitunix_confluence.py    — resolution_bars param + --resolution-tf {3m,1m}
+M     reports/gate_backtest_2026-05-17_v3_bybit_hybrid.md — § Addendum (Branch A) appended
+M     docs/memos/2026-05-17_gate_v1.1_state_of_knowledge.md — § 8 framing update + Status → PARKED
+```
+
+Also touched (existing-from-earlier, still untracked): `scripts/fetch_bitunix_5m_history.py` (already supports `--interval 1m`).
+
+### Cross-venue alignment
+
+bars_1m (Bitunix native REST) vs bars_3m (BYBIT_BTCUSDT.P via TV CSV) at 3-minute boundaries, 7,745 + 7,741 paired close+open observations over the 17d window: **median |Δ| = 0.53 bps, p95 = 1.57 bps, max = 11.56 bps, outliers >10 bps = 1 / 15,486 (~0.006%)**. Single outlier (2026-05-07T02:30) doesn't touch either outcome-shifted trade. Cross-venue resolution is tight but not zero — recorded as a known caveat in the addendum's "Cross-venue confound" section.
+
+### Test baseline
+
+`tests/test_backtest_bitunix_confluence_five_factor.py` + `test_bitunix_confluence_gate.py` + `test_bitunix_gate_inputs.py` = **78 / 78 pass in 0.36s.** The `resolution_bars` parameter defaults to None which falls back to the legacy `bars` walk, preserving the test fixtures' default-path behavior.
+
+### v1.1 formally PARKED — what that means
+
+- The state-of-knowledge memo's status line is now `PARKED`. The active investigation is paused.
+- **No further local backtest experiments are planned.** Branch A was the only remaining 1-2h disambiguation lever the v3 report's Block C identified; it has been run.
+- The next data gate is **paper-mode shadow PF over a 60-day window**, on the **[1.14, 2.63] expected-PF prior** specified in memo § 8 (with central tendency near the middle, not at either extreme). Reading shadow data on a binary prior would mis-attribute partial outcomes.
+- The Phase 4 live-broker gate (`BitunixBroker.place_order` REST + auto_execute_caps harmonization with the webhook path per CLAUDE.md § 1) is unchanged and is downstream of positive-EV paper data.
+- Re-open the memo when paper data lands, OR earlier if someone proposes a non-backtest disambiguation (real Bybit CVD via WebSocket trade-stream; regime-classifier layer; explicit cross-venue entry-price test).
+
+### Service health at session end
+
+- Prod **untouched** this session. Still on the 2026-05-17 21:25 UTC code (Polymarket promote/demote v2). bitunix_futures observer remains in shadow mode (`scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True`) with `auto_execute: false`. No live `BitunixBroker.place_order`.
+- Local: no new commits. Working tree carries Branch A's modified + untracked files alongside the unchanged parallel-session WIP (Kalshi Structure Arb, Kalshi LLM cuts, Polymarket v2 routes, BitUnix Phase B, IC v1 deferred 5 files).
+
+### kalshi_structure_arb / IC v1 coordination note (as previously specified)
+
+Branch A's working tree changes do **NOT** touch any of the five IC v1 deferred files. The coordination structure from the 2026-05-18 12:30 wrap remains valid and unchanged:
+
+| File | Parallel session that owns it | Branch A touched? |
+|------|-------------------------------|-------------------|
+| `config/divisions.yaml` | Kalshi Structure Arb | NO |
+| `config/strategies.yaml` | Kalshi LLM + Kalshi Structure Arb | NO |
+| `trading_corp/main.py` | BitUnix Phase B + Kalshi Structure Arb | NO |
+| `tests/test_boot_smoke.py` | BitUnix Phase B | NO |
+| `trading_corp/web/routes.py` | Polymarket promote/demote v2 | NO |
+
+**Consequences for the next session pickup:**
+
+1. Branch A's files can be committed as a standalone BitUnix-backtest commit (4 modifications + 2 new scripts + 1 new JSON cache + 1 new SQLite table + 2 new run dirs + 1 addendum + 1 memo update) without disturbing any parallel session's working state. Suggested commit message scope: `backtest: gate v1.1 Branch A addendum — 1m Bitunix trade-resolution (PF 1.14 → 1.30)`.
+2. With v1.1 PARKED, the **next-highest-EV unblocked work item is `kalshi_structure_arb` backtest** per the 2026-05-17 22:30 wrap's standing priority. The full prompt remains in `runbooks/session_start_2026_05_18.md` and is intact. Backtester approval required before any prod code lands (CLAUDE.md § 4). The Kalshi Structure Arb session is the same session that owns `config/divisions.yaml` + `config/strategies.yaml` + the main.py loop — landing it would also unblock IC v1's deconfliction on those three files.
+3. The IC v1 5-file deconfliction sequence is unchanged: parallel sessions commit first, then IC's deltas layer on top via `git diff HEAD -- <file>`. **Don't attempt surgical extraction across no-touch boundaries** — the auto-classifier denies it (see 2026-05-18 12:30 wrap § Critical guardrail).
+4. The IC v1 workstream (`session_start_2026_05_19_ic_v1.md`) is unchanged by this session; it picks up from the 12:30 UTC wrap, not from this snapshot.
+
+### Tomorrow's pickup candidates (ordered)
+
+1. **(BitUnix branch — closed)** Branch A is the last local lever the v3 report identified. v1.1 is PARKED. Until paper data lands, this branch has no in-session work.
+2. **kalshi_structure_arb backtest** — now the highest-EV unblocked item per § coordination note above. Full prompt in `runbooks/session_start_2026_05_18.md`. ~2-4h with backtest + Board memo; narrower if just the backtest pass first.
+3. **IC v1 5-file deconfliction** (`session_start_2026_05_19_ic_v1.md`) — gated on the parallel sessions committing first. The Kalshi Structure Arb session is the most-constraint-unlocking one because it owns 3 of the 5 shared files.
+4. **Standing kalshi cuts** — US-release ticker blacklist, max_divergence_pct cap, residual Sci/Tech leak, min_horizon_hours: 4 for crypto-arb. Bundle into the kalshi_structure_arb deploy if scope allows.
+5. **Investigate the BSOD / OOM pattern.** 4 crashes in 4 sessions during BitUnix backtest work (3 BSODs + 1 python-launcher OOM that killed this session). Possibly correlated with sustained az vm run-command load OR with large-DB sqlite3 reads during the backtest walk. Not in scope for any current branch; flag if a 5th occurs.
+
+### Things to NOT do without explicit approval
+
+(Same list as 2026-05-18 12:30 wrap, plus this session's additions:)
+
+- **Don't re-open v1.1 backtest experiments** without a concrete non-backtest disambiguation hypothesis. Branch A was the last lever; further backtest variants would just tighten estimates of the wrong quantity. The next data gate is paper.
+- **Don't bundle Branch A's commit with parallel-session content.** Branch A's working-tree changes are clean across all 5 IC-v1-deferred files; keeping the commit scope tight preserves that property for the parallel sessions' future deconfliction work.
+- **Don't change the [1.14, 2.63] expected-PF prior in the cutover memo to a binary either/or framing.** Memo § 8 documents why — paper data should be expected to land in the central interval, not at either extreme. Mis-framing the prior would mis-attribute partial outcomes.
+- **Don't paper over Branch A's modest H1 support as "v1.1 is back."** PF 1.30 still fails WR + fire-rate on the most-favorable trade-resolution arm available locally. v1.1 has not earned a cutover-eligible result on Bitunix-proximate data.
+- (All prior session don'ts still apply: don't flip bitunix_futures.auto_execute true; don't paper over the v3 negative finding; don't deploy via `patch -p1` over `routes.py` without CRLF normalization; don't deploy a strategy without Backtester approval — except IC v1, where Backtester is permanently out of scope per Board decision.)
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-18 12:30 UTC  *(superseded by 2026-05-18 14:30 above)*
 
 **One work thread this session: Robinhood Joint Iron Condor v1 (paper-mode) — recovery of a lost design session after a PC OOM crash, followed by partial commit of the IC v1 code locally. No prod changes. Five files deferred due to parallel-session contamination (Kalshi LLM + Kalshi Structure Arb + Polymarket promote/demote v2 + BitUnix Phase B confluence-gate). IC v1 code is INERT in the repo until the 5 deferred files land via coordinated commits.**
 
