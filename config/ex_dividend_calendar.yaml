@@ -1,0 +1,169 @@
+# Ex-dividend dates for ETF universe symbols used by the
+# Robinhood-joint iron-condor strategy.
+#
+# Phase 1: hand-maintained. The iron-condor Position Manager force-closes
+# any open IC where the short call delta > 0.25 AND the underlying's ex-div
+# date is within 3 trading days — to avoid early assignment on the call.
+#
+# Phase 1.5 (not in v1): auto-fetch from issuer pages so this file
+# refreshes itself.
+#
+# Schema:
+#   - symbol:    ticker (str, upper case)
+#     ex_date:   YYYY-MM-DD — the trading-day-side ex-dividend date
+#     pay_date:  YYYY-MM-DD — informational only; not used by the
+#                force-close logic, but useful for audit/reconciliation
+#     confirmed: bool — true if sourced from issuer's published 2026
+#                schedule; false if projected from historical pattern
+#     source:    short attribution string
+#
+# Coverage notes:
+#   SPY  — SPDR (SSGA): quarterly. All four 2026 dates confirmed from the
+#          SSGA "Calendar Year 2026 Dividend Distribution Schedule" PDF.
+#   QQQ  — Invesco: quarterly. Q1 + Q2 confirmed from public dividend
+#          trackers; Q3 + Q4 projected from Invesco's typical third-Monday
+#          (or first business day of week 3) pattern.
+#   IWM  — iShares: quarterly. Q1 + Q2 confirmed; Q3 + Q4 projected from
+#          iShares' historical third-Monday pattern.
+#   TLT  — iShares: monthly. Issuer-stated rule is "first business day of
+#          each month." May and June 2026 confirmed via tracker sources;
+#          the rest are extrapolated by that rule. Adjusted for weekends
+#          (e.g. Aug 1 Sat → Aug 3 Mon; Nov 1 Sun → Nov 2 Mon) and the
+#          New Year's Day market holiday (Jan 1 Thu → Jan 2 Fri).
+#   GLD  — World Gold Trust: no regular dividends and no scheduled
+#          capital gains distributions. Intentionally empty for v1.
+#          GLD holds physical gold bullion; the trust generates no
+#          dividend income or capital gains. Revisit if SSGA ever
+#          declares a special distribution.
+
+ex_dividends:
+  # ── SPY (SSGA, quarterly — all 4 confirmed) ─────────────────────────
+  - symbol: SPY
+    ex_date: "2026-03-20"
+    pay_date: "2026-04-30"
+    confirmed: true
+    source: "SSGA 2026 Dividend Distribution Schedule"
+  - symbol: SPY
+    ex_date: "2026-06-18"
+    pay_date: "2026-07-31"
+    confirmed: true
+    source: "SSGA 2026 Dividend Distribution Schedule"
+  - symbol: SPY
+    ex_date: "2026-09-18"
+    pay_date: "2026-10-30"
+    confirmed: true
+    source: "SSGA 2026 Dividend Distribution Schedule"
+  - symbol: SPY
+    ex_date: "2026-12-18"
+    pay_date: "2027-01-29"
+    confirmed: true
+    source: "SSGA 2026 Dividend Distribution Schedule"
+
+  # ── QQQ (Invesco, quarterly) ────────────────────────────────────────
+  - symbol: QQQ
+    ex_date: "2026-03-23"
+    pay_date: "2026-03-27"
+    confirmed: true
+    source: "Invesco / public dividend trackers"
+  - symbol: QQQ
+    ex_date: "2026-06-22"
+    pay_date: "2026-07-09"
+    confirmed: true
+    source: "Invesco / public dividend trackers"
+  - symbol: QQQ
+    ex_date: "2026-09-21"
+    pay_date: ""
+    confirmed: false
+    source: "projected — Invesco third-Monday pattern"
+  - symbol: QQQ
+    ex_date: "2026-12-21"
+    pay_date: ""
+    confirmed: false
+    source: "projected — Invesco third-Monday pattern"
+
+  # ── IWM (iShares, quarterly) ────────────────────────────────────────
+  - symbol: IWM
+    ex_date: "2026-03-17"
+    pay_date: ""
+    confirmed: true
+    source: "iShares / public dividend trackers"
+  - symbol: IWM
+    ex_date: "2026-06-15"
+    pay_date: "2026-06-18"
+    confirmed: true
+    source: "iShares / public dividend trackers"
+  - symbol: IWM
+    ex_date: "2026-09-21"
+    pay_date: ""
+    confirmed: false
+    source: "projected — iShares third-Monday pattern"
+  - symbol: IWM
+    ex_date: "2026-12-21"
+    pay_date: ""
+    confirmed: false
+    source: "projected — iShares third-Monday pattern"
+
+  # ── TLT (iShares, monthly — first business day) ─────────────────────
+  - symbol: TLT
+    ex_date: "2026-01-02"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day (Jan 1 = New Year's Day holiday)"
+  - symbol: TLT
+    ex_date: "2026-02-02"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day (Feb 1 = Sunday)"
+  - symbol: TLT
+    ex_date: "2026-03-02"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day (Mar 1 = Sunday)"
+  - symbol: TLT
+    ex_date: "2026-04-01"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day"
+  - symbol: TLT
+    ex_date: "2026-05-01"
+    pay_date: ""
+    confirmed: true
+    source: "iShares / public dividend trackers"
+  - symbol: TLT
+    ex_date: "2026-06-01"
+    pay_date: "2026-06-04"
+    confirmed: true
+    source: "iShares / public dividend trackers"
+  - symbol: TLT
+    ex_date: "2026-07-01"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day"
+  - symbol: TLT
+    ex_date: "2026-08-03"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day (Aug 1 = Saturday)"
+  - symbol: TLT
+    ex_date: "2026-09-01"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day"
+  - symbol: TLT
+    ex_date: "2026-10-01"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day"
+  - symbol: TLT
+    ex_date: "2026-11-02"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day (Nov 1 = Sunday)"
+  - symbol: TLT
+    ex_date: "2026-12-01"
+    pay_date: ""
+    confirmed: false
+    source: "projected — first business day"
+
+  # ── GLD (World Gold Trust) ──────────────────────────────────────────
+  # Intentionally empty — see preamble.

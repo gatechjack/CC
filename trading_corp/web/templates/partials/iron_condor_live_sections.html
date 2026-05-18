@@ -1,0 +1,245 @@
+{# Sections 1, 3, 5 — refreshed every 30s via htmx #}
+
+{# ──────────────────────── Section 5: Strategy Health ──────────────────────── #}
+<section class="bg-pane border border-edge rounded-lg p-4 mb-4">
+  <header class="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      5 · Strategy Health
+    </h2>
+  </header>
+  <dl class="grid grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-1 text-xs font-mono">
+    <dt class="text-muted">enabled</dt>
+    <dd class="{% if health.enabled %}text-gain{% else %}text-loss{% endif %}">
+      {{ health.enabled }}
+    </dd>
+    <dt class="text-muted">auto_execute</dt>
+    <dd class="{% if health.auto_execute %}text-loss{% else %}text-gain{% endif %}">
+      {{ health.auto_execute }}{% if not health.auto_execute %} (HITL){% endif %}
+    </dd>
+    <dt class="text-muted">consecutive_losses</dt>
+    <dd>{{ health.circuit_breaker.consecutive_losses }}</dd>
+    <dt class="text-muted">paused_until</dt>
+    <dd class="{% if health.circuit_breaker.is_paused %}text-loss{% endif %}">
+      {{ health.circuit_breaker.paused_until or '—' }}
+    </dd>
+    <dt class="text-muted">drawdown_hwm</dt>
+    <dd>{{ health.circuit_breaker.drawdown_hwm or '—' }}</dd>
+    <dt class="text-muted">VIX</dt>
+    <dd class="{% if health.vix_gate_firing %}text-loss{% endif %}">
+      {{ "%.2f"|format(health.vix) if health.vix is not none else '—' }}
+      {% if health.vix_gate_firing %} (>30 — gate firing){% endif %}
+    </dd>
+    <dt class="text-muted">macro_halt</dt>
+    <dd class="{% if health.macro_halt.in_halt_window %}text-loss{% endif %}">
+      {% if health.macro_halt.in_halt_window %}
+        IN WINDOW: {{ health.macro_halt.next_event.name }}
+        ({{ health.macro_halt.next_event.ts }})
+      {% else %}
+        clear
+      {% endif %}
+    </dd>
+    <dt class="text-muted">agent_state updated</dt>
+    <dd>{{ health.agent_state_updated_at or '—' }}</dd>
+    <dt class="text-muted">last manage audit</dt>
+    <dd>{{ health.last_manage_audit_ts or '—' }}</dd>
+    <dt class="text-muted">last scan telemetry day</dt>
+    <dd>{{ health.last_scan_telemetry_day or '—' }}</dd>
+    <dt class="text-muted">open_ics (state)</dt>
+    <dd>{{ health.state_consistency.open_ics_in_agent_state }}</dd>
+    <dt class="text-muted">open combos (db)</dt>
+    <dd class="{% if not health.state_consistency.agrees %}text-loss{% endif %}">
+      {{ health.state_consistency.distinct_open_combos_in_position_table }}
+      {% if not health.state_consistency.agrees %} (MISMATCH){% endif %}
+    </dd>
+  </dl>
+  <details class="mt-3">
+    <summary class="text-[11px] text-muted font-mono cursor-pointer">wiring</summary>
+    <pre class="text-[11px] font-mono mt-2 whitespace-pre-wrap">{{ health.wiring | tojson(indent=2) }}</pre>
+  </details>
+</section>
+
+{# ──────────────────────── Section 1: Open Positions ──────────────────────── #}
+<section class="bg-pane border border-edge rounded-lg p-4 mb-4">
+  <header class="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      1 · Open Positions ({{ positions|length }})
+    </h2>
+  </header>
+  {% if not positions %}
+    <div class="text-muted text-xs font-mono py-6 text-center">
+      No open ICs.
+    </div>
+  {% else %}
+    {% for pos in positions %}
+      <article class="border border-edge rounded-lg p-3 mb-3 bg-pane-2/30">
+        <header class="flex items-baseline justify-between gap-3 flex-wrap mb-2">
+          <div class="flex items-baseline gap-3 flex-wrap text-xs font-mono">
+            <span class="text-mono font-semibold">{{ pos.symbol }}</span>
+            <span class="text-muted">combo {{ pos.short_id }}</span>
+            <span class="text-muted">opened {{ pos.opened_ts }}</span>
+            <span>DTE {{ pos.dte_remaining if pos.dte_remaining is not none else '—' }}</span>
+            <span>adj {{ pos.adjustment_count }}</span>
+            <span>contracts {{ pos.contracts }}</span>
+            <span>cadence {{ pos.position_manager_cadence_sec }}s</span>
+            <span class="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider
+                         {% if pos.tested_side == 'call' or pos.tested_side == 'put' %}
+                           bg-warn/15 text-warn border border-warn/30
+                         {% else %}
+                           bg-gain/15 text-gain border border-gain/30
+                         {% endif %}">
+              tested: {{ pos.tested_side }}
+            </span>
+          </div>
+          {% if pos.pnl_dollars is not none %}
+            <div class="text-mono text-sm
+                        {% if pos.pnl_dollars >= 0 %}text-gain{% else %}text-loss{% endif %}">
+              {% if pos.pnl_dollars >= 0 %}+{% endif %}${{ "%.2f"|format(pos.pnl_dollars) }}
+              <span class="text-[11px] text-muted">
+                ({{ "%.1f"|format(pos.pnl_pct_of_credit) }}% of credit)
+              </span>
+            </div>
+          {% endif %}
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs font-mono">
+          {# Entry context #}
+          <dl class="space-y-0.5">
+            <dt class="text-[11px] text-muted uppercase tracking-wider">Entry</dt>
+            <dd>IVR {{ pos.ivr_at_entry or '—' }}</dd>
+            <dd>credit ${{ "%.2f"|format(pos.credit_at_entry_per_share) }}/sh
+                · ${{ "%.2f"|format(pos.credit_at_entry_dollars) }} total</dd>
+            <dd>wings ${{ pos.wing_width }}</dd>
+            <dd>expiry {{ pos.expiration }}</dd>
+          </dl>
+          {# Current state #}
+          <dl class="space-y-0.5">
+            <dt class="text-[11px] text-muted uppercase tracking-wider">Current</dt>
+            <dd>spot ${{ "%.2f"|format(pos.spot) if pos.spot is not none else '—' }}</dd>
+            <dd>short call {{ pos.short_call_strike }}
+                {% if pos.short_call_current_delta is not none %}
+                  (Δ {{ "%.2f"|format(pos.short_call_current_delta) }})
+                {% endif %}
+                {% if pos.short_call_distance_pct is not none %}
+                  · {{ "%.1f"|format(pos.short_call_distance_pct) }}% from spot
+                {% endif %}
+            </dd>
+            <dd>short put {{ pos.short_put_strike }}
+                {% if pos.short_put_current_delta is not none %}
+                  (Δ {{ "%.2f"|format(pos.short_put_current_delta) }})
+                {% endif %}
+                {% if pos.short_put_distance_pct is not none %}
+                  · {{ "%.1f"|format(pos.short_put_distance_pct) }}% from spot
+                {% endif %}
+            </dd>
+            <dd>combo mark
+                {% if pos.current_combo_mark_per_share is not none %}
+                  {% if pos.current_combo_mark_per_share >= 0 %}+{% endif %}${{ "%.2f"|format(pos.current_combo_mark_per_share) }}/sh
+                {% else %}—{% endif %}
+            </dd>
+            <dd>P&L of max-loss:
+                {% if pos.pnl_pct_of_max_loss is not none %}
+                  {{ "%.1f"|format(pos.pnl_pct_of_max_loss) }}%
+                {% else %}—{% endif %}
+            </dd>
+          </dl>
+          {# Approaching triggers #}
+          <dl class="space-y-0.5">
+            <dt class="text-[11px] text-muted uppercase tracking-wider">Approaching triggers</dt>
+            <dd>to 50% profit:
+                {% if pos.distance_to_profit_per_share is not none %}
+                  ${{ "%.2f"|format(pos.distance_to_profit_per_share) }}/sh
+                {% else %}—{% endif %}
+            </dd>
+            <dd>to -200% hard stop:
+                {% if pos.distance_to_hard_stop_per_share is not none %}
+                  ${{ "%.2f"|format(pos.distance_to_hard_stop_per_share) }}/sh
+                {% else %}—{% endif %}
+            </dd>
+            <dd>DTE to 21:
+                {% if pos.dte_distance_to_21 is not none %}
+                  {{ pos.dte_distance_to_21 }} days
+                {% else %}—{% endif %}
+            </dd>
+            <dd>DTE to 7:
+                {% if pos.dte_distance_to_7 is not none %}
+                  {{ pos.dte_distance_to_7 }} days
+                {% else %}—{% endif %}
+            </dd>
+            <dd>next ex-div: {{ pos.ex_div_next or '—' }}
+                {% if pos.ex_div_trading_days_until is not none %}
+                  ({{ pos.ex_div_trading_days_until }} td)
+                {% endif %}
+                {% if pos.ex_div_short_call_at_risk %}
+                  <span class="text-warn">· short call Δ>0.25</span>
+                {% endif %}
+            </dd>
+            {% if pos.days_until_resume is not none %}
+              <dd class="text-loss">PAUSED — resume in {{ "%.1f"|format(pos.days_until_resume) }}d</dd>
+            {% endif %}
+          </dl>
+        </div>
+
+        {# Session contribution + legs JSON dump #}
+        <div class="mt-2 text-[11px] font-mono">
+          session_start ({{ pos.session_start_date or '—' }}):
+          {% if pos.session_pnl_dollars is not none %}
+            {% if pos.session_pnl_dollars >= 0 %}+{% endif %}${{ "%.2f"|format(pos.session_pnl_dollars) }}
+            ({% if pos.session_pnl_per_share >= 0 %}+{% endif %}${{ "%.2f"|format(pos.session_pnl_per_share) }}/sh)
+          {% else %} — not yet captured today{% endif %}
+        </div>
+        <details class="mt-2">
+          <summary class="text-[11px] text-muted font-mono cursor-pointer">legs (raw)</summary>
+          <pre class="text-[11px] font-mono mt-2 whitespace-pre-wrap">{{ pos.legs | tojson(indent=2) }}</pre>
+        </details>
+      </article>
+    {% endfor %}
+  {% endif %}
+</section>
+
+{# ──────────────────────── Section 3: Pending Approvals ──────────────────────── #}
+<section class="bg-pane border border-edge rounded-lg p-4 mb-4">
+  <header class="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      3 · Pending Approvals ({{ pending.entries|length }})
+    </h2>
+    {% if pending.telegram_queue.pending_count %}
+      <span class="text-[11px] font-mono text-warn">
+        Telegram batcher queued: {{ pending.telegram_queue.pending_count }}
+      </span>
+    {% endif %}
+  </header>
+  {% if not pending.entries %}
+    <div class="text-muted text-xs font-mono py-4 text-center">
+      No combos awaiting Board approval.
+    </div>
+  {% else %}
+    <ul class="divide-y divide-edge -mx-4">
+      {% for e in pending.entries %}
+        <li class="px-4 py-2">
+          <a href="{{ e.detail_url }}" class="block hover:bg-pane-2 -mx-2 px-2 py-1 rounded">
+            <div class="flex items-baseline justify-between gap-3 flex-wrap">
+              <div class="text-xs font-mono">
+                <span class="text-mono font-semibold">{{ e.symbol }}</span>
+                <span class="text-muted">· {{ e.intent }}</span>
+                <span class="text-muted">· combo {{ e.short_id }}</span>
+                <span class="text-muted">· {{ e.direction }} ${{ "%.2f"|format(e.net_limit_price) }}</span>
+                <span class="text-muted">· {{ e.contracts }} contracts</span>
+                <span class="text-muted">· waiting {{ "%.0f"|format(e.age_sec) }}s</span>
+              </div>
+              <span class="text-accent text-xs font-mono">Review →</span>
+            </div>
+            <details class="mt-1">
+              <summary class="text-[11px] text-muted font-mono cursor-pointer">legs</summary>
+              <pre class="text-[11px] font-mono mt-2 whitespace-pre-wrap">{{ e.legs | tojson(indent=2) }}</pre>
+            </details>
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+
+{# ──────────────────────── Refresh timestamp ──────────────────────── #}
+<div class="text-[10px] text-muted font-mono text-right mb-2">
+  live sections refreshed: {{ refreshed_at }}
+</div>

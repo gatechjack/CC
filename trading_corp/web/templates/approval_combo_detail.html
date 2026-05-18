@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Combo {{ view.short_id }} — Trading Corp{% endblock %}
+
+{% block content %}
+<section class="bg-pane border border-edge rounded-lg p-4 mb-4">
+  <header class="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
+    <div class="flex items-baseline gap-2 flex-wrap">
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider
+                   bg-warn/15 text-warn border border-warn/30">
+        combo
+      </span>
+      <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+        IC {{ view.intent_label }} · {{ view.symbol or '—' }}
+      </h2>
+    </div>
+    <span class="text-[11px] text-muted font-mono uppercase tracking-wider whitespace-nowrap">
+      combo {{ view.short_id }} · {{ view.added_at | et_hms }}
+    </span>
+  </header>
+
+  <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs font-mono mb-4">
+    <dt class="text-muted">Strategy</dt>
+    <dd class="text-mono">{{ view.strategy }}</dd>
+    <dt class="text-muted">Division</dt>
+    <dd class="text-mono">{{ view.division }}</dd>
+    <dt class="text-muted">Direction</dt>
+    <dd class="text-mono uppercase">{{ view.direction or '—' }}</dd>
+    <dt class="text-muted">
+      {% if view.direction == 'credit' %}
+        Net credit{% if view.intent == 'adjustment_1' %} added{% endif %}
+      {% else %}
+        Net debit{% if view.intent == 'adjustment_1' %} paid{% endif %}
+      {% endif %}
+    </dt>
+    <dd class="text-mono">
+      {% if view.net_price is not none %}
+        ${{ "%.2f"|format(view.net_price) }} × {{ view.contracts }} contract{{ '' if view.contracts == 1 else 's' }}
+      {% else %}
+        —
+      {% endif %}
+    </dd>
+  </dl>
+
+  {% for group in view.leg_groups %}
+    <div class="mb-3">
+      <h3 class="text-[11px] text-muted font-mono uppercase tracking-wider mb-2">
+        {{ group.label }}
+      </h3>
+      <ul class="divide-y divide-edge -mx-4">
+        {% for leg in group.legs %}
+          <li class="py-2 px-4 flex items-baseline justify-between gap-3">
+            <div class="min-w-0 flex-1 flex items-baseline gap-3 flex-wrap font-mono text-xs">
+              <span class="text-muted w-28">{{ leg.role_label }}</span>
+              <span class="text-mono">{{ leg.side_label }}</span>
+              <span class="text-mono">{{ leg.strike | strike }} {{ leg.option_type|upper }}</span>
+              <span class="text-muted">@ ${{ "%.2f"|format(leg.limit_price or 0) }}</span>
+              <span class="text-muted">{{ leg.expiration }}</span>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endfor %}
+
+  <form method="post"
+        action="/approvals/combos/{{ view.combo_id }}/decide"
+        class="mt-4 flex items-center gap-2 flex-wrap">
+    <button type="submit" name="decision" value="approve"
+            class="px-3 py-1.5 rounded bg-gain/15 text-gain border border-gain/30
+                   text-xs font-mono uppercase tracking-wider
+                   hover:bg-gain/25 transition-colors">
+      Approve combo
+    </button>
+    <button type="submit" name="decision" value="reject"
+            class="px-3 py-1.5 rounded bg-loss/15 text-loss border border-loss/30
+                   text-xs font-mono uppercase tracking-wider
+                   hover:bg-loss/25 transition-colors">
+      Reject
+    </button>
+    <a href="/approvals" class="text-muted text-xs font-mono ml-2 hover:underline">
+      ← back to pending list
+    </a>
+  </form>
+</section>
+{% endblock %}

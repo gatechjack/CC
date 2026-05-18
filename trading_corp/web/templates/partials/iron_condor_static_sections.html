@@ -1,0 +1,149 @@
+{# Sections 2, 4, 6 — render on page load only #}
+
+{# ──────────────────────── Section 4: Today's Scan Results ──────────────────────── #}
+<section class="bg-pane border border-edge rounded-lg p-4 mb-4">
+  <header class="mb-3">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      4 · Today's Scan Results
+    </h2>
+  </header>
+  <div class="overflow-x-auto">
+    <table class="w-full text-xs font-mono">
+      <thead class="text-[10px] uppercase tracking-wider text-muted">
+        <tr class="border-b border-edge">
+          <th class="text-left py-1 pr-3">Sym</th>
+          <th class="text-left py-1 pr-3">Scanned</th>
+          <th class="text-right py-1 pr-3">IVR%</th>
+          <th class="text-right py-1 pr-3">ATM IV 45d</th>
+          <th class="text-right py-1 pr-3">ATM IV 75d</th>
+          <th class="text-right py-1 pr-3">Term spread</th>
+          <th class="text-right py-1 pr-3">Filtered</th>
+          <th class="text-right py-1 pr-3">Proposed</th>
+          <th class="text-left py-1">Filter reasons</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in scan_results %}
+          <tr class="border-b border-edge/40">
+            <td class="py-1 pr-3 font-semibold">{{ row.symbol }}</td>
+            <td class="py-1 pr-3">{{ "yes" if row.scanned else "no" }}</td>
+            <td class="py-1 pr-3 text-right">
+              {% if row.current_ivr_pct is not none %}{{ "%.1f"|format(row.current_ivr_pct) }}{% else %}—{% endif %}
+            </td>
+            <td class="py-1 pr-3 text-right">
+              {% if row.current_atm_iv_45dte is not none %}{{ "%.3f"|format(row.current_atm_iv_45dte) }}{% else %}—{% endif %}
+            </td>
+            <td class="py-1 pr-3 text-right">
+              {% if row.current_atm_iv_75dte is not none %}{{ "%.3f"|format(row.current_atm_iv_75dte) }}{% else %}—{% endif %}
+            </td>
+            <td class="py-1 pr-3 text-right">
+              {% if row.term_structure_spread is not none %}
+                <span class="{% if row.term_structure_spread > 0.05 %}text-warn{% endif %}">
+                  {{ "%+.3f"|format(row.term_structure_spread) }}
+                </span>
+              {% else %}—{% endif %}
+            </td>
+            <td class="py-1 pr-3 text-right">{{ row.filtered_total }}</td>
+            <td class="py-1 pr-3 text-right">{{ row.combos_proposed }}</td>
+            <td class="py-1 text-muted">
+              {% for r, n in row.filter_reasons.items() %}
+                <code>{{ r }}={{ n }}</code>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{# ──────────────────────── Section 6: Last 10 Closed Combos ──────────────────────── #}
+<section class="bg-pane border border-edge rounded-lg p-4 mb-4">
+  <header class="mb-3">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      6 · Last 10 Closed Combos
+    </h2>
+  </header>
+  {% if not closed %}
+    <div class="text-muted text-xs font-mono py-4 text-center">No closed combos yet.</div>
+  {% else %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs font-mono">
+        <thead class="text-[10px] uppercase tracking-wider text-muted">
+          <tr class="border-b border-edge">
+            <th class="text-left py-1 pr-3">Closed</th>
+            <th class="text-left py-1 pr-3">Combo</th>
+            <th class="text-left py-1 pr-3">Sym</th>
+            <th class="text-right py-1 pr-3">IVR</th>
+            <th class="text-right py-1 pr-3">Credit</th>
+            <th class="text-right py-1 pr-3">Realized $</th>
+            <th class="text-right py-1 pr-3">% credit</th>
+            <th class="text-left py-1 pr-3">Close kind</th>
+            <th class="text-right py-1">Adj</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in closed %}
+            <tr class="border-b border-edge/40">
+              <td class="py-1 pr-3">{{ c.closed_ts }}</td>
+              <td class="py-1 pr-3">{{ c.short_id }}</td>
+              <td class="py-1 pr-3 font-semibold">{{ c.symbol }}</td>
+              <td class="py-1 pr-3 text-right">{{ c.ivr_at_entry or '—' }}</td>
+              <td class="py-1 pr-3 text-right">${{ "%.2f"|format(c.credit_at_entry) }}</td>
+              <td class="py-1 pr-3 text-right
+                  {% if c.realized_pnl_dollars >= 0 %}text-gain{% else %}text-loss{% endif %}">
+                {% if c.realized_pnl_dollars >= 0 %}+{% endif %}${{ "%.2f"|format(c.realized_pnl_dollars) }}
+              </td>
+              <td class="py-1 pr-3 text-right">
+                {% if c.realized_pct_of_credit is not none %}
+                  {{ "%.0f"|format(c.realized_pct_of_credit) }}%
+                {% else %}—{% endif %}
+              </td>
+              <td class="py-1 pr-3">{{ c.close_kind }}</td>
+              <td class="py-1 text-right">{{ c.adjustment_count }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>
+
+{# ──────────────────────── Section 2: Recent Activity Feed ──────────────────────── #}
+<section class="bg-pane border border-edge rounded-lg p-4 mb-4">
+  <header class="mb-3">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      2 · Recent Activity ({{ activity|length }} events)
+    </h2>
+  </header>
+  {% if not activity %}
+    <div class="text-muted text-xs font-mono py-4 text-center">No audit activity yet.</div>
+  {% else %}
+    <ul class="divide-y divide-edge -mx-4">
+      {% for e in activity %}
+        <li class="px-4 py-2">
+          <div class="flex items-baseline gap-3 flex-wrap text-xs font-mono">
+            <span class="text-muted whitespace-nowrap">{{ e.ts }}</span>
+            <span class="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider
+                {% if e.severity == 'high' %}
+                  bg-loss/15 text-loss border border-loss/30
+                {% elif e.severity == 'warning' %}
+                  bg-warn/15 text-warn border border-warn/30
+                {% else %}
+                  bg-pane-2 text-muted border border-edge
+                {% endif %}">
+              {{ e.kind }}
+            </span>
+            {% if e.symbol %}<span>{{ e.symbol }}</span>{% endif %}
+            {% if e.combo_id %}<span class="text-muted">combo {{ e.combo_id[:8] }}</span>{% endif %}
+            <span class="text-muted">actor {{ e.actor }}</span>
+          </div>
+          <details class="mt-1">
+            <summary class="text-[10px] text-muted font-mono cursor-pointer">payload</summary>
+            <pre class="text-[10px] font-mono mt-1 whitespace-pre-wrap text-muted">{{ e.payload | tojson(indent=2) }}</pre>
+          </details>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
