@@ -31,36 +31,64 @@
     <ul class="divide-y divide-edge -mx-4">
       {% for row in rows %}
         <li>
-          <a href="/approvals/{{ row.primary_order_id }}"
-             class="block py-3 px-4 hover:bg-pane-2 transition-colors">
-            <div class="flex items-baseline justify-between gap-3">
-              <div class="min-w-0 flex-1">
-                <div class="flex items-baseline gap-2 flex-wrap">
-                  {% if row.is_paired %}
+          {% if row.kind == 'combo' %}
+            {# Iron-condor combo row — link to combo detail by combo_id #}
+            <a href="/approvals/combos/{{ row.combo_id }}"
+               class="block py-3 px-4 hover:bg-pane-2 transition-colors">
+              <div class="flex items-baseline justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-baseline gap-2 flex-wrap">
                     <span class="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider
-                                 bg-accent/15 text-accent border border-accent/30 whitespace-nowrap">
-                      paired
+                                 bg-warn/15 text-warn border border-warn/30 whitespace-nowrap">
+                      combo
                     </span>
-                  {% endif %}
-                  <div class="text-mono text-sm truncate">
-                    {{ row.summary | default('(no summary)', true) }}
+                    <div class="text-mono text-sm truncate">
+                      {{ row.summary | default('(no summary)', true) }}
+                    </div>
+                  </div>
+                  <div class="text-[11px] text-muted font-mono mt-1">
+                    <span>{{ row.division | default('—', true) }}</span>
+                    <span class="mx-1">·</span>
+                    <span>{{ row.combo_leg_count }} legs · combo {{ row.combo_short_id }}</span>
+                    <span class="mx-1">·</span>
+                    <span>{{ row.added_at | et_hms }}</span>
                   </div>
                 </div>
-                <div class="text-[11px] text-muted font-mono mt-1">
-                  <span>{{ row.division | default('—', true) }}</span>
-                  <span class="mx-1">·</span>
-                  {% if row.is_paired %}
-                    <span>{{ row.entries|length }} legs · pair {{ row.pair_id }}</span>
-                  {% else %}
-                    <span>{{ row.primary_order_id[:12] }}…</span>
-                  {% endif %}
-                  <span class="mx-1">·</span>
-                  <span>{{ row.added_at | et_hms }}</span>
-                </div>
+                <span class="text-accent text-xs font-mono shrink-0 whitespace-nowrap">Review →</span>
               </div>
-              <span class="text-accent text-xs font-mono shrink-0 whitespace-nowrap">Review →</span>
-            </div>
-          </a>
+            </a>
+          {% else %}
+            <a href="/approvals/{{ row.primary_order_id }}"
+               class="block py-3 px-4 hover:bg-pane-2 transition-colors">
+              <div class="flex items-baseline justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-baseline gap-2 flex-wrap">
+                    {% if row.is_paired %}
+                      <span class="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider
+                                   bg-accent/15 text-accent border border-accent/30 whitespace-nowrap">
+                        paired
+                      </span>
+                    {% endif %}
+                    <div class="text-mono text-sm truncate">
+                      {{ row.summary | default('(no summary)', true) }}
+                    </div>
+                  </div>
+                  <div class="text-[11px] text-muted font-mono mt-1">
+                    <span>{{ row.division | default('—', true) }}</span>
+                    <span class="mx-1">·</span>
+                    {% if row.is_paired %}
+                      <span>{{ row.entries|length }} legs · pair {{ row.pair_id }}</span>
+                    {% else %}
+                      <span>{{ row.primary_order_id[:12] }}…</span>
+                    {% endif %}
+                    <span class="mx-1">·</span>
+                    <span>{{ row.added_at | et_hms }}</span>
+                  </div>
+                </div>
+                <span class="text-accent text-xs font-mono shrink-0 whitespace-nowrap">Review →</span>
+              </div>
+            </a>
+          {% endif %}
         </li>
       {% endfor %}
     </ul>

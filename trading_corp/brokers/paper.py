@@ -11,8 +11,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
-from trading_corp.brokers.base import AccountSnapshot, Broker
+from trading_corp.brokers.base import AccountSnapshot, Broker, validate_combo_cohesion
 from trading_corp.persistence.models import FillEvent, Position, ProposedOrder
+
+# Default per-leg adverse slippage when the strategy doesn't set
+# `extra.paper_per_leg_slippage_dollars`. Matches
+# config/strategies.yaml: robinhood_joint_iron_condor.paper_simulation.
+_DEFAULT_PAPER_PER_LEG_SLIPPAGE = 0.03
 
 log = logging.getLogger(__name__)
 
@@ -207,3 +212,148 @@ class PaperExecutionBroker(Broker):
         if hasattr(self._live, "get_calls_for_expiry"):
             return await self._live.get_calls_for_expiry(symbol, expiry)  # type: ignore[attr-defined]
         return []
+
+    async def get_puts_for_expiry(self, symbol: str, expiry: str) -> list[dict]:
+        if hasattr(self._live, "get_puts_for_expiry"):
+            return await self._live.get_puts_for_expiry(symbol, expiry)  # type: ignore[attr-defined]
+        return []
+
+    # ------------------------------------------------------------------
+    # Multi-leg combo simulation
+    #
+    # PaperExecutionBroker simulates combo execution locally rather than
+    # routing to Robinhood paper accounts (the venue's combo handling
+    # for paper is unverified and the design doc resolves this question
+    # by keeping the simulator in-process). Slippage model:
+    #
+    #   sell leg fill = mid - slippage
+    #   buy  leg fill = mid + slippage
+    #
+    # `mid` is read via self._live.get_option_greeks(option_id); falls
+    # back to order.limit_price when the option_id isn't stashed in
+    # extra or the live read fails. The combo fills only when the
+    # simulated net credit/debit satisfies the combo's net_limit_price.
+    #
+    # FillEvents are returned but PaperBroker's internal _positions
+    # dict is NOT updated: stock-shaped position tracking conflates with
+    # option positions, and IC position state is tracked in agent_state
+    # by the strategy. The audit trail comes from the structured log.info
+    # lines below, which step 7's data_exec.place_combo promotes to a
+    # real audit_event row.
+    # ------------------------------------------------------------------
+
+    async def place_multi_leg(
+        self, orders: list[ProposedOrder]
+    ) -> list[FillEvent]:
+        if not orders:
+            return []
+
+        combo = validate_combo_cohesion(orders)
+        slippage = float(
+            (orders[0].extra or {}).get(
+                "paper_per_leg_slippage_dollars",
+                _DEFAULT_PAPER_PER_LEG_SLIPPAGE,
+            )
+        )
+
+        # Resolve simulated fill price per leg.
+        sim_fills: list[tuple[ProposedOrder, float, float | None]] = []
+        for o in orders:
+            ex = o.extra or {}
+            option_id = ex.get("option_id")
+            mid: float | None = None
+            if option_id and hasattr(self._live, "get_option_greeks"):
+                try:
+                    gk = await self._live.get_option_greeks(option_id)
+                    raw_mid = gk.get("mark_price") if gk else None
+                    if raw_mid is not None:
+                        mid = float(raw_mid)
+                except Exception as e:
+                    log.warning(
+                        "PaperExecutionBroker: get_option_greeks(%s) failed "
+                        "for combo %s leg: %s — falling back to limit_price",
+                        option_id, combo.combo_id, e,
+                    )
+                    mid = None
+            if mid is None or mid <= 0:
+                # Fall back to per-leg limit_price; this still lets the
+                # simulator exercise the audit/HITL path even without a
+                # live quote source.
+                mid = float(o.limit_price or 0)
+            # Adverse slippage based on the leg's action (buy/sell), NOT
+            # on combo role — closes flip the action vs opens.
+            sim = mid - slippage if o.side == "sell" else mid + slippage
+            sim_fills.append((o, sim, mid))
+
+        # Signed cashflow: + means we received cash net (collected
+        # premium); - means we paid net (debit). Per-share / per-contract
+        # units; matches the per-share units that robin_stocks's `price`
+        # argument expects and that net_limit_price carries.
+        cashflow = 0.0
+        for o, sim_price, _ in sim_fills:
+            ratio = int((o.extra or {}).get("ratio_quantity", 1))
+            signed = sim_price if o.side == "sell" else -sim_price
+            cashflow += signed * ratio
+
+        # Translate to direction-specific actual + satisfaction check.
+        # Tiny epsilon absorbs float-precision drift on the "exactly at
+        # limit" boundary — at 1e-9 it's six orders of magnitude below
+        # a penny, so it never gives away meaningful money.
+        _EPS = 1e-9
+        if combo.direction == "credit":
+            actual = cashflow                     # expected > 0
+            satisfied = actual >= combo.net_limit - _EPS
+        else:
+            actual = -cashflow                    # debit-as-positive
+            satisfied = actual <= combo.net_limit + _EPS
+
+        actual_vs_limit_slippage_dollars = abs(actual - combo.net_limit)
+
+        if not satisfied:
+            log.info(
+                "paper_combo_unfilled combo=%s direction=%s actual=%.4f "
+                "limit=%.4f slippage_per_leg=%.4f legs=%d",
+                combo.combo_id, combo.direction, actual,
+                combo.net_limit, slippage, len(orders),
+            )
+            return []
+
+        fill_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        fills: list[FillEvent] = [
+            FillEvent(
+                order_id=o.id,
+                symbol=o.symbol,
+                side=o.side,
+                qty=float(o.qty),
+                price=sim_price,
+                ts=fill_ts,
+                venue="paper-exec",
+            )
+            for o, sim_price, _ in sim_fills
+        ]
+
+        log.info(
+            "paper_combo_filled combo=%s direction=%s actual=%.4f "
+            "limit=%.4f actual_vs_limit_slippage_dollars=%.4f "
+            "slippage_per_leg=%.4f legs=%d",
+            combo.combo_id, combo.direction, actual, combo.net_limit,
+            actual_vs_limit_slippage_dollars, slippage, len(orders),
+        )
+        return fills
+
+    async def get_option_greeks(
+        self, option_id: str
+    ) -> dict[str, float | None]:
+        """Pass-through to the wrapped live broker's Greeks lookup.
+
+        If the wrapped broker doesn't expose Greeks (e.g., a PaperBroker
+        with no real quote source), returns all-None — caller treats as
+        "undetermined" and the IC strategy's tested-side identification
+        returns 'neither' (no adjustment fires).
+        """
+        if hasattr(self._live, "get_option_greeks"):
+            return await self._live.get_option_greeks(option_id)
+        return {
+            "delta": None, "gamma": None, "theta": None,
+            "vega": None,  "iv": None,    "mark_price": None,
+        }

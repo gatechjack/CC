@@ -74,6 +74,21 @@ class WebDeps:
     # observer to consult it before passing trades through the gate.
     bitunix_htf_provider: Any = None  # BitUnixHTFContextProvider | None
 
+    # Phase IC1 (2026-05-17): Robinhood Joint Iron Condor strategy
+    # + division shell. The web app's HITL approval handler reads
+    # `ic_strategy` (the strategy module) when a Board approve POST
+    # arrives on a combo, and calls
+    # `_ic_orchestration.dispatch_approved_ic_combo(...)` to fire
+    # `data_exec.place_combo` + the state callback in one chain.
+    # The batcher is per-strategy so other strategies can share or
+    # bring their own.
+    ic_division: Any = None             # RobinhoodJointAgent | None
+    ic_strategy: Any = None             # RobinhoodJointIronCondorAgent | None
+    ic_telegram_batcher: Any = None     # TelegramBatcher | None
+    pending_combo_registry: Any = None  # PendingComboRegistry | None — read
+                                        # by /approvals routes to render +
+                                        # resolve combo approval cards.
+
 
 def create_app(deps: WebDeps) -> FastAPI:
     """Build the FastAPI app and wire routes."""

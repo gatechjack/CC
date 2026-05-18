@@ -106,3 +106,16 @@ overrides:
     per_trade_risk_pct: 1.0
     per_strategy_daily_loss_pct: 1.0
     max_drawdown_disabled: true
+
+  # Robinhood Joint Iron Condor — 45 DTE neutral premium-selling on
+  # ETFs (SPY/QQQ/IWM/GLD/TLT). Defined-risk math: max loss per condor
+  # = (wing_width × 100 − credit) × contracts. The strategy sizes each
+  # leg under the per-trade cap independently; the existing per-leg
+  # risk gate in agents/risk.py is sufficient (no multi-leg combo
+  # extension needed — see step 5 design doc).
+  #
+  # 5% per-trade is the iron-condor max-loss-per-condor cap; the
+  # strategy also enforces max_concurrent and max_correlated in
+  # strategies.yaml so portfolio-wide deployment stays bounded.
+  robinhood_joint_iron_condor:
+    per_trade_risk_pct: 0.05

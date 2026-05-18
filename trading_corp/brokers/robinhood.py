@@ -31,7 +31,7 @@ import re
 from datetime import date, datetime, timezone
 from threading import Lock
 
-from trading_corp.brokers.base import AccountSnapshot, Broker
+from trading_corp.brokers.base import AccountSnapshot, Broker, validate_combo_cohesion
 from trading_corp.persistence.models import FillEvent, Position, ProposedOrder
 
 log = logging.getLogger(__name__)
@@ -550,10 +550,20 @@ class RobinhoodBroker(Broker):
         return sorted(chain.get("expiration_dates") or [])
 
     async def get_calls_for_expiry(self, symbol: str, expiry: str) -> list[dict]:
-        """All call options for `symbol` expiring on `expiry` with greeks +
-        liquidity fields used by PMCCAgent's gates.
+        """All call options for `symbol` expiring on `expiry`. See
+        `_options_for_expiry` for the row shape."""
+        return await self._options_for_expiry(symbol, expiry, "call")
 
-        Each item:
+    async def get_puts_for_expiry(self, symbol: str, expiry: str) -> list[dict]:
+        """All put options for `symbol` expiring on `expiry`. See
+        `_options_for_expiry` for the row shape. Added for the
+        iron-condor strategy's put-side chain reads."""
+        return await self._options_for_expiry(symbol, expiry, "put")
+
+    async def _options_for_expiry(
+        self, symbol: str, expiry: str, option_type: str
+    ) -> list[dict]:
+        """Shared chain-read implementation for calls and puts. Each item:
           option_id, expiration_date, strike_price, delta, mark_price,
           bid, ask, bid_size, ask_size, dte,
           open_interest, volume, implied_volatility, theta, gamma, vega.
@@ -562,7 +572,7 @@ class RobinhoodBroker(Broker):
         import robin_stocks.robinhood as rs  # type: ignore
 
         raw = await asyncio.to_thread(
-            rs.options.find_options_by_expiration, [symbol], expiry, "call"
+            rs.options.find_options_by_expiration, [symbol], expiry, option_type,
         ) or []
         dte = _days_to_expiry(expiry)
 
@@ -578,10 +588,10 @@ class RobinhoodBroker(Broker):
             except (TypeError, ValueError):
                 return 0
 
-        calls = []
+        out = []
         for opt in raw:
             mark_raw = opt.get("adjusted_mark_price") or opt.get("mark_price")
-            calls.append({
+            out.append({
                 "option_id": opt.get("id") or opt.get("option_id") or "",
                 "expiration_date": expiry,
                 "strike_price": float(opt.get("strike_price") or 0),
@@ -601,7 +611,7 @@ class RobinhoodBroker(Broker):
                 "gamma": _f(opt.get("gamma")),
                 "vega": _f(opt.get("vega")),
             })
-        return calls
+        return out
 
     # ------------------------------------------------------------------
     # Order placement
@@ -651,6 +661,19 @@ class RobinhoodBroker(Broker):
     async def _place_option_order(self, order: ProposedOrder) -> FillEvent:
         import robin_stocks.robinhood as rs  # type: ignore
         extra = order.extra or {}
+        if extra.get("is_multi_leg"):
+            # Programming guard: combo legs must NEVER be placed one at a
+            # time. The iron-condor strategy submits 4 ProposedOrders
+            # sharing a combo_id; data_exec.place_combo() aggregates and
+            # calls broker.place_multi_leg(orders). If a leg ever reaches
+            # this single-leg path, it would partially open the combo and
+            # leave naked exposure — fail fast instead.
+            raise ValueError(
+                f"order {order.id} is a multi-leg combo leg "
+                f"(combo_id={extra.get('combo_id')!r}); use "
+                "broker.place_multi_leg(orders) — never _place_option_order "
+                "on a single leg."
+            )
         underlying = extra.get("underlying", order.symbol)
         expiry = extra.get("expiration", "")
         strike = float(extra.get("strike") or 0)
@@ -695,6 +718,145 @@ class RobinhoodBroker(Broker):
         import robin_stocks.robinhood as rs  # type: ignore
         result = await asyncio.to_thread(rs.orders.cancel_option_order, order_id)
         return bool(result)
+
+    # ------------------------------------------------------------------
+    # Multi-leg combo orders (iron condor, vertical spreads, etc.)
+    # ------------------------------------------------------------------
+
+    async def place_multi_leg(
+        self, orders: list[ProposedOrder]
+    ) -> list[FillEvent]:
+        """Submit a multi-leg option combo via robin_stocks.order_option_spread.
+
+        All `orders` must share `extra["combo_id"]`, `combo_direction`
+        ("credit" | "debit"), `net_limit_price`, `underlying`, and `qty`.
+        Each leg supplies its own `expiration`, `strike`, `option_type`,
+        `position_effect` ("open" | "close"), `side` ("buy" | "sell"),
+        and optional `ratio_quantity` (defaults to 1).
+
+        Robinhood's combo engine fills all legs atomically (single
+        ref_id, single POST) or rejects the whole order — no naked-leg
+        execution window. Returns one FillEvent per input order; per-leg
+        fill prices are best-effort (combo-level net is authoritative
+        for P&L).
+        """
+        self._require_connected()
+        if not orders:
+            return []
+
+        combo = validate_combo_cohesion(orders)
+
+        # Build the spread[] list in robin_stocks's expected shape.
+        spread: list[dict] = []
+        for o in orders:
+            ex = o.extra or {}
+            for required in ("expiration", "strike", "option_type", "position_effect"):
+                if required not in ex:
+                    raise ValueError(
+                        f"leg missing required extra key {required!r} "
+                        f"in combo {combo.combo_id!r}"
+                    )
+            spread.append({
+                "expirationDate": ex["expiration"],
+                "strike": float(ex["strike"]),
+                "optionType": ex["option_type"],
+                "effect": ex["position_effect"],
+                "action": o.side,                                  # "buy" | "sell"
+                "ratio_quantity": int(ex.get("ratio_quantity", 1)),
+            })
+
+        import robin_stocks.robinhood as rs  # type: ignore
+        acct = self._account_number or None
+
+        result = await asyncio.to_thread(
+            rs.orders.order_option_spread,
+            combo.direction,
+            combo.net_limit,
+            combo.underlying,
+            combo.quantity,
+            spread,
+            account_number=acct,
+            timeInForce="gfd",     # day-only — matches PMCC; no resting GTC
+        )
+
+        result = result or {}
+        legs_result = result.get("legs") or []
+        fill_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        fills: list[FillEvent] = []
+        for i, o in enumerate(orders):
+            # Best-effort per-leg fill price. Sources, in priority order:
+            #  1. legs_result[i]["price"]                — if RH echoes per leg
+            #  2. legs_result[i]["executions"][0]["price"]  — alt shape
+            #  3. order.limit_price                      — fallback
+            leg_price = None
+            if i < len(legs_result):
+                leg = legs_result[i] or {}
+                leg_price = leg.get("price")
+                if leg_price is None:
+                    execs = leg.get("executions") or []
+                    if execs and isinstance(execs, list):
+                        leg_price = (execs[0] or {}).get("price")
+            try:
+                price_f = float(leg_price) if leg_price is not None else float(o.limit_price or 0)
+            except (TypeError, ValueError):
+                price_f = float(o.limit_price or 0)
+
+            fills.append(FillEvent(
+                order_id=o.id,
+                symbol=o.symbol,
+                side=o.side,
+                qty=float(o.qty),
+                price=price_f,
+                ts=fill_ts,
+                venue="robinhood",
+            ))
+        return fills
+
+    async def get_option_greeks(
+        self, option_id: str
+    ) -> dict[str, float | None]:
+        """Return delta, gamma, theta, vega, iv, mark_price for an option.
+
+        Thin wrapper over robin_stocks.options.get_option_market_data_by_id.
+        Already used internally by get_option_positions_detail (line ~509);
+        this method exposes it on the Broker ABC so strategy code can
+        identify the tested side of an open iron condor without holding
+        the position dict.
+
+        Returns None for any individual field that the venue omits or
+        that fails float() coercion. Network/venue failure propagates as
+        an exception — callers (`_identify_tested_side` in the IC strategy)
+        treat this as "tested side undetermined" and skip adjustment.
+        """
+        self._require_connected()
+        import robin_stocks.robinhood as rs  # type: ignore
+        raw = await asyncio.to_thread(
+            rs.options.get_option_market_data_by_id, option_id
+        )
+
+        if isinstance(raw, list) and raw:
+            md = raw[0] or {}
+        elif isinstance(raw, dict):
+            md = raw
+        else:
+            md = {}
+
+        def _f(v) -> float | None:
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        return {
+            "delta": _f(md.get("delta")),
+            "gamma": _f(md.get("gamma")),
+            "theta": _f(md.get("theta")),
+            "vega":  _f(md.get("vega")),
+            "iv":    _f(md.get("implied_volatility")),
+            "mark_price": _f(
+                md.get("adjusted_mark_price") or md.get("mark_price")
+            ),
+        }
 
     # ------------------------------------------------------------------
     # Helpers
