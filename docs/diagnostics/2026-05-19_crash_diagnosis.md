@@ -496,7 +496,174 @@ useful minidump.
   inducing crash #12).
 - Pagefile sufficiency for a full kernel dump if we change `CrashDumpEnabled` to 7
   (16 GB RAM + 17 GB pagefile = should be enough; verify before changing).
+  *(Resolved in M1 execution below — pagefile is sufficient.)*
 - Task Scheduler history correlation with crash timestamps.
 - External monitor / dock state at the time of crashes.
+
+---
+
+## 7. M1 execution — 2026-05-19
+
+Goal: identify what's deleting `C:\Windows\Minidump\*.dmp`, and switch
+`CrashDumpEnabled` from 3 (minidump) to 7 (automatic) so the next crash produces
+an analyzable dump. Session was non-elevated, so the registry change is described
+as a manual step for the user rather than applied.
+
+### Findings
+
+| Step | Item                                          | Result                                                                                                                      |
+| ---- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Disk Cleanup scheduled tasks (`SilentCleanup`) | **Enabled**. Last run **2026-05-18 19:42:02** (11 min after the 19:31:40 crash). Action: `cleanmgr.exe /autocleanstoragesense /d %systemdrive%`. |
+| 1b   | VolumeCaches → "System error minidump files"  | **Registered handler exists**, points exactly at `C:\WINDOWS\Minidump`. (Companion handler "System error memory dump files" targets `C:\WINDOWS`.) `StateFlags*` columns blank — no user-saved profile, default behavior applies. |
+| 2    | Storage Sense (HKCU StoragePolicy)            | Master toggle `01 = 0` (**OFF**). Cadence `04 = 1` (daily, but irrelevant since 01=0). No machine-wide policy.              |
+| 3a   | Windows Defender (`Get-MpPreference`)         | Realtime monitoring ON. Controlled Folder Access OFF (so it's not blocking writes to Minidump dir). Exclusions hidden because session is non-elevated. |
+| 3b   | Defender threat detection history (30d)       | **No detections.** Defender itself is not quarantining anything.                                                            |
+| 3c   | Third-party AV via SecurityCenter2            | Only Windows Defender registered. **BUT see step 4** — Norton is installed and not reporting through SC2.                   |
+| 4    | PC-optimizer / cleanup / 3rd-party AV inventory | `Norton Security 22.20.5.40` (installed 2021-04-22) — **AND ACTIVELY RUNNING**: service `NortonSecurity` (Running), two `NortonSecurity.exe` processes (PIDs 5032, 6148, ~10 MB each), `NisSrv` (Network Inspection). Install dirs present: `Program Files\Norton Security`, `Program Files (x86)\NortonInstaller`, `ProgramData\Norton`. Also: `MSI Center SDK` (harmless), `RstDowngradeGuard` (already covered in main report). No CCleaner / Glary / Advanced SystemCare / etc. |
+| 5    | WER configuration                             | Normal. WER service running. `EnableZip=1`, `ChangeDumpTypeByTelemetryLevel=1` (default). No `LocalDumps` subkey — user-mode app dumps not saved to disk (this is default Windows behavior; doesn't affect kernel BSOD dumps). No anomalies, no auto-delete settings. |
+| 6    | `CrashDumpEnabled` current value              | **`3`** (small memory dump / minidump only — 256 KB). `DumpFile=C:\WINDOWS\MEMORY.DMP`, `MinidumpDir=C:\WINDOWS\Minidump`, `AutoReboot=1`, `Overwrite=1`, `MinidumpsCount=5`. **NOT CHANGED THIS SESSION** — see "user-action required" below. |
+| 7    | Pagefile vs RAM                               | RAM **16,085 MB** (16.08 GB). Pagefile `C:\pagefile.sys` allocated **17,408 MB** (17 GB), current usage 46 MB. **Sufficient for any `CrashDumpEnabled` value** including 1 (complete dump, which requires RAM + 257 MB ≈ 16,342 MB minimum — 17 GB satisfies). For `CrashDumpEnabled=7` (automatic, the recommendation), pagefile sizing is well above the system-recommended minimum. |
+
+### Two plausible deletion sources identified
+
+#### Source A — Norton Security (HIGH confidence as the immediate deleter)
+
+Norton was the OEM-bundled AV on this MSI laptop (factory date 2021-04-22) and is
+**still actively running** alongside Windows Defender. SecurityCenter2 didn't
+report it (likely because the 2021 version doesn't register through the modern
+SC2 API, or registration has gone stale), which is why the initial diagnosis only
+saw Defender. The user may believe Norton was uninstalled long ago — it wasn't,
+or it was only partially uninstalled.
+
+**The Minidump directory's `LastWriteTime` is `2026-05-18 11:17:23`** — exactly
+**6 seconds** after the BugCheck event at 11:17:17. That's not the SilentCleanup
+window (SilentCleanup at 19:42:02 is hours later). A 6-second post-write deletion
+is consistent with **real-time AV scanning** flagging a `.dmp` file as suspicious
+and quarantining it immediately. Norton 2021-vintage is known for aggressive
+behavior toward unsigned binary files including memory dumps.
+
+A 5-year-old Norton with likely-expired subscription, stale signatures, running
+alongside Defender (which Windows usually disables when third-party AV is
+registered — but doesn't here, because SC2 doesn't see Norton) is a multi-axis
+problem: it's deleting forensic data AND it's a known source of system
+instability in its own right.
+
+#### Source B — SilentCleanup scheduled task (MEDIUM-LOW confidence as the immediate deleter, HIGH as a contributor)
+
+The `SilentCleanup` task is enabled and ran at 19:42:02 on 5/18, ~11 minutes
+after the 19:31:40 crash. It invokes `cleanmgr.exe /autocleanstoragesense`, which
+uses the Storage Sense engine even though Storage Sense's master toggle is OFF.
+
+The "System error minidump files" VolumeCaches handler is *registered* with
+`Folder = C:\WINDOWS\Minidump`. The `StateFlags*` columns are blank, meaning no
+user-saved Disk Cleanup profile exists; SilentCleanup uses default Storage Sense
+behaviors, which historically don't include minidumps but have varied across
+Windows builds. On Win 11 26200 the exact set is undocumented.
+
+If Source A (Norton) is removed and minidumps still vanish, Source B is the next
+suspect.
+
+### User-action required (Step 6 — not auto-applied)
+
+Session is non-elevated; `Set-ItemProperty` on `HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl`
+requires admin. **Do NOT run a Set-Item from a non-elevated PowerShell** — the
+change will fail silently (or with `Requested registry access is not allowed`).
+
+**To change `CrashDumpEnabled` from 3 (small) to 7 (automatic):**
+
+GUI path (easiest, no command line):
+1. Win+R → `sysdm.cpl` → enter.
+2. **Advanced** tab → **Startup and Recovery** → **Settings...**
+3. Under **System failure**, "Write debugging information":
+   - Change from **Small memory dump (256 KB)** to **Automatic memory dump**.
+4. Confirm "Dump file" is `%SystemRoot%\MEMORY.DMP`.
+5. Confirm "Overwrite any existing file" is checked.
+6. OK / OK. **No reboot required** — change applies on next BSOD.
+
+PowerShell path (must be run as Administrator):
+```powershell
+Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl' `
+                 -Name 'CrashDumpEnabled' -Value 7 -Type DWord
+# Verify:
+Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl' |
+    Select-Object CrashDumpEnabled
+```
+
+Why `7` (automatic), not `1` (complete) or `2` (kernel):
+- `7` automatic = Windows picks kernel-or-complete dump based on pagefile size at
+  crash time. On this system it'll produce a kernel dump (~1–2 GB typically),
+  which is more than enough for WinDbg `!analyze -v` to identify the faulting
+  driver. The previous `3` (small/256KB) sometimes leaves out enough context to
+  diagnose unusual faults.
+- `1` (complete) writes all of RAM (~16 GB on this system). Slower to write,
+  larger on disk, rarely needed for driver-fault analysis.
+- `2` (kernel) is the same as `7` would auto-pick here, just non-adaptive.
+
+Pagefile is sufficient for any of these (see Step 7).
+
+### Concerning side-finding (not the deletion issue per se)
+
+**Norton + Defender running simultaneously is itself a problem worth
+addressing.** Windows is designed to register one realtime AV at a time;
+SecurityCenter2 should be enrolling Norton and disengaging Defender, or vice
+versa. Here both are scanning. This:
+- Increases CPU/disk overhead.
+- Causes random file-access lockouts (one product holds a file open, the other
+  tries to scan it, etc.).
+- Is a known cause of broader system flakiness on consumer Windows, separate
+  from the crash issue.
+
+Recommended user action (separate from the minidump-deletion fix, but related to
+the broader crash investigation):
+
+- **Either** uninstall Norton cleanly via "Add or remove programs" + run the
+  Norton Removal Tool (`NRnR.exe`) from Norton's site to clear leftovers.
+- **Or** confirm the Norton subscription is active and uninstall Defender's
+  realtime side (not really possible cleanly on Win 11) — much less recommended.
+
+Cleanest path is to uninstall Norton entirely and let Defender be the sole AV.
+This *also* removes Norton as a deletion suspect for minidumps in one step.
+
+### Net assessment / what to surface
+
+1. **The dumps are likely being deleted by Norton's realtime scan within seconds
+   of being written**, not by SilentCleanup hours later. The 11:17:23 directory
+   write time vs 11:17:17 BugCheck event is the evidence.
+2. **SilentCleanup is a secondary risk**: even after Norton is gone, the task
+   could in principle clean minidumps on idle-disk runs. Mitigation: disable the
+   SilentCleanup task in Task Scheduler, OR add an explicit exclude flag to
+   Storage Sense, OR (simplest) ensure `MinidumpsCount=5` retention always wins.
+   Since `MinidumpsCount=5` and `Overwrite=1` are set, the dump subsystem itself
+   keeps the last 5. As long as no external process deletes them, you'll have
+   the history.
+3. **Switching `CrashDumpEnabled` to 7** captures a richer dump that's easier to
+   analyze. Requires admin; user action via `sysdm.cpl`.
+
+### Recommended action sequence (user-side, before next session)
+
+1. **Uninstall Norton Security** (Add or Remove Programs → Norton Security →
+   Uninstall). Reboot. Run the Norton Removal Tool (NRnR) to clean leftovers.
+   This stops the post-crash dump deletion AND removes a likely contributor to
+   the broader instability.
+2. **Change `CrashDumpEnabled` to 7** via `sysdm.cpl` → System failure → "Write
+   debugging information" → Automatic memory dump.
+3. **Disable the SilentCleanup task** as belt-and-braces: Task Scheduler →
+   Microsoft → Windows → DiskCleanup → SilentCleanup → Disable.
+   *(Optional — only if you want zero risk of automated dump cleanup. Otherwise
+   skip; once Norton is gone, retention will work.)*
+4. Wait for the next crash. Check `C:\Windows\Minidump\` for a fresh `.dmp` file.
+   Report back.
+
+### Stop-and-ask triggers — none triggered, one concerning side-finding
+
+- Steps 1–5 **did** identify plausible deletion sources (Norton + SilentCleanup),
+  so the "no source found and can't elevate" trigger doesn't apply.
+- Pagefile **is** larger than RAM (17 GB vs 16 GB), so the "pagefile too small"
+  trigger doesn't apply.
+- Concerning side-finding: **Norton actively running alongside Defender, while
+  SecurityCenter2 reports only Defender.** Surfaced inline above.
+
+End of M1 execution. Next action is user-side; do not proceed to M2 (driver
+uninstall) until user confirms M1 actions are done OR explicitly defers them.
 
 End of report.
