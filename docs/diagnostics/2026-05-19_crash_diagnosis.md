@@ -326,6 +326,38 @@ The sections below preserve the pre-WinDbg evidence record. **Read them as
 historical reasoning, superseded by the verdict above for the immediate
 action call.**
 
+### Post-crash-#9 re-ranking — 2026-05-18 22:08 (SUPERSEDES the post-crash-#8 ranking below for H7 status + mitigation interpretation)
+
+Full evidence and timeline in **§ 11 below.** Summary of what changed:
+
+Crash #9 produced a kernel bugcheck dump on its own
+(`051826-15343-01.dmp`, **`0x0000010e VIDEO_MEMORY_MANAGEMENT_INTERNAL`**,
+sub-code `0x2e`) with Event 2004 firing 4 minutes earlier identifying
+`python.exe (8544)` at **58.3 GB virtual / 53.85 GB private commit**. The
+offending workload was a *single-file* pytest run
+(`tests/test_kalshi_structure_arb.py`) — not a backtest run, just pytest
+discovery + collection — invoked **directly via `python.exe`** without
+the `scripts/run_capped.ps1` / procgov wrapper that was committed in
+ab13673 ~14 minutes earlier.
+
+| Hypothesis | Pre-crash-#9 status (§ 9 ranking) | Post-crash-#9 status | Reasoning |
+| ---------- | --------------------------------- | -------------------- | --------- |
+| **H7 (workload pressure / virtual-memory exhaustion)** | LEADING (untested but with strong direct correlative evidence) | **LEADING (mechanism-confirmed by crash #9 dump).** | Bugcheck `0x10e` is the *exact* cascade § 9 predicted: VM exhaustion → 4 min of thrashing → video memory manager allocation path can't proceed → bugcheck. The Event 2004 → bugcheck timeline is now tighter than "2–7 min before"; the bugcheck *is* in the resource-exhaustion window itself. |
+| **H7 — mitigation interpretation** | M1 applied; M2 (procgov wrapper) pending Board approval | **M2 wrapper installed but NOT invoked on offending process** (`run_capped.ps1` bypassed; `python.exe` called directly). | **Wrapper-invocation discipline failure, not procgov enforcement failure.** Procgov's Job Object cap (`--maxjobmem 25G --terminate-job-on-exit`) would have hard-killed at 25 GB; the cap was never attached because the wrapper was never invoked. Crash #9 invalidates "wrapper exists ⇒ wrapper protects" but does NOT invalidate procgov's actual enforcement strength. See § 11 for the three-tier recommendation (runbook → lint-check → OS watchdog). |
+| **H2 (NVIDIA `nvlddmkm.sys`)** | Confirmed for crash #6 only; falsified as complete explanation by crash #8 | **Unchanged** — modest nudge as the *kind of allocation path* H7 cascades into on this machine, but not a separate proximate cause. The 2021 OEM driver is still present (per § 9's M3 verdict — Game Ready clean install replaced it, but a `nvlddmkm` of similar staleness is on disk), and graphics-memory paths are repeatedly where H7's pressure surfaces. **Symptom, not cause.** |
+| **H1, H1b, H3, H4, H5, H6, H8** | Per § 9 ranking | **Unchanged.** Crash #9 adds no new positive evidence for any of these and adds no new evidence against. |
+
+**The one structural change to ranking:** H7 moves from "leading by correlation"
+to "leading by mechanism." That's the strongest evidence type in the inventory.
+
+**Why the M2 mitigation didn't help:** the wrapper *cannot* protect a
+process the human (or agent) never wraps. M2's design choice ("opt-in
+shim invoked at the command line") was the cheapest install but is the
+weakest enforcement. § 11's recommendations move toward closing the
+opt-in gap — runbook strengthening first (cheap), then an OS-side
+watchdog (Board-decision) if the discipline approach proves
+insufficient.
+
 ### Post-crash-#8 widened-scope re-ranking — 2026-05-19 (SUPERSEDES the WinDbg verdict's ranking above for the immediate action call)
 
 Crash #8 happened on **2026-05-18 21:13** despite the NVIDIA Game Ready Driver
@@ -2076,5 +2108,278 @@ work. Option B doesn't exist; Option E is blunt.
   Parallel-session-owned; address after Mitigation 2 stabilizes.
 
 End of § 10.
+
+---
+
+## 11. Crash #9 — post-procgov-install (2026-05-18 22:08:46)
+
+**TL;DR.** Crash #9 happened ~14 minutes after the procgov + `run_capped.ps1`
+wrapper was committed (ab13673 at 21:54:16). The wrapper **was not invoked**
+on the offending workload. The previous Claude session ran
+`& "C:\Users\AA Incorporado\AppData\Local\Python\bin\python.exe" -m pytest
+tests/test_kalshi_structure_arb.py …` **directly** — bypassing
+`scripts/run_capped.ps1` and therefore bypassing the procgov Job Object cap
+that was supposed to terminate at 25 GB. The python process grew to 57.88
+GB virtual / 53.85 GB private / 9.1 GB working-set before the crash. H7 is
+re-confirmed; the mitigation gap is **wrapper-invocation discipline**, not
+procgov enforcement strength.
+
+This crash *did* produce a kernel bugcheck dump
+(`C:\Windows\Minidump\051826-15343-01.dmp`, 5,006,100 bytes), with bugcheck
+**`0x0000010e` (VIDEO_MEMORY_MANAGEMENT_INTERNAL)** at 22:08:46. Sub-code
+`0x2e` (= `0x000000000000002e`). The 4-minute gap between Event 2004
+(22:04:25) and the bugcheck (22:08:46) is consistent with the H7 cascade
+mechanism described in § 9: VM exhaustion → system thrashes → eventually a
+GPU video-memory allocation fails → video memory manager hits an internal
+error path that *can* still run bugcheck.
+
+### Crash inventory entry
+
+| Field                  | Value                                                 |
+| ---------------------- | ----------------------------------------------------- |
+| Crash #                | 9 (user-frame) / 12th Kernel-Power 41 in the inventory |
+| Event 2004 time        | 2026-05-18 22:04:25 local                              |
+| Kernel-Power 41 time   | 2026-05-18 22:08:27 local                              |
+| BugCheck 1001 time     | 2026-05-18 22:08:46 local                              |
+| BugCheck code          | `0x0000010e` (VIDEO_MEMORY_MANAGEMENT_INTERNAL)        |
+| BugCheck parameters    | `0x2e, 0xffffd50c37e51460, 0xffffd50c50fbfb50, 0xffff888a5fe4ea50` |
+| Dump file              | `C:\Windows\Minidump\051826-15343-01.dmp` (5.0 MB, present, ACL-protected — WinDbg deferred to next elevated session) |
+| Report Id              | `3bf90318-6da0-489a-ad44-3260004c26a9`                |
+| Top VM consumer (Event 2004) | `python.exe (PID 8544)` at **58,318,585,856 bytes** (54.3 GiB) |
+| #2/#3 VM consumers     | `claude.exe (10156)` 0.60 GiB, `claude.exe (16740)` 0.45 GiB |
+
+### What workload was running at crash time
+
+From the prior Claude session's transcript
+(`C:\Users\AA Incorporado\.claude\projects\C--Users-AA-Incorporado-cc\584ff160-b281-442a-ac8d-f296b143d867.jsonl`,
+last write 22:04:22, 3 seconds before Event 2004):
+
+- 22:01:50 — PowerShell tool invoked:
+  ```
+  & "C:\Users\AA Incorporado\AppData\Local\Python\bin\python.exe" -m pytest
+    tests/test_kalshi_structure_arb.py …
+  ```
+  (background job, command id `bxmnb301m`). **No `run_capped.ps1`, no
+  `procgov` in the invocation.**
+- 22:03:52 — background job confirmed running, output redirected to
+  `C:\Users\AAINCO~1\AppData\Local\Temp\claude\C--Users-AA-Incorp...`
+- 22:04:02 — ad-hoc Get-Counter sample reported:
+  - `\Memory\Committed Bytes` = **53.84 GB**
+  - `\Memory\Available Bytes` = **0.94 GB**
+- 22:04:14 — session text: "**MEMORY PRESSURE ALERT** — Committed 53.84 GB,
+  Available 0.94 GB. Both past action thresholds. Identifying culprit and
+  acting per crash protocol."
+- 22:04:17 — Get-Process top: `python (8544) WS 9.1 GB, PM 53.85 GB,
+  VM 57.88 GB`.
+- 22:04:22 — last JSONL write (session frozen).
+- 22:04:25 — Event 2004 fires.
+- 22:08:27 — Kernel-Power 41 (hard reboot).
+- 22:08:46 — Post-reboot BugCheck 1001 logged.
+
+So the workload was **a scoped pytest on a *single* test file**
+(`tests/test_kalshi_structure_arb.py`). That this could push python past
+57 GB virtual is the same finding from § 9 — a single pytest discovery /
+collection + imports under the trading_corp package can balloon if the
+backtester / data-loading modules eagerly materialize large DataFrames at
+import time. **The workload-reduction baseline (§ 10 Mitigation 1) said
+"don't run the full backtest"; it did not say "don't import the
+backtester at all," and pytest discovery against this file appears to
+trigger heavy imports.**
+
+### Was procgov engaged on python.exe (8544)?
+
+**No.**
+
+Three independent pieces of evidence:
+
+1. **Transcript shows direct invocation.** The PowerShell command string
+   captured in the prior session's JSONL is
+   `& "...python.exe" -m pytest …`. No procgov, no `run_capped.ps1`.
+2. **VM commit exceeded the cap by 2.3×.** procgov's wrapper enforces
+   `--maxjobmem 25G --terminate-job-on-exit`. The Windows Job Object
+   `JOB_OBJECT_LIMIT_JOB_MEMORY` limit is hard-enforced by the kernel: a
+   `VirtualAlloc` past the cap returns `STATUS_NO_MEMORY` and the job is
+   terminated. The python process reached **57.88 GB virtual / 53.85 GB
+   private commit** — 2.3× the cap. Either procgov did not see this
+   process at all, or its job was never attached. Direct invocation is
+   the only plausible explanation.
+3. **PSReadLine history does not contain `run_capped.ps1` or `procgov`.**
+   The user-side history (`ConsoleHost_history.txt`, last write 21:29:36)
+   has neither. The pytest command was issued by the previous Claude
+   session via its PowerShell tool, not by the user, and was not wrapped.
+
+This is the **wrapper-not-invoked** failure mode, not the **wrapper-failed
+-to-enforce** failure mode. Procgov itself is installed
+(`procgov.exe 3.2.25275.19` at
+`C:\Users\AA Incorporado\AppData\Local\Microsoft\WinGet\Packages\…`) and
+`scripts/run_capped.ps1` is in tree.
+
+### Memory sampler trajectory
+
+The user's continuous memory sampler launched earlier in the day
+(PSReadLine history tail: `while ($true) { ... Get-Counter ... Start-Sleep
+30 }`) was running in a separate PowerShell window. That window's
+scrollback is **not recoverable from this session** — PSReadLine history
+captures only commands the user typed, not their output, and the file's
+last-write was 21:29:36 (no further user-typed commands captured before
+crash). Whether that sampler window survived to the crash or was closed
+earlier is unknown without ScreenShots / log files the user kept.
+
+The single Get-Counter sample the previous Claude session took at 22:04:02
+(Committed 53.84 GB, Available 0.94 GB) is the only sampler data
+recoverable for this crash. It confirms the H7 picture (VM at ~33 GB
+commit limit + 17 GB pagefile expansion = ~50 GB total commit; 53.84 GB
+is past that, system is in the "automatic pagefile expansion absorbing
+overflow" regime described in § 9) but is a single sample, not a
+trajectory.
+
+### Dump file presence
+
+| Dump file                                | Time            | Size      | Notes |
+| ---------------------------------------- | --------------- | --------- | ----- |
+| `C:\Windows\Minidump\051826-14937-01.dmp` | 5/18 11:17:11 AM | 2.82 MB  | Crash #6, already analyzed (§ 2 WinDbg verdict; nvlddmkm.sys). |
+| `C:\Windows\Minidump\051826-15343-01.dmp` | 5/18 10:08:46 PM | **5.0 MB**, **NEW** | **Crash #9.** Bugcheck `0x10e`. Read-protected to current ACL; deferred to elevated session. |
+
+A `MEMORY.DMP` (kernel-mode full dump, not minidump) was also referenced
+by Event 1001: `A dump was saved in: C:\WINDOWS\MEMORY.DMP.` Not enumerated
+in this section (it's typically large, > 1 GB, also ACL-protected).
+
+### Re-confirmation of H7 mechanism
+
+Bugcheck `0x10e` (VIDEO_MEMORY_MANAGEMENT_INTERNAL) with Event 2004 four
+minutes prior is the cleanest single-cause expression of H7 we have so
+far:
+
+1. python.exe at 54 GB private commit pushes the system past pagefile
+   expansion.
+2. Event 2004 fires at 22:04:25 (kernel notices low virtual memory).
+3. For ~4 minutes the system thrashes (pagefile churn, every kernel
+   allocation slow, including GPU driver allocations).
+4. At 22:08:27 the video memory manager finally hits an allocation /
+   accounting path that cannot proceed (sub-code `0x2e`), bugchecks
+   cleanly (storage stack still up), and reboots.
+
+This is exactly the cascade § 9 predicted. The one-NVIDIA-dump-amongst-
+many-no-dump-crashes pattern from earlier is no longer the puzzle it was;
+under H7, the *kind* of bugcheck depends on which allocation path happens
+to fail first, and graphics-memory paths fail under VM pressure as often
+as anything else.
+
+### Updated hypothesis ranking
+
+**H7 (workload pressure / virtual-memory exhaustion) — LEADING.** Status
+upgraded from "untested but with strong correlative evidence" (§ 9) to
+**"directly mechanism-confirmed for crash #9."** Crash #9 alone provides:
+
+- Event 2004 → bugcheck 4 minutes later (correlation tightened from "2–7
+  min before" to "bugcheck during the resource-exhaustion window itself").
+- A bugcheck code (`0x10e`) whose semantics fit the H7 cascade
+  end-to-end.
+- A workload (pytest collection on a single test file, no backtest run)
+  small enough that H7's "any sustained python ≥ 50 GB will crash this
+  machine" framing — rather than "the full Kalshi SA backtest is the
+  problem" — is the right framing.
+
+**H7 mitigation status:**
+
+- **M1 (workload reduction baseline, runbook):** Insufficient on its own.
+  The prior session was already operating under the M1 workload-defaults
+  rules and still hit the crash, because pytest discovery is not what M1
+  was scoped to forbid. M1 needs an addendum: "no python invocation under
+  trading_corp/ imports is exempt — wrap *all* pytest runs in
+  `run_capped.ps1`, not just full backtests."
+- **M2 (procgov + `run_capped.ps1` wrapper):** Installed and functional
+  but **not enforced by default.** Crash #9 happened because the wrapper
+  was bypassed. The wrapper itself is fine; the gap is that nothing
+  forces its use.
+
+**H7 mitigation invalidated?** No. **H7 mitigation gap exposed:**
+the wrapper is an *opt-in* discipline rather than a *cannot-be-bypassed*
+constraint. Two patterns can close the gap:
+
+- **Default-on wrapper at the Claude tool layer.** Bias the project /
+  agent's PowerShell + Bash tools to prefer
+  `.\scripts\run_capped.ps1 python …` over `python …` for any python
+  invocation that touches `trading_corp/` or `tests/`. This is a
+  documentation / agent-behavior change, not a code change.
+- **Per-process default cap at the OS level.** Configure procgov as a
+  service watching for `python.exe` processes spawned under this user
+  and attaching a job-mem limit automatically (procgov's
+  `--monitor-process` mode). This is an OS-side install / config that
+  catches *any* python invocation regardless of how it's launched.
+  Requires Board approval; higher install/maintenance cost than the
+  agent-side rule.
+
+The other hypotheses are unchanged from § 9's ranking. H2 (NVIDIA) gets a
+modest nudge as the *kind of bugcheck* H7 cascades into on this machine
+(graphics-memory path keeps showing up), but the leading hypothesis stays
+H7. The H2 driver is still the 2021 OEM driver post-clean-install (per
+§ 9), so its baseline robustness under memory pressure is poor; under H7
+this is a symptom, not a separate hypothesis.
+
+### Step-4 recommendation (do not apply this session)
+
+**Primary recommendation: tighten wrapper-invocation discipline.**
+
+Specifically, three concrete actions, in order of cost:
+
+1. **(Cheap, hour-scale)** Amend `docs/runbooks/session_workload_defaults.md`
+   to make `run_capped.ps1` the **mandatory** invocation path for *any*
+   python command that touches `trading_corp/` or `tests/`, **including
+   pytest discovery on a single file.** Add a short rationale: pytest
+   collection runs the package's `__init__.py`s, which transitively
+   import the backtester's heavy modules and can balloon. The runbook
+   should give the explicit wrapped-pytest invocation form. Then update
+   CLAUDE.md or the session-start prompt to surface this rule at session
+   open so future Claude sessions adopt it by default.
+
+2. **(Medium, session-scale)** Add a project-level pre-commit / lint
+   check (or just a session-start reminder) that searches for direct
+   `python` / `python.exe` invocations in any recent Claude transcript
+   under `.claude/projects/.../jsonl` and flags them. This is the
+   smallest amount of automation that closes the human-discipline gap.
+
+3. **(Heavier, Board-decision-scale)** Install procgov as a session-wide
+   watchdog using `procgov --monitor-process python.exe --maxjobmem 25G`
+   (or equivalent — exact flag set TBD against procgov's docs). This
+   enforces the cap regardless of invocation path. Requires testing
+   that it doesn't interfere with legitimate small python invocations
+   (e.g., a one-off `python --version` or a benign script), and that
+   the cap isn't tripped by trading_corp's normal startup. **Stop and
+   ask before doing this** — it's a system-wide change.
+
+**Do not apply Mitigation 3 (backtester refactor) this session** —
+parallel-session-owned code per § 10 and CLAUDE.md ownership rules.
+
+**Secondary recommendation: WinDbg the new dump in an elevated session.**
+
+`C:\Windows\Minidump\051826-15343-01.dmp` is ACL-protected; running
+`cdb !analyze -v` against it requires an elevated PowerShell or copying
+the dump out under elevation. This is **non-blocking** — H7 is already
+confirmed by Event 2004 + bugcheck-code semantics — but a stack trace
+showing `dxgkrnl!…`, `dxgmms2!…`, or `nvlddmkm!…` in the faulting frames
+would (a) tighten which video-memory path failed, and (b) settle whether
+the 2021 OEM NVIDIA driver's residual instability is contributing under
+memory pressure. Schedule as an M4 followup; not load-bearing for the
+H7 mitigation call.
+
+### What did *not* fail
+
+For the avoidance of future doubt:
+
+- **Procgov itself.** The tool is installed and ready. It was never
+  invoked on the offending process. Do not write off procgov; write off
+  the assumption that an opt-in wrapper is sufficient.
+- **The Event 2004 detector.** Fired on time, identified the right
+  culprit, gave 4 minutes' warning. The previous session noticed the
+  alert and tried to act on it but was too late — the BSOD landed
+  before the session's mitigation flow could complete.
+- **The minidump pipeline.** Crash #9 produced a dump (5 MB, ACL-locked,
+  retrievable). The "no dump on 11/12 crashes" pattern from § 9 is now
+  10/12 — bugcheck `0x10e` ran the dump path cleanly, supporting the
+  § 9 reading that the no-dump cases are downstream of storage / commit
+  wedge, not a broken dump configuration.
+
+End of § 11.
 
 End of report.
