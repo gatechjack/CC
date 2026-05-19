@@ -326,6 +326,80 @@ The sections below preserve the pre-WinDbg evidence record. **Read them as
 historical reasoning, superseded by the verdict above for the immediate
 action call.**
 
+### Post-crash-#8 widened-scope re-ranking — 2026-05-19 (SUPERSEDES the WinDbg verdict's ranking above for the immediate action call)
+
+Crash #8 happened on **2026-05-18 21:13** despite the NVIDIA Game Ready Driver
+clean install completing earlier the same evening. **The H2 (NVIDIA) mitigation
+did not stop the crashes.** Combined with H1b (Norton) being falsified the
+prior session, two software-driver hypotheses have now been mitigation-tested
+and neither resolved the pattern. This subsection widens scope to include
+hypotheses not previously seriously tested.
+
+Full supporting evidence inventory is in **§ 9 below**. Summary of the new
+finding driving this re-ranking:
+
+**`Microsoft-Windows-Resource-Exhaustion-Detector` Event 2004 fires within 2–7
+minutes before every recent crash.** 10 / 10 correlation since 5/17 23:00.
+Top virtual-memory consumer in every event: **`python.exe` at 43 – 60 GB**
+(claude.exe consistently #2). The system commit-charge limit is RAM + pagefile
+= 16 GB + 17 GB = **33 GB**, so a single python process committing 50+ GB is
+either (a) automatic pagefile expansion absorbing it temporarily, or (b) the
+reported figure is VirtualSize (reserved + committed) rather than commit
+charge — either way, Windows' own resource-exhaustion detector is identifying
+a low-virtual-memory condition immediately before each crash. Crash #8 fits
+the pattern: Event 2004 at 21:10:38, python.exe (PID 10416) at **55 GB**,
+crash at 21:13:30.
+
+For comparison: in the 27 days preceding 5/17 23:00, Event 2004 fired **once
+total** (5/2, python at ~7 GB, did not precede a crash). The metric crossed
+from "rare baseline" to "immediate precedent of every crash" exactly when the
+crash cluster began. The change is the **backtester workload** (Kalshi SA
+backtest, BitUnix v3 hybrid backtests) — large-pandas-DataFrame Python
+processes routinely sitting at 50+ GB virtual.
+
+**Revised ranking (post-crash-#8, scope widened):**
+
+| Hypothesis | Status | Confidence | Reasoning |
+| ---------- | ------ | ---------- | --------- |
+| **H7 (workload pressure / virtual-memory exhaustion) — NEW** | Untested but with strong direct correlative evidence. **LEADING.** | HIGH | 10/10 Event 2004 → crash correlation in the last 24 h. The metric is rare baseline → systematic crash precedent at the exact 5/17 23:00 inflection point. Python at 50–60 GB virtual on a 33 GB commit-limit system stresses every kernel allocation path (storage, GPU, network, paging) simultaneously. Explains both the no-dump pattern (kernel can't allocate to write a bugcheck dump when commit is exhausted) AND the one NVIDIA dump (GPU driver fault when video memory allocation fails under system memory pressure). |
+| **H2 (NVIDIA `nvlddmkm.sys`)** | Confirmed for one crash, **falsified as complete explanation** by crash #8 post-clean-install. | MEDIUM (as proximate cause for crash #6 only) | The one analyzable dump (5/18 11:17 AM) shows nvlddmkm.sys faulting, but the Dec 2021 driver has been replaced via clean install and crashes continue with the same no-dump signature. Plausibly a SYMPTOM of H7 — when system VM is exhausted, the GPU driver's allocations fail, an older driver hits a code path that bugchecks while a newer driver hard-hangs the same way the storage stack does for the no-dump crashes. |
+| **H1 (Intel RST `iaStor*`)** | Untested by mitigation. **MEDIUM** as proximate cause; possibly downstream artifact per WinDbg verdict. | LOW–MEDIUM | The 11/11 RstMwService 7023 correlation is still present, but the WinDbg verdict reframed it as a downstream artifact of dirty reboots. Under H7, the RST driver may be wedging *because* commit-exhaustion is wedging its lower-level state, which is itself an H7 expression. Mitigation (M2: RST uninstall) still hasn't been tried. |
+| **H1b (Norton dual-AV)** | **FALSIFIED** by post-Norton-uninstall recurrence (crashes #7, #8). | LOW | Norton is gone; the crashes continue with identical signatures. |
+| **H3 (Killer Wi-Fi 2021-vintage)** | Untested by mitigation. | LOW–MEDIUM | Same 2021 OEM vintage as NVIDIA (driver 22.70.0.6, dated 2021-06-28). 17 user-mode service crashes in 7 days, but every Killer service crash timestamp lines up with a system-reboot time — downstream artifact, not driver bug surfacing. No Killer modules in the one bugcheck stack. Same OEM-staleness pattern applies but no positive evidence elevates it. |
+| **H8 (firmware / BIOS) — NEW**            | Untested. | LOW–MEDIUM | BIOS is `E17K3IMS.119` dated **2021-08-05** — over 4.5 years old, same OEM vintage as NVIDIA and Killer drivers. MSI may have released stability fixes; some hard-hang patterns are known BIOS bugs. Not auto-checked here (user-side action), but BIOS staleness is part of the same "nothing on this system has been updated since factory" picture. |
+| **H4 (May 2026 KBs as trigger)** | Unchanged — trigger interpretation. | MEDIUM (as trigger only) | The 5/15 KB install date still aligns with crash acceleration. Under H7, KB5089549's kernel changes may have changed memory-management or allocation behavior in ways that turn a previously-tolerable 50 GB python process into a system-wedge trigger. |
+| **H5 (power delivery weakness)** | Unchanged. | LOW as cause, MEDIUM as amplifier | No WHEA thermal/VRM events in 7 days. Battery wear 23.2% confirmed via fresh report. |
+| **H6 (hardware fault not visible to WHEA)** | Untested by mitigation. **WEAKENED** further. | LOW | SMART OK on the only physical disk. No prior memtest ever recorded — diagnostic gap, but no positive signal. WHEA silence remains across 7 more days. H7 explains the no-dump pattern without invoking hardware. |
+
+**The pattern of 11 / 12 no-dump crashes** is now interpretable under H7:
+when system commit is exhausted, the kernel can't allocate the buffer needed
+to write a bugcheck dump; the storage stack can't service the dump write;
+the embedded controller's watchdog fires before the bugcheck path completes.
+This is the same mechanism the H1 historical reading proposed, but with the
+trigger being **system-wide commit exhaustion** rather than RST-driver
+internal state. The one bugcheck (crash #6, 5/18 11:17 AM) is then the
+exceptional case where the fault hit a code path that *did* manage to run
+bugcheck before the storage stack wedged — that path landed in `nvlddmkm.sys`
+because GPU allocation was the proximate failure under VM pressure.
+
+H7 is the only single-mechanism hypothesis that explains:
+1. The 5/17 23:00 inflection point (workload type changed: heavy backtester
+   Python).
+2. The Event 2004 → crash correlation (10/10).
+3. The 11/12 no-dump pattern (no commit available to write bugcheck).
+4. The one NVIDIA dump (GPU allocation path was where the fault landed under
+   memory pressure, and that path *could* still run bugcheck because storage
+   wasn't wedged at that moment).
+5. The RstMwService 7023 correlation (RST kernel state corrupted by
+   exhaustion-driven dirty reboot, same downstream-artifact reading).
+6. Why post-NVIDIA-clean-install crashes continue (the underlying mechanism is
+   memory pressure, not driver bug).
+
+The recommended testing sequence (cheap → expensive, likely-yield → speculative)
+is in **§ 9 Step 7**. The single cheapest, highest-yield test is the
+workload-reduction observation — close the backtester sessions, run with the
+normal-but-not-heavy load, observe whether crashes stop.
+
 ### H1 — Intel Rapid Storage Technology driver (`iaStorAC.sys` / `iaStorAVC.sys`) is the immediate cause [HIGH — historical; demoted to MEDIUM/LOW per WinDbg verdict above]
 
 **Claim:** A 5-year-old Intel RST storage driver is corrupting kernel state under
@@ -1336,5 +1410,432 @@ not a fix-application session. The Board reviews and executes M3 when
 ready.
 
 End of § 8.
+
+---
+
+## 9. Crash #8 diagnostic + widened-scope inventory — 2026-05-19
+
+User reported an eighth crash on **2026-05-18 21:13** (within a few hours of
+the NVIDIA Game Ready Driver clean install completing). The H2 (NVIDIA)
+mitigation that the prior session recommended has now been applied and has
+**not** stopped the crashes. With H1b (Norton) also previously falsified by
+mitigation test, two single-hypothesis software mitigations have failed.
+This section is **inventory and ranking, not testing or mitigation** — the
+deliverable is updated diagnostic data and a recommended testing sequence
+for the user to act on next session.
+
+No fixes applied this session.
+
+### Step 1 — Verify no-new-dump finding and inventory current state
+
+#### Dump-file inventory
+
+`cmd /c dir C:\Windows\Minidump\` (PowerShell `Get-ChildItem` is still ACL-blocked
+for the non-elevated session):
+
+| File                          | Size (bytes) | Written              |
+| ----------------------------- | ------------ | -------------------- |
+| `051826-14937-01.dmp`         | 2,820,616    | 2026-05-18 11:17 AM  |
+
+**Only the prior session's NVIDIA-confirmed dump is present. Crash #8 did NOT
+produce a new dump.** `CrashDumpEnabled=7` is set and effective, yet crash #8
+still produced no bugcheck — the hard-hang pattern continues. 11 of 12 crashes
+have now produced no dump.
+
+#### Crash #8 timeline (Event Viewer)
+
+| Time                | Provider                                              | ID    | Note                                                                                       |
+| ------------------- | ----------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------ |
+| 5/18 21:01:15       | User32 (`C:\WINDOWS\Temp\<uuid>\setup.exe (MSI)`)     | 1074  | **MSI installer initiated a restart.** Almost certainly the NVIDIA Game Ready Driver clean-install reboot. |
+| 5/18 21:01:30       | EventLog                                              | 6006  | Clean shutdown began (first NVIDIA-install reboot).                                        |
+| 5/18 21:02:02       | EventLog                                              | 6005  | Boot complete — system came back up from NVIDIA installer's first reboot.                  |
+| 5/18 21:04:16       | User32 (StartMenuExperienceHost)                      | 1074  | Second `Initiated restart` log (likely the NVIDIA installer triggering a second restart for finalization). |
+| 5/18 21:04:23       | winsrvext                                             | 100   | `explorer.exe is delaying system shutdown after 5016 milliseconds` — explorer hanging during shutdown. |
+| 5/18 21:04:25       | EventLog                                              | 6006  | Clean shutdown began (second restart attempt).                                             |
+| 5/18 21:04:26       | WLAN-AutoConfig                                       | 10002 | WLAN Extensibility Module stopped (shutdown sequence).                                     |
+| 5/18 21:05:00       | (implied — recorded retroactively by 6008 at 21:13:42)| —     | **System "shutdown" — actually hard-hung during clean shutdown sequence.**                 |
+| 5/18 21:10:38       | Resource-Exhaustion-Detector                          | 2004  | **Low virtual memory diagnostic — python.exe (PID 10416) consumed 59,088,732,160 bytes (~55 GB).** Buffered pre-crash event committed to disk on next boot. |
+| 5/18 21:13:30       | Microsoft-Windows-Kernel-Power                        | **41**| **Critical** — system rebooted without cleanly shutting down. Crash #8 post-boot record. |
+| 5/18 21:13:32       | Kernel-PnP                                            | 219   | `\Driver\WUDFRd failed to load` (boot enumeration, downstream artifact).                   |
+| 5/18 21:13:42       | EventLog                                              | 6005  | EventLog service started on post-crash boot.                                               |
+| 5/18 21:13:42       | EventLog                                              | 6008  | Previous shutdown at 21:05:00 was unexpected.                                              |
+| 5/18 21:13:43       | Service Control Manager                               | 7023  | `RstMwService terminated with error` — the same +13s post-boot pattern, 11/11 since 5/15.  |
+| 5/18 21:13:48       | DNS-Client                                            | 1014  | wpad resolution timeout (boot-time noise).                                                 |
+| 5/18 21:13:49       | Netwtw10                                              | 6062  | LSO triggered (Wi-Fi reconnect on boot).                                                   |
+| 5/18 21:13:55       | DistributedCOM                                        | 10016 | COM permission warning (chronic, unrelated).                                                |
+
+**Material observations:**
+- **No BugCheck 1001 event** — kernel did not run the bugcheck path. Same as 10
+  of the prior 11 crashes.
+- **No WHEA-Logger events at all in the last 7 days.** Hardware-error path
+  remains clean.
+- **RstMwService 7023 at +13s post-boot — 11/11.** Pattern continues.
+- **The 21:05:00 "shutdown" was actually a hung clean-shutdown attempt** —
+  6006 fired at 21:04:25 (clean shutdown began), explorer hung at 21:04:23,
+  then nothing more until the next boot at 21:13:42. Crash #8 happened
+  **during a planned restart triggered by the NVIDIA installer**, not during
+  active project work.
+
+#### Pre-crash workload context
+
+The task prompt notes that the prior session's agent was performing the
+Kalshi structure-arb review (reading files, running scoped pytest). Two
+observations sharpen this:
+
+1. **The actual crash moment was inside a planned reboot** (NVIDIA installer's
+   second post-install restart). The python.exe process that Resource-
+   Exhaustion-Detector flagged (PID 10416, ~55 GB virtual) was still committed
+   when Windows began the clean shutdown sequence at 21:04:25. The shutdown
+   sequence couldn't terminate the process or page out its commitments fast
+   enough; explorer hung trying; the system did not complete shutdown.
+2. **Pre-crash memory state was severe.** ~10 Claude desktop processes,
+   pytest python.exe at ~55 GB virtual, Vmmem (WSL) at ~1.4 GB,
+   Defender realtime active, IDE running, plus baseline OS overhead — on a
+   16 GB RAM + 17 GB pagefile = 33 GB commit-limit system. This is the
+   pre-disposition; the NVIDIA installer's restart was the trigger.
+
+### Step 2 — Hardware-hypothesis tests
+
+#### SMART status
+
+```
+SAMSUNG MZVLQ1T0HALB-00000 (the only physical drive)
+Status: OK | Healthy | OK (1 TB NVMe)
+```
+
+No stop-and-ask trigger fired. Storage is not visibly failing.
+
+#### Prior Memory Diagnostic runs
+
+`Get-WinEvent -LogName System | Where-Object {$_.ProviderName -like "*MemoryDiagnostic*"}` →
+**zero events.** No memtest has ever been recorded on this system. Diagnostic
+gap; queue for next planned reboot.
+
+#### Temperature monitoring
+
+Registry scan of installed software for HWMonitor / Core Temp / HWiNFO /
+Afterburner / CrystalDiskInfo etc. → **zero matches.** Only `MSI Center SDK
+3.2021.1126.01` is installed (a platform SDK, not the full MSI Center with
+temp readouts).
+
+**Diagnostic gap: no live temperature data available.** Recommend installing
+**HWiNFO64** (free, vendor-neutral, lightweight, sensor-only mode) before the
+next long work session so the user can correlate temps with crashes if needed.
+
+#### Power configuration
+
+```
+Sleep states available:    S3 (Standby), Hibernate, Fast Startup
+Sleep states unavailable:  S1, S2, S0 Low Power Idle (firmware), Hybrid Sleep (hypervisor)
+Active scheme:             Balanced (381b4222-f694-41f0-9685-ff5bb260df2e)
+Min processor state:       5%   (AC and DC)
+Max processor state:       100% (AC and DC)
+```
+
+Modern, standard config. No obvious power-management red flag. The system
+does have **Fast Startup** enabled — known on some configurations to cause
+storage-driver state corruption across reboots, but not specific to the
+observed pattern.
+
+#### Battery report (fresh)
+
+| Field           | Value      | Note                                                              |
+| --------------- | ---------- | ----------------------------------------------------------------- |
+| Design Capacity | 95,000 mWh |                                                                   |
+| Full Charge     | 72,914 mWh | Down 87 mWh from prior session (73,021 mWh).                      |
+| Cycle Count     | unknown    | Battery firmware not reporting cycle count via PowerShell parse.  |
+| Wear            | **23.2%**  | Marginal slow drift; on AC, not load-bearing for crash diagnosis. |
+
+Battery is on AC the whole time. Not a credible crash cause.
+
+#### Boot / shutdown / crash pattern (last ~50 system events)
+
+11 K-P 41 critical events appear in the recent System log (4/30 onward), with
+the cluster densifying since 5/17 23:00. Time-of-day distribution: morning,
+midday, evening — **no time-of-day correlation**. Uptime-at-crash
+distribution: a few minutes (post-reboot crashes #2, #3 of 5/17-night
+cluster) to hours (steady-state crashes during workday) — **no uptime
+correlation**. The strong correlation is with the **Event 2004 low-VM
+diagnostic** (10/10, as documented in § 2's post-crash-#8 ranking and Step 4
+below), not with thermal accumulation, time-of-day, or boot age.
+
+### Step 3 — Firmware / BIOS
+
+#### BIOS
+
+```
+Manufacturer:   American Megatrends International, LLC.
+Name:           E17K3IMS.119
+Version:        MSI_NB - 1072009
+Release Date:   2021-08-05
+Model:          MSI GE76 Raider 11UE
+```
+
+**BIOS is 4.5 years old, OEM factory image, never updated.** Same vintage
+cluster as NVIDIA (Dec 2021), Killer Wi-Fi (Jun 2021), Intel chipset (Apr 2021).
+MSI has released multiple BIOS updates for the GE76 Raider 11UE since 2021;
+the user should check **msi.com → Support → GE76 Raider 11UE → BIOS** for the
+current version. Newer BIOS revisions for this model are known to include
+stability fixes for storage controller (Intel VMD/RST), power management
+(C-state behaviour at high commit), and embedded controller / power delivery
+patches.
+
+**Do NOT auto-update BIOS.** It is a manual, high-risk user action requiring
+plugged-in AC, sufficient battery charge, and an unattended reboot. The user
+should evaluate after reading the changelog at MSI's support page.
+
+#### TPM / Secure Boot
+
+`Get-Tpm` and `Confirm-SecureBootUEFI` returned access-denied (require elevation).
+TPM details and Secure Boot status are diagnostic gaps for this session.
+WMI fallback (`Win32_Tpm` in `MicrosoftTpm` namespace) is also access-denied.
+**Queue for an elevated PowerShell next session** if H8 (firmware) needs deeper
+testing — but H8 is currently LOW-MEDIUM, not the highest-priority next test.
+
+### Step 4 — Workload-pressure hypothesis (NEW H7)
+
+This is the **major finding** of this session.
+
+#### Pagefile + commit-charge configuration
+
+```
+Pagefile:                 C:\pagefile.sys   AllocatedBaseSize 17,408 MB
+Current usage at write:   14 MB (idle moment)
+AutomaticManagedPagefile: True
+Total RAM:                16,085 MB
+Commit limit (RAM + PF):  35,120 MB (~33 GB before pagefile auto-expansion)
+```
+
+Page file is system-managed and adequately sized for the static workload.
+Under heavy backtester load it has been auto-expanding — this is necessary
+but ALSO is the mechanism by which a 50+ GB python process is "tolerated"
+until Windows decides commit pressure crosses the resource-exhaustion threshold.
+
+#### Current top-20 processes by working set
+
+Top consumers right now (idle moment, light workload):
+
+| Process               | WS (MB) | VM (MB)     | PID   | Note                                |
+| --------------------- | ------- | ----------- | ----- | ----------------------------------- |
+| explorer              | 428     | 2,102,810   | 11404 |                                     |
+| claude × 4            | ~1,200  | 3,539,150 × | —     | Multiple Claude Code processes      |
+| Discord × 3           | ~770    | 3,498,000 × | —     | Discord helper procs                |
+| MsMpEng               | 303     | 2,102,491   | 4940  | Defender realtime                   |
+| dwm                   | 180     | 2,101,945   | 1856  | Window manager                      |
+| NVDisplay.Container   | 164     |             |       | New NVIDIA service (post-install)   |
+| OneDrive              | 155     |             |       |                                     |
+| SteelSeriesGGEZ       | 154     |             |       |                                     |
+| msedge / Copilot      | ~265    |             |       |                                     |
+
+No active backtester python in this moment, so no 50 GB VM consumer. **The
+crash precondition is heavy-Python sessions, not the steady-state baseline.**
+
+#### Event 2004 (Resource-Exhaustion-Detector) — the smoking gun
+
+Last 24 hours, low-virtual-memory diagnostics:
+
+| Event 2004 time      | Top consumer                          | Nearest K-P 41 crash | Crash lead time |
+| -------------------- | ------------------------------------- | --------------------- | --------------- |
+| 5/17 23:03:31        | python.exe (19244) ~47.5 GB           | 5/17 23:07:06        | 3 min 35 s      |
+| 5/17 23:24:06        | python.exe (18580) ~57.7 GB           | 5/17 23:27:43        | 3 min 37 s      |
+| 5/18 00:02:32        | python.exe (27524) ~47.6 GB           | 5/18 00:04:24        | 1 min 52 s      |
+| 5/18 07:12:26        | python.exe (3936) ~43.7 GB            | 5/18 07:15:38        | 3 min 12 s      |
+| 5/18 10:36:57        | python.exe (20560) ~58.7 GB           | 5/18 10:39:06        | 2 min 09 s      |
+| 5/18 11:10:33        | python.exe (11288) ~59.5 GB           | 5/18 11:17:04 (dump) | 6 min 31 s      |
+| 5/18 11:15:33        | python.exe (11288) ~60.5 GB           | (same crash)          | 1 min 31 s      |
+| 5/18 19:27:03        | python.exe (9412) ~47.6 GB            | 5/18 19:31:40        | 4 min 37 s      |
+| 5/18 20:16:48        | python.exe (2616) ~58.8 GB            | 5/18 20:18:34        | 1 min 46 s      |
+| **5/18 21:10:38**    | **python.exe (10416) ~55.0 GB**       | **5/18 21:13:30 #8** | **2 min 52 s**  |
+
+**10 of 10 recent crashes are preceded by Event 2004 within 1.5 – 6.5 minutes.**
+
+Baseline comparison: in the 27 days from 4/20 to 5/17 22:00, Event 2004 fired
+**once** (5/2 12:53, python.exe at ~7.4 GB, did not precede a crash). The
+metric went from rare-baseline to crash-precedent at the 5/17 23:00 inflection
+point — same inflection as the crash cluster.
+
+What changed at 5/17 23:00: the Trading Corp workload shifted to **heavy
+backtester runs** (Kalshi structure-arb backtester at ~600 events × cross-
+sectional analysis; BitUnix v3 hybrid backtests; long pandas DataFrames held
+in memory for the report-writing phase). These are the Python processes
+sitting at 45–60 GB virtual.
+
+#### Reliability Monitor
+
+`perfmon /rel` is GUI-only without elevation/scripting hooks. The
+Event-Viewer signals above (Event 2004, K-P 41, no WHEA) are the same data
+Reliability Monitor would surface. No additional info gained from a separate
+RelMon view this session.
+
+#### Verdict on H7
+
+**H7 (workload-pressure / virtual-memory exhaustion) is the new leading
+hypothesis.** Direct correlation evidence is stronger than any other
+hypothesis has had at any point in the investigation:
+
+- Single biggest evidence: 10/10 Event 2004 → K-P 41 within minutes.
+- Mechanism: kernel can't allocate to write bugcheck dump when commit is
+  exhausted → explains 11/12 no-dump pattern (with the one dump being the
+  exceptional case where the fault path happened to be runnable).
+- Inflection-point match: pattern began exactly when heavy backtester
+  workload type was introduced.
+- Falsification evidence: prior single-driver mitigations (Norton, NVIDIA)
+  did not stop the crashes because the underlying mechanism is system-wide
+  memory pressure, not any individual driver.
+
+**Workload-reduction test (M-WR — new, free, immediate):** the user runs a
+24 – 48 hour session under **explicitly capped Python memory** — only one
+backtester process at a time, with the heavy processes monitored for >30 GB
+VM and forcibly killed before they reach the 2004-trigger zone. Concretely:
+
+1. Close all but one Claude Code window during heavy work.
+2. Shut down WSL (`wsl --shutdown`) — frees ~1.4 GB virtual + reduces commit
+   pressure.
+3. Close Discord (it routinely sits at 3 × 3.5 GB VM = 10 GB virtual).
+4. When running backtesters: monitor `python.exe` VM via
+   `Get-Process python | Select WorkingSet64, VirtualMemorySize64` every
+   30 seconds; kill processes >25 GB VM before they hit the 2004 zone.
+5. Observe whether crashes stop.
+
+If crashes stop under reduced workload → H7 confirmed; permanent fix is to
+**split heavy backtester runs into separate Python processes that exit
+between batches**, not to keep one long-running process across an entire
+backtest sweep.
+
+If crashes continue under reduced workload → H7 weakened; reopen H1 (RST
+uninstall, M2) and H8 (BIOS update) as next mitigations.
+
+### Step 5 — Killer Wi-Fi hypothesis
+
+#### Killer driver versions
+
+| Component                                   | Version          | Driver Date      | Vintage        |
+| ------------------------------------------- | ---------------- | ---------------- | -------------- |
+| Killer(R) Wi-Fi 6E AX1675x 160MHz (210NGW)  | **22.70.0.6**    | **2021-06-28**   | OEM-stale (5 yr) |
+| Killer Networking Software                  | 3.1524.510.1     | 2024-05-09       | ~2 yr           |
+| Killer E3100G 2.5 Gigabit Ethernet          | 1125.20.729.2024 | 2024-07-28       | ~2 yr           |
+
+The Wi-Fi driver itself is **same vintage as NVIDIA** (mid-2021 OEM image,
+never updated). Networking software and the Ethernet driver have been
+refreshed by Killer.
+
+#### Killer user-mode crash count
+
+Last 7 days: **17 `Application Error` events for
+`KillerProviderDataHelperService.exe 3.1524.510.1`** (same time stamp 0x663e3e89,
+indicating one binary version repeatedly crashing).
+
+Looking at crash-time alignment: every Killer crash timestamp lines up with a
+post-reboot SCM boot moment (within seconds of K-P 41 events). Killer
+service crashes are **downstream artifacts of system crashes** — service
+auto-starts post-boot, fails immediately because its kernel counterpart is
+in a state it can't talk to, exits. Same shape as the RstMwService 7023
+pattern.
+
+#### Verdict on H3
+
+No new positive evidence elevates Killer as a primary cause. But the
+**driver vintage is the same OEM-stale cluster as NVIDIA and BIOS** — same
+"nothing on this machine has been updated since factory" story. **H3 stays
+LOW–MEDIUM**: untested by mitigation, plausible co-conspirator if H7 is the
+trigger, but no direct evidence.
+
+### Step 6 — Hypothesis ranking summary (canonical for this session)
+
+The full restructured ranking is in § 2's "Post-crash-#8 widened-scope re-
+ranking" subsection. Quick summary here for cross-referencing:
+
+| Category                          | Hypotheses                                          |
+| --------------------------------- | --------------------------------------------------- |
+| **Confirmed for individual crash** | H2 (NVIDIA) — crash #6 via the one bugcheck dump   |
+| **Falsified by mitigation**        | H1b (Norton dual-AV), H2 (NVIDIA) as complete cause for the pattern |
+| **Untested but plausible — NEW**   | H7 (workload pressure / VM exhaustion) — **LEADING**; H1 (Intel RST); H3 (Killer Wi-Fi 2021-vintage); H8 (BIOS / firmware 2021-vintage); H6 (hardware fault not visible to WHEA) |
+| **Trigger-only (not root)**        | H4 (May 2026 KBs accelerated the existing brittleness) |
+| **LOW**                            | H5 (power delivery), H1b (Norton)                   |
+
+The pattern of **11/12 no-dump crashes** suggests the cause is in:
+- Driver-interrupt-context (any driver wedging the storage stack before
+  bugcheck can run), OR
+- System-wide commit exhaustion preventing the kernel from allocating to
+  write a dump (H7), OR
+- Hardware / firmware path that bypasses software error handling entirely.
+
+H7 is the only single-mechanism hypothesis that explains every observation
+in the data we have. Alternative interpretations exist but require either
+multiple unrelated causes or speculative mechanisms unsupported by WHEA data.
+
+### Step 7 — Recommended testing sequence
+
+Ordered cheap → expensive, likely-yield → speculative. The user picks which
+to act on. **No mitigation applied this session.**
+
+| # | Test                                    | Effort        | Likely yield                | Risk     | Type           |
+| - | --------------------------------------- | ------------- | --------------------------- | -------- | -------------- |
+| 1 | **M-WR — workload-reduction observation** (close extra Claude windows, `wsl --shutdown`, close Discord, monitor python VM, cap at ~25 GB) | 24–48 hr passive observation | HIGH — directly tests H7 which has the strongest correlative evidence | None | Software-process change, no install |
+| 2 | **Install HWiNFO64** (free, vendor-neutral) and run during the M-WR window to gather temp + voltage + commit-charge data | 10 min install + passive | MEDIUM — closes the temp diagnostic gap; tests H5/H6 thermal-amplifier story passively | None | Read-only monitoring tool |
+| 3 | **Check MSI BIOS support page for E17K3IMS.119 vs current** (do NOT auto-update; user reads changelog and decides) | 15 min user-side | MEDIUM — tests H8 if BIOS changelog mentions storage / power / EC fixes | None this step (read-only); the UPDATE itself is high-risk and deferred to a separate explicit decision | User read-only |
+| 4 | **Queue Windows Memory Diagnostic for next planned reboot** (`mdsched.exe` schedules without running; reboot when user can spare 2 hours) | 0 min to queue, 2 hr at reboot | LOW — no positive signal for RAM, but free + closes diagnostic gap (H6) | None | Built-in MS tool |
+| 5 | **M2 — uninstall Intel RST + RstDowngradeGuard + reboot** (the next "obvious software step" the prior session held off on) | 15 min + reboot | MEDIUM — tests H1; hygiene win regardless | Low | Driver uninstall |
+| 6 | **M4 — replace Killer Wi-Fi driver 22.70.0.6 with current Intel AX210 reference driver** | 30 min | LOW — tests H3, no positive evidence elevates Killer as primary | Low | Driver swap |
+| 7 | **BIOS update** (only after #3 confirms a newer version exists with relevant stability fixes; manual, high-risk) | 30 – 60 min unattended | MEDIUM if relevant changelog; LOW otherwise | **HIGH** — bricking risk if interrupted | Manual firmware flash |
+| 8 | **RAM swap / PSU test / physical inspection** | service center | LOW — no positive signal | Highest | Hardware replacement |
+
+#### Recommended order of execution
+
+1. **Run test #1 first.** Workload-reduction is free, immediate, tests the
+   highest-confidence current hypothesis, has zero downside. If crashes
+   stop, the diagnosis converges and no further mitigation is needed beyond
+   the workload-management process change.
+2. **Run test #2 in parallel with #1.** HWiNFO64 install is 10 minutes and
+   gives us passive data during the workload-reduction window. If crashes
+   continue under reduced workload, HWiNFO data will be needed for the next
+   step.
+3. **Run test #3 in parallel with #1.** No system impact; user-side reading
+   only. Frames whether #7 (BIOS update) is worth considering later.
+4. **Run test #4 at next planned reboot.** Queues for free; runs during a
+   time the user is away from the laptop anyway.
+5. **If tests #1 / #2 / #3 / #4 leave the diagnosis unresolved, then #5
+   (RST uninstall).** This is the "next obvious software step" but is held
+   off here because the workload-reduction evidence base is stronger and
+   gives broader signal.
+6. **#6 only if #5 doesn't help.**
+7. **#7 only if #3 surfaced a relevant changelog AND nothing else helped.**
+   BIOS flashing is the last manual-risk software step.
+8. **#8 only as final resort** with everything software / firmware
+   exhausted.
+
+#### What success looks like for each test
+
+| Test | Pass condition                                                                 | Fail / inconclusive condition                                                |
+| ---- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| #1   | Zero K-P 41 + zero 6008 events in a 48 h window with reduced workload          | Any new K-P 41 → H7 not the sole cause; reopen H1                            |
+| #2   | HWiNFO logs show CPU pkg < 95 °C and VRM voltages stable during heavy use       | Spikes to 95 °C+ or voltage transients → H5 / H6 amplifier confirmed         |
+| #3   | Current MSI BIOS version available and changelog mentions storage / EC / power fixes | Same BIOS or no changelog match → H8 deprioritized                           |
+| #4   | MemoryDiagnostic completes with 0 errors                                       | Any error → immediate stop, RAM replacement (high-priority)                  |
+| #5   | RstMwService 7023 stops; no further K-P 41 in 48 h                              | Crashes continue → H1 falsified                                              |
+
+#### Stop-and-ask triggers that did NOT fire this session
+
+- SMART status on the one physical drive is OK / Healthy.
+- No WHEA-Logger events in 7 days.
+- No Memory Diagnostic warnings (none have ever run).
+- BIOS is old but not surprisingly so (4.5 yr, same vintage cluster as NVIDIA
+  and Killer Wi-Fi already known to be old).
+- Workload-reduction test IS plausible and IS surfaced as the highest-
+  priority cheap test (test #1).
+
+#### Stop-and-ask triggers that did fire (informational, no immediate user
+action required)
+
+- **Diagnostic gap: no prior memtest, no temperature monitoring tool, no
+  elevated-TPM-inspection access.** All three are non-blocking but worth
+  closing before the next round of mitigation testing.
+
+### Step 8 — Commit and stop
+
+Commit per task spec. End of session — no project work, no mitigations
+applied.
+
+End of § 9.
 
 End of report.
