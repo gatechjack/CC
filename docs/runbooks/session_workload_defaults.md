@@ -89,7 +89,7 @@ When you do need to run Python:
 
 - [ ] **Note current Committed before launching.** Have headroom of at
       least 4 GB on top of the baseline.
-- [ ] **Backtests: always invoke via the capped wrapper.**
+- [ ] **Backtests: MANDATORY via the capped wrapper.**
 
       ```powershell
       .\scripts\run_capped.ps1 python scripts\backtest_kalshi_structure_arb.py [args...]
@@ -98,28 +98,41 @@ When you do need to run Python:
 
       The wrapper applies a 25 GB Windows-Job-Object commit-charge cap
       to the entire process tree (parent + children). If the cap is
-      reached, the kernel terminates the job cleanly — no thrash, no
-      Event 2004, no Kernel-Power 41 crash. See § 10 of the diagnostic
-      report for the mechanism details.
-- [ ] **Pytest beyond the 78 Branch A baseline: recommended via wrapper.**
+      reached, the kernel rejects further `VirtualAlloc` calls (python
+      raises `MemoryError`) — no thrash, no Event 2004, no Kernel-Power
+      41 crash. See § 10 of the diagnostic report for the mechanism
+      details.
+- [ ] **Pytest: MANDATORY via wrapper. No exemption for single-file
+      runs, no exemption for "small" test sets.**
 
       ```powershell
-      .\scripts\run_capped.ps1 pytest [path] [args...]
+      .\scripts\run_capped.ps1 python -m pytest tests/<file>.py [args...]
+      .\scripts\run_capped.ps1 python -m pytest tests/ [args...]
       ```
 
-      Includes any new IC v1 test sweeps, Kalshi SA pytest expansions,
-      or full-suite runs.
-- [ ] **Scoped pytest of the 78 Branch A baseline tests: can run unwrapped.**
+      Applies to single-file pytest, scoped pytest, and full-suite
+      pytest equally. **Crash #9 (2026-05-18 22:08) was an unwrapped
+      pytest on a *single* test file (`tests/test_kalshi_structure_arb.py`)
+      that grew to 58 GB virtual commit and BSOD-ed the machine.**
+      The prior version of this runbook exempted "the 78 Branch A
+      baseline tests" because they finished in 0.4 s; that exemption
+      is removed. Wall-time and apparent test size are not reliable
+      predictors of memory footprint — pytest discovery transitively
+      imports the package's `__init__.py`s and trading_corp's import
+      chain can balloon. See § 11 of the diagnostic report for the
+      crash #9 forensics and the watchdog-mitigation attempt that was
+      abandoned.
+- [ ] **Trivial sanity checks: may run unwrapped.**
 
       ```powershell
-      pytest tests/test_backtest_bitunix_confluence_five_factor.py tests/test_bitunix_confluence_gate.py tests/test_bitunix_gate_inputs.py
+      python --version
+      python -c "print('hi')"
+      python -c "import ctypes; ..."   # one-liners with no trading_corp/tests imports
       ```
 
-      These finish in ~0.4 s and have an established safe profile.
-      Light workload, no wrapper overhead needed.
-- [ ] **`pytest tests/` full-suite: ALWAYS via wrapper.** Collection
-      over the whole suite plus any pandas/numpy-loaded test modules
-      can push committed by several GB before tests run.
+      Bound: zero `trading_corp` / `tests/` imports, no `pandas` /
+      `numpy` load. If a script imports anything from this project,
+      it goes through the wrapper.
 - [ ] **One backtester at a time.** Heavy backtests (BitUnix v3 hybrid,
       Kalshi structure-arb) routinely reach 45 – 60 GB virtual on this
       machine *unwrapped*. Even with the cap, concurrent runs share
@@ -165,7 +178,18 @@ This runbook + the `run_capped.ps1` wrapper together implement
   running). The session-start checklist above.
 - **Mitigation 2 (Python VM cap)**: 25 GB Job-Object commit cap via
   `procgov` and `scripts\run_capped.ps1`. The Python-operations
-  checklist above.
+  checklist above. **The wrapper is MANDATORY (not recommended) for
+  every python invocation that imports trading_corp/ or tests/.**
+  Wrapper-invocation discipline is the only enforcement; no OS-level
+  enforcement exists on this build (see Mitigation 2b below).
+- **Mitigation 2b (OS-level watchdog via procgov service)**:
+  investigated 2026-05-18, **abandoned**. Procgov's service mode
+  cannot complete its Job-Object attach on Win11 26200 — the .NET
+  `ProcessManager.GetModules` call hits `ERROR_PARTIAL_COPY` on
+  `EnumProcessModulesUntilSuccess` regardless of `RequiredPrivileges`
+  tuning. See [docs/diagnostics/2026-05-19_crash_diagnosis.md § 11](../diagnostics/2026-05-19_crash_diagnosis.md)
+  for the full investigation. Don't reinstall procgov as a service
+  on this OS build.
 
 **Mitigation 3 (backtester memory refactor)** — investigation of why
 backtesters reach 60 GB virtual on ~10 MB of input data — is on the

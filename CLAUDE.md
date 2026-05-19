@@ -42,6 +42,21 @@ Before you change anything:
    (`RiskAgent.narrate`); they may not produce them.
 5. **The TradingView webhook → broker path is handling real capital.**
    Don't refactor without explicit, in-session approval.
+6. **Local Python execution must go through `scripts\run_capped.ps1`.**
+   Any python invocation that touches `trading_corp/` or `tests/` —
+   including single-file pytest discovery — runs as
+   `.\scripts\run_capped.ps1 python …`, which caps the process tree's
+   commit charge at 25 GB via a Windows Job Object. Crash #9
+   (2026-05-18 22:08) was an unwrapped pytest on a single test file
+   that grew to 58 GB virtual and hard-rebooted the machine. The
+   OS-level watchdog approach (procgov service) was investigated and
+   abandoned for this Win11 26200 build — see
+   [docs/diagnostics/2026-05-19_crash_diagnosis.md § 11](docs/diagnostics/2026-05-19_crash_diagnosis.md).
+   Wrapper-invocation discipline is the only enforcement. Trivial
+   sanity checks (`python --version`, `python -c "print('hi')"` with
+   no project imports) may run unwrapped. See
+   [docs/runbooks/session_workload_defaults.md](docs/runbooks/session_workload_defaults.md)
+   for the full Python operations checklist.
 
 ---
 

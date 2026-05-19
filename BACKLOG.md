@@ -10,12 +10,15 @@ Active session work lives in chat — not duplicated here.
 
 ## P0 — Crash diagnosis (2026-05-19)
 
-PC has hard-rebooted 12 times in 30 days. Crash #8 (5/18 21:13) occurred during
+PC has hard-rebooted 13 times in 30 days. Most recent: **crash #9 (2026-05-18
+22:08)** — unwrapped pytest on a single test file hit 58 GB virtual commit and
+triggered a `VIDEO_MEMORY_MANAGEMENT_INTERNAL` BSOD. Wrapper-bypass failure
+mode, not a procgov enforcement failure. Crash #8 (5/18 21:13) occurred during
 the NVIDIA Game Ready Driver clean install's post-install reboot — H2 (NVIDIA)
 mitigation insufficient. H1b (Norton) already falsified prior session.
 
 **Current leading hypothesis: H7 (workload pressure / VM exhaustion).** Event
-2004 fires within 2 – 7 min before every recent crash (10/10), naming
+2004 fires within 2 – 7 min before every recent crash (11/11), naming
 `python.exe` at 43 – 60 GB virtual commit. Diagnostic report at
 **[docs/diagnostics/2026-05-19_crash_diagnosis.md](docs/diagnostics/2026-05-19_crash_diagnosis.md)**.
 
@@ -28,15 +31,35 @@ mitigation insufficient. H1b (Norton) already falsified prior session.
   - Discord closed
   - Memory sampler running in a visible PowerShell window
   - Current Committed memory < 11 GB
-- **Mitigation 2 (Python VM cap) — pending Board decision.** Mechanism
-  options A – E analyzed in diagnostic report § 10. Recommendation:
-  procgov via winget (option A) as primary, psutil-checkpoint in
-  conftest.py (option C) as secondary safety net. Not implemented this
-  commit.
+- **Mitigation 2 (Python VM cap via `scripts\run_capped.ps1` wrapper) —
+  APPLIED + MANDATORY.** Procgov 3.2.25275.19 installed via winget;
+  the wrapper invokes
+  `procgov -r --maxjobmem 25G --terminate-job-on-exit -- @args` to cap
+  the process tree at 25 GB commit charge. Per the runbook above AND
+  CLAUDE.md "STOP AND READ" invariant #6, the wrapper is MANDATORY
+  for every python invocation that touches `trading_corp/` or
+  `tests/` (including single-file pytest discovery). Crash #9 was an
+  unwrapped pytest → 58 GB virtual → BSOD.
+- **Mitigation 2b (OS-level watchdog via procgov service) —
+  investigated, abandoned 2026-05-18.** See diagnostic report § 11
+  addendum. On Win11 26200 + procgov 3.2.25275.19, the service can't
+  reliably attach Job Objects to user-mode python processes (.NET
+  `ProcessManager.GetModules` hits `ERROR_PARTIAL_COPY` regardless of
+  `RequiredPrivileges` tuning). Don't reinstall as a service on this
+  OS build.
 - **Mitigation 3 (backtester root-cause refactor) — backlog.** Why do
   backtests reach 60 GB virtual on ~10 MB of input data? Parallel-
   session-owned code; address after the cap mechanism stabilizes
   baseline.
+- **Mitigation 4 (agent-side transcript lint) — follow-up.** Session-start
+  greps recent Claude transcripts at
+  `~/.claude/projects/.../jsonl` for unwrapped python invocations and
+  flags them. Closes the agent-side discipline gap that crash #9
+  exposed (wrapper exists but the agent forgot to use it per § 11).
+  Framing: when a wrapper-mandated workflow exists but isn't
+  kernel-enforced, a transcript lint at session start catches
+  non-compliance. Don't implement until 48 h of wrapper-discipline
+  data shows whether the lint is needed.
 
 **P0 until mitigation 1 + mitigation 2 hold a 48 h crash-free observation
 window** under normal backtester load. See report § 9 Step 7 for the full

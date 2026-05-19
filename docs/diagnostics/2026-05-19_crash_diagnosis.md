@@ -2380,6 +2380,138 @@ For the avoidance of future doubt:
   § 9 reading that the no-dump cases are downstream of storage / commit
   wedge, not a broken dump configuration.
 
+### Addendum: Watchdog mitigation attempt — investigated and abandoned (2026-05-18 22:30 – 23:15)
+
+Following the § 11 recommendation 3 ("Board-decision-scale: procgov as
+session-wide watchdog"), procgov 3.2.25275.19 was installed via `winget`
+on 2026-05-18 21:54 (commit `ab13673`) and then `procgov --install
+--maxjobmem 25G python.exe` (+ same for `pythonw.exe`) was run in elevated
+PowerShell to configure it as a service watching `python.exe` and
+`pythonw.exe` with a 25 GB Job-Object commit cap. Intent: remove the
+wrapper-invocation discipline gap crash #9 exposed — every python.exe
+launch on the machine, regardless of caller, should attach to a capped
+Job Object at start.
+
+It does not work on this OS build. Investigation summary:
+
+1. **`procgov --install` does NOT use IFEO** despite public docs for
+   procgov 3.x stating "the service uses IFEO to start the procgov process
+   as a debugger for each new instance of the monitored process." A binary
+   string scan of the installed `procgov.exe` (8.1 MB, dated 2025-10-02)
+   found no `Image File Execution Options` / IFEO / `Debugger`-as-CLI-flag
+   strings — only `EtwEventProvider`, `EtwTraceListener`, `<StartMonitor>`,
+   `IOCPListener`, `NewProcessEventFormatter`, and
+   `CreateProcessWithJobAssigned`. The actual mechanism is **post-launch
+   ETW attach**: the service subscribes to kernel process-creation events,
+   sees each new `python.exe`, then attempts to open the process handle
+   and add it to a Job Object. Verbose mode (`procgov -v --install …`)
+   confirmed no IFEO write attempt — the verbose flag produced only the
+   same single-line cap-confirmation as non-verbose install.
+2. **ETW step works; OpenProcess step fails.** Application event log
+   showed repeated warnings from the service:
+   `Failed when getting information about process N: System.ComponentModel.Win32Exception (5): Access is denied. at System.Diagnostics.ProcessManager.OpenProcess(Int32, Int32, Boolean) + 0x165 at System.Diagnostics.NtProcessManager.GetFirstModule(Int32) + 0xf at ProcessGovernor.Program.ProcessGovernorService.<Start>g__RunProcessObserver|3_1(CancellationToken) + 0x270`.
+   ETW fired; identification step
+   (`ProcessManager.OpenProcess` → `NtProcessManager.GetFirstModule`)
+   refused. Service runs as `NT AUTHORITY\SYSTEM`, so this points at a
+   token-privilege issue: `SeDebugPrivilege` not enabled by default
+   under Win11 service hardening despite the SYSTEM account having it
+   nominally.
+3. **`RequiredPrivileges = SeDebugPrivilege` (β-minimal) partially helped.**
+   Added `RequiredPrivileges` to the service registration at
+   `HKLM:\SYSTEM\CurrentControlSet\Services\ProcessGovernor` as a
+   `REG_MULTI_SZ` value. After service restart, access-denied warnings
+   stopped — service token now had `SeDebugPrivilege` enabled,
+   `OpenProcess` succeeded. **But smoke test (`IsProcessInJob`
+   immediately after python launch + delayed checks at t=100, 500,
+   1000, 2000, 5000 ms) all still returned `False`.** The service was
+   now identifying the process successfully but not attaching the Job
+   Object — silently.
+4. **BITS-equivalent privilege set (β-broader) exposed a deeper wall.**
+   Reset `RequiredPrivileges` to the BITS service's full set
+   (`SeChangeNotify, SeCreateGlobal, SeImpersonate, SeAssignPrimaryToken,
+   SeIncreaseQuota, SeDebug`) — structurally analogous to procgov's
+   needs. Service restart: clean. Smoke test: **`In job: False` still.**
+   Application log now showed a *new* error kind for *other* processes:
+   `Failed when getting information about process N: System.ComponentModel.Win32Exception (299): Only part of a ReadProcessMemory or WriteProcessMemory request was completed. at System.Diagnostics.NtProcessManager.EnumProcessModulesUntilSuccess(...) at System.Diagnostics.NtProcessManager.GetModules(Int32, Boolean) + 0x18b`.
+   **`ERROR_PARTIAL_COPY` (299) is a kernel-side memory-read restriction**
+   — typically caused by WoW64 boundary mismatch, page-protection rules,
+   or the process exiting mid-read. Not a privilege issue. Adding more
+   privileges doesn't fix it. The python smoke-test processes themselves
+   continued to produce *no log entry at all*, meaning the service either
+   was matching them and failing silently on a later step (no logging
+   on `AssignProcessToJobObject` errors) or wasn't matching them at all.
+
+**Conclusion.** On Windows 11 build 26200 + procgov 3.2.25275.19, the
+service's `.NET ProcessManager.GetModules` call cannot reliably inspect
+user-mode python processes regardless of which `RequiredPrivileges` set
+the service is granted. The `ERROR_PARTIAL_COPY` error indicates a
+Windows-side process-memory-read restriction outside what service-token
+privileges can adjust. There is no `--debugger` CLI mode on this procgov
+build (confirmed by binary string scan), so the "manual IFEO → procgov
+as debugger" workaround is also unavailable.
+
+**Rollback performed 2026-05-18 23:15.** `procgov --uninstall-all` in
+elevated PowerShell. Verified post-uninstall (read-only from a
+non-elevated session):
+
+- `Get-Service ProcessGovernor` → null (service unregistered).
+- `Test-Path HKLM:\SOFTWARE\ProcessGovernor` → False (per-image config
+  cleared).
+- `Test-Path HKLM:\SYSTEM\CurrentControlSet\Services\ProcessGovernor` →
+  False (service registry key cleared; `RequiredPrivileges` died with it).
+- IFEO entries for `python.exe` / `pythonw.exe` → never existed.
+- `C:\Program Files\ProcessGovernor\` directory remains with `procgov.exe`
+  inside (cosmetic — not on PATH, not service-registered, not invoked
+  by anything). Optional manual cleanup; not load-bearing.
+
+Procgov binary at the WinGet user-scope path
+(`%LOCALAPPDATA%\Microsoft\WinGet\Packages\LowLevelDesign.ProcessGovernor_Microsoft.Winget.Source_8wekyb3d8bbwe\procgov.exe`)
+remains on PATH and continues to back `scripts\run_capped.ps1` as the
+per-invocation wrapper. Wrapper smoke-tested post-uninstall:
+`.\scripts\run_capped.ps1 python -c "print('wrapper still works')"`
+→ `Maximum job committed memory (MB): 25,600` → `wrapper still works`,
+exit 0. The wrapper path is unaffected by the uninstall.
+
+### What NOT to retry on this OS build
+
+- **Don't reinstall procgov as a service watchdog.** Same ETW +
+  `OpenProcess` + `GetModules` mechanism, same `ERROR_PARTIAL_COPY` wall.
+  Adding more privileges to `RequiredPrivileges` won't fix it.
+- **Don't try manual IFEO writes pointing at procgov.exe.** Procgov has
+  no `--debugger` CLI mode (binary scan confirmed). Writing
+  `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\python.exe\Debugger = "...\procgov.exe --debugger"`
+  would break every python.exe launch on the system.
+- **Don't try to enable `SeDebugPrivilege` some other way** (e.g.,
+  `AdjustTokenPrivileges` shim, scheduled task with explicit
+  privileges). The `SeDebugPrivilege` step is solved by
+  `RequiredPrivileges`; the wall is `ERROR_PARTIAL_COPY` on
+  `EnumProcessModulesUntilSuccess`, which token privileges don't affect.
+- **Do consider, if revisiting later:** (a) a newer procgov release
+  (3.3+ may have rewritten the ProcessManager call to use
+  `K32EnumProcessModules` or `NtQueryInformationProcess` directly,
+  bypassing the .NET wrapper that hits `ERROR_PARTIAL_COPY`); (b) a
+  different watchdog tool with pre-launch interception (true IFEO
+  redirection via a small custom debugger stub, ~100 LoC, would attach
+  the Job Object before `OpenProcess` becomes necessary). Both are
+  higher-cost than the wrapper + discipline path warrants today.
+
+### Mitigation state at end of this turn
+
+- **Mitigation 1 (workload reduction baseline):** APPLIED, unchanged
+  ([docs/runbooks/session_workload_defaults.md](../runbooks/session_workload_defaults.md)).
+- **Mitigation 2 (Python VM cap via `scripts\run_capped.ps1` wrapper):**
+  APPLIED + **MANDATORY** per runbook + CLAUDE.md "STOP AND READ"
+  invariant #6. Per-invocation discipline is the enforcement.
+- **Mitigation 2b (procgov as service watchdog):** investigated,
+  **abandoned** per analysis above. Procgov service uninstalled.
+- **Mitigation 3 (backtester memory refactor):** unchanged, on backlog
+  as parallel-session-owned code.
+- **Future enforcement gap closer:** "agent-side transcript lint at
+  session start" filed in BACKLOG.md as a follow-up to catch
+  unwrapped-python invocations in recent Claude transcripts. Don't
+  implement until 48 h of wrapper-discipline data shows whether the
+  lint is needed.
+
 End of § 11.
 
 End of report.
