@@ -10,18 +10,38 @@ Active session work lives in chat — not duplicated here.
 
 ## P0 — Crash diagnosis (2026-05-19)
 
-PC has hard-rebooted 11+ times in 30 days, accelerating to 8 crashes in 24 hours on
-5/17–5/18. Diagnostic report at **[docs/diagnostics/2026-05-19_crash_diagnosis.md](docs/diagnostics/2026-05-19_crash_diagnosis.md)**.
+PC has hard-rebooted 12 times in 30 days. Crash #8 (5/18 21:13) occurred during
+the NVIDIA Game Ready Driver clean install's post-install reboot — H2 (NVIDIA)
+mitigation insufficient. H1b (Norton) already falsified prior session.
 
-Lead hypothesis: 5-year-old Intel RST storage driver (`iaStorAC.sys`), with
-RstDowngradeGuard / OptaneDowngradeGuard blocking updates. RstMwService terminates
-with non-zero status on every reboot post-5/15 (9/9). NVIDIA RTX 3060 driver (Dec
-2021) and Killer Wi-Fi driver (June 2021) are secondary suspects.
+**Current leading hypothesis: H7 (workload pressure / VM exhaustion).** Event
+2004 fires within 2 – 7 min before every recent crash (10/10), naming
+`python.exe` at 43 – 60 GB virtual commit. Diagnostic report at
+**[docs/diagnostics/2026-05-19_crash_diagnosis.md](docs/diagnostics/2026-05-19_crash_diagnosis.md)**.
 
-**P0 until mitigations are validated.** No project work (IC v1 deconfliction,
-Kalshi SA review, paper-cutover prep) until M1 (capture analyzable minidump) +
-M2 (uninstall Intel RST + downgrade guards) have had 48 hours to validate. See
-report § 3 for the full mitigation list and § 5 for the recommended sequence.
+**Mitigations active as of this commit:**
+
+- **Mitigation 1 (workload reduction baseline) — APPLIED.** Defaults
+  documented at **[docs/runbooks/session_workload_defaults.md](docs/runbooks/session_workload_defaults.md)**.
+  Before any session involving Python execution, verify:
+  - One Claude window only
+  - Discord closed
+  - Memory sampler running in a visible PowerShell window
+  - Current Committed memory < 11 GB
+- **Mitigation 2 (Python VM cap) — pending Board decision.** Mechanism
+  options A – E analyzed in diagnostic report § 10. Recommendation:
+  procgov via winget (option A) as primary, psutil-checkpoint in
+  conftest.py (option C) as secondary safety net. Not implemented this
+  commit.
+- **Mitigation 3 (backtester root-cause refactor) — backlog.** Why do
+  backtests reach 60 GB virtual on ~10 MB of input data? Parallel-
+  session-owned code; address after the cap mechanism stabilizes
+  baseline.
+
+**P0 until mitigation 1 + mitigation 2 hold a 48 h crash-free observation
+window** under normal backtester load. See report § 9 Step 7 for the full
+8-step testing sequence. The historical M1 / M2 / M3 mitigations in § 3 of
+the report are not the priority any longer — H7 supersedes them.
 
 ---
 
