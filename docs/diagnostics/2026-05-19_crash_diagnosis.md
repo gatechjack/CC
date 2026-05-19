@@ -866,4 +866,258 @@ Empty output = crash-free observation window confirmed.
 End of M1 execution. Next action is user-side; do not proceed to M2 (driver
 uninstall) until user confirms M1 actions are done OR explicitly defers them.
 
+---
+
+## 8. Crash #7 diagnostic — 2026-05-18 (user-frame "5/19")
+
+User reported a seventh crash "during the Kalshi SA review session on 2026-05-19."
+System clock at the time of this analysis is 2026-05-18 20:22 local — the crash
+was tonight, not tomorrow. Treat dates throughout this section as 2026-05-18.
+
+### Timeline
+
+| When (local)             | What                                                                          |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| 2026-05-18 20:09:53      | Unexpected shutdown (recorded retroactively by EventLog 6008 at 20:18:47).    |
+| 2026-05-18 20:09:53      | `RstMwService` terminated (Service Control Manager 7023).                     |
+| 2026-05-18 20:18:32.500  | System back up (`LastBootUpTime`).                                            |
+| 2026-05-18 20:18:34      | Kernel-Power 41 critical event logged after reboot.                           |
+| 2026-05-18 20:18:47      | `RstMwService` terminated again on service startup (the +13 s pattern).       |
+
+What the user was doing immediately before: Kalshi SA review session, reading
+the `kalshi_structure_arb_backtest_2026-05-17.md` backtest report file. No heavy
+compute, no broker connectivity, no pytest. Light file-read workload — same
+class of workload as the 5/15 light-session crash that invalidated the original
+"long pytest causes OOM" hypothesis.
+
+### Dump file inventory (Step 1 result)
+
+| Location                                            | State                                                                                                                                              |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `C:\Windows\Minidump\`                              | **Contains `051826-14937-01.dmp` (2,820,616 bytes, written 2026-05-18 11:17 AM).** Note: PowerShell `Get-ChildItem` is access-denied for non-elevated processes; `cmd /c dir` enumerates fine. |
+| `C:\Windows\memory.dmp`                             | Present, but timestamp is **2022-05-14 06:08** — stale, 4-year-old residue, unrelated to recent crashes.                                            |
+| `C:\Users\AA Incorporado\AppData\Local\CrashDumps\` | 3 user-mode dumps from 5/18 evening: `Start_HDR.exe.16312.dmp` (5/18 20:10), `TradingView.exe.17848.dmp` (5/18 20:17), `Start_HDR.exe.16724.dmp` (5/18 20:19). User-mode app crashes around the kernel reboot, not the kernel crash itself. |
+
+**Significant**: the 11:17 AM 5/18 dump (`051826-14937-01.dmp`) was reported
+"MISSING from disk" in § 1 of this report. It is **now visible**. Two possible
+explanations:
+
+1. Norton's realtime engine was suppressing visibility / quarantining the file,
+   and post-uninstall the file is accessible again.
+2. The M1 inventory was incorrect — the file was always there, but the
+   non-elevated session in M1 read an empty listing due to ACL behaviour that
+   PowerShell handles less gracefully than `cmd dir`.
+
+Either way: **we have an analyzable kernel dump from the 11:17 AM 5/18 crash**.
+This is the dump M1 was hoping to capture from the next crash; it turns out we
+already had it.
+
+### Dump for the 20:09 PM crash specifically
+
+No new dump was written for the most recent (20:09 PM) crash:
+
+- `C:\Windows\Minidump\` contains only the older 11:17 AM dump.
+- No BugCheck `1001` event was logged in the last 6 hours.
+- No `volmgr` "dump file generation succeeded" event was logged in the last 6
+  hours.
+
+This is the same no-dump pattern as the 9 of 10 prior crashes that produced no
+bugcheck. **`CrashDumpEnabled=7` is set and confirmed**, so the registry change
+from M1 took effect — yet the kernel still didn't run the bugcheck path. The
+storage-stack-wedge mechanism (kernel can't run bugcheck because the storage
+subsystem is unresponsive, so the embedded controller forces a hard reset) is
+the only mechanism consistent with "modern crash-dump policy correctly set yet
+no dump produced." Hardware-fault-class events would have appeared in WHEA;
+nothing did.
+
+### Event Viewer entries around the crash
+
+System log, last 48 h, IDs 41/1001/6008/1074 (kernel-power / bugcheck /
+unexpected-shutdown / restart-initiated):
+
+```
+5/18 8:18:47 PM  6008 EventLog                     Previous shutdown at 8:09:53 PM was unexpected.
+5/18 8:18:34 PM    41 Microsoft-Windows-Kernel-Power  Rebooted without cleanly shutting down first.
+5/18 8:09:17 PM  1074 User32                       winlogon.exe initiated restart on behalf of NT AUTHORITY\SYSTEM (no title).
+5/18 7:31:53 PM  6008 EventLog                     Previous shutdown at 7:17:18 PM was unexpected.
+5/18 7:31:40 PM    41 Microsoft-Windows-Kernel-Power  Rebooted without cleanly shutting down first.
+5/18 11:17:17 AM 6008 EventLog                     Previous shutdown at 10:39:18 AM was unexpected.
+5/18 11:17:17 AM 1001 WER-SystemErrorReporting     BugCheck 0x7E (0xC0000005, 0xFFFFF80489594CB6, 0xFFFFF3862D816778, 0xFFFFF3862D815F80). Dump: C:\WINDOWS\Minidump\051826-14937-01.dmp.
+5/18 11:17:04 AM   41 Microsoft-Windows-Kernel-Power  Rebooted without cleanly shutting down first.
+```
+
+Note the **20:09:17 PM Event ID 1074** from `winlogon.exe`: an `NT AUTHORITY\SYSTEM`-initiated
+restart 36 seconds before the unexpected-shutdown timestamp. The "No title for
+this reason could be found" message is ambiguous — could be a hung-shutdown
+fallback (winlogon trying to restart a frozen system before the EC forces it),
+or a `RtlShutdownSystem` call from a kernel-driver fault handler. Worth noting
+but not conclusive on its own; the substantive evidence is the K-P 41 at
+20:18:34 PM and the missing bugcheck.
+
+### WHEA-Logger
+
+**Zero events in the last 48 hours.** Hardware-error path remains clean across
+this crash too. Hardware-fault hypothesis (H6) continues to lack any positive
+signal.
+
+### RstMwService correlation continues — 10 / 10 now
+
+Service Control Manager 7023 events in the last hour:
+
+| Time                  | Source                  | Detail                                             |
+| --------------------- | ----------------------- | -------------------------------------------------- |
+| 5/18 7:31:53 PM       | Service Control Manager | `RstMwService` terminated on post-7:17-crash boot. |
+| **5/18 8:09:53 PM**   | Service Control Manager | **`RstMwService` terminated AT THE MOMENT of the most recent crash.** |
+| 5/18 8:18:47 PM       | Service Control Manager | `RstMwService` terminated on post-8:09-crash boot. |
+
+The 8:09:53 PM termination is precisely synchronous with the crash itself
+(the 6008 timestamp records "previous shutdown at 8:09:53 PM"). The crash-time
+correlation is now **10/10** since the May 2026 cumulative updates. Combined
+with the no-dump pattern (storage stack wedge), this is the strongest specific
+evidence in the entire investigation pointing at the Intel RST stack as the
+proximate cause.
+
+Driver enumeration confirms the picture:
+
+| Component        | Present? | State                     | Notes                                                  |
+| ---------------- | -------- | ------------------------- | ------------------------------------------------------ |
+| `iaStorAC`       | No       | —                         | Not installed.                                          |
+| `iaStorAVC.sys`  | Yes      | Stopped / Manual          | Installed, not currently started.                       |
+| `iaStorV.sys`    | Yes      | Stopped / Manual          | Installed, not currently started.                       |
+| `RstMwService`   | Yes      | Stopped (Automatic startup) | Service definition still registered; auto-starts every boot then fails. |
+
+The RST user-mode service is auto-starting every boot, then terminating with a
+non-zero error because its kernel counterpart isn't in a state it can talk to
+(or isn't loaded the way it expects). Even though `iaStorAVC.sys` shows
+"stopped," the driver file is on disk and the registered class-filter / lower-
+filter entries in `HKLM\SYSTEM\CurrentControlSet\Control\Class\{...}` may still
+be referencing it at boot time — meaning a code path through that driver could
+still be in the I/O path despite the "stopped" SCM state.
+
+### Norton uninstall — confirmed clean
+
+| Check                                                            | Result                              |
+| ---------------------------------------------------------------- | ----------------------------------- |
+| `Get-Service NortonSecurity`                                     | Service not present.                |
+| `Get-Process NortonSecurity`                                     | No matching processes.              |
+| `Test-Path 'C:\Program Files\Norton Security'`                   | Directory removed.                  |
+
+Norton is gone. Yet:
+- A new no-dump crash happened tonight (20:09 PM).
+- The `RstMwService` 7023 pattern continued unchanged.
+- The 11:17 AM 5/18 minidump *that Norton was supposedly deleting* is on disk.
+
+Reasonable inference: **Norton was not the dump-deletion mechanism**, or at
+least not the only one. The original M1 dump-deletion hypothesis was wrong on
+the deletion specifics. The 11:17 AM dump was always there; we couldn't see it
+because of the PowerShell-ACL behaviour. This doesn't fully rule out
+"Norton was disrupting visibility" — it just means we have less reason to think
+so now. Either way: data we thought was lost is recovered.
+
+### Implication for the hypothesis ranking (preliminary — fuller update in § 9 after WinDbg)
+
+- **H1 (Intel RST `iaStorAVC.sys` / `RstMwService`) — leading, strengthened.**
+  10/10 crash-time correlation with `RstMwService` termination. Storage-wedge
+  no-dump pattern continued after the only competing explanation (H1b) was
+  eliminated. The driver state inventory shows RST machinery still present.
+- **H1b (dual-AV Norton minifilter) — weakened to unlikely sole cause.**
+  Norton is uninstalled; the crash recurred with identical signatures the same
+  evening. If H1b were the sole cause, the M1 uninstall should have prevented
+  this crash. Doesn't rigorously *disprove* H1b (could be a tail event, could be
+  state lingering from years of Norton operation, could be one of multiple
+  contributors), but the evidence balance has shifted hard toward H1.
+- **H2 (NVIDIA), H3 (Killer), H4 (May KBs as trigger), H5 (power), H6 (hardware)
+  — unchanged** from the prior ranking. Subsidiary, awaiting evidence.
+
+### Step 3 — WinDbg availability check
+
+| Tool                                            | Found? |
+| ----------------------------------------------- | ------ |
+| `windbg.exe` on PATH                            | No     |
+| `cdb.exe` on PATH                               | No     |
+| `kd.exe` on PATH                                | No     |
+| `C:\Program Files\Windows Kits\10\Debuggers\…`  | No     |
+| `C:\Program Files (x86)\Windows Kits\…`         | No     |
+| `Microsoft.WinDbg` Appx package                 | Not installed |
+| `C:\Program Files\Debugging Tools for Windows*` | None   |
+
+**WinDbg is not available on this system. STOP per the task's stop-and-ask
+trigger — install required before analysis can proceed.**
+
+### WinDbg install options
+
+Three reasonable paths, ordered cheapest to heaviest:
+
+1. **Microsoft Store / `winget` — WinDbg (modern preview, recommended).**
+   - From an elevated PowerShell: `winget install --id Microsoft.WinDbg`
+   - Or: open Microsoft Store, search "WinDbg", click Install.
+   - Roughly 200 MB download, no SDK dependency, ships symbols server pre-
+     configured.
+   - After install, the binary is `windbgx.exe`. Open dump with:
+     ```
+     windbgx.exe -z C:\Windows\Minidump\051826-14937-01.dmp
+     ```
+   - Recommended unless the user has a reason to prefer the classic.
+
+2. **Windows SDK → Debugging Tools for Windows (classic).**
+   - Download Windows 11 SDK installer from learn.microsoft.com → run → during
+     "Select the features you want to install", **uncheck everything except**
+     "Debugging Tools for Windows".
+   - Installs `windbg.exe`, `cdb.exe`, `kd.exe` to
+     `C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\`.
+   - ~250 MB. Classic UI. Slightly more featureful for kernel work than the
+     Store version, but the Store version is sufficient here.
+
+3. **`winget install Microsoft.WindowsSDK.10` (programmatic SDK install).**
+   - Same Debugging Tools subset as #2 but installed via winget.
+   - Heavier than #1.
+
+### Once WinDbg is installed, the analysis commands to run
+
+Against `C:\Windows\Minidump\051826-14937-01.dmp`:
+
+```
+.symfix
+.reload
+!analyze -v
+lm
+!process 0 0
+```
+
+Save the output to
+`docs/diagnostics/2026-05-19_crash_7_windbg.txt` (filename keeps "2026-05-19"
+to match the report's naming even though the system date is 5/18). Commit
+separately.
+
+### What we're hoping to see (and what each result means)
+
+| WinDbg `!analyze -v` "PROBABLY_CAUSED_BY" | Hypothesis confirmed | Recommended next user-action |
+| ----------------------------------------- | -------------------- | ---------------------------- |
+| `iaStorAC.sys`, `iaStorAVC.sys`, `iaStorV.sys`, or any other `iaStor*` | **H1 (Intel RST)** | M2 (uninstall RstDowngradeGuard + OptaneDowngradeGuard + Intel RST). |
+| `nvlddmkm.sys`, `nvkmd*.sys`, `nv*.sys`   | **H2 (NVIDIA)**     | NVIDIA Game Ready Driver clean install. |
+| `rt*.sys`, `qcamain*.sys`, `Killer*.sys`, `Rivet*` | **H3 (Killer Wi-Fi)** | Replace Killer driver stack with Intel reference driver. |
+| `ntoskrnl.exe` / `ntfs.sys` / `volmgr.sys` / Microsoft-only stack | Ambiguous — surface for review | Stop and decide; could be H4 (KB-induced kernel bug) or storage wedge unattributed. |
+| Anything else (e.g., `acpi.sys`, `pci.sys`, an EC driver) | **New hypothesis Hx**, stop and surface | Don't act yet — discuss before acting. |
+
+### Estimated effort and risk of recommended actions (preliminary)
+
+| Action | Effort | Risk |
+| ------ | ------ | ---- |
+| Install WinDbg + run analysis | 15 min + read time | None. |
+| If H1 confirmed → M2 (RST uninstall) | 15 min + reboot | Low. Inbox `stornvme.sys` handles Samsung NVMe fine; create System Restore point first. |
+| If H2 confirmed → M3 (NVIDIA clean install) | 20 min | Very low. |
+| If H3 confirmed → Killer→Intel driver swap | 30 min | Low. Loses Killer Control Center features. |
+| If something else → discuss | Variable | Variable — don't act without review. |
+
+### Net assessment
+
+The dump we thought we lost is recovered. WinDbg is the next gate. Until WinDbg
+runs against `051826-14937-01.dmp`, H1 is the leading hypothesis by both (a)
+direct correlation (10/10 RstMwService crash-time matches) and (b) elimination
+(H1b dropped after Norton uninstall failed to prevent tonight's crash). The
+dump should produce a definitive answer; do not act on M2 or any other
+mitigation until the dump analysis has been read.
+
+End of § 8.
+
 End of report.
