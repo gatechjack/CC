@@ -231,6 +231,90 @@ kernel can't even write a dump (10 cases).
 `iaStorAVC.sys`, or the RST filter driver. Alternatively, the *test* of replacing
 the Intel RST driver and seeing if crashes stop would also confirm.
 
+### H1b — Dual real-time AV conflict (Norton + Windows Defender simultaneously active) is contributing to crashes [HIGH, co-leading with H1]
+
+*Added post-M1 execution (§ 7) once Norton was confirmed actively running
+alongside Defender. Numbered H1b rather than H4 (per the addendum request) to
+make the co-leading-with-H1 positioning visually unambiguous; existing H4–H6
+keep their original numbers and meanings.*
+
+**Claim:** Two real-time AV products (Norton Security 22.20.5.40 and Windows
+Defender) are scanning the same files simultaneously. Each one's minifilter
+driver intercepts file I/O independently. Race conditions between the two
+minifilters — especially under load, especially in the kernel storage stack —
+can corrupt I/O completions in a way that crashes the system. The Norton
+install is from the 2021-04-22 factory image and has likely had a lapsed
+subscription for years; stale signatures combined with kernel-level hooks
+amplify the conflict.
+
+**Evidence for:**
+- Norton 2021-vintage doesn't register with `SecurityCenter2` (only Defender
+  shows there), so Windows never disengaged Defender's realtime side. Both are
+  scanning every file open.
+- The 6-second gap between BugCheck event (11:17:17) and Minidump-directory
+  `LastWriteTime` (11:17:23) is a textbook real-time-AV-quarantine signature,
+  consistent with Norton flagging the new `.dmp` file. That's direct evidence
+  that Norton's realtime engine is actively touching kernel-region files.
+- Dual real-time AV is widely documented as a cause of consumer-Windows
+  instability *independent* of any other factor. Microsoft's own guidance on
+  Defender for Endpoint deployments explicitly warns against running a second
+  realtime AV alongside it.
+- Norton has been running continuously since the 2021-04-22 factory install
+  (5 years on stale code), explaining the long-running baseline of weekly-ish
+  crashes pre-5/15. The acceleration after 5/15 could be the kernel update
+  changing how minifilter callbacks resolve, pushing the long-running latent
+  race into a frequent failure mode.
+- Crashes that produce no bug check (10 of 11) are consistent with a
+  minifilter-storage-stack wedge — same failure mode that argues for H1, but
+  via a different mechanism (filter-driver collision vs. driver-internal bug).
+
+**Evidence against:**
+- Doesn't directly explain the **`RstMwService` 9/9 termination pattern**. If
+  the cause were purely an AV minifilter collision, you wouldn't expect the
+  RST service to consistently come up in an error state. (Counter to the
+  counter: a minifilter collision in the storage stack *could* leave the RST
+  driver state corrupted on reboot — but this is speculative.)
+- Doesn't directly explain the **sharp temporal correlation with the May 2026
+  KB installs**. If dual-AV had been the cause for 5 years, you'd expect a
+  consistent baseline rate, not a sudden acceleration. (Counter: the KBs may
+  have changed kernel minifilter callback semantics in a way that turned the
+  previously-survivable race into a frequent panic — same "exposed pre-existing
+  bug" story as H4 below.)
+- The H1 case (RST driver) has direct, specific evidence (RstMwService log
+  pattern) that H1b doesn't.
+
+**What would confirm:** Uninstall Norton + NRnR cleanup + 48–72 hr observation
+under normal heavy use. If crashes stop, H1b is confirmed (and H1's RST issue
+either wasn't the root cause OR was being amplified by the conflict). If
+crashes continue, H1b is not the sole cause and we proceed to M2 (RST
+uninstall). If a minidump from the next crash survives and `!analyze -v`
+shows a minifilter or Norton driver (`SymEFA.sys`, `eeCtrl.sys`, `IDSvix86.sys`,
+`SRTSP*.sys`) in the fault stack, H1b confirmed by mechanism.
+
+### H1 / H1b mutual relationship
+
+H1 and H1b are **not mutually exclusive**. Three plausible joint stories,
+ranked rough-equally:
+
+1. **One is necessary, the other amplifies.** E.g., RST driver has a latent
+   bug that only triggers when something perturbs storage I/O at the wrong
+   moment — Norton's minifilter is that perturbation. Removing Norton alone
+   would reduce trigger frequency to near zero; removing RST alone would fix
+   the underlying bug. Either fix in isolation might suffice; both is safest.
+2. **Both contribute independently.** Each on its own would produce occasional
+   crashes; together the rate is higher than additive. Removing one cuts the
+   rate substantially but doesn't reach zero until both are addressed.
+3. **One is the actual cause; the other is a red herring.** RST might be
+   crashing the system, and the RstMwService log pattern is the symptom most
+   visible, while Norton is just a co-resident annoyance that doesn't actually
+   cause reboots. Or Norton is causing the crashes and RST's symptom-on-reboot
+   is just what we see *because* the kernel comes up dirty from any crash.
+
+The 48–72 hr post-Norton-uninstall observation distinguishes story 1/2 from
+story 3-flavor-Norton-is-cause. Story 1/2 vs. story 3-flavor-RST-is-cause
+requires either a captured minidump (M1) showing the faulting driver, or
+trying M2 if Norton-uninstall alone doesn't resolve.
+
 ### H2 — NVIDIA RTX 3060 driver hang causing hard reset [MEDIUM-HIGH]
 
 **Claim:** NVIDIA driver `nvlddmkm` is from Dec 2021 (~350 releases behind current).
@@ -330,6 +414,38 @@ PSU swap.
 
 Each mitigation is paired with a way to test it. **None of these are applied this
 session — the report is the deliverable.** Order them after Board review.
+
+### Revised mitigation ordering (post-M1 execution, post-H1b)
+
+The original ordering (M1 → M2 → M3 → M4 → M5/M6) was written before Norton was
+identified as actively running. With H1b now co-leading with H1, the cheaper and
+safer fix (Norton uninstall) should be attempted before the heavier one (Intel
+RST uninstall). Revised priority for user action:
+
+1. **M1 — DONE** (this session, in § 7). Minidump-deletion sources identified;
+   `CrashDumpEnabled → 7` documented for user execution.
+2. **M-Norton (new, defined under § 7 as part of the action sequence) — FIRST-
+   LINE FIX.** Uninstall Norton Security cleanly. Cheap, safe, resolves the
+   minidump-deletion issue AND tests H1b in one step.
+3. **48–72 hour observation period** under normal heavy use (see § 7 "What
+   counts as valid observation").
+4. **M2 — Remove Intel RST + downgrade guards — SECOND-LINE FIX**, attempted
+   **only if** crashes continue through the observation window. Defined below
+   with original details preserved.
+5. **M3 — Update NVIDIA driver** — third-line, applied **after the observation
+   window regardless** of whether crashes continue. The 4.5-year-old driver is
+   a hygiene problem independent of crash causation; updating now reduces noise
+   from `dwm.exe` / `Start_HDR.exe` user-mode crashes and removes H2 from the
+   suspect list.
+6. **M4 — Update Killer/Wi-Fi to Intel reference driver** — fourth-line, only
+   if M2 + M3 + observation haven't resolved.
+7. **M5/M6 — sfc, chkdsk, Windows Memory Diagnostic** — fifth-line, only if
+   all software mitigations exhausted.
+8. **M7 — Battery report review** — separate hygiene track, no crash-causation
+   relevance unless system goes unplugged.
+
+The M-prefixed sections below retain their original numbering (M1–M7) for
+reference — only the *user-action priority* has been revised.
 
 ### M1 — Disable the 4 GB minidump cleanup so the NEXT crash gives us evidence [Session-time, cheap]
 
@@ -641,18 +757,102 @@ This *also* removes Norton as a deletion suspect for minidumps in one step.
 
 ### Recommended action sequence (user-side, before next session)
 
-1. **Uninstall Norton Security** (Add or Remove Programs → Norton Security →
-   Uninstall). Reboot. Run the Norton Removal Tool (NRnR) to clean leftovers.
-   This stops the post-crash dump deletion AND removes a likely contributor to
-   the broader instability.
-2. **Change `CrashDumpEnabled` to 7** via `sysdm.cpl` → System failure → "Write
-   debugging information" → Automatic memory dump.
-3. **Disable the SilentCleanup task** as belt-and-braces: Task Scheduler →
-   Microsoft → Windows → DiskCleanup → SilentCleanup → Disable.
-   *(Optional — only if you want zero risk of automated dump cleanup. Otherwise
-   skip; once Norton is gone, retention will work.)*
-4. Wait for the next crash. Check `C:\Windows\Minidump\` for a fresh `.dmp` file.
-   Report back.
+Revised after H1b was added — Norton uninstall is now the candidate first-line
+crash fix, not just the dump-deletion fix.
+
+**(a) Uninstall Norton Security + NRnR + reboot.**
+Add or Remove Programs → Norton Security → Uninstall. Reboot. Download Norton's
+"Norton Remove and Reinstall" (NRnR) tool from `norton.com/nrnr` — run it,
+choose "Remove only", reboot again. This:
+- Stops the post-crash dump deletion (M1 fix).
+- Removes the dual-AV conflict (H1b test).
+- Leaves Defender as the sole realtime AV (which is what Windows expects).
+
+**(b) Change `CrashDumpEnabled` to 7 — no reboot needed.**
+`sysdm.cpl` → Advanced tab → Startup and Recovery → Settings → "Write
+debugging information" → **Automatic memory dump** → OK / OK. Confirms the
+next crash (if any) writes a WinDbg-analyzable dump.
+
+**(c) 48–72 hour observation period under normal heavy use.**
+See "What counts as valid observation" below — this is *not* "leave the laptop
+on the desk for 3 days." The observation is meaningful only if the system is
+exercised the way a real session does.
+
+**(d) M2 (Intel RST uninstall) — only if observation shows crashes continuing.**
+After 48–72 hr of valid observation:
+- **Zero crashes** → H1b confirmed; STOP here, do not run M2. Continue working
+  normally; revisit only if crashes return.
+- **Reduced rate but still crashing** → H1 + H1b both contributing; proceed to
+  M2 (uninstall `RstDowngradeGuard` + `OptaneDowngradeGuard` + Intel RST per
+  § 3 → M2 detail). Then observe another 48–72 hr.
+- **No reduction** → H1b likely a red herring; proceed straight to M2. Then
+  observe.
+
+**(e) M3 (NVIDIA driver update) — apply after the observation window regardless
+of crash status.**
+4.5-year-old driver is independently a hygiene issue. Even if (c) shows zero
+crashes, update NVIDIA Game Ready Driver via clean install. Reduces `dwm.exe`
++ `Start_HDR.exe` user-mode noise and rules H2 out of the residual suspect
+list. Defer until after the M2-or-not decision so the cause is identified
+cleanly before adding another variable.
+
+**Optional belt-and-braces during (c):** disable the `SilentCleanup` task —
+Task Scheduler → Microsoft → Windows → DiskCleanup → SilentCleanup → Disable.
+Removes the secondary minidump-deletion risk. Only matters if a crash happens
+during the observation window and you want to be 100% sure the dump survives.
+
+### What counts as valid observation
+
+The 48–72 hr observation window is the load-bearing test that distinguishes
+H1b alone vs. H1+H1b vs. H1 alone. The observation is only meaningful if the
+system is exercised the way real sessions exercise it. "No crashes over the
+weekend while the laptop sat idle" is **not** valid observation — many of the
+crashes happened during *light* operations precisely because something about
+load + duration is the trigger, not load level alone.
+
+**Valid observation = at least 48 hr (ideally 72 hr) of:**
+- The browser open with the usual tab count (Claude Code web, dashboards,
+  GitHub, etc.).
+- The IDE / Claude Code session open and actively used — file reads, edits,
+  agent invocations.
+- Normal background processes running (OneDrive sync, Defender realtime, the
+  things that are always on).
+- At least one or two heavier operations during the window — a `git` checkout,
+  a `pytest` run (small scope, not the full backtest suite), an `az` CLI
+  command. Not artificial stress-testing — just normal work cadence.
+- Wake-from-sleep transitions if that's the user's normal pattern (a couple of
+  the recent crashes happened within 1 minute of resume — sleep/wake is part of
+  the workload).
+- AC-powered. Don't conflate AC-vs-battery into the observation; that's H5
+  territory and we're not testing it here.
+
+**NOT valid observation:**
+- Laptop sitting idle on the desk, lid closed, no user interaction.
+- Heavy stress-testing (Prime95 / FurMark / sustained burnin) — risks
+  inducing crash #12 and conflates load level with load type.
+- Light-only weekend use — doesn't replicate the workload pattern that
+  produced the original crashes.
+- Less than 48 hr — the prior baseline was ~weekly crashes, then jumped to
+  multi-per-day. A 24-hr window has too much variance to distinguish "fixed"
+  from "got lucky." A 48–72 hr window with active heavy use covers enough
+  reboot/resume/load cycles for the answer to be reliable.
+
+**What "crash-free" looks like in Event Viewer (verifiable after the window):**
+- Zero new Kernel-Power 41 events.
+- Zero new BugCheck 1001 events.
+- Zero new EventLog 6008 unexpected-shutdown markers.
+- (Bonus: zero new `KillerProviderDataHelperService.exe` user-mode crashes —
+  if Norton was the cause, Killer's noise should drop too because the conflict
+  was contributing to its service crashes.)
+
+PowerShell one-liner to verify after the window:
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='System'; Id=41,1001,6008;
+    StartTime=(Get-Date).AddHours(-72)} -ErrorAction SilentlyContinue |
+    Select-Object TimeCreated, Id, ProviderName |
+    Format-Table -AutoSize
+```
+Empty output = crash-free observation window confirmed.
 
 ### Stop-and-ask triggers — none triggered, one concerning side-finding
 
