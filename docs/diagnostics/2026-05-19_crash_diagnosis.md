@@ -256,7 +256,77 @@ leading because it's the only single-cause hypothesis that explains both
 the bugcheck we have (one analyzable driver fault) and the bugcheck-less
 hard-resets we don't (storage stack wedged before bugcheck path runs).
 
-### H1 — Intel Rapid Storage Technology driver (`iaStorAC.sys` / `iaStorAVC.sys`) is the immediate cause [HIGH]
+### WinDbg verdict — 2026-05-18 post-install (SUPERSEDES sections below)
+
+`cdb !analyze -v` against `C:\Windows\Minidump\051826-14937-01.dmp`
+(committed in `9b37510` as `docs/diagnostics/2026-05-19_crash_7_windbg.txt`)
+returned a definitive verdict on the one bugcheck dump we have:
+
+| Field                  | Value                                                 |
+| ---------------------- | ----------------------------------------------------- |
+| `BUGCHECK_CODE`        | `0x7E` (SYSTEM_THREAD_EXCEPTION_NOT_HANDLED)          |
+| `BUGCHECK_P1`          | `0xC0000005` (STATUS_ACCESS_VIOLATION)                |
+| Faulting IP            | `nvlddmkm+0x164cb6` (`fffff80489594cb6`)              |
+| `MODULE_NAME`          | **`nvlddmkm`**                                        |
+| `IMAGE_NAME`           | **`nvlddmkm.sys`**                                    |
+| `FAILURE_BUCKET_ID`    | `AV_nvlddmkm!unknown_function`                        |
+| Faulting instruction   | `cmp qword ptr [rcx+0B8h], 0` with `rcx=0x0000000000B10000` → reads `0x0000000000B100B8` (near-null) |
+| `PROCESS_NAME`         | `System`                                              |
+| Module timestamp       | **Fri Dec  3 02:59:01 2021** (the OEM driver)         |
+
+The crash is a near-null pointer dereference inside the NVIDIA kernel-mode
+display driver. The faulting nvlddmkm.sys is the **same** 2021-12-02 driver
+from § 1's "out-of-date drivers" table. Public symbol load failed (transient
+/ firewall), but the module identification is from the dump's loaded-image
+table and does not depend on symbols.
+
+**Re-ranking:**
+
+| Hypothesis | Before WinDbg | After WinDbg | Reasoning |
+| ---------- | ------------- | ------------ | --------- |
+| **H2 (NVIDIA `nvlddmkm.sys`)** | MEDIUM-HIGH | **CONFIRMED for crash #6 (5/18 11:17 AM). Leading hypothesis overall.** | Direct evidence: the only analyzable dump names this module. Faulting code is paged-out → loaded code path actively in use. |
+| **H1 (Intel RST)** | HIGH (leading) | **DEMOTED to MEDIUM, possibly LOW.** | `nvlddmkm` is in the faulting stack, no `iaStor*` appears. The `RstMwService` 7023 correlation is re-interpreted as a **downstream artifact of dirty reboots** — every unclean shutdown leaves the RST user-mode service unable to attach to its kernel counterpart on next boot. That's the symptom; the NVIDIA fault is the cause that triggers the dirty reboot in the first place. |
+| **H1b (Norton dual-AV)**       | HIGH (co-leading) | Already weakened by tonight's post-uninstall recurrence; now further reduced to LOW. No `Norton`/`SymEFA`/`SRTSP*` modules in the faulting stack. |
+| **H3 (Killer)**                | MEDIUM | Unchanged. No Killer modules in the faulting stack of the one dump we have. |
+| **H4 (May KBs as trigger)**    | MEDIUM, as trigger | **Reframed: trigger for H2, not H1.** The May 2026 KBs likely changed display-driver API contracts in ways the Dec 2021 NVIDIA driver mishandles. Same logic as before, different target. |
+| **H5 (power)**                 | LOW as cause / MEDIUM as amplifier | Unchanged. |
+| **H6 (hardware)**              | LOW | Unchanged. WHEA silence remains. |
+
+**Confidence about the 10 no-dump crashes:**
+
+We have direct evidence for one crash. The 10 hard-hang-without-bugcheck crashes
+could be:
+
+(a) **All also NVIDIA** — a graphics-driver fault inside a DPC or interrupt
+    context can wedge the system before the bugcheck path runs, leaving no dump.
+    The dwm.exe + Start_HDR.exe user-mode crash chorus (4 + 10 in 7 days)
+    independently points at NVIDIA as the chronically-unstable component. Most
+    parsimonious explanation: one root cause, varying expression. **This is the
+    leading interpretation.**
+(b) **Mixed** — some NVIDIA, some something else (RST, Killer, KB-induced
+    Microsoft kernel bug). Possible but loses parsimony.
+(c) **A different shared cause** that one time happened to be preceded by an
+    NVIDIA fault (false-flag bugcheck). Very unlikely — the bugcheck timestamp
+    matches a Kernel-Power 41 reboot precisely.
+
+**Net:** H2 is now the leading hypothesis. M3 (NVIDIA Game Ready Driver clean
+install) supersedes M2 (Intel RST uninstall) as the recommended next user-action.
+M2 retains value as a hygiene item (5-year-old driver is bad practice) but is
+no longer the primary fix.
+
+**Note re prior recommendation flagged by Board (M2-regardless intent):** the
+Board's heads-up said "I'm considering doing M2 regardless of what the dump
+shows" because the prior evidence base (RstMwService 10/10) made M2 a rational
+calculated bet. The dump did materially change the picture — RstMwService is
+re-interpreted as downstream artifact, not cause. **Recommendation: do M3
+first, not M2.** If M3 doesn't reduce crashes, then M2 is the next move (RST
+hygiene is independently good even if not load-bearing).
+
+The sections below preserve the pre-WinDbg evidence record. **Read them as
+historical reasoning, superseded by the verdict above for the immediate
+action call.**
+
+### H1 — Intel Rapid Storage Technology driver (`iaStorAC.sys` / `iaStorAVC.sys`) is the immediate cause [HIGH — historical; demoted to MEDIUM/LOW per WinDbg verdict above]
 
 **Claim:** A 5-year-old Intel RST storage driver is corrupting kernel state under
 some condition reachable from normal use (any disk I/O pattern that hits a latent
@@ -1175,6 +1245,95 @@ direct correlation (10/10 RstMwService crash-time matches) and (b) elimination
 (H1b dropped after Norton uninstall failed to prevent tonight's crash). The
 dump should produce a definitive answer; do not act on M2 or any other
 mitigation until the dump analysis has been read.
+
+End of § 8 (pre-WinDbg portion).
+
+### Step 5 — Post-WinDbg recommendation (2026-05-18 21:xx local)
+
+**What the dump showed:** crash #6 (5/18 11:17 AM, bugcheck `0x7E`) is a
+near-null pointer dereference inside **`nvlddmkm.sys`** (NVIDIA kernel-mode
+display driver), module timestamp Dec 3 2021 — the exact OEM driver flagged
+in § 1's stale-driver table. Process context: System (kernel DPC). No
+`iaStor*` modules in the faulting stack; no Norton modules.
+
+**Leading hypothesis:** H2 (NVIDIA outdated `nvlddmkm.sys`).
+The prior leading hypothesis, H1 (Intel RST), is demoted: the `RstMwService`
+7023 correlation is re-interpreted as downstream artifact of dirty reboots,
+not cause.
+
+**Recommended next user-action:** **M3 — Clean install of current NVIDIA
+Game Ready Driver (or Studio Driver, preference is fine).**
+
+Specifically:
+
+1. Go to **nvidia.com → Drivers** → select Product Type "GeForce" → Series
+   "GeForce RTX 30 Series (Notebooks)" → Product "GeForce RTX 3060 Laptop
+   GPU" → OS "Windows 11" → Driver Type "Game Ready Driver" (or "Studio
+   Driver" — Studio is slightly more conservative on release cadence, fine
+   for non-gaming workloads). Download the current package.
+2. Run the installer. Choose **Custom installation** → tick **"Perform a
+   clean installation"**. This wipes the 4.5-year-old profile, removes any
+   stale NVIDIA service state, and installs fresh.
+3. Reboot when prompted.
+4. Optional belt-and-braces: before step 1, download **DDU (Display Driver
+   Uninstaller)** from wagnardsoft.com, boot into Safe Mode, run DDU on the
+   NVIDIA driver to scrub it cleanly, then reboot to normal mode and install
+   the new driver. This is the gold-standard "no residual state" path; only
+   worth the extra ~30 min if the simple clean install in step 1–3 doesn't
+   resolve crashes within 48 hours.
+5. After the install, verify in Device Manager → Display adapters → NVIDIA
+   GeForce RTX 3060 Laptop GPU → Properties → Driver tab: driver date should
+   be 2026 (or at minimum recent 2025), version starts with a current major
+   (current branch is ~570.xx as of last public release).
+
+**Effort:** 20–30 minutes (download ~700 MB + install + reboot). DDU detour
+adds ~30 min if used.
+
+**Risk:** Very low.
+- Samsung MZVLQ NVMe + Intel UHD iGPU are untouched.
+- Existing NVIDIA Control Panel preferences are wiped (intentional — clean
+  install).
+- If the new driver has its own issues (rare), NVIDIA's installer keeps the
+  prior installer in `C:\NVIDIA\` for rollback, and Windows keeps the prior
+  driver under Device Manager → Roll Back.
+- Create a System Restore point first as belt-and-braces.
+
+**What "confirmed" looks like:** observe for **48–72 hours** of normal
+heavy use (see § 7 "What counts as valid observation" — same definition
+still applies). Expected outcomes:
+
+| Observation                         | Interpretation                                          | Next action          |
+| ----------------------------------- | ------------------------------------------------------- | -------------------- |
+| Zero K-P 41 / 1001 / 6008 events    | H2 confirmed. Done.                                      | Stop. Resume project work. |
+| Reduced rate, still occasional crashes | H2 was a primary contributor; secondary cause exists.   | M2 (RST uninstall) next. |
+| No reduction in crash rate          | H2 was not the primary cause (or fix didn't take).      | M2 next; reassess.    |
+
+**M2 (Intel RST uninstall) — deferred but not abandoned.**
+- Still a hygiene win regardless of crash causation. 5-year-old RST stack
+  on a system with no RAID/Optane shouldn't be there.
+- Apply after the 48–72 hr post-M3 observation window concludes (regardless
+  of outcome — either as the next mitigation if M3 didn't fully resolve, or
+  as residual hygiene if M3 did).
+- Effort/risk per § 3 M2 detail; unchanged.
+
+**M4 (Killer driver replacement) — further deferred.**
+Killer noise is independent (KillerProviderDataHelperService.exe crashes
+weekly), but no Killer module appeared in the faulting stack. Apply after
+M3 and M2 have had a chance, only if Killer service crashes persist.
+
+**Mitigations that should NOT be done now:**
+- DON'T downgrade or roll back any May 2026 KBs. H4 is the trigger
+  interpretation, not the cause; rolling back loses security fixes and
+  doesn't address the underlying brittle driver.
+- DON'T run stress tests (Prime95, FurMark) to "verify the fix" — risks
+  inducing crash #12 mid-test on a system whose root cause was just
+  identified but not yet remedied.
+- DON'T do M5/M6 (sfc / chkdsk / MemDiag) preemptively. H6 (hardware) is
+  still LOW; M5/M6 only enter the plan if M3 + M2 don't resolve crashes.
+
+**Stop here — do not apply M3 this session.** This is a diagnostic report,
+not a fix-application session. The Board reviews and executes M3 when
+ready.
 
 End of § 8.
 
