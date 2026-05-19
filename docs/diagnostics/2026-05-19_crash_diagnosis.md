@@ -198,6 +198,64 @@ not an OOM event.
 
 ## 2. Working hypotheses (ranked by likelihood)
 
+### Preamble — hard-hang vs BSOD interpretation (added 2026-05-18 post-crash #7)
+
+11 crashes total in the inventory. **Only 1 produced a kernel bugcheck dump
+(`0x7E`, 5/18 11:17 AM).** The other 10 produced *nothing*:
+
+- No bugcheck `1001` event.
+- No `volmgr` "dump file generation succeeded" log.
+- No `.dmp` file written to `C:\Windows\Minidump\`.
+
+Critically, after crash #7 tonight we now have direct evidence that
+`CrashDumpEnabled=7` is set and effective at the registry level — and the
+crash *still* produced no dump. So the no-dump pattern is **not** explained
+by "dump policy wasn't configured" or "dumps are being deleted post-write."
+The kernel simply didn't reach the bugcheck path. This is the **hard-hang
+without bugcheck** pattern and it is itself diagnostic. Three mechanisms
+fit:
+
+1. **Storage-stack wedge before bugcheck.** The bugcheck write path needs a
+   functioning storage stack to write the dump. If the storage driver is
+   already wedged (or its lower-level kernel state is corrupted) at the
+   moment the fault occurs, the kernel can't run bugcheck — the embedded
+   controller's watchdog times out and forces a hard reset with no software
+   trace. This is the **H1-consistent** interpretation.
+2. **Hardware fault that bypasses software error handling entirely.**
+   Voltage brownout, power-rail glitch, EC reset, motherboard component
+   failure — anything that yanks the CPU out of execution before any
+   software (kernel or otherwise) can react. **WHEA-Logger silence weakens
+   this interpretation but doesn't eliminate it** — WHEA captures only
+   hardware errors that the firmware/CPU machine-check architecture
+   surfaces; a power-rail brownout that simply cuts the CPU clock leaves no
+   WHEA trace because there's nothing left running to log one.
+3. **Both — H1 wedge plus the brownout-on-hard-reset finishing the job.**
+   Plausible but not separable from #1 with current evidence.
+
+What the 10/11-no-dump rate adds to H1 vs H6 specifically:
+
+| Reading                                                        | H1 (RST wedge) | H6 (hardware) |
+| -------------------------------------------------------------- | -------------- | ------------- |
+| Mostly-no-dump + `RstMwService` 7023 at crash time on 10/10    | ✓ direct fit  | indirect — no obvious mechanism for RstMwService correlation |
+| Mostly-no-dump + WHEA silence on 11/11                         | ✓ — wedge produces no WHEA either | weakened — most failing hardware surfaces *something* on WHEA |
+| One genuine BSOD bugcheck (`0x7E`) on 5/18 11:17 AM             | ✓ — driver bug hits a code path that *doesn't* wedge storage; bugcheck runs normally | hard to explain — hardware failure isn't usually selective like this |
+| Acceleration synchronized with KB5089549/KB5087051 install     | ✓ — H4 amplifies H1 (kernel calling pattern changed; brittle RST driver now hits the bug daily) | plausible — could be coincidence |
+
+H1 fits the entire pattern with one mechanism. H6 requires either a very
+selective hardware fault or "two unrelated things happening at once,"
+which is parsimony-disfavoured. **The hard-hang pattern strengthens H1's
+relative position without eliminating H6.** Definitive separation would
+require either (a) WinDbg analysis of the one dump we have showing an
+`iaStor*` module in the faulting stack, or (b) hardware-level diagnostics
+(M5/M6 first, then physical inspection if needed).
+
+This preamble does not alter the ranking below, which still has H1 leading
+and H6 at LOW pending hardware-diagnostic exhaustion. It tightens the
+*why*: H1 isn't leading because it's the most common type of cause; H1 is
+leading because it's the only single-cause hypothesis that explains both
+the bugcheck we have (one analyzable driver fault) and the bugcheck-less
+hard-resets we don't (storage stack wedged before bugcheck path runs).
+
 ### H1 — Intel Rapid Storage Technology driver (`iaStorAC.sys` / `iaStorAVC.sys`) is the immediate cause [HIGH]
 
 **Claim:** A 5-year-old Intel RST storage driver is corrupting kernel state under
