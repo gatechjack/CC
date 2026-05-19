@@ -1838,4 +1838,243 @@ applied.
 
 End of § 9.
 
+---
+
+## 10. Mitigation 1 applied; mitigation 2 mechanism analysis — 2026-05-19
+
+Follow-up to § 9. The Board accepted H7 as the working leading hypothesis
+and instructed: apply the workload-reduction baseline now; analyze the
+Python VM cap mechanism options and surface a recommendation before
+implementing.
+
+### Mitigation 1 (workload reduction baseline) — APPLIED
+
+Documented at [docs/runbooks/session_workload_defaults.md](../runbooks/session_workload_defaults.md).
+Session-start checklist, memory sampler command, action thresholds, and
+verification command for the 48 h observation window. BACKLOG.md P0
+section updated to reference the runbook.
+
+The runbook is the **session-discipline lever**: keep committed memory
+below Event-2004 trigger thresholds through process hygiene. It assumes
+the user is watching the sampler. The VM cap (Mitigation 2) is the
+enforcement lever — a hard per-process limit that catches a runaway
+Python even if the user looks away.
+
+### Mitigation 2 (Python VM cap) — mechanism options analyzed
+
+The diagnostic recommended "cap python VM at ~25 GB" without specifying
+how. Five options surfaced in the task prompt; analysis below.
+
+#### Option A — Per-process Job Object limits via PowerShell / `procgov`
+
+**Mechanism:** Windows Job Objects support `ProcessMemoryLimit` (per-
+process committed memory cap) and `JobMemoryLimit` (total job committed
+memory cap) via `SetInformationJobObject` with
+`JobObjectExtendedLimitInformation`. When a process exceeds the limit,
+the kernel terminates it cleanly — no swap-thrash, no system-wide
+pressure cascade.
+
+The cleanest user-space tool that wraps this API is
+**`procgov`** (Process Governor by Sebastian Solnica, MIT-licensed,
+~60 KB single-file exe, well-tested, used internally at Microsoft).
+Available via winget on this machine:
+
+```
+winget search ProcessGovernor
+  → procgov  LowLevelDesign.ProcessGovernor  3.2.25275  winget
+```
+
+Usage (no admin needed once installed):
+
+```
+procgov --maxmem 25G -- python scripts/backtest_kalshi_structure_arb.py
+procgov --maxmem 25G -- pytest tests/test_kalshi_structure_arb.py
+```
+
+Wrapping in a project shim (e.g. `scripts/run_capped.ps1`) removes the
+"easy to forget" risk: the user runs `./scripts/run_capped.ps1 python …`
+and the wrapper applies the cap.
+
+| Pros                                                                 | Cons                                                                  |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Zero code changes — wraps any invocation                              | Requires installing one tool (winget, ~30 s)                          |
+| Hard kernel-enforced limit; no thrash mode                            | Easy to forget the wrapper; needs shim or muscle memory               |
+| Sebastian Solnica is a known good source (sysinternals-adjacent)      | Third-party binary (well-trusted but not Microsoft-signed)            |
+| MIT-licensed, vetted by community                                    | New invocation pattern for the user to internalize                    |
+
+#### Option B — WSRM (Windows System Resource Manager)
+
+**Verdict: not applicable.** WSRM was a Server-edition-only Microsoft
+component, **deprecated in Windows Server 2012 R2 and removed since.**
+Not available on Windows 11 Home (this machine). Skip.
+
+#### Option C — Python-side via psutil / ctypes / conftest.py
+
+**Mechanism:** POSIX has `resource.setrlimit(resource.RLIMIT_AS, …)` —
+hard per-process virtual-memory cap that fires `MemoryError` on
+allocation. The `resource` module is **not available on Windows**;
+neither is `RLIMIT_AS`.
+
+The Windows-native alternatives:
+
+1. **`psutil` polling** — call `psutil.Process().memory_info().vms` at
+   checkpoint boundaries, raise MemoryError if over threshold. Doesn't
+   enforce: a single allocation spike between checkpoints can still
+   crash the system. Useful as a *secondary* monitor inside backtest
+   loops, not as a primary cap.
+2. **`ctypes` → `SetProcessWorkingSetSize`** — only caps working set
+   (resident pages), not committed virtual memory. Doesn't address the
+   commit-charge driver of Event 2004. Skip.
+3. **Job-object via ctypes from Python** — same kernel API as Option A,
+   but the Python process applies the limit to itself at startup
+   (in `__main__.py` or `conftest.py`). Works, but requires touching
+   every entry point in the repo. Verbose ctypes boilerplate (~60 LoC).
+
+Cleanest in-code path: a `conftest.py` fixture that calls psutil at
+test setup and warns if commit is already high, plus a backtest-side
+checkpoint in long-running loops. **Useful as a complement to Option A,
+not a substitute.**
+
+| Pros                                                                 | Cons                                                                  |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Code-controlled, version-controlled, repo-local                       | No clean primary mechanism on Windows; setrlimit unavailable          |
+| Granular — can apply different caps per entry point                   | Polling-based; misses single-allocation spikes                        |
+| No external dependency to install                                    | Requires touching every entry point (pytest, backtest scripts)        |
+| Good as secondary safety net inside long-running loops               | ctypes job-object boilerplate is verbose if used as primary           |
+
+#### Option D — Address the cause: bound backtest pandas footprint
+
+**Observation:** the python processes that triggered Event 2004 were
+running backtests against ~10 MB of input data (47 days × 1440 1m bars
+≈ 67k rows × ~10 cols float64 = ~5 MB pandas, ~10 MB with index/multi-
+indexing). Reaching **60 GB virtual** on 10 MB of input is a 6000×
+overhead — almost certainly a code-level memory issue, not an inherent
+workload requirement.
+
+Likely culprits (without having read the backtester code this session):
+
+- **Pandas merge / pivot intermediates** retained in the function scope
+  rather than freed between phases. A wide join across 67k rows can
+  produce GB-class temporaries if done carelessly.
+- **`multiprocessing.Pool` / `concurrent.futures`** forking the parent
+  process — each child inherits the parent's full virtual address
+  space (copy-on-write on Linux, copy-on-fork on Windows via spawn).
+  N children × parent VM = multiplicative virtual commit.
+- **Long-lived DataFrames** kept in memory for the report-writing phase
+  rather than streamed to disk and dropped.
+- **Numpy / pyarrow buffer caches** never released across batches.
+
+A targeted fix here (chunked processing, drop-and-recompute pattern,
+streaming writer) would reduce peak memory **naturally** — likely to
+1 – 5 GB rather than 60 GB. This is the root-cause fix.
+
+**However:** the backtester code (`scripts/backtest_kalshi_structure_arb.py`,
+`scripts/backtest_bitunix_confluence.py`) is owned by parallel sessions
+per the parallel-sessions feedback memory and the IC v1 coordination
+note in BACKLOG.md. **Don't refactor it this session.** Flag for the
+backlog as Mitigation 3.
+
+| Pros                                                                 | Cons                                                                  |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Fixes the root cause; no enforcement wrapper needed long-term        | Requires reading + refactoring backtester code                        |
+| Reduces peak memory by ~10× regardless of cap                         | Parallel-session-owned code per session-collaboration rules           |
+| Permanent improvement to the codebase                                | Takes a real engineering session, not a wrapper-install task          |
+
+#### Option E — System-level commit limit / fixed pagefile
+
+**Mechanism:** Windows lets the user override `AutomaticManagedPagefile`
+and set a fixed pagefile size. Lowering pagefile below the default
+~17 GB would lower the commit limit below the current ~33 GB. Once
+commit limit is hit, processes' allocations fail with `ERROR_COMMITMENT_LIMIT`
+rather than the system thrashing pagefile.
+
+**Why this is wrong here:** the commit limit applies system-wide, not
+per-process. Setting commit limit at 25 GB to "cap Python" would mean
+that **every legitimate large allocation** (Chrome session restore,
+video editing, OS background tasks under load) fails too. The pagefile
+is sized to support all-running-processes' aggregate working set; a
+manual cap is bluntly destructive.
+
+Also: the desired behaviour is to **terminate the runaway Python
+process**, not to fail all subsequent allocations. Job Object (Option
+A) does the former; commit-limit lowering does the latter.
+
+Skip.
+
+### Recommendation
+
+**Option A as primary, Option C as a later complement, Option D on the
+backlog.** B and E rejected.
+
+**Concrete implementation (when the Board approves):**
+
+1. **Install procgov via winget** (one-time, ~30 s, no admin needed for
+   user-scope install):
+
+   ```
+   winget install LowLevelDesign.ProcessGovernor
+   ```
+
+2. **Create a project shim `scripts/run_capped.ps1`** that wraps any
+   command with the cap:
+
+   ```powershell
+   # scripts/run_capped.ps1
+   param([Parameter(ValueFromRemainingArguments=$true)] [string[]] $Cmd)
+   if (-not $Cmd) { Write-Error "Usage: run_capped.ps1 <command> [args...]"; exit 1 }
+   procgov --maxmem 25G -- @Cmd
+   ```
+
+   Usage: `.\scripts\run_capped.ps1 python scripts/backtest_kalshi_structure_arb.py`
+
+3. **Update [docs/runbooks/session_workload_defaults.md](../runbooks/session_workload_defaults.md)**
+   to reference `run_capped.ps1` as the canonical way to invoke
+   backtests + heavy pytest. Add the wrapper to the Python-operations
+   checklist.
+
+4. **Defer Option C (psutil conftest.py fixture)** until 48 h of
+   procgov-wrapped runs demonstrate the cap is holding. Add only if
+   Mitigation 1 + 2 leave any residual baseline noise that a
+   code-level checkpoint would catch.
+
+5. **Add Option D (backtester memory refactor) to BACKLOG** as
+   Mitigation 3 (parallel-session-owned, P1 not P0). Worth doing
+   eventually for clean engineering; not load-bearing once the cap
+   is in place.
+
+### Why Option A is the right call
+
+The cheapest difference between the options is implementation cost
+vs enforcement strength:
+
+| Option | Install / setup cost | Enforcement strength       | Coverage                            |
+| ------ | -------------------- | -------------------------- | ----------------------------------- |
+| A      | ~30 s + 1 shim file  | **Hard kernel-enforced**   | Any invocation through the shim     |
+| B      | n/a                  | n/a                        | n/a (deprecated)                    |
+| C      | Touch every entry pt | Soft polling-based         | Only the entry points instrumented  |
+| D      | Engineering session  | Natural (root-cause)       | Permanent, no enforcement needed    |
+| E      | 1 reboot             | System-wide brute force    | Breaks legitimate uses              |
+
+Option A has the best enforcement-per-install-cost ratio AND the broadest
+coverage (any command can be wrapped). Option C is best paired with A
+as a code-level second line of defense — but doing C without A leaves
+the gap that motivated this analysis. Option D is the long-term answer
+and should be the eventual goal, but it's an engineering project not a
+mitigation, and the parallel-session ownership makes it cross-session
+work. Option B doesn't exist; Option E is blunt.
+
+### Status as of this commit
+
+- **Mitigation 1 (workload reduction baseline): APPLIED.** Runbook
+  live at `docs/runbooks/session_workload_defaults.md`. BACKLOG.md P0
+  updated.
+- **Mitigation 2 (Python VM cap, procgov / Option A): pending Board
+  decision.** Implementation plan above. Awaiting "go" before running
+  `winget install LowLevelDesign.ProcessGovernor` and creating the
+  shim.
+- **Mitigation 3 (backtester memory refactor / Option D): backlog.**
+  Parallel-session-owned; address after Mitigation 2 stabilizes.
+
+End of § 10.
+
 End of report.
