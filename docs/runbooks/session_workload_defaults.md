@@ -89,37 +89,90 @@ When you do need to run Python:
 
 - [ ] **Note current Committed before launching.** Have headroom of at
       least 4 GB on top of the baseline.
-- [ ] **Subprocess-batched pytest only.** Run targeted test files, not
-      `pytest tests/` full-suite. Pytest collection over a large suite
-      can itself push committed by 1 – 2 GB before any test runs.
+- [ ] **Backtests: always invoke via the capped wrapper.**
+
+      ```powershell
+      .\scripts\run_capped.ps1 python scripts\backtest_kalshi_structure_arb.py [args...]
+      .\scripts\run_capped.ps1 python scripts\backtest_bitunix_confluence.py [args...]
+      ```
+
+      The wrapper applies a 25 GB Windows-Job-Object commit-charge cap
+      to the entire process tree (parent + children). If the cap is
+      reached, the kernel terminates the job cleanly — no thrash, no
+      Event 2004, no Kernel-Power 41 crash. See § 10 of the diagnostic
+      report for the mechanism details.
+- [ ] **Pytest beyond the 78 Branch A baseline: recommended via wrapper.**
+
+      ```powershell
+      .\scripts\run_capped.ps1 pytest [path] [args...]
+      ```
+
+      Includes any new IC v1 test sweeps, Kalshi SA pytest expansions,
+      or full-suite runs.
+- [ ] **Scoped pytest of the 78 Branch A baseline tests: can run unwrapped.**
+
+      ```powershell
+      pytest tests/test_backtest_bitunix_confluence_five_factor.py tests/test_bitunix_confluence_gate.py tests/test_bitunix_gate_inputs.py
+      ```
+
+      These finish in ~0.4 s and have an established safe profile.
+      Light workload, no wrapper overhead needed.
+- [ ] **`pytest tests/` full-suite: ALWAYS via wrapper.** Collection
+      over the whole suite plus any pandas/numpy-loaded test modules
+      can push committed by several GB before tests run.
 - [ ] **One backtester at a time.** Heavy backtests (BitUnix v3 hybrid,
       Kalshi structure-arb) routinely reach 45 – 60 GB virtual on this
-      machine. Two concurrent runs is a guaranteed crash.
+      machine *unwrapped*. Even with the cap, concurrent runs share
+      the 25 GB job budget — sequential, not parallel.
 - [ ] **Watch the sampler climb.** If Committed climbs above 15 GB or
       Available drops below 1 GB during a run, **abort the run** (Ctrl-C
-      or kill from Task Manager) before Event 2004 fires.
+      or kill from Task Manager) before Event 2004 fires. The cap is
+      the safety net; the sampler is the early warning.
 - [ ] **Re-baseline between runs.** Don't keep large pandas DataFrames in
       memory across backtest invocations. Restart the Python process
       between backtest sweeps.
+
+### Wrapper installation + smoke-test results (one-time, 2026-05-19)
+
+```
+winget install LowLevelDesign.ProcessGovernor    # procgov 3.2.25275 installed
+.\scripts\run_capped.ps1 python -c "print('hello from wrapped python')"
+  → Process Governor v3.2.25275.19 - sets limits on processes
+  → Maximum job committed memory (MB):          25,600
+  → All configured limits will also apply to the child processes.
+  → hello from wrapped python
+  → exit code 0
+```
+
+If `procgov` is not on PATH in a fresh shell (winget noted "restart your
+shell to use the new value"), open a new PowerShell window or refresh
+PATH manually:
+
+```powershell
+$env:Path = [System.Environment]::GetEnvironmentVariable('Path','User') + ';' +
+            [System.Environment]::GetEnvironmentVariable('Path','Machine')
+```
 
 ---
 
 ## What this doesn't cover
 
-This runbook is the **workload-reduction baseline (Mitigation 1)**. It
-keeps memory pressure below the Event-2004 trigger zone through
-disciplined session hygiene, not enforcement.
+This runbook + the `run_capped.ps1` wrapper together implement
+**Mitigations 1 and 2** of the H7 response:
 
-The complementary **Python VM cap (Mitigation 2)** — a hard per-process
-limit that prevents a runaway Python from reaching 50+ GB even if the
-user forgets to watch the sampler — is analyzed in
+- **Mitigation 1 (workload reduction baseline)**: session hygiene
+  (one Claude window, Discord closed, browser minimal, sampler
+  running). The session-start checklist above.
+- **Mitigation 2 (Python VM cap)**: 25 GB Job-Object commit cap via
+  `procgov` and `scripts\run_capped.ps1`. The Python-operations
+  checklist above.
+
+**Mitigation 3 (backtester memory refactor)** — investigation of why
+backtesters reach 60 GB virtual on ~10 MB of input data — is on the
+backlog as parallel-session-owned code. Address only after the
+cap mechanism has demonstrated a 48 h crash-free window. See
 [docs/diagnostics/2026-05-19_crash_diagnosis.md § 10](../diagnostics/2026-05-19_crash_diagnosis.md)
-and is **pending Board decision** as of this commit. When implemented,
-the cap mechanism will be referenced from this runbook.
-
-Investigation of why backtesters reach 60 GB virtual in the first place
-(when input data is ~10 MB) is **Mitigation 3 (root cause)** — currently
-on the backlog, parallel-session-owned code.
+for full analysis.
 
 ---
 
