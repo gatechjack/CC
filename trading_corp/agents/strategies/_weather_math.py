@@ -378,3 +378,38 @@ def apply_bucket_guard(
         )
     return BucketGuardResult(outcome=proposed_outcome, action=None, skip_reason=None)
 
+
+def apply_entry_price_floor(
+    *,
+    outcome: str,
+    share_price: float,
+    min_yes_entry: float = 0.10,
+    min_no_entry: float = 0.50,
+) -> str | None:
+    """Side-specific cheap-tail skip.
+
+    Comparator asymmetry by design:
+      - YES: skip when share_price <= min_yes_entry  (inclusive)
+      - NO:  skip when share_price <  min_no_entry   (strict)
+
+    The NO comparator stays strict so $0.50 itself aligns with the live
+    [0.50, 0.60) entry-price band used in the post-cutoff RT analysis,
+    rather than being suppressed at the boundary. YES stays inclusive
+    because the cheap-YES floor sits in a region where no trades have
+    been observed at all in the post-cutoff window.
+
+    Backed by post-cutoff round-trip data (2026-05-16T19:18Z onward):
+    YES entries <= $0.10 went 0/5 (-$37.50); NO entries < $0.50 went 0/5
+    (-$37.50). Cheap-tail bets sized to fixed notional lose the full
+    stake on every miss; with zero wins observed in either bucket, EV is
+    negative regardless of model edge.
+
+    Returns a skip_reason string when the price triggers the floor; None
+    means proceed to sizing.
+    """
+    if outcome == "yes" and share_price <= min_yes_entry:
+        return f"entry_below_floor: yes {share_price:.3f} <= {min_yes_entry:.2f}"
+    if outcome == "no" and share_price < min_no_entry:
+        return f"entry_below_floor: no {share_price:.3f} < {min_no_entry:.2f}"
+    return None
+

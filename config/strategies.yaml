@@ -1491,6 +1491,14 @@ kalshi_weather_arb:
   market_cooldown_hours: 4          # don't re-emit same ticker within 4h
   min_divergence_pct: 10.0          # |P(YES) - implied| × 100 ≥ this → fire
   max_horizon_hours: 72             # NWS forecast precision degrades past 72h
+  # ── Entry-price floor (2026-05-20) ─────────────────────────────────
+  # Skip proposals where the chosen-outcome ask is at or below the side
+  # floor. Post-cutoff data: YES <= $0.10 went 0/5 (-$37.50); NO < $0.50
+  # went 0/5 (-$37.50). YES comparator is inclusive (no observed trades
+  # at the boundary); NO comparator is strict so $0.50 itself stays in
+  # the live [0.50, 0.60) band rather than being suppressed.
+  min_yes_entry: 0.10
+  min_no_entry: 0.50
   # ── Tier-1 upgrades (2026-05-15) ──────────────────────────────
   # Open-Meteo cross-model ensemble for measured σ (GFS+ICON+ECMWF+...).
   # When ≥3 model members are available, σ = max(ensemble_std, floor).

@@ -37,6 +37,7 @@ from trading_corp.agents.strategies._weather_math import (
     ForecastPoint,
     WeatherVerdict,
     apply_bucket_guard,
+    apply_entry_price_floor,
     evaluate_weather_market,
     kalshi_quote_dollars,
     kelly_fraction,
@@ -625,6 +626,22 @@ class KalshiWeatherArbAgent:
             eval_payload["skip_reason"] = f"share_price out-of-range ({share_price})"
             eval_payload["fired"] = False
             return verdict, None, {"code": "no_edge", **eval_payload}, eval_payload
+
+        # ── Entry-price floor (config-driven; cheap-tail skip) ─────────
+        # See _weather_math.apply_entry_price_floor for the data motivating
+        # the side-specific defaults and the YES-inclusive / NO-strict
+        # comparator asymmetry. Skips here become `entry_below_floor`
+        # audit rows so suppression rate stays observable.
+        floor_skip = apply_entry_price_floor(
+            outcome=outcome,
+            share_price=share_price,
+            min_yes_entry=float(self._strat_cfg.get("min_yes_entry", 0.10)),
+            min_no_entry=float(self._strat_cfg.get("min_no_entry", 0.50)),
+        )
+        if floor_skip is not None:
+            eval_payload["skip_reason"] = floor_skip
+            eval_payload["fired"] = False
+            return verdict, None, {"code": "entry_below_floor", **eval_payload}, eval_payload
 
         # ── Sizing: fractional Kelly with per-market / day / city caps ────
         # Kelly is computed against the outcome side we're actually buying.

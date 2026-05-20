@@ -20,6 +20,7 @@ import pytest
 from trading_corp.agents.strategies._weather_math import (
     BucketGuardResult,
     apply_bucket_guard,
+    apply_entry_price_floor,
 )
 from trading_corp.agents.strategies.kalshi_weather_arb import _parse_target_time
 
@@ -300,3 +301,55 @@ def test_regression_minneapolis_high_t90_loss_now_blocked():
     )
     assert result.outcome is None
     assert result.action == "block_yes_forecast_outside"
+
+
+# ─── apply_entry_price_floor tests ─────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "outcome,share_price,expect_skip",
+    [
+        # YES side, default min_yes_entry = 0.10, inclusive comparator
+        ("yes", 0.05, True),   # cheap YES -> skip
+        ("yes", 0.10, True),   # boundary inclusive -> skip
+        ("yes", 0.12, False),  # just above floor -> pass
+        ("yes", 0.50, False),  # well above -> pass
+        # NO side, default min_no_entry = 0.50, STRICT comparator
+        # (boundary stays in observed [0.50, 0.60) band rather than skip)
+        ("no",  0.40, True),   # cheap NO -> skip
+        ("no",  0.50, False),  # boundary strict -> pass
+        ("no",  0.55, False),  # just above floor -> pass
+        ("no",  0.85, False),  # well above -> pass
+    ],
+)
+def test_apply_entry_price_floor_defaults(outcome, share_price, expect_skip):
+    skip_reason = apply_entry_price_floor(
+        outcome=outcome, share_price=share_price,
+    )
+    if expect_skip:
+        assert skip_reason is not None
+        assert "entry_below_floor" in skip_reason
+        assert outcome in skip_reason
+    else:
+        assert skip_reason is None
+
+
+def test_apply_entry_price_floor_custom_thresholds():
+    """Caller-supplied thresholds override defaults on either side."""
+    # Tighter YES floor — bet at $0.05 now passes.
+    assert apply_entry_price_floor(
+        outcome="yes", share_price=0.05,
+        min_yes_entry=0.02, min_no_entry=0.50,
+    ) is None
+    # Looser NO floor — bet at $0.30 now passes.
+    assert apply_entry_price_floor(
+        outcome="no", share_price=0.30,
+        min_yes_entry=0.10, min_no_entry=0.20,
+    ) is None
+    # Tighter NO floor — bet at $0.55 now skips.
+    res = apply_entry_price_floor(
+        outcome="no", share_price=0.55,
+        min_yes_entry=0.10, min_no_entry=0.70,
+    )
+    assert res is not None
+    assert "entry_below_floor" in res
