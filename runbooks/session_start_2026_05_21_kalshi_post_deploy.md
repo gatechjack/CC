@@ -133,14 +133,24 @@ SELECT COUNT(*) FROM audit_event
 WHERE kind = 'kalshi_weather_skipped_entry_below_floor'
   AND ts >= '2026-05-20T11:34:59+00:00';
 
--- breakdown by side (which buckets are catching)
+-- breakdown by side (which buckets are catching).
+-- Side is encoded INSIDE skip_reason, not a separate payload field —
+-- the audit row carries skip_reason text shaped like:
+--   "entry_below_floor: yes 0.010 <= 0.10"
+--   "entry_below_floor: no 0.40 < 0.50"
+-- Verified against prod 2026-05-20T21:50:17Z: 203 yes + 97 no = 300 total ✓.
 SELECT
-  json_extract(payload_json, '$.outcome') AS side,
+  CASE
+    WHEN json_extract(payload_json, '$.skip_reason') LIKE 'entry_below_floor: yes%' THEN 'yes'
+    WHEN json_extract(payload_json, '$.skip_reason') LIKE 'entry_below_floor: no%'  THEN 'no'
+    ELSE 'unknown'
+  END AS side,
   COUNT(*) AS n
 FROM audit_event
 WHERE kind = 'kalshi_weather_skipped_entry_below_floor'
   AND ts >= '2026-05-20T11:34:59+00:00'
-GROUP BY side;
+GROUP BY side
+ORDER BY n DESC;
 
 -- THE actual question: forward PnL. Only valid once a meaningful sample
 -- of round-trips lands post-deploy. Run after >= 50 RTs since
@@ -154,6 +164,13 @@ WHERE division = 'kalshi_weather'
 ```
 
 **At deploy + 6 min:** 1 scan cycle, 29 evaluations, 3 entry_below_floor skips, 0 weather would_have_placed. The floor is exercising. The profitability question is open.
+
+**Baseline at deploy + 10h 12min (captured 2026-05-20T21:46:49Z at session wrap):**
+
+- `entry_below_floor` skips since 11:34:59Z: **299 total** (YES: 202, NO: 97). YES-heavy as expected — the `<= 0.10` inclusive comparator catches a wider band of cheap-tail YES than the `< 0.50` strict NO comparator, which only catches the narrow region not already excluded by share-price sanity gates.
+- Weather round-trips resolved post-deploy: **0** (n_rts=0, total_pnl=$0, WR=0). Expected — RTs lag entry by hours to days; resolver hasn't seen first post-deploy fills yet.
+
+Next session: the firing-rate query should show >= 299 (cumulative, monotonically increasing). The forward-PnL query becomes informative once n_rts >= 50 — likely 2-4 days out at the historical fire rate. **Compare against these recorded numbers, not against reconstructed counts.**
 
 ## Other open items (defer; ranked by data support)
 
