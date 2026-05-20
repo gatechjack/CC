@@ -868,6 +868,8 @@
 </section>
 {% endif %}
 
+{% if view.vol_v2_block %}{% include "partials/pm_vol_v2_block.html" %}{% endif %}
+
 {# Inline equity-curve data — re-read by window.renderPMChart() on initial
    page load AND after every HTMX swap (via the htmx:afterSwap listener
    in prediction_markets_dashboard.html). #}

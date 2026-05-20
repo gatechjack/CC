@@ -68,6 +68,71 @@ the report are not the priority any longer — H7 supersedes them.
 
 ---
 
+## END-OF-SESSION SNAPSHOT — 2026-05-20 ~23:05 UTC  *(supersedes 2026-05-20 ~11:45 UTC below)*
+
+**One work thread: kalshi_crypto vol-v2 paper-validation tile DEPLOYED to paper prod at 22:54:25 UTC. Tile renders on `/prediction-markets/kalshi_crypto`: post-vol-v2 n=7 / -$1.05 / 71.4%, lifetime n=334 / -$45.94 / 51.5%, post-bucket-guard pre-v2 n=174 / +$20.90, classification breakdown for same_fire/new_fire/suppressed_fire/both_skip, suppressed-fire/day metric, strays footnote (0 currently). One rollback at 22:44 UTC for a SARGable-view perf regression, re-deployed clean at 22:54. See `runbooks/deploy_log.md` 22:54 entry for full rollback-then-fix story; pickup at `runbooks/session_start_2026_05_21_kalshi_vol_v2_dashboard.md`.**
+
+### Headline
+
+The kalshi_crypto dashboard now reflects only post-vol-v2 results, with pre-vol-v2 numbers visible but labeled as historical reference. Two-condition filter (entry_ts ≥ cutoff AND `vol_v2_classification` IS NOT NULL) is enforced inside a SARGable SQL VIEW (`kalshi_crypto_vol_v2_round_trips`) that uses `ev.ts BETWEEN strftime(...)` rather than `ABS(julianday diff)` so the planner can index-seek the audit_event ts column. Four dashboard queries total 0.072s on prod-scale (404K audit rows). Forward paper watch is now visible on the dashboard, not just in memory and SQL.
+
+### Latent bug caught + fixed (during deploy)
+
+Initial view used `ABS((julianday(ev.ts) - julianday(krt.entry_ts)) * 86400.0) <= 2.0`. Pre-deploy SQL probes returned <1s because their inline WHERE clauses pushed down to base tables, but the VIEW's `CASE`-based `vol_v2_era` column blocks planner push-down — consumer queries went O(n_krt × n_audit) = ~26M iterations × 4 queries = >90s hang on kalshi_crypto partial. Caught via end-to-end dashboard test (not the pre-deploy SQL probes). Rolled back data.py at 22:44 UTC; view DROP+CREATEd with SARGable BETWEEN form; re-deploy succeeded at 22:54 UTC. Two memory lessons saved: [[time-views-on-prod-scale-before-shipping]], [[julianday-abs-blocks-index-use]].
+
+### What landed
+
+**On prod (live, paper):**
+- `trading_corp/web/data.py` — 4-hunk surgical patch (import L17, `vol_v2_block` field on PMDashboardView L3333, conditional builder call L4491-4493, return kwarg L4506). md5 `e7888864…`.
+- `trading_corp/web/kalshi_crypto_vol_v2.py` — NEW. Cutoff constant + view-DDL helper + 3 dataclasses + 6 query helpers + composer. md5 `2ab7bb22…`.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — 1-line additive include at L871. md5 `2f9365e8…`.
+- `trading_corp/web/templates/partials/pm_vol_v2_block.html` — NEW. Three stacked cards + classification table + rate metric + strays footnote. md5 `994f474b…`.
+- Prod DB VIEW `kalshi_crypto_vol_v2_round_trips`. SARGable BETWEEN form on `ev.ts`. EXPLAIN confirms `SEARCH ev USING INDEX ix_audit_event_ts (ts>? AND ts<?)`.
+
+**On local (uncommitted; in sync with prod content after CRLF normalize):**
+- Same 4 files + DDL helper in the new module + `runbooks/deploy_log.md` 22:54 UTC entry + `runbooks/session_start_2026_05_21_kalshi_vol_v2_dashboard.md` (NEW pickup file) + this snapshot.
+
+**Local committed (`main`):** still at `a97d1f6` (1 ahead of `origin/main`). None of today's three sessions' code has been committed; prod state is source of truth via `deploy_log.md`.
+
+### Environment sync state
+
+| Surface | State |
+|---|---|
+| Local working tree | vol-v2 dashboard tile + previous untracked from kalshi_weather + bitunix sessions; see `git status` |
+| Local committed (`main`) | `a97d1f6`, 1 ahead of `origin/main` (the kalshi_weather session-wrap doc commit) |
+| `origin/main` | 1 behind local |
+| Prod (`tc-prod-vm`) | **live: kalshi_crypto vol-v2 dashboard tile + 05:52 UTC vol-v2 strategy ship + kalshi_weather floor + bitunix dashboard tile + bitunix v2 lifecycle fix.** PID 913665, restart 2026-05-20 22:54:25 UTC. `auto_execute: false` preserved. |
+| Backup tag on prod | `pre-vol-v2-dashboard-20260520-2200` — 2 files (data.py, pm_dashboard_body.html). Rollback recipe in deploy_log.md 22:54 entry. |
+| Memory | new `kalshi-crypto-vol-v2-dashboard-live` project memory; new `time-views-on-prod-scale-before-shipping` + `julianday-abs-blocks-index-use` feedback memories; older `kalshi-crypto-vol-v2-deployed` (05:52 ship) preserved; `kalshi-weather-price-floor` from earlier session preserved. |
+
+### Open observations + follow-ups
+
+1. **Forward paper-validation gate.** Resolved-RT sample is n=7; user's stated threshold for full per-classification analysis was n≥30. Wait. Once sample crosses, surface the four numbers; do not conclude go/no-go on live flip — Board sign-off required.
+2. **Suppressed-fire-per-day is currently 0/day.** Spot-check earlier in the session showed only 3 of 143 divergence-cap fires were `suppressed_fire`-class (rest were `both_skip` redundant). The 3 haven't resolved yet. Watch for the rate to climb toward the ~5/day expectation.
+3. **Strays count should stay 0.** Non-zero would mean a post-cutoff RT didn't join under the ±2s tolerance. The strays footnote on the dashboard is the surfacing path.
+4. **The cutoff constant is single-source-of-truth in Python only.** `KALSHI_CRYPTO_VOL_V2_CUTOFF` in `web/kalshi_crypto_vol_v2.py`. The view body has the literal interpolated at view-create time; changing the constant requires `DROP VIEW; CREATE VIEW;` explicitly (the DDL helper is for migration replay only).
+5. **Three parallel sessions touched the same checkout today.** Targeted-patch discipline (pull-prod → edit-staging → push-staging) was the pattern that worked under contention. Local `data.py` byte-for-byte diff to prod is now zero (after the import-order fix-up at session-end). Future sessions: don't `scp local data.py → prod`.
+
+### Cleanup nits (still defer)
+
+- Three uncommitted deploy threads on local; consider a single wrap commit covering all three (or three feature commits) when the day's work is finalized.
+- `tmp/` is still gitignore-free (same nit as kalshi_weather pickup).
+- No `scripts/sql/create_kalshi_crypto_vol_v2_view.sql` artifact yet — the DDL helper in `web/kalshi_crypto_vol_v2.py` is the canonical source; making it executable as a migration script is optional cleanup.
+
+### Soft rollback (disable vol-v2 tile only)
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-vol-v2-dashboard-20260520-2200; BASE=/home/azureuser/trading_corp;
+sudo cp \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py;
+sudo chown root:root \$BASE/trading_corp/web/data.py;
+sudo systemctl restart trading-corp.service"
+```
+
+This reverts only `data.py`. The tile becomes invisible (Jinja sees `view.vol_v2_block` as undefined → falsy → include skipped). The VIEW + new module + new partial stay on prod as inert artifacts. Full rollback recipe in `runbooks/deploy_log.md` 22:54 UTC entry.
+
+---
+
 ## END-OF-SESSION SNAPSHOT — 2026-05-20 ~11:45 UTC  *(supersedes 2026-05-20 04:30 below)*
 
 **One work thread: kalshi_weather entry-price floor DEPLOYED to paper prod at 11:35 UTC via surgical patcher. Floor exercising on first scan cycle (3 entry_below_floor skips). Hybrid deploy: vol-v2 ship at 05:52 bundled the floor function + yaml entries; my patcher added the call site. See `runbooks/deploy_log.md` 11:35 entry for full hybrid story + rollback.**

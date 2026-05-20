@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from trading_corp.persistence import db
+from trading_corp.web.kalshi_crypto_vol_v2 import PMVolV2Block, query_pm_vol_v2_block
 from trading_corp.utils.time import format_et_full, format_et_hm, format_et_short
 from trading_corp.utils.divisions import (
     Division, InvestmentGroup, group_by_investment_type, load_divisions,
@@ -3325,6 +3326,11 @@ class PMDashboardView:
     whales: list[PMWhaleRow]         # populated for copy_trading divisions; empty otherwise
     kalshi_watch_only: list[KalshiWatchOnlyRow]   # K3 watch-list panel; empty unless kalshi_copy_trading is selected
     polymarket_watch_only: list[PolymarketWatchOnlyRow]  # Polymarket watch-list panel; empty unless polymarket_copy_trading is selected
+    # Set only when the selected division is 'kalshi_crypto'. None
+    # on every other division and on the All Prediction Markets view.
+    # Owns the vol-v2 paper-validation cards; see
+    # `web/kalshi_crypto_vol_v2.py` for the module.
+    vol_v2_block: "PMVolV2Block | None" = None
 
 
 _POLYMARKET_PREFIX = "polymarket_"
@@ -4482,6 +4488,10 @@ async def build_prediction_market_view(
         summary.cutoff_ts = DASHBOARD_RT_CUTOFFS[division]
         summary.cutoff_label = summary.cutoff_ts.split("T", 1)[0]
 
+    vol_v2_block = None
+    if division == "kalshi_crypto":
+        vol_v2_block = await asyncio.to_thread(query_pm_vol_v2_block, db_url)
+
     return PMDashboardView(
         selected=division,
         selected_label=selected_label,
@@ -4493,6 +4503,7 @@ async def build_prediction_market_view(
         whales=whales,
         kalshi_watch_only=kalshi_watch_only,
         polymarket_watch_only=polymarket_watch_only,
+        vol_v2_block=vol_v2_block,
     )
 
 

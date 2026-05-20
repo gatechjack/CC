@@ -76,6 +76,58 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-20 22:54 UTC — kalshi_crypto vol-v2 dashboard: tile + read-only VIEW (rollback-then-fix)
+
+**Commits:** uncommitted on local `main`. Deployed via targeted-patch staging copy (pull-prod → edit → push-staging), NOT a whole-file scp of local `data.py` — local carried unrelated bitunix reconciler WIP at deploy-start that the 22:51 UTC bitunix session shipped shortly before my deploy.
+**Triggered by:** User request to update the kalshi_crypto dashboard so metrics reflect only post-vol-v2 results, with the post-vol-v2 set defined by a two-condition filter (`entry_ts >= cutoff` AND `vol_v2_classification IS NOT NULL`). Follows from the 2026-05-20 05:52 UTC vol-v2 ship — forward paper watch needed a dedicated tile.
+**Backup tag:** `pre-vol-v2-dashboard-20260520-2200` (2 files: `web/data.py`, `web/templates/partials/pm_dashboard_body.html`). MD5-verified pre-edit state.
+
+**Files deployed (2 new + 2 modify + 1 DB VIEW):**
+- `trading_corp/web/kalshi_crypto_vol_v2.py` — **NEW**. Owns `KALSHI_CRYPTO_VOL_V2_CUTOFF = "2026-05-20T05:52:09+00:00"`, view-DDL helper, 3 dataclasses (`VolV2SummaryBlock`, `VolV2ClassificationRow`, `PMVolV2Block`), 6 query helpers, and `query_pm_vol_v2_block(db_url)` composer.
+- `trading_corp/web/templates/partials/pm_vol_v2_block.html` — **NEW**. Three stacked summary cards (Post-vol-v2 live / Lifetime / Post-bucket-guard window pre-vol-v2), per-classification breakdown table, suppressed-fire-per-day metric, strays footnote.
+- `trading_corp/web/data.py` — 4-hunk surgical patch via staging-pull → Edit → push: import at L17, `vol_v2_block: PMVolV2Block | None = None` on `PMDashboardView` at L3333, conditional builder call when `division == "kalshi_crypto"` at L4491–4493, kwarg in `return PMDashboardView(...)` at L4506.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — 1-line additive include at L871: `{% if view.vol_v2_block %}{% include "partials/pm_vol_v2_block.html" %}{% endif %}`.
+- Prod DB `kalshi_crypto_vol_v2_round_trips` VIEW — **NEW** (metadata-only; no rows). Joins `kalshi_round_trips` to `audit_event` rows with `kind='kalshi_crypto_evaluated'` under a ±2s tolerance window on entry_ts. **DROPped + re-CREATEd mid-deploy** to switch to SARGable BETWEEN form (see Latent bugs).
+
+**Features shipped:**
+- **Vol-v2 paper-validation tile** on `/partials/prediction-markets/kalshi_crypto`. Three stacked summary cards, per-classification breakdown for `same_fire` / `new_fire` / `suppressed_fire` / `both_skip`, suppressed-fire-per-day rate metric (target ~5/day, currently 0/day on 0 resolved suppressed_fires), strays footnote (zero now — non-zero would surface a join-miss regression).
+- **Two-condition filter for post-vol-v2.** A row is `vol_v2_era='post'` only if BOTH `entry_ts >= '2026-05-20T05:52:09+00:00'` AND `vol_v2_classification IS NOT NULL`. Embedded in the VIEW's `CASE` so every consumer query inherits the contract.
+- **SARGable tolerance-window VIEW design.** Final view uses `ev.ts BETWEEN strftime('%Y-%m-%dT%H:%M:%S+00:00', krt.entry_ts, '-2 seconds') AND strftime(..., '+2 seconds')`. `EXPLAIN QUERY PLAN` confirms `SEARCH ev USING INDEX ix_audit_event_ts (ts>? AND ts<?)`. Four dashboard queries total **0.072s** on prod-scale data (404K audit rows, 87K of `kind='kalshi_crypto_evaluated'`).
+
+**Notable code changes:**
+- **Targeted-patch discipline survived a moving parallel-session base.** At my deploy-start, local `data.py` was 90 lines ahead of prod (the 22:51 UTC bitunix reconciler-tile WIP, then-unshipped). Mid-deploy the bitunix session shipped their reconciler, converging prod and local on the reconciler region. My patch still flowed via pull-prod → edit-staging → push-staging (never local→prod scp), with bitunix-region md5 verified byte-identical at `e28f226f7ade6a5e0d842f3292a92d2a` on every checkpoint (pre-edit, post-staging-edit, post-scp, post-rollback, post-re-deploy).
+- **Cutoff is a single Python constant.** `KALSHI_CRYPTO_VOL_V2_CUTOFF` lives only in `web/kalshi_crypto_vol_v2.py`; the view-DDL helper interpolates it at view-create time. Changing the cutoff requires an explicit `DROP VIEW; CREATE VIEW;` — flagged in the helper docstring.
+- **Cutoff format is `'YYYY-MM-DDTHH:MM:SS+00:00'`, NOT space-separated.** Caught an ISO-format string-compare bug mid-investigation: `'2026-05-20 05:52:09'` (space sep) compared lexicographically against `entry_ts` like `'2026-05-20T04:06:31+00:00'` (T sep) admits every 2026-05-20 row because space (0x20) < T (0x54). All cutoff strings in the new code use the T-separated form to match the stored entry_ts column format byte-for-byte.
+
+**Latent bugs caught + fixed (during deploy):**
+- **`ABS(julianday(ev.ts) - julianday(krt.entry_ts)) <= 2.0` is not SARGable.** Initial VIEW used this tolerance form; under prod load the kalshi_crypto partial hung >90s. Pre-deploy SQL probes had been inline-WHERE (`entry_ts >= cutoff AND vol_v2_classification IS NOT NULL`) which let the planner push filters down to base tables — they returned in <1s and gave a misleading green light. The VIEW's `CASE`-based `vol_v2_era` column is opaque to the planner, so consumer queries scanned 87,376 audit rows × 305 round-trips × 4 queries = ~100M ops. **Initial deploy rolled back at 22:44 UTC** (data.py only — the VIEW and new module/template files stayed inert on prod since `pm_dashboard_body.html`'s `{% if view.vol_v2_block %}` is falsy when `data.py` lacks the field). View was DROP+CREATEd with the SARGable BETWEEN form; re-deploy succeeded at 22:54 UTC. Memory lessons saved as [[time-views-on-prod-scale-before-shipping]] and [[julianday-abs-blocks-index-use]].
+- **Off-by-1s join-miss recovered.** Initial diagnostic showed 2 post-cutoff RTs that didn't join under exact-ts equality. One was genuinely pre-deploy (entry_ts 04:06:31, masked by the ISO-format string-compare bug noted above). The other (row 2210, ticker KXETH-26MAY2011-B2130) had audit at 14:18:43 vs entry_ts 14:18:44 — exactly 1s off. The ±2s tolerance recovers it as `new_fire`; the genuine pre-deploy row is correctly excluded under the corrected ISO comparison.
+
+**Verification:**
+- Service: PID 911491 (post-rollback) → 913665 (post-fix re-deploy). `ExecMainStartTimestamp=2026-05-20 22:54:25 UTC`. ActiveState=active, SubState=running. Web command center bound at 22:56:08 UTC (~105s post-restart — normal for this service).
+- kalshi_crypto partial: `HTTP 200, 585835 bytes, 1.07s` (vs pre-deploy baseline 0.61s — vol-v2 block adds ~460ms). Repeat curls: 2.58s / 0.64s (variable, no hang).
+- Rendered markers confirmed: "Vol-v2 paper validation" heading, `cutover 2026-05-20T05:52:09+00:00` label, Post-vol-v2 (live) n=7 / -$1.05 / 71.4%, Lifetime n=334 / -$45.94 / 51.5%, Post-bucket-guard window n=174 / +$20.90, `new_fire` and `same_fire` classification rows, Suppressed-fire rate row, no strays footnote (zero strays). Live numbers reconcile vs the user's earlier-snapshot values (lifetime 305 → 334, post-bucket-guard 144 → 174: ~29 natural resolutions in the intervening ~1h).
+- Bitunix region md5 byte-identical at `e28f226f7ade6a5e0d842f3292a92d2a` across (a) pre-edit prod, (b) staging post-patch, (c) prod post-deploy, (d) prod post-rollback, (e) staging-2 post-re-patch, (f) prod final. **Proven untouched throughout the entire deploy cycle.**
+- Q1–Q4 timings (read-only against prod after view rewrite): Q1 post 0.026s, Q2 classification 0.023s, Q3 suppressed_fire_per_day 0.022s, Q4 strays 0.001s = **0.072s total**. Gate (<1s) passed by 13×.
+- Journalctl post-restart: no `vol_v2` / `kalshi_crypto_vol_v2` / Traceback errors in new code paths. Pre-existing Robinhood + Fidelity broker auth errors → `broker_fallback_to_paper` per the documented sharp edge.
+
+**Inert / dormant on current traffic:** the new dataclasses + 6 query helpers exercise only when the dashboard URL selects `division == 'kalshi_crypto'`. All other divisions and the "All Prediction Markets" aggregate bypass `query_pm_vol_v2_block` entirely. The `pm_vol_v2_block.html` partial is included only when `view.vol_v2_block` is truthy, so a future rollback of `data.py` alone (removing the field) cleanly disables the tile without touching the template.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-vol-v2-dashboard-20260520-2200; BASE=/home/azureuser/trading_corp; \
+sudo cp \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+sudo cp \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html.\$TAG \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html; \
+sudo chown root:root \$BASE/trading_corp/web/data.py \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html; \
+sudo rm -f \$BASE/trading_corp/web/kalshi_crypto_vol_v2.py \$BASE/trading_corp/web/templates/partials/pm_vol_v2_block.html; \
+sudo systemctl restart trading-corp.service"
+# VIEW can be left in place (zero rows of its own, inert without consumer) or dropped:
+ssh azureuser@trading.jacksumner.com "sqlite3 /home/azureuser/trading_corp/data/trading_corp.db 'DROP VIEW IF EXISTS kalshi_crypto_vol_v2_round_trips;'"
+```
+
+---
+
 ## 2026-05-20 22:51 UTC — BitUnix dashboard: reconciler-state tile + corrected-outcome display
 
 **Commits:** `1264f55` (`feat(dashboard): reconciler-state tile + corrected-outcome display (PRIORITY 2)`). On `origin/main`.

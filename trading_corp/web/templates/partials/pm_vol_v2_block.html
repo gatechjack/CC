@@ -1,0 +1,85 @@
+{# Vol-v2 paper-validation block.
+
+   Rendered only when view.vol_v2_block is set — kalshi_crypto division.
+   Three stacked summary cards (post / lifetime / post-bucket-guard),
+   classification breakdown table, and the suppressed-fire/day metric.
+#}
+<section class="mt-6">
+  <div class="flex items-baseline gap-3 mb-3">
+    <h3 class="text-mono text-lg font-semibold tracking-tight">Vol-v2 paper validation</h3>
+    <span class="text-[11px] uppercase tracking-wider text-muted">
+      cutover {{ view.vol_v2_block.cutoff_ts }} · classified-fires-only filter
+    </span>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+    {% for blk in [view.vol_v2_block.post, view.vol_v2_block.lifetime, view.vol_v2_block.post_bucket_guard] %}
+      <div class="bg-pane border border-edge rounded p-3">
+        <div class="text-[11px] uppercase tracking-wider text-muted">{{ blk.label }}</div>
+        <div class="text-mono mt-1">n = <span class="font-mono text-lg">{{ blk.n }}</span></div>
+        {% if blk.n > 0 %}
+          <div class="text-sm text-muted">WR {{ "%.1f"|format(blk.wr_pct) }}%</div>
+          <div class="text-sm {% if blk.sum_pnl >= 0 %}text-gain{% else %}text-loss{% endif %}">
+            &Sigma; PnL {{ "%+.2f"|format(blk.sum_pnl) }}
+          </div>
+          <div class="text-sm text-muted">avg/RT {{ "%+.3f"|format(blk.avg_pnl) }}</div>
+        {% else %}
+          <div class="text-sm text-muted">no resolved RTs yet</div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
+  {# Classification breakdown table #}
+  {% if view.vol_v2_block.classification %}
+    <div class="mt-4 bg-pane border border-edge rounded">
+      <div class="px-3 py-2 text-[11px] uppercase tracking-wider text-muted border-b border-edge">
+        Per-classification breakdown (post-vol-v2 only)
+      </div>
+      <table class="w-full text-sm font-mono">
+        <thead class="text-muted text-[11px] uppercase">
+          <tr>
+            <th class="text-left px-3 py-1">classification</th>
+            <th class="text-right px-3 py-1">n</th>
+            <th class="text-right px-3 py-1">WR</th>
+            <th class="text-right px-3 py-1">&Sigma; PnL</th>
+            <th class="text-right px-3 py-1">avg/RT</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in view.vol_v2_block.classification %}
+            <tr class="border-t border-edge">
+              <td class="px-3 py-1 text-mono">{{ row.classification }}</td>
+              <td class="text-right px-3 py-1">{{ row.n }}</td>
+              <td class="text-right px-3 py-1">{% if row.wr_pct is not none %}{{ "%.1f"|format(row.wr_pct) }}%{% else %}—{% endif %}</td>
+              <td class="text-right px-3 py-1 {% if row.sum_pnl >= 0 %}text-gain{% else %}text-loss{% endif %}">{{ "%+.2f"|format(row.sum_pnl) }}</td>
+              <td class="text-right px-3 py-1">{% if row.avg_pnl is not none %}{{ "%+.3f"|format(row.avg_pnl) }}{% else %}—{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  {# Suppressed-fire rate metric — the one that actually matters,
+     not the raw divergence-cap skip count (45x logging artifact). #}
+  <div class="mt-3 flex items-baseline gap-3">
+    <span class="text-[11px] uppercase tracking-wider text-muted">Suppressed-fire rate</span>
+    <span class="font-mono text-mono">
+      {% if view.vol_v2_block.suppressed_fire_per_day is not none %}
+        {{ "%.1f"|format(view.vol_v2_block.suppressed_fire_per_day) }}/day
+      {% else %}
+        —
+      {% endif %}
+    </span>
+    <span class="text-[11px] text-muted">target ~5/day</span>
+  </div>
+
+  {# Strays footnote — non-zero means the join-miss smell is back. #}
+  {% if view.vol_v2_block.strays_count > 0 %}
+    <p class="mt-3 text-xs text-muted">
+      &#9888; {{ view.vol_v2_block.strays_count }} post-cutoff row{% if view.vol_v2_block.strays_count != 1 %}s{% endif %}
+      had no v2 audit join — excluded from vol-v2 metrics.
+    </p>
+  {% endif %}
+</section>
