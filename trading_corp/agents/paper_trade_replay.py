@@ -913,29 +913,44 @@ async def _bitunix_kline_fetcher(
 
     Same data source LiveBarCache uses for live ATR — keeps the
     replay's price path consistent with what the trade saw at
-    placement. BitUnix accepts up to 1000 bars per call; for the
-    typical bitunix_futures.max_hold_seconds=86400 (24h × 60 = 1440
-    1m bars) we page in two requests.
+    placement.
+
+    Pagination contract: BitUnix's `/api/v1/futures/market/kline`
+    silently caps each response at `SERVER_PAGE_CAP` bars regardless
+    of the `limit` query param, returning the NEWEST bars within the
+    requested [startTime, endTime] window in descending order. To
+    walk a window larger than that cap, we slice the requested range
+    into ≤cap-bar sub-windows and iterate forward in time, advancing
+    the cursor to the next sub-window end regardless of how many bars
+    came back (bars can be missing within a sub-window without
+    indicating end-of-data).
+
+    Verified server cap: 200 bars (probed 2026-05-20). Treating the
+    cap as end-of-data was the silent v2 lifecycle bug — for trades
+    with max_hold_seconds=86400 (24h × 60 = 1440 1m bars) the legacy
+    one-shot pagination returned only the newest 200 minutes, so the
+    classifier never walked the early bars where TP1/TP2 filled. See
+    `tests/test_bitunix_kline_fetcher_pagination.py` for the
+    reproduction.
     """
     import httpx
     bu_symbol = _to_bitunix_symbol(symbol)
     tf_ms = _timeframe_ms(timeframe)
     out: list[list[float]] = []
+    SERVER_PAGE_CAP = 200
+    total_end_ms = since_ms + limit * tf_ms
     cursor = since_ms
-    remaining = limit
-    page_size = 1000
     async with httpx.AsyncClient(base_url="https://fapi.bitunix.com", timeout=20.0) as client:
-        while remaining > 0:
-            this_page = min(page_size, remaining)
-            end_ms = cursor + this_page * tf_ms
+        while cursor < total_end_ms:
+            window_end = min(cursor + SERVER_PAGE_CAP * tf_ms, total_end_ms)
             r = await client.get(
                 "/api/v1/futures/market/kline",
                 params={
                     "symbol": bu_symbol,
                     "interval": timeframe,
                     "startTime": cursor,
-                    "endTime": end_ms,
-                    "limit": this_page,
+                    "endTime": window_end,
+                    "limit": SERVER_PAGE_CAP,
                 },
             )
             r.raise_for_status()
@@ -945,8 +960,6 @@ async def _bitunix_kline_fetcher(
                     f"bitunix kline err: code={data.get('code')} msg={data.get('msg')!r}"
                 )
             page = data.get("data") or []
-            if not page:
-                break
             for row in page:
                 out.append([
                     int(row["time"]),
@@ -958,11 +971,9 @@ async def _bitunix_kline_fetcher(
                     # for parity with ccxt's volume convention.
                     float(row.get("baseVol") or 0.0),
                 ])
-            last_ts = max(int(row["time"]) for row in page)
-            cursor = last_ts + tf_ms
-            remaining -= len(page)
-            if len(page) < this_page:
-                break
+            # Advance to next sub-window regardless of returned count.
+            # Gaps in the response don't imply end-of-data.
+            cursor = window_end
     # Defensive: ensure chronological order (the replay classifier walks forward)
     out.sort(key=lambda r: r[0])
     return out
