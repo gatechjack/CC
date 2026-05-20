@@ -70,6 +70,8 @@ the report are not the priority any longer — H7 supersedes them.
 
 ## END-OF-SESSION SNAPSHOT — 2026-05-18 14:30 UTC  *(supersedes 2026-05-18 12:30 + 07:00 + 2026-05-17 22:30 + 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
 
+> **Post-snapshot correction (2026-05-19):** Branch A's files were committed as `0049889` — `backtest: gate v1.1 Branch A addendum — 1m Bitunix trade-resolution (PF 1.14 → 1.30)` — after this snapshot was written. The "uncommitted; all on disk" framing below is therefore stale on that point. No prod deploy (research/local only); deploy_log.md unchanged.
+
 **One work thread this session: BitUnix Gate v1.1 — Branch A (1m-Bitunix trade-resolution addendum) to disambiguate the v3 bar-fidelity-vs-over-fit hypotheses. Picked up after a python-launcher OOM crash that killed the prior session mid-write. All Branch A deliverables verified on disk (cache, table, runs, addendum, memo § 8 update). v1.1 is now formally PARKED pending paper data — no further local backtest experiments planned. No prod changes. No commits this session (working tree has Branch A's untracked + modified files; commit-or-not decision is the User's).**
 
 ### Branch A — what landed (uncommitted; all on disk)
