@@ -1521,6 +1521,20 @@ kalshi_crypto_arb:
   auto_execute: false               # paper-mode until validation gate
   division: kalshi_crypto
   poll_interval_sec: 60             # crypto markets churn fast — short-window
+  # v2 (2026-05-20): realized vol from Coinbase 5m bars. On per-asset
+  # fetch error / insufficient coverage / staleness, falls back to the
+  # hardcoded ANNUAL_VOLS constants in crypto_spot_provider.py. PoC at
+  # 14d/5m measured realized 0.49-0.56x the constants across all 5
+  # assets; ETH 30d realized 0.43 lands in eyeball 40-60% band, so the
+  # math (annualization factor sqrt(105192)~=324.33 for 5m) is right and
+  # the old constants were stale (regime compression, not bug).
+  realized_vol:
+    enabled: true                   # 2026-05-20: paper validation per Backtester sign-off
+    lookback_days: 14               # ~2x longest Kalshi crypto horizon (7d)
+    bar_interval: "5m"              # 4032 bars/asset; fits Coinbase rate limit
+    refresh_interval_minutes: 60    # vol doesn't shift fast; hourly is plenty
+    min_bar_coverage_pct: 80        # require >=80% of expected bars
+    max_staleness_minutes: 30       # newest bar within 30min of now
   discovery:
     max_series_per_category: 30
     max_markets_per_series: 50
@@ -1528,6 +1542,7 @@ kalshi_crypto_arb:
   k_markets_per_cycle: 30           # candidates evaluated per cycle
   market_cooldown_hours: 1          # short cooldown — fast-churning markets
   min_divergence_pct: 10.0          # |P(YES) - implied| × 100 ≥ this → fire
+  max_divergence_pct: 35.0          # 2026-05-20: cap tail/oracle-disagreement bleed; backtester showed 50%+ NO bin did NOT compress under realized vol (-$6.55 over 15 RTs in replay). Skip kind: kalshi_crypto_skipped_divergence_too_high.
   max_horizon_hours: 168            # 7 days — vol model gets noisy past this
   sizing:
     mode: fixed_usd

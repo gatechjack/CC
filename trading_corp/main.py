@@ -3377,6 +3377,7 @@ async def _scheduled_kalshi_crypto_arb_loop(
                         "sigma_used_usd": ext.get("sigma_used_usd"),
                         "annual_vol": ext.get("annual_vol"),
                         "threshold_usd": ext.get("threshold_usd"),
+                        "threshold_high_usd": ext.get("threshold_high_usd"),
                         "direction": ext.get("direction"),
                         "horizon_hours": ext.get("horizon_hours"),
                         "delta_usd": ext.get("delta_usd"),
@@ -3386,6 +3387,14 @@ async def _scheduled_kalshi_crypto_arb_loop(
                         # Bucket-aware bet-side guard outcome (2026-05-16;
                         # shared with kalshi_weather).
                         "bucket_guard": ext.get("bucket_guard"),
+                        # Vol-v2 drift watch (2026-05-20, paper). Carry the
+                        # hardcoded-vol mirror + per-fire classification so
+                        # forward paper data can bucket new_fire vs same_fire
+                        # outcomes without reconstructing from bars.
+                        "hardcoded_av": ext.get("hardcoded_av"),
+                        "hardcoded_prob_yes": ext.get("hardcoded_prob_yes"),
+                        "hardcoded_edge_pct": ext.get("hardcoded_edge_pct"),
+                        "vol_v2_classification": ext.get("vol_v2_classification"),
                         "risk_verdict": verdict.verdict,
                         "risk_reason": verdict.reason,
                     },

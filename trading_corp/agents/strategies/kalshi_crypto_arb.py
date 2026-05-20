@@ -39,9 +39,11 @@ from trading_corp.agents.strategies._weather_math import (
     ForecastPoint,
     apply_bucket_guard,
     evaluate_weather_market,
+    forecast_probability,
     kalshi_quote_dollars,
 )
 from trading_corp.data.crypto_spot_provider import (
+    ANNUAL_VOLS,
     CryptoSpotProvider,
     parse_kalshi_asset_prefix,
     parse_kalshi_strike_suffix,
@@ -153,11 +155,36 @@ class KalshiCryptoArbAgent:
             log.debug("kalshi_crypto_arb: no coinbase broker available; no-op")
             return []
 
+        # v2 vol refresh: idempotent and rate-limited inside. First-cycle-
+        # after-restart pays the fetch cost (~14 paginated ccxt calls per
+        # asset at 14d/5m); subsequent cycles within refresh_interval_minutes
+        # are no-ops. All errors fall back to ANNUAL_VOLS constants and
+        # CryptoSpotProvider.get_annual_vol() reads the cache transparently.
+        from trading_corp.data.crypto_vol_provider import VolConfig
+        rv_cfg = self._strat_cfg.get("realized_vol") or {}
+        vol_cfg = VolConfig(**{
+            k: v for k, v in rv_cfg.items()
+            if k in VolConfig.__dataclass_fields__
+        })
+        rv_status = await CryptoSpotProvider.refresh_realized_vols_if_due(vol_cfg)
+        if logger_agent is not None and rv_status:
+            non_cached = {k: v for k, v in rv_status.items() if v != "cached"}
+            if non_cached:
+                logger_agent.log_event(self.name, "kalshi_crypto_vol_refresh", {
+                    "strategy": self.name, "division": self.division,
+                    "statuses": non_cached,
+                })
+
         disc_cfg = self._strat_cfg.get("discovery") or {}
         max_series = int(disc_cfg.get("max_series_per_category", 30))
         max_markets = int(disc_cfg.get("max_markets_per_series", 50))
         cache_ttl = float(disc_cfg.get("cache_ttl_sec", 600))
         min_div_pct = float(self._strat_cfg.get("min_divergence_pct", 10.0))
+        # max_divergence_pct (2026-05-20, paper only): caps high-edge fires
+        # where the bleed is tail/oracle disagreement, not vol artifact.
+        # 50%+ NO bin did not compress under realized vol per backtester.
+        _max_div_raw = self._strat_cfg.get("max_divergence_pct")
+        max_div_pct = float(_max_div_raw) if _max_div_raw is not None else None
         max_hours = float(self._strat_cfg.get(
             "max_horizon_hours", MAX_HORIZON_HOURS_CRYPTO,
         ))
@@ -342,7 +369,8 @@ class KalshiCryptoArbAgent:
             order, skip_payload, eval_payload = await self._evaluate_market(
                 full=full, cand=cand,
                 spot_provider=spot_provider,
-                min_div_pct=min_div_pct, max_hours=max_hours, now=now,
+                min_div_pct=min_div_pct, max_div_pct=max_div_pct,
+                max_hours=max_hours, now=now,
             )
 
             if logger_agent is not None and eval_payload is not None:
@@ -366,7 +394,8 @@ class KalshiCryptoArbAgent:
     async def _evaluate_market(
         self, *, full: Any, cand: dict[str, Any],
         spot_provider: CryptoSpotProvider,
-        min_div_pct: float, max_hours: float, now: datetime,
+        min_div_pct: float, max_div_pct: float | None,
+        max_hours: float, now: datetime,
     ) -> tuple[ProposedOrder | None, dict[str, Any] | None, dict[str, Any] | None]:
         tkr = cand["ticker"]
         asset = cand["asset"]
@@ -481,8 +510,40 @@ class KalshiCryptoArbAgent:
             forecast=forecast, threshold_f=threshold, direction=direction,
             threshold_high_f=threshold_high,
             implied_yes=implied_yes, horizon_hours=horizon_h,
-            min_divergence_pct=min_div_pct, max_horizon_hours=max_hours,
+            min_divergence_pct=min_div_pct,
+            max_divergence_pct=max_div_pct,
+            max_horizon_hours=max_hours,
             source_divergence_sigma_f=source_div_sigma,
+        )
+
+        # Vol-v2 drift watch (2026-05-20, paper). Compute the hardcoded-vol
+        # mirror prob/edge so the audit pool carries a per-fire classification
+        # of how realized-vol diverges from the hardcoded baseline. The
+        # primary path stays governed by `annual_vol` (cache-read, realized
+        # when enabled). This block only produces audit telemetry; it does
+        # NOT alter the firing decision. Cheap: two CDF evaluations.
+        hardcoded_av = ANNUAL_VOLS.get(asset)
+        hc_prob_yes: float | None = None
+        hc_edge_pct: float | None = None
+        if hardcoded_av is not None:
+            sigma_hc = spot * hardcoded_av * math.sqrt(years)
+            sigma_hc = max(sigma_hc, spot * 1e-6)
+            sigma_hc_total = math.sqrt(sigma_hc * sigma_hc + source_div_sigma * source_div_sigma)
+            hc_prob_yes = forecast_probability(
+                forecast_temp_f=spot, sigma_f=sigma_hc_total,
+                threshold_f=threshold, direction=direction,
+                threshold_high_f=threshold_high,
+            )
+            hc_edge_pct = abs(hc_prob_yes - implied_yes) * 100.0
+        # `would_have_fired_hardcoded` mirrors the same gates the primary
+        # path applies: min divergence + optional max cap. We deliberately
+        # do NOT replay the near-threshold gate here — kalshi crypto is
+        # ~100% between-direction in production, where near-threshold
+        # doesn't apply.
+        would_fire_hc = (
+            hc_edge_pct is not None
+            and hc_edge_pct >= min_div_pct
+            and (max_div_pct is None or hc_edge_pct <= max_div_pct)
         )
 
         eval_payload = {
@@ -503,12 +564,32 @@ class KalshiCryptoArbAgent:
             "divergence_pct": round(verdict.edge_pct, 1),
             "fired": verdict.fired,
             "skip_reason": verdict.skip_reason,
+            # Vol-v2 drift watch fields:
+            "hardcoded_av": hardcoded_av,
+            "hardcoded_prob_yes": round(hc_prob_yes, 3) if hc_prob_yes is not None else None,
+            "hardcoded_edge_pct": round(hc_edge_pct, 1) if hc_edge_pct is not None else None,
         }
         if not verdict.fired:
             code = ("near_threshold" if "near-threshold" in verdict.skip_reason
                     else "horizon" if "horizon" in verdict.skip_reason
+                    else "divergence_too_high" if "max_divergence_pct" in verdict.skip_reason
                     else "no_edge")
+            # Suppressed-fire flag: realized-vol path skipped but hardcoded
+            # would have fired. Lets us track baseline drift on the skip
+            # side too (per the user's "drift toward +$2.37" concern).
+            if would_fire_hc:
+                eval_payload["vol_v2_classification"] = "suppressed_fire"
+            else:
+                eval_payload["vol_v2_classification"] = "both_skip"
             return None, {"code": code, **eval_payload}, eval_payload
+
+        # Fire path: classify whether the hardcoded baseline would also
+        # have fired. "new_fire" is the [5-10%] old-edge pool that realized
+        # vol lifts above the 10% floor — the population the backtester
+        # could only sample 16 of.
+        eval_payload["vol_v2_classification"] = (
+            "same_fire" if would_fire_hc else "new_fire"
+        )
 
         # Build ProposedOrder.
         outcome = "yes" if verdict.prob_yes > implied_yes else "no"
@@ -577,6 +658,7 @@ class KalshiCryptoArbAgent:
                 "sigma_used_usd": verdict.sigma_used_f,
                 "annual_vol": annual_vol,
                 "threshold_usd": threshold,
+                "threshold_high_usd": threshold_high,
                 "direction": direction,
                 "horizon_hours": round(horizon_h, 3),
                 "delta_usd": round(verdict.delta_f, 4),
@@ -587,6 +669,14 @@ class KalshiCryptoArbAgent:
                 "tier": "crypto_spot_fixed_usd",
                 "source_signal": "coinbase_spot",
                 "is_prediction_market": True,
+                # Vol-v2 drift watch (2026-05-20, paper). Per-fire mirror
+                # of the hardcoded-vol alternative path so a future query
+                # can bucket new fires by band x side x outcome and watch
+                # for drift toward the strictly-comparable +$2.37 number.
+                "hardcoded_av": hardcoded_av,
+                "hardcoded_prob_yes": hc_prob_yes,
+                "hardcoded_edge_pct": hc_edge_pct,
+                "vol_v2_classification": eval_payload["vol_v2_classification"],
                 # Bucket-aware bet-side guard outcome (2026-05-16; shared
                 # with kalshi_weather). None on natural-path trades.
                 "bucket_guard": bucket_guard_action,

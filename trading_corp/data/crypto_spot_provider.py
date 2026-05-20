@@ -14,6 +14,10 @@ import re
 import time
 from typing import Any
 
+from trading_corp.data.crypto_vol_provider import (
+    VolConfig, get_cache as _get_vol_cache, refresh_realized_vols,
+)
+
 log = logging.getLogger(__name__)
 
 # Kalshi ticker prefix → Coinbase ccxt symbol. Limited to Coinbase US
@@ -31,6 +35,10 @@ _KALSHI_TO_COINBASE: dict[str, str] = {
 # uncertainty band → more near-threshold skips. Conservative numbers
 # preferred over aggressive (false-skip costs us a fire; over-confident
 # σ costs us a wrong fire).
+# v2 (2026-05-20): used as FALLBACK only when crypto_vol_provider can't
+# compute realized vol (fetch error, insufficient coverage, staleness,
+# or realized_vol.enabled=false). See VolEntry.source in audit for which
+# path each asset took on a given refresh.
 ANNUAL_VOLS: dict[str, float] = {
     "BTC": 0.60,
     "ETH": 0.75,
@@ -74,7 +82,21 @@ class CryptoSpotProvider:
 
     @staticmethod
     def get_annual_vol(asset: str) -> float | None:
+        # v2: prefer realized vol from cache if a fresh entry exists.
+        # Falls back to the hardcoded constant when:
+        #   - the cache has never been refreshed (first scan after restart)
+        #   - vol_v2 is disabled in config
+        #   - refresh failed / had insufficient bars / went stale
+        entry = _get_vol_cache().get(asset)
+        if entry is not None:
+            return entry.annual_vol
         return ANNUAL_VOLS.get(asset)
+
+    @staticmethod
+    async def refresh_realized_vols_if_due(cfg: VolConfig) -> dict[str, str]:
+        """Call once per scan cycle. Internal rate-limit gate honors
+        cfg.refresh_interval_minutes -- most calls are cheap no-ops."""
+        return await refresh_realized_vols(cfg, _KALSHI_TO_COINBASE, ANNUAL_VOLS)
 
     @staticmethod
     def is_supported(asset: str) -> bool:

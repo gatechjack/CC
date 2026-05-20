@@ -116,6 +116,7 @@ def evaluate_weather_market(
     horizon_hours: float,
     threshold_high_f: float | None = None,
     min_divergence_pct: float = DEFAULT_MIN_DIVERGENCE_PCT,
+    max_divergence_pct: float | None = None,
     min_delta_sigma: float = MIN_THRESHOLD_DELTA_SIGMA,
     max_horizon_hours: float = MAX_HORIZON_HOURS,
     source_divergence_sigma_f: float = SOURCE_DIVERGENCE_SIGMA_F,
@@ -195,6 +196,22 @@ def evaluate_weather_market(
             fired=False,
             skip_reason=(
                 f"edge {edge_pct:.1f}% < min_divergence_pct {min_divergence_pct:.1f}%"
+            ),
+        )
+
+    # Gate 4 — maximum divergence cap (tail/oracle-disagreement guard, paper
+    # only as of 2026-05-20). Realized vol does not compress this bin
+    # because spot is many sigma outside the bucket and prob_yes ~= 0
+    # under any reasonable sigma; the bleed is a Kalshi-oracle vs our-
+    # forecast disagreement, not a vol artifact. Cap kills the trade.
+    if max_divergence_pct is not None and edge_pct > max_divergence_pct:
+        return WeatherVerdict(
+            prob_yes=prob_yes, edge_pct=edge_pct,
+            delta_f=delta, sigma_used_f=sigma_total,
+            fired=False,
+            skip_reason=(
+                f"edge {edge_pct:.1f}% > max_divergence_pct "
+                f"{max_divergence_pct:.1f}% (block_divergence_too_high)"
             ),
         )
 
