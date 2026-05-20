@@ -1,5 +1,7 @@
 # BitUnix confound check + fee-floor diagnostic
 
+> **CORRECTION — 2026-05-20 (post-ship).** This report's closing statement "Paper-mode v2 is functioning" was wrong in a load-bearing sub-component. A subsequent audit-integrity review found the v2 multi-leg lifecycle silently dropped TP-fill detection due to a BitUnix kline fetcher pagination bug. The fee-floor diagnosis itself (Step 2) is unaffected and stands — the floor is still correctly reporting that low-vol BTC + swing SLs produce R below the cost threshold. The Step 1 confound-check conclusion (sell-skew is regime-driven, not scorer-driven) also stands. Only the framing "v2 is functioning" needs revision: the v2 placement decision logic was functioning; the v2 resolution/lifecycle path was not. Bug fix: `paper_trade_replay._bitunix_kline_fetcher` pagination corrected; reconciler added. Full detail: `reports/bitunix_audit_integrity_2026-05-20.md` + `reports/bitunix_v2_fix_2026-05-20.md`.
+
 **Window:** 2026-05-17 05:14 UTC (trade-plan v2 flip) → 2026-05-20 04:36 UTC. ~71 h.
 **Source:** read-only `sqlite3` against prod `/home/azureuser/trading_corp/data/trading_corp.db` via `az vm run-command invoke` + local compute on the pulled payloads.
 **Scope:** funnel/distribution diagnosis. No win-rate or PF conclusions drawn from n=2 v2-era fires.

@@ -1,5 +1,7 @@
 # BitUnix paper-data review — since trade-plan v2 flip
 
+> **CORRECTION — 2026-05-20 (post-ship).** This report's conclusion that "the infrastructure works… no silent failures" was wrong. A subsequent audit-integrity review found a silent logging failure in the v2 multi-leg lifecycle (BitUnix kline fetcher silently truncated bar slices to the newest 200, dropping the early bars where TP1+TP2 actually filled on Trade #1). The audit-vs-reality reconciler confirmed Trade #1's true outcome was `win / +0.838R`, not `loss / -1.0R`. The funnel-stage counts (PA gate, HTF, trade-plan v2 fee-floor) in this report are still correct; only the "0/2 v2 paper trades fired and both losses" framing of trade outcomes is materially wrong (one is a recorded loss that should have been a partial win). Bug fix: `paper_trade_replay._bitunix_kline_fetcher` pagination corrected; reconciler added. Full detail: `reports/bitunix_audit_integrity_2026-05-20.md` + `reports/bitunix_v2_fix_2026-05-20.md`.
+
 **Window:** 2026-05-17 05:14 UTC (Phase 1E flag flip / trade-plan v2 became active) → 2026-05-20 04:13 UTC. ~70 hours of live paper-mode behavior.
 
 **Source:** read-only `sqlite3` against prod `/home/azureuser/trading_corp/data/trading_corp.db` via `az vm run-command invoke`. Query scripts archived at `tmp/bitunix_paper_analysis*.sh`.
