@@ -1455,7 +1455,15 @@ kalshi_llm_arbitrage:
   llm_concurrency: 8                # cap concurrent Anthropic calls (Semaphore in strategy)
   market_cooldown_hours: 6          # don't re-evaluate the same ticker within 6h
   min_divergence_pct: 10.0          # |LLM prob - implied prob| × 100 ≥ this → emit order
+  max_divergence_pct: 30.0          # 2026-05-18: 50%+ bucket 0/12 WR; 30-50% 46% WR -$22 PnL
   time_horizon_max_days: 30         # broader than polymarket (7d) — Kalshi has many longer markets
+  # Ticker-prefix blacklist: US scheduled macro releases — 36 trades, 0 wins, -$36 PnL
+  # (2026-05-18 post-deploy audit). Checked pre-LLM to avoid burning Anthropic tokens.
+  ticker_prefix_blacklist:
+    - KXUSPPI       # US PPI release
+    - KXUSCPI       # US CPI release
+    - KXAIRFARE     # Airline fares index
+    - KXAAAGAS      # AAA gasoline price
   filter:
     min_implied_probability: 0.05   # skip extreme tails (handled by tail-arb division)
     max_implied_probability: 0.95
@@ -1598,3 +1606,123 @@ polymarket_copy_trader:
     # tier is more aggressive ($5 vs Kalshi's $3).
     tier_boundaries_usdc: [100.0, 1000.0]
     tier_sizes_usdc: [1.0, 2.0, 5.0]
+
+
+# ── Robinhood Joint Iron Condor (added 2026-05-17, Phase IC1) ──
+# 45 DTE iron condor on Tier-1 + Tier-2 ETFs (SPY/QQQ/IWM/GLD/TLT).
+# Paper-default until ≥90 days of paper track record earn `enabled: true`
+# AND a Board memo lifts the `auto_execute_caps.require_approval_for`
+# guards. HITL approves every open / close / adjustment in the web app.
+# See planning/we-will-be-working-async-lerdorf.md for the full design.
+robinhood_joint_iron_condor:
+  enabled: true
+  auto_execute: false           # HITL on every action — do not flip without memo
+  division: robinhood_joint
+  universe: [SPY, QQQ, IWM, GLD, TLT]
+  entry:
+    target_dte: 45
+    short_delta: 0.16
+    min_credit_pct_of_width: 0.33
+    min_ivr: 30                 # IVR threshold as a percentage (0–100)
+    min_ivp: 50                 # IV percentile threshold; sibling to min_ivr
+    term_structure_max_diff: 0.05  # front-month minus 60-90 DTE ATM IV (absolute)
+  wing_widths:                  # per-symbol dollar width of each vertical
+    SPY: 3.0
+    QQQ: 4.0
+    IWM: 2.0
+    GLD: 2.0
+    TLT: 2.0
+  portfolio_caps:
+    max_per_trade_pct: 0.05
+    max_bp_pct: 0.40            # v1.5 plumbing — not enforced today. The
+                                # operating cap is implicit via
+                                # max_concurrent × max_per_trade_pct
+                                # (3 × 5% = 15% worst case). 40% is the
+                                # safety ceiling for the future BP-pct
+                                # check. See planning step 9 simplification.
+    max_concurrent: 3
+    max_correlated: 2
+  management:
+    profit_target_pct: 0.50
+    force_close_dte: 21
+    short_dte_force_close: 7
+    hard_stop_credit_mult: 2.00
+    catastrophic_stop_account_pct: 0.10
+    tested_delta_warn: 0.25
+    tested_delta_adjust: 0.30
+    tested_delta_close_side: 0.35
+    tested_side_neutral_band: 0.05   # |current_Δ - entry_Δ| < this → "neither"
+    max_adjustments: 1
+    min_dte_for_adjustment: 14
+    ex_div_force_close_within_trading_days: 3
+    ex_div_force_close_short_call_delta: 0.25
+    adjustment_roll_target_short_delta: 0.30
+  circuit_breaker:
+    consecutive_loss_pause: 3
+    drawdown_pct_pause: 0.15
+    pause_days: 5
+  paper_simulation:
+    per_leg_slippage_dollars: 0.03
+  notifications:
+    telegram_batch_window_sec: 60
+    telegram_bypass_tags:       # high-severity tags bypass the batch window
+      - circuit_breaker_auto_repause
+      - catastrophic_stop
+      - startup_catchup
+      - late_dte_force_close
+  auto_execute_caps:
+    # Dormant while auto_execute=false but pre-structured for the future
+    # earn-auto-execute conversation (see CLAUDE.md § 1 memo requirements).
+    require_approval_for:
+      - "any_neutral_strategy_open_or_close"
+      - "any_action_when_vix_above_30"
+
+
+# ── Kalshi Structure Arbitrage (2026-05-17, Phase K2.5) ──
+# Deterministic multi-outcome event strategy. No LLM in path.
+# For each Kalshi event with K >= 3 sub-markets, computes sum(implied_yes).
+# When sum > threshold (1.5), bets NO on top-M (3) sub-markets.
+# Rationale: in a mutually-exclusive event exactly one YES resolves — the
+# market collectively over-prices all YES outcomes when sum > 1.0. Betting
+# NO on the highest-implied sub-markets captures the structural mispricing.
+#
+# Ship decision: Board approved 2026-05-17 for paper-mode data collection
+# (backtesting skipped per Board directive; 49 qualifying events found in
+# prod DB with resolution data pending). Paper-only deployment.
+#
+# Fixed price-bucket regex (2026-05-17): old regex missed -T-<n>/-B-<n>
+# dash-separator forms; strategy uses re.compile(r'-(?:B|T)-?\d').
+kalshi_structure_arb:
+  enabled: true
+  auto_execute: false               # paper-only on initial deploy — CLAUDE.md § 1 + Board directive
+  division: kalshi_structure_arb
+  threshold:
+    sum_yes_implied_min: 1.5        # Board-approved default; do not raise without Backtester approval
+    min_k: 3
+    top_m: 3
+  sizing:
+    mode: fixed_usdc
+    fixed_amount: 1.0               # $1 per shakedown trade
+  cadence:
+    default_seconds: 60             # normal poll interval
+    rapid_seconds: 15               # accelerated when fresh event in cache
+    rapid_window_hours: 24          # "fresh" = first-observed within this many hours
+  discovery:
+    cache_ttl_sec: 600              # 10 min broker.list_markets() cache
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    categories: []                  # empty = all categories (skip rules filter below)
+  # Kill criterion (Board commitment 2026-05-17): After 30 paper days,
+  # kill the strategy if EITHER:
+  #   - win_rate < 0.55 on n_resolved >= 20
+  #   - gross_paper_pnl_usd < 0
+  # Review date: 2026-06-16. Re-evaluation is human-process by the Board
+  # (CLAUDE.md § 4). This is NOT code-enforced — it is a documented
+  # commitment. The Backtester will review audit rows on 2026-06-16.
+  kill_criterion:
+    review_at_days: 30
+    review_date: "2026-06-16"
+    min_resolved_bets: 20
+    min_win_rate: 0.55
+    min_gross_pnl_usd: 0.0
+

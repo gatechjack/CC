@@ -1,0 +1,173 @@
+diff --git a/trading_corp/web/data.py b/trading_corp/web/data.py
+index 9f70858..f4c37c2 100644
+--- a/trading_corp/web/data.py
++++ b/trading_corp/web/data.py
+@@ -3968,6 +3968,59 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
+         except Exception as e:
+             log.debug("_query_pm_whales polymarket failed: %s", e)
+ 
++    # Surface freshly-promoted whales who have no round_trip activity yet.
++    # The query above only emits rows for whales with resolved round_trips
++    # or open paper positions, so a whale promoted via dashboard-button
++    # won't appear until the next copy-trade poll fires. Walk selected_whales
++    # and append zero-stat placeholders for anyone not already in `out`.
++    if "kalshi_copy_trading" in target_slugs:
++        try:
++            rec = db.load_agent_state(
++                "kalshi_copy_trader", "selected_whales", db_url=db_url,
++            )
++            if rec is not None and isinstance(rec[0], list):
++                existing = {w.handle for w in out if w.venue == "kalshi"}
++                for h in rec[0]:
++                    handle = str(h) if h else ""
++                    if not handle or handle in existing:
++                        continue
++                    out.append(PMWhaleRow(
++                        handle=handle, venue="kalshi",
++                        division="kalshi_copy_trading",
++                        n_resolved=0, n_wins=0, n_losses=0,
++                        win_rate_pct=None,
++                        total_realized_pnl=0.0,
++                        n_open=0,
++                        last_entry_ts=None,
++                    ))
++        except Exception as e:
++            log.debug("_query_pm_whales kalshi selected-placeholder failed: %s", e)
++
++    if "polymarket_copy_trading" in target_slugs:
++        try:
++            rec = db.load_agent_state(
++                "polymarket_copy_trader", "selected_whales", db_url=db_url,
++            )
++            if rec is not None and isinstance(rec[0], list):
++                existing = {w.handle for w in out if w.venue == "polymarket"}
++                for s in rec[0]:
++                    if not isinstance(s, dict):
++                        continue
++                    user_name = str(s.get("user_name") or "")
++                    if not user_name or user_name in existing:
++                        continue
++                    out.append(PMWhaleRow(
++                        handle=user_name, venue="polymarket",
++                        division="polymarket_copy_trading",
++                        n_resolved=0, n_wins=0, n_losses=0,
++                        win_rate_pct=None,
++                        total_realized_pnl=0.0,
++                        n_open=0,
++                        last_entry_ts=None,
++                    ))
++        except Exception as e:
++            log.debug("_query_pm_whales polymarket selected-placeholder failed: %s", e)
++
+     # Decorate rows with actor_id (the identifier the demote endpoint
+     # consumes) and is_pinned (whether the whale was manually promoted
+     # via the dashboard; pinned whales survive refresh_*_whales.py runs).
+@@ -4027,7 +4080,18 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
+ def _query_kalshi_watch_only_rows(
+     db_url: str, target_slugs: list[str],
+ ) -> list[KalshiWatchOnlyRow]:
+-    """Render the K3 Watch List panel from `agent_state(watch_only_stats)`.
++    """Render the K3 Watch List panel from `agent_state(watch_only_whales)`.
++
++    `watch_only_whales` (a list[dict]) is the source of truth for "who's on
++    the watch list" — promote/demote endpoints mutate this slot, and
++    refresh_kalshi_whales.py also writes here. `watch_only_stats` (a dict)
++    is an enrichment slot maintained by refresh_kalshi_watchlist_stats.py;
++    it lags behind list mutations and may be missing handles entirely
++    (e.g. just-demoted whales).
++
++    For each entry in watch_only_whales, emit one row with stats merged in
++    from watch_only_stats[handle] when present. Newly-demoted whales appear
++    with zero stats until the next stats refresh.
+ 
+     Only populated when kalshi_copy_trading is in scope — there's no
+     cross-venue watch-list today. Empty list otherwise.
+@@ -4037,30 +4101,46 @@ def _query_kalshi_watch_only_rows(
+     """
+     if "kalshi_copy_trading" not in target_slugs:
+         return []
+-    loaded = db.load_agent_state(
+-        "kalshi_copy_trader", "watch_only_stats", db_url=db_url,
++
++    whales_rec = db.load_agent_state(
++        "kalshi_copy_trader", "watch_only_whales", db_url=db_url,
+     )
+-    if loaded is None:
+-        return []
+-    stats_by_handle, _updated = loaded
+-    if not isinstance(stats_by_handle, dict):
++    if whales_rec is None or not isinstance(whales_rec[0], list):
+         return []
++    whales_list = whales_rec[0]
++
++    stats_rec = db.load_agent_state(
++        "kalshi_copy_trader", "watch_only_stats", db_url=db_url,
++    )
++    stats_by_handle: dict[str, dict] = {}
++    if stats_rec is not None and isinstance(stats_rec[0], dict):
++        stats_by_handle = stats_rec[0]
+ 
+     out: list[KalshiWatchOnlyRow] = []
+-    for handle, s in stats_by_handle.items():
+-        if not isinstance(s, dict):
++    for w in whales_list:
++        if not isinstance(w, dict):
++            continue
++        handle = str(w.get("handle") or "")
++        if not handle:
+             continue
++        s = stats_by_handle.get(handle) or {}
++        if not isinstance(s, dict):
++            s = {}
+         decisive = int(s.get("wins") or 0) + int(s.get("losses") or 0)
+         wr_pct: float | None = None
+         if decisive > 0:
+             wr_pct = 100.0 * int(s.get("wins") or 0) / decisive
+         cats = s.get("top_categories") or []
+         top_cat = cats[0] if cats else None
++        # Prefer fresh stats fields; fall back to whatever the
++        # watch_only_whales list entry recorded (tier/notes/source flagged
++        # by promote/demote or by the refresh script).
++        tier_raw = s.get("tier") if s.get("tier") is not None else w.get("tier")
+         out.append(KalshiWatchOnlyRow(
+-            handle=str(s.get("handle") or handle),
+-            tier=int(s["tier"]) if s.get("tier") is not None else None,
+-            source_x_handle=s.get("source_x_handle"),
+-            notes=s.get("notes"),
++            handle=handle,
++            tier=int(tier_raw) if tier_raw is not None else None,
++            source_x_handle=s.get("source_x_handle") or w.get("source_x_handle"),
++            notes=s.get("notes") or w.get("notes"),
+             resolved_count=int(s.get("resolved_count") or 0),
+             wins=int(s.get("wins") or 0),
+             losses=int(s.get("losses") or 0),
+@@ -4070,7 +4150,7 @@ def _query_kalshi_watch_only_rows(
+             top_category=top_cat,
+             n_open=int(s.get("n_open") or 0),
+             lifetime_markets_traded=int(s.get("lifetime_markets_traded") or 0),
+-            last_refresh_iso=s.get("last_refresh_iso"),
++            last_refresh_iso=s.get("last_refresh_iso") or w.get("included_iso"),
+         ))
+     out.sort(key=lambda w: (w.tier or 99, -w.total_pnl))
+     return out
+diff --git a/trading_corp/web/routes.py b/trading_corp/web/routes.py
+index 90682ec..06aca81 100644
+--- a/trading_corp/web/routes.py
++++ b/trading_corp/web/routes.py
+@@ -1619,9 +1619,15 @@ def register(app: FastAPI) -> None:
+ 
+     def _render_action_pill(msg: str, *, success: bool = True) -> HTMLResponse:
+         cls = "text-gain" if success else "text-loss"
++        # HX-Refresh tells htmx to reload the page after this response, which
++        # re-renders both the Selected Whales and Watch List panels from the
++        # updated agent_state slots. Without this, only the clicked row vanishes
++        # (the pill div replaces it via outerHTML) and the user thinks the
++        # action didn't take effect.
+         return HTMLResponse(
+             f'<div class="{cls} text-[11px] font-mono uppercase tracking-wider">'
+-            f'{msg}</div>'
++            f'{msg}</div>',
++            headers={"HX-Refresh": "true"},
+         )
+ 
+     def _now_iso() -> str:

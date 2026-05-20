@@ -307,6 +307,22 @@ async def run(argv: list[str] | None = None) -> int:
     bitunix_d1_cache = LiveBarCache(
         symbol="BTCUSDT", timeframe="1d", venue="bitunix", max_bars=250,
     )
+    # Confluence-gate caches (Phase B of the 5-factor gate rollout).
+    # 5m feeds Factor 3 (ATR + Bollinger width); 15m feeds Factor 1
+    # (EMA 8/21/50 alignment + slope). Both are populated at boot but
+    # NOT yet consumed by the observer — Phase D wires them into the
+    # gate evaluation. `max_bars` sized for the longest gate input:
+    #   5m: ATR(14) + SMA(50) needs 63; BB(20) + pct_rank(100) needs
+    #        119; +safety → 300.
+    #   15m: EMA(50) + slope(5) lookback needs 54; +safety → 250.
+    # See `bitunix_confluence_gate.ConfluenceGateConfig` for the defaults
+    # those numbers depend on.
+    bitunix_5m_cache = LiveBarCache(
+        symbol="BTCUSDT", timeframe="5m", venue="bitunix", max_bars=300,
+    )
+    bitunix_15m_cache = LiveBarCache(
+        symbol="BTCUSDT", timeframe="15m", venue="bitunix", max_bars=250,
+    )
     # Phase 3.2 — confluence score accumulator config (off by default;
     # flip `bitunix_futures.scoring.enabled: true` in strategies.yaml
     # after backtest greenlight). When disabled, the observer runs the
@@ -387,6 +403,11 @@ async def run(argv: list[str] | None = None) -> int:
         # PR 4 — adaptive trade plan. Both None unless YAML activates them.
         trade_plan_config=_trade_plan_config,
         fee_config=_fee_config,
+        # Confluence-gate Phase B — caches passed in, gate_config still
+        # None (Phase D wires the YAML). Observer stores but does not
+        # consume them yet.
+        bar_cache_5m=bitunix_5m_cache,
+        bar_cache_15m=bitunix_15m_cache,
         # telegram_channel attached after channel is constructed (below)
     )
 
@@ -1045,6 +1066,27 @@ async def run(argv: list[str] | None = None) -> int:
             )
         )
 
+        # --- Kalshi Structure Arbitrage (2026-05-17, Phase K2.5) ---
+        # Deterministic multi-outcome event strategy. No LLM in path.
+        # Fires when sum(implied_yes) > 1.5 across K >= 3 sub-markets
+        # of the same event. Buys NO on top-M=3 sub-markets. Paper-only
+        # on initial deploy (auto_execute=false, Board directive).
+        # Kill criterion committed 2026-05-17: review on 2026-06-16.
+        from trading_corp.agents.strategies.kalshi_structure_arb import (
+            KalshiStructureArbAgent,
+        )
+        kalshi_structure_arb_agent = KalshiStructureArbAgent(db_url=secrets.db_url)
+        kalshi_structure_arb_task = asyncio.create_task(
+            _scheduled_kalshi_structure_arb_loop(
+                kalshi_structure_arb_agent,
+                channel=channel,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                risk_agent=risk_agent,
+                db_url=secrets.db_url,
+            )
+        )
+
         # --- Kalshi Sports Scout (2026-05-14, read-only observer) ---
         # No order emission. Logs bookmaker vs Kalshi divergence to
         # `kalshi_sports_observed` audit. 7-day pass to validate edge.
@@ -1078,6 +1120,96 @@ async def run(argv: list[str] | None = None) -> int:
                 risk_agent=risk_agent,
                 db_url=secrets.db_url,
             )
+        )
+
+        # --- Phase IC1 (2026-05-17): Robinhood Joint Iron Condor ---
+        # 45 DTE neutral premium-selling on ETFs (SPY/QQQ/IWM/GLD/TLT).
+        # Paper-default; every open/close/adjustment requires Board HITL
+        # approval via the web app. attach_strategy is idempotent so the
+        # division and the strategy can be constructed in either order.
+        # The two async loops (Signal Scanner + dynamic-cadence Position
+        # Manager) live in agents/strategies/_ic_orchestration.py so the
+        # wiring stays testable in isolation.
+        from trading_corp.agents.divisions.robinhood_joint import (
+            RobinhoodJointAgent,
+        )
+        from trading_corp.agents.strategies.robinhood_joint_iron_condor import (
+            RobinhoodJointIronCondorAgent,
+        )
+        from trading_corp.agents.strategies._ic_orchestration import (
+            run_position_manager_loop as _run_ic_position_manager,
+            run_signal_scanner_loop as _run_ic_signal_scanner,
+        )
+        from trading_corp.comms.pending_combo_registry import (
+            PendingComboRegistry,
+        )
+        from trading_corp.comms.telegram_batcher import TelegramBatcher
+        from trading_corp.persistence.models import (
+            AccountState as _ICAccountState,
+            StrategyState as _ICStrategyState,
+        )
+
+        ic_division = RobinhoodJointAgent()
+        ic_strategy = RobinhoodJointIronCondorAgent(db_url=secrets.db_url)
+        ic_division.attach_strategy(ic_strategy)
+
+        ic_notifications_cfg = (ic_strategy._cfg.get("notifications") or {})
+        ic_bypass_tags = list(
+            ic_notifications_cfg.get("telegram_bypass_tags") or []
+        )
+        ic_batch_window = float(
+            ic_notifications_cfg.get("telegram_batch_window_sec", 60)
+        )
+        ic_telegram_batcher = TelegramBatcher(
+            channel,
+            batch_window_sec=ic_batch_window,
+            bypass_tags=ic_bypass_tags,
+        )
+        ic_combo_registry = PendingComboRegistry(logger_agent=logger_agent)
+
+        # Account factory pulls live equity per call so the per-trade
+        # risk cap reflects current account state. Falls back to the
+        # paper broker if the division's broker isn't registered.
+        async def _ic_account_factory() -> _ICAccountState:
+            broker = data_exec.brokers.get(ic_division.slug) or paper_broker
+            try:
+                snap = await broker.snapshot()
+                eq = float(getattr(snap, "equity", 0.0))
+            except Exception:
+                eq = 0.0
+            return _ICAccountState(
+                account=ic_division.slug,
+                equity=eq, peak_equity=eq, halted=False,
+            )
+
+        def _ic_strategy_state_factory() -> _ICStrategyState:
+            return _ICStrategyState(strategy=ic_strategy.SLUG, halted=False)
+
+        ic_broker = data_exec.brokers.get(ic_division.slug) or paper_broker
+
+        ic_signal_scanner_task = asyncio.create_task(
+            _run_ic_signal_scanner(
+                division=ic_division, broker=ic_broker,
+                strategy=ic_strategy, risk_agent=risk_agent,
+                logger_agent=logger_agent, data_exec=data_exec,
+                account_factory=_ic_account_factory,
+                strategy_state_factory=_ic_strategy_state_factory,
+                telegram_batcher=ic_telegram_batcher,
+                pending_combo_registry=ic_combo_registry,
+            ),
+            name="ic-signal-scanner",
+        )
+        ic_position_manager_task = asyncio.create_task(
+            _run_ic_position_manager(
+                division=ic_division, broker=ic_broker,
+                strategy=ic_strategy, risk_agent=risk_agent,
+                logger_agent=logger_agent, data_exec=data_exec,
+                account_factory=_ic_account_factory,
+                strategy_state_factory=_ic_strategy_state_factory,
+                telegram_batcher=ic_telegram_batcher,
+                pending_combo_registry=ic_combo_registry,
+            ),
+            name="ic-position-manager",
         )
 
 
@@ -1252,7 +1384,10 @@ async def run(argv: list[str] | None = None) -> int:
         # Cadences sized to ~1/3 of each TF's bar duration so a new bar
         # is picked up promptly after close. Funding rate updates every
         # 8h on BitUnix; 30 min poll keeps the cached value warm.
+        # Confluence-gate Phase B adds 5m / 15m at the same ~1/3 cadence.
         for _cache, _interval, _name in (
+            (bitunix_5m_cache, 100.0, "bitunix-5m-cache"),    # ~100s
+            (bitunix_15m_cache, 300.0, "bitunix-15m-cache"),  # 5 min
             (bitunix_h1_cache, 300.0, "bitunix-h1-cache"),    # 5 min
             (bitunix_h4_cache, 900.0, "bitunix-h4-cache"),    # 15 min
             (bitunix_d1_cache, 1800.0, "bitunix-d1-cache"),   # 30 min
@@ -1266,6 +1401,18 @@ async def run(argv: list[str] | None = None) -> int:
                 _cache.run_poll_loop(interval_s=_interval),
                 name=_name,
             )
+        # Board mod #4 — boot-time warm-up ETA for the confluence gate.
+        # Logs whether each cache holds enough bars for the gate's most
+        # demanding factor input, and the ETA to warm if not. Helps the
+        # operator understand why early post-boot fires would low-score
+        # even after the gate is wired (Phase D).
+        from trading_corp.data.bitunix_price_context import (
+            log_gate_cache_warmup_status as _log_gate_warmup,
+        )
+        try:
+            _log_gate_warmup(bitunix_5m_cache, bitunix_15m_cache, log=log)
+        except Exception:
+            log.exception("gate warm-up ETA log failed (non-fatal)")
         try:
             await bitunix_htf_provider.refresh_funding_rate()
             log.info(
@@ -1409,6 +1556,11 @@ async def run(argv: list[str] | None = None) -> int:
             kalshi_llm_task.cancel()
             try:
                 await kalshi_llm_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            kalshi_structure_arb_task.cancel()
+            try:
+                await kalshi_structure_arb_task
             except (asyncio.CancelledError, Exception):
                 pass
             if polymarket_resolver_task is not None:
@@ -1641,6 +1793,10 @@ async def _start_web_server(
         pending_registry=pending_registry,
         bitunix_observer=bitunix_observer,
         bitunix_htf_provider=bitunix_htf_provider,
+        ic_division=ic_division,
+        ic_strategy=ic_strategy,
+        ic_telegram_batcher=ic_telegram_batcher,
+        pending_combo_registry=ic_combo_registry,
     )
     app = create_app(deps)
     config = uvicorn.Config(
@@ -3409,6 +3565,194 @@ async def _scheduled_kalshi_crypto_arb_loop(
             await asyncio.sleep(5.0)
 
 
+
+
+async def _scheduled_kalshi_structure_arb_loop(
+    agent,
+    *,
+    channel,
+    logger_agent,
+    data_exec,
+    risk_agent,
+    db_url: str,
+) -> None:
+    """Kalshi Structure Arbitrage scanner loop (Phase K2.5, 2026-05-17).
+
+    Wakes on a dynamic cadence (default 60s; rapid 15s when fresh events
+    are in the cache). On each tick:
+      - If `enabled: false`, no-op and sleep.
+      - Lazy-resolve a live KalshiBroker for discovery.
+      - Call `agent.run_scan_cycle(kalshi_broker)` which groups events,
+        applies skip rules, and emits ProposedOrders for qualifying events.
+      - Each order runs through `risk_agent.evaluate()` (single chokepoint
+        per CLAUDE.md § 1). Approved orders log `would_have_placed` (paper).
+        Rejected orders log `kalshi_structure_arb_order_rejected_by_risk`.
+
+    The evaluated audit is written INSIDE run_scan_cycle (before any
+    decision branch) per CLAUDE.md § 1. The would_have_placed audit is
+    written here in the loop after risk approval.
+
+    auto_execute is read from config but MUST remain false on initial deploy
+    (Board directive 2026-05-17). The auto_execute=true branch is scaffolded
+    but cannot fire until Phase K5+ live broker lands.
+    """
+    from datetime import datetime, timezone
+    from trading_corp.persistence.models import AccountState, StrategyState
+
+    log.info(
+        "Kalshi Structure Arbitrage scanner online (enabled=%s, auto_execute=%s)",
+        agent.enabled, agent.auto_execute,
+    )
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            # Dynamic cadence: read interval from agent AFTER the previous scan.
+            # On first tick, use the configured default.
+            poll_sec = agent.next_scan_interval_seconds(now)
+            await asyncio.sleep(max(10.0, poll_sec))
+
+            if not agent.enabled:
+                continue
+
+            # Lazy-resolve a real KalshiBroker (Phase K1, read-only).
+            # Identified by class name + having an active _client. Same
+            # pattern as kalshi_weather_arb and kalshi_crypto_arb.
+            kalshi_broker = None
+            for br in data_exec.brokers.values():
+                if br.__class__.__name__ == "KalshiBroker" and getattr(br, "_client", None):
+                    kalshi_broker = br
+                    break
+            if kalshi_broker is None:
+                log.debug("Kalshi Structure Arb: no live KalshiBroker; skipping cycle")
+                continue
+
+            try:
+                orders = await agent.run_scan_cycle(
+                    kalshi_broker, logger_agent=logger_agent,
+                )
+            except Exception as e:
+                log.exception("Kalshi Structure Arb: run_scan_cycle failed: %s", e)
+                continue
+
+            if not orders:
+                continue
+
+            # Pull account snapshot for risk gate equity context.
+            div_broker = data_exec.brokers.get(agent.division)
+            account_equity = 0.0
+            if div_broker is not None:
+                try:
+                    snap = await div_broker.snapshot()
+                    account_equity = float(getattr(snap, "equity", 0.0) or 0.0)
+                except Exception as e:
+                    log.warning("Kalshi Structure Arb: snapshot failed: %s; assuming $0", e)
+
+            account = AccountState(
+                account=agent.division,
+                equity=account_equity,
+                peak_equity=account_equity,
+                halted=False,
+            )
+            strategy_state = StrategyState(strategy=agent.name, halted=False)
+
+            log.info(
+                "Kalshi Structure Arb: %d ProposedOrder(s) emitted",
+                len(orders),
+            )
+
+            for order in orders:
+                logger_agent.log_proposed_order(order)
+                ext = order.extra or {}
+                base_payload = {
+                    "strategy": agent.name,
+                    "division": agent.division,
+                    "order_id": order.id,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "limit_price": order.limit_price,
+                    "rationale": order.rationale,
+                    "ticker": ext.get("ticker"),
+                    "event_ticker": ext.get("event_ticker"),
+                    "category": ext.get("category"),
+                    "k": ext.get("k"),
+                    "sum_yes_implied": ext.get("sum_yes_implied"),
+                    "implied_yes_at_entry": ext.get("implied_yes_at_entry"),
+                    "no_ask": ext.get("no_ask"),
+                    "fixed_usd": ext.get("fixed_usd"),
+                    "first_observation": ext.get("first_observation"),
+                }
+
+                # Risk gate — BEFORE any decision branch (CLAUDE.md § 1).
+                verdict = risk_agent.evaluate(
+                    order, account, strategy_state, db_url=db_url,
+                )
+
+                if verdict.verdict == "reject":
+                    logger_agent.log_event(
+                        agent.name,
+                        "kalshi_structure_arb_order_rejected_by_risk",
+                        {**base_payload, "risk_reason": verdict.reason},
+                    )
+                    log.info(
+                        "Kalshi Structure Arb: risk REJECT %s — %s",
+                        order.symbol, verdict.reason,
+                    )
+                    continue
+
+                if verdict.verdict == "resize" and verdict.new_qty is not None:
+                    log.info(
+                        "Kalshi Structure Arb: risk RESIZE qty %.4f -> %.4f (%s)",
+                        order.qty, verdict.new_qty, verdict.reason,
+                    )
+                    order.qty = float(verdict.new_qty)
+
+                # auto_execute=false → would_have_placed (paper-mode).
+                # auto_execute=true path scaffolded but MUST NOT be reached
+                # on initial deploy (Board directive 2026-05-17, CLAUDE.md § 1).
+                if not agent.auto_execute:
+                    logger_agent.log_event(
+                        agent.name,
+                        "would_have_placed",
+                        {
+                            **base_payload,
+                            "qty": order.qty,  # post-resize
+                            "implied_prob_at_entry": ext.get("implied_prob_at_entry"),
+                            "outcome": ext.get("outcome"),
+                            "max_dollar_risk": ext.get("max_dollar_risk"),
+                            "expires_at": ext.get("expires_at"),
+                            "tier": ext.get("tier"),
+                            "source_signal": ext.get("source_signal"),
+                            "risk_verdict": verdict.verdict,
+                            "risk_reason": verdict.reason,
+                        },
+                    )
+                else:
+                    # Phase K5+ live order placement. NOT active on initial deploy.
+                    # When the Board greenlights live placement, wire
+                    # data_exec.place() here and remove this comment.
+                    log.warning(
+                        "Kalshi Structure Arb: auto_execute=true but live order "
+                        "placement is not yet implemented (Phase K5+). "
+                        "Order %s dropped — set auto_execute=false.", order.id,
+                    )
+
+                try:
+                    sum_yes = ext.get("sum_yes_implied") or 0
+                    k_val = ext.get("k") or "?"
+                    await channel.push(
+                        f"Kalshi Structure Arb {order.side.upper()} {order.symbol} "
+                        f"(K={k_val}, sum_yes={sum_yes:.3f}) "
+                        f"— logged to activity rail."
+                    )
+                except Exception as e:
+                    log.warning("Kalshi Structure Arb channel push failed: %s", e)
+
+        except asyncio.CancelledError:
+            log.info("Kalshi Structure Arbitrage scanner cancelled.")
+            return
+        except Exception as e:
+            log.exception("Kalshi Structure Arb loop iteration failed: %s", e)
+            await asyncio.sleep(10.0)
 
 
 async def _scheduled_kalshi_sports_scout_loop(

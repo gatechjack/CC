@@ -347,6 +347,109 @@ def hh_ll_4h_at(
     )
 
 
+def _resample_to_15m(bars: list[dict]) -> list[dict]:
+    """15m resample. Buckets aligned to UTC :00 / :15 / :30 / :45.
+
+    Added for the confluence-gate backtest arm (Phase C). Same shape
+    as `_resample_to_4h`; just narrower buckets.
+    """
+    if not bars:
+        return []
+    out: list[dict] = []
+    cur: dict | None = None
+    cur_bucket: datetime | None = None
+    for b in bars:
+        bucket = b["ts"].replace(
+            minute=(b["ts"].minute // 15) * 15, second=0, microsecond=0,
+        )
+        if cur is None or bucket != cur_bucket:
+            if cur is not None:
+                out.append(cur)
+            cur_bucket = bucket
+            cur = {
+                "ts": bucket,
+                "open": b["open"], "high": b["high"], "low": b["low"],
+                "close": b["close"], "volume": b["volume"],
+            }
+        else:
+            cur["high"] = max(cur["high"], b["high"])
+            cur["low"] = min(cur["low"], b["low"])
+            cur["close"] = b["close"]
+            cur["volume"] += b["volume"]
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def _resample_to_5m(bars: list[dict]) -> list[dict]:
+    """5m resample. Buckets aligned to UTC :00 / :05 / :10 / ...
+
+    Added for the confluence-gate backtest arm (Phase C).
+    """
+    if not bars:
+        return []
+    out: list[dict] = []
+    cur: dict | None = None
+    cur_bucket: datetime | None = None
+    for b in bars:
+        bucket = b["ts"].replace(
+            minute=(b["ts"].minute // 5) * 5, second=0, microsecond=0,
+        )
+        if cur is None or bucket != cur_bucket:
+            if cur is not None:
+                out.append(cur)
+            cur_bucket = bucket
+            cur = {
+                "ts": bucket,
+                "open": b["open"], "high": b["high"], "low": b["low"],
+                "close": b["close"], "volume": b["volume"],
+            }
+        else:
+            cur["high"] = max(cur["high"], b["high"])
+            cur["low"] = min(cur["low"], b["low"])
+            cur["close"] = b["close"]
+            cur["volume"] += b["volume"]
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def _resample_to_3m(bars: list[dict]) -> list[dict]:
+    """3m resample. Buckets aligned to UTC :00 / :03 / :06 / ...
+
+    Used by the confluence-gate backtest arm to feed the gate's CVD
+    (Factor 4) + VWAP (Factor 2) + volume-z (Factor 5) inputs from
+    the 1m OHLCV the harness already pulls from Coinbase. Live prod
+    feeds the gate from the native BitUnix 3m kline.
+    """
+    if not bars:
+        return []
+    out: list[dict] = []
+    cur: dict | None = None
+    cur_bucket: datetime | None = None
+    for b in bars:
+        bucket = b["ts"].replace(
+            minute=(b["ts"].minute // 3) * 3, second=0, microsecond=0,
+        )
+        if cur is None or bucket != cur_bucket:
+            if cur is not None:
+                out.append(cur)
+            cur_bucket = bucket
+            cur = {
+                "ts": bucket,
+                "open": b["open"], "high": b["high"], "low": b["low"],
+                "close": b["close"], "volume": b["volume"],
+            }
+        else:
+            cur["high"] = max(cur["high"], b["high"])
+            cur["low"] = min(cur["low"], b["low"])
+            cur["close"] = b["close"]
+            cur["volume"] += b["volume"]
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
 def _resample_to_1h(bars: list[dict]) -> list[dict]:
     """1h resample analog of `_resample_to_4h`. Buckets aligned to
     UTC :00 of each hour."""

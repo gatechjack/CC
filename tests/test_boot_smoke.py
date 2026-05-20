@@ -240,3 +240,45 @@ def test_strategies_yaml_phase1c_blocks_parse():
     )
     StrategyConfig.from_dict(bitunix.get("trade_plan") or {})
     FeeConfig.from_dict(bitunix.get("fees") or {})
+
+    # Confluence gate (Phase B — YAML block may be absent; loader must
+    # return a default-disabled config without raising).
+    from trading_corp.agents.strategies.bitunix_confluence_gate import (
+        ConfluenceGateConfig,
+    )
+    gate_cfg = ConfluenceGateConfig.from_dict(bitunix)
+    assert gate_cfg is not None
+
+
+def test_main_py_wires_6_bitunix_caches():
+    """Phase B regression guard — main.py must instantiate the 5 BitUnix
+    bar caches the gate stack expects (3m, 5m, 15m, 1h, 4h, 1d = 6).
+    AST-grep so we don't import main.py (heavy)."""
+    src = MAIN_PY.read_text(encoding="utf-8")
+    for needle in (
+        "bitunix_bar_cache = LiveBarCache(",       # 3m
+        "bitunix_5m_cache = LiveBarCache(",
+        "bitunix_15m_cache = LiveBarCache(",
+        "bitunix_h1_cache = LiveBarCache(",
+        "bitunix_h4_cache = LiveBarCache(",
+        "bitunix_d1_cache = LiveBarCache(",
+    ):
+        assert needle in src, (
+            f"main.py missing expected BitUnix cache instantiation: {needle!r}.\n"
+            "Confluence-gate Phase B requires the 5m + 15m caches alongside "
+            "the existing 3m + HTF set."
+        )
+
+
+def test_main_py_passes_new_caches_to_observer_ctor():
+    """Phase B — observer ctor must receive bar_cache_5m + bar_cache_15m
+    even though it doesn't consume them until Phase D."""
+    src = MAIN_PY.read_text(encoding="utf-8")
+    assert "bar_cache_5m=bitunix_5m_cache" in src, (
+        "main.py is missing `bar_cache_5m=bitunix_5m_cache` in the "
+        "BitunixFuturesObserver() call site (Phase B wiring)."
+    )
+    assert "bar_cache_15m=bitunix_15m_cache" in src, (
+        "main.py is missing `bar_cache_15m=bitunix_15m_cache` in the "
+        "BitunixFuturesObserver() call site (Phase B wiring)."
+    )

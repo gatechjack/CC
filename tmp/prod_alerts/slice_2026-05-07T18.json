@@ -1,0 +1,10 @@
+{
+  "value": [
+    {
+      "code": "ProvisioningState/succeeded",
+      "displayStatus": "Provisioning succeeded",
+      "level": "Info",
+      "message": "Enable succeeded: \n[stdout]\n2026-05-07T18:51:01+00:00|lord_otter|spoon_bear|BTC/USD|80032.59|3\n2026-05-07T21:09:00+00:00|lord_otter|cvd_bear_flip|BTC/USD|79648.6|3\n2026-05-07T23:21:00+00:00|lord_otter|spoon_bear|BTC/USD|79916.0|3\n2026-05-07T23:30:04+00:00|lord_otter|spoon_bull|BTC/USD|79941.68|3\n2026-05-07T23:48:01+00:00|lord_otter|cvd_bull_flip|BTC/USD|80010.83|3\n\n[stderr]\n"
+    }
+  ]
+}

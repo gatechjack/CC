@@ -1,0 +1,444 @@
+commit 873e0040cb17be10c9f91f0be321001b9b2e8558
+Author: Jack Sumner <jack@jacksumner.com>
+Date:   Sun May 17 13:14:09 2026 -0400
+
+    polymarket: watchlist weekly refresh — Cloudflare 403 retry + --merge + systemd timer
+    
+    Unblocks the P2 weekly cron for `agent_state(polymarket_copy_trader,
+    watch_only_whales)`. The 14:43 UTC prod seed crashed at chunk 1163 with
+    HTTP 403 from gamma-api (Cloudflare rate-limited the Azure VM IP, shared
+    with PCT live + polymarket_arbitrage live). Without these three changes
+    the weekly Sunday cron will fail the same way every week.
+    
+    1. _get_json: exponential backoff (30/60/120/240/300s, ~6 attempts) on
+       403+cf-ray-marker responses. Terminal failure raises the existing
+       PolymarketRateLimitError. Non-Cloudflare 403s are NOT retried — only
+       the rate-limit interstitial signature triggers retry.
+    
+    2. fetch_market_resolutions: per-chunk swallow on PolymarketRateLimitError.
+       Failed chunks fall through to the existing not_found sentinel so the
+       caller still gets a complete dict; sweep continues with partial
+       coverage instead of aborting (compute_polymarket_stats already handles
+       not_found resolutions cleanly).
+    
+    3. seed_polymarket_watchlist_deep:
+       - --merge: union freshly-computed top-N with existing slot; existing
+         entries' included_iso preserved (so we can track observation
+         duration), per-wallet stats take fresh values.
+       - --max-total N: cap merged list size by realized_pnl_usdc desc;
+         prevents unbounded growth.
+       - Merge stats reported in summary + human print.
+    
+    4. systemd timer: trading-corp-pm-watchlist-deep.{service,timer}
+       weekly Sunday 13:00 UTC, RandomizedDelaySec=900, ExecStart with
+       --merge --max-total 100. Slot between daily 12:00 UTC Kalshi
+       stats-refresh and Sunday 14:00 UTC Kalshi deep-scan to avoid
+       concurrent bulk-API load.
+    
+    12 new tests; 52 existing Polymarket tests pass.
+    
+    Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+diff --git a/trading_corp/data/polymarket_data_api_client.py b/trading_corp/data/polymarket_data_api_client.py
+index b5b9c06..40e6091 100644
+--- a/trading_corp/data/polymarket_data_api_client.py
++++ b/trading_corp/data/polymarket_data_api_client.py
+@@ -49,6 +49,13 @@ _DATA_API_BASE = "https://data-api.polymarket.com"
+ _GAMMA_API_BASE = "https://gamma-api.polymarket.com"
+ _HTTP_TIMEOUT_SEC = 30.0
+ 
++# Exponential-backoff schedule for Cloudflare 403 retries. Each delay is the
++# sleep BEFORE the next attempt; 5 entries → up to 6 total attempts. Tests
++# monkeypatch this to shorten the wall-clock cost.
++# Sized for the failure observed 2026-05-17 16:00 UTC on prod's shared-IP
++# gamma-api sweep — Cloudflare blocks typically clear inside 60-300s.
++_CLOUDFLARE_RETRY_DELAYS_SEC: tuple[float, ...] = (30.0, 60.0, 120.0, 240.0, 300.0)
++
+ # Categories that empirically return leaderboard rows. Polymarket's taxonomy
+ # has more, but most are empty — these 5 are where the data actually lives.
+ POLYMARKET_LEADERBOARD_CATEGORIES: tuple[str, ...] = (
+@@ -61,7 +68,30 @@ class PolymarketDataAPIError(Exception):
+ 
+ 
+ class PolymarketRateLimitError(PolymarketDataAPIError):
+-    """HTTP 429 — back off and retry."""
++    """HTTP 429, or a Cloudflare 403 that survived the in-client retry budget.
++
++    `_get_json` retries Cloudflare-marked 403 responses on its own with
++    exponential backoff (`_CLOUDFLARE_RETRY_DELAYS_SEC`); only after the
++    budget is exhausted does it raise this. Callers (`fetch_market_resolutions`
++    in particular) catch it and continue with whatever data accumulated, so
++    a single rate-limited chunk doesn't abort a long sweep.
++    """
++
++
++def _is_cloudflare_block(resp: httpx.Response) -> bool:
++    """Detect Cloudflare WAF / rate-limit interstitials on a 4xx response.
++
++    Cloudflare's block pages send a `cf-ray` header and a `Server: cloudflare`
++    header; the body is HTML containing "Cloudflare" or "Attention Required".
++    Either signal is enough — `cf-ray` alone is conclusive.
++    """
++    headers = resp.headers
++    if "cf-ray" in headers or "cf-mitigated" in headers:
++        return True
++    if headers.get("server", "").lower() == "cloudflare":
++        return True
++    body = (resp.text or "")[:2000].lower()
++    return "cloudflare" in body or "attention required" in body
+ 
+ 
+ @dataclass(frozen=True)
+@@ -468,6 +498,7 @@ class PolymarketDataAPIClient:
+             return out
+ 
+         unique = list(dict.fromkeys(condition_ids))  # dedupe preserving order
++        rate_limited_chunks = 0
+         for i in range(0, len(unique), chunk_size):
+             chunk = unique[i:i + chunk_size]
+             # Gamma-api default is `closed=false` (active markets only) and
+@@ -475,15 +506,29 @@ class PolymarketDataAPIClient:
+             # TWO queries per chunk: one for open, one for closed. Merge.
+             base_params = [("condition_ids", c) for c in chunk]
+             base_params.append(("limit", str(chunk_size)))
++            chunk_rate_limited = False
+             for variant in ("open", "closed"):
+                 params = list(base_params)
+                 if variant == "closed":
+                     params.append(("closed", "true"))
+-                rows = await self._get_json(
+-                    f"{_GAMMA_API_BASE}/markets",
+-                    params=params,
+-                    label=f"resolutions[{len(chunk)} ids, chunk {i // chunk_size}, {variant}]",
+-                )
++                try:
++                    rows = await self._get_json(
++                        f"{_GAMMA_API_BASE}/markets",
++                        params=params,
++                        label=f"resolutions[{len(chunk)} ids, chunk {i // chunk_size}, {variant}]",
++                    )
++                except PolymarketRateLimitError as e:
++                    # Cloudflare 403 (or 429) survived in-client retry. Skip
++                    # this chunk-variant and continue; missing condition_ids
++                    # fall through to the not_found sentinel below so the
++                    # caller still gets a complete dict.
++                    chunk_rate_limited = True
++                    log.warning(
++                        "polymarket-data-api fetch_market_resolutions chunk %d "
++                        "(%s) rate-limited; partial coverage: %s",
++                        i // chunk_size, variant, e,
++                    )
++                    continue
+                 if not isinstance(rows, list):
+                     continue
+                 for m in rows:
+@@ -497,6 +542,8 @@ class PolymarketDataAPIClient:
+                     # market settles).
+                     if variant == "closed" or cid not in out:
+                         out[cid] = _decode_resolution(m)
++            if chunk_rate_limited:
++                rate_limited_chunks += 1
+         # Fill in "not_found" for any missing condition_ids the caller asked for
+         # so downstream code can iterate without KeyError.
+         for c in unique:
+@@ -504,6 +551,14 @@ class PolymarketDataAPIClient:
+                 out[c] = {"status": "not_found", "winning_outcome_index": None,
+                           "yes_won": None, "outcomes": [], "outcome_prices": [],
+                           "closed": False, "title": ""}
++        if rate_limited_chunks:
++            log.warning(
++                "polymarket-data-api fetch_market_resolutions: %d/%d chunks "
++                "rate-limited; %d/%d condition_ids resolved",
++                rate_limited_chunks, (len(unique) + chunk_size - 1) // chunk_size,
++                sum(1 for c in unique if out[c]["status"] != "not_found"),
++                len(unique),
++            )
+         return out
+ 
+     async def _get_json(
+@@ -514,31 +569,48 @@ class PolymarketDataAPIClient:
+                 "PolymarketDataAPIClient must be used as an async context "
+                 "manager: `async with PolymarketDataAPIClient() as client:`"
+             )
+-        t0 = time.monotonic()
+-        async with self._sem:
++        attempt = 0
++        while True:
++            t0 = time.monotonic()
++            async with self._sem:
++                try:
++                    resp = await self._client.get(url, params=params)
++                except httpx.TimeoutException as e:
++                    raise PolymarketDataAPIError(f"{label}: HTTP timeout") from e
++                except httpx.HTTPError as e:
++                    raise PolymarketDataAPIError(
++                        f"{label}: HTTP error {type(e).__name__}: {e}"
++                    ) from e
++            dur_ms = int((time.monotonic() - t0) * 1000)
++            if resp.status_code == 429:
++                raise PolymarketRateLimitError(f"{label}: HTTP 429")
++            if resp.status_code == 403 and _is_cloudflare_block(resp):
++                if attempt >= len(_CLOUDFLARE_RETRY_DELAYS_SEC):
++                    raise PolymarketRateLimitError(
++                        f"{label}: HTTP 403 Cloudflare block survived "
++                        f"{attempt + 1} attempts; giving up"
++                    )
++                delay = _CLOUDFLARE_RETRY_DELAYS_SEC[attempt]
++                log.warning(
++                    "polymarket-data-api %s: HTTP 403 Cloudflare block on "
++                    "attempt %d (%dms); backing off %.0fs",
++                    label, attempt + 1, dur_ms, delay,
++                )
++                attempt += 1
++                await asyncio.sleep(delay)
++                continue
++            if resp.status_code >= 400:
++                body_preview = resp.text[:300] if resp.text else "(empty)"
++                raise PolymarketDataAPIError(
++                    f"{label}: HTTP {resp.status_code} — {body_preview}"
++                )
+             try:
+-                resp = await self._client.get(url, params=params)
+-            except httpx.TimeoutException as e:
+-                raise PolymarketDataAPIError(f"{label}: HTTP timeout") from e
+-            except httpx.HTTPError as e:
++                payload = resp.json()
++            except json.JSONDecodeError as e:
+                 raise PolymarketDataAPIError(
+-                    f"{label}: HTTP error {type(e).__name__}: {e}"
++                    f"{label}: non-JSON response (HTTP {resp.status_code}): "
++                    f"{resp.text[:200]}"
+                 ) from e
+-        dur_ms = int((time.monotonic() - t0) * 1000)
+-        if resp.status_code == 429:
+-            raise PolymarketRateLimitError(f"{label}: HTTP 429")
+-        if resp.status_code >= 400:
+-            body_preview = resp.text[:300] if resp.text else "(empty)"
+-            raise PolymarketDataAPIError(
+-                f"{label}: HTTP {resp.status_code} — {body_preview}"
+-            )
+-        try:
+-            payload = resp.json()
+-        except json.JSONDecodeError as e:
+-            raise PolymarketDataAPIError(
+-                f"{label}: non-JSON response (HTTP {resp.status_code}): "
+-                f"{resp.text[:200]}"
+-            ) from e
+-        n_rows = len(payload) if isinstance(payload, list) else 1
+-        log.info("polymarket-data-api %s: %d rows in %dms", label, n_rows, dur_ms)
+-        return payload
++            n_rows = len(payload) if isinstance(payload, list) else 1
++            log.info("polymarket-data-api %s: %d rows in %dms", label, n_rows, dur_ms)
++            return payload
+diff --git a/trading_corp/scripts/seed_polymarket_watchlist_deep.py b/trading_corp/scripts/seed_polymarket_watchlist_deep.py
+index 66287dd..d6dfe33 100644
+--- a/trading_corp/scripts/seed_polymarket_watchlist_deep.py
++++ b/trading_corp/scripts/seed_polymarket_watchlist_deep.py
+@@ -42,6 +42,8 @@ Options:
+     --min-win-rate F        Min win rate gate [0.0-1.0] (default 0.70)
+     --activity-limit N      /activity rows per call (default 500, max 1000)
+     --activity-pages N      Pages of activity per wallet (default 2)
++    --merge                 Union with existing watchlist (weekly-refresh mode)
++    --max-total N           Cap merged list size (only with --merge)
+     --dry-run               Print results; don't write to agent_state
+     --json                  JSON output instead of human table
+ """
+@@ -62,7 +64,7 @@ from trading_corp.data.polymarket_data_api_client import (
+     PolymarketDataAPIError,
+ )
+ from trading_corp.data.polymarket_whale_stats import compute_polymarket_stats
+-from trading_corp.persistence.db import set_agent_state
++from trading_corp.persistence.db import load_agent_state, set_agent_state
+ from trading_corp.utils.secrets import load_secrets
+ 
+ log = logging.getLogger(__name__)
+@@ -99,6 +101,62 @@ async def _fetch_wallet_activity(
+     return out
+ 
+ 
++def _merge_watchlists(
++    existing: list[dict[str, Any]] | None,
++    fresh: list[dict[str, Any]],
++    *,
++    max_total: int | None,
++) -> tuple[list[dict[str, Any]], dict[str, int]]:
++    """Union existing + fresh entries by proxy_wallet for the weekly-refresh
++    accumulation mode.
++
++    Existing entries' `included_iso` is preserved (so we can track how long
++    each wallet has been observed); fresh entries get the new `included_iso`
++    from the current run. Per-wallet stats (wins, losses, win_rate, etc.)
++    always take the FRESH value when both sides see the wallet — we want the
++    most-recent observation, not the oldest.
++
++    Re-ranks the merged list by `realized_pnl_usdc` desc, then trims to
++    `max_total` if set. Returns (merged, stats) where stats reports
++    `preserved`, `added`, `replaced`, `dropped` counts for the summary.
++    """
++    by_wallet: dict[str, dict[str, Any]] = {}
++    for e in existing or []:
++        wallet = e.get("proxy_wallet")
++        if wallet:
++            by_wallet[wallet] = dict(e)
++    stats = {"preserved": 0, "added": 0, "replaced": 0, "dropped": 0}
++    for f in fresh:
++        wallet = f.get("proxy_wallet")
++        if not wallet:
++            continue
++        if wallet in by_wallet:
++            prior_iso = by_wallet[wallet].get("included_iso")
++            merged_entry = dict(f)
++            if prior_iso:
++                merged_entry["included_iso"] = prior_iso
++            by_wallet[wallet] = merged_entry
++            stats["replaced"] += 1
++        else:
++            by_wallet[wallet] = dict(f)
++            stats["added"] += 1
++    stats["preserved"] = max(
++        0, len(by_wallet) - stats["added"] - stats["replaced"],
++    )
++    combined = sorted(
++        by_wallet.values(),
++        key=lambda r: r.get("realized_pnl_usdc", 0.0),
++        reverse=True,
++    )
++    if max_total is not None and len(combined) > max_total:
++        stats["dropped"] = len(combined) - max_total
++        combined = combined[:max_total]
++    # Re-rank in-place so the rank field reflects the merged ordering.
++    for new_rank, entry in enumerate(combined, start=1):
++        entry["rank"] = new_rank
++    return combined, stats
++
++
+ async def seed_polymarket_watchlist_deep(
+     *,
+     db_url: str,
+@@ -110,9 +168,19 @@ async def seed_polymarket_watchlist_deep(
+     activity_pages: int = 2,
+     categories: tuple[str, ...] = POLYMARKET_LEADERBOARD_CATEGORIES,
+     dry_run: bool = False,
++    merge: bool = False,
++    max_total: int | None = None,
+ ) -> dict[str, Any]:
+     """Run the full pipeline. Returns a summary dict; writes to agent_state
+-    unless `dry_run=True`."""
++    unless `dry_run=True`.
++
++    `merge=True` unions the freshly-computed top-N with the existing
++    `agent_state(polymarket_copy_trader, watch_only_whales)` slot — used
++    by the weekly cron so the watchlist accumulates over time. New entries
++    get a fresh `included_iso`; previously-seen wallets keep their original
++    `included_iso` so we can track observation duration. `max_total` (if
++    set) caps the merged list by `realized_pnl_usdc` desc.
++    """
+     started = datetime.now(timezone.utc)
+     summary: dict[str, Any] = {
+         "started_at": started.isoformat(),
+@@ -124,6 +192,8 @@ async def seed_polymarket_watchlist_deep(
+             "activity_limit": activity_limit,
+             "activity_pages": activity_pages,
+             "categories": list(categories),
++            "merge": merge,
++            "max_total": max_total,
+         },
+         "leaderboards_pulled": [],
+         "unique_candidates": 0,
+@@ -277,18 +347,42 @@ async def seed_polymarket_watchlist_deep(
+             "included_iso": now_iso,
+         })
+ 
+-    summary["watch_only_whales"] = watch_only_payload
++    final_payload = watch_only_payload
++    merge_stats: dict[str, int] | None = None
++    if merge:
++        loaded = load_agent_state(
++            "polymarket_copy_trader", "watch_only_whales", db_url=db_url,
++        )
++        existing_value = loaded[0] if loaded else None
++        existing_list = (
++            existing_value if isinstance(existing_value, list) else []
++        )
++        final_payload, merge_stats = _merge_watchlists(
++            existing_list, watch_only_payload, max_total=max_total,
++        )
++        log.info(
++            "merge: existing=%d fresh=%d added=%d replaced=%d preserved=%d "
++            "dropped=%d final=%d",
++            len(existing_list), len(watch_only_payload),
++            merge_stats["added"], merge_stats["replaced"],
++            merge_stats["preserved"], merge_stats["dropped"], len(final_payload),
++        )
++
++    summary["watch_only_whales"] = final_payload
+     summary["finished_at"] = datetime.now(timezone.utc).isoformat()
+     summary["stats"] = {
+         "candidates": summary["unique_candidates"],
+         "with_activity": summary["with_activity"],
+         "quality_gate_pass": summary["quality_gate_pass"],
+-        "written": len(watch_only_payload),
++        "fresh_top_n": len(watch_only_payload),
++        "written": len(final_payload),
+     }
++    if merge_stats is not None:
++        summary["merge_stats"] = merge_stats
+ 
+     if not dry_run:
+         set_agent_state(
+-            "polymarket_copy_trader", "watch_only_whales", watch_only_payload,
++            "polymarket_copy_trader", "watch_only_whales", final_payload,
+             db_url=db_url,
+         )
+         set_agent_state(
+@@ -312,8 +406,17 @@ def _print_human(summary: dict[str, Any]) -> None:
+         f"Candidates: {s.get('candidates', 0)}  |  "
+         f"With activity: {s.get('with_activity', 0)}  |  "
+         f"Quality gate pass: {s.get('quality_gate_pass', 0)}  |  "
++        f"Fresh top-N: {s.get('fresh_top_n', s.get('written', 0))}  |  "
+         f"Written: {s.get('written', 0)}"
+     )
++    merge_stats = summary.get("merge_stats")
++    if merge_stats:
++        print(
++            f"Merge: added={merge_stats.get('added', 0)}  "
++            f"replaced={merge_stats.get('replaced', 0)}  "
++            f"preserved={merge_stats.get('preserved', 0)}  "
++            f"dropped={merge_stats.get('dropped', 0)}"
++        )
+     print()
+     whales = summary.get("watch_only_whales", [])
+     if not whales:
+@@ -368,6 +471,23 @@ def main(argv: list[str] | None = None) -> int:
+         "--activity-pages", type=int, default=2,
+         help="Pages of /activity to fetch per wallet (default 2).",
+     )
++    parser.add_argument(
++        "--merge", action="store_true",
++        help=(
++            "Union freshly-computed top-N with the existing "
++            "agent_state(polymarket_copy_trader, watch_only_whales). "
++            "New entries get fresh included_iso; previously-seen wallets "
++            "keep their original included_iso. Used by the weekly cron."
++        ),
++    )
++    parser.add_argument(
++        "--max-total", type=int, default=None,
++        help=(
++            "When --merge is set, cap the merged list to top-N by "
++            "realized_pnl_usdc desc. Without this, the merged list grows "
++            "unbounded as new wallets pass the gate each week."
++        ),
++    )
+     parser.add_argument(
+         "--dry-run", action="store_true",
+         help="Print results without writing to agent_state.",
+@@ -393,6 +513,8 @@ def main(argv: list[str] | None = None) -> int:
+         activity_pages=args.activity_pages,
+         categories=cats,
+         dry_run=args.dry_run,
++        merge=args.merge,
++        max_total=args.max_total,
+     ))
+ 
+     if args.json:

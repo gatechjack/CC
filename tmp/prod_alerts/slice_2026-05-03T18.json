@@ -1,0 +1,10 @@
+{
+  "value": [
+    {
+      "code": "ProvisioningState/succeeded",
+      "displayStatus": "Provisioning succeeded",
+      "level": "Info",
+      "message": "Enable succeeded: \n[stdout]\n2026-05-03T18:45:02+00:00|lord_otter|cvd_bear_flip|BTC/USD|78661.06|3\n2026-05-03T19:33:00+00:00|lord_otter|cvd_bull_flip|BTC/USD|78739.21|3\n2026-05-03T20:00:03+00:00|lord_otter|cvd_bear_flip|BTC/USD|78753.17|3\n2026-05-03T20:27:01+00:00|lord_otter|cvd_bull_flip|BTC/USD|78902.37|3\n2026-05-03T20:48:00+00:00|lord_otter|cvd_bear_flip|BTC/USD|78955.37|3\n2026-05-03T20:51:01+00:00|lord_otter|cvd_bull_flip|BTC/USD|78894.91|3\n2026-05-03T20:57:01+00:00|lord_otter|cvd_bull_flip|BTC/USD|78905.54|3\n2026-05-03T21:09:00+00:00|lord_otter|cvd_bear_flip|BTC/USD|78983.51|3\n2026-05-03T21:12:02+00:00|lord_otter|cvd_bull_flip|BTC/USD|79044.3|3\n2026-05-03T21:27:00+00:00|lord_otter|cvd_bear_flip|BTC/USD|78919.15|3\n2026-05-03T21:39:01+00:00|lord_otter|cvd_bull_flip|BTC/USD|78875.32|3\n2026-05-03T21:45:02+00:00|lord_otter|cvd_bear_flip|BTC/USD|78701.16|3\n2026-05-03T22:00:01+00:00|lord_otter|cvd_bull_flip|BTC/USD|78822.53|3\n2026-05-03T22:30:00+00:00|lord_otter|cvd_bear_flip|BTC/USD|79072.16|3\n\n[stderr]\n"
+    }
+  ]
+}

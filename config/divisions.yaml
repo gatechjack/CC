@@ -53,6 +53,7 @@ divisions:
     intent: aggressive
     benchmark: SPY
     target_annual_return: 0.20
+    strategy: robinhood_joint_iron_condor
     enabled: true
 
   # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────
@@ -227,3 +228,19 @@ divisions:
     target_annual_return: 0.50
     standby: true
     enabled: true
+
+  # Phase K2.5 (2026-05-17): Kalshi Structure Arbitrage. Deterministic multi-
+  # outcome event strategy — no LLM in path. Buys NO on overpriced sub-markets
+  # when sum(implied_yes) > threshold across K >= 3 mutually-exclusive outcomes.
+  # paper_capital=$500 for equity tracking (matches kalshi_weather + kalshi_crypto
+  # pattern). auto_execute=false; Board kill criterion committed 2026-05-17.
+  - slug: kalshi_structure_arb
+    name: Kalshi Structure Arb
+    broker: paper    # placeholder for equity tracking; strategy uses real KalshiBroker for discovery
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: false
+    enabled: true
+    paper_capital: 500.0

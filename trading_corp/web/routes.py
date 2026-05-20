@@ -131,6 +131,33 @@ def _summary_action_hint(summary: str) -> str:
     return head
 
 
+def _combo_index_summary(entry) -> str:
+    """One-line summary for an IC combo on the /approvals index row.
+
+    Format mirrors the existing solo/paired rows: emoji prefix +
+    short intent + symbol + strategy. The strategy module's
+    `combo_intent` (e.g. "open", "adjustment_1", "hard_stop") drives
+    the short label.
+    """
+    short_label_by_intent = {
+        "open": "OPEN",
+        "close_tested_side": "CLOSE TESTED",
+        "adjustment_1": "ADJUST",
+        "profit_target": "CLOSE 50% TGT",
+        "force_close_dte": "CLOSE 21 DTE",
+        "late_dte_force_close": "CLOSE LATE DTE",
+        "ex_div_force_close": "CLOSE EX-DIV",
+        "hard_stop": "CLOSE HARD STOP",
+        "catastrophic_stop": "CATASTROPHIC STOP",
+        "startup_catchup": "STARTUP CATCH-UP",
+    }
+    short = short_label_by_intent.get(
+        entry.intent, entry.intent.replace("_", " ").upper()
+    )
+    sym = entry.underlying or "?"
+    return f"📦 IC · {short} · `{sym}` · {entry.strategy_slug}"
+
+
 def _summary_symbol(summary: str) -> str:
     r"""Best-effort: pull the underlying symbol out of the approval
     summary's first line. The format-style is `📤 *ROLL: BUY TO CLOSE*
@@ -1398,6 +1425,117 @@ def register(app: FastAPI) -> None:
             {"title": "System", "phase": "later"},
         )
 
+    # ── Iron Condor live trades view (Phase IC1 dashboard) ──────────────
+    # Single-page debugging surface for real-time IC monitoring. 6 sections
+    # split into "live" (1, 3, 5 — 30s htmx refresh) and "static" (2, 4, 6 —
+    # page-load + manual refresh). See agents/ic_live_view.py for the
+    # query functions feeding each section.
+
+    @app.get("/telemetry/iron_condor", response_class=HTMLResponse)
+    async def iron_condor_live(request: Request):
+        from datetime import datetime, timezone
+        from trading_corp.agents.ic_live_view import (
+            open_positions_detail, pending_combos_view,
+            recent_activity, recent_closed_combos,
+            strategy_health, todays_scan_results,
+        )
+        # Best-effort broker resolution; falls back to the paper broker
+        # if the strategy's division-broker isn't registered yet.
+        broker = (
+            deps.data_exec.brokers.get("robinhood_joint")
+            or deps.data_exec.brokers.get("default")
+            or deps.paper_broker
+        )
+
+        # Live sections (1, 3, 5).
+        try:
+            positions = await open_positions_detail(
+                broker=broker, db_url=deps.db_url,
+            )
+        except Exception:
+            log.exception("iron_condor_live: open_positions_detail failed")
+            positions = []
+        pending = pending_combos_view(
+            registry=getattr(deps, "pending_combo_registry", None),
+            batcher=getattr(deps, "ic_telegram_batcher", None),
+        )
+        health = strategy_health(
+            ic_strategy=getattr(deps, "ic_strategy", None),
+            ic_division=getattr(deps, "ic_division", None),
+            pending_combo_registry=getattr(deps, "pending_combo_registry", None),
+            telegram_batcher=getattr(deps, "ic_telegram_batcher", None),
+            db_url=deps.db_url,
+        )
+
+        # Static sections (2, 4, 6).
+        activity = recent_activity(db_url=deps.db_url, limit=50)
+        try:
+            scan_results = await todays_scan_results(
+                broker=broker, db_url=deps.db_url,
+            )
+        except Exception:
+            log.exception("iron_condor_live: todays_scan_results failed")
+            scan_results = []
+        closed = recent_closed_combos(db_url=deps.db_url, limit=10)
+
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return templates.TemplateResponse(
+            request, "iron_condor_live.html",
+            {
+                "now_iso": now_iso,
+                "refreshed_at": now_iso,
+                "positions": positions,
+                "pending": pending,
+                "health": health,
+                "activity": activity,
+                "scan_results": scan_results,
+                "closed": closed,
+            },
+        )
+
+    @app.get(
+        "/telemetry/iron_condor/partials/live", response_class=HTMLResponse,
+    )
+    async def iron_condor_live_partial(request: Request):
+        """The 30s-refresh partial — sections 1, 3, 5 only."""
+        from datetime import datetime, timezone
+        from trading_corp.agents.ic_live_view import (
+            open_positions_detail, pending_combos_view, strategy_health,
+        )
+        broker = (
+            deps.data_exec.brokers.get("robinhood_joint")
+            or deps.data_exec.brokers.get("default")
+            or deps.paper_broker
+        )
+        try:
+            positions = await open_positions_detail(
+                broker=broker, db_url=deps.db_url,
+            )
+        except Exception:
+            log.exception("iron_condor_live_partial: open_positions_detail failed")
+            positions = []
+        pending = pending_combos_view(
+            registry=getattr(deps, "pending_combo_registry", None),
+            batcher=getattr(deps, "ic_telegram_batcher", None),
+        )
+        health = strategy_health(
+            ic_strategy=getattr(deps, "ic_strategy", None),
+            ic_division=getattr(deps, "ic_division", None),
+            pending_combo_registry=getattr(deps, "pending_combo_registry", None),
+            telegram_batcher=getattr(deps, "ic_telegram_batcher", None),
+            db_url=deps.db_url,
+        )
+        refreshed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return templates.TemplateResponse(
+            request, "partials/iron_condor_live_sections.html",
+            {
+                "positions": positions,
+                "pending": pending,
+                "health": health,
+                "refreshed_at": refreshed_at,
+            },
+        )
+
     # ── HITL approval surface (Phase B.1 → B.3) ──────────────────────────
     # The dashboard surface for Board approvals. Reads + resolves the
     # in-process PendingApprovalRegistry held on deps.pending_registry
@@ -1412,19 +1550,157 @@ def register(app: FastAPI) -> None:
         """Index of pending approvals. Empty state when none, or
         explanatory note when the registry isn't wired (CLI dev /
         no-Telegram fallback). B.3 — paired entries (same pmcc_pair_id)
-        are grouped into a single row with a combined headline."""
+        are grouped into a single row with a combined headline. Phase
+        IC1 — combo entries (4 legs sharing combo_id) render as one
+        row tagged `kind='combo'`."""
         snap = await data.build_command_center(deps)
         registry = deps.pending_registry
         entries = registry.list_pending() if registry is not None else []
         rows = _group_index_entries(entries)
+
+        # Phase IC1: append IC combo entries from the parallel registry.
+        combo_registry = getattr(deps, "pending_combo_registry", None)
+        combo_entries = (
+            combo_registry.list_pending() if combo_registry is not None else []
+        )
+        for ce in combo_entries:
+            rows.append({
+                "kind": "combo",
+                "entries": [],                # not used for combos
+                "is_paired": False,
+                "primary_order_id": ce.combo_id,      # POST target uses combo_id
+                "division": ce.division,
+                "summary": _combo_index_summary(ce),
+                "added_at": ce.added_at,
+                "pair_id": None,
+                "combo_id": ce.combo_id,
+                "combo_short_id": ce.combo_id[:8],
+                "combo_leg_count": len(ce.orders),
+            })
+        rows.sort(key=lambda r: r["added_at"], reverse=True)
+
+        total_legs = len(entries) + sum(len(ce.orders) for ce in combo_entries)
         return templates.TemplateResponse(
             request, "approvals.html",
             {
                 "snap": snap,
                 "rows": rows,
-                "total_legs": len(entries),
-                "registry_unavailable": registry is None,
+                "total_legs": total_legs,
+                "registry_unavailable": (
+                    registry is None and combo_registry is None
+                ),
             },
+        )
+
+    @app.get("/approvals/combos/{combo_id}", response_class=HTMLResponse)
+    async def approval_combo_detail(request: Request, combo_id: str):
+        """Detail page for a pending IC combo. 404 when the combo is no
+        longer pending (already resolved, or never registered)."""
+        from trading_corp.web.combo_approval_view import (
+            build_combo_card_payload,
+        )
+        combo_registry = getattr(deps, "pending_combo_registry", None)
+        if combo_registry is None:
+            raise HTTPException(
+                status_code=404,
+                detail="combo approval registry unavailable",
+            )
+        entry = combo_registry.get(combo_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"combo {combo_id} not pending",
+            )
+        view = build_combo_card_payload(entry)
+        snap = await data.build_command_center(deps)
+        return templates.TemplateResponse(
+            request, "approval_combo_detail.html",
+            {"snap": snap, "entry": entry, "view": view},
+        )
+
+    @app.post("/approvals/combos/{combo_id}/decide", response_class=HTMLResponse)
+    async def approval_combo_decide(request: Request, combo_id: str):
+        """POST decision endpoint for a pending IC combo.
+
+        Body (form-encoded or JSON):
+          - `decision`: "approve" | "reject"
+          - `reason`:   optional string
+
+        On approve: pops the entry and calls
+        `dispatch_approved_ic_combo` (which fires `data_exec.place_combo`
+        and the `strategy.on_combo_filled` state callback). Returns the
+        FillEvent list as a short status fragment.
+
+        On reject: pops the entry, audits the rejection, leaves the
+        strategy's `_pending` entry untouched (the next manage() tick
+        cleans up).
+
+        Returns 200 + a small HTML fragment on success; 404 if the
+        combo isn't pending (already resolved or never registered);
+        400 on invalid decision.
+        """
+        from trading_corp.agents.strategies._ic_orchestration import (
+            dispatch_approved_ic_combo,
+        )
+        combo_registry = getattr(deps, "pending_combo_registry", None)
+        if combo_registry is None:
+            raise HTTPException(
+                status_code=404,
+                detail="combo approval registry unavailable",
+            )
+        ctype = (request.headers.get("content-type") or "").lower()
+        if ctype.startswith("application/json"):
+            body = await request.json()
+            decision_str = body.get("decision")
+            reason = body.get("reason") or ""
+        else:
+            form = await request.form()
+            decision_str = form.get("decision")
+            reason = form.get("reason") or ""
+        if decision_str not in ("approve", "reject"):
+            raise HTTPException(
+                status_code=400,
+                detail="decision must be 'approve' or 'reject'",
+            )
+        entry = combo_registry.resolve(
+            combo_id, decision=decision_str, reason=reason, source="web",
+        )
+        if entry is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"combo {combo_id} already resolved or not pending",
+            )
+
+        if decision_str == "approve":
+            ic_strategy = getattr(deps, "ic_strategy", None)
+            data_exec = deps.data_exec
+            if ic_strategy is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="ic_strategy not wired in WebDeps",
+                )
+            fills = await dispatch_approved_ic_combo(
+                entry.orders,
+                strategy=ic_strategy,
+                data_exec=data_exec,
+                division=entry.division,
+            )
+            outcome = (
+                f"filled {len(fills)} leg(s)" if fills else "combo unfilled"
+            )
+            return HTMLResponse(
+                f'<div class="text-gain text-sm font-mono">'
+                f'Combo {combo_id[:8]}… APPROVED — {outcome}. '
+                f'<a href="/approvals" class="underline">Back to pending list</a>.'
+                f'</div>'
+            )
+
+        # reject
+        return HTMLResponse(
+            f'<div class="text-loss text-sm font-mono">'
+            f'Combo {combo_id[:8]}… REJECTED. Position unchanged. '
+            f'<a href="/approvals" class="underline">Back to pending list</a>.'
+            f'</div>'
         )
 
     @app.get("/approvals/{order_id}", response_class=HTMLResponse)

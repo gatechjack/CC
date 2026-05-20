@@ -5,5 +5,19 @@
       "args": [],
       "type": "stdio"
     }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(az account show *)",
+      "Bash(az account list)",
+      "Bash(az vm list-skus *)",
+      "Bash(az vm list-usage *)",
+      "Bash(az vm show *)",
+      "Bash(az vm run-command show *)",
+      "Bash(az vm run-command list *)",
+      "Bash(az network nsg rule list *)",
+      "Bash(az network nsg rule show *)",
+      "Bash(az --version)"
+    ]
   }
 }

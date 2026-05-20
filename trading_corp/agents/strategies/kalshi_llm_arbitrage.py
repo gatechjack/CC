@@ -184,6 +184,18 @@ class KalshiLLMArbitrageAgent:
         k_per_cycle = int(self._strat_cfg.get("k_markets_per_cycle", 20))
         cooldown_h = float(self._strat_cfg.get("market_cooldown_hours", 6))
         min_div_pct = float(self._strat_cfg.get("min_divergence_pct", 10.0))
+        # Divergence ceiling (2026-05-18): 50%+ bucket 0/12 WR, 30-50% bucket
+        # 46% WR -$22 PnL. LLM calibration breaks at high divergence (claims
+        # extreme probs on informed-participant markets). Cap is hot-reloadable.
+        max_div_pct_raw = self._strat_cfg.get("max_divergence_pct")
+        max_div_pct = float(max_div_pct_raw) if max_div_pct_raw is not None else None
+        # Ticker-prefix blacklist (2026-05-18): US scheduled macro releases
+        # 36 trades / 0 wins / -$36 PnL. Tickers: KXUSPPI*, KXUSCPI*,
+        # KXAIRFARE*, KXAAAGAS*. Pre-LLM check — avoids burning Anthropic
+        # tokens on a known-loser class. Hot-reloadable via yaml.
+        ticker_prefix_blacklist: list[str] = list(
+            self._strat_cfg.get("ticker_prefix_blacklist") or []
+        )
         # Per-category gates (Fix 2026-05-14): retro on 190 historical trades
         # showed Economics + Financials threshold markets lose 76% of the
         # time at moderate confidence — the LLM has no info advantage vs
@@ -248,6 +260,7 @@ class KalshiLLMArbitrageAgent:
         n_skipped_prob_bounds = 0
         n_skipped_cooldown = 0
         n_skipped_ttr = 0
+        n_skipped_blacklist = 0
         for event in self._discovery_cache.events:
             if event.event_type == EventType.COLLECTION:
                 # Counted at event-grain since collection markets are already
@@ -293,6 +306,23 @@ class KalshiLLMArbitrageAgent:
                             continue
                     except (TypeError, ValueError):
                         pass
+                # Ticker-prefix blacklist: skip known-loser macro-release series.
+                # Audit fires BEFORE the skip so a silent filter is never invisible.
+                if ticker_prefix_blacklist and any(
+                    m.ticker.upper().startswith(pfx.upper())
+                    for pfx in ticker_prefix_blacklist
+                ):
+                    n_skipped_blacklist += 1
+                    if logger_agent is not None:
+                        logger_agent.log_event(
+                            self.name, "kalshi_llm_ticker_blacklisted",
+                            {
+                                "strategy": self.name,
+                                "division": self.division,
+                                "ticker": m.ticker,
+                            },
+                        )
+                    continue
                 survivors.append({
                     "ticker": m.ticker,
                     "event_ticker": m.event_ticker,
@@ -339,6 +369,7 @@ class KalshiLLMArbitrageAgent:
                     "skipped_prob_bounds": n_skipped_prob_bounds,
                     "skipped_cooldown": n_skipped_cooldown,
                     "skipped_ttr": n_skipped_ttr,
+                    "skipped_blacklist": n_skipped_blacklist,
                 },
             )
 
@@ -430,6 +461,25 @@ class KalshiLLMArbitrageAgent:
                 )
 
             if divergence_pct < min_div_pct:
+                continue
+
+            # Divergence ceiling: LLM calibration breaks when divergence is
+            # very high (informed-participant markets the model mis-reads as
+            # sure things). Audit BEFORE skip so the decision is never silent.
+            if max_div_pct is not None and divergence_pct > max_div_pct:
+                if logger_agent is not None:
+                    logger_agent.log_event(
+                        self.name, "kalshi_llm_divergence_capped",
+                        {
+                            "strategy": self.name,
+                            "division": self.division,
+                            "ticker": ticker,
+                            "divergence_pct": divergence_pct,
+                            "max_divergence_pct": max_div_pct,
+                            "llm_prob_yes": est.prob_yes,
+                            "implied_prob_yes": implied,
+                        },
+                    )
                 continue
 
             # Per-category strict gate (Eco/Fin): require higher divergence

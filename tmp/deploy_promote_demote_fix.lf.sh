@@ -1,0 +1,50 @@
+#!/bin/bash
+set -e
+TAG=pre-promote-demote-uxfix-20260518-q1ack
+BASE=/home/azureuser/trading_corp
+
+cd $BASE
+
+# 1. Backup tag
+cp trading_corp/web/routes.py trading_corp/web/routes.py.$TAG
+cp trading_corp/web/data.py   trading_corp/web/data.py.$TAG
+
+# 2. CRLF normalize routes.py + data.py before applying patch (per feedback_crlf_routes_py_deploy.md)
+sed -i 's/\r$//' trading_corp/web/routes.py
+sed -i 's/\r$//' trading_corp/web/data.py
+
+# 3. Apply patch
+echo "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" | base64 -d | gunzip > /tmp/promote_demote_fix.patch
+patch --dry-run -p1 < /tmp/promote_demote_fix.patch
+patch -p1 < /tmp/promote_demote_fix.patch
+
+# 4. md5 confirm
+md5sum trading_corp/web/routes.py trading_corp/web/data.py
+
+# 5. Import smoke test
+sudo -u www-data /home/azureuser/trading_corp/.venv/bin/python -c "
+from trading_corp.web import routes, data
+from trading_corp.web.data import _query_pm_whales, _query_kalshi_watch_only_rows
+print('imports green')
+" 2>&1 || /home/azureuser/trading_corp/.venv/bin/python -c "
+from trading_corp.web import routes, data
+from trading_corp.web.data import _query_pm_whales, _query_kalshi_watch_only_rows
+print('imports green')
+"
+
+echo "===== Pre-restart state ====="
+systemctl show trading-corp -p MainPID --no-pager
+
+# 6. Restart
+sudo systemctl restart trading-corp
+
+# Wait for it to come back up
+sleep 4
+echo "===== Post-restart state ====="
+systemctl is-active trading-corp
+systemctl show trading-corp -p MainPID --no-pager
+
+# 7. Verify HX-Refresh header present in source
+grep -c 'HX-Refresh' trading_corp/web/routes.py || echo "GREP FAILED"
+
+echo "DEPLOY OK"

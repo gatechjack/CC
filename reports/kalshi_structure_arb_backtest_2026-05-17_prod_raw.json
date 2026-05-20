@@ -1,0 +1,225 @@
+{
+  "meta": {
+    "generated": "2026-05-17",
+    "retrieved": "2026-05-17",
+    "script": "scripts/backtest_kalshi_structure_arb.py",
+    "db_queried": "/home/azureuser/trading_corp/data/trading_corp.db (production VM tc-prod-vm)",
+    "run_method": "az vm run-command invoke",
+    "json_file_on_vm": "/tmp/structure_arb_prod_backtest.json",
+    "json_file_size_bytes": 60464,
+    "note": "Full JSON on VM at /tmp/structure_arb_prod_backtest.json. This file contains the summary metrics extracted via python3 queries on the VM. The bets_summary array (147 bets) is not included here for size reasons — see the VM file directly."
+  },
+  "feasibility": {
+    "llm_audit_rows_total": 25977,
+    "parse_errors": 0,
+    "distinct_event_tickers": 1352,
+    "events_k3_plus": 845,
+    "kalshi_audit_counts": {
+      "kalshi_crypto_evaluated": 54761,
+      "kalshi_llm_probability_called": 25977,
+      "kalshi_weather_evaluated": 21917,
+      "kalshi_crypto_skipped_no_edge": 20525,
+      "kalshi_crypto_skipped_no_implied": 18741,
+      "kalshi_weather_skipped_no_edge": 9529,
+      "kalshi_market_evaluated": 9150,
+      "kalshi_llm_scan_cycle": 8405,
+      "kalshi_pair_evaluated": 6471,
+      "kalshi_crypto_skipped_no_strike": 5967,
+      "kalshi_crypto_skipped_near_threshold": 5191,
+      "kalshi_weather_skipped_no_implied": 4107,
+      "kalshi_crypto_scan": 4003,
+      "kalshi_crypto_skipped_horizon": 3602,
+      "kalshi_weather_skipped_no_size": 3045,
+      "kalshi_discovery_refreshed": 2857,
+      "kalshi_weather_skipped_near_threshold": 2339,
+      "kalshi_temporal_bucket_scan": 1835,
+      "kalshi_tail_arb_scan": 1833,
+      "kalshi_weather_skipped_no_forecast": 1194,
+      "kalshi_weather_scan": 834,
+      "kalshi_weather_skipped_no_strike": 765,
+      "kalshi_sports_scout_unmapped": 606,
+      "kalshi_copy_entry_skipped_no_side": 275,
+      "kalshi_weather_skipped_no_coords": 240,
+      "kalshi_weather_skipped_bucket_guard": 225,
+      "kalshi_weather_skipped_horizon": 207,
+      "kalshi_llm_strict_gate_skip": 133,
+      "kalshi_bucket_evaluated": 49,
+      "kalshi_weather_order_rejected_by_risk": 22,
+      "kalshi_crypto_order_rejected_by_risk": 10,
+      "kalshi_whale_promoted": 7,
+      "kalshi_copy_cold_start": 6,
+      "kalshi_whale_demoted": 5,
+      "kalshi_watch_only_refresh": 5,
+      "kalshi_crypto_skipped_no_spot": 1
+    },
+    "round_trips_available": true,
+    "round_trips_count": 808,
+    "days": 60,
+    "cutoff": "2026-03-19"
+  },
+  "backtest": {
+    "threshold_used": 1.5,
+    "m_used": 3,
+    "events_evaluated": 1352,
+    "events_skipped_category": 1032,
+    "events_skipped_k": 231,
+    "events_skipped_threshold": 40,
+    "events_qualifying": 49,
+    "n_bets": 147,
+    "n_wins": 1,
+    "n_losses": 6,
+    "n_voids": 0,
+    "n_unresolved": 140,
+    "n_resolved": 7,
+    "win_rate": 0.1429,
+    "gross_pnl_usd": -4.7011,
+    "roi_pct": -67.16,
+    "normalized_variants": {
+      "norm>0.4": {
+        "threshold": 0.4,
+        "n_events_qualifying": 38,
+        "n_bets": 114,
+        "n_wins": 0,
+        "n_losses": 6,
+        "n_unresolved": 108,
+        "win_rate": 0.0,
+        "gross_pnl": -6.0,
+        "roi_pct": -100.0
+      },
+      "norm>0.5": {
+        "threshold": 0.5,
+        "n_events_qualifying": 27,
+        "n_bets": 81,
+        "n_wins": 0,
+        "n_losses": 4,
+        "n_unresolved": 77,
+        "win_rate": 0.0,
+        "gross_pnl": -4.0,
+        "roi_pct": -100.0
+      },
+      "norm>0.6": {
+        "threshold": 0.6,
+        "n_events_qualifying": 13,
+        "n_bets": 39,
+        "n_wins": 0,
+        "n_losses": 2,
+        "n_unresolved": 37,
+        "win_rate": 0.0,
+        "gross_pnl": -2.0,
+        "roi_pct": -100.0
+      }
+    },
+    "ticker_patterns": {
+      "KXTEMPNYCH": 42,
+      "KXSOLE": 40,
+      "KXSOLD": 40,
+      "KXBNB": 39,
+      "KXDOGE": 37,
+      "KXXRPD": 35,
+      "KXETH": 32,
+      "KXDOGED": 32,
+      "KXXRP": 31,
+      "KXETHD": 28,
+      "KXBNBD": 23,
+      "KXHYPED": 18,
+      "KXAAAGASD": 8,
+      "KXHYPE": 8,
+      "KXINX": 7
+    }
+  },
+  "resolved_bets_detail": {
+    "note": "Only 7 of 147 bets have resolved. Breakdown by event:",
+    "events_with_resolved_bets": [
+      {
+        "event_ticker": "KXAAAGASD-26MAY12",
+        "category": "Economics",
+        "sum_yes": null,
+        "k": null,
+        "note": "Australian AAA Gas Daily price bucket — PRICE BUCKET market that slipped through skip filter. -T- suffix not caught by current _PRICE_BUCKET_RE = r'-(?:B|T)\\d' (requires digit immediately after T, but -T-30 has a dash separator).",
+        "bets": [
+          {"ticker": "KXAAAGASD-26MAY12-4.500", "implied_yes": 0.94, "resolution": "yes", "pnl": -1.0},
+          {"ticker": "KXAAAGASD-26MAY12-4.505", "implied_yes": 0.925, "resolution": null, "pnl": null},
+          {"ticker": "KXAAAGASD-26MAY12-4.510", "implied_yes": 0.81, "resolution": null, "pnl": null}
+        ],
+        "resolved_pnl": -1.0,
+        "wins": 0,
+        "losses": 1
+      },
+      {
+        "event_ticker": "KXAAAGASD-26MAY13",
+        "category": "Economics",
+        "note": "Same bucket market. Price-bucket skip filter bug.",
+        "bets": [
+          {"ticker": "KXAAAGASD-26MAY13-4.495", "implied_yes": 0.95, "resolution": null, "pnl": null},
+          {"ticker": "KXAAAGASD-26MAY13-4.500", "implied_yes": 0.935, "resolution": "yes", "pnl": -1.0},
+          {"ticker": "KXAAAGASD-26MAY13-4.505", "implied_yes": 0.88, "resolution": null, "pnl": null}
+        ],
+        "resolved_pnl": -1.0,
+        "wins": 0,
+        "losses": 1
+      },
+      {
+        "event_ticker": "KXAAAGASD-26MAY14",
+        "category": "Economics",
+        "note": "Same bucket market. Price-bucket skip filter bug.",
+        "bets": [
+          {"ticker": "KXAAAGASD-26MAY14-4.510", "implied_yes": 0.945, "resolution": "yes", "pnl": -1.0},
+          {"ticker": "KXAAAGASD-26MAY14-4.515", "implied_yes": 0.93, "resolution": "yes", "pnl": -1.0},
+          {"ticker": "KXAAAGASD-26MAY14-4.520", "implied_yes": 0.815, "resolution": null, "pnl": null}
+        ],
+        "resolved_pnl": -2.0,
+        "wins": 0,
+        "losses": 2
+      },
+      {
+        "event_ticker": "KXAUNABCONF-26MAY12",
+        "category": "Economics",
+        "note": "Australia NAB business confidence index. Threshold market (-T-30, -T-27, -T-25). ALSO slipped through skip filter (same -T- suffix bug).",
+        "bets": [
+          {"ticker": "KXAUNABCONF-26MAY12-T-30", "implied_yes": 0.85, "resolution": "yes", "pnl": -1.0},
+          {"ticker": "KXAUNABCONF-26MAY12-T-27", "implied_yes": 0.79, "resolution": null, "pnl": null},
+          {"ticker": "KXAUNABCONF-26MAY12-T-25", "implied_yes": 0.78, "resolution": "yes", "pnl": -1.0}
+        ],
+        "resolved_pnl": -2.0,
+        "wins": 0,
+        "losses": 2
+      },
+      {
+        "event_ticker": "KXCHINAANNOUNCE-26MAY",
+        "category": "Politics",
+        "sum_yes": 2.90,
+        "k": 9,
+        "note": "NEW sub-event batch for KXCHINAANNOUNCE-26MAY — different sub-markets from the historical FENT/SOYA/USDET event (now MAY17 date-scoped sub-markets: BOEING, BOT, TRUCE). Only BOT has resolved (no). BOEING and TRUCE unresolved.",
+        "bets": [
+          {"ticker": "KXCHINAANNOUNCE-26MAY-MAY17-BOEING", "implied_yes": 0.58, "resolution": null, "pnl": null},
+          {"ticker": "KXCHINAANNOUNCE-26MAY-MAY17-BOT", "implied_yes": 0.565, "resolution": "no", "pnl": 1.2989},
+          {"ticker": "KXCHINAANNOUNCE-26MAY-MAY17-TRUCE", "implied_yes": 0.565, "resolution": null, "pnl": null}
+        ],
+        "resolved_pnl": 1.2989,
+        "wins": 1,
+        "losses": 0
+      }
+    ]
+  },
+  "data_quality_finding": {
+    "price_bucket_skip_filter_bug": {
+      "description": "The _PRICE_BUCKET_RE = r'-(?:B|T)\\d' regex requires a digit immediately after B or T (e.g. -B1 or -T1). Markets using -T-<number> suffix (threshold markets: KXAAAGASD-T-4.500, KXAUNABCONF-T-30) are NOT caught by this filter because the T is followed by a dash, not a digit. These are threshold/price-bucket markets that should be excluded from structure_arb but are leaking through.",
+      "affected_events": ["KXAAAGASD-*", "KXAUNABCONF-*", "KXISMPMI-*", "KXCHRETAIL-*", "KXDEGFK-*", "KXDEZEW-*", "KXUKGDPMOM-*", "KXUE-*", "KXH100MON-*", "KXH200MON-*", "KXB200MON-*", "KXA100MON-*"],
+      "fix": "Update regex to r'-(?:B|T)[\\d-]' or r'-T-\\d' for threshold markets, or add a category-based filter for Economics macro-release events.",
+      "impact_on_backtest": "5 of 7 resolved losses (KXAAAGASD x3, KXAUNABCONF x2) are from these leaking bucket/threshold markets. Without them, the only resolved event is KXCHINAANNOUNCE (1 win, 0 losses). The negative gross_pnl is entirely attributable to the filter bug."
+    }
+  },
+  "kxchinaannounce_sanity_check": {
+    "historical_event_fent_soya_usdet": {
+      "note": "The original KXCHINAANNOUNCE event (FENT/SOYA/USDET/AISA/BOT/RARE/USOIL sub-markets, sum_yes~4.6) is NOT in the 60-day backtest window visible in the current prod DB audit log. It pre-dates the Kalshi strategy deployment (2026-05-11) or was on a different date-scoped ticker that was already resolved.",
+      "kalshi_round_trips_confirms": "18 entries, 16 wins, +$24.07 (sourced from BACKLOG.md 2026-05-17 snapshot) remains valid — that data is in kalshi_round_trips, not in audit_event. The backtest's audit_event query uses a 60-day window; KXCHINAANNOUNCE-26MAY original trades may have audit rows that are present but the event may have different sub-market tickers than the MAY17 batch."
+    },
+    "new_sub_event_may17": {
+      "event_ticker": "KXCHINAANNOUNCE-26MAY",
+      "sub_markets_in_backtest": ["KXCHINAANNOUNCE-26MAY-MAY17-BOEING", "KXCHINAANNOUNCE-26MAY-MAY17-BOT", "KXCHINAANNOUNCE-26MAY-MAY17-TRUCE"],
+      "sum_yes": 2.90,
+      "k": 9,
+      "note": "This appears to be a NEW date-scoped batch of sub-markets for the ongoing KXCHINAANNOUNCE event (MAY17 date suffix suggests these were added around May 17). The original FENT/SOYA/USDET sub-markets had already resolved before the backtest window or are on separate ticker names. Structure_arb correctly identified this as a qualifying event (sum_yes=2.90 > 1.5, k=9). BOT resolved NO (win, +$1.30)."
+    }
+  }
+}

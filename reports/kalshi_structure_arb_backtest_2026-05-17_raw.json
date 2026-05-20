@@ -1,0 +1,103 @@
+{
+  "meta": {
+    "generated": "2026-05-17",
+    "script": "scripts/backtest_kalshi_structure_arb.py",
+    "db_queried": "data/trading_corp.db (local dev copy)",
+    "verdict": "INFEASIBLE_LOCAL — production DB required"
+  },
+  "feasibility_local_db": {
+    "llm_audit_rows_total": 0,
+    "parse_errors": 0,
+    "distinct_event_tickers": 0,
+    "events_k3_plus": 0,
+    "kalshi_audit_counts": {},
+    "round_trips_available": false,
+    "round_trips_count": 0,
+    "days": 60,
+    "cutoff": "2026-03-19T00:35:53+00:00",
+    "note": "Local DB (data/trading_corp.db) spans 2026-04-26 to 2026-05-03. Zero Kalshi strategy rows. kalshi_round_trips table does not exist in this DB. All Kalshi data lives on production VM (tc-prod-vm:/home/azureuser/trading_corp/data/trading_corp.db)."
+  },
+  "production_data_from_deploy_log": {
+    "source": "runbooks/deploy_log.md + BACKLOG.md (END-OF-SESSION SNAPSHOT 2026-05-17 22:30 UTC)",
+    "note": "These numbers are from the production VM audit. They represent the GROUND TRUTH for the KXCHINAANNOUNCE event and kalshi_llm_arbitrage performance. They were extracted by the Board (user) via az vm run-command queries run on 2026-05-17.",
+    "kalshi_llm_arbitrage_full_window": {
+      "window": "2026-05-11 to 2026-05-16",
+      "n_round_trips": 808,
+      "win_rate_pct": 55.3,
+      "gross_pnl_usd": -49.02,
+      "note": "All categories including Climate/Weather and Crypto. After excluding those two categories: 150 trades, 40% WR, -$17.67."
+    },
+    "kalshi_llm_arbitrage_excl_weather_crypto": {
+      "n_round_trips": 150,
+      "win_rate_pct": 40.0,
+      "gross_pnl_usd": -17.67,
+      "by_category": {
+        "Politics": {"n": 26, "wins": 20, "pnl": 22.19, "note": "ALL profit driven by KXCHINAANNOUNCE-26MAY"},
+        "Economics": {"n": 49, "wins": 12, "win_rate_pct": 24.5, "pnl": -25.32, "note": "Dominated by US macro release bets (PPI, CPI, airfare). 36 trades on scheduled releases = 0 wins, -$36."},
+        "Elections": {"n_approx": "~30", "pnl_approx": "slightly positive or flat"},
+        "Financials": {"n_approx": "~20", "pnl_approx": "negative", "note": "Strict gate added post-audit to require divergence>=30% + LLM in extreme band"}
+      }
+    },
+    "kxchinaannounce_26may": {
+      "event_ticker": "KXCHINAANNOUNCE-26MAY",
+      "event_title": "What will Trump announce as part of his China trip?",
+      "category": "Politics",
+      "n_sub_markets": 7,
+      "sum_yes_implied_approx": 4.6,
+      "sub_markets": [
+        {"ticker": "KXCHINAANNOUNCE-26MAY-FENT", "implied_yes_approx": 0.83, "resolution": "no"},
+        {"ticker": "KXCHINAANNOUNCE-26MAY-SOYA", "implied_yes_approx": 0.84, "resolution": "yes", "note": "Ranged 0.84-0.89 across multiple entries"},
+        {"ticker": "KXCHINAANNOUNCE-26MAY-AISA", "implied_yes_approx": 0.66, "resolution": "no", "note": "Ranged 0.52-0.80"},
+        {"ticker": "KXCHINAANNOUNCE-26MAY-RARE", "implied_yes_approx": 0.53, "resolution": "no", "note": "Ranged 0.29-0.76"},
+        {"ticker": "KXCHINAANNOUNCE-26MAY-BOT", "implied_yes_approx": 0.62, "resolution": "no", "note": "Ranged 0.57-0.66"},
+        {"ticker": "KXCHINAANNOUNCE-26MAY-USDET", "implied_yes_approx": 0.68, "resolution": "no"},
+        {"ticker": "KXCHINAANNOUNCE-26MAY-USOIL", "implied_yes_approx": 0.50, "resolution": "no"}
+      ],
+      "kalshi_llm_result": {
+        "n_trades": 18,
+        "n_wins": 16,
+        "n_losses": 2,
+        "gross_pnl_usd": 24.07,
+        "note": "LLM accidentally captured this structural mispricing. Low-p bias made it bet NO across the board. All 16 wins were NO bets resolving NO. 2 losses: likely the SOYA sub-market which resolved YES."
+      },
+      "structure_arb_simulation": {
+        "note": "Simulated from known data. sum_yes_implied=4.6 >> 1.5 threshold, K=7 >= 3. Top-3 by implied_yes at any reasonable fire-time: FENT(0.83), SOYA(0.84-0.89), AISA(0.66-0.80). Exact ranking depends on which observation timestamp is used as fire-time.",
+        "top3_picks_scenario_a": {
+          "note": "Using max observed implied_yes per sub-market (upper bound of range)",
+          "picks": [
+            {"ticker": "KXCHINAANNOUNCE-26MAY-SOYA", "implied_yes": 0.89, "resolution": "yes", "pnl_approx": -1.0},
+            {"ticker": "KXCHINAANNOUNCE-26MAY-FENT", "implied_yes": 0.83, "resolution": "no", "pnl_approx": 4.88},
+            {"ticker": "KXCHINAANNOUNCE-26MAY-AISA", "implied_yes": 0.80, "resolution": "no", "pnl_approx": 4.0}
+          ],
+          "gross_pnl": 7.88,
+          "wins": 2,
+          "losses": 1
+        },
+        "top3_picks_scenario_b": {
+          "note": "Using single-observation snapshot (e.g. FENT=0.83, SOYA=0.84, AISA=0.52). AISA replaced by USDET or RARE depending on snapshot.",
+          "picks": [
+            {"ticker": "KXCHINAANNOUNCE-26MAY-SOYA", "implied_yes": 0.84, "resolution": "yes", "pnl_approx": -1.0},
+            {"ticker": "KXCHINAANNOUNCE-26MAY-FENT", "implied_yes": 0.83, "resolution": "no", "pnl_approx": 4.88},
+            {"ticker": "KXCHINAANNOUNCE-26MAY-USDET", "implied_yes": 0.68, "resolution": "no", "pnl_approx": 2.13}
+          ],
+          "gross_pnl": 6.01,
+          "wins": 2,
+          "losses": 1
+        }
+      }
+    },
+    "production_data_gaps": {
+      "kalshi_llm_probability_called_coverage": "Only fires for sub-markets passing prob_lo=0.05..prob_hi=0.95 filter AND not on cooldown. Extreme-tail sub-markets (e.g., implied_yes < 0.05 or > 0.95) are missing from the audit log. For KXCHINAANNOUNCE with implied_yes ranging 0.50-0.89, all 7 sub-markets would have been within bounds IF they passed the LLM cooldown and TTR filters.",
+      "resolver_ordering_bug": "Fixed 2026-05-16 16:55 UTC. Before fix, ~605 past-expiration rows were never reached by the resolver (ORDER BY ts ASC starvation). Post-fix kalshi_round_trips count grew from 194 to 245 in 5 min. Resolution coverage improved significantly.",
+      "activity_collapse_5_14_to_5_15": "155 trades on 5/14 dropped to 8 trades on 5/15. Cause not investigated. May affect event coverage in any time-windowed backtest.",
+      "1761_pending_unresolved": "As of 2026-05-17, kalshi_llm_arbitrage has 1,761 would_have_placed rows not yet paired into round_trips. These represent bets on markets still pending resolution (up to 30-day horizon). They cannot contribute resolution data to this backtest."
+    }
+  },
+  "structure_arb_feasibility_verdict": {
+    "local_db": "INFEASIBLE — zero Kalshi data",
+    "production_db_available": false,
+    "prod_db_path": "/home/azureuser/trading_corp/data/trading_corp.db",
+    "prod_access_method": "az vm run-command (SSH blocked from non-home IPs)",
+    "recommendation": "FORWARD_TEST — run in shadow mode for 7-30 days before requesting Board approval for live deployment. See report for full rationale."
+  }
+}

@@ -443,6 +443,13 @@ class BitunixFuturesObserver:
         # pre-PR-4 behavior. Activation = YAML `trade_plan.enabled: true`.
         trade_plan_config: StrategyConfig | None = None,
         fee_config: FeeConfig | None = None,
+        # Confluence-gate Phase B — caches + config are stored but not
+        # consumed. Phase D wires `gate_config` to the score-path and
+        # swaps the PA validator for the 5-factor gate. Defaults keep
+        # the existing PA pipeline running unchanged.
+        bar_cache_5m: Any = None,         # LiveBarCache | None
+        bar_cache_15m: Any = None,        # LiveBarCache | None
+        gate_config: Any = None,          # ConfluenceGateConfig | None
     ) -> None:
         self.db_url = db_url
         self.risk_agent = risk_agent
@@ -461,6 +468,10 @@ class BitunixFuturesObserver:
         # PR 4 — adaptive trade plan configs. None means legacy path.
         self.trade_plan_config = trade_plan_config
         self.fee_config = fee_config
+        # Confluence-gate Phase B — stored for Phase D consumption.
+        self.bar_cache_5m = bar_cache_5m
+        self.bar_cache_15m = bar_cache_15m
+        self.gate_config = gate_config
         # Normalize the gate mode to one of the three known values.
         self.htf_gate_mode = (
             htf_gate_mode.lower() if isinstance(htf_gate_mode, str) else "off"
