@@ -68,7 +68,81 @@ the report are not the priority any longer — H7 supersedes them.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-18 14:30 UTC  *(supersedes 2026-05-18 12:30 + 07:00 + 2026-05-17 22:30 + 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
+## END-OF-SESSION SNAPSHOT — 2026-05-20 ~11:45 UTC  *(supersedes 2026-05-20 04:30 below)*
+
+**One work thread: kalshi_weather entry-price floor DEPLOYED to paper prod at 11:35 UTC via surgical patcher. Floor exercising on first scan cycle (3 entry_below_floor skips). Hybrid deploy: vol-v2 ship at 05:52 bundled the floor function + yaml entries; my patcher added the call site. See `runbooks/deploy_log.md` 11:35 entry for full hybrid story + rollback.**
+
+### Headline
+
+`kalshi_weather_arb` side-asymmetric entry-price floor live on paper prod since 2026-05-20 11:34:59 UTC (PID 865556). Smoke check at 11:41:03 UTC: 29 evaluations, **3 `entry_below_floor` skips** on first scan cycle (KXLOWTBOS-26MAY20-T66, KXLOWTMIN-26MAY20-B42.5, KXLOWTMIN-26MAY20-B38.5), 0 weather `would_have_placed`. Floor is catching real cheap-tail proposals. `auto_execute: false` preserved; `max_per_day_pct: 120.0` unchanged — local main and prod have matched on this value since commit `00e0c45` (2026-05-15), so the earlier "hot-patch preserved / backport pending" framing was stale and there is no drift to reconcile.
+
+### Surprise / hybrid finding
+
+Phase A re-hashed prod cleanly (matched baseline). Between Phase A and the patcher run, the parallel session that finalized vol-v2 at 05:52 UTC also whole-file-scp'd `_weather_math.py` and `config/strategies.yaml` from the same shared working tree — **inadvertently shipping my uncommitted floor function and yaml entries**. By patcher run-time, only `kalshi_weather_arb.py` actually needed surgery (the call site). Patcher idempotently skipped the two pre-shipped files. Consequence: only `kalshi_weather_arb.py.pre-floor-20260520-1110` is a true pre-floor backup; the other two backups were manually `cp -p`'d post-Phase-B (byte-identical to live). Hard rollback for floor is manual (soft rollback — disable via call-site revert — is one-command and recipe-logged).
+
+### Latent bug caught + fixed pre-deploy
+
+Patcher v1 used `Path.read_text(encoding=..., newline=...)`. The `newline=` kwarg is Python **3.13+**; prod is **3.10.12**. First prod patcher run safe-failed with `TypeError` at the first `_read(p)`, before any write or backup. Zero state change verified via md5 + absence of backup files. Fix: switched to `Path.read_bytes().decode("utf-8")` / `Path.write_bytes(src.encode("utf-8"))`. Works on every 3.x and bypasses universal-newlines translation entirely.
+
+### What landed (deployed via surgical patcher 11:35 UTC; floor content arrived earlier via vol-v2 ship)
+
+**On prod (live):**
+- `trading_corp/agents/strategies/_weather_math.py` — `apply_entry_price_floor` function, lines 382-414. Arrived via 05:52 vol-v2 ship (parallel session).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — import + call-site between share_price gate and Kelly sizing. **Surgically patched by THIS deploy at 11:10 UTC** (file mtime) and activated by 11:34:59 restart.
+- `config/strategies.yaml` — `min_yes_entry: 0.10` (line 1500), `min_no_entry: 0.50` (line 1501), under `kalshi_weather_arb:`. Arrived via 05:52 vol-v2 ship.
+
+**Local working tree (uncommitted; superset of prod):**
+- Above 3 files + `tests/test_kalshi_weather_fixes.py` (9 new tests, 40/40 pass in 0.13s — local only)
+- Vol-v2 work also still uncommitted locally per `kalshi-crypto-vol-v2-deployed` memory: `crypto_vol_provider.py` (new), `crypto_spot_provider.py` (modify), `kalshi_crypto_arb.py` (modify), `main.py` (modify), strategies.yaml has additional vol-v2 lines.
+- Untracked tmp/ files from this and prior sessions.
+
+**Local committed (`main`):** still at `504c992` — none of the floor or vol-v2 work has been committed. Local is 2 commits ahead of `origin/main` (unrelated bitunix paper-data review + diagnostic commits from earlier).
+
+### Environment sync state
+
+| Surface | State |
+|---|---|
+| Local working tree | floor + vol-v2 + tests + tmp/ untracked. See `git status` output below. |
+| Local committed (`main`) | `504c992`, 2 ahead of `origin/main` (unrelated to today's work) |
+| `origin/main` | 2 behind local |
+| Prod (`tc-prod-vm`) | **live: floor + vol-v2 + bitunix-v2-lifecycle fix.** PID 865556. `auto_execute: false`. Restart 2026-05-20 11:34:59 UTC. |
+| Backup tag on prod | `pre-floor-20260520-1110` — 3 files, but only `kalshi_weather_arb.py.<tag>` is a true pre-floor baseline (`4bf3005a…`). Other two are post-vol-v2 snapshots (byte-identical to live). |
+| Memory | new `kalshi-weather-price-floor` (replaces ...-pending); new `prod-python-version-3.10` feedback memory; `kalshi-crypto-vol-v2-deployed` from parallel session preserved |
+
+**Local, origin, and prod are out of sync.** Prod is the leading edge; local working tree is a superset of prod; `main` is behind both. Decision to commit-and-push deferred to next session.
+
+### Open observations + follow-ups
+
+1. **Forward paper-validation clock starts 2026-05-20 for the floor.** 60-day window: aim for the floor-bucketed RT sample to flip the prior -$65.48 / 163-RT pre-floor sample to at least flat. Watch `kalshi_weather_skipped_entry_below_floor` audit rows as the indicator-of-firing.
+2. **`bucket_guard` is still dormant** on the observed market shape (per `sigma-vs-bucket-width-mismatch` § Dormant). Not actionable until trigger condition appears in production data.
+3. **Open levers still not shipped** (data didn't justify yet):
+   - $0.40–$0.60 NO fade zone (n=23 RT slice, WR=43.5%, -$27). Speculative.
+   - $0.80–$0.90 NO payoff-asymmetry trap (n=35, WR=82.9%, -$5.72). Needs entry-price ceiling or stake reshape.
+   - T-ticker handling (n=17, WR=58.8%, -$21). Bucket-guard doesn't reliably apply when `σ < |forecast - threshold|`.
+   - `bucket_guard` is NULL in `kalshi_round_trips.extra_json` — resolver builds RT extra from a different source than audit allowlist.
+4. **vol-v2 forward paper-validation also active** per `kalshi-crypto-vol-v2-deployed`. Both clocks run concurrently.
+
+### Cleanup nits (still defer)
+
+- `.gitignore` has no `tmp/` rule. Untracked tmp/ files would be swept in by a careless `git add -A`.
+- `tmp/scan_weather.py` (throwaway audit-scan helper from 04:30 session) safe to delete.
+- `tmp/vol_v2_poc.py` (throwaway from earlier today) safe to delete.
+
+### Soft rollback (disable floor only)
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-floor-20260520-1110; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py.\$TAG \
+   \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py; \
+sudo systemctl restart trading-corp"
+```
+
+Hard rollback (full floor revert) is manual — see `deploy_log.md` 11:35 entry. Vol-v2 rollback is also separate (tag `pre-vol-v2-paper-20260520-0541`; see deploy_log.md 05:52 entry).
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-18 14:30 UTC  *(superseded by 2026-05-20 ~04:30 above; previously: supersedes 2026-05-18 12:30 + 07:00 + 2026-05-17 22:30 + 17:45 + 17:25 + 05:40 + 03:55 + 03:25 + 20:10 + 19:40 + 04:55)*
 
 > **Post-snapshot correction (2026-05-19):** Branch A's files were committed as `0049889` — `backtest: gate v1.1 Branch A addendum — 1m Bitunix trade-resolution (PF 1.14 → 1.30)` — after this snapshot was written. The "uncommitted; all on disk" framing below is therefore stale on that point. No prod deploy (research/local only); deploy_log.md unchanged.
 
@@ -1378,7 +1452,9 @@ Items punted during the day's specialized-agent build sprint. Grouped by priorit
 
 ### P2
 
-- **Crypto vol model v2** — rolling 30d realized vol from Coinbase bars (replaces hard-coded `ANNUAL_VOLS` constants in `trading_corp/data/crypto_spot_provider.py`). Constants today: BTC=60%, ETH=75%, SOL=90%, DOGE=110%, XRP=85%. Real σ varies regime-to-regime; v2 reads `coinbase_broker.get_bars()` for the asset, computes close-to-close σ over last 30 days (rolling), refreshes on a daily cron. Estimated 2-3h. Watch for the moment a fixed-vol miscalibration causes a near-threshold misfire.
+- ~~**Crypto vol model v2** — rolling 30d realized vol from Coinbase bars (replaces hard-coded `ANNUAL_VOLS` constants in `trading_corp/data/crypto_spot_provider.py`). Constants today: BTC=60%, ETH=75%, SOL=90%, DOGE=110%, XRP=85%. Real σ varies regime-to-regime; v2 reads `coinbase_broker.get_bars()` for the asset, computes close-to-close σ over last 30 days (rolling), refreshes on a daily cron. Estimated 2-3h. Watch for the moment a fixed-vol miscalibration causes a near-threshold misfire.~~ **SHIPPED 2026-05-20 05:52 UTC.** Module: `trading_corp/data/crypto_vol_provider.py`. 14d (not 30d) lookback on 5m bars, hourly refresh. Per-asset fallback to ANNUAL_VOLS constants on fetch error / coverage / staleness. Live values (PoC + verified post-restart): BTC 0.298, ETH ~0.40, SOL 0.505, DOGE 0.600, XRP ~0.46 — all ~0.5x the hardcoded constants (regime compression, not bug; ETH 30d realized 0.43 lands in the eyeball 40-60% band). Forward validation in paper, NOT live — see "Next session pickup" below. Deploy log: 2026-05-20 05:52 UTC entry. Backtester replay (tmp/vol_v2_backtest/) showed strictly-comparable PnL drops $19 on 144 RTs; rescued to ~flat only by undersampled (16/317) new-fire pool — paper data is what validates this forward.
+
+- **kalshi_crypto vol-v2 forward paper watch** (P2, new) — instruments shipped 2026-05-20 emit `vol_v2_classification ∈ {same_fire, new_fire, suppressed_fire, both_skip}` on every eval + `would_have_placed`, plus `hardcoded_av`/`hardcoded_prob_yes`/`hardcoded_edge_pct` for drift tracking. After ~50-100 fresh resolved RTs (likely 2-5 days at current cadence), query: (a) WR + PnL bucketed by `vol_v2_classification` to see if `new_fire` (the [5-10%] old-edge pool the backtester only sampled 16 of) prints profitably at volume; (b) sum(realized_pnl) for `same_fire` rows — that's the strictly-comparable baseline-drift metric (should NOT drift toward the backtester's +$2.37). If `same_fire` PnL is materially below the prior +$21 baseline trajectory, realized-vol is a quiet regression and we revert via the deploy_log rollback recipe.
 
 - **Sports trading division build** (B or C from 2026-05-14 scoping) — gated on 7-day Sports Scout data. After `kalshi_sports_observed` audit accumulates ~300+ rows, query for: median absolute divergence per league, hit-rate at various divergence thresholds (cross-reference with `kalshi_round_trips` for resolved games). If edge ≥ 5% at meaningful volume in any league: build trading division mirroring `kalshi_crypto_arb` shape (paid the-odds-api $30/mo if needed for quota). Estimated 6-12h depending on scope (MLB-only vs broad).
 

@@ -76,6 +76,60 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-20 11:35 UTC — kalshi_weather entry-price floor (side-asymmetric, paper)
+
+**Commits:** uncommitted on local `main`. Deployed via surgical anchor patcher; floor function + yaml entries already on prod via the 05:52 vol-v2 ship (see "hybrid story" below).
+**Triggered by:** Post-cutoff RT analysis on `kalshi_weather_arb` since 2026-05-16T19:18Z: 163 RTs, 68.7% WR, **-$65.48 PnL**. The strategy clears the 65% paper→live gate yet bleeds on cheap-tail entries — YES ≤ $0.10 went 0/5 (-$37.50); NO < $0.50 went 0/5 (-$37.50). Suppressing those retroactively flips the sample from -$65 to ~+$10.
+**Backup tag:** `pre-floor-20260520-1110` (3 files; only `kalshi_weather_arb.py` backup is a true pre-floor baseline — see hybrid story).
+
+**Files deployed (3 modify; 1 local-only):**
+- `trading_corp/agents/strategies/_weather_math.py` — NEW pure helper `apply_entry_price_floor` appended after `apply_bucket_guard`. Side-asymmetric: YES skipped at `<= 0.10` (inclusive), NO skipped at `< 0.50` (strict). NO comparator strict so $0.50 stays in the live `[0.50, 0.60)` band the post-cutoff RT analysis bucketed it into. Pure-function pattern mirrors `apply_bucket_guard` for testability. **Arrived on prod via the parallel-session vol-v2 whole-file scp at 05:52 UTC — not by this deploy.**
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — surgical import + call-site insertion. Imports `apply_entry_price_floor` alongside `apply_bucket_guard`; calls it between the `share_price` out-of-range gate and the Kelly sizing block. Skips become `code=entry_below_floor` audit rows. Pre-patcher md5 `4bf3005a…` (HEAD baseline) → post-patcher md5 `31595b5d…`. **This is the only file actually written by this deploy's patcher.**
+- `config/strategies.yaml` — adds `min_yes_entry: 0.10`, `min_no_entry: 0.50`, and a 6-line comment block under `kalshi_weather_arb:`, between `max_horizon_hours: 72` and `# ── Tier-1 upgrades (2026-05-15)`. Hot-patch `max_per_day_pct: 120.0` deliberately preserved (anchor isolates the insert from `sizing:`). **Also arrived via the 05:52 vol-v2 ship.**
+- `tests/test_kalshi_weather_fixes.py` — 9 new tests (8 parametrized boundary cases including the explicit-flipped `("no", 0.50, False)` plus a custom-thresholds case). 40/40 pass in 0.13s. Local-only; not shipped to prod.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Cheap-tail entries are now blocked at the source.** Any `kalshi_weather_arb` evaluation where the chosen-outcome ask hits YES ≤ $0.10 (inclusive) or NO < $0.50 (strict) emits `code=entry_below_floor` audit row instead of progressing to Kelly sizing. Observable: `kalshi_weather_skipped_entry_below_floor` audit rows; smoke check at 11:41 UTC produced **3 skips on the first scan cycle** (`KXLOWTBOS-26MAY20-T66`, `KXLOWTMIN-26MAY20-B42.5`, `KXLOWTMIN-26MAY20-B38.5`).
+- **Floor thresholds are config-driven.** `min_yes_entry` / `min_no_entry` read from `_strat_cfg`; defaults (0.10 / 0.50) live in `_weather_math.apply_entry_price_floor`. Tightening or loosening is a yaml change + mtime-hot-reload — no service restart needed for future threshold tuning (the .py call-site has no other dependency on the floor values).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Hybrid deploy story.** This deploy was NOT a clean independent ship. Phase A re-hashed prod and matched our Phase A baseline (`0bb50267…` / `00779032…` / `4bf3005a…`). Between Phase A and the patcher run, the parallel session that finalized vol-v2 at 05:52 UTC also shipped two of the three floor target files (`_weather_math.py`, `strategies.yaml`) **because the parallel session's whole-file scp picked up the uncommitted floor content from the same working tree**. By the time my patcher executed, the floor function + yaml entries were already on prod — only the call site in `kalshi_weather_arb.py` was missing. Patcher's idempotency markers (`def apply_entry_price_floor(` / `min_yes_entry: 0.10`) caused it to skip those two files (no backup created); it correctly surgically patched only `kalshi_weather_arb.py`.
+- **Consequence: rollback is asymmetric.** Only `kalshi_weather_arb.py.pre-floor-20260520-1110` is a true pre-floor baseline (matches HEAD `4bf3005a…`). The other two backups were created manually post-restart-decision (`cp -p` of current state) for tag symmetry; they're byte-identical to their live counterparts. Soft rollback (disable floor) is one-file surgery; hard rollback (revert all floor content) is manual.
+- **Floor is config-driven, NOT hard-coded in .py.** When the user wants to retire or tighten the floor later, change yaml. The .py wiring is permanent until a future code change.
+
+**Latent bugs caught + fixed (in patcher development; pre-deploy):**
+- **`Path.read_text(newline=...)` is Python 3.13+.** Patcher v1 used this kwarg; locally on 3.14 it worked, but prod is Python 3.10.12. First prod patcher run safe-failed with `TypeError` at the first `_read(p)`, before any write or backup. Zero state change confirmed via md5 + absence of backup files. Fix: switched to `Path.read_bytes().decode("utf-8")` / `Path.write_bytes(src.encode("utf-8"))`, which (a) bypasses universal-newlines translation entirely and (b) works on every 3.x. Re-scp'd and re-ran successfully.
+- **Working-tree `_weather_math.py` is CRLF on this Windows checkout** (saved by an editor that converted on save); `kalshi_weather_arb.py` is LF. Prod is LF. Patcher's bytes-mode r/w preserves whatever endings the prod file has, so this never reached prod — but a naive `scp` from this working tree would have introduced CRLF drift. Another reason surgical-patch is the right pattern even when md5 matches.
+
+**Verification:**
+- Service restart: PID 860013 → 865556, `ExecMainStartTimestamp=2026-05-20 11:34:59 UTC`, `ActiveState=active`, `SubState=running`.
+- Startup latency: ~95s before port 8000 bound (matches the 10:37 BitUnix restart pattern — Azure KV secret fetches + many strategy inits).
+- `curl https://trading.jacksumner.com/healthz` → `{"status":"ok","mode":"PAPER"}` HTTP 200, 164ms.
+- First post-restart kalshi_weather scan cycle at 11:41:03 UTC. 29 evaluations, **3 `entry_below_floor` skips** (KXLOWTBOS-26MAY20-T66, KXLOWTMIN-26MAY20-B42.5, KXLOWTMIN-26MAY20-B38.5), 0 weather `would_have_placed`. The floor is firing.
+- No errors / tracebacks in journalctl since restart.
+- Hot-patch survived: `grep max_per_day_pct config/strategies.yaml` → `120.0` at line 1519, comment "hot-patch preserved" still inline.
+
+**Inert / dormant on current traffic:** none. The floor is exercising on the first cycle.
+
+**Watch for (next 48h):**
+- `kalshi_weather_skipped_entry_below_floor` audit rows should accumulate on each scan cycle (every 300s) when sub-floor proposals arise. Empty cycles are fine (markets quiet) — sustained absence over a full trading day suggests the floor isn't catching anything (revisit thresholds or check whether market depth has shifted).
+- `kalshi_weather/would_have_placed` rows: should drop in proportion to entry_below_floor skips. Combined `evaluated → (kelly-fire + entry_below_floor + other-skips)` should be conservation-preserving.
+- Forward paper validation: 60-day clock effectively starts today (2026-05-20). The pre-floor 163-RT post-cutoff sample is the baseline (-$65.48 PnL); aim for the floor-bucketed sample to be at least +$0 over a comparable window.
+
+**Rollback recipe (soft — disable floor by removing call site only):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-floor-20260520-1110; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py.\$TAG \
+   \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py; \
+sudo systemctl restart trading-corp"
+```
+This reverts only the call site. The `apply_entry_price_floor` function in `_weather_math.py` and the `min_yes_entry`/`min_no_entry` yaml entries stay on prod but become dormant (nothing imports/calls them). Harmless.
+
+**Rollback recipe (hard — full revert):** not one-command. Would require manually deleting lines 382-415 of prod's `_weather_math.py` (the floor function) and the 8 floor lines from `config/strategies.yaml`. The `pre-floor-20260520-1110` backups of those two files are post-floor state (byte-identical to live), so they don't help. If hard rollback is needed: use `git show HEAD:trading_corp/agents/strategies/_weather_math.py` (md5 `00779032…`) as the source-of-truth for the function-removed state, but note that prod ALSO has the v2 `Gate 4` / `max_divergence_pct` content that HEAD lacks — surgical line removal is the safer path than full file replace.
+
+---
+
 ## 2026-05-20 10:37 UTC — BitUnix v2 lifecycle kline-fetcher pagination fix + audit-vs-reality reconciler + daily systemd timer
 
 **Commits:** `6c1e48b` (fetcher fix + new test file), `3021c03` (reconciler + bug-probe scripts), `fd26e8c` (v2-fix report + correction notices on two prior reports + trade re-tag script). All pushed to origin/main as part of this deploy.
@@ -122,6 +176,57 @@ rm -f \$BASE/scripts/audit_reality_reconciler.py; \
 systemctl disable --now tc-audit-reality.timer tc-audit-reality.service; \
 rm -f /etc/systemd/system/tc-audit-reality.service /etc/systemd/system/tc-audit-reality.timer; \
 systemctl daemon-reload; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
+## 2026-05-20 05:52 UTC — kalshi_crypto vol-v2 (realized vol) + max_divergence_pct cap (paper)
+
+**Commits:** uncommitted at deploy; deployed via raw scp from verified-md5 local files.
+**Triggered by:** Backtester replay validated structural correctness of realized vol (dissolves ~77% of bucket-guard flips into natural-path YES with zero outcome-flips). Strictly-comparable PnL dropped $19; rescued to ~flat only by an undersampled new-fire pool. Forward paper validation is the next required step.
+**Backup tag:** `pre-vol-v2-paper-20260520-0541` (5 files), `pre-vol-v2-paper-20260520-0541` (crypto_spot_provider added late after first restart erred).
+
+**Files deployed (5 modify + 1 new):**
+- `trading_corp/data/crypto_vol_provider.py` — **NEW**. Realized-vol provider: ccxt fetch of Coinbase 5m bars, paginated-backward with dedup-by-timestamp, sample-std of log returns × sqrt(periods/yr) annualization. Refreshes hourly (configurable). Per-asset fallback to ANNUAL_VOLS constants on fetch error / insufficient coverage / staleness.
+- `trading_corp/data/crypto_spot_provider.py` — `get_annual_vol` now reads the vol cache first; falls back to ANNUAL_VOLS. New `refresh_realized_vols_if_due` async staticmethod.
+- `trading_corp/agents/strategies/_weather_math.py` — Added optional `max_divergence_pct` kwarg to `evaluate_weather_market` (Gate 4). Default None; weather strategy not passing it → no behavior change there.
+- `trading_corp/agents/strategies/kalshi_crypto_arb.py` — Reads `max_divergence_pct` + `realized_vol.*` from yaml; refresh hook at run_scan_cycle entry; dual-vol mirror (hardcoded_av/prob/edge) + `vol_v2_classification` field on every eval/skip; maps "divergence_too_high" skip code (audit kind `kalshi_crypto_skipped_divergence_too_high`).
+- `trading_corp/main.py` — `would_have_placed` audit allowlist now carries `threshold_high_usd`, `hardcoded_av`, `hardcoded_prob_yes`, `hardcoded_edge_pct`, `vol_v2_classification`.
+- `config/strategies.yaml` — `realized_vol.enabled: false → true`; added `max_divergence_pct: 35.0`. `auto_execute: false` preserved.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Realized-vol-driven sigma for kalshi_crypto.** Trading-Corp now sizes Gaussian probability with rolling realized vol from Coinbase 5m bars instead of hardcoded ANNUAL_VOLS. Observable: `kalshi_crypto_vol_refresh` audit row with per-asset `source: realized:<n_bars>`; `annual_vol` field on `kalshi_crypto_evaluated` rows now ~0.30 for BTC, ~0.40 for ETH, ~0.50 for SOL, ~0.61 for DOGE, ~0.46 for XRP (vs 0.60/0.75/0.90/1.10/0.85 hardcoded).
+- **`max_divergence_pct: 35.0` cap.** Block trades where edge > 35% — fixes the 50%+ NO bin bleed that backtester showed does NOT compress under realized vol (tail/oracle disagreement, not vol artifact). New audit kind `kalshi_crypto_skipped_divergence_too_high`.
+- **Vol-v2 drift instrumentation.** Every eval + every fire carries `hardcoded_av`, `hardcoded_prob_yes`, `hardcoded_edge_pct`, `vol_v2_classification` (one of `same_fire` / `new_fire` / `suppressed_fire` / `both_skip`). Enables forward bucketing of new-fire resolution and baseline-drift tracking without reconstruction from bars.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- Initial restart at 2026-05-20 05:48 UTC failed because `crypto_spot_provider.py` was edited but not included in the first scp batch — strategy threw `AttributeError: type object 'CryptoSpotProvider' has no attribute 'refresh_realized_vols_if_due'`. Lesson: when an existing module gains a new method that a new module calls, count the diff carefully against the staged set. Caught + fixed at 2026-05-20 05:52 UTC; second restart succeeded.
+- Bucket-guard logic in `_weather_math.apply_bucket_guard` and the per-market math untouched (per task scope).
+
+**Latent bugs caught + fixed (if any):**
+- See above — missing module-update file caught from journal AttributeError after restart 1.
+
+**Verification:**
+- New service `ActiveEnterTimestamp = Wed 2026-05-20 05:52:09 UTC`, PID 844075 (was 616794 since 2026-05-17 21:05).
+- md5 match on all 6 files prod-vs-local.
+- First post-restart `kalshi_crypto_vol_refresh` at 05:54:12 UTC, statuses `{BTC: realized:4032, ETH: realized:4032, SOL: realized:4032, DOGE: realized:4032, XRP: realized:4032}` — no fallback.
+- Live evaluations confirm: BTC 0.2984, SOL 0.5052, DOGE 0.6002 (all within PoC ranges). ETH + XRP confirmed by refresh status but not yet surfaced in `kalshi_crypto_evaluated` rows (discovery filtered them out in early cycles — normal).
+- Refresh cadence: 1 vol_refresh per ~10 scan cycles ≈ 60min interval ✓.
+- Zero `kalshi_crypto_skipped_divergence_too_high` rows in first ~10 minutes — expected (realized vol compresses edges so few cross 35%).
+- Zero `would_have_placed` rows in first ~10 minutes — markets are quiet; will revisit as paper data accumulates.
+
+**Inert / dormant on current traffic (if any):**
+- `vol_v2_classification` for `suppressed_fire` and `same_fire` classes will start landing more frequently once more fires occur. First `new_fire` classification observed in eval payload (then killed by share_price out-of-range, pre-existing skip path).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-vol-v2-paper-20260520-0541; BASE=/home/azureuser/trading_corp; \
+for f in trading_corp/agents/strategies/kalshi_crypto_arb.py trading_corp/agents/strategies/_weather_math.py trading_corp/main.py config/strategies.yaml trading_corp/data/crypto_spot_provider.py; do \
+  mv \$BASE/\$f.\$TAG \$BASE/\$f; \
+done; \
+rm -f \$BASE/trading_corp/data/crypto_vol_provider.py; \
 sudo systemctl restart trading-corp.service"
 ```
 
