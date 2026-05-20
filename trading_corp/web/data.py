@@ -3347,8 +3347,12 @@ _KALSHI_PREFIX = "kalshi_"
 # pre-fix PnL would mislead the dashboard. Don't filter speculatively;
 # only filter when bet-side or sizing math changed.
 DASHBOARD_RT_CUTOFFS: dict[str, str] = {
-    "kalshi_weather": "2026-05-16T19:18:00+00:00",  # bucket-guard + date-parse fix
-    "kalshi_crypto":  "2026-05-16T19:37:00+00:00",  # bucket-guard fix
+    # Advanced 2026-05-20 from the 2026-05-16 bucket-guard fix to each
+    # strategy's own logic-change date. Pre-cutoff rows remain queryable
+    # in `kalshi_round_trips` (forensic + σ-scaling work); they're only
+    # filtered out of dashboard aggregates.
+    "kalshi_weather": "2026-05-20T11:34:59+00:00",  # entry-price floor live — see deploy_log.md 2026-05-20 11:35 UTC
+    "kalshi_crypto":  "2026-05-20T05:52:09+00:00",  # vol-v2 + max_divergence_pct live — see deploy_log.md 2026-05-20 05:52 UTC (matches KALSHI_CRYPTO_VOL_V2_CUTOFF in web/kalshi_crypto_vol_v2.py)
 }
 
 
