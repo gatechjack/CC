@@ -49,6 +49,7 @@ class _ReconcileResult:
     side: str
     recorded_result: str | None
     recorded_r: float | None
+    recorded_source: str  # 'native' or 'corrected'
     simulated_result: str | None
     simulated_r: float | None
     simulated_filled_legs: list[str]
@@ -131,8 +132,20 @@ def _reconcile_one(conn, trade: dict[str, Any]) -> _ReconcileResult:
     sim_filled = (verdict.extra_json_updates or {}).get("filled_legs", [])
     sim_sl = (verdict.extra_json_updates or {}).get("current_sl")
 
-    rec_result = trade["result"]
-    rec_r = trade["actual_r_multiple"]
+    # If the row has been audit-corrected (manual review with reconciler-
+    # verified outcome stored in extra_json), compare against the
+    # corrected_* fields so already-reviewed rows don't keep flagging.
+    # Original `result` / `actual_r_multiple` columns are preserved for
+    # historical fidelity; corrected_* is the post-review truth.
+    audit_corrected = bool(extra.get("audit_corrected"))
+    if audit_corrected and extra.get("corrected_result") is not None:
+        rec_result = extra.get("corrected_result")
+        rec_r = extra.get("corrected_r_multiple")
+        rec_source = "corrected"
+    else:
+        rec_result = trade["result"]
+        rec_r = trade["actual_r_multiple"]
+        rec_source = "native"
 
     # Match criteria: result string AND R within tolerance.
     r_tol = 0.05
@@ -160,6 +173,7 @@ def _reconcile_one(conn, trade: dict[str, Any]) -> _ReconcileResult:
         side=trade["side"],
         recorded_result=rec_result,
         recorded_r=rec_r,
+        recorded_source=rec_source,
         simulated_result=sim_result,
         simulated_r=sim_r,
         simulated_filled_legs=sim_filled,
@@ -191,7 +205,7 @@ def _format_text(results: list[_ReconcileResult]) -> str:
     for r in results:
         tag = "✓ MATCH" if r.matches else "✗ MISMATCH"
         lines.append(f"{tag}  {r.order_id}  {r.ts}  {r.side}")
-        lines.append(f"  recorded: result={r.recorded_result} R={r.recorded_r}")
+        lines.append(f"  recorded ({r.recorded_source}): result={r.recorded_result} R={r.recorded_r}")
         lines.append(f"  simulated: result={r.simulated_result} R={r.simulated_r} "
                      f"filled_legs={r.simulated_filled_legs} "
                      f"final_sl={r.simulated_current_sl}")
@@ -207,6 +221,7 @@ def _format_json(results: list[_ReconcileResult]) -> str:
         {
             "order_id": r.order_id, "ts": r.ts, "division": r.division, "side": r.side,
             "recorded_result": r.recorded_result, "recorded_r": r.recorded_r,
+            "recorded_source": r.recorded_source,
             "simulated_result": r.simulated_result, "simulated_r": r.simulated_r,
             "simulated_filled_legs": r.simulated_filled_legs,
             "simulated_current_sl": r.simulated_current_sl,

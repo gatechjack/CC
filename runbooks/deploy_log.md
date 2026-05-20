@@ -76,6 +76,57 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-20 10:37 UTC — BitUnix v2 lifecycle kline-fetcher pagination fix + audit-vs-reality reconciler + daily systemd timer
+
+**Commits:** `6c1e48b` (fetcher fix + new test file), `3021c03` (reconciler + bug-probe scripts), `fd26e8c` (v2-fix report + correction notices on two prior reports + trade re-tag script). All pushed to origin/main as part of this deploy.
+**Triggered by:** silent audit-logging failure surfaced by user chart-observation of trades reaching TP2 on 5/19 that the bot recorded as -1.0R losses. Audit-integrity review (`reports/bitunix_audit_integrity_2026-05-20.md`) localized the bug; failing-test-then-passing-test evidence in `tests/test_bitunix_kline_fetcher_pagination.py`.
+**Backup tag:** `pre-v2-kline-fix-20260520` (1 file: paper_trade_replay.py only — full md5-verified, see verification block).
+
+**Files deployed (1 modify + 1 new + 2 new systemd unit files):**
+- `trading_corp/agents/paper_trade_replay.py` — `_bitunix_kline_fetcher` rewrites pagination to slice the requested window into ≤200-bar sub-windows and iterate forward in time. Server cap at 200/page is documented in the function docstring. Classifier (`_classify_v2_multi_leg`) and routing condition unchanged. md5 `49c9735f6ee1fd2c74ed85f1e74b3421`.
+- `scripts/audit_reality_reconciler.py` — **NEW**. Per closed v2 paper_trade_record, pulls bitunix_bar_history bars over [ts, result_ts] and replays via `_classify_v2_multi_leg`; compares simulated vs recorded result + R (±0.05 tol). Honors `extra_json.audit_corrected=true` rows by comparing against `corrected_result` / `corrected_r_multiple`. Exit 0 if all match, 1 on any mismatch (CI/cron gate). md5 `1a4da6bd4f8190178af4e82b6bcd2198`.
+- `/etc/systemd/system/tc-audit-reality.service` — **NEW VM-side unit.** oneshot service running reconciler via venv python. StandardOutput/Error=journal. SuccessExitStatus=0 (mismatch fails the service).
+- `/etc/systemd/system/tc-audit-reality.timer` — **NEW VM-side unit.** OnCalendar=daily 06:00 UTC, Persistent=true, RandomizedDelaySec=600. Enabled + started.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **v2 multi-leg lifecycle is no longer silently truncating bar slices.** Any v2 paper trade entered after 2026-05-20 10:37 UTC will see its full max_hold window walked, TP fills detected in price-action order, SL transitions emitted as `position_sl_update` audits. Observable: post-deploy v2 trades that hit TP1 will produce a `position_sl_update` audit row (all-time count was 0; the first non-zero count proves the fix is exercising).
+- **Daily reality reconciler.** `tc-audit-reality.timer` runs the reconciler at ~06:00 UTC daily; any mismatch between recorded and bar-history-implied outcomes fails the systemd service → journalctl WARN → visible via `systemctl --failed`. Generalizes beyond this specific bug — catches any future class of silent audit-vs-reality boundary failure.
+- **60-day paper-cutover clock restarted from 2026-05-20.** Pre-deploy 2 v2 trades are reconstructed-corrected (audit_corrected=true) and preserved for historical context but excluded from the cutover sample. Documented in `trading_corp_bitunix_vision.md` memory.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- The bug class was "self-consistent silent failure": every audit row was internally consistent and dashboard rendered cleanly; the audit just didn't reflect reality. Two prior reports (504c992, f6559ff) asserted "no silent failures" before the bug was caught. Both carry correction headers in commit fd26e8c.
+- The `_classify_v2_multi_leg` classifier itself was always correct; the fix is to the fetcher's pagination loop only. Existing 27 tests in `tests/test_paper_trade_replay.py` still pass.
+- Asymmetry between trade #1 (corrupted) and trade #2 (correct) was reality-dependent: both trades had identical buggy bar slices, but only trade #1 had TP fills in the dropped early window (verified against bitunix_bar_history price truth).
+
+**Latent bugs caught + fixed (if any):**
+- Confirmed via live probe (2026-05-20): BitUnix kline endpoint silently caps responses at 200 bars per call regardless of `limit` param, returning newest-first within the requested window. The legacy fetcher's `if len(page) < this_page: break` mistook this for end-of-data.
+- 2 historical v2 paper_trade_record rows re-tagged with `audit_corrected=true` + reconciler-verified `corrected_result`/`corrected_r_multiple`/`corrected_filled_legs` in extra_json (original `result` and `actual_r_multiple` columns preserved). Trade #1 corrected: loss/-1.0R → win/+0.838R, +1.838R delta.
+
+**Verification:**
+- Fetcher reality-probe via venv python in-process: requested 1440 1m bars for trade #1's actual window; returned **1600 bars** (>200 threshold). Span = 1440 minutes (full window). First bar ts = 1779121440000 (5/18 16:24 UTC, matching entry).
+- Reconciler in-process against prod DB: post-deploy with updated reconciler, **2/2 matches**, 0 mismatches.
+  - Trade #1 (`35aa49c9`): recorded(corrected)=win/+0.838R vs simulated=win/+0.838R, filled_legs=['tp1','tp2'].
+  - Trade #2 (`a467e316`): recorded(corrected)=loss/-1.0R vs simulated=loss/-1.0R.
+- Daily systemd timer status post-install: `active (waiting)`. First-run service triggered manually post-install: exit 0, 2/2 matches. Next trigger: 2026-05-21 06:03 UTC (+ jitter).
+- Service PID change: 844089 → 860028 (restart confirmed). Boot wiring log: `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True` (unchanged — no behavior change at the configuration layer).
+
+**Inert / dormant on current traffic (if any):**
+- The fix changes paper-mode replay behavior only. `BitunixBroker.place_order` still raises NotImplementedError and `auto_execute=false` — no live-capital path was touched. First evidence the fix is exercising will be the first new v2 trade post-deploy with a non-empty `filled_legs` or a non-zero `position_sl_update` count.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-v2-kline-fix-20260520; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/trading_corp/agents/paper_trade_replay.py.\$TAG \$BASE/trading_corp/agents/paper_trade_replay.py; \
+rm -f \$BASE/scripts/audit_reality_reconciler.py; \
+systemctl disable --now tc-audit-reality.timer tc-audit-reality.service; \
+rm -f /etc/systemd/system/tc-audit-reality.service /etc/systemd/system/tc-audit-reality.timer; \
+systemctl daemon-reload; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
 ## 2026-05-18 21:25 UTC — Promote/Demote UX fix v2 — Selected Whales filter + stop mutating watch_only_whales + tab persistence
 
 **Commits:** (uncommitted at deploy; will commit after user verification — combined v1+v2 patch applied)
