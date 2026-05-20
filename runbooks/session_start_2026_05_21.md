@@ -105,6 +105,8 @@ WHERE division='bitunix_futures'
 
 **Daily reconciler:** `tc-audit-reality.timer` next trigger 2026-05-21 06:03 UTC + jitter. **Check it:** `systemctl status tc-audit-reality.service` post-trigger; `journalctl -u tc-audit-reality.service --since "1 day ago"`. Any mismatch → service fails → visible via `systemctl --failed`.
 
+**Unattended-fire check (after 2026-05-21 06:13 UTC):** `journalctl -u tc-audit-reality.service --since "06:00 today"` — verify timer fired unattended. If no log line, the timer/service wiring has a latent issue.
+
 ## PRIORITY 2 — Dashboard surfacing of `audit_corrected` (queued, not started)
 
 Today the Trade Plan v2 dashboard panel reads `result` / `actual_r_multiple` directly from `paper_trade_record`. For audit-corrected rows, it should prefer `extra_json.corrected_result` / `corrected_r_multiple`. This is a small `web/data.py` change (probably `build_bitunix_trade_plan_view`) + a partial template update.

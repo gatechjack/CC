@@ -287,7 +287,14 @@
             </td>
             <td class="p-2 text-muted">
               {{ f.trigger_signal or '—' }}
-              {% if f.result %}
+              {% if f.display_result %}
+                <div class="text-[9px] {% if f.display_result == 'win' %}text-gain{% elif f.display_result == 'loss' %}text-loss{% else %}text-muted{% endif %}">
+                  {% if f.audit_corrected %}
+                    <span class="text-[8px] px-1 py-0.5 rounded bg-pane-2 border border-edge text-muted" title="{{ f.correction_tooltip }}">corrected</span>
+                  {% endif %}
+                  {{ f.display_result }}
+                </div>
+              {% elif f.result %}
                 <div class="text-[9px] {% if f.result == 'win' %}text-gain{% elif f.result == 'loss' %}text-loss{% else %}text-muted{% endif %}">
                   {{ f.result }}
                 </div>

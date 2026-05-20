@@ -547,7 +547,10 @@ def test_decision_flow_not_redeemed_for_normal_tv_source(db_url: str):
 # ─── build_bitunix_trade_plan_view (PR 6) ──────────────────────────────
 
 
-from trading_corp.web.data import build_bitunix_trade_plan_view
+from trading_corp.web.data import (
+    build_bitunix_score_view,
+    build_bitunix_trade_plan_view,
+)
 
 
 def test_trade_plan_view_returns_none_when_observer_missing():
@@ -682,3 +685,210 @@ def test_trade_plan_view_24h_window_excludes_stale_rows(db_url: str):
     assert view["counts_24h"]["decisions_total"] == 1
     assert view["counts_24h"]["should_trade_true"] == 1
     assert len(view["decisions"]) == 2  # both surfaced in recent list
+
+
+# ─── Reconciler state tile tests ──────────────────────────────────────────
+
+
+def _reconciler_deps(db_url: str):
+    return SimpleNamespace(
+        db_url=db_url,
+        bitunix_observer=SimpleNamespace(
+            trade_plan_config=None, fee_config=None,
+        ),
+    )
+
+
+def _insert_reconciler_run(conn, payload: dict, ts: str) -> None:
+    conn.execute(
+        "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+        (ts, "audit_reality_reconciler", "audit_reality_run", json.dumps(payload)),
+    )
+
+
+def test_trade_plan_view_reconciler_state_never_run(db_url: str):
+    """No audit_reality_run rows → state='never_run', n_matches=0."""
+    deps = _reconciler_deps(db_url)
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    assert view is not None
+    rc = view["reconciler"]
+    assert rc["state"] == "never_run"
+    assert rc["n_matches"] == 0
+    assert rc["n_total"] == 0
+    assert rc["last_run_ts"] is None
+
+
+def test_trade_plan_view_reconciler_state_match(db_url: str):
+    """Insert one fresh audit_reality_run with status='match', 2/2 → state='match'."""
+    now = datetime.now(timezone.utc)
+    fresh_ts = (now - timedelta(hours=1)).isoformat()
+    with db.connect(db_url) as conn:
+        _insert_reconciler_run(conn, {
+            "n_total": 2, "n_matches": 2, "n_mismatches": 0,
+            "status": "match", "mismatches": [],
+        }, fresh_ts)
+    deps = _reconciler_deps(db_url)
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    rc = view["reconciler"]
+    assert rc["state"] == "match"
+    assert rc["n_matches"] == 2
+    assert rc["n_total"] == 2
+    assert rc["n_mismatches"] == 0
+    assert rc["mismatches"] == []
+
+
+def test_trade_plan_view_reconciler_state_no_trades(db_url: str):
+    """status='no_trades' → state='no_trades'."""
+    now = datetime.now(timezone.utc)
+    fresh_ts = (now - timedelta(hours=1)).isoformat()
+    with db.connect(db_url) as conn:
+        _insert_reconciler_run(conn, {
+            "n_total": 0, "n_matches": 0, "n_mismatches": 0,
+            "status": "no_trades", "mismatches": [],
+        }, fresh_ts)
+    deps = _reconciler_deps(db_url)
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    rc = view["reconciler"]
+    assert rc["state"] == "no_trades"
+    assert rc["n_total"] == 0
+
+
+def test_trade_plan_view_reconciler_state_mismatch(db_url: str):
+    """status='mismatch' with one mismatch entry → state='mismatch', mismatches populated."""
+    now = datetime.now(timezone.utc)
+    fresh_ts = (now - timedelta(hours=1)).isoformat()
+    with db.connect(db_url) as conn:
+        _insert_reconciler_run(conn, {
+            "n_total": 2, "n_matches": 1, "n_mismatches": 1,
+            "status": "mismatch",
+            "mismatches": [{
+                "order_id": "abcdef12-0000-0000-0000-000000000000",
+                "ts": "2026-05-18T16:24:00+00:00",
+                "recorded_result": "loss",
+                "recorded_r": -1.0,
+                "simulated_result": "win",
+                "simulated_r": 0.838,
+                "simulated_filled_legs": ["tp1", "tp2"],
+                "bar_count": 1600,
+                "discrepancy": "result: recorded='loss' sim='win'",
+            }],
+        }, fresh_ts)
+    deps = _reconciler_deps(db_url)
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    rc = view["reconciler"]
+    assert rc["state"] == "mismatch"
+    assert rc["n_mismatches"] == 1
+    assert len(rc["mismatches"]) == 1
+    assert rc["mismatches"][0]["order_id"] == "abcdef12-0000-0000-0000-000000000000"
+    assert "result" in rc["mismatches"][0]["discrepancy"]
+
+
+def test_trade_plan_view_reconciler_state_stale(db_url: str):
+    """Insert a match row dated 30h ago → state='stale' (not 'match'), hours_since ≈ 30."""
+    now = datetime.now(timezone.utc)
+    stale_ts = (now - timedelta(hours=30)).isoformat()
+    with db.connect(db_url) as conn:
+        _insert_reconciler_run(conn, {
+            "n_total": 1, "n_matches": 1, "n_mismatches": 0,
+            "status": "match", "mismatches": [],
+        }, stale_ts)
+    deps = _reconciler_deps(db_url)
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    rc = view["reconciler"]
+    assert rc["state"] == "stale"
+    assert rc["hours_since"] is not None
+    assert 29.0 <= rc["hours_since"] <= 31.0
+
+
+def test_trade_plan_view_reconciler_mismatch_overrides_stale(db_url: str):
+    """Mismatch row dated 30h ago → state='mismatch' (mismatch takes precedence over stale)."""
+    now = datetime.now(timezone.utc)
+    stale_ts = (now - timedelta(hours=30)).isoformat()
+    with db.connect(db_url) as conn:
+        _insert_reconciler_run(conn, {
+            "n_total": 2, "n_matches": 1, "n_mismatches": 1,
+            "status": "mismatch",
+            "mismatches": [{
+                "order_id": "deadbeef-0000-0000-0000-000000000000",
+                "ts": "2026-05-18T16:24:00+00:00",
+                "recorded_result": "loss",
+                "recorded_r": -1.0,
+                "simulated_result": "win",
+                "simulated_r": 0.838,
+                "simulated_filled_legs": ["tp1"],
+                "bar_count": 1600,
+                "discrepancy": "result: recorded='loss' sim='win'",
+            }],
+        }, stale_ts)
+    deps = _reconciler_deps(db_url)
+    view = build_bitunix_trade_plan_view(db_url, deps)
+    rc = view["reconciler"]
+    assert rc["state"] == "mismatch"
+
+
+# ─── Score view: corrected-outcome display ─────────────────────────────────
+
+
+def test_score_view_recent_fires_surfaces_corrected_outcome(db_url: str):
+    """Insert a paper_trade_record row with audit_corrected=true + corrected_*
+    in extra_json. Verify recent_fires[0] has display_result == corrected_result,
+    audit_corrected==True, correction_tooltip populated."""
+    now = datetime.now(timezone.utc)
+    order_id = "35aa49c9-test-0000-0000-000000000000"
+    extra = {
+        "tp_plan_version": "v2",
+        "audit_corrected": True,
+        "corrected_result": "win",
+        "corrected_r_multiple": 0.838,
+        "filled_legs": [],
+        "current_sl": 76269.87,
+    }
+    with db.connect(db_url) as conn:
+        conn.execute(
+            "INSERT INTO paper_trade_record "
+            "(order_id, ts, strategy, division, symbol, side, qty, "
+            "stop_price, tp_price, tp_r_multiple, entry_reference_price, "
+            "expected_loss, expected_gain, max_hold_seconds, "
+            "result, result_ts, result_price, actual_r_multiple, extra_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                order_id,
+                (now - timedelta(hours=2)).isoformat(),
+                "bitunix_confluence", "bitunix_futures", "BTCUSDT", "buy",
+                0.001,
+                75000.0, 78000.0, 2.0, 76000.0,
+                -38.0, 76.0, 86400,
+                "loss", (now - timedelta(hours=1)).isoformat(), 75000.0, -1.0,
+                json.dumps(extra),
+            ),
+        )
+
+    # build_bitunix_score_view requires scoring_config on observer with full shape
+    deps = SimpleNamespace(
+        bitunix_observer=SimpleNamespace(
+            scoring_config=SimpleNamespace(
+                enabled=True,
+                cooldown_seconds=300,
+                premium_threshold=12,
+                standard_threshold=8,
+                weak_threshold=5,
+                min_score_to_fire=8,
+                dedupe_within_ttl=True,
+                factors=[],
+            ),
+            fee_config=None,
+        )
+    )
+    view = build_bitunix_score_view(db_url, deps)
+    assert view is not None
+    fires = view["recent_fires"]
+    assert len(fires) >= 1
+    f = fires[0]
+    assert f["audit_corrected"] is True
+    assert f["display_result"] == "win"
+    assert f["corrected_result"] == "win"
+    assert f["result_native"] == "loss"
+    assert f["result"] == "loss"  # backward-compat key unchanged
+    assert f["correction_tooltip"] is not None
+    assert "Native" in f["correction_tooltip"]
+    assert "Corrected" in f["correction_tooltip"]

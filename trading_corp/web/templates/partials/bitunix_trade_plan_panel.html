@@ -51,6 +51,56 @@
     </div>
   </header>
 
+  {# ─── Reconciler state tile ─── #}
+  {% if tp.reconciler %}
+  {% set rc = tp.reconciler %}
+  {% if rc.state == 'mismatch' %}
+  <div class="flex flex-col gap-1 mb-3 px-3 py-2 rounded-md border bg-loss/20 border-loss font-mono text-xs">
+    <div class="flex items-center gap-2 font-semibold text-loss text-sm">
+      <span>✗ RECONCILER MISMATCH</span>
+      <span class="text-loss">·</span>
+      <span>{{ rc.n_matches }}/{{ rc.n_total }} match — INVESTIGATE</span>
+      {% if rc.last_run_ts_et %}
+        <span class="ml-auto text-[10px] text-loss/70">last run {{ rc.last_run_ts_et }}</span>
+      {% endif %}
+    </div>
+    {% if rc.mismatches %}
+    <div class="mt-1 space-y-0.5 pl-2 border-l-2 border-loss/50">
+      {% for m in rc.mismatches %}
+      <div class="text-loss/90">
+        <span class="font-semibold" title="{{ m.order_id }}">{{ m.order_id[:8] }}…</span>
+        {% if m.ts_et %}<span class="text-muted"> {{ m.ts_et }}</span>{% endif %}
+        {% if m.discrepancy %}<span class="text-loss/80"> · {{ m.discrepancy }}</span>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% elif rc.state == 'stale' %}
+  <div class="flex items-center gap-2 mb-3 px-3 py-2 rounded-md border bg-yellow-900/20 border-yellow-600/50 font-mono text-xs text-yellow-400">
+    <span>⚠ STALE: reconciler last ran {{ rc.hours_since|round(1) }}h ago — daily timer may have stopped</span>
+    {% if rc.last_run_ts_et %}
+      <span class="ml-auto text-[10px] text-yellow-400/70">({{ rc.last_run_ts_et }})</span>
+    {% endif %}
+  </div>
+  {% elif rc.state == 'match' %}
+  <div class="flex items-center gap-2 mb-3 px-3 py-2 rounded-md border bg-pane-2 border-edge font-mono text-xs text-gain">
+    <span>✓ Reality match · {{ rc.n_matches }}/{{ rc.n_total }} v2 trades</span>
+    {% if rc.last_run_ts_et %}
+      <span class="text-muted">· {{ rc.last_run_ts_et }}</span>
+    {% endif %}
+  </div>
+  {% elif rc.state == 'no_trades' %}
+  <div class="flex items-center gap-2 mb-3 px-3 py-2 rounded-md border bg-pane-2 border-edge font-mono text-xs text-muted">
+    <span>○ Reconciler last ran {% if rc.last_run_ts_et %}{{ rc.last_run_ts_et }}{% endif %} · no closed v2 trades to verify yet</span>
+  </div>
+  {% else %}
+  <div class="flex items-center gap-2 mb-3 px-3 py-2 rounded-md border bg-pane-2 border-edge font-mono text-xs text-muted">
+    <span>○ Reconciler not yet run</span>
+  </div>
+  {% endif %}
+  {% endif %}
+
   {# ─── Section 1: Recent trade-plan decisions ─── #}
   <div class="mb-4">
     <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">

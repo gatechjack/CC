@@ -1713,10 +1713,21 @@ def build_bitunix_trade_plan_view(db_url: str, deps: Any) -> dict | None:
         "skipped": 0,
         "sl_updates_total": 0,
     }
+    reconciler: dict = {
+        "state": "never_run",
+        "last_run_ts": None,
+        "last_run_ts_et": None,
+        "hours_since": None,
+        "n_matches": 0,
+        "n_total": 0,
+        "n_mismatches": 0,
+        "mismatches": [],
+    }
     try:
         cutoff_24h = (
             datetime.now(timezone.utc) - timedelta(hours=24)
         ).isoformat()
+        cutoff_26h = (datetime.now(timezone.utc) - timedelta(hours=26)).isoformat()
         with db.connect(db_url) as conn:
             # Recent decisions list (last 10)
             dec_rows = conn.execute(
@@ -1794,6 +1805,60 @@ def build_bitunix_trade_plan_view(db_url: str, deps: Any) -> dict | None:
             ).fetchone()
             if sl_count_row:
                 counts_24h["sl_updates_total"] = int(sl_count_row["n"])
+
+            # Reconciler state tile
+            rec_row = conn.execute(
+                "SELECT ts, payload_json FROM audit_event "
+                "WHERE kind='audit_reality_run' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if rec_row:
+                rec_ts = rec_row["ts"]
+                try:
+                    rec_payload = json.loads(rec_row["payload_json"]) if rec_row["payload_json"] else {}
+                except Exception:
+                    rec_payload = {}
+                rec_status = rec_payload.get("status", "no_trades")
+                n_total = int(rec_payload.get("n_total", 0))
+                n_matches = int(rec_payload.get("n_matches", 0))
+                n_mismatches = int(rec_payload.get("n_mismatches", 0))
+                mismatches_raw = rec_payload.get("mismatches", [])
+                mismatches_display = [
+                    {
+                        "order_id": m.get("order_id", ""),
+                        "ts_et": format_et_short(m.get("ts")) if m.get("ts") else None,
+                        "discrepancy": m.get("discrepancy"),
+                    }
+                    for m in mismatches_raw
+                ]
+                # Determine hours_since
+                try:
+                    rec_dt = datetime.fromisoformat(rec_ts.replace("Z", "+00:00"))
+                    if rec_dt.tzinfo is None:
+                        rec_dt = rec_dt.replace(tzinfo=timezone.utc)
+                    hours_since = (datetime.now(timezone.utc) - rec_dt).total_seconds() / 3600.0
+                except Exception:
+                    hours_since = None
+                # State precedence: never_run → mismatch → stale → no_trades → match
+                is_stale = rec_ts < cutoff_26h
+                if rec_status == "mismatch":
+                    state = "mismatch"
+                elif is_stale:
+                    state = "stale"
+                elif rec_status == "no_trades":
+                    state = "no_trades"
+                else:
+                    state = "match"
+                reconciler = {
+                    "state": state,
+                    "last_run_ts": rec_ts,
+                    "last_run_ts_et": format_et_short(rec_ts),
+                    "hours_since": hours_since,
+                    "n_matches": n_matches,
+                    "n_total": n_total,
+                    "n_mismatches": n_mismatches,
+                    "mismatches": mismatches_display,
+                }
     except Exception as e:
         log.warning("bitunix trade_plan view query failed: %s", e)
 
@@ -1803,6 +1868,7 @@ def build_bitunix_trade_plan_view(db_url: str, deps: Any) -> dict | None:
         "decisions": decisions,
         "sl_updates": sl_updates,
         "counts_24h": counts_24h,
+        "reconciler": reconciler,
     }
 
 
@@ -2297,7 +2363,7 @@ def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
             fire_rows = conn.execute(
                 "SELECT order_id, ts, side, qty, entry_reference_price, "
                 "stop_price, tp_price, tier, source_signal, result, "
-                "extra_json "
+                "actual_r_multiple, extra_json "
                 "FROM paper_trade_record "
                 "WHERE division = 'bitunix_futures' "
                 "ORDER BY ts DESC LIMIT 10"
@@ -2315,6 +2381,22 @@ def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
                     if fee_cfg is not None and entry_px
                     else None
                 )
+                result_native = r["result"]
+                actual_r_multiple_native = r["actual_r_multiple"]
+                audit_corrected = bool(extra.get("audit_corrected"))
+                corrected_result = extra.get("corrected_result")
+                corrected_r_multiple = extra.get("corrected_r_multiple")
+                display_result = corrected_result if (audit_corrected and corrected_result is not None) else result_native
+                display_r = corrected_r_multiple if (audit_corrected and corrected_r_multiple is not None) else actual_r_multiple_native
+                correction_tooltip = None
+                if audit_corrected:
+                    try:
+                        correction_tooltip = (
+                            f"Native: {result_native}/{float(actual_r_multiple_native):+.3f}R"
+                            f" · Corrected: {corrected_result}/{float(corrected_r_multiple):+.3f}R"
+                        )
+                    except (TypeError, ValueError):
+                        correction_tooltip = f"Native: {result_native} · Corrected: {corrected_result}"
                 recent_fires.append({
                     "order_id": r["order_id"],
                     "ts": r["ts"],
@@ -2334,7 +2416,15 @@ def build_bitunix_score_view(db_url: str, deps: Any) -> dict | None:
                     "funding_rate_at_decision": extra.get("funding_rate_at_decision"),
                     "fee_floor_dollars": fee_floor,
                     "sl_lifecycle_state": sl_lifecycle_by_order.get(r["order_id"]),
-                    "result": r["result"],
+                    "result": result_native,
+                    "result_native": result_native,
+                    "actual_r_multiple_native": actual_r_multiple_native,
+                    "audit_corrected": audit_corrected,
+                    "corrected_result": corrected_result,
+                    "corrected_r_multiple": corrected_r_multiple,
+                    "display_result": display_result,
+                    "display_r": display_r,
+                    "correction_tooltip": correction_tooltip,
                     "net_score": extra.get("net_score"),
                     "trigger_signal": r["source_signal"],
                     "alert_tf": _infer_alert_tf(r["source_signal"]),

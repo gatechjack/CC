@@ -27,6 +27,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -190,6 +191,61 @@ def reconcile_all(db_url: str) -> list[_ReconcileResult]:
         return [_reconcile_one(conn, t) for t in trades]
 
 
+def _persist_summary(db_url: str, results: list[_ReconcileResult]) -> None:
+    """Write one audit_event summary row per reconciler run. Dashboard
+    surfaces the latest row as the reconciler-state tile. No-op-safe
+    when no closed v2 trades exist yet.
+    """
+    n_total = len(results)
+    n_matches = sum(1 for r in results if r.matches)
+    n_mismatches = n_total - n_matches
+
+    if n_total == 0:
+        status = "no_trades"
+    elif n_mismatches > 0:
+        status = "mismatch"
+    else:
+        status = "match"
+
+    mismatches = [
+        {
+            "order_id": r.order_id,
+            "ts": r.ts,
+            "recorded_result": r.recorded_result,
+            "recorded_r": r.recorded_r,
+            "simulated_result": r.simulated_result,
+            "simulated_r": r.simulated_r,
+            "simulated_filled_legs": r.simulated_filled_legs,
+            "bar_count": r.bar_count,
+            "discrepancy": r.discrepancy,
+        }
+        for r in results
+        if not r.matches
+    ]
+
+    payload = {
+        "n_total": n_total,
+        "n_matches": n_matches,
+        "n_mismatches": n_mismatches,
+        "status": status,
+        "mismatches": mismatches,
+    }
+
+    try:
+        with _db.connect(db_url) as conn:
+            conn.execute(
+                "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+                (
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "audit_reality_reconciler",
+                    "audit_reality_run",
+                    json.dumps(payload),
+                ),
+            )
+    except Exception as exc:
+        print(f"WARNING: _persist_summary failed (reconciler result unaffected): {exc}", file=sys.stderr)
+
+
 def _format_text(results: list[_ReconcileResult]) -> str:
     lines = []
     lines.append("=" * 80)
@@ -244,6 +300,7 @@ def main() -> int:
     args = parser.parse_args()
 
     results = reconcile_all(args.db)
+    _persist_summary(args.db, results)
     if args.json:
         print(_format_json(results))
     else:
