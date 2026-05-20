@@ -76,6 +76,57 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-20 22:51 UTC — BitUnix dashboard: reconciler-state tile + corrected-outcome display
+
+**Commits:** `1264f55` (`feat(dashboard): reconciler-state tile + corrected-outcome display (PRIORITY 2)`). On `origin/main`.
+**Triggered by:** PRIORITY 2 follow-up to the 2026-05-20 10:37 UTC bitunix v2 fix. The audit-vs-reality reconciler's only output was systemd service state; without dashboard surfacing, a mismatch would have remained silent until someone manually ran `systemctl status`. Also surfaces audit_corrected outcomes (2 historical bitunix trades) which the score panel was previously hiding.
+**Backup tag:** `pre-dashboard-tile-20260520` (4 files: web/data.py, two bitunix template partials, audit_reality_reconciler.py — md5-verified to match pre-deploy state).
+
+**Files deployed (4 modify):**
+- `trading_corp/web/data.py` — extend `build_bitunix_trade_plan_view` to read latest `audit_reality_run` row + compute reconciler state (never_run / match / mismatch / no_trades / stale, 26h staleness boundary, mismatch overrides stale). Add `audit_corrected` / `corrected_*` / `display_result` / `correction_tooltip` to score-view `recent_fires`. md5 `734c86e30f61113a689e7f0e61ccdaf2`.
+- `trading_corp/web/templates/partials/bitunix_trade_plan_panel.html` — reconciler-state strip between header and Section 1; mismatch=red alarm with expandable per-mismatch list, stale=amber warning, match=green, no_trades / never_run=gray muted. md5 `7cf29147ecdcfc9ae371dfb5ecbb021a`.
+- `trading_corp/web/templates/partials/bitunix_score_panel.html` — recent-fires renders `display_result` (corrected when flagged) with 8px `corrected` badge + native-vs-corrected tooltip. md5 `9d30d6bad06233bf5f68bb1040ac06b3`.
+- `scripts/audit_reality_reconciler.py` — `_persist_summary` writes one `audit_event` (kind=`audit_reality_run`) per run; called from `main()` after `reconcile_all()`, try/except-wrapped so write failure cannot crash the script or change exit code. md5 `b203f791514cd43ce4b668d853bfd250`.
+
+**Features shipped:**
+- **Reconciler-state tile.** Trade Plan v2 panel now alarms red on mismatch (visually unmissable), warns amber on stale (>26h since last run), shows green match + timestamp on healthy state. Closes the "silent immune system" gap — reconciler failure previously required manually running `systemctl status` to detect.
+- **Corrected-outcome display.** Score-panel recent fires now badge `audit_corrected=true` rows with `corrected` label + tooltip showing native-vs-corrected R-multiple and result string. Trade #1 (`35aa49c9`) historical correction `loss/-1.0R → win/+0.838R` is now operator-visible.
+- **Reconciler persists per-run summary.** Each daily timer fire (or manual run) writes one `audit_reality_run` audit_event row carrying n_total / n_matches / n_mismatches + mismatch details. Read-only-elsewhere; the dashboard reads this row.
+
+**Notable code changes:**
+- The new write lives in the reconciler, not the dashboard. The dashboard is read-only against `audit_reality_run` rows. Matches the task constraint "if Part 1 needs the reconciler to persist a last-run summary, that write lives in the reconciler/its wiring, not the dashboard."
+- State precedence in `build_bitunix_trade_plan_view`: `never_run` → `mismatch` → `stale` → `no_trades` → `match`. **Mismatch overrides stale** (a stale mismatch still alarms red, not yellow).
+- `audit_corrected=true` rule documented in memory: never an automated path (would silence the reconciler signal). See `trading_corp_bitunix_vision.md` §Audit-correction discipline.
+
+**Verification:**
+- `_persist_summary` write fired manually post-deploy: `audit_event` id 407478, ts `2026-05-20T22:51:58+00:00`, status=match, n_matches=3, n_total=3.
+- Reconciler scanned all 3 closed v2 trades (2 pre-deploy `audit_corrected=true`, 1 post-deploy `ef6e6697`); **3/3 matches**, including the new ef6e6697 (bars_walked=2, no TPs reached, genuine SL hit — disambiguated earlier in the session).
+- Dashboard `/division/bitunix_futures` (HTTP 200 via localhost:8000): tile renders green `✓ Reality match · 3/3 v2 trades · 05-20 18:51 ET`; corrected badges visible on both `audit_corrected` trades, with Trade #1 tooltip `Native: loss/-1.000R · Corrected: win/+0.838R`.
+- Pre-deploy tests: 28/28 view-builder tests passed wrapped (`tests/test_bitunix_view_builders.py` including `test_*_mismatch`, `test_*_stale`, `test_*_mismatch_overrides_stale`, `test_score_view_recent_fires_surfaces_corrected_outcome`).
+- Boot wiring log post-restart: `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True` (unchanged — no behavior change at the configuration layer).
+
+**Mismatch / stale render paths NOT live-tested:** can't be seen without an actual mismatch or a >26h-old reconciler row. Unit-tested only via the named tests above. Acceptable for a display-layer change but worth flagging in case live observation reveals a render-edge bug.
+
+**Unattended-timer-fire check (DEFERRED):** Daily timer next fires 2026-05-21 06:03 UTC + jitter. After 5/21 06:13 UTC run `journalctl -u tc-audit-reality.service --since "06:00 today"` to verify the unattended fire produces a clean `audit_reality_run` row — this is the first fully-unattended end-to-end exercise of the immune system. (Today's `_persist_summary` exercise was via manual reconciler invocation.)
+
+**Issues encountered during deploy:**
+- The required `systemctl restart trading-corp.service` triggered Robinhood device-approval MFA. Pre-restart PID had been running for ~5h 58m with an expired pickle generating runtime 401s (visible in pre-restart journal); the restart path detects the expired pickle and runs full re-login. The Robinhood push notification subsystem appeared to silently fail for the first 3 stop+start attempts — user reported never receiving a push. 4th attempt (~55 min after first restart) produced a successful Robinhood resolution; the journal advance between 22:50:02 (`Check robinhood app...`) and 22:50:45 (`Telegram channel online`) was silent, so it's unclear whether MFA went through or Robinhood adapter timed out → `broker_fallback_to_paper`. **Pre-existing condition surfaced by the necessary restart — not caused by deploy content.** Recommendation: refresh robinhood.pickle proactively before future restarts; consider whether an SMS-fallback MFA option exists in the adapter.
+
+**Inert / dormant on current traffic:** none — this is a display change + one new audit row per reconciler run. No behavior change to risk gate, fee math, SL lifecycle, auto_execute, or any decision pipeline component.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-dashboard-tile-20260520; BASE=/home/azureuser/trading_corp; \
+sudo mv \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+sudo mv \$BASE/trading_corp/web/templates/partials/bitunix_trade_plan_panel.html.\$TAG \$BASE/trading_corp/web/templates/partials/bitunix_trade_plan_panel.html; \
+sudo mv \$BASE/trading_corp/web/templates/partials/bitunix_score_panel.html.\$TAG \$BASE/trading_corp/web/templates/partials/bitunix_score_panel.html; \
+sudo mv \$BASE/scripts/audit_reality_reconciler.py.\$TAG \$BASE/scripts/audit_reality_reconciler.py; \
+sudo systemctl restart trading-corp.service"
+```
+
+---
+
 ## 2026-05-20 11:35 UTC — kalshi_weather entry-price floor (side-asymmetric, paper)
 
 **Commits:** uncommitted on local `main`. Deployed via surgical anchor patcher; floor function + yaml entries already on prod via the 05:52 vol-v2 ship (see "hybrid story" below).
