@@ -2514,4 +2514,127 @@ exit 0. The wrapper path is unaffected by the uninstall.
 
 End of § 11.
 
+---
+
+## 12. Procgov wrapper cap does not enforce (verified 2026-05-19 22:50)
+
+**TL;DR.** The `scripts\run_capped.ps1` wrapper does not enforce its 25 GB
+Job-Object cap on Windows 11 build 26200 + procgov 3.2.25275.19. An
+explicit allocation test executed *through the wrapper* reached 30 GB of
+private commit with the cap-engaged banner displayed and was not
+terminated. This invalidates the "Mitigation 2 applied" status recorded
+at commit `88a6c3b`; the wrapper-mandatory discipline (CLAUDE.md
+invariant #6, runbook) provides **no actual memory protection** on this
+OS build. Crash #9 (§ 11) was misclassified as a *wrapper-not-invoked*
+failure; the more accurate framing — consistent with the new evidence —
+is *wrapper-cannot-enforce.* Crash #10 (2026-05-19 22:35, python at
+55.3 GB virtual commit despite wrapper engagement) corroborates.
+
+### Allocation test (2026-05-19 22:50)
+
+Procedure: `allocate_test.py` allocates `bytearray(100 * 1024 * 1024)`
+chunks until either 30 GB is reached or the process is terminated.
+Invoked through the wrapper:
+
+```
+.\scripts\run_capped.ps1 python allocate_test.py
+```
+
+Observed:
+
+- Wrapper banner printed `Maximum job committed memory (MB): 25,600` —
+  procgov reporting cap *intent*.
+- Python proceeded past 25.6 GB without termination, allocation continued
+  to the 30 GB self-imposed target.
+- Final line of test output: `DID NOT HIT CAP`.
+- Continuous memory sampler at 22:50:15 (local): `\Memory\Committed Bytes`
+  = **22.03 GB**, `\Memory\Available Bytes` = **0.31 GB**. The 25 GB cap
+  is not enforced at the kernel level; the system instead approached
+  whole-OS exhaustion under wrapper supervision.
+- Process exited cleanly on test completion; OS reclaimed pages
+  immediately (post-test sample: 7.72 GB committed / 11.32 GB
+  available — *better* than pre-test baseline 8.89 GB available).
+
+Interpretation: the wrapper banner reflects what procgov *was asked* to
+do, not what the Windows Job Object subsystem actually enforced. On this
+OS build the `JOB_OBJECT_LIMIT_JOB_MEMORY` path that should return
+`STATUS_NO_MEMORY` and terminate the job is not engaging. Mechanism
+unconfirmed (a job object may not be attached at all, or the
+`JobObjectExtendedLimitInformation` write may silently no-op under
+26200's job-hardening changes); behavioral outcome is unambiguous.
+
+### Re-classification of crash #9 (§ 11)
+
+§ 11 concluded crash #9 was a *wrapper-not-invoked* failure based on
+transcript evidence that the PowerShell command string lacked
+`run_capped.ps1`. That observation still stands, but the inference that
+*invoking* the wrapper would have prevented the crash does not. § 12's
+allocation test demonstrates that python at 30 GB private commit under
+the wrapper is not terminated by the cap. A wrapped pytest invocation
+exhibiting the same backtester-import balloon to 54 GB private commit
+would, on the evidence available, crash the machine identically.
+
+Crash #10 (2026-05-19 22:35, python.exe at 55.3 GB virtual commit
+despite wrapper engagement on the offending workload) is independent
+confirmation: a workload that *did* go through the wrapper still reached
+private-commit levels well past the cap.
+
+### Mitigation status, re-evaluated
+
+| Mitigation | Prior status (§ 11)        | Status as of § 12                                                                                  |
+| ---------- | -------------------------- | -------------------------------------------------------------------------------------------------- |
+| **M1** (workload reduction baseline) | APPLIED, marginal benefit | **APPLIED.** Still partial; reduces frequency, does not bound peak commit. |
+| **M2** (procgov wrapper, per-invocation) | APPLIED + MANDATORY | **NON-FUNCTIONAL on 25H2 / build 26200 + procgov 3.2.25275.19.** Cap is advisory, not enforced. Flagged for removal from runbook + CLAUDE.md "STOP AND READ" invariant #6. |
+| **M2b** (procgov as service watchdog) | Abandoned (§ 11 addendum) | Unchanged. Not re-attempted; `ERROR_PARTIAL_COPY` wall is upstream of cap-enforcement question. |
+| **M3** (backtester memory refactor) | Backlog, parallel-owned | **Only mitigation that addresses root cause.** Coordination-blocked. Priority raised: M2's removal leaves M3 as the only viable software fix. |
+| **M4** (agent-side transcript lint for unwrapped python) | Filed in BACKLOG.md | **Moot.** Closes a wrapper-discipline gap that does not protect anything. Recommend de-prioritize / close. |
+
+### Path forward — options surveyed
+
+The wrapper path is verified non-functional. Remaining options, ordered
+by enforcement strength vs. workflow cost:
+
+1. **Hyper-V VM with bounded RAM.** Install Windows 11 in a VM with
+   12 GB allocated; perform project work inside the VM. If python
+   exhausts memory, the VM crashes; the host stays up. Setup ~2–4 h.
+   Most rigorous answer; actually enforces.
+2. **Docker Desktop with memory-limited container.** Python inside a
+   container with `--memory=12g`. Container OOM-kills python cleanly;
+   host unaffected. Requires Docker Desktop install + adapting workflows
+   to run inside containers. Setup ~1–2 h.
+3. **psutil-based polling watchdog.** Python script polling at 100 ms
+   that kills the process at a threshold. Race-prone: a fast
+   allocation can cross the threshold and crash before the watchdog
+   acts. Setup ~1 h. Fragile patch.
+4. **M3 (backtester refactor).** Addresses the 60 GB-virtual-for-10 MB-
+   input root cause. With M3 the legitimate workload fits in 16 GB and
+   no containment is needed. Coordination-blocked currently.
+5. **Hardware RAM upgrade.** 32 GB ($80–150) gives breathing room;
+   64 GB ($150–300, this laptop's max) gives comfortable headroom even
+   with the broken backtester. Does not fix the bug; makes it less
+   catastrophic. Cheapest path back to working sessions while M3
+   remains blocked.
+
+The wrapper path is closed for further investment. WSL / Docker / VM are
+heavyweight workflow changes the user has either declined or deferred.
+The psutil watchdog is fragile by construction. RAM upgrade is the
+cheapest near-term defense while M3 unblocks.
+
+### Action items emerging from § 12
+
+- **Update CLAUDE.md invariant #6** to reflect the wrapper is
+  non-functional; remove the wrapper-mandatory framing or convert it to
+  a "no-op kept for forward-compat with a future enforcing build" note.
+- **Update runbook (`docs/runbooks/session_workload_defaults.md`)** to
+  remove the wrap-every-python rule and replace it with the actual
+  current defense (workload reduction + avoid pytest on full
+  trading_corp import chain).
+- **Raise M3 priority in BACKLOG.md.** With M2 gone, M3 is the only
+  software mitigation that bounds peak commit.
+- **De-prioritize or close M4** (transcript lint for unwrapped python)
+  in BACKLOG.md.
+- **Re-baseline session-start prompt** to omit wrapper guidance.
+
+End of § 12.
+
 End of report.
