@@ -1,0 +1,61 @@
+fix(bitunix): paginate kline fetcher around 200-bar server cap (silent v2 lifecycle bug)
+
+The BitUnix Futures kline endpoint (/api/v1/futures/market/kline) silently
+caps each response at 200 bars per call regardless of the `limit` parameter,
+returning the NEWEST bars within the requested [startTime, endTime] window
+in descending order.
+
+The legacy `_bitunix_kline_fetcher` treated "page returned fewer bars than
+requested" as end-of-data via `if len(page) < this_page: break`, exiting
+after one call. For paper-mode v2 trades with max_hold_seconds=86400
+(24h * 60 = 1440 1m bars), the fetcher returned only the newest 200 minutes
+of the requested window -- silently dropping ~85 percent of the bars the
+v2 multi-leg classifier needed to walk. TP1/TP2 fills that happened in the
+dropped early-window bars were never observed; the classifier saw only
+late bars where original SL had been violated and returned `loss` on
+bars_to_resolution=1.
+
+Verified server cap via live probe (2026-05-20):
+  GET /api/v1/futures/market/kline?symbol=BTCUSDT&interval=1m
+      &startTime=1779121442000&endTime=1779181440000&limit=1000
+  -> code=0, rows_returned=200 (NOT 1000)
+     newest row time = 1779181380000 (5/19 09:03 UTC)
+     oldest returned  = 1779169440000 (5/19 05:44 UTC)
+
+Fix: slice the requested window into 200-bar sub-windows, iterate forward,
+advance cursor to each sub-window's end regardless of how many bars came
+back (gaps within a sub-window don't imply end-of-data).
+
+Failing-test-then-passing-test evidence:
+- test_kline_fetcher_returns_full_window_when_server_caps_at_200 fails
+  pre-fix (got 200 bars; expected 1000) and passes post-fix.
+- test_trade1_reproduces_observed_bug_with_truncated_bars passes both
+  before and after the fix -- the bug repro is at the *classifier* layer
+  with the buggy single-bar slice, and the classifier behavior is correct
+  given that input.
+- test_trade1_with_correct_bars_yields_partial_win passes -- with proper
+  bars (entry + early TP-touch bars + SL-violation bar), the classifier
+  correctly fills TP1+TP2, advances SL to TP1 floor 76,269.87, returns
+  result=win, r=+0.838 -- matching the audit-vs-reality reconciler's
+  simulated outcome for prod trade #1.
+- test_multi_tp_in_one_walk_yields_correct_sl_at_tp1_floor (NEW) covers
+  the multi-TP-in-one-tick edge case that has never executed live: when
+  TP1 and TP2 fill in the same replay-tick walk, SL must end at TP1
+  floor (not stuck at entry, not double-moved). Verified.
+
+Full existing v2 lifecycle suite (tests/test_paper_trade_replay.py, 27
+tests) still passes. The fix only touches fetcher pagination; classifier
+logic unchanged.
+
+Asymmetry between trade #1 (corrupted) and trade #2 (correct) is
+reality-dependent, not bug-dependent: both trades had identical buggy
+bar slices, but only trade #1 had TP fills in the dropped early window
+that should have been observed. Trade #2 had no TP fills anywhere in
+its life (verified against bitunix_bar_history -- TP1 missed by $3.97).
+
+Audit-vs-reality reconciler (scripts/audit_reality_reconciler.py, ships
+in next commit) is the durable check that would have caught this bug at
+trade-close time and that generalizes to unknown future bugs in the
+audit-vs-reality boundary.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

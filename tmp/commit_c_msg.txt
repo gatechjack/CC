@@ -1,0 +1,43 @@
+docs+data: v2 lifecycle fix report + correction notices on prior reports + trade re-tag script
+
+Three artifacts:
+
+1. reports/bitunix_v2_fix_2026-05-20.md (NEW) -- consolidated fix-and-
+   reconciliation report. Documents the confirmed root cause, the
+   minimal pagination fix, the failing-test-then-passing-test evidence,
+   the reconciler's first-run output (1 mismatch / 1 match), the
+   trade-#1 corrected outcome (+0.838R win vs recorded -1.0R loss), the
+   re-stated v2-era record (1W/1L, sum -0.162R, not 0/2 -2.0R), and the
+   push-gate confirmation.
+
+2. Correction-notice headers prepended to two prior reports (body
+   unchanged per task instruction):
+   - reports/bitunix_paper_data_review_2026-05-20.md (commit 504c992):
+     "infrastructure works ... no silent failures" was wrong. Funnel-
+     stage counts still correct; only trade-outcome framing materially
+     wrong (0/2 losses -> 1W/1L post-correction).
+   - reports/bitunix_confound_and_fee_floor_2026-05-20.md (commit f6559ff):
+     "v2 is functioning" was wrong in load-bearing sub-component. Step 1
+     confound + Step 2 fee-floor diagnoses stand; only the closing
+     framing needed revision.
+   Push gate satisfied: the wrong "no silent failures" conclusion no
+   longer sits unmarked on local main.
+
+3. tmp/apply_trade_corrections.sh -- one-time prod data migration that
+   re-tagged the 2 closed v2 paper_trade_record rows on prod with
+   audit_corrected=true + reconciler-verified corrected_result /
+   corrected_r_multiple in extra_json (original result + R columns
+   preserved for historical fidelity). Already executed against prod.
+
+   Trade #1 (35aa49c9): added corrected_result='win', corrected_r=0.838,
+     corrected_filled_legs=['tp1','tp2'], corrected_exit_price=76269.87.
+   Trade #2 (a467e316): added corrected_result='loss', corrected_r=-1.0
+     (verified correct; reconciler match).
+
+Downstream code that needs the corrected outcome should read
+extra_json.corrected_result / extra_json.corrected_r_multiple when
+extra_json.audit_corrected is true. Dashboard surfacing of these fields
+is out of scope for this task -- noted in the fix report's
+"out of scope" section.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

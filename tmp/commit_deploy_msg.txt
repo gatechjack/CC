@@ -1,0 +1,41 @@
+deploy: bitunix v2 lifecycle fix + reconciler + daily systemd timer (prod 2026-05-20 10:37 UTC)
+
+Deployed commits 6c1e48b + 3021c03 + fd26e8c to tc-prod-vm. Backup tag
+pre-v2-kline-fix-20260520 created before deploy; rollback recipe captured
+in the deploy_log.md entry.
+
+Reality-verified post-deploy:
+- Fetcher in-process probe with trade-#1's actual window (since_ms 5/18
+  16:24, limit 1440 1m bars): returned 1600 bars > 200 threshold; full
+  window walked. The 200-bar server cap is no longer being treated as
+  end-of-data.
+- Reconciler in-process against prod DB: 2/2 matches, 0 mismatches.
+  Trade #1 corrected outcome (win/+0.838R) matches simulated; trade #2
+  recorded outcome (loss/-1.0R) matches simulated.
+
+Daily systemd timer (tc-audit-reality.timer) installed + enabled.
+First-run service triggered manually: exit 0, 2/2 matches. Next trigger
+2026-05-21 06:03 UTC + jitter. Any future audit-vs-reality mismatch
+fails the systemd service -> visible via journalctl/systemctl --failed.
+
+60-day paper-cutover clock RESTARTED from 2026-05-20 per the audit-integrity
+review (Option A). Pre-deploy 2 v2 trades remain in DB with audit_corrected
+flags + corrected_* fields but are excluded from the cutover sample.
+Documented in trading_corp_bitunix_vision.md memory.
+
+Reconciler update vs the locally-committed version (3021c03): now respects
+audit_corrected=true rows by comparing simulated outcome against
+extra_json.corrected_result / corrected_r_multiple instead of the original
+result/actual_r_multiple columns. This is why post-deploy clean state is
+2/2 matches (would have been 1/2 mismatches against the unmodified
+recorded columns -- both readings are equivalent statements; the
+corrected-row interpretation is the useful one for an ongoing alarm).
+
+Includes the deploy artifacts: pre-deploy backup script, upload script,
+verify script (3a+3b), venv-finder, and systemd timer install script.
+
+No bundling of parallel-session deploy_log content: surgically committed
+only the new BitUnix entry on top of HEAD; parallel session's uncommitted
+kalshi-vol-v2 deploy_log hunk preserved in working tree for their commit.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

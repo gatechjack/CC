@@ -1,0 +1,37 @@
+reports: bitunix audit-integrity finding -- silent v2 lifecycle logging failure
+
+Trigger: user reported observing 2 trades on 5/19 progressing to TP2/TP3.
+Prior review (504c992) said only 2 v2-era trades total, both 5/18, all losses,
+position_sl_update=0. Direct contradiction; ran audit-integrity reconciliation.
+
+Finding: there are exactly 2 v2-era trades (both 5/18, open into 5/19) -- that
+count is correct. But Trade #1 (35aa49c9) DID hit TP1 on the entry bar and TP2
+six minutes later in actual BTC price action (verified against bitunix_bar_history
+3m bars). The v2 multi-leg classifier in paper_trade_replay.py never observed
+those fills: filled_legs=[], current_sl unchanged from entry, recorded as full
+-1.0R loss. Actual would have been ~+0.625R partial win under Option C arithmetic.
+Trade #2 (a467e316) is a genuine loss -- TP1 missed by $3.97. Position_sl_update
+audit count, all-time, all divisions: 0 rows (not "0 since v2 flip" -- 0 EVER).
+
+Bug class (not fixed in this task -- diagnosis only): the v2 classifier IS being
+routed (paper_trade_replay.py lines 745-749 conditions match), but bars_to_resolution=1
+on both trades suggests the replay-tick that finally resolves the trade walks only
+a single bar -- likely a fetcher-scope issue between _default_router_fetcher and
+_bitunix_kline_fetcher returning a wrong slice. Lifecycle never sees the TP-fill
+bars. Filled_legs never grows, so _emit_audit never fires, so 0 position_sl_update.
+
+Material implications:
+- Prior reports' "infra healthy / no silent failures" framing is INVALIDATED.
+- Recorded v2 outcomes are wrong on trades that traversed TP levels.
+- 60-day paper-cutover decision will be made on biased data if not fixed.
+- Dashboard Trade Plan v2 panel shows the same wrong data.
+- auto_execute remains correctly false; no capital exposure from the bug.
+
+Honest assessment: I should have done this cross-source verification before
+writing "no silent failures" in either prior report. The verify-before-narrating
+memory exists exactly for this failure mode.
+
+Next task (separate, with code-change scope) belongs in the fix-investigation
+session -- recommendations in report under "Recommended next task."
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

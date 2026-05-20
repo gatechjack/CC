@@ -1,0 +1,34 @@
+feat(scripts): audit-vs-reality reconciler for closed v2 paper trades
+
+The durable check that would have caught the silent v2 lifecycle bug at
+trade-close time. For each closed v2 paper_trade_record row, the
+reconciler:
+
+1. Pulls bars from bitunix_bar_history (3m) over the trade's
+   [ts, result_ts] window -- the persisted price-truth.
+2. Calls _classify_v2_multi_leg with a fresh extra-state to simulate
+   what a non-buggy replay-tick would have produced.
+3. Compares simulated vs recorded result + actual_r_multiple (R within
+   +/- 0.05 tolerance).
+4. Reports per-trade MATCH or MISMATCH with discrepancy detail.
+
+Exit code 0 if all match, 1 if any mismatch -- wires into CI / cron as
+a gate against the audit-vs-reality boundary failure class.
+
+First-run output against prod DB (2026-05-20):
+  matches: 1/2   mismatches: 1
+  MISMATCH 35aa49c9 (recorded loss/-1.0R vs simulated win/+0.838R,
+                     filled_legs=[tp1,tp2], final_sl=76,269.87)
+  MATCH    a467e316 (recorded loss/-1.0R verified correct -- TP1
+                     missed by $3.97 in price action; genuine SL hit)
+
+The asymmetry between mismatch (trade #1) and match (trade #2) is the
+predicted bug-vs-reality interaction: both trades had identical buggy
+bar slices in the live path, but only trade #1 had TP fills in the
+dropped early window that should have been observed.
+
+Also archives the live BitUnix kline-endpoint probe (tmp/bitunix_kline_probe.sh)
+and the prod-DB evidence gathering script (tmp/bitunix_v2_bug_evidence.sh)
+that confirmed the 200-bar server cap behavior used by the bug analysis.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
