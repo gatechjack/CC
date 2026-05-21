@@ -76,6 +76,145 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-21 03:22 UTC — IC v1 follow-up: home-tile routing (commit `19b6dba`)
+
+**Commits:** `19b6dba` (home: route robinhood_joint tile to /telemetry/iron_condor) — authored 2026-05-18, missed in the 03:09 UTC ship because the tarball covered only commits A + B + 65c8cdd.
+**Triggered by:** user reported clicking the Robinhood Joint home tile didn't open the new IC page.
+**Backup tag:** `.pre-ic-tile-20260521-032240`
+
+**Files deployed (1):**
+- `trading_corp/web/templates/home.html` — Robinhood Joint tile now routes to `/telemetry/iron_condor` instead of the generic `/division/robinhood_joint` shell.
+
+**Features shipped:**
+- Home tile for Robinhood Joint goes to the operator-facing IC live view (sections 1-6) — mirrors the existing prediction-market special-case in the same template.
+
+**Verification:**
+- Local + prod md5 match: `9834530b54872b42cf904180f4c9197e`
+- `curl http://localhost:8000/ | grep href="/telemetry/iron_condor"` returns the link
+- Templates hot-reload — no `systemctl restart` needed.
+
+**Rollback:**
+```bash
+sudo -u azureuser cp /home/azureuser/trading_corp/trading_corp/web/templates/home.html.pre-ic-tile-20260521-032240 /home/azureuser/trading_corp/trading_corp/web/templates/home.html
+```
+
+---
+
+## 2026-05-21 03:09 UTC — Iron Condor v1 first-prod-ship (30 files, chunked transport)
+
+**Commits:** `365114b` (scaffolding) + `7c1eef0` (IC-only shared edits) + `65c8cdd` (wiring) — three IC commits previously in git but never deployed; this is the first prod ship of the entire IC v1 phase.
+**Triggered by:** session-end deploy after the 5-file deconfliction landed locally and 371/371 tests + `ic_paper_run_readiness` confirmed READY.
+**Backup tag:** `.pre-ic-v1-full-20260521-030935` (for the 12 overwritten files; the 18 new files have no backup — they didn't exist on prod before).
+
+**Files deployed (30):**
+
+*New files (18 — commit A `365114b`):*
+- `trading_corp/agents/divisions/robinhood_joint.py` — division shell (190 lines)
+- `trading_corp/agents/strategies/robinhood_joint_iron_condor.py` — primary strategy module (1686 lines)
+- `trading_corp/agents/strategies/_ic_orchestration.py` — signal scanner + position manager loops + dispatch helpers
+- `trading_corp/agents/ic_live_view.py` — live-view query layer (828 lines, 6 sections)
+- `trading_corp/agents/ic_telemetry.py` — telemetry rollups (492 lines)
+- `trading_corp/comms/pending_combo_registry.py` — in-process HITL combo registry
+- `trading_corp/comms/telegram_batcher.py` — per-strategy notification batcher with bypass-tag pass-through
+- `trading_corp/web/combo_approval_view.py` — approval-card renderer (4-leg combo view)
+- `trading_corp/utils/iv.py` — IV-rank + ATM-IV utilities
+- `trading_corp/data/ex_dividend_calendar.py` — ex-div calendar loader
+- `trading_corp/scripts/ic_paper_run_readiness.py` — pre-run wiring check CLI (exit 0 = green)
+- `trading_corp/scripts/ic_daily_digest.py` — cron-able daily summary
+- `trading_corp/scripts/ic_telemetry_cli.py` — interactive telemetry queries
+- `trading_corp/web/templates/approval_combo_detail.html` — combo approval card
+- `trading_corp/web/templates/iron_condor_live.html` — `/telemetry/iron_condor` page shell
+- `trading_corp/web/templates/partials/iron_condor_live_sections.html` — sections 1/3/5 (htmx 30s refresh)
+- `trading_corp/web/templates/partials/iron_condor_static_sections.html` — sections 2/4/6 (page-load)
+- `config/ex_dividend_calendar.yaml` — 169-line calendar source
+
+*Modified files (12 — commit B + 65c8cdd):*
+- `trading_corp/agents/data_exec.py` — adds `place_combo` (multi-leg dispatch + 3 audit kinds + `_persist_combo_positions`)
+- `trading_corp/brokers/base.py` — `Broker` ABC adds `place_multi_leg` + `get_option_greeks` + `validate_combo_cohesion` + `ComboParams`
+- `trading_corp/brokers/paper.py` — `place_multi_leg` combo simulator (per-leg slippage from `paper_simulation.per_leg_slippage_dollars`)
+- `trading_corp/brokers/robinhood.py` — `get_puts_for_expiry` + `place_multi_leg` (atomic 4-leg via `robin_stocks.orders.order_option_spread`) + `is_multi_leg` guard on single-leg path
+- `trading_corp/web/app.py` — `WebDeps` adds `ic_division` / `ic_strategy` / `ic_telegram_batcher` / `pending_combo_registry` fields
+- `trading_corp/web/templates/approvals.html` — `{% if row.kind == 'combo' %}` branch on approvals list
+- `config/risk.yaml` — `robinhood_joint_iron_condor` override block (`per_trade_risk_pct: 0.05`)
+- `config/macro_calendar.yaml` — 2026 high-impact dates (FOMC + NFP + CPI + PPI)
+- `config/divisions.yaml` — `strategy: robinhood_joint_iron_condor` on robinhood_joint block
+- `config/strategies.yaml` — full `robinhood_joint_iron_condor:` strategy block (lines 1626-1691)
+- `trading_corp/main.py` — IC wiring (RobinhoodJointAgent + RobinhoodJointIronCondorAgent + TelegramBatcher + PendingComboRegistry + `_ic_account_factory` + `_ic_strategy_state_factory` + 2 asyncio tasks + WebDeps wiring + finally-block cancellation)
+- `trading_corp/web/routes.py` — 4 new routes: `GET /telemetry/iron_condor`, `GET /telemetry/iron_condor/partials/live`, `GET /approvals/combos/{combo_id}`, `POST /approvals/combos/{combo_id}/decide`
+
+**Features shipped:**
+- **Robinhood Joint Iron Condor v1** as a fully-wired division — paper-default (`auto_execute: false` is load-bearing). Universe SPY/QQQ/IWM/GLD/TLT, 45 DTE, 0.16 short delta. Decision tree is 10-branch (catastrophic stop → profit target → late-DTE → ex-div → hard stop → tested-side ID → adjust/close branches). Backtester permanently out of scope per Board decision 2026-05-18; paper-mode-as-validation per `runbooks/paper_run/ic_v1.md` (≥30-day tuning checkpoint, ≥90-day live-discussion readiness, HITL on every action even after 90 days).
+- **Multi-leg broker support** — `place_multi_leg` on `Broker` ABC + Robinhood (atomic 4-leg `order_option_spread`) + paper (slippage-simulated). `place_combo` on `data_exec` for cohesion validation + combo-level audit events. Idle for non-IC strategies (`NotImplementedError` default on the ABC).
+- **HITL combo approval surface** — `/approvals/combos/{combo_id}` GET + POST `/decide` via `PendingComboRegistry` (in-process, lost on restart by design). Combo rows now appear on the existing `/approvals` index via the new combo branch.
+- **`/telemetry/iron_condor` operator dashboard** — 6-section debugging view: open positions (live Greeks, distances to triggers), recent activity, pending combos, today's scan results, strategy health (VIX gate, macro halt, circuit breaker, state-consistency check), last 10 closed combos. Live sections (1/3/5) htmx-refresh every 30s.
+- **Operator CLIs** — `python -m trading_corp.scripts.ic_paper_run_readiness` (13 BLOCK + 1 SOFT readiness check), `ic_daily_digest`, `ic_telemetry_cli`. All run under the prod venv.
+- **`config/macro_calendar.yaml` 2026 dates** — 32 high-impact events (FOMC/NFP/CPI/PPI). Used by IC scan's `MacroCalendar.has_high_impact_event_within(trading_days=5)` gate. Shared infrastructure — other strategies also read this.
+- **`config/risk.yaml` IC override** — `overrides.robinhood_joint_iron_condor.per_trade_risk_pct: 0.05`. Per-leg evaluation already supported by `RiskAgent`; no multi-leg gate extension.
+
+**Notable code changes:**
+- **Two new asyncio tasks** in `run()` named `ic-signal-scanner` and `ic-position-manager`. Both confirmed initialized in the post-deploy logs (`IC signal scanner online: weekdays 09:45-09:50 ET (poll every 60s)` + `IC position manager online — running startup catch-up first`).
+- **First scan fires at 09:45 ET on the next US market day** (`_ic_orchestration.is_signal_scan_due` window 09:45-09:50 ET, skip weekends and 2026 NYSE holidays).
+- **Template-var naming gotcha** — partial templates expect `positions`, `pending`, `health`, `scan_results`, `activity`, `closed` (short forms), NOT the longer `ic_live_view` function names (`open_positions_detail`, etc.). Routes deliberately use the short forms in the TemplateResponse context dict.
+- **Route ordering** — `/approvals/combos/{combo_id}` registered BEFORE the catch-all `/approvals/{order_id}` for FastAPI first-match path routing.
+- **CRLF concern was a non-issue** — md5 of routes.py on prod matched git LF (despite local working tree being CRLF), so no `sed -i 's/\r$//'` needed on this deploy. Future routes.py deploys should still check.
+
+**Latent bugs caught + fixed:**
+- **First deploy attempt at 02:10 UTC crashed in a Restart=always loop** because the patch shipped only the 4 wiring files (commit `65c8cdd`) without commit A's 18 IC modules or commit B's 8 supporting edits. `main.py` hit `ModuleNotFoundError: No module named 'trading_corp.agents.divisions.robinhood_joint'` on import. Rolled back at 02:17 UTC via `.pre-ic-v1-20260521-020956` backups; service stabilized immediately. Root lesson: prod is filesystem-deployed (no git on prod), so a patch covering only HEAD's diff is insufficient when the prior commits in the same phase were never shipped. **Audit the full chain of unshipped IC commits before deploying the next phase of any project.** Cross-checked via `find /home/azureuser -name 'robinhood_joint.py'` (zero hits) + line-count math reconciliation across the 12 modified files (every delta matched commit-B/65c8cdd insertion counts exactly, ruling out prod-only drift).
+
+**Verification:**
+- Service active, PID 939464 (uptime since 03:09:36 UTC); no further restarts in 5+ min.
+- `IMPORT OK` from the import-test step (all 9 IC modules + main + routes import cleanly under the prod venv).
+- `IC signal scanner online` + `IC position manager online` both in journal.
+- `curl http://localhost:8000/telemetry/iron_condor` → HTTP 200.
+- `curl http://localhost:8000/approvals` → HTTP 200 (existing surface intact).
+- Tracebacks in current PID journal: zero (Fidelity bot-block + Kalshi copy_trader `wallet` NameError are both known pre-existing issues unrelated to IC).
+- Robinhood reconnect from the 02:00 UTC MFA refresh still good: `RobinhoodBroker bound: filter='joint' → account=116637293063 (joint_tenancy_with_ros)`.
+
+**Inert / dormant on current traffic:**
+- **First scan won't fire until 09:45 ET on the next US market day** (2026-05-21 is Thursday, so next fire is today ~13:45 UTC if past 09:30 ET, else tomorrow). The position manager runs its startup catchup immediately but does nothing because there are no open ICs in `agent_state.open_ics` (clean prod state).
+- **`auto_execute_caps` block in `strategies.yaml`** is structurally present but unused while `auto_execute: false`. Future earn-auto-execute conversation would touch this; do not flip without a Board memo per CLAUDE.md § 1.
+- **`place_multi_leg` on non-Robinhood brokers** is `NotImplementedError`. Only `RobinhoodBroker` and `PaperExecutionBroker` implement it. No other strategy uses combos today.
+
+**Robinhood MFA loop fix (precondition):**
+Earlier this session, the broken RH MFA loop on restart was fixed via `scripts/rh_mfa_refresh_prod.sh` (push approval, fresh pickle at `/home/azureuser/.tokens/robinhood.pickle` at 01:58 UTC). Without that fix, the IC scanner would have run on `broker_fallback_to_paper` $0-equity → qty=0 candidates → risk gate rejects everything → silent no-emit. The MFA fix is the load-bearing precondition for the IC v1 paper run to actually produce candidates.
+
+**Rollback recipe:**
+```bash
+TAG=20260521-030935; BASE=/home/azureuser/trading_corp
+sudo -u azureuser bash -c "
+for f in \
+  trading_corp/agents/data_exec.py trading_corp/brokers/base.py \
+  trading_corp/brokers/paper.py trading_corp/brokers/robinhood.py \
+  trading_corp/web/app.py trading_corp/web/templates/approvals.html \
+  config/risk.yaml config/macro_calendar.yaml \
+  config/divisions.yaml config/strategies.yaml \
+  trading_corp/main.py trading_corp/web/routes.py; do
+  mv \"\$BASE/\$f.pre-ic-v1-full-\$TAG\" \"\$BASE/\$f\"
+done
+rm -rf \$BASE/trading_corp/agents/divisions/robinhood_joint.py \
+       \$BASE/trading_corp/agents/strategies/robinhood_joint_iron_condor.py \
+       \$BASE/trading_corp/agents/strategies/_ic_orchestration.py \
+       \$BASE/trading_corp/agents/ic_live_view.py \
+       \$BASE/trading_corp/agents/ic_telemetry.py \
+       \$BASE/trading_corp/comms/pending_combo_registry.py \
+       \$BASE/trading_corp/comms/telegram_batcher.py \
+       \$BASE/trading_corp/web/combo_approval_view.py \
+       \$BASE/trading_corp/utils/iv.py \
+       \$BASE/trading_corp/data/ex_dividend_calendar.py \
+       \$BASE/trading_corp/scripts/ic_paper_run_readiness.py \
+       \$BASE/trading_corp/scripts/ic_daily_digest.py \
+       \$BASE/trading_corp/scripts/ic_telemetry_cli.py \
+       \$BASE/trading_corp/web/templates/approval_combo_detail.html \
+       \$BASE/trading_corp/web/templates/iron_condor_live.html \
+       \$BASE/trading_corp/web/templates/partials/iron_condor_live_sections.html \
+       \$BASE/trading_corp/web/templates/partials/iron_condor_static_sections.html \
+       \$BASE/config/ex_dividend_calendar.yaml
+"
+sudo systemctl restart trading-corp
+```
+
+---
+
 ## 2026-05-20 22:54 UTC — kalshi_crypto vol-v2 dashboard: tile + read-only VIEW (rollback-then-fix)
 
 **Commits:** uncommitted on local `main`. Deployed via targeted-patch staging copy (pull-prod → edit → push-staging), NOT a whole-file scp of local `data.py` — local carried unrelated bitunix reconciler WIP at deploy-start that the 22:51 UTC bitunix session shipped shortly before my deploy.

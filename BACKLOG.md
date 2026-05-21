@@ -68,6 +68,103 @@ the report are not the priority any longer — H7 supersedes them.
 
 ---
 
+## END-OF-SESSION SNAPSHOT — 2026-05-21 ~03:30 UTC  *(supersedes 2026-05-20 ~23:05 UTC below)*
+
+**One work thread: Iron Condor v1 SHIPPED to prod at 03:09 UTC after a first-attempt crash-loop revealed prod wasn't carrying commits A (`365114b`) or B (`7c1eef0`). Rolled back at 02:17, audited drift via line-count math (clean — prod = pre-commit-B base for all 12 modified files), then full 30-file ship via 11-chunk az transport. Two IC asyncio tasks online (`IC signal scanner online` + `IC position manager online` in journal). Home tile (`19b6dba`, also missed in tarball) caught + shipped at 03:22 UTC. RH MFA loop on restart pre-fixed at 01:58 UTC via `scripts/rh_mfa_refresh_prod.sh` (push approval to phone) — load-bearing precondition for the IC scanner to actually emit candidates. First scan fires today 09:45–09:50 ET (13:45–13:50 UTC). See `runbooks/deploy_log.md` 03:09 + 03:22 entries; pickup at `runbooks/session_start_2026_05_22.md`.**
+
+### Headline
+
+IC v1 is end-to-end live on prod, paper mode, `auto_execute: false`. All 30 files shipped (commit A's 18 IC modules + commit B's 8 IC-only shared edits + 65c8cdd's 4 wiring deltas + home.html tile fix). Service `active` on PID 939464 since 03:09:36 UTC, zero tracebacks in current journal. `/telemetry/iron_condor` + `/approvals` both HTTP 200. Robinhood Joint bound (account 116637293063, `joint_tenancy_with_ros`). Robinhood MFA loop fixed earlier in the session.
+
+### Latent bug caught + fixed (during deploy)
+
+**First-attempt crash loop.** Patch-only deploy of commit `65c8cdd` (the 4-file wiring delta) crashed `main.py` at `ModuleNotFoundError: No module named 'trading_corp.agents.divisions.robinhood_joint'` because commits A + B were authored 2026-05-18 but never deployed. Systemd `Restart=always` put trading-corp into a 45s-run / 10s-restart cycle for ~6 minutes (6 restart events). Rolled back via the `.pre-ic-v1-20260521-020956` backups; service stabilized immediately. Audited the full chain of unshipped commits via `find` + `grep` + line-count reconciliation, then full ship via xz tarball + 11-chunk base64 transport. New feedback memory saved: [[feedback-audit-unshipped-commits-before-deploy]].
+
+### What landed
+
+**On prod (live, paper):**
+- 18 new IC modules in `trading_corp/agents/{divisions,strategies,}/` + `trading_corp/comms/` + `trading_corp/web/combo_approval_view.py` + `trading_corp/utils/iv.py` + `trading_corp/data/ex_dividend_calendar.py` + 3 operator CLIs + 4 templates + `config/ex_dividend_calendar.yaml`.
+- 8 IC-only shared-file edits: `data_exec.py` (`place_combo`), `brokers/base.py` (`place_multi_leg` + `get_option_greeks` ABC), `brokers/paper.py` (combo simulator), `brokers/robinhood.py` (atomic 4-leg POST), `web/app.py` (IC WebDeps fields), `web/templates/approvals.html` (combo branch), `config/risk.yaml` (IC override), `config/macro_calendar.yaml` (2026 dates).
+- 4 wiring deltas in `config/{divisions,strategies}.yaml` + `trading_corp/main.py` + `trading_corp/web/routes.py`.
+- `trading_corp/web/templates/home.html` — Robinhood Joint tile routes to `/telemetry/iron_condor`.
+- Robinhood session pickle refreshed: `/home/azureuser/.tokens/robinhood.pickle` at 01:58 UTC.
+
+**On local (committed):**
+- `65c8cdd` — IC v1 wiring (4 files +359 lines). On `main`, NOT pushed to `origin/main`.
+- Prior IC commits ancestral: `88b8ced`, `19b6dba`, `365114b`, `7c1eef0` (all 2026-05-18, now also on prod via tonight's tarball).
+
+**On local (uncommitted — operational artifacts):**
+- `scripts/rh_mfa_refresh_prod.sh` — reusable RH MFA-loop fix via push approval.
+- `scripts/deploy_ic_v1.sh` — IC-specific patch deploy script (first attempt; superseded).
+- `scripts/drive_ic_v1_deploy.sh` + `.ps1` — chunked-transport driver (reusable pattern for large payloads).
+- `scripts/ic_v1_deploy_finalize.sh` — assemble+extract+restart+verify finalize script.
+- `runbooks/deploy_log.md` (M) — 03:09 + 03:22 UTC entries.
+- `runbooks/paper_run/ic_v1.md` — Start date filled in (2026-05-21).
+- This snapshot.
+
+### Environment sync state
+
+| Surface | State |
+|---|---|
+| Local working tree | IC v1 wiring committed (`65c8cdd`); 5 operational scripts untracked; deploy_log + paper_run + BACKLOG modified (this snapshot). |
+| Local committed (`main`) | `65c8cdd`, 1 ahead of `origin/main`. |
+| `origin/main` | 1 behind local. |
+| Prod (`tc-prod-vm`) | **live: IC v1 (paper, HITL) + all prior strategies preserved.** PID 939464, restart 2026-05-21 03:09:36 UTC. `auto_execute: false` on IC; `bitunix_futures.auto_execute: true` within deterministic caps preserved. RH session pickle fresh (2026-05-21 01:58 UTC). |
+| Backup tag on prod | `.pre-ic-v1-full-20260521-030935` (12 overwritten files) + `.pre-ic-tile-20260521-032240` (home.html). Rollback recipe in deploy_log 03:09 + 03:22 entries. |
+| Memory | `trading_corp_iron_condor_v1.md` updated (LIVE on prod); MEMORY.md index entry updated; new `feedback_audit_unshipped_commits_before_deploy.md` saved; `trading_corp_project.md` Robinhood section updated to include IC v1 paper run. |
+
+### Open observations + follow-ups
+
+1. **First scan hasn't fired yet.** Today (Thursday 2026-05-21) is a US market day. Scanner fires once in the 09:45–09:50 ET window (13:45–13:50 UTC). Watch the journal for `IC scanner firing daily scan at HH:MM ET` and any subsequent `combo_proposed` audits.
+2. **Paper-run start date filled in** (`runbooks/paper_run/ic_v1.md` line 7). Start = 2026-05-21. 30-day tuning checkpoint = 2026-06-20. 90-day live-discussion readiness = 2026-08-19.
+3. **`auto_execute: false` is permanent through 90-day graduation** per CLAUDE.md § 1 + runbook § "What 'Ready to Discuss Live' Does Not Mean." Don't flip the bool under any circumstances.
+4. **Reusable operational scripts** — `rh_mfa_refresh_prod.sh` for any future RH MFA-loop event; the `drive_ic_v1_deploy.sh` + chunked transport pattern is reusable for any large-payload deploy (>28KB script cap).
+5. **Three deploys ran clean tonight** — the rh_mfa refresh, the rolled-back patch-only attempt (instructive failure), the full 30-file ship, and the home.html tile fix. All used `az vm run-command` (SSH stayed blocked from local IP, no NSG poking needed).
+
+### Cleanup nits (still defer)
+
+- 5 operational scripts in `scripts/` are untracked. Two of them (`drive_ic_v1_deploy.sh` + `ic_v1_deploy_finalize.sh`) are IC-specific one-offs but encode a useful chunked-deploy pattern; the other three (`deploy_ic_v1.sh`, `drive_ic_v1_deploy.ps1`, `rh_mfa_refresh_prod.sh`) are also worth preserving. Will be committed at session end.
+- `runbooks/session_start_2026_05_21_kalshi_post_deploy.md` (M) and `docs/Deployment notes.txt` (??) are parallel-session artifacts; not committing in this session's scope.
+
+### Soft rollback (revert IC v1 to pre-deploy state)
+
+```bash
+# Full rollback recipe in runbooks/deploy_log.md 2026-05-21 03:09 UTC entry.
+# Short version:
+TAG=20260521-030935; BASE=/home/azureuser/trading_corp
+sudo -u azureuser bash -c "
+  for f in trading_corp/agents/data_exec.py trading_corp/brokers/base.py \
+           trading_corp/brokers/paper.py trading_corp/brokers/robinhood.py \
+           trading_corp/web/app.py trading_corp/web/templates/approvals.html \
+           config/risk.yaml config/macro_calendar.yaml \
+           config/divisions.yaml config/strategies.yaml \
+           trading_corp/main.py trading_corp/web/routes.py; do
+    mv \"\$BASE/\$f.pre-ic-v1-full-\$TAG\" \"\$BASE/\$f\"
+  done
+  rm -rf \$BASE/trading_corp/agents/divisions/robinhood_joint.py \
+         \$BASE/trading_corp/agents/strategies/robinhood_joint_iron_condor.py \
+         \$BASE/trading_corp/agents/strategies/_ic_orchestration.py \
+         \$BASE/trading_corp/agents/ic_live_view.py \
+         \$BASE/trading_corp/agents/ic_telemetry.py \
+         \$BASE/trading_corp/comms/pending_combo_registry.py \
+         \$BASE/trading_corp/comms/telegram_batcher.py \
+         \$BASE/trading_corp/web/combo_approval_view.py \
+         \$BASE/trading_corp/utils/iv.py \
+         \$BASE/trading_corp/data/ex_dividend_calendar.py \
+         \$BASE/trading_corp/scripts/ic_paper_run_readiness.py \
+         \$BASE/trading_corp/scripts/ic_daily_digest.py \
+         \$BASE/trading_corp/scripts/ic_telemetry_cli.py \
+         \$BASE/trading_corp/web/templates/approval_combo_detail.html \
+         \$BASE/trading_corp/web/templates/iron_condor_live.html \
+         \$BASE/trading_corp/web/templates/partials/iron_condor_live_sections.html \
+         \$BASE/trading_corp/web/templates/partials/iron_condor_static_sections.html \
+         \$BASE/config/ex_dividend_calendar.yaml
+"
+sudo systemctl restart trading-corp
+```
+
+---
+
 ## END-OF-SESSION SNAPSHOT — 2026-05-20 ~23:05 UTC  *(supersedes 2026-05-20 ~11:45 UTC below)*
 
 **One work thread: kalshi_crypto vol-v2 paper-validation tile DEPLOYED to paper prod at 22:54:25 UTC. Tile renders on `/prediction-markets/kalshi_crypto`: post-vol-v2 n=7 / -$1.05 / 71.4%, lifetime n=334 / -$45.94 / 51.5%, post-bucket-guard pre-v2 n=174 / +$20.90, classification breakdown for same_fire/new_fire/suppressed_fire/both_skip, suppressed-fire/day metric, strays footnote (0 currently). One rollback at 22:44 UTC for a SARGable-view perf regression, re-deployed clean at 22:54. See `runbooks/deploy_log.md` 22:54 entry for full rollback-then-fix story; pickup at `runbooks/session_start_2026_05_21_kalshi_vol_v2_dashboard.md`.**

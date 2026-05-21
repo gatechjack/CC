@@ -4,7 +4,7 @@
 
 **Archive.** `runbooks/paper_run/` is the archive directory for all paper-run runbooks. IC v1 is the first; future strategies that go to paper get their own file here.
 
-**Start date.** To be filled in when the paper run begins.
+**Start date.** 2026-05-21 (first prod-live scan window: 09:45–09:50 ET on a US market day). 30-day tuning checkpoint: 2026-06-20. 90-day live-discussion readiness checkpoint: 2026-08-19.
 
 ---
 
