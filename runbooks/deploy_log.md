@@ -76,6 +76,61 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-21 13:05:43 UTC — Bitunix funding-rate ×100 display/gate fix (commit `4f04fa66`)
+
+**Commits:** `4f04fa66`
+**Triggered by:** Human-authorized production deploy of funding-rate unit correction. `gate_mode="off"` throughout; no trade decisions affected. Display/audit-correctness only. No 60-day clock re-baseline.
+**Backup tag:** `pre-funding-units-fix-20260521` (3 files: `bitunix_htf_regime.py`, `bitunix_htf_panel.html`, `bitunix.py` — tests file is new, no backup needed)
+
+**Files deployed (4):**
+- `trading_corp/agents/strategies/bitunix_htf_regime.py` — `:870` remove `abs(ctx.funding_rate) * 100.0 >` → `abs(ctx.funding_rate) >`; `:1011` remove `funding_rate * 100` → `funding_rate` in reason string; `:195` type comment updated to reflect API returns value already in percent.
+- `trading_corp/web/templates/partials/bitunix_htf_panel.html` — `:101` remove `h.funding_rate * 100` → `h.funding_rate` in `%.4f` format call.
+- `trading_corp/brokers/bitunix.py` — docstring only: `get_funding_rate` clarified that returned value is already in percent (e.g. 0.0066 means 0.0066% per 8h).
+- `tests/test_bitunix_htf_regime.py` — new file: 4 unit-pinning tests (mild-positive, mild-negative, threshold-trip, render-format) + 2 corrected existing tests. Not functionally exercised on prod at runtime; shipped for repo state parity.
+
+**Features shipped:**
+- **Funding-rate display corrected.** Template rendered 0.66% for a 0.0066 raw value (×100 bug); now correctly renders `+0.0064%` for the current BTCUSDT rate of `0.006398`.
+- **Funding-extreme gate corrected.** Gate comparison was `abs(rate) * 100 > threshold`; with threshold `0.05` (= 0.05%/8h), the gate was tripping on rates 100× too small (trip point was effectively 0.0005%). Now correctly trips at 0.05%/8h. `gate_mode="off"` throughout so no trade was ever blocked by this bug.
+- **Reason-string corrected.** Gate audit rows will now read `"0.0064% per 8h"` style, not `"0.6400% per 8h"`.
+
+**Notable code changes:**
+- Three independent `* 100` sites removed. Each was a separate bug introduced when it was incorrectly assumed the API returned a decimal fraction rather than a percent value.
+- No threshold change (`funding_extreme_pct_per_8h=0.05` unchanged). The threshold was always denominated in percent per 8h; only the comparison operand was wrong.
+- `gate_mode` remains `"off"` — no change to gate behavior beyond correcting the arithmetic.
+
+**Verification:**
+- Pre-deploy prod state: template line 101 contained `funding_rate * 100` (confirmed via grep), prod md5s: `bitunix_htf_regime.py=ce24fe018229957bedfb57e122e602f5`, `bitunix_htf_panel.html=f32d3dce65cb26d3cf846b140cd50fd1`, `bitunix.py=a7125b2febf2f008cf03dfd82243fe9e`.
+- Post-deploy md5s (all 4 match commit `4f04fa66` exactly): `bitunix_htf_regime.py=e0dbf34a7b43ee628eb1aa269849cc26`, `bitunix_htf_panel.html=3c886fb0950f936a61564d4e45c6b47e`, `bitunix.py=61b406fa218900b15e5f2d2366cc7579`, `tests/test_bitunix_htf_regime.py=c9cf307d6df764105dcccf94c4363e6f`.
+- Code check post-deploy: `grep 'funding_rate \* 100' bitunix_htf_panel.html` → NOT FOUND. `grep '\* 100' bitunix_htf_regime.py` → NOT FOUND.
+- PID: 973446 → 978296. Service active since `2026-05-21 13:05:43 UTC`. Healthz: `{"status":"ok","mode":"PAPER"}`.
+- **Live render gate**: DB `bitunix_funding_history` latest BTCUSDT row: `ts=2026-05-21T13:07:23+00:00, rate=0.006398`. Dashboard `/division/bitunix_futures` rendered `+0.0064%` — matches `%.4f` of raw value (NOT `0.6400%`). PASS.
+- **Extreme-tile gate**: No "extreme" text in rendered dashboard page. Rate 0.0064% < 0.05% threshold → NOT-extreme. PASS.
+- **Reason-string gate**: No `funding_gate` audit rows emitted yet post-deploy (gate_mode="off" means no rows are written unless gate fires). Gate logic is verified correct by unit tests in the new test file.
+- **DB lock errors**: transient on startup (~13:12-13:13 UTC), settled to 0 by 13:15 UTC. Pre-existing behavior on PMCC scan contention, not caused by this deploy.
+
+**Reconciler + timer check:**
+- `tc-audit-reality.timer` first unattended fire: `2026-05-21 06:03:42 UTC` — CLEAN. 3/3 trades matched, 0 mismatches. `audit_reality_run` audit row written at `2026-05-21T06:03:42+00:00` with `{"n_total":3,"n_matches":3,"n_mismatches":0,"status":"match","mismatches":[]}`. This was the first fully-unattended fire (was manual-only in the 2026-05-20 22:51 UTC deploy). Immune system confirmed operational.
+- Reconciler unaffected by this deploy (touches only display/gate, not lifecycle/kline). Service is running clean post-restart.
+
+**Inert / dormant on current traffic:**
+- Tests file on prod is not exercised at runtime; shipped to keep prod tree in parity with repo.
+- Gate reason-string format correction (`funding_rate` without `* 100`) is dormant until `gate_mode` is flipped from `"off"` to `"enforce"` — that's a separate Board-gated decision.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-funding-units-fix-20260521
+BASE=/home/azureuser/trading_corp
+cp \$BASE/trading_corp/agents/strategies/bitunix_htf_regime.py.\$TAG \$BASE/trading_corp/agents/strategies/bitunix_htf_regime.py
+cp \$BASE/trading_corp/web/templates/partials/bitunix_htf_panel.html.\$TAG \$BASE/trading_corp/web/templates/partials/bitunix_htf_panel.html
+cp \$BASE/trading_corp/brokers/bitunix.py.\$TAG \$BASE/trading_corp/brokers/bitunix.py
+rm -f \$BASE/tests/test_bitunix_htf_regime.py
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-21 12:28:07 UTC — polymarket_arbitrage per-`condition_id` position cap (commit `c2b0e12`)
 
 **Commits:** `c2b0e12` (cap implementation), `af27c4f` (Board approval record), `fcecbca` (memo addendum)
