@@ -2008,9 +2008,30 @@ Parallel session has been iterating BitUnix Phase 3.2 → 3.2.3 (price-action fa
 
 ---
 
-## P1 — Polymarket dedupe: per-`condition_id` position cap  *(NEW 2026-05-21; pending Backtester sign-off)*
+## P1 — Polymarket dedupe: per-`condition_id` position cap  *(NEW 2026-05-21; APPROVED 2026-05-21)*
 
-Implement per-`condition_id` position cap in `polymarket_arbitrage.py` (pending Backtester sign-off — see [runbooks/board_memo_polymarket_dedupe_2026_05_21.md](runbooks/board_memo_polymarket_dedupe_2026_05_21.md)). Proposal-only; no code changes yet, no `auto_execute` flip, `enabled` flag untouched.
+**Status: APPROVED** by Board/Backtester 2026-05-21 — see [runbooks/board_memo_polymarket_dedupe_2026_05_21.md](runbooks/board_memo_polymarket_dedupe_2026_05_21.md) (Approval section). Implementation pending: strategy-internal pre-emission check inside `agents/strategies/polymarket_arbitrage.py` that consults open/unresolved entries for the candidate `condition_id` before emitting `would_have_placed`. **Must NOT** modify `RiskAgent.evaluate()` or the risk gate. **Must NOT** touch `enabled` or `auto_execute`. Strategy stays paper-only. **Diff review by Board required BEFORE commit/deploy** — the work is approved, not the resulting code.
+
+---
+
+## P1 — Polymarket clean-data tracker  *(NEW 2026-05-21; activates after per-`condition_id` cap ships)*
+
+After the per-`condition_id` cap deploys, instrument a clean-data tracker per the memo Addendum §1 clarification:
+
+- Count only trades **placed AFTER the cap paper-deploy timestamp** — resolutions of pre-cap stacked positions do NOT count toward n, regardless of when they resolve.
+- Report resolved n / WR / PnL by `llm_prob` bucket (0–20, 20–40, 40–60, 60–80, 80–100).
+- Explicitly flag when n hits 50. Do NOT characterize edge as established before n=50 regardless of interim PnL direction. The 50-trade floor is a precondition to evaluating edge, not a trigger.
+
+---
+
+## P2 — Polymarket dedupe follow-up: underlying/series-level concentration cap  *(NEW 2026-05-21; blocked on per-`condition_id` cap ship + post-cap data review)*
+
+Per-`condition_id` cap (approved 2026-05-21) does not catch correlated-underlying stacks — distinct `condition_id`s that are effectively one bet (memo Addendum §2). Concrete examples observed 2026-05-21:
+
+- **WTI cluster:** 5 `condition_id`s (HIGH $110 / $115 / $120 NO + LOW $90 / $95 NO), 44 entries, $44 notional — all bets that May crude stays within a $95–$110 band.
+- **Iran peace-deal cluster:** 2 deadlines (May 31 + June 30), 22 entries — same event.
+
+Approach options to evaluate: per-`series` cap, per-underlying tag, correlation-aware sizing. **Open this only after** (a) the per-`condition_id` cap is shipped and (b) post-cap clean data accumulates. The per-`condition_id` ship may itself shift the concentration pattern (10× single-market → 5× across 5 correlated markets), or the cleaner data may show this isn't materially affecting expected outcomes once single-market stacking is gone.
 
 ---
 

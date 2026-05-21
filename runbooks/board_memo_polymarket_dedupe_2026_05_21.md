@@ -97,3 +97,15 @@ The cap is necessary but not sufficient. It does NOT catch correlated-underlying
 - **Iran peace-deal cluster (2 `condition_id`s, 22 entries):** "US × Iran permanent peace deal by May 31" and "…by June 30" are the same event with two deadlines. The cap treats them as independent.
 
 Flag as a known limitation to address in a follow-up (e.g. per-`series` or per-underlying cap, or correlation-aware sizing). **NOT a reason to block §4A** — the per-`condition_id` cap still eliminates the single-market 10× stacking pattern that drove the 05-20 loss. The Board should know the proposed cap is not a complete concentration solution.
+
+---
+
+## Approval — 2026-05-21
+
+**§4A: APPROVED** by Board/Backtester 2026-05-21. Per-`condition_id` cap to be implemented as described — strategy-internal pre-emission check inside `agents/strategies/polymarket_arbitrage.py`. **Must NOT** modify `RiskAgent.evaluate()` or the risk gate. **Must NOT** touch `enabled` or `auto_execute`. Strategy remains paper-only. **Diff review by Board required BEFORE commit/deploy** — the work is approved, not the resulting code.
+
+**§4B: ENDORSED.** Strategy continues paper-only to gather clean post-cap data. No Phase 3 live-execution work authorized. The ≥50-clean-post-cap-trade threshold is a **floor before edge is even evaluated**, not a trigger.
+
+**Known-limitation follow-up (Addendum §2):** Underlying/series-level cap to address correlated-underlying stacks tracked as separate BACKLOG P2 follow-up. Not in scope for this approval.
+
+**Post-cap clean-data tracker:** Count only trades placed AFTER the cap paper-deploys; report resolved n / WR / PnL by `llm_prob` bucket; flag when n hits 50. Do NOT characterize edge as established before n=50 regardless of interim PnL direction. Tracked as separate BACKLOG P1 entry; activates after cap ship.
