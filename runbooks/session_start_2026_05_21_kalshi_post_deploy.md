@@ -172,6 +172,18 @@ WHERE division = 'kalshi_weather'
 
 Next session: the firing-rate query should show >= 299 (cumulative, monotonically increasing). The forward-PnL query becomes informative once n_rts >= 50 — likely 2-4 days out at the historical fire rate. **Compare against these recorded numbers, not against reconstructed counts.**
 
+### ⚠ KNOWN DATA GAP — 2026-05-21 00:06:17 → 00:33:42 UTC (~27.5 min)
+
+**Prod was DOWN during this window.** The bot was offline through three restart cycles of the dashboard-cutoff deploy (Robinhood pickle-expiry → MFA push-delivery failure loop). Scanners down, no trades could fire. The market moved sharply during this window — a weather trade likely would have fired but couldn't.
+
+**Treat as a MISSED-SIGNAL HOLE, not data.** The `kalshi_weather_skipped_entry_below_floor` audit count and the `kalshi_round_trips` forward-PnL query above both span this window. Empty rows in 00:06–00:34 UTC are missing-signal, NOT quiet-market evidence:
+
+- Do NOT count the absence of skip/RT activity in 00:06–00:34 as the floor or strategy behaving normally.
+- If the floor ends up borderline at the few-hundred-RT verdict point, do NOT round in the floor's favor on the assumption this hole would have been profitable.
+- Cumulative counts after this window already include the hole as a downward bias on activity.
+
+Full context recorded at [[kalshi-weather-floor-data-gap-20260521]]. Cause is recurring: every `systemctl restart trading-corp` while the Robinhood pickle is near-expiry risks a multi-restart MFA loop (~10–15 min per cycle, undelivered pushes). Refresh `robinhood.pickle` pre-deploy if you can.
+
 ## Other open items (defer; ranked by data support)
 
 Same as the 04:30 snapshot:
