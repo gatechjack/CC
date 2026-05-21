@@ -2008,6 +2008,12 @@ Parallel session has been iterating BitUnix Phase 3.2 → 3.2.3 (price-action fa
 
 ---
 
+## P1 — Polymarket dedupe: per-`condition_id` position cap  *(NEW 2026-05-21; pending Backtester sign-off)*
+
+Implement per-`condition_id` position cap in `polymarket_arbitrage.py` (pending Backtester sign-off — see [runbooks/board_memo_polymarket_dedupe_2026_05_21.md](runbooks/board_memo_polymarket_dedupe_2026_05_21.md)). Proposal-only; no code changes yet, no `auto_execute` flip, `enabled` flag untouched.
+
+---
+
 ## P1 — Revisit BitUnix scoring weights after ≥30 live PREMIUM fires post-H2  *(NEW 2026-05-16)*
 
 H2 YAML applied 2026-05-16 18:51 UTC; **actually went live 2026-05-16 19:21 UTC** when the parallel kalshi_weather deploy restarted the service (BitUnix scorer loads `ScoringConfig` once at startup; no mtime hot-reload). First post-restart `bitunix_score_decided` audit row at 19:24 UTC showed new weights. See `runbooks/deploy_log.md`. Falsification gate from `reports/scoring_recommendation.md`: **PREMIUM mean R must be ≥0.05R better than STANDARD mean R** on production `paper_trade_record` data after ≥30 live PREMIUM fires. Replay predicted +0.114R (PREMIUM −0.300 vs STANDARD −0.414).
