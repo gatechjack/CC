@@ -76,6 +76,60 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-21 12:28:07 UTC — polymarket_arbitrage per-`condition_id` position cap (commit `c2b0e12`)
+
+**Commits:** `c2b0e12` (cap implementation), `af27c4f` (Board approval record), `fcecbca` (memo addendum)
+**Triggered by:** Board approval 2026-05-21 of memo §4A — see [board_memo_polymarket_dedupe_2026_05_21.md](../runbooks/board_memo_polymarket_dedupe_2026_05_21.md). Implements the position-stacking fix that closes the 10× single-market concentration pattern surfaced by the 2026-05-20 −$22 day.
+**Backup tag:** `pre-dedupe-cap-20260521-1226` (2 files: `polymarket_arbitrage.py`, `strategies.yaml`)
+
+**Files deployed (2):**
+- `trading_corp/agents/strategies/polymarket_arbitrage.py` — new module-level helper `_count_open_entries_by_condition_id(db_url, condition_ids) → dict[str, int]` (counts unresolved `would_have_placed` audit rows anti-joined against `polymarket_round_trips.order_id`; no timestamp filter, so the cap bites against ALL pre-existing open entries on first eligible cycle). New "step 3a" dedupe filter in `run_scan_cycle`: skips survivors with `open_count >= max_open_per_condition_id` BEFORE the LLM fan; advances cooldown for skipped markets; emits one `polymarket_dedupe_skipped` audit per skipped market with `{condition_id, market_slug, market_question, category, current_open_count, cap}`. Two new fields on the existing `polymarket_scan_cycle` audit: `dedupe_skipped_count`, `max_open_per_condition_id`. Cooldown init lines moved 74 lines up to enable cooldown advancement in the dedupe path; non-skipped result-loop write byte-for-byte unchanged (regression covered by `test_non_skipped_path_cooldown_unchanged_after_init_move`).
+- `config/strategies.yaml` — new `max_open_per_condition_id: 1` knob on `polymarket_arbitrage` block. **`enabled: true` and `auto_execute: false` UNCHANGED.** Strategy remains paper-only.
+
+**Features shipped:**
+- Per-`condition_id` position cap default `max_open_per_condition_id: 1` (true dedupe). Prevents the 10× stacking pattern. The ~99-entry in-flight overhang across 12 condition_ids (Iran 18, WTI HIGH $110 14, WTI HIGH $115 12, PSG 12, WTI HIGH $120 10, Anthropic 8, Arsenal CL 5, Paxton 5, WTI LOW $95 5, Iran-May31 4, Spencer Pratt 3, WTI LOW $90 3) cannot be added to; existing entries resolve through the normal resolver flow.
+- New audit kind `polymarket_dedupe_skipped` per dedupe-skipped market for dashboard observability.
+
+**Notable code changes:**
+- `polymarket_scan_cycle` audit gains 2 fields (`dedupe_skipped_count`, `max_open_per_condition_id`) — existing dashboard queries on the original fields unaffected.
+- `_count_open_entries_by_condition_id` uses `sqlite3` directly via `json_extract` on `payload_json` — no schema change, no new persistence helper required. Errors are logged and swallowed → falls through to pre-cap behavior (cap is a safety filter, not a load-bearing gate).
+
+**Paper-only confirmation:** `auto_execute=false`; broker is `ReadOnlyBroker` (no `place_order` method exists on the class). Orders flow to `would_have_placed` audits only. **No Phase 3 live-execution work is authorized by this deploy** (Board memo §4B endorsed).
+
+**Verification:**
+- Pre-deploy md5 verify: `polymarket_arbitrage.py = 7965e45122d05033c366246d2d0a4620`, `strategies.yaml = 52722fe9b49f0fdacd5554553ff8a467` — local == prod after scp.
+- Service restart at `2026-05-21 12:28:07 UTC`; `systemctl is-active trading-corp = active`; no traceback / import errors in journalctl post-restart window.
+- First post-restart `polymarket_scan_cycle` audit landed `2026-05-21 12:29:45 UTC` with `"max_open_per_condition_id": 1` and `"dedupe_skipped_count": 0`. Three subsequent cycles (12:29:45, 12:30:15, 12:30:48) all show cap field present and value=1.
+- `dedupe_skipped_count` was 0 across the verification window because all 100 surveyed markets were in active cooldown from pre-restart scans (cooldown table persists in `agent_state(polymarket_arbitrage, market_cooldowns)` across restarts). The cap will begin firing as the 6h cooldowns expire on stacked-overhang condition_ids and they re-enter the survivor set.
+
+**Observed firings:**
+- First `polymarket_dedupe_skipped` audit fired at `2026-05-21 12:33:51 UTC` (5 min 44 s post-restart) on `condition_id 0xdeb0a6abf730d613190d1b49e64bbedb2af0cc14f8a6f87e8da9282e64c29c0b` (WTI HIGH $115 in May). Cap saw 12 prior unresolved entries on this market and refused entry #13 — exactly the in-flight-overhang case the addendum §1 anticipated.
+- 1 skip across 12 post-restart scan_cycles as of `2026-05-21 12:35:29 UTC`. The skipped market now sits in its newly-advanced 6h cooldown until ~`18:33 UTC`. Subsequent skips will accumulate as other stacked condition_ids (Iran 18, WTI HIGH $110 14, WTI HIGH $120 10, PSG 12, etc.) clear their pre-restart cooldowns and re-enter the survivor set.
+
+**Side-effects of restart:**
+- **Cloudflare-retry resilience now ACTIVE** on live PCT + polymarket_arbitrage paths (was dormant since 2026-05-17 17:38 UTC per Option-1 rollout — see that deploy_log entry).
+- No other strategy YAML/code edited.
+
+**Clean-data tracker epoch:** `2026-05-21 12:28:07 UTC` — this is the boundary the BACKLOG P1 clean-data tracker keys against. Trades with `entry_ts < 2026-05-21T12:28:07+00:00` are pre-cap and do NOT count toward the 50-trade clean-sample floor (per memo Addendum §1 clarification).
+
+**Don't (until further notice):**
+- Don't flip `polymarket_arbitrage.auto_execute: false → true` — gated on memo §4B (Phase 3 live execution requires ≥50 clean post-cap trades demonstrating edge).
+- Don't flip `polymarket_arbitrage.enabled: true → false` — would stop accumulation of the clean-data sample.
+- Don't change `max_open_per_condition_id` away from `1` without a separate Board memo.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-dedupe-cap-20260521-1226
+BASE=/home/azureuser/trading_corp
+cp \$BASE/trading_corp/agents/strategies/polymarket_arbitrage.py.\$TAG \$BASE/trading_corp/agents/strategies/polymarket_arbitrage.py
+cp \$BASE/config/strategies.yaml.\$TAG \$BASE/config/strategies.yaml
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
 ## 2026-05-21 03:22 UTC — IC v1 follow-up: home-tile routing (commit `19b6dba`)
 
 **Commits:** `19b6dba` (home: route robinhood_joint tile to /telemetry/iron_condor) — authored 2026-05-18, missed in the 03:09 UTC ship because the tarball covered only commits A + B + 65c8cdd.

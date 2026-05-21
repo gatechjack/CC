@@ -2014,7 +2014,7 @@ Parallel session has been iterating BitUnix Phase 3.2 → 3.2.3 (price-action fa
 
 ---
 
-## P1 — Polymarket clean-data tracker  *(NEW 2026-05-21; activates after per-`condition_id` cap ships)*
+## P1 — Polymarket clean-data tracker  *(NEW 2026-05-21; 2026-05-21 12:28:07 UTC; trades with entry_ts before this are pre-cap and excluded from the 50-trade floor)*
 
 After the per-`condition_id` cap deploys, instrument a clean-data tracker per the memo Addendum §1 clarification:
 
