@@ -66,6 +66,55 @@ _LAST_SCAN_KEY = "last_scan_ts"
 _COOLDOWNS_KEY = "market_cooldowns"
 
 
+def _count_open_entries_by_condition_id(
+    db_url: str, condition_ids: list[str],
+) -> dict[str, int]:
+    """Count unresolved `would_have_placed` audit rows per `condition_id`.
+
+    Open = `audit_event(actor='polymarket_arbitrage', kind='would_have_placed')`
+    whose `order_id` has NOT yet been picked up by the resolver (i.e. not
+    present in `polymarket_round_trips`). Used by the per-`condition_id`
+    position cap to prevent stacking (Board approval 2026-05-21 — see
+    `runbooks/board_memo_polymarket_dedupe_2026_05_21.md`).
+
+    Returns a dict of `{condition_id: open_count}` containing only IDs
+    with at least one open entry. IDs absent from the dict have zero
+    open entries.
+
+    Errors are logged and swallowed — failure of the count returns `{}`,
+    which makes the caller fall through to pre-cap behavior. The cap is a
+    safety filter on top of the existing pipeline, not a load-bearing
+    gate.
+    """
+    import sqlite3
+    if not db_url or not condition_ids:
+        return {}
+    path = db_url.replace("sqlite:///", "")
+    placeholders = ",".join("?" * len(condition_ids))
+    sql = (
+        "SELECT json_extract(payload_json,'$.condition_id') AS cid, COUNT(*) "
+        "FROM audit_event "
+        "WHERE actor = 'polymarket_arbitrage' "
+        "AND kind = 'would_have_placed' "
+        f"AND json_extract(payload_json,'$.condition_id') IN ({placeholders}) "
+        "AND json_extract(payload_json,'$.order_id') NOT IN ("
+        "    SELECT order_id FROM polymarket_round_trips "
+        "    WHERE COALESCE(division,'polymarket_arbitrage')='polymarket_arbitrage'"
+        ") "
+        "GROUP BY cid"
+    )
+    counts: dict[str, int] = {}
+    try:
+        with sqlite3.connect(path) as conn:
+            cur = conn.execute(sql, condition_ids)
+            for cid, n in cur.fetchall():
+                if cid is not None:
+                    counts[str(cid)] = int(n)
+    except sqlite3.Error as e:
+        log.warning("polymarket_arbitrage: open-entry count failed: %s", e)
+    return counts
+
+
 @dataclass
 class _ProbabilityEstimate:
     """LLM output, validated and bounded."""
@@ -217,6 +266,56 @@ class PolymarketArbitrageAgent:
         # reason about. Cooldown prevents re-burning the same prefix.
         survivors = survivors[:k_per_cycle]
 
+        # Cooldown state initialized here so the dedupe filter below can
+        # advance cooldowns for skipped markets.
+        new_cooldowns = dict(cooldowns)
+        cooldown_until = (now + timedelta(hours=cooldown_h)).isoformat(timespec="seconds")
+
+        # 3a. Per-`condition_id` position cap (Board approval 2026-05-21 —
+        # see runbooks/board_memo_polymarket_dedupe_2026_05_21.md).
+        # Strategy-internal pre-emission check: drop any survivor whose
+        # condition_id already has ≥ cap open (unresolved) would_have_placed
+        # entries. Skipped markets have their cooldown advanced so we don't
+        # re-evaluate them every cycle (cheap because no LLM call happens
+        # for skipped IDs). Does NOT touch RiskAgent.evaluate or the risk
+        # gate. Cap defaults to 1 (true dedupe); 0 disables (pre-cap
+        # behavior). Configurable via strategies.yaml.
+        max_open = int(self._strat_cfg.get("max_open_per_condition_id", 1))
+        n_dedupe_skipped = 0
+        if max_open > 0 and survivors and self._db_url:
+            cids_to_check = [
+                (m.get("conditionId") or m.get("condition_id") or "")
+                for m in survivors
+            ]
+            cids_to_check = [c for c in cids_to_check if c]
+            open_counts = _count_open_entries_by_condition_id(
+                self._db_url, cids_to_check,
+            )
+            kept_after_cap: list[dict] = []
+            for m in survivors:
+                cid = m.get("conditionId") or m.get("condition_id") or ""
+                n_open = open_counts.get(cid, 0) if cid else 0
+                if cid and n_open >= max_open:
+                    n_dedupe_skipped += 1
+                    if logger_agent is not None:
+                        logger_agent.log_event(
+                            self.name, "polymarket_dedupe_skipped",
+                            {
+                                "strategy": self.name,
+                                "division": self.division,
+                                "condition_id": cid,
+                                "market_slug": m.get("slug"),
+                                "market_question": m.get("question"),
+                                "category": m.get("category"),
+                                "current_open_count": n_open,
+                                "cap": max_open,
+                            },
+                        )
+                    new_cooldowns[cid] = cooldown_until
+                    continue
+                kept_after_cap.append(m)
+            survivors = kept_after_cap
+
         if logger_agent is not None:
             logger_agent.log_event(
                 self.name, "polymarket_scan_cycle",
@@ -225,6 +324,8 @@ class PolymarketArbitrageAgent:
                     "division": self.division,
                     "markets_pre_filter": len(markets),
                     "survivors_post_filter": len(survivors),
+                    "dedupe_skipped_count": n_dedupe_skipped,
+                    "max_open_per_condition_id": max_open,
                     "k_per_cycle": k_per_cycle,
                     "min_divergence_pct": min_div_pct,
                 },
@@ -239,8 +340,6 @@ class PolymarketArbitrageAgent:
         # K-1 follow-ups all hit the cache. Cycle time: ~5s (first) +
         # ~5s (parallel rest) = ~10s vs ~50s sequential.
         orders: list[ProposedOrder] = []
-        new_cooldowns = dict(cooldowns)  # mutate a copy
-        cooldown_until = (now + timedelta(hours=cooldown_h)).isoformat(timespec="seconds")
 
         # Concurrency cap on the LLM fan (Phase K7). Anthropic enforces a
         # per-account concurrent-connections limit separate from RPM/TPM;

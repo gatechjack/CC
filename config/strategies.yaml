@@ -990,6 +990,15 @@ polymarket_arbitrage:
   # connections ceiling. Mirrors kalshi_llm_arbitrage's cap. See memory
   # `anthropic_concurrent_connections.md`.
   llm_concurrency: 8
+  # Per-condition_id position cap (Board-approved 2026-05-21 — see
+  # runbooks/board_memo_polymarket_dedupe_2026_05_21.md). Strategy-internal
+  # pre-emission check: limits how many open/unresolved would_have_placed
+  # entries we'll stack on a single condition_id. 1 = true dedupe (one open
+  # bet per market at a time). Set to 0 to disable the cap entirely
+  # (pre-2026-05-21 behavior; available for A/B or rollback). Does NOT
+  # touch the risk gate; the existing `single_market_max_usd` polymarket:
+  # cap in risk.yaml still applies independently.
+  max_open_per_condition_id: 1
   sizing:
     mode: "fixed_usdc"              # forward-compat: "pct_with_confidence" reserved
     fixed_amount: 1.0               # $1 USDC per shakedown trade

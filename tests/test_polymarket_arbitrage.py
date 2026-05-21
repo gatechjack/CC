@@ -15,6 +15,7 @@ import pytest
 from trading_corp.agents.risk import RiskAgent
 from trading_corp.agents.strategies.polymarket_arbitrage import (
     PolymarketArbitrageAgent, _ProbabilityEstimate,
+    _count_open_entries_by_condition_id,
 )
 from trading_corp.persistence.models import (
     AccountState, ProposedOrder, StrategyState,
@@ -415,3 +416,403 @@ def test_llm_fan_default_semaphore_is_8(tmp_path):
     asyncio.run(agent.run_scan_cycle(broker))
 
     assert max_inflight <= 8, f"Default cap breached: peak={max_inflight}"
+
+
+# ── Per-condition_id position cap (Board-approved 2026-05-21) ──────────
+
+
+def _init_test_db(tmp_path):
+    """Create a temp SQLite with the audit_event + polymarket_round_trips
+    schema. Returns (db_url, db_path)."""
+    from trading_corp.persistence.db import init_db
+    db_url = f"sqlite:///{tmp_path / 'tc.db'}"
+    init_db(db_url=db_url)
+    return db_url, tmp_path / "tc.db"
+
+
+def _insert_open_audit(db_path, *, condition_id: str, order_id: str):
+    """Insert a `would_have_placed` audit row for polymarket_arbitrage."""
+    import json as _json
+    import sqlite3 as _sqlite3
+    from datetime import datetime, timezone
+    payload = {
+        "strategy": "polymarket_arbitrage",
+        "division": "polymarket_arbitrage",
+        "condition_id": condition_id,
+        "order_id": order_id,
+        "slug": "test-slug",
+        "side": "buy", "qty": 20.0, "limit_price": 0.05,
+        "outcome": "no",
+    }
+    with _sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+            "VALUES (?, 'polymarket_arbitrage', 'would_have_placed', ?)",
+            (datetime.now(timezone.utc).isoformat(), _json.dumps(payload)),
+        )
+
+
+def _insert_resolved_round_trip(db_path, *, order_id: str, condition_id: str):
+    """Mark an `order_id` as resolved by inserting into polymarket_round_trips."""
+    import sqlite3 as _sqlite3
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO polymarket_round_trips "
+            "(order_id, condition_id, outcome_bet, qty, entry_price, notional, "
+            " entry_ts, resolved_ts, yes_won, won, realized_pnl, roi_pct, "
+            " category, division) "
+            "VALUES (?, ?, 'no', 20.0, 0.05, 1.0, ?, ?, 0, 1, 0.95, 95.0, "
+            " 'other', 'polymarket_arbitrage')",
+            (order_id, condition_id, now_iso, now_iso),
+        )
+
+
+def test_count_open_entries_returns_only_unresolved(tmp_path):
+    """3 audit rows: 2 unresolved, 1 with matching round_trip → counts {cid: 2}."""
+    db_url, db_path = _init_test_db(tmp_path)
+    _insert_open_audit(db_path, condition_id="0xAAA", order_id="ord-1")
+    _insert_open_audit(db_path, condition_id="0xAAA", order_id="ord-2")
+    _insert_open_audit(db_path, condition_id="0xAAA", order_id="ord-3")
+    _insert_resolved_round_trip(db_path, order_id="ord-3", condition_id="0xAAA")
+    counts = _count_open_entries_by_condition_id(db_url, ["0xAAA"])
+    assert counts == {"0xAAA": 2}
+
+
+def test_count_open_entries_empty_db_returns_empty(tmp_path):
+    db_url, _ = _init_test_db(tmp_path)
+    assert _count_open_entries_by_condition_id(db_url, ["0xAAA"]) == {}
+
+
+def test_count_open_entries_ignores_other_actors(tmp_path):
+    """Audit rows for other actors must not count."""
+    db_url, db_path = _init_test_db(tmp_path)
+    import json as _json, sqlite3 as _sqlite3
+    from datetime import datetime, timezone
+    payload = {"condition_id": "0xAAA", "order_id": "other-1"}
+    with _sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+            "VALUES (?, 'polymarket_copy_trader', 'would_have_placed', ?)",
+            (datetime.now(timezone.utc).isoformat(), _json.dumps(payload)),
+        )
+    assert _count_open_entries_by_condition_id(db_url, ["0xAAA"]) == {}
+
+
+def test_count_open_entries_handles_missing_db_url():
+    assert _count_open_entries_by_condition_id("", ["0xAAA"]) == {}
+    assert _count_open_entries_by_condition_id("sqlite:///nonexistent.db", []) == {}
+
+
+def _yamls_with_cap(tmp_path, *, max_open=1):
+    """Strategy + risk YAML pair with cap configured."""
+    strat = tmp_path / "strategies.yaml"
+    strat.write_text(
+        "polymarket_arbitrage:\n"
+        "  enabled: true\n"
+        "  division: polymarket_arbitrage\n"
+        "  k_markets_per_cycle: 10\n"
+        "  market_cooldown_hours: 6\n"
+        "  min_divergence_pct: 10.0\n"
+        "  time_horizon_max_days: 7\n"
+        "  llm_concurrency: 8\n"
+        f"  max_open_per_condition_id: {max_open}\n"
+        "  sizing: {mode: fixed_usdc, fixed_amount: 1.0}\n"
+    )
+    risk = tmp_path / "risk.yaml"
+    risk.write_text(
+        "polymarket: {min_implied_probability: 0.05, max_implied_probability: 0.95,\n"
+        "             min_market_24h_volume_usd: 0, max_spread_cents: 99,\n"
+        "             min_hours_to_resolution: 0}\n"
+    )
+    return strat, risk
+
+
+class _RecordingLogger:
+    """Captures audit events; mirrors LoggerAgent.log_event signature."""
+    def __init__(self):
+        self.events: list[tuple[str, str, dict]] = []
+
+    def log_event(self, actor, kind, payload):
+        self.events.append((actor, kind, dict(payload)))
+
+
+def test_dedupe_skips_when_open_count_at_cap(tmp_path):
+    """Cap=1, 1 open entry on cid-A → cid-A skipped, cid-B kept."""
+    db_url, db_path = _init_test_db(tmp_path)
+    _insert_open_audit(db_path, condition_id="cid-A", order_id="ord-A1")
+
+    strat, risk = _yamls_with_cap(tmp_path, max_open=1)
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat, risk_yaml=risk, db_url=db_url)
+
+    seen: list[str] = []
+    async def spy_estimate(market):
+        seen.append(market.get("conditionId"))
+        return None
+    agent._estimate_probability = spy_estimate
+
+    markets = [
+        {"conditionId": "cid-A", "slug": "mkt-a", "question": "Q-A", "lastTradePrice": 0.5,
+         "events": [], "category": "other"},
+        {"conditionId": "cid-B", "slug": "mkt-b", "question": "Q-B", "lastTradePrice": 0.5,
+         "events": [], "category": "other"},
+    ]
+    logger = _RecordingLogger()
+    asyncio.run(agent.run_scan_cycle(_StubPolyBroker(markets), logger_agent=logger))
+
+    # Only cid-B should have been LLM-called.
+    assert seen == ["cid-B"]
+    # A dedupe_skipped audit must exist for cid-A.
+    skipped = [e for e in logger.events if e[1] == "polymarket_dedupe_skipped"]
+    assert len(skipped) == 1
+    assert skipped[0][2]["condition_id"] == "cid-A"
+    assert skipped[0][2]["current_open_count"] == 1
+    assert skipped[0][2]["cap"] == 1
+
+
+def test_dedupe_disabled_when_max_is_zero(tmp_path):
+    """Cap=0 → no skip even when open count is high."""
+    db_url, db_path = _init_test_db(tmp_path)
+    for i in range(10):
+        _insert_open_audit(db_path, condition_id="cid-A", order_id=f"ord-{i}")
+
+    strat, risk = _yamls_with_cap(tmp_path, max_open=0)
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat, risk_yaml=risk, db_url=db_url)
+
+    seen: list[str] = []
+    async def spy_estimate(market):
+        seen.append(market.get("conditionId"))
+        return None
+    agent._estimate_probability = spy_estimate
+
+    markets = [
+        {"conditionId": "cid-A", "slug": "mkt-a", "question": "Q-A", "lastTradePrice": 0.5,
+         "events": [], "category": "other"},
+    ]
+    logger = _RecordingLogger()
+    asyncio.run(agent.run_scan_cycle(_StubPolyBroker(markets), logger_agent=logger))
+
+    assert seen == ["cid-A"]
+    assert [e for e in logger.events if e[1] == "polymarket_dedupe_skipped"] == []
+
+
+def test_dedupe_cap_default_is_one(tmp_path):
+    """When max_open_per_condition_id is unset in YAML, default=1 applies."""
+    db_url, db_path = _init_test_db(tmp_path)
+    _insert_open_audit(db_path, condition_id="cid-A", order_id="ord-A1")
+
+    # YAML missing max_open_per_condition_id key.
+    strat = tmp_path / "strategies.yaml"
+    strat.write_text(
+        "polymarket_arbitrage:\n"
+        "  enabled: true\n"
+        "  k_markets_per_cycle: 10\n"
+        "  market_cooldown_hours: 6\n"
+        "  min_divergence_pct: 10.0\n"
+        "  time_horizon_max_days: 7\n"
+        "  sizing: {mode: fixed_usdc, fixed_amount: 1.0}\n"
+    )
+    risk = tmp_path / "risk.yaml"
+    risk.write_text(
+        "polymarket: {min_implied_probability: 0.05, max_implied_probability: 0.95,\n"
+        "             min_market_24h_volume_usd: 0, max_spread_cents: 99,\n"
+        "             min_hours_to_resolution: 0}\n"
+    )
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat, risk_yaml=risk, db_url=db_url)
+
+    seen: list[str] = []
+    async def spy_estimate(market):
+        seen.append(market.get("conditionId"))
+        return None
+    agent._estimate_probability = spy_estimate
+
+    markets = [
+        {"conditionId": "cid-A", "slug": "mkt-a", "question": "Q-A", "lastTradePrice": 0.5,
+         "events": [], "category": "other"},
+    ]
+    logger = _RecordingLogger()
+    asyncio.run(agent.run_scan_cycle(_StubPolyBroker(markets), logger_agent=logger))
+
+    # Default cap=1 → cid-A skipped, no LLM call.
+    assert seen == []
+    assert [e for e in logger.events if e[1] == "polymarket_dedupe_skipped"]
+
+
+def test_dedupe_cap_at_three_allows_partial_stacking(tmp_path):
+    """Cap=3, 2 open entries → emit (under cap). 3 open → skip."""
+    db_url, db_path = _init_test_db(tmp_path)
+    # cid-A has 2 open (under cap=3). cid-B has 3 open (at cap=3).
+    _insert_open_audit(db_path, condition_id="cid-A", order_id="A-1")
+    _insert_open_audit(db_path, condition_id="cid-A", order_id="A-2")
+    _insert_open_audit(db_path, condition_id="cid-B", order_id="B-1")
+    _insert_open_audit(db_path, condition_id="cid-B", order_id="B-2")
+    _insert_open_audit(db_path, condition_id="cid-B", order_id="B-3")
+
+    strat, risk = _yamls_with_cap(tmp_path, max_open=3)
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat, risk_yaml=risk, db_url=db_url)
+
+    seen: list[str] = []
+    async def spy_estimate(market):
+        seen.append(market.get("conditionId"))
+        return None
+    agent._estimate_probability = spy_estimate
+
+    markets = [
+        {"conditionId": "cid-A", "slug": "mkt-a", "question": "Q-A", "lastTradePrice": 0.5,
+         "events": [], "category": "other"},
+        {"conditionId": "cid-B", "slug": "mkt-b", "question": "Q-B", "lastTradePrice": 0.5,
+         "events": [], "category": "other"},
+    ]
+    asyncio.run(agent.run_scan_cycle(_StubPolyBroker(markets), logger_agent=None))
+
+    # cid-A (n=2, cap=3) emits; cid-B (n=3, cap=3) skips.
+    assert seen == ["cid-A"]
+
+
+def test_dedupe_resolved_entries_dont_count_toward_cap(tmp_path):
+    """An entry whose order_id is in polymarket_round_trips is RESOLVED →
+    not counted as open → does not contribute to the cap."""
+    db_url, db_path = _init_test_db(tmp_path)
+    _insert_open_audit(db_path, condition_id="cid-A", order_id="A-1")
+    _insert_resolved_round_trip(db_path, order_id="A-1", condition_id="cid-A")
+
+    strat, risk = _yamls_with_cap(tmp_path, max_open=1)
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat, risk_yaml=risk, db_url=db_url)
+
+    seen: list[str] = []
+    async def spy_estimate(market):
+        seen.append(market.get("conditionId"))
+        return None
+    agent._estimate_probability = spy_estimate
+
+    markets = [
+        {"conditionId": "cid-A", "slug": "mkt-a", "question": "Q-A", "lastTradePrice": 0.5,
+         "events": [], "category": "other"},
+    ]
+    asyncio.run(agent.run_scan_cycle(_StubPolyBroker(markets), logger_agent=None))
+
+    # cid-A's only prior entry is resolved → open count = 0 → emit allowed.
+    assert seen == ["cid-A"]
+
+
+def test_non_skipped_path_cooldown_unchanged_after_init_move(tmp_path):
+    """REGRESSION: the only edit to existing logic is moving the
+    `new_cooldowns` / `cooldown_until` initialization upward (out of the
+    LLM-fan block, above the dedupe filter). For a market that is NOT
+    skipped by dedupe, the cooldown must be written by the existing
+    result-loop code path with the same value it would have used before
+    the move.
+
+    Setup: cap=1, fresh DB (no open entries), one market survives. The
+    market should pass the dedupe filter, go through the LLM fan, and
+    receive its cooldown via the result loop — identical to pre-move
+    behavior. Verified by checking that the persisted cooldown for the
+    market exists and is parseable as a future ISO timestamp."""
+    from datetime import datetime, timezone
+    db_url, _db_path = _init_test_db(tmp_path)
+    # NO pre-existing audits — every survivor's open_count is 0.
+
+    strat, risk = _yamls_with_cap(tmp_path, max_open=1)
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat, risk_yaml=risk, db_url=db_url)
+
+    async def spy_estimate(market):
+        return None  # no order emitted, but result loop still sets cooldown
+    agent._estimate_probability = spy_estimate
+
+    markets = [
+        {"conditionId": "fresh-cid", "slug": "fresh", "question": "Fresh?",
+         "lastTradePrice": 0.5, "events": [], "category": "other"},
+    ]
+    logger = _RecordingLogger()
+    asyncio.run(agent.run_scan_cycle(_StubPolyBroker(markets), logger_agent=logger))
+
+    # No dedupe skip should have happened.
+    assert [e for e in logger.events if e[1] == "polymarket_dedupe_skipped"] == []
+
+    # Cooldown for fresh-cid must be persisted by the result loop,
+    # exactly as the pre-move code did.
+    from trading_corp.persistence.db import load_agent_state
+    row = load_agent_state("polymarket_arbitrage", "market_cooldowns", db_url=db_url)
+    assert row is not None
+    cooldowns_dict, _ = row
+    assert "fresh-cid" in cooldowns_dict
+    until_iso = cooldowns_dict["fresh-cid"]
+    until_dt = datetime.fromisoformat(until_iso)
+    if until_dt.tzinfo is None:
+        until_dt = until_dt.replace(tzinfo=timezone.utc)
+    assert until_dt > datetime.now(timezone.utc), \
+        "cooldown should be a future timestamp (market_cooldown_hours=6)"
+
+
+def test_cap_bites_against_pre_existing_overhang(tmp_path):
+    """REGRESSION: the cap must apply to UNRESOLVED audit rows regardless
+    of when they were created. On deploy, condition_ids with N already-
+    open entries (e.g. the 18-row Iran stack, 14-row WTI HIGH $110 stack
+    that exist in prod 2026-05-21) must be skipped immediately, not
+    grandfathered.
+
+    Setup: insert 18 audit rows for cid-IRAN (mimicking the in-flight
+    Iran peace-deal stack). Run scan. Cap=1 → cid-IRAN must be skipped
+    on the very first cycle, with the open_count reflecting all 18
+    prior entries."""
+    db_url, db_path = _init_test_db(tmp_path)
+    for i in range(18):
+        _insert_open_audit(
+            db_path,
+            condition_id="cid-IRAN",
+            order_id=f"iran-{i:02d}",
+        )
+
+    strat, risk = _yamls_with_cap(tmp_path, max_open=1)
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat, risk_yaml=risk, db_url=db_url)
+
+    seen: list[str] = []
+    async def spy_estimate(market):
+        seen.append(market.get("conditionId"))
+        return None
+    agent._estimate_probability = spy_estimate
+
+    markets = [
+        {"conditionId": "cid-IRAN", "slug": "iran-peace", "question": "Iran peace deal?",
+         "lastTradePrice": 0.05, "events": [], "category": "geopolitics"},
+    ]
+    logger = _RecordingLogger()
+    asyncio.run(agent.run_scan_cycle(_StubPolyBroker(markets), logger_agent=logger))
+
+    # No LLM call — cap bit immediately on the existing overhang.
+    assert seen == []
+    skipped = [e for e in logger.events if e[1] == "polymarket_dedupe_skipped"]
+    assert len(skipped) == 1
+    # The audit must reflect ALL 18 prior unresolved entries, not just
+    # a subset filtered by recency.
+    assert skipped[0][2]["current_open_count"] == 18
+    assert skipped[0][2]["cap"] == 1
+    assert skipped[0][2]["condition_id"] == "cid-IRAN"
+
+
+def test_dedupe_skipped_market_gets_cooldown_advanced(tmp_path):
+    """Skipped markets must have their cooldown advanced so we don't
+    re-evaluate them every cycle."""
+    db_url, db_path = _init_test_db(tmp_path)
+    _insert_open_audit(db_path, condition_id="cid-A", order_id="A-1")
+
+    strat, risk = _yamls_with_cap(tmp_path, max_open=1)
+    agent = PolymarketArbitrageAgent(strategies_yaml=strat, risk_yaml=risk, db_url=db_url)
+
+    async def spy_estimate(market):
+        return None
+    agent._estimate_probability = spy_estimate
+
+    markets = [
+        {"conditionId": "cid-A", "slug": "mkt-a", "question": "Q-A", "lastTradePrice": 0.5,
+         "events": [], "category": "other"},
+    ]
+    asyncio.run(agent.run_scan_cycle(_StubPolyBroker(markets), logger_agent=None))
+
+    # Cooldown should now contain cid-A.
+    from trading_corp.persistence.db import load_agent_state
+    row = load_agent_state("polymarket_arbitrage", "market_cooldowns", db_url=db_url)
+    assert row is not None
+    cooldowns_dict, _ = row
+    assert "cid-A" in cooldowns_dict
