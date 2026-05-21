@@ -1080,6 +1080,95 @@ async def run(argv: list[str] | None = None) -> int:
             )
         )
 
+        # --- Robinhood Joint Iron Condor v1 (IC1, 2026-05-17) ---
+        # 45 DTE neutral premium-selling on SPY/QQQ/IWM/GLD/TLT.
+        # HITL on every action — `auto_execute=false` in strategies.yaml
+        # is load-bearing. Two asyncio loops: daily signal scanner fires
+        # in the 09:45–09:50 ET window on US market days; dynamic-cadence
+        # position manager runs startup_catchup then loops at 5/15/30 min
+        # based on the most-stressed open IC's short delta.
+        from trading_corp.agents.divisions.robinhood_joint import RobinhoodJointAgent
+        from trading_corp.agents.strategies.robinhood_joint_iron_condor import (
+            RobinhoodJointIronCondorAgent,
+        )
+        from trading_corp.agents.strategies._ic_orchestration import (
+            run_signal_scanner_loop as _ic_run_signal_scanner_loop,
+            run_position_manager_loop as _ic_run_position_manager_loop,
+        )
+        from trading_corp.comms.pending_combo_registry import PendingComboRegistry
+        from trading_corp.comms.telegram_batcher import TelegramBatcher
+        from trading_corp.persistence.models import StrategyState as _ICStrategyState
+
+        ic_division = RobinhoodJointAgent()
+        ic_strategy = RobinhoodJointIronCondorAgent(db_url=secrets.db_url)
+        ic_division.attach_strategy(ic_strategy)
+
+        # Per-strategy Telegram batcher in front of the BoardChannel.
+        # 60s window + bypass tags mirror strategies.yaml notifications
+        # block. Severe events (catastrophic_stop, late_dte_force_close,
+        # circuit_breaker_auto_repause, startup_catchup) ping immediately.
+        ic_telegram_batcher = TelegramBatcher(
+            channel,
+            batch_window_sec=60.0,
+            bypass_tags=(
+                "circuit_breaker_auto_repause",
+                "catastrophic_stop",
+                "startup_catchup",
+                "late_dte_force_close",
+            ),
+        )
+
+        # In-process HITL registry — /approvals/combos/{combo_id} routes
+        # read + resolve via this. Lost on restart by design (v1
+        # simplification per planning/iron_condor_v1_plan.md § 5.3); the
+        # strategy re-proposes on the next manage() tick if conditions
+        # still hold.
+        pending_combo_registry = PendingComboRegistry(logger_agent=logger_agent)
+
+        # Broker for the robinhood_joint division. Falls back to the
+        # process paper_broker if the RH connect failed at startup
+        # (broker_fallback_to_paper $0-equity path) — IC sizing math will
+        # produce qty=0 candidates that the risk gate rejects, so the
+        # loops stay running but emit nothing until RH is restored.
+        _rj_broker = data_exec.brokers.get(ic_division.slug) or paper_broker
+
+        async def _ic_account_factory():
+            return await _rj_broker.snapshot()
+
+        def _ic_strategy_state_factory():
+            return _ICStrategyState(strategy=ic_strategy.SLUG, halted=False)
+
+        ic_signal_scanner_task = asyncio.create_task(
+            _ic_run_signal_scanner_loop(
+                division=ic_division,
+                broker=_rj_broker,
+                strategy=ic_strategy,
+                risk_agent=risk_agent,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                account_factory=_ic_account_factory,
+                strategy_state_factory=_ic_strategy_state_factory,
+                telegram_batcher=ic_telegram_batcher,
+                pending_combo_registry=pending_combo_registry,
+            ),
+            name="ic-signal-scanner",
+        )
+        ic_position_manager_task = asyncio.create_task(
+            _ic_run_position_manager_loop(
+                division=ic_division,
+                broker=_rj_broker,
+                strategy=ic_strategy,
+                risk_agent=risk_agent,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                account_factory=_ic_account_factory,
+                strategy_state_factory=_ic_strategy_state_factory,
+                telegram_batcher=ic_telegram_batcher,
+                pending_combo_registry=pending_combo_registry,
+            ),
+            name="ic-position-manager",
+        )
+
 
         # --- Polymarket round-trip resolver + equity snapshot writer ---
         # Closes the data gaps for the betmoar-style portfolio dashboard:
@@ -1359,6 +1448,10 @@ async def run(argv: list[str] | None = None) -> int:
             pending_registry=pending_registry,
             bitunix_observer=bitunix_observer,
             bitunix_htf_provider=bitunix_htf_provider,
+            ic_division=ic_division,
+            ic_strategy=ic_strategy,
+            ic_telegram_batcher=ic_telegram_batcher,
+            pending_combo_registry=pending_combo_registry,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -1437,6 +1530,16 @@ async def run(argv: list[str] | None = None) -> int:
             donchian_task.cancel()
             try:
                 await donchian_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            ic_signal_scanner_task.cancel()
+            try:
+                await ic_signal_scanner_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            ic_position_manager_task.cancel()
+            try:
+                await ic_position_manager_task
             except (asyncio.CancelledError, Exception):
                 pass
             replay_task.cancel()
@@ -1609,6 +1712,10 @@ async def _start_web_server(
     pending_registry: Any = None,
     bitunix_observer: Any = None,
     bitunix_htf_provider: Any = None,
+    ic_division: Any = None,
+    ic_strategy: Any = None,
+    ic_telegram_batcher: Any = None,
+    pending_combo_registry: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -1641,6 +1748,10 @@ async def _start_web_server(
         pending_registry=pending_registry,
         bitunix_observer=bitunix_observer,
         bitunix_htf_provider=bitunix_htf_provider,
+        ic_division=ic_division,
+        ic_strategy=ic_strategy,
+        ic_telegram_batcher=ic_telegram_batcher,
+        pending_combo_registry=pending_combo_registry,
     )
     app = create_app(deps)
     config = uvicorn.Config(

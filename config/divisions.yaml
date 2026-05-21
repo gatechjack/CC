@@ -53,6 +53,7 @@ divisions:
     intent: aggressive
     benchmark: SPY
     target_annual_return: 0.20
+    strategy: robinhood_joint_iron_condor
     enabled: true
 
   # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────
