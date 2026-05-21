@@ -31,7 +31,7 @@ divisions:
     benchmark: SPY
     target_annual_return: 0.30
     strategy: robinhood_pmcc
-    enabled: false   # disabled 2026-05-21: broken robin_stocks MFA loop on restart; division unused (paper-degraded)
+    enabled: true
 
   - slug: robinhood_ira
     name: Robinhood IRA
@@ -44,7 +44,7 @@ divisions:
     intent: retirement
     benchmark: SPY
     target_annual_return: 0.08
-    enabled: false   # disabled 2026-05-21: broken robin_stocks MFA loop on restart; division unused (paper-degraded)
+    enabled: true
 
   - slug: robinhood_joint
     name: Robinhood Joint
@@ -53,7 +53,7 @@ divisions:
     intent: aggressive
     benchmark: SPY
     target_annual_return: 0.20
-    enabled: false   # disabled 2026-05-21: broken robin_stocks MFA loop on restart; division unused (paper-degraded)
+    enabled: true
 
   # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────
   - slug: fidelity_joint
