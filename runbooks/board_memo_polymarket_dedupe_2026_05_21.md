@@ -76,3 +76,24 @@ These were considered and are being deferred pending ≥50 clean resolved trades
 ## 6. What we are NOT doing
 
 No changes to `polymarket_arbitrage.py` logic, no `auto_execute` flip, no live-config changes (including the `enabled` flag) have been made in producing this memo. Item A is submitted for Backtester sign-off before any deploy.
+
+---
+
+## Addendum (added 2026-05-21 after initial submission)
+
+Two findings from a read-only audit of unresolved `polymarket_arbitrage` positions, performed after the main memo was drafted. Neither changes the §4A request; both clarify scope.
+
+### 1. In-flight stack overhang
+
+There are ~99 stacked entries across 12 open `condition_id`s, resolving over the next ~10 days. That is ~1.8× the 54-entry resolved stack volume the main analysis covered. These positions will continue to flatter or damage reported PnL before the proposed cap can affect anything — **material uncertain PnL remains in-flight and direction is unknown.**
+
+**Clarification to §4B:** the "≥50 clean (non-stacked) resolved trades" gate must mean **50 trades placed AFTER the cap ships**, not 50 resolutions that happen to include these in-flight stacked positions. Resolutions of pre-cap stacks are part of the same artifact §3 describes and do not count toward the clean sample.
+
+### 2. Known limitation of the per-`condition_id` cap
+
+The cap is necessary but not sufficient. It does NOT catch correlated-underlying stacks — cases where the strategy emits entries on multiple distinct `condition_id`s that are effectively one bet:
+
+- **WTI cluster (5 `condition_id`s, 44 entries, $44 notional):** HIGH $110 / $115 / $120 NO + LOW $90 / $95 NO are all bets that May WTI stays within a $95–$110 band. The cap treats these as five independent markets.
+- **Iran peace-deal cluster (2 `condition_id`s, 22 entries):** "US × Iran permanent peace deal by May 31" and "…by June 30" are the same event with two deadlines. The cap treats them as independent.
+
+Flag as a known limitation to address in a follow-up (e.g. per-`series` or per-underlying cap, or correlation-aware sizing). **NOT a reason to block §4A** — the per-`condition_id` cap still eliminates the single-market 10× stacking pattern that drove the 05-20 loss. The Board should know the proposed cap is not a complete concentration solution.
