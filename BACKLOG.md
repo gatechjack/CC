@@ -5083,6 +5083,38 @@ HTMX/HTML routes. Skip unless committed to native build.
 
 ---
 
+## P2 — Tighten prod-access permission rules in `.claude/settings.local.json`  *(NEW 2026-05-22)*
+
+Surfaced during the 2026-05-22 polymarket post-cap monitor session, when Claude Code's auto-mode classifier blocked a read-only sqlite3 query against the prod DB. Investigation found three blanket allow rules in `.claude/settings.local.json` that grant far broader prod access than any current workflow needs. Logged as tracked security debt; not bundled into the polymarket monitor work.
+
+**Remove:**
+
+- `Bash(ssh *)` — line 192. Any SSH to any host. No known-good non-prod usage in this repo.
+- `Bash(ssh azureuser@trading.jacksumner.com *)` — line 90. Any shell command to the prod VM as `azureuser` (sudoer). Includes destructive: `rm`, `sudo systemctl stop`, file writes, DB writes.
+- `Bash(az vm run-command invoke *)` — line 193. **Structural bypass of SSH:** runs arbitrary shell on the prod VM via Azure ARM API as `azureuser`. Removing 90+192 without removing 193 leaves the equivalent attack surface open via a different code path. Tightening SSH posture is incomplete without addressing this.
+
+**Replace with narrow read-only rules** (add before removing line 90 to avoid prompt-storm during incident response):
+
+- `Bash(ssh azureuser@trading.jacksumner.com 'sqlite3 -readonly /home/azureuser/trading_corp/data/trading_corp.db*)` — SELECT-only enforced by sqlite3's `-readonly` flag at the engine layer (writes refuse with "attempt to write a readonly database").
+- `Bash(ssh azureuser@trading.jacksumner.com "sudo journalctl -u trading-corp*)` — read trading-corp logs only (no `--rotate` / `--vacuum` since they don't start with this prefix).
+- `Bash(ssh azureuser@trading.jacksumner.com "sudo systemctl status trading-corp*)` — read service state only (start/stop/restart don't match this prefix).
+
+**Out-of-scope flag for the same pass:**
+
+- `PowerShell(Remove-Item *)` — line 195. Blanket local-FS delete. Same "blanket destructive" family as the SSH blankets, different blast radius (local, not prod). Address as a separate decision.
+
+**Order of operations matters:**
+
+1. Remove line 192 unconditionally (no replacement needed).
+2. Add the three narrow read-only replacements above.
+3. Validate replacements don't grant more than intended.
+4. Remove line 90.
+5. Decide on line 193 separately — real gap; tightening requires rebuilding narrow `az vm run-command invoke … --scripts "…"` patterns actually in use.
+
+**Observed limitation (recorded so future-you doesn't re-discover it):** Claude Code's auto-mode classifier blocks "Production Reads" at a layer ABOVE `permissions.allow` — narrow read-only allow rules don't unblock the classifier denial observed 2026-05-22 (classifier doesn't appear to consult the allow list for this category). This cleanup is about narrowing what *can* be auto-approved once the classifier allows; it does NOT broaden any access the classifier currently denies. The four narrow ssh rules already in the file (lines 77, 88, 137, 189) and ~15 narrow scp rules remain unaffected by this cleanup.
+
+---
+
 ## Items consciously excluded
 
 - Multi-region active-active deploy — overkill for personal trading
