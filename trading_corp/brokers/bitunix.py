@@ -317,8 +317,9 @@ class BitunixBroker(Broker):
         return 0.0
 
     async def get_funding_rate(self, symbol: str) -> float | None:
-        """Return current funding rate for `symbol` as a decimal per 8h
-        period (e.g. 0.0001 = 0.01% per 8h). Public endpoint, no auth.
+        """Return current funding rate for `symbol` already in percent per 8h
+        (e.g. 0.0066 means 0.0066% per 8h — API returns percent directly, not
+        a raw decimal fraction). Public endpoint, no auth.
 
         Works regardless of broker stub/connected state — funding is a
         public endpoint, so we construct a transient httpx client here

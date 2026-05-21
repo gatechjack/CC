@@ -98,7 +98,7 @@
                     {% elif h.funding_rate > 0 %}text-gain
                     {% elif h.funding_rate < 0 %}text-loss
                     {% else %}text-mono{% endif %}">
-          {% if h.funding_rate > 0 %}+{% endif %}{{ '%.4f'|format(h.funding_rate * 100) }}%
+          {% if h.funding_rate > 0 %}+{% endif %}{{ '%.4f'|format(h.funding_rate) }}%
         </div>
         <div class="text-[11px] text-muted font-mono mt-1">
           {% if h.funding_extreme %}

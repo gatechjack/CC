@@ -195,7 +195,7 @@ class HTFContext:
     current_price: float
     prior_day_high: float | None
     prior_day_low: float | None
-    funding_rate: float | None         # decimal: 0.0001 = 0.01% per 8h
+    funding_rate: float | None         # percent per 8h: API returns value already in percent; e.g. 0.0066 means 0.0066% per 8h
     ts: datetime                       # UTC; eval moment
 
 
@@ -867,7 +867,7 @@ def compute_regime(
 
     funding_extreme = (
         ctx.funding_rate is not None
-        and abs(ctx.funding_rate) * 100.0 > config.funding_extreme_pct_per_8h
+        and abs(ctx.funding_rate) > config.funding_extreme_pct_per_8h
     )
 
     return RegimeVerdict(
@@ -1008,7 +1008,7 @@ def get_trade_permissions(
                 allow_long=al, allow_short=asho, size_multiplier=0.0,
                 reason=(
                     f"{matrix_reason}; funding_extreme "
-                    f"({verdict.funding_rate * 100:.4f}% per 8h) "
+                    f"({verdict.funding_rate:.4f}% per 8h) "
                     f"— {side} is crowded side"
                 ),
                 hard_zero_reason="funding_extreme_crowded",

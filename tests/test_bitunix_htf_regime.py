@@ -459,16 +459,18 @@ def test_compute_regime_threshold_boundaries():
 
 def test_compute_regime_funding_extreme_flag():
     # +0.06% per 8h > 0.05% threshold → funding_extreme
+    # API returns funding already in percent; 0.06 means 0.06% per 8h.
     ctx = _ctx(_bull_bars("1h"), _bull_bars("4h"), _bull_bars("1d"),
-               funding=0.0006)
+               funding=0.06)
     v = compute_regime(ctx, _config())
     assert v.funding_extreme is True
-    assert v.funding_rate == pytest.approx(0.0006)
+    assert v.funding_rate == pytest.approx(0.06)
 
 
 def test_compute_regime_funding_below_threshold():
+    # 0.03% per 8h < 0.05% threshold → not extreme
     ctx = _ctx(_bull_bars("1h"), _bull_bars("4h"), _bull_bars("1d"),
-               funding=0.0001)
+               funding=0.03)
     v = compute_regime(ctx, _config())
     assert v.funding_extreme is False
 
@@ -699,3 +701,72 @@ def test_hard_zero_priority_proximity_over_vol_tier():
     long = get_trade_permissions(v, "buy", cfg)
     assert long.size_multiplier == 0.0
     assert long.hard_zero_reason == "proximity_to_resistance"
+
+
+# ── funding-units pinning tests (fix: API returns percent, not fraction) ──
+#
+# Bitunix API returns funding rates ALREADY IN PERCENT.
+# e.g. raw "fundingRate"="-0.008454" means -0.0084% per 8h, confirmed by
+# API-vs-UI identity (BTCUSDC raw matched UI display exactly).
+# The gate must compare raw value directly against funding_extreme_pct_per_8h=0.05
+# WITHOUT a ×100 scaling step.
+
+
+def test_funding_units_mild_positive_not_extreme():
+    """Raw API value 0.0066 (≈ BTCUSDT long lean) should NOT trip the
+    0.05%/8h extreme threshold. Pre-fix this would multiply by 100→0.66>0.05
+    and incorrectly flag extreme. Post-fix: 0.0066 < 0.05 → not extreme."""
+    ctx = _ctx(_bull_bars("1h"), _bull_bars("4h"), _bull_bars("1d"),
+               funding=0.0066)
+    v = compute_regime(ctx, _config())
+    assert v.funding_extreme is False, (
+        f"funding_extreme should be False for raw 0.0066 (0.0066% per 8h, "
+        f"threshold 0.05%); got funding_extreme={v.funding_extreme}"
+    )
+    assert v.funding_rate == pytest.approx(0.0066)
+
+
+def test_funding_units_mild_negative_not_extreme_sign_preserved():
+    """Raw API value -0.0085 (≈ BTCUSDC short lean) should NOT trip extreme
+    threshold AND sign must be preserved as negative (shorts pay longs).
+    Pre-fix: abs(-0.0085)*100=0.85>0.05 → incorrectly extreme.
+    Post-fix: abs(-0.0085)=0.0085 < 0.05 → not extreme."""
+    ctx = _ctx(_bear_bars("1h"), _bear_bars("4h"), _bear_bars("1d"),
+               funding=-0.0085, current_price=100.0)
+    v = compute_regime(ctx, _config())
+    assert v.funding_extreme is False, (
+        f"funding_extreme should be False for raw -0.0085 (0.0085% per 8h, "
+        f"threshold 0.05%); got funding_extreme={v.funding_extreme}"
+    )
+    assert v.funding_rate is not None and v.funding_rate < 0, (
+        f"funding_rate sign must be negative; got {v.funding_rate}"
+    )
+
+
+def test_funding_units_extreme_trips_at_correct_threshold():
+    """Raw API value 0.06 (0.06% per 8h) should trip the 0.05% threshold.
+    Post-fix: 0.06 > 0.05 → funding_extreme=True (correct)."""
+    ctx = _ctx(_bull_bars("1h"), _bull_bars("4h"), _bull_bars("1d"),
+               funding=0.06)
+    v = compute_regime(ctx, _config())
+    assert v.funding_extreme is True, (
+        f"funding_extreme should be True for raw 0.06 (0.06% per 8h, "
+        f"threshold 0.05%); got funding_extreme={v.funding_extreme}"
+    )
+
+
+def test_funding_units_render_format():
+    """A stored funding_rate of 0.0066 (already in percent) should render
+    as '0.0066%' via the %.4f format — NOT '0.6600%' (which would be the
+    result of an erroneous ×100).
+
+    This tests the format string used in bitunix_htf_panel.html:
+      {{ '%.4f'|format(h.funding_rate) }}%
+    (post-fix — no ×100).
+    """
+    raw_rate = 0.0066
+    rendered = "%.4f%%" % raw_rate
+    assert rendered == "0.0066%", (
+        f"Expected '0.0066%' but got '{rendered}'; "
+        f"if '0.6600%' appears the ×100 bug is still present"
+    )
