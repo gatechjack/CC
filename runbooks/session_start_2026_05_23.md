@@ -2,6 +2,15 @@
 
 *Written 2026-05-22 ~14:00 UTC at session wrap.*
 
+> **STATUS UPDATE — 2026-05-22 ~22:30 UTC (added at end of kalshi_weather Phase D session):**
+> - **PRIORITY 1 (AM provider SDK fix) is DONE.** `e977641` deployed to prod 2026-05-22 16:47:11 UTC. Live probe confirmed: SPY ATM IV 0.1508, IWM 0.2243, TLT 0.1029, SPY spot 747.30 — all real via Tastytrade. See `runbooks/deploy_log.md` 2026-05-22 16:47 UTC entry and memory `[[data-provider-deploy]]`.
+> - **PRIORITY 2 (grader §6 live verification) and PRIORITY 3 (deploy) remain open** — proceed from PRIORITY 2 below.
+> - **Other things landed between this doc and the morning pickup** (not in PRIORITY 1-3's critical path, just context):
+>   - kalshi_weather Item 2 (hourly re-eval) investigated and **CLOSED — no signal** (commits `4f7fe50` + `5d3d859`; findings at `planning/kalshi_weather_hourly_reeval_findings.md`; memory `[[kalshi-weather-hourly-reeval-closed]]`). `quote_snapshot` persistence NOT being built.
+>   - Dashboard kalshi_weather cutoff advanced to P3 deploy 2026-05-22 16:25 UTC via surgical sed on prod (commits `90b3491` + `98c7824`; deploy_log 22:17 UTC entry). Filter-only; 82 floor-era RTs preserved.
+>   - All 7 session commits pushed to `origin/main` (`d756388..98c7824`).
+>   - kalshi_weather P3 observation week still in progress through ~2026-05-29 (untouched).
+
 Picks up after the IC morning-candidate grader was committed
 (`112aef3`) but intentionally NOT deployed.  The grader's ship gate is
 the AM provider SDK fix — that work has its own runbook

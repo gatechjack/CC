@@ -8,6 +8,62 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-22 ~22:30 UTC (Friday late evening — kalshi_weather Phase D + dashboard cutoff advance)
+
+**Headline of THIS session:** kalshi_weather Item 2 (hourly re-evaluation) investigation **CLOSED** as "investigated, no signal" after a full replay against the 556-RT prod corpus. Zero-leak Tier A.1 close-signal correctness was 50% (coin flip) on 22 flipped positions; leak-inflated Tier A.2 underperformed A.1 at 41.3% — clean kill, no edge hiding under friction. `quote_snapshot` persistence design (Tier C long-pole, prior session `f20de60`) is **not being built**; its only purpose was Tier C real-PnL on a signal we now know doesn't exist. Dashboard kalshi_weather cutoff advanced to the P3 deploy time (2026-05-22 16:25 UTC) so the tile scopes to the fully-corrected logic window — surgical sed on prod, no other code change.
+
+**Local `main` head (pushed, in sync with `origin/main`):**
+- `98c7824 runbooks: deploy_log entry for 2026-05-22 22:17 UTC dashboard cutoff advance`
+- `90b3491 dashboard: advance kalshi_weather DASHBOARD_RT_CUTOFFS to P3 deploy 2026-05-22 16:25`
+- `5d3d859 backlog: close Item 2 (kalshi_weather hourly re-eval) — investigated, no signal`
+- `4f7fe50 kalshi_weather: Phase D replay — hourly re-eval signal doesn't clear cost bar`
+- `f20de60 planning: quote_snapshot persistence design (Tier C long-pole)` *(prior in this thread)*
+- `2e98d8f planning: design + data-availability for kalshi_weather hourly re-eval replay` *(prior in this thread)*
+- `fe5d3fd backlog: re-add lost kalshi_weather intraday items (2026-05-22 EOS loss)` *(prior in this thread)*
+- All 7 pushed end-of-session (`d756388..98c7824`).
+
+**What's running on prod (post-this-session):**
+- `f5a5fd5` kalshi_weather P3 — unchanged from earlier session. **Observation week in progress**, daily drift-check at `scripts/check_weather_coord_drift.sql` must stay clean through ~2026-05-29 before P4 advance is considered. **NOT advanced by this session.**
+- `e977641` Tastytrade AM fix — unchanged from earlier session.
+- Dashboard `DASHBOARD_RT_CUTOFFS["kalshi_weather"]`: now `2026-05-22T16:25:00+00:00` (was `2026-05-20T11:34:59+00:00`). Filter-only; 82 floor-era RTs preserved in `kalshi_round_trips` for forensics. Surgical sed via `az vm run-command`, backup tag `pre-cutoff-20260522-1730`. Restart clean; healthz 200 + mode=PAPER; MainPID `1119435` since 22:17:49 UTC. md5 `6f716288d01a97996ed41e7a3c3ca8ba`. **Local data.py LF-normalized md5 verified equal to prod md5 — environments in sync.**
+
+**Phase D investigation outputs (committed):**
+- `planning/kalshi_weather_hourly_reeval_findings.md` — full replay results, Tier A.1 / A.2 / B headlines, A.1↔A.2 divergence by horizon, what the replay does and does not tell us.
+- `scripts/replay_kalshi_weather_hourly_reeval.py` — reproducible replay. PARITY gate (#4) passes to float epsilon (3.33e-16, all 556). LEAK GUARD (#5) asserts `obs_dt ≤ H` on every observed-floor call; 11,141 asserts ran clean. Run via `.\scripts\run_capped.ps1 python scripts\replay_kalshi_weather_hourly_reeval.py`.
+
+**Phase D investigation outputs (gitignored, in `tmp/`):**
+- `tmp/kw_whp.jsonl.gz` (636 rows) + `tmp/kw_rt.jsonl.gz` (556 rows) + `tmp/kw_po.jsonl.gz` (658 rows) — the read-only corpus pulled from prod via the chunked az run-command pattern. sha-verified against prod-side hashes at pull time. Reusable for any future kalshi_weather forensic analysis.
+- `tmp/replay_results.csv` (11,141 rows), `tmp/replay_summary.json`.
+- `tmp/metar_cache/` (19 stations, ~280 obs each from NWS Aviation Weather API), `tmp/open_meteo_cache/`.
+- `tmp/fetch_corpus_chunked.py` — the chunked extraction driver (validated for ~285 KB gzipped corpus).
+
+**BACKLOG state changes:**
+- Item 2 (hourly re-evaluation) — **CLOSED — INVESTIGATED, NO SIGNAL (2026-05-22)** (commit `5d3d859`). Original investigation spec preserved in a collapsed `<details>` block; CLOSED marker + pointer to findings doc leads. Do not re-propose absent a strategy redesign that materially changes the entry signal.
+- Item 1 (settlement-certainty arb) — UNTOUCHED. Different mechanism; Phase D result has no bearing on it. Remains open in the P2 section.
+
+**Highest-leverage open items (NOT advanced this session):**
+1. **P4 observation week** — kalshi_weather xref daily drift-check through ~2026-05-29; P4 (legacy `_CITY_COORDS_FALLBACK` removal) is the eventual go decision. Day-one (60 evals) was clean. The session's dashboard cutoff change confirms the corrected logic window is now what the tile reports against.
+2. **Tastytrade rotation runbook** (P1 HIGH, from earlier session) — atomic 2-step procedure + failure-chain diagnosis template. Pre-empts a multi-round-trip rotation next time secrets rotate.
+3. **Bug 4 (`get_history` dead branch)** (P2 MEDIUM, from earlier session) — pre-existing; IVR still falls through to yfinance HV.
+4. **IC grader §6 live verification** (project memory `project_ic_grader_committed.md`) — AM SDK fix gate closed by earlier session; next gate is §6 against the live provider. Coordinating runbook at `session_start_2026_05_23.md` (PRIORITY 1 should be marked DONE in that file given the AM fix is live).
+5. **Security-review remediation** — 7 CRITICAL findings still un-addressed (`e88d663`).
+
+**Memory updated this session:**
+- NEW `project_kalshi_weather_hourly_reeval_closed.md` — the negative-result project memory with do-not-re-propose guidance + Tier-C-skip rationale.
+- NEW `reference_az_run_command_stdout_cap.md` — operational reference for the 4 KB tail-truncated stdout cap on `az vm run-command`, with the chunked dd+base64 pattern that validated 285 KB pull.
+- `MEMORY.md` — index entries appended for both.
+
+**Tmp throwaways** (gitignored, useful next session):
+- All Phase D artifacts above. The chunked-extraction pattern in `tmp/fetch_corpus_chunked.py` is reusable for any future prod-DB pull — pattern is documented in `reference_az_run_command_stdout_cap.md` memory; the script itself is gitignored.
+
+**Untracked at session end** (pre-existing, unrelated, NOT mine):
+- `docs/Deployment notes.txt`
+- `scripts/fetch_kalshi_weather_corpus.py` (the failed paginating version from a prior session; superseded by the chunked pattern but left in place per "don't expand scope")
+
+**Canonical pickup:** next-session prompt provided at session end in chat + this EOS + `runbooks/deploy_log.md` (top entry, `2026-05-22 22:17 UTC` dashboard cutoff) + `runbooks/session_start_2026_05_23.md` (IC-grader thread; PRIORITY 1 should be marked DONE there).
+
+---
+
 ## EOS snapshot — 2026-05-22 ~17:05 UTC (Friday evening — Tastytrade AM fix session, parallel to kalshi_weather session below)
 
 **Headline of THIS session:** Tastytrade AM SDK-shape fix deployed
