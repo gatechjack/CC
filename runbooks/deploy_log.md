@@ -76,6 +76,158 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-22 16:25 UTC — kalshi_weather P3: YAML xref loader wired (commit `f5a5fd5`)
+
+**Commits:** `f5a5fd5` (strategy edits + new test file). Companion files
+shipped same deploy: `38595d8` (P1 loader+YAML+tests, was committed
+dormant) and `6ff80c1` (P2 verified — 38 NWS-CLI entries flipped).
+Pushed to `origin/main`.
+**Triggered by:** Operator go after P2 verification pass (jack personally
+reviewed each entry in `planning/weather_stations_review.md` against
+the verbatim Kalshi rules, then ran the batch flip). Plan in
+`planning/weather_station_xref_design.md` §7 P3.
+**Backup tag:** `kalshi_weather_arb.py.pre-p3-20260522T162316Z` (in
+`/home/azureuser/trading_corp/backups`). New files have no backup
+target.
+
+**Files deployed (3):**
+- `trading_corp/data/weather_stations.py` (new) — pydantic-validated
+  YAML loader with mtime cache + fail-safe to last-good copy. Public
+  API: `get_registry()` singleton, `lookup_series()`, `lookup_station()`.
+- `config/weather_stations.yaml` (new) — 19 stations + 39 series.
+  38 series `verified: true` (jack, 2026-05-22, with `verified_via_market`
+  per entry); 1 series `disabled: true` (KXTEMPNYCH — AccuWeather).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — `_resolve_coords`
+  helper extracted; verified-YAML → legacy lookup order; eval_payload
+  carries `coord_source` / `yaml_coords` / `legacy_coords` for drift
+  detection.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+
+- **YAML xref loader live and driving coords for every verified series.**
+  Day-one scan: 60 evals, all `coord_source=yaml_verified`, zero drift
+  (`yaml_coords == legacy_coords` on every row). The legacy
+  `_CITY_COORDS_FALLBACK` dict stays FULLY ACTIVE — both paths compute
+  per eval; P4 (legacy removal) is gated on a full week of drift=0.
+- **Audit drift fields** (`coord_source`, `yaml_coords`, `legacy_coords`)
+  now in every `kalshi_weather_evaluated` event. New `skip_code`
+  `yaml_disabled` reserved for the belt-and-suspenders case where a
+  disabled YAML entry leaks past `_DISABLED_SERIES_PREFIXES` (hasn't
+  fired; would log WARN).
+- **Drift-check SQL shipped at `scripts/check_weather_coord_drift.sql`**
+  (`6e81038`) — runnable read-only against prod sqlite. Reports
+  coord_source distribution, drift cases, legacy_fallback events,
+  upstream-filter health. Daily during the observation week.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+
+- **Critical invariant in `_resolve_coords`:** only `verified: true`
+  YAML entries drive `coord_source=yaml_verified`. An entry with
+  `verified: false` is IGNORED and falls to legacy. Protects against
+  an unreviewed YAML edit silently changing trades. Test
+  `tests/test_kalshi_weather_coord_resolution.py::test_unverified_yaml_entry_falls_to_legacy`
+  enforces.
+- **`_DISABLED_SERIES_PREFIXES = {'KXTEMPNYCH'}` is STILL the primary
+  disabled-series gate** (in the survivors phase). The YAML
+  `disabled: true` flag is consulted in `_resolve_coords` as belt-and-
+  suspenders — if/when the upstream gate is removed (P5+), the YAML
+  flag picks up the work. Don't remove either without a successor.
+- **Three commits today were committed-but-not-deployed before this
+  one:** `38595d8` (P1, explicitly dormant), `f5beafa` (P2 review
+  doc + helper — never on prod, lives in repo only), `6ff80c1` (P2
+  verified flips — never deployed alone; shipped here as part of P3
+  via the YAML file write). The drift-check SQL `6e81038` is repo-only
+  too — no prod copy needed; sqlite3 is on prod.
+
+**Observation tripwires (read these during the observation week):**
+- Drift-check Section 3 must stay `NO DRIFT — ...` across daily runs
+  through ~2026-05-29.
+- Drift-check Section 4 must stay `OK — no legacy_fallback events`.
+  If a new Kalshi series shows up that isn't in the YAML, this fires
+  and the safety net catches it — but P4 must NOT advance until the
+  new series is added + verified.
+- Drift-check Section 5 must stay `OK — no disabled_skip leaks`. If
+  it ever non-zeros, hard bug.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-p3-20260522T162316Z; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/backups/kalshi_weather_arb.py.\$TAG \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py; \
+rm -f \$BASE/trading_corp/data/weather_stations.py \$BASE/config/weather_stations.yaml; \
+systemctl restart trading-corp.service
+"
+```
+
+Validation after rollback: healthz 200, kalshi_weather scan emits NO
+`coord_source` field, station coords resolved exclusively via
+`_CITY_COORDS_FALLBACK` (still has the Track-1 corrections).
+
+---
+
+## 2026-05-22 14:02 UTC — kalshi_weather Track-1 station fix: 6 corrections + KXTEMPNYCH disable (commit `e02258d`)
+
+**Commits:** `e02258d`. Pushed to `origin/main`. Companion planning
+doc + audit JSON at `02ab258` (commit-before).
+**Triggered by:** Operator investigation of a 2026-05-21 KXHIGHTSEA-B74.5
+"lucky win" trade. Audit of all 39 weather series we trade revealed
+6 settlement-station mismatches in `_CITY_COORDS_FALLBACK` (15-25%
+of last-14-day weather volume) + 1 source mismatch (KXTEMPNYCH on
+AccuWeather, no feed). Backtest of 125 affected historical trades
+showed 0 direction flips but 9 marginal SKIPs under corrected
+forecast — strictly more accurate, not a behavior change.
+**Backup tag:** `kalshi_weather_arb.py.pre-station-fix-20260522T140059Z`.
+
+**Files deployed (1):**
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — surgical
+  patch (+32 / −16). Six entries corrected in `_CITY_COORDS_FALLBACK`
+  + `_CITY_TO_METAR_STATION`; new `_DISABLED_SERIES_PREFIXES` set;
+  filter wired in candidate-survivors phase; scan audit carries
+  `skipped_disabled_series` counter.
+
+**Features shipped:**
+
+- **6 settlement-station corrections in `_CITY_COORDS_FALLBACK`:**
+  - `NYC`, `TNYC`, `NY` → `KNYC` (Central Park) — was KJFK, ~12 mi off; Central Park is +3°F warmer for highs in 30-day ASOS.
+  - `CHI`, `TCHI` → `KMDW` (Midway) — was KORD, ~17 mi off.
+  - `THOU` → `KHOU` (Hobby) — was KIAH, ~24 mi off.
+  Mirrored in `_CITY_TO_METAR_STATION`. Cross-checked against
+  verbatim Kalshi rules in `planning/weather_station_xref_audit.json`.
+
+- **`_DISABLED_SERIES_PREFIXES = {'KXTEMPNYCH'}` gate in the
+  candidate-survivors phase.** KXTEMPNYCH resolves on AccuWeather;
+  we have no feed. Refused-to-model rather than synthesize a station.
+  Scan audit carries `skipped_disabled_series` counter; day-one
+  observed value is 24 drops per scan (the active hourly markets).
+
+**Notable code changes:**
+
+- Affected ~125 of ~700 last-14-day trades on the 6 mis-mapped
+  series. Backtest results saved during session at
+  `tmp/backtest_results.csv` + `tmp/backtest_with_outcomes.csv`
+  (gitignored). Climatological deltas in
+  `tmp/station_pair_deltas.json`.
+- Yesterday's KXHIGHTSEA-B74.5 trade (the trigger): TSEA→KSEA
+  mapping was CORRECT all along; the 3°F miss was forecast error,
+  not station error. The wider audit found the unrelated 6 series
+  with real misalignments.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-station-fix-20260522T140059Z; BASE=/home/azureuser/trading_corp; \
+mv \$BASE/backups/kalshi_weather_arb.py.\$TAG \$BASE/trading_corp/agents/strategies/kalshi_weather_arb.py; \
+systemctl restart trading-corp.service
+"
+```
+
+NB: a later P3 deploy (16:25 UTC same day) replaced this file. The
+P3 rollback restores to a DIFFERENT backup (`pre-p3-...`) that has
+the Track-1 fix baked in. To fully revert Track 1, restore the
+`pre-station-fix-...` backup AFTER rolling back P3 — order matters.
+
+---
+
 ## 2026-05-22 10:33 UTC — data-provider abstraction + Tastytrade primary + 1e-5 fix (commit `a6885a5`) — degraded (2 SDK bugs queued for AM fix)
 
 **Commits:** `a6885a5` (data-provider abstraction). On `main`, not pushed to `origin/main` as part of this deploy (host-direct deploy mechanism; prod has no git).

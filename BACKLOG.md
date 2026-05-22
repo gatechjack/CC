@@ -8,54 +8,74 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## EOS snapshot — 2026-05-22 ~14:00 UTC (Friday afternoon)
+## EOS snapshot — 2026-05-22 ~16:45 UTC (Friday evening — second session)
 
-**Headline:** IC morning-candidate grader committed-not-shipped at
-`112aef3`. Deploy sequence is pre-conditioned on the AM provider SDK
-fix landing first. **All other prod state unchanged from earlier today.**
+**Headline of THIS session:** kalshi_weather settlement-station fixes
+shipped to prod in two deploys (`e02258d` at 14:02 UTC, `f5a5fd5` at
+16:25 UTC). Cross-reference system P1–P3 complete; P4 (legacy-dict
+removal) **gated on a clean observation week** through ~2026-05-29.
+Daily drift-check at `scripts/check_weather_coord_drift.sql`.
 
-**Local `main` head (1 ahead of `origin/main`, not pushed):**
-- `112aef3 feat(ic): morning candidate grader on /telemetry/iron_condor`
+**Local `main` head (pushed, in sync with `origin/main`):**
+- `6e81038 weather_stations: daily drift-check SQL for P3 observation week`
+- All today's commits pushed (`02ab258 → e02258d → 38595d8 → f5beafa →
+  6ff80c1 → e977641 (AM fix, separate session) → f5a5fd5 → 6e81038`).
 
-**What's running on prod (unchanged today):**
-- `a6885a5` (data-provider abstraction + Tastytrade primary + 1e-5 fix)
-  — DEGRADED with two SDK bugs queued for AM fix; strictly better than
-  pre-deploy regardless.
-- `b218375` (kalshi_weather side-asymmetric entry-price floor) — Day 2
-  of forward paper-validation window. **First post-deploy round-trips
-  expected to land 14:00–19:00 UTC today** as 2026-05-21 wpps reach
-  contract expiration. Run the PRIORITY-3 queries from
-  `runbooks/session_start_2026_05_21_kalshi_post_deploy.md` after
-  ~15:00 UTC.
-- IC v1 paper-mode (shipped 2026-05-21 03:09 UTC). Scanner ran Thursday
-  and Friday at 09:45 ET; only GLD had a tally entry in scan_telemetry,
-  consistent with the strategy's first-fail-only counter mechanism
-  (verified non-anomaly during this session).
+**What's running on prod (current state):**
+- `f5a5fd5` (kalshi_weather P3 — YAML xref loader wired,
+  verified-YAML → legacy precedence, drift fields in audit). LIVE since
+  16:25 UTC. Observation week in progress.
+- `e02258d` (kalshi_weather Track-1 station fix — 6 corrections + KXTEMPNYCH
+  disable). Embedded in the P3 file. Was deployed 14:02 UTC and
+  superseded-in-place by P3 (P3 backup tag preserves it).
+- `a6885a5` (data-provider abstraction + Tastytrade primary). Earlier
+  session shipped AM SDK fix `e977641` to repo — **deploy status
+  uncertain from this session; need to confirm via deploy_log**.
+- `b218375` (kalshi_weather entry-price floor) — Day 2 of paper-validation,
+  carried forward.
+- IC v1 paper-mode (shipped 2026-05-21 03:09 UTC) + IC grader still
+  committed-not-shipped at `112aef3` pending the three sequential gates
+  (see prior EOS — unchanged in this session).
 - BitUnix paper-eval clock continues toward 2026-07-19.
 - Polymarket per-condition_id cap shipped (paper-only).
 
-**Three sequential ship gates for the grader — DO NOT SKIP:**
+**Live invariant to watch during the observation week:**
+- Daily run of `scripts/check_weather_coord_drift.sql` must show
+  Section 3 `NO DRIFT — ...`, Section 4 `OK — no legacy_fallback events`,
+  Section 5 `OK — no disabled_skip leaks`. Day-one (60 evals) was clean.
+- If ANY of those flip non-OK, **P4 is paused indefinitely** until
+  the cause is understood (per the design's safety-net philosophy —
+  see `planning/weather_station_xref_design.md`).
 
-1. **AM provider SDK fix** — covered by
-   `runbooks/session_start_2026_05_22_data_provider_am_fix.md`. The two
-   SDK bugs (`Session()` kwargs + missing `get_quote` import) + the
-   two queued follow-ups (`_iv_math.py` move, Fidelity test).
-2. **§6 live-verification** (real-provider, real ATM IV numbers,
-   full gate-7 path) per
-   `.claude/plans/planning-session-ic-hashed-kettle.md` §
-   Verification §6. Mock-based unit tests at 88/88 do NOT close this.
-3. **CRLF-normalized deploy of the grader** — `routes.py` must be
-   normalized to LF at transport time per
-   `[[feedback-crlf-routes-py-deploy]]`. Then re-run §6 in prod.
+**P4 readiness gate (do NOT advance early):**
+- Full week of clean drift-check runs (target: 2026-05-29).
+- Across enough distinct dates, scan cycles, and series to be
+  confident the YAML path is behaviorally identical to legacy.
+- Operator (jack) explicit go — not Claude's call.
+
+**Pickup item for next session: backlog items operator added today.**
+Operator stated at session end ("I want to work on the backlog items I
+added today in the next session"). The items themselves are below in
+this BACKLOG file. **Read the P-priority items below** to identify
+what was added today; this EOS snapshot does not duplicate them.
 
 **Coordination items outside this session:**
 - 5 stranded shared files (parallel-session deconfliction) — unchanged.
-- `origin/main` push decision — local is 1 ahead; push deferred.
+- IC grader three ship gates (AM fix → §6 live verify → CRLF deploy) —
+  unchanged from prior EOS; this session did not touch them.
 
 **Untracked at session end:** `docs/Deployment notes.txt` (pre-existing,
 unrelated).
 
-**Canonical pickup:** `runbooks/session_start_2026_05_23.md`.
+**Tmp artifacts** (gitignored, useful next session):
+- `tmp/backtest_results.csv` — 125 affected trades, corrected vs legacy decisions
+- `tmp/backtest_with_outcomes.csv` — with resolution outcomes
+- `tmp/station_pair_deltas.json` — JFK/NYC, ORD/MDW, IAH/HOU climatological deltas
+- `tmp/asos_by_station.json` — 30-day ASOS history per station
+- `tmp/affected_trades.csv` — the 125 affected trades from prod
+
+**Canonical pickup:** new session prompt provided by operator, plus
+`runbooks/deploy_log.md` (top two entries are today's).
 
 ---
 
