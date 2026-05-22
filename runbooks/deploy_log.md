@@ -76,6 +76,45 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-22 22:17 UTC — dashboard: kalshi_weather cutoff → P3 deploy time (commit `90b3491`)
+
+**Commits:** `90b3491` (local main, not pushed at deploy time — push call deferred to operator). Single-line surgical patch to `DASHBOARD_RT_CUTOFFS` in `trading_corp/web/data.py`.
+**Triggered by:** Operator request after Phase D replay closed the hourly re-eval investigation (commit `5d3d859`). Floor cutoff (2026-05-20 11:35 UTC) was set before the 2026-05-22 station-coord + xref-loader corrections; advancing it scopes the dashboard tile to the fully-corrected logic window.
+**Backup tag:** `pre-cutoff-20260522-1730` on prod `trading_corp/web/data.py` only.
+
+**Files deployed (1):**
+- `trading_corp/web/data.py` — single line: `DASHBOARD_RT_CUTOFFS["kalshi_weather"]` from `2026-05-20T11:34:59+00:00` → `2026-05-22T16:25:00+00:00`. Inline comment updated to reference all three corrections (floor + 6 station fixes + KXTEMPNYCH disable + xref YAML loader). md5: `7722dd80…` → `6f716288d01a97996ed41e7a3c3ca8ba`.
+
+**Features shipped:**
+- **kalshi_weather dashboard tile now scopes to fully-corrected logic** (post-`f5a5fd5` P3 deploy, 2026-05-22 16:25 UTC). Tile's "since" badge will render `2026-05-22` after the next page load.
+- **82 floor-era RTs (2026-05-20 11:35 → 2026-05-22 16:25) preserved in `kalshi_round_trips`** — filter-only, queryable for forensics; just excluded from dashboard aggregates. Cross-strategy `kalshi_crypto` cutoff at `2026-05-20T05:52:09+00:00` was verified unchanged.
+
+**Notable code changes:**
+- Surgical patch only; no schema changes, no new modules, no test changes. The deploy mechanism was a `sudo sed -i` on prod's file with strict pre/post grep verify (old-line hits 0, new-line hits 1, crypto-line hits 1) — bail-and-restore path if any verify count miscounted.
+- Cutoff value chosen = `f5a5fd5` deploy time (P3 xref loader live). All three corrections — entry-price floor (`b218375`, deployed 2026-05-20 11:35), 6 station-coord corrections + KXTEMPNYCH disable (`e02258d`, deployed 2026-05-22 14:02), xref YAML loader (`f5a5fd5`, deployed 2026-05-22 16:25) — are guaranteed live at and after this timestamp.
+
+**Verification:**
+- Prod md5 post-patch: `6f716288d01a97996ed41e7a3c3ca8ba`, line count unchanged at 4883.
+- `systemctl restart trading-corp` clean. MainPID `1119435` since `2026-05-22 22:17:49 UTC` (was `1071785` since 16:25:02 UTC — Tastytrade AM-fix process).
+- `curl http://127.0.0.1:8000/healthz` → `HTTP 200 OK`, body `{"status":"ok","mode":"PAPER"}`.
+- `ss -tlnp`: python pid 1119450 LISTEN on `0.0.0.0:8000`.
+- journalctl shows live `kalshi_crypto_evaluated` audit rows flowing post-restart (audit log intact).
+- Read-only RT count at deploy time: 0 kalshi_weather_arb round-trips with `entry_ts >= 2026-05-22T16:25:00+00:00` (forward fills haven't resolved yet — clean baseline for the advanced cutoff to populate over the observation week).
+
+**Inert / dormant on current traffic:** none. The cutoff dict is consulted on every `/dashboard` render path that touches a kalshi_weather aggregate; change takes effect on next page load.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-cutoff-20260522-1730; BASE=/home/azureuser/trading_corp; \
+sudo cp \$BASE/trading_corp/web/data.py.\$TAG \$BASE/trading_corp/web/data.py; \
+sudo chown root:root \$BASE/trading_corp/web/data.py; \
+sudo systemctl restart trading-corp
+"
+```
+
+---
+
 ## 2026-05-22 16:47 UTC — Tastytrade AM fix: SDK shape across all call sites (commit `e977641`)
 
 **Commits:** `e977641` (Tastytrade AM fix). On `origin/main` (operator-pushed). Local main currently at `6e81038` (parallel-session `weather_stations` work pushed on top, unrelated to this deploy and untouched by it).
