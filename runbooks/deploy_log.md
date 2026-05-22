@@ -76,6 +76,63 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-22 01:50 UTC — B7 + B9 reconciler hardening (commits `3713ace` + `4fe56de`) — 5/5 MATCH
+
+**Commits:** `3713ace` (B7 — bar_count > 0 guard) + `4fe56de` (B9 — inverted-window normalization). Both on `origin/main`.
+**Triggered by:** Human-authorized re-deploy after the 2026-05-22 01:06 UTC rollback surfaced the inverted-window edge case that B9 addresses. Test-first locally for both commits (5 reconciler tests pass via `scripts\run_capped.ps1`).
+**Backup tag:** `pre-b7-b9-reconciler-20260522` (1 file: `scripts/audit_reality_reconciler.py`; captures the post-rollback original at md5 `b203f791514cd43ce4b668d853bfd250`).
+
+**Files deployed (1):**
+- `scripts/audit_reality_reconciler.py` — md5 transitioned `b203f791514cd43ce4b668d853bfd250` (post-rollback original) → `071503b76cb722be2ca3e5621d847adc` (4fe56de blob = local). Adds: (a) `bar_count > 0` guard with explicit `no_bars` outcome and `audit_reality_no_bars` audit kind (B7); (b) window-normalization branch in `_load_bars_for_trade` that handles `ts > result_ts` by using `[result_ts, ts + max_hold_seconds]` instead of the inverted SQL bounds (B9).
+
+**Features shipped:**
+- **Reconciler can no longer false-clean against zero bars (B7).** If `_load_bars_for_trade` returns `[]`, the reconciler short-circuits to `simulated_result="no_bars", matches=False`, writes a per-trade `audit_reality_no_bars` audit_event row, and the per-fire roll-up status precedence becomes `mismatch > no_bars > match`. Closes the kline-shaped blind spot that was rebuilt inside the immune system.
+- **Reconciler correctly handles inverted query windows (B9).** Trades with `ts > result_ts` (the v2 finalizing-tick attribution artifact previously bundled into B5) now reconcile against the bars that exist in absolute time, not against an empty SQL result. The classifier walks `[result_ts, ts + max_hold_seconds]` and stops on first SL/TP hit; trailing post-resolution bars are harmless. Trade `2942ff8e` now reconciles to a genuine match instead of `no_bars`/phantom mismatch.
+
+**Verification (manual fire as `azureuser` mimicking `tc-audit-reality.service` ExecStart):**
+- `cd /home/azureuser/trading_corp && /home/azureuser/trading_corp/venv/bin/python scripts/audit_reality_reconciler.py --db sqlite:////home/azureuser/trading_corp/data/trading_corp.db` exit code `0` (clean — was `1` under the prior deploy attempt that surfaced 2942ff8e's inverted-window symptom).
+- Per-trade verdicts (5 closed v2 trades scanned):
+  - `35aa49c9` — **MATCH** (sim=win R=0.838, rec=win R=0.838 corrected, 266 bars)
+  - `a467e316` — **MATCH** (sim=loss R=-1.0, rec=loss R=-1.0 corrected, 266 bars)
+  - `ef6e6697` — **MATCH** (sim=loss R=-1.0, rec=loss R=-1.0, 2 bars)
+  - `ab190eb8` — **MATCH** (sim=loss R=-1.0, rec=loss R=-1.0, 1 bar)
+  - `2942ff8e` — **MATCH** (sim=win R=**0.7955**, rec=win R=**0.7955**, **236 bars walked**, filled_legs=[tp1, tp2], final_sl=76950.63908). **NEW under B9** — was `no_bars` under B7-alone (yesterday's rollback) and would be `mismatch` under pre-B7 code. Now genuinely reality-verified by the reconciler against real bar OHLC.
+- Roll-up row (audit_event id `463270`, ts `2026-05-22T01:50:10+00:00`): `{"n_total": 5, "n_matches": 5, "n_mismatches": 0, "status": "match", "mismatches": []}`.
+- Zero new `audit_reality_no_bars` audit_event rows from this fire (only the residual id `461531` from yesterday's rolled-back deploy still exists — append-only history).
+
+**Diagnostic anomaly resolved (not a regression):** A verification SQL probe `SELECT COUNT(*) FROM audit_event WHERE kind='audit_reality_no_bars' AND ts >= datetime('now','-2 minutes')` returned `1`, falsely suggesting a new no_bars row from this fire. Root cause: SQLite's `datetime('now', ...)` returns space-separated `'YYYY-MM-DD HH:MM:SS'`, while stored ISO timestamps use `T` (0x54) and `+00:00`. String comparison `T > space` → any same-UTC-day ISO row sorts as ≥ the space-formatted now-2min. The single row counted was id `461531` from yesterday at `2026-05-22T01:06:08+00:00`, NOT a row from this fire. Future verification queries should use `strftime('%Y-%m-%dT%H:%M:%S', 'now', '-2 minutes')` or numeric `julianday()` comparison to avoid this format mismatch. Not a B7/B9 issue — verification SQL hygiene.
+
+**Timer state:**
+- `tc-audit-reality.timer` active (waiting); next fire 2026-05-22 06:05:30 UTC + jitter. Oneshot — picks up the new file on next invocation without restart.
+
+**Unattended-fire posture (post-deploy):**
+- Next unattended fire (~06:05 UTC) runs the new (B7+B9) reconciler. Predicted result: 5/5 match, status="match", n_matches=5, n_total=5, mirroring the manual fire above. Trade population may grow if new v2 trades close between 01:50 and 06:05; new trades would also need bars in absolute time to match.
+- Post-06:05 check recipe (use `julianday` to avoid the ISO/space mismatch):
+  ```bash
+  az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+    --command-id RunShellScript \
+    --scripts 'sqlite3 -header /home/azureuser/trading_corp/data/trading_corp.db "
+      SELECT id, ts, json_extract(payload_json,\"\$.status\") AS status,
+             json_extract(payload_json,\"\$.n_matches\") AS n_matches,
+             json_extract(payload_json,\"\$.n_total\") AS n_total
+      FROM audit_event WHERE kind=\"audit_reality_run\" ORDER BY id DESC LIMIT 3;"'
+  ```
+
+**Status moves in BACKLOG.md:**
+- **B7** DO-SOON → **done** (shipped + verified non-regressive at 5/5).
+- **B9** new → **done** (companion fix that made B7's deploy possible; documented now in BACKLOG as a closed item).
+- **B5** — the original `bars_to_resolution` scope **stays cosmetic** (untouched by B7+B9). The adjacent `result_ts < ts` inversion has its **reconciler-side blast radius now resolved by B9**; a source-side residue remains in `paper_trade_record.result_ts` for multi-tick lifecycle trades (any future consumer of `result_ts` that assumes forward time would face the artifact). Note in BACKLOG.
+
+**Rollback recipe (kept for record; not executed this fire):**
+```bash
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+  --command-id RunShellScript \
+  --scripts 'sudo -u azureuser mv /home/azureuser/trading_corp/scripts/audit_reality_reconciler.py.pre-b7-b9-reconciler-20260522 /home/azureuser/trading_corp/scripts/audit_reality_reconciler.py'
+```
+(No service restart needed; oneshot reads the file fresh on next timer fire.)
+
+---
+
 ## 2026-05-22 01:06 UTC — B7 reconciler no_bars guard (commit `3713ace`) — DEPLOYED AND ROLLED BACK
 
 **Commits:** `3713ace` (B7 fix). `4 commits` pushed alongside (`8448a06`, `24af247`, `797a312`, `07ed68c`) — all docs/runbooks, no runtime code changes.

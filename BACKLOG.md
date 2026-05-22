@@ -70,29 +70,61 @@ the report are not the priority any longer — H7 supersedes them.
 
 ## BitUnix — post-funding diagnostics (2026-05-21)
 
-Four items raised during the post-funding-units-fix diagnostic sweep on
+Items raised during the post-funding-units-fix diagnostic sweep on
 2026-05-21. Full write-up — including the reality-verified verdict on
 trade `2942ff8e` and the premise-conflict case study — in
-`runbooks/2026-05-21_post_funding_diagnostics.md`. Items graded; pull
-DO-SOON items into the next active session.
+`runbooks/2026-05-21_post_funding_diagnostics.md`. **B7 + B9 shipped
+2026-05-22 01:50 UTC (commits `3713ace` + `4fe56de`); deploy verified
+5/5 match — see deploy_log entry.** B6, B8 remain LOW; B5 cosmetic
+stands with the `result_ts < ts` residue documented (B9 covers the
+reconciler-side consequence).
 
-### B7 — DO-SOON: reconciler `bar_count > 0` guard
+### B7 — ✅ DONE 2026-05-22 01:50 UTC: reconciler `bar_count > 0` guard
 
-`scripts/audit_reality_reconciler.py` does not check whether
-`_load_bars_for_trade` returned an empty list before declaring match.
-Current protection is outcome-contingent: empty bars produce
-`sim_result="expired"` from `_classify_v2_multi_leg`; since all current
-trades record `loss` or `win`, sim ≠ rec → correct mismatch. But the day
-any trade is recorded as `result="expired"` and its bars are missing,
-sim=expired AND rec=expired → match-against-zero-bars. That is the kline
-silent-failure pattern rebuilt inside the immune system that was built to
-prevent it. Currently safe-by-coincidence-of-outcomes, not safe-by-design.
+**Status:** Shipped as commit `3713ace` alongside B9 (`4fe56de`).
+Deployed 2026-05-22 01:50 UTC; manual fire verified 5/5 match (roll-up
+row id `463270`, status=`match`). Backup tag
+`pre-b7-b9-reconciler-20260522`. See `runbooks/deploy_log.md`
+2026-05-22 01:50 UTC entry.
 
-**Fix shape:** add an explicit `audit_reality_no_bars` outcome at the top
-of `_reconcile_one` (or wherever bars are fetched) that can never equal a
-match, and emit a distinct audit kind. ~30–60 min, one file, needs a test
-against an empty-bars input. Runbook rule: re-run the audit reconciler
-post-deploy.
+**What it fixed:** `scripts/audit_reality_reconciler.py` previously did
+not check whether `_load_bars_for_trade` returned an empty list before
+declaring match. Pre-fix protection was outcome-contingent: empty bars
+produce `sim_result="expired"`, and since current trades record `loss`
+or `win`, sim ≠ rec → correct mismatch. But the day any trade was
+recorded as `result="expired"` AND its bars were missing,
+sim=expired AND rec=expired → match-against-zero-bars. That was the
+kline silent-failure pattern rebuilt inside the immune system built to
+prevent it.
+
+**How it was fixed:** explicit `bar_count > 0` guard at the top of
+`_reconcile_one`. Empty bars now return `simulated_result="no_bars",
+matches=False` and emit a distinct `audit_reality_no_bars` audit kind.
+Roll-up status precedence: `mismatch > no_bars > match`. Three tests in
+`tests/test_audit_reality_reconciler.py` (unit + regression + summary).
+
+### B9 — ✅ DONE 2026-05-22 01:50 UTC: reconciler inverted-window normalization
+
+**Status:** Shipped as commit `4fe56de` alongside B7. Required to make
+B7's deploy non-regressive — surfaced during yesterday's 01:06 UTC
+deploy attempt when trade `2942ff8e` flipped to `no_bars` under B7
+alone. Deployed 2026-05-22 01:50 UTC; manual fire verified `2942ff8e`
+reconciles to **win R=0.7955 (236 bars walked)** instead of `no_bars`.
+Same backup tag and deploy_log entry as B7.
+
+**What it fixed:** `_load_bars_for_trade` previously bound SQL window
+to `ts_ms >= trade.ts AND ts_ms <= trade.result_ts` directly. For
+trades whose `result_ts < ts` (v2 finalizing-tick attribution
+artifact, e.g. `2942ff8e` ts=14:00:12 > result_ts=14:00:00), the SQL
+window is inverted → 0 rows even when bars exist in absolute time.
+
+**How it was fixed:** branch on the inversion. Normal case
+(`ts ≤ result_ts`) unchanged. Inverted case (`ts > result_ts`) uses
+`start = result_ts, end = ts + max_hold_seconds` — the full potential
+lifecycle window. The classifier walks bar-by-bar and stops on the
+first SL/TP hit, so trailing post-resolution bars are harmless. Two
+tests added (unit + integration using actual `2942ff8e` OHLC from
+runbook § 1).
 
 ### B6 — LOW: reconciler API-refetch path for clock-grade audits
 
@@ -123,7 +155,7 @@ makes backfill trivial). (2) Update `_load_bars_for_trade` query and
 `BitUnixBarArchiver` writer to carry symbol. Defer until the
 second-symbol design lands; do not pre-build.
 
-### B5 — cosmetic: `bars_to_resolution` semantics misleading
+### B5 — cosmetic: `bars_to_resolution` semantics misleading (with `result_ts < ts` source-side residue)
 
 For multi-tick partial-lifecycle trades, `bars_to_resolution` records
 the bar index of the finalizing replay tick, not the total bars walked
@@ -131,9 +163,28 @@ across all ticks. Trade `2942ff8e` records `bars_to_resolution=1`
 despite TP1+TP2 filling on real bars at 14:15 and 14:18 and the runner
 SL hitting at 14:27 (≥ 9 bars walked).
 
-**Fix shape:** add a separate `total_bars_walked` column or compute
+**Fix shape (`bars_to_resolution` cosmetic — unchanged):** add a
+separate `total_bars_walked` column or compute
 `bars_resolved_total = ROUND((julianday(result_ts) - julianday(ts)) *
 1440 / 3, 0)` for display. Pure display layer. No urgency.
+
+**Source-side `result_ts < ts` residue (B9-adjacent):** the same
+finalizing-tick path also produces trade rows where `result_ts` is the
+bar-OPEN of the entry bar (e.g. 14:00:00) while `ts` is the
+wall-clock entry (e.g. 14:00:12) — an inverted forward-time relation.
+**B9 (shipped 2026-05-22) resolved the reconciler-side blast radius**
+of this artifact: the reconciler now normalizes its query window when
+`ts > result_ts` and reconciles correctly against bars in absolute
+time. The **source-side artifact still exists in
+`paper_trade_record.result_ts`**: any future consumer that assumes
+`result_ts >= ts` (dashboard time-since rendering, lifetime
+computation, downstream analytics) needs to handle the inversion or
+accept the artifact. Source fix would be in
+`trading_corp/agents/paper_trade_replay.py` — set `result_ts = max(ts,
+bar_ts_iso)` (or similar) so the recorded value never precedes entry.
+Runbook gate applies: any `paper_trade_replay.py` change requires a
+post-deploy reconciler re-run. Not urgent given B9 closes the
+downstream consequence.
 
 ---
 
