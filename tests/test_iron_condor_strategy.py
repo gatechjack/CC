@@ -930,3 +930,103 @@ async def test_startup_catchup_tags_actions(agent):
     # Every leg flagged.
     assert all(o.extra.get("startup_catchup") is True for o in actions[0])
     assert all(o.extra.get("audit_severity") == "warning" for o in actions[0])
+
+
+# ---------------------------------------------------------------------------
+# IVR data unavailable — None from calc_iv_rank → tally ivr_data_unavailable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scan_tallies_ivr_data_unavailable_when_calc_iv_rank_returns_none(agent):
+    """calc_iv_rank returning None → strategy tallies ivr_data_unavailable, returns no combo."""
+    with patch(
+        "trading_corp.agents.strategies.robinhood_joint_iron_condor.get_vix",
+        return_value=18.0,
+    ), patch(
+        "trading_corp.agents.strategies.robinhood_joint_iron_condor.calc_iv_rank",
+        new=AsyncMock(return_value=None),   # provider returns None (data unavailable)
+    ):
+        out = await agent.scan(_fake_broker())
+
+    assert out == [], "expected no combos when IV rank data is unavailable"
+    state = agent.load_state()
+    bucket = list(state["scan_telemetry"].values())[0]
+    assert "ivr_data_unavailable" in bucket["SPY"]["by_reason"], (
+        "expected ivr_data_unavailable tally when calc_iv_rank returns None"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chain-too-shallow guard — _construct_ic returns None + tallies
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chain_shallow_call_side_skips_symbol(agent):
+    """Call side delta +0.30 (not within 0.05 of target +0.16) → chain_too_shallow."""
+    expiry = "2026-06-29"
+    # Shallowest available call has delta 0.30 — outside ±0.05 of target 0.16
+    calls = [
+        _option(strike=465, delta=0.30, mark=1.80, option_id="C-465", expiration=expiry),
+        _option(strike=468, delta=0.22, mark=1.20, option_id="C-468", expiration=expiry),
+    ]
+    puts = [
+        _option(strike=430, delta=-0.16, mark=1.10, option_id="P-430", expiration=expiry),
+        _option(strike=427, delta=-0.08, mark=0.20, option_id="P-427", expiration=expiry),
+    ]
+    broker = _fake_broker(calls=calls, puts=puts, expirations=[expiry])
+
+    with patch(
+        "trading_corp.agents.strategies.robinhood_joint_iron_condor.get_vix",
+        return_value=18.0,
+    ), patch(
+        "trading_corp.agents.strategies.robinhood_joint_iron_condor.calc_iv_rank",
+        new=AsyncMock(return_value=0.55),
+    ), patch(
+        "trading_corp.agents.strategies.robinhood_joint_iron_condor.calc_atm_iv",
+        new=AsyncMock(return_value=0.20),
+    ):
+        out = await agent.scan(broker)
+
+    assert out == [], "expected no combos when call chain too shallow"
+    state = agent.load_state()
+    bucket = list(state["scan_telemetry"].values())[0]
+    assert "chain_too_shallow" in bucket["SPY"]["by_reason"], (
+        "expected chain_too_shallow tally when call-side delta outside tolerance"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chain_shallow_put_side_skips_symbol(agent):
+    """Put side delta -0.30 (not within 0.05 of target -0.16) → chain_too_shallow."""
+    expiry = "2026-06-29"
+    calls = [
+        _option(strike=470, delta=0.16, mark=1.10, option_id="C-470", expiration=expiry),
+        _option(strike=473, delta=0.08, mark=0.20, option_id="C-473", expiration=expiry),
+    ]
+    # Shallowest available put has delta -0.30 — outside ±0.05 of target -0.16
+    puts = [
+        _option(strike=435, delta=-0.30, mark=1.80, option_id="P-435", expiration=expiry),
+        _option(strike=432, delta=-0.22, mark=1.20, option_id="P-432", expiration=expiry),
+    ]
+    broker = _fake_broker(calls=calls, puts=puts, expirations=[expiry])
+
+    with patch(
+        "trading_corp.agents.strategies.robinhood_joint_iron_condor.get_vix",
+        return_value=18.0,
+    ), patch(
+        "trading_corp.agents.strategies.robinhood_joint_iron_condor.calc_iv_rank",
+        new=AsyncMock(return_value=0.55),
+    ), patch(
+        "trading_corp.agents.strategies.robinhood_joint_iron_condor.calc_atm_iv",
+        new=AsyncMock(return_value=0.20),
+    ):
+        out = await agent.scan(broker)
+
+    assert out == [], "expected no combos when put chain too shallow"
+    state = agent.load_state()
+    bucket = list(state["scan_telemetry"].values())[0]
+    assert "chain_too_shallow" in bucket["SPY"]["by_reason"], (
+        "expected chain_too_shallow tally when put-side delta outside tolerance"
+    )

@@ -1,0 +1,10 @@
+global:
+  primary: tastytrade
+  fallback: null   # explicit null; auto-failover forbidden
+  cache_ttl_sec: 60
+  auth:
+    tastytrade:
+      provider_secret_env: TASTYTRADE_PROVIDER_SECRET
+      refresh_token_env: TASTYTRADE_REFRESH_TOKEN
+overrides:
+  # robinhood_joint_iron_condor: { primary: tastytrade }

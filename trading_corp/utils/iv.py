@@ -1,59 +1,66 @@
 """Implied-volatility helpers — IV-rank proxy and ATM IV lookup.
 
 Shared by Fidelity options division (existing) and the Robinhood-joint iron
-condor strategy (new). Both pull from yfinance, which gives end-of-day data
-that is fine for daily entry decisions but not intraday.
+condor strategy (new).
 
-`calc_iv_rank` returns a [0, 1] HV-proxy rank — preserved from
-`fidelity_options._calc_iv_rank` for backwards compatibility. Callers that
-think in percentage points (e.g. config `min_ivr: 30`) divide by 100 at the
-call site.
+These functions are thin wrappers that delegate to the configured
+MarketDataProvider (see `config/data_providers.yaml`).  The provider is
+resolved lazily on first call and mtime-cached so config changes are picked
+up automatically.
+
+`calc_iv_rank` returns a [0, 1] HV-proxy rank or None.  The old 0.5 sentinel
+is gone — callers must handle None explicitly (skip symbol, tally
+`ivr_data_unavailable`).
 
 `calc_atm_iv` returns the at-the-money implied volatility (decimal, e.g.
-0.23 = 23% annualized) for an expiration within `tolerance_days` of
-`target_dte`. Used by the iron condor's term-structure gate.
+0.23 = 23% annualized) or None on any failure or degenerate value.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
-import math
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Lazy provider — resolved once, mtime-cached via provider_factory
+# ---------------------------------------------------------------------------
 
-async def calc_iv_rank(symbol: str) -> float:
-    """Approximate IV rank via 30-day rolling historical volatility.
+_PROVIDER_CONFIG_PATH = Path("config/data_providers.yaml")
 
-    Returns [0, 1]: 1 = historically high vol (sell premium).
-    Actual IV rank requires historical IV data; we use HV as a proxy.
 
-    Returns 0.5 on insufficient data or any failure (neutral fallback so
-    callers don't crash). Extracted from
-    `agents/divisions/fidelity_options.py` so multiple strategies can share.
+def _get_configured_provider():
+    """Return the globally-configured MarketDataProvider.
+
+    Reads config/data_providers.yaml lazily on first call.  mtime-cache
+    in provider_factory handles config hot-reload.
     """
-    import yfinance as yf  # type: ignore
-    import numpy as np     # type: ignore
+    from trading_corp.data.provider_factory import get_provider
+    return get_provider(strategy_slug=None, config_path=_PROVIDER_CONFIG_PATH)
 
-    def _fn() -> float:
-        hist = yf.Ticker(symbol).history(period="1y")
-        if len(hist) < 35:
-            return 0.5
-        log_ret = np.log(hist["Close"] / hist["Close"].shift(1)).dropna()
-        hv30 = log_ret.rolling(30).std() * math.sqrt(252)
-        hv30 = hv30.dropna()
-        if len(hv30) < 5:
-            return 0.5
-        cur = float(hv30.iloc[-1])
-        mn = float(hv30.min())
-        mx = float(hv30.max())
-        return max(0.0, min(1.0, (cur - mn) / (mx - mn))) if mx > mn else 0.5
 
+# ---------------------------------------------------------------------------
+# Public interface — unchanged function names and parameter names
+# ---------------------------------------------------------------------------
+
+async def calc_iv_rank(symbol: str) -> float | None:
+    """Return HV-proxy IV rank for `symbol` as [0, 1] or None.
+
+    None means insufficient history or data failure.  The old 0.5 sentinel
+    is gone — callers must add an explicit None branch:
+        ivr = await calc_iv_rank(symbol)
+        if ivr is None:
+            # tally ivr_data_unavailable, skip symbol
+            return None
+        if ivr * 100 < min_ivr:
+            ...
+    """
     try:
-        return await asyncio.to_thread(_fn)
+        provider = _get_configured_provider()
+        return await provider.get_iv_rank(symbol)
     except Exception as e:
         log.warning("calc_iv_rank: %s failed: %s", symbol, e)
-        return 0.5
+        return None
 
 
 async def calc_atm_iv(
@@ -61,68 +68,15 @@ async def calc_atm_iv(
     target_dte: int,
     tolerance_days: int = 7,
 ) -> float | None:
-    """Return at-the-money implied volatility for `symbol` at the expiration
-    closest to `target_dte` (within ±tolerance_days).
+    """Return ATM implied volatility for `symbol` or None.
 
-    Returns a decimal (0.23 = 23% annualized). None on any failure:
-    yfinance unavailable, no qualifying expiration, empty chain, missing IV.
-
-    ATM = strike closest to current spot, taken from the call chain. Put-call
-    parity guarantees the put-side ATM IV is within a fraction of a vol point
-    for vanilla options; the call side alone is sufficient for the IC
-    term-structure gate.
+    Picks the expiration closest to `target_dte` within ±tolerance_days.
+    Returns None on any failure, missing expiration, or degenerate IV value
+    (including the 1e-5 yfinance bug — filtered at the provider boundary).
     """
-    def _fn() -> float | None:
-        import yfinance as yf  # type: ignore
-        from datetime import date
-
-        tk = yf.Ticker(symbol)
-        expirations = tk.options or ()
-        if not expirations:
-            return None
-
-        today = date.today()
-
-        def _dte(exp: str) -> int:
-            try:
-                return (date.fromisoformat(exp) - today).days
-            except (ValueError, TypeError):
-                return -10_000  # treat unparseable as far-past so it gets filtered
-
-        candidates = [
-            (e, _dte(e)) for e in expirations
-            if abs(_dte(e) - target_dte) <= tolerance_days
-        ]
-        if not candidates:
-            return None
-        # Closest to target_dte.
-        expiry = min(candidates, key=lambda x: abs(x[1] - target_dte))[0]
-
-        hist = tk.history(period="5d")
-        if hist is None or hist.empty:
-            return None
-        spot = float(hist["Close"].iloc[-1])
-        if spot <= 0:
-            return None
-
-        chain = tk.option_chain(expiry)
-        calls = getattr(chain, "calls", None)
-        if calls is None or len(calls) == 0:
-            return None
-
-        # Closest strike to spot.
-        diffs = (calls["strike"] - spot).abs()
-        atm_idx = diffs.idxmin()
-        iv = calls.loc[atm_idx, "impliedVolatility"]
-        if iv is None:
-            return None
-        iv = float(iv)
-        if not math.isfinite(iv) or iv <= 0:
-            return None
-        return iv
-
     try:
-        return await asyncio.to_thread(_fn)
+        provider = _get_configured_provider()
+        return await provider.get_atm_iv(symbol, target_dte, tolerance_days)
     except Exception as e:
         log.warning(
             "calc_atm_iv: %s target_dte=%d ±%d failed: %s",

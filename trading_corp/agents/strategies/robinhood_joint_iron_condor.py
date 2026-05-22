@@ -436,6 +436,9 @@ class RobinhoodJointIronCondorAgent:
         # IVR gate.
         ivr_decimal = await calc_iv_rank(symbol)
         min_ivr = float(self.cfg("entry.min_ivr"))
+        if ivr_decimal is None:
+            self._tally_scan_filter(state, [symbol], "ivr_data_unavailable")
+            return None
         if ivr_decimal * 100 < min_ivr:
             self._tally_scan_filter(state, [symbol], f"ivr_below_{int(min_ivr)}")
             return None
@@ -525,6 +528,30 @@ class RobinhoodJointIronCondorAgent:
         short_put = self._pick_by_delta(puts, -short_target)
         if not short_call or not short_put:
             log.info("IronCondor: could not pick short strikes for %s", symbol)
+            return None
+
+        # Delta-proximity guard: chain-depth correctness gate.
+        # If the best available strike is outside ±0.05 of the target delta,
+        # the chain is too shallow for this strategy.  Skip cleanly — do NOT
+        # substitute a closer-to-ATM strike.  This is a CORRECTNESS gate
+        # enforcing the 16-delta target; it does not move thresholds.
+        _delta_tol = 0.05
+        sc_delta = short_call.get("delta")
+        sp_delta = short_put.get("delta")
+        if sc_delta is None or sp_delta is None or (
+            abs(sc_delta - short_target) > _delta_tol
+            or abs(sp_delta - (-short_target)) > _delta_tol
+        ):
+            log.info(
+                "IronCondor: chain too shallow for %s — "
+                "closest call delta %.3f, closest put delta %.3f "
+                "(target ±%.2f, tol %.2f)",
+                symbol,
+                sc_delta if sc_delta is not None else float("nan"),
+                sp_delta if sp_delta is not None else float("nan"),
+                short_target, _delta_tol,
+            )
+            self._tally_scan_filter(state, [symbol], "chain_too_shallow")
             return None
 
         # Longs are placed by dollar-width offset — NOT by long-delta

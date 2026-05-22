@@ -30,6 +30,7 @@ import yaml
 
 from trading_corp.brokers.base import Broker
 from trading_corp.persistence.models import ProposedOrder
+from trading_corp.utils.iv import calc_iv_rank as _calc_iv_rank
 
 log = logging.getLogger(__name__)
 
@@ -135,35 +136,6 @@ async def _get_chain(symbol: str, expiry: str) -> tuple[list[dict], list[dict]]:
 
     return _to_list(calls_df, "call"), _to_list(puts_df, "put")
 
-
-async def _calc_iv_rank(symbol: str) -> float:
-    """Approximate IV rank via 30-day rolling historical volatility.
-
-    Returns [0, 1]: 1 = historically high vol (sell premium).
-    Actual IV rank requires historical IV data; we use HV as a proxy.
-    """
-    import yfinance as yf  # type: ignore
-    import numpy as np     # type: ignore
-
-    def _fn() -> float:
-        hist = yf.Ticker(symbol).history(period="1y")
-        if len(hist) < 35:
-            return 0.5
-        log_ret = np.log(hist["Close"] / hist["Close"].shift(1)).dropna()
-        hv30 = log_ret.rolling(30).std() * math.sqrt(252)
-        hv30 = hv30.dropna()
-        if len(hv30) < 5:
-            return 0.5
-        cur = float(hv30.iloc[-1])
-        mn = float(hv30.min())
-        mx = float(hv30.max())
-        return max(0.0, min(1.0, (cur - mn) / (mx - mn))) if mx > mn else 0.5
-
-    try:
-        return await asyncio.to_thread(_fn)
-    except Exception as e:
-        log.warning("FidelityOptionsAgent: IV rank failed for %s: %s", symbol, e)
-        return 0.5
 
 
 def _by_delta(chain: list[dict], target_delta: float) -> dict | None:
@@ -337,6 +309,11 @@ class FidelityOptionsAgent:
             return []
         if not expirations:
             log.warning("FidelityOptionsAgent: no option expirations for %s; skipping", symbol)
+            return []
+        if iv_rank is None:
+            log.info(
+                "FidelityOptionsAgent: IV rank unavailable for %s; skipping", symbol
+            )
             return []
 
         strategy = self._choose_strategy(regime, iv_rank)
