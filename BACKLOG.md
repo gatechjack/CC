@@ -344,7 +344,26 @@ matter AND fillable size is meaningful.
 counter-parties are already running it; the bar for "fillable edge
 remains" is high.
 
-### Item 2 — Hourly re-evaluation of open positions with intraday data *(investigate as signal-layer first)*
+### Item 2 — Hourly re-evaluation of open positions with intraday data — **CLOSED — INVESTIGATED, NO SIGNAL (2026-05-22)**
+
+**Result:** Tier A.1 (METAR-only zero-leak) close-signal 11/22 correct
+= 50% (coin flip); leak-inflated Tier A.2 (Open-Meteo overlay) worse
+at 19/46 = 41.3% (below chance); no edge before exit costs even enter.
+Both gates passed (parity to float epsilon, leak-guard clean across
+11,141 asserts). A.2 underperforming A.1 is a clean kill — no signal
+hiding under the friction.
+
+**Findings:** [planning/kalshi_weather_hourly_reeval_findings.md](planning/kalshi_weather_hourly_reeval_findings.md)
+(commit `4f7fe50`, 2026-05-22).
+**Replay artifact:** `scripts/replay_kalshi_weather_hourly_reeval.py`.
+
+**Do not re-propose** this investigation absent a strategy redesign that
+materially changes the entry signal in a way that would also change the
+intraday signal. `quote_snapshot` persistence is NOT being built — its
+only justification was Tier-C real-data PnL, gated on a signal we don't
+have.
+
+<details><summary>original investigation spec (preserved for context)</summary>
 
 **Premise:** entry forecast (~06:00 UTC, ~17h out) is far less accurate
 than a midday forecast with intraday station readings already in hand.
@@ -360,15 +379,7 @@ plus the implied PnL delta. No action.
 signal would have improved net PnL after double-crossing the spread on
 closes + fees.
 
-**Must address before any implementation step beyond logging:**
-- Interaction with the `max_per_day_pct` daily exposure cap — intraday
-  adds must not blow through it.
-- Risk that "add to winner" degrades sizing discipline (a sized-once
-  position is a different beast than a position that grew based on
-  intraday confirmation; review separately).
-
-**Do not touch positions until the signal-layer analysis proves positive
-EV net of costs.**
+</details>
 
 ---
 
