@@ -76,6 +76,68 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-22 01:06 UTC — B7 reconciler no_bars guard (commit `3713ace`) — DEPLOYED AND ROLLED BACK
+
+**Commits:** `3713ace` (B7 fix). `4 commits` pushed alongside (`8448a06`, `24af247`, `797a312`, `07ed68c`) — all docs/runbooks, no runtime code changes.
+**Triggered by:** Human-authorized deploy of B7 — the `bar_count > 0` guard in `scripts/audit_reality_reconciler.py` that prevents the reconciler from declaring `match` against zero bars (the kline silent-failure pattern rebuilt inside the immune system). Test-first: RED→GREEN locally, 57 tests pass, wrapped via `scripts\run_capped.ps1`.
+**Backup tag:** `pre-b7-no-bars-guard-20260521` (1 file: `scripts/audit_reality_reconciler.py`).
+
+**Files deployed (1) — subsequently rolled back:**
+- `scripts/audit_reality_reconciler.py` — md5 transitioned `b203f791514cd43ce4b668d853bfd250` (pre-deploy) → `a0b9071e2db1275fdd4bb0be36a4c885` (3713ace blob, deployed) → `b203f791514cd43ce4b668d853bfd250` (rolled back).
+
+**Features shipped:**
+- **NONE.** Deploy was rolled back during Step 3 verification per the task's literal rule.
+
+**Verification (manual fire as `azureuser` mimicking `tc-audit-reality.service` ExecStart):**
+- `cd /home/azureuser/trading_corp && /home/azureuser/trading_corp/venv/bin/python scripts/audit_reality_reconciler.py --db sqlite:////home/azureuser/trading_corp/data/trading_corp.db` exit code 1.
+- Per-trade verdicts (5 closed v2 trades scanned):
+  - `35aa49c9` — MATCH (sim=win R=0.838, rec=win R=0.838 corrected, 266 bars)
+  - `a467e316` — MATCH (sim=loss R=-1.0, rec=loss R=-1.0 corrected, 266 bars)
+  - `ef6e6697` — MATCH (sim=loss R=-1.0, rec=loss R=-1.0, 2 bars)
+  - `ab190eb8` — MATCH (sim=loss R=-1.0, rec=loss R=-1.0, 1 bar)
+  - `2942ff8e` — **NO_BARS** (sim=no_bars, rec=win R=0.7955, **0 bars** in window). Discrepancy: `no_bars: 0 bars in window [2026-05-21T14:00:12+00:00, 2026-05-21T14:00:00+00:00]`.
+- Roll-up: `n_total=5, n_matches=4, n_mismatches=1, status="no_bars"`.
+- audit_event rows from the manual fire (id 461531 `audit_reality_no_bars`, id 461532 `audit_reality_run`) **remain in the DB** post-rollback — append-only history. They do not affect future runs.
+
+**Why the guard correctly flagged `2942ff8e` (B5-adjacent — escalates from cosmetic):**
+- The reconciler's `_load_bars_for_trade` queries `bitunix_bar_history` with `WHERE ts_ms >= trade.ts AND ts_ms <= trade.result_ts`. For `2942ff8e`, `ts=14:00:12 > result_ts=14:00:00` (the documented two-tick replay artifact previously graded "cosmetic" in `runbooks/2026-05-21_post_funding_diagnostics.md` § 1). Inverted bounds → SQL returns 0 rows → B7 guard correctly declares `no_bars`. The bars exist in absolute time (verified in the post-funding diagnostic; 80/80 expected 3m bars for 5/21 12:00–16:00 UTC), but the reconciler's literal window is invalid.
+- **Pre-deploy code path for the same trade**: empty bars → `_classify_v2_multi_leg` returns `result="expired", R=0.0` → sim=expired vs rec=win → genuine `mismatch` (different label, same non-match outcome). The OLD reconciler would have produced 4/5 match + 1 mismatch on `2942ff8e` instead of 4/5 match + 1 no_bars.
+
+**Rollback executed (per task's Step 3 literal rule):**
+- One-step `sudo -u azureuser mv ${BACKUP} ${TARGET}` consumed the backup file (mv, not cp). Post-rollback md5 verified equal to pre-deploy `b203f791514cd43ce4b668d853bfd250`. Backup file no longer exists (single-use, expected).
+- Timer `tc-audit-reality.timer` state unchanged; oneshot service will pick up the (rolled-back, pre-B7) file on next fire.
+
+**Status of B7:**
+- Stays `DO-SOON` in BACKLOG.md. NOT marked done. Re-deploy is gated on a companion fix that handles the inverted-window case (`2942ff8e`-shaped trades). Two candidate shapes for the follow-up:
+  1. Normalize the reconciler's query window: `start, end = sorted([ts, result_ts])`. Cheapest. Treats the inversion as a no-op concern at the verifier layer.
+  2. Fix the source of the inversion in `paper_trade_replay.py` so `result_ts >= ts` always. More invasive. Touches the replay loop the runbook flags as deploy-gated.
+- B5 (the underlying inversion cosmetic) **escalates from cosmetic → MEDIUM** as a result of this finding. The cosmetic grade was correct for R / exit-price; it understated the downstream consequence for the reconciler's window query. Update B5 in BACKLOG.md when next opening that file.
+
+**Unattended-fire posture (post-rollback):**
+- Next fire `2026-05-22 06:05:30 UTC + jitter`. Will run the OLD (pre-B7) reconciler.
+- Predicted shape: `n_total=5, n_matches=4, n_mismatches=1, status="mismatch"`, with `2942ff8e` reporting sim=expired vs rec=win (the empty-bars classifier output). This is NOT a real R disagreement — it's the inverted-window symptom under the OLD code path.
+- **Post-06:05 check recipe** (read-only):
+  ```bash
+  az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+    --command-id RunShellScript \
+    --scripts 'sqlite3 -header /home/azureuser/trading_corp/data/trading_corp.db "
+      SELECT id, ts, json_extract(payload_json,\"\$.status\") AS status,
+             json_extract(payload_json,\"\$.n_matches\") AS n_matches,
+             json_extract(payload_json,\"\$.n_total\") AS n_total
+      FROM audit_event WHERE kind=\"audit_reality_run\" ORDER BY id DESC LIMIT 3;"'
+  ```
+  Expected: `status="mismatch", n_matches=4, n_total=5` reflecting the `2942ff8e` issue under the pre-B7 code.
+
+**Rollback recipe (for future deploys of this commit, after the companion fix lands):**
+```bash
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+  --command-id RunShellScript \
+  --scripts 'sudo -u azureuser mv /home/azureuser/trading_corp/scripts/audit_reality_reconciler.py.pre-b7-no-bars-guard-20260521 /home/azureuser/trading_corp/scripts/audit_reality_reconciler.py'
+```
+(No service restart needed; reconciler is a oneshot — next timer fire reads the file fresh.)
+
+---
+
 ## 2026-05-21 13:05:43 UTC — Bitunix funding-rate ×100 display/gate fix (commit `4f04fa66`)
 
 **Commits:** `4f04fa66`
