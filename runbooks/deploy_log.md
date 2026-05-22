@@ -76,6 +76,114 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-22 16:47 UTC — Tastytrade AM fix: SDK shape across all call sites (commit `e977641`)
+
+**Commits:** `e977641` (Tastytrade AM fix). On `origin/main` (operator-pushed). Local main currently at `6e81038` (parallel-session `weather_stations` work pushed on top, unrelated to this deploy and untouched by it).
+**Triggered by:** AM follow-up to the `a6885a5` deploy (2026-05-22 10:33 UTC) per `runbooks/session_start_2026_05_22_data_provider_am_fix.md`. Resolves four SDK-shape bugs in `tastytrade_provider.py` that mock-based tests couldn't detect (same class as Bug 1+2 from `a6885a5`; full file-wide audit pass on every `asyncio.to_thread` + `tastytrade.*` call site preceded the fix per the operator-mandated audit-first rule).
+**Backup tag:** `pre-tastytrade-fix-20260522` on 4 modified files. New files have no backup target by definition.
+
+**Files deployed (6):**
+
+*Modified (4):*
+- `trading_corp/data/tastytrade_provider.py` — Bug 1 (`Session(provider_secret=, refresh_token=)`), Bug 2 (`get_market_data(InstrumentType.EQUITY)` replaces non-existent `get_quote`), async/to_thread fix (direct `await` on `get_option_chain` + `get_market_data` — both are async in 12.4.1; previously wrapped in `asyncio.to_thread` which returned unawaited coroutine objects), `greeks.event_symbol` snake_case (replaces `greeks.eventSymbol` camelCase that silently `AttributeError`'d inside the DXLink streamer loop's try/except). Also imports `_hv_to_rank` from `_iv_math.py` (no longer via yfinance provider).
+- `trading_corp/data/yfinance_provider.py` — drop `_hv_to_rank` definition; import from `_iv_math.py`.
+- `tests/test_tastytrade_provider.py` — `monkeypatch.delenv` on the two auth-missing tests (pre-existing test isolation bug; leaked when env vars are set).
+- `tests/test_yfinance_provider.py` — import `_hv_to_rank` from `_iv_math.py` (was from yfinance_provider).
+
+*New (2):*
+- `trading_corp/data/_iv_math.py` — provider-neutral `_hv_to_rank` extracted from yfinance_provider so Tastytrade doesn't import math via yfinance.
+- `tests/test_fidelity_uses_shared_iv_rank.py` — regression test: `fidelity_options._calc_iv_rank IS utils.iv.calc_iv_rank` (locks in the a6885a5 dedup).
+
+**Credential state at deploy (load-bearing context):**
+
+The Tastytrade Client Secret was rotated by the operator pre-deploy. The session debugged through three failure modes before a working secret/token pair landed on prod's `/etc/trading-corp/tastytrade.env`:
+1. **`invalid_grant: Grant revoked`** — refresh token issued under the old Client Secret was invalidated by rotation; prod env file had not been re-bootstrapped (mtime stuck at 10:30:28 UTC from the original deploy).
+2. **`invalid_grant: Invalid JWT`** — first bootstrap retry wrote a non-JWT token (no `eyJ` b64 prefix; probably wrong token type from the OAuth flow).
+3. **`invalid_grant: Client secret mismatch`** — second bootstrap retry produced a JWT, but the Client Secret in env was a different value than the one used during the OAuth grant.
+
+Final correct pair landed at **2026-05-22 16:25:14 UTC** (env-file mtime; sha256 `a0df3165af…26015c329`, 633 bytes, perms 600 root:root). First successful `session.refresh()` against prod creds: 2026-05-22 ~16:38 UTC (operator's `setx` mirror synced via parity check). **First end-to-end working Tastytrade OAuth on prod since the original 2026-05-21 grant.** See backlog HIGH item "Tastytrade rotation runbook" — secret rotation must be an atomic 2-step operation (OAuth bootstrap + write matched JWT refresh_token + Client Secret to prod env).
+
+**Features shipped:**
+
+- **Full Tastytrade ATM-IV path live on prod.** Post-deploy probe via the deployed code: `get_atm_iv("SPY", 45) = 0.1508`, `IWM = 0.2243`, `TLT = 0.1029` — all real, not None, not 1e-5. Matches the 2026-05-21 evening Step 0 spike (~0.21 IWM, ~0.11 TLT) ±natural market drift. Pre-deploy, the same calls returned None due to Bug 1's `KeyError('TT_SECRET')` SDK fallback — see today's 13:47:28 UTC `xvfb-run[1044557]` journal entries on PID 1044543 (those are the last instances of that signature; nothing after PID 1074854's 16:47:11 UTC restart).
+- **Real `get_underlying_price` via Tastytrade.** `get_market_data(session, symbol, InstrumentType.EQUITY)` returning `MarketData.last or MarketData.mark`. SPY returned 747.30 on the post-deploy probe.
+- **Async SDK call shape correct everywhere.** Three sites (`_fetch_chain`, `_compute_atm_iv`, `_fetch_underlying_price`) fixed to direct `await`. The remaining `asyncio.to_thread` sites in this file (`Session()` construction, `_yf_closes` local sync function) were audit-confirmed CORRECT and kept as-is.
+- **Greeks attribute access fixed.** `greeks.event_symbol` (snake_case, the actual `pydantic.model_fields` name in 12.4.1). Was `greeks.eventSymbol` (camelCase, nonexistent — would raise but was caught by outer try/except in `_fetch_chain`'s DXLink loop, producing silent zero-Greeks chains).
+- **`_hv_to_rank` provider-neutral.** Tastytrade provider no longer imports HV math via yfinance.
+- **Fidelity `_calc_iv_rank` shared-util regression test.** Locks the a6885a5 dedup against future drift.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+
+- **Four SDK-shape bugs in one file, all same failure class** ([[feedback-mocks-dont-catch-sdk-shape]]): mocks accept any kwargs/attributes/sync-vs-async and silently produce green tests against wrong shapes. The full audit pass on this commit covered every `asyncio.to_thread(...)` site + every `tastytrade.*` import + every SDK return-object attribute access in the file. Of 8 distinct call sites surveyed: 4 needed fixing, 3 were correct-as-written, 1 is the deferred Bug 4 (`get_history`). See escalation in backlog: live SDK gate now MANDATORY pre-commit for any provider change.
+- **`Session.__init__` is sync but does HTTP I/O at construction**, so wrapping in `asyncio.to_thread` is correct usage (audit-confirmed KEEP). Don't simplify that to a direct call without testing — it would block the event loop during initial auth.
+- **`get_event(Greeks)` returns a `Greeks` event** keyed by `event_symbol` (snake_case). The `_fetch_chain` greeks_map keys by `streamer_symbol` from `Option` objects (also snake_case). They MUST match — the dxFeed convention is `event_symbol == streamer_symbol` of the subscribed option. Don't change either side independently.
+- **Bug 4 NOT fixed in this deploy.** `tastytrade.market_data.get_history` doesn't exist in 12.4.1; `_fetch_close_series` ImportErrors on every call → falls through to yfinance HV. Pre-existing condition; IVR continues to work via yfinance HV math (the live SPY IVR of 0.342 in the 2026-05-22 10:33 entry's verification came from this fallback, not from Tastytrade history — the "auth chain works" claim in that entry was masked by this fallback). Deferred to backlog as MEDIUM.
+
+**Latent bugs caught + fixed:**
+
+- **Bug 1 (`a6885a5` ship-blocker):** `Session(login=ps, remember_token=rt)` → unknown kwargs fell into `**client_kwargs`; SDK then `KeyError('TT_SECRET')`. Fix: `Session(provider_secret=ps, refresh_token=rt)`.
+- **Bug 2 (`a6885a5` ship-blocker):** `from tastytrade.market_data import get_quote` — symbol missing in 12.4.1. Fix: `get_market_data(session, symbol, InstrumentType.EQUITY)` reading `MarketData.last or MarketData.mark`.
+- **Async/to_thread mismatch (pre-existing in `a6885a5`, masked by Bug 1):** `get_option_chain` and `get_market_data` are `async def`; `asyncio.to_thread(<coro>, ...)` returns unawaited coroutine objects (`'coroutine' object is not iterable` / `'coroutine' object has no attribute 'last'`). Fix: drop `to_thread` wrap, `await` directly.
+- **`greeks.eventSymbol` camelCase (pre-existing in `a6885a5`):** AttributeError silently absorbed by outer try/except in `_fetch_chain`. Fix: `greeks.event_symbol`.
+- **Test isolation in `test_tastytrade_provider.py` (pre-existing in `a6885a5`):** `test_auth_missing_provider_secret_raises` / `_refresh_token_raises` didn't `monkeypatch.delenv`, so the env-var-fallback path made them spuriously pass in dev environments without the secrets but spuriously fail in environments with them. Fix: add `monkeypatch.delenv` to match the neighbouring `test_auth_missing_both_env_vars_raises` pattern.
+
+**Verification:**
+
+- `systemctl is-active trading-corp` → `active`. MainPID `1074854` since `2026-05-22 16:47:11 UTC` (was `1071785` since `16:25:02 UTC` under the broken-creds env; before that, `1044543` since `10:33:42 UTC` under `a6885a5` bugs).
+- md5-diff of all 6 files post-extract matches local:
+  - `3866b6c38cff31056e673287e2932c04  trading_corp/data/tastytrade_provider.py`
+  - `94d9e07495ee3d9336e38d505c57e3b4  trading_corp/data/yfinance_provider.py`
+  - `ec51d8f4d3252c73dbf07fa9e425c629  tests/test_tastytrade_provider.py`
+  - `9c81010c3bab85b637d2cdf6b525792a  tests/test_yfinance_provider.py`
+  - `807b459f39e7780103572e0070060a38  trading_corp/data/_iv_math.py`
+  - `8d5a997ec836faf552ddd36ddd982510  tests/test_fidelity_uses_shared_iv_rank.py`
+- env file at `/etc/trading-corp/tastytrade.env`: 633 bytes, sha256 `a0df3165af0f9b38f3dce00416e573d781d6bd5910649e884faf2d326015c329`, mtime `2026-05-22 16:25:14 UTC`, perms 600 root:root.
+- Post-restart journal (since `16:47:11 UTC`): no `Traceback` / `CRITICAL` / `TT_SECRET` / `coroutine was never awaited` / `invalid_grant` lines.
+- **Live post-deploy probe via deployed code on prod** (python-direct env loader, no bash source): SPY ATM IV 0.1508, IWM 0.2243, TLT 0.1029, SPY spot 747.30 — all real.
+- Local gate pre-deploy (against the same prod creds, synced via sha256 parity verification): SPY 0.1515, IWM 0.2245, TLT 0.1038, SPY spot 747.13 — drift consistent with normal market motion during the deploy window.
+- Mocks: 352/352 green pre-fix AND post-fix. **Mocks did not gate this commit — the live SDK probe did.** Mocks accept both correct and incorrect SDK shapes (escalation in backlog).
+
+**Inert / dormant on current traffic:**
+- The IVR path's Tastytrade-history branch (`_fetch_close_series` line 350-359) still ImportErrors on every call and falls through to yfinance HV. Same behavior as the `a6885a5` deploy; deferred Bug 4. No change in IVR output from this deploy.
+- The deploy's 6 files include 1 new test file (`test_fidelity_uses_shared_iv_rank.py`) and 1 new test-isolation fix (in `test_tastytrade_provider.py`). Neither is exercised at runtime — pytest only.
+
+**Rollback recipe:**
+
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-tastytrade-fix-20260522
+BASE=/home/azureuser/trading_corp
+for f in \
+  trading_corp/data/tastytrade_provider.py \
+  trading_corp/data/yfinance_provider.py \
+  tests/test_tastytrade_provider.py \
+  tests/test_yfinance_provider.py; do
+  sudo -u azureuser mv \$BASE/\$f.\$TAG \$BASE/\$f
+done
+sudo -u azureuser rm -f \
+  \$BASE/trading_corp/data/_iv_math.py \
+  \$BASE/tests/test_fidelity_uses_shared_iv_rank.py
+sudo systemctl restart trading-corp
+"
+# Notes:
+# - Rollback restores a6885a5's broken Session() + missing get_quote + async-to_thread mismatch.
+#   The 'TT_SECRET' KeyError signature would return on the next IC scan (13:45 UTC daily) and
+#   get_atm_iv would silently return None again (caught by outer try/except).
+# - Rollback does NOT touch /etc/trading-corp/tastytrade.env. The post-rotation JWT creds in the
+#   env file are still good for the rolled-back code — but the rolled-back Session() never gets
+#   far enough to use them.
+# - Env-file rollback to pre-rotation creds is NOT possible from this deploy (the prior values
+#   were revoked Tastytrade-side; only the new bootstrap-produced pair authenticates).
+```
+
+**Follow-ups queued:**
+- **Bug 4 (MEDIUM):** dead `tastytrade.market_data.get_history` branch in `_fetch_close_series`. Either delete + document yfinance-by-design for IVR, or find the actual 12.4.1 historical-bars API. Same observability class as the silent-fallback item.
+- **Silent-fallback audit rows (MEDIUM):** every yfinance fallback in `_fetch_close_series` should emit an `auth_chain_failed` or `provider_fallback_fired` audit row so prod isn't silently using yfinance when Tastytrade was expected. Recurring "plausible number from wrong source" pattern (kline silent failure rebuilt inside reconciler — see B7; funding-units ×100 — see project memory; now IVR-via-yfinance-fallback masking Tastytrade auth state).
+- **Tastytrade rotation runbook (HIGH — this session's full cost):** secret rotation is an ATOMIC 2-step operation. (1) Full OAuth grant against the current Client Secret on a standard browser (not privacy browser — see [[feedback-oauth-use-standard-browser]]); (2) write the resulting matched pair (Client Secret + JWT refresh_token, both from the SAME bootstrap session) to prod's `/etc/trading-corp/tastytrade.env`. Document the failure-chain symptom progression (revoked → non-JWT → secret-mismatch) as a diagnosis template so future rotations are diagnosable in seconds.
+- **`[[feedback-mocks-dont-catch-sdk-shape]]` escalation:** 4 bugs surfaced this session from mocks accepting wrong SDK shapes (kwargs, missing import, async vs sync, attribute name). Live SDK gate must be MANDATORY pre-commit for any provider change. Consider a thin real-SDK smoke test that asserts each SDK symbol used is importable, `iscoroutinefunction` matches usage, and accessed attributes exist on the return type — would have caught all four bugs in CI rather than at deploy.
+
+---
+
 ## 2026-05-22 16:25 UTC — kalshi_weather P3: YAML xref loader wired (commit `f5a5fd5`)
 
 **Commits:** `f5a5fd5` (strategy edits + new test file). Companion files
