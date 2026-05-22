@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from datetime import date
 
+from trading_corp.data._iv_math import _hv_to_rank
 from trading_corp.data.market_data_provider import (
     MarketDataProvider,
     OptionContract,
@@ -27,43 +27,6 @@ from trading_corp.data.market_data_provider import (
 )
 
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Pure IVR math — extracted from utils/iv.py lines 38-50
-# ---------------------------------------------------------------------------
-
-def _hv_to_rank(close_series) -> float | None:  # type: ignore[type-arg]
-    """Compute IV rank from a historical close-price series.
-
-    Approximation: 30-day rolling HV × √252, min/max normalised to [0, 1].
-    Returns None on insufficient data (< 35 bars, < 5 rolling-HV values,
-    or flat series where min == max).  Returns None, not 0.5 — callers
-    decide what to do with missing data.
-
-    Computes IVR from historical volatility — approximation unchanged from
-    prior code.  Improvable later by using Tastytrade's real IV history.
-    Follow-up, not in scope here.
-
-    IMPORTANT: this is the SOLE None source for IVR values.
-    `_is_degenerate_iv` MUST NOT be called on the output of this function —
-    IVR is a [0, 1] rank, not an implied-volatility value.
-    """
-    import numpy as np  # type: ignore
-
-    if len(close_series) < 35:
-        return None
-    log_ret = (close_series / close_series.shift(1)).apply(math.log).dropna()
-    hv30 = log_ret.rolling(30).std() * math.sqrt(252)
-    hv30 = hv30.dropna()
-    if len(hv30) < 5:
-        return None
-    cur = float(hv30.iloc[-1])
-    mn = float(hv30.min())
-    mx = float(hv30.max())
-    if mx <= mn:
-        return None
-    return max(0.0, min(1.0, (cur - mn) / (mx - mn)))
 
 
 class YFinanceDataProvider(MarketDataProvider):

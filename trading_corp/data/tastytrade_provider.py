@@ -26,12 +26,12 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from trading_corp.data._iv_math import _hv_to_rank
 from trading_corp.data.market_data_provider import (
     MarketDataProvider,
     OptionContract,
     _is_degenerate_iv,
 )
-from trading_corp.data.yfinance_provider import _hv_to_rank
 
 log = logging.getLogger(__name__)
 
@@ -81,8 +81,8 @@ class TastytradeDataProvider(MarketDataProvider):
             from tastytrade import Session  # type: ignore
             self._session = await asyncio.to_thread(
                 Session,
-                login=self._provider_secret,
-                remember_token=self._refresh_token,
+                provider_secret=self._provider_secret,
+                refresh_token=self._refresh_token,
             )
         return self._session
 
@@ -140,7 +140,7 @@ class TastytradeDataProvider(MarketDataProvider):
             session = await self._get_session()
 
             # get_option_chain returns dict[date, list[Option]] with ALL strikes
-            chain_dict = await asyncio.to_thread(get_option_chain, session, symbol)
+            chain_dict = await get_option_chain(session, symbol)
             options_for_exp = chain_dict.get(expiration, [])
             if not options_for_exp:
                 log.info(
@@ -170,7 +170,7 @@ class TastytradeDataProvider(MarketDataProvider):
                                 streamer.get_event(Greeks),
                                 timeout=min(remaining, 5.0),
                             )
-                            greeks_map[greeks.eventSymbol] = greeks
+                            greeks_map[greeks.event_symbol] = greeks
                         except asyncio.TimeoutError:
                             break
             except Exception as e:
@@ -264,7 +264,7 @@ class TastytradeDataProvider(MarketDataProvider):
             from tastytrade.instruments import get_option_chain  # type: ignore
 
             session = await self._get_session()
-            chain_dict = await asyncio.to_thread(get_option_chain, session, symbol)
+            chain_dict = await get_option_chain(session, symbol)
             if not chain_dict:
                 return None
 
@@ -387,13 +387,18 @@ class TastytradeDataProvider(MarketDataProvider):
         return result
 
     async def _fetch_underlying_price(self, symbol: str) -> float | None:
+        # SDK 12.4 has no `get_quote`; `get_market_data(session, symbol,
+        # InstrumentType.EQUITY)` returns a `MarketData` with Decimal
+        # last/mark/bid/ask fields. EQUITY is correct for the ETFs that
+        # currently route through this provider (SPY/IWM/TLT/QQQ).
         try:
-            from tastytrade.market_data import get_quote  # type: ignore
+            from tastytrade.market_data import get_market_data  # type: ignore
+            from tastytrade.order import InstrumentType  # type: ignore
             session = await self._get_session()
-            quote = await asyncio.to_thread(get_quote, session, symbol)
-            if quote is None:
+            md = await get_market_data(session, symbol, InstrumentType.EQUITY)
+            if md is None:
                 return None
-            price = float(getattr(quote, "last", None) or getattr(quote, "mark", None) or 0)
+            price = float(md.last or md.mark or 0)
             return price if price > 0 else None
         except Exception as e:
             log.warning(

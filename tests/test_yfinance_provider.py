@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from trading_corp.data.yfinance_provider import YFinanceDataProvider, _hv_to_rank
+from trading_corp.data._iv_math import _hv_to_rank
+from trading_corp.data.yfinance_provider import YFinanceDataProvider
 
 
 # ---------------------------------------------------------------------------

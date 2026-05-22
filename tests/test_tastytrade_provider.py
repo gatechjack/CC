@@ -58,14 +58,16 @@ def _fake_greeks(
 # ---------------------------------------------------------------------------
 
 
-def test_auth_missing_provider_secret_raises():
+def test_auth_missing_provider_secret_raises(monkeypatch):
     """Ctor must raise ValueError with useful message when PS is missing."""
+    monkeypatch.delenv("TASTYTRADE_PROVIDER_SECRET", raising=False)
     with pytest.raises(ValueError, match="TASTYTRADE_PROVIDER_SECRET"):
         TastytradeDataProvider(provider_secret=None, refresh_token="rt")
 
 
-def test_auth_missing_refresh_token_raises():
+def test_auth_missing_refresh_token_raises(monkeypatch):
     """Ctor must raise ValueError with useful message when RT is missing."""
+    monkeypatch.delenv("TASTYTRADE_REFRESH_TOKEN", raising=False)
     with pytest.raises(ValueError, match="TASTYTRADE_REFRESH_TOKEN"):
         TastytradeDataProvider(provider_secret="ps", refresh_token=None)
 
