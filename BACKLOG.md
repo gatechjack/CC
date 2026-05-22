@@ -68,6 +68,75 @@ the report are not the priority any longer — H7 supersedes them.
 
 ---
 
+## BitUnix — post-funding diagnostics (2026-05-21)
+
+Four items raised during the post-funding-units-fix diagnostic sweep on
+2026-05-21. Full write-up — including the reality-verified verdict on
+trade `2942ff8e` and the premise-conflict case study — in
+`runbooks/2026-05-21_post_funding_diagnostics.md`. Items graded; pull
+DO-SOON items into the next active session.
+
+### B7 — DO-SOON: reconciler `bar_count > 0` guard
+
+`scripts/audit_reality_reconciler.py` does not check whether
+`_load_bars_for_trade` returned an empty list before declaring match.
+Current protection is outcome-contingent: empty bars produce
+`sim_result="expired"` from `_classify_v2_multi_leg`; since all current
+trades record `loss` or `win`, sim ≠ rec → correct mismatch. But the day
+any trade is recorded as `result="expired"` and its bars are missing,
+sim=expired AND rec=expired → match-against-zero-bars. That is the kline
+silent-failure pattern rebuilt inside the immune system that was built to
+prevent it. Currently safe-by-coincidence-of-outcomes, not safe-by-design.
+
+**Fix shape:** add an explicit `audit_reality_no_bars` outcome at the top
+of `_reconcile_one` (or wherever bars are fetched) that can never equal a
+match, and emit a distinct audit kind. ~30–60 min, one file, needs a test
+against an empty-bars input. Runbook rule: re-run the audit reconciler
+post-deploy.
+
+### B6 — LOW: reconciler API-refetch path for clock-grade audits
+
+Reconciler is DB-only — reads `bitunix_bar_history`, no fallback to the
+BitUnix kline API. Originally flagged as a potential blocker for the
+60-day-clock final audit (concern: gaps in `bitunix_bar_history` could
+blind the reconciler). Downgraded after the bar-coverage check showed
+480/480 daily 3m coverage for 5/16–5/20 and 80/80 for the disputed 5/21
+12:00–16:00 window. Continuous archiver coverage is the working
+assumption.
+
+**Becomes load-bearing if:** the main process suffers a process-down
+window long enough to leave a gap in `bitunix_bar_history` that overlaps
+a clock-sample trade. No offline-backfill mechanism exists today, so any
+such gap is permanent until rebuilt.
+
+### B8 — LOW (latent): reconciler does not filter on symbol
+
+`_load_bars_for_trade` filters `bitunix_bar_history` on `timeframe`
+only. The table's PK is `(ts_ms, timeframe)` with no `symbol` column.
+Latent because BTC/USDT.P is currently the only futures symbol. The day
+a second perp symbol is added, the reconciler will silently walk bars
+from the wrong symbol for any trade outside BTC.
+
+**Fix shape:** two-part. (1) Add `symbol` column to
+`bitunix_bar_history` schema with migration + backfill (BTC-only today
+makes backfill trivial). (2) Update `_load_bars_for_trade` query and
+`BitUnixBarArchiver` writer to carry symbol. Defer until the
+second-symbol design lands; do not pre-build.
+
+### B5 — cosmetic: `bars_to_resolution` semantics misleading
+
+For multi-tick partial-lifecycle trades, `bars_to_resolution` records
+the bar index of the finalizing replay tick, not the total bars walked
+across all ticks. Trade `2942ff8e` records `bars_to_resolution=1`
+despite TP1+TP2 filling on real bars at 14:15 and 14:18 and the runner
+SL hitting at 14:27 (≥ 9 bars walked).
+
+**Fix shape:** add a separate `total_bars_walked` column or compute
+`bars_resolved_total = ROUND((julianday(result_ts) - julianday(ts)) *
+1440 / 3, 0)` for display. Pure display layer. No urgency.
+
+---
+
 ## END-OF-SESSION SNAPSHOT — 2026-05-21 ~03:30 UTC  *(supersedes 2026-05-20 ~23:05 UTC below)*
 
 **One work thread: Iron Condor v1 SHIPPED to prod at 03:09 UTC after a first-attempt crash-loop revealed prod wasn't carrying commits A (`365114b`) or B (`7c1eef0`). Rolled back at 02:17, audited drift via line-count math (clean — prod = pre-commit-B base for all 12 modified files), then full 30-file ship via 11-chunk az transport. Two IC asyncio tasks online (`IC signal scanner online` + `IC position manager online` in journal). Home tile (`19b6dba`, also missed in tarball) caught + shipped at 03:22 UTC. RH MFA loop on restart pre-fixed at 01:58 UTC via `scripts/rh_mfa_refresh_prod.sh` (push approval to phone) — load-bearing precondition for the IC scanner to actually emit candidates. First scan fires today 09:45–09:50 ET (13:45–13:50 UTC). See `runbooks/deploy_log.md` 03:09 + 03:22 entries; pickup at `runbooks/session_start_2026_05_22.md`.**
