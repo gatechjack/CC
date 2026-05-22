@@ -79,6 +79,148 @@ unrelated).
 
 ---
 
+## P1/P2 — Tastytrade AM fix follow-ups (2026-05-22)  *(NEW — 2026-05-22)*
+
+Queued during the `e977641` Tastytrade AM-fix deploy (deploy_log entry
+2026-05-22 16:47 UTC). The deploy resolved four SDK-shape bugs in
+`tastytrade_provider.py` (Bug 1: Session kwargs; Bug 2: `get_quote` →
+`get_market_data`; async/to_thread mismatch; `greeks.eventSymbol` →
+`event_symbol`). These four items are the residue: one HIGH (rotation
+runbook — this session's full cost), three MEDIUM (Bug 4 + silent-fallback
+audit rows + mocks-shape escalation).
+
+### P1 (HIGH) — Tastytrade secret rotation runbook
+
+Document the atomic rotation procedure so the failure chain that cost
+this session never recurs.
+
+**Atomic 2-step rotation procedure:**
+1. **OAuth grant** under the current Client Secret on a **standard
+   browser** (not privacy-hardened — see [[feedback-oauth-use-standard-browser]]).
+   The grant produces a matched pair: the same Client Secret + a JWT
+   refresh token (must start with `eyJ` base64 prefix — that's the JWT
+   header).
+2. **Write the matched pair atomically** to prod's
+   `/etc/trading-corp/tastytrade.env`:
+   ```
+   TASTYTRADE_PROVIDER_SECRET=<40-char Client Secret from the grant>
+   TASTYTRADE_REFRESH_TOKEN=<JWT refresh_token from the SAME grant>
+   ```
+   Both values MUST come from the same bootstrap session. Restart
+   `trading-corp` after the write so the new env is picked up.
+
+**Failure-chain symptom progression (diagnosis template — recognize the
+error string, jump to the cause):**
+
+| Error string | Cause | Fix |
+|---|---|---|
+| `invalid_grant: Grant revoked` | refresh token issued under an old (rotated) Client Secret; portal rotated but prod env not re-bootstrapped | run step 1 + step 2 above |
+| `invalid_grant: Invalid JWT` | token in env is not structurally a JWT (no `eyJ` b64 prefix; e.g. wrong token type from the OAuth flow, or copy-paste truncation) | re-run step 1, paste the full token value, verify `eyJ` prefix |
+| `invalid_grant: Client secret mismatch` | the Client Secret in env is a different value than the one used during step 1's grant | re-write env so PS and RT both come from the SAME bootstrap session |
+| `KeyError('TT_SECRET')` (not an OAuth error — SDK internal) | code path used wrong kwargs to `Session()`; SDK fell back to `os.environ["TT_SECRET"]` | code bug in `Session(...)` call, not creds |
+
+The session cost: roughly 5 round-trips with the operator before
+landing the matched pair. With this runbook, future rotations should
+be one round-trip.
+
+**Where to land:** new `runbooks/tastytrade_oauth_rotation.md`. Also
+add a `[[feedback-tastytrade-rotation-runbook]]` memory referencing
+this runbook so future sessions auto-load it on Tastytrade-touching
+work.
+
+### P2 (MEDIUM) — Bug 4: dead `get_history` branch in IVR path
+
+`trading_corp/data/tastytrade_provider.py:347-376` `_fetch_close_series`
+tries `from tastytrade.market_data import get_history` first. That
+symbol does **not** exist in tastytrade 12.4.1 — every call ImportErrors
+and falls through to yfinance HV. The IVR path has been yfinance-only
+since `a6885a5` shipped; this was masked by the silent fallback in the
+same function.
+
+**Two acceptable resolutions:**
+1. **Delete the Tastytrade-history branch** and document yfinance HV as
+   the IVR-by-design path. Tightest, honest about what IVR actually is
+   (a yfinance HV approximation).
+2. **Find the actual 12.4.1 historical-bars API** and wire it. The
+   `tastytrade.metrics.get_market_metrics(session, [symbols])` call
+   returns `MarketMetricInfo` with `option_expiration_implied_volatilities`
+   — could be a better IVR source than HV approximation. Would change
+   IVR semantics (real IV-vs-IV rank, not HV-proxy) so needs a
+   correctness review.
+
+Either resolution should also add an audit row when yfinance is used
+(see silent-fallback item below) so future regressions are observable.
+
+**Where to land:** edit `tastytrade_provider.py`; if going with (2),
+also bump `_compute_iv_rank` docstring + add tests.
+
+### P2 (MEDIUM) — Silent-fallback audit rows in providers
+
+Every provider fallback (Tastytrade → yfinance for IVR; any future
+fallback) should emit a `provider_fallback_fired` or
+`auth_chain_failed` audit row via `LoggerAgent`. Prod must not silently
+serve "plausible number from wrong source." This is a recurring class:
+- kline silent failure (recoiled inside reconciler B7 — see
+  `runbooks/2026-05-21_post_funding_diagnostics.md`).
+- funding-units ×100 ([[project-bitunix-paper-clock]]).
+- IVR yfinance fallback masking broken Tastytrade auth chain (this
+  session — the `a6885a5` deploy_log's "auth chain works" claim was
+  actually yfinance HV running because Bug 1 broke Session()).
+
+**Pattern:** at every fallback boundary, write an audit row with
+`{provider_expected, provider_actual, reason, sample_value}`. Don't
+suppress the warning to make the log noise lower — suppress the
+fallback or signal that it fired.
+
+**Where to land:** `_fetch_close_series` (this session's example),
+`broker_fallback_to_paper` (already audits via
+`broker_fallback_to_paper` audit kind — pattern model).
+
+### P2 (MEDIUM) — Escalate `[[feedback-mocks-dont-catch-sdk-shape]]`: thin real-SDK smoke test in CI
+
+Four bugs surfaced this session from mock-based unit tests accepting
+wrong SDK shapes:
+
+1. `Session(login=..., remember_token=...)` — wrong kwargs (Bug 1).
+2. `from tastytrade.market_data import get_quote` — missing symbol (Bug 2).
+3. `asyncio.to_thread(get_option_chain, ...)` — sync wrap of async
+   function returns unawaited coroutine (audit-found Bug 8 this session).
+4. `greeks.eventSymbol` — camelCase, actual field is snake_case (audit-
+   found Bug 9 this session).
+
+Plus Bug 4 (`get_history` missing — same class, deferred).
+
+Five SDK-shape mismatches in one file, all accepted by `MagicMock`
+without complaint. The mock-based test suite passed 352/352 against
+BOTH the broken pre-fix code AND the correct post-fix code — meaning
+mocks cannot gate this class.
+
+**Mitigation: thin real-SDK smoke test in CI.** A test file (e.g.
+`tests/test_real_sdk_shape.py`) that:
+- For each `from tastytrade.<mod> import <symbol>` line in
+  `tastytrade_provider.py`, asserts the symbol is importable in the
+  installed `tastytrade` package version (catches Bug 2, Bug 4).
+- For each async/sync usage assumption (`asyncio.to_thread(fn, ...)`
+  expects fn to be sync; `await fn(...)` expects async), asserts
+  `inspect.iscoroutinefunction(fn)` matches the expectation (catches Bug 8).
+- For each SDK return-object attribute access in production code
+  (`greeks.event_symbol`, `md.last`, `opt.streamer_symbol`), asserts
+  the attribute name exists on the type's `pydantic.model_fields` or
+  `dir()` (catches Bug 9).
+
+The test stays mock-free, uses no live credentials, runs in seconds,
+and would have caught all four bugs in CI rather than at deploy time.
+
+**Escalation rule:** in addition to the smoke test, the **live SDK
+gate is now MANDATORY pre-commit for any provider change.** Updating
+[[feedback-mocks-dont-catch-sdk-shape]] memory to reflect this:
+mocks pass + smoke test pass + live SDK gate pass = the new bar.
+
+**Where to land:** new `tests/test_real_sdk_shape.py`. Memory update
+on the existing `[[feedback-mocks-dont-catch-sdk-shape]]` file.
+
+---
+
 ## P0 — Crash diagnosis (2026-05-19)
 
 PC has hard-rebooted 13 times in 30 days. Most recent: **crash #9 (2026-05-18
