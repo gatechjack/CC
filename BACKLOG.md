@@ -8,6 +8,57 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-22 ~14:00 UTC (Friday afternoon)
+
+**Headline:** IC morning-candidate grader committed-not-shipped at
+`112aef3`. Deploy sequence is pre-conditioned on the AM provider SDK
+fix landing first. **All other prod state unchanged from earlier today.**
+
+**Local `main` head (1 ahead of `origin/main`, not pushed):**
+- `112aef3 feat(ic): morning candidate grader on /telemetry/iron_condor`
+
+**What's running on prod (unchanged today):**
+- `a6885a5` (data-provider abstraction + Tastytrade primary + 1e-5 fix)
+  — DEGRADED with two SDK bugs queued for AM fix; strictly better than
+  pre-deploy regardless.
+- `b218375` (kalshi_weather side-asymmetric entry-price floor) — Day 2
+  of forward paper-validation window. **First post-deploy round-trips
+  expected to land 14:00–19:00 UTC today** as 2026-05-21 wpps reach
+  contract expiration. Run the PRIORITY-3 queries from
+  `runbooks/session_start_2026_05_21_kalshi_post_deploy.md` after
+  ~15:00 UTC.
+- IC v1 paper-mode (shipped 2026-05-21 03:09 UTC). Scanner ran Thursday
+  and Friday at 09:45 ET; only GLD had a tally entry in scan_telemetry,
+  consistent with the strategy's first-fail-only counter mechanism
+  (verified non-anomaly during this session).
+- BitUnix paper-eval clock continues toward 2026-07-19.
+- Polymarket per-condition_id cap shipped (paper-only).
+
+**Three sequential ship gates for the grader — DO NOT SKIP:**
+
+1. **AM provider SDK fix** — covered by
+   `runbooks/session_start_2026_05_22_data_provider_am_fix.md`. The two
+   SDK bugs (`Session()` kwargs + missing `get_quote` import) + the
+   two queued follow-ups (`_iv_math.py` move, Fidelity test).
+2. **§6 live-verification** (real-provider, real ATM IV numbers,
+   full gate-7 path) per
+   `.claude/plans/planning-session-ic-hashed-kettle.md` §
+   Verification §6. Mock-based unit tests at 88/88 do NOT close this.
+3. **CRLF-normalized deploy of the grader** — `routes.py` must be
+   normalized to LF at transport time per
+   `[[feedback-crlf-routes-py-deploy]]`. Then re-run §6 in prod.
+
+**Coordination items outside this session:**
+- 5 stranded shared files (parallel-session deconfliction) — unchanged.
+- `origin/main` push decision — local is 1 ahead; push deferred.
+
+**Untracked at session end:** `docs/Deployment notes.txt` (pre-existing,
+unrelated).
+
+**Canonical pickup:** `runbooks/session_start_2026_05_23.md`.
+
+---
+
 ## P0 — Crash diagnosis (2026-05-19)
 
 PC has hard-rebooted 13 times in 30 days. Most recent: **crash #9 (2026-05-18
