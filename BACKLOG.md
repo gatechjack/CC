@@ -307,6 +307,71 @@ on the existing `[[feedback-mocks-dont-catch-sdk-shape]]` file.
 
 ---
 
+## P2 — kalshi_weather intraday work (2026-05-22, re-added after EOS loss)  *(NEW — 2026-05-22)*
+
+Two items the operator added during the kalshi_weather P3 session that were
+lost when `454ba02` committed a forward reference ("items below") without
+actually writing them. Verified gone (BACKLOG, planning/, all-refs git
+pickaxe, reflog, stash, unreachable blobs, working tree, tmp/) before
+re-adding here. Both are **investigation-first** — quantify EV net of
+costs from historical data before any implementation.
+
+### Item 1 — Intraday settlement-certainty arbitrage *(investigate, don't build)*
+
+**Premise:** once a daily-HIGH market's recorded high already exceeds a
+bucket's top (highs can't reverse), or a daily-LOW market's low is
+already settled for the day, the outcome is partially or fully determined
+but the market may still misprice it. Observed: Seattle daily high
+already 75°F, the `≤73` NO contract still trading ~5¢.
+
+**Investigation must answer (from historical data):**
+1. **(a) Rigorous irreversibility test.** How to determine that a bucket
+   is IRREVERSIBLY settled intraday. Distinguish HIGH vs LOW markets;
+   account for the day not being over; never treat "probably won't
+   reverse" as certain.
+2. **(b) Mispricing frequency + magnitude.** How often a genuinely-settled
+   bucket stays mispriced, and by how much (cents per contract vs
+   bucket-resolution truth).
+3. **(c) Fillable size at the mispriced quote.** The slippage / liquidity
+   question — likely kills it.
+4. **(d) Net EV after spread + fees.** Including Kalshi's fee schedule
+   and the realistic fill price after walking the book.
+
+**Gate (do not build until both true):** mispricing is frequent enough to
+matter AND fillable size is meaningful.
+
+**Note:** this is a crowded, well-known trade. Assume sophisticated
+counter-parties are already running it; the bar for "fillable edge
+remains" is high.
+
+### Item 2 — Hourly re-evaluation of open positions with intraday data *(investigate as signal-layer first)*
+
+**Premise:** entry forecast (~06:00 UTC, ~17h out) is far less accurate
+than a midday forecast with intraday station readings already in hand.
+Hourly re-eval could close now-losing positions early, add to confirmed
+winners, or open new positions on the improved forecast.
+
+**Build as a logging / signal layer first — DO NOT touch positions.**
+Hourly, recompute the forecast per open position using intraday actuals +
+updated NWS/NBM, and **log** what it WOULD do (hold / close / add / new)
+plus the implied PnL delta. No action.
+
+**Acceptance gate:** quantify over historical data whether acting on the
+signal would have improved net PnL after double-crossing the spread on
+closes + fees.
+
+**Must address before any implementation step beyond logging:**
+- Interaction with the `max_per_day_pct` daily exposure cap — intraday
+  adds must not blow through it.
+- Risk that "add to winner" degrades sizing discipline (a sized-once
+  position is a different beast than a position that grew based on
+  intraday confirmation; review separately).
+
+**Do not touch positions until the signal-layer analysis proves positive
+EV net of costs.**
+
+---
+
 ## P0 — Crash diagnosis (2026-05-19)
 
 PC has hard-rebooted 13 times in 30 days. Most recent: **crash #9 (2026-05-18
