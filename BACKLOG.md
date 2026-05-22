@@ -188,7 +188,62 @@ downstream consequence.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-21 ~03:30 UTC  *(supersedes 2026-05-20 ~23:05 UTC below)*
+## END-OF-SESSION SNAPSHOT — 2026-05-22 ~11:00 UTC  *(supersedes 2026-05-21 ~03:30 UTC below)*
+
+**One work thread: data-provider abstraction SHIPPED to prod at 10:33 UTC (commit `a6885a5`). Replaces yfinance as IV/options data source with a pluggable `MarketDataProvider` ABC; Tastytrade primary, yfinance demoted to labeled fallback. Fixes the 1e-5 degenerate-IV bug surfaced by IC v1's 2026-05-21 13:45 UTC scan via a `< 0.01 → None` floor at the provider boundary. IC strategy modified live with two new safety branches: `ivr_data_unavailable` tally on IVR=None and `chain_too_shallow` correctness guard on delta-proximity. Fidelity duplicate `_calc_iv_rank` deduped. Service restarted to PID 1044543, IC online, 351/351 tests green pre-deploy. Deployed in a known DEGRADED state — two SDK API bugs surfaced in live end-to-end test (mocks couldn't catch them): `Session()` kwargs wrong (login/remember_token → should be provider_secret/refresh_token) and `from tastytrade.market_data import get_quote` (symbol doesn't exist in 12.4.1). Effect: `calc_atm_iv` and `get_underlying_price` return None; `calc_iv_rank` works (yfinance HV bars internally; live SPY = 0.342). IC fail-opens on term-structure check (same as pre-deploy 1e-5 behavior). Net state STRICTLY BETTER than pre-deploy. AM follow-up queued before 09:45 ET (13:45 UTC) to fix both bugs against the live SDK + bundle the two prior follow-ups (`_hv_to_rank` to neutral `_iv_math.py`, tiny Fidelity test). Hard rule: if AM fix slips, do NOT rush — 09:45 scan runs in tonight's better state. See `runbooks/deploy_log.md` (top entry) and `runbooks/session_start_2026_05_22_data_provider_am_fix.md` for the AM pickup.**
+
+### Headline
+
+`a6885a5` is live on prod, paper mode. Two SDK bugs known + queued. Service active on PID 1044543 since 10:33:42 UTC. All other strategies (PMCC, Polymarket, Kalshi, BitUnix, Donchian) preserved — IC scanner + position manager online alongside.
+
+### What landed
+
+**On prod (live):**
+- 15 files extracted via az tarball transport at 09:51 UTC (4 modified + 9 new + 1 systemd config change + 1 env file). md5 verified post-extract; all 15 match local.
+- `tastytrade>=12.4` installed in prod venv (`/home/azureuser/trading_corp/venv/bin/pip install`). 12.4.1 + transitive `httpx_ws==0.9.0`, `wsproto==1.3.2`.
+- `/etc/systemd/system/trading-corp.service.d/override.conf` adds `EnvironmentFile=/etc/trading-corp/tastytrade.env` (operator-written, 600 root:root, holds `TASTYTRADE_PROVIDER_SECRET` + `TASTYTRADE_REFRESH_TOKEN`).
+- Service restarted at 10:33:42 UTC (second restart of the session; first attempt at 09:56 UTC failed env auth due to operator paste bug — file rewritten without brackets at 10:30 UTC, re-restarted 10:33).
+
+**On local (committed, NOT pushed to origin):**
+- `a6885a5` — data-provider abstraction (15 files, 2,135 insertions, 317 deletions).
+- `92d6018` — deploy_log entry (131 insertions to `runbooks/deploy_log.md`).
+- main is 2 ahead of `origin/main`. Push decision deferred (separate from tonight's deploy).
+
+### Critical security note (accepted risk, NOT remediated tonight)
+
+During live SPY-fetch verification, a `bash` source command on the env file (when it briefly held literal `<value>` placeholder brackets) echoed the Tastytrade Client Secret to stderr → captured by `az vm run-command`. **The 40-char Client Secret leaked into the chat transcript AND Azure activity log.** Refresh token did NOT leak (bash bailed on line 2's syntax error).
+
+Operator's risk assessment: leaked value is OAuth2 client secret with `scope: read` only on operator-controlled funded Tastytrade account. Exposure bounded to read-only market/account data. Full token refresh tracked under operator's infosec backlog (no ticket ID surfaced). Risk accepted, deploy continued.
+
+**Process change going forward:** never `bash source` env files for verification. Use python-direct readers. See `[[feedback-never-bash-source-env-files]]` memory.
+
+### Environment sync state
+
+| Surface | State |
+|---|---|
+| Local working tree | Clean except 2 pre-existing untracked files (`docs/Deployment notes.txt`, `reports/2026-05-21_security_review.md` — not mine, not staged). |
+| Local committed (`main`) | `92d6018` (deploy_log), `a6885a5` (data-provider). 2 ahead of `origin/main`. |
+| `origin/main` | 2 behind local. Not pushed. |
+| Prod (`tc-prod-vm`) | **live: data-provider abstraction (degraded) + all prior strategies preserved.** PID 1044543 since 2026-05-22 10:33:42 UTC. `auto_execute: false` on IC (load-bearing). Tastytrade env vars present in process. |
+| Backup tags on prod | `pre-data-provider-deploy-20260521` on 4 file backups + override.conf backup. Rollback recipe in deploy_log entry. |
+| Memory | New: `feedback_mocks_dont_catch_sdk_shape.md`, `feedback_never_bash_source_env_files.md`, `project_data_provider_deploy.md`. Index updated. |
+
+### Open observations + follow-ups
+
+1. **Two SDK bugs queued for AM** (before 2026-05-22 13:45 UTC = 09:45 ET). See deploy_log top entry, project memory, and `runbooks/session_start_2026_05_22_data_provider_am_fix.md` for the pickup brief.
+2. **`tests/test_iv_rank.py` and `tests/test_iron_condor_strategy.py`** now exist on prod (created by tonight's tarball extraction). They were absent on prod pre-deploy. Not exercised at runtime; only by pytest.
+3. **Push to `origin/main`** is unresolved. Operator's standing position: separate decision from deploy. 2 local commits unpushed.
+4. **Credential rotation** deferred to operator's infosec backlog. Until worked, the env file on prod holds creds operator labeled as exposure-bounded (`scope: read` only).
+5. **`runbooks/paper_run/ic_v1.md` `auto_execute: false`** holds through 90-day graduation. Unchanged.
+6. **Daily IC scan at 09:45-09:50 ET** runs in the strictly-better state (no 1e-5, no 0.5 sentinel, `chain_too_shallow` guard active). If AM fix doesn't ship in time, this is the acceptable fallback.
+
+### Rollback recipe (kept for record; only execute if a fresh fault surfaces)
+
+Full recipe in `runbooks/deploy_log.md` top entry. Summary: restore 4 in-place file backups via `mv $f.pre-data-provider-deploy-20260521 $f`, `rm` the 11 new files (9 provider/test files + 2 prod-test files), revert override.conf from backup, `daemon-reload` + `restart`. Tastytrade venv pkg + env file can be removed manually if desired (harmless if left).
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-21 ~03:30 UTC  *(superseded by 2026-05-22 ~11:00 UTC above)*
 
 **One work thread: Iron Condor v1 SHIPPED to prod at 03:09 UTC after a first-attempt crash-loop revealed prod wasn't carrying commits A (`365114b`) or B (`7c1eef0`). Rolled back at 02:17, audited drift via line-count math (clean — prod = pre-commit-B base for all 12 modified files), then full 30-file ship via 11-chunk az transport. Two IC asyncio tasks online (`IC signal scanner online` + `IC position manager online` in journal). Home tile (`19b6dba`, also missed in tarball) caught + shipped at 03:22 UTC. RH MFA loop on restart pre-fixed at 01:58 UTC via `scripts/rh_mfa_refresh_prod.sh` (push approval to phone) — load-bearing precondition for the IC scanner to actually emit candidates. First scan fires today 09:45–09:50 ET (13:45–13:50 UTC). See `runbooks/deploy_log.md` 03:09 + 03:22 entries; pickup at `runbooks/session_start_2026_05_22.md`.**
 
