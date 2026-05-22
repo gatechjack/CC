@@ -113,8 +113,52 @@ def _build_pending_row(trade: dict[str, Any]) -> _PendingRow:
     )
 
 
+_NO_BARS_OUTCOME = "no_bars"
+_NO_BARS_AUDIT_KIND = "audit_reality_no_bars"
+
+
 def _reconcile_one(conn, trade: dict[str, Any]) -> _ReconcileResult:
     bars = _load_bars_for_trade(conn, trade)
+
+    # B7 guard: never declare a match against zero bars.
+    # Empty bars cause _classify_v2_multi_leg to return result="expired"
+    # (loop over bars doesn't execute; fully-elapsed window → expired).
+    # If the recorded result also happens to be "expired", the naive
+    # sim_result == rec_result comparison declares a match — the immune
+    # system reports healthy while looking at nothing.  The guard stops
+    # that: a trade with no bars in its window gets a distinct
+    # `no_bars` outcome that can never equal any legitimate result string.
+    if not bars:
+        rec_result = trade["result"]
+        extra_raw = json.loads(trade["extra_json"]) if trade["extra_json"] else {}
+        audit_corrected = bool(extra_raw.get("audit_corrected"))
+        if audit_corrected and extra_raw.get("corrected_result") is not None:
+            rec_result = extra_raw["corrected_result"]
+            rec_r = extra_raw.get("corrected_r_multiple")
+            rec_source = "corrected"
+        else:
+            rec_r = trade["actual_r_multiple"]
+            rec_source = "native"
+        discrepancy = (
+            f"no_bars: 0 bars in window [{trade['ts']}, {trade['result_ts']}]"
+        )
+        return _ReconcileResult(
+            order_id=trade["order_id"],
+            ts=trade["ts"],
+            division=trade["division"],
+            side=trade["side"],
+            recorded_result=rec_result,
+            recorded_r=rec_r,
+            recorded_source=rec_source,
+            simulated_result=_NO_BARS_OUTCOME,
+            simulated_r=None,
+            simulated_filled_legs=[],
+            simulated_current_sl=None,
+            bar_count=0,
+            matches=False,
+            discrepancy=discrepancy,
+        )
+
     # Reset extra state to a fresh-replay starting point (mimic what a
     # working replay-tick would see if it walked the full bar window
     # in one pass). The recorded extra_json may carry stale state from
@@ -199,10 +243,18 @@ def _persist_summary(db_url: str, results: list[_ReconcileResult]) -> None:
     n_total = len(results)
     n_matches = sum(1 for r in results if r.matches)
     n_mismatches = n_total - n_matches
+    n_no_bars = sum(1 for r in results if r.simulated_result == _NO_BARS_OUTCOME)
 
     if n_total == 0:
         status = "no_trades"
+    elif n_no_bars > 0 and n_mismatches == n_no_bars:
+        # All non-matches are no_bars (no genuine discrepancies found, but
+        # bar coverage is incomplete — immune system looked at nothing for
+        # at least one trade).  Use a distinct status so the dashboard /
+        # alarm treats this as attention-worthy, not silently green.
+        status = "no_bars"
     elif n_mismatches > 0:
+        # Mix of genuine mismatches (and possibly no_bars rows too).
         status = "mismatch"
     else:
         status = "match"
@@ -232,11 +284,33 @@ def _persist_summary(db_url: str, results: list[_ReconcileResult]) -> None:
     }
 
     try:
+        run_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with _db.connect(db_url) as conn:
+            # Per-trade audit events for no_bars rows so a future audit
+            # can grep for the exact order_id + window that had no coverage.
+            for r in results:
+                if r.simulated_result == _NO_BARS_OUTCOME:
+                    conn.execute(
+                        "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+                        (
+                            run_ts,
+                            "audit_reality_reconciler",
+                            _NO_BARS_AUDIT_KIND,
+                            json.dumps({
+                                "order_id": r.order_id,
+                                "ts": r.ts,
+                                "result_ts": None,  # not available on _ReconcileResult
+                                "recorded_result": r.recorded_result,
+                                "bar_count": r.bar_count,
+                                "discrepancy": r.discrepancy,
+                            }),
+                        ),
+                    )
+            # Per-fire summary row (dashboard tile).
             conn.execute(
                 "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
                 (
-                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    run_ts,
                     "audit_reality_reconciler",
                     "audit_reality_run",
                     json.dumps(payload),
