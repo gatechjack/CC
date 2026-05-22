@@ -339,7 +339,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at New York City for May 22,
       2026, is greater than 56° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTNYC-26MAY22-T56
     correction_note: 'Corrected 2026-05-22: was KJFK (~12 mi off, Central Park is
       +3°F warmer for highs)'
   KXHIGHTSEA:
@@ -349,7 +352,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Seattle for May 22, 2026,
       is less than 72° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTSEA-26MAY22-T72
   KXHIGHTBOS:
     settles_at: KBOS
     settles_what: daily_max_temp
@@ -357,7 +363,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Boston for May 22, 2026,
       is between 68-69° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTBOS-26MAY22-B68.5
   KXLOWTAUS:
     settles_at: KAUS
     settles_what: daily_min_temp
@@ -365,7 +374,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Austin for May 22, 2026,
       is greater than 71° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTAUS-26MAY22-T71
   KXHIGHTDC:
     settles_at: KDCA
     settles_what: daily_max_temp
@@ -373,7 +385,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Washington DC for May 22,
       2026, is between 64-65° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTDC-26MAY22-B64.5
   KXHIGHLAX:
     settles_at: KLAX
     settles_what: daily_max_temp
@@ -381,7 +396,10 @@ series:
     rules_excerpt: If the highest temperature recorded in Los Angeles Airport, CA
       for May 22, 2026 as reported by the National Weather Service's Climatological
       Report (Daily), is less than 64°, then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHLAX-26MAY22-T64
   KXLOWTSATX:
     settles_at: KSAT
     settles_what: daily_min_temp
@@ -389,7 +407,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at San Antonio for May 22,
       2026, is between 64-65° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTSATX-26MAY22-B64.5
   KXHIGHTMIN:
     settles_at: KMSP
     settles_what: daily_max_temp
@@ -397,7 +418,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Minneapolis for May 22,
       2026, is between 62-63° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTMIN-26MAY22-B62.5
   KXHIGHNY:
     settles_at: KNYC
     settles_what: daily_max_temp
@@ -405,7 +429,10 @@ series:
     rules_excerpt: If the highest temperature recorded in Central Park, New York for
       May 22, 2026 as reported by the National Weather Service's Climatological Report
       (Daily), is less than 63°, then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHNY-26MAY22-T63
     correction_note: 'Corrected 2026-05-22: was KJFK (~12 mi off, Central Park is
       +3°F warmer for highs)'
   KXHIGHCHI:
@@ -415,7 +442,10 @@ series:
     rules_excerpt: If the highest temperature recorded at Chicago Midway, IL for May
       22, 2026, is greater than 71° according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHCHI-26MAY22-T71
     correction_note: 'Corrected 2026-05-22: was KORD (~17 mi off)'
   KXLOWTMIN:
     settles_at: KMSP
@@ -424,7 +454,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Minneapolis for May 22,
       2026, is between 45-46° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTMIN-26MAY22-B45.5
   KXHIGHTSFO:
     settles_at: KSFO
     settles_what: daily_max_temp
@@ -432,7 +465,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at San Francisco for May 22,
       2026, is between 72-73° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTSFO-26MAY22-B72.5
   KXHIGHTATL:
     settles_at: KATL
     settles_what: daily_max_temp
@@ -440,7 +476,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Atlanta for May 22, 2026,
       is less than 81° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTATL-26MAY22-T81
   KXHIGHAUS:
     settles_at: KAUS
     settles_what: daily_max_temp
@@ -448,7 +487,10 @@ series:
     rules_excerpt: If the highest temperature recorded in Austin Bergstrom for May
       22, 2026 as reported by the National Weather Service's Climatological Report
       (Daily), is between 89-90°, then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHAUS-26MAY22-B89.5
   KXLOWTDC:
     settles_at: KDCA
     settles_what: daily_min_temp
@@ -456,7 +498,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Washington DC for May 22,
       2026, is between 49-50° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTDC-26MAY22-B49.5
   KXLOWTCHI:
     settles_at: KMDW
     settles_what: daily_min_temp
@@ -464,7 +509,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Chicago for May 22, 2026,
       is between 46-47° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTCHI-26MAY22-B46.5
     correction_note: 'Corrected 2026-05-22: was KORD (~17 mi off)'
   KXLOWTPHIL:
     settles_at: KPHL
@@ -473,7 +521,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Philadelphia for May 22,
       2026, is between 47-48° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTPHIL-26MAY22-B47.5
   KXLOWTHOU:
     settles_at: KHOU
     settles_what: daily_min_temp
@@ -481,7 +532,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Houston for May 22, 2026,
       is between 72-73° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTHOU-26MAY22-B72.5
     correction_note: 'Corrected 2026-05-22: was KIAH (~24 mi off)'
   KXHIGHTOKC:
     settles_at: KOKC
@@ -490,7 +544,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Oklahoma City for May 22,
       2026, is between 79-80° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTOKC-26MAY22-B79.5
   KXHIGHDEN:
     settles_at: KDEN
     settles_what: daily_max_temp
@@ -498,7 +555,10 @@ series:
     rules_excerpt: If the highest temperature recorded in Denver, CO for May 22, 2026
       as reported by the National Weather Service's Climatological Report (Daily),
       is between 60-61°, then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHDEN-26MAY22-B60.5
   KXLOWTDEN:
     settles_at: KDEN
     settles_what: daily_min_temp
@@ -506,7 +566,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Denver for May 22, 2026,
       is greater than 46° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTDEN-26MAY22-T46
   KXHIGHTPHX:
     settles_at: KPHX
     settles_what: daily_max_temp
@@ -514,7 +577,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Phoenix for May 22, 2026,
       is between 100-101° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTPHX-26MAY22-B100.5
   KXHIGHTNOLA:
     settles_at: KMSY
     settles_what: daily_max_temp
@@ -522,7 +588,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at New Orleans for May 22,
       2026, is less than 83° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTNOLA-26MAY22-T83
   KXHIGHTHOU:
     settles_at: KHOU
     settles_what: daily_max_temp
@@ -530,7 +599,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Houston for May 22, 2026,
       is between 87-88° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTHOU-26MAY22-B87.5
     correction_note: 'Corrected 2026-05-22: was KIAH (~24 mi off)'
   KXLOWTSFO:
     settles_at: KSFO
@@ -539,7 +611,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at San Francisco for May 22,
       2026, is less than 47° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTSFO-26MAY22-T47
   KXHIGHTDAL:
     settles_at: KDFW
     settles_what: daily_max_temp
@@ -547,7 +622,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at Dallas for May 22, 2026,
       is between 88-89° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTDAL-26MAY22-B88.5
   KXLOWTDAL:
     settles_at: KDFW
     settles_what: daily_min_temp
@@ -555,7 +633,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Dallas for May 22, 2026,
       is between 64-65° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTDAL-26MAY22-B64.5
   KXHIGHMIA:
     settles_at: KMIA
     settles_what: daily_max_temp
@@ -563,7 +644,10 @@ series:
     rules_excerpt: If the highest temperature recorded at Miami International Airport
       for May 22, 2026 as reported by the National Weather Service's Climatological
       Report (Daily), is less than 85°, then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHMIA-26MAY22-T85
   KXLOWTNOLA:
     settles_at: KMSY
     settles_what: daily_min_temp
@@ -571,7 +655,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at New Orleans for May 22,
       2026, is greater than 76° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTNOLA-26MAY22-T76
   KXHIGHTSATX:
     settles_at: KSAT
     settles_what: daily_max_temp
@@ -579,7 +666,10 @@ series:
     rules_excerpt: If the maximum temperature recorded at San Antonio for May 22,
       2026, is between 85-86° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHTSATX-26MAY22-B85.5
   KXHIGHPHIL:
     settles_at: KPHL
     settles_what: daily_max_temp
@@ -587,7 +677,10 @@ series:
     rules_excerpt: If the highest temperature recorded at Philadelphia International
       Airport for May 22, 2026 as reported by the National Weather Service's Climatological
       Report (Daily), is greater than 69°, then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXHIGHPHIL-26MAY22-T69
   KXLOWTMIA:
     settles_at: KMIA
     settles_what: daily_min_temp
@@ -595,7 +688,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Miami for May 22, 2026,
       is greater than 81° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTMIA-26MAY22-T81
   KXLOWTOKC:
     settles_at: KOKC
     settles_what: daily_min_temp
@@ -603,7 +699,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Oklahoma City for May 22,
       2026, is between 53-54° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTOKC-26MAY22-B53.5
   KXLOWTLAX:
     settles_at: KLAX
     settles_what: daily_min_temp
@@ -611,7 +710,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Los Angeles for May 22,
       2026, is less than 55° fahrenheit according to the National Weather Service's
       Climatological Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTLAX-26MAY22-T55
   KXLOWTATL:
     settles_at: KATL
     settles_what: daily_min_temp
@@ -619,7 +721,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Atlanta for May 22, 2026,
       is greater than 69° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTATL-26MAY22-T69
   KXLOWTSEA:
     settles_at: KSEA
     settles_what: daily_min_temp
@@ -627,7 +732,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Seattle for May 22, 2026,
       is between 48-49° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTSEA-26MAY22-B48.5
   KXLOWTPHX:
     settles_at: KPHX
     settles_what: daily_min_temp
@@ -635,7 +743,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Phoenix for May 22, 2026,
       is between 65-66° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTPHX-26MAY22-B65.5
   KXLOWTBOS:
     settles_at: KBOS
     settles_what: daily_min_temp
@@ -643,7 +754,10 @@ series:
     rules_excerpt: If the minimum temperature recorded at Boston for May 22, 2026,
       is greater than 45° fahrenheit according to the National Weather Service's Climatological
       Report (Daily), then the market resolves to Yes.
-    verified: false
+    verified: true
+    verified_by: jack
+    verified_at: '2026-05-22'
+    verified_via_market: KXLOWTBOS-26MAY22-T45
   KXTEMPNYCH:
     settles_at: null
     settles_what: hourly_temp_at_hour
