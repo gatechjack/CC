@@ -76,6 +76,137 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-22 10:33 UTC — data-provider abstraction + Tastytrade primary + 1e-5 fix (commit `a6885a5`) — degraded (2 SDK bugs queued for AM fix)
+
+**Commits:** `a6885a5` (data-provider abstraction). On `main`, not pushed to `origin/main` as part of this deploy (host-direct deploy mechanism; prod has no git).
+**Triggered by:** Human-authorized deploy after end-to-end review of the IC v1 first-paper-scan finding (2026-05-21 13:45 UTC) where `calc_atm_iv` returned `1.0000000000000003e-05` for IWM and TLT — a degenerate yfinance value that slipped past the existing `not finite or <= 0` guard. Step 0 validation spike confirmed Tastytrade returns clean IV (~0.11 TLT, ~0.21 IWM front-month at 45 DTE). Operator explicitly acknowledged this MODIFIED LIVE IC STRATEGY behavior (not inert — corrects the prior session's "inert" mischaracterization; IC shipped at 2026-05-21 03:09 UTC and fired the 13:45 UTC scan that surfaced the 1e-5 bug).
+**Backup tag:** `pre-data-provider-deploy-20260521` — 4 in-place file backups (`trading_corp/utils/iv.py`, `trading_corp/agents/strategies/robinhood_joint_iron_condor.py`, `trading_corp/agents/divisions/fidelity_options.py`, `requirements.txt`) plus `/etc/systemd/system/trading-corp.service.d/override.conf.pre-data-provider-deploy-20260521`. The 9 new files have no backup target by definition.
+
+**Files deployed (15):**
+
+*New (9):*
+- `trading_corp/data/market_data_provider.py` — `MarketDataProvider` ABC + `OptionContract` dataclass + `_is_degenerate_iv` helper (IV-only invariant; rejects None / non-finite / `<= 0` / `< 0.01`).
+- `trading_corp/data/tastytrade_provider.py` — primary provider via `tastytrade.instruments.get_option_chain` (flat, full-depth), 60s TTL cache, OAuth2 refresh-token auth.
+- `trading_corp/data/yfinance_provider.py` — labeled fallback; wraps old `utils/iv.py` logic with `_is_degenerate_iv` boundary applied.
+- `trading_corp/data/provider_factory.py` — mtime-cached config loader, `global + overrides[strategy]` merge, no auto-failover.
+- `config/data_providers.yaml` — `primary: tastytrade`, `fallback: null` (explicit; auto-failover forbidden).
+- `tests/test_market_data_provider.py`, `tests/test_tastytrade_provider.py`, `tests/test_yfinance_provider.py`, `tests/test_provider_factory.py` — provider/factory test suites (mock-based; see "Known degraded state" — mocks couldn't catch real-SDK kwarg shape).
+
+*Modified (6):*
+- `trading_corp/utils/iv.py` — thin wrappers delegating to configured provider. `calc_iv_rank` signature changed `float → float | None` (the `0.5` sentinel is gone).
+- `trading_corp/agents/strategies/robinhood_joint_iron_condor.py` — `ivr_data_unavailable` tally branch at the IVR gate + 20-line delta-proximity guard (`chain_too_shallow` tally) after `_pick_by_delta`.
+- `trading_corp/agents/divisions/fidelity_options.py` — duplicate `_calc_iv_rank` deleted (was lines 139-166), now imports from `utils.iv`; None-branch at `_scan_symbol` caller.
+- `tests/test_iv_rank.py`, `tests/test_iron_condor_strategy.py` — updated for None signatures + new guard tests.
+- `requirements.txt` — added `tastytrade>=12.4`. Installed in prod's venv pre-restart via `/home/azureuser/trading_corp/venv/bin/pip install --upgrade tastytrade`; verified 12.4.1 + transitive `httpx_ws==0.9.0`, `wsproto==1.3.2` importable.
+
+**Systemd config change (one-time, recorded for future deploys):**
+- `/etc/systemd/system/trading-corp.service.d/override.conf` — added `EnvironmentFile=/etc/trading-corp/tastytrade.env` to the `[Service]` section, preserving the existing `Environment=TELEGRAM_NOTIFICATION_ONLY=true` line. `systemctl daemon-reload` issued. systemd resolves the reference as `EnvironmentFiles=/etc/trading-corp/tastytrade.env (ignore_errors=no)` — service refuses to start if the file is missing or unreadable.
+- `/etc/trading-corp/` directory created (700 root:root); `/etc/trading-corp/tastytrade.env` written out-of-band by operator (chmod 600 root:root, 2 lines: `TASTYTRADE_PROVIDER_SECRET=...` + `TASTYTRADE_REFRESH_TOKEN=...`). Values not in this log; verified by `grep -c` count + leading-char checks only.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+
+- **`MarketDataProvider` ABC live in prod.** All options/IV reads now route through the configured provider via `utils.iv:_get_configured_provider()`. yfinance is no longer imported at the IV-utility boundary.
+- **1e-5 degenerate-IV bug FIXED at the provider boundary.** `_is_degenerate_iv` rejects `None` / non-finite / `<= 0` / `< 0.01` before the value reaches any caller. The `0.5` sentinel from `calc_iv_rank` is gone — symbols with insufficient data now return `None` and the IC strategy tallies them as `ivr_data_unavailable` (distinct from `ivr_below_30`).
+- **IC strategy delta-proximity guard live in prod.** After `_pick_by_delta` returns short call/put picks, the strategy verifies `|achieved_delta - target_delta| <= 0.05`. If outside band, the symbol skips with a new `chain_too_shallow` scan-filter tally. CORRECTNESS gate enforcing the existing 16-delta target — does NOT move thresholds.
+- **Fidelity `_calc_iv_rank` deduped.** The local duplicate at `fidelity_options.py:139-166` now imports from `utils.iv`. One math path.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+
+- **`calc_iv_rank` return type changed.** Was `float` (with `0.5` sentinel on error). Now `float | None`. Callers updated in this commit. Future callers must handle None.
+- **Tastytrade authentication via OAuth2 refresh-token flow.** SDK 12.4 has moved off username+password; `Session(provider_secret=..., refresh_token=...)`. One-time OAuth grant produces the refresh token; SDK auto-refreshes access tokens (~28 day refresh-token lifetime). Operator's bootstrap script at `cc/tmp/tasty_oauth_bootstrap.py` (throwaway, not committed) handles the one-time grant.
+- **`EnvironmentFile` is now a hard service dependency.** `ignore_errors=no` means systemd refuses to start trading-corp if `/etc/trading-corp/tastytrade.env` is missing/unreadable. Future deploys touching the env file must verify the file is in place before restart, else the service fails to start.
+- **Chain-fetch path uses flat SDK function, not nested.** `tastytrade.instruments.get_option_chain` (module-level async) returns `dict[date, list[Option]]` with all strikes. NOT `NestedOptionChain.get` (which returns a narrow ~30-strike window that fails delta-proximity for SPY/IWM/QQQ at 16-delta — verified during Step 0 spike).
+
+**Known degraded state (NOT blocking the 09:45 ET scan; AM follow-up queued):**
+
+Two SDK API bugs in `tastytrade_provider.py`, surfaced only by live end-to-end test (mock-based tests couldn't catch real-SDK kwarg shape):
+
+1. **`tastytrade_provider.py:82-86`** — `Session(login=ps, remember_token=rt)`. Wrong kwarg names; SDK 12.4 signature is `Session(provider_secret=..., refresh_token=...)`. Unknown kwargs silently fall into `**client_kwargs`; SDK then falls back to `os.environ["TT_SECRET"]` → `KeyError`. Effect: `get_atm_iv` raises internally, caught by outer try/except, returns `None`.
+2. **`tastytrade_provider.py:391`** — `from tastytrade.market_data import get_quote`. Symbol doesn't exist in tastytrade 12.4.1. Effect: `get_underlying_price` returns `None`.
+
+**Effect on tomorrow's 09:45 ET scan:**
+- `calc_iv_rank` works (uses yfinance HV bars internally via `_hv_to_rank`; live SPY test returned `0.342`, real value for all 5 symbols).
+- `calc_atm_iv` returns `None` for both front- and back-month → IC's `_term_structure_ok` fail-opens (logs `IronCondor: term-structure check skipped for X (front=None back=None)`) and proceeds. Same effective behavior as pre-deploy (where 1e-5 also bypassed the check via the same fail-open).
+- `get_underlying_price` is unused by IC (strategy uses `broker.quote()` via Robinhood for spot; provider's `get_underlying_price` is internal to `get_atm_iv`'s ATM detection).
+
+**Net comparison vs pre-deploy:**
+
+| Behavior | Pre-deploy (yfinance) | Post-deploy (with bugs) |
+|---|---|---|
+| IVR `0.5` sentinel masking errors | YES (bug) | NO (clean `None` → `ivr_data_unavailable` tally) |
+| ATM IV `1e-5` corrupting comparisons | YES (bug) | NO (clean `None` → fail-open identical to before) |
+| Term-structure check on IWM/TLT | Effectively bypassed (1e-5) | Effectively bypassed (`None`) |
+| Chain-depth correctness guard | Absent | Live (new `chain_too_shallow` tally) |
+
+Strictly better than pre-deploy. AM follow-up closes the remaining gap.
+
+**Verification:**
+- `systemctl is-active trading-corp` → `active`. MainPID `1044543` since `2026-05-22 10:33:42 UTC`.
+- `ic_paper_run_readiness --skip-network` → `STATUS: READY` (13/13 BLOCK checks pass post-deploy).
+- IC signal scanner + position manager online (journal at `10:33:42 UTC`).
+- `TASTYTRADE_PROVIDER_SECRET` + `TASTYTRADE_REFRESH_TOKEN` present in `/proc/1044543/environ` (names only confirmed; values not echoed).
+- **Live SPY end-to-end:** `get_iv_rank("SPY")` returned `0.342` (real value; auth chain works for the IVR path). `get_atm_iv("SPY")` and `get_underlying_price("SPY")` returned `None` due to the bugs above.
+- No new `agent_error` / `Traceback` / `CRITICAL` in `journalctl -u trading-corp` since the `10:33:42 UTC` restart. The one pre-restart Traceback at `10:27:48 UTC` is from PID `1042130` (the prior restart attempt under a broken env file, now superseded by the `10:33` restart).
+
+**Security note for the record (accepted risk, NOT remediated tonight):**
+
+During the live-fetch verification, a bash-source command attempted to load `/etc/trading-corp/tastytrade.env`. The env file at the time held the literal placeholder text `<value>` surrounding the actual values (operator paste issue during initial env-file creation). bash interpreted `<` as a redirect operator → syntax error → bash echoed the offending LINE to stderr, which the `az vm run-command invoke` captured into stdout. **The Tastytrade Client Secret (40 chars) leaked** into (a) the chat transcript of this session, and (b) the Azure activity log for `az vm run-command` invocations against `tc-prod-vm` in `rg-shared-prod`. The refresh token did NOT leak (bash bailed on line 2's syntax error before reading line 3).
+
+**Risk assessment (operator):** the leaked value is a Tastytrade OAuth2 Client Secret for an application registered with `scope: read` only. It authenticates as the operator's funded Tastytrade account but can only read market data, account details, and positions — it cannot place trades or move funds. Exposure scope is bounded to read-only data on an account the operator controls. A full token refresh (revoke + new Client Secret + new OAuth grant) is tracked under the operator's infosec backlog as a queued remediation; no ticket ID was surfaced in this session.
+
+**Decision:** operator accepted the residual risk and continued the deploy. The current `/etc/trading-corp/tastytrade.env` on prod holds the operator's actual (now-rewritten-without-brackets) Client Secret and refresh token. Operator did NOT explicitly state whether the rewrite used the leaked secret as-is (just brackets stripped) or a freshly-rotated secret — env file checks cannot distinguish (both produce a 40-char value). If unrotated, the leaked secret remains active until the infosec backlog item is worked.
+
+**Mitigation paths NOT taken in this deploy (queued):** immediate revocation in Tastytrade's OAuth Application UI + new Client Secret + redo of OAuth grant + `setx` locally + rewrite of `/etc/trading-corp/tastytrade.env` + restart. Path to revisit: when the infosec backlog item is worked.
+
+**Process change for future env-file work:** never source env files via `bash` for verification — use a Python-direct reader that parses key=value lines without shell interpretation. The post-fix verification used this approach successfully (see Verification section above).
+
+**Inert / dormant on current traffic:**
+- The 4 new test files (`tests/test_market_data_provider.py`, `tests/test_tastytrade_provider.py`, `tests/test_yfinance_provider.py`, `tests/test_provider_factory.py`) ship to prod's `tests/` dir but are exercised only by CI / local pytest. No runtime path imports them.
+- `YFinanceDataProvider` (`yfinance_provider.py`) is present but never selected; config's `primary: tastytrade, fallback: null` keeps it dormant. Would activate only if `config/data_providers.yaml` is changed.
+
+**Rollback recipe (kept for record; only roll back if a fresh fault surfaces post-deploy — current bugs are acceptable):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-data-provider-deploy-20260521
+BASE=/home/azureuser/trading_corp
+for f in \
+  trading_corp/utils/iv.py \
+  trading_corp/agents/strategies/robinhood_joint_iron_condor.py \
+  trading_corp/agents/divisions/fidelity_options.py \
+  requirements.txt; do
+  sudo -u azureuser mv \$BASE/\$f.\$TAG \$BASE/\$f
+done
+sudo -u azureuser rm -f \
+  \$BASE/trading_corp/data/market_data_provider.py \
+  \$BASE/trading_corp/data/tastytrade_provider.py \
+  \$BASE/trading_corp/data/yfinance_provider.py \
+  \$BASE/trading_corp/data/provider_factory.py \
+  \$BASE/config/data_providers.yaml \
+  \$BASE/tests/test_market_data_provider.py \
+  \$BASE/tests/test_tastytrade_provider.py \
+  \$BASE/tests/test_yfinance_provider.py \
+  \$BASE/tests/test_provider_factory.py \
+  \$BASE/tests/test_iv_rank.py \
+  \$BASE/tests/test_iron_condor_strategy.py
+sudo cp /etc/systemd/system/trading-corp.service.d/override.conf.pre-data-provider-deploy-20260521 \
+       /etc/systemd/system/trading-corp.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart trading-corp
+"
+# Notes:
+# - Rollback leaves tastytrade + httpx_ws + wsproto installed in venv (harmless after env import paths revert).
+# - Rollback leaves /etc/trading-corp/tastytrade.env on disk (chmod 600 root:root); no longer referenced by systemd after override.conf revert. Safe to delete manually if desired.
+```
+
+**Follow-ups queued for AM (before 2026-05-22 13:45 UTC = 09:45 ET):**
+- Fix `tastytrade_provider.py:82-86` — `Session()` kwargs to `provider_secret=` / `refresh_token=`. Verify against the SDK's actual signature (`inspect.signature(Session.__init__)`), don't guess.
+- Fix `tastytrade_provider.py:391` — replace `from tastytrade.market_data import get_quote` with whatever SDK 12.4 actually exposes for spot/quote. Look it up in the installed package; don't assume.
+- Bundle with the two prior follow-ups (deferred from `a6885a5`): move `_hv_to_rank` from `yfinance_provider.py` to a neutral `trading_corp/data/_iv_math.py` (so Tastytrade provider doesn't import math via yfinance provider); add a tiny Fidelity test asserting `_calc_iv_rank` resolves to the shared util.
+- **Verification gate for the AM fix:** real authenticated Tastytrade call returning a real number (not None, not 1e-5) for `get_atm_iv("SPY")`, `get_atm_iv("IWM")`, `get_atm_iv("TLT")` — the three symbols including the two that went degenerate yesterday. Live SDK call is MANDATORY (mocks alone caused tonight's surprise).
+- **Hard rule:** if the AM fix slips, surfaces a third bug, or can't verify before 09:45 ET → DO NOT rush. The 09:45 scan runs in tonight's strictly-better state (acceptable fallback). The good state is already deployed; better state is the low-pressure goal.
+
+---
+
 ## 2026-05-22 01:50 UTC — B7 + B9 reconciler hardening (commits `3713ace` + `4fe56de`) — 5/5 MATCH
 
 **Commits:** `3713ace` (B7 — bar_count > 0 guard) + `4fe56de` (B9 — inverted-window normalization). Both on `origin/main`.
