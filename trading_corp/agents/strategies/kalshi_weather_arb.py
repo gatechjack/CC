@@ -49,6 +49,10 @@ from trading_corp.data.open_meteo_client import (
     OpenMeteoClient,
 )
 from trading_corp.data.weather_forecast import WeatherForecastClient
+from trading_corp.data.weather_stations import (
+    WeatherStationsRegistry,
+    get_registry as _get_station_registry,
+)
 from trading_corp.persistence import db
 from trading_corp.persistence.models import ProposedOrder
 
@@ -186,6 +190,11 @@ class KalshiWeatherArbAgent:
         self._forecast_client = WeatherForecastClient()
         self._open_meteo_client = OpenMeteoClient()
         self._metar_client = MetarClient()
+        # P3 (2026-05-22): coord resolution consults the verified YAML
+        # xref before the legacy _CITY_COORDS_FALLBACK dict. The legacy
+        # dict stays fully active; this phase is additive observation.
+        # See planning/weather_station_xref_design.md §7 P3.
+        self._station_registry: WeatherStationsRegistry = _get_station_registry()
         self._discovery_cache: Any = None
         self._discovery_ts: datetime | None = None
         self._reload()
@@ -216,6 +225,82 @@ class KalshiWeatherArbAgent:
     def division(self) -> str:
         self._reload()
         return str(self._strat_cfg.get("division", "kalshi_weather"))
+
+    # ── coord resolution (P3) ───────────────────────────────────────────
+    def _resolve_coords(
+        self, *, ticker: str, rules: str, city_code: str,
+    ) -> dict[str, Any]:
+        """Resolve (lat, lon) for a Kalshi weather market.
+
+        Lookup order (P3 — planning/weather_station_xref_design.md §7):
+          1. YAML xref via ``self._station_registry`` — only if the series
+             has ``verified: true`` AND not ``disabled``.
+          2. Legacy: ``_parse_coords(rules)`` then ``_CITY_COORDS_FALLBACK``.
+
+        Returns a dict with keys ``lat``, ``lon`` (the chosen pair, or None
+        if no source resolved), ``coord_source`` (``yaml_verified`` |
+        ``legacy_fallback`` | ``disabled_skip`` | ``none``), and the
+        verbatim ``yaml_coords`` / ``legacy_coords`` from each source
+        regardless of which was chosen (for drift detection — P4 gates
+        on a week of audits showing the two equal).
+
+        The legacy path is computed unconditionally so the audit can
+        report the drift between sources even when YAML wins.
+        """
+        series_prefix = ticker.split("-", 1)[0]
+        yaml_entry = self._station_registry.lookup_series(series_prefix)
+
+        # Disabled-series safety net. The primary handler is
+        # _DISABLED_SERIES_PREFIXES in the candidate-survivors phase; this
+        # branch only fires if a disabled YAML entry somehow reaches
+        # evaluation (which would be a bug — caller logs + skips).
+        if yaml_entry is not None and yaml_entry.disabled:
+            return {
+                "lat": None, "lon": None,
+                "coord_source": "disabled_skip",
+                "yaml_coords": None,
+                "legacy_coords": None,
+            }
+
+        # YAML coords — only if verified=True and settles_at resolves.
+        yaml_coords: tuple[float, float] | None = None
+        if (
+            yaml_entry is not None
+            and yaml_entry.verified is True
+            and yaml_entry.settles_at is not None
+        ):
+            station = self._station_registry.lookup_station(yaml_entry.settles_at)
+            if station is not None:
+                yaml_coords = (station.coords.lat, station.coords.lon)
+
+        # Legacy coords — always computed for drift detection.
+        legacy_lat, legacy_lon = _parse_coords(rules)
+        if legacy_lat is None or legacy_lon is None:
+            fall = _CITY_COORDS_FALLBACK.get(city_code.upper())
+            if fall is not None:
+                legacy_lat, legacy_lon = fall
+        legacy_coords: tuple[float, float] | None = (
+            (legacy_lat, legacy_lon) if legacy_lat is not None else None
+        )
+
+        # Pick: YAML verified wins; else legacy; else give up.
+        if yaml_coords is not None:
+            chosen = yaml_coords
+            coord_source = "yaml_verified"
+        elif legacy_coords is not None:
+            chosen = legacy_coords
+            coord_source = "legacy_fallback"
+        else:
+            chosen = None
+            coord_source = "none"
+
+        return {
+            "lat": chosen[0] if chosen else None,
+            "lon": chosen[1] if chosen else None,
+            "coord_source": coord_source,
+            "yaml_coords": list(yaml_coords) if yaml_coords else None,
+            "legacy_coords": list(legacy_coords) if legacy_coords else None,
+        }
 
     # ── public scan entry ────────────────────────────────────────────────
 
@@ -424,18 +509,44 @@ class KalshiWeatherArbAgent:
             }
             return None, None, {"code": "no_strike", **payload}, payload
 
-        # Coordinates: prefer rules_primary; fall back to city map
-        lat, lon = _parse_coords(rules)
-        if lat is None or lon is None:
-            fall = _CITY_COORDS_FALLBACK.get(cand["city_code"].upper())
-            if fall is None:
-                payload = {
-                    "strategy": self.name, "division": self.division,
-                    "ticker": tkr, "title": title,
-                    "skip_code": "no_coords", "city_code": cand["city_code"],
-                }
-                return None, None, {"code": "no_coords", **payload}, payload
-            lat, lon = fall
+        # Coordinates — P3 lookup order (planning/weather_station_xref_design.md §7):
+        #   1) YAML xref if series is verified AND not disabled
+        #   2) legacy: rules_primary parse → _CITY_COORDS_FALLBACK
+        # The legacy path stays fully active in P3. P4 removes it after a
+        # week of audits confirms yaml_coords == legacy_coords for every
+        # NWS-CLI series in production.
+        coord_info = self._resolve_coords(
+            ticker=tkr, rules=rules, city_code=cand["city_code"],
+        )
+        if coord_info["coord_source"] == "disabled_skip":
+            # Belt-and-suspenders: a disabled YAML entry should never reach
+            # _evaluate_market (upstream _DISABLED_SERIES_PREFIXES catches
+            # KXTEMPNYCH). If it does, log loudly and skip.
+            log.warning(
+                "kalshi_weather_arb: disabled series %s reached _evaluate_market "
+                "(upstream filter leaked) — investigate",
+                tkr.split("-", 1)[0],
+            )
+            payload = {
+                "strategy": self.name, "division": self.division,
+                "ticker": tkr, "title": title,
+                "skip_code": "yaml_disabled",
+                "coord_source": coord_info["coord_source"],
+                "yaml_coords": coord_info["yaml_coords"],
+                "legacy_coords": coord_info["legacy_coords"],
+            }
+            return None, None, {"code": "yaml_disabled", **payload}, payload
+        if coord_info["lat"] is None or coord_info["lon"] is None:
+            payload = {
+                "strategy": self.name, "division": self.division,
+                "ticker": tkr, "title": title,
+                "skip_code": "no_coords", "city_code": cand["city_code"],
+                "coord_source": coord_info["coord_source"],
+                "yaml_coords": coord_info["yaml_coords"],
+                "legacy_coords": coord_info["legacy_coords"],
+            }
+            return None, None, {"code": "no_coords", **payload}, payload
+        lat, lon = coord_info["lat"], coord_info["lon"]
 
         # Target time + horizon
         target_iso = _parse_target_time(rules, tkr, full)
@@ -576,6 +687,13 @@ class KalshiWeatherArbAgent:
             "strategy": self.name, "division": self.division,
             "ticker": tkr, "title": title, "category": cand["category"],
             "lat": lat, "lon": lon, "target_iso": target_iso,
+            # P3 coord-resolution observability (additive — fields used by
+            # P4 drift gate). coord_source ∈ {yaml_verified, legacy_fallback,
+            # disabled_skip}. yaml_coords / legacy_coords carry both for
+            # drift comparison regardless of which was chosen.
+            "coord_source": coord_info["coord_source"],
+            "yaml_coords": coord_info["yaml_coords"],
+            "legacy_coords": coord_info["legacy_coords"],
             "horizon_hours": round(horizon_h, 2),
             "threshold_f": threshold, "threshold_high_f": threshold_high,
             "direction": direction,
