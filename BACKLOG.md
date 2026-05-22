@@ -8,6 +8,92 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-22 ~17:05 UTC (Friday evening — Tastytrade AM fix session, parallel to kalshi_weather session below)
+
+**Headline of THIS session:** Tastytrade AM SDK-shape fix deployed
+end-to-end. `e977641` ships full Tastytrade ATM-IV + spot
+working on prod for the first time end-to-end. Audit-first pass on
+`tastytrade_provider.py` surfaced 2 latent bugs beyond the 2 the
+original brief flagged (async/to_thread + `event_symbol` snake_case);
+all four fixed in the one commit. Cred-rotation cascade (revoked →
+non-JWT → secret-mismatch → matched pair) burned ~5 round-trips with
+the operator before landing the working OAuth state — the rotation
+runbook (HIGH backlog) makes the next rotation 1 round-trip.
+
+**Local `main` head** (parallel-session interleaved):
+- `18c636f backlog: AM Tastytrade fix follow-ups` *(this session, local-only)*
+- `5d53684 runbooks: log AM Tastytrade fix deploy` *(this session, local-only)*
+- `454ba02 runbooks+backlog: session wrap — kalshi_weather P3` *(parallel session, pushed)* ← **origin/main currently here**
+- `6e81038 weather_stations: daily drift-check SQL` *(parallel session, pushed)*
+- `e977641 data: Tastytrade AM fix — SDK shape across all call sites` *(this session, pushed earlier)*
+- `f5a5fd5 kalshi_weather: P3 — wire YAML xref loader` *(parallel session, pushed)*
+
+**Push state:** Local is **2 ahead of `origin/main`** (`5d53684` deploy_log +
+`18c636f` backlog). Operator attempted `git push origin main` near
+session end; ls-remote shows origin still at `454ba02` — **push did
+NOT land**. Either retry push, or authorize a `git push origin main`
+from the AI side before next session. Until pushed, the deploy_log
+entry and the queued follow-ups are not yet visible from a fresh
+clone.
+
+**What's running on prod (post-this-session):**
+- `e977641` Tastytrade AM fix. LIVE since `2026-05-22 16:47:11 UTC`.
+  Service PID `1074854`. **Live probe confirmed:** SPY ATM IV 0.1508,
+  IWM 0.2243, TLT 0.1029, SPY spot 747.30 — all real via Tastytrade.
+- Backup tag on 4 modified files: `pre-tastytrade-fix-20260522`.
+- `/etc/trading-corp/tastytrade.env`: 633 bytes, sha256 `a0df3165af…`,
+  mtime `2026-05-22 16:25:14 UTC`, perms 600 root:root. **Matched
+  secret + JWT refresh token pair from a single bootstrap session;
+  first working OAuth on prod since the 2026-05-21 grant.**
+- IC `auto_execute: false` (load-bearing, unchanged).
+- Bug 4 (`get_history` dead branch) still ImportErrors silently and
+  the IVR path still falls through to yfinance HV. Pre-existing.
+
+**Highest-leverage queued (in this session's BACKLOG block above):**
+
+1. **P1 HIGH — Tastytrade rotation runbook.** Atomic 2-step procedure +
+   failure-chain diagnosis template. Pick this up before the next
+   rotation; it makes the next rotation 1 round-trip.
+2. **P2 MEDIUM — Bug 4 (dead `get_history` branch).** Delete + document
+   yfinance-by-design, or wire the real 12.4.1 historical-bars API.
+3. **P2 MEDIUM — Silent-fallback audit rows.** Every provider fallback
+   must emit an audit row. Recurring class.
+4. **P2 MEDIUM — Real-SDK shape smoke test in CI.** Would have caught
+   all 5 SDK-shape bugs from this file. Live SDK gate now MANDATORY
+   pre-commit; smoke test would shift detection left into CI.
+
+**Other open items (NOT from this session, but in scope for context):**
+
+- Tastytrade env vars still bypass KV path
+  ([[feedback-tastytrade-env-vars-bypass-kv]]). Was queued in the
+  pre-session BACKLOG; deliberately NOT bundled with this fix per
+  operator's explicit scope-control. Still queued for a future
+  Tastytrade-touching session.
+- IC grader committed-not-shipped (`112aef3`, parallel session) —
+  three gates per [[project-ic-grader-committed]]; **AM SDK fix gate
+  is now closed** by this session's deploy. Next gate: `§6 live`.
+- Comprehensive security-review remediation (`e88d663` report). None
+  of the 7 CRITICAL findings remediated. Still queued.
+
+**Memory updated this session:**
+- `feedback_mocks_dont_catch_sdk_shape.md` — escalated (5 bugs in
+  one file class); new 3-gate pre-commit rule; audit-first rule.
+- `project_data_provider_deploy.md` — status updated to "AM fix
+  shipped, full Tastytrade live."
+- `MEMORY.md` — index entries refreshed for both.
+
+**Throwaways left in `cc/tmp/`** (gitignored, safe to leave):
+- `tasty_validation.py` (prior session — Step 0 spike pattern).
+- `tasty_validation_v2.py` (this session — corrected-gate validation).
+- `tasty_oauth_bootstrap.py` (operator's bootstrap script).
+
+**Canonical pickup:** next-session prompt provided at session end
+in chat + this EOS + `runbooks/deploy_log.md` (top entry,
+`2026-05-22 16:47 UTC`) + BACKLOG "P1/P2 — Tastytrade AM fix
+follow-ups (2026-05-22)" section above.
+
+---
+
 ## EOS snapshot — 2026-05-22 ~16:45 UTC (Friday evening — second session)
 
 **Headline of THIS session:** kalshi_weather settlement-station fixes
