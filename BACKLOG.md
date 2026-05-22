@@ -188,7 +188,45 @@ downstream consequence.
 
 ---
 
-## END-OF-SESSION SNAPSHOT — 2026-05-22 ~11:00 UTC  *(supersedes 2026-05-21 ~03:30 UTC below)*
+## END-OF-SESSION SNAPSHOT — 2026-05-22 (post-security-review)  *(supersedes 2026-05-22 ~11:00 UTC below)*
+
+**One work thread: comprehensive InfoSec audit of the trading_corp repo + Azure architecture (Opus-driven, four parallel Sonnet Explore agents). Output is a 1,324-line review at `reports/2026-05-21_security_review.md` committed as `e88d663`. No code changes. No deploy. Identifies 7 CRITICAL findings, 17 HIGH, 22 MEDIUM, 13 LOW, with prioritized roadmap (Immediate ≤24h / Short-term ≤2w / Medium-term ≤8w). New BACKLOG entries below: P0 — Security review Immediate items (S-1 through S-11) and P1 — Tastytrade env vars bypass KV (separate from the AM SDK-bugs queue but related to the same provider).**
+
+### Headline
+
+Security review committed locally as `e88d663`. The three most consequential findings are: (1) the local `.env` appears to hold live secrets in plaintext on the dev workstation; (2) the LLM `push_back` verdict at `web/webhooks.py:582` and `:826` returns before `RiskAgent.evaluate()` runs — violates the single-chokepoint invariant; (3) `_check_auto_execute` re-reads `config/strategies.yaml` per-order with no mtime cache and no schema validation, so a single file write flips `auto_execute=true` instantly. Each is fixable in 1–4 hours; the rotation in (1) is genuinely 1–3 hours of coordinated wallet/key work and gates several other items.
+
+### What landed this session
+
+- `e88d663` — `reports: comprehensive security review (2026-05-21)`. Single file, 1,324 insertions. No code changes; pure artifact.
+- Tastytrade-env-vars-bypass-KV finding surfaced during the operator's `nano /etc/trading-corp/tastytrade.env` action: `TASTYTRADE_PROVIDER_SECRET` and `TASTYTRADE_REFRESH_TOKEN` are read directly from `os.environ` in `trading_corp/data/tastytrade_provider.py:54-55`. They are NOT in `utils/secrets.py:192-222 expected_env_vars`, so they bypass `_populate_from_keyvault` AND are NOT registered with `register_redact_literal()` for log redaction. Currently loaded via systemd `EnvironmentFile=/etc/trading-corp/tastytrade.env`. Action queued as a new P1 BACKLOG item below — fold into the AM SDK-bug fix branch since both touch the same provider.
+
+### Environment sync state
+
+| Surface | State |
+|---|---|
+| Local working tree | Clean except 1 pre-existing untracked file (`docs/Deployment notes.txt`) — not mine, not staged. |
+| Local committed (`main`) | `e88d663` (security review) on top of `92d6018` (deploy_log) on top of `a6885a5` (data-provider). **3 ahead of `origin/main`**. |
+| `origin/main` | 3 behind local. Not pushed. Operator's standing position: separate decision from deploy. |
+| Prod (`tc-prod-vm`) | Unchanged from 2026-05-22 10:33 UTC data-provider deploy. PID 1044543, paper mode. **None of the security-review findings have been remediated.** |
+| Memory | New: `project_security_review_2026_05_22.md`, `feedback_tastytrade_env_vars_bypass_kv.md`. Index updated. |
+| Reports | `reports/2026-05-21_security_review.md` committed. |
+
+### Open observations + follow-ups
+
+1. **Two SDK bugs still queued for AM fix** (separate, pre-existing workstream from `runbooks/session_start_2026_05_22_data_provider_am_fix.md`). Hard deadline: before 2026-05-22 13:45 UTC (09:45 ET) scan. **Fold the tastytrade-env-vars-KV finding into that fix branch** so both the SDK bugs and the secrets path get fixed in one deploy.
+2. **Push to `origin/main`** is unresolved. Now 3 commits unpushed.
+3. **Security-review Immediate (≤24h) items** in `reports/2026-05-21_security_review.md` §5 are the highest-leverage next-session work. Most non-controversial single fix is C-2 (`push_back` LLM bypass) — 1-2 hours, no infra coordination, no rotation logistics. The rotation in C-1 is the highest-impact but takes 1-3 hours coordinated.
+4. **No deploy.** Nothing in prod changed this session.
+5. **`runbooks/session_start_2026_05_22_post_security_review.md`** is the pickup brief.
+
+### Rollback recipe
+
+`git reset --hard 92d6018` reverts the report. No prod impact (no deploy).
+
+---
+
+## END-OF-SESSION SNAPSHOT — 2026-05-22 ~11:00 UTC  *(superseded by 2026-05-22 post-security-review above)*
 
 **One work thread: data-provider abstraction SHIPPED to prod at 10:33 UTC (commit `a6885a5`). Replaces yfinance as IV/options data source with a pluggable `MarketDataProvider` ABC; Tastytrade primary, yfinance demoted to labeled fallback. Fixes the 1e-5 degenerate-IV bug surfaced by IC v1's 2026-05-21 13:45 UTC scan via a `< 0.01 → None` floor at the provider boundary. IC strategy modified live with two new safety branches: `ivr_data_unavailable` tally on IVR=None and `chain_too_shallow` correctness guard on delta-proximity. Fidelity duplicate `_calc_iv_rank` deduped. Service restarted to PID 1044543, IC online, 351/351 tests green pre-deploy. Deployed in a known DEGRADED state — two SDK API bugs surfaced in live end-to-end test (mocks couldn't catch them): `Session()` kwargs wrong (login/remember_token → should be provider_secret/refresh_token) and `from tastytrade.market_data import get_quote` (symbol doesn't exist in 12.4.1). Effect: `calc_atm_iv` and `get_underlying_price` return None; `calc_iv_rank` works (yfinance HV bars internally; live SPY = 0.342). IC fail-opens on term-structure check (same as pre-deploy 1e-5 behavior). Net state STRICTLY BETTER than pre-deploy. AM follow-up queued before 09:45 ET (13:45 UTC) to fix both bugs against the live SDK + bundle the two prior follow-ups (`_hv_to_rank` to neutral `_iv_math.py`, tiny Fidelity test). Hard rule: if AM fix slips, do NOT rush — 09:45 scan runs in tonight's better state. See `runbooks/deploy_log.md` (top entry) and `runbooks/session_start_2026_05_22_data_provider_am_fix.md` for the AM pickup.**
 
@@ -5287,6 +5325,127 @@ Surfaced during the 2026-05-22 polymarket post-cap monitor session, when Claude 
 5. Decide on line 193 separately — real gap; tightening requires rebuilding narrow `az vm run-command invoke … --scripts "…"` patterns actually in use.
 
 **Observed limitation (recorded so future-you doesn't re-discover it):** Claude Code's auto-mode classifier blocks "Production Reads" at a layer ABOVE `permissions.allow` — narrow read-only allow rules don't unblock the classifier denial observed 2026-05-22 (classifier doesn't appear to consult the allow list for this category). This cleanup is about narrowing what *can* be auto-approved once the classifier allows; it does NOT broaden any access the classifier currently denies. The four narrow ssh rules already in the file (lines 77, 88, 137, 189) and ~15 narrow scp rules remain unaffected by this cleanup.
+
+---
+
+## P0 — Security review remediation roadmap  *(NEW 2026-05-22)*
+
+Full security audit at `reports/2026-05-21_security_review.md` (committed `e88d663`).
+Identifies 7 CRITICAL, 17 HIGH, 22 MEDIUM, 13 LOW findings against the
+trading_corp repo + Azure deploy. The CRITICAL items, prioritized:
+
+| # | Severity | Finding | Effort |
+|---|---|---|---|
+| S-1 | CRITICAL | Local `.env` appears to hold full live secret set in plaintext on dev workstation. **Rotate every secret + depopulate workstation `.env` to just `KEY_VAULT_URI=`.** | 1–3h coordinated |
+| S-2 | CRITICAL | `TradeConfirmation.verdict == "push_back"` skips `RiskAgent.evaluate()`. Route through risk gate as a forced-reject reason. Also disallow LLM-side flips in `suggested_modifications`. | 1–2h |
+| S-3 | CRITICAL | `_check_auto_execute` re-reads `strategies.yaml` per-order with no mtime cache, no schema validation. Add Pydantic validation + mtime cache; long-term, move `auto_execute_caps` to KV. | 2h |
+| S-4 | CRITICAL | All 4 timer service units run as `User=root` with no sandbox directives. Rewrite as `User=azureuser` + `NoNewPrivileges` + `ProtectSystem=strict` + `ReadWritePaths=` etc. | 2h |
+| S-5 | CRITICAL | No production DB backup. Nightly `sqlite3 .backup` → encrypted Azure Blob (GRS + immutability + CMK). One-shot backup tonight as stopgap. | 4h |
+| S-6 | CRITICAL | No dependency lockfile / hash pinning; `tvdatafeed` + `tradingview-ta` have NO version pin at all. `pip-compile --generate-hashes` → `requirements.lock`. | 30m–1h |
+| S-7 | CRITICAL | Rejected-webhook audit writes `raw[:500]` containing the secret in plaintext. Scrub secret-bearing fields before audit write; backfill scrub the existing rows. | 1h |
+
+The full report has 17 HIGH and 22 MEDIUM follow-ups grouped into Short-term
+(≤2w) and Medium-term (≤8w) buckets — see `reports/2026-05-21_security_review.md`
+§5 for the complete roadmap. Highlights:
+
+- **HIGH H-1/H-2/H-3:** Replace static-bearer-in-JSON-body webhook auth with
+  HMAC-SHA256 over body + timestamp header + 60s replay window + nonce
+  cache. Cypher's 25-hour replay window is the most consequential bug here.
+- **HIGH H-10:** Telegram bot has no sender-ID allowlist — any user with the
+  bot token can issue commands.
+- **HIGH H-12:** Author 4 DR runbooks (VM compromise, KV compromise,
+  broker-key rotation, panic halt all trading). None exist today.
+- **HIGH H-13:** Azure VM has no Trusted Launch (no Secure Boot, no vTPM).
+  Requires a recreate with `securityProfile` block.
+- **HIGH H-15:** No CI pipeline. Establish GitHub Actions + branch protection
+  + signed commits + `pip-audit` + `bandit` + `trufflehog` gate.
+- **MEDIUM M-6:** KV `publicNetworkAccess: 'Enabled'`, `softDeleteRetentionInDays: 7`,
+  no `enablePurgeProtection`. Change all three.
+
+### VM-side items requiring shell verification
+
+Report §7 enumerates 13 commands to run on `tc-prod-vm` that the repo cannot
+verify (Caddyfile, Authelia configuration, sshd, sudoers, unattended-upgrades,
+AppArmor, Defender/Backup/Log Analytics, VM Trusted Launch state, DB pragmas,
+Kalshi PEM tempfile cleanup). The next post-deploy window is a natural time
+to run them.
+
+### Cross-references
+
+- The existing P1 "Real SMTP for Authelia notifications" entry below maps to
+  H-14 in the security review.
+- The existing P2 "Tighten prod-access permission rules in `.claude/settings.local.json`"
+  entry below maps to the security review's AI-attacker-angle section.
+
+---
+
+## P1 — Tastytrade env vars bypass KV path  *(NEW 2026-05-22)*
+
+Surfaced during the post-security-review session when the operator was
+editing `/etc/trading-corp/tastytrade.env` on prod. `TASTYTRADE_PROVIDER_SECRET`
+and `TASTYTRADE_REFRESH_TOKEN` are read directly from `os.environ` in
+`trading_corp/data/tastytrade_provider.py:54-55` but are NOT in:
+
+- `utils/secrets.py:192-222` `expected_env_vars` — so they bypass
+  `_populate_from_keyvault`.
+- `utils/secrets.py:20-52` `_SECRET_KEY_NAMES` — so the `KEY=value` redaction
+  pattern doesn't catch them in logs.
+- The `register_redact_literal()` calls in `load_secrets()` — so the literal
+  values aren't substituted out of third-party SDK log output.
+
+Currently loaded via systemd `EnvironmentFile=/etc/trading-corp/tastytrade.env`
+(file mode 600, root-owned per the 2026-05-22 10:33 UTC deploy log). This
+works but creates a parallel secret-handling path outside the documented
+KV-first architecture. The 2026-05-22 ~11:00 UTC EOS snapshot notes a
+Tastytrade Client Secret leaked into chat transcript + Azure activity log via
+a bash-source mishap on that same file — exactly the leak pattern that the
+KV path + redaction filter would mitigate.
+
+### Fix (bundle with the AM SDK-bug fix branch — both touch the same provider)
+
+1. Upload secrets to KV (one-time):
+   ```bash
+   az keyvault secret set --vault-name kv-tc-vtwbowt3wtkpy \
+     --name TASTYTRADE-PROVIDER-SECRET --value "$(read -s)"
+   az keyvault secret set --vault-name kv-tc-vtwbowt3wtkpy \
+     --name TASTYTRADE-REFRESH-TOKEN --value "$(read -s)"
+   ```
+2. Patch `trading_corp/utils/secrets.py`:
+   - Add `"TASTYTRADE_PROVIDER_SECRET"` and `"TASTYTRADE_REFRESH_TOKEN"` to
+     `_SECRET_KEY_NAMES` (line ~20-52).
+   - Add the same two to `expected_env_vars` in `_populate_from_keyvault` (line ~192-222).
+   - In `load_secrets()`, after the existing `register_redact_literal()` calls,
+     add `register_redact_literal(os.getenv("TASTYTRADE_PROVIDER_SECRET"))`
+     and same for the refresh token.
+3. On deploy, remove the `EnvironmentFile=/etc/trading-corp/tastytrade.env`
+   line from `/etc/systemd/system/trading-corp.service.d/override.conf` (or
+   the whole drop-in if it has no other content). The provider reads from
+   `os.environ`; `_populate_from_keyvault` populates it at startup.
+4. After confirming the service starts cleanly and Tastytrade auth works,
+   `sudo shred -u /etc/trading-corp/tastytrade.env` and remove the
+   `/etc/trading-corp/` directory if empty.
+5. Add tastytrade auth to the live-mode credential precondition checks in
+   `utils/secrets.py::assert_live_ready` if you treat Tastytrade as
+   live-required for any current strategy.
+
+### Rationale (from the security review)
+
+`EnvironmentFile=` secrets live in `/proc/<pid>/environ` (readable by
+same-UID processes) AND surface in any `env`/`ps -e --no-headers -o environ`
+output. The KV path doesn't change this (env vars still end up in
+`os.environ`), but it gives you (a) rotation via KV, (b) read-audit via
+KV diagnostic logs, (c) consistent redaction in log output via the existing
+two-pass filter, and (d) removes one of two parallel secret-handling
+architectures.
+
+### Risk if deferred
+
+Low marginal risk over the current state (creds are already on prod, on disk,
+600 root-owned). The cost of NOT consolidating is: future tastytrade-related
+debugging output may leak the value into logs because the redaction filter
+doesn't know about it; rotation requires editing a file on the VM rather
+than a single `az keyvault secret set`; the same kind of bash-source leak
+documented in the 2026-05-22 11:00 EOS could recur.
 
 ---
 
