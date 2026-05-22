@@ -59,12 +59,16 @@ log = logging.getLogger(__name__)
 # These match Kalshi's documented resolution-source locations. Extend
 # as new city markets emerge.
 _CITY_COORDS_FALLBACK: dict[str, tuple[float, float]] = {
-    # Hourly NYC Central Park (the KXTEMPNYCH chain)
+    # Hourly NYC Central Park (the KXTEMPNYCH chain — disabled, see
+    # _DISABLED_SERIES_PREFIXES below). Coords retained for reference only.
     "NYC_CENTRAL": (40.7812, -73.9665),
-    # Daily high/low chains (KXHIGH*, KXLOW*) — Kalshi uses major-airport
-    # AccuWeather points. Coordinates verified via Kalshi rules_primary
-    # for the documented cities; non-documented cities fall back to LookupError.
-    "NYC": (40.6413, -73.7781),       # JFK
+    # Daily high/low chains (KXHIGH*, KXLOW*) — coordinates verified
+    # against Kalshi rules_primary on 2026-05-22 (see planning/
+    # weather_station_xref_audit.json for verbatim excerpts per series).
+    # Six entries were corrected on 2026-05-22 — see "FIXED 2026-05-22"
+    # markers; the xref system (planning/weather_station_xref_design.md)
+    # will supersede this dict.
+    "NYC": (40.7794, -73.9692),       # FIXED 2026-05-22: Central Park (was KJFK, off by ~12 mi)
     "TBOS": (42.3656, -71.0096),      # BOS
     "TDC": (38.8512, -77.0402),       # DCA
     "TSEA": (47.4502, -122.3088),     # SEA
@@ -73,7 +77,7 @@ _CITY_COORDS_FALLBACK: dict[str, tuple[float, float]] = {
     "PHIL": (39.8729, -75.2437),      # PHL
     "TOKC": (35.3931, -97.6007),      # OKC
     "MIA": (25.7959, -80.2870),       # MIA
-    "CHI": (41.9742, -87.9073),       # ORD
+    "CHI": (41.7868, -87.7522),       # FIXED 2026-05-22: Chicago Midway (was KORD, off by ~17 mi)
     "AUS": (30.1975, -97.6664),       # AUS
     "TAUS": (30.1975, -97.6664),
     "TMIN": (44.8848, -93.2223),      # MSP
@@ -82,18 +86,18 @@ _CITY_COORDS_FALLBACK: dict[str, tuple[float, float]] = {
     "LAX": (33.9416, -118.4085),      # LAX
     "DEN": (39.8561, -104.6737),      # DEN
     "TDEN": (39.8561, -104.6737),
-    "THOU": (29.9844, -95.3414),      # IAH
+    "THOU": (29.6454, -95.2789),      # FIXED 2026-05-22: Houston Hobby (was KIAH, off by ~24 mi)
     "TPHX": (33.4373, -112.0078),     # PHX
     "TNOLA": (29.9934, -90.2580),     # MSY
     # Aliases observed in prod 2026-05-15 — Kalshi uses both the T-prefix
     # and non-T variants interchangeably across event chains. Each alias
     # points at the same resolution station as its non-T sibling.
     "TMIA": (25.7959, -80.2870),      # = MIA (KMIA)
-    "TCHI": (41.9742, -87.9073),      # = CHI (KORD)
+    "TCHI": (41.7868, -87.7522),      # FIXED 2026-05-22: = CHI (KMDW), not KORD
     "TPHIL": (39.8729, -75.2437),     # = PHIL (KPHL)
     "TLAX": (33.9416, -118.4085),     # = LAX (KLAX)
-    "TNYC": (40.6413, -73.7781),      # = NYC (KJFK)
-    "NY": (40.6413, -73.7781),        # = NYC (KJFK), bare 2-char form
+    "TNYC": (40.7794, -73.9692),      # FIXED 2026-05-22: = NYC (KNYC Central Park), not KJFK
+    "NY": (40.7794, -73.9692),        # FIXED 2026-05-22: = NYC (KNYC Central Park), bare 2-char form
 }
 
 
@@ -103,7 +107,7 @@ _CITY_COORDS_FALLBACK: dict[str, tuple[float, float]] = {
 # entry — KNYC is the official METAR site for the park.
 _CITY_TO_METAR_STATION: dict[str, str] = {
     "NYC_CENTRAL": "KNYC",
-    "NYC": "KJFK",
+    "NYC": "KNYC",                    # FIXED 2026-05-22: Central Park, not KJFK
     "TBOS": "KBOS",
     "TDC": "KDCA",
     "TSEA": "KSEA",
@@ -112,7 +116,7 @@ _CITY_TO_METAR_STATION: dict[str, str] = {
     "PHIL": "KPHL",
     "TOKC": "KOKC",
     "MIA": "KMIA",
-    "CHI": "KORD",
+    "CHI": "KMDW",                    # FIXED 2026-05-22: Midway, not KORD
     "AUS": "KAUS",
     "TAUS": "KAUS",
     "TMIN": "KMSP",
@@ -121,22 +125,28 @@ _CITY_TO_METAR_STATION: dict[str, str] = {
     "LAX": "KLAX",
     "DEN": "KDEN",
     "TDEN": "KDEN",
-    "THOU": "KIAH",
+    "THOU": "KHOU",                   # FIXED 2026-05-22: Hobby, not KIAH
     "TPHX": "KPHX",
     "TNOLA": "KMSY",
     # Aliases for Kalshi's T-prefix + bare-short variants (2026-05-15)
     "TMIA": "KMIA",
-    "TCHI": "KORD",
+    "TCHI": "KMDW",                   # FIXED 2026-05-22: Midway, not KORD
     "TPHIL": "KPHL",
     "TLAX": "KLAX",
-    "TNYC": "KJFK",
-    "NY": "KJFK",
+    "TNYC": "KNYC",                   # FIXED 2026-05-22: Central Park, not KJFK
+    "NY": "KNYC",                     # FIXED 2026-05-22: Central Park, not KJFK
 }
 
 # Kalshi temperature-market ticker prefixes we handle. Non-US (e.g.
 # KXLOWTLV Tel Aviv) skipped — NWS is US-only.
 _HANDLED_PREFIX_RE = re.compile(r"^KX(HIGH|LOW|TEMP)([A-Z]+?)-")
 _NON_US_CITIES = {"TLV"}
+
+# Series whose settlement source is NOT one we forecast against. Refuse
+# to model rather than guess. KXTEMPNYCH resolves on AccuWeather and we
+# have no AccuWeather feed; re-enable only after a real feed lands.
+# Cross-check via planning/weather_station_xref_audit.json.
+_DISABLED_SERIES_PREFIXES = {"KXTEMPNYCH"}
 
 # Rules-primary coordinate extractor (most reliable; preferred over the
 # fallback table).
@@ -260,6 +270,7 @@ class KalshiWeatherArbAgent:
         n_pre_filter = 0
         n_skipped_not_weather = 0
         n_skipped_non_us = 0
+        n_skipped_disabled = 0
         n_skipped_no_strike = 0
 
         for event in events:
@@ -273,6 +284,10 @@ class KalshiWeatherArbAgent:
                 kind, city = tm.group(1), tm.group(2)
                 if city.upper() in _NON_US_CITIES or city.upper().endswith("TLV"):
                     n_skipped_non_us += 1
+                    continue
+                series_prefix = tkr.split("-", 1)[0]
+                if series_prefix in _DISABLED_SERIES_PREFIXES:
+                    n_skipped_disabled += 1
                     continue
                 # strike + direction come from per-market fetch (need full Market)
                 yes_ask_d, no_ask_d, yes_bid_d, no_bid_d = kalshi_quote_dollars(m)
@@ -310,6 +325,7 @@ class KalshiWeatherArbAgent:
                     "markets_pre_filter": n_pre_filter,
                     "skipped_not_weather": n_skipped_not_weather,
                     "skipped_non_us": n_skipped_non_us,
+                    "skipped_disabled_series": n_skipped_disabled,
                     "candidates": len(survivors),
                     "k_per_cycle": k_per_cycle,
                     "min_divergence_pct": min_div_pct,
