@@ -3351,7 +3351,7 @@ DASHBOARD_RT_CUTOFFS: dict[str, str] = {
     # strategy's own logic-change date. Pre-cutoff rows remain queryable
     # in `kalshi_round_trips` (forensic + σ-scaling work); they're only
     # filtered out of dashboard aggregates.
-    "kalshi_weather": "2026-05-20T11:34:59+00:00",  # entry-price floor live — see deploy_log.md 2026-05-20 11:35 UTC
+    "kalshi_weather": "2026-05-22T16:25:00+00:00",  # P3 deploy: entry-price floor + 6 station-coord fixes + KXTEMPNYCH disable + xref YAML loader all live — see deploy_log.md 2026-05-22 16:25 UTC
     "kalshi_crypto":  "2026-05-20T05:52:09+00:00",  # vol-v2 + max_divergence_pct live — see deploy_log.md 2026-05-20 05:52 UTC (matches KALSHI_CRYPTO_VOL_V2_CUTOFF in web/kalshi_crypto_vol_v2.py)
 }
 
