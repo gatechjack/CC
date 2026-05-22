@@ -1608,6 +1608,39 @@ def register(app: FastAPI) -> None:
             },
         )
 
+    @app.post(
+        "/telemetry/iron_condor/grade", response_class=HTMLResponse,
+    )
+    async def iron_condor_grade(request: Request):
+        """Grade an operator-pasted Barchart screener block against live
+        IC strategy rules.  Research/grading only — no order surface.
+
+        Body (form-encoded): `paste` = textarea content.
+        Response: partial HTML fragment for htmx swap into #grader-result.
+        """
+        from trading_corp.agents.strategies.ic_candidate_grader import (
+            grade_paste,
+        )
+        from trading_corp.utils.iv import _get_configured_provider
+        form = await request.form()
+        paste = str(form.get("paste") or "")
+        strategy = getattr(deps, "ic_strategy", None)
+        if strategy is None:
+            raise HTTPException(
+                status_code=503, detail="ic_strategy not available",
+            )
+        provider = _get_configured_provider()
+        result = await grade_paste(
+            paste,
+            strategy=strategy,
+            provider=provider,
+            logger=deps.logger_agent,
+        )
+        return templates.TemplateResponse(
+            request, "partials/iron_condor_grader_result.html",
+            {"result": result},
+        )
+
     @app.get("/approvals/{order_id}", response_class=HTMLResponse)
     async def approval_detail(request: Request, order_id: str):
         """Detail page for a single pending approval. 404 when the
