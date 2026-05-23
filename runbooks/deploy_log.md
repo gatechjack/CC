@@ -76,6 +76,70 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-23 15:23 UTC — pm-metrics-epoch: agent_state-driven reset (commit `17cdd55`)
+
+**Commits:** `17cdd55` (helpers + threading + tests). Pushed to `origin/main` via fast-forward of branch `pm-metrics-epoch`. `origin/main` head: `17cdd55`.
+**Triggered by:** Board approval after the P1 backlog item ("metrics-epoch reset scout") was turned into a complete plan + reversibility-tested locally. Mirrors the Kalshi `DASHBOARD_RT_CUTOFFS` / `_kalshi_cutoff_clause` machinery, with two intentional departures: storage in `agent_state(polymarket_copy_trader, metrics_epoch)` for redeploy-free reversibility; coverage extended to `audit_event.ts` (open/pending) and `polymarket_equity_history.ts` (curve) beyond just round_trips.
+**Backup tag:** `pre-metrics-epoch-20260523-0710` on the single modified prod file (paths below). No agent_state slot was written by this deploy; the `metrics_epoch` slot stays unset (no-op state) until the operator deliberately sets it as a separate action.
+
+**Files deployed (1 modify):**
+- `trading_corp/web/data.py` — adds `_get_polymarket_metrics_epoch(db_url)` (ISO-8601-validated read of `agent_state(polymarket_copy_trader, metrics_epoch)`) and `_polymarket_cutoff_clause(epoch_iso, *, ts_col, div_col, div_value)` (mirror of `_kalshi_cutoff_clause`; returns `''` no-op when `epoch_iso` is None). Threads `pm_epoch: str | None = None` kwarg into 6 PM query helpers (`_query_pm_round_trips`, `_query_pm_equity_curve`, `_query_pm_open_trades`, `_query_pm_pending_count`, `_query_pm_resolved_stats`, `_query_pm_whales`) + applies the cutoff inline in `_hydrate_pm_overview` (the home-tile rollup). Single epoch resolution per dashboard build in `build_prediction_market_view`; same helper resolves internally in `_hydrate_pm_overview`. `PMDashboardView` gains `pm_metrics_epoch: str | None` field. Owner: root:root preserved.
+
+**Why entry_ts ≡ audit_event.ts (the dual-cutoff is coherent):** verified at `polymarket_resolver.py:161` (market-settle path: `entry_ts = row['_ts']`) and `:306` (whale-closed path: `entry_ts = str(entry_row['ts'])`). Both source the BUY-side audit_event row's ts — byte-equal. The dual filter (a.ts on open/pending surfaces, entry_ts on resolved surfaces) is filtering the SAME physical timestamp from two angles. A position opened pre-epoch / resolved post-epoch is invisible on every surface — the "old bet settling into fresh slate" failure mode is prevented at every stage.
+
+**Validation gate (injection defense):** `_get_polymarket_metrics_epoch` parses the stored value via `datetime.fromisoformat` round-trip and returns None on any failure. The returned value is f-string-interpolated into SQL by `_polymarket_cutoff_clause`; the parse is the injection gate, mandatory regardless of write-path trust. Tests cover injection-shaped payload, non-ISO string, non-string value, JSON null, empty string, and missing slot — all rejected.
+
+**Features shipped (LATENT — dashboard view unchanged until epoch is set):**
+- Operator can run `set_agent_state('polymarket_copy_trader', 'metrics_epoch', '<ISO>')` at any moment to mark a new performance epoch. All 7 metric surfaces immediately filter to post-epoch only; pre-epoch rows stay in `polymarket_round_trips` / `audit_event` / `polymarket_equity_history` for forensics.
+- Reversibility: `DELETE FROM agent_state WHERE agent='polymarket_copy_trader' AND key='metrics_epoch'` is the canonical unset; `set_agent_state(..., None)` works as a fallback (helper treats JSON null as unset). Either restores the pre-epoch view exactly. Redeploy-free.
+
+**NOT touched by this deploy:**
+- `agent_state` slots other than `metrics_epoch` — `selected_whales`, `pinned_whales`, `watch_only_whales` (the windowed list from 2026-05-23 06:23 UTC) all untouched.
+- `polymarket_copy_trader` strategy / broker / risk gate / audit pipeline.
+- `seed_polymarket_watchlist_deep.py`, `refresh_polymarket_whales.py` (watchlist + roster pickers).
+- Kalshi side — Kalshi cutoffs continue to live in `DASHBOARD_RT_CUTOFFS` (hardcoded), separate machinery.
+
+**Verification:**
+- Service restart: 15:18:34 UTC → web bound at 15:23:44 UTC (5m 10s, matches windowing-deploy startup pattern). Healthz `HTTP 200 {"status":"ok","mode":"PAPER"}`. MainPID 1180983.
+- Post-deploy md5 of `trading_corp/web/data.py`: `f3898a5e47308f917c7c56e121bffe46` — matches LF-normalized local.
+- `agent_state(polymarket_copy_trader, metrics_epoch)` slot: None (unset, no-op state) — confirmed via direct DB query post-deploy.
+- `_get_polymarket_metrics_epoch(...)` returns `None`; `_polymarket_cutoff_clause(None)` returns `''` — confirmed in-VM.
+- Dashboard at `/prediction-markets/polymarket_copy_trading` renders HTTP 200, 1.7 MB. All windowing markers (AvgPx column, `<.70` column, provisional `opacity-50 italic` rows, sort URLs, "scored on last 100 resolved BUYs" header) still present from the 06:23 UTC ship. Tile values populated (Resolved 2,269 / Open 1,117 / Realized +$193.20) — non-zero, sensible. Home tile for polymarket_copy_trading renders cleanly.
+- Pre-deploy reversibility test (synthetic frozen sandbox): all 7 stages PASS — pre-state captured, EPOCH set mid-data cuts PCT 6→3 with arb 3→3 control, forward-zero (future epoch) zeros all PCT surfaces, invalid epoch + injection payload rejected by validator (no-op), DELETE unset restores pre-state EXACTLY, `set_agent_state(None)` fallback also restores pre-state EXACTLY.
+
+**How to set the epoch (operator action — separate from this deploy):**
+```bash
+ssh azureuser@trading.jacksumner.com "sudo /home/azureuser/trading_corp/venv/bin/python3 -c \"
+from trading_corp.persistence import db
+db.set_agent_state('polymarket_copy_trader', 'metrics_epoch',
+                   '<your-chosen-ISO-8601-timestamp>',
+                   db_url='sqlite:///data/trading_corp.db')
+\""
+```
+
+**How to unset the epoch (operator action):**
+```bash
+# Canonical:
+ssh azureuser@trading.jacksumner.com "sudo sqlite3 /home/azureuser/trading_corp/data/trading_corp.db \"
+DELETE FROM agent_state WHERE agent='polymarket_copy_trader' AND key='metrics_epoch';
+\""
+
+# Fallback (works via the helper's JSON-null handling, but leaves a phantom row):
+# … set_agent_state('polymarket_copy_trader', 'metrics_epoch', None, …)
+```
+
+**Rollback recipe** (code revert — needed only if the no-op state ever surfaces a bug, which the reversibility test indicates shouldn't happen):
+```bash
+TAG=pre-metrics-epoch-20260523-0710; BASE=/home/azureuser/trading_corp
+ssh azureuser@trading.jacksumner.com "
+sudo mv $BASE/trading_corp/web/data.py.\$TAG $BASE/trading_corp/web/data.py
+sudo systemctl restart trading-corp.service"
+# Then: git revert --no-edit 17cdd55 && git push origin main
+# If the epoch slot was set, clear it first via the DELETE recipe above.
+```
+
+---
+
 ## 2026-05-23 06:23 UTC — pm-watchlist: windowed re-score on last 100 resolved BUYs (commits `6e37b48`, `0045ff1`, `5d7704c`)
 
 **Commits:** `6e37b48` (windowing + 19 unit tests), `0045ff1` (edge-proxy columns AvgPx + <.70 + PnL floor $5k + server-side sortable headers + 9 sort tests), `5d7704c` (backlog: deferred root-hardening followup). All three pushed to `origin/main` via fast-forward merge of branch `pm-watchlist-windowed-rescore`. `origin/main` head: `5d7704c`.
