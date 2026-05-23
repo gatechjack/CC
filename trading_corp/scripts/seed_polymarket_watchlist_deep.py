@@ -29,7 +29,12 @@ Pipeline:
        - `n >= min_resolved_buys` (default 10, hard noise floor)
        - `last_trade_iso` of ANY side <= recency_days old (default 60)
        - windowed WR >= min_windowed_wr (default 0.62)
-       - windowed realized PnL > min_windowed_pnl (default 0.01, i.e. > $0)
+       - windowed realized PnL >= min_windowed_pnl (default 5000.0 USDC)
+     Note: the PnL floor sits at $5,000 — high enough to filter capital-
+     driven favorite-farmers (winning at $0.95 contracts earns $0.05/win
+     per contract, so $5k+ requires sharp edge OR very deep capital).
+     `avg_entry_price` is exposed as a column for visual discrimination
+     but is not itself a gate.
   6. Rank survivors by **windowed** `realized_pnl_usdc` desc. No top-N
      cap by default (`--top 0`).
   7. Mark `provisional=true` iff `window_size_n < provisional_threshold`
@@ -63,7 +68,7 @@ Options:
     --window-size N          Resolved-BUY window size (default 100)
     --min-resolved-buys N    Hard noise floor on n (default 10)
     --min-windowed-wr F      Windowed WR floor [0.0-1.0] (default 0.62)
-    --min-windowed-pnl F     Windowed realized PnL floor USDC (default 0.01)
+    --min-windowed-pnl F     Windowed realized PnL floor USDC (default 5000.0)
     --recency-days N         Drop if last activity older than N days (default 60)
     --provisional-threshold N  Mark provisional iff n < this (default 50)
     --activity-limit N       /activity rows per call (default 500, max 1000)
@@ -244,7 +249,7 @@ async def seed_polymarket_watchlist_deep(
     window_size: int = 100,
     min_resolved_buys: int = 10,
     min_windowed_wr: float = 0.62,
-    min_windowed_pnl: float = 0.01,
+    min_windowed_pnl: float = 5000.0,
     recency_days: int = 60,
     provisional_threshold: int = 50,
     activity_limit: int = 500,
@@ -440,7 +445,7 @@ async def seed_polymarket_watchlist_deep(
             if win_rate < min_windowed_wr:
                 summary["drop_reasons"]["wr_floor"] += 1
                 continue
-            if stats.total_pnl <= min_windowed_pnl:
+            if stats.total_pnl < min_windowed_pnl:
                 summary["drop_reasons"]["pnl_floor"] += 1
                 continue
 
@@ -453,6 +458,23 @@ async def seed_polymarket_watchlist_deep(
                 last_trade_ts, tz=timezone.utc,
             ).isoformat() if last_trade_ts else ""
             provisional = n_resolved < provisional_threshold
+
+            # Entry-price edge proxies. Investigation 2026-05-23 confirmed
+            # that the WR>=90% cluster is dominated by favorite-farmers
+            # (avg entry $0.85+) — high apparent accuracy with no edge.
+            # avg_entry_price + share_below_70 are surfaced as visible
+            # columns so the operator can distinguish sharp whales (low
+            # avg / high share-below-70) from capital-driven favorite-
+            # farmers (high avg / near-zero share-below-70) at a glance.
+            # NOT a gate — visual only.
+            window_prices = [float(a.price) for a in window]
+            avg_entry_price = (
+                sum(window_prices) / len(window_prices) if window_prices else 0.0
+            )
+            share_below_70 = (
+                sum(1 for p in window_prices if p < 0.70) / len(window_prices)
+                if window_prices else 0.0
+            )
 
             summary["quality_gate_pass"] += 1
             if provisional:
@@ -475,11 +497,15 @@ async def seed_polymarket_watchlist_deep(
                 "window_days_span": window_days_span,
                 "last_trade_iso": last_trade_iso,
                 "provisional": provisional,
+                "avg_entry_price": avg_entry_price,
+                "share_below_70": share_below_70,
             })
             log.info(
-                "quality gate PASS: %s (%s) n=%d wr=%.2f pnl=%.2f span=%.0fd %s",
+                "quality gate PASS: %s (%s) n=%d wr=%.2f pnl=%.2f span=%.0fd "
+                "avgPx=%.3f <.70=%.0f%% %s",
                 wallet[:10], entry.user_name, closed, win_rate, stats.total_pnl,
-                window_days_span, "[PROVISIONAL]" if provisional else "",
+                window_days_span, avg_entry_price, share_below_70 * 100.0,
+                "[PROVISIONAL]" if provisional else "",
             )
 
     # 5. Rank by descending windowed realized PnL. Optional top-N cap.
@@ -513,6 +539,8 @@ async def seed_polymarket_watchlist_deep(
             "window_days_span": round(s["window_days_span"], 2),
             "last_trade_iso": s["last_trade_iso"],
             "provisional": s["provisional"],
+            "avg_entry_price": round(s["avg_entry_price"], 4),
+            "share_below_70": round(s["share_below_70"], 4),
         })
 
     final_payload = watch_only_payload
@@ -614,9 +642,10 @@ def _print_human(summary: dict[str, Any]) -> None:
     print(
         f"{'#':>3} | {'Wallet':<14} | {'User':<22} | {'Cat':<8} | "
         f"{'N':>4} | {'Span':>6} | {'WR':>6} | {'PnL':>10} | "
+        f"{'AvgPx':>6} | {'<.70':>5} | "
         f"{'Last':<12} | {'P'}"
     )
-    print("-" * 120)
+    print("-" * 140)
     for w in whales:
         last_short = (w.get("last_trade_iso") or "")[:10]
         prov_mark = "*" if w.get("provisional") else " "
@@ -627,12 +656,17 @@ def _print_human(summary: dict[str, Any]) -> None:
             f"{w['window_days_span']:>5.0f}d | "
             f"{w['win_rate']:>6.2%} | "
             f"${w['realized_pnl_usdc']:>9,.2f} | "
+            f"{w.get('avg_entry_price', 0.0):>6.3f} | "
+            f"{w.get('share_below_70', 0.0)*100:>4.0f}% | "
             f"{last_short:<12} | {prov_mark}"
         )
     print()
     if any(w.get("provisional") for w in whales):
         print("  * = provisional (n < threshold) — dashboard will grey these rows.")
         print()
+    print(r"  AvgPx = mean entry price across the window; <.70 = share of BUYs at <$0.70.")
+    print("  Low AvgPx + high <.70 = sharp/longshot whale; high AvgPx + low <.70 = favorite-farmer.")
+    print()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -663,8 +697,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Min windowed win rate [0.0-1.0] (default 0.62).",
     )
     parser.add_argument(
-        "--min-windowed-pnl", type=float, default=0.01,
-        help="Min windowed realized PnL in USDC (default 0.01, i.e. > $0).",
+        "--min-windowed-pnl", type=float, default=5000.0,
+        help=(
+            "Min windowed realized PnL in USDC (default 5000.0). Calibrated "
+            "2026-05-23 against the live Polymarket pool: $5,000 sized the "
+            "candidate list to ~155 whales and naturally filters most "
+            "capital-driven favorite-farmers without dropping sharp small-"
+            "size whales."
+        ),
     )
     parser.add_argument(
         "--recency-days", type=int, default=60,

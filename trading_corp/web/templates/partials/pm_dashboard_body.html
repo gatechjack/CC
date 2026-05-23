@@ -783,6 +783,40 @@
   {% endif %}
 
   {% if view.polymarket_watch_only %}
+  {# Sortable-header macro. Server-side sort: clicking a header triggers an
+     HTMX swap of #pm-content with `?pm_watch_sort=<key>&pm_watch_desc=<0|1>`
+     and pushes the URL so refresh + back/forward preserve the sort. The
+     active column shows ↓/↑; clicking it again flips direction. `default_key`
+     marks the column treated as active when no `?pm_watch_sort` is set —
+     the seed pre-sorts by `realized_pnl_usdc` desc so that one is the
+     default-active. #}
+  {% macro pm_watch_sort_link(key, label, default_key=False) %}
+    {# When `view.pm_watch_sort` is None (no explicit sort in URL), the
+       column marked `default_key=True` is treated as the active sort —
+       matches the seed's pre-sort of `realized_pnl_usdc` desc. #}
+    {%- if view.pm_watch_sort -%}
+      {%- set is_active = (view.pm_watch_sort == key) -%}
+      {%- set active_desc = view.pm_watch_desc -%}
+    {%- else -%}
+      {%- set is_active = default_key -%}
+      {%- set active_desc = True -%}
+    {%- endif -%}
+    {%- if is_active -%}
+      {%- set next_desc = (0 if active_desc else 1) -%}
+      {%- set arrow = '↓' if active_desc else '↑' -%}
+    {%- else -%}
+      {%- set next_desc = 1 -%}
+      {%- set arrow = '' -%}
+    {%- endif -%}
+    {%- set slug = view.selected or 'polymarket_copy_trading' -%}
+    <a class="cursor-pointer select-none hover:text-mono {% if is_active %}text-mono{% endif %}"
+       hx-get="/partials/prediction-markets/{{ slug }}?pm_watch_sort={{ key }}&pm_watch_desc={{ next_desc }}"
+       hx-target="#pm-content"
+       hx-swap="innerHTML"
+       hx-push-url="/prediction-markets/{{ slug }}?pm_watch_sort={{ key }}&pm_watch_desc={{ next_desc }}">
+      {{ label }}{% if arrow %}<span class="ml-0.5">{{ arrow }}</span>{% endif %}
+    </a>
+  {% endmacro %}
   <div class="bg-pane border border-edge rounded-lg overflow-hidden {% if view.kalshi_watch_only or view.whales %}mt-6{% endif %}">
     <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
       <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
@@ -797,15 +831,17 @@
         <thead class="bg-pane-2/40 text-muted uppercase tracking-wider text-[10px]">
           <tr>
             <th class="text-right px-3 py-2 font-medium">#</th>
-            <th class="text-left px-3 py-2 font-medium">Whale</th>
-            <th class="text-left px-3 py-2 font-medium">Category</th>
-            <th class="text-right px-3 py-2 font-medium" title="Resolved BUYs in window (≤100)">N</th>
-            <th class="text-right px-3 py-2 font-medium" title="Span from oldest to newest BUY in window">Span</th>
-            <th class="text-right px-3 py-2 font-medium" title="Most recent activity of any side">Last</th>
-            <th class="text-right px-3 py-2 font-medium">WR%</th>
-            <th class="text-right px-3 py-2 font-medium">Realized PnL</th>
-            <th class="text-right px-3 py-2 font-medium">Leaderboard PnL</th>
-            <th class="text-right px-3 py-2 font-medium">Leaderboard Vol</th>
+            <th class="text-left px-3 py-2 font-medium">{{ pm_watch_sort_link("user_name", "Whale") }}</th>
+            <th class="text-left px-3 py-2 font-medium">{{ pm_watch_sort_link("best_category", "Category") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Resolved BUYs in window (≤100)">{{ pm_watch_sort_link("n", "N") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Span from oldest to newest BUY in window">{{ pm_watch_sort_link("span", "Span") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Most recent activity of any side">{{ pm_watch_sort_link("last", "Last") }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ pm_watch_sort_link("wr", "WR%") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Mean BUY entry price across the window. Low (<.50) = sharp/contrarian; high (.85+) = favorite-farmer.">{{ pm_watch_sort_link("avg_entry_price", "AvgPx") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Share of windowed BUYs entered below $0.70 — high = sharp; low = favorite-farmer">{{ pm_watch_sort_link("share_below_70", "<.70") }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ pm_watch_sort_link("realized_pnl_usdc", "Realized PnL", default_key=True) }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ pm_watch_sort_link("lifetime_pnl_from_leaderboard", "Leaderboard PnL") }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ pm_watch_sort_link("lifetime_vol_from_leaderboard", "Leaderboard Vol") }}</th>
             <th class="text-left px-3 py-2 font-medium">Profile</th>
           </tr>
         </thead>
@@ -841,6 +877,17 @@
               {% elif w.win_rate_pct >= 40 %}text-mono
               {% else %}text-loss{% endif %}">
               {% if w.win_rate_pct is none %}—{% else %}{{ w.win_rate_pct | round(1) }}%{% endif %}
+            </td>
+            {# AvgPx: low (<.50) = sharp/contrarian, high (.85+) = favorite-farmer #}
+            <td class="px-3 py-2 text-right
+              {% if w.avg_entry_price == 0.0 %}text-muted/60
+              {% elif w.avg_entry_price < 0.50 %}text-gain
+              {% elif w.avg_entry_price < 0.85 %}text-mono
+              {% else %}text-muted{% endif %}">
+              {% if w.avg_entry_price == 0.0 %}—{% else %}{{ w.avg_entry_price | round(3) }}{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right text-mono/80">
+              {% if w.window_size_n > 0 %}{{ (w.share_below_70 * 100) | round(0) | int }}%{% else %}—{% endif %}
             </td>
             <td class="px-3 py-2 text-right font-semibold
               {% if w.realized_pnl_usdc > 0 %}text-gain

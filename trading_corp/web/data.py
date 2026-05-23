@@ -3318,6 +3318,13 @@ class PolymarketWatchOnlyRow:
     window_days_span: float = 0.0
     last_trade_iso: str | None = None
     provisional: bool = False
+    # Entry-price edge proxies. `avg_entry_price` is the mean BUY price
+    # across the window; `share_below_70` is the fraction of windowed BUYs
+    # entered at <$0.70. Low avg + high share-below-70 = sharp/contrarian
+    # whale; high avg + near-zero share-below-70 = capital-driven favorite-
+    # farmer. Visible columns; NOT a filter gate.
+    avg_entry_price: float = 0.0
+    share_below_70: float = 0.0
 
 
 @dataclass
@@ -3333,6 +3340,11 @@ class PMDashboardView:
     whales: list[PMWhaleRow]         # populated for copy_trading divisions; empty otherwise
     kalshi_watch_only: list[KalshiWatchOnlyRow]   # K3 watch-list panel; empty unless kalshi_copy_trading is selected
     polymarket_watch_only: list[PolymarketWatchOnlyRow]  # Polymarket watch-list panel; empty unless polymarket_copy_trading is selected
+    # Current Polymarket Watch List sort state (server-side sort, persisted
+    # via `?pm_watch_sort=&pm_watch_desc=` query params). The template reads
+    # these to render the active-column arrow + compute the toggle URL.
+    pm_watch_sort: str | None = None  # whitelisted user-facing key (e.g. "avg_entry_price")
+    pm_watch_desc: bool = True
     # Set only when the selected division is 'kalshi_crypto'. None
     # on every other division and on the All Prediction Markets view.
     # Owns the vol-v2 paper-validation cards; see
@@ -4313,8 +4325,45 @@ def _query_kalshi_watch_only_rows(
     return out
 
 
+# Whitelist of sort keys the Polymarket Watch List panel will honor from
+# the URL query param `?pm_watch_sort=`. The string the user provides is
+# mapped to the PolymarketWatchOnlyRow attribute the sort runs on. Anything
+# not in this dict falls back to the default sort (realized_pnl_usdc desc).
+# String keys are case-insensitive on lookup.
+_PM_WATCH_SORT_KEYS: dict[str, str] = {
+    "rank": "rank",
+    "user_name": "user_name",
+    "best_category": "best_category",
+    "n": "window_size_n",
+    "window_size_n": "window_size_n",
+    "span": "window_days_span",
+    "window_days_span": "window_days_span",
+    "last": "last_trade_iso",
+    "last_trade_iso": "last_trade_iso",
+    "wr": "win_rate_pct",
+    "win_rate_pct": "win_rate_pct",
+    "avg_entry_price": "avg_entry_price",
+    "avg": "avg_entry_price",
+    "avgpx": "avg_entry_price",
+    "share_below_70": "share_below_70",
+    "below_70": "share_below_70",
+    "realized_pnl_usdc": "realized_pnl_usdc",
+    "pnl": "realized_pnl_usdc",
+    "lifetime_pnl_from_leaderboard": "lifetime_pnl_from_leaderboard",
+    "lifetime_pnl": "lifetime_pnl_from_leaderboard",
+    "lifetime_vol_from_leaderboard": "lifetime_vol_from_leaderboard",
+    "lifetime_vol": "lifetime_vol_from_leaderboard",
+}
+
+_PM_WATCH_DEFAULT_SORT_KEY = "realized_pnl_usdc"
+_PM_WATCH_DEFAULT_SORT_DESC = True
+
+
 def _query_polymarket_watch_only_rows(
     db_url: str, target_slugs: list[str],
+    *,
+    sort_key: str | None = None,
+    sort_desc: bool = True,
 ) -> list[PolymarketWatchOnlyRow]:
     """Render the Polymarket Watch List panel from `agent_state(watch_only_whales)`.
 
@@ -4388,8 +4437,27 @@ def _query_polymarket_watch_only_rows(
             window_days_span=float(w.get("window_days_span") or 0.0),
             last_trade_iso=w.get("last_trade_iso") or None,
             provisional=bool(w.get("provisional", False)),
+            avg_entry_price=float(w.get("avg_entry_price") or 0.0),
+            share_below_70=float(w.get("share_below_70") or 0.0),
         ))
-    out.sort(key=lambda w: w.rank)
+
+    # Sort by the requested key (or default to rank ascending, which mirrors
+    # the agent_state pre-sorted-by-PnL ordering). The attribute name is
+    # whitelisted; falls back to default if the user passed garbage.
+    attr = _PM_WATCH_SORT_KEYS.get((sort_key or "").lower(), None)
+    if attr is None:
+        # Default = realized_pnl_usdc desc, which is how the seed writes them.
+        # Honor the seed's rank field directly for the default path.
+        out.sort(key=lambda w: w.rank)
+    else:
+        # Split None/non-None and concat None-trailing AFTER sorting non-Nones.
+        # If we used a tuple-based composite key with reverse=True, the None
+        # bucket would flip to the top — undesirable for old-schema rows
+        # missing windowed fields.
+        with_val = [w for w in out if getattr(w, attr, None) is not None]
+        without_val = [w for w in out if getattr(w, attr, None) is None]
+        with_val.sort(key=lambda w: getattr(w, attr), reverse=sort_desc)
+        out = with_val + without_val
     return out
 
 
@@ -4452,6 +4520,8 @@ async def build_prediction_market_view(
     *,
     history_limit: int = 100,
     equity_curve_days: int = 30,
+    pm_watch_sort: str | None = None,
+    pm_watch_desc: bool = True,
 ) -> PMDashboardView | None:
     """Build the dashboard view for /prediction-markets/ and
     /prediction-markets/{division}.
@@ -4488,7 +4558,10 @@ async def build_prediction_market_view(
         asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200),
         asyncio.to_thread(_query_pm_whales, db_url, target_slugs),
         asyncio.to_thread(_query_kalshi_watch_only_rows, db_url, target_slugs),
-        asyncio.to_thread(_query_polymarket_watch_only_rows, db_url, target_slugs),
+        asyncio.to_thread(
+            _query_polymarket_watch_only_rows, db_url, target_slugs,
+            sort_key=pm_watch_sort, sort_desc=pm_watch_desc,
+        ),
         asyncio.to_thread(_query_pm_pending_count, db_url, target_slugs),
         asyncio.to_thread(_query_pm_resolved_stats, db_url, target_slugs),
     )
@@ -4518,6 +4591,8 @@ async def build_prediction_market_view(
         whales=whales,
         kalshi_watch_only=kalshi_watch_only,
         polymarket_watch_only=polymarket_watch_only,
+        pm_watch_sort=(pm_watch_sort or "").lower() or None,
+        pm_watch_desc=pm_watch_desc,
         vol_v2_block=vol_v2_block,
     )
 

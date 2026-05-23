@@ -336,6 +336,13 @@ async def _run_seed(
         def fromtimestamp(ts, tz=None):
             return datetime.fromtimestamp(ts, tz=tz)
 
+    # The production default for min_windowed_pnl is $5,000 (calibrated
+    # against the live Polymarket survivor pool). Test synthetic scenarios
+    # use small synthetic PnL and would all be dropped on the production
+    # floor; relax it to $0.01 here so tests exercise the floor *mechanic*,
+    # not the production calibration. Individual tests override to test the
+    # PnL floor explicitly.
+    kwargs.setdefault("min_windowed_pnl", 0.01)
     with patch.object(seed_mod, "PolymarketDataAPIClient", return_value=fake), \
          patch.object(seed_mod, "datetime", _FakeDT):
         # categories=() so we only hit the GLOBAL leaderboard bucket.
@@ -524,6 +531,98 @@ async def test_true_n_recorded_when_window_under_100():
     assert whale["window_size_n"] == 42
     assert whale["wins"] == 42
     assert whale["losses"] == 0
+
+
+async def test_avg_entry_price_and_share_below_70_computed_correctly():
+    """Per-whale avg_entry_price + share_below_70 reflect the windowed slice."""
+    now_ts = 1_700_000_000
+    # Construct a whale with mixed entry prices: 5 at $0.40, 5 at $0.80,
+    # 5 at $0.95, all wins.
+    activity: list[ActivityRow] = []
+    cid = 0
+    for px in [0.40, 0.80, 0.95]:
+        for _ in range(5):
+            cid += 1
+            activity.append(_make_activity(
+                now_ts - cid * 3600, f"cid_{cid}", side="BUY", price=px,
+                outcome_index=0,
+            ))
+    # Activity is most-recent-first; ours already iterates newest cid_15
+    # last, oldest cid_1 first — reverse so newest is at index 0.
+    activity.reverse()
+    resolutions = {
+        f"cid_{i}": _resolved(winning_outcome_index=0) for i in range(1, 16)
+    }
+    lb = {"GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)]}
+    summary = await _run_seed(
+        leaderboard=lb,
+        activity_by_wallet={"0xa": [activity]},
+        resolutions=resolutions,
+        fake_now_ts=now_ts,
+    )
+    assert len(summary["watch_only_whales"]) == 1
+    whale = summary["watch_only_whales"][0]
+    expected_avg = (5 * 0.40 + 5 * 0.80 + 5 * 0.95) / 15
+    # Payload rounds to 4 decimal places — match tolerance.
+    assert abs(whale["avg_entry_price"] - expected_avg) < 1e-3
+    # 5 of 15 BUYs below $0.70 → 1/3
+    assert abs(whale["share_below_70"] - (5 / 15)) < 1e-3
+
+
+async def test_pnl_floor_at_production_default_drops_low_pnl_whales():
+    """At the production default $5,000 floor, a $500-PnL whale must drop."""
+    now_ts = 1_700_000_000
+    # 100 wins at price=0.5, size=1 → PnL = 100 * (1-0.5) * 1 = $50. Way below
+    # the $5,000 floor.
+    buys = [(now_ts - i * 3600, True) for i in range(100)]
+    activity_rows: list[ActivityRow] = []
+    for idx, (ts, win) in enumerate(sorted(buys, key=lambda t: -t[0])):
+        activity_rows.append(_make_activity(
+            ts, f"cid_{idx}", side="BUY", price=0.5, size=1.0, outcome_index=0,
+        ))
+    resolutions = {
+        f"cid_{idx}": _resolved(winning_outcome_index=0 if win else 1)
+        for idx, (_, win) in enumerate(sorted(buys, key=lambda t: -t[0]))
+    }
+    lb = {"GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)]}
+    # Override _run_seed's relaxed default with the production value.
+    summary = await _run_seed(
+        leaderboard=lb,
+        activity_by_wallet={"0xa": [activity_rows]},
+        resolutions=resolutions,
+        fake_now_ts=now_ts,
+        min_windowed_pnl=5000.0,
+    )
+    assert summary["drop_reasons"]["pnl_floor"] == 1
+    assert summary["quality_gate_pass"] == 0
+
+
+async def test_pnl_floor_keeps_whale_at_or_above_threshold():
+    """A whale with PnL exactly equal to the floor must NOT be dropped."""
+    now_ts = 1_700_000_000
+    # 50 wins at price=0.5, size=200 → PnL = 50 * 0.5 * 200 = $5,000 exactly.
+    buys = [(now_ts - i * 3600, True) for i in range(50)]
+    activity_rows: list[ActivityRow] = []
+    for idx, (ts, win) in enumerate(sorted(buys, key=lambda t: -t[0])):
+        activity_rows.append(_make_activity(
+            ts, f"cid_{idx}", side="BUY", price=0.5, size=200.0,
+            outcome_index=0,
+        ))
+    resolutions = {
+        f"cid_{idx}": _resolved(winning_outcome_index=0 if win else 1)
+        for idx, (_, win) in enumerate(sorted(buys, key=lambda t: -t[0]))
+    }
+    lb = {"GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)]}
+    summary = await _run_seed(
+        leaderboard=lb,
+        activity_by_wallet={"0xa": [activity_rows]},
+        resolutions=resolutions,
+        fake_now_ts=now_ts,
+        min_windowed_pnl=5000.0,
+    )
+    assert summary["drop_reasons"]["pnl_floor"] == 0
+    assert summary["quality_gate_pass"] == 1
+    assert summary["watch_only_whales"][0]["realized_pnl_usdc"] == 5000.0
 
 
 async def test_compute_polymarket_stats_called_with_half_life_36500():

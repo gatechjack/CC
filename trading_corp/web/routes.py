@@ -248,17 +248,39 @@ def register(app: FastAPI) -> None:
     # within the dashboard. Same template, different data.
 
     @app.get("/prediction-markets/", response_class=HTMLResponse)
-    async def prediction_markets_all(request: Request):
-        return await _render_pm_dashboard(request, division=None)
+    async def prediction_markets_all(
+        request: Request,
+        pm_watch_sort: str | None = None,
+        pm_watch_desc: int = 1,
+    ):
+        return await _render_pm_dashboard(
+            request, division=None,
+            pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
+        )
 
     @app.get("/prediction-markets/{division}", response_class=HTMLResponse)
-    async def prediction_markets_one(request: Request, division: str):
-        return await _render_pm_dashboard(request, division=division)
+    async def prediction_markets_one(
+        request: Request, division: str,
+        pm_watch_sort: str | None = None,
+        pm_watch_desc: int = 1,
+    ):
+        return await _render_pm_dashboard(
+            request, division=division,
+            pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
+        )
 
-    async def _render_pm_dashboard(request: Request, division: str | None):
+    async def _render_pm_dashboard(
+        request: Request, division: str | None,
+        *,
+        pm_watch_sort: str | None = None,
+        pm_watch_desc: bool = True,
+    ):
         cmd_snap, view = await asyncio.gather(
             data.build_command_center(deps),
-            data.build_prediction_market_view(deps, division),
+            data.build_prediction_market_view(
+                deps, division,
+                pm_watch_sort=pm_watch_sort, pm_watch_desc=pm_watch_desc,
+            ),
         )
         if view is None:
             raise HTTPException(
@@ -278,15 +300,37 @@ def register(app: FastAPI) -> None:
     # fan-out from build_command_center doesn't run on swap.
 
     @app.get("/partials/prediction-markets/", response_class=HTMLResponse)
-    async def prediction_markets_partial_all(request: Request):
-        return await _render_pm_partial(request, division=None)
+    async def prediction_markets_partial_all(
+        request: Request,
+        pm_watch_sort: str | None = None,
+        pm_watch_desc: int = 1,
+    ):
+        return await _render_pm_partial(
+            request, division=None,
+            pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
+        )
 
     @app.get("/partials/prediction-markets/{division}", response_class=HTMLResponse)
-    async def prediction_markets_partial_one(request: Request, division: str):
-        return await _render_pm_partial(request, division=division)
+    async def prediction_markets_partial_one(
+        request: Request, division: str,
+        pm_watch_sort: str | None = None,
+        pm_watch_desc: int = 1,
+    ):
+        return await _render_pm_partial(
+            request, division=division,
+            pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
+        )
 
-    async def _render_pm_partial(request: Request, division: str | None):
-        view = await data.build_prediction_market_view(deps, division)
+    async def _render_pm_partial(
+        request: Request, division: str | None,
+        *,
+        pm_watch_sort: str | None = None,
+        pm_watch_desc: bool = True,
+    ):
+        view = await data.build_prediction_market_view(
+            deps, division,
+            pm_watch_sort=pm_watch_sort, pm_watch_desc=pm_watch_desc,
+        )
         if view is None:
             raise HTTPException(
                 status_code=404,
