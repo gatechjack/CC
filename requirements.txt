@@ -46,8 +46,11 @@ markdown>=3.7              # render LLM analysis (markdown → HTML) on division
 
 # TradingView supplemental signals (supplemental only — never on execution path)
 # Requires ENABLE_TRADINGVIEW=1 env var to activate at runtime.
-tvdatafeed                 # historical OHLCV bars via TV WebSocket
-tradingview-ta             # indicator snapshots via TV screener API
+# tvdatafeed             # ORPHAN 2026-05-23: NOT on PyPI (404); never installed on prod; not in lockfile.
+                         # Runtime (trading_corp/data/tradingview.py:54-60) tolerates ImportError and falls
+                         # back to tradingview-ta. If reintroduced, add the actual source (git URL + sha) and
+                         # re-run uv pip compile.
+tradingview-ta==3.3.0    # indicator snapshots via TV screener API — pinned 2026-05-23 to match prod-installed version
 
 # Kalshi (Phase K1+ — Prediction Markets group). MIT-licensed community SDK
 # with both async + sync clients, RSA-PSS request signing, REST + WebSocket.
