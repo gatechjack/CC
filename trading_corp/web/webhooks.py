@@ -566,6 +566,28 @@ async def _process_lord_otter_alert(
             )
             return
 
+        # ── Stamp originating side BEFORE consult so the backstop can
+        #    detect any LLM-induced side flip. Use a dict-copy to avoid
+        #    mutating any shared dict reference.
+        extra = dict(order.extra or {})
+        extra["originating_signal_side"] = order.side
+        order.extra = extra
+
+        # ── Build account/strat/regime now (needed for both skip-path
+        #    and proceed-path risk gate calls below).
+        account = AccountState(
+            account=getattr(snap, "account", agent.division) if snap else agent.division,
+            equity=account_equity or 100_000.0,
+            peak_equity=account_equity or 100_000.0,
+        )
+        strat_state = StrategyState(strategy=order.strategy)
+        regime = "unknown"
+        if deps.trend_agent is not None:
+            try:
+                regime = getattr(deps.trend_agent.read(), "regime", "unknown") or "unknown"
+            except Exception:
+                regime = "unknown"
+
         # ── Research firm TradeConfirmation consult (Phase 1e) ───────
         from trading_corp.agents.research.trade_confirmation_consult import (
             consult_research_for_trade_confirmation,
@@ -580,6 +602,22 @@ async def _process_lord_otter_alert(
             account_equity=account_equity,
         )
         if consult.decision == "skip":
+            verdict = deps.risk_agent.evaluate(
+                order, account, strat_state, regime, None,
+                forced_reject_reason=f"llm_push_back: {consult.rationale}",
+            )
+            order.risk_reason = verdict.reason
+            order.status = "risk_rejected"
+            deps.logger_agent.log_proposed_order(order)
+            deps.logger_agent.log_event(
+                actor="risk", kind="risk_rejected",
+                payload={
+                    "order_id": order.id, "symbol": order.symbol,
+                    "reason": verdict.reason, "via": "lord_otter_webhook",
+                    "tier": (order.extra or {}).get("tier"),
+                    "source": "llm_push_back",
+                },
+            )
             await _telegram_notify(
                 deps,
                 (
@@ -606,19 +644,6 @@ async def _process_lord_otter_alert(
                 payload={"order_id": order.id, "reason": "broker not registered"},
             )
             return
-
-        account = AccountState(
-            account=getattr(snap, "account", agent.division) if snap else agent.division,
-            equity=account_equity or 100_000.0,
-            peak_equity=account_equity or 100_000.0,
-        )
-        strat_state = StrategyState(strategy=order.strategy)
-        regime = "unknown"
-        if deps.trend_agent is not None:
-            try:
-                regime = getattr(deps.trend_agent.read(), "regime", "unknown") or "unknown"
-            except Exception:
-                regime = "unknown"
 
         verdict = deps.risk_agent.evaluate(order, account, strat_state, regime, None)
         order.risk_reason = verdict.reason
@@ -803,6 +828,28 @@ async def _process_market_cypher_alert(
             )
             return
 
+        # ── Stamp originating side BEFORE consult so the backstop can
+        #    detect any LLM-induced side flip. Use a dict-copy to avoid
+        #    mutating any shared dict reference.
+        extra = dict(order.extra or {})
+        extra["originating_signal_side"] = order.side
+        order.extra = extra
+
+        # ── Build account/strat/regime now (needed for both skip-path
+        #    and proceed-path risk gate calls below).
+        account = AccountState(
+            account=getattr(snap, "account", agent.division) if snap else agent.division,
+            equity=account_equity or 100_000.0,
+            peak_equity=account_equity or 100_000.0,
+        )
+        strat_state = StrategyState(strategy=order.strategy)
+        regime = "unknown"
+        if deps.trend_agent is not None:
+            try:
+                regime = getattr(deps.trend_agent.read(), "regime", "unknown") or "unknown"
+            except Exception:
+                regime = "unknown"
+
         # ── Research firm consult ────────────────────────────────────
         from trading_corp.agents.research.trade_confirmation_consult import (
             consult_research_for_trade_confirmation,
@@ -817,6 +864,22 @@ async def _process_market_cypher_alert(
             account_equity=account_equity,
         )
         if consult.decision == "skip":
+            verdict = deps.risk_agent.evaluate(
+                order, account, strat_state, regime, None,
+                forced_reject_reason=f"llm_push_back: {consult.rationale}",
+            )
+            order.risk_reason = verdict.reason
+            order.status = "risk_rejected"
+            deps.logger_agent.log_proposed_order(order)
+            deps.logger_agent.log_event(
+                actor="risk", kind="risk_rejected",
+                payload={
+                    "order_id": order.id, "symbol": order.symbol,
+                    "reason": verdict.reason, "via": "market_cypher_webhook",
+                    "tier": (order.extra or {}).get("tier"),
+                    "source": "llm_push_back",
+                },
+            )
             await _telegram_notify(
                 deps,
                 (
@@ -843,19 +906,6 @@ async def _process_market_cypher_alert(
                 payload={"order_id": order.id, "reason": "broker not registered"},
             )
             return
-
-        account = AccountState(
-            account=getattr(snap, "account", agent.division) if snap else agent.division,
-            equity=account_equity or 100_000.0,
-            peak_equity=account_equity or 100_000.0,
-        )
-        strat_state = StrategyState(strategy=order.strategy)
-        regime = "unknown"
-        if deps.trend_agent is not None:
-            try:
-                regime = getattr(deps.trend_agent.read(), "regime", "unknown") or "unknown"
-            except Exception:
-                regime = "unknown"
 
         verdict = deps.risk_agent.evaluate(order, account, strat_state, regime, None)
         order.risk_reason = verdict.reason

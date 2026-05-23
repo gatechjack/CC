@@ -7,17 +7,17 @@ the place where research can prevent a real order from reaching the
 risk gate.
 
 What's pinned here:
-  - push_back: handler returns 200 + skipped_by_research, telegram_notify
-    fires with the rationale, risk_agent.evaluate is NEVER called, and an
-    audit row lands with kind=research_tradeconf_pushback_acted_on.
+  - push_back: handler routes through risk_agent.evaluate with
+    forced_reject_reason="llm_push_back:..." instead of bypassing the gate.
+    Telegram notify fires. Audit row for risk_rejected with source=llm_push_back.
   - no_research smoke: research_firm=None routes through the consult's
     no_research branch and reaches the risk gate as before. The consult
     is invisible when not wired.
 
 Stub policy: minimal. The agent's on_alert is monkey-patched to return a
 fixed ProposedOrder so we don't drag tier-classification details into a
-test about webhook wiring. The risk_agent is a Mock so we can assert
-"never called" cleanly.
+test about webhook wiring. The risk_agent is a Mock configured to return a
+RiskVerdict so the handler doesn't crash.
 """
 from __future__ import annotations
 
@@ -30,7 +30,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from trading_corp.agents.strategies.lord_otter import LordOtterAgent
+from trading_corp.agents.strategies.market_cypher import MarketCypherAgent
 from trading_corp.agents.logger import LoggerAgent
+from trading_corp.agents.risk import RiskVerdict
 from trading_corp.agents.research import schemas
 from trading_corp.agents.research.engagement import ResearchFirmDeps
 from trading_corp.agents.research.graph import build_engagement_graph
@@ -57,6 +59,12 @@ lord_otter:
   auto_execute: false
   symbols: [BTC/USD]
   webhook_secret_env: TEST_OTTER_SECRET
+  division: coinbase_spot
+market_cypher:
+  enabled: true
+  auto_execute: false
+  symbols: [BTC/USD]
+  webhook_secret_env: TEST_CYPHER_SECRET
   division: coinbase_spot
 """.strip(),
         encoding="utf-8",
@@ -115,6 +123,7 @@ def _build_deps(
     deps.risk_agent = risk_agent
     deps.research_firm = research_firm
     deps.telegram_channel = telegram_channel
+    deps.bitunix_observer = None
     return deps, logger_agent
 
 
@@ -141,17 +150,83 @@ def _make_otter_agent(otter_yaml: Path) -> LordOtterAgent:
     return agent
 
 
-# ── Test 1: push_back wiring ────────────────────────────────────────────
+def _fixed_cypher_order() -> ProposedOrder:
+    """The order Cypher pretends to produce."""
+    return ProposedOrder(
+        strategy="market_cypher",
+        symbol="BTC/USD",
+        side="buy",
+        qty=0.01,
+        order_type="market",
+        rationale="alert-driven (cypher test)",
+        extra={"tier": "standard", "size_pct_equity": 0.015},
+    )
 
 
-def test_push_back_skips_order_and_notifies_board(
+def _cypher_alert_payload(secret: str = "the_correct_cypher_secret") -> dict:
+    """Minimal TradingView alert payload for Market Cypher tests."""
+    return {
+        "secret": secret,
+        "ticker": "BTCUSD",
+        "signal": "mc_b_green_dot",
+        "price": "65000.0",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "interval": "240",
+    }
+
+
+def _make_cypher_agent(otter_yaml: Path) -> MarketCypherAgent:
+    """Build a real MarketCypherAgent with on_alert monkey-patched."""
+    from trading_corp.data.macro_calendar import MacroCalendar
+    agent = MarketCypherAgent(
+        strategies_yaml=otter_yaml,
+        macro_calendar=MacroCalendar(path=otter_yaml.parent / "no.yaml"),
+        db_url=None,
+    )
+    agent.on_alert = lambda payload, *, account_equity=None, held_qty=None: (
+        _fixed_cypher_order(), "fixed cypher test order"
+    )
+    return agent
+
+
+def _build_deps_cypher(
+    *,
+    db_url: str,
+    cypher_agent: MarketCypherAgent,
+    research_firm: ResearchFirmDeps | None,
+    risk_agent: MagicMock,
+    telegram_channel: MagicMock | None,
+):
+    """Construct a deps object shaped like WebDeps for market_cypher webhook."""
+    init_db(db_url)
+    logger_agent = LoggerAgent(db_url)
+
+    class _Deps:
+        pass
+    deps = _Deps()
+    deps.logger_agent = logger_agent
+    deps.lord_otter_agent = None
+    deps.market_cypher_agent = cypher_agent
+    deps.data_exec = None
+    deps.trend_agent = None
+    deps.risk_agent = risk_agent
+    deps.research_firm = research_firm
+    deps.telegram_channel = telegram_channel
+    deps.bitunix_observer = None
+    return deps, logger_agent
+
+
+# ── Test 1: push_back routes through risk gate ──────────────────────────
+
+
+def test_push_back_routes_through_risk_gate_as_forced_reject(
     otter_yaml, tmp_db, monkeypatch,
 ):
     """When the research firm returns push_back, the webhook handler MUST:
-      - return 200 with status=skipped_by_research + verdict=push_back
-      - call telegram_channel.push with the rationale
+      - call risk_agent.evaluate ONCE with forced_reject_reason containing "llm_push_back"
+      - write a risk_rejected audit row with source="llm_push_back"
       - write a research_tradeconf_pushback_acted_on audit row
-      - NOT call risk_agent.evaluate (the order is dead at this stage)
+      - call telegram_channel.push with the rationale
     """
     monkeypatch.setenv("TEST_OTTER_SECRET", "the_correct_secret")
     monkeypatch.setenv("LORD_OTTER_DISABLE_IP_CHECK", "1")
@@ -172,7 +247,11 @@ def test_push_back_skips_order_and_notifies_board(
         logger_agent=logger_agent, experts=experts, graph=graph,
     )
 
+    # risk_agent returns a reject verdict so the handler can continue normally.
     risk_agent = MagicMock()
+    risk_agent.evaluate.return_value = RiskVerdict(
+        verdict="reject", reason="llm_push_back: test rationale",
+    )
     telegram = MagicMock()
     telegram.push = AsyncMock()
 
@@ -192,17 +271,18 @@ def test_push_back_skips_order_and_notifies_board(
         "/webhook/tradingview/lord-otter", json=_alert_payload(),
     )
 
-    # Return-fast architecture (2026-05-02): the HTTP response is now
-    # uniform `{"status":"accepted"}`. The push_back outcome lands in the
-    # audit + Telegram side-effects below, which is the load-bearing
-    # contract for downstream consumers (dashboard reads audit rows;
-    # the Board reads Telegram). Tests now assert on those side effects.
+    # Return-fast architecture: HTTP response is uniform {"status":"accepted"}.
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "accepted"
 
-    # Risk gate MUST not have been called — the order is dead.
-    risk_agent.evaluate.assert_not_called()
+    # Risk gate MUST have been called once with forced_reject_reason kwarg.
+    risk_agent.evaluate.assert_called_once()
+    call_kwargs = risk_agent.evaluate.call_args[1]
+    assert "forced_reject_reason" in call_kwargs, (
+        "risk_agent.evaluate must be called with forced_reject_reason kwarg"
+    )
+    assert "llm_push_back" in call_kwargs["forced_reject_reason"]
 
     # Telegram notify MUST have been called with the rationale.
     telegram.push.assert_called_once()
@@ -210,21 +290,112 @@ def test_push_back_skips_order_and_notifies_board(
     assert "lord-otter" in notify_msg
     assert "research vetoed" in notify_msg
 
-    # Division-side audit row pinned to the engagement.
-    events = logger_agent.recent_events(limit=40)
+    # Division-side pushback audit row still lands.
+    events = logger_agent.recent_events(limit=60)
     pushback = [
         e for e in events
         if e["kind"] == "research_tradeconf_pushback_acted_on"
     ]
     assert len(pushback) == 1
-    payload = pushback[0]["payload"]
-    assert payload["symbol"] == "BTC/USD"
-    assert payload["side"] == "buy"
-    assert payload.get("engagement_id")  # joinable to the engagement-side row
+    pb_payload = pushback[0]["payload"]
+    assert pb_payload["symbol"] == "BTC/USD"
+    assert pb_payload["side"] == "buy"
+    assert pb_payload.get("engagement_id")
+
+    # risk_rejected audit row with source=llm_push_back must also land.
+    risk_rejected = [
+        e for e in events
+        if e["kind"] == "risk_rejected"
+    ]
+    assert len(risk_rejected) == 1, (
+        f"Expected 1 risk_rejected audit row, got {len(risk_rejected)}"
+    )
+    rr_payload = risk_rejected[0]["payload"]
+    assert rr_payload.get("source") == "llm_push_back"
+    assert "llm_push_back" in (rr_payload.get("reason") or "")
 
     # Engagement-side row also lands.
     kinds = [e["kind"] for e in events]
     assert "research_trade_confirmation_emitted" in kinds
+
+
+# ── Test 2: Cypher mirror — push_back also routes through risk gate ──────
+
+
+def test_cypher_push_back_routes_through_risk_gate_as_forced_reject(
+    otter_yaml, tmp_db, monkeypatch,
+):
+    """Market Cypher handler: same shape as the Otter test above.
+    push_back must call risk_agent.evaluate with forced_reject_reason
+    rather than bypassing the gate silently.
+    """
+    monkeypatch.setenv("TEST_CYPHER_SECRET", "the_correct_cypher_secret")
+    monkeypatch.setenv("MARKET_CYPHER_DISABLE_IP_CHECK", "1")
+
+    init_db(tmp_db)
+    logger_agent = LoggerAgent(tmp_db)
+
+    experts = {
+        "technical": FakeTechnicalExpert(lean="bearish", confidence=0.8),
+        "macro": FakeMacroExpert(lean="bearish", confidence=0.7),
+        "sentiment": FakeSentimentExpert(lean="bearish", confidence=0.6),
+    }
+    graph = build_engagement_graph(
+        logger_agent, experts=experts, checkpointer=None,
+    )
+    research_firm = ResearchFirmDeps(
+        logger_agent=logger_agent, experts=experts, graph=graph,
+    )
+
+    risk_agent = MagicMock()
+    risk_agent.evaluate.return_value = RiskVerdict(
+        verdict="reject", reason="llm_push_back: cypher test rationale",
+    )
+    telegram = MagicMock()
+    telegram.push = AsyncMock()
+
+    agent = _make_cypher_agent(otter_yaml)
+    deps, _ = _build_deps_cypher(
+        db_url=tmp_db,
+        cypher_agent=agent,
+        research_firm=research_firm,
+        risk_agent=risk_agent,
+        telegram_channel=telegram,
+    )
+    deps.logger_agent = logger_agent
+    app = _build_app(deps)
+
+    client = TestClient(app)
+    r = client.post(
+        "/webhook/tradingview/market-cypher", json=_cypher_alert_payload(),
+    )
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "accepted"
+
+    # Risk gate called once with forced_reject_reason.
+    risk_agent.evaluate.assert_called_once()
+    call_kwargs = risk_agent.evaluate.call_args[1]
+    assert "forced_reject_reason" in call_kwargs
+    assert "llm_push_back" in call_kwargs["forced_reject_reason"]
+
+    # Telegram fired.
+    telegram.push.assert_called_once()
+    notify_msg = telegram.push.call_args[0][0]
+    assert "market-cypher" in notify_msg or "cypher" in notify_msg.lower()
+    assert "research vetoed" in notify_msg
+
+    # Pushback audit row.
+    events = logger_agent.recent_events(limit=60)
+    pushback = [e for e in events if e["kind"] == "research_tradeconf_pushback_acted_on"]
+    assert len(pushback) == 1
+
+    # risk_rejected audit row with source=llm_push_back.
+    risk_rejected = [e for e in events if e["kind"] == "risk_rejected"]
+    assert len(risk_rejected) == 1
+    rr_payload = risk_rejected[0]["payload"]
+    assert rr_payload.get("source") == "llm_push_back"
+    assert "llm_push_back" in (rr_payload.get("reason") or "")
 
 
 # ── Test 2: no_research smoke ───────────────────────────────────────────

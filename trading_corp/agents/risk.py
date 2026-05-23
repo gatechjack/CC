@@ -87,8 +87,28 @@ class RiskAgent:
         regime: str | None = None,
         realized_vol: float | None = None,
         db_url: str | None = None,
+        forced_reject_reason: str | None = None,
     ) -> RiskVerdict:
         params = self._params(order.strategy)
+
+        # Short-circuit: caller (typically a webhook handler) is forcing a
+        # reject. Used to route LLM "skip" verdicts through the chokepoint
+        # so they're audited as risk_rejected like every other reject.
+        # The deterministic risk gate still owns the verdict; the LLM only
+        # narrates the reason.
+        if forced_reject_reason:
+            return RiskVerdict(verdict="reject", reason=forced_reject_reason)
+
+        # Backstop: defense in depth against LLM side-flip injection. The
+        # webhook handler stamps the originating signal side on the order
+        # before any consult runs; if anything between then and here flipped
+        # the side, reject.
+        originating_side = (order.extra or {}).get("originating_signal_side")
+        if originating_side and originating_side != order.side:
+            return RiskVerdict(
+                verdict="reject",
+                reason=f"side flipped from originating signal: {originating_side} → {order.side}",
+            )
 
         # 1. Strategy halt check
         if strategy_state.halted:

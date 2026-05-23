@@ -168,17 +168,22 @@ def test_apply_mods_size_pct_equity_without_equity_keeps_qty():
     assert "skipped_reason" in applied["qty"]
 
 
-def test_apply_mods_side_flip():
+def test_apply_mods_side_flip_is_blocked():
+    """LLM cannot reverse the originating signal's direction. The side mod
+    must be dropped; original side is preserved; applied records the block."""
     order = _order(side="buy")
     mods = schemas.SuggestedModifications(
         side="sell",
         rationale="reverse direction",
     )
-    new_order, _ = apply_suggested_modifications_to_order(
+    new_order, applied = apply_suggested_modifications_to_order(
         order=order, mods=mods, account_equity=None, fallback_price=None,
     )
-    assert new_order.side == "sell"
+    # Side must NOT have been flipped.
+    assert new_order.side == "buy"
     assert order.side == "buy"  # original untouched
+    # Block recorded in applied for the audit row.
+    assert applied.get("side_flip_blocked") == {"requested": "sell", "original": "buy"}
 
 
 def test_apply_mods_no_changes_when_only_rationale():
@@ -437,3 +442,73 @@ async def test_consult_conditional_applies_modifications(
     ]
     assert len(applied) == 1
     assert applied[0]["payload"].get("applied_changes", {}).get("qty")
+
+
+async def test_consult_conditional_with_side_flip_blocks_and_audits(
+    logger_agent: LoggerAgent, deps_bullish: ResearchFirmDeps, monkeypatch,
+):
+    """When the LLM returns conditional with a side flip in suggested_modifications,
+    the flip must be blocked (original side preserved) and a
+    research_side_flip_blocked audit row must be written."""
+    from trading_corp.agents.research import graph as graph_mod
+    from trading_corp.agents.research.schemas import SuggestedModifications
+
+    async def side_flip_synth(*, spec, reports, expert_audit_row_ids, **_kwargs):
+        tc = schemas.TradeConfirmation(
+            engagement_id=spec.engagement_id,
+            requesting_division=spec.requesting_division,
+            subject_action=dict(spec.scope.proposed_action),
+            verdict="conditional",
+            rationale="flip to sell instead",
+            risks_flagged=[],
+            suggested_modifications=SuggestedModifications(
+                side="sell",
+                rationale="reverse direction based on macro",
+            ),
+        )
+        return tc, 0.0
+
+    monkeypatch.setattr(
+        graph_mod, "synthesize_trade_confirmation", side_flip_synth,
+    )
+    deps_bullish.graph = build_engagement_graph(
+        logger_agent,
+        experts=deps_bullish.experts,
+        checkpointer=None,
+    )
+
+    order = _order(side="buy")
+    result = await consult_research_for_trade_confirmation(
+        order=order,
+        payload=_payload(),
+        research_firm=deps_bullish,
+        logger_agent=logger_agent,
+        division_slug="lord_otter",
+        asset_class="crypto_spot",
+        account_equity=100_000.0,
+    )
+
+    # Order must proceed (conditional path) with original side preserved.
+    assert result.decision == "proceed"
+    assert result.verdict_kind == "conditional"
+    assert result.order is not None
+    assert result.order.side == "buy"  # NOT flipped to "sell"
+
+    # applied_changes must record the block.
+    assert result.applied_changes.get("side_flip_blocked") == {
+        "requested": "sell", "original": "buy",
+    }
+
+    # research_side_flip_blocked audit row must exist.
+    events = logger_agent.recent_events(limit=60)
+    flip_blocked = [
+        e for e in events
+        if e["kind"] == "research_side_flip_blocked"
+    ]
+    assert len(flip_blocked) == 1, (
+        f"Expected 1 research_side_flip_blocked row, got {len(flip_blocked)}"
+    )
+    fb_payload = flip_blocked[0]["payload"]
+    assert fb_payload.get("originating_side") == "buy"
+    assert fb_payload.get("requested_side") == "sell"
+    assert fb_payload.get("order_id") == order.id

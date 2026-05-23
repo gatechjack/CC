@@ -125,3 +125,31 @@ def test_no_price_reference_approves_provisionally(tmp_risk_yaml):
                           qty=1.0, order_type="market", limit_price=None)
     v = risk.evaluate(order, _account(), _strategy())
     assert v.verdict == "approve"
+
+
+def test_evaluate_with_forced_reject_reason_short_circuits(tmp_risk_yaml):
+    """forced_reject_reason short-circuits ALL other checks and returns
+    a reject verdict with exactly the supplied reason string."""
+    risk = RiskAgent(risk_yaml=tmp_risk_yaml, narrator_enabled=False)
+    # Use an order that would normally approve (small, within caps).
+    order = _order(qty=1, price=500.0, side="buy")
+    v = risk.evaluate(
+        order, _account(), _strategy(),
+        forced_reject_reason="test_reason_xyz",
+    )
+    assert v.verdict == "reject"
+    assert v.reason == "test_reason_xyz"
+
+
+def test_evaluate_backstop_rejects_side_mismatch(tmp_risk_yaml):
+    """If originating_signal_side in order.extra differs from order.side,
+    the backstop rejects even though the order would otherwise approve."""
+    risk = RiskAgent(risk_yaml=tmp_risk_yaml, narrator_enabled=False)
+    order = ProposedOrder(
+        strategy="demo", symbol="SPY", side="sell",
+        qty=1, order_type="limit", limit_price=500.0,
+        extra={"originating_signal_side": "buy"},
+    )
+    v = risk.evaluate(order, _account(), _strategy())
+    assert v.verdict == "reject"
+    assert "side flipped from originating signal" in v.reason

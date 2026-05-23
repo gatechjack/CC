@@ -339,6 +339,20 @@ async def consult_research_for_trade_confirmation(
         account_equity=account_equity,
         fallback_price=_payload_price(payload),
     )
+    if applied_changes.get("side_flip_blocked"):
+        _audit_division_side(
+            logger_agent,
+            actor=division_slug,
+            kind="research_side_flip_blocked",
+            payload={
+                "engagement_id": product.engagement_id,
+                "order_id": order.id,
+                "symbol": order.symbol,
+                "originating_side": applied_changes["side_flip_blocked"]["original"],
+                "requested_side": applied_changes["side_flip_blocked"]["requested"],
+                "rationale": product.rationale,
+            },
+        )
     _audit_division_side(
         logger_agent,
         actor=division_slug,
@@ -427,8 +441,14 @@ def apply_suggested_modifications_to_order(
     if mods.side is not None:
         before = new_order.side
         if mods.side != before:
-            new_order.side = mods.side  # type: ignore[assignment]
-            applied["side"] = {"before": before, "after": new_order.side}
+            # Side flip BLOCKED (capital-risk path). LLM cannot reverse
+            # the originating signal's direction; the consult is a
+            # narrator, not a decision-maker. Drop the mod; preserve
+            # original side; surface in applied for the audit row.
+            applied["side_flip_blocked"] = {
+                "requested": mods.side, "original": before,
+            }
+            # Do NOT mutate new_order.side.
 
     if mods.size_pct_equity is not None:
         before_qty = new_order.qty
