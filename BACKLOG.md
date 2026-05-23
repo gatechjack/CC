@@ -429,6 +429,42 @@ Falsy on `0.0`; should be `is not none`.
 
 ---
 
+## P1/P2/P3 — VM security state anomalies (2026-05-23, from §7 verification)  *(NEW — 2026-05-23)*
+
+Three findings surfaced during the §7 verification spree (runbook: `runbooks/2026-05-23_vm_security_state.md`, commit `d1402b5`) that are NOT in the original security review (`reports/2026-05-21_security_review.md`). Filed here so they get rolled into the next remediation sweep.
+
+### P1 — `azureuser` has `NOPASSWD:ALL` sudo
+
+**Finding:** `/etc/sudoers.d/*` includes `azureuser ALL=(ALL) NOPASSWD:ALL` (set by cloud-init). This partially undermines the C-4 remediation that was already done (service now runs as `azureuser` instead of root). Any code-execution path inside the `trading-corp` process can `subprocess.run(['sudo', 'bash'])` and reach root with no password prompt.
+
+**Cross-ref:** C-4 in the report; not separately named there.
+
+**Patch sketch:** Replace the blanket `NOPASSWD:ALL` with a narrow allowlist of the specific commands the operator actually needs passwordless (e.g. `systemctl restart trading-corp`, `sqlite3 /home/azureuser/trading_corp/data/trading_corp.db`). Everything else requires password prompt. Risk: misconfiguring the sudoers file is a classic VM lockout pattern — edit via `visudo` only, test in a second SSH session before closing the first.
+
+**Why P1:** active privilege-escalation path that nullifies the work that went into running the service as non-root. Should be sequenced with TRACK A (secret rotation) since both touch VM state.
+
+### P2 — `trading_corp.db` is world-readable (mode 644)
+
+**Finding:** `-rw-r--r-- azureuser azureuser 484950016 /home/azureuser/trading_corp/data/trading_corp.db`. Any local process on the VM can read the full `audit_event`, `position`, `account_state`, and `agent_state` tables without sudo. Includes broker fills, every webhook payload received, every risk-gate decision.
+
+**Cross-ref:** Adjacent to C-5 (no backup) and M-16 (sync mode), but not separately named.
+
+**Patch:** `sudo chmod 600 /home/azureuser/trading_corp/data/trading_corp.db`. Service owns the file (azureuser), so the trading-corp process keeps r/w access. Verify nothing else on the VM needs read access (the watchlist deep-batch services may — those run as root per the P2 root-timer entry below, so root would still read fine).
+
+**Why P2:** confidentiality issue, not integrity. The VM has no untrusted local users today, so the threat surface is small. But cheap fix and removes a class of "if you ever get on this box, everything's readable" exposure.
+
+### P3 — Root-owned `/tmp/kalshi_*.pem` files
+
+**Finding:** Two of the four stale `/tmp/kalshi_*.pem` files (from May 16) are root-owned, created during `az vm run-command` deploys (which runs as root). The `trading-corp` service (now `azureuser`) cannot clean them up. Only root can remove them.
+
+**Cross-ref:** M-15 / L-12 in the report (Kalshi PEM tempfile leak) — those findings exist, but the root-ownership wrinkle wasn't called out.
+
+**Patch:** Inventory + `sudo rm` the four stale files once. For the recurring cause, fix the upstream code so PEMs are written to a directory the service can clean — or include cleanup in the Kalshi adapter's shutdown path.
+
+**Why P3:** cosmetic; the files are read-only key material that's already been rotated. Cleanup hygiene only.
+
+---
+
 ## P2 (infra/security) — Polymarket + Kalshi deep-watchlist timers run as root  *(NEW — 2026-05-23)*
 
 **Division scope:** `polymarket_copy_trading` + `kalshi_copy_trading` (both deep-watchlist timers).
