@@ -282,6 +282,32 @@ unrelated).
 
 ---
 
+## P2 (infra/security) — Polymarket + Kalshi deep-watchlist timers run as root  *(NEW — 2026-05-23)*
+
+**Division scope:** `polymarket_copy_trading` + `kalshi_copy_trading` (both deep-watchlist timers).
+**Flagged during:** the `pm-watchlist-windowed-rescore` deploy (2026-05-23). **Deliberately deferred** — do NOT bundle into that deploy or any other current-quarter deploy. File the work, schedule it on its own.
+
+The `trading-corp-pm-watchlist-deep.service` (verified live on prod 2026-05-23) and the Kalshi-equivalent deep-watchlist service both run with `User=root`. A weekly batch that reads a public unauthenticated API and writes one `agent_state` slot is overprivileged at root — pattern smell, not acute exposure (see "Why this isn't an emergency" below).
+
+**Hardening workstream:**
+
+1. Change `User=root` → `User=azureuser` (or a dedicated non-login service account) on BOTH unit files:
+   - `/etc/systemd/system/trading-corp-pm-watchlist-deep.service`
+   - `/etc/systemd/system/trading-corp-kalshi-watchlist-deep.service`
+2. Migrate ownership of every file the scripts touch:
+   - `/home/azureuser/trading_corp/data/trading_corp.db` (the SQLite `agent_state` write; must be writable by the new service user WITHOUT breaking other code paths that touch the same DB — chiefly the live `trading-corp` service itself).
+   - Any tmp/cache the scripts create under WorkingDirectory.
+3. One-time `chown` of existing root-owned artifacts so the first non-root timer fire doesn't hit permission errors. Audit-first: `find /home/azureuser/trading_corp -user root -ls` to enumerate.
+4. Verify the venv at `/home/azureuser/trading_corp/venv/bin/python` is executable by the new user (usually yes for a standard venv — confirm).
+
+**Rollback risk is real:** a wrong ownership migration breaks BOTH weekly refreshes (PM + Kalshi) silently — they'll fail to write `agent_state` and the watch-list dashboards will go stale. Treat as its own workstream with its own rollback: snapshot the pre-change `find -ls` ownership listing; on rollback, replay `chown` commands with the recorded owners. NOT a small unit-file edit.
+
+**Why this isn't an emergency:** the public APIs being hit (`data-api.polymarket.com`, Apify Kalshi profile scraper) are read-only and carry no prod secret. Worst-case escalation from a compromise of the script process is the ability to corrupt `watch_only_whales` (a paper-only screening list) and the script's own log files. Risk is privilege drift / pattern smell, not acute exposure.
+
+**Scope check:** if the SQLite ownership migration requires extending beyond `data/trading_corp.db` (e.g. if the live `trading-corp.service` also needs to switch off root for the DB write paths to line up), scope bigger than a one-session task — escalate to a Board memo before executing.
+
+---
+
 ## P1/P2 — Tastytrade AM fix follow-ups (2026-05-22)  *(NEW — 2026-05-22)*
 
 Queued during the `e977641` Tastytrade AM-fix deploy (deploy_log entry
