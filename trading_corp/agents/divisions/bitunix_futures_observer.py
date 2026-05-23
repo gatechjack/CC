@@ -677,6 +677,86 @@ class BitunixFuturesObserver:
 
     # ── Phase 3.2 — score path ────────────────────────────────────────
 
+    def _detect_flip_opportunity(
+        self,
+        payload: dict[str, Any],
+        verdict_score: Any,
+        ctx: Any,
+    ) -> None:
+        """Observe-only audit: when a PREMIUM opposite-side signal
+        scores while an open paper_trade_record exists for this
+        division, write one `flip_opportunity_detected` row capturing
+        the open position, the opposing signal, and the unrealized R
+        at this moment. No close, no modify, no reconciler change —
+        pure instrumentation to measure how often the
+        no-close-on-opposite gap fires before any execution build."""
+        if verdict_score.tier != _ScoreTier.PREMIUM:
+            return
+        new_side = "buy" if verdict_score.side == _ScoreSide.BUY else "sell"
+        with db.connect(self.db_url) as conn:
+            row = conn.execute(
+                "SELECT order_id, side, entry_reference_price, "
+                "stop_price, ts FROM paper_trade_record "
+                "WHERE strategy = ? AND result IS NULL "
+                "ORDER BY ts DESC LIMIT 1",
+                ("bitunix_futures",),
+            ).fetchone()
+        if row is None:
+            return
+        open_side = row["side"]
+        if open_side == new_side:
+            return
+
+        entry = row["entry_reference_price"]
+        stop = row["stop_price"]
+        current_price = getattr(ctx, "current_price", None)
+        # Unrealized R = (current - entry) / (entry - stop) for long;
+        # mirror for short. None when any input is missing or the
+        # risk distance is zero (degenerate stop=entry).
+        current_r: float | None = None
+        if (
+            entry is not None
+            and stop is not None
+            and current_price is not None
+        ):
+            risk_dist = (entry - stop) if open_side == "buy" else (stop - entry)
+            if risk_dist != 0:
+                move = (
+                    (current_price - entry)
+                    if open_side == "buy"
+                    else (entry - current_price)
+                )
+                current_r = float(move) / float(risk_dist)
+
+        bd = verdict_score.breakdown
+        payload_dict = {
+            "strategy": "bitunix_futures",
+            "division": "bitunix_futures",
+            "open_order_id": row["order_id"],
+            "open_side": open_side,
+            "open_entry_price": entry,
+            "open_stop_price": stop,
+            "open_ts": row["ts"],
+            "current_price": current_price,
+            "current_r": current_r,
+            "opposing_side": new_side,
+            "opposing_tier": verdict_score.tier.value,
+            "opposing_net_score": bd.net_score,
+            "opposing_signal": (payload.get("signal") or "").strip().lower(),
+            "opposing_source": payload.get("_source"),
+        }
+        with db.connect(self.db_url) as conn:
+            conn.execute(
+                "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    _utc_now_iso(),
+                    "bitunix_futures",
+                    "flip_opportunity_detected",
+                    json.dumps(payload_dict, default=str),
+                ),
+            )
+
     def _log_score_decision(
         self,
         payload: dict[str, Any],
@@ -1136,6 +1216,18 @@ class BitunixFuturesObserver:
                 self._log_pa_validation_expired(reason="score_decay")
             self._clear_pending_pa()
             return
+
+        # Observe-only: when a PREMIUM opposite-side signal scores
+        # while an open paper position exists, write one detection row
+        # so the no-close-on-opposite gap can be measured empirically
+        # before committing to the full close-on-opposite-PREMIUM
+        # build. NEVER closes, modifies, or otherwise touches the open
+        # position; wrapped in try/except so a DB hiccup here cannot
+        # break the trading path.
+        try:
+            self._detect_flip_opportunity(payload, verdict_score, ctx)
+        except Exception as e:
+            log.warning("bitunix_observer: flip detection raised: %s", e)
 
         # Deferred-fire: captured in the PA-PASS branch below when the
         # source is `bar_tick_redeem`. Used to stamp `order.extra` so
