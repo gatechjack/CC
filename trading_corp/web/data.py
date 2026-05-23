@@ -976,6 +976,11 @@ def _hydrate_pm_overview(divisions: list[Division], db_url: str) -> None:
     Keys on the resulting dict:
         n_resolved, n_pending, n_wins, n_losses, n_voids,
         win_rate_pct (None pre-first-resolve), total_realized_pnl.
+
+    Polymarket metrics-epoch cutoff is resolved internally and applied
+    to the polymarket roll-up + the pending-count subquery for the
+    polymarket_copy_trading division. Kalshi cutoffs live in
+    DASHBOARD_RT_CUTOFFS (no change here).
     """
     from trading_corp.utils.divisions import classify_investment_type
 
@@ -1001,6 +1006,11 @@ def _hydrate_pm_overview(divisions: list[Division], db_url: str) -> None:
         for d in pm_divisions
     }
 
+    # Resolve metrics-epoch once for this hydrate sweep — affects the
+    # polymarket roll-up below + the pending count below it. Kalshi
+    # tile cutoffs use DASHBOARD_RT_CUTOFFS (hardcoded), not agent_state.
+    pm_epoch = _get_polymarket_metrics_epoch(db_url)
+
     # Polymarket round-trips — grouped by division (Fix 2026-05-14).
     # Previously this was a table-wide aggregate dumped onto the
     # `polymarket_arbitrage` tile, which (1) showed the wrong WR for
@@ -1014,7 +1024,14 @@ def _hydrate_pm_overview(divisions: list[Division], db_url: str) -> None:
             "       COUNT(*) AS n, "
             "       SUM(won) AS w, "
             "       SUM(realized_pnl) AS pnl "
-            "FROM polymarket_round_trips GROUP BY division",
+            "FROM polymarket_round_trips "
+            "WHERE 1=1"
+            + _polymarket_cutoff_clause(
+                pm_epoch,
+                ts_col="entry_ts",
+                div_col="COALESCE(division, 'polymarket_arbitrage')",
+            )
+            + " GROUP BY division",
         )
         for r in rows:
             div = r.get("division") or ""
@@ -1062,10 +1079,14 @@ def _hydrate_pm_overview(divisions: list[Division], db_url: str) -> None:
         log.debug("pm_overview: kalshi roll-up failed: %s", e)
 
     # Pending counts (per-division). One query per division — small;
-    # could be batched if it becomes hot.
+    # could be batched if it becomes hot. Polymarket-side pending counts
+    # carry the metrics-epoch cutoff; Kalshi-side pending counts ignore
+    # it (Kalshi uses DASHBOARD_RT_CUTOFFS for round_trips only).
     for d in pm_divisions:
         try:
-            stats[d.slug]["n_pending"] = _query_pm_pending_count(db_url, [d.slug])
+            stats[d.slug]["n_pending"] = _query_pm_pending_count(
+                db_url, [d.slug], pm_epoch=pm_epoch,
+            )
         except Exception as e:
             log.debug("pm_overview: pending count failed for %s: %s", d.slug, e)
 
@@ -3345,6 +3366,12 @@ class PMDashboardView:
     # these to render the active-column arrow + compute the toggle URL.
     pm_watch_sort: str | None = None  # whitelisted user-facing key (e.g. "avg_entry_price")
     pm_watch_desc: bool = True
+    # Polymarket metrics-epoch (None when unset). Read from
+    # agent_state(polymarket_copy_trader, metrics_epoch). Surfaced on the
+    # view so the template can render a "metrics since {epoch}" badge.
+    # The filter itself is applied inside each PM query helper; this field
+    # is just the UI signal that an epoch is active.
+    pm_metrics_epoch: str | None = None
     # Set only when the selected division is 'kalshi_crypto'. None
     # on every other division and on the All Prediction Markets view.
     # Owns the vol-v2 paper-validation cards; see
@@ -3392,6 +3419,92 @@ def _kalshi_cutoff_clause(ts_col: str) -> str:
     return "".join(parts)
 
 
+# ── Polymarket per-division metrics-epoch reset ─────────────────────────
+#
+# Where the Kalshi pattern above uses a hardcoded Python dict (requires
+# redeploy to roll forward/back), the polymarket_copy_trading epoch lives
+# in `agent_state(polymarket_copy_trader, metrics_epoch)`. Operator sets
+# the ISO timestamp at runtime; clearing the slot (DELETE FROM agent_state
+# WHERE agent='polymarket_copy_trader' AND key='metrics_epoch') fully
+# restores the prior dashboard view. Pre-epoch rows are never deleted —
+# they stay in polymarket_round_trips / audit_event / polymarket_equity_
+# history for forensics; only dashboard aggregates filter them out.
+#
+# Coverage extends beyond round_trips: the curve filters on
+# polymarket_equity_history.ts, and open/pending counts filter on
+# audit_event.ts. polymarket_resolver.py:161+:306 sets
+# polymarket_round_trips.entry_ts == the original BUY audit_event.ts
+# byte-equal, so the dual filter (a.ts pre-resolution, entry_ts
+# post-resolution) is filtering the same physical timestamp from two
+# angles — no semantic gap.
+
+
+def _get_polymarket_metrics_epoch(db_url: str) -> str | None:
+    """Read agent_state(polymarket_copy_trader, metrics_epoch), validated.
+
+    Returns the ISO-8601 timestamp string verbatim if it parses; otherwise
+    None (the no-op path — equivalent to "no epoch set"). The validation
+    is mandatory regardless of how trusted the write path is: the returned
+    value is f-string-interpolated into SQL by `_polymarket_cutoff_clause`,
+    so anything that escapes the parse becomes injection surface.
+
+    We do NOT return the parsed datetime; we return the original string so
+    it round-trips into SQL literally as the operator stored it. The parse
+    is purely a typecheck.
+    """
+    try:
+        rec = db.load_agent_state(
+            "polymarket_copy_trader", "metrics_epoch", db_url=db_url,
+        )
+    except Exception as e:
+        log.debug("metrics_epoch load failed: %s", e)
+        return None
+    if rec is None:
+        return None
+    val = rec[0]
+    if not isinstance(val, str) or not val:
+        return None
+    try:
+        datetime.fromisoformat(val)
+    except (TypeError, ValueError):
+        log.warning(
+            "metrics_epoch value %r failed ISO-8601 parse — treating as unset",
+            val,
+        )
+        return None
+    return val
+
+
+def _polymarket_cutoff_clause(
+    epoch_iso: str | None,
+    *,
+    ts_col: str = "entry_ts",
+    div_col: str = "division",
+    div_value: str = "polymarket_copy_trading",
+) -> str:
+    """SQL fragment excluding pre-epoch rows for the specified polymarket
+    division. Returns '' (no-op) when `epoch_iso` is None — the
+    reversibility path. Mirrors `_kalshi_cutoff_clause` shape.
+
+    `epoch_iso` is assumed pre-validated by `_get_polymarket_metrics_epoch`
+    (datetime.fromisoformat round-trip). Passing an unvalidated value here
+    is an injection bug; the helper above is the only intended caller.
+
+    Per-call-site column parameterization because the three relevant
+    tables use different column names:
+      - polymarket_round_trips:     ts_col='entry_ts',
+                                    div_col="COALESCE(division,'polymarket_arbitrage')"
+      - polymarket_equity_history:  filter applied via Python max(window, epoch)
+                                    BEFORE the SQL, not via this clause
+      - audit_event:                ts_col='a.ts',
+                                    div_col="COALESCE(json_extract(...payload_json,'$.division'),
+                                                      'polymarket_arbitrage')"
+    """
+    if not epoch_iso:
+        return ""
+    return f" AND NOT ({div_col}='{div_value}' AND {ts_col} < '{epoch_iso}')"
+
+
 def _pm_venue(slug: str) -> str:
     if slug.startswith(_KALSHI_PREFIX):
         return "kalshi"
@@ -3409,6 +3522,8 @@ def _pm_divisions_all() -> list[Division]:
 
 def _query_pm_round_trips(
     db_url: str, division_slugs: list[str], limit: int,
+    *,
+    pm_epoch: str | None = None,
 ) -> list[PMRoundTrip]:
     """Pull round-trip rows from both venue tables, filter to the selected
     divisions, normalize, sort by resolved_ts DESC, cap to `limit`.
@@ -3437,8 +3552,13 @@ def _query_pm_round_trips(
             f"       implied_at_entry, llm_prob, divergence_pct, extra_json, "
             f"       COALESCE(division, 'polymarket_arbitrage') AS division "
             f"FROM polymarket_round_trips "
-            f"WHERE COALESCE(division, 'polymarket_arbitrage') IN ({poly_ph}) "
-            f"ORDER BY resolved_ts DESC LIMIT ?",
+            f"WHERE COALESCE(division, 'polymarket_arbitrage') IN ({poly_ph})"
+            + _polymarket_cutoff_clause(
+                pm_epoch,
+                ts_col="entry_ts",
+                div_col="COALESCE(division, 'polymarket_arbitrage')",
+            )
+            + " ORDER BY resolved_ts DESC LIMIT ?",
             (*poly_slugs, limit),
         )
         for r in poly_rows:
@@ -3577,10 +3697,19 @@ def _query_pm_round_trips(
 
 def _query_pm_equity_curve(
     db_url: str, division_slugs: list[str], days: int,
+    *,
+    pm_epoch: str | None = None,
 ) -> list[PMEquityPoint]:
     """Equity-history points for the selected divisions over `days` of
     history. In All-mode (multiple selected slugs) we DON'T sum here —
     return raw per-division points and let the chart layer aggregate.
+
+    When `pm_epoch` is set AND `polymarket_copy_trading` is in scope,
+    the polymarket side's effective cutoff is `max(now - days, epoch)`
+    so the rendered curve's X-axis (auto-fit via Lightweight Charts'
+    timeScale().fitContent()) anchors at the epoch — not the days-back
+    window — when the epoch is more recent. Filter and anchor are ONE
+    change because of fitContent's auto-range behavior.
     """
     if not division_slugs:
         return []
@@ -3589,6 +3718,11 @@ def _query_pm_equity_curve(
 
     poly_slugs = [s for s in division_slugs if s.startswith(_POLYMARKET_PREFIX)]
     if poly_slugs:
+        # Effective cutoff for the polymarket side = max(window, epoch).
+        # Kalshi side keeps the window-only cutoff — kalshi cutoffs live
+        # in DASHBOARD_RT_CUTOFFS (round_trips only), not in equity-history
+        # filtering. Both behaviors intentionally distinct.
+        poly_cutoff = max(cutoff, pm_epoch) if pm_epoch else cutoff
         poly_ph = ",".join("?" for _ in poly_slugs)
         poly_rows = _query(
             db_url,
@@ -3596,7 +3730,7 @@ def _query_pm_equity_curve(
             f"FROM polymarket_equity_history "
             f"WHERE ts >= ? AND division IN ({poly_ph}) "
             f"ORDER BY ts ASC",
-            (cutoff, *poly_slugs),
+            (poly_cutoff, *poly_slugs),
         )
         for r in poly_rows:
             out.append(PMEquityPoint(
@@ -3633,6 +3767,8 @@ def _query_pm_equity_curve(
 
 def _query_pm_open_trades(
     db_url: str, division_slugs: list[str], limit: int = 200,
+    *,
+    pm_epoch: str | None = None,
 ) -> list[PMOpenTrade]:
     """Pull would_have_placed audit rows that have no round-trip resolution
     yet, normalize across venues, sort by emit ts DESC, cap to `limit`.
@@ -3675,7 +3811,15 @@ def _query_pm_open_trades(
             f"  AND a.kind = 'would_have_placed' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.division'), 'polymarket_arbitrage') IN ({poly_ph}) "
-            f"  AND r.order_id IS NULL "
+            + _polymarket_cutoff_clause(
+                pm_epoch,
+                ts_col="a.ts",
+                div_col=(
+                    "COALESCE(json_extract(a.payload_json, '$.division'),"
+                    "'polymarket_arbitrage')"
+                ),
+            )
+            + f"  AND r.order_id IS NULL "
             f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
             f"    SELECT entry_order_id FROM polymarket_round_trips "
             f"    WHERE entry_order_id IS NOT NULL"
@@ -3827,6 +3971,8 @@ def _query_pm_open_trades(
 
 def _query_pm_pending_count(
     db_url: str, division_slugs: list[str],
+    *,
+    pm_epoch: str | None = None,
 ) -> int:
     """Count would_have_placed audit rows without a corresponding
     round-trip resolution. Cross-venue."""
@@ -3852,7 +3998,15 @@ def _query_pm_pending_count(
             f"  AND a.kind = 'would_have_placed' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.division'), 'polymarket_arbitrage') IN ({poly_ph}) "
-            f"  AND r.order_id IS NULL "
+            + _polymarket_cutoff_clause(
+                pm_epoch,
+                ts_col="a.ts",
+                div_col=(
+                    "COALESCE(json_extract(a.payload_json, '$.division'),"
+                    "'polymarket_arbitrage')"
+                ),
+            )
+            + f"  AND r.order_id IS NULL "
             f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
             f"    SELECT entry_order_id FROM polymarket_round_trips "
             f"    WHERE entry_order_id IS NOT NULL"
@@ -3893,6 +4047,8 @@ def _query_pm_pending_count(
 
 def _query_pm_resolved_stats(
     db_url: str, division_slugs: list[str],
+    *,
+    pm_epoch: str | None = None,
 ) -> dict:
     """Aggregate stats over ALL resolved round-trips (no LIMIT), cross-venue.
 
@@ -3919,7 +4075,12 @@ def _query_pm_resolved_stats(
             f"       COALESCE(SUM(CASE WHEN won = 0 AND realized_pnl = 0.0 THEN 1 ELSE 0 END), 0) AS n_voids, "
             f"       COALESCE(SUM(realized_pnl), 0.0) AS total_pnl "
             f"FROM polymarket_round_trips "
-            f"WHERE COALESCE(division, 'polymarket_arbitrage') IN ({poly_ph})",
+            f"WHERE COALESCE(division, 'polymarket_arbitrage') IN ({poly_ph})"
+            + _polymarket_cutoff_clause(
+                pm_epoch,
+                ts_col="entry_ts",
+                div_col="COALESCE(division, 'polymarket_arbitrage')",
+            ),
             tuple(poly_slugs),
         )
         if rows:
@@ -3967,7 +4128,11 @@ def _pm_equity_at(curve: list[PMEquityPoint], at_or_before: datetime) -> float |
     return sum(p.equity for p in by_div.values())
 
 
-def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
+def _query_pm_whales(
+    db_url: str, target_slugs: list[str],
+    *,
+    pm_epoch: str | None = None,
+) -> list[PMWhaleRow]:
     """Per-whale aggregates for the Whales tab.
 
     Returns one row per (whale_handle, division). The panel shows whales we
@@ -4066,7 +4231,16 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
     # Polymarket Copy Trader
     if "polymarket_copy_trading" in target_slugs:
         try:
-            rows = _query(db_url, """
+            # Aggregate over polymarket_round_trips. Epoch cutoff appended
+            # to WHERE. Division is hardcoded to polymarket_copy_trading so
+            # we pass division as a literal — clause renders identically
+            # via the COALESCE'd div_col we use elsewhere.
+            rt_clause = _polymarket_cutoff_clause(
+                pm_epoch,
+                ts_col="entry_ts",
+                div_col="division",
+            )
+            rows = _query(db_url, f"""
               SELECT json_extract(extra_json, '$.whale_user_name') AS handle,
                      COUNT(*) AS n,
                      SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) AS w,
@@ -4075,17 +4249,29 @@ def _query_pm_whales(db_url: str, target_slugs: list[str]) -> list[PMWhaleRow]:
                      MAX(entry_ts) AS last_ts
               FROM polymarket_round_trips
               WHERE division='polymarket_copy_trading' AND won IS NOT NULL
+                {rt_clause}
               GROUP BY handle
             """)
-            opens = _query(db_url, """
-              SELECT json_extract(payload_json,'$.whale_user_name') AS handle,
+            # Opens subquery: audit_event with a.ts cutoff. Aliased as
+            # `a` so the cutoff clause's a.ts column reference resolves.
+            opens_clause = _polymarket_cutoff_clause(
+                pm_epoch,
+                ts_col="a.ts",
+                div_col=(
+                    "COALESCE(json_extract(a.payload_json,'$.division'),"
+                    "'polymarket_arbitrage')"
+                ),
+            )
+            opens = _query(db_url, f"""
+              SELECT json_extract(a.payload_json,'$.whale_user_name') AS handle,
                      COUNT(*) AS n
-              FROM audit_event
-              WHERE kind='would_have_placed'
-                AND json_extract(payload_json,'$.division')='polymarket_copy_trading'
-                AND json_extract(payload_json,'$.side')='buy'
-                AND json_extract(payload_json,'$.order_id') NOT IN
+              FROM audit_event a
+              WHERE a.kind='would_have_placed'
+                AND json_extract(a.payload_json,'$.division')='polymarket_copy_trading'
+                AND json_extract(a.payload_json,'$.side')='buy'
+                AND json_extract(a.payload_json,'$.order_id') NOT IN
                   (SELECT entry_order_id FROM polymarket_round_trips WHERE entry_order_id IS NOT NULL)
+                {opens_clause}
               GROUP BY handle
             """)
             opens_map = {r.get("handle"): int(r.get("n") or 0) for r in opens}
@@ -4552,18 +4738,25 @@ async def build_prediction_market_view(
 
     db_url = deps.db_url
 
+    # Resolve the polymarket_copy_trading metrics epoch once for this build.
+    # All 6 PM query helpers below accept it as a kwarg and apply the
+    # cutoff to their polymarket side; passing None == no-op (the
+    # reversibility path). Kalshi-side queries ignore it; their cutoffs
+    # live in DASHBOARD_RT_CUTOFFS.
+    pm_epoch = await asyncio.to_thread(_get_polymarket_metrics_epoch, db_url)
+
     round_trips, equity_curve, open_trades, whales, kalshi_watch_only, polymarket_watch_only, pending_count, resolved_stats = await asyncio.gather(
-        asyncio.to_thread(_query_pm_round_trips, db_url, target_slugs, history_limit),
-        asyncio.to_thread(_query_pm_equity_curve, db_url, target_slugs, equity_curve_days),
-        asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200),
-        asyncio.to_thread(_query_pm_whales, db_url, target_slugs),
+        asyncio.to_thread(_query_pm_round_trips, db_url, target_slugs, history_limit, pm_epoch=pm_epoch),
+        asyncio.to_thread(_query_pm_equity_curve, db_url, target_slugs, equity_curve_days, pm_epoch=pm_epoch),
+        asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200, pm_epoch=pm_epoch),
+        asyncio.to_thread(_query_pm_whales, db_url, target_slugs, pm_epoch=pm_epoch),
         asyncio.to_thread(_query_kalshi_watch_only_rows, db_url, target_slugs),
         asyncio.to_thread(
             _query_polymarket_watch_only_rows, db_url, target_slugs,
             sort_key=pm_watch_sort, sort_desc=pm_watch_desc,
         ),
-        asyncio.to_thread(_query_pm_pending_count, db_url, target_slugs),
-        asyncio.to_thread(_query_pm_resolved_stats, db_url, target_slugs),
+        asyncio.to_thread(_query_pm_pending_count, db_url, target_slugs, pm_epoch=pm_epoch),
+        asyncio.to_thread(_query_pm_resolved_stats, db_url, target_slugs, pm_epoch=pm_epoch),
     )
 
     # Tiles must show TRUE totals, not list lengths. open_trades/round_trips
@@ -4593,6 +4786,7 @@ async def build_prediction_market_view(
         polymarket_watch_only=polymarket_watch_only,
         pm_watch_sort=(pm_watch_sort or "").lower() or None,
         pm_watch_desc=pm_watch_desc,
+        pm_metrics_epoch=pm_epoch,
         vol_v2_block=vol_v2_block,
     )
 
