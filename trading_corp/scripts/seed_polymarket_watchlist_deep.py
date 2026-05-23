@@ -1,24 +1,46 @@
-"""Polymarket watch-only watchlist deep seed — true-PnL whale discovery.
+"""Polymarket watch-only watchlist deep seed — windowed (last-N resolved BUYs).
 
-Finds the top-N most-profitable Polymarket wallets that pass a quality gate
-and writes them to `agent_state(polymarket_copy_trader, watch_only_whales)`.
-These wallets are observation-only: no ProposedOrders are ever emitted from
-this list. The copy-trade roster lives separately in `selected_whales`.
+Finds Polymarket wallets whose **last 100 resolved BUYs** clear a quality
+gate and writes them to
+`agent_state(polymarket_copy_trader, watch_only_whales)`.
+These wallets are observation-only: no ProposedOrders are ever emitted
+from this list. The copy-trade roster lives separately in
+`selected_whales` and is untouched by this script.
 
 Pipeline:
-  1. Pull `/v1/leaderboard?category=<C>` for each working category + global,
-     paginated to `candidates_per_category` rows per key. Dedupe wallets.
-  2. For each candidate wallet, fetch `/activity?user=<wallet>&limit=N`
-     (single call by default; paginate if --activity-pages > 1).
+  1. Pull `/v1/leaderboard?category=<C>` for each working category +
+     global, paginated to `candidates_per_category` rows per key. Dedupe
+     wallets.
+  2. Per candidate wallet, walk `/activity` with three termination
+     conditions, whichever fires first:
+       - Accumulated BUY-trade row count >= `target_buy_rows` (default
+         150, a buffer above the 100-window so unresolveds don't starve
+         it).
+       - `/activity` returns an empty page (feed exhausted).
+       - Page index reaches `max_pages_per_wallet` (default 10, → 5000
+         activity rows ceiling at activity_limit=500).
+     Record the termination reason for telemetry.
   3. Batch-fetch market resolutions for every unique condition_id seen
      across all wallets' BUY activity (gamma-api /markets).
-  4. Per wallet, call `compute_polymarket_stats` (the same helper used by
-     the live copy-roster refresh) to determine wins, losses, and total
-     realized PnL on resolved BUYs.
-  5. Quality gate: closed_positions_count >= min_positions
-     AND wins/closed_positions_count >= min_win_rate.
-  6. Rank survivors by descending total realized PnL (USDC). Take top-N.
-  7. Write to `agent_state(polymarket_copy_trader, watch_only_whales)`.
+  4. Per wallet, build the windowed slice = most-recent 100 BUYs whose
+     market is `resolved`. If <window_size, true N is recorded — never
+     silently report 100 on a short window.
+  5. Apply floors (whichever fails → drop):
+       - `n >= min_resolved_buys` (default 10, hard noise floor)
+       - `last_trade_iso` of ANY side <= recency_days old (default 60)
+       - windowed WR >= min_windowed_wr (default 0.62)
+       - windowed realized PnL > min_windowed_pnl (default 0.01, i.e. > $0)
+  6. Rank survivors by **windowed** `realized_pnl_usdc` desc. No top-N
+     cap by default (`--top 0`).
+  7. Mark `provisional=true` iff `window_size_n < provisional_threshold`
+     (default 50). Dashboard greys these rows independent of sort column.
+  8. Write to `agent_state(polymarket_copy_trader, watch_only_whales)`.
+
+Why windowed: lifetime stats (the prior design) rank dormant whales and
+high-volume-low-edge whales as if they were still good bets. A 100-trade
+sliding window filters inactive wallets for free (they never accumulate
+100 recent resolved trades) and makes WR/PnL directly comparable across
+whales (sample size held constant).
 
 Why this path (vs `/closed-positions`):
   `/closed-positions` only surfaces positions with positive realizedPnl —
@@ -35,17 +57,22 @@ Usage::
     python -m trading_corp.scripts.seed_polymarket_watchlist_deep [opts]
 
 Options:
-    --categories C1,C2,...  Leaderboard categories (default: all 5 working)
-    --candidates N          Top-N to consider per category (default 500)
-    --top N                 Final watchlist size (default 50)
-    --min-positions N       Min resolved positions gate (default 100)
-    --min-win-rate F        Min win rate gate [0.0-1.0] (default 0.70)
-    --activity-limit N      /activity rows per call (default 500, max 1000)
-    --activity-pages N      Pages of activity per wallet (default 2)
-    --merge                 Union with existing watchlist (weekly-refresh mode)
-    --max-total N           Cap merged list size (only with --merge)
-    --dry-run               Print results; don't write to agent_state
-    --json                  JSON output instead of human table
+    --categories C1,C2,...   Leaderboard categories (default: all 5 working)
+    --candidates N           Top-N to consider per category (default 500)
+    --top N                  Cap final watchlist (default 0 = no cap)
+    --window-size N          Resolved-BUY window size (default 100)
+    --min-resolved-buys N    Hard noise floor on n (default 10)
+    --min-windowed-wr F      Windowed WR floor [0.0-1.0] (default 0.62)
+    --min-windowed-pnl F     Windowed realized PnL floor USDC (default 0.01)
+    --recency-days N         Drop if last activity older than N days (default 60)
+    --provisional-threshold N  Mark provisional iff n < this (default 50)
+    --activity-limit N       /activity rows per call (default 500, max 1000)
+    --max-pages-per-wallet N Ceiling on /activity pages per wallet (default 10)
+    --target-buy-rows N      Stop paging when this many BUYs seen (default 150)
+    --merge                  Union with existing watchlist (weekly-refresh mode)
+    --max-total N            Cap merged list size (only with --merge)
+    --dry-run                Print results; don't write to agent_state
+    --json                   JSON output instead of human table
 """
 from __future__ import annotations
 
@@ -72,16 +99,31 @@ log = logging.getLogger(__name__)
 _LEADERBOARD_PAGE = 50  # data-api caps /v1/leaderboard at 50 rows per call
 
 
-async def _fetch_wallet_activity(
+async def _fetch_wallet_activity_windowed(
     client: PolymarketDataAPIClient,
     wallet: str,
     *,
     activity_limit: int,
-    activity_pages: int,
-) -> list[ActivityRow]:
-    """Fetch up to `activity_pages` pages of `/activity` for one wallet."""
+    max_pages: int,
+    target_buy_rows: int,
+) -> tuple[list[ActivityRow], int, str]:
+    """Walk `/activity` until enough BUY trades or feed exhausted or ceiling.
+
+    Three explicit stop conditions, whichever fires first:
+      - Cumulative TRADE+BUY row count >= target_buy_rows
+        (a buffer above the eventual window_size to account for some BUYs
+        being unresolved when we batch-fetch resolutions)
+      - A page returns 0 rows (feed exhausted)
+      - page index reaches max_pages (the hard ceiling on examined rows)
+
+    Returns (rows, pages_fetched, termination_reason). The
+    termination_reason is one of {"target_buys_reached", "exhausted",
+    "max_pages_hit", "fetch_error"}.
+    """
     out: list[ActivityRow] = []
-    for page_idx in range(activity_pages):
+    buy_count = 0
+    pages_fetched = 0
+    for page_idx in range(max_pages):
         offset = page_idx * activity_limit
         try:
             page = await client.fetch_activity(
@@ -92,13 +134,50 @@ async def _fetch_wallet_activity(
                 "activity fetch failed at offset=%d for %s: %s",
                 offset, wallet[:10], e,
             )
-            break
+            return out, pages_fetched, "fetch_error"
+        pages_fetched += 1
         if not page:
-            break
+            return out, pages_fetched, "exhausted"
         out.extend(page)
+        for a in page:
+            if a.type == "TRADE" and a.side == "BUY":
+                buy_count += 1
+        if buy_count >= target_buy_rows:
+            return out, pages_fetched, "target_buys_reached"
         if len(page) < activity_limit:
+            return out, pages_fetched, "exhausted"
+    return out, pages_fetched, "max_pages_hit"
+
+
+def _select_resolved_buys_window(
+    activity: list[ActivityRow],
+    resolutions: dict[str, dict],
+    *,
+    window_size: int,
+) -> list[ActivityRow]:
+    """Pick the most-recent `window_size` BUYs whose market is resolved.
+
+    `activity` is assumed most-recent-first (the `/activity` API
+    contract). We iterate in order and collect resolved BUYs until the
+    window is full or activity is exhausted. The returned list preserves
+    the most-recent-first ordering so callers can read window_days_span
+    as `activity[0].ts - activity[-1].ts`.
+    """
+    window: list[ActivityRow] = []
+    for a in activity:
+        if a.type != "TRADE" or a.side != "BUY":
+            continue
+        if not a.condition_id:
+            continue
+        res = resolutions.get(a.condition_id)
+        if not res:
+            continue
+        if (res.get("status") or "").lower() != "resolved":
+            continue
+        window.append(a)
+        if len(window) >= window_size:
             break
-    return out
+    return window
 
 
 def _merge_watchlists(
@@ -161,11 +240,16 @@ async def seed_polymarket_watchlist_deep(
     *,
     db_url: str,
     candidates_per_category: int = 500,
-    top_n: int = 50,
-    min_positions: int = 100,
-    min_win_rate: float = 0.70,
+    top_n: int = 0,
+    window_size: int = 100,
+    min_resolved_buys: int = 10,
+    min_windowed_wr: float = 0.62,
+    min_windowed_pnl: float = 0.01,
+    recency_days: int = 60,
+    provisional_threshold: int = 50,
     activity_limit: int = 500,
-    activity_pages: int = 2,
+    max_pages_per_wallet: int = 10,
+    target_buy_rows: int = 150,
     categories: tuple[str, ...] = POLYMARKET_LEADERBOARD_CATEGORIES,
     dry_run: bool = False,
     merge: bool = False,
@@ -174,23 +258,35 @@ async def seed_polymarket_watchlist_deep(
     """Run the full pipeline. Returns a summary dict; writes to agent_state
     unless `dry_run=True`.
 
-    `merge=True` unions the freshly-computed top-N with the existing
+    Scoring is over each wallet's last `window_size` resolved BUYs (no
+    lifetime). Survivors must clear four floors (see module docstring).
+    No top-N cap by default (`top_n=0`); pass a positive value to cap.
+
+    `merge=True` unions the freshly-computed list with the existing
     `agent_state(polymarket_copy_trader, watch_only_whales)` slot — used
-    by the weekly cron so the watchlist accumulates over time. New entries
-    get a fresh `included_iso`; previously-seen wallets keep their original
-    `included_iso` so we can track observation duration. `max_total` (if
-    set) caps the merged list by `realized_pnl_usdc` desc.
+    by the weekly cron so the watchlist accumulates over time. New
+    entries get a fresh `included_iso`; previously-seen wallets keep
+    their original `included_iso` so we can track observation duration.
+    `max_total` (if set) caps the merged list by windowed
+    `realized_pnl_usdc` desc.
     """
     started = datetime.now(timezone.utc)
+    started_ts = started.timestamp()
+    recency_cutoff_ts = started_ts - (recency_days * 86400)
     summary: dict[str, Any] = {
         "started_at": started.isoformat(),
         "params": {
             "candidates_per_category": candidates_per_category,
             "top_n": top_n,
-            "min_positions": min_positions,
-            "min_win_rate": min_win_rate,
+            "window_size": window_size,
+            "min_resolved_buys": min_resolved_buys,
+            "min_windowed_wr": min_windowed_wr,
+            "min_windowed_pnl": min_windowed_pnl,
+            "recency_days": recency_days,
+            "provisional_threshold": provisional_threshold,
             "activity_limit": activity_limit,
-            "activity_pages": activity_pages,
+            "max_pages_per_wallet": max_pages_per_wallet,
+            "target_buy_rows": target_buy_rows,
             "categories": list(categories),
             "merge": merge,
             "max_total": max_total,
@@ -198,7 +294,16 @@ async def seed_polymarket_watchlist_deep(
         "leaderboards_pulled": [],
         "unique_candidates": 0,
         "with_activity": 0,
+        "termination_reasons": {
+            "target_buys_reached": 0, "exhausted": 0,
+            "max_pages_hit": 0, "fetch_error": 0,
+        },
+        "drop_reasons": {
+            "no_activity": 0, "n_floor": 0, "recency_floor": 0,
+            "wr_floor": 0, "pnl_floor": 0,
+        },
         "quality_gate_pass": 0,
+        "provisional_count": 0,
         "watch_only_whales": [],
     }
 
@@ -258,15 +363,20 @@ async def seed_polymarket_watchlist_deep(
             len(candidates), len(list(categories)) + 1,
         )
 
-        # 2. Fetch /activity for each candidate, collecting condition_ids.
+        # 2. Walk /activity per candidate with the windowed termination spec.
         all_condition_ids: set[str] = set()
         activity_by_wallet: dict[str, list[ActivityRow]] = {}
         for wallet in candidates:
-            acts = await _fetch_wallet_activity(
+            acts, pages_fetched, term_reason = await _fetch_wallet_activity_windowed(
                 client, wallet,
-                activity_limit=activity_limit, activity_pages=activity_pages,
+                activity_limit=activity_limit,
+                max_pages=max_pages_per_wallet,
+                target_buy_rows=target_buy_rows,
             )
             activity_by_wallet[wallet] = acts
+            summary["termination_reasons"][term_reason] = (
+                summary["termination_reasons"].get(term_reason, 0) + 1
+            )
             if acts:
                 summary["with_activity"] += 1
             for a in acts:
@@ -274,30 +384,79 @@ async def seed_polymarket_watchlist_deep(
                     all_condition_ids.add(a.condition_id)
         log.info(
             "seed_polymarket_watchlist_deep: %d wallets with activity, "
-            "%d unique condition_ids across all BUYs",
+            "%d unique condition_ids across all BUYs; termination=%s",
             summary["with_activity"], len(all_condition_ids),
+            summary["termination_reasons"],
         )
 
         # 3. Batch-fetch market resolutions.
         resolutions = await client.fetch_market_resolutions(list(all_condition_ids))
 
-        # 4. Compute stats per wallet, apply quality gate.
+        # 4. Per wallet: build windowed slice, apply floors.
         survivors: list[dict[str, Any]] = []
         for wallet, rec in candidates.items():
             entry = rec["entry"]
             activity = activity_by_wallet.get(wallet, [])
             if not activity:
+                summary["drop_reasons"]["no_activity"] += 1
                 continue
+
+            # Most-recent activity row of ANY side governs the recency floor —
+            # a whale actively SELLing or holding open positions is not dormant
+            # even if their most recent resolved BUY is older.
+            last_trade_ts = max((a.timestamp for a in activity), default=0)
+            if last_trade_ts < recency_cutoff_ts:
+                summary["drop_reasons"]["recency_floor"] += 1
+                continue
+
+            window = _select_resolved_buys_window(
+                activity, resolutions, window_size=window_size,
+            )
+            n_resolved = len(window)
+            if n_resolved < min_resolved_buys:
+                summary["drop_reasons"]["n_floor"] += 1
+                continue
+
+            # half_life_days=36500.0 → effectively no half-life weighting. The
+            # fixed-size window IS the recency mechanism; applying a 30-day
+            # half-life on top would double-count and let the most-recent ~30
+            # trades dominate a slice we deliberately sized at 100.
             stats, _outcomes = compute_polymarket_stats(
                 leaderboard_entry=entry,
-                activity_rows=activity,
+                activity_rows=window,
                 market_resolutions=resolutions,
+                half_life_days=36500.0,
             )
             closed = stats.closed_positions_count
+            if closed != n_resolved:
+                # Defensive: the slice and stats should agree on n. If they
+                # diverge (shouldn't), trust compute_polymarket_stats.
+                n_resolved = closed
+                if n_resolved < min_resolved_buys:
+                    summary["drop_reasons"]["n_floor"] += 1
+                    continue
+
             win_rate = stats.wins / closed if closed > 0 else 0.0
-            if closed < min_positions or win_rate < min_win_rate:
+            if win_rate < min_windowed_wr:
+                summary["drop_reasons"]["wr_floor"] += 1
                 continue
+            if stats.total_pnl <= min_windowed_pnl:
+                summary["drop_reasons"]["pnl_floor"] += 1
+                continue
+
+            # window_days_span = span from oldest-in-window BUY to most-recent.
+            window_ts = [a.timestamp for a in window]
+            window_days_span = (
+                (max(window_ts) - min(window_ts)) / 86400.0 if window_ts else 0.0
+            )
+            last_trade_iso = datetime.fromtimestamp(
+                last_trade_ts, tz=timezone.utc,
+            ).isoformat() if last_trade_ts else ""
+            provisional = n_resolved < provisional_threshold
+
             summary["quality_gate_pass"] += 1
+            if provisional:
+                summary["provisional_count"] += 1
             survivors.append({
                 "proxy_wallet": wallet,
                 "user_name": entry.user_name,
@@ -312,15 +471,20 @@ async def seed_polymarket_watchlist_deep(
                 "win_rate": win_rate,
                 "realized_pnl_usdc": stats.total_pnl,
                 "total_usdc_size": stats.total_contracts,
+                "window_size_n": n_resolved,
+                "window_days_span": window_days_span,
+                "last_trade_iso": last_trade_iso,
+                "provisional": provisional,
             })
             log.info(
-                "quality gate PASS: %s (%s) closed=%d wr=%.2f pnl=%.0f",
+                "quality gate PASS: %s (%s) n=%d wr=%.2f pnl=%.2f span=%.0fd %s",
                 wallet[:10], entry.user_name, closed, win_rate, stats.total_pnl,
+                window_days_span, "[PROVISIONAL]" if provisional else "",
             )
 
-    # 5. Rank by descending realized PnL, take top-N.
+    # 5. Rank by descending windowed realized PnL. Optional top-N cap.
     survivors.sort(key=lambda r: r["realized_pnl_usdc"], reverse=True)
-    top_survivors = survivors[:top_n]
+    top_survivors = survivors if top_n <= 0 else survivors[:top_n]
 
     now_iso = started.isoformat()
     watch_only_payload: list[dict[str, Any]] = []
@@ -345,6 +509,10 @@ async def seed_polymarket_watchlist_deep(
             ),
             "best_category": s["best_category"],
             "included_iso": now_iso,
+            "window_size_n": s["window_size_n"],
+            "window_days_span": round(s["window_days_span"], 2),
+            "last_trade_iso": s["last_trade_iso"],
+            "provisional": s["provisional"],
         })
 
     final_payload = watch_only_payload
@@ -374,6 +542,7 @@ async def seed_polymarket_watchlist_deep(
         "candidates": summary["unique_candidates"],
         "with_activity": summary["with_activity"],
         "quality_gate_pass": summary["quality_gate_pass"],
+        "provisional_count": summary["provisional_count"],
         "fresh_top_n": len(watch_only_payload),
         "written": len(final_payload),
     }
@@ -394,7 +563,7 @@ async def seed_polymarket_watchlist_deep(
 
 
 def _print_human(summary: dict[str, Any]) -> None:
-    print(f"=== Polymarket Watchlist Deep Seed — {summary['started_at']} ===")
+    print(f"=== Polymarket Watchlist Deep Seed (windowed) — {summary['started_at']} ===")
     print()
     print("Leaderboards pulled:")
     for lb in summary["leaderboards_pulled"]:
@@ -406,9 +575,27 @@ def _print_human(summary: dict[str, Any]) -> None:
         f"Candidates: {s.get('candidates', 0)}  |  "
         f"With activity: {s.get('with_activity', 0)}  |  "
         f"Quality gate pass: {s.get('quality_gate_pass', 0)}  |  "
+        f"Provisional: {s.get('provisional_count', 0)}  |  "
         f"Fresh top-N: {s.get('fresh_top_n', s.get('written', 0))}  |  "
         f"Written: {s.get('written', 0)}"
     )
+    tr = summary.get("termination_reasons", {})
+    if tr:
+        print(
+            f"Termination: target_buys={tr.get('target_buys_reached', 0)}  "
+            f"exhausted={tr.get('exhausted', 0)}  "
+            f"max_pages={tr.get('max_pages_hit', 0)}  "
+            f"fetch_err={tr.get('fetch_error', 0)}"
+        )
+    dr = summary.get("drop_reasons", {})
+    if dr:
+        print(
+            f"Drops:  no_activity={dr.get('no_activity', 0)}  "
+            f"n<floor={dr.get('n_floor', 0)}  "
+            f"recency={dr.get('recency_floor', 0)}  "
+            f"wr<floor={dr.get('wr_floor', 0)}  "
+            f"pnl<floor={dr.get('pnl_floor', 0)}"
+        )
     merge_stats = summary.get("merge_stats")
     if merge_stats:
         print(
@@ -422,22 +609,30 @@ def _print_human(summary: dict[str, Any]) -> None:
     if not whales:
         print("No wallets passed the quality gate.")
         return
-    print(f"Top {len(whales)} watchlist whales (ranked by realized PnL on resolved BUYs):")
+    print(f"{len(whales)} watchlist whales (ranked by windowed realized PnL):")
     print()
     print(
-        f"{'#':>3} | {'Wallet':<14} | {'User':<22} | {'Category':<10} | "
-        f"{'N':>5} | {'WR':>6} | {'PnL (USDC)':>12} | {'Vol':>14}"
+        f"{'#':>3} | {'Wallet':<14} | {'User':<22} | {'Cat':<8} | "
+        f"{'N':>4} | {'Span':>6} | {'WR':>6} | {'PnL':>10} | "
+        f"{'Last':<12} | {'P'}"
     )
     print("-" * 120)
     for w in whales:
+        last_short = (w.get("last_trade_iso") or "")[:10]
+        prov_mark = "*" if w.get("provisional") else " "
         print(
             f"{w['rank']:>3} | {w['proxy_wallet'][:14]} | "
-            f"{w['user_name'][:22]:<22} | {w['best_category']:<10} | "
-            f"{w['total_resolved_positions']:>5} | {w['win_rate']:>6.2%} | "
-            f"${w['realized_pnl_usdc']:>11,.2f} | "
-            f"${w['lifetime_vol_from_leaderboard']:>13,.2f}"
+            f"{w['user_name'][:22]:<22} | {w['best_category'][:8]:<8} | "
+            f"{w['window_size_n']:>4} | "
+            f"{w['window_days_span']:>5.0f}d | "
+            f"{w['win_rate']:>6.2%} | "
+            f"${w['realized_pnl_usdc']:>9,.2f} | "
+            f"{last_short:<12} | {prov_mark}"
         )
     print()
+    if any(w.get("provisional") for w in whales):
+        print("  * = provisional (n < threshold) — dashboard will grey these rows.")
+        print()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -452,29 +647,52 @@ def main(argv: list[str] | None = None) -> int:
         help="Top-N candidates to pull per category (default 500).",
     )
     parser.add_argument(
-        "--top", type=int, default=50,
-        help="Final watchlist size (default 50).",
+        "--top", type=int, default=0,
+        help="Cap final watchlist size (default 0 = no cap).",
     )
     parser.add_argument(
-        "--min-positions", type=int, default=100,
-        help="Minimum resolved positions for inclusion (default 100).",
+        "--window-size", type=int, default=100,
+        help="Number of most-recent resolved BUYs in the scoring window (default 100).",
     )
     parser.add_argument(
-        "--min-win-rate", type=float, default=0.70,
-        help="Minimum win rate [0.0-1.0] for inclusion (default 0.70).",
+        "--min-resolved-buys", type=int, default=10,
+        help="Hard noise floor on resolved BUY count (default 10).",
+    )
+    parser.add_argument(
+        "--min-windowed-wr", type=float, default=0.62,
+        help="Min windowed win rate [0.0-1.0] (default 0.62).",
+    )
+    parser.add_argument(
+        "--min-windowed-pnl", type=float, default=0.01,
+        help="Min windowed realized PnL in USDC (default 0.01, i.e. > $0).",
+    )
+    parser.add_argument(
+        "--recency-days", type=int, default=60,
+        help="Drop whales whose most recent activity is older than N days (default 60).",
+    )
+    parser.add_argument(
+        "--provisional-threshold", type=int, default=50,
+        help="Mark `provisional=true` iff window_size_n < this (default 50).",
     )
     parser.add_argument(
         "--activity-limit", type=int, default=500,
         help="/activity rows per call (default 500; max ~1000).",
     )
     parser.add_argument(
-        "--activity-pages", type=int, default=2,
-        help="Pages of /activity to fetch per wallet (default 2).",
+        "--max-pages-per-wallet", type=int, default=10,
+        help="Ceiling on /activity pages per wallet (default 10).",
+    )
+    parser.add_argument(
+        "--target-buy-rows", type=int, default=150,
+        help=(
+            "Stop paging once accumulated BUY-trade rows reach this count "
+            "(default 150; buffer above window_size for unresolveds)."
+        ),
     )
     parser.add_argument(
         "--merge", action="store_true",
         help=(
-            "Union freshly-computed top-N with the existing "
+            "Union freshly-computed list with the existing "
             "agent_state(polymarket_copy_trader, watch_only_whales). "
             "New entries get fresh included_iso; previously-seen wallets "
             "keep their original included_iso. Used by the weekly cron."
@@ -483,7 +701,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--max-total", type=int, default=None,
         help=(
-            "When --merge is set, cap the merged list to top-N by "
+            "When --merge is set, cap the merged list to top-N by windowed "
             "realized_pnl_usdc desc. Without this, the merged list grows "
             "unbounded as new wallets pass the gate each week."
         ),
@@ -507,10 +725,15 @@ def main(argv: list[str] | None = None) -> int:
         db_url=secrets.db_url,
         candidates_per_category=args.candidates,
         top_n=args.top,
-        min_positions=args.min_positions,
-        min_win_rate=args.min_win_rate,
+        window_size=args.window_size,
+        min_resolved_buys=args.min_resolved_buys,
+        min_windowed_wr=args.min_windowed_wr,
+        min_windowed_pnl=args.min_windowed_pnl,
+        recency_days=args.recency_days,
+        provisional_threshold=args.provisional_threshold,
         activity_limit=args.activity_limit,
-        activity_pages=args.activity_pages,
+        max_pages_per_wallet=args.max_pages_per_wallet,
+        target_buy_rows=args.target_buy_rows,
         categories=cats,
         dry_run=args.dry_run,
         merge=args.merge,

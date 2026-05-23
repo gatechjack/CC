@@ -789,7 +789,7 @@
         Polymarket Watch List — observation only
       </h2>
       <div class="text-[11px] font-mono text-muted">
-        {{ view.polymarket_watch_only | length }} whales · top-50 by realized PnL · NOT copy-traded
+        {{ view.polymarket_watch_only | length }} whales · scored on last 100 resolved BUYs · NOT copy-traded
       </div>
     </header>
     <div class="overflow-x-auto">
@@ -799,7 +799,9 @@
             <th class="text-right px-3 py-2 font-medium">#</th>
             <th class="text-left px-3 py-2 font-medium">Whale</th>
             <th class="text-left px-3 py-2 font-medium">Category</th>
-            <th class="text-right px-3 py-2 font-medium">N</th>
+            <th class="text-right px-3 py-2 font-medium" title="Resolved BUYs in window (≤100)">N</th>
+            <th class="text-right px-3 py-2 font-medium" title="Span from oldest to newest BUY in window">Span</th>
+            <th class="text-right px-3 py-2 font-medium" title="Most recent activity of any side">Last</th>
             <th class="text-right px-3 py-2 font-medium">WR%</th>
             <th class="text-right px-3 py-2 font-medium">Realized PnL</th>
             <th class="text-right px-3 py-2 font-medium">Leaderboard PnL</th>
@@ -809,11 +811,16 @@
         </thead>
         <tbody>
           {% for w in view.polymarket_watch_only %}
-          <tr class="border-t border-edge hover:bg-pane-2/40">
+          {# `provisional` is a row attribute — the greyed/italic styling is
+             driven by it directly, so the cue persists regardless of which
+             column the list is currently sorted by. #}
+          <tr class="border-t border-edge hover:bg-pane-2/40 {% if w.provisional %}opacity-50 italic{% endif %}"
+              {% if w.provisional %}title="Provisional: window size {{ w.window_size_n }} is below the comfort threshold (50). WR/PnL noisier than a full-100 sample."{% endif %}>
             <td class="px-3 py-2 text-right text-muted/60">{{ w.rank }}</td>
             <td class="px-3 py-2 text-mono font-semibold">
               {% if w.x_username %}@{{ w.x_username }}{% else %}{{ w.user_name }}{% endif %}
               {% if w.verified_badge %}<span class="text-accent text-[10px] ml-1">✓</span>{% endif %}
+              {% if w.provisional %}<span class="text-[9px] uppercase tracking-wider ml-1 border border-edge px-1 text-muted">prov</span>{% endif %}
             </td>
             <td class="px-3 py-2 text-muted/80">
               {% if w.best_category %}{{ w.best_category }}{% else %}—{% endif %}
@@ -821,6 +828,12 @@
             <td class="px-3 py-2 text-right
               {% if w.total_resolved_positions == 0 %}text-muted/60{% else %}text-mono{% endif %}">
               {{ w.total_resolved_positions }}
+            </td>
+            <td class="px-3 py-2 text-right text-mono/80">
+              {% if w.window_days_span %}{{ w.window_days_span | round(0) | int }}d{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right text-mono/80 whitespace-nowrap">
+              {% if w.last_trade_iso %}{{ w.last_trade_iso[:10] }}{% else %}—{% endif %}
             </td>
             <td class="px-3 py-2 text-right font-semibold
               {% if w.win_rate_pct is none %}text-muted/60

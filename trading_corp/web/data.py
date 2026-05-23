@@ -3311,6 +3311,13 @@ class PolymarketWatchOnlyRow:
     lifetime_vol_from_leaderboard: float
     best_category: str
     included_iso: str | None
+    # Windowed-scoring fields (added 2026-05-23). Optional/defaulted for
+    # back-compat — agent_state entries written before the windowed seed
+    # shipped won't carry them. Templates should treat 0/None as "absent".
+    window_size_n: int = 0
+    window_days_span: float = 0.0
+    last_trade_iso: str | None = None
+    provisional: bool = False
 
 
 @dataclass
@@ -4377,6 +4384,10 @@ def _query_polymarket_watch_only_rows(
             lifetime_vol_from_leaderboard=float(w.get("lifetime_vol_from_leaderboard") or 0.0),
             best_category=str(w.get("best_category") or ""),
             included_iso=w.get("included_iso") or None,
+            window_size_n=int(w.get("window_size_n") or 0),
+            window_days_span=float(w.get("window_days_span") or 0.0),
+            last_trade_iso=w.get("last_trade_iso") or None,
+            provisional=bool(w.get("provisional", False)),
         ))
     out.sort(key=lambda w: w.rank)
     return out
