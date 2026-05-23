@@ -76,6 +76,90 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-23 00:40 UTC — IC morning-candidate grader: ship to prod (commit `112aef3`)
+
+**Commits:** `112aef3` (the grader, committed 2026-05-22 ~13:30 UTC, intentionally held off origin during the IC grader session). Pushed to `origin/main` is a separate decision, deliberately deferred — local `main` head at deploy time is `1bcd8b4` (the §6 closure note from this session, also on top of `112aef3`); both are local-only.
+**Triggered by:** Gate [3] of the IC grader ship sequence per `runbooks/session_start_2026_05_23.md` and `planning/ic_grader_section6_closure_20260523.md`. The three sequential ship gates (AM SDK fix → §6 live-verification → CRLF deploy) all closed: AM fix shipped 2026-05-22 16:47 UTC (`e977641`); §6 closed locally this session at `1bcd8b4`.
+**Backup tag:** `pre-grader-20260523-0036` on the 2 modified prod files. 3 new files have no backup target by definition.
+
+**Pickle-refreshed-first note (operator action):**
+- Per `[[kalshi-weather-floor-data-gap-20260521]]`, every restart with an expiring `robinhood.pickle` risks a multi-cycle MFA loop. Operator was asked to refresh by hand before the restart. **Filesystem ground truth showed `/home/azureuser/.tokens/robinhood.pickle` mtime unchanged at 2026-05-21 01:58:34 UTC (47h stale) at restart time** — flagged as a fork; operator authorized proceeding (existing token was valid in practice). Post-restart `RobinhoodBroker logged in (user=jrsumner@yahoo.com)` cleanly with all 3 accounts (individual / IRA / joint) bound — no MFA loop fired. The 47h-old pickle was in fact still valid; the operator's pre-deploy refresh either ran against a different mechanism (in-process token store), was a no-op because the token was sliding-window-valid, or didn't take. For future deploys: don't conflate "operator says refreshed" with "filesystem mtime updated" — verify both, or accept the operator's call but document the discrepancy here.
+
+**Files deployed (5 runtime; tests are local-only):**
+
+*Modified (2):*
+- `trading_corp/web/routes.py` — adds `POST /telemetry/iron_condor/grade` (form `paste` → calls `grade_paste(...)` with real `MarketDataProvider` + `ic_strategy` + `logger_agent` → renders `iron_condor_grader_result.html` for htmx swap). md5 (prod, LF): `e8aa9a1…` → `8376e5c7…`. 33-line addition + CRLF→LF normalization at transport time (working tree is CRLF, prod is LF — normalization done in the deploy pipeline, NOT in a commit, to preserve `git blame` on the ~4000 unchanged lines per `[[feedback-crlf-routes-py-deploy]]`).
+- `trading_corp/web/templates/partials/iron_condor_static_sections.html` — adds the collapsible `<details>` "IC Candidate Grader" block at the top of the static section. md5 (prod, LF): `d04b22e5…` → `8e63c37f…`.
+
+*New (3):*
+- `trading_corp/agents/strategies/ic_candidate_grader.py` — research-only grader (8-gate sequential, first-failure-wins, cheap-first). No execution path; AST-walked by `test_no_execution_invariant`. md5: `df7a2378…`. 40,764 bytes.
+- `trading_corp/web/templates/partials/iron_condor_grader.html` — paste form (textarea + Grade button + htmx swap target). md5: `bcd91d54…`. 1,914 bytes.
+- `trading_corp/web/templates/partials/iron_condor_grader_result.html` — per-row verdict table (PASS/FAIL/NEEDS_LIVE_DATA, failed_gate, reason, measurements). md5: `91982c02…`. 5,402 bytes.
+
+*Local-only (NOT deployed):*
+- `tests/test_ic_grader.py` — 25/25 tests, runs locally only (pytest does not run on prod).
+
+**Features shipped:**
+- **IC candidate grader endpoint live at `/telemetry/iron_condor/grade`.** Operator pastes a Barchart screener block; each row graded against live `robinhood_joint_iron_condor` rules using live `MarketDataProvider` data (NEVER the pasted Barchart numbers). Grader sits behind Authelia like the rest of `/telemetry/iron_condor`; no API/auth surface added.
+- **8 gates, sequential, first-failure-wins, cheap-first:** universe → expiration_on_chain → dte → ivr → strikes → delta_proximity → term_structure (gate 7) → credit (gate 8).
+- **Term-structure operand order pinned verbatim from strategy** (`robinhood_joint_iron_condor.py:491`).
+- **Per-Q2 design divergence from strategy:** one-leg-None on `get_atm_iv` → emits `NEEDS_LIVE_DATA` instead of fail-open. Operator transparency is the grader's purpose.
+- **Audit row per run** (`kind='ic_grader_run'`, actor `ic_candidate_grader`) — payload carries counts + failure breakdown + cfg version hash; **no raw paste content** (privacy invariant verified in §6).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Structural no-execution guarantee.** The grader module imports zero strategy or order-surface names; uses a `_StrategyLike` Protocol duck-typed against `RobinhoodJointIronCondorAgent`. `test_no_execution_invariant` AST-walks the imports.
+- **§6 live-verification ship gate corrected criterion documented at `planning/ic_grader_section6_closure_20260523.md`.** The runbook restatement at `runbooks/session_start_2026_05_23.md` lines 76–95 carries an incomplete criterion ("PASS or FAIL@term_structure") that doesn't anticipate gate 8 (credit) outcomes. Corrected: §6 satisfied when verdict is PASS, OR FAIL at any gate ≥ 7 (term_structure or credit); disqualifying = `NEEDS_LIVE_DATA` at gate 7 OR failure at any gate < 7. General principle: §6 satisfied when run reaches or passes gate 7 on real data.
+- **`_get_configured_provider()` is the route's only provider source.** Resolves via `provider_factory.get_provider(strategy_slug=None, config_path=Path("config/data_providers.yaml"))` — Tastytrade primary, fallback null. No DI for the route; the global config drives behavior.
+- **Plan-doc phantom pointer.** The commit message references `.claude/plans/planning-session-ic-hashed-kettle.md` as the design source; **that file does not exist** in the repo or in git history. Per `[[session-committed-phantom-pointer]]`. Use `planning/ic_grader_section6_closure_20260523.md` as the canonical §6 acceptance reference.
+
+**Verification:**
+- md5-diff of all 5 runtime files at production paths matches local LF-normalized md5s exactly (`df7a2378…`, `8376e5c7…`, `bcd91d54…`, `91982c02…`, `8e63c37f…`).
+- `grep $'\r'` on prod `routes.py` returns empty (LF-only confirmed).
+- `systemctl is-active trading-corp` → `active`. MainPID `1141109` since `2026-05-23 00:40:51 UTC` (was `1119435` since `2026-05-22 22:17:49 UTC` — dashboard cutoff deploy). `Result=success`.
+- Post-restart journal: clean broker init (paper + Robinhood 3 accounts + Polymarket + Kalshi). Two pre-existing recurring errors observed and ignored (NOT grader-related): Kalshi copy-trader `name 'wallet' is not defined` in prior-PID logs; Fidelity bot-detection rejection → `broker_fallback_to_paper` audit (designed behavior).
+- **Prod §6 verification (corrected criterion, all 5 acceptance points satisfied):**
+  - Provider class = `TastytradeDataProvider` in both direct call and route's `_get_configured_provider()` — same singleton instance.
+  - Fresh B2 candidate constructed against live SPY chain: `SPY  06/30/26 (38)  699/702  775/778  35%`. short_put 702 (Δ=−0.1598), short_call 775 (Δ=+0.1639); 3.0-pt wings verified on chain.
+  - Verdict: **FAIL, failed_gate=`credit`** (gate 8). Reaching gate 8 = gate 7 PASSED.
+  - Direct gate-7 probe (under same event loop): front 0.1500, back 0.1651, spread **−0.0151** (contango, well below max_diff 0.05).
+  - 1 `ic_grader_run` audit row written (prod's actual path is 1 POST = 1 row). Payload keys match spec exactly. Paste content NOT in payload (privacy invariant intact).
+  - Credit-gate FAIL is itself a correct real result (SPY 16Δ $3-wing genuinely yields ~$0.78 = 26% < 33% floor) — real information about why the strategy isn't finding SPY trades right now, not a defect.
+- **Initial prod §6 run produced NEEDS_LIVE_DATA spuriously** due to a bug in the test harness (multiple `asyncio.run()` calls created+closed independent event loops, breaking the Tastytrade SDK session→loop binding). Fix: collapse all async work into a single `asyncio.run()`. Production route uses single-event-loop FastAPI semantics, so this bug is local-to-the-verification-script only. Documented for next session in case a similar verification script is needed.
+
+**Inert / dormant on current traffic:**
+- Grader endpoint requires manual operator interaction (paste + submit). No scheduled cron or autonomous caller. Will sit idle between operator scan-grading sessions.
+- `iron_condor_static_sections.html` change adds a collapsible `<details>` that is **closed by default**; existing dashboard sections render unchanged for users who don't expand it.
+- No execution path. No order surface. No risk gate interaction. No `auto_execute` flag.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-grader-20260523-0036
+BASE=/home/azureuser/trading_corp
+# Restore the 2 modified files from backup tags
+sudo -u azureuser cp -p \$BASE/trading_corp/web/routes.py.\$TAG \$BASE/trading_corp/web/routes.py
+sudo -u azureuser cp -p \$BASE/trading_corp/web/templates/partials/iron_condor_static_sections.html.\$TAG \$BASE/trading_corp/web/templates/partials/iron_condor_static_sections.html
+# Remove the 3 new files
+sudo -u azureuser rm -f \\
+  \$BASE/trading_corp/agents/strategies/ic_candidate_grader.py \\
+  \$BASE/trading_corp/web/templates/partials/iron_condor_grader.html \\
+  \$BASE/trading_corp/web/templates/partials/iron_condor_grader_result.html
+sudo systemctl restart trading-corp
+"
+# Notes:
+# - Rollback restores prod to the post-22:17-UTC dashboard-cutoff state (PID 1119435 era).
+# - Does NOT touch backup tags themselves — they remain available for re-rollback.
+# - Does NOT touch /etc/trading-corp/tastytrade.env or robinhood.pickle.
+# - Does NOT touch local commits (112aef3 still in main; rollback only erases prod side).
+```
+
+**Follow-ups queued:**
+- **Push decision (local 1 ahead of origin).** `1bcd8b4` (the §6 closure note) is local-only. Separate from deploy per scope-control. Push timing is operator's call.
+- **Runbook restatement amendment.** `runbooks/session_start_2026_05_23.md` lines 76–95 carry the incomplete §6 acceptance criterion. Either amend there (with Board approval per CLAUDE.md §4 runbook-edit rule), or live with the pointer at `planning/ic_grader_section6_closure_20260523.md`.
+- **Pickle-mtime ground truth gap.** Operator says "refreshed," filesystem says "unchanged." Either there's a refresh path not visible in `/home/azureuser/.tokens/robinhood.pickle`, or the no-op was masked by sliding-window token validity. Worth a brief audit before the next restart-with-pickle-pre-refresh expectation, so future sessions can verify rather than rely on operator assertion.
+
+---
+
 ## 2026-05-22 22:17 UTC — dashboard: kalshi_weather cutoff → P3 deploy time (commit `90b3491`)
 
 **Commits:** `90b3491` (local main, not pushed at deploy time — push call deferred to operator). Single-line surgical patch to `DASHBOARD_RT_CUTOFFS` in `trading_corp/web/data.py`.
