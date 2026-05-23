@@ -8,6 +8,67 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-23 ~15:35 UTC (Saturday — TWO polymarket_copy_trading deploys + metrics-epoch SET on prod)
+
+**Headline of THIS session:** Two consecutive operator-approved Polymarket Copy Trading deploys shipped to prod + the metrics-epoch slot was deliberately set, establishing a clean-slate paper-metrics start.
+
+**`origin/main` head (in sync with local):**
+- `6073480` — bitunix_futures: bias TTL 90→30 + flip-opportunity detection (observe-only) *(PARALLEL SESSION — not yet deployed to prod per its commit; restart-required deploy is a separate gate. NOT MY WORK.)*
+- `35804ac` — deploy_log: pm-metrics-epoch shipped 2026-05-23 15:23 UTC *(this session)*
+- `17cdd55` — pm-metrics-epoch: agent_state-driven metrics-epoch reset (7 surfaces) *(this session)*
+- `4c78176` — deploy_log + backlog: pm-watchlist windowed scoring shipped 2026-05-23 06:23 UTC *(prior session — deployed then)*
+
+**What's running on prod (post-this-session):**
+- `17cdd55` pm-metrics-epoch code: LIVE since `2026-05-23 15:23:44 UTC`. MainPID 1180983. data.py md5 `f3898a5e47308f917c7c56e121bffe46`. Backup tag `pre-metrics-epoch-20260523-0710`.
+- `agent_state(polymarket_copy_trader, metrics_epoch)` = **`'2026-05-23T15:30:15.042822+00:00'`** (operator-set 7 minutes after the code deploy). The slot is ACTIVE. Every PM metric surface filters to post-epoch only.
+- `agent_state(polymarket_copy_trader, watch_only_whales)`: 190 entries (drifted from 197 post-windowing-deploy due to natural pool churn). 21 provisional.
+- `agent_state(polymarket_copy_trader, selected_whales)`: 10 entries (current copy roster). All 10 render as zero-stat placeholders in the Whales tab under the active epoch (intentional — roster stays visible).
+- Windowing-rescore (`0045ff1`) from earlier today: still LIVE; dashboard headers + AvgPx + `<.70` columns + sortable + provisional cue all carry through.
+- Parallel-session `6073480` (bitunix observe-only): NOT YET DEPLOYED.
+
+**Dashboard state at session end** (load `/prediction-markets/polymarket_copy_trading` to see):
+- Resolved tile: **0**. Realized P&L: **+$0.00**. Open: **0 awaiting settle**. History tab: **(0)**. Equity curve: **empty**.
+- Home tile for polymarket_copy_trading: **equity $0.00**.
+- Polymarket_arbitrage control (untouched by the epoch): n_resolved=106, n_wins=54, total_realized_pnl=−$9.00.
+
+**Reversibility — how to unset the epoch:**
+```bash
+ssh azureuser@trading.jacksumner.com "sudo sqlite3 /home/azureuser/trading_corp/data/trading_corp.db \"
+DELETE FROM agent_state WHERE agent='polymarket_copy_trader' AND key='metrics_epoch';
+\""
+# Dashboard restores to full-history view on next render. No restart required.
+```
+
+**Highest-leverage open items (NOT advanced this session):**
+1. **Observation window opens NOW** — paper-metrics clean slate starts accumulating from 2026-05-23T15:30:15 UTC. First post-epoch resolved trade is the gate that proves end-to-end no-stray-metrics. Watch for it as a quick sanity check next session.
+2. **Parallel-session bitunix deploy** (`6073480`) needs its own restart-gated deploy. Per the commit message: scoring_config loads once at startup; needs `systemctl restart trading-corp` after operator approval.
+3. **P3 cosmetic** (filed 2026-05-23): `{% if w.window_days_span %}` Jinja truthiness on a numeric field in `pm_dashboard_body.html:869` renders `—` for legit 0.0 span. Fix is `is not none`. Scope is isolated.
+4. **P2 ops** (filed 2026-05-23): Cloudflare retry burn vs `TimeoutStartSec=3600` on watchlist deep timers. First suspect if a future Sunday refresh fails silently.
+5. **P2 infra/security** (filed 2026-05-23): deep-watchlist timers run as root. Workstream described — coordinated PM + Kalshi unit edits + ownership migration + snapshot-replay rollback.
+6. **Tastytrade rotation runbook** (P1 HIGH, from prior session — unchanged).
+7. **Bug 4 (`get_history` dead branch)** (P2 MEDIUM, from prior session — unchanged).
+8. **Security-review remediation** — 7 CRITICAL findings still un-addressed (`e88d663`).
+
+**Memory updated this session:**
+- NEW `project_pm_metrics_epoch_live.md` — what's running on prod, slot value, all 7 surface behaviors, reversibility recipes.
+- UPDATED `project_pm_watchlist_windowed_live.md` — flagged that metrics-epoch is currently active, dashboard view zeroed forward.
+- `MEMORY.md` index appended.
+
+**Tmp throwaways** (gitignored, useful next session):
+- `tmp/metrics_epoch_sandbox.db` + `tmp/build_metrics_epoch_sandbox.py` + `tmp/run_metrics_epoch_reversibility_test.py` — fully self-contained reversibility test bench. Reusable for re-running the 7-stage test if anyone proposes changes to the cutoff plumbing.
+- `tmp/deploy_lf/data.py` — LF-normalized stage copy from today's deploy.
+- `tmp/dryrun_windowed_v2.json`, `tmp/render_check.db`, etc. — windowing-rescore artifacts from earlier today.
+- `tmp/post_epoch_dash.html` + `tmp/post_epoch_home.html` — captured dashboard renders post-epoch-set.
+
+**Untracked at session end** (pre-existing, NOT this session):
+- `docs/Deployment notes.txt`, `runbooks/strategy_harness_inventory.md`, `scripts/fetch_kalshi_weather_corpus.py`
+
+**Environment sync state:** local `main` == `origin/main` == `6073480`. Local `trading_corp/web/data.py` LF-normalized md5 matches prod (`f3898a5e47308f917c7c56e121bffe46`). Prod backup file `/tmp/backup_watch_only_whales_pre_windowed_20260523.json` from this morning's windowing deploy still kept on prod (will be useful for at least one more Sunday refresh).
+
+**Canonical pickup:** new-session prompt provided in chat + this EOS + `runbooks/deploy_log.md` (top two entries are today's) + memory `[[pm-metrics-epoch-live]]` + `[[pm-watchlist-windowed-live]]` + `[[polymarket-whale-scoring-edge]]`.
+
+---
+
 ## EOS snapshot — 2026-05-23 ~01:00 UTC (Saturday early morning — IC grader gate [3] shipped + §6 closed)
 
 **Headline of THIS session:** IC morning-candidate grader **LIVE on prod**. All three sequential ship gates closed in one session: AM SDK fix (`e977641`, pre-existing from prior session) verified still live → §6 live-verification closed locally with corrected acceptance criterion → gate [3] CRLF-normalized deploy executed cleanly. Grader endpoint `POST /telemetry/iron_condor/grade` is now serving paste-and-grade against real Tastytrade ATM-IV. The §6 criterion in the runbook restatement was found incomplete (anticipated only PASS or FAIL@term_structure; didn't anticipate FAIL@credit at gate 8, which proves gate 7 ran AND passed); corrected criterion documented at `planning/ic_grader_section6_closure_20260523.md` and pinned in the renamed memory `[[ic-grader-shipped]]`.
