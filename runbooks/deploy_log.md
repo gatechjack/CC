@@ -76,6 +76,69 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-23 15:52 UTC — bitunix: bias TTL 90→30 + flip-opportunity detection (commit `6073480`)
+
+**Commits:** `6073480` (YAML + observer + 8 tests). On `origin/main` via parallel-session fast-forward — origin head at deploy time: `03e8917` (an unrelated BACKLOG.md EOS snapshot atop `6073480`; `git diff 6073480 03e8917 -- <the 2 deploy files>` empty, so the deploy source is the `6073480` blobs exactly).
+**Triggered by:** Vortex audit + iterative scoping. Two changes addressing the no-close-on-opposite-signal gap without committing to the full close-on-opposite-PREMIUM build (~250 LOC, gated on observed data): (a) cause-side bias TTL shrink, (b) symptom-side instrumentation. Vortex's scope doc retained as the implementation plan, gated behind `flip_opportunity_detected` rows demonstrating the leak frequency × R-cost justifies the build.
+**Backup tag:** `pre-bias-flip-detection-20260523` on the 2 modified prod files (paths below). md5 captured on prod: YAML `52722fe9b49f0fdacd5554553ff8a467` (81680 bytes, CRLF — matches prod pre-deploy state); observer `406cd632571276d800ac628a27b4adc8` (103726 bytes — matches local `6073480~1` LF blob exactly).
+
+**Files deployed (2 modify):**
+- `config/strategies.yaml` — bitunix_futures block lines 1189-1190: `bias_bull` + `bias_bear` `ttl_minutes: 90` → `30`. Cause-side fix for bias-into-stale-regime suppression of opposite-side entries on the 3m engine. Weight unchanged at 2 (one knob, not both, per scoping discipline). Comment-laden form in git blob (`# 90→30 2026-05-23: …`) was not deployed — sed-surgical edit on prod (see "Notable" below) replaced only the bare numerals, so prod YAML carries no comment for this change. Owner: root:root preserved.
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — new `_detect_flip_opportunity` helper (line 680) + new `flip_opportunity_detected` audit kind + hook call at the post-SKIP / pre-PA-gate point (line 1228, try/except-wrapped so the detector cannot break the trading path). Observe-only — captures one row per (PREMIUM tier ∧ opposite open paper position) coincidence with open trade id/side/entry/stop/ts, opposing side/tier/net_score/signal/source, current_price, and unrealized R. NEVER closes, modifies, or otherwise touches the open position. md5 post-deploy: `5b7d342b6c7e179379f0095e8a2b6414` (matches git blob of `6073480` exactly). Owner: azureuser:azureuser preserved.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **bias_bull/bias_bear TTL = 30m** in the active bitunix_futures scoring factor block. Side effect: `_max_ttl_minutes` (observer:482-487) ceiling shrinks from 90→30; ledger-pull window in `_load_live_alerts_in_window` likewise shrinks. Consistent with rationale ("don't hold regime-scale bias on a scalp engine") — intended, not a bug.
+- **`flip_opportunity_detected` audit kind active** in `audit_event`. Detection fires AFTER the SKIP short-circuit and BEFORE the PA gate, so the row is written even when PA later rejects the new opposing fire — captures the full leak universe, not just the trades that would have placed.
+- **`_detect_flip_opportunity` helper queryable via /proc** for live introspection of the observer source under the running PID (1185752 at deploy time).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **YAML patch hunk REJECTED on EOL mismatch** during initial `patch -p1` run. Root cause: prod YAML uses **CRLF** line terminators (1549-byte drift vs local LF git blob is pure CRLF cost — verified via `file` + `od -c` on prod, no semantic drift). Recovered via `sudo -u azureuser sed -i '1189s/ttl_minutes: 90/ttl_minutes: 30/' config/strategies.yaml` (and same for line 1190). Sed-in-place preserves CRLF endings; `.rej` file removed. Pattern memorialized at `[[deploy-mechanics-crlf-config-patch]]` — for single-knob CRLF config edits, prefer sed over patch + wholesale-replace (wholesale-replace blows the 28KB az `--scripts` cap on this file).
+- **The observer's `scoring_config` is loaded ONCE at startup** (`main.py:319-335`), no mtime check — unlike Otter/Cypher's property-mtime path. Any future bitunix YAML change is INERT until `systemctl restart trading-corp`. This is why the deploy required a restart, not just a file copy.
+- **Detector is wrapped in try/except** so a DB hiccup in the detection path cannot break placement. The catch logs `bitunix_observer: flip detection raised: ...` and proceeds to PA gate normally.
+
+**Latent observation captured (not new, but corrects a stale claim):**
+- **`position_sl_update` count = 4** on prod (not 0 as a prior audit had claimed). The multi-leg TP/trail lifecycle has engaged multiple times since the B7+B9 reconciler hardening on 2026-05-22 01:50 UTC. The reality-verified `2942ff8e` (`runbooks/deploy_log.md:678`) is one of them. Net implication: the exit system is **working**, which further weakens the urgency of the close-on-opposite build that the detector instruments. Detection data is now the gate.
+
+**Verification:**
+- Push: `git push origin main` returned "Everything up-to-date" — parallel session had already pushed `6073480`. `git ls-remote origin refs/heads/main` = `03e8917...` (which contains `6073480`). Local HEAD == origin HEAD, clean tree.
+- Pre-deploy probe: prod observer md5 = `406cd632571276d800ac628a27b4adc8` = local `6073480~1` blob exactly (clean patch baseline). Prod YAML md5 = `52722fe9b49f0fdacd5554553ff8a467`, CRLF-drifted but bias_bull/bias_bear at lines 1189-1190 byte-identical to expected pre-state.
+- Pickle refresh (15:43 UTC): `scripts/rh_mfa_refresh_prod.sh` ran clean. New pickle 1396 bytes; LOGIN OK; 3 RH accounts bound; old code+config still on disk (expected — deploy follows).
+- Backup tag `pre-bias-flip-detection-20260523` applied; md5 verified to match pre-deploy prod state.
+- Patch applied: observer hunk clean (post-patch md5 `5b7d342b...` matches expected NEW LF blob); YAML hunk rejected → recovered via sed; `.rej` removed.
+- Post-deploy md5 (prod): observer `5b7d342b6c7e179379f0095e8a2b6414` exact match; YAML `d2a263ac8b6c8887e8efb1f136c94793` (CRLF-form, no exact-LF match expected — verified by semantic-grep on bias lines: both show `ttl_minutes: 30`).
+- Restart: 15:52:00 UTC. MainPID transitioned 1183988 → 1185752 (changed ✓). Web command center listening on `0.0.0.0:8000` at 15:57:00 UTC (~5 min latency due to IC position-manager startup catch-up; normal pattern). Healthz `HTTP 200 {"status":"ok","mode":"PAPER"}` both internal + external via Caddy.
+- BitunixBroker connected: `account=bitunix-futures, equity=$1121.83, 0 positions`. Observer wiring line: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True`.
+- **TTL load proof:** `/proc/1185752/root/home/azureuser/trading_corp/config/strategies.yaml` lines 1189-1190 show `ttl_minutes: 30` — verified live against the running process, not the on-disk file alone. Detector helper present in live source under `/proc/<PID>/root/...`: `_detect_flip_opportunity` at line 680, `flip_opportunity_detected` literal at line 755, hook call at line 1228.
+- **Observe-only confirmed:** SQL `kind LIKE '%close%' OR '%cancel%' OR '%flip_close%' OR '%position_flip%'` since restart → empty. The detector writes only `flip_opportunity_detected` rows.
+- **Detector count post-deploy (24 min after restart):** `flip_opportunity_detected` = 0 (no firings yet; no `bitunix_score_decided` events post-restart either — quiet TV window). Detection accrues from here.
+- Pre-existing recurring failure not caused by this deploy: Fidelity broker startup login → `'can't complete this action'` page → `broker_fallback_to_paper` audit for `fidelity_joint` + `fidelity_401k`. Independent of bitunix; restart unrelated.
+
+**Inert / dormant on current traffic:**
+- The detector itself fires only on (PREMIUM tier ∧ open paper position ∧ opposite side). At time of deploy: no open bitunix paper positions; therefore even a PREMIUM signal would not produce a flip_opportunity_detected row. Open positions accumulate during normal traffic.
+- The close-on-opposite-PREMIUM EXECUTION path is **NOT deployed**. Only the detection path is live. The full build remains gated on observed data.
+
+**NOT touched by this deploy:**
+- `agents/divisions/bitunix_position_reconciler.py` — no reconciler change; SL ratchet logic unchanged.
+- `paper_trade_record` schema — no new columns, no new `result` enum values.
+- `RiskAgent.evaluate()` and any risk-gate caps — untouched.
+- `auto_execute` flag for bitunix_futures — remains `true` (already was; no flip).
+- Otter/Cypher webhook paths — untouched.
+- Other YAML factor TTLs (only bias_bull + bias_bear edited).
+
+**Rollback recipe:**
+```bash
+TAG=pre-bias-flip-detection-20260523; BASE=/home/azureuser/trading_corp
+az vm run-command invoke -g rg-shared-prod -n tc-prod-vm --command-id RunShellScript --scripts "
+sudo -u azureuser mv $BASE/config/strategies.yaml.\$TAG $BASE/config/strategies.yaml
+sudo -u azureuser mv $BASE/trading_corp/agents/divisions/bitunix_futures_observer.py.\$TAG $BASE/trading_corp/agents/divisions/bitunix_futures_observer.py
+sudo systemctl restart trading-corp.service"
+# Pickle refresh first if restart wedges on MFA — see scripts/rh_mfa_refresh_prod.sh.
+# Then locally: git revert --no-edit 6073480 && git push origin main
+# (or leave the commit and just revert prod files; the detector code is harmless inert when reverted to the pre-helper file).
+```
+
+---
+
 ## 2026-05-23 15:23 UTC — pm-metrics-epoch: agent_state-driven reset (commit `17cdd55`)
 
 **Commits:** `17cdd55` (helpers + threading + tests). Pushed to `origin/main` via fast-forward of branch `pm-metrics-epoch`. `origin/main` head: `17cdd55`.
