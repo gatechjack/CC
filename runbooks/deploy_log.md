@@ -156,7 +156,6 @@ sudo systemctl restart trading-corp
 **Follow-ups queued:**
 - **Push decision (local 1 ahead of origin).** `1bcd8b4` (the §6 closure note) is local-only. Separate from deploy per scope-control. Push timing is operator's call.
 - **Runbook restatement amendment.** `runbooks/session_start_2026_05_23.md` lines 76–95 carry the incomplete §6 acceptance criterion. Either amend there (with Board approval per CLAUDE.md §4 runbook-edit rule), or live with the pointer at `planning/ic_grader_section6_closure_20260523.md`.
-- **Pickle-mtime ground truth gap.** Operator says "refreshed," filesystem says "unchanged." Either there's a refresh path not visible in `/home/azureuser/.tokens/robinhood.pickle`, or the no-op was masked by sliding-window token validity. Worth a brief audit before the next restart-with-pickle-pre-refresh expectation, so future sessions can verify rather than rely on operator assertion.
 
 ---
 
