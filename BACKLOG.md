@@ -8,6 +8,56 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-23 ~20:30 UTC (Saturday late — security tracks F+B+D shipped; C-2 and C-6 closed in CODE, awaiting deploy)
+
+**Headline of THIS session:** Three security-review remediation tracks executed in one session — TRACK F (VM-side §7 verification spree, 13/13 checks), TRACK B (LLM `push_back` bypass fix + side-flip rejection, closes CRITICAL C-2), TRACK D (hash-pinned `requirements.lock` + TV deps pinned, closes CRITICAL C-6). Four commits pushed to `origin/main`. **Prod is UNCHANGED** from the bitunix 15:52 UTC deploy — none of this session's code is on prod yet; deploy is the operator's next gated step.
+
+**`origin/main` head (in sync with local after push):**
+- `4086221` — security: hash-pinned `requirements.lock` + pin TV deps (C-6 fix) *(this session)*
+- `19ff0da` — security: route LLM push_back through risk gate + reject side flips (C-2 fix) *(this session)*
+- `8d72dcc` — backlog: file 3 VM-security anomalies from 2026-05-23 §7 spree *(this session)*
+- `d1402b5` — runbooks: VM-side security state verified 2026-05-23 (§7 spree) *(this session)*
+- `c2c4faa` — backlog EOS snapshot 2026-05-23 ~16:35 UTC *(prior session — bitunix bias-TTL + flip-detection)*
+
+**What's running on prod (unchanged from prior session):**
+- Bitunix bias-TTL + flip-detection (`6073480`) — LIVE since 2026-05-23 15:52:00 UTC. MainPID 1185736. `flip_opportunity_detected` accruing.
+- pm-metrics-epoch slot ACTIVE (`agent_state.polymarket_copy_trader.metrics_epoch = '2026-05-23T15:30:15.042822+00:00'`).
+- IC grader live (`112aef3`). Data-provider abstraction live (`a6885a5` + `e977641` AM fix).
+- **NOT on prod from this session:**
+  - `19ff0da` (TRACK B C-2 fix) — webhook-path change; needs backup + restart + post-deploy verification that a real skip produces a `risk_rejected` row with `source=llm_push_back`.
+  - `4086221` (TRACK D C-6 lockfile) — needs `pip install --require-hashes -r requirements.lock` in prod venv + ~2h paper-mode soak.
+
+**Highest-leverage open items (NOT advanced this session — handoff to next):**
+1. **Deploy `19ff0da` (C-2 fix) to prod.** Webhook-path change. Backup `web/webhooks.py` + `agents/risk.py` + `agents/research/trade_confirmation_consult.py` on prod; replace; `systemctl restart trading-corp`; trigger a synthetic push_back (or wait for real one); verify a `risk_rejected` row lands in `audit_event` with `source=llm_push_back` + `via=lord_otter_webhook`/`market_cypher_webhook`.
+2. **Deploy `4086221` (C-6 lockfile) to prod.** Run `/home/azureuser/trading_corp/venv/bin/pip install --require-hashes -r requirements.lock` in a paper-mode session window. Soak ~2h. No restart strictly required unless install drops/changes pkg versions that affect import behavior — diff `pip list` before/after; if unchanged, no restart.
+3. **NEW P1 — fix `azureuser` `NOPASSWD:ALL` sudo.** Filed in `8d72dcc`. Sudoers edit; high lockout risk; do via `visudo` with a second SSH session open as testing pad. Replace blanket `NOPASSWD:ALL` with narrow allowlist (systemctl restart trading-corp, sqlite3 trading_corp.db, etc).
+4. **TRACK A — secret rotation** (C-1, the most consequential remaining CRITICAL; uninterrupted-time-heavy, partial rotation is worse than none; sequence with the NOPASSWD:ALL fix since both touch VM state).
+5. **TRACK C — `strategies.yaml` schema + mtime + audit** (C-3 fix; §4 protected — needs explicit approval at session start).
+6. **TRACK E — Tastytrade KV consolidation** (P1 BACKLOG; §4 protected; standalone now that the AM SDK fix already shipped).
+7. **3 new VM anomalies filed in `8d72dcc`** — P1 NOPASSWD:ALL (item 3 above), P2 DB world-readable (`chmod 600`), P3 root-owned `/tmp/kalshi_*.pem` cleanup.
+
+**Memory updated this session:**
+- NEW `project_security_tracks_fbd_shipped_2026_05_23.md` — full state of what shipped vs what's deployed; gating notes for next session.
+- NEW `reference_uv_pip_compile_cross_platform.md` — the canonical command for generating hash-pinned lockfiles cross-platform from Windows; reusable for next dep change.
+- UPDATED `project_security_review_2026_05_22.md` — C-2 and C-6 marked closed-in-code (deploy gated).
+- `MEMORY.md` index appended.
+
+**Notable mid-session catches (worth carrying forward):**
+- **Pickup brief was stale by ~24h.** The initial prompt described session state from 2026-05-22 evening (4 ahead of origin, AM SDK fix pending). Actual: 4 sessions and many deploys had happened since. Spent 2 reads to diff brief-vs-reality before picking a track. The `[[verify-premises-against-ground-truth]]` memory earned its keep again.
+- **H-17 in the security review is stale.** Report says prod Python is 3.10.12. Actual: system Python is 3.10.12 but the **venv that runs trading_corp is 3.12.13**. Lockfile correctly targets 3.12. Worth a report erratum next time the review is touched.
+- **`tvdatafeed` is NOT on PyPI** (HTTP 404). The line in `requirements.txt:49` was unversioned and never installed — `pip show tvdatafeed` on prod returns "not found". Runtime (`trading_corp/data/tradingview.py:54-60`) tolerates the missing import and ORs with `tradingview-ta`. Commented out (not deleted) in this commit; if anyone re-introduces it, they need to find the actual source (git URL + sha; the package was never publishable under that name).
+- **5 pre-existing test failures in `tests/test_webhooks_return_fast.py`** — all `AttributeError: '_Deps' object has no attribute 'bitunix_observer'`. Pre-existing fixture gap (file untouched 1+ week, zero diff against this HEAD). Not caused by TRACK B; not fixed in this session (scope creep avoidance). Filed implicitly via this note for whichever future session touches that file.
+
+**Tmp throwaways** (gitignored, useful next session): `tmp/soak_venv/` — Python 3.12 ephemeral venv used to dry-run-verify the lockfile. Reusable for re-running `uv pip install --dry-run --require-hashes -r requirements.lock` if anyone wants to re-verify before deploy.
+
+**Untracked at session end** (pre-existing, NOT this session): `docs/Deployment notes.txt`, `runbooks/strategy_harness_inventory.md`, `scripts/fetch_kalshi_weather_corpus.py`.
+
+**Environment sync state:** local `main` == `origin/main` == `4086221` (after this session's push). Prod files match their respective git-blob expectations from the BITUNIX deploy 15:52 UTC — UNCHANGED THIS SESSION (verified via `systemctl show trading-corp.service`: MainPID 1185736, ActiveEnterTimestamp Sat 2026-05-23 15:52:00 UTC). Local working tree clean except the 3 pre-existing untracked files listed above.
+
+**Canonical pickup:** new-session prompt at `runbooks/session_start_2026_05_24_post_security_tracks_fbd.md` (this session wrote it) + this EOS + memory `[[project-security-tracks-fbd-shipped-2026-05-23]]` + the 4 commits listed at the top of this entry.
+
+---
+
 ## EOS snapshot — 2026-05-23 ~16:35 UTC (Saturday — bitunix bias-TTL + flip-detection LIVE on prod; close-on-opposite build gated on data)
 
 **Headline of THIS session:** Vortex audit → iterative scoping → bias_bull/bias_bear TTL 90→30 + observe-only `flip_opportunity_detected` detector shipped to prod (commit `6073480`, restart 15:52 UTC). The close-on-opposite-PREMIUM execution path (~250 LOC) is intentionally **NOT built** — gated on whether the detector's accruing rows justify it.
