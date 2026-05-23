@@ -282,6 +282,44 @@ unrelated).
 
 ---
 
+## P3 (cosmetic) — `pm_dashboard_body.html` Jinja truthiness on numeric `window_days_span`  *(NEW — 2026-05-23)*
+
+**Discovered during:** the `pm-watchlist-windowed-rescore` deploy verification 2026-05-23. Surfaced by Sassy-Bucket (#3 under `<.70` desc) — n=100 trades all in the same UTC second, `window_days_span = 0.0`, render shows `—` instead of `0d`.
+
+**The line:**
+```jinja
+{% if w.window_days_span %}{{ w.window_days_span | round(0) | int }}d{% else %}—{% endif %}
+```
+Falsy on `0.0`; should be `is not none`.
+
+**Fix:**
+```jinja
+{% if w.window_days_span is not none %}{{ w.window_days_span | round(0) | int }}d{% else %}—{% endif %}
+```
+
+**Scope check (done):** grepped `{% if w.<numeric> %}` across `pm_dashboard_body.html`. Bug is isolated to that one line — every other `{% if w.X %}` in the template is on string or bool fields where falsy semantics are correct. PnL/count comparisons use explicit `> 0` or `is none` operators. No cross-template grep performed; if any other template renders a numeric where 0 is a meaningful value, the same fix may apply.
+
+**Cosmetic only** — does NOT silently blank PnL, n, or WR (those use explicit comparison operators). Defer.
+
+---
+
+## P2 (ops) — Cloudflare-retry burn vs `TimeoutStartSec=3600` on watchlist deep timers  *(NEW — 2026-05-23)*
+
+**Discovered during:** the `pm-watchlist-windowed-rescore` deploy 2026-05-23. The one-shot seed run burned **12.5 minutes** of Cloudflare 403 retry against a single chunk (chunk 898) — full retry budget consumed (5 backoffs: 30s + 60s + 120s + 240s + 300s) before the chunk eventually succeeded. Total run: 28m 43s on a corpus that completed locally in ~6 min.
+
+**The risk:** the systemd unit caps the run at `TimeoutStartSec=3600` (1 hour). One stuck chunk + a partial-chunk Cloudflare retry budget that's now ~12 min worst-case adds 12 min to the natural run-time. The Sunday refresh has been observed at <30 min historically. If the natural run grows or Cloudflare gets tighter, we'd expect:
+1. Multiple chunks each burning 12 min retry budgets, OR
+2. A chunk that exhausts the retry budget (terminal `PolymarketRateLimitError`) — caught + swallowed per-chunk by `fetch_market_resolutions`, but no telemetry on the prod side besides stderr lines
+
+**If a future Sunday refresh ever fails silently:**
+- Check timer status: `systemctl status trading-corp-pm-watchlist-deep.service` for SIGTERM at the 3600s timeout
+- Check stderr: grep for `Cloudflare block on attempt` count + `PolymarketRateLimitError`
+- If retry budget vs timeout is the cause: bump `TimeoutStartSec=7200`, OR shrink the Cloudflare retry schedule, OR add a per-chunk-failure-rate kill-switch
+
+**Capture as ops note on the timer** (not bundled here): one-shot run 2026-05-23 demonstrated the upper-bound of current retry-budget-vs-timeout headroom is ~1.5x typical run-time. Pre-emptive hardening defensible but not urgent — single-chunk-stuck pattern wasn't a deploy-blocker today and the retry succeeded on attempt 6.
+
+---
+
 ## P2 (infra/security) — Polymarket + Kalshi deep-watchlist timers run as root  *(NEW — 2026-05-23)*
 
 **Division scope:** `polymarket_copy_trading` + `kalshi_copy_trading` (both deep-watchlist timers).

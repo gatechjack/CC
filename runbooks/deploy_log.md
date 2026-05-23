@@ -76,6 +76,72 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-23 06:23 UTC — pm-watchlist: windowed re-score on last 100 resolved BUYs (commits `6e37b48`, `0045ff1`, `5d7704c`)
+
+**Commits:** `6e37b48` (windowing + 19 unit tests), `0045ff1` (edge-proxy columns AvgPx + <.70 + PnL floor $5k + server-side sortable headers + 9 sort tests), `5d7704c` (backlog: deferred root-hardening followup). All three pushed to `origin/main` via fast-forward merge of branch `pm-watchlist-windowed-rescore`. `origin/main` head: `5d7704c`.
+**Triggered by:** Operator-approved deploy of the windowed-rescore branch. Replaces the lifetime-scored watchlist (≥100 lifetime resolved BUYs + ≥70% lifetime WR ranked by lifetime realized PnL) with sliding-window scoring on each whale's last 100 resolved BUYs. Operator-stated motivation: lifetime stats let inactive whales + high-volume-low-edge favorite-farmers crowd the screening list; sample-size-constant windowing + AvgPx edge-proxy column resolve both failure modes.
+**Backup tag:** `pre-windowed-20260523-0543` on 4 modified prod files (paths below). Pre-deploy `agent_state(polymarket_copy_trader, watch_only_whales)` snapshot at `/tmp/backup_watch_only_whales_pre_windowed_20260523.json` (25,061 bytes, md5 `c725d496bb31859e4a16e5b24b9014d3`, **kept on prod through at least the first steady-state Sunday refresh 2026-05-24**).
+
+**Files deployed (4 modify):**
+- `trading_corp/scripts/seed_polymarket_watchlist_deep.py` — windowing pipeline: `_fetch_wallet_activity_windowed` (3-condition termination: target_buys_reached / exhausted / max_pages_hit ceiling at 10 pages × 500 rows), `_select_resolved_buys_window` (most-recent-N resolved BUYs from paged activity, true N recorded on sub-window), recency floor on any-side `last_trade_iso` ≤ 60 days, `compute_polymarket_stats(half_life_days=36500.0)` (the window IS the recency mechanism), quality floors WR ≥ 0.62 AND realized PnL ≥ $5,000 (production-calibrated), n ≥ 10 noise floor, provisional flag at n < 50, schema additions `window_size_n` + `window_days_span` + `last_trade_iso` + `provisional` + `avg_entry_price` + `share_below_70`. CLI: `--top` default 0 (no cap), `--min-positions` renamed to `--min-resolved-buys`, `--min-win-rate` renamed to `--min-windowed-wr`. Owner: root:root preserved.
+- `trading_corp/web/data.py` — `PolymarketWatchOnlyRow` dataclass gains 6 new fields (defaulted for back-compat with pre-windowed agent_state entries). `_query_polymarket_watch_only_rows` accepts whitelisted `sort_key` + `sort_desc`; whitelist includes aliases (`pnl`, `avg`, `avgpx`, `below_70`, etc.); unknown keys fall back to default rank ordering; None-value rows sink to bottom independent of sort direction. `build_prediction_market_view` plumbs `pm_watch_sort` + `pm_watch_desc` into the dashboard view. Owner: root:root preserved.
+- `trading_corp/web/routes.py` — all four `/prediction-markets/[partials/]/{division?}` endpoints accept `pm_watch_sort` + `pm_watch_desc` query params. Owner: azureuser:azureuser preserved.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — new Jinja macro `pm_watch_sort_link(key, label, default_key=False)` renders each column header as an HTMX `<a hx-get hx-target=#pm-content hx-push-url>`; active column gets ↑/↓ arrow + text-mono highlight. New columns: Span, Last, AvgPx, `<.70`. Provisional rows greyed via `opacity-50 italic` driven by `w.provisional` attribute — independent of sort column. Owner: root:root preserved.
+
+**Systemd unit edit (one-line):**
+- `/etc/systemd/system/trading-corp-pm-watchlist-deep.service` ExecStart: dropped `--max-total 100` (operator accepted floating list size; PnL floor + provisional cue replace the cap). Backup tag matches code-deploy backup tag. `systemctl daemon-reload` issued. Steady-state ExecStart now: `… seed_polymarket_watchlist_deep --merge`.
+
+**One-shot first run (overwrite mode, no `--merge`, no `--max-total`):**
+- Ran as root via `az vm run-command` (matches `User=root` on the service unit). Command: `… seed_polymarket_watchlist_deep --json`. Wall-clock 28m 43s (05:54:26 → 06:23:09 UTC) — 12.5 min of that burned in Cloudflare-403 retry on a single resolutions chunk (chunk 898, 5 retries, eventually succeeded on attempt 6). Zero `terminal failures` / `PolymarketRateLimitError`. Cost note filed at BACKLOG `P2 (ops) — Cloudflare-retry burn vs TimeoutStartSec=3600`.
+
+**Features shipped:**
+- **Polymarket Watch List dashboard panel** (`/prediction-markets/polymarket_copy_trading`) now ranks 197 whales by **windowed** realized PnL (last 100 resolved BUYs, last_trade ≤ 60 days, WR ≥ 62%, PnL ≥ $5k, n ≥ 10). Header text reads "scored on last 100 resolved BUYs". 27 of 197 are provisional (n<50, rendered with `opacity-50 italic` + `prov` badge + tooltip).
+- **AvgPx (mean BUY entry price) + `<.70` (share of windowed BUYs entered at <$0.70) columns.** Color-coded AvgPx: <$0.50 green (sharp/contrarian), $0.50-$0.85 mono, ≥$0.85 muted (favorite-farmer). Operator can discriminate edge-driven whales from capital-driven favorite-farmers at a glance — `[[polymarket-whale-scoring-edge]]` memory captures the structural finding.
+- **Server-side sortable headers** via `?pm_watch_sort=<key>&pm_watch_desc=<0|1>` query params + HTMX swap of `#pm-content`. URL push-state preserves sort across refresh + back/forward. Whitelisted keys: `rank`, `user_name`, `best_category`, `n`/`window_size_n`, `span`/`window_days_span`, `last`/`last_trade_iso`, `wr`/`win_rate_pct`, `avg_entry_price`/`avg`/`avgpx`, `share_below_70`/`below_70`, `realized_pnl_usdc`/`pnl`, `lifetime_pnl_from_leaderboard`/`lifetime_pnl`, `lifetime_vol_from_leaderboard`/`lifetime_vol`.
+
+**Inert / dormant on current traffic:**
+- The `--merge` accumulation path is dormant until Sun 2026-05-24 13:07:58 UTC (next timer fire). First weekly fire will union freshly-windowed candidates with the overwrite-baseline written at 06:23 UTC today.
+
+**NOT touched by this deploy:**
+- `agent_state(polymarket_copy_trader, selected_whales)` — copy-execution roster. Code-level guaranteed: the seed script never names `selected_whales`. Snapshot before+after confirmed identical.
+- `refresh_polymarket_whales.py` (live roster picker) — left at existing Wilson LCB × edge × category logic with 30-day half-life.
+- `polymarket_copy_trader` strategy / broker adapter / risk gate / audit pipeline.
+- Kalshi watchlist seed (`seed_kalshi_watchlist_deep.py`).
+- Paper-metrics epoch / cutoff dates. Operator explicitly held this — watchlist screening change ≠ copy-execution change.
+
+**Verification:**
+- Service restart: PID 1157880 → 1157894, `ExecMainStartTimestamp=2026-05-23 05:48:34 UTC`, web bound at 05:53:11 UTC (~277s startup; long-tail of broker fan-out + Azure KV, no errors beyond pre-existing Fidelity broker_fallback_to_paper).
+- Healthz: `HTTP 200 {"status":"ok","mode":"PAPER"}`.
+- One-shot seed summary: 2389 candidates, 197 quality-gate pass, 27 provisional, written. Drop reasons: wr_floor=1013, pnl_floor=815, n_floor=249, recency_floor=115. Termination: target_buys_reached=1758, exhausted=629, max_pages_hit=0, fetch_error=2.
+- Dashboard render confirmed: AvgPx + `<.70` columns rendered on all 197 rows, sort URLs swap `#pm-content` with `?pm_watch_sort=…` query params, active-column arrow moves with sort, 27 provisional rows greyed under every sort. Top of default sort: Mosley1 ($299k / n=100 / AvgPx 0.394 / <.70 99%), ethanaz ($230k / n=100 / WR 63% / AvgPx 0.447 / <.70 95%) — exactly the mid-WR/high-edge whale the old WR≥70% gate excluded. AvgPx-ascending sort: Wickier leads ($75k / n=46 provisional / AvgPx 0.166 / <.70 98%) — emerging-sharp whale the old lifetime ≥100 gate hid. Size-vs-edge separation working on prod.
+- Timer next fire: `Sun 2026-05-24 13:07:58 UTC`, steady-state ExecStart confirmed `… --merge` (no `--max-total`).
+
+**Rollback recipe** (split urgency — 7.1 + 7.2 restore working prod immediately; 7.3 is the deliberate non-urgent tail):
+```bash
+# 7.1 (URGENT) — restore agent_state from pre-deploy snapshot
+ssh azureuser@trading.jacksumner.com "sudo /home/azureuser/trading_corp/venv/bin/python3 -c \"
+from trading_corp.persistence import db
+import json
+with open('/tmp/backup_watch_only_whales_pre_windowed_20260523.json', 'r') as f:
+    val = json.load(f)
+db.set_agent_state('polymarket_copy_trader', 'watch_only_whales', val, db_url='sqlite:///data/trading_corp.db')
+\""
+
+# 7.2 (URGENT) — revert systemd unit so next Sunday fire uses old flags
+ssh azureuser@trading.jacksumner.com "sudo sed -i 's|seed_polymarket_watchlist_deep --merge\$|seed_polymarket_watchlist_deep --merge --max-total 100|' /etc/systemd/system/trading-corp-pm-watchlist-deep.service && sudo systemctl daemon-reload"
+
+# 7.3 (DELIBERATE — only after 7.1 + 7.2 stabilize prod) — code revert
+TAG=pre-windowed-20260523-0543; BASE=/home/azureuser/trading_corp
+ssh azureuser@trading.jacksumner.com "
+for f in trading_corp/scripts/seed_polymarket_watchlist_deep.py trading_corp/web/data.py trading_corp/web/routes.py trading_corp/web/templates/partials/pm_dashboard_body.html; do
+  sudo mv $BASE/\$f.\$TAG $BASE/\$f
+done
+sudo systemctl restart trading-corp.service"
+# Then on dev: git revert --no-edit 5d7704c 0045ff1 6e37b48 && git push origin main
+```
+
+---
+
 ## 2026-05-23 00:40 UTC — IC morning-candidate grader: ship to prod (commit `112aef3`)
 
 **Commits:** `112aef3` (the grader, committed 2026-05-22 ~13:30 UTC, intentionally held off origin during the IC grader session). Pushed to `origin/main` is a separate decision, deliberately deferred — local `main` head at deploy time is `1bcd8b4` (the §6 closure note from this session, also on top of `112aef3`); both are local-only.
