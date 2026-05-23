@@ -8,6 +8,67 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-23 ~01:00 UTC (Saturday early morning — IC grader gate [3] shipped + §6 closed)
+
+**Headline of THIS session:** IC morning-candidate grader **LIVE on prod**. All three sequential ship gates closed in one session: AM SDK fix (`e977641`, pre-existing from prior session) verified still live → §6 live-verification closed locally with corrected acceptance criterion → gate [3] CRLF-normalized deploy executed cleanly. Grader endpoint `POST /telemetry/iron_condor/grade` is now serving paste-and-grade against real Tastytrade ATM-IV. The §6 criterion in the runbook restatement was found incomplete (anticipated only PASS or FAIL@term_structure; didn't anticipate FAIL@credit at gate 8, which proves gate 7 ran AND passed); corrected criterion documented at `planning/ic_grader_section6_closure_20260523.md` and pinned in the renamed memory `[[ic-grader-shipped]]`.
+
+**Local `main` head (push pending — see below):**
+- `b61a26a runbooks: downgrade pickle-mtime gap from follow-up to passive deploy-log lesson` *(this session)*
+- `642c833 runbooks: log IC grader deploy 2026-05-23 00:40 UTC (112aef3)` *(this session)*
+- `4368095 path_logger: kalshi_crypto BTC bucket order-book logger + limit-order backtest harness` *(parallel session, integrated cleanly on top of `1bcd8b4`)*
+- `1bcd8b4 planning: IC grader §6 closure note — gate 7 verified live, criterion corrected` *(this session)*
+- `f301e49` — prior session wrap (current `origin/main` head until push).
+- **4 commits ahead of `origin/main` at session wrap; PUSH PENDING per operator instruction at session-end.**
+
+**What's running on prod (post-this-session):**
+- `112aef3` IC grader: LIVE since `2026-05-23 00:40:51 UTC`. MainPID `1141109`. Backup tag `pre-grader-20260523-0036` on the 2 modified files. Grader is research-only (no execution path; AST-walked invariant). Sits idle between operator scan-grading sessions.
+- `e977641` Tastytrade AM fix: unchanged from prior session. Powers gate 7 of the grader.
+- `f5a5fd5` kalshi_weather P3: unchanged from prior session. Observation week still in progress through ~2026-05-29.
+- Dashboard `DASHBOARD_RT_CUTOFFS["kalshi_weather"]`: unchanged from prior session at `2026-05-22T16:25:00+00:00`.
+- IC `auto_execute: false` unchanged (load-bearing).
+- **Parallel session activity observed (NOT this session's work):** `4368095 path_logger: kalshi_crypto BTC bucket order-book logger + limit-order backtest harness` committed on top of `1bcd8b4`. Memory entries also rotated externally — `project_kalshi_crypto_vol_v2_dashboard` replaced by `project_kalshi_crypto_shelved` (kalshi_crypto inquiry closed: no demonstrated edge, latency thesis structurally closed by 60s trimmed-mean BRTI settlement); new `reference_strategy_harness_inventory` added. `runbooks/strategy_harness_inventory.md` left untracked (parallel session's; not committed by this session). Read those memory entries before working any crypto-vol or harness adjacent area.
+
+**§6 closure evidence (load-bearing for any future re-verification):**
+- Provider: `TastytradeDataProvider` (real, same singleton in route + direct paths).
+- Candidate (local + prod): `SPY 06/30/26 (38–39) 699/702 776/778 35%` — algorithmically picked against live chain (16Δ ±0.05, 3pt wings, all strikes on chain).
+- Verdict: FAIL@credit (gate 8 reached → gate 7 PASSED on real numbers).
+- Gate-7 direct probe: front 0.1500, back 0.1651, spread −0.0151 (contango, well below max_diff 0.05).
+- Audit row: 1 in prod, correct shape, no raw paste content (privacy invariant intact).
+- §6 criterion CORRECTED (in `planning/ic_grader_section6_closure_20260523.md`): PASS or FAIL at any gate ≥ 7; disqualifying = NEEDS_LIVE_DATA at gate 7 OR failure at gate < 7. The runbook restatement at `runbooks/session_start_2026_05_23.md` lines 76–95 has the older incomplete version.
+
+**Pickle-mtime ground truth gap (CLOSED, non-blocking):** Operator confirmed pre-deploy refresh; filesystem mtime unchanged at 47h stale. Operator authorized proceeding; post-restart Robinhood login was clean with all 3 accounts bound (token sliding-window-valid in practice). Lesson captured passively in `runbooks/deploy_log.md` 2026-05-23 00:40 UTC entry. Not promoted to memory, not a follow-up.
+
+**§6 verification-script sharp edge (captured in `[[ic-grader-shipped]]`):** Multiple `asyncio.run()` calls in a verification script break the TastytradeDataProvider session→loop binding ("Event loop is closed" → `get_atm_iv` returns None). Collapse all async work into one `asyncio.run()`. Production FastAPI uses single-event-loop semantics; this is verification-script-only. First prod §6 run spuriously failed for this reason; v2 with single event loop was clean.
+
+**Highest-leverage open items (NOT advanced this session):**
+1. **Push 4 local commits to `origin/main`** (`1bcd8b4 → b61a26a`). Includes the parallel session's `4368095` (path_logger). Operator-deferrable.
+2. **Runbook restatement amendment** at `runbooks/session_start_2026_05_23.md` lines 76–95 (incomplete §6 acceptance criterion). Either amend with Board approval per CLAUDE.md §4, or live with the pointer to `planning/ic_grader_section6_closure_20260523.md`. Closure note is the source of truth either way.
+3. **P4 observation week** — kalshi_weather xref daily drift-check through ~2026-05-29 (unchanged from prior session). Day-one (60 evals) was clean. Drift-check script at `scripts/check_weather_coord_drift.sql`.
+4. **Tastytrade rotation runbook** (P1 HIGH, from earlier session) — atomic 2-step procedure + failure-chain diagnosis template.
+5. **Bug 4 (`get_history` dead branch)** (P2 MEDIUM, from earlier session) — pre-existing; IVR still falls through to yfinance HV.
+6. **Security-review remediation** — 7 CRITICAL findings still un-addressed (`e88d663`).
+
+**Memory updated this session:**
+- RENAMED `project_ic_grader_committed.md` → `project_ic_grader_shipped.md`; slug `ic-grader-committed-not-shipped` → `ic-grader-shipped`. Content rewritten for shipped state, including the §6 corrected acceptance criterion and the multi-asyncio-run sharp edge.
+- `MEMORY.md` — index entry refreshed.
+- `planning/ic_grader_section6_closure_20260523.md` — inbound link updated.
+- Pickle-mtime: **NOT** escalated to memory per operator instruction (closed, non-blocking, lives only as a passive line in the deploy_log).
+
+**Throwaways left in `tmp/`** (gitignored, safe to leave or delete):
+- `b2_construct_candidate.py` — live-chain SPY 16Δ candidate picker (reusable for future §6 re-runs).
+- `b3_section6_verify.py` — local §6 5-point assertion (TestClient + direct grade_paste).
+- `prod_section6.py` + `prod_section6_v2.py` — prod §6 probe scripts (v1 had the multi-asyncio bug; v2 is the clean single-event-loop version).
+- `grader_deploy/`, `grader_deploy.tar.gz`, `grader_deploy.tar.gz.b64` — deploy staging (5-file LF-normalized tarball, 54KB).
+- `deploy_step4.sh`, `prod_section6_runner.sh`, `prod_section6_v2_runner.sh` — az run-command wrapper scripts.
+
+**Untracked at session end** (pre-existing, unrelated, NOT mine):
+- `docs/Deployment notes.txt`
+- `scripts/fetch_kalshi_weather_corpus.py` (superseded chunked-corpus puller from earlier session)
+
+**Canonical pickup:** next-session prompt provided at session end in chat + this EOS + `runbooks/deploy_log.md` (top entry, 2026-05-23 00:40 UTC) + memory `[[ic-grader-shipped]]` + `planning/ic_grader_section6_closure_20260523.md`. The `runbooks/session_start_2026_05_23.md` file from prior session is now CONSUMED — gate [3] complete; don't re-execute its steps.
+
+---
+
 ## EOS snapshot — 2026-05-22 ~22:30 UTC (Friday late evening — kalshi_weather Phase D + dashboard cutoff advance)
 
 **Headline of THIS session:** kalshi_weather Item 2 (hourly re-evaluation) investigation **CLOSED** as "investigated, no signal" after a full replay against the 556-RT prod corpus. Zero-leak Tier A.1 close-signal correctness was 50% (coin flip) on 22 flipped positions; leak-inflated Tier A.2 underperformed A.1 at 41.3% — clean kill, no edge hiding under friction. `quote_snapshot` persistence design (Tier C long-pole, prior session `f20de60`) is **not being built**; its only purpose was Tier C real-PnL on a signal we now know doesn't exist. Dashboard kalshi_weather cutoff advanced to the P3 deploy time (2026-05-22 16:25 UTC) so the tile scopes to the fully-corrected logic window — surgical sed on prod, no other code change.

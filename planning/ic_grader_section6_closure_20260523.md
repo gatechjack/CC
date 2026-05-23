@@ -127,7 +127,7 @@ criterion to the re-run result.
 
 ## Related
 
-- `[[ic-grader-committed-not-shipped]]` — what's committed, what isn't
+- `[[ic-grader-shipped]]` — what's committed, what isn't
 - `[[project-data-provider-deploy]]` — the AM SDK fix this depends on
 - `[[feedback-mocks-dont-catch-sdk-shape]]` — the discipline driving
   the live-SDK §6 gate
