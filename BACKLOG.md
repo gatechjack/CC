@@ -8,6 +8,54 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-23 ~16:35 UTC (Saturday — bitunix bias-TTL + flip-detection LIVE on prod; close-on-opposite build gated on data)
+
+**Headline of THIS session:** Vortex audit → iterative scoping → bias_bull/bias_bear TTL 90→30 + observe-only `flip_opportunity_detected` detector shipped to prod (commit `6073480`, restart 15:52 UTC). The close-on-opposite-PREMIUM execution path (~250 LOC) is intentionally **NOT built** — gated on whether the detector's accruing rows justify it.
+
+**`origin/main` head (in sync with local after final push):**
+- `7d34dbe` — deploy_log: bias TTL 90→30 + flip-opportunity detection shipped 2026-05-23 15:52 UTC *(this session, after wrap)*
+- `03e8917` — backlog: EOS snapshot 2026-05-23 ~15:35 UTC — pm-metrics-epoch shipped + slot SET *(parallel session — its content is the one immediately below this EOS)*
+- `6073480` — bitunix_futures: bias TTL 90→30 + flip-opportunity detection (observe-only) *(this session's code commit; the parallel-session EOS below was written BEFORE this was deployed and incorrectly flagged it as "NOT YET DEPLOYED" — that line is now stale)*
+- `35804ac` / `17cdd55` / `4c78176` — prior session, unchanged
+
+**What's running on prod (post-this-session):**
+- `6073480` bitunix bias-TTL + flip-detection code: LIVE since `2026-05-23 15:52:00 UTC`. MainPID 1185752. Web bound 15:57:00 UTC. observer.py md5 `5b7d342b6c7e179379f0095e8a2b6414` (LF-exact match to git blob). YAML md5 `d2a263ac8b6c8887e8efb1f136c94793` (CRLF-form, semantically verified — bias_bull/bias_bear lines 1189-1190 show `ttl_minutes: 30`). Backup tag `pre-bias-flip-detection-20260523` on both files.
+- `pm-metrics-epoch` code (`17cdd55`) + slot ACTIVE — unchanged from parallel-session EOS below.
+- Robinhood pickle: refreshed 2026-05-23 15:43 UTC (this session, pre-deploy MFA wedge prevention).
+- `_max_ttl_minutes` ceiling for bitunix scoring: shrunk from 90→30 as a side effect of the bias TTL change. Ledger-pull window in `_load_live_alerts_in_window` shrinks accordingly. Intended.
+- `flip_opportunity_detected` audit kind: present in audit_event schema but **zero firings** as of 16:35 UTC (no bitunix scoring events post-restart — quiet TV window).
+- `position_sl_update` count: **4** (corrects the Vortex-stale "0 all-time" claim — the trail mechanism HAS engaged in prod since B7+B9).
+- Pre-existing recurring failure not caused by this deploy: Fidelity broker startup login → `'can't complete this action'` page → `broker_fallback_to_paper` for `fidelity_joint` + `fidelity_401k`. Independent.
+
+**Highest-leverage open items (NOT advanced this session — handoff to next):**
+1. **Watch `flip_opportunity_detected` accrual.** Query: `SELECT COUNT(*), MIN(ts), MAX(ts) FROM audit_event WHERE kind='flip_opportunity_detected'`. Goal: enough rows to characterize leak frequency × R-cost distribution. Decision threshold not pre-set; Vortex's scope doc is the gated implementation plan when the bar is cleared.
+2. **Funnel-sanity check post-restart.** Compare `bitunix_score_decided` rates over a longer window now that `_max_ttl_minutes` is 30 (was 90). Expected: slightly fewer in-window signals; flag if it collapses.
+3. **Observation window opens NOW** for pm-metrics-epoch (parallel session — see EOS below). Independent track, no bitunix interaction.
+4. **Tastytrade rotation runbook** (P1 HIGH, unchanged).
+5. **Bug 4 (`get_history` dead branch)** (P2 MEDIUM, unchanged).
+6. **Security-review remediation** — 7 CRITICAL findings still un-addressed (`e88d663`).
+
+**Memory updated this session:**
+- NEW `feedback_deploy_crlf_config_patch.md` — prod YAML is CRLF; LF git-diff `patch -p1` rejects on EOL mismatch; sed-in-place per line is the workaround. Memorialized after the deploy hit this failure mode.
+- NEW `project_bitunix_flip_detection_live.md` — deployed state + gating condition for the close-on-opposite-PREMIUM build.
+- UPDATED `project_bitunix_paper_clock.md` (this session) — added 2026-05-23 line for the bias TTL + flip-detection deploy during the paper-eval window.
+- `MEMORY.md` index appended (2 new entries).
+
+**Notable mid-session catches (worth carrying forward):**
+- **Push gap caught twice.** First time the prompt said "human pushed" but origin was still at `35804ac`; second time it said "pushed" but origin had a parallel-session `03e8917` on top of `6073480`. Verify-premises-against-ground-truth ([[verify-premises-against-ground-truth]]) earned its keep both times.
+- **YAML patch failure.** `patch -p1` rejected on CRLF/LF EOL mismatch. Sed-surgical recovery preserved CRLF byte-for-byte and edited only the 2 target lines. Captured in memory ([[deploy-mechanics-crlf-config-patch]]) so the next config deploy doesn't re-discover.
+- **position_sl_update=4 (not 0).** Vortex's audit was stale on this — the trail mechanism has fired multiple times since B7+B9 hardened the reconciler 2026-05-22 01:50 UTC. The reality-verified `2942ff8e` is one of them.
+
+**Tmp throwaways** (gitignored, no carry-forward needed): none from this session (deploy was patch-based via az, no local tmp accumulated).
+
+**Untracked at session end** (pre-existing, NOT this session): `docs/Deployment notes.txt`, `runbooks/strategy_harness_inventory.md`, `scripts/fetch_kalshi_weather_corpus.py`.
+
+**Environment sync state:** local `main` == `origin/main` (after this session's final push). Prod files match their respective git-blob expectations (observer LF-exact; YAML semantic-verified). Backup tags `pre-bias-flip-detection-20260523` kept on prod for at least one observation week.
+
+**Canonical pickup:** new-session prompt provided in chat + this EOS + `runbooks/deploy_log.md` 2026-05-23 15:52 UTC entry + memory `[[bitunix-flip-detection-live]]` + `[[deploy-mechanics-crlf-config-patch]]`.
+
+---
+
 ## EOS snapshot — 2026-05-23 ~15:35 UTC (Saturday — TWO polymarket_copy_trading deploys + metrics-epoch SET on prod)
 
 **Headline of THIS session:** Two consecutive operator-approved Polymarket Copy Trading deploys shipped to prod + the metrics-epoch slot was deliberately set, establishing a clean-slate paper-metrics start.
