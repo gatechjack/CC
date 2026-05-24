@@ -96,6 +96,62 @@ def classify_nba_ticker(ticker: str) -> tuple[str, str | None]:
     return "unknown", None
 
 
+# ── MLB classifier — sibling, NOT a generalization ────────────────────────
+# Added 2026-05-23 after MLB pre-flip audit. Kalshi MLB ticker shape:
+# KXMLBGAME-{YYMMMDD}{HHMM}{TEAM_BLOB}-{YES_SIDE}. Audit-evidence
+# confirms Kalshi offers only KXMLBGAME (game ML) for live MLB games;
+# all other KXMLB* prefixes are season-long futures / props / awards.
+# NO KXMLBSPREAD or KXMLBTOTAL — same Phase 0 ML-only constraint as NBA.
+
+_PHASE0_MLB_TICKER_PREFIXES: dict[str, str] = {
+    "KXMLBGAME": "game_ml",
+}
+
+_OUT_OF_SCOPE_MLB_PREFIXES: tuple[str, ...] = (
+    "KXMLBWINS",                            # season-win totals
+    "KXMLBSTATCOUNT",                       # generic stat-counter futures
+    "KXMLBRFI",                             # Run First Inning prop
+    "KXMLBKS",                              # strikeout-pitcher props
+    "KXMLBPLAYOFFS",
+    "KXMLBPITCHEROTM",                      # Pitcher of the Month
+    "KXMLBLSTREAK",                         # longest streak
+    "KXMLBEOTY",                            # Executive of the Year
+    "KXMLBNL", "KXMLBNLWEST", "KXMLBNLEAST", "KXMLBNLCENT",
+    "KXMLBNLROTY", "KXMLBNLMVP", "KXMLBNLHAARON",
+    "KXMLBAL", "KXMLBALMVP", "KXMLBALHAARON",
+    "KXMLBALRELOTY", "KXMLBALCPOTY",
+)
+
+
+def classify_mlb_ticker(ticker: str) -> tuple[str, str | None]:
+    """MLB sibling of classify_nba_ticker. Same return shape.
+
+    NOT a generalization of the NBA function — kept separate per the
+    'preserve NBA path intact' constraint. Future leagues add their
+    own classify_<league>_ticker + _PHASE0_*_TICKER_PREFIXES siblings.
+    """
+    if not ticker:
+        return "unknown", None
+    head = ticker.split("-", 1)[0]
+    if head in _PHASE0_MLB_TICKER_PREFIXES:
+        return "in_scope", _PHASE0_MLB_TICKER_PREFIXES[head]
+    if head in _OUT_OF_SCOPE_MLB_PREFIXES:
+        return "out_of_scope", None
+    return "unknown", None
+
+
+# ── League dispatch table ─────────────────────────────────────────────────
+# Read by run_scan_cycle to look up (classifier, ticker_prefix) per
+# configured league. Adding a new league = adding one entry here +
+# sibling classify_* function + ticker-prefix constants. Never mutate
+# existing league entries to add new league semantics.
+
+_PHASE0_LEAGUE_CLASSIFIERS: dict[str, tuple[Any, str]] = {
+    "NBA": (classify_nba_ticker, "KXNBA"),
+    "MLB": (classify_mlb_ticker, "KXMLB"),
+}
+
+
 def _vig_remove_two_sides(p1: float, p2: float) -> tuple[float, float]:
     """For one book's two-sided market (h2h or spread or total).
     Returns (vig_removed_p1, vig_removed_p2).
@@ -288,12 +344,17 @@ class KalshiSportsArbObserverAgent:
     ) -> None:
         """One observer cycle. Always returns None (no orders).
 
-        Pipeline:
-          1. Discover Kalshi sports markets, filter to NBA + in-scope ticker.
-          2. Fetch per-book lines via OddsAPIClient.get_lines.
-          3. For each matched market, compute A (per-book arb candidates)
+        Pipeline (per configured league):
+          1. Discover Kalshi sports markets (once per cycle, shared).
+          2. Filter to this league + in-scope ticker + mapped teams.
+          3. Fetch per-book lines via OddsAPIClient.get_lines(sport_key).
+          4. For each matched market, compute A (per-book arb candidates)
              and B (sharp/proxy directional) EV-at-fill at qty.
-          4. Write per-market audit + cycle summary.
+          5. Write per-market audit. Aggregate cycle summary across leagues.
+
+        League dispatch via _PHASE0_LEAGUE_CLASSIFIERS. Adding a new
+        league = sibling classify_<league>_ticker + ticker-prefix
+        constants + one dispatch entry; existing leagues untouched.
         """
         self._reload()
         if not self.enabled:
@@ -314,7 +375,16 @@ class KalshiSportsArbObserverAgent:
         sizing_cfg = self._strat_cfg.get("sizing_for_ev_calc") or {}
         qty = int(sizing_cfg.get("contracts", 10))
 
-        # 1. Kalshi discovery
+        configured_leagues = [
+            str(x).upper()
+            for x in (self._strat_cfg.get("leagues") or ["NBA"])
+        ]
+        sharp_books_cfg = self._strat_cfg.get("sharp_book_preference") or [
+            "pinnacle", "draftkings", "fanduel", "betmgm",
+        ]
+        books_filter = tuple(str(b).lower() for b in sharp_books_cfg)
+
+        # 1. Kalshi discovery (shared across leagues).
         now = datetime.now(timezone.utc)
         need_refresh = (
             self._discovery_cache is None
@@ -335,19 +405,92 @@ class KalshiSportsArbObserverAgent:
         events = (self._discovery_cache.events
                   if self._discovery_cache is not None else [])
 
-        # 2. Filter to NBA + in-scope ticker + mapped teams.
-        in_scope: list[tuple[Any, Any, str]] = []  # (market, parsed, market_type)
+        # 2-5. Per-league pipeline. Aggregate counts for the cycle summary.
+        per_league_summary: dict[str, dict[str, Any]] = {}
+        for league in configured_leagues:
+            league_summary = await self._process_league(
+                league=league,
+                events=events,
+                qty=qty,
+                books_filter=books_filter,
+                logger_agent=logger_agent,
+            )
+            if league_summary is not None:
+                per_league_summary[league] = league_summary
+
+        # Cycle summary — keep top-level totals across leagues for
+        # backward-compatible audit-query consumers; per-league
+        # breakdown is in `per_league`.
+        total_pre = sum(s["markets_pre_filter"] for s in per_league_summary.values())
+        total_in_scope = sum(s["n_in_scope"] for s in per_league_summary.values())
+        total_out_of_scope = sum(s["n_out_of_scope"] for s in per_league_summary.values())
+        total_unmapped = sum(s["n_unmapped"] for s in per_league_summary.values())
+        total_observed = sum(s["n_observed"] for s in per_league_summary.values())
+        total_no_book = sum(s["n_no_book_match"] for s in per_league_summary.values())
+        # Merge out_of_scope prefix dicts across leagues
+        merged_oos_prefixes: dict[str, int] = {}
+        for s in per_league_summary.values():
+            for k, v in s["out_of_scope_prefixes"].items():
+                merged_oos_prefixes[k] = merged_oos_prefixes.get(k, 0) + v
+        if logger_agent is not None:
+            logger_agent.log_event(
+                self.name, "kalshi_sports_arb_scan",
+                {
+                    "strategy": self.name,
+                    "division": self.division,
+                    "leagues_scanned": list(per_league_summary.keys()),
+                    "markets_pre_filter": total_pre,
+                    "n_in_scope": total_in_scope,
+                    "n_out_of_scope": total_out_of_scope,
+                    "n_unmapped": total_unmapped,
+                    "n_observed": total_observed,
+                    "n_no_book_match": total_no_book,
+                    "out_of_scope_prefixes": merged_oos_prefixes,
+                    "per_league": per_league_summary,
+                    "odds_api_quota_remaining": self._client.quota_remaining,
+                    "odds_api_quota_used": self._client.quota_used,
+                },
+            )
+
+    async def _process_league(
+        self,
+        *,
+        league: str,
+        events: list,
+        qty: int,
+        books_filter: tuple[str, ...],
+        logger_agent: Any,
+    ) -> dict[str, Any] | None:
+        """Filter → fetch → evaluate for one configured league.
+
+        Returns a per-league summary dict (or None if the league has no
+        registered classifier). Writes per-market audit rows directly.
+        """
+        dispatch = _PHASE0_LEAGUE_CLASSIFIERS.get(league)
+        if dispatch is None or league not in LEAGUE_TO_SPORT_KEY:
+            if logger_agent is not None:
+                logger_agent.log_event(
+                    self.name, "kalshi_sports_arb_unsupported_league",
+                    {"strategy": self.name, "division": self.division,
+                     "league": league,
+                     "note": "no classifier or sport_key registered"},
+                )
+            return None
+        classifier, kx_prefix = dispatch
+
+        # Filter Kalshi markets for this league.
+        in_scope: list[tuple[Any, Any, str]] = []
         n_pre = 0
         n_out_of_scope = 0
         n_unmapped = 0
         out_of_scope_prefixes: dict[str, int] = {}
         for event in events:
             for m in event.markets:
-                n_pre += 1
                 ticker = m.ticker or ""
-                if not ticker.startswith("KXNBA"):
+                if not ticker.startswith(kx_prefix):
                     continue
-                status, market_type = classify_nba_ticker(ticker)
+                n_pre += 1
+                status, market_type = classifier(ticker)
                 if status == "out_of_scope":
                     n_out_of_scope += 1
                     prefix = ticker.split("-", 1)[0]
@@ -357,7 +500,7 @@ class KalshiSportsArbObserverAgent:
                     n_unmapped += 1
                     continue
                 parsed = parse_sports_ticker(ticker)
-                if parsed is None or parsed.league != "NBA":
+                if parsed is None or parsed.league != league:
                     n_unmapped += 1
                     continue
                 if parsed.team_a_name is None or parsed.team_b_name is None:
@@ -365,45 +508,35 @@ class KalshiSportsArbObserverAgent:
                     continue
                 in_scope.append((m, parsed, market_type))
 
-        # 3. Fetch lines once for NBA. Pinnacle is NOT in the-odds-api's
-        # default "us regions" response and MUST be requested explicitly
-        # via `bookmakers=` (verified 2026-05-23 prod probe). The
-        # sharp_book_preference config knob is the canonical list.
-        sharp_books_cfg = self._strat_cfg.get("sharp_book_preference") or [
-            "pinnacle", "draftkings", "fanduel", "betmgm",
-        ]
-        books_filter = tuple(str(b).lower() for b in sharp_books_cfg)
+        # Fetch per-book lines from the-odds-api for this sport.
         if in_scope:
             try:
                 lines: list[GameLine] = await self._client.get_lines(
-                    LEAGUE_TO_SPORT_KEY["NBA"],
+                    LEAGUE_TO_SPORT_KEY[league],
                     markets=("h2h", "spreads", "totals"),
                     books=books_filter,
                 )
             except Exception as e:
-                log.warning("kalshi_sports_arb_observer: odds_api fetch failed: %s", e)
+                log.warning(
+                    "kalshi_sports_arb_observer: odds_api fetch failed (%s): %s",
+                    league, e,
+                )
                 lines = []
         else:
             lines = []
 
-        # Bucket lines by (market, home, away).
         lines_by_key: dict[tuple[str, str, str], list[GameLine]] = {}
         for gl in lines:
             key = (gl.market, gl.home_team.lower(), gl.away_team.lower())
             lines_by_key.setdefault(key, []).append(gl)
 
-        # 4. Per-market evaluation.
         n_observed = 0
         n_no_book_match = 0
         for m, parsed, market_type in in_scope:
-            # Find the h2h GameLine for this game.
-            # parsed.team_a_name is the YES side; team_b_name the opposing.
-            # For matching, build both possible home/away orderings.
             game_h2h: GameLine | None = None
             yes_is_home: bool | None = None
             ta = (parsed.team_a_name or "").lower()
             tb = (parsed.team_b_name or "").lower()
-            # Try ta=home, tb=away
             cand = lines_by_key.get(("h2h", ta, tb))
             if cand:
                 game_h2h = cand[0]
@@ -419,6 +552,7 @@ class KalshiSportsArbObserverAgent:
                     logger_agent.log_event(
                         self.name, "kalshi_sports_arb_unmapped",
                         {"strategy": self.name, "division": self.division,
+                         "league": league,
                          "ticker": m.ticker,
                          "team_a_name": parsed.team_a_name,
                          "team_b_name": parsed.team_b_name,
@@ -426,7 +560,6 @@ class KalshiSportsArbObserverAgent:
                     )
                 continue
 
-            # Raw Kalshi quotes — RAW dollars, no /100 corruption.
             yes_bid = _kalshi_dollars(getattr(m, "yes_bid", None))
             yes_ask = _kalshi_dollars(getattr(m, "yes_ask", None))
             no_bid = _kalshi_dollars(getattr(m, "no_bid", None))
@@ -437,7 +570,6 @@ class KalshiSportsArbObserverAgent:
                 if not (0.5 <= total <= 1.5):
                     kalshi_quote_invalid = True
 
-            # Hypothesis A — per-book arb candidates (only if we have a yes_ask).
             a_candidates: list[_ArbCandidate] = []
             if yes_ask is not None and not kalshi_quote_invalid:
                 a_candidates = _evaluate_a_arb_for_ml(
@@ -449,7 +581,6 @@ class KalshiSportsArbObserverAgent:
                 )
             best_arb = a_candidates[0] if a_candidates else None
 
-            # Hypothesis B — sharp/proxy directional model_prob for YES.
             pinnacle_or_proxy = _pick_pinnacle_or_proxy(
                 game_h2h.books, home_side="home", away_side="away",
             )
@@ -478,7 +609,7 @@ class KalshiSportsArbObserverAgent:
                         "division": self.division,
                         "observation_id": uuid.uuid4().hex,
                         "matching_key": {
-                            "league": "NBA",
+                            "league": league,
                             "game_date_utc": (game_h2h.commenced_at or "")[:10],
                             "team_home": game_h2h.home_team,
                             "team_away": game_h2h.away_team,
@@ -519,21 +650,12 @@ class KalshiSportsArbObserverAgent:
                     },
                 )
 
-        # 5. Cycle summary.
-        if logger_agent is not None:
-            logger_agent.log_event(
-                self.name, "kalshi_sports_arb_scan",
-                {
-                    "strategy": self.name,
-                    "division": self.division,
-                    "markets_pre_filter": n_pre,
-                    "n_in_scope": len(in_scope),
-                    "n_out_of_scope": n_out_of_scope,
-                    "n_unmapped": n_unmapped,
-                    "n_observed": n_observed,
-                    "n_no_book_match": n_no_book_match,
-                    "out_of_scope_prefixes": out_of_scope_prefixes,
-                    "odds_api_quota_remaining": self._client.quota_remaining,
-                    "odds_api_quota_used": self._client.quota_used,
-                },
-            )
+        return {
+            "markets_pre_filter": n_pre,
+            "n_in_scope": len(in_scope),
+            "n_out_of_scope": n_out_of_scope,
+            "n_unmapped": n_unmapped,
+            "n_observed": n_observed,
+            "n_no_book_match": n_no_book_match,
+            "out_of_scope_prefixes": out_of_scope_prefixes,
+        }

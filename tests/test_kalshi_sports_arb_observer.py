@@ -11,9 +11,11 @@ import pytest
 from trading_corp.data.odds_api_client import BookPrice
 from trading_corp.agents.strategies.kalshi_sports_arb_observer import (
     _ArbCandidate,
+    _PHASE0_LEAGUE_CLASSIFIERS,
     _evaluate_a_arb_for_ml,
     _pick_pinnacle_or_proxy,
     _vig_remove_two_sides,
+    classify_mlb_ticker,
     classify_nba_ticker,
 )
 
@@ -188,3 +190,75 @@ class TestEvaluateAArbForML:
         )
         assert len(candidates) == 1
         assert candidates[0].book_side == "home"
+
+
+# ── MLB sibling tests — added 2026-05-23 alongside NBA tests ─────────────
+# Constraint: must not modify the NBA test classes above. MLB classifier
+# is its own function; the dispatch table is the only shared structure
+# and gets its own test class below.
+
+class TestClassifyMLBTicker:
+    def test_in_scope_game_ml(self):
+        # MLB game tickers include HHMM time (NBA does not)
+        assert classify_mlb_ticker("KXMLBGAME-26MAY241610ATHSD-SD") == ("in_scope", "game_ml")
+        assert classify_mlb_ticker("KXMLBGAME-26MAY241420HOUCHC-HOU") == ("in_scope", "game_ml")
+
+    def test_out_of_scope_season_props(self):
+        # Catalogued from 9-day scout corpus prefix audit (2026-05-23)
+        for ticker in (
+            "KXMLBWINS-26-NYY",            # season-win totals
+            "KXMLBSTATCOUNT-26-OPS",        # generic stat counter
+            "KXMLBRFI-26MAY24-OAKBOS",     # Run First Inning
+            "KXMLBKS-26MAY24-COLE",        # pitcher strikeouts
+            "KXMLBPLAYOFFS-26-NYY",
+            "KXMLBPITCHEROTM-26MAY-DEG",
+            "KXMLBLSTREAK-26-LAD",
+            "KXMLBEOTY-26-MHAZ",
+            "KXMLBNL-26-LAD", "KXMLBNLWEST-26-LAD", "KXMLBNLEAST-26-ATL",
+            "KXMLBNLCENT-26-MIL", "KXMLBNLROTY-26-PSKE",
+            "KXMLBNLMVP-26-AAC", "KXMLBNLHAARON-26-AAC",
+            "KXMLBAL-26-NYY", "KXMLBALMVP-26-AAJ", "KXMLBALHAARON-26-AAJ",
+            "KXMLBALRELOTY-26-RDUR", "KXMLBALCPOTY-26-RMAR",
+        ):
+            status, mt = classify_mlb_ticker(ticker)
+            assert status == "out_of_scope", f"expected out_of_scope for {ticker}, got {status}"
+            assert mt is None
+
+    def test_unknown_prefix(self):
+        # Future Kalshi MLB market type we haven't catalogued
+        status, mt = classify_mlb_ticker("KXMLBNEWPROP-foo")
+        assert status == "unknown"
+        assert mt is None
+
+    def test_empty_ticker(self):
+        assert classify_mlb_ticker("") == ("unknown", None)
+
+    def test_nba_ticker_NOT_classified_as_mlb_in_scope(self):
+        # Cross-league safety: NBA tickers should NOT be in-scope under the MLB classifier.
+        assert classify_mlb_ticker("KXNBAGAME-26MAY22OKCSAS-OKC") == ("unknown", None)
+
+
+class TestLeagueDispatchTable:
+    """The dispatch table is the only structure shared across NBA and
+    MLB code paths. Verify both entries are present and well-formed."""
+
+    def test_nba_and_mlb_registered(self):
+        assert "NBA" in _PHASE0_LEAGUE_CLASSIFIERS
+        assert "MLB" in _PHASE0_LEAGUE_CLASSIFIERS
+
+    def test_nba_dispatch_points_to_nba_classifier_and_prefix(self):
+        classifier, kx_prefix = _PHASE0_LEAGUE_CLASSIFIERS["NBA"]
+        assert classifier is classify_nba_ticker
+        assert kx_prefix == "KXNBA"
+
+    def test_mlb_dispatch_points_to_mlb_classifier_and_prefix(self):
+        classifier, kx_prefix = _PHASE0_LEAGUE_CLASSIFIERS["MLB"]
+        assert classifier is classify_mlb_ticker
+        assert kx_prefix == "KXMLB"
+
+    def test_nba_and_mlb_dispatch_are_distinct(self):
+        # The two classifiers MUST be different functions — otherwise
+        # 'generalize by addition, not mutation' was violated.
+        nba_classifier, _ = _PHASE0_LEAGUE_CLASSIFIERS["NBA"]
+        mlb_classifier, _ = _PHASE0_LEAGUE_CLASSIFIERS["MLB"]
+        assert nba_classifier is not mlb_classifier
