@@ -40,8 +40,10 @@ LEAGUE_TO_SPORT_KEY: dict[str, str] = {
 
 MLB_TEAMS: dict[str, str] = {
     "ARI": "Arizona Diamondbacks",   "ATL": "Atlanta Braves",
+    "AZ":  "Arizona Diamondbacks",
     "BAL": "Baltimore Orioles",      "BOS": "Boston Red Sox",
     "CHC": "Chicago Cubs",           "CHW": "Chicago White Sox",
+    "CWS": "Chicago White Sox",
     "CIN": "Cincinnati Reds",        "CLE": "Cleveland Guardians",
     "COL": "Colorado Rockies",       "DET": "Detroit Tigers",
     "HOU": "Houston Astros",         "KC":  "Kansas City Royals",
