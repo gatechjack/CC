@@ -8,6 +8,54 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~16:00 UTC (Sunday afternoon — pm-metrics-epoch VERIFIED end-to-end on real prod data; first Sunday `--merge` timer fire clean; cadence-change plan BOARD-GATED)
+
+**Headline of THIS session:** pm-metrics-epoch verification closed structurally on real production data — tile arithmetic balances on both sides (Resolved: 2,271 pre-epoch hidden + 18 post-epoch shown = 2,289 all-time ✓; n_open: 2,283 pre-epoch hidden + 700 post-epoch shown = 2,983 all-time ✓). 6 of 7 metrics surfaces confirmed working on real data; surface #2 (equity curve) verified *in logic only* due to a pre-existing writer gap — `polymarket_equity_history` has zero rows for `polymarket_copy_trading` ever (mirror gap on Kalshi for `kalshi_copy_trading`). Sunday `--merge` timer fire verified clean (17m wall-clock vs 1h `TimeoutStartSec` budget); merge_stats revealed hybrid behavior (48% preserved-stale today) → cadence-change plan filed BOARD-GATED.
+
+**`origin/main` head (in sync with local, fast-forward to `02f465f`):**
+- `02f465f` — backlog: file BOARD-GATED cadence plan — drop `--merge` from pm-watchlist-deep timer *(this session)*
+- `ca00600` — web: fix Jinja truthiness on `window_days_span`; file equity-history writer gap *(this session)*
+- `db6d805` — runbook: add strategy_harness_inventory.md (phantom-pointer fix) *(prior session)*
+- `ffd47bc` — backlog + runbook: EOS 2026-05-24 ~15:30 UTC - C-6 lockfile corrected + deployed *(prior session)*
+- `7a3e439` — deploy_log: backfill commit SHA in 2026-05-24 15:14 UTC entry *(prior session)*
+
+**What's running on prod (unchanged this session except scheduled refresh):**
+- pm-metrics-epoch slot ACTIVE — `agent_state.polymarket_copy_trader.metrics_epoch = '2026-05-23T15:30:15.042822+00:00'`. **Post-epoch: 18 resolved (15W/3L), 700 open, first resolution at `2026-05-23T17:23:30+00:00`.** Tile arithmetic balanced on both sides → dual `a.ts`/`entry_ts` filter confirmed working on real prod data.
+- `polymarket_equity_history` has ZERO rows for `polymarket_copy_trading` ever (writer never wired for copy-trader divisions; same gap on Kalshi). Dashboard equity-curve panel will stay empty as Resolved/PnL fill — pre-existing gap, not an epoch bug.
+- pm-watchlist-deep timer first `--merge` fire CLEAN: `Sun 2026-05-24 13:08:07 UTC`, 17m08s wall-clock, ExecMainStatus=0, `watch_only_whales` slot refreshed at `2026-05-24T13:25:14.522078+00:00`, roster grew 197 → 329 via merge_stats `added=132 replaced=40 preserved=157 dropped=0`. Cloudflare-retry silent-fail mode did NOT trigger. Next fire `Sun 2026-05-31 13:12:45 UTC`.
+- `selected_whales` (copy-execution roster) at 13 whales as of 2026-05-23T20:44:24 UTC. Roster grew 10→13 via 3 operator dashboard_button promotes (abracadabr, 0x4528…, kitten147) on 2026-05-23 20:42-20:44 UTC. Benign, attributed.
+- Bitunix `6073480` LIVE since 2026-05-23 15:52 UTC. IC grader live (`112aef3`). Data-provider abstraction live (`a6885a5` + `e977641`). C-6 lockfile DEPLOYED + verified converged 2026-05-24 15:14 UTC (`e5556ef`). C-2 fix (`19ff0da`) STILL held — webhook-path change, undeployed.
+- kalshi_sports_scout discovery-rotation fix + MLB AZ/CWS aliases LIVE since 2026-05-24 ~03:17 UTC.
+
+**Highest-leverage open items (handoff to next session):**
+1. **BOARD-GATED — execute the watchlist cadence change.** Plan filed at `BACKLOG.md` (top P2 section): drop `--merge` from `trading-corp-pm-watchlist-deep.service` ExecStart via one sed-in-place + `systemctl daemon-reload`. Backup + sed + reload + verify; no code change, no service restart. **Operator approval required per CLAUDE.md §4** before execution. Not urgent — first impact is the next Sunday fire `2026-05-31 13:12:45 UTC` (~6 days). Wait, decide, ship.
+2. **Jinja `window_days_span` fix shipped in code (`ca00600`) but NOT yet on prod.** Sassy-Bucket-style 0d rows will keep rendering as `—` until the next prod deploy of `trading_corp/web/templates/partials/pm_dashboard_body.html` (single-line change; could be a one-off scp + reload). Cosmetic only — no urgency.
+3. **Deploy `19ff0da` (C-2 fix) to prod.** Unchanged from prior EOS. Webhook-path change.
+4. **NEW P1 — `azureuser` `NOPASSWD:ALL` sudo.** Unchanged. Filed in `8d72dcc`.
+5. **TRACK A — secret rotation** (C-1). Unchanged.
+6. **TRACK C — strategies.yaml schema + mtime + audit** (C-3 fix). Unchanged.
+7. **TRACK E — Tastytrade KV consolidation.** Unchanged.
+8. **43 deferred package bumps from C-6 drift** (P1, from prior session). Unchanged.
+
+**Memory updated this session:**
+- UPDATED `project_pm_metrics_epoch_live.md` — verified end-to-end on real prod data; tile arithmetic balance recorded; surface #2 caveat (equity-history writer gap) noted.
+- UPDATED `project_pm_watchlist_windowed_live.md` — first `--merge` fire clean 2026-05-24 13:08 UTC; merge_stats; BOARD-GATED cadence change filed.
+- NEW `feedback_empty_table_not_filter_proof.md` — verifying a filter on an empty table proves nothing; both sides of the arithmetic must balance against real data. Anomaly A taught this — equity-curve "0 in every stage" was vacuous.
+
+**Notable mid-session catches (worth carrying forward):**
+- **Anomaly A discovered through cross-table sanity comparison.** The equity-curve "0 post-epoch" reading appeared identical to a successful filter, but a comparison to `polymarket_arbitrage` (4,158 rows actively written) and `kalshi_copy_trading` (also 0 rows) surfaced that the writer was never wired for copy-trader divisions. Generalizable lesson saved as memory.
+- **Selected_whales 10→13 attributed cleanly** with one tightened audit_event query — 3 operator dashboard_button promotes within 2 minutes. Confirmed promote-button audit path writes correctly (incidentally useful for any future C-2-style work).
+- **`watch_only_stats` retraction** — I initially called this a vestigial slot; it's actually a Kalshi-only slot (`agent='kalshi_copy_trader'`), my query under `polymarket_copy_trader` correctly returned empty. False flag, corrected in the same response.
+- **The `--merge` hybrid behavior** is the slow regression back to the lifetime-list state this whole arc was meant to kill. 48% preserved-stale today; trajectory matters more than the snapshot. Cadence-change plan addresses it.
+
+**Untracked at session end** (all pre-existing, NOT this session): `classify_losses.py`, `decode_losses.py`, `deploy/sports_arb_observer/_probe17.{ps1,sh}` (kalshi_sports_scout session), `docs/Deployment notes.txt`, `scripts/fetch_kalshi_weather_corpus.py`.
+
+**Environment sync state:** local `main` == `origin/main` == `02f465f` (verified via `git ls-remote origin main`). Prod files unchanged from prior session — Jinja fix is committed locally but NOT deployed. systemd unit `trading-corp-pm-watchlist-deep.service` unchanged (still `--merge`). Working tree clean except pre-existing untracked files listed above.
+
+**Canonical pickup:** next-session prompt at the end of this turn; this EOS + memory `[[pm-metrics-epoch-live]]`, `[[pm-watchlist-windowed-live]]`, `[[empty-table-not-filter-proof]]`; commits `02f465f` + `ca00600`.
+
+---
+
 ## EOS snapshot — 2026-05-24 ~15:30 UTC (Sunday mid-day — C-6 lockfile CORRECTED + DEPLOYED after reversing unintended 14:56 UTC bump install; 43 deferred bumps filed P1; TRACK B still held)
 
 **Headline of THIS session:** TRACK D-DEPLOY (C-6 hash-pinned lockfile) executed — but the original `4086221` lockfile, when installed, silently bumped 43 prod packages including anthropic 0.97 → 0.104 and cryptography 47 → 48 (it had been compiled from `requirements.txt` against current PyPI, not from prod's running freeze). Caught before any restart could ride the bumps. Regenerated lockfile from prod's actual running pip-freeze; ran real `pip install --require-hashes` to downgrade disk back to OLD; achieved **three-way convergence (disk ≡ lock ≡ process, all OLD)**, no process restart. Process PID 1237405 unchanged throughout.
