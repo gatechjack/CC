@@ -365,14 +365,20 @@ class KalshiSportsArbObserverAgent:
                     continue
                 in_scope.append((m, parsed, market_type))
 
-        # 3. Fetch lines once for NBA (h2h only matters today, but we
-        # ask for all three markets so future spread/total Kalshi
-        # products would be ready to evaluate without code change).
+        # 3. Fetch lines once for NBA. Pinnacle is NOT in the-odds-api's
+        # default "us regions" response and MUST be requested explicitly
+        # via `bookmakers=` (verified 2026-05-23 prod probe). The
+        # sharp_book_preference config knob is the canonical list.
+        sharp_books_cfg = self._strat_cfg.get("sharp_book_preference") or [
+            "pinnacle", "draftkings", "fanduel", "betmgm",
+        ]
+        books_filter = tuple(str(b).lower() for b in sharp_books_cfg)
         if in_scope:
             try:
                 lines: list[GameLine] = await self._client.get_lines(
                     LEAGUE_TO_SPORT_KEY["NBA"],
                     markets=("h2h", "spreads", "totals"),
+                    books=books_filter,
                 )
             except Exception as e:
                 log.warning("kalshi_sports_arb_observer: odds_api fetch failed: %s", e)

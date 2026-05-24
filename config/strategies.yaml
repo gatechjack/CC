@@ -1594,6 +1594,14 @@ kalshi_sports_scout:
 # Quota: NBA only, 3 markets/call × 1 call/h = ~72 credits/day. Free
 # tier (500/mo) is insufficient alongside the scout's ~30-60/day; the
 # Phase 0 plan recommends $30/mo paid tier before flipping enabled.
+#
+# Pinnacle IS available on this account but only when explicitly
+# requested via bookmakers= filter (verified 2026-05-23 prod probe).
+# sharp_book_preference below drives the books= filter to get_lines,
+# so adding pinnacle here is the opt-in mechanism. The first list
+# entry is preferred for Hypothesis B model_prob (Pinnacle = sharp
+# book); the rest are the proxy fallback when Pinnacle doesn't quote
+# both sides.
 kalshi_sports_arb_observer:
   enabled: false
   auto_execute: false                # always — observer never emits
