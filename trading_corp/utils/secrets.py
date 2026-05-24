@@ -49,6 +49,12 @@ _SECRET_KEY_NAMES = (
     # the saswave Kalshi leaderboard + profile actors used for whale
     # discovery and position monitoring. Free/Starter tier; pulled from KV.
     "APIFY_API_TOKEN",
+    # Tastytrade (data provider live since 2026-05-22; Tasty Options
+    # division adds order placement on top). OAuth-refresh-token model:
+    # provider_secret is the long-lived OAuth client secret, refresh_token
+    # is rotated by the SDK on each session. Both are sensitive.
+    "TASTYTRADE_PROVIDER_SECRET",
+    "TASTYTRADE_REFRESH_TOKEN",
 )
 
 
@@ -121,6 +127,13 @@ class Secrets:
     # ongoing position monitoring. If unset, the Apify client initializes
     # in stub mode (returns empty results); the strategy no-ops safely.
     apify_api_token: str | None
+    # Tastytrade (Phase: data provider live since 2026-05-22; Tasty Options
+    # division shipping order placement on top). provider_secret is the OAuth
+    # client secret; refresh_token rotates per session. Both required for
+    # both data (read) and orders (write); if unset, TastytradeDataProvider
+    # and TastytradeBroker initialize as stubs.
+    tastytrade_provider_secret: str | None
+    tastytrade_refresh_token: str | None
     fidelity_username: str | None
     fidelity_password: str | None
     fidelity_account: str | None   # account name substring to filter, e.g. "Joint"
@@ -210,6 +223,8 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "KALSHI_API_KEY_ID",
         "KALSHI_PRIVATE_KEY_PEM",
         "APIFY_API_TOKEN",
+        "TASTYTRADE_PROVIDER_SECRET",
+        "TASTYTRADE_REFRESH_TOKEN",
         "FIDELITY_USERNAME",
         "FIDELITY_PASSWORD",
         "FIDELITY_ACCOUNT",
@@ -284,6 +299,8 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         kalshi_api_key_id=_env("KALSHI_API_KEY_ID"),
         kalshi_private_key_pem=_env("KALSHI_PRIVATE_KEY_PEM"),
         apify_api_token=_env("APIFY_API_TOKEN"),
+        tastytrade_provider_secret=_env("TASTYTRADE_PROVIDER_SECRET"),
+        tastytrade_refresh_token=_env("TASTYTRADE_REFRESH_TOKEN"),
         fidelity_username=_env("FIDELITY_USERNAME"),
         fidelity_password=_env("FIDELITY_PASSWORD"),
         fidelity_account=_env("FIDELITY_ACCOUNT"),
@@ -307,6 +324,10 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     register_redact_literal(secrets.kalshi_private_key_pem)
     # Apify token — auth bearer for all saswave Kalshi actor calls. K3.
     register_redact_literal(secrets.apify_api_token)
+    # Tastytrade OAuth secrets — both sensitive (provider_secret is long-lived
+    # client secret; refresh_token rotates per session).
+    register_redact_literal(secrets.tastytrade_provider_secret)
+    register_redact_literal(secrets.tastytrade_refresh_token)
 
     return secrets
 
@@ -328,6 +349,9 @@ def assert_live_ready(secrets: Secrets, brokers_required: tuple[str, ...]) -> No
     if "fidelity" in brokers_required:
         if not (secrets.fidelity_username and secrets.fidelity_password):
             missing.append("FIDELITY_USERNAME/PASSWORD")
+    if "tastytrade" in brokers_required:
+        if not (secrets.tastytrade_provider_secret and secrets.tastytrade_refresh_token):
+            missing.append("TASTYTRADE_PROVIDER_SECRET/REFRESH_TOKEN")
     if missing:
         raise RuntimeError(
             "LIVE mode requested but missing credentials for: "
