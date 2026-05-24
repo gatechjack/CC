@@ -30,6 +30,16 @@ class ForecastPoint:
     sigma_f: float        # 1-sigma uncertainty estimate (Fahrenheit)
     valid_iso: str        # forecast period start ISO
     source: str = "nws"   # 'nws' | 'accuweather' | etc.
+    # Item 1.2 (run-age logging) — additive only, defaults preserve callers.
+    # `issued_at` is the model/forecast issue time from the upstream API
+    # (NWS Last-Modified header). May be NULL on a fraction of NWS fetches
+    # because Akamai CDN strips/staleifies the header per-request — NULL is
+    # normal here, NOT a bug. `fetched_at` is the wall-clock UTC when we
+    # actually hit the upstream (cache-refresh time, NOT now()-if-cached);
+    # always populated for sources that surface freshness, used as the
+    # graceful-degradation fallback for analysis.
+    issued_at: str | None = None
+    fetched_at: str | None = None
 
 
 @dataclass(frozen=True)

@@ -1520,6 +1520,14 @@ kalshi_weather_arb:
   # linear trend off the current obs.
   metar_enabled: true
   nowcast_blend_horizon_hours: 6.0
+  # ── Item 1.1 (2026-05-24) — write-only HRRR logging ─────────────────
+  # Captures Open-Meteo `ncep_hrrr_conus` forecast alongside the existing
+  # NWS + ensemble blend at entry time. NOT fed into σ or decision logic.
+  # Observation-week corpus only — backtest input for the queued
+  # NBM-σ / horizon-weighting work. Flip to false to suppress without
+  # touching code (hot-reloadable). See
+  # plans/forecast-quality-improvements-for-kalshi-prancy-porcupine.md.
+  hrrr_enabled: true
   sizing:
     mode: kelly_fractional          # was fixed_usd; flipped 2026-05-15
     kelly_fraction: 0.25            # quarter-Kelly — robust to misestimation

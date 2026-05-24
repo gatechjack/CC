@@ -50,8 +50,11 @@ class WeatherForecastClient:
     def __init__(self) -> None:
         self._gridpoint_cache: dict[tuple[float, float], tuple[float, str]] = {}
         # value: (cached_at_epoch, forecast_hourly_url)
-        self._forecast_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-        # value: (cached_at_epoch, periods_list)
+        self._forecast_cache: dict[
+            str,
+            tuple[float, list[dict[str, Any]], str | None, str | None],
+        ] = {}
+        # value: (cached_at_epoch, periods_list, last_modified_header, fetched_at_iso)
         self._http: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
 
@@ -97,10 +100,19 @@ class WeatherForecastClient:
 
     # ── /forecast/hourly fetch ────────────────────────────────────────────
 
-    async def _get_periods(self, forecast_hourly_url: str) -> list[dict[str, Any]] | None:
+    async def _get_periods(
+        self, forecast_hourly_url: str,
+    ) -> tuple[list[dict[str, Any]], str | None, str | None] | None:
+        """Return (periods, last_modified, fetched_at_iso) or None on failure.
+
+        last_modified is the upstream Last-Modified header (may be None if
+        Akamai strips it on a given request); fetched_at_iso is the
+        wall-clock UTC when we last hit NWS for THIS url (NOT now-if-cached
+        — it's the cache fill time, the actual freshness signal).
+        """
         cached = self._forecast_cache.get(forecast_hourly_url)
         if cached and (time.time() - cached[0]) < _FORECAST_TTL_SEC:
-            return cached[1]
+            return cached[1], cached[2], cached[3]
 
         http = await self._ensure_http()
         for attempt in range(_MAX_RETRIES + 1):
@@ -109,8 +121,12 @@ class WeatherForecastClient:
                 r.raise_for_status()
                 data = r.json()
                 periods = (data.get("properties") or {}).get("periods") or []
-                self._forecast_cache[forecast_hourly_url] = (time.time(), periods)
-                return periods
+                last_modified = r.headers.get("Last-Modified")
+                fetched_at_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                self._forecast_cache[forecast_hourly_url] = (
+                    time.time(), periods, last_modified, fetched_at_iso,
+                )
+                return periods, last_modified, fetched_at_iso
             except Exception as e:
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(0.5 * (attempt + 1))
@@ -135,7 +151,10 @@ class WeatherForecastClient:
             forecast_url = await self._get_forecast_hourly_url(lat, lon)
             if forecast_url is None:
                 return None
-            periods = await self._get_periods(forecast_url)
+            result = await self._get_periods(forecast_url)
+            if not result:
+                return None
+            periods, last_modified, fetched_at = result
             if not periods:
                 return None
 
@@ -172,6 +191,8 @@ class WeatherForecastClient:
             sigma_f=sigma,
             valid_iso=str(chosen.get("startTime") or ""),
             source="nws",
+            issued_at=last_modified,
+            fetched_at=fetched_at,
         )
 
     async def get_daily_extremum(
@@ -189,7 +210,10 @@ class WeatherForecastClient:
             forecast_url = await self._get_forecast_hourly_url(lat, lon)
             if forecast_url is None:
                 return None
-            periods = await self._get_periods(forecast_url)
+            result = await self._get_periods(forecast_url)
+            if not result:
+                return None
+            periods, last_modified, fetched_at = result
             if not periods:
                 return None
 
@@ -232,6 +256,8 @@ class WeatherForecastClient:
             sigma_f=sigma,
             valid_iso=chosen_start.isoformat(),
             source="nws",
+            issued_at=last_modified,
+            fetched_at=fetched_at,
         )
 
 

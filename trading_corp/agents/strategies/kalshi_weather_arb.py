@@ -620,6 +620,30 @@ class KalshiWeatherArbAgent:
             ensemble_sigma = forecast.sigma_f  # heuristic fallback
             sigma_source = "heuristic"
 
+        # ── Item 1.1 — HRRR latest-run logging (write-only; no decision impact)
+        # Captured alongside the existing forecast for the observation-week
+        # backtest corpus. Coord-discipline: REUSES the same `lat, lon`
+        # locals already bound at L549 (yaml_verified-or-legacy_fallback),
+        # so HRRR sees the corrected station for NYC/CHI/HOU. NEVER fed
+        # into σ or temp blend; logged as parallel field only.
+        # try/except keeps a transient Open-Meteo HRRR failure from
+        # affecting the strategy loop.
+        hrrr_obs: EnsembleObservation | None = None
+        if self._hrrr_enabled():
+            try:
+                if cand["kind"] in ("HIGH", "LOW"):
+                    hrrr_kind = "high" if cand["kind"] == "HIGH" else "low"
+                    hrrr_obs = await self._open_meteo_client.fetch_hrrr_only(
+                        lat, lon, tgt_dt.date().isoformat(), kind=hrrr_kind,
+                    )
+                else:
+                    hrrr_obs = await self._open_meteo_client.fetch_hrrr_only(
+                        lat, lon, target_iso,
+                    )
+            except Exception as e:
+                log.debug("kalshi_weather_arb: hrrr lookup failed: %s", e)
+                hrrr_obs = None
+
         # ── Nowcast blend: METAR-derived current-temp extrapolation ───────
         # For sub-6h horizons, blend the NWS forecast value with the
         # METAR-extrapolated value (latest obs + linear trend). Weight w
@@ -654,6 +678,14 @@ class KalshiWeatherArbAgent:
                             + (1.0 - blend_w) * nowcast_extrap
                         )
 
+        # Item 1.2 — capture raw NWS run-age before rebuild. The rebuild
+        # below intentionally drops these (it composes sigma+temp only);
+        # we preserve them as locals for the audit payload. issued_at may
+        # be NULL because Akamai CDN strips Last-Modified on a fraction
+        # of NWS requests — that's normal, not a bug.
+        nws_issued_at = forecast.issued_at
+        nws_fetched_at = forecast.fetched_at
+
         # Rebuild the ForecastPoint with the upgraded sigma + blended temp
         # so the downstream math gets a single, coherent object.
         forecast = ForecastPoint(
@@ -662,6 +694,8 @@ class KalshiWeatherArbAgent:
             valid_iso=forecast.valid_iso,
             source=f"{forecast.source}+{sigma_source}"
                    + ("+metar_blend" if blend_w is not None else ""),
+            issued_at=nws_issued_at,
+            fetched_at=nws_fetched_at,
         )
 
         # Implied: YES probability from yes_ask (cheaper side trades first).
@@ -711,6 +745,36 @@ class KalshiWeatherArbAgent:
             "metar_extrap_f": (
                 round(nowcast_extrap, 2) if nowcast_extrap is not None else None
             ),
+            # Item 1.2 — METAR observation age, derived from
+            # `nowcast.latest_obs_iso`. Only populated when nowcast
+            # fetched successfully (sub-6h hourly markets).
+            "metar_obs_age_min": (
+                _minutes_since_iso(nowcast.latest_obs_iso) if nowcast else None
+            ),
+            "metar_latest_obs_iso": (
+                nowcast.latest_obs_iso if nowcast else None
+            ),
+            # Item 1.2 — NWS run-age. `nws_forecast_issued_at` is the
+            # upstream Last-Modified header (Akamai may strip → NULL;
+            # NULL is normal, not a bug). `nws_fetched_at` is our
+            # wall-clock when we hit NWS (always populated).
+            "nws_forecast_issued_at": nws_issued_at,
+            "nws_fetched_at": nws_fetched_at,
+            # Item 1.2 — Open-Meteo ensemble fetch-time (model init time
+            # not exposed by API; fetch-time is the freshness proxy).
+            "open_meteo_fetched_at": (
+                ensemble.fetched_at if ensemble else None
+            ),
+            # Item 1.1 — HRRR latest-run parallel log. Captured at the
+            # same xref-resolved (lat, lon) as the existing forecast
+            # path (see _evaluate_market line 549). NEVER fed into σ or
+            # decision logic; observation-week corpus only.
+            "hrrr_temp_f": (
+                round(hrrr_obs.members[0], 2)
+                if hrrr_obs and hrrr_obs.members else None
+            ),
+            "hrrr_source": (hrrr_obs.source if hrrr_obs else "unavailable"),
+            "hrrr_fetched_at": (hrrr_obs.fetched_at if hrrr_obs else None),
             "delta_f": round(verdict.delta_f, 2),
             "implied_yes": round(implied_yes, 3),
             "prob_yes": round(verdict.prob_yes, 3),
@@ -882,6 +946,13 @@ class KalshiWeatherArbAgent:
 
     def _metar_enabled(self) -> bool:
         return bool(self._strat_cfg.get("metar_enabled", True))
+
+    def _hrrr_enabled(self) -> bool:
+        # Item 1.1 — write-only HRRR logging via Open-Meteo's
+        # `ncep_hrrr_conus` model. Default True (observation-week data
+        # collection); flip to false in strategies.yaml to suppress
+        # without code change. No effect on σ or decisions.
+        return bool(self._strat_cfg.get("hrrr_enabled", True))
 
     def _compute_kelly_usd(
         self, *, prob_outcome: float, share_price: float,
@@ -1145,6 +1216,28 @@ def _parse_target_time(rules: str, ticker: str, full_market: Any) -> str | None:
 
 
 # ── cooldown helper ───────────────────────────────────────────────────────
+
+def _minutes_since_iso(ts_iso: str | None) -> float | None:
+    """Minutes from `ts_iso` to now (UTC). None if ts_iso is None/unparseable.
+
+    Item 1.2 helper. Used to surface METAR observation freshness in the
+    audit payload as a single scalar that's directly comparable across
+    rows. Negative values would indicate a future-dated observation
+    (clock skew or upstream bug); we don't clamp — analysis can flag.
+    """
+    if not ts_iso:
+        return None
+    try:
+        s = ts_iso.replace("Z", "+00:00") if ts_iso.endswith("Z") else ts_iso
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return round(
+        (datetime.now(timezone.utc) - dt).total_seconds() / 60.0, 1,
+    )
+
 
 def _is_in_cooldown(
     ticker: str, cooldowns: dict[str, str], now: datetime, cooldown_h: float,
