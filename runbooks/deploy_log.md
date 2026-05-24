@@ -76,6 +76,78 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-24 16:55 UTC — C-2 (LLM push_back routes through risk gate + side-flip backstop) DEPLOYED (commit `19ff0da`)
+
+**Commits:** `19ff0da` (already on `origin/main` since 2026-05-23 — TRACK B closed-in-code in EOS `07ffcdc`). This deploy_log entry will land in the wrap commit alongside the TRACK B deploy_log closeout.
+
+**Triggered by:** Operator directive 2026-05-24 ~16:00 UTC ("TRACK B-DEPLOY — deploy C-2 webhook risk-gate fix with active push_back acceptance watch") + in-session §4 approval for webhook/risk-path change.
+
+**Backup tag:** `pre-trackb-c2-20260524` on `trading_corp/web/webhooks.py`, `trading_corp/agents/risk.py`, `trading_corp/agents/research/trade_confirmation_consult.py`. Pre-deploy md5s:
+- `990b33c5aa535396eacb288b63843356  webhooks.py` (CRLF)
+- `18b161758f3038d91bf66189631f1f8d  risk.py` (LF)
+- `6f23795b7b96a5127fec21009953f8c7  trade_confirmation_consult.py` (LF)
+
+**Files deployed (3):**
+- `trading_corp/web/webhooks.py` — Lord Otter + Market Cypher handlers stamp `extra["originating_signal_side"] = order.side` before consult; route `consult.decision == "skip"` through `risk_agent.evaluate(..., forced_reject_reason="llm_push_back: <rationale>")` instead of bypassing; write `risk_rejected` audit row with `source="llm_push_back"` and `via=lord_otter_webhook`/`market_cypher_webhook`.
+- `trading_corp/agents/risk.py` — `RiskAgent.evaluate` gains a strictly-additive `forced_reject_reason` kwarg (short-circuit to reject); new side-flip backstop rejects when `order.side != extra["originating_signal_side"]`.
+- `trading_corp/agents/research/trade_confirmation_consult.py` — `apply_suggested_modifications_to_order` silently drops `mods.side` flips and surfaces `side_flip_blocked` in `applied`; `consult_research_for_trade_confirmation` writes `research_side_flip_blocked` audit row when the LLM tries to flip side.
+
+Per-file EOL preserved (webhooks.py = CRLF, risk.py = LF, consult.py = LF) — semantic md5 (LF-normalized) of all 3 matches the `19ff0da` git blob byte-for-byte.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **C-2 (LLM push_back routes through risk gate) CLOSED.** Every LLM skip is now audited as `risk_rejected/source=llm_push_back`; CLAUDE.md §1 invariant #1 (risk gate is a single chokepoint) is restored.
+- **Side-flip defense-in-depth.** Two-layer block: consult-layer drop (preserves original side + writes `research_side_flip_blocked`) and risk-gate backstop (rejects via `originating_signal_side` comparison).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- `forced_reject_reason` is a strictly additive kwarg to `RiskAgent.evaluate` — existing callers unchanged; new short-circuit returns `RiskVerdict(verdict="reject", reason=forced_reject_reason)` before any other gates run.
+- Side-flip backstop reads `order.extra["originating_signal_side"]` — webhook handlers stamp it immediately after `agent.on_alert` returns and BEFORE consult is invoked.
+- `SuggestedModifications.side` is `Literal["buy", "sell"]` and `OrderSide` is also `Literal["buy", "sell"]` — `apply_suggested_modifications_to_order` compares them directly; mixed casing would trigger spurious `side_flip_blocked`. Both sides of the system stay lowercase.
+
+**Verification:**
+- PRE_PID `1237405` (active since 2026-05-24 03:38:39 UTC) → POST_PID `1284818` (xvfb-run wrapper) / `1284838` (python child) at 2026-05-24 16:55:43 UTC.
+- Web bound on `:8000` at 2026-05-24 17:00:45 UTC (~5:02 post-restart; IC position-manager startup catch-up was the limiting step).
+- healthz local + Caddy: `{"status":"ok","mode":"PAPER"}`.
+- File md5s post-deploy match the `19ff0da` git blobs (per-file EOL preserved).
+- **Synthetic gate tests** (separate prod python process invoking the loaded `RiskAgent.evaluate`, see `/tmp/trackb_synthetic.py`): T1 `forced_reject_reason` in evaluate signature; T2 `forced_reject_reason="llm_push_back: ..."` → `verdict=reject` reason carries the marker; T3 side-flip backstop (`originating_signal_side=BUY`, `order.side=SELL`) → `verdict=reject, reason="side flipped from originating signal: BUY → SELL"`; T4 allowed-path (sides match, no forced reject) → `verdict=approve, reason="within all risk caps"`. **All 4 PASS.**
+- **Real-HTTP path verification via temporary forcing hooks (REMOVED before close):** at 2026-05-24 ~20:55 UTC, a pair of payload-marker-gated forcing hooks was added to `web/webhooks.py` and `agents/research/trade_confirmation_consult.py` (backup tag `pre-trackb-hook-20260524-1700`). Two POSTs to `http://127.0.0.1:8000/webhook/tradingview/lord-otter` from localhost on prod (HMAC-valid, KV-fetched secret):
+  - **SKIP marker (`trackb-test-20260524-skip-c2deploy`)** → HTTP 200 `{"status":"accepted","signal":"TRACKB_SYNTH_SKIP","symbol":"BTCUSDT.P"}` at 20:56:08 UTC. Audit row at **20:56:10 UTC**: `kind=risk_rejected, actor=risk, source=llm_push_back, via=lord_otter_webhook, symbol=TRACKBSYNTHBTC, tier=trackb_synth, reason="llm_push_back: TRACKB SYNTHETIC: forced skip for C-2 deploy verification"`. End-to-end ~2s.
+  - **SIDE-FLIP marker (`trackb-test-20260524-sideflip-c2deploy`)** → HTTP 200 at 20:56:42 UTC. Audit row at **20:56:44 UTC**: `kind=research_side_flip_blocked, actor=lord_otter, engagement_id=TRACKB-SYNTH-SIDEFLIP, order_id=a3817c5e-faef-43bf-bc1a-407f47021bed, symbol=TRACKBSYNTHBTC, originating_side=buy, requested_side=sell, rationale="TRACKB SYNTHETIC SIDE FLIP"`. Followed by `lord_otter/would_have_placed` (same ts) — confirms the side-flip was blocked AND the original side (`buy`) was preserved through the risk gate downstream.
+- **Forcing hooks reverted** at 2026-05-24 ~21:00 UTC from the `pre-trackb-hook-20260524-1700` backup. Restart #3 PID `1295064 → 1296508`. Post-revert md5 matches the C-2 fix state byte-for-byte; `grep -c TRACKB` returns 0 on both files. /tmp staging files removed.
+
+**Forcing-hook recipe (reproducible for future deploys that need real-path verification of a hard-to-trigger code path):**
+1. Add payload-marker-gated branch in webhook handler (synthesize a `ProposedOrder` if marker present, bypassing `agent.on_alert`).
+2. Add payload-marker-gated branch in consult function (return `ConsultResult` with the desired `decision` if marker present, bypassing the LLM call).
+3. Use a unique marker string keyed to the deploy date + commit (e.g. `trackb-test-20260524-skip-c2deploy`) to make accidental collisions astronomically unlikely; gate on `payload.get("trackb_test_marker") == EXACT_VALUE`.
+4. Backup current files with `pre-<feature>-hook-YYYYMMDD-HHMM`; install patched; restart.
+5. POST from localhost on prod (HMAC + KV-fetched secret); verify audit rows; revert from backup; restart.
+6. Final `grep -c <MARKER_PREFIX>` on both files must return 0.
+
+**Inert / dormant on current traffic:**
+- The new code paths fire only when `consult.decision == "skip"` (LLM push_back) or when `mods.side != order.side`. On natural traffic since 16:55:43 restart through verification window: 31 `webhook_received` (Otter 2 + Cypher 29), all `alert_ignored` (agent.on_alert returned None — strategy cooldowns / regime gates / Sunday traffic). **The C-2 fix code paths have NOT yet been exercised by natural traffic.**
+- **Forward-watch obligation** (carries into next sessions until satisfied): the first few natural push_backs after this deploy MUST audit a `risk_rejected/source=llm_push_back` row. If they don't, the wiring is broken in a way synthetic + forced-real-path tests missed; rollback per recipe below. Query:
+  ```sql
+  SELECT ts, json_extract(payload_json, '$.via'), json_extract(payload_json, '$.symbol'),
+         substr(json_extract(payload_json, '$.reason'), 1, 80)
+    FROM audit_event
+   WHERE kind='risk_rejected'
+     AND json_extract(payload_json, '$.source')='llm_push_back'
+     AND ts >= '2026-05-24T16:55:43'
+   ORDER BY ts DESC LIMIT 10;
+  ```
+
+**Rollback recipe (reverts to OLD pre-C-2-fix state — LLM push_back resumes bypassing risk gate; use ONLY if forward-watch shows the new code is broken):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-trackb-c2-20260524; BASE=/home/azureuser/trading_corp;
+for f in trading_corp/web/webhooks.py trading_corp/agents/risk.py trading_corp/agents/research/trade_confirmation_consult.py; do
+  mv \$BASE/\$f.\$TAG \$BASE/\$f
+done
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-24 14:40 UTC — kalshi_sports_arb_observer cap-bump 50→150 (max_markets_per_series); no restart (mtime hot-reload)
 
 **Commits (observer-side, already on `origin/main`):** `2dd12bf` (cap bump + verdict reframe), `0bcb2ba` (series_filter fix), `f8d441d` (observer Phase 0 instrument), `5807273` (MLB sibling), `e620fe7` (analyze script), `6ae5e48` (deploy bundle), `753ecee` (sports_math + scout retro), `7b4b056` (odds_api_client per-book). This deploy_log entry closes the EOS.
