@@ -206,3 +206,44 @@ Continue the observation week. Re-run this autopsy at end of week
   concentration finding
 
 Do not advance P4 on this day's data alone.
+
+---
+
+## 7. Connected hypothesis — observation-week watch (#1 + #2 together)
+
+The two anomalies from §3 and §4 are not independent loose ends. Read
+together they describe one structural posture:
+
+- **#1 (book is 100% NO, 87% NO-on-`between`)** — the strategy is
+  selling option-like payouts that win in the modal "actual lands
+  outside the narrow window" case and lose in the tail. **Short vol.**
+- **#2 (σ_used under-estimated; |z|≥2 at 3.1× theoretical, ≥3 at
+  10×)** — the model is **underpricing the tails it sells.**
+
+Short-vol + underpriced-tails is the textbook way a strategy looks
+profitable on most days and gives back disproportionately on rare ones.
+The 70.7% WR on a 24h window is consistent with this; the question is
+whether the realized tail draws are wider/more frequent than the model
+expects, which is exactly what #2 is asking.
+
+**Watch through 2026-05-29 (end of observation week):** do KMSP, KSAT,
+KAUS, KSEA — or any other station — repeat |z| > 2 on *independent
+settle dates*? Independent = different days, not multiple tickers on
+the same (station, date). If YES → σ_used is genuinely under-estimated
+and the strategy's short-vol posture is materially underpriced. If NO →
+this day was a single weather event over a NO-heavy book.
+
+**Connected queued work — moves from "speculative" to "justified" if
+the above repeats:** BACKLOG already carries an **Empirical σ-scaling
+factor** item (see BACKLOG.md `## P2 Empirical σ-scaling` / NBM-σ
+calibration work). That work would: (a) replace the heuristic
+`sigma_for_horizon(h)` in `_weather_math.py` with an NBM-derived
+forecast σ that scales correctly with horizon and station, (b)
+back-test the resulting σ against the same pre-fix RT corpus, (c) ship
+a fix that widens tails on the bet-side selection. **Addresses both #1
+and #2 together** — wider σ tightens the no-edge gate, suppresses
+marginal NO bets, and the book diversifies on direction as fewer
+tight-`between` markets clear the divergence threshold.
+
+Do not start that work on this day's data. Re-evaluate at end of
+observation week.
