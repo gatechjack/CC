@@ -3,6 +3,11 @@
 **Author:** session 2026-05-23
 **Status:** Gate **DECIDABLE** from the recovered corpus (see §0); leading
 recommendation is **scope-down with caveats**, not full division and not shelve
+**Update 2026-05-23:** see `2026-05-23_kalshi_sports_scout_phase0_addendum.md`
+— per-market time-series probe shows the negative-mean structural signal is
+**at least partly an early-line corpus-construction artifact**, not a tradeable
+edge as v2 implied. Addendum supersedes v2's "directional alpha candidate"
+framing.
 **Observation window:** 2026-05-14 22:34 UTC → 2026-05-23 22:55 UTC (~9 days)
 **Cycles observed:** 187 (~1.15h cadence; matches the post-22:28 1h poll)
 **Quota usage:** 21 calls / 500 monthly free-tier ceiling (4.2%) — non-binding
