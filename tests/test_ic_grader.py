@@ -770,3 +770,83 @@ async def test_operator_sample_zero_pass_no_provider_calls():
     provider.get_iv_rank.assert_not_called()
     provider.get_greeks.assert_not_called()
     provider.get_atm_iv.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# division / strategy_slug stamping + strict_universe knob (Tasty Options)
+# ---------------------------------------------------------------------------
+
+
+async def test_grade_paste_with_tasty_options_division_stamps_audit():
+    """Tasty Options passes division="tasty_options" — audit reflects it."""
+    strategy = _make_strategy()
+    provider = MagicMock()
+    _all_async_mocks(provider)
+    logger = MagicMock()
+
+    paste = "ZZZZ 100 07/06/26 (45) 35% 100/95 105/110 $0.85"
+    await g.grade_paste(
+        paste, strategy=strategy, provider=provider, clock=_frozen_clock(),
+        logger=logger,
+        division="tasty_options",
+        strategy_slug="tasty_options_iron_condor",
+    )
+
+    assert logger.log_event.called
+    call = logger.log_event.call_args
+    payload = call.kwargs["payload"]
+    assert payload["division"] == "tasty_options"
+    assert payload["strategy"] == "tasty_options_iron_condor"
+
+
+async def test_grade_paste_off_watchlist_warns_not_fails_when_strict_false():
+    """strict_universe=False: off-universe symbol skips gate 1 and is
+    tagged watchlist_membership=off in measurements. Empty chain still
+    fails at gate 2 — which is the expected outcome for ZZZZ — but the
+    failure is `expiration_not_available`, NOT `universe`."""
+    strategy = _make_strategy()
+    strategy.strict_universe = False
+    provider = MagicMock()
+    _all_async_mocks(provider)
+    provider.get_option_chain.return_value = []  # unresolvable
+
+    paste = "ZZZZ 100 07/06/26 (45) 35% 100/95 105/110 $0.85"
+    result = await g.grade_paste(
+        paste, strategy=strategy, provider=provider, clock=_frozen_clock(),
+    )
+
+    assert len(result.rows) == 1
+    row = result.rows[0]
+    # Gate 1 didn't fire — gate 2 (expiration_on_chain) did instead because
+    # the chain came back empty.
+    assert row.failed_gate == "expiration_not_available"
+    assert row.measurements.get("watchlist_membership") == "off"
+    # Provider WAS called — proves the universe gate did not short-circuit.
+    provider.get_option_chain.assert_called_once()
+
+
+async def test_grade_paste_strict_true_still_fails_off_universe():
+    """Regression guard: RH Joint behavior (strict_universe defaults True)
+    MUST keep failing off-universe rows at gate 1 with zero provider calls."""
+    strategy = _make_strategy()  # no strict_universe attribute → default True
+    provider = MagicMock()
+    _all_async_mocks(provider)
+    logger = MagicMock()
+
+    paste = "ZZZZ 100 07/06/26 (45) 35% 100/95 105/110 $0.85"
+    result = await g.grade_paste(
+        paste, strategy=strategy, provider=provider, clock=_frozen_clock(),
+        logger=logger,
+    )
+
+    assert len(result.rows) == 1
+    row = result.rows[0]
+    assert row.verdict == "FAIL"
+    assert row.failed_gate == "universe"
+    assert row.measurements.get("watchlist_membership") == "off"
+    provider.get_option_chain.assert_not_called()
+
+    # Audit defaults to RH Joint stamps when division/strategy_slug omitted.
+    payload = logger.log_event.call_args.kwargs["payload"]
+    assert payload["division"] == "robinhood_joint"
+    assert payload["strategy"] == "robinhood_joint_iron_condor"

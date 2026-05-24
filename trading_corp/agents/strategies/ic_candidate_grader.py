@@ -28,6 +28,7 @@ RunContext. Within-run consistency is correct for a ≤5s grading run.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -114,6 +115,13 @@ class _StrategyLike(Protocol):
     @property
     def wing_widths(self) -> dict[str, float]: ...
     def cfg(self, dotted: str) -> Any: ...
+    # Optional attribute (defaults True via getattr fallback in _snapshot_cfg):
+    # when False, off-universe symbols don't fail gate 1 — they get a
+    # "off_watchlist" warning tag on the final result but proceed through
+    # gates 2-8 normally. Tasty Options sets False so its "watchlist" is
+    # informational/curated rather than a hard gate; Robinhood Joint leaves
+    # the attribute undefined → defaults True → original behavior.
+    strict_universe: bool
 
 
 class _LoggerLike(Protocol):
@@ -155,6 +163,11 @@ class _RunContext:
     call_budget: int
     calls_used: int = 0
     clock: Any = None  # callable returning current datetime
+    # When True (default), `_gate_universe` fails any candidate whose symbol
+    # is not in `universe` — Robinhood Joint behavior. When False (Tasty
+    # Options), off-universe symbols proceed through gates 2-8 and the final
+    # row is tagged `watchlist_membership: "off"` in measurements.
+    strict_universe: bool = True
     # Per-run cache keyed by (method, *args). Cache hits don't consume
     # budget. Makes `test_cache_reuse_two_rows_same_symbol_expiration`
     # deterministic without depending on the provider's internal cache.
@@ -203,6 +216,10 @@ def _snapshot_cfg(
         per_call_timeout=DEFAULT_PER_CALL_TIMEOUT,
         call_budget=DEFAULT_CALL_BUDGET,
         clock=clock,
+        # RH Joint strategy doesn't define this attribute → defaults True →
+        # original gate-1-blocks-off-universe behavior. Tasty Options strategy
+        # sets False as a class-level attribute.
+        strict_universe=bool(getattr(strategy, "strict_universe", True)),
     )
 
 
@@ -439,7 +456,26 @@ def _now_iso(ctx: _RunContext) -> str:
 def _gate_universe(
     c: ParsedCandidate, ctx: _RunContext,
 ) -> GradeResult | None:
-    if c.symbol is None or c.symbol not in ctx.universe:
+    # Missing symbol is a parse-level failure regardless of strict mode —
+    # gates 2-8 cannot run without one. Always FAILs.
+    if c.symbol is None:
+        return GradeResult(
+            candidate=c, verdict="FAIL", failed_gate="universe",
+            reason=(
+                f"symbol {c.symbol} not in universe "
+                f"[{', '.join(ctx.universe)}]"
+            ),
+            measurements={"pasted_symbol": c.symbol},
+            provider_calls=ctx.calls_used,
+            graded_at_iso=_now_iso(ctx),
+        )
+    if c.symbol not in ctx.universe:
+        # Non-strict mode (Tasty Options): off-universe symbol proceeds
+        # through gates 2-8; the watchlist_membership tag is added to the
+        # final result in _grade_row. Returning None here lets the live
+        # provider gates do the real work — the watchlist is informational.
+        if not ctx.strict_universe:
+            return None
         return GradeResult(
             candidate=c, verdict="FAIL", failed_gate="universe",
             reason=(
@@ -992,12 +1028,18 @@ async def grade_paste(
     call_budget: int = DEFAULT_CALL_BUDGET,
     logger: _LoggerLike | None = None,
     row_cap: int = DEFAULT_ROW_CAP,
+    division: str = "robinhood_joint",
+    strategy_slug: str = "robinhood_joint_iron_condor",
 ) -> GraderRunResult:
     """Top-level entry. Parse, snapshot cfg, grade each row, log summary.
 
     `strategy` must expose `universe`, `wing_widths`, and `cfg(dotted)` —
     duck-typed against `RobinhoodJointIronCondorAgent`. The grader does
     NOT import the strategy class, preserving the no-execution invariant.
+
+    `division` and `strategy_slug` stamp the `ic_grader_run` audit row;
+    default to Robinhood Joint for backwards compatibility. Tasty Options
+    passes "tasty_options" / "tasty_options_iron_condor".
     """
     if clock is None:
         clock = lambda: datetime.now(timezone.utc)
@@ -1019,7 +1061,10 @@ async def grade_paste(
             summary={"rows_pasted": 0},
             provider_calls_total=0,
         )
-        _emit_summary_audit(logger, result, had_expired=False)
+        _emit_summary_audit(
+            logger, result, had_expired=False,
+            division=division, strategy_slug=strategy_slug,
+        )
         return result
 
     # 2. Snapshot cfg. Stamp ctx with provider + budget + clock.
@@ -1035,7 +1080,20 @@ async def grade_paste(
     #    deterministic and testable).
     rows: list[GradeResult] = []
     for c in candidates:
-        rows.append(await _grade_row(c, ctx))
+        r = await _grade_row(c, ctx)
+        # Tag the row with watchlist_membership when meaningful (parseable
+        # symbol present). Strict-universe runs (RH Joint) get "in" on
+        # passes / FAILs that reached past gate 1 with "off" recorded on
+        # gate-1 fails; non-strict runs (Tasty Options) get the full
+        # in/off signal regardless of verdict — that's the whole point
+        # of the watchlist semantics.
+        if c.symbol is not None and r.verdict != "PARSE_ERROR":
+            membership = "in" if c.symbol in ctx.universe else "off"
+            r = dataclasses.replace(
+                r,
+                measurements={**r.measurements, "watchlist_membership": membership},
+            )
+        rows.append(r)
 
     # 4. Summary.
     summary = _summarize(rows)
@@ -1055,7 +1113,10 @@ async def grade_paste(
     )
 
     # 5. Audit summary (no raw paste content).
-    _emit_summary_audit(logger, result, had_expired=had_expired)
+    _emit_summary_audit(
+        logger, result, had_expired=had_expired,
+        division=division, strategy_slug=strategy_slug,
+    )
 
     # 6. Stdout log line.
     log.info(
@@ -1090,12 +1151,14 @@ def _emit_summary_audit(
     result: GraderRunResult,
     *,
     had_expired: bool,
+    division: str = "robinhood_joint",
+    strategy_slug: str = "robinhood_joint_iron_condor",
 ) -> None:
     if logger is None:
         return
     payload = {
-        "strategy": "robinhood_joint_iron_condor",
-        "division": "robinhood_joint",
+        "strategy": strategy_slug,
+        "division": division,
         "rows_pasted": result.summary.get("rows_pasted", 0),
         "rows_passed": result.summary.get("rows_passed", 0),
         "rows_failed": result.summary.get("rows_failed", 0),
