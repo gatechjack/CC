@@ -1063,6 +1063,25 @@ async def run(argv: list[str] | None = None) -> int:
             )
         )
 
+        # --- Kalshi Sports Arbitrage observer (2026-05-23, Phase 0) ---
+        # Sibling of the scout, separate division (kalshi_arbitrage).
+        # Writes kalshi_sports_arb_observation audit with raw quotes +
+        # per-book + EV-at-fill (A + B). NEVER emits orders.
+        from trading_corp.agents.strategies.kalshi_sports_arb_observer import (
+            KalshiSportsArbObserverAgent,
+        )
+        kalshi_sports_arb_observer_agent = KalshiSportsArbObserverAgent(
+            odds_api_key=secrets.odds_api_key,
+            db_url=secrets.db_url,
+        )
+        kalshi_sports_arb_observer_task = asyncio.create_task(
+            _scheduled_kalshi_sports_arb_observer_loop(
+                kalshi_sports_arb_observer_agent,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+            )
+        )
+
         # --- Kalshi Copy Trader scanner (Phase K3; default off) ---
         from trading_corp.agents.strategies.kalshi_copy_trader import (
             KalshiCopyTraderAgent,
@@ -3578,6 +3597,62 @@ async def _scheduled_kalshi_sports_scout_loop(
                 return
             except Exception as e:
                 log.exception("Sports Scout loop iteration failed: %s", e)
+                await asyncio.sleep(5.0)
+    finally:
+        try:
+            await agent.close()
+        except Exception:
+            pass
+
+
+async def _scheduled_kalshi_sports_arb_observer_loop(
+    agent,
+    *,
+    logger_agent,
+    data_exec,
+) -> None:
+    """Kalshi Sports Arbitrage observer loop. NO order emission.
+
+    Sibling of the scout loop above. Writes
+    `kalshi_sports_arb_observation` audit with raw Kalshi quotes +
+    per-book sportsbook prices + EV-at-fill (Hypotheses A + B) at the
+    configured qty. Phase 0 instrument; observer-only.
+    """
+    log.info(
+        "Kalshi Sports Arb Observer online (enabled=%s, has_credentials=%s)",
+        agent.enabled, agent.has_credentials,
+    )
+    try:
+        while True:
+            try:
+                poll_sec = float(agent._strat_cfg.get("poll_interval_sec", 3600))
+                await asyncio.sleep(max(30.0, poll_sec))
+
+                if not agent.enabled:
+                    continue
+
+                kalshi_broker = None
+                for div_name, br in data_exec.brokers.items():
+                    if br.__class__.__name__ == "KalshiBroker" and getattr(br, "_client", None):
+                        kalshi_broker = br
+                        break
+                if kalshi_broker is None:
+                    log.debug("Sports Arb Observer: no live KalshiBroker; skipping")
+                    continue
+
+                try:
+                    await agent.run_scan_cycle(
+                        kalshi_broker, logger_agent=logger_agent,
+                    )
+                except Exception as e:
+                    log.exception("Sports Arb Observer: run_scan_cycle failed: %s", e)
+                    continue
+
+            except asyncio.CancelledError:
+                log.info("Kalshi Sports Arb Observer cancelled.")
+                return
+            except Exception as e:
+                log.exception("Sports Arb Observer loop iteration failed: %s", e)
                 await asyncio.sleep(5.0)
     finally:
         try:

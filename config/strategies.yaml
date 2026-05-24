@@ -1581,6 +1581,33 @@ kalshi_sports_scout:
   leagues: [MLB, NBA, NHL, MLS, NFL]
   divergence_log_threshold_pct: 1.0  # only log markets w/ |div| >= 1pp
 
+# ── Kalshi Sports Arbitrage observer (2026-05-23, Phase 0) ──
+# Sibling of the scout above; separate division (kalshi_arbitrage).
+# Read-only — NEVER emits orders. Writes kalshi_sports_arb_observation
+# audit rows with raw Kalshi quotes + per-book sportsbook prices +
+# EV-at-fill for both Hypotheses A (cross-venue arb) and B (lead-lag
+# directional) at qty=10 contracts.
+#
+# DEFAULT enabled: false. Flip to true ONLY after the dev dry-run +
+# the first-cycle hand-verification gate (per Phase 0 plan Step 4).
+#
+# Quota: NBA only, 3 markets/call × 1 call/h = ~72 credits/day. Free
+# tier (500/mo) is insufficient alongside the scout's ~30-60/day; the
+# Phase 0 plan recommends $30/mo paid tier before flipping enabled.
+kalshi_sports_arb_observer:
+  enabled: false
+  auto_execute: false                # always — observer never emits
+  division: kalshi_arbitrage
+  poll_interval_sec: 3600            # 1h
+  discovery:
+    max_series_per_category: 50
+    max_markets_per_series: 50
+    cache_ttl_sec: 900
+  leagues: [NBA]                     # Phase 0 scope is NBA-only
+  sizing_for_ev_calc:
+    contracts: 10                    # qty assumption for fee math + EV
+  sharp_book_preference: [pinnacle, draftkings, fanduel, betmgm]
+
 kalshi_copy_trader:
   enabled: true                    # Board-flip after audit-mode validation
   auto_execute: false               # Phase K5+ before this can flip live
