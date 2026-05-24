@@ -1,6 +1,8 @@
-# Next-session pickup prompt (post kalshi_weather 24h post-xref autopsy)
+# Next-session pickup prompt (kalshi_weather: autopsy + plan + Bucket 1 LIVE)
 
-*Written 2026-05-24 ~20:30 UTC at the end of a read-only forensic session on kalshi_weather post-xref RTs. NO deploys this session; prod is unchanged.*
+*Updated 2026-05-24 ~22:15 UTC after a multi-segment session that: (1) ran the 24h post-xref autopsy, (2) wrote the forecast-quality plan, (3) shipped Bucket 1 (HRRR + run-age logging) to prod. Supersedes the earlier 20:30 UTC version of this file.*
+
+**Why one prompt covers three things:** they're the same thread — the autopsy raised questions, the plan answered them as work items, Bucket 1 ships the data capture that the rest of the plan depends on. Read top-to-bottom; the order matters.
 
 ---
 
@@ -8,91 +10,124 @@ Paste this into a fresh Claude Code session at `C:/Users/AA Incorporado/cc`:
 
 ---
 
-Resuming after the 2026-05-24 kalshi_weather post-xref 24h autopsy session. **Four commits on `origin/main`** (pushed at end of last session):
-- `84ceea9` — backlog: EOS snapshot 2026-05-24 ~20:00 UTC
-- `0ab8daa` — housekeeping: keep verified kalshi_weather corpus-fetch driver (`scripts/fetch_kalshi_weather_corpus.py`)
-- `239e99c` — report: link kalshi_weather anomalies #1+#2 to queued NBM-sigma work (autopsy §7)
-- `ecc3367` — report: kalshi_weather 24h post-xref autopsy
+Resuming after the 2026-05-24 kalshi_weather session (autopsy → plan → Bucket 1 deploy). Three things landed today; one is now data-collecting on prod, two are gates for later. **Prod state changed once** (Bucket 1 deploy). **All commits pushed to `origin/main`.**
 
-**Prod is UNCHANGED.** `kalshi_weather_arb` still running f5a5fd5 (YAML xref loader) live since 2026-05-22T16:25 UTC. No code on prod was modified this session. No other divisions touched.
+## Where things stand (read first)
 
-## Read first
+**Prod:** `kalshi_weather_arb` is running:
+- `f5a5fd5` (P3 YAML xref loader) since 2026-05-22T16:25 UTC.
+- **`75ba7c5` (Bucket 1: HRRR + forecast run-age logging) since 2026-05-24T21:47:13 UTC** — write-only additive audit fields, NO decision logic change.
+- PID `1300124` (xvfb-run). healthz `{"status":"ok","mode":"PAPER"}`.
+- Observation window runs through ~2026-05-29.
 
-1. **`reports/2026-05-24_kalshi_weather_post_xref_24h_autopsy.md`** — full 7-section autopsy. Sections 3 (defect-class scan), 4 (σ calibration), 7 (anomalies #1+#2 → NBM-σ connection) are the load-bearing reads.
-2. **`BACKLOG.md` top EOS snapshot (2026-05-24 ~20:00 UTC)** — handoff + watch-list + open items.
-3. **Memory (auto-loaded):** `project_kalshi_weather_24h_post_xref_autopsy.md` (new this session), updated `project_kalshi_weather_xref_p3_live.md`.
+**Three artifacts today:**
+1. **Autopsy** (`reports/2026-05-24_kalshi_weather_post_xref_24h_autopsy.md`) — verdict: NO defect, variance. n=75, WR 70.7%, net −$28.15 (NOT the −$81 by resolved_ts — ~$53 of that was pre-deploy carryover; filter `entry_ts` going forward).
+2. **Plan** (`plans/forecast-quality-improvements-for-kalshi-prancy-porcupine.md`) — Bucket 1 (additive data capture, ship-now-safe) + Bucket 2 (logic specs, gated until observation week closes).
+3. **Bucket 1 LIVE on prod** (`runbooks/deploy_log.md` entry 2026-05-24 21:47 UTC) — 8 new audit fields on `kalshi_weather_evaluated` from 21:53:23 UTC onward.
 
-## Verdict from last session
+**Two anomalies the autopsy flagged for observation-week watch (NOT acted on):**
+- **#1: book is 100% NO bets, 87% NO-on-`between`** — short-vol posture, geographically diverse but directionally one-dimensional.
+- **#2: σ_used appears under-estimated** — empirical |z|≥2 at 3.1× theoretical (directional only; Open-Meteo proxy; 12 tail rows collapse to 5 unique events on 2026-05-23 cold push).
 
-- **NO logic defect.** All five enumerated defect classes scanned clean (station mismatch, coord_source anomaly, KXTEMPNYCH leak, floor breach, systematic bias).
-- True post-deploy sample (entry_ts ≥ 2026-05-22T16:25): n=75 / WR 70.7% / **net −$28.15** — inside variance.
-- ~$53 of the −$81 by-resolved_ts headline was **pre-deploy carryover** (entries under old KJFK/KORD/KIAH coords settling in-window). **Future post-deploy reads MUST filter by `entry_ts`, not `resolved_ts`.**
+Together → short-vol with underpriced tails. Bucket 2 Item 2.2 (NBM-σ work) addresses both, justified if signal repeats.
 
-## Two anomalies on the observation-week watch (not acted on)
+## Read first (in this order)
 
-- **#1 — book is 100% NO bets, 87% NO-on-`between`.** Short-vol posture, geographically diverse but directionally one-dimensional. Synoptic weather (regional cold push) drives correlated losses across many tickers.
-- **#2 — σ_used appears under-estimated.** Empirical |z|≥2 at 3.1× theoretical, |z|≥3 at 10×, 1–2σ band depleted (0.54×), stdev z = 1.168 (~17% wider than σ_used). **Directional only:** 12 tail rows collapse to 5 unique (station, date) events driven by 2026-05-23 Midwest/Texas cold push; used Open-Meteo reanalysis as proxy for actuals (not authoritative NWS CLI).
-
-Together → strategy is **short-vol with underpriced tails**. The queued `P2 Empirical σ-scaling factor` (NBM-σ) work in BACKLOG addresses both — moves from "speculative" to "justified" if the watch signal repeats.
+1. **`BACKLOG.md` top EOS snapshot (2026-05-24 ~22:00 UTC)** — canonical handoff. Lists today's 5 commits + prod state + open items + memory updates.
+2. **`reports/2026-05-24_kalshi_weather_post_xref_24h_autopsy.md`** — sections 3 (defect-class scan), 4 (σ calibration), 7 (anomalies #1+#2 → NBM-σ connection) are load-bearing.
+3. **`plans/forecast-quality-improvements-for-kalshi-prancy-porcupine.md`** — the plan. Bucket 1 status now = DEPLOYED. Bucket 2 specs (2.1–2.4) wait on operator go after observation week closes.
+4. **`runbooks/deploy_log.md` 2026-05-24 21:47 UTC entry** — what's actually running + audit field shape + rollback recipe.
+5. **Memory (auto-loaded):** `project_kalshi_weather_bucket1_deployed.md` (new), `project_kalshi_weather_24h_post_xref_autopsy.md` (updated), `project_kalshi_weather_xref_p3_live.md` (updated).
 
 ═══════════════════════════════════════════════════════════════════════════
 ## What to work on next — Board picks ONE
 ═══════════════════════════════════════════════════════════════════════════
 
-### TRACK A — Mid-week watch-list check (~30m, read-only)
+You're picking from three real options. The session is currently in a **data-collection wait** — Bucket 1 just started logging; the observation week runs to ~2026-05-29. Most-leverage work is gated on time-based accumulation, not Claude.
 
-If today is on or before 2026-05-29 and you want a pulse-check before the formal end-of-week autopsy:
+### TRACK A — Forward-watch on Bucket 1 deploy (~15m, read-only, recommended FIRST)
 
-1. Run `python scripts/fetch_kalshi_weather_corpus.py` to pull the latest RT corpus from prod (this is the committed driver, stdlib only, chunked dd+base64).
-2. Filter the new RTs to those with `entry_ts > <prior pull cutoff>` AND `entry_ts >= '2026-05-22T16:25'`.
-3. For the four watch stations (**KMSP, KSAT, KAUS, KSEA**), compute |z| against Open-Meteo (quick) for any *new* settle dates since 2026-05-23. If any hit |z| > 2 on a *different* date → flag the NBM-σ work as justified.
-4. Also: check if ANY YES bet has landed since 2026-05-23. If still 100% NO across the week, the short-vol diagnosis hardens.
+Just sanity-check that the 21:47 deploy is healthy across the spectrum, not just the HOU rows that the post-deploy spot-check happened to sample. Useful if at least a few hours have passed since deploy so multiple scan cycles have run.
 
-**Read-only.** No prod writes. Report findings, do not act.
+1. SSH to prod and query for fresh `kalshi_weather_evaluated` rows since 21:47:13 UTC, sampling the corrected-city tickers:
+   ```sql
+   SELECT ts, json_extract(payload_json, '$.ticker'),
+          json_extract(payload_json, '$.coord_source'),
+          json_extract(payload_json, '$.lat'), json_extract(payload_json, '$.lon'),
+          json_extract(payload_json, '$.yaml_coords'),
+          json_extract(payload_json, '$.hrrr_temp_f'),
+          json_extract(payload_json, '$.hrrr_source'),
+          json_extract(payload_json, '$.nws_forecast_issued_at')
+     FROM audit_event
+    WHERE actor='kalshi_weather_arb' AND kind='kalshi_weather_evaluated'
+      AND julianday(ts) > julianday('2026-05-24T21:47:13')
+      AND (json_extract(payload_json,'$.ticker') LIKE 'KXHIGHCHI%'
+        OR json_extract(payload_json,'$.ticker') LIKE 'KXHIGHNY%'
+        OR json_extract(payload_json,'$.ticker') LIKE 'KXLOWTNYC%'
+        OR json_extract(payload_json,'$.ticker') LIKE 'KXLOWTCHI%'
+        OR json_extract(payload_json,'$.ticker') LIKE 'KXHIGHTHOU%')
+    ORDER BY ts DESC LIMIT 20;
+   ```
+2. For every row: confirm `coord_source = yaml_verified`, `audit_lat/lon == yaml_coords`, `hrrr_temp_f` non-null, `hrrr_source = open_meteo_hrrr`. Any row failing these is a defect.
+3. Bulk health: count HRRR availability rate (% of post-deploy rows with non-null `hrrr_temp_f`) and NWS issued_at populate rate (% non-null). HRRR expected ~100%; NWS expected most-but-not-all (Akamai per-request behavior).
+4. If anything looks off, report; do not auto-fix. The rollback recipe is in the deploy_log entry.
 
-### TRACK B — End-of-observation-week formal autopsy (~2h, gated on date)
+**Read-only.** Should take ~15 minutes. Report findings + stop.
 
-Run only when on or after ~2026-05-29:
+### TRACK B — Mid-week σ-defect watch (~30m, read-only, AFTER ~24h of new data)
 
-1. Pull full post-2026-05-22T16:25 RT corpus via `scripts/fetch_kalshi_weather_corpus.py`.
-2. **Use NWS CLI HTML scrape**, not Open-Meteo, for actuals — each station's `feeds.cli_observed_html` URL is in `config/weather_stations.yaml`. That's what Kalshi settles against. (Open-Meteo was last session's first-pass proxy; not authoritative.)
-3. Recompute z-score distribution and run §3 defect-class scan against the full week's RTs.
-4. If σ under-estimation survives a clean week (independent-date repeats at KMSP/KSAT/KAUS/KSEA or new fat-tail stations) → start the NBM-σ implementation work.
-5. If bet-shape stays 100% NO across 5+ days → consider whether YES-side bets should be unblocked or whether NO-only is structurally correct given the strategy's `direction=between` focus.
-6. Write `reports/2026-05-29_kalshi_weather_obs_week_verdict.md` (or whatever the date is).
-7. **P4 advance gate:** advance to P4 (legacy `_CITY_COORDS_FALLBACK` removal) only if the clean-week verdict is unambiguous. Operator explicit go required.
+Defer until at least 24h after Bucket 1 deploy (so ≥2 settle dates beyond 2026-05-23 cold push are in the corpus). The σ-defect signal from the autopsy is "do KMSP / KSAT / KAUS / KSEA repeat |z|>2 on a *different* settle date?" — this needs more time to answer than TRACK A.
 
-### TRACK C — Pivot to another division
+1. Use `scripts/fetch_kalshi_weather_corpus.py` to pull post-deploy RTs from prod (committed `0ab8daa`, stdlib only, chunked dd+base64 driver).
+2. Filter by `entry_ts >= '2026-05-22T16:25'` (NOT `resolved_ts` — the carryover trap that bit the headline last time).
+3. For the 4 watch stations, compute z = (actual − forecast) / σ_used per RT. Open-Meteo as proxy is fine for the mid-week check (formal week-end run uses NWS CLI).
+4. Report: any of those 4 stations show |z| > 2 on a *different* settle date than 2026-05-23? If YES on 2+ independent dates → NBM-σ work (Bucket 2 Item 2.2) moves from speculative to justified. If NO → keep watching.
 
-Kalshi-weather observation week runs autonomously through ~2026-05-29; you don't *need* to touch it mid-week. Other open work:
+### TRACK C — End-of-observation-week formal autopsy v2 (~2h, gated on 2026-05-29 OR LATER)
 
-- **kalshi_sports_arb_observer** corpus accumulation (Phase 0 LIVE on MLB since 2026-05-24 15:40 UTC; first decision point ~10–15 cycles in). See BACKLOG EOS snapshot 2026-05-24 ~17:00 UTC.
-- **Security tracks** — C-2 still patched-in-code but not deployed; C-1 secret rotation unchanged. See `reports/2026-05-21_security_review.md`.
-- **PM watchlist** — cadence-change plan filed BOARD-GATED.
+The big one. Only run when on/after ~2026-05-29.
+
+1. Same corpus pull as TRACK B, full week's data.
+2. **Use NWS CLI HTML scrape, not Open-Meteo, for actuals** — each station's `feeds.cli_observed_html` URL in `config/weather_stations.yaml`. That's what Kalshi settles against. (Open-Meteo proxy was last week's first-pass; not authoritative for verdict.)
+3. Recompute the full §3 defect-class scan + §4 σ calibration with NWS CLI as ground truth.
+4. **Bonus available now (was not in v1 autopsy):** compare HRRR-only forecast vs the existing blend on same-day market entries — this is Bucket 2 Item 2.4 Step A in the plan. If HRRR-only is materially better calibrated, Bucket 2 Item 2.4 (pace adjustment) becomes a SHELVE candidate (HRRR captures most of pace's value natively).
+5. Write `reports/2026-05-29_kalshi_weather_obs_week_verdict.md` (or whatever the date is).
+6. **P4 advance gate:** operator explicit go required. Do NOT advance the legacy `_CITY_COORDS_FALLBACK` removal without clean-week verdict.
+
+### TRACK D — Pivot to other open work (if you don't want to think about kalshi_weather)
+
+Today's session was mostly kalshi_weather. Other open threads:
+- **kalshi_sports_arb_observer corpus accumulation** (Phase 0 MLB live since 2026-05-24 15:40 UTC). First decision point ~10–15 cycles in. See parallel session's EOS snapshots 2026-05-24 ~17:00 / ~21:30 UTC in `BACKLOG.md`.
+- **Security tracks:** C-2 and C-6 BOTH deployed today (parallel session). C-1 secret rotation unchanged. See `reports/2026-05-21_security_review.md`.
+- **PM watchlist cadence-change** filed BOARD-GATED. See `project_pm_watchlist_windowed_live.md`.
+- **Tastytrade env vars KV fix** (parallel session WIP — uncommitted modification to `trading_corp/utils/secrets.py` adding `TASTYTRADE_PROVIDER_SECRET` + `TASTYTRADE_REFRESH_TOKEN` to `_SECRET_KEY_NAMES` per `feedback_tastytrade_env_vars_bypass_kv.md`).
 
 ═══════════════════════════════════════════════════════════════════════════
 ## Hard discipline reminders for this work
 ═══════════════════════════════════════════════════════════════════════════
 
-- **Read-only.** Both TRACK A and TRACK B are forensics. No prod writes, no positions touched, no fixes proposed without explicit operator go.
-- **Filter by `entry_ts`, NOT `resolved_ts`.** The carryover trap cost us a misleading −$81 headline last session.
-- **Tail multipliers use distinct (station, date) tuples.** Row counts overstate independent-event counts by ~2.4× because of multi-ticker-per-station structure.
-- **Open-Meteo ≠ NWS CLI.** Directional only for first-pass; NWS CLI scrape required for any verdict.
-- **Observation windows are durations, not samples.** One clean day is the start, not the end. See `feedback_observation_window_no_early_advance.md`.
-- **Delegate mechanical SQL/data pulls to Sonnet sub-agents.** Last session worked well: two Sonnet sub-agents handled all prod pulls; Opus retained framing.
-- **Tighter commits than feels normal.** Commit each forensic artifact as it lands.
+- **Filter by `entry_ts`, NOT `resolved_ts`.** Carryover trap. Last session: ~$53 of −$81 headline was pre-deploy carryover.
+- **Observation windows are durations, not samples.** One clean day is the start, not the end. (`feedback_observation_window_no_early_advance.md`)
+- **Tail multipliers use distinct (station, date) tuples**, not row counts (multi-ticker-per-station inflates by ~2.4×).
+- **Open-Meteo proxy ≠ NWS CLI ground truth.** Directional for first-pass; authoritative only via CLI scrape.
+- **Coord-discipline is structural.** Any new data source MUST pass the `lat, lon` locals from `_evaluate_market` line 549; never re-resolve from city names. The HRRR fetch did this correctly.
+- **Delegate mechanical SQL / data pulls to Sonnet sub-agents.** Today's pulls (autopsy, bet-shape, σ calibration) were all done by Sonnet under Opus framing. Worked well; do it again.
+- **Stop-and-report at forks.** Today's forks (deploy cadence, HRRR flag default) were resolved via AskUserQuestion. Don't auto-resolve.
+- **Tighter commits than feels normal.** Each artifact (autopsy, plan, deploy, deploy_log entry) was its own commit.
 
 ═══════════════════════════════════════════════════════════════════════════
-## Prod state snapshot at session end
+## Prod state snapshot at session end (2026-05-24 ~22:15 UTC)
 ═══════════════════════════════════════════════════════════════════════════
 
-- `kalshi_weather_arb`: f5a5fd5 (P3 YAML xref) — live since 2026-05-22T16:25 UTC
-- `kalshi_sports_arb_observer`: Phase 0 MLB live since 2026-05-24 15:40 UTC (cap 150)
-- `kalshi_sports_scout`: discovery-rotation fix b880b66 + MLB aliases d6d54d3 — corpus accumulating
-- `polymarket_arbitrage`: per-condition_id cap shipped 2026-05-21 paper-only
-- `IC grader`: 112aef3 live, paste-and-grade at /telemetry/iron_condor
-- `bitunix_futures`: bias TTL 30 + flip-detection observe-only
-- `requirements.lock`: C-6 corrected + deployed 2026-05-24 15:14 UTC
-- C-2 patch in code (19ff0da) but NOT on prod yet
+- `kalshi_weather_arb`: f5a5fd5 (P3 YAML xref) + 75ba7c5 (Bucket 1) — both live. PID 1300124.
+- `kalshi_sports_arb_observer`: Phase 0 MLB live since 2026-05-24 15:40 UTC (cap 150). Sibling division track.
+- `kalshi_sports_scout`: discovery-rotation fix b880b66 + MLB aliases d6d54d3 — corpus accumulating.
+- `polymarket_arbitrage`: per-condition_id cap shipped 2026-05-21 paper-only.
+- `IC grader`: 112aef3 live, paste-and-grade at /telemetry/iron_condor.
+- `bitunix_futures`: bias TTL 30 + flip-detection observe-only.
+- `requirements.lock`: C-6 corrected + deployed 2026-05-24 15:14 UTC.
+- C-2 webhook risk-gate fix: deployed 2026-05-24 16:55 UTC.
 
-No environment drift to address. Local working tree is clean (only untracked = `docs/Deployment notes.txt`, operator's pre-existing notes, not session output).
+Local working tree clean except `docs/Deployment notes.txt` (operator's pre-existing notes) and any parallel-session WIP. Local HEAD = `origin/main`.
+
+**Where to start (operator):** **TRACK A** if it's been at least an hour since 21:47 UTC deploy (enough for multiple scan cycles to have hit NYC/CHI tickers). **TRACK B** after ~24h. **TRACK C** after ~2026-05-29. **TRACK D** if you want a context-switch away from weather.

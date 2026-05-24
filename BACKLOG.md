@@ -8,6 +8,51 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~22:00 UTC (Sunday late evening — kalshi_weather Bucket 1 data-capture DEPLOYED + forecast-quality plan written; observation-week data window now richer)
+
+**Headline of THIS session-segment (continuation of the ~20:00 UTC autopsy wrap):** After the autopsy verdict ("no defect, variance"), wrote a full forecast-quality plan (Bucket 1 = additive data capture, Bucket 2 = gated logic specs), then **shipped Bucket 1 to prod** in one bundled deploy. `kalshi_weather_evaluated` audit rows now carry 8 new fields from 2026-05-24T21:53:23 UTC onward. NO decision logic changed — these are write-only additive logs. Observation week through ~2026-05-29 continues, now with HRRR + run-age data accumulating in parallel for the eventual NBM-σ backtest. Plan at `plans/forecast-quality-improvements-for-kalshi-prancy-porcupine.md`.
+
+**`origin/main` head (this session-segment commits, all pushed):**
+- **`b8e609d`** — deploy_log: kalshi_weather Bucket 1 deployed 2026-05-24 21:47 UTC *(THIS session-segment)*
+- **`75ba7c5`** — kalshi_weather Bucket 1: HRRR latest-run logging + forecast run-age *(THIS session-segment)*
+- `558c870` — backlog + runbook: EOS 2026-05-24 ~21:30 UTC — TRACK B C-2 deployed + verified (parallel session)
+- `dcdd0ef` — deploy_log: TRACK B C-2 deployed + verified via real-HTTP forcing-hook test (parallel session)
+- `7f6dc6d` — runbooks: next-session pickup prompt (post kalshi_weather autopsy) *(THIS session, earlier)*
+- `84ceea9` — backlog: EOS snapshot 2026-05-24 ~20:00 UTC - kalshi_weather post-xref 24h autopsy *(THIS session, earlier)*
+- `0ab8daa` — housekeeping: keep verified kalshi_weather corpus-fetch driver *(THIS session, earlier)*
+- `239e99c` — report: link kalshi_weather anomalies #1+#2 to queued NBM-sigma work *(THIS session, earlier)*
+- `ecc3367` — report: kalshi_weather 24h post-xref autopsy *(THIS session, earlier)*
+
+**What's running on prod (kalshi_weather_arb specifically):**
+- f5a5fd5 (YAML xref loader) LIVE since 2026-05-22T16:25 UTC. Verified-station list + 6 corrected city mappings (NYC→KNYC, CHI→KMDW, HOU→KHOU) baked in. KXTEMPNYCH disabled.
+- **75ba7c5 (Bucket 1) LIVE since 2026-05-24T21:47:13 UTC.** PID 1300124 (xvfb-run). `hrrr_enabled: true` in `config/strategies.yaml`. Audit rows from 21:53:23 UTC onward carry: `hrrr_temp_f`, `hrrr_source`, `hrrr_fetched_at`, `nws_forecast_issued_at`, `nws_fetched_at`, `open_meteo_fetched_at`, `metar_obs_age_min`, `metar_latest_obs_iso`.
+- Backup tag for Bucket 1 rollback: `pre-bucket1-20260524-2200` on all 5 files. Rollback recipe in `runbooks/deploy_log.md`.
+- Observation week runs through ~2026-05-29.
+
+**Highest-leverage open items (handoff to next session):**
+1. **Forward-watch obligations for Bucket 1** (read-only checks; fire next time someone looks):
+   - Confirm new audit fields populate for NYC/CHI rows (post-deploy spot-check only had HOU rows). Tickers: `KXHIGHCHI*`, `KXHIGHNY*`, `KXLOWTNYC*`, `KXLOWTCHI*`, `KXHIGHTHOU*`. coord_source MUST be `yaml_verified`; `audit_lat/lon` MUST equal `yaml_coords`.
+   - HRRR availability rate — expect near-100% during US weather hours; failures should be transient.
+   - NWS `issued_at` populate rate — expect most-but-not-all (Akamai CDN per-request behavior). 0% would mean header capture is broken.
+2. **End-of-observation-week autopsy v2 (on/after ~2026-05-29):** re-run forensic with the now-richer data. Use `scripts/fetch_kalshi_weather_corpus.py` to pull RTs. Filter by `entry_ts >= '2026-05-22T16:25'` (NOT `resolved_ts` — carryover trap documented in autopsy). For σ calibration, switch from Open-Meteo proxy to **NWS CLI HTML scrape** (each station's `feeds.cli_observed_html` in `config/weather_stations.yaml`). Also: compare HRRR-only vs blend (now possible — Bucket 1 makes this data available).
+3. **σ defect watch list:** KMSP, KSAT, KAUS, KSEA — do any hit |z| > 2 on *independent* settle dates across the week? If YES on 2+ dates → NBM-σ work (Bucket 2 Item 2.2) moves from speculative to justified.
+4. **Bet-shape watch:** does ANY YES bet land this week? If still 100% NO at week-end, short-vol diagnosis hardens.
+5. **P4 advance gate stays closed.** Do not advance the P3 → P4 (legacy `_CITY_COORDS_FALLBACK` removal) on the current 24h sample alone. Observation window is a duration, not a sample.
+
+**Memory updates this session-segment:**
+- NEW `project_kalshi_weather_bucket1_deployed.md` — Bucket 1 LIVE state + audit field shape + rollback + forward-watch.
+- UPDATED `project_kalshi_weather_24h_post_xref_autopsy.md` — appended Bucket 1 deploy reference (autopsy verdict unchanged; data window now richer for the week-end re-run).
+- UPDATED `MEMORY.md` index.
+
+**Notable mid-session catches (worth carrying forward):**
+- **Coord-discipline as a structural property, not a runtime check.** The HRRR fetch inherited the corrected NYC/CHI/HOU coords automatically because it reuses the `lat, lon` locals at `kalshi_weather_arb.py:549`. No city-name fallback was introduced. The plan called this out explicitly as a load-bearing constraint; implementation honored it by NOT adding a separate lookup path. This is the right pattern for any future "additive data capture at entry time" — pass the existing locals, never re-resolve.
+- **Open-Meteo HRRR identifier is `ncep_hrrr_conus`** (NOT `gfs_hrrr` or `hrrr` — verified by direct curl 2026-05-24). Single-model responses use UNSUFFIXED `hourly.temperature_2m`; multi-model uses `hourly.temperature_2m_<model>`. Don't confuse parsers.
+- **NWS DOES serve Last-Modified through Akamai** at least some of the time — first post-deploy row had `nws_forecast_issued_at = "Sun, 24 May 2026 20:59:58 GMT"` (~54 min behind fetch). Expect NULL on a fraction; that's normal not a bug.
+- **Prod YAML `config/strategies.yaml` is PURE LF**, not CRLF. The memory `feedback_deploy_crlf_config_patch.md` was out-of-date for THIS file (verified with `cat -A`). scp wholesale was safe. Other YAML files may still be CRLF — check per-file before deploying.
+- **Discipline standard worked again:** stop-and-report at forks (deploy cadence + HRRR flag default → AskUserQuestion), sub-agent delegation for mechanical data pulls (autopsy + bet-shape + σ calibration via Sonnet), Opus retained framing + commit discipline. The plan-mode review caught the coord-discipline risk before any code was written.
+
+---
+
 ## EOS snapshot — 2026-05-24 ~21:30 UTC (Sunday evening — TRACK B-DEPLOY C-2 webhook risk-gate fix SHIPPED + VERIFIED in prod via real-HTTP forcing-hook test; C-2 + C-6 both CLOSED; phantom-pointer housekeeping done; 5 board items remain)
 
 **Headline of THIS session:** TRACK B-DEPLOY (`19ff0da` C-2 webhook risk-gate fix) shipped to prod at 2026-05-24 16:55:43 UTC (PRE_PID 1237405 → POST_PID 1284818, web bound 17:00:45 UTC, healthz mode:PAPER). Acceptance gate closed via two-stage verification: (1) synthetic gates T1-T4 in a separate prod python (forced_reject_reason kwarg present + short-circuits to reject; side-flip backstop fires; allowed-path unchanged); (2) **real-HTTP path verified via temporary payload-marker-gated forcing hooks** (installed 20:55 UTC under `pre-trackb-hook-20260524-1700` backup tag; SKIP marker → `risk_rejected/source=llm_push_back` row at 20:56:10 UTC; SIDE-FLIP marker → `research_side_flip_blocked` + `would_have_placed` at 20:56:44 UTC; hooks reverted ~21:00 UTC, restart #3 PID 1295064 → 1296508, post-revert md5 = C-2 fix state byte-for-byte, `grep -c TRACKB` = 0 on both files). Deploy_log entry `dcdd0ef` committed + pushed. Forward-watch obligation carries to next session.
