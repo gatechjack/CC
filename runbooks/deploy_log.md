@@ -76,6 +76,53 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-24 15:14 UTC — `requirements.lock` C-6 correction: regenerated against prod running versions, disk-downgrade reverses unintended 14:56 UTC bump install (commit `<TBD>`)
+
+**Commits:** `<TBD-this-commit-sha>` (regenerated `requirements.lock` + BACKLOG P1 entry + this deploy_log entry).
+**Triggered by:** Operator directive 2026-05-24 ~15:00 UTC to reverse the 14:56 UTC bump-install without process restart.
+
+**Context (the deploy this fixes):**
+At 2026-05-24 14:56 UTC, scp'd the original C-6 lockfile (md5 `5eb170f06fe4ba585f637cc8dacab946`, generated 2026-05-23 17:39 local from `requirements.txt` against current PyPI) to prod and ran `pip install --require-hashes -r requirements.lock`. Exit 0 — **but installed 43 NEWER versions** than the running process was built against (Apr-30 venv). Process (PID 1237405) was unaffected (cached imports in `sys.modules`), but disk was now in an unintended state: any restart would silently deliver the 43 bumps. C-6's goal is reproducibility of the known-good running state, not a mass upgrade.
+
+**Backup tag:** `requirements.lock.bad-bump-20260524` on prod (preserved 14:56 lockfile as recovery breadcrumb).
+
+**Files deployed (1):**
+- `requirements.lock` — regenerated locally from `/tmp/pip_pre_20260524_145514.txt` (prod's actual running freeze captured 14:55 UTC, pre-bump) via `uv pip compile --python-version 3.12 --python-platform x86_64-unknown-linux-gnu --generate-hashes -o requirements.lock tmp/prod_running_pin_20260524T1455Z.txt`. New md5 `c1d1db5f2a435ab9ba797b8448ca3287`. 137 packages, every pin matches running prod (zero diff after PEP 503 normalization).
+
+**Disk-side action (real install, NOT dry-run, at 15:14 UTC):**
+`pip install --require-hashes -r requirements.lock` against prod venv. Downgraded 43 packages back to OLD versions (anthropic 0.104.1 → 0.97.0, langgraph 1.2.1 → 1.1.10, cryptography 48.0.0 → 47.0.0, etc.). Exit 0. Log: `/tmp/pip_downgrade_20260524T151353Z.log`. Post-snapshot: `/tmp/pip_post_downgrade_20260524T151353Z.txt`.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **C-6 (hash-pinned lockfile reproducing prod) CORRECTED.** Lockfile now pins the actual running versions, not arbitrary newer PyPI versions. Future fresh-install from this lock produces the known-good Apr-30 venv state.
+- **Disk ≡ lock ≡ running-process convergence verified.** Next operator restart picks up OLD versions matching the lock, not the unintended bumps.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- The lockfile's autogen header references `tmp/prod_running_pin_20260524T1455Z.txt` as the input file. That file is NOT in the repo. For future regens that want to capture the then-current running state, repeat the recipe: scp prod's `pip list --format=freeze` to local, feed it to `uv pip compile`. Per `[[reference-uv-pip-compile-cross-platform]]`.
+- **The 43 deferred bumps are NOT lost** — see BACKLOG.md P1 "Deferred 43-package upgrade from C-6 lockfile drift" for per-package risk notes. anthropic SDK bump 0.97 → 0.104 specifically requires real-SDK smoke test per `[[feedback-mocks-dont-catch-sdk-shape]]`, not paper soak.
+
+**Latent bugs caught + fixed (if any):**
+- (none new from this work — the bad 14:56 install was caught BEFORE it could ride a restart, and reversed in-flight)
+
+**Verification (three-way convergence, all OLD):**
+- PID unchanged ✅ — `1237405` (xvfb-run) + `1237421` (Python child) confirmed alive post-downgrade. Same as pre-install.
+- `pip install --dry-run --require-hashes -r requirements.lock` ✅ — 137 "Requirement already satisfied", zero "Would install".
+- `diff /tmp/pip_pre_20260524_145514.txt /tmp/pip_post_downgrade_20260524T151353Z.txt` → exit 0 (byte-identical disk freezes before-bump vs after-downgrade).
+- Journal `--since 15:13` ✅ — normal INFO audit events from kalshi_crypto_arb, polymarket scan, polymarket-data-api, kalshi_copy_trader. No errors, no tracebacks, no lazy-import surprises.
+
+**Inert / dormant on current traffic (if any):**
+- The lockfile itself is dormant until the next fresh-install. The trading-corp process continues running its in-memory imports loaded at startup; this deploy does not change its behavior.
+
+**Rollback recipe (do NOT use unless reversing this fix):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; cp \$BASE/requirements.lock.bad-bump-20260524 \$BASE/requirements.lock; \
+\$BASE/venv/bin/pip install --require-hashes -r \$BASE/requirements.lock
+"
+```
+Restoring the bumped (broken-intent) lockfile + re-applying the 43 bumps on disk. Reverses this deploy.
+
+---
+
 ## 2026-05-24 03:17 UTC — kalshi_sports_scout: MLB team-code aliases AZ + CWS (commit `d6d54d3`, deploy script to be committed)
 
 **Commits:** `d6d54d3` (one-file mapping fix).

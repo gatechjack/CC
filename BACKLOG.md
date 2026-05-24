@@ -505,6 +505,40 @@ unrelated).
 
 ---
 
+## P1 (ops/security) — Deferred 43-package upgrade from C-6 lockfile drift  *(NEW — 2026-05-24)*
+
+**Why this exists:** the original `requirements.lock` shipped 2026-05-23 in `4086221` was generated from `requirements.txt` against current PyPI, NOT from prod's running versions. Result: when installed on prod 2026-05-24 14:56 UTC, it pinned **43 packages to NEWER versions** than what the running process had been built against (Apr-30 venv build). Recognized before any restart could ride the bumps; reversed the disk install at 15:14 UTC. Lockfile now correctly pins prod's running versions (md5 `c1d1db5f2a435ab9ba797b8448ca3287`). See deploy_log 2026-05-24 15:14 UTC for the full reversal.
+
+**The deferred upgrades (43 packages — what the bumps WERE):** highest-leverage first.
+
+| Package | Pre (current/restored) | Bumped to | Risk class |
+|---|---|---|---|
+| **anthropic** | **0.97.0** | **0.104.1** | 7 minor versions — `[[feedback-mocks-dont-catch-sdk-shape]]` territory |
+| cryptography | 47.0.0 | 48.0.0 | Major. TLS, broker creds, signing |
+| langgraph | 1.1.10 | 1.2.1 | Agent decision pipeline |
+| langchain-core | 1.3.2 | 1.4.0 | LangGraph stack |
+| starlette | 1.0.0 | 1.1.0 | Web layer |
+| fastapi | 0.136.1 | 0.136.3 | Routes surface |
+| langsmith | 0.7.38 | 0.8.5 | Tracing |
+| pandas | 3.0.2 | 3.0.3 | Data layer |
+| playwright | 1.59.0 | 1.60.0 | Web driver |
+| (~34 more patch/minor) | — | — | aiodns, ccxt, certifi, click, idna, jiter, numpy, orjson, pydantic, requests, starlette, urllib3, uvicorn, watchfiles, yarl, yfinance, langchain-anthropic, langgraph-checkpoint{,-sqlite}, langgraph-prebuilt, langgraph-sdk, etc. |
+
+Full diff lives on prod in `/tmp/pip_install_20260524_145616.log` and the corresponding pre/post freezes (`/tmp/pip_pre_20260524_145514.txt`, `/tmp/pip_post_20260524_145616.txt`). Keep ≥1 week.
+
+**Rules for the eventual upgrade:**
+- **NOT a single batch.** Audited one-at-a-time, highest-leverage first.
+- **anthropic SDK bump 0.97 → 0.104 requires real-SDK smoke test** per `[[feedback-mocks-dont-catch-sdk-shape]]`. Paper soak is NOT sufficient because most paper-mode flows don't exercise every LLM call site. Need live authenticated call + verification of return shape against actual usage in `agents/llm.py`, `agents/research/*`, `agents/strategies/kalshi_crypto_arb.py`, and any other site that calls the anthropic SDK.
+- **cryptography 47→48 major** — check release notes for deprecations affecting `utils/secrets.py` (KV path), broker adapters using mTLS, signing in `web/webhooks.py` HMAC.
+- **langgraph + langchain-core minor bumps** — check `graph/ceo_graph.py` for any deprecated APIs.
+- **Each bump deserves its own deploy + soak window** — no "and while we're at it".
+
+**Bad lockfile artifact preserved on prod:** `/home/azureuser/trading_corp/requirements.lock.bad-bump-20260524` (the version that pinned the 43 bumps). Keep for ≥1 week as recovery breadcrumb in case we discover something the corrected lock missed.
+
+**See also:** `[[project-security-tracks-fbd-shipped-2026-05-23]]` (the original C-6 ship), `[[reference-uv-pip-compile-cross-platform]]` (canonical regen command).
+
+---
+
 ## P3 (cosmetic) — `pm_dashboard_body.html` Jinja truthiness on numeric `window_days_span`  *(NEW — 2026-05-23)*
 
 **Discovered during:** the `pm-watchlist-windowed-rescore` deploy verification 2026-05-23. Surfaced by Sassy-Bucket (#3 under `<.70` desc) — n=100 trades all in the same UTC second, `window_days_span = 0.0`, render shows `—` instead of `0d`.
