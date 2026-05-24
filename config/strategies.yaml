@@ -1575,10 +1575,21 @@ kalshi_sports_scout:
   enabled: true
   poll_interval_sec: 3600            # 1h — quota-friendly; lift back to 900 if paid tier
   discovery:
-    max_series_per_category: 50
+    # 2026-05-23: bumped 50 → 100 with introduction of series_filter in
+    # discover_by_categories. The cap now counts only in-scope series
+    # (exact-set match on KXMLBGAME/KXNBAGAME/KXNHLGAME/KXMLSGAME — see
+    # _SCOUT_SERIES_FILTER in kalshi_sports_scout.py), so 100 is
+    # comfortably above the 4 in-scope series. Was binding hard before:
+    # Sports category has ~2000 series; the old 50-cap returned a
+    # rotating 2.5% slice and in-scope leagues landed only ~11% of scans.
+    max_series_per_category: 100
     max_markets_per_series: 50
     cache_ttl_sec: 900
-  leagues: [MLB, NBA, NHL, MLS, NFL]
+  # NFL excluded 2026-05-23: probe found no KXNFLGAME moneyline series
+  # in Sports (only props: KXNFLGAMETD/FG/SACK). Re-add as game-moneyline
+  # once that series is actually present — re-probe ~3-4 weeks before
+  # kick-off and check Sports + Football categories for the right ticker.
+  leagues: [MLB, NBA, NHL, MLS]
   divergence_log_threshold_pct: 1.0  # only log markets w/ |div| >= 1pp
 
 # ── Kalshi Sports Arbitrage observer (2026-05-23, Phase 0) ──

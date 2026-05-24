@@ -336,6 +336,7 @@ class KalshiBroker(ReadOnlyBroker):
         categories: tuple[str, ...] | None = None,
         max_series_per_category: int = 30,
         max_markets_per_series: int = 50,
+        series_filter: tuple[str, ...] | frozenset[str] | None = None,
     ):
         """Discovery: category -> series -> markets, classified by structural type.
 
@@ -343,6 +344,10 @@ class KalshiBroker(ReadOnlyBroker):
         broker-level abstraction that strategies (Phase K2.1+) consume —
         same role as `PolymarketBroker.list_markets()` in the polymarket
         pattern. Strategies don't talk to pykalshi directly.
+
+        `series_filter` constrains discovery to an exact-match set of
+        series tickers within the requested category(ies). See
+        `discover_by_categories` for the rationale.
 
         Empty result in stub mode (no credentials).
         """
@@ -361,6 +366,7 @@ class KalshiBroker(ReadOnlyBroker):
             categories=categories or DEFAULT_DISCOVERY_CATEGORIES,
             max_series_per_category=max_series_per_category,
             max_markets_per_series=max_markets_per_series,
+            series_filter=series_filter,
         )
 
 

@@ -327,6 +327,7 @@ async def discover_by_categories(
     categories: tuple[str, ...] = DEFAULT_DISCOVERY_CATEGORIES,
     max_series_per_category: int = 50,
     max_markets_per_series: int = 50,
+    series_filter: tuple[str, ...] | frozenset[str] | None = None,
     inter_call_delay_sec: float = 0.15,
 ) -> DiscoveryResult:
     """Discovery via category -> series -> markets traversal.
@@ -335,6 +336,16 @@ async def discover_by_categories(
     by KXMVE* sports parlay noise — see module-level comment). Cost is
     bounded: O(categories) + O(min(series_per_cat, max_series_per_category) ×
     n_categories) get_markets calls + O(events) get_event calls.
+
+    `series_filter` (optional) constrains the iteration to an exact-match
+    set of series tickers within the requested categories. Out-of-set
+    series are skipped BEFORE they consume a cap slot — so the
+    `max_series_per_category` cap counts only in-scope series. This is
+    how targeted callers (e.g. kalshi_sports_scout) avoid being rotated
+    out of the returned slice by the much larger catalog of out-of-scope
+    series sharing the same category. Exact-set semantics (not prefix)
+    so adjacent series like KXNBAGAMES / KXNBAGAME7 don't sweep in
+    alongside KXNBAGAME.
 
     Two cost guards (added 2026-05-10 after a runaway scan hit Kalshi's
     rate limit on 4482 series across 6 categories — pykalshi's
@@ -349,6 +360,10 @@ async def discover_by_categories(
     """
     import asyncio
     from pykalshi import MarketStatus
+
+    series_filter_set: frozenset[str] | None = (
+        frozenset(series_filter) if series_filter is not None else None
+    )
 
     # Step 1: enumerate series in the target categories.
     # NOTE: pykalshi's get_all_series silently fetches all pages for the
@@ -368,9 +383,12 @@ async def discover_by_categories(
             if cat_count >= max_series_per_category:
                 break
             t = getattr(s_obj, "ticker", None)
-            if t:
-                all_series_tickers.append(t)
-                cat_count += 1
+            if not t:
+                continue
+            if series_filter_set is not None and t not in series_filter_set:
+                continue
+            all_series_tickers.append(t)
+            cat_count += 1
 
     log.info(
         "kalshi_market_map: enumerated %d series (capped at %d/category × %d categories)",

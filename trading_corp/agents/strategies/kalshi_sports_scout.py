@@ -48,6 +48,23 @@ from trading_corp.data.sports_team_mapping import (
 log = logging.getLogger(__name__)
 
 
+# Game-moneyline series tickers within Kalshi's "Sports" category. The
+# Sports category contains ~2000 series across 50+ market types
+# (futures, season wins, playoff brackets, props, props variants per
+# league); we want only the four game-h2h series. Exact-match
+# semantics (not prefix) so adjacent series like KXNBAGAMES /
+# KXNBAGAME7 don't sweep in. NFL game-moneyline series does NOT
+# currently exist in Sports (probe 2026-05-23 found only KXNFLGAMETD /
+# KXNFLGAMEFG / KXNFLGAMESACK — all props, no game-h2h); re-probe and
+# re-add once in-season approaches kick-off.
+_SCOUT_SERIES_FILTER: tuple[str, ...] = (
+    "KXMLBGAME",
+    "KXNBAGAME",
+    "KXNHLGAME",
+    "KXMLSGAME",
+)
+
+
 class KalshiSportsScoutAgent:
     """Read-only sports observer. Logs divergence; emits no orders.
 
@@ -147,6 +164,7 @@ class KalshiSportsScoutAgent:
                     categories=("Sports",),
                     max_series_per_category=max_series,
                     max_markets_per_series=max_markets,
+                    series_filter=_SCOUT_SERIES_FILTER,
                 )
                 self._discovery_ts = now
             except Exception as e:
