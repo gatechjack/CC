@@ -12,6 +12,7 @@ from trading_corp.data.odds_api_client import BookPrice
 from trading_corp.agents.strategies.kalshi_sports_arb_observer import (
     _ArbCandidate,
     _PHASE0_LEAGUE_CLASSIFIERS,
+    _PHASE0_LEAGUE_SERIES_FILTER,
     _evaluate_a_arb_for_ml,
     _pick_pinnacle_or_proxy,
     _vig_remove_two_sides,
@@ -262,3 +263,39 @@ class TestLeagueDispatchTable:
         nba_classifier, _ = _PHASE0_LEAGUE_CLASSIFIERS["NBA"]
         mlb_classifier, _ = _PHASE0_LEAGUE_CLASSIFIERS["MLB"]
         assert nba_classifier is not mlb_classifier
+
+
+class TestSeriesFilterDispatch:
+    """Verifies the series_filter mechanism that prevents the
+    rotating-slice discovery bug (Kalshi Sports has ~2000 series; the
+    discovery cap returns a 50-series rotating slice without a filter).
+    Sibling of dispatch table; existing dispatch tests untouched.
+    """
+
+    def test_nba_filter_includes_KXNBAGAME(self):
+        assert "NBA" in _PHASE0_LEAGUE_SERIES_FILTER
+        assert "KXNBAGAME" in _PHASE0_LEAGUE_SERIES_FILTER["NBA"]
+
+    def test_mlb_filter_includes_KXMLBGAME(self):
+        assert "MLB" in _PHASE0_LEAGUE_SERIES_FILTER
+        assert "KXMLBGAME" in _PHASE0_LEAGUE_SERIES_FILTER["MLB"]
+
+    def test_nba_and_mlb_filters_are_disjoint(self):
+        # Sanity: NBA filter should not pick up MLB series and vice versa.
+        nba_set = set(_PHASE0_LEAGUE_SERIES_FILTER["NBA"])
+        mlb_set = set(_PHASE0_LEAGUE_SERIES_FILTER["MLB"])
+        assert nba_set.isdisjoint(mlb_set), (
+            f"NBA and MLB filters overlap: {nba_set & mlb_set}"
+        )
+
+    def test_filter_entries_match_in_scope_ticker_prefixes(self):
+        # The filter values MUST match the classifier's in-scope prefix
+        # set exactly. If they diverge, discovery would either pre-filter
+        # to nothing (no in-scope tickers ever found) or include series
+        # the classifier rejects (silent waste).
+        from trading_corp.agents.strategies.kalshi_sports_arb_observer import (
+            _PHASE0_NBA_TICKER_PREFIXES,
+            _PHASE0_MLB_TICKER_PREFIXES,
+        )
+        assert set(_PHASE0_LEAGUE_SERIES_FILTER["NBA"]) == set(_PHASE0_NBA_TICKER_PREFIXES.keys())
+        assert set(_PHASE0_LEAGUE_SERIES_FILTER["MLB"]) == set(_PHASE0_MLB_TICKER_PREFIXES.keys())

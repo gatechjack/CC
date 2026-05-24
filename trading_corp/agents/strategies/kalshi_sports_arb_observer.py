@@ -152,6 +152,23 @@ _PHASE0_LEAGUE_CLASSIFIERS: dict[str, tuple[Any, str]] = {
 }
 
 
+# ── Series filter for kalshi_broker.list_markets() ────────────────────────
+# Kalshi Sports category has ~2000 series; without a series_filter, the
+# discovery's max_series_per_category cap returns a rotating ~50-series
+# slice and in-scope leagues land only ~11% of scans (verified bug per
+# kalshi_sports_scout commit b880b66). Pass the in-scope series tuple
+# to list_markets() so the cap counts ONLY relevant series.
+#
+# Derived from the per-league ticker-prefix dicts so adding a new league
+# automatically flows through. Sibling to _PHASE0_LEAGUE_CLASSIFIERS
+# (not extending its tuple shape — preserves existing dispatch tests).
+
+_PHASE0_LEAGUE_SERIES_FILTER: dict[str, tuple[str, ...]] = {
+    "NBA": tuple(_PHASE0_NBA_TICKER_PREFIXES.keys()),
+    "MLB": tuple(_PHASE0_MLB_TICKER_PREFIXES.keys()),
+}
+
+
 def _vig_remove_two_sides(p1: float, p2: float) -> tuple[float, float]:
     """For one book's two-sided market (h2h or spread or total).
     Returns (vig_removed_p1, vig_removed_p2).
@@ -384,7 +401,17 @@ class KalshiSportsArbObserverAgent:
         ]
         books_filter = tuple(str(b).lower() for b in sharp_books_cfg)
 
-        # 1. Kalshi discovery (shared across leagues).
+        # 1. Kalshi discovery (shared across leagues). Build series_filter
+        # union across configured leagues so list_markets() pre-filters at
+        # the broker layer (avoids the rotating-slice bug — see
+        # _PHASE0_LEAGUE_SERIES_FILTER comment).
+        series_filter_parts: list[str] = []
+        for league in configured_leagues:
+            series_filter_parts.extend(_PHASE0_LEAGUE_SERIES_FILTER.get(league, ()))
+        series_filter: tuple[str, ...] | None = (
+            tuple(series_filter_parts) if series_filter_parts else None
+        )
+
         now = datetime.now(timezone.utc)
         need_refresh = (
             self._discovery_cache is None
@@ -397,6 +424,7 @@ class KalshiSportsArbObserverAgent:
                     categories=("Sports",),
                     max_series_per_category=max_series,
                     max_markets_per_series=max_markets,
+                    series_filter=series_filter,
                 )
                 self._discovery_ts = now
             except Exception as e:
