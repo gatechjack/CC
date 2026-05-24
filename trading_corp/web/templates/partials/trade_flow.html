@@ -16,11 +16,17 @@
                     hover:bg-pane-2 transition-colors group">
       <summary class="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <div class="flex items-center gap-2 text-[11px] font-mono">
-          <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
-            {{ evt.kind | replace('_', ' ') }}
-          </span>
-          <span class="ml-auto text-muted">{{ evt.ts_short }} ago</span>
-          <span class="text-muted/60 text-xs transition-transform group-open:rotate-90">▶</span>
+          {% if evt.event_title %}
+            <span class="{{ evt.color }} font-semibold text-mono truncate" title="{{ evt.event_title }} · {{ evt.kind }}">
+              {{ evt.event_title }}
+            </span>
+          {% else %}
+            <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+              {{ evt.kind | replace('_', ' ') }}
+            </span>
+          {% endif %}
+          <span class="ml-auto text-muted shrink-0">{{ evt.ts_short }} ago</span>
+          <span class="text-muted/60 text-xs transition-transform group-open:rotate-90 shrink-0">▶</span>
         </div>
         {% if evt.symbol %}
           <div class="mt-1 flex items-center gap-2 text-sm">

@@ -27,21 +27,18 @@
   background: #334155;
 }
 
-/* HTMX request indicator — fades target while in-flight */
+/* HTMX in-flight dim — kept as a very subtle "something happened" hint
+   without the prior whole-panel flicker. The 0.6 / 0 opacities used
+   before made every 5-30s polling panel pulse dark → light → dark on a
+   visible cadence, which on multi-panel pages (e.g. bitunix_futures)
+   read as the screen "darkening" repeatedly. 0.97 keeps the technical
+   class hook in place but is below perceptual threshold. */
 .htmx-request {
-  opacity: 0.6;
-  transition: opacity 0.1s ease-in-out;
+  opacity: 0.97;
+  transition: opacity 60ms ease-in-out;
 }
-
-/* Smoother HTMX swap — brief fade on incoming content */
-.htmx-swapping {
-  opacity: 0;
-  transition: opacity 0.1s ease-in-out;
-}
-.htmx-settling {
-  opacity: 1;
-  transition: opacity 0.2s ease-in-out;
-}
+/* htmx-swapping / htmx-settling fades removed — the brief opacity:0
+   flash on every swap was also contributing to the flicker. */
 
 /* Typography refinement: tighter heading spacing */
 h1, h2, h3 { letter-spacing: -0.011em; }

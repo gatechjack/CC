@@ -1384,6 +1384,16 @@ def trade_flow(db_url: str, limit: int = 20) -> list[dict]:
             "qty": payload.get("qty", ""),
             "reason": payload.get("reason", "")[:120],
             "color": _color_for(r["kind"]),
+            # Human-readable title for the row header. Prefer the
+            # prediction-market event title (Kalshi: event_title,
+            # Polymarket: market_question) — repeating "WOULD HAVE
+            # PLACED" on every row is not useful when there are 6+ rows.
+            # Falls back to None so the template can render the kind.
+            "event_title": (
+                payload.get("event_title")
+                or payload.get("market_question")
+                or None
+            ),
             "payload_pretty": json.dumps(payload, indent=2, default=str, sort_keys=True),
         })
     return out

@@ -69,11 +69,18 @@
   </div>
 </div>
 
-<!-- ── Two-column main grid ──────────────────────────────────────── -->
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+<!-- ── Main grid ──────────────────────────────────────────────────
+     Most divisions use a 2-col layout (left = positions + activity,
+     right = Expert Analysis aside that gets fed by "Show analysis"
+     buttons on PMCC pairs, Polymarket events, Kalshi events).
+     bitunix_futures has no path that fires into #pair-analysis, so
+     the aside renders permanently empty — collapse to single full-
+     width column for that division. -->
+{% set _has_expert_analysis = view.division.slug != 'bitunix_futures' %}
+<div class="grid grid-cols-1 {% if _has_expert_analysis %}lg:grid-cols-3{% endif %} gap-4">
 
-  <!-- LEFT (2 cols): Position rows + Activity -->
-  <div class="lg:col-span-2 flex flex-col gap-4">
+  <!-- LEFT: Position rows + Activity (spans full width when no aside) -->
+  <div class="{% if _has_expert_analysis %}lg:col-span-2{% endif %} flex flex-col gap-4">
 
     {# Robinhood IRA gets its own dashboard — shares + covered calls +
        wheel puts grouped explicitly. Skip the generic PMCC pairs /
@@ -790,6 +797,7 @@
 
   </div>
 
+  {% if _has_expert_analysis %}
   <!-- RIGHT (1 col): Equity curve + DYNAMIC LLM analysis -->
   <aside class="lg:col-span-1 flex flex-col gap-4">
 
@@ -837,6 +845,7 @@
     </section>
 
   </aside>
+  {% endif %}
 </div>
 {% endblock %}
 
