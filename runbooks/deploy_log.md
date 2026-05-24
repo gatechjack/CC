@@ -76,6 +76,115 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-24 01:28 UTC — kalshi_sports_scout: series_filter fix for 1-obs/ticker rotation (commit `b880b66`, deploy script `12c0c86`)
+
+**Commits:** `b880b66` (4-file change), `12c0c86` (one-off deploy script).
+**Triggered by:** Phase-0 gate review session 2026-05-23 — diagnosis at
+`reports/2026-05-23_kalshi_sports_scout_discovery_diagnosis.md` (`07e3579`)
+showed each in-scope MLB ticker was observed exactly once (88/92 markets).
+Root cause: Sports category has 2018 series; `discover_by_categories`
+50-cap returned a rotating 2.5% slice and in-scope leagues landed in only
+21/188 scans (11.2%) over 9 days.
+
+**Backup tag:** `.pre-series-filter-20260523` (on 4 files; no new files).
+
+**Files deployed (4):**
+- `trading_corp/data/kalshi_market_map.py` — `discover_by_categories` gains
+  `series_filter: tuple[str,...] | frozenset[str] | None` kwarg. Out-of-set
+  series are skipped before consuming a cap slot. Backward-compatible.
+- `trading_corp/brokers/kalshi.py` — `KalshiBroker.list_markets` passthrough
+  kwarg.
+- `trading_corp/agents/strategies/kalshi_sports_scout.py` — module constant
+  `_SCOUT_SERIES_FILTER = ("KXMLBGAME","KXNBAGAME","KXNHLGAME","KXMLSGAME")`,
+  passed to `list_markets` call.
+- `config/strategies.yaml` — `max_series_per_category: 50 → 100`,
+  `leagues: drop NFL` (probe found no NFL game-moneyline series in Sports
+  category — only props variants KXNFLGAMETD/FG/SACK).
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Series-filtered discovery in `discover_by_categories`.** Generic
+  facility; not scout-specific. Other callers of `KalshiBroker.list_markets`
+  can constrain to an exact-match series set when they know the targets.
+- **Exact-set semantics (not prefix).** Adjacent series like KXNBAGAMES /
+  KXNBAGAME7 do NOT sweep in alongside KXNBAGAME. The discovery probe
+  on 2026-05-23 found 3 NBA-game-prefix-like series; only `KXNBAGAME`
+  itself contains game-moneyline markets.
+- **NFL deliberately excluded.** All current "NFL observed" rows from
+  Phase 0 were 2026-season placeholder lines 110-120 days pre-game
+  (per addendum doc). Re-probe `pykalshi.get_all_series("Sports")` ~3-4
+  weeks pre-kickoff to find the correct game-moneyline series, then
+  add to `_SCOUT_SERIES_FILTER` + add NFL back to YAML `leagues`.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **`_SCOUT_SERIES_FILTER` is hardcoded in the scout, not configured in
+  YAML.** League roster is tightly coupled to `sports_team_mapping.py`
+  (the canonical league→team-name lookup) — letting them drift would
+  silently lose markets. Future cleanup could derive prefixes from the
+  same source of truth; for the minimal fix, hardcoded.
+- **`max_series_per_category: 100` is comfortable headroom over the 4
+  in-scope series.** Cap will not bind. If NFL re-adds (likely 5
+  series) the cap still doesn't bind.
+- **EOL preservation matters on prod.** `brokers/kalshi.py` and
+  `config/strategies.yaml` are CRLF on prod; the other two are LF.
+  Deploy script (`scripts/_deploy_2026_05_23_series_filter.py`) detects
+  per-file EOL via `\r\n` byte search in first 8KB and translates the
+  patch strings accordingly. Same approach applies to future patches.
+- **`series_ticker: None` quirk noted in probe.** `client.get_market(ticker)`
+  returns market objects with `series_ticker=None`. The fix doesn't use
+  per-market `series_ticker` for filtering; the filter happens at series
+  enumeration time before `get_markets` is even called. So this quirk is
+  not load-bearing for our path.
+
+**Latent bugs caught + fixed (during this session):**
+- **`/100.0` units bug at `kalshi_sports_scout.py:232-240`** — separately
+  flagged in v1/v2 review docs. NOT fixed by this deploy; recovered via
+  `recovered = stored × 100` for analysis (see review doc v2). The fix
+  for live trading is one-line + a sum-to-1 sanity guard; deferred until
+  the post-rerun corpus is in.
+- **Foreign in-flight change separated from this commit.** Working tree
+  had a pre-existing `kalshi_sports_arb_observer.enabled: false → true`
+  flip with "FLIPPED 2026-05-23 for MLB Phase 0" comment. Not mine;
+  reverted in the working tree before staging, then restored uncommitted
+  after the scout commit. Operator's WIP intact.
+
+**Verification:**
+- Pre-deploy probe (commit `07e3579` references): `TOTAL_SERIES: 2018`
+  in Sports category; per-league sample tickers confirmed all 4 in-scope
+  series exist with the exact prefixes assumed.
+- Post-patch smoke: `py_compile` clean on 3 python files;
+  `yaml.safe_load` clean on strategies.yaml with expected key set.
+- Service restart: `sudo systemctl restart trading-corp.service` at
+  2026-05-24 01:28:30 UTC; `systemctl is-active = active`; journal at
+  01:29:11 `Kalshi Sports Scout online (enabled=True, has_credentials=True)`.
+- First post-deploy scan expected ~02:29:11 UTC (scout loop sleeps
+  `poll_interval_sec=3600` BEFORE first scan, per `_scheduled_kalshi_sports_scout_loop`
+  at `main.py:3553`).
+
+**Inert / dormant on current traffic:**
+- **No code change to the divergence-computation path.** The units bug
+  remains; observed rows will still be 100× off until a follow-on fix.
+  Discovery side ships; analysis side stays the same.
+- **`series_filter` kwarg added to `KalshiBroker.list_markets` but only
+  the scout uses it today.** Other Kalshi strategies (weather, crypto,
+  llm_arbitrage, temporal_bucket, tail_price, copy_trader) call
+  `list_markets` without the kwarg — their behavior is unchanged.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-series-filter-20260523; BASE=/home/azureuser/trading_corp
+for f in trading_corp/data/kalshi_market_map.py \
+         trading_corp/brokers/kalshi.py \
+         trading_corp/agents/strategies/kalshi_sports_scout.py \
+         config/strategies.yaml; do
+  mv \$BASE/\$f.\$TAG \$BASE/\$f
+done
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-23 15:52 UTC — bitunix: bias TTL 90→30 + flip-opportunity detection (commit `6073480`)
 
 **Commits:** `6073480` (YAML + observer + 8 tests). On `origin/main` via parallel-session fast-forward — origin head at deploy time: `03e8917` (an unrelated BACKLOG.md EOS snapshot atop `6073480`; `git diff 6073480 03e8917 -- <the 2 deploy files>` empty, so the deploy source is the `6073480` blobs exactly).
