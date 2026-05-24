@@ -8,6 +8,54 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~23:00 UTC (Sunday late evening — UI cleanup pass: htmx flicker fix + 3 other dashboard defects SHIPPED + DEPLOYED; parallel tasty_options fixup also landed)
+
+**Headline of THIS session-segment:** Operator-driven UI defect walkthrough. Four defects identified, fixed, shipped, and deployed in one bundled commit. Zero strategy or risk-gate code touched. All changes are web/templates/static + one display-only field in the audit-row renderer. Parallel claude session committed `672f658` (tasty_options async fixup) between my UI commit and my deploy_log commit — also rode to origin on the same push.
+
+**`origin/main` head (this session-segment commits, all pushed):**
+- **`9b55ee9`** — deploy_log: UI cleanup pass (commit `0a98bbf`) *(THIS session-segment)*
+- **`672f658`** — tasty_options fixup: TastytradeBroker async-call sites + sys.path shim *(PARALLEL session, not mine — Phase-0 smoke surfaced 7 async-wrapping bugs in tastytrade.py + 1 sys.path shim; mocks were the failure mode `feedback_mocks_dont_catch_sdk_shape` warns about; smoke now reaches OAuth refresh layer and returns `invalid_grant` → re-grant pending)*
+- **`0a98bbf`** — UI cleanup pass: htmx flicker + trade-flow titles + bitunix layout + approvals tile link *(THIS session-segment)*
+- (then `613c7fa` / `94b3129` / `a9e4e46` / `d7e0afd` — pre-existing tasty_options commits 5-of-5 / 4-of-5 / 3-of-5 / 2-of-5 that were already ahead of origin at session start and rode the same push)
+
+**What's running on prod (UI surface specifically):**
+- **`0a98bbf` LIVE since 2026-05-24T22:49:35 UTC.** PRE_PID 1300124 → POST_PID 1303946. `trading-corp.service` active; brokers re-registered cleanly. Backup tag `pre-ui-flicker-fix-20260524-2230` on all 5 files for rollback.
+- 5 files deployed: `trading_corp/web/static/css/app.css`, `trading_corp/web/data.py`, `trading_corp/web/templates/partials/trade_flow.html`, `trading_corp/web/templates/division.html`, `trading_corp/web/templates/partials/stat_cards.html`.
+- HTTP probes: `/`, `/approvals`, `/division/bitunix_futures` all 302 → Authelia (expected; routes alive).
+- Post-deploy md5s match local byte-for-byte for all 5 files.
+
+**Defects fixed (load-bearing for "is X done?" checks):**
+1. **htmx whole-panel flicker NEUTRALIZED.** Every `.htmx-request` element no longer fades to 0.6 opacity during in-flight requests; `.htmx-swapping`/`.htmx-settling` opacity-0 flash on every swap removed. Affects all polling partials: bitunix ×6, stat_cards, market_ribbon, trade_flow, iron_condor_live, home. The class hook still exists at opacity 0.97 / 60 ms — sub-perceptual but available for any JS that keys off it.
+2. **Live trade flow rows show market context.** Row header now prefers `payload.event_title` (Kalshi) → `payload.market_question` (Polymarket) → falls back to old uppercase kind label for non-prediction-market rows. Audit kind preserved in hover tooltip.
+3. **bitunix_futures detail page is single-column.** Empty Expert Analysis aside hidden (no bitunix partial targets `#pair-analysis`); left column expands to full grid width. The `#pair-analysis` box and its routes are preserved — PMCC / IRA / Polymarket / Kalshi all still depend on it.
+4. **Pending Approvals tile is clickable** → `<a href="/approvals">` with hover/focus affordances. Route already existed at `routes.py:1454`; tile had no link.
+
+**Highest-leverage open items (handoff to next session):**
+1. **coinbase_spot likely has the same Expert Analysis empty-box symptom** as bitunix_futures (donchian partials also don't fire into `#pair-analysis`). Deferred in this session for scope discipline. If the user reports it, add `'coinbase_spot'` to the exclusion in `_has_expert_analysis` at `templates/division.html:73` (current pattern: `view.division.slug != 'bitunix_futures'` — extend to a `not in` set).
+2. **`/trades` and `/system` are placeholder.html stubs.** Top-nav links in `base.html:130,132` exist but the pages just render a stub. Phase 3+ work, but worth flagging as a UI "promise vs reality" defect. Not in scope for any current EOS plan.
+3. **`tasty_options` Phase-0 smoke needs a TT OAuth re-grant.** Per `672f658` commit body: refresh token is `invalid_grant / Grant revoked` (single-use, prod data provider likely consumed it). Re-grant via standard browser per `feedback_oauth_use_standard_browser`, populate KV, re-run smoke. Production data path may also be affected — confirm before assuming it's still serving ATM IV.
+4. **HTMX loading-indicator architecture.** If a future session wants visible loading-state UX, the right pattern is opt-in `.htmx-indicator` spinners scoped to small elements (e.g. the existing `#pair-analysis-loading` span pattern), NOT restoring the global `.htmx-request` fade. The inline comment in `app.css` warns about this.
+5. **Working-tree leftover:** `docs/Deployment notes.txt` is untracked, pre-existing (was already present at session start). Not touched. Either commit/gitignore/delete per operator preference — left as-is.
+
+**Environments in sync at EOS:**
+- Working tree: clean except untracked `docs/Deployment notes.txt`.
+- Local `main` head: `9b55ee9` (deploy_log).
+- `origin/main` head: `9b55ee9` (pushed at 22:55 UTC).
+- Prod VM `/home/azureuser/trading_corp/`: 5 UI files md5-match local; `trading-corp.service` active on PID 1303946 since 22:49:35 UTC.
+
+**Memory updates this session-segment:**
+- NEW `reference_prod_systemd_units.md` — `trading-corp.service` is the prod web service; sibling timer services for pruner / watchlist / pm-watchlist documented.
+- NEW `project_ui_cleanup_pass_2026_05_24.md` — pointer to this EOS + deploy_log entry; what shipped, what's deferred, where the patterns are.
+- UPDATED `MEMORY.md` index.
+
+**Notable mid-session catches (worth carrying forward):**
+- **`#pair-analysis` is shared infrastructure across 4 divisions.** Used by PMCC pairs (`partials/pmcc_pair.html`), IRA covered calls (`partials/ira_pair.html`), Polymarket events (`division.html:444`), Kalshi LLM events (`:520`), Kalshi arb events (`:730`). Backed by routes `/division/{slug}/pair-analysis/{symbol}` (`routes.py:684`), `/partials/polymarket-analysis/{id}`, `/partials/kalshi-analysis/{id}`, `/partials/kalshi-llm-analysis/{id}`, wired in `pair_list.js`. Hiding it per-division (not deleting) is the right scope for any future division that doesn't use it.
+- **The full-page-route orphan inventory has ZERO orphans.** Audited mid-session (Sonnet sub-agent, see chat): every `HTMLResponse`-returning route has at least one inbound link from templates, JS, or other routes. `not_found.html` and `offline.html` are intentional exclusions (404 handler + SW fallback).
+- **Parallel-session commit visibility:** `git log origin/main..HEAD` is the only visible signal that another claude session has been committing locally. The deploy_log entries written by other sessions don't appear until that session pushes. When deploying, always re-check `git log origin/main..HEAD` before pushing so you know what else is going out the door. Today's push carried 4 pre-existing tasty_options commits + 1 mid-session parallel fixup commit in addition to my 2 commits.
+- **`scripts/run_capped.ps1` discipline preserved.** No project python invoked during this session (UI-only work, no test runs). The 25 GB job-object cap was not relevant.
+
+---
+
 ## EOS snapshot — 2026-05-24 ~22:00 UTC (Sunday late evening — kalshi_weather Bucket 1 data-capture DEPLOYED + forecast-quality plan written; observation-week data window now richer)
 
 **Headline of THIS session-segment (continuation of the ~20:00 UTC autopsy wrap):** After the autopsy verdict ("no defect, variance"), wrote a full forecast-quality plan (Bucket 1 = additive data capture, Bucket 2 = gated logic specs), then **shipped Bucket 1 to prod** in one bundled deploy. `kalshi_weather_evaluated` audit rows now carry 8 new fields from 2026-05-24T21:53:23 UTC onward. NO decision logic changed — these are write-only additive logs. Observation week through ~2026-05-29 continues, now with HRRR + run-age data accumulating in parallel for the eventual NBM-σ backtest. Plan at `plans/forecast-quality-improvements-for-kalshi-prancy-porcupine.md`.
