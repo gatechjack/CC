@@ -76,6 +76,58 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-24 22:49 UTC — UI cleanup pass: htmx flicker fix + trade-flow titles + bitunix layout + approvals tile link (commit `0a98bbf`)
+
+**Commits:** `0a98bbf` (deployed at 22:49 UTC; pushed to `origin/main` immediately after).
+
+**Triggered by:** Operator UI-defect walkthrough this session: (1) "screen darkens and gets bright again, frustrating" on division detail pages; (2) "WOULD HAVE PLACED" repeated on every Live trade flow row is not helpful, use payload `event_title`; (3) bitunix_futures Expert Analysis box is unused — collapse it; (4) Pending Approvals tile (count = 16 at session time) has no click target — make it a link.
+
+**Backup tag:** `pre-ui-flicker-fix-20260524-2230`. Pre-deploy md5s on prod (= HEAD before this commit):
+- `679c8a032523f8a433b73647639343b0  trading_corp/web/static/css/app.css`
+- `f3898a5e47308f917c7c56e121bffe46  trading_corp/web/data.py`
+- `f140ba7f74f877634d319c92d9187282  trading_corp/web/templates/partials/trade_flow.html`
+- `7eb631a8ba5c7f0095baa49e3a1bb80b  trading_corp/web/templates/division.html`
+- `89c0c814a42f4c73ccea1a1c0c5e34dd  trading_corp/web/templates/partials/stat_cards.html`
+
+**Files deployed (5):**
+- `trading_corp/web/static/css/app.css` — `.htmx-request` opacity raised 0.6 → 0.97; transition shortened 100 ms → 60 ms. `.htmx-swapping` (opacity 0) and `.htmx-settling` (opacity 1) rules removed entirely. These three rules together produced a visible whole-panel fade on every htmx poll/swap; on bitunix_futures the six stacked polling panels at 15-30 s offsets read as the screen constantly cycling dark/bright.
+- `trading_corp/web/data.py` — `trade_flow()` row dict gains `event_title` field: `payload.event_title` (Kalshi) → `payload.market_question` (Polymarket) → `None`. No schema change; pure derived field from existing `payload_json`.
+- `trading_corp/web/templates/partials/trade_flow.html` — row header renders `evt.event_title` (mono case, truncated, hover-title for full text + audit kind) when present; falls back to the existing uppercase kind label for non-prediction-market rows (PMCC scans, fills, Otter/Cypher webhooks).
+- `trading_corp/web/templates/division.html` — `_has_expert_analysis = view.division.slug != 'bitunix_futures'` flag added. Outer grid drops `lg:grid-cols-3` when no aside; left wrapper drops `lg:col-span-2`; entire right `<aside>` block wrapped in the same conditional. **The `#pair-analysis` box and its routes are preserved** — PMCC / IRA / Polymarket / Kalshi all still target it.
+- `trading_corp/web/templates/partials/stat_cards.html` — Pending Approvals tile changed from `<div>` to `<a href="/approvals">` with `block` + hover/focus affordances + `→` glyph. Route already existed at `routes.py:1454`.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **htmx-request whole-panel fade NEUTRALIZED.** Every existing polling partial (bitunix_pending_pa/htf/pa/decision_flow/score/trade_plan, stat_cards, market_ribbon, trade_flow, iron_condor_live, home) stops visibly flickering on each tick. Class hook preserved at opacity 0.97 in case JS needs it; sub-perceptual.
+- **Live trade flow rows now show market context.** Kalshi rows show `event_title` ("When will Stripe officially announce an IPO?"), Polymarket rows show `market_question`. Audit kind preserved in row hover tooltip.
+- **bitunix_futures detail page is single-column.** Left content (positions/activity/HTF/PA/score/etc.) takes the full grid width.
+- **Pending Approvals tile is clickable** → routes to `/approvals`.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **`.htmx-request` rule still exists** but at 0.97 opacity / 60 ms transition — effectively invisible. If you later want to restore a visible loading indicator, the right pattern is opt-in `.htmx-indicator` spinners scoped to small elements, not a global fade.
+- **`_has_expert_analysis` flag in `division.html`** is a single-division allow-list. Coinbase_spot likely has the same empty-aside symptom (donchian partials also don't fire into `#pair-analysis`) but was deferred — flag was not extended speculatively. Add `'coinbase_spot'` to the exclusion if/when the user asks.
+- **`event_title` derivation in `data.py`** uses `.get()` chain — adding new prediction-market kinds with their own title field means adding a new fallback. Generic enough for current Kalshi + Polymarket.
+
+**Verification:**
+- PRE_PID `1300124` → POST_PID `1303946` at 22:49:35 UTC. Service `active`. Broker re-registration log lines all present (Robinhood OAuth, Coinbase, BitUnix observer, Kalshi/Polymarket/Tasty), no startup errors.
+- HTTP probes: `/`, `/approvals`, `/division/bitunix_futures` all 302 → Authelia (expected; routes alive).
+- Post-deploy md5s on prod match local byte-for-byte for all 5 files.
+
+**Inert / dormant on current traffic:**
+- None — all 5 changes affect the running UI immediately on next browser refresh (CSS + templates are picked up at request time; `data.py` change activated by service restart).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-ui-flicker-fix-20260524-2230; BASE=/home/azureuser/trading_corp
+for f in trading_corp/web/static/css/app.css trading_corp/web/data.py trading_corp/web/templates/partials/trade_flow.html trading_corp/web/templates/division.html trading_corp/web/templates/partials/stat_cards.html; do
+  mv \$BASE/\$f.\$TAG \$BASE/\$f
+done
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-24 21:47 UTC — kalshi_weather Bucket 1 (HRRR + forecast run-age logging) DEPLOYED (commit `75ba7c5`)
 
 **Commits:** `75ba7c5` (pushed to `origin/main` at 21:42 UTC, deployed at 21:47 UTC).
