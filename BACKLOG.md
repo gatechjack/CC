@@ -8,6 +8,61 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~17:00 UTC (Sunday afternoon — kalshi_sports_arb_observer Phase 0 LIVE on MLB; HARD GATE passed; cap-bump 50→150 brought first overlap; verdict-design reframe shipped)
+
+**Headline of THIS session:** Stood up the **kalshi_sports_arb_observer** Phase-0 instrument end-to-end on prod (observer-only paper, sibling of `kalshi_sports_scout` in the `kalshi_arbitrage` division). Three sequential deploys: (1) initial 02:01 UTC failed silently due to missing `series_filter=` kwarg on `kalshi_broker.list_markets()` — observer's discovery returned only KXMLBWINS season props (7/cycle, all out-of-scope, `n_observed=0`); (2) redeploy 03:38 UTC with `series_filter` mirroring scout's b880b66 fix (`0bcb2ba`) — observer found 50 KXMLBGAME tickers per cycle but ALL were future-dated (25MAY+26MAY) and books only had 24MAY → 11 consecutive cycles of `n_no_book_match=50, n_observed=0`; (3) cap-bump 14:40 UTC (`max_markets_per_series: 50→150` on observer block only) — first post-bump cycle at 15:40:54 UTC produced **30 observations** with the first row hand-verified to the cent (A-arb EV −$0.329 stored as −0.3288; B EV −$0.223 stored as −0.2223; matching correct; Pinnacle present). Mid-session: feed-diagnosis established the calendar mismatch is a REAL-WORLD venue-asymmetry fact (books don't list >24h pre-game on MLB; the-odds-api refresh is 60s pre-match all tiers; binding latency cap is OUR 1h cadence, not the feed); cap-bump was the cheapest correct fix and `$30`/`$319` upgrades are explicitly deferred until A hourly-snapshot produces a reason. Verdict design reframed in `analyze_kalshi_sports_arb_observations.py`: dual-verdict shape (A/B separate), B forced INCONCLUSIVE at 1h cadence, new `SHELVE_LATENCY_THESIS_CLOSED` A-verdict for when A=0/negative-EV (kalshi-crypto-shelved pattern), 3 new mandatory structural caveats (calendar asymmetry, single-feed limit, hourly-arb-prior-low).
+
+**`origin/main` head (in sync with local — pulled in via parallel session's commits):**
+- `02f465f` — backlog: file BOARD-GATED cadence plan (parallel pm-metrics-epoch session)
+- `ca00600` — web: fix Jinja truthiness on window_days_span (parallel session)
+- `7a3e439` / `e5556ef` — lockfile C-6 correction (parallel session)
+- **`2dd12bf`** — cap bump (50→150) + feed-diagnosis verdict reframe *(THIS session)*
+- `e5efa06` — copy-trader: fix NameError in sports-skip audit payload (parallel session)
+- **`05ba56c`** — deploy: rebuild bundle with observer series_filter fix *(THIS session)*
+- **`0bcb2ba`** — observer: add series_filter to list_markets to fix rotating-slice bug *(THIS session)*
+- **`6ae5e48`** — deploy: self-contained bundle for kalshi_sports_arb_observer (MLB Phase 0) *(THIS session)*
+- **`e620fe7`** — analyze script + flip enabled:true for MLB Phase 0 observer *(THIS session)*
+- **`5807273`** — observer: add MLB sibling path; repoint Phase 0 to MLB; NBA preserved *(THIS session)*
+- **`7b4b056`** — odds_api_client: add per-book get_lines() for Phase 0 arbitrage observer *(THIS session)*
+- **`753ecee`** — sports_math + scout-corpus retro for Kalshi Sports Arbitrage Phase 0 *(THIS session)*
+
+**What's running on prod (kalshi_sports_arb_observer specifically):**
+- `enabled: true`, `auto_execute: false`, `division: kalshi_arbitrage`, `leagues: [MLB]`, `poll_interval_sec: 3600`, `max_markets_per_series: 150` (post-bump), `sharp_book_preference: [pinnacle, draftkings, fanduel, betmgm]`.
+- Observer NEVER emits orders — strict paper observation. Writes `kalshi_sports_arb_observation` / `kalshi_sports_arb_scan` / `kalshi_sports_arb_unmapped` audit kinds.
+- First post-bump cycle: 88 KXMLBGAME tickers, 30 matched + observed, 58 unmatched (future-dated where books haven't posted lines — expected; calendar asymmetry caveat fully load-bearing).
+- HARD GATE result on first observation: ✅ PASSED to the cent.
+- Quota at session end: 382 the-odds-api credits remaining / 118 used (~12/cycle, paid tier deferred).
+- All Kalshi other divisions unchanged. Scout still running alongside (sibling division track unchanged).
+
+**Highest-leverage open items (handoff to next session):**
+1. **Let observer accumulate.** Next decision point ~10–15 cycles in (≈10–15 hours from 15:40 UTC, so ~04:40–10:40 UTC Monday). At that point run `python scripts/analyze_kalshi_sports_arb_observations.py --db data/trading_corp.db --league MLB` against accumulated corpus. If A verdict comes back `SHELVE_LATENCY_THESIS_CLOSED` (zero positives or negative mean EV) → route to shelve discussion; do NOT spend on $30/$319 tier. If A verdict comes back `PROCEED_TO_FINER_RESOLUTION_TEST` → hand-verify N positive rows before considering $30 upgrade.
+2. **Grading-alignment matrix for MLB** is DEFERRED to Phase 1 prereq. Required BEFORE any live Hypothesis A action: Kalshi vs DK/FD/BetMGM rules for rain-shortened, official-game (5-inning/4.5-inning), pitcher-listed (book voids if listed starter doesn't pitch), extra innings. Operator-research task (Sonnet sub-agent attempt failed on usage-policy filter for sportsbook URLs).
+3. **NBA path remains validated** (`leagues: [NBA]` would still produce hand-cert OKC-SAS-style observations) but in calendar dormancy until NBA Finals tip-off. Don't reconstruct.
+
+**Memory updates this session:**
+- NEW `project_kalshi_sports_arb_observer_phase0_live.md` — Phase 0 instrument shipped + HARD GATE passed; series_filter + cap-bump fix history; B forced INCONCLUSIVE structurally.
+- NEW `feedback_feed_diagnosis_before_spend.md` — "diagnose the feed before optimizing within constraints you never validated"; calendar-asymmetry pattern; the-odds-api 60s refresh + REST-only ceiling.
+- UPDATED `MEMORY.md` index.
+
+**Notable mid-session catches (worth carrying forward):**
+- **Three sequential structural surprises**, each requiring a separate fix: (a) missing `series_filter` mirroring an already-fixed scout bug — observer landed silently empty (zero KXMLBGAME), (b) Kalshi 50-cap excludes today's games on Sunday morning because Kalshi sorts by `expected_expiration_time` descending — wait alone wouldn't fix, (c) the-odds-api game window is set by what books quote (not by any time-param), so a $30/$319 upgrade can't synthesize lines books don't list. ALL three reinforce the [[kalshi-crypto-shelved]] lesson: confirm the instrument can actually see the thing before believing or disbelieving a null result.
+- **Single-feed test is structurally different from real-arb-shop multi-feed operation.** Even at 60s polling on a paid tier, a positive B signal from this setup is a LEAD requiring multi-feed confirmation, not a verdict. Baked into the verdict caveats.
+- **Hand-verification gate was the load-bearing trust check.** First row HARD GATE took ~5 minutes and reconciled A-arb math to the cent (Pinnacle home @ -115 = $5.349 leg, Kalshi $0.48 + $0.18 fee = $4.98 leg, total $10.329 vs guaranteed $10 = −$0.329 EV; stored −0.3288). Without this gate a parsing/matching error would silently compute correct EV on the wrong pairing.
+
+**Sandbox/operational notes carried forward:**
+- **PowerShell terminal wraps long lines at column ~80** as actual newlines into command buffer, breaking multi-line `az vm run-command` calls. Workaround pattern adopted: small `.ps1` wrapper files under `deploy/sports_arb_observer/_probeN.ps1` invoked by `.\path\to\_probeN.ps1`. Many of these committed for replay/audit.
+- **az --scripts payload cap ~28KB** — full deploy script fits via tarball-base64 trick (bundle 18KB → b64 24KB).
+- **az run-command stdout cap ~4KB** — long output gets tail-truncated; `set -e` + a final marker line is the trustworthy success signal, not the visible head.
+- **Sandbox correctly blocked** ad-hoc Python on prod that read credential files; reading via `load_secrets()` with `KEY_VAULT_URI` set is the proper path. Pulling secrets out of KV directly is also blocked (correct).
+
+**Untracked at session end** (operator-owned or pre-session): `classify_losses.py`, `decode_losses.py`, `docs/Deployment notes.txt`, `scripts/fetch_kalshi_weather_corpus.py`. THIS session's untracked: `deploy/sports_arb_observer/_probe17.{ps1,sh}` (probe file pair from final HARD-GATE check) — committed in the EOS commit.
+
+**Environment sync state:** local `main` == `origin/main` (after this EOS push). Prod `config/strategies.yaml` has observer block with `enabled: true`, `max_markets_per_series: 150`. Prod observer files (`_sports_math.py`, `kalshi_sports_arb_observer.py`, `odds_api_client.py`) md5-match local commits. Observer is running on PID 1237421, last cycle 15:40:54 UTC, next cycle ~16:40:54 UTC.
+
+**Canonical pickup:** next-session prompt at the end of this turn; this EOS + memory `[[project-kalshi-sports-arb-observer-phase0-live]]`; deploy_log entry at 14:40 UTC for full deploy chain.
+
+---
+
 ## EOS snapshot — 2026-05-24 ~16:00 UTC (Sunday afternoon — pm-metrics-epoch VERIFIED end-to-end on real prod data; first Sunday `--merge` timer fire clean; cadence-change plan BOARD-GATED)
 
 **Headline of THIS session:** pm-metrics-epoch verification closed structurally on real production data — tile arithmetic balances on both sides (Resolved: 2,271 pre-epoch hidden + 18 post-epoch shown = 2,289 all-time ✓; n_open: 2,283 pre-epoch hidden + 700 post-epoch shown = 2,983 all-time ✓). 6 of 7 metrics surfaces confirmed working on real data; surface #2 (equity curve) verified *in logic only* due to a pre-existing writer gap — `polymarket_equity_history` has zero rows for `polymarket_copy_trading` ever (mirror gap on Kalshi for `kalshi_copy_trading`). Sunday `--merge` timer fire verified clean (17m wall-clock vs 1h `TimeoutStartSec` budget); merge_stats revealed hybrid behavior (48% preserved-stale today) → cadence-change plan filed BOARD-GATED.

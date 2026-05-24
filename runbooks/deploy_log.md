@@ -76,6 +76,68 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-24 14:40 UTC — kalshi_sports_arb_observer cap-bump 50→150 (max_markets_per_series); no restart (mtime hot-reload)
+
+**Commits (observer-side, already on `origin/main`):** `2dd12bf` (cap bump + verdict reframe), `0bcb2ba` (series_filter fix), `f8d441d` (observer Phase 0 instrument), `5807273` (MLB sibling), `e620fe7` (analyze script), `6ae5e48` (deploy bundle), `753ecee` (sports_math + scout retro), `7b4b056` (odds_api_client per-book). This deploy_log entry closes the EOS.
+**Triggered by:** Operator directive 2026-05-24 ~14:35 UTC after feed-diagnosis established calendar mismatch is real-world (not a free-tier artifact). Wait-for-overlap strategy failed at 11 cycles (all `n_no_book_match=50`); cap-bump was the pre-authorized fallback (Option A).
+
+**Backup tag:** none — surgical config-only patch via Python sed-in-place on the OBSERVER block ONLY (scout block `max_markets_per_series: 50` untouched). Pre/post grep verified single-line replacement.
+
+**Files patched on prod (1):**
+- `/home/azureuser/trading_corp/config/strategies.yaml` — observer block: `max_markets_per_series: 50` → `150`. Mtime updated; observer's `_reload()` mtime check picks it up on next cycle. No service restart.
+
+**Features shipped:**
+- Observer's Kalshi discovery now captures up to 150 KXMLBGAME tickers per cycle (was 50, hitting the rotating-slice cap). First post-bump cycle at 15:40:54 UTC saw `markets_pre_filter: 88`, `n_in_scope: 88`, **`n_observed: 30`** (vs zero on every cycle before) — first calendar overlap with books achieved.
+
+**HARD GATE PASSED on first MLB observation row** (15:40:53 UTC, `observation_id=68f15be4...`):
+- Ticker `KXMLBGAME-26MAY241920TEXLAA-TEX` (LAA hosts TEX, 23:21 UTC start).
+- `matching_key.team_home="Los Angeles Angels"`, `team_away="Texas Rangers"` — confirmed correct game.
+- A-arb EV reconciled to −$0.329 (Kalshi 10×$0.48 + $0.18 fee + Pinnacle home @ −115 = $5.349; total $10.329 vs guaranteed $10). Stored: `-0.3288`. **Matches to the cent.**
+- B EV: Pinnacle vig-removed TEX prob 0.4757 → 10×0.4757 − 4.98 − 0.18 = −$0.223. Stored: `-0.2223`. **Matches to the cent.**
+- `kalshi_quote_invalid: false` (yes_ask + no_ask = 1.01).
+- `pinnacle_used: true`. Pinnacle returned both sides (vig 2.03%). B-test is a real sharp-book test, not soft-book proxy.
+
+**Notable code changes:**
+- **Feed-diagnosis verdict reframe in `scripts/analyze_kalshi_sports_arb_observations.py` (`2dd12bf`).** Dual-verdict shape: A_hypothesis + B_hypothesis separate. **B is FORCED to `INCONCLUSIVE_INSTRUMENT_TOO_WEAK`** because Phase 0's 1h cadence cannot test sub-hour lag (the-odds-api refresh is 60s pre-match, all tiers; binding constraint is OUR cadence, not the feed). **New `SHELVE_LATENCY_THESIS_CLOSED` A-verdict** fires when A=0 positives or mean EV ≤ kill threshold; routes to shelve discussion (kalshi-crypto pattern), NOT to spend escalation. **3 new mandatory caveats:** CALENDAR ASYMMETRY (venues overlap only in final ~24h pre-game = most-efficient window), SINGLE-FEED LIMIT (production shops run 4-10+ feeds), HOURLY A-ARB PRIOR IS LOW (persistent >1h arb would be taken by any shop with a 60s feed).
+- **the-odds-api Pinnacle is opt-in via `bookmakers=` filter.** Default us-regions response excludes Pinnacle. Observer's `_PHASE0_LEAGUE_SERIES_FILTER` and `sharp_book_preference` config knob wire it in.
+- **MLB sibling path preserved NBA path bit-for-bit** (`_PHASE0_LEAGUE_CLASSIFIERS` dispatch table + `_process_league` per-league loop; existing 46 NBA tests pass unchanged + 9 new MLB tests + 4 series-filter tests = 59/59 total).
+
+**Latent bugs caught + fixed (during this work):**
+- Observer initial deploy missing `series_filter=` kwarg to `kalshi_broker.list_markets()` — saw only 7 KXMLBWINS tickers per cycle (Sports category has ~2000 series; cap returned rotating slice that mostly missed in-scope game tickers). Fixed in `0bcb2ba` by mirroring scout's b880b66 pattern.
+
+**Verification:**
+- Service unchanged (PID 1237421); restart NOT required for config-only patch.
+- `kalshi_sports_arb_scan` audit row at 15:40:54 UTC confirms cycle fired with new cap.
+- `kalshi_sports_arb_observation` rows = 30 after one cycle (up from 0).
+- `kalshi_sports_arb_unmapped` rows for that cycle = 58 (future-dated Kalshi tickers where books haven't posted lines yet — expected; not a bug).
+- HARD GATE math reconciled to the cent on first row.
+- 59/59 tests still green locally.
+
+**Inert / dormant on current traffic:**
+- **Hypothesis B verdict is forced to INCONCLUSIVE** for Phase 0 by design — observer collects + reports B EV numbers, but verdict-design treats them as non-discriminating at 1h cadence. To move B out of INCONCLUSIVE the cadence (not the feed) must change, and only after A hourly-snapshot results justify the spend.
+- **`SHELVE_LATENCY_THESIS_CLOSED` routing** is wired in the analyze script but only fires once N≥30 rows have accumulated AND A is consistently zero/negative-EV. Until then, A verdict will be `INCONCLUSIVE_INSTRUMENT_TOO_WEAK`.
+- **Grading-alignment matrix for MLB is DEFERRED** to Phase 1 prereq. Observer collects A-arb candidates against unverified Kalshi-vs-DK/FD/BetMGM grading on rain-shortened, official-game rule, pitcher-listed, extra innings. Live A-arb action requires the matrix filled in first.
+
+**Rollback recipe (cap-bump revert, if needed):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+/home/azureuser/trading_corp/venv/bin/python3 -c \"
+p='/home/azureuser/trading_corp/config/strategies.yaml'
+s=open(p,encoding='utf-8').read()
+start=s.find('kalshi_sports_arb_observer:'); end=s.find('kalshi_copy_trader:',start)
+blk=s[start:end].replace('max_markets_per_series: 150','max_markets_per_series: 50',1)
+open(p,'w',encoding='utf-8').write(s[:start]+blk+s[end:])
+print('reverted to 50')
+\"
+"
+```
+
+**Earlier deploys in this chain (for completeness):**
+- **2026-05-24 03:38:44 UTC** — observer redeploy with series_filter fix (`0bcb2ba` + bundle `05ba56c`). Service restart (PID 1235018 → 1237421). First post-fix cycle at 04:39:32 UTC fixed the 7-KXMLBWINS issue but exposed the calendar-overlap fork.
+- **2026-05-24 02:01:08 UTC** — observer initial deploy (`f8d441d` + bundle `6ae5e48`). Service restart (PID 1228335 → 1235018). First cycle at 03:01:39 UTC found only KXMLBWINS due to missing series_filter (root-caused later).
+
+---
+
 ## 2026-05-24 15:14 UTC — `requirements.lock` C-6 correction: regenerated against prod running versions, disk-downgrade reverses unintended 14:56 UTC bump install (commit `e5556ef`)
 
 **Commits:** `e5556ef` (regenerated `requirements.lock` + BACKLOG P1 entry + this deploy_log entry).
