@@ -1631,7 +1631,7 @@ kalshi_sports_scout:
 #   - Run-line pushes: not relevant here (Phase 0 is ML-only) but
 #     keep in mind if/when Kalshi adds run lines.
 kalshi_sports_arb_observer:
-  enabled: false
+  enabled: true                      # FLIPPED 2026-05-23 for MLB Phase 0
   auto_execute: false                # always — observer never emits
   division: kalshi_arbitrage
   poll_interval_sec: 3600            # 1h
