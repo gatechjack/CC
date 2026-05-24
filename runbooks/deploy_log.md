@@ -76,9 +76,9 @@ rm -rf <new-files-or-dirs>
 
 ---
 
-## 2026-05-24 15:14 UTC — `requirements.lock` C-6 correction: regenerated against prod running versions, disk-downgrade reverses unintended 14:56 UTC bump install (commit `<TBD>`)
+## 2026-05-24 15:14 UTC — `requirements.lock` C-6 correction: regenerated against prod running versions, disk-downgrade reverses unintended 14:56 UTC bump install (commit `e5556ef`)
 
-**Commits:** `<TBD-this-commit-sha>` (regenerated `requirements.lock` + BACKLOG P1 entry + this deploy_log entry).
+**Commits:** `e5556ef` (regenerated `requirements.lock` + BACKLOG P1 entry + this deploy_log entry).
 **Triggered by:** Operator directive 2026-05-24 ~15:00 UTC to reverse the 14:56 UTC bump-install without process restart.
 
 **Context (the deploy this fixes):**
