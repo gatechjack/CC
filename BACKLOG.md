@@ -8,6 +8,48 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~21:30 UTC (Sunday evening — TRACK B-DEPLOY C-2 webhook risk-gate fix SHIPPED + VERIFIED in prod via real-HTTP forcing-hook test; C-2 + C-6 both CLOSED; phantom-pointer housekeeping done; 5 board items remain)
+
+**Headline of THIS session:** TRACK B-DEPLOY (`19ff0da` C-2 webhook risk-gate fix) shipped to prod at 2026-05-24 16:55:43 UTC (PRE_PID 1237405 → POST_PID 1284818, web bound 17:00:45 UTC, healthz mode:PAPER). Acceptance gate closed via two-stage verification: (1) synthetic gates T1-T4 in a separate prod python (forced_reject_reason kwarg present + short-circuits to reject; side-flip backstop fires; allowed-path unchanged); (2) **real-HTTP path verified via temporary payload-marker-gated forcing hooks** (installed 20:55 UTC under `pre-trackb-hook-20260524-1700` backup tag; SKIP marker → `risk_rejected/source=llm_push_back` row at 20:56:10 UTC; SIDE-FLIP marker → `research_side_flip_blocked` + `would_have_placed` at 20:56:44 UTC; hooks reverted ~21:00 UTC, restart #3 PID 1295064 → 1296508, post-revert md5 = C-2 fix state byte-for-byte, `grep -c TRACKB` = 0 on both files). Deploy_log entry `dcdd0ef` committed + pushed. Forward-watch obligation carries to next session.
+
+Also closed this session: **phantom-pointer housekeeping** (`db6d805` — `runbooks/strategy_harness_inventory.md` committed standalone after being untracked-but-referenced-by-memory).
+
+**`origin/main` head:** `dcdd0ef` (TRACK B deploy_log close, this thread). The parallel operator thread landed 7 commits during this window (kalshi_weather autopsy + pickup brief + housekeeping): `89bafba`, `475a2a2`, `ecc3367`, `239e99c`, `0ab8daa`, `84ceea9`, `7f6dc6d`. Fast-forward push at session end (origin moved `7f6dc6d → dcdd0ef`).
+
+**Prod state at session end:**
+- **Running process:** PID `1296508` (xvfb-run) / python child under it. Started 2026-05-24 ~21:01 UTC after the third restart (forcing-hook revert). Web bound 21:02:17 UTC. healthz `{"status":"ok","mode":"PAPER"}` on both 127.0.0.1:8000 and via Caddy.
+- **C-2 fix code on disk:** byte-for-byte matches `19ff0da` git blobs (per-file EOL preserved: webhooks.py=CRLF, risk.py=LF, consult.py=LF). md5s: `6fed0aa89c103ba475bd8901a8ab434a` (webhooks.py), `49e4d138b41d78ce0e670a2b06c2fbc5` (risk.py), `26c0c896875a6235932da1e86a0701e9` (consult.py). Zero `TRACKB` residue.
+- **Backups on prod:**
+  - `pre-trackb-c2-20260524.*` — pre-C-2-fix OLD state (rollback target if forward-watch shows wiring broken).
+  - `pre-trackb-hook-20260524-1700.*` — C-2 fix state snapshot from before forcing hooks (== current; useful as breadcrumb).
+- **Lord_otter / market_cypher strategies are DISABLED in config.** Every alert in the verification window (31 webhook_received: Otter 2 + Cypher 29) hit `alert_ignored` with reason "lord_otter strategy is disabled in config". **The C-2 fix code paths have NOT been exercised by natural traffic.** When the strategies are re-enabled, the FIRST FEW natural push_backs MUST audit a `risk_rejected/source=llm_push_back` row — see forward-watch SQL in deploy_log 2026-05-24 16:55 UTC entry. **Rollback per deploy_log recipe if no row.**
+
+**What's still HELD / open (5 board items, original 7 minus 2 closes this session):**
+1. **TRACK A — C-1 secret rotation** (1–3h, coordination-heavy). The most consequential remaining CRITICAL. Sequence with the NEW P1 NOPASSWD:ALL fix.
+2. **P1 — Deferred 43-package upgrade from C-6 lockfile drift** (multi-session). anthropic 0.97→0.104 first (real-SDK smoke per `[[feedback-mocks-dont-catch-sdk-shape]]`). Each bump = its own deploy.
+3. **TRACK C — `strategies.yaml` schema + mtime + audit** (C-3 fix, 2h, §4).
+4. **TRACK E — Tastytrade KV consolidation** (1h, §4). Patch list in `[[feedback-tastytrade-env-vars-bypass-kv]]`.
+5. **NEW P1 — fix `azureuser` `NOPASSWD:ALL` sudo** (1h, §4 VM). Filed `8d72dcc`.
+
+**Untracked files in working tree at session end (NOT swept — operator-owned):**
+- `docs/Deployment notes.txt` (640 KB, May 20). Only untracked remaining.
+- The other 3 from the prior handoff are EXPLAINED: `scripts/fetch_kalshi_weather_corpus.py` committed by parallel-operator thread in `0ab8daa`; `classify_losses.py` + `decode_losses.py` removed by operator from working tree (their own analysis artifacts). No commit in `db6d805..HEAD` touched any of them.
+
+**Memory updates this session:**
+- UPDATED `[[project-security-tracks-fbd-shipped-2026-05-23]]` — C-2 now DEPLOYED + verified in prod (synthetic + real-HTTP forcing-hook tests both passed; deploy_log entry `dcdd0ef`).
+- NEW `[[feedback-forcing-hook-real-path-verification]]` — the discipline lesson: synthetic-on-loaded-module ≠ real-prod-HTTP-path proof. Includes the reusable recipe + pointer to the deploy_log entry where it's fully documented.
+- `MEMORY.md` index updated.
+
+**Discipline notes (worth keeping for future sessions):**
+- **Sleep is blocked in Bash with `run_in_background`**. Use `until <check>; do sleep N; done` in a single ssh script for "wait until ready" patterns. Or use the Monitor tool for streaming events.
+- **Re-check `git log origin/main..HEAD` AND `git log HEAD..origin/main` before commit/push.** Parallel operator commits can land between fetches; the harness fetched during this session so local was ahead-of-prior-origin without me noticing until push.
+- **`git log --oneline <range> -- <file>` before claiming you didn't touch something.** 3 files "vanished" during this session; investigation showed 1 operator-committed + 2 operator-deleted, none by me.
+- **Forcing-hook real-path verification** (new discipline this session): when a hard-to-trigger code path resists deterministic synthetic invocation through the real HTTP layer, a payload-marker-gated forcing branch + a localhost POST is the right pattern. Recipe in deploy_log + `[[feedback-forcing-hook-real-path-verification]]`. Hooks MUST be reverted before close; verify via `grep -c <MARKER>` = 0.
+
+**Canonical pickup:** `runbooks/session_start_2026_05_25_post_trackb_c2_deploy.md` + this EOS + `[[project-security-tracks-fbd-shipped-2026-05-23]]` + the deploy_log 2026-05-24 16:55 UTC entry.
+
+---
+
 ## EOS snapshot — 2026-05-24 ~20:00 UTC (Sunday evening — kalshi_weather post-xref 24h autopsy: NO defect, variance; two anomalies flagged for observation week; NO DEPLOYS this session)
 
 **Headline of THIS session:** Read-only forensic autopsy of first ~24h of resolved `kalshi_weather_arb` paper RTs under the post-2026-05-22T16:25 UTC xref logic (commit f5a5fd5). Board framing: "no defect assumed; rule out variance first." Verdict: **NO logic defect** in any of the five enumerated classes (station mismatch, coord_source anomaly, KXTEMPNYCH leak, floor/sizing breach, systematic forecast bias). Headline P/L was **−$81 by resolved_ts but only −$28 under new logic** — 26 of 48 "post-deploy" losses were pre-deploy entries (old KJFK/KORD/KIAH coords) that simply settled in-window. True post-deploy sample: **n=75, WR 70.7%, net −$28.15** — inside variance. Two anomalies flagged for observation-week watch (NOT acted on): (#1) **book is 100% NO bets, 87% NO-on-`between`** — single-pattern short-vol posture, geographically diverse but directionally one-dimensional; (#2) **σ_used appears under-estimated** — empirical |z|≥2 at 3.1× theoretical, |z|≥3 at 10×, 1–2σ band depleted to 0.54×, stdev z = 1.168 (~17% wider than σ_used). Caveat #2 directional only — 12 tail rows collapse to 5 unique (station, date) events driven by 2026-05-23 Midwest/Texas cold push; Open-Meteo reanalysis used as actuals proxy (not authoritative NWS CLI). Together #1+#2 = strategy is short-vol with underpriced tails — addressed by the queued **P2 Empirical σ-scaling factor** / NBM-σ backlog item which moves from "speculative" to "justified" if KMSP/KSAT/KAUS/KSEA repeat |z|>2 on *independent* settle dates through 2026-05-29.
