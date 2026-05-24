@@ -866,7 +866,7 @@
               {{ w.total_resolved_positions }}
             </td>
             <td class="px-3 py-2 text-right text-mono/80">
-              {% if w.window_days_span %}{{ w.window_days_span | round(0) | int }}d{% else %}—{% endif %}
+              {% if w.window_days_span is not none %}{{ w.window_days_span | round(0) | int }}d{% else %}—{% endif %}
             </td>
             <td class="px-3 py-2 text-right text-mono/80 whitespace-nowrap">
               {% if w.last_trade_iso %}{{ w.last_trade_iso[:10] }}{% else %}—{% endif %}

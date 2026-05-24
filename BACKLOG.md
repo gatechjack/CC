@@ -579,24 +579,17 @@ Full diff lives on prod in `/tmp/pip_install_20260524_145616.log` and the corres
 
 ---
 
-## P3 (cosmetic) — `pm_dashboard_body.html` Jinja truthiness on numeric `window_days_span`  *(NEW — 2026-05-23)*
+## P3 (cleanup) — Copy-trader `equity_history` writer never wired  *(NEW — 2026-05-24)*
 
-**Discovered during:** the `pm-watchlist-windowed-rescore` deploy verification 2026-05-23. Surfaced by Sassy-Bucket (#3 under `<.70` desc) — n=100 trades all in the same UTC second, `window_days_span = 0.0`, render shows `—` instead of `0d`.
+**Discovered during:** pm-metrics-epoch dashboard verification 2026-05-24. The `/prediction-markets/polymarket_copy_trading` "equity curve" surface read as zero post-epoch and we initially read it as "epoch filter correctly excluded pre-epoch data." Investigation showed `polymarket_equity_history` has **zero rows for `polymarket_copy_trading` ever** — the curve is empty because no rows have ever been written for this division, not because the epoch filtered them out. Symmetric gap on Kalshi: `kalshi_equity_history` has zero rows for `kalshi_copy_trading`. Both copy-trader divisions are affected.
 
-**The line:**
-```jinja
-{% if w.window_days_span %}{{ w.window_days_span | round(0) | int }}d{% else %}—{% endif %}
-```
-Falsy on `0.0`; should be `is not none`.
+**Comparison:** `polymarket_equity_history` has 4,158 rows for `polymarket_arbitrage` (still being written, last `2026-05-24T15:28:46+00:00`). The writer works for arbitrage divisions; the wiring was never extended to copy-trader divisions.
 
-**Fix:**
-```jinja
-{% if w.window_days_span is not none %}{{ w.window_days_span | round(0) | int }}d{% else %}—{% endif %}
-```
+**Why it matters:** Surface #2 of the seven post-epoch dashboard metrics surfaces (the equity curve) is verified *in logic only* — the epoch filter sandbox-tested on synthetic equity rows and the filter SQL is correct, but it has never acted on real production data because the underlying table is empty. The other six surfaces are confirmed working on real prod data (resolved tile arithmetic balances: 2,271 pre-epoch hidden + 18 post-epoch shown = 2,289 total; n_open: 2,283 + 700 = 2,983). Don't chase the empty equity curve as an epoch bug when the other surfaces fill in — it's this gap.
 
-**Scope check (done):** grepped `{% if w.<numeric> %}` across `pm_dashboard_body.html`. Bug is isolated to that one line — every other `{% if w.X %}` in the template is on string or bool fields where falsy semantics are correct. PnL/count comparisons use explicit `> 0` or `is none` operators. No cross-template grep performed; if any other template renders a numeric where 0 is a meaningful value, the same fix may apply.
+**Fix scope:** Wire whichever process emits `polymarket_equity_history` rows for `polymarket_arbitrage` to also emit `polymarket_copy_trading` rows. Mirror for Kalshi (`kalshi_equity_history` → `kalshi_copy_trading`). Both copy-trader strategies hold paper positions via `PaperBroker`, so the inputs (cash, positions_value, n_positions) are already available — missing wiring, not missing data source.
 
-**Cosmetic only** — does NOT silently blank PnL, n, or WR (those use explicit comparison operators). Defer.
+**Defer until:** operator wants paper-mode equity curves to render for copy-trader divisions. Until then the panel stays empty — pre-existing, not a fire.
 
 ---
 
