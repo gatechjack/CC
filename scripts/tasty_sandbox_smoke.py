@@ -38,6 +38,13 @@ import sys
 import traceback
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
+
+# Make `trading_corp.*` importable when running this script directly via
+# `python scripts/tasty_sandbox_smoke.py` (mirrors the path-shim pattern
+# used by other scripts in this directory, e.g. backfill_paper_trade_record.py).
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
 
 from trading_corp.brokers.tastytrade import TastytradeBroker
 from trading_corp.data.tastytrade_provider import TastytradeDataProvider

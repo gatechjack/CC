@@ -132,7 +132,7 @@ class TastytradeBroker(Broker):
             refresh_token=self._refresh_token,
             is_test=self._is_test,
         )
-        accounts = await asyncio.to_thread(Account.get, self._session)
+        accounts = await Account.get(self._session)
         if not accounts:
             raise RuntimeError(
                 "TastytradeBroker.connect: no accounts on this Tastytrade session "
@@ -184,12 +184,8 @@ class TastytradeBroker(Broker):
     async def snapshot(self) -> AccountSnapshot:
         self._require_connected()
 
-        balances = await asyncio.to_thread(
-            self._account.get_balances, self._session,
-        )
-        positions_raw = await asyncio.to_thread(
-            self._account.get_positions, self._session,
-        )
+        balances = await self._account.get_balances(self._session)
+        positions_raw = await self._account.get_positions(self._session)
 
         # net_liquidating_value is TT's "equity" (account value if liquidated now).
         equity = float(balances.net_liquidating_value or 0)
@@ -233,8 +229,8 @@ class TastytradeBroker(Broker):
         from tastytrade.market_data import get_market_data
         from tastytrade.order import InstrumentType
         try:
-            md = await asyncio.to_thread(
-                get_market_data, self._session, symbol, InstrumentType.EQUITY,
+            md = await get_market_data(
+                self._session, symbol, InstrumentType.EQUITY,
             )
         except Exception as e:
             log.warning("TastytradeBroker.quote(%s) failed: %s", symbol, e)
@@ -275,9 +271,7 @@ class TastytradeBroker(Broker):
             log.warning("TastytradeBroker.cancel_order: non-int order_id %r", order_id)
             return False
         try:
-            await asyncio.to_thread(
-                self._account.delete_order, self._session, oid,
-            )
+            await self._account.delete_order(self._session, oid)
             return True
         except Exception as e:
             log.warning("TastytradeBroker.cancel_order(%s) failed: %s", oid, e)
@@ -394,8 +388,8 @@ class TastytradeBroker(Broker):
         Raises on rejection or timeout — caller (strategy) treats this
         as a failed combo and does not record fills.
         """
-        response = await asyncio.to_thread(
-            self._account.place_order, self._session, new_order, False,
+        response = await self._account.place_order(
+            self._session, new_order, False,
         )
         placed_order = response.order
         order_id = placed_order.id
@@ -432,9 +426,7 @@ class TastytradeBroker(Broker):
         loop = asyncio.get_event_loop()
         deadline = loop.time() + _FILL_POLL_TIMEOUT_SEC
         while True:
-            placed = await asyncio.to_thread(
-                self._account.get_order, self._session, order_id,
-            )
+            placed = await self._account.get_order(self._session, order_id)
             status_val = placed.status.value if hasattr(placed.status, "value") else str(placed.status)
             if status_val in _TERMINAL_STATUSES:
                 return placed

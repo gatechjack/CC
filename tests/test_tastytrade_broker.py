@@ -175,13 +175,13 @@ async def test_place_multi_leg_builds_credit_combo_with_positive_price():
     fake_response = MagicMock()
     fake_response.order = MagicMock()
     fake_response.order.id = 42
-    broker._account.place_order = MagicMock(return_value=fake_response)
+    broker._account.place_order = AsyncMock(return_value=fake_response)
 
     fake_terminal = MagicMock()
     fake_terminal.status = MagicMock()
     fake_terminal.status.value = "Filled"
     fake_terminal.legs = []
-    broker._account.get_order = MagicMock(return_value=fake_terminal)
+    broker._account.get_order = AsyncMock(return_value=fake_terminal)
 
     orders = _ic_combo()  # combo_direction="credit", net_limit=1.50
     fills = await broker.place_multi_leg(orders)
@@ -208,13 +208,13 @@ async def test_place_multi_leg_builds_debit_combo_with_negative_price():
     fake_response = MagicMock()
     fake_response.order = MagicMock()
     fake_response.order.id = 99
-    broker._account.place_order = MagicMock(return_value=fake_response)
+    broker._account.place_order = AsyncMock(return_value=fake_response)
 
     fake_terminal = MagicMock()
     fake_terminal.status = MagicMock()
     fake_terminal.status.value = "Filled"
     fake_terminal.legs = []
-    broker._account.get_order = MagicMock(return_value=fake_terminal)
+    broker._account.get_order = AsyncMock(return_value=fake_terminal)
 
     # IC close — opposite of opening, so direction="debit"
     orders = [
@@ -239,7 +239,7 @@ async def test_place_multi_leg_propagates_cohesion_failure():
     broker = _make_broker()
     broker._connected = True
     broker._account = MagicMock()
-    broker._account.place_order = MagicMock()
+    broker._account.place_order = AsyncMock()
 
     orders = _ic_combo()
     orders[2].extra["combo_id"] = "DIFFERENT"  # break cohesion
@@ -259,13 +259,13 @@ async def test_place_multi_leg_raises_when_terminal_not_filled():
     fake_response = MagicMock()
     fake_response.order = MagicMock()
     fake_response.order.id = 7
-    broker._account.place_order = MagicMock(return_value=fake_response)
+    broker._account.place_order = AsyncMock(return_value=fake_response)
 
     fake_terminal = MagicMock()
     fake_terminal.status = MagicMock()
     fake_terminal.status.value = "Rejected"
     fake_terminal.legs = []
-    broker._account.get_order = MagicMock(return_value=fake_terminal)
+    broker._account.get_order = AsyncMock(return_value=fake_terminal)
 
     with pytest.raises(RuntimeError, match="Rejected"):
         await broker.place_multi_leg(_ic_combo())
@@ -302,7 +302,7 @@ async def test_cancel_order_coerces_string_to_int():
     broker = _make_broker()
     broker._connected = True
     broker._account = MagicMock()
-    broker._account.delete_order = MagicMock(return_value=None)
+    broker._account.delete_order = AsyncMock(return_value=None)
 
     assert (await broker.cancel_order("123")) is True
     broker._account.delete_order.assert_called_once()
@@ -316,7 +316,7 @@ async def test_cancel_order_returns_false_on_non_int_order_id():
     broker = _make_broker()
     broker._connected = True
     broker._account = MagicMock()
-    broker._account.delete_order = MagicMock()
+    broker._account.delete_order = AsyncMock()
 
     assert (await broker.cancel_order("not-an-int")) is False
     broker._account.delete_order.assert_not_called()
@@ -338,7 +338,7 @@ async def test_snapshot_parses_balances_and_positions():
     fake_balances.derivative_buying_power = 100000.0
     fake_balances.equity_buying_power = 100000.0
     fake_balances.cash_balance = 25000.0
-    broker._account.get_balances = MagicMock(return_value=fake_balances)
+    broker._account.get_balances = AsyncMock(return_value=fake_balances)
 
     pos_long = MagicMock()
     pos_long.quantity = 10
@@ -360,7 +360,7 @@ async def test_snapshot_parses_balances_and_positions():
     pos_short.underlying_symbol = "SPY"
     pos_short.multiplier = 100
 
-    broker._account.get_positions = MagicMock(return_value=[pos_long, pos_short])
+    broker._account.get_positions = AsyncMock(return_value=[pos_long, pos_short])
 
     snap = await broker.snapshot()
     assert snap.account == "TT-12345"
@@ -388,12 +388,12 @@ async def test_snapshot_skips_zero_qty_positions():
     fake_balances.derivative_buying_power = 0
     fake_balances.equity_buying_power = 0
     fake_balances.cash_balance = 0
-    broker._account.get_balances = MagicMock(return_value=fake_balances)
+    broker._account.get_balances = AsyncMock(return_value=fake_balances)
 
     zero_pos = MagicMock()
     zero_pos.quantity = 0
     zero_pos.quantity_direction = "Long"
-    broker._account.get_positions = MagicMock(return_value=[zero_pos])
+    broker._account.get_positions = AsyncMock(return_value=[zero_pos])
 
     snap = await broker.snapshot()
     assert snap.positions == []
