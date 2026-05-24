@@ -579,6 +579,55 @@ Full diff lives on prod in `/tmp/pip_install_20260524_145616.log` and the corres
 
 ---
 
+## P2 (ops) — Polymarket watchlist deep timer: drop `--merge` → weekly overwrite  *(NEW — 2026-05-24, BOARD-GATED per CLAUDE.md §4)*
+
+**Status:** PLANNED — not shipped. Systemd unit edit on prod; per CLAUDE.md §4 ("Modify VM-side configuration … No-edit from this repo") requires explicit Board approval before execution. Not urgent — first impact is the next Sunday fire (`2026-05-31 13:12:45 UTC`).
+
+**Discovered during:** Sunday 2026-05-24 13:08 UTC first `--merge` fire verification. Merge stats `existing=197 fresh=172 added=132 replaced=40 preserved=157 dropped=0 final=329`. 48% of the standing pool (157/329) is the "preserved" bucket — wallets that didn't make this week's fresh quality-gate pass but are kept on the list with their prior-week stats frozen. Trajectory: monotonic growth with stale-stat accumulation. Killed the lifetime-list problem at the wrong layer.
+
+**`included_iso` consumer audit (Polymarket):** NOTHING consumes it on the Polymarket side. Verified:
+- Transported onto `PolymarketWatchOnlyRow.included_iso` at `web/data.py:4621` but never rendered in any template (grep on `included_iso` across `web/templates/` returns zero hits).
+- Not in the sort whitelist `_PM_WATCH_SORT_KEYS` (`web/data.py:4519-4542`).
+- No downstream caller, CSV export, or audit consumer.
+- (Kalshi side consumes it via `last_refresh_iso` fallback at `web/data.py:4508` → `pm_dashboard_body.html:761`, but Kalshi is a separate script and a different timer — out of scope.)
+
+**Change (single sed-in-place, preserves perms + ownership + CRLF discipline):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+sudo cp /etc/systemd/system/trading-corp-pm-watchlist-deep.service{,.pre-overwrite-cadence-20260524}
+sudo sed -i 's|seed_polymarket_watchlist_deep --merge\$|seed_polymarket_watchlist_deep|' \
+  /etc/systemd/system/trading-corp-pm-watchlist-deep.service
+sudo systemctl daemon-reload
+"
+```
+No code change. No service restart (oneshot fires on timer). No agent_state pre-flush (next fire's overwrite replaces it).
+
+**Expected next-fire effect (Sun 2026-05-31 13:12:45 UTC):**
+- Roster snaps from 329 → ~172 (this week's pass-today set, ± week-over-week churn).
+- All rows have FRESH stats — zero preserved-stale bucket.
+- `included_iso` reset to the new run time for all surviving wallets — harmless on Polymarket per the audit above.
+- Wall-clock similar to today's 17m, possibly longer on cold-cache (today's `--merge` benefitted from existing-wallet activity already cached). Headroom against `TimeoutStartSec=3600` remains healthy.
+
+**Rollback (one-liner, same shape):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+sudo sed -i 's|seed_polymarket_watchlist_deep\$|seed_polymarket_watchlist_deep --merge|' \
+  /etc/systemd/system/trading-corp-pm-watchlist-deep.service && sudo systemctl daemon-reload
+"
+```
+(Backup file from the change step also available for byte-exact restore.)
+
+**Risk note:** If a future Polymarket feature wants whale tenure ("first observed N weeks ago"), `included_iso` would either need to be moved to a separate audit/metadata path (preferred — decouples display from cadence), or this change would have to be reverted to `--merge`. Calling it out so the trade-off is explicit.
+
+**Why strictly better than merge+periodic-flush:**
+- Self-maintaining. No second cadence to schedule, no "did we flush this month?" question.
+- Edge columns always reflect this week's reality — zero preserved-stale rows ever.
+- Loses nothing on Polymarket (`included_iso` is dead-end here).
+
+**Execution gate:** Operator approval. Once approved, the unit edit is the only action — fits in one SSH session with backup + sed + daemon-reload + verify (compare ExecStart before/after via `systemctl show -p FragmentPath` + `grep ExecStart`).
+
+---
+
 ## P3 (cleanup) — Copy-trader `equity_history` writer never wired  *(NEW — 2026-05-24)*
 
 **Discovered during:** pm-metrics-epoch dashboard verification 2026-05-24. The `/prediction-markets/polymarket_copy_trading` "equity curve" surface read as zero post-epoch and we initially read it as "epoch filter correctly excluded pre-epoch data." Investigation showed `polymarket_equity_history` has **zero rows for `polymarket_copy_trading` ever** — the curve is empty because no rows have ever been written for this division, not because the epoch filtered them out. Symmetric gap on Kalshi: `kalshi_equity_history` has zero rows for `kalshi_copy_trading`. Both copy-trader divisions are affected.
