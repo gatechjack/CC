@@ -8,6 +8,70 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~03:35 UTC (Saturday overnight — kalshi_sports_scout discovery-rotation fix + MLB mapping aliases LIVE on prod)
+
+**Headline of THIS session:** kalshi_sports_scout Phase-0 review revealed a chain of issues, fixed bottom-up:
+1. **100× units bug discovered** in `kalshi_sports_scout.py:232-240` — divides `m.yes_ask` by 100 assuming cents, but it's already in dollars. **Bug is mathematically reversible** (`recovered = stored × 100`) so the 461-row 9-day corpus IS recoverable — NOT shelved.
+2. **Recovered Phase-0 gate matrix** (in `reports/2026-05-23_kalshi_sports_scout_phase0_review.md` v2): MLB median |div| 3.08pp, NBA 12.78pp (but n=24 in 2 playoff series — needs validation), MLS 0.92pp (drop), NHL 1.50pp, NFL 2.44pp (mostly off-season placeholder lines — park).
+3. **Negative-mean signed div ACROSS ALL LEAGUES turned out to be an early-line capture artifact**, not directional alpha. Diagnosis: 88/92 MLB tickers observed exactly once across 9 days because the `discover_by_categories` 50-series cap rotated through 2018 Sports series with the 5 in-scope leagues landing only 21/188 scans (11.2%). The 4 doubly-observed MLB markets showed div collapsing as `n_books` grew 3→9 over ~45h.
+4. **Discovery rotation fix LIVE on prod (b880b66 + 12c0c86, 01:28 UTC):** `series_filter` exact-set match added to `discover_by_categories`; scout passes `("KXMLBGAME","KXNBAGAME","KXNHLGAME","KXMLSGAME")`. `max_series_per_category: 50 → 100`. NFL excluded (no `KXNFLGAME` moneyline series exists in Sports — only props KXNFLGAMETD/FG/SACK).
+5. **First post-deploy scan at 03:01:22 UTC** verified the fix: `markets_pre_filter` 334 → 85; 4 leagues every scan; 20 observed in first cycle. BUT n_unmapped=13 surfaced 2 missing MLB team-code aliases.
+6. **MLB mapping fix LIVE on prod (d6d54d3 + d5542f1, 03:17 UTC):** added `AZ` → Arizona Diamondbacks, `CWS` → Chicago White Sox. Full audit script (`scripts/_probe_kalshi_team_codes.py`) confirmed only MLB had gaps.
+
+**`origin/main` head (will be after push from this wrap-up):**
+- `d5542f1` — deploy_log + scripts: MLB team-code aliases 2026-05-24 03:17 UTC *(this session)*
+- `d6d54d3` — mapping: add MLB AZ + CWS team-code aliases *(this session)*
+- `6ae5e48` — deploy: self-contained bundle for kalshi_sports_arb_observer (MLB Phase 0) *(operator, this session)*
+- `88a1574` — deploy_log: kalshi_sports_scout series_filter 2026-05-24 01:28 UTC *(this session)*
+- `12c0c86` — deploy: one-off script for series_filter patch 2026-05-23 *(this session)*
+- `e620fe7` — analyze script + flip enabled:true for MLB Phase 0 observer *(operator, this session)*
+- `b880b66` — kalshi_sports_scout: series_filter exact-match to fix 1-obs/ticker rotation *(this session)*
+- `5807273` — observer: add MLB sibling path; repoint Phase 0 to MLB; NBA preserved *(operator)*
+- `07e3579` — report: kalshi_sports_scout discovery-rotation diagnosis + minimal fix *(this session)*
+
+**What's running on prod (after this session's deploys):**
+- **kalshi_sports_scout** with series-filtered discovery + AZ/CWS aliases. Last restart 03:17:07 UTC, PID 1235018. First post-restart scan expected ~04:17:49 UTC.
+- **kalshi_sports_arb_observer** (sibling) flipped `enabled: true` for MLB Phase 0 (operator's parallel work `e620fe7` + `6ae5e48`).
+- Everything else from prior EOS (Bitunix bias-TTL + flip-detection, PCT, IC grader, data-provider abstraction, etc.) — unchanged.
+
+**Verification status:**
+- First-scan verification task `b2w4dditt` (local background) was running at session end; result should be in audit_event regardless. Next session: query `audit_event` since `2026-05-24 03:17:00` for `kind='kalshi_sports_scout_scan'` to confirm.
+- **Look for:** MLB `n_observed > 0` (was 0 in prior cycle), `n_unmapped` near zero (was 13), `team_code_not_in_mapping` reason count for MLB = 0.
+
+**Pending followups (in priority order):**
+
+1. **P1 — Confirm post-deploy corpus accumulates as expected.** Next session: query repeat observations per ticker through commencement, `n_books ≥ 6` natural maturation, time-series divergence behavior. ~1 week of observation needed for the reconvene.
+
+2. **P1 — Fix the 100× units bug at `kalshi_sports_scout.py:232-240`.** One-line + sum-to-1 sanity gate. Discovery side ships; units side does not. Required before any live trading from this strategy. Bug is **only on log side**, not on broker quote path — so it's read-only impact today. Detailed fix in `reports/2026-05-23_kalshi_sports_scout_phase0_review.md` §5.
+
+3. **P2 — Re-probe for `KXNFLGAME` moneyline series ~3-4 weeks pre-kickoff.** NFL currently excluded from `_SCOUT_SERIES_FILTER` because the probe found no moneyline series in Sports during off-season (only props KXNFLGAMETD/FG/SACK). Re-run `scripts/_probe_kalshi_team_codes.py`-style audit + check Sports + Football categories for the right ticker. Add NFL series + restore `NFL` to YAML `leagues` list.
+
+4. **P2 — Re-audit NBA + NHL team-code mappings at regular-season start (~Oct 2026).** Current audit only saw 4 active codes each (late playoffs); full roster coverage is not confirmed. Run `scripts/_probe_kalshi_team_codes.py` again once season opens.
+
+5. **P3 — NBA edge validation step before any Phase-1 commit on NBA.** Phase-0 recovered matrix showed NBA median 12.78pp (vs 3.08 MLB) but n=24 concentrated in 2 playoff series (OKC/SAS, NYK/CLE). Could be real or liquidity-wedge artifact (low-volume markets defaulting to ~50¢). Needs explicit validation distinct from the n_books artifact discussed in addendum doc.
+
+6. **P3 — Phase-1 design.** Once corpus quality is confirmed (after ~1 week of observation), add EV-at-fill (using observed bid/ask spread, not just yes_ask), fees, fillability gates. Phase-0 is divergence-pp only by design.
+
+**Operator restart cadence noted:** 5 unscheduled `systemctl restart` events on May 23, 1 unscheduled at 02:00:21 UTC today. Each resets the scout's `await asyncio.sleep(3600)` BEFORE the first scan. If the operator's restart cadence is high enough that intervals between restarts are consistently < 1h, the scout may not fire. Not currently blocking but worth tracking.
+
+**Memory updates:**
+- `project_kalshi_sports_scout_phase0_recovered.md` reflects: bug recoverable, scope-down with caveats, then addendum updated with corpus-construction artifact reading.
+
+**Rollback (if needed):**
+```bash
+# Both deploys can be rolled back independently.
+TAG=pre-mlb-aliases-20260524; BASE=/home/azureuser/trading_corp
+mv $BASE/trading_corp/data/sports_team_mapping.py.$TAG $BASE/trading_corp/data/sports_team_mapping.py
+
+TAG=pre-series-filter-20260523; BASE=/home/azureuser/trading_corp
+for f in trading_corp/data/kalshi_market_map.py trading_corp/brokers/kalshi.py trading_corp/agents/strategies/kalshi_sports_scout.py config/strategies.yaml; do
+  mv $BASE/$f.$TAG $BASE/$f
+done
+sudo systemctl restart trading-corp.service
+```
+
+---
+
 ## EOS snapshot — 2026-05-23 ~20:30 UTC (Saturday late — security tracks F+B+D shipped; C-2 and C-6 closed in CODE, awaiting deploy)
 
 **Headline of THIS session:** Three security-review remediation tracks executed in one session — TRACK F (VM-side §7 verification spree, 13/13 checks), TRACK B (LLM `push_back` bypass fix + side-flip rejection, closes CRITICAL C-2), TRACK D (hash-pinned `requirements.lock` + TV deps pinned, closes CRITICAL C-6). Four commits pushed to `origin/main`. **Prod is UNCHANGED** from the bitunix 15:52 UTC deploy — none of this session's code is on prod yet; deploy is the operator's next gated step.
