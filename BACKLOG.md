@@ -8,6 +8,46 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~15:30 UTC (Sunday mid-day — C-6 lockfile CORRECTED + DEPLOYED after reversing unintended 14:56 UTC bump install; 43 deferred bumps filed P1; TRACK B still held)
+
+**Headline of THIS session:** TRACK D-DEPLOY (C-6 hash-pinned lockfile) executed — but the original `4086221` lockfile, when installed, silently bumped 43 prod packages including anthropic 0.97 → 0.104 and cryptography 47 → 48 (it had been compiled from `requirements.txt` against current PyPI, not from prod's running freeze). Caught before any restart could ride the bumps. Regenerated lockfile from prod's actual running pip-freeze; ran real `pip install --require-hashes` to downgrade disk back to OLD; achieved **three-way convergence (disk ≡ lock ≡ process, all OLD)**, no process restart. Process PID 1237405 unchanged throughout.
+
+**`origin/main` head (after this session's push, fast-forward to `7a3e439`):**
+- `7a3e439` — deploy_log: backfill commit SHA in 2026-05-24 15:14 UTC entry *(this session)*
+- `e5556ef` — lockfile: regenerate against prod running versions (C-6 correction) *(this session)*
+- `2dd12bf` — cap bump (50→150) + feed-diagnosis verdict reframe *(operator, pre-session)*
+- `e5efa06` — copy-trader: fix NameError in sports-skip audit payload *(this session — early catch on dirty tree)*
+- `05ba56c` — deploy: rebuild bundle with observer series_filter fix *(prior session)*
+- `0bcb2ba` — observer: add series_filter to list_markets to fix rotating-slice bug *(prior session)*
+
+**Prod state at session end:**
+- **Running process:** PID 1237405 (xvfb-run wrapper) + 1237421 (python) — same as session start. Apr-30 venv build, never restarted.
+- **Disk packages:** 137 packages, ALL pinned to the OLD running versions. `pip install --dry-run --require-hashes -r requirements.lock` reports 137 "Requirement already satisfied", zero "Would install".
+- **On-disk lockfile:** `requirements.lock` (md5 `c1d1db5f2a435ab9ba797b8448ca3287`) matches local HEAD.
+- **Backup of bad lockfile:** `/home/azureuser/trading_corp/requirements.lock.bad-bump-20260524` preserved ≥1 week as recovery breadcrumb.
+- **Other prod artifacts:** `/tmp/pip_pre_20260524_145514.txt` (pre-bump freeze), `/tmp/pip_install_20260524_145616.log` (original bumped install), `/tmp/pip_downgrade_20260524T151353Z.log` (reversal), `/tmp/pip_post_downgrade_20260524T151353Z.txt` (post-reversal freeze byte-identical to pre-bump).
+
+**What's still HELD / open:**
+1. **TRACK B-DEPLOY (`19ff0da` C-2 webhook risk-gate fix)** — explicitly held for its own focused window. Acceptance test requires watching `audit_event` for `kind='risk_rejected'` + `json_extract(payload,'$.source')='llm_push_back'` on a real push_back; deploy-and-walk-away is wrong. §4 webhook-path change → needs in-session approval.
+2. **43-package deferred upgrade** — filed at the top of BACKLOG as new P1 ("Deferred 43-package upgrade from C-6 lockfile drift"). anthropic 0.97 → 0.104 specifically requires real-SDK smoke test per `[[feedback-mocks-dont-catch-sdk-shape]]`, NOT paper soak. Each bump deserves its own audit + deploy window — explicitly NOT a single batch.
+3. **PM watchlist `--merge` cron landed clean today 13:08:07 UTC** (197 → 329 whales, +132 net, exit clean). First weekly fire of the windowed-union path validated. Next fire Sun 2026-05-31 13:12:45 UTC. No action needed.
+
+**Untracked files in working tree at session end (NOT swept — they predate or are operator-owned):**
+- `decode_losses.py` — operator-created today (~15:13 UTC) inline; weather-arb resolved-trade base64 chunks for loss decoding. Operator's analysis artifact.
+- `runbooks/strategy_harness_inventory.md` — substantive runbook (May 22 20:59), referenced by memory `[[reference-strategy-harness-inventory]]` — **PHANTOM POINTER**. Next session should either commit standalone or update the memory to remove the pointer.
+- `scripts/fetch_kalshi_weather_corpus.py` — pre-session paginated prod-DB extraction script (May 22 15:53). Likely from kalshi_weather P3 work.
+- `docs/Deployment notes.txt` — long-standing operator notes file (May 20 07:08, 640 KB). Operator-owned.
+
+**Memory updates this session:**
+- Updated `[[project-security-tracks-fbd-shipped-2026-05-23]]` — C-6 now DEPLOYED with corrected lockfile (description + UPDATE section).
+- New `[[feedback-lockfile-regen-from-running-state]]` — the lesson: reproducibility locks compile from `pip freeze` of running env, not from `requirements.txt` against current PyPI. Verification chain documented.
+- `MEMORY.md` index updated.
+
+**Discipline notes (worth keeping for future sessions):**
+- The `! ssh ...` inline command pattern from this session **broke twice** on long lines — Claude Code's prompt wrap inserts a real newline that splits `systemctl status <unit>` into two commands. Workarounds: keep `status` adjacent to its unit name, OR use a `for u in ...` loop, OR put long commands in a heredoc. Documented for next session.
+
+---
+
 ## EOS snapshot — 2026-05-24 ~03:35 UTC (Saturday overnight — kalshi_sports_scout discovery-rotation fix + MLB mapping aliases LIVE on prod)
 
 **Headline of THIS session:** kalshi_sports_scout Phase-0 review revealed a chain of issues, fixed bottom-up:
