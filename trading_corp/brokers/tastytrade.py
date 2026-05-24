@@ -278,7 +278,7 @@ class TastytradeBroker(Broker):
             return False
 
     async def place_multi_leg(
-        self, orders: list[ProposedOrder]
+        self, orders: list[ProposedOrder], *, dry_run: bool = False,
     ) -> list[FillEvent]:
         """Submit a multi-leg option combo as a single atomic NewOrder.
 
@@ -294,6 +294,11 @@ class TastytradeBroker(Broker):
         Atomic at TT — partial fills on a single 4-leg order do not
         happen (TT either fills the whole combo at the net price or
         rejects). Partial-fill exception raised if observed (defensive).
+
+        `dry_run=True` asks TT to validate the order without placing it.
+        Used by the Phase-0 sandbox smoke to verify broker-shape
+        end-to-end without risking a working order on the account; not
+        used by the live IC strategy path.
         """
         self._require_connected()
         if not orders:
@@ -308,7 +313,7 @@ class TastytradeBroker(Broker):
             else -Decimal(str(combo.net_limit))
         )
         new_order = self._build_new_order(legs=legs, price=signed_price)
-        return await self._submit_and_wait(orders, new_order)
+        return await self._submit_and_wait(orders, new_order, dry_run=dry_run)
 
     async def get_option_greeks(
         self, option_id: str,
@@ -381,16 +386,30 @@ class TastytradeBroker(Broker):
         self,
         source_orders: list[ProposedOrder],
         new_order: Any,
+        *,
+        dry_run: bool = False,
     ) -> list[FillEvent]:
         """Place `new_order` and poll until terminal, then map to FillEvents.
 
         Returns one FillEvent per input order (preserves input order).
         Raises on rejection or timeout — caller (strategy) treats this
         as a failed combo and does not record fills.
+
+        `dry_run=True` asks TT to validate-only. No order is placed; no
+        polling; returns an empty list. Smoke probes use this to verify
+        end-to-end broker shape without risking a working order.
         """
         response = await self._account.place_order(
-            self._session, new_order, False,
+            self._session, new_order, dry_run,
         )
+        if dry_run:
+            log.info(
+                "TastytradeBroker dry_run: TT validated combo (no order placed); "
+                "warnings=%s errors=%s",
+                getattr(response, "warnings", None),
+                getattr(response, "errors", None),
+            )
+            return []
         placed_order = response.order
         order_id = placed_order.id
 

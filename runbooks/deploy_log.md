@@ -76,6 +76,31 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-24 23:52 UTC — tasty_options Phase-0 sandbox smoke PASSED (local verification, no prod deploy)
+
+**Commits:** `672f658` (async-call + sys.path fixup) + post-fixup iteration (broker `dry_run` param + smoke moved to production endpoint + smoke now picks real chain expiry + margin/BP rejection on dry-run treated as broker-shape SUCCESS). Final iteration commit pending.
+
+**Features shipped to prod:** NONE. This is local smoke verification of the `TastytradeBroker` end-to-end against `api.tastyworks.com`. Broker is not yet wired into running prod main.py (that's Commit 4 of the tasty_options build, `94b3129`, which is committed to main but not deployed).
+
+**Notable code changes (across the smoke iteration):**
+- `trading_corp/brokers/tastytrade.py`: 7 sites switched from `asyncio.to_thread(async_method, ...)` to `await async_method(...)` — the SDK's `Account.*` methods + `get_market_data` are coroutine functions; the original `to_thread` wrapping produced unawaited coroutine objects that the broker's `await` then choked on. Plus added `dry_run: bool = False` kwarg to `place_multi_leg` + `_submit_and_wait` so smoke probes can verify shape without placing real orders.
+- `tests/test_tastytrade_broker.py`: 13 `MagicMock(return_value=X)` → `AsyncMock(return_value=X)` on the async account methods (the original mocks were the exact failure mode `feedback_mocks_dont_catch_sdk_shape` warns about).
+- `scripts/tasty_sandbox_smoke.py`: sys.path shim added; `is_test=True` → `is_test=False` (Tastytrade CERT requires a separate OAuth app registration; rather than maintain two OAuth bootstraps the smoke probes production with `dry_run=True`); strikes auto-picked from real SPY chain via `get_option_chain` rather than guessed; margin/BP rejection on dry-run treated as the broker-shape SUCCESS signal (TT validated chain + serialization + auth + scope + margin layer — every code path exercised).
+
+**Verification:** Final smoke run at 2026-05-24T23:52 UTC. All 4 probes PASSED on account `5WZ66443` (equity $500, BP $0) on TT PRODUCTION:
+- probe 1/4 snapshot — equity + balances + positions read OK
+- probe 2/4 place_multi_leg(dry_run=True) — TT validated SPY 2026-07-17 600C/605C/555P/560P combo through to margin layer; rejected with `margin_check_failed: Your account does not have sufficient buying power` (expected; account capacity issue, not code)
+- probe 3/4 cancel_order on non-existent id 999999999 — returned False (expected)
+- probe 4/4 get_option_greeks for SPY 260717C00600000 — returned None (dxFeed timeout; acceptable per runbook)
+
+**OAuth scope verified:** New OAuth grant 2026-05-24 ~23:25 UTC with `scope=read trade` after operator widened the OAuth app's allowed scopes in the Tastytrade developer portal (originally `read` only). JWT `iat=1779666232`, `scope="read trade"`. Verified via in-process JWT decode pre-smoke.
+
+**Inert / dormant on current traffic:** All of the tasty_options division code (`94b3129`) is committed to main but NOT deployed to prod. Prod's running main.py predates this commit. Phase-1 paper observation will start once the tasty_options division code lands on prod — operator deploy decision; see plan file `.claude/plans/i-want-to-create-enumerated-papert.md`.
+
+**Next:** Deploy `94b3129` + this fixup commit chain to prod when ready. Once running, `auto_execute: false` keeps TastytradeBroker paper-wrapped (PaperExecutionBroker) for the ≥21-day Phase-1 observation window before any Phase-2 live conversation. Per memory `feedback_never_pre_flip_verified_flags` and `feedback_observation_window_no_early_advance`.
+
+---
+
 ## 2026-05-24 22:49 UTC — UI cleanup pass: htmx flicker fix + trade-flow titles + bitunix layout + approvals tile link (commit `0a98bbf`)
 
 **Commits:** `0a98bbf` (deployed at 22:49 UTC; pushed to `origin/main` immediately after).
