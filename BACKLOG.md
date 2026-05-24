@@ -8,6 +8,43 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~20:00 UTC (Sunday evening — kalshi_weather post-xref 24h autopsy: NO defect, variance; two anomalies flagged for observation week; NO DEPLOYS this session)
+
+**Headline of THIS session:** Read-only forensic autopsy of first ~24h of resolved `kalshi_weather_arb` paper RTs under the post-2026-05-22T16:25 UTC xref logic (commit f5a5fd5). Board framing: "no defect assumed; rule out variance first." Verdict: **NO logic defect** in any of the five enumerated classes (station mismatch, coord_source anomaly, KXTEMPNYCH leak, floor/sizing breach, systematic forecast bias). Headline P/L was **−$81 by resolved_ts but only −$28 under new logic** — 26 of 48 "post-deploy" losses were pre-deploy entries (old KJFK/KORD/KIAH coords) that simply settled in-window. True post-deploy sample: **n=75, WR 70.7%, net −$28.15** — inside variance. Two anomalies flagged for observation-week watch (NOT acted on): (#1) **book is 100% NO bets, 87% NO-on-`between`** — single-pattern short-vol posture, geographically diverse but directionally one-dimensional; (#2) **σ_used appears under-estimated** — empirical |z|≥2 at 3.1× theoretical, |z|≥3 at 10×, 1–2σ band depleted to 0.54×, stdev z = 1.168 (~17% wider than σ_used). Caveat #2 directional only — 12 tail rows collapse to 5 unique (station, date) events driven by 2026-05-23 Midwest/Texas cold push; Open-Meteo reanalysis used as actuals proxy (not authoritative NWS CLI). Together #1+#2 = strategy is short-vol with underpriced tails — addressed by the queued **P2 Empirical σ-scaling factor** / NBM-σ backlog item which moves from "speculative" to "justified" if KMSP/KSAT/KAUS/KSEA repeat |z|>2 on *independent* settle dates through 2026-05-29.
+
+**`origin/main` head (local — 3 commits pending push):**
+- **`0ab8daa`** — housekeeping: keep verified kalshi_weather corpus-fetch driver *(THIS session)*
+- **`239e99c`** — report: link kalshi_weather anomalies #1+#2 to queued NBM-sigma work *(THIS session)*
+- **`ecc3367`** — report: kalshi_weather 24h post-xref autopsy *(THIS session)*
+- `e5efa06` — copy-trader: fix NameError in sports-skip audit payload (previous session)
+- `05ba56c` — deploy: rebuild bundle with observer series_filter fix (previous session)
+- `0bcb2ba` — observer: add series_filter to list_markets to fix rotating-slice bug (previous session)
+- `30725b1` — backlog: EOS snapshot 2026-05-24 ~03:35 UTC (previous session)
+
+**What's running on prod (kalshi_weather_arb specifically):**
+- f5a5fd5 (YAML xref loader) LIVE since 2026-05-22T16:25 UTC. Verified-station list (38 NWS-CLI entries) + 6 corrected city mappings (NYC→KNYC, CHI→KMDW, HOU→KHOU) baked in. KXTEMPNYCH disabled.
+- **Observation week** runs through ~2026-05-29 per `project_kalshi_weather_xref_p3_live.md`. Daily drift check at `scripts/check_weather_coord_drift.sql`.
+- This session changed NOTHING on prod. Pure read-only forensic.
+
+**Highest-leverage open items (handoff to next session):**
+1. **Re-run autopsy at end of observation week (~2026-05-29).** Use `scripts/fetch_kalshi_weather_corpus.py` (committed this session — chunked dd+base64 driver, stdlib only) to pull the full post-2026-05-22T16:25 RT corpus. Filter by `entry_ts >= '2026-05-22T16:25'` (not `resolved_ts` — the carryover trap is now documented). For σ calibration, replace Open-Meteo reanalysis with NWS CLI HTML scrape from each station's `feeds.cli_observed_html` in `config/weather_stations.yaml` — that's the authoritative settlement temp.
+2. **Watch-list for σ defect signal:** KMSP, KSAT, KAUS, KSEA — do any hit |z| > 2 on a *different* settle date during the week? If YES on 2+ independent dates → σ_used_f genuinely under-estimated → start the **P2 Empirical σ-scaling factor** backlog work (~1-2h). If NO → 2026-05-23 was one cold day over a NO-heavy book; no action.
+3. **Watch-list for bet-shape signal:** does ANY YES bet land during the observation week? If still 100% NO at end of week, the short-vol diagnosis hardens and the "should we be running YES bets at all" question becomes structural, not hypothetical.
+4. **P4 advance gate:** absolutely DO NOT advance to P4 (live REST) on the current 24h sample alone. Observation week is a duration, not a sample. Per `feedback_observation_window_no_early_advance.md`: a clean day-one is the start, not the end.
+
+**Memory updates this session:**
+- NEW `project_kalshi_weather_24h_post_xref_autopsy.md` — verdict, sample math, both anomalies, watch list, NBM-σ connection.
+- UPDATED `project_kalshi_weather_xref_p3_live.md` — appended autopsy reference + observation-week status.
+- UPDATED `MEMORY.md` index.
+
+**Notable mid-session catches (worth carrying forward):**
+- **Carryover trap:** filtering kalshi_weather P/L by `resolved_ts` after a logic change includes pre-deploy entries that simply settled into the window. Must filter by `entry_ts` for "new logic only." This session: ~$53 of −$81 headline was carryover. Bake into future post-deploy-window analysis.
+- **Tail-row clustering:** at this strategy's structure (multiple tickers per station × date from `KXHIGH*`/`KXLOW*`/`B`/`T` variants), |z|≥2 row counts overstate independent-event counts by ~2.4×. Use distinct (station, date) tuples for tail multipliers.
+- **Open-Meteo ≠ NWS CLI:** Open-Meteo reanalysis is a directional proxy for actuals, not the authoritative source Kalshi settles against. Fine for first-pass calibration signal; not fine for verdict. NWS CLI scrape required for formal work.
+- **Sub-agent discipline worked:** two Sonnet sub-agents handled all mechanical prod pulls (autopsy + bet-shape + σ calibration); Opus retained judgment on framing and the connection between anomalies. Discipline standard from session start was load-bearing.
+
+---
+
 ## EOS snapshot — 2026-05-24 ~17:00 UTC (Sunday afternoon — kalshi_sports_arb_observer Phase 0 LIVE on MLB; HARD GATE passed; cap-bump 50→150 brought first overlap; verdict-design reframe shipped)
 
 **Headline of THIS session:** Stood up the **kalshi_sports_arb_observer** Phase-0 instrument end-to-end on prod (observer-only paper, sibling of `kalshi_sports_scout` in the `kalshi_arbitrage` division). Three sequential deploys: (1) initial 02:01 UTC failed silently due to missing `series_filter=` kwarg on `kalshi_broker.list_markets()` — observer's discovery returned only KXMLBWINS season props (7/cycle, all out-of-scope, `n_observed=0`); (2) redeploy 03:38 UTC with `series_filter` mirroring scout's b880b66 fix (`0bcb2ba`) — observer found 50 KXMLBGAME tickers per cycle but ALL were future-dated (25MAY+26MAY) and books only had 24MAY → 11 consecutive cycles of `n_no_book_match=50, n_observed=0`; (3) cap-bump 14:40 UTC (`max_markets_per_series: 50→150` on observer block only) — first post-bump cycle at 15:40:54 UTC produced **30 observations** with the first row hand-verified to the cent (A-arb EV −$0.329 stored as −0.3288; B EV −$0.223 stored as −0.2223; matching correct; Pinnacle present). Mid-session: feed-diagnosis established the calendar mismatch is a REAL-WORLD venue-asymmetry fact (books don't list >24h pre-game on MLB; the-odds-api refresh is 60s pre-match all tiers; binding latency cap is OUR 1h cadence, not the feed); cap-bump was the cheapest correct fix and `$30`/`$319` upgrades are explicitly deferred until A hourly-snapshot produces a reason. Verdict design reframed in `analyze_kalshi_sports_arb_observations.py`: dual-verdict shape (A/B separate), B forced INCONCLUSIVE at 1h cadence, new `SHELVE_LATENCY_THESIS_CLOSED` A-verdict for when A=0/negative-EV (kalshi-crypto-shelved pattern), 3 new mandatory structural caveats (calendar asymmetry, single-feed limit, hourly-arb-prior-low).
