@@ -1,0 +1,11 @@
+echo "=== full kalshi_sports_arb_scan payload ==="
+sqlite3 /home/azureuser/trading_corp/data/trading_corp.db "SELECT payload_json FROM audit_event WHERE kind='kalshi_sports_arb_scan' ORDER BY ts ASC;"
+echo ""
+echo "=== what KXMLB tickers are Kalshi serving right now (scout discovery) ==="
+sqlite3 /home/azureuser/trading_corp/data/trading_corp.db "SELECT DISTINCT SUBSTR(json_extract(payload_json,'\$.ticker'),1,INSTR(json_extract(payload_json,'\$.ticker')||'-','-')-1) AS prefix, COUNT(*) FROM audit_event WHERE kind='kalshi_sports_scout_unmapped' AND json_extract(payload_json,'\$.ticker') LIKE 'KXMLB%' AND ts > '2026-05-24 02:00:00' GROUP BY prefix ORDER BY COUNT(*) DESC;"
+echo ""
+echo "=== scout's observed MLB tickers since restart ==="
+sqlite3 /home/azureuser/trading_corp/data/trading_corp.db "SELECT json_extract(payload_json,'\$.ticker'), MAX(ts) FROM audit_event WHERE kind='kalshi_sports_observed' AND json_extract(payload_json,'\$.league')='MLB' AND ts > '2026-05-24 02:00:00' GROUP BY 1 LIMIT 10;"
+echo ""
+echo "=== service restart investigation: what happened ~03:17 ==="
+journalctl -u trading-corp.service --since "2026-05-24 03:15:00" --until "2026-05-24 03:18:30" --no-pager | grep -iE "Traceback|fatal|killed|terminat|restart|stopping|started" | head -20

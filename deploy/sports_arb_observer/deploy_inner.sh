@@ -24,7 +24,7 @@ cp -v "$BASE/config/strategies.yaml" "$BACKUP/strategies.yaml.bak"
 echo ">>> Verifying bundled file md5s"
 declare -A EXPECTED
 EXPECTED["trading_corp/agents/strategies/_sports_math.py"]="23f8cc2e92037893d25080b77bf9cef2"
-EXPECTED["trading_corp/agents/strategies/kalshi_sports_arb_observer.py"]="73e7ca73e641102783ea37e11b5f3547"
+EXPECTED["trading_corp/agents/strategies/kalshi_sports_arb_observer.py"]="25aa81236faf939f1936cfc5f65ea97f"
 EXPECTED["trading_corp/data/odds_api_client.py"]="63da9c0c929e9c6a49e983c7f09af2c6"
 for f in "${!EXPECTED[@]}"; do
   ACTUAL=$(md5sum "$STAGING/$f" | awk '{print $1}')
