@@ -309,7 +309,7 @@ class KalshiCopyTraderAgent:
                         logger_agent.log_event(
                             self.name, 'kalshi_copy_entry_skipped_sports',
                             {'strategy': self.name, 'division': self.division,
-                             'wallet': wallet, 'whale_handle': user_name,
+                             'whale': whale,
                              'ticker': ticker,
                              'reason': 'sports_routed_to_scout'},
                         )
