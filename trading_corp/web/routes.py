@@ -51,6 +51,45 @@ _LLM_LOCK = Lock()
 _DEFER_TTL_HOURS = 24
 
 
+def _resolve_ic_division_ctx(deps, division: str) -> dict:
+    """Map a `division` query-string value to the right strategy/registry/
+    batcher handles on `deps`. Two IC divisions are supported today:
+
+      - "robinhood_joint" → deps.ic_* fields (default)
+      - "tasty_options"   → deps.tasty_* fields
+
+    Unknown values fall back to robinhood_joint silently — defensive against
+    bookmark drift. Returns a dict keyed by the field names the IC-live +
+    grader endpoints use, so the call sites stay uniform.
+    """
+    if division == "tasty_options":
+        return {
+            "division_slug": "tasty_options",
+            "division_name": "Tasty Options",
+            "strategy_slug": "tasty_options_iron_condor",
+            "broker_key": "tasty_options",
+            "strategy": getattr(deps, "tasty_strategy", None),
+            "division": getattr(deps, "tasty_division", None),
+            "pending_combo_registry": getattr(
+                deps, "tasty_pending_combo_registry", None,
+            ),
+            "telegram_batcher": getattr(
+                deps, "tasty_telegram_batcher", None,
+            ),
+        }
+    # Default / "robinhood_joint" — preserves pre-2026-05-24 behavior.
+    return {
+        "division_slug": "robinhood_joint",
+        "division_name": "Robinhood Joint",
+        "strategy_slug": "robinhood_joint_iron_condor",
+        "broker_key": "robinhood_joint",
+        "strategy": getattr(deps, "ic_strategy", None),
+        "division": getattr(deps, "ic_division", None),
+        "pending_combo_registry": getattr(deps, "pending_combo_registry", None),
+        "telegram_batcher": getattr(deps, "ic_telegram_batcher", None),
+    }
+
+
 def _group_index_entries(entries: list) -> list[dict]:
     """Group `/approvals` index entries by pmcc_pair_id (Phase B.3).
 
@@ -1584,25 +1623,26 @@ def register(app: FastAPI) -> None:
     # page load.
 
     @app.get("/telemetry/iron_condor", response_class=HTMLResponse)
-    async def iron_condor_live(request: Request):
+    async def iron_condor_live(request: Request, division: str = "robinhood_joint"):
         from trading_corp.agents import ic_live_view as _icv
-        broker = deps.data_exec.brokers.get("robinhood_joint") or deps.paper_broker
+        ctx = _resolve_ic_division_ctx(deps, division)
+        broker = deps.data_exec.brokers.get(ctx["broker_key"]) or deps.paper_broker
         positions = await _icv.open_positions_detail(
             broker=broker, db_url=deps.db_url,
         )
         activity = _icv.recent_activity(db_url=deps.db_url, limit=50)
         pending = _icv.pending_combos_view(
-            registry=deps.pending_combo_registry,
-            batcher=deps.ic_telegram_batcher,
+            registry=ctx["pending_combo_registry"],
+            batcher=ctx["telegram_batcher"],
         )
         scan_results = await _icv.todays_scan_results(
             broker=broker, db_url=deps.db_url,
         )
         health = _icv.strategy_health(
-            ic_strategy=deps.ic_strategy,
-            ic_division=deps.ic_division,
-            pending_combo_registry=deps.pending_combo_registry,
-            telegram_batcher=deps.ic_telegram_batcher,
+            ic_strategy=ctx["strategy"],
+            ic_division=ctx["division"],
+            pending_combo_registry=ctx["pending_combo_registry"],
+            telegram_batcher=ctx["telegram_batcher"],
             db_url=deps.db_url,
         )
         closed = _icv.recent_closed_combos(db_url=deps.db_url, limit=10)
@@ -1618,29 +1658,34 @@ def register(app: FastAPI) -> None:
                 "scan_results": scan_results,
                 "health": health,
                 "closed": closed,
+                "division_slug": ctx["division_slug"],
+                "division_name": ctx["division_name"],
             },
         )
 
     @app.get(
         "/telemetry/iron_condor/partials/live", response_class=HTMLResponse,
     )
-    async def iron_condor_live_partial(request: Request):
+    async def iron_condor_live_partial(
+        request: Request, division: str = "robinhood_joint",
+    ):
         """HTMX-refreshing partial for sections 1 / 3 / 5 (open positions,
         pending combos, strategy health)."""
         from trading_corp.agents import ic_live_view as _icv
-        broker = deps.data_exec.brokers.get("robinhood_joint") or deps.paper_broker
+        ctx = _resolve_ic_division_ctx(deps, division)
+        broker = deps.data_exec.brokers.get(ctx["broker_key"]) or deps.paper_broker
         positions = await _icv.open_positions_detail(
             broker=broker, db_url=deps.db_url,
         )
         pending = _icv.pending_combos_view(
-            registry=deps.pending_combo_registry,
-            batcher=deps.ic_telegram_batcher,
+            registry=ctx["pending_combo_registry"],
+            batcher=ctx["telegram_batcher"],
         )
         health = _icv.strategy_health(
-            ic_strategy=deps.ic_strategy,
-            ic_division=deps.ic_division,
-            pending_combo_registry=deps.pending_combo_registry,
-            telegram_batcher=deps.ic_telegram_batcher,
+            ic_strategy=ctx["strategy"],
+            ic_division=ctx["division"],
+            pending_combo_registry=ctx["pending_combo_registry"],
+            telegram_batcher=ctx["telegram_batcher"],
             db_url=deps.db_url,
         )
         return templates.TemplateResponse(
@@ -1655,11 +1700,16 @@ def register(app: FastAPI) -> None:
     @app.post(
         "/telemetry/iron_condor/grade", response_class=HTMLResponse,
     )
-    async def iron_condor_grade(request: Request):
+    async def iron_condor_grade(
+        request: Request, division: str = "robinhood_joint",
+    ):
         """Grade an operator-pasted Barchart screener block against live
         IC strategy rules.  Research/grading only — no order surface.
 
         Body (form-encoded): `paste` = textarea content.
+        Query: `division` ∈ {"robinhood_joint", "tasty_options"} — selects
+        which strategy's universe/watchlist + thresholds to grade against.
+        Default preserves backwards compatibility with the original UI.
         Response: partial HTML fragment for htmx swap into #grader-result.
         """
         from trading_corp.agents.strategies.ic_candidate_grader import (
@@ -1668,21 +1718,24 @@ def register(app: FastAPI) -> None:
         from trading_corp.utils.iv import _get_configured_provider
         form = await request.form()
         paste = str(form.get("paste") or "")
-        strategy = getattr(deps, "ic_strategy", None)
-        if strategy is None:
+        ctx = _resolve_ic_division_ctx(deps, division)
+        if ctx["strategy"] is None:
             raise HTTPException(
-                status_code=503, detail="ic_strategy not available",
+                status_code=503,
+                detail=f"{ctx['strategy_slug']} not available",
             )
         provider = _get_configured_provider()
         result = await grade_paste(
             paste,
-            strategy=strategy,
+            strategy=ctx["strategy"],
             provider=provider,
             logger=deps.logger_agent,
+            division=ctx["division_slug"],
+            strategy_slug=ctx["strategy_slug"],
         )
         return templates.TemplateResponse(
             request, "partials/iron_condor_grader_result.html",
-            {"result": result},
+            {"result": result, "division_slug": ctx["division_slug"]},
         )
 
     @app.get("/approvals/{order_id}", response_class=HTMLResponse)

@@ -1772,3 +1772,77 @@ robinhood_joint_iron_condor:
     require_approval_for:
       - any_neutral_strategy_open_or_close
       - any_action_when_vix_above_30
+
+# ── Tasty Options Iron Condor v1 (added 2026-05-24) ──
+# Sibling of robinhood_joint_iron_condor. Identical decision tree and
+# thresholds; the only behavioral difference is the `watchlist` key
+# replacing `universe`. The watchlist is PERMISSIVE — the auto-scanner
+# scans only these symbols, but operators can paste any ticker into
+# the morning grader (/telemetry/iron_condor?division=tasty_options)
+# and trade it if it grades cleanly. Empty watchlist → scanner emits
+# `scan_skipped_empty_watchlist` audit row and short-circuits (pure
+# paste-driven entry path).
+tasty_options_iron_condor:
+  enabled: true
+  auto_execute: false
+  division: tasty_options
+
+  watchlist: [SPY, QQQ, IWM]
+
+  wing_widths:
+    SPY: 3.0
+    QQQ: 4.0
+    IWM: 2.0
+    GLD: 2.0     # included so operator can add GLD to watchlist without YAML edit
+    TLT: 2.0     # ditto for TLT
+
+  entry:
+    target_dte: 45
+    short_delta: 0.16
+    min_credit_pct_of_width: 0.33
+    min_ivr: 30
+    min_ivp: 50
+    term_structure_max_diff: 0.05
+
+  portfolio_caps:
+    max_per_trade_pct: 0.05
+    max_bp_pct: 0.40
+    max_concurrent: 3
+    max_correlated: 2
+
+  management:
+    profit_target_pct: 0.50
+    force_close_dte: 21
+    short_dte_force_close: 7
+    hard_stop_credit_mult: 2.00
+    catastrophic_stop_account_pct: 0.10
+    tested_delta_warn: 0.25
+    tested_delta_adjust: 0.30
+    tested_delta_close_side: 0.35
+    tested_side_neutral_band: 0.05
+    max_adjustments: 1
+    min_dte_for_adjustment: 14
+    ex_div_force_close_within_trading_days: 3
+    ex_div_force_close_short_call_delta: 0.25
+    adjustment_roll_target_short_delta: 0.30
+
+  circuit_breaker:
+    consecutive_loss_pause: 3
+    drawdown_pct_pause: 0.15
+    pause_days: 5
+
+  paper_simulation:
+    per_leg_slippage_dollars: 0.03
+
+  notifications:
+    telegram_batch_window_sec: 60
+    telegram_bypass_tags:
+      - circuit_breaker_auto_repause
+      - catastrophic_stop
+      - startup_catchup
+      - late_dte_force_close
+
+  auto_execute_caps:
+    require_approval_for:
+      - any_neutral_strategy_open_or_close
+      - any_action_when_vix_above_30

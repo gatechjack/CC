@@ -88,6 +88,32 @@ divisions:
     target_annual_return: 0.20
     enabled: false
 
+  # ── Tastytrade (added 2026-05-24; Tasty Options division) ─────────────
+  # Sibling of robinhood_joint trading the same 45-DTE iron-condor
+  # strategy on Tastytrade. The "universe" is a permissive WATCHLIST:
+  # the auto-scanner uses it for daily entry-candidate generation, but
+  # operators can paste any ticker into the morning grader and trade
+  # it if it grades cleanly (see strategies.yaml `watchlist:` key and
+  # `strict_universe = False` on the strategy class). Phase 1
+  # observation runs paper-internal for ≥21 calendar days; Phase 2 live
+  # gated on Backtester sign-off + Board review (auto_execute earned,
+  # never granted).
+  - slug: tasty_options
+    name: Tasty Options
+    broker: tastytrade
+    # account_filter matches against TT account_number OR nickname
+    # (substring). Empty string → first account from
+    # Account.get(session). Set this to a real TT account substring
+    # when the operator picks the trading account; pre-Phase-2 the
+    # broker is paper-wrapped by main.py so the account doesn't matter
+    # for fills.
+    account_filter: ""
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.20
+    strategy: tasty_options_iron_condor
+    enabled: true
+
   # ── Coinbase (one login, two trading modes) ────────────────────────────
   - slug: coinbase_spot
     name: Coinbase BTC HODL

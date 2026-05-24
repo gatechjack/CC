@@ -1188,6 +1188,83 @@ async def run(argv: list[str] | None = None) -> int:
             name="ic-position-manager",
         )
 
+        # --- Tasty Options Iron Condor v1 (2026-05-24, Commit 4/5) ---
+        # Sibling of robinhood_joint_iron_condor on Tastytrade. Identical
+        # decision tree; only difference is the permissive `watchlist`
+        # semantic vs the hard-gate `universe` (see strategies.yaml +
+        # ic_candidate_grader.py:strict_universe). HITL on every action —
+        # auto_execute:false in strategies.yaml is load-bearing. Same two
+        # asyncio loops as RH Joint. Reuses the single shared RiskAgent +
+        # _ic_orchestration helpers (already division-parameterized via
+        # division= kwarg in propose_ic_combo); separate
+        # PendingComboRegistry + TelegramBatcher so audit ownership and
+        # restart-isolation stay clean across divisions.
+        from trading_corp.agents.divisions.tasty_options import TastyOptionsAgent
+        from trading_corp.agents.strategies.tasty_options_iron_condor import (
+            TastyOptionsIronCondorAgent,
+        )
+
+        tasty_division = TastyOptionsAgent()
+        tasty_strategy = TastyOptionsIronCondorAgent(db_url=secrets.db_url)
+        tasty_division.attach_strategy(tasty_strategy)
+
+        tasty_telegram_batcher = TelegramBatcher(
+            channel,
+            batch_window_sec=60.0,
+            bypass_tags=(
+                "circuit_breaker_auto_repause",
+                "catastrophic_stop",
+                "startup_catchup",
+                "late_dte_force_close",
+            ),
+        )
+
+        tasty_pending_combo_registry = PendingComboRegistry(
+            logger_agent=logger_agent,
+        )
+
+        # Broker for the tasty_options division. Falls back to the
+        # process paper_broker if TT connect failed at startup (same
+        # broker_fallback_to_paper $0-equity pattern as RH Joint).
+        _tasty_broker = data_exec.brokers.get(tasty_division.slug) or paper_broker
+
+        async def _tasty_account_factory():
+            return await _tasty_broker.snapshot()
+
+        def _tasty_strategy_state_factory():
+            return _ICStrategyState(strategy=tasty_strategy.SLUG, halted=False)
+
+        tasty_signal_scanner_task = asyncio.create_task(
+            _ic_run_signal_scanner_loop(
+                division=tasty_division,
+                broker=_tasty_broker,
+                strategy=tasty_strategy,
+                risk_agent=risk_agent,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                account_factory=_tasty_account_factory,
+                strategy_state_factory=_tasty_strategy_state_factory,
+                telegram_batcher=tasty_telegram_batcher,
+                pending_combo_registry=tasty_pending_combo_registry,
+            ),
+            name="tasty-signal-scanner",
+        )
+        tasty_position_manager_task = asyncio.create_task(
+            _ic_run_position_manager_loop(
+                division=tasty_division,
+                broker=_tasty_broker,
+                strategy=tasty_strategy,
+                risk_agent=risk_agent,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+                account_factory=_tasty_account_factory,
+                strategy_state_factory=_tasty_strategy_state_factory,
+                telegram_batcher=tasty_telegram_batcher,
+                pending_combo_registry=tasty_pending_combo_registry,
+            ),
+            name="tasty-position-manager",
+        )
+
 
         # --- Polymarket round-trip resolver + equity snapshot writer ---
         # Closes the data gaps for the betmoar-style portfolio dashboard:
@@ -1471,6 +1548,10 @@ async def run(argv: list[str] | None = None) -> int:
             ic_strategy=ic_strategy,
             ic_telegram_batcher=ic_telegram_batcher,
             pending_combo_registry=pending_combo_registry,
+            tasty_division=tasty_division,
+            tasty_strategy=tasty_strategy,
+            tasty_telegram_batcher=tasty_telegram_batcher,
+            tasty_pending_combo_registry=tasty_pending_combo_registry,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -1559,6 +1640,16 @@ async def run(argv: list[str] | None = None) -> int:
             ic_position_manager_task.cancel()
             try:
                 await ic_position_manager_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            tasty_signal_scanner_task.cancel()
+            try:
+                await tasty_signal_scanner_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            tasty_position_manager_task.cancel()
+            try:
+                await tasty_position_manager_task
             except (asyncio.CancelledError, Exception):
                 pass
             replay_task.cancel()
@@ -1699,6 +1790,43 @@ def _build_broker_for_division(
             demo=os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True"),
         )
 
+    if family == "tastytrade":
+        # Tasty Options division. Auth via the same OAuth refresh-token env
+        # vars the TastytradeDataProvider uses (TASTYTRADE_PROVIDER_SECRET +
+        # TASTYTRADE_REFRESH_TOKEN). The broker delegates get_option_greeks
+        # to the globally-configured data provider so we don't open a second
+        # dxFeed subscription per process. is_test routes Session to TT's
+        # cert/sandbox endpoint — Phase-0 smoke is operator-run via
+        # scripts/tasty_sandbox_smoke.py, not from this code path.
+        from trading_corp.brokers.tastytrade import TastytradeBroker
+        from trading_corp.utils.iv import _get_configured_provider
+        if not (secrets.tastytrade_provider_secret and secrets.tastytrade_refresh_token):
+            log.info(
+                "Skipping division %s — no Tastytrade credentials "
+                "(TASTYTRADE_PROVIDER_SECRET / TASTYTRADE_REFRESH_TOKEN)",
+                division.slug,
+            )
+            return None
+        try:
+            tt = TastytradeBroker(
+                provider_secret=secrets.tastytrade_provider_secret,
+                refresh_token=secrets.tastytrade_refresh_token,
+                account_filter=division.account_filter or None,
+                is_test=False,
+                data_provider=_get_configured_provider(),
+            )
+        except Exception as e:
+            log.warning(
+                "TastytradeBroker construction failed for %s: %s — "
+                "division will use paper fallback",
+                division.slug, e,
+            )
+            return None
+        if is_live_family:
+            return tt
+        paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
+        return PaperExecutionBroker(tt, paper)
+
     if family == "paper":
         return PaperBroker(
             account=f"paper_{division.slug}",
@@ -1735,6 +1863,10 @@ async def _start_web_server(
     ic_strategy: Any = None,
     ic_telegram_batcher: Any = None,
     pending_combo_registry: Any = None,
+    tasty_division: Any = None,
+    tasty_strategy: Any = None,
+    tasty_telegram_batcher: Any = None,
+    tasty_pending_combo_registry: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -1771,6 +1903,10 @@ async def _start_web_server(
         ic_strategy=ic_strategy,
         ic_telegram_batcher=ic_telegram_batcher,
         pending_combo_registry=pending_combo_registry,
+        tasty_division=tasty_division,
+        tasty_strategy=tasty_strategy,
+        tasty_telegram_batcher=tasty_telegram_batcher,
+        tasty_pending_combo_registry=tasty_pending_combo_registry,
     )
     app = create_app(deps)
     config = uvicorn.Config(

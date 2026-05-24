@@ -78,6 +78,15 @@ def test_instantiates_and_reads_config(divisions_yaml):
     assert a.has_strategy is False
 
 
+def test_production_config_has_tasty_options_entry():
+    """Smoke-check against the real config/divisions.yaml so a future
+    rename of the slug / broker / strategy trips this test loudly."""
+    a = TastyOptionsAgent()        # default path = config/divisions.yaml
+    assert a.broker_family == "tastytrade"
+    assert a.strategy_name == "tasty_options_iron_condor"
+    assert a.enabled is True
+
+
 def test_missing_config_file_returns_inactive_agent(tmp_path: Path):
     a = TastyOptionsAgent(divisions_yaml=tmp_path / "does_not_exist.yaml")
     assert a.enabled is False

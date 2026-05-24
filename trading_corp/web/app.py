@@ -89,6 +89,16 @@ class WebDeps:
                                         # by /approvals routes to render +
                                         # resolve combo approval cards.
 
+    # Tasty Options sibling division (2026-05-24, Commit 4/5). Parallel
+    # to the ic_* fields above — separate strategy/division/batcher/
+    # registry so audit ownership stays clean across the two IC
+    # divisions. /telemetry/iron_condor?division=tasty_options switches
+    # the live-view + grader endpoints onto these handles.
+    tasty_division: Any = None             # TastyOptionsAgent | None
+    tasty_strategy: Any = None             # TastyOptionsIronCondorAgent | None
+    tasty_telegram_batcher: Any = None     # TelegramBatcher | None
+    tasty_pending_combo_registry: Any = None  # PendingComboRegistry | None
+
 
 def create_app(deps: WebDeps) -> FastAPI:
     """Build the FastAPI app and wire routes."""

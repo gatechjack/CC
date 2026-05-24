@@ -53,14 +53,17 @@
         <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
           {% for d in grp.divisions %}
             {# Prediction-market tiles open the unified dashboard with the
-               division pre-selected; robinhood_joint opens the IC live view
-               (its only strategy); all other divisions keep the per-division
-               drill-down route. #}
+               division pre-selected; robinhood_joint and tasty_options
+               (both IC divisions) open the IC live view scoped to that
+               division via the ?division= query param; all other divisions
+               keep the per-division drill-down route. #}
             {% set _href = ('/prediction-markets/' + d.slug)
                             if grp.key == 'prediction_markets'
                             else ('/telemetry/iron_condor'
                                     if d.slug == 'robinhood_joint'
-                                    else ('/division/' + d.slug)) %}
+                                    else ('/telemetry/iron_condor?division=tasty_options'
+                                            if d.slug == 'tasty_options'
+                                            else ('/division/' + d.slug))) %}
             <a href="{{ _href }}"
                class="group bg-pane border border-edge rounded-lg p-4
                       hover:border-edge-2 hover:bg-pane-2 transition-colors block">

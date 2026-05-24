@@ -2,19 +2,32 @@
 {% block title %}IC Live View — Trading Corp{% endblock %}
 
 {% block content %}
+{# division_slug + division_name are passed by the route. Default to RH
+   Joint for backwards compatibility with bookmarks predating
+   2026-05-24's Tasty Options addition. #}
+{% set _div_slug = division_slug | default("robinhood_joint") %}
+{% set _div_name = division_name | default("Robinhood Joint") %}
+{% set _strategy_slug = "tasty_options_iron_condor" if _div_slug == "tasty_options"
+                          else "robinhood_joint_iron_condor" %}
+{% set _live_partial_url = "/telemetry/iron_condor/partials/live?division=" ~ _div_slug %}
+
 <section class="bg-pane border border-edge rounded-lg p-4 mb-4">
   <header class="flex items-baseline justify-between mb-2 gap-3 flex-wrap">
     <h1 class="text-mono text-sm font-semibold tracking-tight uppercase">
       Iron Condor — Live Trades View
+      <span class="text-[10px] font-mono tracking-wider px-1.5 py-0.5 rounded
+                   bg-accent/15 text-accent ml-1">
+        {{ _div_name }}
+      </span>
     </h1>
     <span class="text-[11px] text-muted font-mono uppercase tracking-wider">
       Last refreshed: <span id="last-refreshed">{{ now_iso }}</span>
     </span>
   </header>
   <div class="text-[11px] text-muted font-mono">
-    Strategy: <code>robinhood_joint_iron_condor</code>  ·  Division: <code>robinhood_joint</code>
+    Strategy: <code>{{ _strategy_slug }}</code>  ·  Division: <code>{{ _div_slug }}</code>
     ·  <a href="/approvals" class="underline">/approvals</a>
-    ·  <button hx-get="/telemetry/iron_condor/partials/live"
+    ·  <button hx-get="{{ _live_partial_url }}"
                hx-target="#live-sections"
                hx-swap="innerHTML"
                class="underline text-accent">manual refresh</button>
@@ -23,7 +36,7 @@
 
 {# ── Live sections (1, 3, 5) — htmx auto-refresh every 30s ─────────── #}
 <div id="live-sections"
-     hx-get="/telemetry/iron_condor/partials/live"
+     hx-get="{{ _live_partial_url }}"
      hx-trigger="every 30s"
      hx-swap="innerHTML">
   {% include "partials/iron_condor_live_sections.html" %}
