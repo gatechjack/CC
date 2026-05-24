@@ -76,6 +76,76 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-24 03:17 UTC — kalshi_sports_scout: MLB team-code aliases AZ + CWS (commit `d6d54d3`, deploy script to be committed)
+
+**Commits:** `d6d54d3` (one-file mapping fix).
+**Triggered by:** First post-deploy scan from prior entry showed
+`n_unmapped=13` with 6 MLB tickers failing `team_code_not_in_mapping` on
+`AZ` and `CWS`. MLB observed = 0 that cycle because every active MLB
+game involved AZSF or MINCWS.
+
+**Backup tag:** `.pre-mlb-aliases-20260524`.
+
+**Files deployed (1):**
+- `trading_corp/data/sports_team_mapping.py` — two-line addition to
+  `MLB_TEAMS`: `"AZ": "Arizona Diamondbacks"`, `"CWS": "Chicago White Sox"`.
+
+**Audit performed (no other gaps found):**
+- Ran `scripts/_probe_kalshi_team_codes.py` against current OPEN markets
+  on all 4 in-scope series. Results: MLB 94 markets / 30 unique codes /
+  **2 gaps (AZ, CWS)**; NBA 6/4/0; NHL 8/4/0; MLS 21+7-TIE / 14/0. Only
+  MLB had gaps. The 9 "unused" MLB mapping keys (KCR/OAK/SDP/SFG/TBR/
+  WAS/WSN/etc.) are existing defensive aliases — kept.
+- Caveat: NBA + NHL audits ran during late-playoff windows so only 4
+  team codes each were active. Audit only confirms COMPLETENESS for
+  currently-live games, not for the full team rosters. Re-audit at
+  start of NBA/NHL regular season (~Oct 2026) before assuming complete.
+
+**Features shipped:**
+- **MLB games involving Arizona Diamondbacks or Chicago White Sox now
+  resolve.** Previously all 6 such tickers per scan fell to
+  `kalshi_sports_scout_unmapped`. Now they should reach the
+  divergence-observation step.
+
+**Notable code changes:**
+- **Alias style follows existing pattern.** New codes inserted on their
+  own line (consistent with `KCR` and `ATH` standalones), breaking the
+  two-per-line pairing rather than reflowing the column alignment.
+- **NBA / NHL gaps not assessable from the audit.** With only 4 active
+  teams each in playoffs, the audit can't surface codes for the other
+  ~25 teams. Re-audit needed at regular-season start to confirm full
+  coverage before relying on NBA/NHL game-moneyline edge.
+
+**Verification:**
+- Pre-deploy probe (commit pending): MLB 94 markets, 2 gaps confirmed.
+- Smoke: `py_compile` clean. Import + `MLB_TEAMS["AZ"]` returns
+  `"Arizona Diamondbacks"`, `["CWS"]` returns `"Chicago White Sox"`.
+  MLB_TEAMS dict size 37 → 39.
+- Service restarted at 03:17:03 UTC; `Kalshi Sports Scout online` at
+  03:17:49 UTC (PID 1235018). No scout-related startup errors.
+- First post-deploy scan expected ~04:17:49 UTC. Background verification
+  task pending: confirm MLB `n_observed > 0`.
+
+**Inert / dormant on current traffic:**
+- **NBA / NHL playoff vs. regular-season coverage.** Audit confirms
+  current-live teams map; doesn't confirm regular-season full roster
+  for those leagues. If NBA / NHL games involving non-playoff teams
+  appear on Kalshi before regular season starts (rare but possible for
+  exhibitions / WNBA / etc.), unmapped rows may surface and require a
+  follow-on audit.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-mlb-aliases-20260524; BASE=/home/azureuser/trading_corp
+mv \$BASE/trading_corp/data/sports_team_mapping.py.\$TAG \
+   \$BASE/trading_corp/data/sports_team_mapping.py
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-24 01:28 UTC — kalshi_sports_scout: series_filter fix for 1-obs/ticker rotation (commit `b880b66`, deploy script `12c0c86`)
 
 **Commits:** `b880b66` (4-file change), `12c0c86` (one-off deploy script).
