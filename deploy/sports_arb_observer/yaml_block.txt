@@ -1,0 +1,57 @@
+# ── Kalshi Sports Arbitrage observer (2026-05-23, Phase 0) ──
+# Sibling of the scout above; separate division (kalshi_arbitrage).
+# Read-only — NEVER emits orders. Writes kalshi_sports_arb_observation
+# audit rows with raw Kalshi quotes + per-book sportsbook prices +
+# EV-at-fill for both Hypotheses A (cross-venue arb) and B (lead-lag
+# directional) at qty=10 contracts.
+#
+# DEFAULT enabled: false. Flip to true ONLY after the dev dry-run +
+# the first-cycle hand-verification gate (per Phase 0 plan Step 4).
+#
+# Quota: each in-scope league costs 3 markets/call × ~1 call/h = ~72
+# credits/day. Free tier (500/mo) is insufficient alongside the
+# scout's ~30-60/day; the Phase 0 plan recommends $30/mo paid tier
+# before flipping enabled.
+#
+# Pinnacle IS available on this account but only when explicitly
+# requested via bookmakers= filter (verified 2026-05-23 prod probe for
+# both basketball_nba AND baseball_mlb). sharp_book_preference below
+# drives the books= filter to get_lines; first list entry is preferred
+# for Hypothesis B model_prob, the rest are the soft-book fallback.
+#
+# League dispatch: observer reads `leagues` and routes via the
+# _PHASE0_LEAGUE_CLASSIFIERS dispatch table. Supported leagues today:
+# NBA (validated to-the-cent on 2026-05-23 against OKC-SAS row) and
+# MLB (added 2026-05-23; pre-flip audit confirmed parser/mapping/
+# market types/Pinnacle; first-cycle hand-verification still pending
+# operator flip).
+#
+# MLB-SPECIFIC GRADING CAVEATS (deferred to Phase 1 prereq matrix —
+# do NOT take Hypothesis A live without resolving these):
+#   - Rain-shortened / suspended games: when does Kalshi grade vs
+#     when does each sportsbook? Official-game rule (5 innings home
+#     ahead / 4.5 away ahead) differs from grading-by-final.
+#   - Pitcher-listed rule: most US books void or no-action MLB ML
+#     when listed starter doesn't pitch; Kalshi rules unverified.
+#   - Extra innings: should always count for both venues but verify.
+#   - Run-line pushes: not relevant here (Phase 0 is ML-only) but
+#     keep in mind if/when Kalshi adds run lines.
+kalshi_sports_arb_observer:
+  enabled: true                      # FLIPPED 2026-05-23 for MLB Phase 0
+  auto_execute: false                # always — observer never emits
+  division: kalshi_arbitrage
+  poll_interval_sec: 3600            # 1h
+  discovery:
+    max_series_per_category: 50
+    max_markets_per_series: 50
+    cache_ttl_sec: 900
+  # League scope — single value or list. Each league dispatches to
+  # its own classifier; NBA path is validated to-the-cent, MLB path
+  # is pre-flip-audited but awaiting first-cycle hand verification.
+  # MLB is current Phase 0 default because NBA Finals haven't tipped
+  # yet and MLB has ~20 games/day vs NBA's 1-2 right now.
+  leagues: [MLB]
+  sizing_for_ev_calc:
+    contracts: 10                    # qty assumption for fee math + EV
+  sharp_book_preference: [pinnacle, draftkings, fanduel, betmgm]
+

@@ -1,0 +1,19 @@
+        # --- Kalshi Sports Arbitrage observer (2026-05-23, Phase 0) ---
+        # Sibling of the scout, separate division (kalshi_arbitrage).
+        # Writes kalshi_sports_arb_observation audit with raw quotes +
+        # per-book + EV-at-fill (A + B). NEVER emits orders.
+        from trading_corp.agents.strategies.kalshi_sports_arb_observer import (
+            KalshiSportsArbObserverAgent,
+        )
+        kalshi_sports_arb_observer_agent = KalshiSportsArbObserverAgent(
+            odds_api_key=secrets.odds_api_key,
+            db_url=secrets.db_url,
+        )
+        kalshi_sports_arb_observer_task = asyncio.create_task(
+            _scheduled_kalshi_sports_arb_observer_loop(
+                kalshi_sports_arb_observer_agent,
+                logger_agent=logger_agent,
+                data_exec=data_exec,
+            )
+        )
+
