@@ -1637,7 +1637,7 @@ kalshi_sports_arb_observer:
   poll_interval_sec: 3600            # 1h
   discovery:
     max_series_per_category: 50
-    max_markets_per_series: 50
+    max_markets_per_series: 150
     cache_ttl_sec: 900
   # League scope — single value or list. Each league dispatches to
   # its own classifier; NBA path is validated to-the-cent, MLB path

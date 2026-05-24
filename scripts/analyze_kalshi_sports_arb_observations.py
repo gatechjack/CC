@@ -195,46 +195,94 @@ def _summarize_ev(values: list[float]) -> dict[str, Any]:
 
 
 def _propose_verdict(agg: dict[str, Any]) -> dict[str, Any]:
+    """Proposes (a) A-hypothesis verdict at hourly-snapshot resolution
+    and (b) B-hypothesis verdict, which is FORCED to
+    INCONCLUSIVE_INSTRUMENT_TOO_WEAK by Phase 0's 1h poll cadence
+    (verified 2026-05-24: the-odds-api refresh is 60s pre-match, but
+    our 1h cycle is the binding latency cap; sub-hour lag is
+    structurally unobservable). Operator confirms.
+    """
     n = agg["n_total"]
-    if n < _INSUFFICIENT_N:
-        return {
-            "verdict": "INCONCLUSIVE_INSTRUMENT_TOO_WEAK",
-            "reason": f"n={n} < {_INSUFFICIENT_N} threshold",
-        }
     a_n_eval = agg["a_arb_n_evaluated"]
     a_pos = agg["a_arb_n_positive_ev"]
     a_pos_rate = a_pos / a_n_eval if a_n_eval else 0.0
     a_mean_ev = (agg["a_arb"] or {}).get("mean") or 0.0
-    b_n_eval = agg["b_n_evaluated"]
-    b_pos = agg["b_n_positive_ev"]
-    b_pos_rate = b_pos / b_n_eval if b_n_eval else 0.0
-    b_mean_ev = (agg["b"] or {}).get("mean") or 0.0
-    pct_pin = agg.get("pct_pinnacle_used") or 0.0
-    needs_pinnacle = pct_pin < 0.5 and b_pos_rate < _B_HIT_GO
 
-    if a_pos_rate >= _A_ARB_HIT_GO:
-        return {"verdict": "GO_PHASE_1_ODDS_API",
-                "reason": f"A-arb positive-EV rate {a_pos_rate:.1%} >= {_A_ARB_HIT_GO:.0%} threshold"}
-    if b_pos_rate >= _B_HIT_GO and pct_pin >= 0.5:
-        return {"verdict": "GO_PHASE_1_ODDS_API",
-                "reason": f"B positive-EV rate {b_pos_rate:.1%} >= {_B_HIT_GO:.0%}; Pinnacle in {pct_pin:.1%} of rows"}
-    if needs_pinnacle:
-        return {"verdict": "GO_PHASE_1_NEEDS_PINNACLE",
-                "reason": f"Pinnacle present in only {pct_pin:.1%} of rows; B-test under soft-book proxy; cannot KILL"}
-    if a_mean_ev < _MEAN_EV_KILL_THRESHOLD_PER_ROW and b_mean_ev < _MEAN_EV_KILL_THRESHOLD_PER_ROW:
-        return {"verdict": "KILL_CANDIDATE",
-                "reason": f"Both mean EVs below {_MEAN_EV_KILL_THRESHOLD_PER_ROW}; review caveats before confirming"}
-    return {
+    # B is INCONCLUSIVE by construction at 1h cadence.
+    b_verdict = {
         "verdict": "INCONCLUSIVE_INSTRUMENT_TOO_WEAK",
-        "reason": "no hypothesis clears its GO threshold; not negative enough for KILL",
+        "reason": "1h poll cadence cannot observe sub-hour sportsbook->Kalshi lag "
+                  "(feed refreshes 60s; binding constraint is OUR cadence). "
+                  "Sub-hour B-leadlag is structurally invisible regardless of "
+                  "EV-at-fill numbers. Resolving requires sub-minute cadence "
+                  "(quota-side change, not feed-side).",
+    }
+
+    # A verdict at hourly-snapshot resolution.
+    if n < _INSUFFICIENT_N:
+        a_verdict = {
+            "verdict": "INCONCLUSIVE_INSTRUMENT_TOO_WEAK",
+            "reason": f"n={n} < {_INSUFFICIENT_N} threshold for hourly-snapshot A test",
+        }
+    elif a_n_eval > 0 and a_pos == 0:
+        # ZERO positive-EV-at-fill A-arbs across an N-row window with
+        # any meaningful evaluation count -- this matches the
+        # [[kalshi-crypto-shelved]] latency-thesis pattern: instrument
+        # was capable of seeing the thing AND saw nothing. Route to
+        # SHELVE, do NOT recommend spend.
+        a_verdict = {
+            "verdict": "SHELVE_LATENCY_THESIS_CLOSED",
+            "reason": f"0/{a_n_eval} A-arb opportunities cleared positive-EV-at-fill "
+                      f"over n={n} rows. Matches kalshi-crypto-shelved pattern: a "
+                      f"persistent >1h arb on MLB ML would already be taken by any "
+                      f"shop with a 60s feed. Hourly-window absence is a real signal, "
+                      f"not an instrument weakness. Do NOT spend on $30 or $319 "
+                      f"upgrades on this thesis; route to shelve discussion.",
+        }
+    elif a_n_eval > 0 and a_mean_ev < _MEAN_EV_KILL_THRESHOLD_PER_ROW:
+        a_verdict = {
+            "verdict": "SHELVE_LATENCY_THESIS_CLOSED",
+            "reason": f"A-arb mean EV {a_mean_ev:.3f} <= {_MEAN_EV_KILL_THRESHOLD_PER_ROW} "
+                      f"(n={n}, positives={a_pos}/{a_n_eval}). Even where positive-EV "
+                      f"flags appeared, the after-fee economics are unfavorable. "
+                      f"Matches kalshi-crypto-shelved pattern; route to shelve, NOT spend.",
+        }
+    elif a_pos_rate >= _A_ARB_HIT_GO:
+        a_verdict = {
+            "verdict": "PROCEED_TO_FINER_RESOLUTION_TEST",
+            "reason": f"A-arb hit rate {a_pos_rate:.1%} >= {_A_ARB_HIT_GO:.0%} at hourly "
+                      f"snapshot suggests opportunities may exist at finer cadence. "
+                      f"Spend decision (e.g. $30 for 1-min polling) JUSTIFIED only if "
+                      f"hand-verification of N positive rows confirms they were real "
+                      f"and fillable at the moment captured, not stale-quote artifacts.",
+        }
+    else:
+        a_verdict = {
+            "verdict": "INCONCLUSIVE_INSTRUMENT_TOO_WEAK",
+            "reason": f"A-arb hit rate {a_pos_rate:.1%} below GO threshold but not "
+                      f"unambiguously zero; insufficient signal at hourly snapshot to "
+                      f"distinguish edge from noise. Continue observing or escalate "
+                      f"based on the structural caveats below.",
+        }
+
+    return {
+        "A_hypothesis": a_verdict,
+        "B_hypothesis": b_verdict,
     }
 
 
 def _mandatory_caveats(per_league: dict[str, dict]) -> list[str]:
+    """Mandatory caveats per Phase 0 plan + 2026-05-24 feed-diagnosis.
+    Every GO / KILL / SHELVE / INCONCLUSIVE verdict is only interpretable
+    in light of these.
+    """
     out = []
+    # Original caveats (from initial Phase 0 plan)
     out.append(
         "HOUR-SCALE ONLY -- observer polls every ~1h; sub-hour lead-lag edges "
-        "(typical sportsbook horizon, often minutes) are structurally invisible."
+        "(typical sportsbook horizon, often minutes) are structurally invisible. "
+        "the-odds-api refreshes 60s pre-match; binding constraint is our cadence, "
+        "not the feed."
     )
     out.append(
         "GAME-MARKETS ONLY -- Kalshi offers ML binaries for game markets (NBA/MLB); "
@@ -256,6 +304,35 @@ def _mandatory_caveats(per_league: dict[str, dict]) -> list[str]:
             "rule, and extra-innings handling between Kalshi vs DK/FD/BetMGM not yet "
             "audited. Hypothesis A live-action requires the deferred grading matrix."
         )
+
+    # 2026-05-24 feed-diagnosis structural caveats — added per operator directive.
+    # These shape verdict interpretation regardless of the numbers above.
+    out.append(
+        "CALENDAR ASYMMETRY (structural) -- Kalshi opens markets 2-3 days pre-game; "
+        "sportsbooks post lines only ~24h pre-game. The two venues OVERLAP only in "
+        "the final ~24h pre-game window -- which is also the most efficient and "
+        "most-arbitraged window. The earlier window (where mispricing would be "
+        "easiest to find) has no book line to compare against. This is real-world "
+        "venue behavior, NOT a free-tier artifact; no feed/spend/param fixes it."
+    )
+    out.append(
+        "SINGLE-FEED LIMIT (structural) -- This test consumes ONE feed "
+        "(the-odds-api). Production arb shops (OddsJam / OpticOdds / etc.) "
+        "run 4-10+ feeds for cross-corroboration. A positive B-leadlag signal "
+        "from a single feed cannot be distinguished from a feed-side quirk "
+        "(stale quote, partial outage, book-side metadata lag). Any positive "
+        "result here is a LEAD requiring multi-feed confirmation, not a verdict. "
+        "Negative single-feed results are correspondingly weak evidence too."
+    )
+    out.append(
+        "HOURLY A-ARB PRIOR IS LOW (structural) -- A persistent >1h cross-venue "
+        "arbitrage on MLB moneyline would already be harvested by any shop running "
+        "a 60s feed. Expecting 'no persistent hourly arbs' is the BASE RATE, not "
+        "a Phase-0 failure. If A count is zero/negative-EV at hourly snapshot, the "
+        "correct read is 'venue design closed this edge surface', matching the "
+        "[[kalshi-crypto-shelved]] latency-thesis pattern -- route to shelve "
+        "discussion, NOT to spend escalation."
+    )
     return out
 
 
@@ -297,15 +374,23 @@ def _print_human(report: dict[str, Any]) -> None:
         if b.get("n"):
             print(f"    EV $: mean={b['mean']} median={b['median']} max={b['max']} min={b['min']}")
         v = report["verdicts"].get(league) or {}
-        print(f"  PROPOSED VERDICT: {v.get('verdict')}  ({v.get('reason')})")
+        a = v.get("A_hypothesis") or {}
+        b = v.get("B_hypothesis") or {}
+        print(f"  PROPOSED VERDICTS:")
+        print(f"    A (cross-venue arb @ hourly snapshot): {a.get('verdict')}")
+        print(f"      reason: {a.get('reason')}")
+        print(f"    B (sportsbook->Kalshi lead-lag):        {b.get('verdict')}")
+        print(f"      reason: {b.get('reason')}")
         print()
     print("MANDATORY CAVEATS:")
     for c in report["caveats"]:
         print(f"  - {c}")
     print()
-    print("Operator: any GO or KILL is only valid in light of the caveats above.")
-    print("If verdict is INCONCLUSIVE, review which caveat was load-bearing for")
-    print("the inconclusiveness before deciding on a Phase 0.5 instrument fix.")
+    print("Operator: any GO / KILL / SHELVE is only valid in light of the caveats above.")
+    print("INCONCLUSIVE -> review which caveat was load-bearing for the inconclusiveness")
+    print("              before deciding on a Phase 0.5 instrument fix (cadence/feed).")
+    print("SHELVE_LATENCY_THESIS_CLOSED -> do NOT escalate spend; route to shelve")
+    print("              discussion (matches kalshi-crypto-shelved pattern).")
 
 
 def main() -> int:
