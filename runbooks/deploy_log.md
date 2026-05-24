@@ -76,6 +76,80 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-24 21:47 UTC — kalshi_weather Bucket 1 (HRRR + forecast run-age logging) DEPLOYED (commit `75ba7c5`)
+
+**Commits:** `75ba7c5` (pushed to `origin/main` at 21:42 UTC, deployed at 21:47 UTC).
+
+**Triggered by:** Operator directive 2026-05-24 ~20:30 UTC ("lets do bucket 1 so we can collect data for a week") + in-session `AskUserQuestion` go on (a) ship 1.1+1.2 together, (b) HRRR flag default ON, (c) commit + deploy now. Plan at `plans/forecast-quality-improvements-for-kalshi-prancy-porcupine.md`.
+
+**Backup tag:** `pre-bucket1-20260524-2200`. Pre-deploy md5s on prod:
+- `e6ea67d5b76b1be4ef18efe1ab339c03  trading_corp/agents/strategies/_weather_math.py`
+- `6cac8d46c18cbadaab20509c134a801e  trading_corp/agents/strategies/kalshi_weather_arb.py`
+- `c4e9f5e78464c2ca4302ab41ff3cb1ae  trading_corp/data/open_meteo_client.py`
+- `ecc5a69d34485d390259e9cf42b1b0d4  trading_corp/data/weather_forecast.py`
+- `322fed92944d9ab8ee16e46e1f7277ea  config/strategies.yaml`
+
+**Files deployed (5):**
+- `trading_corp/agents/strategies/_weather_math.py` — `ForecastPoint` gains optional `issued_at` and `fetched_at` (default None; preserves all existing callers).
+- `trading_corp/data/weather_forecast.py` — `_get_periods` captures NWS `Last-Modified` header + wall-clock fetch time; cache value extended from `(epoch, periods)` to `(epoch, periods, last_modified, fetched_at)`; both `get_forecast_at` and `get_daily_extremum` populate the new ForecastPoint fields.
+- `trading_corp/data/open_meteo_client.py` — `EnsembleObservation.fetched_at` added; `_fetch_payload` returns `(payload, fetched_at_iso)` with cache value extended to 3-tuple; **new `fetch_hrrr_only(lat, lon, target_iso, kind=None)` method** with separate `_hrrr_cache` and single-model unsuffixed-field parse path (`hourly.temperature_2m`, not `hourly.temperature_2m_<model>`).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — new HRRR fetch block after the ensemble block (inherits the same `lat, lon` locals from line 549 — coord-discipline preserved); `_hrrr_enabled()` helper; `_minutes_since_iso()` helper; 8 new audit fields in `eval_payload`: `hrrr_temp_f`, `hrrr_source`, `hrrr_fetched_at`, `nws_forecast_issued_at`, `nws_fetched_at`, `open_meteo_fetched_at`, `metar_obs_age_min`, `metar_latest_obs_iso`. Raw NWS issued/fetched preserved across the ForecastPoint rebuild via local variables.
+- `config/strategies.yaml` — new `hrrr_enabled: true` key under `kalshi_weather_arb`. Hot-reloadable.
+
+All 5 files deployed via `scp` from local to prod `/tmp/`, then atomic-`mv` into position. Post-deploy md5s on prod match local byte-for-byte. Prod YAML was pure LF (memory `feedback_deploy_crlf_config_patch.md` was out-of-date for THIS file — verified with `cat -A` showing `$` line ends, not `^M$`); scp wholesale was safe. **No sed-in-place needed for this YAML.**
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Item 1.1 (HRRR latest-run logging) LIVE.** Every `kalshi_weather_evaluated` audit row from 21:53:23 UTC onwards carries `hrrr_temp_f` and `hrrr_source` (=`open_meteo_hrrr` when available, `unavailable` otherwise) — captured at the same xref-resolved `(lat, lon)` the existing forecast path uses. Backtest corpus for the queued NBM-σ / horizon-weighting work accumulates from this timestamp.
+- **Item 1.2 (forecast run-age logging) LIVE.** Same audit rows carry `nws_forecast_issued_at` (NWS Last-Modified header, may be NULL on Akamai-stripped requests — first-row populated `"Sun, 24 May 2026 20:59:58 GMT"`), `nws_fetched_at` (wall-clock fallback, always populated), `open_meteo_fetched_at`, `metar_obs_age_min` (only for sub-6h hourly markets — daily HIGH/LOW markets skip METAR by design).
+- **`hrrr_enabled` config flag** is hot-reloadable. To suppress HRRR fetch without restart: `sed -i 's/^  hrrr_enabled: true/  hrrr_enabled: false/' /home/azureuser/trading_corp/config/strategies.yaml`. Strategy mtime-checks YAML on every cycle.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Coord-discipline is structural.** The HRRR fetch passes the existing `lat, lon` locals (bound at `kalshi_weather_arb.py:549` from `coord_info["lat"], coord_info["lon"]` which is xref-resolved). There is NO city-name lookup inside OpenMeteoClient; there is NO separate `_resolve_hrrr_coords` helper. The 2026-05-22 NYC/CHI/HOU correction (KJFK→KNYC, KORD→KMDW, KIAH→KHOU) is therefore inherited automatically. Plan §1.1 coord-discipline guarantee enforced.
+- **HRRR uses a SEPARATE cache (`_hrrr_cache`)** keyed on `(lat, lon, forecast_days)` so the single-model HRRR payload doesn't collide with the multi-model ensemble payload at the same coords. Same key shape, different dict.
+- **Single-model Open-Meteo response uses UNSUFFIXED `hourly.temperature_2m`** (verified 2026-05-24 via direct curl). Multi-model uses `hourly.temperature_2m_<model>`. `fetch_hrrr_only` reads the unsuffixed field; `get_ensemble_at`/`get_ensemble_daily_extremum` read the suffixed fields. Don't confuse them.
+- **HRRR model identifier is `ncep_hrrr_conus`** (Open-Meteo's name). Hardcoded as `OpenMeteoClient.HRRR_MODEL`. CONUS-only — fine for every current weather station, but a non-CONUS coord request would return None.
+- **HRRR data is NEVER fed into σ or temp blend.** It's parallel-logged only. The strategy's σ flow (`sqrt(forecast.sigma_f² + SOURCE_DIVERGENCE_SIGMA_F²)`) and decision logic are unchanged. Verified by inspection at `_weather_math.py:155`.
+
+**Verification (all PASS):**
+- PRE_PID `1300115` (stale match) → POST_PID `1300124` (xvfb-run wrapper) at 21:47:13 UTC. Service `active (running)` since same.
+- 71 weather-related tests pass under `run_capped.ps1 pytest` (4 test files: coord_resolution, fixes, sizing, weather_stations).
+- Local pre-deploy smoke against real Open-Meteo: `fetch_hrrr_only` at KNYC/KMDW/KHOU returns `temp=56.6/69.0/77.6 °F`, `source=open_meteo_hrrr`, `fetched_at` populated, `models=['ncep_hrrr_conus']`.
+- First post-restart `kalshi_weather_evaluated` audit row at 21:53:23 UTC (10 minutes post-restart; 5-minute poll cycle). Spot-check of 6 KXLOWTHOU rows from that scan:
+  - `audit_lat = 29.6454`, `audit_lon = -95.2789` = KHOU coords (corrected)
+  - `yaml_coords = [29.6454, -95.2789]` = matches audit_lat/lon byte-for-byte
+  - `coord_source = yaml_verified`
+  - `hrrr_temp_f` populated (67.2 °F for 26MAY24 daily-low, 70.2 °F for 26MAY25)
+  - `hrrr_source = open_meteo_hrrr`
+  - `nws_forecast_issued_at = "Sun, 24 May 2026 20:59:58 GMT"` (Akamai DID serve a valid Last-Modified header)
+  - `nws_fetched_at = 2026-05-24T21:53:16+00:00`
+  - `open_meteo_fetched_at = 2026-05-24T21:53:16+00:00`
+  - `metar_obs_age_min` NULL (correct — HOU's KXLOWT is a daily-low market, METAR nowcast is excluded for daily extrema by design)
+- **Coord-discipline verification PASSED.** HRRR is fetching at the same corrected coords the existing forecast path uses for the 6 HOU rows examined. Future post-deploy spot-checks should sample NYC/CHI rows too (KXHIGHCHI/KXHIGHNY) as they appear in subsequent scan cycles.
+
+**Inert / dormant on current traffic:**
+- `nws_forecast_issued_at` populates 100% on first cycle, but Akamai CDN behavior is per-request — expect SOME fraction of NULL across the week. NULL is normal, not a bug.
+- HRRR is CONUS-only. If a non-CONUS weather market is ever added (none today), `hrrr_temp_f` will be NULL and `hrrr_source = "unavailable"` (logged as such, not silent).
+
+**Forward-watch obligation (for the observation week through ~2026-05-29):**
+- Confirm new fields populate across NYC/CHI markets too (not just HOU). Spot-check after first hourly cycle that scans those: `KXHIGHCHI*`, `KXHIGHNY*`, `KXLOWTNYC*`, `KXLOWTCHI*`, `KXHIGHTHOU*`. coord_source MUST be `yaml_verified`; lat/lon MUST equal yaml_coords.
+- Confirm HRRR availability rate. Expected ~100% during US weather hours; failures should be transient (try/except wraps the fetch).
+- Confirm NWS issued_at populate rate. NULL on a fraction is expected (Akamai); 0% would mean header capture is broken.
+
+**Rollback recipe (reverts to pre-Bucket 1 state — strategy logic restored, audit payload loses the 8 new fields, no decision impact either way):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bucket1-20260524-2200; BASE=/home/azureuser/trading_corp;
+for f in trading_corp/agents/strategies/_weather_math.py trading_corp/agents/strategies/kalshi_weather_arb.py trading_corp/data/open_meteo_client.py trading_corp/data/weather_forecast.py config/strategies.yaml; do
+  mv \$BASE/\$f.\$TAG \$BASE/\$f
+done
+sudo systemctl restart trading-corp.service
+"
+```
+
+Alternative soft-disable (no restart): `sed -i 's/^  hrrr_enabled: true/  hrrr_enabled: false/' /home/azureuser/trading_corp/config/strategies.yaml` — suppresses HRRR fetch only, keeps run-age logging.
+
+---
+
 ## 2026-05-24 16:55 UTC — C-2 (LLM push_back routes through risk gate + side-flip backstop) DEPLOYED (commit `19ff0da`)
 
 **Commits:** `19ff0da` (already on `origin/main` since 2026-05-23 — TRACK B closed-in-code in EOS `07ffcdc`). This deploy_log entry will land in the wrap commit alongside the TRACK B deploy_log closeout.
