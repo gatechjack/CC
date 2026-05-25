@@ -8,6 +8,76 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-25 ~18:00 UTC (Monday evening — bitunix placement-quietude diagnosis + Board fee-floor decision RECORDED; ZERO code/config/threshold changes; 2 deliverables queued)
+
+**Headline of THIS session:** Bitunix futures has placed 0 paper trades since 2026-05-22 15:33 UTC. Investigation went through three reframes (PA structure_alignment → trade_plan fee floor → genuine regime → operator's "TF mismatch" hypothesis → operator's "high volume" hypothesis) and settled on: **regime-blocked, NOT a bug, NOT a deploy regression.** BTC ATR(14, 3m) compressed ~50% on 2026-05-23 ($105-131 max → $50-67 max), staying compressed through 2026-05-25 (live probe $59.71). 1R falls below the $138 fee floor; trade_plan correctly rejects 100% with `fees_too_high_for_risk`. The 5/23 deploy `6073480` (bias TTL 90→30 + observe-only flip detector) is mechanically non-causal — `_build_proposal_v2` reads `bar_cache.bars`, not `_load_live_alerts_in_window`. PA-redeem mechanism (commit `72bbbe4`, 5/17) IS firing (46 successes since 5/17, most recent 5/25 03:49 UTC); the cliff is downstream at trade_plan.
+
+**Board decision recorded directly** in `runbooks/board_memo_bitunix_fee_floor_decision_2026_05_25.md` §9 — operator IS the Board. Three verdicts: (a) wait for vol APPROVED with 2026-06-19 tripwire; (b) tp_is_maker fill-rate model APPROVED as next bitunix build deliverable; (c) swing_max_lookback backtest APPROVED but parameter change NOT approved. Tip1_min_profit_multiplier lowering EXPLICITLY rejected.
+
+**`origin/main` head:** `dd78ab6` (verified `git rev-parse HEAD == origin/main`). Commits this session (5 mine, parallel-session commits interleaved):
+- **`ee6533d`** — reports: bitunix placement quietude diagnosis 2026-05-25 *(superseded framing; left for trail)*
+- **`95f31ef`** — reports: bitunix placement cliff addendum (corrects ee6533d — root cause is fee floor × low-vol ATR, NOT 5/23 deploy)
+- **`2ceb6e9`** — runbooks: Board memo — bitunix fee-floor tuning decision (DRAFT, anti-loosen)
+- **`8244b63`** — runbooks: Board fee-floor memo — 3 refinements before review (tripwire + (b)>(c) ranking + meta-rule)
+- **`dd78ab6`** — runbooks+backlog: Board decision recorded on bitunix fee-floor memo *(this session's terminus)*
+
+**What's running on prod (touched THIS session): NOTHING.** Zero code/config/threshold changes. The bitunix observer continues running the 5/23 build (`6073480`); the PA-redeem mechanism continues firing; the paper-clock window stays anchored at 2026-05-20. This session is 100% documentation + diagnosis + Board decision.
+
+**The fee-floor decision tree (now load-bearing for next bitunix session):**
+
+```
+                 BTC ATR ≥ ~$90 sustained?
+              ┌──────── YES ───────────┐
+              │                        │
+        strategy auto-resumes      hit 2026-06-19 tripwire?
+        (no action needed)            ├── NO  → continue waiting
+                                      └── YES → narrow re-decision:
+                                              "60-day clock = elapsed
+                                              time OR trade-eligible time?"
+                                              (do NOT re-litigate gates)
+```
+
+**Highest-leverage open items (handoff to next session — by priority):**
+
+1. **TRACK A — C-1 secret rotation** (P0 CRITICAL, ~1–3h, **operator-heavy entire window**). Unchanged from prior session's handoff — 13 distinct credential rotations across 8+ providers. **Blocker: C-7 must be fixed first.** Best done in a planned trading-pause window.
+2. **C-7 — rejected-webhook audit plaintext leak** (P0 CRITICAL prerequisite). Blocks TRACK A's webhook-secret step.
+3. **First weekly-overwrite cycle of pm-watchlist-deep timer** — Sun 2026-05-31 ~13:07 UTC. Expected: roster 329 → ~172 with zero `preserved` rows.
+4. **PM first-post-epoch resolved trade** ([[pm-metrics-epoch-live]]) — metrics-epoch set 2026-05-23 15:30:15 UTC; watch for first resolved trade to confirm tile-arithmetic-balance holds on real prod data.
+5. **Tastytrade rotation runbook** (P1 HIGH, untouched). Forensics ready from prior sessions; should land at `runbooks/tastytrade_oauth_rotation.md`.
+6. **Cloud-init re-image durability for the sudo narrow** (P2). Carryover from prior session.
+7. **Jinja fix `ca00600`** still LOCAL-only on prod (cosmetic). Can ride next regular deploy.
+8. **Bug 4 (get_history dead branch)** (P2 MEDIUM, [[project-data-provider-deploy]]). Deferred from 2026-05-22 Tastytrade deploy.
+9. **Security-review remediation — 7 CRITICAL findings** (`reports/2026-05-21_security_review.md`, committed `e88d663`). C-2 + C-6 closed; C-1 remains primary CRITICAL (above #1). C-3/C-4/C-5/C-7 still open.
+10. **43 deferred package bumps** from C-6 lockfile drift. anthropic 0.97 → 0.104 specifically needs real-SDK smoke.
+11. **`bitunix_atr_snapshot` audit kind** (NEW P2 MEDIUM, filed in BACKLOG this session as item 10 of the prior snapshot). Closes the 12-14h diagnostic-silent-window observed during today's live ATR probe.
+
+**Bitunix paper-clock state (DECIDED — do NOT re-open before 2026-06-19):**
+- Clock anchor: 2026-05-20 (start), ~2026-07-19 (end). UNCHANGED.
+- Midpoint tripwire: **2026-06-19**. If ATR(14, 3m) hasn't reached ~$90 sustained by then, the Board re-decides clock semantics (elapsed-time vs trade-eligible). NOT a re-litigation of gate tightness.
+- Queued deliverable (b): **maker-fill-rate model** for `tp_is_maker: false → true`. Historical fill-rate at v2-plan TP levels by symbol × ATR regime, including un-filled→taker semantics and partial-fill behavior. Deploy `tp_is_maker: true` ONLY on net-positive model verdict (savings net of un-fill cost ≥ 0.03%/round-trip). **NOT started.**
+- Queued deliverable (c): **swing_max_lookback backtest**. Criterion locked: net PnL per fire, gates held fixed, ATR-regime-rotation corpus. Parameter change requires separate Board approval after backtest holds. **NOT started.**
+- Live probe confirmed 2026-05-25 17:30 UTC: ATR $59.71, last close $77,624 — diagnosis still valid; observer bar-feed is live (matches probe within $7).
+
+**Memory updates this session:**
+- UPDATED `[[bitunix-paper-clock]]` — regime-blocked framing + 2026-06-19 tripwire + DECIDED state with queued deliverables.
+- NEW `[[pa-redeem-check-before-quietude-attribution]]` — class learning: check redeem volume (46 since 5/17) BEFORE attributing placement quietude to PA gate. Funnel-query template included.
+- UPDATED `MEMORY.md` index (rewrote bitunix-paper-clock line + appended PA-redeem feedback line).
+
+**Notable mid-session catches (worth carrying forward):**
+- **The first quietude diagnosis was wrong-but-fixable.** Initial framing claimed "PA structure_alignment dominant blocker, regime untradeable" — missed the PA-redeem mechanism entirely. Operator pushed back; reframe found the cliff is downstream at trade_plan fee floor. Addendum `95f31ef` documents the correction. Lesson generalized in the new feedback memory.
+- **The operator's TF-mismatch hypothesis (15m/30m HTF) was incorrect** — `score_timeframes: [3m,15m,30m]` is the SIGNAL whitelist, the HTF DIRECTIONAL AUTHORITY (`htf_regime` composite weights d1=0.5, h4=0.3, h1=0.2) is deliberately 1H/4H/1D per PR 3c architecture (`strategies.yaml:1062-1066`). Both PA structure (4h) and HTF authority (1H/4H/1D) are intentional design, not stale config.
+- **The operator's "volume is high" hypothesis is also independent of the fee floor.** Live data confirmed: 173.8M USDT over 3h is genuine activity, BUT ATR (price excursion per unit time) is what determines SL distance, not volume. High volume + tight per-bar range is the current regime.
+- **3h chart-readable structure DOES exist** (3h range $407 ≈ 5/22 successful fire swing range $394). The strategy's 30-bar (90 min) swing lookback can't capture it. This is the empirical evidence for the (c) swing_max_lookback backtest — but the change remains overfit-risk and requires a backtest that includes an ATR-regime rotation.
+- **The 2026-06-19 tripwire is load-bearing for next bitunix session.** Without it, "wait for vol" drifts to "expire 7/19 with n≈0." The Board owns the revisit trigger.
+
+**Environments in sync at EOS:**
+- Working tree: parallel-session WIP only — `M scripts/backtest_rounding_flip.py`, `?? docs/Deployment notes.txt`, `?? scripts/fetch_kalshi_weather_evaluated_corpus.py`. Deliberately NOT swept (operator-owned / parallel-session). My session changes ALL committed.
+- Local `main` head: `dd78ab6`.
+- `origin/main` head: `dd78ab6` (verified via `git rev-parse`).
+- Memory directory updated (2 files); MEMORY.md index in sync.
+
+---
+
 ## EOS snapshot — 2026-05-25 ~15:35 UTC (Monday afternoon — TWO VM-side prod deploys: pm-watchlist cadence overwrite + sudoers NOPASSWD:ALL narrowed; both 4-gate verified; only C-1 remains as an open CRITICAL)
 
 **Headline of THIS session:** Two BOARD-GATED VM-side fixes shipped and verified live on prod. No repo code changes — both are systemd / sudoers edits via the `az vm run-command invoke` channel (root-via-VM-agent, bypasses sudoers, the legitimate safety-net alternative to parallel SSH that the harness's auto-mode classifier may block). Sequenced **lockdown → rotation**: the sudo narrow shrinks the blast radius that C-1 secret rotation will be operating against. **C-1 secret rotation HELD** this session — needs its own planned trading-pause window AND C-7 (rejected-webhook audit writes secret in plaintext) must be fixed first to avoid leaking newly-rotated webhook secrets through the gap.
