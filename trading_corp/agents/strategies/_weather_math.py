@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 
 # ── Constants — validation gates ──────────────────────────────────────────
@@ -422,4 +422,115 @@ def apply_entry_price_floor(
     if outcome == "no" and share_price < min_no_entry:
         return f"entry_below_floor: no {share_price:.3f} < {min_no_entry:.2f}"
     return None
+
+
+# ---------------------------------------------------------------------------
+# C3 (Tier 1 plan): F→C→F rounding-artifact deterministic predictor.
+#
+# Pure function; no I/O; no live decision path consumes it today
+# (gated-consumption per plans/tier1-data-foundation-kalshi-weather.md).
+# Used by scripts/backtest_rounding_flip.py to measure whether the ASOS
+# Celsius→Fahrenheit rounding band explains autopsy anomaly #2 tail losses.
+# ---------------------------------------------------------------------------
+
+
+def cli_rounding_risk(
+    public_temp_f: float,
+    threshold_f: int,
+    direction: Literal["max", "min"],
+) -> dict[str, Any]:
+    """Predict whether F→C→F rounding could flip CLI settlement vs the public feed.
+
+    Mechanism: ASOS sensors observe in °C, round to 1 decimal, then convert
+    to °F for the NWS CLI report (integer values). A small slice of real
+    °C readings maps to either of two °F integers depending on rounding
+    direction. When the public-feed (forecast or ASOS) °F value is close
+    to a Kalshi market threshold, that rounding band is settlement risk.
+
+    Algorithm:
+      1. Convert public_temp_f → °C with 1-decimal rounding.
+      2. Enumerate the rounding neighborhood: {c - 0.1, c, c + 0.1} °C.
+      3. For each neighbor, convert back to integer °F.
+      4. risk_flag = True if any neighbor's °F differs from
+         round(public_temp_f) AND that difference crosses the threshold
+         (given direction).
+
+    Returns:
+        {
+          "risk_flag": bool,
+          "delta_predicted_f": float,  # signed worst-case °F delta toward
+                                       # the threshold-crossing side; 0.0
+                                       # when no flip risk
+          "candidate_c_values": list[float],
+          "rationale": str,
+        }
+
+    Two intended use modes:
+      - Entry-time: pass forecast_temp_f as public_temp_f to flag
+        boundary-adjacent bets at decision time.
+      - Settlement-time: pass last public ASOS reading to predict
+        whether CLI will round to a different integer.
+
+    Example:
+        >>> r = cli_rounding_risk(72.5, 73, "max")
+        >>> r["risk_flag"]
+        True
+    """
+    public_int = round(public_temp_f)
+    c = round((public_temp_f - 32.0) * 5.0 / 9.0, 1)
+    candidates = [round(c - 0.1, 1), c, round(c + 0.1, 1)]
+
+    flipped_fs: list[int] = []
+    for cn in candidates:
+        f_n = round(cn * 9.0 / 5.0 + 32.0)
+        if f_n != public_int:
+            flipped_fs.append(f_n)
+
+    if not flipped_fs:
+        return {
+            "risk_flag": False,
+            "delta_predicted_f": 0.0,
+            "candidate_c_values": candidates,
+            "rationale": (
+                f"public {public_temp_f}F -> {c}C; all rounding-band "
+                f"neighbors round back to {public_int}F"
+            ),
+        }
+
+    # Worst-case delta toward the threshold-crossing side.
+    deltas = [f_n - public_int for f_n in flipped_fs]
+    if direction == "max":
+        worst_delta = min(deltas)
+    else:
+        worst_delta = max(deltas)
+
+    # Did any flipped integer cross threshold_f relative to public_int?
+    threshold_crossed = False
+    for f_n in flipped_fs:
+        if direction == "max":
+            if public_int >= threshold_f and f_n < threshold_f:
+                threshold_crossed = True
+                break
+            if public_int < threshold_f and f_n >= threshold_f:
+                threshold_crossed = True
+                break
+        else:  # "min"
+            if public_int <= threshold_f and f_n > threshold_f:
+                threshold_crossed = True
+                break
+            if public_int > threshold_f and f_n <= threshold_f:
+                threshold_crossed = True
+                break
+
+    return {
+        "risk_flag": threshold_crossed,
+        "delta_predicted_f": float(worst_delta),
+        "candidate_c_values": candidates,
+        "rationale": (
+            f"public {public_temp_f}F->{c}C; neighbors round to "
+            f"{sorted(set(flipped_fs))}F; "
+            f"{'threshold crossed' if threshold_crossed else 'no cross'} "
+            f"vs {threshold_f}F ({direction})"
+        ),
+    }
 

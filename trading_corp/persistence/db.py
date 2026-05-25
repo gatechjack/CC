@@ -309,6 +309,37 @@ CREATE TABLE IF NOT EXISTS weather_nbm_observations (
 );
 CREATE INDEX IF NOT EXISTS ix_weather_nbm_station_valid
     ON weather_nbm_observations(station_id, valid_iso);
+
+-- weather_forecast_residuals: per-station per-source per-target-day
+-- residuals (actual_temp_f - forecast_temp_f) where actual_temp_f comes
+-- from IEM CLI ground truth. Correction layer on top of NBM (not from-
+-- scratch sigma). The logic_era field is a contamination guard: rows
+-- with logic_era='pre_station_fix' carry forecasts generated against
+-- the wrong-station coords that the 2026-05-22 xref commit corrected.
+-- Calibration queries MUST filter WHERE logic_era != 'pre_station_fix'
+-- to avoid re-introducing the very bug we fixed.
+-- See plans/tier1-data-foundation-kalshi-weather.md §C2.
+CREATE TABLE IF NOT EXISTS weather_forecast_residuals (
+    station_id      TEXT NOT NULL,
+    target_date     TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    target_iso      TEXT,
+    forecast_temp_f REAL NOT NULL,
+    actual_temp_f   REAL NOT NULL,
+    forecast_source TEXT NOT NULL,
+    horizon_hours   REAL NOT NULL,
+    residual_f      REAL NOT NULL,
+    cycle_iso       TEXT NOT NULL,
+    season          TEXT NOT NULL,
+    logic_era       TEXT NOT NULL,
+    icao_source     TEXT NOT NULL,
+    ingested_at     TEXT NOT NULL,
+    PRIMARY KEY (station_id, target_date, kind, forecast_source, cycle_iso)
+);
+CREATE INDEX IF NOT EXISTS ix_wfr_station_horizon
+    ON weather_forecast_residuals(station_id, horizon_hours, season, logic_era);
+CREATE INDEX IF NOT EXISTS ix_wfr_target_date
+    ON weather_forecast_residuals(target_date, kind);
 """
 
 
