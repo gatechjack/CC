@@ -236,9 +236,9 @@ All 5 files deployed via `scp` from local to prod `/tmp/`, then atomic-`mv` into
 - PRE_PID `1300115` (stale match) → POST_PID `1300124` (xvfb-run wrapper) at 21:47:13 UTC. Service `active (running)` since same.
 - 71 weather-related tests pass under `run_capped.ps1 pytest` (4 test files: coord_resolution, fixes, sizing, weather_stations).
 - Local pre-deploy smoke against real Open-Meteo: `fetch_hrrr_only` at KNYC/KMDW/KHOU returns `temp=56.6/69.0/77.6 °F`, `source=open_meteo_hrrr`, `fetched_at` populated, `models=['ncep_hrrr_conus']`.
-- First post-restart `kalshi_weather_evaluated` audit row at 21:53:23 UTC (10 minutes post-restart; 5-minute poll cycle). Spot-check of 6 KXLOWTHOU rows from that scan:
-  - `audit_lat = 29.6454`, `audit_lon = -95.2789` = KHOU coords (corrected)
-  - `yaml_coords = [29.6454, -95.2789]` = matches audit_lat/lon byte-for-byte
+- First post-restart `kalshi_weather_evaluated` audit row at 21:53:23 UTC (10 minutes post-restart; 5-minute poll cycle). Spot-check of 6 KXLOWTHOU rows from that scan (column names corrected 2026-05-25 — see note at end of block):
+  - `lat = 29.6454`, `lon = -95.2789` = KHOU coords (corrected) — scalar `$.lat` / `$.lon` JSON keys in `payload_json`, populated from `chosen[*]` after xref resolution at `kalshi_weather_arb.py:298-299`
+  - `yaml_coords = [29.6454, -95.2789]` = YAML-resolved coord list; equals `lat`/`lon` byte-for-byte because `coord_source = yaml_verified` means `chosen` IS the YAML coords
   - `coord_source = yaml_verified`
   - `hrrr_temp_f` populated (67.2 °F for 26MAY24 daily-low, 70.2 °F for 26MAY25)
   - `hrrr_source = open_meteo_hrrr`
@@ -247,15 +247,16 @@ All 5 files deployed via `scp` from local to prod `/tmp/`, then atomic-`mv` into
   - `open_meteo_fetched_at = 2026-05-24T21:53:16+00:00`
   - `metar_obs_age_min` NULL (correct — HOU's KXLOWT is a daily-low market, METAR nowcast is excluded for daily extrema by design)
 - **Coord-discipline verification PASSED.** HRRR is fetching at the same corrected coords the existing forecast path uses for the 6 HOU rows examined. Future post-deploy spot-checks should sample NYC/CHI rows too (KXHIGHCHI/KXHIGHNY) as they appear in subsequent scan cycles.
+- **Field-name correction (added 2026-05-25):** the original spot-check report (above) called the scalar coord fields `audit_lat` / `audit_lon`. Those names are SQL aliases from the plan's verification query (`json_extract(payload_json, '$.lat') AS audit_lat, ...`), not JSON keys. Actual top-level JSON keys in the payload are `lat` and `lon` (see `kalshi_weather_arb.py:298-299`). The substantive verification — chosen scalar coords match `yaml_coords` for `yaml_verified` rows — holds either way. The forward-watch obligation below is restated with corrected names.
 
 **Inert / dormant on current traffic:**
 - `nws_forecast_issued_at` populates 100% on first cycle, but Akamai CDN behavior is per-request — expect SOME fraction of NULL across the week. NULL is normal, not a bug.
 - HRRR is CONUS-only. If a non-CONUS weather market is ever added (none today), `hrrr_temp_f` will be NULL and `hrrr_source = "unavailable"` (logged as such, not silent).
 
 **Forward-watch obligation (for the observation week through ~2026-05-29):**
-- Confirm new fields populate across NYC/CHI markets too (not just HOU). Spot-check after first hourly cycle that scans those: `KXHIGHCHI*`, `KXHIGHNY*`, `KXLOWTNYC*`, `KXLOWTCHI*`, `KXHIGHTHOU*`. coord_source MUST be `yaml_verified`; lat/lon MUST equal yaml_coords.
-- Confirm HRRR availability rate. Expected ~100% during US weather hours; failures should be transient (try/except wraps the fetch).
-- Confirm NWS issued_at populate rate. NULL on a fraction is expected (Akamai); 0% would mean header capture is broken.
+- Confirm new fields populate across NYC/CHI markets too (not just HOU). Spot-check after first hourly cycle that scans those: `KXHIGHCHI*`, `KXHIGHNY*`, `KXLOWTNYC*`, `KXLOWTCHI*`, `KXHIGHTHOU*`. `coord_source` MUST be `yaml_verified`; scalar `$.lat`/`$.lon` MUST equal `$.yaml_coords[0]`/`$.yaml_coords[1]`. (Status as of 2026-05-25T14:10 UTC: PASS on 3,153 yaml_verified rows — see `reports/2026-05-25_kalshi_weather_bucket1_forward_watch.md`.)
+- Confirm HRRR availability rate. Expected ~100% during US weather hours; failures should be transient (try/except wraps the fetch). (Observed 2026-05-25: 96.8%.)
+- Confirm NWS issued_at populate rate. NULL on a fraction is expected (Akamai); 0% would mean header capture is broken. (Observed 2026-05-25: 100% — no Akamai stripping in window.)
 
 **Rollback recipe (reverts to pre-Bucket 1 state — strategy logic restored, audit payload loses the 8 new fields, no decision impact either way):**
 ```bash

@@ -68,7 +68,7 @@ Just sanity-check that the 21:47 deploy is healthy across the spectrum, not just
         OR json_extract(payload_json,'$.ticker') LIKE 'KXHIGHTHOU%')
     ORDER BY ts DESC LIMIT 20;
    ```
-2. For every row: confirm `coord_source = yaml_verified`, `audit_lat/lon == yaml_coords`, `hrrr_temp_f` non-null, `hrrr_source = open_meteo_hrrr`. Any row failing these is a defect.
+2. For every row: confirm `coord_source = yaml_verified`, `$.lat == $.yaml_coords[0]` and `$.lon == $.yaml_coords[1]` (the scalar coord fields equal the YAML coord list), `hrrr_temp_f` non-null, `hrrr_source = open_meteo_hrrr`. Any row failing these is a defect. (Field-name correction 2026-05-25: prior phrasing said `audit_lat/lon` — those were SQL aliases from the plan's verification query, not JSON keys. Actual JSON keys are `lat`/`lon`. The SQL above already extracts them correctly via `$.lat` / `$.lon`.)
 3. Bulk health: count HRRR availability rate (% of post-deploy rows with non-null `hrrr_temp_f`) and NWS issued_at populate rate (% non-null). HRRR expected ~100%; NWS expected most-but-not-all (Akamai per-request behavior).
 4. If anything looks off, report; do not auto-fix. The rollback recipe is in the deploy_log entry.
 

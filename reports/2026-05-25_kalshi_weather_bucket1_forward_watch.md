@@ -57,35 +57,49 @@ These are NOT TRACK A regressions. They are statements in prior-session
 docs that don't match the running code. Flagging so the next session
 catches them before treating them as ground truth.
 
-### Phantom #1 — `audit_lat` / `audit_lon` are not emitted as scalar fields
+### Phantom #1 — `audit_lat` / `audit_lon` were SQL aliases, not JSON keys (column-name confusion, not structural gap)
+
+**CORRECTION (added 2026-05-25 later same day, after initial commit):**
+the framing below in §3.1 was partially wrong. The deeper read into
+`kalshi_weather_arb.py:298-299, 591, 723` showed scalar coord fields
+named `lat` and `lon` DO exist in the payload — they were just queried
+with the SQL aliases `audit_lat` / `audit_lon` in the plan's
+verification query (`json_extract(payload_json, '$.lat') AS audit_lat,
+json_extract(payload_json, '$.lon') AS audit_lon`). Downstream docs
+(deploy_log, BACKLOG, session_start) then propagated those alias names
+as if they were JSON keys. The Track A sub-agent searched for
+`$.audit_lat` / `$.audit_lon` (which don't exist) and reported a
+structural gap; in fact the substantive coord-integrity check —
+"scalar `$.lat`/`$.lon` (populated from `chosen[*]` after xref)
+equal `$.yaml_coords[0]`/`$.yaml_coords[1]` (the YAML-resolved
+list) for `yaml_verified` rows" — IS queryable and DOES pass on the
+3,153-row sample. The phantom was a column-name aliasing artifact,
+not a missing field. The docs have been amended 2026-05-25 to use
+`$.lat` / `$.lon`.
+
+The original (pre-correction) §3.1 framing follows for the audit
+trail.
+
+---
 
 - **Claimed in:** `runbooks/deploy_log.md` 21:47 UTC entry, lines 195–197:
   > `audit_lat = 29.6454`, `audit_lon = -95.2789` = KHOU coords (corrected)
   > `yaml_coords = [29.6454, -95.2789]` = matches audit_lat/lon byte-for-byte
   > `coord_source = yaml_verified`
 - Same phrasing in `BACKLOG.md` (top EOS), `runbooks/session_start_2026_05_25_post_kalshi_weather_autopsy.md`, and `docs/Deployment notes.txt`.
-- **Code reality:** `grep -rn 'audit_lat\|audit_lon' trading_corp/` returns zero hits.
-  The Bucket 1 payload writes coords ONLY into `yaml_coords: [lat, lon]`.
-  There is no `audit_lat` field and no `audit_lon` field on any
-  `kalshi_weather_evaluated` row, today or ever.
-- **Implication:** The forward-watch obligation as stated
-  ("coord_source MUST be yaml_verified; lat/lon MUST equal yaml_coords")
-  cannot be verified the way the deploy_log spelled it out (there's no
-  `audit_lat = yaml_coords[0]` comparison to make). Coord integrity is
-  still PASS — `yaml_coords` is populated, and the strategy uses the
-  same xref-resolved `lat, lon` locals at `kalshi_weather_arb.py:549`
-  for both the existing forecast path and the new HRRR fetch
-  (deploy_log §"Coord-discipline is structural"). The integrity
-  guarantee is structural, not field-comparable.
+- **Original (now superseded) read:** "code reality — `grep -rn 'audit_lat\|audit_lon' trading_corp/` returns zero hits; the Bucket 1 payload writes coords ONLY into `yaml_coords: [lat, lon]`." That grep result was correct but the conclusion was wrong: the grep should have been for `\"lat\":` and `\"lon\":` (the actual JSON key emissions), which return 5 hits including line 298-299 and 591 and 723 of `kalshi_weather_arb.py`.
+- **Corrected read (2026-05-25):** payload has BOTH the scalar `$.lat` / `$.lon` keys AND the `$.yaml_coords[lat, lon]` list. For `yaml_verified` rows they hold byte-equal coord values (because `chosen` IS `yaml_coords`). The integrity check is queryable and PASSED.
 - **Match against memory:** `feedback_session_committed_phantom_pointer`
-  — sessions can commit pointers / verification claims to artifacts that
-  were never actually written. Verify with `grep` / direct read, not
-  the EOS report.
-- **Board decision needed:** keep yaml_coords-only payload (structural
-  guarantee is sufficient), OR add `audit_lat`/`audit_lon` scalar
-  fields so future field-level verification queries don't tilt at a
-  ghost. Either is fine; the deploy_log wording should match whichever
-  is chosen.
+  still applies — but the specific failure mode here was column-alias
+  confusion compounding into a doc-everywhere-the-alias-is-the-name
+  pattern, not a missing field. The corrective lesson for future
+  Bucket-style audits: grep for the actual JSON key spelling
+  (`"lat":` / `"lon":`) AND the alias spelling before concluding the
+  field doesn't exist; or extract via both `$.lat` and `$.audit_lat`
+  to see which path returns non-NULL.
+- **Resolution:** docs amended 2026-05-25 to use `$.lat` / `$.lon`. No
+  code change. Future verification queries should use `$.lat` /
+  `$.lon` (matching the actual JSON keys).
 
 ### Phantom #2 — `plans/forecast-quality-improvements-for-kalshi-prancy-porcupine.md` was never committed
 
