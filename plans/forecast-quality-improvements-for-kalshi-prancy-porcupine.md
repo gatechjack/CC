@@ -198,7 +198,25 @@ day-one finding was a single-day single-event artifact and neither
 folds into 2.2's residual table; 2.4 may be obviated entirely by
 Item 1.1's HRRR data (Step A is a SHELVE test).
 
-### Item 2.1 — Boundary-proximity σ widening
+### Item 2.1 — Boundary-proximity σ widening — DEMOTED 2026-05-25 to secondary
+
+> **Status update (2026-05-25, post-C3 backtest):** Item 2.1 was originally
+> the lead candidate fix for autopsy anomaly #2's fat-tail σ. The C3 backtest
+> (`scripts/backtest_rounding_flip.py`, run against the 4 unique autopsy
+> tail-loss events) showed **0/4 events had `risk_flag=True`** at either
+> entry-time or settlement-time. The same physics applies to Item 2.1:
+> both 2.1 and C3 are **boundary treatments capped at ~1°F**; the autopsy's
+> tail losses were **4–8°F genuine synoptic forecast misses**, which no
+> boundary-scale treatment can absorb mechanically. **Item 2.1 is therefore
+> demoted to a secondary anomaly-#2 candidate.** It remains in queue —
+> there may still be a smaller boundary contribution worth widening σ for,
+> measured against the residuals DB once enough samples accumulate — but it
+> is no longer the lead. The lead is now NBM-σ substitution (corroborated
+> by Tier 1 C1 probe showing NBM σ at 48h MaxT is ~56% wider than the
+> heuristic — exactly the kind of mechanism that can shift |z|≥2 frequency
+> from 3.1× theoretical toward 1×). See
+> `plans/tier1-data-foundation-kalshi-weather.md` for the gated-consumption
+> path that swaps `_weather_math.py:165` to read NBM `temp_sigma_f`.
 
 **Hypothesis:** Bets where the forecast sits within ~1°F of a bracket
 edge (between markets where forecast is close to either `threshold_f`

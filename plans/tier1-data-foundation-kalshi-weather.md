@@ -6,6 +6,12 @@
 
 > **Probe-resolved (2026-05-25):** NBM source path and TXNSD units resolved against live endpoints; see §"Probe results" below. C2 schema gains a `logic_era` contamination-tag field per Board direction.
 
+> **First-run findings registered (2026-05-25, post-build):**
+> - **C3 rounding artifact RULED OUT as anomaly-#2 driver.** Backtest on the 4 unique autopsy tail-loss events: 0/4 had `risk_flag=True` at entry OR settlement. Forecast misses were 4-8°F; the F→C→F rounding mechanism caps at 1°F and cannot mechanically explain misses of this magnitude. Anomaly #2's fat tails are **genuine synoptic forecast misses** (the 5/23 cold push + KSEA warm event), NOT settlement-rounding microstructure.
+> - **C3 re-scoped** from "anomaly-#2 explanation candidate" to "**boundary-bet guard tool**." Stays in the codebase; do not feed into σ-widening for anomaly #2 (the mechanism doesn't fit). Future use: per-bet entry-time flag for trades sitting in the rounding band, regardless of anomaly-#2 status.
+> - **Item 2.1 (boundary-σ widening) DEMOTED to secondary.** Same logic: 2.1 is also a boundary treatment, capped at the same boundary scale; cannot address a 6°F miss either. Stays in queue but no longer the lead anomaly-#2 candidate.
+> - **NBM-σ substitution PROMOTED to primary anomaly-#2 candidate.** Corroborated independently by C1 probe: NBM σ at 48h MaxT is **~56% wider** than the current `sigma_for_horizon` heuristic. The heuristic systematically under-estimates global σ across all horizons, which IS the kind of mechanism that can shift |z|≥2 frequency from 3.1× theoretical toward 1×. The gated-consumption work that swaps `_weather_math.py:165` `sigma_total` to read `weather_nbm_observations.temp_sigma_f` is now the lead fix for anomaly #2 (still gated until observation week closes and anomaly #2 confirms on independent station-dates).
+
 ---
 
 ## Context

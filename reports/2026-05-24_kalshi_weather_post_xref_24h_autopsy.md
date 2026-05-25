@@ -247,3 +247,36 @@ tight-`between` markets clear the divergence threshold.
 
 Do not start that work on this day's data. Re-evaluate at end of
 observation week.
+
+---
+
+## 8. Addendum — C3 rounding-flip backtest (2026-05-25)
+
+**Tested**: whether F→C→F rounding artifact (`cli_rounding_risk()` in
+`_weather_math.py`, run by `scripts/backtest_rounding_flip.py`) explains
+the 4 unique autopsy tail-loss events above.
+
+**Result — RULED OUT.** 0 / 4 events had `risk_flag=True` at either
+entry-time (forecast-vs-threshold) or settlement-time (actual-vs-threshold).
+The 12 underlying `|z|≥2` rows likewise show 0 risk.
+
+**Why**: physics. The F→C→F mechanism caps at a 1°F mis-rounding (an
+ASOS °C reading rounds to one of two neighboring °F integers). The
+autopsy's tail misses were **4–8°F**: KMSP/KSAT cold push (8.3°F /
+6.2°F), KSEA warm event (6.4°F), KAUS cool (4.9°F). No rounding-band
+trick can absorb that — these were **genuine synoptic forecast misses**,
+not settlement microstructure.
+
+**Implications** (registered into the plans):
+
+- **NBM-σ substitution is now the primary fix candidate for anomaly #2**
+  (`plans/tier1-data-foundation-kalshi-weather.md`). Independently
+  corroborated by C1: NBM σ at 48h MaxT is ~56% wider than the current
+  `sigma_for_horizon` heuristic, suggesting global σ under-estimation
+  IS the kind of mechanism that can shift |z|≥2 freq from 3.1× toward 1×.
+- **Boundary-σ widening (Item 2.1 of the forecast-quality plan) is demoted
+  to secondary** — same physics ceiling as C3: a boundary treatment
+  cannot absorb a 6°F miss.
+- **C3 stays in the codebase** as a per-bet boundary-bet guard tool;
+  the function is sound, the predictions are accurate, the use case just
+  isn't anomaly #2.
