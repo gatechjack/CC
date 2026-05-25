@@ -460,3 +460,60 @@ Per-component verification steps below. C1's mandatory 19-ICAO bulk-file presenc
 | `backtest_rounding_flip.py` read-only script | ✓ | Decide whether existing plan Item 2.1 (boundary-σ widening) is parked |
 
 **The entire Tier 1 build is data foundation only. Every consumption path stays board-gated until (a) observation week closes and (b) anomaly #2 is confirmed to repeat.**
+
+---
+
+## Data-accumulation timeline (registered 2026-05-25, post prod-scale measurement)
+
+Prod-scale ingestion run on the full 59,342-row `kalshi_weather_evaluated` audit corpus
+(2026-05-14 → 2026-05-25) produced 27,068 unique residual rows after PK collapse. State
+of the calibration data **today** and what changes over time:
+
+| What | Today | When it unlocks | Why the wait |
+|---|---|---|---|
+| Clean calibration rows | **6,446** post-fix `nws_blend` residuals | already available | post_station_fix subset of current corpus |
+| NBM-source residuals | **0** | **~2 days** | NBM forecasts cover 5/26+; IEM CLI only published through 5/24. Once IEM publishes 5/26+, the NBM cycles already ingested join in |
+| `nbm_p50` / `nbm_mean` per-(station, horizon) sample size | 0 | ~30 days after NBM joins start | Item 2.2 σ-calibration gate requires ≥20 samples per (station, source, season) partition |
+| Cross-season calibration (winter, summer, fall) | not possible | **~6 months** | Corpus only spans May 2026 = spring only. Need real winter/summer/fall data to validate seasonal residuals |
+| Multi-source diversification (HRRR, Open-Meteo ensemble) | thin | weeks-to-months | HRRR audit-row joins started 2026-05-24 (Bucket 1 deploy); ensemble joins are already possible but not yet ingested into residuals |
+
+**Practical schedule:**
+- **~2026-05-27 (~T+2d):** first NBM-source residual rows appear. NBM-σ vs IEM-actual deltas become measurable.
+- **~2026-06-24 (~T+30d):** Item 2.2's `sigma_for_city_horizon(station, horizon, source)` lookup becomes computable for spring-station-NBM partition at ≥20 samples — the threshold-of-no-fallback in the lookup function spec.
+- **~2026-11-25 (~T+6mo):** cross-season residuals accumulated; full seasonal calibration becomes possible.
+
+**What this means for anomaly #2 fix scheduling:**
+- NBM-σ substitution (the primary anomaly-#2 candidate per the 2026-05-25 registration above) is **technically unlockable for spring in ~30 days** — assuming the cron poller is running and anomaly #2 has confirmed to repeat on independent station-dates by then.
+- A fully **season-robust** NBM-σ replacement is a **multi-month accumulation problem**, not a code problem. Don't expect a season-robust calibration verdict before that data exists.
+- The boundary-treatment candidates (Item 2.1 boundary-σ widening, C3 rounding-flip — both already demoted/ruled-out) needed even less data than NBM-σ; their fates are decided.
+
+---
+
+## Next deliberate step (GATED — separate prod deploy, Board says go)
+
+**Cron / systemd poller for ongoing NBM + IEM ingestion.**
+
+Without this, the data-accumulation clock above doesn't start. Both ingestion scripts are
+one-shot today; for the timeline to actually elapse, the prod VM needs scheduled invocations:
+
+- `scripts/ingest_nbm.py` — every 6h, aligned to NBM cycle release (01z / 07z / 13z / 19z + 5 min lag): `5 1,7,13,19 * * *` UTC
+- `scripts/ingest_iem_cli_residuals.py --incremental` — 1x daily after IEM publishes prior-day CLI: suggested `15 14 * * *` UTC (gives IEM 14:00 UTC to settle yesterday's CLI publication)
+
+**This is a prod deploy + service consideration.** Same hash-compare/backup/verify discipline
+as prior deploys (per `runbooks/deploy_log.md` patterns):
+- `scp` (or chunked az push) of the 6 new/modified Python files to prod
+- md5-verify each against local
+- Append systemd `*.service` + `*.timer` units (timers, not service-restart of trading-corp)
+- `systemctl daemon-reload`, `systemctl enable --now nbm-ingest.timer iem-ingest.timer`
+- **No restart of `trading-corp.service` required** — the new scripts run standalone, are not imported by the live strategy.
+
+**Trading impact:** none if scoped to timers. The live strategy doesn't read from
+`weather_nbm_observations` or `weather_forecast_residuals` (consumption stays board-gated).
+The deploy is purely additive data collection.
+
+**When ready:** plan as a standalone reviewed deploy. Use the existing deploy_log template;
+backup tags on any modified existing files; rollback recipe; first-fire verification of
+each timer's first invocation; row-count sanity-check the next day.
+
+**Until then:** the foundation is complete and trustworthy at scale (per prod-scale measurement
+above). The rest is data-accumulation time. No more building today.
