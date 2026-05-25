@@ -8,6 +8,38 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-25 ~21:30 UTC (Monday late evening — polymarket watchlist WR investigation; ROOT CAUSE = condition_id clustering, NOT denominator bug; PROMOTION PAUSED across all windowed columns; fix-planning session queued)
+
+**Headline of THIS session:** Investigated the dashboard's `~17/18 100.0% windowed WR` sweep on the Polymarket watch list. Operator hypothesis ("losses excluded from denominator → wins/wins ≈ 100%") was **REFUTED** by both static read and empirical replication against live Polymarket APIs. Real bug is **window-by-order-fill vs window-by-decision**: `_select_resolved_buys_window` (seed_polymarket_watchlist_deep.py:157-185) treats each `ActivityRow` as an independent sample, but 29 BUYs at the same `condition_id` (sports playoff spread cluster) are one decision repeated. During winning streaks the cluster fills the 100-slot window mechanically. Runaround verified at 100/0 windowed despite true all-resolved WR of ~60% (39W/26L). Mosley1 (100/0 stored vs 95/5 today) is staleness compounding, not the same defect — staleness self-heals on the Sunday overwrite; clustering does not.
+
+**`origin/main` head after this session:** `0b8bb82` (parallel kalshi_weather session terminus). This session's single commit `297508c` ("reports+scripts/verification: polymarket WR 100% sweep — clustering, not denominator bug") landed before `0b8bb82` and is pushed.
+
+**What's running on prod (touched THIS session): NOTHING.** Read-only investigation. Zero code/config/threshold changes. The watchlist seed continues to run weekly Sun ~13:00 UTC unmodified.
+
+**What shipped:**
+- **`reports/2026-05-25_polymarket_wr_investigation.md`** — full report: refutation of operator hypothesis, evidence (Mosley1 + Runaround), candidate fix directions (NOT picked), interim-promotion-pause rationale.
+- **`scripts/verification/2026-05-25_polymarket_wr/`** — 5 scripts + `results.json`; re-runnable against public Polymarket APIs as the evidence base for the eventual fix.
+
+**Operational decision recorded:** **Promotion off the Polymarket watch list is PAUSED across ALL windowed columns** (WR, realized PnL, AvgPx, `<.70` share — all inherit cluster contamination from the same window). The "constant sample size = comparable across whales" premise the 2026-05-23 windowing redesign was built on is invalidated for this screen. Operator's interim instinct (rank on PnL+`<.70`) was assessed and rejected — PnL has the same contamination, just with real dollars attached.
+
+**Memory updates:**
+- `project_polymarket_whale_scoring_edge.md` — CORRECTED: not "near-inert" but actively broken by clustering; all windowed columns contaminated; promotion paused until per-decision fix.
+- `project_pm_watchlist_windowed_live.md` — PROMOTION PAUSED header added; cross-link to scoring-edge memory.
+- `MEMORY.md` index lines for both refreshed.
+
+**Highest-leverage open item added by this session (handoff):**
+
+1. **POLYMARKET CLUSTERING FIX — PLANNING SESSION (Board-gated, NOT execution).** Three candidate directions are NOT equivalent re: the `n ≥ 10` floor and `n < 50` provisional flag interaction:
+   - **A. Dedupe by `condition_id` before windowing** — most honest; collapses cluster-traders' `n`; many current 100% rows tip to provisional or under the floor (operator: "truth surfacing, not damage"). Operator lean, NOT locked.
+   - **B. Cap same-`condition_id` slots at K of 100** — preserves higher `n`; K choice non-obvious.
+   - **C. `1 / n_buys_in_same_market` weighting** — preserves `n` for floor/provisional but weighted `wins/n` math.
+
+   Next session should walk cohort impact of each option against the current 329-row watchlist before any code change. Fix is Board-gated per CLAUDE.md § 4 — do not edit `_select_resolved_buys_window` without explicit approval. Session-start prompt at `runbooks/session_start_2026_05_25_post_polymarket_wr_investigation.md`.
+
+**Open items from earlier sessions still active (NOT touched here):** weekly-overwrite first cycle 2026-05-31 ~13:00 UTC; C-1 secret rotation; C-7 webhook audit leak; tastytrade rotation runbook; security-review remediation (5 CRITICAL findings remaining). See prior EOS snapshot for full list.
+
+---
+
 ## EOS snapshot — 2026-05-25 ~18:00 UTC (Monday evening — bitunix placement-quietude diagnosis + Board fee-floor decision RECORDED; ZERO code/config/threshold changes; 2 deliverables queued)
 
 **Headline of THIS session:** Bitunix futures has placed 0 paper trades since 2026-05-22 15:33 UTC. Investigation went through three reframes (PA structure_alignment → trade_plan fee floor → genuine regime → operator's "TF mismatch" hypothesis → operator's "high volume" hypothesis) and settled on: **regime-blocked, NOT a bug, NOT a deploy regression.** BTC ATR(14, 3m) compressed ~50% on 2026-05-23 ($105-131 max → $50-67 max), staying compressed through 2026-05-25 (live probe $59.71). 1R falls below the $138 fee floor; trade_plan correctly rejects 100% with `fees_too_high_for_risk`. The 5/23 deploy `6073480` (bias TTL 90→30 + observe-only flip detector) is mechanically non-causal — `_build_proposal_v2` reads `bar_cache.bars`, not `_load_live_alerts_in_window`. PA-redeem mechanism (commit `72bbbe4`, 5/17) IS firing (46 successes since 5/17, most recent 5/25 03:49 UTC); the cliff is downstream at trade_plan.
