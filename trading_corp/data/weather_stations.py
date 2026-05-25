@@ -252,6 +252,33 @@ class WeatherStationsRegistry:
             return None
         return self._doc.stations.get(icao)
 
+    def list_verified_series(self) -> list[tuple[str, SeriesEntry, StationEntry]]:
+        """Return ``(prefix, series_entry, station_entry)`` for every series
+        where ``verified=True`` and ``disabled`` is falsy and ``settles_at``
+        resolves to a known station.
+
+        Used by ingestion paths that need to iterate the canonical bet-on
+        station set — e.g. the NBM and IEM CLI residual ingestion scripts.
+        Going through this method is the structural guarantee that new
+        ingestion paths inherit the YAML xref discipline (KJFK→KNYC,
+        KORD→KMDW, KIAH→KHOU corrections etc.) without re-implementing
+        coord resolution. The strategy's ``_resolve_coords`` returns only
+        lat/lon (no station id) by design; new ingestion paths consume
+        this list instead.
+        """
+        self._reload_if_stale()
+        if self._doc is None:
+            return []
+        out: list[tuple[str, SeriesEntry, StationEntry]] = []
+        for prefix, series in self._doc.series.items():
+            if not series.verified or series.disabled or series.settles_at is None:
+                continue
+            station = self._doc.stations.get(series.settles_at)
+            if station is None:
+                continue
+            out.append((prefix, series, station))
+        return out
+
     @classmethod
     def load(cls, path: str | Path = _DEFAULT_YAML) -> "WeatherStationsRegistry":
         """Load and return a registry from the given path (eager first load)."""

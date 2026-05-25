@@ -282,6 +282,33 @@ CREATE TABLE IF NOT EXISTS kalshi_equity_history (
 );
 CREATE INDEX IF NOT EXISTS ix_kalshi_equity_history_division_ts
     ON kalshi_equity_history(division, ts);
+
+-- weather_nbm_observations: per-station NBM probabilistic temperature
+-- forecasts (deciles + stdev + mean) from NOMADS blend_nbptx text bulletins.
+-- Write-only ingestion target for scripts/ingest_nbm.py; the strategy hot
+-- path does not read this table until gated-consumption decision lands.
+-- See plans/tier1-data-foundation-kalshi-weather.md §C1 for the design
+-- and the icao_source / nbm_source drift sentinels.
+CREATE TABLE IF NOT EXISTS weather_nbm_observations (
+    station_id    TEXT NOT NULL,
+    cycle_iso     TEXT NOT NULL,
+    valid_iso     TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    horizon_hours REAL NOT NULL,
+    temp_p10_f    REAL NOT NULL,
+    temp_p20_f    REAL NOT NULL,
+    temp_p50_f    REAL NOT NULL,
+    temp_p70_f    REAL NOT NULL,
+    temp_p90_f    REAL NOT NULL,
+    temp_sigma_f  REAL NOT NULL,
+    temp_mean_f   REAL NOT NULL,
+    nbm_source    TEXT NOT NULL,
+    icao_source   TEXT NOT NULL,
+    ingested_at   TEXT NOT NULL,
+    PRIMARY KEY (station_id, cycle_iso, valid_iso, kind)
+);
+CREATE INDEX IF NOT EXISTS ix_weather_nbm_station_valid
+    ON weather_nbm_observations(station_id, valid_iso);
 """
 
 

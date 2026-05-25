@@ -233,6 +233,46 @@ series:
 # ---------------------------------------------------------------------------
 
 
+def test_list_verified_series_yields_all_38_active() -> None:
+    """list_verified_series() yields every verified+enabled series with a
+    settles_at, paired with its station. Skips disabled KXTEMPNYCH."""
+    reg = WeatherStationsRegistry.load(_PROD_YAML)
+    rows = reg.list_verified_series()
+    assert len(rows) == 38, (
+        f"Expected 38 verified+enabled series (39 total - 1 disabled), got {len(rows)}"
+    )
+    prefixes = {r[0] for r in rows}
+    assert "KXTEMPNYCH" not in prefixes, "Disabled series leaked into list"
+
+    # Every yielded row must have all three components populated
+    for prefix, series, station in rows:
+        assert series.verified is True, f"{prefix}: non-verified series leaked"
+        assert series.disabled is False, f"{prefix}: disabled series leaked"
+        assert series.settles_at is not None, f"{prefix}: no settles_at"
+        assert station.icao == series.settles_at, (
+            f"{prefix}: station.icao {station.icao!r} != settles_at {series.settles_at!r}"
+        )
+
+    # Dedupe by ICAO — should give 19 unique stations (the bet-on station set)
+    unique_icaos = {r[2].icao for r in rows}
+    assert len(unique_icaos) == 19, (
+        f"Expected 19 unique bet-on station ICAOs, got {len(unique_icaos)}: {sorted(unique_icaos)}"
+    )
+
+    # All 6 corrected stations must appear
+    for required_icao in ("KNYC", "KMDW", "KHOU"):
+        assert required_icao in unique_icaos, (
+            f"Corrected station {required_icao} missing from list_verified_series"
+        )
+
+
+def test_list_verified_series_empty_on_unloaded_registry() -> None:
+    """A bare registry (never loaded) returns an empty list — fail-safe."""
+    reg = WeatherStationsRegistry(Path("/nonexistent/never-exists.yaml"))
+    rows = reg.list_verified_series()
+    assert rows == []
+
+
 def test_validation_rejects_bad_coords() -> None:
     fixture_yaml = """
 schema_version: 1
