@@ -1,0 +1,568 @@
+[
+  {
+    "user_name": "Mosley1",
+    "wallet": "0x5bec79df9add70a3892041ab1a5516b60f53b215",
+    "stored_wins": 100,
+    "stored_losses": 0,
+    "stored_wr": 1.0,
+    "computed_wins": 95,
+    "computed_losses": 5,
+    "computed_wr": 0.95,
+    "kept_count": 100,
+    "samples": [
+      {
+        "condition_id": "0xa2a8b2f7341e95f955...",
+        "title": "Roland Garros ATP: Marton Fucsovics vs Matteo Berrettini",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Marton Fucsovics",
+        "outcomes": [
+          "Marton Fucsovics",
+          "Matteo Berrettini"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Matteo Berrettini",
+        "is_win": false,
+        "price_at_trade": 0.43
+      },
+      {
+        "condition_id": "0xa2a8b2f7341e95f955...",
+        "title": "Roland Garros ATP: Marton Fucsovics vs Matteo Berrettini",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Marton Fucsovics",
+        "outcomes": [
+          "Marton Fucsovics",
+          "Matteo Berrettini"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Matteo Berrettini",
+        "is_win": false,
+        "price_at_trade": 0.43
+      },
+      {
+        "condition_id": "0xa2a8b2f7341e95f955...",
+        "title": "Roland Garros ATP: Marton Fucsovics vs Matteo Berrettini",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Marton Fucsovics",
+        "outcomes": [
+          "Marton Fucsovics",
+          "Matteo Berrettini"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Matteo Berrettini",
+        "is_win": false,
+        "price_at_trade": 0.4300001767002986
+      },
+      {
+        "condition_id": "0xa2a8b2f7341e95f955...",
+        "title": "Roland Garros ATP: Marton Fucsovics vs Matteo Berrettini",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Marton Fucsovics",
+        "outcomes": [
+          "Marton Fucsovics",
+          "Matteo Berrettini"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Matteo Berrettini",
+        "is_win": false,
+        "price_at_trade": 0.4300001351923623
+      },
+      {
+        "condition_id": "0xa2a8b2f7341e95f955...",
+        "title": "Roland Garros ATP: Marton Fucsovics vs Matteo Berrettini",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Marton Fucsovics",
+        "outcomes": [
+          "Marton Fucsovics",
+          "Matteo Berrettini"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Matteo Berrettini",
+        "is_win": false,
+        "price_at_trade": 0.43
+      },
+      {
+        "condition_id": "0x29e0a98a16efbb0eb2...",
+        "title": "Roland Garros ATP: Stan Wawrinka vs Jesper de Jong",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Jesper de Jong",
+        "outcomes": [
+          "Stan Wawrinka",
+          "Jesper de Jong"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Jesper de Jong",
+        "is_win": true,
+        "price_at_trade": 0.6
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.41
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.41000015340011353
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.41
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.41
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.4100000202227945
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.41
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.41
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.41000015340011353
+      },
+      {
+        "condition_id": "0x481c6ee273dd4c78ff...",
+        "title": "Avalanche vs. Golden Knights",
+        "outcome_idx_from_activity": 1,
+        "outcome_label": "Golden Knights",
+        "outcomes": [
+          "Avalanche",
+          "Golden Knights"
+        ],
+        "prices": [
+          0.0,
+          1.0
+        ],
+        "winner_idx": 1,
+        "winner_label": "Golden Knights",
+        "is_win": true,
+        "price_at_trade": 0.41
+      }
+    ]
+  },
+  {
+    "user_name": "Runaround",
+    "wallet": "0xc0ff6a9ac424210cf218fda5c5753324c34a9953",
+    "stored_wins": 100,
+    "stored_losses": 0,
+    "stored_wr": 1.0,
+    "computed_wins": 100,
+    "computed_losses": 0,
+    "computed_wr": 1.0,
+    "kept_count": 100,
+    "samples": [
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.5500000787500255
+      },
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.55
+      },
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.55
+      },
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.55
+      },
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.55
+      },
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.5500000114387394
+      },
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.5500000114387394
+      },
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.55
+      },
+      {
+        "condition_id": "0xf85cc4fab0a986dfc2...",
+        "title": "Spread: Knicks (-11.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.55
+      },
+      {
+        "condition_id": "0x839eac6189ca07c700...",
+        "title": "Spread: Knicks (-6.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.47
+      },
+      {
+        "condition_id": "0x839eac6189ca07c700...",
+        "title": "Spread: Knicks (-6.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.47
+      },
+      {
+        "condition_id": "0xdf714b44de860d8236...",
+        "title": "Spread: Knicks (-5.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.5100000003724
+      },
+      {
+        "condition_id": "0x5dc91215116a044910...",
+        "title": "Spread: Knicks (-8.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.3800000061316094
+      },
+      {
+        "condition_id": "0xdf714b44de860d8236...",
+        "title": "Spread: Knicks (-5.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.5100000047231338
+      },
+      {
+        "condition_id": "0x839eac6189ca07c700...",
+        "title": "Spread: Knicks (-6.5)",
+        "outcome_idx_from_activity": 0,
+        "outcome_label": "Knicks",
+        "outcomes": [
+          "Knicks",
+          "Cavaliers"
+        ],
+        "prices": [
+          1.0,
+          0.0
+        ],
+        "winner_idx": 0,
+        "winner_label": "Knicks",
+        "is_win": true,
+        "price_at_trade": 0.47
+      }
+    ]
+  }
+]
