@@ -108,17 +108,24 @@ Tracking ATR regime is itself useful instrumentation: a public-facing audit kind
 
 The Board can:
 
-(a) **Wait for vol to return** — no action. Strategy auto-resumes on regime change. Paper-clock accrues at the rate the market allows. (Session recommendation.)
+**The three options are not co-equal. They live on different risk axes — rank accordingly.**
 
-(b) **Queue the `tp_is_maker` fill-rate model as a Backtester deliverable.** A net-positive verdict from the model would justify a Board-approved deploy of `tp_is_maker: true` independent of the placement cliff. This is a strict-improvement lever IF the fill model supports it.
+(a) **Wait for vol to return** — no action. Strategy auto-resumes when BTC ATR(14, 3m) ≥ ~$90 sustained (≥ a full 4h window above threshold to avoid one-bar spikes triggering noisy re-entry). Paper-clock accrues at the rate the market allows. (Session recommendation.)
 
-(c) **Open a separate backtest on `tp2_r_default` or `swing_max_lookback`** as net-of-cost-expectancy questions, NOT fire-rate questions. The decision criterion is "does net PnL per fire improve under the relaxed parameter, holding the strategy's other gates fixed?"
+> **Dated revisit tripwire**: if ATR has not recovered to ≥ ~$90 by **2026-06-19 (paper-clock midpoint, day 30 of 60)**, the Board re-opens this memo for the narrower question — *"does the clock measure 60 calendar days, or 60 trade-eligible days?"* The wait itself is correct; the failure mode is an undated wait that drifts to expire 2026-07-19 with n≈0 and nobody having decided. Owning a revisit trigger is the Board's call to make now, not something to discover later.
+
+(b) **Queue the `tp_is_maker` fill-rate model as a Backtester deliverable.** A net-positive verdict from the model would justify a Board-approved deploy of `tp_is_maker: true` independent of the placement cliff. This is a **strict-improvement** lever: it lowers real cost (0.180% → 0.128% fee floor) without changing trade selection. Every trade that fires under the new floor would also have fired under the old; the trades just get cheaper. Net-positive in every regime if the fill model supports it. **(b) ranks above (c) — different risk class.**
+
+(c) **Open a separate backtest on `tp2_r_default` or `swing_max_lookback`** — but understand these are **trade-selection** changes, not cost reductions. They alter *which* trades qualify. This carries **overfit risk**: a relaxed `tp2_r_default = 1.5` will look net-positive in a backtest restricted to current low-vol BTC (where it's the only way to get fires), and may look strictly worse when the regime rotates. Same trap as adding signal factors at low n — local optimum on a stale window.
+   - Decision criterion stays: "net PnL per fire, holding other gates fixed." That metric is overfit-resistant in a way that fire-rate and total-PnL are not. **Do not let it slip to fire-rate or total-PnL during Board discussion.**
+   - Require the backtest corpus to cover at least one ATR-regime rotation (the 5/15-5/22 high-ATR window + the 5/23+ low-ATR window). A backtest that only sees low-vol BTC cannot tell you whether the change generalizes.
 
 The Board should NOT:
 
 - Lower `tp1_min_profit_multiplier` to chase fire-rate
 - Loosen the fee floor "for the demo" or "to satisfy the paper-clock observation rate"
 - Treat the current placement quietude as a bug to fix on the deploy timeline rather than a regime to wait through
+- **Re-open this decision every time the paper-clock observation rate looks low.** Low fire-rate in low vol is the system working — confirmed three times now (5/20 confound report, 5/25 quietude diagnosis, 5/25 cliff addendum). The Board decides ONCE that it accepts regime-gated accrual as honest, and that decision sticks until something *new* shows up (a new diagnostic finding, a new cost-side lever, a regime that produces fires but bad outcomes). Monthly re-litigation of "are the gates too tight" is itself a failure mode — it converts "wait for vol" into a soft loosening pressure that compounds across review cycles.
 
 ## 8. What the session will not do
 
