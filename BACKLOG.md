@@ -992,15 +992,9 @@ sudo sed -i 's|seed_polymarket_watchlist_deep\$|seed_polymarket_watchlist_deep -
 
 Three findings surfaced during the §7 verification spree (runbook: `runbooks/2026-05-23_vm_security_state.md`, commit `d1402b5`) that are NOT in the original security review (`reports/2026-05-21_security_review.md`). Filed here so they get rolled into the next remediation sweep.
 
-### P1 — `azureuser` has `NOPASSWD:ALL` sudo
+### P1 — `azureuser` has `NOPASSWD:ALL` sudo  *(SHIPPED 2026-05-25 15:21 UTC)*
 
-**Finding:** `/etc/sudoers.d/*` includes `azureuser ALL=(ALL) NOPASSWD:ALL` (set by cloud-init). This partially undermines the C-4 remediation that was already done (service now runs as `azureuser` instead of root). Any code-execution path inside the `trading-corp` process can `subprocess.run(['sudo', 'bash'])` and reach root with no password prompt.
-
-**Cross-ref:** C-4 in the report; not separately named there.
-
-**Patch sketch:** Replace the blanket `NOPASSWD:ALL` with a narrow allowlist of the specific commands the operator actually needs passwordless (e.g. `systemctl restart trading-corp`, `sqlite3 /home/azureuser/trading_corp/data/trading_corp.db`). Everything else requires password prompt. Risk: misconfiguring the sudoers file is a classic VM lockout pattern — edit via `visudo` only, test in a second SSH session before closing the first.
-
-**Why P1:** active privilege-escalation path that nullifies the work that went into running the service as non-root. Should be sequenced with TRACK A (secret rotation) since both touch VM state.
+**Status:** SHIPPED 2026-05-25 15:21 UTC per operator in-session approval, sequenced BEFORE C-1 secret rotation so rotation's blast radius is actually shrunk by lockdown. See `runbooks/deploy_log.md` 2026-05-25 15:21 UTC entry for full forensics. Allowlist scopes: `TC_SYSTEMD_BIN/USR` (systemctl verbs against `trading-corp*`), `TC_JOURNAL` (`journalctl --no-pager -u trading-corp*`), `TC_DB` (bare `sqlite3 /home/azureuser/trading_corp/data/trading_corp.db` only — no trailing args; SQL via stdin). All four verification gates passed: allowlisted passwordless, `sed -i`/`cp`/`chmod` on units prompt, `sudo bash` / `cat /etc/shadow` / `sqlite3 /tmp/test.db` prompt, `journalctl` without `--no-pager` prompts. `azureuser` is in `sudo` group but password is locked (`passwd -S → L`, shadow `!`) — `%sudo` path is effective-deny without further action. **Follow-up filed (see new P2 entry below):** cloud-init re-image durability — narrowed file would be re-written to `NOPASSWD:ALL` on a re-image; durable fix is `/etc/cloud/cloud.cfg.d/` override. Backup of pre-narrow file at `/etc/sudoers.d/90-cloud-init-users.pre-narrow-20260525` (145 B, original cloud-init grant; rollback recipe in deploy_log).
 
 ### P2 — `trading_corp.db` is world-readable (mode 644)
 
@@ -1021,6 +1015,18 @@ Three findings surfaced during the §7 verification spree (runbook: `runbooks/20
 **Patch:** Inventory + `sudo rm` the four stale files once. For the recurring cause, fix the upstream code so PEMs are written to a directory the service can clean — or include cleanup in the Kalshi adapter's shutdown path.
 
 **Why P3:** cosmetic; the files are read-only key material that's already been rotated. Cleanup hygiene only.
+
+### P2 — sudoers narrow doesn't survive VM re-image (cloud-init re-creation)  *(NEW — 2026-05-25)*
+
+**Finding:** The P1 sudo-lockdown shipped 2026-05-25 15:21 UTC edits `/etc/sudoers.d/90-cloud-init-users` in place. That file is cloud-init managed (header: `Created by cloud-init v. 25.3-0ubuntu1~22.04.1 on Thu, 30 Apr 2026 16:47:39 +0000`). On the current boot cloud-init's status is `done` so re-creation isn't imminent, but `cloud-init clean` + reboot OR a re-image of the VM from the scale-set image WOULD re-write the file back to its default content (`azureuser ALL=(ALL) NOPASSWD:ALL`). The in-place narrow is therefore brittle against operations the operator hasn't planned for (image refresh, automated re-deployment, disaster recovery from image).
+
+**Patch sketch:** Add `/etc/cloud/cloud.cfg.d/99-trading-corp-sudo.cfg` with a cloud-init `users:` override that either (a) sets `sudo: false` for `azureuser` and provisions the narrow allowlist via a separate write_files: directive that overlays the cloud-init-created `90-cloud-init-users` after generation, or (b) replaces the default sudo grant directive with the narrow allowlist content. Option (a) is conceptually cleaner; option (b) keeps the change to a single file. Either way, the override must be loaded by cloud-init BEFORE the user-creation stage (numbering convention puts our override at `99-` which is late — confirm cloud-init's user-mod stage actually re-reads the merge before writing `/etc/sudoers.d/90-cloud-init-users`).
+
+**Verification needed:** `cloud-init clean --logs && cloud-init init` in a non-prod environment (or against a snapshot) to confirm the override survives a cloud-init re-run AND that the narrow allowlist is what lands on disk. **Do NOT test this on `tc-prod-vm`** — a misconfigured override could lock out `azureuser` SSH if the user-creation stage fails. Stage on a sibling Azure VM or in a one-off snapshot-restore VM first.
+
+**Cross-ref:** Follows the P1 sudo-lockdown shipped 2026-05-25 (this entry). Both entries point at the same root file; this is the durability complement.
+
+**Why P2:** the in-place narrow is the safety win today; the cloud-init override is the durability win. Re-image is rare on this VM but not impossible (e.g. if the scale-set image gets refreshed for an OS-level update). Acceptable to defer if operator's re-image cadence is "never planned."
 
 ---
 

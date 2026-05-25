@@ -76,6 +76,69 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-25 15:21 UTC — sudoers narrow: `azureuser NOPASSWD:ALL` → narrow allowlist (P1, BACKLOG `8d72dcc`)
+
+**Commits:** n/a (VM-side `/etc/sudoers.d/` edit only; no repo code changed)
+**Triggered by:** in-session operator approval; BACKLOG.md "P1 — `azureuser` has `NOPASSWD:ALL` sudo" (filed 2026-05-23 in `8d72dcc`, sequenced BEFORE C-1 secret rotation to shrink rotation's blast radius)
+**Backup tag:** `.pre-narrow-20260525` on `/etc/sudoers.d/90-cloud-init-users`
+
+**Files deployed (1, VM-side only):**
+- `/etc/sudoers.d/90-cloud-init-users` — replaced cloud-init's blanket `azureuser ALL=(ALL) NOPASSWD:ALL` (1 line) with a narrow Cmnd_Alias allowlist (15 lines): `TC_SYSTEMD_BIN`, `TC_SYSTEMD_USR`, `TC_JOURNAL` (`--no-pager` scoped), `TC_DB` (bare-invocation only). Perms preserved at `0440 root:root`. Final md5: `f08e9d1a1cb2f1e9ae23fdeacf66b48d`.
+
+**Features shipped:**
+- The active privilege-escalation path through `sudo bash` / `sudo cat /etc/shadow` / `sudo <anything>` as `azureuser` is CLOSED. C-4 (service running as `azureuser` instead of root, ALREADY REMEDIATED) is no longer undermined by the cloud-init grant. Daily ops (`systemctl restart/start/stop/status/is-active/is-failed trading-corp*`, `systemctl daemon-reload`, `journalctl --no-pager -u trading-corp*`, bare `sqlite3 …trading_corp.db` with stdin SQL) remain passwordless; everything else falls through to a password prompt against `azureuser`'s **locked** password (`passwd -S azureuser = L`, shadow field `!`) — effective deny.
+
+**Sudo-group secondary path:** `azureuser` is in `sudo` group (gid 27), which gives `%sudo ALL=(ALL:ALL) ALL` with password required. Password is locked, so this path is effective-deny — `gpasswd -d azureuser sudo` was considered but is unnecessary surface-area-change. Left as-is.
+
+**Notable code changes:**
+- None in repo; allowlist is on-VM only. Allowlist content reproduced inline in this entry for forensic recovery.
+
+**Verification (azureuser via `sudo -n`; "a password is required" + nonzero exit = correctly-denied prompt):**
+
+GATE 1 — allowlisted commands run passwordless:
+- `sudo -n systemctl status trading-corp.service --no-pager` → exit 0, service info printed
+- `sudo -n systemctl is-active trading-corp.service` → `active`, exit 0
+- `sudo -n systemctl daemon-reload` → exit 0 (the cadence-deploy pattern)
+- `sudo -n journalctl --no-pager -u trading-corp.service -n 1` → exit 0, journal line returned
+- `echo 'SELECT COUNT(*) FROM sqlite_master;' | sudo -n sqlite3 /home/azureuser/trading_corp/data/trading_corp.db` → `56`, exit 0
+
+GATE 2 — unit-file mutations correctly PROMPT (TC_UNITS was deliberately omitted from the allowlist; rare supervised deploy actions are not high-frequency ops and should authenticate):
+- `sudo -n sed -i 's|x|x|' /etc/systemd/system/trading-corp-pm-watchlist-deep.service` → "a password is required", exit 1
+- `sudo -n cp /etc/hostname /etc/systemd/system/trading-corp-noop.txt` → "a password is required", exit 1
+- `sudo -n chmod 0644 /etc/systemd/system/trading-corp-pm-watchlist-deep.service` → "a password is required", exit 1
+
+GATE 3 — unrelated sudo PROMPTS:
+- `sudo -n cat /etc/shadow` → "a password is required"
+- `sudo -n sqlite3 /tmp/test.db` (non-allowlisted DB path) → "a password is required", exit 1 (bare-path strictness confirmed)
+- `sudo -n bash -c 'whoami'` → "a password is required", exit 1 (canonical escalation closed)
+
+GATE 4 — `journalctl` WITHOUT `--no-pager` PROMPTS (confirms pager-shell-escape mitigation took):
+- `sudo -n journalctl -u trading-corp.service -n 1` → "a password is required"
+
+**Operational workflow note for future sessions:**
+- `journalctl` invocations against trading-corp units **must include `--no-pager`** (in either position: `--no-pager -u …` OR `-u … --no-pager`) to remain passwordless. The 4 patterns covered are explicit; other positions fall through to password prompt.
+- `sqlite3` invocations must be **bare** (`sqlite3 /home/azureuser/trading_corp/data/trading_corp.db`) with SQL passed via stdin/heredoc. No `-cmd`, no inline SQL arg, no trailing args (`.shell`/`.system` dot-commands would otherwise be RCE).
+- **Unit-file mutations now require a password.** Since `azureuser`'s password is locked, the practical effect during deploys is: edit unit files via the `az vm run-command invoke` channel (which runs root-via-VM-agent, bypasses sudoers entirely) rather than `ssh azureuser@… && sudo sed -i`. The pm-watchlist cadence deploy earlier today (`14:25 UTC`) used exactly this pattern.
+
+**Inert / dormant on current traffic:** none — the narrowed grant is exercised immediately by any sudo invocation.
+
+**Filed as follow-up (NOT in this deploy):**
+- **Cloud-init re-image durability.** The narrowed file lives at `/etc/sudoers.d/90-cloud-init-users` — managed by cloud-init. On next boot cloud-init won't re-run (`status: done`), but a `cloud-init clean` + reboot OR a re-image from the scale-set image WOULD re-write the file back to `NOPASSWD:ALL`. Durable fix: a `/etc/cloud/cloud.cfg.d/99-disable-default-user-sudo.cfg` override with `users: [...] sudo: false` (or an equivalent narrow grant via cloud-init's `users:` directive). Filed as new P2 in BACKLOG.md.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm --command-id RunShellScript --scripts "
+install -m 0440 -o root -g root \
+  /etc/sudoers.d/90-cloud-init-users.pre-narrow-20260525 \
+  /etc/sudoers.d/90-cloud-init-users && \
+visudo -c && \
+grep -nE 'azureuser|NOPASSWD' /etc/sudoers.d/90-cloud-init-users
+"
+```
+Restores byte-for-byte the cloud-init original (`145` bytes, `NOPASSWD:ALL` grant).
+
+---
+
 ## 2026-05-25 14:25 UTC — pm-watchlist-deep timer: drop `--merge` → weekly overwrite
 
 **Commits:** n/a (VM-side systemd unit only; no repo code changed)
