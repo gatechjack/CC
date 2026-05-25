@@ -183,35 +183,128 @@ def report_autopsy(per_event: dict[str, dict], n_entry: int, n_sett: int) -> Non
                   f"settle={sett_tag}(d={r['delta_settlement']:+.1f})")
 
 
+def _parse_threshold_from_ticker(ticker: str) -> tuple[float, str] | None:
+    """KXHIGHTMIN-26MAY23-B69.5 → (69.5, 'between'). T tickers also return a
+    float threshold; the bucket type ('between' vs 'threshold') is preserved
+    only for diagnostics. Returns None if pattern doesn't match."""
+    m = re.match(r".+-([BT])(\d+(?:\.\d+)?)$", ticker)
+    if not m:
+        return None
+    bucket_type = "between" if m.group(1) == "B" else "threshold"
+    return float(m.group(2)), bucket_type
+
+
 def report_residuals_db(db_path: Path) -> None:
-    """Best-effort base-rate report if weather_forecast_residuals has rows."""
+    """Full base-rate report joining residuals → audit_event by cycle_iso to
+    recover ticker → threshold. Per Tier 1 plan §C3 'Measurability against
+    the residuals DB' — implements the predictive base rate + flip
+    realization rate over ALL boundary-adjacent rows."""
     conn = sqlite3.connect(db_path)
     try:
-        # Check table exists
         table_exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='weather_forecast_residuals'"
         ).fetchone()
         if not table_exists:
-            print("\n(weather_forecast_residuals table not yet created; skipping base-rate)")
+            print("\n(weather_forecast_residuals table not yet created)")
             return
-        c = conn.execute(
+        total = conn.execute(
             "SELECT COUNT(*) FROM weather_forecast_residuals "
             "WHERE logic_era != 'pre_station_fix'"
         ).fetchone()[0]
-        if c == 0:
-            print("\n(no non-pre-fix residuals DB rows; skipping base-rate)")
+        if total == 0:
+            print("\n(no non-pre-fix residuals)")
             return
-        print(f"\n--- Predictive base rate from residuals DB ---")
-        print(f"non-pre-fix residual rows: {c}")
-        # We don't know the threshold per row without the ticker, but
-        # we can compute the at-entry rounding-risk against the
-        # closest-integer threshold from forecast itself (a proxy).
-        # For a meaningful base rate we'd need the ticker; for now,
-        # report sample sizes and a note.
-        print("(per-ticker threshold join not built here — defer to a "
-              "follow-up backtest that joins back to audit_event by "
-              "ticker for proper threshold extraction)")
+
+        print(f"\n" + "=" * 70)
+        print(f"C3 BASE-RATE — FULL non-pre-fix residual population")
+        print(f"=" * 70)
+        print(f"total non-pre-fix residuals: {total:,}")
+
+        # Join residuals → audit_event to recover ticker (only for audit-derived
+        # residuals; NBM-native residuals don't join back to audit).
+        join_sql = """
+            SELECT r.station_id, r.kind, r.forecast_temp_f, r.actual_temp_f,
+                   r.logic_era, r.forecast_source,
+                   json_extract(a.payload_json, '$.ticker') AS ticker
+            FROM weather_forecast_residuals r
+            LEFT JOIN audit_event a
+              ON a.ts = r.cycle_iso
+             AND a.actor = 'kalshi_weather_arb'
+             AND a.kind = 'kalshi_weather_evaluated'
+            WHERE r.logic_era != 'pre_station_fix'
+        """
+        rows = conn.execute(join_sql).fetchall()
+
+        # Note: the LEFT JOIN can inflate row count because multiple ticker-
+        # bets share the same audit ts (=cycle_iso). The per-row evaluation
+        # below is correct (each (residual, ticker) pair gets its own
+        # rounding-risk check), but the raw join-row count is not a
+        # meaningful "with ticker" total. Skip the join-row count print.
+        n_audit_joined_rows = len(rows)
+        print(f"residual×ticker join rows (post-inflation): {n_audit_joined_rows:,}")
+
+        # Compute base-rate over boundary-adjacent rows
+        n_boundary = 0
+        n_risky = 0
+        n_risky_flipped = 0
+        n_nonrisky_flipped = 0
+        n_nonrisky_boundary = 0
+        for r in rows:
+            station, kind, fcst, actual, era, source, ticker = r
+            if not ticker:
+                continue
+            parsed = _parse_threshold_from_ticker(ticker)
+            if parsed is None:
+                continue
+            thr, _btype = parsed
+            if abs(fcst - thr) >= 1.0:
+                continue  # not boundary-adjacent
+            n_boundary += 1
+            direction = "max" if kind == "daily_max" else "min"
+            verdict = cli_rounding_risk(fcst, int(round(thr)), direction)
+            # Did the CLI value land 1F below (for max) or 1F above (for min)
+            # round(fcst), i.e., did the rounding actually flip in the
+            # "dangerous" direction?
+            fcst_int = round(fcst)
+            if direction == "max":
+                flipped_dangerous = (int(round(actual)) == fcst_int - 1)
+            else:
+                flipped_dangerous = (int(round(actual)) == fcst_int + 1)
+            if verdict["risk_flag"]:
+                n_risky += 1
+                if flipped_dangerous:
+                    n_risky_flipped += 1
+            else:
+                n_nonrisky_boundary += 1
+                if flipped_dangerous:
+                    n_nonrisky_flipped += 1
+
+        print(f"\nBoundary-adjacent (|forecast - threshold| < 1.0F): {n_boundary:,}")
+        if n_boundary == 0:
+            print("(no boundary-adjacent rows; can't compute base-rate)")
+            return
+        print(f"  risk_flag=True : {n_risky:,} ({100*n_risky/n_boundary:.1f}%)")
+        print(f"  risk_flag=False: {n_nonrisky_boundary:,} ({100*n_nonrisky_boundary/n_boundary:.1f}%)")
+
+        # Flip realization rate
+        print(f"\nFLIP REALIZATION (CLI settled 1F in the dangerous direction):")
+        if n_risky > 0:
+            print(f"  risk_flag=True : {n_risky_flipped}/{n_risky} = "
+                  f"{100*n_risky_flipped/n_risky:.1f}%  (PREDICTED to flip)")
+        if n_nonrisky_boundary > 0:
+            print(f"  risk_flag=False: {n_nonrisky_flipped}/{n_nonrisky_boundary} = "
+                  f"{100*n_nonrisky_flipped/n_nonrisky_boundary:.1f}%  (base rate)")
+        if n_risky > 0 and n_nonrisky_boundary > 0:
+            risky_rate = n_risky_flipped / n_risky
+            base_rate = n_nonrisky_flipped / n_nonrisky_boundary
+            if base_rate > 0:
+                lift = risky_rate / base_rate
+                print(f"  LIFT (risky / base): {lift:.2f}x  "
+                      f"(Tier 1 plan asked for >=2x to validate the mechanism)")
+            else:
+                print(f"  LIFT: risky={100*risky_rate:.1f}% vs base=0% "
+                      f"(base too small to compute lift)")
     finally:
         conn.close()
 
