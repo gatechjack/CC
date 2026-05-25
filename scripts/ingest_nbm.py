@@ -70,6 +70,7 @@ def _write_observations(
     observations: list[NBMObservation],
     nbm_source: str = "nomads_bulk",
     icao_source: str = "registry_yaml",
+    ingest_mode: str = "live_cron",
 ) -> int:
     """Idempotent UPSERT into weather_nbm_observations. Returns row count written."""
     if not observations:
@@ -80,9 +81,9 @@ def _write_observations(
             station_id, cycle_iso, valid_iso, kind, horizon_hours,
             temp_p10_f, temp_p20_f, temp_p50_f, temp_p70_f, temp_p90_f,
             temp_sigma_f, temp_mean_f,
-            nbm_source, icao_source, ingested_at
+            nbm_source, icao_source, ingest_mode, ingested_at
         ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         ON CONFLICT (station_id, cycle_iso, valid_iso, kind) DO UPDATE SET
             horizon_hours = excluded.horizon_hours,
@@ -95,6 +96,7 @@ def _write_observations(
             temp_mean_f = excluded.temp_mean_f,
             nbm_source = excluded.nbm_source,
             icao_source = excluded.icao_source,
+            ingest_mode = excluded.ingest_mode,
             ingested_at = excluded.ingested_at
     """
     rows = [
@@ -102,7 +104,7 @@ def _write_observations(
             o.station_id, o.cycle_iso, o.valid_iso, o.kind, o.horizon_hours,
             o.temp_p10_f, o.temp_p20_f, o.temp_p50_f, o.temp_p70_f, o.temp_p90_f,
             o.temp_sigma_f, o.temp_mean_f,
-            nbm_source, icao_source, ingested_at,
+            nbm_source, icao_source, ingest_mode, ingested_at,
         )
         for o in observations
     ]

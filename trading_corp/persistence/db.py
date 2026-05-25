@@ -304,6 +304,7 @@ CREATE TABLE IF NOT EXISTS weather_nbm_observations (
     temp_mean_f   REAL NOT NULL,
     nbm_source    TEXT NOT NULL,
     icao_source   TEXT NOT NULL,
+    ingest_mode   TEXT NOT NULL DEFAULT 'live_cron',
     ingested_at   TEXT NOT NULL,
     PRIMARY KEY (station_id, cycle_iso, valid_iso, kind)
 );
@@ -372,6 +373,12 @@ def init_db(db_url: str = "sqlite:///data/trading_corp.db") -> Path:
         )
         _maybe_add_column(
             conn, "kalshi_round_trips", "entry_order_id", "TEXT",
+        )
+        # ingest_mode: distinguish historical_backfill vs live_cron NBM rows
+        # (Tier 1 plan 2026-05-25 — historical S3 backfill alongside live cron poller).
+        _maybe_add_column(
+            conn, "weather_nbm_observations", "ingest_mode",
+            "TEXT NOT NULL DEFAULT 'live_cron'",
         )
         # Indexes that reference columns added by the migration above must
         # be created here (not in SCHEMA) so they apply AFTER the column
