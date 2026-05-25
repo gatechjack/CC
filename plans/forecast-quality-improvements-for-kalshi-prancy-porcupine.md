@@ -1,5 +1,7 @@
 # Plan — Forecast-Quality Improvements for kalshi_weather
 
+> **Superseded for Items 2.1 + 2.2 data prerequisites by Tier 1 (2026-05-25):** see [`plans/tier1-data-foundation-kalshi-weather.md`](tier1-data-foundation-kalshi-weather.md). The Tier 1 plan supplies the data prerequisite (calibrated NBM σ + per-station IEM CLI residuals DB) that Items 2.1 and 2.2 below lacked, and surfaces a deterministic F→C→F rounding model (C3) that may park Item 2.1 entirely after backtest. Read Tier 1 first; then read this file for the consumption-layer specs that Tier 1's data enables.
+
 > **Document status: RECONSTRUCTED-FROM-SESSION-CONTEXT (2026-05-25).**
 > The original plan was worked out in the 2026-05-24 session and
 > referenced from `BACKLOG.md` / `runbooks/deploy_log.md` /
