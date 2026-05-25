@@ -8,6 +8,60 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-24 ~23:55 UTC (Sunday late evening — Tasty Options division 5-commit build COMPLETE + Phase-0 smoke GREEN end-to-end on TT PRODUCTION; deploy QUEUED for next session)
+
+**Headline of THIS session-segment:** Built a new equity-options division (`tasty_options`) from scratch — a sibling-clone of `robinhood_joint` that trades the same 45-DTE iron-condor strategy on Tastytrade with a permissive "watchlist" replacing the hard-gate "universe." Shipped in 5 planned commits + 2 fixups surfaced by the Phase-0 sandbox smoke. **All 4 smoke probes PASS** on TT PRODUCTION account `5WZ66443` as of 2026-05-24T23:52 UTC. **No production deploy this session — operator deferred to next session.** Local main is 1 commit ahead of origin (final push at session wrap).
+
+**`origin/main` head AFTER session wrap push: `26a191e`**. Commits added this session (chronological, oldest first):
+- `a6990cd` — tasty_options Commit 1/5: TastytradeBroker + secrets KV plumbing *(THIS thread)*
+- `d7e0afd` — tasty_options Commit 2/5: IC grader parameterization *(THIS thread)*
+- `a9e4e46` — tasty_options Commit 3/5: division shell + strategy clone *(1750-LOC strategy clone via Sonnet sub-agent)*
+- `94b3129` — tasty_options Commit 4/5: config + main.py wiring + dashboard tile *(THIS thread)*
+- `613c7fa` — tasty_options Commit 5/5: Phase-0 sandbox smoke script + runbook *(THIS thread)*
+- `0a98bbf` — UI cleanup pass *(PARALLEL session, deployed at 22:49 UTC — see prior EOS)*
+- `9b55ee9`, `cf355cc` — deploy_log + backlog for UI cleanup *(PARALLEL session)*
+- `672f658` — tasty_options fixup: TastytradeBroker async-call sites + sys.path shim *(THIS thread; first smoke run surfaced 7 sites mis-wrapping async SDK methods in `asyncio.to_thread` — the exact `feedback_mocks_dont_catch_sdk_shape` failure mode the memory entry warned about; mocks happily passed since MagicMock returns directly while real SDK returns coroutines)*
+- `26a191e` — tasty_options fixup-2: dry_run param on broker + smoke iteration to GREEN + deploy_log entry *(THIS thread; this commit + the doc-wrap commit are the queue for next-session push)*
+
+**Phase 0 verification (PASSED end-to-end, 2026-05-24T23:52 UTC on TT PRODUCTION account `5WZ66443`):**
+- probe 1/4 snapshot — equity $500, BP $0, positions 0 (the operator's test account is brand-new + unfunded; capacity ≠ broker code)
+- probe 2/4 place_multi_leg(dry_run=True) — TT validated SPY 2026-07-17 600C/605C/555P/560P combo through to margin layer; rejected with `margin_check_failed: Your account does not have sufficient buying power`. **This IS the broker-shape SUCCESS signal on a dry-run probe** — TT exercised auth + chain + serialization + OCC + scope + margin layer. Account capacity is operator-state, not code.
+- probe 3/4 cancel_order(999999999) — returned False as designed
+- probe 4/4 get_option_greeks — returned None (dxFeed timeout; acceptable warning per runbook)
+
+**OAuth saga (load-bearing for any future TT broker work):**
+- Initial TT refresh token (data-provider, scope=`read` only) returned `invalid_grant: Grant revoked` against orders endpoint — single-use token had been rotated by the prod data provider.
+- Operator did first OAuth re-grant; result still scope=`read` (TT app permitted only read).
+- Operator widened the OAuth app in TT's developer portal to permit `scope=read trade`.
+- Second OAuth re-grant produced trade-scoped JWT (iat=1779666232, scope=`"read trade"`).
+- Hidden gotcha #1: `setx TASTYTRADE_REFRESH_TOKEN` writes to User registry; the in-process PS env keeps the OLD value until close+reopen. Confirmed via comparing in-process vs registry-User token fingerprints.
+- Hidden gotcha #2: TT silently drops scopes not permitted by the OAuth app config — requesting `scope=read+trade` against a `scope=read`-only app returns a `read`-only token with no error. Diagnosable only by JWT-decoding the token's `scope` claim.
+- See new memory `[[reference-tastytrade-oauth-scope-widening]]` for the full diagnostic recipe.
+
+**Cleanup safety net added:** smoke now does a `get_live_orders` + `get_live_complex_orders` sweep matched by OCC symbol after every probe-2 run; cancels anything attributable to the smoke run. Belt-and-suspenders against TT routing partially-validated orders into a working state.
+
+**What's on prod RIGHT NOW vs queued for next session:**
+- Prod runtime: `0a98bbf` (UI cleanup deployed 2026-05-24 22:49 UTC). **DOES NOT YET INCLUDE the tasty_options division.** Operator deferred deploy.
+- Queued for next-session deploy: 7 commits + 12 files. Full deploy plan in this session's chat + `runbooks/2026-05-25_session_start_post_tasty_options_build.md` (this commit).
+
+**Highest-leverage open items (handoff to next session — by priority):**
+
+1. **DEPLOY tasty_options to prod** (P0 HIGH). 7 commits, 12 files, ~3500 LOC. Plan documented in `runbooks/session_start_2026_05_25_post_tasty_options_build.md`. Backup-tag pattern matches the UI cleanup deploy's `pre-ui-flicker-fix-20260524-2230` template. Recommend pre-market Monday so the 09:45-09:50 ET scanner first-fire happens under direct watch.
+
+2. **Push the trade-scoped TASTYTRADE_REFRESH_TOKEN to prod's `/etc/trading-corp/tastytrade.env`** (P1 HIGH, gated by Phase 2 not Phase 1). Operator's new trade-scoped token lives only in their local Windows User registry today. Phase 1 is paper-wrapped so the existing prod read-only token is sufficient. Phase 2 requires the trade-scoped token on prod. Atomic procedure: same as the documented Tastytrade rotation runbook (which is now ready to be written from this session's evidence).
+
+3. **Write the Tastytrade rotation runbook** (P2 MEDIUM). This session generated all the forensics needed — the OAuth saga above + the in-process-env-vs-registry gotcha + the scope-silently-dropped gotcha. Should land at `runbooks/tastytrade_oauth_rotation.md` and supersede the prior P1-HIGH-untouched entry tracked in deploy_log notes.
+
+4. **Phase 1 paper observation clock** starts when deploy lands. Min 21 calendar days. Watch `/telemetry/iron_condor?division=tasty_options` daily. Memory `[[project-tasty-options-paper-clock]]` carries the exit-criteria + Backtester-approval gate for Phase 2 promotion.
+
+5. **3 pre-existing test failures in `tests/test_iron_condor_strategy.py`** (P3 LOW). Inherited from the RH Joint test file; surfaced cleanly in the Tasty Options test clone as 3/53 fails on identical line numbers/error shapes. Out of scope this session — recommend ticket against RH Joint test owner.
+
+**Files modified this session (count = 19 across commits a6990cd..26a191e):**
+NEW: `trading_corp/brokers/tastytrade.py`, `trading_corp/agents/divisions/tasty_options.py`, `trading_corp/agents/strategies/tasty_options_iron_condor.py`, `tests/test_tasty_options_division.py`, `tests/test_tasty_options_iron_condor.py`, `tests/test_tastytrade_broker.py`, `tests/test_tastytrade_broker_real_sdk.py`, `scripts/tasty_sandbox_smoke.py`, `runbooks/2026-05-25_tasty_sandbox_smoke_runbook.md`, `tmp/probe_spy_chain.py` (diagnostic; uncommitted, kept for future use)
+MOD: `trading_corp/utils/secrets.py`, `trading_corp/agents/strategies/ic_candidate_grader.py`, `trading_corp/main.py`, `trading_corp/web/app.py`, `trading_corp/web/routes.py`, `trading_corp/web/templates/home.html`, `trading_corp/web/templates/iron_condor_live.html`, `config/divisions.yaml`, `config/strategies.yaml`, `runbooks/deploy_log.md`
+
+---
+
 ## EOS snapshot — 2026-05-24 ~23:00 UTC (Sunday late evening — UI cleanup pass: htmx flicker fix + 3 other dashboard defects SHIPPED + DEPLOYED; parallel tasty_options fixup also landed)
 
 **Headline of THIS session-segment:** Operator-driven UI defect walkthrough. Four defects identified, fixed, shipped, and deployed in one bundled commit. Zero strategy or risk-gate code touched. All changes are web/templates/static + one display-only field in the audit-row renderer. Parallel claude session committed `672f658` (tasty_options async fixup) between my UI commit and my deploy_log commit — also rode to origin on the same push.
