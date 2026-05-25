@@ -474,18 +474,24 @@ of the calibration data **today** and what changes over time:
 | Clean calibration rows | **6,446** post-fix `nws_blend` residuals | already available | post_station_fix subset of current corpus |
 | NBM-source residuals | **0** | **~2 days** | NBM forecasts cover 5/26+; IEM CLI only published through 5/24. Once IEM publishes 5/26+, the NBM cycles already ingested join in |
 | `nbm_p50` / `nbm_mean` per-(station, horizon) sample size | 0 | ~30 days after NBM joins start | Item 2.2 σ-calibration gate requires ≥20 samples per (station, source, season) partition |
-| Cross-season calibration (winter, summer, fall) | not possible | **~6 months** | Corpus only spans May 2026 = spring only. Need real winter/summer/fall data to validate seasonal residuals |
+| Cross-season calibration — **own-pipeline** sources (nws_blend, HRRR, ensemble) | not possible | **~6 months forward** | We can't backfill forecasts we never made. Forward-accumulation only |
+| Cross-season calibration — **NBM-σ** (via historical archive backfill) | **available NOW** | one batch backfill run | AWS S3 `noaa-nbm-grib2-pds` retains NBM probabilistic text bulletins continuously from 2020-05-18 to today. Per 2026-05-25 probe: v4.0 onward (verified 2021-01-15) has TXNSD/TXNP\* for all 19 ICAOs as per-station blocks (same keying as live NOMADS); v3.2 era (2020-05 to ~2020-09) has different bulletin layout and TXNSD was not present in the sample block — treat 2021-01 as the practical lower bound. CLI actuals via IEM cover 2010+ for 18 of 19 stations (KMSY starts ~2022) |
 | Multi-source diversification (HRRR, Open-Meteo ensemble) | thin | weeks-to-months | HRRR audit-row joins started 2026-05-24 (Bucket 1 deploy); ensemble joins are already possible but not yet ingested into residuals |
 
 **Practical schedule:**
 - **~2026-05-27 (~T+2d):** first NBM-source residual rows appear. NBM-σ vs IEM-actual deltas become measurable.
 - **~2026-06-24 (~T+30d):** Item 2.2's `sigma_for_city_horizon(station, horizon, source)` lookup becomes computable for spring-station-NBM partition at ≥20 samples — the threshold-of-no-fallback in the lookup function spec.
-- **~2026-11-25 (~T+6mo):** cross-season residuals accumulated; full seasonal calibration becomes possible.
+- **~2026-11-25 (~T+6mo):** cross-season residuals for **own-pipeline** sources (nws_blend, HRRR, ensemble) accumulated; full seasonal calibration for THOSE sources possible.
+- **AVAILABLE NOW (gated on a historical-backfill batch job):** cross-season residuals for the **NBM-source** partition (the primary anomaly-#2 candidate per the 2026-05-25 reprioritization). Per 2026-05-25 archive probe (`tmp/_probe_nbm_archive.py`), AWS S3 `noaa-nbm-grib2-pds` carries v4.0+ NBP text bulletins for all 19 settlement ICAOs from 2021-01-15 onward — ~5.5 years × 4 seasons of (NBM forecast, IEM CLI actual) pairs are joinable today.
 
-**What this means for anomaly #2 fix scheduling:**
-- NBM-σ substitution (the primary anomaly-#2 candidate per the 2026-05-25 registration above) is **technically unlockable for spring in ~30 days** — assuming the cron poller is running and anomaly #2 has confirmed to repeat on independent station-dates by then.
-- A fully **season-robust** NBM-σ replacement is a **multi-month accumulation problem**, not a code problem. Don't expect a season-robust calibration verdict before that data exists.
+**What this means for anomaly #2 fix scheduling — UPDATED 2026-05-25 post-archive-probe:**
+- NBM-σ substitution (the primary anomaly-#2 candidate) is **technically unlockable cross-season NOW via a historical-backfill batch job** — not in 30 days, not in 6 months. The data exists; only the backfill code does not. The forward-accumulation path (30 days for spring NBM partition) is still valid but no longer the binding constraint for season-robust calibration.
+- A fully **season-robust** NBM-σ replacement is therefore a **scoping decision**, not an accumulation wait: design a backfill batch that pulls 1 NBM cycle per day (e.g., 13z) from 2021-01-15 to today, parses our 19 ICAOs per file, joins to IEM CLI actuals, writes to `weather_forecast_residuals` with `logic_era='native_post_fix'`. ~60 GB raw, ~5-15 GB gzipped — non-trivial but mechanically the same as `ingest_nbm.py`.
+- The own-pipeline (nws_blend / HRRR / ensemble) cross-season calibration **does still need ~6 months forward** — those forecasts weren't logged historically, so backfill is impossible for those sources.
 - The boundary-treatment candidates (Item 2.1 boundary-σ widening, C3 rounding-flip — both already demoted/ruled-out) needed even less data than NBM-σ; their fates are decided.
+
+**New deferred work surfaced by the probe (not building now):**
+- `scripts/backfill_nbm_historical.py` — iterates 2021-01-15 → today, pulls 1 cycle/day from S3, parses target ICAOs, writes to `weather_nbm_observations` (which then joins automatically via `ingest_iem_cli_residuals.py --backfill <large N>`). Estimate: 1,975 dates × ~5 sec/date stream-fetch = ~3 hours walltime; ~10-15 GB local storage if we keep raw bulletins; ~50 MB if we discard raw and only retain extracted per-station blocks. Read-only against S3; write-only to the new local table. Separate scoping step.
 
 ---
 
