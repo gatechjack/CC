@@ -76,6 +76,78 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-26 22:20 UTC — pm-watchlist clustering fix: dedupe by `(cid, outcome_index)` (Board-approved)
+
+**Commits:** `a4558fc` (code + tests), `4d56cdf` (plan + empirics + replay scripts). Pushed to branch `pm-watchlist-clustering-fix` on `origin`. **Main NOT advanced this deploy** — the auto-mode classifier denied a direct fast-forward push to main; user authorized "push the branch" only. **`origin/main` head at deploy time:** `b22a2e5` (the σ-calibration report from a parallel session, unrelated to this deploy). The 2 commits above sit on the work branch; ff-merge to main is a separate user-driven step.
+**Triggered by:** Board approval after the 2026-05-26 fix-planning session (`reports/2026-05-26_polymarket_clustering_fix_plan.md`, predecessor: `reports/2026-05-25_polymarket_wr_investigation.md` commit `297508c`).
+**Backup tag:** `.pre-clustering-fix-20260526` on the single modified prod file. Backup md5 captured before move: `0f38a83ec673f37a7372e2bd6d800bd6` (matches the file shipped on 2026-05-23 — prod was in sync with the pre-deploy baseline).
+
+**Files deployed (1 modify):**
+- `trading_corp/scripts/seed_polymarket_watchlist_deep.py` — `_select_resolved_buys_window` now dedupes by `(condition_id, outcome_index)` before windowing. Walks activity most-recent-first, keeps the most-recent BUY per `(cid, oi)` pair, stops at `window_size=100` distinct pairs. Win/loss math downstream (`compute_polymarket_stats`, `_is_win_for_buy`) is byte-identical — only the row-selection unit changed. Module + function docstrings updated to reflect "distinct decisions" semantics. Owner: root:root preserved. LF-canonical md5 post-deploy: `6b4372b7d38393c4b38a9d9999521dd5`.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Per-decision windowing on the Polymarket watch list.** A whale who fills 29 BUYs on one Knicks-Cavs spread now contributes 1 window slot, not 29. WR/realized PnL/AvgPx/`<.70` share are all now per-decision metrics. Window count `n` now means distinct decisions, not raw fills. Latent on prod until the first cron fire — see "Inert / dormant" below.
+- **Backlog of stale watchlist rows continues from 2026-05-24 13:08 UTC merge fire.** The current 329-row `agent_state(polymarket_copy_trader, watch_only_whales)` slot was produced by the BUGGY windowing one week ago and is being preserved until the Sunday overwrite. NOT corrected by this code deploy — only the next scheduled fire produces the corrected list.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Shipped dedupe granularity is `(condition_id, outcome_index)`, NOT the `condition_id`-only used in the plan report's empirics surrogate (`scripts/verification/2026-05-26_clustering_plan/empirics_v2.py`'s `window_A`).** They reproduce the same 97-whale cohort clean-list and the same deployment outcome for the 4 test traders. They differ 0-3 in `n` and 0-15pp in per-whale WR where hedges exist (a whale that bought BOTH `outcomeIndex=0` AND `outcomeIndex=1` on one market). The `(cid, oi)` version is deliberate and tracks ground-truth more closely: surfandturf (the canonical hedge case) lands at WR=0.40 on n=5 under the shipped code, vs honest decision WR of exactly 0.40 (2W/3L) from full-history walk — exact match. The plan's cid-only surrogate produced 0.25 on n=4 by wrongly collapsing the Thunder-vs-Spurs hedge. **This is documented to prevent a future reviewer computing cid-only, getting different per-whale numbers, and mistaking prod for buggy.**
+- **Floors deliberately unchanged.** `min_resolved_buys=10`, `provisional_threshold=50`, `min_windowed_wr=0.62`, `min_windowed_pnl=5000.0` all hold. The plan flagged that the clean-list count drops from 225 → 97 under decision-counting, and that this is the floor working correctly (the 128 dropouts never had 50+ recent independent decisions). Re-tuning is queued post-deploy with real decision-counted data; not this deploy.
+
+**Verification — pre-deploy:**
+- All 25 tests in `tests/test_polymarket_watchlist_seed.py` pass locally (including 4 new tests for (cid,oi) dedupe semantics + 2 new integration tests for clustered-whale floor behavior).
+- All 57 tests across `tests/test_polymarket_*.py` pass.
+- Empirical replay (`scripts/verification/2026-05-26_clustering_plan/replay_via_prod_code.py`) ran the SHIPPED code against cached 329-wallet activity+resolutions data. Cohort clean-list under shipped code: **97 wallets** — identical to plan. Per-test-trader: Runaround n=100 wr=0.6000 (identical to plan), Mosley1 n=20 wr=0.5000 (+3 hedge-decisions over plan's 17), weflyhigh n=25 wr=0.5600 (+1 hedge), surfandturf n=5 wr=0.4000 (+1 hedge, matches honest 40% exactly). All 4 test traders correctly drop off the clean watchlist under the shipped code.
+
+**Verification — on prod (post-deploy):**
+- Backup md5 confirmed `0f38a83e...` (matches pre-deploy baseline).
+- Post-deploy md5 confirmed `6b4372b7...` (matches local LF blob).
+- Owner root:root preserved; mode 644; size 34530 bytes.
+- Smoke import via prod venv (`/home/azureuser/trading_corp/venv/bin/python3`): `_select_resolved_buys_window` imports cleanly; docstring matches new content; source contains `seen: set[tuple[str, int]] = set()` and `(a.condition_id, oi)` markers.
+- Functional smoke on prod: 3 same-(cid,0) BUYs → window n=1; (cid_a,0)+(cid_a,1) hedge → window n=2. Both match expected.
+
+**Inert / dormant on current traffic:**
+- **No code change exercises until the next weekly seed fire.** The current 329-row `watch_only_whales` slot was produced by the pre-fix windowing and continues to be served by the dashboard until the Sunday overwrite. Don't read this slot as "what the fix produces" before then.
+- **First fire under the fix: Sun 2026-05-31 ~13:00 UTC** (weekly-overwrite cadence per `[[pm-watchlist-windowed-live]]`; `RandomizedDelaySec` may re-roll the exact second by daemon-reload events between now and then). Expected effect: roster snaps 329 → ~97-172 (the 97 floor-clean plus provisional rows down to n≥10); zero `preserved` rows in merge_stats (overwrite cadence); per-whale `wins` `losses` `win_rate` `window_size_n` columns reflect distinct-decision counts; `realized_pnl_usdc` magnitudes will drop because cluster fills no longer pile up under one decision (PnL math is per-row; rows now means decisions).
+- **No manual seed run this deploy** (user instruction). The Sunday fire is the first observation point.
+
+**Promotion-resume-pending-verification:**
+- **Promotion off the watchlist remains PAUSED** ([[polymarket-whale-scoring-edge]], [[pm-watchlist-windowed-live]]). Unpaused ONLY after the Sun 2026-05-31 fire is verified (roster snaps to expected size; spot-check Runaround/Mosley1/weflyhigh show decision-WR not the old 100%; n column reflects distinct decisions, not fills). The pause does not lift on this deploy.
+
+**Floor re-tuning explicitly deferred:**
+- The plan flagged that `n≥10` + `n<50 provisional` + `WR≥0.62` floors were calibrated against fill-counted samples. Under decision-counting they bite harder (median n drops from 100 → 98, p90 WR from 1.00 → 0.90; clean list 225 → 97). Re-tuning is a separate post-Sunday decision with real decision-counted data, not this deploy.
+
+**NOT touched by this deploy:**
+- `agent_state(polymarket_copy_trader, selected_whales)` — copy-execution roster.
+- `agent_state(polymarket_copy_trader, watch_only_whales)` — the existing slot stays in place; Sunday's overwrite is what produces the corrected list. **No backfill, no manual write.**
+- `polymarket_copy_trader` strategy / broker adapter / risk gate / audit pipeline.
+- `refresh_polymarket_whales.py` (live roster picker).
+- Kalshi watchlist seed.
+- Web dashboard render — columns + sort URLs unchanged.
+- `compute_polymarket_stats` + `_is_win_for_buy` — win/loss math is byte-identical.
+- Floors (`min_resolved_buys`, `provisional_threshold`, `min_windowed_wr`, `min_windowed_pnl`) — see "Floor re-tuning explicitly deferred" above.
+- Systemd unit `trading-corp-pm-watchlist-deep.service` — ExecStart unchanged from 2026-05-25 14:25 UTC overwrite-cadence edit (`… seed_polymarket_watchlist_deep`, no `--merge`, no `--max-total`).
+
+**Rollback recipe:**
+```bash
+# Code revert (single file) via az run-command — the sudoers-narrow workflow.
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+  --command-id RunShellScript --scripts "
+TAG=pre-clustering-fix-20260526
+BASE=/home/azureuser/trading_corp/trading_corp/scripts
+F=seed_polymarket_watchlist_deep.py
+mv \$BASE/\$F.\$TAG \$BASE/\$F
+chown root:root \$BASE/\$F
+chmod 644 \$BASE/\$F
+md5sum \$BASE/\$F
+# Expected post-rollback md5: 0f38a83ec673f37a7372e2bd6d800bd6
+"
+# No service restart needed; the seed runs from-disk per cron, picks up the rollback automatically.
+```
+
+If a Sunday fire already ran under the new code and the agent_state slot needs restoring to the pre-fix 329-row content: the pre-deploy slot is preserved in agent_state's row, but the **previous** weekly fire's content (2026-05-24 13:08 UTC merge state) is not preserved separately. The fix is to wait for the following weekly fire under the rolled-back code; promotion remains paused throughout.
+
+---
+
 ## 2026-05-25 15:21 UTC — sudoers narrow: `azureuser NOPASSWD:ALL` → narrow allowlist (P1, BACKLOG `8d72dcc`)
 
 **Commits:** n/a (VM-side `/etc/sudoers.d/` edit only; no repo code changed)
