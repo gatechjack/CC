@@ -1,8 +1,8 @@
-"""Polymarket watch-only watchlist deep seed — windowed (last-N resolved BUYs).
+"""Polymarket watch-only watchlist deep seed — windowed (last-N distinct decisions).
 
-Finds Polymarket wallets whose **last 100 resolved BUYs** clear a quality
-gate and writes them to
-`agent_state(polymarket_copy_trader, watch_only_whales)`.
+Finds Polymarket wallets whose **last 100 distinct decisions** (unique
+`(condition_id, outcome_index)` pairs) clear a quality gate and writes
+them to `agent_state(polymarket_copy_trader, watch_only_whales)`.
 These wallets are observation-only: no ProposedOrders are ever emitted
 from this list. The copy-trade roster lives separately in
 `selected_whales` and is untouched by this script.
@@ -22,9 +22,13 @@ Pipeline:
      Record the termination reason for telemetry.
   3. Batch-fetch market resolutions for every unique condition_id seen
      across all wallets' BUY activity (gamma-api /markets).
-  4. Per wallet, build the windowed slice = most-recent 100 BUYs whose
-     market is `resolved`. If <window_size, true N is recorded — never
-     silently report 100 on a short window.
+  4. Per wallet, build the windowed slice = most-recent 100 distinct
+     `(condition_id, outcome_index)` decisions on resolved markets,
+     keeping the most-recent BUY per decision. If <window_size distinct
+     decisions exist, true N is recorded — never silently report 100 on
+     a short window. (Pre-2026-05-26 the slice was the most-recent 100
+     fills, which over-counted same-side cluster fills as independent
+     samples; see `reports/2026-05-26_polymarket_clustering_fix_plan.md`.)
   5. Apply floors (whichever fails → drop):
        - `n >= min_resolved_buys` (default 10, hard noise floor)
        - `last_trade_iso` of ANY side <= recency_days old (default 60)
@@ -42,10 +46,12 @@ Pipeline:
   8. Write to `agent_state(polymarket_copy_trader, watch_only_whales)`.
 
 Why windowed: lifetime stats (the prior design) rank dormant whales and
-high-volume-low-edge whales as if they were still good bets. A 100-trade
-sliding window filters inactive wallets for free (they never accumulate
-100 recent resolved trades) and makes WR/PnL directly comparable across
-whales (sample size held constant).
+high-volume-low-edge whales as if they were still good bets. A 100-
+decision sliding window filters inactive wallets for free (they never
+accumulate 100 recent distinct decisions) and makes WR/PnL directly
+comparable across whales (decision-count held constant). The decision
+unit, NOT the fill count, is what's held constant — same-side cluster
+fills (e.g. 29 BUYs on one Knicks-spread market) collapse to one slot.
 
 Why this path (vs `/closed-positions`):
   `/closed-positions` only surfaces positions with positive realizedPnl —
@@ -65,8 +71,8 @@ Options:
     --categories C1,C2,...   Leaderboard categories (default: all 5 working)
     --candidates N           Top-N to consider per category (default 500)
     --top N                  Cap final watchlist (default 0 = no cap)
-    --window-size N          Resolved-BUY window size (default 100)
-    --min-resolved-buys N    Hard noise floor on n (default 10)
+    --window-size N          Distinct-decision window size (default 100)
+    --min-resolved-buys N    Hard noise floor on distinct-decision n (default 10)
     --min-windowed-wr F      Windowed WR floor [0.0-1.0] (default 0.62)
     --min-windowed-pnl F     Windowed realized PnL floor USDC (default 5000.0)
     --recency-days N         Drop if last activity older than N days (default 60)
@@ -160,25 +166,43 @@ def _select_resolved_buys_window(
     *,
     window_size: int,
 ) -> list[ActivityRow]:
-    """Pick the most-recent `window_size` BUYs whose market is resolved.
+    """Pick the most-recent `window_size` distinct DECISIONS, not fills.
+
+    A decision is a `(condition_id, outcome_index)` pair — one side of
+    one market. A whale who fills 29 BUYs on the Knicks spread is making
+    one decision (long Knicks), expressed across 29 fills; counting
+    those as 29 independent samples is the clustering bug that
+    reports/2026-05-26_polymarket_clustering_fix_plan.md ratifies as
+    Option A. The window keeps the most-recent BUY per `(cid, oi)` pair,
+    walking activity most-recent-first, stopping at `window_size`
+    distinct pairs. Hedges (a whale that bought both sides of one
+    market) are correctly preserved as two decisions.
 
     `activity` is assumed most-recent-first (the `/activity` API
-    contract). We iterate in order and collect resolved BUYs until the
-    window is full or activity is exhausted. The returned list preserves
-    the most-recent-first ordering so callers can read window_days_span
-    as `activity[0].ts - activity[-1].ts`.
+    contract). The returned list preserves the most-recent-first
+    ordering so callers can read window_days_span as
+    `activity[0].ts - activity[-1].ts`.
     """
+    seen: set[tuple[str, int]] = set()
     window: list[ActivityRow] = []
     for a in activity:
         if a.type != "TRADE" or a.side != "BUY":
             continue
         if not a.condition_id:
             continue
+        try:
+            oi = int(a.outcome_index)
+        except (TypeError, ValueError):
+            continue
         res = resolutions.get(a.condition_id)
         if not res:
             continue
         if (res.get("status") or "").lower() != "resolved":
             continue
+        key = (a.condition_id, oi)
+        if key in seen:
+            continue
+        seen.add(key)
         window.append(a)
         if len(window) >= window_size:
             break

@@ -274,7 +274,177 @@ def test_window_terminates_at_window_size_even_if_more_resolved_remain():
     assert [a.condition_id for a in window] == [f"cid_{i}" for i in range(5)]
 
 
+# ── Decision-unit windowing (Option A, shipped 2026-05-26) ───────────────
+
+
+def test_window_collapses_cluster_of_same_cid_same_outcome_to_one_slot():
+    """29 BUYs on the same (cid, outcome_index) collapse to ONE window slot.
+
+    Canonical Runaround case: a whale fills 29 BUYs on "Spread: Knicks
+    (-11.5)" at price ~0.55 over 70 seconds. Under the pre-2026-05-26
+    fill-counting bug this saturated 29 of 100 window slots; under
+    Option A (dedupe by (cid, outcome_index)) it should collapse to 1.
+    Most-recent fill survives (preserves the activity-feed ordering
+    contract for window_days_span).
+    """
+    activity = [
+        _make_activity(1000 - i, "cid_knicks_spread", side="BUY",
+                       outcome_index=0, price=0.55)
+        for i in range(29)
+    ]
+    resolutions = {"cid_knicks_spread": _resolved(winning_outcome_index=0)}
+    window = _select_resolved_buys_window(activity, resolutions, window_size=100)
+    assert len(window) == 1
+    # Most-recent fill (timestamp 1000) is the one that survives.
+    assert window[0].timestamp == 1000
+
+
+def test_window_keeps_distinct_cids_distinct():
+    """Different markets stay as separate slots — only same (cid, oi) collapses."""
+    activity = [
+        _make_activity(1000, "cid_a", side="BUY", outcome_index=0),
+        _make_activity(999, "cid_b", side="BUY", outcome_index=0),
+        _make_activity(998, "cid_c", side="BUY", outcome_index=0),
+    ]
+    resolutions = {
+        "cid_a": _resolved(), "cid_b": _resolved(), "cid_c": _resolved(),
+    }
+    window = _select_resolved_buys_window(activity, resolutions, window_size=100)
+    assert len(window) == 3
+    assert [a.condition_id for a in window] == ["cid_a", "cid_b", "cid_c"]
+
+
+def test_window_keeps_opposite_outcome_index_on_same_cid_as_distinct_decisions():
+    """A whale that bought BOTH sides of one market = TWO decisions, not one.
+
+    Hedges are rare but real (buyer flipped or bought both sides of a
+    binary). The decision unit is (condition_id, outcome_index), so each
+    side counts independently. Each pair contributes one slot.
+    """
+    activity = [
+        # 5 BUYs on cid_a outcome 0 — collapse to 1
+        _make_activity(1000 - i, "cid_a", side="BUY", outcome_index=0)
+        for i in range(5)
+    ] + [
+        # 3 BUYs on cid_a outcome 1 — collapse to 1 (distinct decision)
+        _make_activity(900 - i, "cid_a", side="BUY", outcome_index=1)
+        for i in range(3)
+    ]
+    resolutions = {"cid_a": _resolved(winning_outcome_index=0)}
+    window = _select_resolved_buys_window(activity, resolutions, window_size=100)
+    assert len(window) == 2
+    # Both slots are on cid_a, but with different outcome_index.
+    assert {(a.condition_id, a.outcome_index) for a in window} == {
+        ("cid_a", 0), ("cid_a", 1),
+    }
+
+
+def test_window_picks_most_recent_buy_per_decision_not_first():
+    """When a (cid, oi) pair has multiple fills, the most-recent ts survives.
+
+    Activity is most-recent-first, so the first-encountered row IS the
+    most-recent fill. Verifies the slot carries the most-recent price /
+    size — relevant for downstream avg_entry_price and PnL math.
+    """
+    activity = [
+        _make_activity(2000, "cid_x", side="BUY", outcome_index=0, price=0.55),  # newest
+        _make_activity(1500, "cid_x", side="BUY", outcome_index=0, price=0.50),
+        _make_activity(1000, "cid_x", side="BUY", outcome_index=0, price=0.45),  # oldest
+    ]
+    resolutions = {"cid_x": _resolved()}
+    window = _select_resolved_buys_window(activity, resolutions, window_size=100)
+    assert len(window) == 1
+    assert window[0].timestamp == 2000
+    assert window[0].price == 0.55
+
+
 # ── Integration: seed_polymarket_watchlist_deep floor behavior ────────────
+
+
+def _make_clustered_activity(
+    wallet: str, n_decisions: int, fills_per_decision: int = 5,
+    *, all_wins: bool = True, ts_anchor: int = 1_700_000_000,
+) -> tuple[list[ActivityRow], dict[str, dict[str, Any]]]:
+    """Build a clustered-fills activity feed for floor / provisional tests.
+
+    `n_decisions` distinct (cid, outcome_index=0) decisions, each with
+    `fills_per_decision` repeat-BUYs at the same price within a few
+    seconds — the canonical clustering shape from the Runaround case.
+    Returns (activity_rows_most_recent_first, resolutions).
+
+    Under the Option A windowing semantics, the effective n = n_decisions,
+    NOT n_decisions * fills_per_decision.
+    """
+    activity: list[ActivityRow] = []
+    resolutions: dict[str, dict[str, Any]] = {}
+    for d in range(n_decisions):
+        cid = f"cid_d{d}"
+        win = all_wins
+        resolutions[cid] = _resolved(winning_outcome_index=0 if win else 1)
+        # decision d sits at ts_anchor - d*3600 (one hour apart); within
+        # each decision, fills_per_decision rows within 10 seconds.
+        decision_ts = ts_anchor - d * 3600
+        for f in range(fills_per_decision):
+            activity.append(_make_activity(
+                decision_ts - f, cid, side="BUY",
+                outcome_index=0, price=0.5, size=2.0,
+                wallet=wallet,
+            ))
+    return activity, resolutions
+
+
+async def test_n_floor_drops_clustered_whale_with_lt10_distinct_decisions():
+    """8 distinct decisions × 20 fills = 160 fills, but n=8 < 10 floor → drop.
+
+    Pre-2026-05-26 this whale would have passed (160 fills counts as n=100
+    after the window cap; n_floor=10 → pass). Under Option A, n=8 distinct
+    decisions falls below the floor → dropped, correctly.
+    """
+    now_ts = 1_700_000_000
+    activity_rows, resolutions = _make_clustered_activity(
+        wallet="0xa", n_decisions=8, fills_per_decision=20,
+        all_wins=True, ts_anchor=now_ts,
+    )
+    lb = {"GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)]}
+    summary = await _run_seed(
+        leaderboard=lb,
+        activity_by_wallet={"0xa": [activity_rows]},
+        resolutions=resolutions,
+        fake_now_ts=now_ts,
+    )
+    assert summary["drop_reasons"]["n_floor"] == 1
+    assert summary["quality_gate_pass"] == 0
+    assert summary["watch_only_whales"] == []
+
+
+async def test_clustered_whale_with_42_distinct_decisions_fires_provisional():
+    """42 distinct decisions × 5 fills = 210 fills, but window n=42 → provisional.
+
+    Confirms that the provisional flag (n<50 threshold) fires on the
+    distinct-decision count, not the fill count.
+    """
+    now_ts = 1_700_000_000
+    activity_rows, resolutions = _make_clustered_activity(
+        wallet="0xa", n_decisions=42, fills_per_decision=5,
+        all_wins=True, ts_anchor=now_ts,
+    )
+    lb = {"GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)]}
+    summary = await _run_seed(
+        leaderboard=lb,
+        activity_by_wallet={"0xa": [activity_rows]},
+        resolutions=resolutions,
+        fake_now_ts=now_ts,
+    )
+    assert len(summary["watch_only_whales"]) == 1
+    whale = summary["watch_only_whales"][0]
+    assert whale["window_size_n"] == 42, "n must reflect distinct decisions, not fills"
+    assert whale["wins"] == 42
+    assert whale["losses"] == 0
+    assert whale["provisional"] is True
+    assert summary["provisional_count"] == 1
+
+
+
 
 
 def _build_seed_scenario(
