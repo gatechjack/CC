@@ -908,9 +908,9 @@ Full diff lives on prod in `/tmp/pip_install_20260524_145616.log` and the corres
 
 ---
 
-## P2 (ops) — Polymarket watchlist deep timer: drop `--merge` → weekly overwrite  *(NEW — 2026-05-24, BOARD-GATED per CLAUDE.md §4)*
+## P2 (ops) — Polymarket watchlist deep timer: drop `--merge` → weekly overwrite  *(SHIPPED 2026-05-25 14:25 UTC)*
 
-**Status:** PLANNED — not shipped. Systemd unit edit on prod; per CLAUDE.md §4 ("Modify VM-side configuration … No-edit from this repo") requires explicit Board approval before execution. Not urgent — first impact is the next Sunday fire (`2026-05-31 13:12:45 UTC`).
+**Status:** SHIPPED 2026-05-25 14:25 UTC per operator in-session approval. Single sed-in-place on `/etc/systemd/system/trading-corp-pm-watchlist-deep.service` + `daemon-reload`. Unit md5 `9f1b2baf…` → `0ca8e1d3…`. Backup at `.pre-overwrite-cadence-20260525`. First weekly-overwrite fire: Sun 2026-05-31 13:00:12 UTC. See `runbooks/deploy_log.md` 2026-05-25 14:25 UTC entry and memory `[[pm-watchlist-windowed-live]]`. Section retained below for the discovered-during context and the rollback recipe.
 
 **Discovered during:** Sunday 2026-05-24 13:08 UTC first `--merge` fire verification. Merge stats `existing=197 fresh=172 added=132 replaced=40 preserved=157 dropped=0 final=329`. 48% of the standing pool (157/329) is the "preserved" bucket — wallets that didn't make this week's fresh quality-gate pass but are kept on the list with their prior-week stats frozen. Trajectory: monotonic growth with stale-stat accumulation. Killed the lifetime-list problem at the wrong layer.
 

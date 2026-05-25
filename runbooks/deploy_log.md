@@ -76,6 +76,51 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-25 14:25 UTC — pm-watchlist-deep timer: drop `--merge` → weekly overwrite
+
+**Commits:** n/a (VM-side systemd unit only; no repo code changed)
+**Triggered by:** in-session operator approval; BACKLOG.md "P2 (ops) — Polymarket watchlist deep timer: drop `--merge` → weekly overwrite" (filed 2026-05-24, BOARD-GATED per CLAUDE.md §4)
+**Backup tag:** `.pre-overwrite-cadence-20260525` on `/etc/systemd/system/trading-corp-pm-watchlist-deep.service`
+
+**Files deployed (1, VM-side only):**
+- `/etc/systemd/system/trading-corp-pm-watchlist-deep.service` — line 13 ExecStart: removed trailing ` --merge` from `python -m trading_corp.scripts.seed_polymarket_watchlist_deep --merge`
+
+**Features shipped:**
+- pm-watchlist-deep weekly timer now performs full **overwrite** of `agent_state.polymarket_copy_trader.watch_only_whales` on each Sunday fire instead of union-merge. Eliminates the "preserved-stale" accumulation bucket (was 48% of the 329-entry pool on the 2026-05-24 fire) — roster will snap to ~this-week's quality-pass set (~172 ± churn) with all-fresh stats on the next fire.
+
+**Notable code changes:**
+- None. Single sed-in-place on the systemd unit. `seed_polymarket_watchlist_deep` itself already handles overwrite-vs-merge via the presence/absence of `--merge` (cold-start safe; merge degenerates to overwrite when slot empty).
+
+**Verification:**
+- PRE md5: `9f1b2baf9c1b17d6fd0d95d9eb615bad`. POST md5: `0ca8e1d3880e41e8c24ffefc2b12d137`.
+- `diff` vs backup: single-line change at line 13 (`ExecStart` lost ` --merge`), nothing else.
+- `sudo systemctl daemon-reload` → OK.
+- `systemctl is-failed trading-corp-pm-watchlist-deep.service` → `inactive` (timer-driven oneshot, expected).
+- Timer next-fire: `Sun 2026-05-31 13:00:12 UTC` (RandomizedDelaySec re-rolled on daemon-reload; previous was 13:12:45 — ~12 min earlier, systemd-expected jitter, not a bug).
+
+**Inert until first fire (Sun 2026-05-31 ~13:00 UTC):**
+- The timer is the actuation surface. Until next Sunday, the standing 329-entry roster persists unchanged on disk. First post-deploy validation comes from the Sun 2026-05-31 fire — expect roster to snap to ~172 with merge_stats showing `replaced ≈ existing` and `preserved = 0`.
+
+**Risk note carried forward:**
+- `included_iso` is dead-end on Polymarket today (audited 2026-05-24: not in any template, not in sort whitelist, no consumer). If a future "whale tenure" feature wants it, either decouple `included_iso` from cadence (preferred) or revert this change. Per BACKLOG plan.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm --command-id RunShellScript --scripts "
+sudo cp /etc/systemd/system/trading-corp-pm-watchlist-deep.service.pre-overwrite-cadence-20260525 \
+  /etc/systemd/system/trading-corp-pm-watchlist-deep.service && \
+sudo systemctl daemon-reload && \
+grep '^ExecStart' /etc/systemd/system/trading-corp-pm-watchlist-deep.service
+"
+```
+Or one-line sed reversal:
+```bash
+sudo sed -i 's|seed_polymarket_watchlist_deep$|seed_polymarket_watchlist_deep --merge|' \
+  /etc/systemd/system/trading-corp-pm-watchlist-deep.service && sudo systemctl daemon-reload
+```
+
+---
+
 ## 2026-05-24 23:52 UTC — tasty_options Phase-0 sandbox smoke PASSED (local verification, no prod deploy)
 
 **Commits:** `672f658` (async-call + sys.path fixup) + post-fixup iteration (broker `dry_run` param + smoke moved to production endpoint + smoke now picks real chain expiry + margin/BP rejection on dry-run treated as broker-shape SUCCESS). Final iteration commit pending.
