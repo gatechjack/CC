@@ -139,3 +139,48 @@ The close-on-opposite-PREMIUM build (~250 LOC, scoped per Vortex) remains correc
 The PA-redeem mechanism continues operating; nothing about this diagnosis changes its design.
 
 The 60-day paper clock continues at its anchor (2026-05-20).
+
+---
+
+## 9. Board Decision (2026-05-25)
+
+The operator IS the Board (no external routing). Decisions recorded directly here. Memo status: **DRAFT → DECIDED**.
+
+### (a) Wait for vol to return — APPROVED
+
+- Strategy auto-resumes on regime change. No code/config action required.
+- **Tripwire**: revisit if BTC ATR(14, 3m) has not reached ~$90 sustained (≥ one 4h window above threshold) by the paper-clock midpoint **2026-06-19** (day 30 of 60).
+- At the tripwire, the re-decision is narrow: *"does the 60-day clock measure elapsed time, or trade-eligible time?"* — NOT a re-litigation of gate tightness.
+- Per the §7 meta-rule: **do not re-litigate gate-tightness on low fire-rate before the 2026-06-19 tripwire.** Low fire-rate in low vol is the system working; re-opening on observation-rate alone is itself a failure mode.
+
+### (b) `tp_is_maker` fill-rate model — APPROVED as next bitunix build deliverable
+
+- Strict-improvement cost lever (drops round-trip cost 0.090% → 0.064%, fee floor 0.180% → 0.128%). Net-positive in every regime if the fill model supports it.
+- **Deliverable**: build a maker-fill-rate model — historical fill rate for limit orders placed at v2-plan TP1/TP2/TP3 levels, by symbol × ATR regime, including un-filled-revert-to-taker semantics and partial-fill behavior on the v2 reconciler.
+- **Deploy `tp_is_maker: false → true` only on a net-positive model verdict** (maker-savings net of un-fill cost ≥ 0.03% per round-trip).
+- The model itself is its own future session — **NOT started this session**.
+
+### (c) `swing_max_lookback` change — BACKTEST APPROVED; parameter change NOT approved
+
+- Run the backtest. Decision criterion locked: **net PnL per fire, holding all other gates fixed**, across a corpus that includes an ATR-regime rotation (the 5/15-5/22 high-ATR window + the 5/23-5/25 low-ATR window, at minimum).
+- Corroborated by live evidence (2026-05-25 fee-floor verification): 3h range $407 ≈ 5/22 successful-fire swing range $394 — chart-readable structure exists outside the strategy's 90-min lookback. The operator's "setups exist" instinct is real at the 3h level.
+- **Parameter change requires a separate Board decision after the backtest holds across regimes.** Overfit-risk per §5.2 remains — the parameter is approved-to-test, not approved-to-ship.
+- Backtest is its own future session — **NOT started this session**.
+
+### What was NOT approved
+
+- **Lowering `tp1_min_profit_multiplier`** to chase fire-rate. Explicitly rejected per §3 and §7. The fee floor is working; lowering it manufactures negative-expectancy trades in a no-edge regime.
+- **Treating current quietude as a deploy-timeline bug.** The 5/23 deploy is mechanically non-causal (verified twice — addendum `95f31ef` + 2026-05-25 live-ATR verification). Regime is the cause; wait it out.
+
+### Observability filed separately
+
+The 2026-05-25 live-ATR verification surfaced a **12-14h silent window** in the diagnostic feedback loop: `trade_plan_decision` only fires after PA passes, so there's no recent ATR-input ground-truth in the audit log when the strategy is most idle (exactly when an observability question gets asked). A `bitunix_atr_snapshot` audit kind (periodic, e.g. alongside the 60s redeem loop, payload = `{atr_3m, last_close, swing_low, swing_high, fee_floor_pct × entry, would_clear_floor: bool}`) would let future Claude or the Board read *"is the engine idle by design or by bug?"* without a live kline probe.
+
+**Filed P2 MEDIUM in `BACKLOG.md` (current EOS snapshot).** Not urgent — current workflow works, just adds friction.
+
+### Session-close confirmations
+
+- **No threshold, config, or code changes made this session.** No edits to `tp1_min_profit_multiplier`, `tp_is_maker`, `tp2_r_default`, `swing_max_lookback`, `max_stop_atr_mult`, `proximity_block_pct`, or any other strategy parameter.
+- **(b) and (c) are queued deliverables**, each its own future session — NOT started now. The maker fill-rate model and the swing backtest both have to be designed and run before any parameter flip.
+- **Close-on-opposite build remains correctly NOT built** — its precondition (open paper position) is structurally unmet because placement itself is regime-blocked.
+- **Paper-clock memory `[[bitunix-paper-clock]]`** already updated with regime-blocked framing; the 2026-06-19 tripwire is now load-bearing for the next bitunix session.
