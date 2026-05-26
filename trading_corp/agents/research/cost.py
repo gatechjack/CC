@@ -23,6 +23,11 @@ log = logging.getLogger(__name__)
 _PRICING: dict[str, dict[str, float]] = {
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-opus-4-7":   {"input": 15.0, "output": 75.0},
+    # Haiku — used by the on-demand polymarket_whale_analyst narrator.
+    # Cost critical here: per-whale review at ~$0.001-0.0015 budget; without
+    # this entry the Sonnet fallback overcosts by ~4x and the daily cap fires
+    # prematurely. Pricing per Anthropic public schedule (2025-2026).
+    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0},
     # Older fallbacks — used if config still references them.
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0},
     "claude-opus-4-6":   {"input": 15.0, "output": 75.0},

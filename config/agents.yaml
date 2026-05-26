@@ -27,5 +27,13 @@ agents:
   research_synthesis: { model: claude-sonnet-4-6, temperature: 0.2 }
   research_judge:     { model: claude-opus-4-7,   temperature: 0.0 }
 
+  # On-demand per-whale audit narrator: Haiku.
+  # The deterministic audit (data/polymarket_whale_audit.py) does ALL the
+  # math; the LLM produces a 2-4 sentence plain-language verdict from the
+  # computed numbers. Cheap model fits this scope — see
+  # reports/2026-05-26_polymarket_clustering_fix_plan.md + the analyze-whale
+  # plan. Target per-call cost ~$0.001-0.0015.
+  polymarket_whale_analyst: { model: claude-haiku-4-5-20251001, temperature: 0.1 }
+
 # Prompt caching is enabled by default in the Anthropic client wrapper —
 # system prompts and the rolling market-context block are cached.
