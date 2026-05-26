@@ -76,6 +76,90 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-26 23:46–23:54 UTC — C-7 webhook secret-scrub DEPLOYED + 5-row backfill RUN (commits `9d65be8`+`aa4f37f`)
+
+**Commits:** `9d65be8` (scrub: webhooks.py `_scrub_secrets_from_body` + `_audit_rejected` swap + two `raw=%r`→`len=%d` log lines + 13 new tests) + `aa4f37f` (backfill: `scripts/scrub_webhook_rejected_secrets.py` + 7 tests). Cherry-picked from local branch `c7-webhook-secret-scrub` (`d7ce0df`+`5f7a198`) onto current `origin/main` (`515a870`) — the original SHAs sat on parallel-session base `b64cdc5` which is patch-identical to `f13fb05` already on `origin/main` (same author/timestamp/content, different parent), so cherry-pick was the clean path; pushing the branch would have replayed the duplicate. New SHAs `9d65be8`/`aa4f37f` carry identical file content to the original two commits.
+
+**Triggered by:** Operator directive 2026-05-26 23:30 UTC — "C-7 deploy → backfill → ready for C-1 (security CRIT, gated, operator-supervised)". §4 webhook-path approval in-session; ordering is load-bearing (scrub-fix before backfill before C-1 rotation).
+
+**Backup tag:** `pre-c7-scrub-20260526` on `trading_corp/web/webhooks.py` (pre-deploy md5 `6fed0aa89c103ba475bd8901a8ab434a`, 58049 bytes, CRLF). No backup for the new backfill script (didn't exist before).
+
+**Files deployed (1 modify + 1 new):**
+- `trading_corp/web/webhooks.py` — audit-write-path ONLY: new module-level `_SECRET_FIELDS = ("secret", "webhook_secret", "token")` + `_scrub_secrets_from_body(raw: bytes) -> str` helper at module scope; `_audit_rejected` swaps `raw[:500].decode(...)` → `_scrub_secrets_from_body(raw)` (same call sites, no signature change); two `log.warning(... raw=%r, raw[:200])` lines (lord-otter line ~178, market-cypher line ~364) become `len=%d, len(raw)`. **Does NOT touch:** HMAC check, IP allowlist, replay window, secret comparison, agent dispatch, risk gate, order construction, place_order. Audit-write-before-branch invariant preserved. Owner: azureuser:azureuser. CRLF preserved. Post-deploy md5: `86db1afec568a871b8a6e634c3b37a64`, 58565 bytes (+516 vs baseline).
+- `scripts/scrub_webhook_rejected_secrets.py` — NEW one-shot backfill (argparse `--db` / `--dry-run` / `--verbose`; reuses the same regex shape as the in-prod scrub; idempotent on already-redacted text; WAL-safe online). Owner: azureuser:azureuser. md5: `9297904537532afec0842658e9a8c5fb`, 5788 bytes.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **C-7 (rejected-webhook audit plaintext leak) CLOSED.** No new `webhook_rejected` row can persist a plaintext JSON-shaped secret. Verified end-to-end on prod with bad_secret rejection carrying marker `C7VERIFYLIVE2026052623XX` — audit row's `raw_body_snippet` reads `{"secret": "***REDACTED***","symbol":"TESTSCRUB","signal":"sell"}` (marker absent, REDACTED present).
+- **Historical leak surface cleared.** Backfill scrubbed the 5 pre-existing leaked rows (id 105, 402, 722, 1006, 1116). C-1 secret rotation is now safe to execute — the OLD secret does not survive in any audit row through the rotation event.
+- **Dual control on log path.** Even on non-JSON-shaped bodies that the regex doesn't match (malformed_json with kv-form text), the journald warning emits `len=N`, not raw content — so the only residual exposure is in the audit DB row of a malformed_json rejection that carries kv-form credential text, which is vanishingly small in practice (auth scheme requires JSON).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Regex matches JSON-shaped string fields only:** `"(secret|webhook_secret|token)"\s*:\s*"[^"]*"` case-insensitive. TV static-bearer body is always JSON-shaped so every `bad_secret` rejection (the actual C-7 leak path) is in scope. Documented boundary in BACKLOG.md C-7 entry.
+- **CRLF preservation via scp:** prod webhooks.py is CRLF, the file scp'd over from the local CRLF checkout (also CRLF after cherry-pick — Windows checkout). md5 match local↔prod = byte-for-byte identical. The C-2 deploy 2026-05-24 followed the same recipe and called this out explicitly.
+- **Cherry-pick path chosen over branch push:** local branch `c7-webhook-secret-scrub` had foreign ancestor `b64cdc5` patch-identical to `f13fb05` already on main. Pushing the branch would have replayed the duplicate; cherry-picking `d7ce0df` + `5f7a198` produced new SHAs (`9d65be8`/`aa4f37f`) with byte-identical file content but clean parentage from `515a870`. Documented in BACKLOG.md C-7 entry as the load-bearing branch-isolation option.
+- **`--verbose` defeats the script's "never echo secrets" design.** The dry-run with `--verbose` (used once for drift check before the real run) DID print the cleartext secrets of id 402/1006/1116 over ssh stdout. Real run was summary-only. Process learning: dry-run drift check should use `--verbose` only if you accept stdout-channel exposure of the very thing you're scrubbing. Both the in-stdout secrets and the historical audit rows are rotated out of play by C-1 in the next session, but the principle stands.
+
+**Verification — pre-deploy:**
+- 23/23 tests green under `scripts\run_capped.ps1`: 16 `tests/test_webhook_audit_trail.py` + 7 `tests/test_scrub_webhook_rejected_backfill.py`. 3.57s.
+- Cherry-pick onto clean `origin/main` (`515a870`); no merge needed; new SHAs `9d65be8` + `aa4f37f`.
+- Local md5s match expected: webhooks.py `86db1afec568a871b8a6e634c3b37a64`, backfill script `9297904537532afec0842658e9a8c5fb`. Git blob hashes `369fdaa0...` + `ab1ed258...`.
+
+**Verification — on prod (post-restart 23:46:22 UTC):**
+- PRE_PID (long-running 2026-05-24 process) → POST_PID `1507621` at 23:46:22 UTC. `NRestarts=0`, `ActiveState=active`, single-startup (no crash loop).
+- Port 8000 bound at ~23:53 UTC (~7min post-restart, IC position-manager startup catch-up limiting step per [[reference-prod-systemd-units]]).
+- healthz local `127.0.0.1:8000/healthz` AND Caddy public `https://trading.jacksumner.com/healthz` both `{"status":"ok","mode":"PAPER"}`.
+- Journal clean of new errors. Known noise: yfinance BTC/USD earnings-not-found (pre-existing), Fidelity shared-session bootstrap failure → fall-back-to-paper (pre-existing flow).
+- File md5 post-deploy match local: webhooks.py `86db1afec5...` (CRLF preserved), backfill `9297904537...`.
+- Semantic markers on prod webhooks.py: `_SECRET_FIELDS` count=2, `_scrub_secrets_from_body` count=2, `len=%d` count=2, `raw=%r` count=0.
+
+**Live-scrub verification — the gate (passed at 23:53:12 UTC):**
+
+Two bad_secret rejections from prod localhost — one to each of `/webhook/tradingview/lord-otter` and `/webhook/tradingview/market-cypher` — with body `{"secret":"C7VERIFYLIVE2026052623XX[_CYPH]","symbol":"TESTSCRUB","signal":"sell"}`. HTTP 401 `{"status":"rejected","reason":"auth failed"}` on both. Audit rows read via raw `sqlite3` CLI (independent of LoggerAgent):
+
+```
+ts                        actor          reason       raw_body_snippet
+2026-05-26T23:53:12+00:00 market_cypher  bad_secret   {"secret": "***REDACTED***","symbol":"TESTSCRUB","signal":"sell"}
+2026-05-26T23:53:12+00:00 lord_otter     bad_secret   {"secret": "***REDACTED***","symbol":"TESTSCRUB","signal":"sell"}
+```
+
+Marker leak count `LIKE '%C7VERIFYLIVE2026052623XX%' AND kind='webhook_rejected'` = **0**. REDACTED count on those two rows = **2**. Live scrub confirmed on BOTH webhook handlers (lord_otter + market_cypher).
+
+**Backfill — run + verification (23:53–23:54 UTC):**
+
+Pre-backfill drift check (`--dry-run`): `rows_scanned=10 rows_changed=5 rows_already_clean=5` — matches the original BACKLOG dry-run baseline of "5 would scrub" (now 10 total because of the two new live-scrub verification rows already-redacted).
+
+Real run (no `--dry-run`, no `--verbose`): `rows_scanned=10 rows_changed=5 rows_skipped_bad_json=0 rows_skipped_no_snippet=0 rows_already_clean=5`. Idempotency probe via re-`--dry-run`: `rows_changed=0 rows_already_clean=10`.
+
+Post-backfill state on the 5 previously-leaking rows (`id IN (105, 402, 722, 1006, 1116)`), all now read `"secret": "***REDACTED***"`. One quoted in full:
+
+```
+id     = 1116
+actor  = lord_otter
+reason = timestamp_skew_1467s
+ts     = 2026-05-03T19:51:27+00:00
+snippet= {"secret": "***REDACTED***","signal":"cvd_bear_flip","ticker":"BTCUSD","exchange":"COINBASE","price":78680.40,"time":"2026-05-03T19:27:00Z","interval":"3"}
+```
+
+`SELECT COUNT(*) FROM audit_event WHERE kind='webhook_rejected' AND payload_json LIKE '%REDACTED%'` = **7** (5 just-backfilled + 2 live-scrub verification posts). The loose `LIKE '%secret%:%' AND NOT LIKE '%REDACTED%'` returns 3 rows BUT those are false positives: id 4642/4661/4686 from 2026-05-10 where the audit payload's `reason` field literally is `"bad_secret"` (substring `secret` in the value) but the body snippet has no `secret` field at all — TV alerts that omitted the secret entirely and got rejected. No actual cleartext secret remains in any webhook_rejected row.
+
+**Inert / dormant on current traffic:**
+- The C-7 path fires only on `webhook_rejected` audit (bad_secret / malformed_json / json_not_object / ip_blocked / etc.). On non-rejection traffic the new helper is inert.
+- The two live-scrub verification rows (id 732404, 732405) are real prod audit rows — left in place (removing would corrupt audit history; both already redacted; idempotent on re-scan).
+
+**C-1 unblock state:** scrub fix is live → no new leak can persist → 5 historical leaks scrubbed → C-1 secret rotation can proceed in its own session without leaving rotated-secret records in audit history. The load-bearing order (scrub-deploy → backfill → C-1) is satisfied.
+
+**Rollback recipe (reverts to OLD pre-scrub state — webhook_rejected rows will resume leaking; use ONLY if a live regression is observed):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-c7-scrub-20260526; BASE=/home/azureuser/trading_corp;
+mv \$BASE/trading_corp/web/webhooks.py.\$TAG \$BASE/trading_corp/web/webhooks.py;
+sudo systemctl restart trading-corp.service
+"
+# Backfill is one-way (UPDATE in place over ***REDACTED***). To restore raw snippets you would need to reconstruct from the journald 'len=N' lines — practically not recoverable. This is intentional.
+```
+
+---
+
 ## 2026-05-26 22:58 UTC — Tastytrade OAuth rotation runbook landed (doc artifact, no prod touch)
 
 **Commit:** `27dd0ef` — `runbooks/tastytrade_oauth_rotation.md` (canonical atomic 2-step rotation + 7 system-state freshness checks + 6-symptom failure-chain diagnosis; **bash-only KV writes (PowerShell `--value` form removed — uncloseable plaintext window)**, Read-Host-AsSecureString for Windows registry env-var, hard history-purge gate) + `scripts/check_tt_token_scope.py` (fail-closed JWT scope check, 10/10 paths verified empirically). Memory pointer at `[[feedback-tastytrade-rotation-runbook]]`. Forward-link target for any future Tastytrade-touching session. **No prod files modified; no rollback needed** (`git revert 27dd0ef` removes both files).

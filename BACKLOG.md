@@ -8,6 +8,46 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-26 ~23:54 UTC (Tuesday late evening — **C-7 webhook secret-scrub DEPLOYED to prod + 5-row backfill RUN; C-1 secret rotation now UNBLOCKED**)
+
+**Headline of THIS session-arc:** Closed the **P0 CRITICAL C-7 (rejected-webhook audit plaintext leak)** finding from `reports/2026-05-21_security_review.md`. Cherry-picked the local-only draft (`d7ce0df`+`5f7a198`) onto current `origin/main` (`515a870`) as `9d65be8` (scrub) + `aa4f37f` (backfill) to avoid replaying the foreign `b64cdc5` ancestor (patch-identical to `f13fb05` already on main). 23/23 tests green wrapped under `scripts\run_capped.ps1`. scp deploy preserved CRLF; backup tag `pre-c7-scrub-20260526` on prod webhooks.py; restart `trading-corp.service` produced PID `1507621` at 23:46:22 UTC, port 8000 bound by 23:53 UTC (IC position-manager catch-up was the limiting step), healthz local + Caddy public both `{"status":"ok","mode":"PAPER"}`. Live-scrub gate verified on BOTH handlers (lord_otter + market_cypher) at 23:53:12 UTC via raw sqlite3 read — marker `C7VERIFYLIVE2026052623XX` absent, `***REDACTED***` present. Backfill ran: `rows_changed=5` on first pass (id 105, 402, 722, 1006, 1116), `rows_changed=0` on idempotency re-dry-run. **The load-bearing order (scrub-fix-deploy → backfill → C-1) is satisfied — C-1 secret rotation is now unblocked for its own session.**
+
+**`origin/main` head after this session (pre-push, pending commit + push of this EOS + deploy_log):** `aa4f37f` (cherry-picked backfill commit). Commits this session that will land on `origin/main`:
+
+- **`9d65be8`** *(THIS session, cherry-picked)* — `webhooks: scrub secret-bearing JSON fields from rejected-webhook audit (C-7)` — file content byte-identical to original draft `d7ce0df`.
+- **`aa4f37f`** *(THIS session, cherry-picked)* — `scripts: one-shot backfill to scrub secrets from existing webhook_rejected audit rows (C-7 Phase 2)` — file content byte-identical to original draft `5f7a198`.
+- **(pending this turn)** — `deploy_log + backlog: C-7 webhook secret-scrub DEPLOYED + 5-row backfill RUN — C-1 unblocked` — captures the prod state change.
+
+**What's running on prod (touched THIS session):** webhooks.py scrub fix is live (md5 `86db1afec568a871b8a6e634c3b37a64`, CRLF, +516 bytes vs baseline). New backfill script staged at `/home/azureuser/trading_corp/scripts/scrub_webhook_rejected_secrets.py` (executed once, idempotent on re-run). Service PID `1507621` (was: long-running 2026-05-24 process). Audit table state: 5 previously-leaking rows scrubbed; 2 new rows from live-scrub verification (id 732404, 732405 — also redacted; left in place as real audit history); 3 rows (id 4642, 4661, 4686) that never carried a `secret` field unchanged (false positive on loose `LIKE '%secret%:%'` query because their `reason` value is the string `"bad_secret"`).
+
+**Service restart history this session:** one — at 2026-05-26 23:46:22 UTC. NRestarts=0. ~7min strategy-pause window (single-process arch tax — filed P3 architecture item in earlier sessions).
+
+**Items RETIRED this session:**
+
+- **C-7 — rejected-webhook audit plaintext leak (P0 CRITICAL)** — SHIPPED at `9d65be8` (scrub) + `aa4f37f` (backfill). Deploy + backfill verified end-to-end on prod against real audit rows via raw sqlite3. Strike from open-item lists going forward.
+
+**Highest-leverage open items remaining (handoff to next session):**
+
+1. **C-1 secret rotation (P0 CRITICAL — NOW UNBLOCKED).** 13 distinct credential rotations across 8+ providers. C-7 prerequisite satisfied. Best done in a planned trading-pause window. **When C-1 reaches the Tastytrade portion: use `runbooks/tastytrade_oauth_rotation.md` — don't improvise** (parallel-session canonical runbook landed 22:58 UTC `27dd0ef`).
+2. **Sun 2026-05-31 ~13:00 UTC pm-watchlist weekly seed fire** — first under clustering + PnL aggregation fixes. 6-criterion verification gate.
+3. **Bug 4 (`tastytrade_provider.py` get_history dead branch)** (P2 MEDIUM, IC-adjacent). Cross-surface: IC division + tasty_options Phase 1 paper, both consume `tastytrade_provider.py`.
+4. **43 deferred package bumps** (P1).
+5. **`bitunix_atr_snapshot` observability audit kind** (P2 — silent-fallback class).
+6. **Architecture: trading-corp-web.service split** (P3, filed 2026-05-26 03:30 UTC).
+7. **P3 cleanup — `tests/test_webhooks_return_fast.py` 5 failures from `_Deps.bitunix_observer` fixture gap** (filed in the C-7 draft session 2026-05-26 ~23:30 UTC).
+
+**Process learning carried forward:**
+
+- **Cherry-pick over branch-push when the branch has a patch-duplicate ancestor.** Local branch `c7-webhook-secret-scrub` was based on `b64cdc5`, which is patch-identical to `f13fb05` already on main. Pushing the branch would have replayed the duplicate; cherry-picking the two C-7 commits onto current main produced clean linear history. The verification is `git diff <foreign-ancestor> <main-equivalent>` returning empty.
+- **`--verbose` on the backfill script echoes secrets via stdout.** The dry-run drift check used `--verbose` once and printed the cleartext secrets of id 402/1006/1116 over ssh stdout. The real run was summary-only. The script's design comment says "Never prints raw snippet values to stdout (would echo secrets via az run-command output)" — but `--verbose` overrides that. Process learning recorded in the deploy_log entry; the in-stdout exposure is rotated out of play by C-1 in the next session.
+- **The two live-scrub verification rows (id 732404, 732405) are real prod audit rows.** Left in place — removing would corrupt audit history; both already redacted; idempotent on any future re-scrub.
+
+**Memory updates this session:** none (the load-bearing memories already in place — `[[project-c7-draft-pending-deploy]]`, `[[reference-real-audit-row-raw-sqlite3]]`, `[[deploy-crlf-config-patch]]`, `[[reference-prod-systemd-units]]` — all loaded into the session and applied. The `[[project-c7-draft-pending-deploy]]` memory will be updated to point at the deploy_log entry rather than the draft state in a follow-up turn if the next session opens against it.)
+
+**Canonical pickup for next session (C-1 rotation):** `runbooks/deploy_log.md` 2026-05-26 23:46–23:54 UTC entry + `runbooks/tastytrade_oauth_rotation.md` (for the Tastytrade portion) + `reports/2026-05-21_security_review.md` §C-1 + this EOS.
+
+---
+
 ## EOS snapshot — 2026-05-26 ~23:58 UTC (Tuesday late evening — Tastytrade OAuth rotation runbook SHIPPED end-to-end on the IC thread; canonical procedure + fail-closed JWT scope check script + memory pointer; closes the P1 HIGH item carried since 2026-05-22; NO prod touch; pure doc/script + offline memory)
 
 **Headline of THIS session-arc:** Closed the **P1 HIGH Tastytrade OAuth rotation runbook** item that's been queued across both the 2026-05-22 IC pickup menu and the 2026-05-22 deploy_log line 1478's explicit memory request. Two cycles' forensics (2026-05-22 rotation incident: revoked → non-JWT → secret-mismatch + bash-source-stderr leak; 2026-05-25 tasty_options OAuth: silent scope downgrade + setx-stale-in-process) consolidated into one canonical procedure: atomic 2-step rotation (Client Secret + refresh token from same OAuth session, no cross-pollination), 7 system-state freshness checks (not operator assertion), 6-symptom diagnosis table with shape-only leak detection, hard history-purge gate. Operator-driven 3-revision iteration: hard-stop to bash for KV writes (no PowerShell `--value` form documented even as "last resort" — uncloseable plaintext window), hard history-purge gate added (mandatory tier, not footnote), JWT scope decoder extracted to script and verified fail-closed 10/10 paths empirically. Memory pointer auto-loads on TT-touching strings.
@@ -1492,7 +1532,7 @@ sudo sed -i 's|seed_polymarket_watchlist_deep\$|seed_polymarket_watchlist_deep -
 
 ---
 
-## P0 — C-7 webhook secret-scrub: draft state, deploy sequence, regex boundary  *(DRAFTED 2026-05-26, on local branch `c7-webhook-secret-scrub`)*
+## P0 — C-7 webhook secret-scrub: draft state, deploy sequence, regex boundary  *(DONE 2026-05-26 23:54 UTC — DEPLOYED + BACKFILL RAN; commits `9d65be8` (scrub) + `aa4f37f` (backfill) cherry-picked onto main; live-scrub verified via raw sqlite3 on both webhook handlers, 5 historical rows scrubbed, idempotency confirmed. C-1 unblocked. See deploy_log.md 2026-05-26 23:46–23:54 UTC for the full record. The original draft state below is preserved for historical context.)*
 
 **Branch state:** `c7-webhook-secret-scrub`, **local-only** (never pushed), 2 commits on top of the parallel-session base `b64cdc5`:
 
