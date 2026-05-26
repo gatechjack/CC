@@ -30,6 +30,7 @@ from trading_corp.data.polymarket_data_api_client import (
 )
 from trading_corp.scripts import seed_polymarket_watchlist_deep as seed_mod
 from trading_corp.scripts.seed_polymarket_watchlist_deep import (
+    _aggregate_window_to_decisions,
     _fetch_wallet_activity_windowed,
     _select_resolved_buys_window,
     seed_polymarket_watchlist_deep,
@@ -358,6 +359,172 @@ def test_window_picks_most_recent_buy_per_decision_not_first():
     assert window[0].price == 0.55
 
 
+# ── Decision aggregation (PnL fix, shipped 2026-05-26 post-clustering) ───
+
+
+def test_aggregate_29_winning_fills_sums_all_pnl_not_just_survivor():
+    """29 BUYs on (cid_a, oi=0) at price 0.5, size 10 each, all win.
+
+    Per-fill PnL sum = 29 * (1-0.5) * 10 = $145.
+    Survivor-only PnL (the pre-aggregation bug) = (1-0.5) * 10 = $5.
+    Aggregated row must produce $145 when fed to per-row PnL math.
+    """
+    activity = [
+        _make_activity(1000 - i, "cid_a", side="BUY",
+                       outcome_index=0, price=0.5, size=10.0)
+        for i in range(29)
+    ]
+    # Window has 1 survivor (the most-recent fill, ts=1000) — that's what
+    # _select_resolved_buys_window would have produced.
+    survivor = activity[0]
+    window = [survivor]
+    agg = _aggregate_window_to_decisions(activity, window)
+    assert len(agg) == 1
+    assert agg[0].condition_id == "cid_a"
+    assert agg[0].outcome_index == 0
+    assert agg[0].size == 290.0  # 29 * 10
+    assert abs(agg[0].price - 0.5) < 1e-9  # weighted avg of identical prices
+    # Per-row PnL math (the formula compute_polymarket_stats uses): for a win,
+    # per_contract_pnl = (1 - price) and trade_pnl = per_contract_pnl * size.
+    # 290 * 0.5 = $145, matches sum-across-fills.
+    assert agg[0].size * (1.0 - agg[0].price) == 145.0
+
+
+def test_aggregate_29_losing_fills_sums_negative_pnl_not_just_survivor():
+    """29 BUYs on (cid_a, oi=0), all losses (winner_idx=1 elsewhere).
+
+    Per-fill loss PnL sum = 29 * (-0.5) * 10 = -$145.
+    Survivor-only PnL = -$5. Aggregated PnL must equal -$145.
+    """
+    activity = [
+        _make_activity(1000 - i, "cid_a", side="BUY",
+                       outcome_index=0, price=0.5, size=10.0)
+        for i in range(29)
+    ]
+    survivor = activity[0]
+    agg = _aggregate_window_to_decisions(activity, [survivor])
+    assert len(agg) == 1
+    # For a loss, per_contract_pnl = -price; trade_pnl = -price * size.
+    # -290 * 0.5 = -$145.
+    assert -agg[0].price * agg[0].size == -145.0
+
+
+def test_aggregate_mixed_price_fills_uses_size_weighted_avg():
+    """Two fills on (cid_a, 0): 100 @ $0.50 and 200 @ $0.60.
+
+    Weighted-avg price = (0.50*100 + 0.60*200) / 300 = 170/300 ≈ 0.567.
+    Total size = 300. For a win, pnl = (1 - 0.567) * 300 = $130 ≡
+    (1-0.5)*100 + (1-0.6)*200 = $50 + $80 = $130. Math identity confirmed.
+    """
+    activity = [
+        _make_activity(2000, "cid_a", side="BUY", outcome_index=0,
+                       price=0.50, size=100.0),
+        _make_activity(1000, "cid_a", side="BUY", outcome_index=0,
+                       price=0.60, size=200.0),
+    ]
+    agg = _aggregate_window_to_decisions(activity, [activity[0]])
+    assert len(agg) == 1
+    assert agg[0].size == 300.0
+    assert abs(agg[0].price - (170.0 / 300.0)) < 1e-12
+    win_pnl = (1.0 - agg[0].price) * agg[0].size
+    assert abs(win_pnl - 130.0) < 1e-9
+
+
+def test_aggregate_hedge_keeps_each_side_separate():
+    """A whale that bought both (cid_a, 0) AND (cid_a, 1) = TWO decisions.
+
+    Each side's fills aggregate INDEPENDENTLY — total_size on one side does
+    NOT pull in the other side's contracts (those are a separate bet that
+    resolves differently). Each synthetic row carries only its own oi's fills.
+    """
+    activity = [
+        # 5 BUYs on cid_a oi=0 (size 10 each)
+        _make_activity(2000 - i, "cid_a", side="BUY",
+                       outcome_index=0, price=0.45, size=10.0)
+        for i in range(5)
+    ] + [
+        # 3 BUYs on cid_a oi=1 (size 20 each)
+        _make_activity(1500 - i, "cid_a", side="BUY",
+                       outcome_index=1, price=0.55, size=20.0)
+        for i in range(3)
+    ]
+    # Window picked both survivors (one per side).
+    window = [activity[0], activity[5]]
+    agg = _aggregate_window_to_decisions(activity, window)
+    assert len(agg) == 2
+    by_oi = {a.outcome_index: a for a in agg}
+    assert by_oi[0].size == 50.0  # 5 fills * 10
+    assert abs(by_oi[0].price - 0.45) < 1e-9
+    assert by_oi[1].size == 60.0  # 3 fills * 20
+    assert abs(by_oi[1].price - 0.55) < 1e-9
+
+
+def test_aggregate_single_fill_decision_passes_through_unchanged():
+    """A 1-fill decision must aggregate to itself (no math changes).
+
+    Edge case to protect: legacy fills that don't cluster should not be
+    silently mutated by the aggregator.
+    """
+    activity = [
+        _make_activity(1000, "cid_solo", side="BUY", outcome_index=0,
+                       price=0.42, size=33.0),
+    ]
+    agg = _aggregate_window_to_decisions(activity, [activity[0]])
+    assert len(agg) == 1
+    assert agg[0].condition_id == "cid_solo"
+    assert agg[0].outcome_index == 0
+    assert agg[0].size == 33.0
+    assert agg[0].price == 0.42
+
+
+def test_aggregate_preserves_survivor_ts_for_window_days_span():
+    """The aggregated row's `timestamp` is the survivor's (most-recent fill).
+
+    `window_days_span` in the seed is `max(ts) - min(ts)` across the window;
+    aggregation must not collapse times to e.g. min-of-cluster or risk
+    distorting the span column.
+    """
+    activity = [
+        _make_activity(3000, "cid_a", side="BUY", outcome_index=0,
+                       price=0.5, size=10.0),  # most recent
+        _make_activity(1000, "cid_a", side="BUY", outcome_index=0,
+                       price=0.5, size=10.0),  # older fill
+    ]
+    survivor = activity[0]
+    agg = _aggregate_window_to_decisions(activity, [survivor])
+    assert agg[0].timestamp == 3000
+
+
+def test_aggregate_with_empty_activity_falls_back_to_survivor():
+    """Defensive: if activity is empty (degenerate caller), use survivor as-is."""
+    survivor = _make_activity(1000, "cid_a", side="BUY",
+                              outcome_index=0, price=0.5, size=10.0)
+    agg = _aggregate_window_to_decisions([], [survivor])
+    assert len(agg) == 1
+    assert agg[0] is not survivor  # dataclasses.replace produces a new instance
+    assert agg[0].size == 10.0
+    assert agg[0].price == 0.5
+
+
+def test_aggregate_ignores_non_trade_non_buy_fills_in_activity():
+    """SELLs and non-TRADE events on the same (cid, oi) must NOT be summed
+    into the decision's PnL — those are exits / redeems, not entry fills."""
+    activity = [
+        _make_activity(3000, "cid_a", side="BUY", outcome_index=0,
+                       price=0.5, size=10.0),
+        _make_activity(2500, "cid_a", side="SELL", outcome_index=0,
+                       price=0.7, size=5.0),  # SELL — ignore
+        _make_activity(2000, "cid_a", side="BUY", outcome_index=0,
+                       price=0.5, size=10.0, type_="REDEEM"),  # REDEEM — ignore
+        _make_activity(1000, "cid_a", side="BUY", outcome_index=0,
+                       price=0.5, size=10.0),
+    ]
+    agg = _aggregate_window_to_decisions(activity, [activity[0]])
+    assert len(agg) == 1
+    # Only the 2 BUY+TRADE fills sum: 10 + 10 = 20.
+    assert agg[0].size == 20.0
+
+
 # ── Integration: seed_polymarket_watchlist_deep floor behavior ────────────
 
 
@@ -415,6 +582,47 @@ async def test_n_floor_drops_clustered_whale_with_lt10_distinct_decisions():
     assert summary["drop_reasons"]["n_floor"] == 1
     assert summary["quality_gate_pass"] == 0
     assert summary["watch_only_whales"] == []
+
+
+async def test_clustered_whale_pnl_aggregates_across_all_fills_not_just_survivor():
+    """50 distinct decisions, each with 5 winning fills at price 0.5 size 200.
+
+    Under aggregation: each decision = (1-0.5)*1000 = $500 PnL → 50 decisions
+    → $25,000 total. Clears the $5k floor.
+
+    Without aggregation (pre-fix): each decision counted as 1 fill's PnL
+    = (1-0.5)*200 = $100 → 50 decisions → $5,000 exactly. The same whale
+    would borderline-fail the $5k floor on a 1-dollar slip and be dropped
+    artifactually. With aggregation, the genuine $25k economic exposure is
+    surfaced and the whale rightly survives.
+    """
+    now_ts = 1_700_000_000
+    activity_rows, resolutions = _make_clustered_activity(
+        wallet="0xa", n_decisions=50, fills_per_decision=5,
+        all_wins=True, ts_anchor=now_ts,
+    )
+    # _make_clustered_activity uses price=0.5, size=2.0 by default. Override:
+    activity_rows = [
+        ActivityRow(
+            **{**{k: getattr(r, k) for k in r.__dataclass_fields__ if k != "size"},
+               "size": 200.0}
+        )
+        for r in activity_rows
+    ]
+    lb = {"GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)]}
+    summary = await _run_seed(
+        leaderboard=lb,
+        activity_by_wallet={"0xa": [activity_rows]},
+        resolutions=resolutions,
+        fake_now_ts=now_ts,
+        min_windowed_pnl=5000.0,  # production-default floor — must not drop us
+    )
+    assert summary["drop_reasons"]["pnl_floor"] == 0
+    assert summary["quality_gate_pass"] == 1
+    whale = summary["watch_only_whales"][0]
+    assert whale["window_size_n"] == 50  # distinct decisions, not 250 fills
+    # 50 decisions × 5 fills × 200 contracts × (1-0.5) = $25,000.
+    assert whale["realized_pnl_usdc"] == 25000.0
 
 
 async def test_clustered_whale_with_42_distinct_decisions_fires_provisional():
