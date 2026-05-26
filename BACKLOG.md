@@ -8,6 +8,56 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-26 ~01:25 UTC (Monday/Tuesday rollover — kalshi_weather bias-offset v1 DEPLOYED to prod after 1 rollback; live-eval verified; 5 commits to main)
+
+**Headline of THIS session:** Built and deployed the kalshi_weather per-(station, season) bias-offset correction (Tier 1 follow-up to the 654K-row NBM-σ calibration measurement). Path: NBM-σ-substitution candidate REJECTED after apples-to-apples 3-way comparison showed raw NBM σ is WORSE than the heuristic at tail control (|z|≥3 = 12.66× vs 8.26×); residual-corrected NBM emerged as the new primary anomaly-#2 σ candidate. Bias-offset (the LOCATION fix, orthogonal to σ widening) split off and shipped as v1 — 22 cells filtered to |train_off| ≥ 1.0°F (9 spring `fully_validated` + 13 non-spring `nbm_only` watch-items). First deploy attempt crash-looped 17 min on `ModuleNotFoundError: residual_logic` (residual_logic.py was committed locally in C2 work but never pushed to prod; my new strategy file imported from it). Rolled back clean at 00:44 UTC. Fix (inlined `derive_season` byte-equivalent into `_weather_math`, locked in by `tests/test_derive_season_inlined_equiv.py`) re-deployed at 01:10:33 UTC; PID 1448692 stable past 4× 30s cycles, healthz green PAPER, live arithmetic verified on KAUS + KMSP first-cycle audit rows.
+
+**`origin/main` head after this session:** `dac1e27`. Commits this session, chronological:
+- `c26882f` — kalshi_weather: bias-offset v1 wiring (22 cells, magnitude-filtered ≥1.0°F)
+- `92e8662` — dashboard: advance DASHBOARD_RT_CUTOFFS to 2026-05-26T00:18 (FIRST deploy attempt's cutoff; superseded)
+- `6d66ea7` — kalshi_weather: inline derive_season (FIX for crash-loop; 110 lines, 48/48 tests pass)
+- `dac1e27` — deploy_log + cutoff: bias-offset v1 LIVE 2026-05-26 01:10:33 (re-deploy entry + cutoff advance to 01:08:00)
+
+**Prod state:**
+- `trading-corp.service` active, PID 1448692 since 2026-05-26 01:10:33 UTC. healthz `{"status":"ok","mode":"PAPER"}`.
+- `_weather_math.py` + `kalshi_weather_arb.py` md5-match local byte-for-byte. `data.py` md5 differs (CRLF on prod from sed-in-place + old comment preserved; functional cutoff value `2026-05-26T01:08:00+00:00` is correct).
+- Backup tag `pre-bias-offset-20260526-0018` intact on all 3 prod files for rollback.
+- DB tables `weather_nbm_observations` (668,952 rows, 2021-01-15 → 2026-05-25) + `weather_forecast_residuals` (1,362,895 rows) are LOCAL-only (built in this session for measurement; not on prod).
+
+**Highest-leverage open items (handoff to next session — by priority):**
+
+1. **Bias-offset live-PnL watch (~1-2 weeks)** — first round-trips on the bias-corrected forecasts won't resolve until the bet target dates pass. Read the kalshi_weather dashboard tile at https://trading.jacksumner.com after a few days to see WR/PnL accumulate post-cutoff (2026-05-26T01:08:00). Compare to pre-cutoff baseline (which is forensically queryable in `kalshi_round_trips` — not deleted).
+
+2. **WATCH-ITEM — non-spring cross-source re-validation (gates summer/fall/winter cells)** — 13 `nbm_only` cells are deployed but cross-source-unvalidated. As live `nws_blend` data accumulates per-season (summer ≥Jun 1, fall ≥Sep 1, winter ≥Dec 1), re-run the STEP 1 cross-source procedure (`tmp/_offset_train_test.py`) for that season's cells. Pull any cell where the offset DOESN'T reduce nws_blend bias. Spring's 9 fully_validated cells are already cross-source-checked.
+
+3. **The NBM ingestion cron poller (held for separate deploy)** — Tier 1 plan §"Next deliberate step." Required for forward NBM accumulation (so the data foundation keeps growing without manual backfills). Specs in `plans/tier1-data-foundation-kalshi-weather.md`. Includes the `nbm-ingest.timer` and `iem-ingest.timer` systemd units. Also bundles the C2 push: `trading_corp/data/residual_logic.py` (NEW file still absent on prod), `nbm_client.py`, `iem_cli_client.py`, `weather_stations.py` updates (`list_verified_series`), `db.py` schema addition (`weather_nbm_observations` + `weather_forecast_residuals` tables), `ingest_nbm.py`, `ingest_iem_cli_residuals.py`. Hash-compare + import-graph audit (per the new memory entry) MANDATORY pre-deploy.
+
+4. **Anomaly-#2 σ work — RC-NBM σ is the new primary candidate** (replaces NBM-σ-substitution which the measurement rejected). Existing-plan Item 2.2 part 2. Data is fully populated in the LOCAL residuals table — ready for measurement + build whenever the Board approves. Note: until the cron poller ships, the data is local-only and won't keep accumulating forward.
+
+5. **Decile-direct (Tier 1 open Q5)** for the residual |z|≥3 = 6.58× gap that RC-NBM σ can't close (Gaussian-assumption ceiling). Schema captures all 5 percentiles in `weather_nbm_observations`. Future work.
+
+**Memory updates this session:**
+- NEW `feedback_deploy_import_graph_audit.md` — pre-deploy checklist (grep `^+from`/`^+import`, ls-check each on prod) born from the crash-loop incident.
+- NEW `project_kalshi_weather_bias_offset_v1_live.md` — load-bearing live state + watch-item.
+- NEW `project_nbm_sigma_calibration_measurement.md` — the 654K-row apples-to-apples result + reprioritization.
+- NEW `reference_nbm_historical_archive.md` — AWS NODD endpoint + backfill recipe.
+- `MEMORY.md` index updated.
+
+**Notable mid-session catches (worth carrying forward):**
+- **Local ≠ prod environment delta** caught the deploy: the test-set passed locally because residual_logic existed locally; prod failed because it didn't. Hash-comparing changed files isn't import-graph auditing. New memory entry codifies the fix.
+- **PowerShell + Windows cmd.exe ~8KB command-line cap** on `az run-command --scripts`. Fix: use `--scripts @file` form. (Also: gzip+base64 the .py files before push to fit ~30KB raw into ~10KB transit.)
+- **One-off cycle bulletin corruption is real**: 2021-04-24 13z NBP file was 4.5 MB short with all TXN* rows missing across 19 ICAOs. Other cycles (01z/07z/19z) that day were clean. `backfill_nbm_historical.py` has cycle-fallback logic for this case.
+- **sed-in-place on prod preserves CRLF and surrounding text**, so post-deploy md5 won't match local LF + new comment. Functional value is correct; the drift is cosmetic and self-resolves on the next full file push.
+- **PROCGOV (run_capped.ps1) intermittently fails with Win32Exception(5)** after killed/orphaned monitor processes. Unwrapped python is acceptable for memory-bounded scripts (one-date-at-a-time, no global accumulator).
+
+**Environments at EOS:**
+- Working tree: clean except `docs/Deployment notes.txt` untracked (operator-owned, left as-is per prior sessions).
+- Local `main` head: `dac1e27`.
+- `origin/main` head: `dac1e27` (pushed).
+- Prod VM `/home/azureuser/trading_corp/`: `_weather_math.py` + `kalshi_weather_arb.py` md5-match local; `data.py` matches functionally (CRLF + comment-text cosmetic drift). `trading-corp.service` active on PID 1448692, healthz green.
+
+---
+
 ## EOS snapshot — 2026-05-25 ~21:30 UTC (Monday late evening — polymarket watchlist WR investigation; ROOT CAUSE = condition_id clustering, NOT denominator bug; PROMOTION PAUSED across all windowed columns; fix-planning session queued)
 
 **Headline of THIS session:** Investigated the dashboard's `~17/18 100.0% windowed WR` sweep on the Polymarket watch list. Operator hypothesis ("losses excluded from denominator → wins/wins ≈ 100%") was **REFUTED** by both static read and empirical replication against live Polymarket APIs. Real bug is **window-by-order-fill vs window-by-decision**: `_select_resolved_buys_window` (seed_polymarket_watchlist_deep.py:157-185) treats each `ActivityRow` as an independent sample, but 29 BUYs at the same `condition_id` (sports playoff spread cluster) are one decision repeated. During winning streaks the cluster fills the 100-slot window mechanically. Runaround verified at 100/0 windowed despite true all-resolved WR of ~60% (39W/26L). Mosley1 (100/0 stored vs 95/5 today) is staleness compounding, not the same defect — staleness self-heals on the Sunday overwrite; clustering does not.
