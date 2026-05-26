@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import logging
 import sys
@@ -207,6 +208,80 @@ def _select_resolved_buys_window(
         if len(window) >= window_size:
             break
     return window
+
+
+def _aggregate_window_to_decisions(
+    activity: list[ActivityRow],
+    window: list[ActivityRow],
+) -> list[ActivityRow]:
+    """For each (cid, oi) survivor in `window`, collapse all fills on that
+    decision into one synthetic row carrying decision-level economics.
+
+    Counterpart to `_select_resolved_buys_window`: that picks which decisions
+    are in the window; this attributes the full per-decision realized value to
+    each. Without this step, downstream PnL math (`compute_polymarket_stats`)
+    sees only the survivor row's `size` — i.e. one fill of a 29-fill cluster —
+    and reports decision PnL as `1/29` of the actual realized number, which
+    silently breaks the windowed PnL floor under cluster-heavy whales.
+
+    Per synthetic row:
+      - `size` = sum of `size` across all BUY+TRADE fills on `(cid, oi)`
+      - `usdc_size` = sum of `usdc_size` across those fills
+      - `price` = size-weighted mean entry price across those fills
+      - All other fields (`condition_id`, `outcome_index`, `timestamp`, `title`,
+        etc.) preserved from the survivor row (`timestamp` is therefore the
+        most-recent fill's ts — keeps `window_days_span` math consistent).
+
+    Math identity: for a winning decision the per-fill PnL sum
+    `sum_i (1-p_i) * s_i` equals `(1 - weighted_avg_price) * total_size`; for
+    a losing decision `sum_i (-p_i) * s_i` equals `-weighted_avg_price *
+    total_size`. So `compute_polymarket_stats` running unchanged per-row math
+    against the aggregated rows produces the same number as it would summing
+    every fill individually — but `n` stays at distinct-decision count, which
+    is what the clustering fix needs.
+
+    `activity` is iterated once to bucket fills by `(cid, oi)`; for a
+    single-fill decision the synthetic row is byte-equivalent to the survivor.
+    Hedges are correctly preserved: `(cid, 0)` and `(cid, 1)` are two separate
+    buckets, valued independently.
+    """
+    fills_by_key: dict[tuple[str, int], list[ActivityRow]] = {}
+    for a in activity:
+        if a.type != "TRADE" or a.side != "BUY":
+            continue
+        if not a.condition_id:
+            continue
+        try:
+            oi = int(a.outcome_index)
+        except (TypeError, ValueError):
+            continue
+        fills_by_key.setdefault((a.condition_id, oi), []).append(a)
+
+    out: list[ActivityRow] = []
+    for survivor in window:
+        try:
+            survivor_oi = int(survivor.outcome_index)
+        except (TypeError, ValueError):
+            # Should never happen — `_select_resolved_buys_window` already
+            # filtered these — but be defensive against future callers.
+            out.append(survivor)
+            continue
+        key = (survivor.condition_id, survivor_oi)
+        fills = fills_by_key.get(key) or [survivor]
+        total_size = sum(f.size for f in fills)
+        total_usdc_size = sum(f.usdc_size for f in fills)
+        if total_size > 0:
+            weighted_avg_price = sum(f.price * f.size for f in fills) / total_size
+        else:
+            # Degenerate guard — keeps prior behavior when sizes are all 0.
+            weighted_avg_price = survivor.price
+        out.append(dataclasses.replace(
+            survivor,
+            size=total_size,
+            usdc_size=total_usdc_size,
+            price=weighted_avg_price,
+        ))
+    return out
 
 
 def _merge_watchlists(
@@ -445,6 +520,16 @@ async def seed_polymarket_watchlist_deep(
             if n_resolved < min_resolved_buys:
                 summary["drop_reasons"]["n_floor"] += 1
                 continue
+
+            # Collapse each (cid, outcome_index) decision in the window to a
+            # single synthetic row carrying ALL fills' aggregate size + the
+            # size-weighted avg entry price. Without this step downstream
+            # PnL math under (cid, oi) windowing would see only the survivor
+            # fill — ~1/N of the decision's true realized value for cluster-
+            # heavy whales — and the PnL floor would reject good whales for
+            # an artifact number. See
+            # reports/2026-05-26_polymarket_pnl_aggregation_fix_plan.md.
+            window = _aggregate_window_to_decisions(activity, window)
 
             # half_life_days=36500.0 → effectively no half-life weighting. The
             # fixed-size window IS the recency mechanism; applying a 30-day
