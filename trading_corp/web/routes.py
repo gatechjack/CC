@@ -2189,6 +2189,231 @@ def register(app: FastAPI) -> None:
         label = user_name or wallet_lower[:10]
         return _render_action_pill(f"@{label} demoted{suffix}")
 
+    # ── Polymarket whale on-demand audit (Phase B, read-only review) ────
+
+    @app.post(
+        "/api/polymarket/watchlist/analyze/{proxy_wallet}",
+        response_class=HTMLResponse,
+    )
+    async def polymarket_watchlist_analyze(
+        proxy_wallet: str, request: Request, force: int = 0,
+    ):
+        """Run the per-whale audit on demand from a dashboard button.
+
+        Returns a rendered `partials/analyze_whale_result.html` fragment
+        that htmx swaps into a sibling `<tr>` under the whale's row. The
+        fragment shows the same six sections as the
+        `analyze_polymarket_whale` CLI: clustering, sell footprint, edge
+        profile, category concentration, REDEEM-grounded realized PnL,
+        and the Haiku-narrated verdict (or a reasoned-null when the LLM
+        is disabled / unavailable / capped / errored).
+
+        Read-only: NO writes to promotion-relevant slots
+        (`watch_only_whales`, `selected_whales`, `pinned_whales`,
+        `metrics_epoch`). The audit-cache namespace
+        (`polymarket_whale_analyst`) is structurally isolated — see
+        `polymarket_whale_audit_cache.py` for the invariant.
+
+        Query: `?force=1` → evict the cache entry first (the "Re-analyze"
+        link inside the rendered partial uses this).
+
+        Telemetry: emits one `polymarket_whale_analyzed` audit_event
+        with `source="dashboard"`, `wallet`, `user_name`, `cache_hit`,
+        `llm_cost_usd`, `llm_tokens_in/out`, `verdict_emitted`,
+        `null_reason`, `duration_ms`.
+        """
+        from trading_corp.agents.polymarket_whale_analyst import WhaleAnalyst
+        from trading_corp.agents.research.polymarket_whale_audit_cache import (
+            evict_audit, read_audit, write_audit,
+        )
+        from trading_corp.data.polymarket_data_api_client import (
+            PolymarketDataAPIClient, PolymarketDataAPIError,
+        )
+        from trading_corp.data.polymarket_whale_audit import (
+            DEFAULT_PARTIAL_SELL_THRESHOLD, build_audit_report,
+        )
+
+        wallet_lower = proxy_wallet.lower()
+        # Validate wallet shape early. The dashboard hands us the slot's
+        # `proxy_wallet` field directly, so this is defensive; we still
+        # want a clean error render rather than a 500.
+        import re as _re
+        if not _re.match(r"^0x[0-9a-f]{40}$", wallet_lower):
+            return HTMLResponse(
+                f'<div class="text-loss text-xs font-mono p-2 border border-loss/40">'
+                f'invalid wallet format: {proxy_wallet[:20]}…'
+                f'</div>'
+            )
+
+        db_url = deps.db_url
+        started = datetime.now(timezone.utc)
+        cache_hit = False
+        report = None
+
+        try:
+            async with PolymarketDataAPIClient() as client:
+                # 1. Peek for activity_max_ts (cache key)
+                head = await client.fetch_activity(
+                    wallet_lower, limit=1, offset=0,
+                )
+                if not head:
+                    raise RuntimeError(
+                        "no activity rows found — wallet has no Polymarket "
+                        "trades, or the data-api is rate-limited (try later)."
+                    )
+                activity_max_ts = head[0].timestamp
+
+                # 2. Cache lookup (or force-evict)
+                if force:
+                    evict_audit(wallet_lower, activity_max_ts, db_url=db_url)
+                else:
+                    cached = read_audit(
+                        wallet_lower, activity_max_ts, db_url=db_url,
+                    )
+                    if cached is not None:
+                        report = cached
+                        cache_hit = True
+
+                # 3. Cache miss → full fetch + compute
+                if report is None:
+                    activity: list = []
+                    for page_idx in range(10):  # 10 pages × 500 = 5000 row ceiling
+                        offset = page_idx * 500
+                        try:
+                            page = await client.fetch_activity(
+                                wallet_lower, limit=500, offset=offset,
+                            )
+                        except PolymarketDataAPIError as e:
+                            log.warning(
+                                "analyze: activity fetch fail offset=%d "
+                                "wallet=%s: %s — stopping",
+                                offset, wallet_lower[:10], e,
+                            )
+                            break
+                        if not page:
+                            break
+                        activity.extend(page)
+                        if len(page) < 500:
+                            break
+
+                    if not activity:
+                        raise RuntimeError(
+                            "no activity rows after full fetch"
+                        )
+                    activity_max_ts = max(
+                        activity_max_ts,
+                        max(a.timestamp for a in activity),
+                    )
+                    unique_cids = {
+                        a.condition_id for a in activity if a.condition_id
+                    }
+                    resolutions = await client.fetch_market_resolutions(
+                        list(unique_cids),
+                    )
+                    # Best-effort leaderboard lookup (top-50, no pagination)
+                    leaderboard_entry = None
+                    try:
+                        lb_rows = await client.fetch_leaderboard(
+                            category=None, limit=50, offset=0,
+                        )
+                        for lb_r in lb_rows:
+                            if lb_r.proxy_wallet.lower() == wallet_lower:
+                                leaderboard_entry = lb_r
+                                break
+                    except PolymarketDataAPIError:
+                        pass
+
+            # No more network from here — pure compute + LLM
+            if report is None:
+                report = build_audit_report(
+                    leaderboard_entry=leaderboard_entry,
+                    activity_rows=activity,
+                    resolutions=resolutions,
+                    proxy_wallet=wallet_lower,
+                    partial_sell_threshold=DEFAULT_PARTIAL_SELL_THRESHOLD,
+                )
+                # Run the narrator
+                analyst = WhaleAnalyst(
+                    narrator_enabled=True,
+                    db_url=db_url,
+                )
+                narration_result = await analyst.narrate(report)
+                import dataclasses as _dc
+                report = _dc.replace(
+                    report,
+                    verdict_narration=narration_result.narration,
+                    verdict_null_reason=narration_result.null_reason,
+                    llm_cost_usd=narration_result.cost_usd,
+                    llm_tokens_in=narration_result.tokens_in,
+                    llm_tokens_out=narration_result.tokens_out,
+                )
+                # Cache the fresh result for future cache-hit reads
+                # (shared with the CLI; same cache key, same namespace)
+                write_audit(report, db_url=db_url)
+
+        except RuntimeError as e:
+            # Surface a render-able error fragment rather than a 500 —
+            # the htmx swap target still gets useful content.
+            return HTMLResponse(
+                f'<div class="text-loss text-xs font-mono p-3 '
+                f'border border-loss/40 bg-loss/5">'
+                f'<div class="font-semibold mb-1">Analyze failed</div>'
+                f'<div class="text-muted/80">{str(e)[:200]}</div>'
+                f'<div class="text-muted/60 mt-1 text-[10px]">'
+                f'wallet {wallet_lower[:18]}… · '
+                f'{(datetime.now(timezone.utc) - started).total_seconds():.1f}s'
+                f'</div></div>'
+            )
+        except Exception as e:
+            log.exception("analyze: unexpected failure wallet=%s", wallet_lower[:10])
+            return HTMLResponse(
+                f'<div class="text-loss text-xs font-mono p-3 '
+                f'border border-loss/40 bg-loss/5">'
+                f'<div class="font-semibold">Analyze errored — check logs.</div>'
+                f'<div class="text-muted/70 text-[10px] mt-1">{type(e).__name__}</div>'
+                f'</div>'
+            )
+
+        duration_s = (datetime.now(timezone.utc) - started).total_seconds()
+
+        # Telemetry — single audit_event row per call
+        if deps.logger_agent is not None:
+            try:
+                deps.logger_agent.log_event(
+                    "polymarket_copy_trader", "polymarket_whale_analyzed",
+                    {
+                        "strategy": "polymarket_copy_trader",
+                        "division": "polymarket_copy_trading",
+                        "source": "dashboard",
+                        "wallet": wallet_lower,
+                        "user_name": report.user_name,
+                        "cache_hit": cache_hit,
+                        "force_requested": bool(force),
+                        "llm_cost_usd": report.llm_cost_usd,
+                        "llm_tokens_in": report.llm_tokens_in,
+                        "llm_tokens_out": report.llm_tokens_out,
+                        "verdict_emitted": report.verdict_narration is not None,
+                        "verdict_null_reason": report.verdict_null_reason,
+                        "duration_ms": int(duration_s * 1000),
+                        "n_resolved_decisions": report.n_resolved_decisions,
+                        "clustering_ratio": report.clustering.clustering_ratio,
+                        "pnl_inflation_ratio": report.realized_pnl.pnl_inflation_ratio,
+                    },
+                )
+            except Exception:
+                # Never fail the response on a logging hiccup.
+                log.exception("analyze: failed to emit audit_event")
+
+        return templates.TemplateResponse(
+            request,
+            "partials/analyze_whale_result.html",
+            {
+                "report": report,
+                "cache_hit": cache_hit,
+                "duration_s": duration_s,
+            },
+        )
+
     # ── Research firm dashboard (v3 — read-only) ─────────────────────────
 
     @app.get("/research", response_class=HTMLResponse)

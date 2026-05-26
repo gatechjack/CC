@@ -910,6 +910,24 @@
                  class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1 mr-1">
                 View ↗
               </a>
+              {# Analyze button — on-demand per-whale audit (Phase B of
+                 the analyze-whale-cli plan). Renders a sibling row
+                 below the whale via `hx-target` so the table layout
+                 isn't broken. The result row's id is keyed on the
+                 wallet prefix (first 10 hex chars) for collision
+                 safety; full wallet is 40 hex chars but the prefix is
+                 ample for uniqueness within a 329-row max watchlist.
+
+                 The .whale-audit-container class on the inner wrapper
+                 lets the partial's "Re-analyze" link self-replace via
+                 `hx-target="closest .whale-audit-container"`. #}
+              <button hx-post="/api/polymarket/watchlist/analyze/{{ w.proxy_wallet }}"
+                      hx-target="#whale-audit-{{ w.proxy_wallet[:10] }} > .whale-audit-container"
+                      hx-swap="outerHTML"
+                      hx-indicator="#whale-audit-spinner-{{ w.proxy_wallet[:10] }}"
+                      class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-warn/60 text-warn/80 hover:bg-warn/10 hover:text-warn mr-1">
+                Analyze
+              </button>
               <button hx-post="/api/polymarket/watchlist/promote/{{ w.proxy_wallet }}"
                       hx-target="closest tr"
                       hx-swap="outerHTML"
@@ -917,6 +935,23 @@
                       class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-accent/60 text-accent/80 hover:bg-accent/10 hover:text-accent">
                 Promote
               </button>
+            </td>
+          </tr>
+          {# Sibling row that the Analyze button targets. Empty by
+             default; htmx swap replaces the inner .whale-audit-container
+             with the rendered analysis. The spinner is shown by htmx
+             while the call is in flight (the call can take ~10-25s on
+             a heavy whale due to gamma resolution batching + the LLM
+             round-trip). #}
+          <tr id="whale-audit-{{ w.proxy_wallet[:10] }}"
+              class="border-t-0">
+            <td colspan="13" class="p-0">
+              <div class="whale-audit-container"></div>
+              <div id="whale-audit-spinner-{{ w.proxy_wallet[:10] }}"
+                   class="htmx-indicator px-3 py-2 text-[11px] font-mono text-muted/70 italic">
+                ⏳ Analyzing {{ w.user_name or w.proxy_wallet[:10] }}…
+                <span class="text-muted/50 ml-2">(walks /activity + gamma resolutions + Haiku verdict; ~10-25s)</span>
+              </div>
             </td>
           </tr>
           {% endfor %}

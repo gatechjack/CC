@@ -1,0 +1,254 @@
+{# On-demand whale-audit result — htmx-swapped into #whale-audit-<wallet_prefix>.
+   Read-only review surface. NO promotion / demotion controls live here; the
+   audit shows what's true about the whale, the operator decides separately.
+
+   Context inputs (set by the route):
+     - report:   trading_corp.data.polymarket_whale_audit.WhaleAuditReport
+     - cache_hit: bool
+     - duration_s: float
+     - cli_kwargs: dict of CLI flag echoes (force / no_llm / partial_sell_threshold)
+#}
+
+{% set c = report.clustering %}
+{% set s = report.sell_footprint %}
+{% set e = report.edge %}
+{% set cat = report.category %}
+{% set p = report.realized_pnl %}
+
+{% set span_sec = (report.activity_max_ts - report.activity_min_ts) if report.activity_max_ts else 0 %}
+{% set span_days = (span_sec / 86400.0) if span_sec else 0 %}
+
+<div class="whale-audit-container my-2 p-3 border border-edge/60 bg-pane-1/40 text-xs font-mono">
+
+  {# ── header line ─────────────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-3 pb-2 border-b border-edge/40">
+    <div>
+      <span class="text-mono font-semibold">
+        Whale audit — {{ report.user_name or '<no name>' }}
+      </span>
+      <span class="text-muted/70 ml-2">
+        ({{ report.proxy_wallet[:10] }}…)
+      </span>
+      <span class="ml-3 text-muted/60">
+        {{ report.n_resolved_decisions }} resolved decisions over {{ '%.1f' | format(span_days) }} days
+      </span>
+    </div>
+    <div class="text-muted/60 text-[10px]">
+      {% if cache_hit %}<span class="text-accent">CACHE HIT</span>{% else %}<span class="text-muted">computed</span>{% endif %}
+      · {{ '%.1f' | format(duration_s) }}s
+      {% if report.llm_cost_usd > 0 %}
+        · ${{ '%.4f' | format(report.llm_cost_usd) }} LLM
+      {% endif %}
+      <a href="https://polymarket.com/profile/{{ report.proxy_wallet }}"
+         target="_blank" rel="noopener noreferrer"
+         class="ml-2 underline hover:text-accent">profile ↗</a>
+      <button hx-post="/api/polymarket/watchlist/analyze/{{ report.proxy_wallet }}?force=1"
+              hx-target="closest .whale-audit-container"
+              hx-swap="outerHTML"
+              class="ml-2 px-1 text-[10px] text-muted hover:text-accent underline">
+        re-analyze
+      </button>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+
+    {# ── 1. Clustering ────────────────────────────────────────────── #}
+    <div>
+      <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Clustering</div>
+      <div>
+        <span class="text-mono">raw_fills={{ c.n_raw_fills }}</span>
+        ·
+        <span class="text-mono">decisions={{ c.n_decisions }}</span>
+        ·
+        <span class="
+          {% if c.clustering_ratio > 5 %}text-warn{% elif c.clustering_ratio > 3 %}text-mono{% else %}text-muted/80{% endif %}
+          font-semibold">
+          {{ c.clustering_ratio }}× ratio
+        </span>
+      </div>
+      <div class="text-muted/70 text-[10px] mt-1">
+        decisions with ≥5 fills: {{ c.decisions_with_ge_5_fills }}
+      </div>
+      {% if c.top_clusters_by_fill_count %}
+        <div class="text-muted/60 text-[10px] mt-1">
+          top clusters:
+          {% for cid, oi, n in c.top_clusters_by_fill_count[:3] %}
+            <code>{{ cid }}.. oi={{ oi }}×{{ n }}</code>{{ "" if loop.last else " · " }}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── 2. Sell footprint ───────────────────────────────────────── #}
+    <div>
+      <div class="text-[10px] uppercase tracking-wider text-muted mb-1">
+        Sell footprint
+        <span class="text-muted/50 normal-case">(round-trip ⊂ partial-sell, no-gap)</span>
+      </div>
+      <div>
+        <span class="text-mono">decisions_with_sells={{ s.n_decisions_with_sells }}/{{ s.n_decisions_total }}</span>
+      </div>
+      <div class="mt-1">
+        <span class="text-mono">round_trips={{ s.n_round_trips }}</span>
+        <span class="text-muted/60 text-[10px] ml-1">(≥95% sold)</span>
+        ·
+        <span class="
+          {% if s.n_partial_sells / (s.n_decisions_total or 1) > 0.3 %}text-warn{% else %}text-mono{% endif %}">
+          partial_sells={{ s.n_partial_sells }}
+        </span>
+        <span class="text-muted/60 text-[10px] ml-1">(≥{{ (s.partial_sell_threshold * 100) | int }}% sold)</span>
+        ·
+        <span class="text-mono">clean={{ s.n_held_cleanly }}</span>
+      </div>
+      {% if s.top_flagged_by_inflation_usdc %}
+        <div class="mt-2">
+          <div class="text-[10px] uppercase tracking-wider text-muted/70 mb-0.5">Top flagged by inflation USD</div>
+          {% for fd in s.top_flagged_by_inflation_usdc %}
+          <div class="text-[10px] py-0.5 border-b border-edge/20 last:border-b-0">
+            <div class="truncate">
+              <span class="text-mono/90">"{{ fd.title }}"</span>
+              <span class="text-muted/60">oi={{ fd.outcome_index }}</span>
+              {% if fd.is_round_trip %}
+                <span class="ml-1 px-1 text-[9px] uppercase border border-warn/40 text-warn">ROUND-TRIP</span>
+              {% else %}
+                <span class="ml-1 px-1 text-[9px] uppercase border border-muted/40 text-muted">PARTIAL</span>
+              {% endif %}
+            </div>
+            <div class="text-muted/70 ml-2">
+              buy=${{ '{:,.0f}'.format(fd.sum_buy_usdc) }} ·
+              sell=${{ '{:,.0f}'.format(fd.sum_sell_usdc) }} ·
+              redeem=${{ '{:,.0f}'.format(fd.redeem_payout_usdc) }} ·
+              sold {{ (fd.sell_share * 100) | round(0) | int }}%
+              ·
+              realized=<span class="{% if fd.realized_pnl > 0 %}text-gain{% elif fd.realized_pnl < 0 %}text-loss{% else %}text-mono{% endif %}">${{ '{:+,.0f}'.format(fd.realized_pnl) }}</span>
+              vs held=${{ '{:+,.0f}'.format(fd.held_to_resolution_pnl) }}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── 3. Edge profile ─────────────────────────────────────────── #}
+    <div>
+      <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Edge profile</div>
+      <div>
+        <span class="text-mono">avg_entry=</span>
+        <span class="
+          {% if e.avg_entry_price_decision_weighted < 0.50 %}text-gain
+          {% elif e.avg_entry_price_decision_weighted < 0.85 %}text-mono
+          {% else %}text-muted{% endif %} font-semibold">
+          {{ '%.3f' | format(e.avg_entry_price_decision_weighted) }}
+        </span>
+        ·
+        <span class="text-muted/80">&lt;.70={{ (e.share_below_70 * 100) | round(0) | int }}%</span>
+        ·
+        <span class="text-muted/80">&gt;.85={{ (e.share_above_85 * 100) | round(0) | int }}%</span>
+      </div>
+      <div class="text-muted/60 text-[10px] mt-1">
+        p25/p50/p75 =
+        {{ '%.2f' | format(e.p25_entry) }} /
+        {{ '%.2f' | format(e.p50_entry) }} /
+        {{ '%.2f' | format(e.p75_entry) }}
+      </div>
+    </div>
+
+    {# ── 4. Category concentration ──────────────────────────────── #}
+    <div>
+      <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Category concentration</div>
+      <div>
+        <span class="text-mono">distinct_event_slugs={{ cat.n_distinct_event_slugs }}</span>
+        ·
+        <span class="
+          {% if cat.largest_event_share > 0.5 %}text-warn{% else %}text-mono{% endif %} font-semibold">
+          largest={{ (cat.largest_event_share * 100) | round(0) | int }}%
+        </span>
+      </div>
+      {% if cat.top_3_event_slugs %}
+        <div class="text-muted/60 text-[10px] mt-1 truncate">
+          top:
+          {% for slug, n in cat.top_3_event_slugs %}
+            <code>{{ slug }}×{{ n }}</code>{{ "" if loop.last else " · " }}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── 5. Realized PnL (full width) ──────────────────────────── #}
+    <div class="md:col-span-2 pt-2 mt-1 border-t border-edge/30">
+      <div class="text-[10px] uppercase tracking-wider text-muted mb-1">
+        Realized PnL (REDEEM-grounded)
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1">
+        <div>
+          <div class="text-[10px] text-muted/70">realized</div>
+          <div class="
+            {% if p.realized_pnl_usdc > 0 %}text-gain
+            {% elif p.realized_pnl_usdc < 0 %}text-loss
+            {% else %}text-mono{% endif %} font-semibold">
+            ${{ '{:+,.2f}'.format(p.realized_pnl_usdc) }}
+          </div>
+        </div>
+        <div>
+          <div class="text-[10px] text-muted/70">held_to_resolution</div>
+          <div class="text-mono/80">
+            ${{ '{:+,.2f}'.format(p.held_to_resolution_pnl_usdc) }}
+            <span class="text-[10px] text-muted/50 ml-1">watchlist view</span>
+          </div>
+        </div>
+        <div>
+          <div class="text-[10px] text-muted/70">inflation_gap</div>
+          <div class="
+            {% if p.pnl_inflation_ratio > 0.5 %}text-warn font-semibold
+            {% elif p.pnl_inflation_ratio > 0.2 %}text-mono
+            {% else %}text-muted/80{% endif %}">
+            ${{ '{:+,.0f}'.format(p.pnl_inflation_usdc) }}
+            <span class="text-[10px] ml-1">({{ (p.pnl_inflation_ratio * 100) | round(0) | int }}%)</span>
+          </div>
+        </div>
+        <div>
+          <div class="text-[10px] text-muted/70">from_clean / from_partial</div>
+          <div class="text-mono/80">
+            ${{ '{:+,.0f}'.format(p.pnl_from_clean_holds_usdc) }}
+            / ${{ '{:+,.0f}'.format(p.pnl_from_partial_sells_usdc) }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# ── 6. Verdict narration (full width) ─────────────────────── #}
+    <div class="md:col-span-2 pt-2 mt-1 border-t border-edge/30">
+      <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Verdict</div>
+      {% if report.verdict_narration %}
+        <div class="text-mono leading-relaxed">
+          {{ report.verdict_narration }}
+        </div>
+        <div class="text-[10px] text-muted/50 mt-1">
+          Haiku 4.5 · {{ report.llm_tokens_in }}+{{ report.llm_tokens_out }} tok · ${{ '%.4f' | format(report.llm_cost_usd) }}
+        </div>
+      {% else %}
+        {# Null verdict — surface the reason readably, never blank #}
+        {% set null_reason_text = {
+          "disabled_by_flag":  "LLM verdict disabled (--no-llm / narrator off)",
+          "llm_unavailable":   "LLM unavailable on this host (no ANTHROPIC_API_KEY or langchain-anthropic) — deterministic report above is complete",
+          "daily_cap_hit":     "daily LLM cost cap reached — deterministic report above is complete; verdict resumes tomorrow UTC",
+          "llm_error":         "LLM call errored (see logs) — deterministic report above is complete"
+        } %}
+        <div class="text-muted/80 italic text-[11px]">
+          (verdict not emitted — {{ null_reason_text.get(report.verdict_null_reason, "unknown reason: " ~ (report.verdict_null_reason or 'unset')) }})
+        </div>
+      {% endif %}
+    </div>
+
+  </div>
+
+  {# Footer: bias-free note re: realized vs held-to-resolution #}
+  <div class="mt-3 pt-2 border-t border-edge/30 text-[10px] text-muted/50 leading-snug">
+    <span class="font-semibold text-muted/70">Note:</span>
+    realized PnL is REDEEM-grounded — sum of sell proceeds + redemption payout − cost basis, per
+    <code>polymarket_whale_audit.py</code>. Differs from the watchlist's held-to-resolution figure
+    which assumes the full bought position settled. When inflation ratio &gt; 0.3, the headline
+    PnL is materially less real cash than the watchlist column suggests.
+  </div>
+</div>
