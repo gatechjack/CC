@@ -3407,7 +3407,7 @@ DASHBOARD_RT_CUTOFFS: dict[str, str] = {
     # strategy's own logic-change date. Pre-cutoff rows remain queryable
     # in `kalshi_round_trips` (forensic + σ-scaling work); they're only
     # filtered out of dashboard aggregates.
-    "kalshi_weather": "2026-05-22T16:25:00+00:00",  # P3 deploy: entry-price floor + 6 station-coord fixes + KXTEMPNYCH disable + xref YAML loader all live — see deploy_log.md 2026-05-22 16:25 UTC
+    "kalshi_weather": "2026-05-26T00:18:00+00:00",  # bias-offset v1 deploy (22 cells, magnitude-filtered ≥1.0°F, 9 spring fully-validated + 13 non-spring nbm-only). Advanced from 2026-05-22T16:25 (P3 xref deploy) so post-deploy PnL measures the bias-corrected model from a clean baseline. See deploy_log.md 2026-05-26 00:18 UTC.
     "kalshi_crypto":  "2026-05-20T05:52:09+00:00",  # vol-v2 + max_divergence_pct live — see deploy_log.md 2026-05-20 05:52 UTC (matches KALSHI_CRYPTO_VOL_V2_CUTOFF in web/kalshi_crypto_vol_v2.py)
 }
 
