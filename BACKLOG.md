@@ -1339,6 +1339,23 @@ sudo sed -i 's|seed_polymarket_watchlist_deep\$|seed_polymarket_watchlist_deep -
 
 ---
 
+## P3 (UX) — Analyze button has no collapse — toggle the whale-audit panel open/closed  *(NEW — 2026-05-26)*
+
+**Discovered during:** dashboard use immediately after the 2026-05-26 22:28 UTC `hx-target` fix that made the Analyze button render at all. The button works (renders the 6-section partial in a sibling row), but there is no way to collapse the panel once expanded — clicking Analyze again on the same row re-fires the request and re-renders (cache hit so it's fast, but the panel stays open). Operator must scroll past it on the long watchlist.
+
+**Desired behaviour:** clicking Analyze on a row that has an audit panel currently open should **collapse** the panel back to the empty `.whale-audit-container` (the pre-click state). Clicking again opens it. Two-state toggle, not a re-fire.
+
+**Sketch of the fix (htmx-only, no JS):**
+- Add a per-row `data-audit-open="0|1"` attribute on the sibling `<tr id="whale-audit-{prefix}">`.
+- Either: (a) route the button through an `hx-vals`-passed flag and have the endpoint return either the rendered panel or an empty `.whale-audit-container` based on current state; OR (b) handle the collapse purely client-side with an `hx-on::before-request` that checks the open state and short-circuits to a swap-to-empty when open. Option (b) avoids a server round-trip for the collapse half of the toggle.
+- The result partial's "re-analyze" link is unaffected — it remains a force-refetch.
+
+**Won't fix:** auto-collapse on scroll, multi-panel mutex (close-on-open-other). Single-row toggle only.
+
+**Defer until:** operator finds the open-panel-clutter friction high enough to spend on it. Not blocking analysis review.
+
+---
+
 ## P2 (ops) — Cloudflare-retry burn vs `TimeoutStartSec=3600` on watchlist deep timers  *(NEW — 2026-05-23)*
 
 **Discovered during:** the `pm-watchlist-windowed-rescore` deploy 2026-05-23. The one-shot seed run burned **12.5 minutes** of Cloudflare 403 retry against a single chunk (chunk 898) — full retry budget consumed (5 backoffs: 30s + 60s + 120s + 240s + 300s) before the chunk eventually succeeded. Total run: 28m 43s on a corpus that completed locally in ~6 min.
