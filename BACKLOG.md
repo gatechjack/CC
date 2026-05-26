@@ -8,6 +8,72 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-26 ~23:30 UTC (Tuesday evening — C-7 webhook secret-scrub DRAFTED + verified end-to-end + BANKED on local branch; bitunix tripwire CHECKED + below threshold; NO prod touch; branch holds for its own deploy session)
+
+**Headline of THIS session-arc:** Picked up against the post-analyze-whale-deploy session-start prompt. Bitunix tripwire check first (~30s probe of BTC ATR(14, 3m) via public BitUnix kline endpoint): current $69.27, recent 4h window 2/10 samples above $90 (transient spike to $119 at ~17:48 UTC decayed by 20:00); BELOW $90-sustained threshold → no action per [[bitunix-paper-clock]] memo §10(a). Then C-7 — the rejected-webhook audit plaintext-leak fix that gates C-1 secret rotation: drafted scrub helper + backfill script, both delegated to Sonnet with tight specs, verified end-to-end against a real persisted SQLite row read via raw `sqlite3.connect()` (NOT through LoggerAgent), confirmed against prod via read-only `az vm run-command` dry-run (5 of 8 webhook_rejected rows would scrub). Banked as 2 commits on `c7-webhook-secret-scrub` (local-only, never pushed). BACKLOG.md updated with the C-7 draft state + deploy sequence + regex boundary + the P3 `test_webhooks_return_fast.py _Deps` gap; pushed as `3a5946f`.
+
+**`origin/main` head after this session:** `3a5946f`. Commits this session (1 on `main`, 2 local-only on `c7-webhook-secret-scrub`):
+
+- **`3a5946f`** *(on main, pushed)* — `backlog: file C-7 draft state + deploy sequence + regex boundary; file P3 test_webhooks_return_fast _Deps gap`
+- **`5f7a198`** *(c7-webhook-secret-scrub, LOCAL ONLY)* — `scripts: one-shot backfill to scrub secrets from existing webhook_rejected audit rows (C-7 Phase 2)`
+- **`d7ce0df`** *(c7-webhook-secret-scrub, LOCAL ONLY)* — `webhooks: scrub secret-bearing JSON fields from rejected-webhook audit (C-7)`
+
+**What's running on prod (touched THIS session):** Nothing. Zero prod-touch besides one read-only `az vm run-command` dry-run that produced count summary only (no row mutations, no secret values printed).
+
+**Service restart history this session:** none. No prod restart, no PID change. Final prod PID still `1462117` from the 2026-05-26 03:30:19 UTC analyze-whale Phase A modules deploy.
+
+**Operational status on prod (Tuesday 23:30 UTC baseline):**
+
+- **8 webhook_rejected rows on prod**; 5 carry plaintext JSON-shaped secret values in `payload_json.raw_body_snippet` (confirmed via dry-run). UNCHANGED — backfill not run; this is the leaked-state-of-record awaiting the deploy session.
+- **Analyze button:** still live from the 22:35 UTC parallel-session deploy (`490d0021257cd…`).
+- **`watch_only_whales` slot:** still 53 rows from 2026-05-26 00:44 UTC.
+- **`selected_whales` / `pinned_whales`:** untouched this session.
+- **`metrics_epoch`:** unchanged.
+- **Promotion PAUSED** — Sunday 2026-05-31 ~13:00 UTC weekly seed fire still the load-bearing next gate.
+
+**C-7 draft state (load-bearing — full detail in BACKLOG.md `P0 — C-7 webhook secret-scrub` entry):**
+
+- Branch `c7-webhook-secret-scrub` is **local-only**, never pushed. 2 commits on top of parallel-session base `b64cdc5`. Cherry-pickable off a clean `origin/main` base via `git cherry-pick d7ce0df 5f7a198` if isolation is wanted at deploy time.
+- 23/23 tests green (16 webhook_audit_trail + 7 backfill suite).
+- Real-audit-row scrub VERIFIED end-to-end via raw sqlite3 read independent of LoggerAgent (`tmp/verify_c7_real_audit_row.py`, re-runnable).
+- Prod dry-run VERIFIED on prod DB (`tmp/c7_prod_dryrun_inline.sh`, re-runnable; output: 8 scanned / 5 would-scrub / 3 already-clean / 0 out-of-scope; idempotency probe True).
+- **Deploy sequence is load-bearing** (per the BACKLOG entry's `Deploy sequence` section): deploy `d7ce0df` first → run backfill script (cleans 5 historical leaked rows; WAL-safe online) → execute C-1 secret rotation. Out-of-order: C-1 before fix re-leaks the new secret; C-1 before backfill carries old secret through rotation in audit history.
+- **Regex boundary recorded** (BACKLOG `Known boundary` section): scrub matches JSON-shaped `"key": "value"` fields only. In-scope for the TV static-bearer auth body shape. Out-of-scope for non-JSON-shaped credential text in `malformed_json` rejections; that gap is still covered by the `len=N` log half of the fix in journald.
+
+**Working tree at EOS:**
+
+- Clean of mine.
+- 3 untracked files NOT mine (parallel-session WIP): `docs/Deployment notes.txt`, `runbooks/tastytrade_oauth_rotation.md`, `scripts/check_tt_token_scope.py`. Per discipline — DO NOT sweep.
+- 2 verification harnesses NOT in repo (gitignored): `tmp/verify_c7_real_audit_row.py`, `tmp/c7_prod_dryrun_inline.sh`. Re-runnable for next session's pre-deploy re-verification.
+
+**Notable mid-session catches worth carrying forward:**
+
+- **Parallel-session commit landed on my checked-out branch.** Sonnet branched from main at `802f739` and started the C-7 draft. The parallel session then committed `b64cdc5` (its analyze-button deploy_log entry) while `c7-webhook-secret-scrub` was the active branch — making `b64cdc5` the new tip of MY branch, not main's. The parallel session then `git switch main`, `git cherry-pick b64cdc5` (becomes `f13fb05`), and continued. Net result: c7 carries 2 parallel-session ancestors (`802f739` + `b64cdc5`); main carries the cherry-picked equivalent (`f13fb05`) and never gets the b64cdc5 SHA directly. Cherry-pick recovery (described in BACKLOG) sidesteps the entanglement cleanly. **Filed as feedback memory** — next time a long-running session is open and the operator opens another, expect commits to land wherever HEAD is pointing.
+- **Real-audit-row verification pattern with raw `sqlite3.connect()` is reusable.** TestClient + LoggerAgent + LoggerAgent.recent_events is a closed loop — the same component writes and reads. The raw sqlite3 read is the independent path. Pattern: `tmp/verify_c7_real_audit_row.py` lines 95-115. Useful for any future "did the row REALLY land with the right content" question. **Filed as reference memory.**
+- **Cost ATR-decay observed in 4h window**: BTC ATR(14, 3m) spiked to $119 at 17:48 UTC and decayed to $52-69 range by 20:00 UTC. Brief tripwire-crossing window but NOT sustained per the memo's "≥ one 4h window above threshold" criterion. The probe pattern (`urllib.request` with `Mozilla/5.0` UA against `fapi.bitunix.com/api/v1/futures/market/kline?symbol=BTCUSDT&interval=3m&limit=200`) takes 5s end-to-end; suitable for any future tripwire re-check.
+
+**Highest-leverage open items (handoff to next session):**
+
+1. **C-7 deploy session** — its own session, gated on operator scheduling. Pickup is the BACKLOG `P0 — C-7 webhook secret-scrub` entry. Sequence: `git push origin c7-webhook-secret-scrub` → deploy `d7ce0df` to prod → restart trading-corp.service (~5min strategy pause) → run backfill once (cleans 5 leaked rows; WAL-safe online) → THEN proceed to C-1 secret rotation. Verification harnesses in `tmp/` are re-runnable as a pre-deploy gate.
+2. **Sun 2026-05-31 ~13:00 UTC weekly seed fire** — first fire under BOTH clustering + PnL aggregation fixes. Verification gate from the prior session-start prompt still applies (roster size 97-172, no 100% WR, decision-counted n, etc.).
+3. **C-1 secret rotation** (P0 CRITICAL, blocked on C-7 deploy + backfill). 13 distinct credential rotations across 8+ providers. Best in a planned trading-pause window.
+4. **Tastytrade rotation runbook** (P1, untouched — parallel-session note appeared in untracked WIP this session but not authored by me).
+5. **43 deferred package bumps** from C-6 lockfile drift (P1).
+6. **kalshi_weather observation week** — `[[project_kalshi_weather_bias_offset_v1_live.md]]` set 2026-05-26 01:08 UTC as cutoff; round-trips accumulating over ~1-2 weeks. Read dashboard tile, no action.
+7. **bitunix_atr_snapshot observability audit kind** (P2, filed earlier).
+8. **Architecture: trading-corp-web.service split** (P3, filed earlier).
+
+**Memory updates this session:**
+
+- **NEW `project_c7_draft_pending_deploy.md`** — load-bearing C-7 draft state, branch isolation, deploy sequence, regex boundary.
+- **NEW `feedback_parallel_session_branch_collision.md`** — long-running session + operator opens parallel session = commits land on the checked-out branch.
+- **NEW `reference_real_audit_row_raw_sqlite3.md`** — verification pattern with raw sqlite3 read independent of LoggerAgent.
+- **MEMORY.md** — 3 new index lines.
+
+**Canonical pickup for next session:** `runbooks/session_start_2026_05_26_post_c7_draft.md` (written this session) + `BACKLOG.md` top EOS + `BACKLOG.md` "P0 — C-7 webhook secret-scrub" entry + memory `[[project-c7-draft-pending-deploy]]`.
+
+---
+
 ## EOS snapshot — 2026-05-26 ~22:35 UTC (Tuesday evening — analyze-whale UI click-path defect FIXED + DEPLOYED + PUSHED in one short session; first browser exercise of the analyze surface; P3 toggle-collapse filed)
 
 **Headline of THIS session-arc:** Operator-reported defect — the Analyze button "returns nothing." Root cause was a one-character CSS-selector bug in the Phase B template (`>` direct-child combinator on an `hx-target` whose target was actually a grand-child through `<td colspan=13>`). `document.querySelector` returned null, htmx silently no-op'd, browser saw nothing. The 03:30 UTC endpoint-smoke (direct HTTP POST) couldn't have caught it — the bug was downstream of the route, in the browser's selector resolution. Fix shipped via sed-in-place over the existing LF prod file at 22:28 UTC, no service restart (template change). md5 transition verified end-to-end: `2904256301ff…` (Phase-B baseline) → `490d0021257cd…` (matches local LF md5). One follow-up P3 filed: the panel has no collapse path — clicking Analyze again should toggle, not re-render.
