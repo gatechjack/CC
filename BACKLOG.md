@@ -1367,6 +1367,75 @@ sudo sed -i 's|seed_polymarket_watchlist_deep\$|seed_polymarket_watchlist_deep -
 
 ---
 
+## P0 — C-7 webhook secret-scrub: draft state, deploy sequence, regex boundary  *(DRAFTED 2026-05-26, on local branch `c7-webhook-secret-scrub`)*
+
+**Branch state:** `c7-webhook-secret-scrub`, **local-only** (never pushed), 2 commits on top of the parallel-session base `b64cdc5`:
+
+- **`d7ce0df`** — `webhooks: scrub secret-bearing JSON fields from rejected-webhook audit (C-7)` — `_scrub_secrets_from_body` helper, `_audit_rejected` swap, both `log.warning(raw=%r)` → `len=%d`. 309 ins / 3 del across `trading_corp/web/webhooks.py` + `tests/test_webhook_audit_trail.py`.
+- **`5f7a198`** — `scripts: one-shot backfill to scrub secrets from existing webhook_rejected audit rows (C-7 Phase 2)` — `scripts/scrub_webhook_rejected_secrets.py` + tests. 390 ins NEW.
+
+**Verification status (done at draft time):**
+
+- 23/23 tests green (16 webhook_audit_trail + 7 backfill).
+- **Real-audit-row scrub verified** end-to-end via independent raw `sqlite3.connect()` read (NOT through LoggerAgent): bad_secret rejection produces a `webhook_rejected` row whose `payload_json.raw_body_snippet` contains `"secret": "***REDACTED***"` and NOT the plaintext value. Warning log emits `len=N`, not `raw=%r`.
+- **Prod dry-run** via `az vm run-command invoke` against `/home/azureuser/trading_corp/data/trading_corp.db`: 8 `webhook_rejected` rows total, **5 would scrub**, 3 already clean (likely IP-blocked / body-too-large paths with no JSON-shaped secret body), 0 in wrong scope (no other-kind rows in audit_event carry `"secret"` substring). Idempotency probe confirmed (re-scrub on already-redacted text = no-op).
+
+### Deploy sequence (load-bearing ordering)
+
+The sequence below is **load-bearing** — out-of-order execution either re-leaks fixed rows or leaves historical leaks through the rotation event:
+
+1. **Deploy `d7ce0df` (scrub fix)** to prod. After this, no NEW `webhook_rejected` row can persist a plaintext JSON-shaped secret. Requires prod restart (touches `web/webhooks.py`); same single-process tax as any UI deploy per the architecture backlog above.
+2. **Run `scripts/scrub_webhook_rejected_secrets.py` once on prod** (no `--dry-run`). Cleans the 5 historical leaked rows. WAL mode (verified in `persistence/db.py:425`) means this is online-safe — readers don't block, the UPDATE batch on 5 rows completes in milliseconds. No planned strategy pause required.
+3. **Execute C-1 secret rotation.** New webhook secrets go live. Old (now-rotated) secret is no longer of value; the historical audit rows are already scrubbed (step 2), so a future incident reader can't pivot from a rotated secret in audit history to anywhere useful.
+
+**Why the order is load-bearing:**
+
+- C-1 before step 1 (scrub fix): new rejections under the NEW rotated secret immediately persist the NEW secret in plaintext. C-7 fix must be live first.
+- C-1 before step 2 (backfill): the historical rows carrying the OLD secret survive the rotation. While the OLD secret no longer authenticates, anyone reading the historical row learns a credential the operator believed was scrubbed. Backfill before rotation closes the window.
+- Step 2 before step 1: not possible (the script reuses the same scrub regex as the fix; running it without the fix in place is harmless but pointless — fresh rejections immediately re-leak).
+
+### Known boundary — regex matches JSON-shaped fields only
+
+The scrub regex (`"(secret|webhook_secret|token)"\s*:\s*"[^"]*"`, case-insensitive) matches **JSON-shaped string fields only**. Boundary documented because it's deliberate, not a defect:
+
+- **In threat-model scope:** the TV static-bearer auth body is always JSON-shaped — `{"secret":"...","symbol":"...","signal":"..."}`. Every `bad_secret` rejection (the actual C-7 leak path) IS this shape. Verified during real-row testing.
+- **Out of threat-model scope:** non-JSON-shaped credential text in a `malformed_json` body (e.g., a TV operator misconfiguring the alert with `secret: value` as plaintext key-value text instead of valid JSON). The regex does not match; the snippet persists as written. Confirmed during real-row testing (id=1 of the verification harness preserved the literal token).
+
+Out-of-scope rejection paths still log `len=N` in journald (the second half of the fix). Even when the regex doesn't redact, the warning log itself never echoes raw body content. The dual control (regex-redact + len-only log) means the only residual exposure is for non-JSON-shaped credentials in audit DB rows of a malformed_json rejection — vanishingly small in practice (the auth scheme requires JSON; malformed_json bodies don't authenticate).
+
+**Future generalization** (NOT in this PR): if the threat model ever widens to include non-JSON-shaped credential leakage, the regex would need a heuristic pass (e.g., kv-form match on `secret\s*[:=]\s*\S+` outside JSON-shaped contexts). Filed here only — no code change in this draft.
+
+### Status / gate
+
+- **Do not push the branch** until the deploy session is scheduled.
+- **Do not merge to main** — branch holds for its own deploy session.
+- **Cherry-pickable off a clean base:** `git cherry-pick d7ce0df 5f7a198` onto any fresh branch off `origin/main` isolates C-7 from the 2 parallel-session ancestors (`802f739` + `b64cdc5`) if needed.
+
+### Verification artifacts (not in repo, in tmp/)
+
+- `tmp/verify_c7_real_audit_row.py` — local end-to-end harness (raw sqlite3 read, log capture). Re-runnable for re-verification before deploy.
+- `tmp/c7_prod_dryrun_inline.sh` — inline `az vm run-command` script for the read-only prod dry-run. Re-runnable to confirm row counts haven't drifted before backfill.
+
+---
+
+## P3 (cleanup) — `tests/test_webhooks_return_fast.py` 5 failures from `_Deps.bitunix_observer` fixture gap  *(NEW — 2026-05-26)*
+
+**Discovered during:** C-7 webhook-secret-scrub deploy verification 2026-05-26. While running the `test_webhook_audit_trail.py` suite, the adjacent `test_webhooks_return_fast.py` file surfaced 5 pre-existing failures (5 of N tests in the file), all of the same shape:
+
+```
+AttributeError: '_Deps' object has no attribute 'bitunix_observer'
+```
+
+**Why pre-existing:** The failures reproduce identically against `origin/main` with my C-7 diff absent — the test's `_build_deps` fixture was not updated when `bitunix_observer` was wired into the webhook background processing path (currently `trading_corp/web/webhooks.py:523`). The strategy attribute is read live during `register(app)` or in a webhook codepath the test exercises, and the fixture's minimal `_Deps` stub never grew the attribute.
+
+**Cross-ref:** Same class of failure as the pre-existing flag in BACKLOG.md line 850 (2026-05-24 EOS), filed implicitly. Now promoted to a standalone P3 item so the next session touching this file finds it without grep-spelunking.
+
+**Fix scope (5-10 LOC):** In `tests/test_webhooks_return_fast.py`, extend the `_Deps` stub (or whatever helper builds the fake deps object for that file) to expose `bitunix_observer = None`. The webhook handler null-guards on the attribute; presence is enough.
+
+**Why P3:** Pre-existing flake, unrelated to any in-flight work, doesn't block CI signal interpretation as long as the green tests in the file still pass. Fix-when-quiet; no urgency.
+
+---
+
 ## P3 (cleanup) — Copy-trader `equity_history` writer never wired  *(NEW — 2026-05-24)*
 
 **Discovered during:** pm-metrics-epoch dashboard verification 2026-05-24. The `/prediction-markets/polymarket_copy_trading` "equity curve" surface read as zero post-epoch and we initially read it as "epoch filter correctly excluded pre-epoch data." Investigation showed `polymarket_equity_history` has **zero rows for `polymarket_copy_trading` ever** — the curve is empty because no rows have ever been written for this division, not because the epoch filtered them out. Symmetric gap on Kalshi: `kalshi_equity_history` has zero rows for `kalshi_copy_trading`. Both copy-trader divisions are affected.
