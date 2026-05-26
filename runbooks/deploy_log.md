@@ -76,6 +76,102 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-26 01:42 UTC — pm-watchlist PnL-aggregation fix on top of clustering fix (Board-approved)
+
+**Commits:** `a1cbe18` (code+tests), `b42a8a5` (plan + corrected-PnL replay). On branch `pm-watchlist-pnl-aggregation-fix` on `origin`. Main NOT advanced this deploy (ff-merge to main is a separate user-driven step). Parallel-session kalshi_weather commits (`c26882f` → `321d426`) landed on `main` between this deploy's planning and execution; not bundled with this work.
+**Triggered by:** Board ratification after the 2026-05-26 00:44 UTC clustering-fix manual fire produced a 53-row roster (outside the predicted 97-172 band). Root-cause: per-fill PnL math interacting with `(cid, oi)` windowing — only the survivor fill's `size` flowed into `compute_polymarket_stats`, so cluster-heavy whales' realized PnL was deflated 3-30x and many were artifactually rejected by the $5k PnL floor. Plan: `reports/2026-05-26_polymarket_pnl_aggregation_fix_plan.md`.
+**Backup tag:** `.pre-pnl-fix-20260526`. Backup md5 captured pre-move: `6b4372b7d38393c4b38a9d9999521dd5` (the clustering-fix-only version shipped 2026-05-25 22:20 UTC; rollback to it restores today's 53-row behavior, NOT pre-clustering-fix fill-counting behavior).
+
+**Files deployed (1 modify):**
+- `trading_corp/scripts/seed_polymarket_watchlist_deep.py` — adds `_aggregate_window_to_decisions(activity, window) → list[ActivityRow]` (~85 LOC incl docstring). For each `(cid, outcome_index)` decision in the window, collapses to one synthetic row with `size = Σ s_i`, `usdc_size = Σ usdc_i`, `price = (Σ p_i·s_i) / Σ s_i` (size-weighted avg across ALL BUY+TRADE fills on that decision, from the full activity feed). Wired into the pipeline as one line after `_select_resolved_buys_window`. Owner: root:root. LF-canonical md5 post-deploy: `906435c92c498f4bc54d4c9b88d74aa9`; size 38564 bytes (vs 34530 for the clustering-fix-only).
+
+**Features shipped:**
+- **Per-decision PnL valuation.** A 29-BUY cluster now has its decision's PnL credited for the full economic exposure across all 29 fills, not just the survivor fill. Closes the loop between count-axis (n = distinct decisions, shipped 2026-05-25 22:20 UTC) and value-axis (PnL aggregates across decisions, this deploy) — both decision-level now.
+- Empirical replay against cached 329-wallet corpus: cohort under all four production floors = **136 wallets** (inside predicted 97-172 band; vs the 53-row broken state). No floor re-tuning — math identity restores cohort without touching `min_resolved_buys=10`, `provisional_threshold=50`, `min_windowed_wr=0.62`, `min_windowed_pnl=5000.0`.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+
+- **Math identity (load-bearing for trust):** `(1 - weighted_avg_price) · total_size ≡ Σ_i (1 - p_i) · s_i` for wins; mirror for losses. `compute_polymarket_stats`'s per-row formula on aggregated rows produces the same number as a per-fill walk. **Hand-proven on real data — Magamyman's top 3 clusters (131 + 87 + 68 fills) AND full 98-decision window match per-fill hand-sum to floating-point precision (~1e-10).** Full-window aggregated $1,005,202.882858 = per-fill hand-sum $1,005,202.882858.
+
+- **`AvgPx` and `share_below_70` semantics shifted (semantic upgrade, not regression):** Pre-fix these were per-survivor-fill statistics; post-fix they are per-decision weighted statistics. Numbers will move slightly in either direction depending on cluster compositions.
+
+- **`window_days_span` unchanged** — `_aggregate_window_to_decisions` preserves the survivor row's timestamp.
+
+- **`compute_polymarket_stats` and `_is_win_for_buy` UNTOUCHED** — fix lands entirely in the seed script. Win/loss formula, half-life weighting, WhaleStats packing all unchanged against aggregated rows.
+
+- **Realized-PnL caveat — DOCUMENTED, NOT GATED.** Aggregated PnL is "held-to-resolution credit," not realized cash-flow PnL. `compute_polymarket_stats` skips SELL rows at `polymarket_whale_stats.py:124-129` — pre-existing behavior, inherited by aggregation, NOT introduced by this fix.
+
+  Magamyman audit (representative top-of-list whale):
+  - 2 of 3 top clusters held cleanly through resolution (zero SELLs) — hand-sum IS realized PnL.
+  - **1 cluster (US-strikes-Iran-Feb-28, his $679k contributor) sold 570,098 of 861,154 contracts (66%) before resolution.** REDEEM row shows actual held position was 291,056 contracts. The $679k credit is "what he WOULD have made if he'd held to settlement" — actual realized was less. He also had a paired oi=1 NO-side that was a fully-exited round-trip (100% SELL/BUY), counted in this design as a held loss.
+  - Whale-level across his 193 resolved decisions: 3 had any SELL; total SELL/BUY ratio 24.6%.
+
+  **Implication for the review-phase promotion gate:** promotion in this phase is paper-mode review (operator adds a whale to their review set to watch trades before deciding to follow live), NOT capital deployment. The SELL footprint of a candidate is a per-whale review note, not a hard pre-promote check. A future possible enhancement using REDEEM rows + SELL proceeds to compute realized PnL is filed as backlog priority — likely superseded by per-whale on-demand review tooling that surfaces the same caveat at the point of use.
+
+- **Magamyman data points (for future reviewer calibration):**
+  - "Israel military response against Iran in October?" — 131 BUYs, wavg $0.45519, total 93,723 contracts, REDEEM matches BUY (held cleanly), $51,077 hand-sum ≡ aggregated.
+  - "Israel military response against Iran by Friday?" — 87 BUYs, wavg $0.24550, 52,157 contracts, held cleanly, $39,352.
+  - "US strikes Iran by February 28, 2026?" — 68 BUYs at wavg $0.21130 (861,154 contracts); 4 SELLs took 570,098 contracts pre-resolution; REDEEM = 291,056. Aggregated $679,192 is held-to-resolution credit; realized is less.
+
+**Verification — pre-deploy:**
+- All 34 tests in `tests/test_polymarket_watchlist_seed.py` pass (8 new unit + 1 new integration + 25 prior).
+- Empirical replay (`scripts/verification/2026-05-26_clustering_plan/replay_with_pnl_agg.py`) against cached 329-wallet corpus: cohort 136 (inside 97-172 band), non-provisional 69. Top-of-list = Magamyman at $1,005,203. JSON at `tmp/2026-05-26_clustering_plan/replay_with_pnl_agg.json`.
+- All four test cluster-traders still correctly drop on the right floors (not artifactual PnL):
+  - Runaround: WR 0.6000 < 0.62 floor (aggregated PnL $51,859)
+  - Mosley1: WR 0.5000 < 0.62 floor (aggregated PnL $939,241)
+  - weflyhigh: WR 0.5600 < 0.62 floor (aggregated PnL $286,777)
+  - surfandturf: n 5 < 10 floor (aggregated PnL $286,832)
+- Hand-proof against Magamyman's full activity feed (822 rows) confirmed math identity to ~1e-10 on top-3 clusters AND full 98-decision window.
+
+**Verification — on prod (post-deploy):**
+- Backup md5 `6b4372b7d38393c4b38a9d9999521dd5` (matches clustering-fix-only baseline).
+- Post-deploy md5 `906435c92c498f4bc54d4c9b88d74aa9` (matches local LF blob).
+- Owner root:root, mode 644, size 38564 bytes.
+- Smoke import via prod venv: both `_select_resolved_buys_window` and `_aggregate_window_to_decisions` imported cleanly.
+- Functional smoke: 3-fill mixed-price cluster (prices 0.50/0.60/0.40, sizes 100/200/300) → total_size=600, wavg_price=0.483333, per-row PnL formula on aggregated row = $310.00 = hand-sum across 3 fills. MATCH.
+
+**Inert / dormant on current traffic:**
+- **No code path exercises until the next weekly seed fire.** The current `agent_state(polymarket_copy_trader, watch_only_whales)` slot (53 rows from the 2026-05-26 00:44 UTC manual fire under clustering-fix-only code) continues to serve the dashboard until Sunday's overwrite.
+- **First fire under this fix: Sun 2026-05-31 ~13:00 UTC.** Same systemd unit + timer + ExecStart as 2026-05-25 14:25 UTC overwrite-cadence edit. Expected: roster ~136 (replay-predicted), zero `preserved` rows (overwrite cadence), `n` reflects distinct decisions, `realized_pnl_usdc` magnitudes restored to honest decision-level (3-30x today's broken 53-row figures).
+- **No manual seed run this deploy** (operator directive — ride Sunday).
+
+**Promotion-resume-pending-verification:**
+- Promotion off the watchlist remains PAUSED until the post-fire verification gate passes:
+  - Roster size ~97-172 (expected ~136)
+  - No 100% WR rows
+  - `n` column reflects distinct decisions
+  - Provisional flag fires on n<50 rows
+  - Clean exit status, wall-clock in expected band
+- If those pass, **promotion unpauses NORMALLY** — no SELL-footprint forensics gate. The held-vs-realized caveat is a per-whale review note, not a hard pre-promote check (because promotion in this phase is paper-mode review, not capital deployment).
+
+**NOT touched by this deploy:**
+- `_select_resolved_buys_window` — count-axis correct as shipped.
+- `compute_polymarket_stats` + `_is_win_for_buy` — unchanged.
+- All four floor values — explicitly held; no re-tuning.
+- `agent_state(polymarket_copy_trader, watch_only_whales)` slot — current 53-row content stays until Sunday's overwrite.
+- `agent_state(polymarket_copy_trader, selected_whales)` — copy-execution roster.
+- `refresh_polymarket_whales.py`, `polymarket_copy_trader` strategy, broker, risk gate, audit pipeline, dashboard render — unchanged.
+- Systemd unit + timer — unchanged.
+
+**Rollback recipe:**
+```bash
+# Single-file rollback to the clustering-fix-only state (today's 53-row behavior).
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+  --command-id RunShellScript --scripts "
+TAG=pre-pnl-fix-20260526
+BASE=/home/azureuser/trading_corp/trading_corp/scripts
+F=seed_polymarket_watchlist_deep.py
+mv \$BASE/\$F.\$TAG \$BASE/\$F
+chown root:root \$BASE/\$F
+chmod 644 \$BASE/\$F
+md5sum \$BASE/\$F
+# Expected: 6b4372b7d38393c4b38a9d9999521dd5
+"
+```
+For deeper rollback (pre-clustering-fix fill-counting behavior): nested rollback via `.pre-clustering-fix-20260526` backup — see 2026-05-26 22:20 UTC entry.
+
+---
+
 ## 2026-05-26 01:10 UTC — kalshi_weather bias-offset v1 deployed (re-deploy after 00:24 crash-loop)
 
 **Commits:** `c26882f` (original wiring, 22 cells), `92e8662` (initial cutoff bump to 00:18, superseded), `6d66ea7` (inlined derive_season + equivalence test — the fix), `<this commit>` (cutoff advance to 01:08 + deploy_log entry).
