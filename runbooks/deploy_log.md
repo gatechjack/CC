@@ -76,6 +76,12 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-26 22:58 UTC — Tastytrade OAuth rotation runbook landed (doc artifact, no prod touch)
+
+**Commit:** `27dd0ef` — `runbooks/tastytrade_oauth_rotation.md` (canonical atomic 2-step rotation + 7 system-state freshness checks + 6-symptom failure-chain diagnosis; **bash-only KV writes (PowerShell `--value` form removed — uncloseable plaintext window)**, Read-Host-AsSecureString for Windows registry env-var, hard history-purge gate) + `scripts/check_tt_token_scope.py` (fail-closed JWT scope check, 10/10 paths verified empirically). Memory pointer at `[[feedback-tastytrade-rotation-runbook]]`. Forward-link target for any future Tastytrade-touching session. **No prod files modified; no rollback needed** (`git revert 27dd0ef` removes both files).
+
+---
+
 ## 2026-05-26 22:28 UTC — analyze-whale Analyze button hx-target bug fix (selector defect)
 
 **Commits:** `802f739` (template-only one-char fix). Followup to the 2026-05-26 03:30 UTC Phase B deploy.
