@@ -76,6 +76,68 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-26 01:10 UTC — kalshi_weather bias-offset v1 deployed (re-deploy after 00:24 crash-loop)
+
+**Commits:** `c26882f` (original wiring, 22 cells), `92e8662` (initial cutoff bump to 00:18, superseded), `6d66ea7` (inlined derive_season + equivalence test — the fix), `<this commit>` (cutoff advance to 01:08 + deploy_log entry).
+
+**Triggered by:** Board approval after STEP 1 train/test + cross-source validation (Reading C: ship cells with |train_off| ≥ 1.0°F). See `reports/2026-05-25_sigma_three_way_calibration.md` for the data.
+
+**Backup tag:** `pre-bias-offset-20260526-0018` on 3 prod files. Captured during the FIRST attempt at 2026-05-26 00:20 UTC; reused for this re-deploy because the 00:44 rollback restored prod byte-equal to the backup snapshot. md5s pre-deploy:
+- `3605df4ce3195ea327d9a77bc269d9d5` _weather_math.py
+- `913280ae09780e65884aa7f177206550` kalshi_weather_arb.py
+- `908cf16dd033dd81f2eb0ed2de97d273` data.py
+
+**Files deployed (3 modify):**
+- `trading_corp/agents/strategies/_weather_math.py` — added `BIAS_OFFSETS_V1` (22-cell `dict[(station, season), (offset_f, validation_tag)]`), `BIAS_OFFSET_SOURCE_TAG`, `lookup_bias_offset()`, and an INLINED byte-equivalent copy of `derive_season` (the residual_logic version). Inlining was the fix for the prior crash — see "Prior attempt" below. md5 post-push: `7a025622345e25c73b9f0ce23d7e0968` (matches local).
+- `trading_corp/agents/strategies/kalshi_weather_arb.py` — `_resolve_coords` returns `station_id` (verified ICAO; None unless `coord_source='yaml_verified'`). `_evaluate_market` after forecast rebuild + before `evaluate_weather_market`: derives season from target_iso, looks up `(station_id, season)` offset, rebuilds `ForecastPoint` with `temp_f + offset_f` if non-zero. Source string gains `+bias_offset` marker. Fail-open to `_season='_unparseable'` sentinel (no match → 0.0) on unparseable target_iso. 6 new audit fields on `eval_payload`: `forecast_temp_f_pre_offset`, `bias_offset_applied_f`, `bias_offset_source`, `bias_offset_validation`, `bias_offset_season`, `bias_offset_station_id`. md5 post-push: `c4a56c07f9e7bc07982ae57cca4c066f` (matches local).
+- `trading_corp/web/data.py` — `DASHBOARD_RT_CUTOFFS['kalshi_weather']` advanced from `2026-05-22T16:25:00+00:00` (P3 xref deploy) to `2026-05-26T01:08:00+00:00` (this deploy). Sed-in-place; only the timestamp string changed.
+
+**Restart:** PRE_PID `1442346` (post-rollback PID from 00:44) → POST_PID **`1448692`** at restart_ts `2026-05-26T01:10:33+00:00`. systemctl active. Healthz `{"status":"ok","mode":"PAPER"}` green at 01:15:45 UTC (5min IC catch-up — normal).
+
+**Stability watch (the lesson from the prior crash-loop):** PID 1448692 confirmed unchanged + active at T+30s / T+60s / T+90s / T+120s. Past 2+ cycles of the prior 50s crash-loop interval before declaring success. Healthz binding completed within the window.
+
+**Features shipped:**
+- **22-cell per-(station, season) bias-offset correction.** Lookup keyed on registry-direct station_id (None unless coord_source='yaml_verified' — never applied to legacy_fallback / disabled_skip). 9 fully_validated spring cells (NBM train/test 79% + nws_blend cross-source 84%) + 13 nbm_only non-spring watch-items (NBM train/test only; nws_blend cross-source pending forward-accumulation).
+- Largest offset: KDEN spring -3.187°F. Pattern: Texas/High Plains cold-bias cluster + KLAX/KSFO marine warm bias.
+- Today (2026-05-26) is spring — fully_validated cells active immediately. Non-spring nbm_only cells activate as seasons turn (watch-item: re-validate cross-source as live nws_blend data accumulates).
+- Stations NOT in `BIAS_OFFSETS_V1` (KATL, KDCA, KMIA, KPHL, KPHX, KSEA) pass through untouched; bias_offset_applied_f = 0.0.
+
+**Notable code changes:**
+- `derive_season` INLINED into `_weather_math.py` (NOT imported from `residual_logic`). The bias offsets were FIT using `residual_logic.derive_season`'s boundaries; the inlined version is BYTE-EQUIVALENT (asserted by `tests/test_derive_season_inlined_equiv.py` across every day-of-year + leap day + all 8 boundary edges).
+- `_resolve_coords` return dict gains `station_id` field (cleanly fills the "audit row carries no station id" gap noted in prior Tier 1 work).
+- Every audit row carries `forecast_temp_f_pre_offset` alongside `forecast_temp_f` for full diffability — offset rollout/rollback is reversible from audit alone.
+- Bypass: setting `BIAS_OFFSETS_V1 = {}` in code disables all offsets (1-line code rollback path).
+
+**PRIOR FAILED ATTEMPT (2026-05-26 00:24 UTC, crash-looped 17 min, rolled back 00:44):**
+- Initial deploy of commits `c26882f` + `92e8662` pushed `kalshi_weather_arb.py` containing `from trading_corp.data.residual_logic import derive_season`.
+- `residual_logic.py` was committed locally in `0ff6007` (C2 work) but the earlier push-to-prod was harness-blocked; prod had the importer but NOT the imported.
+- journalctl: `ModuleNotFoundError: No module named 'trading_corp.data.residual_logic'` → `Main process exited, code=exited, status=1/FAILURE` → systemd restarted → repeat every ~50s.
+- Rollback at 00:44:46 restored prod byte-equal to pre-deploy state; service back to healthy.
+- **Process failure I own:** hash-comparing the 3 changed files isn't the same as auditing the import graph for new dependencies. The fix: grep `^+from`/`^+import` in the diff, ls-check each imported module on prod before deploy. Memory entry: `feedback_deploy_import_graph_audit.md`.
+- For THIS re-deploy, the import-graph audit ran: only stdlib `datetime.date` is newly imported; all 7 `trading_corp.*` modules referenced exist on prod (verified with `ls`). `residual_logic.py` confirmed STILL absent on prod (and the re-deploy doesn't need it).
+
+**Inert / dormant on current traffic:**
+- The 13 nbm_only non-spring cells (KAUS winter/summer, KBOS summer, KDEN fall, KLAX fall, KMDW winter/summer/fall, KNYC summer, KOKC winter/summer, KSAT winter, KSFO fall) sit dormant until their season turns. None apply today.
+- The 2.5-min sliver of `2026-05-26T01:08:00` (cutoff) → `2026-05-26T01:10:33` (restart_ts): pre-bias-offset audit rows in this window pass the dashboard filter. Worst-case ~150 rows from one half scan cycle. Self-corrects after a few hours of new bias-corrected rows accumulate. Noted for honesty; not worth a second restart to fix.
+
+**WATCH-ITEM (non-spring nbm_only cross-source re-validation):**
+As live nws_blend data accumulates through summer (Jun 1+), fall (Sep 1+), and winter (Dec 1+), re-run the cross-source validation per the STEP 1 procedure for that season's nbm_only cells. Pull any cell that doesn't hold (mean(z) gets WORSE after offset applied to nws_blend test data). The 9 spring cells are already cross-source-validated and don't need re-check.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-bias-offset-20260526-0018; BASE=/home/azureuser/trading_corp
+for f in trading_corp/agents/strategies/_weather_math.py \
+         trading_corp/agents/strategies/kalshi_weather_arb.py \
+         trading_corp/web/data.py; do
+  cp \$BASE/\$f.\$TAG \$BASE/\$f
+done
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-26 22:20 UTC — pm-watchlist clustering fix: dedupe by `(cid, outcome_index)` (Board-approved)
 
 **Commits:** `a4558fc` (code + tests), `4d56cdf` (plan + empirics + replay scripts). Pushed to branch `pm-watchlist-clustering-fix` on `origin`. **Main NOT advanced this deploy** — the auto-mode classifier denied a direct fast-forward push to main; user authorized "push the branch" only. **`origin/main` head at deploy time:** `b22a2e5` (the σ-calibration report from a parallel session, unrelated to this deploy). The 2 commits above sit on the work branch; ff-merge to main is a separate user-driven step.
