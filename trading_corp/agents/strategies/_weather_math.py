@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Literal
 
 
@@ -562,6 +563,39 @@ def cli_rounding_risk(
 # ICAO from `WeatherStationsRegistry` (registry-direct only). Season is
 # the meteorological 4-bucket convention (see residual_logic.derive_season).
 # ---------------------------------------------------------------------------
+
+# Season derivation — INLINED 2026-05-26 byte-equivalent copy of
+# trading_corp.data.residual_logic.derive_season. The bias offsets
+# (BIAS_OFFSETS_V1) were fit using residual_logic.derive_season; the
+# inlined copy must produce identical output for every date so an
+# edge-date forecast (e.g., Feb 28, May 31, Aug 31, Nov 30) can never
+# route to the wrong cell. Tests/test_derive_season_inlined_equiv.py
+# asserts byte-equivalence across all (month, day) of a non-leap year.
+# Reason for inlining: residual_logic.py was not on prod when the
+# original deploy attempt (00:24 UTC 2026-05-26) shipped a strategy
+# file importing from it → ModuleNotFoundError → service crash-loop
+# (rolled back at 00:44 UTC). See feedback_deploy_import_graph_audit.md.
+# Inlining removes the cross-module dependency; residual_logic.py
+# still exists in trading_corp/data/ for the future C2/poller deploy
+# where it ships as part of the bigger Tier-1 cron bundle.
+Season = Literal["winter", "spring", "summer", "fall"]
+
+
+def derive_season(d: date) -> Season:
+    """Meteorological 4-bucket season derivation per Board direction Q3.
+
+    Convention: Dec/Jan/Feb=winter, Mar/Apr/May=spring,
+    Jun/Jul/Aug=summer, Sep/Oct/Nov=fall.
+    """
+    m = d.month
+    if m in (12, 1, 2):
+        return "winter"
+    if m in (3, 4, 5):
+        return "spring"
+    if m in (6, 7, 8):
+        return "summer"
+    return "fall"
+
 
 BIAS_OFFSET_SOURCE_TAG = "bias_offset_v1_train_2021_2024_filtered_1.0F"
 

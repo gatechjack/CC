@@ -39,6 +39,7 @@ from trading_corp.agents.strategies._weather_math import (
     WeatherVerdict,
     apply_bucket_guard,
     apply_entry_price_floor,
+    derive_season,
     evaluate_weather_market,
     kalshi_quote_dollars,
     kelly_fraction,
@@ -46,7 +47,6 @@ from trading_corp.agents.strategies._weather_math import (
     sigma_for_horizon,
 )
 from trading_corp.data.metar_client import MetarClient, MetarNowcast
-from trading_corp.data.residual_logic import derive_season
 from trading_corp.data.open_meteo_client import (
     EnsembleObservation,
     OpenMeteoClient,
