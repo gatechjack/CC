@@ -8,6 +8,65 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-26 ~23:58 UTC (Tuesday late evening — Tastytrade OAuth rotation runbook SHIPPED end-to-end on the IC thread; canonical procedure + fail-closed JWT scope check script + memory pointer; closes the P1 HIGH item carried since 2026-05-22; NO prod touch; pure doc/script + offline memory)
+
+**Headline of THIS session-arc:** Closed the **P1 HIGH Tastytrade OAuth rotation runbook** item that's been queued across both the 2026-05-22 IC pickup menu and the 2026-05-22 deploy_log line 1478's explicit memory request. Two cycles' forensics (2026-05-22 rotation incident: revoked → non-JWT → secret-mismatch + bash-source-stderr leak; 2026-05-25 tasty_options OAuth: silent scope downgrade + setx-stale-in-process) consolidated into one canonical procedure: atomic 2-step rotation (Client Secret + refresh token from same OAuth session, no cross-pollination), 7 system-state freshness checks (not operator assertion), 6-symptom diagnosis table with shape-only leak detection, hard history-purge gate. Operator-driven 3-revision iteration: hard-stop to bash for KV writes (no PowerShell `--value` form documented even as "last resort" — uncloseable plaintext window), hard history-purge gate added (mandatory tier, not footnote), JWT scope decoder extracted to script and verified fail-closed 10/10 paths empirically. Memory pointer auto-loads on TT-touching strings.
+
+**`origin/main` head after this session:** `10c5157`. Commits this session (2, both on `main`, both pushed):
+
+- **`27dd0ef`** — `runbooks: tastytrade oauth rotation runbook + JWT scope check script` (983 LOC added; `runbooks/tastytrade_oauth_rotation.md` canonical procedure + `scripts/check_tt_token_scope.py` fail-closed JWT check). Pushed by parallel session during their EOS commit window.
+- **`10c5157`** *(THIS session terminus push)* — `deploy_log + memory: forward-link to tastytrade rotation runbook (27dd0ef)` (one deploy_log entry with the greppable "PowerShell `--value` form removed — uncloseable plaintext window" exclusion recorded so a future session can't quietly re-add the convenience form).
+
+**What's running on prod (touched THIS session):** Nothing. Zero prod touch. Pure doc artifact + verification script + offline memory. Final prod PID unchanged: `1462117` from the 2026-05-26 03:30:19 UTC analyze-whale Phase A modules deploy.
+
+**Service restart history this session:** none.
+
+**Operational status on prod (Tuesday 23:58 UTC baseline — unchanged from parallel session's 23:30 UTC EOS):**
+
+- 8 webhook_rejected rows on prod; 5 still carry plaintext JSON-shaped secrets in `payload_json.raw_body_snippet` (C-7 backfill not run). Awaiting C-7 deploy session.
+- Analyze button live from 22:35 UTC parallel-session deploy.
+- `watch_only_whales` slot: 53 rows from 2026-05-26 00:44 UTC; promotion PAUSED.
+- Sunday 2026-05-31 ~13:00 UTC fire still the load-bearing next event for pm-watchlist.
+- Tasty Options Phase 1 paper clock still running.
+
+**Working tree at EOS:**
+
+- Clean of mine.
+- 1 untracked file NOT mine: `docs/Deployment notes.txt` (operator-owned, parallel session). DO NOT sweep.
+
+**Notable mid-session catches worth carrying forward:**
+
+- **"No documented leaky escape hatch" pattern extracted as discipline.** When a security-critical runbook's safe path is essentially always reachable, do NOT document a leaky fallback even as a "last resort" — a documented-but-leaky path becomes a loaded path a hurried operator can rationalize into using. Cut it; replace with a hard stop. Distinguishes from acceptable minimized-window patterns where the leak surface is genuinely unavoidable (e.g., Windows registry env-var writes). **Filed as feedback memory** `[[feedback-no-documented-leaky-escape-hatch]]`.
+- **"Verify the committed artifact matches the canonization claim BEFORE writing the memory pointer."** Operator's gate caught a delete that hadn't actually landed in the runbook (the "demoted to last resort" form was claimed cut but still present in an earlier draft). The git show `<commit>:<file>` verification step closed the gap before the memory pointer canonized the wrong version. Generalizes `[[feedback-session-committed-phantom-pointer]]` to downstream-artifact-creation timing.
+- **Parallel-session EOS observed my work as "untracked WIP not authored by me"** (their BACKLOG EOS line 46; their session-start prompt line 33). Their commit landed BEFORE my push of `27dd0ef`, so they captured a stale view. **Resolution mechanism:** the `[[feedback-tastytrade-rotation-runbook]]` memory pointer auto-loads on any TT-touching work and redirects the future reader to the canonical artifact, sidestepping the stale references in the parallel session's prompt + EOS without requiring edits to those files.
+
+**Items RETIRED this session:**
+
+- **Tastytrade rotation runbook (P1 HIGH)** — SHIPPED at `27dd0ef`. Forward-link at `10c5157`. Memory pointer at `[[feedback-tastytrade-rotation-runbook]]`. **Strike from all open-item lists going forward** — the parallel session's 23:30 UTC EOS still lists it (line 60), but that observation predates my push.
+- **IC grader runbook §6 amendment** — explicit won't-fix per operator decision; closure note at `planning/ic_grader_section6_closure_20260523.md` is the source of truth.
+
+**Highest-leverage open items remaining (handoff to next session):**
+
+1. **C-7 deploy session** (parallel-thread, not IC). Branch `c7-webhook-secret-scrub` local-only, 2 commits, never pushed. Sequence per parallel session's EOS: push → deploy → backfill (cleans 5 leaked rows) → C-1 secret rotation. **When C-1 reaches Tastytrade portion: use `runbooks/tastytrade_oauth_rotation.md` — don't improvise.**
+2. **Sun 2026-05-31 ~13:00 UTC pm-watchlist weekly seed fire** — first under clustering + PnL aggregation fixes. 6-criterion verification gate.
+3. **C-1 secret rotation** (P0, blocked on C-7). 13 rotations across 8+ providers. Tastytrade portion now has a canonical runbook.
+4. **Bug 4 (`tastytrade_provider.py` get_history dead branch)** (P2 MEDIUM, IC-adjacent). **Cross-surface: IC division + tasty_options Phase 1 paper, both consume `tastytrade_provider.py`.** Needs its own session with cross-surface framing up front (resolution (a) delete + document yfinance-by-design vs (b) wire real 12.4.1 historical-bars API). Pickup at `runbooks/session_start_2026_05_26_post_tastytrade_rotation_runbook.md`.
+5. **43 deferred package bumps** (P1).
+6. **`bitunix_atr_snapshot` observability audit kind** (P2 — silent-fallback class, same as Bug 4).
+7. **Architecture: trading-corp-web.service split** (P3, filed 2026-05-26 03:30 UTC).
+
+**Memory updates this session:**
+
+- **NEW `feedback_tastytrade_rotation_runbook.md`** — auto-loads on TT-rotation-adjacent strings; "Do NOT improvise; follow the canonical runbook."
+- **NEW `feedback_no_documented_leaky_escape_hatch.md`** — generalizable discipline: cut leaky escape hatches when the safe path is reachable; distinguishes from acceptable unavoidable-surface minimized-window patterns.
+- **MEMORY.md** — 2 new index lines.
+
+**Canonical pickup for next IC-thread session:** `runbooks/session_start_2026_05_26_post_tastytrade_rotation_runbook.md` (written this session) + this BACKLOG EOS + memory `[[feedback-tastytrade-rotation-runbook]]` + `[[feedback-no-documented-leaky-escape-hatch]]` (both auto-load).
+
+**Note on parallel session's 23:30 UTC EOS below:** that snapshot was written before my push of `27dd0ef`. Their open-item #4 ("Tastytrade rotation runbook (P1, untouched)") is **stale** as of `27dd0ef` landing. Their `runbooks/session_start_2026_05_26_post_c7_draft.md` line 33 carrying the same staleness is corrected by the memory pointer auto-load — not by editing that file.
+
+---
+
 ## EOS snapshot — 2026-05-26 ~23:30 UTC (Tuesday evening — C-7 webhook secret-scrub DRAFTED + verified end-to-end + BANKED on local branch; bitunix tripwire CHECKED + below threshold; NO prod touch; branch holds for its own deploy session)
 
 **Headline of THIS session-arc:** Picked up against the post-analyze-whale-deploy session-start prompt. Bitunix tripwire check first (~30s probe of BTC ATR(14, 3m) via public BitUnix kline endpoint): current $69.27, recent 4h window 2/10 samples above $90 (transient spike to $119 at ~17:48 UTC decayed by 20:00); BELOW $90-sustained threshold → no action per [[bitunix-paper-clock]] memo §10(a). Then C-7 — the rejected-webhook audit plaintext-leak fix that gates C-1 secret rotation: drafted scrub helper + backfill script, both delegated to Sonnet with tight specs, verified end-to-end against a real persisted SQLite row read via raw `sqlite3.connect()` (NOT through LoggerAgent), confirmed against prod via read-only `az vm run-command` dry-run (5 of 8 webhook_rejected rows would scrub). Banked as 2 commits on `c7-webhook-secret-scrub` (local-only, never pushed). BACKLOG.md updated with the C-7 draft state + deploy sequence + regex boundary + the P3 `test_webhooks_return_fast.py _Deps` gap; pushed as `3a5946f`.
