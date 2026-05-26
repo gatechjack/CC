@@ -8,6 +8,65 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## Architecture backlog — `trading-corp.service` single-process tax on UI deploys (filed 2026-05-26 03:30 UTC after analyze-whale Phase B deploy)
+
+**Priority:** P3 (architecture, not urgent — paper-only impact, doesn't gate any current strategy work). **Touches:** `infra/systemd/trading-corp.service`, `trading_corp/__main__.py`, possibly `infra/main.bicep`.
+
+**Finding (verified pre-Phase-B-restart):** `trading-corp.service` runs ONE Python process (`python -X utf8 -m trading_corp` under xvfb-run) that hosts ALL of these in the same address space:
+
+- The FastAPI/htmx web app (the dashboard at `https://trading.jacksumner.com`)
+- The TradingView webhook listeners (`/webhook/<source>/<strategy>` endpoints — Otter, Cypher, etc.)
+- ALL division strategies running in-process (verified via 60s audit_event sample 2026-05-26 02:49 UTC):
+  - `kalshi_crypto_arb` (2,556 evaluations + 1,949 skips/min)
+  - `kalshi_weather_arb` (736 evaluations + 398 + 198 skips/min)
+  - `kalshi_llm_arbitrage` (407 LLM probability calls + 113 scans/min)
+  - `polymarket_arbitrage` (263 scan_cycles/min — ~30s cadence)
+  - `kalshi_tail_price_arb` (130 evaluations/min)
+  - `kalshi_temporal_bucket_arb` (123 evaluations/min)
+  - `kalshi_sports_arb_observer` (68 observations/min)
+  - `bitunix_futures` (57 score_decided + 48 PA validations/min)
+  - `kalshi_sports_scout` (51 observations/min)
+  - `research_firm` (48 engagement starts/min)
+  - `data_exec` (48 broker_fallback_to_paper/min)
+- The Playwright Node.js driver subprocess (for whatever scraping path uses it)
+
+**The tax:** every dashboard / web / route / template change forces a full `systemctl restart trading-corp.service`. The restart:
+
+- Blips ALL strategies for ~5 minutes (broker fan-out + Azure KV secret warmup + LangChain client init). Measured today: 5min from `systemctl restart` to `healthz 200` in both Phase B restarts.
+- Drops TradingView webhooks during the window — they're listened on the same FastAPI port (no separate webhook listener service). External signals fired in the 5-min hole are LOST (TV doesn't retry per the webhook contract).
+- Today's Phase B deploy paid this tax TWICE (the import-graph-audit miss forced a re-restart) — 10 minutes of strategy pause across all divisions for a single dashboard tooling change.
+- All paper, so no real-money loss. Pure opportunity-miss in paper signal collection.
+
+**Proposed split:**
+
+`trading-corp-web.service` — a separate systemd unit running ONLY the FastAPI app + the route handlers + the webhook listener:
+- Same Python venv, same code repo, same `agent_state` DB (the source of truth for cross-process state).
+- The dashboard queries `agent_state` for its render data (already does); no in-memory state-sharing needed with strategies.
+- Webhook listener writes to `audit_event` and `agent_state` (already does); strategies poll those.
+- Restart of `trading-corp-web.service` would blip ONLY the dashboard + webhook endpoint for ~5min, NOT the 11+ strategy loops.
+
+`trading-corp.service` — keeps the strategy schedulers, division agents, the Playwright driver, and the research firm. Restarts for strategy-config or `agents/strategies/*.py` changes; not for dashboard tooling.
+
+**Out-of-scope work this would unlock:**
+
+- UI/dashboard development without a 5-min strategy pause per restart. Today's Analyze-Whale deploy would have been a 0-impact dashboard restart instead of a strategy-wide blip.
+- Webhook listener could survive a strategy restart (separation: webhook PERSISTS the incoming signal, strategies POLL — already the design).
+- Could move the Playwright driver to its own service too if it ever becomes restart-heavy.
+
+**Risk / cost of the split:**
+
+- Two services need to share env / secret setup. Doable — `EnvironmentFile` directives in both units pointing at the same `/etc/trading-corp.env` would work.
+- The 5-min web startup is dominated by LangChain + LangGraph + broker SDK init in the current monolith. Stripping strategies out should reduce startup-time for the web service (no LangChain warm-load) but increase startup-time for the strategy service (still cold-loading everything). Net: same total work, just decoupled timing-wise.
+- Existing systemd dependencies (`After=`, `Wants=`) need re-thinking. Strategies probably want `After=trading-corp-web.service` so the audit_event listener is up first; web can start before strategies are ready (it just won't see ticking audit rows for a few minutes).
+
+**NOT a fit for this work:** the polymarket_copy_trader copy-execution loop (it lives in the strategy process; touches broker via `data_exec`). That stays put.
+
+**Recurring-tax math:** today's session paid ~10min of strategy pause. The 2026-05-26 01:10 UTC kalshi_weather bias-offset deploy paid ~5min. The 2026-05-25 14:25 UTC pm-watchlist cadence change paid 0min (systemd unit edit only — no service restart). The 2026-05-25 22:20 UTC clustering fix paid 0min (seed-script-only deploy; strategy process unaffected because the seed runs as its own timer-triggered oneshot, not in-process). **Rough cadence on a UI-touch deploy: ~1-2× per week in the active phase, ~5min each, all paper.**
+
+Pull when: there's a 2-hour quiet window AND the next dashboard touch is queued AND no live-money flips are pending. Not before.
+
+---
+
 ## EOS snapshot — 2026-05-26 ~01:25 UTC (Monday/Tuesday rollover — kalshi_weather bias-offset v1 DEPLOYED to prod after 1 rollback; live-eval verified; 5 commits to main)
 
 **Headline of THIS session:** Built and deployed the kalshi_weather per-(station, season) bias-offset correction (Tier 1 follow-up to the 654K-row NBM-σ calibration measurement). Path: NBM-σ-substitution candidate REJECTED after apples-to-apples 3-way comparison showed raw NBM σ is WORSE than the heuristic at tail control (|z|≥3 = 12.66× vs 8.26×); residual-corrected NBM emerged as the new primary anomaly-#2 σ candidate. Bias-offset (the LOCATION fix, orthogonal to σ widening) split off and shipped as v1 — 22 cells filtered to |train_off| ≥ 1.0°F (9 spring `fully_validated` + 13 non-spring `nbm_only` watch-items). First deploy attempt crash-looped 17 min on `ModuleNotFoundError: residual_logic` (residual_logic.py was committed locally in C2 work but never pushed to prod; my new strategy file imported from it). Rolled back clean at 00:44 UTC. Fix (inlined `derive_season` byte-equivalent into `_weather_math`, locked in by `tests/test_derive_season_inlined_equiv.py`) re-deployed at 01:10:33 UTC; PID 1448692 stable past 4× 30s cycles, healthz green PAPER, live arithmetic verified on KAUS + KMSP first-cycle audit rows.

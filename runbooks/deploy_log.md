@@ -76,6 +76,99 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-26 03:30 UTC — pm-watchlist Analyze-Whale dashboard endpoint (Phase B, Board-approved)
+
+**Commits:** `78323c3` (dashboard endpoint + button + partial + tests on branch `analyze-whale-dashboard`). Phase A modules (`a1cbe18` + `b42a8a5` + earlier) also deployed in this window — they had been merged to main as the operator-local CLI work but were never on prod's disk. Deploy-import-graph oversight caught at the smoke step (see "Mid-deploy correction" below).
+**Triggered by:** Board ratification of the Phase B plan after Phase A CLI verified Magamyman gate locally. Predecessor: the analyze-whale-cli planning + CLI build earlier today.
+**Backup tags:**
+- `.pre-analyze-dashboard-20260526` on `routes.py` (md5 `45881c9572b02ea3e6618087f64be0f6`) and `pm_dashboard_body.html` (md5 `7d857f9a5243750608185bde82ae4f79`) — both pre-Phase-B baseline.
+- `.pre-phaseA-modules-20260526` on `config/agents.yaml` (md5 `70697b07f4c0a9a1cd35cb926b55f8c6`) and `trading_corp/agents/research/cost.py` (md5 `2cb93de2e1deac8b203c373eeb8bf292`) — pre-Phase-A-modules baseline. The 3 new module files have no backup (didn't exist before).
+- `analyze_whale_result.html` has no backup (new file).
+
+**Files deployed (3 NEW + 4 modified across two staging passes):**
+
+Phase B pass (03:14 UTC):
+- `trading_corp/web/routes.py` — adds `POST /api/polymarket/watchlist/analyze/{proxy_wallet}` (~190 LOC including handler + imports + telemetry). Mirrors `iron_condor_grade` (:1700) shape. Owner: azureuser:azureuser. LF md5 post-deploy: `936c7f4e476f783916f8869aa714d15a`; 191660 bytes.
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — adds Analyze button + sibling `<tr id="whale-audit-{wallet[:10]}">` swap target row + htmx-indicator spinner alongside the existing View / Promote buttons (line ~913). Owner: root:root. LF md5: `2904256301ff26211b09cd79436f38fe`; 51719 bytes.
+- `trading_corp/web/templates/partials/analyze_whale_result.html` — NEW 6-section partial (Clustering / Sell footprint / Edge profile / Category concentration / Realized PnL / Verdict). Owner: root:root. LF md5: `e24da5a65c403c792d2073470a438999`; 12250 bytes.
+
+Phase A modules pass (03:30 UTC — see "Mid-deploy correction"):
+- `trading_corp/data/polymarket_whale_audit.py` — NEW compute core. Owner: root:root. LF md5: `67f3371fb97b0e41c7eb131127aa5902`; 30187 bytes.
+- `trading_corp/agents/polymarket_whale_analyst.py` — NEW Haiku narrator. Owner: root:root. LF md5: `bdacfa23368f817762d7af10faf12a67`; 15183 bytes.
+- `trading_corp/agents/research/polymarket_whale_audit_cache.py` — NEW namespace-isolated cache. Owner: root:root. LF md5: `febdb30b14ca029dae671826ba93ff94`; 7786 bytes.
+- `config/agents.yaml` — appended `polymarket_whale_analyst: { model: claude-haiku-4-5-20251001, temperature: 0.1 }`. Owner: root:root. LF md5: `5b22b4c9ec9bac5edad47b308599b063`.
+- `trading_corp/agents/research/cost.py` — added Haiku pricing to `_PRICING` table. Owner: root:root. LF md5: `5cbae222472e4fe6f188a32c57a5fb73`.
+
+**Features shipped:**
+
+- **On-demand whale audit on the dashboard.** Operator clicks "Analyze" on a watchlist row → ~5-25s LLM-narrated audit renders inline below the row. Six sections match the CLI output. Verdict line cites verbatim report numbers (LLM does no arithmetic); null-verdict cases (no_llm / cap_hit / unavailable / error) render operator-readable reasons.
+- **Cache shared between CLI and dashboard.** Same `polymarket_whale_analyst` namespace, same key format. Re-analyzing the same whale (with no new activity) is free; `?force=1` evicts.
+- **Per-call telemetry.** Each dashboard analyze fires one `polymarket_whale_analyzed` audit_event with `source="dashboard"`, token/cost/cache_hit/duration fields. Same audit kind as the CLI; differentiated by `source` field.
+
+**Notable code changes (callouts for future me):**
+
+- **Mid-deploy correction (load-bearing for future deploys):** The Phase B pass alone (03:14 UTC) shipped routes.py + 2 templates and restarted the service cleanly (healthz 200 in ~5min). BUT the route's `from trading_corp.agents.polymarket_whale_analyst import WhaleAnalyst` etc. references Phase A modules that the CLI build had committed locally but never deployed to prod. First smoke-curl returned `500 Internal Server Error` in 4ms; journal trace: `ModuleNotFoundError: No module named 'trading_corp.agents.polymarket_whale_analyst'`. This is exactly the failure mode that the `[[deploy-import-graph-audit]]` memory entry (filed earlier today) warns about — hash-comparing only files in the diff misses NEW imports referring to modules absent on prod. The Phase A modules pass (03:30 UTC) fixed this; second restart + smoke-curl returned 200 in 4.3s with the expected verdict. **Future me: when deploying a dashboard surface that imports from any module not on prod, ls-check each imported path on prod before the restart, not after.**
+- **Single-process architecture tax (filed to BACKLOG):** `trading-corp.service` runs the web app + ALL strategies (polymarket_arbitrage, kalshi_*_arb, bitunix_futures, kalshi_sports_*, etc.) + Playwright driver in ONE Python process. Restart blips ALL strategies + TradingView webhooks for ~5 min. This deploy paid that tax twice (once per restart, 10min total strategy pause). All paper — no real-money impact — but the architecture means every UI deploy forces a full strategy bounce. A `trading-corp-web.service` split would decouple this. See BACKLOG entry.
+- **Read-only invariant preserved on prod.** Verified post-deploy via direct DB query: all four promotion-relevant slots (`watch_only_whales`, `selected_whales`, `pinned_whales`, `metrics_epoch`) carry their pre-deploy `updated_ts`. The endpoint's only writes are (a) the audit cache under isolated `polymarket_whale_analyst` namespace and (b) the audit_event row. Confirmed via SQL.
+- **Cost on prod matches budget.** First Magamyman analyze: $0.0015 (Haiku 4.5). Within the planned ~$0.0013-0.0015 per-whale budget.
+
+**Verification — pre-deploy:**
+
+- 111 tests passing locally (10 new endpoint + 35 Phase A unit + 66 regression in polymarket suite). 10 endpoint tests parametrize null-reason taxonomy + assert NO promotion slot is written (direct load_agent_state pre/post compare).
+
+**Verification — on prod (post-final-restart 03:30:19 UTC):**
+
+- PID rotated 1448692 → 1458904 (Phase B restart 03:15:30) → 1462117 (Phase A modules restart 03:30:19).
+- healthz returns 200 `{"status":"ok","mode":"PAPER"}` at ~5min post-each-restart.
+- Strategies resumed: 9,648 audit_event rows in the last 60s post-restart (matches pre-deploy ~7k baseline).
+- Import smoke via prod venv: `from trading_corp.agents.polymarket_whale_analyst import WhaleAnalyst` etc. — all 3 module imports succeed; `AGENT_NAMESPACE == 'polymarket_whale_analyst'`.
+- Endpoint smoke (POST `/api/polymarket/watchlist/analyze/0x4dfd481c16d9995b809780fd8a9808e8689f6e4a` = Magamyman):
+  - HTTP 200, 4.3s, body 7763 bytes
+  - All 6 sections render; Magamyman name + Iran cluster + `$1,005,202` held-to-res + `$787k` realized + partial/round-trip flags all present
+  - Verdict line (Haiku-generated): cites verbatim report numbers, no arithmetic
+  - `audit_event` row landed: actor=polymarket_copy_trader, kind=polymarket_whale_analyzed, source=dashboard, cache_hit=0, verdict_emitted=1, cost=$0.0015, duration=4191ms, n_resolved_decisions=98
+  - Audit cache entry under `polymarket_whale_analyst:polymarket_whale_audit:0x4dfd481c16...:1777744382` (isolated namespace confirmed via SQL)
+  - All 4 protected slots' `updated_ts` UNCHANGED across deploy + smoke window
+
+**Inert / dormant — nothing.** Endpoint is live. Operators can click Analyze on any watchlist row immediately.
+
+**Promotion-pause status unaffected.** This is review tooling; copy execution / watchlist seed / promotion state all untouched.
+
+**Rollback recipe:**
+
+```bash
+# Step 1: revert routes.py + pm_dashboard_body.html to pre-Phase-B baseline
+# (removes the Analyze button + endpoint; analyze_whale_result.html stays
+# on disk but unreferenced, harmless)
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+  --command-id RunShellScript --scripts "
+TAG=pre-analyze-dashboard-20260526
+BASE=/home/azureuser/trading_corp
+mv \$BASE/trading_corp/web/routes.py.\$TAG \$BASE/trading_corp/web/routes.py
+mv \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html.\$TAG \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html
+rm -f \$BASE/trading_corp/web/templates/partials/analyze_whale_result.html
+chown azureuser:azureuser \$BASE/trading_corp/web/routes.py
+chown root:root \$BASE/trading_corp/web/templates/partials/pm_dashboard_body.html
+systemctl restart trading-corp.service
+"
+# Step 2 (optional): also revert Phase A modules (yaml + cost.py back to baseline,
+# remove the 3 NEW module files). Skip unless the Phase A modules are themselves
+# at issue — they only execute when the analyze endpoint or CLI is called.
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+  --command-id RunShellScript --scripts "
+TAG=pre-phaseA-modules-20260526
+BASE=/home/azureuser/trading_corp
+mv \$BASE/config/agents.yaml.\$TAG \$BASE/config/agents.yaml
+mv \$BASE/trading_corp/agents/research/cost.py.\$TAG \$BASE/trading_corp/agents/research/cost.py
+rm -f \$BASE/trading_corp/data/polymarket_whale_audit.py
+rm -f \$BASE/trading_corp/agents/polymarket_whale_analyst.py
+rm -f \$BASE/trading_corp/agents/research/polymarket_whale_audit_cache.py
+systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-26 01:42 UTC — pm-watchlist PnL-aggregation fix on top of clustering fix (Board-approved)
 
 **Commits:** `a1cbe18` (code+tests), `b42a8a5` (plan + corrected-PnL replay). On branch `pm-watchlist-pnl-aggregation-fix` on `origin`. Main NOT advanced this deploy (ff-merge to main is a separate user-driven step). Parallel-session kalshi_weather commits (`c26882f` → `321d426`) landed on `main` between this deploy's planning and execution; not bundled with this work.
