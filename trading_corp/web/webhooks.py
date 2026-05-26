@@ -27,6 +27,7 @@ import hmac
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -71,6 +72,21 @@ _MAX_BODY_BYTES = 4 * 1024
 # captured a valid signed body. At this scope, 20-min replay tolerance
 # is fine.
 _REPLAY_WINDOW_SEC = 1200
+
+# Secret-bearing field names to scrub from raw webhook bodies before audit.
+_SECRET_FIELDS = ("secret", "webhook_secret", "token")
+
+
+def _scrub_secrets_from_body(raw: bytes) -> str:
+    """Decode first 500 bytes and redact secret-bearing JSON fields. Best-effort."""
+    text = raw[:500].decode("utf-8", errors="replace")
+    text = re.sub(
+        r'"(' + "|".join(_SECRET_FIELDS) + r')"\s*:\s*"[^"]*"',
+        r'"\1": "***REDACTED***"',
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
 
 
 def register(app: FastAPI) -> None:
@@ -160,7 +176,7 @@ def register(app: FastAPI) -> None:
 
         payload, parse_warning = _lenient_json_parse(raw)
         if payload is None:
-            log.warning("lord-otter webhook rejected: bad JSON (raw=%r)", raw[:200])
+            log.warning("lord-otter webhook rejected: bad JSON (len=%d)", len(raw))
             _audit_rejected(deps, "malformed_json", client_ip, raw)
             return JSONResponse(
                 {"status": "rejected", "reason": "malformed JSON"},
@@ -346,7 +362,7 @@ def register(app: FastAPI) -> None:
 
         payload, parse_warning = _lenient_json_parse(raw)
         if payload is None:
-            log.warning("market-cypher webhook rejected: bad JSON (raw=%r)", raw[:200])
+            log.warning("market-cypher webhook rejected: bad JSON (len=%d)", len(raw))
             _audit_rejected(
                 deps, "malformed_json", client_ip, raw,
                 actor="market_cypher", strategy_name="market_cypher",
@@ -1301,7 +1317,7 @@ def _audit_rejected(
     try:
         if not deps or not getattr(deps, "logger_agent", None):
             return
-        snippet = raw[:500].decode("utf-8", errors="replace") if raw else ""
+        snippet = _scrub_secrets_from_body(raw) if raw else ""
         deps.logger_agent.log_event(
             actor=actor, kind="webhook_rejected",
             payload={
