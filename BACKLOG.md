@@ -8,6 +8,48 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-26 ~22:35 UTC (Tuesday evening — analyze-whale UI click-path defect FIXED + DEPLOYED + PUSHED in one short session; first browser exercise of the analyze surface; P3 toggle-collapse filed)
+
+**Headline of THIS session-arc:** Operator-reported defect — the Analyze button "returns nothing." Root cause was a one-character CSS-selector bug in the Phase B template (`>` direct-child combinator on an `hx-target` whose target was actually a grand-child through `<td colspan=13>`). `document.querySelector` returned null, htmx silently no-op'd, browser saw nothing. The 03:30 UTC endpoint-smoke (direct HTTP POST) couldn't have caught it — the bug was downstream of the route, in the browser's selector resolution. Fix shipped via sed-in-place over the existing LF prod file at 22:28 UTC, no service restart (template change). md5 transition verified end-to-end: `2904256301ff…` (Phase-B baseline) → `490d0021257cd…` (matches local LF md5). One follow-up P3 filed: the panel has no collapse path — clicking Analyze again should toggle, not re-render.
+
+**`origin/main` head after this session:** `527fbe2`. Commits this session (3, all on `main`):
+
+- **`802f739`** — `analyze_whale: fix Analyze button hx-target — descendant, not direct child` (the 1-char template fix)
+- **`f13fb05`** — `deploy_log: Analyze-button hx-target fix shipped 2026-05-26 22:28 UTC`
+- **`527fbe2`** — `backlog: P3 — Analyze button has no collapse, want toggle behavior`
+
+**What's running on prod (touched THIS session):**
+
+- **`trading_corp/web/templates/partials/pm_dashboard_body.html`** — LF md5 `490d0021257cd0fc7fc9dbbb4d582593` (51717 bytes; size shrunk by 2 vs Phase-B baseline 51719). Backup at `.pre-hxtarget-fix-20260526` (md5 `2904256301ff26211b09cd79436f38fe`).
+
+**Service restart history this session:** none. Template-only change; trading-corp.service was NOT restarted, no all-strategy pause incurred. PID unchanged from prior session's terminus (1462117).
+
+**Operational status on prod (Tuesday 22:35 UTC baseline):**
+
+- **Analyze button:** LIVE and click-tested via instruction handed to operator (hard-refresh + click) — no in-session browser smoke from my side, only md5/grep/wc verification of the on-disk state. **First-real-browser-exercise verification falls to operator.**
+- **`watch_only_whales` slot:** still the 53-row slot from 2026-05-26 00:44 UTC manual fire (clustering-fix-only code, PRE-PnL-aggregation). Unchanged this session.
+- **Sunday 2026-05-31 ~13:00 UTC fire** — unchanged; all six verification-gate criteria from the prior EOS snapshot still apply.
+- **C-7 work-in-progress** — local working tree has uncommitted changes to `webhooks.py` + `test_webhook_audit_trail.py` plus untracked `scripts/scrub_webhook_rejected_secrets.py`, `tests/test_scrub_webhook_rejected_backfill.py`, `runbooks/tastytrade_oauth_rotation.md`. Source unclear (prior session? sub-agent?); a future session should diff before deciding to finish or scrap.
+
+**Class-of-bug lesson (load-bearing for future htmx/dashboard deploys):**
+
+- **Endpoint-smoke ≠ click-path-smoke.** The 03:30 UTC verification ran `curl -X POST` against the route and got 200 + correct body — the browser-side selector resolution was downstream of all of that. Future htmx-swap deploys should include either (a) a real browser click in the verification, or (b) a static assertion that the rendered DOM selector resolves (e.g. parse the partial in a test and check `document.querySelector(...)` would match). Filed as a class generalisation in `deploy_log.md`'s 22:28 UTC entry, not a new code gate.
+
+**Highest-leverage open items (handoff to next session):**
+
+1. **Sun 2026-05-31 ~13:00 UTC weekly seed fire** — first fire under BOTH clustering + PnL aggregation fixes. Six-criterion verification gate from prior snapshot still applies (roster 97-172, no 100% WR, `n` reflects distinct decisions, provisional<50, clean exit 20-35min, sub-1% drop_reasons noise). All pass → promotion unpauses NORMALLY.
+2. **C-7 rejected-webhook audit plaintext leak (P0 CRITICAL)** — partial WIP exists locally (see above). Standalone-doable this session-class; prerequisite for C-1.
+3. **C-1 secret rotation** (P0, 13 rotations across 8+ providers) — needs trading-pause window + C-7 must land first.
+4. **Tastytrade rotation runbook** (P1) — partial WIP in untracked file `runbooks/tastytrade_oauth_rotation.md`.
+5. **Tasty Options division deploy** (7 commits queued from 2026-05-24) — pre-market Monday window.
+6. **43 deferred package bumps** (P1).
+7. **Analyze button collapse toggle** (P3, filed this session).
+8. **trading-corp.service single-process tax** (P3, filed 2026-05-26 03:30 UTC).
+9. **Cloud-init re-image durability for sudo narrow** (P2).
+10. **Jinja `window_days_span` cosmetic** (P3, can ride next deploy).
+
+---
+
 ## EOS snapshot — 2026-05-26 ~03:45 UTC (Tuesday early morning — pm-watchlist clustering+PnL fixes SHIPPED LATENT + analyze-whale CLI+dashboard SHIPPED LIVE; 4 prod restarts; import-graph-audit gate strengthened from awareness → checklist)
 
 **Headline of THIS session-arc:** Closed out the polymarket watchlist clustering bug with a two-phase fix (clustering 2026-05-25 22:20 UTC + PnL aggregation 2026-05-26 01:42 UTC, both LATENT until Sun 2026-05-31 ~13:00 UTC weekly fire), then built the analyze-whale review tooling on top of it (CLI shipped to repo + dashboard endpoint LIVE on prod 2026-05-26 03:30 UTC). Both phases of the watchlist fix verified against the same cached 329-wallet corpus via the empirical replay pattern. Magamyman is the canonical case: cluster-counted 100% WR (broken) → decision-counted 60% WR (clustering fix) → REDEEM-grounded realized $787k vs held-to-res $1,005k (PnL aggregation fix + analyze-whale audit surfaces the $218k inflation gap). Dashboard endpoint smoke verified live: HTTP 200 in 4.3s with Haiku verdict at $0.0015.
