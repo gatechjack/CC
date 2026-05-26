@@ -922,7 +922,7 @@
                  lets the partial's "Re-analyze" link self-replace via
                  `hx-target="closest .whale-audit-container"`. #}
               <button hx-post="/api/polymarket/watchlist/analyze/{{ w.proxy_wallet }}"
-                      hx-target="#whale-audit-{{ w.proxy_wallet[:10] }} > .whale-audit-container"
+                      hx-target="#whale-audit-{{ w.proxy_wallet[:10] }} .whale-audit-container"
                       hx-swap="outerHTML"
                       hx-indicator="#whale-audit-spinner-{{ w.proxy_wallet[:10] }}"
                       class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-warn/60 text-warn/80 hover:bg-warn/10 hover:text-warn mr-1">
