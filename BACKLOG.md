@@ -8,6 +8,102 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-26 ~03:45 UTC (Tuesday early morning — pm-watchlist clustering+PnL fixes SHIPPED LATENT + analyze-whale CLI+dashboard SHIPPED LIVE; 4 prod restarts; import-graph-audit gate strengthened from awareness → checklist)
+
+**Headline of THIS session-arc:** Closed out the polymarket watchlist clustering bug with a two-phase fix (clustering 2026-05-25 22:20 UTC + PnL aggregation 2026-05-26 01:42 UTC, both LATENT until Sun 2026-05-31 ~13:00 UTC weekly fire), then built the analyze-whale review tooling on top of it (CLI shipped to repo + dashboard endpoint LIVE on prod 2026-05-26 03:30 UTC). Both phases of the watchlist fix verified against the same cached 329-wallet corpus via the empirical replay pattern. Magamyman is the canonical case: cluster-counted 100% WR (broken) → decision-counted 60% WR (clustering fix) → REDEEM-grounded realized $787k vs held-to-res $1,005k (PnL aggregation fix + analyze-whale audit surfaces the $218k inflation gap). Dashboard endpoint smoke verified live: HTTP 200 in 4.3s with Haiku verdict at $0.0015.
+
+**`origin/main` head after this session:** `59ce0d7`. Commits this session (chronological, in order):
+
+- **`a4558fc`** — `pm-watchlist: dedupe by (condition_id, outcome_index) before windowing` (clustering fix code + 25 tests)
+- **`4d56cdf`** — `reports+scripts: clustering fix plan + empirics + prod-code replay` (planning doc + replay scripts)
+- **`e6d5ef1`** — `deploy_log: pm-watchlist clustering fix shipped 2026-05-26 22:20 UTC` (entry recording (cid, oi) granularity vs cid-only plan surrogate)
+- **`a1cbe18`** — `pm-watchlist: aggregate fills per (cid, outcome_index) decision for PnL math` (PnL aggregation fix + 9 new tests, 34 total)
+- **`b42a8a5`** — `reports+scripts: PnL-aggregation fix plan + corrected-PnL replay` (plan + replay confirming cohort 136 in band)
+- **`63865e9`** — `deploy_log: pm-watchlist PnL-aggregation fix shipped 2026-05-26 01:42 UTC`
+- **`a4558fc → b22a2e5 → ...`** — kalshi_weather parallel session work landed on main between deploys; not bundled here
+- **`df3e48b`** — `analyze_whale: REDEEM-grounded per-decision audit compute core` (+ 17 unit tests including the 95%-sold-5%-held composition gap case)
+- **`31a0ebc`** — `analyze_whale: Haiku narrator with reason'd-null taxonomy` (+ 8 tests; agents.yaml + cost.py Haiku entries)
+- **`15dae3b`** — `analyze_whale: namespace-isolated audit cache + serialization round-trip` (+ 10 tests)
+- **`797fca5`** — `analyze_whale: CLI entry — argparse + human/JSON output + cache wiring`
+- **`78323c3`** — `analyze_whale: Phase B dashboard endpoint + button + partial template` (+ 10 endpoint tests parametrizing null-reason taxonomy + asserting NO promotion slot writes)
+- **`59ce0d7`** *(THIS session terminus)* — `deploy_log + BACKLOG: analyze-whale dashboard endpoint shipped + single-process tax filed`
+
+**What's running on prod (touched THIS session):**
+
+- **`trading_corp/scripts/seed_polymarket_watchlist_deep.py`** — md5 `906435c92c498f4bc54d4c9b88d74aa9` (clustering + PnL aggregation fix). Latent until Sun 2026-05-31 ~13:00 UTC weekly fire. Backups: `.pre-clustering-fix-20260526` (md5 `0f38a83e…`) + `.pre-pnl-fix-20260526` (md5 `6b4372b7…`).
+- **`trading_corp/web/routes.py`** — md5 `936c7f4e476f783916f8869aa714d15a` (adds `POST /api/polymarket/watchlist/analyze/{wallet}`). Backup: `.pre-analyze-dashboard-20260526` (md5 `45881c95…`).
+- **`trading_corp/web/templates/partials/pm_dashboard_body.html`** — md5 `2904256301ff26211b09cd79436f38fe` (adds Analyze button + sibling-row swap target). Backup: `.pre-analyze-dashboard-20260526` (md5 `7d857f9a…`).
+- **`trading_corp/web/templates/partials/analyze_whale_result.html`** — md5 `e24da5a65c403c792d2073470a438999` (NEW file, no backup).
+- **`trading_corp/data/polymarket_whale_audit.py`** — md5 `67f3371fb97b0e41c7eb131127aa5902` (NEW).
+- **`trading_corp/agents/polymarket_whale_analyst.py`** — md5 `bdacfa23368f817762d7af10faf12a67` (NEW).
+- **`trading_corp/agents/research/polymarket_whale_audit_cache.py`** — md5 `febdb30b14ca029dae671826ba93ff94` (NEW).
+- **`config/agents.yaml`** — md5 `5b22b4c9ec9bac5edad47b308599b063` (Haiku entry appended). Backup `.pre-phaseA-modules-20260526` (md5 `70697b07…`).
+- **`trading_corp/agents/research/cost.py`** — md5 `5cbae222472e4fe6f188a32c57a5fb73` (Haiku pricing entry added). Backup `.pre-phaseA-modules-20260526` (md5 `2cb93de2…`).
+
+**Service restart history this session:**
+- 22:20 UTC clustering-fix deploy: NO restart (seed runs as systemd timer's oneshot, not in the web process)
+- 01:42 UTC PnL aggregation deploy: NO restart (same reason)
+- 00:44 UTC manual `systemctl start trading-corp-pm-watchlist-deep.service`: 16m44s wall-clock fire; produced the 53-row roster that surfaced the PnL aggregation gap (NOT a service restart of `trading-corp.service`)
+- 03:15 UTC analyze-whale Phase B deploy: `trading-corp.service` restart, healthz green ~5min, **but Phase B import smoke failed with ModuleNotFoundError on Phase A modules** that were on origin/main but never on prod's disk
+- 03:30 UTC Phase A modules deploy: `trading-corp.service` restart, healthz green ~5min, all imports verified, endpoint smoke green
+- Final prod PID: **1462117**, ActiveEnter 2026-05-26 03:30:19 UTC
+
+**The import-graph-audit failure mode is the most load-bearing lesson of this session.** The `[[deploy-import-graph-audit]]` memory entry already existed (filed earlier today after the kalshi_weather residual_logic crash-loop). It did NOT prevent the analyze-whale Phase B failure. The entry has been **strengthened from "be aware" to a mechanical checklist gate** — pre-deploy MUST resolve the transitive import closure of every changed file, diff against prod's filesystem, treat any missing module as a must-include in the transfer set. Specific trap called out: operator-local CLI modules are committed to main but NOT on prod's disk; any prod surface importing them must deploy them too.
+
+**Operational status on prod (Tuesday 03:30 UTC baseline):**
+
+- **`watch_only_whales` slot:** 53 rows from the 2026-05-26 00:44 UTC manual fire (under clustering-fix-only code, PRE-PnL-aggregation). Still serves the dashboard. **Don't read this slot as "what the corrected fix produces"** — that's Sunday.
+- **`selected_whales` slot:** untouched from prior; `updated_ts` 2026-05-26 02:01:29.
+- **`pinned_whales` slot:** untouched from prior; `updated_ts` 2026-05-26 02:01:29.
+- **`metrics_epoch` slot:** still set to 2026-05-23T15:30:15 (the windowing-deploy epoch); unchanged.
+- **`polymarket_whale_analyst:cost_today:2026-05-26`:** $0.0015 spent (the Magamyman live smoke).
+- **`polymarket_whale_analyst:polymarket_whale_audit:0x4dfd481c…:1777744382`:** Magamyman's audit cached (will hit until he has new activity).
+
+**Highest-leverage open items (handoff to next session):**
+
+1. **Sun 2026-05-31 ~13:00 UTC weekly seed fire** — first fire under BOTH clustering + PnL aggregation fixes. Verification gate (per the predecessor plans + deploy_log):
+   - Roster size in 97-172 band (expected ~136 per replay)
+   - No 100% WR rows
+   - `window_size_n` column reflects distinct decisions, not fill counts
+   - Provisional flag fires on n<50 rows
+   - Clean exit + 20-35 min wall-clock band
+   - Sub-1% drop_reasons noise
+   - **If all pass: promotion unpauses NORMALLY** (no SELL-footprint forensics gate)
+   - **If outside band: STOP — don't promote, investigate**
+2. **Analyze-Whale dashboard now available for review-phase use.** Operator clicks Analyze on a row → 6-section audit + Haiku verdict. Read-only against promotion state; held-vs-realized PnL caveat is a per-whale review note, NOT a hard pre-promote check.
+3. **C-1 secret rotation** (P0 CRITICAL, still pending). 13 distinct credential rotations across 8+ providers. Blocker: C-7 (rejected-webhook audit plaintext leak) must be fixed first.
+4. **C-7 — rejected-webhook audit plaintext leak** (P0 CRITICAL prerequisite).
+5. **Tastytrade rotation runbook** (P1, untouched from prior sessions).
+6. **43 deferred package bumps** from C-6 lockfile drift (P1).
+7. **Bug 4 (get_history dead branch)** — P2, deferred from data-provider deploy.
+8. **`bitunix_atr_snapshot` audit kind** — P2 observability gap.
+9. **kalshi_weather forecast quality follow-ups** (parallel-session work; not touched here).
+
+**Architecture follow-up (NEW this session, P3, filed above):** `trading-corp.service` single-process tax. Today's UI deploy paid 10 minutes of strategy pause across 2 restarts. Pre-conditions for a `trading-corp-web.service` split documented above; pull-when-quiet.
+
+**Memory updates this session:**
+- **STRENGTHENED `[[deploy-import-graph-audit]]`** — from "be aware" to mechanical checklist gate. Runnable Python AST helper for transitive closure. Specific trap (operator-local CLI modules NOT on prod's disk) called out.
+- **UPDATED `[[pm-watchlist-windowed-live]]`** — Phase B dashboard endpoint added to summary; cross-link to `[[analyze-whale-shipped]]`.
+- **NEW `[[analyze-whale-shipped]]`** — project state: modules, surfaces, costs, REDEEM-grounded math, read-only invariant, telemetry, known limitation.
+- **UPDATED `MEMORY.md`** — 3 lines refreshed; one new line for analyze-whale-shipped.
+
+**Notable mid-session catches (worth carrying forward):**
+
+- **Operator-local CLI modules sit on main but NOT on prod's disk.** This is the trap that bit the analyze-whale Phase B deploy. Future deploys to a dashboard surface that imports from any module not previously deployed: the gate from `[[deploy-import-graph-audit]]` MUST run.
+- **Operator-rejected pre-flip of WR floor.** The 53-row PnL deflation incident: my initial "lower the $5k floor to compensate" path was correctly rejected — the floor was working as designed against broken PnL; the right answer was fixing the PnL math, not the floor. Pattern: when a floor-of-correctness column looks wrong, fix the column before tuning the floor.
+- **Mid-deploy correction protocol works.** Phase B 500 → recovery + re-deploy + re-restart + re-smoke landed cleanly in ~30 minutes; no rollback needed because the 500-render path returns a render-able error fragment (not a 500-page). Future me: build endpoints that fail visibly into the htmx swap target, not into the browser's network tab.
+
+**Environments in sync at EOS:**
+- Working tree: clean modulo `docs/Deployment notes.txt` (pre-existing operator-owned untracked file, parallel-session).
+- Local `main` head: `59ce0d7` (verified via `git rev-parse HEAD`).
+- `origin/main` head: `59ce0d7` (verified via `git push origin main`).
+- Prod VM: 9 files deployed across two staging passes; all post-deploy md5s match local LF blobs; backups in place for all 6 modified files; 3 new files have no backup (correct — didn't exist before).
+- Memory directory: 3 files updated/added; `MEMORY.md` index in sync.
+
+**Canonical pickup for next session:** this EOS + `runbooks/deploy_log.md` 2026-05-26 entries (22:20 + 01:42 + 03:30 UTC) + `[[pm-watchlist-windowed-live]]` + `[[analyze-whale-shipped]]` + `[[deploy-import-graph-audit]]` (now mechanical gate).
+
+---
+
 ## Architecture backlog — `trading-corp.service` single-process tax on UI deploys (filed 2026-05-26 03:30 UTC after analyze-whale Phase B deploy)
 
 **Priority:** P3 (architecture, not urgent — paper-only impact, doesn't gate any current strategy work). **Touches:** `infra/systemd/trading-corp.service`, `trading_corp/__main__.py`, possibly `infra/main.bicep`.
