@@ -34,6 +34,7 @@ import yaml  # type: ignore[import-untyped]
 
 from trading_corp.agents.strategies._weather_math import (
     BucketGuardResult,
+    BIAS_OFFSET_SOURCE_TAG,
     ForecastPoint,
     WeatherVerdict,
     apply_bucket_guard,
@@ -41,9 +42,11 @@ from trading_corp.agents.strategies._weather_math import (
     evaluate_weather_market,
     kalshi_quote_dollars,
     kelly_fraction,
+    lookup_bias_offset,
     sigma_for_horizon,
 )
 from trading_corp.data.metar_client import MetarClient, MetarNowcast
+from trading_corp.data.residual_logic import derive_season
 from trading_corp.data.open_meteo_client import (
     EnsembleObservation,
     OpenMeteoClient,
@@ -260,6 +263,7 @@ class KalshiWeatherArbAgent:
                 "coord_source": "disabled_skip",
                 "yaml_coords": None,
                 "legacy_coords": None,
+                "station_id": None,
             }
 
         # YAML coords — only if verified=True and settles_at resolves.
@@ -294,12 +298,27 @@ class KalshiWeatherArbAgent:
             chosen = None
             coord_source = "none"
 
+        # station_id is the verified-ICAO key the YAML xref resolved to.
+        # Set only when YAML wins (yaml_coords is not None). NULL on
+        # legacy_fallback / none. Consumers needing registry-direct
+        # station identity (e.g., bias-offset lookup) MUST check that
+        # coord_source=='yaml_verified' before trusting this.
+        station_id = (
+            yaml_entry.settles_at if (
+                yaml_entry is not None
+                and yaml_entry.verified
+                and not yaml_entry.disabled
+                and yaml_coords is not None
+            ) else None
+        )
+
         return {
             "lat": chosen[0] if chosen else None,
             "lon": chosen[1] if chosen else None,
             "coord_source": coord_source,
             "yaml_coords": list(yaml_coords) if yaml_coords else None,
             "legacy_coords": list(legacy_coords) if legacy_coords else None,
+            "station_id": station_id,
         }
 
     # ── public scan entry ────────────────────────────────────────────────
@@ -698,6 +717,37 @@ class KalshiWeatherArbAgent:
             fetched_at=nws_fetched_at,
         )
 
+        # Per-(station, season) bias-offset correction (Board direction
+        # 2026-05-25, Reading C). Lookup is registry-direct (station_id
+        # from coord_info["station_id"], populated only when YAML xref
+        # resolved). Cells with |offset|<1.0°F are absent from the table
+        # → offset_f == 0.0, no change to forecast. Season derived from
+        # target_iso via the meteorological 4-bucket convention shared
+        # with residual_logic.derive_season.
+        # Audit captures pre-offset forecast for visibility; the offset
+        # math is fully additive so downstream sigma + decision logic
+        # see the corrected ForecastPoint as if it were the original.
+        forecast_temp_f_pre_offset = forecast.temp_f
+        try:
+            _target_date = datetime.fromisoformat(
+                target_iso.replace("Z", "+00:00")
+            ).date()
+            _season = derive_season(_target_date)
+        except (TypeError, ValueError):
+            _season = "_unparseable"  # sentinel; never matches BIAS_OFFSETS_V1 → (0.0, 'none')
+        bias_offset_f, bias_offset_validation = lookup_bias_offset(
+            coord_info.get("station_id"), _season,
+        )
+        if bias_offset_f != 0.0:
+            forecast = ForecastPoint(
+                temp_f=forecast.temp_f + bias_offset_f,
+                sigma_f=forecast.sigma_f,
+                valid_iso=forecast.valid_iso,
+                source=f"{forecast.source}+bias_offset",
+                issued_at=forecast.issued_at,
+                fetched_at=forecast.fetched_at,
+            )
+
         # Implied: YES probability from yes_ask (cheaper side trades first).
         # Use yes_ask as "buy YES cost" → implied_yes ≈ yes_ask_dollars.
         implied_yes = yes_ask if 0 < yes_ask < 1 else (1.0 - no_ask if 0 < no_ask < 1 else None)
@@ -732,6 +782,20 @@ class KalshiWeatherArbAgent:
             "threshold_f": threshold, "threshold_high_f": threshold_high,
             "direction": direction,
             "forecast_temp_f": round(forecast.temp_f, 2),
+            # Bias-offset audit (2026-05-25). forecast_temp_f above is
+            # the POST-offset value the math actually used. _pre_offset
+            # is what it would have been without correction; subtracting
+            # gives the applied offset. station_id is the registry-direct
+            # ICAO the offset table keyed on; NULL when coord_source !=
+            # yaml_verified (offset table not applied for those rows).
+            "forecast_temp_f_pre_offset": round(forecast_temp_f_pre_offset, 2),
+            "bias_offset_applied_f": round(bias_offset_f, 3),
+            "bias_offset_source": (
+                BIAS_OFFSET_SOURCE_TAG if bias_offset_f != 0.0 else None
+            ),
+            "bias_offset_validation": bias_offset_validation,
+            "bias_offset_season": _season,
+            "bias_offset_station_id": coord_info.get("station_id"),
             "forecast_sigma_f": round(forecast.sigma_f, 2),
             "sigma_used_f": round(verdict.sigma_used_f, 2),
             "sigma_source": sigma_source,

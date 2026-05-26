@@ -534,3 +534,76 @@ def cli_rounding_risk(
         ),
     }
 
+
+# ---------------------------------------------------------------------------
+# Per-(station_id, season) forecast bias offsets (Tier 1 + 2026-05-25 v1).
+#
+# Fit on NBM 2021-2024 train window: offset = mean(cli_actual - nbm_p50).
+# Filtered per Board decision (Reading C) to cells where |offset| >= 1.0°F
+# — only large, structurally-real biases ship. Small-bias cells get zero
+# offset (avoids the out-of-sample overshoot failure mode the train/test
+# validation surfaced — 32/76 cells WORSE when train_off was <1°F).
+#
+# Validation tags:
+#   'fully_validated' — spring cells; NBM train/test (79% pass) AND
+#                       nws_blend cross-source test on the 50K-row spring
+#                       2026 audit corpus (84% pass).
+#   'nbm_only'        — non-spring cells; NBM train/test only; nws_blend
+#                       cross-source confirmation pending (no nws_blend
+#                       data outside spring 2026 yet). Watch-item: re-
+#                       validate each as live nws_blend data accumulates
+#                       through summer/fall/winter; pull any that don't
+#                       hold.
+#
+# Source: tmp/_offset_train_test.py output 2026-05-25.
+# Applied additively to the forecast.temp_f before
+# `evaluate_weather_market` in the calling strategy.
+# Lookup is by `(station_id, season)` where station_id is the verified
+# ICAO from `WeatherStationsRegistry` (registry-direct only). Season is
+# the meteorological 4-bucket convention (see residual_logic.derive_season).
+# ---------------------------------------------------------------------------
+
+BIAS_OFFSET_SOURCE_TAG = "bias_offset_v1_train_2021_2024_filtered_1.0F"
+
+BIAS_OFFSETS_V1: dict[tuple[str, str], tuple[float, str]] = {
+    ("KAUS", "winter"): (-1.712, "nbm_only"),         # n_train=6,138
+    ("KAUS", "spring"): (-2.464, "fully_validated"),  # n_train=6,624
+    ("KAUS", "summer"): (-1.067, "nbm_only"),         # n_train=6,624
+    ("KBOS", "summer"): (+1.104, "nbm_only"),         # n_train=6,624
+    ("KDEN", "spring"): (-3.187, "fully_validated"),  # n_train=6,624
+    ("KDEN", "fall"):   (+1.016, "nbm_only"),         # n_train=6,552
+    ("KDFW", "spring"): (-1.649, "fully_validated"),  # n_train=6,624
+    ("KHOU", "spring"): (-1.349, "fully_validated"),  # n_train=6,624
+    ("KLAX", "fall"):   (+1.452, "nbm_only"),         # n_train=6,552
+    ("KMDW", "winter"): (+1.079, "nbm_only"),         # n_train=6,138
+    ("KMDW", "summer"): (-1.370, "nbm_only"),         # n_train=6,624
+    ("KMDW", "fall"):   (+1.137, "nbm_only"),         # n_train=6,552
+    ("KMSP", "spring"): (-1.266, "fully_validated"),  # n_train=6,624
+    ("KMSY", "spring"): (-1.573, "fully_validated"),  # n_train=3,312
+    ("KNYC", "spring"): (-1.187, "fully_validated"),  # n_train=6,624
+    ("KNYC", "summer"): (-1.685, "nbm_only"),         # n_train=6,624
+    ("KOKC", "winter"): (-1.448, "nbm_only"),         # n_train=6,138
+    ("KOKC", "spring"): (-2.474, "fully_validated"),  # n_train=6,624
+    ("KOKC", "summer"): (-1.072, "nbm_only"),         # n_train=6,624
+    ("KSAT", "winter"): (-1.298, "nbm_only"),         # n_train=6,138
+    ("KSAT", "spring"): (-1.223, "fully_validated"),  # n_train=6,588
+    ("KSFO", "fall"):   (+1.357, "nbm_only"),         # n_train=6,534
+}
+
+
+def lookup_bias_offset(station_id: str | None, season: str) -> tuple[float, str]:
+    """Return (offset_f, validation_tag) for a (station_id, season) pair.
+
+    No match → (0.0, 'none'). station_id=None → (0.0, 'none').
+    Caller is responsible for: (a) supplying station_id from registry-direct
+    resolution (no hardcoded lookup), (b) deriving season from the target
+    date via the same 4-bucket meteorological convention used in
+    `residual_logic.derive_season`.
+    """
+    if station_id is None:
+        return 0.0, "none"
+    entry = BIAS_OFFSETS_V1.get((station_id, season))
+    if entry is None:
+        return 0.0, "none"
+    return entry
+
