@@ -76,6 +76,44 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-26 22:28 UTC — analyze-whale Analyze button hx-target bug fix (selector defect)
+
+**Commits:** `802f739` (template-only one-char fix). Followup to the 2026-05-26 03:30 UTC Phase B deploy.
+**Triggered by:** Operator report — "the analyze button returns nothing." Browser click was a no-op despite the endpoint smoke being green at deploy time. Root cause: button's `hx-target` used a `>` direct-child CSS combinator but `.whale-audit-container` lives inside the sibling row's `<td colspan=13>`, two levels under the `<tr id="whale-audit-{prefix}">`. `document.querySelector` returned null, htmx silently no-op'd. The 03:30 UTC endpoint-smoke (direct HTTP POST) couldn't catch this because the bug was purely browser-side selector resolution.
+**Backup tag:** `.pre-hxtarget-fix-20260526` on `pm_dashboard_body.html` (md5 `2904256301ff26211b09cd79436f38fe`, the Phase-B post-deploy baseline).
+
+**Files deployed (1 modify):**
+- `trading_corp/web/templates/partials/pm_dashboard_body.html` — line 925 `hx-target="#whale-audit-{...} > .whale-audit-container"` → `hx-target="#whale-audit-{...} .whale-audit-container"` (descendant combinator). Owner: root:root. LF md5 post-deploy: `490d0021257cd0fc7fc9dbbb4d582593`; 51717 bytes (−2 bytes vs baseline).
+
+**Features shipped:**
+- **Analyze button actually fires the htmx swap in the browser.** The endpoint, partial, telemetry, and cache were already deployed 03:30 UTC and verified by direct POST — only the dashboard click path was broken.
+
+**Notable code changes:**
+- **Deploy mechanic — sed-in-place via `az vm run-command`** preserved prod's LF line endings (local checkout is CRLF; an scp of the local file would have rewritten line endings across all 976 lines and bloated the diff). The sed target ` > .whale-audit-container` is unique in the file; the partial's own `closest .whale-audit-container` is not affected.
+- **No service restart.** Per [[reference-prod-systemd-units]], template-only changes are picked up on the next request without a `trading-corp.service` bounce; only browser cache needed to bust.
+- **Class of bug — endpoint-smoke ≠ click-path smoke.** The 03:30 UTC verification ran a direct `POST` against the route; the broken CSS selector was downstream of that, in the browser. Future analyze/promote/htmx-swap deploys should include a real browser click as part of the verification step (or at least a static assertion that the selector resolves against the rendered DOM). Filed as the class generalisation, not a new gate.
+
+**Verification — on prod (post-sed 22:28 UTC):**
+- md5 transition: `2904256301ff26211b09cd79436f38fe` → `490d0021257cd0fc7fc9dbbb4d582593` (matches local LF md5 exactly).
+- Pattern counts: broken ` > .whale-audit-container` = 0 (was 1), fix-form `hx-target="#whale-audit-... .whale-audit-container"` = 1.
+- Line count 976 unchanged; size 51719 → 51717 (the deleted ` >` is exactly 2 chars).
+- Operator-side: hard-refresh `https://trading.jacksumner.com/pm` and click Analyze on any row in the 53-row watch_only slot → partial should render below the row in ~5-25s (cache miss on first click per whale, ~<200ms on cache hit).
+
+**Inert / dormant — nothing.** The fix is live; next click exercises the corrected selector.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+  --command-id RunShellScript --scripts "
+F=/home/azureuser/trading_corp/trading_corp/web/templates/partials/pm_dashboard_body.html
+mv \$F.pre-hxtarget-fix-20260526 \$F
+chown root:root \$F
+"
+# No service restart required for template rollback.
+```
+
+---
+
 ## 2026-05-26 03:30 UTC — pm-watchlist Analyze-Whale dashboard endpoint (Phase B, Board-approved)
 
 **Commits:** `78323c3` (dashboard endpoint + button + partial + tests on branch `analyze-whale-dashboard`). Phase A modules (`a1cbe18` + `b42a8a5` + earlier) also deployed in this window — they had been merged to main as the operator-local CLI work but were never on prod's disk. Deploy-import-graph oversight caught at the smoke step (see "Mid-deploy correction" below).
