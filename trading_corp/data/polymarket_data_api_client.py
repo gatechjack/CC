@@ -56,6 +56,13 @@ _HTTP_TIMEOUT_SEC = 30.0
 # gamma-api sweep — Cloudflare blocks typically clear inside 60-300s.
 _CLOUDFLARE_RETRY_DELAYS_SEC: tuple[float, ...] = (30.0, 60.0, 120.0, 240.0, 300.0)
 
+# Short-backoff schedule for transient upstream 5xx. Each delay is the sleep
+# BEFORE the next attempt; 2 entries → up to 3 total attempts. Sized for the
+# gamma-api flakiness observed 2026-05-27 04:00 UTC on /markets?condition_ids
+# where individual chunks intermittently 500 while neighbours succeed — most
+# clears on the first retry inside a second.
+_SERVER_ERROR_RETRY_DELAYS_SEC: tuple[float, ...] = (0.5, 1.5)
+
 # Categories that empirically return leaderboard rows. Polymarket's taxonomy
 # has more, but most are empty — these 5 are where the data actually lives.
 POLYMARKET_LEADERBOARD_CATEGORIES: tuple[str, ...] = (
@@ -570,6 +577,7 @@ class PolymarketDataAPIClient:
                 "manager: `async with PolymarketDataAPIClient() as client:`"
             )
         attempt = 0
+        server_error_attempts = 0
         while True:
             t0 = time.monotonic()
             async with self._sem:
@@ -597,6 +605,23 @@ class PolymarketDataAPIClient:
                     label, attempt + 1, dur_ms, delay,
                 )
                 attempt += 1
+                await asyncio.sleep(delay)
+                continue
+            if 500 <= resp.status_code < 600:
+                if server_error_attempts >= len(_SERVER_ERROR_RETRY_DELAYS_SEC):
+                    body_preview = resp.text[:300] if resp.text else "(empty)"
+                    raise PolymarketDataAPIError(
+                        f"{label}: HTTP {resp.status_code} after "
+                        f"{server_error_attempts + 1} attempts — {body_preview}"
+                    )
+                delay = _SERVER_ERROR_RETRY_DELAYS_SEC[server_error_attempts]
+                log.warning(
+                    "polymarket-data-api %s: HTTP %d on attempt %d (%dms); "
+                    "backing off %.1fs",
+                    label, resp.status_code, server_error_attempts + 1,
+                    dur_ms, delay,
+                )
+                server_error_attempts += 1
                 await asyncio.sleep(delay)
                 continue
             if resp.status_code >= 400:
