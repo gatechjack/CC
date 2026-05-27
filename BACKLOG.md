@@ -8,6 +8,72 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-27 ~01:55 UTC (Wednesday early morning — **C-1 PARTIAL: webhook secrets (2 of 13+) ROTATED; remaining 11+ explicitly DEFERRED to per-portal sessions; C-7 scrub stress-tested under real-world rotation traffic, all 8 in-window bad_secret rows REDACTED**)
+
+**Headline of THIS session-arc:** Rotated `LORD_OTTER_WEBHOOK_SECRET` + `MARKET_CYPHER_WEBHOOK_SECRET` in KV (vault `kv-tc-vtwbowt3wtkpy`) end-to-end with strict value-blind discipline — secret values never traversed any Claude Code surface; all value-handling was operator-side in a separate Git Bash window OUTSIDE Claude. Agent provided the KV-write block + a prod-side value-blind verification script; operator generated, wrote-to-KV, and updated 50 TradingView alert templates; agent verified via KV version IDs + HTTP status codes (4/4 PASS) + post-scrub audit rows. The **C-7 scrub got its first real-world stress test**: during the rotation window, 6 TV alerts hit prod with NEW-secret-in-body vs OLD-secret-in-env mismatch → all 6 bad_secret rejection audit rows carry `"secret": "***REDACTED***"`, plus 2 verification rejections also REDACTED — 8 of 8 scrub coverage on the live rotation event. **First-rotation attempt earlier in the session (transcript-exposed candidate values) never actually wrote to KV** (agent caught the version-ID stall before any prod restart) and never reached TV templates — the exposure surface is artifact-only, closed by never-was-live + clean re-rotation chain.
+
+**`origin/main` head after this session (pre-push, pending commit of this EOS + deploy_log entry):** `820173e`. Commits this session-arc that already pushed (before C-1 rotation): `820173e` (scrub script --verbose gate as C-7 follow-up). The C-1 rotation itself is a KV mutation + service restart — no source code change. The pending commit (this turn) lands deploy_log + BACKLOG only.
+
+**What's running on prod (touched THIS session):**
+
+- KV: both webhook secrets advanced past 2026-04-30 baseline. New version IDs: LORD-OTTER `29db2cc743d847a788402deea04b2627` (2026-05-27T01:13:43Z); MARKET-CYPHER `d5b2907bf13f4126ad5cac5715feebaf` (2026-05-27T01:13:45Z). Prior versions remain in KV history (Azure retention).
+- TradingView: all 50 alert templates updated to new secrets, paused during the transition, **un-paused after agent's GO/NO-GO signal**.
+- Service: PID `1507621` (from 2026-05-26 23:46:22 UTC C-7 deploy) → `1513106` at 2026-05-27 01:34:00 UTC. NRestarts=0. ~4.5min port-8000-bind window (IC catch-up).
+- Audit table: 8 new `webhook_rejected` rows from the rotation window + verification, all REDACTED in `raw_body_snippet`.
+
+**Items RETIRED this session:**
+
+- **C-1 — webhook-secret portion (2 of 13+)** — rotated end-to-end under value-blind discipline. **Do NOT mark C-1 as fully done** — 11+ credentials remain (see deferred list below).
+
+**Items NEWLY OPEN (each its own per-portal session — do not batch):**
+
+1. **C-1 ANTHROPIC_API_KEY rotation** — Anthropic console → KV `ANTHROPIC-API-KEY` → restart → smoke any LLM-consuming surface (research firm, Haiku narrator, IC grader). Operator-portal step.
+2. **C-1 TELEGRAM_BOT_TOKEN rotation** — BotFather → KV `TELEGRAM-BOT-TOKEN` → restart → smoke a notification. Operator-portal step.
+3. **C-1 ROBINHOOD_PASSWORD rotation + force re-login** — Robinhood website → KV `ROBINHOOD-PASSWORD` → invalidate `/home/azureuser/.tokens/robinhood.pickle` → restart → re-login flow with MFA push. Operator phone + browser.
+4. **C-1 ROBINHOOD_MFA_SECRET rotation** — re-enroll TOTP from scratch on Robinhood (phone QR scan). Highest operator-overhead of the remaining.
+5. **C-1 COINBASE_API_KEY / SECRET / PASSPHRASE rotation (spot)** — Coinbase portal → KV trio → smoke a price quote. Operator-portal step.
+6. **C-1 COINBASE_FUTURES_API_KEY / SECRET / PASSPHRASE rotation (FCM)** — Coinbase futures portal → KV trio → smoke. Operator-portal step.
+7. **C-1 BITUNIX_FUTURES_API_KEY / SECRET rotation** — Bitunix console → KV pair → smoke an ATR pull. Operator-portal step.
+8. **C-1 FIDELITY_PASSWORD rotation** — Fidelity portal → KV → restart → smoke (Fidelity is read-only paper today). Operator-portal step.
+9. **C-1 KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PEM rotation** — Kalshi console (revoke + reissue) → KV pair → smoke a market query. Operator-portal step.
+10. **C-1 POLYMARKET_PRIVATE_KEY rotation** — generate new EOA wallet + on-chain USDC transfer (gas cost) + KV update. Highest-complexity remaining; coordinate with Polymarket position state (any open orders need careful handling).
+11. **C-1 POLYGON_RPC_URL (Alchemy) rotation** — Alchemy console rotate-API-key → KV update. Operator-portal step.
+12. **C-1 APIFY_API_TOKEN rotation** — Apify console → KV update. Operator-portal step.
+13. **C-1 TASTYTRADE_PROVIDER_SECRET + TASTYTRADE_REFRESH_TOKEN rotation** — follow `runbooks/tastytrade_oauth_rotation.md` (the matched-pair atomic 2-step OAuth flow). Highest-complexity by procedural depth; runbook is canonical.
+
+**Highest-leverage open items remaining (handoff to next session):**
+
+1. **C-1 remaining 11+ credentials** (each its own per-portal session, see above).
+2. **Sun 2026-05-31 ~13:00 UTC pm-watchlist weekly seed fire** — first under clustering + PnL aggregation fixes. 6-criterion verification gate.
+3. **Bug 4 (`tastytrade_provider.py` get_history dead branch)** (P2 MEDIUM, IC-adjacent).
+4. **43 deferred package bumps** (P1).
+5. **`bitunix_atr_snapshot` observability audit kind** (P2 — silent-fallback class).
+6. **Architecture: trading-corp-web.service split** (P3, filed 2026-05-26 03:30 UTC).
+7. **P3 cleanup — `tests/test_webhooks_return_fast.py` 5 failures from `_Deps.bitunix_observer` fixture gap** (filed 2026-05-26 ~23:30 UTC).
+
+**Process learnings carried forward (load-bearing for future security work):**
+
+- **Secrets NEVER touch the Claude Code session.** Generalizes from this rotation: agent provides verification METHODS (scripts, queries, recipes); operator executes the value-bearing parts in a separate non-transcripted terminal; operator reports only metadata (KV versions, HTTP status codes, pass/fail markers). The agent verifies via post-scrub audit rows (the scrub is what makes the audit table safe to inspect from the agent side). Filing as feedback memory `[[feedback-secret-never-touches-claude-code]]`.
+- **git-bash on Windows + `<(process substitution)` + Windows-native `az` = does not work.** `--file <(printf '%s' "$VAR")` fails with `No such file or directory: /proc/N/fd/X` because Windows-native binaries can't read MSYS pseudo-paths. Use `mktemp` + `chmod 600` + `--file <path>` + `shred -u`. Brief on-disk window (microseconds during `az` invocation) is the unavoidable trade-off vs. argv leak. Cloud Shell (https://shell.azure.com) is the alternative if true Linux bash is needed. Filing as feedback memory `[[feedback-git-bash-process-substitution-fails]]`.
+- **Verify KV state advanced post-write, don't trust operator "I rotated it"** — first-rotation attempt this session showed why: operator believed the `az keyvault secret set` commands had run; KV version IDs proved they hadn't. Catch is `az keyvault secret show --query "id" -o tsv` comparing pre/post URLs.
+- **C-7 scrub had its first real-world stress test** during this rotation window and held: 6 in-window bad_secret rejections + 2 verification rejections = 8/8 audit rows REDACTED, zero cleartext leakage. The scrub is now validated under genuine production traffic, not just synthetic harness.
+
+**Memory updates this session (filed in the next-session commit OR this commit if scope allows):**
+
+- **NEW `feedback_secret_never_touches_claude_code.md`** — the discipline applied this session (TBD this commit).
+- **NEW `feedback_git_bash_process_substitution_fails.md`** — the MSYS-bash-vs-Windows-az gotcha (TBD this commit).
+
+**Operator cleanup pending (NOT agent-destructive — operator handles):**
+
+- `~/cc_webhook_secrets_DELETE_AFTER_USE.txt` — first-attempt handoff file (values never made it to KV; artifact-only exposure).
+- `~/c1_clean_DELETE_AFTER_USE.txt` — clean rotation's handoff file (values are live but useless to outsiders; safe to delete since TV templates are now updated).
+- `~/c1_rotate_clean.sh` — rotation script (no values inside).
+- Close the standalone Git Bash window where the rotation ran (OS terminal scrollback may contain values from `cat`).
+
+**Canonical pickup for next C-1 session:** `runbooks/deploy_log.md` 2026-05-27 01:13–01:43 UTC entry + the per-credential list above + `runbooks/tastytrade_oauth_rotation.md` (when it's TT's turn) + `reports/2026-05-21_security_review.md` §C-1.
+
+---
+
 ## EOS snapshot — 2026-05-26 ~23:54 UTC (Tuesday late evening — **C-7 webhook secret-scrub DEPLOYED to prod + 5-row backfill RUN; C-1 secret rotation now UNBLOCKED**)
 
 **Headline of THIS session-arc:** Closed the **P0 CRITICAL C-7 (rejected-webhook audit plaintext leak)** finding from `reports/2026-05-21_security_review.md`. Cherry-picked the local-only draft (`d7ce0df`+`5f7a198`) onto current `origin/main` (`515a870`) as `9d65be8` (scrub) + `aa4f37f` (backfill) to avoid replaying the foreign `b64cdc5` ancestor (patch-identical to `f13fb05` already on main). 23/23 tests green wrapped under `scripts\run_capped.ps1`. scp deploy preserved CRLF; backup tag `pre-c7-scrub-20260526` on prod webhooks.py; restart `trading-corp.service` produced PID `1507621` at 23:46:22 UTC, port 8000 bound by 23:53 UTC (IC position-manager catch-up was the limiting step), healthz local + Caddy public both `{"status":"ok","mode":"PAPER"}`. Live-scrub gate verified on BOTH handlers (lord_otter + market_cypher) at 23:53:12 UTC via raw sqlite3 read — marker `C7VERIFYLIVE2026052623XX` absent, `***REDACTED***` present. Backfill ran: `rows_changed=5` on first pass (id 105, 402, 722, 1006, 1116), `rows_changed=0` on idempotency re-dry-run. **The load-bearing order (scrub-fix-deploy → backfill → C-1) is satisfied — C-1 secret rotation is now unblocked for its own session.**
