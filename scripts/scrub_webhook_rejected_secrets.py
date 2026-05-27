@@ -12,6 +12,14 @@ Usage:
     python scripts/scrub_webhook_rejected_secrets.py --db data/trading_corp.db
     python scripts/scrub_webhook_rejected_secrets.py --dry-run
     python scripts/scrub_webhook_rejected_secrets.py --dry-run --verbose
+
+--verbose prints per-row status markers ([SCRUB] / [CLEAN] / [SKIP bad-json] /
+[SKIP no-snippet]) keyed by id only.  It does NOT echo the raw or scrubbed
+snippet contents to stdout — that would defeat the script's whole purpose
+(printing the very cleartext you are scrubbing into the operator's terminal
++ any shell/transcript capture).  This is intentional and load-bearing; do
+not re-introduce a before/after snippet print without reading
+docs/security/2026-05-26_c7_verbose_stdout_exposure.md (if filed).
 """
 from __future__ import annotations
 
@@ -108,11 +116,12 @@ def run(
             rows_changed += 1
 
             if verbose:
-                before = original_snippet[:120]
-                after = scrubbed_snippet[:120]
+                # Keyed by id only. Echoing the original (before) snippet would
+                # print the very cleartext secret the script exists to scrub.
+                # See 2026-05-26 C-7 verbose-stdout exposure incident — operator
+                # transcript scrub required. Do NOT add before/after snippet
+                # prints here without rotating to a redact-on-display path.
                 print(f"  [SCRUB] id={row_id}")
-                print(f"    before: {before!r}")
-                print(f"    after:  {after!r}")
 
         if not dry_run and updates:
             conn.executemany(
@@ -147,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--verbose",
         action="store_true",
-        help="Print id + before/after snippet for each row that would change.",
+        help="Print per-row status markers keyed by id only. Never echoes raw snippet content.",
     )
     args = p.parse_args(argv)
 
