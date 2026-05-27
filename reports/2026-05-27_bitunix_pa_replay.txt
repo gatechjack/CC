@@ -1,0 +1,158 @@
+======================================================================
+BITUNIX PA-VALIDATION ALT-CONFIG REPLAY
+======================================================================
+Anchor:                       2026-05-23T15:52:00Z
+Total score_decided rows:     3336
+Total pa_validation rows:     2896
+PA-rejected score rows:       2869
+
+Outcome distribution:
+  skipped_pa_validation        2869
+  skipped_score                437
+  skipped_htf_gate             17
+  skipped_trade_plan           7
+  placed                       3
+  skipped_cooldown             3
+
+----------------------------------------------------------------------
+OPTION 1: pa_validation.require_all true -> false (>=2 of 3 must pass)
+----------------------------------------------------------------------
+Paired PA-reject score rows:           2869
+Unpaired (excluded from option 1):     0
+Failed-count distribution (PA rows):
+  1 validator(s) failed: 527
+  2 validator(s) failed: 848
+  3 validator(s) failed: 1494
+
+Would PASS PA under option 1:          527
+Would STILL REJECT (>=2 failed):       2342
+  by tier: {'STANDARD': 407, 'PREMIUM': 120}
+  by side: {'sell': 466, 'buy': 61}
+  PA-pass rate under option 1: 18.4%
+
+Note: 'would PASS' means the trade reaches the HTF gate. Whether it
+ultimately fires depends on HTF (historical 17/27=63.0% hard-zero)
+and trade_plan (historical 7/10=70% STANDARD fee-floor rejection).
+Upper-bound estimate for new placements under option 1 alone:
+  527 would-pass * (1 - 0.630 HTF hardzero) = 195
+  195 * (1 - 0.700 trade_plan reject) = 59
+  Estimated additional fires under option 1: ~59
+  Caveat: HTF/trade_plan rates were measured on PREMIUM-heavy survivors;
+  STANDARD-heavy option-1 survivors may face worse trade_plan rejection.
+
+----------------------------------------------------------------------
+OPTION 5: scoring.tier_thresholds.standard 5 -> 7
+----------------------------------------------------------------------
+All score rows whose tier survives (PREMIUM/STANDARD): 1877
+  dropped from STANDARD->WEAK/SKIP: 1021
+  dropped from PREMIUM->* (unchanged since 10>=10): 0
+Currently-PA-pass rows that still survive on score side: 13
+Currently-PLACED rows that still survive on score side:  1
+
+Effect: option 5 SHRINKS the candidate pool entering PA. It cannot
+produce new fires on a PA-reject corpus. Diagnostic value: if many
+currently-fired trades survive (high score), the engine's STANDARD
+bracket isn't load-bearing for actual placements.
+
+----------------------------------------------------------------------
+OPTION 6: scoring.min_score_to_fire 5 -> 7
+----------------------------------------------------------------------
+Rows with net_score >= 7 (survive option 6):  1877
+Rows dropped (net_score < 7):                  1459
+Currently-PA-pass rows that survive:           13
+Currently-PLACED rows that survive:            1
+
+======================================================================
+ALL-THREE-FAILED PA BUCKET (the score<->PA disagreement bucket)
+======================================================================
+Bucket size: 1494
+Tier:        {'STANDARD': 973, 'PREMIUM': 521}
+Side:        {'sell': 1387, 'buy': 107}
+
+net_score distribution:
+  net_score=  5: 170
+  net_score=  6: 306
+  net_score=  7: 118
+  net_score=  8: 246
+  net_score=  9: 133
+  net_score= 10: 124
+  net_score= 11: 180
+  net_score= 12: 47
+  net_score= 13: 69
+  net_score= 14: 47
+  net_score= 15: 12
+  net_score= 16: 37
+  net_score= 17: 5
+
+Stack size (# contributing signals on winning side):
+  solo (1 sig):       0  (0.0%)
+  pair (2 sigs):      188  (12.6%)
+  three+ sigs:        1306  (87.4%)
+
+Top-1 dominant signal: 49.7% of bucket
+Top-3 dominant signals: 92.8% of bucket
+
+Top 15 DOMINANT signals (#1 contributor per row):
+    742  ( 49.7%)  mc_a_red_diamond
+    576  ( 38.6%)  mc_a_blood_diamond
+     69  (  4.6%)  mc_b_sell_circle_div
+     43  (  2.9%)  mc_b_buy_circle_div
+     39  (  2.6%)  mc_b_gold_buy
+     14  (  0.9%)  otter_buy
+      7  (  0.5%)  mc_a_bluetriangle
+      4  (  0.3%)  mc_b_buy_circle
+
+Top 15 signals by TOP-3-CONTRIBUTOR appearance:
+   1387  mc_a_red_diamond
+    766  mc_a_redx
+    576  mc_a_blood_diamond
+    529  mc_b_sell_circle
+    405  mc_b_sell_circle_div
+    217  cvd_bear_flip
+     82  mc_b_buy_circle_div
+     79  mc_b_buy_circle
+     59  otter_sell
+     44  mc_a_bluetriangle
+     39  mc_b_gold_buy
+     39  cvd_bull_flip
+     26  spoon_bear
+     24  money_bag_top
+     14  otter_buy
+
+Top 15 signals by TOTAL weight summed across bucket:
+   5548  mc_a_red_diamond
+   2880  mc_a_blood_diamond
+   1620  mc_b_sell_circle_div
+   1587  mc_b_sell_circle
+   1532  mc_a_redx
+    434  cvd_bear_flip
+    328  mc_b_buy_circle_div
+    237  mc_b_buy_circle
+    195  mc_b_gold_buy
+    177  otter_sell
+    132  mc_a_bluetriangle
+     78  cvd_bull_flip
+     52  spoon_bear
+     48  money_bag_top
+     42  otter_buy
+
+Top 10 full signal STACKS (set of contributing sigs):
+    305  [mc_a_blood_diamond,mc_a_red_diamond,mc_a_redx]
+    111  [mc_a_blood_diamond,mc_a_red_diamond,mc_a_redx,mc_b_sell_circle_div]
+     87  [mc_a_red_diamond,mc_b_sell_circle]
+     85  [mc_a_red_diamond,mc_a_redx,mc_b_sell_circle]
+     79  [cvd_bear_flip,mc_a_red_diamond,mc_a_redx]
+     72  [mc_a_red_diamond,mc_a_redx,mc_b_sell_circle_div]
+     67  [mc_a_red_diamond,mc_a_redx]
+     56  [mc_a_blood_diamond,mc_a_red_diamond,mc_a_redx,mc_b_sell_circle]
+     53  [cvd_bear_flip,mc_a_red_diamond,mc_a_redx,mc_b_sell_circle]
+     52  [cvd_bear_flip,mc_a_red_diamond,mc_a_redx,mc_b_sell_circle_div]
+
+======================================================================
+HYPOTHESIS HINT (verdict requires human judgment)
+======================================================================
+HINT: HIGH CONCENTRATION
+  top-1 dominant = 49.7%, solo-stack = 0.0%
+  -> Score engine appears over-generous: a small set of signal
+     types is reaching tier threshold without supporting
+     confluence that PA validators look for. Favor options 5/6.
