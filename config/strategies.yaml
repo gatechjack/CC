@@ -1228,7 +1228,8 @@ bitunix_futures:
   # ============================================================
   pa_validation:
     enabled: true
-    require_all: true
+    require_all: false              # 2026-05-27: was true; loosen to >=2 of 3 per replay (9606b9f synthesis)
+    min_validators_passed: 2        # 2026-05-27: required when require_all=false (defaults to 0 = PA-disabled)
     validators:
       - vwap_alignment            # buy: above session VWAP; sell: below
       - volume_confirmation       # current bar's volume > 20-bar avg

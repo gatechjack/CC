@@ -45,6 +45,27 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P1 — bitunix PA validation observation window (closes 2026-06-03 ~23:18 UTC)
+
+Shipped 2026-05-27 23:18 UTC: `pa_validation.require_all: false` + `min_validators_passed: 2` (see deploy_log entry). Replay-justified structural fix; PA-pass rate expected to jump 0.94% → ~18.4%; placement rate expected ~15/day vs 0.75/day baseline.
+
+**Watch:**
+- Fires per day (directional vs replay estimate of ~15/day).
+- Outcomes (TP vs SL hit) on the new fires — don't declare victory on fire rate alone.
+- Which validator-pair carries each pass (`pa_validation_decision.payload_json.passed`). If `structure_alignment` never contributes, that's evidence the 4h-horizon check is broken on the 3m engine and the next structural change is 4h→15m/30m.
+
+**Rollback trigger:** (a) win-rate < 30% after >=20 placed trades; (b) drawdown > 5% on bitunix paper account; (c) other "this isn't working" signal. Recipe in deploy_log entry.
+
+## P2 — bitunix PA validator raw-input audit (MEDIUM, instrumentation)
+
+`pa_validation_decision` already captures which validators `passed` / `failed`. The deeper question — what raw input did each validator compute (e.g., did `structure_alignment` on sell see `lower_lows_4h_observed=true/false`, what bars did it use) — is NOT captured. Filed as follow-up: add per-validator raw-input fields to `_log_pa_validation` payload so a future replay can distinguish "validator computed wrong" from "horizon legitimately disagrees with 3m signal stack". Pickup after the 1-week PA observation window closes 2026-06-03.
+
+## P3 — `tasty_options` config block missing from prod's `strategies.yaml` (ANOMALY)
+
+Local `config/strategies.yaml` carries the `tasty_options:` block (commit `94b3129`, 2026-05-24 "Commit 4/5"); prod's YAML does NOT (`grep -c "^tasty_options:"` = 0 on prod, 1 on local). Local is 74 lines longer than prod (1848 vs 1774 pre-2026-05-27-PA-patch; 1775 post-patch). Per memory `[[tasty-options-paper-clock]]`, the tasty_options commits ARE supposed to be on prod. Either: (a) the YAML was rolled back on prod, (b) the deploy never copied the YAML block (only the Python wiring), or (c) something else. Investigate before next tasty_options touch — the strategy can't be reading its config if it's not in prod's YAML.
+
+---
+
 ## EOS snapshot — 2026-05-27 ~01:55 UTC (Wednesday early morning — **C-1 PARTIAL: webhook secrets (2 of 13+) ROTATED; remaining 11+ explicitly DEFERRED to per-portal sessions; C-7 scrub stress-tested under real-world rotation traffic, all 8 in-window bad_secret rows REDACTED**)
 
 **Headline of THIS session-arc:** Rotated `LORD_OTTER_WEBHOOK_SECRET` + `MARKET_CYPHER_WEBHOOK_SECRET` in KV (vault `kv-tc-vtwbowt3wtkpy`) end-to-end with strict value-blind discipline — secret values never traversed any Claude Code surface; all value-handling was operator-side in a separate Git Bash window OUTSIDE Claude. Agent provided the KV-write block + a prod-side value-blind verification script; operator generated, wrote-to-KV, and updated 50 TradingView alert templates; agent verified via KV version IDs + HTTP status codes (4/4 PASS) + post-scrub audit rows. The **C-7 scrub got its first real-world stress test**: during the rotation window, 6 TV alerts hit prod with NEW-secret-in-body vs OLD-secret-in-env mismatch → all 6 bad_secret rejection audit rows carry `"secret": "***REDACTED***"`, plus 2 verification rejections also REDACTED — 8 of 8 scrub coverage on the live rotation event. **First-rotation attempt earlier in the session (transcript-exposed candidate values) never actually wrote to KV** (agent caught the version-ID stall before any prod restart) and never reached TV templates — the exposure surface is artifact-only, closed by never-was-live + clean re-rotation chain.

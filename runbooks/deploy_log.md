@@ -76,6 +76,59 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-27 23:18 UTC — bitunix PA validation: loosen to >=2 of 3 (`require_all: false` + `min_validators_passed: 2`)
+
+**Commits (this entry):** (config-only deploy + this entry; commit to follow)
+**Triggered by:** Operator directive 2026-05-27 ~22:00 UTC — bitunix paper division producing 3 trades in 5 days post the 2026-05-23 15:52 UTC bias-TTL deploy. Funnel diagnostic showed 99.06% PA-reject rate; replay (commit `9606b9f`, see `reports/2026-05-27_bitunix_pa_replay_synthesis.md`) characterized the all-three-failed bucket (n=1,494): **0% solo signals; 87.4% are 3+ signal stacks** — refuted the "score over-generous" hypothesis. Top stack `mc_a_blood_diamond + mc_a_red_diamond + mc_a_redx` (305 occurrences) is genuine Cypher A-panel sell confluence. Verdict: PA validators rejecting real multi-signal score stacks; structural fix on the PA side.
+
+**Backup tag:** `/home/azureuser/trading_corp/config/strategies.yaml.pre-pa-2of3-20260527` (md5 `2a87d38dc44b145a0733c660ea6e1878`, pre-patch state byte-identical).
+
+**Files deployed (1):**
+- `config/strategies.yaml` — two-line change to active `bitunix_futures.pa_validation` block. Pre md5 `2a87d38dc44b145a0733c660ea6e1878` (86169 B, 1774 lines). Post md5 `ed8e452d85fafb5132dd0c8e01f55511` (86200 B, 1775 lines; +31 B = exactly one CRLF line). Patch applied via python (binary mode, single-occurrence assert) staged in `/tmp` then `sudo cp` to prod — `sed -i` was rejected because the `a\` insert command writes the new line with LF terminator, breaking CRLF discipline (`[[deploy-crlf-config-patch]]`).
+
+**Features shipped:**
+- **PA `require_all: false` + `min_validators_passed: 2`** — both knobs required. Single-knob (`require_all: false` alone) would mean `len(passed) >= 0` which **disables PA entirely** (every trade passes). Replay's 18.4% PA-pass estimate assumed both. Without the `min_validators_passed: 2` line, PA would have flipped from 99% reject straight to 100% pass.
+- **Expected behavior change:** PA-pass rate jumps from 0.94% → ~18.4% on identical input stream. After HTF (63% hard-zero) + trade_plan (70% fee-floor on STANDARD), upper-bound estimate is ~15 placements/day vs. 0.75/day baseline (~20× lift). Most lift is on the sell side (2:1 sell signal mix, 0 BULL HTF days since deploy).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **`min_validators_passed` was previously absent from YAML and defaults to `0`** in the `bitunix_pa_validation.py:96` dataclass. Code at line 254-262: `if require_all` branches to "all must pass"; else `validators_passed = len(passed) >= min_validators_passed`. With `min_validators_passed=0`, that's always True. The two-knob discipline is load-bearing — never flip `require_all` without also setting the floor.
+- **Observer's `scoring_config` is loaded ONCE at startup** (`main.py:319-335`), no mtime check — restart was required for the new YAML to take effect. Inert until restart, verified via `/proc/<pid>/root/.../strategies.yaml`.
+- **Local-prod yaml divergence at line 1776+** — local has the `tasty_options` block (commit `94b3129`, 2026-05-24 "Commit 4/5"); prod has no `tasty_options:` entry. Local is 74 lines longer than prod (1848 vs 1774 pre-patch). The bitunix block at line 1218-1242 is byte-identical on both sides, so the surgical patch was safe — but the broader divergence is a SEPARATE anomaly. Filed in BACKLOG.
+
+**Verification — pre-deploy:**
+- `require_all` and `pa_validation:` grep returned a single occurrence each in `config/strategies.yaml` (line 1231 + 1229). Active `bitunix_futures.pa_validation` block confirmed unique target.
+- Test impact: `tests/test_bitunix_pa_validation.py` already covers `require_all=False, min_validators_passed=N` paths (lines 160, 171). No test changes needed.
+
+**Verification — on prod (post-restart):**
+- **PIDs:** `1538397` (pre, since 2026-05-27 10:46:24 UTC) → `1571555` (post, since 2026-05-27 23:18:19 UTC). NRestarts=0. ActiveState=active.
+- **Healthz local:** `{"status":"ok","mode":"PAPER"}` post port-bind.
+- **Loaded YAML via `/proc/1571555/root/home/azureuser/trading_corp/config/strategies.yaml`:** md5 `ed8e452d85fafb5132dd0c8e01f55511` (exact post-patch). Lines 1231 `require_all: false` + 1232 `min_validators_passed: 2` both present.
+- **Observer wiring line:** `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True`.
+- **Bitunix bar caches primed:** 3m (atr_14=$95.34), h1, h4, d1. Above the `[[bitunix-paper-clock]]` $90 tripwire.
+- **Robinhood login:** clean (3 accounts, no MFA prompt, pickle worked, no `broker_fallback_to_paper`). Only pre-existing fallback: `fidelity_401k` (recurring, unrelated).
+- **No bitunix/PA-related ERROR or Traceback in journal since restart.**
+
+**Observation window — 1 week (closes 2026-06-03 ~23:18 UTC):**
+- **Primary signal:** fires per day. Replay estimated ~15/day under loosened gate vs 0.75/day baseline. Confirm directionally.
+- **Secondary signal — outcomes:** track TP vs SL hit on the new fires via `audit_event` / bitunix paper position state. Don't declare victory on fire rate alone. If win-rate is materially below baseline tighter-gate trades (3 placed, outcomes pending), the fix has traded reject-bias for bad-take-bias and needs revision.
+- **Tertiary — which validator-pair carries each pass:** `pa_validation_decision.payload_json.passed` ALREADY captures the per-pass validator set (no new instrumentation needed). If one validator (likely `structure_alignment` per the all-three-failed bucket composition) NEVER contributes across the observation window, that's evidence the 4h-structure check is broken on the 3m horizon and the next structural change is replacing the 4h horizon with 15m/30m. That's a code change, filed MEDIUM, NOT shipping this session.
+- **Rollback trigger:** any of (a) win-rate < 30% after >=20 placed trades, (b) drawdown > 5% on bitunix paper account, (c) some other operator-defined "this isn't working" signal.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+sudo cp /home/azureuser/trading_corp/config/strategies.yaml.pre-pa-2of3-20260527 \
+        /home/azureuser/trading_corp/config/strategies.yaml \
+  && sudo systemctl restart trading-corp.service
+"
+```
+Single-step revert; restores both knobs to pre-patch state via backup tag.
+
+**Tripwire boundary respected:**
+- Options 3 (`htf_regime.proximity_block_pct`, currently 0.30) and 4 (`trade_plan.tp1_min_profit_multiplier`, currently 2.0) remain **DEFERRED to 2026-06-19 midpoint tripwire** per `[[bitunix-paper-clock]]`. This deploy did NOT touch them. This change is a **score↔PA internal-consistency fix** (PA was rejecting genuine multi-signal score confluence), not a gate-tightness loosening — substantively different from the tightness options the clock protects.
+
+---
+
 ## 2026-05-27 10:30 + 13:14 UTC — polymarket data-api: gamma 5xx resilience (analyze-whale fix)
 
 **Commits (this entry):**
