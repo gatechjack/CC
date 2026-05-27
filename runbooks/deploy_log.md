@@ -76,6 +76,69 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-27 10:30 + 13:14 UTC — polymarket data-api: gamma 5xx resilience (analyze-whale fix)
+
+**Commits (this entry):**
+- `b2128bd` — `polymarket_data_api_client.py`: retry 5xx with short backoff in `_get_json` (0.5s, 1.5s → 3 total attempts).
+- `fc7e2d6` — `polymarket_data_api_client.py`: tolerate per-chunk 5xx in `fetch_market_resolutions` (catch `PolymarketDataAPIError`, log partial-coverage warning, fall through to `not_found` sentinels — mirrors existing `PolymarketRateLimitError` path).
+
+Branch: `polymarket-gamma-5xx-retry` (local-only — not merged to `main`; standard prod-bypass-git deploy).
+
+**Triggered by:** Operator directive 2026-05-27 ~04:00 UTC — analyze-whale on `/prediction-markets/polymarket_copy_trading#whales` returning "Analyze errored — check logs / PolymarketDataAPIError" across multiple wallets. Diagnosis showed `gamma-api.polymarket.com/markets?condition_ids=...` intermittently 500ing on individual chunk calls; one bad chunk killed the entire analyze. First patch (retry) shipped at 10:30 UTC, proved insufficient when retry budget exhausted on sustained chunk-0 5xx across 3 different wallets (RTERK43357, bloodmaster, 0x7714c16f); second patch (chunk-skip) shipped at 13:14 UTC.
+
+**Backup tags:**
+- `polymarket_data_api_client.py.pre-gamma5xx-retry-20260527` (pre `b2128bd`, md5 `a10c01ddbd2f1c451af8c501aec80010`)
+- `polymarket_data_api_client.py.pre-chunkskip-20260527` (pre `fc7e2d6`, md5 `cf1c6dc325c1ed4184931caa9e6d207a` — i.e., the retry-only state)
+
+**Files deployed (1):**
+- `trading_corp/data/polymarket_data_api_client.py` — gamma-api 5xx resilience (retry + chunk-skip). Post-deploy md5 `3810a1084c7f90e6f4a4c82e629d3952`.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **In-client 5xx retry on gamma-api / data-api calls.** Every `_get_json` call now retries HTTP 500-599 twice with 0.5s + 1.5s backoff before raising. Visible signal: `WARNING ... HTTP NNN on attempt M (XXXms); backing off Y.Ys` log lines from `polymarket-data-api`. Benefits every caller of the client (not just resolutions).
+- **Per-chunk fault tolerance in `fetch_market_resolutions`.** A `PolymarketDataAPIError` from any single chunk-variant call is now caught at the chunk loop (mirroring the existing rate-limit handling) and turned into a partial-coverage warning. Failed-chunk condition_ids fall through to the `not_found` sentinel. The summary log now reports both axes: `N/M chunks rate-limited, N/M chunks upstream-errored; X/Y condition_ids resolved`. Analyze-whale no longer dies on a single bad chunk.
+- **Constants:** `_SERVER_ERROR_RETRY_DELAYS_SEC: tuple[float, ...] = (0.5, 1.5)` next to the existing `_CLOUDFLARE_RETRY_DELAYS_SEC` at the top of the module.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Except-block ordering matters.** `PolymarketRateLimitError` subclasses `PolymarketDataAPIError`, so the rate-limit `except` MUST come before the generic-data-api `except` in the chunk loop. Both branches `continue` to the next variant. Don't reorder.
+- **Retry budgets are intentionally tight.** 2 retries / 3 total attempts at 0.5s + 1.5s = ~2-4s max latency per affected call. Sized for transient flakes; sustained upstream outages exhaust the budget and fall through to chunk-skip, which is the correct behaviour (don't make analyze take 5 minutes hoping a sustained outage clears).
+- **`_get_json` 5xx retry is generic across all gamma-api callers** — `fetch_market_resolutions`, `fetch_leaderboard`, `fetch_market_by_id` (etc.) all benefit. The chunk-skip layer is specific to `fetch_market_resolutions` because that's the only caller today with a chunk loop.
+
+**Latent bugs caught + NOT fixed (surfaced during this session; out of scope):**
+- **`PolymarketBroker.list_markets` hits identical gamma-api 5xx pattern** but uses a different code path (broker adapter, not the data-api client). Same flakiness, no retry/skip on that path. Observed 2026-05-27 10:29:46 UTC in journal: `Server error '500 Internal Server Error' for url 'https://gamma-api.polymarket.com/markets?closed=false&active=true&...'`. Filed for future session.
+- **`Kalshi copy trader: run_scan_cycle failed: name 'wallet' is not defined`** — `NameError` in a recent Kalshi copy-trader code path. Completely unrelated to today's work. Observed 2026-05-27 10:30:03 UTC.
+
+**Verification — pre-deploy:**
+- Local diff reviewed (clean — 25 + 24 lines insertion across the two commits, no churn).
+- Local file md5s: `cf1c6dc325c1ed4184931caa9e6d207a` (post-retry-only), `3810a1084c7f90e6f4a4c82e629d3952` (post-chunk-skip).
+- File line endings: LF on both local and prod (no CRLF preservation needed, unlike `webhooks.py`).
+
+**Verification — on prod (post-restarts):**
+- **First deploy (retry, `b2128bd`):** PID `1513106` → `1536228` at ~10:30 UTC. ActiveState=active. Port 8000 bound ~4-5min later. Retry warning observed firing on a real 5xx at 10:36:06 UTC: `polymarket-data-api resolutions[50 ids, chunk 0, open]: HTTP 500 on attempt 1 (2169ms); backing off 0.5s` → attempt 2 also 500 → attempt 3 raised. Proved retry is wired correctly but insufficient for sustained 5xx. Prompted second patch.
+- **Second deploy (chunk-skip, `fc7e2d6`):** PID `1536228` → `1538397` at ~13:14 UTC. ActiveState=active. Healthz `{"status":"ok","mode":"PAPER"}` post port-bind. Md5 post-deploy on prod matches local `3810a1084c7f90e6f4a4c82e629d3952`.
+- **User-observed:** operator re-clicked Analyze post-second-deploy and confirmed it works ("It worked", ~13:23 UTC). **Caveat:** 30-min log window (13:15–13:45 UTC) shows zero `analyze:` lines and zero `limit=500` activity fetches, suggesting the click hit the analyze cache rather than a fresh fetch. Chunk-skip is therefore deployed and proven not to crash, but **the new `upstream error; partial coverage` warning has not yet been observed firing on a real 5xx**. The next analyze that gets a fresh fetch + happens during a gamma-api flake will be the real-world test.
+
+**Inert / dormant on current traffic:**
+- The retry warning `HTTP NNN on attempt M; backing off Y.Ys` only fires on a true 5xx that survives the first attempt; benign as long as gamma-api is healthy.
+- The chunk-skip warning `upstream error; partial coverage` only fires after the retry budget is exhausted; benign at gamma-api's typical flake rate.
+
+**Class of bug — gamma-api flakiness affects multiple call sites.** The polymarket-data-api retry/skip pattern is a template for fixing the broker-side `list_markets` flake when that's prioritised. Same upstream, same symptom, different client.
+
+**Rollback recipe:**
+```bash
+az vm run-command invoke --resource-group rg-shared-prod --name tc-prod-vm \
+  --command-id RunShellScript --scripts "
+BASE=/home/azureuser/trading_corp
+F=trading_corp/data/polymarket_data_api_client.py
+# Full rollback to pre-retry state:
+mv \$BASE/\$F.pre-gamma5xx-retry-20260527 \$BASE/\$F
+# (Or, to roll back ONLY the chunk-skip and keep retry: mv .pre-chunkskip-20260527 instead.)
+chown azureuser:azureuser \$BASE/\$F
+systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-27 01:13–01:43 UTC — C-1 partial: webhook secrets ROTATED (2 of 13+) — KV-only; operator-driven; value-blind verification
 
 **Commits (this entry):** none code-side yet; deploy_log + BACKLOG only (pending in the commit that lands this entry). The rotation itself is a KV mutation + service restart; no source-code change.
