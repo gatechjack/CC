@@ -506,6 +506,7 @@ class PolymarketDataAPIClient:
 
         unique = list(dict.fromkeys(condition_ids))  # dedupe preserving order
         rate_limited_chunks = 0
+        upstream_error_chunks = 0
         for i in range(0, len(unique), chunk_size):
             chunk = unique[i:i + chunk_size]
             # Gamma-api default is `closed=false` (active markets only) and
@@ -514,6 +515,7 @@ class PolymarketDataAPIClient:
             base_params = [("condition_ids", c) for c in chunk]
             base_params.append(("limit", str(chunk_size)))
             chunk_rate_limited = False
+            chunk_upstream_error = False
             for variant in ("open", "closed"):
                 params = list(base_params)
                 if variant == "closed":
@@ -536,6 +538,21 @@ class PolymarketDataAPIClient:
                         i // chunk_size, variant, e,
                     )
                     continue
+                except PolymarketDataAPIError as e:
+                    # Upstream 5xx (or other non-rate-limit gamma-api error)
+                    # survived the in-client retry budget. Same fallback as
+                    # rate-limited path: skip chunk-variant, fall through to
+                    # not_found sentinels so the caller still gets a complete
+                    # dict and one bad chunk doesn't kill the whole sweep.
+                    # PolymarketRateLimitError subclasses this — the order of
+                    # except blocks above keeps it on its dedicated path.
+                    chunk_upstream_error = True
+                    log.warning(
+                        "polymarket-data-api fetch_market_resolutions chunk %d "
+                        "(%s) upstream error; partial coverage: %s",
+                        i // chunk_size, variant, e,
+                    )
+                    continue
                 if not isinstance(rows, list):
                     continue
                 for m in rows:
@@ -551,6 +568,8 @@ class PolymarketDataAPIClient:
                         out[cid] = _decode_resolution(m)
             if chunk_rate_limited:
                 rate_limited_chunks += 1
+            if chunk_upstream_error:
+                upstream_error_chunks += 1
         # Fill in "not_found" for any missing condition_ids the caller asked for
         # so downstream code can iterate without KeyError.
         for c in unique:
@@ -558,11 +577,13 @@ class PolymarketDataAPIClient:
                 out[c] = {"status": "not_found", "winning_outcome_index": None,
                           "yes_won": None, "outcomes": [], "outcome_prices": [],
                           "closed": False, "title": ""}
-        if rate_limited_chunks:
+        if rate_limited_chunks or upstream_error_chunks:
             log.warning(
-                "polymarket-data-api fetch_market_resolutions: %d/%d chunks "
-                "rate-limited; %d/%d condition_ids resolved",
+                "polymarket-data-api fetch_market_resolutions: "
+                "%d/%d chunks rate-limited, %d/%d chunks upstream-errored; "
+                "%d/%d condition_ids resolved",
                 rate_limited_chunks, (len(unique) + chunk_size - 1) // chunk_size,
+                upstream_error_chunks, (len(unique) + chunk_size - 1) // chunk_size,
                 sum(1 for c in unique if out[c]["status"] != "not_found"),
                 len(unique),
             )
