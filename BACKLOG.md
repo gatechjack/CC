@@ -8,6 +8,43 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-27 ~13:45 UTC (Wednesday early afternoon — **polymarket gamma-api 5xx resilience SHIPPED on top of analyze-whale; 2-step deploy (retry + chunk-skip); 3 commits on `main` pushed to origin; 2 anomalies surfaced + filed**)
+
+**Headline of THIS session-arc:** Operator reported analyze-whale on `/prediction-markets/polymarket_copy_trading#whales` returning "Analyze errored — check logs / PolymarketDataAPIError" across multiple wallets. Root cause: `gamma-api.polymarket.com/markets?condition_ids=...` intermittently 500s on individual chunk calls; one bad chunk in `fetch_market_resolutions` killed the entire analyze. Shipped two-step fix: (1) 5xx retry+backoff in `_get_json` proved insufficient when retry budget exhausted on sustained chunk-0 5xx across 3 wallets (RTERK43357, bloodmaster, 0x7714c16f); (2) chunk-skip in `fetch_market_resolutions` (mirror existing rate-limit handling) closes the surface. User confirmed analyze working post-second-deploy.
+
+**`origin/main` head after this session:** `dca7e30`. Commits this session-arc: `b2128bd` (retry), `fc7e2d6` (chunk-skip), `dca7e30` (deploy_log). All three pushed.
+
+**What's running on prod (touched THIS session):**
+
+- `trading_corp/data/polymarket_data_api_client.py` — md5 `3810a1084c7f90e6f4a4c82e629d3952` (LF on prod; matches git HEAD blob). Two backup tags on prod: `.pre-gamma5xx-retry-20260527` (pre-`b2128bd`) and `.pre-chunkskip-20260527` (post-retry, pre-chunk-skip).
+- Service: PID `1513106` (from earlier session) → `1536228` (retry deploy ~10:30 UTC) → `1538397` (chunk-skip deploy ~13:14 UTC). ActiveState=active. Healthz `{"status":"ok","mode":"PAPER"}` post both port-binds.
+- New WARNING shapes that may appear in journals:
+  - `polymarket-data-api LABEL: HTTP NNN on attempt M (XXXms); backing off Y.Ys` (retry firing)
+  - `polymarket-data-api fetch_market_resolutions chunk N (variant) upstream error; partial coverage: ERR` (chunk-skip firing)
+  - `polymarket-data-api fetch_market_resolutions: N/M chunks rate-limited, N/M chunks upstream-errored; X/Y condition_ids resolved` (summary line, new "upstream-errored" axis)
+
+**Verification caveat:** Retry warning WAS observed firing on a real 5xx (10:36:06 UTC, 3-attempt exhaust). Chunk-skip warning has NOT been observed firing yet — user's post-deploy click likely hit the analyze cache (no `limit=500` activity fetches in the 30-min log window). Code is deployed and confirmed not to crash; the chunk-skip path will exercise next time a fresh analyze coincides with a gamma-api flake.
+
+**Items RETIRED this session:** none — this was an inbound bug-report fix, not a planned backlog pull.
+
+**Items NEWLY OPEN (filed from this session):**
+
+1. **`PolymarketBroker.list_markets` hits identical gamma-api 5xx pattern** — different code path (broker adapter, not the data-api client). Observed 2026-05-27 10:29:46 UTC: `Server error '500 Internal Server Error' for url 'https://gamma-api.polymarket.com/markets?closed=false&active=true&...'`. Same flakiness, no retry/skip on that client. **Fix template:** mirror today's `_get_json` retry + the chunk-loop tolerance — the patterns transfer directly. P2 (only affects the periodic list_markets sweep; doesn't kill a user-facing surface today).
+2. **`Kalshi copy trader: run_scan_cycle failed: name 'wallet' is not defined`** — `NameError` in a recent Kalshi copy-trader scan path. Observed 2026-05-27 10:30:03 UTC. Completely unrelated to today's polymarket work; flagged for triage. P2 (the cycle errors out cleanly per the log; doesn't crash the process; but the strategy isn't running its intended logic).
+3. **Verify chunk-skip warning on real 5xx** — next analyze on a previously-failing whale that hits a fresh fetch + gamma-api flake should log the new `upstream error; partial coverage` line. P3 watch-item; will close itself the first time a non-cached analyze coincides with a flake.
+
+**Highest-leverage open items remaining (carried from prior EOS — handoff to next session):**
+
+1. **C-1 remaining 11+ credentials** (each its own per-portal session — full list in EOS 2026-05-27 ~01:55 UTC below). Still the only CRITICAL open.
+2. **Sun 2026-05-31 ~13:00 UTC pm-watchlist weekly seed fire** — first under clustering + PnL aggregation fixes (LATENT since 2026-05-26 01:42 UTC). 6-criterion verification gate.
+3. **PolymarketBroker.list_markets retry/skip patch** (new this session, see above) — small follow-up that benefits the same code class.
+4. **Kalshi copy trader NameError triage** (new this session, see above).
+5. **Bug 4 (`tastytrade_provider.py` get_history dead branch)** (P2 MEDIUM, IC-adjacent).
+6. **43 deferred package bumps** (P1).
+7. **`bitunix_atr_snapshot` observability audit kind** (P2 — silent-fallback class).
+
+---
+
 ## EOS snapshot — 2026-05-27 ~01:55 UTC (Wednesday early morning — **C-1 PARTIAL: webhook secrets (2 of 13+) ROTATED; remaining 11+ explicitly DEFERRED to per-portal sessions; C-7 scrub stress-tested under real-world rotation traffic, all 8 in-window bad_secret rows REDACTED**)
 
 **Headline of THIS session-arc:** Rotated `LORD_OTTER_WEBHOOK_SECRET` + `MARKET_CYPHER_WEBHOOK_SECRET` in KV (vault `kv-tc-vtwbowt3wtkpy`) end-to-end with strict value-blind discipline — secret values never traversed any Claude Code surface; all value-handling was operator-side in a separate Git Bash window OUTSIDE Claude. Agent provided the KV-write block + a prod-side value-blind verification script; operator generated, wrote-to-KV, and updated 50 TradingView alert templates; agent verified via KV version IDs + HTTP status codes (4/4 PASS) + post-scrub audit rows. The **C-7 scrub got its first real-world stress test**: during the rotation window, 6 TV alerts hit prod with NEW-secret-in-body vs OLD-secret-in-env mismatch → all 6 bad_secret rejection audit rows carry `"secret": "***REDACTED***"`, plus 2 verification rejections also REDACTED — 8 of 8 scrub coverage on the live rotation event. **First-rotation attempt earlier in the session (transcript-exposed candidate values) never actually wrote to KV** (agent caught the version-ID stall before any prod restart) and never reached TV templates — the exposure surface is artifact-only, closed by never-was-live + clean re-rotation chain.
