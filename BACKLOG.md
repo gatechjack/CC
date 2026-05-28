@@ -8,6 +8,66 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-28 ~00:35 UTC (Wednesday late evening / Thursday early UTC — **bitunix PA 2-of-3 LIVE + dashboard cleanup shipped + consolidation proposal approved; full 5-panel rebuild deferred to a separate session; 3 commits on `main` all pushed**)
+
+**Headline of THIS session-arc:** Operator requested an evaluation of why bitunix is producing only 3 trades in 5 days post the 2026-05-23 15:52 UTC bias-TTL deploy. Funnel diagnostic surfaced 99.06% PA-reject rate with 52.2% of rejects failing ALL three validators. Read-only replay (`scripts/replay_pa_validation_alt.py` shipped at `9606b9f`) characterized the 1,494-row all-three-failed bucket: **0% solo signals, 87.4% are 3+ signal stacks** — refuted the "score over-generous" hypothesis, supported "PA too strict on legitimate confluence" (likely 3m signals vs 4h structure horizon mismatch). Operator approved the replay-justified structural fix: `pa_validation.require_all: true → false` + add `min_validators_passed: 2` (both knobs required — single-knob would disable PA entirely because default is 0). Deployed at `07eb542` (config change, restart at 23:18:19 UTC, PID `1538397` → `1571555`). Then opened a dashboard consolidation thread: read-only audit + 4 verifications + written proposal at `runbooks/2026-05-27_bitunix_dashboard_consolidation_proposal.md`; operator approved with all 6 Section F decisions including a small standalone cleanup-first PR. Shipped at `3d9d9d3` (template cuts: "Phase 3.2" label, "Recent Evaluations" duplicate, bar-cache aggregate; restart at 00:16:49 UTC, PID `1571555` → `1576923`). Full 5-panel rebuild deferred to a separate session per the proposal spec.
+
+**`origin/main` head after this session:** `3d9d9d3`. Commits this session-arc (all on `main`, all pushed):
+
+- **`9606b9f`** — `bitunix: read-only PA-validation replay + score<->PA hypothesis verdict` (3 files: `scripts/replay_pa_validation_alt.py` + `reports/2026-05-27_bitunix_pa_replay.txt` + `reports/2026-05-27_bitunix_pa_replay_synthesis.md`).
+- **`07eb542`** — `bitunix pa_validation: loosen to >=2 of 3 (require_all false + min_validators_passed 2)` (3 files: `config/strategies.yaml` + `runbooks/deploy_log.md` + `BACKLOG.md`).
+- **`3d9d9d3`** — `bitunix dashboard: small-PR cleanup (Phase 3.2 label + Recent Evaluations + bar-cache aggregate) + consolidation proposal` (3 files: `trading_corp/web/templates/partials/bitunix_score_panel.html` + `runbooks/2026-05-27_bitunix_dashboard_consolidation_proposal.md` + `BACKLOG.md`).
+
+**What's running on prod (touched THIS session):**
+
+- `config/strategies.yaml` — prod md5 `ed8e452d85fafb5132dd0c8e01f55511` (1775 lines, CRLF, +1 line vs pre-session). `require_all: false` + `min_validators_passed: 2` at lines 1231-1232. Backup tag: `strategies.yaml.pre-pa-2of3-20260527`.
+- `trading_corp/web/templates/partials/bitunix_score_panel.html` — prod md5 `62f085be373d9264d1eb69bf6a5d7ec8` (291 lines, CRLF, -77 lines vs pre-session). Phase 3.2 label + Recent Evaluations table + bar-cache aggregate card all cut. Backup tag: `bitunix_score_panel.html.pre-dashboard-cleanup-20260527`.
+- Service: PID `1538397` → `1571555` (PA deploy, 23:18:19 UTC) → `1576923` (dashboard cleanup, 00:16:49 UTC). ActiveState=active. NRestarts=0 on both. Healthz `{"status":"ok","mode":"PAPER"}` post each port-bind (~5min IC catch-up window per restart).
+- Observer wiring (last restart): `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True`. Bitunix bar caches primed (3m ATR_14=$95.34 — above `[[bitunix-paper-clock]]` $90 tripwire threshold).
+
+**Verification caveat:** PA 2-of-3 change went live at 23:18 UTC. ~30 min later, today's UTC-day funnel snapshot showed 540 evals → 12 PA pass (2.2%, up from baseline 0.94%) → 3 HTF pass (75% hard-zeroed by `proximity_to_support`) → 3 placed. Most of those PA passes are in the post-deploy window. The 3 placed trades from earlier today were all **WINS at R +0.13, +0.92, +0.81 (avg +0.62)** — tiny sample, do NOT declare PA 2-of-3 victory yet. The 1-week observation window closes **2026-06-03 ~23:18 UTC**.
+
+**Items RETIRED this session:** none in the strict sense — this session opened the PA 2-of-3 thread (now observation-window-pending) and the dashboard consolidation thread (cleanup shipped, rebuild filed).
+
+**Items NEWLY OPEN (filed from this session):**
+
+1. **bitunix PA 2-of-3 observation window** (P1) — closes 2026-06-03 ~23:18 UTC. Watch: fires/day vs 0.75/day baseline (replay est. ~15/day); outcomes (TP vs SL hit, R-multiples) on new fires; which validator-pair carries each pass (`pa_validation_decision.payload_json.passed`). Rollback recipe in deploy_log entry. **Don't declare victory on fire-count alone.**
+2. **bitunix `actual_pnl_dollars` persistence** (P2 MEDIUM) — column exists in `paper_trade_record`; value is 0.00 on every row. `result` + `actual_r_multiple` ARE populated correctly. Filed BACKLOG P2; fix is computing notional × R-multiple × dollar-per-R at trade close in the position reconciler. Gates the dashboard Observation Window panel's `$PnL` cell; non-blocking for win-rate / R-avg cells.
+3. **bitunix dashboard full 5-panel rebuild** (P2 MEDIUM) — spec at `runbooks/2026-05-27_bitunix_dashboard_consolidation_proposal.md`. Panels 1-5 (Status Header / Today's Funnel / PA Validator-Pair Distribution / Observation Window / Recent Paper Fires + Outcomes) + on-demand `/division/bitunix_futures/debug` route + Recent Activity whitelist fix (V3 of proposal).
+4. **bitunix PA validator raw-input audit** (P2 MEDIUM, instrumentation) — `passed`/`failed` are captured; raw inputs each validator computed (e.g., what bars `structure_alignment` actually used, what session VWAP was) are NOT. Filed for post-observation-window pickup so a future replay can split "validator computed wrong" from "horizon legitimately disagrees with 3m stack."
+
+**Anomalies surfaced + filed (NOT acted on this session):**
+
+- **Local-prod `config/strategies.yaml` divergence beyond comments.** Local has the `tasty_options:` block (commit `94b3129`, 2026-05-24 "Commit 4/5"); prod does NOT have any `tasty_options:` entry. Local is 1849 lines vs prod 1775 (74-line divergence beyond the 1 line added today). Per `[[tasty-options-paper-clock]]` memory, tasty_options is supposed to be on prod. Filed P3 ANOMALY in BACKLOG. Investigate before next tasty_options touch — the strategy can't be reading its config if not in prod's YAML.
+- **Local vs prod `strategies.yaml` comment divergence (cosmetic, intentional).** Local has `# 2026-05-27: was true; loosen to >=2 of 3 per replay (9606b9f synthesis)` etc. on the two PA lines; prod has bare lines (sed-style surgical patch doesn't carry comments). Semantically identical. Local md5 `60526f15…` vs prod md5 `ed8e452d…`. Do NOT "fix" by mass-replacing prod with local — that would silently deploy the tasty_options block.
+
+**Highest-leverage open items remaining (carried + new — handoff to next session):**
+
+1. **C-1 remaining 11+ credentials** (each per-portal session). Still the only CRITICAL open.
+2. **Sun 2026-05-31 ~13:00 UTC pm-watchlist weekly seed fire** — first under clustering + PnL aggregation fixes. 6-criterion verification gate.
+3. **bitunix PA 2-of-3 observation window** (new this session, closes 2026-06-03).
+4. **bitunix dashboard full 5-panel rebuild** (new this session, spec at proposal MD).
+5. **bitunix `actual_pnl_dollars` persistence** (new this session, P2 MEDIUM).
+6. **bitunix PA validator raw-input audit** (new this session, P2 MEDIUM, instrumentation).
+7. **PolymarketBroker.list_markets retry/skip patch** (carried from earlier today — small follow-up).
+8. **Kalshi copy trader NameError triage** (carried from earlier today).
+9. **Bug 4 (`tastytrade_provider.py` get_history dead branch)** (P2 MEDIUM, IC-adjacent).
+10. **43 deferred package bumps** (P1).
+11. **`bitunix_atr_snapshot` observability audit kind** (P2).
+12. **Local-prod `tasty_options` YAML divergence** (P3 ANOMALY).
+
+**Process learnings carried forward:**
+
+- **Two-knob discipline on PA loosening is load-bearing.** `pa_validation.require_all: false` alone makes `min_validators_passed` default to 0, which means PA passes EVERYTHING. The replay's 18.4% PA-pass estimate assumed both knobs. Single-knob flip would have shipped a materially different change than analyzed. Caught pre-deploy via reading `bitunix_pa_validation.py:96, 254-262` — generalizes to "always read the dataclass defaults of any field your YAML edit interacts with."
+- **prior-session premise correction (V1 of dashboard proposal).** Prior session's funnel diagnostic claimed bitunix paper trades aren't in `paper_trade_record`. They ARE — 76 rows keyed by `division='bitunix_futures'`. The gap is narrower than thought (dollar PnL not computed; outcomes ARE captured). Useful reminder: re-verify "negative" findings before building a fix scope around them.
+- **Templates don't need restart on Jinja2.** Per `[[reference-prod-systemd-units]]`, templates auto-reload. The dashboard cleanup restart was ceremonial (operator-requested) — Jinja would have served the new template on next request without it. Worth knowing for future presentation-only deploys (you can skip the 5-min strategy-pause).
+
+**Memory updates this session (filed in commits):**
+
+- **NEW `project_bitunix_pa_2of3_deploy.md`** — points at deploy SHA, observation-window close date, watch-criteria, rollback path. Filed in this EOS commit.
+
+---
+
 ## EOS snapshot — 2026-05-27 ~13:45 UTC (Wednesday early afternoon — **polymarket gamma-api 5xx resilience SHIPPED on top of analyze-whale; 2-step deploy (retry + chunk-skip); 3 commits on `main` pushed to origin; 2 anomalies surfaced + filed**)
 
 **Headline of THIS session-arc:** Operator reported analyze-whale on `/prediction-markets/polymarket_copy_trading#whales` returning "Analyze errored — check logs / PolymarketDataAPIError" across multiple wallets. Root cause: `gamma-api.polymarket.com/markets?condition_ids=...` intermittently 500s on individual chunk calls; one bad chunk in `fetch_market_resolutions` killed the entire analyze. Shipped two-step fix: (1) 5xx retry+backoff in `_get_json` proved insufficient when retry budget exhausted on sustained chunk-0 5xx across 3 wallets (RTERK43357, bloodmaster, 0x7714c16f); (2) chunk-skip in `fetch_market_resolutions` (mirror existing rate-limit handling) closes the surface. User confirmed analyze working post-second-deploy.

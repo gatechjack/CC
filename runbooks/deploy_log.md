@@ -76,6 +76,54 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-28 00:16 UTC — bitunix dashboard: small-PR clutter cleanup (Phase 3.2 label + Recent Evaluations + bar-cache aggregate)
+
+**Commits (this entry):**
+- `3d9d9d3` — `bitunix dashboard: small-PR cleanup (Phase 3.2 label + Recent Evaluations + bar-cache aggregate) + consolidation proposal`
+
+**Triggered by:** Operator-approved small standalone PR per Section F item 6 of `runbooks/2026-05-27_bitunix_dashboard_consolidation_proposal.md`. Full 5-panel rebuild deferred to a separate session. This deploy cuts cheap visible clutter so the dashboard reads cleaner today without prejudging the broader layout change.
+
+**Backup tag:** `/home/azureuser/trading_corp/trading_corp/web/templates/partials/bitunix_score_panel.html.pre-dashboard-cleanup-20260527` (md5 `9d30d6bad06233bf5f68bb1040ac06b3`, pre-cut state).
+
+**Files deployed (1):**
+- `trading_corp/web/templates/partials/bitunix_score_panel.html` — pre md5 `9d30d6ba…` (368 lines, 17039 B), post md5 `62f085be373d9264d1eb69bf6a5d7ec8` (291 lines, 13747 B). Net −77 lines / −3292 B. CRLF preserved. Owner root:root preserved (sudo cp from /tmp stage). Deployed via base64-encoded payload + `sudo cp /tmp` (the standard prod-bypass-git template deploy pattern).
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **"(Phase 3.2)" header label removed.** Internal versioning text gone from the H2; dashboard is not release notes. Docstring at template line 1 still references `Phase 3.2.3` (developer comment, not user-visible).
+- **Bar-cache aggregate stat card removed** from the top-row stat-card grid. Per-TF version in the HTF Regime panel (still rendered) is the canonical bar-cache view. View-builder still populates `bs.bar_cache` in the dict (no data layer change); only the render block was cut.
+- **"Recent evaluations (20) · ledger 24h" table removed** from the score panel. Was a duplicate of Decision Flow's chained view per V1 of the consolidation proposal. View-builder still populates `bs.recent_evals` + `bs.ledger_window` (no data layer change); only the render block was cut.
+- **Top-row stat-card grid retuned** `grid-cols-2 lg:grid-cols-4 → grid-cols-2 lg:grid-cols-3` so the 3 remaining cards (Last eval / Net score / Cooldown) fit cleanly on desktop.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Templates auto-reload on Jinja2 — restart was ceremonial.** Per `[[reference-prod-systemd-units]]`. The 5-min strategy-pause restart was operator-requested for paranoia + journal-clean confirmation. Future presentation-only template deploys can skip the restart unless an operator wants the verification.
+- **View-builder code unchanged.** Both `bar_cache` and `recent_evals` keys still populate in the view dict (so any future re-render is a one-liner). Presentation-only cut. Filed Section F item 6's "see the cleanup impact before committing to the full layout change" — that's the intent of this small-PR-first sequence.
+
+**Verification — pre-deploy:**
+- Pre-flight grep for `#bitunix-score-panel`, `bs.bar_cache`, `bs.recent_evals` confirmed references contained to `bitunix_score_panel.html` only. No other partial hx-selects into the cut sections.
+- 3 surgical Edits via the local Edit tool (CRLF preserved on local).
+
+**Verification — on prod (post-restart):**
+- **PIDs:** `1571555` (pre, since 2026-05-27 23:18:19 UTC) → `1576923` (post, since 2026-05-28 00:16:49 UTC). NRestarts=0. ActiveState=active.
+- **Healthz local:** `{"status":"ok","mode":"PAPER"}` post port-bind (~5 min IC catch-up window, normal).
+- **Loaded template via `/proc/1576923/root/.../bitunix_score_panel.html`:** md5 `62f085be373d9264d1eb69bf6a5d7ec8` (exact post-patch).
+- **Observer wiring line:** `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True`.
+- **No template parse errors in journal** since restart. Bitunix bar caches primed.
+- **Browser-side render not verified by agent** (Authelia gates localhost curl from prod); operator's next dashboard load is the final ground-truth check. The cuts should be immediately visible.
+
+**Inert / dormant on current traffic:**
+- View-builder still computes `bar_cache` + `recent_evals` payloads on every request. Tiny waste — kept intentionally so a one-line template edit could restore the displays. Will be cleaned up as part of the full 5-panel rebuild.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+sudo cp /home/azureuser/trading_corp/trading_corp/web/templates/partials/bitunix_score_panel.html.pre-dashboard-cleanup-20260527 \
+        /home/azureuser/trading_corp/trading_corp/web/templates/partials/bitunix_score_panel.html
+# No restart needed — Jinja auto-reloads templates.
+"
+```
+
+---
+
 ## 2026-05-27 23:18 UTC — bitunix PA validation: loosen to >=2 of 3 (`require_all: false` + `min_validators_passed: 2`)
 
 **Commits (this entry):** (config-only deploy + this entry; commit to follow)
