@@ -76,6 +76,34 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-28 ~03:4x UTC — bitunix telegram lifecycle notifications (Phase 2: TP fills + SL moves + close-out)
+
+**Commits (this entry):** `52ca294` — `bitunix: telegram lifecycle notifications (Phase 2 — TP fills + close-out)`. deploy_log in the follow-up commit.
+**Triggered by:** Phase 2 of the telegram-lifecycle work (gated on Phase 1 prod verification, which passed — row `c8f25d17`).
+**Backup tags:** `.pre-p2notifier-20260528` on `paper_trade_replay.py` + `main.py`. New module `bitunix_lifecycle_notifier.py` is first-shipment (no backup).
+
+**Files deployed (3):**
+- `trading_corp/comms/bitunix_lifecycle_notifier.py` — NEW (md5 `e232e8a0…`). `BitunixLifecycleNotifier`: one canonical helper. `notify_tp_fill` (TP1/TP2 + bundled SL move) + `notify_close_out` (TP3/SL/expired with path, R, $PnL, held). Per-mode prefix `📄 [PAPER]` / `💸 [LIVE]`. Send wrapped in try/except → writes `telegram_notification_failed` audit on failure; never raises.
+- `trading_corp/agents/paper_trade_replay.py` — md5 `6099d066…` → `6f389d18…`. Queues lifecycle events during the sync classifier walk (`_queue_tp_fill_notification` in `_emit_audit`) + after `_update_row` (`_queue_close_out_notification`); drains async at tick end (`_drain_notify_queue`). `set_lifecycle_notifier()` injects the channel-backed notifier. Idempotent: TP events fire only on the tick a leg transitions (resumed `filled_legs` prevent re-emit); close-out fires once (result-IS-NULL filter).
+- `trading_corp/main.py` — md5 `6636b2c0…` → `cacc46ed…`. Constructs + wires the notifier AFTER the startup catch-up, so the backfill of resolutions missed during downtime stays SILENT — only going-forward live resolutions ping.
+
+**⚠️ Prod main.py drift noted (pre-existing, NOT introduced here):** prod `main.py` was at `6636b2c0…` = `94b3129~1` (PRE-tasty_options). The 136-line tasty_options wiring from commit `94b3129` was never deployed to prod — this is the BACKLOG P3 `tasty_options` anomaly, confirmed from the main.py side. My notifier hunk sits between tasty_options hunks (line 1188 and 1471), in untouched territory, so `patch -p1` applied cleanly at offset -77. Prod main.py now = pre-tasty + notifier hunk (`cacc46ed…`); it STILL lacks tasty_options wiring (separate anomaly, unchanged by this deploy).
+
+**Failure semantics:** observability-only. Notifier send failure → `telegram_notification_failed` audit row + warning log; the replay tick continues unaffected. The drain wrapper also catches malformed-event formatting errors. Never blocks/delays/modifies the trade lifecycle.
+
+**Service:** PID `1604244` → `1619576`. ActiveState=active, SubState=running, NRestarts=0.
+
+**Verification:**
+- Pre-deploy: prod md5 of `paper_trade_replay.py` == HEAD~1 blob (no drift). `main.py` drift root-caused (pre-tasty). Patch dry-run clean on prod (main hunk offset -77). New-module md5 `e232e8a0…` verified post-transfer.
+- Post-patch md5s all match locally-simulated expected. `ast.parse` OK on all 3. Import check OK (`BitunixLifecycleNotifier` + `set_lifecycle_notifier`).
+- Tests: 97 pass (boot smoke + replay + notifier unit (7) + replay integration (2: TP1→TP2→TP3 sequence + no-notifier safety) + observer v2 + reconciler + paper_trade_record + telegram_batcher).
+- Post-restart: service active, all scanners online (journal 03:53:25), 0 fatals/tracebacks, IC startup catch-up in progress (port-bind/healthz completes after catch-up — the usual multi-minute window). Notifier-error count = 0.
+- **ACCEPTANCE (real telegram from a real lifecycle): PENDING** — needs a new bitunix trade to resolve post-restart (PID 1619576). The actual Telegram message is operator-side (agent can't read the operator's phone). Prod-side proxy to confirm the notifier fired clean: a post-restart resolution + zero `telegram_notification_failed` audit rows + zero "lifecycle notify drain failed" warnings. Operator confirms the message(s) arrived.
+
+**Rollback:** `cd /home/azureuser/trading_corp && for f in trading_corp/agents/paper_trade_replay.py trading_corp/main.py; do cp -a $f.pre-p2notifier-20260528 $f; done && rm -f trading_corp/comms/bitunix_lifecycle_notifier.py && sudo systemctl restart trading-corp.service`.
+
+---
+
 ## 2026-05-28 ~02:5x UTC — bitunix v2 $PnL persistence fix (score-path `expected_gain`/`tp_r_multiple` oversight) + 7-row backfill
 
 **Commits (this entry):** `bc9d188` — `bitunix v2: populate expected_gain_if_tp_hit + tp_r_multiple in _build_proposal_v2` (code + test + backfill script). Docs/corrections in the follow-up commit.
