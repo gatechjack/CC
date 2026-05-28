@@ -8,6 +8,57 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-28 ~04:00 UTC (Thursday early UTC — **bitunix telegram lifecycle notifications: TWO-PHASE GATED arc. Phase 1 ($PnL persistence fix) SHIPPED + live-verified; Phase 2 (lifecycle notifier) DEPLOYED + healthz-green, acceptance pending a live lifecycle. 4 commits on `main`, all pushed.**)
+
+**Headline:** Operator approved building Telegram lifecycle notifications (TP1/TP2/TP3 fills + SL moves + close-out) for bitunix paper trades, in two gated phases. **Phase 1 was a prereq $PnL-persistence fix** — and the §D.3 prod diagnostic **REFUTED the proposal's premise**: NOT "all 76 rows `actual_pnl_dollars=0.00`" (that was a 3-row-sample over-generalization from the dashboard proposal V1). Reality: 78 rows, only **10 zero** — 3 correctly-zero `expired` + 7 partial-win SCORE-path rows. Root cause was a narrow oversight: `_build_proposal_v2` (the path the SCORE entry uses) omitted `expected_gain_if_tp_hit` + `tp_r_multiple` that the legacy `_build_proposal` (traditional path) sets, so `paper_trade_replay.py:526-531/569-571` fell to $0 on partial-win/TP3 closes. Fixed in the v2 builder with the semantically-correct **blended-R** value (`Σ leg.fraction×leg.target_r`), which preserves the replay invariant `expected_gain/tp_r_multiple == max_dollar_risk`. Backfilled the 7 rows (+$1.46). Then built **Phase 2**: a canonical `BitunixLifecycleNotifier` hooked into the replay (TP-fill queue in `_emit_audit`, close-out queue after `_update_row`, async drain at tick end), reusing the existing `TelegramChannel`, wired AFTER startup-catch-up so restart-backfills stay silent.
+
+**`origin/main` head after this arc:** `b50e491` (a PARALLEL kalshi_weather EOS commit landed on top — see entry below; bitunix arc = `9256d0b` and its 3 ancestors). Commits this arc (all pushed):
+- **`bc9d188`** — `bitunix v2: populate expected_gain_if_tp_hit + tp_r_multiple in _build_proposal_v2` (code + test + backfill script).
+- **`5979239`** — `deploy_log + proposal corrections: bitunix v2 $PnL fix (Phase 1) + 7-row backfill`.
+- **`52ca294`** — `bitunix: telegram lifecycle notifications (Phase 2 — TP fills + close-out)` (notifier module + replay hooks + main.py wiring + tests).
+- **`9256d0b`** — `deploy_log: bitunix telegram lifecycle Phase 2 deployed`.
+- (`58c135f` from the prior session = the proposal MD itself.)
+
+**What's running on prod (touched this arc):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — md5 `d31bed3d…` (was `5b7d342b…`). v2 builder now sets the two PnL-compute fields. Backup `.pre-pnlfix-20260528`.
+- `trading_corp/agents/paper_trade_replay.py` — md5 `6f389d18…` (was `6099d066…`→ via Phase1 → Phase2). Defensive null-warning + lifecycle-notification hooks. Backups `.pre-pnlfix-20260528` (Phase1) + `.pre-p2notifier-20260528` (Phase2).
+- `trading_corp/comms/bitunix_lifecycle_notifier.py` — NEW, md5 `e232e8a0…`. First shipment.
+- `trading_corp/main.py` — md5 `cacc46ed…` (was `6636b2c0…`). Notifier wiring added.
+- DB: `data/trading_corp.db.pre-pnl-backfill-20260528` backup (md5 `7406a694…`) before the 7-row backfill.
+- Service: PID `1604244` → `1619576` (Phase 2 restart). ActiveState=active. Healthz `{"status":"ok","mode":"PAPER"}`.
+
+**⚠️ Prod `main.py` DRIFT confirmed (pre-existing, NOT introduced):** prod `main.py` was `6636b2c0` = `94b3129~1` — the **PRE-tasty_options** version. The 136-line tasty_options main.py wiring (commit `94b3129`) was **never deployed to prod**. This corroborates the BACKLOG P3 `tasty_options` anomaly from the main.py side (previously only seen on strategies.yaml). My notifier hunk sits between tasty_options hunks (lines 1188/1471) in untouched territory, so `patch -p1` applied surgically at offset −77; prod main.py STILL lacks tasty_options wiring (unchanged — that anomaly is unresolved).
+
+**Phase 1 live verification (the gate that cleared Phase 2):** post-deploy score-path trade `c8f25d17` fired 2026-05-28T03:18:06, resolved `win`: `expected_gain=0.1023`, `tp_r_multiple=1.33225` (both NULL before the fix), `actual_pnl_dollars=0.1023` (non-zero). Invariant `eg/tpR=0.0768=−expected_loss=max_dollar_risk` holds.
+
+**Phase 2 acceptance STILL PENDING (the one open thing):** the actual Telegram message is operator-side (agent can't read the phone). At wrap there were **0 open bitunix trades** and zero resolutions after the 03:53 restart, so the notifier hasn't fired live yet. **Next session: verify the notifier fired clean on the first post-restart resolution** with:
+```sql
+-- resolutions after the Phase-2 restart:
+SELECT order_id, result_ts, result, actual_pnl_dollars,
+       json_extract(extra_json,'$.score_path') AS score
+FROM paper_trade_record
+WHERE division='bitunix_futures' AND result IS NOT NULL
+  AND result_ts >= '2026-05-28T03:53:00' ORDER BY result_ts DESC;
+-- must be ZERO failed-notify rows:
+SELECT COUNT(*) FROM audit_event WHERE kind='telegram_notification_failed';
+```
+A resolution present + zero `telegram_notification_failed` rows + no "lifecycle notify drain failed" journal warning = notifier fired clean. Operator confirms the 📄 [PAPER] message(s) arrived on Telegram.
+
+**Items NEWLY OPEN (filed from this arc):**
+
+1. **Phase 2 lifecycle-notifier live acceptance** (P1, quick) — run the two queries above + operator confirms the Telegram message. Closes the deploy_log `<ACCEPTANCE PENDING>` line.
+2. **Entry-notification consolidation + `(paper)` vs `(paper, score)` divergence** (P3, follow-up) — the two existing entry-path Telegram sends (`bitunix_futures_observer.py:1557-1573` score + `:2429-2446` traditional) were intentionally NOT touched this arc (per proposal §H#2: don't retro-touch entry templates this PR). The `BitunixLifecycleNotifier` is built generically so entry CAN adopt it + the unified `📄 [PAPER]` prefix when entry is next touched. Small latent divergence; defer.
+3. **bitunix paper-mode cost-accrual (fees + funding)** (P2 MEDIUM) — already filed (BACKLOG P2); lifecycle close-out messages show literal `Fees: not tracked in paper` / `Funding: not tracked in paper` until this lands.
+4. **`tasty_options` main.py wiring missing from prod** (P3 ANOMALY) — now confirmed on BOTH strategies.yaml AND main.py. Prod runs `94b3129~1`. The tasty_options division can't be live on prod. Decide: deploy `94b3129`'s main.py+yaml to prod, or revert the local commit. Investigate before any tasty_options work.
+
+**Process learnings carried forward:**
+- **`[[verify-premises-against-ground-truth]]` paid off again (6th instance).** The proposal's "all 76 rows = 0.00" came from a 3-row dashboard sample; the prod diagnostic found 7/78. Always run the SELECT before scoping a fix on a "negative" finding. The §D.3 stop-and-report gate fired exactly as designed.
+- **`[[deploy-import-graph-audit]]` / "verify prod state" caught the main.py drift.** md5-diffing prod against the pre-deploy blob revealed prod ≠ git HEAD; root-caused to the un-deployed tasty_options commit before patching. Surgical `patch -p1` (not full-file replace) preserved the drift safely.
+- **Delegated the mechanical notifier module + unit tests to Sonnet** (`[[delegate-to-sonnet]]`); kept the subtle async hook-wiring + deploy judgment on Opus. Reviewed the generated code before wiring.
+- **Notifier wired AFTER startup catch-up** so restart-backfills don't spam — the replay re-resolves all pending rows on boot, which would otherwise fire stale close-outs. Going-forward live resolutions only.
+
+---
+
 ## EOS snapshot — 2026-05-28 ~02:00 UTC (Thursday early UTC — **READ-ONLY kalshi_weather investigation arc: bias-offset TRACK A sanity PASS + YES/NO bet-structure forensics. ZERO code changes, ZERO deploys, 1 commit (this BACKLOG EOS only). git HEAD already at `9256d0b` from PARALLEL bitunix sessions — this session did NOT touch that work.**)
 
 **Scope discipline note:** This session ran entirely read-only against prod sqlite (`az vm run-command` + sqlite3). No source files were edited; no prod state changed; local==prod for all kalshi_weather code. The only repo write is this EOS. The git log above this commit (`9256d0b`, `52ca294`, `5979239`, …) is a parallel bitunix telegram-lifecycle arc — NOT documented here because it's not this session's work (that arc has no EOS past the 2026-05-28 00:35 entry below; flag for whoever owns bitunix).
