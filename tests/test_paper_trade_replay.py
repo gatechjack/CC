@@ -603,3 +603,88 @@ def test_v2_aggregate_r_helper_matches_option_c_arithmetic():
         tp_plan=tp_plan, filled_legs=[], exit_price=95.0,
     )
     assert r == -1.0
+
+
+# ── lifecycle notification hook (Telegram) ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_replay_tick_fires_lifecycle_notifications(tmp_db):
+    """End-to-end: a v2 bitunix trade resolving TP1→TP2→TP3 fires
+    notify_tp_fill for tp1 + tp2 and one notify_close_out, in order."""
+    from trading_corp.agents.paper_trade_replay import set_lifecycle_notifier
+
+    init_db(tmp_db)
+    tp_plan = [
+        {"leg": "tp1", "fraction": 0.25, "target_r": 0.5, "price": 102.5,
+         "stop_action": "move_to_breakeven"},
+        {"leg": "tp2", "fraction": 0.50, "target_r": 1.0, "price": 105.0,
+         "stop_action": "move_to_tp1"},
+        {"leg": "tp3", "fraction": 0.25, "target_r": 2.5, "price": 112.5,
+         "stop_action": "trail_atr"},
+    ]
+    rec = PaperTradeRecord(
+        order_id="v2-life", ts="2026-05-02T00:00:00+00:00",
+        strategy="bitunix_futures", division="bitunix_futures",
+        symbol="BTCUSDT.P", side="buy", qty=0.01,
+        tier="STANDARD", source_signal="x",
+        entry_reference_price=100.0, stop_price=95.0, tp_price=112.5,
+        tp_r_multiple=1.25, expected_loss=-50.0, expected_gain=62.5,
+        rr_ratio=1.25, max_hold_seconds=86400,
+    )
+    rec.extra = {"tp_plan": tp_plan, "tp_plan_version": "v2"}
+    insert_paper_trade_record(rec.to_db_row(), db_url=tmp_db)
+
+    class _StubNotifier:
+        def __init__(self) -> None:
+            self.tp_fills: list[dict] = []
+            self.close_outs: list[dict] = []
+
+        async def notify_tp_fill(self, **kw):
+            self.tp_fills.append(kw)
+
+        async def notify_close_out(self, **kw):
+            self.close_outs.append(kw)
+
+    stub = _StubNotifier()
+    set_lifecycle_notifier(stub)
+    try:
+        async def mock_fetcher(symbol, timeframe, since_ms, limit):
+            return [
+                _bar(since_ms, 100, 102.7, 99.5, 102.5),            # tp1
+                _bar(since_ms + 60_000, 102.5, 105.5, 102.0, 105.0),  # tp2
+                _bar(since_ms + 120_000, 105, 113.0, 104.5, 112.5),   # tp3
+            ]
+
+        await replay_pending_paper_trades_async(tmp_db, ohlcv_fetcher=mock_fetcher)
+    finally:
+        set_lifecycle_notifier(None)
+
+    assert [f["leg"] for f in stub.tp_fills] == ["tp1", "tp2"]
+    assert stub.tp_fills[0]["new_sl_label"] == "breakeven"
+    assert stub.tp_fills[0]["percent_closed"] == 25
+    assert stub.tp_fills[1]["new_sl_label"] == "post-TP1 floor"
+    assert stub.tp_fills[1]["percent_closed"] == 75
+
+    assert len(stub.close_outs) == 1
+    co = stub.close_outs[0]
+    assert co["order_id"] == "v2-life"
+    assert co["result"] == "win"
+    assert co["exit_reason"] == "TP3 hit"
+    assert co["pnl_dollars"] == pytest.approx(62.5)
+
+
+@pytest.mark.asyncio
+async def test_replay_tick_no_notifier_is_safe(tmp_db):
+    """With no notifier wired, the replay still resolves rows normally."""
+    from trading_corp.agents.paper_trade_replay import set_lifecycle_notifier
+
+    set_lifecycle_notifier(None)
+    init_db(tmp_db)
+    _insert_full_row(tmp_db, order_id="o-tp")
+
+    async def mock_fetcher(symbol, timeframe, since_ms, limit):
+        return [_bar(since_ms, 95, 105, 93, 100)]
+
+    counts = await replay_pending_paper_trades_async(tmp_db, ohlcv_fetcher=mock_fetcher)
+    assert counts["resolved_win"] == 1

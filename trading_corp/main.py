@@ -1414,6 +1414,26 @@ async def run(argv: list[str] | None = None) -> int:
             log.info(f"paper_trade_replay startup catch-up: {startup_counts}")
         except Exception:
             log.exception("paper_trade_replay startup catch-up failed (continuing)")
+        # Wire the bitunix lifecycle notifier AFTER the startup catch-up so
+        # the backfill of resolutions missed during downtime stays silent;
+        # only going-forward live resolutions ping Telegram. Observability-
+        # only — a notifier failure never blocks the replay.
+        try:
+            from trading_corp.agents.paper_trade_replay import (
+                set_lifecycle_notifier,
+            )
+            from trading_corp.comms.bitunix_lifecycle_notifier import (
+                BitunixLifecycleNotifier,
+            )
+            set_lifecycle_notifier(
+                BitunixLifecycleNotifier(
+                    channel,
+                    db_url=secrets.db_url,
+                    paper_mode=(str(mode).lower() != "live"),
+                )
+            )
+        except Exception:
+            log.exception("bitunix lifecycle notifier wiring failed (continuing)")
         replay_task = start_replay_loop(secrets.db_url, interval_sec=900)
 
         # --- BitUnix 3m bar cache poll (Phase 3.2a) ---

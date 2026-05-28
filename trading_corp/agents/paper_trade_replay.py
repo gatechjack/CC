@@ -470,6 +470,15 @@ def _classify_v2_multi_leg(
                 "v2 replay: position_sl_update audit failed for order_id=%s: %s",
                 row.order_id, e,
             )
+        # Observability hook: queue a TP-fill lifecycle notification for
+        # the post-tick async drain. `current_sl` here is still the OLD sl
+        # (reassigned by the caller only after this returns).
+        _queue_tp_fill_notification(
+            row=row, side=side, entry_price=entry_price,
+            original_sl=original_sl, tp_plan=tp_plan,
+            filled_legs=filled_legs, old_sl=current_sl, new_sl=new_sl,
+            lifecycle_state=lifecycle_state,
+        )
 
     leg_targets = {leg: _leg_price(tp_plan, leg) for leg in ("tp1", "tp2", "tp3")}
     if any(p is None for p in leg_targets.values()):
@@ -712,6 +721,145 @@ def _v2_audit_writer(rec_module):
 _REPLAY_DB_URL_CTX: dict[str, str | None] = {"db_url": None}
 
 
+# Lifecycle notifier (Telegram), wired once at startup via
+# set_lifecycle_notifier(); None in tests/CLI unless injected. The
+# classifier queues events into _NOTIFY_QUEUE during the (sync) bar walk;
+# _replay_tick_async drains + sends them (async) after each pass.
+# Observability-only — a queue/send failure never blocks the replay.
+_LIFECYCLE_NOTIFIER: dict = {"notifier": None}
+_NOTIFY_QUEUE: list[dict] = []
+
+
+def set_lifecycle_notifier(notifier) -> None:
+    """Wire the lifecycle notifier (or None to disable)."""
+    _LIFECYCLE_NOTIFIER["notifier"] = notifier
+
+
+def _queue_tp_fill_notification(
+    *, row, side, entry_price, original_sl, tp_plan,
+    filled_legs, old_sl, new_sl, lifecycle_state,
+) -> None:
+    """Assemble + queue a TP-fill notification. Never raises. Fires only
+    on the tick where a leg transitions to filled (the classifier resumes
+    from persisted filled_legs, so subsequent ticks don't re-emit)."""
+    if _LIFECYCLE_NOTIFIER["notifier"] is None:
+        return
+    try:
+        leg = "tp1" if lifecycle_state == "post_tp1" else "tp2"
+        leg_price = _leg_price(tp_plan, leg)
+        if leg_price is None:
+            return
+        r_so_far = _aggregate_multi_leg_r(
+            side=side, entry_price=entry_price, original_sl=original_sl,
+            tp_plan=tp_plan, filled_legs=filled_legs, exit_price=new_sl,
+        )
+        pct_closed = round(
+            sum(_leg_fraction(tp_plan, leg_name) for leg_name in filled_legs) * 100
+        )
+        new_sl_label = (
+            "breakeven" if lifecycle_state == "post_tp1" else "post-TP1 floor"
+        )
+        _NOTIFY_QUEUE.append({
+            "kind": "tp_fill",
+            "order_id": row.order_id,
+            "symbol": row.symbol,
+            "side": side,
+            "leg": leg,
+            "entry_price": entry_price,
+            "leg_price": leg_price,
+            "r_so_far": r_so_far,
+            "old_sl": old_sl,
+            "new_sl": new_sl,
+            "new_sl_label": new_sl_label,
+            "percent_closed": pct_closed,
+        })
+    except Exception as e:
+        log.warning(
+            "lifecycle tp-fill queue failed for %s: %s",
+            getattr(row, "order_id", "?"), e,
+        )
+
+
+def _queue_close_out_notification(row, verdict, extra: dict) -> None:
+    """Assemble + queue a close-out notification. Never raises."""
+    if _LIFECYCLE_NOTIFIER["notifier"] is None:
+        return
+    try:
+        tp_plan = extra.get("tp_plan") or []
+        side = (row.side or "").lower()
+        entry_price = float(
+            row.entry_reference_price
+            if row.entry_reference_price is not None
+            else (extra.get("entry_reference_price") or 0.0)
+        )
+        filled = list(
+            (verdict.extra_json_updates or {}).get("filled_legs")
+            or extra.get("filled_legs") or []
+        )
+        result = verdict.result
+        if result == "win" and "tp3" in filled:
+            exit_reason = "TP3 hit"
+        elif result == "win":
+            exit_reason = "SL hit (after partial)"
+        elif result == "loss":
+            exit_reason = "SL hit"
+        else:
+            exit_reason = "max_hold"
+        path: list[tuple] = [("Entry", entry_price, None)]
+        for leg in ("tp1", "tp2", "tp3"):
+            if leg in filled:
+                lp = _leg_price(tp_plan, leg)
+                if lp is None:
+                    continue
+                pct = abs((lp - entry_price) / entry_price * 100) if entry_price else 0.0
+                path.append((leg.upper(), lp, pct))
+        path.append(("Exit", None, None))
+        held_seconds = None
+        st = _parse_row_ts(row.ts)
+        et = _parse_row_ts(verdict.result_ts)
+        if st and et:
+            held_seconds = max(0, int((et - st).total_seconds()))
+        _NOTIFY_QUEUE.append({
+            "kind": "close_out",
+            "order_id": row.order_id,
+            "symbol": row.symbol,
+            "side": side,
+            "result": result,
+            "entry_price": entry_price,
+            "exit_price": verdict.result_price,
+            "exit_reason": exit_reason,
+            "path": path,
+            "r_multiple": verdict.actual_r_multiple,
+            "pnl_dollars": verdict.actual_pnl_dollars,
+            "held_seconds": held_seconds,
+        })
+    except Exception as e:
+        log.warning(
+            "lifecycle close-out queue failed for %s: %s",
+            getattr(row, "order_id", "?"), e,
+        )
+
+
+async def _drain_notify_queue() -> None:
+    """Send all queued lifecycle notifications, then clear. Never raises —
+    the notifier's own send is also failure-safe; this wrapper guards
+    against malformed-event formatting errors so the replay can't break."""
+    notifier = _LIFECYCLE_NOTIFIER["notifier"]
+    events = list(_NOTIFY_QUEUE)
+    _NOTIFY_QUEUE.clear()
+    if notifier is None or not events:
+        return
+    for ev in events:
+        try:
+            kind = ev.pop("kind", None)
+            if kind == "tp_fill":
+                await notifier.notify_tp_fill(**ev)
+            elif kind == "close_out":
+                await notifier.notify_close_out(**ev)
+        except Exception as e:
+            log.warning("lifecycle notify drain failed: %s", e)
+
+
 # ── async core ─────────────────────────────────────────────────────────
 
 
@@ -728,6 +876,7 @@ async def _replay_tick_async(
     # Stash db_url for the v2 audit-emission closure (avoids threading
     # it through the pure classifier signature).
     _REPLAY_DB_URL_CTX["db_url"] = db_url
+    _NOTIFY_QUEUE.clear()
 
     pending = _load_pending(db_url)
     counts = {
@@ -789,10 +938,17 @@ async def _replay_tick_async(
                 continue
 
             _update_row(db_url, row.order_id, verdict)
+            if (
+                verdict.result in ("win", "loss", "expired")
+                and is_v2
+                and row.division == "bitunix_futures"
+            ):
+                _queue_close_out_notification(row, verdict, extra)
         except Exception as e:
             log.exception("replay failed for order_id=%s: %s", row.order_id, e)
             counts["errors"] += 1
 
+    await _drain_notify_queue()
     _REPLAY_DB_URL_CTX["db_url"] = None
     return counts
 
