@@ -132,7 +132,7 @@ A resolution present + zero `telegram_notification_failed` rows + no "lifecycle 
 5. **bitunix `actual_pnl_dollars` persistence** (new this session, P2 MEDIUM).
 6. **bitunix PA validator raw-input audit** (new this session, P2 MEDIUM, instrumentation).
 7. **PolymarketBroker.list_markets retry/skip patch** (carried from earlier today — small follow-up).
-8. **Kalshi copy trader NameError triage** (carried from earlier today).
+8. ~~**Kalshi copy trader NameError triage**~~ — **RESOLVED 2026-05-28 ~04:44 UTC**: fix `e5efa06` (sports-skip payload `wallet`/`whale_handle` → `whale`, line 312) deployed to prod (md5 `e349a74f…`, PID 1619576→1625233) + regression test `5623f91`. Root cause: committed+pushed 2026-05-24 but **never deployed** — prod fired ~800 NameErrors/3d. Runtime confirmed: clean scan cycle 04:55:15 UTC (7 proposals incl. an exit, snapshots persisted, **0 NameError**); sports-skip branch not directly re-triggered yet (no selected whale held a new sports ticker this cycle) — covered by md5-identity + RED→GREEN regression test. See deploy_log 04:44 UTC entry.
 9. **Bug 4 (`tastytrade_provider.py` get_history dead branch)** (P2 MEDIUM, IC-adjacent).
 10. **43 deferred package bumps** (P1).
 11. **`bitunix_atr_snapshot` observability audit kind** (P2).

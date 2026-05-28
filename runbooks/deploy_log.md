@@ -76,6 +76,36 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-28 ~04:44 UTC — k3 (kalshi_copy_trader) sports-skip NameError fix FINALLY deployed
+
+**Commits:** `e5efa06` — `copy-trader: fix NameError in sports-skip audit payload` (the one-line fix; authored + pushed **2026-05-24**, but **never deployed until now**). `5623f91` — `k3: regression test for sports-skip NameError (follow-up to e5efa06)` (this session; test only, no prod code).
+**Triggered by:** Session task "ship the wallet NameError fix to prod." The prompt assumed the fix was an uncommitted working-tree change; verification found it was already committed + pushed 4 days earlier (e5efa06) but **never reached prod** — prod was still running the broken `a220dcf`-era code.
+**Backup:** `kalshi_copy_trader.py.bak-pre-e5efa06-20260528-044249` on prod (same dir as the file).
+
+**Files deployed (1):**
+- `trading_corp/agents/strategies/kalshi_copy_trader.py` — prod md5 `0d821eb4…` (== `git show e5efa06^`, broken) → `e349a74f…` (== local HEAD, fixed). Single-line change at **line 312**: sports-skip audit payload `'wallet': wallet, 'whale_handle': user_name,` → `'whale': whale,`. Applied via `sed -i` on the one unique line — base64 of the full file is 44 KB, over the ~28 KB `az --scripts` cap, so full-file inline copy was not viable; sed preserves prod's LF.
+
+**Features shipped (load-bearing for "is X done?" checks):**
+- k3 sports-skip branch no longer raises NameError. `kalshi_copy_entry_skipped_sports` audit now writes with the in-scope `whale` var. **Before:** any selected whale with a NEW sports-prefix ticker raised NameError in `run_scan_cycle`, caught at `main.py:~2810` (`_scheduled_kalshi_copy_trader_loop`), aborting the ENTIRE scan cycle for ALL whales — missed real-money exits (downside) + entries (opportunity cost). Because the abort preceded the per-whale snapshot persist, the sports ticker was re-detected as "new" every poll → fired every cycle (~800 NameErrors in 3 days; latest pre-deploy 2026-05-28 04:23:49 UTC).
+
+**Notable code changes:**
+- Fix matches the `kalshi_copy_cold_start` payload convention at line 291 (same file). No audit-allowlist exposure: `LoggerAgent.log_event` writes the full payload as JSON with no filter (the allowlist gotcha is on `ProposedOrder.extra` → `base_payload` in `main.py`, a different path).
+- The sports ticker is still NOT persisted into the whale snapshot after the fix (the branch `continue`s before the snapshot write), so `kalshi_copy_entry_skipped_sports` is expected to fire ~every cycle for any selected whale holding a sports position. Benign (sports are routed to `kalshi_sports_scout`); just expect recurring skip audits, not a leak.
+
+**Latent process bug caught:** "committed but not deployed." e5efa06 sat on `origin/main` for 4 days while prod ran broken; the deploy_log had observed the NameError on 2026-05-27 (and 2026-05-28) but mis-attributed it as "pre-existing / unrelated / carried BACKLOG item" rather than "the fix isn't on prod." Git ≠ prod, again.
+
+**Verification:**
+- Pre-deploy: prod md5 `0d821eb4…` == `git show e5efa06^` blob → prod was **exactly one commit behind for this file, no other drift**. Broken line present exactly once at line 312.
+- Post-sed: prod md5 `e349a74f…` == local HEAD blob (deterministic match). Line 312 = `'whale': whale,`. Zero residual `'wallet': wallet`.
+- Service: PID `1619576` → `1625233`, ActiveState=active, SubState=running. Restart 04:44:18 UTC; scanner online 04:45:06.
+- Runtime CONFIRMED: a full scan cycle ran at **04:55:15 UTC** (t+~11 min): `last_poll_ts` updated, **6 selected-whale snapshots persisted**, **"7 copy ProposedOrder(s) emitted"** (entries + one `would_have_placed` copy **EXIT** — the "missed exits" downside is resolved), **zero NameErrors** across the full post-restart window. Pre-fix this cycle would have aborted on the first whale carrying a sports ticker.
+- **Caveat (honest, not a blocker):** the sports-skip branch was NOT *directly* re-triggered this cycle — none of the current 6 selected whales (MaggieTheEagle, Hispaniola, tom14cat14, NovaRex, lengthy.starfish, smedtoshi) held a NEW sports-prefix ticker, so `audit_event` still has **0** `kalshi_copy_entry_skipped_sports` rows (baseline). The fixed branch is proven transitively by md5-identity (prod == test-verified local file) + the RED→GREEN regression test that drives the exact branch. A live prod skip row — the last direct confirmation — will land the next time a selected whale opens a sports ticker. **Low-priority watch:** `sqlite3 … "SELECT count(*) FROM audit_event WHERE kind='kalshi_copy_entry_skipped_sports';"` — baseline is 0, so any row confirms.
+- Regression test: `tests/test_kalshi_copy_trader_sports_skip.py` drives `run_scan_cycle` end-to-end; verified RED (NameError at :312) against the broken payload and GREEN against the fix, both via `scripts/run_capped.ps1`.
+
+**Rollback:** `cp -p /home/azureuser/trading_corp/trading_corp/agents/strategies/kalshi_copy_trader.py.bak-pre-e5efa06-20260528-044249 /home/azureuser/trading_corp/trading_corp/agents/strategies/kalshi_copy_trader.py && sudo systemctl restart trading-corp.service`
+
+---
+
 ## 2026-05-28 ~03:4x UTC — bitunix telegram lifecycle notifications (Phase 2: TP fills + SL moves + close-out)
 
 **Commits (this entry):** `52ca294` — `bitunix: telegram lifecycle notifications (Phase 2 — TP fills + close-out)`. deploy_log in the follow-up commit.
