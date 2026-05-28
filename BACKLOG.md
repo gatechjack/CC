@@ -60,6 +60,14 @@ Shipped 2026-05-27 23:18 UTC: `pa_validation.require_all: false` + `min_validato
 
 `pa_validation_decision` already captures which validators `passed` / `failed`. The deeper question — what raw input did each validator compute (e.g., did `structure_alignment` on sell see `lower_lows_4h_observed=true/false`, what bars did it use) — is NOT captured. Filed as follow-up: add per-validator raw-input fields to `_log_pa_validation` payload so a future replay can distinguish "validator computed wrong" from "horizon legitimately disagrees with 3m signal stack". Pickup after the 1-week PA observation window closes 2026-06-03.
 
+## P2 — bitunix paper-trade `actual_pnl_dollars` persistence (MEDIUM)
+
+`paper_trade_record` has 76 bitunix_futures rows total (3 since 2026-05-23 anchor); `result` ('win'/'loss'/'open') and `actual_r_multiple` are correctly populated, but **`actual_pnl_dollars` is 0.00 on every row**. The column exists; the value is never computed/persisted at trade close. Surfaced by V1 of the 2026-05-27 bitunix dashboard consolidation proposal (`runbooks/2026-05-27_bitunix_dashboard_consolidation_proposal.md`). Updates the prior-session funnel diagnostic which claimed bitunix paper trades aren't in `paper_trade_record` — they ARE; the gap is narrower (dollar PnL not computed) than "no outcomes." Fix: compute notional × R-multiple × dollar-per-R at close in `bitunix_position_reconciler` (or wherever the result row is finalized) and update `actual_pnl_dollars`. Gates the Observation Window panel's `$PnL` cell in the full dashboard rebuild; non-blocking for the win-rate / R-avg cells.
+
+## P2 — bitunix dashboard full 5-panel rebuild (MEDIUM, separate session)
+
+Per the approved proposal at `runbooks/2026-05-27_bitunix_dashboard_consolidation_proposal.md`: build Panels 1-5 (Status Header / Today's Funnel / PA Validator-Pair Distribution / Observation Window / Recent Paper Fires + Outcomes) + `/division/bitunix_futures/debug` on-demand-only route + Recent Activity whitelist fix. Small standalone clutter cleanup (Phase 3.2 label, Recent Evaluations duplicate, bar-cache aggregate) is shipped separately this session as a pre-rebuild simplification.
+
 ## P3 — `tasty_options` config block missing from prod's `strategies.yaml` (ANOMALY)
 
 Local `config/strategies.yaml` carries the `tasty_options:` block (commit `94b3129`, 2026-05-24 "Commit 4/5"); prod's YAML does NOT (`grep -c "^tasty_options:"` = 0 on prod, 1 on local). Local is 74 lines longer than prod (1848 vs 1774 pre-2026-05-27-PA-patch; 1775 post-patch). Per memory `[[tasty-options-paper-clock]]`, the tasty_options commits ARE supposed to be on prod. Either: (a) the YAML was rolled back on prod, (b) the deploy never copied the YAML block (only the Python wiring), or (c) something else. Investigate before next tasty_options touch — the strategy can't be reading its config if it's not in prod's YAML.

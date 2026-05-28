@@ -23,7 +23,7 @@
          id="bitunix-score-panel">
   <header class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
     <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
-      Confluence Score (Phase 3.2)
+      Confluence Score
     </h2>
     <div class="flex items-center gap-2 text-[11px] font-mono">
       {% if bs.scoring_enabled %}
@@ -43,7 +43,7 @@
   </header>
 
   {# ─── Top row of stat cards ─── #}
-  <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+  <div class="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-3">
     {# Last evaluation tier #}
     <div class="bg-pane-2/40 border border-edge rounded-md p-3">
       <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1 flex items-center gap-2">
@@ -124,27 +124,6 @@
       {% endif %}
     </div>
 
-    {# Bar cache health #}
-    <div class="bg-pane-2/40 border border-edge rounded-md p-3">
-      <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
-        Bar cache
-      </div>
-      {% if bs.bar_cache %}
-        <div class="text-sm font-mono font-semibold">
-          {{ bs.bar_cache.bars_cached }} bars
-        </div>
-        <div class="text-[11px] text-muted font-mono mt-1">
-          ${{ '%.2f'|format(bs.bar_cache.last_close) if bs.bar_cache.last_close else '—' }}
-          · ATR ${{ '%.0f'|format(bs.bar_cache.atr_14) if bs.bar_cache.atr_14 else '—' }}
-          {% if bs.bar_cache.last_refresh_error %}
-            <br/><span class="text-loss">err: {{ bs.bar_cache.last_refresh_error[:50] }}</span>
-          {% endif %}
-        </div>
-      {% else %}
-        <div class="text-sm font-mono text-muted">no cache</div>
-        <div class="text-[11px] text-muted font-mono mt-1">observer not wired</div>
-      {% endif %}
-    </div>
   </div>
 
   {# ─── Live PriceContext factors strip ─── #}
@@ -308,61 +287,5 @@
   </div>
   {% endif %}
 
-  {# ─── Recent score evaluations (sparkline-as-table) ─── #}
-  {% if bs.recent_evals %}
-  <div>
-    <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-2">
-      Recent evaluations ({{ bs.recent_evals|length }}) · ledger 24h: {{ bs.ledger_window.rows_last_24h }} rows
-    </div>
-    <div class="bg-pane-2/30 border border-edge rounded-md overflow-x-auto">
-      <table class="w-full text-xs font-mono">
-        <thead class="text-muted text-[10px] uppercase">
-          <tr class="border-b border-edge">
-            <th class="text-left p-2">When</th>
-            <th class="text-left p-2">TF</th>
-            <th class="text-left p-2">Trigger</th>
-            <th class="text-left p-2">Side</th>
-            <th class="text-right p-2">Net</th>
-            <th class="text-right p-2">Buy</th>
-            <th class="text-right p-2">Sell</th>
-            <th class="text-left p-2">Outcome</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for e in bs.recent_evals %}
-          <tr class="border-b border-edge/40 hover:bg-pane-2/30">
-            <td class="p-2 text-muted">{{ e.ts_et }}</td>
-            <td class="p-2 text-mono">
-              {% if e.alert_tf %}
-                <span class="text-[10px] px-1.5 py-0.5 rounded bg-pane border border-edge">{{ e.alert_tf }}</span>
-              {% else %}<span class="text-muted">—</span>{% endif %}
-            </td>
-            <td class="p-2 text-mono">{{ e.signal }}</td>
-            <td class="p-2 {% if e.side == 'buy' %}text-gain{% elif e.side == 'sell' %}text-loss{% else %}text-muted{% endif %}">
-              {{ e.side }}
-            </td>
-            <td class="p-2 text-right
-                       {% if e.tier == 'PREMIUM' %}text-gain font-semibold
-                       {% elif e.tier == 'STANDARD' %}text-gain
-                       {% elif e.tier == 'WEAK' %}text-mono
-                       {% else %}text-muted{% endif %}">
-              {{ e.net }}
-            </td>
-            <td class="p-2 text-right text-muted">{{ e.fb }}</td>
-            <td class="p-2 text-right text-muted">{{ e.fs }}</td>
-            <td class="p-2 text-[11px]
-                       {% if e.outcome == 'placed' %}text-gain font-semibold
-                       {% elif e.outcome == 'skipped_cooldown' %}text-mono
-                       {% elif e.outcome == 'skipped_score' %}text-muted
-                       {% else %}text-muted{% endif %}">
-              {{ e.outcome }}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-  {% endif %}
 </section>
 {% endif %}
