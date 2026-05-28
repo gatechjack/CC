@@ -8,6 +8,24 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-28 (Polymarket weather copy-bot edge investigation — **VERDICT: NO copyable edge; the Kalshi efficient-market finding TRANSFERS. Read-only; ZERO prod changes, ZERO deploys, no trading.**)
+
+**Mandate:** Does the Kalshi "weather is efficiently priced, no +EV from public data" conclusion (entry below) transfer to Polymarket's Daily-Temperature program — a different venue (thinner liquidity, more retail, heavily international stations, on-chain P&L visible)? Two questions, both from on-chain + market data: (Q1) is anyone *persistently* winning Polymarket weather, and is it forecast edge or market-making? (Q2) is Polymarket weather *less efficiently priced* than Kalshi, especially international stations?
+
+**Verdict: NO copyable edge — finding transfers.**
+- **Q1 — persistent winners EXIST, abundantly, with a DURABLE edge — but it's market-making, not forecasting.** 1,413 of 1,987 high-activity wallets clearing the bar (≥30 settled positions AND ≥15 distinct city-days — second clause excludes same-day correlated-bucket fake-persistence) are net-positive; +$13.3M collective realized, harvested from ~51K one-off retail wallets. Out-of-sample **split-half ROI r=0.69** (selection biases it *downward* → real, not survivorship). BUT trade-tape characterization: **13 of top 19 are market-makers/liquidity-rewards farmers/scalpers** (high sell-fraction, both-sides quoting, round-trips), NOT directional forecasters. Profit = spread + Polymarket `MAKER_REBATE` + retail-flow capture. Ground-truth: top wallet ColdMath (+$1.17M) profits on positions whose held token settles to 0. Median trade $0.20–$13. A position-copying bot can't replicate two-sided quoting/rebates → **non-copyable.**
+- **Q2 — NOT less efficient than Kalshi.** Interior market-implied Brier (evening-before horizon) = **0.158** (US 0.137 / intl 0.162) vs **Kalshi 0.161**. Marginally sharper, not looser. International-inefficiency hypothesis: weak directional support (US sharper than intl) but intl still AT the Kalshi benchmark, not exploitably below; per-position PnL identical US/intl ($6.73 vs $6.38). Spreads TIGHTER than Kalshi (US 0.4¢ / intl 0.7¢ median). Interior Brier flat 24h→1h → no near-settlement mispricing window.
+
+**KEY DATA UNLOCK (reusable, all public/unauthenticated, no creds):** Polymarket Daily-Temperature = `daily-temperature` gamma tag **103040** (NOT `temperature` 104615 = a 3-day trap). ~42,912 settled markets Dec25→May26 across 51 cities (program LIVE), $363.7M volume. Pull: `gamma-api/markets?tag_id=103040` (offset caps at 10100 → paginate by weekly end-date windows) → `data-api/trades?market=<conditionId>` (wallets per market) → `data-api/closed-positions?user=<wallet>` (`realizedPnl` per resolved position; filter weather by slug). Cloudflare blocks default urllib UA → send browser UA. Leaderboard has NO weather category.
+
+**Deliverables (committed `5ca9037`, read-only):**
+- `reports/2026-05-28_polymarket_weather_edge_investigation.md` — full Board-review report (Q1/Q2/honest read).
+- `reports/2026-05-28_polymarket_weather/` — 6-stage pipeline (`pm_wx_01_markets`…`06_persistence`) + `_pmwx.py` helper; 124MB `data/` pulls gitignored (re-pull via scripts).
+
+**Do NOT re-open** the copy-bot or forecast-model framing for Polymarket weather — efficient market + non-copyable winners, same wall as Kalshi. The ONLY viable Polymarket-weather game is market-making/liquidity-rewards (different build: two-sided quoting + rebate capture + inventory risk; out of scope). Full context: memory `project_polymarket_weather_edge_investigation.md` + `reference_polymarket_weather_data_coverage.md`.
+
+---
+
 ## EOS snapshot — 2026-05-28 (kalshi_weather +EV exhaustive search — **VERDICT: NO +EV system exists in this data, proven on REAL Kalshi prices across SIX independent avenues. Pure research session; ZERO prod changes, ZERO deploys, paper untouched.**)
 
 **Mandate:** find a +EV kalshi_weather trading system net of fees + realistic fills, unbiased on model structure, with hard inviolable constraints (verified-station only, NWS CLI settlement truth, logic_era contamination filter, no look-ahead, real costs) and mandatory train(2021-24)/validate(2025)/holdout(2026) split. Negative conclusion explicitly permitted; manufacturing an edge explicitly forbidden.
