@@ -8,6 +8,31 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-28 (kalshi_weather +EV exhaustive search — **VERDICT: NO +EV system exists in this data, proven on REAL Kalshi prices across SIX independent avenues. Pure research session; ZERO prod changes, ZERO deploys, paper untouched.**)
+
+**Mandate:** find a +EV kalshi_weather trading system net of fees + realistic fills, unbiased on model structure, with hard inviolable constraints (verified-station only, NWS CLI settlement truth, logic_era contamination filter, no look-ahead, real costs) and mandatory train(2021-24)/validate(2025)/holdout(2026) split. Negative conclusion explicitly permitted; manufacturing an edge explicitly forbidden.
+
+**Verdict: NO robust +EV system exists.** Delivered a frozen candidate (WX-EMP-1) WITH its real-price holdout EV = **−2.1%/contract** (negative at every τ 0.03→0.18, no robust +EV at any segment). The real market is **better-calibrated than any model buildable from all available data** (real-price Brier: market 0.161 < model 0.178; intraday-obs nowcast Brier: market 0.175 < nowcast 0.221). Six independent avenues converge:
+1. Calibration vs NBM (deep corpus, time-split): empirical model beats NBM OOS, but ~70% of the gain is removable per-station mean bias + the rest is cold-tail sample-luck.
+2. Idealized proxy EV: apparent +6-7%/ct collapses to ~0 vs a bias-aware market, negative under realistic spread.
+3. Real-price forecast EV (holdout, 7,403 markets): −2.1%/ct, market Brier < model.
+4. Real-price segment scan: no robust +EV at any station/kind/price/side (all <1 SE, effective-sample bar).
+5. Model-free market structure: real ~2% favorite-longshot bias, fully eaten by spread+fee (best +0.2%/ct, decays to negative).
+6. Intraday morning-ASOS-obs nowcast (daily-high, 16Z decision): market already prices the obs (Brier 0.175<0.221), EV negative.
+
+**KEY DATA UNLOCK (reusable):** Kalshi historical prices are pullable LOCALLY — creds in `.env` (`KALSHI_API_KEY_ID`/`KALSHI_PRIVATE_KEY_PEM`), `pykalshi 1.0.6` exposes `KalshiClient.from_env()` / `get_candlesticks_batch` / `get_markets(status=SETTLED)`. Coverage ≈ 2 months only (Kalshi retains settled-market history ~spring-2026 = our holdout). Verified series→ICAO map is the `config/weather_stations.yaml` `series:` block (38 verified). IEM ASOS hourly obs via `mesonet.agron.iastate.edu/cgi-bin/request/asos.py` (station code = ICAO minus K).
+
+**Deliverables (all committed this session):**
+- `reports/2026-05-28_kalshi_weather_ev_discovery.md` — full six-avenue analysis + verdict.
+- `reports/2026-05-28_kalshi_weather_candidate_system_WX-EMP-1.md` — frozen candidate spec, status **SHELVED** (gate run/failed).
+- `data/weather_emp_model_WX-EMP-1.json` — frozen model artifact (per-cell empirical z-quantiles + bias, train-2021-2024 only).
+- Scripts (run via `scripts/run_capped.ps1`): `weather_edge_analysis.py` (calibration + proxy EV + `freeze` mode), `kalshi_realprice_pull.py` (real candlesticks → `tmp/`), `weather_realprice_ev.py` (real-price EV + Brier + segment scan), `kalshi_market_calibration.py` (model-free favorite-longshot), `asos_pull.py` (IEM obs → `tmp/`), `weather_nowcast_ev.py` (intraday nowcast), `kalshi_price_probe.py` (feasibility probe).
+- NOTE: pulled data (`tmp/kalshi_realprice_candles.jsonl` 14,346 mkts; `tmp/asos_decision_temps.jsonl` 19 stations) is gitignored — re-pull via the scripts if needed (~6-10 min each).
+
+**Do NOT re-open** the deep-corpus model search, real-price gate, segment scan, market-structure test, or intraday nowcast — all done, all negative. The ONLY untested path needs NEW data outside the corpus: a forecast that beats NBM **AND** the market (ECMWF/HRRR ensembles), or a live forward paper track. Both are the brief's designated future gate. Full context: memory `project_kalshi_weather_ev_discovery.md`.
+
+---
+
 ## EOS snapshot — 2026-05-28 ~04:00 UTC (Thursday early UTC — **bitunix telegram lifecycle notifications: TWO-PHASE GATED arc. Phase 1 ($PnL persistence fix) SHIPPED + live-verified; Phase 2 (lifecycle notifier) DEPLOYED + healthz-green, acceptance pending a live lifecycle. 4 commits on `main`, all pushed.**)
 
 **Headline:** Operator approved building Telegram lifecycle notifications (TP1/TP2/TP3 fills + SL moves + close-out) for bitunix paper trades, in two gated phases. **Phase 1 was a prereq $PnL-persistence fix** — and the §D.3 prod diagnostic **REFUTED the proposal's premise**: NOT "all 76 rows `actual_pnl_dollars=0.00`" (that was a 3-row-sample over-generalization from the dashboard proposal V1). Reality: 78 rows, only **10 zero** — 3 correctly-zero `expired` + 7 partial-win SCORE-path rows. Root cause was a narrow oversight: `_build_proposal_v2` (the path the SCORE entry uses) omitted `expected_gain_if_tp_hit` + `tp_r_multiple` that the legacy `_build_proposal` (traditional path) sets, so `paper_trade_replay.py:526-531/569-571` fell to $0 on partial-win/TP3 closes. Fixed in the v2 builder with the semantically-correct **blended-R** value (`Σ leg.fraction×leg.target_r`), which preserves the replay invariant `expected_gain/tp_r_multiple == max_dollar_risk`. Backfilled the 7 rows (+$1.46). Then built **Phase 2**: a canonical `BitunixLifecycleNotifier` hooked into the replay (TP-fill queue in `_emit_audit`, close-out queue after `_update_row`, async drain at tick end), reusing the existing `TelegramChannel`, wired AFTER startup-catch-up so restart-backfills stay silent.
