@@ -8,6 +8,25 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## EOS snapshot — 2026-05-28 (kalshi_weather LATE-CYCLE ultra-high-confidence favorite test — **VERDICT: NULL, refuted on real prices. Read-only research; ZERO prod changes, ZERO deploys, paper untouched. 1 commit `17fab80`, pushed.**)
+
+**Mandate:** a NARROWER slice than the prior favorite-buying scans — at very late cycle AND very high confidence (implied ≥ 0.90; bands 0.90-0.93 / 0.93-0.96 / 0.96-0.99), are favorites underpriced enough to clear fees + spread + tail risk? Proposed mechanism: MMs keep wider spreads / lower prices late when the outcome is near-determined, leaving 1-2¢ for taking last-mile risk. Decisive emphasis on the LOSS DISTRIBUTION (one ~−$0.94 loss erases ~10 penny wins) and on holdout survival.
+
+**Verdict: REFUTED.** Model-free test (price→settlement, pay the ask as taker, net the 1¢ fee) over the real spring-2026 candle corpus (14,336 settled mkts). Every band is net-negative once the loss distribution is paid:
+- midday late window: 0.90-0.93 net **−0.016/ct**, 0.93-0.96 **−0.0045**, 0.96-0.99 **−0.008**, 0.99-1.00 **−0.0016**. Pooled late favorites: WR 0.988 vs break-even-incl-fee 0.992 → −0.0043/ct, 122 losses, mean loss −$0.96, total −$43.19.
+- The real ~2-3% favorite-longshot underpricing is **exactly absorbed by the taker half-spread + fee**, and **DECAYS later in the cycle** (overnight ≈0 → morning −0.010 → midday −0.016) = the OPPOSITE of the proposed wider-late-spread mechanism (spread widens, mispricing shrinks toward settlement).
+- **No band survives** chronological-half OR even/odd-day holdout. `daily_max` is actually OVERpriced at midday (high not yet realized; WR 0.905 < implied 0.916 in the 0.90-0.93 band). Flicker-positive cells are tiny-n / zero-loss multiple-testing artifacts (called out, not cherry-picked). The single 89¢ real-money fill sits in/just below the worst grid cell → variance/selection, not edge.
+
+**DATA CAVEAT (load-bearing fork, surfaced not blocked):** the candle corpus caps at target-midnight **+18h UTC with no close timestamp**, so the LITERAL "6-12h before settlement" window is NOT in the data. Proxied by offset-from-midnight windows (`midday_12_18` = closest-to-settlement available). The time-of-day gradient already answers the hypothesis; the only way to test the literal window = re-pull `kalshi_realprice_pull.py` with a later end-time + capture `close_time`/`expiration_time` and re-band by true hours-to-close (prior from the gradient: more negative, not positive). **Re-pull is the one open follow-up if the Board wants the literal window.**
+
+**Deliverables (committed `17fab80`, read-only):**
+- `scripts/weather_latecycle_favorite_ev.py` — model-free band×window engine (loss dist, break-even WR, fees+spread, chrono + even/odd holdout). Run via `scripts/run_capped.ps1`.
+- `reports/2026-05-28_kalshi_weather_latecycle_favorite_ev.md` — full grid (incl. losers), loss distribution, holdout, honest framing.
+
+**Do NOT re-open** the late-cycle favorite avenue without the literal-window re-pull — it's avenue 9 of the closed kalshi_weather +EV question (entry below), same efficient-market wall. Full context: memory `project_kalshi_weather_ev_discovery.md` (avenue 9 appended).
+
+---
+
 ## EOS snapshot — 2026-05-28 (Polymarket weather copy-bot edge investigation — **VERDICT: NO copyable edge; the Kalshi efficient-market finding TRANSFERS. Read-only; ZERO prod changes, ZERO deploys, no trading.**)
 
 **Mandate:** Does the Kalshi "weather is efficiently priced, no +EV from public data" conclusion (entry below) transfer to Polymarket's Daily-Temperature program — a different venue (thinner liquidity, more retail, heavily international stations, on-chain P&L visible)? Two questions, both from on-chain + market data: (Q1) is anyone *persistently* winning Polymarket weather, and is it forecast edge or market-making? (Q2) is Polymarket weather *less efficiently priced* than Kalshi, especially international stations?
