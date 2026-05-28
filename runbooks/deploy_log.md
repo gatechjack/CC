@@ -76,6 +76,35 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-28 ~02:5x UTC — bitunix v2 $PnL persistence fix (score-path `expected_gain`/`tp_r_multiple` oversight) + 7-row backfill
+
+**Commits (this entry):** `bc9d188` — `bitunix v2: populate expected_gain_if_tp_hit + tp_r_multiple in _build_proposal_v2` (code + test + backfill script). Docs/corrections in the follow-up commit.
+**Triggered by:** Telegram-lifecycle-notifications Phase 1 (prereq). §D.3 diagnostic of `runbooks/2026-05-28_telegram_lifecycle_notifications_proposal.md`.
+**Backup tags:**
+- Code: `.pre-pnlfix-20260528` on `bitunix_futures_observer.py` + `paper_trade_replay.py`
+- DB: `trading_corp.db.pre-pnl-backfill-20260528` (md5 `7406a694…`, 772 MB)
+
+**Files deployed (2):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — prod md5 `5b7d342b…` → `d31bed3d…`. `_build_proposal_v2` now sets `tp_r_multiple` (= blended R across legs = `Σ(leg.fraction × leg.target_r)`) and `expected_gain_if_tp_hit` (= `max_dollar_risk × tp_r_multiple`) in `order.extra`.
+- `trading_corp/agents/paper_trade_replay.py` — prod md5 `49c9735f…` → `6099d066…`. Added `log.warning` on the two PnL-compute fallback-to-0 branches (partial-win SL path line ~530, TP3-fill path line ~573) when `expected_gain` is null, so future null-fallthrough is visible not silent. No behavior change otherwise (still falls to 0).
+
+**Root cause (corrected from the dashboard-proposal V1 premise):** NOT "all rows = 0.00 / value never computed." Full prod diagnostic of 78 bitunix rows: 46 positive PnL, 22 negative, **10 zero** — of which 3 are correctly-zero `expired` (no fills) and 7 are partial-win SCORE-path rows. The score path (`_score_and_maybe_propose_locked`) routes through `_build_proposal_v2`, which (unlike the legacy `_build_proposal` used by the traditional `_maybe_propose` path) omitted the two PaperTradeRecord-harmonized fields. Without `expected_gain`, `paper_trade_replay.py:526-531`/`569-571` fell to $0 on partial-win (TP1-then-SL) and TP3-fill closes. Surfaced more now because every post-PA-2of3 fire uses the score path.
+
+**Backfill:** 7 rows (`actual_pnl_dollars = -expected_loss × actual_r_multiple`, the v2 invariant). Script `scripts/backfill_bitunix_v2_pnl_20260528.py` (re-runnable, idempotent on the eligibility predicate). Affected order_ids: `2942ff8e` (+$0.348), `e6f437e3` (+$0.713), `cb19b9ad` (+$0.065), `28f43f1e` (+$0.089), `0b118801` (+$0.105), `2007d2c9` (+$0.065), `6daca683` (+$0.070) — total +$1.46. **⚠️ Dashboard win-rate `$PnL` cell changes retroactively for these 7 trades** (was $0, now small positive). Expected, not a regression. The 3 `expired` rows correctly remain $0.
+
+**Service:** PID `1576923` → `1604244`. ActiveState=active, SubState=running, NRestarts=0.
+
+**Verification:**
+- Pre-deploy: prod md5 of both files == git HEAD blobs (no drift). Patch dry-run clean. Post-patch md5 == locally-simulated expected. `ast.parse` OK on both.
+- Tests: 100 pass across `test_bitunix_observer_v2_path` (incl. new `test_v2_proposal_carries_pnl_compute_fields`), `test_paper_trade_replay`, `test_bitunix_position_reconciler`, `test_paper_trade_record`, `test_bitunix_view_builders`.
+- Backfill: CHANGES=7; 7 rows verified non-zero post-update; only 3 `expired` zeros remain.
+- **GATE for Phase 2 (notifier): SATISFIED.** New score-path trade `c8f25d17-29d2-...` fired 2026-05-28T03:18:06 (post-restart, PID 1604244), resolved `win` on the 03:23:44 replay tick: `expected_gain=0.10230`, `tp_r_multiple=1.33225` (both NULL before the fix), `actual_r_multiple=1.3322`, **`actual_pnl_dollars=0.10230` (non-zero)**, `score_path=1`. Invariant holds: `eg/tpR = 0.0768 = -expected_loss = max_dollar_risk`. Before the fix this row would have shown $0.00.
+- Healthz post-deploy: `{"status":"ok","mode":"PAPER"}`. No bitunix/replay errors in journal (the 1 recurring `Traceback` is the unrelated pre-existing `_scheduled_kalshi_copy_trader_loop` NameError at `main.py:2810`, carried BACKLOG item).
+
+**Rollback:** `cd /home/azureuser/trading_corp && for f in trading_corp/agents/divisions/bitunix_futures_observer.py trading_corp/agents/paper_trade_replay.py; do cp -a $f.pre-pnlfix-20260528 $f; done && sudo systemctl restart trading-corp.service`. DB rollback (if ever needed): `cp -a data/trading_corp.db.pre-pnl-backfill-20260528 data/trading_corp.db` (⚠️ would also revert any trades written since the backfill — only use if backfill itself is wrong).
+
+---
+
 ## 2026-05-28 00:16 UTC — bitunix dashboard: small-PR clutter cleanup (Phase 3.2 label + Recent Evaluations + bar-cache aggregate)
 
 **Commits (this entry):**

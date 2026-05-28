@@ -287,7 +287,9 @@ Templates use `parse_mode="Markdown"`. The prices and figures in §C.2 / §C.3 d
 
 ## §D — $PnL prereq (the gating dependency)
 
-### D.1 Problem statement
+> **RESOLVED 2026-05-28 (Phase 1 shipped).** The §D.1 premise below was REFUTED by a full prod diagnostic and the gap is now fixed. Summary: the "all 76 rows = 0.00" claim was wrong (generalized from a 3-row sample). Reality: 10/78 zero, of which 3 are correctly-zero `expired` and 7 are partial-win SCORE-path rows. Root cause = `_build_proposal_v2` omitted `expected_gain_if_tp_hit` + `tp_r_multiple` from `order.extra` (oversight vs. legacy `_build_proposal`), so `paper_trade_replay.py:526-531/569-571` fell to $0 only on partial-win closes. Fixed in the v2 builder (commit + deploy_log 2026-05-28); 7 rows backfilled; defensive `log.warning` added to replay when `expected_gain` is null at PnL-compute time. The original problem-statement and hypothesis below are preserved for the audit trail.
+
+### D.1 Problem statement (AS ORIGINALLY WRITTEN — see correction above)
 
 V1 of [`runbooks/2026-05-27_bitunix_dashboard_consolidation_proposal.md`](2026-05-27_bitunix_dashboard_consolidation_proposal.md) surfaced: all 76 bitunix `paper_trade_record` rows show `actual_pnl_dollars = 0.00`, while `result` + `actual_r_multiple` are correctly populated. BACKLOG.md line 123 carries the existing P2 item.
 

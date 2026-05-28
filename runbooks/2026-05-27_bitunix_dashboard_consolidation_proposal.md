@@ -26,6 +26,8 @@ This proposal recommends a 5-panel main page tuned for operator decisions, with 
 
 **Updates a wrong premise from the prior-session funnel diagnostic** (`reports/2026-05-27_bitunix_funnel_diagnostic.md` claimed bitunix paper trades aren't in `paper_trade_record`). They ARE — keyed by `division='bitunix_futures'`. **`actual_pnl_dollars = 0.00` on every row** is the real persistence gap (filed BACKLOG MEDIUM; column exists, value never computed). Win-rate cell IS buildable.
 
+> **CORRECTION 2026-05-28 (Telegram-lifecycle Phase 1):** the "`= 0.00` on every row" claim above was wrong — it generalized from a 3-row sample that happened to all be score-path trades. A full prod diagnostic (78 rows) found only **10/78 are zero**: 3 correctly-zero `expired` (no fills) + 7 partial-win rows on the SCORE path. Root cause was NOT "value never computed" but a narrower oversight: `_build_proposal_v2` omitted `expected_gain_if_tp_hit` + `tp_r_multiple` from `order.extra` (the legacy `_build_proposal` includes them), so `paper_trade_replay.py:526-531/569-571` fell to $0 only on partial-win closes of score-path trades. Fixed + 7 rows backfilled. The $PnL cell can be wired today — it mostly populates correctly. See `runbooks/2026-05-28_telegram_lifecycle_notifications_proposal.md` §D and the deploy_log 2026-05-28 entry.
+
 **Note (don't over-weight):** 3/3 post-deploy wins, R-avg +0.62 on a tiny sample. The 2-of-3 deploy is showing the shape the replay predicted. Wait for the full 1-week observation window before declaring anything.
 
 ### V2 — `bitunix_signal_ledger` + view-builder ledger logic
