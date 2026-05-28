@@ -204,3 +204,39 @@ def test_log_trade_plan_decision_writes_audit_row(tmp_path: Path):
     assert payload["skip_reason"] == "swing_too_close"
     assert payload["should_trade"] is False
     assert payload["inputs"]["swing_low"] == 79_900.0
+
+
+def test_v2_proposal_carries_pnl_compute_fields(tmp_path: Path):
+    base = 80_000.0
+    bars = []
+    for i in range(50):
+        if i == 35:
+            bars.append(_bar(price=base, low=base - 300.0, high=base + 5.0, ts_ms=i * 180_000))
+        else:
+            bars.append(_bar(price=base, low=base - 5.0, high=base + 5.0, ts_ms=i * 180_000))
+
+    obs = _make_observer(tmp_path, bars)
+    proposal, _plan, _structural = obs._build_proposal_v2(
+        tier="STANDARD",
+        trigger_side="bull",
+        trigger_signal="spoon_bull",
+        entry_price=base,
+        account_equity=5_000.0,
+        atr_3m=200.0,
+    )
+    assert proposal.proposed_order is not None
+    extra = proposal.proposed_order.extra
+
+    assert "tp_r_multiple" in extra
+    assert "expected_gain_if_tp_hit" in extra
+
+    tp_plan = extra["tp_plan"]
+    blended_r = sum(leg["fraction"] * leg["target_r"] for leg in tp_plan)
+    max_dollar_risk = extra["max_dollar_risk"]
+
+    assert extra["tp_r_multiple"] == pytest.approx(blended_r)
+    assert extra["expected_gain_if_tp_hit"] == pytest.approx(
+        max_dollar_risk * blended_r
+    )
+    assert extra["tp_r_multiple"] > 0
+    assert extra["expected_gain_if_tp_hit"] > 0

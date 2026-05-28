@@ -2162,6 +2162,16 @@ class BitunixFuturesObserver:
              "price": plan.tp3, "stop_action": "trail_atr"},
         ]
 
+        max_dollar_risk = account_equity * actual_effective_risk
+        # Blended R if all legs hit at their targets — equals what
+        # _aggregate_multi_leg_r returns on a full-fill close, so
+        # expected_gain / tp_r_multiple == max_dollar_risk and the replay's
+        # PnL formula scales linearly with actual_r on any partial outcome.
+        tp_r_multiple = sum(
+            float(leg["fraction"]) * float(leg["target_r"])
+            for leg in tp_plan_payload
+        )
+
         order = ProposedOrder(
             strategy="bitunix_futures",
             symbol=TRADE_SYMBOL,
@@ -2195,7 +2205,9 @@ class BitunixFuturesObserver:
                 "tp3_price": plan.tp3,
                 "take_profit_price": plan.tp3,  # back-compat with paper_trade_record reader
                 "source_signal": trigger_signal,
-                "max_dollar_risk": account_equity * actual_effective_risk,
+                "max_dollar_risk": max_dollar_risk,
+                "tp_r_multiple": tp_r_multiple,
+                "expected_gain_if_tp_hit": max_dollar_risk * tp_r_multiple,
             },
         )
 

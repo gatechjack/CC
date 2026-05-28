@@ -527,8 +527,14 @@ def _classify_v2_multi_leg(
             # Use a positive proxy for $-pnl on the partial-win path
             # (TP1 hit then SL at BE = small positive R; expected_gain
             # is a per-leg full-fill projection so we scale by realized R).
-            if actual_r > 0 and row.expected_gain:
-                actual_pnl = float(row.expected_gain) * (actual_r / max(1e-9, float(row.tp_r_multiple or 1.0)))
+            if actual_r > 0:
+                if row.expected_gain:
+                    actual_pnl = float(row.expected_gain) * (actual_r / max(1e-9, float(row.tp_r_multiple or 1.0)))
+                else:
+                    log.warning(
+                        "v2 replay: order_id=%s partial-win actual_r=%.4f but expected_gain missing; actual_pnl_dollars falling to 0",
+                        row.order_id, actual_r,
+                    )
             result = "win" if actual_r > 0 else "loss"
             return _Resolved(
                 result=result,
@@ -566,9 +572,16 @@ def _classify_v2_multi_leg(
                 original_sl=original_sl, tp_plan=tp_plan,
                 filled_legs=filled_legs, exit_price=exit_price,
             )
-            actual_pnl = float(row.expected_gain or 0.0) * (
-                actual_r / max(1e-9, float(row.tp_r_multiple or 1.0))
-            ) if row.expected_gain else 0.0
+            if row.expected_gain:
+                actual_pnl = float(row.expected_gain) * (
+                    actual_r / max(1e-9, float(row.tp_r_multiple or 1.0))
+                )
+            else:
+                log.warning(
+                    "v2 replay: order_id=%s TP3 filled (actual_r=%.4f) but expected_gain missing; actual_pnl_dollars falling to 0",
+                    row.order_id, actual_r,
+                )
+                actual_pnl = 0.0
             return _Resolved(
                 result="win",
                 result_ts=bar_ts_iso,
