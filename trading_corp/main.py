@@ -396,6 +396,11 @@ async def run(argv: list[str] | None = None) -> int:
         # Stage-1 N+1 commit 2 — execution mode wiring. paper-default
         # everywhere; live requires explicit YAML edit + restart.
         execution_mode=_execution_mode,
+        # Stage-1 N+1 commit 4 — HITL gate for first-N live orders.
+        # Wires the existing PendingApprovalRegistry singleton; the
+        # observer only consults it when execution_mode=live AND
+        # auto_execute=true AND counter < HITL_FIRST_N_LIVE_ORDERS.
+        pending_registry=pending_registry,
         # telegram_channel attached after channel is constructed (below)
     )
 

@@ -213,6 +213,27 @@ TIER_SIZING: dict[str, dict[str, float]] = {
 ALLOWED_SYMBOLS = {"BTC/USD", "BTCUSD", "BTCUSDT", "BTCUSDT.P"}
 TRADE_SYMBOL = "BTC/USDT.P"            # canonical symbol used in ProposedOrder
 
+# Stage-1 N+1 commit 4 — HITL gate for first-N live orders.
+# Orders 1..N route through PendingApprovalRegistry.wait() (web app
+# approval surface, per CLAUDE.md §HITL surface direction). Order N+1
+# onwards skip the wait but emit elevated `(live, monitor-mode)`
+# telegram alerts so the operator stays in the loop.
+#
+# Counter persists across observer re-instantiation via
+# `agent_state` (key="live_orders_placed"); restart-safe.
+#
+# Threshold widening/shrinking is a single-constant edit — no schema
+# change. Recommended widening only after Stage-1 success criteria
+# are written down + the first N have been reconciled to the cent.
+HITL_FIRST_N_LIVE_ORDERS = 10
+# Block up to 10 minutes for an operator decision before synthetic-reject
+# on timeout. Per PendingApprovalRegistry.wait()'s timeout semantics.
+HITL_WAIT_TIMEOUT_SECONDS = 600.0
+# agent_state key for the live-orders-placed counter (per-observer-instance
+# could be a future split if we run multiple divisions on bitunix; today
+# it's one).
+LIVE_ORDERS_PLACED_AGENT_STATE_KEY = "live_orders_placed"
+
 
 # PR 4 — helper for v2 pre-flight guard skips.
 def _make_skip_plan(entry: float, reason: str) -> TradePlan:
@@ -453,6 +474,14 @@ class BitunixFuturesObserver:
         # restart. The complementary kill-switch is `auto_execute` in
         # YAML (mtime-hot-reloaded; commit 3 reads it on each placement).
         execution_mode: str = "paper",
+        # Stage-1 N+1 commit 4 — HITL approval registry. When wired AND
+        # execution_mode=live AND auto_execute=true AND we're inside the
+        # first-N window, the helper blocks placement until the operator
+        # approves/rejects/modifies the order via the web app. The
+        # registry is the existing PendingApprovalRegistry singleton
+        # (comms/pending_registry.py); pass None in tests that don't
+        # exercise live-mode HITL.
+        pending_registry: Any = None,
     ) -> None:
         self.db_url = db_url
         self.risk_agent = risk_agent
@@ -492,6 +521,10 @@ class BitunixFuturesObserver:
             )
             em = "paper"
         self.execution_mode = em
+        # HITL approval registry — opaque to the observer; only
+        # exercised when execution_mode=live AND auto_execute=true AND
+        # the first-N counter is below the threshold.
+        self.pending_registry = pending_registry
         # Cache the longest TTL across factors so the ledger read window
         # doesn't drag in stale rows. Falls back to 24h if config absent.
         # PR 3c: also factor in `factor_ttl_per_tf` overrides — the
@@ -2288,6 +2321,51 @@ class BitunixFuturesObserver:
 
     # ── canonical placement-outcome writer (paper + live; live in N+1 commit 3) ─
 
+    def _live_orders_placed_count(self) -> int:
+        """Read the cross-restart counter of successfully placed live
+        orders. Returns 0 if the row doesn't exist (first ever live
+        attempt) or if the value is malformed."""
+        try:
+            loaded = db.load_agent_state(
+                "bitunix_futures",
+                LIVE_ORDERS_PLACED_AGENT_STATE_KEY,
+                db_url=self.db_url,
+            )
+        except Exception as e:
+            log.warning("bitunix_observer: live counter read failed: %s", e)
+            return 0
+        if loaded is None:
+            return 0
+        value, _updated = loaded
+        try:
+            return int(value.get("count", 0)) if isinstance(value, dict) else int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _increment_live_orders_placed_count(self) -> int:
+        """Atomically read+write the counter. Returns the post-increment
+        value. NOT lock-protected at the SQLite layer — multiple in-flight
+        live placements from a single process are theoretically possible
+        (different signals fire concurrently), but the observer's
+        score-path lock + the typical seconds-apart cadence make races
+        a non-issue in practice. If they become an issue, wrap this in
+        a per-instance asyncio.Lock at the call site."""
+        current = self._live_orders_placed_count()
+        new_count = current + 1
+        try:
+            db.set_agent_state(
+                "bitunix_futures",
+                LIVE_ORDERS_PLACED_AGENT_STATE_KEY,
+                {"count": new_count},
+                db_url=self.db_url,
+            )
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: live counter write failed at %d→%d: %s",
+                current, new_count, e,
+            )
+        return new_count
+
     def _yaml_auto_execute_for_bitunix(self) -> bool:
         """Fresh-read YAML `bitunix_futures.auto_execute` on every call.
 
@@ -2404,6 +2482,16 @@ class BitunixFuturesObserver:
         downstream (N+2) is the source of truth for "did the trade
         actually happen at the broker."
 
+        HITL semantics (commit 4):
+        * Orders 1..HITL_FIRST_N_LIVE_ORDERS route through
+          `pending_registry.wait()` — blocks until operator
+          approve/reject/modify via web app, or timeout.
+        * Order N+1 onwards: monitor-mode — no gate, but the telegram
+          message tags `(live, monitor-mode)` so the operator stays
+          informed of the elevated cadence.
+        * Counter persists in `agent_state` (key
+          `live_orders_placed`); restart-safe.
+
         Important: this is an ENTRY (not an exit). `reduce_only` is
         explicitly stamped False so the broker constructs an OPEN
         body (tradeSide=OPEN), not a reduce-only close.
@@ -2415,12 +2503,26 @@ class BitunixFuturesObserver:
         order.extra["reduce_only"] = False
         order.status = "placing"
 
+        # Determine HITL gating up front (counter read once; the
+        # increment happens after a successful place).
+        current_count = self._live_orders_placed_count()
+        is_monitor_mode = current_count >= HITL_FIRST_N_LIVE_ORDERS
+        needs_hitl = (
+            not is_monitor_mode
+            and self.pending_registry is not None
+        )
+
         # Intent audit FIRST (write-ahead-of-side-effect). If the broker
         # call hangs or raises before completing, we still have a record.
         intent_payload = dict(audit_payload)
         intent_payload["execution_mode"] = "live"
         intent_payload["auto_execute_at_decision"] = True  # we read True; record it
         intent_payload["reduce_only"] = False
+        intent_payload["live_orders_placed_before"] = current_count
+        intent_payload["hitl_gate"] = (
+            "required" if needs_hitl else
+            ("monitor_mode" if is_monitor_mode else "skipped_no_registry")
+        )
         intent_row_id = self.logger_agent.log_event(
             actor="bitunix_futures",
             kind="live_order_placed",
@@ -2450,7 +2552,67 @@ class BitunixFuturesObserver:
 
         # Daily-risk accrues on ATTEMPT (matches paper-path semantics:
         # the budget was committed the moment we decided to place).
+        # Even an HITL-rejected order consumed deliberation time + risk
+        # budget at the strategy level; we book it.
         self._record_daily_risk(utc_date, daily_risk_pct)
+
+        # ── HITL gate (orders 1..N) ─────────────────────────────────
+        if needs_hitl:
+            from trading_corp.graph.interrupts import ApprovalRequest
+            summary = (
+                f"BTC-PERP {audit_payload.get('tier', '?')} "
+                f"{'LONG' if order.side == 'buy' else 'SHORT'} "
+                f"qty={order.qty} live (#{current_count + 1}/"
+                f"{HITL_FIRST_N_LIVE_ORDERS})"
+            )
+            try:
+                req = ApprovalRequest(
+                    order_id=order.id,
+                    summary=summary,
+                    detail={
+                        "division": "bitunix_futures",
+                        "strategy": "bitunix_futures",
+                        "order": order.to_db_row() | {"extra": order.extra},
+                        "audit": audit_payload,
+                        "hitl_first_n_position": current_count + 1,
+                        "hitl_first_n_total": HITL_FIRST_N_LIVE_ORDERS,
+                    },
+                )
+                decision = await self.pending_registry.wait(
+                    req, timeout_s=HITL_WAIT_TIMEOUT_SECONDS,
+                )
+            except Exception as e:
+                # Registry-side bug → fail closed; do not place.
+                order.status = "live_order_skipped_hitl"
+                self._write_hitl_skip_audit(
+                    intent_payload, order_id=order.id,
+                    decision_str="error", reason=f"registry error: {e}",
+                )
+                return
+            if decision.decision == "reject":
+                order.status = "live_order_skipped_hitl"
+                self._write_hitl_skip_audit(
+                    intent_payload, order_id=order.id,
+                    decision_str="reject",
+                    reason=decision.reason or "operator rejected",
+                )
+                await self._push_with_confirmed_delivery(
+                    order_id=order.id,
+                    message=(
+                        f"BTC-PERP HITL-REJECTED (live)\n"
+                        f"reason: {decision.reason or '(none)'}\n"
+                        f"order_id={order.id}"
+                    ),
+                    failure_channel="live_hitl_reject_alert",
+                )
+                return
+            if decision.decision == "modify" and decision.new_qty is not None:
+                # Operator-adjusted qty — book the new value before
+                # the broker call. Treats it as a normal (gated)
+                # approval at the new size.
+                order.qty = float(decision.new_qty)
+            # decision == "approve" (or modify-with-new-qty) → fall
+            # through to data_exec.place below.
 
         # ── Place ───────────────────────────────────────────────────
         try:
@@ -2496,19 +2658,60 @@ class BitunixFuturesObserver:
             )
             return
 
+        # Successful place → increment the persistent counter.
+        new_count = self._increment_live_orders_placed_count()
+
         # data_exec.place wrote its own `filled` audit row + set
         # order.status='filled' + order.fill_price/fill_ts. Just emit
         # the operator-facing telegram here.
+        suffix = "(live, monitor-mode)" if is_monitor_mode else "(live)"
         await self._push_with_confirmed_delivery(
             order_id=order.id,
             message=(
                 f"BTC-PERP {audit_payload.get('tier', '?')} "
-                f"{'LONG' if order.side == 'buy' else 'SHORT'} (live)\n"
+                f"{'LONG' if order.side == 'buy' else 'SHORT'} {suffix}\n"
                 f"qty: {order.qty}  fill: ${fill.price}\n"
+                f"placed_count: {new_count}\n"
                 f"order_id={order.id}"
             ),
             failure_channel="live_placement_alert",
         )
+
+    def _write_hitl_skip_audit(
+        self,
+        intent_payload: dict[str, Any],
+        *,
+        order_id: str,
+        decision_str: str,
+        reason: str,
+    ) -> None:
+        """Write the `live_order_skipped_hitl` audit row with re-read
+        confirmation. Failures here log loudly but don't block the
+        skip itself (the operator has already rejected/timed-out)."""
+        skip_payload = dict(intent_payload)
+        skip_payload["hitl_decision"] = decision_str
+        skip_payload["hitl_reason"] = reason
+        skip_row_id = self.logger_agent.log_event(
+            actor="bitunix_futures",
+            kind="live_order_skipped_hitl",
+            payload=skip_payload,
+        )
+        if skip_row_id is not None:
+            try:
+                with db.connect(self.db_url) as conn:
+                    row = conn.execute(
+                        "SELECT kind FROM audit_event WHERE id = ?",
+                        (skip_row_id,),
+                    ).fetchone()
+                if row is None or row["kind"] != "live_order_skipped_hitl":
+                    log.warning(
+                        "bitunix_observer: live_order_skipped_hitl audit "
+                        "row_id=%s re-read failed", skip_row_id,
+                    )
+            except Exception as e:
+                log.warning(
+                    "bitunix_observer: HITL skip audit re-read failed: %s", e,
+                )
 
     async def _push_with_confirmed_delivery(
         self,
