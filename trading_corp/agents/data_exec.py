@@ -23,7 +23,13 @@ log = logging.getLogger(__name__)
 
 
 class DataExecAgent:
-    def __init__(self, logger: LoggerAgent, *, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        logger: LoggerAgent,
+        *,
+        dry_run: bool = False,
+        safety_notifier: Any = None,
+    ) -> None:
         self.logger = logger
         self.brokers: dict[str, Broker] = {}      # division -> Broker
         self.feeds = FeedAggregator()
@@ -35,6 +41,17 @@ class DataExecAgent:
         # Used for first-time LIVE validation: real auth + real reads + real
         # risk gates + real order construction, but no actual fills.
         self.dry_run = dry_run
+        # Safety-event notifier used for `safety_alert` Telegram pushes
+        # raised by the mode-mismatch consumer in `place()` and by
+        # `flatten_division`. Optional — when None, safety paths still
+        # audit + re-raise as configured but skip the Telegram side-effect.
+        # Duck-typed contract:
+        #   async def push(text: str, *,
+        #                  audit_path: str = "other",
+        #                  audit_context: dict | None = None) -> bool
+        # `True` = HTTP 2xx + ok:true (confirmed delivery); `False` =
+        # send failed. Push never raises (per `comms.telegram_bot.push`).
+        self.safety_notifier = safety_notifier
 
     def register_broker(self, division: str, broker: Broker) -> None:
         self.brokers[division] = broker
