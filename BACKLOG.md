@@ -26,6 +26,36 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 
 ---
 
+## EOS snapshot — 2026-05-29 (bitunix observability + data-integrity arc: 3 fixes SHIPPED + 2 live-readiness planning docs. All pushed; prod healthy.)
+
+**Theme:** hardened the bitunix paper-eval observability/data-integrity layer (the "audit-success must mean confirmed reality, not no-exception" discipline — see `[[telegram-audit-success-is-confirmed-delivery]]`), then audited the paper→live gap.
+
+**SHIPPED + DEPLOYED + PUSHED this session:**
+1. **Telegram audit-success semantics (Phase C)** — `TelegramChannel.push()` now `-> bool`, never raises, writes `telegram_notification_success` only on real 2xx+ok:true (with `message_id`) / `_failed` on any error (with http_status + truncated body); retry-once-without-`parse_mode` fallback (rescues `[PAPER]`-bracket Markdown 400s). Notifier delegates auditing to push. **Commits `0298575` (code) + `32ac3bb` (deploy_log).** Live-verified (success message_id, bad-chat 400 failed-row).
+   - **Lifecycle silent-drop = RESOLVED-UNEXPLAINED, NOT root-caused.** Synthetic resolution (`SYNTH-TGDIAG-20260528-0001`, deleted, 3-source-clean) DELIVERED to operator → path works in current build. The 5 historical (2026-05-28) silent resolutions were never explained (presumed older-PID process-specific). Structural protection: the new audit semantics + **divergence monitor** `scripts/telegram_lifecycle_divergence_check.py` (daily cron @08:30 UTC).
+2. **Shared SQLite writer: db-lock fix** — `db.connect()` `PRAGMA busy_timeout=5000` (surgical insert) + `LoggerAgent.log_event` retry(4, jittered) + JSONL file-fallback (`data/audit_event_write_failed.jsonl`) + `scripts/replay_audit_event_write_failed.py`. **Commits `69c401a` (code) + `5836ef4`/`fd23bb6` (docs).** Verified 4 ways (busy_timeout live, retry→success, exhaustion→fallback, replay→recovered). Eliminates the 27-in-7-days silent audit-row drops.
+3. **Reconciler 1m-granularity fix** — `audit_reality_reconciler` now fetches **1m via the live path's exact fetcher** (was 3m DB read → false mismatches); window-inclusivity subsumed; `missed_legs`→`sim_filled_legs`. **Commits `06b5a9e` + `abca646`.** Real run: **17/17 match, 0 mismatches** (was 12/17), all 5 flagged resolved with exact R-match. `bitunix-reconciler-granularity-bug` memory marked FIXED.
+4. **Bitunix 36h health check (read-only)** — GREEN (`07bcc6f`). PA-2of3 funnel matches replay (pass 18.5%, fee-floor 68%); **`structure_alignment` carries 74.5% of PA passes → REFUTES the "replace the 4h check" hypothesis** (don't pursue). Reconciler-mismatch investigation report `225de69` (Case 2: trades are real wins).
+
+**PLANNING DOCS (read-only, pushed, for operator review — no implementation yet):**
+- `runbooks/2026-05-29_bitunix_live_readiness_audit.md` (`0282b20`) — paper→live gap across Stages 0–3 + a conservative 13-item Stage-1 checklist. **Headline: going live is a BUILD, not a flip — `BitunixBroker.place_order/cancel_order/modify_position_tp_sl` are NotImplementedError stubs (Phase 4 unbuilt); system fails closed today.**
+- `runbooks/2026-05-29_bitunix_live_reuse_audit.md` (`16e09ef`) — read BitunixOfficial/open-api + Lumiwealth/lumibot + 0xCherryBlueZu/bitunix. **lumibot is MIT (adopt-with-attribution) → its complete `BitUnixClient` + broker patterns are adoptable; the #1 integration gotcha (sign-what-you-send compact body, `data=` not `json=`) + native kill-switch primitives (`cancel_all_orders`/`flash_close_position`) pre-solved.** Reuse cuts ~30–40% off the broker-write long pole; 3–6 week envelope holds.
+
+**OPERATOR DECISION:** build the bitunix Phase-4 live engine **in parallel with strategy data accrual**. The two audit docs are the plan.
+
+**PROD STATE @ EOS:** PID `1690438`, healthz `{"status":"ok","mode":"PAPER"}`, NRestarts=0. ⚠️ Service was restarted **04:01 UTC by a PARALLEL session** (polymarket-risk work `32f2a2d`/`b4838ac`) — not by this session. All this-session deploys md5-verified on prod. `busy_timeout=5000` live in the service (a `sqlite3` CLI check shows 0 — that's the CLI's own connection, not the service; not a regression).
+
+**OPEN / CARRY-FORWARD (next session):**
+- **RH stale pickle (HIGH operational, NOT yet fixed):** every `systemctl restart trading-corp` re-triggers a Robinhood **device-approval challenge** that BLOCKS startup until the operator approves on their phone — caused a ~25-min web/HITL outage this session. Pickle mtime is May 24; the 00:40/01:58 approvals did NOT persist a session. **Coordinate every restart with the operator (app open); fix RH session persistence as its own task.** See `[[bitunix-prod-restart-rh-challenge]]`.
+- **kalshi_weather schema drift (P3, the entry above this one):** prod `db.py` (`1782cc9c`) intentionally lacks the git weather schema (busy_timeout was deployed surgically). Prod `db.py` ≠ git `db.py` BY DESIGN. Decide deploy-or-revert the weather tables.
+- **16 "— logged" audit-lie sites** in `main.py` scheduler loops (Telegram "logged" before the DB write is confirmed) — found by the db-lock audit; the same observability-lie class; separate follow-up.
+- **7-day db-lock passive monitor:** grep journal for "database is locked … retry" vs the fallback file; if the fallback fires non-trivially, contention needs a deeper fix (batching/WAL tuning).
+- **Ownership drift:** `db.py` + `bitunix_lifecycle_notifier.py` are now `azureuser:azureuser` (were root) from the rm+scp deploy maneuver — benign; `sudo chown root:root` to restore if desired.
+- **Bitunix live Stage-1 blockers (from the readiness audit):** security **C-1** (rotate + KV-only + redact `BITUNIX_FUTURES_API_KEY/SECRET`), build `place_order`+fill-observation, kill switch, broker-truth reconciliation, cost accrual, restart-resume.
+- **Standing gates (do NOT re-litigate):** PA-2of3 observation window closes **2026-06-03**; paper-clock midpoint tripwire **2026-06-19**; the kalshi_weather/+EV and polymarket-weather-copy-bot questions are CLOSED (shelved).
+
+---
+
 ## EOS snapshot — 2026-05-28 (kalshi_weather LATE-CYCLE ultra-high-confidence favorite test — **VERDICT: NULL, refuted on real prices. Read-only research; ZERO prod changes, ZERO deploys, paper untouched. 1 commit `17fab80`, pushed.**)
 
 **Mandate:** a NARROWER slice than the prior favorite-buying scans — at very late cycle AND very high confidence (implied ≥ 0.90; bands 0.90-0.93 / 0.93-0.96 / 0.96-0.99), are favorites underpriced enough to clear fees + spread + tail risk? Proposed mechanism: MMs keep wider spreads / lower prices late when the outcome is near-determined, leaving 1-2¢ for taking last-mile risk. Decisive emphasis on the LOSS DISTRIBUTION (one ~−$0.94 loss erases ~10 penny wins) and on holdout survival.
