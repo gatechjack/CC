@@ -78,7 +78,7 @@ rm -rf <new-files-or-dirs>
 
 ## 2026-05-29 ~02:43 UTC — Shared SQLite audit writer: busy_timeout + log_event retry-with-backoff + JSONL fallback + replay (eliminate silent row-drops)
 
-**Commits:** `69c401a` (db.py busy_timeout + logger.py retry/fallback + replay script + tests) + `<DBLOCK_DOC_SHA>` (this deploy_log + BACKLOG + memory).
+**Commits:** `69c401a` (db.py busy_timeout + logger.py retry/fallback + replay script + tests) + `5836ef4` (this deploy_log + BACKLOG + memory).
 **Triggered by:** 2026-05-28 health check found 11× `database is locked` drops on the polymarket/pmcc write path; the shared `log_event`/`db.connect` writer is used by bitunix too → latent data-integrity hole. P1.
 **Backup tags:** `.bak-dblock-20260529` on `db.py` + `logger.py`.
 
