@@ -53,9 +53,15 @@ from trading_corp.persistence.models import Position
 log = logging.getLogger(__name__)
 
 
-# Native USDC on Polygon mainnet (NOT USDC.e bridged; Polymarket migrated
-# to native USDC). 6 decimals.
-_USDC_CONTRACT = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"
+# USDC.e (bridged) is the Polymarket CLOB collateral token — confirmed
+# 2026-05-29 via on-chain getCollateral() on both exchange contracts
+# (std 0x4bFb…982E and negRisk 0xC5d5…f80a both return 0x2791…84174).
+# An earlier comment here claimed Polymarket migrated to native USDC
+# (0x3c499c…); that is WRONG for the CLOB — the exchanges still settle in
+# USDC.e. The snapshot must read the collateral token so equity reflects
+# *tradeable* balance, not an untradeable native-USDC holding. Both tokens
+# use 6 decimals. See reports/2026-05-29_polymarket_live_prep_groupB_spike.md.
+_USDC_CONTRACT = "0x2791Bca1f2de4661eD88A30C99A7a9449Aa84174"
 _USDC_DECIMALS = 6
 
 # Public read APIs. All three confirmed reachable from US Azure VMs in the

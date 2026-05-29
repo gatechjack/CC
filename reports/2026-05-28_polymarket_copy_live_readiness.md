@@ -235,6 +235,12 @@ Effort key: **S** ≈ hours · **M** ≈ ~1 day · **L** ≈ multi-day. Order re
 5. **[⚠ silent-failure] MATIC gas reserves + per-wallet monitoring** — S–M. Every order burns MATIC;
    **per-EOA** balance tracking + low-balance alert + top-up runbook. Without it, live placement silently
    fails when MATIC drains.
+   > **CORRECTION (2026-05-29):** "every order burns MATIC" is **overstated.** CLOB order placement is
+   > *gasless* for the user — orders are signed off-chain and matched/settled by Polymarket's operator.
+   > MATIC/POL is consumed only by (a) one-time per-wallet approvals and (b) per-resolution
+   > `redeemPositions`. The live wallet holds 98.375 POL (ample). The monitoring/low-balance work is
+   > still worth doing for the Group C per-division-wallet pattern (new EOAs may start under-funded), but
+   > it is not a per-order silent-failure risk. See `reports/2026-05-29_polymarket_live_prep_groupB_spike.md`.
 
 **Group C — Live build**
 6. **Per-Polymarket-division wallet pattern + arbitrage migration** — **L**. Per-division KV secret paths,

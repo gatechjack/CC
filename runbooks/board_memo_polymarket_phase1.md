@@ -51,6 +51,18 @@ When ready — no rush, no time pressure on this:
 3. **Fund** the address from Coinbase: $500 native USDC on Polygon +
    ~$5 MATIC for gas. Native USDC contract is `0x3c499c542cef5e3811e1192ce70d8cc03d5c3359`
    (NOT USDC.e bridged).
+
+   > ⚠ **CORRECTION (2026-05-29):** the native-USDC instruction above is **WRONG for CLOB
+   > trading.** On-chain `getCollateral()` on both live Polymarket exchange contracts
+   > (std `0x4bFb…982E`, negRisk `0xC5d5…f80a`) returns **USDC.e bridged
+   > `0x2791Bca1f2de4661eD88A30C99A7a9449Aa84174`** — the CLOB settles in USDC.e, not native
+   > USDC. The $500 funded here as native USDC **cannot back a CLOB order as-is**; it must be
+   > converted to USDC.e (or the wallet re-funded with USDC.e) before Phase 3. The "Polymarket
+   > migrated to native USDC" belief was never verified against the live exchange.
+   > **Gas:** CLOB order placement is *gasless* for the user (orders are signed off-chain and
+   > settled by Polymarket's operator); MATIC/POL is consumed only by one-time approvals and
+   > per-resolution `redeemPositions`, so "~$5 for gas" is generous (the 98 POL actually funded
+   > is ample). Full detail: `reports/2026-05-29_polymarket_live_prep_groupB_spike.md`.
 4. **Upload to KV** (hyphens not underscores — KV constraint):
    - `POLYMARKET-PRIVATE-KEY` = the private key from step 1
    - `POLYMARKET-FUNDER-ADDRESS` = the address from step 1 (signer == funder, EOA pattern)

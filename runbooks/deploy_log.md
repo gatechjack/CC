@@ -7465,6 +7465,8 @@ sudo systemctl restart trading-corp
 
 **On-chain verification (pre-restart, public RPC):** native USDC `0x3c49…3359` = $500.00, USDC.e bridged = $0.00 (no misrouted tokens), POL/MATIC = 98.375 (~$39 at $0.40/POL — way more than needed for gas).
 
+> ⚠ **CORRECTION (2026-05-29):** the parenthetical "no misrouted tokens" is **backwards.** On-chain `getCollateral()` on both live Polymarket exchanges returns **USDC.e `0x2791…84174`** — the CLOB settles in USDC.e, so the **native USDC is the misrouted token** and USDC.e=$0 means the wallet holds **zero tradeable CLOB collateral.** The $500 must be converted to USDC.e (or re-funded) before any Phase 3 order. POL/MATIC sufficiency stands (CLOB orders are gasless; POL only funds approvals + redeems). See `reports/2026-05-29_polymarket_live_prep_groupB_spike.md`. (Code: `brokers/polymarket.py` `_USDC_CONTRACT` flipped to USDC.e on branch `polymarket-live-prep-2026-05-29`, **not yet deployed** — deploy alongside the funding conversion so the dashboard doesn't read $0.)
+
 **KV state confirmed (presence-only, no values exposed):**
 - `POLYMARKET-PRIVATE-KEY`: enabled, length 64 (no `0x` prefix; `eth_account.Account.from_key` accepts both forms — harmless for Phase 1 since signing isn't in the path)
 - `POLYMARKET-FUNDER-ADDRESS`: enabled, length 42 (`0x` + 40 hex ✓)
