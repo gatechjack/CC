@@ -20,6 +20,18 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P2 — Reconcile committed-but-undeployed main vs prod divergence (tasty_options, iron_condor partial) (found 2026-05-29)
+
+`origin/main` has code committed that prod does **not** run, in `secrets.py` + `main.py`. Concretely (md5 + keyword evidence, 2026-05-29 deploy of polymarket item 6/7): prod `main.py`=3685 lines vs main 3821; prod `secrets.py`=383 vs 403. The gap is almost entirely **tasty_options** wiring — `main.py` tastytrade count prod **0** vs main 12, tasty_options prod **0** vs main 3; `secrets.py` tastytrade prod **0** vs main 18. Everything else matches exactly (bitunix 102=102, kalshi 283=283, polymarket 92=92, lifecycle 9=9). Source commits: `94b3129` (tasty_options main.py wiring) + `a6990cd` (tasty_options secrets KV plumbing). Also a small **iron_condor** delta (prod `main.py` 2 vs main 4). tasty_options is gated on Phase-0 sandbox smoke; iron_condor delta status unclear.
+
+**Why this matters:** every deploy that touches `secrets.py`/`main.py` must navigate the drift **surgically** (apply only the target hunks to prod's current file) to avoid side-effect-shipping the undeployed tasty_options/ic code. The 2026-05-29 polymarket item-6/7 deploy was the **2nd documented occurrence** of having to do this (the 1st: the kalshi_weather db.py schema, P3 entry below). It will keep biting until resolved.
+
+**Resolution paths (tradeoffs):** (a) fire the Phase-0 sandbox smoke for tasty_options and deploy it, closing the gap (brings prod to main, but commits real-money order-placement wiring — needs its own gate); (b) revert the un-deployed commits off main and re-introduce when smoke passes (keeps main == prod, but loses the committed work from history's tip). Decide deliberately; do NOT bundle into an unrelated deploy.
+
+**Priority: P2** — not urgent, but recurring. See memory `committed-not-deployed-recurring-drift`.
+
+---
+
 ## P3 ANOMALY — kalshi_weather tier-1 schema committed but NOT deployed (found 2026-05-29)
 
 Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_weather tier-1 data-foundation schema that's committed in git — `weather_nbm_observations` and `weather_forecast_residuals` tables + their indexes (per `plans/tier1-data-foundation-kalshi-weather.md` §C1/§C2). Discovered during the 2026-05-29 db-lock fix when md5-diffing prod db.py against git (the busy_timeout change was deployed **surgically** to avoid inadvertently shipping this schema). `connect()` and all helper functions match git — the drift is schema-DDL-only. **Decide:** deploy the tier-1 schema to prod (if the ingestion/consumption path is meant to be live) or revert the local commit (if shelved). Do NOT deploy as a side-effect of unrelated db.py changes. This is the **3rd committed-but-not-deployed instance this week** — see memory `committed-not-deployed-recurring-drift`. **P3** (no active consumer reads these tables on prod's hot path today, per the schema comments).
