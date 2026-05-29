@@ -6,14 +6,11 @@ no raise on channel error).
 """
 from __future__ import annotations
 
-import json
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from trading_corp.comms.bitunix_lifecycle_notifier import BitunixLifecycleNotifier
-from trading_corp.persistence import db
 
 
 # ---------------------------------------------------------------------------
@@ -25,13 +22,23 @@ class _StubChannel:
     def __init__(self) -> None:
         self.pushed: list[str] = []
 
-    async def push(self, text: str) -> None:
+    async def push(self, text: str, **kwargs) -> bool:
         self.pushed.append(text)
+        return True
 
 
-class _RaisingChannel:
-    async def push(self, text: str) -> None:
-        raise RuntimeError("boom")
+class _FailingChannel:
+    """Simulates push() returning False (failure) without raising.
+
+    Per the new contract, push() never raises — it returns False on failure
+    and writes the audit row itself. This stub models that behavior.
+    """
+    def __init__(self) -> None:
+        self.pushed: list[str] = []
+
+    async def push(self, text: str, **kwargs) -> bool:
+        self.pushed.append(text)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -231,18 +238,20 @@ async def test_live_mode_prefix():
 
 
 # ---------------------------------------------------------------------------
-# Test 7: failure handling — no raise + audit row written
+# Test 7: failure handling — no raise (push() never raises per new contract)
 # ---------------------------------------------------------------------------
 
 
-async def test_failure_does_not_raise_and_writes_audit(tmp_path: Path):
-    db_url = f"sqlite:///{tmp_path}/x.db"
-    db.init_db(db_url)
+async def test_failure_does_not_raise(tmp_path: Path):
+    """_FailingChannel.push() returns False (never raises) — notifier must
+    not raise either. Audit rows are now written by TelegramChannel.push()
+    itself, not by the lifecycle notifier. This test verifies the notifier
+    remains never-raising when push() signals failure."""
+    # No db needed — _FailingChannel is a no-audit stub
+    ch = _FailingChannel()
+    notifier = _make_notifier(ch)
 
-    ch = _RaisingChannel()
-    notifier = _make_notifier(ch, db_url=db_url)
-
-    # Must not raise
+    # Must not raise even when push() returns False
     await notifier.notify_tp_fill(
         order_id="ord-007",
         symbol="BTCUSDT",
@@ -256,18 +265,5 @@ async def test_failure_does_not_raise_and_writes_audit(tmp_path: Path):
         new_sl_label="breakeven",
         percent_closed=50,
     )
-
-    # Verify audit row written via raw sqlite3
-    db_path = str(tmp_path / "x.db")
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT kind, payload_json FROM audit_event WHERE kind = ?",
-        ("telegram_notification_failed",),
-    ).fetchall()
-    conn.close()
-
-    assert len(rows) == 1, f"Expected 1 audit row, got {len(rows)}"
-    payload = json.loads(rows[0][1])
-    assert payload["notification_type"] == "tp_fill_tp1"
-    assert payload["order_id"] == "ord-007"
-    assert "boom" in payload["failure_reason"]
+    # If we get here without an exception, the test passes.
+    assert ch.pushed[0].startswith("📄 [PAPER]")

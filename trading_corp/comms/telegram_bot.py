@@ -6,7 +6,10 @@ arbitrary chat messages into a CEO message handler.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from trading_corp.comms.base import BoardChannel
@@ -14,6 +17,21 @@ from trading_corp.comms.pending_registry import PendingApprovalRegistry
 from trading_corp.graph.interrupts import ApprovalRequest, BoardDecision
 
 log = logging.getLogger(__name__)
+
+
+def _telegram_error_status(e: Exception) -> int | None:
+    """Map a telegram.error exception type to an HTTP status code, or None."""
+    try:
+        import telegram.error as _te  # type: ignore
+        if isinstance(e, _te.BadRequest):
+            return 400
+        if isinstance(e, _te.Forbidden):
+            return 403
+        if isinstance(e, _te.RetryAfter):
+            return 429
+    except ImportError:
+        pass
+    return None
 
 OnMessage = Callable[[str], Awaitable[str]]  # user_text -> reply_text
 OnCommand = Callable[[], Awaitable[str]]
@@ -41,6 +59,7 @@ class TelegramChannel(BoardChannel):
         notification_only: bool = False,
         dashboard_base_url: str | None = None,
         registry: PendingApprovalRegistry | None = None,
+        db_url: str | None = None,
     ) -> None:
         self._token = token
         self._chat_id = int(chat_id)
@@ -75,6 +94,8 @@ class TelegramChannel(BoardChannel):
         self._registry = registry
         self._pending: dict[str, asyncio.Future[BoardDecision]] = {}
         self._app = None
+        # db_url for audit writes. None = resolve at use-time from env/default.
+        self._db_url = db_url
         # Set when the polling loop hits an unrecoverable error (e.g. another
         # bot instance is polling the same token). main.py races its idle
         # sleep against this so we shut down promptly instead of spamming logs.
@@ -173,16 +194,117 @@ class TelegramChannel(BoardChannel):
         except Exception as e:
             log.warning("Telegram shutdown error: %s", e)
 
-    async def push(self, text: str) -> None:
+    async def push(
+        self,
+        text: str,
+        *,
+        audit_path: str = "other",
+        audit_context: dict | None = None,
+    ) -> bool:
+        """Send a Telegram message and write a success/failure audit row.
+
+        Never raises — callers await push() and rely on it returning a bool.
+        Returns True on confirmed delivery (HTTP 2xx + ok:true), False otherwise.
+        """
         if self._app is None:
             log.warning("push called before start; dropping message")
-            return
-        # Telegram messages are limited to ~4096 chars.
-        await self._app.bot.send_message(
-            chat_id=self._chat_id,
-            text=text[:4000],
-            parse_mode="Markdown",
-        )
+            self._write_send_audit(
+                False,
+                audit_path=audit_path,
+                audit_context=audit_context,
+                http_status=None,
+                response_detail="channel not started (app is None)",
+            )
+            return False
+        try:
+            # Telegram messages are limited to ~4096 chars.
+            msg = await self._app.bot.send_message(
+                chat_id=self._chat_id,
+                text=text[:4000],
+                parse_mode="Markdown",
+            )
+            self._write_send_audit(
+                True,
+                audit_path=audit_path,
+                audit_context=audit_context,
+                http_status=200,
+                response_detail=f"message_id={msg.message_id}",
+            )
+            return True
+        except Exception as e:
+            # Retry once WITHOUT parse_mode. This preserves the markdown-
+            # fallback resilience callers (webhooks) previously got via their
+            # own try/except-on-raise, and rescues messages whose Markdown
+            # 400s (e.g. the '[PAPER]' brackets in lifecycle close-outs).
+            try:
+                msg = await self._app.bot.send_message(
+                    chat_id=self._chat_id,
+                    text=text[:4000],
+                )
+                self._write_send_audit(
+                    True,
+                    audit_path=audit_path,
+                    audit_context=audit_context,
+                    http_status=200,
+                    response_detail=(
+                        f"message_id={msg.message_id} "
+                        f"(plain fallback after {type(e).__name__})"
+                    ),
+                )
+                return True
+            except Exception as e2:
+                status = _telegram_error_status(e2)
+                detail = f"{type(e2).__name__}: {str(e2)[:200]}"
+                log.warning("Telegram push failed (markdown + plain): %s", detail)
+                self._write_send_audit(
+                    False,
+                    audit_path=audit_path,
+                    audit_context=audit_context,
+                    http_status=status,
+                    response_detail=detail,
+                )
+                return False
+
+    def _write_send_audit(
+        self,
+        ok: bool,
+        *,
+        audit_path: str,
+        audit_context: dict | None,
+        http_status: int | None,
+        response_detail: str,
+    ) -> None:
+        """Write a telegram_notification_success/failed audit row. Never raises."""
+        try:
+            db_url = self._db_url or (
+                os.environ.get("TC_DB_URL") or "sqlite:///data/trading_corp.db"
+            )
+            from trading_corp.persistence import db as _db
+            kind = (
+                "telegram_notification_success" if ok
+                else "telegram_notification_failed"
+            )
+            payload: dict = {
+                "path": audit_path,
+                "http_status": http_status,
+                "ok": ok,
+                "response_detail": response_detail,
+            }
+            if audit_context:
+                payload.update(audit_context)
+            with _db.connect(db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "telegram_channel",
+                        kind,
+                        json.dumps(payload, default=str),
+                    ),
+                )
+        except Exception:
+            pass  # observability of observability must never raise
 
     def _build_approval_message(self, req: ApprovalRequest):
         """Build the Telegram message text + (optional) inline keyboard

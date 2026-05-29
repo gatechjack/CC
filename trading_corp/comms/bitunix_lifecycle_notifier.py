@@ -1,16 +1,14 @@
 """Telegram lifecycle notifier for Bitunix paper trades.
 
 Observability-only: a send failure MUST NEVER raise or propagate.
-Logs a warning and writes a `telegram_notification_failed` audit row,
-then returns normally.
+push() now owns success/failure auditing and never raises; _send is
+a thin wrapper that prepends the prefix and passes audit metadata.
 
-Reuses an existing async Telegram channel (channel.push(text) -> None).
+Reuses an existing async Telegram channel (channel.push(text) -> bool).
 """
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -180,46 +178,14 @@ class BitunixLifecycleNotifier:
         notification_type: str,
         order_id: str,
     ) -> None:
-        """Prepend prefix and push to the channel. NEVER raises."""
-        full = f"{self._prefix} {body}"
-        try:
-            await self._channel.push(full)
-        except Exception as e:
-            log.warning(
-                "BitunixLifecycleNotifier: push failed (order_id=%s type=%s): %s",
-                order_id,
-                notification_type,
-                e,
-            )
-            self._write_failed_audit(notification_type, order_id, str(e))
+        """Prepend prefix and push to the channel. NEVER raises.
 
-    def _write_failed_audit(
-        self,
-        notification_type: str,
-        order_id: str,
-        reason: str,
-    ) -> None:
-        """Write a ``telegram_notification_failed`` audit row. Never raises."""
-        if self._db_url is None:
-            return
-        from trading_corp.persistence import db as _db
-        try:
-            with _db.connect(self._db_url) as conn:
-                conn.execute(
-                    "INSERT INTO audit_event (ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
-                    (
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        "bitunix_lifecycle_notifier",
-                        "telegram_notification_failed",
-                        json.dumps(
-                            {
-                                "order_id": order_id,
-                                "notification_type": notification_type,
-                                "failure_reason": reason,
-                            },
-                            default=str,
-                        ),
-                    ),
-                )
-        except Exception:
-            pass  # observability of observability must not raise
+        push() now owns success/failure auditing and never raises itself,
+        so a bare await is sufficient here.
+        """
+        full = f"{self._prefix} {body}"
+        await self._channel.push(
+            full,
+            audit_path=f"lifecycle_{notification_type}",
+            audit_context={"order_id": order_id},
+        )

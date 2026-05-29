@@ -76,6 +76,42 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-29 ~01:58 UTC — Telegram audit-success semantics (Phase C) + lifecycle silent-drop diagnostic (RESOLVED-UNEXPLAINED) + divergence monitor
+
+**Commits:** `<PHASEC_SHA>` (telegram audit semantics + divergence monitor + tests + this deploy_log). Memory: `telegram-audit-success-is-confirmed-delivery`.
+**Triggered by:** Operator task — diagnose why 5 bitunix lifecycle resolutions on 2026-05-28 landed silently (no Telegram) despite clean prod-side audits; then strengthen audit semantics + add a structural divergence monitor.
+**Backup tags:** `.bak-phasec-20260529` on `telegram_bot.py` + `bitunix_lifecycle_notifier.py`. New file `scripts/telegram_lifecycle_divergence_check.py` (first-shipment). `.bak-tgdiag-20260528` (Phase-A instrumentation backups; replay file restored from it).
+
+**Phase A — diagnostic (temporary instrumentation, now REVERTED):** Deployed `[TG-DIAG-20260528]` logging into `paper_trade_replay.py` (azureuser-owned), restarted, and resolved a **synthetic marked paper-trade** (`SYNTH-TGDIAG-20260528-0001`, deleted after; 3-source-verified gone). Findings, in order: notifier is **wired + the SAME live object** at the going-forward tick (same object/dict/module id at `set_lifecycle_notifier` and `_drain` — **refuted** None-at-tick / dual-module / reset); on the synthetic resolution the close-out **was queued** (`_queue_close_out ENTER notifier_is_none=False`) and **reached the drain** (`queue_len=1`), `notify_close_out` dispatched, `send_message` returned no-error, and **the message DELIVERED to the operator's phone**. So the lifecycle path **works in the current build**. **The 2026-05-28 silence (5 resolutions) was NOT root-caused** — presumed older-PID process-specific state; bug vanished, not diagnosed. Instrumentation reverted: `paper_trade_replay.py` md5 back to `6f389d18…` (clean), confirmed no `[TG-DIAG]` at the 01:59 startup.
+
+**Phase C — audit-success semantics (the load-bearing meta-fix):**
+- `trading_corp/comms/telegram_bot.py` (md5 `4711ce8b…`): `push()` now `-> bool`, **never raises**, and writes an affirmative audit for EVERY send: `telegram_notification_success` only on a real `send_message` return (HTTP 2xx + ok:true, payload carries `message_id`), `telegram_notification_failed` on the `_app is None` drop / any exception (payload carries `http_status` mapped from the telegram error type + truncated real `response_detail`). Added a **plain-text fallback**: on a send error it retries once WITHOUT `parse_mode` — rescues lifecycle messages whose Markdown (`[PAPER]` brackets) 400s, AND preserves the markdown-fallback resilience the webhook path previously got from `push()` raising (so `web/webhooks.py` was NOT touched). `db_url` resolves at use-time from `TC_DB_URL`/default — **`main.py` was NOT modified** (it's root-owned + carries the pre-tasty drift).
+- `trading_corp/comms/bitunix_lifecycle_notifier.py` (md5 `065534d2…`): `_send` is now a thin wrapper passing `audit_path="lifecycle_{type}"` + `order_id`; its own `_write_failed_audit` removed (push owns auditing).
+- Tests: `tests/test_telegram_send_audit.py` (6) + updated `test_bitunix_lifecycle_notifier.py` + `test_telegram_lifecycle_divergence_check.py` (2) — all GREEN via `run_capped` (24 in the telegram set; existing telegram tests no regression).
+- **Live verification (deployed code, real API, real DB):** startup "CEO online" → `telegram_notification_success {http_status:200, ok:true, message_id:20406}`. Controlled one-off: good chat → `success {200, ok:true, message_id:20407}` (delivered); bad chat_id 999999999 → `failed {http_status:400, ok:false, response_detail:"BadRequest: Chat not found"}`. Both the Markdown attempt and the plain fallback hit the real error before the failed-row was written.
+
+**Divergence monitor (structural protection — operational, not just filed):** `scripts/telegram_lifecycle_divergence_check.py` counts bitunix lifecycle resolutions (A) vs `telegram_notification_success` rows with `path LIKE 'lifecycle_close_out%'` (B) in a window; writes `telegram_lifecycle_divergence_detected` if A>B. Wired as a **daily azureuser cron @ 08:30 UTC** (`cron` service active), logging to `logs/divergence_monitor.log`. First run: 24h window flagged divergence=6 (the pre-deploy silent resolutions — correct detection; ages out of the window within a day); post-deploy 1h window clean (0/0).
+
+**⚠️ Notable / drift / recurring issues:**
+- **Notifier ownership drift:** `bitunix_lifecycle_notifier.py` was `root:root`; deploying it (no NOPASSWD path for `cp`) used rm+scp in the azureuser-writable comms dir → now `azureuser:azureuser`. Benign (service runs as azureuser); restore with `sudo chown root:root` if desired.
+- **RH session pickle is STALE (`~/.tokens/robinhood.pickle` mtime May 24):** the operator's device-challenge approvals (00:40 + 01:58 UTC) did NOT persist a session, so **every restart re-triggers the Robinhood device-approval challenge and blocks startup until approved on the phone**. This caused a ~25-min web/HITL outage on the first (00:14) restart. Separate recurring operational fragility — NOT part of this work; flag for a follow-up (RH session persistence / device-trust).
+- Reconciler 3m-vs-1m granularity false-positives: HELD for a separate session (see `project_bitunix_reconciler_granularity_bug`).
+
+**Service:** PID → `1682407` (01:58:37 UTC restart). NRestarts=0, ActiveState=active. healthz `{"status":"ok","mode":"PAPER"}`. Bitunix scanners + replay loop online; 0 tracebacks since restart.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+B=/home/azureuser/trading_corp; \
+cp -a \$B/trading_corp/comms/telegram_bot.py.bak-phasec-20260529 \$B/trading_corp/comms/telegram_bot.py; \
+cp -a \$B/trading_corp/comms/bitunix_lifecycle_notifier.py.bak-phasec-20260529 \$B/trading_corp/comms/bitunix_lifecycle_notifier.py; \
+rm -f \$B/scripts/telegram_lifecycle_divergence_check.py; crontab -r; \
+sudo systemctl restart trading-corp.service"
+```
+(NB: rollback restart re-triggers the RH device challenge — operator must be ready.)
+
+---
+
 ## 2026-05-28 ~04:44 UTC — k3 (kalshi_copy_trader) sports-skip NameError fix FINALLY deployed
 
 **Commits:** `e5efa06` — `copy-trader: fix NameError in sports-skip audit payload` (the one-line fix; authored + pushed **2026-05-24**, but **never deployed until now**). `5623f91` — `k3: regression test for sports-skip NameError (follow-up to e5efa06)` (this session; test only, no prod code).
