@@ -8,6 +8,18 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P1 — Polymarket copy-trader SELL-pairing skips ~99.86% of exits ("no matching entry") (found 2026-05-29)
+
+**Diagnostic (surfaced during the Group A resolver settle-fairness diagnosis — NOT investigated further, filed as-is):** `polymarket_resolver._pair_pending_exits` re-scans **719–720** unpaired copy-trader SELL `would_have_placed` rows every tick and skips **719/720 (~99.86%)** as `skipped_no_entry` — it can't find the prior BUY (matched on `whale_wallet` + `condition_id` + `outcome_index`, entry `ts` < sell `ts`, unpaired). Stable every tick for 12h+ (`pair_scanned: 719-720, pair_skipped_no_entry: 719, paired: 0-2`). So whale-closed PCT positions are NOT being booked into round-trips.
+
+**Why filed separately from the settle-fairness fix:** SECOND metric-contamination vector, **larger by count** than the 578 stuck-on-resolved that settle-fairness (Group A #3) addresses. Likely a DIFFERENT bug: settle-fairness is scan-starvation on the BUY/market-settle path; this is on the SELL-pairing path — candidate causes include an `outcome_index` type mismatch in the `json_extract` join (string vs int), a `whale_wallet` field mismatch between SELL and BUY payloads, or these SELLs being for whales/markets we never copied a BUY for (legit no-entry). Deliberately NOT bundled into the Sunday-critical settle-fairness fix to avoid scope creep.
+
+**Instruction — SCOPE BEFORE BUILD** (same pattern as the settle-fairness diagnosis): confirm root cause with a read-only probe BEFORE writing any fix — for a sample of skipped SELLs, does a matching BUY actually exist in `audit_event`? Type-check `outcome_index`/`whale_wallet` in BUY vs SELL payloads; check whether the skipped SELLs correspond to BUYs we ever emitted. Report cause + effort; if L, reconsider before building.
+
+**Priority: P1** (NOT P0 — settle-fairness is the Sunday-critical one). Queued behind the resolver settle-fairness ship.
+
+---
+
 ## P3 ANOMALY — kalshi_weather tier-1 schema committed but NOT deployed (found 2026-05-29)
 
 Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_weather tier-1 data-foundation schema that's committed in git — `weather_nbm_observations` and `weather_forecast_residuals` tables + their indexes (per `plans/tier1-data-foundation-kalshi-weather.md` §C1/§C2). Discovered during the 2026-05-29 db-lock fix when md5-diffing prod db.py against git (the busy_timeout change was deployed **surgically** to avoid inadvertently shipping this schema). `connect()` and all helper functions match git — the drift is schema-DDL-only. **Decide:** deploy the tier-1 schema to prod (if the ingestion/consumption path is meant to be live) or revert the local commit (if shelved). Do NOT deploy as a side-effect of unrelated db.py changes. This is the **3rd committed-but-not-deployed instance this week** — see memory `committed-not-deployed-recurring-drift`. **P3** (no active consumer reads these tables on prod's hot path today, per the schema comments).
