@@ -163,6 +163,15 @@ Step: once PCT EOA holds a position (a small one **manually created via the Poly
 
 ---
 
+## Post-deploy verification gate (run after the bundled deploy + restart)
+
+The bundle (item 6 + item 7 + the `631ddc4` USDC.e flip) must **not regress** the existing single-wallet path for `polymarket_arbitrage`. After deploy + service restart, confirm:
+1. arb's broker resolves to the **legacy keys** (`POLYMARKET_PRIVATE_KEY`/`FUNDER_ADDRESS`) — boot log `PolymarketBroker connected (funder=***REDACTED***, …)`, not stub.
+2. arb's read ops still work: positions (`data-api`), prices (`clob`), market list (`gamma-api`).
+3. The **only** visible delta is the dashboard tile reading **$0** (USDC.e balance) instead of **$500** (native USDC) — intentional, recorded.
+
+**Anything else changing is a regression, not a feature of the refactor.** (The legacy-keys resolution is also unit-guarded by `test_arb_resolves_to_legacy_keys`.)
+
 ## Out of scope / open questions for ratification
 
 - **Out of scope of item 6:** the PCT `broker: paper→polymarket` flip + funding (go-live, item 9); arb wallet replacement (ii) + arb funding; `assert_live_ready` polymarket branch (item 7); the live adapter (item 8); approvals (item 4); MATIC monitoring (item 5).
@@ -173,4 +182,5 @@ Step: once PCT EOA holds a position (a small one **manually created via the Poly
 
 ## Status log
 
-- **2026-05-29** — Plan authored (plan-only). Funding target = Option A (recorded). Awaiting ratification + build-sequencing decision. No build, no deploy, no on-chain action.
+- **2026-05-29** — Plan authored (plan-only). Funding target = Option A (recorded).
+- **2026-05-29** — Ratified (all 4 points). **Item 6 + item 7 BUILT** on branch (`2ed83fe`), bundled with the held `631ddc4` USDC.e flip. 9 new tests + 78-test regression set green. **NOT deployed** — awaiting prod-touch approval (same gate as Group A). Post-deploy verification gate above. Wallet-ops scripts (PCT EOA gen / POL transfer / USDC swap) remain a separate workstream, not in this build.
