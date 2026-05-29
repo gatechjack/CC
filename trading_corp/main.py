@@ -1790,9 +1790,17 @@ def _build_broker_for_division(
         # PaperExecutionBroker wrap is needed: read-only adapters don't
         # have an order surface to simulate.
         from trading_corp.brokers.polymarket import PolymarketBroker
+        # Per-division wallet (item 6): resolve this division's EOA by slug.
+        # RPC is shared. Unmapped/partial wallet → None creds → broker stubs.
+        wallet = secrets.polymarket_wallets.get(division.slug)
+        if wallet is None:
+            log.info(
+                "Polymarket division %s has no mapped wallet — broker will stub",
+                division.slug,
+            )
         return PolymarketBroker(
-            private_key=secrets.polymarket_private_key,
-            funder_address=secrets.polymarket_funder_address,
+            private_key=wallet.private_key if wallet else None,
+            funder_address=wallet.funder_address if wallet else None,
             polygon_rpc_url=secrets.polygon_rpc_url,
         )
 

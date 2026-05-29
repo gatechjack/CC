@@ -38,6 +38,8 @@ _SECRET_KEY_NAMES = (
     # RPC URL contains an embedded Alchemy API key in its path segment.
     "POLYMARKET_PRIVATE_KEY",
     "POLYMARKET_FUNDER_ADDRESS",
+    "POLYMARKET_COPY_PRIVATE_KEY",
+    "POLYMARKET_COPY_FUNDER_ADDRESS",
     "POLYGON_RPC_URL",
     # Kalshi (Phase K1 — read-only). API key ID is a UUID (low sensitivity
     # alone) but keep on the redact list for defense-in-depth. The RSA
@@ -85,6 +87,29 @@ def register_redact_literal(value: str | None) -> None:
 
 
 @dataclass(frozen=True)
+class PolymarketWallet:
+    """One Polymarket EOA: signer key + its public funder address.
+
+    Per-division (item 6, 2026-05-29). signature_type=EOA, funder == signer.
+    A wallet with either field unset → the broker stubs for that division.
+    """
+    private_key: str | None
+    funder_address: str | None
+
+
+# Division-slug → (private-key env var, funder env var). Explicit (not
+# slug-derived) so it's greppable, a new division is one line, and a typo
+# fails to a logged stub rather than silently. arb keeps its LEGACY env
+# names (no KV churn — migration option (i)); PCT gets POLYMARKET_COPY_*.
+# If arb's wallet is ever migrated, rename to POLYMARKET_ARB_* at that
+# moment for uniformity — not before. RPC URL is SHARED (not per-division).
+_POLYMARKET_WALLET_ENV: dict[str, tuple[str, str]] = {
+    "polymarket_arbitrage": ("POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER_ADDRESS"),
+    "polymarket_copy_trading": ("POLYMARKET_COPY_PRIVATE_KEY", "POLYMARKET_COPY_FUNDER_ADDRESS"),
+}
+
+
+@dataclass(frozen=True)
 class Secrets:
     anthropic_api_key: str | None
     telegram_bot_token: str | None
@@ -107,14 +132,14 @@ class Secrets:
     # initializes as a stub returning $0 / no positions.
     bitunix_futures_api_key: str | None
     bitunix_futures_api_secret: str | None
-    # Polymarket / Polygon (Phase 0 — Polymarket Arbitrage division).
-    # Private key signs USDC-spending transactions for the dedicated
-    # Polymarket wallet; funder address is the wallet's public address;
-    # RPC URL is the Alchemy Polygon endpoint with an embedded API key.
-    # All three are pulled from KV at runtime; never written to disk.
-    # If unset, the Polymarket broker initializes as a stub.
-    polymarket_private_key: str | None
-    polymarket_funder_address: str | None
+    # Polymarket / Polygon — per-division wallets (item 6, 2026-05-29).
+    # Each Polymarket division gets its own EOA (signer key + funder
+    # address), keyed by division slug; see _POLYMARKET_WALLET_ENV for the
+    # slug→env mapping. The RPC URL is SHARED across all divisions (one
+    # Alchemy Polygon endpoint with an embedded API key). All pulled from KV
+    # at runtime; never written to disk. A division with no/partial wallet →
+    # the broker initializes as a stub.
+    polymarket_wallets: dict[str, PolymarketWallet]
     polygon_rpc_url: str | None
     # Kalshi (Phase K1 — read-only). api_key_id is a UUID issued by Kalshi;
     # private_key_pem is the RSA PEM contents (multi-line — quote in .env or
@@ -219,6 +244,8 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "BITUNIX_FUTURES_API_SECRET",
         "POLYMARKET_PRIVATE_KEY",
         "POLYMARKET_FUNDER_ADDRESS",
+        "POLYMARKET_COPY_PRIVATE_KEY",
+        "POLYMARKET_COPY_FUNDER_ADDRESS",
         "POLYGON_RPC_URL",
         "KALSHI_API_KEY_ID",
         "KALSHI_PRIVATE_KEY_PEM",
@@ -293,8 +320,13 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         coinbase_futures_passphrase=_env("COINBASE_FUTURES_PASSPHRASE"),
         bitunix_futures_api_key=_env("BITUNIX_FUTURES_API_KEY"),
         bitunix_futures_api_secret=_env("BITUNIX_FUTURES_API_SECRET"),
-        polymarket_private_key=_env("POLYMARKET_PRIVATE_KEY"),
-        polymarket_funder_address=_env("POLYMARKET_FUNDER_ADDRESS"),
+        polymarket_wallets={
+            slug: PolymarketWallet(
+                private_key=_env(pk_env),
+                funder_address=_env(fa_env),
+            )
+            for slug, (pk_env, fa_env) in _POLYMARKET_WALLET_ENV.items()
+        },
         polygon_rpc_url=_env("POLYGON_RPC_URL"),
         kalshi_api_key_id=_env("KALSHI_API_KEY_ID"),
         kalshi_private_key_pem=_env("KALSHI_PRIVATE_KEY_PEM"),
@@ -314,13 +346,16 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     # covers everything else. Polymarket's private key is the load-bearing
     # case (py-clob-client signing-path DEBUG); we register the others
     # for defense-in-depth.
-    register_redact_literal(secrets.polymarket_private_key)
+    # Per-division Polymarket wallets: register every wallet's private key
+    # (load-bearing — py-clob-client signing-path DEBUG) and funder address
+    # (public-info, but registering costs nothing and denies trivial
+    # address-grepping from logs). RPC URL is shared.
+    for _w in secrets.polymarket_wallets.values():
+        register_redact_literal(_w.private_key)
+        register_redact_literal(_w.funder_address)
     register_redact_literal(secrets.polygon_rpc_url)
-    # funder_address is public-info but registering it costs nothing
-    # and prevents trivial address-grepping from log files.
-    register_redact_literal(secrets.polymarket_funder_address)
     # Kalshi RSA private key — signs every Kalshi request. Same defense
-    # as polymarket_private_key.
+    # as the polymarket wallet keys above.
     register_redact_literal(secrets.kalshi_private_key_pem)
     # Apify token — auth bearer for all saswave Kalshi actor calls. K3.
     register_redact_literal(secrets.apify_api_token)
@@ -352,6 +387,26 @@ def assert_live_ready(secrets: Secrets, brokers_required: tuple[str, ...]) -> No
     if "tastytrade" in brokers_required:
         if not (secrets.tastytrade_provider_secret and secrets.tastytrade_refresh_token):
             missing.append("TASTYTRADE_PROVIDER_SECRET/REFRESH_TOKEN")
+    if "polymarket" in brokers_required:
+        # Per-division wallets (item 6): a half-configured wallet (key XOR
+        # funder) silently stubs the broker — fail loudly. Require at least
+        # one COMPLETE wallet so a LIVE polymarket start isn't fully stubbed.
+        # Scope is presence only — balance/allowance/MATIC/nonce preflight
+        # belong to items 4/5, not here. NOTE: divisions aren't loaded at
+        # preflight time (main.py:178 runs before load_divisions at :439), so
+        # this validates wallet completeness + non-emptiness, not which
+        # specific division is going live — the per-division auto_execute gate
+        # is the finer control.
+        complete = 0
+        for slug, w in secrets.polymarket_wallets.items():
+            if bool(w.private_key) != bool(w.funder_address):
+                missing.append(
+                    f"POLYMARKET wallet '{slug}' (key+funder must both be set)"
+                )
+            elif w.private_key and w.funder_address:
+                complete += 1
+        if complete == 0:
+            missing.append("POLYMARKET (no division wallet has both key+funder set)")
     if missing:
         raise RuntimeError(
             "LIVE mode requested but missing credentials for: "
