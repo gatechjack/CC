@@ -803,6 +803,14 @@ async def run(argv: list[str] | None = None) -> int:
     # board direction, bitunix_futures uses notification (not approval)
     # via Telegram — risk caps are the gate, not per-trade HITL.
     bitunix_observer.telegram_channel = channel
+    # Stage-1 N+1 commit 7b: wire the SAME channel singleton as the
+    # safety_notifier for data_exec — no parallel TelegramChannel
+    # instance (CLAUDE.md Phase-C principle: one channel per process).
+    # The safety_notifier slot is consumed on the safety branch's
+    # data_exec.py (mode-mismatch + flatten_division handlers); the
+    # slot was re-added in commit 7a so this assignment is type-safe
+    # right now, before the safety branch lands.
+    data_exec.safety_notifier = channel
 
     await channel.start()
     await channel.push(
