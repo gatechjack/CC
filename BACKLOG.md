@@ -770,6 +770,8 @@ Local `config/strategies.yaml` carries the `tasty_options:` block (commit `94b31
 
 Pull when: there's a 2-hour quiet window AND the next dashboard touch is queued AND no live-money flips are pending. Not before.
 
+**Data point (2026-05-29, polymarket item-6/7 surgical deploy restart):** a single-process restart now blips THREE external flows, not just the strategy loops — compounding evidence for the split: (1) **RH device challenge** (blocks startup until operator approves on phone); (2) **Fidelity Playwright session** — rejected by Fidelity this restart → `fidelity_joint` + `fidelity_401k` fell back to paper ("wait 5-10 min and restart"; external auth fragility, not deploy-related); (3) a **gamma-api 429 burst** — 0 pre-restart → 56 in the first ~6 min (clustered ~17:01:35, fully settled by ~17:02), as the resolver re-scanned the 719-unpaired backlog (the P1 SELL-pairing entry above) with empty cooldowns on its first ticks. All transient/handled/paper, but the restart's blast radius is now two external auth handshakes + an external-API rate-limit burst on top of the ~5-min strategy pause.
+
 ---
 
 ## EOS snapshot — 2026-05-26 ~01:25 UTC (Monday/Tuesday rollover — kalshi_weather bias-offset v1 DEPLOYED to prod after 1 rollback; live-eval verified; 5 commits to main)
