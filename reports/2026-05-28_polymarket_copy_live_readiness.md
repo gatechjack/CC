@@ -298,6 +298,9 @@ immediately and independently of the live decision.
   - **`max_open_positions` count cap DISABLED for PCT** — `504fb6e`. A flat per-division count cap is architecturally wrong for a many-whale copy-trader (hundreds of concurrent open by design); the notional cap + per-position size limits are the real constraints (reasoning recorded in `config/risk.yaml`).
   - **Follow-up filed (P1, BACKLOG.md):** copy-trader SELL-pairing skips ~99.86% of exits — a separate metric-contamination vector; scope-before-build.
   - **Note:** open notional was $2,415 one tick post-#3 and settling toward genuine (~$2k) as the resolver drains the remaining backlog over the next 1–2 ticks.
+- **2026-05-29 — Group B + item 8a prep complete** (`reports/2026-05-29_polymarket_live_prep_groupB_spike.md`): Path A signing CONFIRMED; geo GO (authed surface serves the US VM, task #31 closed); **gas premise corrected** (CLOB orders gasless — see item 5 correction note above). **Collateral premise corrected:** live CLOB settles in **USDC.e** (on-chain `getCollateral()`), so the wallet's 500 **native** USDC is the wrong token. Code fix `631ddc4` (read-path → USDC.e, **held**, not deployed) + doc corrections.
+- **2026-05-29 — Funding target = Option A** (operator): fund the new PCT EOA directly in USDC.e **after item 6 lands**; the existing arb wallet's $500 native USDC **stays put** (arb is read-only; its funding is a separate decision, not bundled into PCT go-live). Rejected converting the existing wallet (walks back the locked per-division decision; signs a DEX swap with the production key).
+- **2026-05-29 — Item 6 plan authored** (PLAN ONLY): `reports/2026-05-29_polymarket_item6_wallet_plan.md` — per-division wallet map, exact per-file diffs, arb migration = keep-wallet (i), test strategy, #7 positions-shape verification scoped (post-funding/pre-trade), #8 consolidation flag for item 8. Awaiting ratification + build-sequencing decision.
 
 ---
 
