@@ -174,3 +174,39 @@ def test_filter_redacts_both_passes_in_one_record():
     assert "foo" not in record.msg
     assert pk not in record.msg
     assert record.msg.count("***REDACTED***") == 2
+
+
+# ── load_secrets registers bitunix live-trading creds as literals ──────
+# C-1 rotation: the bitunix api-key VALUE rides in the `api-key` request
+# header on every signed call, so it must be redactable even without a
+# `KEY=` prefix (which the api-key/sign header form lacks). Defense-in-depth
+# matching the other live-money keys (polymarket/kalshi/tastytrade).
+#
+# SECURITY NOTE: this test must NOT assert membership in any collection that
+# also holds *real* loaded secrets — a failed `x in _REDACT_LITERALS` makes
+# pytest repr the whole set, dumping real secret values into the transcript.
+# So we monkeypatch `register_redact_literal` to capture calls into a LOCAL
+# list and assert with pre-computed booleans (pytest reprs the bool, not the
+# list). No real secret value can reach an assert expression here.
+
+
+def test_load_secrets_registers_bitunix_literals(monkeypatch, tmp_path):
+    monkeypatch.delenv("KEY_VAULT_URI", raising=False)  # no Azure calls in test
+    fake_key = "FAKEbitunixkey_0123456789abcdef"      # >=16 chars; NOT a real secret
+    fake_secret = "FAKEbitunixsecret_0123456789abcdef"
+    monkeypatch.setenv("BITUNIX_FUTURES_API_KEY", fake_key)
+    monkeypatch.setenv("BITUNIX_FUTURES_API_SECRET", fake_secret)
+
+    registered: list[str | None] = []
+    monkeypatch.setattr(
+        secrets_mod, "register_redact_literal", registered.append,
+    )
+    # Nonexistent env_file → the real .env is never loaded.
+    secrets_mod.load_secrets(env_file=tmp_path / "nonexistent.env")
+
+    # Pre-compute booleans so the assert never reprs `registered` (which may
+    # hold real secret values pulled from the process env).
+    key_registered = fake_key in registered
+    secret_registered = fake_secret in registered
+    assert key_registered, "load_secrets did not register the bitunix api_key as a redact literal"
+    assert secret_registered, "load_secrets did not register the bitunix api_secret as a redact literal"

@@ -363,6 +363,12 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     # client secret; refresh_token rotates per session).
     register_redact_literal(secrets.tastytrade_provider_secret)
     register_redact_literal(secrets.tastytrade_refresh_token)
+    # BitUnix Futures live-trading creds (C-1 rotation 2026-05-29). The
+    # api_key VALUE rides in the `api-key` request header on every signed
+    # call, so the KEY=value pattern alone (the `_SECRET_KEY_NAMES` entry)
+    # wouldn't catch a header-form log line — register the literal values too.
+    register_redact_literal(secrets.bitunix_futures_api_key)
+    register_redact_literal(secrets.bitunix_futures_api_secret)
 
     return secrets
 
