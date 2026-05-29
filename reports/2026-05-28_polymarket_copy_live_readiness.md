@@ -285,7 +285,13 @@ immediately and independently of the live decision.
 ## Status log
 
 - **2026-05-28** — Audit complete + shelved.
-- **Group A #1 + #2** — IN PROGRESS (paper-mode correctness fixes; this branch). Marked SHIPPED with SHA on deploy.
+- **2026-05-29 — Group A #1, #2, #3 SHIPPED** (paper-mode correctness; all deployed to prod + verified):
+  - **#1 risk-gate flag wiring + #2 open-notional cap functional** — `5b947ea`. PCT orders now route into `_evaluate_polymarket`; `_sum_polymarket_open` is real (was a `0.0` stub).
+  - **#3 resolver settle-fairness** — `ab8232a`. Per-actor scan budget; arbitrage no longer starves the copy-trader. First post-deploy tick **resolved 640** (was `0` every tick for 12h+); stuck-on-resolved **578 → draining to ~0** over the next 1–2 hourly ticks.
+  - **Open-aggregate notional cap journey:** `1_000` dead stub → `b4838ac` **$4k interim** (the now-live cap immediately bound on $2,998 of accumulated open) → `09481de` **$3,500 principled** (after #3 drained the contamination; ~$1.5k headroom over genuine ~$2k).
+  - **`max_open_positions` count cap DISABLED for PCT** — `504fb6e`. A flat per-division count cap is architecturally wrong for a many-whale copy-trader (hundreds of concurrent open by design); the notional cap + per-position size limits are the real constraints (reasoning recorded in `config/risk.yaml`).
+  - **Follow-up filed (P1, BACKLOG.md):** copy-trader SELL-pairing skips ~99.86% of exits — a separate metric-contamination vector; scope-before-build.
+  - **Note:** open notional was $2,415 one tick post-#3 and settling toward genuine (~$2k) as the resolver drains the remaining backlog over the next 1–2 ticks.
 
 ---
 
