@@ -43,7 +43,7 @@ polymarket:
   daily_aggregate_max_pct_of_equity: 0.25      # 25% of polymarket division equity
   daily_aggregate_cap_usd: 1_000.0             # but never more than $1K/day in NEW notional
   total_open_aggregate_cap_usd: 4_000.0        # INTERIM 2026-05-29 (was 1_000) — unblock PCT paper entries while resolver fairness fix lands; principled ~3_500 gated on post-fix open-notional drop, NOT the contaminated $2,998. See runbooks/deploy_log.md.
-  max_open_positions: 10                       # max concurrent open positions (entries only); 0 disables
+  max_open_positions: 0                        # DISABLED 2026-05-29 (0 = off; gate guards on >0). A flat per-division count cap is ARCHITECTURALLY WRONG for the copy-trader: it mirrors many whales x markets => hundreds of concurrent open positions BY DESIGN. The notional cap + per-position size limits are the real exposure constraints here. STEP 4: keep disabled for PCT, OR make per-division (tight for arb's 1-per-condition design; disabled/high-sentinel for PCT). Do NOT re-set a PCT count cap from instinct — see runbooks/deploy_log.md.
 
 # Kalshi prediction-market caps (Phase K2.1 — tail-price arb, paper-only).
 # Read by:
