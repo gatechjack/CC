@@ -423,6 +423,7 @@ def connect(db_url: str = "sqlite:///data/trading_corp.db") -> Iterator[sqlite3.
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         yield conn
     finally:
