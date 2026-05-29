@@ -6,6 +6,12 @@
 
 ---
 
+## Decision log
+
+- **2026-05-29 — Position mode: ONE_WAY, account-wide (operator decision).** Applies to BTC today and the SOL/ETH/XRP roadmap symbols — all single-net-position-per-symbol strategies; none require hedge. One-way matches the directional-scalp shape (one position per symbol; side flips by close+reopen; exit is `reduceOnly: true`, no `positionId`/`tradeSide` bookkeeping). HEDGE is for genuinely simultaneous long+short on one instrument (basis / delta-neutral), which is not on the roadmap; lumibot defaults to HEDGE only for multi-strategy account safety, a constraint that does not apply to this single-strategy single-symbol bot. **Not a correction** — both this audit (§1) and the reuse audit flagged one-way-vs-hedge as an open decision; neither implied HEDGE. Implementation: `change_position_mode(ONE_WAY)` set+verified at connect; per-order read of `positionMode` off `get_pending_positions` (the only endpoint that exposes it — there is no standalone `get_position_mode`), with a flat→entry re-assert; mismatch fails closed (broker refuses to place) and is surfaced as a `position_mode_mismatch_detected` divergence for the order-path layer to audit/halt/alert.
+
+---
+
 ## TL;DR — the one thing to internalize
 
 **Going live is not a config flip. There is no live execution path at all.** `BitunixBroker.place_order`, `cancel_order`, and `modify_position_tp_sl_order` are deliberate `NotImplementedError` stubs (`trading_corp/brokers/bitunix.py:375,384,456`). The broker is **read-only** today: `snapshot`/`quote`/`get_funding_rate` hit the real BitUnix REST API; nothing can place, cancel, or modify a real order. The paper system routes every order to a `PaperBroker` via `PaperExecutionBroker` (`main.py:~1767-1782`). "Phase 4" (live placement) is **unbuilt**.
