@@ -76,6 +76,61 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-29 ~20:08 UTC — C-1 apify_api_token KV credential rotation (5/13+; new token live; old token REVOKED; portal=REVOKE-REQUIRED)
+
+**Commits (on branch `c1-apify-cred-rotation`, NOT merged):**
+- this commit — close-out only (deploy_log + BACKLOG item 12 RETIRED + memory pointer). **Zero code change** — all apify redaction + KV-pull surfaces were already shipped on `main` (verified BEFORE any code change, per the per-portal discipline step 1).
+
+**Triggered by:** test-failure leak earlier in the same session. The apify token VALUE (40-char hex) was surfaced into the Claude Code transcript by a `assert x in _REDACT_LITERALS` repr during the C-1 bitunix rotation (designed out by `[[no-membership-assert-on-secret-collections]]`; BACKLOG item 12 was P1-elevated on the `c1-bitunix-cred-rotation` branch's `a868f46` annotation). Operator chose to rotate immediately after bitunix landed.
+
+**Backup tag:** n/a (KV mutation + restart; zero source change).
+
+**Files deployed to prod:** 0.
+
+**KV write (operator, Azure Portal browser — vault `kv-tc-vtwbowt3wtkpy`):**
+- `APIFY-API-TOKEN` new version `ebf41050d1d14a65982b4ce0e00b40d7` (2026-05-29T20:04:27Z, enabled). Operator's **Key Vault Secrets Officer** RBAC role already in place from the bitunix rotation; no RBAC step needed this round.
+
+**Portal behavior recorded:** **Apify = REVOKE-REQUIRED, multi-token, FLAT personal tokens only.** Differs from bitunix's REPLACE-ON-CREATE. Apify lists every created token until manually deleted; old + new coexist. **Apify did NOT show a scope/permissions UI** in the operator's account — only the flat personal-token form (full account access). Likely a free/starter-tier limitation; scoped tokens may be a paid-tier feature. Recorded as the apify slot under `[[c1-per-portal-rotation-discipline]]`. **For future apify rotations: explicit revoke step is mandatory (no auto-invalidate).**
+
+**Restart:** `systemctl restart --no-block trading-corp` at 2026-05-29 ~20:08 UTC. MainPID `1734817 → 1739372`. NRestarts=0. RH device challenge approved on operator's phone (coordinated, ~6 min web bind lag as expected). KV pull at 20:08:28: `INFO trading_corp.utils.secrets: Key Vault: loaded 27 secrets from https://kv-tc-vtwbowt3wtkpy.vault.azure.net/`.
+
+**New-token auth verified TWO ways (value-blind):**
+- Service startup log at 20:08:28: `Request URL: 'https://kv-tc-vtwbowt3wtkpy.vault.azure.net/secrets/APIFY-API-TOKEN/?api-version=REDACTED'` — the new process pulled the new KV version.
+- Out-of-band subprocess probe (`/tmp/apify_probe.py` on prod, value-blind: KV → Apify `/v2/users/me`): `http_status=200, auth_ok=True, user_id=WiNIbKSTOmQnS5CJ0, username=GT_Jack`. Token authenticates to the correct Apify account.
+
+**Old-token rejection verified TWO ways (value-blind):**
+- Synthetic FAKE-token probe (local box → Apify `/v2/users/me`): `http_status=401`, body `{"error":{"type":"user-or-token-not-found","message":"User was not found or authentication token is not valid"}}`. Rejection path clean.
+- Operator **REVOKED the old "Kalshi-" labeled token** on apify.com at ~20:14 UTC after new-token verification (operator-confirmed). The leaked-in-transcript value is now portal-revoked → **exposure closed**.
+
+**Dev `.env` scrub:** N/A. `grep -c '^APIFY_API_TOKEN=' .env` was already `0` before the rotation. Apify was never in dev `.env` (dev runs Kalshi Copy Trading as paper / stub).
+
+**Inventory finding — zero code change needed.** All apify redaction surfaces were ALREADY shipped on `main` (verified BEFORE any change):
+- `secrets.py:53` — `APIFY_API_TOKEN` in `_SECRET_KEY_NAMES` (KEY=value redaction).
+- `secrets.py:154,333` — in `Secrets` dataclass + `_env()` loader.
+- `secrets.py:252` — in `expected_env_vars` (KV pull).
+- `secrets.py:361` — `register_redact_literal(secrets.apify_api_token)` (literal-value redaction).
+
+**This is the SECOND rotation in the session where ground-truth inventory found "already shipped" where the readiness audit / backlog implied otherwise** (first was bitunix's KEY=value + KV-pull surfaces). Reinforces `[[c1-per-portal-rotation-discipline]]` step 1: inventory before code-change.
+
+**Pre-existing observation (NOT caused by this rotation):**
+- Operator accidentally deleted the auto-signup "Default" Apify token while in the portal — harmless because it was never in KV / never used by trading-corp (verified via name-only `grep -c` on dev `.env` = 0 + KV only references `APIFY-API-TOKEN`).
+
+**No secret values entered the Claude Code session.** Operator handled values exclusively via the apify portal UI + the Azure Portal browser form. Agent verified via KV version-id metadata + a value-blind subprocess probe (KV → Apify → returns auth-status + account `username=GT_Jack` only; token never printed).
+
+**Features shipped:** Apify token portion of C-1 rotated end-to-end. **C-1 progress: 5/13+** (webhook ×2 on 2026-05-27 + bitunix ×2 on 2026-05-29 + apify ×1 on 2026-05-29). 8 deferred per per-portal sessions.
+
+**Verification:**
+- KV `APIFY-API-TOKEN` latest version metadata = `ebf41050...`, enabled (queried via `az keyvault secret show`).
+- Prod MainPID change verified `1734817 → 1739372`.
+- Apify auth `ok=True` on new token; `401 user-or-token-not-found` on FAKE.
+- Operator-confirmed old "Kalshi-" token revoked on apify.com.
+
+**Unblocks:** the test-failure leak's apify exposure (from earlier this session) is now closed.
+
+**Rollback:** since the OLD token is portal-revoked, KV rollback would not restore working auth. Emergency rollback path: generate a fresh token in the apify portal → write to KV new version → restart. No source-code rollback needed (no source change in this commit).
+
+---
+
 ## 2026-05-29 ~16:55 UTC — Polymarket per-division wallets (item 6) + live-preflight (item 7) + USDC.e collateral fix — SURGICAL deploy
 
 **Commits:** `2ed83fe` (item 6+7 code) + `631ddc4` (polymarket.py USDC.e flip); merged to main `500cc1e`. **Deployed SURGICALLY (patch-only), NOT whole-file.**
