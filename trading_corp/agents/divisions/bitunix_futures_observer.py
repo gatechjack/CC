@@ -1473,9 +1473,10 @@ class BitunixFuturesObserver:
             order.qty = float(risk_verdict.new_qty)
 
         # ── paper-mode placement ──
-        order.status = "would_have_placed"
-        # Tag the audit lineage so the Phase 3.1 audit + paper_trade_record
-        # rows we already query don't have to learn a new format.
+        # Pre-helper mutations on the order so the canonical helper sees
+        # the post-rationale-tag, post-extra-injection shape (matches
+        # pre-refactor ordering: rationale + extra mutations occurred
+        # before log_proposed_order, paper_trade_record).
         order.rationale = f"[score] {order.rationale}"
         order.extra["score_path"] = True
         order.extra["net_score"] = verdict_score.breakdown.net_score
@@ -1485,20 +1486,23 @@ class BitunixFuturesObserver:
         if htf_funding_rate_at_decision is not None:
             order.extra["funding_rate_at_decision"] = htf_funding_rate_at_decision
         # Deferred-fire: stamp redemption metadata onto order.extra so
-        # `paper_trade_record.extra_json` carries it (see record.extra
-        # passthrough below). Lets backtests segment redeemed vs immediate
-        # fires without joining audit timestamps. Strip the internal
-        # `audit_row_id` coordination handle before it leaks into
-        # order.extra (backtest-irrelevant).
+        # `paper_trade_record.extra_json` carries it (helper does the
+        # record.extra carry when carry_order_extra_to_record=True).
+        # Strip the internal `audit_row_id` coordination handle before
+        # it leaks into order.extra (backtest-irrelevant).
         if redeem_metadata is not None:
             order.extra.update(
                 {k: v for k, v in redeem_metadata.items() if k != "audit_row_id"},
             )
-        self.logger_agent.log_proposed_order(order)
-        self.logger_agent.log_event(
-            actor="bitunix_futures",
-            kind="would_have_placed",
-            payload={
+
+        # Stage-1 N+1 commit 1: canonical helper extraction. Score-path
+        # passes carry_order_extra_to_record=True to preserve the
+        # pre-refactor extra_json carry (backtests depend on score_path/
+        # net_score/funding_rate_at_decision/redeemed/bars_waited keys).
+        # Live-mode wiring lands in commit 3 INSIDE the helper.
+        await self._record_placement_outcome(
+            order=order,
+            audit_payload={
                 "strategy": "bitunix_futures",
                 "division": "bitunix_futures",
                 "order_id": order.id,
@@ -1522,34 +1526,22 @@ class BitunixFuturesObserver:
                     redeem_metadata["bars_waited"] if redeem_metadata else None
                 ),
             },
+            utc_date=utc_date,
+            daily_risk_pct=proposal.effective_risk_pct or 0.0,
+            carry_order_extra_to_record=True,
         )
-        try:
-            record = PaperTradeRecord.from_order(
-                order, strategy="bitunix_futures", division="bitunix_futures",
-                max_hold_seconds=self.max_hold_seconds,
-            )
-            # Carry `order.extra` through to `paper_trade_record.extra_json`.
-            # `from_order` only pulls specific named fields out of `extra`
-            # for the typed columns; without this passthrough, all the
-            # rest (`score_path`, `net_score`, `funding_rate_at_decision`,
-            # `redeemed`, `bars_waited`, `htf_size_multiplier`, etc.)
-            # would be lost on the DB write. Backtests need them.
-            record.extra = dict(order.extra)
-            db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
-        except Exception as e:
-            log.warning("bitunix_observer: paper_trade_record write failed: %s", e)
 
         # Deferred-fire gap 1 close: now that `order.id` exists, backfill
         # the `pa_validation_redeem` audit row's `order_id` field. The
         # row was written at PA-pass time (before sizing/risk), so
         # `order_id` was None. Backtests can now one-hop join
         # `pa_validation_redeem` → `paper_trade_record` by order_id.
+        # Stays OUTSIDE the helper — score-path-specific lineage stitching.
         if redeem_metadata is not None and redeem_metadata.get("audit_row_id"):
             self._backfill_redeem_order_id(
                 int(redeem_metadata["audit_row_id"]), order.id,
             )
 
-        self._record_daily_risk(utc_date, proposal.effective_risk_pct or 0.0)
         self._record_score_fire(order.side, now.isoformat(), verdict_score.tier.value)
         self._log_score_decision(payload, verdict_score, "placed",
                                  note=order.rationale, order_id=order.id)
@@ -2273,6 +2265,57 @@ class BitunixFuturesObserver:
         except Exception as e:
             log.warning("bitunix_observer: trade_plan_decision audit failed: %s", e)
 
+    # ── canonical placement-outcome writer (paper today; live in N+1 commit 3) ─
+
+    async def _record_placement_outcome(
+        self,
+        *,
+        order: ProposedOrder,
+        audit_payload: dict[str, Any],
+        utc_date: str,
+        daily_risk_pct: float,
+        carry_order_extra_to_record: bool = False,
+    ) -> None:
+        """Single canonical writer for post-risk-approve placement outcomes.
+
+        Paper mode (today, all call sites): mark `would_have_placed`, log
+        proposal + audit event, insert paper_trade_record, accumulate
+        daily-risk. Two callers — trigger-path (`_maybe_propose`) and
+        score-path (`_score_and_maybe_propose_locked`) — route through
+        here so the live-mode branch only needs to land in ONE place
+        (commit 3 of Stage-1 Session N+1).
+
+        `carry_order_extra_to_record` preserves the pre-extraction
+        asymmetry: score-path carries `order.extra` → `record.extra` so
+        the paper_trade_record's `extra_json` column ships
+        score_path/net_score/redeemed/bars_waited/funding_rate_at_decision
+        downstream to backtests; trigger-path does not. A future commit
+        may unify (no good reason for the asymmetry beyond historical
+        accident), but that's a separate change — this helper is the
+        byte-identical refactor.
+        """
+        order.status = "would_have_placed"
+        self.logger_agent.log_proposed_order(order)
+        self.logger_agent.log_event(
+            actor="bitunix_futures",
+            kind="would_have_placed",
+            payload=audit_payload,
+        )
+        try:
+            record = PaperTradeRecord.from_order(
+                order,
+                strategy="bitunix_futures",
+                division="bitunix_futures",
+                max_hold_seconds=self.max_hold_seconds,
+            )
+            if carry_order_extra_to_record:
+                record.extra = dict(order.extra)
+            db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
+        except Exception as e:
+            log.warning("bitunix_observer: paper_trade_record write failed: %s", e)
+
+        self._record_daily_risk(utc_date, daily_risk_pct)
+
     # ── async order flow: classify → propose → risk → place → notify ─
 
     async def _maybe_propose(
@@ -2385,12 +2428,12 @@ class BitunixFuturesObserver:
         # No HITL approval gate per board direction (memory
         # `trading_corp_bitunix_phase3_confluence_model`). Risk caps are
         # the gate, not per-trade approval.
-        order.status = "would_have_placed"
-        self.logger_agent.log_proposed_order(order)
-        self.logger_agent.log_event(
-            actor="bitunix_futures",
-            kind="would_have_placed",
-            payload={
+        # Stage-1 N+1 commit 1: canonical helper extraction. Paper-mode
+        # behavior is byte-identical with the pre-refactor inline block.
+        # Live-mode wiring lands in commit 3 INSIDE the helper.
+        await self._record_placement_outcome(
+            order=order,
+            audit_payload={
                 "strategy": "bitunix_futures",
                 "division": "bitunix_futures",
                 "order_id": order.id,
@@ -2406,24 +2449,10 @@ class BitunixFuturesObserver:
                 "rr_ratio": proposal.rr_ratio,
                 "rationale": order.rationale,
             },
+            utc_date=utc_date,
+            daily_risk_pct=proposal.effective_risk_pct or 0.0,
+            carry_order_extra_to_record=False,
         )
-        # Phase 3.2a: write paper_trade_record so the existing
-        # paper_trade_replay loop resolves bitunix paper trades to
-        # win/loss outcomes (it walks `paper_trade_record WHERE result IS NULL`
-        # — strategy-agnostic). Failures here are logged but don't abort
-        # placement; the audit_event remains the source of truth.
-        try:
-            record = PaperTradeRecord.from_order(
-                order,
-                strategy="bitunix_futures",
-                division="bitunix_futures",
-                max_hold_seconds=self.max_hold_seconds,
-            )
-            db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
-        except Exception as e:
-            log.warning("bitunix_observer: paper_trade_record write failed: %s", e)
-
-        self._record_daily_risk(utc_date, proposal.effective_risk_pct or 0.0)
         self._log_decision(verdict, original_payload, "placed",
                            note=order.rationale,
                            order_id=order.id,
