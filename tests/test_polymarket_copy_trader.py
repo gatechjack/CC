@@ -319,6 +319,11 @@ async def test_strategy_new_buy_emits_entry(strategy):
     assert o.limit_price == pytest.approx(0.40)
     assert o.extra["is_entry"] is True
     assert o.extra["copy_size_usdc"] == 2.0
+    # Group A #1: entry now carries the routing flag + implied prob so
+    # RiskAgent._evaluate_polymarket actually sees it (was never set before,
+    # so the Polymarket caps silently never applied to copy-trader orders).
+    assert o.extra["is_prediction_market"] is True
+    assert o.extra["implied_prob_at_entry"] == pytest.approx(0.40)
 
 
 @pytest.mark.asyncio
@@ -349,6 +354,11 @@ async def test_strategy_sell_emits_exit_when_we_hold(strategy):
     assert o.qty == pytest.approx(5.0)  # 5 contracts (matches entry size)
     assert o.limit_price == pytest.approx(0.65)
     assert o.extra["is_entry"] is False
+    # Group A #1: exit carries the flag too; implied_prob_at_entry is the
+    # ORIGINAL entry price (0.40), NOT the 0.65 exit price — so the gate's
+    # implied-prob bound can't spuriously reject a legitimate close.
+    assert o.extra["is_prediction_market"] is True
+    assert o.extra["implied_prob_at_entry"] == pytest.approx(0.40)
 
 
 @pytest.mark.asyncio

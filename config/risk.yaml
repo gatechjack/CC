@@ -43,6 +43,7 @@ polymarket:
   daily_aggregate_max_pct_of_equity: 0.25      # 25% of polymarket division equity
   daily_aggregate_cap_usd: 1_000.0             # but never more than $1K/day in NEW notional
   total_open_aggregate_cap_usd: 1_000.0        # max $1K notional across all open positions
+  max_open_positions: 10                       # max concurrent open positions (entries only); 0 disables
 
 # Kalshi prediction-market caps (Phase K2.1 — tail-price arb, paper-only).
 # Read by:

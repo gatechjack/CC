@@ -292,6 +292,162 @@ def test_non_polymarket_order_unaffected(risk_agent):
     assert "polymarket" not in (v.reason or "").lower()
 
 
+# ── Group A: copy-trader routing + aggregate caps (paper-mode bug fixes) ──
+
+
+def _pct_order(*, implied: float = 0.5, qty: float = 2.0, price: float = 0.5,
+               side: str = "buy") -> ProposedOrder:
+    """A polymarket_copy_trader order carrying the Group A routing flag."""
+    return ProposedOrder(
+        strategy="polymarket_copy_trader",
+        symbol="0xcid:Yes", side=side, qty=qty,
+        order_type="market", limit_price=price,
+        rationale="copy test",
+        extra={
+            "is_prediction_market": True,
+            "implied_prob_at_entry": implied,
+            "is_entry": side == "buy",
+            "outcome": "Yes",
+            "condition_id": "0xcid",
+            "division": "polymarket_copy_trading",
+        },
+    )
+
+
+def _insert_pct_open_audit(db_path, *, order_id: str, condition_id: str = "0xC",
+                           qty: float = 20.0, price: float = 0.05,
+                           side: str = "buy"):
+    """Insert a would_have_placed audit row for polymarket_copy_trader."""
+    import json as _json
+    import sqlite3 as _sqlite3
+    from datetime import datetime, timezone
+    payload = {
+        "strategy": "polymarket_copy_trader",
+        "division": "polymarket_copy_trading",
+        "condition_id": condition_id, "order_id": order_id,
+        "side": side, "qty": qty, "limit_price": price, "outcome": "no",
+    }
+    with _sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+            "VALUES (?, 'polymarket_copy_trader', 'would_have_placed', ?)",
+            (datetime.now(timezone.utc).isoformat(), _json.dumps(payload)),
+        )
+
+
+def _risk_yaml_with_max_open(tmp_path, *, max_open: int) -> Path:
+    """Permissive polymarket caps except the count cap under test."""
+    p = tmp_path / f"risk_maxopen_{max_open}.yaml"
+    p.write_text(
+        "global:\n"
+        "  per_trade_risk_pct: 0.015\n"
+        "  per_strategy_daily_loss_pct: 0.03\n"
+        "  per_account_max_drawdown_pct: 0.15\n"
+        "polymarket:\n"
+        "  min_implied_probability: 0.05\n"
+        "  max_implied_probability: 0.95\n"
+        "  max_pct_division_equity_per_position: 1.0\n"
+        "  max_single_market_notional_usd: 100000\n"
+        "  daily_aggregate_max_pct_of_equity: 1.0\n"
+        "  daily_aggregate_cap_usd: 100000\n"
+        "  total_open_aggregate_cap_usd: 100000\n"
+        f"  max_open_positions: {max_open}\n",
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_pct_order_routes_into_evaluate_polymarket(risk_agent, monkeypatch):
+    """Group A #1: a copy-trader order with is_prediction_market MUST reach
+    _evaluate_polymarket. The bug was PCT never set the flag, so the
+    Polymarket cap branch was never entered for copy-trader orders."""
+    hits = []
+    orig = risk_agent._evaluate_polymarket
+
+    def spy(*a, **k):
+        hits.append(True)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(risk_agent, "_evaluate_polymarket", spy)
+    risk_agent.evaluate(
+        _pct_order(qty=2.0, price=0.5), _account(100.0),
+        StrategyState(strategy="polymarket_copy_trader"),
+    )
+    assert hits == [True]
+
+
+def test_pct_over_cap_single_market_rejected(risk_agent):
+    """Group A #1: the gate now SEES copy-trader orders — a $300 single-market
+    notional is rejected exactly as it would be for arbitrage."""
+    v = risk_agent.evaluate(
+        _pct_order(qty=600.0, price=0.5),  # $300 notional
+        _account(100_000.0),
+        StrategyState(strategy="polymarket_copy_trader"),
+    )
+    assert v.verdict == "reject"
+    assert "single-market" in v.reason
+
+
+def test_sum_polymarket_today_counts_both_actors(tmp_path):
+    """Group A #1: _sum_polymarket_today now counts polymarket_copy_trader
+    rows alongside polymarket_arbitrage (was arbitrage-only)."""
+    db_url, db_path = _init_test_db(tmp_path)
+    _insert_open_audit(db_path, condition_id="0xA", order_id="arb-1")   # 20*0.05 = $1
+    _insert_pct_open_audit(db_path, order_id="pct-1")                   # 20*0.05 = $1
+    assert RiskAgent._sum_polymarket_today(db_url) == pytest.approx(2.0)
+
+
+def test_sum_polymarket_open_counts_unresolved_both_actors(tmp_path):
+    """Group A #2: _sum_polymarket_open (was a 0.0 stub) sums open notional
+    across both actors and excludes resolved positions."""
+    db_url, db_path = _init_test_db(tmp_path)
+    _insert_open_audit(db_path, condition_id="0xA", order_id="arb-1")   # $1
+    _insert_pct_open_audit(db_path, order_id="pct-1")                   # $1
+    assert RiskAgent._sum_polymarket_open(db_url) == pytest.approx(2.0)
+    # Resolve the arbitrage one → only the open PCT $1 remains.
+    _insert_resolved_round_trip(db_path, order_id="arb-1", condition_id="0xA")
+    assert RiskAgent._sum_polymarket_open(db_url) == pytest.approx(1.0)
+
+
+def test_sum_polymarket_open_empty_db_is_zero(tmp_path):
+    db_url, _ = _init_test_db(tmp_path)
+    assert RiskAgent._sum_polymarket_open(db_url) == 0.0
+
+
+def test_max_open_positions_allows_nth_rejects_n_plus_1(tmp_path):
+    """Group A #2: max_open_positions=2 → the 2nd entry is allowed, the 3rd is
+    rejected. Other caps are permissive so only the count cap is in play."""
+    db_url, db_path = _init_test_db(tmp_path)
+    risk = RiskAgent(risk_yaml=_risk_yaml_with_max_open(tmp_path, max_open=2),
+                     narrator_enabled=False)
+    # 1 open position → a new (2nd) entry is allowed.
+    _insert_pct_open_audit(db_path, order_id="pct-1", price=0.5, qty=2.0)
+    v = risk.evaluate(_pct_order(qty=2.0, price=0.5), _account(100.0),
+                      StrategyState(strategy="polymarket_copy_trader"),
+                      db_url=db_url)
+    assert v.verdict == "approve", f"unexpected: {v.reason}"
+    # 2 open positions → the 3rd entry is rejected by the count cap.
+    _insert_pct_open_audit(db_path, order_id="pct-2", price=0.5, qty=2.0)
+    v = risk.evaluate(_pct_order(qty=2.0, price=0.5), _account(100.0),
+                      StrategyState(strategy="polymarket_copy_trader"),
+                      db_url=db_url)
+    assert v.verdict == "reject"
+    assert "max open positions" in v.reason
+
+
+def test_max_open_positions_does_not_block_sell(tmp_path):
+    """A close (sell) must never be blocked by the position-count cap."""
+    db_url, db_path = _init_test_db(tmp_path)
+    risk = RiskAgent(risk_yaml=_risk_yaml_with_max_open(tmp_path, max_open=1),
+                     narrator_enabled=False)
+    _insert_pct_open_audit(db_path, order_id="pct-1")
+    _insert_pct_open_audit(db_path, order_id="pct-2")  # already over the cap
+    v = risk.evaluate(_pct_order(qty=2.0, price=0.5, side="sell"), _account(100.0),
+                      StrategyState(strategy="polymarket_copy_trader"),
+                      db_url=db_url)
+    assert "max open positions" not in (v.reason or "")
+
+
 # ── Phase K7: LLM-fan concurrency cap (Semaphore) ──────────────────────
 
 

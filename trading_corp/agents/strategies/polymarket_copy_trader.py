@@ -428,6 +428,12 @@ class PolymarketCopyTraderAgent:
             ),
             extra={
                 "is_entry": True,
+                # Route this order into RiskAgent._evaluate_polymarket (the
+                # gate keys off is_prediction_market; see risk.py:134).
+                # implied_prob_at_entry == the binary outcome's price, which
+                # IS the implied probability, and drives the [0.05,0.95] bound.
+                "is_prediction_market": True,
+                "implied_prob_at_entry": activity.price,
                 "outcome": activity.outcome,
                 "outcome_index": activity.outcome_index,
                 "condition_id": activity.condition_id,
@@ -474,6 +480,13 @@ class PolymarketCopyTraderAgent:
             ),
             extra={
                 "is_entry": False,
+                # Subject the close to the Polymarket notional caps too.
+                # implied_prob_at_entry uses the ORIGINAL entry price (already
+                # validated in-bounds at entry), NOT the exit price — sizing an
+                # exit's bound off an extreme exit price could spuriously reject
+                # a legitimate close.
+                "is_prediction_market": True,
+                "implied_prob_at_entry": entry_price,
                 "outcome": activity.outcome,
                 "outcome_index": activity.outcome_index,
                 "condition_id": activity.condition_id,
