@@ -76,6 +76,34 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-29 ~16:55 UTC — Polymarket per-division wallets (item 6) + live-preflight (item 7) + USDC.e collateral fix — SURGICAL deploy
+
+**Commits:** `2ed83fe` (item 6+7 code) + `631ddc4` (polymarket.py USDC.e flip); merged to main `500cc1e`. **Deployed SURGICALLY (patch-only), NOT whole-file.**
+**Triggered by:** Polymarket live-build prep arc (Group B + item 8a spike → item 6/7 build → ratified deploy).
+**Backup tag:** `.pre-item-6-7-deploy-20260529` on `secrets.py`, `main.py`, `polymarket.py`.
+
+**Files deployed (3):**
+- `trading_corp/utils/secrets.py` — `PolymarketWallet` dataclass + `_POLYMARKET_WALLET_ENV` slug→env map; `Secrets.polymarket_wallets` dict (replaces scalar `polymarket_private_key`/`funder_address`); `POLYMARKET_COPY_*` added to redact-key-names + KV env list; load dict-build; per-wallet redact loop; `assert_live_ready` polymarket branch (item 7).
+- `trading_corp/main.py` — `_build_broker_for_division` polymarket branch resolves wallet by `division.slug` (shared RPC; unmapped/partial → stub).
+- `trading_corp/brokers/polymarket.py` — `_USDC_CONTRACT` native `0x3c49…` → **USDC.e `0x2791…`** (real CLOB collateral per on-chain `getCollateral()`).
+
+**⚠ SURGICAL method (CRITICAL for the next deploy of these files):** prod `secrets.py`/`main.py` are **behind main by the tasty_options wiring** (`94b3129`+`a6990cd`, committed-but-NOT-deployed — BACKLOG P2). Whole-file transfer would have side-effect-shipped tasty_options. Method: cp prod live → `/tmp/stage`; `patch -p1 --forward` the polymarket-only diff (6/7 secrets + main + polymarket clean; the `assert_live_ready` hunk rejected on absent tastytrade context → applied manually re-anchored on the **fidelity** branch); py_compile; diff live-vs-staged (**0 tasty lines added**); cp staged→live + md5-verify. **prod secrets.py/main.py stay tasty-less; the 3 polymarket changes are identical on prod and main; polymarket.py is byte-identical prod==main (a6041b1e).**
+
+**Features shipped:**
+- Per-division wallet plumbing: factory keys wallet off `division.slug`. arb → legacy `POLYMARKET_PRIVATE_KEY/FUNDER` (kept, option (i)); PCT → `POLYMARKET_COPY_*` (DORMANT — PCT still `broker: paper`, not flipped to go live).
+- `assert_live_ready` rejects a LIVE polymarket start with no complete wallet / any half-configured wallet (presence-only).
+- Read-path reads USDC.e → **arb tile $0** (wallet holds 500 *native* USDC, untradeable on CLOB; intended, was $500).
+
+**Notable code changes:** `Secrets` scalars `polymarket_private_key`/`funder_address` REMOVED (only `polymarket_wallets` dict + shared `polygon_rpc_url`; factory was the sole consumer). New divisions add one line to `_POLYMARKET_WALLET_ENV`.
+
+**Verification (post-restart):** PID `1708413`→`1727479`, active, PAPER. `PolymarketBroker connected (funder=***REDACTED***, equity=$0.00, 0 positions)` (arb legacy keys, non-stub, $0 USDC.e intended, reads work). PCT → PaperBroker (unchanged). `POLYMARKET-COPY-*` KV fetched+skipped, no error. arb scanner functioning (scan_cycle markets_pre_filter:98). Pre-deploy: 9 new tests + 78 regression green.
+
+**Observed on restart (transient/handled, NOT from this change):** gamma-api **429 burst** 0→56 clustered ~17:01:35, **0 in following 4 min** (resolver cold-scanned the 719-unpaired BACKLOG-P1 backlog on empty cooldowns; built-in backoff, resolver errors:0). **Fidelity** fell back to paper (joint+401k; Fidelity session rejected on restart — external, unrelated).
+
+**Rollback:** `TAG=pre-item-6-7-deploy-20260529; BASE=/home/azureuser/trading_corp; for f in trading_corp/utils/secrets.py trading_corp/main.py trading_corp/brokers/polymarket.py; do cp -a $BASE/$f.$TAG $BASE/$f; done; sudo systemctl restart trading-corp` (restart re-fires RH device challenge — coordinate w/ operator).
+
+---
+
 ## 2026-05-29 ~03:12 UTC — audit_reality_reconciler: replay at live-path 1m granularity (kill false mismatches) + window-inclusivity + missed_legs rename
 
 **Commit:** `06b5a9e` (reconciler 1m fetch + test refactor + this deploy_log).

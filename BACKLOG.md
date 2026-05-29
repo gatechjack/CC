@@ -38,6 +38,31 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 
 ---
 
+## EOS snapshot — 2026-05-29 ~17:10 UTC (Polymarket live-build prep arc — Group B + item 8a spike + premise fixes + item 6/7 DEPLOYED surgically to prod & merged to main)
+
+**Theme:** advanced the shelved Polymarket copy-trader live-readiness plan from prep → first live-build deploy, with a hard surgical-deploy detour around prod's tasty_options drift.
+
+**Shipped + DEPLOYED + MERGED (origin/main `500cc1e`):**
+- **item 6 (per-division wallets) + item 7 (live-preflight) + USDC.e collateral fix** — SURGICAL deploy (patch-only; prod stays tasty-less). Commits `2ed83fe` + `631ddc4`. Full record + rollback: deploy_log 2026-05-29 ~16:55 UTC.
+- Verified post-restart: PID 1708413→1727479; arb → legacy keys (non-stub); **tile $0 USDC.e** (intended — wallet holds 500 native USDC, untradeable on CLOB); arb scanner functioning; PCT = PaperBroker (unchanged, `broker: paper`).
+
+**Prep delivered earlier in the arc (all on main):**
+- **Group B + item 8a spike** (`reports/2026-05-29_polymarket_live_prep_groupB_spike.md`): Path A signing CONFIRMED (pinned py_clob_client 0.17.5); geo GO (authed CLOB serves the US VM — task #31 closed); gas premise corrected (CLOB orders gasless).
+- **Premise fixes** + doc corrections: live CLOB settles in **USDC.e** (on-chain getCollateral), not native — the wallet's $500 is the WRONG token.
+- **item 6 plan** (`reports/2026-05-29_polymarket_item6_wallet_plan.md`); **funding decision = Option A** (fund a NEW PCT EOA in USDC.e after item 6; do NOT convert the existing wallet).
+
+**Filed this session:** BACKLOG **P2** (committed-but-undeployed main↔prod drift: tasty_options `94b3129`+`a6990cd`, ic 2-vs-4) + restart-blast-radius data point on the architecture-split P3.
+
+**CARRY-FORWARD (next session):**
+1. **Wallet-ops toolchain** = next workstream (plan-then-build, separate session): generate PCT EOA + transfer POL + native→USDC.e swap. Gated behind Option A. **NO funding/on-chain action taken — $500 still native (untradeable); PCT EOA not yet created.**
+2. **Fidelity re-auth** — fell back to paper on this restart (external); re-auth needs another restart (RH challenge) — operator's call, separate.
+3. **BACKLOG P2 drift** (tasty_options) — resolve deliberately; every `secrets.py`/`main.py` deploy must stay SURGICAL until then.
+4. **Parallel bitunix session** had uncommitted/untracked work in the shared tree at EOS (NOT mine, NOT pushed); HEAD left on `main` after my ff-merge — coordinate.
+
+**PROD STATE @ EOS:** PID `1727479`, active, mode PAPER. polymarket_arbitrage broker live on legacy wallet reading USDC.e=$0 (intended). origin/main `500cc1e`.
+
+---
+
 ## EOS snapshot — 2026-05-29 (bitunix observability + data-integrity arc: 3 fixes SHIPPED + 2 live-readiness planning docs. All pushed; prod healthy.)
 
 **Theme:** hardened the bitunix paper-eval observability/data-integrity layer (the "audit-success must mean confirmed reality, not no-exception" discipline — see `[[telegram-audit-success-is-confirmed-delivery]]`), then audited the paper→live gap.
