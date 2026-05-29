@@ -8,6 +8,12 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P3 ANOMALY — kalshi_weather tier-1 schema committed but NOT deployed (found 2026-05-29)
+
+Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_weather tier-1 data-foundation schema that's committed in git — `weather_nbm_observations` and `weather_forecast_residuals` tables + their indexes (per `plans/tier1-data-foundation-kalshi-weather.md` §C1/§C2). Discovered during the 2026-05-29 db-lock fix when md5-diffing prod db.py against git (the busy_timeout change was deployed **surgically** to avoid inadvertently shipping this schema). `connect()` and all helper functions match git — the drift is schema-DDL-only. **Decide:** deploy the tier-1 schema to prod (if the ingestion/consumption path is meant to be live) or revert the local commit (if shelved). Do NOT deploy as a side-effect of unrelated db.py changes. This is the **3rd committed-but-not-deployed instance this week** — see memory `committed-not-deployed-recurring-drift`. **P3** (no active consumer reads these tables on prod's hot path today, per the schema comments).
+
+---
+
 ## EOS snapshot — 2026-05-28 (kalshi_weather LATE-CYCLE ultra-high-confidence favorite test — **VERDICT: NULL, refuted on real prices. Read-only research; ZERO prod changes, ZERO deploys, paper untouched. 1 commit `17fab80`, pushed.**)
 
 **Mandate:** a NARROWER slice than the prior favorite-buying scans — at very late cycle AND very high confidence (implied ≥ 0.90; bands 0.90-0.93 / 0.93-0.96 / 0.96-0.99), are favorites underpriced enough to clear fees + spread + tail risk? Proposed mechanism: MMs keep wider spreads / lower prices late when the outcome is near-determined, leaving 1-2¢ for taking last-mile risk. Decisive emphasis on the LOSS DISTRIBUTION (one ~−$0.94 loss erases ~10 penny wins) and on holdout survival.

@@ -76,6 +76,43 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-29 ~02:43 UTC — Shared SQLite audit writer: busy_timeout + log_event retry-with-backoff + JSONL fallback + replay (eliminate silent row-drops)
+
+**Commits:** `69c401a` (db.py busy_timeout + logger.py retry/fallback + replay script + tests) + `<DBLOCK_DOC_SHA>` (this deploy_log + BACKLOG + memory).
+**Triggered by:** 2026-05-28 health check found 11× `database is locked` drops on the polymarket/pmcc write path; the shared `log_event`/`db.connect` writer is used by bitunix too → latent data-integrity hole. P1.
+**Backup tags:** `.bak-dblock-20260529` on `db.py` + `logger.py`.
+
+**Phase 1 diagnostic:** `db.connect()` (persistence/db.py) had WAL but **`busy_timeout=0`** (verified live) → immediate fail on any write-lock; no retry anywhere. **7-day drops = 27** (~3-11/day, 11 on 05-28, trending up): `_scheduled_pmcc_scan_loop` 11, `end_rejected_node` 5 (graph — drops proposed_order + board-reject audits), `_save_whale_state` 4, `_scheduled_polymarket_copy_trader_loop` 2. **Bitunix not bitten yet** (regime-gated low volume) but shares the writer. `log_event` only wrapped the lastrowid readback → the INSERT's OperationalError propagated and the row was silently lost; callers mostly let it propagate to the loop's outer except (row gone) and the polymarket loop emitted a `"— logged"` Telegram regardless.
+
+**Fix (shared layer, all divisions):**
+- `db.connect()` — **surgical** one-line insert `PRAGMA busy_timeout=5000;` after the WAL pragma (every writer now waits up to 5s on a lock instead of failing). prod md5 `6df34404…` → `1782cc9c…`; diff vs backup = **exactly +1 line** (verified).
+- `LoggerAgent.log_event` (logger.py md5 → `0b409660…`, matches git) — retries on `database is locked` (4 attempts, jittered `_DB_LOCK_RETRY_DELAYS_SEC=(0.1,0.3,0.7)`), logs success-after-retry distinctly; on exhaustion appends to `data/audit_event_write_failed.jsonl` (next to the DB) + log.error + **returns None (never raises, never reports false success)**; non-lock OperationalError still propagates.
+- `scripts/replay_audit_event_write_failed.py` (new) — drains the fallback JSONL into audit_event, idempotent by `(ts,actor,kind,payload_json)` content match; archives the file on full drain.
+- Tests: `tests/test_logger_db_lock_retry.py` + `tests/test_replay_audit_event_write_failed.py` — 41 GREEN incl. regression (research/paper-trade/webhook audit tests) via `run_capped`.
+
+**⚠️ DRIFT FOUND (verify-prod-state caught it):** prod `db.py` was **behind git** — missing the kalshi_weather tier-1 schema (`weather_nbm_observations`, `weather_forecast_residuals` + indexes) that's committed but **never deployed**. Its `connect()` matched git (drift was schema-only). So db.py was deployed **surgically** (busy_timeout line inserted into prod's actual content) — the weather schema was deliberately NOT shipped. Filed **P3** in BACKLOG. This is the **3rd committed-but-not-deployed instance this week** (k3 `e5efa06`, tasty_options `94b3129`, this weather schema) — see memory `committed-not-deployed-recurring-drift`.
+
+**Ownership drift:** `db.py` was `root:root`; deployed via rm+scp in the azureuser-writable persistence dir → now `azureuser:azureuser` (joins logger.py). Benign; restore with `sudo chown root:root` if desired.
+
+**Real-prod acceptance (deployed code; temp DB for contention so the live service wasn't disrupted):** (a) `PRAGMA busy_timeout` on the real prod DB = **5000** ✓; (b) injected transient lock → log_event retried (3 connect attempts) → **succeeded**, row landed, no fallback ✓; (c) sustained lock → exhausted 4 attempts → **fallback JSONL written** `{kind:dblock_exhaust_test,attempts:4}`, returned None, no raise ✓; (d) replay script → `{scanned:1,inserted:1}`, row **recovered** into audit_event ✓.
+
+**Service:** PID → `1685763` (02:43:22 UTC). NRestarts=0, active. 0 `database is locked` since restart. Divergence cron intact. (NB: this restart re-triggered the RH device challenge — stale-pickle issue, operator approved.)
+
+**7-day passive monitor (filed):** count "locked→retry succeeded" vs "locked→fallback file written"; if fallback files appear at a non-trivial rate, contention needs a deeper fix (write batching / connection pooling / WAL checkpoint tuning).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+B=/home/azureuser/trading_corp; \
+cp -a \$B/trading_corp/persistence/db.py.bak-dblock-20260529 \$B/trading_corp/persistence/db.py; \
+cp -a \$B/trading_corp/agents/logger.py.bak-dblock-20260529 \$B/trading_corp/agents/logger.py; \
+rm -f \$B/scripts/replay_audit_event_write_failed.py; \
+sudo systemctl restart trading-corp.service"
+```
+(NB: rollback restart re-triggers the RH device challenge — operator must be ready.)
+
+---
+
 ## 2026-05-29 ~01:58 UTC — Telegram audit-success semantics (Phase C) + lifecycle silent-drop diagnostic (RESOLVED-UNEXPLAINED) + divergence monitor
 
 **Commits:** `0298575` (telegram audit semantics + divergence monitor + tests + this deploy_log). Memory: `telegram-audit-success-is-confirmed-delivery`.
