@@ -363,6 +363,16 @@ Neither per-trade fees (taker on entry/SL, maker on TP fills) nor funding accrua
 
 Per the approved proposal at `runbooks/2026-05-27_bitunix_dashboard_consolidation_proposal.md`: build Panels 1-5 (Status Header / Today's Funnel / PA Validator-Pair Distribution / Observation Window / Recent Paper Fires + Outcomes) + `/division/bitunix_futures/debug` on-demand-only route + Recent Activity whitelist fix. Small standalone clutter cleanup (Phase 3.2 label, Recent Evaluations duplicate, bar-cache aggregate) is shipped separately this session as a pre-rebuild simplification.
 
+## P3 — Strategy-state persistence (agent_state-backed `halted` latch) — bundle with bitunix Session N+1 live execution-mode wiring
+
+Surfaced 2026-05-29 during the Session N defensive scaffolding work (branch `bitunix-orderpath-safety-2026-05-29`). `StrategyState` is constructed fresh with `halted=False` at every `risk_agent.evaluate()` call site (9 in `main.py` + 4 in `web/webhooks.py` + 3 in `web/routes.py` + 2 in the bitunix observer + 1 in `comms/telegram_commands.py` + 1 in `graph/ceo_graph.py`). No `agent_state`-backed writer/reader exists; the `halted` field is read at `risk.py:114` but never persisted between call sites.
+
+Session N consequently shipped halt-as-broker-self-latch (`BitunixBroker._halt_new_orders`) — fail-closed at broker-instance scope but **NOT cross-process** and **NOT cross-broker-instance**. **Recorded scope boundary**: "halt" in the Session N safety handlers means broker-instance latch, not strategy halt. See `[[bitunix-order-path-safety-pattern]]` so future readers don't assume otherwise.
+
+**Bundle with Session N+1** (bitunix live entry-path wiring + `execution_mode: paper | live` config flag): both touch the bitunix observer's risk-eval block, and the `agent_state` writer is the natural prereq for the per-strategy `execution_mode` toggle to survive restarts. Scope when bundled: `db.upsert_agent_state(actor, key, value)` + `db.get_agent_state(actor, key)`; observer-side `StrategyState` construction reads `halted` from `agent_state`; `data_exec` consumers write the halted latch via the new writer. ~6–8 tests; bundle into one session, not two.
+
+---
+
 ## P3 — `tasty_options` config block missing from prod's `strategies.yaml` (ANOMALY)
 
 Local `config/strategies.yaml` carries the `tasty_options:` block (commit `94b3129`, 2026-05-24 "Commit 4/5"); prod's YAML does NOT (`grep -c "^tasty_options:"` = 0 on prod, 1 on local). Local is 74 lines longer than prod (1848 vs 1774 pre-2026-05-27-PA-patch; 1775 post-patch). Per memory `[[tasty-options-paper-clock]]`, the tasty_options commits ARE supposed to be on prod. Either: (a) the YAML was rolled back on prod, (b) the deploy never copied the YAML block (only the Python wiring), or (c) something else. Investigate before next tasty_options touch — the strategy can't be reading its config if it's not in prod's YAML.

@@ -9,10 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Iterable
+from typing import Any, Iterable
 
 from trading_corp.agents.logger import LoggerAgent
 from trading_corp.brokers.base import AccountSnapshot, Broker
+from trading_corp.brokers.bitunix_exceptions import BitunixPositionModeMismatch
 from trading_corp.brokers.paper import PaperBroker
 from trading_corp.data.feeds import FeedAggregator
 from trading_corp.persistence import db
@@ -23,7 +24,13 @@ log = logging.getLogger(__name__)
 
 
 class DataExecAgent:
-    def __init__(self, logger: LoggerAgent, *, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        logger: LoggerAgent,
+        *,
+        dry_run: bool = False,
+        safety_notifier: Any = None,
+    ) -> None:
         self.logger = logger
         self.brokers: dict[str, Broker] = {}      # division -> Broker
         self.feeds = FeedAggregator()
@@ -35,6 +42,17 @@ class DataExecAgent:
         # Used for first-time LIVE validation: real auth + real reads + real
         # risk gates + real order construction, but no actual fills.
         self.dry_run = dry_run
+        # Safety-event notifier used for `safety_alert` Telegram pushes
+        # raised by the mode-mismatch consumer in `place()` and by
+        # `flatten_division`. Optional — when None, safety paths still
+        # audit + re-raise as configured but skip the Telegram side-effect.
+        # Duck-typed contract:
+        #   async def push(text: str, *,
+        #                  audit_path: str = "other",
+        #                  audit_context: dict | None = None) -> bool
+        # `True` = HTTP 2xx + ok:true (confirmed delivery); `False` =
+        # send failed. Push never raises (per `comms.telegram_bot.push`).
+        self.safety_notifier = safety_notifier
 
     def register_broker(self, division: str, broker: Broker) -> None:
         self.brokers[division] = broker
@@ -147,7 +165,16 @@ class DataExecAgent:
             )
             return fill
 
-        fill = await broker.place_order(order)
+        try:
+            fill = await broker.place_order(order)
+        except BitunixPositionModeMismatch as exc:
+            # Safety side-effects (audit + telegram); broker already
+            # self-latched `_halt_new_orders=True` before raising. Re-raise
+            # so the caller's path is clearly broken — matches today's
+            # no-catch propagation semantics + adds the safety effects.
+            await self._handle_position_mode_mismatch(exc, order, division, broker)
+            raise
+
         order.status = "filled"
         order.fill_price = fill.price
         order.fill_ts = fill.ts
@@ -167,6 +194,282 @@ class DataExecAgent:
             },
         )
         return fill
+
+    # ------------------------------------------------------------------
+    # Safety handlers (Session N defensive scaffolding)
+    #
+    # Two consumers wired here at the broker-call chokepoint:
+    #   * `_handle_position_mode_mismatch` — invoked from `place()` when the
+    #     broker raises `BitunixPositionModeMismatch`. Audits + telegrams +
+    #     re-raises. The broker's own `_halt_new_orders` self-latch is the
+    #     halt mechanism (per Phase 2a sub-diagnostic on
+    #     `bitunix-orderpath-safety-2026-05-29`); the consumer's job is the
+    #     response side only.
+    #   * `flatten_division` — invoked by the bitunix observer (or any future
+    #     caller) when `RiskVerdict.flatten_account=True`. Calls
+    #     `broker.flatten()` if available, verifies positions=0 post-call
+    #     via `broker.snapshot()` (NOT just "function returned without
+    #     raising"), audits + telegrams.
+    #
+    # Confirmed-delivery discipline (per
+    # `[[telegram-audit-success-is-confirmed-delivery]]`): audit row IDs are
+    # used for re-read confirmation; telegram `push()` return-bool is what
+    # we trust, not exception-absence; a `push()`-returned-False is itself
+    # audited (`telegram_notification_failed`) but does NOT block the
+    # safety path. Strategy-level halt persistence is a known gap — see
+    # BACKLOG #N+1 follow-up.
+    # ------------------------------------------------------------------
+
+    async def _handle_position_mode_mismatch(
+        self,
+        exc: BitunixPositionModeMismatch,
+        order: ProposedOrder,
+        division: str,
+        broker: Broker,
+    ) -> None:
+        """Audit + telegram side-effects for a caught `BitunixPositionModeMismatch`.
+
+        Does NOT set the halt — the broker self-latches `_halt_new_orders`
+        before raising. This handler confirms the latch state, writes the
+        `position_mode_mismatch_detected` audit row (re-read via the
+        returned audit id), and pushes a `safety_alert` telegram. Caller
+        re-raises the exception after this returns.
+        """
+        broker_halt_latched = bool(getattr(broker, "_halt_new_orders", False))
+        ts = iso(now_utc())
+        payload = {
+            "current": exc.current,
+            "expected": exc.expected,
+            "division": division,
+            "broker_class": type(broker).__name__,
+            "order_id": order.id,
+            "broker_halt_latched": broker_halt_latched,
+            "ts": ts,
+        }
+        audit_id = self.logger.log_event(
+            actor="data_exec",
+            kind="position_mode_mismatch_detected",
+            payload=payload,
+        )
+
+        # Re-read confirmation — independent of LoggerAgent's connection.
+        # Failure to confirm is itself a divergence: log loudly but do not
+        # block the safety path on the re-read.
+        if audit_id is not None:
+            try:
+                with db.connect(self.logger.db_url) as conn:
+                    row = conn.execute(
+                        "SELECT 1 FROM audit_event WHERE id = ?", (audit_id,)
+                    ).fetchone()
+                    if row is None:
+                        log.error(
+                            "position_mode_mismatch_detected audit_id=%s "
+                            "could NOT be re-read — possible silent drop",
+                            audit_id,
+                        )
+            except Exception as e:
+                log.warning("audit re-read after mode-mismatch failed: %s", e)
+
+        if self.safety_notifier is not None:
+            text = (
+                f"⚠️ BitUnix position mode MISMATCH on `{division}`: "
+                f"account is `{exc.current}`, expected `{exc.expected}`. "
+                f"Broker halt latched: {broker_halt_latched}. Refusing new orders. "
+                f"(out-of-band UI change?)"
+            )
+            await self._safety_push(
+                text,
+                audit_path="safety_alert",
+                audit_context={
+                    "division": division,
+                    "kind": "position_mode_mismatch_detected",
+                    "current": str(exc.current),
+                },
+            )
+
+    async def _safety_push(
+        self,
+        text: str,
+        *,
+        audit_path: str,
+        audit_context: dict,
+    ) -> None:
+        """Push a safety alert via the notifier. On failure (returned False
+        or raised), write `telegram_notification_failed` audit but DO NOT
+        block the safety path — the primary audit row is the load-bearing
+        record; comms is best-effort."""
+        if self.safety_notifier is None:
+            return
+        ok = False
+        try:
+            ok = await self.safety_notifier.push(
+                text, audit_path=audit_path, audit_context=audit_context,
+            )
+        except Exception as e:
+            log.warning("safety_notifier.push raised: %s", e)
+            ok = False
+        if not ok:
+            try:
+                self.logger.log_event(
+                    actor="data_exec",
+                    kind="telegram_notification_failed",
+                    payload={
+                        "for_audit_kind": audit_context.get("kind"),
+                        "division": audit_context.get("division"),
+                        "reason": "push returned False or raised",
+                        "ts": iso(now_utc()),
+                    },
+                )
+            except Exception as e:
+                log.warning("failed to audit telegram failure: %s", e)
+
+    async def flatten_division(self, division: str) -> None:
+        """Flatten all open positions on the broker for `division`.
+
+        Bitunix-only effective scope: the call is no-op-with-audit for any
+        broker that doesn't expose `flatten()` (currently every broker
+        except `BitunixBroker` on the broker-write branch). Use cases:
+        - `RiskAgent.evaluate()` returned `flatten_account=True` (drawdown
+          cap breached); the bitunix observer awaits this.
+        - Manual kill-switch invocation from a future operator surface.
+
+        Idempotent: already-flat → `flatten_account_noop_already_flat` audit,
+        no broker call, no error.
+
+        Verification: post-flatten, `broker.snapshot()` is re-read; if any
+        positions remain, the action is treated as FAILED (escalated
+        telegram + audit + re-raise), per the Phase 2a discipline that
+        "verification queries broker truth (positions=0), not just
+        'function returned without raising'".
+        """
+        broker = self.brokers.get(division) or self.brokers.get("default")
+        if broker is None:
+            raise RuntimeError(
+                f"flatten_division: no broker registered for division={division!r}"
+            )
+
+        if not hasattr(broker, "flatten"):
+            self.logger.log_event(
+                actor="data_exec",
+                kind="flatten_account_skipped_no_flatten_method",
+                payload={
+                    "division": division,
+                    "broker_class": type(broker).__name__,
+                    "reason": "broker has no flatten() method (paper-wrapped or non-bitunix)",
+                    "ts": iso(now_utc()),
+                },
+            )
+            return
+
+        # Snapshot BEFORE attempting flatten.
+        try:
+            snap_before = await broker.snapshot()
+            positions_before = len(snap_before.positions or [])
+        except Exception as e:
+            log.warning(
+                "flatten_division(%s): pre-flatten snapshot failed: %s — "
+                "treating positions_before as unknown",
+                division, e,
+            )
+            positions_before = -1
+
+        # Idempotent no-op when already flat.
+        if positions_before == 0:
+            self.logger.log_event(
+                actor="data_exec",
+                kind="flatten_account_noop_already_flat",
+                payload={
+                    "division": division,
+                    "positions": 0,
+                    "ts": iso(now_utc()),
+                },
+            )
+            if self.safety_notifier is not None:
+                await self._safety_push(
+                    f"ℹ️ flatten_account on `{division}`: account already "
+                    f"flat (0 positions). No-op.",
+                    audit_path="safety_alert",
+                    audit_context={
+                        "division": division,
+                        "kind": "flatten_noop_already_flat",
+                    },
+                )
+            return
+
+        # Attempt the flatten.
+        flatten_error: Exception | None = None
+        try:
+            await broker.flatten()
+        except Exception as e:
+            flatten_error = e
+
+        # Verify via snapshot (broker truth).
+        try:
+            snap_after = await broker.snapshot()
+            positions_after = len(snap_after.positions or [])
+        except Exception as e:
+            log.warning(
+                "flatten_division(%s): post-flatten snapshot failed: %s — "
+                "treating positions_after as unknown (escalating)",
+                division, e,
+            )
+            positions_after = -1
+
+        # Failure path: flatten raised OR positions remain OR verification
+        # failed. Audit + escalated telegram + re-raise.
+        if flatten_error is not None or positions_after > 0:
+            self.logger.log_event(
+                actor="data_exec",
+                kind="flatten_account_failed",
+                payload={
+                    "division": division,
+                    "positions_before": positions_before,
+                    "positions_after": positions_after,
+                    "error": str(flatten_error) if flatten_error else None,
+                    "ts": iso(now_utc()),
+                },
+            )
+            if self.safety_notifier is not None:
+                await self._safety_push(
+                    f"🚨 FLATTEN FAILED on `{division}`: "
+                    f"positions_before={positions_before}, "
+                    f"positions_after={positions_after}, "
+                    f"error={flatten_error}",
+                    audit_path="safety_alert",
+                    audit_context={
+                        "division": division,
+                        "kind": "flatten_failed",
+                    },
+                )
+            if flatten_error is not None:
+                raise flatten_error
+            raise RuntimeError(
+                f"flatten_division({division}): post-flatten verification "
+                f"failed — {positions_after} positions remain after "
+                f"broker.flatten()"
+            )
+
+        # Success.
+        self.logger.log_event(
+            actor="data_exec",
+            kind="flatten_account_executed",
+            payload={
+                "division": division,
+                "positions_before": positions_before,
+                "positions_after": positions_after,
+                "ts": iso(now_utc()),
+            },
+        )
+        if self.safety_notifier is not None:
+            await self._safety_push(
+                f"✅ Flatten executed on `{division}`: "
+                f"{positions_before} → {positions_after} positions.",
+                audit_path="safety_alert",
+                audit_context={
+                    "division": division,
+                    "kind": "flatten_executed",
+                },
+            )
 
     # ------------------------------------------------------------------
     # Multi-leg combo dispatch
