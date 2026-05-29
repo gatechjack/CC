@@ -35,56 +35,61 @@ log = logging.getLogger(__name__)
 # ── round-trip resolver ────────────────────────────────────────────────
 
 
-def _fetch_unresolved_orders(db_url: str) -> list[dict]:
+_RESOLVER_ACTORS = ("polymarket_arbitrage", "polymarket_copy_trader")
+
+
+def _fetch_unresolved_orders(db_url: str, *, per_actor_limit: int = 1000) -> list[dict]:
     """Return `would_have_placed` audit rows that have no
     polymarket_round_trips entry yet. Each dict is the parsed payload
     plus a `_ts` field carrying the audit-event ts and a `_actor` field
     carrying the producing strategy (so the resolver can stamp the right
-    `division` on the resulting round-trip row)."""
+    `division` on the resulting round-trip row).
+
+    PER-ACTOR FAIRNESS (2026-05-29): the scan is capped at `per_actor_limit`
+    rows PER actor (one query each), NOT a single global LIMIT. A global cap
+    let one division starve the other: arbitrage's ~121 long-horizon pending
+    rows (all carrying `resolves_at`, so sorted first) saturated the old
+    100-row global cap and the scan NEVER reached a single copy-trader BUY
+    (all NULL `resolves_at`, sorted last) — leaving 1,650 PCT positions
+    unresolved, ~578 on already-settled markets. Per-actor budgeting
+    guarantees each division gets scanned every tick.
+    """
+    rows: list[dict] = []
     with _db.connect(db_url) as conn:
-        # `side` filter: market-settle resolution applies to BUY-side audit
-        # rows only. SELL-side rows from copy_trader are handled by
-        # `_pair_pending_exits`, which matches them to a prior BUY and
-        # computes realized PnL from entry+exit prices. Without this
-        # filter, `_compute_round_trip_row` would mistreat a SELL as a
-        # fresh bet and emit wrong PnL when the market eventually settled.
-        # Also exclude audit rows whose order_id was already linked as an
-        # entry to a paired round-trip (entry_order_id), so the entry
-        # doesn't keep being scanned after pairing resolves it.
-        # Ordering: `resolves_at ASC NULLS LAST` (NULLs synthesized via
-        # `(resolves_at IS NULL)` since SQLite NULLS LAST is version-
-        # conditional). Past-resolution rows scanned first — they're the
-        # most likely to have a final settlement on Polymarket. The
-        # original `ts ASC` ordering left past-expiration rows stuck
-        # behind long-horizon backlog (same shape as the kalshi_resolver
-        # bug fixed in the same session).
-        cur = conn.execute(
-            "SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
-            "FROM audit_event a "
-            "LEFT JOIN polymarket_round_trips r "
-            "  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
-            "WHERE a.actor IN ('polymarket_arbitrage', 'polymarket_copy_trader') "
-            "  AND a.kind  = 'would_have_placed' "
-            "  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
-            "  AND r.order_id IS NULL "
-            "  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
-            "        SELECT entry_order_id FROM polymarket_round_trips "
-            "        WHERE entry_order_id IS NOT NULL"
-            "      ) "
-            "ORDER BY (json_extract(a.payload_json, '$.resolves_at') IS NULL), "
-            "         json_extract(a.payload_json, '$.resolves_at') ASC, "
-            "         a.ts ASC"
-        )
-        rows: list[dict] = []
-        for r in cur.fetchall():
-            try:
-                p = json.loads(r["payload_json"])
-                p["_ts"] = r["ts"]
-                p["_actor"] = r["actor"]
-                rows.append(p)
-            except (json.JSONDecodeError, ValueError, TypeError):
-                continue
-        return rows
+        for actor in _RESOLVER_ACTORS:
+            # `side` filter: market-settle resolution applies to BUY-side audit
+            # rows only. SELL-side copy_trader rows are handled by
+            # `_pair_pending_exits`. Exclude rows already linked as a paired
+            # round-trip's entry (entry_order_id). Ordering: past-resolution
+            # rows first (`resolves_at` ASC, NULLs last via the IS NULL key).
+            cur = conn.execute(
+                "SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
+                "FROM audit_event a "
+                "LEFT JOIN polymarket_round_trips r "
+                "  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+                "WHERE a.actor = ? "
+                "  AND a.kind  = 'would_have_placed' "
+                "  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
+                "  AND r.order_id IS NULL "
+                "  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
+                "        SELECT entry_order_id FROM polymarket_round_trips "
+                "        WHERE entry_order_id IS NOT NULL"
+                "      ) "
+                "ORDER BY (json_extract(a.payload_json, '$.resolves_at') IS NULL), "
+                "         json_extract(a.payload_json, '$.resolves_at') ASC, "
+                "         a.ts ASC "
+                "LIMIT ?",
+                (actor, per_actor_limit),
+            )
+            for r in cur.fetchall():
+                try:
+                    p = json.loads(r["payload_json"])
+                    p["_ts"] = r["ts"]
+                    p["_actor"] = r["actor"]
+                    rows.append(p)
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    continue
+    return rows
 
 
 def _compute_round_trip_row(row: dict, res: dict) -> dict | None:
@@ -333,15 +338,17 @@ async def resolve_pending_round_trips(
     db_url: str,
     broker,
     *,
-    max_per_tick: int = 100,
+    per_actor_limit: int = 1000,
 ) -> dict:
     """One pass. Returns counts: scanned, resolved, pending, void,
     not_found, errors, plus whale-exit pairing counts.
 
-    `max_per_tick` caps gamma-api calls per tick so a long-running
-    backlog can't melt the rate-limit budget on a single sweep. With $1
-    fixed sizing × 6h cooldown × ~60 markets/day, the unresolved
-    backlog should stay well under 100.
+    `per_actor_limit` caps gamma-api lookups per tick PER actor (see
+    `_fetch_unresolved_orders`) so neither division can starve the other,
+    and a one-time backlog drains over a few ticks without melting the
+    rate-limit budget (~2k lookups/tick worst case ≈ 0.6/s on an hourly
+    tick). Replaced the old single global `max_per_tick=100` which let
+    arbitrage's long-horizon rows monopolize the scan window.
 
     Two passes per tick:
       1. `_pair_pending_exits`: pair copy-trader SELL audit rows with
@@ -352,8 +359,7 @@ async def resolve_pending_round_trips(
          up the market on gamma-api and write a round-trip if settled.
     """
     pair_counts = _pair_pending_exits(db_url)
-    rows = _fetch_unresolved_orders(db_url)
-    rows = rows[:max_per_tick]
+    rows = _fetch_unresolved_orders(db_url, per_actor_limit=per_actor_limit)
     counts = {
         "scanned": len(rows),
         "resolved": 0,
