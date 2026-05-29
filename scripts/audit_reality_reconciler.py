@@ -35,7 +35,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import asyncio  # noqa: E402
+
 from trading_corp.agents.paper_trade_replay import (  # noqa: E402
+    _bitunix_kline_fetcher,
+    _iso_to_ms,
     _PendingRow,
     _classify_v2_multi_leg,
 )
@@ -77,54 +81,25 @@ def _load_closed_v2_trades(conn) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def _load_bars_for_trade(conn, trade: dict[str, Any], timeframe: str = "3m") -> list[list[float]]:
-    """Pull bars from bitunix_bar_history covering [entry, result_ts]."""
-    ts = trade["ts"]
-    result_ts = trade["result_ts"]
+def _load_bars_for_trade(trade: dict[str, Any]) -> list[list[float]]:
+    """Fetch 1m bars exactly as the live path did (paper_trade_replay), so the
+    reconciler replays at the live-path granularity and matches by construction.
 
-    if ts <= result_ts:
-        # Normal case: result_ts is the genuine resolution timestamp.
-        # Window = [entry, resolution] — exactly the bars the live path walked.
-        start_iso = ts
-        end_iso = result_ts
-    else:
-        # B9: inverted window — result_ts < ts.
-        # Cause: finalizing-tick attribution artifact (B5, documented in
-        # runbooks/2026-05-21_post_funding_diagnostics.md): result_ts is set to
-        # the bar-OPEN timestamp of the finalizing replay tick, which can precede
-        # the actual trade-entry ts by up to one bar width (e.g. 2942ff8e has
-        # ts=14:00:12, result_ts=14:00:00 — inverted by 12 s).
-        # In this case result_ts is NOT the resolution timestamp; it is the
-        # entry-bar open. The actual resolution could be anywhere within
-        # max_hold_seconds of ts. We use result_ts as the start (it bounds the
-        # entry bar) and ts + max_hold_seconds as the end so the classifier can
-        # walk the full potential price path and find the real resolution point.
-        # This is strictly more permissive than the normal window (may include
-        # post-resolution bars) but the classifier is bar-by-bar and stops on
-        # the first SL/TP hit, so extra trailing bars are harmless.
-        max_hold = int(trade.get("max_hold_seconds") or 86400)
-        start_iso = result_ts  # earlier of the two (bar-open)
-        # Compute end as ts + max_hold_seconds via Python datetime arithmetic
-        # to avoid SQLite strftime addition complexity.
-        from datetime import datetime, timezone, timedelta  # noqa: PLC0415
-        try:
-            entry_dt = datetime.fromisoformat(ts)
-        except ValueError:
-            # Fallback: parse without tz and assume UTC.
-            entry_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        end_dt = entry_dt + timedelta(seconds=max_hold)
-        end_iso = end_dt.isoformat(timespec="seconds")
+    The live path (_replay_tick_async) fetches:
+        since_ts_ms = _iso_to_ms(row.ts)
+        bars_needed = max(1, max_hold_seconds // 60)
+        bars = await fetcher(row.symbol, "1m", since_ts_ms, bars_needed)
 
-    # Convert ISO to ms via SQLite strftime for portability.
-    rows = conn.execute("""
-        SELECT ts_ms, open, high, low, close, volume
-        FROM bitunix_bar_history
-        WHERE timeframe = ?
-          AND ts_ms >= CAST(strftime('%s', ?) AS INTEGER) * 1000
-          AND ts_ms <= CAST(strftime('%s', ?) AS INTEGER) * 1000
-        ORDER BY ts_ms ASC
-    """, (timeframe, start_iso, end_iso)).fetchall()
-    return [[r["ts_ms"], r["open"], r["high"], r["low"], r["close"], r["volume"]] for r in rows]
+    We do the same here so the reconciler's bar window is identical to what
+    the live classifier walked. This eliminates the 3m-vs-1m granularity
+    mismatch that caused fast partial-win trades to be mis-resolved as
+    'still_open' or 'expired'.
+    """
+    since_ms = _iso_to_ms(trade["ts"])
+    max_hold = int(trade.get("max_hold_seconds") or 86400)
+    bars_needed = max(1, max_hold // 60)
+    symbol = trade["symbol"]
+    return asyncio.run(_bitunix_kline_fetcher(symbol, "1m", since_ms, bars_needed))
 
 
 def _build_pending_row(trade: dict[str, Any]) -> _PendingRow:
@@ -152,7 +127,7 @@ _NO_BARS_AUDIT_KIND = "audit_reality_no_bars"
 
 
 def _reconcile_one(conn, trade: dict[str, Any]) -> _ReconcileResult:
-    bars = _load_bars_for_trade(conn, trade)
+    bars = _load_bars_for_trade(trade)
 
     # B7 guard: never declare a match against zero bars.
     # Empty bars cause _classify_v2_multi_leg to return result="expired"
@@ -242,7 +217,7 @@ def _reconcile_one(conn, trade: dict[str, Any]) -> _ReconcileResult:
         if sim_r is not None and rec_r is not None and abs(float(sim_r) - float(rec_r)) > r_tol:
             deltas.append(f"R: recorded={rec_r} sim={sim_r} (delta={float(sim_r)-float(rec_r):+.4f})")
         if sim_filled:
-            deltas.append(f"missed_legs: {sim_filled}")
+            deltas.append(f"sim_filled_legs: {sim_filled}")
         discrepancy = "; ".join(deltas) or "match-criteria-failed"
 
     return _ReconcileResult(

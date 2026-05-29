@@ -76,6 +76,27 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-29 ~03:12 UTC — audit_reality_reconciler: replay at live-path 1m granularity (kill false mismatches) + window-inclusivity + missed_legs rename
+
+**Commit:** `<RECON_SHA>` (reconciler 1m fetch + test refactor + this deploy_log).
+**Triggered by:** Dashboard `RECONCILER MISMATCH 12/17` (5/28 evening) — 5 flagged trades all confirmed real (3-source ground truth, `reports/2026-05-28_reconciler_mismatch_investigation.md`, Case 2). The reconciler read **3m** bars while the live path resolves at **1m** → fast partial-wins mis-resolved as `expired`/`still_open`; tight `[entry,result_ts]` DB windows → `no_bars`. Tool wrong, trades right. Scripted job (`tc-audit-reality.timer/.service`, daily) → **no trading-corp restart needed**.
+**Backup:** `scripts/audit_reality_reconciler.py.bak-recon1m-20260529` (prod md5 was the old 3m-DB version → now `f0a1338d…`).
+
+**Fix (tool-only; trade data / paper_trade_replay / audit rows UNTOUCHED):**
+- `_load_bars_for_trade` now fetches **1m bars via the live path's exact fetcher** — `paper_trade_replay._bitunix_kline_fetcher(symbol, "1m", _iso_to_ms(entry_ts), max_hold//60)`. Same fetcher, same `since`, same `bars_needed` as `_replay_tick_async` → the reconciler replays at the **live-path granularity by construction**. Dropped the `bitunix_bar_history` 3m DB read + the B9 inverted-window branch (forward-fetch from entry covers the lifetime → **window-inclusivity subsumed**, dissolves `no_bars`). B7 no-bars guard kept (only fires now if the API genuinely returns nothing). Option (b) — no schema change; daily ~17-trade fetch is trivial API volume.
+- **Renamed `missed_legs` → `sim_filled_legs`** at `:245` (it printed `sim_filled` = legs the sim FILLED, not missed — the misnomer drove the fire drills). Dashboard renders the discrepancy string verbatim → no UI change needed.
+- Tests `tests/test_audit_reality_reconciler.py` refactored: DB-seed of 3m bars → monkeypatch `_bitunix_kline_fetcher` to return controlled 1m bars. 6 GREEN (1m-fetch asserted, fast-partial-win→win, former-no_bars→resolves, rename, B7 no-bars). Old B9-window tests dropped (obsolete — no window to invert).
+
+**Real-prod acceptance (manual run against live prod data, deployed code):** **17/17 match, 0 mismatches** (was 12/17, 5 mismatches). All 5 previously-flagged resolved **with exact R-match**: 28f43f1e/0b118801/6daca683 → `win` (simR=recR 0.9244/0.8146/0.9076); 99d62e04 → `loss` (-1.0); aaaefb0f → `win` (0.9616). The fast single-tick trades reproduce the live path's R exactly (fresh 1m re-walk == the live first-tick walk). Persisted `audit_reality_run` row = `status=match, 17/17, 0`. Dashboard alarm now meaningful (a real future mismatch won't be lost in granularity noise) — **load-bearing protection restored, not suppressed.**
+
+**Principle recorded:** a reconciler/verifier MUST replay at the **same data granularity** the path-under-verification used — verifying a 1m-resolved decision with 3m bars manufactures false mismatches. (Sibling of `[[telegram-audit-success-is-confirmed-delivery]]`.)
+
+**Next scheduled run:** `tc-audit-reality.timer` ~06:06 UTC will be the unattended confirmation; with 0 mismatches the `.service` now exits 0 (was "failed" only because it exits 1 on any mismatch — the CI-gate). Stale `audit_reality_no_bars` rows from the pre-deploy 01:38 run (99d62e04, aaaefb0f) are historical — the new run resolved both.
+
+**Rollback:** `cp -a scripts/audit_reality_reconciler.py.bak-recon1m-20260529 scripts/audit_reality_reconciler.py` (no restart — picked up on next timer run).
+
+---
+
 ## 2026-05-29 ~02:43 UTC — Shared SQLite audit writer: busy_timeout + log_event retry-with-backoff + JSONL fallback + replay (eliminate silent row-drops)
 
 **Commits:** `69c401a` (db.py busy_timeout + logger.py retry/fallback + replay script + tests) + `5836ef4` (this deploy_log + BACKLOG + memory).
