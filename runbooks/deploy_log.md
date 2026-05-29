@@ -9633,3 +9633,17 @@ sudo systemctl restart trading-corp
 # (KV secrets being present is harmless if the broker code is gone — main.py
 # falls back to the "Unknown broker family" warning path.)
 ```
+
+---
+
+## 2026-05-29 — INTERIM Polymarket open-aggregate cap raise $1K → $4K (config hot-reload, no restart)
+
+**Why:** Group A item #2 turned `RiskAgent._sum_polymarket_open` from a `return 0.0` stub into a real query. On activation, live open notional = **$2,998** (1,771 open positions) — ~3x the `$1,000` `total_open_aggregate_cap_usd`, so the now-live cap rejected EVERY new polymarket entry (both divisions; 5 `polymarket_copy_order_rejected_by_risk` in the first ~9 min post-restart). Raised the cap to **$4,000** to unblock copy-trader paper entries before Sunday's whale-scoring verification.
+
+**INTERIM — not the steady-state value.** The principled cap (~$3,500, ~$1,500 headroom over genuine ~$1,991 open) is gated on the resolver fairness fix dropping open notional — NOT on the contaminated $2,998.
+
+**Resolver artifact (root cause; separate fix = Group A #3):** `polymarket_resolver._fetch_unresolved_orders` market-settle pass (`max_per_tick=100`, orders `resolves_at`-non-NULL first) is 100% saturated by 121 long-horizon arbitrage rows (all carry `resolves_at`) and NEVER scans a copy-trader BUY (all 1,650 have `resolves_at=NULL` -> sorted last). Empirical: `resolved:0` every tick for 12h+; first-100 scan window = 100/100 arbitrage. >=578 PCT positions stuck-open on already-resolved markets.
+
+**Mechanics:** one-line `config/risk.yaml`. `risk.yaml` hot-reloads via `RiskAgent._reload_if_changed` (mtime) -> cap applies on the next risk eval (~60s); **no service restart performed** (avoids the ~5-min all-strategy pause + TV-webhook hole). Prod backup `config/risk.yaml.pre-cap-interim-2026-05-28`; md5 verified post-transfer.
+
+**Rollback:** `cp config/risk.yaml.pre-cap-interim-2026-05-28 config/risk.yaml` on prod (hot-reloads back to $1K within ~60s).

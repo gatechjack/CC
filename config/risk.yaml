@@ -42,7 +42,7 @@ polymarket:
   # ── Aggregate caps (RiskAgent queries audit_event for in-flight + filled) ──
   daily_aggregate_max_pct_of_equity: 0.25      # 25% of polymarket division equity
   daily_aggregate_cap_usd: 1_000.0             # but never more than $1K/day in NEW notional
-  total_open_aggregate_cap_usd: 1_000.0        # max $1K notional across all open positions
+  total_open_aggregate_cap_usd: 4_000.0        # INTERIM 2026-05-29 (was 1_000) — unblock PCT paper entries while resolver fairness fix lands; principled ~3_500 gated on post-fix open-notional drop, NOT the contaminated $2,998. See runbooks/deploy_log.md.
   max_open_positions: 10                       # max concurrent open positions (entries only); 0 disables
 
 # Kalshi prediction-market caps (Phase K2.1 — tail-price arb, paper-only).
