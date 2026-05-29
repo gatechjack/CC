@@ -76,6 +76,72 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-29 ~19:06 UTC — C-1 bitunix futures KV credential rotation (4/13+; new key live; old key dead; dev `.env` scrubbed)
+
+**Commits (on branch `c1-bitunix-cred-rotation`, NOT merged to `main`):**
+- `55da299` — security(C-1): `register_redact_literal` for bitunix `api_key` + `api_secret` VALUES (defense-in-depth; KEY=value redaction was already in `_SECRET_KEY_NAMES` and KV-pull was already in `expected_env_vars` — both verified BEFORE any code change, correcting the readiness audit's "not redacted" claim).
+- `a868f46` — backlog: annotate apify (P1, exposed in test-failure leak) + tastytrade (P2-verify; refresh-token JWT exposed) follow-ups.
+- this commit — close-out (deploy_log + BACKLOG + memories + Fidelity P3 file).
+
+**Triggered by:** operator request — C-1 bitunix portion (Stage-1 blocker for the live-engine build on branch `bitunix-live-engine-stage1-broker-write`).
+
+**Backup tag:** n/a (KV mutation + restart; the only source diff is the literal-redaction commit and lives on an unmerged branch).
+
+**Files deployed to prod (0 — see "Source diff" below):**
+- This rotation is a KV-secret-overwrite + service restart. The literal-redaction code change is NOT on `main` yet; if/when merged, the next deploy of `trading_corp/utils/secrets.py` would carry it (additive — two `register_redact_literal` lines, no behavior change for existing flows).
+
+**KV writes (operator, Azure Portal browser — vault `kv-tc-vtwbowt3wtkpy`):**
+- `BITUNIX-FUTURES-API-KEY` new version `9b33309a64da4855bb10128243c6b499` (2026-05-29T18:58:22Z, enabled).
+- `BITUNIX-FUTURES-API-SECRET` new version `51b5020363184d5491fa77619bec5ffa` (2026-05-29T18:58:54Z, enabled).
+- Operator self-granted **Key Vault Secrets Officer** RBAC role on the vault to write via Portal (vault uses RBAC, not access policies — initial GUI attempt got "operation not allowed by RBAC").
+
+**Portal behavior recorded:** **bitunix = REPLACE-ON-CREATE (one-key-slot model).** Operator portal check 2026-05-29 confirmed only the new key is listed (no old entry). Creating the new key auto-invalidated the old; no explicit revoke step required for bitunix. Recorded as the bitunix slot under `[[c1-per-portal-rotation-discipline]]`; the apply-this-pattern memory now has a per-portal observation slot for the remaining ~9.
+
+**Key scope:** trade-enabled, **withdraw-DISABLED**, IP-whitelisted to `20.51.145.253` (prod egress = same as VM's assigned public IP — confirmed via `curl https://api.ipify.org` from prod), label `tc-live-engine-2026-05-29`.
+
+**Restart:** `systemctl restart --no-block trading-corp` at 2026-05-29 19:05:59 UTC. MainPID `1727479` → `1734817`. `NRestarts=0`. Robinhood device challenge approved on operator's phone (coordinated). `Web command center listening on http://0.0.0.0:8000` at 19:11:55 (binds last, ~6 min into startup). `healthz=200`. Public `https://trading.jacksumner.com/` returns `302` (Authelia redirect = healthy).
+
+**New-key auth verified (value-blind):**
+- Service startup log 19:06:41: `INFO trading_corp.brokers.bitunix: BitunixBroker connected (account=bitunix-futures, equity=$323.17, 1 positions)` — real `get_account` + `get_pending_positions` succeed using the new KV-sourced key.
+- New process KV fetch at 19:06:01: `Request URL: 'https://kv-tc-vtwbowt3wtkpy.vault.azure.net/secrets/BITUNIX-FUTURES-API-KEY/?api-version=REDACTED'` (+ SECRET) — confirms the new process pulled the new versions.
+
+**Old-key rejection verified TWO ways (value-blind):**
+- Live: old process (PID `1727494`) logged `code=10003 msg='Token invalid'` at 19:05:33, 19:05:45, 19:05:52 (three account/position polls failed in a row) — the old key was empirically dead BEFORE the restart, consistent with REPLACE-ON-CREATE.
+- Synthetic: agent-side probe against `/api/v1/futures/account` with FAKE api-key + FAKE secret → `http=200, code=10003, msg='Token invalid'`. Identical envelope. Confirms the rejection path independent of the live observation.
+
+**Dev `.env` scrub:** `sed -i '/^BITUNIX_FUTURES_API_KEY=/d;/^BITUNIX_FUTURES_API_SECRET=/d' .env` on the dev box. Post-scrub `grep -c` returns 0/0; other 206 lines intact.
+
+**Prod state for bitunix remains KV-only.** `trading-corp.service` Environment has `KEY_VAULT_URI` set; prod has no `.env` (only `.env.example`). Verified before any change. Means future bitunix rotations are also pure KV-overwrite + restart — no prod `.env` scrub needed.
+
+**Features shipped:**
+- Bitunix futures C-1 portion rotated end-to-end under strict value-blind discipline (operator handled values via Azure Portal browser form — no shell history, no terminal leak). C-1 progress now 4/13+ (webhook ×2 on 2026-05-27 + bitunix ×2 on 2026-05-29).
+- Per-portal rotation discipline codified as `[[c1-per-portal-rotation-discipline]]` (reusable for the remaining ~9 portals) with a per-portal observation slot.
+
+**Notable code changes (only on the unmerged C-1 branch):**
+- `secrets.py` literal-redaction additions for bitunix api_key + secret VALUES — closes the wire-header redaction gap (api-key value rides in the `api-key` request header, which the KEY= pattern doesn't catch). Test-first; RED→GREEN via monkeypatched `register_redact_literal` + boolean-capture assert (NEVER `assert x in _REDACT_LITERALS` — see test-discipline rule below).
+
+**Test-failure leak incident (filed + designed out):** the first RED run of the new redaction test asserted `fake in _REDACT_LITERALS`; on failure pytest repr'd the whole set, surfacing a real apify token VALUE (40-char hex) and a real tastytrade refresh-token JWT (`rt+jwt` shape) into the transcript. Mitigated by monkeypatching `register_redact_literal` and asserting on a pre-computed boolean. Standing rule filed as `[[no-membership-assert-on-secret-collections]]`. Backlog effects: **apify token rotation ELEVATED to P1** (token doesn't self-rotate, exposure live); **tastytrade P2-verify** (the `secrets.py` "rotates per session" claim is unverified — `tastytrade_oauth_rotation.md` leans against; elevate to P1 if verification confirms no self-rotation).
+
+**Verification (post-rotation):**
+- PID change `1727479 → 1734817` (confirmed via `systemctl show -p MainPID`).
+- `ss -ltnp`: python (PID 1734832, the xvfb-run child) bound `0.0.0.0:8000`. Caddy on `:80/:443`. Authelia on `127.0.0.1:9091`.
+- Journal: BitUnix observer wiring online, Robinhood accounts bound, telegram online, paper_trade_replay startup catch-up ran, all schedulers/scanners online by 19:06:48.
+- 32 bitunix-broker-write tests + 13 secrets-redaction tests + reconciler + persistence tests green pre-commit on the C-1 branch.
+
+**Inert / dormant on current traffic:**
+- The new trade-scoped key is unused for writes today — `BitunixBroker.place_order` is still a `NotImplementedError` stub on `main`/prod (the write path lives only on the unmerged `bitunix-live-engine-stage1-broker-write` branch `72f0eb6`). Prod is paper for bitunix; the new key only services snapshot/quote/funding reads at present. Fail-closed remains structurally guaranteed.
+
+**Pre-existing observation (NOT caused by this deploy):**
+- Fidelity startup login failed (`'Sorry, we can't complete this action right now'` page) → `broker_fallback_to_paper` for `fidelity_joint` and `fidelity_401k`. Recurring restart flakiness, independent of bitunix; Fidelity is read-only paper today. Filed as a P3 in BACKLOG.
+
+**No secret values entered the Claude Code session** for this rotation. Operator handled values exclusively via the Azure Portal browser form and the bitunix portal UI. Agent verified via KV version-id metadata + value-blind grep + service journal.
+
+**Unblocks:** `bitunix-live-engine-stage1-broker-write` branch (`72f0eb6`, pushed, also unmerged) is now unblocked for further Stage-1 development — C-1 bitunix portion satisfied as a Stage-1 blocker. Remaining Stage-1 items still pending: restart-resume from broker truth, post-trade reconciliation vs `paper_trade_record`, cost accrual, REST resilience, operational alerts, runbooks, prod md5-diff before any live-path wiring.
+
+**Rollback:** revert KV to prior versions via Azure Portal (each secret's version history is retained) + restart. The Python literal-redaction change is additive on an unmerged branch — no rollback action required on prod.
+
+---
+
 ## 2026-05-29 ~16:55 UTC — Polymarket per-division wallets (item 6) + live-preflight (item 7) + USDC.e collateral fix — SURGICAL deploy
 
 **Commits:** `2ed83fe` (item 6+7 code) + `631ddc4` (polymarket.py USDC.e flip); merged to main `500cc1e`. **Deployed SURGICALLY (patch-only), NOT whole-file.**
