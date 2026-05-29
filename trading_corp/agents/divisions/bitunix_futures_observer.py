@@ -1510,8 +1510,11 @@ class BitunixFuturesObserver:
         try:
             account = AccountState(account="bitunix_futures",
                                    equity=account_equity, peak_equity=account_equity)
-            strat_state = StrategyState(strategy="bitunix_futures")
-            risk_verdict = self.risk_agent.evaluate(order, account, strat_state, None, None)
+            strat_state = StrategyState.from_persistence("bitunix_futures", db_url=self.db_url)
+            risk_verdict = self.risk_agent.evaluate(
+                order, account, strat_state, None, None,
+                db_url=self.db_url,
+            )
         except Exception as e:
             self._log_score_decision(payload, verdict_score, "error_risk_eval",
                                      note=str(e), order_id=order.id)
@@ -2845,8 +2848,11 @@ class BitunixFuturesObserver:
         order = proposal.proposed_order
         try:
             account = AccountState(account="bitunix_futures", equity=account_equity, peak_equity=account_equity)
-            strat_state = StrategyState(strategy="bitunix_futures")
-            verdict_risk = self.risk_agent.evaluate(order, account, strat_state, None, None)
+            strat_state = StrategyState.from_persistence("bitunix_futures", db_url=self.db_url)
+            verdict_risk = self.risk_agent.evaluate(
+                order, account, strat_state, None, None,
+                db_url=self.db_url,
+            )
         except Exception as e:
             self._log_decision(verdict, original_payload, "error_risk_eval",
                                note=f"risk_agent.evaluate failed: {e}",

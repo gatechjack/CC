@@ -334,10 +334,20 @@ def build_trade_graph(
         account = AccountState(**state.get("account", {})) if state.get("account") else AccountState(
             account="paper", equity=100_000.0, peak_equity=100_000.0,
         )
-        strategy_state = StrategyState(**state.get("strategy_state", {})) if state.get("strategy_state") else StrategyState(strategy=order.strategy)
+        strategy_state = (
+            StrategyState(**state.get("strategy_state", {}))
+            if state.get("strategy_state")
+            else StrategyState.from_persistence(order.strategy, db_url=logger.db_url)
+        )
         regime = state.get("regime")
         rvol = state.get("realized_vol")
-        verdict: RiskVerdict = risk.evaluate(order, account, strategy_state, regime, rvol)
+        # Stage-1 N+1 commit 6: pass db_url so RiskAgent.persist_halt
+        # writes the daily-loss halt to agent_state for cross-process
+        # persistence (graph nodes don't carry db_url in state today).
+        verdict: RiskVerdict = risk.evaluate(
+            order, account, strategy_state, regime, rvol,
+            db_url=logger.db_url,
+        )
         # Optionally narrate (best-effort).
         try:
             verdict = await risk.narrate(order, verdict)

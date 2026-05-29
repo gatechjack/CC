@@ -2374,7 +2374,7 @@ async def _scheduled_polymarket_arb_loop(
                 peak_equity=account_equity,
                 halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             log.info(
                 "Polymarket scanner: %d divergence-based ProposedOrder(s) emitted",
@@ -2545,7 +2545,7 @@ async def _scheduled_kalshi_arb_loop(
                 peak_equity=account_equity,
                 halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             # Pairs are interleaved [yes_leg, no_leg, yes_leg, no_leg, ...].
             n_pairs = len(orders) // 2
@@ -2696,7 +2696,7 @@ async def _scheduled_kalshi_tb_arb_loop(
                 peak_equity=account_equity,
                 halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             # Group legs by arb_set_id for cleaner audit + telegram.
             sets: dict[str, list] = {}
@@ -2858,7 +2858,7 @@ async def _scheduled_kalshi_llm_arb_loop(
                 peak_equity=account_equity,
                 halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             log.info(
                 "Kalshi LLM scanner: %d divergence-based ProposedOrder(s) emitted",
@@ -3011,7 +3011,7 @@ async def _scheduled_kalshi_copy_trader_loop(
                     account=agent.division, equity=account_equity,
                     peak_equity=account_equity, halted=False,
                 )
-                strategy_state = StrategyState(strategy=agent.name, halted=False)
+                strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
                 log.info(
                     "Kalshi copy trader: %d copy ProposedOrder(s) emitted",
@@ -3166,7 +3166,7 @@ async def _scheduled_polymarket_copy_trader_loop(
                     account=agent.division, equity=account_equity,
                     peak_equity=account_equity, halted=False,
                 )
-                strategy_state = StrategyState(strategy=agent.name, halted=False)
+                strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
                 log.info(
                     "Polymarket copy trader: %d copy ProposedOrder(s) emitted",
@@ -3461,7 +3461,7 @@ async def _scheduled_kalshi_weather_arb_loop(
                 account=agent.division, equity=account_equity,
                 peak_equity=account_equity, halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             log.info("Kalshi Weather: %d ProposedOrder(s) emitted", len(orders))
             for order in orders:
@@ -3635,7 +3635,7 @@ async def _scheduled_kalshi_crypto_arb_loop(
                 account=agent.division, equity=account_equity,
                 peak_equity=account_equity, halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             log.info("Kalshi Crypto: %d ProposedOrder(s) emitted", len(orders))
             for order in orders:
