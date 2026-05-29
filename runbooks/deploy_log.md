@@ -78,7 +78,7 @@ rm -rf <new-files-or-dirs>
 
 ## 2026-05-29 ~01:58 UTC — Telegram audit-success semantics (Phase C) + lifecycle silent-drop diagnostic (RESOLVED-UNEXPLAINED) + divergence monitor
 
-**Commits:** `<PHASEC_SHA>` (telegram audit semantics + divergence monitor + tests + this deploy_log). Memory: `telegram-audit-success-is-confirmed-delivery`.
+**Commits:** `0298575` (telegram audit semantics + divergence monitor + tests + this deploy_log). Memory: `telegram-audit-success-is-confirmed-delivery`.
 **Triggered by:** Operator task — diagnose why 5 bitunix lifecycle resolutions on 2026-05-28 landed silently (no Telegram) despite clean prod-side audits; then strengthen audit semantics + add a structural divergence monitor.
 **Backup tags:** `.bak-phasec-20260529` on `telegram_bot.py` + `bitunix_lifecycle_notifier.py`. New file `scripts/telegram_lifecycle_divergence_check.py` (first-shipment). `.bak-tgdiag-20260528` (Phase-A instrumentation backups; replay file restored from it).
 
