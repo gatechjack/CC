@@ -1018,7 +1018,8 @@ polymarket_arbitrage:
 # moving them to YAML is a future refinement (not load-bearing for Phase 3.1).
 bitunix_futures:
   enabled: true                     # Phase 3.1 paper-mode auto-execute live
-  auto_execute: true                # NO per-trade HITL — caps are the gate
+  auto_execute: true                # mtime-hot-reloaded runtime kill switch (per-order read)
+  execution_mode: paper             # "paper" | "live"  — Stage-1 N+1 commit 2; config-and-restart, no hot-reload
   division: bitunix_futures
   symbol: "BTC/USDT.P"              # canonical perp symbol; whitelist BTC-only Phase 3
   counter_tier_enabled: false       # COUNTER (fade-the-trend) defaults OFF

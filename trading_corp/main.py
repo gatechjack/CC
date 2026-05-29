@@ -322,6 +322,7 @@ async def run(argv: list[str] | None = None) -> int:
     _trade_plan_config = None       # PR 4 — adaptive trade plan
     _fee_config = None              # PR 4 — fee schedule for TP1 fee floor
     _bx_block: dict = {}            # PR 4 — surfaced outside try for from_dict downstream
+    _execution_mode = "paper"       # Stage-1 N+1 — fail-closed default if YAML load fails
     try:
         import yaml as _yaml
         from pathlib import Path as _Path
@@ -337,6 +338,10 @@ async def run(argv: list[str] | None = None) -> int:
         _htf_gate_mode = str(
             (_bx_block.get("htf_gate") or {}).get("mode", "off")
         ).lower()
+        # Stage-1 N+1 commit 2: execution_mode (paper | live). Default
+        # paper. Observer's __init__ enforces final fail-closed
+        # normalization; this is the YAML read site.
+        _execution_mode = str(_bx_block.get("execution_mode", "paper")).lower()
         # PR 4 — adaptive trade plan + fees. Activated only when
         # `bitunix_futures.trade_plan.enabled: true` in YAML. Default
         # (block missing or enabled=false) leaves the legacy geometric
@@ -364,12 +369,13 @@ async def run(argv: list[str] | None = None) -> int:
         _htf_config = HTFRegimeConfig.defaults()
     log.info(
         "BitUnix observer wiring: scoring=%s, pa_enabled=%s, htf_gate_mode=%s, "
-        "htf_regime_enabled=%s, trade_plan_active=%s",
+        "htf_regime_enabled=%s, trade_plan_active=%s, execution_mode=%s",
         bool(_scoring_config and _scoring_config.enabled),
         bool(_pa_config and _pa_config.enabled),
         _htf_gate_mode,
         bool(_htf_config and _htf_config.enabled),
         bool(_trade_plan_config and _fee_config),
+        _execution_mode,
     )
     bitunix_observer = BitunixFuturesObserver(
         db_url=secrets.db_url,
@@ -387,6 +393,9 @@ async def run(argv: list[str] | None = None) -> int:
         # PR 4 — adaptive trade plan. Both None unless YAML activates them.
         trade_plan_config=_trade_plan_config,
         fee_config=_fee_config,
+        # Stage-1 N+1 commit 2 — execution mode wiring. paper-default
+        # everywhere; live requires explicit YAML edit + restart.
+        execution_mode=_execution_mode,
         # telegram_channel attached after channel is constructed (below)
     )
 

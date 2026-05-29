@@ -443,6 +443,16 @@ class BitunixFuturesObserver:
         # pre-PR-4 behavior. Activation = YAML `trade_plan.enabled: true`.
         trade_plan_config: StrategyConfig | None = None,
         fee_config: FeeConfig | None = None,
+        # Stage-1 N+1 — execution mode. "paper" is the SAFE DEFAULT and
+        # what every test fixture and every existing prod config uses
+        # today. "live" routes the canonical placement helper to
+        # data_exec.place() (commit 3). Unknown values fall back to
+        # "paper" with a warning. Hot-reload is intentionally NOT
+        # supported on this field — a stray file write must not flip
+        # the system live; live requires explicit YAML edit + process
+        # restart. The complementary kill-switch is `auto_execute` in
+        # YAML (mtime-hot-reloaded; commit 3 reads it on each placement).
+        execution_mode: str = "paper",
     ) -> None:
         self.db_url = db_url
         self.risk_agent = risk_agent
@@ -471,6 +481,17 @@ class BitunixFuturesObserver:
                 htf_gate_mode,
             )
             self.htf_gate_mode = "off"
+        # execution_mode: fail-closed normalization. Anything other
+        # than "live" (case-insensitive) lands on "paper". Logged at
+        # WARN if the input was clearly intended as a mode but mis-spelled.
+        em = execution_mode.lower() if isinstance(execution_mode, str) else "paper"
+        if em not in ("paper", "live"):
+            log.warning(
+                "bitunix_observer: unknown execution_mode %r — defaulting to 'paper'",
+                execution_mode,
+            )
+            em = "paper"
+        self.execution_mode = em
         # Cache the longest TTL across factors so the ledger read window
         # doesn't drag in stale rows. Falls back to 24h if config absent.
         # PR 3c: also factor in `factor_ttl_per_tf` overrides — the
