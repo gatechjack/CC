@@ -78,7 +78,7 @@ rm -rf <new-files-or-dirs>
 
 ## 2026-05-29 ~03:12 UTC — audit_reality_reconciler: replay at live-path 1m granularity (kill false mismatches) + window-inclusivity + missed_legs rename
 
-**Commit:** `<RECON_SHA>` (reconciler 1m fetch + test refactor + this deploy_log).
+**Commit:** `06b5a9e` (reconciler 1m fetch + test refactor + this deploy_log).
 **Triggered by:** Dashboard `RECONCILER MISMATCH 12/17` (5/28 evening) — 5 flagged trades all confirmed real (3-source ground truth, `reports/2026-05-28_reconciler_mismatch_investigation.md`, Case 2). The reconciler read **3m** bars while the live path resolves at **1m** → fast partial-wins mis-resolved as `expired`/`still_open`; tight `[entry,result_ts]` DB windows → `no_bars`. Tool wrong, trades right. Scripted job (`tc-audit-reality.timer/.service`, daily) → **no trading-corp restart needed**.
 **Backup:** `scripts/audit_reality_reconciler.py.bak-recon1m-20260529` (prod md5 was the old 3m-DB version → now `f0a1338d…`).
 
