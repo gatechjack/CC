@@ -148,9 +148,22 @@ class RiskAgent:
             and account.equity > 0
             and abs(strategy_state.realized_pnl) / account.equity >= daily_cap
         ):
+            halt_reason = (
+                f"daily loss cap reached for {order.strategy}: "
+                f"{strategy_state.realized_pnl:.2f} ≥ {daily_cap*100:.1f}% of equity"
+            )
+            # Stage-1 N+1 commit 5: persist the halt so it survives
+            # process / observer re-instantiation. Pre-N+1 the verdict
+            # bit was in-process only; the 17 StrategyState construction
+            # sites that consult `from_persistence` (commit 6) pick up
+            # this row at their next eval. Best-effort: if db_url is
+            # None (legacy tests), the in-process verdict still rejects
+            # this order — only cross-process persistence is lost.
+            if db_url is not None:
+                StrategyState.persist_halt(order.strategy, halt_reason, db_url=db_url)
             return RiskVerdict(
                 verdict="reject",
-                reason=f"daily loss cap reached for {order.strategy}: {strategy_state.realized_pnl:.2f} ≥ {daily_cap*100:.1f}% of equity",
+                reason=halt_reason,
                 halt_strategy=True,
             )
 
