@@ -2286,7 +2286,34 @@ class BitunixFuturesObserver:
         except Exception as e:
             log.warning("bitunix_observer: trade_plan_decision audit failed: %s", e)
 
-    # ── canonical placement-outcome writer (paper today; live in N+1 commit 3) ─
+    # ── canonical placement-outcome writer (paper + live; live in N+1 commit 3) ─
+
+    def _yaml_auto_execute_for_bitunix(self) -> bool:
+        """Fresh-read YAML `bitunix_futures.auto_execute` on every call.
+
+        This is the runtime kill switch: setting `auto_execute: false` in
+        strategies.yaml disables live placement WITHOUT a process restart
+        (the file read is cheap, ~µs, and bitunix placements occur at
+        most every few minutes). Fails CLOSED — any error returns False,
+        which routes the placement to paper-mode write-only behavior.
+
+        Note: this does NOT cache. The CLAUDE.md sharp-edge entry on
+        `_check_auto_execute` (graph/ceo_graph.py) follows the same
+        pattern. Caching here would defeat the kill-switch property.
+        """
+        try:
+            import yaml as _yaml
+            from pathlib import Path as _Path
+            strat_path = (
+                _Path(__file__).resolve().parent.parent.parent.parent
+                / "config" / "strategies.yaml"
+            )
+            with strat_path.open(encoding="utf-8") as f:
+                raw = _yaml.safe_load(f) or {}
+            return bool((raw.get("bitunix_futures") or {}).get("auto_execute", False))
+        except Exception as e:
+            log.warning("bitunix_observer: YAML auto_execute read failed: %s", e)
+            return False
 
     async def _record_placement_outcome(
         self,
@@ -2297,24 +2324,42 @@ class BitunixFuturesObserver:
         daily_risk_pct: float,
         carry_order_extra_to_record: bool = False,
     ) -> None:
-        """Single canonical writer for post-risk-approve placement outcomes.
+        """Canonical writer for post-risk-approve placement outcomes.
 
-        Paper mode (today, all call sites): mark `would_have_placed`, log
-        proposal + audit event, insert paper_trade_record, accumulate
-        daily-risk. Two callers — trigger-path (`_maybe_propose`) and
-        score-path (`_score_and_maybe_propose_locked`) — route through
-        here so the live-mode branch only needs to land in ONE place
-        (commit 3 of Stage-1 Session N+1).
+        Two execution modes:
+          * paper (default) — mark `would_have_placed`, log proposal +
+            audit event, insert paper_trade_record, accumulate
+            daily-risk. Byte-identical with the pre-Stage-1 inline
+            blocks (preserved via carry_order_extra_to_record).
+          * live — only when `self.execution_mode == "live"` AND a
+            fresh YAML read returns `auto_execute: true`. Routes the
+            order through `data_exec.place()`; writes
+            `live_order_placed` (intent, re-read confirmed) and
+            `live_order_rejected` (on failure, re-read confirmed);
+            emits telegram with `(live)` suffix (push-bool checked,
+            failure → `telegram_notification_failed` audit). No
+            paper_trade_record on the live path — fill tracking
+            happens in `proposed_order` (set by data_exec) and the
+            `filled` audit event.
 
-        `carry_order_extra_to_record` preserves the pre-extraction
-        asymmetry: score-path carries `order.extra` → `record.extra` so
-        the paper_trade_record's `extra_json` column ships
-        score_path/net_score/redeemed/bars_waited/funding_rate_at_decision
-        downstream to backtests; trigger-path does not. A future commit
-        may unify (no good reason for the asymmetry beyond historical
-        accident), but that's a separate change — this helper is the
-        byte-identical refactor.
+        Encapsulation: the paper path NEVER calls `data_exec.place()`
+        — that's the structural safety claim. `auto_execute=false`
+        + `execution_mode=live` falls back to paper-write behavior
+        (operator soft-disabled live without changing execution_mode).
         """
+        # Decision-time fresh read of auto_execute — the kill switch.
+        is_live = (self.execution_mode == "live") and self._yaml_auto_execute_for_bitunix()
+
+        if is_live:
+            await self._place_live(
+                order=order,
+                audit_payload=audit_payload,
+                utc_date=utc_date,
+                daily_risk_pct=daily_risk_pct,
+            )
+            return
+
+        # Paper path (unchanged from commit 1)
         order.status = "would_have_placed"
         self.logger_agent.log_proposed_order(order)
         self.logger_agent.log_event(
@@ -2336,6 +2381,177 @@ class BitunixFuturesObserver:
             log.warning("bitunix_observer: paper_trade_record write failed: %s", e)
 
         self._record_daily_risk(utc_date, daily_risk_pct)
+
+    async def _place_live(
+        self,
+        *,
+        order: ProposedOrder,
+        audit_payload: dict[str, Any],
+        utc_date: str,
+        daily_risk_pct: float,
+    ) -> None:
+        """Live-mode placement: route order through data_exec.place().
+
+        Confirmed-delivery discipline per
+        [[telegram-audit-success-is-confirmed-delivery]]:
+        * audit row write → re-read by id to confirm presence
+        * telegram push → push-bool checked → failure-audit on False
+        * exception path also writes + re-reads its own audit
+
+        Failures are SWALLOWED (not re-raised) so the observer's
+        alert-processing loop survives a one-off broker hiccup. The
+        operator-facing trail is the audit + telegram; reconciliation
+        downstream (N+2) is the source of truth for "did the trade
+        actually happen at the broker."
+
+        Important: this is an ENTRY (not an exit). `reduce_only` is
+        explicitly stamped False so the broker constructs an OPEN
+        body (tradeSide=OPEN), not a reduce-only close.
+        """
+        # Stamp the entry-vs-exit discriminator BEFORE any audit so
+        # downstream readers (broker, audit, paper_trade_record) all see
+        # the same value. Entries from this observer are always
+        # reduce_only=False; exits flow through bitunix_live_executor (N+2).
+        order.extra["reduce_only"] = False
+        order.status = "placing"
+
+        # Intent audit FIRST (write-ahead-of-side-effect). If the broker
+        # call hangs or raises before completing, we still have a record.
+        intent_payload = dict(audit_payload)
+        intent_payload["execution_mode"] = "live"
+        intent_payload["auto_execute_at_decision"] = True  # we read True; record it
+        intent_payload["reduce_only"] = False
+        intent_row_id = self.logger_agent.log_event(
+            actor="bitunix_futures",
+            kind="live_order_placed",
+            payload=intent_payload,
+        )
+        # Confirmed-delivery: re-read the audit row to verify it landed.
+        if intent_row_id is not None:
+            try:
+                with db.connect(self.db_url) as conn:
+                    row = conn.execute(
+                        "SELECT kind FROM audit_event WHERE id = ?",
+                        (intent_row_id,),
+                    ).fetchone()
+                if row is None or row["kind"] != "live_order_placed":
+                    log.warning(
+                        "bitunix_observer: live_order_placed audit "
+                        "row_id=%s re-read failed", intent_row_id,
+                    )
+            except Exception as e:
+                log.warning(
+                    "bitunix_observer: live audit re-read failed: %s", e,
+                )
+
+        # Log proposed_order with status='placing' so the dashboard
+        # reflects the intent state.
+        self.logger_agent.log_proposed_order(order)
+
+        # Daily-risk accrues on ATTEMPT (matches paper-path semantics:
+        # the budget was committed the moment we decided to place).
+        self._record_daily_risk(utc_date, daily_risk_pct)
+
+        # ── Place ───────────────────────────────────────────────────
+        try:
+            fill = await self.data_exec.place(order, division="bitunix_futures")
+        except Exception as e:
+            order.status = "live_order_rejected"
+            reject_payload = dict(intent_payload)
+            reject_payload["error"] = str(e)
+            reject_payload["error_type"] = type(e).__name__
+            reject_row_id = self.logger_agent.log_event(
+                actor="bitunix_futures",
+                kind="live_order_rejected",
+                payload=reject_payload,
+            )
+            if reject_row_id is not None:
+                try:
+                    with db.connect(self.db_url) as conn:
+                        row = conn.execute(
+                            "SELECT kind FROM audit_event WHERE id = ?",
+                            (reject_row_id,),
+                        ).fetchone()
+                    if row is None or row["kind"] != "live_order_rejected":
+                        log.warning(
+                            "bitunix_observer: live_order_rejected audit "
+                            "row_id=%s re-read failed", reject_row_id,
+                        )
+                except Exception as re:
+                    log.warning(
+                        "bitunix_observer: reject audit re-read failed: %s", re,
+                    )
+            # Operator alert on rejection; push-bool checked but
+            # rejection isn't blocked on telegram success (operator
+            # also sees the dashboard).
+            await self._push_with_confirmed_delivery(
+                order_id=order.id,
+                message=(
+                    f"BTC-PERP REJECTED (live)\n"
+                    f"side: {order.side.upper()}  qty: {order.qty}\n"
+                    f"error: {type(e).__name__}: {e}\n"
+                    f"order_id={order.id}"
+                ),
+                failure_channel="live_rejection_alert",
+            )
+            return
+
+        # data_exec.place wrote its own `filled` audit row + set
+        # order.status='filled' + order.fill_price/fill_ts. Just emit
+        # the operator-facing telegram here.
+        await self._push_with_confirmed_delivery(
+            order_id=order.id,
+            message=(
+                f"BTC-PERP {audit_payload.get('tier', '?')} "
+                f"{'LONG' if order.side == 'buy' else 'SHORT'} (live)\n"
+                f"qty: {order.qty}  fill: ${fill.price}\n"
+                f"order_id={order.id}"
+            ),
+            failure_channel="live_placement_alert",
+        )
+
+    async def _push_with_confirmed_delivery(
+        self,
+        *,
+        order_id: str,
+        message: str,
+        failure_channel: str,
+    ) -> None:
+        """Telegram push with confirmed-delivery semantics.
+
+        `push()` returns bool per `comms/telegram_bot.py:_send_message`.
+        False or exception → write `telegram_notification_failed` audit
+        tagged with `failure_channel` so the operator can grep for which
+        live-path message dropped. NEVER raises — comms is best-effort
+        beyond the primary audit row.
+        """
+        if self.telegram_channel is None:
+            return
+        try:
+            sent = await self.telegram_channel.push(message)
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: telegram push raised for %s: %s",
+                failure_channel, e,
+            )
+            sent = False
+        if not sent:
+            try:
+                self.logger_agent.log_event(
+                    actor="bitunix_futures",
+                    kind="telegram_notification_failed",
+                    payload={
+                        "order_id": order_id,
+                        "channel": failure_channel,
+                        "strategy": "bitunix_futures",
+                        "division": "bitunix_futures",
+                    },
+                )
+            except Exception as ae:
+                log.warning(
+                    "bitunix_observer: telegram_notification_failed audit "
+                    "write failed: %s", ae,
+                )
 
     # ── async order flow: classify → propose → risk → place → notify ─
 
