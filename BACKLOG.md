@@ -8,6 +8,40 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P1 — Stage-1 prod-deploy BLOCKED: main.py:1087 / secrets.odds_api_key inconsistency + uncommitted-prod-surgical-edits audit (filed 2026-05-30 17:40 UTC)
+
+Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `runbooks/deploy_log.md` entry on branch `stage1-deploy-2026-05-30`; memory `[[stage1-deploy-rolled-back-2026-05-30]]`). The Stage 1 + gate (a) + tasty_options prod deploy is BLOCKED until two distinct items resolve:
+
+### Item 1 (REQUIRED): Resolve `main.py:1087` / `secrets.odds_api_key` inconsistency
+
+**Symptom:** clean redeploy of `main.py` + `secrets.py` from `origin/main` crashes at startup with `AttributeError: 'Secrets' object has no attribute 'odds_api_key'`. `main.py:1087` + `:1106` reference `secrets.odds_api_key` unconditionally inside `KalshiSportsScoutAgent` / `KalshiSportsArbObserverAgent` construction; `Secrets` dataclass on `origin/main` has NO `odds_api_key` field; `git log --all -S "odds_api_key" -- trading_corp/utils/secrets.py` returns EMPTY (the field has never been on git in any branch).
+
+**Root cause:** uncommitted surgical edit at unknown past point added `odds_api_key: str | None` to prod's `secrets.py` (lines 144 + 320) without round-tripping to git. Old prod main.py + old prod secrets.py were stale-together; new prod main.py + new prod secrets.py exposed the latent inconsistency on first import.
+
+**RECOMMENDED FIX (option 1):** add `odds_api_key: str | None` field back to `Secrets` dataclass on `origin/main`, plus `odds_api_key=_env("ODDS_API_KEY")` in `load_secrets()` populator. Single-PR fix; cover with a unit test that asserts `Secrets()` has every attribute `main.py` reads (covers this class of bug going forward). Round-trips the uncommitted prod-only addition to git.
+
+**NOT recommended (option 2):** `getattr(secrets, "odds_api_key", None)` at `main.py:1087` + `:1106`. Defensive but masks the missing-field issue (`[[no-documented-leaky-escape-hatch]]` discipline).
+
+### Item 2 (REQUIRED before next deploy attempt): Audit ALL uncommitted prod surgical-edit additions
+
+**Symptom:** `odds_api_key` may not be the only uncommitted prod-only addition. If others exist, the next clean redeploy will crash on a NEW latent bug after this one is fixed.
+
+**Method (per `[[verify-premises-against-ground-truth]]`):** for each of the 13 files restored from `pre-stage1-20260530-1230` backup on prod, diff the backup against `origin/main`'s version (LF-normalized, since prod is CRLF). For any added/removed symbol that lacks a matching commit on `git log --all -S "<symbol>"`, flag as a candidate uncommitted surgical edit. Round-trip each finding to git via a single PR before the next deploy attempt.
+
+**Files to audit (the 13 backups):** `data_exec.py`, `bitunix_futures_observer.py`, `risk.py`, `bitunix.py`, `telegram_commands.py`, `ceo_graph.py`, `main.py`, `models.py`, `secrets.py`, `routes.py`, `webhooks.py`, `config/strategies.yaml`, `config/divisions.yaml`. Forensics preserved on prod as `*.pre-stage1-20260530-1230` (do-not-delete).
+
+### Test-gate coverage hardening (RECOMMENDED, not blocker)
+
+The import-sanity check (`python3 -c "from trading_corp.main import run"`) catches module-import errors but does NOT execute `run()` → misses runtime `AttributeError` on dataclass field access in startup-construction sites. Add a test that exercises the startup-equivalent dry-run against the real `Secrets` dataclass — strengthens `[[mocks-dont-catch-sdk-shape]]` discipline.
+
+### Deploy unblock criteria
+
+- Item 1 landed on `origin/main` with passing test gate (must include new "secrets fields cover main.py reads" assertion test).
+- Item 2 audit complete; all findings round-tripped to git OR explicitly accepted as known divergence.
+- New deploy session per the same Plan A pattern: 18-file whole-file transfer + pre-flight gates + RH-pickle-coordinated restart.
+
+---
+
 ## P1 — Stage-1 BitUnix prod-deploy gates from 2026-05-30 architectural review Finding #2 (3 untracked gaps) (filed 2026-05-30)
 
 Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` Finding #2 + Finding #7 §6: three readiness-audit must-haves are pre-deploy gates for the first prod-deploy of Stage 1 but were NOT in any active BACKLOG item before this entry. Review explicitly recommends P1 with "explicit pre-deploy gate dependency" framing (Finding #7 §6). Not in scope (B) of N+2 Phase 3 — separate work tracks.
@@ -32,6 +66,8 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 **Fix-forward triggered (per `[[branch-tests-must-cover-existing-fixtures-not-only-new-tests]]`):** 3 pre-existing test files received small edits: `test_bitunix_observer_live_branch.py` + `test_bitunix_observer_hitl_gate.py` (add `broker._assert_snapshot_fresh = AsyncMock()` to MagicMock broker fixtures); `test_bitunix_broker_write.py::test_partial_fill_status_and_qty` (queue a cancel-success response to match the new PART_FILLED-at-exhaustion contract).
 
 **Next prod-deploy:** all 3 P1 gates now closed; the main-to-prod deploy is unblocked subject to the import-graph audit + RH-pickle-aware coordination + operator sign-off. Deploy session itself is separate work (not part of gate (a)).
+
+**UPDATE 2026-05-30 17:22–17:34 UTC — DEPLOY ATTEMPTED + ROLLED BACK:** Plan A whole-file deploy (18 files via scp+ssh) executed cleanly through file transfer + md5-verify, but crashed at first restart with `AttributeError: 'Secrets' object has no attribute 'odds_api_key'` at `trading_corp/main.py:1087` (latent main bug — `secrets.py` on origin/main has no `odds_api_key` field but `main.py` references it). Systemd auto-restarted 10× over 11 minutes; operator-approved rollback restored prod byte-identically to pre-deploy state (`pre-stage1-20260530-1230` backup tag). Healthz HTTP 200 confirmed at 17:39:59. **Net code change on prod: zero.** Full forensics in `runbooks/deploy_log.md` "## 2026-05-30 17:22–17:34 UTC" entry on branch `stage1-deploy-2026-05-30`. Memory: `[[stage1-deploy-rolled-back-2026-05-30]]`. Next prod-deploy now blocked on the new P1 below.
 
 ### Gate (b) — Readiness item #11: Panic-halt + credential-compromise runbooks — **LANDED 2026-05-30 on branch `bitunix-runbooks-gate-b-2026-05-30` (commits `921e470` + `39ee8cd`, NOT merged)**
 
