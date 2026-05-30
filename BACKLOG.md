@@ -312,6 +312,82 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 
 ---
 
+## EOS snapshot — 2026-05-30 ~07:30 UTC (architectural-review second-batch remediation: P1 gate (c) md5-diff LANDED + merged to main; worktree-fixture-gap anomaly surfaced)
+
+**Type:** operator-supervised build + tests + merge. **No prod deploys.** Two scoped commits on branch + one merge commit on `origin/main`. Board-authorized push.
+
+**origin/main:** `96871ad` → `b131d02` (3 commits ahead — 2 branch + 1 merge).
+
+**Commits added (in branch order, then merge):**
+1. `59c4b06` feat(stage-1) — `scripts/bitunix_prod_surface_md5diff.py` (205 lines) + `tests/test_bitunix_prod_surface_md5diff.py` (207 lines, 15 tests).
+2. `cc8613c` backlog — gate (c) entry marked LANDED + new anomaly note "worktree fixture gap on data/trading_corp.db".
+3. `b131d02` Merge `bitunix-prod-surface-md5diff-2026-05-30` into main (`--no-ff`). Diff: 3 files, 439 insertions, 1 deletion.
+
+**Branch state:** `bitunix-prod-surface-md5diff-2026-05-30` pushed to `origin/` at tip `cc8613c`; merged via `b131d02`. Worktree `.claude/worktrees/bitunix-md5diff` not auto-cleaned.
+
+**Test gate:**
+- Worktree run (branch state, gate-(c) command): **2002 passed / 28 failed**. Math: (1987 worktree-pre-existing pass + 15 mine) / (26 main-baseline fail + 2 worktree-env fail). Net code regression: 0.
+- Main baseline (pre + post merge): **1989 passed / 26 failed** unchanged (regression threshold held).
+- Post-merge sanity on main (15 new + 2 readiness): **17/17 pass** — proves the worktree fails were purely environmental.
+
+**Anomaly surfaced (filed adjacent to Finding #1d as worktree-fixture-gap note):** every fresh git worktree gets a 4KB empty `data/trading_corp.db` instead of main's 652MB populated DB. Two tests in `test_paper_run_tooling.py` fail with `no such table: agent_state/audit_event/position`. Worktree-baseline is **1987/28**, not main-baseline **1989/26**. Three mitigation options filed (operator decision):
+- (a) autouse fixture that seeds the populated DB into worktrees pre-test
+- (b) widen `run_readiness_checks` to schema-on-demand for the production-config path
+- (c) document only — manual discipline
+
+**P1 pre-deploy gate progress (3 from Finding #2):**
+- (a) REST resilience (readiness #6, MEDIUM build) — NOT STARTED
+- (b) Panic-halt + cred-compromise runbooks (readiness #11, SMALL-MEDIUM writing) — NOT STARTED
+- (c) Pre-flip md5-diff prod surface (readiness #12, SMALL) — **LANDED b131d02**
+
+**Prod state:** unchanged. Still `4985bbe + 03:57 sed-overlay`. Next main-to-prod deploy still gated on gates (a) + (b).
+
+**Memory updates filed:**
+- New: `[[gate-c-md5diff-landed-2026-05-30]]` (session memo).
+- Updated: MEMORY.md index (one new top line).
+
+**Next-session pointer:** see "Next session — 2026-05-30 third-batch remediation prompt" section below.
+
+---
+
+## Next session — 2026-05-30 third-batch remediation prompt
+
+Read first:
+1. `[[gate-c-md5diff-landed-2026-05-30]]` — this session's deliverable + worktree-fixture-gap anomaly + remaining 2 P1 gates.
+2. `[[2026-05-30-architectural-review-first-batch-remediation]]` — full Finding #10 decision queue + state snapshot from prior session.
+3. `BACKLOG.md` § "P1 — Stage-1 BitUnix prod-deploy gates" — gates (a) and (b) entries (lines ~17-35).
+
+State verification before doing anything:
+- `git rev-parse origin/main` should equal `b131d02` (this session's merge).
+- `git worktree list` — confirm `.claude/worktrees/bitunix-md5diff` is present (operator may remove); ensure new session uses its own worktree.
+
+Goal — operator picks ONE of:
+
+**A. Land gate (b) panic-halt + cred-compromise runbooks (~SMALL-MEDIUM writing).** 4 short runbooks: (a) panic halt + manual flatten on BitUnix UI, (b) buggy-deploy rollback + reconciliation, (c) broker-side discrepancy dispute, (d) credential compromise mid-trade. Template: `[[reference-tastytrade-rotation-runbook]]` for runbook (d). Likely 1-1.5 sessions.
+
+**B. Land gate (a) REST resilience (~MEDIUM build).** Wrap `httpx` calls in `BitunixBroker` with retry/backoff; add `stale_snapshot_detected` health signal; add `stuck_order_timeout_cancel` policy. Per readiness audit § 5. Likely 1-2 sessions.
+
+**C. Address worktree-fixture-gap anomaly.** Pick (a)/(b)/(c) from the BACKLOG anomaly note. Removes the 2-fail noise in every future worktree session. ~SMALL build for (b), TRIVIAL for (c).
+
+**D. Triage 8+ Finding #10 operator decisions still queued.** Same queue as prior EOS, unchanged.
+
+**E. Tastytrade refresh-token rotation (P1 ceiling 2026-06-12 — 13 days).** Parallel critical path; can run alongside A/B.
+
+Recommend: **A** next — runbooks are pure writing (no code-test cycle), unblock the prod-deploy alongside (a), and dovetail with the tastytrade runbook template work. Gate (a) (B) is the long-pole; deferring it doesn't change the deploy timeline if A lands first.
+
+Constraints (same as prior sessions):
+- Operator-supervised. STOP-and-report at forks.
+- No prod deploys without explicit sign-off + import-graph audit `[[feedback-deploy-import-graph-audit]]`.
+- Each new branch in its own worktree; verify `git branch --show-current` + `git rev-parse HEAD` before every commit.
+- Test gate: `.\scripts\run_capped.ps1 python -m pytest tests/ --tb=no -p no:cacheprovider --ignore=tests/test_backtest_bitunix_confluence_five_factor.py --ignore=tests/test_bitunix_confluence_gate.py --ignore=tests/test_bitunix_gate_inputs.py`. **Main baseline 1989/26; worktree baseline 1987/28** (2-test fixture gap on `data/trading_corp.db` per anomaly note above).
+
+Out of scope unless re-prompted:
+- Prod deploy (still gated on remaining P1 gates).
+- Merging `stage1-architectural-review-2026-05-30` doc branch to main (operator's call).
+- Anything in kalshi / polymarket / pmcc tracks.
+
+---
+
 ## EOS snapshot — 2026-05-30 ~06:30 UTC (architectural-review first-batch remediation: Finding #1c risk-tier MERGED to main + 5 untracked Stage-1 gaps FILED + review branch PUSHED; concurrent-session anomaly observed and isolated)
 
 **Type:** operator-supervised git + docs session. **No prod deploys.** Three scoped commits + one push of an existing branch landed on `origin/main` / `origin/`.
