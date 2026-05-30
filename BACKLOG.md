@@ -195,6 +195,43 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 
 ---
 
+## EOS snapshot — 2026-05-30 ~06:30 UTC (paper-trade visualizer for TradingView SHIPPED on branch — display-only review tool, UNMERGED, prod untouched)
+
+**Theme:** built a Pine v6 paper-trade visualizer + Python exporter so the operator can scan TradingView charts for patterns where the bitunix model wins vs loses. Display-only review tooling; touches nothing in the live engine, nothing on prod.
+
+**Branch:** `paper-trade-visualizer-2026-05-30` @ `6b1ca81` (pushed to `origin/paper-trade-visualizer-2026-05-30`; **UNMERGED**, intentionally). Worktree at `.claude\worktrees\TradeViewPS` kept (not removed) so the next session can iterate on the .pine file in place.
+
+**Commits (6):** `0d028c9` Phase 1 diagnostic · `864c909` Phase 2 exporter + tests · `15a9b8f` SQL ISO-T fix · `b822bed` Phase 3 Pine + sample paste block · `7e843d2` Phase 4 README · `6b1ca81` visibility + SL→TP3 RR box.
+
+**Files added:**
+- `scripts/export_paper_trades_to_pinescript.py` — read-only SQLite exporter (configurable window, default 30d; joins `audit_event.pa_validation_decision` for validator-pair tag via the 600s-pre-entry recipe).
+- `tests/test_export_paper_trades_to_pinescript.py` — 19/19 hermetic in-memory SQLite tests (multi-leg v2, pre-v2 single-leg, open trades, validator-pair edge cases, Pine paste-block format).
+- `scripts/pinescript/paper_trade_visualizer.pine` — Pine v6 indicator (entry/SL/TP lines, outcome box, SL→TP3 RR box, entry+exit labels; paginated `Show last N` capped at 100).
+- `scripts/pinescript/paper_trades_pine.txt` — sample paste block, 14 prod trades 2026-05-23→2026-05-30 (11W/3L).
+- `scripts/pinescript/README.md` — operator notes.
+- `reports/2026-05-30_paper_trade_visualizer_phase1_diagnostic.md` — Phase 1 schema audit + validator-join recipe correction.
+- `reports/2026-05-30_paper_trade_visualizer_session_eos.md` — this session's EOS detail.
+
+**Anomalies surfaced + resolved in-session:**
+1. **Validator-pair join in the spec was wrong.** `pa_validation_decision` payload has NO `order_id`. Working recipe (10/10 in probe): match `trigger_signal` + `decision.ts` within 600s before `pt.ts`. Fallback when no match: raw `trigger_signal` as cluster tag.
+2. **SQL ISO-T vs `datetime()` space-format string compare.** Initial fetch_validator_pair used `datetime(?, '-N seconds')` for the lower bound; ISO-T `ts` >= space-format string lex-matched falsely (memory `feedback_sqlite_iso_datetime_comparison`). Fix: compute lower bound in Python.
+3. **Pine `CE10156` on first chart load.** Multi-line ternary in `f_result_color` at 4-space indent (function-body indent) → Pine parsed as separate statements, not continuations. Fix: collapse to single line.
+4. **Branch-pointer slip during Phase 1.** Commit landed on main mid-session; recovered cleanly via `git branch -f` + `git reset --hard 9fd9022`. No work lost.
+
+**PROD STATE:** UNCHANGED. No deploy. No code path touched in `trading_corp/`. The exporter runs locally against `data/trading_corp.db`; the Pine script lives in TradingView's sandbox.
+
+**Verified on TradingView:** operator confirmed visualizer renders on BTCUSDT.P 3m after `CE10156` fix + visibility tweaks (screenshot showed entry/SL/TP lines + outcome box + labels). Validator-pair clustering visible in the 7-day sample: `V+VOL+S` (all-pass) = 5/5 win; `VOL+S/-V` = mixed. The exact pattern the tool was built to surface.
+
+**CARRY-FORWARD (next session):**
+1. **Merge or leave parked.** Branch is unmerged off `9fd9022`; current `main` is at `96871ad` (moved in a parallel session). Rebase before merging if/when the operator wants this to land on main.
+2. **Re-run exporter against fresh prod data.** The paste block in the .pine file is from 2026-05-23 → 2026-05-30. To refresh, pull a prod-DB snapshot OR re-use the `_tmp_inline_exporter.py` recipe (deleted at EOS; recreate from `scripts/export_paper_trades_to_pinescript.py` if needed).
+3. **(Optional) Validator-pair WR/$PnL aggregate report.** If the visual clustering pans out, a Python helper that emits per-cluster aggregates from `paper_trade_record` would short-circuit the visual scan.
+4. **(Optional) Multi-symbol support.** The script is hardcoded to BTCUSDT.P expectations (label position, price magnitude); other divisions would work as-is but cosmetics may need tuning.
+
+**What this session did NOT touch:** any path in `trading_corp/`, any prod state, any deploy_log entry, any other branch, any open BACKLOG item.
+
+---
+
 ## EOS snapshot — 2026-05-30 ~01:08 UTC (bitunix read-only diagnostics + kalshi scanner-disable DEPLOYED; session straddled UTC midnight)
 
 **Theme:** four read-only diagnostics ran in a parallel session while another Claude built Stage-1 N+1 (HITL entry-path) + began N+2 (exit-path). Diagnostics produced two committed reports + one operator-actioned config change deployed end-to-end.
