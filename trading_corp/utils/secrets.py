@@ -46,6 +46,10 @@ _SECRET_KEY_NAMES = (
     # private key PEM is the load-bearing secret — signs every Kalshi
     # request.
     "KALSHI_API_KEY_ID",
+    # the-odds-api.com token (used by kalshi_sports_scout +
+    # kalshi_sports_arb_observer). Defense-in-depth redaction of
+    # `ODDS_API_KEY=<value>` env-style log lines.
+    "ODDS_API_KEY",
     "KALSHI_PRIVATE_KEY_PEM",
     # Apify (Phase K3 — Kalshi Copy Trading). Token authenticates calls to
     # the saswave Kalshi leaderboard + profile actors used for whale
@@ -268,6 +272,7 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "POLYGON_RPC_URL",
         "KALSHI_API_KEY_ID",
         "KALSHI_PRIVATE_KEY_PEM",
+        "ODDS_API_KEY",
         "APIFY_API_TOKEN",
         "TASTYTRADE_PROVIDER_SECRET",
         "TASTYTRADE_REFRESH_TOKEN",
