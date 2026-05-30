@@ -53,8 +53,12 @@ _SECRET_KEY_NAMES = (
     "APIFY_API_TOKEN",
     # Tastytrade (data provider live since 2026-05-22; Tasty Options
     # division adds order placement on top). OAuth-refresh-token model:
-    # provider_secret is the long-lived OAuth client secret, refresh_token
-    # is rotated by the SDK on each session. Both are sensitive.
+    # provider_secret is the long-lived OAuth client secret. refresh_token
+    # is ALSO long-lived — the SDK's `Session.refresh()` exchanges it for
+    # a short-lived access (session) token but does NOT self-rotate the
+    # refresh_token itself (verified 2026-05-29 against tastytrade SDK
+    # source; see `[[tastytrade-refresh-token-no-self-rotation]]`).
+    # Both rotate manually per `runbooks/tastytrade_oauth_rotation.md`.
     "TASTYTRADE_PROVIDER_SECRET",
     "TASTYTRADE_REFRESH_TOKEN",
 )
@@ -154,9 +158,18 @@ class Secrets:
     apify_api_token: str | None
     # Tastytrade (Phase: data provider live since 2026-05-22; Tasty Options
     # division shipping order placement on top). provider_secret is the OAuth
-    # client secret; refresh_token rotates per session. Both required for
-    # both data (read) and orders (write); if unset, TastytradeDataProvider
-    # and TastytradeBroker initialize as stubs.
+    # client secret; refresh_token is the long-lived grant — the SDK does NOT
+    # self-rotate it (verified 2026-05-29 against the SDK source; only the
+    # short-lived session/access token rotates). Both rotate manually per
+    # `runbooks/tastytrade_oauth_rotation.md`. Both required for data (read)
+    # and orders (write); if unset, TastytradeDataProvider and
+    # TastytradeBroker initialize as stubs.
+    #
+    # PROD LOAD PATH: tastytrade creds load from
+    # `/etc/trading-corp/tastytrade.env` (systemd EnvironmentFile drop-in),
+    # NOT KV — there are NO `TASTYTRADE-*` secrets in KV today (verified
+    # 2026-05-29). The runbook's Pre-flight 1 lists three possible load
+    # paths; on this prod the EnvironmentFile is the ONLY live one.
     tastytrade_provider_secret: str | None
     tastytrade_refresh_token: str | None
     fidelity_username: str | None
@@ -359,8 +372,10 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     register_redact_literal(secrets.kalshi_private_key_pem)
     # Apify token — auth bearer for all saswave Kalshi actor calls. K3.
     register_redact_literal(secrets.apify_api_token)
-    # Tastytrade OAuth secrets — both sensitive (provider_secret is long-lived
-    # client secret; refresh_token rotates per session).
+    # Tastytrade OAuth secrets — both sensitive and BOTH long-lived (the SDK
+    # does not self-rotate the refresh token; only the short-lived session
+    # token rotates). Manual rotation only — see
+    # `runbooks/tastytrade_oauth_rotation.md`.
     register_redact_literal(secrets.tastytrade_provider_secret)
     register_redact_literal(secrets.tastytrade_refresh_token)
     # BitUnix Futures live-trading creds (C-1 rotation 2026-05-29). The

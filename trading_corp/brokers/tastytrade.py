@@ -1,8 +1,15 @@
 """Tastytrade broker — order placement on top of the existing data provider.
 
 Auth: env vars TASTYTRADE_PROVIDER_SECRET and TASTYTRADE_REFRESH_TOKEN
-(same as TastytradeDataProvider). OAuth-refresh-token model; the SDK
-rotates the refresh token per session.
+(same as TastytradeDataProvider). OAuth-refresh-token model: the SDK's
+`Session.refresh()` exchanges the long-lived refresh_token for a
+short-lived access (session) token but **does NOT self-rotate the
+refresh_token itself** (verified 2026-05-29 against tastytrade SDK
+source — `Session.refresh()` only updates `self.session_token` +
+`self.session_expiration`; `self.refresh_token` is never written).
+Refresh token rotation is manual per
+`runbooks/tastytrade_oauth_rotation.md`. See also
+`[[tastytrade-refresh-token-no-self-rotation]]`.
 
 Mode flag: `is_test=True` routes Session to Tastytrade's cert/sandbox
 environment (CERT_URL). Live trading uses `is_test=False` (default).
