@@ -62,6 +62,8 @@ def _make_observer_paper(tmp_path: Path):
     snap.positions = []
     broker = MagicMock()
     broker.snapshot = AsyncMock(return_value=snap)
+    # gate (a) sub-item 2: observer's pre-trade gate awaits this. Healthy no-op.
+    broker._assert_snapshot_fresh = AsyncMock()
 
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
@@ -105,6 +107,8 @@ def _make_observer_live(tmp_path: Path, monkeypatch, *, place_raises=None,
     snap.positions = []
     broker = MagicMock()
     broker.snapshot = AsyncMock(return_value=snap)
+    # gate (a) sub-item 2: observer's pre-trade gate awaits this. Healthy no-op.
+    broker._assert_snapshot_fresh = AsyncMock()
 
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}

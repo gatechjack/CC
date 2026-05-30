@@ -37,3 +37,39 @@ class BitunixPositionModeMismatch(RuntimeError):
             f"BitUnix position mode mismatch: account is {current!r}, "
             f"expected {expected!r} — refusing to place order"
         )
+
+
+class BitunixStaleSnapshot(RuntimeError):
+    """The BitUnix broker's last successful `snapshot()` is older than the
+    configured staleness threshold (`snapshot_staleness_threshold_seconds`
+    in `config/strategies.yaml`).
+
+    Raised by `BitunixBroker._assert_snapshot_fresh()` from two sites
+    (gate (a) sub-item 2 of the REST resilience track, 2026-05-30):
+      * the bitunix observer's pre-trade gate, before routing into
+        `data_exec.place()`;
+      * `data_exec.place()` as a defense-in-depth re-check, because
+        observer-gate-passed-and-then-snapshot-went-stale-between-classification-and-place
+        is a real race.
+
+    Like `BitunixPositionModeMismatch`, the broker fails closed: it latches
+    `_halt_new_orders=True` and `_halt_reason="snapshot_stale:<age_s>"`
+    BEFORE raising. The consumer's job is the response side (audit +
+    Telegram) via `data_exec._handle_stale_snapshot()`.
+
+    Recovery semantics: a subsequent successful `snapshot()` will flip
+    `is_healthy()` back to True (the timestamp is refreshed), but the halt
+    latch is STICKY — operator clears it explicitly via `broker.resume()`.
+    The is_healthy() recovery is what lets the dashboard show "live again"
+    without forcing a restart; the halt latch is what stops orders from
+    sneaking through during a flap.
+    """
+
+    def __init__(self, age_s: float, threshold_s: float) -> None:
+        self.age_s = age_s
+        self.threshold_s = threshold_s
+        super().__init__(
+            f"BitUnix snapshot is stale: last successful snapshot was "
+            f"{age_s:.1f}s ago, threshold is {threshold_s:.1f}s "
+            f"— refusing to place order"
+        )

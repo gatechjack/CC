@@ -81,7 +81,10 @@ import json
 import httpx
 
 from trading_corp.brokers.base import AccountSnapshot, Broker
-from trading_corp.brokers.bitunix_exceptions import BitunixPositionModeMismatch
+from trading_corp.brokers.bitunix_exceptions import (
+    BitunixPositionModeMismatch,
+    BitunixStaleSnapshot,
+)
 from trading_corp.brokers.bitunix_symbols import to_wire_format
 from trading_corp.persistence import db
 from trading_corp.persistence.models import FillEvent, OpenPosition, Position, ProposedOrder
@@ -92,9 +95,9 @@ if TYPE_CHECKING:
 
 # Re-exported here so existing callers can still write
 # `from trading_corp.brokers.bitunix import BitunixPositionModeMismatch`.
-# The canonical class object lives in `bitunix_exceptions.py` (see that
+# The canonical class objects live in `bitunix_exceptions.py` (see that
 # module's docstring for the cross-branch class-identity rationale).
-__all__ = ["BitunixPositionModeMismatch"]
+__all__ = ["BitunixPositionModeMismatch", "BitunixStaleSnapshot"]
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +121,13 @@ _TERMINAL_STATUSES = {"FILLED", "CANCELED"}
 # Fill-observation poll defaults (overridable per-instance for tests).
 _FILL_MAX_POLLS = 8
 _FILL_POLL_INTERVAL_S = 0.4
+
+# Default snapshot-staleness threshold (seconds). Overridable via
+# `bitunix_futures.snapshot_staleness_threshold_seconds` in
+# config/strategies.yaml. 60s = 2× the strategy's per-bar cadence on the
+# 1-min bar; a single missed snapshot is fine, two-in-a-row is the halt
+# signal.
+_DEFAULT_SNAPSHOT_STALENESS_S = 60.0
 
 # BitUnix business-error taxonomy. The envelope `code` is non-zero on a
 # business error even when HTTP is 200. Codes are facts from the official
@@ -308,6 +318,15 @@ class BitunixBroker(Broker):
         # None, the retry layer logs via `logging` only (no audit row). Wired
         # from main.py at broker construction; tests inject a fake.
         self.logger: "LoggerAgent | None" = logger
+        # ── Snapshot-health primitive (gate (a) sub-item 2) ─────────────
+        # `time.monotonic()` of the last successful `snapshot()` return.
+        # None until the first successful snapshot — `is_healthy()` fails
+        # closed (returns False) in that state, which is the intended
+        # behavior for a broker that has never produced a fresh snapshot.
+        self._last_successful_snapshot_ts: float | None = None
+        # mtime-cache for the snapshot-staleness threshold YAML read.
+        # `(mtime, value)`; None means "not yet read or cache invalidated".
+        self._staleness_threshold_cache: tuple[float, float] | None = None
 
     async def connect(self) -> None:
         if self._stub:
@@ -447,6 +466,11 @@ class BitunixBroker(Broker):
                 pos_data.get("code"), pos_data.get("msg"),
             )
 
+        # Mark snapshot as fresh BEFORE returning. Any earlier raise (e.g.
+        # r.raise_for_status on a 503) skips this line — staleness then
+        # grows until `_assert_snapshot_fresh()` halts the order path.
+        # See gate (a) sub-item 2 for the rationale.
+        self._last_successful_snapshot_ts = time.monotonic()
         return AccountSnapshot(
             account="bitunix-futures",
             equity=equity,
@@ -454,6 +478,92 @@ class BitunixBroker(Broker):
             cash=cash,
             positions=positions,
         )
+
+    # ── Snapshot-health primitives (gate (a) sub-item 2, 2026-05-30) ────
+    def _staleness_threshold_s(self) -> float:
+        """Mtime-cached read of `bitunix_futures.snapshot_staleness_threshold_seconds`
+        from `config/strategies.yaml`. Falls back to `_DEFAULT_SNAPSHOT_STALENESS_S`
+        on read error so a malformed YAML never disables the halt.
+        """
+        try:
+            from pathlib import Path as _Path
+            strat_path = (
+                _Path(__file__).resolve().parent.parent.parent
+                / "config" / "strategies.yaml"
+            )
+            mtime = strat_path.stat().st_mtime
+        except Exception:
+            return _DEFAULT_SNAPSHOT_STALENESS_S
+        if (
+            self._staleness_threshold_cache is not None
+            and self._staleness_threshold_cache[0] == mtime
+        ):
+            return self._staleness_threshold_cache[1]
+        try:
+            import yaml as _yaml
+            with strat_path.open(encoding="utf-8") as f:
+                raw = _yaml.safe_load(f) or {}
+            bx_block = raw.get("bitunix_futures") or {}
+            value = float(
+                bx_block.get("snapshot_staleness_threshold_seconds",
+                             _DEFAULT_SNAPSHOT_STALENESS_S)
+            )
+            if value <= 0:
+                value = _DEFAULT_SNAPSHOT_STALENESS_S
+        except Exception as e:
+            log.warning(
+                "bitunix _staleness_threshold_s YAML read failed: %s "
+                "— defaulting to %.1fs",
+                e, _DEFAULT_SNAPSHOT_STALENESS_S,
+            )
+            value = _DEFAULT_SNAPSHOT_STALENESS_S
+        self._staleness_threshold_cache = (mtime, value)
+        return value
+
+    def is_healthy(self) -> bool:
+        """True iff the broker has produced a successful `snapshot()` recently
+        enough (within `_staleness_threshold_s()`).
+
+        Fail-closed semantics:
+          * No successful snapshot yet (`_last_successful_snapshot_ts is None`)
+            → False. A freshly-constructed broker is "stale" until its first
+            successful snapshot.
+          * `now - last_successful_snapshot > threshold` → False.
+
+        Pure read; no side effects. The halt latch is set only by
+        `_assert_snapshot_fresh()` when an order is about to be placed.
+        """
+        if self._last_successful_snapshot_ts is None:
+            return False
+        age_s = time.monotonic() - self._last_successful_snapshot_ts
+        return age_s <= self._staleness_threshold_s()
+
+    async def _assert_snapshot_fresh(self) -> None:
+        """Fail-closed pre-trade gate: refuse to place unless the most recent
+        snapshot is younger than the configured threshold.
+
+        Symmetric with `_assert_position_mode_one_way`: the broker latches
+        `_halt_new_orders=True` BEFORE raising, so the halt is sticky beyond
+        the immediate call. The latch is operator-cleared via `resume()` —
+        is_healthy() will turn True again on a fresh snapshot, but the latch
+        does NOT auto-clear (intentional, per the operator-gates-everything
+        discipline).
+
+        Async for symmetry with the other `_assert_*` guards; no actual
+        I/O is performed here (state is already cached on the broker
+        instance — `_last_successful_snapshot_ts` is set by `snapshot()`).
+        """
+        if self.is_healthy():
+            return
+        age_s = (
+            float("inf")
+            if self._last_successful_snapshot_ts is None
+            else time.monotonic() - self._last_successful_snapshot_ts
+        )
+        threshold_s = self._staleness_threshold_s()
+        self._halt_new_orders = True
+        self._halt_reason = f"snapshot_stale:{age_s:.1f}s"
+        raise BitunixStaleSnapshot(age_s=age_s, threshold_s=threshold_s)
 
     async def quote(self, symbol: str) -> float:
         """Return last price for `symbol`. Public endpoint — no auth needed."""
