@@ -8,6 +8,47 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P2 — Stage-1 N+2 live exit-path: Phase 1a complete, Phase 1b + scope decision pending (filed 2026-05-29)
+
+**Branch:** `bitunix-live-exit-path-2026-05-29` (off main, 1 commit `33da534`, pushed). Phase 1a sub-diagnostic shipped in `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1a.md` covering structural questions #1 (TP/SL/expired detection map), #2 (wire-point recommendation), #3 (exit-order construction), #8 (HITL-on-exits), #9 (N+1 premise validation). Phase 1b (questions #4 reconciliation, #5 cost accrual, #6 restart-resume, #7 alerts, plus the A/B/C scope decision) deferred to a fresh session — handoff prompt embedded at end of the report file. Phase 1a session ended with context budget tight; split was deliberate.
+
+**Load-bearing Phase 1a findings (operator decisions required before Phase 3):**
+
+1. **Path C confirmation needed (REVERSES N+1 commit 3)**: N+1's live entries do NOT write `paper_trade_record` (commit 3 `e04b192`: "No paper_trade_record on the live path"). But `paper_trade_replay` walks `paper_trade_record WHERE result IS NULL` — so live positions are **structurally invisible** to the exit detection loop. Three resolution paths surfaced (A tag-and-share, B parallel table, C hybrid). Phase 1a recommends **Path C**: live entries write `paper_trade_record` with `extra.execution_mode='live'` + `extra.broker_order_id`; replay walks both paper and live rows; exit helper forks paper-vs-live on the `execution_mode` tag; live `result_*` columns populated from broker truth. Requires a small additive change on the N+1 entry-path branch — recommend folding into the N+2 branch when it lands.
+
+2. **HITL-on-exits = NO (validated)**: exits are time-sensitive (TP/SL slippage); gating defeats the strategy. Replace blocking HITL with elevated `(live, exit)` telegram suffix for first N exits (counter in `agent_state`, separate key from N+1 entries). Halt does NOT block exits; flatten DOES force-close (existing safety consumer).
+
+3. **Wire-point = in-place fork, NOT parallel executor**: refuted the readiness audit's "new `bitunix_live_executor`" recommendation against actual code structure. Recommend canonical `_record_exit_outcome` helper at the classifier-return / `_update_row` boundary; paper-vs-live fork inside (mirrors N+1 pattern).
+
+**Phase 1b structural questions** (paste handoff prompt at end of `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1a.md` into a fresh Claude session):
+- #4 post-trade reconciliation (lumibot's `do_polling` diff-engine reference)
+- #5 cost accrual (fees + funding bookkeeping; fold into N+2 or defer to N+3?)
+- #6 restart-resume from broker truth (lumibot's `_first_iteration` sync)
+- #7 operational alerts (exit_order_placed/filled/rejected/partial/position_closed audit kinds)
+
+**Merge sequencing extension (when N+2 code branch eventually ships):**
+1. C-1 branches → 2. broker-write `87dac50` → 3. safety branch → 4. entry-path `bitunix-live-entry-path-2026-05-29` (with the Path C revert of commit 3 if confirmed) → 5. exit-path `bitunix-live-exit-path-2026-05-29` (currently just Phase 1a report; code lands post-Phase 1b + Phase 2 scope decision).
+
+**Premise correction surfaced**: brief said "7 unmerged branches" — actually **6 Session-29 feature branches** on origin (broker-write `87dac50` is a commit on existing branch). N+2 is now branch #7 (Phase 1a report only).
+
+**Priority: P2** — in-flight diagnostic; reactivates on the fresh session that runs Phase 1b.
+
+---
+
+## P3 — Uncommitted `config/strategies.yaml` disable for two dead divisions (carried over from prior session, surfaced 2026-05-29)
+
+Working tree on `bitunix-live-exit-path-2026-05-29` (and likely on every branch via working-tree shared state) has an uncommitted modification to `config/strategies.yaml` that flips:
+- `kalshi_weather_arb.enabled: true → false` with comment "division effectively dead — silence telegrams + stop scan"
+- `kalshi_crypto_arb.enabled: true → false` with comment "SHELVED per project_kalshi_crypto_shelved — silence telegrams + stop scan"
+
+Not committed; not pushed; not on any branch. The change is semantically valid (matches `[[kalshi_crypto_shelved]]` + `[[kalshi_weather_ev_discovery]]` memories — both divisions are conclusively shelved with no copyable edge). It needs its own scoped commit on `main` (or a dedicated `kalshi-divisions-disable` branch) when an operator wants to silence those scanners on prod.
+
+**NOT committed on N+2 branch deliberately** — unrelated to live exit path; would muddy the merge.
+
+**Priority: P3** — operator decision. Either commit-on-main as a 2-line config change + deploy, or document the change as intentional-but-unshipped (paper-mode is already paper; the divisions just keep scanning and pinging telegram). Phase 1a session left it uncommitted so the operator could decide.
+
+---
+
 ## P1 — Polymarket copy-trader SELL-pairing skips ~99.86% of exits ("no matching entry") (found 2026-05-29)
 
 **Diagnostic (surfaced during the Group A resolver settle-fairness diagnosis — NOT investigated further, filed as-is):** `polymarket_resolver._pair_pending_exits` re-scans **719–720** unpaired copy-trader SELL `would_have_placed` rows every tick and skips **719/720 (~99.86%)** as `skipped_no_entry` — it can't find the prior BUY (matched on `whale_wallet` + `condition_id` + `outcome_index`, entry `ts` < sell `ts`, unpaired). Stable every tick for 12h+ (`pair_scanned: 719-720, pair_skipped_no_entry: 719, paired: 0-2`). So whale-closed PCT positions are NOT being booked into round-trips.
