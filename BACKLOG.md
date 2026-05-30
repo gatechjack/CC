@@ -25,13 +25,18 @@ everywhere; no live order flow.** See report
    `c1-bitunix-cred-rotation`, `c1-apify-cred-rotation`,
    `c1-tastytrade-verify-2026-05-29`. KV-side rotation work; can merge
    in any order among themselves.
-2. **Exception-class move on broker-write** — single follow-up commit
-   on `bitunix-live-engine-stage1-broker-write` that imports
-   `BitunixPositionModeMismatch` from `trading_corp/brokers/bitunix_exceptions.py`
-   (introduced on the safety branch) instead of defining inline. ~5 LOC.
-   **Required** for `except` class identity to work across modules.
-3. **Broker-write to main** (`bitunix-live-engine-stage1-broker-write`)
-   — adds real `place_order`. Still dead code on prod until the live
+2. **Exception-class move on broker-write — RESOLVED 2026-05-29** (`87dac50`)
+   on `bitunix-live-engine-stage1-broker-write`. The canonical
+   `BitunixPositionModeMismatch` now lives in
+   `trading_corp/brokers/bitunix_exceptions.py` (byte-identical with
+   the safety branch's file); `trading_corp/brokers/bitunix.py`
+   imports + re-exports for back-compat with existing callers.
+   6-test class-identity guard locks IS-equality across both import
+   paths + bidirectional except-clause catching. All 38 broker-write
+   tests green.
+3. **Broker-write to main** (`bitunix-live-engine-stage1-broker-write`
+   HEAD `87dac50`) — adds real `place_order` + the canonical
+   `bitunix_exceptions.py`. Still dead code on prod until the live
    wiring + a YAML `execution_mode: live` flip.
 4. **Safety branch to main** (`bitunix-orderpath-safety-2026-05-29`)
    — mode-mismatch consumer + flatten_division + observer flatten
@@ -39,14 +44,18 @@ everywhere; no live order flow.** See report
 5. **This branch to main** (`bitunix-live-entry-path-2026-05-29`)
    — wires execution_mode, HITL, persistence, safety_notifier=channel.
 
-**Cross-branch duplicate (intentional, no conflict):**
-- The 3-line `safety_notifier` kwarg slot on `DataExecAgent` was
-  added by BOTH the safety branch (originating add) AND this branch
-  (commit 7a, byte-identical re-add). Reason: this branch is off
-  main; the safety branch hadn't landed when 7a was needed for 7b's
-  main.py wiring to be type-safe standalone. Git auto-merge resolves
-  identical adds to a no-op delta — **not a conflict.** Verified via
-  `diff` against the safety-branch source.
+**Cross-branch duplicates (intentional, no conflicts):**
+- **`safety_notifier` kwarg slot on `DataExecAgent`** — added by BOTH
+  the safety branch (originating) AND this branch (commit 7a,
+  byte-identical re-add). Reason: this branch is off main; safety
+  branch hadn't landed when 7a was needed for 7b's main.py wiring
+  to be type-safe standalone. Git auto-merge resolves identical adds
+  to a no-op delta — **not a conflict.**
+- **`trading_corp/brokers/bitunix_exceptions.py`** — added by BOTH
+  the safety branch (originating, Session N) AND the broker-write
+  branch (`87dac50`, byte-identical pull-in). Reason: load-bearing
+  class identity at merge time. Both files are byte-identical
+  (verified by `diff`); git auto-merge resolves to a no-op delta.
 
 **Live-config flip is NOT included in any of the above merges.** Going
 live requires an EXPLICIT operator deploy that edits `config/strategies.yaml`
