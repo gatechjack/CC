@@ -116,7 +116,75 @@ when prod observation warrants a tuning loop.
 
 ---
 
-## 2026-05-30 17:22–17:34 UTC — Stage 1 + gate (a) + tasty_options prod deploy → ROLLED BACK (latent `main.py:1087` / `secrets.odds_api_key` AttributeError caused infinite restart loop)
+## 2026-05-30 22:43–23:09 UTC — Stage 1 + gate (a) + tasty_options prod re-deploy (Plan A attempt #2) → ROLLED BACK (NEW latent `main.py:1972` / `WebDeps.__init__()` unexpected kwarg `tasty_division` TypeError caused restart loop at web-bind step)
+
+**Type:** prod re-deploy ATTEMPTED then ROLLED BACK. **Net effect on prod: zero code change** (state restored byte-identically to pre-redeploy `pre-stage1-redeploy-20260530-2244` backup, which itself = the post-17:34-rollback stable state). The 18-file whole-file re-deploy executed cleanly through pre-flight gates + file transfer + per-file md5-verify + import sanity check; the manual restart (python child PID `1872142`) crashed at 22:55:08 UTC ~5min30s into startup with `TypeError: WebDeps.__init__() got an unexpected keyword argument 'tasty_division'` at `trading_corp/main.py:1972` (inside `_start_web_server`). Systemd auto-restarted 3× before operator-authorized rollback at 23:09:23; rollback executed in 9s; `healthz=200` recovered at 23:15:24 UTC (T+5.5min post-rollback, matching historical lazy-bind).
+
+**Commits / source SHA:** `origin/main` HEAD `309e39e` at deploy time (merge of `stage1-forward-fix-2026-05-30` carrying Item 1 `71ff0a5` + Item 2 `ffbb09b` + audit `e2cd15c` + rollback entries `58a1807` + `a8a8b66` from prior session). The Item 1 + Item 2 fix WORKED — the rollback's `secrets.odds_api_key` AttributeError did NOT recur; `Kalshi Sports Scout online (has_credentials=True)` confirmed during startup. The NEW failure surfaced one layer deeper at web-bind.
+**Triggered by:** operator-approved Plan A re-attempt per session prompt; pre-deploy gates per Finding #9 sixth discipline (filesystem audit).
+
+**Pre-deploy gates (all GREEN before transfer):**
+- Test gate: 2044/28/3 worktree = 2046/26/3 main-baseline equivalent (the +2 failures are `test_paper_run_tooling.py` DB-fixture worktree gap per `[[gate-c-md5diff-landed-2026-05-30]]`; net regression 0). Item 1's 2 new completeness tests pass.
+- Gate (c) md5-diff + CRLF cross-verify: 7 DIFFER → 4 CRLF false-pos (`bitunix_confluence.py`, `bitunix_pa_validation.py`, `bitunix_lifecycle_notifier.py`, `risk.yaml`) + 3 real-drift (`bitunix.py`, `bitunix_futures_observer.py`, `strategies.yaml`) all in expected Stage-1 + tasty transfer set. Matches first attempt's gate output exactly.
+- **NEW Finding #9 filesystem audit:** 14 prod files byte-identical to Item 2 audit's recorded md5s (4-hour gap since Item 2 introduced zero new uncommitted edits); 5 net-new files ABSENT as expected; backup tag `pre-stage1-20260530-1230` (13 files) preserved untouched. Audit confirmed NOT stale.
+- YAML pre-check: `tasty_options_iron_condor.auto_execute=false`, `enabled=true`; `tasty_options` division registered with `enabled=true`. No autonomous flag anywhere.
+- Import-graph audit (local): `from trading_corp.main import run` returns `import_ok function 0.207s`. Completeness test (`tests/test_secrets_completeness.py`) green — every `secrets.X` access in main.py resolves to a Secrets field. This was the structural fix for the rollback root cause and IT WORKED.
+
+**18 files transferred + md5-verified (matches first attempt):**
+- 13 in `4985bbe..origin/main` deployable diff (excl `config/strategies.yaml`, which is the 14th in-diff): `data_exec.py`, `bitunix_futures_observer.py`, `risk.py`, `bitunix.py`, `bitunix_exceptions.py` (NEW), `bitunix_symbols.py` (NEW), `tastytrade.py` (NEW), `telegram_commands.py`, `ceo_graph.py`, `main.py`, `models.py`, `secrets.py` (now with Item 1 + Item 2 odds_api_key fix), `routes.py`, `webhooks.py` + `config/strategies.yaml` = 15.
+- 3 net-new for tasty activation (in main but not on prod's FS): `tasty_options.py`, `tasty_options_iron_condor.py`, `config/divisions.yaml`.
+
+**Transfer mechanism:** local tarball + LF-normalize + base64-encode (237079 bytes raw, md5 `93a53632ac1c3e17f5715c2fa6062678`; 316108 b64 bytes); 14 chunks of 24KB each + final verify call via `az vm run-command --scripts @file` (the @file syntax bypasses Windows ~32KB command-line cap that bit on first attempt). Per-file md5-verify on prod after extract: 18/18 OK. Sanity check: `import_ok function 0.359s`.
+
+**Backup tag created:** `pre-stage1-redeploy-20260530-2244` on 13 files (the 5 net-new files have no prior version). Distinct from preserved `pre-stage1-20260530-1230` forensics tag. **Both tags preserved untouched; do-not-delete.**
+
+**Failure timeline (UTC):**
+- 22:49:27 — `sudo systemctl restart trading-corp.service` (manual; new MainPID `1872126`, python child `1872142`).
+- 22:49:27 → 22:55:08 — startup proceeded normally for ~5min30s; brokers + scanners came up incl. `Kalshi Sports Scout online (has_credentials=True)` confirming Item 1's odds_api_key fix worked.
+- 22:55:08 — `TypeError: WebDeps.__init__() got an unexpected keyword argument 'tasty_division'` at `main.py:1972` (inside `_start_web_server` which is called from `main:1578`).
+- 22:55:09 — systemd: Main process exited, code=exited, status=1/FAILURE.
+- 22:55:23 — systemd auto-restart counter=1; new PID `1872735` / child `1872748`.
+- 22:55:23 → ~22:59:20 — second PID got through broker init + strategy init (Kalshi Sports Scout online again, IC scanner online, polymarket resolver online); same code path reached the web-bind step.
+- ~22:59:30 — second PID crashed at same line; NRestarts→2.
+- ~23:00 → 23:09 — third PID started, crashed; NRestarts→3.
+- 23:09:23 — operator-approved rollback begins: `sudo systemctl stop trading-corp.service` (NRestarts captured at 3 at stop time, confirming the in-flight crash-loop pattern).
+- 23:09:24 → 23:09:32 — 9s rollback: restore 13 files from backup + rm 5 net-new + restart. New MainPID `1874494`, NRestarts=0.
+- 23:15:24 — `healthz=200` (rollback recovery time T+5.5min, matches historical lazy-bind).
+
+**Root cause (NEW latent main bug, not a deploy procedure bug):**
+- `trading_corp/main.py:1972` calls `WebDeps(tasty_division=tasty_division, ...)` inside `_start_web_server`.
+- `_start_web_server` declares `tasty_division: Any = None` parameter (`main.py:1932`); caller at `main.py:1603` passes it through.
+- `trading_corp/web/app.py:31` defines `@dataclass class WebDeps` — **does NOT include `tasty_division` field.** `git log --all -S "tasty_division" -- trading_corp/web/app.py` returns EMPTY (verify next session).
+- The 2026-05-24 tasty_options build (commits `a6990cd` + `94b3129` + `a9e4e46`) wired tasty_division through `_start_web_server`'s signature but **forgot to add the field on `WebDeps`**. Pre-cleanup main paths never exercised the actual web-bind on prod with tasty_division populated (the symbol was likely on prod's WebDeps too via earlier surgical-edit and got removed in some cleanup; or the prior prod deploys never crossed the broken merge boundary). Either way: latent on main since 2026-05-24.
+- Item 2 audit verified `secrets.X` access patterns via AST-completeness test (covered the rollback's bug class). Did NOT extend to `WebDeps(X=...)` kwarg patterns. **Same structural class of bug, different surface.**
+- Pre-flight import sanity (`from trading_corp.main import run`) cannot catch this — the TypeError happens at `_start_web_server()` runtime, not at import time. Same gap the rollback documented.
+
+**Rollback executed (operator-authorized, pre-stop NRestarts had ticked to 3):**
+- Step 1: `sudo systemctl stop trading-corp.service` — halt the crash loop (MainPID → 0, inactive, dead, NRestarts captured at 3).
+- Step 2: restored 13 files from `.pre-stage1-redeploy-20260530-2244` backup via `sudo -u azureuser cp -p`. Per-file md5-verify against the Item-2-audit-documented prod md5s: 13/13 OK.
+- Step 3: removed 5 net-new files (`tasty_options.py`, `tasty_options_iron_condor.py`, `bitunix_exceptions.py`, `bitunix_symbols.py`, `tastytrade.py`).
+- Step 4: backup tags preserved on prod for forensics (do-not-delete). `pre-stage1-20260530-1230`: 13 files. `pre-stage1-redeploy-20260530-2244`: 13 files. **Both untouched.**
+- Step 5: `sudo systemctl start trading-corp.service` — MainPID `1874494`, ActiveState=active, SubState=running.
+- Step 6: post-rollback verification — NRestarts holds at 0 for at least 6 minutes; no crash signatures in journal; healthz=200 at T+5.5min; Kalshi LLM scanner emitting orders normally.
+
+**Implications:**
+- Next deploy attempt blocked on: (a) adding `tasty_division: Any = None` field to `WebDeps` dataclass on origin/main, AND (b) extending the AST completeness test to cover dataclass kwarg patterns (e.g., `WebDeps(X=...)`) not just `secrets.X` access. Forward-fix is a separate session (per operator instruction: "No forward-fix work this session").
+- Finding #9 sixth discipline (pre-deploy filesystem audit) WORKED — caught zero new uncommitted edits; the bug is not surgical-edit drift but pre-existing main inconsistency that the prior session masked.
+- Onion-peeling failure mode: each layer's structural fix exposes the next latent inconsistency. The architectural review's Finding #1 drift class now has a sixth locus to add: "kwarg signatures across function-to-dataclass boundaries (TypeError-class)".
+
+**Source SHA on origin/main UNCHANGED:** still `309e39e` (the buggy merge stays on main as forensic artifact; reverting would be destructive and the bug pre-existed the merge). Next forward-fix work goes on a new branch off `309e39e`.
+
+**Files preserved on prod for forensics (do-not-delete):**
+- `*.pre-stage1-20260530-1230` (13 files — original Plan A attempt #1 backups)
+- `*.pre-stage1-redeploy-20260530-2244` (13 files — Plan A attempt #2 backups, this session)
+- `/tmp/redeploy/stage1.tgz` (237079 bytes, md5 `93a53632ac1c3e17f5715c2fa6062678` — the deployed tarball; safe to clean next session if disk-pressured)
+- `/tmp/backups_2026_05_30.tgz` (from Item 2 audit; safe to clean next session)
+
+**Worktree (local):** `.claude/worktrees/stage1-redeploy-2026-05-30` (branch `stage1-redeploy-2026-05-30`, HEAD post-merge `309e39e` + this deploy_log + close-out commits). Operator can remove at convenience.
+
+---
+
+
 
 **Type:** prod deploy ATTEMPTED then ROLLED BACK. **Net effect on prod: zero code change** (state restored to pre-deploy `4985bbe + 03:57 sed-overlay` plus the pre-existing uncommitted `odds_api_key` surgical addition on prod's secrets.py). The 18-file whole-file deploy executed cleanly through file transfer + md5-verify; the first manual restart (python child PID `1827090`) crashed at 17:22:27 UTC ~49s into startup with `AttributeError: 'Secrets' object has no attribute 'odds_api_key'`; systemd auto-restarted 10× over the next ~11 minutes, each new process crashing on the same line. Operator-approved rollback at 17:33:05 (stop) → 17:33:23 (start of restored old code) → 17:34:08 all scanners online including `Kalshi Sports Scout online (has_credentials=True)` confirming `odds_api_key` is back on prod's Secrets object.
 

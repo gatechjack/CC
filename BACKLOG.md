@@ -22,6 +22,8 @@ Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `run
 
 **NOT recommended (option 2):** `getattr(secrets, "odds_api_key", None)` at `main.py:1087` + `:1106`. Defensive but masks the missing-field issue (`[[no-documented-leaky-escape-hatch]]` discipline).
 
+### Item 1 STATUS — **LANDED + MERGED 2026-05-30 22:24 UTC** on `origin/main` `309e39e` via `stage1-forward-fix-2026-05-30` (commit `71ff0a5`). `Secrets` dataclass now has `odds_api_key` field + `load_secrets()` populator; AST completeness test (`tests/test_secrets_completeness.py`) asserts every `secrets.X` access in `main.py` resolves. **The fix WORKED** — second deploy attempt 2026-05-30 22:49 UTC reached Kalshi Sports Scout startup with `has_credentials=True` (no AttributeError). 2026-05-30 22:43-23:09 UTC re-deploy attempt rolled back on a DIFFERENT latent bug (see Item 3 below); the Item 1 closure is NOT in question.
+
 ### Item 2 (REQUIRED before next deploy attempt): Audit ALL uncommitted prod surgical-edit additions
 
 **Symptom:** `odds_api_key` may not be the only uncommitted prod-only addition. If others exist, the next clean redeploy will crash on a NEW latent bug after this one is fixed.
@@ -30,15 +32,51 @@ Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `run
 
 **Files to audit (the 13 backups):** `data_exec.py`, `bitunix_futures_observer.py`, `risk.py`, `bitunix.py`, `telegram_commands.py`, `ceo_graph.py`, `main.py`, `models.py`, `secrets.py`, `routes.py`, `webhooks.py`, `config/strategies.yaml`, `config/divisions.yaml`. Forensics preserved on prod as `*.pre-stage1-20260530-1230` (do-not-delete).
 
+### Item 2 STATUS — **LANDED + MERGED 2026-05-30 22:24 UTC** on `origin/main` `309e39e` via `stage1-forward-fix-2026-05-30` (audit `e2cd15c` + Item-2-secrets `ffbb09b`). Audit found ONE Category-A finding (`odds_api_key`, 4 sublocations — closed by Item 1 + Item 2 commits) and 11 Category-C (main-ahead-of-prod, normalized by deploy). Zero Category-B (no surfaces requiring human judgement). **No additional uncommitted prod-surgical-edit symbols surfaced.**
+
+### Item 3 (NEW BLOCKER, NOT in original scope — filed 2026-05-30 23:20 UTC after second rollback): Resolve `main.py:1972` / `WebDeps.__init__()` unexpected kwarg `tasty_division` TypeError
+
+**Symptom:** clean redeploy of `main.py` + `web/app.py` from `origin/main` `309e39e` crashes at startup at the web-bind step (T+~5min30s) with `TypeError: WebDeps.__init__() got an unexpected keyword argument 'tasty_division'`. Surfaced 2026-05-30 22:55:08 UTC during Plan A re-deploy attempt #2; auto-restarted 3× before operator-authorized rollback at 23:09:23 UTC (see `runbooks/deploy_log.md` "## 2026-05-30 22:43-23:09 UTC" entry).
+
+**Root cause:** latent main inconsistency since the 2026-05-24 tasty_options build (commits `a6990cd` + `94b3129` + `a9e4e46`):
+- `trading_corp/main.py:1972` calls `WebDeps(tasty_division=tasty_division, ...)` inside `_start_web_server`.
+- `_start_web_server` declares `tasty_division: Any = None` parameter (`main.py:1932`); caller at `main.py:1603` passes it through from `tasty_division = TastyOptionsAgent()` (`main.py:1239`).
+- `trading_corp/web/app.py:31` defines `@dataclass class WebDeps` — **does NOT include a `tasty_division` field.** The signature was wired through `_start_web_server` + `WebDeps(...)` call site but `WebDeps` dataclass was never updated.
+- Prior session masked this bug behind the `secrets.odds_api_key` AttributeError (which crashed at T+49s, before reaching the web-bind step at T+5min30s).
+- The Item 1 AST completeness test covers `secrets.X` access patterns; does NOT cover dataclass `(X=...)` kwarg patterns. Same structural class of bug, different surface.
+
+**RECOMMENDED FIX (option 1):** add `tasty_division: Any = None` field to `WebDeps` dataclass on `origin/main`. Mirror the existing optional-field pattern (e.g., `lord_otter_agent`, `market_cypher_agent`). Single-PR fix. Verify the dashboard endpoint surfaces the tasty division correctly if/when needed (but the field can land as a held reference even before any dashboard wiring uses it).
+
+**Plus (REQUIRED with option 1):** extend the AST completeness test to cover `WebDeps(X=...)` kwarg patterns (and any other `<DataclassName>(X=...)` patterns in `main.py` that should be invariant). Parse `main.py` for all `Call` nodes whose `func` is a known dataclass and assert each keyword matches a dataclass field. Catches future inconsistencies of this class.
+
+**NOT recommended (option 2):** `getattr(secrets, "odds_api_key", None)` analog — pop `tasty_division` from a kwargs dict before constructing WebDeps. Same `[[no-documented-leaky-escape-hatch]]` concern.
+
+### Item 4 (RECOMMENDED, defensive — filed 2026-05-30 23:20 UTC): Pre-deploy "startup-equivalent dry-run" gate
+
+The current pre-deploy gates catch:
+- Module-import-time errors (`from trading_corp.main import run` import sanity check)
+- `secrets.X` access pattern bugs (Item 1's AST completeness test)
+- Prod-vs-git filesystem drift (Item 2's audit pattern + Finding #9 gate)
+
+They do NOT catch:
+- Runtime kwarg/method/attribute-name TypeErrors that fire inside `run()` itself (Item 3's class)
+- Startup-time exception in any code path that runs only when `asyncio.run(run())` is actually invoked
+
+**Proposed gate:** a `pytest`-time fixture that constructs a full `Secrets()` + minimal mock collaborators and invokes the early portion of `run()` (up through the web-bind setup), trapping any TypeError/AttributeError. Bounded by a short timeout (5s) — past the web-bind setup is integration territory. Surfaces this class of bug at test time, not deploy time.
+
 ### Test-gate coverage hardening (RECOMMENDED, not blocker)
 
 The import-sanity check (`python3 -c "from trading_corp.main import run"`) catches module-import errors but does NOT execute `run()` → misses runtime `AttributeError` on dataclass field access in startup-construction sites. Add a test that exercises the startup-equivalent dry-run against the real `Secrets` dataclass — strengthens `[[mocks-dont-catch-sdk-shape]]` discipline.
 
 ### Deploy unblock criteria
 
-- Item 1 landed on `origin/main` with passing test gate (must include new "secrets fields cover main.py reads" assertion test).
-- Item 2 audit complete; all findings round-tripped to git OR explicitly accepted as known divergence.
-- New deploy session per the same Plan A pattern: 18-file whole-file transfer + pre-flight gates + RH-pickle-coordinated restart.
+- Item 1 landed on `origin/main` with passing test gate (must include new "secrets fields cover main.py reads" assertion test). ✅ **CLOSED** — `309e39e` carries `71ff0a5` + `tests/test_secrets_completeness.py`.
+- Item 2 audit complete; all findings round-tripped to git OR explicitly accepted as known divergence. ✅ **CLOSED** — `e2cd15c` carries the audit report; one Category-A finding closed by `ffbb09b`; 11 Category-C accepted as main-ahead-of-prod (deploy normalizes).
+- Item 3 (NEW BLOCKER from 2026-05-30 23:09 UTC rollback): `WebDeps` dataclass on `origin/main` has `tasty_division` field + AST completeness test extended to `WebDeps(X=...)` kwarg pattern. ⏳ **OPEN.**
+- Item 4 (recommended): pre-deploy "startup-equivalent dry-run" gate covering runtime TypeError class. ⏳ **OPEN (recommended).**
+- New deploy session per the same Plan A pattern: 18-file whole-file transfer + pre-flight gates (now including Finding #9 filesystem audit, validated 2026-05-30 22:13 UTC) + RH-pickle-coordinated restart.
+
+**UPDATE 2026-05-30 22:43-23:09 UTC — RE-DEPLOY ATTEMPTED + ROLLED BACK (Plan A attempt #2):** Items 1 + 2 forward-fix merged to main (`309e39e`); all 7 pre-deploy gates green incl. the new Finding #9 filesystem audit; 18 files transferred with per-file md5-verify; restart at 22:49:27 → first python child crashed at 22:55:08 with `TypeError: WebDeps.__init__() got an unexpected keyword argument 'tasty_division'` at `main.py:1972`; auto-restarts × 3 before operator-authorized rollback at 23:09:23 (executed in 9s; healthz=200 at 23:15:24 = T+5.5min). Backup tag `pre-stage1-redeploy-20260530-2244` preserved (13 files; do-not-delete). Original `pre-stage1-20260530-1230` forensics tag also preserved (13 files). **Net code change on prod: zero.** Full forensics in `runbooks/deploy_log.md` "## 2026-05-30 22:43-23:09 UTC" entry. Memory: `[[stage1-redeploy-rolled-back-2026-05-30]]`. Item 1's odds_api_key fix WORKED (Kalshi Sports Scout reached `has_credentials=True`); the new failure is one structural layer deeper (Item 3 above).
 
 ---
 
