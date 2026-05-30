@@ -116,6 +116,90 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-05-30 17:22–17:34 UTC — Stage 1 + gate (a) + tasty_options prod deploy → ROLLED BACK (latent `main.py:1087` / `secrets.odds_api_key` AttributeError caused infinite restart loop)
+
+**Type:** prod deploy ATTEMPTED then ROLLED BACK. **Net effect on prod: zero code change** (state restored to pre-deploy `4985bbe + 03:57 sed-overlay` plus the pre-existing uncommitted `odds_api_key` surgical addition on prod's secrets.py). The 18-file whole-file deploy executed cleanly through file transfer + md5-verify; the first manual restart (python child PID `1827090`) crashed at 17:22:27 UTC ~49s into startup with `AttributeError: 'Secrets' object has no attribute 'odds_api_key'`; systemd auto-restarted 10× over the next ~11 minutes, each new process crashing on the same line. Operator-approved rollback at 17:33:05 (stop) → 17:33:23 (start of restored old code) → 17:34:08 all scanners online including `Kalshi Sports Scout online (has_credentials=True)` confirming `odds_api_key` is back on prod's Secrets object.
+
+**Commits / source SHA:** `origin/main` HEAD `06d7060` at deploy time (gate (a) merge `eae5080`, gate (b) merge `f20a7bc`, gate (c) merge `b131d02`, tasty_options commits `a6990cd` + `94b3129` + `a9e4e46` all ancestor of `06d7060`).
+**Triggered by:** operator-approved Plan A from the deploy-halt investigation (this same session, earlier turns).
+**Backup tag:** `pre-stage1-20260530-1230` on 13 files (the 5 new files had no pre-existing backup — preserved as forensics, **do-not-delete**).
+
+**Plan A as approved (whole-file transfer, operator-supervised):**
+- 18-file whole-file transfer (vs the original 14-file scope) — investigation surfaced 3 additions: `tasty_options.py` + `tasty_options_iron_condor.py` missing on prod (despite Sonnet's first-pass audit claiming present; direct probe confirmed missing), and `config/divisions.yaml` missing the `tasty_options` registration entry (line-count diff vs main = 26 lines / 1275 bytes).
+- Pre-flight gates all GREEN before transfer: git state `06d7060`; dedicated worktree `.claude/worktrees/stage1-deploy-2026-05-30`; YAML pre-check (`tasty_options_iron_condor.auto_execute: false`); test gate 2044/26; gate (c) md5-diff with CRLF cross-verification (4 of 7 false-positives + 3 real-drift all in transfer set); strategies.yaml sed-overlay reconciliation line-by-line byte-identical for TIER_SIZING + PA validation + kalshi-disable; import-graph audit PASS after the 3-file addition; import-sanity check (`from trading_corp.main import run`) passed in 0.364s with no side-effects.
+
+**18 files transferred + md5-verified:**
+- 14 in `4985bbe..origin/main` diff: `data_exec.py`, `bitunix_futures_observer.py`, `risk.py`, `bitunix.py`, `bitunix_exceptions.py` (NEW), `bitunix_symbols.py` (NEW), `tastytrade.py` (NEW), `telegram_commands.py`, `ceo_graph.py`, `main.py`, `models.py`, `secrets.py`, `routes.py`, `webhooks.py`, plus `config/strategies.yaml`.
+- 3 NEW for tasty_options activation: `tasty_options.py`, `tasty_options_iron_condor.py`, `config/divisions.yaml`.
+
+**Transfer mechanism:** `scp .tmp/stage1.tgz azureuser@trading.jacksumner.com:/tmp/stage1.tgz` (241134 bytes, md5 `6ec2d5b97d2dd4d89e97e3ee31db7aec` — prod md5 matched); `ssh` for extract + backup + cp + md5-verify in 4 phases. All 18 deployed-file md5s matched local manifest before restart.
+
+**Failure timeline (UTC):**
+- 17:21:21 — `sudo systemctl restart trading-corp.service` (manual)
+- 17:21:38 — restart returned, MainPID `1762864` → `1827074` (xvfb wrapper) / `1827090` (python child)
+- 17:22:01 — Fidelity broker login UI flow begins (Playwright)
+- 17:22:13 — Fidelity rejects login (generic "can't complete this action" page — pre-existing bot detection)
+- 17:22:14 — `broker_fallback_to_paper` audits for fidelity_joint + fidelity_401k (normal fall-back path; not the trigger)
+- 17:22:27 — `AttributeError: 'Secrets' object has no attribute 'odds_api_key'` at `trading_corp/main.py:1087` (`odds_api_key=secrets.odds_api_key` inside `KalshiSportsScoutAgent` construction)
+- 17:22:28 — systemd: Main process exited, code=exited, status=1/FAILURE
+- 17:22:38 — systemd auto-restart counter=1; PID `1827533`
+- 17:22:38 → 17:33:00 — 10 more crash-loop iterations (PIDs `1827533` `1827963` `1828262` `1828706` `1829144` `1829460` `1829775` `1830098` `1830413` `1830739` `1831056`), each ~50–60s to the same `AttributeError`
+- 17:33:05 — operator-approved rollback begins: `sudo systemctl stop trading-corp.service`
+- 17:33:23 — `sudo systemctl start trading-corp.service` after restore — MainPID `1831520` / python child `1831535`
+- 17:34:08 — all scanners online including `Kalshi Sports Scout online (enabled=True, has_credentials=True)` — `secrets.odds_api_key` confirmed resolvable
+- 17:34:32+ — NRestarts holds at 11 (cumulative count from earlier service lifetime; no new auto-restart) — crash loop broken
+- (web command center bind expected ~17:39 per historical 6-min lazy-bind pattern)
+
+**Root cause (latent main bug, not a deploy procedure bug):**
+- `trading_corp/main.py:1087` and `:1106` reference `secrets.odds_api_key` unconditionally (no `if` guard) inside `KalshiSportsScoutAgent` + `KalshiSportsArbObserverAgent` construction.
+- `trading_corp/utils/secrets.py` on `origin/main` has NO `odds_api_key` field on the `Secrets` dataclass.
+- `git log --all -S "odds_api_key" -- trading_corp/utils/secrets.py` returns EMPTY — the field has **never been committed to any branch in git's history** on `secrets.py`.
+- The OLD prod `secrets.py` (backup `pre-stage1-20260530-1230`) HAS `odds_api_key: str | None` (line 144) and `odds_api_key=_env("ODDS_API_KEY")` (line 320). These were added by uncommitted surgical edit at an unknown past point and never round-tripped to git.
+- Old prod main.py + old prod secrets.py were stale-together (both pre-cleanup); the bug stayed dormant. New prod main.py + new prod secrets.py exposed the latent inconsistency on first import.
+- Test gate (`tests/`) does not exercise main.py's startup-time construction path against the real `Secrets` dataclass — only mock-mode tests. This class of import-time AttributeError on a startup-only construction is invisible to current test coverage.
+
+**Rollback executed (operator-approved):**
+- Step 1: `sudo systemctl stop trading-corp.service` — halt the crash loop (MainPID → 0, inactive, dead).
+- Step 2: restored 13 files from `.pre-stage1-20260530-1230` backup via `cp -p`.
+- Step 3: removed 5 NEW files (`tasty_options.py`, `tasty_options_iron_condor.py`, `bitunix_exceptions.py`, `bitunix_symbols.py`, `tastytrade.py`).
+- Step 4: backup tag files preserved on prod for forensics (do-not-delete).
+- Step 5: md5-verify of restored files matches pre-deploy prod md5s exactly (the same md5s gate (c)'s scan reported, including the CRLF-asymmetry false-positives).
+- Step 6: `sudo systemctl start trading-corp.service` — MainPID `1831520`, ActiveState=active, SubState=running.
+- Step 7: post-rollback verification — NRestarts holds at 11 (no further auto-restarts after `1831520` started); all scanners online incl. Kalshi Sports Scout (`has_credentials=True`); polymarket_arbitrage + kalshi_arbitrage live brokers connected (KalshiBroker prod balance=$540.82).
+
+**Files deployed to prod (net):** **ZERO.** Prod restored byte-identically to `pre-stage1-20260530-1230` backup state. Forensics preserved.
+
+**Verification post-rollback:**
+- MainPID change: `1762864` (pre-deploy) → `1827074..1831056` (11-iteration crash loop) → `1831520` (post-rollback, stable).
+- NRestarts holds at 11 (no further auto-restarts since `1831520` started).
+- `Kalshi Sports Scout online (enabled=True, has_credentials=True)` log line at 17:34:08 confirms `secrets.odds_api_key` resolves (the construction line that crashed) → rollback effective.
+- Polymarket arbitrage scanner online (live broker).
+- Kalshi arbitrage scanner online (live broker).
+- KalshiBroker connected (prod) balance=$540.82.
+- Healthz pending (lazy ~6min bind; web bind expected ~17:39 UTC).
+
+**Inert / dormant in prod state today:** unchanged from pre-deploy. Gate (a) REST resilience + Stage 1 N+1 execution_mode + tasty_options division still NOT on prod (they remain on `origin/main` `06d7060`).
+
+**Rollback recipe (already executed; preserved for audit reference):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-stage1-20260530-1230; BASE=/home/azureuser/trading_corp
+sudo systemctl stop trading-corp.service
+for f in trading_corp/agents/data_exec.py trading_corp/agents/divisions/bitunix_futures_observer.py trading_corp/agents/risk.py trading_corp/brokers/bitunix.py trading_corp/comms/telegram_commands.py trading_corp/graph/ceo_graph.py trading_corp/main.py trading_corp/persistence/models.py trading_corp/utils/secrets.py trading_corp/web/routes.py trading_corp/web/webhooks.py config/strategies.yaml config/divisions.yaml; do cp -p \$BASE/\$f.\$TAG \$BASE/\$f; done
+for f in trading_corp/agents/divisions/tasty_options.py trading_corp/agents/strategies/tasty_options_iron_condor.py trading_corp/brokers/bitunix_exceptions.py trading_corp/brokers/bitunix_symbols.py trading_corp/brokers/tastytrade.py; do rm -f \$BASE/\$f; done
+sudo systemctl start trading-corp.service
+"
+```
+
+**Implications for next deploy attempt:** the Stage 1 / gate (a) prod deploy is BLOCKED on resolving the latent `main.py:1087` ↔ `secrets.odds_api_key` inconsistency. Options:
+- (1) Add `odds_api_key: str | None` field back to `Secrets` dataclass on `origin/main`, plus `odds_api_key=_env("ODDS_API_KEY")` in `load_secrets()`. Single-PR fix; cover by a simple unit test that asserts `Secrets()` has every attribute `main.py` reads. Round-trips the uncommitted prod-only addition to git.
+- (2) Replace `secrets.odds_api_key` with `getattr(secrets, "odds_api_key", None)` at `main.py:1087` + `:1106`. Defensive; masks the missing-field issue but preserves stub-mode behavior. **NOT recommended** per `[[no-documented-leaky-escape-hatch]]` discipline — defensive `getattr` would mask any future field-rename mistake.
+- (3) Audit ALL prod surgical-edit additions that may be similarly missing from git (grep prod backup `secrets.py`/`main.py`/others for any field/symbol absent from `origin/main`). The `odds_api_key` may not be the only one. Recommended as a separate session before the next deploy attempt.
+
+Forward fix is **separate session** per operator direction: "No forward-fix work this session. Post-rollback, we file findings, capture forensics, and stop."
+
+---
+
 ## 2026-05-30 ~09:05 UTC — Merge `bitunix-rest-resilience-2026-05-30` into main — closes gate (a) (last P1 pre-deploy gate from architectural review) — NO prod deploy
 
 **Type:** source-merge. No prod deploy this session. Prod remains at the pre-merge state (`4985bbe + 03:57 sed-overlay`). This entry records that the gate (a) REST resilience layer is now on `main`, closing the third and final P1 pre-deploy gate from the 2026-05-30 architectural review Finding #2. Combined with gate (b) panic-halt+credential-compromise runbooks (`f20a7bc`) and gate (c) md5-diff prod-surface tool (`b131d02`), the main-to-prod deploy of Stage 1 is now unblocked subject to the usual import-graph audit + RH-pickle-aware coordination + operator sign-off.
