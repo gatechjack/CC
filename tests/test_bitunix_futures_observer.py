@@ -292,10 +292,10 @@ def test_build_proposal_premium_full_size():
     assert p.proposed_order.symbol == "BTC/USDT.P"
     # 0.3% stop floor wins over 1.5×0.04% = 0.06%
     assert p.stop_distance_pct == pytest.approx(0.003)
-    # Effective risk cap: target 4% × 8x × 0.3% = 0.096% which is BELOW 0.5% cap
+    # Effective risk cap: target 1.5% × 25x × 0.3% = 0.1125% which is BELOW 0.5% cap
     # So full target size used
-    assert p.target_size_pct == 0.04
-    assert p.effective_risk_pct == pytest.approx(0.04 * 8.0 * 0.003, rel=0.01)
+    assert p.target_size_pct == 0.015
+    assert p.effective_risk_pct == pytest.approx(0.015 * 25.0 * 0.003, rel=0.01)
     # tp at 2R below the 0.3% stop = 0.6% above entry
     assert p.tp_price == pytest.approx(80_000.0 * 1.006, rel=0.001)
     assert p.stop_price == pytest.approx(80_000.0 * 0.997, rel=0.001)

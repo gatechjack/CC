@@ -199,8 +199,8 @@ MIN_RR_RATIO = 1.5                     # refuse trades below this R:R
 
 # Tier sizing — % equity at TARGET (downsized by effective-risk cap if needed)
 TIER_SIZING: dict[str, dict[str, float]] = {
-    "PREMIUM":  {"size_pct": 0.04, "leverage": 8.0},
-    "STANDARD": {"size_pct": 0.02, "leverage": 5.0},
+    "PREMIUM":  {"size_pct": 0.015, "leverage": 25.0},
+    "STANDARD": {"size_pct": 0.0075, "leverage": 25.0},
     "WEAK":     {"size_pct": 0.01, "leverage": 2.0},
     "COUNTER":  {"size_pct": 0.005, "leverage": 2.0},  # default OFF
 }
