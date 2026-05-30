@@ -286,6 +286,71 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 
 ---
 
+## EOS snapshot — 2026-05-30 ~06:30 UTC (architectural-review first-batch remediation: Finding #1c risk-tier MERGED to main + 5 untracked Stage-1 gaps FILED + review branch PUSHED; concurrent-session anomaly observed and isolated)
+
+**Type:** operator-supervised git + docs session. **No prod deploys.** Three scoped commits + one push of an existing branch landed on `origin/main` / `origin/`.
+
+**origin/main:** `d967706` → `d48d688` (3 commits ahead). New origin branch: `stage1-architectural-review-2026-05-30 = ade4dbc`.
+
+**Commits on main (in order):**
+1. `9fd9022` — Merge `bitunix-risk-tier-pre-live` (`--no-ff`). Brings PREMIUM/STANDARD TIER_SIZING values to main byte-identical with prod's running constants. Closes architectural-review Finding #1c silent-regression risk. Diff: 5 files, 103 insertions, 7 deletions.
+2. `622f46c` — deploy_log entry recording the merge (cherry-pick recovery from concurrent-session hijack of `e4d0c21`).
+3. `d48d688` — BACKLOG entries for the 5 untracked Stage-1 readiness gaps + Finding #1d drift-class extension note.
+
+**Test gate:** pre-merge + post-merge full pytest both **1989 passed / 26 failed** (regression threshold held; 26 carryover from 2026-05-30 merge session; 3 pre-existing collection-error files in `--ignore` list).
+
+**5 untracked Stage-1 readiness gaps FILED in BACKLOG** (this commit `d48d688`):
+
+| Item | Audit ref | Priority | Why this priority |
+|---|---|---|---|
+| (a) REST retry/backoff + stale-snapshot + stuck-order timeout | readiness #6 § 5 | **P1** | Review Finding #7 §6 explicit "P1 with pre-deploy gate dependency"; medium drift severity per Finding #2 |
+| (b) 4 panic-halt + credential-compromise runbooks | readiness #11 § 10 | **P1** | Same — pre-deploy gate; medium drift |
+| (c) Pre-flip md5-diff bitunix prod surface vs git | readiness #12 § 12 | **P1** | Same — pre-deploy gate; medium drift |
+| Low-equity alert + funding amount decision | readiness #8 § 8 | P3 | Low drift per Finding #2; not a pre-deploy gate |
+| Verify webhook H-11 bitunix path fails closed | readiness §13 / #10 | P3 | Low drift per Finding #2; 10-min verify task |
+
+**Gate semantics:** items (a)/(b)/(c) condition the next prod-deploy of `main` to prod (i.e., the deploy that takes broker-write + safety + entry-path + risk-tier from main to prod). Until those three land, the deploy stays paused.
+
+**Concurrent-session anomaly surfaced + resolved** (logged as Finding #1d drift-class extension):
+- A second Claude Code session was running in `C:/Users/AA Incorporado/cc` during this session.
+- It created `paper-trade-visualizer-2026-05-30` from my HEAD, took my deploy_log commit `e4d0c21` onto that branch instead of main, then committed `0d028c9` onto main and reset main back to `9fd9022`.
+- Recovery: operator moved concurrent session to dedicated worktree `.claude/worktrees/TradeViewPS`. Orphan `e4d0c21` cherry-picked onto main as `622f46c`. Push to origin clean.
+- Pattern is second occurrence of `[[parallel-session-branch-collision]]` (first: 2026-05-26 C-7 incident). Standing rule added: multi-session work in same repo must use distinct worktrees per session.
+- One leftover stash entry from the incident: `stash@{0} On paper-trade-visualizer-2026-05-30: leftover from concurrent session pre-isolation: LF->CRLF in test_export_paper_trades_to_pinescript.py` — 4 lines cosmetic on a file tracked only on paper-trade-vis. Safe to drop; left for operator review.
+
+**Architectural review branch PUSHED to origin:** `stage1-architectural-review-2026-05-30` (`ade4dbc`) is now `origin/`. The doc `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` is canonical for Stage 1 state as of 2026-05-30. Reachable via:
+- `git show ade4dbc:reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md`
+- or `git checkout stage1-architectural-review-2026-05-30 && cat reports/...`
+
+Operator deferred decision on whether to also merge the review branch to main as a doc commit (default: do NOT auto-merge; review is a snapshot artifact).
+
+**8+ Finding #10 operator decisions queued for next session** (full list in `[[2026-05-30-architectural-review-first-batch-remediation]]`):
+1. ~~Finding #1c remediation choice~~ — DEFAULT (A) shipped this session; consider (B) tripwire script as belt-and-suspenders for the prod-overlay window before P1 gates land.
+2. Finding #1a Phase 1a/1b reports on `bitunix-live-exit-path-2026-05-29` — merge docs-only to main or carry `[on branch X]` citations forward?
+3. Finding #1b prod-deploy gating — when does the 11-commit main stack go to prod? Conditioned on P1 (a)/(b)/(c) landing.
+4. Finding #1d class-extension scan — cross-reference `deploy_log.md` vs `git log --all` for other "deployed but unmerged" overlays.
+5. Finding #5 analogous "live skips X" audit (5 candidate items surfaced by review).
+6. Finding #6.1 `result='win'` semantic disambiguation (a/b/c/d).
+7. Finding #6.2 audit-row-loss-after-broker-confirm fallback (a/b/c).
+8. Finding #7 Phase 3 scope confirmation — scope (B) + ~60-90 LOC additions for Findings #6.1/6.2/6.3/6.4.
+9. Finding #8 pre-Phase-3 verification phase — run 8-10 verifications or accept residual on low-severity?
+10. Finding #9 discipline additions — adopt all five recommendations, subset, or alternatives?
+
+**Memory updates filed:**
+- New: `[[2026-05-30-architectural-review-first-batch-remediation]]` (session memo).
+- Updated: `[[bitunix-live-engine-build]]` (new "2026-05-30 UPDATE 2" block at top).
+- Updated: `[[parallel-session-branch-collision]]` (second-occurrence entry + standing rule).
+- MEMORY.md index gained one new line.
+
+**Status of older tracked items (unchanged this session):**
+- Stage-1 N+2 Phase 3 exit-path implementation: still queued; rebase `bitunix-live-exit-path-2026-05-29` onto merged main as first step.
+- Tastytrade refresh-token P1 ceiling 2026-06-12 — 13 days from session date.
+- C-1 progress 5/13+ — same as 2026-05-29 EOS.
+
+**Process gates unchanged:** 60-day paper-eval clock (~2026-07-19), Board sign-off for `auto_execute`, webhook↔LangGraph `auto_execute_caps` harmonization.
+
+---
+
 ## EOS snapshot — 2026-05-30 ~01:08 UTC (bitunix read-only diagnostics + kalshi scanner-disable DEPLOYED; session straddled UTC midnight)
 
 **Theme:** four read-only diagnostics ran in a parallel session while another Claude built Stage-1 N+1 (HITL entry-path) + began N+2 (exit-path). Diagnostics produced two committed reports + one operator-actioned config change deployed end-to-end.
