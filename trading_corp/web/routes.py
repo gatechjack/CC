@@ -927,7 +927,7 @@ def register(app: FastAPI) -> None:
             equity=account_equity or 100_000.0,
             peak_equity=account_equity or 100_000.0,
         )
-        strat_state = StrategyState(strategy="robinhood_pmcc")
+        strat_state = StrategyState.from_persistence("robinhood_pmcc", db_url=deps.db_url)
 
         # Per-order: risk → execute → log
         results: list[dict] = []
@@ -1121,7 +1121,7 @@ def register(app: FastAPI) -> None:
             equity=account_equity or 100_000.0,
             peak_equity=account_equity or 100_000.0,
         )
-        strat_state = StrategyState(strategy="robinhood_pmcc")
+        strat_state = StrategyState.from_persistence("robinhood_pmcc", db_url=deps.db_url)
 
         # Regime read (used by risk for counter-trend sizing)
         try:
@@ -1382,7 +1382,7 @@ def register(app: FastAPI) -> None:
             equity=account_equity or 100_000.0,
             peak_equity=account_equity or 100_000.0,
         )
-        strat_state = StrategyState(strategy=order.strategy)
+        strat_state = StrategyState.from_persistence(order.strategy, db_url=deps.db_url)
 
         try:
             reading = deps.trend_agent.read() if deps.trend_agent else None

@@ -134,6 +134,102 @@ class StrategyState:
     realized_pnl_day: str | None = None  # YYYY-MM-DD; cleared on rollover
     updated_ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
+    # ── Stage-1 N+1 commit 5: cross-process halt persistence ─────────
+    # Pre-N+1 every StrategyState site constructed `halted=False` fresh,
+    # which meant RiskAgent's daily-loss halt verdict only blocked
+    # in-process — a restart cleared the halt. The single primitive
+    # below (paired with a `set_agent_state` writer at the halt-mutation
+    # site in RiskAgent) lets construction sites consult persisted halt
+    # state with one line. Other fields stay transient per-call
+    # computations (realized_pnl is summed from audit/order rows each
+    # eval; persisting it would diverge from the audit source of truth).
+
+    _AGENT_STATE_ACTOR = "strategy_state"
+
+    @classmethod
+    def from_persistence(
+        cls,
+        strategy: str,
+        db_url: str = "sqlite:///data/trading_corp.db",
+    ) -> "StrategyState":
+        """Construct a StrategyState with `halted` + `halt_reason` loaded
+        from `agent_state` (key=strategy, actor="strategy_state").
+
+        Returns `cls(strategy=strategy)` (the pre-N+1 default) if no
+        persisted row exists or the read raises. Read failures degrade
+        to "not halted" rather than failing closed — a transient DB
+        glitch shouldn't halt the entire bot if no halt was actually
+        set. The RiskAgent's per-eval daily-loss check is the real
+        backstop; this primitive carries the cross-process bit."""
+        from trading_corp.persistence.db import load_agent_state
+        try:
+            loaded = load_agent_state(
+                cls._AGENT_STATE_ACTOR, strategy, db_url=db_url,
+            )
+        except Exception:
+            return cls(strategy=strategy)
+        if loaded is None:
+            return cls(strategy=strategy)
+        value, _updated = loaded
+        if not isinstance(value, dict):
+            return cls(strategy=strategy)
+        return cls(
+            strategy=strategy,
+            halted=bool(value.get("halted", False)),
+            halt_reason=value.get("halt_reason"),
+        )
+
+    @classmethod
+    def persist_halt(
+        cls,
+        strategy: str,
+        reason: str,
+        db_url: str = "sqlite:///data/trading_corp.db",
+    ) -> None:
+        """Write `halted=True` + `halt_reason` to `agent_state` so
+        every future `StrategyState.from_persistence(strategy, db_url)`
+        observes the halt. Called from RiskAgent's daily-loss-cap
+        branch; can also be called directly from operational tooling
+        (e.g. an admin "halt strategy X" CLI). Best-effort: failure
+        logs but does not raise (caller's reject path is what enforces
+        the halt for the current decision)."""
+        from trading_corp.persistence.db import set_agent_state
+        import logging as _logging
+        try:
+            set_agent_state(
+                cls._AGENT_STATE_ACTOR,
+                strategy,
+                {"halted": True, "halt_reason": reason},
+                db_url=db_url,
+            )
+        except Exception as e:
+            _logging.getLogger(__name__).warning(
+                "StrategyState.persist_halt failed for %s: %s", strategy, e,
+            )
+
+    @classmethod
+    def clear_halt(
+        cls,
+        strategy: str,
+        db_url: str = "sqlite:///data/trading_corp.db",
+    ) -> None:
+        """Reverse `persist_halt`. The natural caller is operator
+        tooling once they've reviewed the daily-loss breach and decided
+        the strategy is ready to trade again."""
+        from trading_corp.persistence.db import set_agent_state
+        import logging as _logging
+        try:
+            set_agent_state(
+                cls._AGENT_STATE_ACTOR,
+                strategy,
+                {"halted": False, "halt_reason": None},
+                db_url=db_url,
+            )
+        except Exception as e:
+            _logging.getLogger(__name__).warning(
+                "StrategyState.clear_halt failed for %s: %s", strategy, e,
+            )
+
 
 @dataclass
 class PaperTradeRecord:

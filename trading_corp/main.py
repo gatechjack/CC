@@ -322,6 +322,7 @@ async def run(argv: list[str] | None = None) -> int:
     _trade_plan_config = None       # PR 4 — adaptive trade plan
     _fee_config = None              # PR 4 — fee schedule for TP1 fee floor
     _bx_block: dict = {}            # PR 4 — surfaced outside try for from_dict downstream
+    _execution_mode = "paper"       # Stage-1 N+1 — fail-closed default if YAML load fails
     try:
         import yaml as _yaml
         from pathlib import Path as _Path
@@ -337,6 +338,10 @@ async def run(argv: list[str] | None = None) -> int:
         _htf_gate_mode = str(
             (_bx_block.get("htf_gate") or {}).get("mode", "off")
         ).lower()
+        # Stage-1 N+1 commit 2: execution_mode (paper | live). Default
+        # paper. Observer's __init__ enforces final fail-closed
+        # normalization; this is the YAML read site.
+        _execution_mode = str(_bx_block.get("execution_mode", "paper")).lower()
         # PR 4 — adaptive trade plan + fees. Activated only when
         # `bitunix_futures.trade_plan.enabled: true` in YAML. Default
         # (block missing or enabled=false) leaves the legacy geometric
@@ -364,12 +369,13 @@ async def run(argv: list[str] | None = None) -> int:
         _htf_config = HTFRegimeConfig.defaults()
     log.info(
         "BitUnix observer wiring: scoring=%s, pa_enabled=%s, htf_gate_mode=%s, "
-        "htf_regime_enabled=%s, trade_plan_active=%s",
+        "htf_regime_enabled=%s, trade_plan_active=%s, execution_mode=%s",
         bool(_scoring_config and _scoring_config.enabled),
         bool(_pa_config and _pa_config.enabled),
         _htf_gate_mode,
         bool(_htf_config and _htf_config.enabled),
         bool(_trade_plan_config and _fee_config),
+        _execution_mode,
     )
     bitunix_observer = BitunixFuturesObserver(
         db_url=secrets.db_url,
@@ -387,6 +393,14 @@ async def run(argv: list[str] | None = None) -> int:
         # PR 4 — adaptive trade plan. Both None unless YAML activates them.
         trade_plan_config=_trade_plan_config,
         fee_config=_fee_config,
+        # Stage-1 N+1 commit 2 — execution mode wiring. paper-default
+        # everywhere; live requires explicit YAML edit + restart.
+        execution_mode=_execution_mode,
+        # Stage-1 N+1 commit 4 — HITL gate for first-N live orders.
+        # Wires the existing PendingApprovalRegistry singleton; the
+        # observer only consults it when execution_mode=live AND
+        # auto_execute=true AND counter < HITL_FIRST_N_LIVE_ORDERS.
+        pending_registry=pending_registry,
         # telegram_channel attached after channel is constructed (below)
     )
 
@@ -789,6 +803,14 @@ async def run(argv: list[str] | None = None) -> int:
     # board direction, bitunix_futures uses notification (not approval)
     # via Telegram — risk caps are the gate, not per-trade HITL.
     bitunix_observer.telegram_channel = channel
+    # Stage-1 N+1 commit 7b: wire the SAME channel singleton as the
+    # safety_notifier for data_exec — no parallel TelegramChannel
+    # instance (CLAUDE.md Phase-C principle: one channel per process).
+    # The safety_notifier slot is consumed on the safety branch's
+    # data_exec.py (mode-mismatch + flatten_division handlers); the
+    # slot was re-added in commit 7a so this assignment is type-safe
+    # right now, before the safety branch lands.
+    data_exec.safety_notifier = channel
 
     await channel.start()
     await channel.push(
@@ -2360,7 +2382,7 @@ async def _scheduled_polymarket_arb_loop(
                 peak_equity=account_equity,
                 halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             log.info(
                 "Polymarket scanner: %d divergence-based ProposedOrder(s) emitted",
@@ -2531,7 +2553,7 @@ async def _scheduled_kalshi_arb_loop(
                 peak_equity=account_equity,
                 halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             # Pairs are interleaved [yes_leg, no_leg, yes_leg, no_leg, ...].
             n_pairs = len(orders) // 2
@@ -2682,7 +2704,7 @@ async def _scheduled_kalshi_tb_arb_loop(
                 peak_equity=account_equity,
                 halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             # Group legs by arb_set_id for cleaner audit + telegram.
             sets: dict[str, list] = {}
@@ -2844,7 +2866,7 @@ async def _scheduled_kalshi_llm_arb_loop(
                 peak_equity=account_equity,
                 halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             log.info(
                 "Kalshi LLM scanner: %d divergence-based ProposedOrder(s) emitted",
@@ -2997,7 +3019,7 @@ async def _scheduled_kalshi_copy_trader_loop(
                     account=agent.division, equity=account_equity,
                     peak_equity=account_equity, halted=False,
                 )
-                strategy_state = StrategyState(strategy=agent.name, halted=False)
+                strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
                 log.info(
                     "Kalshi copy trader: %d copy ProposedOrder(s) emitted",
@@ -3152,7 +3174,7 @@ async def _scheduled_polymarket_copy_trader_loop(
                     account=agent.division, equity=account_equity,
                     peak_equity=account_equity, halted=False,
                 )
-                strategy_state = StrategyState(strategy=agent.name, halted=False)
+                strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
                 log.info(
                     "Polymarket copy trader: %d copy ProposedOrder(s) emitted",
@@ -3447,7 +3469,7 @@ async def _scheduled_kalshi_weather_arb_loop(
                 account=agent.division, equity=account_equity,
                 peak_equity=account_equity, halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             log.info("Kalshi Weather: %d ProposedOrder(s) emitted", len(orders))
             for order in orders:
@@ -3621,7 +3643,7 @@ async def _scheduled_kalshi_crypto_arb_loop(
                 account=agent.division, equity=account_equity,
                 peak_equity=account_equity, halted=False,
             )
-            strategy_state = StrategyState(strategy=agent.name, halted=False)
+            strategy_state = StrategyState.from_persistence(agent.name, db_url=logger_agent.db_url)
 
             log.info("Kalshi Crypto: %d ProposedOrder(s) emitted", len(orders))
             for order in orders:

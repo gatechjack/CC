@@ -596,7 +596,7 @@ async def _process_lord_otter_alert(
             equity=account_equity or 100_000.0,
             peak_equity=account_equity or 100_000.0,
         )
-        strat_state = StrategyState(strategy=order.strategy)
+        strat_state = StrategyState.from_persistence(order.strategy, db_url=deps.db_url)
         regime = "unknown"
         if deps.trend_agent is not None:
             try:
@@ -858,7 +858,7 @@ async def _process_market_cypher_alert(
             equity=account_equity or 100_000.0,
             peak_equity=account_equity or 100_000.0,
         )
-        strat_state = StrategyState(strategy=order.strategy)
+        strat_state = StrategyState.from_persistence(order.strategy, db_url=deps.db_url)
         regime = "unknown"
         if deps.trend_agent is not None:
             try:

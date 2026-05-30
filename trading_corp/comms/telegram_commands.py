@@ -467,7 +467,7 @@ class TelegramCommands:
             account=slug, equity=equity or 100_000.0,
             peak_equity=equity or 100_000.0,
         )
-        strat_state = StrategyState(strategy="robinhood_pmcc")
+        strat_state = StrategyState.from_persistence("robinhood_pmcc", db_url=self.deps.db_url)
 
         results: list[str] = [f"⚡ *Executing on `{sym}`...*"]
         for order in orders:

@@ -8,6 +8,100 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P2 — Stage-1 N+1 live entry-path branch: merge sequencing + cross-branch coordination (filed 2026-05-29)
+
+**Branch:** `bitunix-live-entry-path-2026-05-29` (8 commits, NOT merged). Ships
+canonical `_record_placement_outcome` helper extraction + `execution_mode`
+YAML field + live-mode wiring inside the helper + HITL gate for first
+N=10 orders + monitor-mode at #11 + `StrategyState.from_persistence` + 17
+site swaps + safety_notifier slot re-add + main.py safety_notifier
+wiring. ~246 tests green. **Default config stays `execution_mode: paper`
+everywhere; no live order flow.** See report
+`reports/2026-05-29_bitunix_live_entry_path_diagnostic.md`.
+
+**Merge sequencing (canonical order, do not re-discover):**
+
+1. **C-1 branches first** (independent of bitunix code path):
+   `c1-bitunix-cred-rotation`, `c1-apify-cred-rotation`,
+   `c1-tastytrade-verify-2026-05-29`. KV-side rotation work; can merge
+   in any order among themselves.
+2. **Exception-class move on broker-write — RESOLVED 2026-05-29** (`87dac50`)
+   on `bitunix-live-engine-stage1-broker-write`. The canonical
+   `BitunixPositionModeMismatch` now lives in
+   `trading_corp/brokers/bitunix_exceptions.py` (byte-identical with
+   the safety branch's file); `trading_corp/brokers/bitunix.py`
+   imports + re-exports for back-compat with existing callers.
+   6-test class-identity guard locks IS-equality across both import
+   paths + bidirectional except-clause catching. All 38 broker-write
+   tests green.
+3. **Broker-write to main** (`bitunix-live-engine-stage1-broker-write`
+   HEAD `87dac50`) — adds real `place_order` + the canonical
+   `bitunix_exceptions.py`. Still dead code on prod until the live
+   wiring + a YAML `execution_mode: live` flip.
+4. **Safety branch to main** (`bitunix-orderpath-safety-2026-05-29`)
+   — mode-mismatch consumer + flatten_division + observer flatten
+   trigger. Adds `safety_notifier` slot to data_exec.py.
+5. **This branch to main** (`bitunix-live-entry-path-2026-05-29`)
+   — wires execution_mode, HITL, persistence, safety_notifier=channel.
+
+**Cross-branch duplicates (intentional, no conflicts):**
+- **`safety_notifier` kwarg slot on `DataExecAgent`** — added by BOTH
+  the safety branch (originating) AND this branch (commit 7a,
+  byte-identical re-add). Reason: this branch is off main; safety
+  branch hadn't landed when 7a was needed for 7b's main.py wiring
+  to be type-safe standalone. Git auto-merge resolves identical adds
+  to a no-op delta — **not a conflict.**
+- **`trading_corp/brokers/bitunix_exceptions.py`** — added by BOTH
+  the safety branch (originating, Session N) AND the broker-write
+  branch (`87dac50`, byte-identical pull-in). Reason: load-bearing
+  class identity at merge time. Both files are byte-identical
+  (verified by `diff`); git auto-merge resolves to a no-op delta.
+
+**Live-config flip is NOT included in any of the above merges.** Going
+live requires an EXPLICIT operator deploy that edits `config/strategies.yaml`
+`bitunix_futures.execution_mode: paper → live` + restart, after operator
+sign-off on a live-readiness review. Default after all 5 merges still
+ships paper.
+
+**Priority: P2** — coordination work, not new feature work. Re-pull
+into active session when sequencing the merge train.
+
+---
+
+## P3 — Wider db_url plumbing through risk.evaluate sites (Stage-1 N+1 follow-up, filed 2026-05-29)
+
+Commit 6 of Stage-1 N+1 swapped 17 `StrategyState(strategy=...)` sites
+to `StrategyState.from_persistence(...)` (READ side). The complementary
+WRITE side (RiskAgent's `persist_halt` on a daily-loss verdict) only
+fires when `db_url` is passed to `risk.evaluate(...)`. Plumbed today
+for: graph path (ceo_graph.py:347) + bitunix observer (lines 1514, 2849).
+
+**NOT plumbed today** (READ-only persistence — picks up halts written
+by the plumbed paths, but doesn't WRITE its own):
+- `main.py` scanners (8 sites): 2389, 2577, 2731, 2887, 3051, 3206,
+  3486, 3660 — Polymarket / Kalshi tail-arb / Kalshi LLM / Kalshi
+  copy / Polymarket copy / Kalshi Weather / Kalshi Crypto.
+- `web/webhooks.py`: 621, 664, 883, 926 — Otter + Cypher webhook paths.
+- `web/routes.py`: 935, 1135, 1394 — manual order endpoints.
+- `comms/telegram_commands.py`: 474 — PMCC telegram commands.
+
+**Impact:** if a daily-loss cap fires via one of these paths (a TV
+webhook breaches the cap), the in-process verdict still rejects the
+current order, but the halt is NOT persisted across restarts. The
+graph path handles PMCC flows; bitunix observer handles bitunix flows;
+the gap is "TV-webhook-induced halt on Otter/Cypher" — which today
+isn't a live scenario (`execution_mode: paper`).
+
+**Resolution:** pass `db_url=deps.db_url` (or equivalent local) to each
+of the listed `risk.evaluate(...)` sites. Mechanical edit (~12 lines
+of plumbing). Test: add an integration test asserting an
+Otter-path halt persists across restart.
+
+**Priority: P3** — not blocking Stage-1 bitunix live; surfaces only
+when TV webhooks become live-execute paths.
+
+---
+
 ## P1 — Polymarket copy-trader SELL-pairing skips ~99.86% of exits ("no matching entry") (found 2026-05-29)
 
 **Diagnostic (surfaced during the Group A resolver settle-fairness diagnosis — NOT investigated further, filed as-is):** `polymarket_resolver._pair_pending_exits` re-scans **719–720** unpaired copy-trader SELL `would_have_placed` rows every tick and skips **719/720 (~99.86%)** as `skipped_no_entry` — it can't find the prior BUY (matched on `whale_wallet` + `condition_id` + `outcome_index`, entry `ts` < sell `ts`, unpaired). Stable every tick for 12h+ (`pair_scanned: 719-720, pair_skipped_no_entry: 719, paired: 0-2`). So whale-closed PCT positions are NOT being booked into round-trips.
