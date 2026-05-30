@@ -145,9 +145,16 @@ def fetch_validator_pair(
     `pa_validation_decision` audit row with the same `trigger_signal`
     whose `ts` is in `(pt_ts - window_seconds, pt_ts]`. Falls back to
     `trigger_signal` itself when no decision row found in the window.
+
+    The lower bound is computed in Python and passed as a same-format
+    ISO 'T' string. Using SQLite's `datetime(?, '-N seconds')` would
+    return a space-separated string that compares falsely against the
+    ISO-'T' `ts` values (see memory feedback_sqlite_iso_datetime_comparison).
     """
     if not trigger_signal or not pt_ts:
         return trigger_signal or ""
+    upper_dt = datetime.fromisoformat(pt_ts.replace("Z", "+00:00"))
+    lower_iso = (upper_dt - timedelta(seconds=window_seconds)).isoformat()
     row = conn.execute(
         """
         SELECT payload_json
@@ -155,11 +162,11 @@ def fetch_validator_pair(
         WHERE kind = 'pa_validation_decision'
           AND json_extract(payload_json, '$.trigger_signal') = ?
           AND ts <= ?
-          AND ts >= datetime(?, ?)
+          AND ts >= ?
         ORDER BY ts DESC
         LIMIT 1
         """,
-        (trigger_signal, pt_ts, pt_ts, f"-{window_seconds} seconds"),
+        (trigger_signal, pt_ts, lower_iso),
     ).fetchone()
     if not row:
         return trigger_signal

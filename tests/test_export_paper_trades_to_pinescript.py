@@ -145,9 +145,9 @@ def _insert_decision(
 
 def test_iso_to_unix_ms_round_trip():
     # 2026-05-29T17:51:02Z → known epoch ms
-    assert iso_to_unix_ms("2026-05-29T17:51:02+00:00") == 1779299462000
+    assert iso_to_unix_ms("2026-05-29T17:51:02+00:00") == 1780077062000
     # Trailing Z variant
-    assert iso_to_unix_ms("2026-05-29T17:51:02Z") == 1779299462000
+    assert iso_to_unix_ms("2026-05-29T17:51:02Z") == 1780077062000
     # Empty / open-trade sentinel
     assert iso_to_unix_ms("") == 0
 
@@ -399,8 +399,8 @@ def test_format_pine_block_renders_array_declarations():
     assert "// Division : bitunix_futures" in block
     assert "// Trades   : 1 (1 win / 0 loss / 0 expired / 0 open)" in block
     assert "var int g_count = 1" in block
-    # 2026-05-29T17:51:02 UTC == 1779299462000 ms
-    assert "var array<int> g_entry_ts = array.from(1779299462000)" in block
+    # 2026-05-29T17:51:02 UTC == 1780077062000 ms
+    assert "var array<int> g_entry_ts = array.from(1780077062000)" in block
     assert 'var array<string> g_side = array.from("sell")' in block
     assert 'var array<string> g_result = array.from("win")' in block
     assert 'var array<string> g_validator_pair = array.from("V+VOL/-S")' in block
