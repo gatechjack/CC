@@ -70,9 +70,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import random
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import json
 
@@ -83,6 +85,10 @@ from trading_corp.brokers.bitunix_exceptions import BitunixPositionModeMismatch
 from trading_corp.brokers.bitunix_symbols import to_wire_format
 from trading_corp.persistence import db
 from trading_corp.persistence.models import FillEvent, OpenPosition, Position, ProposedOrder
+from trading_corp.utils.time import iso, now_utc
+
+if TYPE_CHECKING:
+    from trading_corp.agents.logger import LoggerAgent
 
 # Re-exported here so existing callers can still write
 # `from trading_corp.brokers.bitunix import BitunixPositionModeMismatch`.
@@ -135,11 +141,47 @@ _ERROR_CODES: dict[int, tuple[str, str]] = {
     30042: ("CLIENT_ID_DUPLICATE", "clientId already used — order already accepted; safe to treat as success"),
 }
 
-# Rate-limit codes the (future) retry layer should back off on.
+# Rate-limit codes the retry layer (in `_request`) backs off on.
 _RETRYABLE_CODES = {10005, 10006}
 # Codes meaning "your write already landed" — safe to treat as success because
 # clientId is a deterministic idempotency key.
 _IDEMPOTENT_OK_CODES = {30042}
+
+# ── Phase 4 REST retry layer (gate (a) 2026-05-30) ──────────────────────────
+# Resilience-against-transient-failure for the signed `_request` chokepoint.
+# Read-side calls (snapshot/quote/get_funding_rate) deliberately bypass
+# `_request` and therefore do not retry — for those paths the stale-snapshot
+# halt (sub-item 2) is the safety primitive, not retry. See `_request`
+# docstring for the design rationale.
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY_S = 0.25
+_RETRY_CAP_DELAY_S = 4.0
+# Total backoff budget across all retries. With 4 total attempts × 15 s
+# per-attempt timeout + ≤10 s of sleep across the 3 backoffs, worst-case
+# `_request` wallclock is ≤70 s.
+_RETRY_WALLCLOCK_CAP_S = 10.0
+# HTTP statuses we treat as transient (after `raise_for_status()`).
+_RETRY_HTTP_STATUSES = {408, 429, 502, 503, 504}
+
+
+def _is_retryable_httpx_exc(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _RETRY_HTTP_STATUSES
+    return False
+
+
+def _retry_backoff_delay(attempt: int) -> float:
+    """Exponential backoff with jitter. `attempt` is 1-indexed.
+
+    attempt=1 → ~0.25-0.50 s, attempt=2 → ~0.50-1.00 s, attempt=3 → ~1.00-2.00 s.
+    Capped at `_RETRY_CAP_DELAY_S` per attempt.
+    """
+    base = min(_RETRY_CAP_DELAY_S, _RETRY_BASE_DELAY_S * (2 ** (attempt - 1)))
+    # Full-jitter pattern (AWS architecture blog): random in [base/2, base].
+    # Tests pin `random.uniform` to make this deterministic.
+    return random.uniform(base / 2.0, base)
 
 
 def classify_error(code: int | None) -> tuple[str, str]:
@@ -238,6 +280,8 @@ class BitunixBroker(Broker):
         self,
         api_key: str | None = None,
         api_secret: str | None = None,
+        *,
+        logger: "LoggerAgent | None" = None,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -260,6 +304,10 @@ class BitunixBroker(Broker):
         # Fill-observation poll knobs (overridable for tests).
         self._fill_max_polls = _FILL_MAX_POLLS
         self._fill_poll_interval_s = _FILL_POLL_INTERVAL_S
+        # Optional LoggerAgent for `rest_request_retried` audit rows. When
+        # None, the retry layer logs via `logging` only (no audit row). Wired
+        # from main.py at broker construction; tests inject a fake.
+        self.logger: "LoggerAgent | None" = logger
 
     async def connect(self) -> None:
         if self._stub:
@@ -506,6 +554,34 @@ class BitunixBroker(Broker):
         as raw content (never httpx `json=`, which would re-serialize with
         whitespace and break the signature → error 10007). Returns the
         envelope `data`; raises `BitunixAPIError` on a non-zero `code`.
+
+        ── Retry layer (gate (a) 2026-05-30) ───────────────────────────
+        Transient failures retry with exponential backoff + jitter:
+          * `httpx.TimeoutException` (network or server-side timeout)
+          * `httpx.HTTPStatusError` with status in `_RETRY_HTTP_STATUSES`
+          * `BitunixAPIError` with code in `_RETRYABLE_CODES` (rate-limit
+            only — narrow set; expand on evidence)
+
+        Up to `_RETRY_MAX_ATTEMPTS` (3) retries → 4 total attempts; ≤10 s
+        of total backoff sleep. Worst-case `_request` wallclock ≤70 s.
+
+        **POST retries are gated on `clientId` presence in the body.** Without
+        a deterministic idempotency key we cannot prove a retried request
+        that succeeds didn't *also* land the first time. POSTs without
+        `clientId` (e.g. `change_position_mode`, `change_leverage`,
+        `cancel_orders` without one) raise immediately on transient failure.
+
+        **Sign-stability under retry**: the JSON body string is computed once
+        and re-used across attempts (body bytes never change). `nonce` and
+        `timestamp` ARE re-computed per attempt — duplicate nonces are
+        server-rejected, and the signature stays valid because the signing
+        inputs incorporate the fresh nonce/timestamp.
+
+        Read-path note: `snapshot()`, `quote()`, and `get_funding_rate()`
+        deliberately bypass `_request` (they construct httpx GETs directly
+        for per-call signing efficiency). Retry therefore does NOT cover the
+        read path — for snapshot specifically, the staleness-signal halt
+        (sub-item 2 of gate (a)) is the resilience primitive.
         """
         if self._stub or not self._client or not self._api_key or not self._api_secret:
             raise RuntimeError(
@@ -513,23 +589,116 @@ class BitunixBroker(Broker):
             )
         body_str = ""
         content = None
-        headers: dict[str, str] = {}
+        headers_base: dict[str, str] = {}
         if body is not None:
             body_str = json.dumps(body, separators=(",", ":"))
             content = body_str
-            headers["Content-Type"] = "application/json"
-        headers.update(
-            _sign(self._api_key, self._api_secret, query=query, body=body_str)
-        )
+            headers_base["Content-Type"] = "application/json"
+
+        # Retry-eligibility decision. GETs are read-only; POSTs need a
+        # deterministic idempotency key to be safely retriable.
         if method == "GET":
-            r = await self._client.get(path, params=query or None, headers=headers)
+            retry_eligible = True
         else:
-            r = await self._client.post(path, content=content, headers=headers)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("code") != 0:
-            raise BitunixAPIError(data.get("code"), data.get("msg"), path=path)
-        return data.get("data")
+            retry_eligible = bool(body and "clientId" in body)
+
+        attempt = 0
+        wallclock_used_s = 0.0
+        last_error_summary: str | None = None
+        while True:
+            attempt += 1
+            # Fresh signing per attempt — same body bytes, new nonce/timestamp.
+            headers = dict(headers_base)
+            headers.update(
+                _sign(self._api_key, self._api_secret, query=query, body=body_str)
+            )
+            try:
+                if method == "GET":
+                    r = await self._client.get(
+                        path, params=query or None, headers=headers,
+                    )
+                else:
+                    r = await self._client.post(
+                        path, content=content, headers=headers,
+                    )
+                r.raise_for_status()
+                data = r.json()
+                if data.get("code") != 0:
+                    raise BitunixAPIError(data.get("code"), data.get("msg"), path=path)
+            except BitunixAPIError as exc:
+                transient = exc.code in _RETRYABLE_CODES
+                err_summary = (
+                    f"BitunixAPIError code={exc.code} name={exc.error_name}"
+                )
+                caught = exc
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                transient = _is_retryable_httpx_exc(exc)
+                if isinstance(exc, httpx.HTTPStatusError):
+                    err_summary = f"HTTPStatusError {exc.response.status_code}"
+                else:
+                    err_summary = f"{type(exc).__name__}"
+                caught = exc
+            else:
+                # Success path. Audit retry summary iff we retried.
+                if attempt > 1:
+                    self._audit_request_retried(
+                        path=path,
+                        method=method,
+                        attempts=attempt,
+                        last_error_summary=last_error_summary,
+                        wallclock_used_s=wallclock_used_s,
+                    )
+                return data.get("data")
+
+            # Reached only on caught exception. Decide whether to retry.
+            if (
+                not transient
+                or not retry_eligible
+                or attempt > _RETRY_MAX_ATTEMPTS
+            ):
+                raise caught
+            delay = _retry_backoff_delay(attempt)
+            if wallclock_used_s + delay > _RETRY_WALLCLOCK_CAP_S:
+                # Out of backoff budget — fail fast rather than violate the cap.
+                raise caught
+            last_error_summary = err_summary
+            log.warning(
+                "BitUnix _request transient failure on %s %s (attempt %d): %s "
+                "— sleeping %.3fs before retry",
+                method, path, attempt, err_summary, delay,
+            )
+            await asyncio.sleep(delay)
+            wallclock_used_s += delay
+
+    def _audit_request_retried(
+        self,
+        *,
+        path: str,
+        method: str,
+        attempts: int,
+        last_error_summary: str | None,
+        wallclock_used_s: float,
+    ) -> None:
+        """One audit row per `_request` invocation that needed any retries.
+        Once-per-summary (not per-attempt) to avoid audit-row flooding on a
+        sustained 5xx storm. No-op when no logger is wired."""
+        if self.logger is None:
+            return
+        try:
+            self.logger.log_event(
+                actor="bitunix_broker",
+                kind="rest_request_retried",
+                payload={
+                    "path": path,
+                    "method": method,
+                    "attempts": attempts,
+                    "last_error": last_error_summary,
+                    "wallclock_used_s": round(wallclock_used_s, 3),
+                    "ts": iso(now_utc()),
+                },
+            )
+        except Exception as e:  # never block the success path on audit
+            log.warning("rest_request_retried audit failed: %s", e)
 
     # ── Phase 4: order placement ────────────────────────────────────────
     async def place_order(self, order: ProposedOrder) -> FillEvent:

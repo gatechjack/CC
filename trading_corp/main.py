@@ -462,7 +462,9 @@ async def run(argv: list[str] | None = None) -> int:
     for d in divisions:
         if not d.enabled:
             continue
-        broker = _build_broker_for_division(d, secrets, mode, args.brokers)
+        broker = _build_broker_for_division(
+            d, secrets, mode, args.brokers, logger_agent=logger_agent,
+        )
         if broker is None:
             continue
         data_exec.register_broker(d.slug, broker)
@@ -1719,12 +1721,17 @@ def _build_broker_for_division(
     secrets,
     mode: str,
     live_brokers: list[str],
+    *,
+    logger_agent=None,
 ):
     """Build a broker handle for one division, honoring PAPER/LIVE mode.
 
     PAPER mode wraps real read-only brokers in PaperExecutionBroker so
     snapshots are real but fills are simulated. LIVE mode binds the real
     broker for the listed families only.
+
+    `logger_agent` is currently consumed only by the BitUnix broker, for the
+    REST retry-layer audit (`rest_request_retried`); other adapters ignore it.
     """
     from trading_corp.brokers.coinbase import CoinbaseBroker
 
@@ -1797,6 +1804,7 @@ def _build_broker_for_division(
         bx = BitunixBroker(
             api_key=secrets.bitunix_futures_api_key,
             api_secret=secrets.bitunix_futures_api_secret,
+            logger=logger_agent,
         )
         if is_live_family:
             return bx
