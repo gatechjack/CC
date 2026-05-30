@@ -150,6 +150,12 @@ class Secrets:
     # store as multi-line KV secret). If unset, KalshiBroker initializes as
     # a stub returning $0 / no positions.
     kalshi_api_key_id: str | None
+    # the-odds-api.com token (used by kalshi_sports_scout +
+    # kalshi_sports_arb_observer at main.py:1087/1106). If unset, those
+    # strategies receive a None key — they handle this as a no-op fetch.
+    # Positioned to match the prod backup layout (between the two kalshi
+    # fields) so the next prod redeploy is a no-op diff for this region.
+    odds_api_key: str | None
     kalshi_private_key_pem: str | None
     # Apify (Phase K3 — Kalshi Copy Trading). Token authorizes calls to
     # the saswave leaderboard + profile actors for whale discovery and
@@ -342,6 +348,7 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         },
         polygon_rpc_url=_env("POLYGON_RPC_URL"),
         kalshi_api_key_id=_env("KALSHI_API_KEY_ID"),
+        odds_api_key=_env("ODDS_API_KEY"),
         kalshi_private_key_pem=_env("KALSHI_PRIVATE_KEY_PEM"),
         apify_api_token=_env("APIFY_API_TOKEN"),
         tastytrade_provider_secret=_env("TASTYTRADE_PROVIDER_SECRET"),
