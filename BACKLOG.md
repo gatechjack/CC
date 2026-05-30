@@ -8,7 +8,9 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## P2 — Stage-1 N+1 live entry-path branch: merge sequencing + cross-branch coordination (filed 2026-05-29)
+## ~~P2 — Stage-1 N+1 live entry-path branch: merge sequencing + cross-branch coordination~~ — **✅ RESOLVED 2026-05-30** (filed 2026-05-29)
+
+**Status:** all 5 sequencing steps below LANDED on `main` 2026-05-30 per the merge-session entry in `runbooks/deploy_log.md` (source-only, NOT deployed to prod). Three fixture-gap regressions caught + fixed forward during the merge. Branch landscape simplified to one unmerged feature branch: `bitunix-live-exit-path-2026-05-29` (Phase 3 work). Original entry preserved below for the audit trail.
 
 **Branch:** `bitunix-live-entry-path-2026-05-29` (8 commits, NOT merged). Ships
 canonical `_record_placement_outcome` helper extraction + `execution_mode`

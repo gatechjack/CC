@@ -76,6 +76,60 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-30 — Merge sequence (a): land C-1 + Stage-1 broker-write/safety/entry-path on main — SOURCE-ONLY (NOT deployed to prod)
+
+**Type:** source-merge session — six feature branches landed on `main` + two scoped fixture-fix follow-up commits. **NO prod deploy this session.** Prod remains at the pre-merge main commit (`4985bbe`). Operator decides deploy timing separately; deploy of these merged commits will require the RH-pickle-aware restart coordination per the standing rule.
+
+**Merge order (with commit SHAs):**
+1. `d3cd655` — Merge `c1-bitunix-cred-rotation` (literal-redaction + deploy_log + BACKLOG annotations; conflict resolved: deploy_log.md log-entry ordering)
+2. `8e4d877` — Merge `c1-apify-cred-rotation` (close-out, zero code change; conflicts resolved: BACKLOG items 12+13 + deploy_log interleave)
+3. `cf925e3` — Merge `c1-tastytrade-verify-2026-05-29` (SDK source verification, P2→P1 elevation, comment corrections; conflict resolved: BACKLOG item 13)
+4. `4a15c72` — Merge `bitunix-live-engine-stage1-broker-write` (Phase-4 place/cancel/fill/kill-switch; brokers/bitunix.py 475→969 LOC; CLEAN auto-merge)
+5. `ecfc677` — Merge `bitunix-orderpath-safety-2026-05-29` (mode-mismatch consumer + flatten_division; +309 LOC on data_exec.py + 34 LOC observer; conflict resolved: BACKLOG P3 entries interleaved)
+   * **Fixture-gap regression caught + fixed forward:** `4e75216` — `data_exec.flatten_division = AsyncMock()` in `test_bitunix_futures_observer.py` `wired_observer` fixture (1 LOC). 6 observer tests regressed because safety added an await call site the pre-existing MagicMock fixture didn't model. Restored baseline 26 failures.
+6. `0200eed` — Merge `bitunix-live-entry-path-2026-05-29` (N+1 execution_mode + HITL gate + StrategyState.from_persistence + 17 swap sites + safety_notifier slot; 11 commits, 2882 lines added; conflict resolved: bitunix_futures_observer.py kept both safety's `_maybe_flatten_on_risk_verdict` and entry-path's N+1 plumbing — independent additions at same insertion point)
+   * **Fixture-gap regression caught + fixed forward (TWO classes):**
+     * `7aca8dd` — `data_exec.flatten_division = AsyncMock()` in 3 entry-path test files (placement_outcome, live_branch, hitl_gate), 7 fixture call sites, 6 LOC. Same class as merge 5 fix.
+     * `2cbcc3b` — `deps.db_url = db_url` in 2 `_Deps` fixtures of `test_webhook_research_consult_integration.py`, 2 LOC. Distinct class (new required attribute on deps object) — entry-path swapped `StrategyState()` to `StrategyState.from_persistence(deps.db_url, ...)` in `web/webhooks.py` but pre-existing `_Deps` didn't carry `db_url`.
+
+**Conflict resolution policy applied uniformly:** log-entry ordering = interleave by timestamp reverse-chronological (newest at top); item-content conflicts = "newer evidence wins per item" (no content modification, no invention); independent additions at same insertion point = keep both.
+
+**Pre-merge baseline:** 1881 tests, 26 failures, 0 errors (excluding 3 pre-existing collection-error files in `--ignore` list: `test_backtest_bitunix_confluence_five_factor.py`, `test_bitunix_confluence_gate.py`, `test_bitunix_gate_inputs.py`). The 26 failures are in unrelated files (robinhood/tasty/IC/webhooks) — not touched by these merges.
+
+**Post-merge state:** 2015 tests (+134 new from broker-write + safety + entry-path test files + the new fixture-update tests), 26 failures (unchanged from baseline — regression threshold held), 0 errors. Test runtime: ~250s per pass.
+
+**Byte-identical assumption verification:** the prompt called out two specific files where byte-identical resolution was expected — `bitunix_exceptions.py` (broker-write + safety both create it) and `safety_notifier` slot in `data_exec.py` (entry-path + safety both add it). **Both held cleanly:** no conflicts on either file at the respective merge boundaries. The prompt's biggest worry resolved silently.
+
+**Three distinct regressions caught by the post-merge test gate (this gate is the system working):**
+- Merge 5: `data_exec.flatten_division` MagicMock in pre-existing observer test fixture (1 file, 6 failures)
+- Merge 6 — same root-cause class: same MagicMock issue in 3 entry-path test files (3 files, 7 fixture call sites, 27 failures)
+- Merge 6 — distinct root-cause class: `_Deps.db_url` AttributeError in pre-existing webhook research-consult test fixture (1 file, 2 fixture call sites, 3 failures)
+
+All three fit the same higher-class pattern: branch's own tests passed locally because they exercised only NEW test files using fixtures that matched the BRANCH'S code state — but the BRANCH didn't run pre-existing test fixtures against the integrated-with-main state. **Discipline note filed under `[[branch-tests-must-cover-existing-fixtures-not-only-new-tests]]`** (strengthened with merge-6 instances).
+
+**Files deployed to prod:** **0.** This was a source-merge session only. Prod (`tc-prod-vm`) remains at main `4985bbe`. The newly-on-main code includes Phase-4 broker-write (real `place_order`), entry-path live-mode wiring, and order-path safety consumers — all DEFAULT-PAPER, fail-closed without explicit `execution_mode: live` per-strategy + `--live` process flag.
+
+**Risk surface change in source-on-main:** `BitunixBroker.place_order` is now real (no longer `NotImplementedError`). However, the existing safety layers remain intact:
+- `--paper` (default startup mode) wraps the broker in `PaperExecutionBroker`, intercepting all writes.
+- `execution_mode: paper` is the default per-strategy YAML setting (no live entries today).
+- The HITL gate (entry-path commit 4) blocks the first 10 live orders for operator approval.
+
+Means: a deploy of merged-main today + a default `--paper` startup + unchanged YAML = behaviorally identical to today's prod for orders, with new live-write CODE PATH available but unreachable without explicit config flips.
+
+**Unblocks:** N+2 Phase 3 (live exit-path implementation per Phase 1b's recommended scope B) — N+2 branch (`bitunix-live-exit-path-2026-05-29`, `e1d38f8`) remains UNMERGED and will rebase on merged main in the next session.
+
+**Branch landscape post-merge:**
+- `main` at `2cbcc3b` (HEAD after the two fixture-fix follow-ups).
+- 6 source branches now visible in `git branch -r --merged main`: all 3 C-1 + all 3 Stage-1 feature branches.
+- N+2 branch `bitunix-live-exit-path-2026-05-29` UNMERGED (intentional; rebase target next session).
+- Other unmerged: `backup-2026-05-19-2300` (old backup), `pm-watchlist-pnl-aggregation-fix` (unrelated, separate session question).
+
+**Rollback (if needed before deploy):**
+- `git revert -m 1 <merge-sha>` for any single merge; merge commits are first-parent-on-main so `-m 1` keeps the main-side history. Tests would need re-run after each revert.
+- If a wholesale rollback is desired: `git reset --hard 4985bbe` + force-push — destructive, only if no work has built on top.
+
+---
+
 ## 2026-05-30 ~01:08 UTC — Disable kalshi_weather_arb + kalshi_crypto_arb scanners (silence telegrams on dead divisions)
 
 **Correction (after EOS verification):** original deploy_log header said 2026-05-29 ~23:35 UTC; the actual prod YAML mtime is 2026-05-30 01:08:06 UTC (verified `stat -c '%y' /home/azureuser/trading_corp/config/strategies.yaml`). The session straddled UTC midnight. Post-disable silence query (`ts > '2026-05-30T01:08:06'`) returns **0/0 kalshi_{weather,crypto}_arb `would_have_placed` rows** — disable is taking effect as designed (last weather row 01:03:44 UTC, last crypto row 00:59:14 UTC, both pre-mtime).
