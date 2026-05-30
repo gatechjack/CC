@@ -2273,6 +2273,32 @@ class BitunixFuturesObserver:
         except Exception as e:
             log.warning("bitunix_observer: trade_plan_decision audit failed: %s", e)
 
+    # ── safety: route flatten_account risk verdicts to data_exec ─────
+
+    async def _maybe_flatten_on_risk_verdict(self, verdict_risk) -> None:
+        """If the risk verdict signals `flatten_account=True`, route to
+        `data_exec.flatten_division("bitunix_futures")`.
+
+        Bitunix-only this session — `data_exec.flatten_division` graceful-
+        degrades for any non-bitunix division via the `hasattr(broker,
+        "flatten")` check. See `[[bitunix-order-path-safety-pattern]]` for
+        the confirmed-delivery discipline applied by the consumer.
+
+        No-op when `data_exec` is not wired (e.g. test fixtures without a
+        live data_exec); logged so the gap is visible. The wider gap —
+        cross-process strategy-state halt persistence — is filed as a
+        separate BACKLOG follow-up.
+        """
+        if not getattr(verdict_risk, "flatten_account", False):
+            return
+        if self.data_exec is None:
+            log.warning(
+                "bitunix_observer: risk verdict.flatten_account=True "
+                "but data_exec not wired — flatten skipped",
+            )
+            return
+        await self.data_exec.flatten_division("bitunix_futures")
+
     # ── async order flow: classify → propose → risk → place → notify ─
 
     async def _maybe_propose(
@@ -2369,6 +2395,14 @@ class BitunixFuturesObserver:
                                note=f"risk_agent.evaluate failed: {e}",
                                order_id=order.id)
             return
+
+        # Safety: if the risk verdict signals a flatten_account (e.g.
+        # account drawdown cap breached), route to `data_exec.flatten_division`
+        # BEFORE handling the reject. The flatten consumer is bitunix-only
+        # scope this session — see `[[bitunix-order-path-safety-pattern]]`.
+        # Failures here propagate (re-raise) so a flatten failure is loud,
+        # not swept; intentional, the caller's outer error path will catch.
+        await self._maybe_flatten_on_risk_verdict(verdict_risk)
 
         if verdict_risk.verdict == "reject":
             order.status = "risk_rejected"
