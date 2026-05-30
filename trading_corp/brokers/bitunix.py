@@ -79,9 +79,16 @@ import json
 import httpx
 
 from trading_corp.brokers.base import AccountSnapshot, Broker
+from trading_corp.brokers.bitunix_exceptions import BitunixPositionModeMismatch
 from trading_corp.brokers.bitunix_symbols import to_wire_format
 from trading_corp.persistence import db
 from trading_corp.persistence.models import FillEvent, OpenPosition, Position, ProposedOrder
+
+# Re-exported here so existing callers can still write
+# `from trading_corp.brokers.bitunix import BitunixPositionModeMismatch`.
+# The canonical class object lives in `bitunix_exceptions.py` (see that
+# module's docstring for the cross-branch class-identity rationale).
+__all__ = ["BitunixPositionModeMismatch"]
 
 log = logging.getLogger(__name__)
 
@@ -155,27 +162,6 @@ class BitunixAPIError(RuntimeError):
         super().__init__(
             f"BitUnix API error {code} ({self.error_name}) "
             f"on {path}: {msg!r} — {self.meaning}"
-        )
-
-
-class BitunixPositionModeMismatch(RuntimeError):
-    """Account is not in the expected (ONE_WAY) position mode — fail closed.
-
-    Raised by `place_order` BEFORE any order is sent when the account's live
-    `positionMode` is not ONE_WAY (e.g. an out-of-band UI flip to HEDGE). The
-    broker fails closed (refuses to place) and latches `_halt_new_orders`. The
-    *response* side — a `position_mode_mismatch_detected` audit row,
-    halt-new-orders propagation, and a Telegram alert — is the order-path
-    layer's job and is wired when the live order path lands (deferred; see the
-    live-readiness audit).
-    """
-
-    def __init__(self, current, expected: str = _ONE_WAY) -> None:
-        self.current = current
-        self.expected = expected
-        super().__init__(
-            f"BitUnix position mode mismatch: account is {current!r}, "
-            f"expected {expected!r} — refusing to place order"
         )
 
 
