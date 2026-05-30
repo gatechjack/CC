@@ -519,3 +519,31 @@ Decisions surfaced by this review; review does NOT auto-resolve.
 ---
 
 *Sources: `runbooks/2026-05-29_bitunix_live_readiness_audit.md`, `runbooks/2026-05-29_bitunix_live_reuse_audit.md`, `reports/2026-05-29_bitunix_live_entry_path_diagnostic.md` (on main); `phase1a.md@33da534` + `phase1b.md@e1d38f8` (branch `bitunix-live-exit-path-2026-05-29`, read via `git show`); code on main HEAD `1926eb9` (`brokers/bitunix.py`, `agents/data_exec.py`, `agents/divisions/bitunix_futures_observer.py`, `persistence/models.py`, `comms/pending_registry.py`, `main.py`, `strategies/paper_trade_replay.py`); commits `e04b192`, `87dac50`, `4a15c72`, `ecfc677`, `0200eed`, `1926eb9`, `2a3d20c`, `0298575`, `69c401a`, `06b5a9e`, `33da534`, `4a8b440`, `e1d38f8`; `BACKLOG.md` § Note + § P2 Stage-1 N+2 Phase 3; prod-probe 2026-05-30 (PID 1762864, healthz, observer.py mtime, TIER_SIZING constants, SHA256 9a8fe9cd…); memory entries `project_bitunix_*.md`, `feedback_deploy_*.md`, `[memory: reference_session_2026_05_29_marathon_eos.md]`. No code/config/deploy changes made.*
+
+## Updates
+
+### 2026-05-30 — Forward-fix audit work completed
+
+Two work items landed today following the architectural review:
+
+- **Item 1** (commit 71ff0a5 on branch `stage1-forward-fix-2026-05-30`): added a missing field to the Secrets dataclass on origin/main, plus a completeness test in `tests/test_secrets_completeness.py` that parses `trading_corp/main.py` AST for every `secrets.X` attribute access and asserts each one resolves to a Secrets field or property.
+- **Item 2** (audit report at `reports/2026-05-30_uncommitted_prod_surgical_edits_audit.md`): diffed 13 prod backup files (`*.pre-stage1-20260530-1230`) against origin/main; classified each diff as cosmetic, sed-overlay, or prod-only state not visible to git.
+
+### Finding #1 — Fifth locus added to drift class
+
+Same shape as the four prior loci (Phase 1a/1b reports on unmerged branch, prod-vs-main code state, risk-tier overlay, parallel-session branch creation): state forks across canonical vs non-canonical surfaces.
+
+Fifth locus: prod-side dataclass fields and config values that have never been committed to any git branch. Verification technique: `git log --all -S "<symbol>"` returns empty, confirming the symbol exists on prod only.
+
+Example: the odds_api_key field on prod's Secrets dataclass. Cite any siblings the Item 2 audit surfaced.
+
+### Finding #9 — Sixth discipline recommendation
+
+**Pre-deploy filesystem audit.** Before any whole-file transfer to prod, diff prod's filesystem state against origin/main and classify every difference. Reconcile prod-only state to git, or document explicitly in `runbooks/prod_overlays.md` with a tripwire check.
+
+Two complementary pieces close the gap that surfaced today:
+
+- **In-code:** completeness test asserting every `secrets.X` access in `main.py` resolves to a Secrets dataclass field (per Item 1 commit 71ff0a5). Catches future field drift at test-suite time.
+- **File-system:** pre-deploy audit procedure per Item 2 audit report. Catches prod-only state at pre-deploy time.
+
+Together they close the structural gap that previously allowed prod-only state to remain invisible to deploy verification.
