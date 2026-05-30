@@ -70,25 +70,41 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import random
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import json
 
 import httpx
 
 from trading_corp.brokers.base import AccountSnapshot, Broker
-from trading_corp.brokers.bitunix_exceptions import BitunixPositionModeMismatch
+from trading_corp.brokers.bitunix_exceptions import (
+    BitunixPositionModeMismatch,
+    BitunixStaleSnapshot,
+    BitunixStuckOrderCancelFailed,
+    BitunixStuckOrderCancelled,
+)
 from trading_corp.brokers.bitunix_symbols import to_wire_format
 from trading_corp.persistence import db
 from trading_corp.persistence.models import FillEvent, OpenPosition, Position, ProposedOrder
+from trading_corp.utils.time import iso, now_utc
+
+if TYPE_CHECKING:
+    from trading_corp.agents.logger import LoggerAgent
 
 # Re-exported here so existing callers can still write
 # `from trading_corp.brokers.bitunix import BitunixPositionModeMismatch`.
-# The canonical class object lives in `bitunix_exceptions.py` (see that
+# The canonical class objects live in `bitunix_exceptions.py` (see that
 # module's docstring for the cross-branch class-identity rationale).
-__all__ = ["BitunixPositionModeMismatch"]
+__all__ = [
+    "BitunixPositionModeMismatch",
+    "BitunixStaleSnapshot",
+    "BitunixStuckOrderCancelled",
+    "BitunixStuckOrderCancelFailed",
+]
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +129,13 @@ _TERMINAL_STATUSES = {"FILLED", "CANCELED"}
 _FILL_MAX_POLLS = 8
 _FILL_POLL_INTERVAL_S = 0.4
 
+# Default snapshot-staleness threshold (seconds). Overridable via
+# `bitunix_futures.snapshot_staleness_threshold_seconds` in
+# config/strategies.yaml. 60s = 2× the strategy's per-bar cadence on the
+# 1-min bar; a single missed snapshot is fine, two-in-a-row is the halt
+# signal.
+_DEFAULT_SNAPSHOT_STALENESS_S = 60.0
+
 # BitUnix business-error taxonomy. The envelope `code` is non-zero on a
 # business error even when HTTP is 200. Codes are facts from the official
 # error table (runbooks/2026-05-29_bitunix_live_reuse_audit.md §8) —
@@ -135,11 +158,47 @@ _ERROR_CODES: dict[int, tuple[str, str]] = {
     30042: ("CLIENT_ID_DUPLICATE", "clientId already used — order already accepted; safe to treat as success"),
 }
 
-# Rate-limit codes the (future) retry layer should back off on.
+# Rate-limit codes the retry layer (in `_request`) backs off on.
 _RETRYABLE_CODES = {10005, 10006}
 # Codes meaning "your write already landed" — safe to treat as success because
 # clientId is a deterministic idempotency key.
 _IDEMPOTENT_OK_CODES = {30042}
+
+# ── Phase 4 REST retry layer (gate (a) 2026-05-30) ──────────────────────────
+# Resilience-against-transient-failure for the signed `_request` chokepoint.
+# Read-side calls (snapshot/quote/get_funding_rate) deliberately bypass
+# `_request` and therefore do not retry — for those paths the stale-snapshot
+# halt (sub-item 2) is the safety primitive, not retry. See `_request`
+# docstring for the design rationale.
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY_S = 0.25
+_RETRY_CAP_DELAY_S = 4.0
+# Total backoff budget across all retries. With 4 total attempts × 15 s
+# per-attempt timeout + ≤10 s of sleep across the 3 backoffs, worst-case
+# `_request` wallclock is ≤70 s.
+_RETRY_WALLCLOCK_CAP_S = 10.0
+# HTTP statuses we treat as transient (after `raise_for_status()`).
+_RETRY_HTTP_STATUSES = {408, 429, 502, 503, 504}
+
+
+def _is_retryable_httpx_exc(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _RETRY_HTTP_STATUSES
+    return False
+
+
+def _retry_backoff_delay(attempt: int) -> float:
+    """Exponential backoff with jitter. `attempt` is 1-indexed.
+
+    attempt=1 → ~0.25-0.50 s, attempt=2 → ~0.50-1.00 s, attempt=3 → ~1.00-2.00 s.
+    Capped at `_RETRY_CAP_DELAY_S` per attempt.
+    """
+    base = min(_RETRY_CAP_DELAY_S, _RETRY_BASE_DELAY_S * (2 ** (attempt - 1)))
+    # Full-jitter pattern (AWS architecture blog): random in [base/2, base].
+    # Tests pin `random.uniform` to make this deterministic.
+    return random.uniform(base / 2.0, base)
 
 
 def classify_error(code: int | None) -> tuple[str, str]:
@@ -238,6 +297,9 @@ class BitunixBroker(Broker):
         self,
         api_key: str | None = None,
         api_secret: str | None = None,
+        *,
+        logger: "LoggerAgent | None" = None,
+        safety_notifier=None,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -260,6 +322,26 @@ class BitunixBroker(Broker):
         # Fill-observation poll knobs (overridable for tests).
         self._fill_max_polls = _FILL_MAX_POLLS
         self._fill_poll_interval_s = _FILL_POLL_INTERVAL_S
+        # Optional LoggerAgent for `rest_request_retried` audit rows. When
+        # None, the retry layer logs via `logging` only (no audit row). Wired
+        # from main.py at broker construction; tests inject a fake.
+        self.logger: "LoggerAgent | None" = logger
+        # ── Snapshot-health primitive (gate (a) sub-item 2) ─────────────
+        # `time.monotonic()` of the last successful `snapshot()` return.
+        # None until the first successful snapshot — `is_healthy()` fails
+        # closed (returns False) in that state, which is the intended
+        # behavior for a broker that has never produced a fresh snapshot.
+        self._last_successful_snapshot_ts: float | None = None
+        # mtime-cache for the snapshot-staleness threshold YAML read.
+        # `(mtime, value)`; None means "not yet read or cache invalidated".
+        self._staleness_threshold_cache: tuple[float, float] | None = None
+        # Optional safety_notifier for `stuck_order_cancelled` /
+        # `stuck_order_cancel_failed` telegram pushes (gate (a) sub-item 3).
+        # Duck-typed contract matches `DataExecAgent.safety_notifier`:
+        #   async def push(text: str, *, audit_path: str = "other",
+        #                  audit_context: dict | None = None) -> bool
+        # Wired from main.py to the same TelegramChannel singleton.
+        self.safety_notifier = safety_notifier
 
     async def connect(self) -> None:
         if self._stub:
@@ -399,6 +481,11 @@ class BitunixBroker(Broker):
                 pos_data.get("code"), pos_data.get("msg"),
             )
 
+        # Mark snapshot as fresh BEFORE returning. Any earlier raise (e.g.
+        # r.raise_for_status on a 503) skips this line — staleness then
+        # grows until `_assert_snapshot_fresh()` halts the order path.
+        # See gate (a) sub-item 2 for the rationale.
+        self._last_successful_snapshot_ts = time.monotonic()
         return AccountSnapshot(
             account="bitunix-futures",
             equity=equity,
@@ -406,6 +493,92 @@ class BitunixBroker(Broker):
             cash=cash,
             positions=positions,
         )
+
+    # ── Snapshot-health primitives (gate (a) sub-item 2, 2026-05-30) ────
+    def _staleness_threshold_s(self) -> float:
+        """Mtime-cached read of `bitunix_futures.snapshot_staleness_threshold_seconds`
+        from `config/strategies.yaml`. Falls back to `_DEFAULT_SNAPSHOT_STALENESS_S`
+        on read error so a malformed YAML never disables the halt.
+        """
+        try:
+            from pathlib import Path as _Path
+            strat_path = (
+                _Path(__file__).resolve().parent.parent.parent
+                / "config" / "strategies.yaml"
+            )
+            mtime = strat_path.stat().st_mtime
+        except Exception:
+            return _DEFAULT_SNAPSHOT_STALENESS_S
+        if (
+            self._staleness_threshold_cache is not None
+            and self._staleness_threshold_cache[0] == mtime
+        ):
+            return self._staleness_threshold_cache[1]
+        try:
+            import yaml as _yaml
+            with strat_path.open(encoding="utf-8") as f:
+                raw = _yaml.safe_load(f) or {}
+            bx_block = raw.get("bitunix_futures") or {}
+            value = float(
+                bx_block.get("snapshot_staleness_threshold_seconds",
+                             _DEFAULT_SNAPSHOT_STALENESS_S)
+            )
+            if value <= 0:
+                value = _DEFAULT_SNAPSHOT_STALENESS_S
+        except Exception as e:
+            log.warning(
+                "bitunix _staleness_threshold_s YAML read failed: %s "
+                "— defaulting to %.1fs",
+                e, _DEFAULT_SNAPSHOT_STALENESS_S,
+            )
+            value = _DEFAULT_SNAPSHOT_STALENESS_S
+        self._staleness_threshold_cache = (mtime, value)
+        return value
+
+    def is_healthy(self) -> bool:
+        """True iff the broker has produced a successful `snapshot()` recently
+        enough (within `_staleness_threshold_s()`).
+
+        Fail-closed semantics:
+          * No successful snapshot yet (`_last_successful_snapshot_ts is None`)
+            → False. A freshly-constructed broker is "stale" until its first
+            successful snapshot.
+          * `now - last_successful_snapshot > threshold` → False.
+
+        Pure read; no side effects. The halt latch is set only by
+        `_assert_snapshot_fresh()` when an order is about to be placed.
+        """
+        if self._last_successful_snapshot_ts is None:
+            return False
+        age_s = time.monotonic() - self._last_successful_snapshot_ts
+        return age_s <= self._staleness_threshold_s()
+
+    async def _assert_snapshot_fresh(self) -> None:
+        """Fail-closed pre-trade gate: refuse to place unless the most recent
+        snapshot is younger than the configured threshold.
+
+        Symmetric with `_assert_position_mode_one_way`: the broker latches
+        `_halt_new_orders=True` BEFORE raising, so the halt is sticky beyond
+        the immediate call. The latch is operator-cleared via `resume()` —
+        is_healthy() will turn True again on a fresh snapshot, but the latch
+        does NOT auto-clear (intentional, per the operator-gates-everything
+        discipline).
+
+        Async for symmetry with the other `_assert_*` guards; no actual
+        I/O is performed here (state is already cached on the broker
+        instance — `_last_successful_snapshot_ts` is set by `snapshot()`).
+        """
+        if self.is_healthy():
+            return
+        age_s = (
+            float("inf")
+            if self._last_successful_snapshot_ts is None
+            else time.monotonic() - self._last_successful_snapshot_ts
+        )
+        threshold_s = self._staleness_threshold_s()
+        self._halt_new_orders = True
+        self._halt_reason = f"snapshot_stale:{age_s:.1f}s"
+        raise BitunixStaleSnapshot(age_s=age_s, threshold_s=threshold_s)
 
     async def quote(self, symbol: str) -> float:
         """Return last price for `symbol`. Public endpoint — no auth needed."""
@@ -506,6 +679,34 @@ class BitunixBroker(Broker):
         as raw content (never httpx `json=`, which would re-serialize with
         whitespace and break the signature → error 10007). Returns the
         envelope `data`; raises `BitunixAPIError` on a non-zero `code`.
+
+        ── Retry layer (gate (a) 2026-05-30) ───────────────────────────
+        Transient failures retry with exponential backoff + jitter:
+          * `httpx.TimeoutException` (network or server-side timeout)
+          * `httpx.HTTPStatusError` with status in `_RETRY_HTTP_STATUSES`
+          * `BitunixAPIError` with code in `_RETRYABLE_CODES` (rate-limit
+            only — narrow set; expand on evidence)
+
+        Up to `_RETRY_MAX_ATTEMPTS` (3) retries → 4 total attempts; ≤10 s
+        of total backoff sleep. Worst-case `_request` wallclock ≤70 s.
+
+        **POST retries are gated on `clientId` presence in the body.** Without
+        a deterministic idempotency key we cannot prove a retried request
+        that succeeds didn't *also* land the first time. POSTs without
+        `clientId` (e.g. `change_position_mode`, `change_leverage`,
+        `cancel_orders` without one) raise immediately on transient failure.
+
+        **Sign-stability under retry**: the JSON body string is computed once
+        and re-used across attempts (body bytes never change). `nonce` and
+        `timestamp` ARE re-computed per attempt — duplicate nonces are
+        server-rejected, and the signature stays valid because the signing
+        inputs incorporate the fresh nonce/timestamp.
+
+        Read-path note: `snapshot()`, `quote()`, and `get_funding_rate()`
+        deliberately bypass `_request` (they construct httpx GETs directly
+        for per-call signing efficiency). Retry therefore does NOT cover the
+        read path — for snapshot specifically, the staleness-signal halt
+        (sub-item 2 of gate (a)) is the resilience primitive.
         """
         if self._stub or not self._client or not self._api_key or not self._api_secret:
             raise RuntimeError(
@@ -513,23 +714,116 @@ class BitunixBroker(Broker):
             )
         body_str = ""
         content = None
-        headers: dict[str, str] = {}
+        headers_base: dict[str, str] = {}
         if body is not None:
             body_str = json.dumps(body, separators=(",", ":"))
             content = body_str
-            headers["Content-Type"] = "application/json"
-        headers.update(
-            _sign(self._api_key, self._api_secret, query=query, body=body_str)
-        )
+            headers_base["Content-Type"] = "application/json"
+
+        # Retry-eligibility decision. GETs are read-only; POSTs need a
+        # deterministic idempotency key to be safely retriable.
         if method == "GET":
-            r = await self._client.get(path, params=query or None, headers=headers)
+            retry_eligible = True
         else:
-            r = await self._client.post(path, content=content, headers=headers)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("code") != 0:
-            raise BitunixAPIError(data.get("code"), data.get("msg"), path=path)
-        return data.get("data")
+            retry_eligible = bool(body and "clientId" in body)
+
+        attempt = 0
+        wallclock_used_s = 0.0
+        last_error_summary: str | None = None
+        while True:
+            attempt += 1
+            # Fresh signing per attempt — same body bytes, new nonce/timestamp.
+            headers = dict(headers_base)
+            headers.update(
+                _sign(self._api_key, self._api_secret, query=query, body=body_str)
+            )
+            try:
+                if method == "GET":
+                    r = await self._client.get(
+                        path, params=query or None, headers=headers,
+                    )
+                else:
+                    r = await self._client.post(
+                        path, content=content, headers=headers,
+                    )
+                r.raise_for_status()
+                data = r.json()
+                if data.get("code") != 0:
+                    raise BitunixAPIError(data.get("code"), data.get("msg"), path=path)
+            except BitunixAPIError as exc:
+                transient = exc.code in _RETRYABLE_CODES
+                err_summary = (
+                    f"BitunixAPIError code={exc.code} name={exc.error_name}"
+                )
+                caught = exc
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                transient = _is_retryable_httpx_exc(exc)
+                if isinstance(exc, httpx.HTTPStatusError):
+                    err_summary = f"HTTPStatusError {exc.response.status_code}"
+                else:
+                    err_summary = f"{type(exc).__name__}"
+                caught = exc
+            else:
+                # Success path. Audit retry summary iff we retried.
+                if attempt > 1:
+                    self._audit_request_retried(
+                        path=path,
+                        method=method,
+                        attempts=attempt,
+                        last_error_summary=last_error_summary,
+                        wallclock_used_s=wallclock_used_s,
+                    )
+                return data.get("data")
+
+            # Reached only on caught exception. Decide whether to retry.
+            if (
+                not transient
+                or not retry_eligible
+                or attempt > _RETRY_MAX_ATTEMPTS
+            ):
+                raise caught
+            delay = _retry_backoff_delay(attempt)
+            if wallclock_used_s + delay > _RETRY_WALLCLOCK_CAP_S:
+                # Out of backoff budget — fail fast rather than violate the cap.
+                raise caught
+            last_error_summary = err_summary
+            log.warning(
+                "BitUnix _request transient failure on %s %s (attempt %d): %s "
+                "— sleeping %.3fs before retry",
+                method, path, attempt, err_summary, delay,
+            )
+            await asyncio.sleep(delay)
+            wallclock_used_s += delay
+
+    def _audit_request_retried(
+        self,
+        *,
+        path: str,
+        method: str,
+        attempts: int,
+        last_error_summary: str | None,
+        wallclock_used_s: float,
+    ) -> None:
+        """One audit row per `_request` invocation that needed any retries.
+        Once-per-summary (not per-attempt) to avoid audit-row flooding on a
+        sustained 5xx storm. No-op when no logger is wired."""
+        if self.logger is None:
+            return
+        try:
+            self.logger.log_event(
+                actor="bitunix_broker",
+                kind="rest_request_retried",
+                payload={
+                    "path": path,
+                    "method": method,
+                    "attempts": attempts,
+                    "last_error": last_error_summary,
+                    "wallclock_used_s": round(wallclock_used_s, 3),
+                    "ts": iso(now_utc()),
+                },
+            )
+        except Exception as e:  # never block the success path on audit
+            log.warning("rest_request_retried audit failed: %s", e)
 
     # ── Phase 4: order placement ────────────────────────────────────────
     async def place_order(self, order: ProposedOrder) -> FillEvent:
@@ -769,7 +1063,33 @@ class BitunixBroker(Broker):
         detail nor pending orders carry a fill price — only the fills do).
 
         Returns (status, filled_qty, avg_price, fee). `filled_qty` reflects
-        partial fills via `tradeQty` (BitUnix status PART_FILLED)."""
+        partial fills via `tradeQty` (BitUnix status PART_FILLED).
+
+        ── Stuck-order timeout → cancel (gate (a) sub-item 3, 2026-05-30) ──
+        If polling exhausts WITHOUT a terminal status (still NEW / INIT /
+        PART_FILLED at the last poll), cancel the order and emit safety
+        side-effects:
+          * cancel succeeded AND status was PART_FILLED → continue past the
+            cancel block; the remaining quantity has been cancelled at the
+            venue, but the partial fill that already landed is real money,
+            so we return the partial-fill tuple normally and `place_order`
+            constructs a `bitunix_futures:part_filled` FillEvent. The audit
+            (`stuck_order_cancelled`) + telegram fire from this method.
+          * cancel succeeded AND status was unfilled (NEW / INIT / None) →
+            raise `BitunixStuckOrderCancelled`. Caller's path treats the
+            order as not-placed.
+          * cancel FAILED → raise `BitunixStuckOrderCancelFailed` regardless
+            of whether status was partial or unfilled; operator intervention
+            may be required because the broker cannot prove the order isn't
+            still resting at the venue.
+
+        Threshold note: the existing `_fill_max_polls × _fill_poll_interval_s`
+        (3.2s at the defaults 8 × 0.4s) IS the threshold. Market orders on
+        BTC-PERP typically fill in <1s; 3.2s of inactivity is a strong
+        signal of stuck. If we observe false-positive stuck cancels on slow
+        fills, this is the knob to raise (config addition deferred until
+        we have evidence the default is too tight).
+        """
         status: str | None = None
         filled_qty = 0.0
         resolved_id = order_id
@@ -787,10 +1107,103 @@ class BitunixBroker(Broker):
             if i < self._fill_max_polls - 1:
                 await asyncio.sleep(self._fill_poll_interval_s)
 
+        # Stuck-order check (sub-item 3). Polling exhausted without a
+        # terminal status → cancel + audit + telegram. May raise.
+        if status not in _TERMINAL_STATUSES:
+            await self._handle_stuck_order(
+                order_id=resolved_id, status=status,
+            )
+
         avg_price, fee, hist_qty = await self._fill_price_from_history(resolved_id)
         if filled_qty <= 0 and hist_qty > 0:
             filled_qty = hist_qty
         return status, filled_qty, avg_price, fee
+
+    async def _handle_stuck_order(self, *, order_id, status) -> None:
+        """Cancel a stuck order; emit audit + telegram; raise unless the
+        order was partially filled (in which case the caller's path returns
+        the partial fill normally — see `_observe_fill` docstring for the
+        decision matrix).
+
+        gate (a) sub-item 3 of REST resilience (2026-05-30).
+        """
+        cancel_ok = False
+        cancel_error: Exception | None = None
+        try:
+            cancel_ok = await self.cancel_order(order_id) if order_id else False
+        except Exception as e:
+            cancel_error = e
+            cancel_ok = False
+
+        poll_budget_s = (
+            self._fill_max_polls * self._fill_poll_interval_s
+        )
+        common_payload = {
+            "order_id": str(order_id) if order_id else None,
+            "status_at_exhaustion": status,
+            "poll_budget_s": round(poll_budget_s, 3),
+            "max_polls": self._fill_max_polls,
+            "poll_interval_s": self._fill_poll_interval_s,
+            "cancel_attempted": True,
+            "cancel_ok": cancel_ok,
+            "cancel_error": str(cancel_error) if cancel_error else None,
+            "ts": iso(now_utc()),
+        }
+        is_partial = status == "PART_FILLED"
+        if cancel_ok:
+            audit_kind = "stuck_order_cancelled"
+            telegram_text = (
+                f"⚠️ BitUnix STUCK ORDER cancelled — order_id={order_id} "
+                f"status={status} (poll budget {poll_budget_s:.1f}s exhausted). "
+                f"{'Partial fill kept.' if is_partial else 'No fills landed.'}"
+            )
+        else:
+            audit_kind = "stuck_order_cancel_failed"
+            telegram_text = (
+                f"🚨 BitUnix STUCK ORDER + CANCEL FAILED — order_id={order_id} "
+                f"status={status} (poll budget {poll_budget_s:.1f}s exhausted). "
+                f"cancel_error={cancel_error or '(returned False)'}. "
+                f"Operator: verify order is not still resting at venue."
+            )
+
+        # Audit row (best-effort — never block the safety path on audit failure).
+        if self.logger is not None:
+            try:
+                self.logger.log_event(
+                    actor="bitunix_broker",
+                    kind=audit_kind,
+                    payload=common_payload,
+                )
+            except Exception as e:
+                log.warning(
+                    "BitUnix _handle_stuck_order audit (%s) failed: %s",
+                    audit_kind, e,
+                )
+
+        # Telegram (best-effort — never block the safety path on push failure).
+        if self.safety_notifier is not None:
+            try:
+                await self.safety_notifier.push(
+                    telegram_text,
+                    audit_path="safety_alert",
+                    audit_context={
+                        "kind": audit_kind,
+                        "order_id": str(order_id) if order_id else None,
+                        "status_at_exhaustion": status,
+                    },
+                )
+            except Exception as e:
+                log.warning(
+                    "BitUnix _handle_stuck_order telegram failed: %s", e,
+                )
+
+        # Raise unless cancel succeeded AND we have a real partial fill.
+        if not cancel_ok:
+            raise BitunixStuckOrderCancelFailed(order_id=order_id, status=status)
+        if not is_partial:
+            raise BitunixStuckOrderCancelled(order_id=order_id, status=status)
+        # PART_FILLED + cancel succeeded → fall through; caller returns
+        # the partial fill tuple normally.
 
     async def _fill_price_from_history(self, order_id):
         """VWAP fill price + summed fee + filled qty from trade history."""

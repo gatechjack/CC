@@ -462,7 +462,9 @@ async def run(argv: list[str] | None = None) -> int:
     for d in divisions:
         if not d.enabled:
             continue
-        broker = _build_broker_for_division(d, secrets, mode, args.brokers)
+        broker = _build_broker_for_division(
+            d, secrets, mode, args.brokers, logger_agent=logger_agent,
+        )
         if broker is None:
             continue
         data_exec.register_broker(d.slug, broker)
@@ -811,6 +813,14 @@ async def run(argv: list[str] | None = None) -> int:
     # slot was re-added in commit 7a so this assignment is type-safe
     # right now, before the safety branch lands.
     data_exec.safety_notifier = channel
+    # gate (a) sub-item 3 (2026-05-30): the bitunix broker's stuck-order
+    # cancel-on-exhaustion path emits `safety_alert` telegrams directly
+    # (audit + telegram are local to the broker because PART_FILLED stuck
+    # orders can't raise — they return a partial-fill tuple to place_order).
+    # Same TelegramChannel singleton as data_exec — no parallel instance.
+    _bx_broker = data_exec.brokers.get("bitunix_futures")
+    if _bx_broker is not None and hasattr(_bx_broker, "safety_notifier"):
+        _bx_broker.safety_notifier = channel
 
     await channel.start()
     await channel.push(
@@ -1719,12 +1729,17 @@ def _build_broker_for_division(
     secrets,
     mode: str,
     live_brokers: list[str],
+    *,
+    logger_agent=None,
 ):
     """Build a broker handle for one division, honoring PAPER/LIVE mode.
 
     PAPER mode wraps real read-only brokers in PaperExecutionBroker so
     snapshots are real but fills are simulated. LIVE mode binds the real
     broker for the listed families only.
+
+    `logger_agent` is currently consumed only by the BitUnix broker, for the
+    REST retry-layer audit (`rest_request_retried`); other adapters ignore it.
     """
     from trading_corp.brokers.coinbase import CoinbaseBroker
 
@@ -1797,6 +1812,7 @@ def _build_broker_for_division(
         bx = BitunixBroker(
             api_key=secrets.bitunix_futures_api_key,
             api_secret=secrets.bitunix_futures_api_secret,
+            logger=logger_agent,
         )
         if is_live_family:
             return bx

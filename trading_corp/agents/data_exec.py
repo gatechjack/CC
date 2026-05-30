@@ -13,7 +13,10 @@ from typing import Any, Iterable
 
 from trading_corp.agents.logger import LoggerAgent
 from trading_corp.brokers.base import AccountSnapshot, Broker
-from trading_corp.brokers.bitunix_exceptions import BitunixPositionModeMismatch
+from trading_corp.brokers.bitunix_exceptions import (
+    BitunixPositionModeMismatch,
+    BitunixStaleSnapshot,
+)
 from trading_corp.brokers.paper import PaperBroker
 from trading_corp.data.feeds import FeedAggregator
 from trading_corp.persistence import db
@@ -166,7 +169,19 @@ class DataExecAgent:
             return fill
 
         try:
+            # Defense-in-depth snapshot-staleness re-check (gate (a)
+            # sub-item 2). The bitunix observer's pre-trade gate already
+            # called this, but observer-check-passed-then-snapshot-went-
+            # stale-before-data_exec.place is a real race. Duck-typed —
+            # non-bitunix brokers don't have this method.
+            if hasattr(broker, "_assert_snapshot_fresh"):
+                await broker._assert_snapshot_fresh()
             fill = await broker.place_order(order)
+        except BitunixStaleSnapshot as exc:
+            # Safety side-effects (audit + telegram); broker already
+            # self-latched `_halt_new_orders=True` before raising. Re-raise.
+            await self._handle_stale_snapshot(exc, order, division, broker)
+            raise
         except BitunixPositionModeMismatch as exc:
             # Safety side-effects (audit + telegram); broker already
             # self-latched `_halt_new_orders=True` before raising. Re-raise
@@ -284,6 +299,77 @@ class DataExecAgent:
                     "division": division,
                     "kind": "position_mode_mismatch_detected",
                     "current": str(exc.current),
+                },
+            )
+
+    async def _handle_stale_snapshot(
+        self,
+        exc: BitunixStaleSnapshot,
+        order: ProposedOrder,
+        division: str,
+        broker: Broker,
+    ) -> None:
+        """Audit + telegram side-effects for a caught `BitunixStaleSnapshot`.
+
+        Mirror of `_handle_position_mode_mismatch`. Does NOT set the halt —
+        the broker self-latches `_halt_new_orders=True` before raising in
+        `_assert_snapshot_fresh()`. This handler confirms the latch state,
+        writes the `snapshot_stale_halt` audit row (re-read via the returned
+        audit id), and pushes a `safety_alert` telegram. Caller re-raises
+        the exception after this returns.
+        """
+        broker_halt_latched = bool(getattr(broker, "_halt_new_orders", False))
+        ts = iso(now_utc())
+        payload = {
+            "age_s": round(float(exc.age_s), 3) if exc.age_s != float("inf") else None,
+            "threshold_s": round(float(exc.threshold_s), 3),
+            "division": division,
+            "broker_class": type(broker).__name__,
+            "order_id": order.id,
+            "broker_halt_latched": broker_halt_latched,
+            "ts": ts,
+        }
+        audit_id = self.logger.log_event(
+            actor="data_exec",
+            kind="snapshot_stale_halt",
+            payload=payload,
+        )
+
+        # Re-read confirmation (mirrors mode-mismatch consumer pattern).
+        if audit_id is not None:
+            try:
+                with db.connect(self.logger.db_url) as conn:
+                    row = conn.execute(
+                        "SELECT 1 FROM audit_event WHERE id = ?", (audit_id,)
+                    ).fetchone()
+                    if row is None:
+                        log.error(
+                            "snapshot_stale_halt audit_id=%s could NOT be "
+                            "re-read — possible silent drop",
+                            audit_id,
+                        )
+            except Exception as e:
+                log.warning("audit re-read after stale-snapshot failed: %s", e)
+
+        if self.safety_notifier is not None:
+            age_repr = (
+                "never (no successful snapshot yet)"
+                if exc.age_s == float("inf")
+                else f"{exc.age_s:.1f}s ago"
+            )
+            text = (
+                f"⚠️ BitUnix snapshot STALE on `{division}`: "
+                f"last successful snapshot {age_repr}, "
+                f"threshold {exc.threshold_s:.0f}s. "
+                f"Broker halt latched: {broker_halt_latched}. Refusing new orders."
+            )
+            await self._safety_push(
+                text,
+                audit_path="safety_alert",
+                audit_context={
+                    "division": division,
+                    "kind": "snapshot_stale_halt",
+                    "age_s": payload["age_s"],
                 },
             )
 

@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from trading_corp.brokers.bitunix_exceptions import BitunixStaleSnapshot
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
     AccountState,
@@ -2525,6 +2526,32 @@ class BitunixFuturesObserver:
         explicitly stamped False so the broker constructs an OPEN
         body (tradeSide=OPEN), not a reduce-only close.
         """
+        # ── Pre-trade snapshot-staleness gate (gate (a) sub-item 2, 2026-05-30) ─
+        # Refuse to attempt placement when the broker's snapshot is older than
+        # the configured threshold. Fail-fast: do NOT write intent audit, do
+        # NOT accrue daily-risk, do NOT enter HITL gate — staleness is a
+        # system-health halt, not a strategy decision (and a halted attempt
+        # shouldn't burn risk budget). The broker self-latches `_halt_new_orders`
+        # before raising; the handler audits + telegrams + returns the
+        # exception bubbled to caller-loop via `return` (SWALLOW pattern,
+        # consistent with the rest of `_place_live`'s error-handling).
+        # Defense-in-depth re-check fires inside data_exec.place() for the
+        # observer-passed-then-snapshot-went-stale race; that path catches a
+        # second BitunixStaleSnapshot if the snapshot expires between here
+        # and the broker call.
+        bx_broker = (
+            self.data_exec.brokers.get("bitunix_futures")
+            if self.data_exec is not None else None
+        )
+        if bx_broker is not None and hasattr(bx_broker, "_assert_snapshot_fresh"):
+            try:
+                await bx_broker._assert_snapshot_fresh()
+            except BitunixStaleSnapshot as exc:
+                await self.data_exec._handle_stale_snapshot(
+                    exc, order, "bitunix_futures", bx_broker,
+                )
+                return
+
         # Stamp the entry-vs-exit discriminator BEFORE any audit so
         # downstream readers (broker, audit, paper_trade_record) all see
         # the same value. Entries from this observer are always

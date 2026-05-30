@@ -413,6 +413,12 @@ async def test_nonidempotent_error_propagates():
 
 @pytest.mark.asyncio
 async def test_partial_fill_status_and_qty():
+    """PART_FILLED at poll-budget exhaustion is now treated as a stuck
+    order on the unfilled remainder: gate (a) sub-item 3 (2026-05-30)
+    cancels the resting remainder, then returns the partial fill that
+    actually landed. Queue a cancel-success response so the new path
+    completes cleanly; the partial-fill return contract (qty + venue
+    suffix) is preserved."""
     broker, client = _make_broker()
     broker._fill_max_polls = 2  # never reaches terminal
     client.queue(P_PENDING_POS, {"code": 0, "data": []})
@@ -422,6 +428,9 @@ async def test_partial_fill_status_and_qty():
     client.queue(P_ORDER_DETAIL,
                  {"code": 0, "data": {"orderId": "OIDP", "status": "PART_FILLED",
                                       "tradeQty": "0.0006"}})
+    # gate (a) sub-item 3 cancels the resting remainder of a stuck PART_FILLED.
+    client.queue(P_CANCEL,
+                 {"code": 0, "data": {"successList": [{"orderId": "OIDP"}]}})
     client.queue(P_HISTORY,
                  {"code": 0, "data": {"tradeList": [
                      {"qty": "0.0006", "price": "65000", "fee": "0.01"}]}})
@@ -429,6 +438,8 @@ async def test_partial_fill_status_and_qty():
     fill = await broker.place_order(_entry_order(qty=0.001))
     assert fill.qty == pytest.approx(0.0006)
     assert fill.venue == "bitunix_futures:part_filled"
+    # Cancel was attempted on the resting remainder.
+    assert len(client.posts_to(P_CANCEL)) == 1
 
 
 # ---------------------------------------------------------------------------

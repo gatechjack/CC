@@ -79,6 +79,8 @@ def _make_observer(
     snap.positions = []
     broker = MagicMock()
     broker.snapshot = AsyncMock(return_value=snap)
+    # gate (a) sub-item 2: observer's pre-trade gate awaits this. Healthy no-op.
+    broker._assert_snapshot_fresh = AsyncMock()
 
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
@@ -424,7 +426,7 @@ async def test_no_pending_registry_skips_hitl_gracefully(tmp_path, monkeypatch):
     risk_verdict.new_qty = None
     risk_agent.evaluate.return_value = risk_verdict
     snap = MagicMock(); snap.equity = 5_000.0; snap.positions = []
-    broker = MagicMock(); broker.snapshot = AsyncMock(return_value=snap)
+    broker = MagicMock(); broker.snapshot = AsyncMock(return_value=snap); broker._assert_snapshot_fresh = AsyncMock()
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
     data_exec.flatten_division = AsyncMock()
