@@ -2,14 +2,17 @@
 
 **Written:** 2026-05-30 at session close of gate (a) REST resilience (merge `eae5080` on origin/main).
 
-**State at write time:**
-- `origin/main` HEAD: `99a5be3` (BACKLOG + deploy_log closure for gate (a)).
-- Gate (a) merge commit: `eae5080`.
+**State at session close (post-wrap):**
+- `origin/main` HEAD: `f6f6c06` (next-session prompt commit; HEAD of main = HEAD of this file's parent commit).
+- Working tree clean; `git status` empty; main = origin/main.
+- Gate (a) merge commit: `eae5080`. Branch `bitunix-rest-resilience-2026-05-30` pushed to origin for audit trail. Worktree `.claude/worktrees/bitunix-resilience` REMOVED.
 - All 3 P1 pre-deploy gates from the 2026-05-30 architectural review Finding #2 are LANDED:
   - (a) REST resilience — `eae5080` (this session)
   - (b) Operational runbooks — `f20a7bc`
   - (c) md5-diff prod-surface tool — `b131d02`
 - Prod state: **UNCHANGED.** Still `4985bbe + 03:57 UTC sed-overlay` of TIER_SIZING.
+- Memory entries marked closed for all 3 gates: `[[bitunix-rest-resilience-2026-05-30]]` (new), `[[bitunix-operational-runbooks-2026-05-30]]` (updated), `[[gate-c-md5diff-landed-2026-05-30]]` (updated), `[[bitunix-live-engine-build]]` (UPDATE 3 banner added), `[[2026-05-30-architectural-review-first-batch-remediation]]` (closure note appended). MEMORY.md index has the new gate (a) entry at the top.
+- Recent leftover worktrees still present (not removed; not blocking): `bitunix-md5diff` (gate-c), `bitunix-runbooks` (gate-b), `polycopy`, `TradeViewPS`, 2× locked agent worktrees. Each operator may prune at convenience.
 
 ---
 
