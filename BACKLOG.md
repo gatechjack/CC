@@ -8,6 +8,97 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P1 — Stage-1 BitUnix prod-deploy gates from 2026-05-30 architectural review Finding #2 (3 untracked gaps) (filed 2026-05-30)
+
+Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` Finding #2 + Finding #7 §6: three readiness-audit must-haves are pre-deploy gates for the first prod-deploy of Stage 1 but were NOT in any active BACKLOG item before this entry. Review explicitly recommends P1 with "explicit pre-deploy gate dependency" framing (Finding #7 §6). Not in scope (B) of N+2 Phase 3 — separate work tracks.
+
+**Pre-deploy gate semantics:** the next prod-deploy of `main` (i.e., the deploy that takes broker-write + safety + entry-path + risk-tier from main to prod) MUST NOT proceed until these items land. Filing here so the gate is auditable, not implicit.
+
+### Gate (a) — Readiness item #6: REST retry/backoff + stale-snapshot health signal + stuck-order timeout→cancel
+
+**Readiness-audit text** (`runbooks/2026-05-29_bitunix_live_readiness_audit.md` § 5 "Gap → Stage 1 (MEDIUM)" + checklist line 200):
+> "REST retry/backoff + a stale-snapshot/connection health signal; ... a stuck-order timeout→cancel policy."
+
+**Review evidence** (Finding #2 row #6):
+> "❌ NOT BUILT. Both readiness + reuse audits flag this as no-external-reuse. Phase 1b does NOT include in scope (B). ❌ NOT in any active BACKLOG P1/P2 item. Flagged in readiness audit § 5 as Stage-1 MEDIUM blocker. medium — UNTRACKED gap"
+
+**Current `httpx` state:** 15s timeout, errors swallowed, `_connected` stays True on REST 5xx (per readiness audit § 5).
+
+### Gate (b) — Readiness item #11: Panic-halt + credential-compromise runbooks
+
+**Readiness-audit text** (§ 10 "Gap → Stage 1 (SMALL-MEDIUM, writing)" + checklist line 205):
+> "four short runbooks — (a) panic halt (kill switch + manually flatten on BitUnix UI if the bot can't); (b) roll back a buggy deploy that already placed orders (how to reconcile + flatten + revert); (c) dispute a broker-side discrepancy (what evidence the audit trail provides); (d) credential compromise mid-trade (revoke key on BitUnix, flatten, rotate)."
+
+**Review evidence** (Finding #2 row #11):
+> "❌ NOT WRITTEN. Tastytrade rotation runbook exists as template `[memory: feedback_tastytrade_rotation_runbook.md]`. ❌ NOT in any active BACKLOG P1/P2. medium — UNTRACKED gap"
+
+**Template:** `[[reference-tastytrade-rotation-runbook]]` for runbook (d).
+
+### Gate (c) — Readiness item #12: Pre-flip md5-diff of full bitunix prod surface vs git
+
+**Readiness-audit text** (§ 12 "Gap → Stage 1 (SMALL)" + checklist line 206):
+> "before flipping live, md5-diff the full bitunix surface against git — `brokers/bitunix.py`, `agents/divisions/bitunix_futures_observer.py`, `agents/divisions/bitunix_position_reconciler.py`, `agents/paper_trade_replay.py`, `agents/strategies/bitunix_*.py`, `comms/bitunix_lifecycle_notifier.py`, `config/strategies.yaml` bitunix block, `config/risk.yaml`, and the Phase-4 `place_order` code when it exists."
+
+**Review evidence** (Finding #2 row #12):
+> "❌ NOT DONE. Deploy-import-graph-audit discipline `[memory: feedback_deploy_import_graph_audit.md]` says this is REQUIRED pre-deploy. Stage-1 prod-deploy gate. ❌ Implicit prerequisite, not tracked as item. medium — UNTRACKED gap"
+
+**Adjacent discipline:** `[[feedback-deploy-import-graph-audit]]` (escalated 2026-05-26).
+
+**Combined priority:** P1 (review's recommendation in Finding #7 §6; not P2 because the review explicitly elevates these as "pre-deploy gate" — gate-of-a-deploy semantics).
+
+**Triggering condition:** before any session attempts to deploy current `main` (commit `622f46c` or later) to prod via systemctl restart, scp-from-git, or any mechanism that touches `bitunix_futures_observer.py` / `brokers/bitunix.py` / `data_exec.py` on prod.
+
+---
+
+## P3 — Stage-1 BitUnix readiness gaps — low-severity (2 untracked, filed 2026-05-30)
+
+Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` Finding #2. Two items: low drift-severity per review; not pre-deploy gating but should land before first live $10.
+
+### Item #8 — Low-equity alert + funding amount decision
+
+**Readiness-audit text** (§ 8 "Gap → Stage 1 (SMALL)" + checklist line 202):
+> "Low-equity Telegram alert (e.g. equity < starting − risked-amount) + an operator-decided **funding amount** for the account (the '$10–$50' must physically be there)."
+
+**Review evidence** (Finding #2 row #8):
+> "❌ NOT BUILT. Capital amount still undefined ($10-$50 Stage-1 sizing; $10K planned per `commit:2a3d20c` BACKLOG note). ❌ NOT in any active BACKLOG P1/P2. Capital decision implicit in risk-tier change but no explicit alert tracked. low — UNTRACKED gap"
+
+**Adjacent:** the 2026-05-30 03:57 sed-deploy BACKLOG note implies a $10K target funding amount via 0.5% effective-risk cap math, but neither the decision nor the alert are formalized.
+
+### Item H-11 — Webhook risk gate falls back to `equity=100_000` on snapshot failure — verify bitunix path fails closed
+
+**Readiness-audit text** (§ 13 + checklist line 204 "Security C-1 + verify H-11"):
+> "**H-11** webhook risk gate falls back to `equity=100_000` on snapshot failure ... DIRECT if bitunix uses the webhook path with that fallback. Verify the bitunix order path's equity source on `snapshot()` failure fails closed (reject), not to a $100k placeholder that would mis-size live orders."
+
+**Review evidence** (Finding #2 row #10 column "BACKLOG-tracked?"):
+> "H-11 verify NOT tracked separately. low — H-11 UNTRACKED gap"
+
+**Verification shape:** 10-minute read of the bitunix observer's equity-source path; trace from `BitunixBroker.snapshot()` raising/returning None through to `RiskAgent.evaluate()`. Confirm reject-on-snapshot-failure, not $100k placeholder. Memorialize as a regression test against the `webhook_risk_gate_falls_back_to_equity_100k` sharp edge (`docs/sharp_edges.md`).
+
+---
+
+## Note — 2026-05-30 architectural review Finding #1d drift-class extension: concurrent-session branch hijacking
+
+**Class:** Finding #1 in `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` named "state forks across canonical vs non-canonical surfaces." Three instances cataloged: 1a Phase 1a/1b reports stranded on unmerged branch; 1b prod-vs-main code divergence; 1c risk-tier deployed-but-not-merged.
+
+**Fourth instance (this session, 2026-05-30 ~06:00 UTC):** during the first-batch remediation, a second concurrent Claude Code session was running in the same working directory `C:/Users/AA Incorporado/cc`. Forensics in the cherry-picked deploy_log entry (`runbooks/deploy_log.md` § "2026-05-30 06:02 UTC"). Sequence:
+
+1. Operator-authorized merge `bitunix-risk-tier-pre-live` → main → produced `9fd9022` on main.
+2. Concurrent session created `paper-trade-visualizer-2026-05-30` from my HEAD (branch reflog: `branch: Created from HEAD`), switched my HEAD to it, committed `e4d0c21` (the deploy_log entry I authored) onto that branch instead of main.
+3. Concurrent session checked out main, committed `0d028c9` "paper-trade-visualizer: Phase 1 diagnostic report" onto main, then reset main back to `9fd9022`.
+4. Concurrent session reset `paper-trade-visualizer-2026-05-30` from `e4d0c21` to `0d028c9` then advanced to `864c909`.
+5. Operator moved concurrent session to a new dedicated worktree `TradeViewPS` (under `.claude/worktrees/`). Isolation restored.
+6. Recovery: cherry-picked `e4d0c21` content onto main as `622f46c`; pushed `origin/main` clean.
+
+**Shape of the drift:** operator intent (authorized work on this branch in this session) vs canonical state (refs and HEADs shared across concurrent shells in the same worktree) forked silently. Same shape as Finding #1: "committed must mean reachable from the canonical surface that downstream consumers actually use." Here the inverse — "what's on canonical refs must match what operator authorized in this session."
+
+**Recommended discipline (companion to Finding #9.a / #9.c):**
+- Each Claude session in a multi-session repo runs in its own `git worktree`. Sharing `C:/Users/AA Incorporado/cc` across sessions is unsafe.
+- Pre-commit safety check: agent reads `HEAD` and verifies it's where the agent last left it before committing. Sub-second cost; catches the hijack at write time.
+
+**No new BACKLOG priority** — operational discipline rather than code work. Filed as a class-extension note adjacent to the P1/P3 review-surfaced items for traceability.
+
+---
+
 ## Note — BitUnix paper-mode tier sizing DEPLOYED 2026-05-30 03:57 UTC (branch UNMERGED)
 
 **Branch:** `bitunix-risk-tier-pre-live` (HEAD `32a9f12`, pushed to origin, **NOT merged** to main).
