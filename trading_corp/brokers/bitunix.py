@@ -1,16 +1,40 @@
-"""BitUnix Futures broker — Phase 1 read-only.
+"""BitUnix Futures broker — Phase 4 live order path (Stage-1 broker-write).
 
-Phase 1 ships `snapshot()` (account balance + open positions) and `quote()`
-against the live BitUnix Futures API. `place_order` and `cancel_order` raise
-`NotImplementedError` as a Phase 1 backstop — the live order path lands in
-Phase 4 per `trading_corp_bitunix_vision.md` (gated on stop-loss strategy
-and conviction → leverage map).
+`snapshot()` + `quote()` + `get_funding_rate()` read the live API (Phase 1).
+This module adds the Stage-1 **write** surface: `place_order` (market entry +
+reduce-only exit), `cancel_order`, fill observation (poll order-detail +
+trade-history), and the kill-switch primitives (`cancel_all_orders`,
+`flash_close_position`, `close_all_position`, `flatten`). REST bodies/endpoints
+are reimplemented from the official BitUnix futures spec; the place/cancel/
+flatten *flow* is adapted from Lumiwealth/lumibot's `BitUnixClient` (MIT, with
+attribution) per runbooks/2026-05-29_bitunix_live_reuse_audit.md.
 
 In PAPER mode (default) `trading_corp.main` wraps this broker in
 `PaperExecutionBroker`, so snapshots return real BitUnix data while orders
-simulate via `PaperBroker`. The `NotImplementedError` raise is defensive —
-it only fires if someone constructs an unwrapped `BitunixBroker` and tries
-to place an order, which shouldn't happen until Phase 4 lands.
+simulate via `PaperBroker`. `place_order` is therefore only ever reached in
+LIVE mode — but note `connect()` still runs on this real broker in paper mode
+(for reads), so this module performs NO account-state writes at connect; the
+one-way position mode is set+verified lazily on the first live entry instead.
+
+Two BitUnix-specific invariants this module is built around:
+
+  * **Sign-what-you-send.** The POST body is serialized to compact JSON
+    exactly once; that exact string is both signed and sent (raw content,
+    never httpx `json=`). Re-serialization adds whitespace and breaks the
+    signature (error 10007) — the #1 BitUnix integration failure.
+  * **clientId idempotency.** clientId = ``tc-<order.id>`` is deterministic,
+    so a retry that returns 30042 (CLIENT_ID_DUPLICATE) provably means the
+    order already landed — safe to treat as success.
+
+Position mode is ONE_WAY, account-wide (operator decision 2026-05-29; see the
+live-readiness audit Decision log). Exits use ``reduceOnly: true`` — no
+positionId/tradeSide bookkeeping.
+
+VERIFY-ON-LIVE (flagged, not yet exercised against a real order): the official
+docs mark ``tradeSide`` as hedge-mode-only and ``effect`` (TIF) as required
+for LIMIT orders only, yet the operator-confirmed one-way open payload sends
+both. If the first live entry is rejected with a param error, drop
+``tradeSide``/``effect`` from the open body (see `_build_order_body`).
 
 Auth scheme (per https://www.bitunix.com/api-docs/futures/common/sign.html):
 
@@ -43,6 +67,7 @@ Margin coins:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -54,8 +79,16 @@ import json
 import httpx
 
 from trading_corp.brokers.base import AccountSnapshot, Broker
+from trading_corp.brokers.bitunix_exceptions import BitunixPositionModeMismatch
+from trading_corp.brokers.bitunix_symbols import to_wire_format
 from trading_corp.persistence import db
 from trading_corp.persistence.models import FillEvent, OpenPosition, Position, ProposedOrder
+
+# Re-exported here so existing callers can still write
+# `from trading_corp.brokers.bitunix import BitunixPositionModeMismatch`.
+# The canonical class object lives in `bitunix_exceptions.py` (see that
+# module's docstring for the cross-branch class-identity rationale).
+__all__ = ["BitunixPositionModeMismatch"]
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +99,77 @@ _DEFAULT_TIMEOUT_S = 15.0
 # treated as 1:1 USD without conversion. BTC/ETH-margined balances exist
 # on BitUnix but need quote conversion to USD; defer until Phase 2+.
 _STABLE_MARGIN_COINS = ("USDT", "USDC")
+
+# ── Phase 4 write-path constants ────────────────────────────────────────────
+_ONE_WAY = "ONE_WAY"
+_DEFAULT_MARGIN_COIN = "USDT"
+_CLIENT_ID_PREFIX = "tc-"
+
+# Order statuses that mean "no longer working" — stop polling for a fill.
+# BitUnix status enum: INIT, NEW, PART_FILLED, CANCELED, FILLED.
+_TERMINAL_STATUSES = {"FILLED", "CANCELED"}
+
+# Fill-observation poll defaults (overridable per-instance for tests).
+_FILL_MAX_POLLS = 8
+_FILL_POLL_INTERVAL_S = 0.4
+
+# BitUnix business-error taxonomy. The envelope `code` is non-zero on a
+# business error even when HTTP is 200. Codes are facts from the official
+# error table (runbooks/2026-05-29_bitunix_live_reuse_audit.md §8) —
+# reimplemented here as a lookup.
+_ERROR_CODES: dict[int, tuple[str, str]] = {
+    10004: ("IP_NOT_WHITELISTED", "API key IP whitelist rejection — whitelist the prod VM IP"),
+    10005: ("RATE_LIMIT", "request rate limit exceeded — back off"),
+    10006: ("RATE_LIMIT", "request rate limit exceeded — back off"),
+    10007: ("SIGN_ERROR", "signature error — body re-serialized after signing, or clock drift"),
+    20003: ("INSUFFICIENT_BALANCE", "insufficient balance for the order"),
+    20006: ("LEVERAGE_LOCKED", "cannot change leverage/mode while orders/positions are open"),
+    30001: ("WOULD_LIQUIDATE", "order would immediately liquidate"),
+    30016: ("QTY_BELOW_MIN", "quantity below the symbol minimum"),
+    30017: ("QTY_BELOW_MIN", "quantity below the symbol minimum"),
+    30018: ("REDUCE_ONLY_VIOLATION", "reduce-only rule violation"),
+    30019: ("REDUCE_ONLY_VIOLATION", "reduce-only rule violation"),
+    30024: ("SL_BEYOND_LIQ", "stop-loss set beyond liquidation price"),
+    30025: ("SL_BEYOND_LIQ", "stop-loss set beyond liquidation price"),
+    30038: ("TPSL_EXCEEDS_POSITION", "TP/SL amount exceeds position size"),
+    30042: ("CLIENT_ID_DUPLICATE", "clientId already used — order already accepted; safe to treat as success"),
+}
+
+# Rate-limit codes the (future) retry layer should back off on.
+_RETRYABLE_CODES = {10005, 10006}
+# Codes meaning "your write already landed" — safe to treat as success because
+# clientId is a deterministic idempotency key.
+_IDEMPOTENT_OK_CODES = {30042}
+
+
+def classify_error(code: int | None) -> tuple[str, str]:
+    """Return (name, human-meaning) for a BitUnix error code."""
+    try:
+        return _ERROR_CODES[int(code)]
+    except (TypeError, ValueError, KeyError):
+        return ("UNKNOWN", "unrecognized BitUnix error code")
+
+
+class BitunixAPIError(RuntimeError):
+    """A non-zero `code` in a BitUnix REST envelope (a business error)."""
+
+    def __init__(self, code, msg=None, *, path: str | None = None) -> None:
+        self.code = code
+        self.msg = msg
+        self.path = path
+        self.error_name, self.meaning = classify_error(code)
+        self.retryable = code in _RETRYABLE_CODES
+        super().__init__(
+            f"BitUnix API error {code} ({self.error_name}) "
+            f"on {path}: {msg!r} — {self.meaning}"
+        )
+
+
+def _amount_str(qty: float) -> str:
+    """Format a base-coin amount / price as BitUnix expects: a plain decimal
+    string with no scientific notation and no trailing zeros."""
+    s = f"{abs(float(qty)):.8f}".rstrip("0").rstrip(".")
+    return s or "0"
 
 
 def _sign(
@@ -142,6 +246,20 @@ class BitunixBroker(Broker):
         self._stub = not bool(api_key and api_secret)
         self._client: httpx.AsyncClient | None = None
         self._connected = False
+        # ── Phase 4 write-path state ────────────────────────────────────
+        self._margin_coin = _DEFAULT_MARGIN_COIN
+        # Position mode (ONE_WAY, account-wide). None until set+verified on
+        # the first live entry — NOT at connect (see module docstring).
+        self._position_mode: str | None = None
+        # Per-symbol leverage cache to dodge redundant change_leverage calls
+        # (and error 20006 when a position is already open).
+        self._leverage_cache: dict[str, int] = {}
+        # Fail-closed kill-switch latch. Once set, place_order refuses.
+        self._halt_new_orders = False
+        self._halt_reason: str | None = None
+        # Fill-observation poll knobs (overridable for tests).
+        self._fill_max_polls = _FILL_MAX_POLLS
+        self._fill_poll_interval_s = _FILL_POLL_INTERVAL_S
 
     async def connect(self) -> None:
         if self._stub:
@@ -372,19 +490,395 @@ class BitunixBroker(Broker):
         except (TypeError, ValueError):
             return None
 
+    # ── Phase 4: signed REST core ───────────────────────────────────────
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, str] | None = None,
+        body: dict | None = None,
+    ):
+        """Signed request against the BitUnix futures REST API.
+
+        Implements **sign-what-you-send**: the POST body is serialized to
+        compact JSON exactly once; that exact string is BOTH signed and sent
+        as raw content (never httpx `json=`, which would re-serialize with
+        whitespace and break the signature → error 10007). Returns the
+        envelope `data`; raises `BitunixAPIError` on a non-zero `code`.
+        """
+        if self._stub or not self._client or not self._api_key or not self._api_secret:
+            raise RuntimeError(
+                "BitunixBroker._request requires credentials + an open client"
+            )
+        body_str = ""
+        content = None
+        headers: dict[str, str] = {}
+        if body is not None:
+            body_str = json.dumps(body, separators=(",", ":"))
+            content = body_str
+            headers["Content-Type"] = "application/json"
+        headers.update(
+            _sign(self._api_key, self._api_secret, query=query, body=body_str)
+        )
+        if method == "GET":
+            r = await self._client.get(path, params=query or None, headers=headers)
+        else:
+            r = await self._client.post(path, content=content, headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise BitunixAPIError(data.get("code"), data.get("msg"), path=path)
+        return data.get("data")
+
+    # ── Phase 4: order placement ────────────────────────────────────────
     async def place_order(self, order: ProposedOrder) -> FillEvent:
-        raise NotImplementedError(
-            "BitunixBroker.place_order: Phase 1 is read-only. Live order "
-            "placement lands in Phase 4 (gated on stop-loss strategy + "
-            "conviction → leverage map). In PAPER mode the order should "
-            "have routed to PaperBroker via PaperExecutionBroker — if you "
-            "see this raise, the wrapping was bypassed."
+        """Place a live BitUnix futures order (one-way mode).
+
+        Opening vs reducing is taken from ``order.extra["reduce_only"]`` (the
+        order-path layer sets it for exits; absent ⇒ entry). Entries send
+        tradeSide=OPEN; exits set reduceOnly=true. Fails closed on the halt
+        latch and on a position-mode mismatch. After placement, observes the
+        real fill (poll order-detail → VWAP from trade-history) and returns a
+        `FillEvent`.
+
+        Only reached in LIVE mode (PAPER intercepts at `PaperExecutionBroker`),
+        which is why the position-mode and leverage WRITES live here, not in
+        `connect()` (which runs on this real broker in paper mode too).
+        """
+        if self._stub or not self._client:
+            raise NotImplementedError(
+                "BitunixBroker.place_order: broker is in STUB mode (no "
+                "credentials). In PAPER mode orders route to PaperBroker via "
+                "PaperExecutionBroker — if you see this, the wrapping was bypassed."
+            )
+        if self._halt_new_orders:
+            raise RuntimeError(
+                f"BitunixBroker halted, refusing new orders: {self._halt_reason}"
+            )
+
+        extra = order.extra or {}
+        reduce_only = bool(extra.get("reduce_only", False))
+        wire = to_wire_format(order.symbol)
+
+        # Fail-closed position-mode guard (sets+verifies ONE_WAY on a flat entry).
+        await self._assert_position_mode_one_way(allow_set=not reduce_only)
+
+        # Leverage is per-symbol and must be set before opening (error 20006 if
+        # changed with an open position). Entries only; exits inherit.
+        if not reduce_only:
+            await self._ensure_leverage(wire, extra.get("leverage"))
+
+        body = self._build_order_body(order, wire, reduce_only)
+        client_id = body["clientId"]
+        try:
+            data = await self._request(
+                "POST", "/api/v1/futures/trade/place_order", body=body,
+            )
+        except BitunixAPIError as e:
+            if e.code in _IDEMPOTENT_OK_CODES:
+                # Deterministic clientId ⇒ a duplicate means this exact order
+                # already landed. Treat as success and observe the fill.
+                log.warning(
+                    "BitUnix place_order clientId=%s duplicate (30042) — "
+                    "treating as already-placed", client_id,
+                )
+                data = {"clientId": client_id}
+            else:
+                raise
+        venue_order_id = (data or {}).get("orderId")
+        client_id = (data or {}).get("clientId") or client_id
+        log.info(
+            "BitUnix place_order accepted: venue_order_id=%s clientId=%s "
+            "%s %s qty=%s reduce_only=%s [order_id=%s]",
+            venue_order_id, client_id, body["side"], wire, body["qty"],
+            reduce_only, order.id,
         )
 
-    async def cancel_order(self, order_id: str) -> bool:
-        raise NotImplementedError(
-            "BitunixBroker.cancel_order: Phase 1 is read-only. See place_order."
+        status, filled_qty, avg_price, _fee = await self._observe_fill(
+            order_id=venue_order_id, client_id=client_id,
         )
+
+        # Encode non-terminal status in the venue suffix (mirrors coinbase):
+        #   bitunix_futures              → fully filled
+        #   bitunix_futures:part_filled  → partially filled
+        #   bitunix_futures:new / :init  → accepted, not yet filled
+        venue = "bitunix_futures"
+        if status and status != "FILLED":
+            venue = f"bitunix_futures:{status.lower()}"
+        return FillEvent(
+            order_id=order.id,
+            symbol=order.symbol,
+            side=order.side,
+            qty=filled_qty if filled_qty > 0 else float(order.qty),
+            price=avg_price,
+            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            venue=venue,
+        )
+
+    def _client_id(self, order: ProposedOrder) -> str:
+        """Deterministic idempotency key: the same ProposedOrder always maps to
+        the same clientId, so a retry that 30042-duplicates is provably
+        'already placed', not a double-send."""
+        return f"{_CLIENT_ID_PREFIX}{order.id}"
+
+    def _build_order_body(
+        self, order: ProposedOrder, wire: str, reduce_only: bool,
+    ) -> dict:
+        """Build the place_order body for one-way mode.
+
+        Entry (open): tradeSide=OPEN, reduceOnly=false, effect (TIF).
+        Exit (reduce): reduceOnly=true only — no tradeSide/positionId.
+
+        VERIFY-ON-LIVE: official docs mark `tradeSide` hedge-mode-only and
+        `effect` LIMIT-only; we send both on opens per the operator-confirmed
+        payload. If the first live entry param-errors, drop them (module docstring).
+        """
+        otype = (order.order_type or "market").upper()
+        body: dict = {
+            "symbol": wire,
+            "side": order.side.upper(),
+            "orderType": otype,
+            "qty": _amount_str(order.qty),
+        }
+        if otype == "LIMIT":
+            if not order.limit_price:
+                raise ValueError("BitUnix LIMIT order requires limit_price")
+            body["price"] = _amount_str(order.limit_price)
+        if reduce_only:
+            body["reduceOnly"] = True
+        else:
+            body["tradeSide"] = "OPEN"
+            body["reduceOnly"] = False
+        if otype == "LIMIT" or not reduce_only:
+            body["effect"] = str((order.extra or {}).get("tif", "GTC")).upper()
+        body["clientId"] = self._client_id(order)
+        return body
+
+    # ── Phase 4: position-mode guard (one-way, account-wide) ────────────
+    async def _position_mode_from_positions(self) -> str | None:
+        """Read the account position mode off any open position.
+
+        BitUnix exposes `positionMode` only on the position object
+        (`get_pending_positions`); there is no standalone getter. Returns the
+        mode (upper-cased) when a position exists, else None (flat)."""
+        data = await self._request(
+            "GET", "/api/v1/futures/position/get_pending_positions", query={},
+        )
+        for p in (data or []):
+            pm = p.get("positionMode")
+            if pm:
+                return str(pm).upper()
+        return None
+
+    async def _set_position_mode_one_way(self) -> str:
+        """Set + verify ONE_WAY (account-wide); returns the resulting mode.
+        Only ever called from the live order path (see place_order docstring)."""
+        data = await self._request(
+            "POST", "/api/v1/futures/account/change_position_mode",
+            body={"positionMode": _ONE_WAY},
+        )
+        mode = data.get("positionMode") if isinstance(data, dict) else None
+        # code==0 already means success; trust the returned mode if present,
+        # else the value we just set.
+        self._position_mode = str(mode).upper() if mode else _ONE_WAY
+        return self._position_mode
+
+    async def _assert_position_mode_one_way(self, *, allow_set: bool) -> None:
+        """Fail-closed guard: refuse to place unless the account is ONE_WAY.
+
+        Reads positionMode off an open position when one exists; on a flat
+        opening order (`allow_set`) sets+verifies ONE_WAY. On mismatch: latch
+        the halt flag and raise `BitunixPositionModeMismatch`."""
+        live_mode = await self._position_mode_from_positions()
+        if live_mode is not None:
+            mode = live_mode
+        elif allow_set:
+            mode = await self._set_position_mode_one_way()
+        else:
+            mode = self._position_mode
+        if mode is not None and mode != _ONE_WAY:
+            self._halt_new_orders = True
+            self._halt_reason = f"position_mode_mismatch:{mode}"
+            raise BitunixPositionModeMismatch(current=mode)
+
+    async def _ensure_leverage(self, wire: str, leverage) -> None:
+        """Set per-symbol leverage before opening (cached to dodge 20006)."""
+        if leverage is None:
+            return
+        try:
+            lev = int(leverage)
+        except (TypeError, ValueError):
+            return
+        if lev <= 0 or self._leverage_cache.get(wire) == lev:
+            return
+        try:
+            await self._request(
+                "POST", "/api/v1/futures/account/change_leverage",
+                body={"symbol": wire, "marginCoin": self._margin_coin, "leverage": lev},
+            )
+            self._leverage_cache[wire] = lev
+        except BitunixAPIError as e:
+            if e.code == 20006:
+                # A position/order is already open; leverage can't change now
+                # and the existing setting stands. Don't block the order.
+                log.warning(
+                    "BitUnix change_leverage %s=%dx blocked (20006); "
+                    "using existing leverage", wire, lev,
+                )
+            else:
+                raise
+
+    # ── Phase 4: fill observation ───────────────────────────────────────
+    async def get_order_detail(self, *, order_id=None, client_id=None) -> dict:
+        """Fetch a single order's detail by venue order id or clientId."""
+        if not order_id and not client_id:
+            raise ValueError("get_order_detail requires order_id or client_id")
+        query: dict[str, str] = {}
+        if order_id:
+            query["orderId"] = str(order_id)
+        else:
+            query["clientId"] = str(client_id)
+        data = await self._request(
+            "GET", "/api/v1/futures/trade/get_order_detail", query=query,
+        )
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data or {}
+
+    async def get_history_trades(self, *, order_id=None, symbol=None) -> list[dict]:
+        """Fetch fills (tradeList) for an order/symbol. Carries the real
+        per-fill price + fee (order detail has neither avgPrice nor fill price)."""
+        query: dict[str, str] = {}
+        if order_id:
+            query["orderId"] = str(order_id)
+        if symbol:
+            query["symbol"] = to_wire_format(symbol)
+        data = await self._request(
+            "GET", "/api/v1/futures/trade/get_history_trades", query=query,
+        )
+        if isinstance(data, dict):
+            return data.get("tradeList") or []
+        if isinstance(data, list):
+            return data
+        return []
+
+    async def _observe_fill(self, *, order_id, client_id):
+        """Poll order detail to a terminal/partial state, then derive the VWAP
+        fill price + total fee + filled qty from trade history (neither order
+        detail nor pending orders carry a fill price — only the fills do).
+
+        Returns (status, filled_qty, avg_price, fee). `filled_qty` reflects
+        partial fills via `tradeQty` (BitUnix status PART_FILLED)."""
+        status: str | None = None
+        filled_qty = 0.0
+        resolved_id = order_id
+        for i in range(self._fill_max_polls):
+            detail = await self.get_order_detail(
+                order_id=resolved_id,
+                client_id=None if resolved_id else client_id,
+            )
+            if detail:
+                resolved_id = detail.get("orderId") or resolved_id
+                status = (detail.get("status") or "").upper() or None
+                filled_qty = _to_float(detail.get("tradeQty"))
+            if status in _TERMINAL_STATUSES:
+                break
+            if i < self._fill_max_polls - 1:
+                await asyncio.sleep(self._fill_poll_interval_s)
+
+        avg_price, fee, hist_qty = await self._fill_price_from_history(resolved_id)
+        if filled_qty <= 0 and hist_qty > 0:
+            filled_qty = hist_qty
+        return status, filled_qty, avg_price, fee
+
+    async def _fill_price_from_history(self, order_id):
+        """VWAP fill price + summed fee + filled qty from trade history."""
+        if not order_id:
+            return 0.0, 0.0, 0.0
+        trades = await self.get_history_trades(order_id=order_id)
+        notional = qty = fee = 0.0
+        for t in trades:
+            q = _to_float(t.get("qty"))
+            p = _to_float(t.get("price"))
+            notional += q * p
+            qty += q
+            fee += _to_float(t.get("fee"))
+        avg = (notional / qty) if qty > 0 else 0.0
+        return avg, fee, qty
+
+    # ── Phase 4: cancel + kill-switch primitives ────────────────────────
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel one resting order by venue order id.
+
+        `cancel_orders` requires `symbol`; we resolve it from the order detail
+        (the ABC gives us only the id). Returns True iff the id is in the
+        response successList. Never raises — cancel is often a cleanup path."""
+        if self._stub or not self._client:
+            return False
+        try:
+            detail = await self.get_order_detail(order_id=order_id)
+            body: dict = {"orderList": [{"orderId": str(order_id)}]}
+            symbol = detail.get("symbol")
+            if symbol:
+                body["symbol"] = symbol
+            data = await self._request(
+                "POST", "/api/v1/futures/trade/cancel_orders", body=body,
+            )
+        except Exception as e:
+            log.warning("BitUnix cancel_order(%s) failed: %s", order_id, e)
+            return False
+        success = (data or {}).get("successList") or []
+        return any(str(s.get("orderId")) == str(order_id) for s in success)
+
+    async def cancel_all_orders(self, symbol: str | None = None) -> dict:
+        """Cancel all resting orders (account-wide, or one symbol).
+        Kill-switch primitive."""
+        body: dict = {}
+        if symbol:
+            body["symbol"] = to_wire_format(symbol)
+        return await self._request(
+            "POST", "/api/v1/futures/trade/cancel_all_orders", body=body,
+        ) or {}
+
+    async def flash_close_position(self, position_id: str) -> dict:
+        """Market-flatten a single position by id. Kill-switch primitive."""
+        return await self._request(
+            "POST", "/api/v1/futures/trade/flash_close_position",
+            body={"positionId": str(position_id)},
+        ) or {}
+
+    async def close_all_position(self, symbol: str | None = None) -> dict:
+        """Market-flatten all positions (account-wide, or one symbol).
+        Kill-switch primitive."""
+        body: dict = {}
+        if symbol:
+            body["symbol"] = to_wire_format(symbol)
+        return await self._request(
+            "POST", "/api/v1/futures/trade/close_all_position", body=body,
+        ) or {}
+
+    async def flatten(self, symbol: str | None = None) -> dict:
+        """Kill switch: latch halt-new-orders, cancel all resting orders, then
+        market-flatten all positions. Best-effort — runs every step and
+        collects errors rather than aborting on the first failure."""
+        self._halt_new_orders = True
+        self._halt_reason = "flatten() kill-switch invoked"
+        results: dict = {"halted": True}
+        try:
+            results["cancel_all_orders"] = await self.cancel_all_orders(symbol)
+        except Exception as e:
+            results["cancel_all_orders_error"] = str(e)
+        try:
+            results["close_all_position"] = await self.close_all_position(symbol)
+        except Exception as e:
+            results["close_all_position_error"] = str(e)
+        return results
+
+    def resume(self) -> None:
+        """Clear the halt latch (operator action after resolving the cause)."""
+        self._halt_new_orders = False
+        self._halt_reason = None
 
     def list_open_positions(self, db_url: str) -> list[OpenPosition]:
         """Reconciler-facing enumeration of unresolved positions.
