@@ -84,6 +84,8 @@ from trading_corp.brokers.base import AccountSnapshot, Broker
 from trading_corp.brokers.bitunix_exceptions import (
     BitunixPositionModeMismatch,
     BitunixStaleSnapshot,
+    BitunixStuckOrderCancelFailed,
+    BitunixStuckOrderCancelled,
 )
 from trading_corp.brokers.bitunix_symbols import to_wire_format
 from trading_corp.persistence import db
@@ -97,7 +99,12 @@ if TYPE_CHECKING:
 # `from trading_corp.brokers.bitunix import BitunixPositionModeMismatch`.
 # The canonical class objects live in `bitunix_exceptions.py` (see that
 # module's docstring for the cross-branch class-identity rationale).
-__all__ = ["BitunixPositionModeMismatch", "BitunixStaleSnapshot"]
+__all__ = [
+    "BitunixPositionModeMismatch",
+    "BitunixStaleSnapshot",
+    "BitunixStuckOrderCancelled",
+    "BitunixStuckOrderCancelFailed",
+]
 
 log = logging.getLogger(__name__)
 
@@ -292,6 +299,7 @@ class BitunixBroker(Broker):
         api_secret: str | None = None,
         *,
         logger: "LoggerAgent | None" = None,
+        safety_notifier=None,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -327,6 +335,13 @@ class BitunixBroker(Broker):
         # mtime-cache for the snapshot-staleness threshold YAML read.
         # `(mtime, value)`; None means "not yet read or cache invalidated".
         self._staleness_threshold_cache: tuple[float, float] | None = None
+        # Optional safety_notifier for `stuck_order_cancelled` /
+        # `stuck_order_cancel_failed` telegram pushes (gate (a) sub-item 3).
+        # Duck-typed contract matches `DataExecAgent.safety_notifier`:
+        #   async def push(text: str, *, audit_path: str = "other",
+        #                  audit_context: dict | None = None) -> bool
+        # Wired from main.py to the same TelegramChannel singleton.
+        self.safety_notifier = safety_notifier
 
     async def connect(self) -> None:
         if self._stub:
@@ -1048,7 +1063,33 @@ class BitunixBroker(Broker):
         detail nor pending orders carry a fill price — only the fills do).
 
         Returns (status, filled_qty, avg_price, fee). `filled_qty` reflects
-        partial fills via `tradeQty` (BitUnix status PART_FILLED)."""
+        partial fills via `tradeQty` (BitUnix status PART_FILLED).
+
+        ── Stuck-order timeout → cancel (gate (a) sub-item 3, 2026-05-30) ──
+        If polling exhausts WITHOUT a terminal status (still NEW / INIT /
+        PART_FILLED at the last poll), cancel the order and emit safety
+        side-effects:
+          * cancel succeeded AND status was PART_FILLED → continue past the
+            cancel block; the remaining quantity has been cancelled at the
+            venue, but the partial fill that already landed is real money,
+            so we return the partial-fill tuple normally and `place_order`
+            constructs a `bitunix_futures:part_filled` FillEvent. The audit
+            (`stuck_order_cancelled`) + telegram fire from this method.
+          * cancel succeeded AND status was unfilled (NEW / INIT / None) →
+            raise `BitunixStuckOrderCancelled`. Caller's path treats the
+            order as not-placed.
+          * cancel FAILED → raise `BitunixStuckOrderCancelFailed` regardless
+            of whether status was partial or unfilled; operator intervention
+            may be required because the broker cannot prove the order isn't
+            still resting at the venue.
+
+        Threshold note: the existing `_fill_max_polls × _fill_poll_interval_s`
+        (3.2s at the defaults 8 × 0.4s) IS the threshold. Market orders on
+        BTC-PERP typically fill in <1s; 3.2s of inactivity is a strong
+        signal of stuck. If we observe false-positive stuck cancels on slow
+        fills, this is the knob to raise (config addition deferred until
+        we have evidence the default is too tight).
+        """
         status: str | None = None
         filled_qty = 0.0
         resolved_id = order_id
@@ -1066,10 +1107,103 @@ class BitunixBroker(Broker):
             if i < self._fill_max_polls - 1:
                 await asyncio.sleep(self._fill_poll_interval_s)
 
+        # Stuck-order check (sub-item 3). Polling exhausted without a
+        # terminal status → cancel + audit + telegram. May raise.
+        if status not in _TERMINAL_STATUSES:
+            await self._handle_stuck_order(
+                order_id=resolved_id, status=status,
+            )
+
         avg_price, fee, hist_qty = await self._fill_price_from_history(resolved_id)
         if filled_qty <= 0 and hist_qty > 0:
             filled_qty = hist_qty
         return status, filled_qty, avg_price, fee
+
+    async def _handle_stuck_order(self, *, order_id, status) -> None:
+        """Cancel a stuck order; emit audit + telegram; raise unless the
+        order was partially filled (in which case the caller's path returns
+        the partial fill normally — see `_observe_fill` docstring for the
+        decision matrix).
+
+        gate (a) sub-item 3 of REST resilience (2026-05-30).
+        """
+        cancel_ok = False
+        cancel_error: Exception | None = None
+        try:
+            cancel_ok = await self.cancel_order(order_id) if order_id else False
+        except Exception as e:
+            cancel_error = e
+            cancel_ok = False
+
+        poll_budget_s = (
+            self._fill_max_polls * self._fill_poll_interval_s
+        )
+        common_payload = {
+            "order_id": str(order_id) if order_id else None,
+            "status_at_exhaustion": status,
+            "poll_budget_s": round(poll_budget_s, 3),
+            "max_polls": self._fill_max_polls,
+            "poll_interval_s": self._fill_poll_interval_s,
+            "cancel_attempted": True,
+            "cancel_ok": cancel_ok,
+            "cancel_error": str(cancel_error) if cancel_error else None,
+            "ts": iso(now_utc()),
+        }
+        is_partial = status == "PART_FILLED"
+        if cancel_ok:
+            audit_kind = "stuck_order_cancelled"
+            telegram_text = (
+                f"⚠️ BitUnix STUCK ORDER cancelled — order_id={order_id} "
+                f"status={status} (poll budget {poll_budget_s:.1f}s exhausted). "
+                f"{'Partial fill kept.' if is_partial else 'No fills landed.'}"
+            )
+        else:
+            audit_kind = "stuck_order_cancel_failed"
+            telegram_text = (
+                f"🚨 BitUnix STUCK ORDER + CANCEL FAILED — order_id={order_id} "
+                f"status={status} (poll budget {poll_budget_s:.1f}s exhausted). "
+                f"cancel_error={cancel_error or '(returned False)'}. "
+                f"Operator: verify order is not still resting at venue."
+            )
+
+        # Audit row (best-effort — never block the safety path on audit failure).
+        if self.logger is not None:
+            try:
+                self.logger.log_event(
+                    actor="bitunix_broker",
+                    kind=audit_kind,
+                    payload=common_payload,
+                )
+            except Exception as e:
+                log.warning(
+                    "BitUnix _handle_stuck_order audit (%s) failed: %s",
+                    audit_kind, e,
+                )
+
+        # Telegram (best-effort — never block the safety path on push failure).
+        if self.safety_notifier is not None:
+            try:
+                await self.safety_notifier.push(
+                    telegram_text,
+                    audit_path="safety_alert",
+                    audit_context={
+                        "kind": audit_kind,
+                        "order_id": str(order_id) if order_id else None,
+                        "status_at_exhaustion": status,
+                    },
+                )
+            except Exception as e:
+                log.warning(
+                    "BitUnix _handle_stuck_order telegram failed: %s", e,
+                )
+
+        # Raise unless cancel succeeded AND we have a real partial fill.
+        if not cancel_ok:
+            raise BitunixStuckOrderCancelFailed(order_id=order_id, status=status)
+        if not is_partial:
+            raise BitunixStuckOrderCancelled(order_id=order_id, status=status)
+        # PART_FILLED + cancel succeeded → fall through; caller returns
+        # the partial fill tuple normally.
 
     async def _fill_price_from_history(self, order_id):
         """VWAP fill price + summed fee + filled qty from trade history."""

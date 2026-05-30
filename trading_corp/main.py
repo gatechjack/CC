@@ -813,6 +813,14 @@ async def run(argv: list[str] | None = None) -> int:
     # slot was re-added in commit 7a so this assignment is type-safe
     # right now, before the safety branch lands.
     data_exec.safety_notifier = channel
+    # gate (a) sub-item 3 (2026-05-30): the bitunix broker's stuck-order
+    # cancel-on-exhaustion path emits `safety_alert` telegrams directly
+    # (audit + telegram are local to the broker because PART_FILLED stuck
+    # orders can't raise — they return a partial-fill tuple to place_order).
+    # Same TelegramChannel singleton as data_exec — no parallel instance.
+    _bx_broker = data_exec.brokers.get("bitunix_futures")
+    if _bx_broker is not None and hasattr(_bx_broker, "safety_notifier"):
+        _bx_broker.safety_notifier = channel
 
     await channel.start()
     await channel.push(
