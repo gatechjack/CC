@@ -65,6 +65,7 @@ def _make_observer_paper(tmp_path: Path):
 
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
+    data_exec.flatten_division = AsyncMock()
     data_exec.place = AsyncMock(return_value=FillEvent(
         order_id="x", symbol="BTCUSDT", side="buy",
         qty=0.001, price=80_000.0, ts="2026-05-29T12:00:00+00:00",
@@ -107,6 +108,7 @@ def _make_observer_live(tmp_path: Path, monkeypatch, *, place_raises=None,
 
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
+    data_exec.flatten_division = AsyncMock()
     if place_raises is not None:
         data_exec.place = AsyncMock(side_effect=place_raises)
     else:

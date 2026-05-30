@@ -75,6 +75,7 @@ def wired_observer(tmp_path: Path):
     broker.snapshot = AsyncMock(return_value=snap)
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
+    data_exec.flatten_division = AsyncMock()
 
     logger_agent = MagicMock()
     telegram_channel = MagicMock()
@@ -268,6 +269,7 @@ def score_wired_observer(tmp_path: Path, monkeypatch):
     broker.snapshot = AsyncMock(return_value=snap)
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
+    data_exec.flatten_division = AsyncMock()
 
     logger_agent = MagicMock()
     telegram_channel = MagicMock()

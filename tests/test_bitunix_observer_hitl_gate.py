@@ -82,6 +82,7 @@ def _make_observer(
 
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
+    data_exec.flatten_division = AsyncMock()
     if place_raises is not None:
         data_exec.place = AsyncMock(side_effect=place_raises)
     else:
@@ -426,6 +427,7 @@ async def test_no_pending_registry_skips_hitl_gracefully(tmp_path, monkeypatch):
     broker = MagicMock(); broker.snapshot = AsyncMock(return_value=snap)
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
+    data_exec.flatten_division = AsyncMock()
     data_exec.place = AsyncMock(return_value=FillEvent(
         order_id="x", symbol="BTCUSDT", side="buy",
         qty=0.001, price=80_000.0, ts="2026-05-29T12:00:00+00:00",
