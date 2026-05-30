@@ -124,6 +124,7 @@ def _build_deps(
     deps.research_firm = research_firm
     deps.telegram_channel = telegram_channel
     deps.bitunix_observer = None
+    deps.db_url = db_url
     return deps, logger_agent
 
 
@@ -213,6 +214,7 @@ def _build_deps_cypher(
     deps.research_firm = research_firm
     deps.telegram_channel = telegram_channel
     deps.bitunix_observer = None
+    deps.db_url = db_url
     return deps, logger_agent
 
 
