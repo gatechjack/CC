@@ -76,6 +76,67 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-30 03:57 UTC — BitUnix paper-mode tier sizing aligned with intended live values (sed-deploy, branch UNMERGED)
+
+**Commits (branch state — NOT on main):** `847aad7` (on branch `bitunix-risk-tier-pre-live`, pushed to origin).
+**Triggered by:** operator request — align paper-mode sizing with planned $10K live funding. Same config carries to live when `execution_mode: paper → live` flips.
+**Backup tag:** `.pre-tier-sizing-pre-live-20260530T035251Z` (on both prod files)
+
+**Files deployed (2 — surgical sed-in-place):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — TIER_SIZING constants lines 202-203 only (PREMIUM + STANDARD). md5 `d31bed3d…` → `ec2a0f74…`.
+- `config/strategies.yaml` — `bitunix_futures.tier_sizing` lines 1035-1036 (doc mirror). md5 `9b68f1aa…` → `61dd3550…`.
+
+**The change (PREMIUM + STANDARD only; WEAK / COUNTER / `EFFECTIVE_RISK_PER_TRADE_PCT` untouched):**
+
+| Tier | size_pct | leverage |
+|---|---|---|
+| PREMIUM  | 0.04 → **0.015**  | 8.0 → **25.0** |
+| STANDARD | 0.02 → **0.0075** | 5.0 → **25.0** |
+| WEAK     | 0.01 (unchanged) | 2.0 (unchanged) |
+| COUNTER  | 0.005 (unchanged, still disabled) | 2.0 (unchanged) |
+
+`EFFECTIVE_RISK_PER_TRADE_PCT` cap stays at 0.005 (0.5%). PREMIUM eff-risk at stop floor = 0.015 × 25 × 0.003 = **0.1125%**, well under cap. STANDARD eff-risk = 0.0075 × 25 × 0.003 = **0.05625%**.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- BitUnix paper-mode TIER_SIZING: PREMIUM (0.015, 25.0) + STANDARD (0.0075, 25.0). Same values apply to live mode once `execution_mode: live` flips.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Branch UNMERGED.** Local + origin `main` still at `d967706`; this deploy went from branch `bitunix-risk-tier-pre-live` (`847aad7`) via surgical sed. Prod's `bitunix_futures_observer.py` no longer matches any single commit (4985bbe + 2 sed lines from 847aad7).
+- **YAML block is documentation-only.** `config/strategies.yaml:1017-1018` comment is accurate — zero YAML readers for `tier_sizing` or `effective_risk_per_trade_pct` in `trading_corp/`. Module constants are load-bearing. If a future change touches only the YAML, the running observer will keep the hardcoded constants. Always edit both, or wire YAML reads first.
+- **Test fixture refreshed in branch but NOT on prod:** `tests/test_bitunix_futures_observer.py:281-298` (`test_build_proposal_premium_full_size`). Test files are not deployed.
+
+**Verification:**
+- pre/post md5 changed on both files (recorded above).
+- 4 NEW patterns present (1 each): grep -c -F validated.
+- 4 OLD patterns absent (0 each): grep -c -F validated.
+- EOL integrity preserved: `.py` LF=2466 unchanged, YAML CRLF=1775 unchanged.
+- Old python PID: 1739386 → new PID: 1762880 (xvfb wrapper: 1739372 → 1762864).
+- `system/startup` audit row at 2026-05-30T03:57:28+00:00.
+- Scanner roll-call journal at 03:58:11: all expected divisions online; `BitunixBroker connected (account=bitunix-futures, equity=$285.13, 0 positions)`.
+- Fresh venv-python import of `bitunix_futures_observer` returns `TIER_SIZING.PREMIUM = {'size_pct': 0.015, 'leverage': 25.0}`, `TIER_SIZING.STANDARD = {'size_pct': 0.0075, 'leverage': 25.0}`, `EFFECTIVE_RISK_PER_TRADE_PCT = 0.005`. Source-on-disk values verified.
+- Web command center bound at 04:03:39 (6m 14s lazy-start — matches historical pattern). `curl https://trading.jacksumner.com/healthz` returns **200**.
+
+**Audit-row empirical verification — DEFERRED:**
+The `would_have_placed` audit row (which carries `leverage` + `effective_risk_pct` at top-level) fires only ~3/24h (last pre-restart was 2026-05-29T19:58:11). First post-restart `would_have_placed` will quote `leverage=25.0` and a recomputed `effective_risk_pct` matching the new tier values. Marker for future-Claude: query `SELECT ts, payload_json FROM audit_event WHERE actor='bitunix_futures' AND kind='would_have_placed' AND ts > '2026-05-30T03:57:25' ORDER BY ts ASC LIMIT 1` to confirm.
+
+**Inert / dormant on current traffic:**
+- Change is paper-mode-affecting today. Live-mode-affecting when `execution_mode: paper → live` flips (separate, gated change).
+- Stage-1 entry-path / safety / broker-write code (on `main` but NOT on prod per `4985bbe`) is unrelated to this change and remains undeployed.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-tier-sizing-pre-live-20260530T035251Z
+BASE=/home/azureuser/trading_corp
+for f in trading_corp/agents/divisions/bitunix_futures_observer.py config/strategies.yaml; do
+  mv \$BASE/\$f.\$TAG \$BASE/\$f
+done
+sudo systemctl restart trading-corp.service
+"
+```
+
+---
+
 ## 2026-05-30 — Merge sequence (a): land C-1 + Stage-1 broker-write/safety/entry-path on main — SOURCE-ONLY (NOT deployed to prod)
 
 **Type:** source-merge session — six feature branches landed on `main` + two scoped fixture-fix follow-up commits. **NO prod deploy this session.** Prod remains at the pre-merge main commit (`4985bbe`). Operator decides deploy timing separately; deploy of these merged commits will require the RH-pickle-aware restart coordination per the standing rule.

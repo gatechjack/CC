@@ -8,6 +8,41 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## Note — BitUnix paper-mode tier sizing DEPLOYED 2026-05-30 03:57 UTC (branch UNMERGED)
+
+**Branch:** `bitunix-risk-tier-pre-live` (HEAD `32a9f12`, pushed to origin, **NOT merged** to main).
+**Status:** **DEPLOYED** via surgical sed-in-place + restart. Backup tag on prod: `.pre-tier-sizing-pre-live-20260530T035251Z`. Canonical record in `runbooks/deploy_log.md` § "2026-05-30 03:57 UTC".
+
+**Change:** `TIER_SIZING` constants in `trading_corp/agents/divisions/bitunix_futures_observer.py:201` + YAML doc-mirror in `config/strategies.yaml:1034`:
+
+- PREMIUM:  `size_pct` 0.04 → **0.015**, `leverage` 8.0 → **25.0**
+- STANDARD: `size_pct` 0.02 → **0.0075**, `leverage` 5.0 → **25.0**
+- WEAK / COUNTER: untouched
+- `EFFECTIVE_RISK_PER_TRADE_PCT` cap: untouched (stays 0.005 = 0.5%)
+
+**Rationale:** at planned $10K live funding, the new values produce ~$1875 STANDARD / ~$3750 PREMIUM notional (size × leverage × equity). Today's paper equity (~$285) sees correctly-scaled ratios. Same config carries to live when `execution_mode: paper → live` flips. Effective-risk math at stop floor: `0.015 × 25 × 0.003 = 0.1125%`, well under the 0.5% cap.
+
+**Restart confirmed:** old python PID 1739386 → new 1762880 at 03:57:25 UTC. Fresh venv import returns new TIER_SIZING values; web command center bound 04:03:39 (~6m lazy-start matches historical); `https://trading.jacksumner.com/healthz` returns 200. Pre-existing `broker_fallback_to_paper` for `fidelity_401k` + `fidelity_joint` on restart are unchanged baseline (NOT caused by this deploy).
+
+**Test fixture refreshed:** `tests/test_bitunix_futures_observer.py:281-298` (`test_build_proposal_premium_full_size` — same semantic, new PREMIUM values). 290 bitunix tests green; two pre-existing collection errors on `test_bitunix_confluence_gate.py` + `test_bitunix_gate_inputs.py` (missing module on main too — pre-existing baseline drift, not caused by this change).
+
+**Audit-row empirical verify — DEFERRED:** `would_have_placed` cadence ~3/24h. Query for next-session pickup:
+```bash
+ssh azureuser@trading.jacksumner.com "/home/azureuser/trading_corp/venv/bin/python -c \"
+import sqlite3, json
+con=sqlite3.connect('/home/azureuser/trading_corp/data/trading_corp.db')
+c=con.cursor()
+c.execute(\\\"SELECT ts, payload_json FROM audit_event WHERE actor='bitunix_futures' AND kind='would_have_placed' AND ts > '2026-05-30T03:57:25' ORDER BY ts ASC LIMIT 1\\\")
+r=c.fetchone()
+if r: ts,pj=r; p=json.loads(pj); print(f'{ts} leverage={p.get(\\\"leverage\\\")} effective_risk_pct={p.get(\\\"effective_risk_pct\\\")}')
+else: print('none yet — keep waiting')
+\""
+```
+
+**Merge:** prod state currently matches NO single main commit (4985bbe base + 2 sed lines from 847aad7). Merge of this branch into main remains operator's call (Stage-1 sequence context still applies). If/when merged, the bitunix tier-sizing source-on-main will catch up to deployed state. **A future redeploy of main without re-sed of these specific lines would silently revert the sizing** unless the merge has landed.
+
+---
+
 ## P2 — BitUnix Stage-1 N+2 Phase 3 implementation (live exit-path) — queued for next session (filed 2026-05-30)
 
 **Scope confirmed:** (B) Narrowed per `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1b.md` and `[[bitunix-live-exit-path-phase1b]]`. Operator pre-approved 2026-05-30 along with merge-sequence (a).
