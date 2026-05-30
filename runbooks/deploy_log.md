@@ -76,6 +76,52 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-30 06:02 UTC — Merge `bitunix-risk-tier-pre-live` into main — closes Finding #1c silent-regression risk — NO prod deploy
+
+**Type:** source-merge. No prod deploy this session. Prod remains at the pre-merge state (4985bbe base + 03:57 sed-overlay of TIER_SIZING lines from `847aad7`). This entry records that the overlay is now byte-identical with `main`, so a future `git pull && restart` redeploy of main will preserve the prod TIER_SIZING values instead of silently reverting.
+
+**Merge commit:** `9fd9022` on `main` (merged with `--no-ff`).
+**Branch merged:** `bitunix-risk-tier-pre-live` (tip `2a3d20c` on origin) — 4 commits (`41ee5e6` config + `847aad7`/`32a9f12`/`2a3d20c` docs).
+**Triggered by:** operator-supervised first-batch remediation of the 2026-05-30 architectural review (`reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md`), Finding #1c HIGH-severity item.
+
+**Files in the merge (5 — 103 insertions, 7 deletions):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — TIER_SIZING constants lines 202-203 (PREMIUM + STANDARD)
+- `config/strategies.yaml` — `bitunix_futures.tier_sizing` lines 1036-1037 (doc mirror)
+- `tests/test_bitunix_futures_observer.py` — `test_build_proposal_premium_full_size` arithmetic expectations updated to new tier values
+- `BACKLOG.md` — 35 inserts (risk-tier branch context + redeploy-revert risk note from the original branch commits)
+- `runbooks/deploy_log.md` — 61 inserts (the 03:57 UTC sed-deploy entry — merged-in from the branch; this 06:02 entry is the new one)
+
+**The change carried in (same values as 03:57 sed-deploy):**
+
+| Tier | size_pct | leverage |
+|---|---|---|
+| PREMIUM  | 0.04 → **0.015**  | 8.0 → **25.0** |
+| STANDARD | 0.02 → **0.0075** | 5.0 → **25.0** |
+| WEAK     | 0.01 (unchanged) | 2.0 (unchanged) |
+| COUNTER  | 0.005 (unchanged) | 2.0 (unchanged) |
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- BitUnix TIER_SIZING values (PREMIUM 0.015/25.0, STANDARD 0.0075/25.0) are now on `main`. Architectural-review Finding #1c silent-regression risk closed at the git-history level.
+
+**Verification:**
+- Pre-flight `git merge --no-commit --no-ff` showed clean auto-merge (no conflicts). Aborted, ran baseline test suite on main pre-merge, then re-merged.
+- Pre-merge baseline: **1989 passed / 26 failed** (excluding 3 pre-existing collection-error files in `--ignore` list).
+- Post-merge: **1989 passed / 26 failed** — IDENTICAL to baseline (regression threshold held).
+- Post-merge byte verification (`bitunix_futures_observer.py:202-203`): `PREMIUM:  {"size_pct": 0.015, "leverage": 25.0}`, `STANDARD: {"size_pct": 0.0075, "leverage": 25.0}`. Match risk-tier branch intent + prod-running constants.
+- Post-merge YAML verification (`config/strategies.yaml:1036-1037`): byte-identical with the Python constants.
+
+**Notable — prod-vs-main alignment after this merge:**
+- The 03:57 UTC sed-deploy on prod was made against base `4985bbe` (pre-Stage-1 merge). Now that main carries those same values, a future clean redeploy from main no longer silently reverts the sizing.
+- However, prod still runs `4985bbe + 2 sed lines`, NOT main HEAD. Stage-1 merges (broker-write + safety + entry-path + C-1 + this merge) all remain un-deployed. Operator decides when to deploy main to prod — separate session, RH-pickle-aware coordination (per the 2026-05-30 merge-session entry below).
+- When that deploy happens, the deploy-import-graph audit `[memory: feedback_deploy_import_graph_audit.md]` still applies; the risk-tier portion is now safe to deploy without re-sedding.
+
+**Inert / dormant on current traffic:**
+- All 5 files in the merge are already at the desired state on prod for the 2 TIER_SIZING lines (sed-deployed 03:57). Merge to main does NOT change prod behavior. Effect is purely on future-redeploy semantics.
+
+**No rollback recipe** — no prod change.
+
+---
+
 ## 2026-05-30 03:57 UTC — BitUnix paper-mode tier sizing aligned with intended live values (sed-deploy, branch UNMERGED)
 
 **Commits (branch state — NOT on main):** `847aad7` (on branch `bitunix-risk-tier-pre-live`, pushed to origin).
