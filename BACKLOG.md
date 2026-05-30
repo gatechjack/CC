@@ -8,6 +8,30 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P2 — BitUnix Stage-1 N+2 Phase 3 implementation (live exit-path) — queued for next session (filed 2026-05-30)
+
+**Scope confirmed:** (B) Narrowed per `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1b.md` and `[[bitunix-live-exit-path-phase1b]]`. Operator pre-approved 2026-05-30 along with merge-sequence (a).
+
+**Now-resolved prerequisites:** merge-sequence (a) is COMPLETE — broker-write + safety + entry-path all on `main` (HEAD `1926eb9`, 2026-05-30). C-1 progress is 5/13+ unchanged. See `[[stage1-on-main-merge-session-2026-05-30]]` for the merge-session ground-truth.
+
+**Branch state:** `bitunix-live-exit-path-2026-05-29` (HEAD `e1d38f8` on origin, 3 commits ahead of pre-merge main; all docs/diagnostics, no code yet). **Next session's first action: rebase this branch onto merged `main` (1926eb9 or later).**
+
+**Scope-B work shape (~940 LOC + ~620 test LOC, 8-11 commits):**
+1. Path C revert (commit 1) — small additive on entry-path's `_place_live`: also `db.insert_paper_trade_record(..., extra.execution_mode='live', extra.broker_order_id=..., extra.broker_venue_order_id=...)`. Requires adding `venue_order_id: str | None = None` to `FillEvent` dataclass. ~30 LOC.
+2. `_record_exit_outcome` canonical helper (revised signature `(row, resolved, fill_event, leg=None, db_url=...)`). In-place paper/live fork. ~400 LOC + tests.
+3. `_execute_live_exits` async follow-up step + #4 event-driven reconciler inside it (no background poll; defer 5s sweep to N+3). ~150 LOC + tests.
+4. #5 Layer 1 fee plumbing — `fee: float = 0.0` on FillEvent + drop `_fee` discard at `place_order:598` + stamp `extra_json["fee_usd"]` + render real fee in `notify_close_out` live branch. ~60 LOC + tests. Layer 2 (funding accrual via new `get_history_positions`) DEFERRED to N+3.
+5. #3 restart-resume cases (a) match + (b) broker-only-orphan→halt. Case (c) row-only-broker-closed-during-downtime DEFERRED to N+3 (couples to #5 Layer 2). ~120 LOC + tests.
+6. #7 all 8 telegram methods — `notify_exit_order_placed/filled/rejected/partial_fill/position_closed_with_pnl/reconciliation_divergence/cost_accrual_recorded/restart_resume_executed`. Counter-aware `(live, exit #N/10)` suffix via `live_exit_counter_getter` constructor kwarg (reuses entry-path HITL-counter pattern). ~450 LOC + tests.
+
+**Discipline carries from merge session:** test fixture-gap is the third-occurrence pattern this period. Before declaring Phase 3 "tests green", run the FULL pre-existing test suite, not just the new exit-path test files (see `[[branch-tests-must-cover-existing-fixtures-not-only-new-tests]]`).
+
+**Out of scope (deferred to N+3):** #5 Layer 2 funding accrual, #3 case (c) automatic restart-resume, lumibot's 5s background reconciliation poll, WS position channel.
+
+**Process gates still in play:** 60-day paper-eval clock (`~2026-07-19`), Board sign-off for `auto_execute`, webhook↔LangGraph `auto_execute_caps` harmonization (CLAUDE.md §1). N+2 Phase 3 is paper-default throughout — no live order flow until those gates close.
+
+---
+
 ## ~~P2 — Stage-1 N+1 live entry-path branch: merge sequencing + cross-branch coordination~~ — **✅ RESOLVED 2026-05-30** (filed 2026-05-29)
 
 **Status:** all 5 sequencing steps below LANDED on `main` 2026-05-30 per the merge-session entry in `runbooks/deploy_log.md` (source-only, NOT deployed to prod). Three fixture-gap regressions caught + fixed forward during the merge. Branch landscape simplified to one unmerged feature branch: `bitunix-live-exit-path-2026-05-29` (Phase 3 work). Original entry preserved below for the audit trail.
@@ -223,7 +247,7 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 - **16 "— logged" audit-lie sites** in `main.py` scheduler loops (Telegram "logged" before the DB write is confirmed) — found by the db-lock audit; the same observability-lie class; separate follow-up.
 - **7-day db-lock passive monitor:** grep journal for "database is locked … retry" vs the fallback file; if the fallback fires non-trivially, contention needs a deeper fix (batching/WAL tuning).
 - **Ownership drift:** `db.py` + `bitunix_lifecycle_notifier.py` are now `azureuser:azureuser` (were root) from the rm+scp deploy maneuver — benign; `sudo chown root:root` to restore if desired.
-- **Bitunix live Stage-1 blockers (from the readiness audit; status 2026-05-29):** ✅ C-1 rotation done (`BITUNIX_FUTURES_API_KEY/SECRET` rotated 2026-05-29, KV-authoritative, literal-redaction added — see `deploy_log` 2026-05-29 ~19:06 UTC + `[[bitunix-credential-rotation-2026-05-29]]`); ✅ `place_order` + fill observation + kill switch built test-first on branch `bitunix-live-engine-stage1-broker-write` (`72f0eb6`, **NOT merged/deployed** — see `[[bitunix-live-engine-build]]`); still pending: broker-truth reconciliation, cost accrual, REST resilience, restart-resume-from-broker-truth, operational alerts, runbooks, prod md5-diff before any live-path wiring.
+- **Bitunix live Stage-1 blockers (from the readiness audit; status 2026-05-30):** ✅ C-1 rotation done (`BITUNIX_FUTURES_API_KEY/SECRET` rotated 2026-05-29, KV-authoritative, literal-redaction added + MERGED to main 2026-05-30 — see `deploy_log` 2026-05-29 ~19:06 UTC + `[[bitunix-credential-rotation-2026-05-29]]`); ✅ `place_order` + fill observation + kill switch built test-first + MERGED to main 2026-05-30 on `main` (`4a15c72` Phase-4 broker-write commit; ex-branch `bitunix-live-engine-stage1-broker-write` `72f0eb6` is now reachable from main, **on source main but NOT yet deployed to prod** — prod stays at `4985bbe` pending operator-gated deploy + RH-pickle-aware restart coordination); ✅ Stage-1 N+1 live-entry-path wiring + HITL + StrategyState.from_persistence + safety scaffolding MERGED 2026-05-30 (see `[[stage1-on-main-merge-session-2026-05-30]]`); still pending in Stage-1: broker-truth reconciliation (#4), cost accrual (#5), REST resilience (#6), restart-resume-from-broker-truth (#3), operational alerts (#7) — all scoped into N+2 Phase 3 per Phase 1b report; remaining beyond N+2: runbooks (#11), prod md5-diff (#12).
 - **Standing gates (do NOT re-litigate):** PA-2of3 observation window closes **2026-06-03**; paper-clock midpoint tripwire **2026-06-19**; the kalshi_weather/+EV and polymarket-weather-copy-bot questions are CLOSED (shelved).
 
 ---
@@ -504,13 +528,17 @@ Recurring side-effect of every `trading-corp` restart: Fidelity's headless login
 
 ---
 
-## P3 — Strategy-state persistence (agent_state-backed `halted` latch) — bundle with bitunix Session N+1 live execution-mode wiring
+## P3 — Wider db_url plumbing for cross-process halt persistence (N+1 follow-up; PARTIAL coverage post-merge)
 
-Surfaced 2026-05-29 during the Session N defensive scaffolding work (branch `bitunix-orderpath-safety-2026-05-29`). `StrategyState` is constructed fresh with `halted=False` at every `risk_agent.evaluate()` call site (9 in `main.py` + 4 in `web/webhooks.py` + 3 in `web/routes.py` + 2 in the bitunix observer + 1 in `comms/telegram_commands.py` + 1 in `graph/ceo_graph.py`). No `agent_state`-backed writer/reader exists; the `halted` field is read at `risk.py:114` but never persisted between call sites.
+**Reframed 2026-05-30** after Stage-1 N+1 entry-path merged. The agent_state writer/reader primitive (`StrategyState.from_persistence` + `RiskAgent.persist_halt`) NOW EXISTS on `main` — that part of this P3 is no longer pending.
 
-Session N consequently shipped halt-as-broker-self-latch (`BitunixBroker._halt_new_orders`) — fail-closed at broker-instance scope but **NOT cross-process** and **NOT cross-broker-instance**. **Recorded scope boundary**: "halt" in the Session N safety handlers means broker-instance latch, not strategy halt. See `[[bitunix-order-path-safety-pattern]]` so future readers don't assume otherwise.
+**What N+1 actually delivered:** `StrategyState.from_persistence(strategy, db_url, ...)` READ side + `RiskAgent.persist_halt(...)` WRITE side, plumbed at 17 swap sites. WRITE only fires when `db_url` is passed to `risk.evaluate(...)`. Plumbed today for: graph path (`ceo_graph.py:347`) + bitunix observer (lines 1514, 2849).
 
-**Bundle with Session N+1** (bitunix live entry-path wiring + `execution_mode: paper | live` config flag): both touch the bitunix observer's risk-eval block, and the `agent_state` writer is the natural prereq for the per-strategy `execution_mode` toggle to survive restarts. Scope when bundled: `db.upsert_agent_state(actor, key, value)` + `db.get_agent_state(actor, key)`; observer-side `StrategyState` construction reads `halted` from `agent_state`; `data_exec` consumers write the halted latch via the new writer. ~6–8 tests; bundle into one session, not two.
+**Remaining gap (NOT plumbed today, still READ-only on those sites):** `web/webhooks.py`, `web/routes.py`, `comms/telegram_commands.py`, `main.py` non-bitunix call sites. These pick up halts written by the plumbed paths, but don't WRITE their own. Surfaces where a halt could be missed: webhook-initiated risk verdicts in lord_otter / market_cypher flows. See companion P3 entry "Wider db_url plumbing through risk.evaluate sites (Stage-1 N+1 follow-up, filed 2026-05-29)" above for the per-call-site inventory.
+
+**Original Session N scope-boundary note (preserved for reference):** Session N shipped halt-as-broker-self-latch (`BitunixBroker._halt_new_orders`) — fail-closed at broker-instance scope but **NOT cross-process** and **NOT cross-broker-instance**. With N+1 now on main, cross-process halt persistence works for the plumbed sites. See `[[bitunix-order-path-safety-pattern]]` for the scope-boundary lineage.
+
+**Scope when picked up:** ~30 LOC plumbing across the unplumbed call sites + tests confirming the WRITE path fires from each. Independent of N+2.
 
 ---
 
