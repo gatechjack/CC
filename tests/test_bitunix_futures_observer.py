@@ -468,6 +468,7 @@ def wired_observer(tmp_path):
 
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
+    data_exec.flatten_division = AsyncMock()
 
     logger_agent = MagicMock()
     telegram_channel = MagicMock()
