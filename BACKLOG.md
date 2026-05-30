@@ -14,7 +14,7 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 **Pre-deploy gate semantics:** the next prod-deploy of `main` (i.e., the deploy that takes broker-write + safety + entry-path + risk-tier from main to prod) MUST NOT proceed until these items land. Filing here so the gate is auditable, not implicit.
 
-### Gate (a) — Readiness item #6: REST retry/backoff + stale-snapshot health signal + stuck-order timeout→cancel
+### Gate (a) — Readiness item #6: REST retry/backoff + stale-snapshot health signal + stuck-order timeout→cancel — **LANDED 2026-05-30 on `origin/main` `eae5080` (merge `--no-ff` of branch `bitunix-rest-resilience-2026-05-30`, 3 commits)**
 
 **Readiness-audit text** (`runbooks/2026-05-29_bitunix_live_readiness_audit.md` § 5 "Gap → Stage 1 (MEDIUM)" + checklist line 200):
 > "REST retry/backoff + a stale-snapshot/connection health signal; ... a stuck-order timeout→cancel policy."
@@ -22,7 +22,16 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 **Review evidence** (Finding #2 row #6):
 > "❌ NOT BUILT. Both readiness + reuse audits flag this as no-external-reuse. Phase 1b does NOT include in scope (B). ❌ NOT in any active BACKLOG P1/P2 item. Flagged in readiness audit § 5 as Stage-1 MEDIUM blocker. medium — UNTRACKED gap"
 
-**Current `httpx` state:** 15s timeout, errors swallowed, `_connected` stays True on REST 5xx (per readiness audit § 5).
+**Closure (2026-05-30):** three sub-items, each its own commit (no bundling):
+* `f3f920a` — REST retry/backoff at `_request` chokepoint. Exp-backoff w/ full-jitter (0.25s→4s cap), 3 retries, 10s wallclock budget → worst-case `_request` ≤70s. Retriable: `httpx.TimeoutException` + statuses {408, 429, 502, 503, 504} + `BitunixAPIError` codes {10005, 10006}. POST retries gated on `clientId` presence in body (preserves the deterministic idempotency contract with `_IDEMPOTENT_OK_CODES` 30042). Sign-stable: same body bytes across attempts, fresh nonce/timestamp per attempt. Optional `logger` slot on broker (`actor=bitunix_broker`, `kind=rest_request_retried`, once-per-summary not per-attempt). 13 tests.
+* `c9e99cb` — Snapshot-staleness halt + connection health signal. `BitunixBroker.is_healthy()` (pure read, fail-closed when no snapshot yet); `_assert_snapshot_fresh()` (state-changing — latches `_halt_new_orders=True` + `_halt_reason="snapshot_stale:<age_s>s"` BEFORE raising `BitunixStaleSnapshot`); new `snapshot_staleness_threshold_seconds: 60` in `config/strategies.yaml` (mtime-cached YAML read). Two check sites: observer pre-trade gate (fail-fast before intent audit + daily-risk + HITL) and `data_exec.place()` defense-in-depth re-check. New `data_exec._handle_stale_snapshot()` mirrors mode-mismatch consumer pattern. Recovery is asymmetric: a new fresh snapshot reverses `is_healthy()` but the halt latch is sticky (operator-clears via `resume()`). 13 + 6 = 19 tests.
+* `36a3749` — Stuck-order timeout → cancel on poll-budget exhaustion. `_observe_fill` reaches exhaustion without terminal status → `_handle_stuck_order` cancels + audits + telegrams. Decision matrix: cancel-OK + PART_FILLED → fall through, return partial fill (real money kept); cancel-OK + NEW/INIT → raise `BitunixStuckOrderCancelled`; cancel-FAILED → raise `BitunixStuckOrderCancelFailed` (operator may need to verify order isn't still resting). Audit + telegram emitted from the broker (not the consumer pattern of sub-items 1+2, because PART_FILLED can't raise — must return). New `safety_notifier` slot on broker, wired to same TelegramChannel singleton. 8 + 1 fix-forward tests.
+
+**Full test gate (worktree at branch tip):** 2042 passed / 28 failed (= 2002 worktree-baseline + 40 new tests; 28 unchanged worktree-fixture-gap failures per `[[gate-c-md5diff-landed-2026-05-30]]`).
+
+**Fix-forward triggered (per `[[branch-tests-must-cover-existing-fixtures-not-only-new-tests]]`):** 3 pre-existing test files received small edits: `test_bitunix_observer_live_branch.py` + `test_bitunix_observer_hitl_gate.py` (add `broker._assert_snapshot_fresh = AsyncMock()` to MagicMock broker fixtures); `test_bitunix_broker_write.py::test_partial_fill_status_and_qty` (queue a cancel-success response to match the new PART_FILLED-at-exhaustion contract).
+
+**Next prod-deploy:** all 3 P1 gates now closed; the main-to-prod deploy is unblocked subject to the import-graph audit + RH-pickle-aware coordination + operator sign-off. Deploy session itself is separate work (not part of gate (a)).
 
 ### Gate (b) — Readiness item #11: Panic-halt + credential-compromise runbooks — **LANDED 2026-05-30 on branch `bitunix-runbooks-gate-b-2026-05-30` (commits `921e470` + `39ee8cd`, NOT merged)**
 

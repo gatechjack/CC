@@ -93,6 +93,91 @@ Both runbooks have a `# Last verified` line at the top with the
 code-surface commit SHA — re-read against current `main` HEAD before
 relying on the cited line numbers.
 
+### Operator-facing knobs (gate (a) REST resilience, 2026-05-30)
+
+The merge `eae5080` (gate (a)) added one tunable that operators may want
+to know about during incident response:
+
+- **`bitunix_futures.snapshot_staleness_threshold_seconds`** in
+  `config/strategies.yaml` (default **60s**). The bitunix broker halts
+  the live order path when the last successful `snapshot()` is older
+  than this value. Read mtime-cached per call — change-and-restart NOT
+  required; new value takes effect on the next `_assert_snapshot_fresh()`
+  invocation (next live-mode order attempt or next defense-in-depth
+  re-check in `data_exec.place()`). Lower → halt earlier on read
+  outages (safer, more false-positives); higher → ride out brief
+  outages (less safe, fewer interruptions). 60s ≈ 2× the strategy's
+  per-bar cadence on the 1-min bar.
+
+The retry layer (`_RETRY_*` constants in `trading_corp/brokers/bitunix.py`)
+and the stuck-order cancel logic (`_FILL_MAX_POLLS` × `_FILL_POLL_INTERVAL_S`
+in same file) are intentionally NOT YAML-configurable today. Move to YAML
+when prod observation warrants a tuning loop.
+
+---
+
+## 2026-05-30 ~09:05 UTC — Merge `bitunix-rest-resilience-2026-05-30` into main — closes gate (a) (last P1 pre-deploy gate from architectural review) — NO prod deploy
+
+**Type:** source-merge. No prod deploy this session. Prod remains at the pre-merge state (`4985bbe + 03:57 sed-overlay`). This entry records that the gate (a) REST resilience layer is now on `main`, closing the third and final P1 pre-deploy gate from the 2026-05-30 architectural review Finding #2. Combined with gate (b) panic-halt+credential-compromise runbooks (`f20a7bc`) and gate (c) md5-diff prod-surface tool (`b131d02`), the main-to-prod deploy of Stage 1 is now unblocked subject to the usual import-graph audit + RH-pickle-aware coordination + operator sign-off.
+
+**Merge commit:** `eae5080` on `main` (merged with `--no-ff`).
+**Branch merged:** `bitunix-rest-resilience-2026-05-30` (tip `36a3749`) — 3 commits (one per sub-item, no bundling):
+- `f3f920a` — REST retry/backoff at `_request` chokepoint
+- `c9e99cb` — Snapshot-staleness halt + connection-health signal
+- `36a3749` — Stuck-order timeout → cancel on poll-budget exhaustion
+
+**Triggered by:** operator-supervised closure of the third P1 pre-deploy gate per `reports/2026-05-30_gate_a_rest_resilience_next_session_prompt.md` (committed at `1b94694`).
+
+**Files in the merge (13 — 2039 insertions, 20 deletions):**
+
+Source (4 files):
+- `trading_corp/brokers/bitunix.py` — retry layer at `_request` (~195 LOC); snapshot-staleness primitives (`_last_successful_snapshot_ts`, `is_healthy()`, `_staleness_threshold_s()`, `_assert_snapshot_fresh()`, ~100 LOC); stuck-order handler `_handle_stuck_order` (~85 LOC); new `logger` + `safety_notifier` kwargs on `__init__`. Total +447 LOC.
+- `trading_corp/brokers/bitunix_exceptions.py` — new `BitunixStaleSnapshot`, `BitunixStuckOrderCancelled`, `BitunixStuckOrderCancelFailed` classes (+86 LOC).
+- `trading_corp/agents/data_exec.py` — new `_handle_stale_snapshot()` consumer (mirrors `_handle_position_mode_mismatch`); defense-in-depth `_assert_snapshot_fresh()` re-check in `place()` (+88 LOC).
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — pre-trade staleness gate at top of `_place_live()` (+27 LOC).
+
+Config (1 file):
+- `config/strategies.yaml` — new `bitunix_futures.snapshot_staleness_threshold_seconds: 60` (1 line).
+
+Wiring (1 file):
+- `trading_corp/main.py` — pass `logger_agent=logger_agent` to `_build_broker_for_division`; the bitunix broker now constructs with `logger=logger_agent`; post-construction `bx_broker.safety_notifier = channel` assignment (+18 LOC).
+
+Tests (7 files — 4 new + 3 fix-forwards):
+- NEW `tests/test_bitunix_rest_retry.py` — 13 tests covering sub-item 1.
+- NEW `tests/test_bitunix_snapshot_health.py` — 13 tests covering sub-item 2 broker primitives.
+- NEW `tests/test_data_exec_stale_snapshot.py` — 6 tests covering sub-item 2 consumer.
+- NEW `tests/test_bitunix_stuck_order_timeout.py` — 8 tests covering sub-item 3.
+- FIX-FORWARD `tests/test_bitunix_observer_live_branch.py` + `tests/test_bitunix_observer_hitl_gate.py` — add `broker._assert_snapshot_fresh = AsyncMock()` to MagicMock broker fixtures (28 previously-failing tests recovered).
+- FIX-FORWARD `tests/test_bitunix_broker_write.py::test_partial_fill_status_and_qty` — queue a cancel-success response to match the new PART_FILLED-at-exhaustion contract.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **REST resilience layer** — `BitunixBroker._request` retries transient failures (`httpx.TimeoutException`, statuses {408, 429, 502, 503, 504}, `BitunixAPIError` codes {10005, 10006}) with exponential backoff + full-jitter. POST retries gated on `clientId` presence (preserves the deterministic idempotency contract with `_IDEMPOTENT_OK_CODES` 30042). Sign-stable: same body bytes across attempts, fresh nonce/timestamp per attempt. Audit row `rest_request_retried` (actor=`bitunix_broker`) once per `_request` invocation that needed any retries — flooding-resistant on a sustained 5xx storm.
+- **Snapshot-staleness halt** — `BitunixBroker.is_healthy()` returns True iff the most recent `snapshot()` is within `bitunix_futures.snapshot_staleness_threshold_seconds` (default 60s). `_assert_snapshot_fresh()` fail-closed gate that latches `_halt_new_orders=True` + `_halt_reason="snapshot_stale:<age_s>s"` before raising `BitunixStaleSnapshot`. Two check sites: observer pre-trade gate (fail-fast before intent audit + daily-risk + HITL) and `data_exec.place()` defense-in-depth re-check. Closes the readiness audit § 5 gap "`_connected` stays True even when the API is unreachable".
+- **Stuck-order timeout → cancel** — when polling exhausts without a terminal status, the broker cancels the resting remainder. PART_FILLED → continues + returns the partial fill normally (`bitunix_futures:part_filled` venue suffix preserved). NEW/INIT → raises `BitunixStuckOrderCancelled`. Cancel failure → raises `BitunixStuckOrderCancelFailed` (operator-investigation kind). Audit + telegram emitted from the broker (broker-side because PART_FILLED can't raise — must return the partial-fill tuple).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- `BitunixBroker` now has two optional injection slots: `logger` (sub-item 1) and `safety_notifier` (sub-item 3). Both wired from `main.py`. Both gracefully no-op when None — useful for tests + the reconciler-side `_BitunixBroker(api_key=None, ...)` stub construction at `main.py:1556`.
+- **Snapshot() bypasses `_request`** — the account-balance + pending-positions reads are inline httpx calls. Retry therefore does NOT cover snapshot. By design: sub-item 2's staleness signal IS the read-path resilience primitive (a 503 storm in snapshot leaves `_last_successful_snapshot_ts` stale → halt latches). This is documented in `_request`'s docstring.
+- **Recovery asymmetry on the staleness halt** — a new fresh snapshot reverses `is_healthy()` back to True, but the `_halt_new_orders` latch is STICKY (operator clears via `broker.resume()`). Mirrors the position-mode-mismatch recovery.
+- **PART_FILLED contract changed**: pre-gate (a), PART_FILLED at poll exhaustion silently returned a partial-fill FillEvent. Post-gate (a), the resting remainder is cancelled first + audited + telegram'd. The FillEvent return shape is unchanged; the new behavior is the cancel + safety side-effects.
+- **3 pre-existing tests fix-forwarded** per `[[branch-tests-must-cover-existing-fixtures-not-only-new-tests]]` — see "Tests" section above.
+
+**Operator-facing knob:** `bitunix_futures.snapshot_staleness_threshold_seconds` (default 60s) is in `config/strategies.yaml`. Mtime-cached read; no restart needed. See "Related operational runbooks" § "Operator-facing knobs" above.
+
+**Verification:**
+- Pre-merge baseline (worktree): 2042 passed / 28 failed (`2002 worktree-pre-existing + 40 mine` / `26 main-baseline + 2 worktree-fixture-gap` per `[[gate-c-md5diff-landed-2026-05-30]]`).
+- Post-merge sanity gate on main: see "2026-05-30 ~09:10 UTC" section if a follow-up entry exists; baseline expectation per gate-c memory: main checkout test gate = ~2044 passed / 26 failed (= 2002 + 40 net new code; 2 worktree-fixture-gap tests pass on main).
+- Branch tip `36a3749` had 265/265 green across the bitunix + data_exec surface in the targeted regression suite.
+
+**Notable — prod-vs-main alignment after this merge:**
+- Prod still runs `4985bbe + 03:57 sed-overlay`. Gate (a) code is on main but NOT on prod. The next main-to-prod deploy carries the gate-a code, the gates (b)+(c) artifacts (runbooks + md5-diff tool), AND the previously-shipped-but-un-deployed Stage-1 broker-write + safety + entry-path + risk-tier. Large surface; deploy is a separate operator-supervised session.
+- Pre-deploy import-graph audit `[memory: feedback_deploy_import_graph_audit.md]` still applies. New transitive-import surface from gate (a): `trading_corp/utils/time.py` (for `iso`/`now_utc` used in `_audit_request_retried`). Already on prod (used by data_exec).
+
+**Inert / dormant on current traffic until deployed:**
+- Prod runs `4985bbe`. None of the gate (a) primitives are reachable on prod yet. Effect on current production: zero.
+
+**No rollback recipe** — no prod change.
+
 ---
 
 ## 2026-05-30 06:02 UTC — Merge `bitunix-risk-tier-pre-live` into main — closes Finding #1c silent-regression risk — NO prod deploy
