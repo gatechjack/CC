@@ -318,6 +318,87 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 
 ---
 
+## EOS snapshot — 2026-05-30 ~11:50 UTC (architectural-review third-batch remediation: P1 gate (b) bitunix operational runbooks LANDED + merged to main)
+
+**Type:** operator-supervised doc-only writing + merge. **No prod deploys. No code changes.** Three scoped commits on branch + one merge commit on `origin/main`. Board-authorized push.
+
+**origin/main:** `03f3261` → `f20a7bc` (4 commits ahead — 3 branch + 1 merge).
+
+**Commits added (in branch order, then merge):**
+1. `921e470` docs(runbooks) — `runbooks/bitunix_panic_halt.md` (452 lines): operator-visible halt + flatten procedure with 7 sections (decision criteria, 3 halt paths, 3 flatten paths, 5-check verification, post-incident, resume, Don't, Related, Revision history). Code surfaces cited at `brokers/bitunix.py:687-703,811-882` + `agents/data_exec.py:223-289,326-450`.
+2. `39ee8cd` docs(runbooks) — `runbooks/bitunix_credential_compromise.md` (597 lines): operator-visible rotation procedure codifying the 2026-05-29 bitunix C-1 Portal-to-Portal pattern. KV vault `kv-tc-vtwbowt3wtkpy`, REPLACE-ON-CREATE, IP-whitelist `20.51.145.253` + withdraw-DISABLED scope, synthetic FAKE-creds dead-key probe, 5-step freshness verification.
+3. `82d0a7e` docs(backlog) — Gate (b) entry marked LANDED + `runbooks/deploy_log.md` preamble cross-link to both new runbooks (sits between Template section and first deploy entry).
+4. `f20a7bc` Merge `bitunix-runbooks-gate-b-2026-05-30` into main (`--no-ff`). Diff: 4 files, 1076 insertions, 2 deletions.
+
+**Branch state:** `bitunix-runbooks-gate-b-2026-05-30` pushed to `origin/` at tip `82d0a7e`; merged via `f20a7bc`. Worktree `.claude/worktrees/bitunix-runbooks` not auto-cleaned.
+
+**Test gate:** 2002 passed / 28 failed — **unchanged from post-gate-(c) worktree baseline** (doc-only changes hold the line; the 28 includes the 2 worktree-environmental readiness fails on `data/trading_corp.db` filed last session). No code regressions.
+
+**P1 pre-deploy gate progress (3 from Finding #2):**
+- (a) REST resilience (readiness #6, MEDIUM build) — **NOT STARTED** (long-pole; recommended next session)
+- (b) Panic-halt + cred-compromise runbooks (readiness #11, SMALL-MEDIUM writing) — **LANDED f20a7bc this session**
+- (c) Pre-flip md5-diff prod surface (readiness #12, SMALL) — LANDED b131d02 (gate-c session)
+
+**Scope discipline:** of the 4 originally-cited runbooks from readiness audit §10, this gate shipped 2 ((a) panic-halt + (d) credential-compromise per session prompt). The remaining 2 are documented in the BACKLOG Gate (b) entry as UNFILED for operator filing decision:
+- (b) Buggy-deploy rollback runbook — for the case where a bad deploy places orders before being caught.
+- (c) Broker-side discrepancy dispute runbook — for when portal and audit trail disagree.
+
+These could be next-session work (rolled in alongside gate (a)) or filed as P2/P3 BACKLOG items for later.
+
+**Prod state:** unchanged. Still `4985bbe + 03:57 sed-overlay`. **Next main-to-prod deploy still gated on gate (a).** Once that lands, all 3 P1 gates close and the deploy can proceed (subject to the usual import-graph audit + RH-pickle-aware coordination + operator sign-off).
+
+**Discipline pattern surfaced (worth carrying forward):**
+- Operational runbooks belong BEFORE code reaches prod, not after the first incident. Both these runbooks are rehearsal-mode today (place_order is still a NotImplementedError stub on prod); that's the right time to write them. The `# Last verified` marker is the staleness signal future operators need to know when to re-verify line numbers against the running `main`.
+
+**Memory updates filed:**
+- New: `[[bitunix-operational-runbooks-2026-05-30]]` (session memo + pattern reference).
+- Updated: MEMORY.md index (one new top line).
+
+**Next-session pointer:** see "Next session — 2026-05-30 fourth-batch remediation prompt" section below.
+
+---
+
+## Next session — 2026-05-30 fourth-batch remediation prompt
+
+Read first:
+1. `[[bitunix-operational-runbooks-2026-05-30]]` — this session's deliverable + the 2 unfiled runbook items.
+2. `[[gate-c-md5diff-landed-2026-05-30]]` — prior session deliverable + worktree-fixture-gap anomaly.
+3. `[[2026-05-30-architectural-review-first-batch-remediation]]` — full Finding #10 decision queue + state snapshot from the first session.
+4. `BACKLOG.md` § "P1 — Stage-1 BitUnix prod-deploy gates" — gate (a) entry (lines ~17-25).
+
+State verification before doing anything:
+- `git rev-parse origin/main` should equal `f20a7bc` (this session's merge).
+- `git worktree list` — confirm `.claude/worktrees/bitunix-runbooks` is present (operator may remove); ensure new session uses its own worktree.
+
+Goal — operator picks ONE of:
+
+**A. Land gate (a) REST resilience (~MEDIUM build, long-pole).** Wrap `httpx` calls in `BitunixBroker` (currently 15s timeout, errors swallowed, `_connected` stays True on REST 5xx) with retry/backoff; add a `stale_snapshot_detected` health signal; add a `stuck_order_timeout_cancel` policy. Per readiness audit § 5. Once landed, all 3 P1 gates close and the main-to-prod deploy can proceed. **Recommended next.** Likely 1-2 sessions.
+
+**B. Add 2 missing runbooks from gate (b) scope: buggy-deploy rollback + discrepancy dispute.** Pure writing, ~SMALL each. Follows the same `# Last verified` discipline pattern as gate (b)'s shipped pair. Closes the readiness audit §10 list fully. Could be appended to a gate (a) session if (a) is going slow.
+
+**C. Address worktree-fixture-gap anomaly from gate-(c) session.** Pick (a)/(b)/(c) from the BACKLOG anomaly note. Removes the 2-fail noise in every future worktree session. ~SMALL build for (b) schema-on-demand, TRIVIAL for (c) document-only.
+
+**D. Triage 8+ Finding #10 operator decisions still queued.** Same queue as the original architectural-review-first-batch EOS, unchanged.
+
+**E. Tastytrade refresh-token rotation (P1 ceiling 2026-06-12 — 13 days).** Parallel critical path; can run alongside A/B/C.
+
+Recommend: **A** next — gate (a) is the long-pole and the only remaining blocker on the main-to-prod deploy. Combining B (the 2 extra runbooks) with A in the same session is reasonable if A goes faster than expected; otherwise file B/C as separate later sessions.
+
+Constraints (same as prior sessions):
+- Operator-supervised. STOP-and-report at forks.
+- No prod deploys without explicit sign-off + import-graph audit `[[feedback-deploy-import-graph-audit]]`.
+- Each new branch in its own worktree; verify `git branch --show-current` + `git rev-parse HEAD` before every commit.
+- Test gate: `.\scripts\run_capped.ps1 python -m pytest tests/ --tb=no -p no:cacheprovider --ignore=tests/test_backtest_bitunix_confluence_five_factor.py --ignore=tests/test_bitunix_confluence_gate.py --ignore=tests/test_bitunix_gate_inputs.py`. **Main baseline 2004/26 (post gate (c)); worktree baseline 2002/28** (still 2-test fixture gap per `[[gate-c-md5diff-landed-2026-05-30]]`).
+- Operational runbooks at `runbooks/bitunix_*.md` are now in place — re-read against current main HEAD before relying on cited line numbers (per the `# Last verified` markers in each).
+
+Out of scope unless re-prompted:
+- Prod deploy (still gated on gate (a)).
+- Editing CLAUDE.md.
+- Merging `stage1-architectural-review-2026-05-30` doc branch to main (operator's call).
+- Anything in kalshi / polymarket / pmcc tracks.
+
+---
+
 ## EOS snapshot — 2026-05-30 ~07:30 UTC (architectural-review second-batch remediation: P1 gate (c) md5-diff LANDED + merged to main; worktree-fixture-gap anomaly surfaced)
 
 **Type:** operator-supervised build + tests + merge. **No prod deploys.** Two scoped commits on branch + one merge commit on `origin/main`. Board-authorized push.
