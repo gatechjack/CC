@@ -76,6 +76,25 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## Related operational runbooks
+
+Incident procedures live in their own files so they're reachable without
+having to scroll through deploy history. For bitunix specifically:
+
+- **Panic-halt + flatten** — `runbooks/bitunix_panic_halt.md`. Use when
+  the bot needs to stop trading + close open bitunix positions in an
+  incident (bad strategy behavior, suspicious fills, system anomaly).
+- **Credential compromise + rotation** — `runbooks/bitunix_credential_compromise.md`.
+  Use when the bitunix API key/secret pair is suspected or confirmed
+  compromised. Cross-references the panic-halt runbook for the
+  halt-first prerequisite.
+
+Both runbooks have a `# Last verified` line at the top with the
+code-surface commit SHA — re-read against current `main` HEAD before
+relying on the cited line numbers.
+
+---
+
 ## 2026-05-30 06:02 UTC — Merge `bitunix-risk-tier-pre-live` into main — closes Finding #1c silent-regression risk — NO prod deploy
 
 **Type:** source-merge. No prod deploy this session. Prod remains at the pre-merge state (4985bbe base + 03:57 sed-overlay of TIER_SIZING lines from `847aad7`). This entry records that the overlay is now byte-identical with `main`, so a future `git pull && restart` redeploy of main will preserve the prod TIER_SIZING values instead of silently reverting.

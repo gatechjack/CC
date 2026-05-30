@@ -24,7 +24,7 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 **Current `httpx` state:** 15s timeout, errors swallowed, `_connected` stays True on REST 5xx (per readiness audit § 5).
 
-### Gate (b) — Readiness item #11: Panic-halt + credential-compromise runbooks
+### Gate (b) — Readiness item #11: Panic-halt + credential-compromise runbooks — **LANDED 2026-05-30 on branch `bitunix-runbooks-gate-b-2026-05-30` (commits `921e470` + `39ee8cd`, NOT merged)**
 
 **Readiness-audit text** (§ 10 "Gap → Stage 1 (SMALL-MEDIUM, writing)" + checklist line 205):
 > "four short runbooks — (a) panic halt (kill switch + manually flatten on BitUnix UI if the bot can't); (b) roll back a buggy deploy that already placed orders (how to reconcile + flatten + revert); (c) dispute a broker-side discrepancy (what evidence the audit trail provides); (d) credential compromise mid-trade (revoke key on BitUnix, flatten, rotate)."
@@ -32,7 +32,13 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 **Review evidence** (Finding #2 row #11):
 > "❌ NOT WRITTEN. Tastytrade rotation runbook exists as template `[memory: feedback_tastytrade_rotation_runbook.md]`. ❌ NOT in any active BACKLOG P1/P2. medium — UNTRACKED gap"
 
-**Template:** `[[reference-tastytrade-rotation-runbook]]` for runbook (d).
+**Closure (2026-05-30):** `runbooks/bitunix_panic_halt.md` (452 lines, commit `921e470`) ships the (a) panic-halt + flatten procedure with decision criteria + 3 halt paths + 3 flatten paths + 5-check verification + post-incident + resume. `runbooks/bitunix_credential_compromise.md` (597 lines, commit `39ee8cd`) ships the (d) credential-compromise + rotation procedure codifying the 2026-05-29 bitunix C-1 Portal-to-Portal pattern (KV vault `kv-tc-vtwbowt3wtkpy`, REPLACE-ON-CREATE, IP-whitelist + withdraw-DISABLED scope, synthetic FAKE-creds dead-key probe). Both runbooks include `# Last verified` markers at `origin/main` commit `03f3261`. Cross-link added to `runbooks/deploy_log.md` preamble. **Branch NOT merged** — gate stays in this BACKLOG entry until operator merges.
+
+**Originally-cited (b)+(c) runbooks NOT in scope of this gate** per the third-batch session prompt:
+- (b) Buggy-deploy rollback runbook — UNFILED. Roll-forward / revert procedure for the case where a deploy lands and places bad orders before being caught. Should be filed as a P2 or P3 BACKLOG item if/when the operator wants it before Stage 1 goes live.
+- (c) Broker-side discrepancy dispute runbook — UNFILED. Evidence-collection procedure for when the bitunix portal and the bot's audit trail disagree on what happened. Same filing recommendation.
+
+**Template:** `[[reference-tastytrade-rotation-runbook]]` for runbook (d) (used as the pattern reference for credential-compromise; the discipline shapes — Pre-flight 2 history-disable, no-shell value handling, system-state-not-assertion verification — all carry over).
 
 ### Gate (c) — Readiness item #12: Pre-flip md5-diff of full bitunix prod surface vs git — **LANDED 2026-05-30 on branch `bitunix-prod-surface-md5diff-2026-05-30` (commit `59c4b06`, NOT merged)**
 
