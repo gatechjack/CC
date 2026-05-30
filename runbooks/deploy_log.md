@@ -76,9 +76,11 @@ rm -rf <new-files-or-dirs>
 
 ---
 
-## 2026-05-29 ~23:35 UTC — Disable kalshi_weather_arb + kalshi_crypto_arb scanners (silence telegrams on dead divisions)
+## 2026-05-30 ~01:08 UTC — Disable kalshi_weather_arb + kalshi_crypto_arb scanners (silence telegrams on dead divisions)
 
-**Commit:** `7e9d06c` on branch `disable-kalshi-scanners-2026-05-29`, FF-merged to `main` (`aa91d48..7e9d06c`). Pushed.
+**Correction (after EOS verification):** original deploy_log header said 2026-05-29 ~23:35 UTC; the actual prod YAML mtime is 2026-05-30 01:08:06 UTC (verified `stat -c '%y' /home/azureuser/trading_corp/config/strategies.yaml`). The session straddled UTC midnight. Post-disable silence query (`ts > '2026-05-30T01:08:06'`) returns **0/0 kalshi_{weather,crypto}_arb `would_have_placed` rows** — disable is taking effect as designed (last weather row 01:03:44 UTC, last crypto row 00:59:14 UTC, both pre-mtime).
+
+**Commit:** `7e9d06c` on branch `disable-kalshi-scanners-2026-05-29`, FF-merged to `main` (`aa91d48..7e9d06c`). Pushed. Doc-bundle follow-up: `52cb11d` (BACKLOG EOS + diagnostics reports + this entry).
 **Triggered by:** Operator request — kalshi_weather division "effectively dead" (per `[[project_kalshi_weather_ev_discovery]]` — no edge confirmed on real prices), kalshi_crypto formally SHELVED 2026-05-22 (`[[project_kalshi_crypto_shelved]]`). Stop the per-fire telegram pings + the scanner-loop Kalshi/NWS/Coinbase API calls.
 **Backup:** `/home/azureuser/trading_corp/config/strategies.yaml.bak.2026-05-29-kalshi-disable` (one-shot).
 

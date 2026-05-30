@@ -40,7 +40,7 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 
 ---
 
-## EOS snapshot — 2026-05-29 ~23:35 UTC (bitunix read-only diagnostics + kalshi scanner-disable DEPLOYED)
+## EOS snapshot — 2026-05-30 ~01:08 UTC (bitunix read-only diagnostics + kalshi scanner-disable DEPLOYED; session straddled UTC midnight)
 
 **Theme:** four read-only diagnostics ran in a parallel session while another Claude built Stage-1 N+1 (HITL entry-path) + began N+2 (exit-path). Diagnostics produced two committed reports + one operator-actioned config change deployed end-to-end.
 
@@ -51,7 +51,7 @@ Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_wea
 4. **Anomaly surfaced (separate diagnostic recommended next session):** 84% of h4_struct values in the hypothesis cohort are "insufficient" — HTF's 4H structure leg has been mostly absent this window (either <20 native 4H bars in cache after 48h+, or BTC's range produced <2 detectable swings in the 20-bar window). Worth a dedicated diagnostic before any HTF tuning.
 
 **Deploy (config-only, full pipeline):**
-- **`kalshi_weather_arb` + `kalshi_crypto_arb` scanners DISABLED** — both `enabled: true` → `false` in `config/strategies.yaml`. Operator framing: divisions effectively dead (weather: no edge post-bias-offset window; crypto: SHELVED 2026-05-22). Commit `7e9d06c` on `disable-kalshi-scanners-2026-05-29` → FF-merge to main (`aa91d48..7e9d06c`) → pushed → prod sed-in-place + verified (deploy_log 2026-05-29 ~23:35 UTC). Hot-reloadable; scanners go silent within ≤60s (crypto) / ≤300s (weather) of the YAML mtime change.
+- **`kalshi_weather_arb` + `kalshi_crypto_arb` scanners DISABLED** — both `enabled: true` → `false` in `config/strategies.yaml`. Operator framing: divisions effectively dead (weather: no edge post-bias-offset window; crypto: SHELVED 2026-05-22). Commit `7e9d06c` on `disable-kalshi-scanners-2026-05-29` → FF-merge to main (`aa91d48..7e9d06c`) → pushed → prod sed-in-place (actual mtime 2026-05-30 01:08:06 UTC) → verified silence: `SELECT COUNT(*) FROM audit_event WHERE kind='would_have_placed' AND ts > '2026-05-30T01:08:06' AND strategy IN (kalshi_weather_arb, kalshi_crypto_arb)` returns 0/0. Hot-reload behavior worked as designed.
 
 **Today's bitunix trades (informational, end-of-day record):**
 - 3 paper fires: 14:13:51 sell STANDARD (+1.29R, +$0.11 WIN); 17:51:02 sell STANDARD (+0.89R, +$0.07 WIN); 19:58:10 sell STANDARD (−1.00R, −$0.06 LOSS).
