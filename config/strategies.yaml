@@ -1489,7 +1489,7 @@ kalshi_llm_arbitrage:
 # P(YES) via Gaussian probability vs threshold; emits ProposedOrder when
 # divergence ≥ min_divergence_pct. No LLM in path (pure math).
 kalshi_weather_arb:
-  enabled: true
+  enabled: false                    # 2026-05-29: division effectively dead — silence telegrams + stop scan
   auto_execute: false               # paper-mode until validation gate
   division: kalshi_weather
   poll_interval_sec: 300            # 5 min — weather markets don't churn
@@ -1543,7 +1543,7 @@ kalshi_weather_arb:
 # spot for BTC/ETH/SOL/DOGE/XRP, computes P(YES) vs threshold via
 # Gaussian probability with annualized vol. No LLM in path.
 kalshi_crypto_arb:
-  enabled: true
+  enabled: false                    # 2026-05-29: SHELVED per project_kalshi_crypto_shelved — silence telegrams + stop scan
   auto_execute: false               # paper-mode until validation gate
   division: kalshi_crypto
   poll_interval_sec: 60             # crypto markets churn fast — short-window
