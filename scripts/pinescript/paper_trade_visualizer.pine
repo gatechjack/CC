@@ -1,0 +1,160 @@
+//@version=6
+// Paper Trade Visualizer for the bitunix_futures division.
+//
+// Display-only review tool. Renders historical paper_trade_record rows
+// as entry/SL/TP lines + outcome-coloured boxes + entry/exit labels on
+// the TradingView chart so the operator can visually scan for patterns
+// where the model performs well vs poorly.
+//
+// Workflow:
+//   1) python scripts/export_paper_trades_to_pinescript.py --since 7d
+//      → writes scripts/pinescript/paper_trades_pine.txt
+//   2) Copy the contents of paper_trades_pine.txt and paste it BETWEEN
+//      the BEGIN/END GENERATED PASTE BLOCK markers below, replacing the
+//      placeholder empty-array declarations.
+//   3) Add to TradingView chart (BTCUSDT.P, 3m). Trades render on the
+//      first bar of the chart.
+//
+// See scripts/pinescript/README.md for full operator notes.
+indicator(
+   "Paper Trade Visualizer",
+   overlay = true,
+   max_lines_count = 500,
+   max_labels_count = 500,
+   max_boxes_count = 500
+   )
+
+// ── User inputs ─────────────────────────────────────────────────────
+// max=100 because Pine v6 caps max_lines_count at 500 and we draw up
+// to 5 lines per trade (entry + SL + TP1 + TP2 + TP3). Turn TPs off
+// below to view ~250 trades.
+show_last_n      = input.int(50, "Show last N trades", minval = 1, maxval = 100)
+show_entry_label = input.bool(true, "Show entry labels (order_id + side + validators)")
+show_exit_label  = input.bool(true, "Show exit labels (R-multiple + $PnL)")
+show_tp_lines    = input.bool(true, "Show TP1/TP2/TP3 lines")
+
+// ── Color palette ──────────────────────────────────────────────────
+// Outcome shading (used for the entry→exit fill box):
+c_win   = color.new(color.green,  70)
+c_loss  = color.new(color.red,    70)
+c_expir = color.new(color.gray,   70)
+c_open  = color.new(color.yellow, 70)
+// Levels:
+c_entry = color.new(color.blue,   20)
+c_sl    = color.new(color.red,    20)
+c_tp1   = color.new(color.green,  20)
+c_tp2   = color.new(color.green,  40)
+c_tp3   = color.new(color.green,  60)
+// Borders:
+c_border = color.new(color.gray, 60)
+
+// === BEGIN GENERATED PASTE BLOCK ===
+// Replace the lines below with the contents of paper_trades_pine.txt
+// produced by scripts/export_paper_trades_to_pinescript.py.
+var int g_count = 0
+var array<int>    g_entry_ts        = array.new<int>()
+var array<int>    g_result_ts       = array.new<int>()
+var array<float>  g_entry_price     = array.new<float>()
+var array<float>  g_sl_price        = array.new<float>()
+var array<float>  g_tp1_price       = array.new<float>()
+var array<float>  g_tp2_price       = array.new<float>()
+var array<float>  g_tp3_price       = array.new<float>()
+var array<float>  g_result_price    = array.new<float>()
+var array<float>  g_r_multiple      = array.new<float>()
+var array<float>  g_pnl_dollars     = array.new<float>()
+var array<string> g_side            = array.new<string>()
+var array<string> g_result          = array.new<string>()
+var array<string> g_validator_pair  = array.new<string>()
+var array<string> g_order_id_short  = array.new<string>()
+// === END GENERATED PASTE BLOCK ===
+
+// ── Helpers ────────────────────────────────────────────────────────
+f_result_color(string res) =>
+    res == "win"     ? c_win :
+    res == "loss"    ? c_loss :
+    res == "expired" ? c_expir :
+                       c_open
+
+f_side_arrow(string side) =>
+    side == "buy" ? "▲" : "▼"
+
+f_signed(float x, string fmt) =>
+    (x >= 0 ? "+" : "") + str.tostring(x, fmt)
+
+// ── Render once on first bar ──────────────────────────────────────
+// Pine's drawing-object pool is finite (max_lines/labels/boxes_count);
+// keep the work inside `barstate.isfirst` so we draw once, not per bar.
+if barstate.isfirst and g_count > 0
+    start_i = math.max(0, g_count - show_last_n)
+    for i = start_i to g_count - 1
+        et     = array.get(g_entry_ts,        i)
+        rt_raw = array.get(g_result_ts,       i)
+        ep     = array.get(g_entry_price,     i)
+        sl     = array.get(g_sl_price,        i)
+        tp1    = array.get(g_tp1_price,       i)
+        tp2    = array.get(g_tp2_price,       i)
+        tp3    = array.get(g_tp3_price,       i)
+        rp     = array.get(g_result_price,    i)
+        rmult  = array.get(g_r_multiple,      i)
+        pnl    = array.get(g_pnl_dollars,     i)
+        side   = array.get(g_side,            i)
+        res    = array.get(g_result,          i)
+        vp     = array.get(g_validator_pair,  i)
+        oid    = array.get(g_order_id_short,  i)
+
+        // 0-sentinel for result_ts means "still open" → extend to now.
+        rt = rt_raw == 0 ? timenow : rt_raw
+        // Outcome box uses entry-price when the position is still open
+        // (no exit price yet).
+        rp_eff = rp > 0 ? rp : ep
+        rc     = f_result_color(res)
+
+        // Entry-price line (solid)
+        line.new(et, ep, rt, ep,
+             xloc = xloc.bar_time, color = c_entry, width = 2)
+
+        // Stop-loss line (dashed)
+        line.new(et, sl, rt, sl,
+             xloc = xloc.bar_time, color = c_sl, style = line.style_dashed)
+
+        // TP1 / TP2 / TP3 lines (dashed, alpha-scaled by leg)
+        if show_tp_lines and tp1 > 0
+            line.new(et, tp1, rt, tp1,
+                 xloc = xloc.bar_time, color = c_tp1, style = line.style_dashed)
+        if show_tp_lines and tp2 > 0
+            line.new(et, tp2, rt, tp2,
+                 xloc = xloc.bar_time, color = c_tp2, style = line.style_dashed)
+        if show_tp_lines and tp3 > 0
+            line.new(et, tp3, rt, tp3,
+                 xloc = xloc.bar_time, color = c_tp3, style = line.style_dashed)
+
+        // Outcome fill box (entry → exit price, coloured by result)
+        box.new(et,    math.max(ep, rp_eff),
+                rt,    math.min(ep, rp_eff),
+             xloc = xloc.bar_time,
+             bgcolor = rc, border_color = c_border)
+
+        // Entry label: order_id (short) + side arrow + validator-pair tag
+        if show_entry_label
+            entry_txt = oid + " " + f_side_arrow(side) + " " + vp
+            label.new(et, ep, entry_txt,
+                 xloc = xloc.bar_time, yloc = yloc.price,
+                 style = label.style_label_right,
+                 color = color.new(color.black, 70),
+                 textcolor = color.white,
+                 size = size.small)
+
+        // Exit label: signed R-multiple + signed $PnL. Skip if still open.
+        if show_exit_label and res != "open"
+            exit_txt = f_signed(rmult, "0.00") + "R  " +
+                       (pnl >= 0 ? "+$" : "-$") + str.tostring(math.abs(pnl), "0.00")
+            label.new(rt, rp_eff, exit_txt,
+                 xloc = xloc.bar_time, yloc = yloc.price,
+                 style = label.style_label_left,
+                 color = rc,
+                 textcolor = color.white,
+                 size = size.small)
+
+// No per-bar plotting; the indicator is purely an overlay of drawings.
+// `na` ensures we don't add an extra series to the legend.
+plot(na, title = "paper trades", color = color.new(color.black, 100))
