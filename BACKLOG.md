@@ -8,6 +8,27 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## Note — BitUnix paper-mode tier sizing aligned with intended live values (filed 2026-05-30)
+
+**Branch:** `bitunix-risk-tier-pre-live` (HEAD `41ee5e6`, pushed to origin, **NOT merged**).
+
+**Change:** `TIER_SIZING` constants in `trading_corp/agents/divisions/bitunix_futures_observer.py:201` + YAML doc-mirror in `config/strategies.yaml:1034`:
+
+- PREMIUM:  `size_pct` 0.04 → **0.015**, `leverage` 8.0 → **25.0**
+- STANDARD: `size_pct` 0.02 → **0.0075**, `leverage` 5.0 → **25.0**
+- WEAK / COUNTER: untouched
+- `EFFECTIVE_RISK_PER_TRADE_PCT` cap: untouched (stays 0.005 = 0.5%)
+
+**Rationale:** at planned $10K live funding, the new values produce ~$1875 STANDARD / ~$3750 PREMIUM notional (size × leverage × equity). Today's paper equity (~$323) sees correctly-scaled ratios. Same config carries to live when `execution_mode: paper → live` flips. Effective-risk math at stop floor: `0.015 × 25 × 0.003 = 0.1125%`, well under the 0.5% cap.
+
+**Restart-required** for constants to reload (no mtime-watch on Python module constants). Not deployed yet — operator coordinates restart timing (RH device challenge requires phone-in-hand for parallel session work).
+
+**Test fixture refreshed:** `tests/test_bitunix_futures_observer.py:281-298` (`test_build_proposal_premium_full_size` — same semantic, new PREMIUM values). 290 bitunix tests green; two pre-existing collection errors on `test_bitunix_confluence_gate.py` + `test_bitunix_gate_inputs.py` (missing module on main too — pre-existing baseline drift, not caused by this change).
+
+**Merge:** operator decides timing alongside the Stage-1 merge sequence.
+
+---
+
 ## P2 — BitUnix Stage-1 N+2 Phase 3 implementation (live exit-path) — queued for next session (filed 2026-05-30)
 
 **Scope confirmed:** (B) Narrowed per `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1b.md` and `[[bitunix-live-exit-path-phase1b]]`. Operator pre-approved 2026-05-30 along with merge-sequence (a).
