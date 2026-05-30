@@ -76,6 +76,33 @@ rm -rf <new-files-or-dirs>
 
 ---
 
+## 2026-05-29 ~23:35 UTC — Disable kalshi_weather_arb + kalshi_crypto_arb scanners (silence telegrams on dead divisions)
+
+**Commit:** `7e9d06c` on branch `disable-kalshi-scanners-2026-05-29`, FF-merged to `main` (`aa91d48..7e9d06c`). Pushed.
+**Triggered by:** Operator request — kalshi_weather division "effectively dead" (per `[[project_kalshi_weather_ev_discovery]]` — no edge confirmed on real prices), kalshi_crypto formally SHELVED 2026-05-22 (`[[project_kalshi_crypto_shelved]]`). Stop the per-fire telegram pings + the scanner-loop Kalshi/NWS/Coinbase API calls.
+**Backup:** `/home/azureuser/trading_corp/config/strategies.yaml.bak.2026-05-29-kalshi-disable` (one-shot).
+
+**Files deployed (1):**
+- `config/strategies.yaml` — lines 1492 + 1546: `enabled: true` → `enabled: false` on `kalshi_weather_arb` + `kalshi_crypto_arb`. Sed-in-place (per `[[feedback_deploy_crlf_config_patch]]`). No code change.
+
+**Features shipped:**
+- Both scanner loops short-circuit at `_scheduled_kalshi_weather_arb_loop`/`_scheduled_kalshi_crypto_arb_loop`'s `if not agent.enabled: continue` guard. No `run_scan_cycle` calls; no `would_have_placed` audit rows; no `☀️ Kalshi Weather` / `Kalshi Crypto` telegram pushes.
+- Hot-reloadable: `KalshiWeatherArbAgent.enabled` property calls `self._reload()` (mtime-cached) on every read (`kalshi_weather_arb.py:218-220`). No service restart needed; kalshi_crypto silent within ≤60s, kalshi_weather within ≤300s of YAML mtime change.
+
+**Reversibility:** flip either `enabled: false` → `enabled: true` (locally + on prod) and the scanner resumes on the next poll tick. The two strategies are NOT removed — sizing, Kelly, discovery, divergence math all intact for revival when/if signal returns.
+
+**Verification:** prod `grep -n 'enabled:' /home/azureuser/trading_corp/config/strategies.yaml` returns `false` for both lines (just-deployed). Post-deploy silence check (next session): confirm `SELECT COUNT(*) FROM audit_event WHERE kind='would_have_placed' AND ts > '2026-05-29T23:35:00' AND json_extract(payload_json,'$.strategy') IN ('kalshi_weather_arb','kalshi_crypto_arb')` returns 0.
+
+**Inert / dormant:** the `division: kalshi_weather` + `division: kalshi_crypto` paper brokers remain wired; equity, position history, settled outcomes still queryable. Just no NEW activity.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp /home/azureuser/trading_corp/config/strategies.yaml.bak.2026-05-29-kalshi-disable /home/azureuser/trading_corp/config/strategies.yaml"
+# Hot-reload picks it up; no restart.
+```
+
+---
+
 ## 2026-05-29 ~16:55 UTC — Polymarket per-division wallets (item 6) + live-preflight (item 7) + USDC.e collateral fix — SURGICAL deploy
 
 **Commits:** `2ed83fe` (item 6+7 code) + `631ddc4` (polymarket.py USDC.e flip); merged to main `500cc1e`. **Deployed SURGICALLY (patch-only), NOT whole-file.**

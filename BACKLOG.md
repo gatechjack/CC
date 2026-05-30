@@ -36,6 +36,45 @@ Active session work lives in chat — not duplicated here.
 
 Prod `trading_corp/persistence/db.py` is **behind git**: it lacks the kalshi_weather tier-1 data-foundation schema that's committed in git — `weather_nbm_observations` and `weather_forecast_residuals` tables + their indexes (per `plans/tier1-data-foundation-kalshi-weather.md` §C1/§C2). Discovered during the 2026-05-29 db-lock fix when md5-diffing prod db.py against git (the busy_timeout change was deployed **surgically** to avoid inadvertently shipping this schema). `connect()` and all helper functions match git — the drift is schema-DDL-only. **Decide:** deploy the tier-1 schema to prod (if the ingestion/consumption path is meant to be live) or revert the local commit (if shelved). Do NOT deploy as a side-effect of unrelated db.py changes. This is the **3rd committed-but-not-deployed instance this week** — see memory `committed-not-deployed-recurring-drift`. **P3** (no active consumer reads these tables on prod's hot path today, per the schema comments).
 
+**Update 2026-05-29 ~23:35 UTC:** `kalshi_weather_arb.enabled` flipped to `false` on prod (deploy_log entry above). The schema-deploy-or-revert decision now leans toward **revert** unless tier-1 forecast-residuals work is being actively revived — with the scanner disabled, the tables would have zero new writers. Not blocking; carry forward.
+
+---
+
+## EOS snapshot — 2026-05-29 ~23:35 UTC (bitunix read-only diagnostics + kalshi scanner-disable DEPLOYED)
+
+**Theme:** four read-only diagnostics ran in a parallel session while another Claude built Stage-1 N+1 (HITL entry-path) + began N+2 (exit-path). Diagnostics produced two committed reports + one operator-actioned config change deployed end-to-end.
+
+**Read-only diagnostics (REPORTS, no code change):**
+1. **PA structure_alignment vs HTF gate — duplication test** (`reports/2026-05-29_bitunix_pa_htf_structure_duplication.md`). Operator hypothesis: 2-of-3 PA loosening being silently un-done by HTF. **Verdict: NO STRONG DUPLICATION.** Of 23 V=1 O=1 S=0 HTF blocks since the 2-of-3 deploy (2026-05-27 23:18 UTC), 19 (82.6%) are `proximity_to_support` — a level-distance check orthogonal to structure direction. Inverse check fails: structure-passing cohorts don't have lower HTF-block rates. Don't move HTF to 15m/30m; HTF's value is in its multi-day regime + level scope.
+2. **proximity_to_support directional contract** (inline, no separate report). Code structurally directional (`bitunix_htf_regime.py:979-988` gates on `side=="sell"`); data confirms 17/17 distinct events are sell-side. Anti-pattern is code-impossible AND empirically absent. Threshold `proximity_block_pct: 0.3` (= 0.3%) firing on distances 0.04-0.30% — gate is active but bites only at the threshold.
+3. **Fee-floor 3-rule audit on today's 15 rejections** (`reports/2026-05-29_bitunix_fee_floor_three_rule_audit.md`). Rule A (operator's "TP1 covers open fee") passes 15/15 — but **9/15 of these have NEGATIVE blended EV** (Rule C, 1.5× round-trip margin), so operator's discipline would manufacture negative-EV trades 60% of the time in today's regime. **6/15** are positive-EV — system over-tight by 40% on those. Per 5/25 board memo §9: do NOT lower `tp1_min_profit_multiplier`. The **already-Board-approved §9(b) maker-fill-rate model** would unblock exactly those 6 trades (drops floor from 0.18% → 0.13% of entry) as cost reduction, not selection-weakening — same outcome, no edge relaxation. 2026-06-19 tripwire unchanged.
+4. **Anomaly surfaced (separate diagnostic recommended next session):** 84% of h4_struct values in the hypothesis cohort are "insufficient" — HTF's 4H structure leg has been mostly absent this window (either <20 native 4H bars in cache after 48h+, or BTC's range produced <2 detectable swings in the 20-bar window). Worth a dedicated diagnostic before any HTF tuning.
+
+**Deploy (config-only, full pipeline):**
+- **`kalshi_weather_arb` + `kalshi_crypto_arb` scanners DISABLED** — both `enabled: true` → `false` in `config/strategies.yaml`. Operator framing: divisions effectively dead (weather: no edge post-bias-offset window; crypto: SHELVED 2026-05-22). Commit `7e9d06c` on `disable-kalshi-scanners-2026-05-29` → FF-merge to main (`aa91d48..7e9d06c`) → pushed → prod sed-in-place + verified (deploy_log 2026-05-29 ~23:35 UTC). Hot-reloadable; scanners go silent within ≤60s (crypto) / ≤300s (weather) of the YAML mtime change.
+
+**Today's bitunix trades (informational, end-of-day record):**
+- 3 paper fires: 14:13:51 sell STANDARD (+1.29R, +$0.11 WIN); 17:51:02 sell STANDARD (+0.89R, +$0.07 WIN); 19:58:10 sell STANDARD (−1.00R, −$0.06 LOSS).
+- Net: **2W/1L, +1.18R, +$0.12**.
+
+**PROD STATE @ EOS (23:35 UTC):**
+- `main` at `7e9d06c` (matches prod after sed-in-place). Backup at `/home/azureuser/trading_corp/config/strategies.yaml.bak.2026-05-29-kalshi-disable`.
+- kalshi_weather_arb + kalshi_crypto_arb scanners: hot-reloaded to disabled. Telegram pings stop on next poll tick.
+- PID (from prior 17:10 UTC EOS): `1727479`, PAPER mode. No restart this session.
+
+**Branch landscape @ EOS:**
+- Local on `main` (after FF-merge). The earlier parallel session worked on `bitunix-live-entry-path-2026-05-29` (entry-path, committed) → moved to `bitunix-live-exit-path-2026-05-29` (3 docs/backlog commits ahead of pre-merge main). Their branch is now 3 commits ahead of new main; needs rebase when they next sync.
+- New ephemeral branch `disable-kalshi-scanners-2026-05-29` exists on origin (1 commit, already merged); safe to delete after operator review.
+
+**CARRY-FORWARD (next session):**
+1. **h4_struct=insufficient root-cause diagnostic** — separate read-only investigation. Either bar-cache freshness OR low-vol regime starving the 20-bar swing detector. Worth understanding before any HTF tuning.
+2. **Maker-fill-rate model (§9(b) of the 5/25 fee-floor memo)** — Board-approved as the next bitunix build deliverable. Today's fee-floor data adds quantitative weight: would precisely unblock the 6 positive-EV rejections without weakening selection logic.
+3. **kalshi_weather schema-deploy-or-revert** — now leans toward revert given the scanner is disabled (the P3 entry above has been updated to reflect this).
+4. **`disable-kalshi-scanners-2026-05-29` branch cleanup** — already merged + pushed; delete locally + on origin when convenient.
+5. **Tripwire 2026-06-19** — unchanged. Don't re-litigate fee-floor gate tightness before then on fire-rate evidence; the maker-flip path is the right axis.
+
+**What this session did NOT touch:** any bitunix code path (read-only diagnostics only); the parallel session's Stage-1 N+1 entry-path or N+2 exit-path work; tp1_min_profit_multiplier; proximity_block_pct; any HTF parameter.
+
 ---
 
 ## EOS snapshot — 2026-05-29 ~17:10 UTC (Polymarket live-build prep arc — Group B + item 8a spike + premise fixes + item 6/7 DEPLOYED surgically to prod & merged to main)
