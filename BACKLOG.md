@@ -34,13 +34,15 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 **Template:** `[[reference-tastytrade-rotation-runbook]]` for runbook (d).
 
-### Gate (c) — Readiness item #12: Pre-flip md5-diff of full bitunix prod surface vs git
+### Gate (c) — Readiness item #12: Pre-flip md5-diff of full bitunix prod surface vs git — **LANDED 2026-05-30 on branch `bitunix-prod-surface-md5diff-2026-05-30` (commit `59c4b06`, NOT merged)**
 
 **Readiness-audit text** (§ 12 "Gap → Stage 1 (SMALL)" + checklist line 206):
 > "before flipping live, md5-diff the full bitunix surface against git — `brokers/bitunix.py`, `agents/divisions/bitunix_futures_observer.py`, `agents/divisions/bitunix_position_reconciler.py`, `agents/paper_trade_replay.py`, `agents/strategies/bitunix_*.py`, `comms/bitunix_lifecycle_notifier.py`, `config/strategies.yaml` bitunix block, `config/risk.yaml`, and the Phase-4 `place_order` code when it exists."
 
 **Review evidence** (Finding #2 row #12):
 > "❌ NOT DONE. Deploy-import-graph-audit discipline `[memory: feedback_deploy_import_graph_audit.md]` says this is REQUIRED pre-deploy. Stage-1 prod-deploy gate. ❌ Implicit prerequisite, not tracked as item. medium — UNTRACKED gap"
+
+**Closure (2026-05-30):** `scripts/bitunix_prod_surface_md5diff.py` ships a manifest-driven md5-diff of the 10-file bitunix surface (8 code + `config/strategies.yaml` + `config/risk.yaml`) against prod via `az vm run-command`. LF-normalized local md5; whole-file diff on configs (non-bitunix-section drift still matters because the next main-to-prod deploy carries it). Exit 0=clean / 1=drift / 2=manifest error. 15 unit tests green; az shell-out is monkeypatched so no live prod calls in tests. Manifest extension for Phase-4 `place_order` code is a single MANIFEST-tuple line. **Branch NOT merged** — gate stays in this BACKLOG entry until operator merges + the pre-deploy verification is actually run against prod.
 
 **Adjacent discipline:** `[[feedback-deploy-import-graph-audit]]` (escalated 2026-05-26).
 
@@ -96,6 +98,30 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 - Pre-commit safety check: agent reads `HEAD` and verifies it's where the agent last left it before committing. Sub-second cost; catches the hijack at write time.
 
 **No new BACKLOG priority** — operational discipline rather than code work. Filed as a class-extension note adjacent to the P1/P3 review-surfaced items for traceability.
+
+---
+
+## Note — 2026-05-30 anomaly: worktree fixture gap on `data/trading_corp.db` (surfaced during gate (c) test gate)
+
+**Symptom:** running the full test gate (`tests/ --tb=no -p no:cacheprovider --ignore=...`) in a fresh `git worktree` produces **2 environmental failures** beyond the main-checkout baseline of 1989 passed / 26 failed:
+
+- `tests/test_paper_run_tooling.py::test_readiness_check_all_blocking_pass_on_production_config`
+- `tests/test_paper_run_tooling.py::test_readiness_check_reports_block_status_correctly`
+
+Both fail with `no such table: agent_state` / `no such table: audit_event` / `no such table: position`.
+
+**Root cause:** these tests read `data/trading_corp.db` via `run_readiness_checks(skip_network=True)`. `data/trading_corp.db` is untracked (in `.gitignore`), so a fresh worktree gets the path-pinned empty 4KB SQLite header that another fixture creates, NOT the main checkout's 652MB populated DB. Schema-on-demand creation in the readiness checks is not triggered for the "production_config" path — they expect the schema already to exist.
+
+**Verification (during this session):** moved the gate-(c) branch's two new files aside, re-ran `tests/test_paper_run_tooling.py` in the pristine worktree → same 2 failures. Confirms the failures are pre-existing in the worktree environment, not caused by gate-(c) work. With branch files restored, full suite is 2002 passed / 28 failed = (1987 worktree-baseline pass + 15 new) / (26 main-baseline fail + 2 worktree-env fail). Net code regression from gate (c): **0**.
+
+**Implication for future worktree-based sessions:** the documented baseline of 1989/26 is the **main-checkout baseline**, not the worktree baseline. A branch that lands clean in a worktree may show 28 fails. Treat the 2 readiness fails as expected worktree noise OR seed the worktree DB before running the gate.
+
+**Mitigation options (operator decision):**
+- (a) **Seed-on-demand:** add an autouse pytest fixture that copies/links the populated DB into the worktree before `test_paper_run_tooling` runs. Risk: cross-test state leakage if not properly isolated.
+- (b) **Schema-on-demand for the production-config check:** widen `run_readiness_checks` so it creates the schema when the target DB has none, like the test_db_path branch already does. Risk: masks a real broken-prod-DB signal.
+- (c) **Document only:** future sessions know to expect 28 in worktree, 26 on main; no code change. Lowest risk, manual discipline.
+
+**No new BACKLOG priority** — operational/environmental anomaly. Filed adjacent to Finding #1d for class-pattern grouping (both are "session-environment vs canonical-truth divergence").
 
 ---
 
