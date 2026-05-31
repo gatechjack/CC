@@ -1,12 +1,46 @@
 <div id="trade-flow"
-     hx-get="/partials/trade-flow"
+     hx-get="/partials/trade-flow{% if stage1_only %}?stage1=1{% endif %}"
      hx-trigger="every 5s"
      hx-swap="outerHTML"
      class="space-y-2 max-h-[640px] overflow-y-auto pr-1 custom-scroll">
 
+  {# Stage-1 filter toggle. Defaults off so the rail behaves byte-
+     identically when untouched. Click pushes URL state (back-button
+     friendly) and swaps the rail server-side. Polling preserves the
+     toggle state because the polling hx-get URL above carries the
+     `?stage1=1` suffix when active. #}
+  <div class="flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider mb-1">
+    <span class="text-muted/60 mr-1">filter:</span>
+    <a hx-get="/partials/trade-flow"
+       hx-target="#trade-flow"
+       hx-swap="outerHTML"
+       hx-push-url="/"
+       href="/"
+       class="px-1.5 py-0.5 rounded cursor-pointer transition-colors
+              {% if not stage1_only %}bg-accent/20 text-accent
+              {% else %}text-muted/60 hover:text-muted hover:bg-pane-2{% endif %}">
+      all
+    </a>
+    <a hx-get="/partials/trade-flow?stage1=1"
+       hx-target="#trade-flow"
+       hx-swap="outerHTML"
+       hx-push-url="/?stage1=1"
+       href="/?stage1=1"
+       title="Stage 1 only — bitunix_futures paper-mode events"
+       class="px-1.5 py-0.5 rounded cursor-pointer transition-colors
+              {% if stage1_only %}bg-accent/20 text-accent
+              {% else %}text-muted/60 hover:text-muted hover:bg-pane-2{% endif %}">
+      stage 1
+    </a>
+  </div>
+
   {% if not flow %}
     <div class="text-muted text-xs text-center py-8 italic">
-      No trade activity yet. Trigger a scan from Telegram (/scan) to seed it.
+      {% if stage1_only %}
+        No Stage-1 (bitunix paper) activity yet.
+      {% else %}
+        No trade activity yet. Trigger a scan from Telegram (/scan) to seed it.
+      {% endif %}
     </div>
   {% endif %}
 

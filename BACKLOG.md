@@ -205,6 +205,32 @@ Looks like a one-off test scaffold left on prod (underscore prefix conventionall
 
 ---
 
+## P3 — Stage-1 paper-mode dashboard precursor charts (filed 2026-05-31)
+
+Surfaced during Stage-1 paper-mode dashboard addition #1 (deploy-marker line). The marker JS+overlay was applied to the existing equity-curve chart only; the user's original request included `fire-rate` and `skip-rate` time-series charts that **do not currently exist** anywhere in `trading_corp/web/`. Grep confirmed zero matches for `fire.?rate` / `skip.?rate` outside an unrelated PM-vol partial; no JS module, no `/partials/*` endpoint, no template.
+
+### Item — Add `fire-rate` and `skip-rate` time-series charts to dashboard
+
+**Spec ready:** the deploy-marker overlay pattern (`equity_chart.js` `positionDeployMarker()` + `#equity-deploy-marker` CSS overlay) lifts directly onto any new time-series chart that uses TradingView Lightweight Charts v4 with daily-granularity `time: 'YYYY-MM-DD'` points. Reuse the same `DEPLOY_MARKER_TIME = '2026-05-31'` constant and subscribe pattern; lift the marker DOM block into the new chart's partial.
+
+**Derivation source:** both rates derive from `audit_event` rows.
+- `fire-rate` = count of decisions that produced an order over total decisions, bucketed by hour or day. Candidate kinds: `would_have_placed`, `live_order_placed`, `auto_executed`, `board_approved` (denominator: `bitunix_decided` + `combo_proposed` + any other "evaluated" kinds — needs a per-division mapping).
+- `skip-rate` = inverse of fire-rate, or count of decisions filtered by gates (PA, HTF, tier, risk). Candidate kinds: `bitunix_skipped`, `risk_rejected`, `pa_rejected`, `htf_rejected` — needs a grep over `audit_event` emit sites to enumerate the full skip taxonomy.
+
+**Estimate:** ~1 session for charts + data endpoints + tests (mirrors the equity-curve scaffolding: 1 JS module, 1 `/partials/*` route, 1 `data.py` query, 1 fixture-based test).
+
+### Item — Add per-cycle audit event to `tasty_options` scanner for dashboard liveness
+
+The `tasty-signal-scanner` asyncio task (`trading_corp/main.py:1282`, body in `trading_corp/agents/strategies/_ic_orchestration.py:301 run_signal_scanner_loop`) does NOT emit a per-cycle audit row. Only `combo_proposed` fires when an actual scan produces combos (~daily, not per-poll). Compared to the PMCC scheduler (which emits `scheduled_scan_done` / `scheduled_scan_error` after each fire), the tasty scanner is invisible to `audit_event` between fires.
+
+**Impact on dashboard:** Stage-1 paper-mode HITL+tasty tile (addition #5) cannot derive a scanner-tick rate; renders a "not currently emitted" placeholder.
+
+**Fix:** Add `logger_agent.log_event("tasty_options", "scanner_tick", {"due": is_signal_scan_due_result, ...})` inside `run_signal_scanner_loop` after each `is_signal_scan_due` check. PMCC parallel: `main.py:2052`. Verify the same scaffold should also instrument the IC scanner (`ic_signal_scanner_task` at `main.py:1192`) — both use the shared `_ic_orchestration.run_signal_scanner_loop`, so the fix lands once for both. **Touches `_ic_orchestration.py` — out of scope for dashboard-only sessions.**
+
+**Estimate:** small. Single log_event call + audit-kind registration in `web/data.py` trade-flow filter, + 1 test.
+
+---
+
 ## P3 — Audit `proximity_to_support` / `proximity_to_resistance` hard-zero behavior over historical bar data (filed 2026-05-31)
 
 Surfaced by 2026-05-31 Stage 1 post-deploy review, Finding F2 (`reports/2026-05-31_stage1_first_17h_paper_mode_review.md` §8 + §9).

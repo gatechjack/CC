@@ -6,6 +6,14 @@
   const empty = document.getElementById('equity-empty');
   if (!container || !window.LightweightCharts) return;
 
+  // Stage 1 paper-mode redeploy landed at 2026-05-31 05:36 UTC
+  // (origin/main 7352f8f). Marker rendered as a CSS overlay div positioned
+  // via chart.timeScale().timeToCoordinate(deploy_date). The equity series
+  // uses daily granularity (YYYY-MM-DD), so the marker lands at the day's
+  // x-position; the label notes the exact UTC time.
+  const DEPLOY_MARKER_TIME = '2026-05-31';
+  const markerEl = document.getElementById('equity-deploy-marker');
+
   const chart = LightweightCharts.createChart(container, {
     layout: {
       background: { type: 'solid', color: 'transparent' },
@@ -44,6 +52,19 @@
     },
   });
 
+  function positionDeployMarker() {
+    if (!markerEl) return;
+    // timeToCoordinate returns null when the time is outside the visible
+    // range OR before any data point exists — hide in either case.
+    const x = chart.timeScale().timeToCoordinate(DEPLOY_MARKER_TIME);
+    if (x === null || x === undefined || x < 0) {
+      markerEl.classList.add('hidden');
+      return;
+    }
+    markerEl.style.left = `${x}px`;
+    markerEl.classList.remove('hidden');
+  }
+
   function refresh() {
     fetch('/partials/equity-curve')
       .then((r) => r.json())
@@ -55,12 +76,14 @@
         if (points.length === 0) {
           container.classList.add('hidden');
           empty?.classList.remove('hidden');
+          markerEl?.classList.add('hidden');
           return;
         }
         container.classList.remove('hidden');
         empty?.classList.add('hidden');
         series.setData(points);
         chart.timeScale().fitContent();
+        positionDeployMarker();
       })
       .catch((err) => console.warn('equity curve fetch failed', err));
   }
@@ -69,11 +92,16 @@
   refresh();
   setInterval(refresh, 60_000);
 
+  // Reposition the deploy marker on any visible-range change (zoom, scroll,
+  // initial fit). Lightweight Charts fires this synchronously after layout.
+  chart.timeScale().subscribeVisibleTimeRangeChange(positionDeployMarker);
+
   const ro = new ResizeObserver(() => {
     chart.applyOptions({
       width: container.clientWidth,
       height: container.clientHeight,
     });
+    positionDeployMarker();
   });
   ro.observe(container);
 })();

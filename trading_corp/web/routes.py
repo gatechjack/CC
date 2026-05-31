@@ -246,18 +246,32 @@ def register(app: FastAPI) -> None:
         )
 
     @app.get("/", response_class=HTMLResponse)
-    async def home(request: Request):
+    async def home(request: Request, stage1: int = 0):
+        # `?stage1=1` flips the trade-flow rail into Stage-1 (bitunix paper)
+        # only mode. Defaults off so the home page is byte-identical when
+        # the toggle is untouched.
+        stage1_only = bool(stage1)
         snap = await data.build_command_center(deps)
-        flow = data.trade_flow(deps.db_url, limit=20)
+        flow = data.trade_flow(deps.db_url, limit=20, stage1_only=stage1_only)
+        # Stage-1 monitoring tiles inline-rendered on first paint;
+        # /partials/stage1-monitoring re-fetches every 10s for HTMX swap.
+        stage1_ctx = _build_stage1_ctx(deps)
         return templates.TemplateResponse(
-            request, "home.html", {"snap": snap, "flow": flow},
+            request, "home.html",
+            {
+                "snap": snap, "flow": flow,
+                "stage1_only": stage1_only,
+                "stage1": stage1_ctx,
+            },
         )
 
     @app.get("/partials/trade-flow", response_class=HTMLResponse)
-    async def partial_trade_flow(request: Request):
-        flow = data.trade_flow(deps.db_url, limit=20)
+    async def partial_trade_flow(request: Request, stage1: int = 0):
+        stage1_only = bool(stage1)
+        flow = data.trade_flow(deps.db_url, limit=20, stage1_only=stage1_only)
         return templates.TemplateResponse(
-            request, "partials/trade_flow.html", {"flow": flow},
+            request, "partials/trade_flow.html",
+            {"flow": flow, "stage1_only": stage1_only},
         )
 
     @app.get("/partials/stat-cards", response_class=HTMLResponse)
@@ -278,6 +292,35 @@ def register(app: FastAPI) -> None:
         return templates.TemplateResponse(
             request, "partials/market_ribbon.html", {"snap": snap},
         )
+
+    @app.get("/partials/stage1-monitoring", response_class=HTMLResponse)
+    async def partial_stage1_monitoring(request: Request):
+        """Stage-1 paper-mode monitoring tiles (HTMX-polled every 10s).
+
+        Ships three tiles:
+          • Gate (a) REST resilience (24h counts, color-coded)
+          • HITL activity (pending + 24h decisions + autonomous-live)
+          • tasty_options activation (broker session + scanner tick rate)
+        """
+        stage1_ctx = _build_stage1_ctx(deps)
+        return templates.TemplateResponse(
+            request, "partials/stage1_monitoring.html", {"stage1": stage1_ctx},
+        )
+
+    def _build_stage1_ctx(deps_) -> dict:
+        """Shared resolver — used by both the `/` initial render and the
+        `/partials/stage1-monitoring` polled refresh so the two views
+        stay byte-identical."""
+        brokers_map = getattr(deps_.data_exec, "brokers", None) \
+            if deps_.data_exec is not None else None
+        return {
+            "gate_a": data.gate_a_resilience_24h(deps_.db_url),
+            "hitl": data.hitl_activity_24h(
+                deps_.db_url,
+                pending_registry=deps_.pending_registry,
+            ),
+            "tasty": data.tasty_activation_status(brokers_map),
+        }
 
     # ── Prediction Markets dashboard (K2.4 Option C) ─────────────────────
     # Single dashboard for all prediction-market divisions with a division

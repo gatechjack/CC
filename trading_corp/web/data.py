@@ -1348,25 +1348,57 @@ def paper_trade_summary(db_url: str, division: str) -> dict:
 
 # ── Trade flow ────────────────────────────────────────────────────────────
 
-def trade_flow(db_url: str, limit: int = 20) -> list[dict]:
-    rows = _query(
-        db_url,
-        """SELECT id, ts, actor, kind, payload_json
-           FROM audit_event
-           WHERE kind IN (
-             'risk_approved','risk_rejected',
-             'board_approved','board_rejected','auto_executed',
-             'fill','execution_error',
-             'scan_order_result','scheduled_scan_done','scheduled_scan_error',
-             -- Lord Otter "would have placed" surfaces on the home rail
-             -- because it represents an action decision. Lower-noise kinds
-             -- (webhook_received, alert_ignored) only render on the
-             -- per-division page so the home rail isn't flooded.
-             'would_have_placed'
-           )
-           ORDER BY id DESC LIMIT ?""",
-        (limit,),
-    )
+def trade_flow(
+    db_url: str, limit: int = 20, *, stage1_only: bool = False,
+) -> list[dict]:
+    """Recent trade-flow rows for the home rail.
+
+    When `stage1_only=True`, the result is filtered to bitunix_futures
+    paper-mode activity (Stage 1's home). The filter matches rows where
+    actor='bitunix_futures' AND the payload's execution_mode is either
+    'paper' or absent (paper rows like `would_have_placed` omit the field
+    by convention; only the live path stamps execution_mode='live' onto
+    `live_order_placed` / `live_order_rejected` payloads).
+
+    The toggle is a URL query-param flip in the routes; defaults to off
+    so the home rail behavior is byte-identical when the toggle is off.
+    """
+    if stage1_only:
+        sql = (
+            """SELECT id, ts, actor, kind, payload_json
+               FROM audit_event
+               WHERE kind IN (
+                 'risk_approved','risk_rejected',
+                 'board_approved','board_rejected','auto_executed',
+                 'fill','execution_error',
+                 'scan_order_result','scheduled_scan_done','scheduled_scan_error',
+                 'would_have_placed','live_order_placed','live_order_rejected'
+               )
+                 AND actor = 'bitunix_futures'
+                 AND (
+                   json_extract(payload_json, '$.execution_mode') IS NULL
+                   OR json_extract(payload_json, '$.execution_mode') = 'paper'
+                 )
+               ORDER BY id DESC LIMIT ?"""
+        )
+    else:
+        sql = (
+            """SELECT id, ts, actor, kind, payload_json
+               FROM audit_event
+               WHERE kind IN (
+                 'risk_approved','risk_rejected',
+                 'board_approved','board_rejected','auto_executed',
+                 'fill','execution_error',
+                 'scan_order_result','scheduled_scan_done','scheduled_scan_error',
+                 -- Lord Otter "would have placed" surfaces on the home rail
+                 -- because it represents an action decision. Lower-noise kinds
+                 -- (webhook_received, alert_ignored) only render on the
+                 -- per-division page so the home rail isn't flooded.
+                 'would_have_placed'
+               )
+               ORDER BY id DESC LIMIT ?"""
+        )
+    rows = _query(db_url, sql, (limit,))
     out: list[dict] = []
     for r in rows:
         try:
@@ -1397,6 +1429,220 @@ def trade_flow(db_url: str, limit: int = 20) -> list[dict]:
             "payload_pretty": json.dumps(payload, indent=2, default=str, sort_keys=True),
         })
     return out
+
+
+# ── Stage-1 monitoring tiles ──────────────────────────────────────────────
+
+# Gate (a) REST resilience: the audit-kind taxonomy actually emitted by
+# trading_corp/brokers/bitunix.py and trading_corp/agents/data_exec.py.
+# Mapped from the user-facing request as:
+#   rest_retry         → rest_request_retried (bitunix.py:815)
+#   snapshot_stale_halt → unchanged           (data_exec.py:334)
+#   stuck_order_timeout → stuck_order_cancelled (success path,
+#                          bitunix.py:1154) + stuck_order_cancel_failed
+#                          (failure path, bitunix.py:1161)
+GATE_A_KIND_REST_RETRIED = "rest_request_retried"
+GATE_A_KIND_SNAPSHOT_STALE = "snapshot_stale_halt"
+GATE_A_KIND_STUCK_CANCELLED = "stuck_order_cancelled"
+GATE_A_KIND_STUCK_CANCEL_FAILED = "stuck_order_cancel_failed"
+
+GATE_A_KINDS = (
+    GATE_A_KIND_REST_RETRIED,
+    GATE_A_KIND_SNAPSHOT_STALE,
+    GATE_A_KIND_STUCK_CANCELLED,
+    GATE_A_KIND_STUCK_CANCEL_FAILED,
+)
+
+
+def _gate_a_severity(counts: dict[str, int]) -> str:
+    """Return 'green' | 'yellow' | 'red' for the Gate (a) tile color.
+
+    Rules:
+      red:   any snapshot_stale_halt (system-protective halt fired) OR
+             any stuck_order_cancel_failed (cancel actually failed —
+             order may still be resting at venue) OR
+             rest_request_retried > 10 (sustained API churn).
+      yellow: any rest_request_retried (1–10) or
+              any stuck_order_cancelled (transient stuck-order resolved).
+      green: all zero.
+    """
+    stale = counts.get(GATE_A_KIND_SNAPSHOT_STALE, 0)
+    cancel_failed = counts.get(GATE_A_KIND_STUCK_CANCEL_FAILED, 0)
+    rest = counts.get(GATE_A_KIND_REST_RETRIED, 0)
+    cancelled = counts.get(GATE_A_KIND_STUCK_CANCELLED, 0)
+    if stale > 0 or cancel_failed > 0 or rest > 10:
+        return "red"
+    if rest > 0 or cancelled > 0:
+        return "yellow"
+    return "green"
+
+
+def gate_a_resilience_24h(
+    db_url: str, *, now: datetime | None = None,
+) -> dict:
+    """Count Gate (a) REST resilience events in the last 24 hours.
+
+    Returns a dict with:
+      - by_kind: {kind → count} for each of the four GATE_A_KINDS
+      - total: int sum across kinds
+      - severity: 'green' | 'yellow' | 'red' (see _gate_a_severity)
+      - since_iso: ISO-8601 lower bound of the 24h window
+    """
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(hours=24)
+    since_iso = since.isoformat(timespec="seconds")
+
+    # One query — group by kind to keep round-trips minimal.
+    placeholders = ",".join("?" for _ in GATE_A_KINDS)
+    rows = _query(
+        db_url,
+        f"""SELECT kind, COUNT(*) AS n
+            FROM audit_event
+            WHERE kind IN ({placeholders})
+              AND ts >= ?
+            GROUP BY kind""",
+        (*GATE_A_KINDS, since_iso),
+    )
+    by_kind = {k: 0 for k in GATE_A_KINDS}
+    for r in rows:
+        by_kind[r["kind"]] = int(r["n"])
+    total = sum(by_kind.values())
+    return {
+        "by_kind": by_kind,
+        "total": total,
+        "severity": _gate_a_severity(by_kind),
+        "since_iso": since_iso,
+    }
+
+
+# HITL activity tile — Stage 1 demands a HITL gate on the first N=10 live
+# bitunix orders. The tile shows: how many approvals are pending right now,
+# how many board decisions fired in the last 24h, and an "autonomous live
+# orders" count that MUST be zero during Stage 1 (paper-mode deployment).
+# A non-zero autonomous count is a Stage-1 violation — a live order placed
+# without operator approval — and is the load-bearing safety signal here.
+
+def hitl_activity_24h(
+    db_url: str,
+    *,
+    pending_registry: Any = None,
+    now: datetime | None = None,
+) -> dict:
+    """Aggregate HITL state for the Stage-1 monitoring row.
+
+    Returns:
+      - pending: int — len(registry._pending), 0 if registry unwired
+      - approved_24h, rejected_24h: int — board decisions in window
+      - autonomous_live_24h: int — bitunix live_order_placed rows in the
+        24h window where hitl_gate == 'monitor_mode' (HITL bypassed
+        because the first N=10 live-order cap was reached). MUST be 0
+        during Stage 1 (paper deployment); any non-zero value is the
+        red signal.
+      - severity: 'green' | 'red' — red iff autonomous_live_24h > 0
+      - since_iso: ISO-8601 lower bound
+    """
+    now = now or datetime.now(timezone.utc)
+    since_iso = (now - timedelta(hours=24)).isoformat(timespec="seconds")
+
+    pending = 0
+    if pending_registry is not None:
+        try:
+            pending = int(pending_registry.pending_count())
+        except Exception as e:
+            log.warning("hitl_activity: pending_count() raised: %s", e)
+
+    rows = _query(
+        db_url,
+        """SELECT kind, COUNT(*) AS n
+           FROM audit_event
+           WHERE actor = 'board'
+             AND kind IN ('board_approved','board_rejected')
+             AND ts >= ?
+           GROUP BY kind""",
+        (since_iso,),
+    )
+    by_decision = {r["kind"]: int(r["n"]) for r in rows}
+    approved_24h = by_decision.get("board_approved", 0)
+    rejected_24h = by_decision.get("board_rejected", 0)
+
+    # Autonomous live orders — live_order_placed rows in the 24h window
+    # tagged with hitl_gate='monitor_mode'. The bitunix observer stamps
+    # this on the live path AFTER the first N=10 HITL gate is exhausted
+    # (bitunix_futures_observer.py:2578). During Stage 1 (paper) any
+    # such row indicates the paper-mode invariant has been broken.
+    auto_rows = _query(
+        db_url,
+        """SELECT COUNT(*) AS n
+           FROM audit_event
+           WHERE actor = 'bitunix_futures'
+             AND kind = 'live_order_placed'
+             AND ts >= ?
+             AND json_extract(payload_json, '$.hitl_gate') = 'monitor_mode'""",
+        (since_iso,),
+    )
+    autonomous_live_24h = int(auto_rows[0]["n"]) if auto_rows else 0
+
+    severity = "red" if autonomous_live_24h > 0 else "green"
+    return {
+        "pending": pending,
+        "approved_24h": approved_24h,
+        "rejected_24h": rejected_24h,
+        "autonomous_live_24h": autonomous_live_24h,
+        "severity": severity,
+        "since_iso": since_iso,
+    }
+
+
+# tasty_options activation tile — shows the broker session connectivity
+# (read from data_exec.brokers, mirroring the footer's _broker_health
+# de-dupe pattern) and surfaces the Fork #4 anomaly: the tasty signal
+# scanner does not emit a per-cycle audit event yet, so scanner-tick rate
+# is rendered as an explicit placeholder pointing at the P3 BACKLOG.
+
+def tasty_activation_status(
+    brokers_map: dict[str, Any] | None,
+) -> dict:
+    """Build the tasty_options tile context.
+
+    Returns:
+      - session: 'connected' | 'disconnected' | 'unwired'
+      - broker_name: str — class name or 'name' attr of the broker, or '—'
+      - scanner_tick_rate: None — see note (audit kind not currently
+        emitted). The template renders the placeholder + BACKLOG pointer
+        when None.
+    """
+    if not brokers_map:
+        return {
+            "session": "unwired",
+            "broker_name": "—",
+            "scanner_tick_rate": None,
+        }
+    # Match either the canonical slug or any *tasty* prefix
+    tasty_broker = brokers_map.get("tasty_options")
+    if tasty_broker is None:
+        for slug, broker in brokers_map.items():
+            if slug.startswith("tasty"):
+                tasty_broker = broker
+                break
+    if tasty_broker is None:
+        return {
+            "session": "unwired",
+            "broker_name": "—",
+            "scanner_tick_rate": None,
+        }
+
+    connected = bool(getattr(tasty_broker, "_connected", False)) or bool(
+        getattr(tasty_broker, "connected", False)
+    )
+    broker_name = getattr(tasty_broker, "name", type(tasty_broker).__name__)
+    return {
+        "session": "connected" if connected else "disconnected",
+        "broker_name": broker_name,
+        # Scanner-tick rate is intentionally None until the
+        # _ic_orchestration.run_signal_scanner_loop adds a per-cycle
+        # audit kind for the tasty division (filed P3 in BACKLOG).
+        "scanner_tick_rate": None,
+    }
 
 
 def _humanize_ts(ts: str | None) -> str:
