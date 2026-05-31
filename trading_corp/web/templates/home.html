@@ -25,7 +25,24 @@
           last 30 days · all accounts
         </span>
       </div>
-      <div id="equity-chart" class="h-[220px] sm:h-[280px] lg:h-[320px] w-full"></div>
+      <div class="relative">
+        <div id="equity-chart" class="h-[220px] sm:h-[280px] lg:h-[320px] w-full"></div>
+        {# Stage 1 paper-mode redeploy marker (origin/main 7352f8f landed
+           2026-05-31 05:36 UTC). Positioned by equity_chart.js via
+           chart.timeScale().timeToCoordinate('2026-05-31'). Hidden when
+           the deploy date is outside the visible range. #}
+        <div id="equity-deploy-marker"
+             class="hidden absolute top-0 bottom-0 pointer-events-none z-10"
+             style="left: 0px;"
+             aria-hidden="true">
+          <div class="absolute top-0 bottom-0 w-px bg-warn/70"></div>
+          <div class="absolute top-1 left-1.5 px-1.5 py-0.5 rounded
+                      bg-warn/20 text-warn text-[9px] font-mono uppercase tracking-wider
+                      whitespace-nowrap border border-warn/40">
+            Stage 1 · 05:36Z
+          </div>
+        </div>
+      </div>
       <div id="equity-empty" class="hidden text-center text-muted text-xs py-12">
         Not enough account_state rows to draw a curve yet — equity history
         accumulates from snapshot logs over time.
