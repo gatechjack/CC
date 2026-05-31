@@ -116,6 +116,117 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-05-31 05:36 UTC — Stage-1 prod redeploy attempt #3 — SUCCESS (66 files; sweep-derived transfer set; first whole-deploy since 2026-05-18 `4985bbe` pointer)
+
+**Commits:** origin/main `7352f8f` (merge of `stage1-blockers-items3-4-5-2026-05-30` @ `9742045`) — closes Stage-1 pre-deploy blockers Items 3+4+5. Underlying source has not changed since the rolled-back 22:43 attempt; the failure that rolled back attempts #1 and #2 was in the deploy *mechanism* (diff-derived manifest missed stale-on-prod files), not source.
+**Triggered by:** operator GO after Phase 2 gates green per `reports/2026-05-30_next_session_prompt_redeploy_attempt_3.md`.
+**Backup tag:** `.pre-stage1-redeploy3-20260531-0307` (52 files; 14 net-new files have no backup → `rm -rf` on rollback).
+
+**Files deployed (66):**
+
+*Modified files (52 — DIFFER-STALE-ON-PROD per sweep baseline + `config/strategies.yaml`):*
+- config/divisions.yaml · config/risk.yaml · config/strategies.yaml · config/weather_stations.yaml
+- trading_corp/agents/backtester.py · agents/data_exec.py · agents/logger.py · agents/risk.py
+- trading_corp/agents/divisions/{bitunix_futures_observer.py, fidelity_options.py}
+- trading_corp/agents/strategies/{_weather_math.py, bitunix_confluence.py, bitunix_pa_validation.py, btc_accumulator.py, ic_candidate_grader.py, kalshi_llm_arbitrage.py, kalshi_sports_scout.py, polymarket_arbitrage.py}
+- trading_corp/brokers/{bitunix.py, kalshi.py}
+- trading_corp/comms/{bitunix_lifecycle_notifier.py, telegram_commands.py}
+- trading_corp/data/{bitunix_bar_archiver.py, bitunix_htf_context.py, kalshi_market_map.py, kalshi_whale_stats.py, weather_stations.py}
+- trading_corp/graph/ceo_graph.py · main.py · persistence/{db.py, models.py} · utils/{divisions.py, secrets.py}
+- trading_corp/web/{app.py, data.py, routes.py, webhooks.py}
+- trading_corp/web/static/icons/{apple-touch-icon-152.png, apple-touch-icon-167.png, apple-touch-icon-180.png, favicon-16.png, favicon-32.png, icon-192.png, icon-512.png, icon-maskable-512.png}
+- trading_corp/web/templates/{division.html, home.html, iron_condor_live.html, research.html}
+- trading_corp/web/templates/partials/{bitunix_score_panel.html, stat_cards.html, trade_flow.html}
+
+*New files (14 — MISSING_ON_PROD per sweep baseline; no backup tag):*
+- trading_corp/agents/divisions/tasty_options.py
+- trading_corp/agents/strategies/tasty_options_iron_condor.py
+- trading_corp/brokers/{bitunix_exceptions.py, bitunix_symbols.py, tastytrade.py}
+- trading_corp/data/{iem_cli_client.py, nbm_client.py, residual_logic.py}
+- trading_corp/path_logger/{__init__.py, __main__.py, logger.py, main.py, store.py}
+- trading_corp/scripts/analyze_polymarket_whale.py
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Stage-1 bitunix live engine + safety scaffolding** — execution_mode YAML flag (paper-default), broker-write surface, mode-mismatch consumer in `data_exec.place()`, observer flatten trigger, persistence-backed StrategyState (`from_persistence`, `persist_halt`, `clear_halt`). Wiring confirmed in startup log: `BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True, execution_mode=paper`.
+- **Bitunix pre-deploy gates (a)+(b)+(c)** — REST resilience (retry/backoff `f3f920a`, snapshot-staleness halt `c9e99cb`, stuck-order timeout `36a3749`), operational runbooks (panic-halt + credential-compromise), prod-surface md5diff script.
+- **Tasty options iron condor v1 + tasty_options division** — registered on prod for the first time (was MISSING on attempts #1 and #2 and crashed `WebDeps` construction). Paper-exec broker, `auto_execute: false` load-bearing.
+- **BitUnix paper-sizing canonical on main** — TIER_SIZING (PREMIUM 0.015/25×, STANDARD 0.0075/25×) merged via 9fd9022 (overlay commit 41ee5e6); whole-file `config/strategies.yaml` transfer carries this without sed re-application going forward.
+- **kalshi_sports_scout MLB Phase 0 observer**, **path_logger** package (5 files), **polymarket arbitrage per-condition-id cap**, **bitunix bar archiver + HTF context**, **kalshi whale stats refresh**, **weather stations** (NBM client + residual logic for kalshi_weather), **IEM CLI client**, **analyze_polymarket_whale CLI script** — all first-shipped to prod in this deploy.
+- **secrets.odds_api_key round-trip** (Items 1+2, commits `71ff0a5`+`ffbb09b`) — the latent AttributeError that rolled back attempt #1 is no longer a crash vector; field is now on main, populator round-trips, `_SECRET_KEY_NAMES` + `expected_env_vars` updated.
+- **Items 3+4+5 deploy-discipline gates** — sweep tool (`scripts/prod_vs_main_file_level_md5_sweep.py`) is the new canonical pre-deploy gate; AST dataclass-completeness test catches the secrets-style class of latent bugs; misattribution correction docs land.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **Transfer mechanism: sweep-derived 66-file manifest (NOT git-diff-derived 15-file manifest).** This is the lesson from attempts #1 and #2: `git diff <last-deploy-pointer>..origin/main` misses files that were stale on prod long before the pointer. The standing rule (`[[deploy-transfer-set-diff-derived-misses-stale-prod-files]]` + `[[file-level-prod-vs-main-sweep-as-standing-discipline]]`) is now load-bearing for every whole-file transfer.
+- **Per-chunk md5-verify discipline.** Built into `scripts/redeploy3_chunked_transfer.py` — push verifies tarball md5 on prod after each chunk; install verifies per-file md5 against expected origin/main md5 (LF-normalized) before declaring chunk complete. Halt-on-mismatch.
+- **Two transfer-tool bugs caught + fixed mid-deploy:** (a) `subprocess.run(["az", ...])` couldn't find `az.cmd` on Windows — resolved via `shutil.which("az.cmd")`; (b) embedded `\"` in install script broke cmd.exe's quote parsing — wrapped script as base64 in `--scripts` arg via `echo <B64> | base64 -d | bash`. New standing pattern for chunked deploys from Windows host.
+- **Push call cmd-line limit empirically ~8KB on Windows host.** `PUSH_CHUNK_BYTES_B64 = 6500` keeps the `printf '%s' '<b64>' >>...` script + az wrapper under cmd.exe's parsing limit.
+
+**Latent bugs caught + fixed:**
+- None during deploy — all previously-known latent bugs (`odds_api_key`, `WebDeps.tasty_division`) were addressed in landed commits before transfer.
+
+**Verification:**
+- New MainPID 1918098 (≠ pre-restart 1874494). ExecMainStartTimestamp Sun 2026-05-31 05:36:49 UTC.
+- NRestarts=0, ActiveState=active, SubState=running at T+10 min probe (05:46:26 UTC).
+- healthz=200 at T+~5 min (matches historical lazy-bind timing).
+- `audit_event` `startup` row landed at 05:36:51 UTC: `{"mode": "PAPER", "live_brokers": [], "dry_run": false}`.
+- 0 crash signatures (Traceback|AttributeError|ImportError|TypeError|ModuleNotFoundError|NameError|SyntaxError|CRITICAL) in journal since restart.
+- Pre-restart import sanity check: `from trading_corp.main import run` → `import_ok` (run via venv python on prod, before restart).
+- All 12 divisions registered as paper-exec brokers: default, robinhood_pmcc, robinhood_ira, robinhood_joint, fidelity_joint, fidelity_401k, tasty_options, coinbase_spot, coinbase_futures, bitunix_futures, polymarket_arbitrage, polymarket_copy_trading. Plus polymarket (live, paper=False) + kalshi (live, paper=False) on the LLM/sports paths.
+- All 66 transferred files' on-prod md5s match origin/main LF-normalized expected md5s (verified per-file in `scripts/redeploy3_chunked_transfer.py` install loop).
+
+**Inert / dormant on current traffic:**
+- **BitUnix live engine** is wired but `execution_mode=paper` — orders flow through the paper-exec broker, no live capital touched.
+- **tasty_options division** registered but `auto_execute: false` per CLAUDE.md "auto_execute is earned" rule. First scan + paper observation begins on next scheduled cycle.
+- **path_logger package** is standalone — not imported by main.py; no traffic until an operator CLI invokes it.
+- **analyze_polymarket_whale.py** is CLI-only; no scheduler hook.
+
+**Rollback recipe:**
+```bash
+TAG=pre-stage1-redeploy3-20260531-0307; BASE=/home/azureuser/trading_corp
+sudo -u azureuser bash -c "
+# 52 backed-up files: restore from .TAG
+for f in \
+  config/divisions.yaml config/risk.yaml config/strategies.yaml config/weather_stations.yaml \
+  trading_corp/agents/backtester.py trading_corp/agents/data_exec.py trading_corp/agents/logger.py trading_corp/agents/risk.py \
+  trading_corp/agents/divisions/bitunix_futures_observer.py trading_corp/agents/divisions/fidelity_options.py \
+  trading_corp/agents/strategies/_weather_math.py trading_corp/agents/strategies/bitunix_confluence.py \
+  trading_corp/agents/strategies/bitunix_pa_validation.py trading_corp/agents/strategies/btc_accumulator.py \
+  trading_corp/agents/strategies/ic_candidate_grader.py trading_corp/agents/strategies/kalshi_llm_arbitrage.py \
+  trading_corp/agents/strategies/kalshi_sports_scout.py trading_corp/agents/strategies/polymarket_arbitrage.py \
+  trading_corp/brokers/bitunix.py trading_corp/brokers/kalshi.py \
+  trading_corp/comms/bitunix_lifecycle_notifier.py trading_corp/comms/telegram_commands.py \
+  trading_corp/data/bitunix_bar_archiver.py trading_corp/data/bitunix_htf_context.py \
+  trading_corp/data/kalshi_market_map.py trading_corp/data/kalshi_whale_stats.py trading_corp/data/weather_stations.py \
+  trading_corp/graph/ceo_graph.py trading_corp/main.py trading_corp/persistence/db.py trading_corp/persistence/models.py \
+  trading_corp/utils/divisions.py trading_corp/utils/secrets.py \
+  trading_corp/web/app.py trading_corp/web/data.py trading_corp/web/routes.py trading_corp/web/webhooks.py \
+  trading_corp/web/static/icons/apple-touch-icon-152.png trading_corp/web/static/icons/apple-touch-icon-167.png \
+  trading_corp/web/static/icons/apple-touch-icon-180.png trading_corp/web/static/icons/favicon-16.png \
+  trading_corp/web/static/icons/favicon-32.png trading_corp/web/static/icons/icon-192.png \
+  trading_corp/web/static/icons/icon-512.png trading_corp/web/static/icons/icon-maskable-512.png \
+  trading_corp/web/templates/division.html trading_corp/web/templates/home.html \
+  trading_corp/web/templates/iron_condor_live.html trading_corp/web/templates/research.html \
+  trading_corp/web/templates/partials/bitunix_score_panel.html trading_corp/web/templates/partials/stat_cards.html \
+  trading_corp/web/templates/partials/trade_flow.html; do
+  mv \"\$BASE/\$f.\$TAG\" \"\$BASE/\$f\"
+done
+# 14 net-new files: rm
+rm -rf \$BASE/trading_corp/agents/divisions/tasty_options.py \
+       \$BASE/trading_corp/agents/strategies/tasty_options_iron_condor.py \
+       \$BASE/trading_corp/brokers/bitunix_exceptions.py \
+       \$BASE/trading_corp/brokers/bitunix_symbols.py \
+       \$BASE/trading_corp/brokers/tastytrade.py \
+       \$BASE/trading_corp/data/iem_cli_client.py \
+       \$BASE/trading_corp/data/nbm_client.py \
+       \$BASE/trading_corp/data/residual_logic.py \
+       \$BASE/trading_corp/path_logger \
+       \$BASE/trading_corp/scripts/analyze_polymarket_whale.py
+"
+sudo systemctl restart trading-corp.service
+```
+
+---
+
 ## 2026-05-31 00:08 UTC — 2026-05-30 22:43-23:09 redeploy rollback misattribution CORRECTED via prod probe — deploy-mechanism gap, NOT source-code drift on `WebDeps`
 
 **Type:** forensics + diagnostic correction. **Net effect on prod: zero** — read-only probe only; no transfer, no restart, no write.
