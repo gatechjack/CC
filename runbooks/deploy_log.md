@@ -116,6 +116,50 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-05-31 ~14:30 UTC — Stage-1 post-deploy administrative close-out — 3 P3 BACKLOG entries filed + `stage1-paper-dashboard-2026-05-31` merged to main
+
+**Type:** admin / source-only. **Net effect on prod: zero** — no transfer, no restart, no write.
+
+**Triggered by:** post-deploy review at `reports/2026-05-31_stage1_first_17h_paper_mode_review.md` (commit `c39f8b2` on branch `worktree-stage1-first-17h-review-2026-05-31`, NOT merged) surfaced 3 P3 follow-ups + an unmerged operator-authored dashboard branch awaiting integration.
+
+**What landed (two source-only commits on origin/main):**
+
+1. `e7b8b4c` — `Add 3 P3 BACKLOG entries from 2026-05-31 Stage 1 post-deploy review (F2, F5, F8)`
+   - F2: P3 audit of `proximity_to_support` / `proximity_to_resistance` hard-zero rule over historical 3m bar data (29/45 = 64% HTF blocks in the 8h45m post-deploy window; N=2 cvd_bull_flip rejections shown wrong on same trend day, but too small to retune from).
+   - F5: P3 fix polymarket retry backoff (currently `backoff 0.0s` on 429 responses — `gamma-api.polymarket.com/markets` retries 4× ~10ms apart; pre-existing, NOT a Stage-1 regression).
+   - F8: P3 discipline — derive deploy windows from `systemctl ExecMainStartTimestamp`, not prompt-stated times (multiple deploy attempts in same day produced ambiguous "17 hours since deploy" reference in source prompt; agent correctly anchored to actual 05:36:49 UTC).
+
+2. `8c80e69` — `Merge branch 'stage1-paper-dashboard-2026-05-31' into main` (`--no-ff`)
+   - Parents: `e7b8b4c` + `a106b4d`.
+   - 5 operator-authored dashboard commits: `b8bf4b9` deploy-marker on equity curve + `088adfc` Stage-1 header badge + `a74a00b` Stage-1 only filter on trade-flow rail + `b615b3f` Stage-1 monitoring row with Gate (a) tile + `a106b4d` HITL + tasty_options activation tiles.
+   - One conflict resolved (BACKLOG.md insertion-point collision; both branches added 2026-05-31-dated P3 sections at the same anchor). Per operator: dashboard's P3 section first (landed 02:13 EDT), then the 3 Phase-1 entries (landed 14:30 UTC), then the pre-existing "Stage-1 BitUnix readiness gaps" divider.
+   - Net BACKLOG.md at `8c80e69` contains 5 distinct 2026-05-31 P3 sections (1 from sweep + 2-item dashboard + HTF audit + polymarket backoff + deploy-window discipline).
+
+**Verification:**
+- Pre-merge: prod stable (`MainPID=1918098, NRestarts=0, ExecMainStartTimestamp=Sun 2026-05-31 05:36:49 UTC`).
+- Post-merge test gate: **2139 passed / 28 failed / 3 errors** (matches the documented expected baseline; 28 failures + 3 errors are pre-existing worktree-fixture gaps + `bitunix_confluence_gate` orphan module per `runbooks/deploy_log.md` line 178). +56 net tests vs `7352f8f`'s 2083/28 baseline = 4 new dashboard test files: `tests/test_gate_a_resilience_tile.py` (168 LOC) + `tests/test_stage1_header_badge.py` (160 LOC) + `tests/test_stage1_hitl_tasty_tiles.py` (214 LOC) + `tests/test_trade_flow_stage1_filter.py` (155 LOC).
+- Post-push: `origin/main = 8c80e69`; prod re-checked, MainPID/NRestarts/ExecMainStartTimestamp unchanged → no inadvertent restart.
+
+**Inert / dormant on current prod traffic:** the dashboard tiles render against `origin/main`'s code surface, but **prod is still serving the prior dashboard files** (last deploy was redeploy attempt #3 at `7352f8f`; dashboard branch was NOT in that transfer set). The new tiles will only render on prod after a subsequent deploy of the web/ subtree. No urgency — dashboard is read-only telemetry.
+
+**Out of scope this session (per prompt):**
+- Polymarket retry backoff fix (Entry F5 — filed for later, separate session).
+- HTF proximity hard-zero audit (Entry F2 — filed for later, separate session).
+- Monday morning tasty_options scanner validation (separate session 2026-06-01 09:45-09:50 ET).
+- N+2 Phase 3 implementation scoping (separate session next weekend).
+- Editing CLAUDE.md (operator-only).
+
+**Rollback recipe (source-only, no prod artifacts to undo):**
+```bash
+# 2026-05-31 14:30 UTC admin close-out — both commits revertible cleanly:
+git revert -m 1 8c80e69        # undo the merge, restore main to 7352f8f + Phase-1 BACKLOG additions
+git revert e7b8b4c             # undo the Phase-1 BACKLOG additions
+git push origin main
+# Prod is not affected by either revert (neither commit was deployed).
+```
+
+---
+
 ## 2026-05-31 00:08 UTC — 2026-05-30 22:43-23:09 redeploy rollback misattribution CORRECTED via prod probe — deploy-mechanism gap, NOT source-code drift on `WebDeps`
 
 **Type:** forensics + diagnostic correction. **Net effect on prod: zero** — read-only probe only; no transfer, no restart, no write.
