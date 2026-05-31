@@ -116,6 +116,47 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-05-31 00:08 UTC — 2026-05-30 22:43-23:09 redeploy rollback misattribution CORRECTED via prod probe — deploy-mechanism gap, NOT source-code drift on `WebDeps`
+
+**Type:** forensics + diagnostic correction. **Net effect on prod: zero** — read-only probe only; no transfer, no restart, no write.
+
+**Triggered by:** the prior session [[stage1-redeploy-rolled-back-2026-05-30]] memory + [[webdeps-tasty-division-latent-bug-2026-05-30]] memory attributed the 22:43-23:09 UTC redeploy crash (`TypeError: WebDeps.__init__() got an unexpected keyword argument 'tasty_division'` at `main.py:1972`) to "origin/main forgot to add the field on WebDeps." When this session loaded the relevant code surfaces to begin the field-add forward-fix, the field was found ALREADY PRESENT on origin/main at `web/app.py:97-100`, in commit `94b3129` (the same 2026-05-24 commit that added the construction call site). Premise verification via `[[verify-premises-against-ground-truth]]` flagged the contradiction.
+
+**Probe (single bundled az vm run-command, read-only):**
+
+```
+prod web/app.py md5:                 16842c40cefb0b5f54e4e02348d5ca10
+prod web/app.py mtime:               2026-05-18 01:58 UTC
+prod web/app.py grep -c tasty_div:   0
+prod web/app.py.pre-stage1-redepl…:  DOES NOT EXIST
+prod web/app.py.pre-stage1-20260…:   DOES NOT EXIST
+prod systemctl:                      MainPID=1874494 NRestarts=0 ActiveState=active
+origin/main web/app.py LF md5:       824195a602c636065426f14444067f7a
+git diff --stat 4985bbe origin/main -- web/app.py:  (empty)
+git log -S tasty_division -- web/app.py:            94b3129 (only commit)
+```
+
+**Conclusion — three reinforcing evidence pieces:**
+
+1. **Prod's `web/app.py` mtime (2026-05-18 01:58 UTC) predates the tasty_options commits (2026-05-24) by 6 days.** Prod is running a copy older than the `4985bbe` deploy pointer suggested.
+2. **Backup files DO NOT EXIST for either deploy attempt.** The deploy script only backs up files in the transfer set. Absence of backup = file was never in the transfer set.
+3. **`grep -c tasty_division` on prod's `web/app.py` returns 0.** The field is literally absent on prod's filesystem.
+
+The redeploy crash was real (the prod process did `WebDeps(tasty_division=...)` against a stale `web/app.py` and got a `TypeError`); the diagnostic about origin/main was wrong. **The transfer set was diff-derived against `4985bbe`** where `git diff 4985bbe..origin/main -- web/app.py` is empty, so the file was filtered out as "no change to transfer." But prod's filesystem held a copy from BEFORE the field was added on git. **"Prod is at commit X" tracks deploy intent; it does not guarantee every file on prod actually matches commit X.**
+
+**Source-of-truth corrections (this session's commits below):**
+
+- Memory `[[webdeps-tasty-division-latent-bug-2026-05-30]]` updated with CORRECTION header preserving the original diagnostic as historical record.
+- Memory `[[stage1-redeploy-rolled-back-2026-05-30]]` (next session if not already): correct the "forgot the field" framing.
+- New memory `[[deploy-transfer-set-diff-derived-misses-stale-prod-files]]` files the standing-rule fix.
+- `BACKLOG.md` Stage-1 BLOCKED entry: Items 1+2 marked LANDED, Item 3 marked REVISED (no source change), Items 4 + 5 filed.
+
+**Branch:** `stage1-blockers-items3-4-5-2026-05-30` (worktree `.claude/worktrees/stage1-blockers-items3-4-5-2026-05-30`). NOT yet merged. Ships in this session: Item 3 docs + Item 4 generalized AST test + Item 5 prod-vs-main sweep tool + empirical sweep findings.
+
+**Rollback recipe:** n/a (no prod write).
+
+---
+
 ## 2026-05-30 17:22–17:34 UTC — Stage 1 + gate (a) + tasty_options prod deploy → ROLLED BACK (latent `main.py:1087` / `secrets.odds_api_key` AttributeError caused infinite restart loop)
 
 **Type:** prod deploy ATTEMPTED then ROLLED BACK. **Net effect on prod: zero code change** (state restored to pre-deploy `4985bbe + 03:57 sed-overlay` plus the pre-existing uncommitted `odds_api_key` surgical addition on prod's secrets.py). The 18-file whole-file deploy executed cleanly through file transfer + md5-verify; the first manual restart (python child PID `1827090`) crashed at 17:22:27 UTC ~49s into startup with `AttributeError: 'Secrets' object has no attribute 'odds_api_key'`; systemd auto-restarted 10× over the next ~11 minutes, each new process crashing on the same line. Operator-approved rollback at 17:33:05 (stop) → 17:33:23 (start of restored old code) → 17:34:08 all scanners online including `Kalshi Sports Scout online (has_credentials=True)` confirming `odds_api_key` is back on prod's Secrets object.
