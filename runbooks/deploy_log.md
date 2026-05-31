@@ -116,6 +116,77 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-05-31 ~18:31 UTC — C-1 tastytrade OAuth credential rotation (6/13+; new Client Secret + matched refresh_token live; old pair revoked at portal-rotate-time; prod env file rewritten + service restarted)
+
+**Commits (on branch `c1-tastytrade-rotation-2026-05-31`, NOT merged to `main`):**
+- this commit — close-out only (deploy_log + BACKLOG item 13 RETIRED + memory pointer updates). **Zero code change** — all tastytrade redaction + env-loader surfaces were already shipped on `main` (verified during the 2026-05-29 verify-branch arc; runbook + `secrets.py` comment corrections from that arc remain on the unmerged `c1-tastytrade-verify-2026-05-29` branch).
+
+**Triggered by:** BACKLOG item 13 (P1, 2-week ceiling 2026-06-12). The original elevation came from the 2026-05-29 C-1 bitunix transcript leak (`assert x in _REDACT_LITERALS` repr surfaced a partial tastytrade refresh-token JWT — `eyJ...<truncated>...3BQ` shape; partial-capture + missing Client Secret = partial exploit risk per `[[tastytrade-refresh-token-no-self-rotation]]`). Operator chose to rotate today, 12 days before the ceiling.
+
+**Backup tag:** n/a (atomic `sudo install` overwrite of prod env file; the previous secret/token values are unrecoverable post-rotation by design — old pair was already dead at TT-portal-rotate-time per REVOKE-ON-CREATE).
+
+**Files deployed to prod:** 1 — `/etc/trading-corp/tastytrade.env` (rewritten via `printf | sudo install -m 0600 -o root -g root /dev/stdin`). No source code change.
+
+**Storage writes (operator, own SaveNothing PowerShell — no Claude Code transcript exposure):**
+- **Azure Key Vault: SKIPPED.** Vault `kv-tc-vtwbowt3wtkpy` contains **no** `TASTYTRADE-*` secrets (probed at rotation-start, confirms 2026-05-29 finding; runbook lines 52-57 KV-claim remains stale, code-comment correction on unmerged `c1-tastytrade-verify-2026-05-29` branch). Prod tastytrade load path is exclusively the systemd `EnvironmentFile` drop-in.
+- **prod systemd EnvironmentFile: `/etc/trading-corp/tastytrade.env`** — rewritten at 2026-05-31 18:25:50 UTC. Pre-rotation mtime: `2026-05-22 16:25:14 UTC` (original 2026-05-22 data-provider deploy). Post-rotation: size=641, perms=600, owner=root:root, TASTYTRADE_ line-count=2.
+- **Windows User registry (`HKCU:\Environment`)** — `TASTYTRADE_PROVIDER_SECRET` + `TASTYTRADE_REFRESH_TOKEN` written via `[Environment]::SetEnvironmentVariable(…, "User")` + in-process sync (`$env:VAR = $value`). Pre-rotation finding: the registry value of `TASTYTRADE_REFRESH_TOKEN` was **corrupt junk** (len=80, no dots, started with literal `$tok;` fragment, ended with `er")` — leftover from a prior session's PowerShell-expression mispaste; local-dev verification scripts had been silently broken). Post-rotation: match=True for both vars (in-process == registry).
+
+**Portal behavior recorded:** **tastytrade Client Secret = REVOKE-ON-CREATE.** Single Client Secret slot per OAuth app; clicking "Regenerate" in the developer-portal Application Settings page revoked the old value at the moment the new one was issued. **Refresh-token grants survive Client Secret rotation in the portal UI** (5 historical grants remained listed under "Manage OAuth Grants" after the Client Secret rotation), but all 5 became operationally **orphaned** — refreshing requires the matched Client Secret per the SDK (no `client_id` is sent at refresh time; the Client Secret IS the identifier), and the matching secret no longer exists. The new refresh token minted in this rotation is grant #6 (visible in portal post-mint; the prior 5 are stale and can be portal-deleted at the operator's discretion). Recorded as the tastytrade slot under `[[c1-per-portal-rotation-discipline]]`. Differs from bitunix REPLACE-ON-CREATE-and-old-key-dead by surviving-grants-in-UI; differs from apify REVOKE-REQUIRED + multi-token by the auto-revoke-on-new behavior.
+
+**OAuth flow used (Step 1 sub-steps 4-6 of the runbook):** authorization code grant via `https://my.tastytrade.com/auth.html?client_id=85e660d9-1d16-4394-bffb-7227eeb0f598&redirect_uri=https%3A%2F%2F127.0.0.1%2Fcallback&response_type=code&scope=read%20trade&state=…`, redirect-captured `?code=` from `https://127.0.0.1/callback` (error page expected; 127.0.0.1 not listening), exchanged via `POST https://api.tastytrade.com/oauth/token` with `Content-Type: application/x-www-form-urlencoded`, `grant_type=authorization_code`. **TT's authorization_code endpoint requires form-encoded body, not JSON** — first attempt with JSON returned 400 Bad Request. The SDK's `Session.refresh()` (refresh_token grant) uses JSON; the two grant types use different content-types. Runbook is brief on the literal mechanics; this entry adds the form-encoded callout.
+
+**Scope verification:** new refresh token JWT `scope` claim = `read trade` (decoded locally before write; matches the 5/24/2026 historical grant that was prod's active pair before this rotation). **No silent scope downgrade** (gotcha 1 detector negative: dry-run order returned `422 margin_check_failed`, NOT `403 insufficient scopes`). `exp` claim absent from the JWT — confirms TT's design (refresh tokens have no expiration; consistent with the 2026-05-29 `[[tastytrade-refresh-token-no-self-rotation]]` finding and with prod's 7-day stable-token observation pre-rotation). The runbook's Check 5 "exp must be future" criterion does not apply to this issuer's tokens.
+
+**Restart:** `sudo systemctl restart trading-corp.service` at 2026-05-31 18:31:09 UTC. MainPID `1918098 → 1961212`. NRestarts=0. Service `ActiveState=active`, `SubState=running`. TT-vars in new MainPID environ = 2.
+
+**New-pair auth verified TWO ways (value-blind):**
+- Service startup log at 18:31:12 UTC: `DEBUG tastytrade: Refreshed token, expires in 900s` immediately followed by `INFO trading_corp.brokers.tastytrade: TastytradeBroker connected: account=5WZ66443, is_test=False, n_accounts=1`. The SDK's `Session.refresh()` succeeded against `POST https://api.tastyworks.com/oauth/token`; the matched pair is server-accepted.
+- `scripts/tasty_sandbox_smoke.py` run locally at 18:36:35–18:37:04 UTC (from operator's PS with the just-set registry env): all 4 probes PASSED on TT PRODUCTION (snapshot, dry-run multi-leg, cancel-by-fake-id round-trip, greeks-subscription auth). Probe 2 specifically exercised the `trade` scope path — dry-run returned `422 margin_check_failed` (account-state), confirming auth + scope + serialization are clean.
+
+**Old-pair rejection:** implicit — REVOKE-ON-CREATE at portal-rotate-time. Old Client Secret no longer exists at TT; any refresh attempt against the old refresh token + old secret would return `invalid_grant: Client secret mismatch` (Symptom C). The 5 orphaned grants in the portal UI confirm the grant-side data is still there but un-paired.
+
+**Inventory finding — zero code change needed.** All tastytrade redaction + env-loader surfaces were already shipped on `main` (verified via the 2026-05-29 verify-branch arc; no re-verify needed for this rotation). Specifically:
+- `secrets.py` — `TASTYTRADE_PROVIDER_SECRET` + `TASTYTRADE_REFRESH_TOKEN` in `_SECRET_KEY_NAMES` + `expected_env_vars` + `register_redact_literal` (KEY=value + literal-value redaction both active).
+- `trading_corp/data/tastytrade_provider.py` + `trading_corp/brokers/tastytrade.py` — read from `os.environ`, hand to `Session(provider_secret=…, refresh_token=…)`. Nothing writes back.
+- Comment corrections (runbook KV-claim, "rotates per session" claim) remain on the unmerged `c1-tastytrade-verify-2026-05-29` branch.
+
+**Dev `.env` scrub:** N/A. `grep -c '^TASTYTRADE_(PROVIDER_SECRET|REFRESH_TOKEN)=' .env` returned `0` (191 total lines, none tastytrade). Tastytrade dev path is the Windows User registry, not `.env` — registry write covers it.
+
+**No secret values entered the Claude Code session.** Operator handled the new Client Secret + redirect-URL code exclusively in their own `C:\Users\AA Incorporado>` PowerShell (PSReadLine `SaveNothing` active for the entire window). Read-Host SecureString + BSTR-decode-then-zero pattern; values flowed into `$Global:TT_NEW_CLIENT_SECRET` + `$Global:TT_NEW_REFRESH_TOKEN` for re-use across Sub-steps 2/3 without re-paste; scrubbed post-rotation. Agent verified value-blind (length, first/last 4, JWT segment count, scope claim) — no first-4 alphanumeric beyond the universal `eyJh` JWT prefix appeared in chat.
+
+**Latent issue caught + recorded (NOT fixed in this rotation):** Local registry value for `TASTYTRADE_REFRESH_TOKEN` was corrupt junk before the rotation began (PowerShell-expression fragment, not a JWT). Pre-existing — predates this session. No prod impact (registry is local-dev only). Standing-rule reminder: registry mispaste from a prior `setx` / `Read-Host` flow can silently land an arbitrary string in `HKCU:\Environment`; the SecureString-decode pattern this rotation uses (`SetEnvironmentVariable` with explicit BSTR-zero) is the corrective and is now the standing form.
+
+**Features shipped:**
+- Tastytrade OAuth C-1 portion rotated end-to-end. **C-1 progress: 6/13+** (webhook ×2 on 2026-05-27 + bitunix ×2 on 2026-05-29 + apify ×1 on 2026-05-29 + tastytrade ×1 on 2026-05-31). 7 deferred per per-portal sessions.
+- Form-encoded body requirement for TT's `authorization_code` grant documented in this entry (the runbook treats Step 1 sub-step 5 as "in a fresh local Python shell" without specifying transport; this entry pins the content-type + endpoint).
+- Portal-behavior slot for tastytrade added to `[[c1-per-portal-rotation-discipline]]` (REVOKE-ON-CREATE + surviving-orphan-grants).
+
+**Verification (consolidated):**
+- Pre-rotation env file mtime: `2026-05-22 16:25:14 UTC`. Post-rotation: `2026-05-31 18:25:50 UTC` (advanced).
+- Pre-rotation MainPID: `1918098`. Post-rotation: `1961212` (advanced; service was actually restarted, not hot-reloaded).
+- New refresh token: len=547, JWT-shape, `eyJh` prefix, scope=`read trade`, no `exp` claim (TT-by-design).
+- Live SDK `Session.refresh()` success on prod (the only check that proves the matched pair authenticates end-to-end): journal `DEBUG tastytrade: Refreshed token, expires in 900s` at 18:31:12 UTC.
+- Both consuming surfaces verified: tasty_options via `scripts/tasty_sandbox_smoke.py` 4/4 PASS; IC division implicit-passed via the smoke's `GET /option-chains/SPY` probe (same provider auth path that the IC grader's gate-7 uses).
+- 5 historical grants visible in TT portal "Manage OAuth Grants" tab (pre-rotation count); operator may delete the orphaned grants at discretion (they cannot authenticate without the matching old Client Secret).
+
+**Inert / dormant on current traffic:** none. Markets reopen Monday 2026-06-01; IC division gate-7 and tasty_options Phase-1 paper observation both resume against the new pair on the first signal.
+
+**Unblocks:** the 2026-05-29 C-1 bitunix-transcript-leak exposure for tastytrade is now closed. BACKLOG item 13 (P1, 2026-06-12 ceiling) retired.
+
+**Rollback recipe:**
+```
+# OLD pair is unrecoverable (TT revoked old Client Secret at portal-rotate-time, no backup).
+# Emergency rollback path is forward-rotation, not restore:
+#   1. Regenerate Client Secret again in TT developer portal (same one-click "Regenerate").
+#   2. Re-run the OAuth grant flow (Step 1 sub-steps 4-6) against the new Client Secret.
+#   3. Write the new pair to /etc/trading-corp/tastytrade.env + HKCU registry (Step 2 sub-steps 2-3).
+#   4. systemctl restart trading-corp.
+# Time-to-recover: ~15 min if operator is at-keyboard with portal access.
+```
+
+---
+
 ## 2026-05-31 ~14:30 UTC — Stage-1 post-deploy administrative close-out — 3 P3 BACKLOG entries filed + `stage1-paper-dashboard-2026-05-31` merged to main
 
 **Type:** admin / source-only. **Net effect on prod: zero** — no transfer, no restart, no write.
