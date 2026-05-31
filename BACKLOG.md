@@ -205,6 +205,51 @@ Looks like a one-off test scaffold left on prod (underscore prefix conventionall
 
 ---
 
+## P3 — Audit `proximity_to_support` / `proximity_to_resistance` hard-zero behavior over historical bar data (filed 2026-05-31)
+
+Surfaced by 2026-05-31 Stage 1 post-deploy review, Finding F2 (`reports/2026-05-31_stage1_first_17h_paper_mode_review.md` §8 + §9).
+
+Context: In the 8h45m post-deploy window, 29/45 (64%) of HTF gate decisions blocked on `proximity_to_support` hard-zero, all sell-side, all in NEUTRAL regime. The rule's intent is mean-reversion-preferred for NEUTRAL, but its implementation at `trading_corp/agents/strategies/bitunix_htf_regime.py:979-988` fires regardless of matrix multiplier. Two observed cvd_bull_flip events (2026-05-30 22:09 UTC pre-deploy and 2026-05-31 13:57 UTC post-deploy) showed the mean-reversion assumption was wrong both times. N=2 is too small to recommend code change.
+
+Scope: Backtest analysis over existing 3m bar history (≥3 months recommended). For each historical HTF gate rejection with `hard_zero_reason in ('proximity_to_support', 'proximity_to_resistance')`:
+- Tag rejection event with regime classification (BULL/NEUTRAL/BEAR/STRONG_*/SAFE_MODE).
+- Compute realized 30min and 60min directional outcome from rejection bar.
+- Report hit-rate per regime: did price mean-revert (rule was right) or break-through (rule was wrong)?
+
+Output: report at `reports/<date>_proximity_hard_zero_historical_audit.md` with per-regime hit-rate, recommendation on whether to adjust `proximity_block_pct=0.3` default or make it regime-conditional in implementation.
+
+Out of scope until audit completes: any code change to `bitunix_htf_regime.py:979-988` or its `proximity_block_pct` default.
+
+---
+
+## P3 — Fix polymarket retry backoff: currently 0.0s on 429 responses (filed 2026-05-31)
+
+Surfaced by 2026-05-31 Stage 1 post-deploy review, Finding F5 (`reports/2026-05-31_stage1_first_17h_paper_mode_review.md` §6).
+
+Context: Journal shows `PolymarketBroker: 429 from gamma-api.polymarket.com/markets; backoff 0.0s (attempt N/4)` at 05:42:51 UTC across 4 attempts ~10ms apart. Backing off zero seconds on a rate-limit response is logically broken; retries hit the same rate limit repeatedly without throttling.
+
+NOT a Stage-1 regression. Pre-existing pattern in the polymarket REST client.
+
+Scope: Locate the polymarket retry logic (likely `trading_corp/brokers/polymarket.py` or similar). Replace `backoff 0.0s` with exponential backoff (suggested: 1s, 2s, 4s, 8s). Add a test asserting backoff progression. Match the bitunix gate (a) retry pattern from `eae5080` if applicable.
+
+Out of scope: changing retry attempt count, adding circuit-breaker, broader polymarket REST refactor.
+
+---
+
+## P3 — Discipline note: derive deploy windows from `systemctl ExecMainStartTimestamp`, not prompt-stated timestamps (filed 2026-05-31)
+
+Surfaced by 2026-05-31 Stage 1 post-deploy review, Finding F8 (`reports/2026-05-31_stage1_first_17h_paper_mode_review.md` §2.1).
+
+Context: 2026-05-30/31 had three deploy attempts (17:22 UTC #1 rolled back, 22:43 UTC #2 rolled back, 05:36 UTC #3 landed). Pre-written prompt referenced "17 hours since deploy" which conflated the three. Agent correctly used `systemctl show trading-corp.ExecMainStartTimestamp` as canonical and scoped analysis to ~8h45m actual window.
+
+Scope: File this as standing discipline. Add to any future post-deploy review prompts: "Derive deploy window from `systemctl show trading-corp --property=ExecMainStartTimestamp` on prod, not from prompt-stated times. Multiple deploy attempts in same calendar day may produce ambiguous prompt references."
+
+Consider folding into CLAUDE.md as a standing rule alongside the other deploy-discipline entries. Operator decides whether to elevate to CLAUDE.md or keep as memory entry.
+
+Out of scope this entry: editing CLAUDE.md (operator-only per §6).
+
+---
+
 ## P3 — Stage-1 BitUnix readiness gaps — low-severity (2 untracked, filed 2026-05-30)
 
 Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` Finding #2. Two items: low drift-severity per review; not pre-deploy gating but should land before first live $10.
