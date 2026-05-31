@@ -246,18 +246,25 @@ def register(app: FastAPI) -> None:
         )
 
     @app.get("/", response_class=HTMLResponse)
-    async def home(request: Request):
+    async def home(request: Request, stage1: int = 0):
+        # `?stage1=1` flips the trade-flow rail into Stage-1 (bitunix paper)
+        # only mode. Defaults off so the home page is byte-identical when
+        # the toggle is untouched.
+        stage1_only = bool(stage1)
         snap = await data.build_command_center(deps)
-        flow = data.trade_flow(deps.db_url, limit=20)
+        flow = data.trade_flow(deps.db_url, limit=20, stage1_only=stage1_only)
         return templates.TemplateResponse(
-            request, "home.html", {"snap": snap, "flow": flow},
+            request, "home.html",
+            {"snap": snap, "flow": flow, "stage1_only": stage1_only},
         )
 
     @app.get("/partials/trade-flow", response_class=HTMLResponse)
-    async def partial_trade_flow(request: Request):
-        flow = data.trade_flow(deps.db_url, limit=20)
+    async def partial_trade_flow(request: Request, stage1: int = 0):
+        stage1_only = bool(stage1)
+        flow = data.trade_flow(deps.db_url, limit=20, stage1_only=stage1_only)
         return templates.TemplateResponse(
-            request, "partials/trade_flow.html", {"flow": flow},
+            request, "partials/trade_flow.html",
+            {"flow": flow, "stage1_only": stage1_only},
         )
 
     @app.get("/partials/stat-cards", response_class=HTMLResponse)

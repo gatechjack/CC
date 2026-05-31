@@ -244,12 +244,12 @@
           live
         </span>
       </div>
-      <div id="trade-flow"
-           hx-get="/partials/trade-flow"
-           hx-trigger="every 5s"
-           hx-swap="outerHTML">
-        {% include "partials/trade_flow.html" %}
-      </div>
+      {# The trade_flow.html partial owns the outer #trade-flow div +
+         polling. Including without an extra wrapper avoids the
+         double-#trade-flow-id from the original embed pattern. The
+         partial carries the Stage-1 filter toggle and preserves the
+         `?stage1=1` query state via its own hx-get URL. #}
+      {% include "partials/trade_flow.html" %}
     </section>
   </aside>
 </div>

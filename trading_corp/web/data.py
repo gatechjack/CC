@@ -1348,25 +1348,57 @@ def paper_trade_summary(db_url: str, division: str) -> dict:
 
 # ── Trade flow ────────────────────────────────────────────────────────────
 
-def trade_flow(db_url: str, limit: int = 20) -> list[dict]:
-    rows = _query(
-        db_url,
-        """SELECT id, ts, actor, kind, payload_json
-           FROM audit_event
-           WHERE kind IN (
-             'risk_approved','risk_rejected',
-             'board_approved','board_rejected','auto_executed',
-             'fill','execution_error',
-             'scan_order_result','scheduled_scan_done','scheduled_scan_error',
-             -- Lord Otter "would have placed" surfaces on the home rail
-             -- because it represents an action decision. Lower-noise kinds
-             -- (webhook_received, alert_ignored) only render on the
-             -- per-division page so the home rail isn't flooded.
-             'would_have_placed'
-           )
-           ORDER BY id DESC LIMIT ?""",
-        (limit,),
-    )
+def trade_flow(
+    db_url: str, limit: int = 20, *, stage1_only: bool = False,
+) -> list[dict]:
+    """Recent trade-flow rows for the home rail.
+
+    When `stage1_only=True`, the result is filtered to bitunix_futures
+    paper-mode activity (Stage 1's home). The filter matches rows where
+    actor='bitunix_futures' AND the payload's execution_mode is either
+    'paper' or absent (paper rows like `would_have_placed` omit the field
+    by convention; only the live path stamps execution_mode='live' onto
+    `live_order_placed` / `live_order_rejected` payloads).
+
+    The toggle is a URL query-param flip in the routes; defaults to off
+    so the home rail behavior is byte-identical when the toggle is off.
+    """
+    if stage1_only:
+        sql = (
+            """SELECT id, ts, actor, kind, payload_json
+               FROM audit_event
+               WHERE kind IN (
+                 'risk_approved','risk_rejected',
+                 'board_approved','board_rejected','auto_executed',
+                 'fill','execution_error',
+                 'scan_order_result','scheduled_scan_done','scheduled_scan_error',
+                 'would_have_placed','live_order_placed','live_order_rejected'
+               )
+                 AND actor = 'bitunix_futures'
+                 AND (
+                   json_extract(payload_json, '$.execution_mode') IS NULL
+                   OR json_extract(payload_json, '$.execution_mode') = 'paper'
+                 )
+               ORDER BY id DESC LIMIT ?"""
+        )
+    else:
+        sql = (
+            """SELECT id, ts, actor, kind, payload_json
+               FROM audit_event
+               WHERE kind IN (
+                 'risk_approved','risk_rejected',
+                 'board_approved','board_rejected','auto_executed',
+                 'fill','execution_error',
+                 'scan_order_result','scheduled_scan_done','scheduled_scan_error',
+                 -- Lord Otter "would have placed" surfaces on the home rail
+                 -- because it represents an action decision. Lower-noise kinds
+                 -- (webhook_received, alert_ignored) only render on the
+                 -- per-division page so the home rail isn't flooded.
+                 'would_have_placed'
+               )
+               ORDER BY id DESC LIMIT ?"""
+        )
+    rows = _query(db_url, sql, (limit,))
     out: list[dict] = []
     for r in rows:
         try:
