@@ -63,7 +63,124 @@
     </div>
   </div>
 
-  {# Addition #5 (HITL + tasty_options tiles) extends this same grid —
-     no new route, more tile blocks here. Empty slots intentionally
-     omitted; the grid wraps naturally as tiles are added. #}
+  {# ── HITL activity tile ──────────────────────────────────────────────
+     Three signals stacked:
+       1. pending (count) — clickable, routes to /approvals
+       2. board decisions in 24h (approved · rejected)
+       3. autonomous live orders in 24h — MUST be 0 during Stage 1
+          (paper-mode deployment). Counted via live_order_placed rows
+          tagged hitl_gate='monitor_mode' (HITL bypassed after the
+          first-N=10 cap). Any non-zero value flips the whole tile
+          to red — Stage-1 invariant violation. #}
+  {% set _h = stage1.hitl %}
+  {% set _hitl_ring = {
+    'green': 'border-edge',
+    'red':   'border-loss/60 ring-1 ring-loss/30',
+  } %}
+  <a href="/approvals"
+     class="bg-pane border {{ _hitl_ring[_h.severity] }} rounded-lg p-4 block
+            hover:bg-pane-2 transition-colors focus:outline-none
+            focus-visible:ring-2 focus-visible:ring-accent"
+     title="HITL: pending approvals · board decisions 24h · autonomous live orders (Stage-1 invariant: must be 0)">
+    <div class="flex items-baseline justify-between gap-2">
+      <div class="text-[11px] text-muted uppercase tracking-wider">
+        HITL activity
+      </div>
+      <div class="text-2xl font-mono font-semibold
+        {% if _h.pending > 0 %}text-warn{% else %}text-mono{% endif %}">
+        {{ _h.pending }}
+      </div>
+    </div>
+    <div class="text-[10px] text-muted/70 mt-0.5 font-mono">pending now · last 24h</div>
+
+    <div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] font-mono">
+      <div class="flex justify-between items-baseline">
+        <span class="{% if _h.approved_24h == 0 %}text-muted/50{% else %}text-muted{% endif %}">approved</span>
+        <span class="font-semibold {% if _h.approved_24h > 0 %}text-gain{% else %}text-muted/50{% endif %}">
+          {{ _h.approved_24h }}
+        </span>
+      </div>
+      <div class="flex justify-between items-baseline">
+        <span class="{% if _h.rejected_24h == 0 %}text-muted/50{% else %}text-muted{% endif %}">rejected</span>
+        <span class="font-semibold {% if _h.rejected_24h > 0 %}text-loss{% else %}text-muted/50{% endif %}">
+          {{ _h.rejected_24h }}
+        </span>
+      </div>
+    </div>
+
+    {# Autonomous-live row — load-bearing safety signal. Reads as
+       "≤ N HITL'd live orders fired, but THIS many bypassed HITL."
+       Stage-1 invariant: 0. Non-zero ⇒ a live order was placed via
+       monitor-mode (HITL skipped) which CANNOT happen during paper
+       deployment — the tile colors flip to red and the value goes
+       to loss-text. #}
+    <div class="mt-3 pt-2 border-t border-edge/50 flex justify-between items-baseline text-[10px] font-mono">
+      <span class="{% if _h.autonomous_live_24h > 0 %}text-loss{% else %}text-muted{% endif %}"
+            title="Live orders placed with hitl_gate=monitor_mode (HITL bypassed). Stage-1 invariant: 0.">
+        autonomous live (24h)
+      </span>
+      <span class="font-bold
+        {% if _h.autonomous_live_24h > 0 %}text-loss{% else %}text-gain{% endif %}">
+        {% if _h.autonomous_live_24h > 0 %}
+          {{ _h.autonomous_live_24h }} ⚠
+        {% else %}
+          0 ✓
+        {% endif %}
+      </span>
+    </div>
+  </a>
+
+  {# ── tasty_options activation tile ───────────────────────────────────
+     Two signals:
+       1. broker session: connected | disconnected | unwired
+       2. scanner-tick rate: placeholder — the tasty signal scanner
+          does not emit a per-cycle audit kind (filed P3 BACKLOG —
+          see commit `b8bf4b9` and BACKLOG "Add per-cycle audit event
+          to tasty_options scanner for dashboard liveness"). #}
+  {% set _t = stage1.tasty %}
+  {% set _tasty_dot = {
+    'connected':    'bg-gain',
+    'disconnected': 'bg-loss',
+    'unwired':      'bg-muted/40',
+  } %}
+  {% set _tasty_label_text = {
+    'connected':    'text-gain',
+    'disconnected': 'text-loss',
+    'unwired':      'text-muted/60',
+  } %}
+  <div class="bg-pane border border-edge rounded-lg p-4"
+       title="tasty_options: tastytrade broker session + scanner-tick rate (audit kind not yet emitted)">
+    <div class="flex items-baseline justify-between gap-2">
+      <div class="text-[11px] text-muted uppercase tracking-wider">
+        tasty_options
+      </div>
+      <div class="text-[10px] text-muted/70 font-mono truncate" title="{{ _t.broker_name }}">
+        {{ _t.broker_name }}
+      </div>
+    </div>
+    <div class="text-[10px] text-muted/70 mt-0.5 font-mono">activation status</div>
+
+    <div class="mt-3 space-y-1.5 text-[10px] font-mono">
+      <div class="flex justify-between items-center">
+        <span class="text-muted">session</span>
+        <span class="flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full {{ _tasty_dot[_t.session] }}"></span>
+          <span class="{{ _tasty_label_text[_t.session] }} font-semibold">
+            {{ _t.session }}
+          </span>
+        </span>
+      </div>
+      <div class="flex justify-between items-baseline">
+        <span class="text-muted">scanner-tick</span>
+        {% if _t.scanner_tick_rate is none %}
+          <span class="text-muted/50 text-[9px] italic"
+                title="The tasty signal scanner does not emit a per-cycle audit event yet. Filed P3 BACKLOG — see commit b8bf4b9 / 'Add per-cycle audit event to tasty_options scanner'.">
+            no audit yet
+          </span>
+        {% else %}
+          <span class="text-mono font-semibold">{{ _t.scanner_tick_rate }}/h</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
 </div>

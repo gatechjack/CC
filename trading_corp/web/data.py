@@ -1515,6 +1515,136 @@ def gate_a_resilience_24h(
     }
 
 
+# HITL activity tile — Stage 1 demands a HITL gate on the first N=10 live
+# bitunix orders. The tile shows: how many approvals are pending right now,
+# how many board decisions fired in the last 24h, and an "autonomous live
+# orders" count that MUST be zero during Stage 1 (paper-mode deployment).
+# A non-zero autonomous count is a Stage-1 violation — a live order placed
+# without operator approval — and is the load-bearing safety signal here.
+
+def hitl_activity_24h(
+    db_url: str,
+    *,
+    pending_registry: Any = None,
+    now: datetime | None = None,
+) -> dict:
+    """Aggregate HITL state for the Stage-1 monitoring row.
+
+    Returns:
+      - pending: int — len(registry._pending), 0 if registry unwired
+      - approved_24h, rejected_24h: int — board decisions in window
+      - autonomous_live_24h: int — bitunix live_order_placed rows in the
+        24h window where hitl_gate == 'monitor_mode' (HITL bypassed
+        because the first N=10 live-order cap was reached). MUST be 0
+        during Stage 1 (paper deployment); any non-zero value is the
+        red signal.
+      - severity: 'green' | 'red' — red iff autonomous_live_24h > 0
+      - since_iso: ISO-8601 lower bound
+    """
+    now = now or datetime.now(timezone.utc)
+    since_iso = (now - timedelta(hours=24)).isoformat(timespec="seconds")
+
+    pending = 0
+    if pending_registry is not None:
+        try:
+            pending = int(pending_registry.pending_count())
+        except Exception as e:
+            log.warning("hitl_activity: pending_count() raised: %s", e)
+
+    rows = _query(
+        db_url,
+        """SELECT kind, COUNT(*) AS n
+           FROM audit_event
+           WHERE actor = 'board'
+             AND kind IN ('board_approved','board_rejected')
+             AND ts >= ?
+           GROUP BY kind""",
+        (since_iso,),
+    )
+    by_decision = {r["kind"]: int(r["n"]) for r in rows}
+    approved_24h = by_decision.get("board_approved", 0)
+    rejected_24h = by_decision.get("board_rejected", 0)
+
+    # Autonomous live orders — live_order_placed rows in the 24h window
+    # tagged with hitl_gate='monitor_mode'. The bitunix observer stamps
+    # this on the live path AFTER the first N=10 HITL gate is exhausted
+    # (bitunix_futures_observer.py:2578). During Stage 1 (paper) any
+    # such row indicates the paper-mode invariant has been broken.
+    auto_rows = _query(
+        db_url,
+        """SELECT COUNT(*) AS n
+           FROM audit_event
+           WHERE actor = 'bitunix_futures'
+             AND kind = 'live_order_placed'
+             AND ts >= ?
+             AND json_extract(payload_json, '$.hitl_gate') = 'monitor_mode'""",
+        (since_iso,),
+    )
+    autonomous_live_24h = int(auto_rows[0]["n"]) if auto_rows else 0
+
+    severity = "red" if autonomous_live_24h > 0 else "green"
+    return {
+        "pending": pending,
+        "approved_24h": approved_24h,
+        "rejected_24h": rejected_24h,
+        "autonomous_live_24h": autonomous_live_24h,
+        "severity": severity,
+        "since_iso": since_iso,
+    }
+
+
+# tasty_options activation tile — shows the broker session connectivity
+# (read from data_exec.brokers, mirroring the footer's _broker_health
+# de-dupe pattern) and surfaces the Fork #4 anomaly: the tasty signal
+# scanner does not emit a per-cycle audit event yet, so scanner-tick rate
+# is rendered as an explicit placeholder pointing at the P3 BACKLOG.
+
+def tasty_activation_status(
+    brokers_map: dict[str, Any] | None,
+) -> dict:
+    """Build the tasty_options tile context.
+
+    Returns:
+      - session: 'connected' | 'disconnected' | 'unwired'
+      - broker_name: str — class name or 'name' attr of the broker, or '—'
+      - scanner_tick_rate: None — see note (audit kind not currently
+        emitted). The template renders the placeholder + BACKLOG pointer
+        when None.
+    """
+    if not brokers_map:
+        return {
+            "session": "unwired",
+            "broker_name": "—",
+            "scanner_tick_rate": None,
+        }
+    # Match either the canonical slug or any *tasty* prefix
+    tasty_broker = brokers_map.get("tasty_options")
+    if tasty_broker is None:
+        for slug, broker in brokers_map.items():
+            if slug.startswith("tasty"):
+                tasty_broker = broker
+                break
+    if tasty_broker is None:
+        return {
+            "session": "unwired",
+            "broker_name": "—",
+            "scanner_tick_rate": None,
+        }
+
+    connected = bool(getattr(tasty_broker, "_connected", False)) or bool(
+        getattr(tasty_broker, "connected", False)
+    )
+    broker_name = getattr(tasty_broker, "name", type(tasty_broker).__name__)
+    return {
+        "session": "connected" if connected else "disconnected",
+        "broker_name": broker_name,
+        # Scanner-tick rate is intentionally None until the
+        # _ic_orchestration.run_signal_scanner_loop adds a per-cycle
+        # audit kind for the tasty division (filed P3 in BACKLOG).
+        "scanner_tick_rate": None,
+    }
+
+
 def _humanize_ts(ts: str | None) -> str:
     if not ts:
         return ""
