@@ -8,11 +8,11 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## P1 — Stage-1 prod-deploy BLOCKED: main.py:1087 / secrets.odds_api_key inconsistency + uncommitted-prod-surgical-edits audit (filed 2026-05-30 17:40 UTC)
+## P1 — Stage-1 prod-deploy BLOCKED: blockers chain (filed 2026-05-30 17:40 UTC; revised 2026-05-31 after probe found 22:43 redeploy root cause was deploy-mechanism, not source-code drift)
 
-Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `runbooks/deploy_log.md` entry on branch `stage1-deploy-2026-05-30`; memory `[[stage1-deploy-rolled-back-2026-05-30]]`). The Stage 1 + gate (a) + tasty_options prod deploy is BLOCKED until two distinct items resolve:
+Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `runbooks/deploy_log.md` 2026-05-30 17:22 entry; memory `[[stage1-deploy-rolled-back-2026-05-30]]`). Re-attempted at 22:43–23:09 UTC + rolled back again on a DIFFERENT class of failure (memory `[[stage1-redeploy-rolled-back-2026-05-30]]`; **prior diagnostic CORRECTED 2026-05-31 by file-level probe — see `[[deploy-transfer-set-diff-derived-misses-stale-prod-files]]`**). The Stage 1 + gate (a) + tasty_options prod deploy is BLOCKED until the items below resolve.
 
-### Item 1 (REQUIRED): Resolve `main.py:1087` / `secrets.odds_api_key` inconsistency
+### Item 1 (REQUIRED): Resolve `main.py:1087` / `secrets.odds_api_key` inconsistency — **LANDED 2026-05-30 on `origin/main` `309e39e` (merge of `stage1-forward-fix-2026-05-30`)**
 
 **Symptom:** clean redeploy of `main.py` + `secrets.py` from `origin/main` crashes at startup with `AttributeError: 'Secrets' object has no attribute 'odds_api_key'`. `main.py:1087` + `:1106` reference `secrets.odds_api_key` unconditionally inside `KalshiSportsScoutAgent` / `KalshiSportsArbObserverAgent` construction; `Secrets` dataclass on `origin/main` has NO `odds_api_key` field; `git log --all -S "odds_api_key" -- trading_corp/utils/secrets.py` returns EMPTY (the field has never been on git in any branch).
 
@@ -22,7 +22,9 @@ Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `run
 
 **NOT recommended (option 2):** `getattr(secrets, "odds_api_key", None)` at `main.py:1087` + `:1106`. Defensive but masks the missing-field issue (`[[no-documented-leaky-escape-hatch]]` discipline).
 
-### Item 2 (REQUIRED before next deploy attempt): Audit ALL uncommitted prod surgical-edit additions
+**Closure (2026-05-30):** Option 1 shipped via commits `71ff0a5` (secrets field + populator) + `ffbb09b` (round-trip ODDS_API_KEY in `_SECRET_KEY_NAMES` + `expected_env_vars`) + `tests/test_secrets_completeness.py` (AST gate). Merged to `origin/main` `309e39e` via `--no-ff` merge of `stage1-forward-fix-2026-05-30`. **Validated empirically:** 22:43 redeploy reached startup-time `KalshiSportsScoutAgent(has_credentials=True)` without AttributeError before crashing at a deeper layer (the deploy-mechanism gap that Items 3/5 address).
+
+### Item 2 (REQUIRED before next deploy attempt): Audit ALL uncommitted prod surgical-edit additions — **LANDED 2026-05-30 on `origin/main` `309e39e` (audit report `e2cd15c`)**
 
 **Symptom:** `odds_api_key` may not be the only uncommitted prod-only addition. If others exist, the next clean redeploy will crash on a NEW latent bug after this one is fixed.
 
@@ -30,15 +32,95 @@ Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `run
 
 **Files to audit (the 13 backups):** `data_exec.py`, `bitunix_futures_observer.py`, `risk.py`, `bitunix.py`, `telegram_commands.py`, `ceo_graph.py`, `main.py`, `models.py`, `secrets.py`, `routes.py`, `webhooks.py`, `config/strategies.yaml`, `config/divisions.yaml`. Forensics preserved on prod as `*.pre-stage1-20260530-1230` (do-not-delete).
 
-### Test-gate coverage hardening (RECOMMENDED, not blocker)
+**Closure (2026-05-30):** Audit ran via `reports/2026-05-30_uncommitted_prod_surgical_edits_audit.md` (commit `e2cd15c`). 1 Category-A finding round-tripped to git (Item 1); all other findings classified Category-C (cosmetic/known-overlay) and explicitly accepted as known divergence.
 
-The import-sanity check (`python3 -c "from trading_corp.main import run"`) catches module-import errors but does NOT execute `run()` → misses runtime `AttributeError` on dataclass field access in startup-construction sites. Add a test that exercises the startup-equivalent dry-run against the real `Secrets` dataclass — strengthens `[[mocks-dont-catch-sdk-shape]]` discipline.
+### Item 3 (REVISED 2026-05-31): NOT a source-code defect — deploy-mechanism gap requiring docs + new gate (Item 5)
 
-### Deploy unblock criteria
+**Original premise (now corrected):** the 22:43-23:09 UTC redeploy rolled back on `TypeError: WebDeps.__init__() got an unexpected keyword argument 'tasty_division'` at `main.py:1972`. Prior session attributed this to a missing field on `WebDeps` on `origin/main` and scoped Item 3 as a single-file forward-fix to add the field.
 
-- Item 1 landed on `origin/main` with passing test gate (must include new "secrets fields cover main.py reads" assertion test).
-- Item 2 audit complete; all findings round-tripped to git OR explicitly accepted as known divergence.
-- New deploy session per the same Plan A pattern: 18-file whole-file transfer + pre-flight gates + RH-pickle-coordinated restart.
+**Corrected root cause (2026-05-31 00:08 UTC probe):** the field IS on `origin/main` since `94b3129` (2026-05-24, the SAME commit that added the construction call site). Prod's `web/app.py` is a stale 2026-05-18 copy that was filtered out of the 18-file redeploy transfer set because `git diff 4985bbe..origin/main -- trading_corp/web/app.py` returned empty (the diff baseline `4985bbe` already had the field on git, but prod's filesystem was further behind than the deploy pointer suggested).
+
+**Evidence (single read-only az probe, 2026-05-31 00:08 UTC):** prod `web/app.py` md5 `16842c40cefb0b5f54e4e02348d5ca10`, mtime **2026-05-18 01:58 UTC**, `grep -c tasty_division`=0. Origin/main `web/app.py` LF md5 `824195a602c636065426f14444067f7a`. Backup files `web/app.py.pre-stage1-redeploy-20260530-2244` and `web/app.py.pre-stage1-20260530-1230` **do not exist** — confirms file was never in the transfer set (deploy script only backs up files it overwrites).
+
+**Closure (2026-05-31):** no source-code change to `web/app.py` (field is already present). Memory `[[deploy-transfer-set-diff-derived-misses-stale-prod-files]]` files the standing-rule correction. Memory `[[webdeps-tasty-division-latent-bug-2026-05-30]]` updated with misattribution correction. Item 5 (below) is the structural fix — extends `[[pre-deploy-filesystem-audit-discipline]]` from "audit-not-stale" to "transferable-surface sweep."
+
+### Item 4 (NEW): generalized AST dataclass-construction completeness test — **LANDED 2026-05-31 on branch `stage1-blockers-items3-4-5-2026-05-30` (NOT merged at filing)**
+
+**What it covers:** every `Dataclass(X=...)` keyword in `trading_corp/main.py` must correspond to a defined field on the target dataclass (resolved via `main.py`'s imports + `dataclasses.fields()`). Catches construction-kwarg/field drift at test-suite time — the AST shape of the `WebDeps(tasty_division=...)` mismatch class.
+
+**What it does NOT cover:** prod-vs-source filesystem drift. The 22:43 rollback was the latter — origin/main is internally consistent; only prod's filesystem held a stale copy. Item 5 is the gate for that. This test ships as defense-in-depth against future SOURCE-CODE drift of the same shape.
+
+**Test file:** `tests/test_main_dataclass_construction_completeness.py`. Companion to `tests/test_secrets_completeness.py` (Item 1 ships) which covers the `secrets.X` attribute-read class.
+
+### Item 5 (NEW, REQUIRED before next deploy attempt): file-level prod-vs-origin/main md5 sweep tool + empirical baseline — **LANDED 2026-05-31 on branch `stage1-blockers-items3-4-5-2026-05-30` (NOT merged at filing)**
+
+**What it does:** enumerate every file under `trading_corp/` + `config/` on prod, md5 each, compare against `origin/main` equivalent with CRLF cross-verification. Output classification per file: MATCH / CRLF-FALSE-POS / DIFFER-EXPECTED-PER-DEPLOY-LOG / DIFFER-STALE-ON-PROD / PROD-ONLY-NOT-ON-MAIN / MAIN-ONLY-NOT-ON-PROD.
+
+**Why it's the gate:** would have caught the `web/app.py` stale-on-prod case before the 22:43 deploy. Generalizes `scripts/bitunix_prod_surface_md5diff.py` from a fixed 10-file manifest to the full transferable surface.
+
+**Tool location:** `scripts/prod_vs_main_file_level_md5_sweep.py`.
+
+**Empirical baseline:** `reports/2026-05-30_prod_vs_main_file_level_sweep.md` — every stale-on-prod file identified in this session's sweep. **MUST be in the next deploy's transfer set** unless explicitly documented as overlay.
+
+### Deploy unblock criteria (REVISED 2026-05-31)
+
+- Item 1 LANDED ✓ (commit `71ff0a5` + `ffbb09b`, on `origin/main` `309e39e`).
+- Item 2 LANDED ✓ (audit report `e2cd15c`, on `origin/main` `309e39e`).
+- Item 3 REVISED ✓ — no source change; documentation correction committed this session.
+- Item 4 LANDED ✓ — generalized AST test committed this session.
+- Item 5 LANDED ✓ — sweep tool committed; empirical baseline at `reports/2026-05-30_prod_vs_main_file_level_sweep.md`.
+- Branch `stage1-blockers-items3-4-5-2026-05-30` merged to `origin/main`.
+- Next deploy session: transfer set must be UNION of (a) `git diff <prod-pointer>..origin/main` AND (b) the Item 5 sweep's DIFFER-STALE-ON-PROD findings. Any file from (b) NOT in (a) = file the diff would silently skip; explicitly include in the transfer manifest. Plan A pattern otherwise unchanged (whole-file transfer + pre-flight gates + RH-pickle-coordinated restart).
+
+---
+
+## P1 — Empirical sweep evidence: 14 MISSING_ON_PROD + 51 DIFFER-STALE-ON-PROD files (filed 2026-05-31 by Item 5 sweep; supersedes the tasty_options-scoped P2 at line 378)
+
+The Item 5 file-level prod-vs-main md5 sweep (Stage-1 BLOCKED Item 5, this branch) found that prod's filesystem is FAR more divergent from origin/main than the prior P2 entry's tasty_options-scoped framing implied. Full evidence in `reports/2026-05-30_prod_vs_main_file_level_sweep.md` + `reports/2026-05-30_prod_vs_main_file_level_sweep_findings_analysis.md`.
+
+**Empirical counts:**
+
+| Status | Count |
+|---|---|
+| MATCH | 185 |
+| DIFFER-EXPECTED-PER-DEPLOY-LOG | 1 (config/strategies.yaml — 03:57 UTC bitunix paper-sizing sed-overlay) |
+| DIFFER-STALE-ON-PROD | 51 |
+| MISSING_ON_PROD | 14 |
+| PROD_ONLY_NOT_ON_MAIN | 18 (15 historical `.bak`/`.orig`, 3 anomalies) |
+
+Total 185 + 1 + 51 + 14 = 251 (matches expected file count exactly).
+
+**Critical MISSING_ON_PROD entries (main.py-directly imported):**
+
+- `trading_corp/agents/divisions/tasty_options.py` (main.py:1234)
+- `trading_corp/agents/strategies/tasty_options_iron_condor.py` (main.py:1235)
+- `trading_corp/brokers/tastytrade.py` (main.py:1867, inside `if family == "tastytrade":`)
+
+**Critical MISSING_ON_PROD entries (transitively imported — would crash on cascade):**
+
+- `trading_corp/brokers/bitunix_exceptions.py` (via data_exec.py, bitunix.py)
+- `trading_corp/brokers/bitunix_symbols.py` (via bitunix.py)
+- `trading_corp/data/nbm_client.py` (via kalshi_weather_arb.py, _weather_math.py, web/data.py)
+- `trading_corp/data/residual_logic.py` (via same set)
+
+**Dormant MISSING_ON_PROD entries (no main.py reach, but should still be transferred for completeness):**
+
+- `trading_corp/path_logger/{__init__,__main__,logger,main,store}.py` (5 files — standalone module package)
+- `trading_corp/data/iem_cli_client.py` (no in-tree importers)
+- `trading_corp/scripts/analyze_polymarket_whale.py` (CLI script, not imported)
+
+**Why prod isn't currently crashing:** prod is internally consistent at a STALER snapshot. Origin/main has the NEW import wiring (main.py imports tasty_options at line 1234 unconditionally); prod's main.py is stale per DIFFER-STALE-ON-PROD list (line 105) and doesn't have those imports. EVERY partial deploy that brings the new main.py without the new dependencies it references will crash on the first reachable import. This structurally explains the layered rollback pattern.
+
+**Why this is the actual root cause of the prior deploy failures:**
+
+- The 17:22 UTC rollback hit `secrets.odds_api_key` first (T+49s) — a real source-code defect, fixed by Item 1.
+- The 22:43 UTC rollback hit `WebDeps.tasty_division` at T+5min30s (well into the construction sequence). The originally-attributed source-code defect on `WebDeps` doesn't exist (the field IS on origin/main since 94b3129); the actual cause was prod's stale `web/app.py` paired with the new main.py. Same class of failure as MISSING_ON_PROD entries — partial-deploy filesystem inconsistency.
+
+**Resolution:** redeploy attempt #3 transfer-set baseline = UNION of the 51 DIFFER-STALE + 14 MISSING = **65 files** (NOT the diff-derived 18-file set used in the prior attempt). Use `scripts/prod_vs_main_file_level_md5_sweep.py` as the authoritative pre-deploy gate going forward (`[[file-level-prod-vs-main-sweep-as-standing-discipline]]`).
+
+**Cross-reference:** the P2 entry at line 378 (`P2 — Reconcile committed-but-undeployed main vs prod divergence`) is a SUBSET of this finding — limited to tasty_options + iron_condor scope. This P1 entry is the empirically-complete superset. The P2 entry's resolution paths (a) deploy or (b) revert still apply per-file, but the operator can decide them in bulk now that the full divergence surface is visible.
+
+**Priority: P1** because the next prod-deploy attempt is structurally blocked on this. P2 line 378 stays as historical context; consider it "closed by completeness" (the empirical sweep replaces the manual md5-diff-by-keyword-grep approach).
 
 ---
 
@@ -100,6 +182,26 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 **Combined priority:** P1 (review's recommendation in Finding #7 §6; not P2 because the review explicitly elevates these as "pre-deploy gate" — gate-of-a-deploy semantics).
 
 **Triggering condition:** before any session attempts to deploy current `main` (commit `622f46c` or later) to prod via systemctl restart, scp-from-git, or any mechanism that touches `bitunix_futures_observer.py` / `brokers/bitunix.py` / `data_exec.py` on prod.
+
+---
+
+## P3 — PROD_ONLY anomalies surfaced by Item 5 sweep (filed 2026-05-31)
+
+Three files exist on prod that are NOT git-tracked on `origin/main` and do NOT match the documented `.bak-<label>-<date>` or `.pre-<label>-<date>` deploy-backup conventions. The Item 5 sweep flagged them for review. None block redeploy attempt #3; cleanup is operator-curated, low-priority.
+
+### Item — `config/Lets` (origin unknown)
+
+File at `config/Lets` (no extension) under the config/ directory. Not a YAML config. Likely an accidental shell-expansion or paste-error artifact (e.g., `git checkout Lets-something` typo). Read content via `az vm run-command` `cat /home/azureuser/trading_corp/config/Lets` (read-only) to classify. If benign, document + remove in a future cleanup session.
+
+### Item — `trading_corp/main.py.orig` (forgotten manual backup)
+
+Uncommitted backup of `main.py` on prod. Probably from a past manual edit's `cp main.py main.py.orig` pattern. Compare md5 against `git log --oneline main.py`'s history to identify which version it captures; if a known historical version, document the timestamp and remove. If not matched to any commit, preserve for forensics + investigate origin.
+
+### Item — `trading_corp/agents/divisions/_observer_test.py` (forgotten test scaffold)
+
+Looks like a one-off test scaffold left on prod (underscore prefix conventionally indicates internal/test). Verify it's not imported by any production codepath (`grep -rn "_observer_test" trading_corp/`), then archive + remove.
+
+**Priority: P3.** None block deploy. Cleanup in a future read-only-on-prod investigation session.
 
 ---
 
