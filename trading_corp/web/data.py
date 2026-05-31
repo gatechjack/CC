@@ -1431,6 +1431,90 @@ def trade_flow(
     return out
 
 
+# ── Stage-1 monitoring tiles ──────────────────────────────────────────────
+
+# Gate (a) REST resilience: the audit-kind taxonomy actually emitted by
+# trading_corp/brokers/bitunix.py and trading_corp/agents/data_exec.py.
+# Mapped from the user-facing request as:
+#   rest_retry         → rest_request_retried (bitunix.py:815)
+#   snapshot_stale_halt → unchanged           (data_exec.py:334)
+#   stuck_order_timeout → stuck_order_cancelled (success path,
+#                          bitunix.py:1154) + stuck_order_cancel_failed
+#                          (failure path, bitunix.py:1161)
+GATE_A_KIND_REST_RETRIED = "rest_request_retried"
+GATE_A_KIND_SNAPSHOT_STALE = "snapshot_stale_halt"
+GATE_A_KIND_STUCK_CANCELLED = "stuck_order_cancelled"
+GATE_A_KIND_STUCK_CANCEL_FAILED = "stuck_order_cancel_failed"
+
+GATE_A_KINDS = (
+    GATE_A_KIND_REST_RETRIED,
+    GATE_A_KIND_SNAPSHOT_STALE,
+    GATE_A_KIND_STUCK_CANCELLED,
+    GATE_A_KIND_STUCK_CANCEL_FAILED,
+)
+
+
+def _gate_a_severity(counts: dict[str, int]) -> str:
+    """Return 'green' | 'yellow' | 'red' for the Gate (a) tile color.
+
+    Rules:
+      red:   any snapshot_stale_halt (system-protective halt fired) OR
+             any stuck_order_cancel_failed (cancel actually failed —
+             order may still be resting at venue) OR
+             rest_request_retried > 10 (sustained API churn).
+      yellow: any rest_request_retried (1–10) or
+              any stuck_order_cancelled (transient stuck-order resolved).
+      green: all zero.
+    """
+    stale = counts.get(GATE_A_KIND_SNAPSHOT_STALE, 0)
+    cancel_failed = counts.get(GATE_A_KIND_STUCK_CANCEL_FAILED, 0)
+    rest = counts.get(GATE_A_KIND_REST_RETRIED, 0)
+    cancelled = counts.get(GATE_A_KIND_STUCK_CANCELLED, 0)
+    if stale > 0 or cancel_failed > 0 or rest > 10:
+        return "red"
+    if rest > 0 or cancelled > 0:
+        return "yellow"
+    return "green"
+
+
+def gate_a_resilience_24h(
+    db_url: str, *, now: datetime | None = None,
+) -> dict:
+    """Count Gate (a) REST resilience events in the last 24 hours.
+
+    Returns a dict with:
+      - by_kind: {kind → count} for each of the four GATE_A_KINDS
+      - total: int sum across kinds
+      - severity: 'green' | 'yellow' | 'red' (see _gate_a_severity)
+      - since_iso: ISO-8601 lower bound of the 24h window
+    """
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(hours=24)
+    since_iso = since.isoformat(timespec="seconds")
+
+    # One query — group by kind to keep round-trips minimal.
+    placeholders = ",".join("?" for _ in GATE_A_KINDS)
+    rows = _query(
+        db_url,
+        f"""SELECT kind, COUNT(*) AS n
+            FROM audit_event
+            WHERE kind IN ({placeholders})
+              AND ts >= ?
+            GROUP BY kind""",
+        (*GATE_A_KINDS, since_iso),
+    )
+    by_kind = {k: 0 for k in GATE_A_KINDS}
+    for r in rows:
+        by_kind[r["kind"]] = int(r["n"])
+    total = sum(by_kind.values())
+    return {
+        "by_kind": by_kind,
+        "total": total,
+        "severity": _gate_a_severity(by_kind),
+        "since_iso": since_iso,
+    }
+
+
 def _humanize_ts(ts: str | None) -> str:
     if not ts:
         return ""

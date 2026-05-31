@@ -253,9 +253,18 @@ def register(app: FastAPI) -> None:
         stage1_only = bool(stage1)
         snap = await data.build_command_center(deps)
         flow = data.trade_flow(deps.db_url, limit=20, stage1_only=stage1_only)
+        # Stage-1 monitoring tiles inline-rendered on first paint;
+        # /partials/stage1-monitoring re-fetches every 10s for HTMX swap.
+        stage1_ctx = {
+            "gate_a": data.gate_a_resilience_24h(deps.db_url),
+        }
         return templates.TemplateResponse(
             request, "home.html",
-            {"snap": snap, "flow": flow, "stage1_only": stage1_only},
+            {
+                "snap": snap, "flow": flow,
+                "stage1_only": stage1_only,
+                "stage1": stage1_ctx,
+            },
         )
 
     @app.get("/partials/trade-flow", response_class=HTMLResponse)
@@ -284,6 +293,23 @@ def register(app: FastAPI) -> None:
         snap = await data.build_command_center(deps)
         return templates.TemplateResponse(
             request, "partials/market_ribbon.html", {"snap": snap},
+        )
+
+    @app.get("/partials/stage1-monitoring", response_class=HTMLResponse)
+    async def partial_stage1_monitoring(request: Request):
+        """Stage-1 paper-mode monitoring tiles (HTMX-polled every 10s).
+
+        Currently ships:
+          • Gate (a) REST resilience (24h counts, color-coded)
+
+        Addition #5 extends this same partial with HITL + tasty_options
+        tiles — no new route, just more keys in `stage1_ctx`.
+        """
+        stage1_ctx = {
+            "gate_a": data.gate_a_resilience_24h(deps.db_url),
+        }
+        return templates.TemplateResponse(
+            request, "partials/stage1_monitoring.html", {"stage1": stage1_ctx},
         )
 
     # ── Prediction Markets dashboard (K2.4 Option C) ─────────────────────

@@ -13,6 +13,23 @@
   {% include "partials/stat_cards.html" %}
 </div>
 
+<!-- ── Stage 1 paper-mode monitoring row ────────────────────────────── -->
+{# Tiles for the bitunix_futures paper deployment (origin/main 7352f8f
+   landed 2026-05-31 05:36 UTC). The partial is HTMX-polled every 10s
+   for fresh counts; the initial render is inline so the user doesn't
+   see an empty box on first paint. #}
+<section class="mt-4">
+  <header class="flex items-baseline justify-between mb-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Stage 1 monitoring
+    </h2>
+    <span class="text-[11px] text-muted font-mono">
+      paper-mode since 2026-05-31 05:36 UTC
+    </span>
+  </header>
+  {% include "partials/stage1_monitoring.html" %}
+</section>
+
 <!-- ── Main grid: equity curve + division panels (lg) | trade flow rail (sm) ── -->
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
   <div class="lg:col-span-2 flex flex-col gap-4">
