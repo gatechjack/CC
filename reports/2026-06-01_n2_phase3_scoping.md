@@ -300,13 +300,11 @@ Phase 1b's reconciler design assumed `get_pending_positions()` is a method; curr
 
 ### Decision 6.5 — Whether to land the rebased exit-path branch as documentation pre-Phase-3 OR keep deferred
 
+**RESOLVED 2026-05-31 ~21:47 UTC — operator overrode default (b) to option (a); 3 docs commits merged onto `origin/main` via `--no-ff` merge `90ae0e4`. See `runbooks/deploy_log.md` 2026-05-31 ~21:47 UTC entry for full detail. Phase 1a + 1b reports + 2026-05-29 next-session-prompt now reachable directly at `reports/...md` from main. Architectural review Finding #1a exit-path locus CLOSED.**
+
 The rebased `bitunix-live-exit-path-2026-05-29-rebased` branch (HEAD `3016053`) carries the Phase 1a + 1b reports as canonical-on-rebased-branch artifacts. Architectural review Finding #1a recommended merging docs-only commits to main "for next session that does any merge." Two options:
-- (a) **Merge `bitunix-live-exit-path-2026-05-29-rebased` to main** as docs-only before Phase 3 starts (3 commits land cleanly per the rebase outcome). Removes the `[on branch X]` citation cost.
-- (b) **Leave rebased branch unmerged** until Phase 3 implementation lands — fold the report-merge into the Phase 3 commit chain (cleaner single-merge story).
-
-**Recommendation: (b).** Phase 3 implementation will produce more code commits than docs; bundle the docs merge with the implementation merge for a single "N+2 Phase 3 ships" history entry. The rebased branch is pushed and discoverable in the interim.
-
-**Operator decision needed:** confirm (b) or override to (a).
+- (a) **Merge `bitunix-live-exit-path-2026-05-29-rebased` to main** as docs-only before Phase 3 starts (3 commits land cleanly per the rebase outcome). Removes the `[on branch X]` citation cost. **← Operator override; executed 2026-05-31 ~21:47 UTC via merge `90ae0e4`.**
+- (b) **Leave rebased branch unmerged** until Phase 3 implementation lands — fold the report-merge into the Phase 3 commit chain (cleaner single-merge story). (Original recommendation; not taken.)
 
 ---
 

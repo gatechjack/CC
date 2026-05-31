@@ -116,6 +116,29 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-05-31 ~21:47 UTC — Decision 6.5 docs-merge: N+2 Phase 3 diagnostic reports onto main (admin only; no prod touch)
+
+**Type:** admin / docs-only `--no-ff` merge to main. **Net effect on prod: zero** — no transfer, no restart, no write, no live flip.
+
+**Triggered by:** override of scoping report Decision 6.5 default (option b "bundle docs into Phase 3 implementation merge") to option a ("merge docs-only branch to main before Phase 3 starts"). Closes one locus of architectural-review Finding #1a — Phase 1a + 1b reports + 2026-05-29 next-session-prompt are now canonically reachable from `origin/main` instead of via `git show <sha>:reports/...` reach-back.
+
+**Merge commit:** `90ae0e4` (`merge(docs): N+2 Phase 3 diagnostic reports onto main (Decision 6.5)`).
+
+**Reports landed on main:**
+- `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1a.md` (Phase 1a sub-diagnostic — structural questions #1, #2, #3, #8, #9)
+- `reports/2026-05-29_next_session_prompt.md` (Phase 1b handoff prompt)
+- `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1b.md` (Phase 1b sub-diagnostic — questions #4, #5, #3-restart, #7 + A/B/C scope decision)
+
+**Verification:**
+- Pre-merge test gate: **2139 passed / 28 failed** on `origin/main` `2f5c320` (matches documented baseline).
+- Post-merge test gate: **2139 passed / 28 failed** on `origin/main` `90ae0e4` (identical — confirms docs-only merge has zero test surface impact).
+- 3 pre-existing collection errors (`tests/test_backtest_bitunix_confluence_five_factor.py`, `tests/test_bitunix_confluence_gate.py`, `tests/test_bitunix_gate_inputs.py`) are pre-existing on main — import modules only present on `c4e47a7` BACKUP branch; documented as `--ignore`d in baseline measurement. Not caused by this merge.
+- Rebased exit-path branch `bitunix-live-exit-path-2026-05-29-rebased` (HEAD `3016053`) remains on origin as audit trail; superseded by this merge for next-session use.
+
+**No source/test/config changes.** Reports/ additions only. Prod unchanged.
+
+---
+
 ## 2026-06-01 — N+2 Phase 3 implementation scoping session (admin only; no prod touch)
 
 **Type:** admin / source-only / branch rebase + scoping report. **Net effect on prod: zero** — no transfer, no restart, no write, no live flip.

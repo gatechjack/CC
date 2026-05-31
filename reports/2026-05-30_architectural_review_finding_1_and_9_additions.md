@@ -54,3 +54,20 @@ The existing Finding #9 sixth-discipline (audit-not-stale re-probe before transf
 - **Finding #2 (Stage-1 readiness gaps):** unchanged. Gates (a)+(b)+(c) still LANDED (per prior session); this session adds Item 5's sweep as a NEW pre-deploy gate to the trio.
 
 When merging this delta into the review file, place these additions inline at the appropriate section anchors. Both additions reference the new memory entries which serve as canonical pointers.
+
+## Finding #1a — exit-path branch-stranded docs locus CLOSED (2026-05-31 ~21:47 UTC)
+
+**Status update (not a new locus; closes one of Finding #1a's documented loci).**
+
+Architectural review Finding #1a flagged Phase 1a + 1b sub-diagnostic reports as branch-stranded on `bitunix-live-exit-path-2026-05-29` (`33da534` / `e1d38f8`), reachable only via `git show <sha>:reports/...md` reach-back.
+
+**Closure path executed:** 2026-06-01 scoping session rebased the branch onto `origin/main` `f110c74` as `bitunix-live-exit-path-2026-05-29-rebased` (HEAD `3016053`). 2026-05-31 ~21:47 UTC docs-merge session folded the 3 rebased docs commits onto main via `--no-ff` merge `90ae0e4` per scoping report Decision 6.5 operator override.
+
+**Reports now canonically reachable from `origin/main`:**
+- `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1a.md`
+- `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase1b.md`
+- `reports/2026-05-29_next_session_prompt.md`
+
+**Other Finding #1a loci unchanged.** The canonical review file itself (`reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md`) is still on `stage1-architectural-review-2026-05-30` branch (`ade4dbc`), NOT on main — that locus remains open; merge decision deferred per the original Finding #10 question 2. This addition file itself remains the canonical addenda-memo surface for the review.
+
+**Test gate verified docs-only zero-impact:** 2139 passed / 28 failed pre-merge AND post-merge (identical).

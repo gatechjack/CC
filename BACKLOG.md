@@ -12,9 +12,10 @@ Active session work lives in chat — not duplicated here.
 
 **Scoping report:** `reports/2026-06-01_n2_phase3_scoping.md` (refined scope brief; pre-written next-session implementation prompt at §7).
 
-**State as of filing:**
-- Phase 1a (`33da534`) + Phase 1b (`e1d38f8`) sub-diagnostics shipped on branch `bitunix-live-exit-path-2026-05-29`. Reports embedded in branch as `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase{1a,1b}.md`.
-- Branch rebased onto `origin/main` `f110c74` as `bitunix-live-exit-path-2026-05-29-rebased` (HEAD `3016053`); 3 docs commits clean, 1 stale BACKLOG commit (`4a8b440`) mechanically skipped (superseded by this entry).
+**State as of filing (updated 2026-05-31 ~21:47 UTC via Decision 6.5 docs-merge `90ae0e4`):**
+- **Phase 1a + Phase 1b sub-diagnostics + next-session prompt are now ON MAIN** at canonical paths `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase{1a,1b}.md` + `reports/2026-05-29_next_session_prompt.md`. Architectural review Finding #1a exit-path locus CLOSED.
+- Original branch `bitunix-live-exit-path-2026-05-29` (`e1d38f8`) and rebased branch `bitunix-live-exit-path-2026-05-29-rebased` (HEAD `3016053`) remain on origin as audit trail; superseded by main for next-session discovery.
+- 1 stale BACKLOG commit (`4a8b440`) was mechanically skipped during the 2026-06-01 rebase (superseded by this entry).
 - Phase 1b scope (B) holds with architectural review's +60-90 LOC additions for Findings #6.1/#6.2/#6.3/#6.4. Current-main reality reduces total LOC by ~85 (Finding #6.4 timeout-and-halt primitive already done via gate (a); `bitunix_position_reconciler.py` exists as extension target, not new module).
 - **Refined estimate: ~820 source LOC + ~800 test LOC across 9 commits, split as Session A (4 commits foundation + paper helper) + Session B (5 commits live + reconciler + alerts + restart). Single-session attempt allowable but not recommended.**
 
