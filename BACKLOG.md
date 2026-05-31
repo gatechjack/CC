@@ -74,6 +74,56 @@ Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `run
 
 ---
 
+## P1 — Empirical sweep evidence: 14 MISSING_ON_PROD + 51 DIFFER-STALE-ON-PROD files (filed 2026-05-31 by Item 5 sweep; supersedes the tasty_options-scoped P2 at line 378)
+
+The Item 5 file-level prod-vs-main md5 sweep (Stage-1 BLOCKED Item 5, this branch) found that prod's filesystem is FAR more divergent from origin/main than the prior P2 entry's tasty_options-scoped framing implied. Full evidence in `reports/2026-05-30_prod_vs_main_file_level_sweep.md` + `reports/2026-05-30_prod_vs_main_file_level_sweep_findings_analysis.md`.
+
+**Empirical counts:**
+
+| Status | Count |
+|---|---|
+| MATCH | 185 |
+| DIFFER-EXPECTED-PER-DEPLOY-LOG | 1 (config/strategies.yaml — 03:57 UTC bitunix paper-sizing sed-overlay) |
+| DIFFER-STALE-ON-PROD | 51 |
+| MISSING_ON_PROD | 14 |
+| PROD_ONLY_NOT_ON_MAIN | 18 (15 historical `.bak`/`.orig`, 3 anomalies) |
+
+Total 185 + 1 + 51 + 14 = 251 (matches expected file count exactly).
+
+**Critical MISSING_ON_PROD entries (main.py-directly imported):**
+
+- `trading_corp/agents/divisions/tasty_options.py` (main.py:1234)
+- `trading_corp/agents/strategies/tasty_options_iron_condor.py` (main.py:1235)
+- `trading_corp/brokers/tastytrade.py` (main.py:1867, inside `if family == "tastytrade":`)
+
+**Critical MISSING_ON_PROD entries (transitively imported — would crash on cascade):**
+
+- `trading_corp/brokers/bitunix_exceptions.py` (via data_exec.py, bitunix.py)
+- `trading_corp/brokers/bitunix_symbols.py` (via bitunix.py)
+- `trading_corp/data/nbm_client.py` (via kalshi_weather_arb.py, _weather_math.py, web/data.py)
+- `trading_corp/data/residual_logic.py` (via same set)
+
+**Dormant MISSING_ON_PROD entries (no main.py reach, but should still be transferred for completeness):**
+
+- `trading_corp/path_logger/{__init__,__main__,logger,main,store}.py` (5 files — standalone module package)
+- `trading_corp/data/iem_cli_client.py` (no in-tree importers)
+- `trading_corp/scripts/analyze_polymarket_whale.py` (CLI script, not imported)
+
+**Why prod isn't currently crashing:** prod is internally consistent at a STALER snapshot. Origin/main has the NEW import wiring (main.py imports tasty_options at line 1234 unconditionally); prod's main.py is stale per DIFFER-STALE-ON-PROD list (line 105) and doesn't have those imports. EVERY partial deploy that brings the new main.py without the new dependencies it references will crash on the first reachable import. This structurally explains the layered rollback pattern.
+
+**Why this is the actual root cause of the prior deploy failures:**
+
+- The 17:22 UTC rollback hit `secrets.odds_api_key` first (T+49s) — a real source-code defect, fixed by Item 1.
+- The 22:43 UTC rollback hit `WebDeps.tasty_division` at T+5min30s (well into the construction sequence). The originally-attributed source-code defect on `WebDeps` doesn't exist (the field IS on origin/main since 94b3129); the actual cause was prod's stale `web/app.py` paired with the new main.py. Same class of failure as MISSING_ON_PROD entries — partial-deploy filesystem inconsistency.
+
+**Resolution:** redeploy attempt #3 transfer-set baseline = UNION of the 51 DIFFER-STALE + 14 MISSING = **65 files** (NOT the diff-derived 18-file set used in the prior attempt). Use `scripts/prod_vs_main_file_level_md5_sweep.py` as the authoritative pre-deploy gate going forward (`[[file-level-prod-vs-main-sweep-as-standing-discipline]]`).
+
+**Cross-reference:** the P2 entry at line 378 (`P2 — Reconcile committed-but-undeployed main vs prod divergence`) is a SUBSET of this finding — limited to tasty_options + iron_condor scope. This P1 entry is the empirically-complete superset. The P2 entry's resolution paths (a) deploy or (b) revert still apply per-file, but the operator can decide them in bulk now that the full divergence surface is visible.
+
+**Priority: P1** because the next prod-deploy attempt is structurally blocked on this. P2 line 378 stays as historical context; consider it "closed by completeness" (the empirical sweep replaces the manual md5-diff-by-keyword-grep approach).
+
+---
+
 ## P1 — Stage-1 BitUnix prod-deploy gates from 2026-05-30 architectural review Finding #2 (3 untracked gaps) (filed 2026-05-30)
 
 Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` Finding #2 + Finding #7 §6: three readiness-audit must-haves are pre-deploy gates for the first prod-deploy of Stage 1 but were NOT in any active BACKLOG item before this entry. Review explicitly recommends P1 with "explicit pre-deploy gate dependency" framing (Finding #7 §6). Not in scope (B) of N+2 Phase 3 — separate work tracks.
@@ -132,6 +182,26 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 **Combined priority:** P1 (review's recommendation in Finding #7 §6; not P2 because the review explicitly elevates these as "pre-deploy gate" — gate-of-a-deploy semantics).
 
 **Triggering condition:** before any session attempts to deploy current `main` (commit `622f46c` or later) to prod via systemctl restart, scp-from-git, or any mechanism that touches `bitunix_futures_observer.py` / `brokers/bitunix.py` / `data_exec.py` on prod.
+
+---
+
+## P3 — PROD_ONLY anomalies surfaced by Item 5 sweep (filed 2026-05-31)
+
+Three files exist on prod that are NOT git-tracked on `origin/main` and do NOT match the documented `.bak-<label>-<date>` or `.pre-<label>-<date>` deploy-backup conventions. The Item 5 sweep flagged them for review. None block redeploy attempt #3; cleanup is operator-curated, low-priority.
+
+### Item — `config/Lets` (origin unknown)
+
+File at `config/Lets` (no extension) under the config/ directory. Not a YAML config. Likely an accidental shell-expansion or paste-error artifact (e.g., `git checkout Lets-something` typo). Read content via `az vm run-command` `cat /home/azureuser/trading_corp/config/Lets` (read-only) to classify. If benign, document + remove in a future cleanup session.
+
+### Item — `trading_corp/main.py.orig` (forgotten manual backup)
+
+Uncommitted backup of `main.py` on prod. Probably from a past manual edit's `cp main.py main.py.orig` pattern. Compare md5 against `git log --oneline main.py`'s history to identify which version it captures; if a known historical version, document the timestamp and remove. If not matched to any commit, preserve for forensics + investigate origin.
+
+### Item — `trading_corp/agents/divisions/_observer_test.py` (forgotten test scaffold)
+
+Looks like a one-off test scaffold left on prod (underscore prefix conventionally indicates internal/test). Verify it's not imported by any production codepath (`grep -rn "_observer_test" trading_corp/`), then archive + remove.
+
+**Priority: P3.** None block deploy. Cleanup in a future read-only-on-prod investigation session.
 
 ---
 

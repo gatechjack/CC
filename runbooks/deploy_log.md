@@ -155,6 +155,32 @@ The redeploy crash was real (the prod process did `WebDeps(tasty_division=...)` 
 
 **Rollback recipe:** n/a (no prod write).
 
+**Branch contents at session close (3 commits + this deploy_log update):**
+
+- `9049284` docs(stage1-blockers): correct 2026-05-30 22:43 redeploy rollback misattribution — BACKLOG + deploy_log entry above + memory `[[deploy-transfer-set-diff-derived-misses-stale-prod-files]]` + corrected `[[webdeps-tasty-division-latent-bug-2026-05-30]]`.
+- `df48adf` test(stage1-blockers): generalized AST dataclass-construction completeness gate — `tests/test_main_dataclass_construction_completeness.py` (9 tests). Empirical scan of main.py: 99 imports, 13 dataclass targets, 19 construction sites, 108 kwargs scanned, **0 findings** (origin/main internally consistent). Companion to `tests/test_secrets_completeness.py`.
+- `cf5c7b5` feat(stage1-blockers): file-level prod-vs-main md5 sweep tool + empirical baseline — `scripts/prod_vs_main_file_level_md5_sweep.py` (251-file surface + gzip+base64 prod payload + SWEEP_BEGIN/END markers) + 30 unit tests + auto-generated `reports/2026-05-30_prod_vs_main_file_level_sweep.md` + operator-curated `reports/2026-05-30_prod_vs_main_file_level_sweep_findings_analysis.md`.
+
+**Empirical sweep result (single authorized Option-C probe, 2026-05-31 ~01:00 UTC):**
+
+| Status | Count |
+|---|---|
+| MATCH | 185 |
+| DIFFER-EXPECTED-PER-DEPLOY-LOG | 1 (`config/strategies.yaml` — 03:57 UTC bitunix paper-sizing sed-overlay) |
+| DIFFER-STALE-ON-PROD | 51 |
+| MISSING_ON_PROD | 14 |
+| PROD_ONLY_NOT_ON_MAIN | 18 (15 historical `.bak`/`.orig`, 3 anomalies for review) |
+
+Total accounted: 185 + 1 + 51 + 14 = 251 expected ✓.
+
+**Redeploy attempt #3 transfer-set baseline: 65 files** (51 stale + 14 missing). Excludes the 1 known overlay (sed-reapply post-transfer OR merge `bitunix-risk-tier-pre-live` first). See `reports/2026-05-30_next_session_prompt_redeploy_attempt_3.md` for the full next-session protocol.
+
+**Test gate:** 2083 passed / 28 failed / 3 errors. +37 new tests vs origin/main's 2046/28 baseline. Zero new failures. The 28 failures + 3 errors are pre-existing (worktree-fixture gap + tests-vs-code drift on `bitunix_confluence_gate` module).
+
+**Verification:** prod state at session close: `MainPID=1874494 NRestarts=0 ActiveState=active`. No prod write performed. Two read-only probes used:
+1. 2026-05-31 00:08 UTC — misattribution-correction probe (single bundled az call, ~30s).
+2. 2026-05-31 00:55 UTC — full-surface sweep probe (single bundled az call, gzip+base64 payload, ~35s).
+
 ---
 
 ## 2026-05-30 17:22–17:34 UTC — Stage 1 + gate (a) + tasty_options prod deploy → ROLLED BACK (latent `main.py:1087` / `secrets.odds_api_key` AttributeError caused infinite restart loop)
