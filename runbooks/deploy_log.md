@@ -116,6 +116,41 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-01 — N+2 Phase 3 implementation scoping session (admin only; no prod touch)
+
+**Type:** admin / source-only / branch rebase + scoping report. **Net effect on prod: zero** — no transfer, no restart, no write, no live flip.
+
+**Triggered by:** operator scoping prompt to validate N+2 Phase 3 (Stage-1 BitUnix live exit path) implementation plan against current `origin/main` after 77 commits of post-Phase-1b drift (entry-path merged, broker-write merged, safety merged, redeploy3, items 3+4+5, dashboard, tastytrade rotation).
+
+**Branches produced this session:**
+
+- `bitunix-live-exit-path-2026-05-29-rebased` (HEAD `3016053`) — rebase of `origin/bitunix-live-exit-path-2026-05-29` (was `e1d38f8`) onto `origin/main` (`f110c74`). 3 docs commits clean (Phase 1a + Phase 1b sub-diagnostics + next-session prompt). 1 stale commit (`4a8b440`, BACKLOG entries from 2026-05-29) mechanically skipped — superseded by 12 newer P1 entries on main + this session's separate scoping branch. Pushed.
+- `n2-phase3-scoping-2026-06-01` (HEAD per commit time) — `reports/2026-06-01_n2_phase3_scoping.md` (refined scope brief + LOC estimate + commit sequence + pre-implementation gates + pre-written next-session prompt) + BACKLOG P1 entry filing the implementation-ready state + this deploy_log entry. Pushed.
+
+**Phase 3 scope summary (full detail in scoping report):**
+
+- Phase 1b scope (B) HOLDS with architectural review's Findings #6.1/#6.2/#6.3/#6.4 additions and current-main reality adjustments.
+- Refined estimate: **~820 source LOC + ~800 test LOC across 9 commits**, recommended Session A (foundation, 4 commits) + Session B (live + reconciler + alerts + restart, 5 commits) split.
+- Merge-sequence prerequisite (Phase 1b §1) is RESOLVED — broker-write, entry-path, safety all merged. Risk-tier overlay on main matches prod md5.
+- Finding #6.4 timeout-and-halt primitive already done (gate (a) sub-item 3); Phase 3 wires existing primitive (~5 LOC) instead of building new (~30 LOC).
+- `bitunix_position_reconciler.py` already exists (dormant in paper); Phase 3 extends it instead of creating a new reconciler module (~50 LOC savings).
+- `get_pending_positions` is inlined inside `snapshot()`; Phase 3 should extract as a public broker method (~15 LOC).
+
+**Operator decisions surfaced (default recommendations, override at session start):**
+- 6.1 result_source mitigation: `extra["result_source"]` stamp.
+- 6.2 audit-row-loss fix: extend `insert_paper_trade_record` DB-lock retry.
+- 6.3 pacing: Session A + Session B split.
+- 6.4 get_pending_positions: extract as method.
+- 6.5 docs-merge timing: bundle with Phase 3 implementation merge.
+
+**Pre-implementation gates:** G1+G3+G4+G5 PASS as of 2026-05-31; G2 verify at session start.
+
+**Hard stops on Phase 3 implementation:** no prod-touching writes; no execution_mode flip; no auto_execute flips side-effect.
+
+**No prod touch this session.** Branches pushed for next-session use.
+
+---
+
 ## 2026-05-31 ~14:30 UTC — Stage-1 post-deploy administrative close-out — 3 P3 BACKLOG entries filed + `stage1-paper-dashboard-2026-05-31` merged to main
 
 **Type:** admin / source-only. **Net effect on prod: zero** — no transfer, no restart, no write.

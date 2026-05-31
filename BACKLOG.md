@@ -8,6 +8,33 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## P1 — N+2 Phase 3 (Stage-1 BitUnix live exit path) implementation READY (filed 2026-06-01 via scoping branch `n2-phase3-scoping-2026-06-01`)
+
+**Scoping report:** `reports/2026-06-01_n2_phase3_scoping.md` (refined scope brief; pre-written next-session implementation prompt at §7).
+
+**State as of filing:**
+- Phase 1a (`33da534`) + Phase 1b (`e1d38f8`) sub-diagnostics shipped on branch `bitunix-live-exit-path-2026-05-29`. Reports embedded in branch as `reports/2026-05-29_bitunix_live_exit_path_diagnostic_phase{1a,1b}.md`.
+- Branch rebased onto `origin/main` `f110c74` as `bitunix-live-exit-path-2026-05-29-rebased` (HEAD `3016053`); 3 docs commits clean, 1 stale BACKLOG commit (`4a8b440`) mechanically skipped (superseded by this entry).
+- Phase 1b scope (B) holds with architectural review's +60-90 LOC additions for Findings #6.1/#6.2/#6.3/#6.4. Current-main reality reduces total LOC by ~85 (Finding #6.4 timeout-and-halt primitive already done via gate (a); `bitunix_position_reconciler.py` exists as extension target, not new module).
+- **Refined estimate: ~820 source LOC + ~800 test LOC across 9 commits, split as Session A (4 commits foundation + paper helper) + Session B (5 commits live + reconciler + alerts + restart). Single-session attempt allowable but not recommended.**
+
+**Operator decisions surfaced (resolved at session start):**
+- 6.1 Finding #6.1 result_source mitigation: default `extra["result_source"]` stamp (option b).
+- 6.2 Finding #6.2 audit-row-loss recovery: default extend `insert_paper_trade_record` DB-lock retry (option a).
+- 6.3 Implementation pacing: default Session A + Session B split.
+- 6.4 `get_pending_positions` access pattern: default extract as broker method (option a).
+- 6.5 Docs-merge timing: default bundle docs merge with Phase 3 implementation merge (option b).
+
+**Pre-implementation gates (G1-G5 in §5 of scoping report):** G1 (prod stable), G3 (timeout primitive reachable), G4 (risk-tier overlay matches), G5 (no critical C-1 P1) PASS as of 2026-05-31. G2 (paper placements fired) verify at session start; acceptable to start with 0.
+
+**Honest gaps (Gap 8.1-8.5 in §8 of scoping report):** `get_history_trades` empty-list shape needs live-mock test; case-(c) restart-resume UX undefined; rebased branch test gate is "compilation-clean by inference" only — first impl-session task is full pytest baseline.
+
+**Pre-written next-session implementation prompt:** see scoping report §7. Paste-ready when operator is ready to execute.
+
+**Hard stops on Phase 3 implementation:** no prod-touching writes; no `execution_mode` flip in committed config; no auto_execute flips side-effect.
+
+---
+
 ## P1 — Stage-1 prod-deploy BLOCKED: blockers chain (filed 2026-05-30 17:40 UTC; revised 2026-05-31 after probe found 22:43 redeploy root cause was deploy-mechanism, not source-code drift)
 
 Surfaced by the 2026-05-30 17:22–17:34 UTC deploy attempt + rollback (see `runbooks/deploy_log.md` 2026-05-30 17:22 entry; memory `[[stage1-deploy-rolled-back-2026-05-30]]`). Re-attempted at 22:43–23:09 UTC + rolled back again on a DIFFERENT class of failure (memory `[[stage1-redeploy-rolled-back-2026-05-30]]`; **prior diagnostic CORRECTED 2026-05-31 by file-level probe — see `[[deploy-transfer-set-diff-derived-misses-stale-prod-files]]`**). The Stage 1 + gate (a) + tasty_options prod deploy is BLOCKED until the items below resolve.
