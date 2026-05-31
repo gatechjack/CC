@@ -10,7 +10,9 @@ task inside the same process as trading_corp — see main.py's idle loop.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +113,20 @@ def create_app(deps: WebDeps) -> FastAPI:
     # Live deps available on every request via request.app.state.deps
     app.state.deps = deps
 
+    # Stage-1 paper-mode dashboard surfaces:
+    #   • git_sha           — short SHA of the deployed commit. Set via
+    #                         GIT_SHA env-var by the deploy script; falls
+    #                         back to "unknown" when unset (current state
+    #                         until the redeploy script gets the follow-up
+    #                         enhancement to populate this).
+    #   • live_since_utc    — moment this process started serving. Used by
+    #                         the Stage-1 header badge to show the "live"
+    #                         duration of the current bitunix execution_mode
+    #                         (which is read once at startup from
+    #                         strategies.yaml and never hot-reloaded).
+    app.state.git_sha = os.environ.get("GIT_SHA", "unknown")
+    app.state.live_since_utc = datetime.now(timezone.utc)
+
     # Templates
     templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
     # Useful Jinja filters for dollar/pct formatting
@@ -125,6 +141,9 @@ def create_app(deps: WebDeps) -> FastAPI:
     templates.env.filters["et_hms"] = format_et_hms
     templates.env.filters["et_short"] = format_et_short
     templates.env.filters["et_full"] = format_et_full
+    # Stage-1 header badge resolver — called by base.html with `request`
+    # so it can read app.state.deps + app.state.git_sha + app.state.live_since_utc.
+    templates.env.globals["stage1_badge"] = _stage1_badge_data
     app.state.templates = templates
 
     # Static
@@ -227,6 +246,69 @@ def _fmt_pct_signed(v: Any, places: int = 2) -> str:
         return "—"
     sign = "+" if n >= 0 else "−"
     return f"{sign}{abs(n)*100:.{places}f}%"
+
+
+def _format_live_since(start_utc: datetime, now_utc: datetime) -> str:
+    """Compact human duration: 'just now', '47m', '2h 14m', '3d 4h'."""
+    delta = now_utc - start_utc
+    secs = int(delta.total_seconds())
+    if secs < 60:
+        return "just now"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m"
+    hrs = mins // 60
+    mins_rem = mins % 60
+    if hrs < 24:
+        return f"{hrs}h {mins_rem}m" if mins_rem else f"{hrs}h"
+    days = hrs // 24
+    hrs_rem = hrs % 24
+    return f"{days}d {hrs_rem}h" if hrs_rem else f"{days}d"
+
+
+def _stage1_badge_data(request: Request) -> dict:
+    """Resolve the Stage-1 paper-mode header badge data from app state.
+
+    Read at template-render time (not request-arrival) so each page sees a
+    fresh `live_since` label without coupling to the route handlers. The
+    badge surfaces the bitunix_futures division specifically — that is
+    where Stage-1 lives. Multi-division execution_mode visibility is a
+    separate tile concept and is intentionally out of scope.
+
+    Returns a dict with these keys (all strings, safe for direct render):
+      - execution_mode: 'paper' | 'live' | 'unwired' | 'unknown'
+      - git_sha: short SHA or 'unknown'
+      - live_since_label: '2h 14m' etc
+      - live_since_iso: ISO-8601 UTC for the tooltip
+      - division: the division this badge tracks (always 'bitunix_futures')
+    """
+    app_state = request.app.state
+    deps = getattr(app_state, "deps", None)
+    obs = getattr(deps, "bitunix_observer", None) if deps else None
+    if obs is None:
+        execution_mode = "unwired"
+    else:
+        execution_mode = getattr(obs, "execution_mode", "unknown") or "unknown"
+
+    git_sha_full = getattr(app_state, "git_sha", "unknown") or "unknown"
+    git_sha = git_sha_full[:7] if git_sha_full != "unknown" else "unknown"
+
+    live_since_utc = getattr(app_state, "live_since_utc", None)
+    if live_since_utc is None:
+        live_since_label = "—"
+        live_since_iso = "—"
+    else:
+        now_utc = datetime.now(timezone.utc)
+        live_since_label = _format_live_since(live_since_utc, now_utc)
+        live_since_iso = live_since_utc.strftime("%Y-%m-%d %H:%M:%SZ")
+
+    return {
+        "execution_mode": execution_mode,
+        "git_sha": git_sha,
+        "live_since_label": live_since_label,
+        "live_since_iso": live_since_iso,
+        "division": "bitunix_futures",
+    }
 
 
 def _fmt_compact(v: Any) -> str:

@@ -161,6 +161,32 @@
           <span id="tc-privacy-label">show $</span>
         </button>
 
+        {# Stage-1 paper-mode header badge: bitunix_futures execution_mode
+           + deployed SHA + live-since label. Read from app.state at
+           render-time via the stage1_badge() Jinja global. Shows on every
+           page so the operator can verify "the dashboard I'm looking at
+           IS the Stage-1 deploy I expect" before reading any tile. The
+           execution_mode pill takes its color from the mode itself
+           (paper=accent, live=loss, unwired/unknown=muted). #}
+        {% set _s1 = stage1_badge(request) %}
+        <span title="Stage 1 ({{ _s1.division }}) — execution_mode · deployed SHA · live since {{ _s1.live_since_iso }}"
+              class="hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-md
+                     text-[11px] font-mono uppercase tracking-wider
+                     bg-pane-2 border
+                     {% if _s1.execution_mode == 'live' %}border-loss/40
+                     {% elif _s1.execution_mode == 'paper' %}border-accent/40
+                     {% else %}border-edge{% endif %}">
+          <span class="text-muted">stage1</span>
+          <span class="
+            {% if _s1.execution_mode == 'live' %}text-loss
+            {% elif _s1.execution_mode == 'paper' %}text-accent
+            {% else %}text-muted/70{% endif %}">{{ _s1.execution_mode }}</span>
+          <span class="text-muted/40">·</span>
+          <span class="text-mono">{{ _s1.git_sha }}</span>
+          <span class="text-muted/40">·</span>
+          <span class="text-muted">live {{ _s1.live_since_label }}</span>
+        </span>
+
         <span class="px-2 py-1 rounded-md text-[11px] font-mono uppercase tracking-wider
                      {% if snap and snap.mode == 'LIVE' %}bg-loss/20 text-loss border border-loss/40
                      {% else %}bg-pane-2 text-muted border border-edge{% endif %}">
