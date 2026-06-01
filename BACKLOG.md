@@ -213,6 +213,33 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 ---
 
+## P2 — Low-equity Telegram alert for `bitunix_futures` division (filed 2026-06-01 via Finding #10 triage)
+
+**Source:** 2026-05-30 architectural review Finding #2 sub-item #8 (`reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` row 8: "Low-equity alert + account funded"). Graded `low — UNTRACKED gap (Finding #10)`; the original Stage-1 13-item readiness audit (`runbooks/2026-05-29_bitunix_live_readiness_audit.md`) lists this as ❌ NOT BUILT with capital amount undefined ($10-$50 Stage-1 sizing; $10K planned per `commit:2a3d20c`).
+
+**Live-mode observability gap:** no notification when account equity drops to a dangerous level.
+
+**Scope:**
+- Monitor account equity post-snapshot in `bitunix_futures` division.
+- Configurable threshold in `strategies.yaml` (default suggest 80% of starting equity; tune per operator loss tolerance).
+- Configurable secondary thresholds (e.g., 70%, 60%) for repeat alerts on further drops.
+- Debounce: each threshold crosses once per session; resets on recovery above threshold.
+- Telegram notification per CLAUDE.md §1 HITL surface direction: short ping, deeplink to dashboard, no equity figures in message body (dashboard has details).
+- Reuse existing `safety_notifier` infrastructure; add new alert kind.
+- `audit_event` row for each alert fired.
+
+**Not gating on:**
+- `execution_mode` flip to live (daily-loss-cap in risk gate is the structural safety; this alert is belt-and-suspenders observability).
+
+**Implementation considerations:**
+- Decide whether monitoring is sync (in snapshot loop) or async (separate task). Sync is simpler; async avoids blocking trade decisions on Telegram latency.
+- Telegram batcher already running in `safety_notifier` infrastructure; new alert kind plugs in cleanly.
+- Test: simulated equity drops trigger alerts at correct thresholds; debounce works; no double-alerts.
+
+**Estimated scope:** 1-2 weeknight sessions or 1 Saturday morning session. Small mechanical work, fits weeknight cadence.
+
+---
+
 ## P3 — PROD_ONLY anomalies surfaced by Item 5 sweep (filed 2026-05-31)
 
 Three files exist on prod that are NOT git-tracked on `origin/main` and do NOT match the documented `.bak-<label>-<date>` or `.pre-<label>-<date>` deploy-backup conventions. The Item 5 sweep flagged them for review. None block redeploy attempt #3; cleanup is operator-curated, low-priority.
