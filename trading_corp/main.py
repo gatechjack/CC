@@ -1466,6 +1466,21 @@ async def run(argv: list[str] | None = None) -> int:
             )
         except Exception:
             log.exception("bitunix lifecycle notifier wiring failed (continuing)")
+        # ── Stage-1 N+2 Phase 3 Session B Commit 4: live-exit executor ──
+        # Register the bitunix_observer so the replay loop forks live-tagged
+        # rows (extra.execution_mode="live" from Path C) to broker close via
+        # observer._execute_live_exits. Paper-tagged rows continue to use
+        # _update_row + _queue_close_out_notification (Session A behavior
+        # unchanged). The registration is unconditional — the fork is
+        # additionally gated inside _replay_tick_async on the row's
+        # execution_mode tag, so paper rows always take the paper path.
+        try:
+            from trading_corp.agents.paper_trade_replay import (
+                set_live_exit_executor,
+            )
+            set_live_exit_executor(bitunix_observer)
+        except Exception:
+            log.exception("bitunix live-exit executor wiring failed (continuing)")
         replay_task = start_replay_loop(secrets.db_url, interval_sec=900)
 
         # --- BitUnix 3m bar cache poll (Phase 3.2a) ---
