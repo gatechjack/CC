@@ -43,6 +43,7 @@ from trading_corp.brokers.bitunix_exceptions import BitunixStaleSnapshot
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
     AccountState,
+    FillEvent,
     PaperTradeRecord,
     ProposedOrder,
     StrategyState,
@@ -2494,6 +2495,130 @@ class BitunixFuturesObserver:
             log.warning("bitunix_observer: paper_trade_record write failed: %s", e)
 
         self._record_daily_risk(utc_date, daily_risk_pct)
+
+    def _record_exit_outcome(
+        self,
+        *,
+        order_id: str,
+        result: str,
+        result_ts: str,
+        result_price: float | None,
+        actual_pnl_dollars: float | None = None,
+        actual_r_multiple: float | None = None,
+        bars_to_resolution: int | None = None,
+        is_live: bool = False,
+        fill_event: FillEvent | None = None,
+        leg: str | None = None,
+        extra_json_updates: dict[str, Any] | None = None,
+    ) -> None:
+        """Canonical writer for paper_trade_record exit outcomes.
+
+        Exit-side mirror of `_record_placement_outcome`. Updates the
+        row's `result_*` columns + merges into `extra_json`, then
+        writes an `exit_outcome_recorded` audit row.
+
+        Per Decision 6.1(b), stamps `extra["result_source"]`:
+          * is_live=False → "paper_replay_bars"  (bar-walk classifier)
+          * is_live=True  → "live_broker_truth"  (broker FillEvent)
+
+        Session A scope: helper + stamp only. Session B wires the
+        upstream consumers (replay loop for paper, `_execute_live_exits`
+        for live). The stamp is load-bearing for Session B's downstream
+        readers (audit-grade win/loss provenance) and cheaper to add
+        now than retrofit later.
+
+        Failures (DB hiccup, audit write) are logged and SWALLOWED:
+        the exit happened — at the broker for live, at the classifier
+        for paper — and the row state lags the truth at worst. The
+        reconciler (commit 4) catches persistent divergences.
+        """
+        result_source = "live_broker_truth" if is_live else "paper_replay_bars"
+
+        # ── update paper_trade_record row + merged extra_json ─────────
+        try:
+            with db.connect(self.db_url) as conn:
+                conn.execute(
+                    "UPDATE paper_trade_record SET "
+                    "  result=?, result_ts=?, result_price=?, "
+                    "  actual_pnl_dollars=?, actual_r_multiple=?, "
+                    "  bars_to_resolution=? "
+                    "WHERE order_id=?",
+                    (
+                        result, result_ts, result_price,
+                        actual_pnl_dollars, actual_r_multiple,
+                        bars_to_resolution, order_id,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT extra_json FROM paper_trade_record "
+                    "WHERE order_id=?",
+                    (order_id,),
+                ).fetchone()
+                prior: dict[str, Any] = {}
+                if row and row["extra_json"]:
+                    try:
+                        prior = json.loads(row["extra_json"])
+                    except (TypeError, ValueError):
+                        prior = {}
+                merged: dict[str, Any] = dict(prior)
+                if extra_json_updates:
+                    merged.update(extra_json_updates)
+                merged["result_source"] = result_source
+                if leg is not None:
+                    merged["exit_leg"] = leg
+                if fill_event is not None:
+                    merged["exit_broker_order_id"] = fill_event.order_id
+                conn.execute(
+                    "UPDATE paper_trade_record SET extra_json = ? "
+                    "WHERE order_id = ?",
+                    (json.dumps(merged, default=str), order_id),
+                )
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: _record_exit_outcome row update failed "
+                "for order_id=%s: %s", order_id, e,
+            )
+
+        # ── audit row (write-AFTER-side-effect is acceptable here;
+        #    the side effect is local DB state, not real-money. The
+        #    row update IS the truth; the audit is the trail). ──
+        audit_payload: dict[str, Any] = {
+            "order_id": order_id,
+            "strategy": "bitunix_futures",
+            "division": "bitunix_futures",
+            "result": result,
+            "result_ts": result_ts,
+            "result_price": result_price,
+            "result_source": result_source,
+            "is_live": is_live,
+        }
+        if leg is not None:
+            audit_payload["leg"] = leg
+        if actual_pnl_dollars is not None:
+            audit_payload["actual_pnl_dollars"] = actual_pnl_dollars
+        if actual_r_multiple is not None:
+            audit_payload["actual_r_multiple"] = actual_r_multiple
+        if fill_event is not None:
+            audit_payload["fill_event"] = {
+                "order_id": fill_event.order_id,
+                "symbol": fill_event.symbol,
+                "side": fill_event.side,
+                "qty": fill_event.qty,
+                "price": fill_event.price,
+                "ts": fill_event.ts,
+                "venue": fill_event.venue,
+            }
+        try:
+            self.logger_agent.log_event(
+                actor="bitunix_futures",
+                kind="exit_outcome_recorded",
+                payload=audit_payload,
+            )
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: exit_outcome_recorded audit failed "
+                "for order_id=%s: %s", order_id, e,
+            )
 
     async def _place_live(
         self,
