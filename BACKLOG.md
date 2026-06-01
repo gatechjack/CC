@@ -294,6 +294,26 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 ---
 
+## P3 — Post-Session-B audit of analogous paper-vs-live timing assumptions beyond Finding #5 cases 5a + 5b (filed 2026-06-01 via Finding #10 triage Decision #6)
+
+**Source:** 2026-05-30 architectural review Finding #5 surfaced two paper-vs-live timing assumption mismatches (`reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` Finding #5 + open question #6 at line 476):
+- **5a:** classifier-bar vs broker-event timing (bar-close evaluation assumption from paper-mode may not transfer to async live events).
+- **5b:** `_observe_fill` one-shot vs re-poll (with `_handle_stuck_order` available, semantic distinction may need refinement). See review §267 for the `_observe_fill` detail.
+
+**Decision #6 outcome (2026-06-01):** defer broader analogous-cases audit to AFTER Session B lands AND paper-mode exercise begins. Session B's `_execute_live_exits` + replay-loop wiring naturally handles the two surfaced cases. Additional cases (if any) are more efficiently surfaced by emergent-need pressure during paper exercise than by speculative audit.
+
+**Scope when audit runs:**
+- Read-only sweep of `paper_trade_replay.py` and division code paths for any other timing-assumption mismatches between paper-mode determinism and live-mode async events.
+- Document findings; address in Session C or future maintenance work.
+
+**Prerequisite:** Session B merged + 1-2 weeks of paper-mode exercise on the new wiring.
+
+**Not gating:** `execution_mode` flip to live.
+
+**Reference:** architectural review Finding #5; CLAUDE.md Session discipline (verify premises against ground truth).
+
+---
+
 ## P3 — `test_paper_run_tooling.py` readiness checks have an undocumented `data/trading_corp.db` filesystem dependency (filed 2026-06-01, refiled corrected framing during Session B pre-flight; supersedes original `0b8419a` framing of "BACKLOG.md text coupling" which was wrong)
 
 **Surface (corrected):** during N+2 Phase 3 Session B pre-flight on a fresh worktree (`n2-phase3-impl-b-2026-06-01`), the baseline test gate showed 28 failures + 3 errors — 2 more than the post-Session-A-merge gate had shown when run from the `cc/` main worktree (26/3). The 2 extra failures are:
