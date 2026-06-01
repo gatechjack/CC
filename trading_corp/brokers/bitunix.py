@@ -949,6 +949,66 @@ class BitunixBroker(Broker):
         body["clientId"] = self._client_id(order)
         return body
 
+    # ── Phase 3 (N+2): public position-list accessor for the reconciler ─
+    async def get_pending_positions(self) -> list[Position]:
+        """Return broker-truth list of open futures positions.
+
+        Thin public wrapper over `/api/v1/futures/position/get_pending_positions`
+        for the N+2 position-state reconciler. Uses `_request` (signed +
+        gate (a) retry-aware) and parses the response into the same
+        `Position` dataclass shape `snapshot()` returns — SHORT positions
+        render with negative qty for downstream PnL math consistency.
+
+        Stub-mode and missing-creds return `[]` (no exception) so dormant
+        paper-mode callers don't crash. Transient errors are logged +
+        treated as "no positions known" — the reconciler's "verdict =
+        missing" branch handles this.
+
+        Distinct from `snapshot()` which fetches account equity + cash
+        in the same call; this method is positions-only and avoids the
+        N×marginCoin balance fetches when the caller only needs the
+        position list.
+        """
+        if (
+            self._stub
+            or not self._client
+            or not self._api_key
+            or not self._api_secret
+        ):
+            return []
+        try:
+            data = await self._request(
+                "GET",
+                "/api/v1/futures/position/get_pending_positions",
+                query={},
+            )
+        except Exception as e:
+            log.warning("BitUnix get_pending_positions failed: %s", e)
+            return []
+        positions: list[Position] = []
+        for p in (data or []):
+            qty = _to_float(p.get("qty"))
+            if qty == 0:
+                continue
+            side = (p.get("side") or "").upper()
+            if side == "SHORT":
+                qty = -abs(qty)
+            positions.append(Position(
+                account="bitunix-futures",
+                symbol=p.get("symbol") or "?",
+                qty=qty,
+                avg_price=_to_float(p.get("avgOpenPrice")),
+                opened_ts=_iso_from_ms(p.get("ctime")),
+                extra={
+                    "leverage": p.get("leverage"),
+                    "marginMode": p.get("marginMode"),
+                    "unrealizedPNL": p.get("unrealizedPNL"),
+                    "liqPrice": p.get("liqPrice"),
+                    "side": side,
+                },
+            ))
+        return positions
+
     # ── Phase 4: position-mode guard (one-way, account-wide) ────────────
     async def _position_mode_from_positions(self) -> str | None:
         """Read the account position mode off any open position.
