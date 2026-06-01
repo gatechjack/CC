@@ -1566,6 +1566,39 @@ async def run(argv: list[str] | None = None) -> int:
             name="bitunix-pa-redeem",
         )
 
+        # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5a): restart-resume ──
+        # cases (a) match + (b) orphan + (c-deferred). Runs BEFORE the
+        # position-state reconciler so the broker_order_id-aware match
+        # pass happens first; reconcile_position_state's startup sweep
+        # is then redundant but cheap (idempotent).
+        if (
+            _execution_mode == "live"
+            and _bx_broker is not None
+            and hasattr(_bx_broker, "get_pending_positions")
+        ):
+            try:
+                from trading_corp.agents.divisions.bitunix_position_reconciler import (
+                    resume_live_positions as _resume_live_positions,
+                )
+                # Lifecycle notifier may not yet be wired (it lands later
+                # in startup); pass None for now — restart-resume telegram
+                # is best-effort. The audit kinds carry the operator-facing
+                # detail regardless.
+                _resume_summary = await _resume_live_positions(
+                    _bx_broker, secrets.db_url, notifier=None,
+                )
+                log.info(
+                    "bitunix restart-resume at startup: matched=%d "
+                    "orphan=%d case_c_deferred=%d",
+                    len(_resume_summary.matched),
+                    len(_resume_summary.orphan_on_broker),
+                    len(_resume_summary.case_c_deferred),
+                )
+            except Exception:
+                log.exception(
+                    "bitunix restart-resume at startup failed (continuing)"
+                )
+
         # ── Stage-1 N+2 Phase 3 Session B Commit 3: position-state ──
         # reconciler one-shot at startup. Compares bot-tracked live rows
         # (paper_trade_record WHERE result IS NULL AND
@@ -1611,6 +1644,35 @@ async def run(argv: list[str] | None = None) -> int:
                 log.exception(
                     "bitunix position-state reconciler at startup failed "
                     "(continuing; halt latch unchanged)"
+                )
+
+        # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5b): 60s sanity poll ──
+        # Background task running `reconcile_position_state` every 60s.
+        # Catches drift that develops AFTER the startup check passed
+        # (broker auto-close during idle, operator UI changes, etc.).
+        # Notifier is passed in lazily — wired below as soon as it lands.
+        if (
+            _execution_mode == "live"
+            and _bx_broker is not None
+            and hasattr(_bx_broker, "get_pending_positions")
+        ):
+            try:
+                from trading_corp.agents.divisions.bitunix_position_reconciler import (
+                    run_position_state_sanity_poll_loop as
+                    _run_position_state_sanity_poll_loop,
+                )
+                asyncio.create_task(
+                    _run_position_state_sanity_poll_loop(
+                        _bx_broker, secrets.db_url,
+                        interval_s=60.0,
+                        notifier=None,  # set after lifecycle notifier wires below
+                    ),
+                    name="bitunix-position-state-sanity-poll",
+                )
+            except Exception:
+                log.exception(
+                    "bitunix position-state sanity poll wiring failed "
+                    "(continuing)"
                 )
 
         # trade-plan PR 5 — position SL reconciler. Stateless 60s loop

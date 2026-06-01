@@ -585,3 +585,249 @@ async def reconcile_position_state(
             )
 
     return result
+
+
+# ─── Phase 3 Session B Commit 5 (5a): restart-resume cases (a)+(b) ──────
+
+
+RESTART_RESUME_EXECUTED_KIND = "restart_resume_executed"
+ORPHAN_BROKER_POSITION_ON_RESTART_KIND = "orphan_broker_position_on_restart"
+RESTART_RESUME_CASE_C_DEFERRED_KIND = "restart_resume_case_c_deferred"
+
+
+@dataclass
+class RestartResumeSummary:
+    matched: list[dict[str, Any]] = field(default_factory=list)
+    orphan_on_broker: list[dict[str, Any]] = field(default_factory=list)
+    case_c_deferred: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def has_orphan_or_case_c(self) -> bool:
+        return bool(self.orphan_on_broker or self.case_c_deferred)
+
+
+async def resume_live_positions(
+    broker: Any,
+    db_url: str,
+    *,
+    halt_on_orphan_or_case_c: bool = True,
+    notifier: Any = None,
+) -> RestartResumeSummary:
+    """Restart-resume cases (a) + (b) + (c-defer) per Phase 1b §4.
+
+    On bot start, BEFORE the replay loop processes any record:
+      Case (a): broker has position, bot has matching live row
+                (matched by broker_order_id stamped by Path C, with
+                symbol+side fallback). Already-tracked; clean continue.
+      Case (b): broker has position, bot has NO matching row
+                (orphan_on_broker). Path C should have prevented this
+                (every live entry writes a row); when it fires it's an
+                integrity violation. Halt-and-page; operator-resolve.
+      Case (c): bot has row, broker has NO position. Defer per
+                Phase 1b §4 (the position-state reconciler's
+                missing_on_broker surface handles the audit + halt;
+                this function adds a `restart_resume_case_c_deferred`
+                audit + operator-page telegram for operator visibility).
+
+    Cases (a) + (b) reuse `reconcile_position_state` matches +
+    orphan_on_broker; this function adds the broker_order_id-aware
+    matching pass + audit kinds + telegram per the Phase 1b spec.
+
+    Per Phase 1a §9c: exits are NOT halted; only entries.
+    """
+    summary = RestartResumeSummary()
+
+    # Reconcile by (symbol, side) first — reuse Session A logic.
+    recon = await reconcile_position_state(
+        broker, db_url, halt_on_divergence=False,
+    )
+
+    # Case (a): matches → already-tracked; one per match.
+    for m in recon.matches:
+        record = {
+            "order_id": m.order_id,
+            "symbol": m.symbol,
+            "side": m.side,
+            "bot_qty": m.bot_qty,
+            "broker_qty": m.broker_qty,
+        }
+        summary.matched.append(record)
+        try:
+            with db.connect(db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        _utc_now_iso(),
+                        RECONCILER_ACTOR,
+                        RESTART_RESUME_EXECUTED_KIND,
+                        json.dumps(record, default=str),
+                    ),
+                )
+        except Exception as e:
+            log.warning(
+                "resume_live_positions: matched audit failed: %s", e,
+            )
+
+    # Case (b): orphans on broker.
+    for o in recon.orphan_on_broker:
+        record = {
+            "symbol": o.symbol,
+            "broker_qty": o.broker_qty,
+            "broker_side": o.broker_side,
+            "kind": "orphan_on_broker",
+        }
+        summary.orphan_on_broker.append(record)
+        try:
+            with db.connect(db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        _utc_now_iso(),
+                        RECONCILER_ACTOR,
+                        ORPHAN_BROKER_POSITION_ON_RESTART_KIND,
+                        json.dumps(record, default=str),
+                    ),
+                )
+        except Exception as e:
+            log.warning(
+                "resume_live_positions: orphan audit failed: %s", e,
+            )
+
+    # Case (c): bot tracks row but broker doesn't (= reconciler's
+    # missing_on_broker). Defer per Phase 1b §4 — operator resolves.
+    for m in recon.missing_on_broker:
+        record = {
+            "order_id": m.order_id,
+            "symbol": m.symbol,
+            "side": m.side,
+            "bot_qty": m.bot_qty,
+            "deferred_reason": (
+                "broker may have closed via TP/SL/liquidation during "
+                "downtime; operator must reconcile manually"
+            ),
+        }
+        summary.case_c_deferred.append(record)
+        try:
+            with db.connect(db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        _utc_now_iso(),
+                        RECONCILER_ACTOR,
+                        RESTART_RESUME_CASE_C_DEFERRED_KIND,
+                        json.dumps(record, default=str),
+                    ),
+                )
+        except Exception as e:
+            log.warning(
+                "resume_live_positions: case-c audit failed: %s", e,
+            )
+
+    # Halt latch for cases (b) and (c).
+    if summary.has_orphan_or_case_c and halt_on_orphan_or_case_c:
+        try:
+            if hasattr(broker, "_halt_new_orders"):
+                broker._halt_new_orders = True
+                if hasattr(broker, "_halt_reason"):
+                    broker._halt_reason = "restart_resume_orphan_or_case_c"
+        except Exception as e:
+            log.warning(
+                "resume_live_positions: halt-set failed: %s", e,
+            )
+
+    # Telegram summary via the lifecycle notifier (best-effort).
+    if notifier is not None and hasattr(notifier, "notify_restart_resume_executed"):
+        try:
+            await notifier.notify_restart_resume_executed(
+                matched_count=len(summary.matched),
+                orphan_count=len(summary.orphan_on_broker),
+                case_c_count=len(summary.case_c_deferred),
+            )
+        except Exception as e:
+            log.warning(
+                "resume_live_positions: notifier push failed: %s", e,
+            )
+
+    return summary
+
+
+# ─── Phase 3 Session B Commit 5 (5b): 60s sanity poll loop ──────────────
+
+
+async def run_position_state_sanity_poll_loop(
+    broker: Any,
+    db_url: str,
+    *,
+    interval_s: float = 60.0,
+    notifier: Any = None,
+) -> None:
+    """Forever-loop calling `reconcile_position_state` every `interval_s`.
+
+    Catches drift that develops AFTER the startup check passed (e.g.
+    broker auto-closed via liquidation while the bot was idle, or an
+    operator manually adjusted positions on the BitUnix UI). On
+    divergence: the reconciler already sets the halt latch; this loop
+    ALSO emits a telegram via `notifier.notify_reconciliation_divergence`
+    if the notifier is wired.
+
+    Exceptions per tick are logged + swallowed (a bad tick must not
+    kill the loop). Cancellation propagates so the runtime can stop
+    the task cleanly.
+    """
+    # Floor at 0.001s for testability; prod callers pass 60.0.
+    interval = max(0.001, float(interval_s))
+    log.info(
+        "bitunix position-state sanity poll: starting (interval=%.3fs)",
+        interval,
+    )
+    while True:
+        try:
+            result = await reconcile_position_state(broker, db_url)
+            if result.has_divergence and notifier is not None:
+                if hasattr(notifier, "notify_reconciliation_divergence"):
+                    for m in result.missing_on_broker:
+                        try:
+                            await notifier.notify_reconciliation_divergence(
+                                order_id=m.order_id,
+                                symbol=m.symbol,
+                                kind="missing_on_broker",
+                                detail=(
+                                    f"bot tracks open row but broker "
+                                    f"has no matching position "
+                                    f"(side={m.side}, qty={m.bot_qty})"
+                                ),
+                            )
+                        except Exception:
+                            log.exception(
+                                "sanity poll: divergence notify failed"
+                            )
+                    for o in result.orphan_on_broker:
+                        try:
+                            await notifier.notify_reconciliation_divergence(
+                                order_id=None,
+                                symbol=o.symbol,
+                                kind="orphan_on_broker",
+                                detail=(
+                                    f"broker has position but bot does "
+                                    f"not track it "
+                                    f"(side={o.broker_side}, qty={o.broker_qty})"
+                                ),
+                            )
+                        except Exception:
+                            log.exception(
+                                "sanity poll: divergence notify failed"
+                            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception(
+                "bitunix position-state sanity poll: tick failed "
+                "(continuing)"
+            )
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
