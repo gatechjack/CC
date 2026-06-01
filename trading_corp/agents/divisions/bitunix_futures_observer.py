@@ -39,7 +39,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from trading_corp.brokers.bitunix_exceptions import BitunixStaleSnapshot
+from trading_corp.brokers.bitunix_exceptions import (
+    BitunixStaleSnapshot,
+    BitunixStuckOrderCancelFailed,
+    BitunixStuckOrderCancelled,
+)
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
     AccountState,
@@ -2967,6 +2971,183 @@ class BitunixFuturesObserver:
                     "bitunix_observer: telegram_notification_failed audit "
                     "write failed: %s", ae,
                 )
+
+    # ── live-exit path: data_exec.place(reduce_only=True) + record ──
+
+    async def _execute_live_exits(
+        self,
+        *,
+        order_id: str,
+        symbol: str,
+        entry_side: str,
+        qty: float,
+        exit_kind: str,
+        parent_broker_order_id: str | None,
+        result: str,
+        result_ts: str,
+        result_price: float,
+        actual_pnl_dollars: float | None = None,
+        actual_r_multiple: float | None = None,
+        bars_to_resolution: int | None = None,
+        leg: str | None = None,
+        extra_json_updates: dict[str, Any] | None = None,
+    ) -> bool:
+        """Live position close — exit-side counterpart to `_place_live`.
+
+        Builds a reduce-only market order (side INVERTED from entry per
+        Phase 1a §3), routes through `data_exec.place()`, and on success
+        calls `_record_exit_outcome(is_live=True, fill_event=fill)`.
+
+        Returns True on a clean close, False on any rejection (broker
+        error, stuck-order cancel, stuck-cancel-failed). On False the
+        paper_trade_record row's `result` stays NULL so the replay
+        loop / reconciler sees the position as still open and retries
+        on the next tick.
+
+        Gate (a) integration (Finding #6.4 wiring):
+          * `BitunixStuckOrderCancelled` — `_observe_fill` timed out,
+            broker cancelled successfully. Write
+            `live_exit_order_stuck_cancelled` audit; alert; return
+            False (position remains open at broker).
+          * `BitunixStuckOrderCancelFailed` — `_observe_fill` timed out
+            AND cancel ALSO failed. Worst case; broker state unknown.
+            Write `live_exit_order_halt` audit; elevated alert;
+            return False. (Halt-and-page; reconciler will detect.)
+          * Generic exceptions: rejection audit + alert; return False.
+
+        Side-effect ordering (write-ahead-of-side-effect discipline):
+          1. `live_exit_order_placed` intent audit
+          2. `data_exec.place` (real money via reduce-only order)
+          3. `_record_exit_outcome` writes the result + audit trail
+          4. Operator-facing telegram
+
+        Session A scope: this commit ADDS the method. Wiring into the
+        replay loop / reconciler is Session B work — Phase 3 lands the
+        primitive without flipping `execution_mode` on prod.
+        """
+        exit_side = "sell" if entry_side == "buy" else "buy"
+        exit_id = f"{order_id}-exit-{exit_kind}"
+        exit_order = ProposedOrder(
+            strategy="bitunix_futures",
+            symbol=symbol,
+            side=exit_side,  # type: ignore[arg-type]
+            qty=qty,
+            order_type="market",
+            rationale=f"exit:{exit_kind} (from entry {order_id})",
+            extra={
+                "reduce_only": True,
+                "exit_kind": exit_kind,
+                "parent_order_id": order_id,
+                "parent_broker_order_id": parent_broker_order_id,
+                "leg": leg,
+            },
+            id=exit_id,
+        )
+
+        # ── Intent audit (write-ahead-of-side-effect) ────────────────
+        intent_payload: dict[str, Any] = {
+            "order_id": exit_id,
+            "parent_order_id": order_id,
+            "parent_broker_order_id": parent_broker_order_id,
+            "strategy": "bitunix_futures",
+            "division": "bitunix_futures",
+            "symbol": symbol,
+            "side": exit_side,
+            "qty": qty,
+            "exit_kind": exit_kind,
+            "leg": leg,
+        }
+        self.logger_agent.log_event(
+            actor="bitunix_futures",
+            kind="live_exit_order_placed",
+            payload=intent_payload,
+        )
+
+        # ── Place the reduce-only exit order ─────────────────────────
+        try:
+            fill = await self.data_exec.place(
+                exit_order, division="bitunix_futures",
+            )
+        except BitunixStuckOrderCancelled as e:
+            reject_payload = dict(intent_payload)
+            reject_payload["error_type"] = "BitunixStuckOrderCancelled"
+            reject_payload["error"] = str(e)
+            self.logger_agent.log_event(
+                actor="bitunix_futures",
+                kind="live_exit_order_stuck_cancelled",
+                payload=reject_payload,
+            )
+            await self._push_with_confirmed_delivery(
+                order_id=exit_id,
+                message=(
+                    f"BTC-PERP EXIT STUCK→CANCELLED (live, exit)\n"
+                    f"exit_kind: {exit_kind}  qty: {qty}\n"
+                    f"parent_order_id: {order_id}\n"
+                    f"position remains open at broker — replay loop "
+                    f"will retry next tick"
+                ),
+                failure_channel="live_exit_stuck_cancel_alert",
+            )
+            return False
+        except BitunixStuckOrderCancelFailed as e:
+            reject_payload = dict(intent_payload)
+            reject_payload["error_type"] = "BitunixStuckOrderCancelFailed"
+            reject_payload["error"] = str(e)
+            self.logger_agent.log_event(
+                actor="bitunix_futures",
+                kind="live_exit_order_halt",
+                payload=reject_payload,
+            )
+            await self._push_with_confirmed_delivery(
+                order_id=exit_id,
+                message=(
+                    f"🚨 BTC-PERP EXIT STUCK→CANCEL-FAILED (live, exit)\n"
+                    f"exit_kind: {exit_kind}  qty: {qty}\n"
+                    f"parent_order_id: {order_id}\n"
+                    f"broker state UNKNOWN — operator must reconcile"
+                ),
+                failure_channel="live_exit_stuck_cancel_failed_alert",
+            )
+            return False
+        except Exception as e:
+            reject_payload = dict(intent_payload)
+            reject_payload["error_type"] = type(e).__name__
+            reject_payload["error"] = str(e)
+            self.logger_agent.log_event(
+                actor="bitunix_futures",
+                kind="live_exit_order_rejected",
+                payload=reject_payload,
+            )
+            await self._push_with_confirmed_delivery(
+                order_id=exit_id,
+                message=(
+                    f"BTC-PERP EXIT REJECTED (live, exit)\n"
+                    f"exit_kind: {exit_kind}  qty: {qty}\n"
+                    f"error: {type(e).__name__}: {e}\n"
+                    f"parent_order_id: {order_id}"
+                ),
+                failure_channel="live_exit_rejection_alert",
+            )
+            return False
+
+        # ── Success → record exit with broker-truth fill ─────────────
+        real_exit_price = (
+            float(fill.price) if fill.price is not None else result_price
+        )
+        self._record_exit_outcome(
+            order_id=order_id,
+            result=result,
+            result_ts=result_ts,
+            result_price=real_exit_price,
+            actual_pnl_dollars=actual_pnl_dollars,
+            actual_r_multiple=actual_r_multiple,
+            bars_to_resolution=bars_to_resolution,
+            is_live=True,
+            fill_event=fill,
+            leg=leg,
+            extra_json_updates=extra_json_updates,
+        )
+        return True
 
     # ── async order flow: classify → propose → risk → place → notify ─
 
