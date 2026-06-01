@@ -294,26 +294,35 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 ---
 
-## P3 — Investigate `test_paper_run_tooling.py` readiness checks — possible documentation-coupled assertions (filed 2026-06-01 via Session A merge close-out)
+## P3 — `test_paper_run_tooling.py` readiness checks have an undocumented `data/trading_corp.db` filesystem dependency (filed 2026-06-01, refiled corrected framing during Session B pre-flight; supersedes original `0b8419a` framing of "BACKLOG.md text coupling" which was wrong)
 
-**Surface:** during the N+2 Phase 3 Session A merge close-out (`844947a`), the post-merge test gate on `origin/main 36157bf` reported 26 failures vs 28 pre-merge. The 2 newly-passing tests are:
+**Surface (corrected):** during N+2 Phase 3 Session B pre-flight on a fresh worktree (`n2-phase3-impl-b-2026-06-01`), the baseline test gate showed 28 failures + 3 errors — 2 more than the post-Session-A-merge gate had shown when run from the `cc/` main worktree (26/3). The 2 extra failures are:
 - `tests/test_paper_run_tooling.py::test_readiness_check_all_blocking_pass_on_production_config`
 - `tests/test_paper_run_tooling.py::test_readiness_check_reports_block_status_correctly`
 
-Session A's source changes touch none of `paper_run_tooling`'s dependencies (verified via the per-commit ACTIVE-vs-DORMANT audit pre-merge; only bitunix observer/broker/reconciler files modified). Probable cause: the operator's `1280007` BACKLOG-doc commit (`docs(backlog): file P2 per-division fallback_equity (Finding #2 H-11 sharp edge)`) updated `BACKLOG.md` text that the readiness checker parses as part of its assertions. If true, that's a small smell — tests that break/fix based on doc-text edits are brittle and create unexpected coupling between BACKLOG hygiene and test-gate state.
+**Root cause (verified by targeted reproduction during Session B pre-flight):** these tests call `run_readiness_checks(skip_network=True)` (from `trading_corp.scripts.ic_paper_run_readiness`), which connects to the **default production DB path** (`sqlite:///data/trading_corp.db` relative to the cwd) and probes the `agent_state`, `audit_event`, and `position` tables for BLOCK-level readiness criteria. The test FAILS with `no such table: agent_state`/`audit_event`/`position` when the default-path DB file doesn't exist OR exists without schema initialized.
+
+The `cc/` main worktree happened to have this DB initialized from prior testing activity; fresh worktrees do not. The "newly-passing" attribution in Session A's merge close-out (deploy_log entry 2026-06-01 ~18:50 UTC) is therefore wrong — Session A's merge did not flip these tests; the `cc/` worktree environment did. The original P3 framing ("BACKLOG.md doc-text coupling") was also wrong — the readiness check does not read BACKLOG.md.
+
+**Why the corrected framing matters:** the 26/3 number was reproducible only on machines where prior pytest/DB-init activity had populated `data/trading_corp.db`. It is NOT the architecturally honest baseline. The honest fresh-worktree baseline is **28/3**, applicable to any clean checkout including CI and any operator running tests against a new worktree.
 
 **Investigation tasks (future maintenance session, low-priority):**
-1. Read `tests/test_paper_run_tooling.py` and identify what `BACKLOG.md` / docs text the readiness check parses.
-2. Decide: (a) decouple the test from doc-text (e.g., use a fixture or fixed-content reference file), or (b) document the coupling explicitly so future operators know "editing BACKLOG.md may shift the test baseline."
-3. If decoupling: re-validate test intent — what was the readiness checker meant to assert? An out-of-date doc may have been the actual failure mode pre-`1280007`.
-4. If documenting: add a one-line comment in the test file + a note in the file the test reads (e.g., a header block in BACKLOG.md saying "this file is parsed by test_paper_run_tooling.py — see X for the coupling").
+1. Decide between three remediations:
+   (a) **Self-contain the tests** — fixture creates a tmp DB with schema; `run_readiness_checks(db_url=...)` accepts an override (it already does per `test_readiness_check_handles_db_path_override` at `tests/test_paper_run_tooling.py:103-114`). Refactor the 2 failing tests to use the same pattern.
+   (b) **Mark as integration-only** — add `@pytest.mark.integration` and exclude from default unit-test runs; documented as "requires a populated DB."
+   (c) **Document the dependency explicitly** — add a `conftest.py` autouse fixture that initializes the schema at the default path, OR add a module-level docstring + a `skipif` guard that auto-skips when the DB doesn't exist.
 
-**Why P3:** the tests are passing on current `origin/main`; the coupling (if real) doesn't gate any production behavior; investigation is hygiene, not safety. Don't touch tonight — file for a future maintenance session.
+   Recommend (a) — symmetric with the existing `_handle_db_path_override` test pattern; self-contained tests are the long-term hygiene win.
 
-**Reference SHAs:**
-- Pre-merge gate (28/3): impl branch `bitunix-live-exit-path-impl-2026-06-01` (HEAD `08f2cb2`) off `bd9c0a2`
-- Post-merge gate (26/3): `origin/main 36157bf`
-- Operator commit suspected to flip the 2 tests: `1280007`
+2. After remediation, the fresh-worktree baseline drops back to 26/3 cleanly. Update `runbooks/deploy_log.md` baseline references accordingly.
+
+**Why P3:** the tests are technically correct (they assert that the production-default DB is in a valid state for kickoff), and the failures don't gate any production behavior. The coupling is undocumented but not load-bearing. Don't touch tonight — file for a future maintenance session.
+
+**Reference SHAs / verification:**
+- Fresh-worktree baseline (this is canonical): 28/3 — reproducible on any clean checkout.
+- `cc/` main worktree post-Session-A-merge ad-hoc result: 26/3 — only because `data/trading_corp.db` happens to be initialized there.
+- Targeted repro showing the actual failure mode: `pytest tests/test_paper_run_tooling.py::test_readiness_check_all_blocking_pass_on_production_config -x --tb=long` in a fresh worktree, observed `[agent_state read/write] no such table: agent_state` + 2 sibling table-missing errors.
+- Original (incorrect) P3 framing: commit `0b8419a` — superseded by this refile.
 
 ---
 
