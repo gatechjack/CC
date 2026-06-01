@@ -8,7 +8,30 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## P1 — N+2 Phase 3 (Stage-1 BitUnix live exit path) implementation READY (filed 2026-06-01 via scoping branch `n2-phase3-scoping-2026-06-01`)
+## P1 — N+2 Phase 3 (Stage-1 BitUnix live exit path) — Session A COMPLETE 2026-06-01; Session B PENDING
+
+**Update 2026-06-01:** Session A landed 4 commits on `bitunix-live-exit-path-impl-2026-06-01` (HEAD `fadab6c`), off `origin/main` `bd9c0a2`. Branch NOT merged; STOP-AND-REPORT for operator merge approval. Test gate clean (28/3 exact baseline match; zero new failures from Session A; ~52 new tests pass per per-file gates). See `reports/2026-06-01_n2_phase3_session_a_complete.md` for full scope + premise corrections + deferred items, and `reports/2026-06-01_n2_phase3_session_b_handoff.md` for the next-session prompt.
+
+**Session A scope landed (~669 source + ~1374 test LOC across 4 commits):**
+- `cb46e0e` Path C revert — live entries write `paper_trade_record` tagged `extra.execution_mode="live"` + `broker_order_id`
+- `6c36d6b` `_record_exit_outcome` canonical helper with Decision 6.1(b) `extra.result_source` stamp
+- `33e5732` `_execute_live_exits` async live-exit primitive + `BitunixBroker.get_pending_positions` extracted method (Decision 6.4(a))
+- `fadab6c` `reconcile_position_state` function added to existing `bitunix_position_reconciler.py` (separate concern from the SL lifecycle `reconciler_tick`)
+
+**Premise corrections caught + filed (Session A only):**
+1. The existing `bitunix_position_reconciler.py` is the SL LIFECYCLE reconciler, NOT a position-state stub. The "dormant in paper mode" reference in the scoping report cites the SL lifecycle docstring; dormancy is per-leg SL transitions waiting on Phase 4 broker fill state, not a position-state extension target. Resolution: added `reconcile_position_state` as new function in same module; two orthogonal concerns sharing a file.
+2. `BitunixBroker.__init__` signature is `(api_key, api_secret, *, logger, safety_notifier)` — no passphrase, no base_url. Test fixtures must match.
+
+**Deferred to Session B (per user's task-description Session A scope, NOT yet started):**
+- FillEvent additive fields (`fee`, `venue_order_id`)
+- Decision 6.2 `insert_paper_trade_record` DB-lock retry
+- Wiring `_record_exit_outcome` / `_execute_live_exits` into the paper-replay loop
+- Wiring `reconcile_position_state` into `main.py` startup
+- 60s background sanity poll (Phase 1b §2)
+- `_resume_live_positions` cases (a) + (b) (Phase 1b §4 restart-resume)
+- 8 operational alerts on `BitunixLifecycleNotifier` (Phase 1b §5)
+
+**Original Phase 3 entry (filed 2026-06-01 via scoping branch `n2-phase3-scoping-2026-06-01`):**
 
 **Scoping report:** `reports/2026-06-01_n2_phase3_scoping.md` (refined scope brief; pre-written next-session implementation prompt at §7).
 
