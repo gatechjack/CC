@@ -240,6 +240,35 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 ---
 
+## P2 — Per-division configurable equity placeholder for webhook snapshot-failure fallback (filed 2026-06-01 via Finding #10 triage, refined per operator)
+
+**Source:** 2026-05-30 architectural review H-11 sharp edge (`reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` Finding #2 row #10 + line 159 untracked-gaps summary). CLAUDE.md §5 sharp edges currently documents: "Webhook risk gate falls back to `equity = 100_000.0` if broker snapshot fails. Risk caps run on a placeholder rather than rejecting."
+
+**Operator decision (2026-06-01):** change fallback to per-division configurable placeholder, defaulting to small conservative value, with explicit per-division overrides matching intended account sizing. Prefer occasional slightly-mis-sized trades (within 10-20% of intended) over missed trades during transient broker API issues. Mode-aware stand-down behavior (alternative architectural choice) deferred — may revisit before `execution_mode` flip if operational patterns suggest it.
+
+**Scope:**
+
+1. Replace hardcoded `equity = 100_000.0` in webhook risk gate path (`web/webhooks.py` or wherever the fallback lives) with read from `divisions.yaml:<division>.fallback_equity`, defaulting to $1K if not specified.
+2. Add `fallback_equity` field to `bitunix_futures` and `coinbase_spot` division configs:
+   - `bitunix_futures: 10000` (matches operator-stated discipline of keeping bitunix topped up to $10K)
+   - `coinbase_spot: <operator-decided based on actual account>`
+3. Update CLAUDE.md §5 sharp edges entry to reflect new behavior.
+4. Tests:
+   - `test_webhook_risk_gate_snapshot_failure_uses_division_config.py`: bitunix snapshot failure uses $10K placeholder.
+   - `test_webhook_risk_gate_snapshot_failure_missing_config`: unknown division falls back to $1K default.
+   - Existing webhook tests don't regress.
+5. Audit-event row enhancement: `snapshot_failure` events should record the placeholder value used in `payload_json` so audit trail is complete.
+
+**Not gating:**
+- N+2 Phase 3 implementation (no Phase 3 dependency).
+- `execution_mode` flip (this fix is BEFORE live mode is sane to flip).
+
+**Reference:** architectural review H-11 sharp edge; CLAUDE.md §5 sharp edges (needs update post-implementation); CLAUDE.md §1 HITL surface direction (Telegram alert pattern from previous Finding #10 sub-item remains separately applicable for severe snapshot failures even with placeholder fix — see "P2 — Low-equity Telegram alert for `bitunix_futures` division" entry above).
+
+**Estimated scope:** 1-2 hour focused session. Small mechanical work.
+
+---
+
 ## P3 — PROD_ONLY anomalies surfaced by Item 5 sweep (filed 2026-05-31)
 
 Three files exist on prod that are NOT git-tracked on `origin/main` and do NOT match the documented `.bak-<label>-<date>` or `.pre-<label>-<date>` deploy-backup conventions. The Item 5 sweep flagged them for review. None block redeploy attempt #3; cleanup is operator-curated, low-priority.
