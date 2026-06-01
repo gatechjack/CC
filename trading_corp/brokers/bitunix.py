@@ -889,7 +889,7 @@ class BitunixBroker(Broker):
             reduce_only, order.id,
         )
 
-        status, filled_qty, avg_price, _fee = await self._observe_fill(
+        status, filled_qty, avg_price, fee = await self._observe_fill(
             order_id=venue_order_id, client_id=client_id,
         )
 
@@ -900,6 +900,10 @@ class BitunixBroker(Broker):
         venue = "bitunix_futures"
         if status and status != "FILLED":
             venue = f"bitunix_futures:{status.lower()}"
+        # Layer 1 fee plumbing (Session B): fee summed by
+        # _fill_price_from_history → _observe_fill returns it → passed
+        # through to FillEvent.fee for downstream consumers (Path C
+        # entry_fee_usd stamp, _record_exit_outcome exit_fee_usd stamp).
         return FillEvent(
             order_id=order.id,
             symbol=order.symbol,
@@ -908,6 +912,7 @@ class BitunixBroker(Broker):
             price=avg_price,
             ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             venue=venue,
+            fee=fee,
         )
 
     def _client_id(self, order: ProposedOrder) -> str:

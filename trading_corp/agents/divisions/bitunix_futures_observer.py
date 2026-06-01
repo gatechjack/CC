@@ -2572,6 +2572,8 @@ class BitunixFuturesObserver:
                     merged["exit_leg"] = leg
                 if fill_event is not None:
                     merged["exit_broker_order_id"] = fill_event.order_id
+                    # Layer 1 fee plumbing (Session B Commit 1)
+                    merged["exit_fee_usd"] = float(fill_event.fee or 0.0)
                 conn.execute(
                     "UPDATE paper_trade_record SET extra_json = ? "
                     "WHERE order_id = ?",
@@ -2611,6 +2613,7 @@ class BitunixFuturesObserver:
                 "price": fill_event.price,
                 "ts": fill_event.ts,
                 "venue": fill_event.venue,
+                "fee": float(fill_event.fee or 0.0),
             }
         try:
             self.logger_agent.log_event(
@@ -2870,6 +2873,10 @@ class BitunixFuturesObserver:
             record.extra = dict(order.extra)
             record.extra["execution_mode"] = "live"
             record.extra["broker_order_id"] = fill.order_id
+            # Layer 1 fee plumbing (Session B Commit 1): stamp entry-side
+            # fee from broker truth. Default 0.0 when FillEvent.fee not
+            # populated (paper broker / non-bitunix venues).
+            record.extra["entry_fee_usd"] = float(fill.fee or 0.0)
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
         except Exception as e:
             log.warning(
