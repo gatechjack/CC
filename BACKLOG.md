@@ -294,6 +294,29 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 ---
 
+## P3 — Investigate `test_paper_run_tooling.py` readiness checks — possible documentation-coupled assertions (filed 2026-06-01 via Session A merge close-out)
+
+**Surface:** during the N+2 Phase 3 Session A merge close-out (`844947a`), the post-merge test gate on `origin/main 36157bf` reported 26 failures vs 28 pre-merge. The 2 newly-passing tests are:
+- `tests/test_paper_run_tooling.py::test_readiness_check_all_blocking_pass_on_production_config`
+- `tests/test_paper_run_tooling.py::test_readiness_check_reports_block_status_correctly`
+
+Session A's source changes touch none of `paper_run_tooling`'s dependencies (verified via the per-commit ACTIVE-vs-DORMANT audit pre-merge; only bitunix observer/broker/reconciler files modified). Probable cause: the operator's `1280007` BACKLOG-doc commit (`docs(backlog): file P2 per-division fallback_equity (Finding #2 H-11 sharp edge)`) updated `BACKLOG.md` text that the readiness checker parses as part of its assertions. If true, that's a small smell — tests that break/fix based on doc-text edits are brittle and create unexpected coupling between BACKLOG hygiene and test-gate state.
+
+**Investigation tasks (future maintenance session, low-priority):**
+1. Read `tests/test_paper_run_tooling.py` and identify what `BACKLOG.md` / docs text the readiness check parses.
+2. Decide: (a) decouple the test from doc-text (e.g., use a fixture or fixed-content reference file), or (b) document the coupling explicitly so future operators know "editing BACKLOG.md may shift the test baseline."
+3. If decoupling: re-validate test intent — what was the readiness checker meant to assert? An out-of-date doc may have been the actual failure mode pre-`1280007`.
+4. If documenting: add a one-line comment in the test file + a note in the file the test reads (e.g., a header block in BACKLOG.md saying "this file is parsed by test_paper_run_tooling.py — see X for the coupling").
+
+**Why P3:** the tests are passing on current `origin/main`; the coupling (if real) doesn't gate any production behavior; investigation is hygiene, not safety. Don't touch tonight — file for a future maintenance session.
+
+**Reference SHAs:**
+- Pre-merge gate (28/3): impl branch `bitunix-live-exit-path-impl-2026-06-01` (HEAD `08f2cb2`) off `bd9c0a2`
+- Post-merge gate (26/3): `origin/main 36157bf`
+- Operator commit suspected to flip the 2 tests: `1280007`
+
+---
+
 ## P3 — PROD_ONLY anomalies surfaced by Item 5 sweep (filed 2026-05-31)
 
 Three files exist on prod that are NOT git-tracked on `origin/main` and do NOT match the documented `.bak-<label>-<date>` or `.pre-<label>-<date>` deploy-backup conventions. The Item 5 sweep flagged them for review. None block redeploy attempt #3; cleanup is operator-curated, low-priority.
