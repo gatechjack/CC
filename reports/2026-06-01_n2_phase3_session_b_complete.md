@@ -169,7 +169,7 @@ Targeted gates verified per-commit during composition:
 
 Regression on Session A's test files (all green throughout Session B): `test_bitunix_observer_live_branch.py` (17/17), `test_bitunix_observer_record_exit_outcome.py` (10/10), `test_bitunix_observer_execute_live_exits.py` (9/9), `test_bitunix_broker_get_pending_positions.py` (8/8), `test_bitunix_position_reconciler.py` (37/37 — 26 SL lifecycle + 11 Session A position-state). `test_main_dataclass_construction_completeness.py` 9/9 green at each commit.
 
-**Full-suite final gate**: 28/3 baseline expected on `origin/main` `1162273`; final post-Session-B gate running in background at report-write time. Result appended to `runbooks/deploy_log.md` post-merge.
+**Full-suite final gate (on impl branch `673a909` post-EOS-commit)**: **28 failed + 3 errors — exact baseline match. Zero new failures from Session B.** Failure distribution identical to pre-flight: 3 `test_iron_condor_strategy.py` + 2 `test_paper_run_tooling.py` (DB-fixture-coupled per P3) + 15 `test_robinhood_multi_leg.py` + 3 `test_tasty_options_iron_condor.py` + 5 `test_webhooks_return_fast.py`. All 28 in modules untouched by Session B's commits. The 3 collection errors are the same pre-existing baseline. Per `[[branch-tests-must-cover-existing-fixtures]]` the branch is gate-clean.
 
 ---
 
