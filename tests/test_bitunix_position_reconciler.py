@@ -1,37 +1,51 @@
-"""Tests for the trade-plan PR 5 position reconciler.
+"""Tests for the BitUnix position reconciler module.
 
-Covers:
-  - `decide_sl_action` — pure decision function across the lifecycle
-    (tp1 → BE, tp2 → tp1 floor, tp2+trail → Chandelier, ratchet/idempotency)
-  - `BitunixBroker.list_open_positions` — paper-mode DB query, v2 filter
-  - `BitunixBroker.modify_position_tp_sl_order` — NotImplementedError stub
-  - `reconciler_tick` — end-to-end audit emission
+Two orthogonal reconciliation concerns share this module + test file:
 
-The decision function is exercised by injecting `filled_legs` directly;
-in paper mode the broker always returns `filled_legs=[]` (legacy
-monolithic resolver), so the lifecycle only fires once Phase 4 wires
-real broker fill state.
+(A) SL lifecycle reconciler (`reconciler_tick`, `decide_sl_action`) —
+    decides per-leg stop-loss moves on already-open positions
+    (tp1 → BE, tp2 → tp1 floor, tp2+trail → Chandelier).
+
+(B) Position-state reconciler (Phase 3 Session A,
+    `reconcile_position_state`) — compares bot-tracked live rows
+    against broker truth (`get_pending_positions`) to detect symmetry
+    violations (bot tracks but broker doesn't, or vice versa).
+
+The two are independent functions that run on different cadences:
+the SL one ticks every 60s on open positions; the position-state one
+runs on startup / after reconnect.
+
+The (A) decision function is exercised by injecting `filled_legs`
+directly; in paper mode the broker returns `filled_legs=[]`, so the
+lifecycle only fires once Phase 4 wires real broker fill state.
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from trading_corp.agents.divisions.bitunix_position_reconciler import (
     POSITION_SL_UPDATE_KIND,
+    POSITION_STATE_DIVERGENCE_KIND,
+    POSITION_STATE_RECONCILED_KIND,
     RECONCILER_ACTOR,
+    PositionStateMissingOnBroker,
+    PositionStateOrphanOnBroker,
+    PositionStateReconciliation,
     ReconcilerConfig,
     _atr_from_bars,
     _extreme_since_tp2,
     decide_sl_action,
+    reconcile_position_state,
     reconciler_tick,
 )
 from trading_corp.brokers.bitunix import BitunixBroker
 from trading_corp.persistence import db
-from trading_corp.persistence.models import OpenPosition
+from trading_corp.persistence.models import OpenPosition, Position
 
 
 # ─── fixtures ───────────────────────────────────────────────────────────
@@ -438,3 +452,312 @@ def test_reconciler_config_from_dict_overrides() -> None:
     assert cfg.trail_atr_mult == 2.0
     assert cfg.period_seconds == 30.0
     assert cfg.timeframe == "5m"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# (B) Position-state reconciler (Phase 3 Session A — separate concern)
+# ════════════════════════════════════════════════════════════════════════
+#
+# Validates `reconcile_position_state`: compares bot-tracked live rows
+# (paper_trade_record WHERE result IS NULL AND extra.execution_mode='live')
+# against broker.get_pending_positions(). Surfaces missing_on_broker
+# and orphan_on_broker as halt-and-alert; sets broker._halt_new_orders
+# on any divergence (Phase 1a §9c — exits NOT halted, only entries).
+
+
+def _insert_live_row(
+    db_url: str,
+    order_id: str,
+    *,
+    symbol: str = "BTCUSDT",
+    side: str = "buy",
+    qty: float = 0.001,
+    broker_order_id: str = "bx-entry-1",
+) -> None:
+    """Seed a Path C live row in `result IS NULL` state."""
+    with db.connect(db_url) as conn:
+        conn.execute(
+            "INSERT INTO paper_trade_record ("
+            " order_id, ts, strategy, division, symbol, side, qty, "
+            " entry_reference_price, stop_price, tp_price, "
+            " max_hold_seconds, result, extra_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                order_id, "2026-06-01T10:00:00+00:00",
+                "bitunix_futures", "bitunix_futures",
+                symbol, side, qty,
+                80_000.0, 79_500.0, 81_000.0,
+                7200, None,
+                json.dumps({
+                    "execution_mode": "live",
+                    "broker_order_id": broker_order_id,
+                }),
+            ),
+        )
+
+
+def _insert_paper_row(db_url: str, order_id: str) -> None:
+    """Seed a paper-mode row — must NOT be considered by the
+    position-state reconciler."""
+    with db.connect(db_url) as conn:
+        conn.execute(
+            "INSERT INTO paper_trade_record ("
+            " order_id, ts, strategy, division, symbol, side, qty, "
+            " entry_reference_price, stop_price, tp_price, "
+            " max_hold_seconds, result, extra_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                order_id, "2026-06-01T10:00:00+00:00",
+                "bitunix_futures", "bitunix_futures",
+                "BTCUSDT", "buy", 0.001,
+                80_000.0, 79_500.0, 81_000.0,
+                7200, None,
+                json.dumps({"tier": "PREMIUM"}),  # no execution_mode
+            ),
+        )
+
+
+def _broker_pos(
+    symbol: str,
+    *,
+    qty: float,
+) -> Position:
+    """Build a Position dataclass matching the shape `get_pending_positions`
+    returns — signed qty (negative for SHORT)."""
+    return Position(
+        account="bitunix-futures",
+        symbol=symbol,
+        qty=qty,
+        avg_price=80_000.0,
+        opened_ts="2026-06-01T10:00:00+00:00",
+        extra={"side": "LONG" if qty > 0 else "SHORT"},
+    )
+
+
+def _make_broker_stub(positions: list[Position]) -> MagicMock:
+    """Broker stub with `get_pending_positions` returning the given list
+    + `_halt_new_orders`/`_halt_reason` attrs so the reconciler can
+    toggle the latch."""
+    broker = MagicMock()
+    broker.get_pending_positions = AsyncMock(return_value=positions)
+    broker._halt_new_orders = False
+    broker._halt_reason = None
+    return broker
+
+
+# ─── clean match (no discrepancies) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_clean_match_no_divergence_no_halt(db_url):
+    _insert_live_row(db_url, "ord-1", side="buy", qty=0.001)
+    broker = _make_broker_stub([_broker_pos("BTCUSDT", qty=0.001)])
+
+    result = await reconcile_position_state(broker, db_url)
+
+    assert isinstance(result, PositionStateReconciliation)
+    assert len(result.matches) == 1
+    assert result.matches[0].order_id == "ord-1"
+    assert result.matches[0].bot_qty == 0.001
+    assert result.matches[0].broker_qty == 0.001
+    assert result.missing_on_broker == []
+    assert result.orphan_on_broker == []
+    assert result.has_divergence is False
+    # Broker latch stays untouched on clean match
+    assert broker._halt_new_orders is False
+    # `position_state_reconciled` audit written
+    with db.connect(db_url) as conn:
+        kinds = [r["kind"] for r in conn.execute(
+            "SELECT kind FROM audit_event "
+            "WHERE actor=? AND kind IN (?, ?)",
+            (RECONCILER_ACTOR,
+             POSITION_STATE_RECONCILED_KIND,
+             POSITION_STATE_DIVERGENCE_KIND),
+        ).fetchall()]
+    assert kinds == [POSITION_STATE_RECONCILED_KIND]
+
+
+# ─── bot tracks, broker doesn't ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_bot_tracks_broker_missing_surfaces_as_divergence(db_url):
+    """Causes: broker closed via TP/SL/liquidation while bot was off;
+    operator manual close on the BitUnix UI; broker_order_id drift."""
+    _insert_live_row(db_url, "ord-m1", side="buy", qty=0.001)
+    broker = _make_broker_stub([])  # broker has no positions
+
+    result = await reconcile_position_state(broker, db_url)
+
+    assert result.matches == []
+    assert len(result.missing_on_broker) == 1
+    assert result.missing_on_broker[0].order_id == "ord-m1"
+    assert result.missing_on_broker[0].side == "buy"
+    assert result.missing_on_broker[0].bot_qty == 0.001
+    assert result.has_divergence is True
+    # Broker halted from new entries (exits still flow per Phase 1a §9c)
+    assert broker._halt_new_orders is True
+    assert broker._halt_reason == "position_state_reconciler_divergence"
+    # Divergence audit written with the diff details
+    with db.connect(db_url) as conn:
+        rows = conn.execute(
+            "SELECT payload_json FROM audit_event "
+            "WHERE kind=?",
+            (POSITION_STATE_DIVERGENCE_KIND,),
+        ).fetchall()
+    assert len(rows) == 1
+    p = json.loads(rows[0]["payload_json"])
+    assert p["missing_on_broker_count"] == 1
+    assert p["orphan_on_broker_count"] == 0
+    assert p["missing_on_broker"][0]["order_id"] == "ord-m1"
+
+
+# ─── broker has, bot doesn't ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_broker_has_bot_missing_surfaces_as_orphan(db_url):
+    """Causes: Path C row-write failed silently after a successful
+    broker entry; operator placed an order outside the bot; broker
+    auto-opened via residual TP/SL."""
+    # No tracked rows seeded.
+    broker = _make_broker_stub([_broker_pos("BTCUSDT", qty=0.005)])
+
+    result = await reconcile_position_state(broker, db_url)
+
+    assert result.matches == []
+    assert result.missing_on_broker == []
+    assert len(result.orphan_on_broker) == 1
+    assert result.orphan_on_broker[0].symbol == "BTCUSDT"
+    assert result.orphan_on_broker[0].broker_qty == 0.005
+    assert result.orphan_on_broker[0].broker_side == "buy"
+    assert result.has_divergence is True
+    assert broker._halt_new_orders is True
+
+
+# ─── SHORT broker positions render as buy/sell correctly ────────────────
+
+
+@pytest.mark.asyncio
+async def test_short_position_matches_sell_side_row(db_url):
+    _insert_live_row(db_url, "ord-short", side="sell", qty=0.001)
+    # Broker returns SHORT (signed-qty negative per snapshot convention).
+    broker = _make_broker_stub([_broker_pos("BTCUSDT", qty=-0.001)])
+
+    result = await reconcile_position_state(broker, db_url)
+
+    assert len(result.matches) == 1
+    assert result.matches[0].side == "sell"
+    assert result.has_divergence is False
+
+
+@pytest.mark.asyncio
+async def test_short_orphan_renders_as_sell_side(db_url):
+    broker = _make_broker_stub([_broker_pos("BTCUSDT", qty=-0.005)])
+    result = await reconcile_position_state(broker, db_url)
+    assert len(result.orphan_on_broker) == 1
+    assert result.orphan_on_broker[0].broker_side == "sell"
+    assert result.orphan_on_broker[0].broker_qty == 0.005
+
+
+# ─── paper-mode rows ignored ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_paper_mode_rows_ignored(db_url):
+    """Rows without `extra.execution_mode == "live"` must NOT be
+    considered. The replay loop's bar-walk handles them."""
+    _insert_paper_row(db_url, "ord-paper-1")
+    broker = _make_broker_stub([])  # no broker positions
+
+    result = await reconcile_position_state(broker, db_url)
+
+    # Paper row is invisible to the position-state reconciler
+    assert result.matches == []
+    assert result.missing_on_broker == []
+    assert result.orphan_on_broker == []
+    assert result.has_divergence is False
+    assert broker._halt_new_orders is False
+
+
+# ─── multiple rows + multiple positions ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_partial_match_one_match_one_orphan(db_url):
+    _insert_live_row(db_url, "ord-btc", symbol="BTCUSDT", side="buy", qty=0.001)
+    broker = _make_broker_stub([
+        _broker_pos("BTCUSDT", qty=0.001),     # match
+        _broker_pos("ETHUSDT", qty=0.05),      # orphan
+    ])
+    result = await reconcile_position_state(broker, db_url)
+    assert len(result.matches) == 1
+    assert len(result.orphan_on_broker) == 1
+    assert result.orphan_on_broker[0].symbol == "ETHUSDT"
+    assert result.has_divergence is True
+
+
+# ─── audit row written on every tick ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_audit_kind_differs_on_clean_vs_divergence(db_url):
+    # Clean tick
+    broker_clean = _make_broker_stub([])
+    await reconcile_position_state(broker_clean, db_url)
+    # Divergent tick
+    broker_div = _make_broker_stub([_broker_pos("BTCUSDT", qty=0.001)])
+    await reconcile_position_state(broker_div, db_url)
+
+    with db.connect(db_url) as conn:
+        kinds = [r["kind"] for r in conn.execute(
+            "SELECT kind FROM audit_event "
+            "WHERE actor=? ORDER BY id",
+            (RECONCILER_ACTOR,),
+        ).fetchall()]
+    assert kinds == [
+        POSITION_STATE_RECONCILED_KIND,
+        POSITION_STATE_DIVERGENCE_KIND,
+    ]
+
+
+# ─── halt_on_divergence=False bypass ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_halt_on_divergence_false_skips_latch(db_url):
+    """Caller can opt out of the halt — useful for diagnostic / dashboard
+    reads where the operator wants to see the diff without halting the bot."""
+    _insert_live_row(db_url, "ord-x", side="buy", qty=0.001)
+    broker = _make_broker_stub([])
+
+    result = await reconcile_position_state(
+        broker, db_url, halt_on_divergence=False,
+    )
+
+    assert result.has_divergence is True
+    # Latch UNTOUCHED despite divergence
+    assert broker._halt_new_orders is False
+
+
+# ─── broker.get_pending_positions raises ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_broker_call_failure_treated_as_no_positions(db_url):
+    """Transient broker failure → treat as 'no broker positions known';
+    any tracked row becomes missing_on_broker → halt + audit. The next
+    tick recovers automatically."""
+    _insert_live_row(db_url, "ord-y", side="buy", qty=0.001)
+    broker = MagicMock()
+    broker.get_pending_positions = AsyncMock(
+        side_effect=RuntimeError("network down"),
+    )
+    broker._halt_new_orders = False
+    broker._halt_reason = None
+
+    result = await reconcile_position_state(broker, db_url)
+
+    assert len(result.missing_on_broker) == 1
+    assert result.has_divergence is True
+    assert broker._halt_new_orders is True
