@@ -2445,10 +2445,15 @@ class BitunixFuturesObserver:
             `live_order_placed` (intent, re-read confirmed) and
             `live_order_rejected` (on failure, re-read confirmed);
             emits telegram with `(live)` suffix (push-bool checked,
-            failure → `telegram_notification_failed` audit). No
-            paper_trade_record on the live path — fill tracking
-            happens in `proposed_order` (set by data_exec) and the
-            `filled` audit event.
+            failure → `telegram_notification_failed` audit).
+            **Path C (Phase 3):** on successful place, also writes a
+            `paper_trade_record` row tagged
+            `extra["execution_mode"]="live"` +
+            `extra["broker_order_id"]=fill.order_id` so the existing
+            paper-replay loop tracks the open live position. The
+            replay loop's exit helper forks on the `execution_mode`
+            tag — paper rows take the bar-walk verdict; live rows
+            await broker truth.
 
         Encapsulation: the paper path NEVER calls `data_exec.place()`
         — that's the structural safety claim. `auto_execute=false`
@@ -2716,6 +2721,32 @@ class BitunixFuturesObserver:
 
         # Successful place → increment the persistent counter.
         new_count = self._increment_live_orders_placed_count()
+
+        # ── Path C (Phase 3): live entry writes paper_trade_record ──
+        # Tagged extra["execution_mode"]="live" + extra["broker_order_id"]
+        # so the existing replay loop tracks the open live position via
+        # the same `paper_trade_record WHERE result IS NULL` walk. The
+        # exit-side helper (`_record_exit_outcome`) forks on the tag:
+        # paper rows take the bar-walk verdict; live rows await broker
+        # truth before populating `result_*`. Failure is logged but
+        # SWALLOWED — broker already placed real money; a DB write hiccup
+        # must not block the operator-facing telegram below.
+        try:
+            record = PaperTradeRecord.from_order(
+                order,
+                strategy="bitunix_futures",
+                division="bitunix_futures",
+                max_hold_seconds=self.max_hold_seconds,
+            )
+            record.extra = dict(order.extra)
+            record.extra["execution_mode"] = "live"
+            record.extra["broker_order_id"] = fill.order_id
+            db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: live-path paper_trade_record write failed "
+                "(broker placed; replay-loop won't track): %s", e,
+            )
 
         # data_exec.place wrote its own `filled` audit row + set
         # order.status='filled' + order.fill_price/fill_ts. Just emit

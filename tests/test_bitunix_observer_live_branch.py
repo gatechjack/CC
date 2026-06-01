@@ -16,7 +16,10 @@ routing). Hard contracts:
 - Telegram pushed with `(live)` suffix; push-bool checked; False →
   `telegram_notification_failed` audit.
 - Daily-risk accrues on ATTEMPT (not only on success).
-- No `paper_trade_record` row written on the live path.
+- Path C (Phase 3): live path writes `paper_trade_record` tagged
+  `extra["execution_mode"]="live"` + `extra["broker_order_id"]` so the
+  existing replay loop tracks the open live position. Reverses the
+  N+1 commit-3 "no paper_trade_record on live" decision.
 """
 from __future__ import annotations
 
@@ -254,13 +257,13 @@ async def test_live_mode_pushes_telegram_with_live_suffix(
 
 
 @pytest.mark.asyncio
-async def test_live_mode_does_not_write_paper_trade_record(
+async def test_live_mode_writes_paper_trade_record_with_execution_mode_tag(
     tmp_path, monkeypatch,
 ):
-    """Live path tracks fills via data_exec's `filled` audit +
-    `proposed_order.fill_price`; the paper-resolution path
-    (paper_trade_record WHERE result IS NULL) must not pick up live
-    trades."""
+    """Path C (Phase 3): live path writes a `paper_trade_record` row
+    tagged with `extra["execution_mode"]="live"` so the replay loop
+    walks the open live position. Reverses the N+1 commit-3 "no
+    paper_trade_record on live" decision."""
     obs, data_exec, logger_agent, telegram_channel = _make_observer_live(
         tmp_path, monkeypatch,
     )
@@ -271,7 +274,86 @@ async def test_live_mode_does_not_write_paper_trade_record(
         rows = conn.execute(
             "SELECT * FROM paper_trade_record WHERE strategy = 'bitunix_futures'"
         ).fetchall()
+    assert len(rows) == 1, (
+        "live entry must write exactly one paper_trade_record row"
+    )
+    extra = json.loads(rows[0]["extra_json"])
+    assert extra.get("execution_mode") == "live"
+
+
+@pytest.mark.asyncio
+async def test_live_mode_paper_trade_record_carries_broker_order_id(
+    tmp_path, monkeypatch,
+):
+    """Path C: the broker's returned `FillEvent.order_id` is stamped
+    into `extra["broker_order_id"]` so the exit helper + reconciler can
+    link the row to broker truth (history_trades, position-state)."""
+    obs, data_exec, logger_agent, telegram_channel = _make_observer_live(
+        tmp_path, monkeypatch,
+    )
+    # Override the broker fill to a known order_id so we can verify the stamp.
+    data_exec.place = AsyncMock(return_value=FillEvent(
+        order_id="bx-order-9999", symbol="BTCUSDT", side="buy",
+        qty=0.001, price=80_000.0, ts="2026-05-29T12:00:00+00:00",
+        venue="bitunix",
+    ))
+    _set_bull_state(obs)
+    await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
+
+    with db.connect(obs.db_url) as conn:
+        rows = conn.execute(
+            "SELECT extra_json FROM paper_trade_record "
+            "WHERE strategy = 'bitunix_futures'"
+        ).fetchall()
+    assert len(rows) == 1
+    extra = json.loads(rows[0]["extra_json"])
+    assert extra.get("broker_order_id") == "bx-order-9999"
+
+
+@pytest.mark.asyncio
+async def test_live_mode_rejection_does_not_write_paper_trade_record(
+    tmp_path, monkeypatch,
+):
+    """Path C is conditional on broker-place success. A rejection (no
+    real money placed) must NOT leave a stray live-tagged row in the
+    replay loop's queue, otherwise the loop would forever try to exit a
+    position that never opened."""
+    obs, data_exec, logger_agent, telegram_channel = _make_observer_live(
+        tmp_path, monkeypatch,
+        place_raises=RuntimeError("broker says no"),
+    )
+    _set_bull_state(obs)
+    await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
+
+    with db.connect(obs.db_url) as conn:
+        rows = conn.execute(
+            "SELECT * FROM paper_trade_record WHERE strategy = 'bitunix_futures'"
+        ).fetchall()
     assert len(rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_paper_mode_paper_trade_record_no_execution_mode_tag(
+    tmp_path,
+):
+    """Paper-mode rows must NOT carry `execution_mode="live"`. The
+    replay loop's exit-side fork keys off this tag; a misstamped paper
+    row would route into the live-broker-truth branch and either fail
+    closed (no broker_order_id present) or worse, attempt to close a
+    nonexistent broker position."""
+    obs, *_ = _make_observer_paper(tmp_path)
+    _set_bull_state(obs)
+    await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
+
+    with db.connect(obs.db_url) as conn:
+        rows = conn.execute(
+            "SELECT extra_json FROM paper_trade_record "
+            "WHERE strategy = 'bitunix_futures'"
+        ).fetchall()
+    assert len(rows) == 1
+    extra = json.loads(rows[0]["extra_json"]) if rows[0]["extra_json"] else {}
+    assert extra.get("execution_mode") != "live"
+    assert "broker_order_id" not in extra
 
 
 # ─── live-mode + auto_execute=false (soft disable) ──────────────────────
