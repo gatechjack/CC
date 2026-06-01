@@ -116,6 +116,60 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-01 ~18:50 UTC — N+2 Phase 3 Session A merge: live exit path core surface onto main (admin only; no prod touch)
+
+**Type:** source-and-test `--no-ff` merge to main. **Net effect on prod: zero** — no transfer, no restart, no write. Prod still at `7352f8f` (per redeploy3) with `config/strategies.yaml execution_mode=paper`.
+
+**Merge commit:** `36157bf` (`merge(stage-1): N+2 Phase 3 Session A — live exit path core surface`). Branch `bitunix-live-exit-path-impl-2026-06-01` (HEAD `08f2cb2`) merged onto `origin/main` (`1280007` pre-merge → `36157bf` post-merge).
+
+**Source commits landed (4 feat + 1 docs):**
+- `cb46e0e` — Path C revert: live entries write `paper_trade_record` tagged `extra.execution_mode="live"` + `extra.broker_order_id=fill.order_id`. Reverses N+1 commit-3's "no paper_trade_record on live path" decision; load-bearing for any Session B replay-loop wiring.
+- `6c36d6b` — `_record_exit_outcome` canonical helper on observer. Decision 6.1(b) stamp: `extra["result_source"] = "paper_replay_bars" | "live_broker_truth"`. New audit kind `exit_outcome_recorded`.
+- `33e5732` — `_execute_live_exits` async live-close path on observer + Decision 6.4(a) `BitunixBroker.get_pending_positions` public extraction. Wires the existing gate-(a) `BitunixStuckOrderCancelled`/`BitunixStuckOrderCancelFailed` exception types (Finding #6.4 wiring; broker-side primitive `_handle_stuck_order` was already on main since commit `36a3749`). New audit kinds: `live_exit_order_placed`, `live_exit_order_stuck_cancelled`, `live_exit_order_halt`, `live_exit_order_rejected`.
+- `fadab6c` — `reconcile_position_state` function added to the existing `bitunix_position_reconciler.py` as a SEPARATE concern from the existing SL lifecycle reconciler (`reconciler_tick`). Compares bot-tracked live rows against `broker.get_pending_positions()`; surfaces `missing_on_broker` / `orphan_on_broker` divergences; sets `broker._halt_new_orders=True` on divergence (entries halt; exits flow per Phase 1a §9c). New audit kinds: `position_state_reconciled`, `position_state_divergence_detected`.
+- `08f2cb2` — EOS docs: `reports/2026-06-01_n2_phase3_session_a_complete.md` + `reports/2026-06-01_n2_phase3_session_b_handoff.md` + BACKLOG P1 update.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Path C live-entry paper_trade_record write** — on `_place_live` success the row IS written (REACHABLE in code, INERT on prod by `execution_mode=paper` gate).
+- **`_record_exit_outcome` canonical exit-side writer** — DORMANT (no production callers; Session B wires from replay loop).
+- **`_execute_live_exits` reduce-only close path** — DORMANT (no production callers; Session B wires from replay loop).
+- **`BitunixBroker.get_pending_positions` public method** — DORMANT (only caller is the dormant reconciler).
+- **`reconcile_position_state` position-state reconciler** — DORMANT (no production callers; Session B wires into `main.py` startup).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- Path C reversal: read [[bitunix-live-entry-path-pattern]]'s "no paper_trade_record on live" claim is NOW STALE. Use the Session A claim instead.
+- `bitunix_position_reconciler.py` now has TWO orthogonal concerns sharing a module: `reconciler_tick` (SL lifecycle, runs every 60s via `main.py:1571`) AND `reconcile_position_state` (position-state symmetry check, dormant; Session B wires into startup). Premise correction filed in session-A complete report §3.
+- `BitunixBroker.__init__` signature is `(api_key, api_secret, *, logger, safety_notifier)` — no `passphrase` or `base_url`. Test fixtures must match.
+
+**Latent bugs caught + fixed (if any):**
+- None this session.
+
+**Verification:**
+- Pre-merge prod stability (operator SSH probe at session-end):
+  `MainPID=1961197, NRestarts=0, ActiveState=active, SubState=running, healthz=200`.
+  MainPID matches Sunday's tastytrade C-1 rotation restart per `[[2026-05-31-tastytrade-c1-rotation]]`; 0 restarts in ~28h.
+- Pre-merge test gate (on `bitunix-live-exit-path-impl-2026-06-01`, base `bd9c0a2`): 28 failed + 3 errors == baseline (`2139/28/3` per `[[2026-06-01-n2-phase3-docs-merged]]`). Zero new failures from Session A; pass count ≥ baseline + ~52 new test functions (per-file gates verified during commit composition).
+- Post-merge test gate (on `origin/main 36157bf`): **26 failed + 3 errors** — 2 FEWER failures than pre-merge. The 2 newly-passing tests are `tests/test_paper_run_tooling.py::test_readiness_check_all_blocking_pass_on_production_config` and `tests/test_paper_run_tooling.py::test_readiness_check_reports_block_status_correctly`. **Not attributable to Session A** — Session A touches none of `paper_run_tooling`'s dependencies. Probable cause: the operator's `1280007` BACKLOG commit (per-div fallback_equity P2 entry) updated `BACKLOG.md` text that `paper_run_tooling`'s readiness check parses, satisfying a previously-failing assertion. Net effect on Session A's test gate: ZERO new failures, +2 incidentally-fixed pre-existing failures. The 3 collection errors remain identical to baseline (pre-existing imports, unrelated).
+- Lineage check: `1280007` (immediately prior main HEAD, the per-division fallback_equity BACKLOG entry) verified as ancestor of `36157bf` via `git merge-base --is-ancestor 1280007 origin/main`. All 5 Session A commits also verified as ancestors.
+
+**Inert / dormant on current traffic:**
+- All 4 Session A source commits are dormant or gated. Path C only fires when `_place_live` is reached, which requires `self.execution_mode == "live"` AND `_yaml_auto_execute_for_bitunix() == True`; `config/strategies.yaml:1022 execution_mode: paper` keeps the first half false on prod. Commits 2/3/4 have zero production callers — Session B wires them.
+- The 7 new audit kinds will NOT appear in `audit_event` on prod until Session B lands and `execution_mode` is later flipped to `live` (operator decision; separate session).
+
+**Rollback recipe** (if Session A is found to have a defect post-merge — local-only at this point):
+```bash
+# Revert the merge commit on main (preserves the source commits as a no-op on main).
+cd "C:/Users/AA Incorporado/cc"
+git revert -m 1 36157bf  # produces a clean revert commit
+git push origin main
+# Alternative (full reset; only if no further commits land on main):
+# git reset --hard 1280007 && git push origin main --force-with-lease
+```
+
+**Session B handoff:** `reports/2026-06-01_n2_phase3_session_b_handoff.md` — paste-ready prompt covering Commits 5-10 (FillEvent fields, Decision 6.2 DB-lock retry, replay-loop wiring of helpers, `main.py` reconciler hookup, `_resume_live_positions` cases (a)+(b), 8 operational alerts on `BitunixLifecycleNotifier`).
+
+---
+
 ## 2026-05-31 ~21:47 UTC — Decision 6.5 docs-merge: N+2 Phase 3 diagnostic reports onto main (admin only; no prod touch)
 
 **Type:** admin / docs-only `--no-ff` merge to main. **Net effect on prod: zero** — no transfer, no restart, no write, no live flip.

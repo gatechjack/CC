@@ -8,9 +8,11 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## P1 — N+2 Phase 3 (Stage-1 BitUnix live exit path) — Session A COMPLETE 2026-06-01; Session B PENDING
+## P1 — N+2 Phase 3 (Stage-1 BitUnix live exit path) — Session A MERGED 2026-06-01 ~18:50 UTC; Session B PENDING
 
-**Update 2026-06-01:** Session A landed 4 commits on `bitunix-live-exit-path-impl-2026-06-01` (HEAD `fadab6c`), off `origin/main` `bd9c0a2`. Branch NOT merged; STOP-AND-REPORT for operator merge approval. Test gate clean (28/3 exact baseline match; zero new failures from Session A; ~52 new tests pass per per-file gates). See `reports/2026-06-01_n2_phase3_session_a_complete.md` for full scope + premise corrections + deferred items, and `reports/2026-06-01_n2_phase3_session_b_handoff.md` for the next-session prompt.
+**Update 2026-06-01 ~18:50 UTC:** Session A **MERGED** to `origin/main` via `--no-ff` merge `36157bf` (operator authorization after per-commit ACTIVE-vs-DORMANT audit). Pre-merge prod stability verified (`MainPID=1961197, NRestarts=0, ActiveState=active, SubState=running, healthz=200`); pre-merge test gate exact baseline `28/3` match. Deploy_log entry at `runbooks/deploy_log.md` 2026-06-01 ~18:50 UTC. Memory: `[[2026-06-01-n2-phase3-session-a-merged]]`. **Net effect on prod: zero** — Path C revert is reachable in code but gated by `config/strategies.yaml:1022 execution_mode: paper`; Commits 2/3/4 fully dormant (no production callers).
+
+**Update 2026-06-01 (pre-merge):** Session A landed 4 commits on `bitunix-live-exit-path-impl-2026-06-01` (HEAD `fadab6c`), off `origin/main` `bd9c0a2`. Pre-merge state archived in `[[2026-06-01-n2-phase3-session-a]]`. See `reports/2026-06-01_n2_phase3_session_a_complete.md` for full scope + premise corrections + deferred items, and `reports/2026-06-01_n2_phase3_session_b_handoff.md` for the next-session prompt.
 
 **Session A scope landed (~669 source + ~1374 test LOC across 4 commits):**
 - `cb46e0e` Path C revert — live entries write `paper_trade_record` tagged `extra.execution_mode="live"` + `broker_order_id`
