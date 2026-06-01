@@ -60,6 +60,76 @@ Before you change anything:
 
 ---
 
+## Session discipline
+
+Operator-supervised work. Honor these as standing rules — they do not
+need to be re-stated per session.
+
+- **Stop-at-fork.** When encountering ambiguity, missing premises, or
+  anomalies, halt and report to the operator rather than auto-resolving.
+  Surface findings before proceeding. Premise corrections caught at the
+  fork are cheap; corrections caught mid-implementation cost rollbacks.
+- **Scoped commits.** Each commit addresses one item. Reference BACKLOG
+  entries by ID where applicable. Never bundle unrelated changes into a
+  single commit.
+- **Read-only by default for production.** Production reads and writes
+  require explicit, in-session operator authorization. Prior approval
+  does not extend to new commands. When in doubt, ask.
+- **Verify premises against ground truth before scoping.** Memory
+  entries, runbook claims, and prior session notes can be wrong. Quote
+  file:line or audit-row evidence before treating a premise as settled.
+- **Worktree isolation per session.** Parallel Claude Code sessions
+  must run in separate `git worktree` instances. Same working directory
+  + parallel sessions = branch-hijack incidents.
+
+### Session wrap-up
+
+When the operator signals EOS / wrap-up:
+
+1. Update memory files and BACKLOG with this session's decisions and
+   surfaces.
+2. Create scoped commits per "Scoped commits" above. One item, one
+   commit.
+3. Push to origin. Closing-out branches (C-1 rotations, audits) stay
+   on origin unmerged as audit trail. Feature/code branches go to main
+   per the existing merge sequence.
+4. Write a next-session handoff prompt capturing: current branch state,
+   open forks, recommended first action, verified UTC timestamp.
+5. Verify timestamps against system clock before committing deploy_log
+   entries.
+
+---
+
+## Environment
+
+Operating context for sessions running against this repo:
+
+- **OS: Windows.** Local Python invocations follow the
+  `scripts\run_capped.ps1` discipline (STOP AND READ #6). Beyond that:
+- **Prefer PowerShell over bash heredocs** for command construction.
+  Bash on Git Bash / Windows interprets long commands across line
+  breaks unreliably; PowerShell here-strings or single-line `&&`-chained
+  commands are safer.
+- **For Azure prod access, prefer direct SSH over `az run-command`
+  with embedded heredocs.** `az run-command` wraps scripts in cmd.exe
+  + bash + heredocs and breaks on quoting, encoding, and command-line
+  length limits. Direct `ssh azureuser@trading.jacksumner.com '...'`
+  is more predictable.
+- **For long payloads to Azure, use base64-wrapped scripts.** Pattern:
+  `echo <B64> | base64 -d | bash`. Chunk to ≤6500 bytes per call to
+  stay under CMD command-line limits. See
+  `scripts/redeploy3_chunked_transfer.py` for canonical patterns.
+- **Watch for cp1252 encoding** in stdout. Force UTF-8 when piping
+  Python output: `python -X utf8 script.py` or set `PYTHONUTF8=1`.
+- **Long paths with spaces** (`AA Incorporado` in the user home) corrupt
+  during command construction with line breaks. Prefer `cd` to the
+  worktree first, then relative paths.
+- **Worktree-relative paths beat absolute paths** in command construction
+  for all the above reasons. `cd <worktree> && command < relative.sql`
+  is the pattern.
+
+---
+
 ## 1. Working agreements
 
 ### Decision pipeline
@@ -269,6 +339,29 @@ value; protect it from re-expansion.
      shipped:**` and `**Notable code changes:**` lines that future-you
      can grep for. This is the load-bearing step that prevents the
      next session from re-doing the work.
+
+### Testing discipline
+
+- **Run pytest before any deploy.** Deploys have repeatedly surfaced
+  latent dataclass and attribute bugs (missing kwargs, missing
+  attributes) that pre-deploy gates would have caught. Baseline test
+  count is documented in the most recent successful deploy_log entry;
+  expect it to hold across PR branches.
+- **Branch tests must cover existing fixtures, not only new tests.**
+  Adding tests for new code while breaking existing fixtures (mock
+  shape drift, async/sync mismatches) is a recurring regression source.
+  When extending mocks for async broker/db interfaces, include all
+  required methods (`async snapshot`, `cancel_order` response,
+  `db_url` attribute).
+- **Generalized AST completeness tests** catch construction-site /
+  field-definition drift (the WebDeps `tasty_division` class of bug).
+  See `tests/test_main_dataclass_construction_completeness.py` for the
+  pattern; add coverage when introducing new dataclasses constructed
+  in `main.py` startup paths.
+- **File-level prod-vs-main md5 sweep** is the pre-deploy gate that
+  catches transfer-set composition defects. See
+  `scripts/bitunix_prod_surface_md5diff.py` for the sweep tool.
+  Required before any prod deploy.
 
 ---
 
