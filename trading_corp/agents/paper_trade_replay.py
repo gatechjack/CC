@@ -729,10 +729,45 @@ _REPLAY_DB_URL_CTX: dict[str, str | None] = {"db_url": None}
 _LIFECYCLE_NOTIFIER: dict = {"notifier": None}
 _NOTIFY_QUEUE: list[dict] = []
 
+# ── Stage-1 N+2 Phase 3 Session B Commit 4: live-exit executor ──
+# Wired once at startup via `set_live_exit_executor()`; None in
+# tests/CLI unless injected. When the classifier produces a terminal
+# verdict (win/loss/expired) for a paper_trade_record row tagged
+# `extra.execution_mode="live"` (Path C marker from Session A), the
+# replay tick delegates to `observer._execute_live_exits(...)`
+# instead of `_update_row`. The observer's method handles the
+# reduce-only broker close + `_record_exit_outcome` write, so the
+# row's result_* columns are populated from broker truth (not the
+# classifier's projected price).
+_LIVE_EXIT_EXECUTOR: dict = {"observer": None}
+
 
 def set_lifecycle_notifier(notifier) -> None:
     """Wire the lifecycle notifier (or None to disable)."""
     _LIFECYCLE_NOTIFIER["notifier"] = notifier
+
+
+def set_live_exit_executor(observer) -> None:
+    """Register the observer instance that owns `_execute_live_exits`.
+
+    Phase 3 Session B Commit 4: enables the replay-loop fork for live-
+    tagged rows. None (default) disables the fork — replay continues
+    to use `_update_row` for every row (Session A's behavior). Pass the
+    bitunix observer instance to activate the live exit path.
+    """
+    _LIVE_EXIT_EXECUTOR["observer"] = observer
+
+
+def _verdict_to_exit_kind(result: str) -> str:
+    """Map classifier verdict to the exit_kind the observer's
+    `_execute_live_exits` expects. Single-leg only; multi-leg per-leg
+    fills are handled by the classifier's mid-walk `_emit_audit` path
+    and don't reach this mapper."""
+    if result == "win":
+        return "tp"
+    if result == "loss":
+        return "sl"
+    return "expired"
 
 
 def _queue_tp_fill_notification(
@@ -937,13 +972,55 @@ async def _replay_tick_async(
                 counts["still_open"] += 1
                 continue
 
-            _update_row(db_url, row.order_id, verdict)
+            # ── Session B Commit 4: live-tagged row fork ──
+            # Path C entries stamped `extra.execution_mode="live"` AND a
+            # registered live-exit executor → broker close + record via
+            # observer._execute_live_exits (which calls _record_exit_outcome
+            # internally with is_live=True + fill_event from broker truth).
+            # Otherwise the existing _update_row paper write path runs.
+            #
+            # No-executor fallback: if the observer hasn't registered, a
+            # live-tagged row falls back to _update_row (preserves Session A
+            # behavior). The position-state reconciler at startup will
+            # detect any stranded live rows on the next process start.
+            is_live_row = extra.get("execution_mode") == "live"
+            live_executor = _LIVE_EXIT_EXECUTOR.get("observer")
             if (
-                verdict.result in ("win", "loss", "expired")
-                and is_v2
-                and row.division == "bitunix_futures"
+                is_live_row
+                and live_executor is not None
+                and hasattr(live_executor, "_execute_live_exits")
             ):
-                _queue_close_out_notification(row, verdict, extra)
+                exit_kind = _verdict_to_exit_kind(verdict.result)
+                try:
+                    await live_executor._execute_live_exits(
+                        order_id=row.order_id,
+                        symbol=row.symbol,
+                        entry_side=row.side,
+                        qty=row.qty,
+                        exit_kind=exit_kind,
+                        parent_broker_order_id=extra.get("broker_order_id"),
+                        result=verdict.result,
+                        result_ts=verdict.result_ts or "",
+                        result_price=verdict.result_price or 0.0,
+                        actual_pnl_dollars=verdict.actual_pnl_dollars,
+                        actual_r_multiple=verdict.actual_r_multiple,
+                        bars_to_resolution=verdict.bars_to_resolution,
+                        extra_json_updates=verdict.extra_json_updates,
+                    )
+                except Exception as e:
+                    log.exception(
+                        "replay-live-exit failed for order_id=%s: %s",
+                        row.order_id, e,
+                    )
+                    counts["errors"] += 1
+            else:
+                _update_row(db_url, row.order_id, verdict)
+                if (
+                    verdict.result in ("win", "loss", "expired")
+                    and is_v2
+                    and row.division == "bitunix_futures"
+                ):
+                    _queue_close_out_notification(row, verdict, extra)
         except Exception as e:
             log.exception("replay failed for order_id=%s: %s", row.order_id, e)
             counts["errors"] += 1

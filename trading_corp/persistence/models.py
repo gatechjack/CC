@@ -77,6 +77,14 @@ class FillEvent:
     price: float
     ts: str
     venue: str
+    # ── Stage-1 N+2 Phase 3 Session B (Layer 1 fee plumbing) ──
+    # Per-fill broker-reported fee in account currency (USD-equivalent
+    # for stablecoin-margined BitUnix futures). Default 0.0 so existing
+    # constructors (paper, robinhood, tasty, coinbase, fidelity) don't
+    # break — they leave it at 0.0 today. BitUnix populates it from
+    # `_fill_price_from_history` which sums per-fill fee from
+    # `get_history_trades`. Layer 2 funding accrual is N+3 scope.
+    fee: float = 0.0
 
 
 @dataclass

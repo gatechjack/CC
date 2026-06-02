@@ -6,13 +6,27 @@ which we avoid). Phase 4 cloud deployment swaps the connection factory.
 from __future__ import annotations
 
 import json
+import logging
+import random
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+log = logging.getLogger(__name__)
+
 DEFAULT_DB_PATH = Path("data/trading_corp.db")
+
+# ── Stage-1 N+2 Phase 3 Session B Commit 2 (Decision 6.2): DB-lock retry ──
+# Mirrors the schedule in `agents/logger.py:_DB_LOCK_RETRY_DELAYS_SEC` —
+# duplicated here (3 floats, 1 tuple) rather than imported to keep the
+# dependency arrow correct (persistence/db is foundational; agents/logger
+# imports from it). 3 entries → up to 4 total attempts (1 initial + 3
+# retries). Tests monkeypatch this to near-zero. Keep the two copies in
+# sync; if you change one, change the other.
+_DB_LOCK_RETRY_DELAYS_SEC: tuple[float, ...] = (0.1, 0.3, 0.7)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_event (
@@ -495,11 +509,23 @@ def insert_paper_trade_record(
     record: dict,
     db_url: str = "sqlite:///data/trading_corp.db",
 ) -> None:
-    """INSERT OR IGNORE one paper_trade_record row.
+    """INSERT OR IGNORE one paper_trade_record row, with DB-lock retry.
 
     `record` is the dict produced by `PaperTradeRecord.to_db_row()`. We use
     INSERT OR IGNORE keyed on order_id so the backfill script and the
     write-on-emit path don't collide — whichever wrote first wins.
+
+    Decision 6.2 (Session B): on transient 'database is locked' errors
+    retries up to len(`_DB_LOCK_RETRY_DELAYS_SEC`) times with jittered
+    backoff (same schedule as `LoggerAgent.log_event`). On retry
+    exhaustion: re-raises the OperationalError — the caller's existing
+    try/except (already swallowing exceptions per the Path C +
+    `_record_placement_outcome` paper-write patterns) handles it.
+
+    INSERT OR IGNORE makes the retry idempotent: a row that landed on
+    a previous attempt but timed out the connection becomes a no-op on
+    retry. Non-lock OperationalErrors (e.g. schema drift) propagate
+    immediately — those are real bugs, not transient contention.
     """
     cols = list(record.keys())
     placeholders = ",".join("?" for _ in cols)
@@ -507,8 +533,45 @@ def insert_paper_trade_record(
         f"INSERT OR IGNORE INTO paper_trade_record ({','.join(cols)}) "
         f"VALUES ({placeholders})"
     )
-    with connect(db_url) as conn:
-        conn.execute(sql, [record[c] for c in cols])
+    params = [record[c] for c in cols]
+
+    attempt = 0  # 0 = initial; 1..N = retries
+    while True:
+        try:
+            with connect(db_url) as conn:
+                conn.execute(sql, params)
+            if attempt > 0:
+                log.warning(
+                    "insert_paper_trade_record: succeeded after %d retries "
+                    "(order_id=%s)", attempt, record.get("order_id"),
+                )
+            return
+
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+
+            if attempt >= len(_DB_LOCK_RETRY_DELAYS_SEC):
+                total_attempts = attempt + 1
+                log.error(
+                    "insert_paper_trade_record FAILED after %d attempts "
+                    "(database locked): order_id=%s — re-raising for "
+                    "caller to handle",
+                    total_attempts, record.get("order_id"),
+                )
+                raise
+
+            delay = _DB_LOCK_RETRY_DELAYS_SEC[attempt] * (0.5 + random.random())
+            log.warning(
+                "insert_paper_trade_record: database locked on attempt "
+                "%d/%d; sleeping %.3fs before retry (order_id=%s)",
+                attempt + 1,
+                len(_DB_LOCK_RETRY_DELAYS_SEC) + 1,
+                delay,
+                record.get("order_id"),
+            )
+            time.sleep(delay)
+            attempt += 1
 
 
 def delete_agent_state(
