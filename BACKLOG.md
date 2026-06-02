@@ -8796,6 +8796,76 @@ documented in the 2026-05-22 11:00 EOS could recur.
 
 ---
 
+## P2 — `scripts/redeploy3_chunked_transfer.py` worktree-stranded; CLAUDE.md references it as canonical → docs/code drift (filed 2026-06-02 via Phase 3 deploy)
+
+**Surfaced:** 2026-06-02 Phase 3 deploy session opener referenced `scripts/redeploy3_chunked_transfer.py` as the canonical deploy mechanism. The script does not exist on origin/main — lives only on branch `stage1-redeploy3-session-2026-05-30` (commit `3088966`, ~380 lines, contains the canonical chunked-transfer + per-file md5-verify pattern).
+
+**Why this matters:** CLAUDE.md §Environment cites the script by path as the canonical pattern for chunked az run-command transfers. A fresh session checking out origin/main and looking for it gets "file not found" — has to dig through git history to find the worktree-stranded branch. Paired drift: the redeploy3 deploy_log entry (Saturday's 66-file deploy narrative) is ALSO stranded on the same branch — main's `runbooks/deploy_log.md` jumps from the 2026-05-31 ~21:47 UTC entry directly to the 2026-06-02 ~01:40 UTC Phase 3 entry, skipping the Saturday deploy.
+
+**This deploy's workaround:** wrote one-shot `scripts/phase3_deploy_2026_06_02.py` with the Phase 3 16-file manifest hardcoded; adopts the same pattern but doesn't address the drift.
+
+**Resolution plan:**
+1. Cherry-pick `3088966` to a fresh branch off main, OR rebase the script content into a clean commit on a new branch.
+2. Parameterize the hardcoded 66-file manifest via `--manifest <path-to-json>` arg so future deploys can reuse the script with different transfer sets.
+3. Bring forward the redeploy3 deploy_log entry (lines 119-227 on the stranded branch) into main's deploy_log.md so the chronological narrative is complete.
+4. Add the missing `is_text_file()` filter to `scripts/prod_vs_main_file_level_md5_sweep.py` while at it — see P3 below.
+
+**Estimated effort:** ~2-3h for the deploy script + deploy_log entry + sweep tool fix.
+
+**Memory:** `[[redeploy3-script-worktree-stranded]]`.
+
+---
+
+## P3 — `scripts/prod_vs_main_file_level_md5_sweep.py:124` LF-normalizes binary files → false-positive DIFFER on PNGs/ICOs (filed 2026-06-02 via Phase 3 deploy)
+
+**Surfaced:** 2026-06-02 Phase 3 pre-deploy sweep reported 23 DIFFER-STALE-ON-PROD files. 8 of those were PNG icons under `trading_corp/web/static/icons/*` that the redeploy3 chunked-transfer script HAD transferred (and md5-verified successfully) on Saturday. Verified locally: prod's `md5sum` byte-md5 matches local raw-bytes md5; sweep's "expected" md5 = LF-normalized PNG bytes (wrong).
+
+**Root cause:** `local_md5_lf()` at line 124 unconditionally calls `data.replace(b"\r\n", b"\n")` before hashing. PNG headers/data legitimately contain `0x0D 0x0A` byte sequences; stripping them produces a hash that doesn't match prod's byte-md5.
+
+**Fix:** add an `is_text_file()` filter mirroring `scripts/redeploy3_chunked_transfer.py` lines 130-132:
+```python
+def is_text_file(path: str) -> bool:
+    return not path.endswith((".png", ".jpg", ".jpeg", ".gif", ".ico"))
+```
+…then in `local_md5_lf()`:
+```python
+data = abs_path.read_bytes()
+if is_text_file(rel_path):
+    data = data.replace(b"\r\n", b"\n")
+return hashlib.md5(data).hexdigest()
+```
+
+**Impact while unpatched:** every full-surface sweep reports false-positive DIFFER on the 8 PNG icons. Sweep operator must raw-bytes verify binaries before adding to transfer set. Documented workaround in [[md5-sweep-lf-on-binary-bug]].
+
+**Estimated effort:** ~30 min (1-line addition + test update + sweep re-run for verification).
+
+**Pairing:** ship this fix alongside the P2 above (redeploy3 script land + sweep tool fix is a single tooling-clean-up commit).
+
+**Memory:** `[[md5-sweep-lf-on-binary-bug]]`.
+
+---
+
+## P3 — pytest 9.0.3 default-abort-on-collection-errors requires `--continue-on-collection-errors` for canonical 28/3 baseline gate (filed 2026-06-02 via Phase 3 deploy)
+
+**Surfaced:** 2026-06-02 Phase 3 pre-deploy test gate. First pytest invocation (`.\scripts\run_capped.ps1 python -m pytest tests/ -q --tb=no`) aborted during collection on the 3 pre-existing stale-import collection errors and reported `Interrupted: 3 errors during collection` — exit code 2, no tests run. Without the `--continue-on-collection-errors` flag, the gate gives no signal about the 2400+ tests that actually pass.
+
+**Root cause:** pytest 8.x changed the default behavior. Pre-pytest-8 continued through collection errors; pytest 8+/9 aborts unless the flag is explicit.
+
+**Resolution options:**
+1. **Standing rule (this session):** all pre-deploy gates pass `--continue-on-collection-errors`. Canonical command is now: `.\scripts\run_capped.ps1 python -m pytest tests/ -q --tb=no --continue-on-collection-errors`. Filed in [[pytest-9-continue-on-collection-errors]].
+2. **Long-term fix (this BACKLOG):** either delete the 3 stale-import test files (they import the deleted `bitunix_confluence_gate` module — fix forward), OR restore the `bitunix_confluence_gate` module if it's still meant to exist. Either way, removing the 3 collection errors restores the 28/0-collection-errors baseline and removes the need for the flag.
+
+Affected files (all 3 import the removed `trading_corp.agents.strategies.bitunix_confluence_gate` module):
+- `tests/test_backtest_bitunix_confluence_five_factor.py`
+- `tests/test_bitunix_confluence_gate.py`
+- `tests/test_bitunix_gate_inputs.py`
+
+**Estimated effort:** ~30 min if delete-the-tests, ~2h if restore-the-module (would need to determine why it was removed + bring back its test fixtures).
+
+**Memory:** `[[pytest-9-continue-on-collection-errors]]`.
+
+---
+
 ## Items consciously excluded
 
 - Multi-region active-active deploy — overkill for personal trading
