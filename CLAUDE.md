@@ -81,6 +81,13 @@ need to be re-stated per session.
 - **Worktree isolation per session.** Parallel Claude Code sessions
   must run in separate `git worktree` instances. Same working directory
   + parallel sessions = branch-hijack incidents.
+- **State-class verb discipline in memory.** Memory entries use one
+  of three explicit verbs to distinguish drift states:
+  - **COMMITTED** — a SHA exists; may be on any branch.
+  - **MERGED** — on origin/main.
+  - **DEPLOYED** — running on prod, verified by deploy_log + a probe.
+  Never "shipped" — the ambiguity hides the canonical-vs-non-canonical
+  drift class.
 
 ### Session wrap-up
 
@@ -97,6 +104,12 @@ When the operator signals EOS / wrap-up:
    open forks, recommended first action, verified UTC timestamp.
 5. Verify timestamps against system clock before committing deploy_log
    entries.
+6. Memory verification gate. Every memory entry written this session
+   is verified by re-reading the actual code surface it claims to
+   describe. If memory says "X exists at file:line", verify file:line.
+   If memory says "the canonical helper returns Y", verify return type.
+   Catches the inherit-stale-memory pattern that drives ~3-4 premise
+   corrections per subsequent session (Finding #4).
 
 ---
 
