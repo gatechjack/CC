@@ -372,6 +372,31 @@ The `cc/` main worktree happened to have this DB initialized from prior testing 
 
 ---
 
+## P3 — Investigate TP1 `target_r` calculation in v2 3-leg `tp_plan` construction (filed 2026-06-01 via dashboard inspection)
+
+Surfaced 2026-06-01 via dashboard inspection of `bitunix_futures` trade `2b418971-7955-4dd4-ae20-8e56d4c9401c` (2026-06-02T00:04:52Z, SELL STANDARD at 71336.00).
+
+**Observed:** TP1 (25% fraction) at `target_r=0.972`, TP2 (50% fraction) at `target_r=1.000` (`default_1r`). Resulting prices $3.75 apart — 75% of position effectively exits at same level.
+
+Audit row math is correct for stated `target_r` values; question is what method produces `target_r=0.972` for TP1. Value is not a clean strategy parameter (0.5/0.75/1.0/1.5 would be clean), suggesting it's computed — possibly from a structural price level converted to R-multiple, or possibly a clamping operation.
+
+`extra_json` surfaces `tp2_method="default_1r"` but NOT `tp1_method` — separate finding: TP1's method should be auditable.
+
+**Scope (read-only):**
+1. Locate v2 `tp_plan` construction (likely `agents/strategies/bitunix_confluence.py` or shared helper).
+2. Identify what produces TP1 `target_r` value.
+3. Identify whether `tp1_method` is stamped elsewhere.
+4. If TP1's method reliably produces near-1R values in some market conditions, characterize when and assess design intent.
+5. Surface findings as report; no code change unless follow-up decision warrants.
+
+**Not gating:** any active work.
+
+**Reference:** audit row `2b418971-7955-4dd4-ae20-8e56d4c9401c`.
+
+**Estimated scope:** ~30-60 minute investigation.
+
+---
+
 ## P3 — PROD_ONLY anomalies surfaced by Item 5 sweep (filed 2026-05-31)
 
 Three files exist on prod that are NOT git-tracked on `origin/main` and do NOT match the documented `.bak-<label>-<date>` or `.pre-<label>-<date>` deploy-backup conventions. The Item 5 sweep flagged them for review. None block redeploy attempt #3; cleanup is operator-curated, low-priority.
