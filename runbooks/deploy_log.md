@@ -154,7 +154,7 @@ when prod observation warrants a tuning loop.
   MainPID matches Sunday's tastytrade C-1 rotation restart per `[[2026-05-31-tastytrade-c1-rotation]]`; 0 restarts in ~30h.
 - Pre-merge test gate (on impl-b branch `c0866e3` off `1162273`): **28 failed + 3 errors == canonical fresh-worktree baseline.** Zero new failures from Session B.
 - Pre-merge activation-impact audit (per-commit reachability table; operator-requested): ALL 5 commits verified BYTE-IDENTICAL or NEW-CODE-EXERCISED-BUT-SAFE on paper-mode prod. Gate-and-short-circuit pattern confirmed at every newly-active path.
-- Post-merge test gate (on `origin/main 920a33a`): see line below — appended after the background full-suite run completes this session.
+- Post-merge test gate (on `origin/main 920a33a`, run from `cc/` main worktree): **26 failed + 3 errors** — same DB-fixture-coupled result documented in Session B pre-flight P3 refile (`cc/` worktree has `data/trading_corp.db` initialized; fresh worktrees see 28/3). Failure distribution: 3 iron_condor_strategy + 15 robinhood_multi_leg + 3 tasty_options_iron_condor + 5 webhooks_return_fast. All in modules untouched by Session B's 5 commits. **Zero new failures from Session B merge.** Canonical fresh-worktree baseline remains 28/3.
 - Lineage check: `39e2361` (operator's P3 Finding #5 BACKLOG entry, immediately prior main HEAD) verified as ancestor of `920a33a` via `git merge-base --is-ancestor 39e2361 origin/main`. All 6 Session B commits also verified as ancestors.
 
 **Activation ledger summary (Session A DORMANT → Session B MERGED active):**
