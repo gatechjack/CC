@@ -116,6 +116,132 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-02 ~01:40 UTC — N+2 Phase 3 (Sessions A + B) + Stage-1 paper-dashboard DEPLOYED to prod — first whole-deploy since 2026-05-31 redeploy3
+
+**Commits:** prod was `7352f8f` (Saturday's redeploy3 pointer) → now running `395c421` (origin/main HEAD at deploy time). Carries: `36157bf` (Session A merge) + `920a33a` (Session B merge) + `8c80e69` (Sunday's stage1-paper-dashboard merge `--no-ff` of `a106b4d`) + downstream docs commits (`def4833`, `1bdad2d`, `240a068`, `2de653e`, `395c421`).
+**Triggered by:** operator paste of next-session deploy prompt (`reports/2026-06-02_n2_phase3_deploy_handoff.md`); Phase 3 fully MERGED on main since 2026-06-01 ~21:10 UTC + ~30h paper-stability window held with no anomalies.
+**Backup tag:** `.pre-phase3-deploy-20260602-0050` on 15 backed-up files; 1 net-new file (`trading_corp/web/templates/partials/stage1_monitoring.html`) has no backup → `rm -f` on rollback.
+
+**Files deployed (16):**
+
+*Modified (15 — DIFFER-STALE per pre-deploy sweep):*
+- **Phase 3 (Sessions A + B) source (8):**
+  - `trading_corp/agents/divisions/bitunix_futures_observer.py` (Path C revert + `_record_exit_outcome` + `_execute_live_exits` + entry_fee_usd/exit_fee_usd stamps)
+  - `trading_corp/agents/divisions/bitunix_position_reconciler.py` (new functions: `reconcile_position_state`, `resume_live_positions`, `run_position_state_sanity_poll_loop`)
+  - `trading_corp/agents/paper_trade_replay.py` (`_LIVE_EXIT_EXECUTOR` registry + `set_live_exit_executor` setter + `_replay_tick_async` live-vs-paper fork)
+  - `trading_corp/brokers/bitunix.py` (`_fee` → `fee` rename in FillEvent construction + `get_pending_positions` extracted method)
+  - `trading_corp/comms/bitunix_lifecycle_notifier.py` (8 new notify methods: exit_order_placed/filled/rejected/partial_fill, position_closed_with_pnl, reconciliation_divergence, cost_accrual_recorded, restart_resume_executed)
+  - `trading_corp/main.py` (startup wires `reconcile_position_state` + `resume_live_positions` + 60s `run_position_state_sanity_poll_loop` background task; all gated by `_execution_mode == "live"`)
+  - `trading_corp/persistence/db.py` (Decision 6.2 db-lock retry on `insert_paper_trade_record` with `_DB_LOCK_RETRY_DELAYS_SEC = (0.1, 0.3, 0.7)`)
+  - `trading_corp/persistence/models.py` (`FillEvent.fee: float = 0.0` field added with default; all existing constructors preserved)
+- **Stage-1 paper-dashboard source (7 modified, from Sunday's `8c80e69`/`a106b4d`):**
+  - `trading_corp/web/app.py` · `trading_corp/web/data.py` · `trading_corp/web/routes.py`
+  - `trading_corp/web/static/js/equity_chart.js` (Stage-1 deploy-marker on equity curve)
+  - `trading_corp/web/templates/base.html` · `trading_corp/web/templates/home.html` · `trading_corp/web/templates/partials/trade_flow.html` (Stage-1 header badge + Stage-1-only trade-flow filter)
+
+*New (1 — MISSING_ON_PROD per pre-deploy sweep; no backup tag):*
+- `trading_corp/web/templates/partials/stage1_monitoring.html` (Stage-1 monitoring row with Gate (a) tile + HITL/tasty_options activation tiles)
+
+**Transfer mechanism:** `scripts/phase3_deploy_2026_06_02.py` (one-shot operational tooling for this deploy session, adopts the redeploy3 chunked-transfer pattern; canonical `scripts/redeploy3_chunked_transfer.py` is worktree-stranded on `stage1-redeploy3-session-2026-05-30` — separately filed to BACKLOG for landing on main). 16 files in 3 chunks (6+5+5), tar+gzip with LF-normalization on text + raw binary on icons, b64-pushed via `az vm run-command` (~6500 bytes per call) with per-tarball md5 verify, install with per-file backup-to-`.TAG` + per-file md5 verify against origin/main LF-md5. Halt-on-mismatch built in. All 16 files installed clean, exit code 0 at 01:33:07 UTC.
+
+**Features now ACTIVE on prod (paper-mode):**
+- **Layer 1 fee plumbing** (Session B Commit 1): `FillEvent.fee` field flows through every constructor with default 0.0. BitunixBroker populates non-zero from `_observe_fill`. Tax-grade per-fill fee records will land from the first live placement onward (no live placements yet — gated).
+- **Decision 6.2 DB-lock retry** (Session B Commit 2): silent on every `insert_paper_trade_record` happy path; logs warning + retries with jitter on `OperationalError("database is locked")`. Paper-mode `would_have_placed` writes go through this path.
+- **Stage-1 paper-dashboard** (Sunday's `8c80e69`/`a106b4d`): Stage-1 header badge, deploy-marker on equity chart, trade-flow Stage-1-only filter, monitoring row with Gate (a) tile + HITL/tasty_options activation tiles. ALL TILES NOW RENDER on prod (were dormant pre-deploy per the 2026-05-31 ~14:30 UTC close-out entry's prediction).
+
+**Features DEPLOYED but DORMANT (gated by `execution_mode=paper`):**
+- **Path C live-entry write to `paper_trade_record`** (Session A): reachable in code, gated by entry observer's `_execution_mode == "live"` check.
+- **`_record_exit_outcome` canonical helper** (Session A): wired via replay-loop fork; only fires for `extra.execution_mode == "live"` rows (no live-tagged rows on prod).
+- **`_execute_live_exits` async primitive** (Session A): same gate as above.
+- **`BitunixBroker.get_pending_positions` extracted method** (Session A): callable only from the 3 live-mode hooks (startup reconciler, sanity poll, restart-resume) — all gated.
+- **`reconcile_position_state` startup hookup** (Session B Commit 3): outer `if _execution_mode == "live"` short-circuits → no call.
+- **`paper_trade_replay` live-exit fork** (Session B Commit 4): registry setter wires unconditionally; the runtime fork on `extra.execution_mode == "live"` keeps paper-mode rows on the existing `_update_row` path.
+- **`resume_live_positions` cases (a)+(b)+(c-deferred)** (Session B Commit 5): startup gate short-circuits → no call.
+- **60s background sanity poll** (Session B Commit 5): `asyncio.create_task` never created (gate short-circuits before `create_task`).
+- **8 new BitunixLifecycleNotifier methods** (Session B Commit 5): defined on the notifier singleton; no production caller (deferred wiring decision).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- **`execution_mode: paper` is the ONLY thing keeping all of the above dormant.** A flip to `live` at `config/strategies.yaml:1022` activates ALL Phase 3 hooks at once. Pre-flip checklist: (a) operator authorization, (b) re-run reconcile_position_state expectation review on current open positions, (c) verify Path C dry-run audit row shape, (d) deploy-log entry for the flip (config-only, no restart on `strategies.yaml` per its mtime-cached load).
+- **`bitunix_position_reconciler.py` now hosts THREE orthogonal concerns:** (1) SL lifecycle `reconciler_tick` (existing), (2) position-state symmetry `reconcile_position_state` (new), (3) restart-resume `resume_live_positions` (new). All independent functions sharing one module. Don't refactor into separate modules without an explicit reason.
+- **`persistence/db.py` `_DB_LOCK_RETRY_DELAYS_SEC = (0.1, 0.3, 0.7)`** is duplicated from `agents/logger.py:26` by design (dependency arrow: persistence is foundational; agents/logger imports from it, not the reverse). Update both if you change the schedule.
+- **Stage-1 paper-dashboard tiles are now visible on prod;** future dashboard changes touching the same template files (`base.html`, `home.html`, `trade_flow.html`, `stage1_monitoring.html`) should be reviewed against the on-prod state, not the pre-deploy state.
+
+**Latent bugs caught + fixed (during this deploy session):**
+- None on the source side. Two operational-tooling drift items surfaced + filed to BACKLOG (no code change this deploy):
+  1. **`scripts/redeploy3_chunked_transfer.py` is worktree-stranded** (lives on `stage1-redeploy3-session-2026-05-30` branch, never merged to main). CLAUDE.md §Environment references it as the canonical chunked-transfer pattern — docs/code drift. This deploy used `scripts/phase3_deploy_2026_06_02.py` (one-shot) which adopts the same pattern.
+  2. **`scripts/prod_vs_main_file_level_md5_sweep.py` `local_md5_lf()` unconditionally LF-normalizes ALL files** including binary PNGs (line 124), producing false-positive DIFFER findings on 8 PNG icons that are byte-identical between prod and main. Verified locally pre-deploy: prod's `md5sum` byte-md5 matches local raw-bytes md5; sweep's "expected" md5 = LF-normalized PNG bytes (wrong). The redeploy3 chunked-transfer script has the `is_text_file()` filter (lines 130-132) that excludes PNG/JPG/GIF/ICO — the sweep tool should mirror this.
+- **pytest 9.0.3 default-abort-on-collection-errors** caught at pre-deploy test gate: without `--continue-on-collection-errors`, pytest aborts during collection on the 3 pre-existing stale-import errors (`tests/test_backtest_bitunix_confluence_five_factor.py`, `tests/test_bitunix_confluence_gate.py`, `tests/test_bitunix_gate_inputs.py`) and never reports the canonical 28-failed baseline. Pre-pytest-8 behavior continued through collection errors; pytest 8+ changed the default. Future deploys must pass `--continue-on-collection-errors` to validate against documented baseline.
+
+**Verification:**
+- **Pre-deploy prod stability** (operator SSH probe at session start): `MainPID=1961197, NRestarts=0, ActiveState=active, SubState=running, healthz=200, now_utc=2026-06-02T00:38:39Z`. ~30h stable since Sunday's tastytrade C-1 rotation restart.
+- **Pre-deploy bitunix narrow sweep (10-file surface)**: 5 DIFFER (bitunix_futures_observer.py, bitunix_position_reconciler.py, paper_trade_replay.py, bitunix.py, bitunix_lifecycle_notifier.py) + 5 MATCH (bitunix_confluence.py, bitunix_pa_validation.py, bitunix_htf_regime.py, config/strategies.yaml, config/risk.yaml). DRIFT expected on the 5 Phase 3 files.
+- **Pre-deploy full sweep (251-file surface)**: 228 MATCH + 23 DIFFER-STALE + 1 MISSING_ON_PROD + 18 PROD_ONLY_NOT_ON_MAIN (.bak/.orig + 1 `_observer_test.py` + 1 `config/Lets` historical artifact). Of 23 DIFFER-STALE: 15 true-positives (8 Phase 3 source + 7 dashboard source) + 8 PNG false-positives (sweep tool's LF-on-binary bug). Manifest = 15 true-positive DIFFER + 1 MISSING = 16 files.
+- **Pre-deploy test gate** (full suite under `scripts/run_capped.ps1`, `--continue-on-collection-errors` on pytest 9.0.3): **28 failed + 3 errors — exact canonical baseline match.** Failure distribution: 3 `test_iron_condor_strategy.py` + 2 `test_paper_run_tooling.py` (DB-fixture-coupled per `0b8419a`) + 15 `test_robinhood_multi_leg.py` + 3 `test_tasty_options_iron_condor.py` + 5 `test_webhooks_return_fast.py`. Collection errors: 3 (`tests/test_backtest_bitunix_confluence_five_factor.py`, `tests/test_bitunix_confluence_gate.py`, `tests/test_bitunix_gate_inputs.py` — all import the removed `bitunix_confluence_gate` module). **Zero new failures from Sessions A + B.**
+- **Transfer + per-file md5 verify**: all 16 files installed clean. Per-file md5s exact-match origin/main LF-md5s. Tarball md5s verified per chunk (`d3d44762b4934f47ab86743e109ae444`, `df3b20415007f46f39de5866a1ab931d`, `d1c3d72576d9e74a3b8344fe09b703d4`). Exit code 0.
+- **Restart**: `sudo systemctl restart trading-corp.service` at 2026-06-02T01:39:48Z. NEW MainPID `2043009` (≠ pre-restart `1961197`). ExecMainStartTimestamp 01:39:55Z.
+- **Post-restart systemd state**: `MainPID=2043009 NRestarts=0 ActiveState=active SubState=running` at T+5s probe + T+11min final probe.
+- **healthz binding**: 502 from T+0 → T+~11min (lazy-bind pattern, on-trend with redeploy3's ~6min observation). **healthz=200 bound at 2026-06-02T01:50:52Z** (T+11min). Stable 200 thereafter.
+- **Startup `system/startup` audit row landed** at 01:39:53Z: `{"mode": "PAPER", "live_brokers": [], "dry_run": false}`.
+- **BitUnix observer wiring confirmed at 01:39:54Z**: `scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True, execution_mode=paper`.
+- **17 brokers registered**: default (paper), robinhood_pmcc/ira/joint (paper-exec), fidelity_joint/401k (paper-exec), tasty_options (paper-exec), coinbase_spot/futures (paper-exec), bitunix_futures (paper-exec), polymarket_arbitrage (LIVE, paper=False), polymarket_copy_trading (paper), kalshi_arbitrage/llm_arbitrage (LIVE, paper=False), kalshi_weather/crypto/copy_trading (paper). Same broker count as pre-restart.
+- **paper_trade_replay startup catch-up clean** at 01:40:06Z: `{'scanned': 0, 'resolved_win': 0, 'resolved_loss': 0, 'resolved_expired': 0, 'marked_pre_phase_a': 0, 'v2_partial_progress': 0, 'errors': 0}`.
+- **IC position manager online** at 01:40:06Z.
+- **Live activity normal post-bind**: polymarket_arbitrage scans (markets_pre_filter=38-39, survivors=0 — cap-blocked steady state), kalshi_llm_arbitrage scans (266 markets, 0 survivors — within configured min_divergence), polymarket_copy_trader emitted 1 `would_have_placed` (paper HITL — expected behavior), kalshi_copy_trader sports-skips (per existing scout routing), market_cypher webhook received → `alert_ignored` (strategy disabled in config — unchanged).
+- **Zero firings of Phase 3 live-mode primitives**: grep over post-restart journalctl for `_execute_live_exits | resume_live_positions | position_state_divergence | orphan_broker_position | restart_resume | sanity poll` returns empty. ALL Phase 3 new audit kinds + 8 lifecycle notifier methods stay DORMANT as designed under `execution_mode=paper`.
+- **Zero new tracebacks from NEW process** (PID 2043024 = python child of MainPID 2043009). The single traceback observed at 01:39:50Z was from OLD process xvfb-run wrapper PID 1961212 (child of pre-restart MainPID 1961197) during graceful shutdown — uvicorn ASGI exception on in-flight request as systemd issued SIGTERM. Death-rattle pattern, not new-process defect. Verified via `ps -ef` post-restart: new xvfb tree (2043009 shell → 2043021 Xvfb + 2043024 Python → 2043029 playwright) intact + healthy.
+- **`execution_mode=paper` gate verified post-restart**: `grep -n execution_mode /home/azureuser/trading_corp/config/strategies.yaml` returns `1022:  execution_mode: paper             # "paper" | "live"  — Stage-1 N+1 commit 2; config-and-restart, no hot-reload`.
+
+**Inert / dormant on current traffic:**
+- All 8 Phase 3 source files have new code paths, but every live-mode gate (`if _execution_mode == "live"` in main.py startup + observer; `if extra.execution_mode == "live"` in replay-loop fork) short-circuits under paper-mode → zero behavioral change vs pre-deploy on the paper-execution paths.
+- 3 new audit kinds (`restart_resume_executed`, `orphan_broker_position_on_restart`, `restart_resume_case_c_deferred`) + 8 new telegram audit_path tags (`lifecycle_exit_order_*`, `lifecycle_position_closed_with_pnl`, `lifecycle_reconciliation_divergence`, `lifecycle_cost_accrual_recorded`, `lifecycle_restart_resume_executed`) WILL NOT appear in `audit_event` or telegram on prod until `execution_mode` is later flipped to `live`.
+- 8 BitunixLifecycleNotifier methods present on the singleton but unwired (no production caller). Stays dormant until operator-decided wiring session.
+- Stage-1 paper-dashboard tiles render but exercise no new behavior beyond visual presentation of state already captured pre-deploy (header badge, deploy-marker, Stage-1 filter, Gate (a) tile, HITL/tasty_options activation tiles).
+
+**Paper-mode observation window:** 2026-06-02 → 2026-06-09 (7 days). Watch for:
+- Any unexpected appearance of the 3 Phase 3 audit kinds in `audit_event` (would indicate a gate-bypass defect).
+- Any `database is locked` warnings logged by the Decision 6.2 retry (would indicate prod-scale contention that hasn't surfaced before).
+- BitUnix Stage-1 paper performance (existing observation continuing; not Phase 3-specific).
+- Dashboard tile rendering correctness (operator-visual spot-check during this window).
+
+**Out of scope for this deploy:**
+- `execution_mode: paper → live` flip on `config/strategies.yaml:1022`. Separate operator decision, separate session.
+- `auto_execute: false → true` on any bitunix-related strategy. Separate session, gated by Backtester approval (CLAUDE.md §4).
+- Wiring the 8 new BitunixLifecycleNotifier methods to production callers. Separate session.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+TAG=pre-phase3-deploy-20260602-0050; BASE=/home/azureuser/trading_corp
+sudo -u azureuser bash -c '
+for f in \
+  trading_corp/agents/divisions/bitunix_futures_observer.py \
+  trading_corp/agents/divisions/bitunix_position_reconciler.py \
+  trading_corp/agents/paper_trade_replay.py \
+  trading_corp/brokers/bitunix.py \
+  trading_corp/comms/bitunix_lifecycle_notifier.py \
+  trading_corp/main.py \
+  trading_corp/persistence/db.py \
+  trading_corp/persistence/models.py \
+  trading_corp/web/app.py \
+  trading_corp/web/data.py \
+  trading_corp/web/routes.py \
+  trading_corp/web/static/js/equity_chart.js \
+  trading_corp/web/templates/base.html \
+  trading_corp/web/templates/home.html \
+  trading_corp/web/templates/partials/trade_flow.html; do
+  mv \$BASE/\$f.\$TAG \$BASE/\$f
+done
+# 1 net-new file: rm
+rm -f \$BASE/trading_corp/web/templates/partials/stage1_monitoring.html
+'
+sudo systemctl restart trading-corp.service
+"
+```
+
+**Phase 3 implementation status:** **Session A + Session B both MERGED on origin/main AND DEPLOYED to prod.** Paper-mode observation window 2026-06-02 → 2026-06-09. `execution_mode: paper → live` flip = next gated operator decision.
+
+---
+
 ## 2026-06-01 ~21:10 UTC — N+2 Phase 3 Session B MERGED: wire Session A primitives + Layer 1 fees + restart-resume + sanity poll onto main (admin only; no prod touch)
 
 **Type:** source-and-test `--no-ff` merge to main. **Net effect on prod: zero** — no transfer, no restart, no write. Prod still at `7352f8f` (per redeploy3) with `config/strategies.yaml execution_mode=paper`. Status: **MERGED**, NOT DEPLOYED (per CLAUDE.md §Session discipline state-class verb).
