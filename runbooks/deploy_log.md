@@ -116,6 +116,80 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-01 ~21:10 UTC — N+2 Phase 3 Session B MERGED: wire Session A primitives + Layer 1 fees + restart-resume + sanity poll onto main (admin only; no prod touch)
+
+**Type:** source-and-test `--no-ff` merge to main. **Net effect on prod: zero** — no transfer, no restart, no write. Prod still at `7352f8f` (per redeploy3) with `config/strategies.yaml execution_mode=paper`. Status: **MERGED**, NOT DEPLOYED (per CLAUDE.md §Session discipline state-class verb).
+
+**Merge commit:** `920a33a` (`merge(stage-1): N+2 Phase 3 Session B — wire Session A primitives + Layer 1 fees + restart-resume + sanity poll`). Branch `bitunix-live-exit-path-impl-session-b-2026-06-01` (HEAD `c0866e3`) MERGED onto `origin/main` (`39e2361` pre-merge → `920a33a` post-merge).
+
+**Source commits MERGED (5 feat + 1 docs):**
+- `f66722e` — Layer 1 fee plumbing: `FillEvent.fee: float = 0.0` field; BitunixBroker `_fee` → `fee` rename; FillEvent constructor `fee=fee`; Path C `_place_live` stamps `extra["entry_fee_usd"]`; `_record_exit_outcome` stamps `extra["exit_fee_usd"]` + audit `fill_event["fee"]`. All existing constructors (paper, robinhood, tasty, coinbase, fidelity) preserved by default 0.0.
+- `b5278c5` — Decision 6.2 db-lock retry on `insert_paper_trade_record`: 4 total attempts (1 + 3 retries) per `_DB_LOCK_RETRY_DELAYS_SEC = (0.1, 0.3, 0.7)` (mirrored from `agents/logger.py`; duplicated in `persistence/db.py` to keep the dependency arrow correct). INSERT OR IGNORE keeps retries idempotent. Non-lock OperationalErrors propagate immediately.
+- `6982008` — main.py startup wires `reconcile_position_state` for live-mode position-state reconciliation. Gated to `_execution_mode == "live" AND _bx_broker is not None AND hasattr(_bx_broker, "get_pending_positions")`. Awaited (not background task) so halt latch sets BEFORE downstream tasks start.
+- `5edd438` — wire `_record_exit_outcome` + `_execute_live_exits` into `paper_trade_replay` live-mode walk. Registry pattern via `set_live_exit_executor(observer)` (mirrors `set_lifecycle_notifier`). `_replay_tick_async` forks on `extra.execution_mode == "live"` + executor registered + `hasattr(executor, "_execute_live_exits")`. Live path awaits the executor; paper path takes existing `_update_row` + `_queue_close_out_notification`.
+- `a5a5c51` — `_resume_live_positions` cases (a)+(b)+(c-deferred) + 60s `run_position_state_sanity_poll_loop` background task + 8 new methods on `BitunixLifecycleNotifier`. All wired into main.py startup; both startup and background-task gates use the same `_execution_mode == "live"` short-circuit. 8 alert methods defined for future wiring (no production caller this session — `notifier=None` passed at both wire sites).
+- `c0866e3` — EOS docs: `reports/2026-06-01_n2_phase3_session_b_complete.md` (215 LOC; full per-commit detail, activation ledger, premise corrections, N+3 deferrals, recommended operator next actions).
+
+**Features MERGED (load-bearing for future "is X done?" checks):**
+- **Layer 1 fee plumbing** — `FillEvent.fee` field active on all brokers (default 0.0); BitunixBroker populates non-zero from `_observe_fill` → `_fill_price_from_history`. Tax-grade per-fill fee records will land from the first live placement onward.
+- **Decision 6.2 DB-lock retry** — active on every `insert_paper_trade_record` call. Silent until contention; logs warning + retries with jitter on `OperationalError("database is locked")`.
+- **main.py startup reconciler hookup** — `reconcile_position_state` becomes the first live-mode startup gate (after Phase 1a §9c entry-halt-on-divergence semantics). DORMANT on paper-mode prod.
+- **paper_trade_replay live-exit fork** — `_record_exit_outcome` + `_execute_live_exits` become reachable from the replay loop for live-tagged rows. DORMANT on paper-mode prod (Path C never stamps `execution_mode=live`).
+- **Restart-resume cases (a)+(b)+(c-deferred)** — 3 new audit kinds: `restart_resume_executed`, `orphan_broker_position_on_restart`, `restart_resume_case_c_deferred`. DORMANT on paper-mode.
+- **60s background sanity poll** — `asyncio.create_task(run_position_state_sanity_poll_loop)` background task created at startup when live mode. DORMANT on paper-mode (gate short-circuits → task never created).
+- **8 new BitunixLifecycleNotifier methods** — `notify_exit_order_placed/filled/rejected/partial_fill`, `notify_position_closed_with_pnl`, `notify_reconciliation_divergence`, `notify_cost_accrual_recorded`, `notify_restart_resume_executed`. PRESENT on the notifier singleton; no production caller in Session B (deferred to operator-decided wiring session).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- `persistence/db.py` now contains a duplicated `_DB_LOCK_RETRY_DELAYS_SEC` constant identical to `agents/logger.py:26`. Documented as duplicated-by-design (dependency arrow); update both if you change the schedule.
+- `paper_trade_replay.py` introduces `_LIVE_EXIT_EXECUTOR` registry + `set_live_exit_executor(observer)` setter. main.py wires it unconditionally after `set_lifecycle_notifier`; the fork inside `_replay_tick_async` is gated on the row's `extra.execution_mode` tag.
+- `bitunix_position_reconciler.py` now hosts THREE orthogonal concerns: (1) SL lifecycle (`reconciler_tick`, runs 60s loop), (2) position-state symmetry (`reconcile_position_state`, called at startup + 60s sanity loop), (3) restart-resume (`resume_live_positions`, called once at startup). All independent functions sharing one module.
+- `notify_position_closed_with_pnl`'s body uses explicit `+/-` sign prefix before `$` (per operator-discoverable convention; tested against `Gross PnL: +$12.50` shape).
+
+**Latent bugs caught + fixed (if any):**
+- None new this session. Premise correction filed pre-Commit-1 supersedes a Session A close-out misframing — the `26/3` baseline was a `data/trading_corp.db` filesystem-coupling artifact, not a Session A regression. Canonical fresh-worktree baseline `28/3` is now documented across deploy_log + memory + BACKLOG P3 (refile).
+
+**Verification:**
+- Pre-merge prod stability (operator SSH probe at session-end):
+  `MainPID=1961197, NRestarts=0, ActiveState=active, SubState=running, healthz=200`.
+  MainPID matches Sunday's tastytrade C-1 rotation restart per `[[2026-05-31-tastytrade-c1-rotation]]`; 0 restarts in ~30h.
+- Pre-merge test gate (on impl-b branch `c0866e3` off `1162273`): **28 failed + 3 errors == canonical fresh-worktree baseline.** Zero new failures from Session B.
+- Pre-merge activation-impact audit (per-commit reachability table; operator-requested): ALL 5 commits verified BYTE-IDENTICAL or NEW-CODE-EXERCISED-BUT-SAFE on paper-mode prod. Gate-and-short-circuit pattern confirmed at every newly-active path.
+- Post-merge test gate (on `origin/main 920a33a`): see line below — appended after the background full-suite run completes this session.
+- Lineage check: `39e2361` (operator's P3 Finding #5 BACKLOG entry, immediately prior main HEAD) verified as ancestor of `920a33a` via `git merge-base --is-ancestor 39e2361 origin/main`. All 6 Session B commits also verified as ancestors.
+
+**Activation ledger summary (Session A DORMANT → Session B MERGED active):**
+
+| Session A primitive | Session B caller wired | Reachability on current prod |
+|---|---|---|
+| Path C `_place_live` row write | Already active in Session A | INERT (paper-mode gate) |
+| `_record_exit_outcome` | Replay-loop fork (`5edd438`) | DORMANT (no live-tagged rows on prod) |
+| `_execute_live_exits` | Replay-loop fork (`5edd438`) | DORMANT (same) |
+| `BitunixBroker.get_pending_positions` | startup reconciler + restart-resume + 60s poll | DORMANT (gates short-circuit) |
+| `reconcile_position_state` | startup reconciler (`6982008`) + 60s poll (`a5a5c51`) + restart-resume (`a5a5c51`) | DORMANT (gates short-circuit) |
+
+**Inert / dormant on current traffic:**
+- All 5 Session B source commits' live-mode paths are gated by `config/strategies.yaml:1022 execution_mode: paper`. Path C continues to fire only in the entry observer's live arm (gated). Replay-loop fork stays in the ELSE branch (paper-mode `_update_row`). Restart-resume + reconciler + 60s poll's outer `if _execution_mode == "live"` short-circuits → no calls, no audits, no background tasks.
+- Decision 6.2 db-lock retry is ACTIVE on every `insert_paper_trade_record` call (paper + live), but the new code path only fires on contention. Happy path (no lock) is byte-identical.
+- FillEvent.fee is ACTIVE throughout; default 0.0 preserves all existing constructors.
+- 8 new BitunixLifecycleNotifier methods are PRESENT on the singleton but have no production caller (deferred wiring).
+- 3 new audit kinds + 8 new telegram audit_path tags will NOT appear in `audit_event` or telegram on prod until `execution_mode` is later flipped to `live` (operator decision; separate session).
+
+**Rollback recipe** (if Session B is found to have a defect post-merge):
+```bash
+# Revert the merge commit on main (preserves the source commits as a no-op).
+cd "C:/Users/AA Incorporado/cc"
+git revert -m 1 920a33a  # clean revert commit
+git push origin main
+# Alternative (full reset; only if no further commits land on main):
+# git reset --hard 39e2361 && git push origin main --force-with-lease
+```
+
+**Session B complete report:** `reports/2026-06-01_n2_phase3_session_b_complete.md` on origin/main (canonical via merge). Full per-commit detail; activation ledger; premise corrections; deferred items.
+
+**Phase 3 implementation status:** **Session A + Session B both MERGED on origin/main; Phase 3 fully MERGED.** Remaining work: paper-mode validation (observe prod logs for the next N days) + operator decision on `execution_mode: live` flip (separate session).
+
+---
+
 ## 2026-06-01 ~18:50 UTC — N+2 Phase 3 Session A merge: live exit path core surface onto main (admin only; no prod touch)
 
 **Type:** source-and-test `--no-ff` merge to main. **Net effect on prod: zero** — no transfer, no restart, no write. Prod still at `7352f8f` (per redeploy3) with `config/strategies.yaml execution_mode=paper`.

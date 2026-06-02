@@ -8,7 +8,33 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## P1 — N+2 Phase 3 (Stage-1 BitUnix live exit path) — Session A MERGED 2026-06-01 ~18:50 UTC; Session B PENDING
+## P1 — N+2 Phase 3 (Stage-1 BitUnix live exit path) — Session A + Session B both MERGED 2026-06-01; Phase 3 fully MERGED on main (NOT DEPLOYED)
+
+**Update 2026-06-01 ~21:10 UTC:** Session B **MERGED** to `origin/main` via `--no-ff` merge `920a33a` (operator authorization after per-commit activation-impact audit). Pre-merge prod stability verified (`MainPID=1961197, NRestarts=0, ActiveState=active, SubState=running, healthz=200`; ~30h stable). Pre-merge test gate `28/3` exact baseline match. Deploy_log entry at `runbooks/deploy_log.md` 2026-06-01 ~21:10 UTC. Memory: `[[2026-06-01-n2-phase3-session-b-merged]]`. **Phase 3 implementation status: fully MERGED on origin/main; NOT DEPLOYED.** Net effect on prod paper-mode: zero — every newly-active code path either gate-and-short-circuits on `_execution_mode == "live"` (Commits 3+5a+5b), takes the existing ELSE branch when no rows are tagged `execution_mode="live"` (Commit 4 fork), is happy-path byte-identical until contention (Commit 2 db-lock retry), or preserves existing constructors via default 0.0 (Commit 1 FillEvent.fee).
+
+**Session B scope MERGED (~932 source + ~1298 test LOC across 5 source commits + 1 docs commit):**
+- `f66722e` Layer 1 fee plumbing — `FillEvent.fee: float = 0.0` + BitunixBroker pass-through + `entry_fee_usd`/`exit_fee_usd` extras + audit `fee`
+- `b5278c5` Decision 6.2 — `insert_paper_trade_record` db-lock retry mirroring `_DB_LOCK_RETRY_DELAYS_SEC = (0.1, 0.3, 0.7)` from `agents/logger.py`
+- `6982008` main.py startup wires `reconcile_position_state` for live-mode position-state reconciliation
+- `5edd438` paper_trade_replay wires `_record_exit_outcome` + `_execute_live_exits` via `set_live_exit_executor` registry + `_replay_tick_async` fork
+- `a5a5c51` `resume_live_positions` + 60s `run_position_state_sanity_poll_loop` background task + 8 new `BitunixLifecycleNotifier` methods
+- `c0866e3` Session B complete report
+
+**Premise corrections (Session B):**
+1. Pre-flight baseline diagnosis (resolved pre-Commit-1; supersedes Session A close-out misframing): the 2 `test_paper_run_tooling.py` readiness checks have a `data/trading_corp.db` filesystem dependency. Fail 28/3 in fresh worktrees; pass 26/3 only on machines with prior DB-init activity. Documented in deploy_log + memory + BACKLOG P3 (refiled `0b8419a`'s framing). Canonical fresh-worktree baseline is 28/3.
+2. Sanity-poll `interval_s` floor lowered from 1.0 → 0.001 for testability (prod callers pass 60.0).
+
+**Activation ledger summary (Session A DORMANT → Session B MERGED active):**
+- All 4 Session A dormant primitives now have production callers wired.
+- ALL live-mode paths gated by `_execution_mode == "live"` or `extra.execution_mode == "live"` checks; gates short-circuit on paper-mode prod.
+- Decision 6.2 db-lock retry is the only path that's "always active" — happy-path byte-identical; retry fires only on `OperationalError("database is locked")`.
+
+**Remaining work post-merge:**
+- Paper-mode observation window on prod (no separate work; ride existing prod paper-mode behavior; watch for any unexpected logs from the new code paths).
+- Operator decision on `config/strategies.yaml:1022 execution_mode: live` flip — separate session, separate deploy. NOT part of Phase 3.
+- N+3 scope items (Layer 2 funding accrual, Case C auto-resolve, wiring 8 notifier methods to consumers) — separate session.
+
+**Original Phase 3 entries (pre-Session-A pre-merge and Session A merged):**
 
 **Update 2026-06-01 ~18:50 UTC:** Session A **MERGED** to `origin/main` via `--no-ff` merge `36157bf` (operator authorization after per-commit ACTIVE-vs-DORMANT audit). Pre-merge prod stability verified (`MainPID=1961197, NRestarts=0, ActiveState=active, SubState=running, healthz=200`); pre-merge test gate exact baseline `28/3` match. Deploy_log entry at `runbooks/deploy_log.md` 2026-06-01 ~18:50 UTC. Memory: `[[2026-06-01-n2-phase3-session-a-merged]]`. **Net effect on prod: zero** — Path C revert is reachable in code but gated by `config/strategies.yaml:1022 execution_mode: paper`; Commits 2/3/4 fully dormant (no production callers).
 
