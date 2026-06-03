@@ -322,6 +322,30 @@ Surfaced by `reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.
 
 ---
 
+## P3 — Establish pre-Phase-3 baseline for `agents/logger.py` `log_event` retry-exhaustion rate; watch for post-`live`-flip increase (filed 2026-06-02 via Day 2 paper-mode audit)
+
+**Surface:** Day 2 paper-mode observation audit (`reports/2026-06-02_phase3_day2_audit.md` §2) found **8 occurrences** of `[audit] log_event FAILED after 4 attempts (database locked): <audit_path> → writing to fallback file` in 23.5h since the 2026-06-02 01:39:50 UTC restart. Two visible exhaustions: `13:33:27` `hitl/pending_approval_added`, `14:33:49` `hitl/board_decision_received`. All are on the pre-existing `agents/logger.py:26` retry path (`_DB_LOCK_RETRY_DELAYS_SEC = (0.1, 0.3, 0.7)`), NOT on Decision 6.2's new `insert_paper_trade_record` retry — the dedicated probe `grep -E 'insert_paper_trade_record|paper_trade_record.*lock'` returned empty (Phase 3-introduced retry path is dormant).
+
+**Why this matters:**
+- Deploy log §202 watch-list item #2 was specifically about Decision 6.2's retry firing. That path is silent, which we now know.
+- BUT the pre-existing `log_event` retry IS exhausting at non-trivial rate (~8/24h on paper-mode). Each exhaustion diverts a `hitl/*` row to the fallback file; the canonical `audit_event` table is missing these rows. Dashboard summaries that query `audit_event` undercount hitl/* activity by ~8 rows/day.
+- We don't have a documented pre-Phase-3 baseline rate. Without one, we can't tell whether Phase 3 changed it.
+- Critical: once `execution_mode` flips to `live`, the 60s `run_position_state_sanity_poll_loop` background task + `resume_live_positions` at every restart + `_execute_live_exits` per exit add NEW audit writers competing for the same DB. If the exhaustion rate climbs after the flip, we'd want to know it's the flip's fault, not pre-existing drift.
+
+**Scope when work runs:**
+1. Pull the same `journalctl ... | grep -c 'database locked'` rate from the **prior** observation window (pre-2026-06-02 01:39:50 UTC restart, ~30h stable). Document the pre-Phase-3 baseline rate per hour.
+2. Document the Day 2 rate (~0.34/hr from 8/23.5h) as the post-Phase-3-deploy baseline.
+3. Sample the 8 affected audit kinds — characterize whether the lock contention is concentrated on a specific path (hitl/*, paper_trade_*, scan_tick, or other) or spread.
+4. Decide whether to (a) raise retry budget from 4 attempts to 6+, (b) widen the jitter schedule, (c) move audit writes to a separate DB file, or (d) just accept the fallback-file path as designed and instrument dashboards to read both.
+
+**Prerequisite:** none — read-only journalctl probe.
+
+**Not gating:** `execution_mode: paper → live` flip. Acceptable to flip with current behavior; this is a baseline-and-watch item, not a blocker.
+
+**Reference:** `agents/logger.py:26` (retry schedule + exhaustion handler); `persistence/db.py` (Decision 6.2 duplicate of same schedule per Phase 3 Session B Commit 2); `runbooks/deploy_log.md` 2026-06-02 ~01:40 UTC §202 watch-list; `reports/2026-06-02_phase3_day2_audit.md` §2 + §4.
+
+---
+
 ## P3 — Post-Session-B audit of analogous paper-vs-live timing assumptions beyond Finding #5 cases 5a + 5b (filed 2026-06-01 via Finding #10 triage Decision #6)
 
 **Source:** 2026-05-30 architectural review Finding #5 surfaced two paper-vs-live timing assumption mismatches (`reports/2026-05-30_stage1_bitunix_live_engine_architectural_review.md` Finding #5 + open question #6 at line 476):
