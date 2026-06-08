@@ -503,6 +503,35 @@ Filed 2026-05-01. Audit-row cleanup.
 
 Filed 2026-05-03. UX clarification.
 
+## P3 — Robinhood Agentic Trading: revisit integration (DEFERRED 2026-06-08)
+
+Robinhood launched Agentic Trading (beta) 2026-05-27 via MCP server
+at `agent.robinhood.com/mcp/trading`. Per planning report
+`reports/2026-06-08_robinhood_agentic_evaluation.md`: deferred
+formal integration; Pattern 1 (broker adapter under existing risk
+gate) is the only shape that preserves single-chokepoint invariant,
+blocked today on:
+- No documented non-interactive / service-account auth path
+- trading_corp is not an MCP client today (no MCP client library)
+
+Revisit triggers (any one is sufficient to re-evaluate):
+- (a) Documented programmatic / service-account auth path lands
+- (b) GA out of beta (currently 2 weeks old)
+- (c) Options or crypto support lands
+- (d) Published rate limits / SLA
+- (e) Observed beta stability over 3+ months
+- (f) Operator capacity for new-division build
+
+The most load-bearing trigger is (a) — without service-account auth,
+Pattern 1 is infeasible regardless of other improvements.
+
+Pattern 3 (operator-driven manual exploration via Claude Desktop)
+remains available as a low-cost surface-familiarity option; not
+filed as a BACKLOG task since it's an operator-driven action, not a
+session work item.
+
+Reference: reports/2026-06-08_robinhood_agentic_evaluation.md.
+
 ## P3 — Migrate `FidelityBroker` onto a `ReadOnlyBroker` ABC
 
 Filed 2026-05-01. Architecture cleanup. See CLAUDE.md §1 code-path-isolation
