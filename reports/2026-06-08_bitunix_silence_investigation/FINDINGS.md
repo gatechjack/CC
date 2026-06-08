@@ -65,7 +65,32 @@ off `origin/main` @ `58744bb`.
 Round 2 (conditional on A2): A3 (HTF reject specifics) / A4 (PA validator) /
 A6 (regime context). Selected after Round 1 results.
 
-**STATUS: awaiting Round 1 results.**
+### Round 1 — call 1 results (probe_a1.sh via `az vm run-command`, 2026-06-08T21:11:38Z)
+
+Raw output captured verbatim:
+- **Connectivity:** `host=tc-prod-vm`, `db=present size_bytes=1042460672` (~1.04 GB). Server clock `2026-06-08T21:11:38Z`.
+- **A1 — bitunix_futures trades/day (≥ 2026-06-02):**
+  ```
+  day         trades
+  2026-06-02  9
+  ```
+  Only one row. **Last trade day = 2026-06-02 (9 trades); zero on 06-03 … 06-08.**
+- **A5 — Phase 3 live-mode primitives in paper-mode (HARD-STOP):** **ZERO rows. CLEAN.**
+  No gate-break; Session B activation audit holds.
+
+**Refinement vs prior premise:** silence began **2026-06-03**, a day earlier than
+the "06-04 → 06-08" window in premise correction #1. The real window is
+**2026-06-03 → 2026-06-08** (~6 days). Last *working* day = 06-02.
+
+**Anomaly (flagged, non-blocking):** Day-2 audit (06-03T01:08Z) reported bitunix
+resolved `total=6`; A1 shows `9` on 06-02. Probable cause: audit counted
+resolved-at-snapshot while ~3 were still settling. Note, don't chase yet.
+
+**Call-2 window widened:** probe_a2.sh A2/A2b changed `ts ≥ 06-04` → `ts ≥ 06-02`
+so the gate-stack breakdown spans the working baseline (06-02) + the transition
+day (06-03), which the original ≥06-04 window excluded.
+
+**STATUS: call 1 done (A5 clean). Awaiting call 2 (A2/A2b, widened to ≥06-02).**
 
 ## Thread B — Robinhood pickle / unplanned restart
 Pending Thread A stop-and-report.
