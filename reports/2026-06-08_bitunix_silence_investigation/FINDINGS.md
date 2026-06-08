@@ -176,7 +176,91 @@ single-chart vs multi-timeframe-filter disagreement.
 `probe_a4.sh`: A6 regime+composite+ADX distribution by day (decides H1a vs H1b) +
 A3c gate verdict/reason (payload tail). Settles correct-behavior vs miscalibration.
 
-**STATUS: call 3 done (regime shift identified at 22:15 boundary; H1a-leaning). Call 4 prepared. Awaiting operator run.**
+### Round 2 — call 4 results (probe_a4.sh, 2026-06-08T~21:2xZ) — ROOT CAUSE FOUND; call-3 H1a lean OVERTURNED
+
+**A3c verdict/reason tail — the blocker named explicitly:**
+- **Silent (06-08T20:28:28):** `volatility_tier`="extreme", `atr_pct_d1`=4.07,
+  **`size_multiplier`=0.0**, **`hard_zero_reason`="vol_tier_extreme"**,
+  `permission_reason`="BEAR + H1=transitional: short full size; vol_tier=Extreme (1D ATR 4.07%)",
+  d1: regime=bear/ema=bear/structure=bear/adx=43.3 (daily IS bearish).
+- **Working (06-02T22:15:01):** `volatility_tier`="high", `atr_pct_d1`=2.92,
+  **`size_multiplier`=1.0**, **`hard_zero_reason`=null**,
+  `permission_reason`="STRONG_BEAR: shorts full size, no longs".
+
+→ **Blocker is a VOLATILITY HARD-ZERO, not the directional/regime gate.** The
+permission_reason grants "short full size"; the vol overlay then sets
+`size_multiplier=0.0` because 1D ATR is in the "extreme" tier. Zero size → no order →
+no trade_plan/would_have_placed. Breakpoint 06-02T22:15 = ATR crossing "high" (2.92%,
+traded) → "extreme" (~4%+, zeroed).
+
+**A6 regime-by-day — refutes the call-3 "choppy tape" read:**
+
+| day | regime | n | avg_score | h1_adx | h4_adx |
+|-----|--------|--:|----------:|-------:|-------:|
+| 06-02 | STRONG_BEAR | 16 | -1.0 | 64.4 | 42.5 |
+| 06-03 | STRONG_BEAR | 36 | -0.9 | 66.7 | 55.0 |
+| 06-04 | STRONG_BEAR | 42 | -0.84 | 54.8 | 66.1 |
+| 06-05 | STRONG_BEAR | 53 | -0.93 | 35.1 | 69.7 |
+| 06-06 | BEAR 26 / STRONG_BEAR 5 | 31 | -0.5/-0.8 | ~35 | ~73 |
+| 06-07 | BEAR | 37 | -0.5 | 25.3 | 66.3 |
+| 06-08 | BEAR | 49 | -0.5 | 26.4 | 52.4 |
+
+**06-03/04/05 were predominantly STRONG_BEAR** (same regime that traded 06-02) → still
+ZERO trades. Call-3's "transitional" read sampled only the latest (06-08) rows. The ONLY
+factor common to ALL silent days is the `vol_tier_extreme` hard-zero. **H1b confirmed; H1a
+refuted.** Operator's chart-read of missed shorts on 06-03/04/05 is VINDICATED — those were
+real strong-bear shorts suppressed by the vol hard-zero, not a correct chop stand-aside.
+
+**REVISED ROOT CAUSE:** continuous `vol_tier_extreme` hard-zero (size_multiplier→0.0) since
+06-02T22:15, because 1D ATR has stayed in the "extreme" tier (~4%+) for ~6 days. Mechanically
+working as coded. Open question for the verdict: is the "extreme" threshold correctly
+calibrated for BTC, a deploy regression, or a deliberate risk control? → grounding threshold
+value + intent + change-history in local code.
+
+### Round 2 — code grounding (verified file:line by primary read; agent corroborated)
+
+`trading_corp/agents/strategies/bitunix_htf_regime.py` (worktree==prod for this file):
+- **Classifier `_atr_pct_to_tier()` (725-737):** docstring "Thresholds are upper bounds
+  for each tier." Tests only `< low(0.5)`, `< normal(1.5)`, `< high(3.0)`, else → **Extreme**.
+  The `"extreme"` key is **never read.** Effective high→Extreme boundary = **3.0%**, not 5.0%.
+- **Defaults (239-241) + `config/strategies.yaml:1268-1272`:** both
+  `{low:0.5, normal:1.5, high:3.0, extreme:5.0}` (YAML==defaults; no real override).
+- **Hard-zero (990-1001):** `if volatility_tier == Extreme → size_multiplier=0.0,
+  hard_zero_reason="vol_tier_extreme"`. Observer under `htf_gate.mode=enforce`
+  (strategies.yaml:1289) `return`s on size≤0 (`bitunix_futures_observer.py:1410-1416`).
+- **Intent (module docstring 80-88):** extreme-vol hard-zero is a DELIBERATE override
+  ("skip until normalized"). Standing aside is by design; the THRESHOLD value is the question.
+- **Git history:** introduced commit `9e1b527` (2026-05-14, Jack Sumner); YAML `98d8b8b`
+  (2026-05-14). **Unchanged since; NOT touched by Phase-3 deploy** (06-01/02 commits made
+  zero changes to this file / the vol_tier block). **Pre-existing latent condition surfaced
+  by a market-vol change (1D ATR 2.92%→~4% across 06-02/03), not a deploy regression. No
+  rollback indicated.**
+
+## THREAD A — VERDICT (COMPLETE)
+
+- **Confirmed window:** 9 trades 06-02; **zero 06-03→06-08** (~6 days).
+- **Where filtered:** `vol_tier_extreme` hard-zero (`size_multiplier=0.0`) between HTF gate
+  and trade-plan. NOT ingest, NOT PA, NOT the directional/regime gate (grants "short full size").
+- **A5 activation check:** CLEAN — no Phase-3 live-mode primitives in paper-mode.
+- **A6 regime context:** 06-03/04/05 were STRONG_BEAR (tradeable) yet suppressed purely by
+  the vol hard-zero. Operator's chart-read of missed shorts VINDICATED.
+
+**Honest verdict — AMBIGUOUS, resolves to ONE design-intent decision:**
+Mechanism certain. Bug vs correct-behavior hinges on intent:
+- Classifier is internally consistent with its "upper bounds" docstring → Extreme=≥3.0% is
+  what it's coded to do (not a strict logic error).
+- BUT `config extreme:5.0` is dead/misleading; a BTC strategy that fully stands aside
+  whenever 1D ATR ≥3% is dormant a large fraction of the time. The 5.0 value + domain sense
+  suggest the intended cutoff was likely higher than the effective 3%.
+→ **Operator (author) decides:** was ≥3% ATR meant to disable the strategy, or was 5% the
+intended extreme cutoff? If 5%, this is a latent threshold bug.
+
+**Impact:** (1) paper observation window 06-02→09 CONTAMINATED (dormant 6/7 days — cannot
+judge live-readiness); (2) latent suppressor for any future live flip.
+**Constraint:** threshold change = strategy-param change → Backtester approval gate
+(CLAUDE.md §4). Read-only session — NO code change made.
+
+**STATUS: THREAD A COMPLETE. Stop-and-report. Awaiting operator on (a) threshold disposition, (b) proceed to Thread B?**
 
 ## Thread B — Robinhood pickle / unplanned restart
 Pending Thread A stop-and-report.
