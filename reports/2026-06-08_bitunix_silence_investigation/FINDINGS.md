@@ -138,7 +138,45 @@ verdicts are rejections → H1 (gate over-blocking; then A6 regime context).
 If they're allows with no trade_plan following → H2 (trade-plan stage broke;
 pivot to trade_plan_decision content + halt/cooldown latch + broad agent_error).
 
-**STATUS: Round 1 complete. Call 3 prepared (htf_gate verdict, H1-vs-H2). Awaiting operator run.**
+### Round 2 — call 3 results (probe_a3.sh, 2026-06-08T21:1xZ)
+
+htf_gate_decision raw payloads (capped 450c — verdict/reason tail cut off, see call 4).
+All rows `score_side: sell` (strategy generating shorts throughout).
+
+**Silent days (06-08, 4 most recent):**
+- top-level `regime` = **BEAR**, `composite_score` = **−0.5**
+- h1: regime=**transitional**, ema_alignment=**mixed**, structure=insufficient, adx≈**24.8–25.6**
+- h4: regime=**transitional**, ema_alignment=**mixed** (one shows structure=**bull**)
+
+**Working day (06-02, 3 rows incl. last-ever htf_gate_decision @ 22:15:01):**
+- top-level `regime` = **STRONG_BEAR**, `composite_score` = **−1.0**
+- h1: regime=**bear**, ema_alignment=**bear**, adx≈**75.4–75.8**
+- h4: regime=**bear**, ema_alignment=**bear**
+
+**Interpretation:** the gate's INPUTS shifted decisively at the 22:15 boundary.
+06-02 = clean aligned strong downtrend (H1+H4 both bear, ADX ~75, STRONG_BEAR,
+composite −1.0) → gate passed shorts → trades fired. 06-03+ = choppy/transitional
+(H1+H4 mixed/transitional, ADX ~25, BEAR, composite −0.5) → gate very likely rejecting.
+Last trade plan (22:15:02) formed ~1s after the last STRONG_BEAR gate decision (22:15:01);
+market then degraded to transitional and trade-plan output went to zero.
+
+Strongly favors **H1 (gate rejecting on regime)** over H2 (trade-plan break); within H1
+leans **H1a (gate correctly refusing a choppy/unaligned tape)** over H1b (miscalibration).
+
+**NOT YET CONFIRMED (call 4):** (1) gate's literal verdict/reason (payload tail capped);
+(2) whether regime stayed transitional ALL window vs had STRONG_BEAR/high-ADX windows
+that should have traded but didn't (= H1b bug).
+
+**Reframes brief's A6 premise:** brief expected STRONG_BEAR + HIGH-vol (gate filtering
+shorts would be wrong). Actual: BEAR/transitional + low ADX (gate filtering shorts is
+plausibly correct). Operator's chart-read of "short opportunities" may be the classic
+single-chart vs multi-timeframe-filter disagreement.
+
+## Round 2 — call 4 (selected)
+`probe_a4.sh`: A6 regime+composite+ADX distribution by day (decides H1a vs H1b) +
+A3c gate verdict/reason (payload tail). Settles correct-behavior vs miscalibration.
+
+**STATUS: call 3 done (regime shift identified at 22:15 boundary; H1a-leaning). Call 4 prepared. Awaiting operator run.**
 
 ## Thread B — Robinhood pickle / unplanned restart
 Pending Thread A stop-and-report.
