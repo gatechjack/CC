@@ -28,6 +28,11 @@ Queries against historical paper data remain available via Claude.
 
 ## Observation window — active
 
+> **2026-06-08 update — window INVALIDATED** by the P1 finding below (`bitunix_htf_regime`
+> volatility classifier bug — **0 fires for 6 of 7 days**). Day-7 close-out 2026-06-09
+> **cannot** produce a flip-readiness verdict. A fresh observation window is required
+> post-fix. Root cause + evidence in the P1 entry immediately below.
+
 - **Day 2 audit completed 2026-06-02:** all gates intact, zero firings of Phase 3
   audit kinds, 6 bitunix paper trades (5W/1L), error rate normal,
   `_DB_LOCK_RETRY_DELAYS_SEC` retry exhausting 8× per 23.5h on `hitl/*` writes
@@ -38,6 +43,55 @@ Queries against historical paper data remain available via Claude.
   8-count db-lock baseline + bitunix trade distribution + bitunix win rate.
 - **Day 7 close-out:** scheduled 2026-06-09. Full window aggregate; verdict on
   whether `execution_mode: paper → live` flip is ready.
+
+## P1 — `bitunix_htf_regime` volatility classifier ignores config; treats BTC ATR ≥3% as extreme (filed 2026-06-08 via Thread A investigation)
+
+Root cause of zero Bitunix fires since 2026-06-02 22:15 UTC, identified 2026-06-08 via
+paper-mode observation-window investigation.
+
+**Bug:** `trading_corp/agents/strategies/bitunix_htf_regime.py:725-737` (`_atr_pct_to_tier`)
+sets the high→Extreme boundary at the `high` threshold (3.0%) and does NOT read the
+`extreme: 5.0%` value from `config/strategies.yaml:1268-1272` — the `extreme` key is dead
+config. The strategy size-zeroes any trade (`size_multiplier=0.0`,
+`hard_zero_reason="vol_tier_extreme"` at `bitunix_htf_regime.py:990-1001`; abandoned under
+`htf_gate.mode=enforce` at `bitunix_futures_observer.py:1410-1416`) when BTC 1D ATR ≥3.0% —
+which is normal BTC volatility, not extreme.
+
+**Empirical evidence:** BTC 1D ATR has been ~4% since 2026-06-03; strategy traded **9×** on
+2026-06-02 (ATR 2.92%, "high" band; Day-2 audit snapshot at 06-03T01:08Z showed 6 resolved),
+zero since (ATR ~4%, hits the effective "extreme" band → size 0). Confirmed via signal-pipeline
+trace: scoring + PA + HTF-regime all alive at high volume through 06-08; the directional gate
+grants "short full size"; the final volatility hard-zero nulls the size. A6 regime trace shows
+06-03/04/05 were STRONG_BEAR (tradeable) yet suppressed — ruling out a "correct chop stand-aside."
+Distinct from the well-calibrated PA validator (`feedback_pa_gate_well_calibrated`); this is the
+HTF vol-tier classifier.
+
+**Impact:**
+- Phase 3 paper-mode observation window (2026-06-02 → 2026-06-09) contaminated — strategy
+  dormant 6 of 7 days. Cannot judge live-readiness from this window's data.
+- Same cutoff would suppress real trades in live mode the moment `execution_mode` flips,
+  defeating the strategy's intent.
+
+**Fix scope:**
+1. Read the `extreme` threshold from `config/strategies.yaml` per the existing config pattern.
+2. Verify the other bands (`high`/`normal`/`low`) also read from config or are documented as
+   hardcoded-by-design.
+3. Backtest validates ≥5.0% as the intended cutoff against historical BTC data — confirm it
+   produces a reasonable trade-eligible regime distribution before shipping.
+4. Per CLAUDE.md §4: strategy-parameter change → Backtester approval required before any code
+   change. Run the backtest first.
+
+**Prerequisites for `execution_mode` flip:** this fix must land + a fresh paper-mode
+observation window must be observed before any flip decision is meaningful. The current
+2026-06-02 → 2026-06-09 window is invalidated by this finding.
+
+**Reference:**
+- Investigation report: `reports/2026-06-08_bitunix_silence_investigation/FINDINGS.md`
+  (branch `bitunix-silence-investigation-2026-06-08`, verdict commit `9e9053b`).
+- Phase 3 paper-mode observation window: `runbooks/deploy_log.md` entry 2026-06-02.
+- CLAUDE.md §4 ("Things to ask before doing") — strategy-parameter change gate.
+
+**Priority: P1.** Structural blocker for any Bitunix live-flip decision.
 
 ## Open items influencing the live-flip decision
 
