@@ -43,9 +43,14 @@ off `origin/main` @ `58744bb`.
    `restart_resume_case_c_deferred`). Using the Day-2 audit's validated
    LIKE filter (strict superset) so the hard-stop check can't return a
    false zero from wrong kind names.
-5. **Network:** Day-2 audit had to route via `az vm run-command` (hotel
-   WiFi blocked SSH:22). Operator now home; SSH expected to work — probe's
-   connectivity marker verifies this in the first round.
+5. **Network (CONFIRMED 2026-06-08):** Operator is on **hotel WiFi + VPN**
+   (still travelling, not home). SSH:22 → `Connection timed out` (NSG
+   source-IP allowlist excludes the VPN egress; same plane that failed in
+   the Day-2 audit). Pivoted to the proven **`az vm run-command`** control
+   plane (`rg-shared-prod` / `tc-prod-vm`), network-independent via
+   `management.azure.com`. Probes split into two calls (`probe_a1.sh` =
+   conn+A1+A5; `probe_a2.sh` = A2+A2b) to stay under az's ~4KB head-truncation
+   limit.
 
 ## Thread A — Bitunix zero-fires
 
