@@ -90,7 +90,55 @@ resolved-at-snapshot while ~3 were still settling. Note, don't chase yet.
 so the gate-stack breakdown spans the working baseline (06-02) + the transition
 day (06-03), which the original ≥06-04 window excluded.
 
-**STATUS: call 1 done (A5 clean). Awaiting call 2 (A2/A2b, widened to ≥06-02).**
+### Round 1 — call 2 results (probe_a2.sh widened ≥06-02, 2026-06-08T21:11Z)
+
+**A2 — gate-stack event counts/day (bitunix/confluence/htf-tagged):**
+
+| day | pa_validation_decision | htf_gate_decision | trade_plan_decision | would_have_placed |
+|-----|---:|---:|---:|---:|
+| 06-02 (working) | 271 | 16 | **11** | **10** |
+| 06-03 | 320 | 36 | **0** | **0** |
+| 06-04 | 376 | 42 | **0** | **0** |
+| 06-05 | 311 | 54 | **0** | **0** |
+| 06-06 | 474 | 31 | **0** | **0** |
+| 06-07 | 651 | 37 | **0** | **0** |
+| 06-08 | 471 | 49 | **0** | **0** |
+
+**A2b — last-fire per kind (alive vs dead):**
+- ALIVE through 06-08: `bitunix_score_decided` (3633, →21:09:05), `pa_validation_decision`
+  (2874, →20:28:28), `htf_regime_snapshot` (953, →21:08:41), `htf_gate_decision`
+  (265, →20:28:28), `bitunix_observer_classified` (75, →17:39:02),
+  `pa_validation_redeem` (83), `pa_validation_expired` (83).
+- **DEAD since 06-02T22:15:02:** `trade_plan_decision` (11 total), `would_have_placed`
+  (9 total). Both share the identical last-event timestamp.
+- `kalshi_llm_probability_called` (2) = unrelated kalshi noise caught by the LIKE filter.
+
+**LOCALIZATION (high confidence):** signals arrive and flow through scoring → PA
+validation → HTF gate — all alive at high volume through 06-08 21:09. The pipeline
+goes dark **between the HTF gate and trade-plan formation**, precisely at
+**2026-06-02T22:15:02Z**. Rules OUT "no signals arriving" and "PA/HTF stopped
+running." Two live hypotheses:
+- **H1** — HTF gate now rejecting ~100% of candidates (gate is *busier* on silent
+  days: 36–54/day vs 16 on 06-02).
+- **H2** — trade-plan formation broke at 22:15:02 (stuck latch / swallowed error /
+  state flip); gate may be passing but no plan forms.
+No `agent_error` rows in the bitunix-tagged set (A2 whitelist included it).
+
+**Breakpoint context:** deploy 06-02 ~01:40 UTC; trades flowed ~20.5h post-deploy
+then stopped at 22:15:02Z. NOT a deploy-instant break — something changed ~20h later.
+
+**The 9-vs-6 anomaly resolves:** A1's 9 `would_have_placed` on 06-02 = the 9 in A2b;
+Day-2 audit's "6" was the resolved-at-snapshot subset at 06-03T01:08Z. Reconciled.
+
+## Round 2 (selected from Round 1)
+
+Call 3 (`probe_a3.sh`): dump `htf_gate_decision` raw verdicts — 4 most recent
+(silent-day) vs 3 from working 06-02 — to decide **H1 vs H2**. If silent-day
+verdicts are rejections → H1 (gate over-blocking; then A6 regime context).
+If they're allows with no trade_plan following → H2 (trade-plan stage broke;
+pivot to trade_plan_decision content + halt/cooldown latch + broad agent_error).
+
+**STATUS: Round 1 complete. Call 3 prepared (htf_gate verdict, H1-vs-H2). Awaiting operator run.**
 
 ## Thread B — Robinhood pickle / unplanned restart
 Pending Thread A stop-and-report.
