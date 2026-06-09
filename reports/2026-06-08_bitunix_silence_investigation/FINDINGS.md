@@ -307,7 +307,29 @@ a normal in-process re-auth/rotation WITHOUT a restart — confirm via pickle mt
 in-process rotation) + B4-lite service-health anomaly scan since deploy (Stopped/Failed/
 Traceback markers — expect none given NRestarts=0).
 
-**STATUS: B1 done (clean, no restart). Call B2 prepared. Awaiting operator run.**
+### Round 2 — call B2 result (probe_b2.sh, 2026-06-09T00:33Z) — PARTIAL (az head-truncated; probe bug)
+
+**Probe defect:** combined B3+B4 in one call; B4-lite grep `-iE "...Failed..."` matched routine
+app-level "...fetch failed" WARNINGs (not systemd lifecycle states) → flooded output → az ~4KB
+head-truncation dropped the B3 (pickle) section. Re-running B3 isolated, pickle info printed LAST.
+
+**B4-lite (surviving tail):** NO systemd lifecycle markers (Started/Stopped/Traceback/
+main-process-exited/OOM/Killed) visible. With B1 (NRestarts=0, Result=success, ~7d uptime),
+**no restart/crash — confirmed.** B4 effectively satisfied.
+
+**Incidental (OUT OF SCOPE — noted, NOT investigated):** recurring non-fatal external-feed
+WARNINGs ~every 10 min, none Bitunix/Phase-3 related:
+- `kalshi_copy_trader: apify open_positions … HTTP 403 — bad/missing APIFY_API_TOKEN`
+- `odds_api: get_games(...) … 401 Unauthorized` — **API key exposed in plaintext log URL**
+  (RedactingFilter not catching query-string `apiKey=`)
+- `polymarket_copy_trader: fetch_activity … HTTP timeout`; `PolymarketBroker.get_market_resolution failed`
+Operator decides whether to file (candidate BACKLOG items; not actioned this session).
+
+## Round 2 (cont.) — call B3 (pickle, re-run isolated)
+`probe_b3.sh`: robinhood journal lines (72h, bounded) + pickle file mtime/size (printed LAST so
+it survives tail-truncation).
+
+**STATUS: B2 partial (truncated; B4 satisfied via B1). Re-running B3 (pickle) isolated. Awaiting operator run.**
 
 ## Thread C — Reconciler mismatch (c8f25d17, ac5f9c59, c2eb7cda)
 Deferred unless A and B surface nothing blocking.
