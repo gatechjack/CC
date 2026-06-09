@@ -765,10 +765,18 @@ blocked today on:
 Revisit triggers (any one is sufficient to re-evaluate):
 - (a) Documented programmatic / service-account auth path lands
 - (b) GA out of beta (currently 2 weeks old)
-- (c) Options or crypto support lands
+- (c) Options/crypto trading-execution support, including
+  instrument-chain discovery primitives (get_option_instruments
+  or equivalent) — watchlist-only options surface already exists
+  and must NOT false-trigger a revisit
 - (d) Published rate limits / SLA
 - (e) Observed beta stability over 3+ months
 - (f) Operator capacity for new-division build
+- (g) Trailing-stop order type or equivalent ratcheting
+  primitive (soft — eliminates adapter friction for
+  trading_corp stop-management, e.g. Bitunix advanced-SL;
+  ratcheting otherwise achievable via cancel+replace, so not
+  strictly required for initial Pattern 1)
 
 The most load-bearing trigger is (a) — without service-account auth,
 Pattern 1 is infeasible regardless of other improvements.
@@ -778,7 +786,27 @@ remains available as a low-cost surface-familiarity option; not
 filed as a BACKLOG task since it's an operator-driven action, not a
 session work item.
 
-Reference: reports/2026-06-08_robinhood_agentic_evaluation.md.
+**UPDATE 2026-06-09 — Pattern 3 exploration COMPLETED; verdict
+UNCHANGED (defer).** Operator-driven manual exploration via Claude
+Desktop empirically validated the Defer verdict and sharpened
+triggers (c)/(g) above. The 22-tool surface confirmed equities-only
+trading (no place_option_order, no instrument-chain discovery), an
+interactive desktop-OAuth-only auth path (trigger (a) unmoved), and
+a two-step review_equity_order -> place_equity_order write flow.
+Material new finding (not in the 2026-06-08 eval): **read-vs-write
+scope asymmetry** — the MCP token grants full cross-account READ
+visibility (7 accounts incl. IRA / advisory-managed) despite
+write-isolation to the agentic sub-account; any future Pattern-1
+read-adapter requires explicit Board acknowledgment of the
+data-exposure scope (CLAUDE.md §4). Captured in auto-memory
+`2026-06-08-robinhood-agentic-evaluated-deferred.md`.
+
+References:
+- reports/2026-06-08_robinhood_agentic_evaluation.md (original eval)
+- reports/2026-06-09_robinhood_agentic_pattern_3_exploration.md
+  (Pattern 3 exploration; branch
+  robinhood-agentic-pattern-3-exploration-2026-06-09, unmerged,
+  pushed to origin)
 
 ## P3 — Migrate `FidelityBroker` onto a `ReadOnlyBroker` ABC
 
