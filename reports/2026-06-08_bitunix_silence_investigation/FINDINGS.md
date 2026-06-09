@@ -422,4 +422,53 @@ sim_filled_legs (C3).
 sim_filled_legs / sim_r names+values; + extra_json length per trade. C4 extracts sim R for all 3
 (+ audit lifecycle if needed).
 
-**STATUS: C2 done (recorded reads + plan; sim past cap). Call C3 prepared. Awaiting operator run.**
+### Round 3 — call C3 result (extra_json keys, 2026-06-09) — PREMISE CORRECTION
+`extra_json` (c2eb7cda) keys: tier, trigger_*, leverage, size_*, effective_risk_pct,
+stop_distance_pct, tp_plan, tp_plan_version, sl_method, tp2_method, atr_source, prices,
+tp_r_multiple, net_score, funding_rate_at_decision, **`filled_legs`=["tp1"]**, **`current_sl`=67686.8**.
+**NO `sim_filled_legs` and NO stored sim-R.** The brief's "sim_filled_legs" is not a stored field —
+the recorded side stores `filled_legs` (live fills); the "sim" is RE-COMPUTED at reconcile time.
+
+### Round 3 — code grounding (Sonnet, verified by primary read of the load-bearing lines)
+- **Sim source:** `scripts/audit_reality_reconciler.py` (CI/cron) cold-re-walks each closed v2 trade:
+  fetches **1m** BitUnix bars, **RESETS** state (`filled_legs=[]`, `current_sl=stop_price`,
+  audit_reality_reconciler.py:171-181), calls `_classify_v2_multi_leg` (paper_trade_replay.py),
+  computes **`delta = sim − recorded`** (line 218), flags when |Δ|>0.05 (r_tol line 205). Writes
+  `audit_reality_run` audit_event → dashboard reads it (`web/data.py:2088+`), renders in
+  `partials/bitunix_trade_plan_panel.html:73`.
+- **Root mechanism (verified paper_trade_replay.py:503-574):** SL checked at bar-start vs the
+  PRIOR bar's `current_sl` (503-506); on SL-hit, conservative close, legs that bar don't count
+  (526-559); leg fills + **advanced-SL ratchet applied AFTER, `current_sl=new_sl` (561-574) → the
+  advanced SL is only evaluated on the NEXT bar.** So a same-1m-bar {TP fill + advanced-SL stopout}
+  → sim fills the legs and misses the stop the live recorder caught (over-credit). Reverse case:
+  sim's SL-first walk truncates a fill the live path credited (under-credit).
+- **Existing remediation hook:** reconciler honors `audit_corrected` + `corrected_result`/
+  `corrected_r_multiple` in extra_json (audit_reality_reconciler.py:189-202) — marked rows stop
+  flagging. The intended path for genuine variance.
+- **Docs:** NO `sharp_edges.md` entry for the advanced-SL intrabar variant (only the original-SL
+  tie is in the paper_trade_replay docstring). Prior work: 3m→1m granularity fix (BACKLOG closed,
+  `06b5a9e`, 12/17→17/17); reports/2026-05-28_reconciler_mismatch_investigation.md. No open
+  BACKLOG item for this residual variance.
+
+## THREAD C — VERDICT (COMPLETE)
+| trade | recorded | sim (≈) | delta (sim−rec) | cause |
+|-------|---------:|--------:|----------------:|-------|
+| c2eb7cda | 0.1285 (tp1 + same-bar BE stop) | 1.2535 | **+1.1250** | sim missed same-bar advanced-SL stop → all legs |
+| ac5f9c59 | 0.8869 (tp1+tp2, tp3 at SL) | 1.3235 | **+0.4366** | same advanced-SL-not-seen-intrabar |
+| c8f25d17 | 1.3322 (full plan, 1 bar) | 0.9146 | **−0.4176** | reverse — sim SL-first walk truncated a live-credited fill |
+
+**Disposition: CHRONIC VARIANCE, not a regression, not an escalation.** Intrabar TP-vs-advanced-SL
+path ambiguity, irreducible at 1m OHLC; bidirectional; all in 1–5 bar resolutions. Recorded is
+source-of-truth ("audit wins"); paper-mode → no capital risk. Residual tail of the (closed) 3m→1m
+granularity fix.
+
+**RECOMMENDATION: file P3** — (1) add sharp_edges.md entry for advanced-SL intrabar reconciler
+variance; (2) remediation = mark the 3 trades `audit_corrected` (recorded authoritative) — PROD
+WRITE, out of scope this read-only session (operator/future). Optional future hardening: check the
+advanced SL intra-bar after a leg fill, OR auto-pass bars≤2 within wider tolerance (fill-logic
+change → Backtester gate).
+
+(`probe_c4.sh`/`run_callc4.cmd` available to confirm `filled_legs` on all 3 if desired — not
+decision-relevant; mechanism is code-confirmed.)
+
+**STATUS: THREAD C COMPLETE. Stop-and-report. Decision: file P3 vs skip-file. Then session-close handoff (CLAUDE.md wrap-up).**
