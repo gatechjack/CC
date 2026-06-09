@@ -230,7 +230,32 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
-## P1 — Polymarket copy-trader SELL-pairing investigation (REFRAMED 2026-06-02)
+## P1 — Polymarket copy-trader SELL-pairing investigation (COMPLETE 2026-06-09 — option (c) selected)
+
+**Status (2026-06-09): investigation COMPLETE, option (c) selected as fix path.**
+Full findings: [`reports/2026-06-09_polymarket_sell_pairing_investigation.md`](reports/2026-06-09_polymarket_sell_pairing_investigation.md)
+(on branch `polymarket-sell-pairing-investigation-2026-06-09`, unmerged planning
+artifact — mirrors the Robinhood Agentic evaluation pattern).
+
+**Selected fix — (c) net-position whale P&L from the activity feed.** Compute each
+whale's P&L from net position + VWAP entry/exit over the `ActivityRow` stream we
+already ingest, instead of pairing our copy SELL/BUY audit rows. Sidesteps BOTH
+structural causes below. ~3–5d engineering scope. Implementation = separate
+scoping session (schema, activity-feed sufficiency, backfill). (a) deferred
+(subsumed by (c) for the stated goal); (b) rejected (removes 97% of trade volume);
+(d) rejected (type-mismatch refuted — `outcome_index` is `integer` on every row).
+
+**Dual structural causes (verified against prod, read-only):**
+- **Partial-fill duplication (4.6×):** 5,084 copy BUY `would_have_placed` rows
+  collapse to 1,115 real `(whale,condition,outcome)` positions; 130 positions
+  carry 10+ BUY rows (one had 216; one burst was 66 buys in 582 s).
+- **Settle-path contention:** `polymarket_resolver._fetch_unresolved_orders`
+  (`agents/polymarket_resolver.py:65-83`) resolves copy-trader BUY rows into
+  round-trips keyed on the BUY's `order_id`, consuming them before sell-pairing
+  can use them. 466/484 (96%) of the "BUY-exists-but-unpaired" SELLs lost their
+  BUY this way; 90% of all copy round_trips (4,565/5,058) are settle-derived.
+- Of 874 unpaired SELLs: 55% have a consumed BUY (above), 44% have no BUY logged
+  at all (entry never copied), <1% had a risk-rejected BUY.
 
 **Background:** `polymarket_resolver._pair_pending_exits` re-scans ~720
 unpaired copy-trader SELL `would_have_placed` rows every tick and skips ~99.86%
