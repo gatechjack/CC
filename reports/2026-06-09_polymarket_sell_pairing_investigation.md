@@ -1,11 +1,12 @@
 # Polymarket copy-trader SELL-pairing investigation
 
-**Date:** 2026-06-09 (probes run 17:18–17:25 UTC)
+**Date:** 2026-06-09 (probes run 17:18–17:51 UTC)
 **Branch:** `polymarket-sell-pairing-investigation-2026-06-09` (base `origin/main` `f998751`)
 **Mode:** read-only. No prod writes, no code changes. All SQL was SELECT-only;
 TEMP tables/indexes lived in the session temp DB (main DB untouched).
 **Prod DB:** `/home/azureuser/trading_corp/data/trading_corp.db` (1.05 GB), sqlite 3.37.2 on `tc-prod-vm`.
 **BACKLOG ref:** P1 — Polymarket copy-trader SELL-pairing investigation (REFRAMED 2026-06-02).
+**Outcome:** investigation COMPLETE. Operator selected fix path **(c)** (2026-06-09); (a) deferred, (b)/(d) rejected.
 
 ---
 
@@ -16,23 +17,28 @@ queries assumed.** The Q2 type-mismatch hypothesis is **empirically refuted**:
 `outcome_index` is `integer` on every row and `whale_wallet` is consistent
 lowercase-hex `text` on both BUY and SELL sides. Instead, the 874 unpaired SELLs
 split two ways: **55% (484) have a matching BUY that exists but has already been
-*consumed*** (settled individually by the market-settle path, or paired to an
-earlier SELL) — `resolver_pairable = 0`, i.e. zero currently-unpaired SELLs have
-an available BUY; and **44% (382) have no BUY audit row at all** (entry never
-copied). The operator's partial-fill hypothesis is **confirmed and is the engine
-of the 55% bucket**: 5,084 BUY rows collapse to 1,115 real `(whale,condition,outcome)`
-positions (4.6× inflation), with 130 positions carrying 10+ BUY rows. The
-watchlist-filter workaround is **self-defeating** — splitter whales generate 92%
-of the unpaired SELLs but also 88% of positions and 97% of trade volume; removing
-them removes the strategy. Recommended path: **(c) net-position P&L from the whale
-activity feed** for the actual goal (winning-trader identification), optionally
-preceded by **(a) upstream partial-fill aggregation** as a tactical fix.
+*consumed*** (`resolver_pairable = 0` — zero currently-unpaired SELLs have an
+available BUY); and **44% (382) have no BUY audit row at all** (entry never
+copied). The consumed bucket is **overwhelmingly settle-path contention**: pm4
+shows **96% (466/484) of those BUYs were consumed by the market-settle path**, not
+by multi-SELL exhaustion (14), and **90% of all copy round_trips (4,565/5,058) are
+settle-derived** — the attribution table is mostly partial-fill-inflated noise.
+The operator's partial-fill hypothesis is **confirmed** as the upstream driver:
+5,084 BUY rows collapse to 1,115 real `(whale,condition,outcome)` positions (4.6×),
+with 130 positions carrying 10+ BUY rows. The watchlist-filter workaround is
+**self-defeating** — splitter whales generate 92% of the unpaired SELLs but also
+88% of positions and 97% of trade volume.
+
+**Operator decision (2026-06-09): fix path (c)** — net-position whale P&L from the
+activity feed — **selected**. It sidesteps both partial-fill duplication and
+settle-path contention and is the correct architecture for winning-trader ID.
+**(a) deferred** (subsumed by (c) for the stated goal); **(b)/(d) rejected.**
 
 ---
 
 ## 2. Question 1 — does a matching BUY exist for skipped SELLs?
 
-**Verdict: split. A matching BUY exists for 55%, but it is unavailable; 44% have no BUY at all. The pairing SQL is not a join-syntax bug.**
+**Verdict: split. A matching BUY exists for 55%, but it is unavailable (96% of it consumed by the settle path); 44% have no BUY at all. The pairing SQL is not a join-syntax bug.**
 
 Partition of the 874 currently-unpaired copy-trader SELL `would_have_placed` rows
 (probe 2, reproducing the resolver's unpaired-sell definition exactly):
@@ -53,8 +59,8 @@ Interpretation:
   matching SQL in `_pair_pending_exits` (`agents/polymarket_resolver.py:255-273`)
   is doing what it was written to do — this is **not** a `LIKE`/join/coercion
   defect.
-- The 484 "BUY exists but consumed" rows are explained by **two BUY-consumers
-  competing for the same rows** (code-confirmed, see §6):
+- The 484 "BUY exists but consumed" rows are explained by **two BUY-consumers**
+  competing for the same rows (code at §6):
   1. The **market-settle path** (`_fetch_unresolved_orders`,
      `polymarket_resolver.py:65-83`) explicitly pulls copy-trader BUY rows
      (`COALESCE(...'$.side'),'buy')='buy'`) and resolves each into its own
@@ -64,10 +70,35 @@ Interpretation:
      **steals BUYs from sell-pairing.**
   2. Multiple SELL events per position: the first SELL pairs and consumes the
      BUY; later SELLs on the same position find none.
-- The risk-rejected-BUY mechanism I traced from code (a BUY rejected by the risk
-  gate is logged under kind `polymarket_copy_order_rejected_by_risk`, never
-  `would_have_placed` — `main.py:3358-3362` — and is therefore invisible to the
-  pairing query at `:261`) is **real but minor: 8 rows.**
+- The risk-rejected-BUY mechanism (a BUY rejected by the risk gate is logged under
+  kind `polymarket_copy_order_rejected_by_risk`, never `would_have_placed` —
+  `main.py:3358-3362` — so it is invisible to the pairing query at `:261`) is
+  **real but minor: 8 rows.**
+
+**pm4 quantifies the 484 consumed bucket** (classifying the matching BUY's
+consumption — settled = `order_id` ∈ `round_trips.order_id`; paired = `order_id` ∈
+`round_trips.entry_order_id`):
+
+| split | count | % |
+|---|---|---|
+| only_settled (market-settle path) | **466** | 96.3% |
+| only_paired (paired to earlier SELL) | 14 | 2.9% |
+| both | 4 | 0.8% |
+| has_match total | 484 | ✓ |
+
+And provenance of **all** copy-trading round_trips (pair path sets `entry_order_id`;
+settle path leaves it NULL):
+
+| | count | % |
+|---|---|---|
+| copy round_trips total | 5,058 | |
+| pair-path (has `entry_order_id`) | 493 | 9.7% |
+| **settle-path (no `entry_order_id`)** | **4,565** | **90.3%** |
+
+So consumer #1 (settle path) is both the engine of the skip (96% of the consumed
+bucket) **and** the source of 90% of an inflated attribution table — one real
+position recorded as up to 216 separate round-trips. Consumer #2 (multi-SELL) is
+negligible (≤18 rows).
 
 ---
 
@@ -98,12 +129,14 @@ like types and is not the cause. **Fix path (d) is not applicable.**
 > `LIKE '%skipped_no_entry%'` (no such field exists; `skipped_no_entry` is a
 > runtime counter in `_pair_pending_exits`, not stored per row). The probes used
 > the verified payload shape from `main.py:3327` + `polymarket_copy_trader.py`.
+> The canned SQL was working-hypothesis scaffolding; the verified probes are the
+> investigation of record.
 
 ---
 
 ## 4. Question 3 — partial-fill aggregation hypothesis
 
-**Verdict: confirmed. Partial-fill duplication is the dominant driver of the 55% consumed-BUY bucket.**
+**Verdict: confirmed. Partial-fill duplication is the upstream cause of the BUY-row inflation that feeds the settle-path contention.**
 
 BUY fanout per `(whale, condition_id, outcome_index)` (probe 2 §Q3):
 
@@ -120,13 +153,12 @@ BUY fanout per `(whale, condition_id, outcome_index)` (probe 2 §Q3):
 - Largest single position: **216 BUY rows** for `0xf9c119…/0xbfca16aa…/oi=1` over
   ~20 h. Tightest burst: **66 BUY rows in 582 s (~10 min)** for `0xe9ba96…` —
   textbook partial-fill of one order across many activity-feed events.
-- Spans range from minutes (rapid chunked fills) to days (genuine scaling-in),
-  so both flavors exist, but the high-count groups dominate the row volume.
+- Spans range from minutes (rapid chunked fills) to days (genuine scaling-in).
 
 Each activity-feed fill becomes a separate `_emit_entry` → separate BUY
 `would_have_placed` row (`polymarket_copy_trader.py:268-286`). The market-settle
-path then resolves these individually, inflating P&L attribution **and** consuming
-the BUYs that sell-pairing needs.
+path then resolves these individually (90% of copy round_trips, §2), inflating P&L
+attribution **and** consuming the BUYs that sell-pairing needs.
 
 ---
 
@@ -172,54 +204,53 @@ identification*. Two distinct P&L concerns are tangled in the current design:
 
 | path | scope | verdict |
 |---|---|---|
-| **(c) net-position P&L from the whale activity feed** — for each `(whale, cid, outcome)`, compute net position + VWAP entry/exit from the `ActivityRow` stream we already ingest (`data/polymarket_data_api_client.py`); realize P&L on flat or market settle. **Sidesteps pairing entirely; handles partial fills natively.** | **large (~3–5 d)** | **Recommended — strategic fix for goal #1.** Correct architecture for winning-trader ID. |
-| **(a) aggregate partial fills upstream** — coalesce consecutive same-`(wallet,cid,oi,side)` activity rows within a window into one logical entry/exit before emitting audit rows (or at resolver time). Collapses 5,084 BUYs → ~1,115 positions; removes the BUY-consumption contention. | **moderate (~1–2 d)** | **Recommended tactical fix for goal #2** if copy-audit-row pairing is retained. Paper-only path (lower risk), but it feeds the dashboard/round_trips contract. |
+| **(c) net-position P&L from the whale activity feed** — for each `(whale, cid, outcome)`, compute net position + VWAP entry/exit from the `ActivityRow` stream we already ingest (`data/polymarket_data_api_client.py`); realize P&L on flat or market settle. **Sidesteps pairing entirely; handles partial fills natively.** | **large (~3–5 d)** | **SELECTED (operator, 2026-06-09)** — strategic fix for the stated goal. Sidesteps partial-fill duplication AND settle-path contention. |
+| **(a) aggregate partial fills upstream** — coalesce consecutive same-`(wallet,cid,oi,side)` activity rows within a window into one logical entry/exit before emitting audit rows. Collapses 5,084 BUYs → ~1,115 positions; removes the BUY-consumption contention. | moderate (~1–2 d) | **Deferred** — subsumed by (c) for the stated goal; only advances goal #2 (our copy paper-P&L) and never fixes the 44% no-BUY bucket. |
 | (b) watchlist filter to non-splitters | small (~2–4 h) | **Rejected** — removes 97% of volume (§5). |
-| (d) type-coercion fix in pairing SQL | small | **N/A** — refuted (§3). |
-| **(e) combination** | — | **(c) for whale attribution + (a) for our copy P&L** is the complete answer. |
+| (d) type-coercion fix in pairing SQL | small | **Rejected — N/A** (refuted, §3). |
+| (e) combination | — | (c) now; revisit (a) only if our-copy paper-P&L later becomes a priority. |
 
-**Secondary structural issue surfaced (worth fixing regardless):** the
-market-settle path resolves copy-trader BUYs into round-trips *independently of
-sell-pairing* (`_fetch_unresolved_orders:65-83` includes `side='buy'` copy rows),
-which both inflates P&L counts and starves sell-pairing of BUYs. Whichever path is
-chosen should resolve this contention (e.g. exclude copy-trader BUYs that have a
-later SELL from the settle path, or unify both into the net-position model).
+**Secondary structural issue (now quantified, addressed by (c)):** the market-settle
+path resolves copy-trader BUYs into round-trips *independently of sell-pairing*
+(`_fetch_unresolved_orders:65-83` includes `side='buy'` copy rows) — 90% of copy
+round_trips (§2). (c) replaces round_trips-based attribution with net-position math,
+dissolving this contention rather than patching it.
+
+**Decision recorded (2026-06-09):** (c) selected; (a) deferred; (b)/(d) rejected.
+Implementing (c) is a **separate scoping session** (out of scope here).
 
 ---
 
 ## 7. Estimated effort per path
 
-- **(a) partial-fill aggregation:** ~1–2 days incl. tests. Touches the copy-trader
-  audit-emission contract (paper-only). Backfill of existing rows is a separate,
-  optional pass.
 - **(c) net-position P&L resolver:** ~3–5 days. New resolver module reading the
   activity feed; new/repurposed `polymarket_round_trips` semantics or a dedicated
   whale-stats table; backfill from history.
-- **(e) combination:** ~5–7 days total; (a) can ship first and independently.
-- **Settle/pairing contention fix:** ~0.5–1 day if done standalone; folded into
-  (a) or (c) otherwise.
-
-(Per CLAUDE.md §4 / PROJECT_CONTEXT §11, any strategy-parameter change still needs
-Backtester approval — not triggered by (a)/(c) themselves, but flagged.)
+- **(a) partial-fill aggregation (deferred):** ~1–2 days incl. tests, if ever
+  revisited for goal #2.
+- (Per CLAUDE.md §4 / PROJECT_CONTEXT §11, any strategy-parameter change still needs
+  Backtester approval — not triggered by (c) itself, but flagged.)
 
 ---
 
-## 8. Operator decision required
+## 8. Operator decision — RECORDED 2026-06-09
 
-1. **Primary goal:** is the priority **whale-attribution P&L** (→ path **c**) or
-   **our copy paper-trade P&L** (→ path **a**)? The BACKLOG framing ("winning
-   trader identification is unreliable") points to **c**.
-2. **Sequencing:** ship **(a)** now as a tactical de-duplication while **(c)** is
-   designed, or go straight to **(c)**?
-3. **Optional confirmation probe (pm4, ~2 min, read-only):** split the 484
-   "consumed" BUYs by *how* they were consumed — settled via the market-settle
-   path (`order_id` ∈ round_trips) vs. paired to an earlier SELL
-   (`entry_order_id`). This pins the exact ratio of settle-contention vs.
-   multi-sell exhaustion and sharpens whether the contention fix is high- or
-   low-value. Recommend running before committing to scope.
+1. **Priority:** whale-attribution P&L → **path (c) selected.**
+2. **Sequencing:** **skip (a), go straight to (c).** Rationale: the consumed bucket
+   is settle-path contention (96%, pm4), not partial-fill per se, and the 44%
+   no-BUY bucket is unaffected by aggregation — so (a) does not materially advance
+   the stated goal. (c) handles partial fills natively via net position.
+3. **pm4:** run (done) — §2. 466/484 settle-consumed; 90% of copy round_trips
+   settle-derived.
 
-**BACKLOG P1 is intentionally NOT modified** — operator updates after reviewing
-findings and choosing a fix path.
+**Interim caveat:** until (c) ships, the settle path keeps writing inflated copy
+round_trips (90% of the table); any consumer reading copy round_trips for whale
+promote/demote is unreliable in the meantime.
+
+**Out of scope here:** designing (c) — schema, whether the activity feed has
+sufficient data or needs augmentation, backfill — is a separate scoping session.
+
+**BACKLOG P1** updated on `main` to reflect this decision (separate scoped commit).
 
 ---
 
@@ -227,19 +258,24 @@ findings and choosing a fix path.
 
 All probes streamed to `tc-prod-vm` via
 `Get-Content pmN.sh -Raw | ssh azureuser@trading.jacksumner.com "tr -d '\r\357\273\277'|bash"`.
+Operator could not access PowerShell this session; probes were run from the agent's
+tools on the operator's machine (same VPN egress `92.119.177.22`), read-only.
 
-**Probe 1 — schema/size/type** (kinds histogram; `side`/`outcome_index`/`whale_wallet`
-typeof; raw sample BUY/SELL payloads; rejected-BUY count). Confirmed payload shape:
-`side` lowercase text, `qty` (float), `limit_price` (float), `outcome_index` integer,
-no `skip_reason`.
+**Probe 1 — schema/size/type.** Confirmed payload shape: `side` lowercase text,
+`qty`/`limit_price` floats, `outcome_index` integer, `whale_wallet` lowercase-hex
+text, no `skip_reason`.
 
-**Probe 2 — Q1 partition + Q3 fanout.** TEMP tables `us` (unpaired sells), `buys`,
-`rej` (rejected BUYs), `consumed` (`entry_order_id` ∪ `order_id` from round_trips),
-with TEMP indexes on `(w,cid,oi,ts)`; partition via `EXISTS`/`NOT EXISTS`. Q3 groups
-BUYs by `(whale_wallet, condition_id, outcome_index)` with `julianday` span.
+**Probe 2 — Q1 partition + Q3 fanout.** TEMP `us`/`buys`/`rej`/`consumed`
+(`entry_order_id` ∪ `order_id`) + TEMP indexes; partition via `EXISTS`/`NOT EXISTS`.
+Q3 groups BUYs by `(whale_wallet, condition_id, outcome_index)` with `julianday` span.
 
 **Probe 3 — Q4 sizing.** Splitter sets (`n≥5 ∧ span≤600`; `n≥5`; `n≥10`) vs.
 unpaired-sell whales and signal-retention counts.
 
-Probe scripts retained locally as `pm1.sh` / `pm2.sh` / `pm3.sh` in the operator
-workspace root (untracked scratch).
+**Probe 4 — consumed-BUY split.** For the 484 unpaired SELLs with a matching BUY,
+classify the matching BUY's consumption: settled (`order_id` ∈ `round_trips.order_id`)
+vs paired (`order_id` ∈ `round_trips.entry_order_id`); plus copy round_trip
+provenance by presence of `entry_order_id`.
+
+Probe scripts retained locally as `pm1.sh` … `pm4.sh` in the operator workspace
+root (untracked scratch).
