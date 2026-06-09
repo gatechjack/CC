@@ -148,6 +148,12 @@ when prod observation warrants a tuning loop.
 
 **Fresh paper observation window:** starts **2026-06-09 03:49:41 UTC**. The 06-02→09 window stays INVALIDATED (dormant 6/7 days). A full fresh window is required before any `execution_mode` live-flip decision.
 
+**Observation window — DEFINED (state: OPEN; operator-set 2026-06-09):**
+- **Duration:** 5 days. **Opened** 2026-06-09 03:49:41 UTC; **closes** ~2026-06-14 03:49 UTC (Sat). Window is **OPEN — not COMPLETED** — until then.
+- **Activation (Step 1+2, ~7.3h in, probes run ~11:09Z 06-09):** F-5 watch-item **CONFIRMED** — ATR [3,5) → `high`, `size_multiplier=1.0`, no vol hard-zero; `still_extreme_under5=0`; firing resumed (3 paper fires, 3/3 win, avg R 0.644, +$0.30); 0 band violations; **0 live-mode primitives in paper**; 0 `agent_error` / reconciler-mismatch. n=3 ⇒ no edge signal yet. Full read: `reports/2026-06-09_bitunix_fresh_window_step1_2_results.md`.
+- **Check-in cadence (operator-run SSH, read-only):** daily `s2.sh` re-run (~5 min) — surface today's fires + W/L, cumulative-through-day, and the hard-stop check (live-mode primitives, `agent_error`, reconciler-mismatch); any anomaly → immediate BACKLOG entry. **Day-5 close-out** (2026-06-14, ~1–2h): full-window aggregate + flip-readiness assessment + recommendation surfaced for the operator's `execution_mode` decision.
+- **Flip stays gated:** remains PAPER; no `execution_mode` / `auto_execute` flip without the close-out recommendation + §4/deploy-checklist gates + explicit operator authorization.
+
 **Rollback recipe (single line):**
 `ssh azureuser@trading.jacksumner.com 'cd /home/azureuser/trading_corp/trading_corp/agents/strategies && mv b.bak bitunix_htf_regime.py && sudo systemctl restart trading-corp.service'`
 (Rollback restart will re-hit the RH login-blocks-startup behavior noted above.)
