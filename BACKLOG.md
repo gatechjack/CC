@@ -230,7 +230,7 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
-## P1 — Polymarket copy-trader SELL-pairing investigation (COMPLETE 2026-06-09 — option (c) selected)
+## P1 — Polymarket copy-trader SELL-pairing → option (c) (SCOPED 2026-06-09; implementation UNSTARTED)
 
 **Status (2026-06-09): investigation COMPLETE, option (c) selected as fix path.**
 Full findings: [`reports/2026-06-09_polymarket_sell_pairing_investigation.md`](reports/2026-06-09_polymarket_sell_pairing_investigation.md)
@@ -240,10 +240,23 @@ artifact — mirrors the Robinhood Agentic evaluation pattern).
 **Selected fix — (c) net-position whale P&L from the activity feed.** Compute each
 whale's P&L from net position + VWAP entry/exit over the `ActivityRow` stream we
 already ingest, instead of pairing our copy SELL/BUY audit rows. Sidesteps BOTH
-structural causes below. ~3–5d engineering scope. Implementation = separate
-scoping session (schema, activity-feed sufficiency, backfill). (a) deferred
+structural causes below. (a) deferred
 (subsumed by (c) for the stated goal); (b) rejected (removes 97% of trade volume);
 (d) rejected (type-mismatch refuted — `outcome_index` is `integer` on every row).
+
+**Implementation SCOPED (2026-06-09):** [`reports/2026-06-09_polymarket_option_c_implementation_scoping.md`](reports/2026-06-09_polymarket_option_c_implementation_scoping.md)
+(branch `polymarket-option-c-scoping-2026-06-09`, unmerged planning artifact).
+Framing (ii): the REDEEM-grounded compute already exists and is deployed
+(`build_audit_report`, `data/polymarket_whale_audit.py`, `df3e48b`) — option (c) is
+*operationalization*, not greenfield. **Revised scope: ~1–2d for Phase 1** (route the
+copy-roster screen `refresh_polymarket_whales.py` through `build_audit_report`) vs. the
+original ~3–5d. Phasing: P1 copy roster → P2 observation roster (`seed_*_deep`) → P3
+unify both onto shared compute → P4 cleanup. Coexistence gap surfaced: add an
+`auto_paused_whales` agent_state key so a refresh doesn't silently re-add whales
+`_whale_autopause` dropped (shared `selected_whales` key today). 5 operator-resolved
+decisions in the doc (selection metric, branch disposition, validation gate, autopause
+model, refresh cadence). The superseded `pm-watchlist-pnl-aggregation-fix` branch is
+NOT a prerequisite (its fix is already on main, `899821d`). Implementation UNSTARTED.
 
 **Dual structural causes (verified against prod, read-only):**
 - **Partial-fill duplication (4.6×):** 5,084 copy BUY `would_have_placed` rows
