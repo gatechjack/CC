@@ -363,7 +363,27 @@ or a recent flip. tail-12 showed only the 00:09 burst.
 - **Incidental (out of scope, B2):** apify 403 / odds_api 401 (key in plaintext logs) / polymarket
   timeouts — external-feed WARNINGs, noted not investigated.
 
-**STATUS: THREAD B COMPLETE. Stop-and-report. Open decisions: (1) RH-auth finding disposition, (2) optional date-the-401s follow-up, (3) Thread C proceed/defer/closeout.**
+**DISPOSITION (operator, 2026-06-08):** RH-auth finding FILED as **P2** → origin/main `b2259a0`
+(under "# Other Open Items", Robinhood cluster); memory
+`2026-06-08-robinhood-session-auth-dead-since-2026-05-29` written + indexed (filing MERGED, fix
+UNSTARTED — operator MFA re-login). Date-the-401s probe SKIPPED (operator: "since ~05-29 +
+re-login" is sufficient). **Proceeding to Thread C.** THREAD B CLOSED.
 
-## Thread C — Reconciler mismatch (c8f25d17, ac5f9c59, c2eb7cda)
-Deferred unless A and B surface nothing blocking.
+## Thread C — Reconciler mismatch (IN PROGRESS 2026-06-08)
+
+Three trades with recorded-vs-sim R deltas (from the 2026-06-04 dashboard):
+- `c8f25d17` — 2026-05-27, delta **−0.4176 R**
+- `ac5f9c59` — 2026-06-02, delta **+0.4366 R**
+- `c2eb7cda` — 2026-06-02, delta **+1.1250 R**
+
+Per Thread A, Bitunix went dormant 06-02 22:15 (vol-classifier bug) → these 3 are pre-bug /
+at the boundary; the recorded-vs-sim deltas are independent of the vol-classifier issue.
+
+Plan: (1) pull the 3 trades from `paper_trade_record` + `audit_event` lifecycle; (2) walk recorded
+fills vs `sim_filled_legs`; (3) identify per-trade delta cause; (4) chronic-variance vs recent
+regression; (5) recommend disposition (P3 file / known-variance skip / escalate). Read-only.
+
+- Round 1 — call **C1** (`probe_c1.sh`): schema discovery — `PRAGMA table_info(paper_trade_record)`
+  + id/sim/R/leg/extra column scan — to build the row + lifecycle pulls precisely.
+
+**STATUS: Thread C opened. Call C1 (schema) prepared. Awaiting operator run.**
