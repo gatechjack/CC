@@ -2,8 +2,13 @@
 
 You can't log into the dashboard. Find your scenario below and execute.
 **SSH is the master recovery key.** All recovery paths assume you can
-still reach the VM via SSH from the home Comcast IP (`98.231.16.63/32`,
-the only IP allowed by the NSG on port 22).
+still reach the VM via SSH from an IP the NSG allows on port 22.
+**NSG allowlist pattern (as of 2026-06-09):** a stable home-network rule
+for normal access, plus temporary `/32` rules named
+`temp-vpn-trip-until-<date>` for trip/VPN access. Current trip rule:
+`temp-vpn-trip-until-2026-06-19` = Surfshark static VPN `92.119.177.22/32`.
+(The old home Comcast IP `98.231.16.63/32`, dated 2026-04-30, is stale —
+do not rely on it.)
 
 If the home IP has changed (Xfinity rotated it) AND you can't log in:
 update the NSG rule first — see [§ SSH unreachable](#ssh-unreachable).
@@ -170,10 +175,14 @@ re-download from
 
 ## Scenario E — SSH unreachable
 
-This is the worst case. SSH is gated by an Azure NSG rule that allows
-only your home Comcast IP (`98.231.16.63/32` as of 2026-04-30). If
-Xfinity rotates your IP and you can't reach the VM, you must update the
-NSG rule **from outside the VM**.
+This is the worst case. SSH is gated by Azure NSG rules on port 22.
+**As of 2026-06-09** access is via a temporary rule
+`temp-vpn-trip-until-2026-06-19` allowing the Surfshark static VPN IP
+`92.119.177.22/32` (pattern: a stable home-network rule plus temp `/32`
+`temp-vpn-trip-until-<date>` rules for trip access; the prior
+`98.231.16.63/32` from 2026-04-30 is stale). If your allowed source IP
+changes and you can't reach the VM, you must update the NSG rule
+**from outside the VM**.
 
 You'll need either Azure Portal or `az` CLI from a machine that's
 already authenticated to your subscription:
