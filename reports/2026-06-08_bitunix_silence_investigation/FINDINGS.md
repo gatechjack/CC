@@ -397,4 +397,29 @@ top-level sim column → the sim side (sim_filled_legs / sim R) must live in `ex
 `probe_c2.sh`: recorded core fields (3 trades) + `extra_json` (capped, printed last) to expose
 sim_filled_legs / sim R. C3 = audit_event lifecycle per order_id once sim schema is known.
 
-**STATUS: C1 done (key=order_id; sim in extra_json). Call C2 prepared. Awaiting operator run.**
+### Round 2 — call C2 results (probe_c2.sh, 2026-06-09)
+All 3 = bitunix_futures BTC/USDT.P **sell STANDARD**, trigger `cvd_bear_flip`, result=**win**.
+Recorded R vs blended plan R (`tp_r_multiple` = Σ frac×target_r over the 3 legs):
+
+| id8 | ts | plan_r | rec_r | result_price | bars | recorded read |
+|-----|----|-------:|------:|-------------|-----:|---------------|
+| c8f25d17 | 05-28 03:18 | 1.33225 | **1.3322** | tp3 price | 1 | FULL plan (all legs) |
+| ac5f9c59 | 06-02 06:51 | 1.3235 | **0.8869** | tp1 price | 5 | partial |
+| c2eb7cda | 06-02 21:42 | 1.2535 | **0.1285** | **entry (breakeven)** | 1 | tp1 only, rest breakeven |
+
+`extra_json` head holds `tp_plan` (tp1/tp2/tp3: fraction+target_r+price+stop_action) +
+`tp_plan_version`. **sim_filled_legs / sim R past the 600c cap → C3.**
+
+**Interim hypothesis (delta = sim − recorded):** c2eb7cda rec_r 0.1285 = exactly 0.25×0.514
+(tp1 leg only; same-bar breakeven stop on the rest, result_price=entry). Deltas (−0.4176 /
++0.4366 / +1.1250) are **bidirectional**, all in **short 1–5 bar resolutions** → signature of
+**intrabar path ambiguity** (live recorder vs replay-sim disagree on TP-vs-advanced-SL fill
+ordering inside one wide OHLC bar) = **chronic variance, NOT a regression.** CONFIRM via
+sim_filled_legs (C3).
+
+## Round 3 — call C3
+`probe_c3.sh`: enumerate `extra_json` keys+previews (c2eb7cda) via json_each → reveal
+sim_filled_legs / sim_r names+values; + extra_json length per trade. C4 extracts sim R for all 3
+(+ audit lifecycle if needed).
+
+**STATUS: C2 done (recorded reads + plan; sim past cap). Call C3 prepared. Awaiting operator run.**
