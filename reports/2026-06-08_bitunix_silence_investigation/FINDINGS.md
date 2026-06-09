@@ -386,4 +386,15 @@ regression; (5) recommend disposition (P3 file / known-variance skip / escalate)
 - Round 1 — call **C1** (`probe_c1.sh`): schema discovery — `PRAGMA table_info(paper_trade_record)`
   + id/sim/R/leg/extra column scan — to build the row + lifecycle pulls precisely.
 
-**STATUS: Thread C opened. Call C1 (schema) prepared. Awaiting operator run.**
+### Round 1 — call C1 result (schema, 2026-06-09)
+`paper_trade_record` keyed by **`order_id`** (TEXT pk); the 3 IDs are order_id prefixes (C1c
+errored on `id`, confirming the column is `order_id`). Recorded-outcome columns: `result`,
+`result_price`, `actual_pnl_dollars`, **`actual_r_multiple`** (recorded R); plan columns
+`entry_reference_price`/`stop_price`/`tp_price`/`tp_r_multiple`; `bars_to_resolution`. **No
+top-level sim column → the sim side (sim_filled_legs / sim R) must live in `extra_json`.**
+
+## Round 2 — call C2
+`probe_c2.sh`: recorded core fields (3 trades) + `extra_json` (capped, printed last) to expose
+sim_filled_legs / sim R. C3 = audit_event lifecycle per order_id once sim schema is known.
+
+**STATUS: C1 done (key=order_id; sim in extra_json). Call C2 prepared. Awaiting operator run.**
