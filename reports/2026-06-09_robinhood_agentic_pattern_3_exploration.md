@@ -98,11 +98,47 @@ material enough to be filed as a standalone eval finding — see the memory entr
   **Three accounts (main, IRA, managed) hit context-size limits and required spillover.** **Pagination cap
   is 200 orders/account.** Confirms read **truly spans every account.**
 
+- **Option chain (Probe 5) — no enumeration path exists in the 22-tool surface.** The options tools
+  (`add_option_to_watchlist`, `get_options_watchlist`) require **contract UUIDs sourced from
+  `get_option_instruments` — which is NOT in this MCP.** So the option watchlist tools are **functionally
+  unusable through the MCP alone**: you can't add what you can't discover. PMCC's existing `robin_stocks`
+  broker adapter remains the established option-chain path; Agentic MCP provides no equivalent.
+  _Implication:_ the options surface here is **broker-data-exposed but not discoverable**, which sharpens
+  watch-trigger (c) further — it must require **option-chain discovery** in addition to trading execution;
+  without `get_option_instruments`, even a hypothetical `place_option_order` would be of limited use (§7).
+- **`search` (Probe 6) — name → instrument lookup only, NOT a fundamentals screener.** Robinhood's
+  marketing ("screen for stocks growing 20% annually") is **misleading**: the actual implementation is
+  **LLM-orchestrated web research** using `search` only for ticker resolution — the intelligence is in the
+  LLM, not the MCP. No analyst-notes access via MCP (the secondary-source `read_analyst_notes` surfaces
+  neither as a tool nor as a discoverable capability through `search`). _Implication:_ the "AI-powered
+  screening" framing is **not an MCP capability** — it's a wrapper around generic LLM research.
+- **`place_equity_order` schema (Probe 7) — full order surface, schema-level (pre-live).**
+  - Order types: **`market`, `limit`, `stop_market`, `stop_limit`. No trailing stop.**
+  - Time-in-force: **`gfd` (day), `gtc`.** No IOC/FOK/OPG.
+  - Extended hours: **yes**, via `market_hours` = `regular_hours` (default) / `extended_hours` /
+    `all_day_hours`. **Fractional and dollar-based orders are rejected outside regular hours.**
+  - Sizing: exactly one of **`quantity`** (share count; fractional allowed only for `market` +
+    `regular_hours`) **XOR `dollar_amount`** (USD notional, `market` type only).
+  - Idempotency: optional **`ref_id` UUID** for retry safety. **Hard gate:** must be an
+    **`agentic_allowed=true`** account.
+  - _Pattern-1 implications:_ **no trailing stop** ⇒ trading_corp's advanced-SL ratcheting (Bitunix
+    pattern) can't translate directly; an adapter would ratchet via **cancel + replace** per stop update.
+    **No IOC/FOK** ⇒ liquidity-sensitive/HFT patterns unavailable (fine for retail). **Extended-hours
+    support exists** (broader than initially assumed). **`ref_id` idempotency** signals the API was
+    designed for **programmatic** use, not just interactive.
+- **`review_equity_order` shape (Probe 8) — pure pre-trade simulation, no side effects.** Returns the
+  current quote + **pre-trade alerts** (buying power, **PDT** pattern-day-trader, instrument halt) — a good
+  regulatory safety surface. Tool guidance **recommends a marketable-limit-at-ask over a plain market
+  order** (price protection).
+
 ### Still pending
-- Option chain for SPY (expected to fail — equities-only): _not yet probed._
-- Explicit positions-empty read beyond `get_portfolio`: _covered indirectly (all uninvested)._
-- Rate limits: none hit — only context-size spillover on the 3 high-history accounts (a client/context
-  limit, not an observed server rate limit).
+- **Live test trade (§4)** — actual `place_equity_order` execution; preview → approval → fill behavior,
+  latency, push notification. (Order schema known from Probe 7; live behavior not yet observed.)
+- Disconnect (§5) and reconnect/close (§6).
+
+_(Resolved: option-chain discovery — Probe 5; `search` capability — Probe 6. Positions-empty covered
+indirectly by `get_portfolio` (all uninvested). No server rate limits hit — only client context-size
+spillover on the 3 high-history accounts.)_
 
 ---
 
@@ -139,22 +175,32 @@ _Filled at end. Maps to the Output checklist._
 - **MCP tools that actually exist** (vs. the three secondary-source names): see §2 — full 22-tool surface,
   `<verb>_<object>` convention; the three cited names do not exist (trade verb is `place_equity_order`,
   preview verb `review_equity_order`; no batch/bulk and no crypto/futures/prediction tools).
-- **Order types that worked:** _pending §4._
+- **Order types (supported, per Probe 7 schema):** `market`, `limit`, `stop_market`, `stop_limit` — **no
+  trailing stop**; TIF `gfd`/`gtc` (no IOC/FOK/OPG); extended-hours via `market_hours`. _Live confirmation
+  of an actually-placed order pending §4._
 - **Preview / approval flow observed:** _pending §4 (surface confirms two-step `review_equity_order` →
   `place_equity_order`; default "Needs approval" on all 22 tools)._
 - **Notification quality:** _pending §4._
-- **Surprises (positive / negative):** options expose a 3-tool *read-only* surface yet no trade verb (§2);
-  watchlist management is ~41% of the surface (9/22); **no batch/bulk tools** (workflows must be
-  agent-composed); **no crypto/futures/prediction tools** (confirms "coming soon"); _trade-flow surprises
-  pending §4._
+- **Surprises (positive / negative):** options are read-only **and not even discoverable** (no
+  `get_option_instruments` — Probe 5); `search` is ticker-lookup only, so Robinhood's "AI screening"
+  marketing is an **LLM wrapper, not an MCP capability** (Probe 6); **extended-hours trading exists**
+  (broader than assumed) and **`ref_id` idempotency** signals deliberate programmatic design (Probe 7,
+  positives); offset by **no trailing-stop / IOC / FOK** (Probe 7) and watchlist management at ~41% of the
+  surface; **no batch/bulk, no crypto/futures/prediction** tools. _Live trade-flow surprises pending §4._
 - **Do the Pattern-1 watch-trigger thresholds still feel right (auth + GA + options)?** _Reassess at end._
   Early read:
   - **(a) auth** — exploration so far reconfirms desktop-browser interactive OAuth only; no non-interactive
     path surfaced. Trigger holds; still the load-bearing blocker.
   - **(b) GA** — n/a from this session (still beta).
-  - **(c) options** — full surface confirms options are **watchlist/read-only** (no option-trading verb).
-    **Recommend sharpening trigger (c)** to fire specifically on an **option *trading* verb**
-    (`place_option_order`) landing — the existing option *watchlist* tools are irrelevant to Pattern-1,
-    which is about execution. As written ("options or crypto support lands"), (c) risks a false trigger on
-    a watchlist-only update; tighten to "option/crypto **trading-execution** support." Same logic extends
-    to crypto/futures/prediction — none have execution verbs today.
+  - **(c) options** — full surface confirms options are **watchlist/read-only AND not even discoverable**
+    (no `get_option_instruments` to enumerate contracts — Probe 5). **Recommend refining trigger (c) to:
+    "options or crypto *trading-execution* support, including instrument-chain discovery."**
+    Trading-execution alone is incomplete — without chain discovery even a future `place_option_order` is
+    of limited use. The current state (option *watchlist* tools with **no discovery**) is itself the
+    warning sign that trading-execution could ship in similarly incomplete shape. Same logic extends to
+    crypto/futures/prediction — none have execution verbs today.
+  - **(g) — NEW candidate trigger (soft; OPERATOR DECIDES):** a **trailing-stop order type, or an
+    equivalent ratcheting primitive** supporting trading_corp's existing stop-management patterns (Bitunix
+    advanced-SL). **Not critical** for initial Pattern 1 (ratcheting is achievable via cancel + replace —
+    Probe 7), but it removes a friction layer in adapter implementation. _Not yet adopted into BACKLOG —
+    pending operator yes/no at close-out._
