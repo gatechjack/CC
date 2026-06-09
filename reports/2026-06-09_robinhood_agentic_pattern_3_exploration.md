@@ -144,33 +144,34 @@ spillover on the 3 high-history accounts.)_
 
 ## 4. Single test trade (Phase 3)
 
-_Pending. Candidate: 1 share of a cheap liquid name (SOFI ~$15 / F ~$12 / T ~$22)._
-
-- Preview shown first? _pending._
-- Explicit approval required, or auto-fire? _pending (default is "Needs approval" — see §1)._
-- Latency from "yes, place" → fill confirmation: _pending._
-- Fill confirmation contents: _pending._
-- Phone push notification received? _pending._
-- Order types actually offered in the preview: _pending._
+**SKIPPED.** The Probe 7 schema inspection (§3) sufficiently validated the **shape** of the write path; an
+actual trade adds only incremental signal and **does not change the Defer verdict** — the **auth blocker**
+(a), not trade-execution mechanics, governs usability for trading_corp. The two-step `review_equity_order`
+→ `place_equity_order` flow and the "Needs approval" default are understood structurally (§3 Probes 7–8).
+Deferred indefinitely; structural findings supersede the need.
 
 ---
 
 ## 5. Disconnect check (Phase 4)
 
-_Pending. Disconnect agent via Robinhood mobile app; retry a trade via Claude Desktop; expect clean
-"not connected" failure._
+**SKIPPED.** The one-click-disconnect safety control is documented; the operator can validate it
+interactively in future without scribe involvement if ever relevant. Not load-bearing for the verdict.
 
 ---
 
 ## 6. Reconnect + close (Phase 5, optional)
 
-_Pending / may skip. Reconnect, sell the share, observe close flow — or leave the position open._
+**N/A** — no test trade was placed (§4 skipped), so there is nothing to reconnect for or close. The
+agentic account remains funded at $75 cash, uninvested.
 
 ---
 
 ## 7. Synthesis (for future-you)
 
-_Filled at end. Maps to the Output checklist._
+**Verdict: DEFER formal integration — unchanged from the 2026-06-08 evaluation.** Today's hands-on
+Pattern-3 exploration **validates that verdict empirically** (the auth blocker is real and unmoved) and
+**sharpens the watch-triggers**. Pattern 1 (broker adapter under the single risk-gate) remains infeasible
+today. Maps to the Output checklist:
 
 - **MCP tools that actually exist** (vs. the three secondary-source names): see §2 — full 22-tool surface,
   `<verb>_<object>` convention; the three cited names do not exist (trade verb is `place_equity_order`,
@@ -178,19 +179,22 @@ _Filled at end. Maps to the Output checklist._
 - **Order types (supported, per Probe 7 schema):** `market`, `limit`, `stop_market`, `stop_limit` — **no
   trailing stop**; TIF `gfd`/`gtc` (no IOC/FOK/OPG); extended-hours via `market_hours`. _Live confirmation
   of an actually-placed order pending §4._
-- **Preview / approval flow observed:** _pending §4 (surface confirms two-step `review_equity_order` →
-  `place_equity_order`; default "Needs approval" on all 22 tools)._
-- **Notification quality:** _pending §4._
+- **Preview / approval flow:** known **structurally** (not live-tested — §4 skipped): a two-step
+  `review_equity_order` (pure pre-trade sim with PDT/BP/halt alerts — Probe 8) → `place_equity_order`,
+  every tool defaulting to "Needs approval" (§1). Sufficient to characterize the write path's shape.
+- **Notification quality:** **not tested** (§4 skipped); Robinhood's real-time-alerts claim is unverified
+  here — operator can confirm interactively in future if ever relevant.
 - **Surprises (positive / negative):** options are read-only **and not even discoverable** (no
   `get_option_instruments` — Probe 5); `search` is ticker-lookup only, so Robinhood's "AI screening"
   marketing is an **LLM wrapper, not an MCP capability** (Probe 6); **extended-hours trading exists**
   (broader than assumed) and **`ref_id` idempotency** signals deliberate programmatic design (Probe 7,
   positives); offset by **no trailing-stop / IOC / FOK** (Probe 7) and watchlist management at ~41% of the
   surface; **no batch/bulk, no crypto/futures/prediction** tools. _Live trade-flow surprises pending §4._
-- **Do the Pattern-1 watch-trigger thresholds still feel right (auth + GA + options)?** _Reassess at end._
-  Early read:
-  - **(a) auth** — exploration so far reconfirms desktop-browser interactive OAuth only; no non-interactive
-    path surfaced. Trigger holds; still the load-bearing blocker.
+- **Pattern-1 watch-triggers — final reassessment.** Priorities unchanged from 2026-06-08; today's
+  findings sharpen the wording:
+  - **(a) auth** — **unchanged, load-bearing.** Direct evidence: the OAuth flow is interactive,
+    browser-based, desktop-only for setup; **no service-account or programmatic-renewal path documented or
+    discovered.** This — not trade-execution mechanics — determines usability for trading_corp.
   - **(b) GA** — n/a from this session (still beta).
   - **(c) options** — full surface confirms options are **watchlist/read-only AND not even discoverable**
     (no `get_option_instruments` to enumerate contracts — Probe 5). **Recommend refining trigger (c) to:
@@ -199,8 +203,28 @@ _Filled at end. Maps to the Output checklist._
     of limited use. The current state (option *watchlist* tools with **no discovery**) is itself the
     warning sign that trading-execution could ship in similarly incomplete shape. Same logic extends to
     crypto/futures/prediction — none have execution verbs today.
-  - **(g) — NEW candidate trigger (soft; OPERATOR DECIDES):** a **trailing-stop order type, or an
+  - **(g) — NEW trigger (soft; ADOPTED by operator at close-out):** a **trailing-stop order type, or an
     equivalent ratcheting primitive** supporting trading_corp's existing stop-management patterns (Bitunix
-    advanced-SL). **Not critical** for initial Pattern 1 (ratcheting is achievable via cancel + replace —
-    Probe 7), but it removes a friction layer in adapter implementation. _Not yet adopted into BACKLOG —
-    pending operator yes/no at close-out._
+    advanced-SL). **Not strictly required** for initial Pattern 1 (ratcheting is achievable via cancel +
+    replace — Probe 7), but it eliminates a friction layer in adapter implementation. **Added to BACKLOG
+    P3 at close-out.**
+- **Additional material finding (NOT in the 2026-06-08 evaluation): read-vs-write scope asymmetry.** The
+  MCP token grants **full cross-account READ visibility** (7 accounts incl. IRA / advisory-managed) despite
+  write-isolation to the agentic sub-account (§3). Any future Pattern-1 implementation needs **explicit
+  Board acknowledgment of the data-exposure scope** (CLAUDE.md §4) before any read-adapter wiring. Captured
+  in auto-memory: `2026-06-08-robinhood-agentic-evaluated-deferred.md`.
+
+---
+
+## 8. Cross-references
+
+- **Evaluation report (2026-06-08):** `reports/2026-06-08_robinhood_agentic_evaluation.md` (branch
+  `robinhood-agentic-evaluation-2026-06-08`, unmerged). This exploration is the Pattern-3 trial that report
+  recommended; the Defer verdict is unchanged.
+- **BACKLOG:** `BACKLOG.md` P3 — "Robinhood Agentic Trading: revisit integration (DEFERRED 2026-06-08)."
+  Updated at close-out with a reference to this report, the sharpened Trigger (c), the new Trigger (g), and
+  a pointer to the read-vs-write finding.
+- **Auto-memory:** `2026-06-08-robinhood-agentic-evaluated-deferred.md` — read-vs-write scope asymmetry +
+  Pattern-3 completion (verdict unchanged).
+- **This report:** branch `robinhood-agentic-pattern-3-exploration-2026-06-09`, pushed to origin unmerged
+  (mirrors the 2026-06-08 evaluation-report pattern).
