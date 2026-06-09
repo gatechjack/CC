@@ -283,7 +283,31 @@ surface for investigation before any other work.
 - Round 2 (conditional): **B2** restart forensics (if NRestarts>0 / MainPID changed) OR
   **B3** pickle state + **B4** healthz history during 06-03→08 (if B1 clean).
 
-**STATUS: call B1 prepared. Awaiting operator run.**
+### Round 1 — call B1 results (probe_b1.sh, 2026-06-09T00:33:07Z) — HARD-STOP CLEAN, no restart
+
+`whoami=root` (az run-command runs as root → journalctl unrestricted in B2).
+
+| field | value | baseline | verdict |
+|---|---|---|---|
+| MainPID | 2043009 | 2043009 | ✅ unchanged |
+| NRestarts | 0 | 0 | ✅ |
+| ExecMainStartTimestamp | Tue 2026-06-02 01:39:50 UTC | 01:39:50 | ✅ |
+| ActiveEnterTimestamp | Tue 2026-06-02 01:39:50 UTC | 01:39:50 | ✅ |
+| ActiveState / SubState | active / running | — | ✅ |
+| Result / ExecMainStatus | success / 0 | — | ✅ |
+| healthz | 200 | 200 | ✅ |
+
+**NO service restart since the 2026-06-02 deploy.** Continuous uptime ~6d23h (06-02 01:39:50Z
+→ now 06-09 00:33:07Z). Hard-stop NOT triggered. **Rules out branch (a)** of the operator's
+pickle concern (full service restart). If the Robinhood pickle reset, it must be branch **(b)**:
+a normal in-process re-auth/rotation WITHOUT a restart — confirm via pickle mtime in B3.
+
+## Round 2 — call B2 (selected; B1 clean)
+`probe_b2.sh`: B3 Robinhood pickle file mtime/size + 72h pickle/auth log activity (confirm
+in-process rotation) + B4-lite service-health anomaly scan since deploy (Stopped/Failed/
+Traceback markers — expect none given NRestarts=0).
+
+**STATUS: B1 done (clean, no restart). Call B2 prepared. Awaiting operator run.**
 
 ## Thread C — Reconciler mismatch (c8f25d17, ac5f9c59, c2eb7cda)
 Deferred unless A and B surface nothing blocking.
