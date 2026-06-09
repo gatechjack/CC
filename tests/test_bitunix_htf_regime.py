@@ -29,6 +29,7 @@ from trading_corp.agents.strategies.bitunix_htf_regime import (
     TimeframeRegime,
     TradePermission,
     VolatilityTier,
+    _atr_pct_to_tier,
     adx,
     atr,
     classify_timeframe,
@@ -477,7 +478,7 @@ def test_compute_regime_funding_below_threshold():
 
 def test_compute_regime_volatility_tier_from_d1_atr():
     # Construct 1D bars where ATR ≈ 2% of price → "high" tier
-    # (default thresholds: low<0.5, normal<1.5, high<3.0, extreme>=3.0)
+    # (default thresholds: Low<0.5, Normal<1.5, High<extreme(5.0), Extreme>=5.0)
     n = 250
     closes = _flat(100.0, n)
     # Wide range bars: high=101, low=99 → TR ~ 2 → ATR ~ 2 → 2% of 100
@@ -494,6 +495,35 @@ def test_compute_regime_volatility_tier_from_d1_atr():
     assert v.atr_pct_d1 is not None
     assert v.atr_pct_d1 == pytest.approx(2.0, abs=0.05)
     assert v.volatility_tier == VolatilityTier.High
+
+
+# ── P1 fix (2026-06-08): vol-tier final boundary reads `extreme`, not `high` ──
+# Regression guard for the bug where `_atr_pct_to_tier` topped out at the
+# `high` (3.0%) threshold and never read `extreme` (5.0%), size-zeroing BTC at
+# normal ~3-4% ATR (zero fires 2026-06-02 → 2026-06-08). The downstream
+# tier→size linkage (Extreme → size_multiplier=0.0; non-Extreme → tradeable)
+# is already pinned by `test_volatility_extreme_blocks_all_trades`; these two
+# tests pin the config→tier wiring that feeds it.
+
+def test_extreme_5_pct_classifies_atr_4_as_high():
+    """With extreme=5.0, a normal BTC 4% 1D ATR is High (tradeable), and only
+    ATR >= 5.0% is Extreme (the vol hard-zero). The boundary is inclusive at
+    `extreme` (>=)."""
+    thresholds = {"low": 0.5, "normal": 1.5, "high": 3.0, "extreme": 5.0}
+    assert _atr_pct_to_tier(4.0, thresholds) == VolatilityTier.High
+    assert _atr_pct_to_tier(5.5, thresholds) == VolatilityTier.Extreme
+    assert _atr_pct_to_tier(5.0, thresholds) == VolatilityTier.Extreme   # at-bound
+    assert _atr_pct_to_tier(4.999, thresholds) == VolatilityTier.High
+
+
+def test_extreme_3_pct_classifies_atr_4_as_extreme():
+    """Config-as-knob: lowering `extreme` to 3.0 makes the same 4% ATR Extreme
+    (the pre-fix effective behavior). Proves the cutoff is driven by the
+    `extreme` config value, not hardcoded — the operator can tune or revert it.
+    (`high` is unchanged at 3.0 here yet has no effect — the orphaned-key P3.)"""
+    thresholds = {"low": 0.5, "normal": 1.5, "high": 3.0, "extreme": 3.0}
+    assert _atr_pct_to_tier(4.0, thresholds) == VolatilityTier.Extreme
+    assert _atr_pct_to_tier(2.5, thresholds) == VolatilityTier.High      # below knob
 
 
 # ─── trade-permission matrix ────────────────────────────────────────────

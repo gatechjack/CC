@@ -725,14 +725,28 @@ def _score_to_regime(score: float, thresholds: dict[str, float]) -> Regime:
 def _atr_pct_to_tier(
     atr_pct: float | None, tier_thresholds: dict[str, float],
 ) -> VolatilityTier:
-    """ATR-as-%-of-price → tier. Thresholds are upper bounds for each tier."""
+    """ATR-as-%-of-price → tier. Thresholds are upper bounds for each tier.
+
+    Bands: Low < ``low``; Normal < ``normal``; High < ``extreme``;
+    Extreme >= ``extreme``. The ``extreme`` threshold is the live,
+    operator-tunable cutoff for the vol hard-zero (a 1D ATR at/above it
+    forces size_multiplier=0.0 — see ``get_trade_permissions``).
+
+    NOTE: 4 tiers vs 4 configured thresholds is structurally over-specified
+    by one boundary. The High band's upper bound is ``extreme``, so the
+    ``high`` threshold is currently vestigial (present in config, unused
+    here). Pre-2026-06-08 the final boundary read ``high`` (3.0%), which
+    silently ignored the ``extreme`` key (5.0%) and size-zeroed BTC at
+    normal ~3-4% ATR; the boundary now reads ``extreme`` per operator
+    intent. The orphaned ``high`` key is tracked as a P3 cleanup.
+    """
     if atr_pct is None:
         return VolatilityTier.Unknown
     if atr_pct < tier_thresholds["low"]:
         return VolatilityTier.Low
     if atr_pct < tier_thresholds["normal"]:
         return VolatilityTier.Normal
-    if atr_pct < tier_thresholds["high"]:
+    if atr_pct < tier_thresholds["extreme"]:
         return VolatilityTier.High
     return VolatilityTier.Extreme
 
