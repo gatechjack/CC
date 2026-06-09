@@ -116,6 +116,44 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-09 ~03:50 UTC — P1 bitunix HTF vol-classifier wiring fix DEPLOYED (single-file; N+3 Phase 1)
+
+**Commits:** merge `7834375` (`--no-ff` of `bitunix-htf-vol-classifier-fix-2026-06-08`: `ab0d251` source + `ea92d4c` tests) on origin/main. Sibling docs commit `4214c23` (P3 orphaned-`high` filing; no code). Prod's `bitunix_htf_regime.py` went pre-fix LF-md5 `e0dbf34a7b43ee628eb1aa269849cc26` → post-fix `550609fad155da002ebb470a57e16709`.
+**Triggered by:** operator-supervised N+3 Phase 1 session; closes P1 BACKLOG `81e6169` (Thread A investigation, 2026-06-08).
+**Backup tag:** `trading_corp/agents/strategies/b.bak` (prod-side `cp` before overwrite).
+
+**Files deployed (1):**
+- `trading_corp/agents/strategies/bitunix_htf_regime.py` — `_atr_pct_to_tier` final band reads `tier_thresholds["extreme"]` (5.0%) instead of `["high"]` (3.0%). **No config change** — `extreme: 5.0` already on prod (`strategies.yaml:1272`); the fix makes the existing value drive the boundary.
+
+**Features now ACTIVE on prod (paper-mode):**
+- **Vol-tier Extreme cutoff moves 3% → 5%.** BTC 1D ATR in [3%, 5%) now classifies **High → tradeable** (was Extreme → `size_multiplier=0.0` hard-zero). Restores bitunix paper firing dormant since 2026-06-02 22:15Z (zero fires 6 of 7 days; current BTC ATR ~4%). ATR ≥ 5% still Extreme/zeroed.
+
+**Notable code changes:**
+- The `high` (3.0%) config key is now **vestigial** (4-tier-vs-4-threshold redundancy relocated by the Option-1a fix) — filed P3 (`4214c23`); the `_atr_pct_to_tier` docstring names it as such.
+- Config-wiring repair, not parameter tuning; §4 backtest skipped per operator authorization (paper-mode; the fresh observation window is the empirical test).
+
+**⚠️ Deploy-time surprise (record for future bitunix/RH restarts):**
+- **A `trading-corp` restart re-triggers the Robinhood interactive login, which BLOCKS startup (and the uvicorn web bind) until the device-approval challenge is handled or times out.** With the stale RH pickle (P2 `b2259a0`, dead since 05-29), the **first deploy restart (03:27:43Z, MainPID 2396161) hung at `Check robinhood app for device approvals` → web 502 for ~22 min.** Resolved by a second restart (03:49:41Z, MainPID 2397472) where the operator approved the RH push within the boot window → login completed, uvicorn bound, pickle refreshed. **Future deploys: be ready to approve the RH push within ~10s of restart, or expect a hung/delayed bind until the P2 pickle is refreshed.** (The 06-02 deploy did NOT hit this — that login timed out within the ~11min lazy-bind; the device-approval path can hang indefinitely.) Candidate `sharp_edges.md` entry (deferred).
+
+**Verification:**
+- **Pre-deploy md5 gate** (operator SSH): prod `bitunix_htf_regime.py` = `e0dbf34…` = main pre-fix LF-md5 → no prod drift (confirms Thread-A "worktree==prod").
+- **Post-transfer md5**: prod = `550609…` = main post-fix LF-md5 (LF-normalized via `sed -i 's/\r$//'` after scp). Exact match in place.
+- **Test gate** (pre-merge, full suite under `run_capped.ps1`, 3 known collection-error files `--ignore`d): **2229 passed / 28 failed** = canonical baseline (28 pre-existing in robinhood/tasty/IC/webhooks) **+ 2 new wiring tests**; zero new failures. `test_bitunix_htf_regime.py` 63/63.
+- **Restart**: live MainPID `2397472` (≠ pre-deploy `2043009`), ActiveEnterTimestamp `2026-06-09 03:49:41 UTC`, ActiveState=active (running).
+- **healthz**: `{"status":"ok","mode":"PAPER"}` (200) via GET at ~04:06Z. (`curl -sI`/HEAD → 405 `allow: GET` — endpoint is GET-only; not a failure.)
+- **BitUnix observer wiring in boot log (03:27:46Z)**: `htf_gate_mode=enforce, htf_regime_enabled=True, execution_mode=paper` — fixed module loaded clean.
+
+**Watch-item (NOT yet confirmed — next bitunix signal):**
+- F-5 classifier activation: a post-restart `htf_gate_decision` for `atr_pct_d1` in [3.0, 5.0) should show `volatility_tier="high"`, `size_multiplier=1.0`, `hard_zero_reason=null`, and `trade_plan_decision`/`would_have_placed` resuming (first since 06-02 22:15Z). Operator to confirm on next signal.
+
+**Fresh paper observation window:** starts **2026-06-09 03:49:41 UTC**. The 06-02→09 window stays INVALIDATED (dormant 6/7 days). A full fresh window is required before any `execution_mode` live-flip decision.
+
+**Rollback recipe (single line):**
+`ssh azureuser@trading.jacksumner.com 'cd /home/azureuser/trading_corp/trading_corp/agents/strategies && mv b.bak bitunix_htf_regime.py && sudo systemctl restart trading-corp.service'`
+(Rollback restart will re-hit the RH login-blocks-startup behavior noted above.)
+
+---
+
 ## 2026-06-02 ~01:40 UTC — N+2 Phase 3 (Sessions A + B) + Stage-1 paper-dashboard DEPLOYED to prod — first whole-deploy since 2026-05-31 redeploy3
 
 **Commits:** prod was `7352f8f` (Saturday's redeploy3 pointer) → now running `395c421` (origin/main HEAD at deploy time). Carries: `36157bf` (Session A merge) + `920a33a` (Session B merge) + `8c80e69` (Sunday's stage1-paper-dashboard merge `--no-ff` of `a106b4d`) + downstream docs commits (`def4833`, `1bdad2d`, `240a068`, `2de653e`, `395c421`).

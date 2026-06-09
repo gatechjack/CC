@@ -46,6 +46,16 @@ Queries against historical paper data remain available via Claude.
 
 ## P1 — `bitunix_htf_regime` volatility classifier ignores config; treats BTC ATR ≥3% as extreme (filed 2026-06-08 via Thread A investigation)
 
+> **RESOLVED 2026-06-09 — DEPLOYED.** Fixed via merge `7834375` (`--no-ff` of `ab0d251`
+> source + `ea92d4c` tests; Option 1a — `_atr_pct_to_tier` final tier boundary reads
+> `extreme`/5.0% not `high`/3.0%). Deployed to prod 2026-06-09 03:49:41 UTC (MainPID
+> 2397472; healthz `{"status":"ok","mode":"PAPER"}`; no config change — `extreme: 5.0`
+> was already on prod). Orphaned `high` key filed as P3 (`4214c23`). **Fresh paper
+> observation window started 2026-06-09 03:49:41 UTC; the 06-02→09 window stays
+> INVALIDATED — a full fresh window is required before any `execution_mode` live-flip
+> decision.** See deploy_log 2026-06-09 entry + memory
+> [[2026-06-08-bitunix-volatility-classifier-wired-deployed]].
+
 Root cause of zero Bitunix fires since 2026-06-02 22:15 UTC, identified 2026-06-08 via
 paper-mode observation-window investigation.
 
@@ -91,7 +101,9 @@ observation window must be observed before any flip decision is meaningful. The 
 - Phase 3 paper-mode observation window: `runbooks/deploy_log.md` entry 2026-06-02.
 - CLAUDE.md §4 ("Things to ask before doing") — strategy-parameter change gate.
 
-**Priority: P1.** Structural blocker for any Bitunix live-flip decision.
+**Priority: P1 — RESOLVED (deployed 2026-06-09, merge `7834375`).** The wiring bug is
+fixed and live; the only remaining gate to a live-flip is a fresh paper observation window
+(started 2026-06-09 03:49:41 UTC), not this bug.
 
 ## P3 — Bitunix HTF volatility config has orphaned `high` threshold after Option 1a wiring fix (filed 2026-06-08)
 
