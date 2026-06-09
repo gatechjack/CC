@@ -427,6 +427,54 @@ deploy it (closes gap, commits real-money order-placement wiring — needs own
 gate); or (b) revert un-deployed commits off main and re-introduce when smoke
 passes.
 
+## P3 — Reconciler intrabar TP-vs-advanced-SL path ambiguity (chronic variance, documentation + remediation gap) — filed 2026-06-08 via Thread C investigation
+
+**Finding:** Three flagged trades (c8f25d17, ac5f9c59, c2eb7cda) show
+recorded-vs-sim R deltas of -0.418, +0.437, +1.125 respectively.
+Root cause is chronic intrabar path ambiguity in the 1m re-walk
+reconciler (audit_reality_reconciler.py → _classify_v2_multi_leg),
+NOT a regression.
+
+**Mechanism (code-confirmed):**
+- paper_trade_replay.py:503-574: SL is checked at bar-start against
+  prior current_sl. Advanced (ratcheted) SL after a TP fill is only
+  applied via current_sl = new_sl at line 574 → evaluated on the
+  next bar.
+- When TP fill + advanced-SL-stopout collapse into one 1m bar, the
+  sim fills the legs and misses the same-bar advanced-SL exit.
+- Bidirectional: c8f25d17 shows the reverse (sim's SL-first walk
+  truncates a fill the live path credited).
+- Same class as the prior 3m→1m granularity fix (06b5a9e, took
+  mismatches 12/17→17/17). These three are the residual sub-1-minute
+  tail it cannot reach.
+
+**Source of truth:** Recorded is authoritative ("audit wins" per
+CLAUDE.md STOP-AND-READ #2). Sim is a cold re-walk diagnostic.
+Paper-mode, no capital at risk.
+
+**Two scope items:**
+
+1. **sharp_edges.md documentation gap.** The original-SL intrabar tie
+   case is documented; the advanced-SL case is NOT. Add the
+   advanced-SL intrabar reconciler-variance entry for completeness.
+
+2. **Remediation for the 3 flagged trades.** Mark each as
+   audit_corrected using the existing audit_corrected /
+   corrected_r_multiple mechanism (audit_reality_reconciler.py:189-202).
+   This stops the dashboard's RECONCILER MISMATCH tile from showing
+   these as persistent INVESTIGATE items. Prod write — operator
+   action, not in-session.
+
+**Why filed P3:** chronic, irreducible at 1m granularity, audit is
+authoritative, paper-mode only. Diagnostic-tool fidelity rather than
+trading-correctness concern. But sharp_edges.md gap erodes future
+diagnosis quality; flagged-trade noise erodes future reconciler-tile
+signal quality. Worth tracking, not urgent.
+
+**Reference:** Thread C investigation commit 10a8bfd.
+
+**Not gating:** any active development.
+
 ## P3 — kalshi_weather tier-1 schema committed but NOT deployed
 
 Filed 2026-05-29. ANOMALY. Same shape as the tasty_options committed-but-undeployed
