@@ -260,10 +260,30 @@ judge live-readiness); (2) latent suppressor for any future live flip.
 **Constraint:** threshold change = strategy-param change → Backtester approval gate
 (CLAUDE.md §4). Read-only session — NO code change made.
 
-**STATUS: THREAD A COMPLETE. Stop-and-report. Awaiting operator on (a) threshold disposition, (b) proceed to Thread B?**
+**DISPOSITION (operator, 2026-06-08):** Accepted as **likely bug** (config-vs-code drift —
+`extreme:5.0` unused, effective 3% cutoff; 3% is normal BTC vol). Filed **P1** to BACKLOG →
+origin/main `81e6169` (under "# Priority 1 — Bitunix Futures path to live trading"); paper
+window 06-02→09 marked **INVALIDATED**. Memory `2026-06-08-bitunix-volatility-classifier-bug`
+written + MEMORY.md indexed. Investigation branch pushed to origin (`9e9053b`). Filing MERGED;
+**fix UNSTARTED** (Backtester-gated, CLAUDE.md §4). **THREAD A CLOSED.**
 
-## Thread B — Robinhood pickle / unplanned restart
-Pending Thread A stop-and-report.
+## Thread B — Robinhood pickle / unplanned restart (IN PROGRESS 2026-06-08)
+
+**Scope (reframed per operator):** Thread A established the Bitunix silence was the vol-tier
+classifier bug — NOT a restart or market. So Thread B is no longer "restart as cause of
+silence"; it is **"was there an unplanned restart the operator should know about, and is the
+Robinhood pickle state healthy?"**
+
+**Hard-stop:** `NRestarts>0` with anomalous exit codes during an expected-stability window →
+surface for investigation before any other work.
+
+- Round 1 — call **B1** (`probe_b1.sh`): service-state gate. `systemctl show trading-corp`
+  (MainPID/NRestarts/ActiveEnter/ExecMainStart/Result) + healthz. Expected baseline:
+  MainPID=2043009, NRestarts=0, ActiveEnter Tue 2026-06-02 01:39:50 UTC.
+- Round 2 (conditional): **B2** restart forensics (if NRestarts>0 / MainPID changed) OR
+  **B3** pickle state + **B4** healthz history during 06-03→08 (if B1 clean).
+
+**STATUS: call B1 prepared. Awaiting operator run.**
 
 ## Thread C — Reconciler mismatch (c8f25d17, ac5f9c59, c2eb7cda)
 Deferred unless A and B surface nothing blocking.
