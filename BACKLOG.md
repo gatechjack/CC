@@ -637,7 +637,7 @@ Filed 2026-04-30. Long-term ticket-flow design.
 
 Filed 2026-05-01. Audit-row cleanup.
 
-## P2 — Robinhood session auth dead since ~2026-05-29; PMCC/IRA/joint reading $0 (filed 2026-06-08 via Thread B investigation)
+## ✅ P2 RESOLVED (2026-06-09) — Robinhood session auth dead since ~2026-05-29; PMCC/IRA/joint reading $0 (filed 2026-06-08 via Thread B investigation)
 
 **Symptom:** Robinhood session pickle returning 401 Unauthorized for
 PMCC, IRA, and joint account reads. Affected division dashboards
@@ -655,6 +655,17 @@ stable since 2026-06-02 deploy (MainPID 2043009, NRestarts=0).
 **Fix:** operator interactive re-login to regenerate Robinhood
 session pickle. Requires MFA — cannot be agent-resolved. ~5 min
 operator action.
+
+**✅ RESOLVED 2026-06-09 ~14:49 UTC.** Operator-supervised path-(b) re-login
+(backup + clear + fresh `rs.login(store_session=True)`); one device push
+approved → fresh pickle (mtime 2026-06-09 14:45Z, was 2026-05-29 01:59Z).
+`sudo systemctl restart trading-corp` at 14:48:58Z (MainPID 2397472 →
+2427161) loaded it: RobinhoodBroker logged in (jrsumner@yahoo.com), 3
+accounts bound (individual/ira_traditional/joint), no RH 401, no
+device-approval hang; PMCC reading 11 real legs; PMCC/IRA/joint dashboards
+confirmed real equity (operator C3). Method + sequence in
+`runbooks/deploy_log.md` 2026-06-09 follow-up. Session: 2026-06-09
+operator-supervised P2 re-login.
 
 **Reference:** Thread B investigation commit a78eff7. See also
 "## P3 — Fidelity startup login flakiness on `trading-corp` restart"

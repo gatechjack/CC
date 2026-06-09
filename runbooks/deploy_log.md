@@ -152,6 +152,15 @@ when prod observation warrants a tuning loop.
 `ssh azureuser@trading.jacksumner.com 'cd /home/azureuser/trading_corp/trading_corp/agents/strategies && mv b.bak bitunix_htf_regime.py && sudo systemctl restart trading-corp.service'`
 (Rollback restart will re-hit the RH login-blocks-startup behavior noted above.)
 
+**Follow-up — 2026-06-09 ~14:49Z: P2 Robinhood pickle REGENERATED (path-b re-login + restart).**
+- Operator-supervised path-(b) re-login (no service stop; backup + clear + fresh `rs.login(store_session=True)`): one device push approved → fresh `/home/azureuser/.tokens/robinhood.pickle` mtime **2026-06-09 14:45Z** (was **2026-05-29 01:59Z**, ~11.5d stale).
+- `sudo systemctl restart trading-corp` at **14:48:58Z** (MainPID `2397472` → `2427161`). Fresh pickle loaded cleanly: `RobinhoodBroker logged in (jrsumner@yahoo.com) — 3 accounts discovered` + bound individual/ira_traditional/joint, **no RH 401, no device-approval hang** (fresh valid pickle → robin_stocks validate-then-reuse skips MFA; pre-empts the ~22min hang). Service healthy by ~15:00Z; PMCCAgent reading 11 real legs; PMCC/IRA/joint dashboards confirmed real equity (operator C3). Closes BACKLOG **P2 (`b2259a0`)** → RESOLVED.
+- **Bitunix observation window** (started 03:49:41Z) saw a **~70-min restart-cycle interruption** — assess **negligible impact** (paper-mode; positions persist in DB; strategy stateless across restart); flag for the window-data review.
+
+**Watch items observed during the 14:48Z restart cycle (not actioned tonight):**
+- `odds_api` returning **401** for NHL/NBA/MLB endpoints since ~15:49Z — third-party API key likely expired or invalid; operator manual rotate when convenient. Feeds `kalshi_sports_scout`.
+- Transient **uvicorn ASGI traceback burst at 15:31:11Z** (isolated to startup); service healthy for ~75 min since. Likely startup-race; not fatal.
+
 ---
 
 ## 2026-06-02 ~01:40 UTC — N+2 Phase 3 (Sessions A + B) + Stage-1 paper-dashboard DEPLOYED to prod — first whole-deploy since 2026-05-31 redeploy3
