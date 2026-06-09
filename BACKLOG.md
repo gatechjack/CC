@@ -553,6 +553,33 @@ Filed 2026-04-30. Long-term ticket-flow design.
 
 Filed 2026-05-01. Audit-row cleanup.
 
+## P2 — Robinhood session auth dead since ~2026-05-29; PMCC/IRA/joint reading $0 (filed 2026-06-08 via Thread B investigation)
+
+**Symptom:** Robinhood session pickle returning 401 Unauthorized for
+PMCC, IRA, and joint account reads. Affected division dashboards
+show $0 equity — masking actual positions and P&L. Discovered
+2026-06-08 during Thread B investigation of the original "Robinhood
+pickle reset" concern. Was NOT a system restart — service has been
+stable since 2026-06-02 deploy (MainPID 2043009, NRestarts=0).
+
+**Impact:**
+- PMCC / IRA / joint dashboards have been blind for ~10 days.
+- No capital at risk (paper-mode exec; reads-only side affected).
+- Dashboard observability for those divisions cannot be trusted
+  until session re-auth.
+
+**Fix:** operator interactive re-login to regenerate Robinhood
+session pickle. Requires MFA — cannot be agent-resolved. ~5 min
+operator action.
+
+**Reference:** Thread B investigation commit a78eff7. See also
+"## P3 — Fidelity startup login flakiness on `trading-corp` restart"
+elsewhere in this file (related class of broker session-cache
+fragility).
+
+**Not gating:** any active development. PMCC / IRA / joint are
+read-only divisions in paper-mode.
+
 ## P3 — Robinhood IRA drilldown: not a LEAP / PMCC strategy
 
 Filed 2026-05-03. UX clarification.
