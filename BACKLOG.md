@@ -438,9 +438,43 @@ Filed 2026-05-30. 2 untracked low-severity items from Stage-1 readiness audit.
 Filed 2026-05-29. Stage-1 N+1 follow-up. Partial coverage post-merge; complete
 the plumbing across remaining risk.evaluate call sites.
 
-## P3 — Fidelity startup login flakiness on `trading-corp` restart
+## P3 — Fidelity Playwright Firefox binary missing → both Fidelity divisions paper-fallback (sharpened from prior "login flakiness" P3 — finding 2026-06-09 via P2 restart)
 
-ANOMALY, RECURRING. Investigate root cause; current workaround is retry.
+**Symptom:** Both `fidelity_joint` and `fidelity_401k` divisions fail
+broker connect at trading-corp startup; fall back to paper mode.
+Their dashboards show $0 equity.
+
+**Concrete cause (verified 2026-06-09 14:49:03 UTC via post-restart
+journal):**
+- `BrowserType.launch: ENOENT … ms-playwright/firefox-1511/firefox/lock`
+- Playwright Firefox binary missing from cache at expected path.
+- Triggers `broker_fallback_to_paper` for both Fidelity divisions.
+
+**Sequence:**
+1. `fidelity_joint` connect fails first (browser binary missing) →
+   paper fallback.
+2. `fidelity_401k` sees "Fidelity shared session bootstrap previously
+   failed" → paper fallback.
+
+**Fix:**
+- `playwright install firefox` on prod VM (likely as azureuser).
+- Verify binary lands at expected cache path.
+- Restart trading-corp; expect Fidelity divisions to connect cleanly.
+
+**Watch concern:** the binary may have been wiped by an unattended-
+upgrades cleanup, OS pruning, or a previous deploy. Confirm root cause
+of the missing binary BEFORE just re-installing — re-installing
+without understanding the deletion mechanism risks repeat.
+
+**Priority: P3.** Read-only equity monitoring, no real-money execution
+surface today. Same priority class as the prior Robinhood P2 session
+auth (which has now been RESOLVED 2026-06-09).
+
+**Not gating:** Bitunix observation window, Polymarket development.
+
+**Supersedes:** prior "Fidelity startup login flakiness on trading-corp
+restart" P3 entry (which was vague; this finding sharpens to concrete
+cause).
 
 ## P3 — Wider db_url plumbing for cross-process halt persistence
 
