@@ -79,16 +79,30 @@ exist**. _(Fully resolves eval §6 q1.)_
 
 ## 3. Read probes (Phase 2 cont.)
 
-_Pending operator observations._
+Four read probes run across the connected accounts. **Headline: read scope ≫ write scope** — the MCP
+token reads *every* account on the login; only the Agentic sub-account can be traded. (This asymmetry is
+material enough to be filed as a standalone eval finding — see the memory entry
+`project_robinhood_agentic_evaluated_deferred.md`, "Read-vs-write scope asymmetry.")
 
-- Positions (expect empty initially): _pending._
-- Supported order types (market/limit/stop/stop-limit/…): _pending (Phase 3 preview will reveal)._
-- `get_equity_quotes` for SPY (basic read): _pending._
-- Option chain for SPY (likely fails — equities-only beta): _pending._
-- Cross-account recent transactions (tests read-across-accounts): _pending._
-- **Response latency:** _pending._
-- **Live web quote vs. cached data:** _pending._
-- **Errors / rate limits hit:** _pending._
+- **`get_accounts` — cross-account read confirmed.** **7 accounts** visible: main, IRA, managed, joint,
+  Mortgage cash, Coinbase cash, Agentic. **Only Agentic has `agentic_allowed=true`.** Read scope ≠ write
+  scope — the token sees all 7, can trade only 1.
+- **`get_portfolio` — isolated sandbox is live.** Agentic funded at **$75 cash, all uninvested.** Confirms
+  the funded agentic account exists and is currently empty (no positions yet).
+- **`get_equity_quotes` — single-symbol read works, sub-second perceived latency.** Returns **both** the
+  regular-session close **and** the after-hours print; **the caller must select most-recent-by-timestamp.**
+  _Adapter implication:_ any downstream consumer must replicate the timestamp-comparison logic or risk
+  reporting a **stale regular-session price during extended hours.** (Also evidence the quote is **live**,
+  carrying the current extended-hours print — not a cached regular-session value.)
+- **`get_equity_orders` (across all 7 accounts) — fully successful.** Each account returned its history.
+  **Three accounts (main, IRA, managed) hit context-size limits and required spillover.** **Pagination cap
+  is 200 orders/account.** Confirms read **truly spans every account.**
+
+### Still pending
+- Option chain for SPY (expected to fail — equities-only): _not yet probed._
+- Explicit positions-empty read beyond `get_portfolio`: _covered indirectly (all uninvested)._
+- Rate limits: none hit — only context-size spillover on the 3 high-history accounts (a client/context
+  limit, not an observed server rate limit).
 
 ---
 
