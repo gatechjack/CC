@@ -93,6 +93,30 @@ observation window must be observed before any flip decision is meaningful. The 
 
 **Priority: P1.** Structural blocker for any Bitunix live-flip decision.
 
+## P3 — Bitunix HTF volatility config has orphaned `high` threshold after Option 1a wiring fix (filed 2026-06-08)
+
+After the P1 fix (commits `ab0d251` source + `ea92d4c` tests), the
+volatility classifier final tier boundary reads `tier_thresholds["extreme"]`
+(5.0%). The `high: 3.0%` config value becomes dead — present in config but
+unused by the classifier. Same drift class as the original P1 bug, just
+relocated by virtue of the 4-tier-vs-4-threshold structural redundancy.
+
+**Resolution options (each defensible):**
+1. Remove `high` from config schema + defaults (Option 1b from fix-session
+   Phase A analysis). Cleanest end-state, hot-reload-sensitive.
+2. Add a 5th tier (e.g., Elevated for 3-5%) so both thresholds stay live
+   (Option 2 from fix-session). Requires backtest, real strategy-design
+   decision.
+3. Leave as-is with explicit documentation that `high` is vestigial (the
+   `_atr_pct_to_tier` docstring already names it as such as of `ab0d251`).
+
+**Priority: P3.** Not gating. The classifier behaves correctly per operator
+intent (`extreme: 5.0%` knob is live); cleanup is honesty + schema hygiene.
+
+**Reference:** P1 fix commits `ab0d251` (source) + `ea92d4c` (tests);
+original Phase A analysis at fix-session worktree
+`bitunix-htf-vol-classifier-fix-2026-06-08`.
+
 ## Open items influencing the live-flip decision
 
 These are operationally relevant but NOT formal flip-gates. Operator decides
