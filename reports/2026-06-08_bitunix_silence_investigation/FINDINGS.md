@@ -329,7 +329,41 @@ Operator decides whether to file (candidate BACKLOG items; not actioned this ses
 `probe_b3.sh`: robinhood journal lines (72h, bounded) + pickle file mtime/size (printed LAST so
 it survives tail-truncation).
 
-**STATUS: B2 partial (truncated; B4 satisfied via B1). Re-running B3 (pickle) isolated. Awaiting operator run.**
+### Round 2 — call B3 results (probe_b3.sh, 2026-06-09T00:3xZ) — pickle UNHEALTHY (auth expired, not rotated)
+
+**B3b pickle files:**
+- Active: `/home/azureuser/.tokens/robinhood.pickle` — 1396 b, **mtime 2026-05-29 01:59:04 UTC**
+  (~11 days old; robin_stocks default token path). **NOT recently rotated.**
+- Stale leftover: `/home/azureuser/robinhood.pickle` — **0 b**, 2026-04-30 (empty; ignore).
+- None in `data/`.
+
+**B3a robinhood journal (72h):** burst of **`401 Client Error: Unauthorized`** across ALL RH
+endpoints (positions, options/positions, portfolios, nummus/holdings) for 3 accounts
+(461391328 / 934310442 / 116637293063) at **2026-06-09 00:09:31–00:09:39 UTC** (~24 min pre-B1).
+
+**Interpretation — reframes the "pickle reset":** pickle did NOT rotate (stale since 05-29);
+RH returns 401 across the board → session token **expired/invalid, re-auth FAILING** (not
+silently rotating). Neither branch (a) restart nor (b) clean rotation — third state: **RH auth
+broken.** The "reset" the operator saw is most likely RH divisions falling back to paper ($0
+equity) on the dashboard via `broker_fallback_to_paper`, triggered by the 401 read failures.
+
+**Severity:** prod registers robinhood as **paper-exec** (deploy_log 2026-06-02) → **no
+live-capital risk**; impact is PMCC/IRA/joint visibility loss (reads fail → $0 fallback). NOT a
+hard-stop. Unrelated to the Bitunix silence (Thread A).
+
+**Unknown (not probed — scope):** when the 401s began / whether continuous since the 05-29 expiry
+or a recent flip. tail-12 showed only the 00:09 burst.
+
+## THREAD B — VERDICT (COMPLETE)
+- **Unplanned restart?** NO. NRestarts=0, MainPID=2043009, ExecMainStart 2026-06-02 01:39:50 UTC,
+  ~7d continuous uptime, healthz=200 (B1).
+- **Robinhood pickle healthy?** NO. Token stale since 2026-05-29; RH API 401 as of 06-09 00:09 →
+  auth expired/failing, not rotating. Likely source of the operator's "pickle reset." Paper-exec
+  → no live-capital risk.
+- **Incidental (out of scope, B2):** apify 403 / odds_api 401 (key in plaintext logs) / polymarket
+  timeouts — external-feed WARNINGs, noted not investigated.
+
+**STATUS: THREAD B COMPLETE. Stop-and-report. Open decisions: (1) RH-auth finding disposition, (2) optional date-the-401s follow-up, (3) Thread C proceed/defer/closeout.**
 
 ## Thread C — Reconciler mismatch (c8f25d17, ac5f9c59, c2eb7cda)
 Deferred unless A and B surface nothing blocking.
