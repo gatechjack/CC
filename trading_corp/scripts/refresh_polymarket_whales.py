@@ -10,11 +10,18 @@ Pipeline:
   3. For each candidate: fetch `/activity?user=<wallet>&limit=N` (~last
      90d of trades).
   4. Batch-fetch market resolutions for every unique condition_id.
-  5. Compute time-weighted Wilson LCB × ROI × category bonus per whale.
+  5. Build the REDEEM-grounded `WhaleAuditReport` per candidate (read through
+     the audit cache) and score it with `score_whale_from_audit`: decision-unit
+     Wilson LCB × realized-ROI edge × category bonus, gated by an inflation
+     ratio. This is option (c) Phase 1 — replaces the legacy held-to-resolution
+     `compute_polymarket_stats` + `score_polymarket_whale` path (kept importable
+     for `seed_*_deep` + the dry-run naive-reference column).
   6. Selection Rule B: top-N per category (default 2) + top-N global
-     (default 2), deduped → 12 total selected.
+     (default 2), deduped → ~12 total selected.
   7. Write list of dicts (wallet + user_name + best_category + score
-     breakdown) to `agent_state(polymarket_copy_trader.selected_whales)`.
+     breakdown + realized metrics) to
+     `agent_state(polymarket_copy_trader.selected_whales)`. Manually-pinned
+     whales are merged in so dashboard promotions survive (UNCHANGED).
 
 Cost: $0 — all endpoints are free public.
 
@@ -26,10 +33,15 @@ Options:
     --top-per-category N    Picks per category for Rule B (default 2)
     --top-global N          Top-N from global to fill (default 2)
     --candidates N          Top-N to enrich per category (default 20)
-    --min-resolved N        Min resolved trades for inclusion (default 10)
-    --half-life-days D      Recency decay half-life (default 30)
+    --min-resolved N        Min resolved DECISIONS for inclusion (default 10)
+    --inflation-threshold R Exclude whales with pnl_inflation_ratio > R
+                            (default 0.5; strictly-greater excludes)
+    --half-life-days D      LEGACY — only affects the dry-run naive reference
+                            column; the realized-basis scorer does NOT
+                            time-weight (warns if passed)
     --activity-limit N      Trades to fetch per whale (default 200)
-    --dry-run               Print picks; don't write to agent_state
+    --dry-run               Print picks + naive-vs-realized cause attribution +
+                            inflation-gated-out list; write NOTHING (read-only)
     --json                  JSON output instead of human table
 """
 from __future__ import annotations
@@ -42,17 +54,63 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from trading_corp.agents.research.polymarket_whale_audit_cache import (
+    read_audit, write_audit,
+)
+from trading_corp.data.kalshi_whale_stats import _edge_factor, wilson_lcb_95
 from trading_corp.data.polymarket_data_api_client import (
     POLYMARKET_LEADERBOARD_CATEGORIES, PolymarketDataAPIClient,
 )
+from trading_corp.data.polymarket_whale_audit import build_audit_report
 from trading_corp.data.polymarket_whale_stats import (
-    DEFAULT_HALF_LIFE_DAYS, DEFAULT_MIN_RESOLVED,
-    compute_polymarket_stats, score_polymarket_whale,
+    DEFAULT_HALF_LIFE_DAYS, DEFAULT_INFLATION_RATIO_THRESHOLD,
+    DEFAULT_MIN_RESOLVED, compute_polymarket_stats, score_polymarket_whale,
+    score_whale_from_audit,
 )
 from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
 
 log = logging.getLogger(__name__)
+
+
+def _select_rule_b(
+    scored_per_category: dict[str, list[Any]],
+    scored_global: list[Any],
+    *,
+    top_per_category: int,
+    top_global: int,
+) -> dict[str, tuple[Any, ...]]:
+    """Rule B: top-N per category + top-N global, deduped by wallet (higher
+    composite wins). Returns {wallet: (entry, scored, source_cat)}.
+
+    Extracted verbatim from the inline selection so the dry-run can run it on
+    both the realized scores (the written roster) and the legacy naive scores
+    (the comparison reference) with identical logic.
+    """
+    selected: dict[str, tuple[Any, ...]] = {}
+    for cat, scored_list in scored_per_category.items():
+        valid = [t for t in scored_list if not t[2].excluded]
+        valid.sort(key=lambda t: t[2].composite_score, reverse=True)
+        for wallet, entry, sw in valid[:top_per_category]:
+            if wallet in selected:
+                # Keep the higher-scoring entry
+                if sw.composite_score > selected[wallet][1].composite_score:
+                    selected[wallet] = (entry, sw, cat)
+            else:
+                selected[wallet] = (entry, sw, cat)
+
+    # Add top-N global. Skip whales already selected (no double-counting).
+    valid_global = [t for t in scored_global if not t[2].excluded]
+    valid_global.sort(key=lambda t: t[2].composite_score, reverse=True)
+    added_global = 0
+    for wallet, entry, sw in valid_global:
+        if wallet in selected:
+            continue
+        selected[wallet] = (entry, sw, "GLOBAL")
+        added_global += 1
+        if added_global >= top_global:
+            break
+    return selected
 
 
 async def refresh_polymarket_selection(
@@ -62,13 +120,22 @@ async def refresh_polymarket_selection(
     top_global: int = 2,
     candidates_per_category: int = 20,
     min_resolved: int = DEFAULT_MIN_RESOLVED,
+    inflation_threshold: float = DEFAULT_INFLATION_RATIO_THRESHOLD,
     half_life_days: float = DEFAULT_HALF_LIFE_DAYS,
     activity_limit: int = 200,
     categories: tuple[str, ...] = POLYMARKET_LEADERBOARD_CATEGORIES,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run the full pipeline. Returns a summary dict; writes to agent_state
-    unless `dry_run=True`."""
+    unless `dry_run=True`.
+
+    Selection uses the REDEEM-grounded realized basis (`build_audit_report` +
+    `score_whale_from_audit`). In `dry_run` the legacy held-to-resolution
+    pipeline is ALSO run, purely to attribute each roster mover to its cause
+    (time-weighting removal vs realized-basis inputs) — see
+    `summary["dry_run_comparison"]`. `dry_run` writes nothing to the DB (not
+    even the audit cache), so it is strictly read-only.
+    """
     started = datetime.now(timezone.utc)
     summary: dict[str, Any] = {
         "started_at": started.isoformat(),
@@ -77,9 +144,11 @@ async def refresh_polymarket_selection(
             "top_global": top_global,
             "candidates_per_category": candidates_per_category,
             "min_resolved": min_resolved,
+            "inflation_threshold": inflation_threshold,
             "half_life_days": half_life_days,
             "activity_limit": activity_limit,
             "categories": list(categories),
+            "scorer": "realized_audit",  # option (c) Phase 1
         },
         "leaderboards_pulled": [],
         "selected_whales": [],
@@ -135,84 +204,132 @@ async def refresh_polymarket_selection(
         # 3. Batch-fetch resolutions for every unique condition_id.
         resolutions = await client.fetch_market_resolutions(list(all_condition_ids))
 
-        # 4. Compute WhaleStats + score per (whale, target_category).
-        # We score each whale once GLOBALLY (no category bonus) and once
-        # per category they appeared on. Rule B then picks top-N per
-        # category + top-N global, deduped by wallet (best score wins).
-        scored_per_category: dict[str, list[Any]] = {}  # cat → [ScoredWhale]
+        # 4. Build the REDEEM-grounded audit report + score per whale on the
+        # realized basis. Score each whale once GLOBALLY (no category bonus)
+        # and once per category they appeared on; Rule B then picks top-N per
+        # category + top-N global. The audit cache (keyed on wallet +
+        # activity_max_ts) is read through; write-back happens only on a real
+        # (non-dry-run) refresh so dry-run stays read-only against the DB.
+        scored_per_category: dict[str, list[Any]] = {}  # cat -> [(wallet, entry, ScoredWhale)]
         scored_global: list[Any] = []
-        per_whale_best: dict[str, Any] = {}  # wallet → ScoredWhale with category context
+        report_by_wallet: dict[str, Any] = {}
+        # Legacy (naive held-to-resolution) pipelines + per-whale score triple,
+        # populated only in dry-run for the cause-attribution diff.
+        scored_per_category_naive: dict[str, list[Any]] = {}
+        scored_global_naive: list[Any] = []
+        comparison_by_wallet: dict[str, dict[str, Any]] = {}
 
         for wallet, rec in candidates.items():
             entry = rec["entry"]
             activity = activity_by_wallet.get(wallet, [])
-            stats, _outcomes = compute_polymarket_stats(
-                leaderboard_entry=entry, activity_rows=activity,
-                market_resolutions=resolutions, half_life_days=half_life_days,
+            activity_max_ts = max(
+                (a.timestamp for a in activity if a.timestamp > 0), default=0,
             )
 
-            # Global score (no category bonus)
-            scored_no_cat = score_polymarket_whale(
-                stats, target_category=None, min_resolved=min_resolved,
+            report = read_audit(wallet, activity_max_ts, db_url=db_url) if db_url else None
+            if report is None:
+                report = build_audit_report(
+                    leaderboard_entry=entry, activity_rows=activity,
+                    resolutions=resolutions, proxy_wallet=wallet,
+                )
+                if not dry_run and db_url:
+                    write_audit(report, db_url=db_url)
+            report_by_wallet[wallet] = report
+
+            # Global realized score (no category bonus)
+            scored_no_cat = score_whale_from_audit(
+                report, target_category=None, min_resolved=min_resolved,
+                inflation_threshold=inflation_threshold,
             )
             scored_global.append((wallet, entry, scored_no_cat))
 
-            # Per-category scores for the categories this whale appeared on
+            # Per-category realized scores for the categories this whale appeared on
             for cat in rec["categories_seen"]:
                 if cat == "GLOBAL":
                     continue
-                # We can't easily set stats.top_categories to fake a match — but
-                # the category bonus uses stats.top_categories. Set it.
-                stats_cat = stats
-                object.__setattr__(stats_cat, "top_categories", (cat,))
-                scored = score_polymarket_whale(
-                    stats_cat, target_category=cat, min_resolved=min_resolved,
+                scored = score_whale_from_audit(
+                    report, target_category=cat, whale_categories=(cat,),
+                    min_resolved=min_resolved, inflation_threshold=inflation_threshold,
                 )
                 scored_per_category.setdefault(cat, []).append((wallet, entry, scored))
-                if not scored.excluded and (
-                    wallet not in per_whale_best
-                    or scored.composite_score > per_whale_best[wallet][2].composite_score
-                ):
-                    per_whale_best[wallet] = (wallet, entry, scored)
 
-        # 5. Rule B: top-N per category + top-N global, deduped by wallet.
-        selected: dict[str, tuple[Any, ...]] = {}  # wallet → (entry, scored, source_cat)
-        for cat, scored_list in scored_per_category.items():
-            valid = [t for t in scored_list if not t[2].excluded]
-            valid.sort(key=lambda t: t[2].composite_score, reverse=True)
-            for wallet, entry, sw in valid[:top_per_category]:
-                if wallet in selected:
-                    # Keep the higher-scoring entry
-                    if sw.composite_score > selected[wallet][1].composite_score:
-                        selected[wallet] = (entry, sw, cat)
-                else:
-                    selected[wallet] = (entry, sw, cat)
+            # Dry-run only: compute the legacy naive references so each mover
+            # can be attributed to time-weighting removal vs realized inputs.
+            if dry_run:
+                stats, _outcomes = compute_polymarket_stats(
+                    leaderboard_entry=entry, activity_rows=activity,
+                    market_resolutions=resolutions, half_life_days=half_life_days,
+                )
+                # naive, time-weighted (today's production), no category bonus
+                naive_tw = score_polymarket_whale(
+                    stats, target_category=None, min_resolved=min_resolved,
+                )
+                # plain Wilson on the SAME naive inputs — the bridge column that
+                # isolates the time-weighting effect (naive_tw -> naive_plain).
+                s_naive_plain = (
+                    wilson_lcb_95(stats.wins, stats.closed_positions_count)
+                    * _edge_factor(stats.avg_pnl_per_contract)
+                )
+                comparison_by_wallet[wallet] = {
+                    "wallet": wallet,
+                    "user_name": entry.user_name,
+                    "s_naive_tw": round(naive_tw.composite_score, 4),
+                    "s_naive_plain": round(s_naive_plain, 4),
+                    "s_realized": round(scored_no_cat.composite_score, 4),
+                    "pnl_inflation_ratio": report.realized_pnl.pnl_inflation_ratio,
+                    "realized_pnl_usdc": report.realized_pnl.realized_pnl_usdc,
+                    "excluded_realized": scored_no_cat.excluded,
+                    "exclusion_reason": scored_no_cat.exclusion_reason,
+                }
+                scored_global_naive.append((wallet, entry, naive_tw))
+                for cat in rec["categories_seen"]:
+                    if cat == "GLOBAL":
+                        continue
+                    stats_cat = stats
+                    object.__setattr__(stats_cat, "top_categories", (cat,))
+                    scored_per_category_naive.setdefault(cat, []).append(
+                        (wallet, entry, score_polymarket_whale(
+                            stats_cat, target_category=cat, min_resolved=min_resolved,
+                        )),
+                    )
 
-        # Add top-N global. Skip whales already selected (no double-counting).
-        valid_global = [t for t in scored_global if not t[2].excluded]
-        valid_global.sort(key=lambda t: t[2].composite_score, reverse=True)
-        added_global = 0
-        for wallet, entry, sw in valid_global:
-            if wallet in selected:
-                continue
-            selected[wallet] = (entry, sw, "GLOBAL")
-            added_global += 1
-            if added_global >= top_global:
-                break
+        # 5. Rule B selection (realized scores → the roster we write).
+        selected = _select_rule_b(
+            scored_per_category, scored_global,
+            top_per_category=top_per_category, top_global=top_global,
+        )
 
-        # 6. Materialize selection records for agent_state.
+        # 6. Materialize selection records for agent_state (realized metrics
+        # are ADDITIVE — the consumed keys wallet/user_name/category/rank/
+        # composite_score are preserved).
         finalists = sorted(
             selected.items(), key=lambda kv: kv[1][1].composite_score, reverse=True,
         )
         selected_records: list[dict[str, Any]] = []
         details: list[dict[str, Any]] = []
         for rank_i, (wallet, (entry, sw, source_cat)) in enumerate(finalists):
+            report = report_by_wallet.get(wallet)
+            rp = report.realized_pnl if report else None
+            buy_usdc = report.total_buy_usdc_resolved if report else 0.0
+            realized = rp.realized_pnl_usdc if rp else 0.0
+            realized_roi = (realized / buy_usdc) if buy_usdc > 0 else 0.0
+            n_res = report.n_resolved_decisions if report else 0
+            n_win = report.n_winning_decisions if report else 0
+            dec_wr = (n_win / n_res) if n_res else 0.0
+            inflation = rp.pnl_inflation_ratio if rp else 0.0
             selected_records.append({
                 "wallet": wallet,
                 "user_name": entry.user_name,
                 "category": source_cat,
                 "rank": rank_i + 1,
                 "composite_score": round(sw.composite_score, 4),
+                # additive realized metrics (option (c) Phase 1)
+                "realized_pnl_usdc": round(realized, 2),
+                "realized_roi": round(realized_roi, 4),
+                "pnl_inflation_ratio": round(inflation, 4),
+                "n_resolved_decisions": n_res,
+                "n_winning_decisions": n_win,
+                "decision_win_rate": round(dec_wr, 4),
             })
             details.append({
                 "rank": rank_i + 1,
@@ -223,12 +340,13 @@ async def refresh_polymarket_selection(
                 "wilson_lcb": round(sw.wilson_lcb, 4),
                 "edge_factor": round(sw.edge_factor, 3),
                 "category_bonus": round(sw.category_bonus, 2),
+                "realized_roi": round(realized_roi, 4),
+                "pnl_inflation_ratio": round(inflation, 3),
+                "decision_win_rate": round(dec_wr, 3),
+                "n_resolved_decisions": n_res,
+                "realized_pnl_usdc": round(realized, 0),
                 "lifetime_vol_usdc": round(entry.vol, 0),
                 "lifetime_pnl_usdc": round(entry.pnl, 0),
-                "closed_positions_count": sw.stats.closed_positions_count,
-                "wins": sw.stats.wins,
-                "win_rate": round(sw.stats.win_rate, 3),
-                "avg_pnl_per_contract_usdc": round(sw.stats.avg_pnl_per_contract, 4),
             })
 
         summary["selected_whales"] = selected_records
@@ -244,6 +362,71 @@ async def refresh_polymarket_selection(
             "resolutions_fetched": len(resolutions),
             "selected": len(finalists),
         }
+
+        # Inflation-gated-out list (D4) — whales excluded specifically by the
+        # inflation gate, surfaced so the operator can calibrate the threshold.
+        # Computed always (cheap); written into selection_metadata.
+        gated_out: list[dict[str, Any]] = []
+        for wallet, rec in candidates.items():
+            report = report_by_wallet.get(wallet)
+            if not report:
+                continue
+            ratio = report.realized_pnl.pnl_inflation_ratio
+            if ratio > inflation_threshold:
+                gated_out.append({
+                    "wallet": wallet,
+                    "user_name": rec["entry"].user_name,
+                    "pnl_inflation_ratio": round(ratio, 4),
+                    "realized_pnl_usdc": round(report.realized_pnl.realized_pnl_usdc, 2),
+                    "n_resolved_decisions": report.n_resolved_decisions,
+                })
+        gated_out.sort(key=lambda g: g["pnl_inflation_ratio"], reverse=True)
+        summary["gated_out_inflation"] = gated_out
+
+        # Dry-run cause attribution: diff the realized roster vs the legacy
+        # naive roster and split each mover's score change into the
+        # time-weighting component and the realized-basis component.
+        if dry_run:
+            selected_naive = _select_rule_b(
+                scored_per_category_naive, scored_global_naive,
+                top_per_category=top_per_category, top_global=top_global,
+            )
+            new_rank = {w: i + 1 for i, (w, _v) in enumerate(finalists)}
+            naive_finalists = sorted(
+                selected_naive.items(),
+                key=lambda kv: kv[1][1].composite_score, reverse=True,
+            )
+            naive_rank = {w: i + 1 for i, (w, _v) in enumerate(naive_finalists)}
+            new_w, naive_w = set(new_rank), set(naive_rank)
+            movers: list[dict[str, Any]] = []
+            for wallet in sorted(new_w | naive_w):
+                nr, oldr = new_rank.get(wallet), naive_rank.get(wallet)
+                if wallet in new_w and wallet in naive_w and nr == oldr:
+                    continue  # unchanged — not a mover
+                comp = comparison_by_wallet.get(wallet, {})
+                s_tw = comp.get("s_naive_tw") or 0.0
+                s_plain = comp.get("s_naive_plain") or 0.0
+                s_real = comp.get("s_realized") or 0.0
+                movers.append({
+                    "wallet": wallet,
+                    "user_name": comp.get("user_name", ""),
+                    "naive_rank": oldr,
+                    "new_rank": nr,
+                    "s_naive_tw": comp.get("s_naive_tw"),
+                    "s_naive_plain": comp.get("s_naive_plain"),
+                    "s_realized": comp.get("s_realized"),
+                    "delta_timeweight": round(s_plain - s_tw, 4),
+                    "delta_realized": round(s_real - s_plain, 4),
+                    "excluded_realized": comp.get("excluded_realized"),
+                    "exclusion_reason": comp.get("exclusion_reason"),
+                })
+            summary["dry_run_comparison"] = {
+                "naive_roster_size": len(naive_w),
+                "new_roster_size": len(new_w),
+                "added": sorted(new_w - naive_w),
+                "dropped": sorted(naive_w - new_w),
+                "movers": movers,
+            }
 
     summary["finished_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -295,7 +478,7 @@ async def refresh_polymarket_selection(
 
 
 def _print_human(summary: dict[str, Any]) -> None:
-    print(f"=== Polymarket Whale Selection — {summary['started_at']} ===")
+    print(f"=== Polymarket Whale Selection (realized basis) — {summary['started_at']} ===")
     print()
     print("Leaderboards pulled:")
     for lb in summary["leaderboards_pulled"]:
@@ -313,18 +496,70 @@ def _print_human(summary: dict[str, Any]) -> None:
     print()
     print(
         f"{'#':>3} | {'Wallet':<14} | {'User':<22} | {'Source':<10} | "
-        f"{'Score':>7} | {'Wilson':>7} | {'PnL$/c':>8} | {'WR':>5} | {'N':>4} | "
-        f"{'LifeVol$':>10} | {'LifePnL$':>10}"
+        f"{'Score':>7} | {'Wilson':>7} | {'ROI':>7} | {'InflR':>6} | "
+        f"{'DecWR':>5} | {'Ndec':>4} | {'RealPnL$':>11} | {'LifePnL$':>10}"
     )
-    print("-" * 130)
+    print("-" * 140)
     for d in summary["selection_details"]:
         print(
             f"{d['rank']:>3} | {d['wallet'][:14]} | {d['user_name'][:22]:<22} | "
             f"{d['source_category']:<10} | {d['composite_score']:>7.4f} | "
-            f"{d['wilson_lcb']:>7.4f} | "
-            f"{d['avg_pnl_per_contract_usdc']:>+8.4f} | "
-            f"{d['win_rate']:>5.2f} | {d['closed_positions_count']:>4} | "
-            f"${d['lifetime_vol_usdc']:>9,.0f} | ${d['lifetime_pnl_usdc']:>9,.0f}"
+            f"{d['wilson_lcb']:>7.4f} | {d['realized_roi']:>+7.3f} | "
+            f"{d['pnl_inflation_ratio']:>6.3f} | {d['decision_win_rate']:>5.2f} | "
+            f"{d['n_resolved_decisions']:>4} | "
+            f"${d['realized_pnl_usdc']:>10,.0f} | ${d['lifetime_pnl_usdc']:>9,.0f}"
+        )
+    print()
+
+
+def _print_gated_out(summary: dict[str, Any]) -> None:
+    gated = summary.get("gated_out_inflation", [])
+    thr = summary.get("params", {}).get("inflation_threshold")
+    print(f"=== Gated out by inflation ratio > {thr} ({len(gated)} whales) ===")
+    if not gated:
+        print("  (none)")
+        print()
+        return
+    print(f"{'Wallet':<14} | {'User':<22} | {'InflR':>6} | {'RealPnL$':>12} | {'Ndec':>4}")
+    print("-" * 70)
+    for g in gated:
+        print(
+            f"{g['wallet'][:14]} | {g['user_name'][:22]:<22} | "
+            f"{g['pnl_inflation_ratio']:>6.3f} | ${g['realized_pnl_usdc']:>11,.0f} | "
+            f"{g['n_resolved_decisions']:>4}"
+        )
+    print()
+
+
+def _print_dry_run_diff(summary: dict[str, Any]) -> None:
+    cmp = summary.get("dry_run_comparison")
+    if not cmp:
+        return
+    print(
+        f"=== Dry-run diff vs naive roster — naive {cmp['naive_roster_size']} "
+        f"vs realized {cmp['new_roster_size']} ==="
+    )
+    print(f"  added (in realized, not naive):   {cmp['added'] or '(none)'}")
+    print(f"  dropped (in naive, not realized): {cmp['dropped'] or '(none)'}")
+    print()
+    print("Movers — score change attributed to cause:")
+    print("  delta_timeweight = naive_plain - naive_tw  (effect of dropping time-weighting)")
+    print("  delta_realized   = realized   - naive_plain (effect of realized-basis inputs)")
+    print()
+    print(
+        f"{'Wallet':<14} | {'User':<18} | {'oldR':>4} | {'newR':>4} | "
+        f"{'TW':>7} | {'Plain':>7} | {'Real':>7} | {'dTW':>7} | {'dReal':>7} | gate"
+    )
+    print("-" * 110)
+    for m in cmp["movers"]:
+        gate = m.get("exclusion_reason") or ("" if not m.get("excluded_realized") else "excluded")
+        print(
+            f"{m['wallet'][:14]} | {(m['user_name'] or '')[:18]:<18} | "
+            f"{str(m['naive_rank'] or '-'):>4} | {str(m['new_rank'] or '-'):>4} | "
+            f"{(m['s_naive_tw'] if m['s_naive_tw'] is not None else 0.0):>7.4f} | "
+            f"{(m['s_naive_plain'] if m['s_naive_plain'] is not None else 0.0):>7.4f} | "
+            f"{(m['s_realized'] if m['s_realized'] is not None else 0.0):>7.4f} | "
+            f"{m['delta_timeweight']:>+7.4f} | {m['delta_realized']:>+7.4f} | {gate}"
         )
     print()
 
@@ -335,7 +570,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--top-global", type=int, default=2)
     parser.add_argument("--candidates", type=int, default=20)
     parser.add_argument("--min-resolved", type=int, default=DEFAULT_MIN_RESOLVED)
-    parser.add_argument("--half-life-days", type=float, default=DEFAULT_HALF_LIFE_DAYS)
+    parser.add_argument(
+        "--inflation-threshold", type=float, default=DEFAULT_INFLATION_RATIO_THRESHOLD,
+    )
+    # Sentinel default None so we can WARN when the legacy flag is explicitly
+    # passed rather than silently no-op'ing it.
+    parser.add_argument("--half-life-days", type=float, default=None)
     parser.add_argument("--activity-limit", type=int, default=200)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -344,13 +584,25 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     secrets = load_secrets()
 
+    half_life = args.half_life_days
+    if half_life is not None:
+        log.warning(
+            "--half-life-days=%s does NOT affect the written roster: the "
+            "realized-basis selection scorer is not time-weighted (it only "
+            "changes the dry-run naive reference column). Time-weighting is "
+            "deferred to Phase 3.", half_life,
+        )
+    else:
+        half_life = DEFAULT_HALF_LIFE_DAYS
+
     summary = asyncio.run(refresh_polymarket_selection(
         db_url=secrets.db_url,
         top_per_category=args.top_per_category,
         top_global=args.top_global,
         candidates_per_category=args.candidates,
         min_resolved=args.min_resolved,
-        half_life_days=args.half_life_days,
+        inflation_threshold=args.inflation_threshold,
+        half_life_days=half_life,
         activity_limit=args.activity_limit,
         dry_run=args.dry_run,
     ))
@@ -359,8 +611,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, indent=2, default=str))
     else:
         _print_human(summary)
+        _print_gated_out(summary)
         if args.dry_run:
-            print("(dry-run — NOT written to agent_state)")
+            _print_dry_run_diff(summary)
+            print("(dry-run — NOT written to agent_state; DB read-only)")
         else:
             print("Written to agent_state(polymarket_copy_trader.selected_whales).")
     return 0

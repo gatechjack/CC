@@ -1,0 +1,237 @@
+"""Tests for the realized-basis copy-roster refresh (option (c) Phase 1).
+
+Network-free: a fake PolymarketDataAPIClient (async context manager) serves
+canned leaderboard / activity / resolution fixtures; a temp sqlite DB backs
+the pinned-merge + audit-cache paths.
+
+Load-bearing assertions:
+  - the REDEEM-grounded realized compute drives selection, and realized
+    metrics ride along on each `selected_whales` record (additive);
+  - the **pinned-whales merge survives unchanged** — a dashboard-pinned wallet
+    that the algorithm did NOT select is still present afterward as
+    `source="pinned_promotion"` (the hard-stop invariant);
+  - the inflation gate drops a whale the naive scorer WOULD have kept, and it
+    shows up in the `gated_out_inflation` list with its ratio (D4);
+  - `--dry-run` writes NOTHING to `selected_whales` (read-only), and the
+    dry-run comparison attributes each mover to cause via the three score
+    columns (D2b).
+"""
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from trading_corp.data.polymarket_data_api_client import ActivityRow, LeaderboardEntry
+from trading_corp.persistence.db import init_db, load_agent_state, set_agent_state
+from trading_corp.scripts import refresh_polymarket_whales as refresh_mod
+from trading_corp.scripts.refresh_polymarket_whales import refresh_polymarket_selection
+
+REDEEM_SENTINEL = 999
+
+
+@pytest.fixture
+def db_url(tmp_path):
+    db_file = tmp_path / "test_refresh.db"
+    url = f"sqlite:///{db_file}"
+    init_db(url)
+    return url
+
+
+# ── fixtures builders ────────────────────────────────────────────────────
+
+
+def _act(
+    ts: int, cid: str, *, wallet: str, side: str = "BUY", oi: int = 0,
+    price: float = 0.5, size: float = 100.0, type_: str = "TRADE",
+) -> ActivityRow:
+    return ActivityRow(
+        proxy_wallet=wallet, timestamp=ts, condition_id=cid, type=type_,
+        size=size, usdc_size=size * price, transaction_hash=f"0xh{cid}{ts}",
+        price=price, asset="", side=side, outcome_index=oi,
+        title=f"market {cid}", slug=cid, event_slug="ev",
+        outcome="Yes" if oi == 0 else "No", name="whale",
+    )
+
+
+def _redeem(ts: int, cid: str, *, wallet: str, size: float) -> ActivityRow:
+    return ActivityRow(
+        proxy_wallet=wallet, timestamp=ts, condition_id=cid, type="REDEEM",
+        size=size, usdc_size=size, transaction_hash=f"0xr{cid}{ts}", price=0.0,
+        asset="", side="", outcome_index=REDEEM_SENTINEL, title="", slug=cid,
+        event_slug="ev", outcome="", name="whale",
+    )
+
+
+def _lb(wallet: str, *, rank: int, user_name: str, vol: float = 1000.0, pnl: float = 100.0) -> LeaderboardEntry:
+    return LeaderboardEntry(
+        rank=rank, proxy_wallet=wallet, user_name=user_name, x_username="",
+        verified_badge=False, vol=vol, pnl=pnl, profile_image="",
+    )
+
+
+def _resolved(winning_outcome_index: int = 0) -> dict[str, Any]:
+    return {"status": "resolved", "winning_outcome_index": winning_outcome_index}
+
+
+def _whale_a_rows() -> list[ActivityRow]:
+    """Good whale: 4 winning CLEAN holds (+$50 each) + 1 loss (−$30).
+    n_resolved=5, n_winning=4, realized +$170, inflation ~0."""
+    rows: list[ActivityRow] = []
+    ts = 1_700_000_000
+    for i in range(1, 5):
+        cid = f"cid_a{i}"
+        rows.append(_act(ts + i, cid, wallet="0xa", oi=0, price=0.5, size=100.0))
+        rows.append(_redeem(ts + i + 100, cid, wallet="0xa", size=100.0))
+    rows.append(_act(ts + 5, "cid_a5", wallet="0xa", oi=1, price=0.3, size=100.0))  # loss
+    return rows
+
+
+def _whale_b_rows() -> list[ActivityRow]:
+    """Inflated whale: 4 winning decisions each ~95% round-tripped. Naive
+    held-to-resolution PnL looks huge (+$100 each) but realized is only +$5
+    each → aggregate inflation_ratio ~0.95 → gated out."""
+    rows: list[ActivityRow] = []
+    ts = 1_700_000_000
+    for i in range(1, 5):
+        cid = f"cid_b{i}"
+        rows.append(_act(ts + i, cid, wallet="0xb", oi=0, price=0.5, size=200.0))
+        rows.append(_act(ts + i + 50, cid, wallet="0xb", oi=0, side="SELL", price=0.5, size=190.0))
+        rows.append(_redeem(ts + i + 100, cid, wallet="0xb", size=10.0))
+    return rows
+
+
+class _FakeClient:
+    def __init__(self, lb, activity, resolutions):
+        self._lb = lb
+        self._act = activity
+        self._res = resolutions
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    async def fetch_leaderboard(self, *, category=None, limit=100, offset=0):
+        rows = list(self._lb.get(category, []))
+        return rows[offset:offset + limit]
+
+    async def fetch_activity(self, wallet, *, limit=200, offset=0):
+        return list(self._act.get(wallet, []))
+
+    async def fetch_market_resolutions(self, condition_ids, chunk_size=50):
+        return {cid: self._res.get(cid, {"status": "not_found"}) for cid in condition_ids}
+
+
+def _build_client() -> _FakeClient:
+    a_entry = _lb("0xa", rank=1, user_name="GoodWhale")
+    b_entry = _lb("0xb", rank=2, user_name="InflatedWhale")
+    lb = {"Politics": [a_entry, b_entry], None: [a_entry, b_entry]}
+    activity = {"0xa": _whale_a_rows(), "0xb": _whale_b_rows()}
+    resolutions: dict[str, dict[str, Any]] = {}
+    for i in range(1, 5):
+        resolutions[f"cid_a{i}"] = _resolved(0)
+        resolutions[f"cid_b{i}"] = _resolved(0)
+    resolutions["cid_a5"] = _resolved(0)  # A bought oi=1 → loses
+    return _FakeClient(lb, activity, resolutions)
+
+
+async def _run(db_url, *, dry_run: bool) -> dict[str, Any]:
+    fake = _build_client()
+    with patch.object(refresh_mod, "PolymarketDataAPIClient", lambda: fake):
+        return await refresh_polymarket_selection(
+            db_url=db_url, categories=("Politics",), candidates_per_category=20,
+            min_resolved=3, inflation_threshold=0.5, top_per_category=2,
+            top_global=2, activity_limit=500, dry_run=dry_run,
+        )
+
+
+# ── selection on the realized basis + additive metrics ───────────────────
+
+
+async def test_realized_compute_drives_selection_with_metrics(db_url):
+    summary = await _run(db_url, dry_run=False)
+    by_wallet = {r["wallet"]: r for r in summary["selected_whales"]}
+    assert "0xa" in by_wallet  # good whale selected
+    assert "0xb" not in by_wallet  # inflated whale gated out
+    a = by_wallet["0xa"]
+    assert a["n_resolved_decisions"] == 5
+    assert a["n_winning_decisions"] == 4
+    assert a["decision_win_rate"] == pytest.approx(0.8)
+    assert a["realized_pnl_usdc"] == pytest.approx(170.0)
+    assert a["realized_roi"] == pytest.approx(170.0 / 230.0, rel=1e-3)
+    assert a["pnl_inflation_ratio"] == pytest.approx(0.0, abs=1e-6)
+    # the consumed keys are still present (additive only)
+    for k in ("wallet", "user_name", "category", "rank", "composite_score"):
+        assert k in a
+
+
+async def test_inflation_gate_lists_dropped_whale(db_url):
+    summary = await _run(db_url, dry_run=False)
+    gated = {g["wallet"]: g for g in summary["gated_out_inflation"]}
+    assert "0xb" in gated
+    assert gated["0xb"]["pnl_inflation_ratio"] > 0.5
+    assert gated["0xb"]["pnl_inflation_ratio"] == pytest.approx(0.95, rel=1e-2)
+
+
+# ── pinned-merge survival (HARD STOP invariant) ──────────────────────────
+
+
+async def test_pinned_whale_survives_refresh(db_url):
+    """A dashboard-pinned wallet the algorithm did NOT select must remain in
+    selected_whales as source='pinned_promotion' after the rebuild."""
+    set_agent_state(
+        "polymarket_copy_trader", "pinned_whales",
+        [{"wallet": "0xc", "user_name": "PinnedWhale", "category": "Politics"}],
+        db_url=db_url,
+    )
+    summary = await _run(db_url, dry_run=False)
+    assert summary["pinned_merged"] == 1
+    by_wallet = {r["wallet"]: r for r in summary["selected_whales"]}
+    assert "0xc" in by_wallet
+    pinned = by_wallet["0xc"]
+    assert pinned["source"] == "pinned_promotion"
+    assert pinned["user_name"] == "PinnedWhale"
+    assert pinned["rank"] is None
+    assert pinned["composite_score"] is None
+    # persisted to agent_state
+    loaded = load_agent_state("polymarket_copy_trader", "selected_whales", db_url=db_url)
+    assert loaded is not None
+    persisted = {r["wallet"] for r in loaded[0]}
+    assert "0xc" in persisted and "0xa" in persisted
+
+
+# ── dry-run: no write + cause attribution ────────────────────────────────
+
+
+async def test_dry_run_writes_nothing(db_url):
+    summary = await _run(db_url, dry_run=True)
+    # roster computed in-memory (incl. pinned merge) but NOT persisted
+    assert any(r["wallet"] == "0xa" for r in summary["selected_whales"])
+    assert load_agent_state("polymarket_copy_trader", "selected_whales", db_url=db_url) is None
+    assert load_agent_state("polymarket_copy_trader", "selection_metadata", db_url=db_url) is None
+
+
+async def test_dry_run_cause_attribution(db_url):
+    summary = await _run(db_url, dry_run=True)
+    cmp = summary["dry_run_comparison"]
+    # B is selected by the naive scorer (inflated PnL looks great) but dropped
+    # on the realized basis → appears in `dropped`.
+    assert "0xb" in cmp["dropped"]
+    assert len(cmp["movers"]) >= 1
+    for m in cmp["movers"]:
+        for k in ("s_naive_tw", "s_naive_plain", "s_realized",
+                  "delta_timeweight", "delta_realized"):
+            assert k in m
+    b_mover = next(m for m in cmp["movers"] if m["wallet"] == "0xb")
+    assert b_mover["excluded_realized"] is True
+    assert "inflation" in (b_mover["exclusion_reason"] or "")
+
+
+async def test_non_dry_run_has_no_comparison_block(db_url):
+    summary = await _run(db_url, dry_run=False)
+    assert "dry_run_comparison" not in summary
+    # gated-out list is computed in BOTH modes (informative metadata)
+    assert "gated_out_inflation" in summary
