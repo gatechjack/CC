@@ -139,6 +139,33 @@ DO NOT fix mid-observation-window; implement after Day-5 close-out
 (2026-06-14) to avoid contaminating window data.
 Reference: `reports/2026-06-10_bitunix_day2_expanded_review.md`.
 
+## P1 — Bitunix post-window analysis: silence-window what-if backtest + TP-structure review (filed 2026-06-10, execute after Day-5 close-out 2026-06-14)
+
+Two related questions, one session (~3-4h, read-only vs snapshot/prod):
+
+A. WHAT-IF BACKTEST of the 2026-06-02→09 silence window: replay the
+suppressed signals (signals fired + approved but size-zeroed by the
+vol-classifier bug) through the v2 3-leg TP plan against 1m bars.
+Output: trade count, W/L, R distribution, cum P&L of what was missed.
+Known caveat: same intrabar TP-vs-advanced-SL ambiguity as the
+reconciler P3 (`70d50f7`) — results are approximate, ±chronic variance.
+
+B. TP-STRUCTURE ANALYSIS (the Day-2 Q3 finding): across all available
+samples (live window + backtest set from A), characterize why TP3 is
+never reached and wins average sub-1R (Day-2: TP3 reached 0/16, TP2
+6 @ avg 0.78R, TP1-only 7 @ avg 0.17R, stopped 3 @ -1R, expectancy
++0.176R). Questions: is TP1 sizing/target taking too much too early?
+Are TP2/TP3 targets calibrated for a volatility regime that doesn't
+run? What would expectancy look like under alternative TP structures
+(re-walk the same trades with modified leg targets — per-CLAUDE.md §4
+Backtester-gate territory if it leads to a parameter change)?
+
+Output feeds the live-flip decision directly: +0.176R expectancy is
+thin against live fees/slippage; flip decision needs to know whether
+TP-structure tuning is required first.
+Reference: `reports/2026-06-10_bitunix_day2_expanded_review.md` (Q3),
+P1 vol-classifier fix (RESOLVED `7834375`).
+
 ## Open items influencing the live-flip decision
 
 These are operationally relevant but NOT formal flip-gates. Operator decides
