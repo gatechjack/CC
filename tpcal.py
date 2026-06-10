@@ -312,4 +312,39 @@ amb_c = [x for x in run(CFG0, combined) if x.get("namb", 0) > 0]
 print(f"\nintrabar-ambiguous trades (>=1 bar with SL+TP both touched), baseline ladder:")
 print(f"  set(a): {len(amb_a)}/{len([x for x in run(CFG0,set_a) if 'netR' in x])}  "
       f"combined: {len(amb_c)}/{len([x for x in run(CFG0,combined) if 'netR' in x])}")
+
+# ---------- FEE-MODEL VERIFICATION (operator dispute) ----------
+print(f"\n{'='*96}\nFEE-MODEL VERIFICATION\n{'='*96}")
+print(f"FeeConfig (== prod YAML bitunix_futures.fees, built via main.py:356 FeeConfig.from_dict):")
+print(f"  taker={FEES.taker_fee_pct}  maker={FEES.maker_fee_pct}  slip={FEES.slippage_pct}  "
+      f"entry_is_taker={FEES.entry_is_taker}  tp_is_maker={FEES.tp_is_maker}")
+print(f"  round_trip = entry_fee + exit_fee + 2*slip = {FEES.taker_fee_pct}+{FEES.taker_fee_pct}+2*{FEES.slippage_pct} = {RT:.5f}")
+
+# hand-walk cf40deeb
+hw = next((t for t in set_a if t["ts"].startswith("2026-06-09T04:57")), None)
+if hw:
+    e, sl = hw["entry"], hw["sl"]; risk = abs(e - sl); stoppct = risk / e * 100
+    feeR = RT * e / risk
+    rt_risk = 50.0; qty = rt_risk / risk; notional = e * qty
+    ef = FEES.taker_fee_pct * notional; xf = FEES.taker_fee_pct * notional
+    slp = 2 * FEES.slippage_pct * notional; tot = ef + xf + slp
+    print(f"\nHAND-WALK cf40deeb (sell): entry={e} stop={sl} risk_per_unit={risk:.4f} "
+          f"stop%={stoppct:.4f}%")
+    print(f"  feeR = RT*entry/risk = {RT:.5f}*{e}/{risk:.3f} = {feeR:.4f} R")
+    print(f"  @ position sized so 1R=$50: qty={qty:.5f} BTC, notional=${notional:,.0f}")
+    print(f"    entry taker ${ef:.2f} + exit taker ${xf:.2f} + slip(2x) ${slp:.2f} = ${tot:.2f}")
+    print(f"    fee in R = ${tot:.2f}/$50 = {tot/rt_risk:.4f} R  (== feeR, matches)")
+
+# breakeven fee + scenarios for baseline + best combined ladder
+def be_and_scen(label):
+    a = rab[label]; g, fa = a["grossavg"], a["feeavg"]
+    rt_be = RT * g / fa
+    print(f"\n[{label}]  gross={g:+.3f}  avg feeR@{RT:.5f}={fa:.3f}  net@current={a['netavg']:+.3f}")
+    print(f"  BREAKEVEN round-trip = {RT:.5f}*{g:.3f}/{fa:.3f} = {rt_be:.5f}  ({rt_be*100:.4f}%)")
+    for name, rt_s in [("taker-both 0.090%", 0.0009), ("entry-taker/exit-maker 0.064%", 0.00064),
+                       ("blended est ~0.072%", 0.00072), ("maker-both 0.038%", 0.00038)]:
+        print(f"    net @ {name:30} = {g - fa*(rt_s/RT):+.3f} R")
+print("\nBREAKEVEN FEE — at what round-trip does net cross 0? (combined set)")
+for lbl in ["baseline 0.5/1.0/2.5 @25/50/25", "single-tgt 1.0R @100%"]:
+    be_and_scen(lbl)
 print("\n=== END HARNESS ===")

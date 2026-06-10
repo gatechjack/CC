@@ -18,6 +18,12 @@
 > **Anti-overfit demonstration baked in (§4.1):** the set(a)-only "near-breakeven" leaders
 > (single-target @ fee-floor, 2-leg-pulled) **invert to worst-in-class** on the larger same-regime
 > set(b) — tuning to the 19 live trades would have selected the *worst* out-of-sample ladder.
+>
+> **Fee math independently verified (§10, operator challenge):** the 0.09% constant matches prod's
+> live config exactly and the `feeR` formula is hand-confirmed — NOT an error. BUT the null is
+> **execution-conditional**: breakeven round-trip is ~0.05%, so the strategy flips **net-positive under
+> maker-both execution (limit entry + limit exit, ~0.038%)**. The lever is **execution/fee-tier, not TP
+> geometry** — and this reconciles the operator's live profitability without any math error (see §10).
 
 ---
 
@@ -260,6 +266,63 @@ constraint**, not approving a parameter. A change would only be revisited if §4
 - **`max_hold` not modeled.** No set(a) trade exited on time (all TP/SL), consistent with the walk;
   out-of-regime tapes may differ.
 
+## 10. Fee-model verification (operator challenge, 2026-06-10) — math CONFIRMED; null is execution-conditional
+
+Operator disputed the 0.09% round-trip / `feeR` math (rightly — it is the single load-bearing
+number). Adversarial read-only re-check, trying to *break* it:
+
+**(1) Constant — sourced from ground truth, matches prod live config.** The fees are NOT a harness
+guess: prod's deployed `config/strategies.yaml` `bitunix_futures.fees` block is
+`taker 0.04% / maker 0.014% / slip 0.005% / entry_is_taker=true / tp_is_maker=false` — confirmed
+**deployed == local == `FeeConfig` dataclass default**, and prod builds its *live* fee config from this
+exact block (`main.py:356` `FeeConfig.from_dict(_bx_block.get("fees"))`). So the harness's `FeeConfig()`
+is numerically identical to what prod runs. **Not an error.** Two assumptions the config *itself* flags:
+- Rate is **"BitUnix Futures VIP3 + Experience Card … ⚠ Experience Card may be time-limited — verify
+  base VIP3 persists after expiry"** → the constant is **tier-dependent** (operator to confirm actual tier).
+- `tp_is_maker=false` is an explicit **"MVP: market exits; revisit when limit fills mature"** — i.e. the
+  taker-on-exit leg is a *deliberately conservative* modeling choice, not measured reality.
+
+**(2) Formula — hand-verified on a real trade.** `feeR = round_trip% · entry / risk_per_unit`. For
+`cf40deeb` (sell, entry 63261.3, stop 63402.83, `risk_per_unit` 141.53, stop 0.2237% — the **same
+`stop_distance_pct=0.0022372` stored in the prod record**, so the risk is not a too-tight harness
+artifact): `feeR = 0.0009·63261.3/141.53 = 0.4023 R`. Cross-checked in USDC at a position sized so
+1R=$50: notional $22,349 → entry taker $8.94 + exit taker $8.94 + slip $2.23 = **$20.11 = 0.402 R**.
+Matches. The formula is correct.
+
+**(3) Reconcile vs a recorded fee — N/A (none exists).** `paper_trade_record` has **no fee column and
+no `extra_json` fee field**; PaperBroker records `fee=0`. There is **no bot-recorded real fee** to check
+the model against — the model is the only fee source, and the **operator's live account is the only
+real-fill ground truth**. (This is also why paper P&L is gross, per the deep-dive.)
+
+**(4) Breakeven fee — the decisive sensitivity (combined set):**
+
+| ladder | breakeven round-trip | net @0.090% (taker-both, current) | @0.064% (taker-entry/maker-exit) | @0.038% (maker-both) |
+|---|---|---|---|---|
+| baseline 25/50/25 | **0.0475%** | −0.128 | −0.050 | **+0.028** |
+| single-tgt 1.0R (best) | **0.0531%** | −0.121 | −0.036 | **+0.049** |
+
+**The strategy crosses net-positive at round-trip ≤ ~0.05%.** The current taker-both (0.09%) and even
+maker-exit (0.064%) sit above it → net-negative. But **maker-BOTH execution (limit entries AND limit
+exits, ~0.038%) is net-POSITIVE (+0.03 to +0.05 R).**
+
+**VERDICT: the fee math is correct; the null is NOT broken — but it is *execution-conditional*, and that
+reconciles the operator's live profitability without any math error:**
+- The null ("no TP ladder clears fees") holds **for the strategy as configured** — `entry_is_taker=true`
+  (market entries) plus the conservative taker-exit MVP assumption.
+- It does **not** hold under maker-both execution. A discretionary trader using **limit entries + limit
+  exits** pays ~0.038% round-trip → net-positive on the same signal. The bot pays taker on entry *by
+  design* (to guarantee fills); the operator likely does not. This is the "two different traders" point
+  made concrete in the fee dimension.
+- Plus the operator's **tier** may differ from the assumed VIP3+Experience-Card, their **discretion**
+  (skip marginal / size conviction / cut early / hold runners) thickens the edge, and their winning
+  trades may sit in a **different regime** than this single ~4% ATR window.
+- **What this changes:** the highest-value lever is **execution (maker entries/exits) + fee tier, NOT TP
+  geometry** — confirming §6/§7 and the operator's instinct. Caveat: limit *entries* trade fee savings
+  for fill risk (price runs away on the trades that would have won), so maker-both is not free — §4 must
+  model limit-entry fill probability before treating +0.04 R as bankable. **Operator action to settle it
+  definitively: confirm your real round-trip cost per trade — if it is below ~0.05%, the mechanical
+  strategy is net-positive for your account, and the report's null applies only to the taker-entry config.**
+
 ## Appendix — reproducibility
 - `tpdata.sh` — read-only `sqlite3 -readonly` CSV pull (bars 06-01→now, `VAL_TAKEN`, `PTR_OUTCOMES`,
   `SIL_SCORE`, `SIL_HTF`) → `tpdata.out`. Stream:
@@ -268,3 +331,6 @@ constraint**, not approving a parameter. A change would only be revisited if §4
   walk mechanics; V1+VWALK gates; 9 candidates; robustness + fee sensitivity). Run: `py tpcal.py`.
 - `q3harness.py` — reused bar-walk engine (deep-dive `fec53ec`), retained for lineage.
 - Proximity gate threshold `proximity_block_pct = 0.3%` confirmed in `bitunix_htf_regime.py:221,243,993`.
+- `fv.sh` — fee-verification probe (read-only): deployed `bitunix_futures.fees` block + `paper_trade_record`
+  fee-column/`extra_json` scan. Prod builds live `FeeConfig` via `main.py:356`. `tpcal.py` carries the
+  hand-walk + breakeven-fee block (§10).
