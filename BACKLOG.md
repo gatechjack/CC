@@ -147,7 +147,24 @@ DO NOT fix mid-observation-window; implement after Day-5 close-out
 (2026-06-14) to avoid contaminating window data.
 Reference: `reports/2026-06-10_bitunix_day2_expanded_review.md`.
 
-## P1 — Bitunix post-window analysis: silence-window what-if backtest + TP-structure review (filed 2026-06-10, execute after Day-5 close-out 2026-06-14)
+## P1 — Bitunix post-window analysis: silence-window what-if backtest + TP-structure review (filed 2026-06-10; ANALYSIS HALF DONE 2026-06-10, pulled forward)
+
+> **STATUS UPDATE 2026-06-10 — analysis half COMPLETE; pulled forward (did not wait for Day-5).**
+> Both A (silence-window replay) and B (TP-structure) executed in one read-only session:
+> `reports/2026-06-10_bitunix_scalp_tp_recalibration.md` (this branch
+> `bitunix-scalp-tp-recalibration-2026-06-10`, pushed, UNMERGED). Set(a)=19 post-fix taken
+> (walk validated 19/19 vs recorded) + set(b)=192 silence vol-zeroed (reconstructed); combined 211.
+> **VERDICT: NULL — no TP ladder is net-positive at 0.09% taker round-trip in the ~3-4% ATR regime**
+> (9 ladders incl. both operator hypotheses cluster net −0.12 to −0.21 R). Gross edge (~0.14-0.17 R)
+> < ladder-invariant fee floor (~0.27 R). Set(a)-only "near-breakeven" ladders **invert to
+> worst-in-class** on set(b) (overfit demo). Even maker exits (0.064%) leave best ladder at −0.036 R.
+> **No §4 TP-parameter change indicated** — the live-flip gap is gross-edge-vs-fees, not TP geometry.
+> **What REMAINS = §4 Backtester validation of the null across OTHER regimes** (all data here is
+> single-regime ~4% ATR): test baseline + single-tgt-1.0R + 2-leg-drop-TP3 over ≥3 regimes / ≥6 mo;
+> the null is overturned only if a ladder's net-after-fee CI excludes 0 in ≥2 regimes (see report §8).
+> Premise check PASS (reproduces deep-dive net-negative; no STOP).
+> **NOTE:** this status update rides this unmerged branch (direct push to main was not authorized
+> this session); fold into main's BACKLOG when the branch is reviewed/merged.
 
 Two related questions, one session (~3-4h, read-only vs snapshot/prod):
 
