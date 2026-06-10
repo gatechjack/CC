@@ -144,13 +144,13 @@ def _build_client() -> _FakeClient:
     return _FakeClient(lb, activity, resolutions)
 
 
-async def _run(db_url, *, dry_run: bool) -> dict[str, Any]:
+async def _run(db_url, *, dry_run: bool, algo_select: bool = False) -> dict[str, Any]:
     fake = _build_client()
     with patch.object(refresh_mod, "PolymarketDataAPIClient", lambda: fake):
         return await refresh_polymarket_selection(
             db_url=db_url, categories=("Politics",), candidates_per_category=20,
             min_resolved=3, inflation_threshold=0.5, top_per_category=2,
-            top_global=2, activity_limit=500, dry_run=dry_run,
+            top_global=2, activity_limit=500, dry_run=dry_run, algo_select=algo_select,
         )
 
 
@@ -187,28 +187,59 @@ async def test_inflation_gate_lists_dropped_whale(db_url):
 # ── pinned-merge survival (HARD STOP invariant) ──────────────────────────
 
 
-async def test_pinned_whale_survives_refresh(db_url):
-    """A dashboard-pinned wallet the algorithm did NOT select must remain in
-    selected_whales as source='pinned_promotion' after the rebuild."""
+async def test_pinned_whale_survives_algo_select_refresh(db_url):
+    """In algo-select mode, a dashboard-pinned wallet the algorithm did NOT
+    select must remain in the WRITTEN roster as source='pinned_promotion'
+    (pinned merge unchanged), alongside the algo picks."""
     set_agent_state(
         "polymarket_copy_trader", "pinned_whales",
         [{"wallet": "0xc", "user_name": "PinnedWhale", "category": "Politics"}],
         db_url=db_url,
     )
-    summary = await _run(db_url, dry_run=False)
+    summary = await _run(db_url, dry_run=False, algo_select=True)
     assert summary["pinned_merged"] == 1
-    by_wallet = {r["wallet"]: r for r in summary["selected_whales"]}
-    assert "0xc" in by_wallet
-    pinned = by_wallet["0xc"]
-    assert pinned["source"] == "pinned_promotion"
-    assert pinned["user_name"] == "PinnedWhale"
-    assert pinned["rank"] is None
-    assert pinned["composite_score"] is None
-    # persisted to agent_state
+    written = {r["wallet"]: r for r in summary["written_selected_whales"]}
+    assert "0xc" in written  # pin survived the algo rebuild
+    assert written["0xc"]["source"] == "pinned_promotion"
+    assert written["0xc"]["rank"] is None
+    assert written["0xc"]["composite_score"] is None
+    assert "0xa" in written  # algo pick also written in algo-select mode
     loaded = load_agent_state("polymarket_copy_trader", "selected_whales", db_url=db_url)
-    assert loaded is not None
     persisted = {r["wallet"] for r in loaded[0]}
     assert "0xc" in persisted and "0xa" in persisted
+
+
+async def test_pins_only_writes_only_pins(db_url):
+    """DEFAULT (pins-only): the DB roster contains ONLY pinned whales; the
+    algorithm's picks appear in the report ranking but are NOT auto-written."""
+    set_agent_state(
+        "polymarket_copy_trader", "pinned_whales",
+        [{"wallet": "0xc", "user_name": "PinnedWhale", "category": "Politics"}],
+        db_url=db_url,
+    )
+    summary = await _run(db_url, dry_run=False)  # default = pins-only
+    assert summary["write_mode"] == "pins_only"
+    assert summary["pinned_merged"] == 1
+    loaded = load_agent_state("polymarket_copy_trader", "selected_whales", db_url=db_url)
+    persisted = {r["wallet"] for r in loaded[0]}
+    assert persisted == {"0xc"}  # ONLY the pin written — no algo auto-select
+    # the algo ranking is still in the report for operator review
+    ranking = {r["wallet"] for r in summary["selected_whales"]}
+    assert "0xa" in ranking
+
+
+async def test_algo_select_writes_algo_plus_pins(db_url):
+    set_agent_state(
+        "polymarket_copy_trader", "pinned_whales",
+        [{"wallet": "0xc", "user_name": "PinnedWhale", "category": "Politics"}],
+        db_url=db_url,
+    )
+    summary = await _run(db_url, dry_run=False, algo_select=True)
+    assert summary["write_mode"] == "algo_select"
+    loaded = load_agent_state("polymarket_copy_trader", "selected_whales", db_url=db_url)
+    persisted = {r["wallet"] for r in loaded[0]}
+    assert "0xa" in persisted  # algo pick written (legacy behavior, now opt-in)
+    assert "0xc" in persisted  # pin merged
 
 
 # ── dry-run: no write + cause attribution ────────────────────────────────
@@ -238,11 +269,15 @@ async def test_dry_run_cause_attribution(db_url):
     assert "inflation" in (b_mover["exclusion_reason"] or "")
 
 
-async def test_non_dry_run_has_no_comparison_block(db_url):
-    summary = await _run(db_url, dry_run=False)
-    assert "dry_run_comparison" not in summary
-    # gated-out list is computed in BOTH modes (informative metadata)
-    assert "gated_out_inflation" in summary
+async def test_algo_select_skips_comparison_pins_only_has_it(db_url):
+    # pins-only (default) is a review mode → produces the cause-attribution diff
+    s_pins = await _run(db_url, dry_run=False)
+    assert "dry_run_comparison" in s_pins
+    assert "gated_out_inflation" in s_pins
+    # algo-select is the commit mode → skips the extra naive comparison
+    s_algo = await _run(db_url, dry_run=False, algo_select=True)
+    assert "dry_run_comparison" not in s_algo
+    assert "gated_out_inflation" in s_algo  # gated-out computed in all modes
 
 
 # ── paginated activity window reconstructs a straddling decision (Commit 3) ──

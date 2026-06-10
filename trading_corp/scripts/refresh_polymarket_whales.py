@@ -19,16 +19,24 @@ Pipeline:
      for `seed_*_deep` + the dry-run naive-reference column).
   6. Selection Rule B: top-N per category (default 2) + top-N global
      (default 2), deduped → ~12 total selected.
-  7. Write list of dicts (wallet + user_name + best_category + score
-     breakdown + realized metrics) to
-     `agent_state(polymarket_copy_trader.selected_whales)`. Manually-pinned
-     whales are merged in so dashboard promotions survive (UNCHANGED).
+  7. WRITE the roster to `agent_state(polymarket_copy_trader.selected_whales)`.
+     DEFAULT is **pins-only**: only operator-pinned (dashboard-promoted) whales
+     are written — the algorithm INFORMS the report (rankings, gated-out,
+     unrankable, cause attribution) but never auto-selects, preserving the
+     manual-promotion workflow. `--algo-select` (explicit opt-in) writes the
+     algorithm's top-N + pins (legacy behavior). Pinned whales always survive
+     (UNCHANGED merge). window_truncated whales are excluded from algo selection
+     and surfaced in an "unrankable" section.
 
 Cost: $0 — all endpoints are free public.
 
 Usage::
 
-    python -m trading_corp.scripts.refresh_polymarket_whales [opts]
+    # Default-safe: full report + PINS-ONLY roster write (algorithm advisory)
+    python -m trading_corp.scripts.refresh_polymarket_whales
+
+    # Explicit opt-in: write algorithm top-N + pins (auto-expands the roster)
+    python -m trading_corp.scripts.refresh_polymarket_whales --algo-select
 
 Options:
     --top-per-category N    Picks per category for Rule B (default 2)
@@ -46,8 +54,10 @@ Options:
     --target-buy-rows N     Legacy early-stop after N BUY rows. DEFAULT: unset →
                             walk to exhaustion (bounded by --max-pages). Whales
                             that hit the ceiling are flagged window_truncated.
-    --dry-run               Print picks + naive-vs-realized cause attribution +
-                            inflation-gated-out list; write NOTHING (read-only)
+    --dry-run               Print full report (rankings + cause attribution +
+                            gated-out + unrankable); write NOTHING (read-only)
+    --algo-select           Opt-in: WRITE algorithm top-N + pins (auto-expands
+                            the copy roster). DEFAULT writes pins only.
     --json                  JSON output instead of human table
 """
 from __future__ import annotations
@@ -140,6 +150,7 @@ async def refresh_polymarket_selection(
     target_buy_rows: int | None = None,  # None = walk to exhaustion (bounded by max_pages)
     categories: tuple[str, ...] = POLYMARKET_LEADERBOARD_CATEGORIES,
     dry_run: bool = False,
+    algo_select: bool = False,  # default-safe: pins-only write; True = algo top-N + pins
 ) -> dict[str, Any]:
     """Run the full pipeline. Returns a summary dict; writes to agent_state
     unless `dry_run=True`.
@@ -166,11 +177,16 @@ async def refresh_polymarket_selection(
             "target_buy_rows": target_buy_rows,
             "categories": list(categories),
             "scorer": "realized_audit",  # option (c) Phase 1
+            "algo_select": algo_select,
         },
         "leaderboards_pulled": [],
         "selected_whales": [],
         "selection_details": [],
     }
+    # Review modes (dry-run + pins-only default) produce the naive-vs-realized
+    # cause-attribution diff; the commit mode (algo_select) skips that extra
+    # naive compute.
+    compute_comparison = dry_run or not algo_select
 
     async with PolymarketDataAPIClient() as client:
         # 1. Pull leaderboard per category (and global).
@@ -296,9 +312,9 @@ async def refresh_polymarket_selection(
                 )
                 scored_per_category.setdefault(cat, []).append((wallet, entry, scored))
 
-            # Dry-run only: compute the legacy naive references so each mover
-            # can be attributed to time-weighting removal vs realized inputs.
-            if dry_run:
+            # Review modes only: compute the legacy naive references so each
+            # mover can be attributed to time-weighting removal vs realized inputs.
+            if compute_comparison:
                 stats, _outcomes = compute_polymarket_stats(
                     leaderboard_entry=entry, activity_rows=activity,
                     market_resolutions=resolutions, half_life_days=half_life_days,
@@ -454,10 +470,10 @@ async def refresh_polymarket_selection(
         unrankable.sort(key=lambda u: -u["n_resolved_decisions_partial"])
         summary["unrankable_truncated"] = unrankable
 
-        # Dry-run cause attribution: diff the realized roster vs the legacy
-        # naive roster and split each mover's score change into the
-        # time-weighting component and the realized-basis component.
-        if dry_run:
+        # Cause attribution: diff the realized roster vs the legacy naive
+        # roster and split each mover's score change into the time-weighting
+        # component and the realized-basis component (review modes only).
+        if compute_comparison:
             selected_naive = _select_rule_b(
                 scored_per_category_naive, scored_global_naive,
                 top_per_category=top_per_category, top_global=top_global,
@@ -501,10 +517,20 @@ async def refresh_polymarket_selection(
 
     summary["finished_at"] = datetime.now(timezone.utc).isoformat()
 
-    # Merge manually-pinned whales (promoted via dashboard) into the
-    # algorithm's selection so they survive this refresh. Dedupe by lower-
-    # cased wallet. Without this step, dashboard promotions would be
-    # silently evicted on every refresh run.
+    # Build the roster to WRITE to selected_whales. DEFAULT (pins-only) writes
+    # ONLY the operator's pinned whales: the algorithm INFORMS (full report
+    # above) but never auto-selects, preserving the manual-promotion workflow
+    # (verification report 2026-06-09). algo_select (explicit opt-in) writes the
+    # algorithm's picks + pins — the legacy behavior. The report's
+    # `selected_whales` keeps the algorithm RANKING either way for operator
+    # review; only the WRITTEN roster differs by mode.
+    write_records: list[dict[str, Any]] = (
+        [dict(r) for r in selected_records] if algo_select else []
+    )
+
+    # Merge manually-pinned whales (promoted via dashboard) so they survive
+    # this refresh. Dedupe by lower-cased wallet. UNCHANGED merge logic — only
+    # the base list it merges into differs by mode (algo picks, or empty).
     try:
         pin_rec = load_agent_state(
             "polymarket_copy_trader", "pinned_whales", db_url=db_url,
@@ -512,18 +538,18 @@ async def refresh_polymarket_selection(
     except Exception:
         pin_rec = None
     pinned_entries = pin_rec[0] if (pin_rec and isinstance(pin_rec[0], list)) else []
-    selected_wallets = {
+    write_wallets = {
         str(s.get("wallet") or s.get("proxy_wallet") or "").lower()
-        for s in selected_records if isinstance(s, dict)
+        for s in write_records if isinstance(s, dict)
     }
     n_pinned_merged = 0
     for p in pinned_entries:
         if not isinstance(p, dict):
             continue
         w_lower = str(p.get("wallet") or p.get("proxy_wallet") or "").lower()
-        if not w_lower or w_lower in selected_wallets:
+        if not w_lower or w_lower in write_wallets:
             continue
-        selected_records.append({
+        write_records.append({
             "wallet": w_lower,
             "user_name": str(p.get("user_name") or ""),
             "category": str(p.get("category") or "pinned"),
@@ -531,13 +557,15 @@ async def refresh_polymarket_selection(
             "composite_score": None,
             "source": "pinned_promotion",
         })
-        selected_wallets.add(w_lower)
+        write_wallets.add(w_lower)
         n_pinned_merged += 1
     summary["pinned_merged"] = n_pinned_merged
+    summary["write_mode"] = "algo_select" if algo_select else "pins_only"
+    summary["written_selected_whales"] = write_records
 
     if not dry_run:
         set_agent_state(
-            "polymarket_copy_trader", "selected_whales", selected_records,
+            "polymarket_copy_trader", "selected_whales", write_records,
             db_url=db_url,
         )
         set_agent_state(
@@ -563,7 +591,10 @@ def _print_human(summary: dict[str, Any]) -> None:
         f"selected: {f.get('selected', 0)}"
     )
     print()
-    print(f"Selected top {len(summary['selected_whales'])} whales:")
+    print(
+        f"Algorithm ranking — top {len(summary['selected_whales'])} "
+        f"(realized basis; written to the roster only under --algo-select):"
+    )
     print()
     print(
         f"{'#':>3} | {'Wallet':<14} | {'User':<22} | {'Source':<10} | "
@@ -678,6 +709,12 @@ def main(argv: list[str] | None = None) -> int:
     # only to restore the legacy early-stop behavior.
     parser.add_argument("--target-buy-rows", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--algo-select", action="store_true",
+        help="DANGEROUS opt-in: write algorithm top-N + pins (auto-expands the "
+             "copy roster). DEFAULT is pins-only — the algorithm informs the "
+             "report but only pinned (operator-promoted) whales are written.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -707,6 +744,7 @@ def main(argv: list[str] | None = None) -> int:
         max_pages=args.max_pages,
         target_buy_rows=args.target_buy_rows,
         dry_run=args.dry_run,
+        algo_select=args.algo_select,
     ))
 
     if args.json:
@@ -715,11 +753,22 @@ def main(argv: list[str] | None = None) -> int:
         _print_human(summary)
         _print_gated_out(summary)
         _print_unrankable(summary)
+        _print_dry_run_diff(summary)  # no-ops if no comparison (algo-select mode)
+        n_pins = summary.get("pinned_merged", 0)
+        n_written = len(summary.get("written_selected_whales", []))
         if args.dry_run:
-            _print_dry_run_diff(summary)
             print("(dry-run — NOT written to agent_state; DB read-only)")
+        elif summary.get("write_mode") == "pins_only":
+            print(
+                f"Written PINS-ONLY: {n_written} whale(s) (= {n_pins} pinned) to "
+                f"selected_whales. The algorithm ranking above is ADVISORY — NOT "
+                f"written. Re-run with --algo-select to write algo picks + pins."
+            )
         else:
-            print("Written to agent_state(polymarket_copy_trader.selected_whales).")
+            print(
+                f"Written ALGO-SELECT: {n_written} whale(s) (algo picks + {n_pins} "
+                f"pinned) to selected_whales."
+            )
     return 0
 
 
