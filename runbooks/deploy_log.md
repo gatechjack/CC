@@ -118,9 +118,9 @@ when prod observation warrants a tuning loop.
 
 ## 2026-06-10 — Polymarket option (c) Phase 1 MERGED (whale-screening compute; NOT run on prod)
 
-**Commits:** merge SHA **pending** operator `--no-ff` merge of branch
-`polymarket-option-c-phase1-2026-06-10` (backfill after merge). Branch = `f517bfc`→`c326538`
-(code + tests + reports) off `32aa884`.
+**Commits:** merge `b137c03` (`--no-ff` of `polymarket-option-c-phase1-2026-06-10` into `main`,
+2026-06-10). Branch = `f517bfc`→`5357ac3` (code + tests + reports + pre-merge truncation-gate
+test & API-ceiling P3) off `32aa884`.
 **State:** **MERGED to main, NOT DEPLOYED / not run against prod.** The new whale-screening
 compute is INERT until a deliberate `refresh_polymarket_whales` run. No file transferred to
 prod, no restart, no refresh — this merge changes `main` only.
