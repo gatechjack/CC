@@ -116,6 +116,38 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-10 — Polymarket option (c) Phase 1 MERGED (whale-screening compute; NOT run on prod)
+
+**Commits:** merge SHA **pending** operator `--no-ff` merge of branch
+`polymarket-option-c-phase1-2026-06-10` (backfill after merge). Branch = `f517bfc`→`c326538`
+(code + tests + reports) off `32aa884`.
+**State:** **MERGED to main, NOT DEPLOYED / not run against prod.** The new whale-screening
+compute is INERT until a deliberate `refresh_polymarket_whales` run. No file transferred to
+prod, no restart, no refresh — this merge changes `main` only.
+
+**Features shipped (inert until a refresh run):**
+- Copy-roster screen scores on REDEEM-grounded realized P&L (`build_audit_report` +
+  `score_whale_from_audit`): decision-unit Wilson WR × realized ROI × category bonus;
+  `pnl_inflation_ratio` exclusion gate (default 0.5); window-truncation gate (excluded from
+  algo selection, observable in an `unrankable` list, pin-overridable); `/activity` walked to
+  exhaustion with a `window_truncated` flag.
+- **Default invocation is PINS-ONLY:** `refresh_polymarket_whales` writes ONLY pinned whales to
+  `selected_whales`. Full algo-selection requires the explicit `--algo-select` flag — so a
+  default refresh never auto-expands the copy roster.
+
+**Known behavior on the first post-merge refresh:** a pins-only refresh rewrites the full
+pinned set, which currently includes the 2 autopaused whales (Johnnyboy42069, damed21 — still
+pinned) → `selected_whales` 13→15 transiently; `_whale_autopause` re-removes them within ~60s
+(the documented flap, now via the pin path). Harmless: paper-mode, operator-pinned,
+whale-own-profitable. Clean resolution deferred to demotion-transparency P3.
+
+**Validation:** [`reports/2026-06-10_polymarket_option_c_phase1_validation.md`](../reports/2026-06-10_polymarket_option_c_phase1_validation.md).
+Realized reconciles to Polymarket `/closed-positions` to the dollar on complete windows
+(theboss2 16/16; Magamyman 85/85). 2256 tests pass / 28 pre-existing failures
+(robinhood/tasty/IC/webhooks); zero regressions.
+
+---
+
 ## 2026-06-09 ~03:50 UTC — P1 bitunix HTF vol-classifier wiring fix DEPLOYED (single-file; N+3 Phase 1)
 
 **Commits:** merge `7834375` (`--no-ff` of `bitunix-htf-vol-classifier-fix-2026-06-08`: `ab0d251` source + `ea92d4c` tests) on origin/main. Sibling docs commit `4214c23` (P3 orphaned-`high` filing; no code). Prod's `bitunix_htf_regime.py` went pre-fix LF-md5 `e0dbf34a7b43ee628eb1aa269849cc26` → post-fix `550609fad155da002ebb470a57e16709`.
