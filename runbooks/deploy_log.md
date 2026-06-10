@@ -116,6 +116,47 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-10 — Polymarket option (c) Phase 2 MERGED (watch_only seed realized PnL; NOT run on prod)
+
+**Commits:** merge `1c0b52e` (`--no-ff` of `polymarket-option-c-phase2-2026-06-10` into `main`,
+2026-06-10; parents `c8d3902` + `922fd19`). Branch commits: `b121e25` feat, `b8cde0c` fix,
+`e5c08e3`+`922fd19` docs. Branch retained on origin (audit trail).
+**State:** **MERGED to main, NOT DEPLOYED / not run against prod.** The new
+`seed_polymarket_watchlist_deep` compute is INERT until the weekly Sunday
+`trading-corp-pm-watchlist-deep.timer` next runs OR a deliberate run. No file transferred to prod,
+no restart, no refresh — this merge changes `main` only.
+
+**Features shipped (inert until the next seed run):**
+- `seed_polymarket_watchlist_deep.py` (the `watch_only_whales` observation roster) now scores on
+  REDEEM-grounded realized P&L (`build_audit_report` + `score_whale_from_audit`) over the windowed RAW
+  fills, replacing naive held-to-resolution (`compute_polymarket_stats`). Carries the exhaustion walk
+  (`target_buy_rows` default 150→None, bounded by `max_pages`) + `window_truncated` flag.
+- Record additive-only: `+window_truncated`, `+pnl_inflation_ratio`, `+realized_roi`,
+  `+n_resolved_decisions`. **FLAG-ONLY** retention (operator-confirmed; segregate declined) — truncated/
+  inflated whales stay in the roster flagged; membership stays governed by the existing floors.
+- Cadence / output key (`watch_only_whales`) / record contract / promotion path / service / timer
+  unchanged. Observation-only; emits no ProposedOrders.
+
+**Pre-merge gate (operator green-lit):** realized compute accurate (matched `/closed-positions`
+reconciliations pass, several to the dollar — aekghas $1.44M, mohahaha, Magamyman); confirmed the real
+Polymarket `/activity` ~3500-row (page-8) pagination ceiling genuinely truncates high-volume whales.
+Tests: 2260 passed / 28 known-fail / 3 pre-existing collection errors (bitunix/backtest); zero new
+regressions. Validation: `reports/2026-06-10_polymarket_option_c_phase2_validation.md`.
+
+**Latent bug caught + fixed (`b8cde0c`):** `fetch_error` (mid-walk API error → partial window) was not
+being flagged `window_truncated`; now `term_reason in (max_pages_hit, fetch_error)`, mirroring the
+refresh.
+
+**Separate operator-owned follow-up (does NOT block; no action this session):** Check-3 found 5/13
+copy-roster (`selected_whales`) members exceed the ~3500-row ceiling → un-fully-rankable on either
+basis; 2 (AdrianCronauer, 4gibg4i3o) have unreliable/overstated realized, 1 (llll-IIII) negative on its
+visible window. Phase-1/copy-roster data-quality review against the finalized PnL is operator-owned.
+
+**Inert / dormant:** the entire compute change — prod `watch_only_whales` is unchanged until the weekly
+timer fires (or a deliberate run).
+
+---
+
 ## 2026-06-10 — Polymarket option (c) Phase 1 MERGED (whale-screening compute; NOT run on prod)
 
 **Commits:** merge `b137c03` (`--no-ff` of `polymarket-option-c-phase1-2026-06-10` into `main`,
