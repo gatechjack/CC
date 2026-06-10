@@ -221,7 +221,7 @@ ladder-invariant fee floor (~0.27 R).
    geometry. **Would this hold for a scalp I'd never seen? Yes — it's a fee-floor identity, not a fit.**
 
 This does not condemn the strategy outright: it is gross-positive (+0.14 R), and the analysis is
-single-regime (~4% ATR). A different regime (lower ATR, tr+ different MFE profile, or genuinely
+single-regime (~4% ATR). A different regime (lower ATR, a different MFE profile, or genuinely
 trending tape) could change the gross edge and the runner economics. That is exactly what §8 must test.
 
 ## 8. §4 Backtester-validation plan (per CLAUDE.md §4 — required before ANY param change)
