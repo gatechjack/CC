@@ -72,9 +72,20 @@ need to be re-stated per session.
 - **Scoped commits.** Each commit addresses one item. Reference BACKLOG
   entries by ID where applicable. Never bundle unrelated changes into a
   single commit.
-- **Read-only by default for production.** Production reads and writes
-  require explicit, in-session operator authorization. Prior approval
-  does not extend to new commands. When in doubt, ask.
+- **Production access: agent read-only SSH is standing practice; writes stay
+  operator-gated.** (Operator-ratified 2026-06-10, after disclosed use in the
+  2026-06-09 Polymarket investigation and 2026-06-10 Bitunix Day-2 review.)
+  - **Agents MAY run read-only SSH against prod directly:** SELECT-only sqlite
+    queries (always with the `-readonly` flag), `journalctl` reads,
+    `systemctl status`/`show`, and file reads (`cat`/`ls`/`md5sum`/`stat`).
+  - **Agents MUST NOT via SSH:** any DB write, any file write/edit/delete, any
+    `systemctl start`/`stop`/`restart`, any config change, any NSG/`az`
+    mutation. These remain operator-run or operator-explicitly-delegated per
+    session (prior approval does not extend to new commands).
+  - **Disclosure required:** each session's close-out states whether
+    agent-driven SSH occurred and confirms it was read-only.
+  - **Classifier reality unchanged:** if the classifier blocks an SSH command,
+    switch to operator-runs immediately — no retries.
 - **Verify premises against ground truth before scoping.** Memory
   entries, runbook claims, and prior session notes can be wrong. Quote
   file:line or audit-row evidence before treating a premise as settled.
