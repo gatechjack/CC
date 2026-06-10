@@ -444,6 +444,12 @@ status on next audit run.
 
 # Other Open Items (not in priority list above)
 
+## P3 — `TypeError: not all arguments converted during string formatting` ×123 in tastytrade-streamer/starlette logging path (filed 2026-06-10)
+
+Cosmetic `%`-format bug; log lines still emit; zero functional impact on
+bitunix or any division. Cleanup candidate.
+Reference: `reports/2026-06-10_bitunix_day2_expanded_review.md`.
+
 ## P2 — `scripts/redeploy3_chunked_transfer.py` worktree-stranded
 
 Filed 2026-06-02 via Phase 3 deploy. Script is referenced as canonical in
