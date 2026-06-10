@@ -28,6 +28,28 @@ Queries against historical paper data remain available via Claude.
 
 ## Observation window — active
 
+> **2026-06-10 — PRE-FLIP SAFETY GATE: NO-GO as-is (2 blockers).** Adversarial read-only audit of the
+> live-execution path (report `reports/2026-06-10_bitunix_live_execution_path_safety_review.md`, branch
+> `bitunix-live-exec-safety-review-2026-06-10`, pushed UNMERGED). Both must be resolved or explicitly
+> accepted before any paper→live flip:
+> - **B1 — No exchange-resident stop-loss.** `modify_position_tp_sl_order` is a Phase-4
+>   `NotImplementedError` stub (`brokers/bitunix.py:1428`); the reconciler only LOGS SL intent
+>   (`bitunix_position_reconciler.py:14`). Live SL = bot poll-cadence (60s/3m) reduce-only market closes.
+>   Bot down (crash, ~22-min RH restart hang, disconnect) → only backstop is exchange liquidation
+>   (~4% adverse at 25× = full margin loss on the position). **Blocks unsupervised live.**
+> - **B2 — Maker-both execution UNBUILT.** Observer places `order_type="market"` only
+>   (`bitunix_futures_observer.py:2046/2235/3042`); no limit path. `entry_is_taker`/`tp_is_maker` are
+>   fee-math knobs, NOT order routing. A flip today runs **taker (0.09%) = net-negative tier** — the
+>   flip's maker-fee premise is unwired. (Building limit entries also needs unfilled/partial/timeout
+>   handling — `_observe_fill` currently collapses a 0-fill to full qty → phantom position.)
+> - **CLEAN (verified):** idempotency (clientId/30042); risk gate (every entry gated, fail-closed, real
+>   limits 1.5%/3%/15% + tighter observer caps 0.5%/3% + drawdown→flatten); HITL-first-10;
+>   snapshot-staleness halt; real-equity sizing (no $100k placeholder leak); kill switch (`flatten`);
+>   restart reconciliation (missing/orphan→halt). Two-control boundary (CLI `--live` AND YAML) — DiD + footgun.
+> - **Conditional supervised-pilot config** (if operator accepts B1/B2): supervised only; lower leverage;
+>   manual exchange catastrophic stop per position; tiny size + per-trade notional cap; expect taker
+>   economics until B2 built; rehearse kill switch; first-N watch. Fixing B1/B2 = separate gated sessions.
+
 > **2026-06-10 — FRESH window active** (post vol-classifier fix `7834375`, started
 > 2026-06-09 03:49:41 UTC). Day-2 expanded review CLOSED clean — F-5 confirmed; report on
 > branch `bitunix-day2-expanded-review-2026-06-10`. **⏰ Day-5 close-out due 2026-06-14
