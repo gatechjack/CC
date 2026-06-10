@@ -7,8 +7,9 @@ Pipeline:
   1. Pull `/v1/leaderboard?category=<C>` for each of the 5 working
      categories (Politics, Sports, Crypto, Tech, Mentions) + global.
   2. Dedupe candidate wallets across categories.
-  3. For each candidate: fetch `/activity?user=<wallet>&limit=N` (~last
-     90d of trades).
+  3. For each candidate: walk the FULL `/activity?user=<wallet>` window via
+     paginated fetch (shared with seed_*_deep) — the realized compute needs
+     every fill of a decision (BUY+SELL+REDEEM) together, not a single page.
   4. Batch-fetch market resolutions for every unique condition_id.
   5. Build the REDEEM-grounded `WhaleAuditReport` per candidate (read through
      the audit cache) and score it with `score_whale_from_audit`: decision-unit
@@ -39,7 +40,10 @@ Options:
     --half-life-days D      LEGACY — only affects the dry-run naive reference
                             column; the realized-basis scorer does NOT
                             time-weight (warns if passed)
-    --activity-limit N      Trades to fetch per whale (default 200)
+    --activity-limit N      Rows per /activity page (default 500)
+    --max-pages N           Max /activity pages walked per whale (default 10
+                            → ~5000-row ceiling at limit=500)
+    --target-buy-rows N     Stop the walk once this many BUY rows seen (default 150)
     --dry-run               Print picks + naive-vs-realized cause attribution +
                             inflation-gated-out list; write NOTHING (read-only)
     --json                  JSON output instead of human table
@@ -66,6 +70,13 @@ from trading_corp.data.polymarket_whale_stats import (
     DEFAULT_HALF_LIFE_DAYS, DEFAULT_INFLATION_RATIO_THRESHOLD,
     DEFAULT_MIN_RESOLVED, compute_polymarket_stats, score_polymarket_whale,
     score_whale_from_audit,
+)
+# Reuse seed_*_deep's paginated activity walk — the realized compute needs the
+# FULL window (BUY+SELL+REDEEM of each decision together), not a single page
+# (scoping doc §6). Shared extraction into a whale_screening module is Phase 3;
+# importing the existing, tested helper avoids a second pagination impl.
+from trading_corp.scripts.seed_polymarket_watchlist_deep import (
+    _fetch_wallet_activity_windowed,
 )
 from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
@@ -122,7 +133,9 @@ async def refresh_polymarket_selection(
     min_resolved: int = DEFAULT_MIN_RESOLVED,
     inflation_threshold: float = DEFAULT_INFLATION_RATIO_THRESHOLD,
     half_life_days: float = DEFAULT_HALF_LIFE_DAYS,
-    activity_limit: int = 200,
+    activity_limit: int = 500,
+    max_pages: int = 10,
+    target_buy_rows: int = 150,
     categories: tuple[str, ...] = POLYMARKET_LEADERBOARD_CATEGORIES,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -147,6 +160,8 @@ async def refresh_polymarket_selection(
             "inflation_threshold": inflation_threshold,
             "half_life_days": half_life_days,
             "activity_limit": activity_limit,
+            "max_pages": max_pages,
+            "target_buy_rows": target_buy_rows,
             "categories": list(categories),
             "scorer": "realized_audit",  # option (c) Phase 1
         },
@@ -186,8 +201,15 @@ async def refresh_polymarket_selection(
         all_condition_ids: set[str] = set()
         activity_by_wallet: dict[str, list] = {}
         for wallet in candidates:
+            # FULL paginated window (scoping doc §6): REDEEM-grounded realized
+            # PnL needs every fill of a decision (BUY+SELL+REDEEM) together, so
+            # a single page truncates and corrupts the cost basis for the
+            # high-volume whales the leaderboard surfaces. Walk like seed_*_deep.
             try:
-                acts = await client.fetch_activity(wallet, limit=activity_limit)
+                acts, _pages, _reason = await _fetch_wallet_activity_windowed(
+                    client, wallet, activity_limit=activity_limit,
+                    max_pages=max_pages, target_buy_rows=target_buy_rows,
+                )
             except Exception as e:
                 log.warning("activity fetch failed for %s: %s", wallet[:10], e)
                 acts = []
@@ -576,7 +598,9 @@ def main(argv: list[str] | None = None) -> int:
     # Sentinel default None so we can WARN when the legacy flag is explicitly
     # passed rather than silently no-op'ing it.
     parser.add_argument("--half-life-days", type=float, default=None)
-    parser.add_argument("--activity-limit", type=int, default=200)
+    parser.add_argument("--activity-limit", type=int, default=500)
+    parser.add_argument("--max-pages", type=int, default=10)
+    parser.add_argument("--target-buy-rows", type=int, default=150)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -604,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
         inflation_threshold=args.inflation_threshold,
         half_life_days=half_life,
         activity_limit=args.activity_limit,
+        max_pages=args.max_pages,
+        target_buy_rows=args.target_buy_rows,
         dry_run=args.dry_run,
     ))
 

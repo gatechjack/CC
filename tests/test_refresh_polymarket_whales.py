@@ -24,9 +24,13 @@ from unittest.mock import patch
 import pytest
 
 from trading_corp.data.polymarket_data_api_client import ActivityRow, LeaderboardEntry
+from trading_corp.data.polymarket_whale_audit import build_audit_report
 from trading_corp.persistence.db import init_db, load_agent_state, set_agent_state
 from trading_corp.scripts import refresh_polymarket_whales as refresh_mod
 from trading_corp.scripts.refresh_polymarket_whales import refresh_polymarket_selection
+from trading_corp.scripts.seed_polymarket_watchlist_deep import (
+    _fetch_wallet_activity_windowed,
+)
 
 REDEEM_SENTINEL = 999
 
@@ -119,7 +123,9 @@ class _FakeClient:
         return rows[offset:offset + limit]
 
     async def fetch_activity(self, wallet, *, limit=200, offset=0):
-        return list(self._act.get(wallet, []))
+        # Offset-paginated so the windowed walk terminates (partial/empty page).
+        rows = self._act.get(wallet, [])
+        return list(rows[offset:offset + limit])
 
     async def fetch_market_resolutions(self, condition_ids, chunk_size=50):
         return {cid: self._res.get(cid, {"status": "not_found"}) for cid in condition_ids}
@@ -235,3 +241,66 @@ async def test_non_dry_run_has_no_comparison_block(db_url):
     assert "dry_run_comparison" not in summary
     # gated-out list is computed in BOTH modes (informative metadata)
     assert "gated_out_inflation" in summary
+
+
+# ── paginated activity window reconstructs a straddling decision (Commit 3) ──
+
+
+def _whale_straddle_rows() -> list[ActivityRow]:
+    """12 rows for 0xs. With activity_limit=5 the single decision cid_s
+    (4 BUYs of 50@0.5 = $100 cost + REDEEM $200) STRADDLES the page boundary:
+    BUYs at indices 0,1 (page 1) and 5,6 (page 2); REDEEM at index 7 (page 2).
+    A single page sees only 2 BUYs and misses the REDEEM → corrupted realized;
+    the full paginated walk reconstructs cost basis $100 → realized +$100."""
+    w = "0xs"
+    return [
+        _act(2000, "cid_s", wallet=w, oi=0, price=0.5, size=50.0),    # 0  BUY cid_s
+        _act(1999, "cid_s", wallet=w, oi=0, price=0.5, size=50.0),    # 1  BUY cid_s
+        _act(1998, "cid_pad1", wallet=w, oi=0, price=0.5, size=10.0), # 2  filler (unresolved)
+        _act(1997, "cid_pad2", wallet=w, oi=0, price=0.5, size=10.0), # 3
+        _act(1996, "cid_pad3", wallet=w, oi=0, price=0.5, size=10.0), # 4
+        _act(1995, "cid_s", wallet=w, oi=0, price=0.5, size=50.0),    # 5  BUY cid_s (page 2)
+        _act(1994, "cid_s", wallet=w, oi=0, price=0.5, size=50.0),    # 6  BUY cid_s
+        _redeem(1993, "cid_s", wallet=w, size=200.0),                 # 7  REDEEM cid_s (page 2)
+        _act(1992, "cid_pad4", wallet=w, oi=0, price=0.5, size=10.0), # 8
+        _act(1991, "cid_pad5", wallet=w, oi=0, price=0.5, size=10.0), # 9
+        _act(1990, "cid_pad6", wallet=w, oi=0, price=0.5, size=10.0), # 10
+        _act(1989, "cid_pad7", wallet=w, oi=0, price=0.5, size=10.0), # 11
+    ]
+
+
+async def test_windowed_walk_reconstructs_straddling_decision():
+    rows = _whale_straddle_rows()
+    fake = _FakeClient({}, {"0xs": rows}, {})
+    resolutions = {"cid_s": _resolved(0)}
+
+    # FULL window: activity_limit=5, up to 10 pages → all 12 rows fetched.
+    full, _pages, reason = await _fetch_wallet_activity_windowed(
+        fake, "0xs", activity_limit=5, max_pages=10, target_buy_rows=150,
+    )
+    assert reason == "exhausted"
+    assert len(full) == 12
+    rpt_full = build_audit_report(
+        leaderboard_entry=None, activity_rows=full, resolutions=resolutions,
+        proxy_wallet="0xs",
+    )
+    assert rpt_full.n_resolved_decisions == 1
+    assert rpt_full.n_winning_decisions == 1
+    assert rpt_full.total_buy_usdc_resolved == pytest.approx(100.0)  # all 4 BUYs
+    assert rpt_full.realized_pnl.realized_pnl_usdc == pytest.approx(100.0)  # 200 - 100
+    assert rpt_full.realized_pnl.pnl_inflation_ratio == pytest.approx(0.0, abs=1e-6)
+
+    # TRUNCATED to page 1 only (max_pages=1): 2 of 4 BUYs, REDEEM unseen →
+    # cost basis halved + redemption missed → corrupted realized. This is
+    # exactly the failure the pagination fix closes.
+    trunc, _p2, _r2 = await _fetch_wallet_activity_windowed(
+        fake, "0xs", activity_limit=5, max_pages=1, target_buy_rows=150,
+    )
+    assert len(trunc) == 5
+    rpt_trunc = build_audit_report(
+        leaderboard_entry=None, activity_rows=trunc, resolutions=resolutions,
+        proxy_wallet="0xs",
+    )
+    assert rpt_trunc.total_buy_usdc_resolved == pytest.approx(50.0)  # only 2 BUYs
+    assert rpt_trunc.realized_pnl.realized_pnl_usdc == pytest.approx(-50.0)
+    assert rpt_trunc.realized_pnl.realized_pnl_usdc != pytest.approx(100.0)
