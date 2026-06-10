@@ -302,6 +302,29 @@ until whale P&L attribution is accurate. The current 99.86% skip rate means
 the "winning trader" identification is unreliable. This is the structural
 blocker for Priority 2.
 
+## P3 — Polymarket whale demotion transparency in dashboard (filed 2026-06-10 via workflow verification)
+
+**Context:** Verification session 2026-06-09 confirmed autopause runs every 60s on prod (per `polymarket_copy_trader.py:185 → :571`). Three autopause events recorded (2026-05-15, 2026-06-03, 2026-06-09). System operates correctly per code; operator workflow now explicitly includes both manual demotions AND system-driven autopause demotions. Operator accepts the autopause functionality but needs transparency on demotion events.
+
+**Operator requirement:**
+1. Dashboard surface: visible status for whales recently demoted (system or operator).
+2. Promotion-guard: when promoting from watchlist, surface previous demotion history for that whale to prevent inadvertent re-promotion of known-bad performers.
+
+**Scope:**
+- New dashboard tile/section showing recent demotions (autopause + manual) with: wallet, user_name, demote_ts, source (autopause/operator), reason (autopause: trade count + WR% + P&L; operator: optional note).
+- Promote-button modal: if wallet has prior demotion event, surface warning with demotion history.
+- Source data: autopause writes audit events today (`polymarket_whale_auto_paused`). Manual demotion path needs to write equivalent (or already does — verify).
+
+**Implementation notes:**
+- Audit event already exists for autopause (`polymarket_whale_auto_paused`).
+- May need parallel audit event for manual demotion if not already present.
+- Dashboard query against audit_event filtered to demotion-class events.
+- Promote-button check: query demotion history for wallet before write.
+
+**Not gating:** any active development. Quality-of-life feature for operator transparency.
+
+**Reference:** workflow verification report `reports/2026-06-09_polymarket_workflow_ground_truth_verification.md`.
+
 ## P3 — Polymarket retry backoff: currently 0.0s on 429 responses
 
 Filed 2026-05-31. Cloudflare/Polymarket 429 responses hit retry path with
