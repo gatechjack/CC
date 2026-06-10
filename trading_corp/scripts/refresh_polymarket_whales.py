@@ -43,7 +43,9 @@ Options:
     --activity-limit N      Rows per /activity page (default 500)
     --max-pages N           Max /activity pages walked per whale (default 10
                             → ~5000-row ceiling at limit=500)
-    --target-buy-rows N     Stop the walk once this many BUY rows seen (default 150)
+    --target-buy-rows N     Legacy early-stop after N BUY rows. DEFAULT: unset →
+                            walk to exhaustion (bounded by --max-pages). Whales
+                            that hit the ceiling are flagged window_truncated.
     --dry-run               Print picks + naive-vs-realized cause attribution +
                             inflation-gated-out list; write NOTHING (read-only)
     --json                  JSON output instead of human table
@@ -135,7 +137,7 @@ async def refresh_polymarket_selection(
     half_life_days: float = DEFAULT_HALF_LIFE_DAYS,
     activity_limit: int = 500,
     max_pages: int = 10,
-    target_buy_rows: int = 150,
+    target_buy_rows: int | None = None,  # None = walk to exhaustion (bounded by max_pages)
     categories: tuple[str, ...] = POLYMARKET_LEADERBOARD_CATEGORIES,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -200,23 +202,39 @@ async def refresh_polymarket_selection(
         # 2. Enrich each candidate: activity (one call per whale).
         all_condition_ids: set[str] = set()
         activity_by_wallet: dict[str, list] = {}
+        truncated_by_wallet: dict[str, bool] = {}
+        # FULL paginated window (scoping doc §6): REDEEM-grounded realized PnL
+        # needs every fill of a decision (BUY+SELL+REDEEM) together. Walk to
+        # EXHAUSTION bounded by max_pages — a fixed target_buy_rows just moves
+        # the truncation cliff (Phase E reconciliation finding). When
+        # target_buy_rows is None (default) disable the early-stop; whales that
+        # STILL hit the page ceiling are flagged `window_truncated` so their
+        # realized is read as a floor-bounded estimate, not silently trusted.
+        eff_target = (
+            target_buy_rows if target_buy_rows is not None
+            else max_pages * activity_limit + 1
+        )
         for wallet in candidates:
-            # FULL paginated window (scoping doc §6): REDEEM-grounded realized
-            # PnL needs every fill of a decision (BUY+SELL+REDEEM) together, so
-            # a single page truncates and corrupts the cost basis for the
-            # high-volume whales the leaderboard surfaces. Walk like seed_*_deep.
             try:
-                acts, _pages, _reason = await _fetch_wallet_activity_windowed(
+                acts, _pages, reason = await _fetch_wallet_activity_windowed(
                     client, wallet, activity_limit=activity_limit,
-                    max_pages=max_pages, target_buy_rows=target_buy_rows,
+                    max_pages=max_pages, target_buy_rows=eff_target,
                 )
             except Exception as e:
                 log.warning("activity fetch failed for %s: %s", wallet[:10], e)
-                acts = []
+                acts, reason = [], "fetch_error"
+            truncated_by_wallet[wallet] = reason in ("max_pages_hit", "fetch_error")
             activity_by_wallet[wallet] = acts
             for a in acts:
                 if a.type == "TRADE" and a.side == "BUY" and a.condition_id:
                     all_condition_ids.add(a.condition_id)
+        n_truncated = sum(1 for t in truncated_by_wallet.values() if t)
+        if n_truncated:
+            log.warning(
+                "%d/%d whales hit the activity page ceiling (window_truncated; "
+                "their realized PnL is a floor-bounded estimate)",
+                n_truncated, len(candidates),
+            )
 
         log.info(
             "refresh_polymarket_whales: %d unique condition_ids across all whales' BUYs",
@@ -302,6 +320,7 @@ async def refresh_polymarket_selection(
                     "realized_pnl_usdc": report.realized_pnl.realized_pnl_usdc,
                     "excluded_realized": scored_no_cat.excluded,
                     "exclusion_reason": scored_no_cat.exclusion_reason,
+                    "window_truncated": truncated_by_wallet.get(wallet, False),
                 }
                 scored_global_naive.append((wallet, entry, naive_tw))
                 for cat in rec["categories_seen"]:
@@ -352,6 +371,7 @@ async def refresh_polymarket_selection(
                 "n_resolved_decisions": n_res,
                 "n_winning_decisions": n_win,
                 "decision_win_rate": round(dec_wr, 4),
+                "window_truncated": truncated_by_wallet.get(wallet, False),
             })
             details.append({
                 "rank": rank_i + 1,
@@ -383,6 +403,7 @@ async def refresh_polymarket_selection(
             ),
             "resolutions_fetched": len(resolutions),
             "selected": len(finalists),
+            "window_truncated": n_truncated,
         }
 
         # Inflation-gated-out list (D4) — whales excluded specifically by the
@@ -401,6 +422,7 @@ async def refresh_polymarket_selection(
                     "pnl_inflation_ratio": round(ratio, 4),
                     "realized_pnl_usdc": round(report.realized_pnl.realized_pnl_usdc, 2),
                     "n_resolved_decisions": report.n_resolved_decisions,
+                    "window_truncated": truncated_by_wallet.get(wallet, False),
                 })
         gated_out.sort(key=lambda g: g["pnl_inflation_ratio"], reverse=True)
         summary["gated_out_inflation"] = gated_out
@@ -600,7 +622,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--half-life-days", type=float, default=None)
     parser.add_argument("--activity-limit", type=int, default=500)
     parser.add_argument("--max-pages", type=int, default=10)
-    parser.add_argument("--target-buy-rows", type=int, default=150)
+    # Default None = walk to exhaustion (bounded by --max-pages). Set a value
+    # only to restore the legacy early-stop behavior.
+    parser.add_argument("--target-buy-rows", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)

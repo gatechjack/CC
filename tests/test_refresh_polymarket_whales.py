@@ -172,6 +172,8 @@ async def test_realized_compute_drives_selection_with_metrics(db_url):
     # the consumed keys are still present (additive only)
     for k in ("wallet", "user_name", "category", "rank", "composite_score"):
         assert k in a
+    # 9-row fixture exhausts well within the page ceiling → not truncated
+    assert a["window_truncated"] is False
 
 
 async def test_inflation_gate_lists_dropped_whale(db_url):
@@ -267,6 +269,41 @@ def _whale_straddle_rows() -> list[ActivityRow]:
         _act(1990, "cid_pad6", wallet=w, oi=0, price=0.5, size=10.0), # 10
         _act(1989, "cid_pad7", wallet=w, oi=0, price=0.5, size=10.0), # 11
     ]
+
+
+def _whale_truncating_rows() -> list[ActivityRow]:
+    """6 rows for 0xt. With activity_limit=2 / max_pages=2 the walk fetches only
+    the first 4 rows and stops at the page ceiling (max_pages_hit) → the record
+    must be flagged window_truncated. The captured rows still form a valid
+    winning decision cid_t (2 BUYs $50 cost + REDEEM $100 → realized +$50)."""
+    w = "0xt"
+    return [
+        _act(2000, "cid_t", wallet=w, oi=0, price=0.5, size=50.0),     # 0 BUY
+        _redeem(1999, "cid_t", wallet=w, size=100.0),                  # 1 REDEEM
+        _act(1998, "cid_t", wallet=w, oi=0, price=0.5, size=50.0),     # 2 BUY
+        _act(1997, "cid_pad1", wallet=w, oi=0, price=0.5, size=10.0),  # 3
+        _act(1996, "cid_pad2", wallet=w, oi=0, price=0.5, size=10.0),  # 4 (beyond ceiling)
+        _act(1995, "cid_pad3", wallet=w, oi=0, price=0.5, size=10.0),  # 5
+    ]
+
+
+async def test_window_truncated_flag_set_on_page_ceiling(db_url):
+    t_entry = _lb("0xt", rank=1, user_name="truncwhale")
+    fake = _FakeClient(
+        {"Politics": [t_entry], None: [t_entry]},
+        {"0xt": _whale_truncating_rows()},
+        {"cid_t": _resolved(0)},
+    )
+    with patch.object(refresh_mod, "PolymarketDataAPIClient", lambda: fake):
+        summary = await refresh_polymarket_selection(
+            db_url=db_url, categories=("Politics",), candidates_per_category=20,
+            min_resolved=1, inflation_threshold=0.5, top_per_category=2,
+            top_global=2, activity_limit=2, max_pages=2, dry_run=True,
+        )
+    rec = {r["wallet"]: r for r in summary["selected_whales"]}
+    assert "0xt" in rec
+    assert rec["0xt"]["window_truncated"] is True
+    assert summary["filters"]["window_truncated"] >= 1
 
 
 async def test_windowed_walk_reconstructs_straddling_decision():
