@@ -27,6 +27,7 @@ import pytest
 from trading_corp.data.polymarket_data_api_client import (
     ActivityRow,
     LeaderboardEntry,
+    PolymarketDataAPIError,
 )
 from trading_corp.scripts import seed_polymarket_watchlist_deep as seed_mod
 from trading_corp.scripts.seed_polymarket_watchlist_deep import (
@@ -1206,3 +1207,49 @@ async def test_window_truncated_whale_stays_in_roster_flagged():
     assert len(roster) == 1, "flag-only: a truncated whale must NOT be excluded"
     assert roster[0]["window_truncated"] is True
     assert roster[0]["realized_pnl_usdc"] > 0
+
+
+async def test_fetch_error_flags_window_truncated():
+    """A mid-walk fetch error returns partial rows + term 'fetch_error', so the
+    window is incomplete and must be flagged window_truncated (same as the page
+    ceiling), kept in the roster under the flag-only policy. Mirrors the
+    refresh's b44e3ed treatment of fetch_error.
+    """
+    now_ts = 1_700_000_000
+    rows: list[ActivityRow] = []
+    resolutions: dict[str, dict[str, Any]] = {}
+    for d in range(2):
+        cid = f"cid_{d}"
+        resolutions[cid] = _resolved(winning_outcome_index=0)
+        rows.append(_make_activity(
+            now_ts - d * 3600, cid, side="BUY", price=0.5, size=200.0,
+            outcome_index=0,
+        ))
+    rows = _with_redeems(rows, resolutions)  # 2 BUY + 2 REDEEM = 4 rows
+
+    class _RaiseOnPage2(_FakeFullClient):
+        async def fetch_activity(self, wallet, *, limit, offset):
+            if offset == 0:
+                return list(rows)  # full first page -> walk continues
+            raise PolymarketDataAPIError("simulated transient error")
+
+    fake = _RaiseOnPage2(
+        leaderboard_by_category={
+            "GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)],
+        },
+        activity_by_wallet={"0xa": [rows]},
+        resolutions=resolutions,
+    )
+    with patch.object(seed_mod, "PolymarketDataAPIClient", return_value=fake), \
+         patch.object(seed_mod, "datetime", _patch_now(now_ts)):
+        summary = await seed_polymarket_watchlist_deep(
+            db_url="sqlite:///:memory:", dry_run=True, categories=(),
+            min_resolved_buys=1, min_windowed_pnl=0.01,
+            activity_limit=len(rows), max_pages_per_wallet=3,
+        )
+
+    assert summary["termination_reasons"].get("fetch_error", 0) == 1
+    assert summary["window_truncated_count"] == 1
+    roster = summary["watch_only_whales"]
+    assert len(roster) == 1, "flag-only: fetch-errored whale stays, flagged"
+    assert roster[0]["window_truncated"] is True

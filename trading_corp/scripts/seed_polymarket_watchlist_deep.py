@@ -536,7 +536,12 @@ async def seed_polymarket_watchlist_deep(
                 target_buy_rows=eff_target,
             )
             activity_by_wallet[wallet] = acts
-            truncated_by_wallet[wallet] = term_reason == "max_pages_hit"
+            # Both max_pages_hit AND fetch_error leave an INCOMPLETE window
+            # (partial rows -> floor-bounded realized). Mirror the refresh
+            # (b44e3ed) and flag both so the number is read as an estimate.
+            truncated_by_wallet[wallet] = term_reason in (
+                "max_pages_hit", "fetch_error",
+            )
             summary["termination_reasons"][term_reason] = (
                 summary["termination_reasons"].get(term_reason, 0) + 1
             )
@@ -549,8 +554,9 @@ async def seed_polymarket_watchlist_deep(
         summary["window_truncated_count"] = n_truncated
         if n_truncated:
             log.warning(
-                "%d/%d candidates hit the activity page ceiling "
-                "(window_truncated; realized PnL is a floor-bounded estimate)",
+                "%d/%d candidates have an incomplete activity window (page "
+                "ceiling or fetch error -> window_truncated; realized PnL is a "
+                "floor-bounded estimate)",
                 n_truncated, len(candidates),
             )
         log.info(
