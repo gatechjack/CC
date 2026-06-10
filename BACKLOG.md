@@ -348,6 +348,30 @@ blocker for Priority 2.
 
 **Reference:** workflow verification report `reports/2026-06-09_polymarket_workflow_ground_truth_verification.md`.
 
+## P3 — Polymarket `/activity` pagination ceiling caps full-history reconciliation (filed 2026-06-10 via option (c) Phase E re-validation)
+
+**Finding:** the public `/activity?user=` feed stops serving past ~3,500 rows (page 8 at
+`limit=500`) — a Cloudflare-403 / hard pagination cap. For the highest-volume, longest-history
+whales their full BUY/SELL/REDEEM history is NOT retrievable, so REDEEM-grounded realized P&L is
+computed on a truncated window and **over-states** (incomplete cost basis). Reproduced 2026-06-10
+on AdrianCronauer (`0xf9c1…`, walk `fetch_error` at 3,500 rows; my realized $1.56M vs Polymarket
+`/closed-positions` $108k) and BigodinSagaz (`0xca1e…`, 25/168 matched positions over-stated).
+Whales with complete windows reconcile to the dollar (Magamyman 85/85, kitten147 156/162) — so
+this is an API-retrieval limit, **not a compute bug**.
+
+**Containment already shipped (option (c) Phase 1):** such whales are flagged `window_truncated=true`
+and **excluded from algorithmic selection** (gate `f448c93`; proven by
+`test_truncated_whale_cannot_enter_algo_selected_roster`). The over-stated number cannot drive a
+copy-roster pick — this P3 is about *completeness*, not safety.
+
+**Investigate (not blocking):** is offset >3,500 ever fetchable for these wallets (longer backoff /
+retry / alternate endpoint), or is it a hard cap? If hard, the highest-volume whales are permanently
+unrankable by the algorithm (manual pin remains available). Matters because longest-history whales
+are plausibly among the most interesting to copy.
+
+**Reference:** convergence table in `reports/2026-06-10_polymarket_option_c_phase1_validation.md`
+(Re-validation section). Relates to the Cloudflare-retry-burn P2 and the 0.0s-backoff P3 below.
+
 ## P3 — Polymarket retry backoff: currently 0.0s on 429 responses
 
 Filed 2026-05-31. Cloudflare/Polymarket 429 responses hit retry path with
