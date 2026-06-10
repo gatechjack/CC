@@ -133,5 +133,50 @@ the refresh.
 
 ---
 
+## Re-validation — after the walk-to-exhaustion fix (commit `b44e3ed`)
+
+Re-ran the 4 capped whales + `theboss2` control with the walk to exhaustion (early-stop disabled,
+bounded by `max_pages=10`):
+
+| whale | walk | rows | matched pass/total | my Σmatched | pm Σmatched | before → after |
+|-------|------|------|--------------------|-------------|-------------|----------------|
+| theboss2 (control) | exhausted | 84 | **16/16** | 230,158 | 237,322 | unchanged ✅ |
+| Magamyman | **exhausted** | 822 | **85/85** | 806,235 | 806,254 | 62/65 → **85/85** ✅ (Δ −$18 on $806k) |
+| kitten147 | **exhausted** | 3045 | **156/162** | 18,465 | 18,826 | 4/9 → **156/162** ✅ (6 fails sub-$110) |
+| AdrianCronauer | **fetch_error** | 3500 | 13/29 | 1,561,611 | 107,644 | 2/11 → still off ⚠ |
+| BigodinSagaz | **fetch_error** | 3500 | 130/155 | 26,477 | 25,192 | 24/27 → still off ⚠ |
+
+**The fix is validated.** Every whale whose window `exhausted` now reconciles — `Magamyman` recovered to
+**85/85** (six-figure positions to the dollar), `kitten147` 4/9 → **156/162** (residual fails are
+sub-$110 fee/rounding noise on small positions). The deep walk closes the cost-basis truncation.
+
+**The 2 residual mis-reconcilers are NOT a compute bug** (per the "STOP-and-surface" instruction): both
+hit `walk=fetch_error` at exactly page 8 (~3500 rows) — a Cloudflare-403 / `/activity` pagination
+ceiling — so their windows are still incomplete, and `my realized` over-states accordingly. The new
+**`window_truncated=true` flag caught both**, so the unreliable realized is observable rather than
+silently trusted. This is a data-retrieval ceiling on the very-highest-volume whales (the scoping doc
+§6 "pagination cap, acceptable, window is by design"), not a math error.
+
+**Open merge question (selection integrity).** A `window_truncated` whale's realized is over-stated →
+it could rank too high or wrongly clear the inflation gate. The flag makes this observable; whether the
+scorer should **gate/penalize** truncated whales (conservative: don't select on a floor-bounded
+estimate) vs keep-but-flag is a merge-time decision — flagged, not auto-resolved.
+
+## Known limitations registered
+
+1. **Goal-1 vs goal-2 is a real, operationally-relevant split.** Both autopaused whales are
+   *profitable* on whale-own realized (Johnnyboy42069 +$8.4k, damed21 +$83.8k) yet our copies lost
+   money (autopause's `round_trips` P&L). When **BACKLOG P3 — demotion transparency** ships, the
+   dashboard should surface BOTH numbers: "good whale, bad copy" is a category pure copy-P&L hides.
+2. **`pnl_inflation_ratio` is unstable when held-to-resolution ≈ 0** (denominator `max(|held|,1)`):
+   `mofi0091` read 0.82 vs 11.40 across two live runs for ~identical realized. Sound *relative* churn
+   signal; noisy *absolute* value near held≈0. First place to look if the gate ever drops a whale you
+   care about. Candidate metric refinement for Phase 3.
+3. **`/activity` retrieval ceiling (~3500 rows / page 8).** The very-highest-volume whales can't have
+   full history retrieved (Cloudflare-403 / API cap); `window_truncated` flags them.
+
+---
+
 *Phase E validation artifact — committed on `polymarket-option-c-phase1-2026-06-10`. All SSH this
-session was read-only (probe + one selected_whales/pinned/audit SELECT).*
+session was read-only (probe + one selected_whales/pinned/audit SELECT). All `/activity` +
+`/closed-positions` reads were public-API GETs from the local worktree run — no prod write.*
