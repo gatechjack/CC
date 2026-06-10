@@ -31,8 +31,11 @@ the scorer's exclusion gate is NOT a roster filter here.
 - Full suite: **28 failed = the documented 28 known-fails baseline, zero new,
   zero polymarket/seed**. 3 pre-existing collection errors (bitunix /
   backtest modules absent at this SHA — verified identical on clean `main`,
-  out of scope). The failed set (28) and error set (3) are unchanged from the
-  baseline; the only passed-count delta is +3 net new seed tests.
+  out of scope). Post-fix full run: **2260 passed, 28 failed, 3 errors** (300s).
+  The failed set (28) and error set (3) are unchanged from baseline; the +4 vs
+  the documented 2256 = 3 net-new seed tests + ~1 drift in the documented
+  figure (changes touch only the seed module + its test, so no other test's
+  outcome can move).
 
 ## Live dry-run (illustrative sample: candidates=8/category, 39 unique, max-pages=10)
 NEW = exhaustion + realized; OLD = current main (naive + 150 early-stop).
