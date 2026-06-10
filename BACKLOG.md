@@ -230,7 +230,30 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
-## P1 — Polymarket copy-trader SELL-pairing → option (c) (SCOPED 2026-06-09; implementation UNSTARTED)
+## P1 — Polymarket copy-trader SELL-pairing → option (c) (Phase 1 MERGED 2026-06-10, NOT run on prod; phases 2-4 pending)
+
+**Phase 1 status (2026-06-10): MERGED to main, NOT DEPLOYED / not run against prod.**
+Branch `polymarket-option-c-phase1-2026-06-10` (stays on origin as audit trail — not deleted).
+`refresh_polymarket_whales.py` now screens on REDEEM-grounded realized P&L (`build_audit_report`
++ `score_whale_from_audit`): decision-unit Wilson WR × realized ROI × category bonus, a
+`pnl_inflation_ratio` exclusion gate (default 0.5), a window-truncation gate (excluded from algo
+selection, observable, pin-overridable), and an `/activity` walk-to-exhaustion. **Refresh defaults
+to PINS-ONLY** (writes only pinned whales); `--algo-select` is an explicit opt-in — a default
+refresh never auto-expands the copy roster. New compute is **inert until a deliberate operator
+refresh run.** Validation:
+[`reports/2026-06-10_polymarket_option_c_phase1_validation.md`](reports/2026-06-10_polymarket_option_c_phase1_validation.md)
+(realized reconciles to Polymarket `/closed-positions` to the dollar on complete windows; 2256
+tests pass / 28 pre-existing). **Phases 2-4 UNSTARTED:** P2 observation roster (`seed_*_deep`),
+P3 unify both onto shared compute, P4 cleanup (remove the legacy held-to-resolution path).
+NOTE: F-4's `auto_paused_whales` key (mentioned in the SCOPED paragraph below) was **SUPERSEDED —
+not built**; refresh stays manual/unscheduled, so scheduling creates no flap.
+
+**Known autopause-pin flap (benign):** a pins-only refresh rewrites the full pinned set, which
+currently includes the 2 autopaused whales (Johnnyboy42069, damed21 — still pinned) →
+`selected_whales` 13→15 transiently until `_whale_autopause` re-removes them (~60s). Harmless
+(paper-mode, operator-pinned, whale-own-profitable per Phase E reconciliation). Clean resolution
+(unpin, or have autopause also clear `pinned_whales`) belongs with the **demotion-transparency P3
+entry below** — do NOT touch autopause for this.
 
 **Status (2026-06-09): investigation COMPLETE, option (c) selected as fix path.**
 Full findings: [`reports/2026-06-09_polymarket_sell_pairing_investigation.md`](reports/2026-06-09_polymarket_sell_pairing_investigation.md)
