@@ -96,6 +96,72 @@ def _make_lb(
     )
 
 
+def _make_redeem(
+    ts: int, condition_id: str, *, size: float, wallet: str = "0xabc",
+) -> ActivityRow:
+    """A market-level REDEEM row (Polymarket sentinel outcome_index=999)."""
+    return _make_activity(
+        ts, condition_id, side="REDEEM", outcome_index=999,
+        price=1.0, size=size, type_="REDEEM", wallet=wallet,
+    )
+
+
+def _with_redeems(
+    activity: list[ActivityRow], resolutions: dict[str, dict[str, Any]],
+) -> list[ActivityRow]:
+    """Append a REDEEM row (size = held qty) for each WINNING decision in
+    `activity`, modelling 'held to resolution and redeemed'.
+
+    Under that model REDEEM-grounded realized PnL (option (c) Phase 2) equals
+    the naive held-to-resolution number: `redeem - cost = size*(1-price)` for a
+    win; losing decisions get no redeem, so `realized = -cost`. That is exactly
+    the held-to-resolution basis the pre-option-(c) fixtures assert against, so
+    wrapping a fixture lets it exercise the Phase 2 realized compute without
+    restating any expected value.
+    """
+    held_by_cid: dict[str, float] = {}
+    ts_by_cid: dict[str, int] = {}
+    for a in activity:
+        if a.type != "TRADE" or a.side != "BUY" or not a.condition_id:
+            continue
+        try:
+            oi = int(a.outcome_index)
+        except (TypeError, ValueError):
+            continue
+        res = resolutions.get(a.condition_id)
+        if not res or (res.get("status") or "").lower() != "resolved":
+            continue
+        if oi != res.get("winning_outcome_index"):
+            continue  # losing side never redeems
+        held_by_cid[a.condition_id] = held_by_cid.get(a.condition_id, 0.0) + a.size
+        ts_by_cid[a.condition_id] = max(ts_by_cid.get(a.condition_id, 0), a.timestamp)
+    redeems = [
+        _make_redeem(ts_by_cid[cid], cid, size=size)
+        for cid, size in held_by_cid.items()
+    ]
+    # Prepend: a non-BUY row's position is irrelevant to window selection
+    # (which keys off BUY order), and redeem ts == decision ts keeps recency
+    # (last_trade) governed by the real trades.
+    return redeems + list(activity)
+
+
+def _patch_now(fake_now_ts: float):
+    """A datetime stand-in pinned to `fake_now_ts` for the seed's now()/
+    fromtimestamp() calls (deterministic recency)."""
+    fake_now_dt = datetime.fromtimestamp(fake_now_ts, tz=timezone.utc)
+
+    class _FakeDT:
+        @staticmethod
+        def now(tz=None):
+            return fake_now_dt
+
+        @staticmethod
+        def fromtimestamp(ts, tz=None):
+            return datetime.fromtimestamp(ts, tz=tz)
+
+    return _FakeDT
+
+
 class _FakeActivityClient:
     """Fake client supporting only fetch_activity (offset pagination)."""
 
@@ -531,6 +597,7 @@ def test_aggregate_ignores_non_trade_non_buy_fills_in_activity():
 def _make_clustered_activity(
     wallet: str, n_decisions: int, fills_per_decision: int = 5,
     *, all_wins: bool = True, ts_anchor: int = 1_700_000_000,
+    size: float = 2.0,
 ) -> tuple[list[ActivityRow], dict[str, dict[str, Any]]]:
     """Build a clustered-fills activity feed for floor / provisional tests.
 
@@ -554,7 +621,7 @@ def _make_clustered_activity(
         for f in range(fills_per_decision):
             activity.append(_make_activity(
                 decision_ts - f, cid, side="BUY",
-                outcome_index=0, price=0.5, size=2.0,
+                outcome_index=0, price=0.5, size=size,
                 wallet=wallet,
             ))
     return activity, resolutions
@@ -599,16 +666,8 @@ async def test_clustered_whale_pnl_aggregates_across_all_fills_not_just_survivor
     now_ts = 1_700_000_000
     activity_rows, resolutions = _make_clustered_activity(
         wallet="0xa", n_decisions=50, fills_per_decision=5,
-        all_wins=True, ts_anchor=now_ts,
+        all_wins=True, ts_anchor=now_ts, size=200.0,
     )
-    # _make_clustered_activity uses price=0.5, size=2.0 by default. Override:
-    activity_rows = [
-        ActivityRow(
-            **{**{k: getattr(r, k) for k in r.__dataclass_fields__ if k != "size"},
-               "size": 200.0}
-        )
-        for r in activity_rows
-    ]
     lb = {"GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)]}
     summary = await _run_seed(
         leaderboard=lb,
@@ -696,6 +755,16 @@ async def _run_seed(
     *, leaderboard, activity_by_wallet, resolutions,
     fake_now_ts: float, **kwargs,
 ) -> dict[str, Any]:
+    # option (c) Phase 2: the seed now computes REDEEM-grounded realized PnL,
+    # so held-to-resolution fixtures need a REDEEM leg per winning decision for
+    # realized to equal the naive numbers these assertions were written for.
+    # Injected centrally so every integration scenario exercises the realized
+    # compute unchanged. (Drop tests stay dropped — their naive PnL was already
+    # sub-floor, and -cost on a no-redeem loss is only more negative.)
+    activity_by_wallet = {
+        w: [_with_redeems(page, resolutions) for page in pages]
+        for w, pages in activity_by_wallet.items()
+    }
     fake = _FakeFullClient(
         leaderboard_by_category=leaderboard,
         activity_by_wallet=activity_by_wallet,
@@ -1003,28 +1072,137 @@ async def test_pnl_floor_keeps_whale_at_or_above_threshold():
     assert summary["watch_only_whales"][0]["realized_pnl_usdc"] == 5000.0
 
 
-async def test_compute_polymarket_stats_called_with_half_life_36500():
-    """Confirm the seed passes half_life_days=36500.0 (effectively infinite)."""
+async def test_seed_routes_compute_through_build_audit_report():
+    """option (c) Phase 2: the seed computes via the Phase 1 REDEEM-grounded
+    `build_audit_report` (over the windowed RAW fills, REDEEM legs included),
+    not the legacy naive `compute_polymarket_stats`."""
     now_ts = 1_700_000_000
     buys = [(now_ts - i * 3600, True) for i in range(15)]
     lb, act, res = _build_seed_scenario(wallet="0xa", buy_outcomes=buys)
 
-    captured_kwargs: list[dict[str, Any]] = []
-    real_fn = seed_mod.compute_polymarket_stats
+    calls: list[dict[str, Any]] = []
+    real_fn = seed_mod.build_audit_report
 
     def _spy(**kwargs):
-        captured_kwargs.append(dict(kwargs))
+        calls.append(dict(kwargs))
         return real_fn(**kwargs)
 
-    with patch.object(seed_mod, "compute_polymarket_stats", side_effect=_spy):
+    with patch.object(seed_mod, "build_audit_report", side_effect=_spy):
         await _run_seed(
             leaderboard=lb, activity_by_wallet=act, resolutions=res,
             fake_now_ts=now_ts,
         )
 
-    # At least one call (for the surviving whale); all calls must pass 36500.0.
-    assert captured_kwargs, "compute_polymarket_stats was never called"
-    for call in captured_kwargs:
-        assert call.get("half_life_days") == 36500.0, (
-            f"expected half_life_days=36500.0, got {call.get('half_life_days')}"
+    assert calls, "build_audit_report was never called"
+    for c in calls:
+        assert "activity_rows" in c and "resolutions" in c
+        assert c.get("proxy_wallet") == "0xa"
+        # The windowed slice must carry REDEEM legs — that is what makes the
+        # compute realized rather than naive held-to-resolution.
+        assert any(r.type == "REDEEM" for r in c["activity_rows"]), (
+            "windowed slice fed to build_audit_report carried no REDEEM rows"
         )
+    # The legacy naive entry point is gone from the seed module.
+    assert not hasattr(seed_mod, "compute_polymarket_stats")
+
+
+async def test_realized_basis_reflects_early_sell_not_held_to_resolution():
+    """The swap is REDEEM/SELL-grounded, not naive held-to-resolution: a whale
+    that wins on resolution but SOLD early books only its realized sell PnL.
+    Also pins the watch_only record contract (21 original fields + the option
+    (c) Phase 2 additive fields).
+    """
+    now_ts = 1_700_000_000
+    rows: list[ActivityRow] = []
+    resolutions: dict[str, dict[str, Any]] = {}
+    # 12 winning decisions (resolved oi=0): BUY 100 @ $0.50 (cost $50), then
+    # SELL 100 @ $0.60 (proceeds $60) -> realized +$10/decision = +$120 total.
+    # Naive held-to-resolution would book (1-0.5)*100 = +$50/decision = +$600.
+    # NO REDEEM rows: the whale exited via SELL, it did not hold to redeem.
+    for d in range(12):
+        cid = f"cid_{d}"
+        resolutions[cid] = _resolved(winning_outcome_index=0)
+        rows.append(_make_activity(
+            now_ts - d * 7200 - 1, cid, side="SELL", price=0.60, size=100.0,
+            outcome_index=0,
+        ))
+        rows.append(_make_activity(
+            now_ts - d * 7200 - 2, cid, side="BUY", price=0.50, size=100.0,
+            outcome_index=0,
+        ))
+    fake = _FakeFullClient(
+        leaderboard_by_category={
+            "GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)],
+        },
+        activity_by_wallet={"0xa": [rows]},
+        resolutions=resolutions,
+    )
+    with patch.object(seed_mod, "PolymarketDataAPIClient", return_value=fake), \
+         patch.object(seed_mod, "datetime", _patch_now(now_ts)):
+        summary = await seed_polymarket_watchlist_deep(
+            db_url="sqlite:///:memory:", dry_run=True, categories=(),
+            min_resolved_buys=1, min_windowed_pnl=0.01,
+        )
+
+    assert len(summary["watch_only_whales"]) == 1
+    whale = summary["watch_only_whales"][0]
+    # Realized = sell proceeds - cost = +$120, NOT the naive +$600.
+    assert whale["realized_pnl_usdc"] == 120.0
+    # Wins are still resolution-based (decision won), unaffected by the exit.
+    assert whale["wins"] == 12 and whale["losses"] == 0
+    assert whale["n_resolved_decisions"] == 12
+    assert whale["realized_roi"] == round(120.0 / 600.0, 4)
+    assert whale["window_truncated"] is False
+    # Output contract: the 21 original fields + the 4 Phase 2 additive fields.
+    assert set(whale.keys()) == {
+        "rank", "proxy_wallet", "user_name", "x_username", "verified_badge",
+        "total_resolved_positions", "wins", "losses", "win_rate",
+        "realized_pnl_usdc", "total_usdc_size_resolved",
+        "lifetime_pnl_from_leaderboard", "lifetime_vol_from_leaderboard",
+        "best_category", "included_iso", "window_size_n", "window_days_span",
+        "last_trade_iso", "provisional", "avg_entry_price", "share_below_70",
+        "window_truncated", "pnl_inflation_ratio", "realized_roi",
+        "n_resolved_decisions",
+    }
+
+
+async def test_window_truncated_whale_stays_in_roster_flagged():
+    """Flag-only (operator decision): a window_truncated whale is NOT excluded
+    from the observation roster — it stays, flagged window_truncated=True, so
+    the operator still sees it for manual review. (Contrast the execution-
+    gating refresh, which HARD-excludes truncated whales.)
+    """
+    now_ts = 1_700_000_000
+    rows: list[ActivityRow] = []
+    resolutions: dict[str, dict[str, Any]] = {}
+    # 3 winning decisions, each held to resolution (BUY 200 @ $0.50 + REDEEM).
+    for d in range(3):
+        cid = f"cid_{d}"
+        resolutions[cid] = _resolved(winning_outcome_index=0)
+        rows.append(_make_activity(
+            now_ts - d * 3600, cid, side="BUY", price=0.5, size=200.0,
+            outcome_index=0,
+        ))
+    rows = _with_redeems(rows, resolutions)  # 3 BUY + 3 REDEEM = 6 rows
+    # A single FULL page (== activity_limit) + max_pages=1 forces the walk to
+    # stop at the page ceiling -> term_reason 'max_pages_hit' -> truncated.
+    fake = _FakeFullClient(
+        leaderboard_by_category={
+            "GLOBAL": [_make_lb("0xa", rank=1)], None: [_make_lb("0xa", rank=1)],
+        },
+        activity_by_wallet={"0xa": [rows]},
+        resolutions=resolutions,
+    )
+    with patch.object(seed_mod, "PolymarketDataAPIClient", return_value=fake), \
+         patch.object(seed_mod, "datetime", _patch_now(now_ts)):
+        summary = await seed_polymarket_watchlist_deep(
+            db_url="sqlite:///:memory:", dry_run=True, categories=(),
+            min_resolved_buys=1, min_windowed_pnl=0.01,
+            activity_limit=len(rows), max_pages_per_wallet=1,
+        )
+
+    assert summary["window_truncated_count"] == 1
+    roster = summary["watch_only_whales"]
+    assert len(roster) == 1, "flag-only: a truncated whale must NOT be excluded"
+    assert roster[0]["window_truncated"] is True
+    assert roster[0]["realized_pnl_usdc"] > 0
