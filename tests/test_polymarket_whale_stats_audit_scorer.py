@@ -231,6 +231,23 @@ def test_custom_inflation_threshold():
     assert "inflation>0.3" in sw.exclusion_reason
 
 
+# ── window-truncated hard gate (pre-merge follow-up) ─────────────────────
+
+
+def test_window_truncated_hard_gate_excludes_regardless_of_score():
+    """A strong whale (high decision WR, positive ROI, no inflation) is still
+    excluded when its activity window was truncated — the screen must not vouch
+    for a realized number it could not fully fetch. Composite is still computed
+    (observable), not zeroed."""
+    report = _report(n_resolved=50, n_winning=45, buy_usdc=10000.0, realized_pnl=5000.0)
+    clean = score_whale_from_audit(report)
+    assert clean.excluded is False  # control: complete window → selectable
+    gated = score_whale_from_audit(report, window_truncated=True)
+    assert gated.excluded is True
+    assert "window_truncated" in gated.exclusion_reason
+    assert gated.composite_score == pytest.approx(clean.composite_score)
+
+
 # ── min-resolved gate ─────────────────────────────────────────────────────
 
 

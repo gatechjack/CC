@@ -287,7 +287,9 @@ def _whale_truncating_rows() -> list[ActivityRow]:
     ]
 
 
-async def test_window_truncated_flag_set_on_page_ceiling(db_url):
+async def test_truncated_whale_excluded_from_selection_and_unrankable(db_url):
+    """A window_truncated whale is hard-gated out of algorithmic selection and
+    surfaced in the unrankable section (not silently dropped)."""
     t_entry = _lb("0xt", rank=1, user_name="truncwhale")
     fake = _FakeClient(
         {"Politics": [t_entry], None: [t_entry]},
@@ -300,10 +302,41 @@ async def test_window_truncated_flag_set_on_page_ceiling(db_url):
             min_resolved=1, inflation_threshold=0.5, top_per_category=2,
             top_global=2, activity_limit=2, max_pages=2, dry_run=True,
         )
-    rec = {r["wallet"]: r for r in summary["selected_whales"]}
-    assert "0xt" in rec
-    assert rec["0xt"]["window_truncated"] is True
+    sel = {r["wallet"] for r in summary["selected_whales"]}
+    assert "0xt" not in sel  # truncated → excluded from algo selection
     assert summary["filters"]["window_truncated"] >= 1
+    unr = {u["wallet"]: u for u in summary["unrankable_truncated"]}
+    assert "0xt" in unr  # surfaced with partial numbers
+    assert unr["0xt"]["window_truncated"] is True
+    assert unr["0xt"]["n_resolved_decisions_partial"] >= 1
+
+
+async def test_truncated_pinned_whale_survives_via_pin(db_url):
+    """Pins are operator decisions and override the truncation gate: a pinned
+    truncated whale survives the rebuild (still surfaced as unrankable)."""
+    set_agent_state(
+        "polymarket_copy_trader", "pinned_whales",
+        [{"wallet": "0xt", "user_name": "truncwhale", "category": "Politics"}],
+        db_url=db_url,
+    )
+    t_entry = _lb("0xt", rank=1, user_name="truncwhale")
+    fake = _FakeClient(
+        {"Politics": [t_entry], None: [t_entry]},
+        {"0xt": _whale_truncating_rows()},
+        {"cid_t": _resolved(0)},
+    )
+    with patch.object(refresh_mod, "PolymarketDataAPIClient", lambda: fake):
+        summary = await refresh_polymarket_selection(
+            db_url=db_url, categories=("Politics",), candidates_per_category=20,
+            min_resolved=1, inflation_threshold=0.5, top_per_category=2,
+            top_global=2, activity_limit=2, max_pages=2, dry_run=False,
+        )
+    loaded = load_agent_state("polymarket_copy_trader", "selected_whales", db_url=db_url)
+    assert loaded is not None
+    written = {r["wallet"]: r for r in loaded[0]}
+    assert "0xt" in written  # pin overrides the truncation gate
+    assert written["0xt"]["source"] == "pinned_promotion"
+    assert any(u["wallet"] == "0xt" for u in summary["unrankable_truncated"])
 
 
 async def test_windowed_walk_reconstructs_straddling_decision():

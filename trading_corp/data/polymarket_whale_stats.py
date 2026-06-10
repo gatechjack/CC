@@ -253,6 +253,7 @@ def score_whale_from_audit(
     whale_categories: tuple[str, ...] = (),
     min_resolved: int = DEFAULT_MIN_RESOLVED,
     inflation_threshold: float = DEFAULT_INFLATION_RATIO_THRESHOLD,
+    window_truncated: bool = False,
 ) -> ScoredWhale:
     """Selection score on the REDEEM-grounded realized basis (option (c), F-1).
 
@@ -273,7 +274,11 @@ def score_whale_from_audit(
         (the refresh passes `target_category=cat, whale_categories=(cat,)` per
         category, and `target_category=None` for the global pass).
 
-    Exclusion gates (both surfaced in `exclusion_reason`, semicolon-joined):
+    Exclusion gates (all surfaced in `exclusion_reason`, semicolon-joined):
+      - `window_truncated` — the activity window exceeded the fetch ceiling, so
+        cost basis is incomplete and realized PnL (and the inflation ratio
+        derived from it) cannot be trusted. HARD gate: not algorithmically
+        selectable regardless of score (an operator can still pin it manually).
       - `n_resolved_decisions < min_resolved` (insufficient sample).
       - `pnl_inflation_ratio > inflation_threshold` — STRICTLY greater excludes;
         a ratio exactly at the threshold is KEPT. Headline PnL that's mostly
@@ -319,6 +324,8 @@ def score_whale_from_audit(
 
     inflation_ratio = report.realized_pnl.pnl_inflation_ratio
     reasons: list[str] = []
+    if window_truncated:
+        reasons.append("window_truncated")
     if n < min_resolved:
         reasons.append(f"resolved<{min_resolved}")
     if inflation_ratio > inflation_threshold:

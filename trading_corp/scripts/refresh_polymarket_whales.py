@@ -276,10 +276,12 @@ async def refresh_polymarket_selection(
                     write_audit(report, db_url=db_url)
             report_by_wallet[wallet] = report
 
-            # Global realized score (no category bonus)
+            wt = truncated_by_wallet.get(wallet, False)
+            # Global realized score (no category bonus). window_truncated whales
+            # are hard-gated out of algorithmic selection (cost basis incomplete).
             scored_no_cat = score_whale_from_audit(
                 report, target_category=None, min_resolved=min_resolved,
-                inflation_threshold=inflation_threshold,
+                inflation_threshold=inflation_threshold, window_truncated=wt,
             )
             scored_global.append((wallet, entry, scored_no_cat))
 
@@ -290,6 +292,7 @@ async def refresh_polymarket_selection(
                 scored = score_whale_from_audit(
                     report, target_category=cat, whale_categories=(cat,),
                     min_resolved=min_resolved, inflation_threshold=inflation_threshold,
+                    window_truncated=wt,
                 )
                 scored_per_category.setdefault(cat, []).append((wallet, entry, scored))
 
@@ -426,6 +429,30 @@ async def refresh_polymarket_selection(
                 })
         gated_out.sort(key=lambda g: g["pnl_inflation_ratio"], reverse=True)
         summary["gated_out_inflation"] = gated_out
+
+        # Unrankable: window_truncated whales, hard-gated from algorithmic
+        # selection (realized PnL is a floor-bounded estimate — activity window
+        # exceeds the fetch ceiling). Surfaced with their PARTIAL numbers, not
+        # silently dropped; an operator can still manually pin one after review.
+        unrankable: list[dict[str, Any]] = []
+        for wallet, rec in candidates.items():
+            if not truncated_by_wallet.get(wallet, False):
+                continue
+            report = report_by_wallet.get(wallet)
+            rp = report.realized_pnl if report else None
+            buy = report.total_buy_usdc_resolved if report else 0.0
+            realized = rp.realized_pnl_usdc if rp else 0.0
+            unrankable.append({
+                "wallet": wallet,
+                "user_name": rec["entry"].user_name,
+                "window_truncated": True,
+                "n_resolved_decisions_partial": report.n_resolved_decisions if report else 0,
+                "realized_pnl_usdc_partial": round(realized, 2),
+                "realized_roi_partial": round((realized / buy) if buy > 0 else 0.0, 4),
+                "pnl_inflation_ratio_partial": round(rp.pnl_inflation_ratio, 4) if rp else 0.0,
+            })
+        unrankable.sort(key=lambda u: -u["n_resolved_decisions_partial"])
+        summary["unrankable_truncated"] = unrankable
 
         # Dry-run cause attribution: diff the realized roster vs the legacy
         # naive roster and split each mover's score change into the
@@ -575,6 +602,31 @@ def _print_gated_out(summary: dict[str, Any]) -> None:
     print()
 
 
+def _print_unrankable(summary: dict[str, Any]) -> None:
+    unr = summary.get("unrankable_truncated", [])
+    print(
+        f"=== Unrankable: activity window exceeds fetch ceiling "
+        f"({len(unr)} whales — excluded from algo selection; pin-overridable) ==="
+    )
+    if not unr:
+        print("  (none)")
+        print()
+        return
+    print(
+        f"{'Wallet':<14} | {'User':<22} | {'Ndec*':>5} | {'ROI*':>7} | "
+        f"{'RealPnL$*':>12} | {'InflR*':>7}"
+    )
+    print("-" * 82)
+    for u in unr:
+        print(
+            f"{u['wallet'][:14]} | {u['user_name'][:22]:<22} | "
+            f"{u['n_resolved_decisions_partial']:>5} | {u['realized_roi_partial']:>+7.3f} | "
+            f"${u['realized_pnl_usdc_partial']:>11,.0f} | {u['pnl_inflation_ratio_partial']:>7.3f}"
+        )
+    print("  (* PARTIAL — floor-bounded estimate over the truncated window)")
+    print()
+
+
 def _print_dry_run_diff(summary: dict[str, Any]) -> None:
     cmp = summary.get("dry_run_comparison")
     if not cmp:
@@ -662,6 +714,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _print_human(summary)
         _print_gated_out(summary)
+        _print_unrankable(summary)
         if args.dry_run:
             _print_dry_run_diff(summary)
             print("(dry-run — NOT written to agent_state; DB read-only)")
