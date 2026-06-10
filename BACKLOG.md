@@ -28,6 +28,14 @@ Queries against historical paper data remain available via Claude.
 
 ## Observation window — active
 
+> **2026-06-10 — FRESH window active** (post vol-classifier fix `7834375`, started
+> 2026-06-09 03:49:41 UTC). Day-2 expanded review CLOSED clean — F-5 confirmed; report on
+> branch `bitunix-day2-expanded-review-2026-06-10`. **⏰ Day-5 close-out due 2026-06-14
+> ~04:00 UTC** — full window aggregate + flip-readiness inputs; **run from a prod-connected
+> (local) session** (read-only SSH). Unblocks the P1 post-window backtest/TP-structure
+> session and the P2 10006 backoff fix. Tracked here rather than a remote `/schedule`
+> routine because remote cloud agents can't reach prod over SSH.
+
 > **2026-06-08 update — window INVALIDATED** by the P1 finding below (`bitunix_htf_regime`
 > volatility classifier bug — **0 fires for 6 of 7 days**). Day-7 close-out 2026-06-09
 > **cannot** produce a flip-readiness verdict. A fresh observation window is required
