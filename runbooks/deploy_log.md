@@ -143,8 +143,9 @@ when prod observation warrants a tuning loop.
 - **healthz**: `{"status":"ok","mode":"PAPER"}` (200) via GET at ~04:06Z. (`curl -sI`/HEAD → 405 `allow: GET` — endpoint is GET-only; not a failure.)
 - **BitUnix observer wiring in boot log (03:27:46Z)**: `htf_gate_mode=enforce, htf_regime_enabled=True, execution_mode=paper` — fixed module loaded clean.
 
-**Watch-item (NOT yet confirmed — next bitunix signal):**
+**Watch-item — F-5 classifier activation CONFIRMED 2026-06-10 (Day-2 expanded review):**
 - F-5 classifier activation: a post-restart `htf_gate_decision` for `atr_pct_d1` in [3.0, 5.0) should show `volatility_tier="high"`, `size_multiplier=1.0`, `hard_zero_reason=null`, and `trade_plan_decision`/`would_have_placed` resuming (first since 06-02 22:15Z). Operator to confirm on next signal.
+- **CONFIRMED 2026-06-10 ~10:44Z** — Day-2 expanded review (full report `reports/2026-06-10_bitunix_day2_expanded_review.md` stays on branch `bitunix-day2-expanded-review-2026-06-10`; this confirmation landed on main 2026-06-10). Evidence: **41/41** `htf_gate_decision` rows classified `high` at ATR 3.977–4.152%; **0 band violations, 0 Unknown tiers** (incl. across the 14:49Z restart — d1-cache reprimed by 14:59Z), **0 `vol_tier_extreme` hard-zeros**. Firing resumed 2026-06-09 04:57Z → **16 paper fires (13W/3L, +0.176R, +$0.94), 100% in the [3,5)% band**. The size-0 rows are `proximity_to_support`/`regime_forbids_side` (separate directional/structure gates), never the vol-tier. F-5 active and correct in the 3–5% band.
 
 **Fresh paper observation window:** starts **2026-06-09 03:49:41 UTC**. The 06-02→09 window stays INVALIDATED (dormant 6/7 days). A full fresh window is required before any `execution_mode` live-flip decision.
 
