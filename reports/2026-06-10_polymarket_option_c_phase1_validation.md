@@ -177,6 +177,34 @@ estimate) vs keep-but-flag is a merge-time decision — flagged, not auto-resolv
 
 ---
 
+## Addendum — pre-merge follow-ups (2026-06-10 14:32 UTC, commits `f448c93`, `c14e786`)
+
+Two operator merge-gate decisions landed on the branch before the merge call:
+
+1. **Truncation gate** (`f448c93`). `window_truncated=true` whales are now **excluded from
+   algorithmic selection** — a hard gate in `score_whale_from_audit` (same mechanism class as the
+   inflation gate). Rationale: the screen must not vouch for a realized number it could not fully
+   fetch, and the inflation gate's denominator is itself corrupted by truncation. Truncated whales
+   are **surfaced** in a labeled `unrankable` report section (partial numbers + flag), not silently
+   dropped. **Manual promotion is unaffected** (the promote button writes `selected_whales`/
+   `pinned_whales` directly, not via the scorer), and a **pinned** truncated whale **survives** via
+   the pinned merge (pin overrides the gate). Tests: scorer gate excludes a top-score whale; refresh
+   excludes + lists in `unrankable`; pinned-truncated survives.
+
+2. **Pins-only refresh mode as the default** (`c14e786`). A real refresh no longer auto-expands the
+   copy roster. **Default invocation writes ONLY pinned whales** — the algorithm produces the full
+   report (rankings, gated-out, unrankable, cause attribution) but **never auto-selects**, preserving
+   the manual-promotion workflow. The legacy "write algo top-N + pins" behavior is now an **explicit
+   `--algo-select` opt-in**. The pinned-merge logic is unchanged (only the base list it merges into
+   differs by mode). Tests: pins-only → roster == pins exactly (algo not written) with the ranking
+   still in the report; `--algo-select` → algo + pins; `--dry-run` writes nothing.
+
+**Gate:** 2256 passed / 28 failed (baseline 2229 + 27 new tests; the 28 are the identical pre-existing
+robinhood/tasty/IC/webhooks set; zero regressions). No SSH, no prod write, no merge, no deploy this
+session — all local code/test work.
+
+---
+
 *Phase E validation artifact — committed on `polymarket-option-c-phase1-2026-06-10`. All SSH this
 session was read-only (probe + one selected_whales/pinned/audit SELECT). All `/activity` +
 `/closed-positions` reads were public-API GETs from the local worktree run — no prod write.*
