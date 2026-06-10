@@ -129,6 +129,16 @@ intent (`extreme: 5.0%` knob is live); cleanup is honesty + schema hygiene.
 original Phase A analysis at fix-session worktree
 `bitunix-htf-vol-classifier-fix-2026-06-08`.
 
+## P2 — Bitunix `code=10006 'request too frequently'` on account polls (filed 2026-06-10 via Day-2 review)
+
+Account-poll WARNINGs + 1 replay-fetch ERROR (order `171d7a46`, retried OK)
+observed during Day-2 window review. Self-recovering today. P2 not P3
+because snapshot failure falls back to the placeholder-equity sharp edge
+(H-11 class) — live-flip-relevant. Fix: poll backoff/jitter on 10006.
+DO NOT fix mid-observation-window; implement after Day-5 close-out
+(2026-06-14) to avoid contaminating window data.
+Reference: `reports/2026-06-10_bitunix_day2_expanded_review.md`.
+
 ## Open items influencing the live-flip decision
 
 These are operationally relevant but NOT formal flip-gates. Operator decides
