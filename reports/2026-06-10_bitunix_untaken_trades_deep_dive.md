@@ -5,8 +5,9 @@
 **Window:** 2026-06-09 03:49:41 UTC (fix deploy) → 2026-06-10 13:54 UTC (capture; ~34 h)
 **Builds on:** `reports/2026-06-10_bitunix_day2_expanded_review.md` (Day-2, taken-trades)
 
-> **STATUS: DRAFT — Q3 (counterfactual) pending an operator method decision** (1m bars are
-> not persisted; see §Q3). Q1/Q2/Q4/Q5 + synthesis (b) are complete and committed.
+> **STATUS: COMPLETE.** Q3 used the operator's granularity-escalation method; **0 of 19 walked
+> rejects needed 1m escalation or a Tier-3 assumption** — gate verdicts are fully observed at 3m.
+> Both surviving gates earn their keep. Numbers audit CLEAN. Fee finding remains the headline.
 
 > **Headline (numbers audit): the recorded numbers are CLEAN** (every R/PnL reproduces from
 > raw prices), **but paper P&L is fee-free, and at the strategy's own assumed 0.09% round-trip
@@ -77,29 +78,50 @@ Full 24-row detail (ts, side, reason, `atr_pct_d1`, dist-to-S/R) in the appendix
 
 ---
 
-## Q3 — Counterfactual walk of rejected signals  ⏳ PENDING METHOD DECISION
+## Q3 — Counterfactual walk of rejected signals (do the gates earn their keep?) — YES, both
 
-**This is the load-bearing question and it hit a data-availability fork.** The replay's 1m bars
-are **not persisted** — `paper_trade_replay` fetches them live from the BitUnix API. The prod DB
-only holds `bitunix_bar_history` at **3m / 1h / 4h / 1d** (12,355 3m rows, covering the window
-through 13:48Z). HTF-rejected signals also never had a trade plan built, and their 3m ATR isn't
-in any audit row.
+**Method (operator-chosen granularity escalation; harness `q3harness.py`).** Each reject's plan
+was reconstructed via the strategy's OWN `build_trade_plan` / `get_recent_swing` /
+`get_htf_levels` (imported, not re-derived) with ATR-14 from the real `LiveBarCache.get_atr`
+(60-bar 3m window). Forward walk on 3m bars mirrors `_classify_v2_multi_leg` (SL-first worst-case
+tie, ordered TP fills, BE-after-TP1 / TP1-after-TP2 ratchet). A 3m bar spanning BOTH the active
+SL and an unfilled TP = *ambiguous* → escalate to 1m (Tier 2) → conservative floor (Tier 3).
 
-**Constructibility:** 24/24 HTF-rejects carry `trigger_price` + side; 3m ATR-14 is computable
-from the DB 3m bars → an **ATR-fallback trade plan (SL = 1.5×ATR₃ₘ, TP 0.5/1.0/2.5R) is
-constructible read-only-from-DB.** Upstream (score/cooldown/PA) rejects are excluded:
-sub-threshold or pre-plan, no meaningful constructible plan.
+**Reconstruction validated against the 20 stored `trade_plan_decision` inputs (plan-mismatch guard):**
+V1 `build_trade_plan`(stored inputs)==stored plan **18/18** ✓ · V2 my ATR≈stored `atr_used` (<5%)
+**19/21** ✓ · V3 swing **42/42** ✓ · V4 HTF S/R **35/38** ✓ → premise holds, no STOP.
 
-**The fork (options for the forward walk):**
-1. **3m-bar walk from the DB (recommended):** fully read-only, no API, feasible now. Coarser
-   than 1m → *more* intrabar TP-vs-SL ambiguity than the already-flagged reconciler-P3 caveat.
-   Adequate for the directional question "does gate X reject winners or losers?"
-2. **1m-bar fetch from the BitUnix API:** more faithful, but requires exchange API calls
-   (rate-limited — the live `code=10006` issue), is a different access class than read-only DB,
-   and the API's 1m lookback may not cover 06-09. Not recommended without explicit authorization.
+**Accounting (the trust metric) — 24 raw → 20 unique setups (4 same-bar dups removed):**
 
-→ *Awaiting operator nod on method before executing. Recommendation: option 1 (3m proxy,
-clearly labelled approximate), de-duped, aggregated per rejection gate.*
+| Bucket | n |
+|---|---|
+| Walked, **Tier-1 clean (0 ambiguous 3m bars)** | **19** |
+| Tier-2 (needed 1m escalation) | **0** |
+| **Tier-3 (intrabar *assumed*)** | **0** |
+| Plan-would-skip (gate moot — `fees_too_high_for_risk`) | 1 |
+| Still-open (ran past available bars) | 0 |
+
+**Zero setups fell to assumption.** Every walkable reject resolved unambiguously on 3m bars (no
+losing bar also touched a TP), so **no 1m fetch was required** and the verdict is **fully observed
+at 3m granularity, not assumption-dominated.** (No public-API 1m GETs occurred.)
+
+**Per-gate counterfactual — NET first (fee lens), gross secondary:**
+
+| Gate | walked | W/L | gross avg R | gross cum R | **net avg R** | **net cum R** | Verdict |
+|---|---|---|---|---|---|---|---|
+| `proximity_to_support` | 15 | 6/9 | −0.238 | −3.57 | **−0.596** | **−8.94** | **Earns its keep** — rejects gross- *and* net-losers |
+| `regime_forbids_side` | 4 | 2/2 | −0.036 | −0.14 | **−0.431** | **−1.73** | **Earns its keep (net)** — gross ≈ neutral, net-negative |
+
+- **`proximity_to_support` (n=15):** trades it blocked would have lost **gross** (−0.238R avg) and
+  clearly **net** (−0.596R). Shorting into nearby support is bounce-prone; the gate filters
+  losers. Robust — gross & net agree, 0 assumptions.
+- **`regime_forbids_side` (n=4, small):** blocked counter-trend longs were ~**gross-neutral**
+  (−0.036R) but **net-negative** (−0.431R) — a **gross/net divergence**: marginal on gross,
+  earns its keep on the net basis that matters live. Directional only (n=4).
+
+Net = gross − round-trip fee drag (`FeeConfig` 0.09%; `feeR = 0.09%·entry/risk`). Structural note:
+the TP1 fee-floor makes a TP1+TP2 win net **exactly +0.5R** while losses net ≈ −1.4R, so gates
+that reject mostly-losers are net-accretive. **No gate is destroying expectancy → no tuning indicated.**
 
 ---
 
@@ -157,18 +179,28 @@ PnL reproduces from raw entry/SL/exit/legs; the 3 losses are exact −1.0; the f
 stage-by-stage. The one caveat is interpretive, not integrity: **P&L is gross/fee-free**, and at
 the strategy's own 0.09% round-trip the **net expectancy is ≈ −0.13R/trade**.
 
-**(a) Are the remaining gates earning their keep? — pending Q3** (method decision above). The
-inventory-level read is suggestive: `proximity_to_support` blocks shorts into nearby support
-(structurally bounce-prone) and `regime_forbids_side` blocks counter-trend longs — both look
-*protective* on their face; the counterfactual will test it.
+**(a) Are the remaining gates earning their keep? — YES, both** (fully-observed Q3, 0 Tier-3
+assumptions). `proximity_to_support` rejected trades that lose gross (−0.24R) *and* net (−0.60R);
+`regime_forbids_side` rejected gross-neutral / net-negative (−0.43R) trades. Neither destroys
+expectancy — both filter (net-)losers. No gate-tuning indicated (and gate changes are downstream
+of the staged P1 + Day-5 anyway).
 
 **(c) Anything askew worth a BACKLOG filing?**
 1. **Fee-vs-expectancy (recommend filing / sharpening staged-P1):** gross +0.175R → net −0.13R
    after assumed fees. The live-flip should not proceed on gross paper numbers; TP-structure
    tuning and/or fee assumptions need resolving first. Sharpens the existing P1.
-2. No data-integrity issues found.
+2. **No gate-tuning item:** Q3 found neither surviving gate destroys expectancy — both reject
+   (net-)losers — so no BACKLOG filing for the gates (and gate changes are downstream of the
+   staged P1 / Day-5 regardless).
+3. No data-integrity issues found.
 
 ---
 
-## Appendix — HTF-gate reject detail + raw trade numbers
-*(24 HTF-reject rows and the 17-trade Q4 dump retained from probe `s7.sh`; counterfactual results append after Q3 method is set.)*
+## Appendix — reproducibility
+- Q3 counterfactual engine committed alongside this report: **`q3harness.py`** (imports the
+  strategy's own `build_trade_plan`/`get_recent_swing`/`get_htf_levels`; validation-first; tiered
+  3m→1m→conservative walk). Run: `run_capped.ps1 <python> q3harness.py` from the worktree, reading
+  `qdata.out` (regenerate via `qdata.sh` — read-only `sqlite3 -readonly` CSV pull of 3m bars +
+  rejects + the 20 `trade_plan_decision` validation rows).
+- Probe scripts `s7.sh`/`qprobe.sh`/`qdata.sh` (repo root) — read-only; retained, not committed.
+- Q4 raw 17-trade numbers + 24 HTF-reject detail captured in `s7.sh` output (this session's log).
