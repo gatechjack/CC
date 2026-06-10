@@ -374,6 +374,45 @@ async def test_truncated_pinned_whale_survives_via_pin(db_url):
     assert any(u["wallet"] == "0xt" for u in summary["unrankable_truncated"])
 
 
+async def test_truncated_whale_cannot_enter_algo_selected_roster(db_url):
+    """CONTAINMENT GUARANTEE: a window_truncated whale CANNOT enter the
+    algorithmically-selected (written) roster — even in --algo-select mode and
+    even with a selectable score. The SAME whale with a COMPLETE window IS
+    written, proving the exclusion is the truncation gate, not a low score
+    (cid_t reconciles to +$50 realized identically in both runs)."""
+    t_entry = _lb("0xt", rank=1, user_name="truncwhale")
+    rows = _whale_truncating_rows()
+
+    # (1) TRUNCATED window (limit=2/max_pages=2 → page ceiling) + --algo-select.
+    fake_t = _FakeClient(
+        {"Politics": [t_entry], None: [t_entry]}, {"0xt": rows}, {"cid_t": _resolved(0)},
+    )
+    with patch.object(refresh_mod, "PolymarketDataAPIClient", lambda: fake_t):
+        s_trunc = await refresh_polymarket_selection(
+            db_url=db_url, categories=("Politics",), candidates_per_category=20,
+            min_resolved=1, inflation_threshold=0.5, top_per_category=2, top_global=2,
+            activity_limit=2, max_pages=2, dry_run=False, algo_select=True,
+        )
+    written_t = {r["wallet"] for r in s_trunc["written_selected_whales"]}
+    assert "0xt" not in written_t  # gated out of the algo-selected write
+    assert "0xt" not in {r["wallet"] for r in s_trunc["selected_whales"]}  # and the ranking
+    assert any(u["wallet"] == "0xt" for u in s_trunc["unrankable_truncated"])  # surfaced
+
+    # (2) SAME whale, COMPLETE window (limit=500/max_pages=10 → exhausts) → selectable.
+    fake_c = _FakeClient(
+        {"Politics": [t_entry], None: [t_entry]}, {"0xt": rows}, {"cid_t": _resolved(0)},
+    )
+    with patch.object(refresh_mod, "PolymarketDataAPIClient", lambda: fake_c):
+        s_full = await refresh_polymarket_selection(
+            db_url=db_url, categories=("Politics",), candidates_per_category=20,
+            min_resolved=1, inflation_threshold=0.5, top_per_category=2, top_global=2,
+            activity_limit=500, max_pages=10, dry_run=False, algo_select=True,
+        )
+    written_c = {r["wallet"] for r in s_full["written_selected_whales"]}
+    assert "0xt" in written_c  # complete window + identical score → IS selected
+    assert not any(u["wallet"] == "0xt" for u in s_full["unrankable_truncated"])
+
+
 async def test_windowed_walk_reconstructs_straddling_decision():
     rows = _whale_straddle_rows()
     fake = _FakeClient({}, {"0xs": rows}, {})
