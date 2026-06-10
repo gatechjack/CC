@@ -194,6 +194,37 @@ lowest-risk configuration:
    missing/orphan); (d) no restart hang; (e) snapshot-staleness halts behave; (f) the two-control
    boundary is set as intended (both `--live` and YAML).
 
+## 4a. B1 premise re-verification (operator challenge, 2026-06-10) — CONFIRMED, stronger basis
+
+Challenge (correct): an unimplemented *MODIFY* does not prove no stop is *PLACED* at entry. Re-checked
+by enumerating the adapter's entire order surface (read-only):
+- The Bitunix adapter's ONLY order-placement endpoint is `POST /api/v1/futures/trade/place_order`
+  (`bitunix.py:870`). `_build_order_body` (`bitunix.py:924-955`) emits only `{symbol, side,
+  orderType(market|limit), qty, price?, reduceOnly, tradeSide, effect, clientId}` — **no
+  `slPrice`/`tpPrice`/`stopPrice`/preset/trigger param.** The entry order carries no attached stop.
+- The adapter has **no stop / trigger / tpsl-PLACE method.** Full `async def` order surface: `place_order`,
+  `cancel_order`, `cancel_all_orders`, `flash_close_position`, `close_all_position`, `flatten`,
+  `modify_position_tp_sl_order` (STUB). The `tpsl/*` endpoint family appears **only inside the modify
+  stub's `NotImplementedError` string** (`bitunix.py:1445`) — never called.
+- **No place-stop call exists outside the adapter** either: the observer places one market entry
+  (`_place_live`, no subsequent order); the reconciler only LOGS `position_sl_update` intent (Phase-4
+  modify is the stub); the replay places reduce-only MARKET exits only on level-detection. (grep of
+  `agents/divisions/` for `slPrice|presetSL|tpsl|stopPrice|trigger|place_stop|modify_position` → only
+  comments + the stub.)
+
+→ **NO exchange-resident stop is placed at entry. B1 STANDS** — and on a stronger basis than the original
+inference: it is not merely that MODIFY is stubbed; the codebase has **no capability to place a
+server-side stop at all.**
+
+**Fix scope (B1 is real):** no reusable place-stop method exists → it must be built. The **venue is not the
+blocker** — Bitunix futures supports order-attached SL / position TP/SL (the modify endpoint exists; it is
+a standard venue feature). Cleanest fix: attach a reduce-only `slPrice` to the entry `place_order` body (one
+server-side catastrophic stop placed at entry), or implement a `tpsl/place_order` method called post-fill.
+Either **cannot be paper-tested** (paper intercepts at `PaperExecutionBroker`) → validate on Bitunix testnet
+if available, else a tiny live order confirming the stop rests server-side + fires on client disconnect.
+Residual even after a PLACE fix: the MODIFY stub still means **no ratchet/trail** (the stop sits at the
+original structural level, no move-to-BE after TP1) — annoying, not catastrophic.
+
 ## 5. Appendix — files reviewed (read-only, `c8d3902`)
 `brokers/base.py` (ABC) · `brokers/bitunix.py` (place_order 829, _build_order_body 924, cancel/flatten
 1289-1354, modify_position_tp_sl_order STUB 1428) · `agents/risk.py` (RiskAgent 45) · `agents/divisions/
