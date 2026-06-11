@@ -26,6 +26,34 @@ When the flip happens, the dashboard begins filtering by flip-date — paper-mod
 trades persist in the DB but are no longer rendered in the live-mode view.
 Queries against historical paper data remain available via Claude.
 
+## P1 — Autonomous live (HITL removal): removal is clean, but BLOCKED on a dead drawdown breaker + unverified B1 (filed 2026-06-11)
+
+Operator intends Bitunix to trade autonomously (remove per-order HITL approval). Analysis:
+`reports/2026-06-11_bitunix_hitl_removal_for_autonomous_live.md` (branch
+`bitunix-hitl-removal-analysis-2026-06-11`, unmerged). The removal itself is **clean** — one code
+constant `HITL_FIRST_N_LIVE_ORDERS=0` (`bitunix_futures_observer.py:234`) routes orders through the
+existing monitor-mode path; nothing downstream depends on the approval. The problem is the safety
+layer that would replace the human:
+
+- **🔴 BLOCKER — account drawdown auto-flatten (15%) NEVER fires.** Both observer risk-eval call
+  sites pass `peak_equity = current equity` (`observer:1518/3247`) → `drawdown_pct()` always 0
+  (`models.py:352-355`; documented not-yet-built at `main.py:2516-2518`). The kill switch's only
+  autonomous trigger rides this dead path, and there is no operator kill surface (`data_exec.py:420`
+  "future operator surface"). So with HITL gone there is **no working account-level auto-flatten and
+  no autonomous/fast kill.** (Latent safety bug for ANY live flip, HITL or not.)
+- **🟠 B1 server-side stop UNVERIFIED on a real fill** — it's the per-order backstop replacing the
+  human; the 2026-06-11 live test aborted before an approved fire. See
+  [[2026-06-10-bitunix-live-exec-safety-review-nogo]].
+- Secondary: score path skips the flatten dispatch (`_maybe_flatten_on_risk_verdict` only on the 3.1
+  path); no max-orders/day cap; `--live` interactive confirm is systemd-incompatible (the real
+  autonomy blocker — autonomous live can't run under systemd until a non-interactive live path exists).
+
+**Do NOT remove HITL until:** (1) real peak-equity high-water-mark + working 15% flatten on BOTH
+paths [BLOCKER]; (2) B1 live-validated on a real fill. Then (3) continuous account monitor + operator
+kill surface; (4) non-interactive `--live`; (5) orders/day cap. **§4 gate:** removal is a
+strategy-execution change — ship behind a unit test that a forced 15% drawdown auto-flattens with no
+human, plus a real fill showing the B1 stop resting server-side.
+
 ## Observation window — active
 
 > **2026-06-10 — FRESH window active** (post vol-classifier fix `7834375`, started
