@@ -116,6 +116,39 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-11 ~00:19 UTC — B1 entry-attached server-side stop MERGED + DEPLOYED (single-file; INERT under paper until restart)
+
+**What.** B1 — `BitunixBroker._build_order_body` attaches a server-side catastrophic stop to
+live entries (`slPrice` from `extra["stop_price"]`, `slStopType=MARK_PRICE`, `slOrderType=MARKET`)
+in the SAME `place_order` call (atomic; no naked window). Closes safety-review B1: live positions
+previously had NO exchange-resident stop (bot-poll-cadence reduce-only closes only → liquidation on
+downtime). Reduce-only exits + stop-less entries byte-unchanged; paper path untouched.
+
+**MERGED.** main `5edf8ea` (`--no-ff` of `225ba0c`; branch `bitunix-b1-entry-attached-stop-2026-06-10`
+PRESERVED). Pushed origin. Gate: merge-tree conflict-free vs `ebe1f20`; full pytest on the
+materialized merge = 31/31 baseline, ZERO regressions; +5 new tests.
+
+**DEPLOYED (single-file, vol-classifier-fix pattern).** Merged `bitunix.py` →
+`/home/azureuser/trading_corp/trading_corp/brokers/bitunix.py`. Fail-closed deploy (py_compile +
+slPrice gate before the move).
+- **Backup / revert:** `bitunix.py.bak-pre-b1-2026-06-10` (64,403 b). Revert: `cp …/bitunix.py.bak-pre-b1-2026-06-10 …/bitunix.py`.
+- **slPrice-VERIFIED-ON-PROD (read-only grep):** `slPrice_count=3` (was 0), `MARK_PRICE=2`,
+  `slOrderType=4`, `py_compile=OK`, 1447→1478 lines. Prod lines 980-982:
+  `body["slPrice"]=_amount_str(sl_px)` / `body["slStopType"]="MARK_PRICE"` / `body["slOrderType"]="MARKET"`.
+
+**INERT until restart.** The running process imported the OLD module at boot; a single-file replace
+does NOT hot-reload. B1 takes effect on the next `trading-corp` restart — and only matters in LIVE
+mode (prod is `execution_mode: paper`, so B1 is dormant now). Restart deferred to the live-flip
+(needs one anyway for `--live`/`execution_mode`; beware the ~22-min RH-login hang).
+
+**Live validation PENDING (NOT done this session).** Phase C (stop rests server-side + fires on
+client disconnect) needs a tiny real live order — separate operator authorization, currently
+disarmed. No live order, no `execution_mode`/`--live` flip, no restart this session. No ratchet/trail
+(`modify_position_tp_sl_order` stub remains a later build). B1-hardening (malformed `stop_price` → no
+SL) filed BACKLOG P3.
+
+---
+
 ## 2026-06-10 — Polymarket option (c) Phase 2 MERGED (watch_only seed realized PnL; NOT run on prod)
 
 **Commits:** merge `1c0b52e` (`--no-ff` of `polymarket-option-c-phase2-2026-06-10` into `main`,

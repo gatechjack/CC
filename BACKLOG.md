@@ -137,6 +137,15 @@ intent (`extreme: 5.0%` knob is live); cleanup is honesty + schema hygiene.
 original Phase A analysis at fix-session worktree
 `bitunix-htf-vol-classifier-fix-2026-06-08`.
 
+## P3 — B1 hardening: malformed `stop_price` silently attaches NO server-side stop (filed 2026-06-11)
+
+In `BitunixBroker._build_order_body` (B1, merged `5edf8ea` / deployed 2026-06-11), a non-float /
+non-positive / absent `extra["stop_price"]` on a live OPEN entry causes the order to place with NO
+attached server-side stop — silently (fail-safe-to-no-SL, not fail-closed-to-reject). Defensible
+default (better than placing a bad/wrong-side stop), but a silent naked live entry warrants a
+**log-warn or an order-reject** for defense-in-depth. Natural to address alongside the ratchet /
+`modify_position_tp_sl_order` build. Ref branch `bitunix-b1-entry-attached-stop-2026-06-10`.
+
 ## P2 — Bitunix `code=10006 'request too frequently'` on account polls (filed 2026-06-10 via Day-2 review)
 
 Account-poll WARNINGs + 1 replay-fetch ERROR (order `171d7a46`, retried OK)
