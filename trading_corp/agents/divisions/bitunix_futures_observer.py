@@ -239,6 +239,13 @@ HITL_WAIT_TIMEOUT_SECONDS = 600.0
 # could be a future split if we run multiple divisions on bitunix; today
 # it's one).
 LIVE_ORDERS_PLACED_AGENT_STATE_KEY = "live_orders_placed"
+# agent_state key for the account-level equity high-water-mark. Feeds
+# AccountState.peak_equity so RiskAgent's drawdown_pct() is computed against
+# the true account peak — not the per-call current equity, which forced
+# drawdown to 0 and left the 15% flatten_account breaker permanently dead
+# (D1 fix, 2026-06-11). Account-level (single bitunix_futures division today),
+# restart-safe; mirrors the live-orders counter pattern above.
+PEAK_EQUITY_AGENT_STATE_KEY = "account_peak_equity"
 
 
 # PR 4 — helper for v2 pre-flight guard skips.
@@ -1515,7 +1522,8 @@ class BitunixFuturesObserver:
         order = proposal.proposed_order
         try:
             account = AccountState(account="bitunix_futures",
-                                   equity=account_equity, peak_equity=account_equity)
+                                   equity=account_equity,
+                                   peak_equity=self._tracked_peak_equity(account_equity))
             strat_state = StrategyState.from_persistence("bitunix_futures", db_url=self.db_url)
             risk_verdict = self.risk_agent.evaluate(
                 order, account, strat_state, None, None,
@@ -1525,6 +1533,17 @@ class BitunixFuturesObserver:
             self._log_score_decision(payload, verdict_score, "error_risk_eval",
                                      note=str(e), order_id=order.id)
             return
+
+        # ── account-drawdown flatten dispatch (D2 fix) ──
+        # Mirror the Phase-3.1 path (`_maybe_propose`, see `_maybe_flatten_on_
+        # risk_verdict` call): if the risk verdict signals flatten_account (the
+        # 15% account-drawdown cap was breached), route to flatten_division
+        # BEFORE handling the reject. Without this, a flatten verdict arriving
+        # via the score path was treated as a plain reject (logged + return)
+        # and the account never flattened — D2. No-op when flatten_account is
+        # False, so normal rejects are unaffected.
+        await self._maybe_flatten_on_risk_verdict(risk_verdict)
+
         if risk_verdict.verdict == "reject":
             order.status = "risk_rejected"
             order.risk_reason = risk_verdict.reason
@@ -2401,6 +2420,60 @@ class BitunixFuturesObserver:
             )
         return new_count
 
+    def _tracked_peak_equity(self, current_equity: float) -> float:
+        """Account equity high-water-mark for the drawdown breaker (D1 fix).
+
+        Reads the persisted peak from `agent_state`, ratchets it up to
+        `current_equity` (a dip never lowers it), persists a new high, and
+        returns the post-ratchet peak. Restart-safe — the peak survives
+        observer / process re-instantiation, so `AccountState.drawdown_pct()`
+        is computed against the true account peak rather than the per-call
+        current equity. The old bug fed `peak_equity = current` at both risk
+        call sites, forcing drawdown to 0 so the 15% `flatten_account` verdict
+        never fired.
+
+        FAIL-SAFE: if the read fails, return `current_equity` — exactly the
+        pre-fix behavior (peak == current ⇒ drawdown 0 ⇒ no flatten), so a
+        persistence hiccup can NEVER manufacture a false flatten. If only the
+        write fails, we still return the real (in-memory) peak so the breaker
+        is correct for THIS eval; the failure is logged, not swept.
+        """
+        try:
+            loaded = db.load_agent_state(
+                "bitunix_futures",
+                PEAK_EQUITY_AGENT_STATE_KEY,
+                db_url=self.db_url,
+            )
+        except Exception as e:
+            log.warning("bitunix_observer: peak-equity read failed: %s", e)
+            return current_equity
+        stored_peak = 0.0
+        if loaded is not None:
+            value, _updated = loaded
+            try:
+                stored_peak = (
+                    float(value.get("peak", 0.0))
+                    if isinstance(value, dict)
+                    else float(value)
+                )
+            except (TypeError, ValueError):
+                stored_peak = 0.0
+        peak = max(stored_peak, current_equity)
+        if peak > stored_peak:  # new high (incl. first-ever initialization)
+            try:
+                db.set_agent_state(
+                    "bitunix_futures",
+                    PEAK_EQUITY_AGENT_STATE_KEY,
+                    {"peak": peak},
+                    db_url=self.db_url,
+                )
+            except Exception as e:
+                log.warning(
+                    "bitunix_observer: peak-equity write failed at %.2f→%.2f: %s",
+                    stored_peak, peak, e,
+                )
+        return peak
+
     def _yaml_auto_execute_for_bitunix(self) -> bool:
         """Fresh-read YAML `bitunix_futures.auto_execute` on every call.
 
@@ -3244,7 +3317,8 @@ class BitunixFuturesObserver:
         # ── Risk gate (single chokepoint per CLAUDE.md) ──────────────
         order = proposal.proposed_order
         try:
-            account = AccountState(account="bitunix_futures", equity=account_equity, peak_equity=account_equity)
+            account = AccountState(account="bitunix_futures", equity=account_equity,
+                                   peak_equity=self._tracked_peak_equity(account_equity))
             strat_state = StrategyState.from_persistence("bitunix_futures", db_url=self.db_url)
             verdict_risk = self.risk_agent.evaluate(
                 order, account, strat_state, None, None,
