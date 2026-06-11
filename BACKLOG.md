@@ -563,6 +563,38 @@ status on next audit run.
 
 # Other Open Items (not in priority list above)
 
+## P2 — Telegram approval link → dashboard 404 (`/approvals/{order_id}`; web layer, division-agnostic) (filed 2026-06-11)
+
+During the 2026-06-11 Bitunix live test, the HITL approval Telegram message ("Review on dashboard →", order
+`84815916-958d-4651-99f1-1b25533eb8a8`) linked to a page that returned **404**. Investigated read-only.
+
+**NOT a URL or routing bug:** the link is built correctly — `comms/approval_format.py:80` →
+`https://trading.jacksumner.com/approvals/{order_id}` (`DEFAULT_DASHBOARD_BASE_URL`, `approval_format.py:26`)
+— and the route EXISTS + the pattern MATCHES (`web/routes.py:1784 @app.get("/approvals/{order_id}")`).
+
+**Root cause:** `approval_detail` (`web/routes.py:1799-1803`) looks the order up in the **in-memory**
+`PendingApprovalRegistry` (`registry.get_entry(order_id)`) and raises **404 "order_id … not pending"** on a
+miss, with **NO fallback to the persisted DB rows** — even though the registry writes `pending_approval_added`
+audit rows expressly "so the dashboard can recover" (`comms/pending_registry.py:99`). The registry is
+per-process + in-memory, so the detail page 404s whenever the web process serving `/approvals/{id}` is **not
+the exact process that registered the order** (tonight's manual-foreground live process vs whatever served
+`trading.jacksumner.com`) **or after any restart between registration and approval** (in-memory state lost, no
+DB recovery in the handler). In normal single-process systemd operation it works; it breaks in the
+foreground-live topology and on restart-mid-pending.
+
+**Division-agnostic** — the in-memory-registry + no-DB-recovery affects EVERY division's approval deep-link, not
+just Bitunix. **NOT moot** if Bitunix HITL is removed (other divisions still use the approval flow; see
+[[2026-06-11-bitunix-hitl-removal-blocked-dead-drawdown-breaker]]).
+
+**Impact (why P2 not P3):** it BLOCKED tonight's B1 real-fill validation — the operator could not approve the
+one HITL order via the dashboard, so the fire never placed (B1-on-real-fill still unvalidated). It blocks the
+HITL approval path whenever the approving process ≠ the page-serving process.
+
+**Fix direction:** make `approval_detail` (and the index) **recover from the persisted DB rows** when the
+in-memory registry misses (the persistence already exists — wire the recovery the comment promises).
+Follow-up read-only check to fully close it: confirm the prod serving topology (does `trading.jacksumner.com`
+route to the order-holding process? nginx port/bind) in case a process/port mismatch also contributed.
+
 ## P3 — `TypeError: not all arguments converted during string formatting` ×123 in tastytrade-streamer/starlette logging path (filed 2026-06-10)
 
 Cosmetic `%`-format bug; log lines still emit; zero functional impact on
