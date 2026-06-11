@@ -54,6 +54,38 @@ kill surface; (4) non-interactive `--live`; (5) orders/day cap. **§4 gate:** re
 strategy-execution change — ship behind a unit test that a forced 15% drawdown auto-flattens with no
 human, plus a real fill showing the B1 stop resting server-side.
 
+## P2 — Bitunix counter-trend reversal whipsaw: can a bull-direction signal open a SHORT? (filed 2026-06-11, INVESTIGATE — P-level pending Q3 cost quantification)
+
+**Observed (operator, 2026-06-11 live):** in a heavy BTC daily downtrend the confluence stack held a large
+bear score (~0 bull) from otter+cipher bear signals; when BTC bottomed and turned up, a **weak bull signal
+(+1)** arrived, but the agent — still seeing a dominant bear score with 2/3 confluence factors bear — placed
+a **SHORT into the reversal** and was near-immediately stopped. **Operator hypothesis:** a bull-direction
+signal should never be able to trigger a short entry.
+
+**Investigate (read-only; any direction-gating fix is §4-Backtester-gated, downstream):**
+- **Q1 — Mechanism (file:line):** what sets entry SIDE — the triggering signal's own direction, the aggregate
+  confluence score's sign, or something else (`bitunix_htf_regime.py` / confluence strategy; find where SIDE
+  is determined and how the score relates to it)? Confirm/refute that a bull trigger can yield a SHORT because
+  the net score is bear. **If refuted (side = trigger direction, not score) → STOP, report the short had a
+  different cause, don't force the theory.**
+- **Q2 — Stale-signal lag:** how do prior-downtrend bear signals age out of the stack — recency decay or
+  persist + keep weighting? Reconstruct the observed event (recent live short, stopped fast, near a daily
+  reversal): which signals were in the stack, their ages, their contribution to the bear score that drove the short.
+- **Q3 — Frequency + cost:** across history (live post-fix window + silence-window reconstruction set), count
+  entries where the trigger direction DISAGREED with the side taken (bull→short / bear→long); per entry the R,
+  time-to-stop, clustering near daily-trend reversals; aggregate R of mismatch entries vs the rest.
+- **Q4 — Evaluate rules vs the historical mismatch set:** (a) operator's rule — trigger direction must agree
+  with side; (b) faster confluence recency-decay; (c) net-score-sign must agree with the trigger before entry.
+  Which removes the losing whipsaws WITHOUT killing legitimate/profitable counter-trend entries (distinguish them)?
+
+**Output (separate session):** `reports/2026-06-11_bitunix_reversal_whipsaw_investigation.md` — mechanism,
+reconstructed event, frequency + aggregate cost, rule evaluation, recommendation + §4 Backtester-validation
+plan. **P-level:** provisional **P2** → **P1** if Q3 shows direction-mismatch entries are a material aggregate
+drag (entry-direction correctness is on the path-to-live). Cross-ref: a bad-direction entry is exactly the
+"bad order" the autonomous-live breakers must bound ([[2026-06-11-bitunix-hitl-removal-blocked-dead-drawdown-breaker]]);
+context in the two 2026-06-10 deep-dive reports (gates already validated). Reuse the `q3harness`/`tpcal`
+bar-walk + schema joins for the reconstruction + frequency pass.
+
 ## Observation window — active
 
 > **2026-06-10 — FRESH window active** (post vol-classifier fix `7834375`, started
