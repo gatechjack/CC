@@ -926,12 +926,32 @@ class BitunixBroker(Broker):
     ) -> dict:
         """Build the place_order body for one-way mode.
 
-        Entry (open): tradeSide=OPEN, reduceOnly=false, effect (TIF).
-        Exit (reduce): reduceOnly=true only — no tradeSide/positionId.
+        Entry (open): tradeSide=OPEN, reduceOnly=false, effect (TIF), + an
+        attached server-side stop (B1) when the order carries a positive
+        ``extra["stop_price"]``.
+        Exit (reduce): reduceOnly=true only — no tradeSide/positionId/stop.
+
+        B1 — atomic catastrophic stop: the protective stop is attached to the
+        SAME open call (BitUnix place_order accepts slPrice/slStopType/
+        slOrderType), so the position and its server-side stop are born in one
+        request — no naked window between entry fill and stop placement.
+          * slStopType=MARK_PRICE — fires ahead of liquidation on the same
+            reference the venue liquidates against; wick-resistant vs LAST_PRICE.
+          * slOrderType=MARKET — guaranteed exit on trigger (not a limit that
+            could sit unfilled through the move).
+          * The attached SL is a position-closing trigger (reduce-by-nature);
+            BitUnix exposes no separate reduce flag for it, and the open order
+            itself stays reduceOnly=False.
+        Scope: places the stop at its original structural level only — NO
+        ratchet / trail-to-BE (that is `modify_position_tp_sl_order`, a separate
+        later build). Absent or non-positive stop_price ⇒ no SL attached
+        (behavior unchanged). Exits (reduce_only) never carry an SL.
 
         VERIFY-ON-LIVE: official docs mark `tradeSide` hedge-mode-only and
         `effect` LIMIT-only; we send both on opens per the operator-confirmed
         payload. If the first live entry param-errors, drop them (module docstring).
+        The slPrice/slStopType/slOrderType attachment is likewise unverified
+        against a real fill — see Phase C live validation.
         """
         otype = (order.order_type or "market").upper()
         body: dict = {
@@ -949,6 +969,17 @@ class BitunixBroker(Broker):
         else:
             body["tradeSide"] = "OPEN"
             body["reduceOnly"] = False
+            # B1: attach the structural stop server-side, atomically with entry.
+            sl_raw = (order.extra or {}).get("stop_price")
+            if sl_raw is not None:
+                try:
+                    sl_px = float(sl_raw)
+                except (TypeError, ValueError):
+                    sl_px = 0.0
+                if sl_px > 0:
+                    body["slPrice"] = _amount_str(sl_px)
+                    body["slStopType"] = "MARK_PRICE"
+                    body["slOrderType"] = "MARKET"
         if otype == "LIMIT" or not reduce_only:
             body["effect"] = str((order.extra or {}).get("tif", "GTC")).upper()
         body["clientId"] = self._client_id(order)

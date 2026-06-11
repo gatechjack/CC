@@ -292,6 +292,78 @@ async def test_clientid_is_deterministic():
 
 
 # ---------------------------------------------------------------------------
+# B1 — entry-attached server-side catastrophic stop (atomic, MARK_PRICE/MARKET)
+# ---------------------------------------------------------------------------
+
+def _entry_order_with_stop(qty=0.001, side="sell", leverage=25, stop=63402.83065):
+    return ProposedOrder(
+        strategy="bitunix_futures", symbol="BTC/USDT.P", side=side, qty=qty,
+        order_type="market", extra={"leverage": leverage, "stop_price": stop},
+    )
+
+
+def test_entry_body_attaches_server_side_stop():
+    """An entry carrying extra['stop_price'] attaches the stop in the SAME
+    open body: slPrice + slStopType=MARK_PRICE + slOrderType=MARKET."""
+    broker, _ = _make_broker()
+    order = _entry_order_with_stop(side="sell", stop=63402.83065)
+    body = broker._build_order_body(order, "BTCUSDT", reduce_only=False)
+    assert body["slPrice"] == bx._amount_str(63402.83065)
+    assert body["slStopType"] == "MARK_PRICE"
+    assert body["slOrderType"] == "MARKET"
+    # MARKET stop → no slOrderPrice (that field is LIMIT-only).
+    assert "slOrderPrice" not in body
+    # Entry still OPENS — the attached SL does not make the order reduce-only.
+    assert body["tradeSide"] == "OPEN"
+    assert body["reduceOnly"] is False
+
+
+def test_entry_without_stop_has_no_sl_fields():
+    """Absent stop_price ⇒ body unchanged (no SL attached)."""
+    broker, _ = _make_broker()
+    body = broker._build_order_body(_entry_order(), "BTCUSDT", reduce_only=False)
+    for k in ("slPrice", "slStopType", "slOrderType"):
+        assert k not in body
+
+
+def test_entry_nonpositive_or_invalid_stop_has_no_sl():
+    """Non-positive / non-numeric stop_price ⇒ no SL (defensive, fail-safe)."""
+    broker, _ = _make_broker()
+    for bad in (0, -1.0, "abc", None):
+        body = broker._build_order_body(
+            _entry_order_with_stop(stop=bad), "BTCUSDT", reduce_only=False,
+        )
+        assert "slPrice" not in body
+
+
+def test_exit_never_attaches_stop():
+    """Reduce-only exits never carry an SL, even if extra has stop_price."""
+    broker, _ = _make_broker()
+    order = ProposedOrder(
+        strategy="bitunix_futures", symbol="BTC/USDT.P", side="buy", qty=0.001,
+        order_type="market", extra={"reduce_only": True, "stop_price": 63000.0},
+    )
+    body = broker._build_order_body(order, "BTCUSDT", reduce_only=True)
+    for k in ("slPrice", "slStopType", "slOrderType"):
+        assert k not in body
+    assert body["reduceOnly"] is True
+
+
+@pytest.mark.asyncio
+async def test_place_entry_with_stop_sends_sl_on_the_wire():
+    """End-to-end: the attached SL reaches the POST body actually sent."""
+    broker, client = _make_broker()
+    _queue_flat_entry_fill(client)
+    order = _entry_order_with_stop(side="sell", stop=63402.83065)
+    await broker.place_order(order)
+    body = client.body_of(P_PLACE)
+    assert body["slPrice"] == bx._amount_str(63402.83065)
+    assert body["slStopType"] == "MARK_PRICE"
+    assert body["slOrderType"] == "MARKET"
+    assert body["reduceOnly"] is False and body["tradeSide"] == "OPEN"
+
+
+# ---------------------------------------------------------------------------
 # place_order — exit (reduce-only)
 # ---------------------------------------------------------------------------
 
