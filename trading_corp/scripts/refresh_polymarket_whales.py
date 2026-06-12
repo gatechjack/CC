@@ -83,13 +83,14 @@ from trading_corp.data.polymarket_whale_stats import (
     DEFAULT_MIN_RESOLVED, compute_polymarket_stats, score_polymarket_whale,
     score_whale_from_audit,
 )
-# Reuse seed_*_deep's paginated activity walk — the realized compute needs the
-# FULL window (BUY+SELL+REDEEM of each decision together), not a single page
-# (scoping doc §6). Shared extraction into a whale_screening module is Phase 3;
-# importing the existing, tested helper avoids a second pagination impl.
-from trading_corp.scripts.seed_polymarket_watchlist_deep import (
-    _fetch_wallet_activity_windowed,
-)
+# Shared activity-acquisition layer (option (c) Phase 3 extraction): the
+# per-candidate /activity walk + loop wrapper now live in whale_screening and
+# are imported by both rosters. The realized compute needs the FULL window
+# (BUY+SELL+REDEEM of each decision together), not a single page (scoping doc
+# §6); broad_catch=True preserves refresh's broad except-wrapper around the
+# walk. This replaces the former refresh->seed_*_deep script-imports-script
+# coupling.
+from trading_corp.data.whale_screening import fetch_activity_window_for_candidates
 from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
 
@@ -215,35 +216,22 @@ async def refresh_polymarket_selection(
             len(candidates), len(list(categories)) + 1,
         )
 
-        # 2. Enrich each candidate: activity (one call per whale).
-        all_condition_ids: set[str] = set()
-        activity_by_wallet: dict[str, list] = {}
-        truncated_by_wallet: dict[str, bool] = {}
-        # FULL paginated window (scoping doc §6): REDEEM-grounded realized PnL
-        # needs every fill of a decision (BUY+SELL+REDEEM) together. Walk to
-        # EXHAUSTION bounded by max_pages — a fixed target_buy_rows just moves
-        # the truncation cliff (Phase E reconciliation finding). When
-        # target_buy_rows is None (default) disable the early-stop; whales that
-        # STILL hit the page ceiling are flagged `window_truncated` so their
-        # realized is read as a floor-bounded estimate, not silently trusted.
-        eff_target = (
-            target_buy_rows if target_buy_rows is not None
-            else max_pages * activity_limit + 1
+        # 2. Enrich each candidate: activity (one call per whale) via the
+        # shared whale_screening helper. FULL paginated window (scoping doc §6):
+        # REDEEM-grounded realized PnL needs every fill of a decision
+        # (BUY+SELL+REDEEM) together. Walk to EXHAUSTION bounded by max_pages —
+        # a fixed target_buy_rows just moves the truncation cliff (Phase E
+        # reconciliation finding). broad_catch=True keeps refresh's broad
+        # except-wrapper around the walk; whales that hit the page ceiling (or
+        # error) are flagged `window_truncated` so their realized is read as a
+        # floor-bounded estimate, not silently trusted.
+        activity_by_wallet, truncated_by_wallet, all_condition_ids = (
+            await fetch_activity_window_for_candidates(
+                client, candidates,
+                activity_limit=activity_limit, max_pages=max_pages,
+                target_buy_rows=target_buy_rows, broad_catch=True,
+            )
         )
-        for wallet in candidates:
-            try:
-                acts, _pages, reason = await _fetch_wallet_activity_windowed(
-                    client, wallet, activity_limit=activity_limit,
-                    max_pages=max_pages, target_buy_rows=eff_target,
-                )
-            except Exception as e:
-                log.warning("activity fetch failed for %s: %s", wallet[:10], e)
-                acts, reason = [], "fetch_error"
-            truncated_by_wallet[wallet] = reason in ("max_pages_hit", "fetch_error")
-            activity_by_wallet[wallet] = acts
-            for a in acts:
-                if a.type == "TRADE" and a.side == "BUY" and a.condition_id:
-                    all_condition_ids.add(a.condition_id)
         n_truncated = sum(1 for t in truncated_by_wallet.values() if t)
         if n_truncated:
             log.warning(
