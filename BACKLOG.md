@@ -426,6 +426,47 @@ are plausibly among the most interesting to copy.
 **Reference:** convergence table in `reports/2026-06-10_polymarket_option_c_phase1_validation.md`
 (Re-validation section). Relates to the Cloudflare-retry-burn P2 and the 0.0s-backoff P3 below.
 
+## P3 — Polymarket audit-cache unification deferred: cache key `(wallet, activity_max_ts)` is scope-blind (collision risk) — filed 2026-06-12 via option (c) Phase 3 Phase B
+
+**Context:** option (c) Phase 3 "Option 1" (small extraction, branch
+`polymarket-option-c-phase3-unify-2026-06-11`) shared the per-candidate
+`/activity` walk + loop wrapper between `refresh_polymarket_whales` and
+`seed_polymarket_watchlist_deep` via the new `trading_corp/data/whale_screening.py`.
+The audit cache (`agents/research/polymarket_whale_audit_cache.py`,
+`read_audit`/`write_audit`) was **deliberately left OUT of that extraction.**
+
+**Collision risk (why it can't be folded in under a byte-identical mandate):**
+the cache key is `(wallet, activity_max_ts)` — **scope-blind.** `refresh` builds
+a FULL-window `WhaleAuditReport`; `seed` builds a WINDOWED (last-100-decision)
+report. For the SAME wallet at the SAME `activity_max_ts` those are DIFFERENT
+reports. `refresh` reads/writes the cache today; `seed` deliberately skips it
+(see the comment at `seed`'s windowed `build_audit_report` call). If `seed` were
+wired to read-through the existing cache, a `refresh` entry would be served for
+`seed`'s windowed request (or vice versa), silently corrupting one roster's
+realized PnL.
+
+**Why deferred, not done:** unifying requires adding a scope discriminator to
+the key (e.g. `(wallet, activity_max_ts, window_scope)`) → a NEW key shape →
+NEW cache entries → a behavior change, not the byte-identical refactor Phase 3
+Option 1 was scoped to. It is therefore separate, behavior-affecting work.
+
+**Scope if picked up:** add the scope discriminator to the cache key + writer +
+reader; decide whether `seed` should cache at all (today it recomputes each run
+— correct but slower); add a test that a `refresh` full-window entry and a
+`seed` windowed entry for the same `(wallet, ts)` do NOT alias; validate
+realized PnL unchanged for both rosters.
+
+**Priority: P3.** Not gating — `seed` skipping the shared cache is correct today
+(no collision is possible while it doesn't read it). This is a
+performance/architecture item, and a TRAP flag to stop anyone later "optimizing"
+`seed` by pointing it at the audit cache without keying by scope.
+
+**Reference:** Phase A duplication map
+`reports/2026-06-11_polymarket_option_c_phase3_phaseA_duplication_map.md` §4
+("The audit cache cannot be unified inside a byte-identical refactor"); Phase
+B/C/D extraction on branch `polymarket-option-c-phase3-unify-2026-06-11`
+(`reports/2026-06-12_polymarket_option_c_phase3_phaseBCD_extraction.md`).
+
 ## P3 — Polymarket retry backoff: currently 0.0s on 429 responses
 
 Filed 2026-05-31. Cloudflare/Polymarket 429 responses hit retry path with
