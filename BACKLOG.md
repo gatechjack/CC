@@ -280,6 +280,31 @@ Prerequisite: Session B merged (✓) + 1-2 weeks paper-mode exercise. Not gating
 Tune scoring weights based on observed fire-rate + win-rate of PREMIUM-tier
 trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
+### P3 (monitor-only) — Reversal-whipsaw / direction-mismatch: do NOT add a trigger-direction gate
+
+Filed 2026-06-11 via the reversal-whipsaw investigation
+(`reports/2026-06-11_bitunix_reversal_whipsaw_investigation.md`, branch
+`bitunix-reversal-whipsaw-investigation-2026-06-11`, unmerged). Operator observed a
+weak bull signal opening a SHORT into a daily-bottom reversal and hypothesized a
+direction-gating rule (a bull trigger should never open a short).
+
+**Investigation REFUTES the harm premise.** Mechanism confirmed (entry side = aggregate
+`winning_side`, `bitunix_confluence.py:415-424`; not the trigger), but across the full
+score-path live window (2026-05-11→06-12) the direction-mismatch entries are **net +21.7R /
+82% WR** — *better* than matched entries (+0.561 avg). The operator's exact pattern,
+**bull-trigger→short, is 19 entries / +24.67R / 18W-1L (~95%)** — the most profitable
+subgroup. The proposed gate would block ~+24.7R of winners. In the reconstructed event the
+bears were **fresh (≤20 min), not stale**, so faster decay wouldn't help either. Reversal
+protection already lives at the right layer — the **HTF regime gate** (`observer:1395`,
+`skipped_htf_gate`).
+
+P3, not higher, because the quantified "cost" is **positive edge**, not a loss. **Do NOT
+implement (a) trigger-agreement or (c) net-agreement gates — winner-killers.** Action: monitor
+the bull→short subgroup's R in the next ranging/reversing regime (this window was a persistent
+downtrend, so the fades won; the tail risk is a true V-reversal). If that subgroup turns
+materially net-negative, revisit via **HTF-regime-classification quality** (block low-confidence
+counter-trend size near swing extremes / falling ADX), not a 3m trigger veto — §4 Backtester-gated.
+
 ---
 
 # Priority 2 — Polymarket Copy Trading path to live trading
