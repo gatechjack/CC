@@ -35,9 +35,23 @@ Before you change anything:
    silent-failure incidents (alerts disappearing) cost days. The
    dashboard renders snapshots; `audit_event` captures intent. If they
    disagree, audit wins.
-3. **Paper is the default on every startup.** `--live` requires
-   interactive confirmation AND populated broker creds
-   (`assert_live_ready` in [utils/secrets.py](trading_corp/utils/secrets.py)).
+3. **Paper is the default on every startup.** `--live` is necessary
+   but not sufficient: a live process also requires explicit
+   authorization AND populated broker creds (`assert_live_ready` in
+   [utils/secrets.py](trading_corp/utils/secrets.py), which runs on the
+   live path regardless of how authorization was granted).
+   Authorization has two paths (`resolve_live_decision` /
+   `live_authorized_noninteractive` in [main.py](trading_corp/main.py)):
+   - **Foreground (TTY):** interactive typed-`LIVE` confirmation
+     (`confirm_live`); declining aborts startup (exit 2).
+   - **Non-interactive (systemd, no stdin):** the durable env var
+     `TC_LIVE_AUTHORIZED=LIVE`. It is **durable by design**: it
+     persists across restarts, so a crash / `Restart=on-failure`
+     re-launch resurrects live WITHOUT re-arming. Revoke by
+     unsetting/changing the var => paper on the next restart.
+   - An unset/wrong `TC_LIVE_AUTHORIZED` under non-interactive `--live`
+     **downgrades to paper** (never aborts), so systemd cannot
+     crash-loop on a declined live start.
 4. **Risk caps are deterministic Python.** LLMs may *narrate* verdicts
    (`RiskAgent.narrate`); they may not produce them.
 5. **The TradingView webhook → broker path is handling real capital.**
