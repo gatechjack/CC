@@ -162,6 +162,61 @@ def confirm_live(input_fn=input) -> bool:
         return False
 
 
+# ── Non-interactive (systemd) LIVE authorization — item 4, 2026-06-13 ─────
+# The supervised service has no stdin, so the interactive typed-LIVE prompt
+# (confirm_live) hits EOFError. To run live unattended, a DURABLE, EXPLICIT
+# authorization is required: env var TC_LIVE_AUTHORIZED must equal the literal
+# "LIVE" (mirrors the typed word). DURABLE by operator decision (2026-06-13):
+# the var persists across restarts (incl. crash / Restart=on-failure), so an
+# unplanned restart resurrects live WITHOUT re-arming. This is NOT "no TTY =>
+# skip the prompt": an unset/wrong value never authorizes live — it downgrades
+# to PAPER (resolve_live_decision returns "paper", NOT "abort", so systemd
+# cannot crash-loop on `return 2`). Revoke by unsetting/changing the var =>
+# next restart runs paper. assert_live_ready (creds) still runs on the live path.
+LIVE_AUTH_ENV = "TC_LIVE_AUTHORIZED"
+LIVE_AUTH_TOKEN = "LIVE"
+
+
+def _stdin_is_interactive() -> bool:
+    """True iff stdin is a real TTY (foreground operator). Robust to a
+    closed/None stdin under systemd (returns False)."""
+    try:
+        return bool(sys.stdin) and sys.stdin.isatty()
+    except (ValueError, OSError):
+        return False
+
+
+def live_authorized_noninteractive(env: dict | None = None) -> bool:
+    """True iff the durable non-interactive live authorization is set:
+    TC_LIVE_AUTHORIZED == "LIVE" (exact, stripped). Durable — a crash /
+    Restart=on-failure re-launch re-reads the still-set env and re-authorizes
+    live (no consumption). Unset/changed => False => downgrade to paper."""
+    env = os.environ if env is None else env
+    return (env.get(LIVE_AUTH_ENV, "") or "").strip() == LIVE_AUTH_TOKEN
+
+
+def resolve_live_decision(
+    *,
+    want_live: bool,
+    interactive: bool,
+    env: dict | None = None,
+    input_fn=input,
+) -> str:
+    """Resolve the startup mode decision. Returns:
+      "live"  — authorized live: interactive typed-LIVE, OR non-interactive
+                durable TC_LIVE_AUTHORIZED=LIVE.
+      "abort" — interactive operator declined the prompt (=> exit 2).
+      "paper" — not requested, OR requested non-interactively without a valid
+                authorization => DOWNGRADE to paper (NOT exit, so a systemd
+                Restart=on-failure cannot crash-loop on `return 2`).
+    """
+    if not want_live:
+        return "paper"
+    if interactive:
+        return "live" if confirm_live(input_fn) else "abort"
+    return "live" if live_authorized_noninteractive(env) else "paper"
+
+
 async def run(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     sys.stdout.write(DISCLAIMER)
@@ -170,16 +225,26 @@ async def run(argv: list[str] | None = None) -> int:
     secrets = load_secrets()
     mode = "PAPER"
     dry_run = bool(args.dry_run)
-    if args.live:
-        if not confirm_live():
-            sys.stdout.write("LIVE mode NOT confirmed. Exiting (no orders placed).\n")
-            return 2
+    interactive = _stdin_is_interactive()
+    # item 4 — interactive typed-LIVE (foreground) OR durable non-interactive
+    # TC_LIVE_AUTHORIZED=LIVE (systemd). Unauthorized non-interactive --live
+    # downgrades to PAPER (never `return 2`, which would crash-loop under
+    # Restart=on-failure).
+    live_auth = "n/a"
+    live_decision = resolve_live_decision(
+        want_live=bool(args.live), interactive=interactive,
+    )
+    if live_decision == "abort":
+        sys.stdout.write("LIVE mode NOT confirmed. Exiting (no orders placed).\n")
+        return 2
+    if live_decision == "live":
         try:
             assert_live_ready(secrets, tuple(args.brokers))
         except RuntimeError as e:
             sys.stdout.write(f"LIVE preflight failed: {e}\n")
             return 3
         mode = "LIVE"
+        live_auth = "interactive" if interactive else "env_authorized"
         if dry_run:
             sys.stdout.write(
                 "\n*** DRY-RUN ENABLED ***\n"
@@ -189,19 +254,28 @@ async def run(argv: list[str] | None = None) -> int:
                 "Approve trades freely — nothing routes to the live broker.\n\n"
             )
             sys.stdout.flush()
-    elif dry_run:
-        sys.stdout.write(
-            "Note: --dry-run has no effect without --live. PAPER mode already "
-            "uses simulated execution.\n"
-        )
-        dry_run = False
+    else:  # "paper" — not live (not requested, or non-interactive unauthorized)
+        if args.live and not interactive:
+            live_auth = "downgraded_no_auth"
+            sys.stdout.write(
+                "LIVE requested but TC_LIVE_AUTHORIZED != LIVE — running PAPER. "
+                "Set TC_LIVE_AUTHORIZED=LIVE on the systemd unit to authorize live.\n"
+            )
+        if dry_run:
+            sys.stdout.write(
+                "Note: --dry-run has no effect without LIVE; PAPER mode already "
+                "uses simulated execution.\n"
+            )
+            dry_run = False
+        sys.stdout.flush()
 
     # --- DB + agents ---
     db_path = db.init_db(secrets.db_url)
     logger_agent = LoggerAgent(secrets.db_url)
     logger_agent.log_event(
         "system", "startup",
-        {"mode": mode, "live_brokers": list(args.brokers), "dry_run": dry_run},
+        {"mode": mode, "live_brokers": list(args.brokers), "dry_run": dry_run,
+         "live_authorization": live_auth},
     )
 
     risk_agent = RiskAgent(narrator_enabled=bool(secrets.anthropic_api_key))
