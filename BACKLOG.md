@@ -48,6 +48,28 @@ also (re)loaded the B1 stop). **15% breaker now LIVE in paper** — see `runbook
 Resolves the dead-breaker BLOCKER tracked in
 [[2026-06-11-bitunix-hitl-removal-blocked-dead-drawdown-breaker]] — **NOW RESOLVED**.
 
+## Item 4 — non-interactive durable `--live` authorization: **BUILT + TESTED, UNMERGED** (branch 710e181, 2026-06-13)
+
+The systemd service couldn't run live: `--live` required an interactive typed-LIVE
+confirmation (`main.py` `confirm_live`) which EOFErrors under systemd → exit 2 →
+crash-loop. **BUILT + TESTED on branch `bitunix-noninteractive-live-auth-2026-06-13`
+(`710e181`, pushed, UNMERGED):** durable env `TC_LIVE_AUTHORIZED=LIVE` (persists across
+restarts incl. crash/`Restart=on-failure` → resurrects live without re-arming; revoke by
+unsetting → paper). Unauthorized non-interactive `--live` **downgrades to PAPER** (never
+`return 2` → no crash-loop). Interactive typed-LIVE unchanged; `assert_live_ready` still
+runs. 15/15 tests + full branch-vs-base zero code regressions.
+
+**STATUS: COMMITTED on branch `710e181`, NOT MERGED, NOT DEPLOYED — the last *code* blocker
+for autonomous live.** Go-live needs, in order, all operator-gated: **(a)** merge `710e181`
+→ main → **(b)** deploy `main.py` (backup→LF→py_compile→md5→atomic-mv, like D1/HITL) →
+**(c) CLAUDE.md invariant #3 edit — HARD PREREQUISITE, operator-run** (classifier blocks
+agent edits; STOP-AND-READ #3 "`--live` requires interactive confirmation" contradicts the
+deployed path) → **(d)** operator go-live restart (systemd unit `--live` +
+`Environment=TC_LIVE_AUTHORIZED=LIVE`, flip `bitunix_futures.execution_mode: live`; that boot
+loads HITL=0 + D1 + Item-4 → autonomous live). Full map: memory
+[[bitunix-go-live-sequence-and-item4]]. Accepted residual risks: durable auth resurrects live
+on crash; B1 unvalidated-on-real-fill (dropped); taker-fee net-negative.
+
 ## Observation window — active
 
 > **2026-06-10 — FRESH window active** (post vol-classifier fix `7834375`, started
