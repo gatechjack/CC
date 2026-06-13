@@ -109,10 +109,7 @@ from trading_corp.data.polymarket_data_api_client import (
 )
 from trading_corp.data.polymarket_whale_audit import build_audit_report
 from trading_corp.data.polymarket_whale_stats import score_whale_from_audit
-from trading_corp.data.whale_screening import (
-    _fetch_wallet_activity_windowed,  # re-exported (option (c) Phase 3): callers/tests import it from here
-    fetch_activity_window_for_candidates,
-)
+from trading_corp.data.whale_screening import fetch_activity_window_for_candidates
 from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
 

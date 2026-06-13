@@ -25,12 +25,10 @@ import pytest
 
 from trading_corp.data.polymarket_data_api_client import ActivityRow, LeaderboardEntry
 from trading_corp.data.polymarket_whale_audit import build_audit_report
+from trading_corp.data.whale_screening import _fetch_wallet_activity_windowed
 from trading_corp.persistence.db import init_db, load_agent_state, set_agent_state
 from trading_corp.scripts import refresh_polymarket_whales as refresh_mod
 from trading_corp.scripts.refresh_polymarket_whales import refresh_polymarket_selection
-from trading_corp.scripts.seed_polymarket_watchlist_deep import (
-    _fetch_wallet_activity_windowed,
-)
 
 REDEEM_SENTINEL = 999
 

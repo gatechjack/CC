@@ -29,10 +29,10 @@ from trading_corp.data.polymarket_data_api_client import (
     LeaderboardEntry,
     PolymarketDataAPIError,
 )
+from trading_corp.data.whale_screening import _fetch_wallet_activity_windowed
 from trading_corp.scripts import seed_polymarket_watchlist_deep as seed_mod
 from trading_corp.scripts.seed_polymarket_watchlist_deep import (
     _aggregate_window_to_decisions,
-    _fetch_wallet_activity_windowed,
     _select_resolved_buys_window,
     seed_polymarket_watchlist_deep,
 )
