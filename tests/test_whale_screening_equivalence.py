@@ -288,16 +288,16 @@ async def test_seed_helper_equals_pre_refactor_loop_explicit_target():
     assert counted["n"] == ref_with == 1
 
 
-# ── decoupling + re-export identity (the structural win) ───────────────────
+# ── decoupling: single-source walk, no seed re-export ──────────────────────
 
 
-def test_walk_is_single_source_reexported_from_seed():
-    """The walk has ONE definition (whale_screening); seed re-exports the SAME
-    object so existing `from ...seed_... import _fetch_wallet_activity_windowed`
-    imports (incl. the refresh test) keep resolving to it. This is the removed
-    refresh->seed script-imports-script coupling, now via the shared module."""
-    assert seed_mod._fetch_wallet_activity_windowed is _fetch_wallet_activity_windowed
+def test_walk_is_single_source_in_whale_screening():
+    """The walk has ONE definition, in whale_screening. seed no longer
+    re-exports it — option (c) Phase 4 removed the back-compat shim, so every
+    caller/test imports it directly from whale_screening. This is the fully
+    removed refresh->seed script-imports-script coupling."""
     assert (
-        seed_mod._fetch_wallet_activity_windowed
-        is whale_screening._fetch_wallet_activity_windowed
+        whale_screening._fetch_wallet_activity_windowed
+        is _fetch_wallet_activity_windowed
     )
+    assert not hasattr(seed_mod, "_fetch_wallet_activity_windowed")
