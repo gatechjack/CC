@@ -231,7 +231,13 @@ TRADE_SYMBOL = "BTC/USDT.P"            # canonical symbol used in ProposedOrder
 # Threshold widening/shrinking is a single-constant edit — no schema
 # change. Recommended widening only after Stage-1 success criteria
 # are written down + the first N have been reconciled to the cent.
-HITL_FIRST_N_LIVE_ORDERS = 10
+# Operator-required PERMANENT HITL-out for Bitunix (item 3, 2026-06-13):
+# 0 => is_monitor_mode is always True (current_count >= 0) => needs_hitl is
+# always False => the `if needs_hitl:` approval-hold block is never entered;
+# every live order places directly via the monitor-mode path. The
+# PendingApprovalRegistry stays wired but dormant (harmless). Raising this
+# above 0 would re-arm per-order HITL for the first N live orders.
+HITL_FIRST_N_LIVE_ORDERS = 0
 # Block up to 10 minutes for an operator decision before synthetic-reject
 # on timeout. Per PendingApprovalRegistry.wait()'s timeout semantics.
 HITL_WAIT_TIMEOUT_SECONDS = 600.0
