@@ -399,38 +399,6 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
-## P1 — E1 live Polymarket broker: reuse-first design (filed 2026-06-13)
-
-**Design (read-only):** [`reports/2026-06-13_polymarket_e1_live_broker_design.md`](reports/2026-06-13_polymarket_e1_live_broker_design.md)
-(branch `polymarket-e1-live-broker-design-2026-06-13`, unmerged). Refines E1 of the execution
-path-to-live punch list (`reports/2026-06-13_polymarket_copy_path_to_live_scoping.md`, on the
-separate unmerged `polymarket-copy-path-to-live-scoping-2026-06-13` branch — both review branches
-touch this P2 section; reconcile on merge).
-
-**Reuse verdict: E1 is an M WIRING job, not a from-scratch L.** The official `py_clob_client` SDK
-provides the whole order lifecycle with EIP-712 signing INTERNAL — `ClobClient(...)` →
-`create_order(OrderArgs)`/`create_market_order` → `post_order(signed, OrderType)` →
-`cancel(order_id)`/`cancel_all()`; L2 auth `create_or_derive_api_creds`/`set_api_creds`. Signing
-already PROVEN by `scripts/spike_polymarket_signing/spike_sign.py` (2026-05-29). The `Broker`
-contract is small + known (`base.py:87-91` `place_order(ProposedOrder)->FillEvent`,
-`cancel_order(str)->bool`; copy `tastytrade.py:259/273` + place→poll→FillEvent `:398-460`). Wallet
-plumbing (items 6/7) SHIPPED (`500cc1e`). **No Polymarket MCP** (no shortcut).
-
-**Genuinely-new (the M):** ProposedOrder→OrderArgs `token_id` resolution; `post_order`→`FillEvent`
-+ status poll; cancel-id mapping; quote/snapshot consolidation onto the SDK; dep pinning
-(`py_clob_client==0.17.5`+`py_order_utils==0.3.2`+`web3==6.11.0`+`eth-account==0.13.1`, NOT in
-requirements.txt; prod py3.12/Linux lockfile; kwargs — constructor arg order is version-sensitive).
-
-**OPERATOR-ONLY (agent never signs/funds/approves):** provision `POLYMARKET_COPY_*` key to KV;
-fund PCT EOA in **USDC.e** (the CLOB collateral, not native USDC); ERC-20 + ERC-1155 allowance
-approvals (none done, funder nonce 0). **Validation:** sign-only/mocked + `--dry-run` are
-agent-doable; no CLOB sandbox → first real validation is a $1 shakedown (operator-gated). Adjacent
-E2 = route the copy loop's `auto_execute`/live branch through `data_exec.place()` (audit item 9).
-
-**Builds on the (real) prior audit** `reports/2026-05-28_polymarket_copy_live_readiness.md`
-(item 8 = E1). NOTE: the scoping report wrongly called that audit "fabricated" — a Glob tooling
-error, now retracted; the audit is real.
-
 ## P1 — Polymarket copy-trader SELL-pairing → option (c) (Phase 1 MERGED 2026-06-10, NOT run on prod; phases 2-4 pending)
 
 **Phase 1 status (2026-06-10): MERGED to main, NOT DEPLOYED / not run against prod.**
