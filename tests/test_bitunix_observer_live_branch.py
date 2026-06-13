@@ -251,8 +251,11 @@ async def test_live_mode_pushes_telegram_with_live_suffix(
 
     telegram_channel.push.assert_awaited()
     msgs = [c.args[0] for c in telegram_channel.push.await_args_list]
-    assert any("(live)" in m for m in msgs), (
-        f"expected telegram message with (live) suffix; got {msgs}"
+    # HITL permanently out (HITL_FIRST_N_LIVE_ORDERS=0): every live order is
+    # monitor-mode, so the success suffix is "(live, monitor-mode)" — not the
+    # bare "(live)" that the first-N HITL-gated orders used to carry.
+    assert any("(live, monitor-mode)" in m for m in msgs), (
+        f"expected telegram message with (live, monitor-mode) suffix; got {msgs}"
     )
 
 

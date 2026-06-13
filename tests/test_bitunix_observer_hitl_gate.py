@@ -35,6 +35,8 @@ from trading_corp.brokers.base import FillEvent
 from trading_corp.graph.interrupts import ApprovalRequest, BoardDecision
 from trading_corp.persistence import db
 
+_LEGACY_GATE_N = 10  # force a nonzero gate to exercise the retained-but-dormant HITL machinery (production HITL_FIRST_N_LIVE_ORDERS=0)
+
 
 # ─── fixtures ───────────────────────────────────────────────────────────
 
@@ -48,6 +50,7 @@ def _make_observer(
     registry_raises=None,
     place_raises=None,
     auto_execute: bool = True,
+    force_gate_n: int | None = None,
 ):
     """Live-mode observer with a programmable PendingApprovalRegistry stub.
 
@@ -58,6 +61,12 @@ def _make_observer(
     db_path = tmp_path / "hitl.db"
     db.init_db(f"sqlite:///{db_path}")
     db_url = f"sqlite:///{db_path}"
+
+    if force_gate_n is not None:
+        monkeypatch.setattr(
+            "trading_corp.agents.divisions.bitunix_futures_observer.HITL_FIRST_N_LIVE_ORDERS",
+            force_gate_n,
+        )
 
     if initial_count > 0:
         db.set_agent_state(
@@ -137,10 +146,11 @@ def _trigger_payload() -> dict:
 # ─── threshold + constant ───────────────────────────────────────────────
 
 
-def test_hitl_first_n_constant_is_10():
-    """The brief specified 10 explicitly. Lock it in so a refactor
-    can't silently shift the gate."""
-    assert HITL_FIRST_N_LIVE_ORDERS == 10
+def test_hitl_first_n_is_zero_permanent():
+    """Operator-required permanent HITL-out (item 3): the gate constant is
+    0, so is_monitor_mode is always True and the per-order approval gate is
+    never entered. Lock it so a refactor can't silently re-arm HITL."""
+    assert HITL_FIRST_N_LIVE_ORDERS == 0
 
 
 # ─── approve path ───────────────────────────────────────────────────────
@@ -154,6 +164,7 @@ async def test_hitl_approve_at_first_order_calls_place_and_increments(
         tmp_path, monkeypatch,
         initial_count=0,
         registry_decision=BoardDecision(decision="approve"),
+        force_gate_n=_LEGACY_GATE_N,
     )
     _set_bull_state(obs)
     await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
@@ -172,6 +183,7 @@ async def test_hitl_summary_includes_position_in_first_n(
         tmp_path, monkeypatch,
         initial_count=3,
         registry_decision=BoardDecision(decision="approve"),
+        force_gate_n=_LEGACY_GATE_N,
     )
     _set_bull_state(obs)
     await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
@@ -183,7 +195,7 @@ async def test_hitl_summary_includes_position_in_first_n(
     # Detail dict must carry the order + audit fields the web app renders
     assert req.detail["division"] == "bitunix_futures"
     assert req.detail["hitl_first_n_position"] == 4
-    assert req.detail["hitl_first_n_total"] == HITL_FIRST_N_LIVE_ORDERS
+    assert req.detail["hitl_first_n_total"] == _LEGACY_GATE_N
     assert "order" in req.detail
 
 
@@ -196,6 +208,7 @@ async def test_hitl_modify_applies_new_qty_then_places(tmp_path, monkeypatch):
         tmp_path, monkeypatch,
         initial_count=0,
         registry_decision=BoardDecision(decision="modify", new_qty=0.0005),
+        force_gate_n=_LEGACY_GATE_N,
     )
     _set_bull_state(obs)
     await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
@@ -220,6 +233,7 @@ async def test_hitl_reject_does_not_call_place_and_audits_skip(
         registry_decision=BoardDecision(
             decision="reject", reason="not the right setup",
         ),
+        force_gate_n=_LEGACY_GATE_N,
     )
     _set_bull_state(obs)
     await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
@@ -244,6 +258,7 @@ async def test_hitl_reject_pushes_telegram_alert(tmp_path, monkeypatch):
     obs, _de, _la, telegram_channel, _r = _make_observer(
         tmp_path, monkeypatch,
         registry_decision=BoardDecision(decision="reject", reason="no"),
+        force_gate_n=_LEGACY_GATE_N,
     )
     _set_bull_state(obs)
     await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
@@ -267,6 +282,7 @@ async def test_hitl_timeout_treated_as_reject(tmp_path, monkeypatch):
         registry_decision=BoardDecision(
             decision="reject", reason="approval timeout",
         ),
+        force_gate_n=_LEGACY_GATE_N,
     )
     _set_bull_state(obs)
     await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
@@ -293,6 +309,7 @@ async def test_hitl_registry_exception_fails_closed(tmp_path, monkeypatch):
     obs, data_exec, *_ = _make_observer(
         tmp_path, monkeypatch,
         registry_raises=RuntimeError("registry imploded"),
+        force_gate_n=_LEGACY_GATE_N,
     )
     _set_bull_state(obs)
     await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
@@ -346,6 +363,7 @@ async def test_audit_intent_payload_marks_hitl_gate_required(
         tmp_path, monkeypatch,
         initial_count=0,
         registry_decision=BoardDecision(decision="approve"),
+        force_gate_n=_LEGACY_GATE_N,
     )
     _set_bull_state(obs)
     await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
@@ -419,6 +437,10 @@ async def test_no_pending_registry_skips_hitl_gracefully(tmp_path, monkeypatch):
     db_path = tmp_path / "no_reg.db"
     db.init_db(f"sqlite:///{db_path}")
     db_url = f"sqlite:///{db_path}"
+    monkeypatch.setattr(
+        "trading_corp.agents.divisions.bitunix_futures_observer.HITL_FIRST_N_LIVE_ORDERS",
+        _LEGACY_GATE_N,
+    )
     risk_agent = MagicMock()
     risk_verdict = MagicMock()
     risk_verdict.verdict = "approve"
@@ -479,3 +501,27 @@ async def test_hitl_reject_does_not_pollute_daily_risk_below_attempt_semantic(
     cum_after, n_after = obs._read_daily_risk(today)
     assert n_after == n_before + 1
     assert cum_after > cum_before
+
+
+@pytest.mark.asyncio
+async def test_hitl_disabled_skips_gate_and_places(tmp_path, monkeypatch):
+    """Operator-required permanent HITL-out: with HITL_FIRST_N_LIVE_ORDERS=0
+    the very first live order skips the approval-hold path entirely —
+    needs_hitl resolves False, registry.wait() is never awaited, and the
+    order proceeds straight to data_exec.place()."""
+    assert HITL_FIRST_N_LIVE_ORDERS == 0
+    obs, data_exec, _la, telegram_channel, registry = _make_observer(
+        tmp_path, monkeypatch,
+        initial_count=0,
+        registry_decision=BoardDecision(decision="approve"),
+    )
+    _set_bull_state(obs)
+    await obs.observe_and_decide(_trigger_payload(), source="lord_otter")
+    registry.wait.assert_not_awaited()
+    data_exec.place.assert_called_once()
+    assert obs._live_orders_placed_count() == 1
+    with db.connect(obs.db_url) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM audit_event WHERE kind='live_order_placed' LIMIT 1"
+        ).fetchone()
+    assert json.loads(row["payload_json"])["hitl_gate"] == "monitor_mode"
