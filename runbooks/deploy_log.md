@@ -116,6 +116,33 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-13 05:29 UTC — Bitunix per-order HITL removal MERGED + DEPLOYED-TO-DISK (PENDING-LOAD on next restart; item 3)
+
+**STATE VERB: DEPLOYED-TO-DISK — NOT yet LOADED.** The prod file on disk has `HITL_FIRST_N_LIVE_ORDERS=0`, but the running process (PID 2608222, booted 03:37) still has the OLD value (10) imported. The constant goes live in-process on the **NEXT restart**, deliberately deferred to **item-4 go-live** (one boot loads HITL + D1 together — no wasted ~22-min RH-hang reboot). System stays paper; no behavior change until then. **HITL only matters in LIVE mode** anyway (the gate lives in `_place_live`), so it is doubly dormant now.
+
+**Commits:** merge `eaeb189` (`--no-ff` of `18d6fe5` into `main`; branch `bitunix-hitl-removal-2026-06-13` retained). Pushed origin `3d6164f..eaeb189`.
+**Triggered by:** operator requirement — per-order HITL permanently out of the loop for Bitunix.
+**Backup:** `bitunix_futures_observer.py.bak-pre-hitl-2026-06-13` (the prior D1 file: md5 `21830bf3…710b`, `HITL=10`; `cp -n`, one-command revert).
+
+**Files deployed-to-disk (1):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — md5 `21830bf3…710b` (D1) → `e30f1756…b8f5` (D1 + `HITL=0`).
+
+**Feature:** per-order HITL approval removed from the bitunix LIVE order path via the single constant `HITL_FIRST_N_LIVE_ORDERS = 10 → 0`. `0` ⇒ `is_monitor_mode` always True ⇒ `needs_hitl` always False ⇒ the `if needs_hitl:` approval-hold block (`ApprovalRequest` + `pending_registry.wait`) is never entered ⇒ every live order places directly via the already-exercised monitor-mode path. `PendingApprovalRegistry` retained but dormant. Phase-A confirmation (vs `reports/2026-06-11_bitunix_hitl_removal_for_autonomous_live.md`): nothing downstream depends on the approval — `log_proposed_order`, `_record_daily_risk`, `data_exec.place`, audits, counter-increment all run identically. Cosmetic only: every live order now stamps `hitl_gate='monitor_mode'` + `(live, monitor-mode)` telegram suffix + the `hitl_activity_24h` dashboard tile reads red (the new normal).
+
+**Verification (DEPLOYED-TO-DISK, read-only):** prod md5 `e30f1756…b8f5` (exact = merged blob), `HITL_FIRST_N_LIVE_ORDERS = 0` (line 240), py_compile OK, backup present. Pre-deploy gates: merge-tree conflict-free vs `3d6164f`; full branch-vs-pristine-base pytest = **zero CODE regressions** (1 genuine consequence — the `test_bitunix_observer_live_branch` suffix test — fixed to `(live, monitor-mode)`; 2 `test_paper_run_tooling` readiness failures were worktree-empty-DB env artifacts, pass on any checkout with the schema); targeted bitunix gate green (96 passed).
+
+**NOT LOADED — running process unaffected:** PID 2608222 keeps `HITL=10` until the item-4 go-live restart. No restart this session (deliberate).
+
+**Residual risk accepted (operator decision):** item 2 (B1 real-fill validation) DROPPED — B1's server-side stop is validated in-code/loaded but UNPROVEN on a live fill. With HITL gone, B1 is the per-order backstop; accepted residual risk pending item-4 go-live.
+
+**Rollback recipe (disk):**
+```bash
+ssh azureuser@trading.jacksumner.com "B=/home/azureuser/trading_corp/trading_corp/agents/divisions/bitunix_futures_observer.py; cp \$B.bak-pre-hitl-2026-06-13 \$B"
+# restores the D1 (HITL=10) file on disk; no restart needed (running process already has HITL=10).
+```
+
+---
+
 ## 2026-06-13 03:37 UTC — D1/D2 bitunix account-drawdown auto-flatten MERGED + DEPLOYED + LOADED (single-file; breaker now LIVE in paper)
 
 **Commits:** merge `76f3bb8` (`--no-ff` of `5c3a294` into `main`; branch `bitunix-d1-drawdown-flatten-fix-2026-06-11` retained as audit trail). Branch: `3dad0b3` fix, `4d3a97c` report+test-evidence, `5c3a294` BACKLOG status. Pushed origin `b1e4150..76f3bb8`.

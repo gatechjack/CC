@@ -44,7 +44,7 @@ single-file `bitunix_futures_observer.py` to prod (md5 `21830bf3…710b`, backup
 `execution_mode=paper`; peak self-initialized on first eval → no false flatten; the restart
 also (re)loaded the B1 stop). **15% breaker now LIVE in paper** — see `runbooks/deploy_log.md`
 2026-06-13 entry. **First prerequisite of the path-to-supervised-live sequence**
-(deploy D1 ✅ → **NEXT: validate B1 on a real fill** → HITL removal → non-interactive `--live`).
+(deploy D1 ✅ → HITL removal ✅ **DEPLOYED-TO-DISK 2026-06-13** [[bitunix-hitl-removed-deployed-to-disk]]; B1 real-fill validation **DROPPED** — accepted residual risk → **NEXT: item-4 non-interactive `--live` go-live**, whose restart loads HITL+D1).
 Resolves the dead-breaker BLOCKER tracked in
 [[2026-06-11-bitunix-hitl-removal-blocked-dead-drawdown-breaker]] — **NOW RESOLVED**.
 
