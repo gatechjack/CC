@@ -26,24 +26,27 @@ When the flip happens, the dashboard begins filtering by flip-date — paper-mod
 trades persist in the DB but are no longer rendered in the live-mode view.
 Queries against historical paper data remain available via Claude.
 
-## P1 — D1/D2 account-drawdown auto-flatten fix: **built + tested, pending deploy** (filed 2026-06-11)
+## P1 — D1/D2 account-drawdown auto-flatten fix: **MERGED + DEPLOYED + LOADED** (deployed 2026-06-13; filed 2026-06-11)
 
 The 15% account-drawdown auto-flatten was a placeholder that never fired
 (`peak_equity=current` ⇒ `drawdown_pct()=0`; and the score path never dispatched
 the flatten — D1/D2). **FIX BUILT + TESTED on branch
-`bitunix-d1-drawdown-flatten-fix-2026-06-11` (4d3a97c, pushed, UNMERGED):**
+`bitunix-d1-drawdown-flatten-fix-2026-06-11` (4d3a97c, pushed; MERGED to main as `76f3bb8`):**
 persisted account high-water-mark in `agent_state` (restart-safe, fail-safe to
 current on read error), both call sites fed the tracked peak, score-path flatten
 dispatch added. Tests prove a forced 15% drawdown flattens on BOTH paths;
 regression-proof + branch-vs-pristine-base no-regression gate (zero new). Report
 `reports/2026-06-11_bitunix_d1_drawdown_flatten_fix.md`.
 
-**STATUS: pending operator-gated DEPLOY** — single-file `bitunix_futures_observer.py`
-+ restart (peak self-initializes on first eval → no false flatten on rollout; the
-restart also loads the deployed B1 stop). **This is the first prerequisite of the
-path-to-supervised-live sequence** (deploy D1 → validate B1 on a real fill → HITL
-removal → non-interactive `--live`). Resolves the dead-breaker BLOCKER tracked in
-[[2026-06-11-bitunix-hitl-removal-blocked-dead-drawdown-breaker]] once deployed.
+**STATUS: DEPLOYED + LOADED 2026-06-13** — merge `76f3bb8` (`--no-ff` of `5c3a294`, pushed);
+single-file `bitunix_futures_observer.py` to prod (md5 `21830bf3…710b`, backup
+`.bak-pre-d1-2026-06-11`) + restart 03:37 UTC (new PID 2608222, fresh venv-3.12 `.pyc`,
+`execution_mode=paper`; peak self-initialized on first eval → no false flatten; the restart
+also (re)loaded the B1 stop). **15% breaker now LIVE in paper** — see `runbooks/deploy_log.md`
+2026-06-13 entry. **First prerequisite of the path-to-supervised-live sequence**
+(deploy D1 ✅ → **NEXT: validate B1 on a real fill** → HITL removal → non-interactive `--live`).
+Resolves the dead-breaker BLOCKER tracked in
+[[2026-06-11-bitunix-hitl-removal-blocked-dead-drawdown-breaker]] — **NOW RESOLVED**.
 
 ## Observation window — active
 

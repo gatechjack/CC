@@ -116,6 +116,40 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-13 03:37 UTC — D1/D2 bitunix account-drawdown auto-flatten MERGED + DEPLOYED + LOADED (single-file; breaker now LIVE in paper)
+
+**Commits:** merge `76f3bb8` (`--no-ff` of `5c3a294` into `main`; branch `bitunix-d1-drawdown-flatten-fix-2026-06-11` retained as audit trail). Branch: `3dad0b3` fix, `4d3a97c` report+test-evidence, `5c3a294` BACKLOG status. Pushed origin `b1e4150..76f3bb8`.
+**Triggered by:** operator-supervised deploy session 2026-06-13 — BLOCKER prerequisite for autonomous-live HITL removal.
+**Backup tag:** `bitunix_futures_observer.py.bak-pre-d1-2026-06-11` (the pre-fix live file; `cp -n`, one-command revert).
+
+**Files deployed (1):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — real account high-water-mark feeding `AccountState.peak_equity` + D2 score-path flatten dispatch. md5 `2f4a0a52…dd58` → `21830bf3…710b`.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **D1 — the 15% account-drawdown auto-flatten now FIRES.** New `_tracked_peak_equity()` persists an `agent_state` high-water-mark (`("bitunix_futures","account_peak_equity")={"peak":float}`), ratchets up only, restart-safe; both risk call sites now pass the tracked peak instead of `peak_equity=current` (which forced `drawdown_pct()`→0 and left `flatten_account` permanently dead). Fail-safe: read error → returns current equity (= pre-fix behavior, drawdown 0) so a persistence hiccup can never manufacture a *false* flatten.
+- **D2 — score-path flatten dispatch.** `await self._maybe_flatten_on_risk_verdict(risk_verdict)` added to the score path before the reject branch (mirrors the Phase-3.1 path); a `flatten_account` verdict on the score path now routes to `flatten_division` instead of being swallowed as a plain reject.
+
+**Notable code changes:**
+- New constant `PEAK_EQUITY_AGENT_STATE_KEY = "account_peak_equity"`.
+- Peak self-initializes to current equity on first post-deploy eval → no false flatten on rollout (expected, correct).
+
+**Verification (probe — DEPLOYED + LOADED):**
+- Pre-deploy gates: merge-tree conflict-free vs `b1e4150`; bitunix observer/risk/drawdown/pa_redeem tests **81 passed / 0 failed** on the merge tree (Win+Py3.14 local); **10-file bitunix prod-surface md5 sweep all MATCH** (prod==origin/main pre-deploy).
+- On disk: `FINAL_MD5=21830bf3…710b`, `_tracked_peak_equity`×3, `peak_equity=account_equity`×0, py_compile OK.
+- Loaded: restart 2026-06-13 03:37:17 UTC, new MainPID `2608222` (was `2507950`), `active`, NRestarts=0; venv Python **3.12.13** compiled a **fresh** `bitunix_futures_observer.cpython-312.pyc` @ 03:37:23 from the new source (no stale-bytecode shadow, no `tmp-d1` leftover). Startup `execution_mode=paper`. BitunixBroker connected (equity=$343.07, 0 positions).
+
+**Inert / dormant on current traffic:** B1 (`slPrice` server-side stop) stays paper-dormant (only matters in live mode); confirmed still loaded (`slPrice`×3 in imported `bitunix.py`). The D1 breaker IS active in paper — it would flatten the paper account on a real 15% drawdown.
+
+**Observed anomaly (pre-existing, NOT this deploy):** `fidelity_joint` + `fidelity_401k` broker connect failed at boot — Playwright firefox binary missing (`~/.cache/ms-playwright/firefox-1511/firefox/lock` ENOENT) → `broker_fallback_to_paper` ($0 equity, designed down-signal). Unrelated to bitunix; won't self-heal on restart (binary absent). Flagged for separate attention.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "B=/home/azureuser/trading_corp/trading_corp/agents/divisions/bitunix_futures_observer.py; cp \$B.bak-pre-d1-2026-06-11 \$B"
+# then operator: sudo systemctl restart trading-corp
+```
+
+---
+
 ## 2026-06-11 ~00:19 UTC — B1 entry-attached server-side stop MERGED + DEPLOYED (single-file; INERT under paper until restart)
 
 **What.** B1 — `BitunixBroker._build_order_body` attaches a server-side catastrophic stop to
