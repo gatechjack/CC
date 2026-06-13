@@ -109,62 +109,16 @@ from trading_corp.data.polymarket_data_api_client import (
 )
 from trading_corp.data.polymarket_whale_audit import build_audit_report
 from trading_corp.data.polymarket_whale_stats import score_whale_from_audit
+from trading_corp.data.whale_screening import (
+    _fetch_wallet_activity_windowed,  # re-exported (option (c) Phase 3): callers/tests import it from here
+    fetch_activity_window_for_candidates,
+)
 from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
 
 log = logging.getLogger(__name__)
 
 _LEADERBOARD_PAGE = 50  # data-api caps /v1/leaderboard at 50 rows per call
-
-
-async def _fetch_wallet_activity_windowed(
-    client: PolymarketDataAPIClient,
-    wallet: str,
-    *,
-    activity_limit: int,
-    max_pages: int,
-    target_buy_rows: int,
-) -> tuple[list[ActivityRow], int, str]:
-    """Walk `/activity` until enough BUY trades or feed exhausted or ceiling.
-
-    Three explicit stop conditions, whichever fires first:
-      - Cumulative TRADE+BUY row count >= target_buy_rows
-        (a buffer above the eventual window_size to account for some BUYs
-        being unresolved when we batch-fetch resolutions)
-      - A page returns 0 rows (feed exhausted)
-      - page index reaches max_pages (the hard ceiling on examined rows)
-
-    Returns (rows, pages_fetched, termination_reason). The
-    termination_reason is one of {"target_buys_reached", "exhausted",
-    "max_pages_hit", "fetch_error"}.
-    """
-    out: list[ActivityRow] = []
-    buy_count = 0
-    pages_fetched = 0
-    for page_idx in range(max_pages):
-        offset = page_idx * activity_limit
-        try:
-            page = await client.fetch_activity(
-                wallet, limit=activity_limit, offset=offset,
-            )
-        except PolymarketDataAPIError as e:
-            log.warning(
-                "activity fetch failed at offset=%d for %s: %s",
-                offset, wallet[:10], e,
-            )
-            return out, pages_fetched, "fetch_error"
-        pages_fetched += 1
-        if not page:
-            return out, pages_fetched, "exhausted"
-        out.extend(page)
-        for a in page:
-            if a.type == "TRADE" and a.side == "BUY":
-                buy_count += 1
-        if buy_count >= target_buy_rows:
-            return out, pages_fetched, "target_buys_reached"
-        if len(page) < activity_limit:
-            return out, pages_fetched, "exhausted"
-    return out, pages_fetched, "max_pages_hit"
 
 
 def _select_resolved_buys_window(
@@ -511,45 +465,35 @@ async def seed_polymarket_watchlist_deep(
             len(candidates), len(list(categories)) + 1,
         )
 
-        # 2. Walk /activity per candidate. REDEEM-grounded realized PnL
-        #    (option (c) Phase 2) needs every fill of a decision together, so
-        #    by default we walk to EXHAUSTION bounded by max_pages — a fixed
-        #    target_buy_rows just moves the truncation cliff (the Phase E
-        #    reconciliation finding behind the refresh's b44e3ed). When
-        #    target_buy_rows is None (default) the early-stop is disabled;
-        #    whales that STILL hit the page ceiling are flagged
-        #    window_truncated so their realized is read as a floor-bounded
-        #    estimate (surfaced, not silently trusted). --target-buy-rows
-        #    restores the legacy early-stop.
-        eff_target = (
-            target_buy_rows if target_buy_rows is not None
-            else max_pages_per_wallet * activity_limit + 1
-        )
-        all_condition_ids: set[str] = set()
-        activity_by_wallet: dict[str, list[ActivityRow]] = {}
-        truncated_by_wallet: dict[str, bool] = {}
-        for wallet in candidates:
-            acts, pages_fetched, term_reason = await _fetch_wallet_activity_windowed(
-                client, wallet,
-                activity_limit=activity_limit,
-                max_pages=max_pages_per_wallet,
-                target_buy_rows=eff_target,
-            )
-            activity_by_wallet[wallet] = acts
-            # Both max_pages_hit AND fetch_error leave an INCOMPLETE window
-            # (partial rows -> floor-bounded realized). Mirror the refresh
-            # (b44e3ed) and flag both so the number is read as an estimate.
-            truncated_by_wallet[wallet] = term_reason in (
-                "max_pages_hit", "fetch_error",
-            )
+        # 2. Walk /activity per candidate via the shared whale_screening
+        #    helper. REDEEM-grounded realized PnL (option (c) Phase 2) needs
+        #    every fill of a decision together, so by default we walk to
+        #    EXHAUSTION bounded by max_pages — a fixed target_buy_rows just
+        #    moves the truncation cliff (the Phase E reconciliation finding
+        #    behind the refresh's b44e3ed). Whales that STILL hit the page
+        #    ceiling (or error) are flagged window_truncated so their realized
+        #    is read as a floor-bounded estimate (surfaced, not silently
+        #    trusted). --target-buy-rows restores the legacy early-stop. seed
+        #    records per-wallet termination + with_activity telemetry via the
+        #    on_termination callback (refresh does not).
+        def _record_termination(
+            wallet: str, term_reason: str, acts: list[ActivityRow],
+        ) -> None:
             summary["termination_reasons"][term_reason] = (
                 summary["termination_reasons"].get(term_reason, 0) + 1
             )
             if acts:
                 summary["with_activity"] += 1
-            for a in acts:
-                if a.type == "TRADE" and a.side == "BUY" and a.condition_id:
-                    all_condition_ids.add(a.condition_id)
+
+        activity_by_wallet, truncated_by_wallet, all_condition_ids = (
+            await fetch_activity_window_for_candidates(
+                client, candidates,
+                activity_limit=activity_limit,
+                max_pages=max_pages_per_wallet,
+                target_buy_rows=target_buy_rows,
+                on_termination=_record_termination,
+            )
+        )
         n_truncated = sum(1 for t in truncated_by_wallet.values() if t)
         summary["window_truncated_count"] = n_truncated
         if n_truncated:
