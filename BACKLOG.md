@@ -399,6 +399,45 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
+## P1 — Polymarket copy EXECUTION path-to-live punch list (filed 2026-06-13 via execution-path scoping)
+
+**Full map + verification:** [`reports/2026-06-13_polymarket_copy_path_to_live_scoping.md`](reports/2026-06-13_polymarket_copy_path_to_live_scoping.md)
+(branch `polymarket-copy-path-to-live-scoping-2026-06-13`, unmerged planning artifact).
+
+**The execution mechanics, not whale selection.** Detection → decision → sizing are real and
+running in PAPER (`main.py:3323` loop; `polymarket_copy_trader.py:158/511/526`). **Everything
+downstream of the risk gate is a stub:** the loop logs `would_have_placed` (`main.py:3450`) and
+stops — **no `broker.place_order()`**. The real `PolymarketBroker` is a `ReadOnlyBroker` with no
+`place_order` (`brokers/polymarket.py:221`, `:3`); **`PolymarketLiveBroker` does not exist**
+("Phase 3 work", `brokers/polymarket.py:5-6`). **No real-money Polymarket placement exists
+anywhere** (arbitrage division is also ReadOnly/paper). A live copy trade cannot fire today.
+
+**Punch list (recommended sequence E1 → (E3∥E4∥E5) → E2 → E6 → $1 shakedown):**
+- **E1 — Build `PolymarketLiveBroker`** (signed CLOB `place_order`; add `py_clob_client`/`web3`/
+  `eth-account` to requirements). Keystone; **L**. *(enabling)*
+- **E2 — Wire the loop's execute branch** at `main.py:3450` (route approved orders through
+  `data_exec.place()` + HITL parity instead of `would_have_placed`). **M**. *(safety: HITL)*
+- **E3 — Provision/fund/approve the copy wallet** (`POLYMARKET_COPY_PRIVATE_KEY/FUNDER` values to
+  vault — paths exist `secrets.py:116`; USDC.e funding; on-chain allowance; extend
+  `assert_live_ready`). **M**. *(safety prereq)*
+- **E4 — Account-drawdown kill switch (D1-equivalent)** — real-equity HWM + auto-flatten on X%
+  drawdown. Per-whale autopause is NOT this. **M**. *(safety prereq)*
+- **E5 — Live position reconciliation** — recover open-position truth from broker on restart;
+  reconcile cap sums vs real fills (today caps sum `would_have_placed` intents). **M**. *(safety prereq)*
+- **E6 — Live-flip control surface** — controlled flip for the copy division (no `execution_mode`
+  field today, `strategies.yaml:1702` `auto_execute:false`; `divisions.yaml:169-177` `broker:paper`,
+  `standby:true`) + systemd `--brokers polymarket` gating w/ Bitunix item-4 durable-LIVE-auth
+  pattern. Land LAST. **S–M**. *(safety: controlled flip)*
+
+**Safety state today:** risk notional caps ARE real and DO cover copy (`risk.py:439/476/505`
+sum both polymarket actors) — but enforce on logged intents, and there is **no account-level
+kill switch**. (Correction to a prior mapping claim: the daily-loss aggregator is NOT
+arbitrage-only; it counts copy.)
+
+**Relationship to the screening track:** the SELL-pairing / P&L-attribution item below is a
+*screening-accuracy* blocker ("can we trust which whales are good?"), independent of these
+execution mechanics. Both must hold to go live confidently; they are separate tracks.
+
 ## P1 — Polymarket copy-trader SELL-pairing → option (c) (Phase 1 MERGED 2026-06-10, NOT run on prod; phases 2-4 pending)
 
 **Phase 1 status (2026-06-10): MERGED to main, NOT DEPLOYED / not run against prod.**
