@@ -55,3 +55,16 @@ tradingview-ta==3.3.0    # indicator snapshots via TV screener API — pinned 20
 # Kalshi (Phase K1+ — Prediction Markets group). MIT-licensed community SDK
 # with both async + sync clients, RSA-PSS request signing, REST + WebSocket.
 pykalshi>=1.0.6
+
+# Polymarket live order placement (E1 — live broker; NOT yet on prod, deploy
+# operator-gated). Proven pin set: matches Polymarket's own MIT `agents`
+# framework + the 2026-05-29 EIP-712 signing spike
+# (reports/2026-05-29_polymarket_live_prep_groupB_spike.md). py-clob-client's
+# repo is archived/read-only but the pin works; ALWAYS construct ClobClient with
+# kwargs (constructor arg order differs across versions — latest 0.34.6 reorders
+# host/chain_id/key). Transitives (eth-abi, etc.) are pinned by the py3.12/Linux
+# lockfile, not hand-pinned here.
+py-clob-client==0.17.5
+py-order-utils==0.3.2
+web3==6.11.0
+eth-account==0.13.1
