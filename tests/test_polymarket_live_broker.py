@@ -17,10 +17,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from trading_corp.brokers.polymarket_live import (
+    OrderPlacementError,
     TokenIdResolutionError,
+    _poll_order_to_fill,
     build_clob_order_args,
     create_signed_order,
     map_proposed_to_clob,
+    place_order,
     resolve_token_id,
     resolve_token_id_from_market,
 )
@@ -198,3 +201,126 @@ def test_create_signed_order_signs_and_never_posts():
     assert passed.size == 4.0
     # SIGN-ONLY: post_order must never be invoked in this slice.
     client.post_order.assert_not_called()
+
+
+# ── E1·3: place/poll -> FillEvent (poll logic is pure; place_order needs SDK) ─
+
+def _poll_client(*order_dicts):
+    """MagicMock client whose get_order returns the given dict(s) in order (the
+    last repeats indefinitely)."""
+    c = MagicMock()
+    seq = list(order_dicts)
+
+    def _get(_order_id):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    c.get_order.side_effect = _get
+    return c
+
+
+async def test_poll_filled_full():
+    c = _poll_client({"status": "matched", "size_matched": "5", "original_size": "5", "price": "0.5"})
+    fill = await _poll_order_to_fill(c, "0xOID", symbol="0xC:Yes", side="buy",
+                                     price=0.5, original_size=5.0, timeout=0.0, interval=0.0)
+    assert fill.order_id == "0xOID"
+    assert fill.symbol == "0xC:Yes"
+    assert fill.side == "buy"
+    assert fill.qty == 5.0
+    assert fill.price == 0.5
+    assert fill.venue == "polymarket"
+
+
+async def test_poll_status_casing_normalized():
+    # GET-order status casing isn't doc-pinned; "MATCHED" must work like "matched".
+    c = _poll_client({"status": "MATCHED", "size_matched": "5", "original_size": "5", "price": "0.5"})
+    fill = await _poll_order_to_fill(c, "0xO", symbol="s", side="buy", price=0.5,
+                                     original_size=5.0, timeout=0.0, interval=0.0)
+    assert fill.qty == 5.0
+
+
+async def test_poll_partial_terminal_records_filled_portion():
+    # cancelled with a partial fill -> FillEvent for the FILLED portion only.
+    c = _poll_client({"status": "cancelled", "size_matched": "3", "original_size": "5", "price": "0.5"})
+    fill = await _poll_order_to_fill(c, "0xO", symbol="s", side="buy", price=0.5,
+                                     original_size=5.0, timeout=0.0, interval=0.0)
+    assert fill.qty == 3.0  # partial, not 5
+
+
+async def test_poll_partial_at_timeout_records_partial():
+    # still 'live' with a partial fill at the deadline -> record the partial.
+    c = _poll_client({"status": "live", "size_matched": "2", "original_size": "5", "price": "0.5"})
+    fill = await _poll_order_to_fill(c, "0xO", symbol="s", side="buy", price=0.5,
+                                     original_size=5.0, timeout=0.0, interval=0.0)
+    assert fill.qty == 2.0
+
+
+async def test_poll_zero_fill_terminal_raises():
+    # cancelled with nothing matched -> no phantom FillEvent.
+    c = _poll_client({"status": "cancelled", "size_matched": "0", "original_size": "5"})
+    with pytest.raises(OrderPlacementError):
+        await _poll_order_to_fill(c, "0xO", symbol="s", side="buy", price=0.5,
+                                  original_size=5.0, timeout=0.0, interval=0.0)
+
+
+async def test_poll_timeout_zero_fill_raises():
+    # resting (live) with no fill at the deadline -> TimeoutError, no phantom fill.
+    c = _poll_client({"status": "live", "size_matched": "0", "original_size": "5"})
+    with pytest.raises(TimeoutError):
+        await _poll_order_to_fill(c, "0xO", symbol="s", side="buy", price=0.5,
+                                  original_size=5.0, timeout=0.0, interval=0.0)
+
+
+async def test_poll_waits_through_live_then_fills():
+    c = _poll_client(
+        {"status": "live", "size_matched": "0", "original_size": "5"},
+        {"status": "live", "size_matched": "0", "original_size": "5"},
+        {"status": "matched", "size_matched": "5", "original_size": "5", "price": "0.5"},
+    )
+    fill = await _poll_order_to_fill(c, "0xO", symbol="s", side="sell", price=0.5,
+                                     original_size=5.0, timeout=5.0, interval=0.0)
+    assert fill.qty == 5.0
+    assert fill.side == "sell"
+    assert c.get_order.call_count == 3
+
+
+# place_order needs OrderType + builds a real OrderArgs -> importorskip (py3.12 venv).
+# The mocked client guarantees the real CLOB post_order is never hit.
+
+async def test_place_order_success_full_fill():
+    pytest.importorskip("py_clob_client")
+    from py_clob_client.clob_types import OrderType
+
+    c = MagicMock()
+    c.create_order.return_value = "SIGNED"
+    c.post_order.return_value = {"success": True, "orderID": "0xOID", "status": "live"}
+    c.get_order.return_value = {"status": "matched", "size_matched": "5", "original_size": "5", "price": "0.5"}
+    order = _order(side="buy", qty=5.0, price=0.5, extra={"token_id": "T"})
+
+    fill = await place_order(c, order, timeout=0.0, interval=0.0)
+
+    assert fill.order_id == "0xOID"
+    assert fill.qty == 5.0
+    assert fill.price == 0.5
+    assert fill.venue == "polymarket"
+    c.create_order.assert_called_once()                 # signed
+    c.post_order.assert_called_once()
+    assert c.post_order.call_args.args[1] == OrderType.GTC
+
+
+async def test_place_order_rejected_raises_and_does_not_poll():
+    pytest.importorskip("py_clob_client")
+    c = MagicMock()
+    c.create_order.return_value = "SIGNED"
+    c.post_order.return_value = {"success": False, "errorMsg": "insufficient balance"}
+    with pytest.raises(OrderPlacementError):
+        await place_order(c, _order(extra={"token_id": "T"}), timeout=0.0, interval=0.0)
+    c.get_order.assert_not_called()
+
+
+async def test_place_order_unmatched_raises():
+    pytest.importorskip("py_clob_client")
+    c = MagicMock()
+    c.create_order.return_value = "SIGNED"
+    c.post_order.return_value = {"success": True, "orderID": "0xO", "status": "unmatched"}
+    with pytest.raises(OrderPlacementError):
+        await place_order(c, _order(extra={"token_id": "T"}), timeout=0.0, interval=0.0)

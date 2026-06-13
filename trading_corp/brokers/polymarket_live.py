@@ -32,9 +32,11 @@ called in this module.**
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
@@ -212,3 +214,148 @@ def create_signed_order(
     mapped = map_proposed_to_clob(order, market_fetcher=market_fetcher)
     args = build_clob_order_args(mapped)
     return client.create_order(args)
+
+
+# ── E1·3: place -> poll -> FillEvent ────────────────────────────────────────
+#
+# Mirrors the tastytrade place->poll-to-terminal->FillEvent template
+# (`brokers/tastytrade.py:398-465`). py_clob_client is a thin REST wrapper:
+# `post_order` returns the raw placement dict and `get_order` the raw order dict
+# — the SDK defines NO order-status constants, so the status strings come from
+# the live Polymarket CLOB API:
+#   - placement status (post_order): live | matched | delayed | unmatched
+#     (https://docs.polymarket.com/developers/CLOB/orders/create-order)
+#   - order fields (get_order): status, size_matched, original_size, price, side
+#     (https://docs.polymarket.com/developers/CLOB/orders/get-order)
+# We **normalize status to lowercase** and treat **`size_matched` as the
+# authoritative filled quantity** (not the status label), to minimize reliance
+# on the exact status strings. CARRY-FORWARD: the real status strings +
+# `size_matched` semantics (incl. the issue-#245 caveat that size_matched can
+# overstate tokens actually received vs on-chain truth — reconciliation is E5)
+# are confirmed only at the operator-gated $1 shakedown.
+#
+# SIGN-ONLY in tests: `post_order` is exercised via a mocked client; the real
+# CLOB is hit only with a live client. The --dry-run skip lives at
+# `data_exec.place()` (E2), NOT here (Polymarket has no venue validate); the
+# broker's paper/live gating is E1·6. py_clob_client (sync) is run via
+# `asyncio.to_thread` so the live path never blocks the loop.
+
+_NONTERMINAL_STATUSES = frozenset({"live", "delayed"})  # keep polling
+_DEFAULT_POLL_TIMEOUT_SEC = 10.0
+_DEFAULT_POLL_INTERVAL_SEC = 0.75
+
+
+class OrderPlacementError(RuntimeError):
+    """post_order was rejected, or the order terminated with no fill. We never
+    fabricate a phantom FillEvent for an unfilled order."""
+
+
+def _is_fully_filled(size_matched: float, original_size: float) -> bool:
+    return original_size > 0 and size_matched >= original_size
+
+
+async def _poll_order_to_fill(
+    client, order_id, *, symbol, side, price, original_size,
+    timeout: float = _DEFAULT_POLL_TIMEOUT_SEC,
+    interval: float = _DEFAULT_POLL_INTERVAL_SEC,
+):
+    """Poll `client.get_order(order_id)` until terminal or `timeout`, then map to
+    a `FillEvent`. `size_matched` is the source of truth for filled qty:
+      - filled (>0) at terminal or at timeout -> FillEvent for the FILLED portion
+        (full or partial);
+      - zero fill at a terminal non-fill status (cancelled/unmatched/expired) ->
+        OrderPlacementError;
+      - zero fill still resting (live/delayed) at timeout -> TimeoutError.
+    No phantom FillEvent for an unfilled order.
+    """
+    from trading_corp.persistence.models import FillEvent
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_status = ""
+    size_matched = 0.0
+    fill_price = float(price)
+    while True:
+        order = (await asyncio.to_thread(client.get_order, order_id)) or {}
+        last_status = str(order.get("status") or "").strip().lower()
+        try:
+            size_matched = float(order.get("size_matched") or 0.0)
+        except (TypeError, ValueError):
+            size_matched = 0.0
+        try:
+            orig = float(order.get("original_size") or original_size)
+        except (TypeError, ValueError):
+            orig = float(original_size)
+        try:
+            if order.get("price") is not None:
+                fill_price = float(order["price"])
+        except (TypeError, ValueError):
+            pass
+
+        if last_status not in _NONTERMINAL_STATUSES or _is_fully_filled(size_matched, orig):
+            break  # terminal
+        if loop.time() >= deadline:
+            if size_matched > 0:
+                break  # partial fill captured at the deadline
+            raise TimeoutError(
+                f"polymarket order {order_id} did not reach a terminal state "
+                f"within {timeout}s (last status={last_status!r}, size_matched=0)"
+            )
+        await asyncio.sleep(interval)
+
+    if size_matched <= 0:
+        raise OrderPlacementError(
+            f"polymarket order {order_id} terminal status={last_status!r} with no "
+            f"fill (size_matched=0); no FillEvent recorded"
+        )
+    return FillEvent(
+        order_id=str(order_id),
+        symbol=symbol,
+        side=side,
+        qty=float(size_matched),
+        price=float(fill_price),
+        ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        venue="polymarket",
+    )
+
+
+async def place_order(
+    client, order, *, market_fetcher: Callable[[str], dict | None] | None = None,
+    timeout: float = _DEFAULT_POLL_TIMEOUT_SEC,
+    interval: float = _DEFAULT_POLL_INTERVAL_SEC,
+):
+    """Map -> sign (`create_order`) -> `post_order(signed, GTC)` -> poll -> FillEvent.
+
+    Mirrors `tastytrade.place_order`. **REAL-when-live**: `post_order` reaches the
+    live CLOB only with a live client (here/in tests it is mocked). Raises
+    `OrderPlacementError` on a rejected/unmatched placement and `TimeoutError` if
+    a resting order never fills within `timeout` — never a phantom FillEvent.
+    """
+    from py_clob_client.clob_types import OrderType
+
+    mapped = map_proposed_to_clob(order, market_fetcher=market_fetcher)
+    args = build_clob_order_args(mapped)
+    signed = await asyncio.to_thread(client.create_order, args)
+    resp = (await asyncio.to_thread(client.post_order, signed, OrderType.GTC)) or {}
+
+    if not resp.get("success", False):
+        raise OrderPlacementError(
+            f"polymarket post_order failed: {resp.get('errorMsg') or resp!r}"
+        )
+    order_id = resp.get("orderID")
+    if not order_id:
+        raise OrderPlacementError(f"polymarket post_order returned no orderID: {resp!r}")
+    if str(resp.get("status") or "").strip().lower() == "unmatched":
+        raise OrderPlacementError(
+            f"polymarket order {order_id} placement status='unmatched' "
+            f"(marketable but did not match); no fill recorded"
+        )
+
+    return await _poll_order_to_fill(
+        client, order_id,
+        symbol=getattr(order, "symbol", ""),
+        side=mapped["side"],
+        price=mapped["price"],
+        original_size=mapped["size"],
+        timeout=timeout, interval=interval,
+    )
