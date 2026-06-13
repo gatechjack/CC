@@ -196,9 +196,80 @@ Account-poll WARNINGs + 1 replay-fetch ERROR (order `171d7a46`, retried OK)
 observed during Day-2 window review. Self-recovering today. P2 not P3
 because snapshot failure falls back to the placeholder-equity sharp edge
 (H-11 class) — live-flip-relevant. Fix: poll backoff/jitter on 10006.
-DO NOT fix mid-observation-window; implement after Day-5 close-out
-(2026-06-14) to avoid contaminating window data.
+DO NOT fix mid-observation-window.
 Reference: `reports/2026-06-10_bitunix_day2_expanded_review.md`.
+
+**ESCALATED — go-live + read-only investigation (2026-06-13, post-go-live PID 2637434).**
+Bitunix is LIVE since 15:36 UTC, so this now touches the REAL-MONEY path. New
+gate supersedes the Day-5 date: **do NOT fix until after the first real live fill
+is observed** (operator plan); the fix is a separate post-first-fill session.
+Read-only investigation (agent SSH + code read, no changes):
+- **Scope: all 10006 are on `/api/v1/futures/account` (balance) only** — 10× since
+  the 15:36 boot, in 2 short bursts (15:52:06 ×6, 16:07:39–40 ×4). ZERO on position
+  reads, order placement, or fill confirmation.
+- **Does NOT trip the snapshot-staleness halt.** BitUnix returns HTTP 200 with
+  `code=10006` in-body, so `r.raise_for_status()` (bitunix.py:419) does not raise;
+  the `code!=0` branch logs a warning + `continue`s (bitunix.py:421-426). `snapshot()`
+  still reaches `_last_successful_snapshot_ts = time.monotonic()` (bitunix.py:488)
+  → freshness preserved → `_assert_snapshot_fresh()` (bitunix.py:556) not tripped.
+- **Does NOT block/delay/mis-fire placement or fills.** `place_order` (bitunix.py:829)
+  uses the place/position-mode/leverage/fill-observe endpoints via the `_request`
+  retry helper — NOT `/account`.
+- **Root cause:** the per-coin account loop (bitunix.py:411-419) issues 2 back-to-back
+  `/account` GETs (USDT, USDC) with NO throttle/cache/retry on the account call, and
+  multiple periodic poll loops (per-division pollers 30–300s in main.py, the 5-min
+  equity_snapshot loop, dashboard + webhook-sizing snapshots) call `snapshot()`
+  concurrently → bursts exceed BitUnix's /account rate limit.
+- **Residual (low-prob, conservative):** a 10006 racing an order-time sizing snapshot
+  under-counts equity (skipped coin) → that one entry under-sized or skipped
+  (conservative; never over-trades). Could dent first-fill observation fidelity; not
+  a safety risk.
+- **Priority stays P2 (not raised to P1):** (b) confirmed it does NOT threaten the
+  staleness halt or the order/fill critical path; impact is bounded + conservative.
+- **Fix direction (design only — DO NOT implement; §4 real-money pipeline + pytest +
+  prod-vs-main md5 sweep gate; post-first-fill):** single-flight / short-TTL cache on
+  `snapshot()` so concurrent callers share one account read; and/or client-side
+  throttle/spacing on `/account`; and/or dedupe overlapping pollers to one shared
+  snapshot. Optionally add backoff-retry to the account call (currently skips →
+  under-counts), but caching/single-flight is the primary lever (retry alone doesn't
+  reduce rate pressure).
+- **Verdict: live path SAFE to keep running to the first fill.**
+Reference: go-live deploy_log entry 2026-06-13 15:36 UTC; this session's read-only investigation.
+
+## P3 — Event-loop contention under live load → TradingView webhook delivery timeouts (filed 2026-06-13 post-go-live)
+
+Background webhook-processing latency (`webhook_received` → handler completion) grew
+from ~1.5–3s pre-go-live (paper, PID 2608235) to **8–10s post-go-live** (live, PID
+2637434), measured in journalctl. The TV-driven handlers (`web/webhooks.py`) respond
+HTTP 200 immediately and dispatch heavy work via `background_tasks.add_task`
+(webhooks.py:281), so a TV "delivery timed out" is NOT slow handler logic — it
+indicates the event loop is too contended to service/flush the request within TV's
+~10s window. **Currently harmless:** the only TV strategies (`market_cypher`,
+`lord_otter`) are `enabled: false`, so timed-out signals are received + ignored
+(zero missed entries — confirmed in the 2026-06-13 webhook diagnostic). **Becomes
+real if any TV-driven strategy is enabled live** (timeouts would hit tradeable
+signals; the server still processes them in background, but TV reports failure).
+Likely contributors: live BitUnix broker load + the 10006 bursts (see the P2 10006
+item) + always-busy copy-trader batches. Action: profile event-loop blocking under
+live load (sync/CPU-bound calls in the loop; the BitUnix snapshot/account path is a
+candidate). P3 unless a TV-driven strategy is slated to go live.
+
+## P3 — `assert_live_ready` has no `bitunix` branch → creds gate is a no-op for the live bitunix path (filed 2026-06-13 at go-live)
+
+`assert_live_ready` (`utils/secrets.py:403-448`) validates creds for
+robinhood/coinbase/fidelity/tastytrade/polymarket but has NO `bitunix` branch. So
+`--live --brokers bitunix` passes the LIVE preflight on `ANTHROPIC_API_KEY` presence
+alone, without verifying `BITUNIX_FUTURES_API_KEY/SECRET`. The CLAUDE.md STOP-AND-READ
+#3 "populated creds via assert_live_ready" is thus generically true but unenforced for
+bitunix. **Backstopped today** by the broker stub-mode guard: with missing creds,
+`BitunixBroker.place_order` raises NotImplementedError (bitunix.py:843-848) →
+fail-closed (no silent live order on a stub broker). So this is a defense-in-depth gap,
+not an active hole (creds are present — confirmed by the live $343.07 equity read).
+Fix: add a `bitunix` branch to `assert_live_ready` asserting key+secret presence.
+§4-adjacent (creds/secrets path) — explicit approval + test before deploy.
+
+(Note: the Fidelity Playwright Firefox `ENOENT` → paper-fallback surfaced at the
+go-live boot is ALREADY filed below as a P3 — not duplicated here.)
 
 ## P1 — Bitunix post-window analysis: silence-window what-if backtest + TP-structure review (filed 2026-06-10, execute after Day-5 close-out 2026-06-14)
 
