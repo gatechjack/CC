@@ -116,6 +116,62 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-13 15:36 UTC — Bitunix AUTONOMOUS LIVE — go-live (item-4 durable --live auth + --brokers bitunix + execution_mode:live; HITL=0 + D1 loaded)
+
+**STATE VERB: DEPLOYED + LOADED + LIVE.** Bitunix futures now places real orders autonomously. Restart at **15:36:05 UTC** (new MainPID `2637434`, was `2608222`; `NRestarts=0`) loaded item-4 (main.py), HITL=0 + D1 (observer.py, fresh `.pyc` 15:36:08), and started the process with `--live --brokers bitunix` + `execution_mode: live`. Startup audit: `mode=LIVE`, `live_brokers=["bitunix"]`, `dry_run=false`, `live_authorization=env_authorized`.
+
+**Commits (origin/main):**
+- `bbae4d6` — merge of item-4 `710e181` (`--no-ff`; durable non-interactive LIVE auth in main.py). Pushed `0d66d16..bbae4d6`.
+- `199716b` — CLAUDE.md STOP-AND-READ #3 rewrite documenting the guarded non-interactive live path (reconciles the constitution with deployed behavior). Pushed `bbae4d6..199716b`.
+
+**Triggered by:** operator-supervised go-live session 2026-06-13 (final a→b→c→d step; the build arc D1 + HITL + item-4 was complete and staged).
+
+**Files deployed this session (prod surfaces):**
+- `trading_corp/main.py` — item-4 durable auth. Deployed-to-disk via `deploy_item4.ps1` (scp → py_compile → md5 gate → atomic mv). Prod md5 `659bbb801317fecec20865f47cbe81a9` (== merged). Backup `main.py.bak-pre-item4-2026-06-13` (md5 `631a4f3b…`).
+- `/etc/systemd/system/trading-corp.service` + `…/override.conf` — ExecStart += `--live --brokers bitunix`; override += `Environment=TC_LIVE_AUTHORIZED=LIVE`. Edited as ROOT via `az vm run-command` (sudo password unavailable). Backups `*.bak-pre-golive-2026-06-13-golive`.
+- `config/strategies.yaml` — `bitunix_futures.execution_mode: paper → live` (line 1022). Backup `strategies.yaml.bak-pre-golive-2026-06-13-golive`. chown-restored to azureuser after root sed.
+- (observer.py `HITL_FIRST_N_LIVE_ORDERS=0` + D1 drawdown-flatten were deployed-to-disk earlier via `eaeb189`/`76f3bb8`; this restart **LOADED** them.)
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- **Bitunix is autonomous-live.** `--live --brokers bitunix` → `is_live_family=True` → unwrapped `BitunixBroker` (real `place_order`); `auto_execute: true` (strategies.yaml:1021) + HITL=0 → orders place directly, no approval. Observable: `Registered … (paper=False)`, `BitunixBroker connected … $343.07`.
+- **Durable non-interactive LIVE authorization (item-4).** systemd `TC_LIVE_AUTHORIZED=LIVE` → `resolve_live_decision` returns "live" without a TTY. DURABLE: survives restarts incl. crash/`Restart=on-failure` (resurrects live without re-arming). Revoke = unset/change env → paper next restart. Unauthorized non-interactive `--live` downgrades to paper (never aborts → no crash-loop).
+- **Per-order HITL permanently off + D1 15% drawdown-flatten breaker live** (loaded by this restart).
+
+**Notable code changes / gotchas (a future Claude must not miss):**
+- **`--brokers bitunix` is REQUIRED, not just `--live`.** `main.py:1945 is_live_family = (mode=="LIVE" and family in args.brokers)`; `--brokers` default `[]` (main.py:147). `--live` alone → `is_live_family=False` → `PaperExecutionBroker` wrap = HALF-FLIP (orders simulate despite live mode + execution_mode:live). Half-flip marker: `Registered … (paper=True)`.
+- **`assert_live_ready` has NO bitunix branch** (`utils/secrets.py:403-448`): passes on `ANTHROPIC_API_KEY` present, does NOT validate bitunix creds. CLAUDE.md #3 "creds via assert_live_ready" is generically true but unenforced for bitunix. BACKLOG: add bitunix branch. (Creds confirmed working via the live $343.07 read.)
+- **VM privilege reality:** azureuser sudo = `(ALL:ALL) ALL` PASSWORD-REQUIRED (no usable password on this SSH-key VM) + NOPASSWD only for `systemctl {restart,start,stop,status,is-active,is-failed,daemon-reload} trading-corp*`, `journalctl -u trading-corp*`, `sqlite3 .../trading_corp.db`. So `/etc/` edits → `az vm run-command` (root); restart/reload → SSH NOPASSWD.
+- **az run-command MUST use `--scripts @file` (LF), not inline `--scripts <body>`.** On Windows `az` is `az.cmd` → cmd.exe re-parses args and mangles `&&`/`||`/`()`; an inline multi-line script ran as empty (rc=0, empty stdout, zero changes) on the first attempt. `@file` makes az read the script in Python.
+
+**Verification (post-boot, read-only):**
+- MainPID `2637434`, active, `NRestarts=0`, ActiveEnter 15:36:05 UTC; no bitunix traceback.
+- Startup audit (`audit_event` id 1152604, 15:36:07 UTC): `{"mode":"LIVE","live_brokers":["bitunix"],"dry_run":false,"live_authorization":"env_authorized"}`.
+- `Registered bitunix_futures broker for division=bitunix_futures (paper=False)` (15:36:08) — true-live, not half-flip.
+- observer wiring `execution_mode=live`; `BitunixBroker connected … equity=$343.07, 0 positions` (15:36:14).
+- On-disk `HITL_FIRST_N_LIVE_ORDERS=0`; observer `.pyc` recompiled 15:36:08 (loaded current source); main.py `resolve_live_decision` present.
+- systemd loaded: ExecStart contains `--live --brokers bitunix`; Environment contains `TC_LIVE_AUTHORIZED=LIVE`; `NeedDaemonReload=no`.
+
+**Operator-accepted risks now live:**
+- Durable auth resurrects live on crash (deliberate). Backstops: D1 15% drawdown-flatten, 3% daily-risk-kill, 0.5% per-trade, snapshot-staleness halt (60s), B1 server-side stop.
+- B1 server-side stop UNVALIDATED on a real fill (item-2 dropped, accepted).
+- Taker-fee economics net-negative (gross +0.175R ≈ −0.13R net at 0.09% round-trip).
+
+**Pre-existing / out-of-scope (surfaced at boot):** `fidelity_joint`/`fidelity_401k` broker connects failed — Playwright Firefox `ENOENT` (browser missing from `~/.cache/ms-playwright`) → `broker_fallback_to_paper` (`starting_equity=0.0`, as designed). Not introduced by go-live; Fidelity not in `--brokers`, `auto_execute:false`. Candidate BACKLOG item.
+
+**Rollback recipe (→ supervised paper):**
+```bash
+# Operator, locally — restores pre-golive unit/override/strategies backups + restart (rz.sh via az, ROOT):
+.\revert_az.ps1
+#   cp .../trading-corp.service.bak-pre-golive-2026-06-13-golive .../trading-corp.service
+#   cp .../override.conf.bak-pre-golive-2026-06-13-golive .../override.conf
+#   cp .../strategies.yaml.bak-pre-golive-2026-06-13-golive .../strategies.yaml ; chown azureuser ...
+#   systemctl daemon-reload && systemctl restart trading-corp
+# To also revert item-4 main.py (rarely needed — durable auth is inert without --live):
+#   restore main.py.bak-pre-item4-2026-06-13 then restart.
+```
+
+---
+
 ## 2026-06-13 05:29 UTC — Bitunix per-order HITL removal MERGED + DEPLOYED-TO-DISK (PENDING-LOAD on next restart; item 3)
 
 **STATE VERB: DEPLOYED-TO-DISK — NOT yet LOADED.** The prod file on disk has `HITL_FIRST_N_LIVE_ORDERS=0`, but the running process (PID 2608222, booted 03:37) still has the OLD value (10) imported. The constant goes live in-process on the **NEXT restart**, deliberately deferred to **item-4 go-live** (one boot loads HITL + D1 together — no wasted ~22-min RH-hang reboot). System stays paper; no behavior change until then. **HITL only matters in LIVE mode** anyway (the gate lives in `_place_live`), so it is doubly dormant now.
