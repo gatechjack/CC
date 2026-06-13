@@ -13,16 +13,26 @@ SEPARATE and explicitly out of scope here — see "Relationship to the screening
 ## 0. Method + accuracy caveat
 
 Mapped via three parallel read-only agents, then **every load-bearing claim re-verified
-against the code directly** (file:line below). Two agent-reported items were **discarded as
-unverifiable/incorrect** and are NOT used here:
-- A prior `reports/2026-05-28_polymarket_copy_live_readiness.md` (+ "item 6/7/8/8a/9",
-  "Path A py_clob_client==0.17.5", a "~2–3 week" estimate). **No such report exists** —
-  `reports/**/*polymarket*` returns nothing. Fabricated; excluded.
-- "The daily-loss aggregator is hardcoded to `polymarket_arbitrage` (copy uncounted)."
-  **False** — `risk.py:439/476` sum `actor IN ('polymarket_arbitrage','polymarket_copy_trader')`;
-  the comment at `:505` confirms the $-cap binds for both. Corrected below.
+against the code directly** (file:line below).
 
-The authoritative prior planning is **`BACKLOG.md` Priority 2**, not any separate report.
+> **RETRACTION (2026-06-13, E1 design session).** An earlier version of this section claimed
+> `reports/2026-05-28_polymarket_copy_live_readiness.md` was "fabricated / no such report
+> exists." **That was WRONG.** That report — plus `reports/2026-05-29_polymarket_live_prep_groupB_spike.md`,
+> `reports/2026-05-29_polymarket_item6_wallet_plan.md`, and
+> `scripts/spike_polymarket_signing/spike_sign.py` — are all **REAL** (verified via Read/Grep with
+> an explicit repo path). The false negative came from a `Glob` tooling fault (it defaults to the
+> cwd `Desktop` without an explicit `path`, and does not expand `{a,b}` braces), **not** an agent
+> hallucination. **That May reuse audit is the FOUNDATION for E1, not something to exclude** — it
+> already established that `py_clob_client` provides the full order lifecycle (EIP-712 signing
+> internal, proven by the 05-29 spike) and that items 6/7 (per-division wallet plumbing) shipped
+> (`500cc1e`). The E1 reuse-first design
+> (`reports/2026-06-13_polymarket_e1_live_broker_design.md`, branch
+> `polymarket-e1-live-broker-design-2026-06-13`) supersedes the from-scratch E1 framing in §2 and
+> re-sizes E1 from **L → M (wiring)**.
+>
+> Separately, the "daily-loss aggregator is arbitrage-only" point was **stale, not false** — true
+> in the 2026-05-28 snapshot (`risk.py:407`), fixed by `5b947ea` (2026-05-29). Current
+> `risk.py:439/476/505` sums both actors (as §1 states).
 
 ---
 
@@ -52,7 +62,7 @@ prereq" = must land before any real-money order.
 
 | Rank | Blocker | What it is | Size | Safety prereq |
 |---|---|---|---|---|
-| **E1** | **Build `PolymarketLiveBroker`** | Real order placement: signed CLOB order submission (`place_order` on a real `Broker`, not `ReadOnlyBroker`). Add live signing deps (`py_clob_client`/`web3`/`eth-account`) to `requirements.txt` + lock. The keystone — nothing places without it. | **L** | enabling |
+| **E1** | **Build `PolymarketLiveBroker`** | WIRE `py_clob_client` (create_order→post_order→cancel, EIP-712 internal; signing proven by the 05-29 spike) into a real `Broker` subclass conforming to `place_order`/`cancel_order`; pin deps (`py_clob_client==0.17.5` + py_order_utils/web3/eth-account, prod lockfile). Keystone. **Re-sized L → M (wiring, not from-scratch) — see `reports/2026-06-13_polymarket_e1_live_broker_design.md`.** | **M** | enabling |
 | **E2** | **Wire the copy loop's execute branch** | At `main.py:3450`, on (live + auto_execute) route approved ProposedOrders through `data_exec.place()`/`broker.place_order()` instead of stopping at `would_have_placed`. Include HITL/board-approval routing parity with the Bitunix path. | **M** | partial (HITL) |
 | **E3** | **Provision + fund + approve the copy wallet** | Put `POLYMARKET_COPY_PRIVATE_KEY/FUNDER` values in the vault, fund USDC.e, execute on-chain CTF/exchange allowance approvals, extend `assert_live_ready` to check balance + allowance (not just key presence). | **M** | **yes** |
 | **E4** | **Account-drawdown kill switch (D1-equivalent)** | Real-equity high-water-mark + auto-flatten/halt on X% drawdown, mirroring Bitunix D1. Per-whale autopause is NOT this. Bitunix treated its D1 as a hard go-live gate. | **M** | **yes** |

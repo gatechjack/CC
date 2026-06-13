@@ -413,8 +413,10 @@ stops — **no `broker.place_order()`**. The real `PolymarketBroker` is a `ReadO
 anywhere** (arbitrage division is also ReadOnly/paper). A live copy trade cannot fire today.
 
 **Punch list (recommended sequence E1 → (E3∥E4∥E5) → E2 → E6 → $1 shakedown):**
-- **E1 — Build `PolymarketLiveBroker`** (signed CLOB `place_order`; add `py_clob_client`/`web3`/
-  `eth-account` to requirements). Keystone; **L**. *(enabling)*
+- **E1 — Build `PolymarketLiveBroker`** — WIRE `py_clob_client` (create_order→post_order→cancel,
+  EIP-712 internal; signing proven by the 05-29 spike; wallet plumbing items 6/7 shipped
+  `500cc1e`) into a `Broker` subclass; pin deps (prod lockfile). Keystone; **M (wiring, not
+  from-scratch L) — see `reports/2026-06-13_polymarket_e1_live_broker_design.md`**. *(enabling)*
 - **E2 — Wire the loop's execute branch** at `main.py:3450` (route approved orders through
   `data_exec.place()` + HITL parity instead of `would_have_placed`). **M**. *(safety: HITL)*
 - **E3 — Provision/fund/approve the copy wallet** (`POLYMARKET_COPY_PRIVATE_KEY/FUNDER` values to
