@@ -30,6 +30,7 @@ from trading_corp.agents.divisions.bitunix_futures_observer import (
     DEFAULT_TP_R,
     TIER_SIZING,
 )
+from trading_corp.agents.risk import RiskVerdict
 from trading_corp.persistence import db
 
 
@@ -562,6 +563,31 @@ async def test_observe_and_decide_risk_rejects(wired_observer):
             "SELECT payload_json FROM audit_event WHERE kind = 'bitunix_decided'"
         ).fetchall()
     assert any(json.loads(r["payload_json"])["outcome"] == "rejected_risk" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_observe_and_decide_flatten_account_dispatches_flatten(wired_observer):
+    """D2 (Phase-3.1 path): a flatten_account verdict must route to
+    data_exec.flatten_division. This path already dispatched flatten before
+    the fix; pinned here so it stays covered alongside the score-path
+    dispatch added by the D2 fix (see test_bitunix_observer_pa_redeem)."""
+    obs, risk_agent, data_exec, logger_agent, telegram_channel = wired_observer
+    risk_agent.evaluate.return_value = RiskVerdict(
+        verdict="reject",
+        reason="account drawdown 16.0% ≥ 15.0% cap — flatten and halt",
+        flatten_account=True,
+    )
+    obs._update_bias("4h", "bull", "2026-05-10T08:00:00+00:00", "mc_b_buy_circle_div")
+    obs._update_bias("1d", "bull", "2026-05-10T00:00:00+00:00", "mc_a_longema")
+    obs._update_cvd("bull", "2026-05-10T11:50:00+00:00")
+
+    payload = {
+        "signal": "spoon_bull", "symbol": "BTC/USD",
+        "price": 80_000.0, "time": "2026-05-10T12:00:00Z", "interval": "3",
+    }
+    await obs.observe_and_decide(payload, source="lord_otter")
+
+    data_exec.flatten_division.assert_awaited_once_with("bitunix_futures")
 
 
 @pytest.mark.asyncio

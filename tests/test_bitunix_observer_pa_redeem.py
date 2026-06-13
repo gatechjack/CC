@@ -27,6 +27,7 @@ from trading_corp.agents.divisions.bitunix_futures_observer import (
     BitunixFuturesObserver,
     OrderProposal,
 )
+from trading_corp.agents.risk import RiskVerdict
 from trading_corp.agents.strategies.bitunix_confluence import (
     BitUnixConfluenceConfig,
     BitUnixVerdict,
@@ -137,6 +138,12 @@ def wired_observer(tmp_path: Path):
     risk_verdict.verdict = "approve"
     risk_verdict.reason = "ok"
     risk_verdict.new_qty = None
+    # Realistic verdict: a normal approve/reject does NOT flatten. Without
+    # this, the bare MagicMock's `.flatten_account` is a truthy auto-child,
+    # which (post the D1/D2 score-path flatten dispatch) would spuriously
+    # trigger `data_exec.flatten_division`. Mirrors production RiskVerdict
+    # (flatten_account defaults False).
+    risk_verdict.flatten_account = False
     risk_agent.evaluate.return_value = risk_verdict
 
     snap = MagicMock()
@@ -147,6 +154,9 @@ def wired_observer(tmp_path: Path):
 
     data_exec = MagicMock()
     data_exec.brokers = {"bitunix_futures": broker}
+    # Awaitable so a flatten dispatch (when a test opts into flatten_account)
+    # doesn't choke on a non-awaitable MagicMock; matches the Phase-3.1 fixture.
+    data_exec.flatten_division = AsyncMock()
 
     logger_agent = MagicMock()
 
@@ -817,3 +827,70 @@ async def test_run_pa_redeem_loop_swallows_tick_exceptions(wired_observer):
 
     # The loop survived the first-tick exception and ran at least twice
     assert call_count["n"] >= 2
+
+
+# ─── D2: flatten dispatch on the SCORE path ─────────────────────────────
+# Before the fix, _score_and_maybe_propose_locked went straight from the
+# risk eval to the reject handler with NO flatten dispatch, so a
+# flatten_account verdict arriving via the score path was logged as a plain
+# reject and the account never flattened. These pin the dispatch (and its
+# specificity — a normal reject must NOT flatten).
+
+
+@pytest.mark.asyncio
+async def test_score_path_flatten_account_verdict_dispatches_flatten(
+    wired_observer, monkeypatch,
+):
+    monkeypatch.setattr(
+        obs_mod, "evaluate_confluence_futures",
+        lambda **kwargs: _verdict(Tier.STANDARD, Side.SELL),
+    )
+    monkeypatch.setattr(
+        obs_mod, "evaluate_pa_validation",
+        lambda **kwargs: _pa_pass(side="sell"),
+    )
+    monkeypatch.setattr(
+        wired_observer, "_build_proposal",
+        lambda **kwargs: _synth_proposal(side="sell"),
+    )
+    wired_observer.risk_agent.evaluate.return_value = RiskVerdict(
+        verdict="reject",
+        reason="account drawdown 16.0% ≥ 15.0% cap — flatten and halt",
+        flatten_account=True,
+    )
+
+    await wired_observer._score_and_maybe_propose(
+        _payload_btc(), source="lord_otter",
+    )
+
+    wired_observer.data_exec.flatten_division.assert_awaited_once_with(
+        "bitunix_futures",
+    )
+
+
+@pytest.mark.asyncio
+async def test_score_path_normal_reject_does_not_flatten(
+    wired_observer, monkeypatch,
+):
+    """Specificity: a non-flatten reject must NOT flatten the account."""
+    monkeypatch.setattr(
+        obs_mod, "evaluate_confluence_futures",
+        lambda **kwargs: _verdict(Tier.STANDARD, Side.SELL),
+    )
+    monkeypatch.setattr(
+        obs_mod, "evaluate_pa_validation",
+        lambda **kwargs: _pa_pass(side="sell"),
+    )
+    monkeypatch.setattr(
+        wired_observer, "_build_proposal",
+        lambda **kwargs: _synth_proposal(side="sell"),
+    )
+    wired_observer.risk_agent.evaluate.return_value = RiskVerdict(
+        verdict="reject", reason="per-trade risk cap", flatten_account=False,
+    )
+
+    await wired_observer._score_and_maybe_propose(
+        _payload_btc(), source="lord_otter",
+    )
+
+    wired_observer.data_exec.flatten_division.assert_not_awaited()
