@@ -419,6 +419,10 @@ anywhere** (arbitrage division is also ReadOnly/paper). A live copy trade cannot
   from-scratch L) — see `reports/2026-06-13_polymarket_e1_live_broker_design.md`**. *(enabling)*
 - **E2 — Wire the loop's execute branch** at `main.py:3450` (route approved orders through
   `data_exec.place()` + HITL parity instead of `would_have_placed`). **M**. *(safety: HITL)*
+  *E1·2 follow-on:* also propagate `activity.asset` → `extra["token_id"]` in the copy strategy's
+  emitted orders, so the live broker resolves token_id via the authoritative **direct** path rather
+  than the gamma `clobTokenIds` lookup (which carries an outcome-ordering risk + a per-order network
+  call). The E1·2 mapping (`polymarket_live.py`) already supports both; this makes direct the norm.
 - **E3 — Provision/fund/approve the copy wallet** (`POLYMARKET_COPY_PRIVATE_KEY/FUNDER` values to
   vault — paths exist `secrets.py:116`; USDC.e funding; on-chain allowance; extend
   `assert_live_ready`). **M**. *(safety prereq)*
