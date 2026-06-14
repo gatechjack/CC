@@ -130,7 +130,7 @@ def test_decode_resolution_pending():
 
 def _act(condition_id: str, outcome_index: int, side: str = "BUY",
          price: float = 0.5, size: float = 100.0, ts: int = 1000,
-         txh: str | None = None) -> ActivityRow:
+         txh: str | None = None, asset: str = "") -> ActivityRow:
     # Default txhash includes side + ts so BUY and SELL on the same market
     # don't collide in the strategy's dedup set.
     if txh is None:
@@ -138,7 +138,7 @@ def _act(condition_id: str, outcome_index: int, side: str = "BUY",
     return ActivityRow(
         proxy_wallet="0xW", timestamp=ts, condition_id=condition_id, type="TRADE",
         size=size, usdc_size=size * price, transaction_hash=txh,
-        price=price, asset="", side=side, outcome_index=outcome_index,
+        price=price, asset=asset, side=side, outcome_index=outcome_index,
         title="t", slug="", event_slug="", outcome="Yes" if outcome_index == 0 else "No",
         name="alice",
     )
@@ -359,6 +359,92 @@ async def test_strategy_sell_emits_exit_when_we_hold(strategy):
     # implied-prob bound can't spuriously reject a legitimate close.
     assert o.extra["is_prediction_market"] is True
     assert o.extra["implied_prob_at_entry"] == pytest.approx(0.40)
+
+
+# ── E2·1: token_id propagation (activity.asset → extra["token_id"]) ──────────
+
+
+@pytest.mark.asyncio
+async def test_entry_extra_carries_token_id(strategy):
+    """E2·1: a copy ENTRY puts the whale's activity.asset into extra['token_id']
+    so the broker's DIRECT token_id path fires (not the gamma fallback)."""
+    agent, db_url = strategy
+    set_agent_state(
+        "polymarket_copy_trader", "selected_whales",
+        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
+        db_url=db_url,
+    )
+    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
+    orders = await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": [
+        _act("cid2", 0, price=0.40, size=1250, ts=2000, asset="74100200300"),
+    ]}))
+    assert len(orders) == 1
+    assert orders[0].side == "buy"
+    assert orders[0].extra["token_id"] == "74100200300"
+
+
+@pytest.mark.asyncio
+async def test_exit_extra_carries_token_id(strategy):
+    """E2·1: a copy EXIT carries the close leg's token id (the whale SELL
+    activity row's asset — same outcome we hold)."""
+    agent, db_url = strategy
+    set_agent_state(
+        "polymarket_copy_trader", "selected_whales",
+        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
+        db_url=db_url,
+    )
+    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
+    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": [
+        _act("cid1", 0, price=0.40, size=1250, ts=2000, asset="888"),  # entry, held
+    ]}))
+    orders = await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": [
+        _act("cid1", 0, price=0.65, size=1250, ts=3000, side="SELL", asset="888"),
+        _act("cid1", 0, price=0.40, size=1250, ts=2000, asset="888"),
+    ]}))
+    assert len(orders) == 1
+    assert orders[0].side == "sell"
+    assert orders[0].extra["token_id"] == "888"
+
+
+@pytest.mark.asyncio
+async def test_absent_asset_token_id_is_none(strategy):
+    """E2·1: when activity.asset is absent (empty), extra['token_id'] is None so
+    the broker's gamma-lookup fallback stays intact (present→direct, absent→gamma —
+    both paths preserved). Does NOT assert a token_id that isn't there."""
+    agent, db_url = strategy
+    set_agent_state(
+        "polymarket_copy_trader", "selected_whales",
+        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
+        db_url=db_url,
+    )
+    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
+    orders = await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": [
+        _act("cid2", 0, price=0.40, size=1250, ts=2000),  # asset="" (default)
+    ]}))
+    assert len(orders) == 1
+    assert orders[0].extra.get("token_id") is None
+
+
+def test_broker_consumes_strategy_token_id_direct_then_fallback():
+    """E2·1 linkage: the producer (strategy extra) feeds the consumer
+    (PolymarketLiveBroker.resolve_token_id). token_id present → DIRECT (no
+    network); absent → NOT direct (gamma territory); absent + fetcher → gamma
+    resolves. Confirms the direct path is now the norm AND the fallback is intact."""
+    from trading_corp.brokers.polymarket_live import (
+        TokenIdResolutionError, resolve_token_id,
+    )
+    # direct: the strategy's extra["token_id"] is returned verbatim, no fetcher
+    assert resolve_token_id({"token_id": "74100200300"}) == "74100200300"
+    # absent token_id + no fetcher → not direct; gamma-fallback territory
+    with pytest.raises(TokenIdResolutionError):
+        resolve_token_id({"condition_id": "0xabc", "outcome_index": 0})
+    # absent token_id + gamma fetcher → fallback resolves (path preserved)
+    market = {"conditionId": "0xabc", "clobTokenIds": '["111", "222"]',
+              "outcomes": '["Yes", "No"]'}
+    assert resolve_token_id(
+        {"condition_id": "0xabc", "outcome": "Yes", "outcome_index": 0},
+        market_fetcher=lambda cid: market,
+    ) == "111"
 
 
 @pytest.mark.asyncio

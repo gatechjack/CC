@@ -437,6 +437,10 @@ class PolymarketCopyTraderAgent:
                 "outcome": activity.outcome,
                 "outcome_index": activity.outcome_index,
                 "condition_id": activity.condition_id,
+                # E2·1: the whale's ERC-1155 token id. Drives the broker's
+                # DIRECT token_id path (brokers/polymarket_live.resolve_token_id);
+                # None (asset absent) → gamma-lookup fallback, unchanged.
+                "token_id": activity.asset or None,
                 "whale_wallet": wallet,
                 "whale_user_name": user_name,
                 "whale_entry_price": activity.price,
@@ -490,6 +494,10 @@ class PolymarketCopyTraderAgent:
                 "outcome": activity.outcome,
                 "outcome_index": activity.outcome_index,
                 "condition_id": activity.condition_id,
+                # E2·1: token id of the outcome being closed (the whale's SELL
+                # activity row's asset — same outcome we hold). Drives the
+                # broker's direct token_id path; None → gamma fallback.
+                "token_id": activity.asset or None,
                 "whale_wallet": wallet,
                 "whale_user_name": user_name,
                 "whale_exit_price": activity.price,
