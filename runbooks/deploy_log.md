@@ -116,6 +116,37 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-14 ~19:12 UTC — Bitunix FIRST LIVE FILL close-out: stopped out + flat at broker, but bot books/engine left in a bad state (read-only; no deploy, no fix)
+
+**STATE VERB: DOCUMENTED (read-only investigation; agent SSH per 82fda13).** Fuller close-out of the first
+live Bitunix fill (the B1-VALIDATED entry below). The SHORT stopped out at the server-side SL and the account
+is FLAT at the broker — but the bot did NOT auto-book the exit and a reconciler matching bug has latched the
+live engine out of new entries. Nothing remediated this session (operator-gated; see BACKLOG P1/P2).
+
+**The trade (authoritative — operator-supplied from BitUnix UI; no API call):**
+- Entry: 2026-06-14 18:24:08 UTC — SHORT BTC/USDT.P, qty 0.000485496950614426, fill **63678.1**, entry fee **0.00509424 USDT**. (~$31 notional, 25×.)
+- Exit: ~19:12 UTC — server-side SL (B1, MARK_PRICE → market close), PnL **−0.04880000 USDT**, exit fee **0.00510400 USDT**.
+- **Net realized ≈ −0.0590 USDT** (PnL − entry fee − exit fee). Held ~48 min. B1 fired correctly → first-fill catastrophic-stop validation holds (see entry below).
+
+**Engine state left behind (NOT remediated — re-confirmed read-only 2026-06-14 19:30:47 UTC):**
+- **Bitunix broker latched `_halt_new_orders=True`** (reason `position_state_reconciler_divergence`) → **blocked from new live entries**; exits unaffected. Clears only on broker re-init (restart).
+- **Account FLAT at broker** (stop closed the position; `get_pending_positions` returns 0, no API errors).
+- **`paper_trade_record.result` still NULL** — exit NOT booked by the bot (deferred-to-operator by design; BACKLOG P2). PID 2637434 unchanged (no restart this session).
+- **Will NOT self-clear** while `result=NULL`.
+
+**Resuming live requires the P1 reconciler fix THEN a restart — NOT a restart alone** (a restart clears the
+halt, but the next live fill re-triggers the same false divergence and re-latches). No restart performed.
+
+**Findings filed:** BACKLOG **P1** (reconciler symbol+side false-divergence → halt-latch, blocks live) +
+**P2** (server-side-stop close not auto-booked). Reports: `reports/2026-06-14_bitunix_first_fill_closeout.md`
++ TP-architecture `reports/2026-06-14_bitunix_first_fill_tp_investigation.md`.
+
+**No code, no deploy, no prod change, no restart, no resume-to-live — documentation only.** Disclosure:
+agent read-only SSH per 82fda13 (`sqlite3 -readonly`, `journalctl`, source review); no writes, no
+signed/public-API calls.
+
+---
+
 ## 2026-06-14 — Bitunix B1 entry-attached server-side stop VALIDATED on first real live fill (closes item-2, was dropped)
 
 **STATE VERB: VALIDATED (operator-observed).** The first real live Bitunix fill since the
