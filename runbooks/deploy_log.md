@@ -155,6 +155,8 @@ triggered-vs-clean-exit) are operator-held; append here if a fuller record is wa
 
 **Revert (if shelve reversed):** repo `enabled: true` + prod sed back to true; observer resumes next cycle **only if** the odds_api key/quota is restored (operator feed action; no spend per standing constraint).
 
+**UPDATE 2026-06-14 20:34 UTC — PROD DISABLE APPLIED (operator-run).** Operator ran `kdis.sh`: prod observer block `enabled: true → false` (1 byte-surgical replacement; backup `config/strategies.yaml.bak-pre-ksarb-disable-2026-06-14`). Verified read-only: prod observer `enabled:false`; last `kalshi_sports_arb_scan` 2026-06-14T19:31:28Z (stays final — disabled cycles return before scanning). **origin/main ↔ prod now in sync on the observer block; shelve FULLY COMPLETE.** Service not restarted by this (hot-reloads next cycle / immediate on the bitunix restart). Stale `# FLIPPED` comment remains on prod — cosmetic, value is `false`.
+
 ---
 
 ## 2026-06-13 15:36 UTC — Bitunix AUTONOMOUS LIVE — go-live (item-4 durable --live auth + --brokers bitunix + execution_mode:live; HITL=0 + D1 loaded)
