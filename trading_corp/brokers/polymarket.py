@@ -419,7 +419,7 @@ class PolymarketBroker(ReadOnlyBroker):
         }
 
     async def quote(self, symbol: str) -> float:
-        """Return the last trade price for a Polymarket outcome.
+        """Return the current MID price (live-book midpoint) for a Polymarket outcome.
 
         `symbol` is in `{market_slug}:{outcome}` form, e.g.
         `trump-2024-elected:yes`. Phase 1's only caller is
@@ -473,16 +473,52 @@ class PolymarketBroker(ReadOnlyBroker):
             if token_id is None:
                 return 0.0
 
-            # Step 2: last-trade price for that token from CLOB.
-            r2 = await self._client.get(
-                f"{_CLOB_API}/last-trade-price",
-                params={"token_id": token_id},
-            )
-            r2.raise_for_status()
-            data = r2.json() or {}
-            return float(data.get("price") or 0.0)
+            # Step 2: current MID price via the py_clob_client SDK (proven
+            # Level-0 public read), replacing the prior unverified raw-httpx
+            # /last-trade-price GET. Midpoint (live-book fair value) is the right
+            # side-agnostic "current price" for quote()'s consumers (dry-run fill
+            # synth, mark-to-market, copy-entry drift check); the executable side
+            # (get_price(token_id, BUY/SELL)) is more precise for entry COST but
+            # needs a side — a future side-aware method (E1·6/E2), since quote()'s
+            # contract is a single side-agnostic float.
+            return await asyncio.to_thread(self._midpoint_via_sdk, token_id)
         except Exception as e:
             log.debug("PolymarketBroker.quote(%r) failed: %s", symbol, e)
+            return 0.0
+
+    def _midpoint_via_sdk(self, token_id) -> float:
+        """Current mid price for `token_id` via py_clob_client `get_midpoint`
+        (Level-0 public read — no creds/key/funds). Returns 0.0 on any error.
+
+        Replaces the prior unverified raw-httpx `/last-trade-price` GET (guessed
+        endpoint + `price` field, silent 0.0 on mismatch). The response field is
+        grounded as `mid` (`{"mid": "0.52"}`) but parsed defensively
+        (mid/midpoint/price); the exact field is re-confirmed at the operator-
+        gated $1 shakedown. Sync SDK — invoked via `asyncio.to_thread`. The
+        Level-0 ClobClient (host only) is constructed lazily + cached.
+        """
+        clob = getattr(self, "_clob_sdk", None)
+        if clob is None:
+            try:
+                from py_clob_client.client import ClobClient
+                clob = ClobClient(host=_CLOB_API)  # Level 0: open endpoints only
+            except Exception as e:
+                log.debug("PolymarketBroker: ClobClient(Level0) init failed: %s", e)
+                return 0.0
+            self._clob_sdk = clob
+        try:
+            resp = clob.get_midpoint(token_id) or {}
+        except Exception as e:
+            log.debug(
+                "PolymarketBroker.get_midpoint(%s) failed: %s", str(token_id)[:14], e,
+            )
+            return 0.0
+        if not isinstance(resp, dict):
+            return 0.0
+        raw = resp.get("mid", resp.get("midpoint", resp.get("price")))
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
             return 0.0
 
     # ── Phase 2a — market discovery for the arbitrage scanner ─────────
