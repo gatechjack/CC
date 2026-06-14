@@ -116,6 +116,27 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-14 ~21:12 UTC — Bitunix P1 reconciler fix DEPLOYED + first-fill exit BOOKED + RESTART (halt cleared; execution_mode:live preserved)
+
+**STATE VERB: DEPLOYED + LOADED + VERIFIED (operator-supervised; §4 gate lifted for this sequence).**
+
+**Triggered by:** operator-gated P1 deploy window — the first-fill close-out (entry below) found the reconciler false-divergence latching the live engine out of new entries (BACKLOG P1).
+
+**Deployed (P1 reconciler symbol+side fix):** `trading_corp/brokers/bitunix.py` + `trading_corp/agents/divisions/bitunix_position_reconciler.py` — branch `bitunix-p1-reconciler-fix-2026-06-14` `8b78da8`, merged to main `08f2911`. Applied via `runbooks/deploy_apply_p1.sh` (md5-gate → backup → atomic-mv):
+- prod base (pre-deploy, NO drift) `bitunix.py 8a81b30e…` / `reconciler bcefc1c0…` → target `64d857246…` / `64f33e76…` (LF md5). Gate A (prod==base) + Gate B (staged==target) + py_compile passed; post-deploy prod md5 == target == merged-main (parity).
+- backups: `bitunix.py.bak-pre-p1reconciler-2026-06-14` + `bitunix_position_reconciler.py.bak-pre-p1reconciler-2026-06-14` (rollback = restore + restart).
+- `config/strategies.yaml` NOT deployed (excluded — holds prod-only `execution_mode: live`).
+
+**P2 booking (manual, operator-gated, single guarded UPDATE):** first-fill row `order_id 6741f62f-d950-4356-8deb-578f603f8db0` booked from BitUnix trade history — `result='loss'`, `result_price=63800.1`, `result_ts=2026-06-14T19:12:20+00:00`, `actual_pnl_dollars=−0.0488` (gross; BitUnix computes on broker-truncated qty 0.0004), `extra_json.exit_fee_usd=0.005104`, net realized −0.0590. Confirming SELECT = exactly 1 row first; `UPDATE … WHERE order_id=… AND result IS NULL` → 1 row. SQL: `runbooks/2026-06-14_p2_confirm_select.sql` + `_p2_book_update.sql`.
+
+**Restart:** `sudo systemctl restart trading-corp` → PID 2637434 → **2717746** (21:12:37 UTC; active, NRestarts=0).
+
+**Verified (read-only, post-restart):** `execution_mode: live` PRESERVED (`Registered bitunix_futures … (paper=False)`, startup `mode: LIVE` — the whole-file-strategies.yaml clobber hazard avoided by the code-only deploy); kalshi `enabled: false` preserved; reconciler emits clean `position_state_reconciled` (×4 @60s, **ZERO divergence**) → **halt cleared, false-divergence eliminated**; side convention confirmed **Sell/Buy** (P1 fail-loud path dormant, no label-set extension); P2 row booked. NB: the position-state sanity-poll has a ~12–15 min post-boot startup delay (normal — old boot's first tick was +11.5 min; not a defect).
+
+**Disclosure (82fda13 + §4 lift):** agent executed the prod writes (file deploy + DB UPDATE + restart) under the explicit operator §4 gate-lift for THIS sequence; all verification read-only; no `strategies.yaml` write; no signed/public-API call. Repo↔prod parity closed by the `08f2911` merge.
+
+---
+
 ## 2026-06-14 ~19:12 UTC — Bitunix FIRST LIVE FILL close-out: stopped out + flat at broker, but bot books/engine left in a bad state (read-only; no deploy, no fix)
 
 **STATE VERB: DOCUMENTED (read-only investigation; agent SSH per 82fda13).** Fuller close-out of the first
