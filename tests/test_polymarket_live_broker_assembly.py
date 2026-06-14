@@ -75,8 +75,30 @@ async def test_disconnect_clears_state():
 
 # ── place/cancel delegate to the (E1·2-4) module fns with the L2 client ─────
 
-async def test_place_order_delegates_to_module_fn(monkeypatch):
-    b = _live()
+# E2·2: place_order dispatches on the configured order_type. The DEFAULT is
+# fak_synth (synthesized FAK), so the default broker delegates to the synth fn —
+# NOT _place_order_fn (which is the native gtc/fok/gtd path). This supersedes the
+# E1·6 single-delegation assertion (place_order had no dispatch before E2·2).
+
+
+async def test_place_order_default_fak_synth_delegates_to_synth_fn(monkeypatch):
+    b = _live()                                # default order_type == fak_synth
+    assert b._order_type == "fak_synth"
+    b._clob = MagicMock()
+    b._connected = True
+    fill = object()
+    fn = AsyncMock(return_value=fill)
+    monkeypatch.setattr(pl, "_place_order_fak_synth_fn", fn)
+    result = await b.place_order("ORDER")
+    assert result is fill
+    fn.assert_awaited_once_with(b._clob, "ORDER", poll_seconds=b._fak_poll_seconds)
+
+
+async def test_place_order_native_order_type_delegates_to_native_fn(monkeypatch):
+    b = PolymarketLiveBroker(
+        private_key="0xkey", funder_address="0xfunder", polygon_rpc_url="http://rpc",
+        order_type="gtc",
+    )
     b._clob = MagicMock()
     b._connected = True
     fill = object()
@@ -84,7 +106,31 @@ async def test_place_order_delegates_to_module_fn(monkeypatch):
     monkeypatch.setattr(pl, "_place_order_fn", fn)
     result = await b.place_order("ORDER")
     assert result is fill
-    fn.assert_awaited_once_with(b._clob, "ORDER")
+    # The order_type STRING is passed through; the broker never imports the SDK to
+    # resolve it (resolution happens inside the real place_order, mocked away here).
+    fn.assert_awaited_once_with(b._clob, "ORDER", order_type="gtc")
+
+
+def test_default_order_type_and_poll_window():
+    b = _live()
+    assert b._order_type == "fak_synth"
+    assert b._fak_poll_seconds == 5.0
+
+
+def test_invalid_order_type_rejected_at_construction():
+    with pytest.raises(ValueError, match="order_type"):
+        PolymarketLiveBroker(
+            private_key="0xk", funder_address="0xf", polygon_rpc_url="http://rpc",
+            order_type="market",
+        )
+
+
+def test_negative_fak_poll_seconds_rejected():
+    with pytest.raises(ValueError, match="fak_poll_seconds"):
+        PolymarketLiveBroker(
+            private_key="0xk", funder_address="0xf", polygon_rpc_url="http://rpc",
+            fak_poll_seconds=-1.0,
+        )
 
 
 async def test_cancel_order_delegates_to_module_fn(monkeypatch):
