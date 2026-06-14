@@ -1715,12 +1715,30 @@ polymarket_copy_trader:
   # defaults to fak_synth / 5s so these keys are forward-compatible today.
   order_type: fak_synth
   fak_poll_seconds: 5               # FAK-synth poll window before cancelling remainder
+  # ── Copy sizing (E2·3, D4) — REPLACED the v1 tier ladder ──
+  # size = clamp(bankroll_usdc * per_trade_fraction * conviction_mult, min_size, max_size)
+  # DEFAULT = flat ≈$1/order, conviction OFF. Arithmetic of the default:
+  #   120.0 * 0.00833 * 1.0 = 0.9996 ≈ $1.00, inside [0.50, 2.00] → ~$1.00.
+  # Copy size no longer scales with the whale's bet size (the old $1/$2/$5 tiers);
+  # the full proportional/conviction schema is present but inert by config.
+  # NOT wired to live placement here (emission still feeds paper would_have_placed);
+  # E2·6 routes it to the live broker.
   sizing:
-    # USDC bet size → our USDC copy size. Polymarket binaries clear in USDC;
-    # whale bet sizes vary 100× more than Kalshi contracts, so the upper
-    # tier is more aggressive ($5 vs Kalshi's $3).
-    tier_boundaries_usdc: [100.0, 1000.0]
-    tier_sizes_usdc: [1.0, 2.0, 5.0]
+    bankroll_usdc: 120.0            # static funded USDC.e balance (PCT ~119.98).
+                                    #   NOTE: when proportional sizing is turned on,
+                                    #   revisit reading the LIVE balance vs this static
+                                    #   constant (deferred — not E2·3).
+    per_trade_fraction: 0.00833     # 120.0 * 0.00833 = 0.9996 ≈ $1.00 default per order
+    min_size: 0.50                  # clamp floor (USDC) — tight (0.5×) around the ~$1 default
+    max_size: 2.00                  # clamp ceiling (USDC) — tight (2×) around the ~$1 default
+    conviction:
+      enabled: false                # OFF → conviction_mult = 1.0 (inert). Flip to true to
+                                    #   scale by whale conviction — NO code change. PREREQ:
+                                    #   a copy-roster review of the pinned whales first
+                                    #   (several truncated/untrustworthy) — operator concern.
+      signal: composite_score       # whale_meta key used when enabled (or decision_win_rate)
+      floor: 0.5                    # clamp on the derived multiplier
+      cap: 2.0
 
 # ── Robinhood Joint Iron Condor v1 ──
 robinhood_joint_iron_condor:

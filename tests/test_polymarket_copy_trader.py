@@ -306,7 +306,7 @@ async def test_strategy_new_buy_emits_entry(strategy):
     await agent.run_scan_cycle(data_api_client=apify)
     # Now a NEW buy at later timestamp
     apify = _StubDataAPI({"0xW": [
-        _act("cid2", 0, price=0.40, size=1250, ts=2000),  # $500 bet → tier 2
+        _act("cid2", 0, price=0.40, size=1250, ts=2000),  # whale $500 bet
         _act("cid1", 0, price=0.40, size=100, ts=1000),
     ]})
     orders = await agent.run_scan_cycle(data_api_client=apify)
@@ -314,11 +314,12 @@ async def test_strategy_new_buy_emits_entry(strategy):
     o = orders[0]
     assert o.side == "buy"
     assert o.symbol == "cid2:Yes"
-    # $2 copy at $0.40 = 5 contracts
-    assert o.qty == pytest.approx(5.0)
+    # E2·3 (D4): flat ≈$1 sizing (no longer the $500→$2 tier). Default config
+    # 120.0 * 0.00833 * 1.0 = 0.9996 USDC; contracts = 0.9996 / 0.40 ≈ 2.499.
+    assert o.extra["copy_size_usdc"] == pytest.approx(0.9996)
+    assert o.qty == pytest.approx(0.9996 / 0.40)
     assert o.limit_price == pytest.approx(0.40)
     assert o.extra["is_entry"] is True
-    assert o.extra["copy_size_usdc"] == 2.0
     # Group A #1: entry now carries the routing flag + implied prob so
     # RiskAgent._evaluate_polymarket actually sees it (was never set before,
     # so the Polymarket caps silently never applied to copy-trader orders).
@@ -351,7 +352,8 @@ async def test_strategy_sell_emits_exit_when_we_hold(strategy):
     assert len(orders) == 1
     o = orders[0]
     assert o.side == "sell"
-    assert o.qty == pytest.approx(5.0)  # 5 contracts (matches entry size)
+    # exit mirrors the flat-$1 entry size: 0.9996 USDC / 0.40 entry ≈ 2.499 contracts
+    assert o.qty == pytest.approx(0.9996 / 0.40)
     assert o.limit_price == pytest.approx(0.65)
     assert o.extra["is_entry"] is False
     # Group A #1: exit carries the flag too; implied_prob_at_entry is the
@@ -467,7 +469,9 @@ async def test_strategy_sell_without_held_position_no_op(strategy):
 
 
 @pytest.mark.asyncio
-async def test_strategy_sizing_tiers(strategy):
+async def test_strategy_sizing_is_flat_regardless_of_whale_size(strategy):
+    # E2·3 (D4): copy sizing is flat ≈$1 — REPLACED the v1 $1/$2/$5 tier ladder, so
+    # the whale's bet size no longer changes our copy size (proves the cutover).
     agent, db_url = strategy
     set_agent_state(
         "polymarket_copy_trader", "selected_whales",
@@ -477,20 +481,18 @@ async def test_strategy_sizing_tiers(strategy):
     apify = _StubDataAPI({"0xW": []})
     await agent.run_scan_cycle(data_api_client=apify)
     apify = _StubDataAPI({"0xW": [
-        _act("sm", 0, price=0.50, size=100, ts=1001),    # $50 → tier 1 $1
-        _act("md", 0, price=0.50, size=1000, ts=1002),   # $500 → tier 2 $2
-        _act("lg", 0, price=0.50, size=10000, ts=1003),  # $5000 → tier 3 $5
+        _act("sm", 0, price=0.50, size=100, ts=1001),    # whale $50 bet
+        _act("md", 0, price=0.50, size=1000, ts=1002),   # whale $500 bet
+        _act("lg", 0, price=0.50, size=10000, ts=1003),  # whale $5000 bet
     ]})
     orders = await agent.run_scan_cycle(data_api_client=apify)
     sizes = {o.symbol.split(":")[0]: o.extra["copy_size_usdc"] for o in orders}
-    assert sizes["sm"] == 1.0
-    assert sizes["md"] == 2.0
-    assert sizes["lg"] == 5.0
-    # contracts = copy_usdc / 0.50
     qty_by_sym = {o.symbol.split(":")[0]: o.qty for o in orders}
-    assert qty_by_sym["sm"] == pytest.approx(2.0)
-    assert qty_by_sym["md"] == pytest.approx(4.0)
-    assert qty_by_sym["lg"] == pytest.approx(10.0)
+    # all flat ≈$1 (120*0.00833=0.9996) + same contracts (0.9996/0.50), independent
+    # of the 100×-varying whale bet sizes.
+    for sym in ("sm", "md", "lg"):
+        assert sizes[sym] == pytest.approx(0.9996)
+        assert qty_by_sym[sym] == pytest.approx(0.9996 / 0.50)
 
 
 @pytest.mark.asyncio
@@ -530,3 +532,96 @@ async def test_strategy_dedups_txhash_across_polls(strategy):
         data_api_client=_StubDataAPI({"0xW": [new_buy]})
     )
     assert orders2 == []
+
+
+# ── E2·3: clamp sizing formula + schema (D4) ─────────────────────────────────
+# size = clamp(bankroll_usdc * per_trade_fraction * conviction_mult, min_size, max_size)
+# Default → flat ≈$1, conviction OFF. These exercise the sizing fns directly (pure;
+# no scan cycle) across the default / clamp / scaling paths.
+
+
+def _sizing_cfg(**over):
+    """A full sizing config; `over` replaces individual keys for clamp/scale cases."""
+    base = {
+        "bankroll_usdc": 120.0, "per_trade_fraction": 0.00833,
+        "min_size": 0.50, "max_size": 2.00,
+        "conviction": {"enabled": False, "signal": "composite_score",
+                       "floor": 0.5, "cap": 2.0},
+    }
+    base.update(over)
+    return {"sizing": base}
+
+
+def test_sizing_default_is_flat_about_one_dollar(strategy):
+    agent, _ = strategy
+    agent._strat_cfg = _sizing_cfg()
+    size = agent._compute_copy_size_usdc()
+    assert size == pytest.approx(0.9996)        # 120.0 * 0.00833 * 1.0
+    assert 0.95 <= size <= 1.05                 # lands in the intended ~$1 band
+
+
+def test_sizing_default_via_code_constants(strategy):
+    # No sizing block at all → module-default constants still yield ~$1.
+    agent, _ = strategy
+    agent._strat_cfg = {"enabled": True}        # no "sizing" key
+    assert agent._compute_copy_size_usdc() == pytest.approx(0.9996)
+
+
+def test_sizing_conviction_inert_under_default(strategy):
+    # conviction OFF → a whale_meta signal has NO effect on size (multiplier 1.0).
+    agent, _ = strategy
+    agent._strat_cfg = _sizing_cfg()
+    with_signal = agent._compute_copy_size_usdc(whale_meta={"composite_score": 1.8})
+    without = agent._compute_copy_size_usdc(whale_meta=None)
+    assert with_signal == pytest.approx(without) == pytest.approx(0.9996)
+    assert agent._conviction_mult({"composite_score": 1.8}) == 1.0
+
+
+def test_sizing_clamp_floors_at_min(strategy):
+    agent, _ = strategy
+    agent._strat_cfg = _sizing_cfg(per_trade_fraction=0.0001)    # raw 120*0.0001=0.012
+    assert agent._compute_copy_size_usdc() == pytest.approx(0.50)  # floored to min_size
+
+
+def test_sizing_clamp_ceils_at_max(strategy):
+    agent, _ = strategy
+    agent._strat_cfg = _sizing_cfg(per_trade_fraction=0.5)       # raw 120*0.5=60
+    assert agent._compute_copy_size_usdc() == pytest.approx(2.00)  # ceiled to max_size
+
+
+def test_sizing_scales_with_fraction_and_conviction(strategy):
+    # Non-default fraction + conviction ON → the full formula scales end-to-end
+    # (proves the schema works, not just the $1 path). 100.0 * 0.05 * 1.5 = 7.5.
+    agent, _ = strategy
+    agent._strat_cfg = _sizing_cfg(
+        bankroll_usdc=100.0, per_trade_fraction=0.05,
+        min_size=0.10, max_size=100.0,
+        conviction={"enabled": True, "signal": "composite_score",
+                    "floor": 0.5, "cap": 3.0},
+    )
+    size = agent._compute_copy_size_usdc(whale_meta={"composite_score": 1.5})
+    assert size == pytest.approx(7.5)
+
+
+def test_conviction_mult_clamps_floor_and_cap(strategy):
+    agent, _ = strategy
+    agent._strat_cfg = _sizing_cfg(
+        conviction={"enabled": True, "signal": "composite_score",
+                    "floor": 0.5, "cap": 2.0},
+    )
+    assert agent._conviction_mult({"composite_score": 5.0}) == pytest.approx(2.0)  # capped
+    assert agent._conviction_mult({"composite_score": 0.1}) == pytest.approx(0.5)  # floored
+    assert agent._conviction_mult({"composite_score": 1.3}) == pytest.approx(1.3)  # passthrough
+
+
+def test_conviction_mult_missing_or_bad_signal_is_neutral(strategy):
+    # conviction ON but the signal is absent/unparseable → neutral 1.0 (never amplify
+    # sizing on bad data).
+    agent, _ = strategy
+    agent._strat_cfg = _sizing_cfg(
+        conviction={"enabled": True, "signal": "composite_score",
+                    "floor": 0.5, "cap": 2.0},
+    )
+    assert agent._conviction_mult(None) == 1.0
+    assert agent._conviction_mult({}) == 1.0
+    assert agent._conviction_mult({"composite_score": "n/a"}) == 1.0

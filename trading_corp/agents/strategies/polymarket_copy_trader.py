@@ -75,9 +75,19 @@ _AGENT_STATE_SELECTED_WHALES = "selected_whales"
 _AGENT_STATE_WHALE_STATE_PREFIX = "whale_state:"  # per-whale state blob
 _AGENT_STATE_LAST_POLL_TS = "last_poll_ts"
 
-# Sizing tier defaults (USDC bet size → USDC copy size).
-_DEFAULT_TIER_BOUNDARIES_USDC = (100.0, 1000.0)
-_DEFAULT_TIER_SIZES_USDC = (1.0, 2.0, 5.0)
+# ── E2·3 clamp-sizing defaults (D4) ──────────────────────────────────────
+# size = clamp(bankroll_usdc * per_trade_fraction * conviction_mult, min, max).
+# Defaults reproduce flat ≈$1/order with conviction OFF (replaced the v1 tier
+# ladder, which scaled copy size by the whale's bet size). Arithmetic:
+#   120.0 * 0.00833 * 1.0 = 0.9996 ≈ $1.00, within [0.50, 2.00] → ~$1.00.
+_DEFAULT_BANKROLL_USDC = 120.0          # static funded USDC.e balance (PCT ~119.98)
+_DEFAULT_PER_TRADE_FRACTION = 0.00833   # 120.0 * 0.00833 = 0.9996 ≈ $1.00 / order
+_DEFAULT_MIN_SIZE_USDC = 0.50           # clamp floor — tight (0.5×) around the ~$1 default
+_DEFAULT_MAX_SIZE_USDC = 2.00           # clamp ceiling — tight (2×) around the ~$1 default
+# Conviction (INERT by default; enabled is a config flip, not code):
+_DEFAULT_CONVICTION_SIGNAL = "composite_score"  # whale_meta key when enabled
+_DEFAULT_CONVICTION_FLOOR = 0.5         # clamp on the derived multiplier
+_DEFAULT_CONVICTION_CAP = 2.0
 
 # How many activity rows to fetch per whale per poll. Polymarket sorts
 # /activity most-recent first; 20 covers minutes of even the busiest
@@ -98,15 +108,30 @@ class PolymarketCopyTraderAgent:
           activity_limit_per_poll: 20
           order_type: fak_synth              # E2·2 broker tif: fak_synth|gtc|fok|gtd
           fak_poll_seconds: 5                # E2·2 FAK-synth poll window (seconds)
-          sizing:
-            tier_boundaries_usdc: [100.0, 1000.0]
-            tier_sizes_usdc: [1.0, 2.0, 5.0]
+          sizing:                            # E2·3 clamp formula (D4); default flat ≈$1
+            bankroll_usdc: 120.0             # static funded balance
+            per_trade_fraction: 0.00833      # 120 * 0.00833 = 0.9996 ≈ $1.00 / order
+            min_size: 0.50                   # clamp floor (USDC)
+            max_size: 2.00                   # clamp ceiling (USDC)
+            conviction:
+              enabled: false                 # OFF → conviction_mult = 1.0 (inert)
+              signal: composite_score        # whale_meta key when enabled
+              floor: 0.5
+              cap: 2.0
 
     `order_type` / `fak_poll_seconds` are EXECUTION config consumed by
     `PolymarketLiveBroker` (brokers/polymarket_live.py), not this strategy. They
     select the live broker's time-in-force: `fak_synth` (default) synthesizes FAK
     over GTC since py_clob_client 0.17.5 has no native FAK; gtc/fok/gtd pass through
     native. The read->broker wiring lands in E2·6; the broker defaults match these.
+
+    `sizing` (E2·3, D4) sets copy size = clamp(bankroll_usdc * per_trade_fraction *
+    conviction_mult, min_size, max_size). Default = flat ≈$1/order with conviction
+    OFF (conviction_mult == 1.0) — replaced the v1 tier ladder (size no longer
+    scales with the whale's bet size). Enabling conviction-scaled sizing is a CONFIG
+    flip (sizing.conviction.enabled), not code — but requires a copy-roster review
+    of the pinned whales first (operator prerequisite). NOT wired to the live
+    placement path here (emission still feeds paper would_have_placed); E2·6 routes it.
     """
 
     name = "polymarket_copy_trader"
@@ -220,6 +245,7 @@ class PolymarketCopyTraderAgent:
                 wallet=wallet, user_name=user_name, rows=rows,
                 logger_agent=logger_agent,
                 market_state_fetcher=market_state_fetcher,
+                whale_meta=whale_meta if isinstance(whale_meta, dict) else None,
             )
             proposals.extend(whale_proposals)
 
@@ -231,8 +257,13 @@ class PolymarketCopyTraderAgent:
         self, *, wallet: str, user_name: str,
         rows: list[ActivityRow], logger_agent: Any,
         market_state_fetcher: Any = None,
+        whale_meta: dict[str, Any] | None = None,
     ) -> list[ProposedOrder]:
-        """Diff new trades against this whale's persisted state, emit orders."""
+        """Diff new trades against this whale's persisted state, emit orders.
+
+        `whale_meta` is the selected-whale dict (carries conviction signals like
+        composite_score / decision_win_rate); threaded to `_emit_entry` for the
+        E2·3 sizing formula. Inert today (conviction OFF → multiplier 1.0)."""
         state = self._load_whale_state(wallet)
         is_cold_start = state is None
 
@@ -279,6 +310,7 @@ class PolymarketCopyTraderAgent:
                     wallet=wallet, user_name=user_name, activity=r,
                     market_state_fetcher=market_state_fetcher,
                     logger_agent=logger_agent,
+                    whale_meta=whale_meta,
                 )
                 if proposal is not None:
                     proposals.append(proposal)
@@ -330,6 +362,7 @@ class PolymarketCopyTraderAgent:
         self, *, wallet: str, user_name: str, activity: ActivityRow,
         market_state_fetcher: Any = None,
         logger_agent: Any = None,
+        whale_meta: dict[str, Any] | None = None,
     ) -> ProposedOrder | None:
         # ── Fix 2026-05-14: skip already-resolved markets ──
         # The whale's activity feed surfaces trades with a 10-60s lag.
@@ -411,8 +444,8 @@ class PolymarketCopyTraderAgent:
                     'polymarket_copy_trader: quote drift check failed for %s: %s',
                     activity.condition_id, e,
                 )
-        copy_usdc = self._size_tier_usdc(activity.usdc_size)
-        # Convert USDC bet size → contract count at the whale's entry price.
+        copy_usdc = self._compute_copy_size_usdc(whale_meta=whale_meta)
+        # Convert USDC copy size → contract count at the whale's entry price.
         # We mirror at the same price (paper-mode simplification) so our
         # contract count is just (our $) / (whale's entry price). The
         # downstream resolver's `pnl = qty * (1-price) if win else -qty*price`
@@ -522,20 +555,56 @@ class PolymarketCopyTraderAgent:
     def _position_key(condition_id: str, outcome_index: int) -> str:
         return f"{condition_id}|{int(outcome_index)}"
 
-    # ── Sizing ────────────────────────────────────────────────────────
+    # ── Sizing (E2·3 — clamp formula, D4) ─────────────────────────────
 
-    def _size_tier_usdc(self, whale_usdc_size: float) -> float:
-        sz_cfg = self._strat_cfg.get("sizing") or {}
-        bounds = tuple(sz_cfg.get("tier_boundaries_usdc")
-                       or _DEFAULT_TIER_BOUNDARIES_USDC)
-        sizes = tuple(sz_cfg.get("tier_sizes_usdc")
-                      or _DEFAULT_TIER_SIZES_USDC)
-        if len(sizes) != len(bounds) + 1:
-            return float(_DEFAULT_TIER_SIZES_USDC[0])
-        for i, b in enumerate(bounds):
-            if whale_usdc_size < float(b):
-                return float(sizes[i])
-        return float(sizes[-1])
+    def _compute_copy_size_usdc(self, whale_meta: dict[str, Any] | None = None) -> float:
+        """USDC copy size per the D4 clamp formula:
+
+            size = clamp(bankroll_usdc * per_trade_fraction * conviction_mult,
+                         min_size, max_size)
+
+        DEFAULT config → flat ≈$1/order (120.0 * 0.00833 = 0.9996) with conviction
+        OFF (conviction_mult == 1.0). REPLACED the v1 tier ladder (`_size_tier_usdc`,
+        removed): copy size no longer scales with the whale's bet size — it's the
+        operator-chosen flat base, with the full proportional/conviction schema
+        present but inert by config. NOT wired to a LIVE placement path here (still
+        feeds `would_have_placed` paper rows); E2·6 routes the emission to the broker.
+        """
+        sz = self._strat_cfg.get("sizing") or {}
+        bankroll = float(sz.get("bankroll_usdc", _DEFAULT_BANKROLL_USDC))
+        fraction = float(sz.get("per_trade_fraction", _DEFAULT_PER_TRADE_FRACTION))
+        min_size = float(sz.get("min_size", _DEFAULT_MIN_SIZE_USDC))
+        max_size = float(sz.get("max_size", _DEFAULT_MAX_SIZE_USDC))
+        raw = bankroll * fraction * self._conviction_mult(whale_meta)
+        return max(min_size, min(raw, max_size))
+
+    def _conviction_mult(self, whale_meta: dict[str, Any] | None) -> float:
+        """Resolve the conviction multiplier for the sizing formula.
+
+        INERT by default → returns 1.0: conviction-scaled sizing stays OFF until
+        `sizing.conviction.enabled` is flipped true, which is a CONFIG change, NOT
+        code (the whale_meta plumbing into `_compute_copy_size_usdc` is already
+        wired). Enabling first requires a copy-roster review of the pinned whales
+        (several are truncated/untrustworthy) — an OPERATOR prerequisite, not E2·3's
+        concern. See [[polymarket-option-c-phase2]] (copy-roster review).
+
+        When enabled, the multiplier is the whale's conviction signal from
+        `whale_meta` (`composite_score` default, or `decision_win_rate`), clamped to
+        [floor, cap]. A missing/unparseable signal degrades to 1.0 — never amplify
+        sizing on bad data.
+        """
+        sz = self._strat_cfg.get("sizing") or {}
+        conv = sz.get("conviction") or {}
+        if not bool(conv.get("enabled", False)):
+            return 1.0
+        signal = str(conv.get("signal", _DEFAULT_CONVICTION_SIGNAL))
+        floor = float(conv.get("floor", _DEFAULT_CONVICTION_FLOOR))
+        cap = float(conv.get("cap", _DEFAULT_CONVICTION_CAP))
+        try:
+            mult = float((whale_meta or {}).get(signal))
+        except (TypeError, ValueError):
+            return 1.0
+        return max(floor, min(mult, cap))
 
     # ── Auto-pause filter (2026-05-14 P3) ─────────────────────────────
 
