@@ -1,0 +1,108 @@
+"""Unit tests for scripts/wallet_ops/walletops_core.py — pure functions only.
+
+Loaded via importlib (Pattern B, like tests/test_backtest_polymarket_arbitrage.py)
+since scripts/wallet_ops/ is not on sys.path. web3-free -> runs in the base gate.
+The signing/broadcast/quote paths (walletops_chain.py) are integration-only and
+deliberately NOT tested here (no network, no keys in CI).
+"""
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+_CORE = Path(__file__).resolve().parent.parent / "scripts" / "wallet_ops" / "walletops_core.py"
+_spec = importlib.util.spec_from_file_location("walletops_core", _CORE)
+core = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(core)
+
+
+class TestAmountMath:
+    def test_usdc_6dp(self):
+        assert core.to_units("119.4", 6) == 119_400_000
+
+    def test_pol_18dp(self):
+        assert core.to_units(5, 18) == 5 * 10 ** 18
+
+    def test_from_units_roundtrip(self):
+        assert core.from_units(119_400_000, 6) == __import__("decimal").Decimal("119.4")
+
+    def test_rejects_subunit_precision(self):
+        with pytest.raises(ValueError):
+            core.to_units("0.0000005", 6)   # 0.5 base units -> not integral
+
+    def test_rejects_negative(self):
+        with pytest.raises(ValueError):
+            core.to_units("-1", 6)
+
+
+class TestFunderSecretName:
+    def test_arb(self):
+        assert core.funder_secret_name("POLYMARKET-PRIVATE-KEY") == "POLYMARKET-FUNDER-ADDRESS"
+
+    def test_pct(self):
+        assert core.funder_secret_name("POLYMARKET-COPY-PRIVATE-KEY") == "POLYMARKET-COPY-FUNDER-ADDRESS"
+
+    def test_rejects_non_key_name(self):
+        with pytest.raises(ValueError):
+            core.funder_secret_name("POLYGON-RPC-URL")
+
+
+class TestCalldata:
+    ADDR = "0x000000000000000000000000000000000000dEaD"
+    ADDR_WORD = "0" * 60 + "dead"  # checksum-case is lowercased + left-padded to 32 bytes
+
+    def test_transfer_calldata_golden(self):
+        data = core.erc20_transfer_calldata(self.ADDR, 1)
+        assert data == "0x" + "a9059cbb" + self.ADDR_WORD + ("0" * 63 + "1")
+        assert len(data) == 2 + 8 + 64 + 64
+
+    def test_approve_calldata_golden(self):
+        data = core.erc20_approve_calldata(self.ADDR, 119_400_000)
+        assert data == "0x" + "095ea7b3" + self.ADDR_WORD + core.pad_uint(119_400_000)
+
+    def test_pad_addr_rejects_bad_length(self):
+        with pytest.raises(ValueError):
+            core.pad_addr("0x1234")
+
+    def test_pad_uint_overflow(self):
+        with pytest.raises(ValueError):
+            core.pad_uint(2 ** 256)
+
+
+class TestSlippageGate:
+    AMOUNT_IN = 120_000_000  # 120 USDC, 6dp
+
+    def test_picks_best_tier_within_tolerance(self):
+        quotes = {100: 0, 500: 119_400_000, 3000: 119_000_000}
+        assert core.select_best_tier(quotes, self.AMOUNT_IN, 0.005) == (500, 119_400_000)
+
+    def test_aborts_when_best_below_tolerance(self):
+        # the "too-large amount / thin pool" case -> None -> caller ABORTS
+        quotes = {500: 119_000_000}  # 0.83% slippage > 0.5%
+        assert core.select_best_tier(quotes, self.AMOUNT_IN, 0.005) is None
+
+    def test_aborts_when_no_pool(self):
+        assert core.select_best_tier({100: 0, 500: 0, 3000: 0}, self.AMOUNT_IN, 0.005) is None
+
+    def test_min_out_floors(self):
+        assert core.min_out(119_400_000, 0.005) == 118_803_000
+
+    def test_effective_slippage(self):
+        assert abs(core.effective_slippage(120_000_000, 119_400_000) - 0.005) < 1e-9
+
+
+class TestDisplay:
+    def test_polygonscan_urls(self):
+        assert core.polygonscan_tx_url("0xabc") == "https://polygonscan.com/tx/0xabc"
+        assert core.polygonscan_addr_url("0xdef") == "https://polygonscan.com/address/0xdef"
+
+    def test_confirmation_dry_run_banner_and_fields(self):
+        d = {"action": "Transfer native POL", "from": "0xAAA", "to": "0xBBB", "gas": 21000, "value": None}
+        s = core.format_confirmation(d, dry_run=True)
+        assert "DRY RUN" in s
+        assert "Transfer native POL" in s and "0xAAA" in s and "21000" in s
+        assert "\n" in s and " value " not in s  # None field omitted
+
+    def test_confirmation_live_banner(self):
+        s = core.format_confirmation({"action": "x"}, dry_run=False)
+        assert "SIGN + BROADCAST" in s

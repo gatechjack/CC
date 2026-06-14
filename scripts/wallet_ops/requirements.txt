@@ -1,0 +1,13 @@
+# Local operator venv for scripts/wallet_ops/ (run on the operator's machine, NOT prod).
+# Versions match requirements.lock (the prod freeze) so on-chain behavior matches
+# the E1 broker. Use a py3.12 venv — web3 6.11.0 pulls beta eth-abi on py3.14.
+#
+#   uv venv --python 3.12 .venv-walletops
+#   .venv-walletops\Scripts\python -m pip install -r scripts/wallet_ops/requirements.txt
+#   az login
+#   .venv-walletops\Scripts\python scripts/wallet_ops/transfer_pol.py ... --dry-run
+web3==6.11.0
+eth-account==0.13.1
+azure-identity==1.25.3
+azure-keyvault-secrets==4.11.0
+setuptools==80.10.2          # web3 6.11 imports pkg_resources; setuptools>=81 REMOVED it (prod lock pins 82.0.1 -> would break web3 import; flagged separately)
