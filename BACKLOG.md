@@ -399,6 +399,21 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
+## E2 — route the copy loop to the live broker (SCOPED 2026-06-14; branch `e2-scoping-2026-06-14`, unmerged)
+
+E1 done + merged (`72e8dc6`); PCT wallet `0x2160…9F82` fully provisioned (OP·A/B/C ✓, 6/6 approvals, 119.98 USDC.e). E2 routes the **PCT** copy loop `would_have_placed` → `data_exec.place()` → `PolymarketLiveBroker` → `FillEvent` (arb stays paper). Full scope + verified path-map: [`reports/2026-06-14_polymarket_e2_scoping.md`](reports/2026-06-14_polymarket_e2_scoping.md). Operator decisions baked in: token_id via `activity.asset`; **synthesized-FAK** order type (0.17.5 has no native FAK/IOC — GTC+poll+cancel-remainder, configurable); **no HITL** (whale-promotion is the approval); **flat ≈$1** sizing default (full schema, conviction off); per-division live isolation; DB `execution_mode` column.
+
+Thin increments, fundless-first, live LAST (one branch each, E1·1–7 cadence):
+- **E2·1** `token_id` → `extra` (`_emit_entry`/`_emit_exit`) + main.py base_payload. *(agent)*
+- **E2·2** `order_type` config (`fak_synth` default) + `fak_poll_seconds`; broker synthesized-FAK (GTC→poll→cancel remainder→filled-portion FillEvent). *(agent)*
+- **E2·3** replace `_size_tier_usdc` with clamp formula + schema; flat ≈$1 default, conviction off. *(agent)*
+- **E2·4** per-division live select (`--live-divisions`); `is_live_division` by slug — division-level anti-half-flip (PCT live, arb paper). *(agent)*
+- **E2·5** add `execution_mode TEXT DEFAULT 'paper'` to `proposed_order` + `paper_trade_record` (idempotent migration); written at placement. *(agent)*
+- **E2·6** PCT loop wiring: two-level gate (`execution_mode`+`auto_execute`, fail-closed) **no HITL**; `data_exec.place(...,"polymarket_copy_trading")` + record FillEvent with ACTUAL filled qty. *(agent, mocked)*
+- **E2·7** live enablement + **OP·E $1 shakedown**. *(OPERATOR-only; prereq: deps deploy — the `setuptools<81` lock fix on main still needs a linux `--require-hashes` smoke + `e1_lock_input.txt` update; deploy via `deploy_e1_lock.sh`)*
+
+Carry-forward: partial-fill reconciliation = **E5**; dashboard paper/live filter UI = backlog (DB column ships in E2·5).
+
 ## P1 — Polymarket copy-trader SELL-pairing → option (c) (Phase 1 MERGED 2026-06-10, NOT run on prod; phases 2-4 pending)
 
 **Phase 1 status (2026-06-10): MERGED to main, NOT DEPLOYED / not run against prod.**
