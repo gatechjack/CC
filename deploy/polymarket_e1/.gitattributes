@@ -1,0 +1,4 @@
+# Deploy artifacts must stay LF on every platform: deploy_e1_lock.sh runs on
+# Linux (bash), and its md5 gate values are the LF-normalized md5s of the lock
+# files. A CRLF checkout would change those md5s and fail the gate.
+* text eol=lf
