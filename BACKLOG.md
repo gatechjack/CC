@@ -273,6 +273,26 @@ go-live boot is ALREADY filed below as a P3 — not duplicated here.)
 
 ## P1 — Bitunix post-window analysis: silence-window what-if backtest + TP-structure review (filed 2026-06-10, execute after Day-5 close-out 2026-06-14)
 
+**2026-06-14 UPDATE — fee-gate slice RESOLVED; A (silence-window) + B (TP-structure) still open.**
+Report `reports/2026-06-14_bitunix_fee_gate_analysis.md` (branch
+`bitunix-fee-gate-analysis-2026-06-14`, commit `676f33d`, **unmerged**) answered the
+operator's live fee-gate observation via empirical 3m forward-replay of the **88
+`fees_too_high_for_risk` declines** (77 unique) over 2026-06-09→14:
+- **Verdict: HOLD the gate.** Declined set gross +0.039R → **net-taker −0.87R / net-maker −0.61R**;
+  only 6/77 net-positive. Gate correctly rejects sub-fee-threshold scalps (median 1R = 0.10%·entry).
+  Confirms the **2026-05-25 Board rejection of lowering `tp1_min_profit_multiplier`** on empirical
+  (not theoretical) data. Validation V1 43/43, skip-reproduce 88/88, 0 ambiguous 3m bars.
+- **Correction to file against the (b) maker deliverable:** the 2026-05-25 memo §9(b) called
+  `tp_is_maker:true` "strict improvement, same selection." **It is not** — the flag couples
+  cost-reduction with floor-relaxation (0.18%→0.128%), admitting an 18-trade band that is
+  **net-maker −0.62R**. (b) is a cost lever for the *taken* set only; to get the cost benefit
+  without admitting losers the floor's fee-basis must be **decoupled** from the booking fee-basis
+  (code change, not a flag flip). Fold this into the (b) fill-rate-model deliverable.
+- **Still OPEN:** P1-A proper (the 2026-06-02→09 vol-classifier-*suppressed* set — a different
+  cohort than the fee-declines) and **P1-B TP-structure analysis** (why TP3 is rarely reached;
+  alt-leg-target re-walk). The fee-gate replay touched the anatomy (TP3 reached 6/77; 21 tp1-only
+  net-losers) but did not execute the alt-structure re-walk. Both remain §4-gated.
+
 Two related questions, one session (~3-4h, read-only vs snapshot/prod):
 
 A. WHAT-IF BACKTEST of the 2026-06-02→09 silence window: replay the
