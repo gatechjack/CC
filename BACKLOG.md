@@ -691,6 +691,30 @@ status on next audit run.
 
 # Other Open Items (not in priority list above)
 
+## P3 — Remove `yfinance` from all use — free/undependable service (filed 2026-06-14 via Bitunix first-fill investigation)
+
+Goal: eliminate dependence on `yfinance` (free, unofficial Yahoo endpoint — rate-limited, schema-drifts, returns empty/"delisted" with no warning).
+
+**Known context (NOT a scope — see prerequisite):**
+- **Bitunix first live fill (2026-06-14 18:24 UTC) surfaced it.** An open BTC/USDT.P
+  position triggers a ~10s yfinance poll fed the perp symbol mistranslated to
+  `BTCUSDT` (yfinance expects `BTC-USD`) → `404 Quote not found` + `possibly
+  delisted; no price data (period=1d)` ERROR log-spam every ~10s (began ~8s after
+  the fill; zero before). **Cosmetic for Bitunix** — the protection paths are
+  confirmed independent of yfinance: replay-loop TP/SL detection uses **BitUnix
+  native klines** (`_bitunix_kline_fetcher`, no-auth; replay `errors:0`), the
+  catastrophic stop is server-side (`slPrice`), the snapshot-staleness gate uses
+  the BitUnix broker snapshot. Ref `reports/2026-06-14_bitunix_first_fill_tp_investigation.md`.
+- **Equity divisions likely use yfinance for stock quotes** (VIX, benchmarks,
+  market-ribbon, PMCC/options price fallbacks, `data/feeds.py`) — **load-bearing-or-not
+  is UNVERIFIED.** Do not assume cosmetic outside Bitunix.
+
+**Prerequisite before ANY removal (this item is FILE-ONLY — no scoping/code yet):**
+build a yfinance usage inventory + decide a per-use replacement first. Cosmetic
+uses = safe delete; load-bearing uses (any price/quote/IV a division actually
+trades or gates on) = wire a replacement source FIRST, then delete. Removal is
+per-use, not a blanket rip-out.
+
 ## P3 — `TypeError: not all arguments converted during string formatting` ×123 in tastytrade-streamer/starlette logging path (filed 2026-06-10)
 
 Cosmetic `%`-format bug; log lines still emit; zero functional impact on
