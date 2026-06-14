@@ -44,7 +44,7 @@ single-file `bitunix_futures_observer.py` to prod (md5 `21830bf3…710b`, backup
 `execution_mode=paper`; peak self-initialized on first eval → no false flatten; the restart
 also (re)loaded the B1 stop). **15% breaker now LIVE in paper** — see `runbooks/deploy_log.md`
 2026-06-13 entry. **First prerequisite of the path-to-supervised-live sequence**
-(deploy D1 ✅ → HITL removal ✅ **DEPLOYED-TO-DISK 2026-06-13** [[bitunix-hitl-removed-deployed-to-disk]]; B1 real-fill validation **DROPPED** — accepted residual risk → **NEXT: item-4 non-interactive `--live` go-live**, whose restart loads HITL+D1).
+(deploy D1 ✅ → HITL removal ✅ **DEPLOYED-TO-DISK 2026-06-13** [[bitunix-hitl-removed-deployed-to-disk]]; B1 real-fill validation **PASSED on first real fill 2026-06-14** (was dropped/accepted-risk; now validated — see `runbooks/deploy_log.md` 2026-06-14 entry) → **NEXT: item-4 non-interactive `--live` go-live**, whose restart loads HITL+D1).
 Resolves the dead-breaker BLOCKER tracked in
 [[2026-06-11-bitunix-hitl-removal-blocked-dead-drawdown-breaker]] — **NOW RESOLVED**.
 
@@ -68,7 +68,7 @@ deployed path) → **(d)** operator go-live restart (systemd unit `--live` +
 `Environment=TC_LIVE_AUTHORIZED=LIVE`, flip `bitunix_futures.execution_mode: live`; that boot
 loads HITL=0 + D1 + Item-4 → autonomous live). Full map: memory
 [[bitunix-go-live-sequence-and-item4]]. Accepted residual risks: durable auth resurrects live
-on crash; B1 unvalidated-on-real-fill (dropped); taker-fee net-negative.
+on crash; B1 **VALIDATED on first real fill 2026-06-14** (was the dropped unvalidated-on-real-fill residual risk); taker-fee net-negative.
 
 ## Observation window — active
 
