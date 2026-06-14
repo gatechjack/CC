@@ -308,6 +308,26 @@ go-live boot is ALREADY filed below as a P3 — not duplicated here.)
 
 ## P1 — Bitunix post-window analysis: silence-window what-if backtest + TP-structure review (filed 2026-06-10, execute after Day-5 close-out 2026-06-14)
 
+**2026-06-14 UPDATE — fee-gate slice RESOLVED; A (silence-window) + B (TP-structure) still open.**
+Report `reports/2026-06-14_bitunix_fee_gate_analysis.md` (branch
+`bitunix-fee-gate-analysis-2026-06-14`, commit `676f33d`, **unmerged**) answered the
+operator's live fee-gate observation via empirical 3m forward-replay of the **88
+`fees_too_high_for_risk` declines** (77 unique) over 2026-06-09→14:
+- **Verdict: HOLD the gate.** Declined set gross +0.039R → **net-taker −0.87R / net-maker −0.61R**;
+  only 6/77 net-positive. Gate correctly rejects sub-fee-threshold scalps (median 1R = 0.10%·entry).
+  Confirms the **2026-05-25 Board rejection of lowering `tp1_min_profit_multiplier`** on empirical
+  (not theoretical) data. Validation V1 43/43, skip-reproduce 88/88, 0 ambiguous 3m bars.
+- **Correction to file against the (b) maker deliverable:** the 2026-05-25 memo §9(b) called
+  `tp_is_maker:true` "strict improvement, same selection." **It is not** — the flag couples
+  cost-reduction with floor-relaxation (0.18%→0.128%), admitting an 18-trade band that is
+  **net-maker −0.62R**. (b) is a cost lever for the *taken* set only; to get the cost benefit
+  without admitting losers the floor's fee-basis must be **decoupled** from the booking fee-basis
+  (code change, not a flag flip). Fold this into the (b) fill-rate-model deliverable.
+- **Still OPEN:** P1-A proper (the 2026-06-02→09 vol-classifier-*suppressed* set — a different
+  cohort than the fee-declines) and **P1-B TP-structure analysis** (why TP3 is rarely reached;
+  alt-leg-target re-walk). The fee-gate replay touched the anatomy (TP3 reached 6/77; 21 tp1-only
+  net-losers) but did not execute the alt-structure re-walk. Both remain §4-gated.
+
 Two related questions, one session (~3-4h, read-only vs snapshot/prod):
 
 A. WHAT-IF BACKTEST of the 2026-06-02→09 silence window: replay the
@@ -433,6 +453,21 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 ---
 
 # Priority 2 — Polymarket Copy Trading path to live trading
+
+## E2 — route the copy loop to the live broker (SCOPED 2026-06-14; branch `e2-scoping-2026-06-14`, unmerged)
+
+E1 done + merged (`72e8dc6`); PCT wallet `0x2160…9F82` fully provisioned (OP·A/B/C ✓, 6/6 approvals, 119.98 USDC.e). E2 routes the **PCT** copy loop `would_have_placed` → `data_exec.place()` → `PolymarketLiveBroker` → `FillEvent` (arb stays paper). Full scope + verified path-map: [`reports/2026-06-14_polymarket_e2_scoping.md`](reports/2026-06-14_polymarket_e2_scoping.md). Operator decisions baked in: token_id via `activity.asset`; **synthesized-FAK** order type (0.17.5 has no native FAK/IOC — GTC+poll+cancel-remainder, configurable); **no HITL** (whale-promotion is the approval); **flat ≈$1** sizing default (full schema, conviction off); per-division live isolation; DB `execution_mode` column.
+
+Thin increments, fundless-first, live LAST (one branch each, E1·1–7 cadence):
+- **E2·1** `token_id` → `extra` (`_emit_entry`/`_emit_exit`) + main.py base_payload. *(agent)*
+- **E2·2** `order_type` config (`fak_synth` default) + `fak_poll_seconds`; broker synthesized-FAK (GTC→poll→cancel remainder→filled-portion FillEvent). *(agent)*
+- **E2·3** replace `_size_tier_usdc` with clamp formula + schema; flat ≈$1 default, conviction off. *(agent)*
+- **E2·4** per-division live select (`--live-divisions`); `is_live_division` by slug — division-level anti-half-flip (PCT live, arb paper). *(agent)*
+- **E2·5** add `execution_mode TEXT DEFAULT 'paper'` to `proposed_order` + `paper_trade_record` (idempotent migration); written at placement. *(agent)*
+- **E2·6** PCT loop wiring: two-level gate (`execution_mode`+`auto_execute`, fail-closed) **no HITL**; `data_exec.place(...,"polymarket_copy_trading")` + record FillEvent with ACTUAL filled qty. *(agent, mocked)*
+- **E2·7** live enablement + **OP·E $1 shakedown**. *(OPERATOR-only; prereq: deps deploy — the `setuptools<81` lock fix on main still needs a linux `--require-hashes` smoke + `e1_lock_input.txt` update; deploy via `deploy_e1_lock.sh`)*
+
+Carry-forward: partial-fill reconciliation = **E5**; dashboard paper/live filter UI = backlog (DB column ships in E2·5).
 
 ## P1 — Polymarket copy-trader SELL-pairing → option (c) (Phase 1 MERGED 2026-06-10, NOT run on prod; phases 2-4 pending)
 
