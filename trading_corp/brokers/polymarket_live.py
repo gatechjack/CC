@@ -38,6 +38,8 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from trading_corp.brokers.base import Broker
+
 log = logging.getLogger(__name__)
 
 
@@ -399,3 +401,105 @@ async def cancel_order(client, order_id: str) -> bool:
     if isinstance(canceled, list) and oid in [str(c) for c in canceled]:
         return True
     return False
+
+
+# ── E1·6: PolymarketLiveBroker(Broker) — assembly ───────────────────────────
+
+_CLOB_HOST = "https://clob.polymarket.com"
+_POLYGON_CHAIN_ID = 137
+
+# Aliases so the same-named Broker methods below delegate to these module-level
+# functions without name-shadow confusion.
+_place_order_fn = place_order
+_cancel_order_fn = cancel_order
+
+
+class PolymarketLiveBroker(Broker):
+    """Live Polymarket order broker — assembles E1·2–5 into the `Broker` contract.
+
+    A **placement-legal `Broker`** (NOT a `ReadOnlyBroker`): it has
+    `place_order`/`cancel_order`. Reads (connect/disconnect/snapshot/quote) are
+    delegated to the read adapter `PolymarketBroker` (incl. E1·5's SDK-midpoint
+    quote); placement/cancel go through the **L2-authed** py_clob_client.
+
+    - `connect()`: connect the read adapter + build the placement client and
+      **L2-authorize** it (`create_or_derive_api_creds` → `set_api_creds`) so
+      `post_order` (L2 auth) is allowed; `paper = False` (live).
+    - `place_order(order) -> FillEvent`  (E1·2/3 map→sign→post→poll)
+    - `cancel_order(order_id) -> bool`   (E1·4)
+    - `snapshot()` / `quote()`           (read adapter; E1·5 quote)
+
+    `place_multi_leg`/`get_option_greeks` inherit `Broker`'s NotImplementedError
+    (Polymarket never sees multi-leg). The PCT live-vs-paper resolution lives in
+    the main.py factory (`_build_broker_for_division`, polymarket `is_live_family`).
+
+    MOCKED/FUNDLESS in tests; the real CLOB is hit only with a live, funded,
+    L2-authed client. `place_order`'s token_id uses the direct path
+    (`extra["token_id"]`) — E2 propagates `activity.asset`; a gamma fallback
+    fetcher can be wired later.
+    """
+
+    name = "polymarket-live"
+    paper = False
+
+    def __init__(self, private_key=None, funder_address=None, polygon_rpc_url=None):
+        from trading_corp.brokers.polymarket import PolymarketBroker
+
+        self._private_key = private_key
+        self._funder = funder_address
+        self._rpc_url = polygon_rpc_url
+        # Reuse the read adapter for connect/disconnect/snapshot/quote.
+        self._read = PolymarketBroker(
+            private_key=private_key,
+            funder_address=funder_address,
+            polygon_rpc_url=polygon_rpc_url,
+        )
+        self._clob = None        # L2-authed placement client, set on connect()
+        self._connected = False
+
+    def _build_clob_client(self):
+        """Construct the L1 placement client (host + chain_id + signer key).
+        Isolated for testability (override to inject a mock)."""
+        from py_clob_client.client import ClobClient
+
+        return ClobClient(
+            host=_CLOB_HOST, chain_id=_POLYGON_CHAIN_ID, key=self._private_key,
+        )
+
+    async def connect(self) -> None:
+        await self._read.connect()
+        clob = self._build_clob_client()
+        # L2 authorize: create (or derive) API creds, then set them so post_order
+        # (L2 auth) is permitted. Sync SDK -> to_thread.
+        creds = await asyncio.to_thread(clob.create_or_derive_api_creds)
+        await asyncio.to_thread(clob.set_api_creds, creds)
+        self._clob = clob
+        self._connected = True
+        log.info(
+            "PolymarketLiveBroker connected (L2 creds set; funder=%s)", self._funder,
+        )
+
+    async def disconnect(self) -> None:
+        await self._read.disconnect()
+        self._clob = None
+        self._connected = False
+
+    async def snapshot(self):
+        return await self._read.snapshot()
+
+    async def quote(self, symbol: str) -> float:
+        return await self._read.quote(symbol)
+
+    def _require_connected(self) -> None:
+        if not self._connected or self._clob is None:
+            raise RuntimeError(
+                "PolymarketLiveBroker not connected — call connect() first"
+            )
+
+    async def place_order(self, order):
+        self._require_connected()
+        return await _place_order_fn(self._clob, order)
+
+    async def cancel_order(self, order_id: str) -> bool:
+        self._require_connected()
+        return await _cancel_order_fn(self._clob, order_id)
