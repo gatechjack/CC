@@ -26,6 +26,43 @@ When the flip happens, the dashboard begins filtering by flip-date — paper-mod
 trades persist in the DB but are no longer rendered in the live-mode view.
 Queries against historical paper data remain available via Claude.
 
+## P1 — Bitunix reconciler false-divergence on live positions → latches engine out of new entries (filed 2026-06-14 via first-fill close-out)
+
+**BLOCKS LIVE TRADING.** Surfaced on the first live fill (2026-06-14). `reconcile_position_state`
+matches bot-tracked rows to broker positions by exact `(symbol, side)`
+(`bitunix_position_reconciler.py` ~505-508), but BOTH keys mismatch for every live Bitunix position:
+- **Symbol:** the bot stores `BTC/USDT.P`; `get_pending_positions` returns broker-native `BTCUSDT` → never equal.
+- **Side:** `get_pending_positions` negates qty only when `side == "SHORT"` (`bitunix.py` ~1029-1031), but
+  BitUnix returns a different side label for the short → qty stays positive → `_broker_side` = `"buy"` ≠ bot `"sell"`.
+
+Either failure alone guarantees a false `missing_on_broker` (the bot's real position) + `orphan_on_broker`
+(the same position re-read as a phantom opposite side). The sanity-poll loop
+(`run_position_state_sanity_poll_loop` → `reconcile_position_state`, default `halt_on_divergence=True`) then
+sets `broker._halt_new_orders=True` (reason `position_state_reconciler_divergence`) every ~60s →
+`place_order` refuses new entries (`bitunix.py:849`); exits are unaffected. **Clears only on broker
+re-init.** Observed: false divergence every ~60s from 18:25:04 (56s post-fill); engine still latched at 19:30:47 UTC.
+
+**Fix (NOT done — §4-gated, design first):** normalize symbols both ways (`BTC/USDT.P` ↔ `BTCUSDT`) in the
+matcher AND derive qty sign in `get_pending_positions` from the actual BitUnix side enum (handle the
+non-`"SHORT"` label), with a regression test on a real-shaped position payload. **Resuming live needs THIS
+fix THEN a restart — a restart ALONE re-triggers the same divergence on the next fill and re-latches.**
+Report: `reports/2026-06-14_bitunix_first_fill_closeout.md`.
+
+## P2 — Bitunix server-side-stop close is not auto-booked (paper_trade_record.result stranded NULL) (filed 2026-06-14 via first-fill close-out)
+
+When the B1 server-side SL (or any broker-side close) closes a live position, the exchange does the
+closing — the bot's replay/exit path (which expects to PLACE the reduce-only close itself, then
+`_record_exit_outcome`) never runs, so `paper_trade_record.result` stays NULL: no exit price, PnL, or exit
+fee booked. The reconciler classifies it as `missing_on_broker`, which `resume_live_positions` **defers to
+operator resolution by design** (Phase 1b §4) — there is no auto-book path. Observed on the first live fill:
+`result` still NULL ~2.5h after the stop (broker flat). Side effect: the unresolved row keeps the P1
+divergence (and its halt-latch) alive indefinitely.
+
+**Fix (NOT done):** add an auto-book path for server-side closes — on a confirmed `missing_on_broker` for a
+live row, fetch the broker exit fill (price/fee/ts) and write `result`/`actual_pnl_dollars`/`exit_fee_usd`
+from broker truth (instead of the place-then-record path), then clear the halt. Until then, server-side-stop
+exits must be operator-booked. Report: `reports/2026-06-14_bitunix_first_fill_closeout.md`.
+
 ## P1 — D1/D2 account-drawdown auto-flatten fix: **MERGED + DEPLOYED + LOADED** (deployed 2026-06-13; filed 2026-06-11)
 
 The 15% account-drawdown auto-flatten was a placeholder that never fired
