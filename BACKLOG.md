@@ -349,6 +349,20 @@ latency theory on the 42 fires over the window:
   redeem latency); **neither says "loosen the gates."** Complements
   `reports/2026-06-14_bitunix_fee_gate_analysis.md` (which tested entry *edge*; HOLD the fee gate).
 
+**2026-06-14 — backtest-infra inventory DONE (pre-scoping for the PA-redeem-cap §4 test).**
+`reports/2026-06-14_bitunix_backtest_infra_inventory.md` (branch
+`bitunix-backtest-infra-inventory-2026-06-14`, commit `1cbddad`, **unmerged**):
+- **Recommendation: EXTEND `scripts/backtest_bitunix_confluence.py`** — it has the corpus + score/PA
+  gate loader but models NONE of the test's needs (no redeem loop, single-TP fixed-ATR not the v2
+  3-leg trade_plan, signal-time entry only). **Build** the PA-redeem loop (`--redeem-cap` 0/1/∞);
+  **graft** the v2 `build_trade_plan` + late-entry walk from this session's `etharness.py`/`fgharness.py`.
+  Don't build-new; don't reuse the et/fg harnesses as-is (recorded-fire-driven, can't re-derive redeem).
+- **DB / runnability caveat:** two backtest DBs — `data/btc_scalping.db` (indicator-enriched corpus)
+  + `data/trading_corp.db` (local STALE; live bars/fires on prod). **High-vol regime present only at
+  15m/30m (Feb-2026); at 3m the corpus is Mar–May 2026, a modest ~1.9× gradient ending 3 weeks before
+  the live low-vol window.** Test is runnable on that spread but NOT a textbook rotation — consider
+  ingesting a high-vol 3m period for a defensible regime-robustness arm (small data task, not tooling).
+
 Two related questions, one session (~3-4h, read-only vs snapshot/prod):
 
 A. WHAT-IF BACKTEST of the 2026-06-02→09 silence window: replay the
