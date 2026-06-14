@@ -24,6 +24,29 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+_VALID_EXECUTION_MODES = ("paper", "live")
+
+
+def _resolve_execution_mode(field_value, extra) -> str:
+    """E2·5 — resolve the persisted execution_mode (NOT NULL 'paper'|'live').
+
+    Precedence:
+      1. an explicit field value set by a placement path — `data_exec.place()`
+         derives it from `broker.paper` (the real broker, not a config guess);
+      2. else the existing `extra['execution_mode']` tag — the bitunix observer's
+         live path already sets this, so its rows classify correctly WITHOUT a
+         bespoke write-path change;
+      3. else 'paper' — the paper-era default (matches the column DEFAULT and the
+         migration backfill of pre-existing rows).
+    """
+    if field_value in _VALID_EXECUTION_MODES:
+        return field_value
+    tag = (extra or {}).get("execution_mode")
+    if tag in _VALID_EXECUTION_MODES:
+        return tag
+    return "paper"
+
+
 @dataclass
 class ProposedOrder:
     """A trade proposal originating from a strategy/division agent."""
@@ -43,6 +66,9 @@ class ProposedOrder:
     board_reason: str | None = None
     fill_price: float | None = None
     fill_ts: str | None = None
+    # E2·5: 'paper' | 'live'. None until a placement path sets it (data_exec.place()
+    # derives it from broker.paper); to_db_row resolves None → extra tag → 'paper'.
+    execution_mode: str | None = None
 
     def to_db_row(self) -> dict:
         return {
@@ -61,6 +87,7 @@ class ProposedOrder:
             "fill_price": self.fill_price,
             "fill_ts": self.fill_ts,
             "extra_json": json.dumps(self.extra),
+            "execution_mode": _resolve_execution_mode(self.execution_mode, self.extra),
         }
 
     def notional(self) -> float:
@@ -267,6 +294,8 @@ class PaperTradeRecord:
     actual_r_multiple: float | None = None
     bars_to_resolution: int | None = None
     extra: dict = field(default_factory=dict)
+    # E2·5: 'paper' | 'live'. None → resolved (extra tag → 'paper') at to_db_row.
+    execution_mode: str | None = None
 
     def to_db_row(self) -> dict:
         return {
@@ -294,6 +323,7 @@ class PaperTradeRecord:
             "actual_r_multiple": self.actual_r_multiple,
             "bars_to_resolution": self.bars_to_resolution,
             "extra_json": json.dumps(self.extra) if self.extra else None,
+            "execution_mode": _resolve_execution_mode(self.execution_mode, self.extra),
         }
 
     @classmethod
@@ -337,6 +367,9 @@ class PaperTradeRecord:
             expected_gain=float(expected_gain) if expected_gain is not None else None,
             rr_ratio=rr_ratio,
             max_hold_seconds=max_hold_seconds,
+            # E2·5: carry the order's execution_mode (None on the paper/would_have_placed
+            # path → 'paper'; the bitunix live path tags record.extra separately).
+            execution_mode=getattr(order, "execution_mode", None),
         )
 
 

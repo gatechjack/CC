@@ -134,9 +134,11 @@ class LoggerAgent:
             conn.execute(
                 """INSERT OR REPLACE INTO proposed_order
                    (id, ts, strategy, symbol, side, qty, order_type, limit_price,
-                    rationale, status, risk_reason, board_reason, fill_price, fill_ts, extra_json)
+                    rationale, status, risk_reason, board_reason, fill_price, fill_ts, extra_json,
+                    execution_mode)
                    VALUES(:id,:ts,:strategy,:symbol,:side,:qty,:order_type,:limit_price,
-                          :rationale,:status,:risk_reason,:board_reason,:fill_price,:fill_ts,:extra_json)""",
+                          :rationale,:status,:risk_reason,:board_reason,:fill_price,:fill_ts,:extra_json,
+                          :execution_mode)""",
                 order.to_db_row(),
             )
 
