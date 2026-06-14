@@ -21,6 +21,7 @@ from trading_corp.brokers.polymarket_live import (
     TokenIdResolutionError,
     _poll_order_to_fill,
     build_clob_order_args,
+    cancel_order,
     create_signed_order,
     map_proposed_to_clob,
     place_order,
@@ -324,3 +325,45 @@ async def test_place_order_unmatched_raises():
     c.post_order.return_value = {"success": True, "orderID": "0xO", "status": "unmatched"}
     with pytest.raises(OrderPlacementError):
         await place_order(c, _order(extra={"token_id": "T"}), timeout=0.0, interval=0.0)
+
+
+# ── E1·4: cancel_order -> bool (defensive; no SDK import needed) ─────────────
+
+async def test_cancel_success_returns_true():
+    c = MagicMock()
+    c.cancel.return_value = {"canceled": ["0xOID"], "not_canceled": {}}
+    assert await cancel_order(c, "0xOID") is True
+    c.cancel.assert_called_once_with("0xOID")  # CLOB orderID passed through, no mapping
+
+
+async def test_cancel_not_canceled_returns_false():
+    c = MagicMock()
+    c.cancel.return_value = {"canceled": [], "not_canceled": {"0xOID": "order already matched"}}
+    assert await cancel_order(c, "0xOID") is False
+
+
+async def test_cancel_order_id_absent_from_canceled_returns_false():
+    c = MagicMock()
+    c.cancel.return_value = {"canceled": ["0xOTHER"], "not_canceled": {}}
+    assert await cancel_order(c, "0xOID") is False
+
+
+async def test_cancel_exception_returns_false_never_raises():
+    c = MagicMock()
+    c.cancel.side_effect = RuntimeError("network down")
+    assert await cancel_order(c, "0xOID") is False
+
+
+async def test_cancel_unrecognized_or_empty_response_returns_false():
+    c = MagicMock()
+    c.cancel.return_value = {"weird": True}
+    assert await cancel_order(c, "0xOID") is False
+    c2 = MagicMock()
+    c2.cancel.return_value = None
+    assert await cancel_order(c2, "0xOID") is False
+
+
+async def test_cancel_empty_order_id_returns_false_without_calling():
+    c = MagicMock()
+    assert await cancel_order(c, "") is False
+    c.cancel.assert_not_called()

@@ -359,3 +359,43 @@ async def place_order(
         original_size=mapped["size"],
         timeout=timeout, interval=interval,
     )
+
+
+# ── E1·4: cancel ────────────────────────────────────────────────────────────
+
+
+async def cancel_order(client, order_id: str) -> bool:
+    """Cancel a resting CLOB order by id; return True iff it was canceled, else
+    False. **Never raises** (the Broker contract is `-> bool`) — mirrors
+    `tastytrade.py:273-285`.
+
+    No id mapping: our `FillEvent.order_id` IS the CLOB orderID (`place_order`
+    sets it from the `post_order` response), and `client.cancel` takes that id
+    directly (DELETE `/order`, body `{"orderID": order_id}`).
+
+    Success determination (grounded in the CLOB cancel-orders docs): the response
+    is `{"canceled": [ids], "not_canceled": {id: reason}}`; the order is canceled
+    iff its id is in `canceled`. **Conservative:** True only on that clear signal —
+    a `not_canceled` entry, an unrecognized/empty/non-dict response, or any
+    exception → False (a live order we *wrongly* believe canceled is worse than a
+    needless retry). The exact shape is re-confirmed at the operator-gated $1
+    shakedown (carry-forward). `client.cancel` (sync) runs via `asyncio.to_thread`.
+
+    `cancel_all()` is intentionally NOT built: the copy loop cancels no CLOB orders
+    in bulk (its `.cancel()` calls are asyncio task lifecycle, not orders); a
+    bulk/kill-switch cancel belongs to E4 if ever needed.
+    """
+    oid = str(order_id or "")
+    if not oid:
+        return False
+    try:
+        resp = await asyncio.to_thread(client.cancel, oid)
+    except Exception as e:
+        log.warning("polymarket cancel_order(%s) raised: %s", oid[:14], e)
+        return False
+    if not isinstance(resp, dict):
+        return False
+    canceled = resp.get("canceled")
+    if isinstance(canceled, list) and oid in [str(c) for c in canceled]:
+        return True
+    return False
