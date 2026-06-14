@@ -741,6 +741,76 @@ class PolymarketCopyTraderAgent:
             db_url=self._db_url,
         )
 
+    # ── E2·6: post-placement position reconciliation (live path) ──────
+
+    def _position_locator(self, order: ProposedOrder):
+        """(wallet, pos_key) for a copy order, from its extra; None if unlocatable."""
+        ext = order.extra or {}
+        wallet = ext.get("whale_wallet")
+        condition_id = ext.get("condition_id")
+        outcome_index = ext.get("outcome_index")
+        if not wallet or condition_id is None or outcome_index is None:
+            return None
+        return wallet, self._position_key(condition_id, outcome_index)
+
+    def record_entry_fill(self, order: ProposedOrder, fill: Any) -> None:
+        """E2·6 — overwrite a LIVE entry's recorded position with the ACTUAL filled
+        qty/price from the FillEvent.
+
+        The BUY branch (`_process_whale_activity`) writes `our_positions[pos_key]`
+        OPTIMISTICALLY at emit time from the INTENDED `copy_size_usdc` + the whale's
+        price, BEFORE the order is placed. After a real (possibly partial) fill we
+        must reconcile to truth. The slot stores `copy_size_usdc` + `entry_price`
+        and `_emit_exit` reconstructs the sell qty as `copy_size_usdc / entry_price`,
+        so we store `entry_price = fill.price` and `copy_size_usdc = fill.qty *
+        fill.price` → a later exit sells EXACTLY `fill.qty` (the real held lot,
+        partial OR full). No-op if the position can't be located or the fill is
+        empty (an empty/no fill is handled by the loop via `discard_entry`)."""
+        loc = self._position_locator(order)
+        if loc is None:
+            return
+        wallet, pos_key = loc
+        try:
+            fill_qty = float(getattr(fill, "qty", 0.0) or 0.0)
+            fill_price = float(getattr(fill, "price", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return
+        if fill_qty <= 0.0 or fill_price <= 0.0:
+            return
+        state = self._load_whale_state(wallet)
+        if not state:
+            return
+        our_positions = dict(state.get("our_positions") or {})
+        pos = our_positions.get(pos_key)
+        if not isinstance(pos, dict):
+            return
+        pos = dict(pos)
+        pos["copy_size_usdc"] = fill_qty * fill_price  # so qty=usdc/price == fill.qty
+        pos["entry_price"] = fill_price
+        pos["actual_fill_qty"] = fill_qty              # explicit real-lot record
+        pos["execution_mode"] = "live"
+        our_positions[pos_key] = pos
+        state["our_positions"] = our_positions
+        self._save_whale_state(wallet, state)
+
+    def discard_entry(self, order: ProposedOrder) -> None:
+        """E2·6 — drop the optimistically-recorded position for a LIVE entry that
+        did NOT fill (`NoFillInWindow`). The BUY branch records `our_positions`
+        BEFORE placement; a no-fill means we hold NOTHING, so the position must be
+        removed — else a later `_emit_exit` would try to sell a lot we never
+        acquired. No-op if unlocatable or already absent."""
+        loc = self._position_locator(order)
+        if loc is None:
+            return
+        wallet, pos_key = loc
+        state = self._load_whale_state(wallet)
+        if not state:
+            return
+        our_positions = dict(state.get("our_positions") or {})
+        if our_positions.pop(pos_key, None) is not None:
+            state["our_positions"] = our_positions
+            self._save_whale_state(wallet, state)
+
 
 def force_close_whale_positions(
     wallet: str,

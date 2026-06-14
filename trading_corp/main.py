@@ -3367,6 +3367,82 @@ async def _scheduled_kalshi_copy_trader_loop(
                 await asyncio.sleep(30)
 
 
+async def _push_copy_card(channel, order, ext, *, tag: str) -> None:
+    """Informational Telegram card for one PCT copy order. Never raises."""
+    try:
+        user = ext.get("whale_user_name") or (ext.get("whale_wallet") or "?")[:10]
+        action = "ENTRY" if ext.get("is_entry") else "EXIT"
+        title_short = (ext.get("market_title") or order.symbol)[:50]
+        await channel.push(
+            f"🟣 Polymarket copy {action} {order.side.upper()} "
+            f"@{user} (${ext.get('copy_size_usdc', 0):.2f}) "
+            f"on \"{title_short}\" — {tag}."
+        )
+    except Exception as e:
+        log.warning("Polymarket copy channel push failed: %s", e)
+
+
+async def _handle_copy_order_placement(
+    *, agent, order, verdict, is_live_armed: bool,
+    data_exec, logger_agent, channel, base_payload: dict,
+) -> None:
+    """E2·6 — place one PCT copy order, gated on live-arming.
+
+    `is_live_armed` is E2·4's decision (the division's broker is placement-legal,
+    i.e. a `Broker`/PolymarketLiveBroker — NOT `broker.paper`):
+
+      * PAPER (not armed): log `would_have_placed` — UNCHANGED behavior.
+      * LIVE-armed: route through `data_exec.place()` (which sets `execution_mode`
+        and logs the fill + proposed_order, E2·5). A benign synthesized-FAK
+        `NoFillInWindow` is SKIPPED — the optimistic position is discarded, a benign
+        audit + log.info is written, and the loop CONTINUES to the next order (no
+        alarm, no 30s sleep, batch not abandoned). A real fill writes the ACTUAL
+        filled qty/price back into the position (entry only). Real placement
+        failures (plain `OrderPlacementError` / anything else) PROPAGATE to the
+        loop's loud handler — they are NOT swallowed here.
+    """
+    ext = order.extra or {}
+    if not is_live_armed:
+        # ── PAPER branch — unchanged ──
+        logger_agent.log_event(
+            agent.name, "would_have_placed",
+            {
+                **base_payload,
+                "qty": order.qty,
+                "risk_verdict": verdict.verdict,
+                "risk_reason": verdict.reason,
+            },
+        )
+        await _push_copy_card(channel, order, ext, tag="logged")
+        return
+
+    # ── LIVE-armed branch (mocked in tests; a real broker only when operator-armed) ──
+    from trading_corp.brokers.polymarket_live import NoFillInWindow
+
+    try:
+        fill = await data_exec.place(order, division=agent.division)
+    except NoFillInWindow as e:
+        # Benign: the synthesized-FAK order did not fill in its window. NOT a
+        # failure — drop the optimistically-recorded position and skip this order.
+        if ext.get("is_entry"):
+            agent.discard_entry(order)
+        logger_agent.log_event(
+            agent.name, "polymarket_copy_no_fill",
+            {**base_payload, "qty": order.qty, "reason": str(e)},
+        )
+        log.info("Polymarket copy: benign no-fill on %s — skipped (%s)", order.symbol, e)
+        return
+    # Real fill (full or synthesized-FAK partial). `data_exec.place` already logged
+    # proposed_order[status=filled] + the 'filled' audit + execution_mode='live'.
+    if ext.get("is_entry"):
+        agent.record_entry_fill(order, fill)
+    await _push_copy_card(
+        channel, order, ext,
+        tag=f"PLACED LIVE @ ${float(getattr(fill, 'price', 0.0)):.3f} "
+            f"x{float(getattr(fill, 'qty', 0.0)):g}",
+    )
+
+
 async def _scheduled_polymarket_copy_trader_loop(
     agent,
     *,
@@ -3419,6 +3495,14 @@ async def _scheduled_polymarket_copy_trader_loop(
                     continue
 
                 broker = data_exec.brokers.get(agent.division)
+                # E2·6 — live-armed iff E2·4 gave this division a PLACEMENT-LEGAL
+                # broker (PolymarketLiveBroker is a `Broker`; the read-only paper
+                # PolymarketBroker is a `ReadOnlyBroker`, NOT a `Broker`). This
+                # REUSES E2·4's --live-divisions decision (the factory already ANDed
+                # family + slug into the broker class) — it is NOT `broker.paper`
+                # (the read-only adapter has paper=False yet cannot place).
+                from trading_corp.brokers.base import Broker as _PlacementLegalBroker
+                is_live_armed = isinstance(broker, _PlacementLegalBroker)
                 if broker is None:
                     account_equity = 0.0
                 else:
@@ -3495,29 +3579,13 @@ async def _scheduled_polymarket_copy_trader_loop(
                         )
                         order.qty = float(verdict.new_qty)
 
-                    logger_agent.log_event(
-                        agent.name, "would_have_placed",
-                        {
-                            **base_payload,
-                            "qty": order.qty,
-                            "risk_verdict": verdict.verdict,
-                            "risk_reason": verdict.reason,
-                        },
+                    # E2·6 — gated live placement vs paper would_have_placed.
+                    await _handle_copy_order_placement(
+                        agent=agent, order=order, verdict=verdict,
+                        is_live_armed=is_live_armed, data_exec=data_exec,
+                        logger_agent=logger_agent, channel=channel,
+                        base_payload=base_payload,
                     )
-
-                    try:
-                        user = ext.get("whale_user_name") or (ext.get("whale_wallet") or "?")[:10]
-                        action = "ENTRY" if ext.get("is_entry") else "EXIT"
-                        title_short = (ext.get("market_title") or order.symbol)[:50]
-                        await channel.push(
-                            f"🟣 Polymarket copy {action} {order.side.upper()} "
-                            f"@{user} (${ext.get('copy_size_usdc', 0):.2f}) "
-                            f"on \"{title_short}\" — logged."
-                        )
-                    except Exception as e:
-                        log.warning(
-                            "Polymarket copy channel push failed: %s", e,
-                        )
 
             except asyncio.CancelledError:
                 log.info("Polymarket copy trader scanner cancelled.")

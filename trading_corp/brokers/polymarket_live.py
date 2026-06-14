@@ -252,6 +252,16 @@ class OrderPlacementError(RuntimeError):
     fabricate a phantom FillEvent for an unfilled order."""
 
 
+class NoFillInWindow(OrderPlacementError):
+    """E2·6 — a synthesized-FAK order that simply did not fill within its poll
+    window (BENIGN, expected on a thin book): the remainder was cancelled and no
+    fill was recorded. A SUBCLASS of OrderPlacementError so a consumer (the copy
+    loop) can catch the benign no-fill BY TYPE — skip the order, no alarm — WITHOUT
+    swallowing real placement failures (rejected / no-orderID / unmatched), which
+    keep raising plain OrderPlacementError. This makes the E2·2 contract-note
+    distinction type-based, not message-string-based."""
+
+
 def _is_fully_filled(size_matched: float, original_size: float) -> bool:
     return original_size > 0 and size_matched >= original_size
 
@@ -306,7 +316,7 @@ async def _poll_order_to_fill(
         await asyncio.sleep(interval)
 
     if size_matched <= 0:
-        raise OrderPlacementError(
+        raise NoFillInWindow(  # E2·6: benign no-fill (terminal, nothing matched)
             f"polymarket order {order_id} terminal status={last_status!r} with no "
             f"fill (size_matched=0); no FillEvent recorded"
         )
@@ -506,7 +516,7 @@ async def place_order_fak_synth(
         # remainder and signal no-fill the way the native path does (raise, never a
         # phantom FillEvent).
         await cancel_order(client, order_id)
-        raise OrderPlacementError(
+        raise NoFillInWindow(  # E2·6: benign no-fill (window expired, remainder cancelled)
             f"polymarket FAK-synth order {order_id} did not fill within "
             f"{poll_seconds}s; remainder cancelled, no fill recorded"
         )
