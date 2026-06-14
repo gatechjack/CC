@@ -96,9 +96,17 @@ class PolymarketCopyTraderAgent:
           division: polymarket_copy_trading
           poll_interval_sec: 60              # 60s on free public API
           activity_limit_per_poll: 20
+          order_type: fak_synth              # E2·2 broker tif: fak_synth|gtc|fok|gtd
+          fak_poll_seconds: 5                # E2·2 FAK-synth poll window (seconds)
           sizing:
             tier_boundaries_usdc: [100.0, 1000.0]
             tier_sizes_usdc: [1.0, 2.0, 5.0]
+
+    `order_type` / `fak_poll_seconds` are EXECUTION config consumed by
+    `PolymarketLiveBroker` (brokers/polymarket_live.py), not this strategy. They
+    select the live broker's time-in-force: `fak_synth` (default) synthesizes FAK
+    over GTC since py_clob_client 0.17.5 has no native FAK; gtc/fok/gtd pass through
+    native. The read->broker wiring lands in E2·6; the broker defaults match these.
     """
 
     name = "polymarket_copy_trader"

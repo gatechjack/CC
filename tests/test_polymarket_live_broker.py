@@ -19,12 +19,14 @@ import pytest
 from trading_corp.brokers.polymarket_live import (
     OrderPlacementError,
     TokenIdResolutionError,
+    _native_order_type,
     _poll_order_to_fill,
     build_clob_order_args,
     cancel_order,
     create_signed_order,
     map_proposed_to_clob,
     place_order,
+    place_order_fak_synth,
     resolve_token_id,
     resolve_token_id_from_market,
 )
@@ -367,3 +369,130 @@ async def test_cancel_empty_order_id_returns_false_without_calling():
     c = MagicMock()
     assert await cancel_order(c, "") is False
     c.cancel.assert_not_called()
+
+
+# ── E2·2: synthesized FAK + native tif pass-through ─────────────────────────
+# py_clob_client 0.17.5 has no native FAK, so place_order_fak_synth posts GTC,
+# polls <= poll_seconds, cancels the unfilled remainder, and fills ONLY the
+# matched portion. These exercise build_clob_order_args/OrderType -> importorskip
+# (py3.12 venv), like the E1·3 place_order tests. The mocked client guarantees the
+# real CLOB is never hit.
+
+
+def _fak_client(*order_dicts, post_status="live", order_id="0xOID"):
+    """Mock client for the FAK-synth path: create_order/post_order succeed and
+    get_order returns the given dict(s) in sequence (last repeats). cancel returns
+    a canceled-confirming response by default."""
+    c = MagicMock()
+    c.create_order.return_value = "SIGNED"
+    c.post_order.return_value = {"success": True, "orderID": order_id, "status": post_status}
+    seq = list(order_dicts)
+
+    def _get(_oid):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    c.get_order.side_effect = _get
+    c.cancel.return_value = {"canceled": [order_id], "not_canceled": {}}
+    return c
+
+
+async def test_fak_synth_posts_gtc_full_fill_no_cancel():
+    # GTC is the order actually posted; a full fill cancels nothing.
+    pytest.importorskip("py_clob_client")
+    from py_clob_client.clob_types import OrderType
+
+    c = _fak_client({"status": "matched", "size_matched": "5", "original_size": "5", "price": "0.5"})
+    order = _order(side="buy", qty=5.0, price=0.5, extra={"token_id": "T"})
+    fill = await place_order_fak_synth(c, order, poll_seconds=0.0, interval=0.0)
+    assert fill.qty == 5.0
+    assert fill.venue == "polymarket"
+    assert c.post_order.call_args.args[1] == OrderType.GTC  # synth posts GTC
+    c.cancel.assert_not_called()                            # full fill -> no remainder
+
+
+async def test_fak_synth_partial_at_timeout_fills_partial_and_cancels_remainder():
+    # Window expires with a partial fill: FillEvent reflects the FILLED qty (not the
+    # posted size) and the unfilled remainder is cancelled.
+    pytest.importorskip("py_clob_client")
+    c = _fak_client({"status": "live", "size_matched": "2", "original_size": "5", "price": "0.5"})
+    order = _order(side="buy", qty=5.0, price=0.5, extra={"token_id": "T"})
+    fill = await place_order_fak_synth(c, order, poll_seconds=0.0, interval=0.0)
+    assert fill.qty == 2.0                       # partial, NOT the posted 5
+    c.cancel.assert_called_once_with("0xOID")    # remainder cancelled
+
+
+async def test_fak_synth_zero_fill_at_timeout_cancels_and_raises_no_phantom():
+    # Resting with nothing matched at the window's expiry: cancel + raise, no fill.
+    pytest.importorskip("py_clob_client")
+    c = _fak_client({"status": "live", "size_matched": "0", "original_size": "5"})
+    order = _order(side="buy", qty=5.0, price=0.5, extra={"token_id": "T"})
+    with pytest.raises(OrderPlacementError):
+        await place_order_fak_synth(c, order, poll_seconds=0.0, interval=0.0)
+    c.cancel.assert_called_once_with("0xOID")    # remainder cancelled, no phantom fill
+
+
+async def test_fak_synth_terminal_zero_fill_raises_without_extra_cancel():
+    # Venue-terminal (cancelled) with 0 matched: _poll raises OrderPlacementError
+    # before the timeout branch — already terminal, so no extra cancel is issued.
+    pytest.importorskip("py_clob_client")
+    c = _fak_client({"status": "cancelled", "size_matched": "0", "original_size": "5"})
+    order = _order(side="buy", qty=5.0, price=0.5, extra={"token_id": "T"})
+    with pytest.raises(OrderPlacementError):
+        await place_order_fak_synth(c, order, poll_seconds=0.0, interval=0.0)
+    c.cancel.assert_not_called()
+
+
+async def test_fak_synth_polls_within_window_then_full_fill():
+    # Poll runs across the window (respects poll_seconds): rests live twice, then
+    # fully fills on the third poll -> no remainder to cancel.
+    pytest.importorskip("py_clob_client")
+    c = _fak_client(
+        {"status": "live", "size_matched": "0", "original_size": "5"},
+        {"status": "live", "size_matched": "0", "original_size": "5"},
+        {"status": "matched", "size_matched": "5", "original_size": "5", "price": "0.5"},
+    )
+    order = _order(side="buy", qty=5.0, price=0.5, extra={"token_id": "T"})
+    fill = await place_order_fak_synth(c, order, poll_seconds=5.0, interval=0.0)
+    assert fill.qty == 5.0
+    assert c.get_order.call_count == 3           # polled through the window
+    c.cancel.assert_not_called()
+
+
+async def test_fak_synth_rejected_placement_raises_before_poll():
+    # A rejected post_order never polls or cancels (no order to manage).
+    pytest.importorskip("py_clob_client")
+    c = MagicMock()
+    c.create_order.return_value = "SIGNED"
+    c.post_order.return_value = {"success": False, "errorMsg": "insufficient balance"}
+    with pytest.raises(OrderPlacementError):
+        await place_order_fak_synth(c, _order(extra={"token_id": "T"}), poll_seconds=0.0, interval=0.0)
+    c.get_order.assert_not_called()
+    c.cancel.assert_not_called()
+
+
+@pytest.mark.parametrize("ot,enum_name", [("gtc", "GTC"), ("fok", "FOK"), ("gtd", "GTD")])
+async def test_place_order_native_posts_requested_tif_and_never_synthesizes(ot, enum_name):
+    # gtc/fok/gtd pass straight through to the native path: the requested tif is
+    # posted and the synth-only cancel is never invoked.
+    pytest.importorskip("py_clob_client")
+    from py_clob_client.clob_types import OrderType
+
+    c = _fak_client({"status": "matched", "size_matched": "5", "original_size": "5", "price": "0.5"})
+    order = _order(side="buy", qty=5.0, price=0.5, extra={"token_id": "T"})
+    fill = await place_order(c, order, order_type=ot, timeout=0.0, interval=0.0)
+    assert fill.qty == 5.0
+    assert c.post_order.call_args.args[1] == getattr(OrderType, enum_name)
+    c.cancel.assert_not_called()                 # native path never cancels-as-synth
+
+
+def test_native_order_type_maps_and_rejects_synth_and_unknown():
+    pytest.importorskip("py_clob_client")
+    from py_clob_client.clob_types import OrderType
+
+    assert _native_order_type("gtc") == OrderType.GTC
+    assert _native_order_type("FOK") == OrderType.FOK     # case-insensitive
+    assert _native_order_type("gtd") == OrderType.GTD
+    with pytest.raises(ValueError):
+        _native_order_type("fak_synth")                  # synth is not a native tif
+    with pytest.raises(ValueError):
+        _native_order_type("bogus")

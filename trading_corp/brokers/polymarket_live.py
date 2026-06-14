@@ -321,24 +321,57 @@ async def _poll_order_to_fill(
     )
 
 
-async def place_order(
-    client, order, *, market_fetcher: Callable[[str], dict | None] | None = None,
-    timeout: float = _DEFAULT_POLL_TIMEOUT_SEC,
-    interval: float = _DEFAULT_POLL_INTERVAL_SEC,
-):
-    """Map -> sign (`create_order`) -> `post_order(signed, GTC)` -> poll -> FillEvent.
+# ── E2·2: order_type config + synthesized FAK ───────────────────────────────
+#
+# py_clob_client 0.17.5 exposes only GTC/FOK/GTD OrderTypes — there is NO native
+# FAK/IOC (D2, confirmed). v1 therefore SYNTHESIZES FAK ("fill-and-kill") over the
+# GTC path (`place_order_fak_synth`, defined after E1·4 cancel below): post GTC,
+# poll a short window, cancel the unfilled remainder, and emit a FillEvent for
+# ONLY the filled portion (never a phantom fill). gtc/fok/gtd pass straight
+# through the native `place_order` path with no synthesis. order_type is
+# config-driven (copy-strategy config -> broker ctor) so a later GTD/FOK swap is a
+# YAML edit, not a rebuild. The order_type STRING is resolved to a py_clob_client
+# OrderType lazily inside the SDK-touching functions, so the broker can dispatch
+# on the string without importing the SDK (it isn't on the box's pytest env).
 
-    Mirrors `tastytrade.place_order`. **REAL-when-live**: `post_order` reaches the
-    live CLOB only with a live client (here/in tests it is mocked). Raises
-    `OrderPlacementError` on a rejected/unmatched placement and `TimeoutError` if
-    a resting order never fills within `timeout` — never a phantom FillEvent.
-    """
+_DEFAULT_FAK_POLL_SECONDS = 5.0  # short FAK-synth poll window (seconds); configurable
+_SYNTH_FAK = "fak_synth"
+_NATIVE_ORDER_TYPES = frozenset({"gtc", "fok", "gtd"})
+_VALID_ORDER_TYPES = _NATIVE_ORDER_TYPES | {_SYNTH_FAK}
+
+
+def _native_order_type(order_type: str):
+    """Map an order_type config string to a py_clob_client `OrderType` (lazy SDK
+    import). Only the NATIVE types (gtc/fok/gtd) map here; `fak_synth` is
+    synthesized over GTC and never reaches this function. Raises on an unknown
+    string — fail loud rather than silently posting the wrong tif."""
     from py_clob_client.clob_types import OrderType
 
+    key = str(order_type).strip().lower()
+    mapping = {"gtc": OrderType.GTC, "fok": OrderType.FOK, "gtd": OrderType.GTD}
+    if key not in mapping:
+        raise ValueError(
+            f"{order_type!r} is not a native py_clob_client OrderType "
+            f"(expected one of {sorted(_NATIVE_ORDER_TYPES)})"
+        )
+    return mapping[key]
+
+
+async def _post_signed_order(
+    client, order, native_order_type, *,
+    market_fetcher: Callable[[str], dict | None] | None = None,
+):
+    """Map -> sign (`create_order`) -> `post_order(signed, native_order_type)` ->
+    validate the placement. Returns `(order_id, mapped)`.
+
+    Shared by `place_order` (native) and `place_order_fak_synth` (which always
+    posts GTC). Raises `OrderPlacementError` on a rejected, orderID-less, or
+    `unmatched` placement. **REAL-when-live**: `post_order` reaches the live CLOB
+    only with a live client (here/in tests it is mocked)."""
     mapped = map_proposed_to_clob(order, market_fetcher=market_fetcher)
     args = build_clob_order_args(mapped)
     signed = await asyncio.to_thread(client.create_order, args)
-    resp = (await asyncio.to_thread(client.post_order, signed, OrderType.GTC)) or {}
+    resp = (await asyncio.to_thread(client.post_order, signed, native_order_type)) or {}
 
     if not resp.get("success", False):
         raise OrderPlacementError(
@@ -352,7 +385,28 @@ async def place_order(
             f"polymarket order {order_id} placement status='unmatched' "
             f"(marketable but did not match); no fill recorded"
         )
+    return order_id, mapped
 
+
+async def place_order(
+    client, order, *, market_fetcher: Callable[[str], dict | None] | None = None,
+    order_type: str = "gtc",
+    timeout: float = _DEFAULT_POLL_TIMEOUT_SEC,
+    interval: float = _DEFAULT_POLL_INTERVAL_SEC,
+):
+    """Map -> sign -> `post_order(signed, <native tif>)` -> poll -> FillEvent.
+
+    The NATIVE place path for the gtc/fok/gtd order types (`order_type` is the
+    config string; resolved to a py_clob_client `OrderType` here). Mirrors
+    `tastytrade.place_order`. Raises `OrderPlacementError` on a rejected/unmatched
+    placement and `TimeoutError` if a resting order never fills within `timeout` —
+    never a phantom FillEvent. The synthesized FAK path is `place_order_fak_synth`;
+    it never routes here.
+    """
+    native = _native_order_type(order_type)
+    order_id, mapped = await _post_signed_order(
+        client, order, native, market_fetcher=market_fetcher,
+    )
     return await _poll_order_to_fill(
         client, order_id,
         symbol=getattr(order, "symbol", ""),
@@ -403,6 +457,68 @@ async def cancel_order(client, order_id: str) -> bool:
     return False
 
 
+# ── E2·2: synthesized FAK (post GTC -> poll -> cancel remainder) ─────────────
+
+
+async def place_order_fak_synth(
+    client, order, *, market_fetcher: Callable[[str], dict | None] | None = None,
+    poll_seconds: float = _DEFAULT_FAK_POLL_SECONDS,
+    interval: float = _DEFAULT_POLL_INTERVAL_SEC,
+):
+    """Synthesize FAK (fill-and-kill) over the native GTC path.
+
+    py_clob_client 0.17.5 has no native FAK/IOC, so v1 FAK is:
+      1. map -> sign -> `post_order(GTC)`  (reuses the E1·3 placement path);
+      2. poll `<= poll_seconds`, capturing `size_matched` each poll
+         (reuses E1·3 `_poll_order_to_fill`);
+      3. cancel the unfilled remainder (reuses E1·4 `cancel_order`);
+      4. emit a FillEvent for ONLY the filled portion.
+
+    Fill semantics — NEVER a phantom fill:
+      - full fill      -> FillEvent(qty=filled); no remainder to cancel.
+      - partial fill   -> FillEvent(qty=filled, < posted size); resting remainder
+                          cancelled (FAK = kill the unfilled balance).
+      - zero fill      -> cancel + raise `OrderPlacementError`; no FillEvent.
+
+    Mirrors the native path's "raise, never fabricate" convention for the no-fill
+    case: a terminal cancelled/unmatched order with 0 matched already raises
+    `OrderPlacementError` from `_poll_order_to_fill` (nothing left to cancel); an
+    order still RESTING with 0 matched at the window's expiry raises `TimeoutError`
+    there, which we convert here — cancel the remainder, then raise
+    `OrderPlacementError`.
+    """
+    from py_clob_client.clob_types import OrderType
+
+    order_id, mapped = await _post_signed_order(
+        client, order, OrderType.GTC, market_fetcher=market_fetcher,
+    )
+    try:
+        fill = await _poll_order_to_fill(
+            client, order_id,
+            symbol=getattr(order, "symbol", ""),
+            side=mapped["side"],
+            price=mapped["price"],
+            original_size=mapped["size"],
+            timeout=poll_seconds, interval=interval,
+        )
+    except TimeoutError:
+        # Window expired with the order still resting and NOTHING matched: kill the
+        # remainder and signal no-fill the way the native path does (raise, never a
+        # phantom FillEvent).
+        await cancel_order(client, order_id)
+        raise OrderPlacementError(
+            f"polymarket FAK-synth order {order_id} did not fill within "
+            f"{poll_seconds}s; remainder cancelled, no fill recorded"
+        )
+    # Filled (full or partial). A partial fill (filled < posted size) leaves an
+    # unfilled remainder resting — kill it per FAK semantics. Full fill: nothing
+    # to cancel. cancel_order never raises (Broker contract is -> bool); on an
+    # already-terminal order it is a harmless no-op returning False.
+    if fill.qty < float(mapped["size"]):
+        await cancel_order(client, order_id)
+    return fill
+
+
 # ── E1·6: PolymarketLiveBroker(Broker) — assembly ───────────────────────────
 
 _CLOB_HOST = "https://clob.polymarket.com"
@@ -411,6 +527,7 @@ _POLYGON_CHAIN_ID = 137
 # Aliases so the same-named Broker methods below delegate to these module-level
 # functions without name-shadow confusion.
 _place_order_fn = place_order
+_place_order_fak_synth_fn = place_order_fak_synth  # E2·2 synth dispatch target
 _cancel_order_fn = cancel_order
 
 # ── E1·7: on-chain live-readiness preflight (read-only) ─────────────────────
@@ -452,7 +569,9 @@ class PolymarketLiveBroker(Broker):
     - `connect()`: connect the read adapter + build the placement client and
       **L2-authorize** it (`create_or_derive_api_creds` → `set_api_creds`) so
       `post_order` (L2 auth) is allowed; `paper = False` (live).
-    - `place_order(order) -> FillEvent`  (E1·2/3 map→sign→post→poll)
+    - `place_order(order) -> FillEvent`  (E1·2/3 map→sign→post→poll; E2·2
+      dispatches on `order_type`: `fak_synth` synthesizes FAK over GTC, else
+      gtc/fok/gtd native pass-through)
     - `cancel_order(order_id) -> bool`   (E1·4)
     - `snapshot()` / `quote()`           (read adapter; E1·5 quote)
 
@@ -469,12 +588,30 @@ class PolymarketLiveBroker(Broker):
     name = "polymarket-live"
     paper = False
 
-    def __init__(self, private_key=None, funder_address=None, polygon_rpc_url=None):
+    def __init__(
+        self, private_key=None, funder_address=None, polygon_rpc_url=None,
+        order_type: str = _SYNTH_FAK, fak_poll_seconds: float = _DEFAULT_FAK_POLL_SECONDS,
+    ):
         from trading_corp.brokers.polymarket import PolymarketBroker
 
         self._private_key = private_key
         self._funder = funder_address
         self._rpc_url = polygon_rpc_url
+        # E2·2: execution discipline (config-driven; E2·6 sources these from the
+        # copy-strategy config). order_type dispatches place_order: fak_synth
+        # (default) synthesizes FAK over GTC; gtc/fok/gtd pass through native.
+        ot = str(order_type).strip().lower()
+        if ot not in _VALID_ORDER_TYPES:
+            raise ValueError(
+                f"unsupported order_type {order_type!r}; expected one of "
+                f"{sorted(_VALID_ORDER_TYPES)}"
+            )
+        self._order_type = ot
+        self._fak_poll_seconds = float(fak_poll_seconds)
+        if self._fak_poll_seconds < 0:
+            raise ValueError(
+                f"fak_poll_seconds must be >= 0; got {fak_poll_seconds!r}"
+            )
         # Reuse the read adapter for connect/disconnect/snapshot/quote.
         self._read = PolymarketBroker(
             private_key=private_key,
@@ -595,7 +732,15 @@ class PolymarketLiveBroker(Broker):
 
     async def place_order(self, order):
         self._require_connected()
-        return await _place_order_fn(self._clob, order)
+        # E2·2: dispatch on the configured order_type. fak_synth synthesizes FAK
+        # over GTC (poll-then-cancel-remainder); gtc/fok/gtd pass through native.
+        if self._order_type == _SYNTH_FAK:
+            return await _place_order_fak_synth_fn(
+                self._clob, order, poll_seconds=self._fak_poll_seconds,
+            )
+        return await _place_order_fn(
+            self._clob, order, order_type=self._order_type,
+        )
 
     async def cancel_order(self, order_id: str) -> bool:
         self._require_connected()

@@ -1703,6 +1703,18 @@ polymarket_copy_trader:
   division: polymarket_copy_trading
   poll_interval_sec: 60             # 60s; free API can sustain faster if needed
   activity_limit_per_poll: 20
+  # ── Execution tif (E2·2) — consumed by PolymarketLiveBroker, NOT the strategy ──
+  # order_type selects the live broker's time-in-force / fill discipline. The
+  # broker dispatches place_order on it (brokers/polymarket_live.py):
+  #   fak_synth (default) — py_clob_client 0.17.5 has NO native FAK, so FAK is
+  #                         synthesized: post GTC, poll <= fak_poll_seconds, cancel
+  #                         the unfilled remainder, fill ONLY the matched portion.
+  #   gtc | fok | gtd     — native py_clob_client pass-through (no synthesis).
+  # Config-driven so a later GTD/FOK swap is a YAML edit, not a rebuild. The
+  # read->broker wiring (main.py factory) lands in E2·6; the broker already
+  # defaults to fak_synth / 5s so these keys are forward-compatible today.
+  order_type: fak_synth
+  fak_poll_seconds: 5               # FAK-synth poll window before cancelling remainder
   sizing:
     # USDC bet size → our USDC copy size. Polymarket binaries clear in USDC;
     # whale bet sizes vary 100× more than Kalshi contracts, so the upper
