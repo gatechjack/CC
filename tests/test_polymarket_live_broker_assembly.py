@@ -48,6 +48,7 @@ def test_read_adapter_is_readonly_not_broker():
 async def test_connect_l2_authorizes_client():
     b = _live()
     b._read = AsyncMock()                  # read-adapter connect mocked
+    b._assert_funded_and_approved = AsyncMock()  # E1·7 preflight stubbed (tested below)
     clob = MagicMock()
     clob.create_or_derive_api_creds.return_value = "CREDS"
     b._build_clob_client = lambda: clob    # inject mock client (no real SDK)
@@ -55,6 +56,7 @@ async def test_connect_l2_authorizes_client():
     await b.connect()
 
     b._read.connect.assert_awaited_once()
+    b._assert_funded_and_approved.assert_awaited_once()  # preflight runs on connect
     clob.create_or_derive_api_creds.assert_called_once()
     clob.set_api_creds.assert_called_once_with("CREDS")
     assert b._clob is clob
@@ -149,3 +151,122 @@ def test_factory_live_but_not_selected_returns_readonly():
     b = _build_broker_for_division(_div(), _secrets(), "LIVE", [])
     assert isinstance(b, PolymarketBroker)
     assert not isinstance(b, PolymarketLiveBroker)
+
+
+# ── E1·7: connect() on-chain funded+approved preflight (read-only, mocked) ──
+#
+# OP·A's creds-completeness preflight already shipped in `assert_live_ready`
+# (utils/secrets.py, item-7 `500cc1e`); E1·7 is ONLY the connect()-level on-chain
+# check (funder holds USDC.e + the ERC-20/ERC-1155 exchange approvals are set) —
+# NOT a duplicate creds-check. All on-chain reads are mocked; no funds, no signing.
+
+
+def _preflight_broker(balance=100.0, eth_calls=(1, 1, 1, 1)):
+    """A live broker with the read adapter's connect mocked and the on-chain
+    reads stubbed for the E1·7 preflight: `_read` provisioned
+    (funder/_client/_rpc_url), USDC.e balance = `balance`, and `_eth_call`
+    returning `eth_calls` = (allowance_std, allowance_neg, approved_std,
+    approved_neg) in call order. `_build_clob_client` returns a mock so a passing
+    preflight proceeds to the (mocked) L2 auth."""
+    b = _live()
+    b._read.connect = AsyncMock()          # don't hit real endpoints
+    b._read.disconnect = AsyncMock()
+    b._read._funder = "0x" + "ab" * 20     # provisioned (valid 20-byte funder EOA)
+    b._read._client = MagicMock()          # httpx client present (connect would set it)
+    b._read._rpc_url = "http://rpc"
+    b._read._fetch_usdc_balance = AsyncMock(return_value=balance)
+    b._eth_call = AsyncMock(side_effect=list(eth_calls))
+    clob = MagicMock()
+    clob.create_or_derive_api_creds.return_value = "CREDS"
+    b._build_clob_client = lambda: clob
+    b._clob_for_test = clob
+    return b
+
+
+async def test_preflight_unprovisioned_wallet_aborts_connect():
+    b = _live()
+    b._read.connect = AsyncMock()
+    b._read._funder = None                 # stub wallet (no key/funder provisioned)
+    b._read._client = None
+    with pytest.raises(RuntimeError, match="not provisioned"):
+        await b.connect()
+    assert b._connected is False and b._clob is None
+
+
+async def test_preflight_unfunded_aborts_connect():
+    b = _preflight_broker(balance=0.0)     # 0 USDC.e
+    with pytest.raises(RuntimeError, match="USDC.e"):
+        await b.connect()
+    assert b._connected is False and b._clob is None
+    b._read._fetch_usdc_balance.assert_awaited_once()
+
+
+async def test_preflight_zero_std_allowance_aborts_connect():
+    b = _preflight_broker(balance=100.0, eth_calls=(0, 1, 1, 1))  # std ERC-20 allowance 0
+    with pytest.raises(RuntimeError, match="allowance"):
+        await b.connect()
+    assert b._connected is False
+
+
+async def test_preflight_zero_negrisk_allowance_aborts_connect():
+    b = _preflight_broker(balance=100.0, eth_calls=(1, 0, 1, 1))  # negRisk allowance 0
+    with pytest.raises(RuntimeError, match="allowance"):
+        await b.connect()
+    assert b._connected is False
+
+
+async def test_preflight_unset_std_approval_aborts_connect():
+    b = _preflight_broker(balance=100.0, eth_calls=(1, 1, 0, 1))  # std CTF approval not set
+    with pytest.raises(RuntimeError, match="approval-for-all"):
+        await b.connect()
+    assert b._connected is False
+
+
+async def test_preflight_unset_negrisk_approval_aborts_connect():
+    b = _preflight_broker(balance=100.0, eth_calls=(1, 1, 1, 0))  # negRisk CTF approval not set
+    with pytest.raises(RuntimeError, match="approval-for-all"):
+        await b.connect()
+    assert b._connected is False
+
+
+async def test_preflight_fully_ready_connects():
+    b = _preflight_broker(balance=100.0, eth_calls=(1, 1, 1, 1))
+    await b.connect()
+    assert b._connected is True
+    assert b._clob is b._clob_for_test     # proceeded to L2 auth after preflight passed
+    # exactly 4 on-chain reads: 2 allowances (std, negRisk) + 2 approvals (std, negRisk)
+    assert b._eth_call.await_count == 4
+    b._read._fetch_usdc_balance.assert_awaited_once()
+
+
+# ── E1·7: calldata builders (pure — selector + 32-byte ABI padding) ─────────
+
+def test_pad_addr_left_pads_to_32_bytes():
+    padded = pl._pad_addr("0x" + "ab" * 20)
+    assert padded == ("0" * 24) + ("ab" * 20)     # 24 zero-nibbles + 20-byte addr
+    assert len(padded) == 64                       # 32 bytes
+
+
+def test_pad_addr_rejects_wrong_length():
+    with pytest.raises(ValueError):
+        pl._pad_addr("0x1234")                     # not a 20-byte address
+
+
+def test_allowance_calldata_selector_and_args():
+    owner = "0x" + "11" * 20
+    spender = "0x" + "22" * 20
+    data = pl._allowance_calldata(owner, spender)
+    assert data.startswith("0xdd62ed3e")           # ERC-20 allowance(owner,spender)
+    assert len(data) == 10 + 64 + 64               # 0x+selector(8) + 2*32-byte args
+    assert data[10:74] == ("0" * 24) + ("11" * 20)  # owner padded
+    assert data[74:] == ("0" * 24) + ("22" * 20)    # spender padded
+
+
+def test_is_approved_for_all_calldata_selector_and_args():
+    owner = "0x" + "33" * 20
+    operator = "0x" + "44" * 20
+    data = pl._is_approved_for_all_calldata(owner, operator)
+    assert data.startswith("0xe985e9c5")           # ERC-1155 isApprovedForAll(owner,operator)
+    assert len(data) == 10 + 64 + 64
+    assert data[10:74] == ("0" * 24) + ("33" * 20)
+    assert data[74:] == ("0" * 24) + ("44" * 20)
