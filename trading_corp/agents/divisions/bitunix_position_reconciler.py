@@ -37,6 +37,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from trading_corp.brokers.bitunix_symbols import (
+    UnknownSymbolError,
+    to_wire_format,
+)
 from trading_corp.persistence import db
 from trading_corp.persistence.models import OpenPosition
 
@@ -448,6 +452,28 @@ def _broker_side(qty: float) -> str:
     return "buy" if qty > 0 else "sell"
 
 
+def _match_symbol_key(symbol: str) -> str:
+    """Canonical key for matching a bot-tracked symbol against a BitUnix broker
+    symbol (P1 fix 2026-06-14).
+
+    Bot rows store the internal display form (e.g. ``BTC/USDT.P``); BitUnix
+    returns the wire form (``BTCUSDT``). Map BOTH to the wire form via the symbol
+    SSOT (`bitunix_symbols`) so the same instrument compares equal — every TRADED
+    symbol is in that map, so this generalizes beyond BTC without ad-hoc string
+    slicing (which `bitunix_symbols` forbids). An unmapped symbol (e.g. a broker
+    orphan in an instrument the bot doesn't trade) falls back to the upper-cased
+    raw string: it still compares deterministically and surfaces as genuine
+    divergence rather than crashing the reconciler.
+    """
+    if not symbol:
+        return ""
+    raw = symbol.strip()
+    try:
+        return to_wire_format(raw)
+    except UnknownSymbolError:
+        return raw.upper()
+
+
 async def reconcile_position_state(
     broker: Any,
     db_url: str,
@@ -498,11 +524,15 @@ async def reconcile_position_state(
     missing: list[PositionStateMissingOnBroker] = []
     matched_broker_keys: set[tuple[str, str]] = set()
 
-    # Walk tracked rows; find broker match by (symbol, side).
+    # Walk tracked rows; find broker match by (canonical symbol, side).
+    # Symbols are normalized to the wire form so BTC/USDT.P (bot) matches
+    # BTCUSDT (broker) — the P1 false-divergence fix (2026-06-14). Side comes
+    # from the (now correctly signed) broker qty via `_broker_side`.
     for t in tracked:
+        t_symbol_key = _match_symbol_key(t["symbol"])
         match = None
         for p in broker_positions:
-            if p.symbol != t["symbol"]:
+            if _match_symbol_key(p.symbol) != t_symbol_key:
                 continue
             if _broker_side(p.qty) != t["side"]:
                 continue
@@ -523,12 +553,14 @@ async def reconcile_position_state(
                 bot_qty=t["qty"],
                 broker_qty=abs(match.qty),
             ))
-            matched_broker_keys.add((match.symbol, _broker_side(match.qty)))
+            matched_broker_keys.add(
+                (_match_symbol_key(match.symbol), _broker_side(match.qty))
+            )
 
     # Walk broker positions; orphans = those not matched to any tracked row.
     orphans: list[PositionStateOrphanOnBroker] = []
     for p in broker_positions:
-        key = (p.symbol, _broker_side(p.qty))
+        key = (_match_symbol_key(p.symbol), _broker_side(p.qty))
         if key in matched_broker_keys:
             continue
         orphans.append(PositionStateOrphanOnBroker(

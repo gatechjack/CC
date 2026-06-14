@@ -129,6 +129,46 @@ _TERMINAL_STATUSES = {"FILLED", "CANCELED"}
 _FILL_MAX_POLLS = 8
 _FILL_POLL_INTERVAL_S = 0.4
 
+# ── BitUnix position `side` → signed qty (P1 reconciler fix, 2026-06-14) ──────
+# One-way-mode positions mirror the OPEN order side. Orders are placed with
+# side="BUY"/"SELL" (`_build_order_body`), and the FIRST live fill (2026-06-14)
+# returned a SELL-opened short whose position `side` was NOT "SHORT": under the
+# old `if side == "SHORT"` check the short read back as POSITIVE qty, so the
+# position-state reconciler saw it as a "buy" it could not match → false
+# `position_state_divergence_detected` every ~60s → `_halt_new_orders` latched →
+# new live entries blocked. (reports/2026-06-14_bitunix_first_fill_closeout.md.)
+#
+# Grounded from captured data: orders use BUY/SELL; the live short read back
+# positive ⇒ the label is NOT "SHORT" (the strong inference is "SELL"). We negate
+# qty for SELL/SHORT and keep BUY/LONG positive, case-insensitively, covering
+# both the order-side convention and the legacy LONG/SHORT assumption. An
+# UNRECOGNIZED non-empty label is logged LOUDLY and left positive (fail-loud,
+# never silently mis-signed) so a third convention surfaces instead of silently
+# re-creating a reconciler divergence.
+# NB: the exact short label ("SELL") is a strong inference, not a captured
+# string — confirm against the live BitUnix position payload at deploy.
+_SHORT_POSITION_SIDE_LABELS = frozenset({"SELL", "SHORT"})
+_LONG_POSITION_SIDE_LABELS = frozenset({"BUY", "LONG"})
+
+
+def _signed_position_qty(side: str | None, qty: float) -> float:
+    """Sign a BitUnix position qty by its `side` label: SHORT/SELL → negative,
+    LONG/BUY → positive. `abs()` makes it idempotent regardless of the raw sign.
+    An unrecognized non-empty label warns and is treated as LONG (positive) —
+    fail-loud, never silently mis-signed."""
+    label = (side or "").strip().upper()
+    if label in _SHORT_POSITION_SIDE_LABELS:
+        return -abs(qty)
+    if label in _LONG_POSITION_SIDE_LABELS:
+        return abs(qty)
+    log.warning(
+        "BitUnix position with unrecognized side label %r (qty=%s); treating as "
+        "LONG (positive). Confirm the BitUnix position-side enum and extend "
+        "_SHORT_POSITION_SIDE_LABELS/_LONG_POSITION_SIDE_LABELS if needed.",
+        side, qty,
+    )
+    return abs(qty)
+
 # Default snapshot-staleness threshold (seconds). Overridable via
 # `bitunix_futures.snapshot_staleness_threshold_seconds` in
 # config/strategies.yaml. 60s = 2× the strategy's per-bar cadence on the
@@ -456,11 +496,11 @@ class BitunixBroker(Broker):
                 qty = _to_float(p.get("qty"))
                 if qty == 0:
                     continue
-                # Sign qty by side: SHORT positions render as negative qty
-                # so the dashboard's downstream sum/PnL math is consistent.
+                # Sign qty by side (P1 fix): SHORT/SELL → negative qty so the
+                # dashboard's downstream sum/PnL math is consistent. See
+                # `_signed_position_qty` for label handling + grounding.
                 side = (p.get("side") or "").upper()
-                if side == "SHORT":
-                    qty = -abs(qty)
+                qty = _signed_position_qty(side, qty)
                 positions.append(Position(
                     account="bitunix-futures",
                     symbol=p.get("symbol") or "?",
@@ -1026,9 +1066,11 @@ class BitunixBroker(Broker):
             qty = _to_float(p.get("qty"))
             if qty == 0:
                 continue
+            # Sign qty by side (P1 fix) — same helper as snapshot(); a
+            # SELL-opened short must render negative so the reconciler's
+            # `_broker_side` reads "sell" and matches the bot's tracked row.
             side = (p.get("side") or "").upper()
-            if side == "SHORT":
-                qty = -abs(qty)
+            qty = _signed_position_qty(side, qty)
             positions.append(Position(
                 account="bitunix-futures",
                 symbol=p.get("symbol") or "?",
