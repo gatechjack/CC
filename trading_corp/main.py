@@ -2018,25 +2018,34 @@ def _build_broker_for_division(
         return PaperExecutionBroker(bx, paper)
 
     if family == "polymarket":
-        # Phase 1 read-only Polymarket adapter. PolymarketBroker subclasses
-        # ReadOnlyBroker (NOT Broker) — there is no `place_order` method to
-        # call. Live order placement is Phase 3 work and will land as a
-        # separate `Broker` subclass when the Backtester verdict +
-        # auto_execute_caps memo greenlight it. Until then, no
-        # PaperExecutionBroker wrap is needed: read-only adapters don't
-        # have an order surface to simulate.
-        from trading_corp.brokers.polymarket import PolymarketBroker
-        # Per-division wallet (item 6): resolve this division's EOA by slug.
-        # RPC is shared. Unmapped/partial wallet → None creds → broker stubs.
+        # PolymarketBroker (read-only, ReadOnlyBroker) for PAPER/non-selected;
+        # PolymarketLiveBroker (Broker, placement-legal) when LIVE + selected
+        # (--brokers polymarket). Per-division wallet (item 6): resolve the EOA
+        # by slug (RPC shared; unmapped/partial wallet → None creds → stub).
+        #
+        # ANTI-HALF-FLIP (E1·6): the live branch is REQUIRED. Without it a
+        # LIVE+selected polymarket division would silently resolve the READ-ONLY
+        # adapter and never place — the Bitunix-half-flip failure mode. PCT goes
+        # live via divisions.yaml `broker: paper→polymarket` + mode LIVE +
+        # `--brokers polymarket`. No PaperExecutionBroker wrap on the read-only
+        # path (no order surface to simulate); the live broker places for real.
         wallet = secrets.polymarket_wallets.get(division.slug)
         if wallet is None:
             log.info(
                 "Polymarket division %s has no mapped wallet — broker will stub",
                 division.slug,
             )
+        pk = wallet.private_key if wallet else None
+        funder = wallet.funder_address if wallet else None
+        if is_live_family:
+            from trading_corp.brokers.polymarket_live import PolymarketLiveBroker
+            return PolymarketLiveBroker(
+                private_key=pk, funder_address=funder,
+                polygon_rpc_url=secrets.polygon_rpc_url,
+            )
+        from trading_corp.brokers.polymarket import PolymarketBroker
         return PolymarketBroker(
-            private_key=wallet.private_key if wallet else None,
-            funder_address=wallet.funder_address if wallet else None,
+            private_key=pk, funder_address=funder,
             polygon_rpc_url=secrets.polygon_rpc_url,
         )
 

@@ -38,6 +38,8 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from trading_corp.brokers.base import Broker
+
 log = logging.getLogger(__name__)
 
 
@@ -399,3 +401,202 @@ async def cancel_order(client, order_id: str) -> bool:
     if isinstance(canceled, list) and oid in [str(c) for c in canceled]:
         return True
     return False
+
+
+# ── E1·6: PolymarketLiveBroker(Broker) — assembly ───────────────────────────
+
+_CLOB_HOST = "https://clob.polymarket.com"
+_POLYGON_CHAIN_ID = 137
+
+# Aliases so the same-named Broker methods below delegate to these module-level
+# functions without name-shadow confusion.
+_place_order_fn = place_order
+_cancel_order_fn = cancel_order
+
+# ── E1·7: on-chain live-readiness preflight (read-only) ─────────────────────
+# Live CLOB contracts on Polygon, dumped from py_clob_client 0.17.5
+# get_contract_config(137) in the 2026-05-29 spike (Track 1b):
+_USDC_E = "0x2791Bca1f2de4661eD88A30C99A7a9449Aa84174"          # collateral (USDC.e, NOT native USDC); == brokers.polymarket._USDC_CONTRACT
+_STD_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"     # CTF Exchange (standard)
+_NEG_RISK_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"  # NegRisk CTF Exchange
+_CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"      # Conditional Tokens (ERC-1155)
+# Standard read selectors (keccak256(sig)[:4]):
+_ALLOWANCE_SELECTOR = "0xdd62ed3e"            # ERC-20 allowance(address owner, address spender)
+_IS_APPROVED_FOR_ALL_SELECTOR = "0xe985e9c5"  # ERC-1155 isApprovedForAll(address owner, address operator)
+
+
+def _pad_addr(addr: str) -> str:
+    """Left-pad a 20-byte address to 32 bytes (64 hex) for eth_call ABI args."""
+    a = str(addr).lower().removeprefix("0x")
+    if len(a) != 40:
+        raise ValueError(f"expected 20-byte address, got {addr!r}")
+    return ("0" * 24) + a
+
+
+def _allowance_calldata(owner: str, spender: str) -> str:
+    return _ALLOWANCE_SELECTOR + _pad_addr(owner) + _pad_addr(spender)
+
+
+def _is_approved_for_all_calldata(owner: str, operator: str) -> str:
+    return _IS_APPROVED_FOR_ALL_SELECTOR + _pad_addr(owner) + _pad_addr(operator)
+
+
+class PolymarketLiveBroker(Broker):
+    """Live Polymarket order broker — assembles E1·2–5 into the `Broker` contract.
+
+    A **placement-legal `Broker`** (NOT a `ReadOnlyBroker`): it has
+    `place_order`/`cancel_order`. Reads (connect/disconnect/snapshot/quote) are
+    delegated to the read adapter `PolymarketBroker` (incl. E1·5's SDK-midpoint
+    quote); placement/cancel go through the **L2-authed** py_clob_client.
+
+    - `connect()`: connect the read adapter + build the placement client and
+      **L2-authorize** it (`create_or_derive_api_creds` → `set_api_creds`) so
+      `post_order` (L2 auth) is allowed; `paper = False` (live).
+    - `place_order(order) -> FillEvent`  (E1·2/3 map→sign→post→poll)
+    - `cancel_order(order_id) -> bool`   (E1·4)
+    - `snapshot()` / `quote()`           (read adapter; E1·5 quote)
+
+    `place_multi_leg`/`get_option_greeks` inherit `Broker`'s NotImplementedError
+    (Polymarket never sees multi-leg). The PCT live-vs-paper resolution lives in
+    the main.py factory (`_build_broker_for_division`, polymarket `is_live_family`).
+
+    MOCKED/FUNDLESS in tests; the real CLOB is hit only with a live, funded,
+    L2-authed client. `place_order`'s token_id uses the direct path
+    (`extra["token_id"]`) — E2 propagates `activity.asset`; a gamma fallback
+    fetcher can be wired later.
+    """
+
+    name = "polymarket-live"
+    paper = False
+
+    def __init__(self, private_key=None, funder_address=None, polygon_rpc_url=None):
+        from trading_corp.brokers.polymarket import PolymarketBroker
+
+        self._private_key = private_key
+        self._funder = funder_address
+        self._rpc_url = polygon_rpc_url
+        # Reuse the read adapter for connect/disconnect/snapshot/quote.
+        self._read = PolymarketBroker(
+            private_key=private_key,
+            funder_address=funder_address,
+            polygon_rpc_url=polygon_rpc_url,
+        )
+        self._clob = None        # L2-authed placement client, set on connect()
+        self._connected = False
+
+    def _build_clob_client(self):
+        """Construct the L1 placement client (host + chain_id + signer key).
+        Isolated for testability (override to inject a mock)."""
+        from py_clob_client.client import ClobClient
+
+        return ClobClient(
+            host=_CLOB_HOST, chain_id=_POLYGON_CHAIN_ID, key=self._private_key,
+        )
+
+    async def connect(self) -> None:
+        await self._read.connect()
+        # E1·7: read-only on-chain live-readiness preflight — abort LOUDLY if the
+        # funder isn't funded (USDC.e) or the exchange approvals aren't set, so a
+        # misconfigured wallet fails HERE, not mid-trade on an unsettling order.
+        await self._assert_funded_and_approved()
+        clob = self._build_clob_client()
+        # L2 authorize: create (or derive) API creds, then set them so post_order
+        # (L2 auth) is permitted. Sync SDK -> to_thread.
+        creds = await asyncio.to_thread(clob.create_or_derive_api_creds)
+        await asyncio.to_thread(clob.set_api_creds, creds)
+        self._clob = clob
+        self._connected = True
+        log.info(
+            "PolymarketLiveBroker connected (L2 creds set; funder=%s)", self._funder,
+        )
+
+    async def disconnect(self) -> None:
+        await self._read.disconnect()
+        self._clob = None
+        self._connected = False
+
+    async def _eth_call(self, to: str, data: str) -> int:
+        """Read-only Polygon RPC eth_call (reusing the read adapter's httpx
+        client + RPC URL); returns the result as an int. No signing, no funds,
+        no on-chain write."""
+        client = self._read._client
+        rpc = self._read._rpc_url
+        if client is None or not rpc:
+            raise RuntimeError("polymarket preflight: no RPC client (wallet stub?)")
+        payload = {
+            "jsonrpc": "2.0", "method": "eth_call",
+            "params": [{"to": to, "data": data}, "latest"], "id": 1,
+        }
+        r = await client.post(
+            rpc, json=payload, headers={"Content-Type": "application/json"},
+        )
+        r.raise_for_status()
+        body = r.json() or {}
+        if "error" in body:
+            raise RuntimeError(f"polymarket preflight eth_call error: {body['error']}")
+        return int(body.get("result", "0x0") or "0x0", 16)
+
+    async def _assert_funded_and_approved(self) -> None:
+        """Read-only on-chain check that the funder EOA can actually place — it
+        holds USDC.e (OP·B) and has set the ERC-20 + ERC-1155 exchange approvals
+        (OP·C). Aborts LIVE `connect()` LOUDLY on any gap, so a misconfigured
+        wallet fails at startup, not mid-trade on a placed-but-unsettling order.
+        The agent only CHECKS (read-only) — the operator provisions/funds/approves
+        (OP·A–C are operator-only).
+        """
+        funder = self._read._funder
+        if not funder or self._read._client is None or not self._read._rpc_url:
+            raise RuntimeError(
+                "PolymarketLiveBroker preflight: wallet not provisioned "
+                "(no funder/RPC) — cannot go live"
+            )
+        # OP·B — funded in USDC.e (the CLOB collateral, NOT native USDC).
+        usdc_e = await self._read._fetch_usdc_balance()
+        if usdc_e <= 0.0:
+            raise RuntimeError(
+                f"PolymarketLiveBroker preflight: funder {funder[:10]}… holds 0 "
+                f"USDC.e — fund the wallet in USDC.e (NOT native USDC) before live"
+            )
+        # OP·C — ERC-20 allowance(USDC.e → exchange) set for both exchanges.
+        for label, spender in (("std", _STD_EXCHANGE), ("negRisk", _NEG_RISK_EXCHANGE)):
+            allowance = await self._eth_call(_USDC_E, _allowance_calldata(funder, spender))
+            if allowance <= 0:
+                raise RuntimeError(
+                    f"PolymarketLiveBroker preflight: USDC.e allowance to the "
+                    f"{label} exchange is 0 — run the one-time approvals before live"
+                )
+        # OP·C — ERC-1155 isApprovedForAll(CTF → exchange) for both exchanges.
+        for label, operator in (("std", _STD_EXCHANGE), ("negRisk", _NEG_RISK_EXCHANGE)):
+            approved = await self._eth_call(
+                _CTF_ADDRESS, _is_approved_for_all_calldata(funder, operator),
+            )
+            if approved != 1:
+                raise RuntimeError(
+                    f"PolymarketLiveBroker preflight: CTF approval-for-all to the "
+                    f"{label} exchange not set — run the one-time approvals before live"
+                )
+        # NOTE (carry-forward): the NegRisk Adapter (0x7876…f29e) MAY also need
+        # approval for neg-risk markets — flagged UNCERTAIN in the 05-29 spike
+        # (not in the 0.17.5 ContractConfig). Confirm against the live approval
+        # set at the operator shakedown; not asserted here to avoid a false-abort
+        # on an unconfirmed spender.
+
+    async def snapshot(self):
+        return await self._read.snapshot()
+
+    async def quote(self, symbol: str) -> float:
+        return await self._read.quote(symbol)
+
+    def _require_connected(self) -> None:
+        if not self._connected or self._clob is None:
+            raise RuntimeError(
+                "PolymarketLiveBroker not connected — call connect() first"
+            )
+
+    async def place_order(self, order):
+        self._require_connected()
+        return await _place_order_fn(self._clob, order)
+
+    async def cancel_order(self, order_id: str) -> bool:
+        self._require_connected()
+        return await _cancel_order_fn(self._clob, order_id)
