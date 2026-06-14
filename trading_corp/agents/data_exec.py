@@ -101,6 +101,15 @@ class DataExecAgent:
         if broker is None:
             raise RuntimeError(f"No broker registered for division={division!r}")
 
+        # E2·5 — classify the execution path from the REAL broker (not a config
+        # guess). PaperExecutionBroker.paper is True (paper mode); placement-legal
+        # live brokers (PolymarketLiveBroker, BitunixBroker, robinhood/…) are False.
+        # This is the generic set point the live path flows through — E2·6's
+        # polymarket-live placement auto-populates execution_mode='live' here with
+        # no further wiring. (The paper would_have_placed path never reaches place()
+        # and defaults to 'paper'.) Set before any log_proposed_order below.
+        order.execution_mode = "paper" if getattr(broker, "paper", True) else "live"
+
         # ── Dry-run short-circuit ──────────────────────────────────────
         # Validates the entire pipeline (auth → snapshot → risk → order
         # build → serialization) WITHOUT actually placing the order at the

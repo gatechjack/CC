@@ -40,6 +40,7 @@ EXPECTED_COLUMNS = {
     "rr_ratio", "max_hold_seconds", "result", "result_ts", "result_price",
     "actual_pnl_dollars", "actual_r_multiple", "bars_to_resolution",
     "extra_json",
+    "execution_mode",   # E2·5
 }
 
 
