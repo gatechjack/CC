@@ -46,15 +46,35 @@ sys.path.insert(0, str(_REPO_ROOT))
 from scripts.backtest_btc_accumulator import (  # noqa: E402
     _ohlcv_cache_path,
     _resample_to_1h,
-    _resample_to_3m,
     _resample_to_4h,
-    _resample_to_5m,
-    _resample_to_15m,
     build_price_context,
     fetch_alerts_from_prod,
     fetch_ohlcv_from_coinbase,
     find_bar_at,
 )
+# PRE-EXISTING BREAKAGE (surfaced 2026-06-14, filed BACKLOG): _resample_to_3m/_5m/_15m
+# are imported + called (coinbase path, ~lines 480-482) but defined NOWHERE in the repo
+# (only _4h/_1h exist). The module was UNIMPORTABLE on main 32e7fb4 and the five-factor
+# test was red at collection. Guarded so the bybit_hybrid path (which supplies bars_3m/5m/15m
+# overrides and never calls these) imports + runs; the coinbase path stays broken-but-LOUD.
+try:
+    from scripts.backtest_btc_accumulator import (  # noqa: E402
+        _resample_to_3m,
+        _resample_to_5m,
+        _resample_to_15m,
+    )
+except ImportError:
+    def _resample_missing(_name):
+        def _raise(*_a, **_k):
+            raise NotImplementedError(
+                f"{_name} is not defined in backtest_btc_accumulator (pre-existing "
+                "breakage; see BACKLOG 2026-06-14). The bybit_hybrid path supplies "
+                "bars_3m/5m/15m overrides and does not call these."
+            )
+        return _raise
+    _resample_to_3m = _resample_missing("_resample_to_3m")
+    _resample_to_5m = _resample_missing("_resample_to_5m")
+    _resample_to_15m = _resample_missing("_resample_to_15m")
 from trading_corp.agents.strategies.bitunix_confluence import (  # noqa: E402
     AlertEvent,
     BitUnixConfluenceConfig,
@@ -64,11 +84,29 @@ from trading_corp.agents.strategies.bitunix_confluence import (  # noqa: E402
     evaluate_confluence_futures,
     filter_live_alerts_with_dedupe,
 )
-from trading_corp.agents.strategies.bitunix_confluence_gate import (  # noqa: E402
-    ConfluenceGateConfig,
-    GateDecision,
-    evaluate_confluence_gate,
-)
+# PRE-EXISTING BREAKAGE (surfaced 2026-06-14, filed BACKLOG): the whole FIVE-FACTOR
+# gate machinery is absent from git — `bitunix_confluence_gate` (module) and
+# `bitunix_price_context.build_gate_inputs` are imported but defined NOWHERE in the
+# repo (prod-vs-git drift; same class as the _resample_3m/5m/15m gap above). Guarded
+# so the PA + bybit_hybrid path (which never touches the 5f machinery) imports + runs;
+# the five_factor arm stays broken-but-LOUD.
+try:
+    from trading_corp.agents.strategies.bitunix_confluence_gate import (  # noqa: E402
+        ConfluenceGateConfig,
+        GateDecision,
+        evaluate_confluence_gate,
+    )
+except ImportError:
+    class ConfluenceGateConfig:  # type: ignore[no-redef]
+        def __init__(self, *a, **k):
+            raise NotImplementedError(
+                "bitunix_confluence_gate is absent from the repo (pre-existing "
+                "breakage; see BACKLOG 2026-06-14). The five_factor arm is unavailable; "
+                "use --gate pa_validation (the redeem-cap engine is PA-based)."
+            )
+    GateDecision = None  # type: ignore[assignment]
+    def evaluate_confluence_gate(*a, **k):  # type: ignore[misc]
+        raise NotImplementedError("bitunix_confluence_gate absent — see BACKLOG 2026-06-14.")
 from trading_corp.agents.strategies.bitunix_pa_validation import (  # noqa: E402
     PAValidationConfig,
     PAValidationDecision,
@@ -77,9 +115,28 @@ from trading_corp.agents.strategies.bitunix_pa_validation import (  # noqa: E402
 from trading_corp.agents.strategies.btc_accumulator import (  # noqa: E402
     PriceContext,
 )
-from trading_corp.data.bitunix_price_context import (  # noqa: E402
-    build_gate_inputs,
+try:
+    from trading_corp.data.bitunix_price_context import (  # noqa: E402
+        build_gate_inputs,
+    )
+except ImportError:
+    def build_gate_inputs(*a, **k):  # type: ignore[misc]
+        raise NotImplementedError(
+            "build_gate_inputs is absent from bitunix_price_context (pre-existing "
+            "breakage; see BACKLOG 2026-06-14). Five_factor arm only; PA path unaffected."
+        )
+# PA-redeem-cap engine graft (2026-06-14): the REAL v2 trade-plan + fee gate,
+# plus swing/HTF-level/ATR-14 recompute (mirrors observer._build_proposal_v2),
+# plus the entry-timing harness bar-walk. Reused in run_redeem_cap_backtest below.
+from trading_corp.agents.strategies.trade_plan import (  # noqa: E402
+    FeeConfig,
+    StrategyConfig,
+    build_trade_plan,
 )
+from trading_corp.agents.strategies.swing import get_recent_swing  # noqa: E402
+from trading_corp.agents.strategies.levels import get_htf_levels  # noqa: E402
+from trading_corp.data.live_bar_cache import Bar as _LBar  # noqa: E402
+from trading_corp.data.live_bar_cache import LiveBarCache  # noqa: E402
 
 
 log = logging.getLogger("backtest_bitunix_confluence")
@@ -1227,6 +1284,386 @@ def _write_comparison_report(
     return output_path
 
 
+# ════════════════════════════════════════════════════════════════════════
+# PA-REDEEM-CAP ENGINE (2026-06-14, branch bitunix-redeem-cap-backtest-tooling)
+# EXTENDS this backtest — reuses its corpus loader + evaluate_confluence_futures
+# + evaluate_pa_validation + build_price_context — and adds:
+#   (1) v2 economics: the REAL build_trade_plan (3-leg + fee gate) with
+#       swing/HTF-level/ATR-14 recomputed from the 3m corpus (mirrors
+#       observer._build_proposal_v2), plus the entry-timing harness bar-walk
+#       (SL-first tie, ordered TP fills, BE-after-TP1 / TP1-after-TP2 ratchet)
+#       and net-of-cost at VIP3 taker 0.09%rt / maker 0.064%rt. This REPLACES
+#       the single-TP fixed-ATR open_trade/resolve_trade for the redeem arms.
+#   (2) the PA-REDEEM loop with a --redeem-cap knob (the mechanism this test
+#       varies): on a PA-reject, re-evaluate score+PA per subsequent 3m bar up
+#       to cap N (mirrors observer.run_pa_redeem_loop: re-run until PA passes
+#       OR score decays to SKIP OR cap exhausted) and FIRE AT THE PASS-BAR with
+#       the late entry priced at the FIRE bar (NOT the stale signal price — the
+#       entry-timing report showed stale pricing overstates redeem economics).
+#       cap 0 = no-redeem; 1 = cap@1bar; REDEEM_CAP_CURRENT = current (decay-bounded).
+# Decision metric = NET-OF-COST EXPECTANCY PER FIRE (never fire-rate). Fires are
+# walked independently (per-fire expectancy = the §4 metric), NOT compounded into
+# an equity curve; one-open-at-a-time portfolio effects are out of scope here.
+# NOT a new engine; NOT the et/fg harnesses reused whole — the v2 walk is grafted
+# onto this file's corpus/gate loop.
+# ════════════════════════════════════════════════════════════════════════
+
+_SCFG = StrategyConfig()
+_FEES_TK = FeeConfig()                       # taker exits (prod): 0.00090 round-trip
+_FEES_MK = FeeConfig(tp_is_maker=True)       # maker exits:        0.00064 round-trip
+_RT_TK = _FEES_TK.round_trip_cost_pct()
+_RT_MK = _FEES_MK.round_trip_cost_pct()
+REDEEM_CAP_CURRENT = 30                       # "current" cap = 30 3m bars (90 min). Covers
+#  the observed max bars_waited=25 from the entry-timing analysis; in prod score-decay
+#  (Tier.SKIP) usually breaks the redeem far sooner. Bounds the per-fire redeem walk for
+#  tractable runs (raise for a fuller §4 run if score-decay is rare on the corpus).
+
+
+def _bars_to_objs(bars_3m: list[dict]) -> list:
+    out = []
+    for b in bars_3m:
+        ts = b["ts"]
+        ms = int(ts.timestamp() * 1000) if isinstance(ts, datetime) else int(ts)
+        out.append(_LBar(ts_ms=ms, open=float(b["open"]), high=float(b["high"]),
+                         low=float(b["low"]), close=float(b["close"]),
+                         volume=float(b.get("volume", 0.0) or 0.0)))
+    return out
+
+
+def _bar_idx_at(bar_objs: list, ts: datetime) -> int:
+    """Index of the last 3m bar with ts_ms <= ts (the bar in force at ts)."""
+    ms = int(ts.timestamp() * 1000)
+    lo, hi, ans = 0, len(bar_objs) - 1, -1
+    while lo <= hi:
+        m = (lo + hi) // 2
+        if bar_objs[m].ts_ms <= ms:
+            ans = m; lo = m + 1
+        else:
+            hi = m - 1
+    return ans
+
+
+def _atr14_at(bar_objs: list, idx: int) -> float | None:
+    lc = LiveBarCache()
+    lc.bars = bar_objs[max(0, idx - 59): idx + 1]
+    return lc.get_atr(14)
+
+
+def build_v2_plan(side: str, entry: float, bar_objs: list, idx: int):
+    """Real v2 3-leg plan via the strategy's OWN build_trade_plan, with swings /
+    HTF levels / ATR-14 recomputed from the 3m corpus as-of bar `idx` (mirrors
+    observer._build_proposal_v2). Returns a TradePlan — check `.should_trade`
+    (a fee-gate skip returns should_trade=False with skip_reason set)."""
+    if idx < 0:
+        return None
+    atr = _atr14_at(bar_objs, idx)
+    if atr is None or atr <= 0:
+        atr = entry * ATR_FALLBACK_PCT
+    swl = get_recent_swing(bar_objs, idx, side="low", n=_SCFG.swing_n,
+                           max_lookback=_SCFG.swing_max_lookback)
+    swh = get_recent_swing(bar_objs, idx, side="high", n=_SCFG.swing_n,
+                           max_lookback=_SCFG.swing_max_lookback)
+    res, sup = get_htf_levels(bar_objs, idx, htf_minutes=_SCFG.htf_minutes,
+                              lookback_bars_htf=_SCFG.htf_lookback_bars, n=_SCFG.swing_n)
+    return build_trade_plan(entry=entry, side=side, atr=atr, swing_low=swl,
+                            swing_high=swh, resistance=res, support=sup,
+                            cfg=_SCFG, fees=_FEES_TK)
+
+
+# ── bar walk grafted from etharness.py (SL-first tie, ordered TP, BE/TP1 ratchet) ──
+def _r_at(side, e, osl, px):
+    risk = abs(e - osl)
+    return 0.0 if risk <= 0 else (1.0 if side == "buy" else -1.0) * (px - e) / risk
+
+
+def _agg_r(side, e, osl, legs, filled, exitpx):
+    tot = ff = 0.0
+    for lg in ("tp1", "tp2", "tp3"):
+        if lg in filled:
+            tot += legs[lg]["r"] * legs[lg]["f"]; ff += legs[lg]["f"]
+    unf = max(0.0, 1.0 - ff)
+    if unf > 0:
+        tot += _r_at(side, e, osl, exitpx) * unf
+    return tot
+
+
+def _ratchet_sl(side, e, osl, csl, filled, legs):
+    f = set(filled)
+    if "tp1" not in f:
+        return csl
+    if "tp2" not in f:
+        return e if ((side == "buy" and e > csl) or (side == "sell" and e < csl)) else csl
+    c = legs["tp1"]["px"]
+    return c if ((side == "buy" and c > csl) or (side == "sell" and c < csl)) else csl
+
+
+def walk_v2(side, entry, legs, bar_objs, start_idx, max_bars=480):
+    """legs = {"_sl": float, "tp1": {"px","r","f"}, ...}. Returns
+    (outcome, gross_r, n_ambiguous, filled_legs)."""
+    osl = legs["_sl"]
+    filled, csl, amb = [], osl, 0
+    tgt = {lg: legs[lg]["px"] for lg in ("tp1", "tp2", "tp3")}
+    end = min(len(bar_objs), start_idx + max_bars)
+    if start_idx < 0 or start_idx >= len(bar_objs):
+        return ("no_bars", None, 0, [])
+    for idx in range(start_idx, end):
+        hi, lo = bar_objs[idx].high, bar_objs[idx].low
+        sl = (side == "buy" and lo <= csl) or (side == "sell" and hi >= csl)
+        hit = []
+        for lg in ("tp1", "tp2", "tp3"):
+            if lg in filled:
+                continue
+            t = tgt[lg]
+            if (side == "buy" and hi >= t) or (side == "sell" and lo <= t):
+                hit.append(lg)
+            else:
+                break
+        if sl and hit:
+            amb += 1
+        if sl:
+            r = _agg_r(side, entry, osl, legs, filled, csl)
+            return ("win" if r > 0 else "loss", r, amb, list(filled))
+        for lg in hit:
+            filled.append(lg); csl = _ratchet_sl(side, entry, osl, csl, filled, legs)
+        if "tp3" in filled:
+            return ("win", _agg_r(side, entry, osl, legs, filled, tgt["tp3"]), amb, list(filled))
+    return ("open", None, amb, list(filled))
+
+
+def _plan_to_legs(tp, entry: float) -> dict:
+    """TradePlan (3-leg) → {_sl, tp1:{px,r,f}, ...} for walk_v2."""
+    rpu = tp.risk_per_unit
+    out = {"_sl": tp.stop_loss}
+    for lg, px, f in (("tp1", tp.tp1, tp.tp1_qty_fraction),
+                      ("tp2", tp.tp2, tp.tp2_qty_fraction),
+                      ("tp3", tp.tp3, tp.tp3_qty_fraction)):
+        out[lg] = {"px": px, "r": abs(px - entry) / rpu, "f": f}
+    return out
+
+
+@dataclass
+class RedeemFire:
+    ts: str
+    side: str
+    redeemed: bool
+    bars_waited: int
+    entry: float
+    risk: float
+    gross_r: float | None
+    net_r_taker: float | None
+    net_r_maker: float | None
+    outcome: str               # win | loss | open | plan_skip
+    filled: str
+    n_amb: int
+    skip_reason: str | None = None
+
+
+def _simulate_redeem(*, config, pa_config, structure_tf, bars, bars_4h, bars_1h,
+                     bar_objs, reject_idx, cap, sorted_alerts,
+                     last_fire_ts_buy, last_fire_ts_sell):
+    """Mirror observer.run_pa_redeem_loop: re-evaluate score+PA on each
+    subsequent 3m bar up to `cap`. Returns (fire_idx, fire_ts, fire_price,
+    bars_waited, side) on a redeem PASS, else None (score-decay or cap)."""
+    for k in range(1, cap + 1):
+        fidx = reject_idx + k
+        if fidx >= len(bar_objs):
+            return None
+        ts_k = datetime.fromtimestamp(bar_objs[fidx].ts_ms / 1000, tz=timezone.utc)
+        ctx_k = build_price_context(bars, ts_k, ctx_config(config),
+                                    bars_4h=bars_4h, bars_1h=bars_1h)
+        if ctx_k is None:
+            continue
+        live_k = filter_live_alerts_with_dedupe(sorted_alerts, config, ts_k)
+        v_k = evaluate_confluence_futures(
+            live_alerts=live_k, price_ctx=ctx_k, config=config, now=ts_k,
+            last_fire_ts_buy=last_fire_ts_buy, last_fire_ts_sell=last_fire_ts_sell,
+        )
+        if v_k.tier == Tier.SKIP:
+            return None                       # score decayed → redeem clears (prod parity)
+        side_k = "buy" if v_k.side == Side.BUY else "sell"
+        pa_ctx_k = ctx_k
+        if structure_tf == "1h":
+            from dataclasses import replace
+            pa_ctx_k = replace(ctx_k, higher_highs_4h=ctx_k.higher_highs_1h,
+                               lower_lows_4h=ctx_k.lower_lows_1h)
+        pa_k = evaluate_pa_validation(side=side_k, price_ctx=pa_ctx_k, config=pa_config)
+        if pa_k.decision != PAValidationDecision.REJECT:
+            return (fidx, ts_k, bar_objs[fidx].close, k, side_k)
+    return None
+
+
+def run_redeem_cap_backtest(*, alerts, bars, config, pa_config, redeem_cap,
+                            structure_tf="4h", arm_name=""):
+    """v2-economics + PA-redeem-cap engine. `bars` is the 3m series (= bars in
+    bybit_hybrid mode). redeem_cap: 0=no-redeem, N=cap@N bars, REDEEM_CAP_CURRENT
+    =current. Returns (fires, summary_dict). Decision metric = net-of-cost
+    expectancy per fire."""
+    if pa_config is None:
+        pa_config = PAValidationConfig(
+            enabled=True, require_all=True,
+            validators=("vwap_alignment", "volume_confirmation", "structure_alignment"),
+            rush_fall_enabled=True,
+            reject_buy_on_60m_drop_pct=5.0, reject_sell_on_60m_rise_pct=5.0,
+        )
+    bar_objs = _bars_to_objs(bars)
+    bars_4h = _resample_to_4h(bars)
+    bars_1h = _resample_to_1h(bars)
+    sorted_alerts = sorted(alerts, key=lambda a: a.ts)
+
+    fires: list[RedeemFire] = []
+    last_fire_ts_buy: datetime | None = None
+    last_fire_ts_sell: datetime | None = None
+    n_score_fire = n_pa_pass = n_pa_reject = 0
+    n_first_pass = n_redeem_fire = n_redeem_drop = n_plan_skip = 0
+
+    def _open(side: str, fire_idx: int, entry: float, redeemed: bool, bars_waited: int):
+        nonlocal last_fire_ts_buy, last_fire_ts_sell, n_plan_skip
+        tp = build_v2_plan(side, entry, bar_objs, fire_idx)
+        ts_iso = datetime.fromtimestamp(
+            bar_objs[fire_idx].ts_ms / 1000, tz=timezone.utc).isoformat()
+        if tp is None:
+            return
+        if not tp.should_trade:
+            n_plan_skip += 1
+            fires.append(RedeemFire(
+                ts=ts_iso, side=side, redeemed=redeemed, bars_waited=bars_waited,
+                entry=entry, risk=0.0, gross_r=None, net_r_taker=None,
+                net_r_maker=None, outcome="plan_skip", filled="", n_amb=0,
+                skip_reason=tp.skip_reason))
+            return
+        legs = _plan_to_legs(tp, entry)
+        o, gr, amb, fl = walk_v2(side, entry, legs, bar_objs, fire_idx + 1)
+        risk = tp.risk_per_unit
+        fires.append(RedeemFire(
+            ts=ts_iso, side=side, redeemed=redeemed, bars_waited=bars_waited,
+            entry=entry, risk=risk, gross_r=gr,
+            net_r_taker=(gr - _RT_TK * entry / risk) if gr is not None else None,
+            net_r_maker=(gr - _RT_MK * entry / risk) if gr is not None else None,
+            outcome=o, filled=",".join(fl), n_amb=amb))
+        if side == "buy":
+            last_fire_ts_buy = datetime.fromisoformat(ts_iso)
+        else:
+            last_fire_ts_sell = datetime.fromisoformat(ts_iso)
+
+    for a in sorted_alerts:
+        ctx = build_price_context(bars, a.ts, ctx_config(config),
+                                  bars_4h=bars_4h, bars_1h=bars_1h)
+        if ctx is None:
+            continue
+        live = filter_live_alerts_with_dedupe(sorted_alerts, config, a.ts)
+        verdict = evaluate_confluence_futures(
+            live_alerts=live, price_ctx=ctx, config=config, now=a.ts,
+            last_fire_ts_buy=last_fire_ts_buy, last_fire_ts_sell=last_fire_ts_sell)
+        if verdict.cooldown_blocked or verdict.tier == Tier.SKIP:
+            continue
+        n_score_fire += 1
+        side_str = "buy" if verdict.side == Side.BUY else "sell"
+        pa_ctx = ctx
+        if structure_tf == "1h":
+            from dataclasses import replace
+            pa_ctx = replace(ctx, higher_highs_4h=ctx.higher_highs_1h,
+                             lower_lows_4h=ctx.lower_lows_1h)
+        pa_result = evaluate_pa_validation(side=side_str, price_ctx=pa_ctx, config=pa_config)
+        alert_idx = _bar_idx_at(bar_objs, a.ts)
+        if alert_idx < 0:
+            continue
+        if pa_result.decision != PAValidationDecision.REJECT:
+            # first-pass fire — enter at the signal/alert bar (no latency)
+            n_pa_pass += 1
+            n_first_pass += 1
+            _open(side_str, alert_idx, bar_objs[alert_idx].close, redeemed=False, bars_waited=0)
+            continue
+        # PA reject
+        n_pa_reject += 1
+        if redeem_cap <= 0:
+            n_redeem_drop += 1                # no-redeem arm: PA-reject drops
+            continue
+        rd = _simulate_redeem(
+            config=config, pa_config=pa_config, structure_tf=structure_tf,
+            bars=bars, bars_4h=bars_4h, bars_1h=bars_1h, bar_objs=bar_objs,
+            reject_idx=alert_idx, cap=redeem_cap, sorted_alerts=sorted_alerts,
+            last_fire_ts_buy=last_fire_ts_buy, last_fire_ts_sell=last_fire_ts_sell)
+        if rd is None:
+            n_redeem_drop += 1                # score-decay or cap exhausted → abandon
+            continue
+        fire_idx, _ts_k, fire_px, bars_waited, side_k = rd
+        n_redeem_fire += 1
+        _open(side_k, fire_idx, fire_px, redeemed=True, bars_waited=bars_waited)
+
+    walked = [f for f in fires if f.gross_r is not None]
+    redeem_walked = [f for f in walked if f.redeemed]
+
+    def _mean(xs):
+        return (sum(xs) / len(xs)) if xs else 0.0
+    summary = {
+        "arm_name": arm_name,
+        "redeem_cap": redeem_cap,
+        "n_score_fire": n_score_fire,
+        "n_pa_pass": n_pa_pass,
+        "n_pa_reject": n_pa_reject,
+        "n_first_pass_fire": n_first_pass,
+        "n_redeem_fire": n_redeem_fire,
+        "n_redeem_drop": n_redeem_drop,
+        "n_plan_skip": n_plan_skip,
+        "n_walked": len(walked),
+        # DECISION METRIC — net-of-cost expectancy per fire (never fire-rate):
+        "exp_gross_per_fire": _mean([f.gross_r for f in walked]),
+        "exp_net_taker_per_fire": _mean([f.net_r_taker for f in walked]),
+        "exp_net_maker_per_fire": _mean([f.net_r_maker for f in walked]),
+        "redeem_exp_net_taker": _mean([f.net_r_taker for f in redeem_walked]),
+        "redeem_exp_net_maker": _mean([f.net_r_maker for f in redeem_walked]),
+        "max_bars_waited": max([f.bars_waited for f in fires], default=0),
+    }
+    return fires, summary
+
+
+def _write_redeem_comparison(arms: list[dict], output_path: Path, *,
+                             start, end) -> Path:
+    """Write the three-arm comparison. EXPLICITLY engine validation, NOT a §4 verdict."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for s in arms:
+        rows.append(
+            f"| {s['arm_name']} | {s['n_first_pass_fire']} | {s['n_redeem_fire']} | "
+            f"{s['n_redeem_drop']} | {s['n_plan_skip']} | {s['n_walked']} | "
+            f"{s['exp_gross_per_fire']:+.4f} | **{s['exp_net_taker_per_fire']:+.4f}** | "
+            f"{s['exp_net_maker_per_fire']:+.4f} | {s['redeem_exp_net_taker']:+.4f} |")
+    md = [
+        "# BitUnix PA-redeem-cap backtest — ENGINE VALIDATION (NOT a §4 verdict)",
+        "",
+        "> **THIS IS ENGINE VALIDATION / A SMOKE RUN — NOT THE §4 REDEEM-CAP VERDICT.**",
+        "> The corpus here (`btc_scalping.db` bars_3m) is only a modest ~1.9x vol",
+        "> gradient (Mar→May 2026); a defensible §4 verdict REQUIRES a high-vol 3m",
+        "> regime (separate data-ingest task) for regime robustness. Do not cite these",
+        "> numbers as the redeem-cap decision.",
+        "",
+        f"Window: {start.date()} → {end.date()}  ·  3m corpus  ·  VIP3 taker 0.09%rt / maker 0.064%rt",
+        "",
+        "Decision metric = **net-of-cost expectancy per fire** (NEVER fire-rate).",
+        "",
+        "| arm | first-pass | redeem | dropped | plan-skip | walked | gross/fire | **net-taker/fire** | net-maker/fire | redeem net-taker |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        *rows,
+        "",
+        "## Arms",
+        "- **no-redeem** (`--redeem-cap 0`): PA-reject drops; no deferred entry.",
+        "- **cap@1bar** (`--redeem-cap 1`): re-evaluate PA for 1 bar; fire-or-abandon.",
+        f"- **current** (`--redeem-cap {REDEEM_CAP_CURRENT}`): re-evaluate until PA pass / score-decay / cap.",
+        "",
+        "## Methodology",
+        "- v2 economics: the real `build_trade_plan` (3-leg + fee gate) + the entry-timing",
+        "  harness bar-walk (SL-first tie, ordered TP, BE-after-TP1 / TP1-after-TP2 ratchet).",
+        "- Redeem fires priced at the **FIRE bar** (not the stale signal price).",
+        "- Per-fire independent walks; net-of-cost expectancy per fire is the metric",
+        "  (not a compounded equity curve; one-open-at-a-time effects out of scope).",
+        "- Cooldown threaded via last_fire_ts; redeem look-ahead introduces minor",
+        "  ordering imperfection vs prod — acceptable for engine validation.",
+        "",
+    ]
+    output_path.write_text("\n".join(md), encoding="utf-8")
+    return output_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start", required=True, help="UTC start date YYYY-MM-DD")
@@ -1294,6 +1731,17 @@ def main() -> None:
              "via scripts/ingest_bitunix_1m_to_db.py) for resolve_trade only; "
              "entry-price context still uses Bybit 3m. Branch A of the v3 "
              "addendum 2026-05-18.",
+    )
+    parser.add_argument(
+        "--redeem-arms", action="store_true",
+        help="PA-redeem-cap ENGINE VALIDATION: run no-redeem / cap@1bar / current "
+             "arms on the 3m corpus (v2 economics, net-of-cost expectancy per fire). "
+             "NOT the §4 verdict (needs high-vol 3m data). Requires bybit_hybrid.",
+    )
+    parser.add_argument(
+        "--redeem-cap", type=int, default=None,
+        help="Single redeem-cap arm with this cap (0=no-redeem, N=cap@N bars, "
+             f"{REDEEM_CAP_CURRENT}=current). Alternative to --redeem-arms.",
     )
     args = parser.parse_args()
 
@@ -1405,6 +1853,40 @@ def main() -> None:
         )
 
     ts_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+    # PA-redeem-cap ENGINE VALIDATION (2026-06-14) — NOT a §4 verdict.
+    if args.redeem_arms or args.redeem_cap is not None:
+        if args.bar_source != "bybit_hybrid":
+            parser.error("--redeem-arms/--redeem-cap require --bar-source bybit_hybrid (3m corpus)")
+        if args.redeem_arms:
+            plan = [("no_redeem", 0), ("cap_1bar", 1), ("current", REDEEM_CAP_CURRENT)]
+        else:
+            plan = [(f"cap_{args.redeem_cap}", args.redeem_cap)]
+        arms = []
+        for label, cap in plan:
+            log.info("redeem-cap arm START: %s (cap=%d)", label, cap)
+            _fires, _sum = run_redeem_cap_backtest(
+                alerts=alerts, bars=bars, config=config, pa_config=None,
+                redeem_cap=cap, structure_tf=args.structure_tf, arm_name=label,
+            )
+            arms.append(_sum)
+            log.info("redeem-cap arm DONE: %s  fires(fp=%d redeem=%d drop=%d skip=%d) "
+                     "walked=%d  net-taker/fire=%+.4f",
+                     label, _sum["n_first_pass_fire"], _sum["n_redeem_fire"],
+                     _sum["n_redeem_drop"], _sum["n_plan_skip"], _sum["n_walked"],
+                     _sum["exp_net_taker_per_fire"])
+        rp = (Path(args.report_path) if args.report_path else
+              _REPO_ROOT / "reports" / f"redeem_cap_engine_validation_{end.date().isoformat()}.md")
+        written = _write_redeem_comparison(arms, rp, start=start, end=end)
+        print("\n=== PA-REDEEM-CAP ENGINE VALIDATION (NOT a §4 verdict — high-vol 3m data pending) ===")
+        for s in arms:
+            print(f"  {s['arm_name']:10} fires(fp={s['n_first_pass_fire']} rd={s['n_redeem_fire']} "
+                  f"drop={s['n_redeem_drop']} skip={s['n_plan_skip']}) walked={s['n_walked']}  "
+                  f"net-taker/fire={s['exp_net_taker_per_fire']:+.4f}  "
+                  f"net-maker/fire={s['exp_net_maker_per_fire']:+.4f}  "
+                  f"max_bw={s['max_bars_waited']}")
+        print(f"  Comparison: {written}")
+        return
 
     if args.gate == "both":
         pa_dir, pa_summary, pa_ledger = _run_one_arm(

@@ -12,6 +12,29 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## P2 — `backtest_bitunix_confluence.py` five_factor/coinbase machinery MISSING from git (prod-vs-git drift)
+
+Surfaced 2026-06-14 during the PA-redeem-cap engine build. `scripts/backtest_bitunix_confluence.py`
+was **unimportable on main `32e7fb4`** (and current main) — it imports + calls THREE things that are
+defined **nowhere in the repo** (only the PA/bybit_hybrid path's deps exist):
+1. `_resample_to_3m` / `_resample_to_5m` / `_resample_to_15m` (from `backtest_btc_accumulator`; only
+   `_resample_to_4h`/`_1h` exist) — used by the **coinbase** bar-source path (~lines 480-482).
+2. `bitunix_confluence_gate` (whole module: `ConfluenceGateConfig`, `GateDecision`,
+   `evaluate_confluence_gate`) — the **five_factor** gate arm.
+3. `bitunix_price_context.build_gate_inputs` — also five_factor.
+
+Consequence: `tests/test_backtest_bitunix_confluence_five_factor.py` was **already RED at collection on
+main** (ImportError) — the "zero-regressions baseline" for that test is broken independent of any new
+work. Almost certainly **prod-vs-git drift** (the five_factor/coinbase machinery shipped to prod but
+the defining modules/functions were never committed; cf. the `sync: catch git up to prod` history).
+
+**Worked around (NOT fixed) on branch `bitunix-redeem-cap-backtest-tooling-2026-06-14`:** the 3 imports
+are `try/except`-guarded so the **PA + bybit_hybrid** path (the redeem-cap engine) imports + runs; the
+five_factor/coinbase arms stay broken-but-LOUD (raise NotImplementedError if used). **Proper repair is
+a separate task** (touches the shared `backtest_btc_accumulator`): recover the missing modules/functions
+from prod, OR delete the dead five_factor/coinbase paths if abandoned. Investigate which.
+
+
 ---
 
 # Priority 1 — Bitunix Futures path to live trading
