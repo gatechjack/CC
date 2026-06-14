@@ -58,6 +58,19 @@ RECONCILER_ACTOR = "bitunix_position_reconciler"
 POSITION_STATE_RECONCILED_KIND = "position_state_reconciled"
 POSITION_STATE_DIVERGENCE_KIND = "position_state_divergence_detected"
 
+# ── P2 auto-book + latch-release (2026-06-14) ───────────────────────────────
+# A bot-owned tracked position that closed broker-side (missing_on_broker,
+# result IS NULL) is auto-booked at the KNOWN stop level, and on a confirmed-
+# clean tick the `_halt_new_orders` latch is released so the engine self-recovers
+# WITHOUT a restart. Quick-fix scope: books at the KNOWN level (slippage-
+# unreconciled ESTIMATE); the accurate signed-fetch-of-real-fill version is a
+# separate BACKLOG item. Both actions require confirmation across TWO consecutive
+# ticks (one empty get_pending_positions can be a transient API error, not a
+# real flat) — the cross-tick memory lives in the audit trail (stays stateless).
+AUTO_BOOK_SERVER_SIDE_CLOSE_KIND = "auto_book_server_side_close"
+AUTO_BOOK_DEFERRED_KIND = "auto_book_deferred"
+POSITION_STATE_HALT_RELEASED_KIND = "position_state_halt_released"
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -474,6 +487,131 @@ def _match_symbol_key(symbol: str) -> str:
         return raw.upper()
 
 
+def _latest_position_state_payload(db_url: str) -> dict[str, Any] | None:
+    """The most recent position-state reconcile audit payload (reconciled OR
+    divergence), parsed. Used to confirm a state across TWO consecutive ticks
+    before auto-booking or releasing the halt — keeps the reconciler stateless
+    (the cross-tick memory lives in the audit trail). None if no prior tick or on
+    read error (callers treat None conservatively = 'not confirmed')."""
+    try:
+        with db.connect(db_url) as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM audit_event "
+                "WHERE actor = ? AND kind IN (?, ?) ORDER BY id DESC LIMIT 1",
+                (RECONCILER_ACTOR, POSITION_STATE_RECONCILED_KIND,
+                 POSITION_STATE_DIVERGENCE_KIND),
+            ).fetchone()
+    except Exception as e:
+        log.warning("reconciler: latest-audit read failed: %s", e)
+        return None
+    if row is None or not row["payload_json"]:
+        return None
+    try:
+        return json.loads(row["payload_json"])
+    except (TypeError, ValueError):
+        return None
+
+
+def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
+    """Auto-book a bot-owned position that closed broker-side, at the KNOWN stop
+    level (the B1 server-side stop). Returns 'booked' | 'deferred' | 'skipped'.
+
+    Determination (stored state ONLY — NO price fetch, per the §4 known-level
+    scope): a broker-side close with `filled_legs` empty can only be the
+    server-side STOP — TPs are bot-side reactive closes that would already be
+    booked, so an empty filled_legs means no TP was reached. → book at
+    stop_price, result='loss'. If a TP leg WAS reached (filled_legs non-empty)
+    the remaining close is ambiguous (deeper TP vs ratcheted stop) → DEFER (leave
+    NULL, flag for manual). Likewise defer if the stop level / entry is missing.
+
+    The booked PnL is `(entry − level) × qty` for a short / `(level − entry) × qty`
+    for a long — a KNOWN-LEVEL ESTIMATE (the real fill slips past the stop; trade 2
+    showed ~138pt), so the row is flagged `result_source='auto_booked_from_stop_level'`,
+    `pnl_basis='known_level_estimate'`, `slippage_unreconciled=true` for later true-up.
+    """
+    try:
+        with db.connect(db_url) as conn:
+            r = conn.execute(
+                "SELECT side, qty, entry_reference_price, stop_price, extra_json "
+                "FROM paper_trade_record WHERE order_id = ? AND result IS NULL",
+                (order_id,),
+            ).fetchone()
+            if r is None:
+                return "skipped"  # vanished or already booked
+            try:
+                extra = json.loads(r["extra_json"]) if r["extra_json"] else {}
+            except (TypeError, ValueError):
+                extra = {}
+            filled_legs = extra.get("filled_legs") or []
+            side = (r["side"] or "").lower()
+            qty = float(r["qty"] or 0.0)
+            entry = r["entry_reference_price"]
+            level = r["stop_price"] if r["stop_price"] is not None \
+                else extra.get("stop_price")
+
+            # ── close-reason determination ─────────────────────────────────
+            if (filled_legs or level is None or float(level) <= 0
+                    or entry is None or qty <= 0):
+                reason = ("partial_tp_ambiguous" if filled_legs
+                          else "no_stop_level_or_entry")
+                conn.execute(
+                    "UPDATE paper_trade_record SET extra_json = "
+                    "json_set(extra_json, '$.autobook_deferred', ?) "
+                    "WHERE order_id = ? AND result IS NULL",
+                    (reason, order_id),
+                )
+                conn.execute(
+                    "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (now, RECONCILER_ACTOR, AUTO_BOOK_DEFERRED_KIND,
+                     json.dumps({"order_id": order_id, "reason": reason,
+                                 "filled_legs": filled_legs})),
+                )
+                return "deferred"
+
+            # ── stop-out auto-book at the KNOWN stop level (estimate) ──────
+            level = float(level)
+            entry = float(entry)
+            pnl = ((entry - level) if side == "sell"
+                   else (level - entry)) * qty
+            mdr = extra.get("max_dollar_risk")
+            try:
+                r_mult = (pnl / float(mdr)) if mdr else None
+            except (TypeError, ValueError, ZeroDivisionError):
+                r_mult = None
+            exit_side = "buy" if side == "sell" else "sell"
+            conn.execute(
+                "UPDATE paper_trade_record SET "
+                "  result = 'loss', result_ts = ?, result_price = ?, "
+                "  actual_pnl_dollars = ?, actual_r_multiple = ?, "
+                "  bars_to_resolution = NULL, "
+                "  extra_json = json_set(extra_json, "
+                "    '$.result_source', 'auto_booked_from_stop_level', "
+                "    '$.pnl_basis', 'known_level_estimate', "
+                "    '$.slippage_unreconciled', json('true'), "
+                "    '$.exit_method', 'server_side_sl_B1', "
+                "    '$.exit_side', ?, '$.autobook_level_type', 'stop', "
+                "    '$.autobook_ts', ?) "
+                "WHERE order_id = ? AND result IS NULL",
+                (now, level, pnl, r_mult, exit_side, now, order_id),
+            )
+            conn.execute(
+                "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                "VALUES (?, ?, ?, ?)",
+                (now, RECONCILER_ACTOR, AUTO_BOOK_SERVER_SIDE_CLOSE_KIND,
+                 json.dumps({"order_id": order_id, "side": side, "entry": entry,
+                             "stop_level": level, "qty": qty,
+                             "pnl_estimate": pnl, "result": "loss",
+                             "pnl_basis": "known_level_estimate",
+                             "slippage_unreconciled": True})),
+            )
+        return "booked"
+    except Exception as e:
+        log.warning("reconciler: auto-book failed for order_id=%s: %s",
+                    order_id, e)
+        return "skipped"
+
+
 async def reconcile_position_state(
     broker: Any,
     db_url: str,
@@ -569,6 +707,31 @@ async def reconcile_position_state(
             broker_side=_broker_side(p.qty),
         ))
 
+    # ── P2 auto-book: a bot-owned position missing on the broker (closed
+    # server-side, result IS NULL) is booked at its KNOWN stop level — but ONLY
+    # when confirmed across two consecutive ticks (a single empty
+    # get_pending_positions can be a transient API error, not a real flat) and on
+    # a real (non-stub) broker. Booked rows drop out of `missing` this tick, so
+    # the audit + halt decision below reflect the post-book state.
+    prev = _latest_position_state_payload(db_url)
+    prev_missing_ids = {
+        m.get("order_id") for m in (prev.get("missing_on_broker") or [])
+    } if prev else set()
+    prev_was_clean = bool(prev) and (
+        prev.get("missing_on_broker_count", 1) == 0
+        and prev.get("orphan_on_broker_count", 1) == 0
+    )
+    broker_live = not getattr(broker, "_stub", False)
+    now = _utc_now_iso()
+    if broker_live and missing and halt_on_divergence:
+        still_missing: list[PositionStateMissingOnBroker] = []
+        for m in missing:
+            if m.order_id in prev_missing_ids:  # 2 consecutive ticks → confirmed
+                if _autobook_missing_close(db_url, m.order_id, now) == "booked":
+                    continue  # resolved this tick — drop from missing
+            still_missing.append(m)
+        missing = still_missing
+
     result = PositionStateReconciliation(
         matches=matches,
         missing_on_broker=missing,
@@ -614,6 +777,42 @@ async def reconcile_position_state(
         except Exception as e:
             log.warning(
                 "reconcile_position_state: halt-set failed: %s", e,
+            )
+    elif ((not result.has_divergence) and prev_was_clean and broker_live
+          and halt_on_divergence):
+        # ── latch-release (2026-06-14): this tick is clean AND the prior tick
+        # was clean (two consecutive) → books reconciled + broker confirmed free
+        # of divergence → release `_halt_new_orders` so the engine self-recovers
+        # WITHOUT a restart. A genuine (or transient-hidden) orphan surfaces as
+        # divergence → this branch never runs into a real unowned position. Stub
+        # broker → no release (no live trading).
+        try:
+            if getattr(broker, "_halt_new_orders", False):
+                broker._halt_new_orders = False
+                if hasattr(broker, "_halt_reason"):
+                    broker._halt_reason = None
+                try:
+                    with db.connect(db_url) as conn:
+                        conn.execute(
+                            "INSERT INTO audit_event "
+                            "(ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+                            (now, RECONCILER_ACTOR,
+                             POSITION_STATE_HALT_RELEASED_KIND,
+                             json.dumps(
+                                 {"reason": "two_consecutive_clean_ticks"})),
+                        )
+                except Exception as ae:
+                    log.warning(
+                        "reconcile_position_state: halt-release audit "
+                        "failed: %s", ae,
+                    )
+                log.info(
+                    "reconcile_position_state: _halt_new_orders RELEASED "
+                    "(two consecutive clean reconcile ticks)",
+                )
+        except Exception as e:
+            log.warning(
+                "reconcile_position_state: halt-release failed: %s", e,
             )
 
     return result

@@ -81,10 +81,26 @@ operator resolution by design** (Phase 1b §4) — there is no auto-book path. O
 `result` still NULL ~2.5h after the stop (broker flat). Side effect: the unresolved row keeps the P1
 divergence (and its halt-latch) alive indefinitely.
 
-**Fix (NOT done):** add an auto-book path for server-side closes — on a confirmed `missing_on_broker` for a
-live row, fetch the broker exit fill (price/fee/ts) and write `result`/`actual_pnl_dollars`/`exit_fee_usd`
-from broker truth (instead of the place-then-record path), then clear the halt. Until then, server-side-stop
-exits must be operator-booked. Report: `reports/2026-06-14_bitunix_first_fill_closeout.md`.
+**STATUS 2026-06-14 — QUICK FIX BUILT (known-level estimate + latch-release); accurate version PENDING.**
+Branch `bitunix-p2-autobook-latch-release-2026-06-14` (§4 build+test, **NOT deployed**, off main `299b40c`)
+adds, in `reconcile_position_state`: **(a) auto-book** a confirmed `missing_on_broker` bot row (closed
+server-side, `result` NULL) at the KNOWN stop level — `result='loss'`, `result_price=stop_price`, PnL
+`(entry−level)×qty` sign-correct, flagged `result_source='auto_booked_from_stop_level'` /
+`pnl_basis='known_level_estimate'` / `slippage_unreconciled=true`; defers (NULL + `autobook_deferred` flag)
+if a TP leg was reached (ambiguous) or no stop level. **(b) latch-release** — clears `_halt_new_orders` on
+TWO consecutive clean ticks so the engine self-recovers WITHOUT a restart (stays halted on a genuine
+orphan). Both gated on a 2-consecutive-tick confirm (one empty `get_pending_positions` can be a transient
+API error). 11 tests + zero-regression gate.
+
+**PERMANENT FIX (PENDING — supersedes the estimate): auto-book from the REAL server-side fill.** Replace the
+known-level estimate with a **signed broker trade-history query** (e.g. `/api/v1/futures/trade/get_history_trades`,
+keyed on the position's `broker_order_id` / symbol+close-window) → book the EXACT exit `result_price`,
+`actual_pnl_dollars`, and `exit_fee_usd` from broker truth, with `result_source='auto_booked_from_broker_fill'`
+(authoritative; drop the slippage flag). **Motivating example:** trade 2's recorded `stop_price` was 65004.48
+but it actually filled **65142.3 (~138pt / 0.52% slippage)** — the known-level estimate books ≈−0.107 vs the
+real −0.134; the signed-fetch version removes that gap (and captures the exit fee, which the estimate leaves
+unset). This is a signed/public-API call (outside the §4 known-level scope), so it lands separately. Reports:
+`reports/2026-06-14_bitunix_p2_autobook_latch.md`, `reports/2026-06-14_bitunix_first_fill_closeout.md`.
 
 ## P1 — D1/D2 account-drawdown auto-flatten fix: **MERGED + DEPLOYED + LOADED** (deployed 2026-06-13; filed 2026-06-11)
 
