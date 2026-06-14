@@ -54,12 +54,8 @@ Per the engineering philosophy (backup → md5 gate → atomic mv), for each `(s
 7. **Re-verify** prod md5 == `target_md5`.
 → When the kalshi item lands, add its `(file, path, base_md5, target_md5)` row to the script's `FILE_SPECS` and re-run the gate; deploy in the same pass.
 
-### 2c. Side-label confirmation (the one residual P1 grounding item — read-only)
-The P1 side fix treats `SELL/SHORT`→short, `BUY/LONG`→long, and **fail-louds (warns + treats as long) on any other label**. The exact BitUnix position-side label is `"SELL"` by strong inference, not a captured string (the closed position can't be re-read without a signed call). At/after deploy, confirm the real label by EITHER:
-- reading the BitUnix UI/position payload `side` value for any open position, OR
-- watching the first post-deploy live position: it either **matches cleanly** (label ∈ SELL/BUY → handled) or emits `WARNING ... unrecognized side label '<X>'` in the journal (a third convention → extend `_SHORT_POSITION_SIDE_LABELS`/`_LONG_POSITION_SIDE_LABELS` by one line + re-deploy).
-
-The fix is safe either way; this just closes the inference.
+### 2c. Side-label — ✅ RESOLVED (no action needed)
+The BitUnix side convention is **confirmed = Sell/Buy** (not SHORT/LONG), from the first-fill trade history (2026-06-14). The P1 fix's `_SHORT_POSITION_SIDE_LABELS={SELL,SHORT}` / `_LONG_POSITION_SIDE_LABELS={BUY,LONG}` therefore handle the real labels **exactly** — the fail-loud "unrecognized label" path is **dormant**, and **no label-set extension is needed**. The earlier residual "strong inference" item is now grounded. (Post-restart, the first live position will simply match cleanly; if a `WARNING ... unrecognized side label` ever appears it would signal a future venue change — not expected.)
 
 ### 2d. Restart — AFTER deploy, clears the latched halt (NOT instead of)
 `systemctl restart trading-corp` (NOPASSWD). The restart:
@@ -103,25 +99,30 @@ WHERE order_id = '6741f62f-d950-4356-8deb-578f603f8db0'
 ```sql
 UPDATE paper_trade_record
 SET result             = 'loss',
-    result_ts          = '2026-06-14T19:12:00+00:00',  -- ~stop-out; CONFIRM exact broker fill ts (bracketed 19:11:46–19:12:46 by the reconciler)
-    result_price       = 63778.62,                     -- ⚠ DERIVED from PnL; CONFIRM exact exit fill (see DISCREPANCY note)
-    actual_pnl_dollars = -0.04880000,                  -- operator-supplied GROSS price PnL
-    actual_r_multiple  = -0.39906,                     -- DERIVED = actual_pnl_dollars / max_dollar_risk(0.12228668); CONFIRM
+    result_ts          = '2026-06-14T19:12:20+00:00',  -- exchange exit; operator wrote 15:12:20 = EDT(UTC-4); 19:12:20 UTC corroborated by reconciler bracket 19:11:46-19:12:46. CONFIRM tz.
+    result_price       = 63800.1,                      -- BitUnix exit fill (BUY-to-close, SL); ~5pts inside the 63805.34 trigger
+    actual_pnl_dollars = -0.04880000,                  -- BitUnix realized PnL (GROSS; computed on broker qty 0.0004)
+    actual_r_multiple  = -0.39906,                     -- DERIVED = pnl / max_dollar_risk(0.12228668); vs actual-stop-risk ~ -0.96. Optional/confirm.
     bars_to_resolution = NULL,                         -- server-side broker close (not a bar-walk resolution)
     extra_json = json_set(extra_json,
-                   '$.exit_fee_usd',     0.00510400,   -- operator-supplied
-                   '$.result_source',    'operator_manual_booking',
+                   '$.exit_fee_usd',     0.00510400,   -- BitUnix exit fee
+                   '$.exit_side',        'buy',         -- BUY-to-close
                    '$.exit_method',      'server_side_sl_B1',
-                   '$.net_realized_usd', -0.0590)       -- = pnl - entry_fee - exit_fee
+                   '$.result_source',    'operator_manual_booking',
+                   '$.net_realized_usd', -0.0590)       -- = pnl - entry_fee(0.00509424) - exit_fee(0.00510400)
 WHERE order_id = '6741f62f-d950-4356-8deb-578f603f8db0'
   AND result IS NULL;                                  -- idempotency guard: books only if still unbooked
--- EXPECT "1 row(s) modified". Re-run Step 1 after → result='loss', exit_fee 0.005104.
+-- EXPECT "1 row(s) modified". Re-run Step 1 after → result='loss', result_price=63800.1, exit_fee 0.005104.
 ```
 
 **Discipline:** run on a writable connection (NOT `-readonly`); single targeted UPDATE; the `AND result IS NULL` guard makes it idempotent (won't double-book). Confirm Step 1 shows exactly 1 row BEFORE running Step 2.
 
-### ⚠ DISCREPANCY to resolve before booking `result_price`
-Operator PnL −0.04880000 implies an exit fill ≈ **63778.62** (= entry fill 63678.1 + 100.52). That is **below the SL trigger 63805.3397** — a clean stop-at-trigger would be ≈ **−0.0618** (exit 63805.34), not −0.0488. So either the MARK_PRICE stop filled ~26.7 pts better than its trigger, or the −0.0488 is on a different basis. **Operator: confirm the exact exit fill price from the BitUnix trade history and set `result_price` to it** (the −0.0488 PnL is taken as authoritative; `result_price`/`actual_r_multiple` are derived from it and flagged). `actual_pnl_dollars` is GROSS (fees are separate in `extra_json`), matching the schema/`_record_exit_outcome` convention.
+### ✅ Values RESOLVED — exchange-authoritative (BitUnix trade history, 2026-06-14)
+Confirmed exit: fill **63800.1** (BUY-to-close, server-side SL), realized PnL **−0.04880000**, exit fee **0.00510400**, exit ~**19:12:20 UTC**. These reconcile exactly: `(63678.1 − 63800.1) × 0.0004 (broker-truncated qty) = −0.0488` — BitUnix computes realized PnL on its 0.0004 position size; the row's `qty` 0.000485497 is the full requested size. The authoritative **realized dollar PnL −0.0488** is what we book. Exit 63800.1 is ~5 pts inside the 63805.34 trigger → a clean stop (the earlier 63778.62 was a wrong derivation using full qty — superseded).
+- **`result_price` = 63800.1** (authoritative). `actual_pnl_dollars` = −0.04880000 (GROSS price PnL; fees separate in `extra_json`).
+- **`result` = 'loss'** — the schema domain is `win|loss|open|expired` (no `'stopped'`/`'closed'` literal); the SL provenance is kept in `extra_json.exit_method='server_side_sl_B1'`.
+- **⚠ Exit time tz:** operator wrote `15:12:20 UTC`, but that **precedes the 18:24:08 entry** — it is EDT (UTC−4); the UTC value **19:12:20** is booked (corroborated by the reconciler orphan-vanish bracket 19:11:46–19:12:46). **Confirm the tz before running.**
+- `actual_r_multiple` = −0.39906 is DERIVED (`pnl / max_dollar_risk`); the alt basis (vs actual stop-risk) ≈ −0.96 — optional, not operator-supplied.
 
 ---
 
