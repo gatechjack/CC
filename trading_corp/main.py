@@ -3419,6 +3419,7 @@ async def _scheduled_polymarket_copy_trader_loop(
                         "outcome": ext.get("outcome"),
                         "outcome_index": ext.get("outcome_index"),
                         "condition_id": ext.get("condition_id"),
+                        "token_id": ext.get("token_id"),  # E2·1: propagate to audit
                         "whale_wallet": ext.get("whale_wallet"),
                         "whale_user_name": ext.get("whale_user_name"),
                         "whale_entry_price": ext.get("whale_entry_price"),
