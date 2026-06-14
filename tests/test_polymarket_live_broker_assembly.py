@@ -181,7 +181,11 @@ def _secrets():
 
 def test_factory_live_and_selected_returns_live_broker():
     from trading_corp.main import _build_broker_for_division
-    b = _build_broker_for_division(_div(), _secrets(), "LIVE", ["polymarket"])
+    # E2·4: arming live now requires the SLUG in live_divisions too (family-level
+    # selection alone is no longer sufficient — see the E2·4 tests below).
+    b = _build_broker_for_division(
+        _div(), _secrets(), "LIVE", ["polymarket"], {"polymarket_copy_trading"},
+    )
     assert isinstance(b, PolymarketLiveBroker)   # the anti-half-flip: live, not read-only
 
 
@@ -197,6 +201,97 @@ def test_factory_live_but_not_selected_returns_readonly():
     b = _build_broker_for_division(_div(), _secrets(), "LIVE", [])
     assert isinstance(b, PolymarketBroker)
     assert not isinstance(b, PolymarketLiveBroker)
+
+
+# ── E2·4: per-division live-select (--live-divisions) — slug-level anti-half-flip ──
+# A division arms LIVE iff family-live-capable (LIVE + --brokers <family>) AND its
+# slug ∈ --live-divisions. The family check alone is NOT sufficient.
+
+
+def _arb_div():
+    # Same polymarket FAMILY as PCT (_div), different slug — must stay paper.
+    return SimpleNamespace(broker="polymarket", slug="polymarket_arbitrage", account_filter=None)
+
+
+def _readonly(b):
+    return isinstance(b, PolymarketBroker) and not isinstance(b, PolymarketLiveBroker)
+
+
+def test_live_divisions_isolates_pct_live_arb_paper():
+    # CORE property: --live-divisions {polymarket_copy_trading} arms PCT live but
+    # leaves the arb division PAPER — even though both are the SAME polymarket family.
+    from trading_corp.main import _build_broker_for_division
+    live = {"polymarket_copy_trading"}
+    pct = _build_broker_for_division(_div(), _secrets(), "LIVE", ["polymarket"], live)
+    arb = _build_broker_for_division(_arb_div(), _secrets(), "LIVE", ["polymarket"], live)
+    assert isinstance(pct, PolymarketLiveBroker)   # PCT armed live
+    assert _readonly(arb)                          # arb stays paper despite same family
+
+
+def test_no_live_divisions_all_paper_even_with_brokers_polymarket():
+    # LIVE + --brokers polymarket but NO --live-divisions ⇒ everything paper.
+    from trading_corp.main import _build_broker_for_division
+    for ld in (None, set(), frozenset()):
+        b = _build_broker_for_division(_div(), _secrets(), "LIVE", ["polymarket"], ld)
+        assert _readonly(b), f"live_divisions={ld!r} should leave the division paper"
+
+
+def test_family_capable_alone_without_slug_stays_paper():
+    # Family IS live-capable (LIVE + --brokers polymarket) but the slug is NOT listed
+    # ⇒ the family-level path alone does NOT arm the division live (the AND-gate).
+    from trading_corp.main import _build_broker_for_division
+    b = _build_broker_for_division(
+        _div(), _secrets(), "LIVE", ["polymarket"], {"some_other_division"},
+    )
+    assert _readonly(b)
+
+
+def test_slug_not_among_running_divisions_no_effect():
+    # A slug that matches no running division ⇒ no crash, nothing silently armed:
+    # PCT (not listed) stays paper; the ghost slugs simply never match.
+    from trading_corp.main import _build_broker_for_division
+    b = _build_broker_for_division(
+        _div(), _secrets(), "LIVE", ["polymarket"], {"ghost_division", "another_ghost"},
+    )
+    assert _readonly(b)
+
+
+def test_live_division_also_requires_family_selected():
+    # Slug listed but family NOT in --brokers ⇒ still paper (the AND needs both halves).
+    from trading_corp.main import _build_broker_for_division
+    b = _build_broker_for_division(
+        _div(), _secrets(), "LIVE", [], {"polymarket_copy_trading"},
+    )
+    assert _readonly(b)
+
+
+def test_live_division_requires_live_mode():
+    # Slug listed + family listed but mode PAPER ⇒ paper (family_live_capable is False).
+    from trading_corp.main import _build_broker_for_division
+    b = _build_broker_for_division(
+        _div(), _secrets(), "PAPER", ["polymarket"], {"polymarket_copy_trading"},
+    )
+    assert _readonly(b)
+
+
+# ── E2·4: --live-divisions CLI parsing ──────────────────────────────────────
+
+
+def test_parse_live_divisions_comma_space_and_empty():
+    from trading_corp.main import _parse_live_divisions
+    assert _parse_live_divisions([]) == set()
+    assert _parse_live_divisions(None) == set()
+    assert _parse_live_divisions(["a", "b"]) == {"a", "b"}            # space-separated
+    assert _parse_live_divisions(["a,b"]) == {"a", "b"}               # comma-separated
+    assert _parse_live_divisions(["a,b", "c"]) == {"a", "b", "c"}     # mixed
+    assert _parse_live_divisions([" a , ,b "]) == {"a", "b"}          # trims + drops empties
+
+
+def test_cli_live_divisions_flag_default_and_parse():
+    from trading_corp.main import parse_args, _parse_live_divisions
+    assert _parse_live_divisions(parse_args([]).live_divisions) == set()   # opt-in default
+    a = parse_args(["--live-divisions", "polymarket_copy_trading"])
+    assert _parse_live_divisions(a.live_divisions) == {"polymarket_copy_trading"}
 
 
 # ── E1·7: connect() on-chain funded+approved preflight (read-only, mocked) ──

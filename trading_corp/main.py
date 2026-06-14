@@ -147,7 +147,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--brokers", nargs="*", default=[],
                    help="Live brokers to require: any of robinhood coinbase fidelity. "
                         "Phase 2 paper mode ignores this.")
+    p.add_argument("--live-divisions", nargs="*", default=[], dest="live_divisions",
+                   help="Division/strategy SLUGS to arm LIVE (slug-level, e.g. "
+                        "polymarket_copy_trading). E2·4 anti-half-flip: a division goes "
+                        "live ONLY if its slug is listed here AND its family is "
+                        "live-capable (--live + --brokers <family>). Absent/empty ⇒ every "
+                        "division stays PAPER, even under --brokers. Comma- and/or "
+                        "space-separated.")
     return p.parse_args(argv)
+
+
+def _parse_live_divisions(raw) -> set[str]:
+    """Flatten the `--live-divisions` tokens (space- and/or comma-separated) into a
+    set of division slugs. Empty/None ⇒ empty set ⇒ NO division arms live (the
+    opt-in, paper-by-default contract)."""
+    out: set[str] = set()
+    for tok in (raw or []):
+        for slug in str(tok).split(","):
+            slug = slug.strip()
+            if slug:
+                out.add(slug)
+    return out
 
 
 def confirm_live(input_fn=input) -> bool:
@@ -533,11 +553,16 @@ async def run(argv: list[str] | None = None) -> int:
     # Each division gets its own broker handle. Brokers within a family
     # (Robinhood, Fidelity) share the underlying login session — see the
     # broker modules for refcount-based session sharing.
+    # E2·4 — per-division live-select (slug-level anti-half-flip): only slugs in
+    # --live-divisions arm live (and only if their family is also live-capable);
+    # everything else stays paper, even under --brokers <family>.
+    live_divisions = _parse_live_divisions(getattr(args, "live_divisions", None))
     for d in divisions:
         if not d.enabled:
             continue
         broker = _build_broker_for_division(
-            d, secrets, mode, args.brokers, logger_agent=logger_agent,
+            d, secrets, mode, args.brokers, live_divisions,
+            logger_agent=logger_agent,
         )
         if broker is None:
             continue
@@ -1927,6 +1952,7 @@ def _build_broker_for_division(
     secrets,
     mode: str,
     live_brokers: list[str],
+    live_divisions=None,
     *,
     logger_agent=None,
 ):
@@ -1934,7 +1960,8 @@ def _build_broker_for_division(
 
     PAPER mode wraps real read-only brokers in PaperExecutionBroker so
     snapshots are real but fills are simulated. LIVE mode binds the real
-    broker for the listed families only.
+    broker for a division ONLY when it is both family-live-capable AND
+    slug-selected (see the E2·4 gate below).
 
     `logger_agent` is currently consumed only by the BitUnix broker, for the
     REST retry-layer audit (`rest_request_retried`); other adapters ignore it.
@@ -1942,7 +1969,18 @@ def _build_broker_for_division(
     from trading_corp.brokers.coinbase import CoinbaseBroker
 
     family = division.broker
-    is_live_family = (mode == "LIVE" and family in (live_brokers or []))
+    # E2·4 — slug-level anti-half-flip. A division arms LIVE iff BOTH hold:
+    #   (1) its FAMILY is live-capable: mode == LIVE and --brokers lists the family;
+    #   (2) its SLUG is explicitly opted in via --live-divisions.
+    # The family check ALONE is NOT sufficient — without the slug a division stays
+    # PAPER even under `--brokers <family>`. This prevents a whole family flipping
+    # live (e.g. `--brokers polymarket` would otherwise arm the arb division when
+    # only polymarket_copy_trading should go live). Empty/absent live_divisions ⇒
+    # nothing arms live. `is_live_division` is the SOLE live-vs-paper gate below.
+    family_live_capable = (mode == "LIVE" and family in (live_brokers or []))
+    is_live_division = (
+        family_live_capable and division.slug in (live_divisions or set())
+    )
 
     if family == "robinhood":
         if not (secrets.robinhood_username and secrets.robinhood_password):
@@ -1954,7 +1992,7 @@ def _build_broker_for_division(
             mfa_secret=secrets.robinhood_mfa_secret,
             account_filter=division.account_filter or None,
         )
-        if is_live_family:
+        if is_live_division:
             return rh
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(rh, paper)
@@ -1968,7 +2006,7 @@ def _build_broker_for_division(
             password=secrets.fidelity_password,
             target_account=division.account_filter or None,
         )
-        if is_live_family:
+        if is_live_division:
             return fid
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(fid, paper)
@@ -1994,7 +2032,7 @@ def _build_broker_for_division(
             passphrase=passphrase,
             mode=mode_str,
         )
-        if is_live_family:
+        if is_live_division:
             return cb
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(cb, paper)
@@ -2012,7 +2050,7 @@ def _build_broker_for_division(
             api_secret=secrets.bitunix_futures_api_secret,
             logger=logger_agent,
         )
-        if is_live_family:
+        if is_live_division:
             return bx
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(bx, paper)
@@ -2037,7 +2075,7 @@ def _build_broker_for_division(
             )
         pk = wallet.private_key if wallet else None
         funder = wallet.funder_address if wallet else None
-        if is_live_family:
+        if is_live_division:
             from trading_corp.brokers.polymarket_live import PolymarketLiveBroker
             return PolymarketLiveBroker(
                 private_key=pk, funder_address=funder,
@@ -2095,7 +2133,7 @@ def _build_broker_for_division(
                 division.slug, e,
             )
             return None
-        if is_live_family:
+        if is_live_division:
             return tt
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(tt, paper)
