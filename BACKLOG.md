@@ -44,11 +44,11 @@ single-file `bitunix_futures_observer.py` to prod (md5 `21830bf3…710b`, backup
 `execution_mode=paper`; peak self-initialized on first eval → no false flatten; the restart
 also (re)loaded the B1 stop). **15% breaker now LIVE in paper** — see `runbooks/deploy_log.md`
 2026-06-13 entry. **First prerequisite of the path-to-supervised-live sequence**
-(deploy D1 ✅ → HITL removal ✅ **DEPLOYED-TO-DISK 2026-06-13** [[bitunix-hitl-removed-deployed-to-disk]]; B1 real-fill validation **PASSED on first real fill 2026-06-14** (was dropped/accepted-risk; now validated — see `runbooks/deploy_log.md` 2026-06-14 entry) → **NEXT: item-4 non-interactive `--live` go-live**, whose restart loads HITL+D1).
+(deploy D1 ✅ → HITL removal ✅ **DEPLOYED-TO-DISK 2026-06-13** [[bitunix-hitl-removed-deployed-to-disk]]; B1 real-fill validation **PASSED on first real fill 2026-06-14** (was dropped/accepted-risk; now validated — see `runbooks/deploy_log.md` 2026-06-14 entry) → item-4 non-interactive `--live` go-live **DONE 2026-06-13** — the go-live restart loaded HITL+D1).
 Resolves the dead-breaker BLOCKER tracked in
 [[2026-06-11-bitunix-hitl-removal-blocked-dead-drawdown-breaker]] — **NOW RESOLVED**.
 
-## Item 4 — non-interactive durable `--live` authorization: **BUILT + TESTED, UNMERGED** (branch 710e181, 2026-06-13)
+## Item 4 — non-interactive durable `--live` authorization: **DONE — MERGED + DEPLOYED + AUTONOMOUS-LIVE 2026-06-13** (merge bbae4d6)
 
 The systemd service couldn't run live: `--live` required an interactive typed-LIVE
 confirmation (`main.py` `confirm_live`) which EOFErrors under systemd → exit 2 →
@@ -59,14 +59,12 @@ unsetting → paper). Unauthorized non-interactive `--live` **downgrades to PAPE
 `return 2` → no crash-loop). Interactive typed-LIVE unchanged; `assert_live_ready` still
 runs. 15/15 tests + full branch-vs-base zero code regressions.
 
-**STATUS: COMMITTED on branch `710e181`, NOT MERGED, NOT DEPLOYED — the last *code* blocker
-for autonomous live.** Go-live needs, in order, all operator-gated: **(a)** merge `710e181`
-→ main → **(b)** deploy `main.py` (backup→LF→py_compile→md5→atomic-mv, like D1/HITL) →
-**(c) CLAUDE.md invariant #3 edit — HARD PREREQUISITE, operator-run** (classifier blocks
-agent edits; STOP-AND-READ #3 "`--live` requires interactive confirmation" contradicts the
-deployed path) → **(d)** operator go-live restart (systemd unit `--live` +
-`Environment=TC_LIVE_AUTHORIZED=LIVE`, flip `bitunix_futures.execution_mode: live`; that boot
-loads HITL=0 + D1 + Item-4 → autonomous live). Full map: memory
+**STATUS: DONE — MERGED + DEPLOYED + AUTONOMOUS-LIVE 2026-06-13.** All four go-live steps
+completed (operator-run): **(a)** merged `710e181`→main (`bbae4d6`); **(b)** deployed `main.py`
+(md5 `659bbb80`); **(c)** CLAUDE.md invariant #3 rewritten to match the guarded non-interactive
+live path (`199716b`); **(d)** go-live restart 15:36 UTC (`--live --brokers bitunix` +
+`TC_LIVE_AUTHORIZED=LIVE` + `execution_mode: live`; loaded HITL=0 + D1 + Item-4 → autonomous
+live). See `runbooks/deploy_log.md` 2026-06-13 15:36 go-live entry. Full map: memory
 [[bitunix-go-live-sequence-and-item4]]. Accepted residual risks: durable auth resurrects live
 on crash; B1 **VALIDATED on first real fill 2026-06-14** (was the dropped unvalidated-on-real-fill residual risk); taker-fee net-negative.
 
