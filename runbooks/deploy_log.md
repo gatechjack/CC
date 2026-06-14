@@ -116,6 +116,27 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-14 — Bitunix B1 entry-attached server-side stop VALIDATED on first real live fill (closes item-2, was dropped)
+
+**STATE VERB: VALIDATED (operator-observed).** The first real live Bitunix fill since the
+2026-06-13 go-live exercised B1 — `BitunixBroker._build_order_body`'s reduce-only server-side
+catastrophic stop, attached atomically at entry in the same `place_order` (merged `5edf8ea`,
+deployed 2026-06-11, LOADED at the 15:36 UTC go-live restart). Operator confirms B1 attached as
+designed on the real fill — the per-order catastrophic backstop is now PROVEN on a live fill, not
+just in-code / loaded.
+
+**Closes:** item-2 "B1 real-fill validation," previously **DROPPED** as accepted residual risk
+(see this log's 2026-06-13 go-live "Operator-accepted risks" line + the HITL-removal entry). With
+per-order HITL permanently off, B1 is the per-order backstop; it is no longer unvalidated-on-fill.
+
+**Recorded per operator report — no agent prod investigation this session (read-only-SSH policy
+82fda13; scoped to documentation).** Fill-level audit specifics (order_id / symbol / ts /
+triggered-vs-clean-exit) are operator-held; append here if a fuller record is wanted.
+
+**No code, no deploy, no prod change in this entry — documentation only.**
+
+---
+
 ## 2026-06-13 15:36 UTC — Bitunix AUTONOMOUS LIVE — go-live (item-4 durable --live auth + --brokers bitunix + execution_mode:live; HITL=0 + D1 loaded)
 
 **STATE VERB: DEPLOYED + LOADED + LIVE.** Bitunix futures now places real orders autonomously. Restart at **15:36:05 UTC** (new MainPID `2637434`, was `2608222`; `NRestarts=0`) loaded item-4 (main.py), HITL=0 + D1 (observer.py, fresh `.pyc` 15:36:08), and started the process with `--live --brokers bitunix` + `execution_mode: live`. Startup audit: `mode=LIVE`, `live_brokers=["bitunix"]`, `dry_run=false`, `live_authorization=env_authorized`.
