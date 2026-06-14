@@ -1,6 +1,6 @@
 # Strategy Harness Inventory
 
-**Purpose.** What survives the 2026-05-22 kalshi_crypto shelve. The next edge inquiry — Bitunix fusion, a new venue, a new instrument — starts from this inventory, not from scratch. For each component: what it is, where it lives, and what an edge-agnostic next-use looks like.
+**Purpose.** What survives the kalshi_crypto (2026-05-22) and kalshi_sports_arb_observer (2026-06-14) shelves. The next edge inquiry — Bitunix fusion, a new venue, a new instrument — starts from this inventory, not from scratch. For each component: what it is, where it lives, and what an edge-agnostic next-use looks like.
 
 ## Data / execution layer (edge-agnostic, reusable as-is)
 
@@ -51,3 +51,33 @@ Built, additive, harmless. 8 files at `trading_corp/path_logger/` + `infra/syste
 1. **Confirm settlement methodology first** — read the venue's contract spec (primary source, not third-party summaries). Determine point-in-time vs windowed-TWAP vs trimmed-mean vs last-trade. The step that would have saved the 2026-05-22 session from chasing a latency thesis the venue's settlement design structurally rules out.
 2. **Bake EV-at-fill in from line one** — build the dashboard tile and validation gate to require positive mean EV-at-fill on winners as a pass criterion, alongside any WR/PnL display. Not "we'll add it if anomalies appear."
 3. **Fix the audit-join integrity before trusting any verdict** — widen the ±2s VIEW tolerance or use foreign keys. Don't let stray rows under-count fires and silently shift the denominator.
+
+---
+
+## What survives the 2026-06-14 kalshi_sports_arb_observer shelve
+
+Phase-0 sports-arb observer shelved with verdict `SHELVE_LATENCY_THESIS_CLOSED` (no hourly cross-venue
+MLB-ML edge; the 1,274 "positive"/`is_arb` rows over 8,360 obs were artifacts, mean EV-at-fill −$0.375/$10,
+no positive-mean subset). Canonical record: [`reports/2026-06-14_kalshi_sports_arb_observer_shelve.md`](../reports/2026-06-14_kalshi_sports_arb_observer_shelve.md). What carries forward:
+
+- **`the-odds-api` per-book client + Pinnacle opt-in wiring** — `trading_corp/data/odds_api_client.py`.
+  Pinnacle is opt-in via the `bookmakers=` filter (default us-regions response excludes it); the observer's
+  `sharp_book_preference` config knob wires it in. Edge-agnostic; reusable for any sportsbook-line inquiry.
+- **EV-at-fill baked in from line one — and it worked.** Computing EV-at-fill per row from the start is what
+  exposed the non-edge: 15% of rows flagged positive EV / guaranteed-arb, yet the population mean was
+  negative and no clean subset turned positive. A win-rate or raw-positive-count lens would have flattered
+  it. Same lesson as kalshi_crypto: keep EV-at-fill first-class, not an afterthought.
+- **Structural priors — promote to first-class; check BEFORE scoping any cross-venue arb:**
+  - **Calendar asymmetry.** Kalshi opens markets 2–3 days pre-game; sportsbooks post lines ~24h pre-game.
+    The venues overlap only in the final ~24h — the most-efficient, most-arbitraged window. Unfixable by spend.
+  - **Single-feed limit.** One feed cannot separate a real signal from a feed-side quirk (stale quote,
+    partial outage, metadata lag); production shops run 4–10+ feeds. Single-feed positives are leads, not verdicts.
+  - **Hourly-arb prior is low.** A persistent >1h arb on a liquid market would already be harvested; its
+    absence is the base rate, not a test failure. This was the load-bearing caveat for the shelve.
+- **Two prerequisites before this instrument is reused (do NOT reuse without them):**
+  1. **Feed-health alarm.** The division silently flatlined ~10 days when the free quota exhausted (and the
+     key 401'd) while still scanning hourly into a dead feed. A data-collection division needs an alarm that
+     fires when observation rows stop even though scan cycles keep firing.
+  2. **Pre-game-only filter.** The observer logged post-start (in-game) snapshots — a stale Kalshi quote vs
+     live in-game book odds (+1480…+3500) produced phantom "arbs" (23% of the false positives). Filter to
+     `observation_ts < commenced_at` before computing A/B.

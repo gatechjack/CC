@@ -137,6 +137,28 @@ triggered-vs-clean-exit) are operator-held; append here if a fuller record is wa
 
 ---
 
+## 2026-06-14 ~15:45 UTC — kalshi_sports_arb_observer SHELVED (Phase-0 verdict; repo close-out on branch; prod disable PENDING operator)
+
+**STATE VERB: COMMITTED (branch, unmerged) + PROD DISABLE PENDING.** Not a prod deploy — admin close-out plus a pending operator-run config disable.
+
+**Triggered by:** fresh-state diagnostic after an extended unattended gap (operator-approved full close-out, 2026-06-14).
+
+**Verdict:** Phase-0 analyzer routes A=`SHELVE_LATENCY_THESIS_CLOSED` (mean EV-at-fill −$0.375/$10 over 8,360 MLB obs), B=`INCONCLUSIVE_INSTRUMENT_TOO_WEAK` (1h cadence). 1,274 positive/`is_arb` rows hand-verified as artifacts (290 in-game stale-vs-live; ~50-cycle persistence; cleanest pre-game subset mean −$0.328 / 9.3% positive — no positive-mean subset exists). Closed on edge + attention grounds. Canonical record: `reports/2026-06-14_kalshi_sports_arb_observer_shelve.md`.
+
+**Diagnostic facts (read-only SSH):** observer is an agent inside `trading-corp.service` (active, MainPID 2637434, started 2026-06-13 15:36, NRestarts=0) — ALIVE but feed-starved. Last observation 2026-06-04 20:26 UTC; scans still fire hourly (last 2026-06-14 14:40) but `n_observed:0`. the-odds-api free quota exhausted (used 500 / remaining 0) + key `401` since ~06-09. Cost during gap: **$0** (no paid tier).
+
+**Branch (unmerged, off `main` fe0666a):** `kalshi-sports-arb-shelve-2026-06-14`. Commits: shelve report `3b6d78b`, divisions banner `2e13a9e`, harness-inventory `8254432`, config disable `2b78edb`, this deploy_log + BACKLOG entry. **SURFACED FOR REVIEW BEFORE MERGE.**
+
+**Premise correction (NO drift):** the 2026-05-24 cap-bump (50→150) was committed in `2dd12bf` (ancestor of main); prod `config/strategies.yaml` observer block matches repo at 150 (verified by prod file read 2026-06-14). The earlier "uncommitted surgical-sed drift" framing was incorrect — **no drift commit was made.**
+
+**PENDING operator action — prod disable (NOT done by agent, per read-only-SSH policy):** set observer `enabled: false` on prod `config/strategies.yaml` via surgical sed (observer block only, mtime hot-reload, no restart). Streamer handed to operator (`ksarb_disable.sh` + one-line paste). Repo is `enabled: false` (commit `2b78edb`); prod converges when the operator runs the streamer. Until then prod stays `enabled: true` but produces nothing (dead feed); disabling just stops it polling into 401s.
+
+**Revert (if shelve reversed):** repo `enabled: true` + prod sed back to true; observer resumes next cycle **only if** the odds_api key/quota is restored (operator feed action; no spend per standing constraint).
+
+**UPDATE 2026-06-14 20:34 UTC — PROD DISABLE APPLIED (operator-run).** Operator ran `kdis.sh`: prod observer block `enabled: true → false` (1 byte-surgical replacement; backup `config/strategies.yaml.bak-pre-ksarb-disable-2026-06-14`). Verified read-only: prod observer `enabled:false`; last `kalshi_sports_arb_scan` 2026-06-14T19:31:28Z (stays final — disabled cycles return before scanning). **origin/main ↔ prod now in sync on the observer block; shelve FULLY COMPLETE.** Service not restarted by this (hot-reloads next cycle / immediate on the bitunix restart). Stale `# FLIPPED` comment remains on prod — cosmetic, value is `false`.
+
+---
+
 ## 2026-06-13 15:36 UTC — Bitunix AUTONOMOUS LIVE — go-live (item-4 durable --live auth + --brokers bitunix + execution_mode:live; HITL=0 + D1 loaded)
 
 **STATE VERB: DEPLOYED + LOADED + LIVE.** Bitunix futures now places real orders autonomously. Restart at **15:36:05 UTC** (new MainPID `2637434`, was `2608222`; `NRestarts=0`) loaded item-4 (main.py), HITL=0 + D1 (observer.py, fresh `.pyc` 15:36:08), and started the process with `--live --brokers bitunix` + `execution_mode: live`. Startup audit: `mode=LIVE`, `live_brokers=["bitunix"]`, `dry_run=false`, `live_authorization=env_authorized`.
