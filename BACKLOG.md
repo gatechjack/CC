@@ -691,6 +691,25 @@ status on next audit run.
 
 # Other Open Items (not in priority list above)
 
+## P2 (ops) — kalshi_sports_arb_observer SHELVED: run prod disable + merge close-out branch (filed 2026-06-14)
+
+Phase-0 verdict `SHELVE_LATENCY_THESIS_CLOSED` (no hourly cross-venue MLB-ML edge; the 1,274 positive/`is_arb`
+rows over 8,360 obs were artifacts; mean EV-at-fill −$0.375/$10, no positive-mean subset). Division closed on
+edge + attention grounds (feed dead since ~06-04, unnoticed ~10 days). Full record:
+`reports/2026-06-14_kalshi_sports_arb_observer_shelve.md`.
+
+**Repo close-out DONE** on branch `kalshi-sports-arb-shelve-2026-06-14` (off main `fe0666a`, UNMERGED — awaiting
+operator review): shelve report, `docs/divisions.md` SHELVED banner, harness-inventory "what survives" section,
+`config/strategies.yaml` observer `enabled: false`.
+
+**OPEN:**
+- Operator: run the prod disable streamer (`ksarb_disable.sh` on Desktop) — surgical sed `enabled:false` on the
+  prod observer block, mtime hot-reload, no restart — to converge prod with repo.
+- Operator: review + merge the close-out branch to main.
+- No cap drift (2dd12bf already on main; prod matches 150) — no drift commit was needed.
+- If ever revisited: do NOT reuse the instrument without a feed-health alarm + pre-game-only filter
+  (see `runbooks/strategy_harness_inventory.md`). No spend / feed upgrade / cadence change is justified by this corpus.
+
 ## P3 — `TypeError: not all arguments converted during string formatting` ×123 in tastytrade-streamer/starlette logging path (filed 2026-06-10)
 
 Cosmetic `%`-format bug; log lines still emit; zero functional impact on
