@@ -271,6 +271,27 @@ go-live boot is ALREADY filed below as a P3 — not duplicated here.)
 
 ## P1 — Bitunix post-window analysis: silence-window what-if backtest + TP-structure review (filed 2026-06-10, execute after Day-5 close-out 2026-06-14)
 
+**2026-06-14 UPDATE — entry-timing analysis DONE → NEW §4-gated lever: cap PA-redeem.**
+Report `reports/2026-06-14_bitunix_entry_timing_analysis.md` (branch
+`bitunix-entry-timing-analysis-2026-06-14`, commit `bddfd50`, **unmerged**) tested the operator's
+latency theory on the 42 fires over the window:
+- **CONFIRMED — (i) latency, not (ii) threshold-looseness.** Synchronous gate chain is sub-second
+  (0 bars); **PA-redeem is the sole multi-bar latency** (re-evals ~60s, rejects up to 25 bars/75min
+  before passing). **64% of fires redeem-rescued; 40% (17/42) fire ≥1 bar late.** Early(signal)-vs-
+  late(confirmation) entry counterfactual on the redeem cohort: early gross +0.31R / net-taker
+  +0.01R vs **late −0.17R / net-taker −0.47R = +0.48R/trade lost to latency**; 6/17 flip win→loss;
+  median 40% of the signal→TP1 move spent before the fire.
+- **NEW RECOMMENDED LEVER (§4-gated): cap/remove the PA-redeem deferred entry (fire-fast-or-abandon).**
+  Late redeem entries are value-destructive (net-taker −0.47R realized vs non-redeem −0.27R); the
+  early edge is NOT capturable without firing on unconfirmed signals (= a separate, riskier (ii)
+  hypothesis — the full PA-rejected-set early-entry walk, NOT done here). Backtest: `current redeem`
+  vs `cap@1bar` vs `no redeem`, net-of-cost expectancy, late-fill priced at the fire bar (paper
+  books the stale signal price → optimistic).
+- **Caveat / reconciliation with the fee report:** even at ideal early timing the set is net-taker
+  −0.15R overall — latency is necessary-not-sufficient. Two independent drags (fees on tight stops +
+  redeem latency); **neither says "loosen the gates."** Complements
+  `reports/2026-06-14_bitunix_fee_gate_analysis.md` (which tested entry *edge*; HOLD the fee gate).
+
 Two related questions, one session (~3-4h, read-only vs snapshot/prod):
 
 A. WHAT-IF BACKTEST of the 2026-06-02→09 silence window: replay the
