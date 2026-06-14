@@ -12,7 +12,10 @@ The P1 reconciler fix needs a restart to load, and a restart bounces the whole l
 | item | files (live engine) | branch / state |
 |---|---|---|
 | **P1 reconciler fix** | `trading_corp/brokers/bitunix.py`, `trading_corp/agents/divisions/bitunix_position_reconciler.py` | `bitunix-p1-reconciler-fix-2026-06-14` (`8b78da8`) — **reviewed, ready**; 14 new tests + full gate zero-new-regressions |
-| **kalshi-sports-arb disable** ("turn off `kdis.sh`") | _PENDING — being prepared in another session_ | **fold its reviewed file(s) into the same md5-gate/backup/atomic-mv + the single restart.** AWAITING its file list + reviewed status before the batch is final. Likely a `config/strategies.yaml` enable-flag flip and/or an observer/script change — confirm from that session. |
+| **kalshi-sports-arb disable** | `config/strategies.yaml` → `kalshi_sports_arb_observer.enabled: true→false` (branch `kalshi-sports-arb-shelve-2026-06-14` `a5d585d`) | **ALREADY APPLIED on prod** — surgical `sed` (operator `ksarb_disable.sh`), **mtime hot-reload, no restart**; prod line 1645 confirmed `enabled: false` (read-only 2026-06-14). **NOT a restart item; NOT a whole-file deploy** (see Shared-config safety). Remaining kalshi action = **merge its branch** (docs+config close-out; prod already converged). |
+
+### ⚠ Shared-config safety — do NOT whole-file deploy `config/strategies.yaml`
+`strategies.yaml` is multi-division and holds **prod-only state that is NOT in repo `main`**, notably `bitunix_futures.execution_mode: live` (prod line 1022; "config-and-restart, no hot-reload"), set at go-live via a direct prod edit. A whole-file replace from any branch would **revert bitunix to paper** and clobber other prod state. The kalshi disable is therefore applied as a **surgical block-scoped `sed`** (already done), never a file copy — and it is **excluded from `deploy_apply_p1.sh`'s `FILE_SPECS`** (code files only). The P1 batch touches only the two `.py` files; `strategies.yaml` is left untouched, so `execution_mode: live` AND `kalshi …enabled: false` both survive the restart.
 
 ### NOT a deploy (DOCS / ANALYSIS — merge to main, no restart)
 Confirmed by three-dot diff (`git diff main...<branch>`): none touch `trading_corp/` live code — only `BACKLOG.md`, `reports/`, `runbooks/deploy_log.md`, and **repo-root analysis harnesses** (`fgharness.py`, `etharness.py`, `introspect_dbs.py`, `q*.sh/out`) which run locally, not in the engine:
@@ -72,6 +75,7 @@ The fix is safe either way; this just closes the inference.
 3. Audit: bitunix `position_state_reconciled` (CLEAN) rows appear and **`position_state_divergence_detected` STOPS** (the ~60s false-divergence is gone). If a position is open it shows in `matches`; if flat, no divergence.
 4. Not halted: no new `position_state_reconciler_divergence` rows post-restart; a subsequent real fill places (not refused). `execution_mode=live`, broker `paper=False` unchanged.
 5. Confirm the side-label step (2c) resolves on the first live position.
+6. **Config preserved** (the code-only deploy never touched `strategies.yaml`): `bitunix_futures.execution_mode` still `live` (line 1022) AND `kalshi_sports_arb_observer.enabled` still `false` (line 1645; no kalshi scans resume) after the restart re-reads prod config.
 
 ---
 

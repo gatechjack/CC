@@ -16,9 +16,12 @@
 #   3) Every file must print "OK applied". THEN, separately: systemctl restart
 #      trading-corp ; then run the post-restart verification (plan §2e).
 #
-# To co-batch the kalshi-sports-arb disable: append its reviewed row to
-# FILE_SPECS (staged_basename|prod_relpath|expected_base_md5|target_md5), stage
-# its file under /tmp/p1, and re-run — it deploys in the same pass + one restart.
+# The kalshi-sports-arb disable is NOT added here. It is a single
+# `enabled: true->false` flip in config/strategies.yaml done by a SURGICAL SED
+# (operator ksarb_disable.sh, mtime hot-reload) and is ALREADY APPLIED on prod
+# (line 1645 enabled: false). NEVER whole-file deploy strategies.yaml via this
+# script — it would clobber prod-only state (bitunix execution_mode: live,
+# line 1022). FILE_SPECS is for live-engine .py CODE only.
 set -euo pipefail
 
 ROOT=/home/azureuser/trading_corp
@@ -30,7 +33,8 @@ BAK_SUFFIX=.bak-pre-p1reconciler-2026-06-14
 FILE_SPECS=(
   "bitunix.py|trading_corp/brokers/bitunix.py|8a81b30e74a5a38e60752e0c88de8d9e|64d857246a0879c4378e5b3a4185874e"
   "bitunix_position_reconciler.py|trading_corp/agents/divisions/bitunix_position_reconciler.py|bcefc1c0b95a784c35d8e236f86748ed|64f33e76934e754c76437e6ce7d7d290"
-  # "<kalshi staged basename>|<kalshi prod relpath>|<base md5>|<target md5>"   # <- add when reviewed
+  # (NO strategies.yaml here — the kalshi config disable is a surgical hot-reload,
+  #  already applied on prod; whole-file replace would clobber execution_mode: live.)
 )
 
 md5of(){ md5sum "$1" | cut -d' ' -f1; }
