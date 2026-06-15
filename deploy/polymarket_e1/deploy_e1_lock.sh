@@ -38,8 +38,15 @@ echo "-- additive-only check vs installed --"
 "$PY" - <<'PY'
 import re, sys
 from importlib import metadata
+# Scoped, one-time exception — MIRROR of pm_e1_lock_diff.ALLOWED_CHANGES (keep in sync):
+# the E1 lock intentionally DOWNGRADES setuptools 82.0.1 -> 80.10.2 because web3 6.11
+# imports pkg_resources, removed in setuptools 81+ (commit fe0666a). ONLY this exact
+# (name, from, to) is allowed; any other setuptools change (different prod baseline or
+# a different target) is NOT matched, stays in `changed`, and STILL aborts.
+ALLOWED_CHANGES = {("setuptools", "82.0.1", "80.10.2")}
 inst = {d.metadata["Name"].lower().replace("_","-"): d.version for d in metadata.distributions()}
 changed = []
+allowed = []
 new = []
 pat = re.compile(r"^([A-Za-z0-9._-]+)==([^\s;]+)")
 for line in open("/tmp/requirements.lock"):
@@ -53,14 +60,20 @@ for line in open("/tmp/requirements.lock"):
     cur = inst.get(name)
     if cur is None:
         new.append(f"{name}=={ver}")
-    elif cur != ver:
+    elif cur == ver:
+        pass
+    elif (name, cur, ver) in ALLOWED_CHANGES:
+        allowed.append(f"{name}: {cur} -> {ver}")
+    else:
         changed.append(f"{name}: {cur} -> {ver}")
+for a in sorted(allowed):
+    print(f"ALLOWED EXCEPTION (web3 6.11 pkg_resources fix, scoped): {a}")
 if changed:
     print("NON-ADDITIVE — these installed packages would CHANGE:")
     for c in sorted(changed): print("  "+c)
     print(f"({len(new)} new packages would also be added)")
     sys.exit(3)
-print(f"ADDITIVE OK — {len(new)} new packages to add, 0 existing changed:")
+print(f"ADDITIVE OK — {len(new)} new packages to add, {len(allowed)} allowed exception(s), 0 unexpected changes:")
 for n in sorted(new): print("  "+n)
 PY
 echo "additive-only check passed"
