@@ -446,6 +446,13 @@ class BitunixBroker(Broker):
         # ($6,763.94 vs real $3,381.97). The 2026-05-03 reconciliation
         # ("transfer is additive") was incorrect — retracted in memory
         # `trading_corp_bitunix_vision.md`.
+        # Equity-read completeness (the breaker-abstain signal): starts True,
+        # flips False if any stablecoin balance read errors (e.g. 10006) and is
+        # dropped from the sum below -> `equity` is then UNDER-reported. A
+        # position-read error does NOT affect this (positions never enter the
+        # equity sum). Surfaced as AccountSnapshot.equity_complete so the bitunix
+        # drawdown breaker abstains on a partial read instead of false-flattening.
+        equity_complete = True
         total_equity = 0.0
         total_cash = 0.0
         for margin_coin in _STABLE_MARGIN_COINS:
@@ -463,6 +470,10 @@ class BitunixBroker(Broker):
                     "BitUnix account error for %s: code=%s msg=%r",
                     margin_coin, ad.get("code"), ad.get("msg"),
                 )
+                # This coin is dropped from the equity sum -> equity is now
+                # UNDER-reported. Flag the snapshot incomplete so the drawdown
+                # breaker abstains rather than act on a phantom drawdown.
+                equity_complete = False
                 continue
             d = ad.get("data") or {}
             if not d:
@@ -532,6 +543,7 @@ class BitunixBroker(Broker):
             buying_power=cash,
             cash=cash,
             positions=positions,
+            equity_complete=equity_complete,
         )
 
     # ── Snapshot-health primitives (gate (a) sub-item 2, 2026-05-30) ────

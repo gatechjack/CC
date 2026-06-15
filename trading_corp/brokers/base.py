@@ -40,6 +40,15 @@ class AccountSnapshot:
     buying_power: float
     cash: float
     positions: list[Position]
+    # True  => `equity` summed ALL expected balance sources (a trustworthy read).
+    # False => a balance source errored (e.g. a BitUnix 10006 on one stablecoin)
+    #          and was dropped from the sum, so `equity` is UNDER-reported.
+    # Defaults True so single-source brokers (robinhood/tasty/coinbase/polymarket/
+    # kalshi/paper) and the stub are always "complete" with no change. Consumed by
+    # the bitunix drawdown breaker, which ABSTAINS on an incomplete read rather
+    # than act on a phantom (under-reported) drawdown. See
+    # runbooks/2026-06-15_breaker_abstain_on_partial_equity_scoping.md.
+    equity_complete: bool = True
 
 
 class ReadOnlyBroker(ABC):
