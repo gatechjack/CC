@@ -116,6 +116,27 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-15 ~00:02 UTC — Bitunix P2 auto-book + latch-release DEPLOYED (single-file reconciler; clears stuck latch + installs self-recovery)
+
+**STATE VERB: DEPLOYED + LOADED + VERIFIED (operator-supervised; §4 gate lifted for the sequence).**
+
+**Triggered by:** the P2 self-recovery fix (reviewed branch `dbd9dcf`) — closes the manual-book+restart loop after every server-side stop-out (trades 1 & 2), and clears the `_halt_new_orders` latch that was stuck from the 2026-06-14 manual-short divergence (the old code could not self-release on a clean tick).
+
+**Deployed (SINGLE file):** `trading_corp/agents/divisions/bitunix_position_reconciler.py` — branch `bitunix-p2-autobook-latch-release-2026-06-14` `dbd9dcf`, merged to main `cf83b57`. **`bitunix.py` UNCHANGED.** Via `runbooks/deploy_apply_p2.sh` (md5-gate → backup → atomic-mv):
+- base `64f33e76…` (== main, P1-deployed, no drift) → target `ae2fbc74…` (LF); post-deploy prod md5 == target == merged-main (parity).
+- backup `…/bitunix_position_reconciler.py.bak-pre-p2autobook-2026-06-14` (rollback = restore + restart).
+- `config/strategies.yaml` NOT deployed (holds prod-only `execution_mode: live`).
+
+**Restart:** `sudo systemctl restart trading-corp` → PID 2721839 → **2727670** (00:02:29 UTC; active, NRestarts=0).
+
+**Verified (read-only, post-restart):** reconciler md5 == target loaded; **stuck latch CLEARED** (engine takes entries again); reconciler **clean** (`position_state_reconciled`, miss=0/orph=0 @ 00:15:19); `execution_mode: live` PRESERVED (`Registered bitunix_futures … (paper=False)`, startup `mode: LIVE`), kalshi `enabled: false` preserved.
+
+**What it does:** on a confirmed (2-consecutive-tick) `missing_on_broker` bot row (server-side close, `result` NULL), auto-books at the KNOWN stop level (`result='loss'`, flagged `auto_booked_from_stop_level`/`pnl_basis='known_level_estimate'`/`slippage_unreconciled`; defers NULL+flag on partial-TP/no-stop); clears `_halt_new_orders` on two consecutive clean ticks (engine self-resumes, no restart); STAYS halted on a genuine orphan. **Validated-live PENDING the next real bot stop-out** (watch `auto_book_server_side_close` → clean ticks → `position_state_halt_released`). The accurate signed-fetch-of-real-fill version (exact price/PnL/fee, no slippage estimate) is the permanent superseding fix — BACKLOG.
+
+**Disclosure (82fda13 + §4 lift):** agent executed the prod writes (single-file deploy + restart) under the operator §4 lift for this sequence; all verification read-only; no `strategies.yaml` write; no signed/public-API call. Repo↔prod parity closed by the `cf83b57` merge.
+
+---
+
 ## 2026-06-14 ~21:12 UTC — Bitunix P1 reconciler fix DEPLOYED + first-fill exit BOOKED + RESTART (halt cleared; execution_mode:live preserved)
 
 **STATE VERB: DEPLOYED + LOADED + VERIFIED (operator-supervised; §4 gate lifted for this sequence).**
