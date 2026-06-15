@@ -104,5 +104,11 @@ needed). If it already reads 80.10.2, CHANGED=0 and no handling is needed.
   doesn't touch that path).
 
 ## Out of scope (operator-gated)
-- 0.3 `--require-hashes` smoke — off-prod throwaway venv, against the **corrected** lock (`a47fc93e…`).
+- 0.3 `--require-hashes` smoke — **drafted** as `deploy/polymarket_e1/smoke_e1_lock.sh` (ready to run),
+  but EXECUTION is operator-only: the lock is hash-pinned for `x86_64-linux / py3.12` (lock header), so it
+  can't run on the agent's Windows/py3.14 box, and the only linux box in reach is prod (agent SSH is
+  read-only — no venv-create / pip-install access). Operator runs it on prod-in-a-scratch-dir or a
+  throwaway linux box: `bash smoke_e1_lock.sh [lock]` — fresh empty venv, hashed install, asserts the 4 E1
+  pkgs + setuptools 80.10.2, then imports web3+pkg_resources (the proof the downgrade fixes the blocker),
+  tears down. Touches only an mktemp scratch dir; never the prod venv/service.
 - The install, the single restart, the live flip, and merging this branch. All §4 operator steps.
