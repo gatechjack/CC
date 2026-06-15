@@ -68,6 +68,17 @@ kalshi:
 
 # Per-strategy overrides — leave empty to inherit `global`.
 overrides:
+  # TEMP (2026-06-15, low-balance live testing): the bitunix account holds only
+  # ~$265 of test funds, so the global 15% account-drawdown auto-flatten trips on
+  # normal small-balance swings — a $64 manual-trade loss = 19.5% DD from the
+  # peak HWM, which rejected live entries + fired a (no-op, flat) flatten. Relaxed
+  # to 99% so the breaker only acts on a near-total wipe while testing. The DD cap
+  # is read per-strategy at agents/risk.py:176 (params.get('per_account_max_drawdown_pct')),
+  # so this targets ONLY bitunix_futures; all other divisions keep the global 15%.
+  # Hot-reloads on mtime (no restart). REVERT (delete this override -> inherits the
+  # global 15%) when the account is funded to ~$15k and the rule is meant to bite.
+  bitunix_futures:
+    per_account_max_drawdown_pct: 0.99
   fidelity_options: {}
   crypto_scalper:
     per_trade_risk_pct: 0.005        # scalper trades smaller per trade, higher frequency
