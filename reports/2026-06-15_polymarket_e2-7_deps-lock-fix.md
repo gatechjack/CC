@@ -103,12 +103,31 @@ needed). If it already reads 80.10.2, CHANGED=0 and no handling is needed.
   are not on this branch; cherry-pick/merge separately if you want them on main (no conflict — this branch
   doesn't touch that path).
 
-## Out of scope (operator-gated)
-- 0.3 `--require-hashes` smoke — **drafted** as `deploy/polymarket_e1/smoke_e1_lock.sh` (ready to run),
-  but EXECUTION is operator-only: the lock is hash-pinned for `x86_64-linux / py3.12` (lock header), so it
-  can't run on the agent's Windows/py3.14 box, and the only linux box in reach is prod (agent SSH is
-  read-only — no venv-create / pip-install access). Operator runs it on prod-in-a-scratch-dir or a
-  throwaway linux box: `bash smoke_e1_lock.sh [lock]` — fresh empty venv, hashed install, asserts the 4 E1
-  pkgs + setuptools 80.10.2, then imports web3+pkg_resources (the proof the downgrade fixes the blocker),
-  tears down. Touches only an mktemp scratch dir; never the prod venv/service.
-- The install, the single restart, the live flip, and merging this branch. All §4 operator steps.
+## 0.3 smoke — EXECUTED GREEN (2026-06-15, operator-run, prod-scratch)
+
+Operator ran `smoke_e1_lock.sh` on prod in an mktemp scratch venv (`/tmp/e1smoke.ybV7AW`), torn down
+after; prod venv `/home/azureuser/trading_corp/venv` + `trading-corp.service` untouched. Results:
+- lock gate OK (md5 `a47fc93e…`, `setuptools==80.10.2`); interpreter `python3.12 → 3.12.13` — **exact prod
+  match**, no deviation.
+- `pip install --require-hashes`: **exit 0** — all 160 pins resolved against their hashes (real
+  manylinux2014_x86_64 / py3.12 wheels). No hash mismatch, no missing-hash.
+- versions OK: py-clob-client 0.17.5, py-order-utils 0.3.2, web3 6.11.0, eth-account 0.13.1, setuptools 80.10.2.
+- `import web3, pkg_resources` → **OK** (web3 6.11.0, pkg_resources present under setuptools 80.10.2). The
+  `pkg_resources is deprecated … pin Setuptools<81` line is a **UserWarning, not an error** — pkg_resources
+  still imports (the proof the downgrade fixes the blocker); under setuptools 82 it would be an ImportError.
+
+**0.3 is GREEN.** Hash resolution + dependency coherence + the web3/pkg_resources import are all validated
+on prod's exact interpreter. (Note: the smoke used an EMPTY venv, so it is guard-independent — the additive
+guard's verdict vs the LIVE prod baseline is exercised at the real deploy, or previewed read-only by running
+`pm_e1_lock_diff.py` on prod against the corrected lock.)
+
+**Forward note (not a blocker):** the setuptools `<81` pin is a *mitigation* — web3 6.11 imports the
+deprecated `pkg_resources`, which setuptools 81+ removes. The pin must HOLD (don't let setuptools drift up);
+the durable fix is a future web3 upgrade that drops pkg_resources. Out of scope here.
+
+## Out of scope (operator-gated, remaining)
+- Merge this branch (+ the validation branch) to main — lands the corrected deploy artifacts + the
+  scoped guard exception on main.
+- The real install into the LIVE venv (flat window, install-only, no restart) — the additive guard runs
+  there vs the live baseline and logs the `ALLOWED EXCEPTION (setuptools 82.0.1 -> 80.10.2)`.
+- The single venv restart, the PCT live flip (`--live-divisions polymarket_copy_trading`), OP·E $1 shakedown.
