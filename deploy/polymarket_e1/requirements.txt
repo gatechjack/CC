@@ -1,0 +1,70 @@
+# Core orchestration
+langgraph>=0.2.50
+langgraph-checkpoint-sqlite>=2.0.0
+langchain-anthropic>=0.3.0
+langchain-core>=0.3.20
+anthropic>=0.40.0
+
+# Brokers / data
+ccxt>=4.4.0
+robin_stocks>=3.4.0
+pyotp>=2.9.0                # TOTP MFA code generation for Robinhood login
+yfinance>=0.2.50
+tastytrade>=12.4             # primary options/IV data provider (replaces yfinance for options)
+
+# Comms
+python-telegram-bot>=21.6
+
+# Configuration / env
+python-dotenv>=1.0.1
+pyyaml>=6.0.2
+pydantic>=2.5             # research firm (typed engagement specs + product schemas)
+
+# Data analysis
+pandas>=2.2.0
+numpy>=1.26.0
+pandas-market-calendars>=4.4.0   # NYSE schedule incl. half-days/holidays for 0-DTE deadline gates
+
+# Testing
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+
+# Phase 3 â€” Fidelity browser automation
+playwright>=1.48.0         # after pip install: run `playwright install chromium`
+
+# Dashboard (legacy â€” kept during migration to FastAPI)
+streamlit>=1.32.0
+nest_asyncio>=1.6.0
+
+# Web command center (FastAPI + HTMX + Jinja templates).
+# Dark trading-desk dashboard hosted in-process alongside trading_corp.
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+jinja2>=3.1.4
+python-multipart>=0.0.12   # form parsing for HTMX POSTs
+markdown>=3.7              # render LLM analysis (markdown â†’ HTML) on division drill-down
+
+# TradingView supplemental signals (supplemental only â€” never on execution path)
+# Requires ENABLE_TRADINGVIEW=1 env var to activate at runtime.
+# tvdatafeed             # ORPHAN 2026-05-23: NOT on PyPI (404); never installed on prod; not in lockfile.
+                         # Runtime (trading_corp/data/tradingview.py:54-60) tolerates ImportError and falls
+                         # back to tradingview-ta. If reintroduced, add the actual source (git URL + sha) and
+                         # re-run uv pip compile.
+tradingview-ta==3.3.0    # indicator snapshots via TV screener API â€” pinned 2026-05-23 to match prod-installed version
+
+# Kalshi (Phase K1+ â€” Prediction Markets group). MIT-licensed community SDK
+# with both async + sync clients, RSA-PSS request signing, REST + WebSocket.
+pykalshi>=1.0.6
+
+# Polymarket live order placement (E1 â€” live broker; NOT yet on prod, deploy
+# operator-gated). Proven pin set: matches Polymarket's own MIT `agents`
+# framework + the 2026-05-29 EIP-712 signing spike
+# (reports/2026-05-29_polymarket_live_prep_groupB_spike.md). py-clob-client's
+# repo is archived/read-only but the pin works; ALWAYS construct ClobClient with
+# kwargs (constructor arg order differs across versions â€” latest 0.34.6 reorders
+# host/chain_id/key). Transitives (eth-abi, etc.) are pinned by the py3.12/Linux
+# lockfile, not hand-pinned here.
+py-clob-client==0.17.5
+py-order-utils==0.3.2
+web3==6.11.0
+eth-account==0.13.1
