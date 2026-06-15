@@ -50,7 +50,7 @@ intended downgrade.**
   `setuptools: 82.0.1 -> 80.10.2` (an explicit, auditable exception) while **any other** CHANGED package
   still aborts. One gated run; drift-detection preserved for everything else; the exception lives in the
   deploy artifact. Cost: a small behavioral edit to the guard (must be precise) — a deploy-safety change,
-  so it's the operator's call to approve. **Not applied in this branch** (stop-and-report at the fork).
+  so it's the operator's call to approve. **Implemented 2026-06-15 (operator-directed) — see Update below.**
 - **B — operator pre-downgrades setuptools, then deploy normally.** `pip install --require-hashes`
   setuptools 80.10.2 first (use the lock's hashes); then prod == lock, guard sees CHANGED=0, deploy is
   fully additive. No guard code change. Cost: an extra venv mutation outside the gated atomic flow, to be
@@ -58,8 +58,37 @@ intended downgrade.**
 - **Rejected:** bypassing the guard entirely (loses drift detection — the exact protection that's wanted),
   or reverting the lock to 82.0.1 (reintroduces the web3 6.11 `pkg_resources` breaker).
 
-**Recommendation:** Option A. If you approve, I'll implement the narrow whitelist (guard + `pm_e1_lock_diff.py`)
-on this branch and re-verify. If you prefer B, no code change — it's an operator runbook step.
+**Recommendation:** Option A — **implemented** (operator-directed, 2026-06-15). Details in Update below.
+
+## Update (2026-06-15) — Option A implemented: scoped additive-guard exception
+
+Encoded a **named, exact-tuple** exception in **both** copies of the guard (they're separate: the
+read-only `pm_e1_lock_diff.py` and `deploy_e1_lock.sh`'s self-contained inline heredoc that runs on prod):
+
+```
+ALLOWED_CHANGES = {("setuptools", "82.0.1", "80.10.2")}   # web3 6.11 pkg_resources fix (fe0666a), one-time
+```
+
+- **Scoped, not blanket.** Only the exact `(name, from, to)` transition is allowed. A setuptools change
+  with a different prod baseline (≠82.0.1) or different target (≠80.10.2) does **not** match → stays in
+  `changed` → still aborts. Any other CHANGED package still aborts unchanged.
+- **Loud.** The deploy guard prints `ALLOWED EXCEPTION (web3 6.11 pkg_resources fix, scoped): setuptools:
+  82.0.1 -> 80.10.2` and an `ADDITIVE OK — N new, 1 allowed exception(s), 0 unexpected changes` summary, so
+  the exception is visible in deploy output and never silent.
+- **`pm_e1_lock_diff.py` refactored** to a pure, testable `classify()`; its I/O moved under `__main__`
+  (import is now side-effect-free). Its output now shows the setuptools line under "ALLOWED EXCEPTIONS"
+  rather than a false NON-ADDITIVE/STOP.
+- **Tested** — `tests/test_e1_lock_additive_guard.py`, 8 cases, all pass:
+  5 against `classify` (allowed downgrade passes; unrelated CHANGED aborts; non-matching baseline aborts;
+  non-matching target aborts; allowlist is an exact 1-tuple) + 3 that execute the **actual
+  `deploy_e1_lock.sh` heredoc bytes** asserting exit 0 on the allowed downgrade and exit 3 on a real change
+  / non-matching setuptools (catches divergence between the two copies).
+- **md5 gate unchanged** — these edits don't touch `requirements.lock`; `EXP_LOCK_MD5` still == the deploy
+  lock's md5 (`a47fc93e…`), re-verified.
+
+**Net:** the branch is now self-consistent and deployable through the gated script in a single run; the
+intended downgrade no longer trips the guard, and drift detection is fully preserved for everything else.
+Still operator-gated: 0.3 smoke, install, restart, flip, and the merge.
 
 **Verify-at-deploy:** confirm prod's live setuptools (read-only) before deploy —
 `venv/bin/python -c "import setuptools;print(setuptools.__version__)"`. Expected 82.0.1 (→ guard handling
