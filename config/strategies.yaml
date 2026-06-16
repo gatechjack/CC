@@ -1346,6 +1346,18 @@ bitunix_futures:
     slippage_pct: 0.00005       # 0.5 bps assumed
     entry_is_taker: true        # market entry on signal bar
     tp_is_maker: false          # MVP: market exits; revisit when limit fills mature
+    # ── B2 maker (POST_ONLY) entry execution ──────────────────────────────
+    # DEFAULT OFF — the deploy ships maker-off (behavior-preserving); flip
+    # enabled→true DELIBERATELY (like execution_mode) to start capturing maker
+    # economics live at real size. When ON, the entry is placed as a POST_ONLY
+    # limit (guaranteed-maker; rejected if it would cross); if it doesn't fill
+    # within rest_timeout_s OR is rejected, it crosses to a taker market entry
+    # (the signal is never dropped). The B1 catastrophic STOP always stays
+    # MARK_PRICE+MARKET taker — never maker.
+    maker_entry_enabled: false
+    maker_entry_rest_timeout_s: 2.0      # short rest, to not worsen the PA-redeem late-entry drag
+    maker_entry_offset_pct: 0.0          # passive offset from signal price (0 = at ref)
+    maker_entry_fallback_mode: cross_to_taker   # cross_to_taker | abandon
 
 
 # ── Polymarket Copy Trading (Phase 4+ placeholder; not yet implemented) ──

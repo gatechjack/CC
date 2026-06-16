@@ -37,6 +37,14 @@ class FeeConfig:
     slippage_pct: float = 0.00005
     entry_is_taker: bool = True
     tp_is_maker: bool = False
+    # ── B2 maker (POST_ONLY) entry execution. DEFAULT OFF → behavior-preserving
+    # (the observer only stamps the maker order when enabled=True; flip it
+    # deliberately like execution_mode). The economics (maker savings net of
+    # non-fill/late-entry cost) are captured LIVE after deploy at real size.
+    maker_entry_enabled: bool = False
+    maker_entry_rest_timeout_s: float = 2.0   # short, so it doesn't worsen the late-entry drag
+    maker_entry_offset_pct: float = 0.0       # passive offset from the signal price
+    maker_entry_fallback_mode: str = "cross_to_taker"  # 'cross_to_taker' | 'abandon'
 
     def round_trip_cost_pct(self) -> float:
         """Total round-trip cost as a fraction of price (both fees +
@@ -58,6 +66,14 @@ class FeeConfig:
             slippage_pct=float(f.get("slippage_pct", d.slippage_pct)),
             entry_is_taker=bool(f.get("entry_is_taker", d.entry_is_taker)),
             tp_is_maker=bool(f.get("tp_is_maker", d.tp_is_maker)),
+            maker_entry_enabled=bool(
+                f.get("maker_entry_enabled", d.maker_entry_enabled)),
+            maker_entry_rest_timeout_s=float(
+                f.get("maker_entry_rest_timeout_s", d.maker_entry_rest_timeout_s)),
+            maker_entry_offset_pct=float(
+                f.get("maker_entry_offset_pct", d.maker_entry_offset_pct)),
+            maker_entry_fallback_mode=str(
+                f.get("maker_entry_fallback_mode", d.maker_entry_fallback_mode)),
         )
 
 

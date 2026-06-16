@@ -612,6 +612,176 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
         return "skipped"
 
 
+def _iso_to_ms(ts: str | None) -> float | None:
+    """ISO-8601 ts → epoch ms (for the since_ms close-fill window). None on error."""
+    if not ts:
+        return None
+    try:
+        s = str(ts).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
+    """Volume-weighted aggregate of N close fills — B2-aware: any number of
+    partial fills, each carrying its REAL per-fill fee. Returns:
+      vwap_price  — Σ(price·qty)/Σqty (the real exit price, multi-fill VWAP)
+      total_fee   — Σ(per-fill fee): the REAL summed fee, reflecting the actual
+                    maker/taker mix — never computed from an assumed rate
+      total_qty   — Σqty (the actual closed quantity)
+      n_fills     — count of valid fills aggregated
+    Pure — no I/O. Skips malformed / non-positive fills."""
+    notional = total_qty = total_fee = 0.0
+    n = 0
+    for f in (fills or []):
+        try:
+            p = float(f.get("price") or 0.0)
+            q = float(f.get("qty") or 0.0)
+            fee = float(f.get("fee") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if p <= 0 or q <= 0:
+            continue
+        notional += p * q
+        total_qty += q
+        total_fee += fee
+        n += 1
+    vwap = (notional / total_qty) if total_qty > 0 else 0.0
+    return {"vwap_price": vwap, "total_fee": total_fee,
+            "total_qty": total_qty, "n_fills": n}
+
+
+async def _autobook_missing_close_real(
+    broker: Any, db_url: str, order_id: str, now: str,
+) -> str:
+    """Accurate auto-book (#1): book a server-side close from the REAL exchange
+    fill(s) — VWAP price, summed REAL per-fill fees, real PnL — replacing the
+    optimistic known-level estimate. Returns 'booked' | 'deferred' | 'skipped'.
+
+    Upgrade over `_autobook_missing_close` (which books at the stop LEVEL): on a
+    clean stop-out, fetch the actual close fills via the broker's signed
+    trade-history (`get_recent_close_fills`), aggregate N fills, and book the
+    exact economics with `result_source='auto_booked_from_real_fill'`, clearing
+    `slippage_unreconciled` and recording the observed slippage (real-fill vs the
+    recorded stop level) so the slippage distribution accumulates.
+
+    SAFETY NET — never leaves a close unbooked because the fetch failed: if the
+    row is ambiguous (filled_legs / missing stop|entry) OR the signed fetch
+    errors / returns no identifiable close fill, this DELEGATES to
+    `_autobook_missing_close` (the deployed, byte-unchanged known-level estimate).
+    """
+    try:
+        with db.connect(db_url) as conn:
+            r = conn.execute(
+                "SELECT side, qty, symbol, ts, entry_reference_price, stop_price, "
+                "extra_json FROM paper_trade_record "
+                "WHERE order_id = ? AND result IS NULL",
+                (order_id,),
+            ).fetchone()
+        if r is None:
+            return "skipped"  # vanished or already booked
+        try:
+            extra = json.loads(r["extra_json"]) if r["extra_json"] else {}
+        except (TypeError, ValueError):
+            extra = {}
+        filled_legs = extra.get("filled_legs") or []
+        side = (r["side"] or "").lower()
+        qty = float(r["qty"] or 0.0)
+        entry = r["entry_reference_price"]
+        level = r["stop_price"] if r["stop_price"] is not None \
+            else extra.get("stop_price")
+
+        # Ambiguous / missing inputs → defer or estimate via the UNCHANGED
+        # deployed path (filled_legs → ambiguous deeper-TP-vs-stop; no stop/entry
+        # → can't even estimate). The real fetch is only for a clean stop-out.
+        if (filled_legs or level is None or float(level) <= 0
+                or entry is None or qty <= 0):
+            return _autobook_missing_close(db_url, order_id, now)
+
+        # Clean stop-out → try the REAL close fill(s) (signed). Any failure or no
+        # identifiable close fill falls back to the known-level estimate.
+        exit_side = "buy" if side == "sell" else "sell"
+        try:
+            fills = await broker.get_recent_close_fills(
+                symbol=r["symbol"], exit_side=exit_side,
+                since_ms=_iso_to_ms(r["ts"]),
+            )
+        except Exception as e:
+            log.warning("reconciler: real-fill fetch failed for %s: %s — "
+                        "falling back to known-level estimate", order_id, e)
+            return _autobook_missing_close(db_url, order_id, now)
+
+        agg = _aggregate_close_fills(fills)
+        if agg["n_fills"] <= 0 or agg["vwap_price"] <= 0 or agg["total_qty"] <= 0:
+            return _autobook_missing_close(db_url, order_id, now)  # safety net
+
+        entry = float(entry)
+        level = float(level)
+        vwap = float(agg["vwap_price"])
+        fqty = float(agg["total_qty"])
+        exit_fee = float(agg["total_fee"])
+        # Gross price PnL on the REAL fill (same convention as the estimate, which
+        # used the stop level): a short loses when the fill is above entry.
+        pnl = ((entry - vwap) if side == "sell" else (vwap - entry)) * fqty
+        # Observed slippage of the real fill vs the RECORDED stop level (signed:
+        # positive = adverse / filled worse than the trigger).
+        slip_pts = (vwap - level) if side == "sell" else (level - vwap)
+        mdr = extra.get("max_dollar_risk")
+        try:
+            r_mult = (pnl / float(mdr)) if mdr else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            r_mult = None
+        try:
+            entry_fee = float(extra.get("entry_fee_usd") or 0.0)
+        except (TypeError, ValueError):
+            entry_fee = 0.0
+        net = pnl - entry_fee - exit_fee
+
+        with db.connect(db_url) as conn:
+            conn.execute(
+                "UPDATE paper_trade_record SET "
+                "  result = 'loss', result_ts = ?, result_price = ?, "
+                "  actual_pnl_dollars = ?, actual_r_multiple = ?, "
+                "  bars_to_resolution = NULL, "
+                "  extra_json = json_set(extra_json, "
+                "    '$.result_source', 'auto_booked_from_real_fill', "
+                "    '$.pnl_basis', 'real_fill', "
+                "    '$.slippage_unreconciled', json('false'), "
+                "    '$.exit_method', 'server_side_sl_B1', "
+                "    '$.exit_side', ?, '$.autobook_level_type', 'stop', "
+                "    '$.exit_fee_usd', ?, '$.net_realized_usd', ?, "
+                "    '$.close_fill_count', ?, '$.observed_slippage_pts', ?, "
+                "    '$.autobook_ts', ?) "
+                "WHERE order_id = ? AND result IS NULL",
+                (now, vwap, pnl, r_mult, exit_side, exit_fee, net,
+                 agg["n_fills"], slip_pts, now, order_id),
+            )
+            conn.execute(
+                "INSERT INTO audit_event (ts, actor, kind, payload_json) "
+                "VALUES (?, ?, ?, ?)",
+                (now, RECONCILER_ACTOR, AUTO_BOOK_SERVER_SIDE_CLOSE_KIND,
+                 json.dumps({"order_id": order_id, "side": side, "entry": entry,
+                             "stop_level": level, "vwap_fill": vwap, "qty": fqty,
+                             "n_fills": agg["n_fills"], "exit_fee": exit_fee,
+                             "pnl": pnl, "net_realized_usd": net, "result": "loss",
+                             "pnl_basis": "real_fill",
+                             "slippage_unreconciled": False,
+                             "observed_slippage_pts": slip_pts})),
+            )
+        return "booked"
+    except Exception as e:
+        log.warning("reconciler: real auto-book failed for order_id=%s: %s — "
+                    "falling back to known-level estimate", order_id, e)
+        try:
+            return _autobook_missing_close(db_url, order_id, now)
+        except Exception:
+            return "skipped"
+
+
 async def reconcile_position_state(
     broker: Any,
     db_url: str,
@@ -708,11 +878,13 @@ async def reconcile_position_state(
         ))
 
     # ── P2 auto-book: a bot-owned position missing on the broker (closed
-    # server-side, result IS NULL) is booked at its KNOWN stop level — but ONLY
-    # when confirmed across two consecutive ticks (a single empty
-    # get_pending_positions can be a transient API error, not a real flat) and on
-    # a real (non-stub) broker. Booked rows drop out of `missing` this tick, so
-    # the audit + halt decision below reflect the post-book state.
+    # server-side, result IS NULL) is booked — but ONLY when confirmed across two
+    # consecutive ticks (a single empty get_pending_positions can be a transient
+    # API error, not a real flat) and on a real (non-stub) broker. #1 upgrade:
+    # `_autobook_missing_close_real` fetches the REAL close fill(s) (signed) and
+    # books exact price/PnL/fee, falling back to the known-level estimate if the
+    # fetch fails. Booked rows drop out of `missing` this tick, so the audit +
+    # halt decision below reflect the post-book state.
     prev = _latest_position_state_payload(db_url)
     prev_missing_ids = {
         m.get("order_id") for m in (prev.get("missing_on_broker") or [])
@@ -727,7 +899,10 @@ async def reconcile_position_state(
         still_missing: list[PositionStateMissingOnBroker] = []
         for m in missing:
             if m.order_id in prev_missing_ids:  # 2 consecutive ticks → confirmed
-                if _autobook_missing_close(db_url, m.order_id, now) == "booked":
+                booked = await _autobook_missing_close_real(
+                    broker, db_url, m.order_id, now,
+                )
+                if booked == "booked":
                     continue  # resolved this tick — drop from missing
             still_missing.append(m)
         missing = still_missing

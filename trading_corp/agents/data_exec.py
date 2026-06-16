@@ -498,7 +498,12 @@ class DataExecAgent:
         except Exception as e:
             flatten_error = e
 
-        # Verify via snapshot (broker truth).
+        # Verify via snapshot (broker truth). This must NOT read a cached
+        # pre-flatten snapshot: BitunixBroker.snapshot() carries a short TTL
+        # poll-cache, but its flatten()/close primitives invalidate that cache
+        # on every mutation, so this post-flatten read always refetches fresh
+        # broker truth (positions=0). See `_invalidate_snapshot_cache` in
+        # trading_corp/brokers/bitunix.py.
         try:
             snap_after = await broker.snapshot()
             positions_after = len(snap_after.positions or [])

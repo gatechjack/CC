@@ -68,6 +68,7 @@ Margin coins:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import logging
 import random
@@ -82,6 +83,7 @@ import httpx
 
 from trading_corp.brokers.base import AccountSnapshot, Broker
 from trading_corp.brokers.bitunix_exceptions import (
+    BitunixMakerEntryUnfilled,
     BitunixPositionModeMismatch,
     BitunixStaleSnapshot,
     BitunixStuckOrderCancelFailed,
@@ -204,6 +206,16 @@ _RETRYABLE_CODES = {10005, 10006}
 # clientId is a deterministic idempotency key.
 _IDEMPOTENT_OK_CODES = {30042}
 
+# ── Account-snapshot poll-cache TTL (10006 rate-limit mitigation) ───────────
+# Default seconds a COMPLETE account snapshot is reused before refetching. The
+# bitunix observer reads snapshot() per TradingView alert (tier-sizing AND the
+# drawdown-breaker equity); clustered alerts across concurrent webhook handlers
+# hammered /account (2 signed calls each) → ~12 calls in 2s → BitUnix 10006
+# "request too frequently". 3 s collapses the burst while staying far below any
+# tolerable staleness for a 15%-account-drawdown breaker. Per-broker
+# overridable via the constructor.
+_SNAPSHOT_CACHE_TTL_S = 3.0
+
 # ── Phase 4 REST retry layer (gate (a) 2026-05-30) ──────────────────────────
 # Resilience-against-transient-failure for the signed `_request` chokepoint.
 # Read-side calls (snapshot/quote/get_funding_rate) deliberately bypass
@@ -219,6 +231,17 @@ _RETRY_CAP_DELAY_S = 4.0
 _RETRY_WALLCLOCK_CAP_S = 10.0
 # HTTP statuses we treat as transient (after `raise_for_status()`).
 _RETRY_HTTP_STATUSES = {408, 429, 502, 503, 504}
+
+# ── B2 maker (POST_ONLY) entry execution defaults ───────────────────────────
+# A maker entry rests as a POST_ONLY limit (guaranteed-maker — BitUnix rejects
+# it if it would cross, so it can never accidentally take). These are FALLBACK
+# defaults only: the observer stamps the real values from config onto
+# `order.extra` when the operator flips the maker flag ON (DEFAULT OFF). Absent
+# `extra["maker_entry"]`, place_order keeps its current taker/market path
+# unchanged (behavior-preserving).
+_MAKER_REST_TIMEOUT_S = 2.0      # short rest, to not worsen the PA-redeem late-entry drag
+_MAKER_OFFSET_PCT = 0.0          # passive offset from the signal/reference price (0 = at ref)
+_MAKER_FALLBACK_MODE = "cross_to_taker"   # 'cross_to_taker' | 'abandon'
 
 
 def _is_retryable_httpx_exc(exc: Exception) -> bool:
@@ -340,6 +363,7 @@ class BitunixBroker(Broker):
         *,
         logger: "LoggerAgent | None" = None,
         safety_notifier=None,
+        snapshot_cache_ttl_s: float = _SNAPSHOT_CACHE_TTL_S,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -382,6 +406,19 @@ class BitunixBroker(Broker):
         #                  audit_context: dict | None = None) -> bool
         # Wired from main.py to the same TelegramChannel singleton.
         self.safety_notifier = safety_notifier
+        # ── Account-snapshot poll cache + single-flight (10006 mitigation) ──
+        # TTL (seconds) a COMPLETE snapshot is reused for. Constructor-
+        # overridable (tests pin it; ops can tune). 0 disables caching. Kept
+        # well below the drawdown breaker's equity-freshness tolerance so the
+        # breaker never acts on dangerously stale equity.
+        self._snapshot_cache_ttl_s = snapshot_cache_ttl_s
+        # (monotonic_ts, AccountSnapshot) of the last COMPLETE fetch; None when
+        # cold or invalidated by a state mutation.
+        self._snapshot_cache: tuple[float, AccountSnapshot] | None = None
+        # Single-flight handle: concurrent callers await this one in-flight
+        # fetch rather than each firing a request.
+        self._snapshot_inflight: asyncio.Task[AccountSnapshot] | None = None
+        self._snapshot_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         if self._stub:
@@ -409,14 +446,102 @@ class BitunixBroker(Broker):
             self._client = None
         self._connected = False
 
-    async def snapshot(self) -> AccountSnapshot:
+    async def snapshot(self, *, force_refresh: bool = False) -> AccountSnapshot:
+        """Account snapshot with a short TTL cache + single-flight.
+
+        10006 mitigation: the bitunix observer calls `snapshot()` on every
+        TradingView alert (account_equity for tier-sizing AND the drawdown
+        breaker), and alerts cluster at candle closes across concurrent
+        webhook-handler tasks. Each `snapshot()` fires two signed `/account`
+        calls (USDT+USDC), so a cluster produced ~12 calls in 2 s → BitUnix
+        10006 "request too frequently".
+
+          * **Single-flight** — concurrent callers share ONE in-flight fetch.
+          * **TTL cache** — a *complete* fetch is reused for
+            `_snapshot_cache_ttl_s` (default `_SNAPSHOT_CACHE_TTL_S`), set well
+            below the drawdown breaker's equity-freshness tolerance.
+          * **Never caches a partial fetch** — a 10006 on one stablecoin
+            under-counts equity and an errored position read hides positions;
+            a partial would poison the breaker for the whole TTL window.
+          * State mutations call `_invalidate_snapshot_cache()`, so post-trade
+            and post-flatten reads are always fresh (the breaker's flatten
+            verification in `data_exec.flatten_division` relies on this).
+          * `force_refresh=True` bypasses the cache (still single-flighted).
+
+        The existing read-side 10006 handling (log + skip coin) and the
+        `_request` write-path backoff are unchanged — they remain the fallback
+        for any residual rate-limiting the cache does not absorb.
+        """
+        # Stub / unconfigured: preserve the original direct zero-snapshot path
+        # (no API, no caching, no lock).
         if self._stub or not self._client or not self._api_key or not self._api_secret:
-            return AccountSnapshot(
-                account="bitunix-stub",
-                equity=0.0,
-                buying_power=0.0,
-                cash=0.0,
-                positions=[],
+            snap, _complete = await self._fetch_snapshot()
+            return snap
+
+        ttl = self._snapshot_cache_ttl_s
+
+        # 1) Fast path — a fresh cached snapshot needs no lock.
+        if not force_refresh and ttl > 0:
+            cached = self._snapshot_cache
+            if cached is not None and (time.monotonic() - cached[0]) < ttl:
+                return cached[1]
+
+        # 2) Single-flight. The lock guards only the cache re-check + in-flight
+        #    handoff; it is NOT held across the network fetch, so concurrent
+        #    callers all join the same in-flight task instead of each firing a
+        #    request (this is what collapses the 12-in-2s burst to one call).
+        async with self._snapshot_lock:
+            if not force_refresh and ttl > 0:
+                cached = self._snapshot_cache
+                if cached is not None and (time.monotonic() - cached[0]) < ttl:
+                    return cached[1]
+            inflight = self._snapshot_inflight
+            if inflight is None or inflight.done():
+                inflight = asyncio.create_task(self._fetch_and_maybe_cache())
+                self._snapshot_inflight = inflight
+
+        try:
+            return await inflight
+        finally:
+            # Release the shared handle once resolved so the next call (after
+            # the TTL lapses) starts a fresh fetch. `is inflight` guards against
+            # clobbering a newer task another caller may have started.
+            if self._snapshot_inflight is inflight and inflight.done():
+                self._snapshot_inflight = None
+
+    def _invalidate_snapshot_cache(self) -> None:
+        """Drop the cached snapshot so the next `snapshot()` refetches.
+
+        Called after every state mutation (place_order/cancel/flatten/close)
+        so post-trade equity and the post-flatten position verification read
+        fresh broker truth, never a pre-mutation cached snapshot.
+        """
+        self._snapshot_cache = None
+
+    async def _fetch_and_maybe_cache(self) -> AccountSnapshot:
+        """Run one real fetch; cache it only if it was complete."""
+        snap, complete = await self._fetch_snapshot()
+        if complete and self._snapshot_cache_ttl_s > 0:
+            self._snapshot_cache = (time.monotonic(), snap)
+        return snap
+
+    async def _fetch_snapshot(self) -> tuple[AccountSnapshot, bool]:
+        """Raw account+positions fetch (no caching).
+
+        Returns `(snapshot, complete)`. `complete` is False when any stablecoin
+        balance read or the position read returned a non-zero BitUnix code
+        (e.g. a 10006) — i.e. the snapshot is partial and must NOT be cached.
+        """
+        if self._stub or not self._client or not self._api_key or not self._api_secret:
+            return (
+                AccountSnapshot(
+                    account="bitunix-stub",
+                    equity=0.0,
+                    buying_power=0.0,
+                    cash=0.0,
+                    positions=[],
+                ),
+                True,
             )
 
         # ── account balance (sum across stablecoin margin coins) ──────────
@@ -446,6 +571,16 @@ class BitunixBroker(Broker):
         # ($6,763.94 vs real $3,381.97). The 2026-05-03 reconciliation
         # ("transfer is additive") was incorrect — retracted in memory
         # `trading_corp_bitunix_vision.md`.
+        # Two completeness flags (reconciled: b0ae39d 10006 + e947ab4 breaker-abstain):
+        #  * equity_complete — True unless a STABLECOIN balance read errors (which
+        #    under-reports equity). Surfaced on AccountSnapshot so the drawdown
+        #    breaker ABSTAINS on a partial read instead of false-flattening.
+        #  * complete — the BROADER flag (stablecoin AND position reads OK) that
+        #    gates the snapshot CACHE (never cache a partial). A position-read error
+        #    sets complete=False but leaves equity_complete True (positions don't
+        #    enter the equity sum).
+        equity_complete = True
+        complete = True
         total_equity = 0.0
         total_cash = 0.0
         for margin_coin in _STABLE_MARGIN_COINS:
@@ -463,6 +598,11 @@ class BitunixBroker(Broker):
                     "BitUnix account error for %s: code=%s msg=%r",
                     margin_coin, ad.get("code"), ad.get("msg"),
                 )
+                # This coin is dropped from the equity sum -> equity UNDER-reported.
+                # equity_complete=False → the breaker abstains; complete=False →
+                # never cache the partial.
+                equity_complete = False
+                complete = False
                 continue
             d = ad.get("data") or {}
             if not d:
@@ -520,18 +660,26 @@ class BitunixBroker(Broker):
                 "BitUnix get_pending_positions error: code=%s msg=%r",
                 pos_data.get("code"), pos_data.get("msg"),
             )
+            # Errored position read → positions list is empty but NOT proven
+            # flat. Mark incomplete so it is never cached (a cached empty list
+            # could false-pass the post-flatten verification).
+            complete = False
 
         # Mark snapshot as fresh BEFORE returning. Any earlier raise (e.g.
         # r.raise_for_status on a 503) skips this line — staleness then
         # grows until `_assert_snapshot_fresh()` halts the order path.
         # See gate (a) sub-item 2 for the rationale.
         self._last_successful_snapshot_ts = time.monotonic()
-        return AccountSnapshot(
-            account="bitunix-futures",
-            equity=equity,
-            buying_power=cash,
-            cash=cash,
-            positions=positions,
+        return (
+            AccountSnapshot(
+                account="bitunix-futures",
+                equity=equity,
+                buying_power=cash,
+                cash=cash,
+                positions=positions,
+                equity_complete=equity_complete,
+            ),
+            complete,
         )
 
     # ── Snapshot-health primitives (gate (a) sub-item 2, 2026-05-30) ────
@@ -866,7 +1014,23 @@ class BitunixBroker(Broker):
             log.warning("rest_request_retried audit failed: %s", e)
 
     # ── Phase 4: order placement ────────────────────────────────────────
-    async def place_order(self, order: ProposedOrder) -> FillEvent:
+    async def place_order(
+        self, order: ProposedOrder, *, fill_timeout_s: float | None = None,
+    ) -> FillEvent:
+        # Wrapper (b0ae39d 10006): invalidate the snapshot poll-cache after any
+        # entry/exit attempt (success OR raise) so the next snapshot() reads
+        # post-trade equity/positions fresh — never a pre-trade cached value the
+        # sizing/breaker would act on. `fill_timeout_s` threads through for the B2
+        # maker rest window (the maker/taker clones re-enter via this wrapper, so
+        # each placement also invalidates the cache).
+        try:
+            return await self._place_order_impl(order, fill_timeout_s=fill_timeout_s)
+        finally:
+            self._invalidate_snapshot_cache()
+
+    async def _place_order_impl(
+        self, order: ProposedOrder, *, fill_timeout_s: float | None = None,
+    ) -> FillEvent:
         """Place a live BitUnix futures order (one-way mode).
 
         Opening vs reducing is taken from ``order.extra["reduce_only"]`` (the
@@ -893,6 +1057,12 @@ class BitunixBroker(Broker):
 
         extra = order.extra or {}
         reduce_only = bool(extra.get("reduce_only", False))
+        # B2 maker-entry dispatch: ENTRIES only (never exits/reduce-only, and
+        # never the B1 catastrophic stop, which is a separate slPrice attachment
+        # that stays MARK_PRICE+MARKET taker). Absent extra["maker_entry"] this is
+        # skipped → the current taker/market path runs unchanged.
+        if not reduce_only and extra.get("maker_entry"):
+            return await self._place_maker_entry(order)
         wire = to_wire_format(order.symbol)
 
         # Fail-closed position-mode guard (sets+verifies ONE_WAY on a flat entry).
@@ -931,6 +1101,7 @@ class BitunixBroker(Broker):
 
         status, filled_qty, avg_price, fee = await self._observe_fill(
             order_id=venue_order_id, client_id=client_id,
+            fill_timeout_s=fill_timeout_s,
         )
 
         # Encode non-terminal status in the venue suffix (mirrors coinbase):
@@ -955,11 +1126,107 @@ class BitunixBroker(Broker):
             fee=fee,
         )
 
+    async def _place_maker_entry(self, order: ProposedOrder) -> FillEvent:
+        """B2: place the ENTRY as a POST_ONLY maker limit; on non-fill within the
+        rest timeout (or a post-only would-cross rejection) fall back to a taker
+        market entry so the signal is NEVER silently dropped.
+
+        Maker params come from `order.extra` (stamped by the observer from the
+        FeeConfig.maker_entry_* fields): `maker_rest_timeout_s`,
+        `maker_offset_pct`, `maker_fallback_mode` ('cross_to_taker' default |
+        'abandon'). The maker and taker-fallback attempts use DISTINCT clientIds
+        (-mk / -tk) so the cancelled maker can't 30042-collide the fallback. #1's
+        signed-fetch auto-book reads the real per-fill fee, so a maker fill books
+        at the maker rate automatically.
+
+        VERIFY-ON-LIVE: the exact BitUnix rejection code for a POST_ONLY-would-
+        cross is not confirmed read-only — so ANY business rejection
+        (BitunixAPIError) of the maker order, and any clean stuck-cancel
+        (non-fill), routes to the taker fallback. A cancel-FAILED on the maker
+        (BitunixStuckOrderCancelFailed) does NOT fall back: the resting maker may
+        still fill, so crossing would risk a DOUBLE position → it raises loud for
+        operator intervention.
+        """
+        extra = order.extra or {}
+        timeout_s = float(extra.get("maker_rest_timeout_s", _MAKER_REST_TIMEOUT_S))
+        mode = str(extra.get("maker_fallback_mode", _MAKER_FALLBACK_MODE))
+
+        maker = self._maker_clone(order)
+        if maker is None:
+            log.info("B2 maker entry: no usable reference price for order_id=%s "
+                     "— placing taker market entry", order.id)
+            return await self.place_order(self._taker_clone(order))
+
+        try:
+            # Fills (full or partial) → place_order returns the FillEvent.
+            return await self.place_order(maker, fill_timeout_s=timeout_s)
+        except BitunixStuckOrderCancelled:
+            log.info("B2 maker entry unfilled within %.1fs (cancelled) — "
+                     "crossing to taker [order_id=%s]", timeout_s, order.id)
+        except BitunixStuckOrderCancelFailed:
+            raise  # resting maker may still fill → crossing = double-fill risk
+        except BitunixAPIError as e:
+            log.info("B2 maker entry rejected (code=%s) — crossing to taker "
+                     "[order_id=%s]: %s", e.code, order.id, e.msg)
+
+        if mode == "abandon":
+            raise BitunixMakerEntryUnfilled(order_id=order.id)
+        # 'cross_to_taker' (default; any unrecognized mode also crosses — never
+        # silently drops the signal).
+        return await self.place_order(self._taker_clone(order))
+
+    def _maker_clone(self, order: ProposedOrder) -> "ProposedOrder | None":
+        """A POST_ONLY LIMIT copy of an entry order, priced passively at a
+        configurable offset from the signal/reference price (buy BELOW ref, sell
+        ABOVE ref → rests as maker; POST_ONLY rejects if it would still cross).
+        Returns None when no usable reference price exists (caller → taker)."""
+        extra = order.extra or {}
+        ref = extra.get("entry_reference_price")
+        if ref is None:
+            ref = order.limit_price
+        try:
+            ref = float(ref) if ref is not None else 0.0
+        except (TypeError, ValueError):
+            ref = 0.0
+        if ref <= 0:
+            return None
+        try:
+            offset = float(extra.get("maker_offset_pct", _MAKER_OFFSET_PCT))
+        except (TypeError, ValueError):
+            offset = _MAKER_OFFSET_PCT
+        side = (order.side or "").lower()
+        limit = ref * (1.0 - offset) if side == "buy" else ref * (1.0 + offset)
+        new_extra = {k: v for k, v in extra.items() if k != "maker_entry"}
+        new_extra["tif"] = "POST_ONLY"
+        new_extra["client_id_suffix"] = "-mk"
+        return dataclasses.replace(
+            order, order_type="limit", limit_price=limit, extra=new_extra,
+        )
+
+    def _taker_clone(self, order: ProposedOrder) -> ProposedOrder:
+        """A plain taker MARKET copy of an entry order (the maker fallback = the
+        current behavior), with a distinct clientId suffix so it can't 30042-
+        collide with the cancelled maker attempt."""
+        extra = order.extra or {}
+        new_extra = {k: v for k, v in extra.items()
+                     if k not in ("maker_entry", "tif")}
+        new_extra["client_id_suffix"] = "-tk"
+        return dataclasses.replace(
+            order, order_type="market", limit_price=None, extra=new_extra,
+        )
+
     def _client_id(self, order: ProposedOrder) -> str:
         """Deterministic idempotency key: the same ProposedOrder always maps to
         the same clientId, so a retry that 30042-duplicates is provably
-        'already placed', not a double-send."""
-        return f"{_CLIENT_ID_PREFIX}{order.id}"
+        'already placed', not a double-send.
+
+        `extra["client_id_suffix"]` (B2): the maker attempt ("-mk") and its
+        taker fallback ("-tk") MUST carry distinct clientIds — otherwise the
+        cancelled maker's clientId would 30042-collide on the taker fallback and
+        the broker would wrongly treat the fallback as already-placed. The suffix
+        keeps determinism (same order+suffix → same clientId)."""
+        suffix = str((order.extra or {}).get("client_id_suffix", ""))
+        return f"{_CLIENT_ID_PREFIX}{order.id}{suffix}"
 
     def _build_order_body(
         self, order: ProposedOrder, wire: str, reduce_only: bool,
@@ -1195,7 +1462,7 @@ class BitunixBroker(Broker):
             return data
         return []
 
-    async def _observe_fill(self, *, order_id, client_id):
+    async def _observe_fill(self, *, order_id, client_id, fill_timeout_s=None):
         """Poll order detail to a terminal/partial state, then derive the VWAP
         fill price + total fee + filled qty from trade history (neither order
         detail nor pending orders carry a fill price — only the fills do).
@@ -1228,10 +1495,17 @@ class BitunixBroker(Broker):
         fills, this is the knob to raise (config addition deferred until
         we have evidence the default is too tight).
         """
+        # B2: a maker entry passes a short `fill_timeout_s` so the resting
+        # POST_ONLY limit's rest window = the maker timeout (not the default
+        # fill-stuck budget). None → default budget (current taker behavior).
+        max_polls = self._fill_max_polls
+        if fill_timeout_s is not None and self._fill_poll_interval_s > 0:
+            _n = float(fill_timeout_s) / self._fill_poll_interval_s
+            max_polls = max(1, int(_n) + (0 if _n == int(_n) else 1))
         status: str | None = None
         filled_qty = 0.0
         resolved_id = order_id
-        for i in range(self._fill_max_polls):
+        for i in range(max_polls):
             detail = await self.get_order_detail(
                 order_id=resolved_id,
                 client_id=None if resolved_id else client_id,
@@ -1242,7 +1516,7 @@ class BitunixBroker(Broker):
                 filled_qty = _to_float(detail.get("tradeQty"))
             if status in _TERMINAL_STATUSES:
                 break
-            if i < self._fill_max_polls - 1:
+            if i < max_polls - 1:
                 await asyncio.sleep(self._fill_poll_interval_s)
 
         # Stuck-order check (sub-item 3). Polling exhausted without a
@@ -1358,6 +1632,60 @@ class BitunixBroker(Broker):
         avg = (notional / qty) if qty > 0 else 0.0
         return avg, fee, qty
 
+    async def get_recent_close_fills(
+        self, *, symbol: str, exit_side: str, since_ms: float | None = None,
+    ) -> list[dict]:
+        """Signed fetch of the REAL fills that CLOSED a position — for accurate
+        auto-booking of a server-side (B1) stop close (#1, replaces the optimistic
+        known-level estimate).
+
+        The B1 stop is venue-managed (attached to the entry via slPrice), so its
+        close fills carry a DIFFERENT orderId than the entry. We therefore query
+        by SYMBOL and keep only the `exit_side` fills (the side that CLOSES the
+        position = opposite of entry), optionally restricted to fills at/after
+        `since_ms` (the entry time) to exclude a prior position's close. Each kept
+        fill carries the REAL per-fill price/qty/fee — including the real maker-vs-
+        taker fee (B2 makes that per-fill variable, so we READ it, never assume a
+        rate). Aggregation (VWAP / summed fee) is the caller's job.
+
+        Returns a list of ``{"price","qty","fee"}`` for the close fills, or ``[]``
+        when none can be confidently identified — the caller then falls back to
+        the known-level estimate (a close is NEVER left unbooked).
+
+        VERIFY-ON-LIVE: the side/timestamp keys read here are inferred from the
+        BitUnix trade-history shape and are NOT yet verified against a real
+        close-fill response (agent SSH is read-only — no live call). If the live
+        shape differs, this returns ``[]`` and the estimate fallback fires (safe);
+        the real-fetch path needs a one-shot live validation at deploy.
+        """
+        want = (exit_side or "").upper()
+        try:
+            raw = await self.get_history_trades(symbol=symbol)
+        except Exception as e:
+            log.warning(
+                "get_recent_close_fills(%s): trade-history fetch failed: %s",
+                symbol, e,
+            )
+            return []
+        out: list[dict] = []
+        for t in (raw or []):
+            side = str(t.get("side") or t.get("tradeSide") or "").upper()
+            # Require a readable exit-side fill — if the venue omits side we
+            # CANNOT distinguish entry from close, so we skip (→ estimate fallback)
+            # rather than risk booking the entry fill as the close.
+            if not side or side != want:
+                continue
+            if since_ms:
+                tms = _to_float(t.get("ctime") or t.get("time") or t.get("ts"))
+                if tms and tms < float(since_ms):
+                    continue
+            out.append({
+                "price": _to_float(t.get("price")),
+                "qty": _to_float(t.get("qty")),
+                "fee": _to_float(t.get("fee")),
+            })
+        return out
+
     # ── Phase 4: cancel + kill-switch primitives ────────────────────────
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel one resting order by venue order id.
@@ -1379,6 +1707,8 @@ class BitunixBroker(Broker):
         except Exception as e:
             log.warning("BitUnix cancel_order(%s) failed: %s", order_id, e)
             return False
+        # A cancel changes resting-order state → drop the snapshot cache.
+        self._invalidate_snapshot_cache()
         success = (data or {}).get("successList") or []
         return any(str(s.get("orderId")) == str(order_id) for s in success)
 
@@ -1388,16 +1718,20 @@ class BitunixBroker(Broker):
         body: dict = {}
         if symbol:
             body["symbol"] = to_wire_format(symbol)
-        return await self._request(
+        result = await self._request(
             "POST", "/api/v1/futures/trade/cancel_all_orders", body=body,
         ) or {}
+        self._invalidate_snapshot_cache()
+        return result
 
     async def flash_close_position(self, position_id: str) -> dict:
         """Market-flatten a single position by id. Kill-switch primitive."""
-        return await self._request(
+        result = await self._request(
             "POST", "/api/v1/futures/trade/flash_close_position",
             body={"positionId": str(position_id)},
         ) or {}
+        self._invalidate_snapshot_cache()
+        return result
 
     async def close_all_position(self, symbol: str | None = None) -> dict:
         """Market-flatten all positions (account-wide, or one symbol).
@@ -1405,9 +1739,11 @@ class BitunixBroker(Broker):
         body: dict = {}
         if symbol:
             body["symbol"] = to_wire_format(symbol)
-        return await self._request(
+        result = await self._request(
             "POST", "/api/v1/futures/trade/close_all_position", body=body,
         ) or {}
+        self._invalidate_snapshot_cache()
+        return result
 
     async def flatten(self, symbol: str | None = None) -> dict:
         """Kill switch: latch halt-new-orders, cancel all resting orders, then
@@ -1424,6 +1760,10 @@ class BitunixBroker(Broker):
             results["close_all_position"] = await self.close_all_position(symbol)
         except Exception as e:
             results["close_all_position_error"] = str(e)
+        # Safety guarantee: always drop the snapshot cache before returning so
+        # the post-flatten verification in data_exec.flatten_division re-reads
+        # fresh broker truth (positions=0), even if a close step raised above.
+        self._invalidate_snapshot_cache()
         return results
 
     def resume(self) -> None:

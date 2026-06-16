@@ -1446,6 +1446,17 @@ class BitunixFuturesObserver:
             self._log_score_decision(payload, verdict_score, "error_snapshot",
                                      note=f"broker.snapshot failed: {e}")
             return
+        # ── breaker-abstain: a partial/under-reported equity read must NOT reach
+        # the drawdown breaker (phantom drawdown -> false flatten). Skip this
+        # cycle; the next complete read evaluates normally (real drawdown still
+        # flattens).
+        if self._abstain_on_incomplete_equity(snap):
+            self._log_score_decision(
+                payload, verdict_score, "abstained_incomplete_equity",
+                note="partial equity read (stablecoin dropped); drawdown breaker "
+                     "abstains this cycle",
+            )
+            return
         if account_equity <= 0:
             self._log_score_decision(payload, verdict_score, "skipped_no_equity",
                                      note=f"equity={account_equity}")
@@ -2353,6 +2364,66 @@ class BitunixFuturesObserver:
         except Exception as e:
             log.warning("bitunix_observer: trade_plan_decision audit failed: %s", e)
 
+    # ── safety: drawdown-breaker abstain on an incomplete equity read ─────
+
+    def _abstain_on_incomplete_equity(self, snap: Any) -> bool:
+        """Return True (and emit a `breaker_abstain_incomplete_equity` audit)
+        when the broker's equity read is PARTIAL — meaning the caller must
+        ABSTAIN this evaluation cycle.
+
+        A stablecoin balance source can error (e.g. a BitUnix 10006) and get
+        dropped from the equity sum, leaving `equity` UNDER-reported. Fed to the
+        drawdown breaker that would be a phantom drawdown vs the peak HWM and
+        could false-flatten a live account. So on an incomplete read the breaker
+        abstains: skip this cycle, wait for a COMPLETE read next tick. The
+        abstain is conditioned ONLY on incompleteness — a complete read showing a
+        genuine drawdown still flattens (the safety net is preserved).
+
+        Safe per the scoping failure-mode check: (a) a complete read arrives on
+        the next alert/tick, and (b) each open position is independently
+        protected by its on-exchange B1 catastrophic stop while the
+        account-level breaker briefly abstains. See
+        runbooks/2026-06-15_breaker_abstain_on_partial_equity_scoping.md.
+
+        Returns False (proceed normally) for a complete read, or for any broker
+        whose snapshot predates the `equity_complete` field (defaults True).
+        """
+        if getattr(snap, "equity_complete", True):
+            return False
+        equity_read = float(getattr(snap, "equity", 0.0) or 0.0)
+        # Quantify the phantom drawdown we just avoided, for the operator. Read
+        # the stored peak WITHOUT ratcheting — a PURE read, never
+        # `_tracked_peak_equity` (which would persist a high-water mark off this
+        # untrustworthy equity).
+        would_be_dd: float | None = None
+        try:
+            loaded = db.load_agent_state(
+                "bitunix_futures", PEAK_EQUITY_AGENT_STATE_KEY, db_url=self.db_url,
+            )
+            if loaded is not None:
+                value, _ = loaded
+                peak = (float(value.get("peak", 0.0))
+                        if isinstance(value, dict) else float(value))
+                if peak > 0:
+                    would_be_dd = max(0.0, (peak - equity_read) / peak)
+        except Exception as e:
+            log.warning("bitunix_observer: abstain peak-read failed: %s", e)
+        if self.logger_agent is not None:
+            self.logger_agent.log_event(
+                actor="bitunix_futures",
+                kind="breaker_abstain_incomplete_equity",
+                payload={
+                    "equity_read": equity_read,
+                    "equity_complete": False,
+                    "would_be_drawdown_pct": would_be_dd,
+                    "reason": (
+                        "stablecoin balance read incomplete (e.g. 10006); equity "
+                        "under-reported -> drawdown breaker abstained (no flatten)"
+                    ),
+                },
+            )
+        return True
+
     # ── safety: route flatten_account risk verdicts to data_exec ─────
 
     async def _maybe_flatten_on_risk_verdict(self, verdict_risk) -> None:
@@ -2886,6 +2957,20 @@ class BitunixFuturesObserver:
             # decision == "approve" (or modify-with-new-qty) → fall
             # through to data_exec.place below.
 
+        # ── B2 maker-entry stamp (DEFAULT OFF) ───────────────────────
+        # When the maker flag is on, mark the entry so the broker places it as a
+        # POST_ONLY maker limit (with taker fallback on non-fill/rejection).
+        # Default OFF → extra unchanged → the current taker/market entry runs
+        # (behavior-preserving). LIVE-only: paper never reaches _place_live, and
+        # the broker maker path runs only in live mode. The B1 catastrophic stop
+        # is unaffected (it is a separate slPrice attachment, never an entry).
+        fc = self.fee_config
+        if fc is not None and getattr(fc, "maker_entry_enabled", False):
+            order.extra["maker_entry"] = True
+            order.extra["maker_rest_timeout_s"] = fc.maker_entry_rest_timeout_s
+            order.extra["maker_offset_pct"] = fc.maker_entry_offset_pct
+            order.extra["maker_fallback_mode"] = fc.maker_entry_fallback_mode
+
         # ── Place ───────────────────────────────────────────────────
         try:
             fill = await self.data_exec.place(order, division="bitunix_futures")
@@ -3273,6 +3358,18 @@ class BitunixFuturesObserver:
         except Exception as e:
             self._log_decision(verdict, original_payload, "error_snapshot",
                                note=f"broker.snapshot failed: {e}")
+            return
+
+        # ── breaker-abstain: a partial/under-reported equity read must NOT reach
+        # the drawdown breaker (phantom drawdown -> false flatten). Skip this
+        # cycle; the next complete read evaluates normally (real drawdown still
+        # flattens).
+        if self._abstain_on_incomplete_equity(snap):
+            self._log_decision(
+                verdict, original_payload, "abstained_incomplete_equity",
+                note="partial equity read (stablecoin dropped); drawdown breaker "
+                     "abstains this cycle",
+            )
             return
 
         if account_equity <= 0:
