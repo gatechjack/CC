@@ -607,9 +607,10 @@ class PolymarketLiveBroker(Broker):
         self._private_key = private_key
         self._funder = funder_address
         self._rpc_url = polygon_rpc_url
-        # E2·2: execution discipline (config-driven; E2·6 sources these from the
-        # copy-strategy config). order_type dispatches place_order: fak_synth
-        # (default) synthesizes FAK over GTC; gtc/fok/gtd pass through native.
+        # E2·2: execution discipline. order_type dispatches place_order: fak_synth
+        # (default) synthesizes FAK over GTC; gtc/fok/gtd pass through native. E5a
+        # sources these from the division's config (config/divisions.yaml), passed
+        # at construction by _build_broker_for_division; unset ⇒ these ctor defaults.
         ot = str(order_type).strip().lower()
         if ot not in _VALID_ORDER_TYPES:
             raise ValueError(

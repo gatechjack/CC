@@ -175,6 +175,11 @@ divisions:
     target_annual_return: 0.50
     standby: true
     enabled: true
+    # E5a — PolymarketLiveBroker execution tif (relocated from strategies.yaml
+    # [polymarket_copy_trader]). Read at broker construction; inert while
+    # broker:paper, activates when broker → polymarket (see 3B cutover).
+    order_type: fak_synth
+    fak_poll_seconds: 5
 
   # ── Kalshi (added 2026-05-10; Phase K1 read-only broker adapter) ──────
   # Phase K1 ships a single placeholder division anchored to the new
