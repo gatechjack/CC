@@ -75,6 +75,12 @@ _AGENT_STATE_SELECTED_WHALES = "selected_whales"
 _AGENT_STATE_WHALE_STATE_PREFIX = "whale_state:"  # per-whale state blob
 _AGENT_STATE_LAST_POLL_TS = "last_poll_ts"
 
+# E5b — dust threshold for the exit reconcile: a residual below this is
+# economically meaningless at the PCT's ~$1 sizing (a held lot is ~2-3 shares), so
+# treat it as a full exit (slot stays popped) rather than flag it forever. Kept in
+# sync with brokers.polymarket_live._EXIT_RESIDUAL_EPS (same semantic, no x-module import).
+_EXIT_RESIDUAL_EPS = 1e-3
+
 # ── E2·3 clamp-sizing defaults (D4) ──────────────────────────────────────
 # size = clamp(bankroll_usdc * per_trade_fraction * conviction_mult, min, max).
 # Defaults reproduce flat ≈$1/order with conviction OFF (replaced the v1 tier
@@ -810,6 +816,67 @@ class PolymarketCopyTraderAgent:
         if our_positions.pop(pos_key, None) is not None:
             state["our_positions"] = our_positions
             self._save_whale_state(wallet, state)
+
+    def record_exit_fill(self, order: ProposedOrder, fill: Any) -> float:
+        """E5b — reconcile a LIVE exit against its (possibly cumulative) fill: the
+        exit-side mirror of `record_entry_fill`.
+
+        Phase A already popped the slot optimistically (`_process_whale_activity`
+        :336) at proposal-emit, so we reconstruct the held lot from `order.extra`
+        (set by `_emit_exit`): held = `copy_size_usdc / implied_prob_at_entry` (== the
+        real held qty, since `record_entry_fill` made `copy_size_usdc / entry_price ==
+        the entry fill.qty`). `fill` may be None (a total no-fill exit) → fill_qty 0.
+
+        residual = held − cumulative fill.qty:
+          * residual ≤ EPS → leave the slot POPPED (full exit achieved); return 0.0.
+          * residual > EPS → RE-INSERT a COMPLETE, flagged residual slot (visible, not
+            orphaned) for manual reconcile; auto-retry is DEFERRED.
+
+        Returns the retained residual qty (0.0 on full exit / unlocatable) so the
+        caller can surface the manual-reconcile flag (audit + telegram). LIVE only —
+        the paper path returns early in `main` and never reaches this."""
+        loc = self._position_locator(order)
+        if loc is None:
+            return 0.0
+        wallet, pos_key = loc
+        ext = order.extra or {}
+        try:
+            entry_price = float(ext.get("implied_prob_at_entry") or 0.0)
+            copy_usdc = float(ext.get("copy_size_usdc") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        if entry_price <= 0.0 or copy_usdc <= 0.0:
+            return 0.0
+        held = copy_usdc / entry_price
+        try:
+            fill_qty = float(getattr(fill, "qty", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            fill_qty = 0.0
+        residual = held - fill_qty
+        if residual <= _EXIT_RESIDUAL_EPS:
+            return 0.0                                  # full exit → slot stays popped (Phase A)
+        state = self._load_whale_state(wallet)
+        if not state:
+            return 0.0
+        our_positions = dict(state.get("our_positions") or {})
+        our_positions[pos_key] = {                      # COMPLETE residual record (not a stub)
+            "condition_id": ext.get("condition_id"),
+            "outcome_index": ext.get("outcome_index"),
+            "outcome": ext.get("outcome"),
+            "copy_size_usdc": residual * entry_price,   # so a future _emit_exit reconstructs `residual`
+            "entry_price": entry_price,                 # original basis carried forward
+            "entry_ts": ext.get("entry_ts", 0),
+            "whale_usdc_size": ext.get("whale_usdc_size", 0.0),
+            "actual_fill_qty": residual,                # explicit residual lot
+            "execution_mode": "live",
+            "reconcile_needed": True,                   # ── the manual-reconcile flag ──
+            "reconcile_reason": "exit_no_fill" if fill_qty <= 0.0 else "exit_partial",
+            "reconcile_ts": ext.get("exit_ts", 0),
+            "residual_qty": residual,
+        }
+        state["our_positions"] = our_positions
+        self._save_whale_state(wallet, state)
+        return residual
 
 
 def force_close_whale_positions(

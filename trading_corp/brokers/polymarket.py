@@ -521,6 +521,46 @@ class PolymarketBroker(ReadOnlyBroker):
         except (TypeError, ValueError):
             return 0.0
 
+    async def best_bid(self, token_id) -> float:
+        """E5b — current BEST BID for `token_id` via py_clob_client `get_price`
+        (Level-0 public read). Used by `PolymarketLiveBroker`'s exit chase to price
+        each step off the bid. Returns 0.0 on any error / stub.
+
+        ⚠ LIVE-VERIFY at OP·E: whether `get_price(token_id, SELL)` returns the best
+        BID (the price a SELLER hits) vs the best ASK cannot be confirmed offline.
+        Mirrors `_midpoint_via_sdk`'s lazy-cached Level-0 client + defensive parse;
+        the chase clamps whatever this returns into a valid (0,1) band.
+        """
+        return await asyncio.to_thread(self._best_bid_via_sdk, token_id)
+
+    def _best_bid_via_sdk(self, token_id) -> float:
+        clob = getattr(self, "_clob_sdk", None)
+        if clob is None:
+            try:
+                from py_clob_client.client import ClobClient
+                clob = ClobClient(host=_CLOB_API)  # Level 0: open endpoints only
+            except Exception as e:
+                log.debug("PolymarketBroker: ClobClient(Level0) init failed: %s", e)
+                return 0.0
+            self._clob_sdk = clob
+        try:
+            from py_clob_client.order_builder.constants import SELL
+        except Exception as e:
+            log.debug("PolymarketBroker: SELL constant import failed: %s", e)
+            return 0.0
+        try:
+            resp = clob.get_price(token_id, SELL) or {}
+        except Exception as e:
+            log.debug(
+                "PolymarketBroker.get_price(%s, SELL) failed: %s", str(token_id)[:14], e,
+            )
+            return 0.0
+        raw = resp.get("price", resp.get("mid", resp.get("midpoint"))) if isinstance(resp, dict) else resp
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+
     # ── Phase 2a — market discovery for the arbitrage scanner ─────────
 
     async def list_markets(
