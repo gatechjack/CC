@@ -1358,6 +1358,60 @@ class BitunixBroker(Broker):
         avg = (notional / qty) if qty > 0 else 0.0
         return avg, fee, qty
 
+    async def get_recent_close_fills(
+        self, *, symbol: str, exit_side: str, since_ms: float | None = None,
+    ) -> list[dict]:
+        """Signed fetch of the REAL fills that CLOSED a position — for accurate
+        auto-booking of a server-side (B1) stop close (#1, replaces the optimistic
+        known-level estimate).
+
+        The B1 stop is venue-managed (attached to the entry via slPrice), so its
+        close fills carry a DIFFERENT orderId than the entry. We therefore query
+        by SYMBOL and keep only the `exit_side` fills (the side that CLOSES the
+        position = opposite of entry), optionally restricted to fills at/after
+        `since_ms` (the entry time) to exclude a prior position's close. Each kept
+        fill carries the REAL per-fill price/qty/fee — including the real maker-vs-
+        taker fee (B2 makes that per-fill variable, so we READ it, never assume a
+        rate). Aggregation (VWAP / summed fee) is the caller's job.
+
+        Returns a list of ``{"price","qty","fee"}`` for the close fills, or ``[]``
+        when none can be confidently identified — the caller then falls back to
+        the known-level estimate (a close is NEVER left unbooked).
+
+        VERIFY-ON-LIVE: the side/timestamp keys read here are inferred from the
+        BitUnix trade-history shape and are NOT yet verified against a real
+        close-fill response (agent SSH is read-only — no live call). If the live
+        shape differs, this returns ``[]`` and the estimate fallback fires (safe);
+        the real-fetch path needs a one-shot live validation at deploy.
+        """
+        want = (exit_side or "").upper()
+        try:
+            raw = await self.get_history_trades(symbol=symbol)
+        except Exception as e:
+            log.warning(
+                "get_recent_close_fills(%s): trade-history fetch failed: %s",
+                symbol, e,
+            )
+            return []
+        out: list[dict] = []
+        for t in (raw or []):
+            side = str(t.get("side") or t.get("tradeSide") or "").upper()
+            # Require a readable exit-side fill — if the venue omits side we
+            # CANNOT distinguish entry from close, so we skip (→ estimate fallback)
+            # rather than risk booking the entry fill as the close.
+            if not side or side != want:
+                continue
+            if since_ms:
+                tms = _to_float(t.get("ctime") or t.get("time") or t.get("ts"))
+                if tms and tms < float(since_ms):
+                    continue
+            out.append({
+                "price": _to_float(t.get("price")),
+                "qty": _to_float(t.get("qty")),
+                "fee": _to_float(t.get("fee")),
+            })
+        return out
+
     # ── Phase 4: cancel + kill-switch primitives ────────────────────────
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel one resting order by venue order id.
