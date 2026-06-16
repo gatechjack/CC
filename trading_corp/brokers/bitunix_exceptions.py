@@ -123,3 +123,23 @@ class BitunixStuckOrderCancelFailed(RuntimeError):
             f"BitUnix order {order_id!r} stuck at status={status!r} AND "
             f"cancel attempt failed — operator intervention may be required"
         )
+
+
+class BitunixMakerEntryUnfilled(RuntimeError):
+    """B2 maker-entry: the POST_ONLY maker limit did not fill within the rest
+    timeout (and was cancelled), AND the configured fallback mode is
+    ``abandon`` (do NOT cross to taker). Raised by
+    `BitunixBroker._place_maker_entry` so the caller treats the signal as
+    deliberately not-entered (an explicit abandon — NEVER a silent drop).
+
+    Only raised in ``fallback_mode='abandon'``. The default mode
+    (``cross_to_taker``) never raises this — it places a taker market entry
+    instead so the signal is not missed.
+    """
+
+    def __init__(self, order_id: str | None) -> None:
+        self.order_id = order_id
+        super().__init__(
+            f"BitUnix maker entry {order_id!r} unfilled within rest timeout; "
+            f"fallback_mode=abandon — signal deliberately not entered"
+        )

@@ -68,6 +68,7 @@ Margin coins:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import logging
 import random
@@ -82,6 +83,7 @@ import httpx
 
 from trading_corp.brokers.base import AccountSnapshot, Broker
 from trading_corp.brokers.bitunix_exceptions import (
+    BitunixMakerEntryUnfilled,
     BitunixPositionModeMismatch,
     BitunixStaleSnapshot,
     BitunixStuckOrderCancelFailed,
@@ -229,6 +231,17 @@ _RETRY_CAP_DELAY_S = 4.0
 _RETRY_WALLCLOCK_CAP_S = 10.0
 # HTTP statuses we treat as transient (after `raise_for_status()`).
 _RETRY_HTTP_STATUSES = {408, 429, 502, 503, 504}
+
+# ── B2 maker (POST_ONLY) entry execution defaults ───────────────────────────
+# A maker entry rests as a POST_ONLY limit (guaranteed-maker — BitUnix rejects
+# it if it would cross, so it can never accidentally take). These are FALLBACK
+# defaults only: the observer stamps the real values from config onto
+# `order.extra` when the operator flips the maker flag ON (DEFAULT OFF). Absent
+# `extra["maker_entry"]`, place_order keeps its current taker/market path
+# unchanged (behavior-preserving).
+_MAKER_REST_TIMEOUT_S = 2.0      # short rest, to not worsen the PA-redeem late-entry drag
+_MAKER_OFFSET_PCT = 0.0          # passive offset from the signal/reference price (0 = at ref)
+_MAKER_FALLBACK_MODE = "cross_to_taker"   # 'cross_to_taker' | 'abandon'
 
 
 def _is_retryable_httpx_exc(exc: Exception) -> bool:
@@ -1001,17 +1014,23 @@ class BitunixBroker(Broker):
             log.warning("rest_request_retried audit failed: %s", e)
 
     # ── Phase 4: order placement ────────────────────────────────────────
-    async def place_order(self, order: ProposedOrder) -> FillEvent:
-        # Wrapper: invalidate the snapshot poll-cache after any entry/exit
-        # attempt (success OR raise) so the next snapshot() reads post-trade
-        # equity/positions fresh — never a pre-trade cached value that sizing
-        # or the drawdown breaker would act on.
+    async def place_order(
+        self, order: ProposedOrder, *, fill_timeout_s: float | None = None,
+    ) -> FillEvent:
+        # Wrapper (b0ae39d 10006): invalidate the snapshot poll-cache after any
+        # entry/exit attempt (success OR raise) so the next snapshot() reads
+        # post-trade equity/positions fresh — never a pre-trade cached value the
+        # sizing/breaker would act on. `fill_timeout_s` threads through for the B2
+        # maker rest window (the maker/taker clones re-enter via this wrapper, so
+        # each placement also invalidates the cache).
         try:
-            return await self._place_order_impl(order)
+            return await self._place_order_impl(order, fill_timeout_s=fill_timeout_s)
         finally:
             self._invalidate_snapshot_cache()
 
-    async def _place_order_impl(self, order: ProposedOrder) -> FillEvent:
+    async def _place_order_impl(
+        self, order: ProposedOrder, *, fill_timeout_s: float | None = None,
+    ) -> FillEvent:
         """Place a live BitUnix futures order (one-way mode).
 
         Opening vs reducing is taken from ``order.extra["reduce_only"]`` (the
@@ -1038,6 +1057,12 @@ class BitunixBroker(Broker):
 
         extra = order.extra or {}
         reduce_only = bool(extra.get("reduce_only", False))
+        # B2 maker-entry dispatch: ENTRIES only (never exits/reduce-only, and
+        # never the B1 catastrophic stop, which is a separate slPrice attachment
+        # that stays MARK_PRICE+MARKET taker). Absent extra["maker_entry"] this is
+        # skipped → the current taker/market path runs unchanged.
+        if not reduce_only and extra.get("maker_entry"):
+            return await self._place_maker_entry(order)
         wire = to_wire_format(order.symbol)
 
         # Fail-closed position-mode guard (sets+verifies ONE_WAY on a flat entry).
@@ -1076,6 +1101,7 @@ class BitunixBroker(Broker):
 
         status, filled_qty, avg_price, fee = await self._observe_fill(
             order_id=venue_order_id, client_id=client_id,
+            fill_timeout_s=fill_timeout_s,
         )
 
         # Encode non-terminal status in the venue suffix (mirrors coinbase):
@@ -1100,11 +1126,107 @@ class BitunixBroker(Broker):
             fee=fee,
         )
 
+    async def _place_maker_entry(self, order: ProposedOrder) -> FillEvent:
+        """B2: place the ENTRY as a POST_ONLY maker limit; on non-fill within the
+        rest timeout (or a post-only would-cross rejection) fall back to a taker
+        market entry so the signal is NEVER silently dropped.
+
+        Maker params come from `order.extra` (stamped by the observer from the
+        FeeConfig.maker_entry_* fields): `maker_rest_timeout_s`,
+        `maker_offset_pct`, `maker_fallback_mode` ('cross_to_taker' default |
+        'abandon'). The maker and taker-fallback attempts use DISTINCT clientIds
+        (-mk / -tk) so the cancelled maker can't 30042-collide the fallback. #1's
+        signed-fetch auto-book reads the real per-fill fee, so a maker fill books
+        at the maker rate automatically.
+
+        VERIFY-ON-LIVE: the exact BitUnix rejection code for a POST_ONLY-would-
+        cross is not confirmed read-only — so ANY business rejection
+        (BitunixAPIError) of the maker order, and any clean stuck-cancel
+        (non-fill), routes to the taker fallback. A cancel-FAILED on the maker
+        (BitunixStuckOrderCancelFailed) does NOT fall back: the resting maker may
+        still fill, so crossing would risk a DOUBLE position → it raises loud for
+        operator intervention.
+        """
+        extra = order.extra or {}
+        timeout_s = float(extra.get("maker_rest_timeout_s", _MAKER_REST_TIMEOUT_S))
+        mode = str(extra.get("maker_fallback_mode", _MAKER_FALLBACK_MODE))
+
+        maker = self._maker_clone(order)
+        if maker is None:
+            log.info("B2 maker entry: no usable reference price for order_id=%s "
+                     "— placing taker market entry", order.id)
+            return await self.place_order(self._taker_clone(order))
+
+        try:
+            # Fills (full or partial) → place_order returns the FillEvent.
+            return await self.place_order(maker, fill_timeout_s=timeout_s)
+        except BitunixStuckOrderCancelled:
+            log.info("B2 maker entry unfilled within %.1fs (cancelled) — "
+                     "crossing to taker [order_id=%s]", timeout_s, order.id)
+        except BitunixStuckOrderCancelFailed:
+            raise  # resting maker may still fill → crossing = double-fill risk
+        except BitunixAPIError as e:
+            log.info("B2 maker entry rejected (code=%s) — crossing to taker "
+                     "[order_id=%s]: %s", e.code, order.id, e.msg)
+
+        if mode == "abandon":
+            raise BitunixMakerEntryUnfilled(order_id=order.id)
+        # 'cross_to_taker' (default; any unrecognized mode also crosses — never
+        # silently drops the signal).
+        return await self.place_order(self._taker_clone(order))
+
+    def _maker_clone(self, order: ProposedOrder) -> "ProposedOrder | None":
+        """A POST_ONLY LIMIT copy of an entry order, priced passively at a
+        configurable offset from the signal/reference price (buy BELOW ref, sell
+        ABOVE ref → rests as maker; POST_ONLY rejects if it would still cross).
+        Returns None when no usable reference price exists (caller → taker)."""
+        extra = order.extra or {}
+        ref = extra.get("entry_reference_price")
+        if ref is None:
+            ref = order.limit_price
+        try:
+            ref = float(ref) if ref is not None else 0.0
+        except (TypeError, ValueError):
+            ref = 0.0
+        if ref <= 0:
+            return None
+        try:
+            offset = float(extra.get("maker_offset_pct", _MAKER_OFFSET_PCT))
+        except (TypeError, ValueError):
+            offset = _MAKER_OFFSET_PCT
+        side = (order.side or "").lower()
+        limit = ref * (1.0 - offset) if side == "buy" else ref * (1.0 + offset)
+        new_extra = {k: v for k, v in extra.items() if k != "maker_entry"}
+        new_extra["tif"] = "POST_ONLY"
+        new_extra["client_id_suffix"] = "-mk"
+        return dataclasses.replace(
+            order, order_type="limit", limit_price=limit, extra=new_extra,
+        )
+
+    def _taker_clone(self, order: ProposedOrder) -> ProposedOrder:
+        """A plain taker MARKET copy of an entry order (the maker fallback = the
+        current behavior), with a distinct clientId suffix so it can't 30042-
+        collide with the cancelled maker attempt."""
+        extra = order.extra or {}
+        new_extra = {k: v for k, v in extra.items()
+                     if k not in ("maker_entry", "tif")}
+        new_extra["client_id_suffix"] = "-tk"
+        return dataclasses.replace(
+            order, order_type="market", limit_price=None, extra=new_extra,
+        )
+
     def _client_id(self, order: ProposedOrder) -> str:
         """Deterministic idempotency key: the same ProposedOrder always maps to
         the same clientId, so a retry that 30042-duplicates is provably
-        'already placed', not a double-send."""
-        return f"{_CLIENT_ID_PREFIX}{order.id}"
+        'already placed', not a double-send.
+
+        `extra["client_id_suffix"]` (B2): the maker attempt ("-mk") and its
+        taker fallback ("-tk") MUST carry distinct clientIds — otherwise the
+        cancelled maker's clientId would 30042-collide on the taker fallback and
+        the broker would wrongly treat the fallback as already-placed. The suffix
+        keeps determinism (same order+suffix → same clientId)."""
+        suffix = str((order.extra or {}).get("client_id_suffix", ""))
+        return f"{_CLIENT_ID_PREFIX}{order.id}{suffix}"
 
     def _build_order_body(
         self, order: ProposedOrder, wire: str, reduce_only: bool,
@@ -1340,7 +1462,7 @@ class BitunixBroker(Broker):
             return data
         return []
 
-    async def _observe_fill(self, *, order_id, client_id):
+    async def _observe_fill(self, *, order_id, client_id, fill_timeout_s=None):
         """Poll order detail to a terminal/partial state, then derive the VWAP
         fill price + total fee + filled qty from trade history (neither order
         detail nor pending orders carry a fill price — only the fills do).
@@ -1373,10 +1495,17 @@ class BitunixBroker(Broker):
         fills, this is the knob to raise (config addition deferred until
         we have evidence the default is too tight).
         """
+        # B2: a maker entry passes a short `fill_timeout_s` so the resting
+        # POST_ONLY limit's rest window = the maker timeout (not the default
+        # fill-stuck budget). None → default budget (current taker behavior).
+        max_polls = self._fill_max_polls
+        if fill_timeout_s is not None and self._fill_poll_interval_s > 0:
+            _n = float(fill_timeout_s) / self._fill_poll_interval_s
+            max_polls = max(1, int(_n) + (0 if _n == int(_n) else 1))
         status: str | None = None
         filled_qty = 0.0
         resolved_id = order_id
-        for i in range(self._fill_max_polls):
+        for i in range(max_polls):
             detail = await self.get_order_detail(
                 order_id=resolved_id,
                 client_id=None if resolved_id else client_id,
@@ -1387,7 +1516,7 @@ class BitunixBroker(Broker):
                 filled_qty = _to_float(detail.get("tradeQty"))
             if status in _TERMINAL_STATUSES:
                 break
-            if i < self._fill_max_polls - 1:
+            if i < max_polls - 1:
                 await asyncio.sleep(self._fill_poll_interval_s)
 
         # Stuck-order check (sub-item 3). Polling exhausted without a
