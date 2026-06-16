@@ -558,6 +558,15 @@ class BitunixBroker(Broker):
         # ($6,763.94 vs real $3,381.97). The 2026-05-03 reconciliation
         # ("transfer is additive") was incorrect — retracted in memory
         # `trading_corp_bitunix_vision.md`.
+        # Two completeness flags (reconciled: b0ae39d 10006 + e947ab4 breaker-abstain):
+        #  * equity_complete — True unless a STABLECOIN balance read errors (which
+        #    under-reports equity). Surfaced on AccountSnapshot so the drawdown
+        #    breaker ABSTAINS on a partial read instead of false-flattening.
+        #  * complete — the BROADER flag (stablecoin AND position reads OK) that
+        #    gates the snapshot CACHE (never cache a partial). A position-read error
+        #    sets complete=False but leaves equity_complete True (positions don't
+        #    enter the equity sum).
+        equity_complete = True
         complete = True
         total_equity = 0.0
         total_cash = 0.0
@@ -576,9 +585,10 @@ class BitunixBroker(Broker):
                     "BitUnix account error for %s: code=%s msg=%r",
                     margin_coin, ad.get("code"), ad.get("msg"),
                 )
-                # Partial read (e.g. 10006): this coin is dropped from the
-                # equity sum, so the snapshot under-reports. Mark incomplete so
-                # it is never cached and the breaker isn't fed an under-count.
+                # This coin is dropped from the equity sum -> equity UNDER-reported.
+                # equity_complete=False → the breaker abstains; complete=False →
+                # never cache the partial.
+                equity_complete = False
                 complete = False
                 continue
             d = ad.get("data") or {}
@@ -654,6 +664,7 @@ class BitunixBroker(Broker):
                 buying_power=cash,
                 cash=cash,
                 positions=positions,
+                equity_complete=equity_complete,
             ),
             complete,
         )
