@@ -36,27 +36,24 @@ read-only prod probe 2026-06-15).
 > disk unused until 3B.
 
 ```
-# (i) git-status guard — surface a diverged/locally-edited prod checkout BEFORE touching it
-ssh azureuser@trading.jacksumner.com "cd trading_corp && git status --porcelain && git rev-parse HEAD"
-# >>> expect: clean (no porcelain output). If tracked files show modified (the reconciler P1 landed as
-#     single-file edits), STOP and inspect — do NOT ff over local edits.
+# PROD IS NOT A GIT CHECKOUT — /home/azureuser/trading_corp has no .git (`git rev-parse` →
+# "not a git repository", probe-confirmed). There is NO git fetch/merge/status on prod; ALL artifacts
+# (lock, txt, the deploy script) arrive by scp / ssh-stdin from the operator's LOCAL checkout.
+# `git push origin main` (already done) updated GitHub CANONICAL only — it did NOT reach prod. Canonical
+# is git (origin/main); prod is kept in sync by the operator's FILE COPY, not a pull.
 
-# (ii) fetch + show the SHA you are about to fast-forward to
-ssh azureuser@trading.jacksumner.com "cd trading_corp && git fetch origin && git log --oneline -1 origin/main"
-# >>> confirm the printed SHA is the merged-fix main you expect, THEN:
-ssh azureuser@trading.jacksumner.com "cd trading_corp && git merge --ff-only origin/main"
-# >>> if ff-only balks → STOP and inspect (diverged checkout); do not force.
-
-# (iii) stage the install inputs to /tmp (deploy_e1_lock.sh reads + md5-gates /tmp, aborts if absent)
-ssh azureuser@trading.jacksumner.com "cp trading_corp/deploy/polymarket_e1/requirements.{lock,txt} /tmp/"
+# (i) scp the install inputs from the LOCAL checkout to prod /tmp (deploy_e1_lock.sh reads + md5-gates
+#     /tmp/requirements.{lock,txt}, aborts if absent). Run from the local deploy dir:
+cd "C:\Users\AA Incorporado\cc\deploy\polymarket_e1"
+scp requirements.lock requirements.txt azureuser@trading.jacksumner.com:/tmp/
 # >>> the script md5-gates these: lock a47fc93e2103bd4687ac8bd8717759c4 / txt 2aee61909bc22cf4fdf6f68ca5166fa3.
-#     (After the ff, the checkout copies ARE the corrected files, so the gate matches.)
 
-# (iv) md5-diff pre-state (engineering gate): capture the installed set BEFORE install
+# (ii) md5-diff pre-state (engineering gate): capture the installed set BEFORE install (read-only)
 ssh azureuser@trading.jacksumner.com "cd trading_corp && venv/bin/pip freeze | md5sum"
 
-# (v) install-only, hashed, NO restart (deploy_e1_lock.sh is install-only by design — it does NOT restart)
-ssh azureuser@trading.jacksumner.com "cd trading_corp && bash deploy/polymarket_e1/deploy_e1_lock.sh"
+# (iii) install-only, hashed, NO restart. The SCRIPT also arrives by stdin (NOT a prod-side copy) — pipe
+#       deploy_e1_lock.sh through ssh→bash; it reads /tmp/requirements.{lock,txt} (BASE is absolute):
+gc deploy_e1_lock.sh -Raw | ssh azureuser@trading.jacksumner.com "tr -d '\r'|bash"
 # >>> expect in output: "ALLOWED EXCEPTION (web3 6.11 pkg_resources fix, scoped): setuptools: 82.0.1 -> 80.10.2"
 #     then "ADDITIVE OK — N new packages to add, 1 allowed exception(s), 0 unexpected changes". The "(no restart
 #     performed)" footer confirms it did not bounce the service.
@@ -91,6 +88,10 @@ ssh azureuser@trading.jacksumner.com "systemctl show trading-corp.service -p Mai
 > The one venv bounce. Live Bitunix re-imports on the new locked deps here. **Arming requires TWO ExecStart
 > changes, not one** (see below), applied via `az vm run-command` (the unit file is root-owned and general sudo
 > needs a password unavailable over ssh), then `daemon-reload` (NOPASSWD ssh-sudo) BEFORE the restart.
+>
+> **Order — every edit lands BEFORE the ONE restart so they ride it together (no extra bounce):**
+> **3B.0** flip the `divisions.yaml` broker line → **3B.1** ExecStart arm → **3B.2** daemon-reload →
+> **3B.3** single restart → verify.
 
 ### Why two args (critical — the slug alone is a silent no-op)
 The E2·4 gate (`main.py:1980-1982`): `is_live_division = family_live_capable AND slug ∈ live_divisions`, where
@@ -105,6 +106,52 @@ use exactly this example).
 ```
 ExecStart=/usr/bin/xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix polymarket --live-divisions polymarket_copy_trading
 ```
+
+### 3B.0 — flip PCT's `divisions.yaml` broker line: `paper → polymarket` (DO THIS FIRST, before 3B.1)
+**Why (the silent-stay-paper gap):** the construction branch is chosen by `family = division.broker`
+(`main.py:1971`), **not** by `--brokers`. PCT's prod entry is `broker: paper` → `family == "paper"` → PCT builds
+the PAPER broker no matter what the ExecStart args say. So the broker line MUST be flipped to `polymarket` first,
+or the whole cutover is a silent no-op.
+
+**Pre-edit stale-file check (operator — flagged, NOT resolved here):** prod's `config/divisions.yaml` is dated
+**May 31** and may be stale vs origin/main. The targeted broker-line edit below is safe *because* it touches only
+that one line and preserves the rest — but if prod is materially stale the operator should reconcile first.
+Read-only diff:
+```
+scp azureuser@trading.jacksumner.com:trading_corp/config/divisions.yaml /tmp/prod_divisions.yaml
+# then diff /tmp/prod_divisions.yaml vs config/divisions.yaml in the local checkout (read-only)
+```
+
+**Delivery — a TARGETED in-place edit (NOT a full-file scp, NOT git).** Prod's `config/divisions.yaml` is
+**azureuser-owned** (`-rw-r--r-- azureuser`), so a direct ssh edit works — **no sudo/az** (unlike the root-owned
+unit file). Run a small `@file` via stdin (mirrors the deploy/arm pattern; keeps the paste line short). Create
+`flip_pct_broker.sh` locally:
+```
+#!/usr/bin/env bash
+set -euo pipefail
+F=/home/azureuser/trading_corp/config/divisions.yaml
+n=$(grep -c 'broker: paper' "$F")        # guard: broker:paper must be UNIQUE to PCT
+[ "$n" = "1" ] || { echo "ABORT: 'broker: paper' x$n (expected 1=PCT); use a slug-ranged edit"; exit 1; }
+cp -p "$F" "$F.bak-pre-pct-flip-$(date -u +%Y%m%d-%H%M)"
+sed -i 's/broker: paper/broker: polymarket/' "$F"
+echo "flipped:"; grep -n -A1 'slug: polymarket_copy_trading' "$F" | grep broker
+```
+Deliver + run it (azureuser-owned → no sudo):
+```
+gc flip_pct_broker.sh -Raw | ssh azureuser@trading.jacksumner.com "tr -d '\r'|bash"
+```
+- >>> expect `flipped: broker: polymarket` under `polymarket_copy_trading`. If the guard ABORTS (`broker: paper`
+  not unique), STOP and use a slug-ranged sed (`/slug: polymarket_copy_trading/,/- slug:/ s/broker: paper/broker:
+  polymarket/`) instead.
+
+**`standby` (optional, cosmetic):** PCT's entry is `standby: true` — a UI badge only, **no functional gate**
+(the setup loop gates on `enabled`, not `standby`; probe-confirmed). Flip to `false` for UI accuracy if you like;
+it is **not required** for live trading.
+
+**Timing — rides the SAME single restart.** `divisions.yaml` is read once at startup (`_read_yaml` is
+`@lru_cache`; broker build `main.py:547`), so this flip takes effect only on the next restart — and that's the
+**same single 3B restart (3B.3) below.** Do this edit NOW (before 3B.1); it loads on that one restart — **no
+extra Bitunix bounce.**
 
 ### 3B.1 — edit ExecStart via `az vm run-command` (root; @file, NOT inline — inline gets mangled)
 Create a local `@file` `arm_pct.sh` (backs up the unit, appends the two args to the ExecStart line, prints the
@@ -163,6 +210,10 @@ ssh azureuser@trading.jacksumner.com "journalctl -u trading-corp.service -n 200 
 - Arb paper: arb's slug is absent from `--live-divisions` (confirmed in 3B.5) → it resolves the read-only
   `PolymarketBroker` by construction (E2·4 tests assert this) → arb never places. Confirm operationally that
   **no live tx / `execution_mode='live'` row appears for `polymarket_arbitrage`** at/after OP·E.
+- **Silent-stay-paper closed (ties to 3B.0):** the preflight's PRESENCE also confirms the 3B.0 broker flip took —
+  with the old `broker: paper`, PCT would resolve the read-only broker and emit **no preflight at all**. Preflight
+  present ⇒ `broker: polymarket` loaded **and** both args armed ⇒ a LIVE `PolymarketLiveBroker`. (No preflight
+  despite the ExecStart args = the broker flip didn't land — re-check 3B.0.)
 
 **3B pass-check:** service active + Bitunix healthy; no web3/pkg_resources failure in logs; `/proc/cmdline` carries
 both args; polymarket preflight ran (PCT live); `connect()` preflight PASSED (wallet provisioned — 119.978358
@@ -233,18 +284,20 @@ the guard — that's intentional.)
 ## One-screen
 1. **[OP]** Step-1 guard preview vs live venv → clean (0 CHANGED, 1 allowed exception) before anything.
 2. **[OP]** Merge fix branch (+validation), NOT the stale prep `deploy/`. Push.
-3. **[OP][flat]** 3A: git-status guard → ff-only → **cp lock+txt to /tmp** → pip-freeze md5 → install-only (no
-   restart). Verify setuptools 80.10.2, Bitunix MainPID un-bounced. STOP.
-4. **[OP][flat]** 3B: `az vm run-command @file` to set ExecStart with **`--brokers bitunix polymarket` AND
-   `--live-divisions polymarket_copy_trading`** → `daemon-reload` → restart `trading-corp.service` → Bitunix clean,
-   no web3 traceback, `/proc/cmdline` carries both args, polymarket preflight ran (PCT live / arb paper).
+3. **[OP][flat]** 3A: **scp lock+txt to /tmp** (NO git on prod — it's a file-deployed copy) → pip-freeze md5 →
+   install-only via the **piped** `deploy_e1_lock.sh` (no restart). Verify setuptools 80.10.2, Bitunix MainPID
+   un-bounced. STOP.
+4. **[OP][flat]** 3B: **3B.0 flip `divisions.yaml` `broker: paper → polymarket` FIRST** (else silent-stay-paper) →
+   `az vm run-command @file` ExecStart with **`--brokers bitunix polymarket` AND `--live-divisions
+   polymarket_copy_trading`** → `daemon-reload` → ONE restart `trading-corp.service` (the broker flip rides it) →
+   Bitunix clean, no web3 traceback, `/proc/cmdline` both args, polymarket preflight ran (PCT live / arb paper).
 5. **[OP]** 3C: one $1 live copy. Confirm live tx, `execution_mode='live'`, FAK behavior, write-back if partial,
    `size_matched`. **Watch the exit by hand.**
 6. Don't scale: close the E5 exit gap + roster review first.
 
 ---
 
-## Changelog — 7 fixes vs the prior Step-3 draft (all verified read-only on prod 2026-06-15)
+## Changelog — 9 fixes vs the prior Step-3 draft (all verified read-only on prod 2026-06-15)
 1. **Unit name** → `trading-corp.service` (HYPHEN) everywhere; the underscore `trading_corp` is dir/module only.
 2. **3A /tmp staging** added — `deploy_e1_lock.sh` reads + md5-gates `/tmp/requirements.{lock,txt}` and aborts if
    absent; the prior draft would abort (txt was never staged).
@@ -257,3 +310,15 @@ the guard — that's intentional.)
    journal (PCT live; arb has no preflight → paper). No guessed per-division log line (none exists).
 7. **3B disarm** corrected to the real mechanism (az `@file` ExecStart edit dropping the args → daemon-reload →
    restart), not a flag toggle.
+8. **Delivery model: git → scp (the big one).** Prod (`/home/azureuser/trading_corp`) is NOT a git checkout
+   (probe: `git rev-parse` → "not a git repository") — it's a file-deployed copy. **Removed** 3A's `git fetch` /
+   `git merge --ff-only origin/main` / `git status` block entirely; ALL artifacts (lock, txt, the deploy script)
+   now arrive by **scp / ssh-stdin** from the LOCAL checkout (the script is piped `gc … | ssh "tr -d '\r'|bash"`,
+   not run against a prod-side copy). `git push origin main` updates GitHub **canonical only** — it does NOT reach
+   prod; the operator keeps prod in sync by file copy.
+9. **3B.0 — `divisions.yaml` broker flip (new step-0).** `family = division.broker` (`main.py:1971`), so PCT's
+   `broker: paper` builds a PAPER broker regardless of `--brokers`/`--live-divisions` (silent-stay-paper). Added a
+   **targeted in-place** `broker: paper → polymarket` edit (azureuser-owned file → no sudo/az, unlike the unit
+   edit) **before** the ExecStart arm; it **rides the SAME single restart** (config read-once at startup via
+   `_read_yaml` `@lru_cache`). `standby` flagged cosmetic (UI-only). Plus a stale-prod-file operator check
+   (read-only diff before editing) and a 3B.6 verify tie-in (preflight presence confirms the flip took).
