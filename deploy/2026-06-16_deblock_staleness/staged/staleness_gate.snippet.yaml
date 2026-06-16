@@ -1,0 +1,10 @@
+  # C (2026-06-16) — bar-interval-aware staleness-reject gate. Rejects an
+  # ENTRY whose originating bar is older than (bar_interval_seconds + margin),
+  # so a freeze- or webhook-retry-delayed alert can't open a stale, adverse
+  # entry (see reports/2026-06-16_entry_latency_investigation.md — the 00:38
+  # trade entered ~11.5 min late and stopped out). Interval-aware: 3m → 300s,
+  # 15m → 1020s. Entry-only (exits always act). Independent of the webhook
+  # 20-min anti-replay window. Shipped ON — it's a safety gate.
+  staleness_gate:
+    enabled: true                  # safety gate ON; set false to disable (current pre-C behavior)
+    margin_seconds: 120            # threshold = bar_interval_seconds + this; 3m bar → 180+120 = 300s
