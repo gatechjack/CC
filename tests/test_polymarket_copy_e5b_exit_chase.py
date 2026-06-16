@@ -406,6 +406,73 @@ def test_record_exit_fill_unlocatable_returns_zero(strategy):
     assert agent.record_exit_fill(order, _fe(0.5, 0.5)) == 0.0
 
 
+# ── single-shot exit reconcile (the OP·E-live path: chase OFF) ───────────────
+
+
+@pytest.mark.asyncio
+async def test_single_shot_exit_partial_retains_flagged(strategy, monkeypatch):
+    """OP·E-live path. A LIVE exit with exit_chase DISABLED goes through the SINGLE-SHOT
+    place_order_fak_synth (the gate short-circuits — _run_exit_chase is NOT entered), and
+    the is_entry-gated reconcile FLOOR still retains + flags a partial. Proves the
+    reconcile works on the simple single-shot exit that is actually live at the shakedown,
+    not only on the chase cumulative (Deviation #2: the reconcile floor is on at the 3B
+    cutover, independent of the chase)."""
+    agent, _ = strategy
+    order = _exit_proposal()                       # held = 0.42 / 0.42 = 1.0
+
+    # ── (A) gate OFF: exit_chase unset → single-shot path, chase NOT entered ──
+    b = PolymarketLiveBroker(private_key="0xk", funder_address="0xf",
+                             polygon_rpc_url="http://rpc")     # NO exit_chase
+    assert b._exit_chase is None
+    b._clob = MagicMock()
+    b._connected = True
+    single_shot = AsyncMock(return_value=_fe(0.4, 0.55))       # ONE partial FillEvent
+    monkeypatch.setattr(pl, "_place_order_fak_synth_fn", single_shot)
+    chase = AsyncMock()
+    monkeypatch.setattr(PolymarketLiveBroker, "_run_exit_chase", chase)
+
+    fill = await b.place_order(order)
+    chase.assert_not_awaited()                                 # the chase loop was NOT entered
+    single_shot.assert_awaited_once_with(b._clob, order, poll_seconds=b._fak_poll_seconds)
+    assert fill.qty == pytest.approx(0.4)
+
+    # ── (B) reconcile FLOOR retains the partial (is_entry-gated, not chase-gated) ──
+    _seed(agent)
+    residual = agent.record_exit_fill(order, fill)
+    assert residual == pytest.approx(0.6)
+    pos = _pos(agent)
+    assert pos is not None                                     # RETAINED, not popped
+    assert pos["actual_fill_qty"] == pytest.approx(0.6)
+    assert pos["residual_qty"] == pytest.approx(0.6)
+    assert pos["reconcile_needed"] is True
+    assert pos["reconcile_reason"] == "exit_partial"
+
+
+@pytest.mark.asyncio
+async def test_single_shot_exit_full_pops(strategy, monkeypatch):
+    """Boundary: a single-shot exit (chase OFF) that fills the WHOLE lot → slot stays
+    popped, no reconcile flag."""
+    agent, _ = strategy
+    order = _exit_proposal()                       # held = 1.0
+    b = PolymarketLiveBroker(private_key="0xk", funder_address="0xf",
+                             polygon_rpc_url="http://rpc")
+    assert b._exit_chase is None
+    b._clob = MagicMock()
+    b._connected = True
+    monkeypatch.setattr(pl, "_place_order_fak_synth_fn",
+                        AsyncMock(return_value=_fe(1.0, 0.55)))
+    chase = AsyncMock()
+    monkeypatch.setattr(PolymarketLiveBroker, "_run_exit_chase", chase)
+
+    fill = await b.place_order(order)
+    chase.assert_not_awaited()                                 # single-shot, no chase
+    assert fill.qty == pytest.approx(1.0)
+
+    _seed(agent)
+    assert agent.record_exit_fill(order, fill) == 0.0
+    assert _pos(agent) is None                                 # full single-shot exit → popped
+
+
 # ── central invariant (end-to-end via the scan + Phase-A pop) ────────────────
 
 
