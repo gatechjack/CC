@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS audit_event (
     payload_json TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_audit_event_ts ON audit_event(ts);
+-- (actor, kind) composite — serves the hot-path readers that filter
+-- `WHERE actor = ? AND kind = ...`: polymarket_resolver, kalshi_resolver,
+-- polymarket_arbitrage's per-condition dedup, and the bitunix position
+-- reconciler. Without it they full-SCAN the (large, 7-figure-row) audit_event
+-- table on the event loop; with it they SEARCH the tiny (actor,kind) subset
+-- (EQP-verified SCAN->SEARCH). Added 2026-06-16 (A — de-block the event loop;
+-- companion to the risk.py polymarket-scan removal). Additive + idempotent.
+CREATE INDEX IF NOT EXISTS ix_audit_event_actor_kind ON audit_event(actor, kind);
 
 CREATE TABLE IF NOT EXISTS proposed_order (
     id           TEXT PRIMARY KEY,            -- uuid

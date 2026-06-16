@@ -388,64 +388,36 @@ def test_pct_over_cap_single_market_rejected(risk_agent):
     assert "single-market" in v.reason
 
 
-def test_sum_polymarket_today_counts_both_actors(tmp_path):
-    """Group A #1: _sum_polymarket_today now counts polymarket_copy_trader
-    rows alongside polymarket_arbitrage (was arbitrage-only)."""
+# Group A aggregate-cap tests REMOVED 2026-06-16 (A / Phase-2): the
+# audit_event-scanning daily-spend / open-notional / max-open-COUNT caps and
+# their scan helpers (_sum_polymarket_today, _polymarket_open_positions,
+# _sum_polymarket_open) were deleted — they full-scanned the 1.19M-row
+# audit_event on the event-loop thread and froze the engine. Replaced by the
+# single test below (caps gone, no scan). Atomic caps + the global drawdown
+# breaker stay covered (single-market test above; test_risk_gates.py).
+
+
+def test_aggregate_caps_removed_no_audit_scan(tmp_path):
+    """A / Phase-2 (de-block): the audit_event-scanning AGGREGATE caps are GONE.
+    The three scan helpers are deleted, and a prediction-market order that WOULD
+    have tripped the old max-open / open-aggregate caps now APPROVES — proving
+    no audit_event scan runs in the risk-eval path. Atomic caps and the global
+    drawdown breaker are untouched (test_risk_gates.py)."""
+    assert not hasattr(RiskAgent, "_sum_polymarket_today")
+    assert not hasattr(RiskAgent, "_polymarket_open_positions")
+    assert not hasattr(RiskAgent, "_sum_polymarket_open")
+
     db_url, db_path = _init_test_db(tmp_path)
-    _insert_open_audit(db_path, condition_id="0xA", order_id="arb-1")   # 20*0.05 = $1
-    _insert_pct_open_audit(db_path, order_id="pct-1")                   # 20*0.05 = $1
-    assert RiskAgent._sum_polymarket_today(db_url) == pytest.approx(2.0)
-
-
-def test_sum_polymarket_open_counts_unresolved_both_actors(tmp_path):
-    """Group A #2: _sum_polymarket_open (was a 0.0 stub) sums open notional
-    across both actors and excludes resolved positions."""
-    db_url, db_path = _init_test_db(tmp_path)
-    _insert_open_audit(db_path, condition_id="0xA", order_id="arb-1")   # $1
-    _insert_pct_open_audit(db_path, order_id="pct-1")                   # $1
-    assert RiskAgent._sum_polymarket_open(db_url) == pytest.approx(2.0)
-    # Resolve the arbitrage one → only the open PCT $1 remains.
-    _insert_resolved_round_trip(db_path, order_id="arb-1", condition_id="0xA")
-    assert RiskAgent._sum_polymarket_open(db_url) == pytest.approx(1.0)
-
-
-def test_sum_polymarket_open_empty_db_is_zero(tmp_path):
-    db_url, _ = _init_test_db(tmp_path)
-    assert RiskAgent._sum_polymarket_open(db_url) == 0.0
-
-
-def test_max_open_positions_allows_nth_rejects_n_plus_1(tmp_path):
-    """Group A #2: max_open_positions=2 → the 2nd entry is allowed, the 3rd is
-    rejected. Other caps are permissive so only the count cap is in play."""
-    db_url, db_path = _init_test_db(tmp_path)
-    risk = RiskAgent(risk_yaml=_risk_yaml_with_max_open(tmp_path, max_open=2),
-                     narrator_enabled=False)
-    # 1 open position → a new (2nd) entry is allowed.
-    _insert_pct_open_audit(db_path, order_id="pct-1", price=0.5, qty=2.0)
-    v = risk.evaluate(_pct_order(qty=2.0, price=0.5), _account(100.0),
-                      StrategyState(strategy="polymarket_copy_trader"),
-                      db_url=db_url)
-    assert v.verdict == "approve", f"unexpected: {v.reason}"
-    # 2 open positions → the 3rd entry is rejected by the count cap.
-    _insert_pct_open_audit(db_path, order_id="pct-2", price=0.5, qty=2.0)
-    v = risk.evaluate(_pct_order(qty=2.0, price=0.5), _account(100.0),
-                      StrategyState(strategy="polymarket_copy_trader"),
-                      db_url=db_url)
-    assert v.verdict == "reject"
-    assert "max open positions" in v.reason
-
-
-def test_max_open_positions_does_not_block_sell(tmp_path):
-    """A close (sell) must never be blocked by the position-count cap."""
-    db_url, db_path = _init_test_db(tmp_path)
+    # Seed 5 open positions: the OLD max_open=1 / open-aggregate caps would have
+    # REJECTED a new entry. With the caps removed the order must approve.
+    for i in range(5):
+        _insert_pct_open_audit(db_path, order_id=f"pct-{i}", price=0.5, qty=2.0)
     risk = RiskAgent(risk_yaml=_risk_yaml_with_max_open(tmp_path, max_open=1),
                      narrator_enabled=False)
-    _insert_pct_open_audit(db_path, order_id="pct-1")
-    _insert_pct_open_audit(db_path, order_id="pct-2")  # already over the cap
-    v = risk.evaluate(_pct_order(qty=2.0, price=0.5, side="sell"), _account(100.0),
+    v = risk.evaluate(_pct_order(qty=2.0, price=0.5), _account(100.0),
                       StrategyState(strategy="polymarket_copy_trader"),
                       db_url=db_url)
-    assert "max open positions" not in (v.reason or "")
+    assert v.verdict == "approve", f"aggregate caps should be gone: {v.reason}"
 
 
 # ── Phase K7: LLM-fan concurrency cap (Semaphore) ──────────────────────

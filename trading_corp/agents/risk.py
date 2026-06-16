@@ -272,30 +272,28 @@ class RiskAgent:
         *,
         db_url: str | None = None,
     ) -> RiskVerdict | None:
-        """Apply Polymarket's bespoke cap structure to a prediction-market
-        order. Returns a RiskVerdict if the order is rejected/resized, or
-        None to fall through to the generic evaluator (which will then
-        approve since the per-trade-pct caps don't bind on $1-shakedown
-        orders).
+        """Apply Polymarket's ATOMIC cap structure to a prediction-market
+        order. Returns a RiskVerdict if the order is rejected, or None to
+        fall through to the generic evaluator (which then approves since the
+        per-trade-pct caps don't bind on small prediction-market orders).
 
-        Caps applied:
+        Caps applied (all ATOMIC — O(1), no DB scan):
           - implied-probability bounds (5-95%) — re-check the strategy's
             pre-filter at the gate as defense-in-depth
-          - max % division equity per position — atomic
-          - max single-market notional — atomic
-          - daily aggregate exposure cap (25% equity, capped at $1K) —
-            queries audit_event for today's filled + would_have_placed
-            polymarket rows
-          - total open-aggregate notional cap ($1K) — queries audit_event
-            for currently-open positions
-          - max open-position COUNT cap (entries only)
+          - max % division equity per position
+          - max single-market notional
 
-        Aggregate-cap queries scan audit_event for actors IN
-        (polymarket_arbitrage, polymarket_copy_trader) — the caps are
-        Polymarket-group-wide, not per-division. They gracefully degrade to
-        "approve" if db_url is None or the query fails — the deterministic
-        atomic caps are the load-bearing safety net, aggregates are
-        belt-and-suspenders.
+        REMOVED 2026-06-16 (A / Phase-2, de-block the event loop): the
+        audit_event-scanning AGGREGATE caps (daily-spend, total-open-notional,
+        max-open-COUNT). They scanned the 1.19M-row audit_event synchronously
+        on the event-loop thread, per emitted order, freezing the WHOLE engine
+        for minutes (see reports/2026-06-16_deblock_phase1c_culprit.md).
+        Operator decision: prediction-market exposure is small + spread across
+        high volume — these group-wide notional/count ceilings are not the
+        concentration risk the cap machinery exists for (stocks/futures), so
+        the work is REMOVED rather than indexed/offloaded. The atomic
+        per-position caps above remain the load-bearing safety net. `db_url`
+        is kept for signature stability but is no longer used here.
         """
         self._reload_if_changed()
         poly_cfg = self._cfg.get("polymarket", {}) or {}
@@ -354,160 +352,27 @@ class RiskAgent:
                 ),
             )
 
-        # Aggregate caps — best-effort against audit_event.
-        if db_url:
-            try:
-                today_notional = self._sum_polymarket_today(db_url)
-                # Compute open positions once; reuse for both the open-notional
-                # cap and the max-open-count cap below (avoids a redundant scan).
-                open_positions = self._polymarket_open_positions(db_url)
-                open_notional = sum(abs(q) * p for q, p in open_positions)
-            except Exception as e:
-                log.debug("RiskAgent: polymarket aggregate query failed: %s", e)
-                today_notional = 0.0
-                open_positions = []
-                open_notional = 0.0
+        # Aggregate caps (daily-spend / total-open-notional / max-open-COUNT)
+        # REMOVED 2026-06-16 (A / Phase-2). They scanned the 1.19M-row
+        # audit_event synchronously on the event-loop thread, per emitted
+        # order, freezing the whole engine for minutes. NO audit_event scan
+        # runs in the order-emission path any more — that is the entire point
+        # of this change. The atomic per-position caps above are the
+        # load-bearing safety net for prediction-market sizing; the global
+        # halts + per-account drawdown breaker in evaluate() are unaffected.
 
-            # Daily new exposure cap. Apply both the equity-pct AND the
-            # absolute $ cap; the tighter of the two binds.
-            daily_pct = float(poly_cfg.get("daily_aggregate_max_pct_of_equity", 0.25))
-            daily_abs = float(poly_cfg.get("daily_aggregate_cap_usd", 1_000.0))
-            daily_cap = daily_abs
-            if account.equity > 0 and daily_pct > 0:
-                daily_cap = min(daily_abs, account.equity * daily_pct)
-            if today_notional + notional > daily_cap:
-                return RiskVerdict(
-                    verdict="reject",
-                    reason=(
-                        f"polymarket: daily aggregate cap reached "
-                        f"(${today_notional:.2f} today + ${notional:.2f} "
-                        f"new > ${daily_cap:.2f})"
-                    ),
-                )
-
-            # Total open-position NOTIONAL cap.
-            total_cap = float(poly_cfg.get("total_open_aggregate_cap_usd", 1_000.0))
-            if open_notional + notional > total_cap:
-                return RiskVerdict(
-                    verdict="reject",
-                    reason=(
-                        f"polymarket: total open aggregate cap "
-                        f"(${open_notional:.2f} open + ${notional:.2f} "
-                        f"new > ${total_cap:.2f})"
-                    ),
-                )
-
-            # Max open-position COUNT cap. Applies to NEW entries only — a
-            # position-count limit must never block a close (sells reduce
-            # exposure). Unset / 0 disables the cap.
-            max_open_n = int(poly_cfg.get("max_open_positions", 0))
-            if max_open_n > 0 and order.side == "buy" and len(open_positions) + 1 > max_open_n:
-                return RiskVerdict(
-                    verdict="reject",
-                    reason=(
-                        f"polymarket: max open positions reached "
-                        f"({len(open_positions)} open ≥ {max_open_n} cap)"
-                    ),
-                )
-
-        # All atomic + aggregate Polymarket caps cleared. Fall through to
-        # the generic evaluator (which will run the per-trade-pct cap;
-        # for $1-shakedown orders that's a non-binding pass-through).
+        # Atomic Polymarket caps cleared. Fall through to the generic
+        # evaluator (per-trade-pct cap; non-binding for small PM orders).
         return None
 
-    # -- audit_event aggregation helpers (polymarket caps) --
-
-    @staticmethod
-    def _sum_polymarket_today(db_url: str) -> float:
-        """Sum notional of polymarket orders proposed today.
-
-        Counts kinds: would_have_placed, board_approved, filled — the
-        states that represent committed-or-likely-committed exposure
-        for the day's aggregate cap. Resets at UTC midnight; future:
-        switch to the division's local TZ if it matters for the cap
-        semantics.
-        """
-        import sqlite3
-        import json
-        from datetime import datetime, timezone
-        path = db_url.replace("sqlite:///", "")
-        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        total = 0.0
-        with sqlite3.connect(path) as conn:
-            cur = conn.execute(
-                "SELECT payload_json FROM audit_event "
-                "WHERE actor IN ('polymarket_arbitrage','polymarket_copy_trader') "
-                "AND kind IN ('would_have_placed','board_approved','filled') "
-                "AND substr(ts,1,10) = ?",
-                (today_iso,),
-            )
-            for (raw,) in cur.fetchall():
-                try:
-                    p = json.loads(raw)
-                    qty = float(p.get("qty") or 0.0)
-                    px = float(p.get("limit_price") or p.get("fill_price") or p.get("price") or 0.0)
-                    total += abs(qty) * px
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    continue
-        return total
-
-    @staticmethod
-    def _polymarket_open_positions(db_url: str) -> list[tuple[float, float]]:
-        """Return (qty, price) for each currently-OPEN polymarket position.
-
-        "Open" mirrors the dashboard's open-trades query
-        (web/data.py::_query_pm_open_trades): a BUY `would_have_placed`
-        audit row whose order_id has no resolution in
-        polymarket_round_trips — neither settled (round_trips.order_id)
-        nor paired as the entry leg of a whale-exit (entry_order_id).
-        Spans BOTH polymarket divisions (arbitrage + copy_trader): the
-        open-aggregate caps are a Polymarket-group-wide ceiling, matching
-        _sum_polymarket_today's cross-actor sum.
-        """
-        import sqlite3
-        import json
-        path = db_url.replace("sqlite:///", "")
-        rows: list[tuple[float, float]] = []
-        with sqlite3.connect(path) as conn:
-            cur = conn.execute(
-                "SELECT a.payload_json FROM audit_event a "
-                "LEFT JOIN polymarket_round_trips r "
-                "  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
-                "WHERE a.actor IN ('polymarket_arbitrage','polymarket_copy_trader') "
-                "  AND a.kind = 'would_have_placed' "
-                "  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
-                "  AND r.order_id IS NULL "
-                "  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
-                "    SELECT entry_order_id FROM polymarket_round_trips "
-                "    WHERE entry_order_id IS NOT NULL)"
-            )
-            for (raw,) in cur.fetchall():
-                try:
-                    p = json.loads(raw)
-                    qty = float(p.get("qty") or 0.0)
-                    px = float(
-                        p.get("limit_price")
-                        or p.get("fill_price")
-                        or p.get("price")
-                        or 0.0
-                    )
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    continue
-                rows.append((qty, px))
-        return rows
-
-    @staticmethod
-    def _sum_polymarket_open(db_url: str) -> float:
-        """Sum notional (qty*price) of all open polymarket positions.
-
-        Was a `return 0.0` scaffold (open-aggregate cap enforced nothing,
-        system-wide). Now backed by _polymarket_open_positions so the
-        $-cap binds for both polymarket_arbitrage and polymarket_copy_trader.
-        """
-        return sum(
-            abs(qty) * px
-            for qty, px in RiskAgent._polymarket_open_positions(db_url)
-        )
+    # -- audit_event aggregation helpers REMOVED 2026-06-16 (A / Phase-2) --
+    # `_sum_polymarket_today`, `_polymarket_open_positions`, and
+    # `_sum_polymarket_open` did unindexed full scans of the 1.19M-row
+    # audit_event table (SCAN + per-row json_extract) on the event-loop
+    # thread and were the root cause of the engine-wide freeze. The only
+    # caller was the aggregate-cap block in `_evaluate_polymarket`, also
+    # removed. Deleted rather than indexed/offloaded (operator decision —
+    # prediction-market group caps not needed).
 
     # -- optional LLM narration --
     async def narrate(self, order: ProposedOrder, verdict: RiskVerdict) -> RiskVerdict:
