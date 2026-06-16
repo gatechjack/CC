@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from trading_corp.brokers.base import Broker
@@ -349,6 +350,27 @@ _SYNTH_FAK = "fak_synth"
 _NATIVE_ORDER_TYPES = frozenset({"gtc", "fok", "gtd"})
 _VALID_ORDER_TYPES = _NATIVE_ORDER_TYPES | {_SYNTH_FAK}
 
+# ── E5b: exit escalating-chase floors/ceilings (mechanism OFF by default — armed
+# only when a division sets exit_chase.enabled in config/divisions.yaml). ──────
+_EXIT_RESIDUAL_EPS = 1e-3   # shares; a residual below this is dust (~$1 sizing) → treat as full exit
+_EXIT_MAX_PRICE = 0.999     # probability ceiling (map_proposed_to_clob requires strictly price < 1, :179)
+_EXIT_PRICE_TICK = 0.001    # CLOB price tick — LIVE-VERIFY at OP·E (Polymarket tick is 0.01 or 0.001)
+
+
+def _clamp_exit_price(price: float, min_price: float) -> float:
+    """Clamp an exit-chase step/terminal price into the valid CLOB probability band
+    and round to the tick. `map_proposed_to_clob` requires STRICTLY 0 < price < 1
+    (:179), so an aggressive concession off a low best-bid that math'd to ≤ 0 (or a
+    rounding artifact ≥ 1) would raise ValueError mid-chase — this clamp (NOT a
+    live-verify deferral) guarantees a postable price. `_EXIT_PRICE_TICK` is the
+    live-verify item; the clamp itself is mandatory."""
+    p = round(round(price / _EXIT_PRICE_TICK) * _EXIT_PRICE_TICK, 6)
+    if p < min_price:
+        p = min_price
+    if p > _EXIT_MAX_PRICE:
+        p = _EXIT_MAX_PRICE
+    return p
+
 
 def _native_order_type(order_type: str):
     """Map an order_type config string to a py_clob_client `OrderType` (lazy SDK
@@ -601,6 +623,7 @@ class PolymarketLiveBroker(Broker):
     def __init__(
         self, private_key=None, funder_address=None, polygon_rpc_url=None,
         order_type: str = _SYNTH_FAK, fak_poll_seconds: float = _DEFAULT_FAK_POLL_SECONDS,
+        exit_chase: dict | None = None,
     ):
         from trading_corp.brokers.polymarket import PolymarketBroker
 
@@ -623,6 +646,15 @@ class PolymarketLiveBroker(Broker):
             raise ValueError(
                 f"fak_poll_seconds must be >= 0; got {fak_poll_seconds!r}"
             )
+        # E5b — exit escalating-chase config (OFF by default). Normalized here so the
+        # place_order gate stays a simple truthiness check: only a present dict with
+        # enabled=True arms the chase. None / no-enabled / enabled-False → None → the
+        # gate is skipped → exits take today's single-shot path (byte-identical).
+        self._exit_chase = (
+            exit_chase
+            if isinstance(exit_chase, dict) and exit_chase.get("enabled")
+            else None
+        )
         # Reuse the read adapter for connect/disconnect/snapshot/quote.
         self._read = PolymarketBroker(
             private_key=private_key,
@@ -743,6 +775,14 @@ class PolymarketLiveBroker(Broker):
 
     async def place_order(self, order):
         self._require_connected()
+        # E5b: exit-only escalating chase — armed SOLELY when a division set
+        # exit_chase.enabled (self._exit_chase non-None) AND this is an EXIT
+        # (is_entry is False, STRICT — a missing flag does NOT divert). Entries and
+        # unarmed exits fall through to the unchanged E2·2 dispatch below. NOTE the
+        # short-circuit: when self._exit_chase is None (the default), order.extra is
+        # NEVER touched → identical to pre-E5b (incl. for non-ProposedOrder stubs).
+        if self._exit_chase and (getattr(order, "extra", None) or {}).get("is_entry") is False:
+            return await self._run_exit_chase(order)
         # E2·2: dispatch on the configured order_type. fak_synth synthesizes FAK
         # over GTC (poll-then-cancel-remainder); gtc/fok/gtd pass through native.
         if self._order_type == _SYNTH_FAK:
@@ -756,3 +796,75 @@ class PolymarketLiveBroker(Broker):
     async def cancel_order(self, order_id: str) -> bool:
         self._require_connected()
         return await _cancel_order_fn(self._clob, order_id)
+
+    async def _run_exit_chase(self, order):
+        """E5b — broker-side escalating exit chase (armed via exit_chase.enabled).
+
+        Re-posts the UNFILLED residual through `place_order_fak_synth` (reused
+        unchanged) at a price that steps more aggressively off the live best-bid each
+        attempt, with a final deeply-crossing terminal step. Returns ONE CUMULATIVE
+        `FillEvent` (qty = Σ filled, price = notional-weighted VWAP); the strategy's
+        `record_exit_fill` reconciles any residual the chase could not clear.
+
+          * per-attempt `NoFillInWindow` → escalate (continue), NOT abort;
+          * a real `OrderPlacementError` (rejected / unmatched) → propagate loudly;
+          * best-bid unavailable (≤ 0) → stop, return whatever filled (the rest is
+            retained + flagged downstream — we never post an invalid ≤ 0 price);
+          * total no-fill (Σ filled ≤ 0) → raise `NoFillInWindow` (handler flags+retains).
+
+        ⚠ LIVE-VERIFY at OP·E: get_price(SELL) best-bid direction (see `best_bid`) and
+        `_EXIT_PRICE_TICK`. The price CLAMP (`_clamp_exit_price`) is mandatory, NOT a
+        live-verify deferral.
+        """
+        from trading_corp.persistence.models import FillEvent
+
+        ec = self._exit_chase or {}
+        max_attempts = max(0, int(ec.get("max_attempts", 3)))
+        spread_fraction = float(ec.get("spread_fraction", 0.25))
+        terminal_aggr = float(ec.get("terminal_aggressiveness", 0.50))
+        poll_seconds = float(ec.get("poll_seconds", self._fak_poll_seconds))
+        min_price = float(ec.get("min_price", 0.01))
+        # keep the floor a valid probability strictly inside (0, 1)
+        min_price = min(max(min_price, _EXIT_PRICE_TICK), _EXIT_MAX_PRICE)
+
+        token_id = resolve_token_id(order.extra)
+        remaining = float(order.qty)
+        filled = 0.0
+        notional = 0.0
+
+        for attempt in range(max_attempts + 1):     # the final iteration is the terminal step
+            if remaining <= _EXIT_RESIDUAL_EPS:
+                break
+            best_bid = await self._read.best_bid(token_id)
+            if best_bid <= 0.0:
+                break                                 # no priceable book → stop; retain+flag downstream
+            is_terminal = attempt == max_attempts
+            conc = terminal_aggr if is_terminal else spread_fraction * attempt
+            step_price = _clamp_exit_price(best_bid * (1.0 - conc), min_price)
+            iter_order = replace(order, qty=remaining, limit_price=step_price)
+            try:
+                fill = await place_order_fak_synth(
+                    self._clob, iter_order, poll_seconds=poll_seconds,
+                )
+            except NoFillInWindow:
+                continue                              # benign per-attempt no-fill → escalate
+            fq = float(getattr(fill, "qty", 0.0) or 0.0)
+            if fq <= 0.0:
+                continue
+            filled += fq
+            notional += fq * float(getattr(fill, "price", 0.0) or 0.0)
+            remaining -= fq
+
+        if filled <= 0.0:
+            raise NoFillInWindow(
+                "exit chase: no fill across all attempts; position retained for reconcile"
+            )
+        return FillEvent(
+            order_id=str(getattr(order, "id", "") or ""),
+            symbol=getattr(order, "symbol", ""),
+            side="sell",
+            qty=filled,
+            price=notional / filled,
+            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            venue="polymarket",
+        )

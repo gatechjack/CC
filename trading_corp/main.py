@@ -2088,6 +2088,11 @@ def _build_broker_for_division(
             _fps = getattr(division, "fak_poll_seconds", None)
             if _fps is not None:
                 exec_kwargs["fak_poll_seconds"] = _fps
+            # E5b — exit_chase pass-through dict (None when unset → kwarg omitted →
+            # ctor default None → chase OFF → byte-identical to pre-E5b).
+            _ec = getattr(division, "exit_chase", None)
+            if _ec is not None:
+                exec_kwargs["exit_chase"] = _ec
             return PolymarketLiveBroker(
                 private_key=pk, funder_address=funder,
                 polygon_rpc_url=secrets.polygon_rpc_url, **exec_kwargs,
@@ -3433,10 +3438,27 @@ async def _handle_copy_order_placement(
     try:
         fill = await data_exec.place(order, division=agent.division)
     except NoFillInWindow as e:
-        # Benign: the synthesized-FAK order did not fill in its window. NOT a
-        # failure — drop the optimistically-recorded position and skip this order.
+        # Benign: the order did not fill in its window.
         if ext.get("is_entry"):
+            # ── ENTRY — unchanged: drop the optimistic position, benign skip. ──
             agent.discard_entry(order)
+        elif ext.get("is_entry") is False:
+            # ── E5b EXIT total no-fill: the chase cleared NOTHING. Do NOT discard an
+            # exit — retain the WHOLE lot as a flagged residual and surface it. ──
+            residual = agent.record_exit_fill(order, None)
+            logger_agent.log_event(
+                agent.name, "polymarket_copy_exit_residual",
+                {**base_payload, "residual_qty": residual, "reason": "exit_no_fill"},
+            )
+            log.warning(
+                "Polymarket copy: EXIT no-fill on %s — residual %g retained, manual reconcile",
+                order.symbol, residual,
+            )
+            await _push_copy_card(
+                channel, order, ext,
+                tag=f"RESIDUAL {residual:g} held (no fill) — MANUAL RECONCILE",
+            )
+            return
         logger_agent.log_event(
             agent.name, "polymarket_copy_no_fill",
             {**base_payload, "qty": order.qty, "reason": str(e)},
@@ -3447,6 +3469,25 @@ async def _handle_copy_order_placement(
     # proposed_order[status=filled] + the 'filled' audit + execution_mode='live'.
     if ext.get("is_entry"):
         agent.record_entry_fill(order, fill)
+    elif ext.get("is_entry") is False:
+        # ── E5b EXIT reconcile: decrement the held lot by the ACTUAL (cumulative)
+        # fill; a residual the exit couldn't clear is retained + flagged for reconcile. ──
+        residual = agent.record_exit_fill(order, fill)
+        if residual > 0.0:
+            logger_agent.log_event(
+                agent.name, "polymarket_copy_exit_residual",
+                {**base_payload, "residual_qty": residual, "reason": "exit_partial"},
+            )
+            log.warning(
+                "Polymarket copy: PARTIAL EXIT on %s — residual %g retained, manual reconcile",
+                order.symbol, residual,
+            )
+            await _push_copy_card(
+                channel, order, ext,
+                tag=f"PLACED LIVE @ ${float(getattr(fill, 'price', 0.0)):.3f} "
+                    f"x{float(getattr(fill, 'qty', 0.0)):g} — RESIDUAL {residual:g} held, MANUAL RECONCILE",
+            )
+            return
     await _push_copy_card(
         channel, order, ext,
         tag=f"PLACED LIVE @ ${float(getattr(fill, 'price', 0.0)):.3f} "
