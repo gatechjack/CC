@@ -55,6 +55,15 @@ class Division:
                                 # (used by Kelly-sized strategies — see main.py
                                 # `family == "paper"` branch). $0 = legacy default.
 
+    # E5a — polymarket execution discipline, read at broker construction
+    # (main.py _build_broker_for_division, polymarket branch). Optional; None ⇒
+    # the PolymarketLiveBroker ctor default applies, so an unset division is
+    # byte-identical to pre-E5a. exit_chase is a pass-through dict — the E5b
+    # attachment point. Inert for every non-polymarket family (they never read it).
+    order_type: str | None = None
+    fak_poll_seconds: float | None = None
+    exit_chase: dict | None = None
+
     # Filled in at runtime by the dashboard data layer; kept here for type
     # convenience so templates can iterate `division.equity` etc. directly.
     equity: float | None = None
@@ -143,6 +152,15 @@ def load_divisions(path: Path = _DEFAULT_PATH) -> list[Division]:
                 enabled=bool(entry.get("enabled", True)),
                 standby=bool(entry.get("standby", False)),
                 paper_capital=float(entry.get("paper_capital", 0.0) or 0.0),
+                # E5a — polymarket execution discipline (None when unset). MUST be
+                # mapped here AND declared on the dataclass — this loader maps
+                # explicitly (not **entry), so a dataclass-only field never flows.
+                order_type=entry.get("order_type"),
+                fak_poll_seconds=(
+                    float(entry["fak_poll_seconds"])
+                    if entry.get("fak_poll_seconds") is not None else None
+                ),
+                exit_chase=entry.get("exit_chase"),
             )
         except KeyError as e:
             log.warning("divisions.yaml: skipping entry missing key %s — %r", e, entry)

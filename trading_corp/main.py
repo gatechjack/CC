@@ -2077,9 +2077,20 @@ def _build_broker_for_division(
         funder = wallet.funder_address if wallet else None
         if is_live_division:
             from trading_corp.brokers.polymarket_live import PolymarketLiveBroker
+            # E5a — execution discipline sourced from THIS division's config
+            # (config/divisions.yaml). Omit each kwarg when unset so the broker
+            # ctor default applies → an unconfigured division is byte-identical to
+            # pre-E5a. exit_chase forwards the same way once E5b adds the ctor param.
+            exec_kwargs = {}
+            _ot = getattr(division, "order_type", None)
+            if _ot is not None:
+                exec_kwargs["order_type"] = _ot
+            _fps = getattr(division, "fak_poll_seconds", None)
+            if _fps is not None:
+                exec_kwargs["fak_poll_seconds"] = _fps
             return PolymarketLiveBroker(
                 private_key=pk, funder_address=funder,
-                polygon_rpc_url=secrets.polygon_rpc_url,
+                polygon_rpc_url=secrets.polygon_rpc_url, **exec_kwargs,
             )
         from trading_corp.brokers.polymarket import PolymarketBroker
         return PolymarketBroker(
