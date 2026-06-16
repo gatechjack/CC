@@ -1,0 +1,6 @@
+# Deploy artifacts are byte-exact targets for a Linux prod box and are md5-gated.
+# Never let git CRLF-convert them on checkout (would break the md5 gate).
+staged/** -text
+patches/** -text
+deploy_apply_deblock_staleness.sh text eol=lf
+*.md text eol=lf
