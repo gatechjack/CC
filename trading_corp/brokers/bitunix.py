@@ -204,6 +204,16 @@ _RETRYABLE_CODES = {10005, 10006}
 # clientId is a deterministic idempotency key.
 _IDEMPOTENT_OK_CODES = {30042}
 
+# ── Account-snapshot poll-cache TTL (10006 rate-limit mitigation) ───────────
+# Default seconds a COMPLETE account snapshot is reused before refetching. The
+# bitunix observer reads snapshot() per TradingView alert (tier-sizing AND the
+# drawdown-breaker equity); clustered alerts across concurrent webhook handlers
+# hammered /account (2 signed calls each) → ~12 calls in 2s → BitUnix 10006
+# "request too frequently". 3 s collapses the burst while staying far below any
+# tolerable staleness for a 15%-account-drawdown breaker. Per-broker
+# overridable via the constructor.
+_SNAPSHOT_CACHE_TTL_S = 3.0
+
 # ── Phase 4 REST retry layer (gate (a) 2026-05-30) ──────────────────────────
 # Resilience-against-transient-failure for the signed `_request` chokepoint.
 # Read-side calls (snapshot/quote/get_funding_rate) deliberately bypass
@@ -340,6 +350,7 @@ class BitunixBroker(Broker):
         *,
         logger: "LoggerAgent | None" = None,
         safety_notifier=None,
+        snapshot_cache_ttl_s: float = _SNAPSHOT_CACHE_TTL_S,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -382,6 +393,19 @@ class BitunixBroker(Broker):
         #                  audit_context: dict | None = None) -> bool
         # Wired from main.py to the same TelegramChannel singleton.
         self.safety_notifier = safety_notifier
+        # ── Account-snapshot poll cache + single-flight (10006 mitigation) ──
+        # TTL (seconds) a COMPLETE snapshot is reused for. Constructor-
+        # overridable (tests pin it; ops can tune). 0 disables caching. Kept
+        # well below the drawdown breaker's equity-freshness tolerance so the
+        # breaker never acts on dangerously stale equity.
+        self._snapshot_cache_ttl_s = snapshot_cache_ttl_s
+        # (monotonic_ts, AccountSnapshot) of the last COMPLETE fetch; None when
+        # cold or invalidated by a state mutation.
+        self._snapshot_cache: tuple[float, AccountSnapshot] | None = None
+        # Single-flight handle: concurrent callers await this one in-flight
+        # fetch rather than each firing a request.
+        self._snapshot_inflight: asyncio.Task[AccountSnapshot] | None = None
+        self._snapshot_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         if self._stub:
@@ -409,14 +433,102 @@ class BitunixBroker(Broker):
             self._client = None
         self._connected = False
 
-    async def snapshot(self) -> AccountSnapshot:
+    async def snapshot(self, *, force_refresh: bool = False) -> AccountSnapshot:
+        """Account snapshot with a short TTL cache + single-flight.
+
+        10006 mitigation: the bitunix observer calls `snapshot()` on every
+        TradingView alert (account_equity for tier-sizing AND the drawdown
+        breaker), and alerts cluster at candle closes across concurrent
+        webhook-handler tasks. Each `snapshot()` fires two signed `/account`
+        calls (USDT+USDC), so a cluster produced ~12 calls in 2 s → BitUnix
+        10006 "request too frequently".
+
+          * **Single-flight** — concurrent callers share ONE in-flight fetch.
+          * **TTL cache** — a *complete* fetch is reused for
+            `_snapshot_cache_ttl_s` (default `_SNAPSHOT_CACHE_TTL_S`), set well
+            below the drawdown breaker's equity-freshness tolerance.
+          * **Never caches a partial fetch** — a 10006 on one stablecoin
+            under-counts equity and an errored position read hides positions;
+            a partial would poison the breaker for the whole TTL window.
+          * State mutations call `_invalidate_snapshot_cache()`, so post-trade
+            and post-flatten reads are always fresh (the breaker's flatten
+            verification in `data_exec.flatten_division` relies on this).
+          * `force_refresh=True` bypasses the cache (still single-flighted).
+
+        The existing read-side 10006 handling (log + skip coin) and the
+        `_request` write-path backoff are unchanged — they remain the fallback
+        for any residual rate-limiting the cache does not absorb.
+        """
+        # Stub / unconfigured: preserve the original direct zero-snapshot path
+        # (no API, no caching, no lock).
         if self._stub or not self._client or not self._api_key or not self._api_secret:
-            return AccountSnapshot(
-                account="bitunix-stub",
-                equity=0.0,
-                buying_power=0.0,
-                cash=0.0,
-                positions=[],
+            snap, _complete = await self._fetch_snapshot()
+            return snap
+
+        ttl = self._snapshot_cache_ttl_s
+
+        # 1) Fast path — a fresh cached snapshot needs no lock.
+        if not force_refresh and ttl > 0:
+            cached = self._snapshot_cache
+            if cached is not None and (time.monotonic() - cached[0]) < ttl:
+                return cached[1]
+
+        # 2) Single-flight. The lock guards only the cache re-check + in-flight
+        #    handoff; it is NOT held across the network fetch, so concurrent
+        #    callers all join the same in-flight task instead of each firing a
+        #    request (this is what collapses the 12-in-2s burst to one call).
+        async with self._snapshot_lock:
+            if not force_refresh and ttl > 0:
+                cached = self._snapshot_cache
+                if cached is not None and (time.monotonic() - cached[0]) < ttl:
+                    return cached[1]
+            inflight = self._snapshot_inflight
+            if inflight is None or inflight.done():
+                inflight = asyncio.create_task(self._fetch_and_maybe_cache())
+                self._snapshot_inflight = inflight
+
+        try:
+            return await inflight
+        finally:
+            # Release the shared handle once resolved so the next call (after
+            # the TTL lapses) starts a fresh fetch. `is inflight` guards against
+            # clobbering a newer task another caller may have started.
+            if self._snapshot_inflight is inflight and inflight.done():
+                self._snapshot_inflight = None
+
+    def _invalidate_snapshot_cache(self) -> None:
+        """Drop the cached snapshot so the next `snapshot()` refetches.
+
+        Called after every state mutation (place_order/cancel/flatten/close)
+        so post-trade equity and the post-flatten position verification read
+        fresh broker truth, never a pre-mutation cached snapshot.
+        """
+        self._snapshot_cache = None
+
+    async def _fetch_and_maybe_cache(self) -> AccountSnapshot:
+        """Run one real fetch; cache it only if it was complete."""
+        snap, complete = await self._fetch_snapshot()
+        if complete and self._snapshot_cache_ttl_s > 0:
+            self._snapshot_cache = (time.monotonic(), snap)
+        return snap
+
+    async def _fetch_snapshot(self) -> tuple[AccountSnapshot, bool]:
+        """Raw account+positions fetch (no caching).
+
+        Returns `(snapshot, complete)`. `complete` is False when any stablecoin
+        balance read or the position read returned a non-zero BitUnix code
+        (e.g. a 10006) — i.e. the snapshot is partial and must NOT be cached.
+        """
+        if self._stub or not self._client or not self._api_key or not self._api_secret:
+            return (
+                AccountSnapshot(
+                    account="bitunix-stub",
+                    equity=0.0,
+                    buying_power=0.0,
+                    cash=0.0,
+                    positions=[],
+                ),
+                True,
             )
 
         # ── account balance (sum across stablecoin margin coins) ──────────
@@ -446,6 +558,7 @@ class BitunixBroker(Broker):
         # ($6,763.94 vs real $3,381.97). The 2026-05-03 reconciliation
         # ("transfer is additive") was incorrect — retracted in memory
         # `trading_corp_bitunix_vision.md`.
+        complete = True
         total_equity = 0.0
         total_cash = 0.0
         for margin_coin in _STABLE_MARGIN_COINS:
@@ -463,6 +576,10 @@ class BitunixBroker(Broker):
                     "BitUnix account error for %s: code=%s msg=%r",
                     margin_coin, ad.get("code"), ad.get("msg"),
                 )
+                # Partial read (e.g. 10006): this coin is dropped from the
+                # equity sum, so the snapshot under-reports. Mark incomplete so
+                # it is never cached and the breaker isn't fed an under-count.
+                complete = False
                 continue
             d = ad.get("data") or {}
             if not d:
@@ -520,18 +637,25 @@ class BitunixBroker(Broker):
                 "BitUnix get_pending_positions error: code=%s msg=%r",
                 pos_data.get("code"), pos_data.get("msg"),
             )
+            # Errored position read → positions list is empty but NOT proven
+            # flat. Mark incomplete so it is never cached (a cached empty list
+            # could false-pass the post-flatten verification).
+            complete = False
 
         # Mark snapshot as fresh BEFORE returning. Any earlier raise (e.g.
         # r.raise_for_status on a 503) skips this line — staleness then
         # grows until `_assert_snapshot_fresh()` halts the order path.
         # See gate (a) sub-item 2 for the rationale.
         self._last_successful_snapshot_ts = time.monotonic()
-        return AccountSnapshot(
-            account="bitunix-futures",
-            equity=equity,
-            buying_power=cash,
-            cash=cash,
-            positions=positions,
+        return (
+            AccountSnapshot(
+                account="bitunix-futures",
+                equity=equity,
+                buying_power=cash,
+                cash=cash,
+                positions=positions,
+            ),
+            complete,
         )
 
     # ── Snapshot-health primitives (gate (a) sub-item 2, 2026-05-30) ────
@@ -867,6 +991,16 @@ class BitunixBroker(Broker):
 
     # ── Phase 4: order placement ────────────────────────────────────────
     async def place_order(self, order: ProposedOrder) -> FillEvent:
+        # Wrapper: invalidate the snapshot poll-cache after any entry/exit
+        # attempt (success OR raise) so the next snapshot() reads post-trade
+        # equity/positions fresh — never a pre-trade cached value that sizing
+        # or the drawdown breaker would act on.
+        try:
+            return await self._place_order_impl(order)
+        finally:
+            self._invalidate_snapshot_cache()
+
+    async def _place_order_impl(self, order: ProposedOrder) -> FillEvent:
         """Place a live BitUnix futures order (one-way mode).
 
         Opening vs reducing is taken from ``order.extra["reduce_only"]`` (the
@@ -1379,6 +1513,8 @@ class BitunixBroker(Broker):
         except Exception as e:
             log.warning("BitUnix cancel_order(%s) failed: %s", order_id, e)
             return False
+        # A cancel changes resting-order state → drop the snapshot cache.
+        self._invalidate_snapshot_cache()
         success = (data or {}).get("successList") or []
         return any(str(s.get("orderId")) == str(order_id) for s in success)
 
@@ -1388,16 +1524,20 @@ class BitunixBroker(Broker):
         body: dict = {}
         if symbol:
             body["symbol"] = to_wire_format(symbol)
-        return await self._request(
+        result = await self._request(
             "POST", "/api/v1/futures/trade/cancel_all_orders", body=body,
         ) or {}
+        self._invalidate_snapshot_cache()
+        return result
 
     async def flash_close_position(self, position_id: str) -> dict:
         """Market-flatten a single position by id. Kill-switch primitive."""
-        return await self._request(
+        result = await self._request(
             "POST", "/api/v1/futures/trade/flash_close_position",
             body={"positionId": str(position_id)},
         ) or {}
+        self._invalidate_snapshot_cache()
+        return result
 
     async def close_all_position(self, symbol: str | None = None) -> dict:
         """Market-flatten all positions (account-wide, or one symbol).
@@ -1405,9 +1545,11 @@ class BitunixBroker(Broker):
         body: dict = {}
         if symbol:
             body["symbol"] = to_wire_format(symbol)
-        return await self._request(
+        result = await self._request(
             "POST", "/api/v1/futures/trade/close_all_position", body=body,
         ) or {}
+        self._invalidate_snapshot_cache()
+        return result
 
     async def flatten(self, symbol: str | None = None) -> dict:
         """Kill switch: latch halt-new-orders, cancel all resting orders, then
@@ -1424,6 +1566,10 @@ class BitunixBroker(Broker):
             results["close_all_position"] = await self.close_all_position(symbol)
         except Exception as e:
             results["close_all_position_error"] = str(e)
+        # Safety guarantee: always drop the snapshot cache before returning so
+        # the post-flatten verification in data_exec.flatten_division re-reads
+        # fresh broker truth (positions=0), even if a close step raised above.
+        self._invalidate_snapshot_cache()
         return results
 
     def resume(self) -> None:
