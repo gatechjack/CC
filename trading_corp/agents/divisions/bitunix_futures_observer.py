@@ -365,6 +365,42 @@ def _interval_to_tf(interval: str | int | None) -> str | None:
     return None
 
 
+def _interval_to_seconds(interval: str | int | None) -> float | None:
+    """Map a TradingView ``{{interval}}`` payload value to seconds.
+
+    TV emits minute bars as bare ints/strings ("1","3","5","15","30","45",
+    "60","120","180","240"), calendar bars as "D"/"W"/"M" (optionally with a
+    leading count, e.g. "1D"), and second bars as "<n>S". Returns ``None``
+    for anything unrecognized so the staleness gate fails OPEN (skips) on a
+    malformed payload rather than blocking a legitimate entry.
+
+    This is the interval-awareness primitive for the C staleness gate: the
+    reject threshold is ``_interval_to_seconds(interval) + margin`` — it
+    scales with the bar (3m → 180s, 15m → 900s), never a fixed constant.
+    """
+    if interval is None:
+        return None
+    s = str(interval).strip().upper()
+    if not s:
+        return None
+    try:
+        if s.isdigit():                       # bare minutes: "3" → 180s
+            return float(int(s) * 60)
+        if s.endswith("S") and s[:-1].isdigit():   # seconds: "30S" → 30s
+            return float(int(s[:-1]))
+        unit = s[-1]
+        count = int(s[:-1] or "1")
+        if unit == "D":
+            return float(count * 86_400)
+        if unit == "W":
+            return float(count * 7 * 86_400)
+        if unit == "M":                       # TV monthly ≈ 30d (coarse; fine for a freshness gate)
+            return float(count * 30 * 86_400)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
 def _signal_to_bias_side(signal: str) -> str | None:
     if signal in CYPHER_BIAS_BULL:
         return "bull"
@@ -501,6 +537,16 @@ class BitunixFuturesObserver:
         # (comms/pending_registry.py); pass None in tests that don't
         # exercise live-mode HITL.
         pending_registry: Any = None,
+        # C (2026-06-16) — bar-interval-aware staleness-reject gate. When
+        # enabled, an entry whose originating bar is older than
+        # (bar_interval_seconds + margin) is REJECTED before propose/place,
+        # so a freeze- or retry-delayed alert can't open a stale, adverse
+        # entry. Default OFF so every existing caller/test (which constructs
+        # the observer without these args, often with historical payload
+        # `time`s) keeps current behavior — the gate ships ON via
+        # strategies.yaml + main.py wiring. ENTRY-ONLY (exits never gated).
+        staleness_gate_enabled: bool = False,
+        staleness_margin_seconds: float = 120.0,
     ) -> None:
         self.db_url = db_url
         self.risk_agent = risk_agent
@@ -519,6 +565,9 @@ class BitunixFuturesObserver:
         # PR 4 — adaptive trade plan configs. None means legacy path.
         self.trade_plan_config = trade_plan_config
         self.fee_config = fee_config
+        # C — staleness-reject gate (entry freshness). Defaults OFF.
+        self.staleness_gate_enabled = bool(staleness_gate_enabled)
+        self.staleness_margin_seconds = float(staleness_margin_seconds)
         # Normalize the gate mode to one of the three known values.
         self.htf_gate_mode = (
             htf_gate_mode.lower() if isinstance(htf_gate_mode, str) else "off"
@@ -829,6 +878,53 @@ class BitunixFuturesObserver:
                     json.dumps(payload_dict, default=str),
                 ),
             )
+
+    def _staleness_verdict(
+        self, payload: dict[str, Any], now: datetime,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """C gate decision — is this entry's originating bar too old?
+
+        Returns ``(is_stale, info)``. ``is_stale=True`` ⇒ the bar is older
+        than the interval-aware threshold ``bar_interval + margin`` and the
+        entry must be REJECTED. Returns ``(False, None)`` when the gate is
+        disabled, or when ``time``/``interval`` can't be parsed (FAIL-OPEN:
+        a malformed payload must not silently halt entries — the
+        snapshot-staleness gate and webhook anti-replay window still apply).
+
+        Interval-aware by construction: 3m bar (180s) + default 120s margin
+        ⇒ 300s threshold; 15m bar ⇒ 1020s. The threshold tracks the bar
+        interval; it is never a fixed constant.
+
+        ENTRY-ONLY: consulted solely from `_score_and_maybe_propose_locked`
+        (the open/propose path). Exits (`_execute_live_exits`) never call
+        this — a late exit must always act.
+        """
+        if not self.staleness_gate_enabled:
+            return False, None
+        bar_open = _parse_iso(payload.get("time"))
+        interval_s = _interval_to_seconds(payload.get("interval"))
+        if bar_open is None or interval_s is None:
+            log.warning(
+                "bitunix_observer: staleness gate fail-open — unparseable "
+                "time=%r / interval=%r",
+                payload.get("time"), payload.get("interval"),
+            )
+            return False, None
+        age_s = (now - bar_open).total_seconds()
+        threshold_s = interval_s + self.staleness_margin_seconds
+        if age_s <= threshold_s:
+            return False, None
+        return True, {
+            "bar_open": bar_open.isoformat(),
+            "age_seconds": round(age_s, 1),
+            "interval_seconds": interval_s,
+            "margin_seconds": self.staleness_margin_seconds,
+            "threshold_seconds": threshold_s,
+            "note": (
+                f"age={age_s:.0f}s > threshold={threshold_s:.0f}s "
+                f"(interval={interval_s:.0f}s + margin={self.staleness_margin_seconds:.0f}s)"
+            ),
+        }
 
     def _log_score_decision(
         self,
@@ -1325,6 +1421,55 @@ class BitunixFuturesObserver:
         ):
             self._log_pa_validation_expired(reason="opposite_side")
             self._clear_pending_pa()
+
+        # ── C: bar-interval-aware staleness-reject gate (ENTRY only) ────
+        # Reject an entry whose originating bar is too old. A delayed alert
+        # — event-loop freeze (reports/2026-06-16_entry_latency_investigation
+        # .md) or a webhook delivery retry — must NOT open a live position at
+        # a stale, adverse price (the 00:38 trade entered ~11.5 min late and
+        # stopped out). Runs AFTER the SKIP check (only would-fire alerts are
+        # gated → clean "would-have-traded-but-stale" semantics) and BEFORE
+        # PA/HTF/sizing/propose/place. Default OFF in __init__; shipped ON via
+        # strategies.yaml. Independent of the webhook `_REPLAY_WINDOW_SEC`
+        # anti-replay window (unchanged). Naturally caps a stale PA-redeem
+        # too (its cached bar only ages) — consistent with the entry-timing
+        # "cap PA-redeem" finding.
+        is_stale, stale_info = self._staleness_verdict(payload, now)
+        if is_stale:
+            self._log_score_decision(
+                payload, verdict_score, "skipped_stale_bar",
+                note=stale_info["note"],
+            )
+            try:
+                self.logger_agent.log_event(
+                    actor="bitunix_futures",
+                    kind="entry_rejected_stale_bar",
+                    payload={
+                        "strategy": "bitunix_futures",
+                        "division": "bitunix_futures",
+                        "signal": payload.get("signal"),
+                        "symbol": payload.get("symbol") or payload.get("ticker"),
+                        "side": side_str,
+                        "tier": verdict_score.tier.value,
+                        "source": payload.get("_source"),
+                        **stale_info,
+                    },
+                )
+            except Exception as e:
+                log.warning(
+                    "bitunix_observer: entry_rejected_stale_bar audit failed: %s", e,
+                )
+            # A PA-rejected payload cached for redeem only ages further each
+            # tick; once stale it would be re-rejected forever. Clear it so
+            # the redeem loop stops spinning on a permanently-stale signal.
+            if (
+                payload.get("_source") == "bar_tick_redeem"
+                and self._pending_pa_payload is not None
+            ):
+                self._log_pa_validation_expired(reason="stale_bar")
+                self._clear_pending_pa()
+            return
+
         if (
             self.pa_config is not None
             and self.pa_config.enabled

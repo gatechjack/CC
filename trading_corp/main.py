@@ -417,6 +417,8 @@ async def run(argv: list[str] | None = None) -> int:
     _fee_config = None              # PR 4 — fee schedule for TP1 fee floor
     _bx_block: dict = {}            # PR 4 — surfaced outside try for from_dict downstream
     _execution_mode = "paper"       # Stage-1 N+1 — fail-closed default if YAML load fails
+    _staleness_enabled = False      # C — staleness-reject gate; OFF if YAML load fails
+    _staleness_margin_s = 120.0     # C — additive margin (s) on top of the bar interval
     try:
         import yaml as _yaml
         from pathlib import Path as _Path
@@ -436,6 +438,11 @@ async def run(argv: list[str] | None = None) -> int:
         # paper. Observer's __init__ enforces final fail-closed
         # normalization; this is the YAML read site.
         _execution_mode = str(_bx_block.get("execution_mode", "paper")).lower()
+        # C — bar-interval-aware staleness-reject gate. Entry freshness:
+        # reject an entry whose signal bar is older than (interval + margin).
+        _stale_block = _bx_block.get("staleness_gate") or {}
+        _staleness_enabled = bool(_stale_block.get("enabled", False))
+        _staleness_margin_s = float(_stale_block.get("margin_seconds", 120.0))
         # PR 4 — adaptive trade plan + fees. Activated only when
         # `bitunix_futures.trade_plan.enabled: true` in YAML. Default
         # (block missing or enabled=false) leaves the legacy geometric
@@ -471,6 +478,10 @@ async def run(argv: list[str] | None = None) -> int:
         bool(_trade_plan_config and _fee_config),
         _execution_mode,
     )
+    log.info(
+        "BitUnix staleness-reject gate (C): enabled=%s margin_s=%.0f",
+        _staleness_enabled, _staleness_margin_s,
+    )
     bitunix_observer = BitunixFuturesObserver(
         db_url=secrets.db_url,
         risk_agent=risk_agent,
@@ -495,6 +506,10 @@ async def run(argv: list[str] | None = None) -> int:
         # observer only consults it when execution_mode=live AND
         # auto_execute=true AND counter < HITL_FIRST_N_LIVE_ORDERS.
         pending_registry=pending_registry,
+        # C — bar-interval-aware staleness-reject gate (entry freshness).
+        # Shipped ON via strategies.yaml; rejects entries on a too-old bar.
+        staleness_gate_enabled=_staleness_enabled,
+        staleness_margin_seconds=_staleness_margin_s,
         # telegram_channel attached after channel is constructed (below)
     )
 
