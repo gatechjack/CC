@@ -147,27 +147,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--brokers", nargs="*", default=[],
                    help="Live brokers to require: any of robinhood coinbase fidelity. "
                         "Phase 2 paper mode ignores this.")
-    p.add_argument("--live-divisions", nargs="*", default=[], dest="live_divisions",
-                   help="Division/strategy SLUGS to arm LIVE (slug-level, e.g. "
-                        "polymarket_copy_trading). E2·4 anti-half-flip: a division goes "
-                        "live ONLY if its slug is listed here AND its family is "
-                        "live-capable (--live + --brokers <family>). Absent/empty ⇒ every "
-                        "division stays PAPER, even under --brokers. Comma- and/or "
-                        "space-separated.")
     return p.parse_args(argv)
-
-
-def _parse_live_divisions(raw) -> set[str]:
-    """Flatten the `--live-divisions` tokens (space- and/or comma-separated) into a
-    set of division slugs. Empty/None ⇒ empty set ⇒ NO division arms live (the
-    opt-in, paper-by-default contract)."""
-    out: set[str] = set()
-    for tok in (raw or []):
-        for slug in str(tok).split(","):
-            slug = slug.strip()
-            if slug:
-                out.add(slug)
-    return out
 
 
 def confirm_live(input_fn=input) -> bool:
@@ -568,16 +548,11 @@ async def run(argv: list[str] | None = None) -> int:
     # Each division gets its own broker handle. Brokers within a family
     # (Robinhood, Fidelity) share the underlying login session — see the
     # broker modules for refcount-based session sharing.
-    # E2·4 — per-division live-select (slug-level anti-half-flip): only slugs in
-    # --live-divisions arm live (and only if their family is also live-capable);
-    # everything else stays paper, even under --brokers <family>.
-    live_divisions = _parse_live_divisions(getattr(args, "live_divisions", None))
     for d in divisions:
         if not d.enabled:
             continue
         broker = _build_broker_for_division(
-            d, secrets, mode, args.brokers, live_divisions,
-            logger_agent=logger_agent,
+            d, secrets, mode, args.brokers, logger_agent=logger_agent,
         )
         if broker is None:
             continue
@@ -1967,7 +1942,6 @@ def _build_broker_for_division(
     secrets,
     mode: str,
     live_brokers: list[str],
-    live_divisions=None,
     *,
     logger_agent=None,
 ):
@@ -1975,8 +1949,7 @@ def _build_broker_for_division(
 
     PAPER mode wraps real read-only brokers in PaperExecutionBroker so
     snapshots are real but fills are simulated. LIVE mode binds the real
-    broker for a division ONLY when it is both family-live-capable AND
-    slug-selected (see the E2·4 gate below).
+    broker for the listed families only.
 
     `logger_agent` is currently consumed only by the BitUnix broker, for the
     REST retry-layer audit (`rest_request_retried`); other adapters ignore it.
@@ -1984,18 +1957,7 @@ def _build_broker_for_division(
     from trading_corp.brokers.coinbase import CoinbaseBroker
 
     family = division.broker
-    # E2·4 — slug-level anti-half-flip. A division arms LIVE iff BOTH hold:
-    #   (1) its FAMILY is live-capable: mode == LIVE and --brokers lists the family;
-    #   (2) its SLUG is explicitly opted in via --live-divisions.
-    # The family check ALONE is NOT sufficient — without the slug a division stays
-    # PAPER even under `--brokers <family>`. This prevents a whole family flipping
-    # live (e.g. `--brokers polymarket` would otherwise arm the arb division when
-    # only polymarket_copy_trading should go live). Empty/absent live_divisions ⇒
-    # nothing arms live. `is_live_division` is the SOLE live-vs-paper gate below.
-    family_live_capable = (mode == "LIVE" and family in (live_brokers or []))
-    is_live_division = (
-        family_live_capable and division.slug in (live_divisions or set())
-    )
+    is_live_family = (mode == "LIVE" and family in (live_brokers or []))
 
     if family == "robinhood":
         if not (secrets.robinhood_username and secrets.robinhood_password):
@@ -2007,7 +1969,7 @@ def _build_broker_for_division(
             mfa_secret=secrets.robinhood_mfa_secret,
             account_filter=division.account_filter or None,
         )
-        if is_live_division:
+        if is_live_family:
             return rh
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(rh, paper)
@@ -2021,7 +1983,7 @@ def _build_broker_for_division(
             password=secrets.fidelity_password,
             target_account=division.account_filter or None,
         )
-        if is_live_division:
+        if is_live_family:
             return fid
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(fid, paper)
@@ -2047,7 +2009,7 @@ def _build_broker_for_division(
             passphrase=passphrase,
             mode=mode_str,
         )
-        if is_live_division:
+        if is_live_family:
             return cb
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(cb, paper)
@@ -2065,56 +2027,31 @@ def _build_broker_for_division(
             api_secret=secrets.bitunix_futures_api_secret,
             logger=logger_agent,
         )
-        if is_live_division:
+        if is_live_family:
             return bx
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(bx, paper)
 
     if family == "polymarket":
-        # PolymarketBroker (read-only, ReadOnlyBroker) for PAPER/non-selected;
-        # PolymarketLiveBroker (Broker, placement-legal) when LIVE + selected
-        # (--brokers polymarket). Per-division wallet (item 6): resolve the EOA
-        # by slug (RPC shared; unmapped/partial wallet → None creds → stub).
-        #
-        # ANTI-HALF-FLIP (E1·6): the live branch is REQUIRED. Without it a
-        # LIVE+selected polymarket division would silently resolve the READ-ONLY
-        # adapter and never place — the Bitunix-half-flip failure mode. PCT goes
-        # live via divisions.yaml `broker: paper→polymarket` + mode LIVE +
-        # `--brokers polymarket`. No PaperExecutionBroker wrap on the read-only
-        # path (no order surface to simulate); the live broker places for real.
+        # Phase 1 read-only Polymarket adapter. PolymarketBroker subclasses
+        # ReadOnlyBroker (NOT Broker) — there is no `place_order` method to
+        # call. Live order placement is Phase 3 work and will land as a
+        # separate `Broker` subclass when the Backtester verdict +
+        # auto_execute_caps memo greenlight it. Until then, no
+        # PaperExecutionBroker wrap is needed: read-only adapters don't
+        # have an order surface to simulate.
+        from trading_corp.brokers.polymarket import PolymarketBroker
+        # Per-division wallet (item 6): resolve this division's EOA by slug.
+        # RPC is shared. Unmapped/partial wallet → None creds → broker stubs.
         wallet = secrets.polymarket_wallets.get(division.slug)
         if wallet is None:
             log.info(
                 "Polymarket division %s has no mapped wallet — broker will stub",
                 division.slug,
             )
-        pk = wallet.private_key if wallet else None
-        funder = wallet.funder_address if wallet else None
-        if is_live_division:
-            from trading_corp.brokers.polymarket_live import PolymarketLiveBroker
-            # E5a — execution discipline sourced from THIS division's config
-            # (config/divisions.yaml). Omit each kwarg when unset so the broker
-            # ctor default applies → an unconfigured division is byte-identical to
-            # pre-E5a. exit_chase forwards the same way once E5b adds the ctor param.
-            exec_kwargs = {}
-            _ot = getattr(division, "order_type", None)
-            if _ot is not None:
-                exec_kwargs["order_type"] = _ot
-            _fps = getattr(division, "fak_poll_seconds", None)
-            if _fps is not None:
-                exec_kwargs["fak_poll_seconds"] = _fps
-            # E5b — exit_chase pass-through dict (None when unset → kwarg omitted →
-            # ctor default None → chase OFF → byte-identical to pre-E5b).
-            _ec = getattr(division, "exit_chase", None)
-            if _ec is not None:
-                exec_kwargs["exit_chase"] = _ec
-            return PolymarketLiveBroker(
-                private_key=pk, funder_address=funder,
-                polygon_rpc_url=secrets.polygon_rpc_url, **exec_kwargs,
-            )
-        from trading_corp.brokers.polymarket import PolymarketBroker
         return PolymarketBroker(
-            private_key=pk, funder_address=funder,
+            private_key=wallet.private_key if wallet else None,
+            funder_address=wallet.funder_address if wallet else None,
             polygon_rpc_url=secrets.polygon_rpc_url,
         )
 
@@ -2164,7 +2101,7 @@ def _build_broker_for_division(
                 division.slug, e,
             )
             return None
-        if is_live_division:
+        if is_live_family:
             return tt
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(tt, paper)
@@ -3398,118 +3335,6 @@ async def _scheduled_kalshi_copy_trader_loop(
                 await asyncio.sleep(30)
 
 
-async def _push_copy_card(channel, order, ext, *, tag: str) -> None:
-    """Informational Telegram card for one PCT copy order. Never raises."""
-    try:
-        user = ext.get("whale_user_name") or (ext.get("whale_wallet") or "?")[:10]
-        action = "ENTRY" if ext.get("is_entry") else "EXIT"
-        title_short = (ext.get("market_title") or order.symbol)[:50]
-        await channel.push(
-            f"🟣 Polymarket copy {action} {order.side.upper()} "
-            f"@{user} (${ext.get('copy_size_usdc', 0):.2f}) "
-            f"on \"{title_short}\" — {tag}."
-        )
-    except Exception as e:
-        log.warning("Polymarket copy channel push failed: %s", e)
-
-
-async def _handle_copy_order_placement(
-    *, agent, order, verdict, is_live_armed: bool,
-    data_exec, logger_agent, channel, base_payload: dict,
-) -> None:
-    """E2·6 — place one PCT copy order, gated on live-arming.
-
-    `is_live_armed` is E2·4's decision (the division's broker is placement-legal,
-    i.e. a `Broker`/PolymarketLiveBroker — NOT `broker.paper`):
-
-      * PAPER (not armed): log `would_have_placed` — UNCHANGED behavior.
-      * LIVE-armed: route through `data_exec.place()` (which sets `execution_mode`
-        and logs the fill + proposed_order, E2·5). A benign synthesized-FAK
-        `NoFillInWindow` is SKIPPED — the optimistic position is discarded, a benign
-        audit + log.info is written, and the loop CONTINUES to the next order (no
-        alarm, no 30s sleep, batch not abandoned). A real fill writes the ACTUAL
-        filled qty/price back into the position (entry only). Real placement
-        failures (plain `OrderPlacementError` / anything else) PROPAGATE to the
-        loop's loud handler — they are NOT swallowed here.
-    """
-    ext = order.extra or {}
-    if not is_live_armed:
-        # ── PAPER branch — unchanged ──
-        logger_agent.log_event(
-            agent.name, "would_have_placed",
-            {
-                **base_payload,
-                "qty": order.qty,
-                "risk_verdict": verdict.verdict,
-                "risk_reason": verdict.reason,
-            },
-        )
-        await _push_copy_card(channel, order, ext, tag="logged")
-        return
-
-    # ── LIVE-armed branch (mocked in tests; a real broker only when operator-armed) ──
-    from trading_corp.brokers.polymarket_live import NoFillInWindow
-
-    try:
-        fill = await data_exec.place(order, division=agent.division)
-    except NoFillInWindow as e:
-        # Benign: the order did not fill in its window.
-        if ext.get("is_entry"):
-            # ── ENTRY — unchanged: drop the optimistic position, benign skip. ──
-            agent.discard_entry(order)
-        elif ext.get("is_entry") is False:
-            # ── E5b EXIT total no-fill: the chase cleared NOTHING. Do NOT discard an
-            # exit — retain the WHOLE lot as a flagged residual and surface it. ──
-            residual = agent.record_exit_fill(order, None)
-            logger_agent.log_event(
-                agent.name, "polymarket_copy_exit_residual",
-                {**base_payload, "residual_qty": residual, "reason": "exit_no_fill"},
-            )
-            log.warning(
-                "Polymarket copy: EXIT no-fill on %s — residual %g retained, manual reconcile",
-                order.symbol, residual,
-            )
-            await _push_copy_card(
-                channel, order, ext,
-                tag=f"RESIDUAL {residual:g} held (no fill) — MANUAL RECONCILE",
-            )
-            return
-        logger_agent.log_event(
-            agent.name, "polymarket_copy_no_fill",
-            {**base_payload, "qty": order.qty, "reason": str(e)},
-        )
-        log.info("Polymarket copy: benign no-fill on %s — skipped (%s)", order.symbol, e)
-        return
-    # Real fill (full or synthesized-FAK partial). `data_exec.place` already logged
-    # proposed_order[status=filled] + the 'filled' audit + execution_mode='live'.
-    if ext.get("is_entry"):
-        agent.record_entry_fill(order, fill)
-    elif ext.get("is_entry") is False:
-        # ── E5b EXIT reconcile: decrement the held lot by the ACTUAL (cumulative)
-        # fill; a residual the exit couldn't clear is retained + flagged for reconcile. ──
-        residual = agent.record_exit_fill(order, fill)
-        if residual > 0.0:
-            logger_agent.log_event(
-                agent.name, "polymarket_copy_exit_residual",
-                {**base_payload, "residual_qty": residual, "reason": "exit_partial"},
-            )
-            log.warning(
-                "Polymarket copy: PARTIAL EXIT on %s — residual %g retained, manual reconcile",
-                order.symbol, residual,
-            )
-            await _push_copy_card(
-                channel, order, ext,
-                tag=f"PLACED LIVE @ ${float(getattr(fill, 'price', 0.0)):.3f} "
-                    f"x{float(getattr(fill, 'qty', 0.0)):g} — RESIDUAL {residual:g} held, MANUAL RECONCILE",
-            )
-            return
-    await _push_copy_card(
-        channel, order, ext,
-        tag=f"PLACED LIVE @ ${float(getattr(fill, 'price', 0.0)):.3f} "
-            f"x{float(getattr(fill, 'qty', 0.0)):g}",
-    )
-
-
 async def _scheduled_polymarket_copy_trader_loop(
     agent,
     *,
@@ -3562,14 +3387,6 @@ async def _scheduled_polymarket_copy_trader_loop(
                     continue
 
                 broker = data_exec.brokers.get(agent.division)
-                # E2·6 — live-armed iff E2·4 gave this division a PLACEMENT-LEGAL
-                # broker (PolymarketLiveBroker is a `Broker`; the read-only paper
-                # PolymarketBroker is a `ReadOnlyBroker`, NOT a `Broker`). This
-                # REUSES E2·4's --live-divisions decision (the factory already ANDed
-                # family + slug into the broker class) — it is NOT `broker.paper`
-                # (the read-only adapter has paper=False yet cannot place).
-                from trading_corp.brokers.base import Broker as _PlacementLegalBroker
-                is_live_armed = isinstance(broker, _PlacementLegalBroker)
                 if broker is None:
                     account_equity = 0.0
                 else:
@@ -3608,7 +3425,6 @@ async def _scheduled_polymarket_copy_trader_loop(
                         "outcome": ext.get("outcome"),
                         "outcome_index": ext.get("outcome_index"),
                         "condition_id": ext.get("condition_id"),
-                        "token_id": ext.get("token_id"),  # E2·1: propagate to audit
                         "whale_wallet": ext.get("whale_wallet"),
                         "whale_user_name": ext.get("whale_user_name"),
                         "whale_entry_price": ext.get("whale_entry_price"),
@@ -3646,13 +3462,29 @@ async def _scheduled_polymarket_copy_trader_loop(
                         )
                         order.qty = float(verdict.new_qty)
 
-                    # E2·6 — gated live placement vs paper would_have_placed.
-                    await _handle_copy_order_placement(
-                        agent=agent, order=order, verdict=verdict,
-                        is_live_armed=is_live_armed, data_exec=data_exec,
-                        logger_agent=logger_agent, channel=channel,
-                        base_payload=base_payload,
+                    logger_agent.log_event(
+                        agent.name, "would_have_placed",
+                        {
+                            **base_payload,
+                            "qty": order.qty,
+                            "risk_verdict": verdict.verdict,
+                            "risk_reason": verdict.reason,
+                        },
                     )
+
+                    try:
+                        user = ext.get("whale_user_name") or (ext.get("whale_wallet") or "?")[:10]
+                        action = "ENTRY" if ext.get("is_entry") else "EXIT"
+                        title_short = (ext.get("market_title") or order.symbol)[:50]
+                        await channel.push(
+                            f"🟣 Polymarket copy {action} {order.side.upper()} "
+                            f"@{user} (${ext.get('copy_size_usdc', 0):.2f}) "
+                            f"on \"{title_short}\" — logged."
+                        )
+                    except Exception as e:
+                        log.warning(
+                            "Polymarket copy channel push failed: %s", e,
+                        )
 
             except asyncio.CancelledError:
                 log.info("Polymarket copy trader scanner cancelled.")

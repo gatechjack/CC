@@ -61,8 +61,7 @@ CREATE TABLE IF NOT EXISTS proposed_order (
     board_reason TEXT,
     fill_price   REAL,
     fill_ts      TEXT,
-    extra_json   TEXT,
-    execution_mode TEXT NOT NULL DEFAULT 'paper'  -- E2·5: 'paper' | 'live'; written at placement time
+    extra_json   TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_proposed_order_status ON proposed_order(status);
 
@@ -163,8 +162,7 @@ CREATE TABLE IF NOT EXISTS paper_trade_record (
     actual_pnl_dollars    REAL,
     actual_r_multiple     REAL,
     bars_to_resolution    INTEGER,
-    extra_json            TEXT,
-    execution_mode        TEXT NOT NULL DEFAULT 'paper'  -- E2·5: 'paper' | 'live'
+    extra_json            TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_paper_trade_record_strategy_ts
     ON paper_trade_record(strategy, ts);
@@ -403,21 +401,6 @@ def init_db(db_url: str = "sqlite:///data/trading_corp.db") -> Path:
         _maybe_add_column(
             conn, "weather_nbm_observations", "ingest_mode",
             "TEXT NOT NULL DEFAULT 'live_cron'",
-        )
-        # execution_mode (E2·5): classify each order/record by the execution path
-        # actually taken — 'paper' (paper/would_have_placed path) vs 'live' (live
-        # broker placement). REQUIRED in E2 because it can't be retrofitted (rows
-        # written without it can't be classified after the fact). These tables are
-        # paper-era to date, so the DEFAULT 'paper' correctly backfills existing
-        # rows (no live placement has ever written here). Dashboard paper/live
-        # filtering is BACKLOG — the column ships here, the UI does not.
-        _maybe_add_column(
-            conn, "proposed_order", "execution_mode",
-            "TEXT NOT NULL DEFAULT 'paper'",
-        )
-        _maybe_add_column(
-            conn, "paper_trade_record", "execution_mode",
-            "TEXT NOT NULL DEFAULT 'paper'",
         )
         # Indexes that reference columns added by the migration above must
         # be created here (not in SCHEMA) so they apply AFTER the column
