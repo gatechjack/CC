@@ -346,8 +346,10 @@ async def test_exit_is_never_staleness_gated(tmp_path):
 
     assert ok is True
     data_exec.place.assert_awaited_once()
-    # reduce_only close was placed → exit executed, not staleness-rejected
-    assert data_exec.place.await_args.kwargs.get("reduce_only") is True
+    # Exit executed despite gate ON + forced-stale → exits are NEVER gated.
+    placed_order = data_exec.place.await_args.args[0]
+    assert placed_order.side == "sell"            # inverted from entry 'buy'
+    assert placed_order.extra["reduce_only"] is True
 
 
 # ─────────────────────── replay path is untouched ───────────────────────
