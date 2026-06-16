@@ -2886,6 +2886,20 @@ class BitunixFuturesObserver:
             # decision == "approve" (or modify-with-new-qty) → fall
             # through to data_exec.place below.
 
+        # ── B2 maker-entry stamp (DEFAULT OFF) ───────────────────────
+        # When the maker flag is on, mark the entry so the broker places it as a
+        # POST_ONLY maker limit (with taker fallback on non-fill/rejection).
+        # Default OFF → extra unchanged → the current taker/market entry runs
+        # (behavior-preserving). LIVE-only: paper never reaches _place_live, and
+        # the broker maker path runs only in live mode. The B1 catastrophic stop
+        # is unaffected (it is a separate slPrice attachment, never an entry).
+        fc = self.fee_config
+        if fc is not None and getattr(fc, "maker_entry_enabled", False):
+            order.extra["maker_entry"] = True
+            order.extra["maker_rest_timeout_s"] = fc.maker_entry_rest_timeout_s
+            order.extra["maker_offset_pct"] = fc.maker_entry_offset_pct
+            order.extra["maker_fallback_mode"] = fc.maker_entry_fallback_mode
+
         # ── Place ───────────────────────────────────────────────────
         try:
             fill = await self.data_exec.place(order, division="bitunix_futures")
