@@ -990,6 +990,14 @@ async def reconcile_position_state(
                 "reconcile_position_state: halt-release failed: %s", e,
             )
 
+    # ── Bracket SL-move-on-TP-fill (price-only; venue auto-reduces qty) ──
+    # Runs on the same 60s cadence; bracket-managed rows only; failure-tolerant;
+    # never blocks the reconcile (a missed move leaves the SL at its prior price).
+    try:
+        await move_bracket_sls(broker, db_url)
+    except Exception as e:
+        log.warning("reconcile_position_state: bracket SL-move failed: %s", e)
+
     return result
 
 
@@ -1010,6 +1018,122 @@ class RestartResumeSummary:
     @property
     def has_orphan_or_case_c(self) -> bool:
         return bool(self.orphan_on_broker or self.case_c_deferred)
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+async def move_bracket_sls(broker: Any, db_url: str) -> None:
+    """Bracket SL-move-on-TP-fill (the only ongoing bot exit logic in the
+    exchange-resting bracket design).
+
+    Detects a TP fill as a REDUCTION in the broker position qty vs the recorded
+    entry qty, decides the new SL price per the (b)+(c) hybrid
+    (`bitunix_bracket.decide_sl_move`), and moves it via
+    `broker.modify_position_sl` (PRICE-ONLY — the venue auto-reduces SL qty).
+    Fail-soft / failure-tolerant: a missed move leaves the SL at its prior,
+    still-protective price and retries next tick (the TP already filled
+    on-exchange, so no profit is lost). Acts ONLY on bracket-managed live rows
+    (extra_json has `bracket_entry_qty`); all other positions are untouched.
+    """
+    from trading_corp.agents.divisions.bitunix_bracket import decide_sl_move
+
+    try:
+        with db.connect(db_url) as conn:
+            rows = conn.execute(
+                "SELECT order_id, symbol, side, qty, stop_price, "
+                "entry_reference_price, extra_json FROM paper_trade_record "
+                "WHERE result IS NULL AND extra_json IS NOT NULL"
+            ).fetchall()
+    except Exception as e:
+        log.warning("bracket SL-move: tracked-row read failed: %s", e)
+        return
+
+    bracket_rows: list[tuple[Any, dict]] = []
+    for r in rows:
+        try:
+            extra = json.loads(r["extra_json"])
+        except (TypeError, ValueError):
+            continue
+        if extra.get("execution_mode") != "live":
+            continue
+        if "bracket_entry_qty" not in extra:
+            continue
+        bracket_rows.append((r, extra))
+    if not bracket_rows:
+        return
+
+    try:
+        positions = await broker.get_pending_positions()
+    except Exception as e:
+        log.warning("bracket SL-move: get_pending_positions failed: %s", e)
+        return
+    pos_qty: dict[tuple[str, str], float] = {}
+    for p in positions:
+        pos_qty[(_match_symbol_key(p.symbol), _broker_side(p.qty))] = abs(float(p.qty))
+
+    for r, extra in bracket_rows:
+        side = r["side"]
+        entry_qty = _safe_float(extra.get("bracket_entry_qty"), _safe_float(r["qty"]))
+        if entry_qty <= 0:
+            continue
+        current_qty = pos_qty.get((_match_symbol_key(r["symbol"]), side), 0.0)
+        if current_qty >= entry_qty - 1e-12:
+            continue  # no TP fill detected this tick
+        current_sl = _safe_float(extra.get("current_sl"), _safe_float(r["stop_price"]))
+        entry_price = _safe_float(
+            extra.get("entry_reference_price"), _safe_float(r["entry_reference_price"])
+        )
+        tp1 = _safe_float(extra.get("tp1_price"))
+        if tp1 <= 0:
+            # fall back to the first bracket leg's price
+            legs = extra.get("bracket_legs") or []
+            if legs:
+                tp1 = _safe_float(legs[0].get("price"))
+        new_sl, why = decide_sl_move(
+            side=side, entry_price=entry_price, current_sl=current_sl,
+            tp1_price=tp1, entry_qty=entry_qty, current_qty=current_qty,
+        )
+        if new_sl is None:
+            continue
+        moved = False
+        if hasattr(broker, "modify_position_sl"):
+            try:
+                moved = await broker.modify_position_sl(r["symbol"], new_sl)
+            except Exception as e:  # belt-and-suspenders — modify is fail-soft
+                log.warning("bracket SL-move: modify raised: %s", e)
+                moved = False
+        # Persist the new SL only if it actually moved (so a failed move retries
+        # next tick). Always audit (moved True/False) so the operator sees it.
+        if moved:
+            try:
+                extra["current_sl"] = new_sl
+                with db.connect(db_url) as conn:
+                    conn.execute(
+                        "UPDATE paper_trade_record SET extra_json=? WHERE order_id=?",
+                        (json.dumps(extra, default=str), r["order_id"]),
+                    )
+            except Exception as e:
+                log.warning("bracket SL-move: persist failed: %s", e)
+        try:
+            with db.connect(db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event(ts, actor, kind, payload_json) "
+                    "VALUES(?, ?, ?, ?)",
+                    (_utc_now_iso(), RECONCILER_ACTOR, "position_sl_update",
+                     json.dumps({
+                         "order_id": r["order_id"], "symbol": r["symbol"],
+                         "new_sl": new_sl, "prev_sl": current_sl, "moved": moved,
+                         "reason": why, "entry_qty": entry_qty,
+                         "current_qty": current_qty, "source": "bracket_sl_move",
+                     }, default=str)),
+                )
+        except Exception as e:
+            log.warning("bracket SL-move: audit failed: %s", e)
 
 
 async def resume_live_positions(
