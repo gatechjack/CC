@@ -1,0 +1,5 @@
+# Staged deploy files must round-trip byte-exact so their md5 == TARGET on any
+# checkout (no CRLF/BOM mangling). Treat as binary.
+staged/** -text
+# The apply script is streamed via `tr -d '\r' | bash`; keep it LF + no BOM.
+*.sh text eol=lf
