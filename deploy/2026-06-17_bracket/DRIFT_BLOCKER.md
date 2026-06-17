@@ -53,6 +53,7 @@ Reduced-scope "ship 4 clean files only" is OFF the table (data_exec/logger are #
 - Drift guard gates **prod-CURRENT** md5 (an operator-approved deviation from "prod==base") for the 2 drifted files, plus prod==base for the 3 clean files, plus create for the new module:
   - data_exec.py:  prod `e3e4cca7` → target `51281fbd`
   - logger.py:     prod `2938e089` → target `e625c388`
+  - models.py:     prod `96cf31c4` → target `a781b495`   ← ADDED (see execution_mode reader audit): E2.5 coupled trio — the new logger INSERT binds :execution_mode against models.to_db_row(); prod models.py (f66722e) is pre-E2.5 → shipping logger without models breaks ALL proposed_order writes. **7-file set.**
   - observer.py:   prod `eec6bda6` (==base) → target `13469b10`
   - reconciler.py: prod `bf048cd1` (==base) → target `386cc6c2`
   - bitunix.py:    prod `70f7904f` (==base) → target `7a3da849`
