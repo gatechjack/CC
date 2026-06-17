@@ -177,13 +177,18 @@ class DataExecAgent:
             )
             return fill
 
+        # #5-C: exits (reduce_only) are EXEMPT from the staleness gate — a
+        # position must always be closable even on a stale snapshot. The gate
+        # blocks ENTRIES only. Keyed strictly on reduce_only=True. (The broker's
+        # halt latch likewise exempts reduce_only — #5-B.)
+        _is_exit = bool((order.extra or {}).get("reduce_only", False))
         try:
             # Defense-in-depth snapshot-staleness re-check (gate (a)
             # sub-item 2). The bitunix observer's pre-trade gate already
             # called this, but observer-check-passed-then-snapshot-went-
             # stale-before-data_exec.place is a real race. Duck-typed —
-            # non-bitunix brokers don't have this method.
-            if hasattr(broker, "_assert_snapshot_fresh"):
+            # non-bitunix brokers don't have this method. ENTRY-only (#5-C).
+            if not _is_exit and hasattr(broker, "_assert_snapshot_fresh"):
                 await broker._assert_snapshot_fresh()
             fill = await broker.place_order(order)
         except BitunixStaleSnapshot as exc:
@@ -199,24 +204,37 @@ class DataExecAgent:
             await self._handle_position_mode_mismatch(exc, order, division, broker)
             raise
 
+        # #3 CORE: `broker.place_order` is the ONLY call whose raise means the
+        # order was REJECTED. Past this point the fill is CONFIRMED + REAL on the
+        # venue, so NO persistence error may convert it into a rejection — the
+        # caller must register it. log_proposed_order is now lock-resilient
+        # (retries; never raises on a transient lock), but we still wrap the
+        # post-fill writes so even a non-lock persistence bug can't lose the fill.
         order.status = "filled"
         order.fill_price = fill.price
         order.fill_ts = fill.ts
-        self.logger.log_proposed_order(order)
-        self.logger.log_event(
-            actor="data_exec",
-            kind="filled",
-            payload={
-                "order_id": order.id,
-                "strategy": order.strategy,
-                "symbol": order.symbol,
-                "side": order.side,
-                "qty": order.qty,
-                "fill_price": fill.price,
-                "venue": fill.venue,
-                "ts": fill.ts,
-            },
-        )
+        try:
+            self.logger.log_proposed_order(order)
+            self.logger.log_event(
+                actor="data_exec",
+                kind="filled",
+                payload={
+                    "order_id": order.id,
+                    "strategy": order.strategy,
+                    "symbol": order.symbol,
+                    "side": order.side,
+                    "qty": order.qty,
+                    "fill_price": fill.price,
+                    "venue": fill.venue,
+                    "ts": fill.ts,
+                },
+            )
+        except Exception as pe:
+            log.error(
+                "data_exec.place: post-fill persistence failed for %s — the fill "
+                "is REAL on the venue; returning it so the caller registers the "
+                "position (NOT a rejection): %s", order.id, pe,
+            )
         return fill
 
     # ------------------------------------------------------------------

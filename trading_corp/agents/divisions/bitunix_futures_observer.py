@@ -3043,9 +3043,41 @@ class BitunixFuturesObserver:
             record.extra["entry_fee_usd"] = float(fill.fee or 0.0)
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
         except Exception as e:
-            log.warning(
-                "bitunix_observer: live-path paper_trade_record write failed "
-                "(broker placed; replay-loop won't track): %s", e,
+            # #3: insert_paper_trade_record already retries a transient lock;
+            # reaching here means registration FAILED for real → the broker holds
+            # a REAL live position the bot cannot track (an orphan). Do NOT swallow
+            # silently: emit a loud audit + operator alert so it's reconciled,
+            # never hidden. (The fill was NOT a rejection — data_exec returned it.)
+            log.error(
+                "bitunix_observer: live-path paper_trade_record write FAILED after "
+                "retries — UNTRACKED LIVE POSITION (broker placed; manual "
+                "reconcile): %s", e,
+            )
+            try:
+                self.logger_agent.log_event(
+                    actor="bitunix_futures",
+                    kind="live_position_registration_failed",
+                    payload={
+                        **intent_payload,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "broker_order_id": getattr(fill, "order_id", None),
+                    },
+                )
+            except Exception as ae:
+                log.error(
+                    "bitunix_observer: live_position_registration_failed audit "
+                    "also failed: %s", ae,
+                )
+            await self._push_with_confirmed_delivery(
+                order_id=order.id,
+                message=(
+                    f"⚠ BTC-PERP UNTRACKED LIVE POSITION (registration failed)\n"
+                    f"side: {order.side.upper()}  qty: {order.qty}\n"
+                    f"position is REAL on the venue but the bot can't track it — "
+                    f"MANUAL RECONCILE\norder_id={order.id}"
+                ),
+                failure_channel="live_registration_failed_alert",
             )
 
         # data_exec.place wrote its own `filled` audit row + set

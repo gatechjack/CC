@@ -1050,13 +1050,17 @@ class BitunixBroker(Broker):
                 "credentials). In PAPER mode orders route to PaperBroker via "
                 "PaperExecutionBroker — if you see this, the wrapping was bypassed."
             )
-        if self._halt_new_orders:
+        # Determine reduce_only FIRST so the halt latch can exempt exits. #5-B:
+        # a halt blocks NEW ENTRIES only — a reduce_only EXIT must always be
+        # allowed to close an existing position ("exits are never halted",
+        # Phase 1a §9c). The B1 catastrophic stop is a separate slPrice
+        # attachment, not a reduce_only order, so it is unaffected.
+        extra = order.extra or {}
+        reduce_only = bool(extra.get("reduce_only", False))
+        if self._halt_new_orders and not reduce_only:
             raise RuntimeError(
                 f"BitunixBroker halted, refusing new orders: {self._halt_reason}"
             )
-
-        extra = order.extra or {}
-        reduce_only = bool(extra.get("reduce_only", False))
         # B2 maker-entry dispatch: ENTRIES only (never exits/reduce-only, and
         # never the B1 catastrophic stop, which is a separate slPrice attachment
         # that stays MARK_PRICE+MARKET taker). Absent extra["maker_entry"] this is
