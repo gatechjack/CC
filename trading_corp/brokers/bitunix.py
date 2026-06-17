@@ -1842,6 +1842,132 @@ class BitunixBroker(Broker):
             ))
         return out
 
+    async def place_resting_reduce_only_limit(self, order: ProposedOrder) -> str:
+        """Place a REDUCE-ONLY LIMIT that RESTS on the book (a bracket TP leg) and
+        return its venue orderId WITHOUT observing the fill.
+
+        Unlike `place_order`, this does NOT poll for a fill — a TP rests until the
+        market reaches it (or native OCO cancels it on the final close). reduce_only
+        is FORCED True, so it is exit-exempt from the halt latch (#5-B). The caller
+        stores the returned orderId so the bot can identify its own resting orders
+        (OCO verify + #4 orphan ID).
+
+        VERIFY-ON-LIVE (Phase-C validation): that a reduce-only LIMIT rests as a
+        maker at the TP price, that 3 legs + the attached SL coexist (no 30038
+        TPSL_EXCEEDS_POSITION), and that native OCO / SL-auto-reduce behave as in
+        the manual UI — the open question this build's validation answers.
+        """
+        if self._stub or not self._client:
+            raise NotImplementedError(
+                "BitunixBroker.place_resting_reduce_only_limit: STUB mode (no creds)"
+            )
+        extra = dict(order.extra or {})
+        extra["reduce_only"] = True
+        order = dataclasses.replace(order, order_type="limit", extra=extra)
+        wire = to_wire_format(order.symbol)
+        # reduce-only on an existing position: verify ONE_WAY (never set/leverage).
+        await self._assert_position_mode_one_way(allow_set=False)
+        body = self._build_order_body(order, wire, reduce_only=True)
+        client_id = body["clientId"]
+        try:
+            data = await self._request(
+                "POST", "/api/v1/futures/trade/place_order", body=body,
+            )
+        except BitunixAPIError as e:
+            if e.code in _IDEMPOTENT_OK_CODES:
+                data = {"clientId": client_id}
+            else:
+                raise
+        venue_order_id = (data or {}).get("orderId")
+        log.info(
+            "BitUnix resting reduce-only LIMIT placed: venue_order_id=%s "
+            "clientId=%s %s %s qty=%s price=%s [order_id=%s]",
+            venue_order_id, client_id, body["side"], wire, body["qty"],
+            body.get("price"), order.id,
+        )
+        return str(venue_order_id) if venue_order_id else ""
+
+    async def get_pending_orders(self, symbol: str | None = None) -> list[dict]:
+        """Return the venue's currently-RESTING (unfilled) orders — for the OCO
+        light-verify (no stale SL/TP lingers after a terminal close). Read-only;
+        returns [] (never raises) on stub/creds/transient error so callers can
+        treat it as 'unknown, skip the verify this tick'.
+
+        VERIFY-ON-LIVE: the exact endpoint/response shape is grounded against the
+        BitUnix futures docs but unconfirmed read-only (Phase-C validation).
+        """
+        if self._stub or not self._client or not self._api_key:
+            return []
+        query: dict = {}
+        if symbol:
+            try:
+                query["symbol"] = to_wire_format(symbol)
+            except Exception:
+                query["symbol"] = symbol
+        try:
+            data = await self._request(
+                "GET", "/api/v1/futures/trade/get_pending_orders", query=query,
+            )
+        except Exception as e:
+            log.warning("BitUnix get_pending_orders failed: %s", e)
+            return []
+        if isinstance(data, dict):
+            data = data.get("orderList") or data.get("list") or []
+        return list(data or [])
+
+    async def modify_position_sl(
+        self,
+        symbol: str,
+        new_sl_price: float,
+        *,
+        position_id: str | None = None,
+        sl_stop_type: str = "MARK_PRICE",
+        sl_order_type: str = "MARKET",
+    ) -> bool:
+        """Move the attached position STOP-LOSS to `new_sl_price` IN PLACE (no
+        cancel-replace naked window). PRICE-ONLY — the venue auto-reduces SL qty
+        as TPs fill, so the bot never sets SL qty (hard rule). The SL stays a
+        guaranteed-fill MARKET stop (slOrderType=MARKET).
+
+        Fail-soft: returns True on success, False on any failure (NEVER raises) —
+        the SL-move is failure-tolerant (a missed move leaves the SL at its prior,
+        still-protective price; the TP already filled on-exchange).
+
+        VERIFY-ON-LIVE (Phase-C): the BitUnix
+        `/api/v1/futures/tpsl/modify_position_tp_sl_order` body shape (and whether
+        position_id is required) is grounded against docs but unconfirmed
+        read-only. If the live call shape-errors, the reconciler falls back to a
+        `position_sl_update` audit + operator alert (the SL stays valid).
+        """
+        if self._stub or not self._client or not self._api_key:
+            return False
+        try:
+            wire = to_wire_format(symbol)
+        except Exception:
+            wire = symbol
+        body: dict = {
+            "symbol": wire,
+            "slPrice": _amount_str(new_sl_price),
+            "slStopType": sl_stop_type,
+            "slOrderType": sl_order_type,
+        }
+        if position_id:
+            body["positionId"] = str(position_id)
+        try:
+            await self._request(
+                "POST",
+                "/api/v1/futures/tpsl/modify_position_tp_sl_order",
+                body=body,
+            )
+            log.info("BitUnix SL moved (price-only) %s -> %s", wire, body["slPrice"])
+            return True
+        except Exception as e:
+            log.warning(
+                "BitUnix modify_position_sl failed (%s -> %s): %s — SL stays at "
+                "prior price (failure-tolerant)", wire, body["slPrice"], e,
+            )
+            return False
+
     async def modify_position_tp_sl_order(
         self,
         order_id: str,

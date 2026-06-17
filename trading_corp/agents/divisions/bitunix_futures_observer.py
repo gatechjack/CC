@@ -3187,7 +3187,9 @@ class BitunixFuturesObserver:
             # populated (paper broker / non-bitunix venues).
             record.extra["entry_fee_usd"] = float(fill.fee or 0.0)
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
+            _registered = True
         except Exception as e:
+            _registered = False
             # #3: insert_paper_trade_record already retries a transient lock;
             # reaching here means registration FAILED for real → the broker holds
             # a REAL live position the bot cannot track (an orphan). Do NOT swallow
@@ -3224,6 +3226,20 @@ class BitunixFuturesObserver:
                 ),
                 failure_channel="live_registration_failed_alert",
             )
+
+        # ── Bracket exits (exchange-resting): the SL is already attached at
+        # entry (B1, market-stop, UNCHANGED). Now REST the TP ladder as
+        # reduce-only LIMIT orders — only when the position registered (else it
+        # was alerted as an untracked orphan above). Fail-soft: a TP-leg failure
+        # leaves the position protected by the SL. Rides #5-B/C (reduce-only).
+        if _registered:
+            try:
+                await self._place_bracket_exits(order=order, record=record)
+            except Exception as be:
+                log.error(
+                    "bitunix_observer: bracket placement raised (SL still "
+                    "protects; position registered): %s", be,
+                )
 
         # data_exec.place wrote its own `filled` audit row + set
         # order.status='filled' + order.fill_price/fill_ts. Just emit
@@ -3321,6 +3337,92 @@ class BitunixFuturesObserver:
                 )
 
     # ── live-exit path: data_exec.place(reduce_only=True) + record ──
+
+    async def _place_bracket_exits(
+        self, *, order: ProposedOrder, record: "PaperTradeRecord",
+    ) -> None:
+        """Rest the TP ladder (reduce-only LIMIT) on the exchange after a live
+        entry fills. The SL is the atomic attached market-stop (UNCHANGED). Splits
+        entry qty by the tp_plan fractions under the Board min-leg rule (0.0003
+        BTC) — degrading to fewer, larger legs rather than placing a sub-min leg.
+        Relies on native OCO (does NOT cancel counter-orders). Captures the venue
+        order-ids into paper_trade_record.extra (SL-move monitor + OCO verify +
+        #4 orphan-ID). Fail-soft per leg — the SL protects regardless.
+        """
+        from trading_corp.agents.divisions.bitunix_bracket import build_bracket_legs
+
+        extra = order.extra or {}
+        tp_plan = extra.get("tp_plan") or []
+        entry_qty = float(order.qty)
+        legs, note = build_bracket_legs(entry_qty, tp_plan)
+        broker = (
+            self.data_exec.brokers.get("bitunix_futures")
+            if self.data_exec is not None else None
+        )
+        if not legs or broker is None or not hasattr(
+            broker, "place_resting_reduce_only_limit"
+        ):
+            self.logger_agent.log_event(
+                actor="bitunix_futures", kind="bracket_tp_skipped",
+                payload={"order_id": order.id, "entry_qty": entry_qty,
+                         "reason": note or "no broker / no resting-limit support"},
+            )
+            return
+
+        exit_side = "sell" if order.side == "buy" else "buy"
+        tp_order_ids: dict[str, str] = {}
+        for leg in legs:
+            tp_order = ProposedOrder(
+                strategy="bitunix_futures", symbol=order.symbol,
+                side=exit_side,  # type: ignore[arg-type]
+                qty=leg.qty, order_type="limit", limit_price=leg.price,
+                rationale=f"bracket {leg.leg} (entry {order.id})",
+                extra={"reduce_only": True, "exit_kind": leg.leg,
+                       "parent_order_id": order.id, "tif": "GTC"},
+                id=f"{order.id}-{leg.leg}",
+            )
+            try:
+                vid = await broker.place_resting_reduce_only_limit(tp_order)
+                tp_order_ids[leg.leg] = vid
+            except Exception as e:
+                log.error(
+                    "bitunix_observer: bracket %s leg place FAILED (SL still "
+                    "protects): %s", leg.leg, e,
+                )
+                self.logger_agent.log_event(
+                    actor="bitunix_futures", kind="bracket_tp_leg_failed",
+                    payload={"order_id": order.id, "leg": leg.leg,
+                             "price": leg.price, "qty": leg.qty,
+                             "error": str(e), "error_type": type(e).__name__},
+                )
+
+        # Persist bracket state for the SL-move monitor + OCO verify + #4.
+        # MUST be an UPDATE: insert_paper_trade_record is INSERT-OR-IGNORE and the
+        # row already exists (written at entry), so a re-insert would be a no-op.
+        try:
+            record.extra["bracket_tp_order_ids"] = tp_order_ids
+            record.extra["bracket_legs"] = [
+                {"leg": l.leg, "price": l.price, "qty": l.qty} for l in legs
+            ]
+            record.extra["bracket_entry_qty"] = entry_qty
+            record.extra["current_sl"] = float(extra.get("stop_price") or 0.0)
+            if note:
+                record.extra["bracket_degrade_note"] = note
+            with db.connect(self.db_url) as conn:
+                conn.execute(
+                    "UPDATE paper_trade_record SET extra_json=? WHERE order_id=?",
+                    (json.dumps(record.extra, default=str), order.id),
+                )
+        except Exception as e:
+            log.error("bitunix_observer: bracket-state persist failed: %s", e)
+
+        self.logger_agent.log_event(
+            actor="bitunix_futures", kind="bracket_placed",
+            payload={"order_id": order.id, "legs_placed": len(tp_order_ids),
+                     "legs_planned": len(legs), "tp_order_ids": tp_order_ids,
+                     "degrade_note": note, "entry_qty": entry_qty,
+                     "structural_sl": float(extra.get("stop_price") or 0.0)},
+        )
 
     async def _execute_live_exits(
         self,
