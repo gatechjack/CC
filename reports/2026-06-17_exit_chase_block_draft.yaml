@@ -1,0 +1,24 @@
+# E5b exit_chase config — PRE-OP·E DRAFT for review (NOT wired into config/divisions.yaml).
+#
+# This block is to be added UNDER the `polymarket_copy_trading` division in
+# config/divisions.yaml WHEN the escalating exit-chase is armed — a POST-OP·E step that
+# also couples with updating tests/test_polymarket_broker_config_plumbing.py
+# ::test_migration_not_stranded (it currently asserts `pct.exit_chase is None`).
+#
+# IMPORTANT
+#  - `enabled: false` keeps the chase OFF even once this block lands. The exit stays
+#    SINGLE-SHOT FAK; the E5b reconcile FLOOR (record_exit_fill) still runs — only the
+#    escalating chase LOOP is gated by `enabled`. Flip true ONLY after tuning on real
+#    fill data.
+#  - Values below are PRE-OP·E GUESSES. get_price(token_id, SELL) best-bid DIRECTION and
+#    the CLOB price tick are LIVE-VERIFY-at-OP·E; tune spread_fraction /
+#    terminal_aggressiveness / max_attempts from the FIRST real exit fills.
+#  - Drafted 2026-06-17 off merged-main a64a42f. Do NOT merge or arm from this file.
+
+    exit_chase:
+      enabled: false          # OFF until armed post-OP·E; flip true only after tuning on real fill data
+      max_attempts: 3         # patient-but-few; each is a full-window FAK before the terminal
+      spread_fraction: 0.25   # each step crosses 25% deeper off best-bid
+      poll_seconds: 5         # matches entry fak_poll_seconds
+      terminal_aggressiveness: 0.50  # final marketable-limit crosses 50% below best-bid to sweep depth
+      min_price: 0.01         # floor so an aggressive concession stays a valid probability
