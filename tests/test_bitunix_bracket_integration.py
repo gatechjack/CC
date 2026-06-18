@@ -1,8 +1,12 @@
 """Integration tests: observer bracket placement + reconciler SL-move.
 
 Mocked brokers / temp DB — no venue I/O. Covers _place_bracket_exits (TP ladder
-placement, degradation, fail-soft) and move_bracket_sls (SL-move-on-TP-fill,
-price-only, failure-tolerant).
+placement via the native place_tpsl_order path, degradation, fail-soft) and
+move_bracket_sls (SL-move-on-TP-fill, price-only, failure-tolerant).
+
+Updated 2026-06-18: bracket now uses place_tpsl_order (native /tpsl/place_order)
+instead of place_resting_reduce_only_limit; positionId sourced from
+get_pending_positions and threaded to each leg.
 """
 from __future__ import annotations
 
@@ -31,6 +35,8 @@ SHORT_TP_PLAN = [
     {"leg": "tp2", "fraction": 0.50, "price": 65801.10, "stop_action": "move_to_tp1"},
     {"leg": "tp3", "fraction": 0.25, "price": 65482.04, "stop_action": "trail_atr"},
 ]
+
+_PRICES_TO_LEG = {65928.22: "tp1", 65801.10: "tp2", 65482.04: "tp3"}
 
 
 def _read_extra(url: str, order_id: str) -> dict:
@@ -63,21 +69,38 @@ def _last_kind(url: str, kind: str) -> dict | None:
 
 # ── bracket placement ───────────────────────────────────────────────────────
 
-class FakeRestingBroker:
-    def __init__(self, fail_legs=()):
+class FakeTpslBroker:
+    """Broker fake supporting the native tpsl path (place_tpsl_order +
+    get_pending_positions). Replaces the old FakeRestingBroker which had
+    place_resting_reduce_only_limit (the pre-rebuild path)."""
+    def __init__(self, position_id="pos-int-123", fail_legs=()):
         self.placed: list[dict] = []
         self.fail_legs = set(fail_legs)
+        self._position_id = position_id
+        self._positions: list[Position] = []
 
-    async def place_resting_reduce_only_limit(self, order):
-        kind = (order.extra or {}).get("exit_kind")
-        if kind in self.fail_legs:
-            raise RuntimeError(f"rest failed for {kind}")
+    def set_positions(self, positions):
+        self._positions = positions
+
+    async def get_pending_positions(self):
+        return self._positions
+
+    async def place_tpsl_order(self, *, symbol, position_id, tp_price, tp_qty,
+                                tp_stop_type="MARK_PRICE", tp_order_type="LIMIT"):
+        leg = None
+        for price, label in _PRICES_TO_LEG.items():
+            if abs(tp_price - price) < 0.01:
+                leg = label
+                break
+        if leg in self.fail_legs:
+            raise RuntimeError(f"tpsl fail for {leg}")
         self.placed.append({
-            "side": order.side, "qty": order.qty, "price": order.limit_price,
-            "exit_kind": kind, "reduce_only": (order.extra or {}).get("reduce_only"),
-            "order_type": order.order_type,
+            "symbol": symbol, "position_id": position_id,
+            "tp_price": tp_price, "tp_qty": tp_qty,
+            "tp_stop_type": tp_stop_type, "tp_order_type": tp_order_type,
+            "exit_kind": leg,
         })
-        return f"venue-{kind}"
+        return f"venue-tpsl-{leg}"
 
 
 class FakeDataExec:
@@ -92,6 +115,16 @@ def _entry_order(qty: float, side: str = "sell", oid: str = "ord-1") -> Proposed
         extra={"tp_plan": SHORT_TP_PLAN, "stop_price": 66273.0,
                "tp1_price": 65928.22, "entry_reference_price": 66047.0,
                "execution_mode": "live"},
+    )
+
+
+def _short_pos_with_id(qty_abs: float, pos_id: str = "pos-int-123") -> Position:
+    return Position(
+        account="bitunix-futures", symbol="BTCUSDT", qty=-qty_abs,
+        avg_price=66047.0, opened_ts="2026-06-18T12:00:00",
+        extra={"side": "SHORT", "positionId": pos_id,
+               "leverage": "10", "marginMode": "ISOLATED",
+               "unrealizedPNL": "0", "liqPrice": "70000"},
     )
 
 
@@ -117,7 +150,8 @@ async def _persist_entry(url, order):
 
 @pytest.mark.asyncio
 async def test_bracket_places_three_legs(tmp_path):
-    broker = FakeRestingBroker()
+    broker = FakeTpslBroker(position_id="pos-int-123")
+    broker.set_positions([_short_pos_with_id(0.0016, "pos-int-123")])
     obs, url = _observer(tmp_path, broker)
     order = _entry_order(0.0016)
     rec = await _persist_entry(url, order)
@@ -125,23 +159,23 @@ async def test_bracket_places_three_legs(tmp_path):
     await obs._place_bracket_exits(order=order, record=rec)
 
     assert [p["exit_kind"] for p in broker.placed] == ["tp1", "tp2", "tp3"]
-    # SHORT entry → reduce-only BUY limit exits at the tp_plan prices.
-    assert all(p["reduce_only"] is True for p in broker.placed)
-    assert all(p["side"] == "buy" for p in broker.placed)
-    assert all(p["order_type"] == "limit" for p in broker.placed)
-    assert broker.placed[0]["price"] == 65928.22
-    assert broker.placed[0]["qty"] == pytest.approx(0.0004)   # 0.25
-    assert broker.placed[1]["qty"] == pytest.approx(0.0008)   # 0.50
+    # positionId threaded to all legs
+    assert all(p["position_id"] == "pos-int-123" for p in broker.placed)
+    assert broker.placed[0]["tp_price"] == 65928.22
+    assert broker.placed[0]["tp_qty"] == pytest.approx(0.0004)   # 0.25
+    assert broker.placed[1]["tp_qty"] == pytest.approx(0.0008)   # 0.50
     extra = _read_extra(url, order.id)
     assert set(extra["bracket_tp_order_ids"]) == {"tp1", "tp2", "tp3"}
     assert extra["bracket_entry_qty"] == pytest.approx(0.0016)
     assert extra["current_sl"] == pytest.approx(66273.0)
+    assert extra["bracket_position_id"] == "pos-int-123"
     assert _last_kind(url, "bracket_placed")["legs_placed"] == 3
 
 
 @pytest.mark.asyncio
 async def test_bracket_degrades_to_one_leg(tmp_path):
-    broker = FakeRestingBroker()
+    broker = FakeTpslBroker(position_id="pos-int-123")
+    broker.set_positions([_short_pos_with_id(0.0004, "pos-int-123")])
     obs, url = _observer(tmp_path, broker)
     order = _entry_order(0.0004)  # < 2*min → single leg
     rec = await _persist_entry(url, order)
@@ -149,13 +183,14 @@ async def test_bracket_degrades_to_one_leg(tmp_path):
     await obs._place_bracket_exits(order=order, record=rec)
 
     assert [p["exit_kind"] for p in broker.placed] == ["tp1"]
-    assert broker.placed[0]["qty"] == pytest.approx(0.0004)
+    assert broker.placed[0]["tp_qty"] == pytest.approx(0.0004)
     assert "degrade" in (_last_kind(url, "bracket_placed")["degrade_note"] or "").lower()
 
 
 @pytest.mark.asyncio
 async def test_bracket_leg_failure_failsoft(tmp_path):
-    broker = FakeRestingBroker(fail_legs={"tp2"})
+    broker = FakeTpslBroker(position_id="pos-int-123", fail_legs={"tp2"})
+    broker.set_positions([_short_pos_with_id(0.0016, "pos-int-123")])
     obs, url = _observer(tmp_path, broker)
     order = _entry_order(0.0016)
     rec = await _persist_entry(url, order)

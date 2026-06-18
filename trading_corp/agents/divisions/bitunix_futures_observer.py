@@ -3341,13 +3341,22 @@ class BitunixFuturesObserver:
     async def _place_bracket_exits(
         self, *, order: ProposedOrder, record: "PaperTradeRecord",
     ) -> None:
-        """Rest the TP ladder (reduce-only LIMIT) on the exchange after a live
-        entry fills. The SL is the atomic attached market-stop (UNCHANGED). Splits
-        entry qty by the tp_plan fractions under the Board min-leg rule (0.0003
-        BTC) — degrading to fewer, larger legs rather than placing a sub-min leg.
-        Relies on native OCO (does NOT cancel counter-orders). Captures the venue
-        order-ids into paper_trade_record.extra (SL-move monitor + OCO verify +
-        #4 orphan-ID). Fail-soft per leg — the SL protects regardless.
+        """Rest the TP ladder via the native `/tpsl/place_order` endpoint after a
+        live entry fills. The B1 SL (atomic attached market-stop) is UNCHANGED.
+        Splits entry qty by the tp_plan fractions under the Board min-leg rule
+        (0.0003 BTC) — degrading to fewer, larger legs rather than placing a
+        sub-min leg. Each leg is placed as a position-tied partial-qty TP/SL order
+        (`place_tpsl_order`) which gives native OCO + auto-reducing SL.
+
+        positionId sourcing: after the entry fill, calls `get_pending_positions`
+        on the broker to match the just-opened symbol/side and read the positionId
+        from Position.extra. Fail-soft: if positionId cannot be resolved, NO TP
+        legs are placed (the B1 SL still guards) and a `bracket_tp_skipped` audit
+        is emitted. Fail-soft per leg — the SL protects regardless.
+
+        Captures the venue order-ids into paper_trade_record.extra (SL-move
+        monitor + OCO verify + #4 orphan-ID). KEEP: `bracket_placed` audit shape
+        + `build_bracket_legs` degrade (3/2/1-leg) UNCHANGED.
         """
         from trading_corp.agents.divisions.bitunix_bracket import build_bracket_legs
 
@@ -3359,30 +3368,68 @@ class BitunixFuturesObserver:
             self.data_exec.brokers.get("bitunix_futures")
             if self.data_exec is not None else None
         )
-        if not legs or broker is None or not hasattr(
-            broker, "place_resting_reduce_only_limit"
-        ):
+        if not legs or broker is None or not hasattr(broker, "place_tpsl_order"):
             self.logger_agent.log_event(
                 actor="bitunix_futures", kind="bracket_tp_skipped",
                 payload={"order_id": order.id, "entry_qty": entry_qty,
-                         "reason": note or "no broker / no resting-limit support"},
+                         "reason": note or "no broker / no tpsl support"},
             )
             return
 
-        exit_side = "sell" if order.side == "buy" else "buy"
-        tp_order_ids: dict[str, str] = {}
-        for leg in legs:
-            tp_order = ProposedOrder(
-                strategy="bitunix_futures", symbol=order.symbol,
-                side=exit_side,  # type: ignore[arg-type]
-                qty=leg.qty, order_type="limit", limit_price=leg.price,
-                rationale=f"bracket {leg.leg} (entry {order.id})",
-                extra={"reduce_only": True, "exit_kind": leg.leg,
-                       "parent_order_id": order.id, "tif": "GTC"},
-                id=f"{order.id}-{leg.leg}",
+        # ── Resolve positionId from the just-opened position ──────────────────
+        position_id: str | None = None
+        try:
+            from trading_corp.brokers.bitunix_symbols import (
+                UnknownSymbolError as _UnknownSymbolError,
+                to_wire_format as _to_wire_fmt,
             )
             try:
-                vid = await broker.place_resting_reduce_only_limit(tp_order)
+                order_wire = _to_wire_fmt(order.symbol or "")
+            except _UnknownSymbolError:
+                order_wire = (order.symbol or "").upper()
+
+            open_positions = await broker.get_pending_positions()
+            entry_side_norm = (order.side or "").lower()
+            for p in open_positions:
+                # Match symbol via wire form (P1 pattern — BTCUSDT == BTC/USDT.P).
+                try:
+                    p_wire = _to_wire_fmt(p.symbol or "")
+                except _UnknownSymbolError:
+                    p_wire = (p.symbol or "").upper()
+                p_side = (p.extra or {}).get("side", "").upper()
+                p_side_norm = "buy" if p_side in ("LONG", "BUY") else "sell"
+                if p_wire == order_wire and p_side_norm == entry_side_norm:
+                    pid = (p.extra or {}).get("positionId")
+                    if pid:
+                        position_id = str(pid)
+                        break
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: get_pending_positions for positionId failed: %s", e,
+            )
+
+        if not position_id:
+            log.error(
+                "bitunix_observer: positionId unresolved for %s — skipping TP "
+                "legs (B1 SL still guards)", order.id,
+            )
+            self.logger_agent.log_event(
+                actor="bitunix_futures", kind="bracket_tp_skipped",
+                payload={"order_id": order.id, "entry_qty": entry_qty,
+                         "reason": "positionId unresolved — skipping TP legs (B1 guards)"},
+            )
+            return
+
+        # ── Place each TP leg via the native tpsl endpoint ───────────────────
+        tp_order_ids: dict[str, str] = {}
+        for leg in legs:
+            try:
+                vid = await broker.place_tpsl_order(
+                    symbol=order.symbol,
+                    position_id=position_id,
+                    tp_price=leg.price,
+                    tp_qty=leg.qty,
+                )
                 tp_order_ids[leg.leg] = vid
             except Exception as e:
                 log.error(
@@ -3406,6 +3453,7 @@ class BitunixFuturesObserver:
             ]
             record.extra["bracket_entry_qty"] = entry_qty
             record.extra["current_sl"] = float(extra.get("stop_price") or 0.0)
+            record.extra["bracket_position_id"] = position_id
             if note:
                 record.extra["bracket_degrade_note"] = note
             with db.connect(self.db_url) as conn:

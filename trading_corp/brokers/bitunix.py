@@ -1354,6 +1354,7 @@ class BitunixBroker(Broker):
                     "unrealizedPNL": p.get("unrealizedPNL"),
                     "liqPrice": p.get("liqPrice"),
                     "side": side,
+                    "positionId": p.get("positionId"),
                 },
             ))
         return positions
@@ -1887,6 +1888,71 @@ class BitunixBroker(Broker):
         )
         return str(venue_order_id) if venue_order_id else ""
 
+    async def place_tpsl_order(
+        self,
+        *,
+        symbol: str,
+        position_id: str,
+        tp_price: float,
+        tp_qty: float,
+        tp_stop_type: str = "MARK_PRICE",
+        tp_order_type: str = "LIMIT",
+    ) -> str:
+        """Place ONE partial-qty TP leg via the native `/tpsl/place_order` endpoint.
+
+        Builds a position-tied TP/SL order with a partial `tpQty` — call N times
+        to build the TP ladder (0.25/0.50/0.25 splits). The `tpOrderPrice` is set
+        equal to `tp_price` to preserve the maker-LIMIT-at-price behaviour (LIMIT
+        TP fills at `tpOrderPrice` when the mark hits `tpPrice`).
+
+        Unlike `place_resting_reduce_only_limit` (standalone reduce-only LIMIT via
+        `/futures/trade/place_order`), this uses the native venue TP/SL order family
+        which gives: native OCO with the attached B1 SL, auto-reducing SL qty as
+        legs fill, and clean fill-tracking via `get_pending_tpsl_orders`.
+
+        Returns the venue tp-order id string (empty string on success with no id).
+        Raises `BitunixAPIError` on non-idempotent errors. Idempotent duplicate
+        codes (_IDEMPOTENT_OK_CODES) are silently accepted (same positionId+price
+        already resting).
+
+        VERIFY-ON-LIVE: the exact response shape (`orderId` field) is grounded
+        against docs; confirm the field name on the first real placement.
+        """
+        if self._stub or not self._client:
+            raise NotImplementedError(
+                "BitunixBroker.place_tpsl_order: STUB mode (no creds)"
+            )
+        try:
+            wire = to_wire_format(symbol)
+        except Exception:
+            wire = symbol
+        body: dict = {
+            "symbol": wire,
+            "positionId": str(position_id),
+            "tpPrice": _amount_str(tp_price),
+            "tpQty": _amount_str(tp_qty),
+            "tpStopType": tp_stop_type,
+            "tpOrderType": tp_order_type,
+            "tpOrderPrice": _amount_str(tp_price),
+        }
+        try:
+            data = await self._request(
+                "POST", "/api/v1/futures/tpsl/place_order", body=body,
+            )
+        except BitunixAPIError as e:
+            if e.code in _IDEMPOTENT_OK_CODES:
+                data = {}
+            else:
+                raise
+        venue_order_id = (data or {}).get("orderId")
+        log.info(
+            "BitUnix tpsl/place_order: venue_order_id=%s positionId=%s "
+            "%s tpPrice=%s tpQty=%s",
+            venue_order_id, position_id, wire,
+            body["tpPrice"], body["tpQty"],
+        )
+        return str(venue_order_id) if venue_order_id else ""
+
     async def get_pending_orders(self, symbol: str | None = None) -> list[dict]:
         """Return the venue's currently-RESTING (unfilled) orders — for the OCO
         light-verify (no stale SL/TP lingers after a terminal close). Read-only;
@@ -1929,17 +1995,26 @@ class BitunixBroker(Broker):
         as TPs fill, so the bot never sets SL qty (hard rule). The SL stays a
         guaranteed-fill MARKET stop (slOrderType=MARKET).
 
-        Fail-soft: returns True on success, False on any failure (NEVER raises) —
-        the SL-move is failure-tolerant (a missed move leaves the SL at its prior,
-        still-protective price; the TP already filled on-exchange).
+        `position_id` is MANDATORY: if absent or empty, this method returns
+        False immediately without calling the venue (a positionId-less SL-move
+        would 404 or silently target the wrong position). The caller (reconciler)
+        must thread positionId from broker Position.extra.
 
-        VERIFY-ON-LIVE (Phase-C): the BitUnix
-        `/api/v1/futures/tpsl/modify_position_tp_sl_order` body shape (and whether
-        position_id is required) is grounded against docs but unconfirmed
-        read-only. If the live call shape-errors, the reconciler falls back to a
-        `position_sl_update` audit + operator alert (the SL stays valid).
+        Fail-soft: returns True on success, False on any failure or absent
+        positionId (NEVER raises) — the SL-move is failure-tolerant (a missed
+        move leaves the SL at its prior, still-protective price; the TP already
+        filled on-exchange).
+
+        Path fix: uses the correct `/api/v1/futures/tpsl/position/modify_order`
+        (the previously used `/tpsl/modify_position_tp_sl_order` returned 404).
         """
         if self._stub or not self._client or not self._api_key:
+            return False
+        if not position_id:
+            log.warning(
+                "BitUnix modify_position_sl: positionId absent for %s — "
+                "skipping (fail-soft; SL stays at prior price)", symbol,
+            )
             return False
         try:
             wire = to_wire_format(symbol)
@@ -1947,16 +2022,15 @@ class BitunixBroker(Broker):
             wire = symbol
         body: dict = {
             "symbol": wire,
+            "positionId": str(position_id),
             "slPrice": _amount_str(new_sl_price),
             "slStopType": sl_stop_type,
             "slOrderType": sl_order_type,
         }
-        if position_id:
-            body["positionId"] = str(position_id)
         try:
             await self._request(
                 "POST",
-                "/api/v1/futures/tpsl/modify_position_tp_sl_order",
+                "/api/v1/futures/tpsl/position/modify_order",
                 body=body,
             )
             log.info("BitUnix SL moved (price-only) %s -> %s", wire, body["slPrice"])

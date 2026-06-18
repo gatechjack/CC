@@ -1073,8 +1073,13 @@ async def move_bracket_sls(broker: Any, db_url: str) -> None:
         log.warning("bracket SL-move: get_pending_positions failed: %s", e)
         return
     pos_qty: dict[tuple[str, str], float] = {}
+    pos_id: dict[tuple[str, str], str] = {}
     for p in positions:
-        pos_qty[(_match_symbol_key(p.symbol), _broker_side(p.qty))] = abs(float(p.qty))
+        key = (_match_symbol_key(p.symbol), _broker_side(p.qty))
+        pos_qty[key] = abs(float(p.qty))
+        pid = (p.extra or {}).get("positionId")
+        if pid:
+            pos_id[key] = str(pid)
 
     for r, extra in bracket_rows:
         side = r["side"]
@@ -1100,10 +1105,16 @@ async def move_bracket_sls(broker: Any, db_url: str) -> None:
         )
         if new_sl is None:
             continue
+        # Thread positionId from the broker Position.extra (required by the
+        # corrected modify_position_sl; absent → fail-soft no-op inside the method).
+        pos_key = (_match_symbol_key(r["symbol"]), side)
+        broker_position_id: str | None = pos_id.get(pos_key)
         moved = False
         if hasattr(broker, "modify_position_sl"):
             try:
-                moved = await broker.modify_position_sl(r["symbol"], new_sl)
+                moved = await broker.modify_position_sl(
+                    r["symbol"], new_sl, position_id=broker_position_id,
+                )
             except Exception as e:  # belt-and-suspenders — modify is fail-soft
                 log.warning("bracket SL-move: modify raised: %s", e)
                 moved = False
