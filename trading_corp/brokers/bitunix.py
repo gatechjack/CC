@@ -1953,6 +1953,76 @@ class BitunixBroker(Broker):
         )
         return str(venue_order_id) if venue_order_id else ""
 
+    async def place_position_tpsl(
+        self,
+        *,
+        symbol: str,
+        position_id: str,
+        sl_price: float,
+        sl_stop_type: str = "MARK_PRICE",
+        sl_order_type: str = "MARKET",
+    ) -> str:
+        """Place the auto-reducing whole-position STOP-LOSS via the native
+        `/tpsl/position/place_order` endpoint.
+
+        This is the ONE position-level SL (NO qty) — it "closes based on the
+        position quantity AT THAT TIME", so it auto-shrinks as the partial TP
+        legs (`place_tpsl_order`) fill. It mirrors the BitUnix UI's *Position
+        TP/SL* tab (one SL, no size box) — confirmed by the operator's UI
+        network capture. It is the SL the trail (`modify_position_sl` ->
+        `/tpsl/position/modify_order`) moves price-only to breakeven / TP1.
+
+        HARD RULE: NO `slQty` — this is position-level and auto-reducing; a qty
+        would defeat the auto-reduce. The SL stays a guaranteed-fill MARKET stop
+        (`slOrderType=MARKET`, `slStopType=MARK_PRICE`), matching B1's behaviour.
+
+        Coexists with the B1 entry-attached `slPrice` MARKET stop (the always-on
+        catastrophic backstop — UNCHANGED). This managed Position SL is the
+        trail-able one; B1 is the immutable price-only backstop. Fail-soft at the
+        call site: if this placement fails, the TP legs + the B1 entry stop still
+        protect the position.
+
+        Returns the venue sl-order id string (empty string on success with no
+        id). Raises `BitunixAPIError` on non-idempotent errors; idempotent
+        duplicate codes (_IDEMPOTENT_OK_CODES) are silently accepted (same
+        positionId+price already resting). STUB mode raises NotImplementedError.
+
+        VERIFY-ON-LIVE: the exact response shape (`orderId` field) and the
+        coexistence with the B1 entry stop (no `30038`) are grounded against the
+        docs + the UI capture; confirm on the first real multi-leg placement.
+        """
+        if self._stub or not self._client:
+            raise NotImplementedError(
+                "BitunixBroker.place_position_tpsl: STUB mode (no creds)"
+            )
+        try:
+            wire = to_wire_format(symbol)
+        except Exception:
+            wire = symbol
+        body: dict = {
+            "symbol": wire,
+            "positionId": str(position_id),
+            "slPrice": _amount_str(sl_price),
+            "slStopType": sl_stop_type,
+            "slOrderType": sl_order_type,
+        }
+        try:
+            data = await self._request(
+                "POST", "/api/v1/futures/tpsl/position/place_order", body=body,
+            )
+        except BitunixAPIError as e:
+            if e.code in _IDEMPOTENT_OK_CODES:
+                data = {}
+            else:
+                raise
+        venue_order_id = (data or {}).get("orderId")
+        log.info(
+            "BitUnix tpsl/position/place_order: venue_order_id=%s positionId=%s "
+            "%s slPrice=%s (auto-reducing, no qty)",
+            venue_order_id, position_id, wire, body["slPrice"],
+        )
+        return str(venue_order_id) if venue_order_id else ""
+
     async def get_pending_orders(self, symbol: str | None = None) -> list[dict]:
         """Return the venue's currently-RESTING (unfilled) orders — for the OCO
         light-verify (no stale SL/TP lingers after a terminal close). Read-only;

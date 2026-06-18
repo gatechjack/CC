@@ -3443,6 +3443,38 @@ class BitunixFuturesObserver:
                              "error": str(e), "error_type": type(e).__name__},
                 )
 
+        # ── Place the managed auto-reducing whole-position SL ────────────────
+        # The native `/tpsl/position/place_order` SL (no qty) auto-shrinks as the
+        # TP legs fill and is the SL the trail (`modify_position_sl` ->
+        # `/tpsl/position/modify_order`) moves to breakeven/TP1. The B1
+        # entry-attached MARKET stop is UNCHANGED and always guards, so this is
+        # fail-soft: a failure here leaves the TP legs + the B1 stop protecting
+        # the position. NO slQty (position-level, auto-reducing).
+        position_sl_order_id: str = ""
+        structural_sl = float(extra.get("stop_price") or 0.0)
+        if structural_sl > 0.0 and hasattr(broker, "place_position_tpsl"):
+            try:
+                position_sl_order_id = await broker.place_position_tpsl(
+                    symbol=order.symbol,
+                    position_id=position_id,
+                    sl_price=structural_sl,
+                )
+            except Exception as e:
+                log.error(
+                    "bitunix_observer: managed position SL place FAILED (B1 entry "
+                    "stop + TP legs still protect): %s", e,
+                )
+                self.logger_agent.log_event(
+                    actor="bitunix_futures", kind="bracket_position_sl_failed",
+                    payload={"order_id": order.id, "sl_price": structural_sl,
+                             "error": str(e), "error_type": type(e).__name__},
+                )
+        elif structural_sl <= 0.0:
+            log.warning(
+                "bitunix_observer: no structural stop_price for %s — managed "
+                "position SL not placed (B1 entry stop still guards)", order.id,
+            )
+
         # Persist bracket state for the SL-move monitor + OCO verify + #4.
         # MUST be an UPDATE: insert_paper_trade_record is INSERT-OR-IGNORE and the
         # row already exists (written at entry), so a re-insert would be a no-op.
@@ -3454,6 +3486,7 @@ class BitunixFuturesObserver:
             record.extra["bracket_entry_qty"] = entry_qty
             record.extra["current_sl"] = float(extra.get("stop_price") or 0.0)
             record.extra["bracket_position_id"] = position_id
+            record.extra["bracket_position_sl_order_id"] = position_sl_order_id
             if note:
                 record.extra["bracket_degrade_note"] = note
             with db.connect(self.db_url) as conn:
@@ -3469,7 +3502,8 @@ class BitunixFuturesObserver:
             payload={"order_id": order.id, "legs_placed": len(tp_order_ids),
                      "legs_planned": len(legs), "tp_order_ids": tp_order_ids,
                      "degrade_note": note, "entry_qty": entry_qty,
-                     "structural_sl": float(extra.get("stop_price") or 0.0)},
+                     "structural_sl": float(extra.get("stop_price") or 0.0),
+                     "position_sl_order_id": position_sl_order_id},
         )
 
     async def _execute_live_exits(
