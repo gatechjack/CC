@@ -18,6 +18,8 @@ USDC_DECIMALS = 6
 SWAP_ROUTER_02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"  # Uniswap V3 SwapRouter02 (Polygon)
 QUOTER_V2 = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"       # Uniswap V3 QuoterV2 (Polygon)
 FEE_TIERS = (100, 500, 3000)                                   # 0.01% / 0.05% / 0.3%
+WPOL = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270"            # wrapped POL/WMATIC = SwapRouter02.WETH9() on Polygon (verified)
+POL_DECIMALS = 18                                              # native POL / WPOL
 
 # ERC-20 function selectors (keccak256(sig)[:4]) — hand-rolled like the repo's
 # read calldata (trading_corp/brokers/polymarket.py); golden-vector tested.
@@ -98,10 +100,48 @@ def min_out(best_out: int, tol: float) -> int:
 
 
 def effective_slippage(amount_in: int, out: int) -> float:
-    """Effective slippage from par (1:1), as a fraction. (amount_in - out)/amount_in."""
+    """Effective slippage from par (1:1), as a fraction. (amount_in - out)/amount_in.
+
+    PAR swaps only (e.g. native USDC -> USDC.e). MEANINGLESS for a market swap
+    where tokenIn/tokenOut differ in price/decimals (POL -> USDC): use
+    price_impact_probe + select_best_tier_by_impact below instead.
+    """
     if amount_in == 0:
         return 0.0
     return float((Decimal(amount_in) - Decimal(out)) / Decimal(amount_in))
+
+
+# ── market (non-par) swap: price-impact gate ─────────────────────────────────
+# For POL -> native USDC the par helpers above do NOT apply: amount_in is POL wei
+# (18dp) and out is USDC raw (6dp) at a non-1:1 price, so select_best_tier's
+# `out >= amount_in*(1-tol)` would always fail and abort. Gate on PRICE IMPACT:
+# compare the full-size fill's price-per-unit to a near-spot (tiny probe) fill on
+# the SAME pool. Decimals/price cancel (it's a ratio of out/in ratios).
+def price_impact_probe(full_out: int, amount_in: int, probe_out: int, probe_amount: int) -> float:
+    """Fraction by which the full-size price-per-unit is worse than the near-spot
+    probe price-per-unit (same fee tier). >0 means you receive less per unit than
+    spot. Returns 1.0 (max impact -> caller treats the tier as unfillable) when
+    spot can't be established (probe reverted / rounded to 0) or full_out is 0."""
+    if full_out <= 0 or amount_in <= 0 or probe_out <= 0 or probe_amount <= 0:
+        return 1.0
+    spot_ppu = Decimal(probe_out) / Decimal(probe_amount)
+    full_ppu = Decimal(full_out) / Decimal(amount_in)
+    if spot_ppu <= 0:
+        return 1.0
+    return float(Decimal(1) - (full_ppu / spot_ppu))
+
+
+def select_best_tier_by_impact(quotes: dict, impacts: dict, tol: float):
+    """Pick the fee tier with the BEST output among tiers whose price impact is
+    within `tol`. Returns (fee, amount_out) or None (-> caller ABORTS) when no
+    tier has a pool OR every fillable pool's price impact exceeds tol. Never
+    selects a tier filling worse than tolerance (does not silently degrade)."""
+    valid = {f: o for f, o in quotes.items()
+             if o and o > 0 and impacts.get(f, 1.0) <= tol}
+    if not valid:
+        return None
+    fee = max(valid, key=lambda k: valid[k])
+    return (fee, valid[fee])
 
 
 # ── display helpers ─────────────────────────────────────────────────────────

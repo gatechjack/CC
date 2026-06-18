@@ -82,8 +82,41 @@ Verify: PolygonScan shows USDC.e moved to PCT. Then re-run the read-only check:
   toolchain**, a separate operator action.
 - Append the tx hashes + outcomes to `runbooks/deploy_log.md`.
 
+## Native POL → USDC drain (`swap_pol_to_usdc.py`)
+Swaps native **POL → native USDC** (Circle) on the sending wallet, e.g. to convert
+leftover gas POL into USDC for a drain to Bitunix. Recipient = sender; any onward
+transfer is a separate `transfer_erc20.py` step.
+```
+PY scripts/wallet_ops/swap_pol_to_usdc.py PK 10 --dry-run           # per-tier quotes + price impact + swap block
+PY scripts/wallet_ops/swap_pol_to_usdc.py PK 10 --slippage 0.5      # y/n -> sign
+```
+
+**Native POL handling (the deposit gotcha — verified, do NOT assume Ethereum's pattern).**
+On Polygon, SwapRouter02 (`0x68b3…Fc45`) handling of native POL was confirmed against
+the PolygonScan-verified source + Codeslaw bytecode + Uniswap's official Polygon
+deployment docs:
+- `exactInputSingle` is **payable**, and the router's `WETH9()` immutable **==
+  WPOL `0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270`** (our `tokenIn`). So native POL
+  sent as `msg.value` is wrapped internally — **no approve, no separate wrap tx**.
+- With `msg.value == amountIn` exactly there is **no leftover → no `refundETH`/
+  multicall**; the script is a single plain `exactInputSingle`.
+- SwapRouter02's `exactInputSingle` has **no `deadline`** param (unlike SwapRouter01).
+- Triple-check on-chain if desired: call `WETH9()` (selector `0x4aa4a4fb`) on the
+  router → expect `…0d500b1d8e8ef31e21c99d1db9a6444d3adf1270`.
+- A **fork** router (QuickSwap/Sushi) could differ — this is verified ONLY for the
+  genuine Uniswap deployment at the address above. Always confirm with a `--dry-run`
+  before live execution.
+
+**Slippage gate differs from the USDC→USDC.e swap.** POL→USDC is a *market* swap, not
+a ~1:1 par swap, so the par gate (`select_best_tier`/`effective_slippage`) does not
+apply. Instead it gates on **price impact** (full-size fill vs a near-spot tiny probe
+on the same pool) AND sets an on-chain `amountOutMinimum`. `ABORT … price impact` →
+**stop**; don't raise `--slippage` blindly. Because the input is the gas token, it
+also refuses to swap so much POL that none is left to pay the swap's own gas.
+
 ## Files
 - `walletops_core.py` — pure helpers (amount/slippage math, calldata, formatting); unit-tested.
 - `walletops_chain.py` — web3 + KV layer (gas/fees, quotes, sign/broadcast, confirm).
-- `transfer_pol.py` / `transfer_erc20.py` / `swap_native_usdc_to_usdce.py` — the three CLIs.
+- `transfer_pol.py` / `transfer_erc20.py` / `swap_native_usdc_to_usdce.py` — the original three CLIs.
+- `swap_pol_to_usdc.py` — native POL → native USDC drain (price-impact gated, single payable tx).
 - `requirements.txt` — local venv pins.

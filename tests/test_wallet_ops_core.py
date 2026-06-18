@@ -91,6 +91,47 @@ class TestSlippageGate:
         assert abs(core.effective_slippage(120_000_000, 119_400_000) - 0.005) < 1e-9
 
 
+class TestPolToUsdcMarketSlippage:
+    # POL -> USDC is a MARKET swap (18dp in / 6dp out, non-1:1 price) so it uses
+    # the price-impact gate, not the par gate above. Probe = amount_in // 1000.
+    AMOUNT_IN = 1_000_000_000_000_000_000   # 1 POL, 18dp
+    PROBE = 1_000_000_000_000_000           # 0.001 POL
+
+    def test_zero_impact_when_full_fill_scales_linearly(self):
+        # full fill is exactly 1000x the probe out -> ~0 price impact
+        assert abs(core.price_impact_probe(400_000_000, self.AMOUNT_IN, 400_000, self.PROBE)) < 1e-9
+
+    def test_half_percent_impact(self):
+        # full fill 0.5% worse per-unit than the near-spot probe
+        imp = core.price_impact_probe(398_000_000, self.AMOUNT_IN, 400_000, self.PROBE)
+        assert abs(imp - 0.005) < 1e-9
+
+    def test_probe_revert_is_max_impact(self):
+        assert core.price_impact_probe(398_000_000, self.AMOUNT_IN, 0, self.PROBE) == 1.0
+
+    def test_zero_full_out_is_max_impact(self):
+        assert core.price_impact_probe(0, self.AMOUNT_IN, 400_000, self.PROBE) == 1.0
+
+    def test_selects_best_output_within_impact(self):
+        quotes = {100: 0, 500: 398_000_000, 3000: 397_000_000}
+        impacts = {100: 1.0, 500: 0.005, 3000: 0.004}
+        assert core.select_best_tier_by_impact(quotes, impacts, 0.005) == (500, 398_000_000)
+
+    def test_skips_best_output_when_its_impact_exceeds_tol(self):
+        # best-output tier (500) fails impact; a deeper lower-output tier (3000) passes
+        quotes = {500: 400_000_000, 3000: 397_000_000}
+        impacts = {500: 0.010, 3000: 0.003}
+        assert core.select_best_tier_by_impact(quotes, impacts, 0.005) == (3000, 397_000_000)
+
+    def test_aborts_when_all_impacts_exceed_tol(self):
+        quotes = {500: 400_000_000, 3000: 397_000_000}
+        impacts = {500: 0.010, 3000: 0.008}
+        assert core.select_best_tier_by_impact(quotes, impacts, 0.005) is None
+
+    def test_aborts_when_no_pool(self):
+        assert core.select_best_tier_by_impact({100: 0, 500: 0}, {100: 1.0, 500: 1.0}, 0.005) is None
+
+
 class TestDisplay:
     def test_polygonscan_urls(self):
         assert core.polygonscan_tx_url("0xabc") == "https://polygonscan.com/tx/0xabc"

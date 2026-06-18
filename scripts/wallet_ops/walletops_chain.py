@@ -107,6 +107,11 @@ def erc20_balance(w3, token, owner) -> int:
     return _erc20(w3, token).functions.balanceOf(w3.to_checksum_address(owner)).call()
 
 
+def native_balance(w3, owner) -> int:
+    """Native POL (gas-token) balance in wei."""
+    return w3.eth.get_balance(w3.to_checksum_address(owner))
+
+
 def quote_best_tier(w3, token_in, token_out, amount_in, fee_tiers=FEE_TIERS) -> dict:
     """Probe each fee tier's QuoterV2.quoteExactInputSingle (read). Reverting
     tiers (no pool) map to 0. Returns {fee: amount_out}."""
