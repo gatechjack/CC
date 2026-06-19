@@ -1,0 +1,3 @@
+# SQL scripts are run via `sqlite3 db < file` on prod (linux) — pin LF so the
+# dot-commands (.headers/.mode) never carry a CR.
+*.sql text eol=lf

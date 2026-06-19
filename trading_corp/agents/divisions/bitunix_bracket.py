@@ -136,3 +136,67 @@ def decide_sl_move(
     else:
         return None, f"unknown side {side!r}"
     return float(target), why
+
+
+def classify_result(*, net_pnl: float | None, gross_pnl: float) -> str:
+    """Win/loss from the booked PnL SIGN — never a literal (the P2 auto-book bug
+    hard-coded 'loss', mis-signing genuine wins; report 2026-06-19_p2_classifier).
+
+    NET basis when available (the real-fill path records fees; a 'win' should mean
+    the trade netted positive), else gross (the known-level estimate path has no
+    fee). Zero → 'loss', matching the paper-replay convention
+    (`win if actual_r > 0 else loss`).
+    """
+    basis = net_pnl if net_pnl is not None else gross_pnl
+    return "win" if (basis is not None and basis > 0) else "loss"
+
+
+def classify_exit_kind(
+    *,
+    side: str,
+    vwap_fill: float,
+    stop_level: float,
+    tp_prices: list[float],
+    close_order_ids: list[str] | None = None,
+    tp_order_ids: list[str] | None = None,
+    sl_order_id: str | None = None,
+    tol_pct: float = 0.0005,
+) -> str:
+    """Classify a close as ``'tp'`` / ``'stop'`` / ``'unknown'`` from the ACTUAL
+    fill — NEVER defaulting to 'stop' when ambiguous (the auto-book bug stamped
+    every close 'stop', mislabeling TP fills).
+
+    1. **Order-id match (most robust):** a close fill whose venue order-id is one
+       of the resting TP legs → ``'tp'``; the position-SL order → ``'stop'``.
+       Available now that the /tpsl/ rebuild tracks ``bracket_tp_order_ids`` +
+       ``bracket_position_sl_order_id``.
+    2. **Price inference (no id match):** for the trade's side, a fill that
+       reached a TP level (favorable, at/past the nearest TP) → ``'tp'``; a fill
+       at/beyond the stop level → ``'stop'``; anything else — favorable but
+       short of a TP (a trailed-stop-in-profit / time exit) — → ``'unknown'``.
+    """
+    cids = {str(c) for c in (close_order_ids or []) if c}
+    tids = {str(t) for t in (tp_order_ids or []) if t}
+    if cids and tids and (cids & tids):
+        return "tp"
+    if cids and sl_order_id and str(sl_order_id) in cids:
+        return "stop"
+
+    s = (side or "").lower()
+    tps = [float(p) for p in (tp_prices or []) if p and float(p) > 0]
+    v = float(vwap_fill or 0.0)
+    sl = float(stop_level) if stop_level else 0.0
+    if v > 0:
+        # TP and stop checks are independent (either level may be absent): a fill
+        # that reached a TP → 'tp'; one at/beyond the stop → 'stop'; else unknown.
+        if s == "sell":   # short: TPs below entry (nearest = highest), stop above
+            if tps and v <= max(tps) * (1.0 + tol_pct):
+                return "tp"
+            if sl > 0 and v >= sl * (1.0 - tol_pct):
+                return "stop"
+        elif s == "buy":  # long: TPs above entry (nearest = lowest), stop below
+            if tps and v >= min(tps) * (1.0 - tol_pct):
+                return "tp"
+            if sl > 0 and v <= sl * (1.0 + tol_pct):
+                return "stop"
+    return "unknown"

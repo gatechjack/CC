@@ -3187,6 +3187,9 @@ class BitunixFuturesObserver:
             # fee from broker truth. Default 0.0 when FillEvent.fee not
             # populated (paper broker / non-bitunix venues).
             record.extra["entry_fee_usd"] = float(fill.fee or 0.0)
+            # Maker/taker role of the entry fill (forward-only telemetry; '' when
+            # the venue/role is unknown, e.g. paper or pre-roleType fills).
+            record.extra["entry_role"] = str(getattr(fill, "role", "") or "")
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
             _registered = True
         except Exception as e:

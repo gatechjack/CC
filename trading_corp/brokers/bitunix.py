@@ -1135,7 +1135,7 @@ class BitunixBroker(Broker):
             reduce_only, order.id,
         )
 
-        status, filled_qty, avg_price, fee = await self._observe_fill(
+        status, filled_qty, avg_price, fee, entry_role = await self._observe_fill(
             order_id=venue_order_id, client_id=client_id,
             fill_timeout_s=fill_timeout_s,
         )
@@ -1160,6 +1160,7 @@ class BitunixBroker(Broker):
             ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             venue=venue,
             fee=fee,
+            role=entry_role,
         )
 
     async def _place_maker_entry(self, order: ProposedOrder) -> FillEvent:
@@ -1563,10 +1564,10 @@ class BitunixBroker(Broker):
                 order_id=resolved_id, status=status,
             )
 
-        avg_price, fee, hist_qty = await self._fill_price_from_history(resolved_id)
+        avg_price, fee, hist_qty, role = await self._fill_price_from_history(resolved_id)
         if filled_qty <= 0 and hist_qty > 0:
             filled_qty = hist_qty
-        return status, filled_qty, avg_price, fee
+        return status, filled_qty, avg_price, fee, role
 
     async def _handle_stuck_order(self, *, order_id, status) -> None:
         """Cancel a stuck order; emit audit + telegram; raise unless the
@@ -1655,19 +1656,34 @@ class BitunixBroker(Broker):
         # the partial fill tuple normally.
 
     async def _fill_price_from_history(self, order_id):
-        """VWAP fill price + summed fee + filled qty from trade history."""
+        """VWAP fill price + summed fee + filled qty + dominant maker/taker role
+        from trade history. role: 'maker'|'taker'|'mixed'|'' (no roleType)."""
         if not order_id:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, ""
         trades = await self.get_history_trades(order_id=order_id)
         notional = qty = fee = 0.0
+        maker_qty = taker_qty = 0.0
         for t in trades:
             q = _to_float(t.get("qty"))
             p = _to_float(t.get("price"))
             notional += q * p
             qty += q
             fee += _to_float(t.get("fee"))
+            role = str(t.get("roleType") or "").upper()
+            if role == "MAKER":
+                maker_qty += q
+            elif role == "TAKER":
+                taker_qty += q
         avg = (notional / qty) if qty > 0 else 0.0
-        return avg, fee, qty
+        if maker_qty <= 0 and taker_qty <= 0:
+            role_tag = ""
+        elif taker_qty <= 0:
+            role_tag = "maker"
+        elif maker_qty <= 0:
+            role_tag = "taker"
+        else:
+            role_tag = "mixed"
+        return avg, fee, qty, role_tag
 
     async def get_recent_close_fills(
         self, *, symbol: str, exit_side: str, since_ms: float | None = None,
@@ -1720,6 +1736,11 @@ class BitunixBroker(Broker):
                 "price": _to_float(t.get("price")),
                 "qty": _to_float(t.get("qty")),
                 "fee": _to_float(t.get("fee")),
+                # roleType is "MAKER" | "TAKER" (BitUnix trade-history doc); the
+                # order id lets the reconciler classify tp-vs-stop. Both absent →
+                # "" so the role mix / exit-kind logic degrades gracefully.
+                "role": str(t.get("roleType") or "").upper(),
+                "order_id": str(t.get("orderId") or ""),
             })
         return out
 

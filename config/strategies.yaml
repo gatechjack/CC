@@ -1128,11 +1128,15 @@ bitunix_futures:
         side: buy
         ttl_minutes: 30
         ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
-      mc_a_yellow_x:
-        weight: 2
-        side: buy
-        ttl_minutes: 30
-        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      # mc_a_yellow_x — INTENTIONALLY NOT a directional factor. It is a
+      # NON-DIRECTIONAL whale/manipulation / tape-anomaly flag (neither bull nor
+      # bear). Was miscategorized as `side: buy` (added spurious bull points);
+      # declassified 2026-06-19 (report 2026-06-19_p2_classifier). Handled like
+      # the other non-directional signals: absent from `factors:` → the scorer
+      # ignores it (btc_accumulator.evaluate_confluence: unknown signal → 0
+      # score) while it still flows through the alert ledger / audit. Do NOT
+      # re-add it as a factor, and do NOT flip it to `side: sell` (the same
+      # category error inverted).
       mc_a_red_diamond:
         weight: 4
         side: sell

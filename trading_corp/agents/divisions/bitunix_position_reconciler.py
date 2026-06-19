@@ -37,6 +37,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from trading_corp.agents.divisions.bitunix_bracket import (
+    classify_exit_kind,
+    classify_result,
+)
 from trading_corp.brokers.bitunix_symbols import (
     UnknownSymbolError,
     to_wire_format,
@@ -580,9 +584,14 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
             except (TypeError, ValueError, ZeroDivisionError):
                 r_mult = None
             exit_side = "buy" if side == "sell" else "sell"
+            # result from the PnL SIGN (no fees on the estimate → gross basis),
+            # never a literal. exit_kind = 'stop': this path books AT the known
+            # stop LEVEL by construction (filled_legs empty, no real fill).
+            result_str = classify_result(net_pnl=None, gross_pnl=pnl)
+            exit_kind = "stop"
             conn.execute(
                 "UPDATE paper_trade_record SET "
-                "  result = 'loss', result_ts = ?, result_price = ?, "
+                "  result = ?, result_ts = ?, result_price = ?, "
                 "  actual_pnl_dollars = ?, actual_r_multiple = ?, "
                 "  bars_to_resolution = NULL, "
                 "  extra_json = json_set(extra_json, "
@@ -590,10 +599,11 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
                 "    '$.pnl_basis', 'known_level_estimate', "
                 "    '$.slippage_unreconciled', json('true'), "
                 "    '$.exit_method', 'server_side_sl_B1', "
-                "    '$.exit_side', ?, '$.autobook_level_type', 'stop', "
-                "    '$.autobook_ts', ?) "
+                "    '$.exit_side', ?, '$.autobook_level_type', ?, "
+                "    '$.exit_kind', ?, '$.autobook_ts', ?) "
                 "WHERE order_id = ? AND result IS NULL",
-                (now, level, pnl, r_mult, exit_side, now, order_id),
+                (result_str, now, level, pnl, r_mult, exit_side, exit_kind,
+                 exit_kind, now, order_id),
             )
             conn.execute(
                 "INSERT INTO audit_event (ts, actor, kind, payload_json) "
@@ -601,7 +611,8 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
                 (now, RECONCILER_ACTOR, AUTO_BOOK_SERVER_SIDE_CLOSE_KIND,
                  json.dumps({"order_id": order_id, "side": side, "entry": entry,
                              "stop_level": level, "qty": qty,
-                             "pnl_estimate": pnl, "result": "loss",
+                             "pnl_estimate": pnl, "result": result_str,
+                             "exit_kind": exit_kind,
                              "pnl_basis": "known_level_estimate",
                              "slippage_unreconciled": True})),
             )
@@ -626,6 +637,18 @@ def _iso_to_ms(ts: str | None) -> float | None:
         return None
 
 
+def _role_summary(maker_qty: float, taker_qty: float) -> str:
+    """One-word maker/taker tag from the per-fill qty split: 'maker' | 'taker' |
+    'mixed' | 'unknown' (no role field present on any fill)."""
+    if maker_qty <= 0 and taker_qty <= 0:
+        return "unknown"
+    if taker_qty <= 0:
+        return "maker"
+    if maker_qty <= 0:
+        return "taker"
+    return "mixed"
+
+
 def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
     """Volume-weighted aggregate of N close fills — B2-aware: any number of
     partial fills, each carrying its REAL per-fill fee. Returns:
@@ -634,8 +657,14 @@ def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
                     maker/taker mix — never computed from an assumed rate
       total_qty   — Σqty (the actual closed quantity)
       n_fills     — count of valid fills aggregated
+      close_order_ids — venue order-ids of the close fills (for tp-vs-stop match)
+      exit_role   — 'maker'|'taker'|'mixed'|'unknown' (the recorded role, not a
+                    rate-inferred guess)
+      maker_taker_mix — {maker_qty, taker_qty, maker_fraction}
     Pure — no I/O. Skips malformed / non-positive fills."""
     notional = total_qty = total_fee = 0.0
+    maker_qty = taker_qty = 0.0
+    order_ids: list[str] = []
     n = 0
     for f in (fills or []):
         try:
@@ -649,10 +678,26 @@ def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
         notional += p * q
         total_qty += q
         total_fee += fee
+        role = str(f.get("role") or "").upper()
+        if role == "MAKER":
+            maker_qty += q
+        elif role == "TAKER":
+            taker_qty += q
+        oid = f.get("order_id")
+        if oid:
+            order_ids.append(str(oid))
         n += 1
     vwap = (notional / total_qty) if total_qty > 0 else 0.0
+    role_qty = maker_qty + taker_qty
     return {"vwap_price": vwap, "total_fee": total_fee,
-            "total_qty": total_qty, "n_fills": n}
+            "total_qty": total_qty, "n_fills": n,
+            "close_order_ids": order_ids,
+            "exit_role": _role_summary(maker_qty, taker_qty),
+            "maker_taker_mix": {
+                "maker_qty": round(maker_qty, 7),
+                "taker_qty": round(taker_qty, 7),
+                "maker_fraction": (maker_qty / role_qty) if role_qty > 0 else None,
+            }}
 
 
 async def _autobook_missing_close_real(
@@ -741,10 +786,26 @@ async def _autobook_missing_close_real(
             entry_fee = 0.0
         net = pnl - entry_fee - exit_fee
 
+        # result from the NET PnL sign; exit_kind from the ACTUAL fill (order-id
+        # match → tp/stop, else price-vs-levels, else 'unknown' — NEVER a literal
+        # 'loss'/'stop'). Fixes the P2 mis-sign (report 2026-06-19_p2_classifier).
+        tp_prices = [extra.get("tp1_price"), extra.get("tp2_price"),
+                     extra.get("tp3_price")]
+        tp_ids = list((extra.get("bracket_tp_order_ids") or {}).values())
+        sl_id = extra.get("bracket_position_sl_order_id")
+        result_str = classify_result(net_pnl=net, gross_pnl=pnl)
+        exit_kind = classify_exit_kind(
+            side=side, vwap_fill=vwap, stop_level=level, tp_prices=tp_prices,
+            close_order_ids=agg.get("close_order_ids"),
+            tp_order_ids=tp_ids, sl_order_id=sl_id,
+        )
+        exit_role = agg.get("exit_role", "unknown")
+        mix_json = json.dumps(agg.get("maker_taker_mix") or {})
+
         with db.connect(db_url) as conn:
             conn.execute(
                 "UPDATE paper_trade_record SET "
-                "  result = 'loss', result_ts = ?, result_price = ?, "
+                "  result = ?, result_ts = ?, result_price = ?, "
                 "  actual_pnl_dollars = ?, actual_r_multiple = ?, "
                 "  bars_to_resolution = NULL, "
                 "  extra_json = json_set(extra_json, "
@@ -752,12 +813,15 @@ async def _autobook_missing_close_real(
                 "    '$.pnl_basis', 'real_fill', "
                 "    '$.slippage_unreconciled', json('false'), "
                 "    '$.exit_method', 'server_side_sl_B1', "
-                "    '$.exit_side', ?, '$.autobook_level_type', 'stop', "
+                "    '$.exit_side', ?, '$.autobook_level_type', ?, "
+                "    '$.exit_kind', ?, '$.exit_role', ?, "
+                "    '$.maker_taker_mix', json(?), "
                 "    '$.exit_fee_usd', ?, '$.net_realized_usd', ?, "
                 "    '$.close_fill_count', ?, '$.observed_slippage_pts', ?, "
                 "    '$.autobook_ts', ?) "
                 "WHERE order_id = ? AND result IS NULL",
-                (now, vwap, pnl, r_mult, exit_side, exit_fee, net,
+                (result_str, now, vwap, pnl, r_mult, exit_side, exit_kind,
+                 exit_kind, exit_role, mix_json, exit_fee, net,
                  agg["n_fills"], slip_pts, now, order_id),
             )
             conn.execute(
@@ -767,7 +831,9 @@ async def _autobook_missing_close_real(
                  json.dumps({"order_id": order_id, "side": side, "entry": entry,
                              "stop_level": level, "vwap_fill": vwap, "qty": fqty,
                              "n_fills": agg["n_fills"], "exit_fee": exit_fee,
-                             "pnl": pnl, "net_realized_usd": net, "result": "loss",
+                             "pnl": pnl, "net_realized_usd": net,
+                             "result": result_str, "exit_kind": exit_kind,
+                             "exit_role": exit_role,
                              "pnl_basis": "real_fill",
                              "slippage_unreconciled": False,
                              "observed_slippage_pts": slip_pts})),

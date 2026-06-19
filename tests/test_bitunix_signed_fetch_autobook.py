@@ -113,7 +113,12 @@ _NOW = "2026-06-15T23:51:30+00:00"
 
 def test_aggregate_single_fill():
     a = _aggregate_close_fills([{"price": 100.0, "qty": 2.0, "fee": 0.1}])
-    assert a == {"vwap_price": 100.0, "total_fee": 0.1, "total_qty": 2.0, "n_fills": 1}
+    assert a["vwap_price"] == 100.0 and a["total_fee"] == 0.1
+    assert a["total_qty"] == 2.0 and a["n_fills"] == 1
+    # no role field on the fill → role mix 'unknown', no order ids (additive keys)
+    assert a["exit_role"] == "unknown"
+    assert a["close_order_ids"] == []
+    assert a["maker_taker_mix"]["maker_fraction"] is None
 
 
 def test_aggregate_multi_fill_vwap():

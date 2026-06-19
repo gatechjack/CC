@@ -112,6 +112,12 @@ class FillEvent:
     # `_fill_price_from_history` which sums per-fill fee from
     # `get_history_trades`. Layer 2 funding accrual is N+3 scope.
     fee: float = 0.0
+    # Maker/taker liquidity role of the fill: 'maker' | 'taker' | 'mixed' | ''.
+    # Default '' so non-BitUnix constructors (paper, robinhood, tasty, coinbase,
+    # fidelity) don't break. BitUnix populates it from `_fill_price_from_history`
+    # (the trade-history `roleType`). Forward-only telemetry — recorded as
+    # `entry_role` on the trade record (and `exit_role` from the close fills).
+    role: str = ""
 
 
 @dataclass
