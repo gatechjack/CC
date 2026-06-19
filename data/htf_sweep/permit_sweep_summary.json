@@ -1,0 +1,141 @@
+{
+  "n_score_cleared_buy": 1469,
+  "n_score_cleared_sell": 13669,
+  "window": [
+    "2026-05-11T18:00:07+00:00",
+    "2026-06-19T04:03:46+00:00"
+  ],
+  "composites": {
+    "a_1h_4h_1d": {
+      "slots_low_to_high": [
+        "1h",
+        "4h",
+        "1d"
+      ],
+      "regime_dist": {
+        "BULL": 40,
+        "NEUTRAL": 8766,
+        "BEAR": 4335,
+        "STRONG_BEAR": 1997
+      },
+      "neutral_or_better_for_long_pct": 58.2,
+      "buy": {
+        "total": 1469,
+        "regime_permitted": 664,
+        "full_permitted": 244,
+        "blocks": {
+          "proximity_to_resistance": 420,
+          "regime_forbids_side": 805
+        }
+      },
+      "sell": {
+        "total": 13669,
+        "regime_permitted": 13653,
+        "full_permitted": 7817,
+        "blocks": {
+          "regime_forbids_side": 16,
+          "proximity_to_support": 5836
+        }
+      }
+    },
+    "b_30m_1h_4h": {
+      "slots_low_to_high": [
+        "30m",
+        "1h",
+        "4h"
+      ],
+      "regime_dist": {
+        "BULL": 1192,
+        "STRONG_BULL": 6,
+        "NEUTRAL": 9750,
+        "BEAR": 2859,
+        "STRONG_BEAR": 1331
+      },
+      "neutral_or_better_for_long_pct": 72.3,
+      "buy": {
+        "total": 1469,
+        "regime_permitted": 420,
+        "full_permitted": 99,
+        "blocks": {
+          "proximity_to_resistance": 321,
+          "regime_forbids_side": 1049
+        }
+      },
+      "sell": {
+        "total": 13669,
+        "regime_permitted": 12495,
+        "full_permitted": 4477,
+        "blocks": {
+          "regime_forbids_side": 1174,
+          "proximity_to_support": 8018
+        }
+      }
+    },
+    "c_15m_30m_1h": {
+      "slots_low_to_high": [
+        "15m",
+        "30m",
+        "1h"
+      ],
+      "regime_dist": {
+        "NEUTRAL": 9502,
+        "BULL": 1544,
+        "BEAR": 1606,
+        "STRONG_BEAR": 1480,
+        "STRONG_BULL": 1006
+      },
+      "neutral_or_better_for_long_pct": 79.6,
+      "buy": {
+        "total": 1469,
+        "regime_permitted": 382,
+        "full_permitted": 87,
+        "blocks": {
+          "proximity_to_resistance": 295,
+          "regime_forbids_side": 1087
+        }
+      },
+      "sell": {
+        "total": 13669,
+        "regime_permitted": 11122,
+        "full_permitted": 3103,
+        "blocks": {
+          "regime_forbids_side": 2547,
+          "proximity_to_support": 8019
+        }
+      }
+    },
+    "d_3m_15m_1h": {
+      "slots_low_to_high": [
+        "3m",
+        "15m",
+        "1h"
+      ],
+      "regime_dist": {
+        "NEUTRAL": 8668,
+        "BULL": 2656,
+        "BEAR": 1911,
+        "STRONG_BEAR": 1236,
+        "STRONG_BULL": 667
+      },
+      "neutral_or_better_for_long_pct": 79.2,
+      "buy": {
+        "total": 1469,
+        "regime_permitted": 414,
+        "full_permitted": 84,
+        "blocks": {
+          "proximity_to_resistance": 330,
+          "regime_forbids_side": 1055
+        }
+      },
+      "sell": {
+        "total": 13669,
+        "regime_permitted": 10350,
+        "full_permitted": 1426,
+        "blocks": {
+          "regime_forbids_side": 3319,
+          "proximity_to_support": 8924
+        }
+      }
+    }
+  }
+}
