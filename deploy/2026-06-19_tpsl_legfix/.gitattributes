@@ -1,0 +1,4 @@
+# Pin deploy artifacts to LF regardless of core.autocrlf on checkout.
+# Stage files must stay byte-identical to target md5 (LF blobs).
+stage/** -text
+*.sh text eol=lf
