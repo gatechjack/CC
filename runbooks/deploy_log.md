@@ -116,6 +116,56 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-19 — Bitunix /tpsl/ TP-leg legfix + P2 classifier/maker-taker + yellow_x (THREE deploys this session) — DEPLOYED + VERIFIED LIVE
+
+**⚠ DEPLOY_LOG STALENESS (branch copy):** this file on branch `bitunix-tpsl-rebuild-2026-06-18` is BEHIND
+main — it is MISSING the 2026-06-16 batch / 2026-06-17 exit-redesign / 2026-06-18 native-`/tpsl/`-rebuild
+entries (logged on main). The 06-18 `/tpsl/` rebuild (was PID 2988577) is the prod baseline this session
+built on. **Reconcile this log on merge-to-main.**
+
+**Branch:** `bitunix-tpsl-rebuild-2026-06-18` (tip `4f2068c`, pushed, UNMERGED to main).
+**Prod engine now: PID 3065623** (active), running the combined-P2 code. Flat, no halt.
+
+### Deploy 1 — TP-leg legfix (16:29 UTC) — DEPLOYED + VERIFIED LIVE
+**Commits:** fix `8d3d164`, package `833ec95`. **Backup:** `*.bak-pre-tpsl-legfix-2026-06-19`. **3 files:**
+`brokers/bitunix.py`, `brokers/bitunix_exceptions.py`, `bitunix_futures_observer.py`.
+- Fixes `place_tpsl_order` crashing all 3 TP legs on a LIST response (Section-B report `c8a426d`: live trade
+  `cb6b4d4a` → `legs_placed=0`, `'list' object has no attribute 'get'`). New `_extract_tpsl_order_id` parses
+  dict+list; raises `BitunixUntrackedTpslOrder` (new) + observer emits `bracket_tp_leg_untracked` so a
+  maybe-resting leg is never silently dropped. VERIFY-A green (was PID 3046486). VERIFY-B (tracked legs on a
+  live ≥0.0012 BTC entry) PENDING.
+
+### Deploy 2 — P2 classifier + maker/taker (22:13 UTC) — DEPLOYED + VERIFIED LIVE
+**Commits:** fix `d83e877`, package `dd9016a`. **Backup:** `*.bak-pre-p2-combined-2026-06-19`. **5 files**
+(delta `8d3d164..d83e877` on the legfix): `bitunix.py`, `observer`, `reconciler`, `bitunix_bracket.py`,
+**`persistence/models.py`**.
+- The P2 auto-book no longer hard-codes `result='loss'`/`exit_kind='stop'`: new pure `classify_result`
+  (NET-else-gross sign) + `classify_exit_kind` (order-id match → tp/stop, else price-vs-levels, else
+  `'unknown'`, NEVER default `'stop'`) in `bitunix_bracket.py`; mirrored to `$.autobook_level_type` +
+  `$.exit_kind`. maker/taker: `roleType` (MAKER/TAKER) → `FillEvent.role` → `$.entry_role`;
+  `_aggregate_close_fills` → `$.exit_role` + `$.maker_taker_mix`.
+- **`models.py` = ONE-TIME §4 Board-override** of the normally-forbidden list. `FillEvent.role` is additive
+  (default `''`); COUPLED with `bitunix.py` via a coupling guard (tip `bitunix.py` constructs
+  `FillEvent(role=...)`). VERIFY-A green: new PID 3065623, **clean boot — NO FillEvent/role
+  TypeError/ImportError** (the override safety condition), paper=False, flat, exec_mode live, main/db
+  untouched. VERIFY-B PENDING first live close.
+
+### Deploy 3 — mc_a_yellow_x config declassification (config edit; INERT until restart)
+**Commit:** package `4f2068c`. **Backup:** `config/strategies.yaml.bak-pre-yellowx-2026-06-19`.
+- Targeted exact-match removal of the `mc_a_yellow_x` directional factor (a non-directional
+  whale/manipulation flag, was `side: buy` adding spurious bull points) from prod's live config. md5
+  `569c38f8 → 3cc3689a`; byte-precise (only the block; execution_mode/DD-cap 0.99/kalshi preserved).
+  Board-approved; agent ran the fail-closed script over SSH.
+- **INERT until the NEXT restart** (config-and-restart, no hot-reload) — PID 3065623 still has yellow_x
+  ACTIVE until restarted.
+
+**Rollback:** restore the per-deploy `*.bak-*` files + restart (legfix/combined), or
+`strategies.yaml.bak-pre-yellowx` + restart (yellow_x).
+**PENDING next session:** VERIFY-B on the first live trade; the restart to activate yellow_x; the
+operator-gated record-correction SQL (`deploy/2026-06-19_p2_record_correction/`, 2 records, label-only).
+
+---
+
 ## 2026-06-15 ~00:02 UTC — Bitunix P2 auto-book + latch-release DEPLOYED (single-file reconciler; clears stuck latch + installs self-recovery)
 
 **STATE VERB: DEPLOYED + LOADED + VERIFIED (operator-supervised; §4 gate lifted for the sequence).**

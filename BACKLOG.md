@@ -37,6 +37,34 @@ from prod, OR delete the dead five_factor/coinbase paths if abandoned. Investiga
 
 ---
 
+## P2/P3 — Bitunix /tpsl/ rebuild + P2-classifier follow-ups (filed 2026-06-19; code DEPLOYED, these are the open tails)
+
+The `/tpsl/` TP-leg legfix, the P2 classifier fix (result/exit_kind derived, not hard-coded), and maker/taker
+recording are **DEPLOYED + VERIFIED LIVE 2026-06-19** (PID **3065623**); the `mc_a_yellow_x` config
+declassification is **APPLIED** (inert until restart). All on branch `bitunix-tpsl-rebuild-2026-06-18` (tip
+`4f2068c`, pushed, **UNMERGED**). See `runbooks/deploy_log.md` (2026-06-19 entry) + memory
+[[bitunix-p2-classifier-signbug]] / [[bitunix-tpsl-rebuild-section-b]]. Open tails:
+
+1. **VERIFY-B (live-trade validation) — PENDING first qualifying trade.** On the next live close confirm:
+   (a) TP legs TRACK (`bracket_placed legs_placed=3`, populated `tp_order_ids`, no `'list'` crash;
+   `bracket_tp_leg_untracked` fires on a track-miss); (b) a winning close books `result=win` (NET) +
+   `exit_kind` via order-id match (NOT `'stop'`); (c) `FillEvent(role=...)` no TypeError +
+   `entry_role`/`exit_role`/`maker_taker_mix` recorded. No live trade fired this session.
+2. **yellow_x restart — PENDING.** The config edit (prod `strategies.yaml` md5 `3cc3689a`) is INERT until the
+   next restart (config-and-restart). Fold into the next bounce; then verify yellow_x adds 0 directional
+   points + clean boot.
+3. **Record correction — operator-gated, PREPARED not applied.** `deploy/2026-06-19_p2_record_correction/`:
+   2 live records (`e1758fc9`, `7d1a78dc`) label-only `result` loss→win + `exit_kind` stop→tp; **PnL
+   UNTOUCHED**; dry-run reviewed clean (3 paper `'expired'` rows correctly excluded). Run `backup.sql` →
+   `apply.sql` (no restart needed).
+4. **Latent same-pattern hard-codes (P3) — NOT fixed.** The P2 auto-book also hard-codes
+   `exit_method='server_side_sl_B1'`; and `place_position_tpsl` shares the same `(data).get` list-vs-dict
+   parse the legfix repaired in `place_tpsl_order` (PASSED live as a dict, so not yet biting). Operator-deferred.
+5. **Branch UNMERGED + deploy_log stale on branch.** `bitunix-tpsl-rebuild-2026-06-18` is unmerged to main; its
+   `runbooks/deploy_log.md` is behind main (missing the 06-16/06-17/06-18 entries). Reconcile on merge.
+
+---
+
 # Priority 1 — Bitunix Futures path to live trading
 
 Phase 3 (live exit path infrastructure) DEPLOYED to prod 2026-06-02 ~01:40 UTC.
