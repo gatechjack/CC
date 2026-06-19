@@ -1,0 +1,223 @@
+{
+  "split": {
+    "train": "..2026-05-15",
+    "validate": "..2026-06-01",
+    "lockbox": ">=2026-06-01 (RESERVED)"
+  },
+  "signals": {
+    "otter_buy": {
+      "side": "buy",
+      "train": {
+        "n": 23,
+        "win_pct": 60.9,
+        "open": 0,
+        "skip": 17,
+        "mean_gross_r": 0.0881,
+        "net_r": -0.1634
+      },
+      "validate": {
+        "n": 9,
+        "win_pct": 44.4,
+        "open": 0,
+        "skip": 7,
+        "mean_gross_r": -0.1601,
+        "net_r": -0.4049
+      }
+    },
+    "super_buy_high": {
+      "side": "buy",
+      "train": {
+        "n": 4,
+        "win_pct": 50.0,
+        "open": 0,
+        "skip": 12,
+        "mean_gross_r": -0.0413,
+        "net_r": -0.3053
+      },
+      "validate": {
+        "n": 9,
+        "win_pct": 44.4,
+        "open": 0,
+        "skip": 5,
+        "mean_gross_r": -0.39,
+        "net_r": -0.6814
+      }
+    },
+    "super_buy_std": {
+      "side": "buy",
+      "train": {
+        "n": 2,
+        "win_pct": 50.0,
+        "open": 0,
+        "skip": 2,
+        "mean_gross_r": -0.0817,
+        "net_r": -0.315
+      },
+      "validate": null
+    },
+    "bottom_signal": {
+      "side": "buy",
+      "train": {
+        "n": 11,
+        "win_pct": 54.5,
+        "open": 0,
+        "skip": 8,
+        "mean_gross_r": -0.0764,
+        "net_r": -0.3064
+      },
+      "validate": {
+        "n": 10,
+        "win_pct": 20.0,
+        "open": 0,
+        "skip": 5,
+        "mean_gross_r": -0.6162,
+        "net_r": -0.8802
+      }
+    },
+    "bull_divergence": {
+      "side": "buy",
+      "train": {
+        "n": 57,
+        "win_pct": 86.0,
+        "open": 0,
+        "skip": 102,
+        "mean_gross_r": 0.5271,
+        "net_r": 0.3135
+      },
+      "validate": {
+        "n": 11,
+        "win_pct": 81.8,
+        "open": 0,
+        "skip": 51,
+        "mean_gross_r": 0.4495,
+        "net_r": 0.2132
+      }
+    },
+    "cvd_flip_bullish": {
+      "side": "buy",
+      "train": {
+        "n": 224,
+        "win_pct": 65.2,
+        "open": 0,
+        "skip": 302,
+        "mean_gross_r": 0.1097,
+        "net_r": -0.1099
+      },
+      "validate": {
+        "n": 62,
+        "win_pct": 40.3,
+        "open": 0,
+        "skip": 135,
+        "mean_gross_r": -0.2689,
+        "net_r": -0.5382
+      }
+    },
+    "otter_sell": {
+      "side": "sell",
+      "train": {
+        "n": 41,
+        "win_pct": 48.8,
+        "open": 0,
+        "skip": 40,
+        "mean_gross_r": -0.2487,
+        "net_r": -0.4891
+      },
+      "validate": {
+        "n": 3,
+        "win_pct": 66.7,
+        "open": 0,
+        "skip": 14,
+        "mean_gross_r": 0.2079,
+        "net_r": -0.0165
+      }
+    },
+    "super_sell_high": {
+      "side": "sell",
+      "train": {
+        "n": 21,
+        "win_pct": 23.8,
+        "open": 0,
+        "skip": 25,
+        "mean_gross_r": -0.5687,
+        "net_r": -0.8424
+      },
+      "validate": null
+    },
+    "super_sell_std": {
+      "side": "sell",
+      "train": {
+        "n": 2,
+        "win_pct": 50.0,
+        "open": 0,
+        "skip": 5,
+        "mean_gross_r": 0.1436,
+        "net_r": -0.1168
+      },
+      "validate": {
+        "n": 2,
+        "win_pct": 100.0,
+        "open": 0,
+        "skip": 0,
+        "mean_gross_r": 0.8595,
+        "net_r": 0.6692
+      }
+    },
+    "top_signal": {
+      "side": "sell",
+      "train": {
+        "n": 32,
+        "win_pct": 59.4,
+        "open": 0,
+        "skip": 15,
+        "mean_gross_r": -0.016,
+        "net_r": -0.2222
+      },
+      "validate": {
+        "n": 6,
+        "win_pct": 100.0,
+        "open": 0,
+        "skip": 10,
+        "mean_gross_r": 0.8013,
+        "net_r": 0.6138
+      }
+    },
+    "bear_divergence": {
+      "side": "sell",
+      "train": {
+        "n": 45,
+        "win_pct": 91.1,
+        "open": 0,
+        "skip": 106,
+        "mean_gross_r": 0.5879,
+        "net_r": 0.3859
+      },
+      "validate": {
+        "n": 11,
+        "win_pct": 81.8,
+        "open": 0,
+        "skip": 47,
+        "mean_gross_r": 0.4847,
+        "net_r": 0.2411
+      }
+    },
+    "cvd_flip_bearish": {
+      "side": "sell",
+      "train": {
+        "n": 235,
+        "win_pct": 52.8,
+        "open": 0,
+        "skip": 291,
+        "mean_gross_r": -0.0755,
+        "net_r": -0.3211
+      },
+      "validate": {
+        "n": 55,
+        "win_pct": 60.0,
+        "open": 0,
+        "skip": 142,
+        "mean_gross_r": 0.0235,
+        "net_r": -0.204
+      }
+    }
+  }
+}
