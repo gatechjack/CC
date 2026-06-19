@@ -1,0 +1,1342 @@
+{
+  "bull_divergence": {
+    "train": {
+      "base_rate": 0.0216,
+      "n_div": 159,
+      "rows": [
+        {
+          "p": "otter_buy",
+          "fam": "OTTER",
+          "n_fires": 40,
+          "recall14": 0.006,
+          "prec": 0.025,
+          "lift": 1.16
+        },
+        {
+          "p": "otter_sell",
+          "fam": "OTTER",
+          "n_fires": 81,
+          "recall14": 0.019,
+          "prec": 0.012,
+          "lift": 0.57
+        },
+        {
+          "p": "super_buy_high",
+          "fam": "OTTER",
+          "n_fires": 16,
+          "recall14": 0.013,
+          "prec": 0.062,
+          "lift": 2.89
+        },
+        {
+          "p": "super_sell_high",
+          "fam": "OTTER",
+          "n_fires": 46,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_buy_std",
+          "fam": "OTTER",
+          "n_fires": 4,
+          "recall14": 0.006,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_sell_std",
+          "fam": "OTTER",
+          "n_fires": 7,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "top_signal",
+          "fam": "OTTER",
+          "n_fires": 47,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "bottom_signal",
+          "fam": "OTTER",
+          "n_fires": 19,
+          "recall14": 0.006,
+          "prec": 0.053,
+          "lift": 2.44
+        },
+        {
+          "p": "ribbon_buy_cross",
+          "fam": "OTTER",
+          "n_fires": 1990,
+          "recall14": 0.101,
+          "prec": 0.022,
+          "lift": 1.0
+        },
+        {
+          "p": "ribbon_sell_cross",
+          "fam": "OTTER",
+          "n_fires": 2130,
+          "recall14": 0.101,
+          "prec": 0.02,
+          "lift": 0.93
+        },
+        {
+          "p": "cvd_flip_bullish",
+          "fam": "OTTER",
+          "n_fires": 526,
+          "recall14": 0.069,
+          "prec": 0.019,
+          "lift": 0.88
+        },
+        {
+          "p": "cvd_flip_bearish",
+          "fam": "OTTER",
+          "n_fires": 526,
+          "recall14": 0.119,
+          "prec": 0.019,
+          "lift": 0.88
+        },
+        {
+          "p": "rsi_exit_os",
+          "fam": "cont",
+          "n_fires": 233,
+          "recall14": 0.031,
+          "prec": 0.021,
+          "lift": 0.99
+        },
+        {
+          "p": "rsi_exit_ob",
+          "fam": "cont",
+          "n_fires": 288,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "macd_up",
+          "fam": "cont",
+          "n_fires": 877,
+          "recall14": 0.094,
+          "prec": 0.016,
+          "lift": 0.74
+        },
+        {
+          "p": "macd_dn",
+          "fam": "cont",
+          "n_fires": 879,
+          "recall14": 0.233,
+          "prec": 0.028,
+          "lift": 1.32
+        },
+        {
+          "p": "ema_up",
+          "fam": "cont",
+          "n_fires": 702,
+          "recall14": 0.075,
+          "prec": 0.014,
+          "lift": 0.66
+        },
+        {
+          "p": "ema_dn",
+          "fam": "cont",
+          "n_fires": 704,
+          "recall14": 0.201,
+          "prec": 0.031,
+          "lift": 1.45
+        },
+        {
+          "p": "red_diamond",
+          "fam": "CYPHER",
+          "n_fires": 2166,
+          "recall14": 0.522,
+          "prec": 0.021,
+          "lift": 0.98
+        },
+        {
+          "p": "blood_diamond",
+          "fam": "CYPHER",
+          "n_fires": 265,
+          "recall14": 0.088,
+          "prec": 0.03,
+          "lift": 1.4
+        },
+        {
+          "p": "blue_triangle",
+          "fam": "CYPHER",
+          "n_fires": 536,
+          "recall14": 0.013,
+          "prec": 0.004,
+          "lift": 0.17
+        },
+        {
+          "p": "red_cross",
+          "fam": "CYPHER",
+          "n_fires": 961,
+          "recall14": 0.208,
+          "prec": 0.019,
+          "lift": 0.87
+        },
+        {
+          "p": "yellow_cross",
+          "fam": "CYPHER",
+          "n_fires": 39,
+          "recall14": 0.025,
+          "prec": 0.051,
+          "lift": 2.37
+        },
+        {
+          "p": "bull_candle",
+          "fam": "CYPHER",
+          "n_fires": 2287,
+          "recall14": 0.107,
+          "prec": 0.009,
+          "lift": 0.43
+        },
+        {
+          "p": "buy_circle",
+          "fam": "CYPHER",
+          "n_fires": 540,
+          "recall14": 0.094,
+          "prec": 0.028,
+          "lift": 1.29
+        },
+        {
+          "p": "sell_circle",
+          "fam": "CYPHER",
+          "n_fires": 556,
+          "recall14": 0.019,
+          "prec": 0.004,
+          "lift": 0.17
+        },
+        {
+          "p": "divergence_buy_circle",
+          "fam": "CYPHER",
+          "n_fires": 198,
+          "recall14": 0.05,
+          "prec": 0.04,
+          "lift": 1.87
+        },
+        {
+          "p": "divergence_sell_circle",
+          "fam": "CYPHER",
+          "n_fires": 230,
+          "recall14": 0.025,
+          "prec": 0.009,
+          "lift": 0.4
+        },
+        {
+          "p": "gold_buy_gold_circle",
+          "fam": "CYPHER",
+          "n_fires": 18,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "wt_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 646,
+          "recall14": 0.038,
+          "prec": 0.006,
+          "lift": 0.29
+        },
+        {
+          "p": "wt_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 246,
+          "recall14": 0.05,
+          "prec": 0.033,
+          "lift": 1.51
+        },
+        {
+          "p": "wt_2nd_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 1029,
+          "recall14": 0.132,
+          "prec": 0.013,
+          "lift": 0.58
+        },
+        {
+          "p": "wt_2nd_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 646,
+          "recall14": 0.119,
+          "prec": 0.029,
+          "lift": 1.36
+        },
+        {
+          "p": "rsi_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 1166,
+          "recall14": 0.107,
+          "prec": 0.015,
+          "lift": 0.67
+        },
+        {
+          "p": "rsi_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 194,
+          "recall14": 0.044,
+          "prec": 0.021,
+          "lift": 0.95
+        },
+        {
+          "p": "stoch_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 2094,
+          "recall14": 0.585,
+          "prec": 0.039,
+          "lift": 1.79
+        },
+        {
+          "p": "stoch_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 1697,
+          "recall14": 0.214,
+          "prec": 0.018,
+          "lift": 0.82
+        },
+        {
+          "p": "long_ema_signal",
+          "fam": "CYPHER",
+          "n_fires": 205,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "short_ema_signal",
+          "fam": "CYPHER",
+          "n_fires": 207,
+          "recall14": 0.082,
+          "prec": 0.034,
+          "lift": 1.57
+        },
+        {
+          "p": "buy_signal",
+          "fam": "CYPHER",
+          "n_fires": 72,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "sell_signal",
+          "fam": "CYPHER",
+          "n_fires": 72,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        }
+      ]
+    },
+    "validate": {
+      "base_rate": 0.0228,
+      "n_div": 62,
+      "rows": [
+        {
+          "p": "otter_buy",
+          "fam": "OTTER",
+          "n_fires": 16,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "otter_sell",
+          "fam": "OTTER",
+          "n_fires": 17,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_buy_high",
+          "fam": "OTTER",
+          "n_fires": 14,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_sell_high",
+          "fam": "OTTER",
+          "n_fires": 6,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_buy_std",
+          "fam": "OTTER",
+          "n_fires": 0,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_sell_std",
+          "fam": "OTTER",
+          "n_fires": 2,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "top_signal",
+          "fam": "OTTER",
+          "n_fires": 16,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "bottom_signal",
+          "fam": "OTTER",
+          "n_fires": 15,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "ribbon_buy_cross",
+          "fam": "OTTER",
+          "n_fires": 724,
+          "recall14": 0.097,
+          "prec": 0.023,
+          "lift": 1.03
+        },
+        {
+          "p": "ribbon_sell_cross",
+          "fam": "OTTER",
+          "n_fires": 615,
+          "recall14": 0.032,
+          "prec": 0.01,
+          "lift": 0.43
+        },
+        {
+          "p": "cvd_flip_bullish",
+          "fam": "OTTER",
+          "n_fires": 197,
+          "recall14": 0.065,
+          "prec": 0.02,
+          "lift": 0.89
+        },
+        {
+          "p": "cvd_flip_bearish",
+          "fam": "OTTER",
+          "n_fires": 197,
+          "recall14": 0.113,
+          "prec": 0.02,
+          "lift": 0.89
+        },
+        {
+          "p": "rsi_exit_os",
+          "fam": "cont",
+          "n_fires": 115,
+          "recall14": 0.048,
+          "prec": 0.026,
+          "lift": 1.14
+        },
+        {
+          "p": "rsi_exit_ob",
+          "fam": "cont",
+          "n_fires": 87,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "macd_up",
+          "fam": "cont",
+          "n_fires": 334,
+          "recall14": 0.016,
+          "prec": 0.003,
+          "lift": 0.13
+        },
+        {
+          "p": "macd_dn",
+          "fam": "cont",
+          "n_fires": 334,
+          "recall14": 0.194,
+          "prec": 0.027,
+          "lift": 1.18
+        },
+        {
+          "p": "ema_up",
+          "fam": "cont",
+          "n_fires": 244,
+          "recall14": 0.081,
+          "prec": 0.02,
+          "lift": 0.9
+        },
+        {
+          "p": "ema_dn",
+          "fam": "cont",
+          "n_fires": 244,
+          "recall14": 0.145,
+          "prec": 0.033,
+          "lift": 1.44
+        },
+        {
+          "p": "red_diamond",
+          "fam": "CYPHER",
+          "n_fires": 814,
+          "recall14": 0.613,
+          "prec": 0.032,
+          "lift": 1.4
+        },
+        {
+          "p": "blood_diamond",
+          "fam": "CYPHER",
+          "n_fires": 95,
+          "recall14": 0.097,
+          "prec": 0.011,
+          "lift": 0.46
+        },
+        {
+          "p": "blue_triangle",
+          "fam": "CYPHER",
+          "n_fires": 200,
+          "recall14": 0.032,
+          "prec": 0.01,
+          "lift": 0.44
+        },
+        {
+          "p": "red_cross",
+          "fam": "CYPHER",
+          "n_fires": 352,
+          "recall14": 0.274,
+          "prec": 0.017,
+          "lift": 0.75
+        },
+        {
+          "p": "yellow_cross",
+          "fam": "CYPHER",
+          "n_fires": 24,
+          "recall14": 0.032,
+          "prec": 0.083,
+          "lift": 3.66
+        },
+        {
+          "p": "bull_candle",
+          "fam": "CYPHER",
+          "n_fires": 704,
+          "recall14": 0.032,
+          "prec": 0.003,
+          "lift": 0.12
+        },
+        {
+          "p": "buy_circle",
+          "fam": "CYPHER",
+          "n_fires": 236,
+          "recall14": 0.129,
+          "prec": 0.025,
+          "lift": 1.12
+        },
+        {
+          "p": "sell_circle",
+          "fam": "CYPHER",
+          "n_fires": 195,
+          "recall14": 0.016,
+          "prec": 0.005,
+          "lift": 0.22
+        },
+        {
+          "p": "divergence_buy_circle",
+          "fam": "CYPHER",
+          "n_fires": 80,
+          "recall14": 0.048,
+          "prec": 0.037,
+          "lift": 1.65
+        },
+        {
+          "p": "divergence_sell_circle",
+          "fam": "CYPHER",
+          "n_fires": 93,
+          "recall14": 0.016,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "gold_buy_gold_circle",
+          "fam": "CYPHER",
+          "n_fires": 9,
+          "recall14": 0.016,
+          "prec": 0.111,
+          "lift": 4.87
+        },
+        {
+          "p": "wt_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 229,
+          "recall14": 0.016,
+          "prec": 0.004,
+          "lift": 0.19
+        },
+        {
+          "p": "wt_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 107,
+          "recall14": 0.048,
+          "prec": 0.028,
+          "lift": 1.23
+        },
+        {
+          "p": "wt_2nd_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 372,
+          "recall14": 0.113,
+          "prec": 0.011,
+          "lift": 0.47
+        },
+        {
+          "p": "wt_2nd_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 257,
+          "recall14": 0.113,
+          "prec": 0.027,
+          "lift": 1.19
+        },
+        {
+          "p": "rsi_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 372,
+          "recall14": 0.048,
+          "prec": 0.008,
+          "lift": 0.35
+        },
+        {
+          "p": "rsi_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 97,
+          "recall14": 0.016,
+          "prec": 0.01,
+          "lift": 0.45
+        },
+        {
+          "p": "stoch_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 812,
+          "recall14": 0.484,
+          "prec": 0.027,
+          "lift": 1.19
+        },
+        {
+          "p": "stoch_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 629,
+          "recall14": 0.194,
+          "prec": 0.013,
+          "lift": 0.56
+        },
+        {
+          "p": "long_ema_signal",
+          "fam": "CYPHER",
+          "n_fires": 80,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "short_ema_signal",
+          "fam": "CYPHER",
+          "n_fires": 80,
+          "recall14": 0.097,
+          "prec": 0.062,
+          "lift": 2.74
+        },
+        {
+          "p": "buy_signal",
+          "fam": "CYPHER",
+          "n_fires": 101,
+          "recall14": 0.016,
+          "prec": 0.01,
+          "lift": 0.43
+        },
+        {
+          "p": "sell_signal",
+          "fam": "CYPHER",
+          "n_fires": 101,
+          "recall14": 0.032,
+          "prec": 0.0,
+          "lift": 0.0
+        }
+      ]
+    }
+  },
+  "bear_divergence": {
+    "train": {
+      "base_rate": 0.0205,
+      "n_div": 151,
+      "rows": [
+        {
+          "p": "otter_buy",
+          "fam": "OTTER",
+          "n_fires": 40,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "otter_sell",
+          "fam": "OTTER",
+          "n_fires": 81,
+          "recall14": 0.007,
+          "prec": 0.012,
+          "lift": 0.6
+        },
+        {
+          "p": "super_buy_high",
+          "fam": "OTTER",
+          "n_fires": 16,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_sell_high",
+          "fam": "OTTER",
+          "n_fires": 46,
+          "recall14": 0.013,
+          "prec": 0.065,
+          "lift": 3.18
+        },
+        {
+          "p": "super_buy_std",
+          "fam": "OTTER",
+          "n_fires": 4,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_sell_std",
+          "fam": "OTTER",
+          "n_fires": 7,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "top_signal",
+          "fam": "OTTER",
+          "n_fires": 47,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "bottom_signal",
+          "fam": "OTTER",
+          "n_fires": 19,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "ribbon_buy_cross",
+          "fam": "OTTER",
+          "n_fires": 1990,
+          "recall14": 0.099,
+          "prec": 0.021,
+          "lift": 1.03
+        },
+        {
+          "p": "ribbon_sell_cross",
+          "fam": "OTTER",
+          "n_fires": 2130,
+          "recall14": 0.139,
+          "prec": 0.028,
+          "lift": 1.35
+        },
+        {
+          "p": "cvd_flip_bullish",
+          "fam": "OTTER",
+          "n_fires": 526,
+          "recall14": 0.139,
+          "prec": 0.03,
+          "lift": 1.48
+        },
+        {
+          "p": "cvd_flip_bearish",
+          "fam": "OTTER",
+          "n_fires": 526,
+          "recall14": 0.079,
+          "prec": 0.021,
+          "lift": 1.02
+        },
+        {
+          "p": "rsi_exit_os",
+          "fam": "cont",
+          "n_fires": 233,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "rsi_exit_ob",
+          "fam": "cont",
+          "n_fires": 288,
+          "recall14": 0.053,
+          "prec": 0.028,
+          "lift": 1.35
+        },
+        {
+          "p": "macd_up",
+          "fam": "cont",
+          "n_fires": 877,
+          "recall14": 0.245,
+          "prec": 0.031,
+          "lift": 1.5
+        },
+        {
+          "p": "macd_dn",
+          "fam": "cont",
+          "n_fires": 879,
+          "recall14": 0.06,
+          "prec": 0.01,
+          "lift": 0.5
+        },
+        {
+          "p": "ema_up",
+          "fam": "cont",
+          "n_fires": 702,
+          "recall14": 0.106,
+          "prec": 0.02,
+          "lift": 0.97
+        },
+        {
+          "p": "ema_dn",
+          "fam": "cont",
+          "n_fires": 704,
+          "recall14": 0.046,
+          "prec": 0.01,
+          "lift": 0.48
+        },
+        {
+          "p": "red_diamond",
+          "fam": "CYPHER",
+          "n_fires": 2166,
+          "recall14": 0.298,
+          "prec": 0.02,
+          "lift": 0.97
+        },
+        {
+          "p": "blood_diamond",
+          "fam": "CYPHER",
+          "n_fires": 265,
+          "recall14": 0.013,
+          "prec": 0.008,
+          "lift": 0.37
+        },
+        {
+          "p": "blue_triangle",
+          "fam": "CYPHER",
+          "n_fires": 536,
+          "recall14": 0.166,
+          "prec": 0.026,
+          "lift": 1.27
+        },
+        {
+          "p": "red_cross",
+          "fam": "CYPHER",
+          "n_fires": 961,
+          "recall14": 0.046,
+          "prec": 0.007,
+          "lift": 0.36
+        },
+        {
+          "p": "yellow_cross",
+          "fam": "CYPHER",
+          "n_fires": 39,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "bull_candle",
+          "fam": "CYPHER",
+          "n_fires": 2287,
+          "recall14": 0.583,
+          "prec": 0.034,
+          "lift": 1.66
+        },
+        {
+          "p": "buy_circle",
+          "fam": "CYPHER",
+          "n_fires": 540,
+          "recall14": 0.02,
+          "prec": 0.006,
+          "lift": 0.27
+        },
+        {
+          "p": "sell_circle",
+          "fam": "CYPHER",
+          "n_fires": 556,
+          "recall14": 0.152,
+          "prec": 0.04,
+          "lift": 1.93
+        },
+        {
+          "p": "divergence_buy_circle",
+          "fam": "CYPHER",
+          "n_fires": 198,
+          "recall14": 0.02,
+          "prec": 0.01,
+          "lift": 0.49
+        },
+        {
+          "p": "divergence_sell_circle",
+          "fam": "CYPHER",
+          "n_fires": 230,
+          "recall14": 0.04,
+          "prec": 0.017,
+          "lift": 0.85
+        },
+        {
+          "p": "gold_buy_gold_circle",
+          "fam": "CYPHER",
+          "n_fires": 18,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "wt_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 646,
+          "recall14": 0.119,
+          "prec": 0.023,
+          "lift": 1.13
+        },
+        {
+          "p": "wt_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 246,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "wt_2nd_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 1029,
+          "recall14": 0.152,
+          "prec": 0.019,
+          "lift": 0.95
+        },
+        {
+          "p": "wt_2nd_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 646,
+          "recall14": 0.086,
+          "prec": 0.017,
+          "lift": 0.83
+        },
+        {
+          "p": "rsi_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 1166,
+          "recall14": 0.272,
+          "prec": 0.016,
+          "lift": 0.79
+        },
+        {
+          "p": "rsi_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 194,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "stoch_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 2094,
+          "recall14": 0.219,
+          "prec": 0.013,
+          "lift": 0.63
+        },
+        {
+          "p": "stoch_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 1697,
+          "recall14": 0.45,
+          "prec": 0.036,
+          "lift": 1.75
+        },
+        {
+          "p": "long_ema_signal",
+          "fam": "CYPHER",
+          "n_fires": 205,
+          "recall14": 0.093,
+          "prec": 0.044,
+          "lift": 2.14
+        },
+        {
+          "p": "short_ema_signal",
+          "fam": "CYPHER",
+          "n_fires": 207,
+          "recall14": 0.007,
+          "prec": 0.005,
+          "lift": 0.24
+        },
+        {
+          "p": "buy_signal",
+          "fam": "CYPHER",
+          "n_fires": 72,
+          "recall14": 0.04,
+          "prec": 0.042,
+          "lift": 2.03
+        },
+        {
+          "p": "sell_signal",
+          "fam": "CYPHER",
+          "n_fires": 72,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        }
+      ]
+    },
+    "validate": {
+      "base_rate": 0.0213,
+      "n_div": 58,
+      "rows": [
+        {
+          "p": "otter_buy",
+          "fam": "OTTER",
+          "n_fires": 16,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "otter_sell",
+          "fam": "OTTER",
+          "n_fires": 17,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_buy_high",
+          "fam": "OTTER",
+          "n_fires": 14,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_sell_high",
+          "fam": "OTTER",
+          "n_fires": 6,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_buy_std",
+          "fam": "OTTER",
+          "n_fires": 0,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "super_sell_std",
+          "fam": "OTTER",
+          "n_fires": 2,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "top_signal",
+          "fam": "OTTER",
+          "n_fires": 16,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "bottom_signal",
+          "fam": "OTTER",
+          "n_fires": 15,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "ribbon_buy_cross",
+          "fam": "OTTER",
+          "n_fires": 724,
+          "recall14": 0.103,
+          "prec": 0.019,
+          "lift": 0.91
+        },
+        {
+          "p": "ribbon_sell_cross",
+          "fam": "OTTER",
+          "n_fires": 615,
+          "recall14": 0.069,
+          "prec": 0.02,
+          "lift": 0.92
+        },
+        {
+          "p": "cvd_flip_bullish",
+          "fam": "OTTER",
+          "n_fires": 197,
+          "recall14": 0.017,
+          "prec": 0.005,
+          "lift": 0.24
+        },
+        {
+          "p": "cvd_flip_bearish",
+          "fam": "OTTER",
+          "n_fires": 197,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "rsi_exit_os",
+          "fam": "cont",
+          "n_fires": 115,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "rsi_exit_ob",
+          "fam": "cont",
+          "n_fires": 87,
+          "recall14": 0.086,
+          "prec": 0.057,
+          "lift": 2.7
+        },
+        {
+          "p": "macd_up",
+          "fam": "cont",
+          "n_fires": 334,
+          "recall14": 0.224,
+          "prec": 0.027,
+          "lift": 1.26
+        },
+        {
+          "p": "macd_dn",
+          "fam": "cont",
+          "n_fires": 334,
+          "recall14": 0.052,
+          "prec": 0.009,
+          "lift": 0.42
+        },
+        {
+          "p": "ema_up",
+          "fam": "cont",
+          "n_fires": 244,
+          "recall14": 0.207,
+          "prec": 0.029,
+          "lift": 1.35
+        },
+        {
+          "p": "ema_dn",
+          "fam": "cont",
+          "n_fires": 244,
+          "recall14": 0.034,
+          "prec": 0.008,
+          "lift": 0.38
+        },
+        {
+          "p": "red_diamond",
+          "fam": "CYPHER",
+          "n_fires": 814,
+          "recall14": 0.241,
+          "prec": 0.017,
+          "lift": 0.81
+        },
+        {
+          "p": "blood_diamond",
+          "fam": "CYPHER",
+          "n_fires": 95,
+          "recall14": 0.017,
+          "prec": 0.011,
+          "lift": 0.49
+        },
+        {
+          "p": "blue_triangle",
+          "fam": "CYPHER",
+          "n_fires": 200,
+          "recall14": 0.207,
+          "prec": 0.04,
+          "lift": 1.88
+        },
+        {
+          "p": "red_cross",
+          "fam": "CYPHER",
+          "n_fires": 352,
+          "recall14": 0.103,
+          "prec": 0.014,
+          "lift": 0.67
+        },
+        {
+          "p": "yellow_cross",
+          "fam": "CYPHER",
+          "n_fires": 24,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "bull_candle",
+          "fam": "CYPHER",
+          "n_fires": 704,
+          "recall14": 0.379,
+          "prec": 0.027,
+          "lift": 1.27
+        },
+        {
+          "p": "buy_circle",
+          "fam": "CYPHER",
+          "n_fires": 236,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "sell_circle",
+          "fam": "CYPHER",
+          "n_fires": 195,
+          "recall14": 0.086,
+          "prec": 0.026,
+          "lift": 1.2
+        },
+        {
+          "p": "divergence_buy_circle",
+          "fam": "CYPHER",
+          "n_fires": 80,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "divergence_sell_circle",
+          "fam": "CYPHER",
+          "n_fires": 93,
+          "recall14": 0.017,
+          "prec": 0.011,
+          "lift": 0.5
+        },
+        {
+          "p": "gold_buy_gold_circle",
+          "fam": "CYPHER",
+          "n_fires": 9,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "wt_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 229,
+          "recall14": 0.103,
+          "prec": 0.026,
+          "lift": 1.23
+        },
+        {
+          "p": "wt_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 107,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "wt_2nd_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 372,
+          "recall14": 0.103,
+          "prec": 0.016,
+          "lift": 0.76
+        },
+        {
+          "p": "wt_2nd_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 257,
+          "recall14": 0.034,
+          "prec": 0.008,
+          "lift": 0.36
+        },
+        {
+          "p": "rsi_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 372,
+          "recall14": 0.207,
+          "prec": 0.019,
+          "lift": 0.88
+        },
+        {
+          "p": "rsi_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 97,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "stoch_bearish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 812,
+          "recall14": 0.328,
+          "prec": 0.02,
+          "lift": 0.92
+        },
+        {
+          "p": "stoch_bullish_divergence",
+          "fam": "CYPHER",
+          "n_fires": 629,
+          "recall14": 0.466,
+          "prec": 0.032,
+          "lift": 1.49
+        },
+        {
+          "p": "long_ema_signal",
+          "fam": "CYPHER",
+          "n_fires": 80,
+          "recall14": 0.069,
+          "prec": 0.025,
+          "lift": 1.17
+        },
+        {
+          "p": "short_ema_signal",
+          "fam": "CYPHER",
+          "n_fires": 80,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        },
+        {
+          "p": "buy_signal",
+          "fam": "CYPHER",
+          "n_fires": 101,
+          "recall14": 0.103,
+          "prec": 0.059,
+          "lift": 2.79
+        },
+        {
+          "p": "sell_signal",
+          "fam": "CYPHER",
+          "n_fires": 101,
+          "recall14": 0.0,
+          "prec": 0.0,
+          "lift": 0.0
+        }
+      ]
+    }
+  }
+}
