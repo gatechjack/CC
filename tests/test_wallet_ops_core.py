@@ -131,6 +131,42 @@ class TestPolToUsdcMarketSlippage:
     def test_aborts_when_no_pool(self):
         assert core.select_best_tier_by_impact({100: 0, 500: 0}, {100: 1.0, 500: 1.0}, 0.005) is None
 
+    def test_negative_impact_clamped_to_zero(self):
+        # fork #2: the real 5-POL artifact — probe out floors 387.6 -> 387, making
+        # the full fill look ~0.16% "better than spot". Clamp that noise to 0.
+        assert core.price_impact_probe(387_616, self.AMOUNT_IN, 387, self.PROBE) == 0.0
+
+    def test_clamp_does_not_mask_real_positive_impact(self):
+        # a genuine 0.5% impact is untouched by the clamp
+        assert abs(core.price_impact_probe(398_000_000, self.AMOUNT_IN, 400_000, self.PROBE) - 0.005) < 1e-9
+
+
+class TestFairPriceFloor:
+    # fork #3: --min-usdc-out oracle floor. units are USDC base (6dp).
+    def test_floor_required_only_on_live(self):
+        assert core.floor_required(dry_run=False, min_usdc_out=None) is True    # live + no floor -> required
+        assert core.floor_required(dry_run=True, min_usdc_out=None) is False    # dry-run exempt
+        assert core.floor_required(dry_run=False, min_usdc_out=0.77) is False   # live + floor -> ok
+        assert core.floor_required(dry_run=True, min_usdc_out=0.77) is False
+
+    def test_floor_satisfied(self):
+        assert core.floor_satisfied(800_000, None) is True          # no floor -> always ok
+        assert core.floor_satisfied(800_000, 770_000) is True       # 0.80 >= 0.77
+        assert core.floor_satisfied(770_000, 770_000) is True       # exactly meets
+        assert core.floor_satisfied(760_000, 770_000) is False      # below floor -> abort
+
+    def test_effective_min_out_takes_more_protective(self):
+        # slippage floor = 1_000_000*(1-0.005) = 995_000
+        assert core.effective_min_out(1_000_000, 0.005, None) == 995_000          # no oracle floor
+        assert core.effective_min_out(1_000_000, 0.005, 990_000) == 995_000       # slippage stricter
+        assert core.effective_min_out(1_000_000, 0.005, 998_000) == 998_000       # oracle floor stricter
+
+    def test_implied_price_per_pol(self):
+        # 5 POL (5e18) -> 0.387616 USDC (387616) => 0.0775232 USDC/POL
+        import decimal
+        got = core.implied_price_per_pol(387_616, 5 * 10 ** 18)
+        assert abs(got - decimal.Decimal("0.0775232")) < decimal.Decimal("1e-9")
+
 
 class TestDisplay:
     def test_polygonscan_urls(self):

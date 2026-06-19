@@ -121,14 +121,21 @@ def price_impact_probe(full_out: int, amount_in: int, probe_out: int, probe_amou
     """Fraction by which the full-size price-per-unit is worse than the near-spot
     probe price-per-unit (same fee tier). >0 means you receive less per unit than
     spot. Returns 1.0 (max impact -> caller treats the tier as unfillable) when
-    spot can't be established (probe reverted / rounded to 0) or full_out is 0."""
+    spot can't be established (probe reverted / rounded to 0) or full_out is 0.
+
+    Fork #2: the result is CLAMPED to >= 0. A small *negative* raw value is a 6-dp
+    floor-rounding artifact of the tiny probe (its USDC out floors harder than the
+    full fill, e.g. 387.6 -> 387), not a real price improvement; clamping keeps the
+    gate from reading that noise as 'better than spot'. Cosmetic only — the on-chain
+    amountOutMinimum (see effective_min_out) is the real backstop, not this number.
+    """
     if full_out <= 0 or amount_in <= 0 or probe_out <= 0 or probe_amount <= 0:
         return 1.0
     spot_ppu = Decimal(probe_out) / Decimal(probe_amount)
     full_ppu = Decimal(full_out) / Decimal(amount_in)
     if spot_ppu <= 0:
         return 1.0
-    return float(Decimal(1) - (full_ppu / spot_ppu))
+    return max(0.0, float(Decimal(1) - (full_ppu / spot_ppu)))
 
 
 def select_best_tier_by_impact(quotes: dict, impacts: dict, tol: float):
@@ -142,6 +149,45 @@ def select_best_tier_by_impact(quotes: dict, impacts: dict, tol: float):
         return None
     fee = max(valid, key=lambda k: valid[k])
     return (fee, valid[fee])
+
+
+# ── fork #3: oracle-derived fair-price floor (--min-usdc-out) ─────────────────
+# The price-impact gate only checks the pool against ITS OWN spot. If the pool itself
+# is off-market vs an external oracle (Coinbase/Kraken/CoinGecko), a low-impact fill
+# can still be a bad price. The operator-supplied floor
+# (pol_amount * external_POL_USD * (1 - tol)) is the independent guard: REQUIRED on a
+# live run, optional on --dry-run so the operator can read the Quoter quote first.
+def floor_required(dry_run: bool, min_usdc_out) -> bool:
+    """True iff a floor MUST be supplied: live (non-dry-run) runs require one;
+    a --dry-run does not."""
+    return (not dry_run) and (min_usdc_out is None)
+
+
+def floor_satisfied(best_out: int, min_usdc_out_units) -> bool:
+    """True if no floor is set OR the expected output meets the floor. False
+    (-> caller ABORTS) means the pool's expected out is below the operator's
+    oracle floor (pool likely off-market vs the oracle)."""
+    if min_usdc_out_units is None:
+        return True
+    return best_out >= int(min_usdc_out_units)
+
+
+def effective_min_out(best_out: int, tol: float, min_usdc_out_units) -> int:
+    """On-chain amountOutMinimum: the MORE protective of the slippage floor
+    best_out*(1-tol) and the operator's oracle floor (if set)."""
+    m = min_out(best_out, tol)
+    if min_usdc_out_units is not None and int(min_usdc_out_units) > m:
+        return int(min_usdc_out_units)
+    return m
+
+
+def implied_price_per_pol(out_units: int, amount_in_units: int) -> Decimal:
+    """USDC-per-POL implied by a quote, for cross-checking the pool against an
+    external oracle: (out / 10**USDC_DECIMALS) / (in / 10**POL_DECIMALS)."""
+    if amount_in_units == 0:
+        return Decimal(0)
+    return ((Decimal(out_units) / (Decimal(10) ** USDC_DECIMALS))
+            / (Decimal(amount_in_units) / (Decimal(10) ** POL_DECIMALS)))
 
 
 # ── display helpers ─────────────────────────────────────────────────────────

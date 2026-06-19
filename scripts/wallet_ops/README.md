@@ -87,8 +87,8 @@ Swaps native **POL → native USDC** (Circle) on the sending wallet, e.g. to con
 leftover gas POL into USDC for a drain to Bitunix. Recipient = sender; any onward
 transfer is a separate `transfer_erc20.py` step.
 ```
-PY scripts/wallet_ops/swap_pol_to_usdc.py PK 10 --dry-run           # per-tier quotes + price impact + swap block
-PY scripts/wallet_ops/swap_pol_to_usdc.py PK 10 --slippage 0.5      # y/n -> sign
+PY scripts/wallet_ops/swap_pol_to_usdc.py PK 10 --dry-run                         # quotes + impact + implied price; no floor needed
+PY scripts/wallet_ops/swap_pol_to_usdc.py PK 10 --min-usdc-out 0.77 --slippage 0.5   # live REQUIRES --min-usdc-out
 ```
 
 **Native POL handling (the deposit gotcha — verified, do NOT assume Ethereum's pattern).**
@@ -109,10 +109,29 @@ deployment docs:
 
 **Slippage gate differs from the USDC→USDC.e swap.** POL→USDC is a *market* swap, not
 a ~1:1 par swap, so the par gate (`select_best_tier`/`effective_slippage`) does not
-apply. Instead it gates on **price impact** (full-size fill vs a near-spot tiny probe
-on the same pool) AND sets an on-chain `amountOutMinimum`. `ABORT … price impact` →
-**stop**; don't raise `--slippage` blindly. Because the input is the gas token, it
-also refuses to swap so much POL that none is left to pay the swap's own gas.
+apply (it compares 18-dp POL units to 6-dp USDC units → would always abort). Instead
+it gates on **price impact** (full-size fill vs a near-spot tiny probe on the same
+pool) AND sets an on-chain `amountOutMinimum`. `ABORT … price impact` → **stop**;
+don't raise `--slippage` blindly. Because the input is the gas token, it also refuses
+to swap so much POL that none is left to pay the swap's own gas. Negative price-impact
+readings (a tiny-probe floor-rounding artifact) are clamped to 0.
+
+**`--min-usdc-out` oracle floor (REQUIRED on live, optional on `--dry-run`).** The
+price-impact gate only checks the pool against *its own* spot — a low-impact fill
+through an *off-market* pool can still be a bad price. The floor is your independent,
+oracle-derived guard. Workflow:
+1. `--dry-run` first — read the per-tier quotes and the printed **implied USDC/POL**.
+2. Look up POL/USD on **Coinbase / Kraken / CoinGecko** and confirm the implied price
+   matches (e.g. 2026-06-18: POL ≈ $0.078, and the Quoter agreed within ~0.5%).
+3. Compute the floor: **`min_usdc_out = pol_amount × external_POL_USD × (1 − slippage/100)`**.
+4. Live-run with `--min-usdc-out <value>`. A live run *without* it aborts; a run whose
+   expected output is *below* the floor aborts (pool likely off-market). The on-chain
+   `amountOutMinimum` is set to the **more protective** of the slippage floor and your
+   oracle floor.
+
+> Why both gates: price-impact guards pool **depth** (relative to the pool's own
+> spot); `--min-usdc-out` guards the **spot itself** being off-market vs an oracle.
+> They protect against different failure modes — keep both.
 
 ## Files
 - `walletops_core.py` — pure helpers (amount/slippage math, calldata, formatting); unit-tested.
