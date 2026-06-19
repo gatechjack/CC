@@ -1,0 +1,48 @@
+{
+  "n_cleared_buy_after_cooldown_filter": 1469,
+  "n_ctx_none_skipped": 0,
+  "pa_decision_counts": {
+    "PASS": 191,
+    "REJECT": 1278,
+    "DISABLED": 0
+  },
+  "fidelity_vs_live_pa": {
+    "agree": 1291,
+    "total": 1469,
+    "pct": 87.9
+  },
+  "PASS": {
+    "pa_decisions": {
+      "PASS": 191,
+      "REJECT": 1278,
+      "DISABLED": 0
+    },
+    "walked": 110,
+    "plan_skipped": 81,
+    "still_open": 0,
+    "win_rate": 61.8,
+    "mean_gross_r": 0.0644,
+    "mean_net_taker_r": -0.284,
+    "mean_net_maker_r": -0.1833
+  },
+  "REJECT": {
+    "pa_decisions": {
+      "PASS": 191,
+      "REJECT": 1278,
+      "DISABLED": 0
+    },
+    "walked": 798,
+    "plan_skipped": 480,
+    "still_open": 0,
+    "win_rate": 62.9,
+    "mean_gross_r": 0.0634,
+    "mean_net_taker_r": -0.2404,
+    "mean_net_maker_r": -0.1526
+  },
+  "reject_failed_validator_combos": {
+    "vwap_alignment+volume_confirmation+structure_alignment": 688,
+    "vwap_alignment+structure_alignment": 317,
+    "volume_confirmation+structure_alignment": 170,
+    "vwap_alignment+volume_confirmation": 103
+  }
+}
