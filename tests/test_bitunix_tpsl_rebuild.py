@@ -18,7 +18,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from trading_corp.brokers.bitunix import BitunixAPIError, BitunixBroker
+from trading_corp.brokers.bitunix import (
+    BitunixAPIError,
+    BitunixBroker,
+    _extract_tpsl_order_id,
+)
+from trading_corp.brokers.bitunix_exceptions import BitunixUntrackedTpslOrder
 from trading_corp.persistence.models import Position, ProposedOrder, PaperTradeRecord
 from trading_corp.persistence import db
 from trading_corp.persistence.db import init_db
@@ -156,17 +161,66 @@ async def test_place_tpsl_order_body_shape():
     assert body["tpPrice"]
 
 
+def test_extract_tpsl_order_id_tolerates_both_shapes():
+    """The parse helper must extract orderId from BOTH the documented dict shape
+    and the LIVE list shape (report c8a426d), plus scalar/edge forms — and return
+    "" only when genuinely absent."""
+    # live shape: /tpsl/place_order returned a LIST → the bug the fix repairs
+    assert _extract_tpsl_order_id([{"orderId": "L1"}]) == "L1"
+    assert _extract_tpsl_order_id([{"orderId": "L1"}, {"orderId": "L2"}]) == "L1"
+    # documented shape: a single dict
+    assert _extract_tpsl_order_id({"orderId": "D1"}) == "D1"
+    # alternate id key + bare-scalar forms
+    assert _extract_tpsl_order_id({"id": "D2"}) == "D2"
+    assert _extract_tpsl_order_id(["S1"]) == "S1"
+    assert _extract_tpsl_order_id("S2") == "S2"
+    assert _extract_tpsl_order_id(123) == "123"
+    # genuinely absent → "" (caller decides what to do)
+    assert _extract_tpsl_order_id({}) == ""
+    assert _extract_tpsl_order_id([]) == ""
+    assert _extract_tpsl_order_id(None) == ""
+    assert _extract_tpsl_order_id([{"noId": "x"}]) == ""
+
+
 @pytest.mark.asyncio
-async def test_place_tpsl_order_returns_empty_string_when_no_order_id():
-    """If the venue returns no orderId, method returns empty string (not crash)."""
-    broker = _make_broker(request_returns={})
+async def test_place_tpsl_order_parses_list_response():
+    """THE FIX: the live /tpsl/place_order returns a LIST [{"orderId": ...}]
+    (report c8a426d, trade cb6b4d4a). The id must be extracted from the list form
+    instead of crashing with 'list' object has no attribute 'get'."""
+    broker = _make_broker(request_returns=[{"orderId": "tpsl-list-001"}])
     result = await broker.place_tpsl_order(
-        symbol="BTC/USDT.P",
-        position_id="pos-123",
-        tp_price=65928.22,
-        tp_qty=0.0004,
+        symbol="BTC/USDT.P", position_id="pos-123",
+        tp_price=65928.22, tp_qty=0.0004,
     )
-    assert result == ""
+    assert result == "tpsl-list-001"
+
+
+@pytest.mark.asyncio
+async def test_place_tpsl_order_parses_dict_response():
+    """Defensive both-shapes: the documented dict {"orderId": ...} must also parse."""
+    broker = _make_broker(request_returns={"orderId": "tpsl-dict-001"})
+    result = await broker.place_tpsl_order(
+        symbol="BTC/USDT.P", position_id="pos-123",
+        tp_price=65928.22, tp_qty=0.0004,
+    )
+    assert result == "tpsl-dict-001"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("empty_response", [{}, [], {"noId": "x"}, [{"noId": "x"}]])
+async def test_place_tpsl_order_raises_untracked_when_post_succeeds_without_id(empty_response):
+    """HARDENING: POST accepted (code 0) but no orderId → the leg may be RESTING
+    UNTRACKED. Must RAISE BitunixUntrackedTpslOrder carrying the reconcile context
+    — NOT silently return "" (that silent-swallow was the Section-B risk)."""
+    broker = _make_broker(request_returns=empty_response)
+    with pytest.raises(BitunixUntrackedTpslOrder) as exc:
+        await broker.place_tpsl_order(
+            symbol="BTC/USDT.P", position_id="pos-123",
+            tp_price=65928.22, tp_qty=0.0004,
+        )
+    # the exception must carry enough to find + reconcile the stray order
+    assert exc.value.position_id == "pos-123"
+    assert exc.value.raw_response == empty_response
 
 
 @pytest.mark.asyncio
@@ -296,11 +350,13 @@ async def test_place_position_tpsl_raises_in_stub_mode():
 
 class FakeTpslBroker:
     """Minimal broker mock supporting the new tpsl path."""
-    def __init__(self, position_id="pos-xyz-789", fail_legs=(), sl_should_fail=False):
+    def __init__(self, position_id="pos-xyz-789", fail_legs=(), sl_should_fail=False,
+                 untracked_legs=()):
         self._position_id = position_id
         self.placed: list[dict] = []
         self.position_sl_placed: list[dict] = []
         self.fail_legs = set(fail_legs)
+        self.untracked_legs = set(untracked_legs)
         self.sl_should_fail = sl_should_fail
         self._positions = []
 
@@ -320,6 +376,12 @@ class FakeTpslBroker:
                 break
         if leg_label in self.fail_legs:
             raise RuntimeError(f"tpsl fail for {leg_label}")
+        if leg_label in self.untracked_legs:
+            # POST reached the venue but the id was uncaptured (parse miss).
+            raise BitunixUntrackedTpslOrder(
+                position_id=position_id, symbol=symbol,
+                tp_price=tp_price, tp_qty=tp_qty, raw_response=[{"noId": "x"}],
+            )
         self.placed.append({
             "symbol": symbol,
             "position_id": position_id,
@@ -512,6 +574,40 @@ async def test_bracket_leg_failure_failsoft_tpsl(tmp_path):
     extra = _read_extra(url, order.id)
     assert "tp2" not in extra["bracket_tp_order_ids"]
     assert set(extra["bracket_tp_order_ids"]) == {"tp1", "tp3"}
+
+
+@pytest.mark.asyncio
+async def test_bracket_leg_untracked_flagged_not_swallowed(tmp_path):
+    """HARDENING: a leg whose POST reached the venue but whose id was uncaptured
+    must be FLAGGED (bracket_tp_leg_untracked audit, with reconcile context), NOT
+    silently recorded as an empty id or dropped — and the other legs + the
+    Position SL still place (fail-soft, B1 + SL guard)."""
+    broker = FakeTpslBroker(position_id="pos-xyz-789", untracked_legs={"tp2"})
+    broker._set_positions([_short_position(0.0016, "pos-xyz-789")])
+    obs, url = _observer(tmp_path, broker)
+    order = _entry_order(0.0016)
+    rec = await _persist_entry(url, order)
+
+    await obs._place_bracket_exits(order=order, record=rec)  # must NOT raise
+
+    # tp2 flagged for reconciliation with enough to find the stray order
+    untracked = _last_kind(url, "bracket_tp_leg_untracked")
+    assert untracked is not None
+    assert untracked["leg"] == "tp2"
+    assert untracked["position_id"] == "pos-xyz-789"
+    assert untracked["qty"] == pytest.approx(0.0008)  # tp2 = 0.50 of 0.0016
+
+    # tp2 is NOT recorded as a tracked leg (no empty-string swallow)
+    extra = _read_extra(url, order.id)
+    assert "tp2" not in extra["bracket_tp_order_ids"]
+    assert set(extra["bracket_tp_order_ids"]) == {"tp1", "tp3"}
+
+    audit = _last_kind(url, "bracket_placed")
+    assert audit["legs_placed"] == 2          # only the 2 truly-tracked legs
+    assert audit["legs_planned"] == 3
+    assert "tp2" not in audit["tp_order_ids"]
+    # fail-soft: the managed Position SL still placed
+    assert audit["position_sl_order_id"] == "venue-position-sl-001"
 
 
 @pytest.mark.asyncio

@@ -88,6 +88,7 @@ from trading_corp.brokers.bitunix_exceptions import (
     BitunixStaleSnapshot,
     BitunixStuckOrderCancelFailed,
     BitunixStuckOrderCancelled,
+    BitunixUntrackedTpslOrder,
 )
 from trading_corp.brokers.bitunix_symbols import to_wire_format
 from trading_corp.persistence import db
@@ -342,6 +343,37 @@ def _to_float(v) -> float:
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _extract_tpsl_order_id(data) -> str:
+    """Extract the venue order id from a `/tpsl/...` place response, tolerating
+    BOTH shapes the venue has been observed to use.
+
+    The BitUnix docs show `data` as a single dict `{"orderId": "..."}`, but the
+    LIVE `/tpsl/place_order` endpoint returned a LIST `[{"orderId": "..."}]`
+    (report c8a426d / trade cb6b4d4a — the old `(data or {}).get("orderId")`
+    crashed with "'list' object has no attribute 'get'", failing all 3 TP legs).
+    Since the documented shape and the live shape disagree — and an exchange that
+    contradicts its own docs can change again — this parses defensively rather
+    than assume one form: dict, list-of-dicts, and bare scalar / list-of-scalars
+    id forms are all accepted. Returns "" when no id is present.
+    """
+    if not data:
+        return ""
+    if isinstance(data, dict):
+        oid = data.get("orderId") or data.get("id")
+        return str(oid) if oid else ""
+    if isinstance(data, list):
+        for el in data:
+            if isinstance(el, dict):
+                oid = el.get("orderId") or el.get("id")
+                if oid:
+                    return str(oid)
+            elif el:  # bare scalar id in a list
+                return str(el)
+        return ""
+    # bare scalar id (str / int)
+    return str(data)
 
 
 class BitunixBroker(Broker):
@@ -1910,13 +1942,16 @@ class BitunixBroker(Broker):
         which gives: native OCO with the attached B1 SL, auto-reducing SL qty as
         legs fill, and clean fill-tracking via `get_pending_tpsl_orders`.
 
-        Returns the venue tp-order id string (empty string on success with no id).
-        Raises `BitunixAPIError` on non-idempotent errors. Idempotent duplicate
-        codes (_IDEMPOTENT_OK_CODES) are silently accepted (same positionId+price
-        already resting).
+        Returns the venue tp-order id string. Empty string ONLY on the idempotent
+        duplicate path (the leg is already resting from a prior attempt; logged).
+        Raises `BitunixAPIError` on non-idempotent errors. Raises
+        `BitunixUntrackedTpslOrder` when the POST was accepted (code 0) but no
+        orderId could be parsed — the leg likely rested but is now untracked, so
+        the caller MUST flag it (never silently treat it as not-placed).
 
-        VERIFY-ON-LIVE: the exact response shape (`orderId` field) is grounded
-        against docs; confirm the field name on the first real placement.
+        Response shape (CONFIRMED live, report c8a426d): the docs show a dict
+        `{"orderId": ...}` but the live `/tpsl/place_order` returned a LIST
+        `[{"orderId": ...}]`. `_extract_tpsl_order_id` parses both defensively.
         """
         if self._stub or not self._client:
             raise NotImplementedError(
@@ -1935,23 +1970,53 @@ class BitunixBroker(Broker):
             "tpOrderType": tp_order_type,
             "tpOrderPrice": _amount_str(tp_price),
         }
+        idempotent_dup = False
         try:
             data = await self._request(
                 "POST", "/api/v1/futures/tpsl/place_order", body=body,
             )
         except BitunixAPIError as e:
             if e.code in _IDEMPOTENT_OK_CODES:
+                # Duplicate of an already-resting leg (prior attempt). Known to be
+                # on the venue — not a surprise order; no untracked risk.
                 data = {}
+                idempotent_dup = True
             else:
                 raise
-        venue_order_id = (data or {}).get("orderId")
-        log.info(
-            "BitUnix tpsl/place_order: venue_order_id=%s positionId=%s "
-            "%s tpPrice=%s tpQty=%s",
-            venue_order_id, position_id, wire,
-            body["tpPrice"], body["tpQty"],
+        # Defensive parse: docs show a dict {"orderId": ...} but the LIVE endpoint
+        # returned a LIST [{"orderId": ...}] (report c8a426d). Tolerate both.
+        venue_order_id = _extract_tpsl_order_id(data)
+        if venue_order_id:
+            log.info(
+                "BitUnix tpsl/place_order: venue_order_id=%s positionId=%s "
+                "%s tpPrice=%s tpQty=%s",
+                venue_order_id, position_id, wire,
+                body["tpPrice"], body["tpQty"],
+            )
+            return venue_order_id
+        if idempotent_dup:
+            log.warning(
+                "BitUnix tpsl/place_order: idempotent duplicate accepted (leg "
+                "already resting from a prior attempt) positionId=%s %s tpPrice=%s "
+                "tpQty=%s — no orderId returned",
+                position_id, wire, body["tpPrice"], body["tpQty"],
+            )
+            return ""
+        # POST was ACCEPTED (code 0) but no orderId could be extracted from an
+        # unexpected response shape. The leg has very likely RESTED on the venue
+        # but we could not capture its id. Do NOT return "" as if nothing was
+        # placed — the reconciler is position-level and will not catch a stray TP
+        # order. Log loudly + RAISE so the caller flags it for reconciliation.
+        log.error(
+            "BitUnix tpsl/place_order: POST accepted but NO orderId in response "
+            "%r — TP leg may be RESTING UNTRACKED (positionId=%s %s tpPrice=%s "
+            "tpQty=%s); flagging for reconciliation",
+            data, position_id, wire, body["tpPrice"], body["tpQty"],
         )
-        return str(venue_order_id) if venue_order_id else ""
+        raise BitunixUntrackedTpslOrder(
+            position_id=str(position_id), symbol=wire,
+            tp_price=body["tpPrice"], tp_qty=body["tpQty"], raw_response=data,
+        )
 
     async def place_position_tpsl(
         self,

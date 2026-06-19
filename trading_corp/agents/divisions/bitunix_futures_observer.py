@@ -43,6 +43,7 @@ from trading_corp.brokers.bitunix_exceptions import (
     BitunixStaleSnapshot,
     BitunixStuckOrderCancelFailed,
     BitunixStuckOrderCancelled,
+    BitunixUntrackedTpslOrder,
 )
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
@@ -3421,6 +3422,15 @@ class BitunixFuturesObserver:
             return
 
         # ── Place each TP leg via the native tpsl endpoint ───────────────────
+        # Record each leg's venue id IMMEDIATELY on placement. Three outcomes:
+        #   * id returned         → tracked in tp_order_ids.
+        #   * clean failure       → bracket_tp_leg_failed (POST did NOT rest an
+        #                           order; B1 + Position SL still guard).
+        #   * POST hit the venue  → bracket_tp_leg_untracked: the leg may be
+        #     but id uncaptured     RESTING UNTRACKED — flagged LOUDLY for
+        #                           reconciliation, NEVER silently swallowed (the
+        #                           reconciler is position-level and won't catch a
+        #                           stray TP order). This is the Section-B hardening.
         tp_order_ids: dict[str, str] = {}
         for leg in legs:
             try:
@@ -3430,7 +3440,20 @@ class BitunixFuturesObserver:
                     tp_price=leg.price,
                     tp_qty=leg.qty,
                 )
-                tp_order_ids[leg.leg] = vid
+            except BitunixUntrackedTpslOrder as e:
+                log.error(
+                    "bitunix_observer: bracket %s leg may be RESTING UNTRACKED "
+                    "(POST reached venue, id uncaptured) — reconcile needed: %s",
+                    leg.leg, e,
+                )
+                self.logger_agent.log_event(
+                    actor="bitunix_futures", kind="bracket_tp_leg_untracked",
+                    payload={"order_id": order.id, "leg": leg.leg,
+                             "price": leg.price, "qty": leg.qty,
+                             "position_id": position_id,
+                             "error": str(e), "error_type": type(e).__name__},
+                )
+                continue
             except Exception as e:
                 log.error(
                     "bitunix_observer: bracket %s leg place FAILED (SL still "
@@ -3441,6 +3464,18 @@ class BitunixFuturesObserver:
                     payload={"order_id": order.id, "leg": leg.leg,
                              "price": leg.price, "qty": leg.qty,
                              "error": str(e), "error_type": type(e).__name__},
+                )
+                continue
+            if vid:
+                tp_order_ids[leg.leg] = vid
+            else:
+                # Empty id WITHOUT an exception = idempotent duplicate (the leg is
+                # already resting from a prior attempt; the broker logged it). Not
+                # a new order — don't count it, but don't silently lose it either.
+                log.warning(
+                    "bitunix_observer: bracket %s leg returned no id (idempotent "
+                    "duplicate / already resting) — not counted as a new leg",
+                    leg.leg,
                 )
 
         # ── Place the managed auto-reducing whole-position SL ────────────────
