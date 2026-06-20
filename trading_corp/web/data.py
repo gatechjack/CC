@@ -1281,49 +1281,103 @@ def _positions_from_snap(snap: Any) -> list[Any]:
 # ── Paper-trade summary (Phase C of would_have_placed enrichment) ────────
 
 
-def paper_trade_summary(db_url: str, division: str) -> dict:
-    """Per-division paper-trade win-rate summary for the dashboard panel.
+def _get_metrics_epoch(db_url: str, agent: str) -> str | None:
+    """Read agent_state(<agent>, metrics_epoch), ISO-8601-validated.
 
-    Returns a dict shaped:
-      {
-        "division": "<slug>",
-        "windows": [
-          {"label": "7d",  "rows": [...]},
-          {"label": "30d", "rows": [...]},
-          {"label": "all", "rows": [...]},
-        ],
-        "totals": {
-          "7d":  {"n": N, "wins": W, "losses": L, "expired": E,
-                  "open": O, "win_rate_pct": float, "sim_pnl": $, ...},
-          "30d": {...},
-          "all": {...},
-        },
-      }
+    Mirrors `_get_polymarket_metrics_epoch` but keyed by the caller's
+    agent/division slug so each division owns its own epoch. Returns the
+    stored ISO string verbatim if it parses, else None ("no epoch set" →
+    unbounded / all-time). Validation is mandatory: the value is bound into
+    SQL downstream, so anything that escapes `datetime.fromisoformat`
+    becomes injection surface (we still bind it as a parameter, not an
+    f-string, but the typecheck is cheap defense-in-depth + keeps a
+    garbage value from silently scoping the panel to nothing).
 
-    `pre_phase_a` rows are excluded from win-rate math (we have no TP/SL
-    on them, so they're not part of the "what would my track record
-    look like?" answer). They're still counted in the raw row count
-    under `n_pre_phase_a` for transparency.
+    Set at runtime with a single INSERT (no redeploy):
+        agent_state(<division>, 'metrics_epoch', '<ISO-8601>')
+    Revert to all-time by deleting that row.
     """
+    try:
+        rec = db.load_agent_state(agent, "metrics_epoch", db_url=db_url)
+    except Exception as e:
+        log.debug("metrics_epoch load failed for %s: %s", agent, e)
+        return None
+    if rec is None:
+        return None
+    val = rec[0]
+    if not isinstance(val, str) or not val:
+        return None
+    try:
+        datetime.fromisoformat(val)
+    except (TypeError, ValueError):
+        log.warning(
+            "metrics_epoch %r for %s failed ISO-8601 parse — treating as unset",
+            val, agent,
+        )
+        return None
+    return val
+
+
+def _ptr_window_totals(
+    db_url: str, division: str, *, live: bool, epoch_iso: str | None,
+) -> tuple[list[dict], dict]:
+    """Win-rate windows (7d/30d/all) over `paper_trade_record` for ONE
+    execution_mode slice.
+
+      - `live=False`: PAPER/sim rows (`execution_mode != 'live'`), unbounded.
+      - `live=True`:  real-fill LIVE rows (`execution_mode = 'live'`),
+        additionally scoped to `result_ts >= epoch_iso` when an epoch is set
+        (the forward clean-booking window; `None` = all-time).
+
+    Splitting by execution_mode is the correctness fix: a blended paper+live
+    win-rate is meaningless once a division trades live. The epoch is applied
+    to the LIVE slice ONLY — paper has never been ledger-contaminated by the
+    live booking bugs (D1 double-book / P2 mislabel / maker-taker), so it
+    stays unbounded. Boundary is `result_ts` (scope by resolution → open rows
+    naturally drop out of the resolved aggregate once an epoch is set).
+    `epoch_iso` is bound as a SQL parameter (not interpolated)."""
     cutoffs = {
         "7d":  (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),
         "30d": (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(),
         "all": "1970-01-01T00:00:00+00:00",
     }
-    out = {"division": division, "windows": [], "totals": {}}
+    # COALESCE guards any legacy NULL execution_mode (pre-migration rows →
+    # treated as paper, never as live).
+    mode_sql = (
+        "COALESCE(execution_mode, 'paper') = 'live'" if live
+        else "COALESCE(execution_mode, 'paper') != 'live'"
+    )
+    windows: list[dict] = []
+    totals: dict = {}
     for label, cutoff in cutoffs.items():
-        rows = _query(
-            db_url,
-            """SELECT tier, result,
-                      COUNT(*) AS n,
-                      COALESCE(SUM(actual_pnl_dollars), 0) AS sim_pnl
-               FROM paper_trade_record
-               WHERE division = ? AND ts >= ?
-               GROUP BY tier, result
-               ORDER BY tier ASC""",
-            (division, cutoff),
-        )
-        out["windows"].append({"label": label, "rows": rows})
+        if live:
+            # `(? IS NULL OR result_ts >= ?)` → epoch None binds a no-op;
+            # epoch set excludes pre-epoch AND still-open (result_ts NULL) rows.
+            rows = _query(
+                db_url,
+                f"""SELECT tier, result,
+                          COUNT(*) AS n,
+                          COALESCE(SUM(actual_pnl_dollars), 0) AS sim_pnl
+                   FROM paper_trade_record
+                   WHERE division = ? AND {mode_sql} AND ts >= ?
+                     AND (? IS NULL OR result_ts >= ?)
+                   GROUP BY tier, result
+                   ORDER BY tier ASC""",
+                (division, cutoff, epoch_iso, epoch_iso),
+            )
+        else:
+            rows = _query(
+                db_url,
+                f"""SELECT tier, result,
+                          COUNT(*) AS n,
+                          COALESCE(SUM(actual_pnl_dollars), 0) AS sim_pnl
+                   FROM paper_trade_record
+                   WHERE division = ? AND {mode_sql} AND ts >= ?
+                   GROUP BY tier, result
+                   ORDER BY tier ASC""",
+                (division, cutoff),
+            )
+        windows.append({"label": label, "rows": rows})
 
         wins = sum(r["n"] for r in rows if r["result"] == "win")
         losses = sum(r["n"] for r in rows if r["result"] == "loss")
@@ -1333,7 +1387,7 @@ def paper_trade_summary(db_url: str, division: str) -> dict:
         decided = wins + losses
         total_n = sum(r["n"] for r in rows)
         sim_pnl = sum(r["sim_pnl"] or 0.0 for r in rows)
-        out["totals"][label] = {
+        totals[label] = {
             "n": total_n,
             "wins": wins,
             "losses": losses,
@@ -1343,7 +1397,56 @@ def paper_trade_summary(db_url: str, division: str) -> dict:
             "win_rate_pct": (100.0 * wins / decided) if decided else None,
             "sim_pnl": round(sim_pnl, 2),
         }
-    return out
+    return windows, totals
+
+
+def paper_trade_summary(db_url: str, division: str) -> dict:
+    """Per-division win-rate summary for the dashboard, SPLIT by execution_mode.
+
+    Returns a dict shaped:
+      {
+        "division": "<slug>",
+        # PAPER/sim slice (execution_mode != 'live'), unbounded — these keys
+        # are backward-compatible with the existing template + every
+        # paper-only division (which renders identically to before).
+        "windows": [{"label": "7d"|"30d"|"all", "rows": [...]}, ...],
+        "totals":  {"7d": {...}, "30d": {...}, "all": {...}},
+        # LIVE slice (execution_mode = 'live'), scoped forward from the
+        # division's metrics epoch (result_ts >= agent_state(<div>,
+        # 'metrics_epoch'); absent = all-time).
+        "live_windows": [...],
+        "live_totals":  {...},
+        "has_live":      bool,        # gates the live panel
+        "metrics_epoch": "<ISO>"|None # drives the "since <date>" label
+      }
+
+    WHY THE SPLIT: pre-split this aggregated ALL rows into one win-rate,
+    blending paper-sim trades with real live fills (a meaningless number
+    once a division trades live — e.g. the bitunix panel was paper+live
+    mashed). The epoch keeps the LIVE numbers on correctly-booked data
+    once it's set at the post-D1 cutover; until then the live panel shows
+    all-time live (flagged in the label as pre-fix-inclusive). Paper stays
+    unbounded — it was never ledger-contaminated by the live booking bugs.
+
+    `pre_phase_a` rows are excluded from win-rate math (no TP/SL on them);
+    still counted under `n_pre_phase_a` for transparency.
+    """
+    epoch_iso = _get_metrics_epoch(db_url, division)
+    paper_windows, paper_totals = _ptr_window_totals(
+        db_url, division, live=False, epoch_iso=None,
+    )
+    live_windows, live_totals = _ptr_window_totals(
+        db_url, division, live=True, epoch_iso=epoch_iso,
+    )
+    return {
+        "division": division,
+        "windows": paper_windows,
+        "totals": paper_totals,
+        "live_windows": live_windows,
+        "live_totals": live_totals,
+        "has_live": bool(live_totals.get("all", {}).get("n")),
+        "metrics_epoch": epoch_iso,
+    }
 
 
 # ── Trade flow ────────────────────────────────────────────────────────────

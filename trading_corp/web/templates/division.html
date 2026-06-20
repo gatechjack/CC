@@ -297,6 +297,55 @@
     </section>
     {% endif %}
 
+    <!-- Live-trade win rate (real exchange fills; separate from the paper/
+         simulated panel above). Scoped forward from the division's metrics
+         epoch once set. Renders only for divisions with live rows. -->
+    {% if view.paper_trade_summary and view.paper_trade_summary.has_live %}
+    <section class="bg-pane border border-edge rounded-lg p-4">
+      <header class="flex items-baseline justify-between mb-3">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Live-trade win rate</h2>
+        <span class="text-[11px] text-muted font-mono">
+          real exchange fills — separate from the paper/simulated panel
+        </span>
+      </header>
+      <div class="grid grid-cols-3 gap-3">
+        {% for window in ['7d', '30d', 'all'] %}
+          {% set t = view.paper_trade_summary.live_totals[window] %}
+          <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+            <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+              {{ window }}
+            </div>
+            <div class="text-2xl font-mono font-semibold
+                  {% if t.win_rate_pct is none %}text-muted
+                  {% elif t.win_rate_pct >= 50 %}text-gain
+                  {% else %}text-loss{% endif %}">
+              {% if t.win_rate_pct is none %}—{% else %}{{ '%.0f'|format(t.win_rate_pct) }}%{% endif %}
+            </div>
+            <div class="text-[11px] text-muted font-mono mt-1">
+              {{ t.wins }}W / {{ t.losses }}L / {{ t.expired }}E
+              {% if t.open %}({{ t.open }} open){% endif %}
+            </div>
+            <div class="text-[11px] font-mono mt-2
+                  {% if t.sim_pnl > 0 %}text-gain{% elif t.sim_pnl < 0 %}text-loss{% else %}text-muted{% endif %}">
+              realized P&amp;L: ${{ '%.2f'|format(t.sim_pnl) }}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      {% if view.paper_trade_summary.metrics_epoch %}
+        <div class="text-[10px] text-muted/70 font-mono mt-3"
+             title="Live metrics scoped forward from the post-fix epoch. Pre-epoch rows remain in the DB, excluded from this panel.">
+          since {{ view.paper_trade_summary.metrics_epoch.split('T')[0] }} · current logic only
+        </div>
+      {% else %}
+        <div class="text-[10px] text-amber-400/80 font-mono mt-3"
+             title="No metrics epoch set yet — live numbers still include pre-fix bookings (D1 double-book, P2 mislabels). The epoch is set at the D1 cutover.">
+          all-time · epoch not set (includes pre-fix bookings)
+        </div>
+      {% endif %}
+    </section>
+    {% endif %}
+
     <!-- Recent activity -->
     <section class="bg-pane border border-edge rounded-lg p-4">
       <header class="flex items-baseline justify-between mb-3">

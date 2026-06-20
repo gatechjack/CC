@@ -25,7 +25,9 @@ from trading_corp.agents.paper_trade_replay import (
     mark_pre_phase_a_rows,
     replay_pending_paper_trades_async,
 )
-from trading_corp.persistence.db import connect, init_db, insert_paper_trade_record
+from trading_corp.persistence.db import (
+    connect, init_db, insert_paper_trade_record, set_agent_state,
+)
 from trading_corp.persistence.models import PaperTradeRecord, ProposedOrder
 
 
@@ -357,6 +359,72 @@ def test_paper_trade_summary_other_division_returns_zero_n(tmp_db):
     summary = paper_trade_summary(tmp_db, "robinhood_pmcc")
     assert summary["totals"]["all"]["n"] == 0
     assert summary["totals"]["all"]["win_rate_pct"] is None
+
+
+def test_paper_trade_summary_splits_paper_vs_live_and_scopes_live_by_epoch(tmp_db):
+    """Metrics-epoch correctness fix: paper_trade_summary must NOT blend
+    paper-sim and live rows into one win-rate. `totals` = paper-only
+    (unbounded); `live_totals` = live-only, scoped forward from the
+    division's metrics epoch (agent_state result_ts boundary). Paper stays
+    unbounded regardless of the epoch."""
+    from trading_corp.web.data import paper_trade_summary
+
+    init_db(tmp_db)
+    now = datetime.now(timezone.utc)
+
+    def insert(order_id, *, result, pnl, mode, entry_days_ago,
+               resolved_days_ago=None):
+        ts = (now - timedelta(days=entry_days_ago)).isoformat(timespec="seconds")
+        rts = (
+            (now - timedelta(days=resolved_days_ago)).isoformat(timespec="seconds")
+            if resolved_days_ago is not None else None
+        )
+        rec = PaperTradeRecord(
+            order_id=order_id, ts=ts, strategy="bitunix_futures",
+            division="bitunix_futures", symbol="BTC/USDT.P", side="sell",
+            qty=0.001, tier="PREMIUM", entry_reference_price=95.0,
+            stop_price=100.0, tp_price=90.0, tp_r_multiple=3.0,
+            expected_loss=-10.0, expected_gain=30.0, rr_ratio=3.0,
+            max_hold_seconds=86400, result=result, result_ts=rts,
+            actual_pnl_dollars=pnl, execution_mode=mode,
+        )
+        insert_paper_trade_record(rec.to_db_row(), db_url=tmp_db)
+
+    # Paper slice: 1W / 1L (unbounded; never epoch-scoped).
+    insert("p_win", result="win", pnl=2.0, mode="paper", entry_days_ago=1,
+           resolved_days_ago=1)
+    insert("p_loss", result="loss", pnl=-1.0, mode="paper", entry_days_ago=2,
+           resolved_days_ago=2)
+    # Live slice: 2 recent wins + 1 OLD loss (resolved 60d ago).
+    insert("l_win1", result="win", pnl=5.0, mode="live", entry_days_ago=2,
+           resolved_days_ago=1)
+    insert("l_win2", result="win", pnl=3.0, mode="live", entry_days_ago=3,
+           resolved_days_ago=2)
+    insert("l_loss_old", result="loss", pnl=-4.0, mode="live",
+           entry_days_ago=65, resolved_days_ago=60)
+
+    # ── No epoch set: split holds, live shows all 3 (2W/1L), paper is 1W/1L. ──
+    s = paper_trade_summary(tmp_db, "bitunix_futures")
+    assert s["metrics_epoch"] is None
+    assert s["has_live"] is True
+    # paper slice excludes the live rows (the blend bug would show 3W/2L here)
+    assert s["totals"]["all"]["wins"] == 1 and s["totals"]["all"]["losses"] == 1
+    assert s["totals"]["all"]["n"] == 2
+    # live slice excludes the paper rows
+    assert s["live_totals"]["all"]["wins"] == 2
+    assert s["live_totals"]["all"]["losses"] == 1
+    assert s["live_totals"]["all"]["win_rate_pct"] == pytest.approx(2 / 3 * 100, rel=1e-3)
+
+    # ── Epoch set to 30d ago: live drops the 60d-old loss; paper unchanged. ──
+    epoch = (now - timedelta(days=30)).isoformat()
+    set_agent_state("bitunix_futures", "metrics_epoch", epoch, db_url=tmp_db)
+    s2 = paper_trade_summary(tmp_db, "bitunix_futures")
+    assert s2["metrics_epoch"] == epoch
+    assert s2["live_totals"]["all"]["wins"] == 2
+    assert s2["live_totals"]["all"]["losses"] == 0           # old loss excluded
+    assert s2["live_totals"]["all"]["win_rate_pct"] == 100.0
+    # paper is unbounded — the epoch never touches it
+    assert s2["totals"]["all"]["wins"] == 1 and s2["totals"]["all"]["losses"] == 1
 
 
 @pytest.mark.asyncio
