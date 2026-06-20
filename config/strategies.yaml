@@ -1031,6 +1031,15 @@ bitunix_futures:
   staleness_gate:
     enabled: true                  # safety gate ON; set false to disable (current pre-C behavior)
     margin_seconds: 120            # threshold = bar_interval_seconds + this; 3m bar → 180+120 = 300s
+  # D4 (2026-06-20) — concurrent-position guard. Blocks a NEW entry when the bot
+  # already holds an open same-symbol SAME-SIDE position it opened (the netting
+  # root cause behind the 2026-06-20 bot-on-bot stack). VENUE-authoritative +
+  # engine-corroborated, fail-closed on an unknown venue read. Same-side only:
+  # a close-and-reverse or any reduce-only/flatten is never gated. Manual /
+  # not-bot-opened positions stay the reconciler orphan-halt's job. Ships OFF;
+  # flip enabled->true DELIBERATELY after ONE clean validation trade.
+  concurrent_position_guard:
+    enabled: false
   division: bitunix_futures
   symbol: "BTC/USDT.P"              # canonical perp symbol; whitelist BTC-only Phase 3
   counter_tier_enabled: false       # COUNTER (fade-the-trend) defaults OFF

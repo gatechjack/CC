@@ -548,6 +548,13 @@ class BitunixFuturesObserver:
         # strategies.yaml + main.py wiring. ENTRY-ONLY (exits never gated).
         staleness_gate_enabled: bool = False,
         staleness_margin_seconds: float = 120.0,
+        # D4 (2026-06-20) — concurrent-position guard. When enabled, blocks a
+        # NEW entry if the bot already holds an open same-symbol SAME-SIDE
+        # position IT opened (the netting root cause). Default OFF so every
+        # existing caller/test keeps current behavior; ships OFF via
+        # strategies.yaml until validated. Same-side only (a close-and-reverse
+        # or any reduce-only/flatten is never gated).
+        concurrent_position_guard_enabled: bool = False,
     ) -> None:
         self.db_url = db_url
         self.risk_agent = risk_agent
@@ -569,6 +576,10 @@ class BitunixFuturesObserver:
         # C — staleness-reject gate (entry freshness). Defaults OFF.
         self.staleness_gate_enabled = bool(staleness_gate_enabled)
         self.staleness_margin_seconds = float(staleness_margin_seconds)
+        # D4 — concurrent-position guard (same-side, bot's-own). Defaults OFF.
+        self.concurrent_position_guard_enabled = bool(
+            concurrent_position_guard_enabled
+        )
         # Normalize the gate mode to one of the three known values.
         self.htf_gate_mode = (
             htf_gate_mode.lower() if isinstance(htf_gate_mode, str) else "off"
@@ -1716,6 +1727,28 @@ class BitunixFuturesObserver:
             return
         if risk_verdict.verdict == "resize" and risk_verdict.new_qty is not None:
             order.qty = float(risk_verdict.new_qty)
+
+        # ── D4: concurrent-position guard (same-side, bot's-own) ──
+        # Block PLACEMENT of a new entry when the bot already holds an open
+        # same-symbol SAME-SIDE position IT opened (netting root cause,
+        # 2026-06-20). Placed AFTER the risk gate + flatten dispatch (a
+        # drawdown-flatten still fires) and BEFORE _record_placement_outcome →
+        # _place_live, so B1/bracket are never reached when blocked. VENUE-
+        # authoritative + engine-corroborated, fail-closed on unknown venue.
+        # Dormant unless enabled via strategies.yaml. Same-side only → a
+        # close-and-reverse (opposite side) and reduce-only/flatten are
+        # unaffected; the manual/not-bot-opened case is the orphan-halt's job.
+        _cpg_blocked, _cpg_info = self._concurrent_position_guard_verdict(
+            snap, order.symbol, order.side,
+        )
+        if _cpg_blocked:
+            self._log_score_decision(
+                payload, verdict_score, "blocked_concurrent_position",
+                note=_cpg_info.get("reason", "concurrent_position_guard"),
+                order_id=order.id,
+            )
+            await self._notify_concurrent_position_block(order, _cpg_info)
+            return
 
         # ── paper-mode placement ──
         # Pre-helper mutations on the order so the canonical helper sees
@@ -3851,6 +3884,20 @@ class BitunixFuturesObserver:
         if verdict_risk.verdict == "resize" and verdict_risk.new_qty is not None:
             order.qty = float(verdict_risk.new_qty)
 
+        # ── D4: concurrent-position guard (same-side, bot's-own) — see the
+        # score path for the full rationale. AFTER risk+flatten, BEFORE place. ──
+        _cpg_blocked, _cpg_info = self._concurrent_position_guard_verdict(
+            snap, order.symbol, order.side,
+        )
+        if _cpg_blocked:
+            self._log_decision(
+                verdict, original_payload, "blocked_concurrent_position",
+                note=_cpg_info.get("reason", "concurrent_position_guard"),
+                order_id=order.id,
+            )
+            await self._notify_concurrent_position_block(order, _cpg_info)
+            return
+
         # ── Place (paper-mode auto-execute via data_exec) ────────────
         # No HITL approval gate per board direction (memory
         # `trading_corp_bitunix_phase3_confluence_model`). Risk caps are
@@ -3901,6 +3948,133 @@ class BitunixFuturesObserver:
                 await self.telegram_channel.push(msg)
             except Exception as e:
                 log.warning("bitunix_observer: telegram push failed: %s", e)
+
+    def _concurrent_position_guard_verdict(
+        self, snap: Any, new_symbol: str, new_side: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """D4 concurrent-position guard — block a new SAME-SIDE entry the bot
+        would STACK onto its own open position (the 2026-06-20 netting root
+        cause). Returns ``(blocked, info)``.
+
+        Rule (Board-ruled): block iff the VENUE shows an open same-symbol
+        SAME-SIDE position (authoritative, necessary) AND the bot holds a
+        tracked open same-side live row (corroborates it is the bot's OWN — the
+        manual / not-bot-opened case is owned by the reconciler orphan-halt,
+        NOT D4). Same-side only → a close-and-reverse (opposite side) and any
+        reduce-only/flatten are never blocked.
+
+        Fail-CLOSED: an unknown/incomplete VENUE read (no snapshot, equity not
+        complete, positions unavailable) BLOCKS — it never inherits the
+        ``get_pending_positions`` error->[] "looks flat" convention. A complete
+        venue read showing no same-side position never blocks, even if the
+        engine DB row still lags ``result IS NULL`` after a manual close.
+
+        Dormant (returns not-blocked) when disabled — the default.
+        """
+        if not self.concurrent_position_guard_enabled:
+            return (False, {})
+        # Reuse the reconciler's exact (symbol, side) normalization so D4 and
+        # the orphan-halt partition the space identically. Local import avoids
+        # any import cycle in the reconciler ↔ observer wiring.
+        from trading_corp.agents.divisions.bitunix_position_reconciler import (
+            _load_tracked_live_rows,
+            _broker_side,
+            _match_symbol_key,
+        )
+        sym_key = _match_symbol_key(new_symbol or "")
+        # ── Fail-closed: the VENUE read must be complete + trustworthy. The
+        # BitUnix snapshot NEVER caches a partial (an errored position read is
+        # incomplete), and the entry path already abstained on an incomplete
+        # equity read upstream — so this is belt-and-suspenders. equity_complete
+        # defaults True for snapshot types that don't carry it (paper) so paper
+        # is not spuriously blocked; positions=None / snap=None ⇒ UNKNOWN ⇒ block.
+        positions = getattr(snap, "positions", None)
+        if (
+            snap is None
+            or positions is None
+            or not getattr(snap, "equity_complete", True)
+        ):
+            return (True, {
+                "reason": "venue_state_unknown_fail_closed",
+                "symbol": new_symbol, "side": new_side, "source": "unknown",
+            })
+        # ── Authoritative: VENUE same-symbol SAME-SIDE open position? ──
+        venue_match = None
+        for p in positions:
+            try:
+                p_qty = float(getattr(p, "qty", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if p_qty == 0.0:
+                continue
+            if _match_symbol_key(getattr(p, "symbol", "")) != sym_key:
+                continue
+            if _broker_side(p_qty) != new_side:
+                continue
+            venue_match = p
+            break
+        if venue_match is None:
+            # Venue flat for this (symbol, side) → never block (covers the
+            # post-manual-close lag where the engine row may still read open).
+            return (False, {})
+        # ── Corroborate: is the venue position the bot's OWN? A venue-open
+        # same-side position with NO tracked bot row is a manual/orphan case
+        # owned by the reconciler orphan-halt (reactive) — D4 does NOT
+        # duplicate it. (If the engine read transiently fails it returns [], so
+        # D4 defers to the orphan-halt here; never a permanent fail-open.)
+        bot_owns = False
+        for t in _load_tracked_live_rows(self.db_url):
+            if _match_symbol_key(t.get("symbol", "")) != sym_key:
+                continue
+            if t.get("side") != new_side:
+                continue
+            bot_owns = True
+            break
+        if not bot_owns:
+            return (False, {})
+        return (True, {
+            "reason": "bot_own_same_side_position_open",
+            "symbol": new_symbol, "side": new_side, "source": "venue+engine",
+            "venue_qty": abs(float(getattr(venue_match, "qty", 0.0) or 0.0)),
+        })
+
+    async def _notify_concurrent_position_block(
+        self, order: Any, info: dict[str, Any],
+    ) -> None:
+        """Emit the dedicated guard audit + a Telegram notify when D4 blocks an
+        entry (ruling 4 — a silent block is indistinguishable from no-signal).
+        Both best-effort; failures are logged, never raised."""
+        try:
+            self.logger_agent.log_event(
+                actor="bitunix_futures",
+                kind="concurrent_position_guard_blocked",
+                payload={
+                    "strategy": "bitunix_futures",
+                    "division": "bitunix_futures",
+                    "order_id": getattr(order, "id", None),
+                    "symbol": info.get("symbol"),
+                    "side": info.get("side"),
+                    "reason": info.get("reason"),
+                    "source": info.get("source"),
+                    "venue_qty": info.get("venue_qty"),
+                },
+            )
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: concurrent_position_guard audit failed: %s", e,
+            )
+        if self.telegram_channel is not None:
+            try:
+                await self.telegram_channel.push(
+                    "⛔ BTC-PERP entry BLOCKED — concurrent-position guard\n"
+                    f"reason: {info.get('reason')}\n"
+                    f"already holding {info.get('side')} {info.get('symbol')}"
+                    f" (venue qty {info.get('venue_qty')}); same-side stack skipped."
+                )
+            except Exception as e:
+                log.warning(
+                    "bitunix_observer: concurrent_position_guard notify failed: %s", e,
+                )
 
     @staticmethod
     def _format_telegram_message(

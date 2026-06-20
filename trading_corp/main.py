@@ -419,6 +419,7 @@ async def run(argv: list[str] | None = None) -> int:
     _execution_mode = "paper"       # Stage-1 N+1 — fail-closed default if YAML load fails
     _staleness_enabled = False      # C — staleness-reject gate; OFF if YAML load fails
     _staleness_margin_s = 120.0     # C — additive margin (s) on top of the bar interval
+    _concurrent_guard_enabled = False  # D4 — concurrent-position guard; OFF if YAML load fails
     try:
         import yaml as _yaml
         from pathlib import Path as _Path
@@ -443,6 +444,10 @@ async def run(argv: list[str] | None = None) -> int:
         _stale_block = _bx_block.get("staleness_gate") or {}
         _staleness_enabled = bool(_stale_block.get("enabled", False))
         _staleness_margin_s = float(_stale_block.get("margin_seconds", 120.0))
+        # D4 — concurrent-position guard. Blocks a new entry while the bot
+        # already holds a same-symbol same-side position it opened. Default OFF.
+        _cpg_block = _bx_block.get("concurrent_position_guard") or {}
+        _concurrent_guard_enabled = bool(_cpg_block.get("enabled", False))
         # PR 4 — adaptive trade plan + fees. Activated only when
         # `bitunix_futures.trade_plan.enabled: true` in YAML. Default
         # (block missing or enabled=false) leaves the legacy geometric
@@ -482,6 +487,9 @@ async def run(argv: list[str] | None = None) -> int:
         "BitUnix staleness-reject gate (C): enabled=%s margin_s=%.0f",
         _staleness_enabled, _staleness_margin_s,
     )
+    log.info(
+        "BitUnix concurrent-position guard (D4): enabled=%s", _concurrent_guard_enabled,
+    )
     bitunix_observer = BitunixFuturesObserver(
         db_url=secrets.db_url,
         risk_agent=risk_agent,
@@ -510,6 +518,9 @@ async def run(argv: list[str] | None = None) -> int:
         # Shipped ON via strategies.yaml; rejects entries on a too-old bar.
         staleness_gate_enabled=_staleness_enabled,
         staleness_margin_seconds=_staleness_margin_s,
+        # D4 — concurrent-position guard (same-side, bot's-own). Ships OFF;
+        # flip ON via strategies.yaml after one clean validation trade.
+        concurrent_position_guard_enabled=_concurrent_guard_enabled,
         # telegram_channel attached after channel is constructed (below)
     )
 
