@@ -12,7 +12,21 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
-## P2 — `backtest_bitunix_confluence.py` five_factor/coinbase machinery MISSING from git (prod-vs-git drift)
+## P2 — `backtest_bitunix_confluence.py` five_factor/coinbase machinery MISSING from git (prod-vs-git drift) — ✅ RESOLVED 2026-06-20 (commit `2659c81`)
+
+**RESOLVED 2026-06-20 via surgical recovery — commit `2659c81` (merged to main this session).** Root cause was
+NOT prod-vs-git drift (prod also lacked the files; backtest scripts aren't deployed to prod): it was a
+**commit-omission** — `861bf90` ("persist BitUnix backtest tooling") landed the tests + analysis scripts but
+omitted the impl files, which survived only on the 2026-05-19 backup snapshot `c4e47a7` ("do not merge" WIP).
+Recovered per-file (NOT a branch merge): `bitunix_confluence_gate.py` (net-new), `_ta_helpers.py` (net-new —
+a transitive dep the original 3-file scope missed, surfaced by running the test), `bitunix_price_context.py`
+(additive hand-port — live-path file, existing functions byte-untouched), and `_resample_to_3m/5m/15m` in
+`backtest_btc_accumulator.py` (pure-additive). The 3 RED-at-collection tests now pass (78 green); observer
+suite 53/53 (no live-path regression). Investigation: `Desktop/bitunix_reports/2026-06-20_backtest_five_factor_gitdrift.md`.
+
+---
+
+_Original report (for history):_
 
 Surfaced 2026-06-14 during the PA-redeem-cap engine build. `scripts/backtest_bitunix_confluence.py`
 was **unimportable on main `32e7fb4`** (and current main) — it imports + calls THREE things that are
