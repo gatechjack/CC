@@ -243,6 +243,7 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
 
     return {
         "mode": mode,
+        "rule_colors": dict(RULE_COLORS),     # stop/drift/guard/time -> hex (4-cell strip)
         "account": account,
         "health": health,
         "funnel": funnel,
