@@ -66,7 +66,8 @@ def test_build_pead_view_graceful_when_division_unwired(tmp_path):
     init_db(url)
     deps = SimpleNamespace(db_url=url, data_exec=None)
     view = asyncio.run(build_pead_view(deps, today=_TODAY))
-    assert view["mode"] == {"paper": True, "label": "PAPER", "wired": False}
+    assert view["mode"] == {"paper": True, "label": "PAPER", "wired": False,
+                            "halted": False, "halt_reason": None}
     assert view["book"] == []
     assert view["funnel"]["scanned"] == 0
     assert view["rejections"]["reconciles"] is True   # 0 - 0 == 0
@@ -74,3 +75,15 @@ def test_build_pead_view_graceful_when_division_unwired(tmp_path):
     assert view["attribution"]["empty"] is True
     assert view["edge"]["empty"] and view["equity"]["empty"]
     assert view["account"]["equity"] is None
+
+
+def test_build_pead_view_reflects_durable_halt(tmp_path):
+    from trading_corp.persistence.db import set_agent_state
+    url = f"sqlite:///{tmp_path / 't.db'}"
+    init_db(url)
+    set_agent_state("robinhood_pead", "halt",
+                    {"halted": True, "reason": "dashboard_kill_switch"}, db_url=url)
+    deps = SimpleNamespace(db_url=url, data_exec=None)
+    view = asyncio.run(build_pead_view(deps, today=_TODAY))
+    assert view["mode"]["halted"] is True
+    assert view["mode"]["halt_reason"] == "dashboard_kill_switch"

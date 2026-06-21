@@ -22,7 +22,7 @@ from trading_corp.agents.strategies.pead_pressures import (
     primitives_from_extra,
     stop_level,
 )
-from trading_corp.persistence.db import connect
+from trading_corp.persistence.db import connect, load_agent_state
 from trading_corp.persistence.pead_observability import (
     load_feed_status,
     scan_rejection_tally,
@@ -189,10 +189,14 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
     if getattr(deps, "data_exec", None) is not None:
         broker = getattr(deps.data_exec, "brokers", {}).get(DIVISION)
 
-    # mode (paper vs live) — the UNMISSABLE pill
+    # mode (paper vs live) — the UNMISSABLE pill; + durable kill-switch halt
     is_paper = bool(getattr(broker, "paper", True)) if broker is not None else True
+    halt_rec = load_agent_state(DIVISION, "halt", db_url=db_url)
+    halt = halt_rec[0] if (halt_rec and isinstance(halt_rec[0], dict)) else {}
+    halted = bool(halt.get("halted"))
     mode = {"paper": is_paper, "label": "PAPER" if is_paper else "LIVE",
-            "wired": broker is not None}
+            "wired": broker is not None, "halted": halted,
+            "halt_reason": halt.get("reason") if halted else None}
 
     # open book
     open_rows = query_open_positions(db_url)
