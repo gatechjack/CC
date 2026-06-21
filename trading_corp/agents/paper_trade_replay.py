@@ -984,8 +984,34 @@ async def _replay_tick_async(
             # behavior). The position-state reconciler at startup will
             # detect any stranded live rows on the next process start.
             is_live_row = extra.get("execution_mode") == "live"
+            # Issue #1 (2026-06-21): a live row whose exit is owned by the
+            # server-side /tpsl/ bracket (resting TP legs + position SL + the
+            # entry-attached B1 stop, since the 2026-06-18 rebuild) must NOT
+            # also be driven by this pre-bracket replay-loop managed virtual-
+            # exit. The two collide: the managed path placed a reduce-only exit
+            # for the FULL entry qty against a bracket-REDUCED venue position →
+            # BitUnix 20008 'Insufficient amount', retried every tick (0% ever
+            # succeeded live). The bracket + the reconciler auto-book own the
+            # exit AND the booking (proven on 48b5adf9). For a bracket-managed
+            # live row: persist any lifecycle delta and leave `result` NULL for
+            # the reconciler to auto-book from real fills — do NOT dispatch the
+            # managed exit, and do NOT fall through to the paper `_update_row`
+            # write (which would book a LIVE row off bar-classification).
+            bracket_managed = is_live_row and bool(
+                extra.get("bracket_tp_order_ids")
+                or extra.get("bracket_position_sl_order_id")
+            )
             live_executor = _LIVE_EXIT_EXECUTOR.get("observer")
-            if (
+            if bracket_managed:
+                if verdict.extra_json_updates:
+                    delta = _extra_json_delta(extra, verdict.extra_json_updates)
+                    if delta is not None:
+                        _persist_extra_json(db_url, row.order_id, delta)
+                        if delta.get("filled_legs"):
+                            counts["v2_partial_progress"] += 1
+                counts.setdefault("suppressed_bracket_managed", 0)
+                counts["suppressed_bracket_managed"] += 1
+            elif (
                 is_live_row
                 and live_executor is not None
                 and hasattr(live_executor, "_execute_live_exits")

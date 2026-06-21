@@ -688,3 +688,86 @@ async def test_replay_tick_no_notifier_is_safe(tmp_db):
 
     counts = await replay_pending_paper_trades_async(tmp_db, ohlcv_fetcher=mock_fetcher)
     assert counts["resolved_win"] == 1
+
+
+# ── Issue #1: managed-exit vs server-side bracket suppression ──────────
+
+
+@pytest.mark.asyncio
+async def test_replay_suppresses_managed_exit_for_bracket_managed_live_row(tmp_db):
+    """Issue #1 (2026-06-21): a LIVE row whose exit is owned by the server-side
+    /tpsl/ bracket must NOT dispatch the replay-loop managed virtual-exit (which
+    over-asked the FULL entry qty against a bracket-reduced venue position →
+    BitUnix 20008 'Insufficient amount', retried every tick). A bracket-managed
+    live row is SUPPRESSED — result stays NULL for the reconciler to auto-book
+    from real fills (NOT booked off bar-classification). A live row WITHOUT a
+    bracket still dispatches (path retained for completeness)."""
+    from trading_corp.agents.paper_trade_replay import set_live_exit_executor
+
+    init_db(tmp_db)
+    v2_plan = [
+        {"leg": "tp1", "fraction": 0.25, "target_r": 0.5, "price": 102.5,
+         "stop_action": "move_to_breakeven"},
+        {"leg": "tp2", "fraction": 0.50, "target_r": 1.0, "price": 105.0,
+         "stop_action": "move_to_tp1"},
+        {"leg": "tp3", "fraction": 0.25, "target_r": 2.5, "price": 112.5,
+         "stop_action": "trail_atr"},
+    ]
+
+    def _extra(bracket: bool) -> dict:
+        e = {"execution_mode": "live", "tp_plan": v2_plan,
+             "tp_plan_version": "v2", "broker_order_id": "bx-1"}
+        if bracket:
+            e["bracket_tp_order_ids"] = {"tp1": "111", "tp2": "222", "tp3": "333"}
+            e["bracket_position_sl_order_id"] = "444"
+        return e
+
+    def _ins(order_id: str, bracket: bool) -> None:
+        rec = PaperTradeRecord(
+            order_id=order_id, ts="2026-05-02T00:00:00+00:00",
+            strategy="bitunix_futures", division="bitunix_futures",
+            symbol="BTCUSDT.P", side="buy", qty=0.01, tier="PREMIUM",
+            entry_reference_price=100.0, stop_price=95.0, tp_price=112.5,
+            tp_r_multiple=2.5, expected_loss=-50.0, expected_gain=125.0,
+            rr_ratio=2.5, max_hold_seconds=86400,
+            execution_mode="live", extra=_extra(bracket),
+        )
+        insert_paper_trade_record(rec.to_db_row(), db_url=tmp_db)
+
+    _ins("live-bracketed", bracket=True)      # exit owned by the bracket → suppress
+    _ins("live-no-bracket", bracket=False)    # no bracket → still dispatches
+
+    calls: list[str] = []
+
+    class _MockExecutor:
+        async def _execute_live_exits(self, *, order_id, **kw):
+            calls.append(order_id)
+            return True
+
+    set_live_exit_executor(_MockExecutor())
+    try:
+        async def fetcher(symbol, timeframe, since_ms, limit):
+            # tp1 → tp2 → tp3 in three sequential bars → v2 verdict 'win'
+            return [
+                _bar(since_ms, 100, 102.7, 99.5, 102.5),
+                _bar(since_ms + 60_000, 102.5, 105.5, 102.0, 105.0),
+                _bar(since_ms + 120_000, 105, 113.0, 104.5, 112.5),
+            ]
+        counts = await replay_pending_paper_trades_async(
+            tmp_db, ohlcv_fetcher=fetcher,
+        )
+    finally:
+        set_live_exit_executor(None)
+
+    # Bracket-managed live row: managed exit NOT dispatched (no 20008 loop).
+    assert "live-bracketed" not in calls
+    assert counts.get("suppressed_bracket_managed", 0) >= 1
+    # Non-bracket live row: still dispatched (path retained).
+    assert "live-no-bracket" in calls
+
+    with connect(tmp_db) as conn:
+        rows = {r["order_id"]: dict(r) for r in conn.execute(
+            "SELECT order_id, result FROM paper_trade_record").fetchall()}
+    # Suppressed live row stays NULL — left for the reconciler to auto-book,
+    # NOT booked off the bar classifier.
+    assert rows["live-bracketed"]["result"] is None
