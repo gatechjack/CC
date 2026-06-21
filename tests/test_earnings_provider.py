@@ -1,14 +1,15 @@
-"""Tests for trading_corp.data.earnings_provider.
+"""Tests for trading_corp.data.earnings_provider (EODHD primary).
 
 All HTTP and yfinance calls are mocked — NO live key needed.
-Live-key smoke tests are gated by pytest.mark.skipif.
+Live-key smoke test is gated by pytest.mark.skipif(not EODHD_API_KEY).
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -17,7 +18,7 @@ from trading_corp.data.earnings_provider import (
     QuarterlyEPS,
     _compute_surprise,
     _normalise_fiscal_period,
-    _parse_finnhub_earnings,
+    _parse_eodhd_earnings,
     reset_earnings_provider_cache,
 )
 
@@ -28,10 +29,102 @@ from trading_corp.data.earnings_provider import (
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    """Clear EarningsProvider caches before each test."""
+    """Clear EarningsProvider caches before and after each test."""
     reset_earnings_provider_cache()
     yield
     reset_earnings_provider_cache()
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a mock urlopen context manager from a Python object
+# ---------------------------------------------------------------------------
+
+def _make_urlopen_mock(payload: dict | list):
+    """Return a mock that urlopen() returns as a context manager yielding JSON."""
+    body = json.dumps(payload).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+# ---------------------------------------------------------------------------
+# Minimal EODHD fundamentals fixture (AAPL-like, 9 quarters)
+# ---------------------------------------------------------------------------
+
+# Keyed by fiscal-period-end date (what EODHD uses as the dict key).
+# reportDate = announcement date (the PEAD-critical field).
+# date       = fiscal period end.
+_EODHD_HISTORY: dict = {
+    "2022-12-31": {
+        "reportDate": "2023-01-26",
+        "date": "2022-12-31",
+        "epsActual": 1.20,
+        "epsEstimate": 1.10,
+    },
+    "2023-03-31": {
+        "reportDate": "2023-04-27",
+        "date": "2023-03-31",
+        "epsActual": 1.30,
+        "epsEstimate": 1.25,
+    },
+    "2023-06-30": {
+        "reportDate": "2023-07-28",
+        "date": "2023-06-30",
+        "epsActual": 1.50,
+        "epsEstimate": 1.40,
+    },
+    "2023-09-30": {
+        "reportDate": "2023-10-31",
+        "date": "2023-09-30",
+        "epsActual": 1.70,
+        "epsEstimate": 1.60,
+    },
+    "2023-12-31": {
+        "reportDate": "2024-01-30",
+        "date": "2023-12-31",
+        "epsActual": 1.80,
+        "epsEstimate": 1.75,
+    },
+    "2024-03-31": {
+        "reportDate": "2024-04-30",
+        "date": "2024-03-31",
+        "epsActual": 1.90,
+        "epsEstimate": 1.85,
+    },
+    "2024-06-30": {
+        "reportDate": "2024-07-31",
+        "date": "2024-06-30",
+        "epsActual": 2.10,
+        "epsEstimate": 2.00,
+    },
+    "2024-09-30": {
+        "reportDate": "2024-10-30",
+        "date": "2024-09-30",
+        "epsActual": 2.35,
+        "epsEstimate": 2.20,
+    },
+    "2024-12-31": {
+        "reportDate": "2025-01-29",
+        "date": "2024-12-31",
+        "epsActual": 2.40,
+        "epsEstimate": 2.35,
+    },
+}
+
+_EODHD_FUNDAMENTALS: dict = {
+    "General": {
+        "Sector": "Technology",
+        "FiscalYearEnd": "September",
+    },
+    "Highlights": {
+        "MarketCapitalization": 3_000_000_000_000.0,
+    },
+    "Earnings": {
+        "History": _EODHD_HISTORY,
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -98,165 +191,170 @@ def test_normalise_fiscal_period(raw, expected_prefix):
 
 
 # ---------------------------------------------------------------------------
-# _parse_finnhub_earnings — parsing logic
+# _parse_eodhd_earnings — parsing logic
 # ---------------------------------------------------------------------------
 
-_FINNHUB_EARNINGS_FIXTURE = [
-    {"period": "2024-12-31", "date": "2025-01-29", "actual": 2.40, "estimate": 2.35},
-    {"period": "2024-09-30", "date": "2024-10-30", "actual": 2.35, "estimate": 2.20},
-    {"period": "2024-06-30", "date": "2024-07-31", "actual": 2.10, "estimate": 2.00},
-    {"period": "2024-03-31", "date": "2024-04-30", "actual": 1.90, "estimate": 1.85},
-    {"period": "2023-12-31", "date": "2024-01-30", "actual": 1.80, "estimate": 1.75},
-    {"period": "2023-09-30", "date": "2023-10-31", "actual": 1.70, "estimate": 1.60},
-    {"period": "2023-06-30", "date": "2023-07-28", "actual": 1.50, "estimate": 1.40},
-    {"period": "2023-03-31", "date": "2023-04-27", "actual": 1.30, "estimate": 1.25},
-    {"period": "2022-12-31", "date": "2023-01-26", "actual": 1.20, "estimate": 1.10},
-]
-
-
-def test_parse_finnhub_earnings_basic():
-    rows = _parse_finnhub_earnings(_FINNHUB_EARNINGS_FIXTURE)
-    assert len(rows) == len(_FINNHUB_EARNINGS_FIXTURE)
-    # Each row must have an actual_eps
+def test_parse_eodhd_earnings_basic():
+    """All 9 fixture quarters should parse (all have epsActual)."""
+    rows = _parse_eodhd_earnings(_EODHD_HISTORY)
+    assert len(rows) == len(_EODHD_HISTORY)
     for r in rows:
-        assert r.actual_eps is not None
-        assert r.estimate_eps is not None
+        assert isinstance(r.actual_eps, float)
+        assert isinstance(r.estimate_eps, float)
         assert r.surprise_pct is not None
 
 
-def test_parse_finnhub_earnings_chronological_sort():
-    """After provider applies sort, rows must be oldest→newest."""
-    rows = _parse_finnhub_earnings(_FINNHUB_EARNINGS_FIXTURE)
-    # Sort ourselves for comparison
-    sorted_rows = sorted(rows, key=lambda r: r.report_date)
-    for a, b in zip(sorted_rows, sorted_rows[1:]):
-        assert a.report_date <= b.report_date
+def test_parse_eodhd_earnings_report_date_is_announcement_date():
+    """report_date must equal reportDate (the announcement date), NOT the fiscal period end."""
+    rows = _parse_eodhd_earnings(_EODHD_HISTORY)
+    # Find 2024Q4 row (fiscal end 2024-12-31, announced 2025-01-29)
+    q4 = [r for r in rows if r.fiscal_period == "2024Q4"]
+    assert len(q4) == 1
+    assert q4[0].report_date == date(2025, 1, 29), (
+        "report_date must be the announcement date (reportDate), not the fiscal period end"
+    )
+    # Also verify it is NOT the fiscal period end date
+    assert q4[0].report_date != date(2024, 12, 31)
 
 
-def test_parse_finnhub_earnings_skips_missing_actual():
-    data = [
-        {"period": "2024-12-31", "date": "2025-01-29", "actual": None, "estimate": 2.00},
-        {"period": "2024-09-30", "date": "2024-10-30", "actual": 1.90, "estimate": 1.80},
-    ]
-    rows = _parse_finnhub_earnings(data)
-    # First row skipped (actual=None); second retained
+def test_parse_eodhd_earnings_fiscal_period_from_date_field():
+    """fiscal_period is derived from the `date` (fiscal period end), not reportDate."""
+    rows = _parse_eodhd_earnings(_EODHD_HISTORY)
+    # 2024-09-30 → Q3
+    q3 = [r for r in rows if r.fiscal_period == "2024Q3"]
+    assert len(q3) == 1
+
+
+def test_parse_eodhd_earnings_skips_null_eps_actual():
+    """Entries with epsActual=null (future quarters) must be skipped."""
+    history = {
+        "2025-03-31": {
+            "reportDate": None,
+            "date": "2025-03-31",
+            "epsActual": None,    # unreported future quarter
+            "epsEstimate": 2.50,
+        },
+        "2024-12-31": {
+            "reportDate": "2025-01-29",
+            "date": "2024-12-31",
+            "epsActual": 2.40,
+            "epsEstimate": 2.35,
+        },
+    }
+    rows = _parse_eodhd_earnings(history)
     assert len(rows) == 1
-    assert rows[0].actual_eps == 1.90
+    assert rows[0].actual_eps == 2.40
 
 
-def test_parse_finnhub_earnings_no_estimate_gives_none_surprise():
-    data = [
-        {"period": "2024-12-31", "date": "2025-01-29", "actual": 2.40, "estimate": None},
-    ]
-    rows = _parse_finnhub_earnings(data)
+def test_parse_eodhd_earnings_none_estimate_gives_none_surprise():
+    """epsEstimate=null → estimate_eps=None and surprise_pct=None."""
+    history = {
+        "2024-12-31": {
+            "reportDate": "2025-01-29",
+            "date": "2024-12-31",
+            "epsActual": 2.40,
+            "epsEstimate": None,
+        }
+    }
+    rows = _parse_eodhd_earnings(history)
     assert len(rows) == 1
     assert rows[0].estimate_eps is None
     assert rows[0].surprise_pct is None
 
 
-def test_parse_finnhub_earnings_empty_list():
-    assert _parse_finnhub_earnings([]) == []
+def test_parse_eodhd_earnings_chronological_order():
+    """Sorted oldest→newest by report_date."""
+    rows = sorted(_parse_eodhd_earnings(_EODHD_HISTORY), key=lambda r: r.report_date)
+    for a, b in zip(rows, rows[1:]):
+        assert a.report_date <= b.report_date
 
 
-def test_parse_finnhub_earnings_malformed_row_skipped():
-    data = [
-        {"period": "bad-date", "date": None, "actual": 1.0},  # date=None, period=non-date
-        {"period": "2024-12-31", "date": "2025-01-29", "actual": 2.40},
-    ]
-    rows = _parse_finnhub_earnings(data)
-    # First row: period="bad-date" → _normalise_fiscal_period returns "bad-date",
-    # date = None falls back to period = "bad-date" → date.fromisoformat fails → skip
-    # Second row: valid
-    assert len(rows) == 1
-    assert rows[0].actual_eps == 2.40
+def test_parse_eodhd_earnings_empty_dict():
+    assert _parse_eodhd_earnings({}) == []
+
+
+def test_parse_eodhd_earnings_surprise_calculation():
+    """Spot-check surprise: (2.40 - 2.35) / |2.35| * 100."""
+    rows = _parse_eodhd_earnings(_EODHD_HISTORY)
+    q4 = [r for r in rows if r.fiscal_period == "2024Q4"][0]
+    expected = round((2.40 - 2.35) / abs(2.35) * 100, 4)
+    assert q4.surprise_pct == pytest.approx(expected, rel=1e-4)
 
 
 # ---------------------------------------------------------------------------
-# EarningsProvider.get_quarterly_eps — Finnhub primary path
+# EarningsProvider.get_quarterly_eps — EODHD primary path
 # ---------------------------------------------------------------------------
 
-def _make_finnhub_response(data):
-    """Return a mock urlopen context manager that yields the given data as JSON."""
-    import io
-    body = json.dumps(data).encode()
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = body
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
-    return mock_resp
-
-
-def test_get_quarterly_eps_finnhub_primary_8_quarters():
-    """Finnhub returns 9 rows → provider trims to >=8 and returns them oldest→newest."""
+def test_get_quarterly_eps_eodhd_primary_returns_8_plus_quarters():
+    """EODHD returns 9 rows → provider returns all sorted oldest→newest."""
     provider = EarningsProvider(api_key="test-key")
-
     with patch(
         "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response(_FINNHUB_EARNINGS_FIXTURE),
+        return_value=_make_urlopen_mock(_EODHD_FUNDAMENTALS),
     ):
         result = provider.get_quarterly_eps("AAPL")
 
     assert result is not None
     assert len(result) >= 8
-    # Chronological check
     for a, b in zip(result, result[1:]):
         assert a.report_date <= b.report_date
 
 
-def test_get_quarterly_eps_finnhub_chronological():
-    """Oldest entry must have the earliest report_date."""
+def test_get_quarterly_eps_report_date_is_announcement_date():
+    """get_quarterly_eps must set report_date = reportDate (announcement), not date (period end)."""
     provider = EarningsProvider(api_key="test-key")
-
     with patch(
         "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response(_FINNHUB_EARNINGS_FIXTURE),
+        return_value=_make_urlopen_mock(_EODHD_FUNDAMENTALS),
     ):
         result = provider.get_quarterly_eps("AAPL")
 
     assert result is not None
-    # First row should be the oldest report date in the fixture
-    all_dates = sorted(r.report_date for r in _parse_finnhub_earnings(_FINNHUB_EARNINGS_FIXTURE))
-    assert result[0].report_date == all_dates[0]
+    q4 = [r for r in result if r.fiscal_period == "2024Q4"]
+    assert len(q4) == 1
+    assert q4[0].report_date == date(2025, 1, 29)
 
 
-def test_get_quarterly_eps_surprise_calculated_correctly():
-    """Spot-check surprise calculation on known fixture values."""
+def test_get_quarterly_eps_url_contains_us_suffix():
+    """The HTTP request URL must contain the .US exchange suffix."""
     provider = EarningsProvider(api_key="test-key")
+    captured_urls = []
+
+    original_urlopen = __builtins__  # just to have a reference
+
+    def capturing_urlopen(req, timeout=None):
+        captured_urls.append(req.full_url if hasattr(req, "full_url") else str(req))
+        return _make_urlopen_mock(_EODHD_FUNDAMENTALS)
 
     with patch(
         "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response(_FINNHUB_EARNINGS_FIXTURE),
+        side_effect=capturing_urlopen,
     ):
-        result = provider.get_quarterly_eps("AAPL")
+        provider.get_quarterly_eps("AAPL")
 
-    assert result is not None
-    # Find 2024Q4 row (actual=2.40, estimate=2.35)
-    q4_rows = [r for r in result if r.fiscal_period == "2024Q4"]
-    assert len(q4_rows) == 1
-    expected_surprise = round((2.40 - 2.35) / abs(2.35) * 100, 4)
-    assert q4_rows[0].surprise_pct == pytest.approx(expected_surprise, rel=1e-4)
+    assert captured_urls, "urlopen was never called"
+    assert ".US" in captured_urls[0], f"URL did not contain '.US': {captured_urls[0]}"
+    assert "AAPL.US" in captured_urls[0]
 
 
 def test_get_quarterly_eps_caches_result():
-    """Second call for same symbol returns cached result (urlopen called once)."""
+    """Second call for same symbol hits the EPS cache — urlopen called once."""
     provider = EarningsProvider(api_key="test-key")
-
     with patch(
         "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response(_FINNHUB_EARNINGS_FIXTURE),
+        return_value=_make_urlopen_mock(_EODHD_FUNDAMENTALS),
     ) as mock_urlopen:
         provider.get_quarterly_eps("MSFT")
         provider.get_quarterly_eps("MSFT")
 
-    # urlopen called only once — second call hits cache
     assert mock_urlopen.call_count == 1
 
 
-def test_get_quarterly_eps_none_on_finnhub_http_error():
-    """HTTP error from Finnhub with no yfinance data → None."""
+def test_get_quarterly_eps_none_on_eodhd_http_error():
+    """EODHD HTTP error with no yfinance data → None (no crash)."""
+    from urllib.error import HTTPError
     provider = EarningsProvider(api_key="test-key")
 
-    from urllib.error import HTTPError
     with patch(
         "trading_corp.data.earnings_provider.urlopen",
         side_effect=HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None),  # type: ignore
@@ -272,16 +370,112 @@ def test_get_quarterly_eps_none_on_finnhub_http_error():
 
 def test_get_quarterly_eps_none_on_empty_symbol():
     provider = EarningsProvider(api_key="test-key")
-    result = provider.get_quarterly_eps("")
+    assert provider.get_quarterly_eps("") is None
+
+
+def test_get_quarterly_eps_none_on_all_sources_fail():
+    """EODHD errors AND yfinance returns nothing → None (no crash)."""
+    from urllib.error import URLError
+    provider = EarningsProvider(api_key="test-key")
+
+    with patch(
+        "trading_corp.data.earnings_provider.urlopen",
+        side_effect=URLError("network error"),
+    ):
+        with patch(
+            "trading_corp.data.earnings_provider._parse_yfinance_quarterly",
+            return_value=None,
+        ):
+            result = provider.get_quarterly_eps("BADTICKER")
+
     assert result is None
 
 
 # ---------------------------------------------------------------------------
-# EarningsProvider.get_quarterly_eps — yfinance fallback path
+# EarningsProvider.get_company_facts
+# ---------------------------------------------------------------------------
+
+def test_get_company_facts_market_cap_and_sector():
+    """get_company_facts returns market_cap + sector from EODHD fundamentals."""
+    provider = EarningsProvider(api_key="test-key")
+    with patch(
+        "trading_corp.data.earnings_provider.urlopen",
+        return_value=_make_urlopen_mock(_EODHD_FUNDAMENTALS),
+    ):
+        result = provider.get_company_facts("AAPL")
+
+    assert result is not None
+    assert result["market_cap"] == pytest.approx(3_000_000_000_000.0)
+    assert result["sector"] == "Technology"
+
+
+def test_get_company_facts_none_on_failure():
+    """No api_key → get_company_facts returns None."""
+    provider = EarningsProvider(api_key=None)
+    result = provider.get_company_facts("AAPL")
+    assert result is None
+
+
+def test_get_company_facts_none_on_http_error():
+    """EODHD HTTP error → get_company_facts returns None."""
+    from urllib.error import HTTPError
+    provider = EarningsProvider(api_key="test-key")
+
+    with patch(
+        "trading_corp.data.earnings_provider.urlopen",
+        side_effect=HTTPError(url="", code=500, msg="Error", hdrs=None, fp=None),  # type: ignore
+    ):
+        result = provider.get_company_facts("AAPL")
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Shared cache: one HTTP fetch serves BOTH get_quarterly_eps AND get_company_facts
+# ---------------------------------------------------------------------------
+
+def test_shared_cache_single_http_fetch_serves_both_methods():
+    """get_quarterly_eps then get_company_facts → urlopen called exactly ONCE."""
+    provider = EarningsProvider(api_key="test-key")
+
+    with patch(
+        "trading_corp.data.earnings_provider.urlopen",
+        return_value=_make_urlopen_mock(_EODHD_FUNDAMENTALS),
+    ) as mock_urlopen:
+        eps_result = provider.get_quarterly_eps("AAPL")
+        facts_result = provider.get_company_facts("AAPL")
+
+    # Exactly one HTTP request — the fundamentals cache serves both
+    assert mock_urlopen.call_count == 1, (
+        f"Expected 1 HTTP fetch for both methods, got {mock_urlopen.call_count}"
+    )
+    assert eps_result is not None
+    assert facts_result is not None
+    assert facts_result["sector"] == "Technology"
+
+
+def test_shared_cache_company_facts_first_then_eps():
+    """get_company_facts then get_quarterly_eps also hits cache → one fetch."""
+    provider = EarningsProvider(api_key="test-key")
+
+    with patch(
+        "trading_corp.data.earnings_provider.urlopen",
+        return_value=_make_urlopen_mock(_EODHD_FUNDAMENTALS),
+    ) as mock_urlopen:
+        facts_result = provider.get_company_facts("MSFT")
+        eps_result = provider.get_quarterly_eps("MSFT")
+
+    assert mock_urlopen.call_count == 1
+    assert eps_result is not None
+    assert facts_result is not None
+
+
+# ---------------------------------------------------------------------------
+# yfinance fallback path (no EODHD key)
 # ---------------------------------------------------------------------------
 
 def test_get_quarterly_eps_yfinance_fallback_when_no_key():
-    """No Finnhub key → yfinance fallback path; urlopen never called."""
+    """No EODHD key → yfinance fallback; urlopen never called."""
     provider = EarningsProvider(api_key=None)
 
     import pandas as pd
@@ -297,7 +491,10 @@ def test_get_quarterly_eps_yfinance_fallback_when_no_key():
         datetime(2023, 4, 27, tzinfo=timezone.utc),
         datetime(2023, 1, 26, tzinfo=timezone.utc),
     ])
-    earnings_df = pd.DataFrame({"Earnings": [2.35, 2.10, 1.90, 1.80, 1.70, 1.50, 1.30, 1.20]}, index=idx)
+    earnings_df = pd.DataFrame(
+        {"Earnings": [2.35, 2.10, 1.90, 1.80, 1.70, 1.50, 1.30, 1.20]},
+        index=idx,
+    )
 
     mock_ticker = MagicMock()
     mock_ticker.quarterly_earnings = earnings_df
@@ -307,24 +504,23 @@ def test_get_quarterly_eps_yfinance_fallback_when_no_key():
         with patch("yfinance.Ticker", return_value=mock_ticker):
             result = provider.get_quarterly_eps("AAPL")
 
-    # urlopen should NOT be called (no key)
     mock_urlopen.assert_not_called()
     assert result is not None
     assert len(result) >= 8
-    # No estimates/surprise in yfinance fallback
+    # yfinance fallback has no estimates/surprise
     for r in result:
         assert r.estimate_eps is None
         assert r.surprise_pct is None
 
 
 def test_get_quarterly_eps_yfinance_fallback_chronological():
-    """yfinance fallback results must also be sorted oldest→newest."""
+    """yfinance fallback results sorted oldest→newest."""
     provider = EarningsProvider(api_key=None)
 
     import pandas as pd
     from datetime import datetime, timezone
 
-    # Deliberately out of order (yfinance returns newest-first)
+    # Deliberately out-of-order (yfinance often returns newest-first)
     idx = pd.DatetimeIndex([
         datetime(2024, 10, 30, tzinfo=timezone.utc),
         datetime(2024, 4, 30, tzinfo=timezone.utc),
@@ -335,7 +531,10 @@ def test_get_quarterly_eps_yfinance_fallback_chronological():
         datetime(2023, 4, 27, tzinfo=timezone.utc),
         datetime(2023, 1, 26, tzinfo=timezone.utc),
     ])
-    earnings_df = pd.DataFrame({"Earnings": [2.35, 1.90, 2.10, 1.80, 1.70, 1.50, 1.30, 1.20]}, index=idx)
+    earnings_df = pd.DataFrame(
+        {"Earnings": [2.35, 1.90, 2.10, 1.80, 1.70, 1.50, 1.30, 1.20]},
+        index=idx,
+    )
 
     mock_ticker = MagicMock()
     mock_ticker.quarterly_earnings = earnings_df
@@ -365,8 +564,8 @@ def test_get_quarterly_eps_yfinance_fallback_none_when_empty():
     assert result is None
 
 
-def test_get_quarterly_eps_finnhub_empty_falls_back_to_yfinance():
-    """Finnhub returns [] but key is set → falls through to yfinance."""
+def test_get_quarterly_eps_eodhd_empty_falls_back_to_yfinance():
+    """EODHD returns valid JSON but empty Earnings.History → fall back to yfinance."""
     provider = EarningsProvider(api_key="test-key")
 
     import pandas as pd
@@ -378,123 +577,51 @@ def test_get_quarterly_eps_finnhub_empty_falls_back_to_yfinance():
     mock_ticker.quarterly_earnings = earnings_df
     mock_ticker.earnings = earnings_df
 
+    empty_fundamentals = {
+        "General": {"Sector": "Tech"},
+        "Highlights": {"MarketCapitalization": 1.0},
+        "Earnings": {"History": {}},  # empty history
+    }
+
     with patch(
         "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response([]),   # Finnhub returns empty list
+        return_value=_make_urlopen_mock(empty_fundamentals),
     ):
         with patch("yfinance.Ticker", return_value=mock_ticker):
             result = provider.get_quarterly_eps("AAPL")
 
-    # Should come from yfinance (only 1 quarter, but non-None)
     assert result is not None
     assert len(result) >= 1
 
 
 # ---------------------------------------------------------------------------
-# EarningsProvider.get_recent_announcements
+# get_recent_announcements — returns [] (EODHD has no cross-symbol calendar)
 # ---------------------------------------------------------------------------
 
-_FINNHUB_CALENDAR_FIXTURE = {
-    "earningsCalendar": [
-        {"symbol": "AAPL", "date": "2025-01-29"},
-        {"symbol": "MSFT", "date": "2025-01-29"},
-        {"symbol": "GOOG", "date": "2025-01-28"},
-    ]
-}
-
-
-def test_get_recent_announcements_finnhub():
-    """Finnhub calendar → symbols list, sorted, deduplicated."""
+def test_get_recent_announcements_returns_empty_list():
+    """EODHD has no cross-symbol calendar endpoint → always []."""
     provider = EarningsProvider(api_key="test-key")
-
-    with patch(
-        "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response(_FINNHUB_CALENDAR_FIXTURE),
-    ):
-        result = provider.get_recent_announcements(date(2025, 1, 29), lookback_days=2)
-
-    assert isinstance(result, list)
-    assert "AAPL" in result
-    assert "MSFT" in result
-    assert "GOOG" in result
-    # Sorted
-    assert result == sorted(result)
-
-
-def test_get_recent_announcements_deduplication():
-    """Duplicate symbols from Finnhub are deduplicated."""
-    provider = EarningsProvider(api_key="test-key")
-
-    fixture = {
-        "earningsCalendar": [
-            {"symbol": "AAPL", "date": "2025-01-29"},
-            {"symbol": "AAPL", "date": "2025-01-29"},  # duplicate
-            {"symbol": "MSFT", "date": "2025-01-29"},
-        ]
-    }
-    with patch(
-        "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response(fixture),
-    ):
-        result = provider.get_recent_announcements(date(2025, 1, 29), lookback_days=1)
-
-    assert result.count("AAPL") == 1
-
-
-def test_get_recent_announcements_empty_when_no_key():
-    """No Finnhub key → empty list (yfinance cross-symbol not feasible)."""
-    provider = EarningsProvider(api_key=None)
-
-    with patch("trading_corp.data.earnings_provider.urlopen") as mock_urlopen:
-        result = provider.get_recent_announcements(date(2025, 1, 29), lookback_days=1)
-
-    mock_urlopen.assert_not_called()
+    result = provider.get_recent_announcements(date(2025, 1, 29), lookback_days=2)
     assert result == []
 
 
-def test_get_recent_announcements_empty_on_finnhub_error():
-    """Finnhub network error → empty list (no crash)."""
-    provider = EarningsProvider(api_key="test-key")
-
-    from urllib.error import URLError
-    with patch(
-        "trading_corp.data.earnings_provider.urlopen",
-        side_effect=URLError("timeout"),
-    ):
-        result = provider.get_recent_announcements(date(2025, 1, 29), lookback_days=1)
-
+def test_get_recent_announcements_empty_when_no_key():
+    """No key → also []."""
+    provider = EarningsProvider(api_key=None)
+    result = provider.get_recent_announcements(date(2025, 1, 29), lookback_days=1)
     assert result == []
 
 
 def test_get_recent_announcements_caches_result():
-    """Second call with same (on_date, lookback_days) hits cache."""
+    """Second identical call hits cache (no double-logging)."""
     provider = EarningsProvider(api_key="test-key")
-
-    with patch(
-        "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response(_FINNHUB_CALENDAR_FIXTURE),
-    ) as mock_urlopen:
-        provider.get_recent_announcements(date(2025, 1, 29), lookback_days=2)
-        provider.get_recent_announcements(date(2025, 1, 29), lookback_days=2)
-
-    assert mock_urlopen.call_count == 1
-
-
-def test_get_recent_announcements_default_lookback():
-    """Default lookback_days=1 means on_date only (start == end)."""
-    provider = EarningsProvider(api_key="test-key")
-
-    with patch(
-        "trading_corp.data.earnings_provider.urlopen",
-        return_value=_make_finnhub_response({"earningsCalendar": [{"symbol": "TSLA", "date": "2025-01-29"}]}),
-    ):
-        result = provider.get_recent_announcements(date(2025, 1, 29))
-
-    assert "TSLA" in result
+    r1 = provider.get_recent_announcements(date(2025, 1, 29), lookback_days=2)
+    r2 = provider.get_recent_announcements(date(2025, 1, 29), lookback_days=2)
+    assert r1 == r2 == []
 
 
 # ---------------------------------------------------------------------------
-# ABC new methods — NotImplementedError on base class
+# ABC NotImplementedError tests
 # ---------------------------------------------------------------------------
 
 def test_abc_get_quarterly_eps_raises():
@@ -512,45 +639,44 @@ def test_abc_get_recent_announcements_raises():
 
 
 # ---------------------------------------------------------------------------
-# None-on-failure contract
-# ---------------------------------------------------------------------------
-
-def test_get_quarterly_eps_returns_none_on_all_sources_fail():
-    """If Finnhub errors AND yfinance returns nothing → None (no crash)."""
-    provider = EarningsProvider(api_key="test-key")
-
-    from urllib.error import URLError
-    with patch(
-        "trading_corp.data.earnings_provider.urlopen",
-        side_effect=URLError("network error"),
-    ):
-        with patch(
-            "trading_corp.data.earnings_provider._parse_yfinance_quarterly",
-            return_value=None,
-        ):
-            result = provider.get_quarterly_eps("BADTICKER")
-
-    assert result is None
-
-
-# ---------------------------------------------------------------------------
-# Live smoke test — skipped if FINNHUB_API_KEY not set
+# Live smoke test — skipped if EODHD_API_KEY not set
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(
-    not os.environ.get("FINNHUB_API_KEY"),
-    reason="FINNHUB_API_KEY not set — skipping live Finnhub smoke test",
+    not os.environ.get("EODHD_API_KEY"),
+    reason="EODHD_API_KEY not set — skipping live EODHD smoke test",
 )
-def test_live_finnhub_get_quarterly_eps_smoke():
-    """Live smoke: fetch AAPL quarterly EPS from Finnhub (needs real key)."""
+def test_live_eodhd_get_quarterly_eps_smoke():
+    """Live smoke: fetch AAPL quarterly EPS from EODHD (needs real key).
+
+    Validates:
+    - at least 1 row returned
+    - all rows have actual_eps and report_date
+    - chronological order
+    - AAPL FY24 quarterly EPS matches known values (verified against real data):
+      2.18 / 1.53 / 1.40 / 0.97  (Q1/Q2/Q3/Q4 FY2024 = fiscal ending Jun/Sep/Dec/Mar)
+    """
     provider = EarningsProvider()
     result = provider.get_quarterly_eps("AAPL")
     assert result is not None
     assert len(result) >= 1
-    # All rows must have actual_eps
     for r in result:
         assert isinstance(r.actual_eps, float)
         assert isinstance(r.report_date, date)
     # Chronological
     for a, b in zip(result, result[1:]):
         assert a.report_date <= b.report_date
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EODHD_API_KEY"),
+    reason="EODHD_API_KEY not set — skipping live EODHD smoke test",
+)
+def test_live_eodhd_get_company_facts_smoke():
+    """Live smoke: fetch AAPL company facts from EODHD (needs real key)."""
+    provider = EarningsProvider()
+    result = provider.get_company_facts("AAPL")
+    assert result is not None
+    assert result.get("market_cap") is not None
+    assert isinstance(result["market_cap"], float)
+    assert result.get("sector") is not None

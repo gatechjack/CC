@@ -6,11 +6,18 @@ global:
     tastytrade:
       provider_secret_env: TASTYTRADE_PROVIDER_SECRET
       refresh_token_env: TASTYTRADE_REFRESH_TOKEN
-    finnhub:
-      # EarningsProvider reads this key directly from os.environ; block is
-      # documented here for discoverability.  Free tier supports
-      # /stock/earnings and /calendar/earnings (no SDK — stdlib urllib.request).
+    eodhd:
+      # EarningsProvider PRIMARY — reads EODHD_API_KEY directly from os.environ;
+      # block documented here for discoverability.
+      # GET /api/fundamentals/{TICKER}.US  (no SDK — stdlib urllib.request).
+      # Provides reportDate (announcement date), epsActual/epsEstimate, market
+      # cap, and sector in one call per symbol (shared 24h cache).
       # Missing key → yfinance fallback (EPS actuals only, no estimates).
+      provider_secret_env: EODHD_API_KEY
+    finnhub:
+      # EarningsProvider LEGACY — superseded by EODHD.  Key retained for
+      # discoverability; EarningsProvider no longer reads it.
+      # Free tier supported /stock/earnings and /calendar/earnings.
       provider_secret_env: FINNHUB_API_KEY
 overrides:
   # robinhood_joint_iron_condor: { primary: tastytrade }

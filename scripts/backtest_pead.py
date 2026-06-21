@@ -3,19 +3,22 @@
 
 Thin network layer over the tested orchestration in
 `trading_corp.agents.strategies.pead_backtest_driver`: fetches daily bars
-(yfinance) + quarterly EPS history (EarningsProvider: Finnhub primary) + a
-sector/market-cap snapshot (yfinance .info), builds the ranked `EventSignal`s,
-runs the backtest with explicit friction, and prints in-sample / out-of-sample
-reports.
+(yfinance) + quarterly EPS history + company facts (EarningsProvider: EODHD
+primary), builds the ranked `EventSignal`s, runs the backtest with explicit
+friction, and prints in-sample / out-of-sample reports.
 
 Screen + signal params are CONFIG-DRIVEN from `config/strategies.yaml`
 (the `robinhood_pead` block) so the floors can be retuned without a code
 change; --lookback / --sue-threshold / --no-quintile override the signal side.
 
 REQUIRES (to run on real data):
-  - FINNHUB_API_KEY in the environment (the yfinance EPS fallback is unreliable
-    on current yfinance; Finnhub is the working primary).
+  - EODHD_API_KEY in the environment (primary — fundamentals JSON supplies
+    announcement dates, EPS history, market cap, and sector in one call).
+    Falls back to yfinance for EPS actuals only if key is absent.
   - A universe of tickers (--universe AAPL,MSFT,... or --universe @nasdaq_composite.txt).
+
+NOTE: daily OHLCV bars stay on yfinance/Tastytrade — only the EPS + company
+facts layer moved to EODHD.
 
 This is a VALIDATION tool — it places no orders and touches no broker.
 """
@@ -95,16 +98,17 @@ def fetch_bars(symbol: str, start: date, end: date) -> list[Bar]:
     return bars
 
 
-def fetch_info(symbol: str) -> dict:
-    """Static sector + market-cap snapshot via yfinance .info (best-effort).
+def fetch_info(symbol: str, provider: "EarningsProvider") -> dict:
+    """Static sector + market-cap snapshot via EarningsProvider.get_company_facts.
+
+    Delegates to EODHD fundamentals JSON (same fetch already done for EPS —
+    the shared 24h cache means no extra HTTP call).  Returns {} on failure.
+
     NOTE: point-in-time, not historical — a documented backtest simplification
-    for the sector/size screen."""
-    try:
-        import yfinance as yf  # type: ignore
-        info = yf.Ticker(symbol).info or {}
-    except Exception:  # noqa: BLE001
-        info = {}
-    return {"market_cap": info.get("marketCap"), "sector": info.get("sector")}
+    for the sector/size screen.
+    """
+    result = provider.get_company_facts(symbol)
+    return result if result is not None else {"market_cap": None, "sector": None}
 
 
 def load_pead_config(path: str) -> dict:
@@ -161,17 +165,18 @@ def main(argv: list[str] | None = None) -> int:
     universe = load_universe(args.universe)
     log.info("universe: %d symbols", len(universe))
 
-    # Resolve Finnhub via the STANDARD secrets path: load_secrets() loads .env
-    # and, if KEY_VAULT_URI is set, pulls from Azure Key Vault (secret name
-    # FINNHUB-API-KEY) using DefaultAzureCredential (Managed Identity on the
-    # prod VM; `az login` locally). No local key file.
+    # Resolve EODHD key via the STANDARD secrets path: load_secrets() loads
+    # .env and, if KEY_VAULT_URI is set, pulls from Azure Key Vault (secret
+    # name EODHD-API-KEY) using DefaultAzureCredential (Managed Identity on
+    # the prod VM; `az login` locally). No local key file.
     secrets = load_secrets()
-    provider = EarningsProvider(api_key=secrets.finnhub_api_key)
-    if secrets.finnhub_api_key is None:
+    provider = EarningsProvider(api_key=secrets.eodhd_api_key)
+    if secrets.eodhd_api_key is None:
         log.warning(
-            "Finnhub key not resolved (.env + Azure KV 'FINNHUB-API-KEY'); "
-            "EPS history will be empty. Add the KV secret and run where the "
-            "vault is reachable (KEY_VAULT_URI + Azure auth)."
+            "EODHD key not resolved (.env + Azure KV 'EODHD-API-KEY'); "
+            "EPS history will use yfinance fallback (actuals only, no estimates, "
+            "no company facts). Add the KV secret and run where the vault is "
+            "reachable (KEY_VAULT_URI + Azure auth)."
         )
 
     fetch_start = args.start - timedelta(days=_LEAD_DAYS)
@@ -185,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         bars = fetch_bars(sym, fetch_start, fetch_end)
         if not bars:
             continue
-        eps_by[sym], bars_by[sym], info_by[sym] = eps, bars, fetch_info(sym)
+        eps_by[sym], bars_by[sym], info_by[sym] = eps, bars, fetch_info(sym, provider)
         if (i + 1) % 100 == 0:
             log.info("  ...%d/%d symbols scanned, %d with data", i + 1, len(universe), len(eps_by))
     log.info("fetched data for %d symbols", len(eps_by))

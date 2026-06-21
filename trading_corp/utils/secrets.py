@@ -65,8 +65,12 @@ _SECRET_KEY_NAMES = (
     # Both rotate manually per `runbooks/tastytrade_oauth_rotation.md`.
     "TASTYTRADE_PROVIDER_SECRET",
     "TASTYTRADE_REFRESH_TOKEN",
-    # Finnhub — earnings data for robinhood_pead division.
+    # Finnhub — earnings data for robinhood_pead division (legacy; superseded by EODHD).
     "FINNHUB_API_KEY",
+    # EODHD — earnings + fundamentals primary for robinhood_pead division.
+    # GET /api/fundamentals/{TICKER}.US serves QuarterlyEPS (with reportDate
+    # = announcement date) + company facts (market cap, sector) in one call.
+    "EODHD_API_KEY",
 )
 
 
@@ -184,12 +188,16 @@ class Secrets:
     # paths; on this prod the EnvironmentFile is the ONLY live one.
     tastytrade_provider_secret: str | None
     tastytrade_refresh_token: str | None
-    # Finnhub (Phase: robinhood_pead division — earnings/fundamentals data).
-    # API key from https://finnhub.io/dashboard.  Free tier supports
-    # /stock/earnings and /calendar/earnings used by EarningsProvider.
-    # If unset, EarningsProvider falls back to yfinance for EPS actuals only
-    # (no consensus estimates or cross-symbol announcement calendar).
+    # Finnhub (Phase: robinhood_pead division — legacy; superseded by EODHD).
+    # If unset, EarningsProvider falls back to yfinance for EPS actuals only.
     finnhub_api_key: str | None
+    # EODHD (Phase: robinhood_pead division — PRIMARY earnings + fundamentals).
+    # GET /api/fundamentals/{TICKER}.US supplies reportDate (announcement date),
+    # epsActual/epsEstimate, market cap, and sector in one call per symbol.
+    # Free/Starter tier: https://eodhd.com/pricing. If unset, EarningsProvider
+    # falls back to yfinance for EPS actuals only (no estimates, no announcement
+    # dates, no company facts).
+    eodhd_api_key: str | None
     fidelity_username: str | None
     fidelity_password: str | None
     fidelity_account: str | None   # account name substring to filter, e.g. "Joint"
@@ -285,6 +293,7 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "TASTYTRADE_PROVIDER_SECRET",
         "TASTYTRADE_REFRESH_TOKEN",
         "FINNHUB_API_KEY",
+        "EODHD_API_KEY",
         "FIDELITY_USERNAME",
         "FIDELITY_PASSWORD",
         "FIDELITY_ACCOUNT",
@@ -368,6 +377,7 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         tastytrade_provider_secret=_env("TASTYTRADE_PROVIDER_SECRET"),
         tastytrade_refresh_token=_env("TASTYTRADE_REFRESH_TOKEN"),
         finnhub_api_key=_env("FINNHUB_API_KEY"),
+        eodhd_api_key=_env("EODHD_API_KEY"),
         fidelity_username=_env("FIDELITY_USERNAME"),
         fidelity_password=_env("FIDELITY_PASSWORD"),
         fidelity_account=_env("FIDELITY_ACCOUNT"),
@@ -406,8 +416,10 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     # wouldn't catch a header-form log line — register the literal values too.
     register_redact_literal(secrets.bitunix_futures_api_key)
     register_redact_literal(secrets.bitunix_futures_api_secret)
-    # Finnhub API key — bearer token in every request URL query string.
+    # Finnhub API key — bearer token in every request URL query string (legacy).
     register_redact_literal(secrets.finnhub_api_key)
+    # EODHD API key — api_token query param in every EODHD fundamentals request.
+    register_redact_literal(secrets.eodhd_api_key)
 
     return secrets
 

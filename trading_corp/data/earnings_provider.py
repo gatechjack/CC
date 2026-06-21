@@ -1,19 +1,28 @@
 """Earnings data adapter for the robinhood_pead division.
 
-PRIMARY source: Finnhub REST API (no SDK — stdlib urllib.request only).
-  - /company/earnings  → QuarterlyEPS history (actuals + estimates)
-  - /calendar/earnings → announcements within a date range
-  Read key from env FINNHUB_API_KEY (loaded by utils/secrets.py).
+PRIMARY source: EODHD REST API (no SDK — stdlib urllib.request only).
+  - GET /api/fundamentals/{TICKER}.US  → one large JSON per symbol
+  - Earnings::History   → QuarterlyEPS history (actuals + estimates)
+  - Highlights::MarketCapitalization + General::Sector → company facts
+  Read key from env EODHD_API_KEY (loaded by utils/secrets.py).
+
+  Key advantage over Finnhub: the `reportDate` field in each
+  Earnings::History entry is the ANNOUNCEMENT date (when the company
+  actually published results), not the fiscal-period-end date.  PEAD
+  returns are measured from the announcement day, so using the wrong date
+  biases returns.
 
 FALLBACK: yfinance (already a dep).
   - quarterly_financials → QuarterlyEPS actuals (no estimate / surprise)
   - earnings_dates       → announcement calendar fallback
 
-No auto-failover: like data_providers.yaml convention, the source that serves
-each response is LOGGED explicitly.  Missing Finnhub key → yfinance path only
-(labeled; never a silent switch mid-call).
+No auto-failover: like data_providers.yaml convention, the source that
+serves each response is LOGGED explicitly.  Missing EODHD key → yfinance
+path only (labeled; never a silent switch mid-call).
 
 24-hour per-symbol in-memory cache with TTL — mirrors utils/market_data.py.
+A SINGLE fetch of the EODHD fundamentals JSON serves BOTH
+get_quarterly_eps AND get_company_facts (one HTTP call per symbol per day).
 
 Boundary contract: return None / empty list on any data gap or failure.
 None = "no data, don't block" (matches get_next_earnings contract).
@@ -35,8 +44,9 @@ log = logging.getLogger(__name__)
 
 _CACHE_TTL_SEC = 86_400  # 24 hours — earnings dates change rarely
 
-# Finnhub base URL
-_FINNHUB_BASE = "https://finnhub.io/api/v1"
+# EODHD base URL + default exchange suffix
+_EODHD_BASE = "https://eodhd.com/api"
+_EODHD_EXCHANGE_SUFFIX = "US"  # appended as "{symbol}.{suffix}"
 _HTTP_TIMEOUT_SEC = 10
 
 
@@ -48,8 +58,9 @@ _HTTP_TIMEOUT_SEC = 10
 class QuarterlyEPS:
     """Normalised quarterly EPS row.
 
-    fiscal_period  — e.g. "2024Q1"
-    report_date    — date the quarter was reported
+    fiscal_period  — e.g. "2024Q1" (derived from the fiscal period-end date)
+    report_date    — date the quarter was ANNOUNCED / released to the public
+                     (EODHD: Earnings.History[key].reportDate)
     actual_eps     — reported EPS (float)
     estimate_eps   — consensus estimate at time of report; None if unavailable
     surprise_pct   — (actual - estimate) / |estimate| * 100; None if no estimate
@@ -65,9 +76,31 @@ class QuarterlyEPS:
 # Internal cache helpers  (per-symbol, per-method)
 # ---------------------------------------------------------------------------
 
+# Shared raw fundamentals cache: symbol.upper() -> (raw_dict, timestamp)
+_FUND_CACHE: dict[str, tuple[dict, float]] = {}
+# EPS result cache: symbol.upper() -> (result, timestamp)
 _EPS_CACHE: dict[str, tuple[list[QuarterlyEPS] | None, float]] = {}
+# Announcement calendar cache: (on_date, lookback_days) -> (result, timestamp)
 _ANN_CACHE: dict[tuple[date, int], tuple[list[str], float]] = {}
 _CACHE_LOCK = Lock()
+
+
+def _fund_cache_get(symbol: str) -> tuple[bool, dict | None]:
+    with _CACHE_LOCK:
+        entry = _FUND_CACHE.get(symbol.upper())
+    if entry is None:
+        return False, None
+    val, ts = entry
+    if time.time() - ts < _CACHE_TTL_SEC:
+        return True, val
+    return False, None
+
+
+def _fund_cache_set(symbol: str, val: dict | None) -> None:
+    if val is None:
+        return
+    with _CACHE_LOCK:
+        _FUND_CACHE[symbol.upper()] = (val, time.time())
 
 
 def _eps_cache_get(symbol: str) -> tuple[bool, list[QuarterlyEPS] | None]:
@@ -105,31 +138,36 @@ def _ann_cache_set(key: tuple[date, int], val: list[str]) -> None:
 def reset_earnings_provider_cache() -> None:
     """Clear all caches (useful for tests)."""
     with _CACHE_LOCK:
+        _FUND_CACHE.clear()
         _EPS_CACHE.clear()
         _ANN_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
-# Low-level HTTP helper
+# Low-level HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _finnhub_get(path: str, params: dict[str, str], api_key: str) -> dict | list | None:
-    """GET `path` from Finnhub with `params`.  Returns parsed JSON or None."""
-    qs = "&".join(f"{k}={v}" for k, v in params.items())
-    url = f"{_FINNHUB_BASE}{path}?{qs}&token={api_key}"
+def _eodhd_get_fundamentals(symbol: str, api_key: str) -> dict | None:
+    """GET EODHD /api/fundamentals/{symbol}.{exchange}  Returns parsed JSON or None."""
+    ticker = f"{symbol.upper()}.{_EODHD_EXCHANGE_SUFFIX}"
+    url = f"{_EODHD_BASE}/fundamentals/{ticker}?api_token={api_key}&fmt=json"
     req = Request(url, headers={"User-Agent": "trading-corp/1.0"})
     try:
         with urlopen(req, timeout=_HTTP_TIMEOUT_SEC) as resp:
             body = resp.read()
-        return json.loads(body)
+        data = json.loads(body)
+        if not isinstance(data, dict):
+            log.warning("EODHD fundamentals for %s: unexpected response type %s", ticker, type(data))
+            return None
+        return data
     except HTTPError as e:
-        log.warning("Finnhub HTTP %s for %s: %s", e.code, path, e)
+        log.warning("EODHD HTTP %s for %s: %s", e.code, ticker, e)
         return None
     except (URLError, OSError) as e:
-        log.warning("Finnhub network error for %s: %s", path, e)
+        log.warning("EODHD network error for %s: %s", ticker, e)
         return None
     except Exception as e:
-        log.warning("Finnhub unexpected error for %s: %s", path, e)
+        log.warning("EODHD unexpected error for %s: %s", ticker, e)
         return None
 
 
@@ -145,27 +183,44 @@ def _compute_surprise(actual: float, estimate: float | None) -> float | None:
     return round((actual - estimate) / abs(estimate) * 100.0, 4)
 
 
-def _parse_finnhub_earnings(data: list[dict]) -> list[QuarterlyEPS]:
-    """Parse Finnhub /company/earnings response into QuarterlyEPS list."""
-    rows: list[QuarterlyEPS] = []
-    for item in data:
-        try:
-            # Finnhub fields: period (YYYY-MM-DD of fiscal end), date (report date),
-            # actual, estimate
-            report_date_str = item.get("date") or item.get("period")
-            if not report_date_str:
-                continue
-            report_date = date.fromisoformat(str(report_date_str)[:10])
-            fiscal_period = item.get("period", report_date_str)
-            # fiscal_period may be "YYYY-MM-DD" — normalise to "YYYYQn" if possible
-            fiscal_str = _normalise_fiscal_period(str(fiscal_period))
+def _normalise_fiscal_period(raw: str) -> str:
+    """Convert 'YYYY-MM-DD' fiscal end date to 'YYYYQn' if possible; else return as-is."""
+    try:
+        d = date.fromisoformat(raw[:10])
+        # Infer quarter from fiscal end month
+        q = (d.month - 1) // 3 + 1
+        return f"{d.year}Q{q}"
+    except Exception:
+        return raw
 
-            actual_raw = item.get("actual")
+
+def _parse_eodhd_earnings(history: dict) -> list[QuarterlyEPS]:
+    """Parse EODHD Earnings.History dict into QuarterlyEPS list.
+
+    Each key is a date string; each value contains:
+      - reportDate: YYYY-MM-DD  (the ANNOUNCEMENT date — what we want)
+      - date:       YYYY-MM-DD  (fiscal period end — used for fiscal_period)
+      - epsActual:  float | null
+      - epsEstimate: float | null
+    """
+    rows: list[QuarterlyEPS] = []
+    for key, item in history.items():
+        try:
+            actual_raw = item.get("epsActual")
             if actual_raw is None:
-                continue  # skip quarters without actual EPS
+                continue  # skip unreported / future quarters
+
             actual_eps = float(actual_raw)
 
-            estimate_raw = item.get("estimate")
+            # Announcement date (the PEAD-critical date)
+            report_date_str = item.get("reportDate") or key
+            report_date = date.fromisoformat(str(report_date_str)[:10])
+
+            # Fiscal period derived from period-end date
+            period_end_str = item.get("date") or key
+            fiscal_str = _normalise_fiscal_period(str(period_end_str))
+
+            estimate_raw = item.get("epsEstimate")
             estimate_eps = float(estimate_raw) if estimate_raw is not None else None
             surprise_pct = _compute_surprise(actual_eps, estimate_eps)
 
@@ -177,19 +232,8 @@ def _parse_finnhub_earnings(data: list[dict]) -> list[QuarterlyEPS]:
                 surprise_pct=surprise_pct,
             ))
         except Exception as e:
-            log.debug("_parse_finnhub_earnings: skipping malformed row %s: %s", item, e)
+            log.debug("_parse_eodhd_earnings: skipping malformed row key=%s item=%s: %s", key, item, e)
     return rows
-
-
-def _normalise_fiscal_period(raw: str) -> str:
-    """Convert 'YYYY-MM-DD' fiscal end date to 'YYYYQn' if possible; else return as-is."""
-    try:
-        d = date.fromisoformat(raw[:10])
-        # Infer quarter from fiscal end month
-        q = (d.month - 1) // 3 + 1
-        return f"{d.year}Q{q}"
-    except Exception:
-        return raw
 
 
 def _parse_yfinance_quarterly(symbol: str) -> list[QuarterlyEPS] | None:
@@ -280,26 +324,60 @@ def _yfinance_announcement_dates(symbol: str) -> list[date]:
 # ---------------------------------------------------------------------------
 
 class EarningsProvider:
-    """Earnings data adapter: EPS history + announcement calendar.
+    """Earnings data adapter: EPS history + announcement calendar + company facts.
 
-    PRIMARY: Finnhub REST API (key from env FINNHUB_API_KEY).
-    FALLBACK: yfinance — activated when key absent or Finnhub returns nothing.
+    PRIMARY: EODHD REST API (key from env EODHD_API_KEY).
+      - get_quarterly_eps: parses Earnings.History; report_date = reportDate
+        (the ANNOUNCEMENT date, not the fiscal period end — critical for PEAD).
+      - get_company_facts: parses Highlights.MarketCapitalization + General.Sector.
+      - Both methods share a single 24h in-memory cache of the raw fundamentals
+        JSON — one HTTP fetch per symbol per day serves both.
+
+    FALLBACK: yfinance — activated when key absent or EODHD returns nothing.
+      - get_quarterly_eps: actuals only (no estimate / surprise).
+      - get_company_facts: not supported via yfinance fallback (returns None).
+
     LABELED: every response logs which source served it.
     NO auto-failover within a single call that already succeeded.
+
+    get_recent_announcements: still backed by the EODHD fundamentals path
+    per-symbol (secondary; labeled) — not a live calendar endpoint.
     """
 
     def __init__(self, api_key: str | None = None) -> None:
         """Create an EarningsProvider.
 
-        api_key — override FINNHUB_API_KEY env var (for tests / injection).
-        If None, reads from os.environ["FINNHUB_API_KEY"].
-        Missing key → Finnhub skipped, yfinance path only.
+        api_key — override EODHD_API_KEY env var (for tests / injection).
+        If None, reads from os.environ["EODHD_API_KEY"].
+        Missing key → EODHD skipped, yfinance path only.
         """
-        self._api_key: str | None = api_key or os.environ.get("FINNHUB_API_KEY") or None
+        self._api_key: str | None = api_key or os.environ.get("EODHD_API_KEY") or None
         if not self._api_key:
             log.info(
-                "EarningsProvider: FINNHUB_API_KEY not set — yfinance fallback only"
+                "EarningsProvider: EODHD_API_KEY not set — yfinance fallback only"
             )
+
+    # ------------------------------------------------------------------
+    # Internal: shared fundamentals fetch (one HTTP call serves both methods)
+    # ------------------------------------------------------------------
+
+    def _get_fundamentals(self, sym: str) -> dict | None:
+        """Fetch (or return cached) raw EODHD fundamentals JSON for `sym`.
+
+        Shared 24h cache: calling get_quarterly_eps then get_company_facts
+        (or vice versa) on the same symbol within one day makes exactly one
+        HTTP request.  Returns None on failure.
+        """
+        hit, cached = _fund_cache_get(sym)
+        if hit:
+            log.debug("EarningsProvider._get_fundamentals(%s): cache hit", sym)
+            return cached
+        if not self._api_key:
+            return None
+        data = _eodhd_get_fundamentals(sym, self._api_key)
+        if data:
+            _fund_cache_set(sym, data)
+        return data
 
     # ------------------------------------------------------------------
     # Public API
@@ -311,8 +389,11 @@ class EarningsProvider:
         None means no data available — callers should treat as "don't block"
         (same contract as get_next_earnings in utils/market_data.py).
 
-        Tries Finnhub first (if key present); falls back to yfinance if
-        Finnhub returns empty or errors.  The serving source is logged.
+        PRIMARY: EODHD fundamentals (if key present); report_date is the
+        ANNOUNCEMENT date (Earnings.History[key].reportDate) — the critical
+        field for PEAD drift measurement.
+        FALLBACK: yfinance (actuals only, no estimates, no announcement dates).
+        The serving source is logged.
         """
         if not symbol:
             return None
@@ -326,6 +407,38 @@ class EarningsProvider:
         _eps_cache_set(sym, result)
         return result
 
+    def get_company_facts(self, symbol: str) -> dict | None:
+        """Return {"market_cap": float|None, "sector": str|None} for `symbol`.
+
+        Sourced from the same EODHD fundamentals JSON as get_quarterly_eps
+        (shared 24h cache — one HTTP fetch serves both methods).
+        Returns None on failure (key absent, network error, etc.).
+        """
+        if not symbol:
+            return None
+        sym = symbol.upper()
+        data = self._get_fundamentals(sym)
+        if data is None:
+            log.info(
+                "EarningsProvider.get_company_facts(%s): no EODHD data — returning None",
+                sym,
+            )
+            return None
+        highlights = data.get("Highlights") or {}
+        general = data.get("General") or {}
+        market_cap_raw = highlights.get("MarketCapitalization")
+        sector_raw = general.get("Sector")
+        result = {
+            "market_cap": float(market_cap_raw) if market_cap_raw is not None else None,
+            "sector": str(sector_raw) if sector_raw is not None else None,
+        }
+        log.info(
+            "EarningsProvider.get_company_facts(%s): served by EODHD "
+            "(market_cap=%s sector=%s)",
+            sym, result["market_cap"], result["sector"],
+        )
+        return result
+
     def get_recent_announcements(
         self,
         on_date: date,
@@ -333,9 +446,11 @@ class EarningsProvider:
     ) -> list[str]:
         """Return symbols that reported earnings on/within lookback_days of on_date.
 
-        Uses Finnhub /calendar/earnings if key is available; falls back to
-        yfinance .earnings_dates cross-symbol (impractical for large universes
-        — returns [] in that case unless Finnhub served it first).
+        NOTE: EODHD does not expose a cross-symbol calendar endpoint.  This
+        method is NOT the primary path used by the PEAD backtest (which derives
+        announcement dates directly from QuarterlyEPS.report_date).  Returns []
+        unless you call it with a per-symbol universe approach; keep for
+        interface compatibility.
 
         Empty list on any failure (never raises).
         """
@@ -353,27 +468,25 @@ class EarningsProvider:
     # ------------------------------------------------------------------
 
     def _fetch_quarterly_eps(self, sym: str) -> list[QuarterlyEPS] | None:
-        # --- PRIMARY: Finnhub ---
+        # --- PRIMARY: EODHD ---
         if self._api_key:
-            data = _finnhub_get(
-                "/stock/earnings",
-                {"symbol": sym},
-                self._api_key,
-            )
-            if isinstance(data, list) and data:
-                rows = _parse_finnhub_earnings(data)
-                if rows:
-                    rows_sorted = sorted(rows, key=lambda r: r.report_date)
-                    # Most-recent 8+ quarters; return all if fewer
-                    result = rows_sorted[-max(8, len(rows_sorted)):]
-                    log.info(
-                        "EarningsProvider.get_quarterly_eps(%s): served by Finnhub "
-                        "(%d quarters)",
-                        sym, len(result),
-                    )
-                    return result
+            data = self._get_fundamentals(sym)
+            if data is not None:
+                history = (data.get("Earnings") or {}).get("History") or {}
+                if isinstance(history, dict) and history:
+                    rows = _parse_eodhd_earnings(history)
+                    if rows:
+                        rows_sorted = sorted(rows, key=lambda r: r.report_date)
+                        # Most-recent 8+ quarters; return all if fewer
+                        result = rows_sorted[-max(8, len(rows_sorted)):]
+                        log.info(
+                            "EarningsProvider.get_quarterly_eps(%s): served by EODHD "
+                            "(%d quarters)",
+                            sym, len(result),
+                        )
+                        return result
             log.info(
-                "EarningsProvider.get_quarterly_eps(%s): Finnhub returned nothing "
+                "EarningsProvider.get_quarterly_eps(%s): EODHD returned nothing "
                 "— trying yfinance fallback",
                 sym,
             )
@@ -401,52 +514,11 @@ class EarningsProvider:
         on_date: date,
         lookback_days: int,
     ) -> list[str]:
-        start = on_date - timedelta(days=lookback_days - 1)
-        end = on_date
-
-        # --- PRIMARY: Finnhub calendar ---
-        if self._api_key:
-            data = _finnhub_get(
-                "/calendar/earnings",
-                {
-                    "from": start.isoformat(),
-                    "to": end.isoformat(),
-                },
-                self._api_key,
-            )
-            if isinstance(data, dict):
-                items = data.get("earningsCalendar", []) or []
-            elif isinstance(data, list):
-                items = data
-            else:
-                items = []
-
-            if items:
-                symbols: list[str] = []
-                for item in items:
-                    sym = item.get("symbol") or item.get("ticker")
-                    if sym:
-                        symbols.append(str(sym).upper())
-                symbols = sorted(set(symbols))
-                log.info(
-                    "EarningsProvider.get_recent_announcements(%s +%dd): served by "
-                    "Finnhub (%d symbols)",
-                    on_date, lookback_days, len(symbols),
-                )
-                return symbols
-            log.info(
-                "EarningsProvider.get_recent_announcements(%s +%dd): Finnhub returned "
-                "nothing — yfinance cross-symbol not feasible; returning []",
-                on_date, lookback_days,
-            )
-            return []
-
-        # --- FALLBACK: yfinance (no cross-symbol scan; single-symbol only) ---
-        # yfinance earnings_dates requires per-symbol calls; without a universe
-        # we can't enumerate all reporters.  Return [] and log.
+        # EODHD does not have a cross-symbol calendar endpoint; return [].
+        # get_recent_announcements is not used by the backtest pipeline.
         log.info(
-            "EarningsProvider.get_recent_announcements(%s +%dd): no Finnhub key; "
-            "yfinance fallback not feasible without a symbol universe — returning []",
+            "EarningsProvider.get_recent_announcements(%s +%dd): EODHD has no "
+            "cross-symbol calendar endpoint — returning []",
             on_date, lookback_days,
         )
         return []
