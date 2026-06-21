@@ -10988,3 +10988,29 @@ sudo systemctl restart trading-corp
 **Rollback:** `cp config/risk.yaml.pre-cap-interim-2026-05-28 config/risk.yaml` on prod (hot-reloads back to $1K within ~60s).
 
 **Addendum (same session, 2026-05-29):** the notional cap raise unblocked the open-NOTIONAL gate but exposed a SECOND binding gate — `max_open_positions: 10` (added in Group A #2) rejected every PCT entry because PCT holds 1,771 open (>>10). Root: a flat per-division count cap is architecturally wrong for a copy-trader (hundreds of concurrent open BY DESIGN). **DISABLED interim** (`max_open_positions: 0`); backup `config/risk.yaml.pre-count-cap-disable-2026-05-28`; hot-reload, no restart. Step 4 decides the final count-cap policy (keep disabled for PCT, or per-division). NB: the $4k notional cap gives **~17h runway** (resolver leaks ~$60/hr), so Step 3 (resolver fairness fix) is the IMMEDIATE next thing.
+
+---
+
+## 2026-06-21 — Combined window: PEAD read-layer (NEW) + metrics-epoch split + issue1 managed-exit-suppress (ACTIVATION)
+
+**Driver.** Agent-executed under explicit **Board authorization** (remote-control; operator away). Agent drove apply (SSH stdin, no scp) + `sudo -n systemctl restart trading-corp` over SSH — read-only-SSH policy Board-overridden for this deploy (2026-06-16 precedent). `sudo -n` is NOPASSWD for `systemctl restart trading-corp*` + `journalctl -u trading-corp*`.
+
+**ONE restart activated three payloads:**
+1. **PEAD read-layer (7 files, NEW)** via self-contained drift-gated `deploy/2026-06-21_pead_readlayer/pead_apply.sh` (base64/LF, md5-verified):
+   - shared, prod==base, drift-gated additive superset: `trading_corp/web/routes.py` (e8113e6f→**76442e8f**), `trading_corp/persistence/db.py` (a2c2ff46→**b1c6a6a2**)
+   - new: `web/pead_view.py` (bc7e1b58), `agents/strategies/pead_pressures.py` (efc6821e), `persistence/pead_observability.py` (4772a518), `web/templates/pead_live.html` (9924dc61), `web/templates/partials/pead_live_sections.html` (4d771c0e)
+   - backups `*.bak-pre-pead-2026-06-21`
+2. **metrics-epoch split** — already staged on prod disk (`web/data.py` dae49424 + `division.html` b6e23456), activated by restart. **Epoch row INTENTIONALLY UNSET** (bitunix_futures has no metrics_epoch; polymarket_copy_trader's pre-existing 2026-05-23 row untouched).
+3. **issue1 managed-exit-suppress** — already staged on prod disk (`agents/paper_trade_replay.py` 5619910d), activated by restart.
+
+**Collision safety.** PEAD shipped NONE of the bitunix-carrying shared files — `main.py` (97a4d676), `web/data.py` (dae49424), `web/templates/division.html` (b6e23456), `config/strategies.yaml` (925b9783) all byte-identical pre+post. The apply drift-gate ABORTS if any shared file ≠ base. **Deferred to Phase 2:** strategies.yaml robinhood_pead block + PEAD data-foundation (earnings_provider/market_data_provider/secrets/data_providers.yaml/signal/backtest).
+
+**Window protection.** `bitunix_futures` durably halted (`StrategyState.persist_halt` → agent_state) before restart; cleared after verify.
+
+**Verify (GREEN).** PID 3093124→**3232691**, active/running, NRestarts=0, healthz 200, no fatal boot errors. `Registered bitunix_futures broker for division=bitunix_futures (paper=False)` + `BitunixBroker connected (account=bitunix-futures, equity=$650.09, 0 positions)` = LIVE/connected/flat. PEAD `data_feed_status`+`scan_evaluation` tables created at boot; `/telemetry/pead` + `/partials/live` HTTP 200 (PAPER pill). bitunix epoch UNSET. **bitunix un-halted (halted=False) → trading resumed.** Boot-smoke pre-deploy: `test_boot_smoke.py` PEAD+issue1 exact prod files 84/84 + routes register; metrics exact stage data.py 7/7.
+
+**Pending live-confirmation (not blockers).** issue1 suppression A/B confirms on the NEXT bracketed bitunix exit (pre-restart baseline = e9c35907 `live_exit_order_rejected` audits). D4 read-only behaviour-watch ended at restart → re-arm fresh (operator holds the watch command).
+
+**Rollback.** PEAD: restore `*.bak-pre-pead-2026-06-21` (routes.py, db.py) + remove the 5 new files. metrics: `web/data.py.bak-pre-metrics-epoch-2026-06-20` (+division.html). issue1: `paper_trade_replay.py.bak-pre-issue1-2026-06-21`. Then restart.
+
+> ⚠ **LOG WAS STALE before this entry** (prior entry 2026-05-29). The June bitunix/polymarket prod changes (D4 guard, P2 classifier, staleness gate, metrics/issue1 stagings, etc.) were applied to prod but never recorded here. This entry resumes the log; a fuller June reconciliation is still owed.
