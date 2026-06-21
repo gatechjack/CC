@@ -344,14 +344,17 @@ class EarningsProvider:
     per-symbol (secondary; labeled) — not a live calendar endpoint.
     """
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, db_url: str | None = None) -> None:
         """Create an EarningsProvider.
 
         api_key — override EODHD_API_KEY env var (for tests / injection).
         If None, reads from os.environ["EODHD_API_KEY"].
         Missing key → EODHD skipped, yfinance path only.
+        db_url — if set, the EODHD feed's tri-state health is written to
+        data_feed_status on each fetch (for the ops dashboard's Stage-0 strip).
         """
         self._api_key: str | None = api_key or os.environ.get("EODHD_API_KEY") or None
+        self._db_url = db_url
         if not self._api_key:
             log.info(
                 "EarningsProvider: EODHD_API_KEY not set — yfinance fallback only"
@@ -375,9 +378,26 @@ class EarningsProvider:
         if not self._api_key:
             return None
         data = _eodhd_get_fundamentals(sym, self._api_key)
+        self._write_feed_status(sym, data)
         if data:
             _fund_cache_set(sym, data)
         return data
+
+    def _write_feed_status(self, sym: str, data: dict | None) -> None:
+        """Update the EODHD feed's tri-state health for the ops dashboard's
+        Stage-0 strip. No-op unless `db_url` was provided; never raises."""
+        if not self._db_url:
+            return
+        try:
+            from trading_corp.persistence.pead_observability import upsert_feed_status
+            if data:
+                upsert_feed_status("eodhd", "live", ok=True, detail=f"{sym} ok",
+                                   db_url=self._db_url)
+            else:
+                upsert_feed_status("eodhd", "down", detail=f"{sym}: empty/error",
+                                   db_url=self._db_url)
+        except Exception as e:  # never let observability break a data fetch
+            log.debug("EarningsProvider feed-status write failed: %s", e)
 
     # ------------------------------------------------------------------
     # Public API
