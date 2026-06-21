@@ -40,6 +40,7 @@ from trading_corp.agents.strategies.pead_signal import (
     sue_params_from_config,
 )
 from trading_corp.data.earnings_provider import EarningsProvider
+from trading_corp.utils.secrets import load_secrets
 
 log = logging.getLogger("backtest_pead")
 
@@ -160,11 +161,17 @@ def main(argv: list[str] | None = None) -> int:
     universe = load_universe(args.universe)
     log.info("universe: %d symbols", len(universe))
 
-    provider = EarningsProvider()
-    if provider._api_key is None:  # noqa: SLF001 — intentional pre-flight check
+    # Resolve Finnhub via the STANDARD secrets path: load_secrets() loads .env
+    # and, if KEY_VAULT_URI is set, pulls from Azure Key Vault (secret name
+    # FINNHUB-API-KEY) using DefaultAzureCredential (Managed Identity on the
+    # prod VM; `az login` locally). No local key file.
+    secrets = load_secrets()
+    provider = EarningsProvider(api_key=secrets.finnhub_api_key)
+    if secrets.finnhub_api_key is None:
         log.warning(
-            "FINNHUB_API_KEY not set — EPS history will be unreliable; "
-            "results may be empty. Set the key for a real run."
+            "Finnhub key not resolved (.env + Azure KV 'FINNHUB-API-KEY'); "
+            "EPS history will be empty. Add the KV secret and run where the "
+            "vault is reachable (KEY_VAULT_URI + Azure auth)."
         )
 
     fetch_start = args.start - timedelta(days=_LEAD_DAYS)
