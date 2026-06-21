@@ -365,6 +365,33 @@ CREATE INDEX IF NOT EXISTS ix_wfr_station_horizon
     ON weather_forecast_residuals(station_id, horizon_hours, season, logic_era);
 CREATE INDEX IF NOT EXISTS ix_wfr_target_date
     ON weather_forecast_residuals(target_date, kind);
+
+-- ── robinhood_pead operations dashboard observability (read-layer) ──────────
+-- Tri-state health of each data feed for the Stage-0 safety strip. The earnings
+-- adapter upserts 'eodhd' on every fetch; brokers reuse snapshot health. A DOWN
+-- earnings feed is an ALERT — "feed live · 0 candidates" must render differently
+-- from "feed down".
+CREATE TABLE IF NOT EXISTS data_feed_status (
+    feed_name     TEXT PRIMARY KEY,          -- 'eodhd' | 'tastytrade' | 'robinhood'
+    status        TEXT NOT NULL,             -- 'live' | 'degraded' | 'down'
+    last_ok_ts    TEXT,                       -- last successful contact (ISO UTC)
+    last_check_ts TEXT NOT NULL,              -- last status write (ISO UTC)
+    detail        TEXT                        -- short human note / error
+);
+
+-- Per-name scan-rejection log → the Stage 1-3 "dropped this scan · why" tally.
+-- The PEAD scan writes one row per evaluated candidate; the dashboard aggregates
+-- the latest session by reason_code, reconciling to scanned − qualified.
+CREATE TABLE IF NOT EXISTS scan_evaluation (
+    id           INTEGER PRIMARY KEY,
+    session_ts   TEXT NOT NULL,               -- scan session id (ISO UTC)
+    ticker       TEXT NOT NULL,
+    verdict      TEXT NOT NULL,               -- 'passed' | 'rejected'
+    reason_code  TEXT,                         -- mapped reject reason; NULL when passed
+    metrics_json TEXT,                         -- {sue, atr, market_cap, ...}
+    created_ts   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_scan_evaluation_session ON scan_evaluation(session_ts);
 """
 
 

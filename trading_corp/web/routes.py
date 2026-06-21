@@ -1781,6 +1781,68 @@ def register(app: FastAPI) -> None:
             {"result": result, "division_slug": ctx["division_slug"]},
         )
 
+    # ── Robinhood PEAD operations dashboard (read-layer) ─────────────────
+    # Single-screen command deck for the robinhood_pead division: a page shell
+    # + a 15s-polled `/partials/live` fragment (the open book / pressures hero,
+    # health strip, funnel, attribution) + a kill-switch POST. Read-only
+    # everywhere except the halt button. Renders pressure-empty until the
+    # Phase-2 exit engine writes the extra_json primitives, then lights up.
+
+    @app.get("/telemetry/pead", response_class=HTMLResponse)
+    async def pead_live(request: Request):
+        from trading_corp.web.pead_view import build_pead_view
+        view = await build_pead_view(deps)
+        return templates.TemplateResponse(request, "pead_live.html", {"v": view})
+
+    @app.get("/telemetry/pead/partials/live", response_class=HTMLResponse)
+    async def pead_live_partial(request: Request):
+        from trading_corp.web.pead_view import build_pead_view
+        view = await build_pead_view(deps)
+        return templates.TemplateResponse(
+            request, "partials/pead_live_sections.html", {"v": view},
+        )
+
+    @app.post("/telemetry/pead/halt", response_class=HTMLResponse)
+    async def pead_halt(request: Request):
+        """Kill switch — the ONLY write surface on the PEAD dashboard.
+
+        Durably halts new PEAD entries (the Phase-2 engine checks
+        agent_state robinhood_pead/halt before entering) and best-effort
+        flattens any open book via the division broker if wired (a no-op
+        before Phase 2), then audits. Read-only everywhere else.
+        """
+        import inspect
+        from trading_corp.web.pead_view import DIVISION
+        db_url = deps.db_url
+        reason = "dashboard_kill_switch"
+        _db_mod.set_agent_state(
+            DIVISION, "halt",
+            {"halted": True, "reason": reason, "ts": _now_iso(),
+             "source": "dashboard_button"},
+            db_url=db_url,
+        )
+        closed = 0
+        broker = None
+        if getattr(deps, "data_exec", None) is not None:
+            broker = deps.data_exec.brokers.get(DIVISION)
+        if broker is not None and hasattr(broker, "flatten"):
+            try:
+                res = broker.flatten()
+                if inspect.isawaitable(res):
+                    res = await res
+                closed = int(res.get("closed", 0)) if isinstance(res, dict) else 0
+            except Exception as e:  # noqa: BLE001
+                log.warning("pead_halt: flatten failed: %s", e)
+        if deps.logger_agent is not None:
+            deps.logger_agent.log_event(
+                "pead_operations", "pead_halt_initiated",
+                {"strategy": "robinhood_pead", "division": DIVISION,
+                 "reason": reason, "closed_positions": closed,
+                 "halted_iso": _now_iso(), "source": "dashboard_button"},
+            )
+        log.info("pead_halt_initiated: reason=%s closed=%d", reason, closed)
+        return _render_action_pill(f"PEAD HALTED · {closed} closed")
+
     @app.get("/approvals/{order_id}", response_class=HTMLResponse)
     async def approval_detail(request: Request, order_id: str):
         """Detail page for a single pending approval. 404 when the

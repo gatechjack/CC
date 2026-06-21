@@ -1,0 +1,686 @@
+{#
+  pead_live_sections.html
+  Rendered at page-load (via {% include %}) AND every 15 s (via hx-get poll).
+  References only `v` (the view dict from build_pead_view).
+  Long-only strategy — no sell/short/side language anywhere.
+#}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   ACCOUNT ROW
+   ══════════════════════════════════════════════════════════════════════════════ #}
+<section class="bg-pane border border-edge rounded-lg p-4 mb-4">
+  <header class="flex items-baseline justify-between mb-3 gap-2 flex-wrap">
+    <h2 class="text-mono text-xs font-semibold tracking-wider uppercase text-muted">
+      Account
+    </h2>
+    <span class="text-[10px] text-muted/50 font-mono">{{ v.generated_ts | et_hms }} ET</span>
+  </header>
+
+  <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+
+    {# Equity #}
+    <div class="bg-pane-2 rounded-md p-3">
+      <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Equity</div>
+      <div class="text-mono font-semibold text-sm font-mono">
+        {% if v.account.equity is not none %}
+          {{ v.account.equity | money }}
+        {% else %}
+          <span class="text-muted">—</span>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Open P&L #}
+    <div class="bg-pane-2 rounded-md p-3">
+      <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Open P&amp;L</div>
+      <div class="text-sm font-mono font-semibold
+                  {% if v.account.open_pnl >= 0 %}text-gain{% else %}text-loss{% endif %}">
+        {{ v.account.open_pnl | money_signed }}
+      </div>
+    </div>
+
+    {# Day P&L #}
+    <div class="bg-pane-2 rounded-md p-3">
+      <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Day P&amp;L</div>
+      <div class="text-sm font-mono font-semibold text-muted">
+        {% if v.account.day_pnl is not none %}
+          <span class="{% if v.account.day_pnl >= 0 %}text-gain{% else %}text-loss{% endif %}">
+            {{ v.account.day_pnl | money_signed }}
+          </span>
+        {% else %}
+          —
+        {% endif %}
+      </div>
+    </div>
+
+    {# Net Exposure #}
+    <div class="bg-pane-2 rounded-md p-3">
+      <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Net Exposure</div>
+      <div class="text-sm font-mono font-semibold text-mono">
+        {% if v.account.net_exposure_pct is not none %}
+          {{ v.account.net_exposure_pct | pct_signed }}
+        {% else %}
+          <span class="text-muted">—</span>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Open Risk $ #}
+    <div class="bg-pane-2 rounded-md p-3">
+      <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Open Risk $</div>
+      <div class="text-sm font-mono font-semibold text-mono">
+        {{ v.account.open_risk_usd | money }}
+      </div>
+    </div>
+
+    {# Risk Budget % #}
+    <div class="bg-pane-2 rounded-md p-3">
+      <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Risk Budget</div>
+      <div class="text-sm font-mono font-semibold text-muted">
+        {% if v.account.risk_budget_pct is not none %}
+          {{ v.account.risk_budget_pct | pct_signed }}
+        {% else %}
+          —
+        {% endif %}
+      </div>
+    </div>
+
+    {# Open positions count #}
+    <div class="bg-pane-2 rounded-md p-3">
+      <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Open Positions</div>
+      <div class="text-sm font-mono font-semibold text-mono">
+        {{ v.account.open_count }}
+      </div>
+    </div>
+
+  </div>
+</section>
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   MAIN GRID — hero + sidebar panels
+   Desktop: 3 columns (book spans 2, sidebar spans 1)
+   Tablet:  2 columns
+   Mobile:  1 column stacked
+   ══════════════════════════════════════════════════════════════════════════════ #}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+
+  {# ────────────────────────────────────────────────────────────────────────────
+     OPEN BOOK — Hero panel (spans 2 cols on lg+)
+     ────────────────────────────────────────────────────────────────────────── #}
+  <section class="bg-pane border border-edge rounded-lg p-4 lg:col-span-2">
+    <header class="flex items-baseline justify-between mb-4 gap-2 flex-wrap">
+      <div class="flex items-baseline gap-2">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+          Open Book
+        </h2>
+        <span class="text-[11px] text-muted font-mono">({{ v.book | length }} position{{ 's' if v.book | length != 1 else '' }})</span>
+      </div>
+      {# Rule legend — hover for semantics #}
+      <div class="flex items-center gap-3 text-[10px] font-mono flex-wrap">
+        <span class="flex items-center gap-1 cursor-help"
+              title="STOP: 2.5×ATR / swing-low stop breached">
+          <span class="w-2 h-2 rounded-sm inline-block" style="background:{{ v.rule_colors.stop }}"></span>
+          <span class="text-muted">STOP</span>
+        </span>
+        <span class="flex items-center gap-1 cursor-help"
+              title="DRIFT: gave back ≥50% of the earnings-day gap — thesis invalidation">
+          <span class="w-2 h-2 rounded-sm inline-block" style="background:{{ v.rule_colors.drift }}"></span>
+          <span class="text-muted">DRIFT</span>
+          <span class="text-muted/40 text-[9px]">invalidation</span>
+        </span>
+        <span class="flex items-center gap-1 cursor-help"
+              title="GUARD: ≤2 trading days before next earnings — avoid re-earnings risk">
+          <span class="w-2 h-2 rounded-sm inline-block" style="background:{{ v.rule_colors.guard }}"></span>
+          <span class="text-muted">GUARD</span>
+        </span>
+        <span class="flex items-center gap-1 cursor-help"
+              title="TIME: 60 trading-day max hold elapsed">
+          <span class="w-2 h-2 rounded-sm inline-block" style="background:{{ v.rule_colors.time }}"></span>
+          <span class="text-muted">TIME</span>
+          <span class="text-muted/40 text-[9px]">60d max</span>
+        </span>
+      </div>
+    </header>
+
+    {% if not v.book %}
+      {# Empty state #}
+      <div class="py-10 text-center">
+        <div class="text-muted text-sm font-mono mb-1">No open positions</div>
+        <div class="text-muted/50 text-[11px] font-mono">Positions will appear here when PEAD enters a trade.</div>
+      </div>
+
+    {% else %}
+      {# ── Desktop table (md+) ────────────────────────────────────────────── #}
+      <div class="hidden md:block">
+        <table class="w-full text-xs font-mono border-collapse">
+          <thead>
+            <tr class="border-b border-edge text-[10px] text-muted uppercase tracking-wider">
+              <th class="text-left pb-2 pr-3 font-medium">Ticker</th>
+              <th class="text-left pb-2 pr-3 font-medium">Entry</th>
+              <th class="text-right pb-2 pr-3 font-medium">Last</th>
+              <th class="text-right pb-2 pr-3 font-medium">SUE</th>
+              <th class="text-right pb-2 pr-3 font-medium">Held</th>
+              <th class="text-right pb-2 pr-3 font-medium">P&amp;L</th>
+              <th class="text-left pb-2 font-medium min-w-[160px]">Exit Pressure</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-edge/40">
+            {% for row in v.book %}
+              <tr class="{% if row.fuse_color == 'red' and row.complete %}pead-row-danger{% endif %}
+                          hover:bg-pane-2/40 transition-colors">
+
+                {# Ticker + name #}
+                <td class="py-2.5 pr-3 align-top">
+                  <div class="text-mono font-bold text-sm">{{ row.symbol }}</div>
+                  <div class="text-muted text-[10px] leading-snug max-w-[100px] truncate"
+                       title="{{ row.name }}">{{ row.name }}</div>
+                </td>
+
+                {# Entry date tag — no direction, long-only #}
+                <td class="py-2.5 pr-3 align-top whitespace-nowrap">
+                  <span class="px-1.5 py-0.5 rounded bg-pane-2 border border-edge/60
+                               text-[10px] text-muted">
+                    {{ row.entry_date }}
+                  </span>
+                </td>
+
+                {# Last price #}
+                <td class="py-2.5 pr-3 align-top text-right whitespace-nowrap">
+                  {% if row.last is not none %}
+                    ${{ '%.2f' % row.last }}
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+
+                {# SUE #}
+                <td class="py-2.5 pr-3 align-top text-right whitespace-nowrap">
+                  {% if row.sue is not none %}
+                    {{ '%.2f' % row.sue }}
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+
+                {# Held days #}
+                <td class="py-2.5 pr-3 align-top text-right whitespace-nowrap">
+                  <span class="{% if row.held_days >= 50 %}text-warn{% elif row.held_days >= 45 %}text-warn/70{% endif %}">
+                    {{ row.held_days }}/{{ row.max_days }}d
+                  </span>
+                </td>
+
+                {# P&L — gain/loss colors, NOT rule colors #}
+                <td class="py-2.5 pr-3 align-top text-right whitespace-nowrap">
+                  {% if row.pnl_pct is not none %}
+                    <div class="{% if row.pnl_pct >= 0 %}text-gain{% else %}text-loss{% endif %} font-semibold">
+                      {% if row.pnl_pct >= 0 %}+{% endif %}{{ '%.1f' % (row.pnl_pct * 100) }}%
+                    </div>
+                  {% else %}
+                    <div class="text-muted">—</div>
+                  {% endif %}
+                  {% if row.pnl_usd is not none %}
+                    <div class="text-[10px] {% if row.pnl_usd >= 0 %}text-gain/70{% else %}text-loss/70{% endif %}">
+                      {{ row.pnl_usd | money_signed }}
+                    </div>
+                  {% endif %}
+                </td>
+
+                {# Exit pressure: fuse bar + 4-cell strip #}
+                <td class="py-2.5 align-top pl-1 min-w-[160px]">
+                  {% if row.complete and row.fuse_pct is not none %}
+                    {# Fuse bar #}
+                    <div class="relative h-2 bg-pane-2 rounded-full overflow-hidden mb-1.5">
+                      {% set fuse_width = (row.fuse_pct * 100) | round(1) %}
+                      {% if row.fuse_color == 'red' %}
+                        {% set fuse_hex = '#f43f5e' %}
+                      {% elif row.fuse_color == 'amber' %}
+                        {% set fuse_hex = '#f59e0b' %}
+                      {% else %}
+                        {% set fuse_hex = '#10b981' %}
+                      {% endif %}
+                      <div class="pead-fuse-fill absolute left-0 top-0 h-full rounded-full"
+                           style="width:{{ fuse_width }}%; background:{{ fuse_hex }};">
+                      </div>
+                      {# Bright tick at the head #}
+                      {% if fuse_width > 2 %}
+                        <div class="absolute top-0 h-full w-0.5 bg-white/70 rounded-full"
+                             style="left:calc({{ fuse_width }}% - 1px);"></div>
+                      {% endif %}
+                    </div>
+                    {# Governing rule label #}
+                    {% if row.governing %}
+                      <div class="text-[10px] font-semibold mb-1.5 uppercase tracking-wider"
+                           style="color:{{ row.governing_color or '#94a3b8' }}">
+                        {{ row.governing }}
+                        <span class="text-muted/50 font-normal">{{ '%.0f' % (row.fuse_pct * 100) }}%</span>
+                      </div>
+                    {% endif %}
+                    {# 4-cell pressure strip #}
+                    <div class="flex gap-0.5">
+                      {% for rule_key, rule_label in [('stop','STOP'),('drift','DRIFT'),('guard','GUARD'),('time','TIME')] %}
+                        {% set pressure = (row.pressures[rule_key] if row.pressures else 0) %}
+                        {% set is_governing = (row.governing == rule_key) %}
+                        <div class="flex flex-col items-center gap-0.5 flex-1" title="{{ rule_label }}: {{ '%.0f' % (pressure * 100) }}%">
+                          <div class="w-full h-5 bg-pane-2/60 rounded-sm overflow-hidden relative">
+                            <div class="pead-cell-fill absolute bottom-0 left-0 w-full rounded-sm"
+                                 style="height:{{ (pressure * 100) | round(0) | int }}%;
+                                        background:{{ v.rule_colors[rule_key] }};
+                                        opacity:{% if is_governing %}1{% else %}0.25{% endif %};">
+                            </div>
+                          </div>
+                          <span class="text-[8px] uppercase tracking-wide leading-none
+                                       {% if is_governing %}font-semibold{% else %}text-muted/50{% endif %}"
+                                style="{% if is_governing %}color:{{ v.rule_colors[rule_key] }}{% endif %}">
+                            {{ rule_label[0] }}
+                          </span>
+                        </div>
+                      {% endfor %}
+                    </div>
+
+                  {% else %}
+                    {# Incomplete row placeholder #}
+                    <div class="h-2 bg-pane-2/30 rounded-full mb-1.5 relative overflow-hidden">
+                      <div class="absolute inset-0 bg-muted/10 rounded-full"></div>
+                    </div>
+                    <div class="text-[10px] text-muted/40 italic mb-1.5">awaiting position metadata</div>
+                    <div class="flex gap-0.5">
+                      {% for _ in range(4) %}
+                        <div class="flex-1 h-5 bg-pane-2/30 rounded-sm border border-edge/20"></div>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                </td>
+
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {# ── Mobile card list (<md) ──────────────────────────────────────────── #}
+      <div class="md:hidden space-y-3">
+        {% for row in v.book %}
+          <article class="border rounded-lg p-3
+                          {% if row.fuse_color == 'red' and row.complete %}border-loss/40 pead-row-danger{% else %}border-edge{% endif %}
+                          bg-pane-2/20">
+
+            {# Card header: ticker + entry + P&L #}
+            <div class="flex items-start justify-between gap-2 mb-2">
+              <div>
+                <span class="text-mono font-bold text-base">{{ row.symbol }}</span>
+                <span class="ml-2 px-1.5 py-0.5 rounded bg-pane-2 border border-edge/60
+                             text-[10px] text-muted">{{ row.entry_date }}</span>
+                <div class="text-muted text-[10px] mt-0.5 truncate max-w-[180px]"
+                     title="{{ row.name }}">{{ row.name }}</div>
+              </div>
+              <div class="text-right shrink-0">
+                {% if row.pnl_pct is not none %}
+                  <div class="font-semibold text-sm
+                              {% if row.pnl_pct >= 0 %}text-gain{% else %}text-loss{% endif %}">
+                    {% if row.pnl_pct >= 0 %}+{% endif %}{{ '%.1f' % (row.pnl_pct * 100) }}%
+                  </div>
+                {% endif %}
+                {% if row.pnl_usd is not none %}
+                  <div class="text-[11px] {% if row.pnl_usd >= 0 %}text-gain/70{% else %}text-loss/70{% endif %}">
+                    {{ row.pnl_usd | money_signed }}
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+
+            {# Metadata row #}
+            <div class="flex items-center gap-3 text-[11px] font-mono text-muted mb-2 flex-wrap">
+              <span>Last:
+                {% if row.last is not none %}<span class="text-mono">${{ '%.2f' % row.last }}</span>{% else %}—{% endif %}
+              </span>
+              <span>SUE:
+                {% if row.sue is not none %}<span class="text-mono">{{ '%.2f' % row.sue }}</span>{% else %}—{% endif %}
+              </span>
+              <span class="{% if row.held_days >= 50 %}text-warn{% endif %}">
+                Held: {{ row.held_days }}/{{ row.max_days }}d
+              </span>
+            </div>
+
+            {# Fuse bar + strip #}
+            {% if row.complete and row.fuse_pct is not none %}
+              <div class="relative h-2.5 bg-pane-2 rounded-full overflow-hidden mb-1.5">
+                {% set fuse_width = (row.fuse_pct * 100) | round(1) %}
+                {% if row.fuse_color == 'red' %}{% set fuse_hex = '#f43f5e' %}
+                {% elif row.fuse_color == 'amber' %}{% set fuse_hex = '#f59e0b' %}
+                {% else %}{% set fuse_hex = '#10b981' %}{% endif %}
+                <div class="pead-fuse-fill absolute left-0 top-0 h-full rounded-full"
+                     style="width:{{ fuse_width }}%; background:{{ fuse_hex }};"></div>
+                {% if fuse_width > 2 %}
+                  <div class="absolute top-0 h-full w-0.5 bg-white/60"
+                       style="left:calc({{ fuse_width }}% - 1px);"></div>
+                {% endif %}
+              </div>
+              {% if row.governing %}
+                <div class="text-[10px] font-semibold uppercase tracking-wider mb-2"
+                     style="color:{{ row.governing_color or '#94a3b8' }}">
+                  {{ row.governing }} {{ '%.0f' % (row.fuse_pct * 100) }}%
+                </div>
+              {% endif %}
+              <div class="flex gap-1">
+                {% for rule_key, rule_label in [('stop','STOP'),('drift','DRIFT'),('guard','GUARD'),('time','TIME')] %}
+                  {% set pressure = (row.pressures[rule_key] if row.pressures else 0) %}
+                  {% set is_governing = (row.governing == rule_key) %}
+                  <div class="flex-1 text-center">
+                    <div class="h-6 bg-pane-2/60 rounded-sm overflow-hidden relative">
+                      <div class="pead-cell-fill absolute bottom-0 left-0 w-full"
+                           style="height:{{ (pressure * 100) | round(0) | int }}%;
+                                  background:{{ v.rule_colors[rule_key] }};
+                                  opacity:{% if is_governing %}1{% else %}0.25{% endif %};">
+                      </div>
+                    </div>
+                    <div class="text-[9px] uppercase mt-0.5
+                                {% if is_governing %}font-bold{% else %}text-muted/50{% endif %}"
+                         style="{% if is_governing %}color:{{ v.rule_colors[rule_key] }}{% endif %}">
+                      {{ rule_label }}
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="h-2.5 bg-pane-2/30 rounded-full mb-1 relative overflow-hidden">
+                <div class="absolute inset-0 bg-muted/10"></div>
+              </div>
+              <div class="text-[10px] text-muted/40 italic">awaiting position metadata</div>
+            {% endif %}
+
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  {# ────────────────────────────────────────────────────────────────────────────
+     SIDEBAR — Funnel + Rejections stacked
+     ────────────────────────────────────────────────────────────────────────── #}
+  <div class="flex flex-col gap-4">
+
+    {# Stage 1–3: Funnel #}
+    <section class="bg-pane border border-edge rounded-lg p-4">
+      <header class="flex items-baseline justify-between mb-3 gap-2">
+        <h2 class="text-mono text-xs font-semibold tracking-wider uppercase text-muted">
+          Signal Funnel
+        </h2>
+        <span class="text-[10px] font-mono text-muted/50 flex items-center gap-1">
+          {% if v.rejections.reconciles %}
+            <span class="text-gain">✓</span> reconciled
+          {% else %}
+            <span class="text-muted/40">· recon pending</span>
+          {% endif %}
+        </span>
+      </header>
+
+      {% if v.funnel.scanned == 0 %}
+        <div class="py-4 text-center text-[11px] font-mono text-muted/60">
+          No scan yet today — waiting for market open.
+        </div>
+      {% else %}
+        {# Funnel steps #}
+        {% set funnel_steps = [
+          ('Scanned',   v.funnel.scanned,    'text-muted',       'bg-muted/15'),
+          ('Qualified', v.funnel.qualified,  'text-accent',      'bg-accent/15'),
+          ('Staged',    v.funnel.staged,     'text-warn',        'bg-warn/15'),
+          ('Open',      v.funnel.open,       'text-gain',        'bg-gain/15'),
+        ] %}
+        <div class="space-y-2">
+          {% for label, count, text_cls, bg_cls in funnel_steps %}
+            <div class="flex items-center gap-3">
+              <div class="w-20 text-[10px] font-mono {{ text_cls }} uppercase tracking-wider shrink-0">
+                {{ label }}
+              </div>
+              <div class="flex-1 h-1.5 bg-pane-2 rounded-full overflow-hidden">
+                {% if v.funnel.scanned > 0 %}
+                  {% set bar_w = ((count if count is not none else 0) / v.funnel.scanned * 100) | round(1) %}
+                {% else %}
+                  {% set bar_w = 0 %}
+                {% endif %}
+                <div class="h-full rounded-full {{ bg_cls }}"
+                     style="width:{{ bar_w }}%;"></div>
+              </div>
+              <div class="w-8 text-right text-xs font-mono font-semibold {{ text_cls }}">
+                {{ count if count is not none else '—' }}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </section>
+
+    {# Rejections breakdown #}
+    <section class="bg-pane border border-edge rounded-lg p-4 flex-1">
+      <header class="flex items-baseline justify-between mb-3 gap-2">
+        <h2 class="text-mono text-xs font-semibold tracking-wider uppercase text-muted">
+          Rejections
+        </h2>
+        <span class="text-xs font-mono font-semibold
+                     {% if v.rejections.rejected > 0 %}text-warn{% else %}text-muted/50{% endif %}">
+          {{ v.rejections.rejected }}
+        </span>
+      </header>
+
+      {% set rejection_items = v.rejections.by_reason.items() | list %}
+      {% if not rejection_items %}
+        <div class="py-3 text-center text-[11px] font-mono text-muted/50">
+          No rejections today.
+        </div>
+      {% else %}
+        {# Sort by count desc — Jinja: collect + sort #}
+        {% set ns = namespace(sorted=[]) %}
+        {% for reason, count in rejection_items %}
+          {% set ns.sorted = ns.sorted + [(count, reason)] %}
+        {% endfor %}
+        <ul class="space-y-1.5">
+          {% for count, reason in ns.sorted | sort(reverse=true) %}
+            <li class="flex items-center justify-between gap-2 text-[11px] font-mono">
+              <span class="text-muted truncate" title="{{ reason }}">{{ reason }}</span>
+              <span class="shrink-0 px-1.5 py-0.5 rounded bg-warn/10 text-warn border border-warn/20
+                           font-semibold text-[10px]">{{ count }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+  </div>{# end sidebar #}
+
+</div>{# end main grid #}
+
+{# ══════════════════════════════════════════════════════════════════════════════
+   BOTTOM PANELS — Exit Queue · Attribution · Edge Monitor · Equity Curve
+   2-col on md+, stacked on mobile
+   ══════════════════════════════════════════════════════════════════════════════ #}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+  {# ── Exit Queue (Stage 5) ─────────────────────────────────────────────── #}
+  <section class="bg-pane border border-edge rounded-lg p-4">
+    <header class="flex items-baseline justify-between mb-3 gap-2">
+      <h2 class="text-mono text-xs font-semibold tracking-wider uppercase text-muted">
+        Exit Queue <span class="text-muted/40 font-normal text-[10px]">stage 5</span>
+      </h2>
+      <span class="text-[10px] font-mono text-muted/50">
+        {{ v.exit_queue | length }} pending
+      </span>
+    </header>
+
+    {% if not v.exit_queue %}
+      <div class="py-6 text-center">
+        <div class="text-muted/50 text-xs font-mono">No exits queued</div>
+        <div class="text-muted/30 text-[10px] font-mono mt-1">Exit orders will appear here when positions trigger a rule.</div>
+      </div>
+    {% else %}
+      <ul class="space-y-2">
+        {% for item in v.exit_queue %}
+          <li class="flex items-center justify-between text-xs font-mono
+                     border border-edge/50 rounded-md p-2 bg-pane-2/30">
+            <span class="font-semibold text-mono">{{ item.symbol }}</span>
+            <span class="text-muted">{{ item.rule | upper }}</span>
+            <span class="text-warn">{{ item.status }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  {# ── Exit Attribution (Stage 6) ──────────────────────────────────────── #}
+  <section class="bg-pane border border-edge rounded-lg p-4">
+    <header class="flex items-baseline justify-between mb-3 gap-2">
+      <h2 class="text-mono text-xs font-semibold tracking-wider uppercase text-muted">
+        Exit Attribution <span class="text-muted/40 font-normal text-[10px]">stage 6</span>
+      </h2>
+      <span class="text-[10px] font-mono text-muted/50">
+        {{ v.attribution.total }} exits
+      </span>
+    </header>
+
+    {% if v.attribution.empty %}
+      <div class="py-6 text-center">
+        <div class="text-muted/50 text-xs font-mono">Accumulating — no closed trades yet</div>
+        <div class="flex justify-center gap-4 mt-4 flex-wrap">
+          {% for rule_key, rule_label in [('stop','STOP'),('drift','DRIFT'),('guard','GUARD'),('time','TIME')] %}
+            <div class="flex items-center gap-1.5 text-[10px] font-mono text-muted/40">
+              <span class="w-2 h-2 rounded-sm inline-block opacity-30"
+                    style="background:{{ v.rule_colors[rule_key] }}"></span>
+              {{ rule_label }}
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% else %}
+      <ul class="space-y-2">
+        {% for rule, data in v.attribution.by_rule.items() %}
+          <li class="flex items-center justify-between text-xs font-mono">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-sm inline-block"
+                    style="background:{{ data.color }}"></span>
+              <span class="font-semibold uppercase" style="color:{{ data.color }}">{{ rule }}</span>
+              <span class="text-muted">{{ data.count }}×</span>
+            </div>
+            <span class="{% if data.pnl >= 0 %}text-gain{% else %}text-loss{% endif %}">
+              {{ data.pnl | money_signed }}
+            </span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  {# ── Edge Monitor ─────────────────────────────────────────────────────── #}
+  <section class="bg-pane border border-edge rounded-lg p-4">
+    <header class="flex items-baseline justify-between mb-3 gap-2">
+      <h2 class="text-mono text-xs font-semibold tracking-wider uppercase text-muted">
+        Edge Monitor
+      </h2>
+      {% if v.edge.empty %}
+        <span class="text-[10px] font-mono text-muted/40 italic">accumulating data</span>
+      {% endif %}
+    </header>
+
+    <div class="grid grid-cols-2 gap-3">
+      {# Win Rate #}
+      <div class="bg-pane-2 rounded-md p-3">
+        <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Win Rate</div>
+        <div class="text-sm font-mono font-semibold {% if v.edge.empty %}text-muted/40{% endif %}">
+          {% if v.edge.win_rate is not none %}
+            {{ '%.1f' % (v.edge.win_rate * 100) }}%
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+      {# Avg Hold #}
+      <div class="bg-pane-2 rounded-md p-3">
+        <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Avg Hold</div>
+        <div class="text-sm font-mono font-semibold {% if v.edge.empty %}text-muted/40{% endif %}">
+          {% if v.edge.avg_hold is not none %}
+            {{ v.edge.avg_hold }}d
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+      {# Profit Factor #}
+      <div class="bg-pane-2 rounded-md p-3">
+        <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Profit Factor</div>
+        <div class="text-sm font-mono font-semibold {% if v.edge.empty %}text-muted/40{% endif %}">
+          {% if v.edge.profit_factor is not none %}
+            {{ '%.2f' % v.edge.profit_factor }}
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+      {# Drift Capture #}
+      <div class="bg-pane-2 rounded-md p-3">
+        <div class="text-[10px] text-muted uppercase tracking-wider font-mono mb-1">Drift Capture</div>
+        <div class="text-sm font-mono font-semibold {% if v.edge.empty %}text-muted/40{% endif %}">
+          {% if v.edge.drift_capture is not none %}
+            {{ '%.1f' % (v.edge.drift_capture * 100) }}%
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {# ── Equity Curve ─────────────────────────────────────────────────────── #}
+  <section class="bg-pane border border-edge rounded-lg p-4">
+    <header class="flex items-baseline justify-between mb-3 gap-2">
+      <h2 class="text-mono text-xs font-semibold tracking-wider uppercase text-muted">
+        Equity Curve
+      </h2>
+      {% if v.equity.ytd is not none %}
+        <span class="text-xs font-mono font-semibold
+                     {% if v.equity.ytd >= 0 %}text-gain{% else %}text-loss{% endif %}">
+          YTD {{ v.equity.ytd | pct_signed }}
+        </span>
+      {% endif %}
+    </header>
+
+    {% if v.equity.empty %}
+      <div class="py-8 text-center">
+        <div class="text-muted/50 text-xs font-mono">No closed trades yet</div>
+        <div class="text-muted/30 text-[10px] font-mono mt-1">
+          Curve begins on first exit
+        </div>
+        {# Placeholder chart skeleton — not a broken chart #}
+        <div class="mt-4 h-16 border border-edge/20 rounded bg-pane-2/20 flex items-end px-2 gap-0.5">
+          {% for h in [20, 25, 22, 30, 28, 35, 32, 40, 38, 45, 42, 48] %}
+            <div class="flex-1 bg-muted/10 rounded-t" style="height:{{ h }}%;"></div>
+          {% endfor %}
+        </div>
+      </div>
+    {% else %}
+      {# Only instantiate Lightweight Charts when series is non-empty #}
+      <div id="pead-equity-chart" class="h-32 w-full"></div>
+      <script>
+        (function() {
+          var el = document.getElementById('pead-equity-chart');
+          if (!el || typeof LightweightCharts === 'undefined') return;
+          var chart = LightweightCharts.createChart(el, {
+            layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
+            grid: { vertLines: { color: '#1f2937' }, horzLines: { color: '#1f2937' } },
+            crosshair: { mode: LightweightCharts.CrosshairMode.Magnet },
+            rightPriceScale: { borderColor: '#1f2937' },
+            timeScale: { borderColor: '#1f2937', timeVisible: true },
+            width: el.clientWidth,
+            height: 128,
+          });
+          var series = chart.addAreaSeries({
+            lineColor: '#10b981',
+            topColor: 'rgba(16,185,129,0.2)',
+            bottomColor: 'rgba(16,185,129,0)',
+            lineWidth: 2,
+          });
+          series.setData({{ v.equity.series | tojson }});
+          chart.timeScale().fitContent();
+        })();
+      </script>
+    {% endif %}
+  </section>
+
+</div>{# end bottom panels #}

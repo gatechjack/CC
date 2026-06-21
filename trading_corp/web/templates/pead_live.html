@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}PEAD Engine — Operations · Trading Corp{% endblock %}
+
+{% block content %}
+{# ── Page-level sticky header ──────────────────────────────────────────────── #}
+<div class="sticky top-[57px] z-20 bg-bg/95 backdrop-blur-sm border-b border-edge mb-4">
+  <div class="py-3 flex flex-wrap items-center gap-3">
+
+    {# Title + version tag #}
+    <div class="flex items-baseline gap-2 min-w-0">
+      <h1 class="text-mono font-semibold text-sm tracking-tight uppercase whitespace-nowrap">
+        PEAD Engine — Operations
+      </h1>
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-mono tracking-wider
+                   bg-accent/15 text-accent border border-accent/30 shrink-0">
+        v1
+      </span>
+    </div>
+
+    {# PAPER / LIVE pill — MUST be unmissable #}
+    {% if v.mode.halted %}
+      {# Halted banner replaces the mode pill #}
+      <span class="flex items-center gap-2 px-3 py-1.5 rounded-md
+                   bg-loss/20 text-loss border-2 border-loss
+                   text-xs font-mono font-semibold uppercase tracking-wider animate-pulse">
+        ⛔ HALTED
+        {% if v.mode.halt_reason %}
+          <span class="font-normal normal-case text-loss/80">— {{ v.mode.halt_reason }}</span>
+        {% endif %}
+      </span>
+    {% elif v.mode.paper %}
+      {# PAPER: amber, dashed border, prominent #}
+      <span class="flex items-center gap-1.5 px-3 py-1.5 rounded-md
+                   bg-warn/15 text-warn border-2 border-dashed border-warn
+                   text-xs font-mono font-semibold uppercase tracking-wider">
+        ⚠ PAPER
+        {% if not v.mode.wired %}
+          <span class="text-[10px] text-muted/80 font-normal normal-case">(unwired)</span>
+        {% endif %}
+      </span>
+    {% else %}
+      {# LIVE: solid green #}
+      <span class="flex items-center gap-1.5 px-3 py-1.5 rounded-md
+                   bg-gain/20 text-gain border-2 border-gain
+                   text-xs font-mono font-semibold uppercase tracking-wider">
+        ● LIVE
+        {% if not v.mode.wired %}
+          <span class="text-[10px] text-muted/80 font-normal normal-case">(unwired)</span>
+        {% endif %}
+      </span>
+    {% endif %}
+
+    {# ET clock #}
+    <span id="pead-clock"
+          class="ml-auto font-mono text-xs text-muted tabular-nums whitespace-nowrap">
+      --:--:-- ET
+    </span>
+
+    {# Kill switch — only write surface #}
+    <button hx-post="/telemetry/pead/halt"
+            hx-swap="none"
+            hx-confirm="Halt PEAD and flatten the open book? This stops all new entries."
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md
+                   bg-loss/15 text-loss border border-loss/60
+                   hover:bg-loss/30 hover:border-loss
+                   text-xs font-mono font-semibold uppercase tracking-wider
+                   transition-colors cursor-pointer">
+      ◼ HALT PEAD
+    </button>
+  </div>
+
+  {# ── Stage-0 health strip ─────────────────────────────────────────────── #}
+  <div class="pb-3 flex flex-wrap items-center gap-2">
+    <span class="text-[10px] text-muted font-mono uppercase tracking-widest mr-1">Data feeds:</span>
+    {% for feed_key, feed_label in [('eodhd', 'EODHD'), ('tastytrade', 'Tastytrade'), ('robinhood', 'Robinhood')] %}
+      {% set feed = v.health[feed_key] %}
+      {% if feed.status == 'live' %}
+        <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md
+                     bg-gain/10 border border-gain/30
+                     text-[11px] font-mono text-gain"
+              title="{{ feed.detail or '' }}{{ ' · last ok: ' ~ feed.last_ok_ts if feed.last_ok_ts else '' }}">
+          <span class="w-1.5 h-1.5 rounded-full bg-gain inline-block"></span>
+          {{ feed_label }} <span class="text-gain/60">LIVE</span>
+        </span>
+      {% elif feed.status == 'degraded' %}
+        <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md
+                     bg-warn/10 border border-warn/30
+                     text-[11px] font-mono text-warn"
+              title="{{ feed.detail or '' }}{{ ' · last ok: ' ~ feed.last_ok_ts if feed.last_ok_ts else '' }}">
+          <span class="w-1.5 h-1.5 rounded-full bg-warn inline-block"></span>
+          {{ feed_label }} <span class="text-warn/70">DEGRADED</span>
+        </span>
+      {% elif feed.status == 'down' %}
+        <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md
+                     bg-loss/20 border-2 border-loss/70
+                     text-[11px] font-mono text-loss font-semibold"
+              title="{{ feed.detail or 'Feed is down' }}{{ ' · last ok: ' ~ feed.last_ok_ts if feed.last_ok_ts else '' }}">
+          <span class="w-1.5 h-1.5 rounded-full bg-loss inline-block animate-pulse"></span>
+          {{ feed_label }} <span>DOWN ⚠</span>
+        </span>
+      {% else %}
+        <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md
+                     bg-pane-2 border border-edge
+                     text-[11px] font-mono text-muted"
+              title="{{ feed.detail or 'Status unknown' }}">
+          <span class="w-1.5 h-1.5 rounded-full bg-muted/40 inline-block"></span>
+          {{ feed_label }} <span class="text-muted/50">—</span>
+        </span>
+      {% endif %}
+    {% endfor %}
+    <span class="ml-auto text-[10px] text-muted/50 font-mono">
+      {{ v.generated_ts | et_hms }} ET
+    </span>
+  </div>
+</div>
+
+{# ── HTMX-polled live sections ─────────────────────────────────────────────── #}
+<div id="pead-live"
+     hx-get="/telemetry/pead/partials/live"
+     hx-trigger="every 15s"
+     hx-swap="innerHTML">
+  {% include "partials/pead_live_sections.html" %}
+</div>
+
+{# Fuse-bar animation — smooth width transitions between polls #}
+<style>
+  .pead-fuse-fill { transition: width 1s ease; }
+  .pead-cell-fill { transition: height 1s ease; }
+  @keyframes row-danger {
+    0%, 100% { background-color: transparent; }
+    50%       { background-color: rgba(244, 63, 94, 0.08); }
+  }
+  .pead-row-danger { animation: row-danger 2s ease-in-out infinite; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    var clockEl = document.getElementById('pead-clock');
+    if (!clockEl) return;
+    function tick() {
+      try {
+        var now = new Date();
+        var et = now.toLocaleTimeString('en-US', {
+          timeZone: 'America/New_York',
+          hour12: false,
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        });
+        clockEl.textContent = et + ' ET';
+      } catch (e) {
+        clockEl.textContent = '--:--:-- ET';
+      }
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+</script>
+{% endblock %}

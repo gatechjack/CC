@@ -1,0 +1,57 @@
+# Code-safety sample universe (NOT the production universe).
+# Mix designed to exercise real-data shape edge cases:
+#  - liquid large-cap (clean path)
+#  - mid / small / thin (wide spreads, gap-through fills)
+#  - recent IPOs with <8 quarters of EPS (SPARSE/MISSING earnings history)
+#  - one deliberately-invalid ticker (no data at all)
+# Some recent-IPO names are cross-exchange; included purely to test the
+# sparse-history skip path, not as production universe members.
+
+# --- liquid large-cap ---
+AAPL
+MSFT
+NVDA
+AMZN
+GOOGL
+META
+TSLA
+AVGO
+COST
+AMD
+
+# --- mid-cap Nasdaq ---
+MRVL
+ON
+MCHP
+ZS
+DDOG
+TEAM
+WDAY
+CDNS
+SNPS
+PANW
+
+# --- small / thinner Nasdaq ---
+RMBS
+FORM
+PLAB
+CALM
+UFPI
+AAON
+SANM
+PATK
+HELE
+COLM
+
+# --- recent IPOs: sparse / missing EPS history (<8 quarters) ---
+ARM
+CART
+RDDT
+ALAB
+RUM
+SOUN
+KVYO
+RBRK
+
+# --- deliberately invalid (no data — must skip, not crash) ---
+ZXQWVT
