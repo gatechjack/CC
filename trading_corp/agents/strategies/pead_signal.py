@@ -47,11 +47,21 @@ class SueParams:
 
 @dataclass(frozen=True)
 class ScreenParams:
-    """Liquidity / universe screen applied BEFORE the signal."""
-    min_price: float = 10.0
-    min_avg_daily_volume: float = 1_000_000.0       # 30d avg shares
-    min_market_cap: float = 1_000_000_000.0         # $1B
-    # Standard PEAD universe convention — exclude financials & utilities.
+    """Liquidity / universe screen applied BEFORE the signal.
+
+    Floors are tuned for THIS account, not institutional PEAD. Tiny orders +
+    fractional shares on Robinhood mean the binding constraint is "can a tiny
+    order fill", NOT "can I move size" — so the floors only screen out names
+    too illiquid/dead to fill at all. The >$1B literature floor (which dodges
+    small-cap slippage-for-size) does NOT apply here and would delete the
+    Nasdaq Composite's small-cap tail, where PEAD's edge concentrates.
+    Config-driven via strategies.yaml (see `screen_params_from_config`) so the
+    floors can be retuned without a code change.
+    """
+    min_price: float = 5.0
+    min_avg_daily_volume: float = 200_000.0         # 30d avg shares
+    min_market_cap: float = 100_000_000.0           # $100M
+    # Exclude financials & utilities (standard PEAD universe convention).
     excluded_sectors: frozenset[str] = frozenset({
         "financial services", "financials", "financial", "utilities", "utility",
     })
@@ -236,3 +246,37 @@ def rank_wave(
         ok, reason = passes_screen(inp, screen_params)
         candidates.append(PeadCandidate(symbol, sue, ok, reason))
     return select_candidates(candidates, sue_params)
+
+
+# ---------------------------------------------------------------------------
+# Config builders — let strategies.yaml drive the params (retune w/o code change)
+# ---------------------------------------------------------------------------
+
+def screen_params_from_config(cfg: Mapping) -> ScreenParams:
+    """Build ScreenParams from a strategies.yaml `screen:` block; unset keys
+    fall back to the (account-tuned) defaults above."""
+    base = ScreenParams()
+    sectors = cfg.get("excluded_sectors")
+    return ScreenParams(
+        min_price=float(cfg.get("min_price", base.min_price)),
+        min_avg_daily_volume=float(cfg.get("min_avg_volume_30d", base.min_avg_daily_volume)),
+        min_market_cap=float(cfg.get("min_market_cap", base.min_market_cap)),
+        excluded_sectors=(
+            frozenset(str(s).strip().lower() for s in sectors)
+            if sectors else base.excluded_sectors
+        ),
+        min_days_to_next_earnings=int(
+            cfg.get("min_days_to_next_earnings", base.min_days_to_next_earnings)
+        ),
+    )
+
+
+def sue_params_from_config(cfg: Mapping) -> SueParams:
+    """Build SueParams from a strategies.yaml `signal:` block."""
+    base = SueParams()
+    return SueParams(
+        lookback=int(cfg.get("lookback", base.lookback)),
+        sue_threshold=float(cfg.get("sue_threshold", base.sue_threshold)),
+        top_quintile=bool(cfg.get("top_quintile", base.top_quintile)),
+        quintile_pct=float(cfg.get("quintile_pct", base.quintile_pct)),
+    )

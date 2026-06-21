@@ -8,26 +8,26 @@ sector/market-cap snapshot (yfinance .info), builds the ranked `EventSignal`s,
 runs the backtest with explicit friction, and prints in-sample / out-of-sample
 reports.
 
+Screen + signal params are CONFIG-DRIVEN from `config/strategies.yaml`
+(the `robinhood_pead` block) so the floors can be retuned without a code
+change; --lookback / --sue-threshold / --no-quintile override the signal side.
+
 REQUIRES (to run on real data):
   - FINNHUB_API_KEY in the environment (the yfinance EPS fallback is unreliable
     on current yfinance; Finnhub is the working primary).
-  - A universe of tickers (--universe AAPL,MSFT,... or --universe @sp500.txt).
+  - A universe of tickers (--universe AAPL,MSFT,... or --universe @nasdaq_composite.txt).
 
-Example:
-  FINNHUB_API_KEY=xxx python -m scripts.backtest_pead \\
-    --universe @sp500.txt --start 2021-01-01 --end 2024-12-31 \\
-    --oos-split 2024-01-01 --exit-mode pure_hold
-
-This is a VALIDATION tool — it places no orders and touches no broker. The
-kill-gate decision (proceed to the live division vs. shelve) is read off these
-reports by the Board.
+This is a VALIDATION tool — it places no orders and touches no broker.
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
+from dataclasses import replace
 from datetime import date, timedelta
+
+import yaml
 
 from trading_corp.agents.strategies.pead_backtest import Bar, BacktestParams
 from trading_corp.agents.strategies.pead_backtest_driver import (
@@ -35,7 +35,10 @@ from trading_corp.agents.strategies.pead_backtest_driver import (
     format_report,
     run_split_backtest,
 )
-from trading_corp.agents.strategies.pead_signal import ScreenParams, SueParams
+from trading_corp.agents.strategies.pead_signal import (
+    screen_params_from_config,
+    sue_params_from_config,
+)
 from trading_corp.data.earnings_provider import EarningsProvider
 
 log = logging.getLogger("backtest_pead")
@@ -93,14 +96,24 @@ def fetch_bars(symbol: str, start: date, end: date) -> list[Bar]:
 
 def fetch_info(symbol: str) -> dict:
     """Static sector + market-cap snapshot via yfinance .info (best-effort).
-    NOTE: this is point-in-time, not historical — a documented backtest
-    simplification for the sector/size screen."""
+    NOTE: point-in-time, not historical — a documented backtest simplification
+    for the sector/size screen."""
     try:
         import yfinance as yf  # type: ignore
         info = yf.Ticker(symbol).info or {}
     except Exception:  # noqa: BLE001
         info = {}
     return {"market_cap": info.get("marketCap"), "sector": info.get("sector")}
+
+
+def load_pead_config(path: str) -> dict:
+    """Read the `robinhood_pead` block from strategies.yaml ({} if absent)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return (yaml.safe_load(f) or {}).get("robinhood_pead", {}) or {}
+    except FileNotFoundError:
+        log.warning("strategies.yaml not found at %s — using built-in defaults", path)
+        return {}
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -110,9 +123,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--end", required=True, type=date.fromisoformat)
     p.add_argument("--oos-split", type=date.fromisoformat, default=None,
                    help="in-sample < date <= out-of-sample")
-    # signal
-    p.add_argument("--lookback", type=int, default=8)
-    p.add_argument("--sue-threshold", type=float, default=1.5)
+    p.add_argument("--strategies-yaml", default="config/strategies.yaml",
+                   help="source of the robinhood_pead screen/signal params")
+    # signal overrides (default: read from the strategies.yaml robinhood_pead block)
+    p.add_argument("--lookback", type=int, default=None)
+    p.add_argument("--sue-threshold", type=float, default=None)
     p.add_argument("--no-quintile", action="store_true")
     # exits / friction / sizing
     p.add_argument("--exit-mode", choices=["pure_hold", "partial_trail"], default="pure_hold")
@@ -129,6 +144,19 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
+    # --- config-driven screen + signal params (CLI overrides the signal) ---
+    cfg = load_pead_config(args.strategies_yaml)
+    screen_params = screen_params_from_config(cfg.get("screen", {}) or {})
+    sue_params = sue_params_from_config(cfg.get("signal", {}) or {})
+    if args.lookback is not None:
+        sue_params = replace(sue_params, lookback=args.lookback)
+    if args.sue_threshold is not None:
+        sue_params = replace(sue_params, sue_threshold=args.sue_threshold)
+    if args.no_quintile:
+        sue_params = replace(sue_params, top_quintile=False)
+    log.info("screen=%s", screen_params)
+    log.info("signal=%s", sue_params)
+
     universe = load_universe(args.universe)
     log.info("universe: %d symbols", len(universe))
 
@@ -143,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     fetch_end = args.end + timedelta(days=_TRAIL_DAYS)
 
     eps_by, bars_by, info_by = {}, {}, {}
-    for sym in universe:
+    for i, sym in enumerate(universe):
         eps = provider.get_quarterly_eps(sym)
         if not eps:
             continue
@@ -151,13 +179,10 @@ def main(argv: list[str] | None = None) -> int:
         if not bars:
             continue
         eps_by[sym], bars_by[sym], info_by[sym] = eps, bars, fetch_info(sym)
+        if (i + 1) % 100 == 0:
+            log.info("  ...%d/%d symbols scanned, %d with data", i + 1, len(universe), len(eps_by))
     log.info("fetched data for %d symbols", len(eps_by))
 
-    sue_params = SueParams(
-        lookback=args.lookback,
-        sue_threshold=args.sue_threshold,
-        top_quintile=not args.no_quintile,
-    )
     params = BacktestParams(
         atr_period=14, max_hold_trading_days=args.max_hold,
         slippage_bps=args.slippage_bps, half_spread_bps=args.half_spread_bps,
@@ -167,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signals = build_signals(
         eps_by, bars_by, info_by,
-        sue_params=sue_params, screen_params=ScreenParams(),
+        sue_params=sue_params, screen_params=screen_params,
         window_start=args.start, window_end=args.end,
     )
     log.info("built %d signals", len(signals))
@@ -178,8 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print()
     print(f"PEAD backtest — exit_mode={args.exit_mode} "
-          f"lookback={args.lookback} sue>{args.sue_threshold} "
-          f"quintile={not args.no_quintile} friction="
+          f"lookback={sue_params.lookback} sue>{sue_params.sue_threshold} "
+          f"quintile={sue_params.top_quintile} friction="
           f"{args.slippage_bps + args.half_spread_bps:.0f}bps/side")
     for label in ("all", "in_sample", "out_of_sample"):
         if label in reports:

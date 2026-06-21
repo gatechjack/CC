@@ -16,8 +16,10 @@ from trading_corp.agents.strategies.pead_signal import (
     _percentile,
     passes_screen,
     rank_wave,
+    screen_params_from_config,
     select_candidates,
     standardized_ue,
+    sue_params_from_config,
     unexpected_earnings,
 )
 
@@ -86,11 +88,11 @@ def test_passes_screen_clean():
 @pytest.mark.parametrize(
     "overrides, reason",
     [
-        ({"price": 5.0}, "price_below_min"),
+        ({"price": 3.0}, "price_below_min"),                  # floor now $5
         ({"price": None}, "missing_price"),
-        ({"avg_daily_volume_30d": 500_000.0}, "volume_below_min"),
+        ({"avg_daily_volume_30d": 100_000.0}, "volume_below_min"),  # floor now 200k
         ({"avg_daily_volume_30d": None}, "missing_volume"),
-        ({"market_cap": 500_000_000.0}, "mktcap_below_min"),
+        ({"market_cap": 50_000_000.0}, "mktcap_below_min"),   # floor now $100M
         ({"market_cap": None}, "missing_market_cap"),
         ({"sector": "Utilities"}, "excluded_sector"),
         ({"sector": "Financial Services"}, "excluded_sector"),
@@ -176,3 +178,34 @@ def test_rank_wave_missing_screen_inputs_excluded():
         sue_params=SueParams(lookback=3, sue_threshold=1.5, top_quintile=False),
     )
     assert out == []
+
+
+# ---------------------------------------------------------------------------
+# Config builders (strategies.yaml -> params)
+# ---------------------------------------------------------------------------
+
+def test_screen_params_from_config_loosened_floors():
+    sp = screen_params_from_config({
+        "min_price": 5.0,
+        "min_avg_volume_30d": 200000,
+        "min_market_cap": 100000000,
+        "min_days_to_next_earnings": 65,
+        "excluded_sectors": ["Financials", "Utilities"],
+    })
+    assert sp.min_price == 5.0
+    assert sp.min_avg_daily_volume == 200_000.0
+    assert sp.min_market_cap == 100_000_000.0
+    assert {"financials", "utilities"} <= sp.excluded_sectors
+
+
+def test_screen_params_from_config_defaults_on_empty():
+    sp = screen_params_from_config({})
+    assert sp.min_price == 5.0                    # account-tuned defaults
+    assert sp.min_avg_daily_volume == 200_000.0
+    assert sp.min_market_cap == 100_000_000.0
+
+
+def test_sue_params_from_config_and_defaults():
+    s = sue_params_from_config({"lookback": 6, "sue_threshold": 2.0, "top_quintile": False})
+    assert (s.lookback, s.sue_threshold, s.top_quintile) == (6, 2.0, False)
+    assert sue_params_from_config({}).lookback == 8

@@ -1893,3 +1893,37 @@ tasty_options_iron_condor:
     require_approval_for:
       - any_neutral_strategy_open_or_close
       - any_action_when_vix_above_30
+
+# Post-Earnings-Announcement-Drift, long-only US equities on the agentic
+# Robinhood account (680725082). Autonomous (no per-trade approval) once the
+# Board blesses the strategy; paper-first. Division wiring lands in Phase 2.
+robinhood_pead:
+  enabled: false
+  auto_execute: false            # Board flips true to bless (HITL rules)
+  division: robinhood_pead
+
+  # --- Universe screen — CONFIG-DRIVEN floors (retune without a code change) ---
+  # Floors LOOSENED to match the Nasdaq Composite small/mid-cap tail, where
+  # PEAD's edge concentrates. At THIS account size (tiny orders + fractional
+  # shares on Robinhood) the binding constraint is "can a tiny order fill", NOT
+  # "can I move size" — so the floors only screen out names too illiquid/dead
+  # to fill at all. The >$1B institutional PEAD floor (which dodges small-cap
+  # slippage-for-size) does NOT apply here and would delete the very tail the
+  # Nasdaq Composite was chosen to reach.
+  screen:
+    min_price: 5.0
+    min_avg_volume_30d: 200000      # 30d avg shares (was 1,000,000)
+    min_market_cap: 100000000       # $100M (was $1B)
+    min_days_to_next_earnings: 65   # trading days of drift room (unchanged)
+    excluded_sectors: [financial services, financials, financial, utilities, utility]
+
+  # --- SRW-SUE signal ---
+  signal:
+    lookback: 8           # trailing quarters of UE for the stdev denominator
+    sue_threshold: 1.5    # long candidate requires SUE above this (z)
+    top_quintile: true    # also require top-quintile SUE within the wave
+    quintile_pct: 0.80
+
+  # NOTE: live sizing / exit-rule / max_concurrent params land in Phase 2 (2E)
+  # when the division is wired. position_pct + max_concurrent there will be
+  # PLUMBING-VALIDATION values at $75 (the intended ~20-25 name book needs funding).
