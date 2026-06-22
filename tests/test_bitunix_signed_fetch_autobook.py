@@ -186,9 +186,12 @@ async def test_real_per_fill_fee_is_summed_not_assumed_rate(db_url):
     """A maker-fee fill + a taker-fee fill → the booked exit fee is the SUM of
     the two REAL per-fill fees, never a single assumed rate × notional."""
     _seed_short(db_url)
+    # Fills sum to the seeded record qty (0.0007528) so this test stays about the
+    # fee being SUMMED (not assumed-rate) — not about D1 qty attribution (which
+    # would scale the fee to the record's share when close qty != record qty).
     broker = _FillBroker([
-        {"price": 66300.0, "qty": 0.0004, "fee": 0.001},   # maker-ish (small fee)
-        {"price": 66320.0, "qty": 0.0004, "fee": 0.005},   # taker-ish (larger fee)
+        {"price": 66300.0, "qty": 0.0004, "fee": 0.001},     # maker-ish (small fee)
+        {"price": 66320.0, "qty": 0.0003528, "fee": 0.005},  # taker-ish (larger fee)
     ])
     await _autobook_missing_close_real(broker, db_url, "ord", _NOW)
     _, extra = _row(db_url)

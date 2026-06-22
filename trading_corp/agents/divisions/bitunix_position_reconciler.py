@@ -75,6 +75,18 @@ AUTO_BOOK_SERVER_SIDE_CLOSE_KIND = "auto_book_server_side_close"
 AUTO_BOOK_DEFERRED_KIND = "auto_book_deferred"
 POSITION_STATE_HALT_RELEASED_KIND = "position_state_halt_released"
 
+# ── D1 netted-close double-booking (2026-06-21) ─────────────────────────────
+# When several stacked records share ONE server-side netted close, each record's
+# auto-book must attribute only ITS share of the close, not the full netted qty —
+# otherwise the PnL/fee are booked N times over. The real-fill auto-book books
+# `min(record_qty, netted_close_qty)`: for a single record where the recorded qty
+# ~ the closed qty (incl. a normal ~5% fill gap), min() == the close qty and the
+# economics are BYTE-UNCHANGED vs the prior full-qty booking. A record qty that
+# GROSSLY exceeds the netted close (>= this ratio) is a real data error (stale or
+# duplicate record), not a fill gap — min() still caps it safely, but we FLAG it
+# (log.warning, never defer/crash) so the anomaly is surfaced for review.
+D1_QTY_ANOMALY_RATIO = 1.5
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -767,11 +779,33 @@ async def _autobook_missing_close_real(
         entry = float(entry)
         level = float(level)
         vwap = float(agg["vwap_price"])
-        fqty = float(agg["total_qty"])
-        exit_fee = float(agg["total_fee"])
-        # Gross price PnL on the REAL fill (same convention as the estimate, which
-        # used the stop level): a short loses when the fill is above entry.
-        pnl = ((entry - vwap) if side == "sell" else (vwap - entry)) * fqty
+        # D1 (netted-close double-booking): `q_close` is the TOTAL qty closed by
+        # the real netted fill(s); `closed_qty` is THIS record's attributed share,
+        # capped at the close qty. When stacked records share one netted close,
+        # each books min(its_qty, q_close) so the per-record PnL/fee sum to the
+        # netted close ONCE, not N times. For a single record where recorded qty ~
+        # the closed qty (incl. a normal fill gap), min() == q_close → BYTE-
+        # UNCHANGED vs the prior full-qty booking.
+        q_close = float(agg["total_qty"])
+        closed_qty = min(qty, q_close)
+        # FLAG (do not defer/crash) a record qty that grossly exceeds the netted
+        # close: a real data error (stale/duplicate record), not a normal ~5% fill
+        # gap. min() above still caps the booked economics safely.
+        if qty > q_close * D1_QTY_ANOMALY_RATIO:
+            log.warning(
+                "reconciler D1: record qty %.10g grossly exceeds netted close "
+                "qty %.10g (ratio %.3f >= %.2f) for order_id=%s — capping at "
+                "close qty; possible stale/duplicate record or fill-history gap",
+                qty, q_close, (qty / q_close) if q_close > 0 else float("inf"),
+                D1_QTY_ANOMALY_RATIO, order_id,
+            )
+        # Exit fee is the proportional share of the netted close fee for THIS
+        # record's attributed qty (== the full fee when closed_qty == q_close).
+        exit_fee = float(agg["total_fee"]) * (closed_qty / q_close)
+        # Gross price PnL on the REAL fill, attributed to THIS record's closed
+        # share (same convention as the estimate, which used the stop level): a
+        # short loses when the fill is above entry.
+        pnl = ((entry - vwap) if side == "sell" else (vwap - entry)) * closed_qty
         # Observed slippage of the real fill vs the RECORDED stop level (signed:
         # positive = adverse / filled worse than the trigger).
         slip_pts = (vwap - level) if side == "sell" else (level - vwap)
@@ -829,7 +863,8 @@ async def _autobook_missing_close_real(
                 "VALUES (?, ?, ?, ?)",
                 (now, RECONCILER_ACTOR, AUTO_BOOK_SERVER_SIDE_CLOSE_KIND,
                  json.dumps({"order_id": order_id, "side": side, "entry": entry,
-                             "stop_level": level, "vwap_fill": vwap, "qty": fqty,
+                             "stop_level": level, "vwap_fill": vwap,
+                             "qty": closed_qty, "netted_close_qty": q_close,
                              "n_fills": agg["n_fills"], "exit_fee": exit_fee,
                              "pnl": pnl, "net_realized_usd": net,
                              "result": result_str, "exit_kind": exit_kind,
