@@ -70,7 +70,7 @@ import sqlite3
 import sys
 from collections import Counter
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -261,13 +261,18 @@ def run_redeem_sim(
     trades = []
     for f in fires:
         net_r = f.net_r_taker if fee_mode == "taker" else f.net_r_maker
+        # f.ts is the ENTRY (fire) bar. The ORIGINAL signal bar is bars_waited
+        # 3m bars earlier (0 for a first-pass fire). Surface both unambiguously.
+        entry_dt = datetime.fromisoformat(f.ts)
+        signal_dt = entry_dt - timedelta(seconds=180 * f.bars_waited)
         trades.append({
-            "signal_ts": f.ts,            # the FIRE-bar ts (entry bar), ISO-UTC
+            "signal_ts": signal_dt.isoformat(),   # ORIGINAL signal-bar ts, ISO-UTC
+            "entry_ts": f.ts,                      # FIRE/entry-bar ts (== signal_ts iff bars_waited==0)
             "redeemed": f.redeemed,
             "bars_waited": f.bars_waited,
-            "entry_bar_price": f.entry,   # FIRE-bar price, NOT signal-bar price
+            "entry_bar_price": f.entry,            # FIRE-bar price, NOT stale signal-bar price
             "side": f.side,
-            "result": f.outcome,          # win | loss | open | plan_skip
+            "result": f.outcome,                   # win | loss | open | plan_skip
             "gross_R": f.gross_r,
             "net_R": net_r,
             "net_R_taker": f.net_r_taker,

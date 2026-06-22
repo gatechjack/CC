@@ -85,7 +85,7 @@ def test_no_look_ahead_future_bars_do_not_change_past_decisions():
     def _past(res):
         # trades whose ENTRY bar ts is <= cutoff (these must be unaffected)
         cut_iso = cutoff.isoformat()
-        return [t for t in res["trades"] if t["signal_ts"] <= cut_iso]
+        return [t for t in res["trades"] if t["entry_ts"] <= cut_iso]
 
     base_past = _past(base)
     mut_past = _past(mut)
@@ -93,6 +93,7 @@ def test_no_look_ahead_future_bars_do_not_change_past_decisions():
     # identical count and identical entry prices / sides / bars_waited
     assert len(base_past) == len(mut_past)
     for a, b in zip(base_past, mut_past):
+        assert a["entry_ts"] == b["entry_ts"]
         assert a["signal_ts"] == b["signal_ts"]
         assert a["side"] == b["side"]
         assert a["bars_waited"] == b["bars_waited"]
@@ -131,9 +132,9 @@ def test_fees_applied_and_all_R_finite_and_redeem_priced_at_fire_bar():
         for key in ("gross_R", "net_R", "net_R_taker", "net_R_maker"):
             v = t[key]
             assert v is None or math.isfinite(v), f"{key} is NaN/inf: {t}"
-        # entry price equals the FIRE bar's close (never signal-bar stale px)
-        if t["signal_ts"] in close_by_ts:
-            assert t["entry_bar_price"] == pytest.approx(close_by_ts[t["signal_ts"]])
+        # entry price equals the FIRE/ENTRY bar's close (never signal-bar stale px)
+        if t["entry_ts"] in close_by_ts:
+            assert t["entry_bar_price"] == pytest.approx(close_by_ts[t["entry_ts"]])
         if t["net_R"] is not None and t["gross_R"] is not None:
             saw_walked = True
             # fee is strictly positive -> net strictly below gross
