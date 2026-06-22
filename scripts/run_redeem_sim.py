@@ -224,13 +224,17 @@ def run_redeem_sim(
 
     Returns a dict (the sweep contract):
       {
-        cap, cap_label, window, n (walked trades), n_expired, n_score_decay_drop,
-        n_first_pass, n_redeem, n_plan_skip,
+        cap, cap_label, window, fee_mode, structure_tf,
+        n_score_fire, n_pa_pass, n_pa_reject,
+        n_first_pass, n_redeem, n_redeem_drop (cap-expiry + score-decay +
+            opposite-side, COMBINED — the engine does not separate them),
+        n_plan_skip,
+        n (walked / R-resolved trades), n_fires_total (incl plan_skip/open),
         total_net_R, net_R_per_trade, gross_R_per_trade,
         win_rate_pct (DIAGNOSTIC ONLY), max_bars_waited,
-        bars_waited_hist: {k: count}, fee_mode,
-        trades: [ {signal_ts, redeemed, bars_waited, entry_bar_price, side,
-                   result, gross_R, net_R, net_R_taker, net_R_maker,
+        bars_waited_hist: {k: count},
+        trades: [ {signal_ts, entry_ts, redeemed, bars_waited, entry_bar_price,
+                   side, result, gross_R, net_R, net_R_taker, net_R_maker,
                    filled_legs, skip_reason} ],
       }
     All R values net-of-cost are finite or null (null only for unwalked
