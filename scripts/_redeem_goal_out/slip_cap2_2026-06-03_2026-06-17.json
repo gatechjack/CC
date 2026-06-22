@@ -1,0 +1,157 @@
+[
+  {
+    "cap": 2,
+    "cap_label": "2",
+    "window": [
+      "2026-06-03",
+      "2026-06-17"
+    ],
+    "fee_mode": "taker",
+    "structure_tf": "4h",
+    "n_score_fire": 1593,
+    "n_pa_pass": 31,
+    "n_pa_reject": 1562,
+    "n_first_pass": 31,
+    "n_redeem": 30,
+    "n_redeem_drop": 1532,
+    "n_slip_guard_drop": 0,
+    "max_slip_pt": null,
+    "n_plan_skip": 28,
+    "n": 33,
+    "n_fires_total": 61,
+    "total_net_R": -7.656240469313825,
+    "net_R_per_trade": -0.23200728694890377,
+    "gross_R_per_trade": 0.10507327648861028,
+    "win_rate_pct": 66.66666666666666,
+    "max_bars_waited": 2,
+    "bars_waited_hist": {
+      "0": 31,
+      "1": 17,
+      "2": 13
+    }
+  },
+  {
+    "cap": 2,
+    "cap_label": "2",
+    "window": [
+      "2026-06-03",
+      "2026-06-17"
+    ],
+    "fee_mode": "taker",
+    "structure_tf": "4h",
+    "n_score_fire": 1617,
+    "n_pa_pass": 37,
+    "n_pa_reject": 1580,
+    "n_first_pass": 37,
+    "n_redeem": 7,
+    "n_redeem_drop": 1540,
+    "n_slip_guard_drop": 33,
+    "max_slip_pt": 25.0,
+    "n_plan_skip": 19,
+    "n": 25,
+    "n_fires_total": 44,
+    "total_net_R": -6.618075239171754,
+    "net_R_per_trade": -0.26472300956687017,
+    "gross_R_per_trade": 0.08153434683181052,
+    "win_rate_pct": 64.0,
+    "max_bars_waited": 2,
+    "bars_waited_hist": {
+      "0": 37,
+      "1": 4,
+      "2": 3
+    }
+  },
+  {
+    "cap": 2,
+    "cap_label": "2",
+    "window": [
+      "2026-06-03",
+      "2026-06-17"
+    ],
+    "fee_mode": "taker",
+    "structure_tf": "4h",
+    "n_score_fire": 1611,
+    "n_pa_pass": 36,
+    "n_pa_reject": 1575,
+    "n_first_pass": 36,
+    "n_redeem": 14,
+    "n_redeem_drop": 1539,
+    "n_slip_guard_drop": 22,
+    "max_slip_pt": 50.0,
+    "n_plan_skip": 23,
+    "n": 27,
+    "n_fires_total": 50,
+    "total_net_R": -5.160808377578792,
+    "net_R_per_trade": -0.19114105102143672,
+    "gross_R_per_trade": 0.15774784505079684,
+    "win_rate_pct": 66.66666666666666,
+    "max_bars_waited": 2,
+    "bars_waited_hist": {
+      "0": 36,
+      "1": 8,
+      "2": 6
+    }
+  },
+  {
+    "cap": 2,
+    "cap_label": "2",
+    "window": [
+      "2026-06-03",
+      "2026-06-17"
+    ],
+    "fee_mode": "taker",
+    "structure_tf": "4h",
+    "n_score_fire": 1603,
+    "n_pa_pass": 35,
+    "n_pa_reject": 1568,
+    "n_first_pass": 35,
+    "n_redeem": 17,
+    "n_redeem_drop": 1532,
+    "n_slip_guard_drop": 19,
+    "max_slip_pt": 75.0,
+    "n_plan_skip": 23,
+    "n": 29,
+    "n_fires_total": 52,
+    "total_net_R": -6.540765054309998,
+    "net_R_per_trade": -0.22554362256241373,
+    "gross_R_per_trade": 0.11795379690192442,
+    "win_rate_pct": 65.51724137931035,
+    "max_bars_waited": 2,
+    "bars_waited_hist": {
+      "0": 35,
+      "1": 11,
+      "2": 6
+    }
+  },
+  {
+    "cap": 2,
+    "cap_label": "2",
+    "window": [
+      "2026-06-03",
+      "2026-06-17"
+    ],
+    "fee_mode": "taker",
+    "structure_tf": "4h",
+    "n_score_fire": 1600,
+    "n_pa_pass": 34,
+    "n_pa_reject": 1566,
+    "n_first_pass": 34,
+    "n_redeem": 21,
+    "n_redeem_drop": 1532,
+    "n_slip_guard_drop": 13,
+    "max_slip_pt": 100.0,
+    "n_plan_skip": 25,
+    "n": 30,
+    "n_fires_total": 55,
+    "total_net_R": -6.734153494710681,
+    "net_R_per_trade": -0.2244717831570227,
+    "gross_R_per_trade": 0.11893024654642756,
+    "win_rate_pct": 66.66666666666666,
+    "max_bars_waited": 2,
+    "bars_waited_hist": {
+      "0": 34,
+      "1": 14,
+      "2": 7
+    }
+  }
+]
