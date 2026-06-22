@@ -60,6 +60,14 @@ _KNOWN_NON_EQUITY_INSTRUMENT_RE = re.compile(
 )
 
 
+class RobinhoodAccountBindError(RuntimeError):
+    """Raised when a NUMERIC account_filter cannot be bound (absent from
+    robin_stocks discovery AND not directly fetchable). We REFUSE to silently
+    fall back to another account — a numeric filter must hit exactly that
+    account or fail loud. This is the guard against the agentic cash account
+    680725082 silently routing to the main margin account 461391328."""
+
+
 def _days_to_expiry(expiration_date: str) -> int:
     """Calendar days from today to expiration_date ('YYYY-MM-DD')."""
     try:
@@ -151,6 +159,9 @@ class RobinhoodBroker(Broker):
                     i + 1, num, acct_type,
                 )
 
+        # Hard-bind a numeric account_filter that discovery omits (e.g. the
+        # agentic cash account 680725082) via a direct fetch — or fail loud.
+        await self._ensure_numeric_filter_resolvable()
         # Resolve this instance's filter → account_number
         self._resolve_account_filter()
         self._connected = True
@@ -189,6 +200,46 @@ class RobinhoodBroker(Broker):
         except Exception as e:
             log.warning("RobinhoodBroker._fetch_accounts failed: %s", e)
         return []
+
+    @staticmethod
+    async def _fetch_account_by_number(num: str) -> dict | None:
+        """Direct GET /accounts/{num}/ — for accounts robin_stocks' discovery
+        list OMITS (cash accounts like the agentic 680725082). Returns the
+        account dict, or None on 404 / error. No fallback."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        try:
+            data = await asyncio.to_thread(
+                rs.helper.request_get,
+                f"https://api.robinhood.com/accounts/{num}/",
+            )
+            if isinstance(data, dict) and data.get("account_number"):
+                return data
+        except Exception as e:
+            log.warning(
+                "RobinhoodBroker._fetch_account_by_number(%s) failed: %s", num, e,
+            )
+        return None
+
+    async def _ensure_numeric_filter_resolvable(self) -> None:
+        """If account_filter is a NUMERIC account absent from the discovery
+        list, bind it via a direct /accounts/{n}/ fetch — and HARD-FAIL if that
+        returns nothing. Never let _resolve_account_filter fall back to the main
+        account for a numeric filter (the 680725082 silent-misroute bug)."""
+        global _ACCOUNT_LIST
+        f = self._account_filter or ""
+        if not f.isdigit():
+            return  # non-numeric (type-keyword) filter — unchanged path
+        if any(str(a.get("account_number") or "") == f for a in (_ACCOUNT_LIST or [])):
+            return  # already discoverable
+        acc = await self._fetch_account_by_number(f)
+        if acc is None:
+            raise RobinhoodAccountBindError(
+                f"account_filter={f!r}: absent from discovery AND direct "
+                f"/accounts/{f}/ returned nothing — refusing to fall back to "
+                f"another account"
+            )
+        _ACCOUNT_LIST = list(_ACCOUNT_LIST or []) + [acc]
+        log.info("RobinhoodBroker: bound numeric account %s via direct fetch", f)
 
     def _resolve_account_filter(self) -> None:
         """Pick the account matching `self._account_filter`."""
@@ -254,6 +305,15 @@ class RobinhoodBroker(Broker):
                         break
 
         if match is None:
+            if f.isdigit():
+                # A numeric account that didn't resolve must NEVER silently
+                # become the main account. _ensure_numeric_filter_resolvable
+                # should have bound or raised already — defense-in-depth.
+                raise RobinhoodAccountBindError(
+                    f"numeric account_filter={self._account_filter!r} unresolved "
+                    f"— refusing to fall back to "
+                    f"{_ACCOUNT_LIST[0].get('account_number')!r}"
+                )
             log.warning(
                 "RobinhoodBroker: no account matched filter=%r; falling back to default",
                 self._account_filter,
