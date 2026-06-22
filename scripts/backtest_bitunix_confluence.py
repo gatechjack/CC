@@ -1505,11 +1505,23 @@ def _simulate_redeem(*, config, pa_config, structure_tf, bars, bars_4h, bars_1h,
 
 
 def run_redeem_cap_backtest(*, alerts, bars, config, pa_config, redeem_cap,
-                            structure_tf="4h", arm_name=""):
+                            structure_tf="4h", arm_name="", max_slip_pt=None):
     """v2-economics + PA-redeem-cap engine. `bars` is the 3m series (= bars in
     bybit_hybrid mode). redeem_cap: 0=no-redeem, N=cap@N bars, REDEEM_CAP_CURRENT
     =current. Returns (fires, summary_dict). Decision metric = net-of-cost
-    expectancy per fire."""
+    expectancy per fire.
+
+    max_slip_pt (ADDITIVE, default None = OFF — MAX-SLIPPAGE ENTRY GUARD):
+      Reject a *redeem* entry when the price has drifted more than `max_slip_pt`
+      price points away from the ORIGINAL signal bar between the signal and the
+      (later) fire bar:  |fire_price - signal_bar_close| > max_slip_pt  -> drop.
+      Models the live engine refusing to chase a stale, latency-delayed alert
+      into a moved market (the entry-timing finding: a delayed entry books a
+      worse fill). Look-ahead-honest: BOTH prices are at-or-before the fire bar
+      (signal_close = reject bar's close, already in the past at fire time).
+      First-pass fires have slip == 0 by construction (signal bar == fire bar),
+      so the guard NEVER affects them — it only ever trims redeems. Composes
+      with redeem_cap (cap bounds the wait; guard bounds the price drift)."""
     if pa_config is None:
         pa_config = PAValidationConfig(
             enabled=True, require_all=True,
@@ -1527,6 +1539,7 @@ def run_redeem_cap_backtest(*, alerts, bars, config, pa_config, redeem_cap,
     last_fire_ts_sell: datetime | None = None
     n_score_fire = n_pa_pass = n_pa_reject = 0
     n_first_pass = n_redeem_fire = n_redeem_drop = n_plan_skip = 0
+    n_slip_guard_drop = 0
 
     def _open(side: str, fire_idx: int, entry: float, redeemed: bool, bars_waited: int):
         nonlocal last_fire_ts_buy, last_fire_ts_sell, n_plan_skip
@@ -1600,6 +1613,15 @@ def run_redeem_cap_backtest(*, alerts, bars, config, pa_config, redeem_cap,
             n_redeem_drop += 1                # score-decay or cap exhausted → abandon
             continue
         fire_idx, _ts_k, fire_px, bars_waited, side_k = rd
+        # MAX-SLIPPAGE ENTRY GUARD (additive, OFF when max_slip_pt is None):
+        # the original signal bar is the reject bar (alert_idx); reject a redeem
+        # whose fill has drifted > max_slip_pt from that signal-bar close. Causal
+        # (signal close is in the past at fire time); first-pass slip is always 0.
+        if max_slip_pt is not None:
+            signal_px = bar_objs[alert_idx].close
+            if abs(fire_px - signal_px) > max_slip_pt:
+                n_slip_guard_drop += 1
+                continue
         n_redeem_fire += 1
         _open(side_k, fire_idx, fire_px, redeemed=True, bars_waited=bars_waited)
 
@@ -1617,6 +1639,7 @@ def run_redeem_cap_backtest(*, alerts, bars, config, pa_config, redeem_cap,
         "n_first_pass_fire": n_first_pass,
         "n_redeem_fire": n_redeem_fire,
         "n_redeem_drop": n_redeem_drop,
+        "n_slip_guard_drop": n_slip_guard_drop,   # redeems rejected by max-slip guard (0 when OFF)
         "n_plan_skip": n_plan_skip,
         "n_walked": len(walked),
         # DECISION METRIC — net-of-cost expectancy per fire (never fire-rate):

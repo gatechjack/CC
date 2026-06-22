@@ -304,3 +304,164 @@ def test_cap_parsing_inf_tokens():
     assert R._parse_cap(-1) == R._INF_CAP
     assert R._parse_cap(0) == 0
     assert R._parse_cap("3") == 3
+
+
+# ── MAX-SLIPPAGE ENTRY GUARD (additive, default-off) ────────────────────
+# These mirror the stubbed-PA pattern above: a redeem fires at a known bar so
+# the slip = |fire_close - signal/reject_close| is exactly computable, letting
+# us assert the guard boundary precisely and prove it is causal + additive.
+
+def _slip_setup(monkeypatch, pass_at_wait=4, reject_bar=10, n=80):
+    """Build a deterministic single-redeem scenario and return (bars, cfg,
+    alerts, pa_cfg, signal_close, fire_close). PA rejects on the reject bar and
+    passes at reject_bar+pass_at_wait; the redeem therefore fires at that bar."""
+    bars = _mk_bars(n)
+    from scripts.backtest_bitunix_confluence import AlertEvent, BitUnixConfluenceConfig
+    import yaml
+    from types import SimpleNamespace
+    from scripts.backtest_bitunix_confluence import Tier, Side
+
+    cfg = BitUnixConfluenceConfig.from_dict(
+        yaml.safe_load((BT._REPO_ROOT / "config" / "strategies.yaml").read_text())
+        ["bitunix_futures"]
+    )
+
+    def fake_score(*, live_alerts, price_ctx, config, now, last_fire_ts_buy,
+                   last_fire_ts_sell):
+        return SimpleNamespace(tier=Tier.STANDARD, side=Side.BUY,
+                               cooldown_blocked=False)
+
+    def fake_pa(*, side, price_ctx, config):
+        idx = _bar_of_ctx(bars, price_ctx)
+        if idx is None or idx < reject_bar + pass_at_wait:
+            return SimpleNamespace(decision=PAValidationDecision.REJECT)
+        return SimpleNamespace(decision=PAValidationDecision.PASS)
+
+    monkeypatch.setattr(BT, "evaluate_confluence_futures", fake_score)
+    monkeypatch.setattr(BT, "evaluate_pa_validation", fake_pa)
+    alerts = [AlertEvent(ts=bars[reject_bar]["ts"], signal_name="otter_buy", tf="3m")]
+    pa_cfg = PAValidationConfig(enabled=True, require_all=True,
+                                validators=("vwap_alignment",))
+    signal_close = bars[reject_bar]["close"]
+    fire_close = bars[reject_bar + pass_at_wait]["close"]
+    return bars, cfg, alerts, pa_cfg, signal_close, fire_close
+
+
+def test_slip_guard_default_off_is_baseline(monkeypatch):
+    """max_slip_pt=None (default) must NOT change behaviour vs not passing it:
+    the redeem fires and n_slip_guard_drop is 0."""
+    bars, cfg, alerts, pa_cfg, sig, fire = _slip_setup(monkeypatch)
+    fires, summ = BT.run_redeem_cap_backtest(
+        alerts=alerts, bars=bars, config=cfg, pa_config=pa_cfg,
+        redeem_cap=10, arm_name="off")
+    assert summ["n_redeem_fire"] == 1
+    assert summ["n_slip_guard_drop"] == 0
+    # explicit None is identical to omitting it
+    fires2, summ2 = BT.run_redeem_cap_backtest(
+        alerts=alerts, bars=bars, config=cfg, pa_config=pa_cfg,
+        redeem_cap=10, arm_name="off2", max_slip_pt=None)
+    assert summ2["n_redeem_fire"] == 1
+    assert summ2["n_slip_guard_drop"] == 0
+
+
+def test_slip_guard_rejects_when_drift_exceeds_threshold(monkeypatch):
+    """A redeem whose |fire - signal| exceeds max_slip_pt is dropped (counted as
+    slip_guard_drop, NOT a redeem fire); a threshold above the drift lets it
+    fire. The boundary is exact and deterministic."""
+    bars, cfg, alerts, pa_cfg, sig, fire = _slip_setup(monkeypatch)
+    drift = abs(fire - sig)
+    assert drift > 0, "scenario must have non-zero slip for a meaningful test"
+
+    # threshold strictly BELOW the drift -> guard rejects the redeem
+    _, summ_lo = BT.run_redeem_cap_backtest(
+        alerts=alerts, bars=bars, config=cfg, pa_config=pa_cfg,
+        redeem_cap=10, arm_name="tight", max_slip_pt=drift - 1.0)
+    assert summ_lo["n_redeem_fire"] == 0, "drift > threshold must drop the redeem"
+    assert summ_lo["n_slip_guard_drop"] == 1
+
+    # threshold strictly ABOVE the drift -> redeem fires as normal
+    _, summ_hi = BT.run_redeem_cap_backtest(
+        alerts=alerts, bars=bars, config=cfg, pa_config=pa_cfg,
+        redeem_cap=10, arm_name="loose", max_slip_pt=drift + 1.0)
+    assert summ_hi["n_redeem_fire"] == 1, "drift < threshold must allow the redeem"
+    assert summ_hi["n_slip_guard_drop"] == 0
+
+
+def test_slip_guard_never_affects_first_pass(monkeypatch):
+    """A first-pass fire has slip == 0 (signal bar == fire bar) so even a
+    zero-point guard must let it through and never count it as a slip drop."""
+    bars = _mk_bars(40)
+    from scripts.backtest_bitunix_confluence import AlertEvent, BitUnixConfluenceConfig
+    import yaml
+    from types import SimpleNamespace
+    from scripts.backtest_bitunix_confluence import Tier, Side
+
+    cfg = BitUnixConfluenceConfig.from_dict(
+        yaml.safe_load((BT._REPO_ROOT / "config" / "strategies.yaml").read_text())
+        ["bitunix_futures"]
+    )
+
+    def fake_score(*, live_alerts, price_ctx, config, now, last_fire_ts_buy,
+                   last_fire_ts_sell):
+        return SimpleNamespace(tier=Tier.STANDARD, side=Side.BUY,
+                               cooldown_blocked=False)
+
+    def fake_pa(*, side, price_ctx, config):  # always PASS -> first-pass fire
+        return SimpleNamespace(decision=PAValidationDecision.PASS)
+
+    monkeypatch.setattr(BT, "evaluate_confluence_futures", fake_score)
+    monkeypatch.setattr(BT, "evaluate_pa_validation", fake_pa)
+    alerts = [AlertEvent(ts=bars[10]["ts"], signal_name="otter_buy", tf="3m")]
+    pa_cfg = PAValidationConfig(enabled=True, require_all=True,
+                                validators=("vwap_alignment",))
+    _, summ = BT.run_redeem_cap_backtest(
+        alerts=alerts, bars=bars, config=cfg, pa_config=pa_cfg,
+        redeem_cap=10, arm_name="fp", max_slip_pt=0.0)
+    assert summ["n_first_pass_fire"] == 1, "first-pass fire must survive a 0pt guard"
+    assert summ["n_slip_guard_drop"] == 0
+
+
+@_needs_corpus
+def test_slip_guard_monotone_fires_in_threshold(monkeypatch):
+    """On the real corpus, redeem-fire count is monotone NON-DECREASING in the
+    slip threshold (a looser guard can only admit more redeems), and a finite
+    guard never admits MORE than the unguarded (inf-threshold) run."""
+    s, e = R._to_dt(_W_START), R._to_dt(_W_END)
+    alerts, bars, config = R.load_inputs(_DB, s, e)
+    pre = (alerts, bars, config, (s, e))
+    fire_counts = []
+    for thr in (25, 50, 75, 100):
+        r = R.run_redeem_sim(cap=10, max_slip_pt=float(thr), _preloaded=pre)
+        fire_counts.append(r["n_redeem"])
+    assert fire_counts == sorted(fire_counts), (
+        f"redeem fires not monotone in slip threshold: {fire_counts}")
+    base = R.run_redeem_sim(cap=10, _preloaded=pre)  # guard off
+    assert fire_counts[-1] <= base["n_redeem"], (
+        "a finite slip guard must not admit more redeems than the unguarded run")
+
+
+@_needs_corpus
+def test_slip_guard_no_look_ahead(monkeypatch):
+    """The slip guard must remain causal: poisoning bars strictly after a cutoff
+    must not change any guarded trade whose entry is at-or-before the cutoff."""
+    s, e = R._to_dt(_W_START), R._to_dt(_W_END)
+    alerts, bars, config = R.load_inputs(_DB, s, e)
+    cutoff = bars[len(bars) // 2]["ts"]
+    base = R.run_redeem_sim(cap=10, max_slip_pt=50.0,
+                            _preloaded=(alerts, bars, config, (s, e)))
+    poisoned = [
+        ({**b, "open": 1e9, "high": 1e9, "low": 1e9, "close": 1e9, "volume": 0.0}
+         if b["ts"] > cutoff else dict(b))
+        for b in bars
+    ]
+    mut = R.run_redeem_sim(cap=10, max_slip_pt=50.0,
+                           _preloaded=(alerts, poisoned, config, (s, e)))
+    cut_iso = cutoff.isoformat()
+    bp = [t for t in base["trades"] if t["entry_ts"] <= cut_iso]
+    mp = [t for t in mut["trades"] if t["entry_ts"] <= cut_iso]
+    assert bp, "expected at least one pre-cutoff guarded trade"
+    assert len(bp) == len(mp)
+    for a, b in zip(bp, mp):
+        assert a["entry_ts"] == b["entry_ts"]
+        assert a["entry_bar_price"] == b["entry_bar_price"]
+        assert a["bars_waited"] == b["bars_waited"]

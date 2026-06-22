@@ -204,6 +204,7 @@ def run_redeem_sim(
     db: str | Path | None = None,
     structure_tf: str = "4h",
     fee_mode: str = "taker",
+    max_slip_pt: float | None = None,
     _preloaded: tuple | None = None,
 ) -> dict:
     """Run the redeem-cap simulator at a single `cap` over the clean corpus.
@@ -220,6 +221,9 @@ def run_redeem_sim(
       fee_mode: 'taker' (prod SL exits, 0.09%rt) or 'maker' (0.064%rt) — selects
         which net-R column is reported as `net_R`. Both are always recorded
         per-trade.
+      max_slip_pt: max-slippage entry guard in price points (default None = OFF).
+        Reject a REDEEM entry when |fire_price - signal_bar_close| > max_slip_pt.
+        First-pass fires are never affected (slip == 0). Composes with `cap`.
       _preloaded: (alerts, bars, config) to reuse across a sweep (internal).
 
     Returns a dict (the sweep contract):
@@ -260,6 +264,7 @@ def run_redeem_sim(
     fires, summ = run_redeem_cap_backtest(
         alerts=alerts, bars=bars, config=config, pa_config=None,
         redeem_cap=cap_i, structure_tf=structure_tf, arm_name=_cap_label(cap_i),
+        max_slip_pt=max_slip_pt,
     )
 
     trades = []
@@ -310,6 +315,8 @@ def run_redeem_sim(
         "n_first_pass": summ["n_first_pass_fire"],
         "n_redeem": summ["n_redeem_fire"],
         "n_redeem_drop": summ["n_redeem_drop"],   # cap-expiry + score-decay (combined)
+        "n_slip_guard_drop": summ.get("n_slip_guard_drop", 0),  # redeems cut by max-slip guard
+        "max_slip_pt": max_slip_pt,
         "n_plan_skip": summ["n_plan_skip"],
         # trades
         "n": len(walked),                          # walked (R-resolved) trades
@@ -333,6 +340,7 @@ def run_sweep(
     db: str | Path | None = None,
     structure_tf: str = "4h",
     fee_mode: str = "taker",
+    max_slip_pt: float | None = None,
 ) -> list[dict]:
     """Run the SAME corpus at multiple caps (inputs loaded once, reused)."""
     db_path = _resolve_db(db)
@@ -347,7 +355,7 @@ def run_sweep(
     for c in caps:
         results.append(run_redeem_sim(
             cap=c, structure_tf=structure_tf, fee_mode=fee_mode,
-            _preloaded=preloaded,
+            max_slip_pt=max_slip_pt, _preloaded=preloaded,
         ))
     return results
 
@@ -391,6 +399,9 @@ def main() -> int:
     ap.add_argument("--db", default=None, help="corpus db path (default btc_scalping.db)")
     ap.add_argument("--structure-tf", choices=["4h", "1h"], default="4h")
     ap.add_argument("--fee-mode", choices=["taker", "maker"], default="taker")
+    ap.add_argument("--max-slip-pt", type=float, default=None,
+                    help="max-slippage entry guard in price points (default OFF); "
+                         "rejects a redeem whose |fill - signal_close| exceeds it")
     ap.add_argument("--json", default=None, help="write full results (incl per-trade) to this path")
     args = ap.parse_args()
 
@@ -404,6 +415,7 @@ def main() -> int:
     results = run_sweep(
         caps, start=args.start, end=args.end, db=args.db,
         structure_tf=args.structure_tf, fee_mode=args.fee_mode,
+        max_slip_pt=args.max_slip_pt,
     )
     _print_sweep_table(results)
 
