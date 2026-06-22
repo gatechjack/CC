@@ -32,11 +32,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 from types import SimpleNamespace
 
 ACCOUNT = "680725082"
+
+# Surface the strategy's wave/skip diagnostics (it logs at INFO) so an empty book
+# prints WHY (no announcers in window / none cleared screen+SUE / round-to-zero).
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+for _noisy in ("yfinance", "urllib3", "asyncio", "peewee", "azure"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
 class _StubLogger:
