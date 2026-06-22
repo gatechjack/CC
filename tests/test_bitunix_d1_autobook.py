@@ -252,3 +252,76 @@ async def test_gross_qty_excess_flags_but_still_books_capped(db_url, caplog):
     (audit,) = _autobook_audits(db_url, "grossqty")
     assert audit["qty"] == pytest.approx(close_qty)        # attributed = capped
     assert audit["netted_close_qty"] == pytest.approx(close_qty)
+
+
+# ─── 5. OVER-FETCH: netted close EXCEEDS the record qty (Q_close > q_i) ───
+#
+# REACHABILITY — proven by code trace, NOT assumed:
+#   brokers/bitunix.py get_recent_close_fills() is scoped by symbol + exit_side
+#   + since_ms (a LOWER time bound only) — never by record qty / position id /
+#   the record's own order ids.  _aggregate_close_fills() sums total_qty over ALL
+#   returned fills with no cap. reconcile_position_state()'s missing-loop calls
+#   the auto-book ONCE PER missing record. So when N stacked same-side records
+#   net into ONE venue close, every record's fetch returns the FULL netted close
+#   → Q_close > that record's q_i. Same unscoped-fetch root cause as the double-
+#   book, in the qty direction; it ALREADY occurred live (125b6f9e/81f5427a:
+#   q_i ~0.0014 each, Q_close 0.0028). Reachable, not a dead path.
+#
+# Intended economics: a record is NEVER credited more PnL than its OWN size
+# traded. D1 caps at q_i. The OLD code booked the full Q_close → over-credited.
+
+
+@pytest.mark.asyncio
+async def test_overfetch_close_exceeds_record_caps_at_record_qty(db_url, caplog):
+    # One record of 0.0005, but the (unscoped) close fetch returns 0.0009 of
+    # exit-side fills — e.g. the netted close of a stacked pair, or an over-fetch
+    # pulling an unrelated same-side close inside the since_ms window.
+    rec_qty, q_close, vwap, total_fee = 0.0005, 0.0009, 64000.0, 0.006
+    _seed_short(db_url, "overfetch", qty=rec_qty, entry=_ENTRY, stop=64600.0)
+    broker = _FillBroker([{"price": vwap, "qty": q_close, "fee": total_fee}])
+
+    with caplog.at_level(logging.WARNING, logger=RECONCILER_LOGGER):
+        assert await _autobook_missing_close_real(broker, db_url, "overfetch", _NOW) \
+            == "booked"
+    r, extra = _row(db_url, "overfetch")
+
+    d1_pnl = (_ENTRY - vwap) * rec_qty     # D1: capped at the record's OWN qty
+    old_pnl = (_ENTRY - vwap) * q_close    # OLD: booked the full netted close
+
+    # D1 books on q_i, NOT Q_close — never credits more PnL than its own size.
+    assert r["actual_pnl_dollars"] == pytest.approx(d1_pnl)
+    assert r["actual_pnl_dollars"] != pytest.approx(old_pnl)
+    # strictly more conservative/correct than OLD: |D1| < |OLD over-credit|,
+    # and exactly the record's qty share of it.
+    assert abs(r["actual_pnl_dollars"]) < abs(old_pnl)
+    assert r["actual_pnl_dollars"] == pytest.approx(old_pnl * rec_qty / q_close)
+    # exit fee scaled to the record's share, < the full netted fee.
+    assert extra["exit_fee_usd"] == pytest.approx(total_fee * rec_qty / q_close)
+    assert extra["exit_fee_usd"] < total_fee
+    # over-fetch (record < close) is the NORMAL stacked direction → NOT flagged
+    # (the >1.5x flag only catches record >> close, the stale/duplicate case).
+    assert "grossly exceeds netted close" not in caplog.text
+    # audit records the attributed (capped) qty AND the larger netted close qty,
+    # so the over-fetch is visible in the trail.
+    (audit,) = _autobook_audits(db_url, "overfetch")
+    assert audit["qty"] == pytest.approx(rec_qty)
+    assert audit["netted_close_qty"] == pytest.approx(q_close)
+    assert audit["netted_close_qty"] > audit["qty"]
+
+
+@pytest.mark.asyncio
+async def test_overfetch_extreme_ratio_still_not_flagged(db_url, caplog):
+    # A tiny record against a huge netted close (0.0001 vs 0.0028 = 28x) — the
+    # real 125b6f9e/81f5427a shape pushed to an extreme. Still the normal stacked
+    # direction (record < close): capped at q_i, NOT flagged (record is not the
+    # one claiming to be oversized).
+    rec_qty, q_close, vwap, total_fee = 0.0001, 0.0028, 63386.63, 0.02
+    _seed_short(db_url, "tinyrec", qty=rec_qty, entry=_ENTRY, stop=64600.0)
+    broker = _FillBroker([{"price": vwap, "qty": q_close, "fee": total_fee}])
+    with caplog.at_level(logging.WARNING, logger=RECONCILER_LOGGER):
+        assert await _autobook_missing_close_real(broker, db_url, "tinyrec", _NOW) \
+            == "booked"
+    r, extra = _row(db_url, "tinyrec")
+    assert r["actual_pnl_dollars"] == pytest.approx((_ENTRY - vwap) * rec_qty)
+    assert extra["exit_fee_usd"] == pytest.approx(total_fee * rec_qty / q_close)
+    assert "grossly exceeds netted close" not in caplog.text
