@@ -1898,7 +1898,7 @@ tasty_options_iron_condor:
 # Robinhood account (680725082). Autonomous (no per-trade approval) once the
 # Board blesses the strategy; paper-first. Division wiring lands in Phase 2.
 robinhood_pead:
-  enabled: false
+  enabled: true                  # declarative; divisions.yaml standby:true is the operative gate
   auto_execute: false            # Board flips true to bless (HITL rules)
   division: robinhood_pead
 
@@ -1924,6 +1924,15 @@ robinhood_pead:
     top_quintile: true    # also require top-quintile SUE within the wave
     quintile_pct: 0.80
 
-  # NOTE: live sizing / exit-rule / max_concurrent params land in Phase 2 (2E)
-  # when the division is wired. position_pct + max_concurrent there will be
-  # PLUMBING-VALIDATION values at $75 (the intended ~20-25 name book needs funding).
+  # --- Phase-2 live wiring (2026-06-22): plumbing-validation values @ ~$75 ---
+  # OPERATIVE kill-switch is divisions.yaml standby:true (scan+manage no-op);
+  # auto_execute:false above keeps it paper even if standby is lifted. The
+  # intended ~20-25 name book needs funding; max_concurrent caps the plumbing book.
+  universe_file: "@config/nasdaq_composite.txt"   # 3,207-name Nasdaq Composite (anchored path)
+  position_pct: 0.10                # 10% of account value per name
+  max_concurrent_positions: 10      # plumbing book ceiling (~20-25 when funded)
+  entry_delay_days: 1               # enter 1 trading day post-announcement...
+  entry_max_delay_days: 2           # ...through 2 td (the PEAD entry window)
+  manage_cadence_sec: 300           # exit-engine poll cadence
+  scan_window_start_et: [8, 30]     # daily pre-open scan window (read at startup by main.py)
+  scan_window_end_et: [9, 25]

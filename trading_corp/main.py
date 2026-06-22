@@ -1411,6 +1411,51 @@ async def run(argv: list[str] | None = None) -> int:
             name="tasty-position-manager",
         )
 
+        # --- Robinhood PEAD v1 (Phase 2, 2026-06-22) — long-only post-earnings
+        # drift on the agentic RH account (680725082). Posture mirrors bitunix:
+        # NO HITL, RiskAgent.evaluate is the only gate. live-vs-paper =
+        # execution_mode ("live" ONLY when robinhood_pead is opted into
+        # --live-divisions AND the robinhood family is live-capable) AND
+        # strategies.yaml auto_execute. divisions.yaml standby:true makes BOTH
+        # loops below no-ops until standby is deliberately lifted (the live test).
+        from trading_corp.agents.divisions.robinhood_pead import RobinhoodPEADAgent
+        from trading_corp.agents.strategies.pead_strategy import PEADStrategy
+        from trading_corp.data.earnings_provider import EarningsProvider as _PEADEarnings
+
+        pead_execution_mode = (
+            "live" if ("robinhood_pead" in live_divisions
+                       and mode == "LIVE"
+                       and "robinhood" in (args.brokers or []))
+            else "paper"
+        )
+        pead_division = RobinhoodPEADAgent()
+        pead_strategy = PEADStrategy(
+            db_url=secrets.db_url,
+            risk_agent=risk_agent,
+            data_exec=data_exec,
+            logger_agent=logger_agent,
+            earnings_provider=_PEADEarnings(
+                api_key=secrets.eodhd_api_key, db_url=secrets.db_url,
+            ),
+            execution_mode=pead_execution_mode,
+        )
+        pead_division.attach_strategy(pead_strategy)
+        _pead_cfg = pead_strategy._cfg()
+        pead_scan_task = asyncio.create_task(
+            _scheduled_pead_scan_loop(
+                pead_division, data_exec, logger_agent,
+                scan_window_start_et=tuple(_pead_cfg.get("scan_window_start_et", (8, 30))),
+                scan_window_end_et=tuple(_pead_cfg.get("scan_window_end_et", (9, 25))),
+            ),
+            name="pead-scan",
+        )
+        pead_manage_task = asyncio.create_task(
+            _scheduled_pead_manage_loop(pead_division, data_exec, logger_agent),
+            name="pead-manage",
+        )
+        log.info("Robinhood PEAD wired (execution_mode=%s; standby-gated).",
+                 pead_execution_mode)
+
 
         # --- Polymarket round-trip resolver + equity snapshot writer ---
         # Closes the data gaps for the betmoar-style portfolio dashboard:
@@ -1942,6 +1987,16 @@ async def run(argv: list[str] | None = None) -> int:
                 await tasty_position_manager_task
             except (asyncio.CancelledError, Exception):
                 pass
+            pead_scan_task.cancel()
+            try:
+                await pead_scan_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            pead_manage_task.cancel()
+            try:
+                await pead_manage_task
+            except (asyncio.CancelledError, Exception):
+                pass
             replay_task.cancel()
             try:
                 await replay_task
@@ -2347,6 +2402,84 @@ async def _scheduled_pmcc_scan_loop(
         except Exception as e:
             log.exception("Scheduler loop error (continuing): %s", e)
             await asyncio.sleep(poll_interval_sec)
+
+
+async def _scheduled_pead_scan_loop(
+    division, data_exec, logger_agent,
+    *,
+    scan_window_start_et=(8, 30),
+    scan_window_end_et=(9, 25),
+    poll_interval_sec: int = 300,
+) -> None:
+    """Daily pre-open PEAD entry scan — fires division.scan(broker) once per US
+    trading weekday inside the ET window, deduped on calendar date. division.scan
+    is a no-op while standby/disabled (the live test = lifting divisions.yaml
+    standby). Broker resolved fresh each fire (None-safe). Holidays ignored —
+    scan bails cleanly when no fresh earnings wave exists."""
+    from datetime import datetime, time
+    try:
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+    except Exception:
+        log.warning("zoneinfo unavailable; PEAD scan scheduler using local time as ET")
+        et = None
+    win_start = time(*scan_window_start_et)
+    win_end = time(*scan_window_end_et)
+    last_scan_date = None
+    log.info("PEAD scan scheduler online: weekdays %02d:%02d-%02d:%02d ET",
+             scan_window_start_et[0], scan_window_start_et[1],
+             scan_window_end_et[0], scan_window_end_et[1])
+    while True:
+        try:
+            now = datetime.now(et) if et is not None else datetime.now()
+            if (now.weekday() < 5 and win_start <= now.time() <= win_end
+                    and last_scan_date != now.date()):
+                last_scan_date = now.date()
+                broker = data_exec.brokers.get(division.slug)
+                if broker is None:
+                    log.info("PEAD scan: no broker for %s — skipping", division.slug)
+                else:
+                    try:
+                        orders = await division.scan(broker)
+                        logger_agent.log_event(
+                            "scheduler", "pead_scan_done",
+                            {"date": str(now.date()), "entered": len(orders)})
+                    except Exception as e:
+                        log.exception("PEAD scheduled scan failed: %s", e)
+                        logger_agent.log_event(
+                            "scheduler", "pead_scan_error",
+                            {"date": str(now.date()), "error": str(e)})
+            await asyncio.sleep(poll_interval_sec)
+        except asyncio.CancelledError:
+            log.info("PEAD scan scheduler cancelled.")
+            return
+        except Exception as e:
+            log.exception("PEAD scan scheduler loop error (continuing): %s", e)
+            await asyncio.sleep(poll_interval_sec)
+
+
+async def _scheduled_pead_manage_loop(division, data_exec, logger_agent) -> None:
+    """Dynamic-cadence PEAD exit engine — fires division.manage(broker) and
+    sleeps the cadence it returns. division.manage is a no-op (returns [], idle
+    cadence) while standby/disabled. Broker resolved fresh each tick (None-safe)."""
+    log.info("PEAD position manager online.")
+    while True:
+        try:
+            broker = data_exec.brokers.get(division.slug)
+            if broker is None:
+                await asyncio.sleep(1800)
+                continue
+            exits, cadence = await division.manage(broker)
+            if exits:
+                logger_agent.log_event(
+                    "scheduler", "pead_manage_exits", {"exits": len(exits)})
+            await asyncio.sleep(int(cadence) if cadence else 1800)
+        except asyncio.CancelledError:
+            log.info("PEAD position manager cancelled.")
+            return
+        except Exception as e:
+            log.exception("PEAD manage loop error (continuing): %s", e)
+            await asyncio.sleep(300)
 
 
 def _seconds_until_next_6h_boundary(now, *, post_close_buffer_sec: int = 120) -> float:

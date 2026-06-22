@@ -56,6 +56,21 @@ divisions:
     strategy: robinhood_joint_iron_condor
     enabled: true
 
+  # ── Robinhood PEAD (Phase 2, 2026-06-22) — long-only post-earnings drift on
+  # the agentic sub-account. standby:true is the OPERATIVE kill-switch: the
+  # division registers + wires, but scan()/manage() both no-op until standby is
+  # lifted (the deliberate live-test action). NO per-trade HITL by design.
+  - slug: robinhood_pead
+    name: Robinhood PEAD
+    broker: robinhood
+    account_filter: "680725082"     # agentic acct; numeric hard-bind (3ad16a2) — never main 461391328
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.30      # reporting/tile label only — inert to the engine
+    strategy: robinhood_pead
+    standby: true                   # scan() + manage() both no-op until lifted
+    enabled: true
+
   # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────
   - slug: fidelity_joint
     name: Fidelity Joint

@@ -129,6 +129,51 @@ def test_main_py_start_web_server_call_kwargs_match_signature():
         )
 
 
+def test_main_py_pead_wiring_call_kwargs_match_signatures():
+    """Phase-2 PEAD wiring guard (same class as the bitunix kwarg guards above):
+    main.py instantiates RobinhoodPEADAgent / PEADStrategy / EarningsProvider and
+    launches the two PEAD scheduler loops. A kwarg the callee does not accept would
+    crash run() at boot (not at import) — so AST-check every PEAD call site against
+    its callee signature."""
+    from trading_corp import main as main_mod
+    from trading_corp.agents.divisions.robinhood_pead import RobinhoodPEADAgent
+    from trading_corp.agents.strategies.pead_strategy import PEADStrategy
+    from trading_corp.data.earnings_provider import EarningsProvider
+
+    src = MAIN_PY.read_text(encoding="utf-8")
+    # call-site bare-name -> callee whose signature must accept the kwargs
+    targets = {
+        "RobinhoodPEADAgent": RobinhoodPEADAgent.__init__,
+        "PEADStrategy": PEADStrategy.__init__,
+        "_PEADEarnings": EarningsProvider.__init__,        # aliased import in main.py
+        "_scheduled_pead_scan_loop": main_mod._scheduled_pead_scan_loop,
+        "_scheduled_pead_manage_loop": main_mod._scheduled_pead_manage_loop,
+    }
+    for name, callee in targets.items():
+        accepted = {p for p in inspect.signature(callee).parameters if p != "self"}
+        sites = _find_call_kwargs(src, name)
+        assert sites, f"no {name}() call site found in main.py — PEAD wiring missing?"
+        for kwargs in sites:
+            extra = kwargs - accepted
+            assert not extra, (
+                f"main.py passes kwargs to {name}() that the callee does not "
+                f"accept: {sorted(extra)}.\n  Accepts:   {sorted(accepted)}\n"
+                f"  Call site: {sorted(kwargs)}\n"
+                "Same run()-time crash class as the bitunix kwarg guards — sync them."
+            )
+
+
+def test_pead_phase2_modules_import_cleanly():
+    """Catches top-level ImportError / SyntaxError in the Phase-2 PEAD live
+    engine modules before they ship and crash boot."""
+    from trading_corp.agents.divisions.robinhood_pead import RobinhoodPEADAgent
+    from trading_corp.agents.strategies import pead_pressures  # the locked contract
+    from trading_corp.agents.strategies.pead_strategy import PEADStrategy
+    assert hasattr(RobinhoodPEADAgent, "scan") and hasattr(RobinhoodPEADAgent, "manage")
+    assert hasattr(PEADStrategy, "scan") and hasattr(PEADStrategy, "manage")
+    assert hasattr(pead_pressures, "compute_pressures")
+
+
 def test_phase1c_new_modules_import_cleanly():
     """Catches top-level ImportError / SyntaxError / NameError in
     Phase 1C-new modules — before they ship and crash boot."""
