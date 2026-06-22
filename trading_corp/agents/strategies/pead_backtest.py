@@ -20,9 +20,13 @@ FILL CONVENTIONS (conservative, documented so the methodology is auditable):
   - Date-based exits (next-earnings guard, time): fill at that bar's close,
     plus sell-side friction.
 
-EXIT PRECEDENCE — evaluated each bar top-down, FIRST MATCH WINS:
-  (1) HARD STOP   price ≤ max(entry − atr_mult·ATR14, post-earnings swing low)
-  (2) DRIFT-DEAD  price gives back ≥ `drift_dead_giveback` of the earnings gap
+EXIT PRECEDENCE — evaluated each bar top-down, FIRST MATCH WINS. The stop and
+drift-dead LEVELS are taken from the LOCKED `pead_pressures` contract (imported,
+not re-implemented) so backtest / live exit engine / dashboard agree by
+construction:
+  (1) HARD STOP   price ≤ max(entry − 2.5·ATR14, post-earnings swing low)
+  (2) DRIFT-DEAD  price gives back ≥ 50% of the earnings gap, measured from the
+                  GAP TOP (announcement-bar close), NOT from our entry
   (3) NEXT-EARNINGS GUARD  ≤ guard_days trading days before next earnings → flat
   (4) TIME        held ≥ max_hold_trading_days → close
 Optional `exit_mode="partial_trail"` adds: at +partial_gain_trigger with
@@ -30,8 +34,9 @@ held>partial_hold_min_days, sell `partial_fraction`; trail the remainder out
 when close < its `trail_ma_period`-day moving average (the 4 hard rules still
 bind the remainder). Resolved against pure_hold by the head-to-head backtest.
 
-All thresholds are parameters (literature priors) — the backtest tunes them.
-Long-only v1.
+Entry timing, friction, guard/time windows, and sizing are parameters (literature
+priors the backtest tunes); the stop + drift-dead LEVELS are fixed by the locked
+`pead_pressures` contract (live-parity, not tunable here). Long-only v1.
 """
 from __future__ import annotations
 
@@ -40,6 +45,8 @@ import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
+
+from trading_corp.agents.strategies import pead_pressures as pp
 
 
 # ---------------------------------------------------------------------------
@@ -177,13 +184,28 @@ def simulate_trade(signal: EventSignal, p: BacktestParams) -> TradeResult | None
     entry_date = bars[e].trade_date
 
     pre_earnings_close = bars[a - 1].close
-    earnings_gap = entry_raw - pre_earnings_close            # the reaction we entered after
+    earnings_gap_top = bars[a].close      # announcement-bar close = the reaction level
     # post-earnings swing low = lowest low from announcement through entry
     swing_low = min(bars[i].low for i in range(a, e + 1))
-    stop_level = max(entry_raw - p.hard_stop_atr_mult * atr, swing_low)
-    # drift-dead: give back `giveback` of a POSITIVE gap (long-only)
+    # Stop + drift LEVELS come from the LOCKED `pead_pressures` contract on a
+    # per-trade PositionPrimitives, so the backtest, the live exit engine, and the
+    # dashboard fire at the IDENTICAL price by construction. entry_price = entry_raw
+    # (the un-frictioned reference, matching the live `_build_primitives`); drift
+    # give-back is measured from the GAP TOP (announcement close), NOT from our
+    # entry (the operator-caught re-align). The locked constants equal the
+    # hard_stop_atr_mult / drift_dead_giveback defaults above (2.5 / 0.50) — the
+    # contract is authoritative for the levels.
+    prim = pp.PositionPrimitives(
+        entry_price=entry_raw,
+        entry_atr_14=atr,
+        post_earnings_swing_low=swing_low,
+        pre_earnings_close=pre_earnings_close,
+        earnings_gap_top=earnings_gap_top,
+    )
+    stop_level = pp.stop_level(prim)
+    # drift-dead only meaningful for a POSITIVE earnings gap (long-only)
     drift_dead_level = (
-        entry_raw - p.drift_dead_giveback * earnings_gap if earnings_gap > 0 else None
+        pp.drift_dead_level(prim) if pp.earnings_gap_usd(prim) > 0 else None
     )
     next_earn_idx = (
         _index_on_or_after(bars, signal.next_earnings_date)

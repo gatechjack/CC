@@ -107,6 +107,29 @@ def test_drift_dead_between_stop_and_giveback():
     assert tr.exit_price == pytest.approx(102.0)        # fill at drift_dead level
 
 
+def test_drift_dead_measured_from_gap_top_not_entry():
+    """Re-align (operator-caught): drift give-back is measured from the earnings
+    GAP TOP (announcement-bar close) via the locked pead_pressures contract, NOT
+    from our entry. Here the stock gapped to a 110 close (gap_top) then drifted
+    down to a 104 entry open. The 50% give-back level is 110 - 0.5*(110-100) =
+    105 (gap-top), well ABOVE the old entry-relative 104 - 0.5*(104-100) = 102.
+    A dip to 105 must fire drift_dead — it would NOT have under the old level."""
+    rows = [
+        (100, 101, 99, 100),
+        (100, 101, 99, 100),    # pre-earnings close = 100
+        (100, 112, 100, 110),   # announcement: close 110 = gap_top
+        (104, 106, 103, 104),   # entry: open 104 (already drifted below gap_top)
+        (107, 107, 105, 106),   # low 105 == gap-top drift_dead; > stop 100, > old 102
+        (106, 108, 105, 107),
+        (107, 109, 106, 108),
+    ]
+    params = BacktestParams(**{**_NO_FRICTION, "max_hold_trading_days": 5})
+    tr = simulate_trade(_sig(rows), params)
+    assert tr.exit_reason == "drift_dead"
+    assert tr.exit_price == pytest.approx(105.0)   # gap-top level (not entry-relative 102)
+    assert tr.holding_days == 1
+
+
 def test_next_earnings_guard_flattens():
     bars = _mkbars(_BASE_ROWS)
     sig = EventSignal("TST", bars[2].trade_date, 2.0, bars,
