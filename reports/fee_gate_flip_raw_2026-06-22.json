@@ -1,0 +1,2021 @@
+{
+  "cap": 2,
+  "fee_current": 0.0004,
+  "fee_corrected": 0.00019,
+  "corpus": "C:\\Users\\AA Incorporado\\CC\\data\\btc_scalping.db",
+  "generated_utc": "2026-06-22T23:10:58.236880+00:00",
+  "windows": [
+    {
+      "lockbox": "TRAIN",
+      "window": [
+        "2026-04-01",
+        "2026-04-15"
+      ],
+      "regime": "bull",
+      "drift_pct": 8.72,
+      "n_score_fire": 1534,
+      "n_walked_current": 31,
+      "n_walked_corrected": 52,
+      "whole_total_net_R_corrected": -17.0071,
+      "whole_net_R_per_trade_corrected": -0.3271,
+      "whole_total_net_R_current": -16.4722,
+      "whole_net_R_per_trade_current": -0.5314,
+      "n_fee_skip_current": 64,
+      "n_plan_skip_current": 91,
+      "n_plan_skip_corrected": 35,
+      "n_flip": 21,
+      "flip_pct_of_fee_skips": 32.8,
+      "flip_total_net_R": -7.7116,
+      "flip_net_R_per_trade": -0.3672,
+      "flip_win_pct_diag": 61.9,
+      "flipped_trades": [
+        {
+          "signal_ts": "2026-04-02T07:54:00+00:00",
+          "entry_ts": "2026-04-02T08:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 1.2798,
+          "net_R": 0.9702
+        },
+        {
+          "signal_ts": "2026-04-02T08:30:00+00:00",
+          "entry_ts": "2026-04-02T08:36:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.1515,
+          "net_R": -0.1515
+        },
+        {
+          "signal_ts": "2026-04-02T10:39:00+00:00",
+          "entry_ts": "2026-04-02T10:39:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.6823,
+          "net_R": 0.404
+        },
+        {
+          "signal_ts": "2026-04-02T11:15:00+00:00",
+          "entry_ts": "2026-04-02T11:15:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.715,
+          "net_R": 0.4412
+        },
+        {
+          "signal_ts": "2026-04-07T04:06:00+00:00",
+          "entry_ts": "2026-04-07T04:09:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.8667,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-07T05:39:00+00:00",
+          "entry_ts": "2026-04-07T05:42:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.8049,
+          "net_R": 0.4189
+        },
+        {
+          "signal_ts": "2026-04-07T07:27:00+00:00",
+          "entry_ts": "2026-04-07T07:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1522,
+          "net_R": -0.1522
+        },
+        {
+          "signal_ts": "2026-04-09T04:15:00+00:00",
+          "entry_ts": "2026-04-09T04:21:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.1776,
+          "net_R": -0.1776
+        },
+        {
+          "signal_ts": "2026-04-09T04:51:00+00:00",
+          "entry_ts": "2026-04-09T04:51:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1727,
+          "net_R": -0.1727
+        },
+        {
+          "signal_ts": "2026-04-09T06:27:00+00:00",
+          "entry_ts": "2026-04-09T06:27:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3445
+        },
+        {
+          "signal_ts": "2026-04-10T04:30:00+00:00",
+          "entry_ts": "2026-04-10T04:36:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3896
+        },
+        {
+          "signal_ts": "2026-04-10T07:00:00+00:00",
+          "entry_ts": "2026-04-10T07:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1696,
+          "net_R": -0.1696
+        },
+        {
+          "signal_ts": "2026-04-10T07:45:00+00:00",
+          "entry_ts": "2026-04-10T07:48:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.8624,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-10T08:48:00+00:00",
+          "entry_ts": "2026-04-10T08:48:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3033
+        },
+        {
+          "signal_ts": "2026-04-11T04:00:00+00:00",
+          "entry_ts": "2026-04-11T04:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4246
+        },
+        {
+          "signal_ts": "2026-04-11T05:09:00+00:00",
+          "entry_ts": "2026-04-11T05:12:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4798
+        },
+        {
+          "signal_ts": "2026-04-11T06:12:00+00:00",
+          "entry_ts": "2026-04-11T06:12:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4617
+        },
+        {
+          "signal_ts": "2026-04-11T07:33:00+00:00",
+          "entry_ts": "2026-04-11T07:33:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9519,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-12T19:39:00+00:00",
+          "entry_ts": "2026-04-12T19:39:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8862,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-13T03:30:00+00:00",
+          "entry_ts": "2026-04-13T03:36:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3031
+        },
+        {
+          "signal_ts": "2026-04-13T11:57:00+00:00",
+          "entry_ts": "2026-04-13T12:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4155
+        }
+      ]
+    },
+    {
+      "lockbox": "TRAIN",
+      "window": [
+        "2026-04-15",
+        "2026-04-29"
+      ],
+      "regime": "neutral",
+      "drift_pct": 2.76,
+      "n_score_fire": 1527,
+      "n_walked_current": 30,
+      "n_walked_corrected": 67,
+      "whole_total_net_R_corrected": -25.4314,
+      "whole_net_R_per_trade_corrected": -0.3796,
+      "whole_total_net_R_current": -11.2833,
+      "whole_net_R_per_trade_current": -0.3761,
+      "n_fee_skip_current": 87,
+      "n_plan_skip_current": 134,
+      "n_plan_skip_corrected": 15,
+      "n_flip": 39,
+      "flip_pct_of_fee_skips": 44.8,
+      "flip_total_net_R": -20.0978,
+      "flip_net_R_per_trade": -0.5153,
+      "flip_win_pct_diag": 48.7,
+      "flipped_trades": [
+        {
+          "signal_ts": "2026-04-15T11:45:00+00:00",
+          "entry_ts": "2026-04-15T11:45:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.144,
+          "net_R": -0.144
+        },
+        {
+          "signal_ts": "2026-04-15T17:00:00+00:00",
+          "entry_ts": "2026-04-15T17:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3945
+        },
+        {
+          "signal_ts": "2026-04-17T04:15:00+00:00",
+          "entry_ts": "2026-04-17T04:18:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3901
+        },
+        {
+          "signal_ts": "2026-04-17T05:33:00+00:00",
+          "entry_ts": "2026-04-17T05:39:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.1382,
+          "net_R": -0.1382
+        },
+        {
+          "signal_ts": "2026-04-17T06:09:00+00:00",
+          "entry_ts": "2026-04-17T06:09:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3914
+        },
+        {
+          "signal_ts": "2026-04-18T01:48:00+00:00",
+          "entry_ts": "2026-04-18T01:54:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3467
+        },
+        {
+          "signal_ts": "2026-04-18T03:30:00+00:00",
+          "entry_ts": "2026-04-18T03:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9206,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-18T10:03:00+00:00",
+          "entry_ts": "2026-04-18T10:03:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.7761,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-18T14:48:00+00:00",
+          "entry_ts": "2026-04-18T14:54:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.352
+        },
+        {
+          "signal_ts": "2026-04-18T22:06:00+00:00",
+          "entry_ts": "2026-04-18T22:06:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4094
+        },
+        {
+          "signal_ts": "2026-04-18T23:30:00+00:00",
+          "entry_ts": "2026-04-18T23:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1648,
+          "net_R": -0.1648
+        },
+        {
+          "signal_ts": "2026-04-20T05:30:00+00:00",
+          "entry_ts": "2026-04-20T05:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1738,
+          "net_R": -0.1738
+        },
+        {
+          "signal_ts": "2026-04-21T21:54:00+00:00",
+          "entry_ts": "2026-04-21T22:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.944,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-21T23:06:00+00:00",
+          "entry_ts": "2026-04-21T23:06:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.7858,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-23T05:30:00+00:00",
+          "entry_ts": "2026-04-23T05:30:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3467
+        },
+        {
+          "signal_ts": "2026-04-24T05:06:00+00:00",
+          "entry_ts": "2026-04-24T05:06:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8714,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-24T07:54:00+00:00",
+          "entry_ts": "2026-04-24T07:54:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4208
+        },
+        {
+          "signal_ts": "2026-04-24T08:57:00+00:00",
+          "entry_ts": "2026-04-24T09:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.2998,
+          "net_R": 0.9502
+        },
+        {
+          "signal_ts": "2026-04-24T10:15:00+00:00",
+          "entry_ts": "2026-04-24T10:18:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3751
+        },
+        {
+          "signal_ts": "2026-04-24T20:03:00+00:00",
+          "entry_ts": "2026-04-24T20:03:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9222,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-24T21:18:00+00:00",
+          "entry_ts": "2026-04-24T21:24:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.9319,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-24T22:00:00+00:00",
+          "entry_ts": "2026-04-24T22:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.924,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-24T22:33:00+00:00",
+          "entry_ts": "2026-04-24T22:36:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.9468,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-25T16:00:00+00:00",
+          "entry_ts": "2026-04-25T16:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 1.3407,
+          "net_R": 0.9093
+        },
+        {
+          "signal_ts": "2026-04-25T16:36:00+00:00",
+          "entry_ts": "2026-04-25T16:36:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3256
+        },
+        {
+          "signal_ts": "2026-04-27T08:24:00+00:00",
+          "entry_ts": "2026-04-27T08:24:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.2795
+        },
+        {
+          "signal_ts": "2026-04-27T09:18:00+00:00",
+          "entry_ts": "2026-04-27T09:24:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4017
+        },
+        {
+          "signal_ts": "2026-04-27T10:00:00+00:00",
+          "entry_ts": "2026-04-27T10:03:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3644
+        },
+        {
+          "signal_ts": "2026-04-27T11:06:00+00:00",
+          "entry_ts": "2026-04-27T11:12:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.486
+        },
+        {
+          "signal_ts": "2026-04-27T21:57:00+00:00",
+          "entry_ts": "2026-04-27T22:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3834
+        },
+        {
+          "signal_ts": "2026-04-27T22:30:00+00:00",
+          "entry_ts": "2026-04-27T22:30:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3896
+        },
+        {
+          "signal_ts": "2026-04-27T23:00:00+00:00",
+          "entry_ts": "2026-04-27T23:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4563
+        },
+        {
+          "signal_ts": "2026-04-28T04:03:00+00:00",
+          "entry_ts": "2026-04-28T04:09:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.9642,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-04-28T04:48:00+00:00",
+          "entry_ts": "2026-04-28T04:48:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3876
+        },
+        {
+          "signal_ts": "2026-04-28T05:36:00+00:00",
+          "entry_ts": "2026-04-28T05:42:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3613
+        },
+        {
+          "signal_ts": "2026-04-28T06:18:00+00:00",
+          "entry_ts": "2026-04-28T06:21:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4025
+        },
+        {
+          "signal_ts": "2026-04-28T12:42:00+00:00",
+          "entry_ts": "2026-04-28T12:45:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.2715,
+          "net_R": 0.9785
+        },
+        {
+          "signal_ts": "2026-04-28T16:27:00+00:00",
+          "entry_ts": "2026-04-28T16:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1503,
+          "net_R": -0.1503
+        },
+        {
+          "signal_ts": "2026-04-28T19:06:00+00:00",
+          "entry_ts": "2026-04-28T19:09:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.9695,
+          "net_R": 0.5
+        }
+      ]
+    },
+    {
+      "lockbox": "TRAIN",
+      "window": [
+        "2026-05-01",
+        "2026-05-15"
+      ],
+      "regime": "bull",
+      "drift_pct": 6.12,
+      "n_score_fire": 1685,
+      "n_walked_current": 23,
+      "n_walked_corrected": 50,
+      "whole_total_net_R_corrected": -13.086,
+      "whole_net_R_per_trade_corrected": -0.2617,
+      "whole_total_net_R_current": -4.7476,
+      "whole_net_R_per_trade_current": -0.2064,
+      "n_fee_skip_current": 74,
+      "n_plan_skip_current": 115,
+      "n_plan_skip_corrected": 22,
+      "n_flip": 29,
+      "flip_pct_of_fee_skips": 39.2,
+      "flip_total_net_R": -13.2795,
+      "flip_net_R_per_trade": -0.4579,
+      "flip_win_pct_diag": 51.7,
+      "flipped_trades": [
+        {
+          "signal_ts": "2026-05-02T02:27:00+00:00",
+          "entry_ts": "2026-05-02T02:30:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3681
+        },
+        {
+          "signal_ts": "2026-05-04T23:48:00+00:00",
+          "entry_ts": "2026-05-04T23:48:00+00:00",
+          "side": "buy",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.7884,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-06T18:33:00+00:00",
+          "entry_ts": "2026-05-06T18:33:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.7826,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-07T00:15:00+00:00",
+          "entry_ts": "2026-05-07T00:18:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.3082,
+          "net_R": 0.9418
+        },
+        {
+          "signal_ts": "2026-05-07T01:09:00+00:00",
+          "entry_ts": "2026-05-07T01:09:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1669,
+          "net_R": -0.1669
+        },
+        {
+          "signal_ts": "2026-05-07T03:30:00+00:00",
+          "entry_ts": "2026-05-07T03:33:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.7233,
+          "net_R": 0.3731
+        },
+        {
+          "signal_ts": "2026-05-07T06:15:00+00:00",
+          "entry_ts": "2026-05-07T06:15:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.413
+        },
+        {
+          "signal_ts": "2026-05-07T11:48:00+00:00",
+          "entry_ts": "2026-05-07T11:54:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.355
+        },
+        {
+          "signal_ts": "2026-05-07T12:24:00+00:00",
+          "entry_ts": "2026-05-07T12:24:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3548
+        },
+        {
+          "signal_ts": "2026-05-07T13:06:00+00:00",
+          "entry_ts": "2026-05-07T13:12:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3299
+        },
+        {
+          "signal_ts": "2026-05-07T19:54:00+00:00",
+          "entry_ts": "2026-05-07T19:57:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3095
+        },
+        {
+          "signal_ts": "2026-05-07T20:33:00+00:00",
+          "entry_ts": "2026-05-07T20:36:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1512,
+          "net_R": -0.1512
+        },
+        {
+          "signal_ts": "2026-05-07T21:09:00+00:00",
+          "entry_ts": "2026-05-07T21:09:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3133
+        },
+        {
+          "signal_ts": "2026-05-07T22:09:00+00:00",
+          "entry_ts": "2026-05-07T22:09:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3219
+        },
+        {
+          "signal_ts": "2026-05-08T06:00:00+00:00",
+          "entry_ts": "2026-05-08T06:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4155
+        },
+        {
+          "signal_ts": "2026-05-08T17:12:00+00:00",
+          "entry_ts": "2026-05-08T17:12:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.2698
+        },
+        {
+          "signal_ts": "2026-05-10T19:18:00+00:00",
+          "entry_ts": "2026-05-10T19:21:00+00:00",
+          "side": "buy",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4101
+        },
+        {
+          "signal_ts": "2026-05-11T13:30:00+00:00",
+          "entry_ts": "2026-05-11T13:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.804,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-12T07:00:00+00:00",
+          "entry_ts": "2026-05-12T07:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4912
+        },
+        {
+          "signal_ts": "2026-05-12T07:36:00+00:00",
+          "entry_ts": "2026-05-12T07:39:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.905,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-12T13:15:00+00:00",
+          "entry_ts": "2026-05-12T13:18:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1587,
+          "net_R": -0.1587
+        },
+        {
+          "signal_ts": "2026-05-12T18:24:00+00:00",
+          "entry_ts": "2026-05-12T18:24:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3019
+        },
+        {
+          "signal_ts": "2026-05-12T20:33:00+00:00",
+          "entry_ts": "2026-05-12T20:36:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4635
+        },
+        {
+          "signal_ts": "2026-05-12T23:39:00+00:00",
+          "entry_ts": "2026-05-12T23:39:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9481,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-13T11:57:00+00:00",
+          "entry_ts": "2026-05-13T12:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.9346,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-13T21:06:00+00:00",
+          "entry_ts": "2026-05-13T21:06:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9237,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-13T21:57:00+00:00",
+          "entry_ts": "2026-05-13T22:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.9081,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-13T23:15:00+00:00",
+          "entry_ts": "2026-05-13T23:21:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.9063,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-14T20:54:00+00:00",
+          "entry_ts": "2026-05-14T21:00:00+00:00",
+          "side": "buy",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.7995,
+          "net_R": 0.5
+        }
+      ]
+    },
+    {
+      "lockbox": "VALIDATE",
+      "window": [
+        "2026-05-15",
+        "2026-05-29"
+      ],
+      "regime": "bear",
+      "drift_pct": -9.25,
+      "n_score_fire": 1541,
+      "n_walked_current": 38,
+      "n_walked_corrected": 83,
+      "whole_total_net_R_corrected": -19.092,
+      "whole_net_R_per_trade_corrected": -0.23,
+      "whole_total_net_R_current": -9.2312,
+      "whole_net_R_per_trade_current": -0.2429,
+      "n_fee_skip_current": 113,
+      "n_plan_skip_current": 178,
+      "n_plan_skip_corrected": 33,
+      "n_flip": 50,
+      "flip_pct_of_fee_skips": 44.2,
+      "flip_total_net_R": -15.1998,
+      "flip_net_R_per_trade": -0.304,
+      "flip_win_pct_diag": 62.0,
+      "flipped_trades": [
+        {
+          "signal_ts": "2026-05-15T08:30:00+00:00",
+          "entry_ts": "2026-05-15T08:30:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.2913
+        },
+        {
+          "signal_ts": "2026-05-15T09:12:00+00:00",
+          "entry_ts": "2026-05-15T09:18:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3254
+        },
+        {
+          "signal_ts": "2026-05-15T09:51:00+00:00",
+          "entry_ts": "2026-05-15T09:51:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3196
+        },
+        {
+          "signal_ts": "2026-05-15T10:39:00+00:00",
+          "entry_ts": "2026-05-15T10:45:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.1595,
+          "net_R": -0.1595
+        },
+        {
+          "signal_ts": "2026-05-15T16:39:00+00:00",
+          "entry_ts": "2026-05-15T16:45:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.1349,
+          "net_R": -0.1349
+        },
+        {
+          "signal_ts": "2026-05-15T17:18:00+00:00",
+          "entry_ts": "2026-05-15T17:24:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3029
+        },
+        {
+          "signal_ts": "2026-05-15T18:15:00+00:00",
+          "entry_ts": "2026-05-15T18:18:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1485,
+          "net_R": -0.1485
+        },
+        {
+          "signal_ts": "2026-05-15T18:57:00+00:00",
+          "entry_ts": "2026-05-15T19:03:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.6506,
+          "net_R": 0.3615
+        },
+        {
+          "signal_ts": "2026-05-15T19:57:00+00:00",
+          "entry_ts": "2026-05-15T19:57:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9011,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-16T11:57:00+00:00",
+          "entry_ts": "2026-05-16T11:57:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.973,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-16T13:15:00+00:00",
+          "entry_ts": "2026-05-16T13:18:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.9177,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-16T14:18:00+00:00",
+          "entry_ts": "2026-05-16T14:18:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4786
+        },
+        {
+          "signal_ts": "2026-05-16T14:48:00+00:00",
+          "entry_ts": "2026-05-16T14:48:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1795,
+          "net_R": -0.1795
+        },
+        {
+          "signal_ts": "2026-05-17T16:45:00+00:00",
+          "entry_ts": "2026-05-17T16:45:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.869,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-17T17:15:00+00:00",
+          "entry_ts": "2026-05-17T17:15:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9455,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-18T05:36:00+00:00",
+          "entry_ts": "2026-05-18T05:39:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.1806,
+          "net_R": 0.8103
+        },
+        {
+          "signal_ts": "2026-05-18T06:12:00+00:00",
+          "entry_ts": "2026-05-18T06:12:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8018,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-18T08:30:00+00:00",
+          "entry_ts": "2026-05-18T08:36:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3411
+        },
+        {
+          "signal_ts": "2026-05-18T09:54:00+00:00",
+          "entry_ts": "2026-05-18T09:54:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8871,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-18T11:00:00+00:00",
+          "entry_ts": "2026-05-18T11:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9119,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-19T04:03:00+00:00",
+          "entry_ts": "2026-05-19T04:09:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.756,
+          "net_R": 0.4305
+        },
+        {
+          "signal_ts": "2026-05-19T05:18:00+00:00",
+          "entry_ts": "2026-05-19T05:18:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9076,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-19T12:12:00+00:00",
+          "entry_ts": "2026-05-19T12:15:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3911
+        },
+        {
+          "signal_ts": "2026-05-19T13:00:00+00:00",
+          "entry_ts": "2026-05-19T13:03:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1995,
+          "net_R": -0.1995
+        },
+        {
+          "signal_ts": "2026-05-19T17:33:00+00:00",
+          "entry_ts": "2026-05-19T17:33:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3359
+        },
+        {
+          "signal_ts": "2026-05-21T08:06:00+00:00",
+          "entry_ts": "2026-05-21T08:06:00+00:00",
+          "side": "buy",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3662
+        },
+        {
+          "signal_ts": "2026-05-21T12:30:00+00:00",
+          "entry_ts": "2026-05-21T12:30:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.2854
+        },
+        {
+          "signal_ts": "2026-05-21T16:45:00+00:00",
+          "entry_ts": "2026-05-21T16:51:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.2782
+        },
+        {
+          "signal_ts": "2026-05-22T06:00:00+00:00",
+          "entry_ts": "2026-05-22T06:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.2385,
+          "net_R": -0.2385
+        },
+        {
+          "signal_ts": "2026-05-22T06:57:00+00:00",
+          "entry_ts": "2026-05-22T07:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4092
+        },
+        {
+          "signal_ts": "2026-05-22T08:33:00+00:00",
+          "entry_ts": "2026-05-22T08:33:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1758,
+          "net_R": -0.1758
+        },
+        {
+          "signal_ts": "2026-05-22T13:30:00+00:00",
+          "entry_ts": "2026-05-22T13:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8828,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-22T21:45:00+00:00",
+          "entry_ts": "2026-05-22T21:48:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.3017,
+          "net_R": 0.9483
+        },
+        {
+          "signal_ts": "2026-05-23T10:45:00+00:00",
+          "entry_ts": "2026-05-23T10:45:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3741
+        },
+        {
+          "signal_ts": "2026-05-24T18:24:00+00:00",
+          "entry_ts": "2026-05-24T18:24:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.954,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-24T19:18:00+00:00",
+          "entry_ts": "2026-05-24T19:18:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4639
+        },
+        {
+          "signal_ts": "2026-05-25T00:45:00+00:00",
+          "entry_ts": "2026-05-25T00:48:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.9959,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-25T01:42:00+00:00",
+          "entry_ts": "2026-05-25T01:42:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.7796,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-26T07:15:00+00:00",
+          "entry_ts": "2026-05-26T07:15:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4282
+        },
+        {
+          "signal_ts": "2026-05-26T07:51:00+00:00",
+          "entry_ts": "2026-05-26T07:54:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4307
+        },
+        {
+          "signal_ts": "2026-05-26T21:51:00+00:00",
+          "entry_ts": "2026-05-26T21:51:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9329,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-26T22:39:00+00:00",
+          "entry_ts": "2026-05-26T22:45:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3423
+        },
+        {
+          "signal_ts": "2026-05-27T01:21:00+00:00",
+          "entry_ts": "2026-05-27T01:21:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3776
+        },
+        {
+          "signal_ts": "2026-05-27T02:00:00+00:00",
+          "entry_ts": "2026-05-27T02:03:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.8688,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-27T03:45:00+00:00",
+          "entry_ts": "2026-05-27T03:48:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.3341,
+          "net_R": 0.9159
+        },
+        {
+          "signal_ts": "2026-05-27T21:03:00+00:00",
+          "entry_ts": "2026-05-27T21:06:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.3575,
+          "net_R": 0.8925
+        },
+        {
+          "signal_ts": "2026-05-28T08:21:00+00:00",
+          "entry_ts": "2026-05-28T08:21:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8392,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-28T09:06:00+00:00",
+          "entry_ts": "2026-05-28T09:06:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1926,
+          "net_R": -0.1926
+        },
+        {
+          "signal_ts": "2026-05-28T10:15:00+00:00",
+          "entry_ts": "2026-05-28T10:21:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4061
+        },
+        {
+          "signal_ts": "2026-05-28T10:51:00+00:00",
+          "entry_ts": "2026-05-28T10:51:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1824,
+          "net_R": -0.1824
+        }
+      ]
+    },
+    {
+      "lockbox": "VALIDATE",
+      "window": [
+        "2026-05-20",
+        "2026-06-03"
+      ],
+      "regime": "bear",
+      "drift_pct": -13.19,
+      "n_score_fire": 1572,
+      "n_walked_current": 42,
+      "n_walked_corrected": 77,
+      "whole_total_net_R_corrected": -14.9733,
+      "whole_net_R_per_trade_corrected": -0.1945,
+      "whole_total_net_R_current": -11.9406,
+      "whole_net_R_per_trade_current": -0.2843,
+      "n_fee_skip_current": 104,
+      "n_plan_skip_current": 174,
+      "n_plan_skip_corrected": 55,
+      "n_flip": 38,
+      "flip_pct_of_fee_skips": 36.5,
+      "flip_total_net_R": -9.6703,
+      "flip_net_R_per_trade": -0.2545,
+      "flip_win_pct_diag": 63.2,
+      "flipped_trades": [
+        {
+          "signal_ts": "2026-05-21T08:06:00+00:00",
+          "entry_ts": "2026-05-21T08:06:00+00:00",
+          "side": "buy",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3662
+        },
+        {
+          "signal_ts": "2026-05-21T12:30:00+00:00",
+          "entry_ts": "2026-05-21T12:30:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.2854
+        },
+        {
+          "signal_ts": "2026-05-21T16:45:00+00:00",
+          "entry_ts": "2026-05-21T16:51:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.2782
+        },
+        {
+          "signal_ts": "2026-05-22T06:00:00+00:00",
+          "entry_ts": "2026-05-22T06:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.2385,
+          "net_R": -0.2385
+        },
+        {
+          "signal_ts": "2026-05-22T06:57:00+00:00",
+          "entry_ts": "2026-05-22T07:00:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4092
+        },
+        {
+          "signal_ts": "2026-05-22T08:33:00+00:00",
+          "entry_ts": "2026-05-22T08:33:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1758,
+          "net_R": -0.1758
+        },
+        {
+          "signal_ts": "2026-05-22T13:30:00+00:00",
+          "entry_ts": "2026-05-22T13:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8828,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-22T21:45:00+00:00",
+          "entry_ts": "2026-05-22T21:48:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.3017,
+          "net_R": 0.9483
+        },
+        {
+          "signal_ts": "2026-05-23T10:45:00+00:00",
+          "entry_ts": "2026-05-23T10:45:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3741
+        },
+        {
+          "signal_ts": "2026-05-24T18:24:00+00:00",
+          "entry_ts": "2026-05-24T18:24:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.954,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-24T19:18:00+00:00",
+          "entry_ts": "2026-05-24T19:18:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4639
+        },
+        {
+          "signal_ts": "2026-05-25T00:45:00+00:00",
+          "entry_ts": "2026-05-25T00:48:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.9959,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-25T01:42:00+00:00",
+          "entry_ts": "2026-05-25T01:42:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.7796,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-26T07:15:00+00:00",
+          "entry_ts": "2026-05-26T07:15:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4282
+        },
+        {
+          "signal_ts": "2026-05-26T07:51:00+00:00",
+          "entry_ts": "2026-05-26T07:54:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4307
+        },
+        {
+          "signal_ts": "2026-05-26T21:51:00+00:00",
+          "entry_ts": "2026-05-26T21:51:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9329,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-26T22:39:00+00:00",
+          "entry_ts": "2026-05-26T22:45:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.3423
+        },
+        {
+          "signal_ts": "2026-05-27T01:21:00+00:00",
+          "entry_ts": "2026-05-27T01:21:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3776
+        },
+        {
+          "signal_ts": "2026-05-27T02:00:00+00:00",
+          "entry_ts": "2026-05-27T02:03:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.8688,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-27T03:45:00+00:00",
+          "entry_ts": "2026-05-27T03:48:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.3341,
+          "net_R": 0.9159
+        },
+        {
+          "signal_ts": "2026-05-27T21:03:00+00:00",
+          "entry_ts": "2026-05-27T21:06:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 1.3575,
+          "net_R": 0.8925
+        },
+        {
+          "signal_ts": "2026-05-28T08:21:00+00:00",
+          "entry_ts": "2026-05-28T08:21:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8392,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-28T09:06:00+00:00",
+          "entry_ts": "2026-05-28T09:06:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1926,
+          "net_R": -0.1926
+        },
+        {
+          "signal_ts": "2026-05-28T10:15:00+00:00",
+          "entry_ts": "2026-05-28T10:21:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.4061
+        },
+        {
+          "signal_ts": "2026-05-28T10:51:00+00:00",
+          "entry_ts": "2026-05-28T10:51:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.1824,
+          "net_R": -0.1824
+        },
+        {
+          "signal_ts": "2026-05-29T07:33:00+00:00",
+          "entry_ts": "2026-05-29T07:33:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9432,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-31T02:24:00+00:00",
+          "entry_ts": "2026-05-31T02:27:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1887,
+          "net_R": -0.1887
+        },
+        {
+          "signal_ts": "2026-05-31T09:18:00+00:00",
+          "entry_ts": "2026-05-31T09:18:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.4499
+        },
+        {
+          "signal_ts": "2026-05-31T12:18:00+00:00",
+          "entry_ts": "2026-05-31T12:18:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9958,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-31T16:30:00+00:00",
+          "entry_ts": "2026-05-31T16:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9667,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-31T21:15:00+00:00",
+          "entry_ts": "2026-05-31T21:15:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.9707,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-05-31T22:03:00+00:00",
+          "entry_ts": "2026-05-31T22:03:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3129
+        },
+        {
+          "signal_ts": "2026-05-31T23:30:00+00:00",
+          "entry_ts": "2026-05-31T23:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.7778,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-06-01T04:15:00+00:00",
+          "entry_ts": "2026-06-01T04:18:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1465,
+          "net_R": -0.1465
+        },
+        {
+          "signal_ts": "2026-06-01T06:42:00+00:00",
+          "entry_ts": "2026-06-01T06:42:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.3201
+        },
+        {
+          "signal_ts": "2026-06-01T09:42:00+00:00",
+          "entry_ts": "2026-06-01T09:42:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 0.8471,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-06-01T21:00:00+00:00",
+          "entry_ts": "2026-06-01T21:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": 1.3076,
+          "net_R": 0.9424
+        },
+        {
+          "signal_ts": "2026-06-01T21:30:00+00:00",
+          "entry_ts": "2026-06-01T21:36:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.8091,
+          "net_R": 0.5
+        }
+      ]
+    },
+    {
+      "lockbox": "VALIDATE",
+      "window": [
+        "2026-06-03",
+        "2026-06-17"
+      ],
+      "regime": "neutral",
+      "drift_pct": -1.65,
+      "n_score_fire": 1578,
+      "n_walked_current": 33,
+      "n_walked_corrected": 38,
+      "whole_total_net_R_corrected": -5.7606,
+      "whole_net_R_per_trade_corrected": -0.1516,
+      "whole_total_net_R_current": -7.6562,
+      "whole_net_R_per_trade_current": -0.232,
+      "n_fee_skip_current": 18,
+      "n_plan_skip_current": 28,
+      "n_plan_skip_corrected": 9,
+      "n_flip": 6,
+      "flip_pct_of_fee_skips": 33.3,
+      "flip_total_net_R": -1.4072,
+      "flip_net_R_per_trade": -0.2345,
+      "flip_win_pct_diag": 66.7,
+      "flipped_trades": [
+        {
+          "signal_ts": "2026-06-13T02:30:00+00:00",
+          "entry_ts": "2026-06-13T02:33:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.9446,
+          "net_R": 0.5
+        },
+        {
+          "signal_ts": "2026-06-16T00:27:00+00:00",
+          "entry_ts": "2026-06-16T00:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": 0.1783,
+          "net_R": -0.1783
+        },
+        {
+          "signal_ts": "2026-06-16T01:54:00+00:00",
+          "entry_ts": "2026-06-16T02:00:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 1.2737,
+          "net_R": 0.9763
+        },
+        {
+          "signal_ts": "2026-06-16T04:24:00+00:00",
+          "entry_ts": "2026-06-16T04:30:00+00:00",
+          "side": "sell",
+          "result": "win",
+          "bars_waited": 2,
+          "redeemed": true,
+          "gross_R": 0.1397,
+          "net_R": -0.1397
+        },
+        {
+          "signal_ts": "2026-06-16T17:42:00+00:00",
+          "entry_ts": "2026-06-16T17:45:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 1,
+          "redeemed": true,
+          "gross_R": -1.0,
+          "net_R": -1.2696
+        },
+        {
+          "signal_ts": "2026-06-16T19:54:00+00:00",
+          "entry_ts": "2026-06-16T19:54:00+00:00",
+          "side": "sell",
+          "result": "loss",
+          "bars_waited": 0,
+          "redeemed": false,
+          "gross_R": -1.0,
+          "net_R": -1.2959
+        }
+      ]
+    }
+  ],
+  "rollup": {
+    "TRAIN": {
+      "n_fee_skip": 225,
+      "n_flip": 89,
+      "flip_pct": 39.6,
+      "flip_total_net_R": -41.0889,
+      "flip_net_R_per_trade": -0.4617,
+      "flip_win_pct_diag": 52.8
+    },
+    "VALIDATE": {
+      "n_fee_skip": 235,
+      "n_flip": 94,
+      "flip_pct": 40.0,
+      "flip_total_net_R": -26.2773,
+      "flip_net_R_per_trade": -0.2795,
+      "flip_win_pct_diag": 62.8
+    },
+    "ALL": {
+      "n_fee_skip": 460,
+      "n_flip": 183,
+      "flip_pct": 39.8,
+      "flip_total_net_R": -67.3662,
+      "flip_net_R_per_trade": -0.3681,
+      "flip_win_pct_diag": 57.9
+    }
+  }
+}

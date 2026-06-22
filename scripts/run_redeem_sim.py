@@ -82,12 +82,15 @@ _SYNTH_DIR = _REPO_ROOT / "scripts" / "research_scoring"
 if str(_SYNTH_DIR) not in sys.path:
     sys.path.insert(0, str(_SYNTH_DIR))
 
+import scripts.backtest_bitunix_confluence as _BT  # noqa: E402
 from scripts.backtest_bitunix_confluence import (  # noqa: E402
     AlertEvent,
     BitUnixConfluenceConfig,
     run_redeem_cap_backtest,
 )
 from synth_ledger import load_synth_ledger  # noqa: E402
+from dataclasses import replace as _dc_replace  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 
 # Default CLEAN corpus. The btc_scalping.db lives in the MAIN cc dir's data/,
 # not in this worktree (the worktree data/ holds only trading_corp.db). Resolve
@@ -101,6 +104,40 @@ _DEFAULT_DB_CANDIDATES = (
 # cap=inf is represented internally by a very large int (the engine walks
 # bar-by-bar and stops at end-of-corpus / score-decay anyway).
 _INF_CAP = 10 ** 9
+
+
+@contextmanager
+def _fee_override(taker_pct: float | None):
+    """Temporarily override the per-side TAKER fee in the backtest engine.
+
+    ADDITIVE / default-OFF: `taker_pct=None` (the default) yields the engine's
+    current behaviour byte-for-byte — this CM is a no-op and does NOT touch the
+    module globals. When a rate is given it rebinds the FOUR fee objects the
+    engine reads at call time, so BOTH the `fees_too_high_for_risk` GATE
+    (`build_v2_plan` reads `_BT._FEES_TK`) and the net-R cost
+    (`run_redeem_cap_backtest` reads `_BT._RT_TK` / `_BT._RT_MK`) use the
+    corrected rate CONSISTENTLY. The entry leg is always taker
+    (`entry_is_taker=True`) so the override also corrects the entry-side cost of
+    the maker-exit net-R column. The maker EXIT fee (`maker_fee_pct`) and
+    `slippage_pct` are left untouched — only the venue-actual taker rate moves.
+
+    Restores all four globals on exit (even on exception). Single-threaded use
+    only (the engine is single-threaded); the sweep loop is sequential.
+    """
+    if taker_pct is None:
+        yield
+        return
+    if not (taker_pct >= 0.0):
+        raise ValueError(f"taker_pct must be >= 0, got {taker_pct!r}")
+    saved = (_BT._FEES_TK, _BT._FEES_MK, _BT._RT_TK, _BT._RT_MK)
+    try:
+        _BT._FEES_TK = _dc_replace(_BT._FEES_TK, taker_fee_pct=taker_pct)
+        _BT._FEES_MK = _dc_replace(_BT._FEES_MK, taker_fee_pct=taker_pct)
+        _BT._RT_TK = _BT._FEES_TK.round_trip_cost_pct()
+        _BT._RT_MK = _BT._FEES_MK.round_trip_cost_pct()
+        yield
+    finally:
+        _BT._FEES_TK, _BT._FEES_MK, _BT._RT_TK, _BT._RT_MK = saved
 
 
 def _resolve_db(db: str | Path | None) -> Path:
@@ -205,6 +242,7 @@ def run_redeem_sim(
     structure_tf: str = "4h",
     fee_mode: str = "taker",
     max_slip_pt: float | None = None,
+    taker_pct: float | None = None,
     _preloaded: tuple | None = None,
 ) -> dict:
     """Run the redeem-cap simulator at a single `cap` over the clean corpus.
@@ -224,6 +262,10 @@ def run_redeem_sim(
       max_slip_pt: max-slippage entry guard in price points (default None = OFF).
         Reject a REDEEM entry when |fire_price - signal_bar_close| > max_slip_pt.
         First-pass fires are never affected (slip == 0). Composes with `cap`.
+      taker_pct: per-side TAKER fee override (FRACTION, e.g. 0.00019 = venue-
+        actual VIP3 Fee-Discount-Card rate). Default None = engine default
+        (0.0004). Applies CONSISTENTLY to the fees_too_high_for_risk GATE and the
+        net-R cost (see `_fee_override`). ADDITIVE: None reproduces prior runs.
       _preloaded: (alerts, bars, config) to reuse across a sweep (internal).
 
     Returns a dict (the sweep contract):
@@ -261,11 +303,12 @@ def run_redeem_sim(
         alerts, bars, config = load_inputs(db_path, s, e)
         win = (s, e)
 
-    fires, summ = run_redeem_cap_backtest(
-        alerts=alerts, bars=bars, config=config, pa_config=None,
-        redeem_cap=cap_i, structure_tf=structure_tf, arm_name=_cap_label(cap_i),
-        max_slip_pt=max_slip_pt,
-    )
+    with _fee_override(taker_pct):
+        fires, summ = run_redeem_cap_backtest(
+            alerts=alerts, bars=bars, config=config, pa_config=None,
+            redeem_cap=cap_i, structure_tf=structure_tf, arm_name=_cap_label(cap_i),
+            max_slip_pt=max_slip_pt,
+        )
 
     trades = []
     for f in fires:
@@ -308,6 +351,7 @@ def run_redeem_sim(
         "window": [win[0].date().isoformat(), win[1].date().isoformat()],
         "fee_mode": fee_mode,
         "structure_tf": structure_tf,
+        "taker_pct": taker_pct if taker_pct is not None else _BT._FEES_TK.taker_fee_pct,
         # funnel
         "n_score_fire": summ["n_score_fire"],
         "n_pa_pass": summ["n_pa_pass"],
@@ -341,6 +385,7 @@ def run_sweep(
     structure_tf: str = "4h",
     fee_mode: str = "taker",
     max_slip_pt: float | None = None,
+    taker_pct: float | None = None,
 ) -> list[dict]:
     """Run the SAME corpus at multiple caps (inputs loaded once, reused)."""
     db_path = _resolve_db(db)
@@ -355,7 +400,7 @@ def run_sweep(
     for c in caps:
         results.append(run_redeem_sim(
             cap=c, structure_tf=structure_tf, fee_mode=fee_mode,
-            max_slip_pt=max_slip_pt, _preloaded=preloaded,
+            max_slip_pt=max_slip_pt, taker_pct=taker_pct, _preloaded=preloaded,
         ))
     return results
 
@@ -370,7 +415,8 @@ def _print_sweep_table(results: list[dict]) -> None:
     print()
     print("=== PA-REDEEM-CAP SWEEP (engine validation -- NOT a cap verdict) ===")
     print(f"window={results[0]['window']}  fee_mode={results[0]['fee_mode']}  "
-          f"structure_tf={results[0]['structure_tf']}")
+          f"structure_tf={results[0]['structure_tf']}  "
+          f"taker_pct={results[0].get('taker_pct')}")
     hdr = ("cap", "first_pass", "redeem", "drop", "plan_skip", "walked",
            "net_R/trade", "total_net_R", "win%(diag)", "max_bw")
     print("{:>5} {:>10} {:>7} {:>6} {:>9} {:>6} {:>11} {:>11} {:>10} {:>6}".format(*hdr))
@@ -402,6 +448,10 @@ def main() -> int:
     ap.add_argument("--max-slip-pt", type=float, default=None,
                     help="max-slippage entry guard in price points (default OFF); "
                          "rejects a redeem whose |fill - signal_close| exceeds it")
+    ap.add_argument("--taker-pct", type=float, default=None,
+                    help="per-side TAKER fee override as a FRACTION (default = engine "
+                         "0.0004); e.g. 0.00019 = venue-actual VIP3 Fee-Discount-Card. "
+                         "Applies to BOTH the fees_too_high_for_risk gate and net-R.")
     ap.add_argument("--json", default=None, help="write full results (incl per-trade) to this path")
     args = ap.parse_args()
 
@@ -415,7 +465,7 @@ def main() -> int:
     results = run_sweep(
         caps, start=args.start, end=args.end, db=args.db,
         structure_tf=args.structure_tf, fee_mode=args.fee_mode,
-        max_slip_pt=args.max_slip_pt,
+        max_slip_pt=args.max_slip_pt, taker_pct=args.taker_pct,
     )
     _print_sweep_table(results)
 

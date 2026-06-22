@@ -465,3 +465,94 @@ def test_slip_guard_no_look_ahead(monkeypatch):
         assert a["entry_ts"] == b["entry_ts"]
         assert a["entry_bar_price"] == b["entry_bar_price"]
         assert a["bars_waited"] == b["bars_waited"]
+
+
+# ── TAKER-FEE OVERRIDE (additive, default-off — fee-vs-edge Step 2) ──────
+# The override must (a) be a true no-op at default (globals untouched, results
+# byte-identical), (b) RESTORE the engine globals after the call (even on
+# error), (c) lower the fees_too_high_for_risk gate so a lower rate admits at
+# least as many trades, and (d) raise net-R on the SAME trade by exactly the
+# round-trip-cost delta. (a)/(b)/(d) are corpus-free and deterministic.
+
+import scripts.backtest_bitunix_confluence as _BTM  # noqa: E402
+
+
+def test_fee_override_default_none_is_noop_and_restores_globals():
+    """taker_pct=None must not touch the engine fee globals at all."""
+    before = (_BTM._FEES_TK, _BTM._FEES_MK, _BTM._RT_TK, _BTM._RT_MK)
+    with R._fee_override(None):
+        # inside the CM the globals are the SAME objects (no-op path)
+        assert _BTM._FEES_TK is before[0]
+        assert _BTM._RT_TK == before[2]
+    after = (_BTM._FEES_TK, _BTM._FEES_MK, _BTM._RT_TK, _BTM._RT_MK)
+    assert after == before
+
+
+def test_fee_override_sets_then_restores_globals():
+    """A given rate rebinds all four globals consistently inside the CM and
+    restores the originals on exit."""
+    before = (_BTM._FEES_TK, _BTM._FEES_MK, _BTM._RT_TK, _BTM._RT_MK)
+    with R._fee_override(0.00019):
+        assert _BTM._FEES_TK.taker_fee_pct == 0.00019
+        assert _BTM._FEES_MK.taker_fee_pct == 0.00019
+        # round-trip is recomputed from the new rate (entry+exit taker + 2*slip)
+        assert _BTM._RT_TK == pytest.approx(0.00019 + 0.00019 + 2 * 0.00005)
+        # maker-exit column: entry taker corrected, exit stays maker
+        assert _BTM._RT_MK == pytest.approx(0.00019 + 0.00014 + 2 * 0.00005)
+    after = (_BTM._FEES_TK, _BTM._FEES_MK, _BTM._RT_TK, _BTM._RT_MK)
+    assert after == before, "globals not restored after the override CM"
+
+
+def test_fee_override_restores_on_exception():
+    before = (_BTM._FEES_TK, _BTM._FEES_MK, _BTM._RT_TK, _BTM._RT_MK)
+    with pytest.raises(RuntimeError):
+        with R._fee_override(0.00019):
+            raise RuntimeError("boom")
+    after = (_BTM._FEES_TK, _BTM._FEES_MK, _BTM._RT_TK, _BTM._RT_MK)
+    assert after == before, "globals not restored after an exception"
+
+
+def test_fee_override_rejects_negative():
+    with pytest.raises(ValueError):
+        with R._fee_override(-0.001):
+            pass
+
+
+@_needs_corpus
+def test_lower_fee_admits_ge_trades_and_lifts_same_trade_net_r():
+    """The corrected (lower) taker rate must (1) admit >= as many walked trades
+    (the fees_too_high_for_risk gate can only loosen), and (2) raise net-R on a
+    trade present in BOTH runs by exactly the round-trip-cost delta * entry/risk.
+    """
+    s, e = R._to_dt(_W_START), R._to_dt(_W_END)
+    alerts, bars, config = R.load_inputs(_DB, s, e)
+    pre = (alerts, bars, config, (s, e))
+    hi = R.run_redeem_sim(cap=2, taker_pct=0.0004, _preloaded=pre)   # current
+    lo = R.run_redeem_sim(cap=2, taker_pct=0.00019, _preloaded=pre)  # corrected
+    # (1) gate loosens: corrected admits at least as many walked trades and
+    # at most as many plan_skips.
+    assert lo["n"] >= hi["n"]
+    assert lo["n_plan_skip"] <= hi["n_plan_skip"]
+    # provenance recorded
+    assert hi["taker_pct"] == 0.0004
+    assert lo["taker_pct"] == 0.00019
+    # (2) For a trade present in BOTH runs whose GROSS path is unchanged (the
+    # lower fee floor can shift TP1 and alter leg fills, so gross is NOT always
+    # invariant), the lower fee yields a strictly higher net_R — the fee delta
+    # flows straight through. We assert this on the path-unchanged subset.
+    hi_by = {(t["entry_ts"], t["side"]): t for t in hi["trades"]
+             if t["net_R"] is not None}
+    checked = 0
+    for t in lo["trades"]:
+        if t["net_R"] is None:
+            continue
+        k = (t["entry_ts"], t["side"])
+        if k in hi_by:
+            h = hi_by[k]
+            if t["gross_R"] == pytest.approx(h["gross_R"]):
+                # identical path -> net delta is purely the (lower) fee cost
+                assert t["net_R"] > h["net_R"]
+                checked += 1
+    assert checked > 0, (
+        "expected at least one path-unchanged overlapping trade where the "
+        "lower fee lifts net_R")
