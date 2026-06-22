@@ -27,7 +27,8 @@ from trading_corp.web.app import (
     _fmt_pct_signed,
     _fmt_strike,
 )
-from trading_corp.web.pead_view import DIVISION, build_pead_view
+from trading_corp.agents.strategies import pead_pressures as pp
+from trading_corp.web.pead_view import DIVISION, build_pead_view, business_days
 
 _TEMPLATES = Path(__file__).resolve().parents[1] / "trading_corp" / "web" / "templates"
 _TODAY = date(2026, 6, 22)
@@ -157,3 +158,54 @@ def test_full_page_renders(tmp_path):
     assert "HALT PEAD" in html    # kill switch (only write surface)
     assert "DOWN" in html         # eodhd down chip distinct from live
     assert "v1" in html
+
+
+def test_dashboard_pressures_match_locked_contract(tmp_path):
+    """Phase-2 integration proof: a paper_trade_record carrying the 6 locked
+    extra_json keys must render `complete=True` with governing/fuse computed by
+    the SAME `pead_pressures.compute_pressures` the live exit engine fires on —
+    so dashboard and engine agree by construction (no divergence in the level a
+    position is shown approaching vs the price it actually exits)."""
+    url = f"sqlite:///{tmp_path / 't.db'}"
+    init_db(url)
+    _seed(url)                                  # AAA: entry 100, atr4/swing90/pre100/gap110
+    row = next(b for b in _view(url)["book"] if b["symbol"] == "AAA")
+
+    prim = pp.primitives_from_extra(
+        {"entry_atr_14": 4.0, "post_earnings_swing_low": 90.0,
+         "pre_earnings_close": 100.0, "earnings_gap_top": 110.0}, 100.0)
+    pr = pp.compute_pressures(
+        prim, 105.0, held_trading_days=0,                       # stub quote 105, opened today
+        days_to_next_earnings=business_days(_TODAY, date(2026, 9, 15)))
+
+    assert row["complete"] is True
+    assert row["governing"] == pr.governing
+    assert row["fuse_pct"] == pr.fuse_pct
+    assert row["fuse_color"] == pr.fuse_color
+    assert row["governing_color"] == pr.governing_color
+    assert row["pressures"] == {
+        "stop": pr.stop, "drift": pr.drift, "guard": pr.guard, "time": pr.time}
+
+
+def test_missing_primitive_key_renders_incomplete(tmp_path):
+    """The completeness gate is exactly the 6-key contract: drop ONE primitive
+    (earnings_gap_top) and the row degrades to the graceful pressure-empty
+    placeholder (complete=False, no governing/fuse) — never a half-computed exit."""
+    url = f"sqlite:///{tmp_path / 't.db'}"
+    init_db(url)
+    extra = {"entry_atr_14": 4.0, "post_earnings_swing_low": 90.0,
+             "pre_earnings_close": 100.0, "entry_sue": 3.1,
+             "next_earnings_date": "2026-09-15", "name": "NoGap"}   # NO earnings_gap_top
+    with connect(url) as conn:
+        conn.execute(
+            "INSERT INTO paper_trade_record "
+            "(order_id, ts, strategy, division, symbol, side, qty, "
+            " entry_reference_price, extra_json, execution_mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("pead-ZZZ-1", _TODAY.isoformat(), "robinhood_pead", DIVISION,
+             "ZZZ", "buy", 1.0, 100.0, json.dumps(extra), "paper"),
+        )
+    row = _view(url)["book"][0]
+    assert row["symbol"] == "ZZZ"
+    assert row["complete"] is False
+    assert row["governing"] is None and row["fuse_pct"] is None
