@@ -1,0 +1,3 @@
+# Prod bash scripts (base64 heredoc) MUST stay LF — a CRLF terminator breaks
+# the heredoc on Linux. Pin so any checkout keeps LF regardless of autocrlf.
+*.sh text eol=lf
