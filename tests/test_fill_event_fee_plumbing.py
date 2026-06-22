@@ -138,6 +138,10 @@ async def test_path_c_stamps_entry_fee_usd_from_broker_truth(
     assert len(rows) == 1
     extra = json.loads(rows[0]["extra_json"])
     assert extra["entry_fee_usd"] == 0.0345
+    # ref-vs-fill (2026-06-22): the FillEvent.price (REAL entry fill) is captured
+    # at fill-time on the same registration → close-side PnL books from the fill,
+    # not entry_reference_price.
+    assert extra["actual_entry_fill_price"] == 80_000.0
 
 
 @pytest.mark.asyncio

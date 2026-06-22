@@ -3190,6 +3190,14 @@ class BitunixFuturesObserver:
             # Maker/taker role of the entry fill (forward-only telemetry; '' when
             # the venue/role is unknown, e.g. paper or pre-roleType fills).
             record.extra["entry_role"] = str(getattr(fill, "role", "") or "")
+            # ref-vs-fill (2026-06-22): stamp the ACTUAL entry fill price (the
+            # broker-observed VWAP from the signed fill, NOT the alert/reference
+            # price) so close-side PnL books from the real fill. Only when known
+            # (>0); else omit so the PnL reader falls back to
+            # entry_reference_price (paper rows / unknown fills book at the ref).
+            _aefp = float(getattr(fill, "price", 0.0) or 0.0)
+            if _aefp > 0:
+                record.extra["actual_entry_fill_price"] = _aefp
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
             _registered = True
         except Exception as e:

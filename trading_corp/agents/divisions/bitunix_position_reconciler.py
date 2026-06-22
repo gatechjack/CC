@@ -528,6 +528,27 @@ def _latest_position_state_payload(db_url: str) -> dict[str, Any] | None:
         return None
 
 
+def _resolve_entry_price(extra: dict, ref_price: Any) -> Any:
+    """ref-vs-fill (2026-06-22): PnL must book from the ACTUAL entry fill price,
+    not the alert/reference price (a systematic per-trade error — e.g. 125b6f9e
+    booked at ref 63465.3 vs the real fill 63413.6, 52pt off).
+
+    The real entry fill (broker-observed VWAP) is captured at fill-time on the
+    observer path and stored in `extra['actual_entry_fill_price']`. Prefer it
+    here. FALLBACK to `ref_price` (entry_reference_price) for records that
+    predate this fix OR have no real fill (paper rows book at the signal price by
+    design) — never crashes, never mis-books a historical. Orthogonal to D1: D1
+    fixes the QTY term (min(qty, q_close)); this fixes the ENTRY-PRICE term. They
+    compose as pnl = (actual_entry_fill - vwap) * min(qty, q_close)."""
+    aefp = extra.get("actual_entry_fill_price")
+    try:
+        if aefp is not None and float(aefp) > 0:
+            return float(aefp)
+    except (TypeError, ValueError):
+        pass
+    return ref_price
+
+
 def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
     """Auto-book a bot-owned position that closed broker-side, at the KNOWN stop
     level (the B1 server-side stop). Returns 'booked' | 'deferred' | 'skipped'.
@@ -561,7 +582,7 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
             filled_legs = extra.get("filled_legs") or []
             side = (r["side"] or "").lower()
             qty = float(r["qty"] or 0.0)
-            entry = r["entry_reference_price"]
+            entry = _resolve_entry_price(extra, r["entry_reference_price"])
             level = r["stop_price"] if r["stop_price"] is not None \
                 else extra.get("stop_price")
 
@@ -748,7 +769,7 @@ async def _autobook_missing_close_real(
         filled_legs = extra.get("filled_legs") or []
         side = (r["side"] or "").lower()
         qty = float(r["qty"] or 0.0)
-        entry = r["entry_reference_price"]
+        entry = _resolve_entry_price(extra, r["entry_reference_price"])
         level = r["stop_price"] if r["stop_price"] is not None \
             else extra.get("stop_price")
 
