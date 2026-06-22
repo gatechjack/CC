@@ -1460,10 +1460,20 @@ class RedeemFire:
 
 def _simulate_redeem(*, config, pa_config, structure_tf, bars, bars_4h, bars_1h,
                      bar_objs, reject_idx, cap, sorted_alerts,
-                     last_fire_ts_buy, last_fire_ts_sell):
+                     last_fire_ts_buy, last_fire_ts_sell, orig_side=None):
     """Mirror observer.run_pa_redeem_loop: re-evaluate score+PA on each
     subsequent 3m bar up to `cap`. Returns (fire_idx, fire_ts, fire_price,
-    bars_waited, side) on a redeem PASS, else None (score-decay or cap)."""
+    bars_waited, side) on a redeem PASS, else None.
+
+    Drop conditions (prod parity with observer._score_and_maybe_propose_locked):
+      * score decay to SKIP  -> None  (observer SKIP branch clears the cache)
+      * opposite-side flip   -> None  (observer `opposite_side` clear: when the
+        re-scored winning side differs from the side the payload was cached on,
+        the waiting state is void). Mirrored here via `orig_side`.
+      * cap exhausted        -> None
+    Look-ahead-honest: every re-eval at bar k uses ONLY bars <= k (the as-of
+    `ts_k` windowing inside build_price_context / filter_live_alerts_with_dedupe).
+    """
     for k in range(1, cap + 1):
         fidx = reject_idx + k
         if fidx >= len(bar_objs):
@@ -1481,6 +1491,8 @@ def _simulate_redeem(*, config, pa_config, structure_tf, bars, bars_4h, bars_1h,
         if v_k.tier == Tier.SKIP:
             return None                       # score decayed → redeem clears (prod parity)
         side_k = "buy" if v_k.side == Side.BUY else "sell"
+        if orig_side is not None and side_k != orig_side:
+            return None                       # opposite-side win → redeem voided (prod parity)
         pa_ctx_k = ctx_k
         if structure_tf == "1h":
             from dataclasses import replace
@@ -1582,7 +1594,8 @@ def run_redeem_cap_backtest(*, alerts, bars, config, pa_config, redeem_cap,
             config=config, pa_config=pa_config, structure_tf=structure_tf,
             bars=bars, bars_4h=bars_4h, bars_1h=bars_1h, bar_objs=bar_objs,
             reject_idx=alert_idx, cap=redeem_cap, sorted_alerts=sorted_alerts,
-            last_fire_ts_buy=last_fire_ts_buy, last_fire_ts_sell=last_fire_ts_sell)
+            last_fire_ts_buy=last_fire_ts_buy, last_fire_ts_sell=last_fire_ts_sell,
+            orig_side=side_str)
         if rd is None:
             n_redeem_drop += 1                # score-decay or cap exhausted → abandon
             continue
