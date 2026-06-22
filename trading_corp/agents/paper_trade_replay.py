@@ -939,6 +939,20 @@ async def _replay_tick_async(
             # stays the default for Otter / Cypher / Donchian / pre-PR-4
             # bitunix trades.
             extra = _parse_extra(row.extra_json)
+            # phantom-legs fix (2026-06-22): a bracket-managed LIVE row is owned
+            # by the venue bracket + the reconciler (venue-truth fills + SL trail
+            # + auto-book). The paper bar-walk must NOT run for it — simulating tp
+            # fills wrote PHANTOM `filled_legs` that stalled the auto-book
+            # (partial_tp_ambiguous → hours-long stuck/halted engine: 89966d01 &
+            # 2a53de19, 2026-06-22) and emitted false `would_call_broker:false` SL
+            # telemetry. Skip entirely; the reconciler owns this row's lifecycle.
+            if extra.get("execution_mode") == "live" and (
+                extra.get("bracket_tp_order_ids")
+                or extra.get("bracket_position_sl_order_id")
+            ):
+                counts.setdefault("skipped_bracket_managed_live", 0)
+                counts["skipped_bracket_managed_live"] += 1
+                continue
             is_v2 = (
                 row.division == "bitunix_futures"
                 and bool(extra.get("tp_plan"))
