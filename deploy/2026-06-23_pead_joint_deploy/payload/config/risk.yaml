@@ -1,0 +1,154 @@
+# Aggressive-but-capped risk profile (Phase 1 confirmed)
+# All percentages are decimals: 0.015 = 1.5%
+# Hot-reloaded by Risk Agent on file mtime change.
+
+global:
+  per_trade_risk_pct: 0.015          # max % of account equity at risk per trade
+  per_strategy_daily_loss_pct: 0.03  # halt strategy for the day at this realized loss
+  per_account_max_drawdown_pct: 0.15 # auto-flatten + global halt at this peak DD
+  correlation_cap: 0.7               # reject incremental adds above this 30d-return correlation
+  target_annualized_vol: 0.25        # used by vol-scalar; size *= min(1, target/realized)
+
+trend_alignment:
+  counter_trend_size_multiplier: 0.5 # counter-trend trades get half size
+
+pmcc:
+  contracts_per_25k_equity: 1        # 1 contract per $25k account equity per underlying
+  short_call_roll_dte: 21            # roll short call when <= 21 DTE
+  short_call_roll_profit_pct: 0.50   # ...or when 50% of credit captured
+  long_call_min_dte: 365             # LEAP target: >= 1 year DTE
+  long_call_min_delta: 0.80          # deep ITM
+  short_call_target_delta: 0.30      # OTM weekly
+  # Phase 1a-2 (design §3.6 + §8.A clause c): N consecutive
+  # `pmcc_scan_research_unavailable` rows before the scout emits a
+  # `pmcc_research_extended_outage` audit kind + Telegram-notifies the
+  # Board. Counter resets on any successful engagement. Default 3.
+  research_outage_alert_threshold: 3
+
+# Polymarket prediction-market caps. Read by:
+#   - polymarket_arbitrage strategy (universe pre-filter)
+#   - RiskAgent.evaluate (atomic per-order + aggregate caps)
+# All caps Board-confirmed 2026-05-09 (Phase 2a memo answer 1).
+polymarket:
+  # ── Universe pre-filter (strategy-side, also re-checked at risk gate) ──
+  min_market_24h_volume_usd: 50_000.0  # drop low-volume / low-liquidity markets
+  max_spread_cents: 3.0                # drop markets with bid-ask > 3¢
+  min_hours_to_resolution: 24.0        # drop near-resolution markets
+  min_implied_probability: 0.05        # reject markets at extreme tails
+  max_implied_probability: 0.95
+  # ── Per-order risk caps (RiskAgent atomic check) ──
+  max_pct_division_equity_per_position: 0.05   # forward-compat — fixed $1 dominates today
+  max_single_market_notional_usd: 250.0        # forward-compat — fixed $1 dominates today
+  # ── Aggregate caps (RiskAgent queries audit_event for in-flight + filled) ──
+  daily_aggregate_max_pct_of_equity: 0.25      # 25% of polymarket division equity
+  daily_aggregate_cap_usd: 1_000.0             # but never more than $1K/day in NEW notional
+  total_open_aggregate_cap_usd: 3_500.0        # 2026-05-29 PRINCIPLED value, set after the resolver fairness fix (Group A #3) drained the stuck-position contamination. ~$1.5k headroom over genuine open (~$2k). History: $1k dead stub (pre Group A #2) -> $4k interim (while resolver fix landed) -> $3.5k. See runbooks/deploy_log.md.
+  max_open_positions: 0                        # DISABLED 2026-05-29 (0 = off; gate guards on >0). A flat per-division count cap is ARCHITECTURALLY WRONG for the copy-trader: it mirrors many whales x markets => hundreds of concurrent open positions BY DESIGN. The notional cap + per-position size limits are the real exposure constraints here. STEP 4: keep disabled for PCT, OR make per-division (tight for arb's 1-per-condition design; disabled/high-sentinel for PCT). Do NOT re-set a PCT count cap from instinct — see runbooks/deploy_log.md.
+
+# Kalshi prediction-market caps (Phase K2.1 — tail-price arb, paper-only).
+# Read by:
+#   - kalshi_tail_price_arb strategy (uses its own knobs in strategies.yaml
+#     for tail thresholds; this section is for RiskAgent atomic + aggregate caps)
+#   - RiskAgent.evaluate when evaluating `is_prediction_market: true` orders
+#     tagged with kalshi_pair_id (Phase K2.1 pair structure)
+# Caps are intentionally tiny — Phase K2.1 is paper-shakedown of a $499 account.
+# Bumped when paper data + Board greenlight justify it (Phase K5+).
+kalshi:
+  # ── Per-order caps (RiskAgent atomic check) ──
+  max_pct_division_equity_per_position: 0.02   # 2% of kalshi division equity per leg
+  max_single_market_notional_usd: 5.0          # $5 per leg max ($10 per pair)
+  # ── Aggregate caps (RiskAgent queries audit_event for in-flight + filled) ──
+  daily_aggregate_max_pct_of_equity: 0.10      # 10% of kalshi division equity per UTC day
+  daily_aggregate_cap_usd: 50.0                # never more than $50/day NEW notional
+  total_open_aggregate_cap_usd: 50.0           # max $50 notional open across all kalshi pairs
+  # ── Tail-price-specific universe (consumed by strategy AND re-checked at gate) ──
+  tail_yes_max: 0.05                           # YES mid ≤ this is a yes-side tail
+  tail_yes_min: 0.95                           # YES mid ≥ this is a no-side tail
+  min_edge_cents: 1.0                          # ≥ 1¢ under $1 round-trip required
+
+# Per-strategy overrides — leave empty to inherit `global`.
+overrides:
+  # TEMP 2026-06-15: relax bitunix DD cap for low-balance (~$265) live testing.
+  # 15% tripped on a $64 manual-trade loss (19.5% DD) -> false flatten + rejects.
+  # Per-strategy (risk.py:176, order.strategy=bitunix_futures); other divisions
+  # keep global 15%. Hot-reloads. REVERT (delete) when funded ~$15k. repo: affb7cc
+  bitunix_futures:
+    per_account_max_drawdown_pct: 0.99
+  fidelity_options: {}
+  crypto_scalper:
+    per_trade_risk_pct: 0.005        # scalper trades smaller per trade, higher frequency
+  crypto_swing: {}
+  crypto_vwap: {}
+  crypto_quarter: {}
+
+  # Lord Otter — TradingView-driven scalping on Coinbase. Diamond-tier
+  # setups size at 5% of equity (the per-trade cap), so this override
+  # lets Diamond fire unmodified. Lower tiers stay well under 5%.
+  lord_otter:
+    per_trade_risk_pct: 0.05         # 5% per-trade cap (max conviction Diamond tier)
+    per_strategy_daily_loss_pct: 0.02  # halt strategy at 2% daily realized loss
+
+  # Manual ad-hoc orders via the Coinbase Spot dashboard form.
+  # Lifted from the global 1.5% so you can place small-to-medium
+  # discretionary trades without the gate auto-resizing. The
+  # dashboard form is a deliberate Board action, so the cap is the
+  # account-level safety valve, not the per-trade default.
+  manual_coinbase_spot:
+    per_trade_risk_pct: 0.05         # 5% per-trade cap on manual entries
+
+  # Coinbase BTC Donchian — 100%-in/out trend follower (locked config
+  # 2026-05-08; walk-forward 8/10 OOS, +25.89% alpha 24mo). The strategy's
+  # edge IS putting the full BTC sleeve in/out on signal, so the standard
+  # caps must be relaxed:
+  #   - per-trade 100%: a tighter cap would silently shrink entries
+  #     below the size the backtest validated.
+  #   - daily-loss 100%: brief said "null"; risk.py reads via float(),
+  #     so 1.0 acts as effectively-disabled (would require a 100% same-
+  #     day realized loss before halting — never reached pre-liquidation).
+  #     Strategy must hold through volatility to the next 6-bar exit.
+  #   - max_drawdown_disabled (honored at agents/risk.py §4): opts out
+  #     of the account-level 15% auto-flatten. 24mo max DD was 16.49%;
+  #     the cap would have force-flattened the strategy mid-run.
+  coinbase_btc_donchian:
+    per_trade_risk_pct: 1.0
+    per_strategy_daily_loss_pct: 1.0
+    max_drawdown_disabled: true
+
+  # Robinhood Joint Iron Condor — 45 DTE neutral premium-selling on
+  # ETFs (SPY/QQQ/IWM/GLD/TLT). Defined-risk math: max loss per condor
+  # = (wing_width × 100 − credit) × contracts. The strategy sizes each
+  # leg under the per-trade cap independently; the existing per-leg
+  # risk gate in agents/risk.py is sufficient (no multi-leg combo
+  # extension needed — see step 5 design doc).
+  #
+  # 5% per-trade is the iron-condor max-loss-per-condor cap; the
+  # strategy also enforces max_concurrent and max_correlated in
+  # strategies.yaml so portfolio-wide deployment stays bounded.
+  robinhood_joint_iron_condor:
+    per_trade_risk_pct: 0.05
+
+  # Robinhood PEAD — long-only post-earnings-announcement drift. DEFINED-RISK
+  # BY DESIGN: the PER-TRADE controls ARE the risk control and they are
+  # STRUCTURAL — ATR hard stop + post-earnings swing-low + 60-trading-day max
+  # hold per position; long-only, no leverage / margin / shorts. The book is
+  # bounded by position_pct × max_concurrent_positions (strategies.yaml), and
+  # the sleeve is risk-sized at the INVESTMENT level (a fixed amount in the
+  # account), not via per-trade or account halts.
+  #
+  # Account-level halts are deliberately OPTED OUT — they would HARM this
+  # strategy: a daily-loss / drawdown auto-flatten fires on a market down-day
+  # and force-exits the whole book mid-drift at the worst possible moment. A
+  # black swan tripping the per-trade STOPS is the strategy WORKING, not a
+  # failure for an account halt to interrupt. (The hard stops are verified by
+  # the adversarial exit suite + mutation test — that IS the risk control.)
+  #   - per_trade_risk_pct 1.0       → off (also inert for PEAD's MARKET orders,
+  #                                     which carry no limit_price to cap).
+  #   - per_strategy_daily_loss_pct 1.0 → float()-read, never fires (cf. donchian).
+  #   - max_drawdown_disabled: true  → opts out of the §4 account DD auto-flatten.
+  # This block MUST NOT be omitted: omitting falls back to the GLOBAL 15% DD /
+  # 3% daily-loss caps, which noise-trip the ~$75 account and halt the division
+  # on ordinary movement — the exact harm this override exists to prevent.
+  robinhood_pead:
+    per_trade_risk_pct: 1.0
+    per_strategy_daily_loss_pct: 1.0
+    max_drawdown_disabled: true

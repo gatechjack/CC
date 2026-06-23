@@ -1,0 +1,13 @@
+# PROD SOURCE md5 (2026-06-23) — the prod blob each superset was built against.
+# apply.sh drift-guard: prod EXISTING file must still match these at window time, or ABORT(9)
+# and rebuild the superset against fresh prod. (NET-NEW files have no source row.)
+d196ddbb3d6bb50dee15dbbe39f353e4  config/divisions.yaml
+994f40c66b129e85b4a513ce3e013d6c  config/risk.yaml
+544458b2e345c68d634e7e01f94ecedd  config/strategies.yaml
+fb1891235bdf5ec53c22d90130359398  config/data_providers.yaml
+97a4d67661361414e369d9e4355e7d3e  trading_corp/main.py
+d7561d3c95530f74071ab195d239c4ce  trading_corp/persistence/models.py
+28817062529b23e1d1bf7b5647901469  trading_corp/agents/paper_trade_replay.py
+dfcc2b5eff4c67f6e576689da69509ac  trading_corp/brokers/robinhood.py
+29377f10d7a83e4bc915110a206fac45  trading_corp/utils/market_data.py
+983146eefe5b138769653b994750e801  trading_corp/utils/secrets.py

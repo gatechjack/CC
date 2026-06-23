@@ -1,0 +1,16 @@
+# PEAD joint-deploy — TARGET md5 of each installed file (LF). apply.sh verifies installed == these.
+8171b46d7aff882be14602e2328c5f2d  config/data_providers.yaml
+2be55d87d0fdc74e33e6ad7285e83842  config/divisions.yaml
+38b82853244403f17cbc3163493aba7e  config/nasdaq_composite.txt
+02874fb25934a8f41979ef83a06918ad  config/risk.yaml
+47ddbfef5a31aaffc802d0b458cf6634  config/strategies.yaml
+93c0a588e45939b4ca5825720a14b2ef  trading_corp/agents/divisions/robinhood_pead.py
+ad9e235bfb60ec65806163d9c09e23a6  trading_corp/agents/paper_trade_replay.py
+a02e1a3e8e42cdd5aa3421fb7cf018bd  trading_corp/agents/strategies/pead_signal.py
+fe739c7edeb6c1276e12abe7bed0ae0c  trading_corp/agents/strategies/pead_strategy.py
+26de02729bc0403d472e48acea9ed03e  trading_corp/brokers/robinhood.py
+79b5ed277dd63ad1dc91acb2c8d554e6  trading_corp/data/earnings_provider.py
+cf98e88d58f6d89328b1ca138038563f  trading_corp/main.py
+61ecc75535bab3a42a75f2a4bc0a4f5f  trading_corp/persistence/models.py
+85afd14b2191828d5c35514c3bc5d1f2  trading_corp/utils/market_data.py
+385e9ded35ee92b05b43e06752053190  trading_corp/utils/secrets.py
