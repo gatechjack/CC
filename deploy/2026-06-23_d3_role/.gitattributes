@@ -1,0 +1,3 @@
+# Prod files must stay LF (bash scripts + the staged .py blobs shipped to prod).
+*.sh text eol=lf
+*.py text eol=lf
