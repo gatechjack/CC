@@ -3,7 +3,7 @@
 2be55d87d0fdc74e33e6ad7285e83842  config/divisions.yaml
 38b82853244403f17cbc3163493aba7e  config/nasdaq_composite.txt
 02874fb25934a8f41979ef83a06918ad  config/risk.yaml
-47ddbfef5a31aaffc802d0b458cf6634  config/strategies.yaml
+6354f202f096349199f6a1cb114cf4d2  config/strategies.yaml
 93c0a588e45939b4ca5825720a14b2ef  trading_corp/agents/divisions/robinhood_pead.py
 ad9e235bfb60ec65806163d9c09e23a6  trading_corp/agents/paper_trade_replay.py
 a02e1a3e8e42cdd5aa3421fb7cf018bd  trading_corp/agents/strategies/pead_signal.py

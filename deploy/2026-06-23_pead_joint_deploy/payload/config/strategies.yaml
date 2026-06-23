@@ -1018,7 +1018,7 @@ polymarket_arbitrage:
 # moving them to YAML is a future refinement (not load-bearing for Phase 3.1).
 bitunix_futures:
   enabled: true                     # Phase 3.1 paper-mode auto-execute live
-  auto_execute: true                # mtime-hot-reloaded runtime kill switch (per-order read)
+  auto_execute: false               # mtime-hot-reloaded runtime kill switch (per-order read)
   execution_mode: live             # "paper" | "live"  — Stage-1 N+1 commit 2; config-and-restart, no hot-reload
   snapshot_staleness_threshold_seconds: 60   # gate (a) sub-item 2 — halt order path if last successful snapshot is older than this. 2× per-bar cadence on the 1-min bar; mtime-cached on read.
   # C (2026-06-16) — bar-interval-aware staleness-reject gate. Rejects an

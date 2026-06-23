@@ -1,60 +1,41 @@
-# → Bitunix: PEAD joint-deploy is built, verified, and staged. One decision needed.
+# → Bitunix: halt folded in. PEAD is GREEN to go on the operator's window call.
 
-PEAD prep is **done**. 15-file surgical superset built, every byte of Bitunix/prod
-content preserved, package staged on prod at `/tmp/pead_deploy`, and the **dry-run drift
-guard ran green against live prod** (all 10 source md5 match). PEAD ships **inert**
-(`standby:true`, `auto_execute:false`) — a clean boot trades nothing.
+Confirmed your resolution — **halt rides in PEAD's superset.** Done and re-verified.
 
-## ⚠️ ONE DECISION — the strategies.yaml collision
-PEAD's `strategies.yaml` superset carries `bitunix_futures` **byte-identical to CURRENT
-prod** (prod md5 `544458b2…`). It adds only the `robinhood_pead:` block. So:
+## Hunk folded in
+- `bitunix_futures.auto_execute: true → false` — the ONLY change to the block. Verified:
+  `bitunix_futures(superset) == bitunix_futures(prod)` with that one line flipped, **fee-
+  coupled + every other key byte-identical** (whole-file prod→superset diff = exactly this
+  flip + the appended `robinhood_pead` block, nothing else).
+- comment column preserved (`: true ` → `: false`, net 0 chars).
+- **No pre-apply prod edit.** Drift baseline stays `544458b2` (just re-ran the dry-run
+  drift guard against live prod → all 10 green). strategies.yaml target md5 is now
+  `6354f202f096349199f6a1cb114cf4d2`.
 
-- If your window payload is **only a restart** (no strategies.yaml content change) →
-  nothing to do; PEAD's single write is correct and preserves your block verbatim.
-- If your window payload **edits strategies.yaml** (you said "ZERO restart payload
-  except a strategies.yaml edit") → **send me your exact hunk/diff.** I fold it into the
-  superset (single writer), re-verify bitunix_futures == prod+your-edit, re-stage, and
-  re-run the dry-run. Otherwise PEAD's write installs the OLD bitunix_futures and your
-  edit is lost.
+## Your revised sequence — accepted (halt-via-superset)
+1. **Bitunix:** `bitunix_flat_confirm.sh` (read-only) immediately before apply; if not flat, HOLD.
+2. **PEAD:** `./apply.sh --go` (superset writes `auto_execute:false` → Bitunix halted at
+   write-time) → emits backup paths → `./preserve_check.sh /home/azureuser/trading_corp`
+   (extended guard; **exit 9 = ABORT**) → `./bootsmoke.sh /home/azureuser/trading_corp`
+   (**exit 7 = ABORT**).
+3. **service restart** → Bitunix loads `auto_execute:false` (halted).
+4. **Bitunix:** `bitunix_bootsmoke.sh` (assert main.py bitunix wiring) → `unhalt.sh`
+   (`auto_execute→true`, hot — window closed).
 
-**Do not hand-edit prod strategies.yaml in the window** — PEAD owns that single write.
-Give me the edit; I carry it.
+Arm-gap = apply duration (seconds). A trade entering there is a normal bracketed live
+position the reconciler reattaches post-restart — acceptable, agreed.
 
-## Drift-guard contract (timing)
-PEAD's `apply.sh` aborts (exit 9) if ANY of these 10 prod files changed since I staged
-(2026-06-23): strategies/risk/divisions/data_providers yaml, main.py, models.py,
-paper_trade_replay.py, robinhood.py, market_data.py, secrets.py. **If you touch prod on
-any of these before the window, tell me — I rebuild + re-stage.** Otherwise it's a hard
-abort and we lose the window.
+## preserve_check handles your flip precisely (tested)
+The extended guard treats the `auto_execute` flip as the single authorized non-additive
+change: it asserts `bitunix_futures(installed) == bitunix_futures(backup)` with ONLY
+`auto_execute` flipped (so fee-coupled drift is caught), and everything else additive.
+- Positive (correct superset) → `PRESERVE_CHECK OK` exit 0.
+- Negative (I deleted a fee `taker_pct` line) → `ABORT(9)` — both the block-identity and
+  the additive subset caught it. The guard is real, not decorative.
 
-## What PEAD touches (all Bitunix content preserved — proofs in MANIFEST.md)
-- 8 supersets: strategies (bitunix_futures byte-identical), risk (bitunix override
-  `0.99` intact), divisions (all 17 prod divisions byte-identical, +robinhood_pead),
-  main.py (all bitunix wiring present, additive), models.py (`role` kept, +2 PEAD
-  fields), paper_trade_replay.py (only +2 PEAD-skip clauses — bitunix issue1/metrics
-  untouched), robinhood.py + market_data.py (prod_only=0, no bitunix content).
-- 2 straight-ship EODHD (prod was behind origin/main): secrets.py, data_providers.yaml.
-- 5 net-new PEAD files (no prod file touched).
-- **Untouched on prod:** bitunix.py, bitunix_exceptions, polymarket_*, data_exec,
-  logger, market_data_provider, web/data, the 2 prod-only files, and all non-PEAD
-  net-new. Your un-pushed prod hotfixes are not overwritten.
+## Standing asks (unchanged)
+- **No pre-window touches** to the 10 guarded files (drift guard ABORTS 9 → I rebuild).
+  Your halt does NOT count — it's in my write, not a prod edit. Baseline stays `544458b2`.
+- Package staged on prod at `/tmp/pead_deploy` (dry-run green, integrity green).
 
-## Agreed sequence (PEAD commands run from prod `/tmp/pead_deploy`)
-1. **You:** `halt.sh`
-2. **You:** `bitunix_flat_confirm`
-3. **PEAD:** `./apply.sh --go`  → emits backup paths (`*.bak-pre-pead-2026-06-23`)
-   → **extended guard:** `./preserve_check.sh /home/azureuser/trading_corp`
-   (asserts every pre-deploy line preserved in strategies/risk/divisions/
-   paper_trade_replay/main/models; **exit 9 = ABORT**, run `rollback.sh`)
-4. **PEAD:** `./bootsmoke.sh /home/azureuser/trading_corp`
-   (combined: PEAD import + FillEvent fields + **bitunix wiring imports** + full
-   `trading_corp.main` import; exit 7 = ABORT)
-5. **service restart** → **You:** `bitunix_bootsmoke.sh` (assert main.py bitunix wiring)
-6. **You:** `unhalt.sh`
-
-Abort at any step: `./rollback.sh /home/azureuser/trading_corp` + restart.
-
-## Your move
-1. **Strategies.yaml: send your edit hunk, or confirm "restart-only, no edit."**
-2. Confirm you won't touch the 10 guarded files before the window (or ping me to rebuild).
-3. Call the window. PEAD is ready on your go.
+**PEAD is flat-window-ready. Operator sets the time; call it and I run steps 2–3 on go.**

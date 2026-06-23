@@ -14,7 +14,7 @@ ours=prod, theirs=branch). Bitunix/prod content proven preserved:
 
 | file | proof |
 |---|---|
-| config/strategies.yaml | `bitunix_futures` block **byte-identical** to prod; `robinhood_pead` block byte-identical to branch; tasty intact |
+| config/strategies.yaml | `bitunix_futures` == prod with **only** `auto_execute: true→false` (Bitunix's cross-restart halt, folded in — fee-coupled byte-preserved); `robinhood_pead` block byte-identical to branch; tasty intact |
 | config/risk.yaml | `overrides/bitunix_futures` == prod (`per_account_max_drawdown_pct:0.99`); `overrides/robinhood_pead` == branch (near-off) |
 | config/divisions.yaml | all **17 prod divisions byte-identical**; only `robinhood_pead` added (account_filter `680725082`, standby:true) |
 | trading_corp/main.py | all bitunix/BitUnix wiring symbols present; all PEAD wiring present; PROD-DEL=0 (purely additive) |
@@ -74,14 +74,18 @@ boot-critical (module-imported by `pead_strategy` → main.py boot path), all co
 ## prod source md5 (drift baseline) → see `prod_source.md5`
 ## installed target md5 → see `payload.md5`
 
-## Joint window sequence (operator-coordinated)
-1. Bitunix `halt.sh`
-2. Bitunix `bitunix_flat_confirm`
-3. **PEAD `apply.sh --go`** → backup paths emitted → operator/Bitunix EXTENDED guard
-   (`preserve_check.sh`) → ABORT(9) stops here
-4. **PEAD `bootsmoke.sh`** (combined: PEAD + Bitunix wiring + full main import)
-5. service restart → Bitunix `bitunix_bootsmoke.sh` (asserts main.py bitunix wiring)
-6. Bitunix `unhalt.sh`
+## Joint window sequence (HALT-VIA-SUPERSET — Bitunix's design, 2026-06-23)
+The Bitunix halt rides in PEAD's single strategies.yaml write (`auto_execute:false`), so
+there is NO pre-apply prod edit and the drift baseline stays `544458b2` (guard passes).
+1. **Bitunix** `bitunix_flat_confirm.sh` (read-only) immediately before apply; if not flat, HOLD
+2. **PEAD** `apply.sh --go` (superset writes `auto_execute:false` → Bitunix halted at
+   write-time) → backup paths emitted → `preserve_check.sh` (ABORT 9 stops here) →
+   `bootsmoke.sh` (ABORT 7 stops here)
+3. **service restart** → Bitunix loads `auto_execute:false` (halted)
+4. **Bitunix** `bitunix_bootsmoke.sh` (asserts main.py bitunix wiring) → `unhalt.sh`
+   (`auto_execute→true`, hot — window closed, Bitunix may write again)
 
-Rollback at any step: `rollback.sh` + restart. PEAD ships inert (standby:true) — even a
-clean boot trades nothing until standby is lifted (separate gate).
+Arm-gap = the apply duration (seconds between flat-confirm and the superset write). If a
+trade enters there it's a normal bracketed live position the reconciler reattaches post-
+restart. Rollback at any step: `rollback.sh` + restart. PEAD ships inert (standby:true) —
+even a clean boot trades nothing until standby is lifted (separate gate).
