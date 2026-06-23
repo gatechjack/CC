@@ -99,7 +99,13 @@ def mark_pre_phase_a_rows(
     with _db.connect(db_url) as conn:
         cur = conn.execute(
             "UPDATE paper_trade_record SET result='pre_phase_a' "
-            "WHERE result IS NULL AND (tp_price IS NULL OR stop_price IS NULL)"
+            "WHERE result IS NULL AND (tp_price IS NULL OR stop_price IS NULL) "
+            # robinhood_pead self-manages exits via its manage() pressure engine
+            # and has NO tp_price (no take-profit) — the replay must NOT stamp its
+            # live rows pre_phase_a, which would drop them from the open book
+            # before manage() exits them. (Mirrors the bitunix bracket-managed
+            # replay suppression.)
+            "AND division != 'robinhood_pead'"
         )
         return cur.rowcount or 0
 
@@ -1274,7 +1280,10 @@ def _load_pending(db_url: str) -> list[_PendingRow]:
             "       stop_price, tp_price, tp_r_multiple, "
             "       entry_reference_price, expected_loss, "
             "       expected_gain, max_hold_seconds, extra_json "
+            # robinhood_pead self-manages exits (manage()/pressures, no TP) — the
+            # paper-trade replay simulator must not touch its rows.
             "FROM paper_trade_record WHERE result IS NULL "
+            "AND division != 'robinhood_pead' "
             "ORDER BY ts ASC"
         ).fetchall()
     return [
