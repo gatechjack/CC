@@ -12,6 +12,18 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## P1 — Bitunix 2026-06-23 session open tails (all booking-honesty fixes DEPLOYED; live-validations + backfills pending)
+
+Prod = PID 3418240, LIVE, flat, armed. fee-coupled + PEAD-joint(inert) + wr-toggle + D3 all DEPLOYED+VERIFIED LIVE 2026-06-23 (see `runbooks/deploy_log.md` 2026-06-23 entry + memory [[bitunix-d3-role-fix]]/[[pead-joint-deploy-package]]). Open:
+
+1. **D3 live-validation — PENDING first qualifying trade.** Next stop-out must book `exit_role=taker` (not maker) + `entry_role=taker` + `role_fee_mismatch=false`. Also the FIRST live fill on the merged PEAD/D3 code (none yet — only an `entry_rejected_stale_bar`); confirms the new `models.py` FillEvent path end-to-end. mon9 `bstd3lphy` armed.
+2. **D1 netting validation — PENDING** a netted/multi-fill close (both post-epoch trades were single-fill stops).
+3. **Backfills — SEPARATE + operator-gated** (do NOT bundle): (a) D1 backfill of `125b6f9e`/`81f5427a`; (b) D3 re-derive of the 2 mis-labelled records `8ed7e662`/`2bfca6ad` (stop→taker). Both are read/re-derive of historical records, not trading-path.
+4. **Entry-slippage = the real-money lever (separate workstream).** 4 straight short stop-out losses; entries fill ~7pt worse than alert (alert→fill on a short). The booking-honesty fixes are correct but the EDGE problem is entry slippage + bear-tape short-only (gross-edge/regime, per the fee/scorer analyses). This is where the money is, not more booking fixes.
+5. **Leverage change — DEFERRED, un-built.** Leverage is the hardcoded `TIER_SIZING` constant in `bitunix_futures_observer.py` (L208, STANDARD/PREMIUM=25x), NOT the dead `strategies.yaml tier_sizing` block. Changing it = code edit + flat-window restart. Operator deferred; decide + build deliberately when wanted.
+6. **prod-ahead-of-main / unmerged branches (chronic git hygiene).** Branch `bitunix-d3-role-2026-06-23` (superset: D1/ref-vs-fill/phantom-legs/wr-toggle/pead-bundle/D3) + PEAD commits `29a0c29/928f8f9/0841cd1` UNMERGED. Prod web/data.py+division.html NEWER than worktree (dashboard drift) — build/drift-gate dashboard/shared changes vs PROD. A main-reconciliation is its own careful task (not session-wrap).
+
+
 ## P2 — `backtest_bitunix_confluence.py` five_factor/coinbase machinery MISSING from git (prod-vs-git drift)
 
 Surfaced 2026-06-14 during the PA-redeem-cap engine build. `scripts/backtest_bitunix_confluence.py`

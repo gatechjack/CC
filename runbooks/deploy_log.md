@@ -116,6 +116,36 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-23 — Bitunix SESSION: PEAD joint-restart + wr-toggle + D3 role-fix DEPLOYED+VERIFIED LIVE (+ catch-up for 06-20→06-22, not previously logged)
+
+**AUTHORITATIVE "what's running on prod NOW" (2026-06-23 ~21:00 UTC):** PID **3418240**, LIVE (`--live --brokers bitunix --live-divisions bitunix_futures`). robinhood_pead **INERT** (NOT in `--live-divisions`, `standby:true`, `auto_execute:false`) — wired+rendering only, no live PEAD trading; go-live is a SEPARATE later Board gate.
+
+| prod file | md5 | shipped by |
+|---|---|---|
+| `trading_corp/brokers/bitunix.py` | **4b00dea2** | D3 (06-23 21:00) |
+| `…/divisions/bitunix_position_reconciler.py` | **8c3adcd1** | D3 (06-23 21:00) |
+| `…/divisions/bitunix_futures_observer.py` | **2647fccc** | ref-vs-fill (06-22) |
+| `…/divisions/bitunix_bracket.py` | **f4be4e9b** | p2-combined (06-19) |
+| `trading_corp/agents/paper_trade_replay.py` | **ad9e235b** | PEAD superset on phantom-legs (06-23) |
+| `config/strategies.yaml` | **4ed38e9d** | fee-coupled + PEAD + unhalt (06-23) |
+| `config/risk.yaml` / `divisions.yaml` | PEAD supersets | bitunix DD-cap 0.99 + wiring preserved |
+| `trading_corp/web/data.py` | **dae49424** | metrics-epoch dashboard (06-20) |
+| `trading_corp/web/templates/division.html` | **367ae476** | wr-toggle (06-23) |
+
+**PID timeline this stretch:** fee-coupled (06-23 ~01:10) →**3355276**; PEAD joint (06-23 18:38) 3355276→**3408232**; D3 (06-23 21:00) 3408232→**3418240**.
+
+**THIS SESSION (06-23), chronological:**
+1. **~01:10 — fee-coupled (config-only, restart):** `strategies.yaml` bitunix `taker_pct 0.0004→0.00019` + `tp1_min_profit_multiplier 2.0→3.75` (fee_floor 0.0018 preserved = SAME gating, true rate). Honesty fix; live PnL unaffected (live books venue-actual fee). Drift-gated. Also SET `agent_state(bitunix_futures,metrics_epoch)='2026-06-23T01:17:17.921942+00:00'`.
+2. **18:38 — PEAD joint restart (cross-session, 15-file superset):** PEAD Phase-2 paper-first/inert + `robinhood.py` fake-fill fix (all 3 paths) + `models.py` FillEvent +broker_order_id/account (additive) + `main.py`/configs supersets + `paper_trade_replay.py` superset (PEAD adds robinhood_pead exclusion to `mark_pre_phase_a_rows`; **preserved** bitunix phantom-legs/Issue#1/metrics). **Bitunix contributed ZERO restart payload** — halt rode IN PEAD's superset (`auto_execute:false`), Bitunix unhalted post-bootsmoke. Bootsmoke GREEN (no FillEvent/role error). All Bitunix content byte-preserved (verified independently). Rollback `*.bak-pre-pead-2026-06-23`.
+3. **~19:00 — wr-toggle (dashboard, hot/no-restart):** `division.html` b6e23456→**367ae476**. Single Win-rate panel + Paper/Live toggle (default LIVE); curled HTTP200 renders Live=0W/2L since-epoch + Paper=105W/49L. Drift-gated.
+4. **21:00 — D3 role-fix (2-file, restart):** `bitunix.py` 3f68473a→**4b00dea2** + reconciler a3e9d50d→**8c3adcd1**. Record maker/taker from ORDER SEMANTICS (POST_ONLY→maker, market/stop→taker via order-id match), abandon venue `roleType` (proven LIES — reports maker for taker fills). No-match guard→fee-corrob/unknown; `role_fee_mismatch` flag INDEPENDENT. Sacred-path clean (role only). Halt→flat→apply(drift-gate+all-or-nothing)→restart→bootsmoke clean→reconciler 21:01:38 mc=0/0/0→unhalt. Rollback `*.bak-pre-d3-2026-06-23`.
+
+**Catch-up (06-20→06-22, on prod, detailed in memory not here):** D4 + metrics-epoch dashboard (06-20), Issue#1 managed-exit-suppress (06-21), D1 netted-close + ref-vs-fill + phantom-legs (06-22). See memory [[bitunix-d1-netted-close-double-booking]], [[bitunix-dashboard-winrate-epoch]], [[bitunix-d3-role-fix]], [[pead-joint-deploy-package]].
+
+**OPEN / TRADE-PENDING after this session:** (a) **D3 live-validation** — next stop-out must book `exit_role=taker` (not maker) + `entry_role=taker` + `role_fee_mismatch=false`; (b) **merged-code FillEvent path** — no live fill yet on the PEAD/D3 code (only an `entry_rejected_stale_bar` seen); (c) **D1 netting** — needs a netted/multi-fill close. mon9 `bstd3lphy` armed for the next fill. **Backfills of D1 + the 2 D3-mislabelled records (8ed7e662/2bfca6ad) are SEPARATE + operator-gated.** Branch `bitunix-d3-role-2026-06-23` (superset of D1/ref-vs-fill/phantom-legs/wr-toggle/pead-bundle/D3) UNMERGED.
+
+---
+
 ## 2026-06-19 — Bitunix /tpsl/ TP-leg legfix + P2 classifier/maker-taker + yellow_x (THREE deploys this session) — DEPLOYED + VERIFIED LIVE
 
 **⚠ DEPLOY_LOG STALENESS (branch copy):** this file on branch `bitunix-tpsl-rebuild-2026-06-18` is BEHIND
