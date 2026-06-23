@@ -78,8 +78,8 @@ async def _poll_fill(rh_id, fallback):
             print(f"  order ended {state!r} — not filled")
             return None
         await asyncio.sleep(1.5)
-    print("  fill poll timed out; using fallback price")
-    return float(fallback)
+    print("  fill poll timed out — order NOT confirmed filled (no record will be written)")
+    return None
 
 
 async def _setup(secrets, *, want_live_cfg):
@@ -122,6 +122,16 @@ async def _entry(secrets):
     from trading_corp.agents.strategies.pead_strategy import PEADStrategy
 
     broker, data_exec, strat = await _setup(secrets, want_live_cfg=False)
+    # Market-open guard (2026-06-23): a MARKET order placed after the regular
+    # session queues and would fill UNWATCHED at the next open. Refuse to place
+    # unless NYSE is open right now (holiday/half-day aware via market_hours).
+    from trading_corp.utils.market_hours import default_calendar
+    now = datetime.now(timezone.utc)
+    if not default_calendar().is_open_at(now):
+        print(f"ABORT: NYSE is CLOSED at {now.isoformat()} — a market order would queue and "
+              f"fill unwatched at the next open. Re-run ENTRY during regular hours (9:30-16:00 ET).")
+        return
+    print(f"market-open check OK ({now.isoformat()})")
     last = float(await broker.quote(SYM))
     print(f"{SYM} last=${last:.2f}  -> MARKET BUY {QTY} share(s) (~${last * QTY:.2f}) on {ACCOUNT}\n")
 
@@ -155,7 +165,16 @@ async def _entry(secrets):
         return
     real_price = await _poll_fill(fill.broker_order_id, fallback=last)
     if real_price is None:
-        print("  not filled — no record written.")
+        # No confirmed fill (cancelled/rejected/failed, or poll timeout on a
+        # queued order). Cancel so nothing fills unwatched, and write NO record
+        # (prevents the phantom result-NULL row seen 2026-06-23).
+        print("  NOT a confirmed fill — cancelling the order; NO record written.")
+        try:
+            import robin_stocks.robinhood as rs
+            rs.orders.cancel_stock_order(fill.broker_order_id)
+            print(f"  cancelled order {fill.broker_order_id}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  cancel error: {e} — verify/cancel manually ({fill.broker_order_id})")
         return
     print(f"  FILLED at ${real_price:.4f}")
 
@@ -220,25 +239,30 @@ async def _exit(secrets):
         return
     r = rows[0]
     oid, entry = r["order_id"], r["entry_price"]
+    from datetime import timedelta
     last = float(await broker.quote(SYM))
     print(f"{SYM}: entry=${entry:.4f}  last=${last:.4f}")
-    if not (entry > last + 0.02):
-        print(f"  entry not comfortably above last — the STOP (a downside exit) can't fire "
-              f"while flat/in-profit. Re-run on a small dip (last < entry).")
-        return
-
-    # Deliberate stop trigger: set the swing-low so stop_level lands in [last, entry).
-    target_stop = min(round(last + 0.02, 2), round(entry - 0.01, 2))
     extra = dict(r["extra"])
-    extra["post_earnings_swing_low"] = target_stop
+    if entry > last:
+        # downside / at a loss: deliberate STOP trigger — stop_level strictly
+        # between last and entry (full precision) so last <= stop_level < entry.
+        extra["post_earnings_swing_low"] = (last + entry) / 2.0
+        trigger, d2n_dbg = "stop", None
+    else:
+        # in profit: a DOWNSIDE stop can't fire; deliberately trigger the GUARD
+        # exit (flatten before earnings) by putting next earnings inside the lead
+        # window. Same real manage() path, fires regardless of price; yields a
+        # correct pnl-signed close.
+        extra["next_earnings_date"] = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
+        trigger, d2n_dbg = "guard", 1
     with db.connect(strat.db_url) as conn:
         conn.execute("UPDATE paper_trade_record SET extra_json=? WHERE order_id=? AND result IS NULL",
                      (json.dumps(extra), oid))
     prim = pp.primitives_from_extra(extra, entry)
-    sl = pp.stop_level(prim)
-    pr = pp.compute_pressures(prim, last, held_trading_days=0, days_to_next_earnings=None)
-    print(f"  stop_level set to ${sl:.2f} (>= last ${last:.2f}) -> stop pressure {pr.stop:.2f}, "
-          f"governing {pr.governing} (STOP should fire)\n")
+    pr = pp.compute_pressures(prim, last, held_trading_days=0, days_to_next_earnings=d2n_dbg)
+    print(f"  deliberate {trigger.upper()} trigger (entry=${entry:.4f} last=${last:.4f}) -> "
+          f"pressures stop={pr.stop:.2f} guard={pr.guard:.2f} governing={pr.governing} "
+          f"(expect {trigger} to fire)\n")
 
     # capture the sell's routing (manage discards the fill's account)
     cap = {}
