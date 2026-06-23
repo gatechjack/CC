@@ -1,0 +1,1924 @@
+{
+  "corrected_taker": 0.00019,
+  "redeem_cap": 1,
+  "windows": {
+    "REGIME_HIVOL": [
+      "2026-06-01",
+      "2026-06-15"
+    ]
+  },
+  "cells": {
+    "REGIME_HIVOL": {
+      "window": [
+        "2026-06-01",
+        "2026-06-15"
+      ],
+      "r_target_sweep": [
+        {
+          "n": 41,
+          "win_pct": 0.4146341463414634,
+          "loss_pct": 0.5853658536585366,
+          "n_flat": 0,
+          "avg_win_R": 0.5958705430036055,
+          "avg_loss_R": 0.6296958470531767,
+          "payoff_ratio": 0.9462831076179629,
+          "expectancy_R": -0.12153417312719379,
+          "total_net_R": -4.9829010982149455,
+          "profit_factor": 0.6702838678960571,
+          "breakeven_win_pct": 0.5137998660554016,
+          "full_run": 5,
+          "partial_tp_stop": 24,
+          "straight_stop": 12,
+          "_trades": [
+            {
+              "net_R_taker": 0.5000000000000401,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.0109051719338997,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.10579660565318603,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.033438288992375324,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.3601630166158321,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2046342092443427,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.9423814105611448,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.13297369720523403,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1679921258586683,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.49999999999999223,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2204108840964079,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.08860912726688142,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.06800247961470939,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.0882445035139303,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.9965571290305263,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.2315656688020271,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.2620476344144449,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5098159246509018,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.9258079643827022,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.1291499143682657,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2026545264230104,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.201590897987397,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.1141600019117903,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.10314050154704725,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.5000000000000066,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.11512706925231427,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.08611642335162234,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2128960775051518,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.07167251298900035,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.49999999999999234,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.49999999999999656,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2272629370149948,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 1.0293794322686887,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.3611758784011003,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.07340496458996647,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1980420076030993,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.05546830170603427,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.4999999999999886,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5000000000000111,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            }
+          ],
+          "tp1_r_target": 0.25,
+          "tp1_mult": 2.0,
+          "n_first_pass": 29,
+          "n_redeem": 19,
+          "n_plan_skip": 7,
+          "n_fires_total": 48,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_r_target",
+          "knob_val": 0.25,
+          "sample_entry": 63174.5
+        },
+        {
+          "n": 41,
+          "win_pct": 0.43902439024390244,
+          "loss_pct": 0.5609756097560976,
+          "n_flat": 0,
+          "avg_win_R": 0.6018155265398889,
+          "avg_loss_R": 0.6513664525267612,
+          "payoff_ratio": 0.9239277279407685,
+          "expectancy_R": -0.1011889983023782,
+          "total_net_R": -4.148748930397506,
+          "profit_factor": 0.7230738740406015,
+          "breakeven_win_pct": 0.5197700441015666,
+          "full_run": 5,
+          "partial_tp_stop": 24,
+          "straight_stop": 12,
+          "_trades": [
+            {
+              "net_R_taker": 0.5000000000000401,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.0109051719338997,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.10579660565318603,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.008438288992375323,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.3601630166158321,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2046342092443427,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.9423814105611448,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.13297369720523403,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1679921258586683,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5168177470179798,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2204108840964079,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.08860912726688142,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.048504959229417055,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.0882445035139303,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 1.000587930375299,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.28156566880202183,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.2620476344144449,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5598159246509001,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.9508079643826988,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.1291499143682657,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2026545264230104,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.201590897987397,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.1141600019117903,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.10314050154704725,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.5000000000000066,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.11512706925231427,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.08473284670324319,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2128960775051518,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.05584502597800274,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.49999999999999234,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.49999999999999656,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2272629370149948,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 1.0293794322686887,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.3611758784011003,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.05930992917993541,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1980420076030993,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5570316982939552,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.4999999999999886,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5000000000000111,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            }
+          ],
+          "tp1_r_target": 0.35,
+          "tp1_mult": 2.0,
+          "n_first_pass": 29,
+          "n_redeem": 19,
+          "n_plan_skip": 7,
+          "n_fires_total": 48,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_r_target",
+          "knob_val": 0.35,
+          "sample_entry": 63174.5
+        },
+        {
+          "n": 41,
+          "win_pct": 0.4878048780487805,
+          "loss_pct": 0.5121951219512195,
+          "n_flat": 0,
+          "avg_win_R": 0.5912019823515144,
+          "avg_loss_R": 0.7006580221678524,
+          "payoff_ratio": 0.8437810795662077,
+          "expectancy_R": -0.07048241020718561,
+          "total_net_R": -2.88977881849461,
+          "profit_factor": 0.8036010281582932,
+          "breakeven_win_pct": 0.5423637388855694,
+          "full_run": 5,
+          "partial_tp_stop": 24,
+          "straight_stop": 12,
+          "_trades": [
+            {
+              "net_R_taker": 0.5000000000000401,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.0218103438678088,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.08659321130637612,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.029061711007629776,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.38451779398956915,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2046342092443427,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.9423814105611448,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.13297369720523403,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1679921258586683,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5918177470179866,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2204108840964079,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.052218254533770936,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 1.1139950407705845,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.0882445035139303,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 1.0380879303752888,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.010118115019663657,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.3285052278136449,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6348159246509115,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.9883079643827,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.1291499143682657,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2026545264230104,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.201590897987397,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.10332000382358227,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.08128100309407932,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.5675808960013399,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.10525413850460888,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.04723284670323738,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2128960775051518,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.018345025977997892,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.49999999999999234,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5501112985132585,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2272629370149948,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5587588645373942,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.432137680227371,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.021809929179934212,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1980420076030993,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6320316982939622,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.4999999999999886,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5000000000000111,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            }
+          ],
+          "tp1_r_target": 0.5,
+          "tp1_mult": 2.0,
+          "n_first_pass": 29,
+          "n_redeem": 19,
+          "n_plan_skip": 7,
+          "n_fires_total": 48,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_r_target",
+          "knob_val": 0.5,
+          "sample_entry": 63174.5
+        },
+        {
+          "n": 41,
+          "win_pct": 0.6341463414634146,
+          "loss_pct": 0.36585365853658536,
+          "n_flat": 0,
+          "avg_win_R": 0.5691132678574133,
+          "avg_loss_R": 0.9444931610866518,
+          "payoff_ratio": 0.6025594374898819,
+          "expectancy_R": 0.015354818243730934,
+          "total_net_R": 0.6295475479929683,
+          "profit_factor": 1.0444363583157952,
+          "breakeven_win_pct": 0.6240018164732275,
+          "full_run": 3,
+          "partial_tp_stop": 26,
+          "straight_stop": 12,
+          "_trades": [
+            {
+              "net_R_taker": 0.5000000000000401,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.059310343867811,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.04909321130637992,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.06656171100762467,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.4595177939895498,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2046342092443427,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.9423814105611448,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.5590526055895491,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.1679921258586683,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6668177470179935,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2204108840964079,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6477817454662117,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.151495040770586,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.0882445035139303,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6130879303753018,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.04761811501965972,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.6414575933991843,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.709815924650909,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.7536005126428094,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.1291499143682657,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2026545264230104,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.201590897987397,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5966799961764053,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.04378100309407723,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.642580896001348,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5947458614953834,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.00973284670324212,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2128960775051518,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.019154974021998145,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.5722267054804178,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.625111298513282,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2272629370149948,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6337588645374035,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5071376802273714,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.015690070820057883,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1980420076030993,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.7070316982939693,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5643284443667242,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5000000000000111,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            }
+          ],
+          "tp1_r_target": 0.65,
+          "tp1_mult": 2.0,
+          "n_first_pass": 29,
+          "n_redeem": 19,
+          "n_plan_skip": 7,
+          "n_fires_total": 48,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_r_target",
+          "knob_val": 0.65,
+          "sample_entry": 63174.5
+        },
+        {
+          "n": 41,
+          "win_pct": 0.6097560975609756,
+          "loss_pct": 0.3902439024390244,
+          "n_flat": 0,
+          "avg_win_R": 0.666861628086954,
+          "avg_loss_R": 0.9550339149328783,
+          "payoff_ratio": 0.6982596300088698,
+          "expectancy_R": 0.033926782030434116,
+          "total_net_R": 1.3909980632477987,
+          "profit_factor": 1.091030671888859,
+          "breakeven_win_pct": 0.5888381154033421,
+          "full_run": 3,
+          "partial_tp_stop": 25,
+          "straight_stop": 13,
+          "_trades": [
+            {
+              "net_R_taker": 0.5529079997106504,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.0968103438678134,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.011593211306383744,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.10406171100762979,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.025645222626258374,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2046342092443427,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.9597628211223308,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.6340526055895546,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.1679921258586683,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.7418177470180003,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2204108840964079,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.7227817454661968,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.7639950407705907,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.0882445035139303,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6880879303753189,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.08511811501966889,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.7164575933991804,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.7848159246509064,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.8286005126428031,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.1291499143682657,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2026545264230104,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.201590897987397,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.671679996176402,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.006281003094087689,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.7175808960013562,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.6697458614953705,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.1722328467032426,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2128960775051518,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.7566549740219908,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.647226705480423,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.7001112985132808,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2272629370149948,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.7087588645373888,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.145961801826254,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.05319007082005908,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1980420076030993,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.7820316982939621,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.6393284443667075,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5000000000000111,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            }
+          ],
+          "tp1_r_target": 0.8,
+          "tp1_mult": 2.0,
+          "n_first_pass": 29,
+          "n_redeem": 19,
+          "n_plan_skip": 7,
+          "n_fires_total": 48,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_r_target",
+          "knob_val": 0.8,
+          "sample_entry": 63174.5
+        },
+        {
+          "n": 3,
+          "win_pct": 0.3333333333333333,
+          "loss_pct": 0.6666666666666666,
+          "n_flat": 0,
+          "avg_win_R": 0.9556382372451084,
+          "avg_loss_R": 1.1059561357904055,
+          "payoff_ratio": 0.8640833088394887,
+          "expectancy_R": -0.4187580114452342,
+          "total_net_R": -1.2562740343357026,
+          "profit_factor": 0.43204165441974435,
+          "breakeven_win_pct": 0.5364567105225378,
+          "full_run": 0,
+          "partial_tp_stop": 1,
+          "straight_stop": 2,
+          "_trades": [
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.9556382372451084,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            }
+          ],
+          "tp1_r_target": 1.0,
+          "tp1_mult": 2.0,
+          "n_first_pass": 98,
+          "n_redeem": 41,
+          "n_plan_skip": 136,
+          "n_fires_total": 139,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_r_target",
+          "knob_val": 1.0,
+          "sample_entry": 63174.5
+        }
+      ],
+      "mult_sweep": [
+        {
+          "n": 43,
+          "win_pct": 0.4883720930232558,
+          "loss_pct": 0.5116279069767442,
+          "n_flat": 0,
+          "avg_win_R": 0.5549223425869484,
+          "avg_loss_R": 0.7374123201342926,
+          "payoff_ratio": 0.7525265410345865,
+          "expectancy_R": -0.10627213601461678,
+          "total_net_R": -4.5697018486285215,
+          "profit_factor": 0.718320789169378,
+          "breakeven_win_pct": 0.5706047677940786,
+          "full_run": 5,
+          "partial_tp_stop": 25,
+          "straight_stop": 13,
+          "_trades": [
+            {
+              "net_R_taker": 0.4029079997106274,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.0218103438678088,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.08659321130637612,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.029061711007629776,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.38451779398956915,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2046342092443427,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.884762821122324,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.1409473944104556,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1679921258586683,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5918177470179866,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2204108840964079,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.052218254533770936,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 1.1139950407705845,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.0882445035139303,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 1.0380879303752888,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.010118115019663657,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.3285052278136449,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6348159246509115,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.9883079643827,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.1291499143682657,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2026545264230104,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.201590897987397,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.10332000382358227,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.08128100309407932,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.5675808960013399,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.10525413850460888,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.04723284670323738,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2128960775051518,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.018345025977997892,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.4972267054804125,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5501112985132585,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2272629370149948,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5587588645373942,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.432137680227371,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.021809929179934212,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1980420076030993,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6320316982939622,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.4893284443667097,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.30541192810165646,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.19207305907507255,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.5012788802243153,
+              "result": "loss",
+              "filled_legs": ""
+            }
+          ],
+          "tp1_r_target": 0.5,
+          "tp1_mult": 1.0,
+          "n_first_pass": 25,
+          "n_redeem": 19,
+          "n_plan_skip": 1,
+          "n_fires_total": 44,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_mult",
+          "knob_val": 1.0,
+          "sample_entry": 63174.5
+        },
+        {
+          "n": 41,
+          "win_pct": 0.4878048780487805,
+          "loss_pct": 0.5121951219512195,
+          "n_flat": 0,
+          "avg_win_R": 0.5912019823515144,
+          "avg_loss_R": 0.7006580221678524,
+          "payoff_ratio": 0.8437810795662077,
+          "expectancy_R": -0.07048241020718561,
+          "total_net_R": -2.88977881849461,
+          "profit_factor": 0.8036010281582932,
+          "breakeven_win_pct": 0.5423637388855694,
+          "full_run": 5,
+          "partial_tp_stop": 24,
+          "straight_stop": 12,
+          "_trades": [
+            {
+              "net_R_taker": 0.5000000000000401,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.0218103438678088,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.08659321130637612,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.029061711007629776,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.38451779398956915,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2046342092443427,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.9423814105611448,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.13297369720523403,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1679921258586683,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5918177470179866,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2204108840964079,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.052218254533770936,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 1.1139950407705845,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.0882445035139303,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 1.0380879303752888,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.010118115019663657,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.3285052278136449,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6348159246509115,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.9883079643827,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.1291499143682657,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2026545264230104,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.201590897987397,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.10332000382358227,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.08128100309407932,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.5675808960013399,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.10525413850460888,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.04723284670323738,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2128960775051518,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.018345025977997892,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.49999999999999234,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5501112985132585,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2272629370149948,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.5587588645373942,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.432137680227371,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.021809929179934212,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1980420076030993,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6320316982939622,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.4999999999999886,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.5000000000000111,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            }
+          ],
+          "tp1_r_target": 0.5,
+          "tp1_mult": 2.0,
+          "n_first_pass": 29,
+          "n_redeem": 19,
+          "n_plan_skip": 7,
+          "n_fires_total": 48,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_mult",
+          "knob_val": 2.0,
+          "sample_entry": 63174.5
+        },
+        {
+          "n": 38,
+          "win_pct": 0.5,
+          "loss_pct": 0.5,
+          "n_flat": 0,
+          "avg_win_R": 0.6668214304567758,
+          "avg_loss_R": 0.7487353453095885,
+          "payoff_ratio": 0.8905969707908703,
+          "expectancy_R": -0.04095695742640638,
+          "total_net_R": -1.5563643822034423,
+          "profit_factor": 0.8905969707908704,
+          "breakeven_win_pct": 0.5289334614672964,
+          "full_run": 4,
+          "partial_tp_stop": 22,
+          "straight_stop": 12,
+          "_trades": [
+            {
+              "net_R_taker": 1.0964762929834801,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -0.02644915141330298,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.029061711007629776,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.02820565282828305,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2046342092443427,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.699460545807833,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.1679921258586683,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6186366897365052,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2204108840964079,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6329136909003411,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 1.1139950407705845,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.0882445035139303,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 1.0591590280219574,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": 0.010118115019663657,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -0.02294280082509978,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.0953851340091207,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6348159246509115,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.9883079643827,
+              "result": "win",
+              "filled_legs": "tp1,tp2,tp3"
+            },
+            {
+              "net_R_taker": -1.1291499143682657,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.2026545264230104,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.201590897987397,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -1.1165271375716903,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6712400028676924,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.025785125386761698,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.6368143279989994,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.6726906038784586,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.021529105837907098,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.2128960775051518,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": -0.01791812824725328,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": 0.6895799708896669,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.6499165261150469,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -1.2272629370149948,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6434308515969367,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.49545452703140924,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": -0.018351241147494507,
+              "result": "win",
+              "filled_legs": "tp1"
+            },
+            {
+              "net_R_taker": -1.1980420076030993,
+              "result": "loss",
+              "filled_legs": ""
+            },
+            {
+              "net_R_taker": 0.6320316982939622,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            },
+            {
+              "net_R_taker": 0.6955036667249608,
+              "result": "win",
+              "filled_legs": "tp1,tp2"
+            }
+          ],
+          "tp1_r_target": 0.5,
+          "tp1_mult": 3.5,
+          "n_first_pass": 33,
+          "n_redeem": 21,
+          "n_plan_skip": 16,
+          "n_fires_total": 54,
+          "window": "REGIME_HIVOL",
+          "knob": "tp1_mult",
+          "knob_val": 3.5,
+          "sample_entry": 63174.5
+        }
+      ]
+    }
+  }
+}
