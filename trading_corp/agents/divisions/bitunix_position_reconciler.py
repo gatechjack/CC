@@ -87,6 +87,14 @@ POSITION_STATE_HALT_RELEASED_KIND = "position_state_halt_released"
 # (log.warning, never defer/crash) so the anomaly is surfaced for review.
 D1_QTY_ANOMALY_RATIO = 1.5
 
+# ── D3 role-recording (2026-06-23) ──────────────────────────────────────────
+# D3 fee-corroboration reference rates (venue-effective, mirror strategies.yaml
+# bitunix_futures.fees taker_pct/maker_pct). Used ONLY to (1) classify a close
+# fill that matches NEITHER a TP nor the SL order-id, and (2) flag role/fee
+# disagreement — NEVER to derive the primary role (keeps role+fee independent).
+D3_TAKER_FEE_REF = 0.00019
+D3_MAKER_FEE_REF = 0.00014
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -671,18 +679,20 @@ def _iso_to_ms(ts: str | None) -> float | None:
 
 
 def _role_summary(maker_qty: float, taker_qty: float) -> str:
-    """One-word maker/taker tag from the per-fill qty split: 'maker' | 'taker' |
-    'mixed' | 'unknown' (no role field present on any fill)."""
-    if maker_qty <= 0 and taker_qty <= 0:
-        return "unknown"
-    if taker_qty <= 0:
-        return "maker"
-    if maker_qty <= 0:
+    """One-word role tag from POSITIVE per-fill evidence only. No positive
+    maker/taker evidence → 'unknown' (NEVER a maker default — D3 fix)."""
+    if maker_qty > 0 and taker_qty > 0:
+        return "mixed"
+    if taker_qty > 0:
         return "taker"
-    return "mixed"
+    if maker_qty > 0:
+        return "maker"
+    return "unknown"
 
 
-def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
+def _aggregate_close_fills(
+    fills: list[dict], *, tp_order_ids=None, sl_order_id=None,
+) -> dict[str, Any]:
     """Volume-weighted aggregate of N close fills — B2-aware: any number of
     partial fills, each carrying its REAL per-fill fee. Returns:
       vwap_price  — Σ(price·qty)/Σqty (the real exit price, multi-fill VWAP)
@@ -691,10 +701,20 @@ def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
       total_qty   — Σqty (the actual closed quantity)
       n_fills     — count of valid fills aggregated
       close_order_ids — venue order-ids of the close fills (for tp-vs-stop match)
-      exit_role   — 'maker'|'taker'|'mixed'|'unknown' (the recorded role, not a
-                    rate-inferred guess)
+      exit_role   — 'maker'|'taker'|'mixed'|'unknown' from ORDER SEMANTICS (which
+                    order the bot placed: a resting POST_ONLY TP leg = maker, the
+                    B1 stop / market reduce = taker), NOT the unreliable venue
+                    roleType (D3 fix). A close fill matching neither TP nor SL
+                    order-id is corroborated by its fee rate, never defaulted maker.
+      fee_implied_role — 'maker'|'taker'|'unknown' from the AGGREGATE fee rate
+                    (independent corroboration of exit_role; role+fee stay
+                    independent so a fee-model error remains detectable).
+      role_fee_mismatch — True iff exit_role and fee_implied_role are both
+                    decisive (maker/taker) and disagree.
       maker_taker_mix — {maker_qty, taker_qty, maker_fraction}
     Pure — no I/O. Skips malformed / non-positive fills."""
+    tp_ids = set(str(x) for x in (tp_order_ids or []))
+    sl = str(sl_order_id) if sl_order_id else None
     notional = total_qty = total_fee = 0.0
     maker_qty = taker_qty = 0.0
     order_ids: list[str] = []
@@ -711,21 +731,52 @@ def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
         notional += p * q
         total_qty += q
         total_fee += fee
-        role = str(f.get("role") or "").upper()
-        if role == "MAKER":
+        # D3: role from the ORDER the bot placed, not the venue roleType.
+        oid = str(f.get("order_id") or "")
+        if oid and oid in tp_ids:
+            # resting POST_ONLY limit TP leg → maker
             maker_qty += q
-        elif role == "TAKER":
+        elif oid and sl and oid == sl:
+            # B1 stop / market reduce → taker
             taker_qty += q
-        oid = f.get("order_id")
+        else:
+            # NO order-id match (manual close / unknown order): corroborate by
+            # fee rate, NEVER default maker. Fee/price/qty unavailable → neither
+            # bucket (stays 'unknown').
+            if p > 0 and q > 0 and fee > 0:
+                rate = fee / (p * q)
+                if abs(rate - D3_TAKER_FEE_REF) <= abs(rate - D3_MAKER_FEE_REF):
+                    taker_qty += q
+                else:
+                    maker_qty += q
         if oid:
-            order_ids.append(str(oid))
+            order_ids.append(oid)
         n += 1
     vwap = (notional / total_qty) if total_qty > 0 else 0.0
     role_qty = maker_qty + taker_qty
+    exit_role = _role_summary(maker_qty, taker_qty)
+    # Independent aggregate fee-implied role (corroboration only — never feeds
+    # the primary exit_role above, so a fee-model error surfaces as a mismatch).
+    if total_fee > 0 and notional > 0:
+        agg_rate = total_fee / notional
+        fee_implied_role = (
+            "taker"
+            if abs(agg_rate - D3_TAKER_FEE_REF) <= abs(agg_rate - D3_MAKER_FEE_REF)
+            else "maker"
+        )
+    else:
+        fee_implied_role = "unknown"
+    role_fee_mismatch = (
+        exit_role in ("maker", "taker")
+        and fee_implied_role in ("maker", "taker")
+        and exit_role != fee_implied_role
+    )
     return {"vwap_price": vwap, "total_fee": total_fee,
             "total_qty": total_qty, "n_fills": n,
             "close_order_ids": order_ids,
-            "exit_role": _role_summary(maker_qty, taker_qty),
+            "exit_role": exit_role,
+            "fee_implied_role": fee_implied_role,
+            "role_fee_mismatch": role_fee_mismatch,
             "maker_taker_mix": {
                 "maker_qty": round(maker_qty, 7),
                 "taker_qty": round(taker_qty, 7),
@@ -793,7 +844,15 @@ async def _autobook_missing_close_real(
                         "falling back to known-level estimate", order_id, e)
             return _autobook_missing_close(db_url, order_id, now)
 
-        agg = _aggregate_close_fills(fills)
+        # D3: the bracket order-ids classify each close fill by the ORDER the bot
+        # placed (TP legs = maker, B1 stop = taker) — computed here so the same
+        # ids feed both the role aggregation and the classify_exit_kind call below
+        # (no duplicate compute).
+        tp_ids = list((extra.get("bracket_tp_order_ids") or {}).values())
+        sl_id = extra.get("bracket_position_sl_order_id")
+        agg = _aggregate_close_fills(
+            fills, tp_order_ids=tp_ids, sl_order_id=sl_id,
+        )
         if agg["n_fills"] <= 0 or agg["vwap_price"] <= 0 or agg["total_qty"] <= 0:
             return _autobook_missing_close(db_url, order_id, now)  # safety net
 
@@ -846,8 +905,8 @@ async def _autobook_missing_close_real(
         # 'loss'/'stop'). Fixes the P2 mis-sign (report 2026-06-19_p2_classifier).
         tp_prices = [extra.get("tp1_price"), extra.get("tp2_price"),
                      extra.get("tp3_price")]
-        tp_ids = list((extra.get("bracket_tp_order_ids") or {}).values())
-        sl_id = extra.get("bracket_position_sl_order_id")
+        # tp_ids / sl_id already computed above the _aggregate_close_fills call
+        # (D3) — reuse them here (no duplicate compute).
         result_str = classify_result(net_pnl=net, gross_pnl=pnl)
         exit_kind = classify_exit_kind(
             side=side, vwap_fill=vwap, stop_level=level, tp_prices=tp_prices,
@@ -856,6 +915,9 @@ async def _autobook_missing_close_real(
         )
         exit_role = agg.get("exit_role", "unknown")
         mix_json = json.dumps(agg.get("maker_taker_mix") or {})
+        # D3: independent fee-vs-order-semantics corroboration. Recorded as a bool
+        # so a fee-model error (role and fee disagreeing) stays detectable.
+        role_fee_mismatch = bool(agg.get("role_fee_mismatch"))
 
         with db.connect(db_url) as conn:
             conn.execute(
@@ -871,12 +933,15 @@ async def _autobook_missing_close_real(
                 "    '$.exit_side', ?, '$.autobook_level_type', ?, "
                 "    '$.exit_kind', ?, '$.exit_role', ?, "
                 "    '$.maker_taker_mix', json(?), "
+                "    '$.fee_implied_role', ?, '$.role_fee_mismatch', json(?), "
                 "    '$.exit_fee_usd', ?, '$.net_realized_usd', ?, "
                 "    '$.close_fill_count', ?, '$.observed_slippage_pts', ?, "
                 "    '$.autobook_ts', ?) "
                 "WHERE order_id = ? AND result IS NULL",
                 (result_str, now, vwap, pnl, r_mult, exit_side, exit_kind,
-                 exit_kind, exit_role, mix_json, exit_fee, net,
+                 exit_kind, exit_role, mix_json,
+                 agg.get("fee_implied_role", "unknown"),
+                 json.dumps(role_fee_mismatch), exit_fee, net,
                  agg["n_fills"], slip_pts, now, order_id),
             )
             conn.execute(
@@ -890,6 +955,9 @@ async def _autobook_missing_close_real(
                              "pnl": pnl, "net_realized_usd": net,
                              "result": result_str, "exit_kind": exit_kind,
                              "exit_role": exit_role,
+                             "fee_implied_role": agg.get(
+                                 "fee_implied_role", "unknown"),
+                             "role_fee_mismatch": role_fee_mismatch,
                              "pnl_basis": "real_fill",
                              "slippage_unreconciled": False,
                              "observed_slippage_pts": slip_pts})),

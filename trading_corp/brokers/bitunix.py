@@ -1140,6 +1140,19 @@ class BitunixBroker(Broker):
             fill_timeout_s=fill_timeout_s,
         )
 
+        # D3 (2026-06-23): derive the recorded role from ORDER SEMANTICS — the
+        # order TYPE the bot actually placed — NOT the unreliable venue roleType
+        # that `_observe_fill` returns (`entry_role`, proven to report MAKER for
+        # economically-taker fills). A POST_ONLY limit (the B2 `_maker_clone`
+        # entry, which sets body["effect"]=="POST_ONLY") rests as a guaranteed
+        # maker; anything else (market/MARK entry, or the maker→taker fallback
+        # which re-enters place_order with a non-POST_ONLY body) is a taker.
+        placed_role = (
+            "maker"
+            if str(body.get("effect") or "").upper() == "POST_ONLY"
+            else "taker"
+        )
+
         # Encode non-terminal status in the venue suffix (mirrors coinbase):
         #   bitunix_futures              → fully filled
         #   bitunix_futures:part_filled  → partially filled
@@ -1160,7 +1173,9 @@ class BitunixBroker(Broker):
             ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             venue=venue,
             fee=fee,
-            role=entry_role,
+            # D3: order-semantics role (placed_role) supersedes the roleType-
+            # derived entry_role from _observe_fill (now vestigial for role).
+            role=placed_role,
         )
 
     async def _place_maker_entry(self, order: ProposedOrder) -> FillEvent:

@@ -115,10 +115,15 @@ def test_role_summary():
 
 
 def test_aggregate_records_role_mix_and_order_ids():
-    agg = _aggregate_close_fills([
-        {"price": 100.0, "qty": 1.0, "fee": 0.1, "role": "MAKER", "order_id": "o1"},
-        {"price": 100.0, "qty": 3.0, "fee": 0.3, "role": "TAKER", "order_id": "o2"},
-    ])
+    # D3: role now from ORDER SEMANTICS — the TP-leg order-id is maker, the SL
+    # order-id is taker (the venue `role`/roleType field is ignored).
+    agg = _aggregate_close_fills(
+        [
+            {"price": 100.0, "qty": 1.0, "fee": 0.1, "order_id": "o1"},
+            {"price": 100.0, "qty": 3.0, "fee": 0.3, "order_id": "o2"},
+        ],
+        tp_order_ids=["o1"], sl_order_id="o2",
+    )
     assert agg["n_fills"] == 2
     assert agg["close_order_ids"] == ["o1", "o2"]
     assert agg["exit_role"] == "mixed"
@@ -129,8 +134,10 @@ def test_aggregate_records_role_mix_and_order_ids():
     assert agg["total_fee"] == pytest.approx(0.4)
 
 
-def test_aggregate_no_role_field_degrades():
-    agg = _aggregate_close_fills([{"price": 100.0, "qty": 1.0, "fee": 0.1}])
+def test_aggregate_no_role_and_no_fee_degrades():
+    # D3: no order-id match AND no fee → no positive role evidence → 'unknown'
+    # (the killed maker-default; roleType is no longer consulted).
+    agg = _aggregate_close_fills([{"price": 100.0, "qty": 1.0, "fee": 0.0}])
     assert agg["exit_role"] == "unknown"
     assert agg["close_order_ids"] == []
     assert agg["maker_taker_mix"]["maker_fraction"] is None
