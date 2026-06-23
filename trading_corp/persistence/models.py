@@ -69,6 +69,14 @@ class ProposedOrder:
     # E2·5: 'paper' | 'live'. None until a placement path sets it (data_exec.place()
     # derives it from broker.paper); to_db_row resolves None → extra tag → 'paper'.
     execution_mode: str | None = None
+    # ── PEAD fractional / notional sizing (additive; default None/False so EVERY
+    # existing constructor across all divisions is byte-for-byte unaffected). On a
+    # fractional BUY, `notional_usd` is the dollar amount (the broker's isolated
+    # fractional path converts $→shares) and `qty` starts 0.0 (the REALIZED qty is
+    # read back from the fill). `fractional=True` routes the order through that
+    # isolated path; whole-share / limit / option orders never set these.
+    notional_usd: float | None = None
+    fractional: bool = False
 
     def to_db_row(self) -> dict:
         return {
@@ -120,6 +128,11 @@ class FillEvent:
     # fill, not fished out of a dict.
     broker_order_id: str | None = None
     account: str | None = None
+    # ── PEAD fractional/notional (additive, default None): the dollars actually
+    # executed, from RH's `executed_notional` on a polled fractional fill. `qty` and
+    # `price` already carry the REALIZED filled quantity + avg fill price — the broker
+    # populates them from the polled fill on the fractional path, not from the request.
+    executed_notional: float | None = None
 
 
 @dataclass

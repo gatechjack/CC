@@ -133,7 +133,8 @@ async def _entry(secrets):
         return
     print(f"market-open check OK ({now.isoformat()})")
     last = float(await broker.quote(SYM))
-    print(f"{SYM} last=${last:.2f}  -> MARKET BUY {QTY} share(s) (~${last * QTY:.2f}) on {ACCOUNT}\n")
+    notional = float(os.environ.get("PEAD_RT_NOTIONAL", "5"))
+    print(f"{SYM} last=${last:.2f}  -> FRACTIONAL notional BUY ${notional:.2f} on {ACCOUNT}\n")
 
     bars = strat._fetch_daily_bars(SYM)
     prim = strat._build_primitives(bars, bars[-3].d, last) if bars and len(bars) >= 16 else None
@@ -150,42 +151,39 @@ async def _entry(secrets):
         "earnings_gap_top": prim["earnings_gap_top"],
         "next_earnings_date": None, "entry_sue": 0.0, "name": SYM,
         "entry_reference_price": last, "stop_price": prim["stop_level"],
-        "source_signal": "gate34_roundtrip",
+        "source_signal": "gate34_roundtrip", "notional_usd": notional,
     }
     order = ProposedOrder(strategy=PEADStrategy.SLUG, symbol=SYM, side="buy",
-                          qty=float(QTY), order_type="market",
-                          rationale="GATE3 live round-trip entry", extra=extra)
+                          qty=0.0, order_type="market", notional_usd=notional,
+                          fractional=True, rationale="GATE3 fractional round-trip entry",
+                          extra=extra)
 
-    fill = await data_exec.place(order, division="robinhood_pead")  # raises on failure
-    print("=== ENTRY PLACED (fixed broker) ===")
+    try:
+        # the broker's fractional path polls to the realized fill (or raises) — no
+        # separate harness poll, no phantom record on a non-fill.
+        fill = await data_exec.place(order, division="robinhood_pead")
+    except Exception as e:  # noqa: BLE001
+        print(f"  ENTRY did not fill (no record written): {e}")
+        return
+    print("=== ENTRY PLACED (fractional, fixed broker) ===")
     print(f"  RH order id = {fill.broker_order_id!r}")
     print(f"  account     = {fill.account!r}   <-- ROUTING (must be 680725082)")
     if str(fill.account) != ACCOUNT:
         print("  ABORT: routed to the WRONG account — STOP.")
         return
-    real_price = await _poll_fill(fill.broker_order_id, fallback=last)
-    if real_price is None:
-        # No confirmed fill (cancelled/rejected/failed, or poll timeout on a
-        # queued order). Cancel so nothing fills unwatched, and write NO record
-        # (prevents the phantom result-NULL row seen 2026-06-23).
-        print("  NOT a confirmed fill — cancelling the order; NO record written.")
-        try:
-            import robin_stocks.robinhood as rs
-            rs.orders.cancel_stock_order(fill.broker_order_id)
-            print(f"  cancelled order {fill.broker_order_id}")
-        except Exception as e:  # noqa: BLE001
-            print(f"  cancel error: {e} — verify/cancel manually ({fill.broker_order_id})")
-        return
-    print(f"  FILLED at ${real_price:.4f}")
+    print(f"  REALIZED: qty={fill.qty}  avg_fill=${fill.price}  executed_notional=${fill.executed_notional}")
 
-    order.extra["entry_reference_price"] = real_price
+    # record the REALIZED fill — never the requested notional or a computed qty
+    order.qty = float(fill.qty)
+    order.extra["entry_reference_price"] = float(fill.price)
+    order.extra["executed_notional"] = fill.executed_notional
     order.execution_mode = "live"
     strat._write_record(order, max_hold_seconds=pp.MAX_HOLD_TRADING_DAYS * 24 * 3600)
-    print(f"\n  paper_trade_record written to PROD DB (order_id={order.id})")
+    print(f"\n  paper_trade_record written to PROD DB (order_id={order.id}, REALIZED qty={order.qty})")
     print("  6 extra_json keys:", json.dumps({k: order.extra[k] for k in
           ("entry_atr_14", "post_earnings_swing_low", "pre_earnings_close",
            "earnings_gap_top", "next_earnings_date", "entry_sue")}, default=str))
-    print("\n=== ENTRY DONE — real position open on 680725082; dashboard should render it ===")
+    print("\n=== ENTRY DONE — real FRACTIONAL position open on 680725082; dashboard should render it ===")
 
 
 # ── PHASE: CHECK (dashboard pressures == engine) ─────────────────────────────
@@ -266,18 +264,18 @@ async def _exit(secrets):
 
     # capture the sell's routing (manage discards the fill's account)
     cap = {}
-    _real = rs.orders.order_sell_market
+    _real = rs.orders.order_sell_fractional_by_quantity
 
     def _wrap(*a, **k):
         rr = _real(*a, **k)
         cap["raw"] = rr
         return rr
 
-    rs.orders.order_sell_market = _wrap
+    rs.orders.order_sell_fractional_by_quantity = _wrap
     try:
-        exits, _cadence = await strat.manage(broker)  # REAL exit engine
+        exits, _cadence = await strat.manage(broker)  # REAL exit engine (fractional sell)
     finally:
-        rs.orders.order_sell_market = _real
+        rs.orders.order_sell_fractional_by_quantity = _real
 
     print("=== manage() result (real exit engine) ===")
     print(f"  fired exits: {[(o.symbol, o.extra.get('exit_reason')) for o in exits]}")

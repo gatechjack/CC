@@ -128,3 +128,28 @@ path (which changed). GFV: settled funds, market-open guard (already in gate34).
    `None` on fail) — Option A accepted; invariant preserved via realized read-back.
 5. **Cash-account settled-BP guard** at capacity (notional spends settled; T+1).
 6. **Existing whole-share P&L is approximate** (quote-as-exit); #4 fixes it for all.
+
+## BUILD STATUS + GO-LIVE SEQUENCING (operator-ruled 2026-06-23)
+**BUILT + COMMITTED (branch, NO deploy).** Mechanics done; tests green (#3 proven by
+the other-division regression suites passing, not by reading the diff).
+
+**FLAG 1 — IN (done).** `entry_reference_price` = the REALIZED avg fill (not the scan
+close); the ledger `stop_price` is re-anchored on the realized entry via the locked
+`pp.stop_level` (the engine + `pead_view` already recompute the stop from entry). It's
+the entry-side of #4's correctness: the stop is "2.5×ATR below ENTRY," so it anchors
+on the price we actually filled. VERIFIED: the entry-INDEPENDENT primitives
+(`earnings_gap_top` = announcement-bar close, ATR, swing) are UNTOUCHED — DRIFT still
+measures from the gap top (empirical test `test_flag1_realized_entry_reanchors_stop_leaves_gap_top`).
+
+**FLAG 2 — REQUIRED PRE-GO-LIVE BLOCKER (reclassified — NOT an optional follow-up).**
+The live engine scans PRE-OPEN (8:30–9:25 ET); a synchronous 90s poll-until-filled
+would CANCEL orders that queue until the 9:30 open → the production scan-and-place flow
+does NOT work with this path. The during-open lifecycle test proves the MECHANICS
+(notional buy, realized-qty read, fractional exit) but NOT the production timing. Do
+NOT let the lifecycle-test green light imply the production flow is proven.
+
+**Sequence to real go-live (in order):**
+1. Lifecycle-test the during-open SYNCHRONOUS path (proves mechanics) — gated/watched, ~$5 F.
+2. BUILD the deferred-fill reconcile (record pending → reconcile realized qty at the open).
+3. PROVE the pre-open-scan path (a pre-open scan that queues + reconciles at the open).
+4. THEN the 4 go-live flips (standby:false + --live-divisions + auto_execute:true + EODHD env).

@@ -86,6 +86,23 @@ def _days_to_expiry(expiration_date: str) -> int:
         return 0
 
 
+def _rh_float(v) -> float:
+    """Tolerant float() for robin_stocks' string/None numeric fields (e.g.
+    cumulative_quantity='0.34710000', average_price=None)."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _rh_executed_notional(info: dict) -> float | None:
+    """RH `executed_notional` is {'amount': '..', 'currency_code': ..} or None."""
+    en = (info or {}).get("executed_notional")
+    if isinstance(en, dict):
+        return _rh_float(en.get("amount"))
+    return None
+
+
 class RobinhoodBroker(Broker):
     name = "robinhood"
     paper = False
@@ -107,6 +124,7 @@ class RobinhoodBroker(Broker):
         self._account_number: str = ""
         self._account_type: str = ""        # "individual"/"ira_roth"/"joint"
         self._account_label: str = ""       # human-readable, used in logs
+        self._frac_elig_cache: dict[str, bool] = {}   # per-symbol fractional eligibility
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -690,6 +708,12 @@ class RobinhoodBroker(Broker):
         self._require_connected()
         if (order.extra or {}).get("is_option"):
             return await self._place_option_order(order)
+        # ISOLATED fractional/notional path (robinhood_pead). Only orders that
+        # explicitly opt in (order.fractional) divert here; the whole-share market /
+        # limit / option / multi-leg paths below are reached unchanged for everything
+        # else (PMCC / robinhood_joint / IC never set order.fractional).
+        if getattr(order, "fractional", False):
+            return await self._place_fractional_stock_order(order)
         return await self._place_stock_order(order)
 
     # ── shared fill construction: fail loud + carry RH's real id + account ──
@@ -762,6 +786,116 @@ class RobinhoodBroker(Broker):
 
         price = float((result or {}).get("average_price") or order.limit_price or 0)
         return self._fill_or_raise(result, order, price)
+
+    # ── ISOLATED fractional / notional path (robinhood_pead) ───────────────────
+    # The whole-share market/limit + option + multi-leg paths above are UNCHANGED.
+    # BUY = by dollars (order_buy_fractional_by_price; robin_stocks converts $→shares
+    # CLIENT-SIDE via the ask, enforces a $1 minimum). SELL = by realized fractional
+    # quantity (order_sell_fractional_by_quantity). Both are market / regular-hours /
+    # gfd. We POLL the order to its terminal state and record the REALIZED
+    # cumulative_quantity + average fill price — never the (client-computed) request
+    # qty. RAISES on a non-accepted order (Bug-1 discipline) and on an unconfirmed
+    # fill (cancel first, then raise — no phantom record).
+    async def _poll_fractional_fill(self, rh_id, *, timeout_s: float = 90.0,
+                                    interval_s: float = 1.5):
+        """Poll get_stock_order_info(rh_id) until terminal. Returns
+        (realized_qty, avg_fill_price, executed_notional) on any non-zero fill, else
+        None (rejected/cancelled/failed with nothing filled, or timeout). A partial
+        that filled before termination is returned as the realized partial (decision
+        #2). On timeout the order is CANCELLED first (stop further fill), then the
+        final realized qty is read."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        iters = max(1, int(timeout_s / interval_s))
+        last: dict = {}
+        for _ in range(iters):
+            try:
+                info = await asyncio.to_thread(rs.orders.get_stock_order_info, rh_id) or {}
+            except Exception:  # noqa: BLE001
+                info = {}
+            last = info or last
+            state = str(info.get("state") or "").lower()
+            cum = _rh_float(info.get("cumulative_quantity"))
+            if state == "filled" and cum > 0:
+                return cum, _rh_float(info.get("average_price")), _rh_executed_notional(info)
+            if state in ("cancelled", "canceled", "rejected", "failed"):
+                if cum > 0:   # partial filled before terminating → accept the realized part
+                    return cum, _rh_float(info.get("average_price")), _rh_executed_notional(info)
+                return None
+            await asyncio.sleep(interval_s)
+        # timeout: cancel to stop any further fill, then record whatever actually filled
+        try:
+            await asyncio.to_thread(rs.orders.cancel_stock_order, rh_id)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            info = await asyncio.to_thread(rs.orders.get_stock_order_info, rh_id) or last
+        except Exception:  # noqa: BLE001
+            info = last
+        cum = _rh_float(info.get("cumulative_quantity"))
+        if cum > 0:
+            return cum, _rh_float(info.get("average_price")), _rh_executed_notional(info)
+        return None
+
+    async def _place_fractional_stock_order(self, order: ProposedOrder) -> FillEvent:
+        import robin_stocks.robinhood as rs  # type: ignore
+        acct = self._account_number or None
+        if order.side == "buy":
+            notional = float(order.notional_usd or 0.0)
+            if notional < 1.0:
+                raise RobinhoodOrderError(
+                    f"fractional buy {order.symbol}: notional ${notional:.2f} < $1 RH minimum")
+            result = await asyncio.to_thread(
+                rs.orders.order_buy_fractional_by_price, order.symbol, notional,
+                account_number=acct, timeInForce="gfd",
+            )
+        else:
+            qty = abs(float(order.qty))
+            if qty <= 0:
+                raise RobinhoodOrderError(f"fractional sell {order.symbol}: qty {qty} <= 0")
+            result = await asyncio.to_thread(
+                rs.orders.order_sell_fractional_by_quantity, order.symbol, qty,
+                account_number=acct, timeInForce="gfd",
+            )
+        # Bug-1: a real accepted order carries an id; None/empty/error dict → raise
+        # (order_buy_fractional_by_price returns None below $1 or on a price-fetch fail).
+        result = result or {}
+        rh_id = result.get("id")
+        if not rh_id:
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty/None response (below $1, price-fetch fail, or rejected)")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept fractional {order.side} {order.symbol}: {reason}")
+        realized = await self._poll_fractional_fill(str(rh_id))
+        if realized is None:
+            raise RobinhoodOrderError(
+                f"fractional {order.side} {order.symbol} not confirmed filled (cancelled) id={rh_id}")
+        filled_qty, avg_price, exec_notional = realized
+        return FillEvent(
+            order_id=order.id, symbol=order.symbol, side=order.side,
+            qty=float(filled_qty), price=float(avg_price),
+            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            venue="robinhood", broker_order_id=str(rh_id),
+            account=self._account_number_from(result), executed_notional=exec_notional,
+        )
+
+    async def fractional_eligible(self, symbol: str) -> bool:
+        """RH per-symbol fractional eligibility (instrument.fractional_tradability ==
+        'tradable'), cached per-process. Fail-open on a lookup hiccup — the order
+        placement still surfaces a real reject (Bug-1)."""
+        sym = (symbol or "").upper()
+        if sym in self._frac_elig_cache:
+            return self._frac_elig_cache[sym]
+        import robin_stocks.robinhood as rs  # type: ignore
+        ok = True
+        try:
+            inst = await asyncio.to_thread(rs.stocks.get_instruments_by_symbols, sym) or []
+            ft = inst[0].get("fractional_tradability") if inst else None
+            ok = (ft == "tradable")
+        except Exception as e:  # noqa: BLE001
+            log.debug("RobinhoodBroker.fractional_eligible(%s) failed: %s — fail-open", sym, e)
+            ok = True
+        self._frac_elig_cache[sym] = ok
+        return ok
 
     async def _place_option_order(self, order: ProposedOrder) -> FillEvent:
         import robin_stocks.robinhood as rs  # type: ignore

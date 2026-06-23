@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -224,11 +223,37 @@ class PEADStrategy:
                 fill = await self.data_exec.place(order, division=self.SLUG)
                 if fill is not None and getattr(fill, "price", None) is not None:
                     order.fill_price = float(fill.price)
+                # Fractional/notional: RH's POLLED fill is the ONLY source of truth —
+                # adopt the REALIZED qty, executed $, and (buy) realized avg entry
+                # price. Never the client-computed request qty. Whole-share keeps qty.
+                if getattr(order, "fractional", False) and fill is not None:
+                    fq = getattr(fill, "qty", None)
+                    if fq:
+                        order.qty = float(fq)
+                    en = getattr(fill, "executed_notional", None)
+                    if en is not None:
+                        order.extra["executed_notional"] = float(en)
+                    if order.side == "buy" and getattr(fill, "price", None):
+                        # FLAG 1: anchor entry on the REALIZED fill — and re-anchor the
+                        # ledger stop the same way (stop = 2.5*ATR below ENTRY) via the
+                        # LOCKED pead_pressures contract, so the stored stop matches the
+                        # level the engine fires at (which already recomputes from entry).
+                        rp = float(fill.price)
+                        order.extra["entry_reference_price"] = rp
+                        _pr = pp.primitives_from_extra(order.extra, rp)
+                        if _pr is not None:
+                            order.extra["stop_price"] = pp.stop_level(_pr)
                 order.execution_mode = "live"
                 return True
             except Exception as e:  # noqa: BLE001
                 log.warning("pead_strategy: live place failed %s: %s", order.symbol, e)
                 return False
+        # PAPER: no real fill — estimate the qty from the notional so the paper record
+        # is sane (paper P&L is illustrative; the live path always overwrites realized).
+        if getattr(order, "fractional", False) and float(order.qty or 0) <= 0:
+            ref = float(order.extra.get("entry_reference_price") or 0)
+            if order.notional_usd and ref > 0:
+                order.qty = round(float(order.notional_usd) / ref, 6)
         order.execution_mode = "paper"
         return True
 
@@ -250,7 +275,6 @@ class PEADStrategy:
             return []
         screen_params = screen_params_from_config(cfg.get("screen", {}) or {})
         sue_params = sue_params_from_config(cfg.get("signal", {}) or {})
-        position_pct = float(cfg.get("position_pct", _DEFAULT_POSITION_PCT))
         max_concurrent = int(cfg.get("max_concurrent_positions", _DEFAULT_MAX_CONCURRENT))
         emin = int(cfg.get("entry_delay_days", _DEFAULT_ENTRY_DELAY_DAYS))
         emax = int(cfg.get("entry_max_delay_days", _DEFAULT_ENTRY_MAX_DELAY_DAYS))
@@ -307,6 +331,8 @@ class PEADStrategy:
 
         snap = await broker.snapshot()
         equity = float(getattr(snap, "equity", 0.0) or 0.0)
+        available_bp = getattr(snap, "buying_power", None)  # settled BP; None = no guard (paper/unknown)
+        notional_budget = self._notional_budget(cfg, equity)             # equal-$ per name
         max_hold_seconds = pp.MAX_HOLD_TRADING_DAYS * 24 * 3600  # informational; live TIME rule uses trading-day count
 
         placed: list[ProposedOrder] = []
@@ -317,18 +343,25 @@ class PEADStrategy:
             entry_price = float(bars[-1].close)       # daily-scan entry reference (≈ next-open fill)
             if entry_price <= 0:
                 continue
-            qty = math.floor((position_pct * equity) / entry_price)
-            if qty < 1:
-                log.info("pead_strategy: %s round-to-zero (px=%.2f, budget=%.2f) — skip",
-                         cand.symbol, entry_price, position_pct * equity)
-                continue                              # high-priced name; fill the next ranked
             prim = self._build_primitives(bars, ann_by[cand.symbol], entry_price)
             if prim is None:
                 continue
+            # ── equal-DOLLAR notional sizing (config-driven, same $ per candidate) ──
+            if notional_budget < 1.0:                 # below RH's $1 fractional minimum
+                log.info("pead_strategy: notional $%.2f < $1 — skip %s", notional_budget, cand.symbol)
+                continue
+            elig = getattr(broker, "fractional_eligible", None)   # #6 (cached on broker)
+            if elig is not None and not await elig(cand.symbol):
+                log.info("pead_strategy: %s not fractional-eligible — skip", cand.symbol)
+                continue
+            if available_bp is not None and notional_budget > float(available_bp) + 1e-9:
+                log.info("pead_strategy: %s settled BP $%.2f < notional $%.2f — skip",  # #5
+                         cand.symbol, float(available_bp), notional_budget)
+                continue
             nxt = nxt_by.get(cand.symbol)
             order = ProposedOrder(
-                strategy=self.SLUG, symbol=cand.symbol, side="buy", qty=float(qty),
-                order_type="market",
+                strategy=self.SLUG, symbol=cand.symbol, side="buy", qty=0.0,
+                order_type="market", notional_usd=notional_budget, fractional=True,
                 rationale=f"PEAD entry SUE={cand.sue:.2f}",
                 extra={
                     # the 6 LOCKED extra_json keys the dashboard + exit engine read
@@ -340,20 +373,29 @@ class PEADStrategy:
                     "entry_sue": float(cand.sue),
                     "name": cand.symbol,
                     # ledger trade-card fields
-                    "entry_reference_price": entry_price,
+                    "entry_reference_price": entry_price,  # overwritten with realized fill (live)
                     "stop_price": prim["stop_level"],
                     "source_signal": "srw_sue",
+                    "notional_usd": notional_budget,
                 },
             )
             if not self._risk_ok(order, equity):
                 continue
             if not await self._place_or_paper(order):
                 continue
+            # _place_or_paper set order.qty + executed_notional + entry_reference_price
+            # from the REALIZED fill (live); paper keeps a notional/ref estimate. The
+            # record reflects REALIZED, never the requested notional.
             self._write_record(order, max_hold_seconds=max_hold_seconds)
+            if available_bp is not None:                 # decrement settled BP as we fill (#5)
+                available_bp = float(available_bp) - float(order.extra.get("executed_notional") or notional_budget)
             self.logger_agent.log_event(
                 self.SLUG, "pead_entry",
                 {"strategy": self.SLUG, "division": self.SLUG, "symbol": cand.symbol,
-                 "qty": qty, "sue": round(float(cand.sue), 3), "entry": entry_price,
+                 "qty": order.qty, "notional": notional_budget,
+                 "executed_notional": order.extra.get("executed_notional"),
+                 "sue": round(float(cand.sue), 3),
+                 "entry": order.extra.get("entry_reference_price"),
                  "execution_mode": order.execution_mode},
             )
             placed.append(order)
@@ -418,8 +460,8 @@ class PEADStrategy:
             if rule is None:
                 continue                              # no exit yet
             sell = ProposedOrder(
-                strategy=self.SLUG, symbol=r["symbol"], side="sell", qty=r["qty"],
-                order_type="market", id=f"{r['order_id']}-exit-{rule}",
+                strategy=self.SLUG, symbol=r["symbol"], side="sell", qty=float(r["qty"]),
+                order_type="market", id=f"{r['order_id']}-exit-{rule}", fractional=True,
                 rationale=f"PEAD exit:{rule}",
                 extra={"exit_reason": rule, "parent_order_id": r["order_id"],
                        "reduce_only": True},
@@ -428,7 +470,21 @@ class PEADStrategy:
                 continue
             if not await self._place_or_paper(sell):
                 continue
-            self._close_record(r["order_id"], rule, last, r["entry_price"], r["qty"],
+            held_qty = float(r["qty"])
+            # #4: exit price = REALIZED avg fill (polled), not the decision-time quote;
+            # realized sold qty from the fill. Paper falls back to last / held qty.
+            live = (sell.execution_mode == "live")
+            exit_price = float(sell.fill_price) if (live and sell.fill_price) else last
+            sold_qty = float(sell.qty) if (live and sell.qty) else held_qty
+            if live and sold_qty + 1e-6 < held_qty:
+                # partial fractional sell — accept realized, leave the residual open
+                # for the next manage tick (decision #2 on the sell side).
+                log.warning("pead_strategy: PARTIAL exit %s sold %.6f of %.6f — residual stays open",
+                            r["symbol"], sold_qty, held_qty)
+                self._reduce_open_qty(r["order_id"], held_qty - sold_qty)
+                exits.append(sell)
+                continue
+            self._close_record(r["order_id"], rule, exit_price, r["entry_price"], held_qty,
                                sell.execution_mode)
             self.logger_agent.log_event(
                 self.SLUG, "pead_exit",
@@ -466,6 +522,28 @@ class PEADStrategy:
                 "WHERE order_id=? AND result IS NULL",
                 (result, now, exit_price, pnl, rule, order_id),
             )
+
+    def _reduce_open_qty(self, order_id: str, residual_qty: float) -> None:
+        """Shrink an open row's qty to the residual after a PARTIAL fractional exit so
+        the next manage tick sells the remainder (never re-sells the full position)."""
+        with db.connect(self.db_url) as conn:
+            conn.execute(
+                "UPDATE paper_trade_record SET qty=? WHERE order_id=? AND result IS NULL",
+                (float(residual_qty), order_id),
+            )
+
+    @staticmethod
+    def _notional_budget(cfg: dict, equity: float) -> float:
+        """Equal-dollar notional per candidate (same value for every candidate in a
+        scan). `position_notional` (fixed $) overrides; else position_pct × equity."""
+        fixed = cfg.get("position_notional")
+        if fixed is not None:
+            try:
+                return max(0.0, float(fixed))
+            except (TypeError, ValueError):
+                pass
+        position_pct = float(cfg.get("position_pct", _DEFAULT_POSITION_PCT))
+        return max(0.0, position_pct * float(equity or 0.0))
 
     @staticmethod
     def _parse_date(s) -> date | None:

@@ -36,6 +36,7 @@ import yaml
 from trading_corp.agents.strategies import pead_pressures as pp
 from trading_corp.agents.strategies.pead_strategy import PEADStrategy, _Bar
 from trading_corp.persistence.db import connect, init_db
+from trading_corp.persistence.models import ProposedOrder
 from trading_corp.web.pead_view import DIVISION, business_days, query_open_positions
 
 # ── test doubles ─────────────────────────────────────────────────────────────
@@ -356,19 +357,24 @@ def _scan_harness(monkeypatch, db_url, tmp_path, *, equity, prices):
     return strat, FakeBroker(equity, {}), bars_by, ann, nxt
 
 
-def test_round_to_zero_skips_and_next_ranked_fills(tmp_db, tmp_path, monkeypatch):
-    """At ~$7.50/position (equity 75 * 10%), the top-ranked $7k name rounds to 0
-    shares and is skipped; the next ranked $5 name fills 1 share — the book still
-    reaches a position. This is the NORMAL path, not an edge case."""
+def test_notional_equal_dollar_sizing_both_fill(tmp_db, tmp_path, monkeypatch):
+    """FRACTIONAL/notional sizing: a ~$400 name and a ~$14 name BOTH fill with the
+    SAME dollars (position_pct*equity = $7.50), not whole shares. Round-to-zero is
+    gone — the expensive name is no longer skipped; both get a fractional order whose
+    notional is identical and whose qty differs only by price."""
     strat, brk, _bars, _ann, _nxt = _scan_harness(
         monkeypatch, tmp_db, tmp_path, equity=75.0,
-        prices={"AAA": 7000.0, "BBB": 5.0},
+        prices={"AAA": 400.0, "BBB": 14.0},
     )
     orders = asyncio.run(strat.scan(brk))
-    assert [o.symbol for o in orders] == ["BBB"]            # AAA skipped, BBB filled
+    assert {o.symbol for o in orders} == {"AAA", "BBB"}     # NEITHER skipped
+    assert all(getattr(o, "fractional", False) for o in orders)
+    assert all(abs(o.notional_usd - 7.5) < 1e-9 for o in orders)   # equal DOLLARS per name
+    by = {o.symbol: o for o in orders}
+    assert by["AAA"].qty > 0 and by["BBB"].qty > 0          # both bought (paper qty estimate)
+    assert by["AAA"].qty < by["BBB"].qty                    # ~$400 name → fewer shares for the same $
     rows = query_open_positions(tmp_db)
-    assert {r["symbol"] for r in rows} == {"BBB"}
-    assert rows[0]["qty"] == 1.0                           # floor(7.5 / ~5.2) == 1
+    assert {r["symbol"] for r in rows} == {"AAA", "BBB"}
 
 
 def test_extra_json_round_trips_six_locked_keys(tmp_db, tmp_path, monkeypatch):
@@ -377,10 +383,10 @@ def test_extra_json_round_trips_six_locked_keys(tmp_db, tmp_path, monkeypatch):
     reader)."""
     strat, brk, bars_by, ann, nxt = _scan_harness(
         monkeypatch, tmp_db, tmp_path, equity=75.0,
-        prices={"AAA": 7000.0, "BBB": 5.0},
+        prices={"AAA": 400.0, "BBB": 14.0},
     )
     asyncio.run(strat.scan(brk))
-    row = query_open_positions(tmp_db)[0]
+    row = [r for r in query_open_positions(tmp_db) if r["symbol"] == "BBB"][0]
     extra = row["extra"]
 
     six = ("entry_atr_14", "post_earnings_swing_low", "pre_earnings_close",
@@ -480,3 +486,91 @@ def test_live_requires_auto_execute_kill_switch(tmp_db, tmp_path):
     exits, _ = asyncio.run(strat.manage(FakeBroker(1000.0, {"AAA": 95.0})))
     assert len(exits) == 1 and exits[0].execution_mode == "paper"
     assert de.placed == []                                # kill-switch held live OFF
+
+
+# ═══ fractional sizing: exit P&L round-trip + partial-sell handling ══════════
+
+
+def test_fractional_position_exit_pnl_roundtrips(tmp_db, tmp_path):
+    """A FRACTIONAL position (0.347 sh) exits cleanly: the stored fractional qty
+    round-trips through the close and P&L = (exit-entry)*0.347 — cost basis + pnl
+    handle fractional, not whole-share."""
+    init_db(tmp_db)
+    today = datetime.now(timezone.utc).date()
+    extra = _extra(atr=2.0, swing_low=95.0, pre_close=92.0, gap_top=96.0)
+    _seed_open(tmp_db, order_id="o1", symbol="AAA", qty=0.347, entry=100.0,
+               extra=extra, opened=today)
+    strat = _strategy(tmp_db, _yaml(tmp_path), risk=FakeRisk("approve"))
+    exits, _ = asyncio.run(strat.manage(FakeBroker(1000.0, {"AAA": 95.0})))   # stop fires
+    assert [o.extra["exit_reason"] for o in exits] == ["stop"]
+    assert abs(exits[0].qty - 0.347) < 1e-9               # the FRACTIONAL qty sold, not int()
+    r = _row(tmp_db, "o1")
+    assert r["result"] == "loss" and r["result_price"] == 95.0
+    assert abs(r["actual_pnl_dollars"] - (95.0 - 100.0) * 0.347) < 1e-6   # fractional P&L
+
+
+def test_fractional_partial_exit_leaves_residual_open(tmp_db, tmp_path):
+    """LIVE: a PARTIAL fractional sell (sold 0.10 of 0.347 held) does NOT close the
+    row — the realized partial is recorded, the residual stays open (qty reduced) for
+    the next manage tick. Never records the requested-but-unsold quantity."""
+    init_db(tmp_db)
+    today = datetime.now(timezone.utc).date()
+    extra = _extra(atr=2.0, swing_low=95.0, pre_close=92.0, gap_top=96.0)
+    _seed_open(tmp_db, order_id="o1", symbol="AAA", qty=0.347, entry=100.0,
+               extra=extra, opened=today)
+
+    class _PartialDE:
+        def __init__(self):
+            self.placed: list = []
+
+        async def place(self, order, division=None):
+            self.placed.append((order, division))
+            order.fill_price = 95.0
+            return SimpleNamespace(price=95.0, qty=0.10, executed_notional=9.5)  # partial sold
+
+    de = _PartialDE()
+    strat = _strategy(tmp_db, _yaml(tmp_path, auto_execute=True), risk=FakeRisk("approve"),
+                      execmode="live", data_exec=de)
+    asyncio.run(strat.manage(FakeBroker(1000.0, {"AAA": 95.0})))
+    assert len(de.placed) == 1                            # the sell WAS placed
+    r = _row(tmp_db, "o1")
+    assert r["result"] is None                            # NOT closed — partial fill
+    assert abs(r["qty"] - (0.347 - 0.10)) < 1e-9          # residual stays open for next tick
+
+
+def test_flag1_realized_entry_reanchors_stop_leaves_gap_top(tmp_db, tmp_path):
+    """FLAG 1: a live fractional fill at a price != the scan close re-anchors BOTH
+    entry_reference_price AND the stop (2.5*ATR below ENTRY, via the locked contract)
+    on the REALIZED fill, while the entry-INDEPENDENT primitives (earnings_gap_top,
+    ATR, swing) are UNTOUCHED — so the engine fires the stop relative to the price we
+    actually paid, and drift still measures from the gap top."""
+    init_db(tmp_db)
+    SCAN, ATR, SWING, GAP_TOP, REALIZED = 14.00, 0.40, 13.50, 13.96, 14.40
+    extra = {"entry_atr_14": ATR, "post_earnings_swing_low": SWING,
+             "pre_earnings_close": 14.41, "earnings_gap_top": GAP_TOP,
+             "next_earnings_date": None, "entry_sue": 3.0, "name": "F",
+             "entry_reference_price": SCAN, "stop_price": max(SCAN - 2.5 * ATR, SWING),
+             "source_signal": "srw_sue"}
+    order = ProposedOrder(strategy="robinhood_pead", symbol="F", side="buy", qty=0.0,
+                          order_type="market", notional_usd=5.0, fractional=True,
+                          extra=dict(extra))
+
+    class _DE:
+        async def place(self, o, division=None):
+            o.fill_price = REALIZED
+            return SimpleNamespace(price=REALIZED, qty=0.347, executed_notional=5.0)
+
+    strat = _strategy(tmp_db, _yaml(tmp_path, auto_execute=True), risk=FakeRisk("approve"),
+                      execmode="live", data_exec=_DE())
+    assert asyncio.run(strat._place_or_paper(order)) is True
+    # entry + stop RE-ANCHORED on the realized fill (stop via the locked contract)
+    assert order.extra["entry_reference_price"] == REALIZED
+    assert abs(order.extra["stop_price"] - max(REALIZED - 2.5 * ATR, SWING)) < 1e-9
+    # entry-INDEPENDENT primitives UNTOUCHED
+    assert order.extra["earnings_gap_top"] == GAP_TOP
+    assert order.extra["entry_atr_14"] == ATR
+    assert order.extra["post_earnings_swing_low"] == SWING
+    # primitives_from_extra + stop_level compute on the realized entry (engine == ledger)
+    prim = pp.primitives_from_extra(order.extra, order.extra["entry_reference_price"])
+    assert prim is not None and abs(pp.stop_level(prim) - max(REALIZED - 2.5 * ATR, SWING)) < 1e-9
+    assert abs(order.qty - 0.347) < 1e-9                   # realized qty adopted
