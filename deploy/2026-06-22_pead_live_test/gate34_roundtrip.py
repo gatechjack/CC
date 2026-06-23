@@ -101,10 +101,15 @@ async def _setup(secrets, *, want_live_cfg):
     data_exec = DataExecAgent(_StubLogger(), dry_run=False)
     data_exec.register_broker("robinhood_pead", broker)
     cfg_path = _temp_live_config() if want_live_cfg else "config/strategies.yaml"
+    # secrets.db_url is RELATIVE ('sqlite:///data/...') and resolves wrong from
+    # this out-of-tree harness (~/pead_branch); PEAD_DB_URL points at the ABSOLUTE
+    # prod DB the deployed dashboard reads. (Harness fix, 2026-06-23.)
+    db_url = os.environ.get("PEAD_DB_URL") or secrets.db_url
+    print(f"db_url = {db_url}")
     strat = PEADStrategy(
-        db_url=secrets.db_url, risk_agent=RiskAgent(narrator_enabled=False),
+        db_url=db_url, risk_agent=RiskAgent(narrator_enabled=False),
         data_exec=data_exec, logger_agent=_StubLogger(),
-        earnings_provider=EarningsProvider(api_key=secrets.eodhd_api_key, db_url=secrets.db_url),
+        earnings_provider=EarningsProvider(api_key=secrets.eodhd_api_key, db_url=db_url),
         strategies_yaml=cfg_path, execution_mode="live",
     )
     return broker, data_exec, strat
@@ -169,7 +174,7 @@ async def _check(secrets):
     from trading_corp.web import pead_view as pv
 
     broker, data_exec, strat = await _setup(secrets, want_live_cfg=False)
-    deps = SimpleNamespace(db_url=secrets.db_url, data_exec=data_exec)
+    deps = SimpleNamespace(db_url=strat.db_url, data_exec=data_exec)
     view = await pv.build_pead_view(deps)
     book = [b for b in (view.get("book") or []) if b.get("symbol") == SYM and b.get("complete")]
     if not book:
@@ -183,7 +188,7 @@ async def _check(secrets):
     print(f"  dashboard pressures = {json.dumps(pos['pressures'])}")
 
     # independently recompute the engine pressures from the SAME live quote
-    rows = [r for r in pv.query_open_positions(secrets.db_url) if r["symbol"] == SYM]
+    rows = [r for r in pv.query_open_positions(strat.db_url) if r["symbol"] == SYM]
     r = rows[0]
     prim = pv.primitives_from_extra(r["extra"], r["entry_price"])
     opened = pv._parse_date(r.get("opened_ts")) or datetime.now(timezone.utc).date()

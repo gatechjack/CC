@@ -6,4 +6,5 @@ set -euo pipefail
 export KEY_VAULT_URI="https://kv-tc-vtwbowt3wtkpy.vault.azure.net/"
 export PYTHONPATH="$PWD"
 export PYTHONIOENCODING="utf-8"
+export PEAD_DB_URL="sqlite:////home/azureuser/trading_corp/data/trading_corp.db"
 exec /home/azureuser/trading_corp/venv/bin/python deploy/2026-06-22_pead_live_test/gate34_roundtrip.py exit

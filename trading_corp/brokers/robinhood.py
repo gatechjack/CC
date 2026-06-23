@@ -741,8 +741,14 @@ class RobinhoodBroker(Broker):
                 if order.side == "buy"
                 else rs.orders.order_sell_market
             )
+            # timeInForce='gfd' (day) — a true market order CANNOT be GTC: RH
+            # rejects market sells placed GTC ("Invalid Good Til Canceled order").
+            # (robin_stocks converts a regular-hours market BUY to a collared
+            # limit so GTC slips through there, but a market SELL stays a real
+            # market order and is rejected. Use GFD for both. Observed live
+            # 2026-06-23.)
             result = await asyncio.to_thread(
-                fn, order.symbol, qty, account_number=acct,
+                fn, order.symbol, qty, account_number=acct, timeInForce="gfd",
             )
         else:
             fn = (

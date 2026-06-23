@@ -111,6 +111,35 @@ def test_option_order_raises_on_live_400(monkeypatch):
 # ── Bug 2: a success must carry RH's real order id + the account it hit ───────
 
 
+def test_market_orders_use_gfd_not_gtc(monkeypatch):
+    """Bug 3: a true market order can't be GTC — RH rejects market sells placed
+    GTC ('Invalid Good Til Canceled order', observed live 2026-06-23). The broker
+    must pass timeInForce='gfd' for market orders. Capture the kwargs for a market
+    buy + sell."""
+    rs_orders = _heal_orders(monkeypatch)
+    ok = {"id": "RH-OK", "account": "https://api.robinhood.com/accounts/680725082/",
+          "average_price": "13.80"}
+    cap: dict = {}
+
+    def _mk(side):
+        def _fn(*a, **k):
+            cap[side] = k
+            return dict(ok)
+        return _fn
+
+    monkeypatch.setattr(rs_orders, "order_buy_market", _mk("buy"))
+    monkeypatch.setattr(rs_orders, "order_sell_market", _mk("sell"))
+    broker = RobinhoodBroker(username="u", password="p", mfa_secret="m",
+                             account_filter="680725082")
+    broker._account_number = "680725082"
+    asyncio.run(broker._place_stock_order(_order("market")))
+    sell = ProposedOrder(strategy="robinhood_pead", symbol="F", side="sell",
+                         qty=1.0, order_type="market", extra={})
+    asyncio.run(broker._place_stock_order(sell))
+    assert cap["buy"].get("timeInForce") == "gfd", cap["buy"]
+    assert cap["sell"].get("timeInForce") == "gfd", cap["sell"]
+
+
 def test_success_carries_rh_id_and_account(monkeypatch):
     broker = _broker_with(SUCCESS, monkeypatch)
     order = _order("market")
