@@ -556,3 +556,123 @@ def test_lower_fee_admits_ge_trades_and_lifts_same_trade_net_r():
     assert checked > 0, (
         "expected at least one path-unchanged overlapping trade where the "
         "lower fee lifts net_R")
+
+
+# ── TP1-MULTIPLIER OVERRIDE (additive, default-off — fee-vs-edge coupled fix) ──
+# Mirrors the taker-fee override contract: (a) a true no-op at default (the
+# engine's _SCFG is untouched, results byte-identical), (b) RESTORE of _SCFG
+# after the call (even on error), and the COUPLED IDENTITY: pairing the lower
+# rate with the bumped multiplier holds the fee-floor constant so the
+# fees_too_high_for_risk skip set + admitted book reproduce the baseline exactly.
+
+
+def test_tp1_mult_override_default_none_is_noop_and_restores_scfg():
+    """tp1_mult=None must not touch the engine _SCFG at all."""
+    before = _BTM._SCFG
+    with R._tp1_mult_override(None):
+        assert _BTM._SCFG is before          # no-op path: same object
+    assert _BTM._SCFG is before
+
+
+def test_tp1_mult_override_sets_then_restores_scfg():
+    """A given multiplier rebinds _SCFG.tp1_min_profit_multiplier inside the CM
+    and restores the original on exit (other fields preserved)."""
+    before = _BTM._SCFG
+    with R._tp1_mult_override(3.75):
+        assert _BTM._SCFG.tp1_min_profit_multiplier == 3.75
+        # only the one field changed; everything else is preserved
+        assert _BTM._SCFG.tp1_r_target == before.tp1_r_target
+        assert _BTM._SCFG.atr_multiplier == before.atr_multiplier
+    assert _BTM._SCFG is before, "_SCFG not restored after the override CM"
+
+
+def test_tp1_mult_override_restores_on_exception():
+    before = _BTM._SCFG
+    with pytest.raises(RuntimeError):
+        with R._tp1_mult_override(3.75):
+            raise RuntimeError("boom")
+    assert _BTM._SCFG is before, "_SCFG not restored after an exception"
+
+
+def test_tp1_mult_override_rejects_negative():
+    with pytest.raises(ValueError):
+        with R._tp1_mult_override(-1.0):
+            pass
+
+
+@_needs_corpus
+def test_coupled_change_reproduces_baseline_book_composition():
+    """THE COUPLED IDENTITY (book-composition half): baseline (taker 0.0004,
+    mult 2.0) vs coupled (taker 0.00019, mult 3.75) must produce the SAME
+    fees_too_high_for_risk skip set, the SAME admitted trade set, and the SAME
+    GROSS-R / TP placement for every shared trade, because
+    2.0*0.0009 == 3.75*0.00048 == 0.0018 -> identical TP1 fee-floor per entry.
+
+    NOTE the net-R half is DELIBERATELY *not* asserted equal: the coupled change
+    genuinely lowers the realised round-trip cost (0.0009 -> 0.00048), so net-R
+    is strictly BETTER (less negative). The multiplier neutralises the GATE
+    loosening, not the fee saving. The rate-only change (mult left at 2.0) admits
+    strictly MORE trades -> proves the multiplier is what holds the gate."""
+    s, e = R._to_dt(_W_START), R._to_dt(_W_END)
+    alerts, bars, config = R.load_inputs(_DB, s, e)
+    pre = (alerts, bars, config, (s, e))
+
+    base = R.run_redeem_sim(cap=2, taker_pct=0.0004, tp1_mult=2.0, _preloaded=pre)
+    coupled = R.run_redeem_sim(cap=2, taker_pct=0.00019, tp1_mult=3.75, _preloaded=pre)
+    rate_only = R.run_redeem_sim(cap=2, taker_pct=0.00019, tp1_mult=2.0, _preloaded=pre)
+
+    def _fee_skips(res):
+        return {
+            (t["signal_ts"], t["entry_ts"], t["side"])
+            for t in res["trades"]
+            if t["result"] == "plan_skip"
+            and t["skip_reason"] == "fees_too_high_for_risk"
+        }
+
+    base_skips = _fee_skips(base)
+    # 1. identical fee-skip set -> zero flipped cohort
+    assert _fee_skips(coupled) == base_skips, (
+        "coupled change changed the fees_too_high_for_risk skip set -> "
+        "fee-floor identity broken")
+    flipped = base_skips - _fee_skips(coupled)
+    assert flipped == set(), f"expected 0 flipped base->coupled, got {len(flipped)}"
+
+    # 2. identical admitted set + identical GROSS-R (TP placement) per shared trade
+    base_by = {(t["signal_ts"], t["entry_ts"], t["side"]): t
+               for t in base["trades"] if t["net_R"] is not None}
+    coup_by = {(t["signal_ts"], t["entry_ts"], t["side"]): t
+               for t in coupled["trades"] if t["net_R"] is not None}
+    assert set(coup_by) == set(base_by), "coupled admitted a different trade set"
+    assert coupled["n"] == base["n"]
+    for k in base_by:
+        assert coup_by[k]["gross_R"] == pytest.approx(base_by[k]["gross_R"], abs=1e-9), (
+            "gross-R / TP placement shifted under the coupled change -> "
+            "fee-floor identity broken")
+        # net-R is strictly BETTER under coupled (lower realised fee), not equal
+        assert coup_by[k]["net_R"] >= base_by[k]["net_R"] - 1e-9
+
+    # 3. rig sanity: rate-only (mult still 2.0) loosens the gate -> MORE trades
+    assert rate_only["n"] > base["n"], (
+        "rate-only correction should re-admit a cohort the gate previously "
+        "skipped (else the rig can't detect the coupling effect)")
+
+
+def test_coupled_fee_floor_identity_is_algebraic():
+    """Direct numeric check of the fee-floor identity used by the gate, for a
+    few (entry) samples, independent of the corpus: the coupled (rate, mult)
+    yields the SAME tp1_fee_floor = mult * round_trip_cost_pct * entry as the
+    baseline, to float tolerance."""
+    from trading_corp.agents.strategies.trade_plan import FeeConfig
+
+    base_fees = FeeConfig(taker_fee_pct=0.0004)
+    coup_fees = FeeConfig(taker_fee_pct=0.00019)
+    base_rt = base_fees.round_trip_cost_pct()   # 0.0004+0.0004+2*0.00005 = 0.0009
+    coup_rt = coup_fees.round_trip_cost_pct()   # 0.00019+0.00019+2*0.00005 = 0.00048
+    assert base_rt == pytest.approx(0.0009)
+    assert coup_rt == pytest.approx(0.00048)
+    for entry in (30000.0, 60000.0, 105123.45, 1.0):
+        base_floor = 2.0 * base_rt * entry
+        coup_floor = 3.75 * coup_rt * entry
+        assert coup_floor == pytest.approx(base_floor, rel=1e-12), (
+            f"fee-floor mismatch at entry={entry}: "
+            f"base={base_floor} coupled={coup_floor}")

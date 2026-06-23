@@ -140,6 +140,37 @@ def _fee_override(taker_pct: float | None):
         _BT._FEES_TK, _BT._FEES_MK, _BT._RT_TK, _BT._RT_MK = saved
 
 
+@contextmanager
+def _tp1_mult_override(tp1_mult: float | None):
+    """Temporarily override `tp1_min_profit_multiplier` in the backtest engine.
+
+    ADDITIVE / default-OFF: `tp1_mult=None` (the default) is a no-op — the engine
+    keeps its current `_SCFG.tp1_min_profit_multiplier` (2.0) byte-for-byte. When
+    a value is given it rebinds `_BT._SCFG` (the frozen StrategyConfig the
+    fee-gate reads at call time via `build_v2_plan` -> `build_trade_plan(cfg=_SCFG)`),
+    so the `fees_too_high_for_risk` gate's TP1 fee-floor
+    (`tp1_min_profit_multiplier * round_trip_cost_pct * entry`) uses the new
+    multiplier. This is the OTHER half of the COUPLED fee correction (Decision A):
+    pairing a lower taker rate with a higher multiplier holds the fee-floor — and
+    therefore the gate's skip set and TP1 placement — constant.
+
+    Restores `_SCFG` on exit (even on exception). Single-threaded use only (the
+    engine is single-threaded; the sweep loop is sequential). Composes with
+    `_fee_override` (they touch disjoint globals).
+    """
+    if tp1_mult is None:
+        yield
+        return
+    if not (tp1_mult >= 0.0):
+        raise ValueError(f"tp1_mult must be >= 0, got {tp1_mult!r}")
+    saved = _BT._SCFG
+    try:
+        _BT._SCFG = _dc_replace(_BT._SCFG, tp1_min_profit_multiplier=tp1_mult)
+        yield
+    finally:
+        _BT._SCFG = saved
+
+
 def _resolve_db(db: str | Path | None) -> Path:
     if db is not None:
         p = Path(db)
@@ -243,6 +274,7 @@ def run_redeem_sim(
     fee_mode: str = "taker",
     max_slip_pt: float | None = None,
     taker_pct: float | None = None,
+    tp1_mult: float | None = None,
     _preloaded: tuple | None = None,
 ) -> dict:
     """Run the redeem-cap simulator at a single `cap` over the clean corpus.
@@ -266,6 +298,11 @@ def run_redeem_sim(
         actual VIP3 Fee-Discount-Card rate). Default None = engine default
         (0.0004). Applies CONSISTENTLY to the fees_too_high_for_risk GATE and the
         net-R cost (see `_fee_override`). ADDITIVE: None reproduces prior runs.
+      tp1_mult: `tp1_min_profit_multiplier` override (e.g. 3.75 = the COUPLED
+        Decision-A value). Default None = engine default (2.0). Scales the TP1
+        fee-floor in the fees_too_high_for_risk gate. ADDITIVE: None reproduces
+        prior runs. The COUPLED fix pairs taker_pct=0.00019 with tp1_mult=3.75 so
+        2.0*0.0009 == 3.75*0.00048 == 0.0018 -> identical fee-floor / skip set.
       _preloaded: (alerts, bars, config) to reuse across a sweep (internal).
 
     Returns a dict (the sweep contract):
@@ -303,7 +340,7 @@ def run_redeem_sim(
         alerts, bars, config = load_inputs(db_path, s, e)
         win = (s, e)
 
-    with _fee_override(taker_pct):
+    with _fee_override(taker_pct), _tp1_mult_override(tp1_mult):
         fires, summ = run_redeem_cap_backtest(
             alerts=alerts, bars=bars, config=config, pa_config=None,
             redeem_cap=cap_i, structure_tf=structure_tf, arm_name=_cap_label(cap_i),
@@ -352,6 +389,7 @@ def run_redeem_sim(
         "fee_mode": fee_mode,
         "structure_tf": structure_tf,
         "taker_pct": taker_pct if taker_pct is not None else _BT._FEES_TK.taker_fee_pct,
+        "tp1_mult": tp1_mult if tp1_mult is not None else _BT._SCFG.tp1_min_profit_multiplier,
         # funnel
         "n_score_fire": summ["n_score_fire"],
         "n_pa_pass": summ["n_pa_pass"],
@@ -386,6 +424,7 @@ def run_sweep(
     fee_mode: str = "taker",
     max_slip_pt: float | None = None,
     taker_pct: float | None = None,
+    tp1_mult: float | None = None,
 ) -> list[dict]:
     """Run the SAME corpus at multiple caps (inputs loaded once, reused)."""
     db_path = _resolve_db(db)
@@ -400,7 +439,8 @@ def run_sweep(
     for c in caps:
         results.append(run_redeem_sim(
             cap=c, structure_tf=structure_tf, fee_mode=fee_mode,
-            max_slip_pt=max_slip_pt, taker_pct=taker_pct, _preloaded=preloaded,
+            max_slip_pt=max_slip_pt, taker_pct=taker_pct, tp1_mult=tp1_mult,
+            _preloaded=preloaded,
         ))
     return results
 
@@ -416,7 +456,8 @@ def _print_sweep_table(results: list[dict]) -> None:
     print("=== PA-REDEEM-CAP SWEEP (engine validation -- NOT a cap verdict) ===")
     print(f"window={results[0]['window']}  fee_mode={results[0]['fee_mode']}  "
           f"structure_tf={results[0]['structure_tf']}  "
-          f"taker_pct={results[0].get('taker_pct')}")
+          f"taker_pct={results[0].get('taker_pct')}  "
+          f"tp1_mult={results[0].get('tp1_mult')}")
     hdr = ("cap", "first_pass", "redeem", "drop", "plan_skip", "walked",
            "net_R/trade", "total_net_R", "win%(diag)", "max_bw")
     print("{:>5} {:>10} {:>7} {:>6} {:>9} {:>6} {:>11} {:>11} {:>10} {:>6}".format(*hdr))
@@ -452,6 +493,11 @@ def main() -> int:
                     help="per-side TAKER fee override as a FRACTION (default = engine "
                          "0.0004); e.g. 0.00019 = venue-actual VIP3 Fee-Discount-Card. "
                          "Applies to BOTH the fees_too_high_for_risk gate and net-R.")
+    ap.add_argument("--tp1-mult", type=float, default=None,
+                    help="tp1_min_profit_multiplier override (default = engine 2.0); "
+                         "e.g. 3.75 = COUPLED Decision-A value. Scales the TP1 fee-floor "
+                         "in the fees_too_high_for_risk gate. Pair with --taker-pct to "
+                         "hold the fee-floor constant (coupled correction).")
     ap.add_argument("--json", default=None, help="write full results (incl per-trade) to this path")
     args = ap.parse_args()
 
@@ -466,6 +512,7 @@ def main() -> int:
         caps, start=args.start, end=args.end, db=args.db,
         structure_tf=args.structure_tf, fee_mode=args.fee_mode,
         max_slip_pt=args.max_slip_pt, taker_pct=args.taker_pct,
+        tp1_mult=args.tp1_mult,
     )
     _print_sweep_table(results)
 
