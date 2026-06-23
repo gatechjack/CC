@@ -871,7 +871,24 @@ class RobinhoodBroker(Broker):
             timeInForce="gfd",     # day-only — matches PMCC; no resting GTC
         )
 
+        # Combo accepted? A genuinely-placed combo carries an 'id' (single ref).
+        # No id (None / empty / error dict) means the whole combo did NOT place —
+        # RAISE, never synthesize per-leg fills (the same fake-fill bug, here on
+        # the LIVE iron-condor path: a fabricated fill books a PHANTOM IC). This
+        # is DISTINCT from a SUCCESSFUL combo that just didn't echo legs[] — that
+        # still has an id and legitimately falls back to limit_price below.
         result = result or {}
+        if not result.get("id"):
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty response")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept the {combo.direction} combo on "
+                f"{combo.underlying} x{combo.quantity}: {reason}"
+            )
+        rh_combo_id = str(result.get("id"))
+        # The account the combo hit: RH may not echo it on a spread, so fall back
+        # to the bound account_number we placed on (Bug-2 routing identity).
+        rh_account = self._account_number_from(result) or self._account_number or None
         legs_result = result.get("legs") or []
         fill_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         fills: list[FillEvent] = []
@@ -901,6 +918,8 @@ class RobinhoodBroker(Broker):
                 price=price_f,
                 ts=fill_ts,
                 venue="robinhood",
+                broker_order_id=rh_combo_id,   # Bug-2: the combo's RH order id
+                account=rh_account,
             ))
         return fills
 

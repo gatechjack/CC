@@ -15,7 +15,7 @@ import pytest
 
 import robin_stocks.robinhood as rs  # type: ignore
 
-from trading_corp.brokers.robinhood import RobinhoodBroker
+from trading_corp.brokers.robinhood import RobinhoodBroker, RobinhoodOrderError
 from trading_corp.persistence.models import ProposedOrder
 
 
@@ -150,6 +150,10 @@ async def test_place_multi_leg_submits_one_combo_with_correct_shape():
     assert [f.side for f in fills] == ["sell", "buy", "sell", "buy"]
     assert all(f.venue == "robinhood" for f in fills)
     assert all(f.qty == 1.0 for f in fills)
+    # Bug-2: each leg fill carries the combo's RH order id + the account it hit
+    # (RH doesn't echo `account` on a spread -> falls back to the bound account).
+    assert all(f.broker_order_id == "RH-ORD-1" for f in fills)
+    assert all(f.account == "ACCT-123" for f in fills)
 
 
 @pytest.mark.asyncio
@@ -242,14 +246,28 @@ async def test_place_multi_leg_handles_malformed_price_strings():
 
 
 @pytest.mark.asyncio
-async def test_place_multi_leg_handles_none_response():
-    """RH returns None entirely (auth failure mid-call). Fills synthesize."""
+async def test_place_multi_leg_raises_on_none_response():
+    """RH returns None (failed/empty combo POST — e.g. auth failure mid-call):
+    RAISE, never synthesize fills. A fabricated fill here books a PHANTOM
+    iron-condor position — the live-path instance of the fake-fill bug."""
     b = _make_broker()
     legs = _standard_ic_legs()
     with patch.object(rs.orders, "order_option_spread", return_value=None):
-        fills = await b.place_multi_leg(legs)
-    assert len(fills) == 4
-    assert all(f.price == 0.50 for f in fills)
+        with pytest.raises(RobinhoodOrderError):
+            await b.place_multi_leg(legs)
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_raises_on_error_dict_no_id():
+    """A 400-style combo reject (error dict, no id) RAISES with RH's reason —
+    distinct from a SUCCESSFUL combo with missing legs (which has an id and
+    synthesizes; see test_place_multi_leg_synthesizes_fill_prices_when_legs_missing)."""
+    b = _make_broker()
+    legs = _standard_ic_legs()
+    err = {"non_field_errors": ["combo rejected by Robinhood"]}
+    with patch.object(rs.orders, "order_option_spread", return_value=err):
+        with pytest.raises(RobinhoodOrderError, match="combo rejected"):
+            await b.place_multi_leg(legs)
 
 
 @pytest.mark.asyncio
