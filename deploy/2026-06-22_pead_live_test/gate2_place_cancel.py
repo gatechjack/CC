@@ -167,6 +167,7 @@ async def _amain() -> int:
         print(f"  RH order id     = {rh_id}")
         print(f"  RH order state  = {rh_state}")
         print(f"  RH order account= {rh_acct}   <-- ROUTING PROOF")
+        print(f"  RAW RH response = {json.dumps(resp, default=str)[:700]}")
         print(f"  engine fill obj : execution_mode={order.execution_mode} venue={fill.venue}")
     finally:
         rs.orders.order_buy_limit = _real_obl
@@ -176,22 +177,30 @@ async def _amain() -> int:
                     rs.orders.cancel_stock_order(rh_id)
                     print(f"  CANCELLED order {rh_id}")
                 else:
-                    # targeted fallback: cancel only OUR symbol+limit on 680725082
-                    for o in (rs.orders.get_all_open_stock_orders() or []):
-                        if _acct_from_url(o.get("account", "")) == ACCOUNT and \
-                           abs(float(o.get("price") or 0) - limit) < 0.005:
+                    # No id returned (rejected / unexpected shape). Targeted sweep:
+                    # cancel ONLY an open BUY near our limit on 680725082.
+                    for o in (rs.orders.get_all_open_stock_orders(account_number=ACCOUNT) or []):
+                        if o.get("side") == "buy" and abs(float(o.get("price") or 0) - limit) < 0.05:
                             rs.orders.cancel_stock_order(o.get("id"))
-                            print(f"  CANCELLED (fallback match) order {o.get('id')}")
+                            print(f"  CANCELLED (targeted sweep) order {o.get('id')}")
             except Exception as e:  # noqa: BLE001
                 print(f"  !! CANCEL ERROR: {e} — VERIFY/CANCEL MANUALLY on 680725082")
 
-    # ── routing verdict ─────────────────────────────────────────────────────
+    # ── routing verdict (three-way: empty response ≠ wrong account) ──────────
     resp = captured.get("resp") or {}
     rh_acct = _acct_from_url(resp.get("account", ""))
-    routing_ok = (rh_acct == ACCOUNT)
-    print(f"\n=== ROUTING: {'PASS' if routing_ok else 'FAIL'} — RH booked the order to {rh_acct!r} (expected {ACCOUNT!r}) ===")
-    if not routing_ok:
-        print("STOP: hard-bind FAILED on a live order — do NOT proceed to Gate 3.")
+    if rh_acct == ACCOUNT:
+        routing_ok, rc = True, 0
+        print(f"\n=== ROUTING: PASS — RH booked the order to {rh_acct!r} ===")
+    elif rh_acct == "":
+        routing_ok, rc = False, 7
+        print("\n=== ROUTING: INCONCLUSIVE — RH returned NO order record (no id/account). ===")
+        print("    The order was NOT accepted (likely REJECTED — see RAW RH response above).")
+        print(f"    This is NOT a wrong-account failure; the broker bind is {bound!r}.")
+    else:
+        routing_ok, rc = False, 6
+        print(f"\n=== ROUTING: FAIL — RH booked to {rh_acct!r}, expected {ACCOUNT!r} ===")
+        print("    Hard-bind routed to the WRONG account. STOP — do NOT proceed to Gate 3.")
 
     # ── record-write proof (temp DB; the cancelled order is not in prod) ─────
     order.execution_mode = order.execution_mode or "live"
@@ -223,7 +232,7 @@ async def _amain() -> int:
             print(f"\ncould not re-read order state: {e}")
 
     print("\n=== END GATE 2 — order cancelled, no fill, prod DB untouched ===")
-    return 0 if routing_ok else 6
+    return rc
 
 
 def main() -> int:
