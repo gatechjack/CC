@@ -1,0 +1,4 @@
+# Prod files must stay LF (bash scripts + the Jinja template shipped to the server).
+*.sh   text eol=lf
+*.html text eol=lf
+*.py   text eol=lf

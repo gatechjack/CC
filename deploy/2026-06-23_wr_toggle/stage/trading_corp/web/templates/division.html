@@ -1,0 +1,969 @@
+{% extends "base.html" %}
+{% block title %}{{ view.division.name }} — Trading Corp{% endblock %}
+
+{% block content %}
+<!-- ── Header bar: back / name / status ────────────────────────────── -->
+<div class="flex items-center gap-4 mb-4">
+  <a href="/" class="text-muted hover:text-mono transition-colors text-sm font-mono">
+    ← Command Center
+  </a>
+  <div class="h-5 w-px bg-edge"></div>
+  <div class="flex items-baseline gap-3 flex-wrap">
+    <h1 class="text-mono text-xl font-semibold tracking-tight">{{ view.division.name }}</h1>
+    {% set intent_color = {
+      'aggressive': 'bg-loss/15 text-loss',
+      'retirement': 'bg-accent/15 text-accent',
+      'balanced':   'bg-warn/15 text-warn',
+    } %}
+    <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                 {{ intent_color.get(view.division.intent, 'bg-edge text-muted') }}">
+      {{ view.division.intent }}
+    </span>
+    <span class="text-[11px] text-muted font-mono">
+      {{ view.division.broker | capitalize }} · {{ view.division.account_filter }}
+    </span>
+  </div>
+</div>
+
+<!-- ── Stat cards: Equity / Cash / [BP] / Today's P&L ──────────────
+     Buying Power tile is dropped for coinbase_spot — on a spot crypto
+     account cash == buying_power and the second value is redundant.
+     Other divisions (margin / options) keep all four. -->
+{% set _hide_bp = view.division.slug == 'coinbase_spot' %}
+<div class="grid grid-cols-2 {% if _hide_bp %}lg:grid-cols-3{% else %}lg:grid-cols-4{% endif %} gap-3 mb-4">
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Equity</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.equity | money }}</div>
+  </div>
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Cash</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.cash | money }}</div>
+  </div>
+  {% if not _hide_bp %}
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Buying power</div>
+    <div class="text-2xl font-mono font-semibold text-mono mt-1">{{ view.buying_power | money }}</div>
+  </div>
+  {% endif %}
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Today's P&amp;L</div>
+    {% if view.todays_pnl is not none %}
+      <div class="text-2xl font-mono font-semibold mt-1
+        {% if view.todays_pnl > 0 %}text-gain
+        {% elif view.todays_pnl < 0 %}text-loss
+        {% else %}text-mono{% endif %}">
+        {{ view.todays_pnl | money_signed }}
+      </div>
+      {% if view.todays_pnl_pct is not none %}
+        <div class="text-[11px] mt-0.5
+          {% if view.todays_pnl_pct > 0 %}text-gain
+          {% elif view.todays_pnl_pct < 0 %}text-loss
+          {% else %}text-muted{% endif %}">
+          {{ view.todays_pnl_pct | pct_signed }}
+        </div>
+      {% endif %}
+    {% else %}
+      <div class="text-2xl font-mono font-semibold text-muted/60 mt-1">—</div>
+      <div class="text-[11px] text-muted/50 mt-0.5">no prior snapshot</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Main grid ──────────────────────────────────────────────────
+     Most divisions use a 2-col layout (left = positions + activity,
+     right = Expert Analysis aside that gets fed by "Show analysis"
+     buttons on PMCC pairs, Polymarket events, Kalshi events).
+     bitunix_futures has no path that fires into #pair-analysis, so
+     the aside renders permanently empty — collapse to single full-
+     width column for that division. -->
+{% set _has_expert_analysis = view.division.slug != 'bitunix_futures' %}
+<div class="grid grid-cols-1 {% if _has_expert_analysis %}lg:grid-cols-3{% endif %} gap-4">
+
+  <!-- LEFT: Position rows + Activity (spans full width when no aside) -->
+  <div class="{% if _has_expert_analysis %}lg:col-span-2{% endif %} flex flex-col gap-4">
+
+    {# Robinhood IRA gets its own dashboard — shares + covered calls +
+       wheel puts grouped explicitly. Skip the generic PMCC pairs /
+       Holdings tables that follow (they'd render duplicate data with
+       less context). #}
+    {% if view.division.slug == 'robinhood_ira' and view.ira_view %}
+      {% include "partials/ira_dashboard.html" %}
+    {% else %}
+
+    <!-- Position list — every pair as click-to-expand row, sorted by priority -->
+    {% if view.pmcc_pairs %}
+      <section>
+        <header class="flex items-baseline justify-between mb-2">
+          <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Positions</h2>
+          <div class="flex items-center gap-3 text-[11px] text-muted font-mono">
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-loss"></span>urgent
+            </span>
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-warn"></span>elevated
+            </span>
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-muted/40"></span>routine
+            </span>
+            <span>· sorted by priority</span>
+          </div>
+        </header>
+        <div id="pair-list" class="flex flex-col gap-2">
+          {% for pair in view.pmcc_pairs %}
+            {% include "partials/pmcc_pair.html" %}
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
+    <!-- Holdings (stock + crypto). Cost-basis / P&L deliberately omitted —
+         this window is "what do I own and what is it worth right now."
+         PMCC pair / option-leg sections handle cost-basis math where it
+         matters. Crypto rows arrive from RobinhoodBroker.snapshot in
+         unified {CODE}/USD form (matching Coinbase). -->
+    {% if view.stock_holdings %}
+      <section class="bg-pane border border-edge rounded-lg overflow-hidden">
+        <header class="px-4 py-3 border-b border-edge flex items-baseline justify-between">
+          <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Holdings</h2>
+          <span class="text-[11px] text-muted font-mono">{{ view.stock_holdings|length }} positions</span>
+        </header>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="text-[10px] uppercase tracking-wider text-muted bg-pane-2/40">
+              <tr>
+                <th class="text-left px-4 py-2">Symbol</th>
+                <th class="text-right px-4 py-2">Qty</th>
+                <th class="text-right px-4 py-2">Last</th>
+                <th class="text-right px-4 py-2 pr-4">Mkt Value</th>
+              </tr>
+            </thead>
+            <tbody class="font-mono">
+              {% for h in view.stock_holdings %}
+                <tr class="border-t border-edge/40 hover:bg-pane-2/40">
+                  <td class="px-4 py-2 font-semibold">{{ h.symbol }}</td>
+                  <td class="text-right px-4 py-2">{{ '%g' % h.qty }}</td>
+                  <td class="text-right px-4 py-2">
+                    {{ h.last | money if h.last is not none else '—' }}
+                  </td>
+                  <td class="text-right px-4 py-2 pr-4">
+                    {{ h.market_value | money if h.market_value is not none else '—' }}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% endif %}
+
+    <!-- Empty state -->
+    {% if not view.pmcc_pairs and not view.stock_holdings %}
+      <section class="bg-pane border border-edge rounded-lg p-12 text-center">
+        <div class="text-muted text-sm">
+          No positions detected for this division yet.
+        </div>
+      </section>
+    {% endif %}
+
+    {% endif %}  {# end non-IRA branch #}
+
+    <!-- Scout — fresh PMCC opening candidates (Robinhood PMCC only) -->
+    {% if view.division.slug == 'robinhood_pmcc' %}
+      <div
+        hx-get="/division/{{ view.division.slug }}/scout"
+        hx-trigger="load"
+        hx-swap="innerHTML">
+        <section class="bg-pane border border-edge rounded-lg p-6 text-center">
+          <div class="text-muted text-sm font-mono italic">
+            Scanning market for new PMCC candidates…
+          </div>
+          <div class="text-[11px] text-muted/60 font-mono mt-1">
+            Surveys configured universe, filters held positions, ranks by weekly yield.
+          </div>
+        </section>
+      </div>
+    {% endif %}
+
+    <!-- Manual order entry — kept available for any future division that
+         needs an ad-hoc trade-entry UI. NOT rendered on coinbase_spot:
+         that division now runs Coinbase BTC Donchian + HITL, so all
+         orders flow through strategy → web-app approval. The partial
+         file `partials/manual_order.html` is preserved untouched. -->
+
+    <!-- Coinbase BTC Donchian — strategy state, 6h price chart with
+         channel overlay, per-bar decision log, realized round-trips.
+         Only renders for coinbase_spot AND only when the strategy is
+         configured in strategies.yaml. Tiles render cleanly with
+         empty states until the agent is wired. -->
+    {% if view.division.slug == 'coinbase_spot' and view.donchian %}
+      {% include "partials/donchian_state.html" %}
+      {% include "partials/donchian_chart.html" %}
+      {% include "partials/donchian_log.html" %}
+      {% include "partials/donchian_trades.html" %}
+    {% endif %}
+
+    <!-- BitUnix gate-chain panels render top-to-bottom in
+         "decide → audit → outcome" reading order:
+           1. HTF regime  (macro context — what's the regime?)
+           2. PA validators (did inputs pass the binary gates?)
+           3. Decision flow (last 5 fires, full chain end-to-end)
+           4. Confluence score (legacy Phase 3.2 detail/explorer below)
+    -->
+
+    <!-- Deferred-fire pending-PA panel. Live state of the observer's
+         in-memory PA-rejected payload cache. Above HTF so operators see
+         "what are we currently watching" first. Renders only when the
+         observer is wired (test envs see None and skip). -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_pending_pa is not none %}
+      {% include "partials/bitunix_pending_pa_panel.html" %}
+    {% endif %}
+
+    <!-- BitUnix HTF (higher-timeframe) regime panel — PR 2 read-only.
+         Renders the live composite regime + per-TF breakdown derived
+         from polled 1H/4H/1D bars. Observer does NOT consult these
+         values for trade decisions until PR 3 wires the gate. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_htf %}
+      {% include "partials/bitunix_htf_panel.html" %}
+    {% endif %}
+
+    <!-- trade-plan PR 6 — PA validators (not scored) panel.
+         Surfaces pa_validation_decision audit trail. Renders only when
+         PA config is wired on the observer. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_pa %}
+      {% include "partials/bitunix_pa_panel.html" %}
+    {% endif %}
+
+    <!-- trade-plan PR 6 — score → PA → HTF → outcome decision-flow
+         timeline. Last 5 fires joined across all three audit kinds. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_decision_flow %}
+      {% include "partials/bitunix_decision_flow.html" %}
+    {% endif %}
+
+    <!-- trade-plan PR 6 — v2 trade-plan decisions + SL lifecycle.
+         Renders empty-state when trade_plan.enabled=false; populates
+         post-flip as `trade_plan_decision` + `position_sl_update`
+         audits accumulate. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_trade_plan is not none %}
+      {% include "partials/bitunix_trade_plan_panel.html" %}
+    {% endif %}
+
+    <!-- BitUnix Phase 3.2.3 — confluence score panel. Renders only for
+         bitunix_futures and only when scoring config is loaded.
+         htmx auto-refresh every 30s baked into the partial.
+         Below the gate-chain panels as the detail/explorer surface. -->
+    {% if view.division.slug == 'bitunix_futures' and view.bitunix_score %}
+      {% include "partials/bitunix_score_panel.html" %}
+    {% endif %}
+
+    <!-- Win rate — Paper/Live toggle (2026-06-23). ONE panel; the toggle
+         switches between the PAPER slice (execution_mode != live, unbounded
+         signal-replay) and the LIVE slice (execution_mode = live, scoped
+         forward from the division metrics_epoch via result_ts). Both slices
+         are precomputed in data.py:paper_trade_summary and arrive in the one
+         view.paper_trade_summary dict, so the toggle is client-side only.
+         The toggle activates only for divisions with a live dimension
+         (has_live or metrics_epoch) — bitunix_futures today; paper-only
+         divisions render exactly as before (single panel, no toggle). -->
+    {% set ps = view.paper_trade_summary %}
+    {% if ps and (ps.totals.all.n or ps.has_live or ps.metrics_epoch) %}
+    {% set has_live_dim = ps.has_live or ps.metrics_epoch %}
+    <section class="bg-pane border border-edge rounded-lg p-4"{% if has_live_dim %} data-wr-panel{% endif %}>
+      <header class="flex items-baseline justify-between mb-3">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">{% if has_live_dim %}Win rate{% else %}Paper-trade win rate{% endif %}</h2>
+        {% if has_live_dim %}
+          <div class="inline-flex rounded-md border border-edge overflow-hidden text-[11px] font-mono" role="tablist" aria-label="win-rate slice">
+            <button type="button" data-wr-tab="live" aria-selected="true"
+                    class="px-2.5 py-1 uppercase tracking-wider transition-colors bg-pane-2 text-gain">Live</button>
+            <button type="button" data-wr-tab="paper" aria-selected="false"
+                    class="px-2.5 py-1 uppercase tracking-wider transition-colors border-l border-edge text-muted">Paper</button>
+          </div>
+        {% else %}
+          <span class="text-[11px] text-muted font-mono">
+            would-have-placed alerts replayed against post-alert price action
+          </span>
+        {% endif %}
+      </header>
+
+      {% if has_live_dim %}
+      <!-- LIVE slice — real exchange fills, result_ts >= metrics_epoch -->
+      <div data-wr-slice="live">
+        {% if ps.live_totals.all.n %}
+          <div class="grid grid-cols-3 gap-3">
+            {% for window in ['7d', '30d', 'all'] %}
+              {% set t = ps.live_totals[window] %}
+              <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+                <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+                  {{ window }}
+                </div>
+                <div class="text-2xl font-mono font-semibold
+                      {% if t.win_rate_pct is none %}text-muted
+                      {% elif t.win_rate_pct >= 50 %}text-gain
+                      {% else %}text-loss{% endif %}">
+                  {% if t.win_rate_pct is none %}—{% else %}{{ '%.0f'|format(t.win_rate_pct) }}%{% endif %}
+                </div>
+                <div class="text-[11px] text-muted font-mono mt-1">
+                  {{ t.wins }}W / {{ t.losses }}L / {{ t.expired }}E
+                  {% if t.open %}({{ t.open }} open){% endif %}
+                </div>
+                <div class="text-[11px] font-mono mt-2
+                      {% if t.sim_pnl > 0 %}text-gain{% elif t.sim_pnl < 0 %}text-loss{% else %}text-muted{% endif %}">
+                  realized P&amp;L: ${{ '%.2f'|format(t.sim_pnl) }}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="bg-pane-2/40 border border-edge rounded-md p-4 text-center text-[12px] text-muted font-mono">
+            No live trades resolved{% if ps.metrics_epoch %} since {{ ps.metrics_epoch.split('T')[0] }}{% endif %} yet.
+          </div>
+        {% endif %}
+        {% if ps.metrics_epoch %}
+          <div class="text-[10px] text-muted/70 font-mono mt-3"
+               title="Live metrics scoped forward from the post-fix epoch. Pre-epoch rows remain in the DB, excluded from this slice.">
+            since {{ ps.metrics_epoch.split('T')[0] }} · current logic only
+          </div>
+        {% else %}
+          <div class="text-[10px] text-amber-400/80 font-mono mt-3"
+               title="No metrics epoch set yet — live numbers still include pre-fix bookings (D1 double-book, P2 mislabels). The epoch is set at the D1 cutover.">
+            all-time · epoch not set (includes pre-fix bookings)
+          </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <!-- PAPER slice — execution_mode != live, unbounded signal replay -->
+      <div data-wr-slice="paper"{% if has_live_dim %} hidden{% endif %}>
+        {% if ps.totals.all.n %}
+          <div class="grid grid-cols-3 gap-3">
+            {% for window in ['7d', '30d', 'all'] %}
+              {% set t = ps.totals[window] %}
+              <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+                <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+                  {{ window }}
+                </div>
+                <div class="text-2xl font-mono font-semibold
+                      {% if t.win_rate_pct is none %}text-muted
+                      {% elif t.win_rate_pct >= 50 %}text-gain
+                      {% else %}text-loss{% endif %}">
+                  {% if t.win_rate_pct is none %}—{% else %}{{ '%.0f'|format(t.win_rate_pct) }}%{% endif %}
+                </div>
+                <div class="text-[11px] text-muted font-mono mt-1">
+                  {{ t.wins }}W / {{ t.losses }}L / {{ t.expired }}E
+                  {% if t.open %}({{ t.open }} open){% endif %}
+                </div>
+                <div class="text-[11px] font-mono mt-2
+                      {% if t.sim_pnl > 0 %}text-gain{% elif t.sim_pnl < 0 %}text-loss{% else %}text-muted{% endif %}">
+                  sim P&amp;L: ${{ '%.2f'|format(t.sim_pnl) }}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+          {% if has_live_dim %}
+            <div class="text-[10px] text-muted/70 font-mono mt-3 italic">
+              all-time · signal replay, not epoch-scoped
+            </div>
+          {% endif %}
+          {% if ps.totals.all.n_pre_phase_a %}
+            <div class="text-[10px] text-muted/70 font-mono mt-3 italic">
+              {{ ps.totals.all.n_pre_phase_a }} pre-Phase-A row(s)
+              excluded from win-rate math (no TP/SL recorded at alert time).
+            </div>
+          {% endif %}
+        {% endif %}
+      </div>
+
+      {% if has_live_dim %}
+      <script>
+      (function () {
+        var s = document.currentScript;
+        var panel = s ? s.closest('[data-wr-panel]') : null;
+        if (!panel) return;
+        var tabs = panel.querySelectorAll('[data-wr-tab]');
+        var slices = panel.querySelectorAll('[data-wr-slice]');
+        function show(which) {
+          slices.forEach(function (el) {
+            el.hidden = (el.getAttribute('data-wr-slice') !== which);
+          });
+          tabs.forEach(function (b) {
+            var on = b.getAttribute('data-wr-tab') === which;
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+            b.classList.toggle('bg-pane-2', on);
+            b.classList.toggle('text-gain', on);
+            b.classList.toggle('text-muted', !on);
+          });
+          try { localStorage.setItem('bitunix_wr_slice', which); } catch (e) {}
+        }
+        tabs.forEach(function (b) {
+          b.addEventListener('click', function () { show(b.getAttribute('data-wr-tab')); });
+        });
+        var saved = 'live';
+        try { saved = localStorage.getItem('bitunix_wr_slice') || 'live'; } catch (e) {}
+        show(saved);
+      })();
+      </script>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    <!-- Recent activity -->
+    <section class="bg-pane border border-edge rounded-lg p-4">
+      <header class="flex items-baseline justify-between mb-3">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Recent activity</h2>
+        <span class="text-[11px] text-muted font-mono">{{ view.recent_activity|length }} events</span>
+      </header>
+      {% if view.recent_activity %}
+        <div class="space-y-2 max-h-[400px] overflow-y-auto pr-1 custom-scroll">
+          {% for evt in view.recent_activity %}
+            <div class="bg-pane-2/40 border border-edge rounded-md px-3 py-2">
+              <div class="flex items-center gap-2 text-[11px] font-mono">
+                {# Polymarket: kind label gets a contextual color so emit / skip / risk-reject read at a glance #}
+                {% if evt.polymarket %}
+                  {% set pm = evt.polymarket %}
+                  {% if evt.kind == 'would_have_placed' %}
+                    <span class="text-gain font-semibold uppercase tracking-wider">would have placed</span>
+                  {% elif evt.kind == 'polymarket_order_rejected_by_risk' %}
+                    <span class="text-loss font-semibold uppercase tracking-wider">risk rejected</span>
+                  {% elif evt.kind == 'polymarket_llm_probability_called' and pm.would_emit == false %}
+                    <span class="text-muted font-semibold uppercase tracking-wider">evaluated · skipped</span>
+                  {% else %}
+                    <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                      {{ evt.kind | replace('_', ' ') }}
+                    </span>
+                  {% endif %}
+                {% elif evt.kalshi_llm %}
+                  {% set kl = evt.kalshi_llm %}
+                  {% if evt.kind == 'would_have_placed' %}
+                    <span class="text-gain font-semibold uppercase tracking-wider">would have placed</span>
+                  {% elif evt.kind == 'kalshi_llm_order_rejected_by_risk' %}
+                    <span class="text-loss font-semibold uppercase tracking-wider">risk rejected</span>
+                  {% elif evt.kind == 'kalshi_llm_probability_called' and kl.would_emit == false %}
+                    <span class="text-muted font-semibold uppercase tracking-wider">evaluated · skipped</span>
+                  {% else %}
+                    <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                      {{ evt.kind | replace('_', ' ') }}
+                    </span>
+                  {% endif %}
+                {% elif evt.kalshi %}
+                  {% set kx = evt.kalshi %}
+                  {% if evt.kind == 'would_have_placed' %}
+                    <span class="text-gain font-semibold uppercase tracking-wider">would have placed</span>
+                  {% elif evt.kind in ('kalshi_order_rejected_by_risk', 'kalshi_tb_order_rejected_by_risk') %}
+                    <span class="text-loss font-semibold uppercase tracking-wider">risk rejected</span>
+                  {% elif evt.kind == 'kalshi_discovery_refreshed' %}
+                    <span class="text-muted font-semibold uppercase tracking-wider">discovery refreshed</span>
+                  {% elif evt.kind == 'kalshi_tail_arb_scan' %}
+                    <span class="{% if kx.n_opportunities_above_threshold and kx.n_opportunities_above_threshold > 0 %}text-mono{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      tail-price scan
+                    </span>
+                  {% elif evt.kind == 'kalshi_temporal_bucket_scan' %}
+                    {% set t_opps = (kx.n_temporal_opportunities or 0) + (kx.n_bucket_opportunities or 0) %}
+                    <span class="{% if t_opps > 0 %}text-mono{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      temporal+bucket scan
+                    </span>
+                  {% elif evt.kind == 'kalshi_market_evaluated' %}
+                    <span class="{% if kx.would_emit %}text-gain{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      {% if kx.would_emit %}market evaluated · ARB{% else %}market evaluated{% endif %}
+                    </span>
+                  {% elif evt.kind == 'kalshi_pair_evaluated' %}
+                    <span class="{% if kx.would_emit %}text-gain{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      {% if kx.would_emit %}pair evaluated · ARB{% else %}pair evaluated{% endif %}
+                    </span>
+                  {% elif evt.kind == 'kalshi_bucket_evaluated' %}
+                    <span class="{% if kx.would_emit %}text-gain{% else %}text-muted{% endif %} font-semibold uppercase tracking-wider">
+                      {% if kx.would_emit %}bucket evaluated · ARB{% else %}bucket evaluated{% endif %}
+                    </span>
+                  {% else %}
+                    <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                      {{ evt.kind | replace('_', ' ') }}
+                    </span>
+                  {% endif %}
+                {% else %}
+                  <span class="{{ evt.color }} font-semibold uppercase tracking-wider">
+                    {{ evt.kind | replace('_', ' ') }}
+                  </span>
+                {% endif %}
+                <span class="ml-auto text-muted">{{ evt.ts_short }} ago</span>
+              </div>
+
+              {% if evt.polymarket %}
+                {# ── Polymarket-specific rich layout ─────────────────── #}
+                {% set pm = evt.polymarket %}
+                <div class="mt-1.5 text-sm">
+                  <span class="font-mono font-semibold text-mono">{{ pm.market_slug }}</span>
+                  {% if pm.outcome %}
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1
+                      {% if pm.outcome == 'yes' %}bg-gain/15 text-gain
+                      {% else %}bg-loss/15 text-loss{% endif %}">
+                      buy {{ pm.outcome }}
+                    </span>
+                  {% endif %}
+                  {% if pm.category %}
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                      {{ pm.category }}{% if pm.series %} · {{ pm.series }}{% endif %}
+                    </span>
+                  {% endif %}
+                </div>
+                {% if pm.market_question %}
+                  <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                    {{ pm.market_question }}
+                  </div>
+                {% endif %}
+                {# Probability strip: LLM vs market + divergence + confidence #}
+                <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                  {% if pm.llm_prob is not none %}
+                    <span>
+                      <span class="text-muted">LLM:</span>
+                      <span class="text-mono font-semibold">{{ '%.0f' | format(pm.llm_prob * 100) }}%</span>
+                      {% if pm.llm_confidence %}
+                        <span class="text-[10px] text-muted/70">({{ pm.llm_confidence }})</span>
+                      {% endif %}
+                    </span>
+                  {% endif %}
+                  {% if pm.implied_prob is not none %}
+                    <span>
+                      <span class="text-muted">market:</span>
+                      <span class="text-mono">{{ '%.0f' | format(pm.implied_prob * 100) }}%</span>
+                    </span>
+                  {% endif %}
+                  {% if pm.divergence_pct is not none %}
+                    <span class="
+                      {% if pm.divergence_pct >= 50 %}text-warn font-semibold
+                      {% elif pm.divergence_pct >= 10 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      Δ {{ '%.1f' | format(pm.divergence_pct) }}%
+                    </span>
+                  {% endif %}
+                  {% if pm.qty and pm.limit_price %}
+                    <span class="text-muted ml-auto">
+                      {{ '%.2f' | format(pm.qty) }} × ${{ '%.3f' | format(pm.limit_price) }}
+                      = ${{ '%.2f' | format(pm.qty * pm.limit_price) }}
+                    </span>
+                  {% endif %}
+                </div>
+                {% if pm.reasoning_preview %}
+                  <div class="mt-1.5 text-[11px] text-muted/90 leading-snug line-clamp-2 italic">
+                    "{{ pm.reasoning_preview }}"
+                  </div>
+                {% endif %}
+                {% if pm.risk_reason and evt.kind == 'polymarket_order_rejected_by_risk' %}
+                  <div class="mt-1.5 text-[11px] text-loss leading-snug">
+                    <span class="font-semibold">Risk:</span> {{ pm.risk_reason }}
+                  </div>
+                {% endif %}
+                {# Click to load full LLM analysis in the right rail. #}
+                {% if evt.id %}
+                  <div class="mt-2">
+                    <button
+                      class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                      hx-get="/partials/polymarket-analysis/{{ evt.id }}"
+                      hx-target="#pair-analysis"
+                      hx-swap="innerHTML"
+                      hx-indicator="#pair-analysis-loading">
+                      Show analysis →
+                    </button>
+                  </div>
+                {% endif %}
+              {% elif evt.kalshi_llm %}
+                {# ── Kalshi LLM-divergence rich layout (mirrors polymarket) ── #}
+                {% set kl = evt.kalshi_llm %}
+                <div class="mt-1.5 text-sm">
+                  <span class="font-mono font-semibold text-mono break-all">{{ kl.ticker }}</span>
+                  {% if kl.outcome %}
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1
+                      {% if kl.outcome == 'yes' %}bg-gain/15 text-gain
+                      {% else %}bg-loss/15 text-loss{% endif %}">
+                      buy {{ kl.outcome }}
+                    </span>
+                  {% endif %}
+                  {% if kl.category %}
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                      {{ kl.category }}
+                    </span>
+                  {% endif %}
+                </div>
+                {% if kl.event_title %}
+                  <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                    {{ kl.event_title }}{% if kl.subtitle %} — <span class="text-muted/60">{{ kl.subtitle }}</span>{% endif %}
+                  </div>
+                {% endif %}
+                <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                  {% if kl.llm_prob is not none %}
+                    <span>
+                      <span class="text-muted">LLM:</span>
+                      <span class="text-mono font-semibold">{{ '%.0f' | format(kl.llm_prob * 100) }}%</span>
+                      {% if kl.llm_confidence %}
+                        <span class="text-[10px] text-muted/70">({{ kl.llm_confidence }})</span>
+                      {% endif %}
+                    </span>
+                  {% endif %}
+                  {% if kl.implied_prob is not none %}
+                    <span>
+                      <span class="text-muted">market:</span>
+                      <span class="text-mono">{{ '%.0f' | format(kl.implied_prob * 100) }}%</span>
+                    </span>
+                  {% endif %}
+                  {% if kl.divergence_pct is not none %}
+                    <span class="
+                      {% if kl.divergence_pct >= 50 %}text-warn font-semibold
+                      {% elif kl.divergence_pct >= 10 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      Δ {{ '%.1f' | format(kl.divergence_pct) }}%
+                    </span>
+                  {% endif %}
+                  {% if kl.qty and kl.limit_price %}
+                    <span class="text-muted ml-auto">
+                      {{ '%.2f' | format(kl.qty) }} × ${{ '%.3f' | format(kl.limit_price) }}
+                      = ${{ '%.2f' | format(kl.qty * kl.limit_price) }}
+                    </span>
+                  {% endif %}
+                </div>
+                {% if kl.reasoning_preview %}
+                  <div class="mt-1.5 text-[11px] text-muted/90 leading-snug line-clamp-2 italic">
+                    "{{ kl.reasoning_preview }}"
+                  </div>
+                {% endif %}
+                {% if kl.risk_reason and evt.kind == 'kalshi_llm_order_rejected_by_risk' %}
+                  <div class="mt-1.5 text-[11px] text-loss leading-snug">
+                    <span class="font-semibold">Risk:</span> {{ kl.risk_reason }}
+                  </div>
+                {% endif %}
+                {% if evt.id %}
+                  <div class="mt-2">
+                    <button
+                      class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                      hx-get="/partials/kalshi-llm-analysis/{{ evt.id }}"
+                      hx-target="#pair-analysis"
+                      hx-swap="innerHTML"
+                      hx-indicator="#pair-analysis-loading">
+                      Show analysis →
+                    </button>
+                  </div>
+                {% endif %}
+              {% elif evt.kalshi %}
+                {# ── Kalshi-specific rich layout ──────────────────────── #}
+                {% set kx = evt.kalshi %}
+                {# Per-kind inline rendering. Scan summaries surface counts;
+                   would_have_placed surfaces ticker + edge + leg + set/pair;
+                   discovery_refreshed surfaces by-type breakdown. #}
+                {% if evt.kind == 'kalshi_tail_arb_scan' %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">scanned:</span>
+                      <span class="text-mono font-semibold">{{ kx.n_markets_scanned or 0 }}</span> markets</span>
+                    <span><span class="text-muted">tail candidates:</span>
+                      <span class="text-mono">{{ kx.n_tail_candidates or 0 }}</span></span>
+                    <span class="{% if kx.n_opportunities_above_threshold and kx.n_opportunities_above_threshold > 0 %}text-gain font-semibold{% else %}text-muted{% endif %}">
+                      opps≥{{ kx.min_edge_cents or '?' }}c:
+                      <span class="font-semibold">{{ kx.n_opportunities_above_threshold or 0 }}</span>
+                    </span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      tail≤{{ '%.2f' | format(kx.yes_max_for_yes_tail or 0) }} / ≥{{ '%.2f' | format(kx.yes_min_for_no_tail or 0) }}
+                    </span>
+                  </div>
+                {% elif evt.kind == 'kalshi_temporal_bucket_scan' %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">temporal:</span>
+                      <span class="text-mono">{{ kx.n_temporal_events_scanned or 0 }}</span> evt /
+                      <span class="{% if kx.n_temporal_opportunities and kx.n_temporal_opportunities > 0 %}text-gain font-semibold{% else %}text-muted{% endif %}">{{ kx.n_temporal_opportunities or 0 }}</span> opps</span>
+                    <span><span class="text-muted">bucket:</span>
+                      <span class="text-mono">{{ kx.n_bucket_events_scanned or 0 }}</span> evt /
+                      <span class="{% if kx.n_bucket_opportunities and kx.n_bucket_opportunities > 0 %}text-gain font-semibold{% else %}text-muted{% endif %}">{{ kx.n_bucket_opportunities or 0 }}</span> opps</span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      thresh: T≥{{ kx.temporal_min_edge_cents or '?' }}c B≥{{ kx.bucket_min_edge_cents or '?' }}c
+                    </span>
+                  </div>
+                {% elif evt.kind == 'kalshi_discovery_refreshed' %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">events:</span>
+                      <span class="text-mono font-semibold">{{ kx.n_events_total or 0 }}</span></span>
+                    <span><span class="text-muted">markets:</span>
+                      <span class="text-mono">{{ kx.n_markets_total or 0 }}</span></span>
+                    {% if kx.n_markets_filtered_collection %}
+                      <span class="text-[10px] text-muted/70">({{ kx.n_markets_filtered_collection }} collection-filtered)</span>
+                    {% endif %}
+                  </div>
+                  {% if kx.events_by_type %}
+                    <div class="mt-1 flex items-center gap-1.5 flex-wrap text-[10px] font-mono">
+                      {% for type_name, count in kx.events_by_type.items() %}
+                        {% if count and count > 0 %}
+                          <span class="px-1.5 py-0.5 rounded bg-edge text-muted">
+                            {{ type_name }}: <span class="text-mono">{{ count }}</span>
+                          </span>
+                        {% endif %}
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                {% elif evt.kind == 'kalshi_market_evaluated' %}
+                  {# Per-tail-candidate row — polymarket-density per market. #}
+                  <div class="mt-1.5 text-sm">
+                    <span class="font-mono font-semibold text-mono break-all">{{ kx.ticker }}</span>
+                    {% if kx.in_yes_tail %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-loss/15 text-loss">YES tail</span>
+                    {% elif kx.in_no_tail %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-gain/15 text-gain">NO tail</span>
+                    {% endif %}
+                    {% if kx.category %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.category }}
+                      </span>
+                    {% endif %}
+                  </div>
+                  {% if kx.event_title %}
+                    <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                      {{ kx.event_title }}{% if kx.subtitle %} — <span class="text-muted/60">{{ kx.subtitle }}</span>{% endif %}
+                    </div>
+                  {% endif %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">YES ask:</span>
+                      <span class="text-mono">${{ '%.3f' | format(kx.yes_ask or 0) }}</span></span>
+                    <span><span class="text-muted">NO ask:</span>
+                      <span class="text-mono">${{ '%.3f' | format(kx.no_ask or 0) }}</span></span>
+                    <span><span class="text-muted">sum:</span>
+                      <span class="text-mono">${{ '%.3f' | format(kx.sum_asks or 0) }}</span></span>
+                    <span class="
+                      {% if kx.would_emit %}text-gain font-semibold
+                      {% elif kx.edge_cents and kx.edge_cents >= 0 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      edge: {{ kx.edge_cents }}c
+                    </span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      threshold: {{ kx.min_edge_cents }}c
+                    </span>
+                  </div>
+                {% elif evt.kind == 'kalshi_pair_evaluated' %}
+                  {# Per-temporal-pair row — both leg tickers + dates + edge. #}
+                  <div class="mt-1.5 text-sm">
+                    <span class="font-mono font-semibold text-mono break-all">{{ kx.event_ticker }}</span>
+                    {% if kx.category %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.category }}
+                      </span>
+                    {% endif %}
+                  </div>
+                  {% if kx.event_title %}
+                    <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                      {{ kx.event_title }}
+                    </div>
+                  {% endif %}
+                  <div class="mt-1.5 text-[11px] font-mono space-y-0.5">
+                    <div>
+                      <span class="text-muted">early</span>
+                      <span class="text-mono">{{ kx.early_subtitle or kx.early_date }}</span>:
+                      P_yes = <span class="text-mono font-semibold">{{ '%.3f' | format(kx.early_yes_ask or 0) }}</span>
+                    </div>
+                    <div>
+                      <span class="text-muted">late&nbsp;</span>
+                      <span class="text-mono">{{ kx.late_subtitle or kx.late_date }}</span>:
+                      P_yes = <span class="text-mono font-semibold">{{ '%.3f' | format(kx.late_yes_ask or 0) }}</span>
+                    </div>
+                  </div>
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span class="
+                      {% if kx.would_emit %}text-gain font-semibold
+                      {% elif kx.edge_cents and kx.edge_cents >= 0 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      edge: {{ kx.edge_cents }}c
+                    </span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      threshold: {{ kx.min_edge_cents }}c
+                      ({% if (kx.early_yes_ask or 0) > (kx.late_yes_ask or 0) %}<span class="text-warn">violation</span>{% else %}<span class="text-muted">in-bounds</span>{% endif %})
+                    </span>
+                  </div>
+                {% elif evt.kind == 'kalshi_bucket_evaluated' %}
+                  {# Per-bucket-event row — N legs + sum + edge. #}
+                  <div class="mt-1.5 text-sm">
+                    <span class="font-mono font-semibold text-mono break-all">{{ kx.event_ticker }}</span>
+                    {% if kx.category %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.category }}
+                      </span>
+                    {% endif %}
+                  </div>
+                  {% if kx.event_title %}
+                    <div class="mt-1 text-[11px] text-muted/80 leading-snug line-clamp-2">
+                      {{ kx.event_title }}
+                    </div>
+                  {% endif %}
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    <span><span class="text-muted">{{ kx.n_legs or 0 }} legs sum:</span>
+                      <span class="text-mono">${{ '%.3f' | format(kx.sum_yes_asks or 0) }}</span></span>
+                    <span class="
+                      {% if kx.would_emit %}text-gain font-semibold
+                      {% elif kx.edge_cents and kx.edge_cents >= 0 %}text-mono
+                      {% else %}text-muted{% endif %}">
+                      edge: {{ kx.edge_cents }}c
+                    </span>
+                    <span class="ml-auto text-[10px] text-muted/70">
+                      threshold: {{ kx.min_edge_cents }}c
+                    </span>
+                  </div>
+                {% else %}
+                  {# would_have_placed / risk-rejected / other: ticker + leg + edge #}
+                  <div class="mt-1.5 text-sm">
+                    {% if kx.ticker %}
+                      <span class="font-mono font-semibold text-mono break-all">{{ kx.ticker }}</span>
+                    {% endif %}
+                    {% if kx.leg %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.leg | replace('_', ' ') }}
+                      </span>
+                    {% endif %}
+                    {% if kx.kalshi_arb_type %}
+                      <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ml-1 bg-edge text-muted">
+                        {{ kx.kalshi_arb_type }} arb
+                      </span>
+                    {% endif %}
+                  </div>
+                  <div class="mt-1.5 flex items-center gap-3 text-[11px] font-mono flex-wrap">
+                    {% if kx.edge_cents %}
+                      <span class="{% if kx.edge_cents >= 5 %}text-gain font-semibold{% elif kx.edge_cents >= 2 %}text-mono{% else %}text-muted{% endif %}">
+                        edge: {{ kx.edge_cents }}c
+                      </span>
+                    {% endif %}
+                    {% if kx.qty and kx.limit_price %}
+                      <span class="text-muted">
+                        {{ '%.2f' | format(kx.qty) }} × ${{ '%.3f' | format(kx.limit_price) }}
+                        = ${{ '%.2f' | format(kx.qty * kx.limit_price) }}
+                      </span>
+                    {% endif %}
+                    {% set link_id = kx.kalshi_arb_set_id or kx.kalshi_pair_id %}
+                    {% if link_id %}
+                      <span class="ml-auto text-[10px] text-muted/70 break-all">set: {{ link_id }}</span>
+                    {% endif %}
+                  </div>
+                  {% if kx.risk_reason and evt.kind in ('kalshi_order_rejected_by_risk', 'kalshi_tb_order_rejected_by_risk') %}
+                    <div class="mt-1.5 text-[11px] text-loss leading-snug">
+                      <span class="font-semibold">Risk:</span> {{ kx.risk_reason }}
+                    </div>
+                  {% endif %}
+                {% endif %}
+                {# Click to load full payload + raw audit JSON in the right rail. #}
+                {% if evt.id %}
+                  <div class="mt-2">
+                    <button
+                      class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                      hx-get="/partials/kalshi-analysis/{{ evt.id }}"
+                      hx-target="#pair-analysis"
+                      hx-swap="innerHTML"
+                      hx-indicator="#pair-analysis-loading">
+                      Show details →
+                    </button>
+                  </div>
+                {% endif %}
+              {% else %}
+                {# ── Existing rendering for non-polymarket events ────── #}
+                {% if evt.symbol %}
+                  <div class="mt-1 flex items-center gap-2 text-sm">
+                    <span class="font-mono font-semibold text-mono">{{ evt.symbol }}</span>
+                    {% if evt.side %}
+                      <span class="text-[11px] uppercase font-mono px-1.5 py-0.5 rounded
+                        {% if evt.side == 'buy' %}bg-gain/15 text-gain
+                        {% elif evt.side == 'sell' %}bg-loss/15 text-loss
+                        {% else %}bg-edge text-muted{% endif %}">
+                        {{ evt.side }}
+                      </span>
+                    {% endif %}
+                    {% if evt.qty %}
+                      <span class="text-muted text-xs font-mono">×{{ evt.qty }}</span>
+                    {% endif %}
+                  </div>
+                {% endif %}
+                {% if evt.reason %}
+                  <div class="mt-1 text-[11px] text-muted leading-snug line-clamp-2">
+                    {{ evt.reason }}
+                  </div>
+                {% endif %}
+                {# Manual research-firm replay (BACKLOG.md 2026-05-02). #}
+                {# Lets the Board send a past TV signal into the research firm   #}
+                {# consult so the existing engagement code path runs against it. #}
+                {# Visible only on signal-shaped rows where it makes sense.       #}
+                {% if evt.id and evt.kind in ['webhook_received', 'alert_ignored', 'would_have_placed'] %}
+                  <div class="mt-2 flex items-center gap-3">
+                    <button
+                      class="text-[10px] uppercase tracking-wider font-mono text-muted hover:text-mono px-2 py-0.5 border border-edge rounded transition-colors"
+                      hx-post="/audit/{{ evt.id }}/replay-research"
+                      hx-target="next .replay-result"
+                      hx-swap="innerHTML"
+                      hx-indicator="next .replay-indicator">
+                      Send to research →
+                    </button>
+                    <span class="replay-indicator htmx-indicator text-[10px] text-muted font-mono italic">
+                      consulting…
+                    </span>
+                  </div>
+                  <div class="replay-result"></div>
+                {% endif %}
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-muted/60 text-sm italic text-center py-6">
+          No recent activity for this division.
+        </div>
+      {% endif %}
+    </section>
+
+  </div>
+
+  {% if _has_expert_analysis %}
+  <!-- RIGHT (1 col): Equity curve + DYNAMIC LLM analysis -->
+  <aside class="lg:col-span-1 flex flex-col gap-4">
+
+    <!-- (Equity curve removed pending account_state_history wiring.
+         Reinstate when historical equity is available — TODO Phase 3.) -->
+
+    <!-- Dynamic per-pair expert analysis.
+         Architecture: fixed-height box that sticks to the viewport top.
+         The HEADER ("EXPERT ANALYSIS · SYMBOL") is OUTSIDE the scroll
+         container, so it cannot be scrolled past. The content body
+         (#pair-analysis) is the scroll container — wheeling inside it
+         scrolls the analysis text without moving the page or the header. -->
+    <section class="bg-pane border border-edge rounded-lg overflow-hidden
+                    lg:sticky lg:top-20
+                    flex flex-col
+                    lg:max-h-[calc(100vh-6rem)]">
+      <!-- Fixed header — not part of the scroll area, so the analysis
+           text physically cannot scroll past it. -->
+      <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge bg-pane shrink-0">
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+          Expert analysis
+        </h2>
+        <span id="pair-analysis-symbol"
+              class="text-[11px] text-muted font-mono uppercase tracking-wider">
+          select a position
+        </span>
+      </header>
+      <!-- Scrolling content. min-h-0 is the flexbox quirk needed for
+           overflow-y-auto to actually clip inside a flex parent. -->
+      <div id="pair-analysis"
+           class="px-4 py-4 min-h-[120px] overflow-y-auto custom-scroll min-h-0 flex-1">
+        <div class="text-muted text-sm italic text-center py-8">
+          {% if view.division.slug.startswith('polymarket_') %}
+            Click "Show analysis →" on any LLM call to see the
+            point-in-time reasoning snapshot here.
+          {% else %}
+            Click any position on the left to see its expert analysis here.
+          {% endif %}
+        </div>
+      </div>
+      <span id="pair-analysis-loading"
+            class="htmx-indicator absolute top-3 right-3 text-[10px] text-muted font-mono italic">
+        loading…
+      </span>
+    </section>
+
+  </aside>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/pair_list.js"></script>
+{# Donchian chart — only loaded on coinbase_spot. The script is a
+   self-running IIFE that no-ops if its container isn't in the DOM,
+   so it's harmless on other division pages, but gating keeps the
+   bytes off the wire where they aren't needed. #}
+{% if view.division.slug == 'coinbase_spot' and view.donchian %}
+<script src="/static/js/donchian_chart.js"></script>
+{% endif %}
+{% endblock %}
