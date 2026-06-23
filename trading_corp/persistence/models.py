@@ -112,6 +112,14 @@ class FillEvent:
     # `_fill_price_from_history` which sums per-fill fee from
     # `get_history_trades`. Layer 2 funding accrual is N+3 scope.
     fee: float = 0.0
+    # ── Bug-2 fix (PEAD STEP 3): the broker's REAL order id + the account the
+    # order actually hit. Default None so existing constructors (paper, tasty,
+    # coinbase, fidelity, bitunix) don't break — they leave both None. The
+    # Robinhood broker populates them from the order response so routing safety
+    # ("did this fill hit the bound account?") is first-class, read on every
+    # fill, not fished out of a dict.
+    broker_order_id: str | None = None
+    account: str | None = None
 
 
 @dataclass

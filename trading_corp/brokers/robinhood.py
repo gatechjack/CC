@@ -68,6 +68,15 @@ class RobinhoodAccountBindError(RuntimeError):
     680725082 silently routing to the main margin account 461391328."""
 
 
+class RobinhoodOrderError(RuntimeError):
+    """Raised when Robinhood does NOT accept an order — the response carries no
+    order id (an empty/None body, or an error dict like {'non_field_errors': …}
+    / {'detail': …}). The broker MUST surface this as a failure rather than
+    synthesize a FillEvent: a fabricated fill makes the engine book a PHANTOM
+    position for an order that never placed (e.g. the live HTTP-400 'answer your
+    investing-goals questions' compliance reject observed 2026-06-22)."""
+
+
 def _days_to_expiry(expiration_date: str) -> int:
     """Calendar days from today to expiration_date ('YYYY-MM-DD')."""
     try:
@@ -683,6 +692,45 @@ class RobinhoodBroker(Broker):
             return await self._place_option_order(order)
         return await self._place_stock_order(order)
 
+    # ── shared fill construction: fail loud + carry RH's real id + account ──
+    @staticmethod
+    def _account_number_from(result: dict) -> str | None:
+        """The account number the order actually hit, parsed from RH's account
+        URL (…/accounts/<num>/). The routing-safety identity (Bug-2 fix)."""
+        acct = str((result or {}).get("account") or "").rstrip("/")
+        num = acct.rsplit("/", 1)[-1]
+        return num or None
+
+    def _fill_or_raise(self, result, order: ProposedOrder, price: float) -> FillEvent:
+        """Build a FillEvent from a robin_stocks order response — or RAISE
+        RobinhoodOrderError if the response is not a real accepted order.
+
+        A genuinely-placed order carries an 'id'. No id (empty/None, or an error
+        dict like {'non_field_errors': …}/{'detail': …}) means it did NOT place;
+        we raise with RH's verbatim reason instead of synthesizing a fill
+        (Bug-1 fix — a fake fill would book a phantom position). On success the
+        FillEvent carries RH's real order id + the account it hit (Bug-2 fix)."""
+        result = result or {}
+        rh_id = result.get("id")
+        if not rh_id:
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty response")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept {order.side} {order.symbol} "
+                f"x{int(order.qty)}: {reason}"
+            )
+        return FillEvent(
+            order_id=order.id,
+            symbol=order.symbol,
+            side=order.side,
+            qty=float(int(order.qty)),
+            price=float(price),
+            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            venue="robinhood",
+            broker_order_id=str(rh_id),
+            account=self._account_number_from(result),
+        )
+
     async def _place_stock_order(self, order: ProposedOrder) -> FillEvent:
         import robin_stocks.robinhood as rs  # type: ignore
         qty = int(order.qty)
@@ -706,17 +754,8 @@ class RobinhoodBroker(Broker):
                 fn, order.symbol, qty, order.limit_price, account_number=acct,
             )
 
-        result = result or {}
-        price = float(result.get("average_price") or order.limit_price or 0)
-        return FillEvent(
-            order_id=order.id,
-            symbol=order.symbol,
-            side=order.side,
-            qty=float(qty),
-            price=price,
-            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            venue="robinhood",
-        )
+        price = float((result or {}).get("average_price") or order.limit_price or 0)
+        return self._fill_or_raise(result, order, price)
 
     async def _place_option_order(self, order: ProposedOrder) -> FillEvent:
         import robin_stocks.robinhood as rs  # type: ignore
@@ -759,19 +798,12 @@ class RobinhoodBroker(Broker):
                 account_number=acct,
             )
 
-        result = result or {}
         fill_price = float(
-            result.get("processed_premium") or result.get("price") or price
+            (result or {}).get("processed_premium")
+            or (result or {}).get("price")
+            or price
         )
-        return FillEvent(
-            order_id=order.id,
-            symbol=order.symbol,
-            side=order.side,
-            qty=float(qty),
-            price=fill_price,
-            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            venue="robinhood",
-        )
+        return self._fill_or_raise(result, order, fill_price)
 
     async def cancel_order(self, order_id: str) -> bool:
         self._require_connected()

@@ -1,17 +1,26 @@
-"""CHARACTERIZATION test — observes the CURRENT (unmodified) RobinhoodBroker
-behavior when robin_stocks returns the EXACT 400 body we captured live.
+"""Broker fail-loud + routing-identity contract (PEAD STEP 3, Bug 1 + Bug 2).
 
-No fix is applied. This feeds `_place_stock_order` the verbatim investing-goals
-compliance reject and records what the broker does: RAISE (treats it as a failed
-placement) or RETURN a FillEvent (reports a fill that never happened). The print
-shows the literal observation; the assertions only pin whatever is observed so a
-future fix flips them deliberately.
+These started as CHARACTERIZATION tests that PASSED against the pre-fix 3ad16a2
+broker blob (observed: a 400 reject -> a fake FillEvent; a success -> RH's id +
+account dropped). They are now FLIPPED to the FIXED contract:
+
+  * Bug 1 — fed the verbatim live HTTP-400 `non_field_errors` body, the broker
+    RAISES RobinhoodOrderError carrying RH's reason, and never returns a fill.
+  * Bug 2 — on a success response, the FillEvent carries RH's real order id
+    (`broker_order_id`) and the account it hit (`account`).
+
+Regression-guard property (what makes them meaningful): each of these FAILS
+against the unfixed broker (we observed the old fake-fill / dropped-id behavior
+on 3ad16a2) and passes only with the fix. No network — robin_stocks order
+functions are monkeypatched.
 """
 from __future__ import annotations
 
 import asyncio
 
-from trading_corp.brokers.robinhood import RobinhoodBroker
+import pytest
+
+from trading_corp.brokers.robinhood import RobinhoodBroker, RobinhoodOrderError
 from trading_corp.persistence.models import FillEvent, ProposedOrder
 
 # Verbatim body captured from the live POST (HTTP 400):
@@ -22,53 +31,7 @@ ERROR_400 = {
     ]
 }
 
-
-def _observe(order_type, limit_price, monkeypatch):
-    import robin_stocks.robinhood as rs
-    # Make every stock order function return the EXACT 400 body (no network).
-    for name in ("order_buy_limit", "order_sell_limit", "order_buy_market", "order_sell_market"):
-        monkeypatch.setattr(rs.orders, name, lambda *a, **k: dict(ERROR_400))
-
-    broker = RobinhoodBroker(username="u", password="p", mfa_secret="m",
-                             account_filter="680725082")
-    broker._account_number = "680725082"  # mimic a connected, hard-bound broker
-    order = ProposedOrder(strategy="robinhood_pead", symbol="F", side="buy",
-                          qty=1.0, order_type=order_type, limit_price=limit_price,
-                          extra={})
-    raised, result = None, None
-    try:
-        result = asyncio.run(broker._place_stock_order(order))
-    except Exception as e:  # noqa: BLE001
-        raised = e
-    print(f"\n--- CURRENT broker, order_type={order_type!r}, fed the live 400 ---")
-    if raised is not None:
-        print(f"  RAISED: {type(raised).__name__}: {raised}")
-    else:
-        print(f"  RETURNED {type(result).__name__}: price={getattr(result,'price',None)} "
-              f"order_id={getattr(result,'order_id',None)} venue={getattr(result,'venue',None)}")
-        print("  -> broker reported a FILL despite the 400 reject (fake fill).")
-    return raised, result
-
-
-def test_current_market_order_on_live_400(monkeypatch, capsys):
-    raised, result = _observe("market", None, monkeypatch)
-    with capsys.disabled():
-        pass
-    # Pin the OBSERVED current behavior (a real placement failure returns a fill,
-    # never raises). When Bug 1 is fixed, this assertion is intentionally flipped.
-    assert raised is None, "current broker unexpectedly raised — re-read; Bug 1 may not exist"
-    assert isinstance(result, FillEvent), "current broker returned a FillEvent on a 400"
-
-
-def test_current_limit_order_on_live_400(monkeypatch):
-    raised, result = _observe("limit", 7.03, monkeypatch)
-    assert raised is None
-    assert isinstance(result, FillEvent)
-    # the inferred '$7.03' — observed literally here:
-    assert result.price == 7.03
-
-
-# A realistic SUCCESS response shape (RH returns its own order id + the account URL):
+# A realistic SUCCESS response shape (RH returns its own order id + account URL):
 SUCCESS = {
     "id": "RH-REAL-ORDER-ID-abc123",
     "account": "https://api.robinhood.com/accounts/680725082/",
@@ -77,27 +40,84 @@ SUCCESS = {
 }
 
 
-def test_current_broker_discards_rh_id_and_account_on_success(monkeypatch):
-    """Bug 2 characterization: on a SUCCESSFUL order, does the FillEvent carry
-    RH's real order id and the account it hit, or our order.id with no account?"""
-    import robin_stocks.robinhood as rs
-    monkeypatch.setattr(rs.orders, "order_buy_market", lambda *a, **k: dict(SUCCESS))
+def _heal_orders(monkeypatch):
+    """Return the REAL robin_stocks.robinhood.orders submodule, healing suite
+    pollution. Other suites replace sys.modules['robin_stocks.robinhood'] with a
+    non-package stub and LEAK it (the same pre-existing pollution that breaks
+    test_robinhood_multi_leg / test_tasty in the full -k sweep on HEAD —
+    'robin_stocks.robinhood is not a package'). monkeypatch can't restore a
+    sys.modules swap, so reload the real package + submodule from disk; this also
+    heals it for whatever runs after."""
+    import importlib
+    import sys
+    for m in [k for k in list(sys.modules)
+              if k == "robin_stocks" or k.startswith("robin_stocks.")]:
+        sys.modules.pop(m, None)
+    importlib.import_module("robin_stocks.robinhood")
+    return importlib.import_module("robin_stocks.robinhood.orders")
 
+
+def _broker_with(order_fn_result, monkeypatch):
+    rs_orders = _heal_orders(monkeypatch)
+    for name in ("order_buy_limit", "order_sell_limit",
+                 "order_buy_market", "order_sell_market"):
+        monkeypatch.setattr(rs_orders, name, lambda *a, **k: dict(order_fn_result))
+    broker = RobinhoodBroker(username="u", password="p", mfa_secret="m",
+                             account_filter="680725082")
+    broker._account_number = "680725082"  # mimic a connected, hard-bound broker
+    return broker
+
+
+def _order(order_type, limit_price=None):
+    return ProposedOrder(strategy="robinhood_pead", symbol="F", side="buy",
+                         qty=1.0, order_type=order_type, limit_price=limit_price,
+                         extra={})
+
+
+# ── Bug 1: a 400 reject must RAISE, never synthesize a fill ───────────────────
+
+
+def test_market_order_raises_on_live_400(monkeypatch):
+    broker = _broker_with(ERROR_400, monkeypatch)
+    with pytest.raises(RobinhoodOrderError) as ei:
+        asyncio.run(broker._place_stock_order(_order("market")))
+    # RH's verbatim reason is surfaced, not swallowed:
+    assert "investing" in str(ei.value).lower()
+
+
+def test_limit_order_raises_on_live_400(monkeypatch):
+    broker = _broker_with(ERROR_400, monkeypatch)
+    with pytest.raises(RobinhoodOrderError):
+        asyncio.run(broker._place_stock_order(_order("limit", 7.03)))
+
+
+def test_option_order_raises_on_live_400(monkeypatch):
+    """Platform-wide: the option single-leg path raises on the same 400."""
+    rs_orders = _heal_orders(monkeypatch)
+    monkeypatch.setattr(rs_orders, "order_buy_option_limit",
+                        lambda *a, **k: dict(ERROR_400))
     broker = RobinhoodBroker(username="u", password="p", mfa_secret="m",
                              account_filter="680725082")
     broker._account_number = "680725082"
-    order = ProposedOrder(strategy="robinhood_pead", symbol="F", side="buy",
-                          qty=1.0, order_type="market", extra={})
-    result = asyncio.run(broker._place_stock_order(order))
+    opt = ProposedOrder(strategy="robinhood_joint", symbol="SPY", side="buy",
+                        qty=1.0, order_type="limit", limit_price=1.0,
+                        extra={"is_option": True, "underlying": "SPY",
+                               "expiration": "2026-07-17", "strike": 500.0,
+                               "option_type": "call", "position_effect": "open"})
+    with pytest.raises(RobinhoodOrderError):
+        asyncio.run(broker._place_option_order(opt))
 
-    has_account = hasattr(result, "account") and getattr(result, "account", None)
-    print("\n--- CURRENT broker, SUCCESS response (RH id + account present) ---")
-    print(f"  FillEvent.order_id = {result.order_id!r}")
-    print(f"  RH real order id   = {SUCCESS['id']!r}")
-    print(f"  carries RH order id? {result.order_id == SUCCESS['id']}")
-    print(f"  carries the account? {bool(has_account)}  (RH account = {SUCCESS['account']!r})")
-    print(f"  price = {result.price}")
-    # Observed current behavior: RH's id + account are DROPPED.
-    assert result.order_id == order.id, "current broker uses OUR order.id, not RH's"
-    assert result.order_id != SUCCESS["id"], "current broker discards RH's real order id"
-    assert not has_account, "current FillEvent has no account field — RH's account is dropped"
+
+# ── Bug 2: a success must carry RH's real order id + the account it hit ───────
+
+
+def test_success_carries_rh_id_and_account(monkeypatch):
+    broker = _broker_with(SUCCESS, monkeypatch)
+    order = _order("market")
+    fill = asyncio.run(broker._place_stock_order(order))
+    assert isinstance(fill, FillEvent)
+    assert fill.broker_order_id == "RH-REAL-ORDER-ID-abc123"   # RH's real id, carried (Bug 2)
+    assert fill.account == "680725082"                          # the account it hit, parsed
+    assert fill.order_id == order.id                            # our id kept for correlation
+    assert fill.order_id != SUCCESS["id"]
+    assert fill.price == 14.05
