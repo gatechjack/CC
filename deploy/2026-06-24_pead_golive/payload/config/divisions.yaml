@@ -1,0 +1,271 @@
+# Division registry — defines every account/sub-portfolio the corp manages.
+#
+# A "division" = one account + one strategic intent. Multiple divisions can
+# share a broker login (Robinhood Joint + IRA + PMCC under one RH account;
+# Fidelity Joint + 401k + Individual under one Fidelity login).
+#
+# Schema:
+#   slug                  unique URL/route identifier (lowercase, snake_case)
+#   name                  human display name
+#   broker                broker family: robinhood | fidelity | coinbase | paper
+#   account_filter        how to pick this account within the broker:
+#                           - robinhood: account_type ("individual","ira_roth","joint")
+#                                        OR account_number substring
+#                           - fidelity: case-insensitive substring of account name
+#                           - coinbase: "spot" | "futures"
+#   intent                aggressive | balanced | retirement
+#                           drives goal-aware coloring + benchmark thresholds
+#   benchmark             ticker symbol for benchmark comparison (yfinance)
+#   target_annual_return  fraction (0.30 = 30%) — optional, used for tile context
+#   enabled               bool — disabled divisions don't render in UI
+#   strategy              optional — strategy block from strategies.yaml that
+#                           operates on this account (informational for now)
+
+divisions:
+  # ── Robinhood (single login, multiple sub-accounts) ─────────────────────
+  - slug: robinhood_pmcc
+    name: Robinhood PMCC
+    broker: robinhood
+    account_filter: individual
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.30
+    strategy: robinhood_pmcc
+    enabled: true
+
+  - slug: robinhood_ira
+    name: Robinhood IRA
+    broker: robinhood
+    # Robinhood returned brokerage_account_type='ira_traditional' for this
+    # account on 2026-04-27 (RH account #2 = 934310442). Other valid filter
+    # values: 'ira_roth', 'ira_trad', 'ira', or the literal account_number
+    # substring (more reliable than type keywords if you have multiple IRAs).
+    account_filter: ira_traditional
+    intent: retirement
+    benchmark: SPY
+    target_annual_return: 0.08
+    enabled: true
+
+  - slug: robinhood_joint
+    name: Robinhood Joint
+    broker: robinhood
+    account_filter: joint
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.20
+    strategy: robinhood_joint_iron_condor
+    enabled: true
+
+  # ── Robinhood PEAD (Phase 2, 2026-06-22) — long-only post-earnings drift on
+  # the agentic sub-account. standby:true is the OPERATIVE kill-switch: the
+  # division registers + wires, but scan()/manage() both no-op until standby is
+  # lifted (the deliberate live-test action). NO per-trade HITL by design.
+  - slug: robinhood_pead
+    name: Robinhood PEAD
+    broker: robinhood
+    account_filter: "680725082"     # agentic acct; numeric hard-bind (3ad16a2) — never main 461391328
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.30      # reporting/tile label only — inert to the engine
+    strategy: robinhood_pead
+    standby: false                  # GO-LIVE 2026-06-24 (Board-authorized): scan()+manage() ACTIVE
+    enabled: true
+
+  # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────
+  - slug: fidelity_joint
+    name: Fidelity Joint
+    broker: fidelity
+    account_filter: Joint
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.20
+    strategy: fidelity_options
+    enabled: true
+
+  - slug: fidelity_401k
+    name: Fidelity 401(k)
+    broker: fidelity
+    account_filter: "401k"
+    intent: retirement
+    benchmark: SPY
+    target_annual_return: 0.08
+    enabled: true
+
+  # Deactivated 2026-05-03 per BitUnix vision conversation: division
+  # disabled so no signals trigger it; YAML entry kept as deadcode for
+  # easy revival if needed. See trading_corp_bitunix_vision.md.
+  - slug: fidelity_individual
+    name: Fidelity Individual
+    broker: fidelity
+    account_filter: Individual
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.20
+    enabled: false
+
+  # ── Tastytrade (added 2026-05-24; Tasty Options division) ─────────────
+  # Sibling of robinhood_joint trading the same 45-DTE iron-condor
+  # strategy on Tastytrade. The "universe" is a permissive WATCHLIST:
+  # the auto-scanner uses it for daily entry-candidate generation, but
+  # operators can paste any ticker into the morning grader and trade
+  # it if it grades cleanly (see strategies.yaml `watchlist:` key and
+  # `strict_universe = False` on the strategy class). Phase 1
+  # observation runs paper-internal for ≥21 calendar days; Phase 2 live
+  # gated on Backtester sign-off + Board review (auto_execute earned,
+  # never granted).
+  - slug: tasty_options
+    name: Tasty Options
+    broker: tastytrade
+    # account_filter matches against TT account_number OR nickname
+    # (substring). Empty string → first account from
+    # Account.get(session). Set this to a real TT account substring
+    # when the operator picks the trading account; pre-Phase-2 the
+    # broker is paper-wrapped by main.py so the account doesn't matter
+    # for fills.
+    account_filter: ""
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.20
+    strategy: tasty_options_iron_condor
+    enabled: true
+
+  # ── Coinbase (one login, two trading modes) ────────────────────────────
+  - slug: coinbase_spot
+    name: Coinbase BTC HODL
+    broker: coinbase
+    account_filter: spot
+    intent: aggressive
+    benchmark: BTC-USD
+    target_annual_return: 0.40
+    enabled: true
+
+  # Marked standby 2026-05-03: no order path active; kept for $-balance
+  # reads + manual promote later if BitUnix proves out.
+  - slug: coinbase_futures
+    name: Coinbase Futures
+    broker: coinbase
+    account_filter: futures
+    intent: aggressive
+    benchmark: BTC-USD
+    target_annual_return: 0.50
+    strategy: crypto_futures
+    standby: true
+    enabled: true
+
+  # ── BitUnix Futures (added 2026-05-03; broker adapter ships in Phase 1) ─
+  - slug: bitunix_futures
+    name: BitUnix Futures
+    broker: bitunix
+    account_filter: futures
+    intent: aggressive
+    benchmark: BTC-USD
+    target_annual_return: 0.50
+    standby: true
+    enabled: true
+
+  # ── Polymarket (added 2026-05-09; read-only Phase 1 broker adapter) ────
+  # Two divisions sharing the new "Polymarket" investment-type group.
+  # polymarket_arbitrage uses the real broker (USDC + position reads from
+  # the dedicated Polygon wallet); polymarket_copy_trading is a paper-
+  # fallback STANDBY placeholder for the future copy-trading strategy
+  # (Phase 4+). Both are tagged standby:true — no order routing yet
+  # (place_order is enforced absent at the ABC level on PolymarketBroker;
+  # the copy_trading paper broker won't be reached by any strategy).
+  - slug: polymarket_arbitrage
+    name: Polymarket Arbitrage
+    broker: polymarket
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY    # placeholder — prediction-market alpha doesn't have a clean benchmark
+    target_annual_return: 0.50
+    standby: true
+    enabled: true
+
+  - slug: polymarket_copy_trading
+    name: Polymarket Copy Trading
+    broker: polymarket    # placeholder until Phase 4+ wires the copy-trader strategy
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: true
+    enabled: true
+
+  # ── Kalshi (added 2026-05-10; Phase K1 read-only broker adapter) ──────
+  # Phase K1 ships a single placeholder division anchored to the new
+  # KalshiBroker (read-only, snapshot + quote). Phase K2 wires in
+  # kalshi_arbitrage as the actual division running the temporal/bucket
+  # arb scanner; Phase K3 adds kalshi_copy_trading. Both lands in the
+  # "Prediction Markets" investment-type group alongside Polymarket. See
+  # memory trading_corp_kalshi.md for the full phasing plan.
+  - slug: kalshi_arbitrage
+    name: Kalshi Arbitrage
+    broker: kalshi
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY    # placeholder — prediction-market alpha doesn't have a clean benchmark
+    target_annual_return: 0.50
+    standby: true
+    enabled: true
+
+  # Phase K6.1 (added 2026-05-11): LLM-divergence Kalshi strategy
+  # mirroring polymarket_arbitrage. Different substrate from
+  # kalshi_arbitrage (which houses the structural tail/temporal/bucket
+  # strategies). Same broker, same Prediction Markets group.
+  - slug: kalshi_llm_arbitrage
+    name: Kalshi LLM Arbitrage
+    broker: kalshi
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: true
+    enabled: true
+
+  # Phase K3 placeholder (added 2026-05-11): Kalshi Copy Trading. Mirrors
+  # polymarket_copy_trading — registered now as STANDBY so the dashboard
+  # dropdown + tile + dashboard view exist before the strategy ships. When
+  # K3 lands the leaderboard scraper + copy-trader strategy, flip
+  # standby:false and point broker at `kalshi` (it reuses the same
+  # read-only KalshiBroker until Phase K5+ live placement).
+  # Phase Weather (2026-05-14): Kalshi Weather Arbitrage. Forecast-driven
+  # — pulls NWS hourly forecasts and computes deterministic P(YES) vs
+  # threshold. Replaces the generic LLM probability call on Climate/Weather
+  # markets (kalshi_llm_arbitrage now skips that category).
+  - slug: kalshi_weather
+    name: Kalshi Weather
+    broker: paper    # placeholder for equity tracking; lazy-resolves real KalshiBroker
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: false
+    enabled: true
+    paper_capital: 500.0
+
+  # Phase Crypto (2026-05-14): Kalshi Crypto Arbitrage. Live-spot-driven
+  # — pulls Coinbase spot for BTC/ETH/SOL/DOGE/XRP and computes deterministic
+  # P(YES) vs threshold using annualized realized vol. Replaces the generic
+  # LLM probability call on Crypto markets (kalshi_llm_arbitrage now skips
+  # that category for directional bets; structural tail/temporal arb still
+  # see crypto markets for their own patterns).
+  - slug: kalshi_crypto
+    name: Kalshi Crypto
+    broker: paper    # placeholder for equity; lazy-resolves real KalshiBroker + CoinbaseBroker
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: false
+    enabled: true
+    paper_capital: 500.0
+
+  - slug: kalshi_copy_trading
+    name: Kalshi Copy Trading
+    broker: paper    # placeholder until Phase K3 wires the copy-trader strategy
+    account_filter: main
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: true
+    enabled: true

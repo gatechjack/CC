@@ -1,0 +1,10 @@
+# PEAD go-live payload — TARGET md5 (LF). Baseline = prod pre-deploy md5 (drift-gate).
+# file                                              baseline(pre)                     target(post)
+config/strategies.yaml                              4ed38e9d0f4e3a03137d15a5732e6443  36f5b32309e4342a4521a69a8cb53a42
+config/divisions.yaml                               2be55d87d0fdc74e33e6ad7285e83842  090174da86bddc9d2a4fdcc74b631d2c
+trading_corp/agents/divisions/robinhood_pead.py     93c0a588e45939b4ca5825720a14b2ef  5b5cfb515a920767c150ecb44234a8ba
+trading_corp/agents/strategies/pead_strategy.py     fe739c7edeb6c1276e12abe7bed0ae0c  ae6d39e124e2a06cb234224d548456c1
+trading_corp/brokers/robinhood.py                   26de02729bc0403d472e48acea9ed03e  72f7944c73abc2c02a71b3f8644ed53c
+trading_corp/main.py                                cf98e88d58f6d89328b1ca138038563f  ec7bd6962bba02d1ba5b601af131f4e2
+trading_corp/persistence/db.py                      b1c6a6a2c41d8692678e652eacadea33  9cb0f65485b976d6b39f6005d02dfd2d
+trading_corp/persistence/models.py                  61ecc75535bab3a42a75f2a4bc0a4f5f  0e917dacebce1a3d8ea574e792279841
