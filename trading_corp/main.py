@@ -1453,6 +1453,10 @@ async def run(argv: list[str] | None = None) -> int:
             _scheduled_pead_manage_loop(pead_division, data_exec, logger_agent),
             name="pead-manage",
         )
+        pead_reconcile_task = asyncio.create_task(
+            _scheduled_pead_reconcile_loop(pead_division, data_exec, logger_agent),
+            name="pead-reconcile",
+        )
         log.info("Robinhood PEAD wired (execution_mode=%s; standby-gated).",
                  pead_execution_mode)
 
@@ -2479,6 +2483,34 @@ async def _scheduled_pead_manage_loop(division, data_exec, logger_agent) -> None
             return
         except Exception as e:
             log.exception("PEAD manage loop error (continuing): %s", e)
+            await asyncio.sleep(300)
+
+
+async def _scheduled_pead_reconcile_loop(division, data_exec, logger_agent) -> None:
+    """Flag-2 deferred-fill reconciler — fires division.reconcile(broker) and sleeps
+    the cadence it returns (a short poll while pending entries exist; idle while
+    standby / none). PEAD scans pre-open, so its entries are placed as GFD fractional
+    buys that QUEUE to the 9:30 open; this loop confirms each at/after the open and
+    promotes it to a real record (or cancels the >5% collar miss past open+deadline).
+    No-op while standby/disabled — ships INERT. Broker resolved fresh each tick
+    (None-safe)."""
+    log.info("PEAD deferred-fill reconciler online.")
+    while True:
+        try:
+            broker = data_exec.brokers.get(division.slug)
+            if broker is None:
+                await asyncio.sleep(300)
+                continue
+            promoted, cadence = await division.reconcile(broker)
+            if promoted:
+                logger_agent.log_event(
+                    "scheduler", "pead_reconcile_promoted", {"promoted": len(promoted)})
+            await asyncio.sleep(int(cadence) if cadence else 300)
+        except asyncio.CancelledError:
+            log.info("PEAD deferred-fill reconciler cancelled.")
+            return
+        except Exception as e:
+            log.exception("PEAD reconcile loop error (continuing): %s", e)
             await asyncio.sleep(300)
 
 

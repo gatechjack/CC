@@ -1936,3 +1936,12 @@ robinhood_pead:
   manage_cadence_sec: 300           # exit-engine poll cadence
   scan_window_start_et: [8, 30]     # daily pre-open scan window (read at startup by main.py)
   scan_window_end_et: [9, 25]
+  # --- Flag-2 deferred-fill reconcile (config-driven; defaults applied if absent) ---
+  # PEAD scans pre-open, so entries are placed as GFD fractional buys that QUEUE to
+  # the 9:30 open; a sibling reconcile loop confirms each fill at/after the open and
+  # promotes it to a record. The deadline is anchored at the 9:30 OPEN (not at
+  # placement) — an order still unfilled at open+deadline is the >5% collar miss
+  # (cancel the resting order, skip the name, log it).
+  reconcile_poll_interval_sec: 30          # reconcile-loop tick while pending orders exist
+  reconcile_deadline_after_open_sec: 300   # wait past the 9:30 ET open before collar-miss cancel
+  reconcile_partial_warn_frac: 0.90        # warn when realized $ < this fraction of requested

@@ -71,7 +71,7 @@ only in the gate34 harness).
    suite + scoped regression (the other-division placement baseline) green **before
    any deploy**. Ships inert (standby) — go-live is the separate 4-flip gate.
 
-## PROPOSED DESIGN — PENDING OPERATOR REVIEW (not built; shown before it lands)
+## APPROVED DESIGN — reviewed + approved 2026-06-24; BUILT + TESTED (see Build status)
 
 ### A. PENDING-store shape — new `pending_order` table (recommended)
 A **separate table**, NOT a marked row in `paper_trade_record`. Rationale: the book
@@ -101,10 +101,11 @@ returns the rh_id immediately. **The existing `_place_fractional_stock_order` (t
 90s-polling path) is left byte-untouched** (#3). PEAD's entry path uses the deferred
 method and INSERTs the PENDING row; no record is written at placement.
 
-Open Q for review: **deferred-always-for-PEAD** (recommended — PEAD always scans
-pre-open; the reconcile loop also cleanly handles the rare already-open case, so no
-market-state branch at placement) **vs. market-state-gated** (synchronous when
-`is_open_at`, deferred when pre-open). I lean deferred-always for simplicity.
+DECIDED (2026-06-24): **deferred-always-for-PEAD** — PEAD's production scan is always
+pre-open, so the synchronous path would never run in production (two paths where one
+runs is needless); the reconcile loop handles the rare already-open case. The
+lifecycle/proof harness MUST use the deferred path too (no synchronous shortcut) so it
+tests the production path, not a test-only one.
 
 ### C. Reconcile-loop shape — new `_scheduled_pead_reconcile_loop` (sibling to scan)
 Wakes around the open; while `default_calendar().is_open_at(now)` (holiday/half-day
@@ -115,7 +116,8 @@ PENDING rows exist for today, drains them. Per PENDING row, poll
   `average_price` / `executed_notional` → `_write_record(realized qty/price/notional)`
   → clear PENDING. The row is now a real open position; `manage()` takes over.
 - **terminal partial** (cum>0, non-"filled" terminal) → record realized partial
-  (consistent with frac build decision #2: accept the realized partial). *Confirm.*
+  (DECIDED 2026-06-24: accept the realized partial, consistent with frac build
+  decision #2; carry the <90%-of-requested warning here too).
 - **still unfilled past a post-open deadline** (the collar >5% miss) → **CANCEL the
   resting GFD order** (critical: GFD rests ALL DAY — an un-cancelled order could fill
   unwatched at 2pm = the phantom position the invariant forbids), **LOG the skip**,
@@ -129,9 +131,10 @@ collar-miss.
 
 Broker resolved fresh each tick (None-safe), no-op while standby/disabled, mirroring
 the scan/manage loops. New additive `strategies.yaml` keys (default-safe):
-`reconcile_poll_interval_sec`, `reconcile_deadline_after_open_sec` (how long to wait
-for the open fill before declaring collar-miss + cancel — propose ~300s), and a
-`reconcile_window_end_et`.
+`reconcile_poll_interval_sec` (default 30s), `reconcile_deadline_after_open_sec`
+(DECIDED: 300s, measured from the 9:30 OPEN — NOT placement; a placement-anchored
+deadline would expire pre-open ~9:00 and cancel every queued order), and
+`reconcile_partial_warn_frac` (0.90).
 
 ### D. main.py wiring
 Register `_scheduled_pead_reconcile_loop` as an asyncio task alongside
@@ -162,7 +165,23 @@ A during-hours green run does NOT prove this — by construction. Proof must spa
 4. **Reconcile must be idempotent + crash-safe:** drain PENDING on boot; never
    double-write a record for the same rh_id.
 
-## BUILD STATUS
-**NOT started.** Decisions locked (above). Shapes A-D PENDING operator review. On go
-(with any edits), build to the reviewed shapes; PEAD suite + scoped regression green
-before any deploy; ships inert.
+## BUILD STATUS — BUILT + TESTED 2026-06-24 (operator commit-go); NOT YET PROVEN LIVE
+Shapes A–D built as approved (deferred-always; deadline anchored at open+300s;
+accept-realized-partial + <90% warning). 7-file change, ADDITIVE: `db.py`
+pending_order table; `robinhood.py` +63/−0 (3 deferred methods; polling/whole-share/
+limit/option BYTE-UNTOUCHED); `pead_strategy.py` deferred `scan()` branch +
+`reconcile()`/`_promote_pending()` + pending helpers; `robinhood_pead.py` division
+`reconcile()` (standby-gated → inert); `main.py` `_scheduled_pead_reconcile_loop` +
+task; `strategies.yaml` knobs; `tests/test_pead_flag2_reconcile.py` (11 adversarial).
+
+Tests: **Flag-2 11/11**, **PEAD 109/109**, **#3 regression 219/219** (broker / PMCC /
+IC-config / multi-leg / place-combo / option-pnl / db-models). The only failures
+anywhere — 3 in `test_iron_condor_strategy.py` — are PRE-EXISTING (identical 3 on
+clean HEAD with none of these changes). Ships INERT (standby); go-live is the separate
+4-flip gate.
+
+**NOT YET PROVEN LIVE.** The code is built + unit-tested but NOT proven against a real
+pre-open-queue-and-reconcile until the gate34 deferred Phase-A (pre-open place, no
+cancel) / Phase-B (post-open reconcile) proof harness runs spanning a real 9:30 open
+(eyes-on, live pre-open window). That harness is the NEXT build and the actual go-live
+gate — a green during-hours test does NOT prove it.

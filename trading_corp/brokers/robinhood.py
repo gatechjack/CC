@@ -878,6 +878,69 @@ class RobinhoodBroker(Broker):
             account=self._account_number_from(result), executed_notional=exec_notional,
         )
 
+    # ── Flag-2: deferred-fill reconcile (robinhood_pead) ───────────────────────
+    # PEAD scans PRE-OPEN (8:30-9:25 ET). A synchronous poll-to-fill would CANCEL a
+    # GFD order that queues to the 9:30 open before it ever fills, so the production
+    # entry must DEFER: place WITHOUT polling, store the order id, and reconcile the
+    # realized fill at/after the open. These three methods are the broker side of
+    # that flow — ADDITIVE, used only by pead_strategy's deferred path; the polling
+    # `_place_fractional_stock_order` above + whole-share/limit/option are UNTOUCHED.
+    async def place_fractional_pending(self, order: ProposedOrder) -> str:
+        """Submit a GFD fractional BUY and return RH's order id WITHOUT polling for
+        the fill (the reconcile loop confirms it at the open). RAISES on a non-
+        accepted order (Bug-1: no id → no phantom). Buy-only — the deferred path is
+        for entries; exits use the synchronous fractional sell."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        if order.side != "buy":
+            raise RobinhoodOrderError(
+                f"place_fractional_pending is buy-only (got {order.side} {order.symbol})")
+        notional = float(order.notional_usd or 0.0)
+        if notional < 1.0:
+            raise RobinhoodOrderError(
+                f"fractional buy {order.symbol}: notional ${notional:.2f} < $1 RH minimum")
+        acct = self._account_number or None
+        result = await asyncio.to_thread(
+            rs.orders.order_buy_fractional_by_price, order.symbol, notional,
+            account_number=acct, timeInForce="gfd",
+        )
+        result = result or {}
+        rh_id = result.get("id")
+        if not rh_id:
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty/None response (below $1, price-fetch fail, or rejected)")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept fractional buy {order.symbol}: {reason}")
+        return str(rh_id)
+
+    async def read_fractional_order(self, rh_id) -> dict:
+        """Single (non-blocking) read of a fractional order's state for the reconcile
+        loop — NEVER cancels. Returns the normalized terminal-truth fields
+        {state, filled_qty, avg_price, executed_notional, account}. `filled_qty` is
+        RH's realized `cumulative_quantity`; `account` is parsed from the order's
+        account URL for the routing-safety record."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        info = await asyncio.to_thread(rs.orders.get_stock_order_info, rh_id) or {}
+        return {
+            "state": str(info.get("state") or "").lower(),
+            "filled_qty": _rh_float(info.get("cumulative_quantity")),
+            "avg_price": _rh_float(info.get("average_price")),
+            "executed_notional": _rh_executed_notional(info),
+            "account": self._account_number_from(info),
+        }
+
+    async def cancel_fractional_order(self, rh_id) -> bool:
+        """Cancel a still-resting fractional order (the collar-miss branch — a GFD
+        order rests ALL DAY, so an un-cancelled miss could fill UNWATCHED later =
+        phantom position). Best-effort: returns False on a cancel hiccup rather than
+        raising (the reconcile loop logs + clears the pending row regardless)."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        try:
+            await asyncio.to_thread(rs.orders.cancel_stock_order, rh_id)
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("cancel_fractional_order(%s) failed: %s", rh_id, e)
+            return False
+
     async def fractional_eligible(self, symbol: str) -> bool:
         """RH per-symbol fractional eligibility (instrument.fractional_tradability ==
         'tradable'), cached per-process. Fail-open on a lookup hiccup — the order

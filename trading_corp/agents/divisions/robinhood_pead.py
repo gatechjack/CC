@@ -146,3 +146,18 @@ class RobinhoodPEADAgent:
             log.warning("RobinhoodPEADAgent.manage: no strategy attached — returning []")
             return [], _DEFAULT_IDLE_CADENCE_SEC
         return await self._strategy.manage(broker)
+
+    async def reconcile(
+        self, broker: Broker
+    ) -> tuple[list[ProposedOrder], int]:
+        """Flag-2 deferred-fill reconcile tick → `(promoted ProposedOrders,
+        next_poll_seconds)`. Drains the PENDING store at/after the open (promotes a
+        confirmed fill to a record, or cancels the >5% collar miss). No-op while
+        disabled/standby (returns idle cadence) so it ships INERT — same kill-switch
+        as scan()/manage()."""
+        if not self.enabled or self.standby:
+            return [], _DEFAULT_IDLE_CADENCE_SEC
+        if self._strategy is None:
+            log.warning("RobinhoodPEADAgent.reconcile: no strategy attached — returning []")
+            return [], _DEFAULT_IDLE_CADENCE_SEC
+        return await self._strategy.reconcile(broker)
