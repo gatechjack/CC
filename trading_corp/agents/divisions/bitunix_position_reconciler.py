@@ -211,18 +211,22 @@ def decide_sl_action(
 
 def _load_recent_bars(
     db_url: str,
+    symbol: str,
     timeframe: str,
     limit: int,
 ) -> list[dict]:
-    """Read the most recent `limit` bars at `timeframe`, ascending by ts_ms."""
+    """Read the most recent `limit` bars for `symbol` at `timeframe`, ascending
+    by ts_ms. The `symbol` filter is REQUIRED (2026-06-25 multi-coin
+    bitunix_bar_history migration: PK is now (symbol, ts_ms, timeframe)); without
+    it the query would interleave other coins' bars and corrupt the SL series."""
     try:
         with db.connect(db_url) as conn:
             rows = conn.execute(
                 "SELECT ts_ms, open, high, low, close, volume "
                 "FROM bitunix_bar_history "
-                "WHERE timeframe = ? "
+                "WHERE symbol = ? AND timeframe = ? "
                 "ORDER BY ts_ms DESC LIMIT ?",
-                (timeframe, int(limit)),
+                (symbol, timeframe, int(limit)),
             ).fetchall()
     except Exception as e:
         log.warning("reconciler: bar history read failed: %s", e)
@@ -282,11 +286,17 @@ async def reconciler_tick(
     if not positions:
         return 0
 
-    bars = _load_recent_bars(db_url, config.timeframe, config.bar_history_limit)
-    atr = _atr_from_bars(bars, config.atr_period) if bars else None
-
     written = 0
     for pos in positions:
+        # Per-position bar load keyed on the position's WIRE symbol. The
+        # bitunix_bar_history table is (symbol, ts_ms, timeframe)-keyed
+        # (2026-06-25 multi-coin migration), so bars MUST be symbol-scoped or
+        # they interleave other coins and corrupt the trail. BTC-only today.
+        bars = _load_recent_bars(
+            db_url, _match_symbol_key(pos.symbol),
+            config.timeframe, config.bar_history_limit,
+        )
+        atr = _atr_from_bars(bars, config.atr_period) if bars else None
         extreme = _extreme_since_tp2(pos, bars)
         decision = decide_sl_action(pos, atr, extreme, config)
         if decision is None:

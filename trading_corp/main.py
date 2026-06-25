@@ -1714,6 +1714,27 @@ async def run(argv: list[str] | None = None) -> int:
             name="bitunix-htf-funding",
         )
 
+        # bitunix_sfp capture (2026-06-25) — drive the SOL/ETH/XRP 15m+3m
+        # RECORD-ONLY caches so the archiver has bars to persist (BTC 15m is
+        # driven by the SFP signal loop; BTC 3m by bitunix_bar_cache). Cadence
+        # ~1/3 the bar duration. 15m+3m only; record-only (not traded).
+        for _wire in ("SOLUSDT", "ETHUSDT", "XRPUSDT"):
+            for _cap_cache, _cap_iv in (
+                (bitunix_sfp_15m_caches[_wire], 300.0),
+                (bitunix_capture_3m_caches[_wire], 60.0),
+            ):
+                try:
+                    await _cap_cache.refresh()
+                except Exception:
+                    log.exception(
+                        "bitunix capture cache %s/%s prime failed (continuing)",
+                        _cap_cache.symbol, _cap_cache.timeframe,
+                    )
+                asyncio.create_task(
+                    _cap_cache.run_poll_loop(interval_s=_cap_iv),
+                    name=f"bitunix-capture-{_cap_cache.symbol}-{_cap_cache.timeframe}",
+                )
+
         # PR 5a — bar archiver. Mirrors the slowest cache poll cadence
         # (60s) so we capture each new bar within ~one tick of when
         # it appears in any cache.

@@ -47,6 +47,7 @@ def _utc_now_iso() -> str:
 
 BAR_HISTORY_DDL = """
 CREATE TABLE IF NOT EXISTS bitunix_bar_history (
+    symbol       TEXT NOT NULL,
     ts_ms        INTEGER NOT NULL,
     timeframe    TEXT NOT NULL,
     open         REAL NOT NULL,
@@ -55,13 +56,15 @@ CREATE TABLE IF NOT EXISTS bitunix_bar_history (
     close        REAL NOT NULL,
     volume       REAL NOT NULL,
     inserted_at  TEXT NOT NULL,
-    PRIMARY KEY (ts_ms, timeframe)
+    PRIMARY KEY (symbol, ts_ms, timeframe)
 );
 """
 
+# 2026-06-25 multi-coin migration: PK is now (symbol, ts_ms, timeframe) so
+# SOL/ETH/XRP bars no longer collide with BTC on the same (ts_ms, timeframe).
 BAR_HISTORY_INDEX_DDL = (
-    "CREATE INDEX IF NOT EXISTS bitunix_bar_history_tf_ts_idx "
-    "ON bitunix_bar_history(timeframe, ts_ms)"
+    "CREATE INDEX IF NOT EXISTS bitunix_bar_history_sym_tf_ts_idx "
+    "ON bitunix_bar_history(symbol, timeframe, ts_ms)"
 )
 
 
@@ -120,7 +123,7 @@ class BitUnixBarArchiver:
                         continue
                     rows = [
                         (
-                            b.ts_ms, cache.timeframe,
+                            cache.symbol, b.ts_ms, cache.timeframe,
                             b.open, b.high, b.low, b.close, b.volume,
                             now,
                         )
@@ -128,8 +131,8 @@ class BitUnixBarArchiver:
                     ]
                     conn.executemany(
                         "INSERT OR IGNORE INTO bitunix_bar_history "
-                        "(ts_ms, timeframe, open, high, low, close, volume, inserted_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        "(symbol, ts_ms, timeframe, open, high, low, close, volume, inserted_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         rows,
                     )
                     self._high_water_mark[key] = max(b.ts_ms for b in new_bars)
