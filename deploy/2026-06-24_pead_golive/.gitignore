@@ -1,0 +1,4 @@
+# Build/transfer artifacts (regenerated; not source)
+golive_pkg.tgz
+*.patch
+prod_current/
