@@ -28,6 +28,13 @@ class UnknownSymbolError(ValueError):
 # come online (see runbooks/2026-05-29_bitunix_live_readiness_audit.md).
 _INTERNAL_TO_WIRE: dict[str, str] = {
     "BTC/USDT.P": "BTCUSDT",
+    # SOL/ETH/XRP added 2026-06-25 for the bitunix_sfp roadmap: today these are
+    # RECORD-ONLY (4-coin 15m+3m bar capture) and reserved for future SFP
+    # trading — each must be backtested before it enters a division's tradable
+    # `symbols:` list. Capture ≠ trade.
+    "SOL/USDT.P": "SOLUSDT",
+    "ETH/USDT.P": "ETHUSDT",
+    "XRP/USDT.P": "XRPUSDT",
 }
 
 _WIRE_TO_INTERNAL: dict[str, str] = {
