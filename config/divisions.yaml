@@ -148,6 +148,17 @@ divisions:
     standby: true
     enabled: true
 
+  - slug: bitunix_sfp
+    name: BitUnix SFP
+    broker: bitunix
+    account_filter: futures
+    secret_ref: bitunix_futures   # key-separation: reuse the existing account keys
+    intent: aggressive
+    benchmark: BTC-USD
+    target_annual_return: 0.50
+    standby: false
+    enabled: true
+
   # ── Polymarket (added 2026-05-09; read-only Phase 1 broker adapter) ────
   # Two divisions sharing the new "Polymarket" investment-type group.
   # polymarket_arbitrage uses the real broker (USDC + position reads from

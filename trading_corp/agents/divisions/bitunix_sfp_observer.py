@@ -328,8 +328,21 @@ class BitunixSfpObserver:
 
     async def _place(self, order: ProposedOrder, symbol_display: str, sig: SfpEntrySignal) -> None:
         """Slim placement writer. Paper → would_have_placed (never touches the
-        broker). Live → data_exec.place + Path-C live row."""
-        is_live = (self.config.execution_mode == "live") and self._yaml_auto_execute()
+        broker). Live → data_exec.place + Path-C live row.
+
+        Live placement requires ALL of: execution_mode:live, the runtime
+        auto_execute kill switch ON, AND the registered broker actually being
+        live (``paper=False``). The last clause prevents a half-flip
+        (execution_mode:live but the slug absent from ``--live-divisions`` → a
+        PaperExecutionBroker) from writing a mislabeled-live record."""
+        broker = self.data_exec.brokers.get(DIVISION) if hasattr(self.data_exec, "brokers") else None
+        broker_is_live = broker is not None and not getattr(broker, "paper", True)
+        cfg_live = (self.config.execution_mode == "live") and self._yaml_auto_execute()
+        if cfg_live and not broker_is_live:
+            log.warning("bitunix_sfp: execution_mode=live + auto_execute but the "
+                        "broker is paper/missing (slug not in --live-divisions?) — "
+                        "routing PAPER to avoid a mislabeled-live record")
+        is_live = cfg_live and broker_is_live
         intent = {
             "symbol": symbol_display, "side": order.side, "qty": order.qty,
             "sfp_mode": sig.sfp_mode, "order_id": order.id,

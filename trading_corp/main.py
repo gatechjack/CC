@@ -401,6 +401,18 @@ async def run(argv: list[str] | None = None) -> int:
     bitunix_d1_cache = LiveBarCache(
         symbol="BTCUSDT", timeframe="1d", venue="bitunix", max_bars=250,
     )
+    # bitunix_sfp (2026-06-25) — engine-side 15m signal caches (BTC traded) +
+    # 4-coin 15m/3m RECORD-ONLY capture (fed to the archiver below). Capture !=
+    # trade: only symbols in the bitunix_sfp `symbols:` list are traded (BTC
+    # today). pivot(50) needs >=101 closed 15m bars → max_bars=160 with margin.
+    bitunix_sfp_15m_caches = {
+        _w: LiveBarCache(symbol=_w, timeframe="15m", venue="bitunix", max_bars=160)
+        for _w in ("BTCUSDT", "SOLUSDT", "ETHUSDT", "XRPUSDT")
+    }
+    bitunix_capture_3m_caches = {
+        _w: LiveBarCache(symbol=_w, timeframe="3m", venue="bitunix", max_bars=200)
+        for _w in ("SOLUSDT", "ETHUSDT", "XRPUSDT")  # BTC 3m already cached above
+    }
     # Phase 3.2 — confluence score accumulator config (off by default;
     # flip `bitunix_futures.scoring.enabled: true` in strategies.yaml
     # after backtest greenlight). When disabled, the observer runs the
@@ -547,6 +559,8 @@ async def run(argv: list[str] | None = None) -> int:
             bitunix_h1_cache,
             bitunix_h4_cache,
             bitunix_d1_cache,
+            *bitunix_sfp_15m_caches.values(),     # 15m BTC/SOL/ETH/XRP (record)
+            *bitunix_capture_3m_caches.values(),  # 3m SOL/ETH/XRP (record)
         ),
     )
     # PR 3c — attach the provider to the observer after construction
@@ -560,6 +574,20 @@ async def run(argv: list[str] | None = None) -> int:
     from trading_corp.brokers.coinbase import CoinbaseBroker
     from trading_corp.utils.divisions import load_divisions
     divisions = load_divisions()
+
+    # Boot-guard (2026-06-25): the Bitunix account runs ONE live division at a
+    # time (ONE_WAY netting + symbol+side reconciler). Refuse to start if two
+    # bitunix divisions are both execution_mode:live — a misconfig that would let
+    # two strategies place real orders on the same account and net into one
+    # position. Key-separation makes this unreachable in practice (only one holds
+    # live keys); this is belt-and-suspenders.
+    _live_bx = _live_bitunix_divisions(divisions)
+    if len(_live_bx) >= 2:
+        raise SystemExit(
+            "REFUSING TO START: bitunix divisions both execution_mode:live "
+            f"{_live_bx}; only ONE may be live on the shared account "
+            "(ONE_WAY netting). Set all but one to execution_mode: paper."
+        )
 
     # 'default' division always uses PaperBroker (demo / fallback fills).
     paper_broker = PaperBroker(account="paper-default", starting_equity=100_000.0)
@@ -582,6 +610,40 @@ async def run(argv: list[str] | None = None) -> int:
         if broker is None:
             continue
         data_exec.register_broker(d.slug, broker)
+
+    # bitunix_sfp (2026-06-25) — engine-side SFP division. Reads its own
+    # strategies.yaml block; a sequential 15m loop walks its tradable `symbols:`
+    # list and routes BOS-confirmed long entries through the risk gate + the
+    # shared bracket. Needs data_exec.brokers["bitunix_sfp"] (registered above).
+    _sfp_raw = {}
+    try:
+        import yaml as _yaml_sfp
+        from pathlib import Path as _Path_sfp
+        with (_Path_sfp(__file__).resolve().parent.parent / "config" / "strategies.yaml").open() as _fsfp:
+            _sfp_raw = (_yaml_sfp.safe_load(_fsfp) or {}).get("bitunix_sfp") or {}
+    except Exception as _e:
+        log.warning("bitunix_sfp config read failed: %s", _e)
+    from trading_corp.agents.divisions.bitunix_sfp_observer import (
+        BitunixSfpConfig as _BitunixSfpConfig,
+        BitunixSfpObserver as _BitunixSfpObserver,
+    )
+    from trading_corp.brokers.bitunix_symbols import to_wire_format as _to_wire
+    _sfp_cfg = _BitunixSfpConfig.from_dict(_sfp_raw)
+    bitunix_sfp_observer = None
+    if _sfp_cfg.enabled:
+        try:
+            _sfp_caches = {_to_wire(_s): bitunix_sfp_15m_caches[_to_wire(_s)]
+                           for _s in _sfp_cfg.symbols}
+            bitunix_sfp_observer = _BitunixSfpObserver(
+                db_url=secrets.db_url, risk_agent=risk_agent, data_exec=data_exec,
+                logger_agent=logger_agent, config=_sfp_cfg, bar_caches=_sfp_caches,
+            )
+            log.info(
+                "bitunix_sfp observer wired: symbols=%s execution_mode=%s auto_execute=%s",
+                list(_sfp_cfg.symbols), _sfp_cfg.execution_mode, _sfp_cfg.auto_execute,
+            )
+        except Exception:
+            log.exception("bitunix_sfp observer wiring failed (continuing without it)")
 
     # connect_all() bootstraps each broker. Robinhood and Fidelity log in
     # exactly once across all instances of the same family thanks to module-
@@ -932,7 +994,14 @@ async def run(argv: list[str] | None = None) -> int:
     # (audit + telegram are local to the broker because PART_FILLED stuck
     # orders can't raise — they return a partial-fill tuple to place_order).
     # Same TelegramChannel singleton as data_exec — no parallel instance.
-    _bx_broker = data_exec.brokers.get("bitunix_futures")
+    # Per-account reconciler binding (2026-06-25): the position-state reconciler
+    # / auto-book / divergence-halt must follow the LIVE bitunix division (whose
+    # broker holds the account creds), NOT a hardcoded slug. The boot-guard
+    # guarantees <=1 bitunix division is execution_mode:live, so this resolves to
+    # exactly that division's broker (or None → reconciler stays off).
+    _live_bx_slug = _live_bx[0] if _live_bx else None
+    _recon_exec_mode = "live" if _live_bx_slug else "paper"
+    _bx_broker = data_exec.brokers.get(_live_bx_slug) if _live_bx_slug else None
     if _bx_broker is not None and hasattr(_bx_broker, "safety_notifier"):
         _bx_broker.safety_notifier = channel
 
@@ -1680,13 +1749,26 @@ async def run(argv: list[str] | None = None) -> int:
             name="bitunix-pa-redeem",
         )
 
+        # bitunix_sfp — prime caches, warm-start detectors from history, spawn
+        # the sequential 15m signal loop.
+        if bitunix_sfp_observer is not None:
+            try:
+                for _c in bitunix_sfp_observer.bar_caches.values():
+                    await _c.refresh()
+                bitunix_sfp_observer.warm_start_from_cache()
+                asyncio.create_task(bitunix_sfp_observer.run_loop(), name="bitunix-sfp-loop")
+                log.info("bitunix_sfp 15m loop spawned (%d symbol cache(s) primed)",
+                         len(bitunix_sfp_observer.bar_caches))
+            except Exception:
+                log.exception("bitunix_sfp loop spawn failed (continuing)")
+
         # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5a): restart-resume ──
         # cases (a) match + (b) orphan + (c-deferred). Runs BEFORE the
         # position-state reconciler so the broker_order_id-aware match
         # pass happens first; reconcile_position_state's startup sweep
         # is then redundant but cheap (idempotent).
         if (
-            _execution_mode == "live"
+            _recon_exec_mode == "live"
             and _bx_broker is not None
             and hasattr(_bx_broker, "get_pending_positions")
         ):
@@ -1728,7 +1810,7 @@ async def run(argv: list[str] | None = None) -> int:
         # halts and AttributeError noise. The reconciler itself catches all
         # broker exceptions; the gate is belt-and-suspenders + clarity.
         if (
-            _execution_mode == "live"
+            _recon_exec_mode == "live"
             and _bx_broker is not None
             and hasattr(_bx_broker, "get_pending_positions")
         ):
@@ -1766,7 +1848,7 @@ async def run(argv: list[str] | None = None) -> int:
         # (broker auto-close during idle, operator UI changes, etc.).
         # Notifier is passed in lazily — wired below as soon as it lands.
         if (
-            _execution_mode == "live"
+            _recon_exec_mode == "live"
             and _bx_broker is not None
             and hasattr(_bx_broker, "get_pending_positions")
         ):
@@ -1962,6 +2044,44 @@ async def run(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _resolve_bitunix_creds(division, secrets):
+    """Resolve (api_key, api_secret) for a bitunix division via its `secret_ref`
+    (falling back to legacy `bitunix_futures` creds when unset). Per-division
+    key-separation seam (2026-06-25): bitunix_sfp inherits the existing account
+    keys via `secret_ref: bitunix_futures`. getattr keeps resolution to
+    explicitly-declared secrets fields."""
+    ref = getattr(division, "secret_ref", None) or "bitunix_futures"
+    return (
+        getattr(secrets, f"{ref}_api_key", None),
+        getattr(secrets, f"{ref}_api_secret", None),
+    )
+
+
+def _live_bitunix_divisions(divisions, strategies_yaml_path=None) -> list[str]:
+    """Slugs of enabled `broker: bitunix` divisions whose strategies.yaml block
+    is `execution_mode: live`. Drives the boot-guard (refuse >=2 → one live
+    account at a time under ONE_WAY netting) and the per-account reconciler
+    binding. Read failure ⇒ [] (fail-safe)."""
+    import yaml as _y
+    from pathlib import Path as _P
+    path = strategies_yaml_path or (
+        _P(__file__).resolve().parent.parent / "config" / "strategies.yaml"
+    )
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = _y.safe_load(f) or {}
+    except Exception:
+        return []
+    out: list[str] = []
+    for d in divisions:
+        if getattr(d, "broker", None) != "bitunix" or not getattr(d, "enabled", True):
+            continue
+        block = raw.get(d.slug) or {}
+        if str(block.get("execution_mode", "paper")).lower() == "live":
+            out.append(d.slug)
+    return out
+
+
 def _build_broker_for_division(
     division,
     secrets,
@@ -2060,9 +2180,10 @@ def _build_broker_for_division(
         # any orders simulate via PaperBroker. Live order placement lands in
         # Phase 4 per `trading_corp_bitunix_vision.md`.
         from trading_corp.brokers.bitunix import BitunixBroker
+        _bx_key, _bx_secret = _resolve_bitunix_creds(division, secrets)
         bx = BitunixBroker(
-            api_key=secrets.bitunix_futures_api_key,
-            api_secret=secrets.bitunix_futures_api_secret,
+            api_key=_bx_key,
+            api_secret=_bx_secret,
             logger=logger_agent,
         )
         if is_live_division:

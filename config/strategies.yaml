@@ -1927,3 +1927,23 @@ robinhood_pead:
   # NOTE: live sizing / exit-rule / max_concurrent params land in Phase 2 (2E)
   # when the division is wired. position_pct + max_concurrent there will be
   # PLUMBING-VALIDATION values at $75 (the intended ~20-25 name book needs funding).
+
+bitunix_sfp:
+  enabled: true
+  auto_execute: true
+  execution_mode: paper            # OPERATOR-SET paper|live at deploy
+  division: bitunix_sfp
+  symbols: ["BTC/USDT.P"]
+  detection_tf: "15m"
+  pivot_len: 50
+  back_to_break: 4
+  stop_buffer_pct: 0.001
+  tp_r: 2.0
+  watch_hours: 12
+  side: long
+  risk_pct_real: 0.005             # OPERATOR-SET
+  risk_pct_considerable: 0.005     # OPERATOR-SET
+  leverage: 5.0                    # OPERATOR-SET
+  max_hold_seconds: 604800
+  bar_cache_max_bars: 160
+  loop_settle_seconds: 20
