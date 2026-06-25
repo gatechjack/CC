@@ -171,13 +171,15 @@ def test_symbol_roundtrip():
 
 
 def test_symbol_unknown_internal_raises():
-    with pytest.raises(UnknownSymbolError, match="SOL/USDT.P"):
-        to_wire_format("SOL/USDT.P")
+    # ZZZ is intentionally unmapped (SOL/ETH/XRP were added to the SSOT
+    # 2026-06-25 for the bitunix_sfp roadmap, so they no longer raise).
+    with pytest.raises(UnknownSymbolError, match="ZZZ/USDT.P"):
+        to_wire_format("ZZZ/USDT.P")
 
 
 def test_symbol_unknown_wire_raises():
     with pytest.raises(UnknownSymbolError):
-        to_internal_format("ETHUSDT")
+        to_internal_format("ZZZUSDT")
 
 
 # ---------------------------------------------------------------------------
