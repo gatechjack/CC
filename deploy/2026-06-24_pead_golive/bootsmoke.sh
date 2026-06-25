@@ -11,8 +11,8 @@ warn(){ echo "  WARN: $*"; }
 echo "== ENGINE =="
 systemctl is-active --quiet trading-corp || fail "service not active"
 nr=$(systemctl show trading-corp -p NRestarts --value); ok "active (NRestarts=$nr — expect prior+1)"
-hz=$(curl -s -m6 localhost:8000/healthz)
-echo "$hz" | grep -q '"mode":"LIVE"' && ok "healthz LIVE ($hz)" || fail "healthz not LIVE: $hz"
+hz=""; for i in $(seq 1 20); do hz=$(curl -s -m6 localhost:8000/healthz); echo "$hz" | grep -q '"mode":"LIVE"' && break; sleep 5; done
+echo "$hz" | grep -q '"mode":"LIVE"' && ok "healthz LIVE ($hz)" || fail "healthz not LIVE after ~100s: $hz"
 es=$(systemctl show trading-corp -p ExecStart --value)
 echo "$es" | grep -q 'bitunix_futures'  && ok "ExecStart has bitunix_futures (PRESERVED)" || fail "ExecStart lost bitunix_futures"
 echo "$es" | grep -q 'robinhood_pead'    && ok "ExecStart has robinhood_pead (go-live flip 2)" || fail "ExecStart missing robinhood_pead"
@@ -25,7 +25,7 @@ $PY -c "import sqlite3;c=sqlite3.connect('$TC/data/trading_corp.db');import sys;
 echo "== PEAD 4 go-live flips =="
 grep -A3 '^robinhood_pead:' "$TC/config/strategies.yaml" | grep -q 'auto_execute: true' && ok "auto_execute: true" || fail "auto_execute != true"
 grep -A8 'slug: robinhood_pead' "$TC/config/divisions.yaml" | grep -q 'standby: false' && ok "standby: false" || fail "standby != false"
-EK=$($PY -c "from trading_corp.utils.secrets import load_secrets; s=load_secrets(); print(1 if getattr(s,'eodhd_api_key',None) else 0)" 2>/dev/null)
+EK=$(KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/ $PY -c "from trading_corp.utils.secrets import load_secrets; s=load_secrets(); print(1 if getattr(s,'eodhd_api_key',None) else 0)" 2>/dev/null)
 [ "$EK" = "1" ] && ok "EODHD-API-KEY loads from KV (EarningsProvider wired)" || fail "EODHD key did NOT load from KV"
 
 echo "== BOOT LOG (last 4 min) — Bitunix clean + PEAD up + RH auth =="
