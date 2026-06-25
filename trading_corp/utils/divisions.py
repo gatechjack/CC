@@ -64,6 +64,12 @@ class Division:
     fak_poll_seconds: float | None = None
     exit_chase: dict | None = None
 
+    # Per-division broker credentials (2026-06-25, bitunix_sfp key-separation):
+    # selects which `secrets.<ref>_api_key/_api_secret` the broker resolves.
+    # None ⇒ family default (bitunix → bitunix_futures creds). Only the bitunix
+    # branch of _build_broker_for_division reads it; inert for every other family.
+    secret_ref: str | None = None
+
     # Filled in at runtime by the dashboard data layer; kept here for type
     # convenience so templates can iterate `division.equity` etc. directly.
     equity: float | None = None
@@ -161,6 +167,7 @@ def load_divisions(path: Path = _DEFAULT_PATH) -> list[Division]:
                     if entry.get("fak_poll_seconds") is not None else None
                 ),
                 exit_chase=entry.get("exit_chase"),
+                secret_ref=entry.get("secret_ref"),
             )
         except KeyError as e:
             log.warning("divisions.yaml: skipping entry missing key %s — %r", e, entry)
