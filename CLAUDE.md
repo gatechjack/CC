@@ -617,6 +617,17 @@ elsewhere in this file. The full catalog is at
   Watch the audit log for "would have fired but didn't." Full entry:
   [docs/sharp_edges.md#config-hot-reload-has-no-validation](docs/sharp_edges.md#config-hot-reload-has-no-validation).
 
+- **Prod deploys: the operator has NO sudo password.** NOPASSWD scope =
+  `systemctl`/`journalctl`/`sqlite3` for `trading-corp` only — **no file
+  edits**. Root-owned edits (e.g. the unit's `--live-divisions` in
+  `/etc/systemd/system/trading-corp.service`) go via **Azure Portal Run
+  Command** (runs as root), with **SHORT lines only** — the Run Command box
+  wraps lines >~100 chars (same hazard as the operator's PowerShell paste).
+  Never hand the operator `sudo cp`/`sudo sed`; `daemon-reload`/`restart`
+  are NOPASSWD. Config kill-switches (`auto_execute`/`standby`) are
+  azureuser-writable + mtime-hot-reloaded — no sudo, no restart. Memory:
+  `prod-sudo-constraint-no-password`; example: 2026-06-25 PEAD go-live.
+
 ---
 
 ## 6. How to use this file

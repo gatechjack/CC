@@ -116,6 +116,52 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-25 01:02 UTC — Robinhood PEAD GO-LIVE (fractional + flag-2 deferred-fill reconcile; all 4 flips; Bitunix preserved)
+
+> ⚠ This entry is on branch `robinhood-pead-2026-06-20` (UNMERGED). **This branch's deploy_log LAGS `main`** — the 2026-06-16..06-23 bitunix/pead-joint deploys are logged on main, not below. Reconcile on merge.
+
+**Commits:** `6228a0b` (flag-2 build) + `55111d1` (deploy pkg) + `12df308` (result/fixes), on `bb9741a` (fractional). Pushed to origin/robinhood-pead-2026-06-20.
+**Triggered by:** operator go-live request (operator away next day; wanted PEAD trading at the 9:30 ET open).
+**Backup tag:** `.bak-pre-golive-2026-06-24` (8 files on prod) + `trading-corp.service.bak-pre-golive-2026-06-24` (unit, via Run Command).
+
+**Files deployed (8 — surgical superset onto `/home/azureuser/trading_corp`; prod's Bitunix hotfixes PRESERVED):**
+- `config/strategies.yaml` — robinhood_pead: `auto_execute:true` + reconcile knobs (GATE 1: bitunix fee-coupled byte-intact)
+- `config/divisions.yaml` — robinhood_pead `standby:false`
+- `trading_corp/brokers/robinhood.py` — fractional (`_place_fractional_stock_order`) + flag-2 (`place_fractional_pending`/`read_fractional_order`/`cancel_fractional_order`); whole-share/limit/option byte-untouched
+- `trading_corp/agents/strategies/pead_strategy.py` — fractional sizing + deferred scan + `reconcile()`/`_promote_pending()`
+- `trading_corp/agents/divisions/robinhood_pead.py` — division `reconcile()` delegation
+- `trading_corp/main.py` — SUPERSET (prod content + `_scheduled_pead_reconcile_loop` + task)
+- `trading_corp/persistence/db.py` — `pending_order` table
+- `trading_corp/persistence/models.py` — SUPERSET (prod content + fractional fields notional_usd/fractional/executed_notional)
+- + systemd unit ExecStart `--live-divisions … robinhood_pead` (via **Azure Run Command**, root — operator has no sudo password)
+
+**Features shipped (is-X-done checks):**
+- PEAD long-only post-earnings-drift LIVE on RH agentic acct **680725082** (execution_mode=live; scans pre-open 8:30–9:25 ET; autonomous, no HITL).
+- Flag-2 deferred-fill reconcile: pre-open GFD fractional buy (NO synchronous 90s cancel) → `pending_order` row → reconcile loop confirms the fill at/after the 9:30 open → promotes to a real `paper_trade_record` (or cancels the >5% collar miss). **First LIVE run = 2026-06-25 9:30 ET open.**
+- Fractional equal-dollar sizing (position_pct × equity).
+
+**Verification:** PID 3418240→**3511979**; healthz LIVE; both divisions in ExecStart; RH auth 680725082 (22h pickle was valid — `connect()` reused, no refresh); `pending_order` created; scan+reconcile+manage loops online; /telemetry/pead 200; Bitunix paper=False + caches primed + fee-coupled intact (GATE 1 PASS); no tracebacks.
+
+**Notable (a future Claude shouldn't miss):**
+- Operator has **NO sudo password** → root-owned unit edits go via **Azure Portal Run Command** (root), SHORT lines only (portal wraps >~100 chars). NOPASSWD = systemctl/journalctl/sqlite3 only. Memory: `prod-sudo-constraint-no-password`.
+- **Kill switch (hot, no sudo):** flip robinhood_pead `auto_execute:false` in `config/strategies.yaml` (mtime hot-reload) → `cc\golive_kill_pead.ps1`.
+- Flag-2 was NOT offline-proven (gate34 pre-open proof harness) before go-live — it runs LIVE for the first time at the open. NEXT SESSION: verify that first live reconcile worked.
+
+**Inert / dormant:** none — PEAD is live + active.
+
+**Rollback recipe:**
+```bash
+# 1) files (azureuser, no sudo):
+ssh azureuser@trading.jacksumner.com 'bash /tmp/pead_golive/rollback.sh'
+# 2) unit ExecStart revert — Azure Run Command (root), short lines:
+#    sed -i 's/ robinhood_pead//g' /etc/systemd/system/trading-corp.service ; systemctl daemon-reload
+# 3) restart (NOPASSWD):
+ssh azureuser@trading.jacksumner.com 'sudo systemctl restart trading-corp'
+```
+Full record: `deploy/2026-06-24_pead_golive/GOLIVE_RESULT.md` (+ Desktop\bitunix_reports).
+
+---
+
 ## 2026-06-15 ~00:02 UTC — Bitunix P2 auto-book + latch-release DEPLOYED (single-file reconciler; clears stuck latch + installs self-recovery)
 
 **STATE VERB: DEPLOYED + LOADED + VERIFIED (operator-supervised; §4 gate lifted for the sequence).**
