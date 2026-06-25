@@ -1941,9 +1941,9 @@ bitunix_sfp:
   tp_r: 2.0
   watch_hours: 12
   side: long
-  risk_pct_real: 0.005             # OPERATOR-SET
-  risk_pct_considerable: 0.005     # OPERATOR-SET
-  leverage: 5.0                    # OPERATOR-SET
+  risk_pct_real: 0.0025            # OPERATOR-SET 2026-06-25 (conservative, below 0.005 default)
+  risk_pct_considerable: 0.0025    # OPERATOR-SET 2026-06-25 (conservative)
+  leverage: 2.0                    # OPERATOR-SET 2026-06-25 (conservative, below 5.0 default)
   max_hold_seconds: 604800
   bar_cache_max_bars: 160
   loop_settle_seconds: 20
