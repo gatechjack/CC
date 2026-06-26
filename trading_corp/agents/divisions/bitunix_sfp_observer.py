@@ -6,11 +6,17 @@ aligned to the 15m bar close, walks the configured ``symbols`` list, feeds each
 symbol's freshly-closed bars to its detectors, and on a BOS-confirmed signal
 builds a :class:`ProposedOrder`, runs the MANDATORY risk gate
 (``RiskAgent.evaluate`` — the single chokepoint, CLAUDE.md #1), and places via a
-slim writer that reuses the shared execution machinery
-(``data_exec.place(division="bitunix_sfp")`` → native ``/tpsl/`` bracket + B1
-server-side stop). Live entries write a Path-C ``paper_trade_record`` row tagged
-``execution_mode="live"`` + ``broker_order_id`` so the existing per-account
-reconciler / auto-book / ref-vs-fill track and book the position UNCHANGED.
+slim writer that reuses the shared execution machinery: ``data_exec.place(
+division="bitunix_sfp")`` places the entry + the atomic B1 server-side stop, and
+``_place`` THEN rests a SINGLE full-qty native ``/tpsl/`` reduce-only TP leg
+post-fill (OCO with the B1 stop) so a winning trade actually closes at 2R on the
+venue — not just on the stop. ``place_order`` itself attaches ONLY the B1 stop;
+the TP is a separate post-fill ``place_tpsl_order`` call (fail-soft + LOUD: any
+TP-place failure leaves the filled entry + B1 stop intact and alerts, never
+silent, never unwinds the entry). Live entries write a Path-C
+``paper_trade_record`` row tagged ``execution_mode="live"`` + ``broker_order_id``
+so the existing per-account reconciler / auto-book / ref-vs-fill track and book
+the position UNCHANGED.
 
 This is a NEW signal + division wired into proven execution — NOT new execution
 logic. It deliberately does NOT reuse the 3500-line confluence observer (a
@@ -368,6 +374,12 @@ class BitunixSfpObserver:
                                                 "error_type": type(e).__name__})
             return
         self._write_record(order, live=True, fill=fill)
+        # ── Post-fill TP placement ──────────────────────────────────────────
+        # The entry + atomic B1 stop are now live. place_order does NOT submit a
+        # TP, so rest the real /tpsl/ reduce-only TP leg here. Fail-soft + LOUD:
+        # any failure leaves the entry + B1 stop intact (downside capped at the
+        # structural stop) and alerts — NEVER silent, NEVER unwinds the entry.
+        await self._place_tp_leg(order, symbol_display)
 
     def _write_record(self, order: ProposedOrder, *, live: bool, fill: Any) -> None:
         try:
@@ -385,6 +397,167 @@ class BitunixSfpObserver:
         except Exception as e:
             log.warning("bitunix_sfp: paper_trade_record write failed "
                         "(live=%s; broker may have placed): %s", live, e)
+
+    # ------------------------------------------------------------------ #
+    # Post-fill TP leg (the SFP edge depends on the 2R TP firing live)
+    # ------------------------------------------------------------------ #
+    async def _place_tp_leg(self, order: ProposedOrder, symbol_display: str) -> None:
+        """Rest ONE full-qty native /tpsl/ reduce-only TP leg after the live entry
+        fills (OCO with the atomic B1 stop, which is UNCHANGED). Fail-soft + LOUD
+        on EVERY failure path: leave the position SL-only (downside capped at the
+        structural stop) and alert (audit + telegram) — never silent, and never
+        unwind the filled entry. NO retry loop (place_tpsl_order is idempotency-
+        aware at the venue + the concurrent-position guard blocks re-entry)."""
+        try:
+            broker = (self.data_exec.brokers.get(DIVISION)
+                      if hasattr(self.data_exec, "brokers") else None)
+            tp_price = float(order.extra.get("take_profit_price") or 0.0)
+            if broker is None or not hasattr(broker, "place_tpsl_order") or tp_price <= 0.0:
+                await self._tp_alert("sfp_tp_unsupported", order,
+                    f"no /tpsl/ broker or tp_price={tp_price} — position is SL-only",
+                    {"tp_price": tp_price})
+                return
+
+            position_id, pos_qty = await self._resolve_position(broker, order)
+            if not position_id:
+                await self._tp_alert("sfp_tp_unresolved_position", order,
+                    "venue positionId unresolved after fill — SL-only (B1 guards)",
+                    {"requested_qty": float(order.qty)})
+                return
+
+            # Single full-qty leg; reuse build_bracket_legs for the 0.0003 BTC
+            # min-leg floor + the 0-legs->SL-only branch (single source of truth).
+            from trading_corp.agents.divisions.bitunix_bracket import build_bracket_legs
+            qty = float(pos_qty or order.qty)
+            legs, note = build_bracket_legs(
+                qty, [{"leg": "tp1", "price": tp_price, "fraction": 1.0}])
+            if not legs:
+                await self._tp_alert("sfp_tp_skipped_submin", order,
+                    f"entry qty {qty} below min leg — SL-only ({note})",
+                    {"qty": qty, "note": note})
+                return
+            leg = legs[0]
+
+            from trading_corp.brokers.bitunix_exceptions import BitunixUntrackedTpslOrder
+            try:
+                tp_order_id = await broker.place_tpsl_order(
+                    symbol=order.symbol, position_id=position_id,
+                    tp_price=tp_price, tp_qty=leg.qty,
+                )
+            except BitunixUntrackedTpslOrder as e:
+                await self._tp_alert("sfp_tp_untracked", order,
+                    "TP leg POST reached the venue but its id was uncaptured — the "
+                    "leg may be RESTING UNTRACKED; RECONCILE. B1 stop still guards.",
+                    {"position_id": position_id, "tp_price": tp_price,
+                     "tp_qty": leg.qty, "error": str(e), "error_type": type(e).__name__})
+                return
+            except Exception as e:
+                await self._tp_alert("sfp_tp_place_failed", order,
+                    f"TP leg placement FAILED — SL-only (B1 stop guards): {e}",
+                    {"position_id": position_id, "tp_price": tp_price,
+                     "tp_qty": leg.qty, "error": str(e), "error_type": type(e).__name__})
+                return
+
+            if not tp_order_id:
+                # Empty id WITHOUT an exception = idempotent duplicate (leg already
+                # resting from a prior attempt). Not a new order; don't double-count.
+                log.warning("bitunix_sfp: TP leg returned no id (idempotent "
+                            "duplicate / already resting) order_id=%s", order.id)
+
+            self._persist_tp(order, position_id, tp_price, leg.qty, tp_order_id or "")
+            self._audit("sfp_bracket_placed", {
+                "order_id": order.id, "symbol": symbol_display,
+                "tp_order_id": tp_order_id or "", "tp_price": tp_price,
+                "tp_qty": leg.qty, "position_id": position_id, "degrade_note": note})
+        except Exception as e:
+            # Belt-and-suspenders: the TP path must NEVER crash the loop or unwind
+            # the (already filled) entry. Any uncaught error -> loud alert, entry intact.
+            try:
+                await self._tp_alert("sfp_tp_unexpected_error", order,
+                    f"unexpected error placing TP — SL-only (B1 guards): {e}",
+                    {"error": str(e), "error_type": type(e).__name__})
+            except Exception:
+                log.exception("bitunix_sfp: TP placement AND its alert both failed "
+                              "(entry intact, B1 guards) order_id=%s",
+                              getattr(order, "id", None))
+
+    async def _resolve_position(self, broker: Any, order: ProposedOrder
+                                ) -> tuple[str | None, float | None]:
+        """Match the just-opened venue position by wire-symbol + side; return
+        (positionId, qty). (None, None) if unresolved — caller leaves SL-only."""
+        try:
+            order_wire = to_wire_format(order.symbol or "")
+        except Exception:
+            order_wire = (order.symbol or "").upper()
+        entry_side = (order.side or "").lower()
+        try:
+            positions = await broker.get_pending_positions()
+        except Exception as e:
+            log.warning("bitunix_sfp: get_pending_positions failed: %s", e)
+            return None, None
+        for p in positions or []:
+            try:
+                p_wire = to_wire_format(getattr(p, "symbol", "") or "")
+            except Exception:
+                p_wire = (getattr(p, "symbol", "") or "").upper()
+            p_side_raw = str((getattr(p, "extra", None) or {}).get("side", "")).upper()
+            p_side = "buy" if p_side_raw in ("LONG", "BUY") else "sell"
+            if p_wire == order_wire and p_side == entry_side:
+                pid = (getattr(p, "extra", None) or {}).get("positionId")
+                if pid:
+                    return str(pid), abs(float(getattr(p, "qty", 0.0) or 0.0))
+        return None, None
+
+    def _persist_tp(self, order: ProposedOrder, position_id: str,
+                    tp_price: float, tp_qty: float, tp_order_id: str) -> None:
+        """Inline UPDATE of the entry row's extra_json with the bracket TP state
+        (mirrors the futures observer's inline db.connect UPDATE; no db.py helper).
+        The row already exists (written at entry) so this MUST be an UPDATE."""
+        import json
+        try:
+            with db.connect(self.db_url) as conn:
+                row = conn.execute(
+                    "SELECT extra_json FROM paper_trade_record WHERE order_id=?",
+                    (order.id,),
+                ).fetchone()
+                extra: dict = {}
+                if row and row["extra_json"]:
+                    try:
+                        extra = json.loads(row["extra_json"])
+                    except (TypeError, ValueError):
+                        extra = {}
+                extra["bracket_tp_order_id"] = tp_order_id
+                extra["bracket_position_id"] = position_id
+                extra["bracket_tp_qty"] = tp_qty
+                extra["bracket_tp_price"] = tp_price
+                conn.execute(
+                    "UPDATE paper_trade_record SET extra_json=? WHERE order_id=?",
+                    (json.dumps(extra, default=str), order.id),
+                )
+        except Exception as e:
+            log.error("bitunix_sfp: TP bracket-state persist failed "
+                      "(leg may be placed at venue): %s", e)
+
+    async def _tp_alert(self, kind: str, order: ProposedOrder, text: str,
+                        payload: dict) -> None:
+        """LOUD, never-silent alert for a TP-placement issue: audit_event (dashboard)
+        + log.error + best-effort Telegram via data_exec.safety_notifier (guarded,
+        never raises). The filled entry + B1 stop are intact regardless."""
+        full = {"order_id": getattr(order, "id", None),
+                "symbol": getattr(order, "symbol", None), **(payload or {})}
+        self._audit(kind, full)
+        log.error("bitunix_sfp: %s — %s (order_id=%s)",
+                  kind, text, getattr(order, "id", None))
+        notifier = getattr(self.data_exec, "safety_notifier", None)
+        if notifier is not None:
+            try:
+                await notifier.push(
+                    f"⚠ SFP TP NOT PLACED ({kind})\n{text}\n"
+                    f"order_id={getattr(order, 'id', None)}",
+                    audit_path="bitunix_sfp", audit_context=full,
+                )
+            except Exception as e:
+                log.warning("bitunix_sfp: safety_notifier.push raised: %s", e)
 
     # ------------------------------------------------------------------ #
     # Helpers

@@ -613,8 +613,10 @@ async def run(argv: list[str] | None = None) -> int:
 
     # bitunix_sfp (2026-06-25) — engine-side SFP division. Reads its own
     # strategies.yaml block; a sequential 15m loop walks its tradable `symbols:`
-    # list and routes BOS-confirmed long entries through the risk gate + the
-    # shared bracket. Needs data_exec.brokers["bitunix_sfp"] (registered above).
+    # list, routes BOS-confirmed long entries through the risk gate, then places
+    # the entry + atomic B1 server-side stop and rests a post-fill native /tpsl/
+    # reduce-only TP leg (NOT a shared bracket). Needs
+    # data_exec.brokers["bitunix_sfp"] (registered above).
     _sfp_raw = {}
     try:
         import yaml as _yaml_sfp
