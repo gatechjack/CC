@@ -16,6 +16,7 @@ Daily OHLC bars stay on yfinance (the code-safety / backtest source); the live
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -55,6 +56,7 @@ _BARS_LOOKBACK_DAYS = 180              # daily bars window for ATR / swing / gap
 _DEFAULT_RECONCILE_POLL_SEC = 30                  # reconcile-loop tick while pending orders exist
 _DEFAULT_RECONCILE_DEADLINE_AFTER_OPEN_SEC = 300  # wait past the 9:30 ET open before collar-miss cancel
 _DEFAULT_RECONCILE_PARTIAL_WARN_FRAC = 0.90       # warn when realized $ < this fraction of requested
+_DEFAULT_INTENT_BUFFER_SEC = 60        # seconds after open before placing intent orders (~9:31 ET)
 
 
 @dataclass
@@ -284,7 +286,7 @@ class PEADStrategy:
         emax = int(cfg.get("entry_max_delay_days", _DEFAULT_ENTRY_MAX_DELAY_DAYS))
         today = datetime.now(timezone.utc).date()
 
-        held = self._held_symbols() | self._pending_symbols()   # pending entries reserve a slot too
+        held = self._held_symbols() | self._pending_symbols()   # pending+intent entries reserve a slot too
         capacity = max_concurrent - len(held)
         if capacity <= 0:
             log.info("pead_strategy.scan: book full (%d) — no entries", len(held))
@@ -299,7 +301,7 @@ class PEADStrategy:
         for sym in universe:
             if sym in held:
                 continue
-            eps_rows = self._provider.get_quarterly_eps(sym)
+            eps_rows = await asyncio.to_thread(self._provider.get_quarterly_eps, sym)
             if not eps_rows:
                 continue
             latest = eps_rows[-1]
@@ -309,7 +311,7 @@ class PEADStrategy:
             days_ago = business_days(ann, today)
             if not (emin <= days_ago <= emax):
                 continue                              # not in the 1-2-day window
-            bars = self._fetch_daily_bars(sym)
+            bars = await asyncio.to_thread(self._fetch_daily_bars, sym)
             if not bars:
                 continue
             facts = self._provider.get_company_facts(sym) or {}
@@ -385,22 +387,20 @@ class PEADStrategy:
             )
             if not self._risk_ok(order, equity):
                 continue
-            # Flag-2 DEFERRED placement (LIVE): PEAD scans PRE-OPEN, so a GFD
-            # fractional buy queues to the 9:30 open. Place WITHOUT polling, store the
-            # order id as PENDING (NOT a position — invariant), and let the reconcile
-            # loop promote it to a record on the CONFIRMED open fill. The PAPER path
-            # is UNCHANGED (no real order; estimate qty + record now).
+            # Entry-fix (LIVE): RH REJECTS fractional market_hours='regular_hours' orders
+            # submitted pre-market (accepts the POST but immediately sets state=rejected —
+            # there is no robin_stocks path to queue a fractional order pre-market). Fix:
+            # write an INTENT row now (NO broker call); reconcile() Phase-1 submits the
+            # real order at open+buffer (~9:31 ET) via _place_or_paper → data_exec.place.
+            # The PAPER path is UNCHANGED (no real order; estimate qty + record now).
             if self._is_live():
-                rh_id = await self._place_pending(order, broker)
-                if rh_id is None:
-                    continue
-                self._write_pending(order, rh_id, max_hold_seconds=max_hold_seconds)
+                self._write_intent(order, max_hold_seconds=max_hold_seconds)
                 if available_bp is not None:             # RESERVE settled BP on the requested notional (#5)
                     available_bp = float(available_bp) - notional_budget
                 self.logger_agent.log_event(
-                    self.SLUG, "pead_pending",
+                    self.SLUG, "pead_intent",
                     {"strategy": self.SLUG, "division": self.SLUG, "symbol": cand.symbol,
-                     "notional": notional_budget, "broker_order_id": rh_id,
+                     "notional": notional_budget,
                      "sue": round(float(cand.sue), 3),
                      "entry_reference_price": order.extra.get("entry_reference_price")},
                 )
@@ -558,33 +558,21 @@ class PEADStrategy:
                 (float(residual_qty), order_id),
             )
 
-    # ── Flag-2: deferred-fill reconcile (PENDING != open position) ────────────
-    # PEAD places its entries PRE-OPEN as GFD fractional buys (which RH queues to the
-    # 9:30 open). A synchronous poll-to-fill would CANCEL them before they fill, so
-    # the LIVE entry path DEFERS: place without polling, store the order id in the
-    # `pending_order` table (NEVER counted in the book), and reconcile the realized
-    # fill at/after the open. A pending order transitions to a real open record ONLY
-    # on a CONFIRMED fill with realized qty — no confirmed fill = no position.
-    async def _place_pending(self, order: ProposedOrder, broker) -> str | None:
-        """Place the GFD fractional buy WITHOUT polling; return RH's order id (the
-        reconcile loop confirms the fill at the open). None on a non-accepted order or
-        a broker lacking the deferred path (paper/stub) — the caller skips the name."""
-        fn = getattr(broker, "place_fractional_pending", None)
-        if fn is None:
-            log.warning("pead_strategy: broker has no place_fractional_pending — skip %s",
-                        order.symbol)
-            return None
-        try:
-            rh_id = await fn(order)
-        except Exception as e:  # noqa: BLE001
-            log.warning("pead_strategy: deferred place failed %s: %s", order.symbol, e)
-            return None
-        return str(rh_id) if rh_id else None
+    # ── Flag-2 / Entry-fix: intent → at-open placement ───────────────────────────
+    # RH REJECTS fractional market_hours='regular_hours' orders submitted pre-market
+    # (accepts the POST but immediately sets state=rejected — no path to queue pre-open).
+    # Fix: scan() writes an INTENT row (NO broker call at all). reconcile() Phase-1
+    # submits the real order at open+buffer (~9:31 ET default) via _place_or_paper →
+    # data_exec.place (the same regular-hours path that filled in the 2026-06-24 probe).
+    # An intent row is NEVER counted in the position book; it becomes a real
+    # paper_trade_record ONLY on a confirmed fill — no confirmed fill = no position.
 
-    def _write_pending(self, order: ProposedOrder, rh_id: str, *, max_hold_seconds: int) -> None:
+    def _write_pending(self, order: ProposedOrder, rh_id: str | None, *,
+                       max_hold_seconds: int, state: str = "pending") -> None:
         """INSERT the order into `pending_order` (NOT the book). `trading_date` is the
         ET session whose 9:30 open reconciles it. INSERT OR IGNORE keyed on order_id
-        keeps a restart-replayed write idempotent."""
+        keeps a restart-replayed write idempotent. `state` is 'pending' (already placed,
+        awaiting fill confirmation) or 'intent' (not yet placed, awaiting open+buffer)."""
         trading_date = datetime.now(ET).date().isoformat()
         with db.connect(self.db_url) as conn:
             conn.execute(
@@ -594,8 +582,14 @@ class PEADStrategy:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (order.id, order.ts, self.SLUG, self.SLUG, order.symbol, order.side,
                  order.order_type, float(order.notional_usd or 0.0), rh_id, trading_date,
-                 int(max_hold_seconds), order.rationale, "pending", json.dumps(order.extra)),
+                 int(max_hold_seconds), order.rationale, state, json.dumps(order.extra)),
             )
+
+    def _write_intent(self, order: ProposedOrder, *, max_hold_seconds: int) -> None:
+        """Write a pre-market INTENT row (state='intent', broker_order_id=NULL).
+        reconcile() Phase-1 places the real order at open+buffer and promotes this
+        row to a paper_trade_record on fill (idempotent INSERT OR IGNORE on order_id)."""
+        self._write_pending(order, None, max_hold_seconds=max_hold_seconds, state="intent")
 
     def _pending_rows(self) -> list[dict]:
         with db.connect(self.db_url) as conn:
@@ -622,13 +616,39 @@ class PEADStrategy:
                         "rationale": r["rationale"], "extra": extra})
         return out
 
-    def _pending_symbols(self) -> set[str]:
-        """Open PENDING entry symbols — folded into the scan's `held` set so a name
-        with a queued entry is neither re-scanned nor double-counted against
-        max_concurrent (slot reservation across the pre-open→open gap)."""
+    def _intent_rows(self) -> list[dict]:
+        """INTENT rows (scan-written, not yet placed) for reconcile Phase-1."""
         with db.connect(self.db_url) as conn:
             rows = conn.execute(
-                "SELECT DISTINCT symbol FROM pending_order WHERE division=? AND state='pending'",
+                "SELECT order_id, symbol, side, order_type, notional_usd, "
+                "trading_date, max_hold_seconds, rationale, extra_json "
+                "FROM pending_order WHERE division=? AND state='intent'",
+                (self.SLUG,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            extra = {}
+            if r["extra_json"]:
+                try:
+                    extra = json.loads(r["extra_json"]) or {}
+                except (ValueError, TypeError):
+                    extra = {}
+            out.append({"order_id": r["order_id"], "symbol": r["symbol"], "side": r["side"],
+                        "order_type": r["order_type"],
+                        "notional_usd": float(r["notional_usd"] or 0.0),
+                        "trading_date": r["trading_date"],
+                        "max_hold_seconds": r["max_hold_seconds"],
+                        "rationale": r["rationale"], "extra": extra})
+        return out
+
+    def _pending_symbols(self) -> set[str]:
+        """Open PENDING+INTENT entry symbols — folded into the scan's `held` set so a
+        name with a queued or intent entry is neither re-scanned nor double-counted
+        against max_concurrent (slot reservation across the pre-open→open gap)."""
+        with db.connect(self.db_url) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT symbol FROM pending_order "
+                "WHERE division=? AND state IN ('pending','intent')",
                 (self.SLUG,),
             ).fetchall()
         return {r["symbol"] for r in rows}
@@ -651,30 +671,103 @@ class PEADStrategy:
         return datetime.combine(d, time(9, 30), tzinfo=ET)
 
     async def reconcile(self, broker) -> tuple[list[ProposedOrder], int]:
-        """Drain the PENDING store at/after the open. Per pending order, read the
-        broker's order state: a CONFIRMED fill (or a terminal order that filled a
-        realized partial) is promoted to a real record (realized qty, decision #2); a
-        still-unfilled order past (9:30 open + deadline) is the >5% collar miss →
-        CANCEL the resting order (a GFD order rests all day; un-cancelled it could fill
-        UNWATCHED = phantom position), then re-read: a realized partial is recorded, a
-        true zero-fill is dropped (no record). Returns (promoted, next_poll_seconds).
-        NO-OP pre-open (cancelling a queued order before 9:30 is the bug Flag-2 fixes)."""
+        """Drain pending entries at/after the open.
+
+        Phase 1 — intent → at-open placement: intent rows written by scan() (no
+        broker call yet) are submitted via _place_or_paper at/after open+buffer
+        (~9:31 ET by default) and promoted to real records on a confirmed fill.
+        Placement failures and intents past the deadline are dropped (no phantom).
+
+        Phase 2 — pending → fill confirmation: rows already placed with a real
+        RH order id are polled at/after the open; confirmed fills are promoted, a
+        terminal-zero-fill is dropped, and an order still open past the open+
+        deadline is the >5%% collar miss → cancel the resting GFD order (else it
+        could fill UNWATCHED = phantom), then record any realized partial or drop.
+
+        NO-OP pre-open (cancelling a queued order before 9:30 is the bug this
+        method must not repeat). Returns (promoted, next_poll_seconds)."""
         cfg = self._cfg()
         poll = int(cfg.get("reconcile_poll_interval_sec", _DEFAULT_RECONCILE_POLL_SEC))
+        promoted: list[ProposedOrder] = []
+        now = datetime.now(timezone.utc)
+        is_open = default_calendar().is_open_at(now)
+        now_et = now.astimezone(ET)
+
+        # ── Phase 1: intent → at-open placement ──────────────────────────
+        intent_rows = self._intent_rows()
+        if intent_rows and is_open:
+            buffer_sec = int(cfg.get("intent_open_buffer_sec", _DEFAULT_INTENT_BUFFER_SEC))
+            deadline_sec_i = int(cfg.get("reconcile_deadline_after_open_sec",
+                                         _DEFAULT_RECONCILE_DEADLINE_AFTER_OPEN_SEC))
+            warn_frac_i = float(cfg.get("reconcile_partial_warn_frac",
+                                        _DEFAULT_RECONCILE_PARTIAL_WARN_FRAC))
+            for r in intent_rows:
+                open_et = self._session_open_et(r["trading_date"])
+                if open_et is None:
+                    continue
+                if now_et >= open_et + timedelta(seconds=deadline_sec_i):
+                    # past deadline — drop without placing (no phantom)
+                    log.info("pead_strategy.reconcile: intent %s past open+%ds deadline — dropped",
+                             r["symbol"], deadline_sec_i)
+                    self.logger_agent.log_event(
+                        self.SLUG, "pead_pending_dropped",
+                        {"division": self.SLUG, "symbol": r["symbol"],
+                         "reason": "intent_past_deadline"})
+                    self._delete_pending(r["order_id"])
+                    continue
+                if now_et < open_et + timedelta(seconds=buffer_sec):
+                    continue                            # within buffer — not yet time to place
+                # ── Place at open+buffer ──────────────────────────────────
+                max_hold = (int(r["max_hold_seconds"]) if r["max_hold_seconds"] is not None
+                            else pp.MAX_HOLD_TRADING_DAYS * 24 * 3600)
+                order = ProposedOrder(
+                    strategy=self.SLUG, symbol=r["symbol"], side=r["side"], qty=0.0,
+                    order_type=r["order_type"] or "market", notional_usd=r["notional_usd"],
+                    fractional=True, id=r["order_id"],
+                    rationale=r["rationale"] or "PEAD entry (intent)", extra=dict(r["extra"]),
+                )
+                ok = await self._place_or_paper(order)
+                placed_qty = float(order.qty or 0)
+                if not ok or placed_qty <= 0:
+                    reason = "rejected" if (ok and placed_qty <= 0) else "placement_failed"
+                    log.warning("pead_strategy.reconcile: intent %s %s — dropped (no record)",
+                                r["symbol"], reason)
+                    self.logger_agent.log_event(
+                        self.SLUG, "pead_pending_dropped",
+                        {"division": self.SLUG, "symbol": r["symbol"], "reason": reason})
+                    self._delete_pending(r["order_id"])
+                    continue
+                # Fill confirmed — write record (idempotent INSERT OR IGNORE on order_id)
+                req = float(r["notional_usd"] or 0.0)
+                en = order.extra.get("executed_notional")
+                if en is not None and req > 0 and float(en) < warn_frac_i * req:
+                    log.warning("pead_strategy.reconcile: PARTIAL intent entry %s realized "
+                                "$%.2f < %.0f%% of requested $%.2f (qty=%.6f) — recorded realized",
+                                r["symbol"], float(en), warn_frac_i * 100, req, placed_qty)
+                self._write_record(order, max_hold_seconds=max_hold)
+                self._delete_pending(r["order_id"])
+                self.logger_agent.log_event(
+                    self.SLUG, "pead_entry",
+                    {"strategy": self.SLUG, "division": self.SLUG, "symbol": r["symbol"],
+                     "qty": order.qty, "notional": req,
+                     "executed_notional": en,
+                     "entry": order.extra.get("entry_reference_price"),
+                     "execution_mode": order.execution_mode, "via_intent": True})
+                promoted.append(order)
+
+        # ── Phase 2: already-placed pending (state='pending') ────────────
         rows = self._pending_rows()
         if not rows:
-            return [], poll
-        now = datetime.now(timezone.utc)
-        if not default_calendar().is_open_at(now):
-            return [], poll                            # pre-open / closed — leave queued
+            return promoted, poll
+        if not is_open:
+            return promoted, poll                      # pre-open / closed — leave queued
         if getattr(broker, "read_fractional_order", None) is None:
             log.warning("pead_strategy.reconcile: broker has no read_fractional_order — skip")
-            return [], poll
+            return promoted, poll
         deadline_sec = int(cfg.get("reconcile_deadline_after_open_sec",
                                    _DEFAULT_RECONCILE_DEADLINE_AFTER_OPEN_SEC))
         warn_frac = float(cfg.get("reconcile_partial_warn_frac",
                                   _DEFAULT_RECONCILE_PARTIAL_WARN_FRAC))
-        promoted: list[ProposedOrder] = []
         for r in rows:
             rh_id = r["broker_order_id"]
             try:
@@ -703,7 +796,7 @@ class PEADStrategy:
             # non-terminal (queued / partially_filled) — collar-miss deadline check,
             # ANCHORED AT THE 9:30 OPEN (not placement).
             open_et = self._session_open_et(r["trading_date"])
-            if open_et is None or now.astimezone(ET) < open_et + timedelta(seconds=deadline_sec):
+            if open_et is None or now_et < open_et + timedelta(seconds=deadline_sec):
                 continue                                   # within the window — still queued, poll next tick
             # past open + deadline → >5% collar miss: cancel the resting order, then
             # re-read the FINAL realized (mirror the synchronous cancel-then-read).

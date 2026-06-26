@@ -209,8 +209,8 @@ def _gen_bars(today, count, base):
 
 
 def test_deferred_live_entry_writes_pending_not_record(tmp_db, tmp_path, monkeypatch):
-    """LIVE scan places via the DEFERRED path (place_fractional_pending) and writes a
-    pending_order row — NOT a paper_trade_record. PENDING != open position."""
+    """LIVE scan() writes an INTENT row (state='intent', broker_order_id=NULL) and
+    makes NO broker call — NOT a paper_trade_record. intent/pending row != open position."""
     init_db(tmp_db)
     today = datetime.now(timezone.utc).date()
     ann, nxt = _past_bdays(today, 1), today + timedelta(days=30)
@@ -230,10 +230,15 @@ def test_deferred_live_entry_writes_pending_not_record(tmp_db, tmp_path, monkeyp
     brk = FakePendingBroker(equity=75.0, place_id="rhAAA")
 
     orders = asyncio.run(strat.scan(brk))
-    assert len(brk.placed) == 1                        # deferred place WAS called
-    assert brk.placed[0].notional_usd is not None      # placed by dollars (fractional)
+    assert brk.placed == []                             # NO broker call — intent only
+    with connect(tmp_db) as conn:
+        intent = conn.execute(
+            "SELECT * FROM pending_order WHERE division=? AND state='intent'",
+            (DIVISION,),
+        ).fetchone()
+    assert intent is not None                           # intent row written
+    assert intent["broker_order_id"] is None           # no broker_order_id (not yet placed)
     assert _open_count(tmp_db) == 0                     # NO book record — pending != position
-    assert _pending_count(tmp_db) == 1                  # the pending row exists
     assert query_open_positions(tmp_db) == []          # dashboard book sees nothing
     assert len(orders) == 1                             # scan reports it as submitted
 
