@@ -116,6 +116,40 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-06-26 15:41 UTC — PEAD entry-fix + Fix-1 (at-open placement; scan event-loop offload)
+
+**Commits:** `7585380` (branch `robinhood-pead-2026-06-20`, UNMERGED)
+**Triggered by:** First live autonomous PEAD run (2026-06-26) — both candidates (MU, PAYX) rejected by RH; root-caused to pre-market fractional submission. Board-approved autonomous deploy + restart.
+**Backup tag:** prod `agents/strategies/pead_strategy.py.bak-pre-entryfix-2026-06-26`
+
+**Files deployed (1):**
+- `trading_corp/agents/strategies/pead_strategy.py` — md5 `ae6d39e1` → `ecd1cad7` (SINGLE-file deploy; the 2 test files stay on the dev branch, NOT shipped to prod)
+
+**Features shipped (load-bearing for "is X done?"):**
+- **Entry-fix:** PEAD no longer submits orders pre-market. `scan()` (8:30-9:25 ET) writes a `pending_order` row with `state='intent'` (NO broker call); `reconcile()` Phase-1 submits the real fractional buy at **open+60s (~9:31 ET, regular hours)** via `_place_or_paper`, confirms fill, promotes to a tracked `paper_trade_record`. Live placement window is strictly **9:31-9:35 ET** (never pre-market).
+- **Fix-1:** `scan()`'s per-ticker EODHD + yfinance HTTP calls offloaded via `asyncio.to_thread` — eliminates the **~56-min event-loop freeze** (12:33→13:29 on 06-26) that locked the whole dashboard during the pre-market scan.
+
+**Notable code changes (a future Claude shouldn't miss):**
+- New `pending_order.state='intent'` value (no schema migration — state col already flexible, broker_order_id nullable). Added `_write_intent`/`_intent_rows`; removed `_place_pending` (broker `place_fractional_pending` is now dead/unused, left in robinhood.py). `_pending_symbols` is now `state IN ('pending','intent')` to reserve the slot pre-open→open.
+- `reconcile()` restructured: **Phase-1** (intent→at-open place) + **Phase-2** (existing placed-pending confirm — logic UNCHANGED).
+
+**Latent bugs caught + fixed:**
+- RH rejects fractional `market_hours='regular_hours'` orders submitted pre-market (accepts the POST + returns an order_id, then sets state=rejected — no robin_stocks path queues a fractional order pre-market). The old flag-2 `place_fractional_pending`-from-`scan()` path was silently rejected on every live entry. No phantom resulted (reconcile drop-on-reject was already safe).
+
+**Verification:**
+- Re-drift-gate PASSED (prod was exactly `ae6d39e1` = build base; the concurrent Bitunix SFP deploy did NOT touch this file). diff-vs-backup = only the intended hunks; `py_compile` OK BEFORE the restart.
+- Restart PID 3633090→**3636191**, NRestarts=0, clean boot: `live_brokers[bitunix,robinhood]`, robinhood `paper=False`, `RobinhoodBroker bound 680725082`, `PEAD wired execution_mode=live`, zero ImportError/traceback. Bitunix preserved (`restart-resume matched=0 orphan=0`). FLAT.
+
+**Inert / dormant until Monday:**
+- First real exercise = **MON 2026-06-29 8:30 ET scan** (writes intent rows) → **~9:31 ET reconcile** (at-open placement). UNVALIDATED on real rails until then. Watch: `pead_intent` events + `state='intent'` pre-market (no broker call); then `pead_entry` `via_intent=True` + a `paper_trade_record` on fill at ~9:31.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp /home/azureuser/trading_corp/trading_corp/agents/strategies/pead_strategy.py.bak-pre-entryfix-2026-06-26 /home/azureuser/trading_corp/trading_corp/agents/strategies/pead_strategy.py && sudo -n systemctl restart trading-corp"
+```
+
+---
+
 ## 2026-06-25 01:02 UTC — Robinhood PEAD GO-LIVE (fractional + flag-2 deferred-fill reconcile; all 4 flips; Bitunix preserved)
 
 > ⚠ This entry is on branch `robinhood-pead-2026-06-20` (UNMERGED). **This branch's deploy_log LAGS `main`** — the 2026-06-16..06-23 bitunix/pead-joint deploys are logged on main, not below. Reconcile on merge.
