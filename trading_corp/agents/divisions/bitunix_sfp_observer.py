@@ -58,6 +58,45 @@ log = logging.getLogger(__name__)
 
 DIVISION = "bitunix_sfp"
 PEAK_EQUITY_AGENT_STATE_KEY = "account_peak_equity"
+LOOP_HEARTBEAT_AGENT_STATE_KEY = "loop_last_evaluated"
+
+# ── sfp_watch_state — OBSERVE-ONLY dashboard Tier-B persistence ─────────────
+# One logical row per armed watch, UPSERT'd through ARMED → terminal by a stable
+# watch_id = f"{symbol}:{mode}:{fired_bar_ts_ms}". CREATE IF NOT EXISTS is run
+# defensively at observer init (the gated migration also creates it).
+_SFP_WATCH_DDL = (
+    "CREATE TABLE IF NOT EXISTS sfp_watch_state ("
+    " watch_id TEXT PRIMARY KEY,"
+    " fired_bar_ts INTEGER NOT NULL,"
+    " symbol TEXT NOT NULL,"
+    " mode TEXT NOT NULL,"
+    " swept_level REAL NOT NULL,"
+    " swept_wick REAL NOT NULL,"
+    " bos_watch_level REAL,"
+    " status TEXT NOT NULL,"
+    " status_ts TEXT NOT NULL,"
+    " armed_ts TEXT NOT NULL,"
+    " terminal_bar_ts INTEGER,"
+    " extra_json TEXT)"
+)
+_SFP_WATCH_IX1 = ("CREATE INDEX IF NOT EXISTS ix_sfp_watch_state_status "
+                  "ON sfp_watch_state(status, status_ts)")
+_SFP_WATCH_IX2 = ("CREATE INDEX IF NOT EXISTS ix_sfp_watch_state_symbol "
+                  "ON sfp_watch_state(symbol, status)")
+# armed_ts is NOT in the UPDATE set — the original ARMED insert's value is kept.
+_SFP_WATCH_UPSERT = (
+    "INSERT INTO sfp_watch_state "
+    "(watch_id, fired_bar_ts, symbol, mode, swept_level, swept_wick, bos_watch_level, "
+    " status, status_ts, armed_ts, terminal_bar_ts, extra_json) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+    "ON CONFLICT(watch_id) DO UPDATE SET "
+    "  status=excluded.status, "
+    "  status_ts=excluded.status_ts, "
+    "  bos_watch_level=COALESCE(excluded.bos_watch_level, sfp_watch_state.bos_watch_level), "
+    "  terminal_bar_ts=COALESCE(excluded.terminal_bar_ts, sfp_watch_state.terminal_bar_ts), "
+    "  extra_json=COALESCE(excluded.extra_json, sfp_watch_state.extra_json)"
+)
+_WATCH_RECENT_WINDOW_SEC = 24 * 3600   # warm-start (b): only persist last 24h
 
 
 def _watch_bars_from_hours(watch_hours: float, tf_minutes: int = 15) -> int:
@@ -153,6 +192,9 @@ class BitunixSfpObserver:
                             back_to_break=config.back_to_break, watch_bars=wb),
             ]
             self._last_ts[wire] = 0
+        # OBSERVE-ONLY: ensure the dashboard watch-state table exists (idempotent;
+        # the gated migration also creates it). Fail-soft, never raises.
+        self._ensure_watch_schema()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -169,6 +211,10 @@ class BitunixSfpObserver:
             bars = [self._to_sfp_bar(b) for b in getattr(cache, "bars", [])]
             for det in self._detectors[wire]:
                 det.warm_start(bars)
+                # OBSERVE-ONLY (warm-start decision b): persist only RECENT (24h)
+                # transitions so a restart fills the dashboard without flooding
+                # ancient backtest history. Idempotent UPSERT by watch_id.
+                self._emit_watch_transitions(wire, det.drain_transitions(), recent_only=True)
             if bars:
                 self._last_ts[wire] = bars[-1].ts_ms
 
@@ -202,6 +248,9 @@ class BitunixSfpObserver:
             except Exception as e:
                 log.warning("bitunix_sfp: %s cache refresh failed: %s", wire, e)
             await self._process_symbol(sym, wire, cache)
+        # OBSERVE-ONLY heartbeat: one cheap agent_state write per loop cycle so the
+        # dashboard can show an honest "loop last evaluated" age. Fail-soft.
+        self._write_heartbeat()
 
     async def _process_symbol(self, symbol_display: str, wire: str, cache: Any) -> None:
         last = self._last_ts.get(wire, 0)
@@ -209,8 +258,12 @@ class BitunixSfpObserver:
         for raw in new_bars:
             bar = self._to_sfp_bar(raw)
             for det in self._detectors[wire]:
-                for sig in det.on_closed_bar(bar):
+                sigs = det.on_closed_bar(bar)        # decision path UNCHANGED
+                for sig in sigs:
                     await self._handle_signal(symbol_display, wire, sig, bar)
+                # OBSERVE-ONLY: drain + persist lifecycle transitions. Fail-soft —
+                # CANNOT raise into the loop; a persist failure never affects trading.
+                self._emit_watch_transitions(wire, det.drain_transitions())
             self._last_ts[wire] = bar.ts_ms
 
     @staticmethod
@@ -628,6 +681,71 @@ class BitunixSfpObserver:
         except Exception as e:
             log.warning("bitunix_sfp: auto_execute read failed (fail-closed): %s", e)
             return False
+
+    # ------------------------------------------------------------------ #
+    # OBSERVE-ONLY emit: watch-state + heartbeat (dashboard Tier-B).
+    # NONE of these read into or alter any trade decision; all fail-soft.
+    # ------------------------------------------------------------------ #
+    def _ensure_watch_schema(self) -> None:
+        """Idempotently create sfp_watch_state (defensive; the gated migration
+        also creates it). Fail-soft — a schema error must not break the observer."""
+        try:
+            with db.connect(self.db_url) as conn:
+                conn.execute(_SFP_WATCH_DDL)
+                conn.execute(_SFP_WATCH_IX1)
+                conn.execute(_SFP_WATCH_IX2)
+        except Exception as e:
+            log.warning("bitunix_sfp: sfp_watch_state ensure-schema failed "
+                        "(emit will no-op until present): %s", e)
+
+    def _write_heartbeat(self) -> None:
+        """One cheap agent_state write per loop cycle (honest dashboard heartbeat).
+        Fail-soft — observe-only."""
+        try:
+            db.set_agent_state(DIVISION, LOOP_HEARTBEAT_AGENT_STATE_KEY,
+                               {"ts": datetime.now(timezone.utc).isoformat()},
+                               db_url=self.db_url)
+        except Exception as e:
+            log.warning("bitunix_sfp: heartbeat write failed (observe-only): %s", e)
+
+    def _emit_watch_transitions(self, wire: str, transitions: list,
+                                *, recent_only: bool = False) -> None:
+        """OBSERVE-ONLY: UPSERT lifecycle transitions into sfp_watch_state, keyed by
+        watch_id = f"{symbol}:{mode}:{fired_bar_ts_ms}". MUST NOT raise into the
+        trading loop — any failure is logged and swallowed. ``recent_only``
+        (warm-start, decision b) skips transitions whose arming bar is older than
+        24h so a restart does not flood ancient history."""
+        if not transitions:
+            return
+        try:
+            import json
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cutoff_ms = None
+            if recent_only:
+                cutoff_ms = int(
+                    (datetime.now(timezone.utc).timestamp() - _WATCH_RECENT_WINDOW_SEC) * 1000)
+            with db.connect(self.db_url) as conn:
+                for t in transitions:
+                    fired_ms = int(getattr(t, "fired_bar_ts_ms", 0) or 0)
+                    if cutoff_ms is not None and fired_ms < cutoff_ms:
+                        continue
+                    watch_id = f"{wire}:{t.mode}:{fired_ms}"
+                    is_armed = (t.status == "ARMED")
+                    terminal_bar = None if is_armed else int(t.status_bar_ts_ms)
+                    extra = None
+                    if t.status == "CONFIRMED":
+                        extra = json.dumps({"bos_ref_high": t.bos_ref_high,
+                                            "entry_bar_index": t.entry_bar_index})
+                    bos = (float(t.bos_watch_level)
+                           if t.bos_watch_level is not None else None)
+                    conn.execute(_SFP_WATCH_UPSERT, (
+                        watch_id, fired_ms, wire, t.mode,
+                        float(t.swept_level), float(t.swept_wick), bos,
+                        t.status, now_iso, now_iso, terminal_bar, extra,
+                    ))
+        except Exception as e:
+            log.warning("bitunix_sfp: watch-state emit failed "
+                        "(observe-only, trading unaffected): %s", e)
 
     def _audit(self, kind: str, payload: dict) -> None:
         payload = {**payload, "strategy": DIVISION, "division": DIVISION}

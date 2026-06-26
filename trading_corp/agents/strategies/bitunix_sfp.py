@@ -104,10 +104,33 @@ class SfpEntrySignal:
 
 
 @dataclass
+class SfpWatchTransition:
+    """OBSERVE-ONLY lifecycle event for one watch (dashboard Tier-B source).
+
+    The detector WRITES these into a write-only buffer (:attr:`SfpDetector._transitions`)
+    at each transition and the observer drains them via :meth:`SfpDetector.drain_transitions`.
+    The detector NEVER reads this buffer back — it has ZERO effect on signal
+    generation. ``symbol`` is intentionally absent (the detector is symbol-agnostic);
+    the observer composes ``watch_id = f"{symbol}:{mode}:{fired_bar_ts_ms}"``.
+    """
+    status: str                 # ARMED | CONFIRMED | INVALIDATED | TIMED_OUT
+    mode: str                   # MODE_REAL | MODE_CONSIDERABLE
+    fired_bar_ts_ms: int        # ts_ms of the arming bar (stable watch identity)
+    swept_level: float          # swept swing-low (invalidation line)
+    swept_wick: float           # wick low that swept it
+    bos_watch_level: float | None   # arm-time BOS target; bos_ref_high on CONFIRMED
+    status_bar_ts_ms: int       # ts_ms of the bar that caused THIS transition
+    bos_ref_high: float | None = None      # set on CONFIRMED
+    entry_bar_index: int | None = None     # set on CONFIRMED
+
+
+@dataclass
 class _Watch:
     fire_index: int
     level: float                # swept swing-low level (invalidation line)
     swept_low: float
+    fired_ts_ms: int = 0        # ts_ms of the arming bar (for the watch_id)
+    bos_watch_level: float | None = None   # BOS target captured at ARM (v1, no per-bar update)
 
 
 @dataclass
@@ -136,6 +159,10 @@ class SfpDetector:
     # ``j`` as available_from so a check at bar w uses entries with j < w.
     _swing_highs: list[tuple[int, float]] = field(default_factory=list)
     _watches: list[_Watch] = field(default_factory=list)
+    # OBSERVE-ONLY transition buffer (dashboard Tier-B). WRITE-ONLY from the
+    # detector — no method ever reads it, so it cannot influence signal
+    # generation. Drained by the observer via drain_transitions().
+    _transitions: list[SfpWatchTransition] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.mode not in (MODE_REAL, MODE_CONSIDERABLE):
@@ -186,9 +213,18 @@ class SfpDetector:
         fired_swept = self._maybe_fire(b)
         if fired_swept is not None:
             self._permit = False
-            self._watches.append(
-                _Watch(fire_index=b, level=float(self._swing_low), swept_low=fired_swept)
-            )
+            # arm-time BOS target (v1: captured once at ARM, finalized at CONFIRM;
+            # _most_recent_swing_high is a pure read — no state mutation).
+            bos_target = self._most_recent_swing_high(before_index=b)
+            w = _Watch(fire_index=b, level=float(self._swing_low), swept_low=fired_swept,
+                       fired_ts_ms=bar.ts_ms, bos_watch_level=bos_target)
+            self._watches.append(w)
+            # OBSERVE-ONLY: record ARMED (write-only buffer; the permit/watch
+            # decision above is unchanged — this only logs what was decided).
+            self._transitions.append(SfpWatchTransition(
+                status="ARMED", mode=self.mode, fired_bar_ts_ms=bar.ts_ms,
+                swept_level=w.level, swept_wick=w.swept_low, bos_watch_level=bos_target,
+                status_bar_ts_ms=bar.ts_ms))
 
         # (3) advance watches armed on an EARLIER bar.
         still_active: list[_Watch] = []
@@ -201,7 +237,24 @@ class SfpDetector:
                 still_active.append(w)          # no resolution yet
             elif isinstance(outcome, SfpEntrySignal):
                 signals.append(outcome)         # BOS → entry; watch resolved
-            # "invalid" / "timeout" → watch dropped (not re-added)
+                # OBSERVE-ONLY: record CONFIRMED (signals list above is unchanged).
+                self._transitions.append(SfpWatchTransition(
+                    status="CONFIRMED", mode=self.mode, fired_bar_ts_ms=w.fired_ts_ms,
+                    swept_level=w.level, swept_wick=w.swept_low,
+                    bos_watch_level=outcome.bos_ref_high, status_bar_ts_ms=self.bars[b].ts_ms,
+                    bos_ref_high=outcome.bos_ref_high, entry_bar_index=outcome.entry_bar_index))
+            elif outcome == "invalid":           # watch dropped (not re-added) — unchanged
+                # OBSERVE-ONLY: record INVALIDATED.
+                self._transitions.append(SfpWatchTransition(
+                    status="INVALIDATED", mode=self.mode, fired_bar_ts_ms=w.fired_ts_ms,
+                    swept_level=w.level, swept_wick=w.swept_low,
+                    bos_watch_level=w.bos_watch_level, status_bar_ts_ms=self.bars[b].ts_ms))
+            elif outcome == "timeout":           # watch dropped (not re-added) — unchanged
+                # OBSERVE-ONLY: record TIMED_OUT.
+                self._transitions.append(SfpWatchTransition(
+                    status="TIMED_OUT", mode=self.mode, fired_bar_ts_ms=w.fired_ts_ms,
+                    swept_level=w.level, swept_wick=w.swept_low,
+                    bos_watch_level=w.bos_watch_level, status_bar_ts_ms=self.bars[b].ts_ms))
         self._watches = still_active
 
         # (4) record this bar's two-candle swing high for future watch bars.
@@ -209,6 +262,19 @@ class SfpDetector:
             self._swing_highs.append((b, self.bars[b - 2].high))
 
         return signals
+
+    # ------------------------------------------------------------------ #
+    def drain_transitions(self) -> list[SfpWatchTransition]:
+        """OBSERVE-ONLY: return + clear buffered lifecycle transitions.
+
+        Called by the observer after :meth:`on_closed_bar`. The detector never
+        reads ``_transitions`` itself, so draining (or not draining) has ZERO
+        effect on signal generation — it is purely an output channel for the
+        dashboard's Tier-B panels.
+        """
+        out = self._transitions
+        self._transitions = []
+        return out
 
     # ------------------------------------------------------------------ #
     def _is_pivot_low(self, p: int) -> bool:
