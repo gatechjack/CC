@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitunix SFP Cockpit — design preview</title>
+<!--
+  STANDALONE DESIGN PREVIEW (open in a browser). Sample data is baked in so you
+  can SEE + ITERATE the v2 look. In PRODUCTION (the Jinja templates + route stubs
+  in trading_corp/web/), the discipline is enforced:
+    • TIER A panels render an HONEST EMPTY state until SFP has real rows
+      (it just went live with ZERO closed trades — they will read "—" not a number).
+    • TIER B panels keep the MOCK ribbon until the observer watch-state emit ships.
+    • TIER C panels are scoped strictly to division='bitunix_sfp' and the LIVE/PAPER
+      badge reads the ACTUAL runtime broker.paper + auto_execute, never a static label.
+  Every panel below carries its tier tag so mock can NEVER be mistaken for live truth.
+-->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Familjen+Grotesk:wght@500;600;700&display=swap');
+
+:root{
+  --bg:#070a11; --bg2:#0a0e17; --panel:#0e1422; --panel2:#111828; --panel-hi:#16203250;
+  --line:rgba(255,255,255,.06); --line2:rgba(255,255,255,.10);
+  --txt:#e6edf6; --txt2:#8b98ad; --txt3:#586679;
+  --green:#34d399; --green-dim:#1c7a5b; --red:#fb5e6b; --amber:#f5b53d;
+  --blue:#5b9dff; --purple:#a78bfa; --teal:#2dd4bf; --gray:#6b7688;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --disp:'Familjen Grotesk',-apple-system,system-ui,sans-serif;
+  --r:14px;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:
+    radial-gradient(1200px 600px at 80% -10%, #0c1830 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 110%, #0d1422 0%, transparent 50%),
+    var(--bg);
+  color:var(--txt); font-family:var(--mono); font-size:13px; line-height:1.4;
+  -webkit-font-smoothing:antialiased; padding:18px; min-height:100vh;
+}
+.disp{font-family:var(--disp)}
+.mono{font-family:var(--mono)}
+.muted{color:var(--txt2)} .dim{color:var(--txt3)}
+.up{color:var(--green)} .down{color:var(--red)}
+
+/* preview banner */
+.pv-banner{
+  border:1px dashed var(--amber); border-radius:10px; padding:9px 14px; margin:0 0 16px;
+  background:linear-gradient(90deg,#f5b53d12,transparent); display:flex; gap:14px;
+  align-items:center; flex-wrap:wrap; font-size:11.5px; color:var(--txt2);
+}
+.pv-banner b{color:var(--amber); font-weight:700; letter-spacing:.04em}
+.pv-legend{display:flex; gap:14px; margin-left:auto; flex-wrap:wrap}
+.pv-legend span{display:inline-flex; align-items:center; gap:6px}
+
+/* layout */
+.wrap{max-width:1480px; margin:0 auto; display:flex; flex-direction:column; gap:14px}
+.row{display:grid; gap:14px}
+.main{display:grid; grid-template-columns:1fr 360px; gap:14px; align-items:start}
+.board{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+.side{display:flex; flex-direction:column; gap:14px}
+
+/* panel base */
+.panel{
+  position:relative; background:linear-gradient(180deg,var(--panel),var(--bg2));
+  border:1px solid var(--line); border-radius:var(--r); padding:16px 18px;
+  animation:rise .5s both;
+}
+@keyframes rise{from{opacity:0; transform:translateY(8px)}to{opacity:1; transform:none}}
+.panel:nth-child(2){animation-delay:.04s}.panel:nth-child(3){animation-delay:.08s}
+.ptitle{font-family:var(--disp); font-weight:600; font-size:15px; letter-spacing:.01em; margin:0}
+.psub{font-size:10.5px; color:var(--txt3); letter-spacing:.06em; text-transform:uppercase}
+.phead{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px}
+.lbl{font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--txt3)}
+
+/* tier tags */
+.tier{font-size:9px; font-weight:700; letter-spacing:.13em; text-transform:uppercase;
+  padding:3px 7px; border-radius:6px; border:1px solid; white-space:nowrap}
+.tier-live{color:var(--green); border-color:#34d39955; background:#34d39912}
+.tier-live::before{content:"● "; }
+.tier-scoped{color:var(--teal); border-color:#2dd4bf55; background:#2dd4bf12}
+.tier-mock{color:var(--amber); border-color:var(--amber); background:#f5b53d12; border-style:dashed}
+
+/* MOCK panel treatment — unmistakable */
+.is-mock{border:1.5px dashed var(--amber); background:linear-gradient(180deg,#160f02,#0a0a07)}
+.is-mock::after{
+  content:"MOCK · DEMO DATA"; position:absolute; top:10px; right:-34px; transform:rotate(38deg);
+  background:var(--amber); color:#1a1206; font-weight:800; font-size:9px; letter-spacing:.12em;
+  padding:3px 40px; box-shadow:0 2px 10px #0008;
+}
+.is-mock .mock-note{color:var(--amber); font-size:10px; margin-top:8px; opacity:.85}
+
+/* badges */
+.badge{display:inline-flex; align-items:center; gap:6px; font-size:10px; font-weight:700;
+  letter-spacing:.1em; text-transform:uppercase; padding:5px 10px; border-radius:7px; border:1px solid}
+.dot{width:7px; height:7px; border-radius:50%; display:inline-block}
+.b-live{color:var(--red); border-color:#fb5e6b; background:#fb5e6b14; box-shadow:0 0 16px #fb5e6b30}
+.b-live .dot{background:var(--red); animation:pulse 2.2s infinite}
+.b-paper{color:var(--gray); border-color:var(--gray); background:#6b768814}
+.b-paper .dot{background:var(--gray)}
+@keyframes pulse{0%,100%{opacity:1; box-shadow:0 0 0 0 #fb5e6b66}50%{opacity:.5; box-shadow:0 0 0 5px #fb5e6b00}}
+.b-green{color:var(--green); border-color:#34d39955; background:#34d39912}
+.b-amber{color:var(--amber); border-color:#f5b53d66; background:#f5b53d12}
+.b-blue{color:var(--blue); border-color:#5b9dff66; background:#5b9dff12}
+.b-purple{color:var(--purple); border-color:#a78bfa66; background:#a78bfa12}
+.b-teal{color:var(--teal); border-color:#2dd4bf66; background:#2dd4bf12}
+.b-gray{color:var(--gray); border-color:#6b768855; background:#6b768812}
+
+/* header */
+.hdr{display:flex; align-items:center; gap:26px; flex-wrap:wrap}
+.logo{font-family:var(--disp); font-weight:700; font-size:21px; letter-spacing:.02em}
+.logo .sfp{color:var(--teal)}
+.logo small{display:block; font-family:var(--mono); font-size:9.5px; color:var(--txt3);
+  letter-spacing:.04em; font-weight:400; margin-top:2px}
+.hstat{display:flex; flex-direction:column; gap:2px}
+.hstat .lbl{font-size:9px}
+.hstat .v{font-size:17px; font-weight:700}
+.hstat .v.mono{font-family:var(--mono)}
+.spacer{flex:1}
+.clock{font-family:var(--mono); font-size:15px; color:var(--txt2); letter-spacing:.06em}
+
+/* recon strip */
+.recon{display:grid; grid-template-columns:repeat(3,1fr); gap:0}
+.recon .cell{padding:4px 22px; border-left:1px solid var(--line); display:flex;
+  align-items:center; justify-content:space-between; gap:14px}
+.recon .cell:first-child{border-left:0; padding-left:0}
+.metric .lbl{margin-bottom:3px}
+.metric .big{font-size:26px; font-weight:800; line-height:1}
+.metric .vs{font-size:12px; color:var(--txt3); margin-left:7px; font-weight:400}
+
+/* coin card */
+.coin{position:relative; overflow:hidden}
+.coin.live{border-color:#34d39940; box-shadow:0 0 0 1px #34d39915, 0 8px 30px -12px #34d39920}
+.coin .top{display:flex; align-items:center; gap:10px; margin-bottom:12px}
+.coin .sym{font-family:var(--disp); font-weight:700; font-size:20px}
+.coin .badges{margin-left:auto; display:flex; gap:7px}
+
+/* R-journey stage rail */
+.rail{display:flex; align-items:center; margin:6px 2px 14px; position:relative}
+.rail .seg{flex:1; height:2px; background:var(--line2)}
+.rail .node{display:flex; flex-direction:column; align-items:center; gap:5px; position:relative}
+.rail .pip{width:11px; height:11px; border-radius:50%; background:#1c2536; border:2px solid #2a3850}
+.rail .nlabel{font-size:8.5px; letter-spacing:.12em; color:var(--txt3)}
+.rail .node.done .pip{background:var(--gray); border-color:var(--gray)}
+.rail .node.armed .pip{background:var(--amber); border-color:var(--amber); box-shadow:0 0 12px var(--amber)}
+.rail .node.armed .nlabel{color:var(--amber)}
+.rail .node.active .pip{background:var(--blue); border-color:var(--blue); box-shadow:0 0 14px var(--blue)}
+.rail .node.active .nlabel{color:var(--blue)}
+
+/* price strip (svg) */
+.strip{position:relative; border:1px solid var(--line); border-radius:9px; background:#0a0f1a; padding:6px}
+.strip svg{display:block; width:100%; height:120px}
+.strip .pxtag{position:absolute; right:10px; bottom:8px; font-size:12px; color:var(--txt2)}
+
+/* coin footer metrics */
+.cfoot{display:flex; gap:20px; margin-top:12px; flex-wrap:wrap}
+.cfoot .m{display:flex; flex-direction:column; gap:2px}
+.cfoot .m .lbl{font-size:9px}
+.cfoot .m .v{font-size:16px; font-weight:700}
+.cfoot .m .v.big{font-size:22px}
+
+/* chips */
+.chips{display:flex; gap:8px; margin-top:12px; flex-wrap:wrap}
+.chip{font-size:10px; font-weight:600; letter-spacing:.04em; padding:5px 9px; border-radius:7px;
+  border:1px solid var(--line2); color:var(--txt2); display:inline-flex; gap:6px; align-items:center}
+.chip.ok{color:var(--green); border-color:#34d39955; background:#34d39910}
+.chip.bad{color:var(--red); border-color:var(--red); background:#fb5e6b14; font-weight:800;
+  animation:pulse 2.2s infinite}
+.chip.warn{color:var(--amber); border-color:#f5b53d66; background:#f5b53d10}
+.chip.hb{color:var(--txt3); border-style:dashed}
+
+/* legend */
+.statelegend{display:flex; gap:18px; margin:2px 4px 0; flex-wrap:wrap; font-size:10px; color:var(--txt2)}
+.statelegend span{display:inline-flex; gap:6px; align-items:center}
+
+/* mode split */
+.mode{border:1px solid var(--line); border-radius:11px; padding:14px; margin-top:10px; position:relative}
+.mode.real{background:linear-gradient(180deg,#a78bfa10,transparent)}
+.mode.cons{background:linear-gradient(180deg,#2dd4bf10,transparent)}
+.mode .mh{display:flex; justify-content:space-between; align-items:baseline}
+.mode .mname{font-weight:700; letter-spacing:.08em; font-size:12px}
+.mode.real .mname{color:var(--purple)} .mode.cons .mname{color:var(--teal)}
+.mode .n{font-size:10px; color:var(--txt3)}
+.mode .win{font-size:30px; font-weight:800; margin:4px 0 2px}
+.mode .win small{font-size:12px; color:var(--txt3); font-weight:400; margin-left:5px}
+.bar{height:5px; border-radius:3px; background:#1a2333; overflow:hidden; margin:8px 0}
+.bar i{display:block; height:100%; border-radius:3px}
+.mode.real .bar i{background:linear-gradient(90deg,var(--purple),#c4b5fd)}
+.mode.cons .bar i{background:linear-gradient(90deg,var(--teal),#5eead4)}
+.mode .avg{display:flex; justify-content:space-between; font-size:11px; color:var(--txt3)}
+
+/* near-miss rows */
+.nm{display:flex; flex-direction:column; gap:7px; margin-top:4px}
+.nmrow{display:grid; grid-template-columns:auto auto 1fr auto auto; gap:9px; align-items:center;
+  padding:8px 10px; border-radius:8px; background:#0c1220; border-left:3px solid var(--gray)}
+.nmrow.inval{border-left-color:var(--red)} .nmrow.timeout{border-left-color:var(--amber)}
+.nmrow .sym{font-weight:700; font-size:13px}
+.nmrow .st{font-size:10px; font-weight:700; letter-spacing:.08em}
+.nmrow.inval .st{color:var(--red)} .nmrow.timeout .st{color:var(--amber)}
+.nmrow .lv{font-family:var(--mono); color:var(--txt2); font-size:11px; text-align:right}
+.nmrow .ago{font-size:10px; color:var(--txt3); text-align:right}
+.tag{font-size:8px; font-weight:800; letter-spacing:.1em; padding:2px 5px; border-radius:5px; border:1px solid}
+.tag-real{color:var(--purple); border-color:#a78bfa55}
+.tag-cons{color:var(--teal); border-color:#2dd4bf55}
+.tag-paper{color:var(--gray); border-color:#6b768855}
+.tag-livev{color:var(--red); border-color:#fb5e6b66}
+
+/* equity */
+.eqhead{display:flex; align-items:baseline; justify-content:space-between}
+.eqval{font-size:26px; font-weight:800}
+.eqfoot{display:flex; justify-content:space-between; font-size:10.5px; color:var(--txt3); margin-top:4px}
+
+/* honest empty */
+.empty{border:1px dashed var(--line2); border-radius:9px; padding:14px; text-align:center;
+  color:var(--txt3); font-size:11px}
+.empty b{color:var(--txt2); display:block; font-size:13px; margin-bottom:3px; font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="pv-banner">
+    <b>DESIGN PREVIEW</b>
+    <span>Sample data — for viewing/iterating the look. Production enforces honest empty states (Tier A) + MOCK ribbons (Tier B) + SFP-only scoping (Tier C).</span>
+    <span class="pv-legend">
+      <span><span class="tier tier-live">LIVE</span> real, wired</span>
+      <span><span class="tier tier-scoped">SFP-SCOPED</span> div='bitunix_sfp'</span>
+      <span><span class="tier tier-mock">MOCK</span> needs observer emit</span>
+    </span>
+  </div>
+
+  <!-- ───────────────────────── HEADER (Tier C badge + Tier A summary) ───────────────────────── -->
+  <div class="panel hdr">
+    <div class="logo">BITUNIX <span class="sfp">SFP</span>
+      <small>Swing-Failure → Break-of-Structure · LONG-only futures bot · 15m bars · 4 coins · 1 live</small>
+    </div>
+    <div class="hstat"><span class="lbl">Next 15m bar</span><span class="v mono" id="barclock">14:52</span></div>
+    <div class="hstat"><span class="lbl">Today · Week</span><span class="v up">+1.4R&nbsp;<span class="dim">/</span>&nbsp;+3.8R</span></div>
+    <div class="hstat"><span class="lbl">Division equity</span><span class="v">$52,840 <span class="up" style="font-size:12px">+0.6%</span></span></div>
+    <div class="spacer"></div>
+    <!-- TIER C: reads ACTUAL runtime broker.paper + auto_execute, not a static label -->
+    <span class="badge b-live" title="broker.paper=False AND auto_execute=true"><span class="dot"></span>LIVE · REAL CAPITAL</span>
+    <span class="clock" id="utc">15:00:07 UTC</span>
+  </div>
+
+  <!-- ───────────────────────── LIVE vs BACKTEST RECON STRIP ───────────────────────── -->
+  <div class="panel">
+    <div class="phead">
+      <div><h3 class="ptitle">Live vs Backtest</h3><span class="psub">first-months reconciliation · 95 live signals</span></div>
+      <span class="tier tier-mock">MOCK · BOS-confirm needs emit</span>
+    </div>
+    <div class="recon">
+      <div class="cell">
+        <div class="metric"><div class="lbl">BOS-confirm rate</div><div><span class="big">31%</span><span class="vs">vs 27–65<sup>th</sup></span></div></div>
+        <span class="badge b-amber"><span class="dot" style="background:var(--amber)"></span>diverging</span>
+      </div>
+      <div class="cell">
+        <div class="metric"><div class="lbl">Win @ 2R</div><div><span class="big">39%</span><span class="vs">vs 38%</span></div></div>
+        <span class="badge b-green"><span class="dot" style="background:var(--green)"></span>tracking</span>
+      </div>
+      <div class="cell">
+        <div class="metric"><div class="lbl">Avg R / trade</div><div><span class="big">+0.19</span><span class="vs">vs +0.27</span></div></div>
+        <span class="badge b-amber"><span class="dot" style="background:var(--amber)"></span>diverging</span>
+      </div>
+    </div>
+    <div class="mock-note" style="color:var(--amber);font-size:10px;margin-top:10px;opacity:.85">
+      ⚠ Win@2R / Avg-R become Tier-A (real) once SFP has closed trades; BOS-confirm rate stays MOCK until the observer watch-state emit ships.
+    </div>
+  </div>
+
+  <!-- ───────────────────────── MAIN: STATE BOARD + SIDEBAR ───────────────────────── -->
+  <div class="main">
+
+    <div class="panel">
+      <div class="phead">
+        <div><h3 class="ptitle">Per-coin state board</h3><span class="psub">BTC live · SOL / ETH / XRP monitor-only</span></div>
+        <span class="tier tier-scoped">SFP-SCOPED</span>
+      </div>
+      <div class="statelegend">
+        <span><span class="dot" style="background:var(--gray)"></span>Monitoring</span>
+        <span><span class="dot" style="background:var(--amber)"></span>SFP armed</span>
+        <span><span class="dot" style="background:var(--blue)"></span>In-trade</span>
+        <span><span class="dot" style="background:var(--red)"></span>No trade</span>
+      </div>
+      <div class="board" style="margin-top:14px">
+
+        <!-- BTC — LIVE / IN-TRADE (Tier A R-journey + Tier C position + new chips) -->
+        <div class="panel coin live">
+          <div class="top">
+            <span class="sym">BTC</span>
+            <span class="badge b-green"><span class="dot" style="background:var(--green)"></span>live trade</span>
+            <span class="badges"><span class="badge b-purple">REAL</span><span class="badge b-blue">in-trade</span></span>
+          </div>
+          <div class="rail">
+            <div class="node done"><span class="pip"></span><span class="nlabel">MON</span></div><div class="seg"></div>
+            <div class="node done"><span class="pip"></span><span class="nlabel">ARM</span></div><div class="seg"></div>
+            <div class="node done"><span class="pip"></span><span class="nlabel">RES</span></div><div class="seg"></div>
+            <div class="node active"><span class="pip"></span><span class="nlabel">TRD</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">CLS</span></div>
+          </div>
+          <div class="strip">
+            <!-- candle strip + entry(amber dashed)/stop(red)/target(green) + live R marker -->
+            <svg viewBox="0 0 460 120" preserveAspectRatio="none">
+              <!-- target / entry / stop guide lines -->
+              <line x1="0" y1="22" x2="460" y2="22" stroke="#34d399" stroke-width="1" stroke-dasharray="3 4" opacity=".55"/>
+              <line x1="0" y1="74" x2="460" y2="74" stroke="#f5b53d" stroke-width="1" stroke-dasharray="5 4" opacity=".7"/>
+              <line x1="0" y1="100" x2="460" y2="100" stroke="#fb5e6b" stroke-width="1" stroke-dasharray="3 4" opacity=".55"/>
+              <g stroke-width="5" stroke-linecap="butt">
+                <line x1="20" y1="86" x2="20" y2="98" stroke="#fb5e6b"/><line x1="44" y1="80" x2="44" y2="95" stroke="#fb5e6b"/>
+                <line x1="68" y1="74" x2="68" y2="90" stroke="#34d399"/><line x1="92" y1="70" x2="92" y2="84" stroke="#34d399"/>
+                <line x1="116" y1="72" x2="116" y2="82" stroke="#fb5e6b"/><line x1="140" y1="64" x2="140" y2="78" stroke="#34d399"/>
+                <line x1="164" y1="60" x2="164" y2="74" stroke="#34d399"/><line x1="188" y1="66" x2="188" y2="76" stroke="#fb5e6b"/>
+                <line x1="212" y1="56" x2="212" y2="70" stroke="#34d399"/><line x1="236" y1="50" x2="236" y2="64" stroke="#34d399"/>
+                <line x1="260" y1="54" x2="260" y2="62" stroke="#fb5e6b"/><line x1="284" y1="44" x2="284" y2="58" stroke="#34d399"/>
+                <line x1="308" y1="40" x2="308" y2="52" stroke="#34d399"/><line x1="332" y1="46" x2="332" y2="54" stroke="#fb5e6b"/>
+                <line x1="356" y1="36" x2="356" y2="48" stroke="#34d399"/><line x1="380" y1="30" x2="380" y2="44" stroke="#34d399"/>
+                <line x1="404" y1="34" x2="404" y2="42" stroke="#fb5e6b"/><line x1="428" y1="26" x2="428" y2="40" stroke="#34d399"/>
+              </g>
+              <!-- live R marker (CSS-transition target in prod; here static at current R) -->
+              <circle cx="428" cy="33" r="5.5" fill="#5b9dff" stroke="#0a0f1a" stroke-width="2"/>
+            </svg>
+            <span class="pxtag">64,560</span>
+          </div>
+          <div class="cfoot">
+            <div class="m"><span class="lbl">Live price</span><span class="v">64,560</span></div>
+            <div class="m"><span class="lbl">Peak MFE</span><span class="v up">+1.18R</span></div>
+            <div class="m"><span class="lbl">Unrealized R</span><span class="v big up">+0.82R</span></div>
+            <div class="m"><span class="lbl">To target / stop</span><span class="v" style="font-size:12px"><span class="up">59%</span> · <span class="down">182%</span></span></div>
+          </div>
+          <!-- NEW: TP@venue + OCO/orphan + loop heartbeat chips -->
+          <div class="chips">
+            <span class="chip ok" title="bracket_tp_order_id present in extra_json">✓ TP @ venue · id 884213</span>
+            <span class="chip ok">OCO ✓ · 1 stop + 1 tp</span>
+            <span class="chip hb">loop · 3m ago</span>
+            <span class="tag tag-livev">LIVE</span>
+          </div>
+        </div>
+
+        <!-- ETH — MONITOR-ONLY / SFP ARMED (Tier B armed-watch overlay) -->
+        <div class="panel coin">
+          <div class="top">
+            <span class="sym">ETH</span>
+            <span class="badge b-gray"><span class="dot" style="background:var(--gray)"></span>monitor-only</span>
+            <span class="badges"><span class="badge b-teal">CONSIDER.</span><span class="badge b-amber">SFP armed</span></span>
+          </div>
+          <div class="rail">
+            <div class="node done"><span class="pip"></span><span class="nlabel">MON</span></div><div class="seg"></div>
+            <div class="node armed"><span class="pip"></span><span class="nlabel">ARM</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">RES</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">TRD</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">CLS</span></div>
+          </div>
+          <div class="strip">
+            <svg viewBox="0 0 460 120" preserveAspectRatio="none">
+              <!-- bos-watch (blue dotted) + swept level (amber dashed) -->
+              <line x1="0" y1="40" x2="460" y2="40" stroke="#5b9dff" stroke-width="1" stroke-dasharray="2 4" opacity=".7"/>
+              <line x1="0" y1="78" x2="460" y2="78" stroke="#f5b53d" stroke-width="1" stroke-dasharray="5 4" opacity=".75"/>
+              <g stroke-width="5">
+                <line x1="20" y1="60" x2="20" y2="74" stroke="#fb5e6b"/><line x1="44" y1="64" x2="44" y2="80" stroke="#fb5e6b"/>
+                <line x1="68" y1="70" x2="68" y2="86" stroke="#fb5e6b"/><line x1="92" y1="66" x2="92" y2="82" stroke="#34d399"/>
+                <line x1="116" y1="58" x2="116" y2="74" stroke="#34d399"/><line x1="140" y1="62" x2="140" y2="72" stroke="#fb5e6b"/>
+                <line x1="164" y1="54" x2="164" y2="70" stroke="#34d399"/><line x1="188" y1="48" x2="188" y2="64" stroke="#34d399"/>
+                <line x1="212" y1="56" x2="212" y2="66" stroke="#fb5e6b"/><line x1="236" y1="50" x2="236" y2="64" stroke="#34d399"/>
+                <line x1="260" y1="44" x2="260" y2="58" stroke="#34d399"/><line x1="284" y1="52" x2="284" y2="60" stroke="#fb5e6b"/>
+                <line x1="308" y1="46" x2="308" y2="58" stroke="#34d399"/><line x1="332" y1="40" x2="332" y2="54" stroke="#34d399"/>
+                <line x1="356" y1="48" x2="356" y2="56" stroke="#fb5e6b"/><line x1="380" y1="42" x2="380" y2="54" stroke="#34d399"/>
+                <line x1="404" y1="38" x2="404" y2="50" stroke="#34d399"/><line x1="428" y1="44" x2="428" y2="52" stroke="#fb5e6b"/>
+              </g>
+              <!-- armed marker (amber diamond) sitting on swept level -->
+              <rect x="282" y="73" width="9" height="9" fill="#f5b53d" transform="rotate(45 286 78)"/>
+            </svg>
+            <span class="pxtag">2,431.4</span>
+          </div>
+          <div class="cfoot">
+            <div class="m"><span class="lbl">Swept wick</span><span class="v" style="font-size:14px">2,409.2</span></div>
+            <div class="m"><span class="lbl">BOS watch</span><span class="v" style="font-size:14px;color:var(--blue)">2,441.0</span></div>
+            <div class="m"><span class="lbl">Expires in</span><span class="v" style="font-size:14px;color:var(--amber)">06:49:01</span></div>
+          </div>
+          <div class="chips">
+            <span class="chip warn">▨ armed-watch is MOCK — needs observer emit (fired_bar_ts, swept_level, bos_watch_level, status)</span>
+            <span class="tag tag-paper">MONITOR</span>
+          </div>
+        </div>
+
+        <!-- SOL — MONITOR-ONLY -->
+        <div class="panel coin">
+          <div class="top">
+            <span class="sym">SOL</span>
+            <span class="badge b-gray"><span class="dot" style="background:var(--gray)"></span>monitor-only</span>
+            <span class="badges"><span class="badge b-gray">no setup</span></span>
+          </div>
+          <div class="rail">
+            <div class="node active" style="--x:0"><span class="pip" style="background:var(--gray);border-color:var(--gray);box-shadow:none"></span><span class="nlabel" style="color:var(--gray)">MON</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">ARM</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">RES</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">TRD</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">CLS</span></div>
+          </div>
+          <div class="strip">
+            <svg viewBox="0 0 460 120" preserveAspectRatio="none">
+              <g stroke-width="5">
+                <line x1="20" y1="50" x2="20" y2="64" stroke="#34d399"/><line x1="44" y1="54" x2="44" y2="70" stroke="#fb5e6b"/>
+                <line x1="68" y1="58" x2="68" y2="74" stroke="#fb5e6b"/><line x1="92" y1="52" x2="92" y2="68" stroke="#34d399"/>
+                <line x1="116" y1="56" x2="116" y2="70" stroke="#fb5e6b"/><line x1="140" y1="60" x2="140" y2="72" stroke="#fb5e6b"/>
+                <line x1="164" y1="54" x2="164" y2="70" stroke="#34d399"/><line x1="188" y1="58" x2="188" y2="72" stroke="#fb5e6b"/>
+                <line x1="212" y1="62" x2="212" y2="74" stroke="#fb5e6b"/><line x1="236" y1="56" x2="236" y2="70" stroke="#34d399"/>
+                <line x1="260" y1="60" x2="260" y2="72" stroke="#fb5e6b"/><line x1="284" y1="64" x2="284" y2="74" stroke="#fb5e6b"/>
+                <line x1="308" y1="58" x2="308" y2="72" stroke="#34d399"/><line x1="332" y1="62" x2="332" y2="72" stroke="#fb5e6b"/>
+                <line x1="356" y1="56" x2="356" y2="70" stroke="#34d399"/><line x1="380" y1="60" x2="380" y2="72" stroke="#fb5e6b"/>
+                <line x1="404" y1="58" x2="404" y2="70" stroke="#34d399"/><line x1="428" y1="62" x2="428" y2="72" stroke="#fb5e6b"/>
+              </g>
+            </svg>
+            <span class="pxtag">136.90</span>
+          </div>
+          <div class="cfoot">
+            <div class="m"><span class="lbl">Last close</span><span class="v" style="font-size:14px">136.90</span></div>
+            <div class="m"><span class="lbl">Nearest pivot low</span><span class="v" style="font-size:14px">134.10</span></div>
+            <div class="m"><span class="lbl">Status</span><span class="v" style="font-size:13px;color:var(--gray)">no SFP</span></div>
+          </div>
+          <div class="chips"><span class="chip hb">loop · 3m ago</span><span class="tag tag-paper">MONITOR</span></div>
+        </div>
+
+        <!-- XRP — MONITOR-ONLY -->
+        <div class="panel coin">
+          <div class="top">
+            <span class="sym">XRP</span>
+            <span class="badge b-gray"><span class="dot" style="background:var(--gray)"></span>monitor-only</span>
+            <span class="badges"><span class="badge b-gray">no setup</span></span>
+          </div>
+          <div class="rail">
+            <div class="node active"><span class="pip" style="background:var(--gray);border-color:var(--gray);box-shadow:none"></span><span class="nlabel" style="color:var(--gray)">MON</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">ARM</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">RES</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">TRD</span></div><div class="seg"></div>
+            <div class="node"><span class="pip"></span><span class="nlabel">CLS</span></div>
+          </div>
+          <div class="strip">
+            <svg viewBox="0 0 460 120" preserveAspectRatio="none">
+              <g stroke-width="5">
+                <line x1="20" y1="48" x2="20" y2="62" stroke="#34d399"/><line x1="44" y1="44" x2="44" y2="60" stroke="#34d399"/>
+                <line x1="68" y1="50" x2="68" y2="64" stroke="#fb5e6b"/><line x1="92" y1="54" x2="92" y2="68" stroke="#fb5e6b"/>
+                <line x1="116" y1="48" x2="116" y2="64" stroke="#34d399"/><line x1="140" y1="52" x2="140" y2="66" stroke="#fb5e6b"/>
+                <line x1="164" y1="56" x2="164" y2="68" stroke="#fb5e6b"/><line x1="188" y1="50" x2="188" y2="66" stroke="#34d399"/>
+                <line x1="212" y1="46" x2="212" y2="62" stroke="#34d399"/><line x1="236" y1="52" x2="236" y2="64" stroke="#fb5e6b"/>
+                <line x1="260" y1="56" x2="260" y2="68" stroke="#fb5e6b"/><line x1="284" y1="50" x2="284" y2="66" stroke="#34d399"/>
+                <line x1="308" y1="54" x2="308" y2="66" stroke="#fb5e6b"/><line x1="332" y1="58" x2="332" y2="68" stroke="#fb5e6b"/>
+                <line x1="356" y1="52" x2="356" y2="66" stroke="#34d399"/><line x1="380" y1="56" x2="380" y2="68" stroke="#fb5e6b"/>
+                <line x1="404" y1="50" x2="404" y2="64" stroke="#34d399"/><line x1="428" y1="54" x2="428" y2="66" stroke="#fb5e6b"/>
+              </g>
+            </svg>
+            <span class="pxtag">0.5120</span>
+          </div>
+          <div class="cfoot">
+            <div class="m"><span class="lbl">Last close</span><span class="v" style="font-size:14px">0.5120</span></div>
+            <div class="m"><span class="lbl">Nearest pivot low</span><span class="v" style="font-size:14px">0.5061</span></div>
+            <div class="m"><span class="lbl">Status</span><span class="v" style="font-size:13px;color:var(--gray)">no SFP</span></div>
+          </div>
+          <div class="chips"><span class="chip hb">loop · 3m ago</span><span class="tag tag-paper">MONITOR</span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ───────────────────────── SIDEBAR ───────────────────────── -->
+    <div class="side">
+
+      <!-- Mode split (Tier A) -->
+      <div class="panel">
+        <div class="phead">
+          <div><h3 class="ptitle">Mode Split</h3><span class="psub">REAL vs CONSIDERABLE · tracked separately</span></div>
+          <span class="tier tier-live">LIVE</span>
+        </div>
+        <div class="mode real">
+          <div class="mh"><span class="mname">REAL</span><span class="n">n=34</span></div>
+          <div class="win">41<small>win%</small></div>
+          <div class="bar"><i style="width:41%"></i></div>
+          <div class="avg"><span>avg-R</span><span class="up">+0.31</span></div>
+        </div>
+        <div class="mode cons">
+          <div class="mh"><span class="mname">CONSIDER.</span><span class="n">n=61</span></div>
+          <div class="win">36<small>win%</small></div>
+          <div class="bar"><i style="width:36%"></i></div>
+          <div class="avg"><span>avg-R</span><span class="up">+0.22</span></div>
+        </div>
+      </div>
+
+      <!-- Near-miss (Tier B mock) -->
+      <div class="panel is-mock">
+        <div class="phead">
+          <div><h3 class="ptitle">Near-Miss</h3><span class="psub">BOS filter working · 58% of armed never convert</span></div>
+          <span class="tier tier-mock">MOCK</span>
+        </div>
+        <div class="nm">
+          <div class="nmrow inval"><span class="tag tag-real">REAL</span><span class="sym">XRP</span><span class="st">INVALIDATED</span><span class="lv">0.5120</span><span class="ago">14m ago</span></div>
+          <div class="nmrow timeout"><span class="tag tag-cons">CONS</span><span class="sym">BTC</span><span class="st">TIMED OUT</span><span class="lv">63,640</span><span class="ago">2h ago</span></div>
+          <div class="nmrow inval"><span class="tag tag-real">REAL</span><span class="sym">SOL</span><span class="st">INVALIDATED</span><span class="lv">136.90</span><span class="ago">3h ago</span></div>
+          <div class="nmrow timeout"><span class="tag tag-cons">CONS</span><span class="sym">ETH</span><span class="st">TIMED OUT</span><span class="lv">2,388.0</span><span class="ago">5h ago</span></div>
+          <div class="nmrow inval"><span class="tag tag-real">REAL</span><span class="sym">BTC</span><span class="st">INVALIDATED</span><span class="lv">62,910</span><span class="ago">7h ago</span></div>
+        </div>
+        <div class="mock-note">BLOCKED on observer watch-state emit (fired_bar_ts, mode, swept_level, status). Wire when emit ships.</div>
+      </div>
+
+      <!-- Division equity (Tier A) -->
+      <div class="panel">
+        <div class="phead">
+          <div><h3 class="ptitle">Division Equity</h3><span class="psub">closed SFP trades · cumulative R</span></div>
+          <span class="tier tier-live">LIVE</span>
+        </div>
+        <div class="eqhead"><span class="dim lbl">bitunix_sfp</span><span class="eqval">$52,840 <span class="up" style="font-size:13px">+0.6%</span></span></div>
+        <svg viewBox="0 0 340 90" style="width:100%;height:84px;margin-top:6px">
+          <defs><linearGradient id="eg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#34d399" stop-opacity=".35"/><stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+          </linearGradient></defs>
+          <path d="M0,72 L24,68 40,70 64,60 88,62 104,54 128,56 150,46 176,48 196,38 220,42 244,30 262,33 288,24 312,28 340,26 L340,90 L0,90 Z" fill="url(#eg)"/>
+          <path d="M0,72 L24,68 40,70 64,60 88,62 104,54 128,56 150,46 176,48 196,38 220,42 244,30 262,33 288,24 312,28 340,26" fill="none" stroke="#34d399" stroke-width="2.5" stroke-linejoin="round"/>
+        </svg>
+        <div class="eqfoot"><span>+18.6 cum R</span><span>41 closed trades</span></div>
+        <!-- Production honest-empty (shown when SFP has no closed trades yet): -->
+        <!-- <div class="empty"><b>Awaiting first closed SFP trade</b>equity curve renders once result IS NOT NULL rows exist for division='bitunix_sfp'</div> -->
+      </div>
+
+    </div>
+  </div>
+
+  <div style="text-align:center;color:var(--txt3);font-size:10px;padding:6px 0 2px">
+    Bitunix SFP Cockpit · v2 · HTMX fragment-poll ~5s · CSS-transition easing, no JS animation loops
+  </div>
+</div>
+
+<script>
+// Only live behavior in the preview: the UTC clock + 15m-bar countdown (no animation loops).
+function tick(){
+  const d=new Date();
+  document.getElementById('utc').textContent=d.toISOString().substr(11,8)+' UTC';
+  const s=d.getUTCMinutes()%15, secs=(14-s)*60+(59-d.getUTCSeconds());
+  document.getElementById('barclock').textContent=String(Math.floor(secs/60)).padStart(2,'0')+':'+String(secs%60).padStart(2,'0');
+}
+tick(); setInterval(tick,1000);
+</script>
+</body>
+</html>
