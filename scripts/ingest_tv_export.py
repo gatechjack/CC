@@ -75,6 +75,38 @@ _TABLE_FOR_TIMEFRAME = {
     "1m": "bars_1m",
 }
 
+# ── Per-coin DB routing (Option A) ──────────────────────────────────────────
+# One DB per coin: data/<coin>_scalping.db. The bars_<tf> tables are IDENTICAL in
+# schema across coins (the coin lives in the DB filename, never the table name),
+# so the p6 harness reads each coin's DB exactly as it reads BTC's. A coin guard
+# (CSV symbol vs target-DB coin) prevents accidentally writing one coin's bars
+# into another coin's DB (a ts-PK collision that would silently corrupt it).
+_QUOTE_SUFFIXES = ("USDT", "USDC", "USD", "PERP")
+
+
+def _detect_coin_from_csv(filename: str) -> str | None:
+    """TV export 'BYBIT_SOLUSDT.P, 15_<hash>.csv' -> 'sol'. None if unrecognized."""
+    m = re.match(r"^[A-Za-z0-9]+_([A-Za-z0-9]+)\.P\s*,", filename)
+    if not m:
+        return None
+    return _canon_coin(m.group(1))
+
+
+def _canon_coin(token: str) -> str | None:
+    """'SOLUSDT' / 'sol' / 'BTCUSDT.P' -> 'sol'/'btc'. Strips a quote suffix."""
+    base = re.sub(r"\.P$", "", token.strip().upper())
+    for q in _QUOTE_SUFFIXES:
+        if base.endswith(q) and len(base) > len(q):
+            base = base[: -len(q)]
+            break
+    return base.lower() or None
+
+
+def _coin_from_db_path(db_path) -> str | None:
+    """'data/sol_scalping.db' -> 'sol'. None if the name isn't <coin>_scalping.db."""
+    m = re.match(r"([a-z0-9]+)_scalping\.db$", Path(db_path).name.lower())
+    return m.group(1) if m else None
+
 
 def _detect_timeframe(filename: str) -> str | None:
     m = _TF_FROM_FILENAME_RE.search(filename)
@@ -253,6 +285,13 @@ def ingest_file(
     # `time` column is Unix seconds ->standardize as `ts`. Add convenience UTC ISO.
     if "time" not in clean_cols:
         raise ValueError(f"{filename!r} has no `time` column; got {raw_cols[:5]!r}...")
+    # Guard the core OHLC schema so a malformed dump fails LOUDLY rather than
+    # creating a table the p6 harness (SELECT ts,open,high,low,close) can't read.
+    missing_ohlc = [c for c in ("open", "high", "low", "close") if c not in clean_cols]
+    if missing_ohlc:
+        raise ValueError(
+            f"{filename!r} missing OHLC column(s) {missing_ohlc}; got {clean_cols[:8]}..."
+        )
     df_raw = df_raw.rename(columns={"time": "ts"})
     df_raw["ts"] = df_raw["ts"].astype("int64")
     df_raw = df_raw.dropna(subset=["ts"])
@@ -407,26 +446,54 @@ def print_data_quality_report(con: sqlite3.Connection) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("csv", nargs="+", help="One or more TradingView CSV exports")
-    parser.add_argument("--db", default=str(DEFAULT_DB),
-                        help=f"SQLite DB path (default: {DEFAULT_DB})")
+    parser.add_argument("--symbol", default=None,
+                        help="Coin slug (btc|sol|eth|xrp) -> data/<coin>_scalping.db "
+                             "when --db is omitted (Option A: one DB per coin)")
+    parser.add_argument("--db", default=None,
+                        help="SQLite DB path. Overrides --symbol. Default when neither "
+                             f"--db nor --symbol is given: {DEFAULT_DB}")
     parser.add_argument("--timeframe", default=None,
                         help="Override timeframe detection (1d|4h|3m|...)")
+    parser.add_argument("--force", action="store_true",
+                        help="Bypass the CSV<->DB coin-mismatch guard (use with care)")
     parser.add_argument("--report", action="store_true",
                         help="Print data quality report after ingestion")
     args = parser.parse_args(argv)
 
-    db_path = Path(args.db)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Resolve the target DB (Option A — one DB per coin). Explicit --db wins;
+    # else --symbol -> data/<coin>_scalping.db; else the BTC default (back-compat).
+    if args.db:
+        db_path = Path(args.db)
+    elif args.symbol:
+        coin = _canon_coin(args.symbol) or args.symbol.lower()
+        db_path = REPO_ROOT / "data" / f"{coin}_scalping.db"
+    else:
+        db_path = DEFAULT_DB
+    target_coin = _coin_from_db_path(db_path)
 
+    # Pre-flight BEFORE opening/creating the DB, so a refused run leaves NO file
+    # behind: every CSV must exist and its coin must match the target DB's coin
+    # (so a SOL dump can never even create, let alone corrupt, btc_scalping.db).
+    for csv_arg in args.csv:
+        csv_path = Path(csv_arg)
+        if not csv_path.exists():
+            print(f"!! NOT FOUND: {csv_arg}", file=sys.stderr)
+            return 1
+        csv_coin = _detect_coin_from_csv(csv_path.name)
+        if target_coin and csv_coin and target_coin != csv_coin and not args.force:
+            print(f"!! REFUSED: {csv_path.name} is {csv_coin.upper()} but target DB is "
+                  f"{target_coin.upper()} ({db_path}). Use --symbol {csv_coin} "
+                  f"(or --db data/{csv_coin}_scalping.db), or --force to override.",
+                  file=sys.stderr)
+            return 1
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as con:
         con.execute("PRAGMA foreign_keys = ON")
         _ensure_meta_table(con)
 
         for csv_arg in args.csv:
             csv_path = Path(csv_arg)
-            if not csv_path.exists():
-                print(f"!! NOT FOUND: {csv_arg}", file=sys.stderr)
-                return 1
             try:
                 result = ingest_file(con, csv_path, args.timeframe)
             except Exception as e:
