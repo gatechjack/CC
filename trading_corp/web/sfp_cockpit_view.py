@@ -543,7 +543,10 @@ def register(app: FastAPI) -> None:
         ctx = {
             "badge": runtime_badge(deps),
             "metrics": await _q(_closed_metrics, db_url),
-            "recon": {**(await _q(_closed_metrics, db_url)), "bos": _mock_bos_confirm()},
+            # _recon.html (and its partial route) read top-level `bos` + `metrics`;
+            # the full-page paint must provide `bos` top-level too (was nested in
+            # an unused `recon` dict -> UndefinedError 'bos' on the full page).
+            "bos": _mock_bos_confirm(),
             "modes": await _q(_mode_split, db_url),
             "equity": await _q(_equity_curve, db_url),
             "near_miss": _mock_near_miss(),
