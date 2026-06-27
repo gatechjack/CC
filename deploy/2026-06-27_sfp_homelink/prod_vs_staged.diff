@@ -1,0 +1,6 @@
+102c102,104
+<                                                     else ('/division/' + d.slug)))) %}
+---
+>                                                     else ('/sfp'
+>                                                             if d.slug == 'bitunix_sfp'
+>                                                             else ('/division/' + d.slug))))) %}
