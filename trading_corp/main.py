@@ -1785,6 +1785,26 @@ async def run(argv: list[str] | None = None) -> int:
             name="bitunix-bar-archiver",
         )
 
+        # Piece 3 (2026-06-27) — ws-primary bar feed. ONE persistent Bitunix
+        # public ws maintains every LiveBarCache's .bars in real time; each
+        # cache's refresh() short-circuits to ws while fresh and REST-falls-back
+        # when stale (interface unchanged → SFP + all consumers unchanged).
+        # Drains the recurring REST kline poll to ~0 while healthy. Fail-soft:
+        # on any error the caches stay on their REST poll.
+        try:
+            from trading_corp.data.bitunix_ws_feed import BitunixWsFeed
+            _ws_caches = [bitunix_bar_cache, bitunix_h1_cache,
+                          bitunix_h4_cache, bitunix_d1_cache]
+            _ws_caches += list(bitunix_sfp_15m_caches.values())
+            _ws_caches += list(bitunix_capture_3m_caches.values())
+            _bitunix_ws_feed = BitunixWsFeed(_ws_caches)
+            _bitunix_ws_feed.mark_caches_ws_enabled()
+            asyncio.create_task(_bitunix_ws_feed.run(), name="bitunix-ws-feed")
+            log.info("bitunix ws feed started (%d caches, %d channels)",
+                     len(_ws_caches), _bitunix_ws_feed.sub_count)
+        except Exception:
+            log.exception("bitunix ws feed start failed (continuing on REST poll)")
+
         # PR 5c — continuous HTF regime snapshot loop (10-min cadence).
         # Provides time-series data on the regime classifier outside of
         # fire moments. Skips no-op when htf_config is unwired.

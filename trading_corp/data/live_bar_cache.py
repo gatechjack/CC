@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -70,6 +71,13 @@ class LiveBarCache:
     last_refresh_ts: float | None = None     # monotonic seconds
     last_refresh_error: str | None = None
     last_refresh_count: int = 0
+    # Piece 3 (2026-06-27) — ws-primary hybrid. When ws_enabled, refresh()
+    # short-circuits to the ws-maintained bars while the ws is fresh (a recent
+    # push set ws_last_msg_ts) and falls back to the REST poll when stale.
+    # Default OFF, so every existing caller/test keeps the pure-REST behavior.
+    ws_enabled: bool = False
+    ws_last_msg_ts: float = 0.0              # monotonic secs; set by the ws feed per push
+    ws_stale_after_s: float = 45.0           # ws deemed dead if no push within this window
 
     @property
     def timeframe_seconds(self) -> int:
@@ -84,6 +92,14 @@ class LiveBarCache:
         in `last_refresh_error`; bars are NOT cleared on error so we
         keep serving the most recent successful snapshot.
         """
+        # Piece 3 hybrid: while the ws feed is fresh it maintains .bars in real
+        # time -> skip the REST poll entirely. Fall back to REST (below) when
+        # the ws goes stale. Requires bars already present (boot prime is REST).
+        if self.ws_enabled and self.bars:
+            if (time.monotonic() - self.ws_last_msg_ts) < self.ws_stale_after_s:
+                return len(self.bars)
+            log.warning("LiveBarCache ws stale (%s %s) — REST fallback",
+                        self.symbol, self.timeframe)
         try:
             if self.venue == "bitunix":
                 return await self._refresh_bitunix()
@@ -217,6 +233,31 @@ class LiveBarCache:
             log.info("LiveBarCache poll loop cancelled")
             raise
 
+    # ── ws-feed hooks (Piece 3) ──────────────────────────────────────
+
+    def note_ws_alive(self) -> None:
+        """Called by the ws feed on every kline push for this cache (freshness)."""
+        self.ws_last_msg_ts = time.monotonic()
+
+    def append_ws_bar(self, bar: "Bar") -> None:
+        """Append a CLOSED bar delivered by the ws feed.
+
+        Dedupes by ts_ms, keeps chronological order, bounds to max_bars. Mirrors
+        the REST refresh's bar shape so consumers (SFP, ATR, archiver) are
+        unchanged — they keep reading `.bars`.
+        """
+        bars = self.bars
+        if bars and bar.ts_ms <= bars[-1].ts_ms:
+            if bar.ts_ms == bars[-1].ts_ms:
+                bars[-1] = bar          # same bucket re-emitted -> latest wins
+            return                      # older than newest -> ignore
+        bars.append(bar)
+        if len(bars) > self.max_bars:
+            del bars[: len(bars) - self.max_bars]
+        self.last_refresh_ts = time.monotonic()
+        self.last_refresh_error = None
+        self.last_refresh_count = len(bars)
+
     # ── computed indicators ──────────────────────────────────────────
 
     def last_close(self) -> float | None:
@@ -268,4 +309,5 @@ class LiveBarCache:
             "last_refresh_count": self.last_refresh_count,
             "last_refresh_error": self.last_refresh_error,
             "atr_14": self.get_atr(14),
+            "ws_enabled": self.ws_enabled,
         }
