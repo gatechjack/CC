@@ -1,0 +1,238 @@
+--- _prodsnap/strategies.yaml.prod	2026-06-27 02:20:29.998105700 -0400
++++ _prodsnap/strategies.yaml.staged	2026-06-27 02:27:25.182907100 -0400
+@@ -1020,6 +1020,7 @@
+   enabled: true                     # Phase 3.1 paper-mode auto-execute live
+   auto_execute: true               # mtime-hot-reloaded runtime kill switch (per-order read)
+   execution_mode: paper             # "paper" | "live"  — Stage-1 N+1 commit 2; config-and-restart, no hot-reload
++  mode: halted                      # two-state collapse (2026-06-27): "trading" | "halted". HALTED = observer short-circuits before scoring/would_have_placed/paper_trade_record (fully inert, flip-ready). Fail-safe default is halted (main.py); no live account here.
+   snapshot_staleness_threshold_seconds: 60   # gate (a) sub-item 2 — halt order path if last successful snapshot is older than this. 2× per-bar cadence on the 1-min bar; mtime-cached on read.
+   # C (2026-06-16) — bar-interval-aware staleness-reject gate. Rejects an
+   # ENTRY whose originating bar is older than (bar_interval_seconds + margin),
+@@ -1929,6 +1930,7 @@
+   enabled: true
+   auto_execute: true
+   execution_mode: live            # OPERATOR-SET paper|live at deploy
++  mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged.
+   division: bitunix_sfp
+   symbols: ["BTC/USDT.P"]
+   detection_tf: "15m"
+--- _prodsnap/futobs.py.prod	2026-06-27 02:20:28.746604200 -0400
++++ _prodsnap/futobs.py.staged	2026-06-27 02:27:25.140971600 -0400
+@@ -530,6 +530,15 @@
+         # restart. The complementary kill-switch is `auto_execute` in
+         # YAML (mtime-hot-reloaded; commit 3 reads it on each placement).
+         execution_mode: str = "paper",
++        # Two-state collapse (2026-06-27) — HALTED-INERT gate. When True the
++        # observer short-circuits its public entries BEFORE scoring /
++        # would_have_placed / paper_trade_record (fully inert: no orders, no
++        # data side-effects, no ledger append). Default False = active, so
++        # existing tests/fixtures that construct the observer without this arg
++        # keep prior behavior. The FAIL-SAFE "default halted" policy lives at
++        # the orchestration layer (main.py reads strategies.yaml `mode` and
++        # passes halted=True unless mode == "trading").
++        halted: bool = False,
+         # Stage-1 N+1 commit 4 — HITL approval registry. When wired AND
+         # execution_mode=live AND auto_execute=true AND we're inside the
+         # first-N window, the helper blocks placement until the operator
+@@ -601,6 +610,9 @@
+             )
+             em = "paper"
+         self.execution_mode = em
++        # Two-state collapse — HALTED-INERT flag (see ctor param). Consumed by
++        # the public-entry guards below; when True the observer is fully inert.
++        self._halted = bool(halted)
+         # HITL approval registry — opaque to the observer; only
+         # exercised when execution_mode=live AND auto_execute=true AND
+         # the first-N counter is below the threshold.
+@@ -677,6 +689,8 @@
+         of order emission. For the full Phase 3.1 path, call the async
+         `observe_and_decide` instead.
+         """
++        if self._halted:
++            return None  # two-state collapse: HALTED-INERT — no classify, no state write
+         try:
+             return self._observe_alert_inner(payload, source=source)
+         except Exception as e:
+@@ -708,6 +722,10 @@
+         with the audit row layout (`bitunix_observer_classified`). The
+         score-path decision is captured in `bitunix_score_decided`.
+         """
++        if self._halted:
++            # Two-state collapse: HALTED-INERT. Short-circuit BEFORE the ledger
++            # append + scoring + would_have_placed + paper_trade_record write.
++            return None
+         verdict = self.observe_alert(payload, source=source)
+ 
+         # Append every signal to the ledger regardless of feature flag —
+@@ -1285,7 +1303,8 @@
+         while True:
+             try:
+                 await asyncio.sleep(interval_s)
+-                if self._pending_pa_payload is None:
++                if self._halted or self._pending_pa_payload is None:
++                    # two-state collapse: HALTED-INERT — never re-fire deferred PA
+                     continue
+                 payload = dict(self._pending_pa_payload)
+                 await self._score_and_maybe_propose(
+--- _prodsnap/main.py.prod	2026-06-27 02:20:27.367514500 -0400
++++ _prodsnap/main.py.staged	2026-06-27 02:27:25.093879100 -0400
+@@ -432,6 +432,10 @@
+     _staleness_enabled = False      # C — staleness-reject gate; OFF if YAML load fails
+     _staleness_margin_s = 120.0     # C — additive margin (s) on top of the bar interval
+     _concurrent_guard_enabled = False  # D4 — concurrent-position guard; OFF if YAML load fails
++    # Two-state collapse (2026-06-27) — futures division mode gate. Fail-safe
++    # default HALTED: if the YAML load below fails OR `mode` != "trading"
++    # (incl. missing), the futures observer is constructed HALTED-INERT.
++    _futures_halted = True
+     try:
+         import yaml as _yaml
+         from pathlib import Path as _Path
+@@ -451,6 +455,9 @@
+         # paper. Observer's __init__ enforces final fail-closed
+         # normalization; this is the YAML read site.
+         _execution_mode = str(_bx_block.get("execution_mode", "paper")).lower()
++        # Two-state collapse — read the division mode (fail-safe halted). Only
++        # an explicit "trading" un-halts; anything else (incl. missing) halts.
++        _futures_halted = (str(_bx_block.get("mode", "halted")).lower() != "trading")
+         # C — bar-interval-aware staleness-reject gate. Entry freshness:
+         # reject an entry whose signal bar is older than (interval + margin).
+         _stale_block = _bx_block.get("staleness_gate") or {}
+@@ -521,6 +528,9 @@
+         # Stage-1 N+1 commit 2 — execution mode wiring. paper-default
+         # everywhere; live requires explicit YAML edit + restart.
+         execution_mode=_execution_mode,
++        # Two-state collapse (2026-06-27) — HALTED-INERT gate. Fail-safe
++        # default halted; only `bitunix_futures.mode: trading` un-halts.
++        halted=_futures_halted,
+         # Stage-1 N+1 commit 4 — HITL gate for first-N live orders.
+         # Wires the existing PendingApprovalRegistry singleton; the
+         # observer only consults it when execution_mode=live AND
+@@ -642,6 +652,15 @@
+     )
+     from trading_corp.brokers.bitunix_symbols import to_wire_format as _to_wire
+     _sfp_cfg = _BitunixSfpConfig.from_dict(_sfp_raw)
++    # Two-state collapse (2026-06-27) — SFP division mode gate, fail-safe HALTED.
++    # ★ The SFP observer file is BYTE-UNCHANGED: `mode` is read HERE (orchestration
++    # layer) from the raw YAML, NOT via BitunixSfpConfig, and gates only whether
++    # the live 15m loop is started below. bitunix_sfp ships `mode: trading`; if it
++    # were missing/non-trading the live BTC edge would stay halted on restart
++    # (the boot smoke asserts trading + loop spawned).
++    _sfp_mode = str(_sfp_raw.get("mode", "halted")).lower()
++    _sfp_trading = (_sfp_mode == "trading")
++    log.info("bitunix_sfp mode gate: mode=%s trading=%s", _sfp_mode, _sfp_trading)
+     bitunix_sfp_observer = None
+     if _sfp_cfg.enabled:
+         try:
+@@ -1683,12 +1702,23 @@
+             replay_pending_paper_trades_async,
+             start_replay_loop,
+         )
++        # Two-state collapse (2026-06-27): the paper-sim layer is RETIRED, so the
++        # replay loop + boot catch-up (the dominant Bitunix bot-footprint:
++        # paginated historical klines, ~15-23k/day — the IP-flag burst on egress
++        # restore) are gated OFF behind ONE flag. SFP (live) resolves via the
++        # reconciler, not replay; disabling replay also removes the latent
++        # live-exit fork that could race SFP's venue brackets. Code retained,
++        # ONE-LINE revert: set _REPLAY_ENABLED = True to restore prior behavior.
++        _REPLAY_ENABLED = False
+         try:
+             mark_pre_phase_a_rows(secrets.db_url)
+-            startup_counts = await replay_pending_paper_trades_async(secrets.db_url)
+-            # f-string (not %s) — RedactingFilter rewrites dict args
+-            # into their keys, producing a TypeError on % formatting.
+-            log.info(f"paper_trade_replay startup catch-up: {startup_counts}")
++            if _REPLAY_ENABLED:
++                startup_counts = await replay_pending_paper_trades_async(secrets.db_url)
++                # f-string (not %s) — RedactingFilter rewrites dict args
++                # into their keys, producing a TypeError on % formatting.
++                log.info(f"paper_trade_replay startup catch-up: {startup_counts}")
++            else:
++                log.info("paper_trade_replay boot catch-up SKIPPED (replay retired)")
+         except Exception:
+             log.exception("paper_trade_replay startup catch-up failed (continuing)")
+         # Wire the bitunix lifecycle notifier AFTER the startup catch-up so
+@@ -1719,14 +1749,19 @@
+         # unchanged). The registration is unconditional — the fork is
+         # additionally gated inside _replay_tick_async on the row's
+         # execution_mode tag, so paper rows always take the paper path.
+-        try:
+-            from trading_corp.agents.paper_trade_replay import (
+-                set_live_exit_executor,
+-            )
+-            set_live_exit_executor(bitunix_observer)
+-        except Exception:
+-            log.exception("bitunix live-exit executor wiring failed (continuing)")
+-        replay_task = start_replay_loop(secrets.db_url, interval_sec=900)
++        if _REPLAY_ENABLED:
++            try:
++                from trading_corp.agents.paper_trade_replay import (
++                    set_live_exit_executor,
++                )
++                set_live_exit_executor(bitunix_observer)
++            except Exception:
++                log.exception("bitunix live-exit executor wiring failed (continuing)")
++            replay_task = start_replay_loop(secrets.db_url, interval_sec=900)
++        else:
++            # Replay retired: no live-exit fork (removes the latent double-exit
++            # race vs SFP's venue brackets) and no periodic historical-kline loop.
++            replay_task = None
+ 
+         # --- BitUnix 3m bar cache poll (Phase 3.2a) ---
+         # Coinbase 3m OHLCV pulled every 60s, cached in-process. Powers the
+@@ -1827,14 +1862,19 @@
+         # decays (cache cleared in SKIP path) or PA passes (cache cleared,
+         # `pa_validation_redeem` audit row written). See observer
+         # `run_pa_redeem_loop` for the lifecycle.
+-        asyncio.create_task(
+-            bitunix_observer.run_pa_redeem_loop(interval_s=60.0),
+-            name="bitunix-pa-redeem",
+-        )
++        if not _futures_halted:
++            asyncio.create_task(
++                bitunix_observer.run_pa_redeem_loop(interval_s=60.0),
++                name="bitunix-pa-redeem",
++            )
++        else:
++            # Two-state collapse: futures HALTED-INERT — deferred-PA redeem loop
++            # NOT started (the observer's entry guards also no-op it defensively).
++            log.info("bitunix_futures HALTED — pa-redeem loop NOT started")
+ 
+         # bitunix_sfp — prime caches, warm-start detectors from history, spawn
+         # the sequential 15m signal loop.
+-        if bitunix_sfp_observer is not None:
++        if bitunix_sfp_observer is not None and _sfp_trading:
+             try:
+                 for _c in bitunix_sfp_observer.bar_caches.values():
+                     await _c.refresh()
+@@ -1844,6 +1884,13 @@
+                          len(bitunix_sfp_observer.bar_caches))
+             except Exception:
+                 log.exception("bitunix_sfp loop spawn failed (continuing)")
++        elif bitunix_sfp_observer is not None and not _sfp_trading:
++            # Two-state collapse: loaded but mode != trading → HALTED-INERT.
++            # 15m loop NOT started (no live BTC trading). Flip mode: trading to arm.
++            log.warning(
++                "bitunix_sfp loaded but mode=%s (not trading) — HALTED-INERT, "
++                "15m loop NOT spawned", _sfp_mode,
++            )
+ 
+         # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5a): restart-resume ──
+         # cases (a) match + (b) orphan + (c-deferred). Runs BEFORE the
+@@ -2117,11 +2164,12 @@
+                 await pead_manage_task
+             except (asyncio.CancelledError, Exception):
+                 pass
+-            replay_task.cancel()
+-            try:
+-                await replay_task
+-            except (asyncio.CancelledError, Exception):
+-                pass
++            if replay_task is not None:  # two-state collapse: None when replay retired
++                replay_task.cancel()
++                try:
++                    await replay_task
++                except (asyncio.CancelledError, Exception):
++                    pass
+             # Stop the web server cleanly
+             if web_server is not None:
+                 web_server.should_exit = True

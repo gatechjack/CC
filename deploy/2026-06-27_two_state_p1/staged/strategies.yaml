@@ -1,0 +1,1948 @@
+# Strategy enablement + watchlists. auto_execute is OFF everywhere by default.
+# Flipping auto_execute to true requires Board approval per the project's HITL rules.
+
+robinhood_pmcc:
+  enabled: true
+  auto_execute: false
+  auto_max_notional: 0
+  # ============================================================
+  # 0-DTE Terminal-DTE Override gates (Board direction 2026-05-01).
+  # When the short leg has 0 DTE, deterministic Python guards override
+  # the LLM's HOLD/WATCH recommendation under two release conditions:
+  #
+  #   (P0) Time-of-day: as the trading-day close approaches, force a
+  #        roll. After Robinhood's auto-close window opens, escalate
+  #        to a single-leg close with urgency=urgent.
+  #
+  #   (P1) Cycle-continuity: if the short's mark has already decayed
+  #        below `cycle_continuity_extrinsic_threshold` per share AND
+  #        intrinsic is zero (mark <= threshold implies intrinsic == 0
+  #        by no-arbitrage), capture next-cycle premium NOW instead of
+  #        waiting for the time gate — better mid-day liquidity, no
+  #        post-expiry coverage gap.
+  #
+  # All three offsets are configurable so the operational behaviour
+  # can be tuned without a code deploy (e.g. widen the release window
+  # if order-execution issues are observed).
+  # ============================================================
+  zero_dte:
+    # Minutes before market close at which the Override releases and
+    # rolls start. Computed against the actual close time for the day
+    # (16:00 ET on regular days; 13:00 ET on half-days; the deadline
+    # rotates onto Thursday when Friday is a market holiday).
+    release_offset_min: 60        # 1h before close
+    # Minutes before market close at which we escalate to close_short
+    # urgency=urgent. Matches Robinhood's auto-close trigger window.
+    hard_deadline_offset_min: 30  # 30m before close
+    # Cycle-continuity release: if a 0-DTE short's mark is at or below
+    # this dollar-per-share threshold, the helper rewrites HOLD/WATCH
+    # to roll_short regardless of time. The trade-off is forfeiting
+    # ~$threshold/contract of residual decay in exchange for
+    # immediate next-cycle premium and no post-expiry coverage gap.
+    cycle_continuity_extrinsic_threshold: 0.15  # $/share
+
+  # Halfway-roll cooldown (Item 1 — 2026-05-02). Backstop guard that
+  # downgrades roll_short → hold when a recent roll-up was executed
+  # and the conditions below all hold. Prevents back-to-back halfway
+  # rolls within a single weekly cycle (which compound bid-ask cost
+  # and lock in the prior roll's debit).
+  roll_cooldown:
+    cooldown_days: 7              # only fires if last roll was within this many days
+    extrinsic_floor: 0.50         # $/share — below this, cycle-continuity wants the roll
+    min_strike_change: 1.0        # $/share — strike_change above this counts as "halfway-style"
+    terminal_dte_floor: 2         # never block a roll on short_leg_dte <= this (deadline-driven)
+
+  # Source for the underlying universe.
+  # "positions" (default): pull live Robinhood holdings at scan time and run
+  #   PMCC logic on whatever the account actually owns. Existing PMCC legs are
+  #   detected and managed (roll/close). New LEAP + short-call setups are only
+  #   proposed on names already held (long stock or long LEAP).
+  # "watchlist": use the explicit list below instead (useful for paper-only
+  #   testing before the live account is connected).
+  # "research_on_demand" (Phase 1a-2 — design §8.A): existing-leg roll/close
+  #   continues from held positions, BUT new opens are sourced per scan from
+  #   the research firm via run_engagement(CandidateScope). Capacity is
+  #   governed by buying power (cash_reserve_floor_pct) — there is no
+  #   hard count cap on positions. Requires research_firm_deps wired into
+  #   PMCCAgent at construction time (main.py); without that the new-opens
+  #   path no-ops with a warning. Backwards compatible — flip per account
+  #   when ready, leave others on "positions".
+  universe_source: positions    # "positions" | "watchlist" | "research_on_demand"
+  watchlist: []                 # only used when universe_source: watchlist
+  # Filters applied when universe_source: positions
+  position_exclude: []
+  position_min_shares: 1
+  scan_schedule: "daily_pre_open"   # daily oversight required for 7-DTE shorts
+
+  # ============================================================
+  # SCOUT — surveys the market for new PMCC opening candidates
+  # Independent of `universe_source` (which controls existing-position scans).
+  # The scout always runs against this universe, filters out symbols already
+  # held as PMCCs, and scores remaining names by weekly-yield economics.
+  # ============================================================
+  scout:
+    enabled: true
+    # Symbols the scout considers for fresh PMCC entries.
+    # Default mix: high-IV crypto-levered + high-beta momentum names that
+    # match the strategy's underlying_criteria. Extend / override here.
+    universe:
+      - NVDA
+      - TSLA
+      - AAPL
+      - MSFT
+      - AMD
+      - MSTR
+      - HOOD
+      - MARA
+      - RIOT
+      - ASTS
+      - RKLB
+      - SMR
+    # Hard caps the scout enforces when deciding "GO / HOLD / HALT"
+    max_concurrent_pmccs: 8        # absolute ceiling on open PMCC pairs
+    capital_per_position_dollars: 25000   # 1 contract per $25k equity (matches risk.yaml)
+    cash_reserve_floor_pct: 0.10   # never let cash drop below this fraction of equity
+    # Scoring weights (heuristic ranking of candidates)
+    weights:
+      weekly_yield_pct: 1.00       # primary signal
+      delta_distance_to_target: 0.30  # closer to target delta = better
+      earnings_distance_days: 0.10    # more days from earnings = safer
+      black_sheep_penalty: 0.15       # slight de-prioritization (not exclusion)
+
+  # ============================================================
+  # Auto-execution caps (apply when auto_execute is flipped to true)
+  # Any action exceeding these caps requires Board approval per HITL rules
+  # ============================================================
+  auto_execute_caps:
+    # Per-action dollar caps
+    max_roll_debit_dollars: 500           # max debit on a single roll without approval
+    max_new_position_debit_dollars: 2000  # max debit to open new PMCC without approval
+    max_single_short_credit_dollars: null # no cap on credits (selling premium)
+    max_close_debit_dollars: 1000         # max to close a losing position without approval
+
+    # Daily aggregate caps
+    max_daily_total_debit_dollars: 1500   # cumulative debits across all actions per day
+    max_daily_actions: 10                 # max number of orders per day
+
+    # Required approval triggers (always require approval, regardless of dollar amount)
+    require_approval_for:
+      - "any_action_on_black_sheep_symbols"   # TSLA, MSTR always need eyes
+      - "closing_any_leap"                     # closing longs is consequential
+      - "opening_new_pmcc_on_new_symbol"       # new underlying = thesis decision
+      - "any_action_when_vix_above_30"         # high-vol regime needs human judgment
+      - "rolling_for_debit_above_5_pct_of_long" # large debit rolls
+      - "any_neutral_strategy_open_or_close"   # iron condors / credit spreads
+
+  # ============================================================
+  # Strategy: Aggressive Weekly Income on High-Beta / Crypto-Levered Names
+  # Thesis: LEAP captures explosive upside, weekly short milks high IV
+  # Risk profile: leveraged, volatile — NOT a retirement strategy
+  # Target: 1.5–3% weekly portfolio yield from short premium
+  # ============================================================
+  strategy:
+
+    # ----- Allocation & sizing -----
+    allocation:
+      pmcc_max_pct: 0.70
+      neutral_max_pct: 0.15
+      cash_reserve_min_pct: 0.10
+      cash_reserve_target_pct: 0.15
+
+    sizing:
+      max_risk_per_trade_pct: 0.05
+      max_pmcc_positions: 15
+      weekly_yield_target_low: 0.015
+      weekly_yield_target_high: 0.03
+      expected_breach_rate: 0.20
+
+    # ----- IV regime (high-IV names only) -----
+    iv_filters:
+      pmcc_iv_min: 0.60               # FLOOR — need high IV for thesis
+      pmcc_iv_preferred: 0.80
+      pmcc_iv_max: 2.00
+      neutral_iv_rank_min: 0.80
+      hedge_vix_trigger: 25
+
+    # ----- Underlying selection (applies to NEW positions only) -----
+    underlying_criteria:
+      acceptable_categories:
+        - "crypto_miners"             # MARA, RIOT, CIFR, IREN, BULL
+        - "crypto_proxies"             # MSTR, HOOD, BLSH
+        - "high_beta_momentum"         # ASTS, RKLB, SMR
+        - "high_iv_specialty"          # OPEN, etc.
+      trend_required: "long_term_uptrend_or_breakout"
+      market_cap_min: null
+      beta_range: null
+      dividend_yield_max: 0.01
+      earnings_buffer_days: 7
+
+    # ============================================================
+    # BLACK SHEEP — high-IV names where assignment is not an option
+    # Strategy: roll halfway, never buy back fully, ride mean reversion
+    # Cash-constrained: cannot accept 100-share assignment
+    # ============================================================
+    black_sheep:
+      symbols:
+        - symbol: "TSLA"
+          rationale: "long-term conviction; high IV mean-reverts reliably"
+          intent: "perpetual_roll_no_assignment"
+        - symbol: "MSTR"
+          rationale: "core BTC-leverage; high IV mean-reverts reliably"
+          intent: "perpetual_roll_no_assignment"
+
+      eligibility_criteria:
+        min_options_iv: 0.70
+        min_avg_options_volume: 10000
+        min_underlying_avg_volume: 5_000_000
+        mean_reversion_history: true
+        early_assignment_risk: "low"
+
+      management_rules:
+        cash_available_for_assignment: false
+        never_allow_assignment: true
+        leap_exercise_allowed: false
+        leap_protection: "preserve_at_all_costs"
+        leap_drawdown_close_threshold: null
+        leap_thesis_check_only: true
+        short_leg_required: true
+        short_leg_dte_target: 7
+        short_leg_initial_delta: [0.20, 0.35]
+
+      rolling_rules:
+        philosophy: |
+          NEVER buy back fully and re-sell OTM at a loss.
+          ALWAYS roll, always for credit, always to a higher strike.
+          Use "halfway roll" when stock has moved aggressively against you.
+          Trust mean reversion on high-IV names within 1-3 weekly cycles.
+
+        roll_trigger_dte: 2
+        roll_trigger_dte_otm: 1
+        roll_trigger_itm_intraday: false
+
+        halfway_roll:
+          when_to_use: "short_strike_breached_by_more_than_3_pct"
+          new_strike_logic: "halfway_between_current_short_strike_and_underlying_price"
+          new_dte: 7
+          require_credit: true
+          minimum_credit: 0.05
+          fallback_extend_dte: 14
+          fallback_extend_dte_max: 21
+
+        standard_roll:
+          when_to_use: "short_within_3_pct_of_underlying"
+          new_strike_logic: "match_or_slightly_above_underlying_price"
+          new_dte: 7
+          require_credit: true
+
+        otm_roll:
+          when_to_use: "short_otm_at_50_pct_profit_or_more"
+          action: "close_at_70_pct_profit_then_open_new_7dte"
+          new_strike_delta: [0.20, 0.30]
+
+        forbidden_actions:
+          - action: "buy_back_short_fully_at_loss_then_resell_otm"
+            reason: "locks in loss right before mean-reversion whipsaw"
+          - action: "close_full_pmcc_to_recover_short_loss"
+            reason: "abandons the long thesis to fix a short — backwards"
+          - action: "accept_assignment"
+            reason: "no cash to fund 100 shares; would force LEAP exercise at loss"
+          - action: "roll_for_debit_to_chase_otm"
+            reason: "high IV means credit rolls are nearly always available"
+
+        mean_reversion:
+          expected_pullback_window: "1_to_3_weekly_cycles"
+          expected_pullback_pct: 0.05
+          do_not_panic_within: "2_weekly_cycles"
+
+      black_sheep_breach:
+        philosophy: |
+          High-IV names breach constantly. The breach is not the problem —
+          panic management is. Roll halfway, collect credit, wait for MR.
+
+        minor_breach:
+          definition: "underlying 0-3% above short strike"
+          preferred_action: "standard_roll_at_2_dte"
+          alternate_action: "let_expire_if_at_strike_and_dte_0"
+
+        major_breach:
+          definition: "underlying 3-10% above short strike"
+          preferred_action: "halfway_roll"
+          require_credit: true
+
+        runaway_breach:
+          definition: "underlying 10%+ above short strike"
+          preferred_action: "halfway_roll_with_extended_dte"
+          new_dte: 14
+          require_credit: true
+          forbidden: ["close_leap", "buy_back_at_full_loss", "accept_assignment"]
+
+      exit_when:
+        - "underlying_thesis_explicitly_broken"
+        - "leap_dte < 90 AND no_roll_available_for_credit"
+        - "fundamental_deterioration_confirmed"
+        - "roll_no_longer_yields_credit_after_3_attempts"
+
+      leap_management:
+        roll_out_trigger_dte: 180
+        roll_out_method: "diagonal_credit_or_minimum_debit"
+        max_debit_pct_of_position: 0.15
+
+    # ----- LEAP (long leg) — for non-black-sheep positions -----
+    long_leg:
+      dte_min: 365
+      dte_max: 720
+      delta_min: 0.55
+      delta_max: 0.80
+      delta_high_conviction: 0.70
+      delta_speculative: 0.55
+      roll_down_trigger_delta: 0.40
+      roll_out_trigger_dte: 120
+
+    # ----- Weekly short (short leg) — for non-black-sheep positions -----
+    short_leg:
+      dte_target: 7
+      dte_secondary: 14
+      dte_extended: 45
+      delta_aggressive: [0.30, 0.45]
+      delta_balanced: [0.20, 0.30]
+      delta_defensive: [0.10, 0.20]
+      short_strike_above_long_cost: false
+      short_strike_logic: "above_long_breakeven_OR_above_recent_high"
+
+    # ----- Trade management -----
+    management:
+      profit_take_pct: 0.50
+      profit_take_pct_late: 0.75
+      stop_loss_pct: null
+      roll_dte_trigger: 2
+      roll_itm_trigger: true
+
+    # ----- Terminal-DTE rules: theta dynamics override breach mechanics -----
+    # When a short call has very little time left, the entire mark is mostly
+    # extrinsic value that will evaporate by close. Rolling at this stage
+    # locks in extrinsic that you'd otherwise collect for free. These rules
+    # tell the analyzer to default to HOLD (let theta work) for ATM/near-ATM
+    # shorts in the final 1-2 days, unless the position genuinely breaches
+    # the strike or there's overnight gap risk we can't accept.
+    terminal_dte_rules:
+      enabled: true
+      short_dte_threshold: 2          # rules apply when short DTE <= this
+      atm_band_pct: 0.015             # ±1.5% from strike = "ATM zone"
+      default_action_in_atm_zone: "hold"
+      override_if_breach_pct: 0.015   # close/roll if underlying > strike × (1 + this)
+      rationale: |
+        Time value collapses rapidly in the final 24-48h. When ATM/near-ATM
+        with ≤2 DTE, theta dynamics dominate over breach mechanics. Rolling
+        locks in extrinsic that would otherwise evaporate. Override only if:
+          (a) underlying breaches strike by more than `override_if_breach_pct`
+          (b) realized overnight gap exceeds 1σ implied move
+          (c) account cannot tolerate assignment risk
+
+    # ----- Breach policy (standard, for non-black-sheep) -----
+    breach_policy:
+      philosophy: "breaches are expected, not emergencies — evaluate combined P/L"
+      classification:
+        minor_breach_pct: 0.03
+        major_breach_pct: 0.08
+        runaway_breach_pct: 0.08
+      evaluate_combined_pl: true
+      combined_profit_take_threshold: 0.30
+
+      responses:
+        minor:
+          preferred_action: "roll_up_and_out"
+          new_short_dte: 7
+          new_short_delta: [0.25, 0.35]
+          require_credit: false
+          max_debit_pct_of_long: 0.08
+          fallback: "hold_to_expiry"
+
+        major:
+          preferred_action: "roll_up_and_out_longer_dte"
+          new_short_dte: 21
+          new_short_delta: [0.30, 0.40]
+          require_credit: true
+          alternative_action: "close_full_pmcc_if_profitable"
+          close_threshold_combined_pl: 0.25
+
+        runaway:
+          preferred_action: "close_short_only_hold_leap_naked"
+          conditions_required:
+            - "leap_dte > 270"
+            - "long_term_thesis_intact"
+            - "vix < 30"
+          alternative_action: "close_full_pmcc_lock_gains"
+          use_alternative_when:
+            - "leap_dte < 270"
+            - "combined_pl > 0.40"
+            - "broader_market_topping"
+          forbidden_action: "chase_with_higher_strike_short_same_week"
+
+      hard_rules:
+        - "never roll for debit > 8% of LEAP current value"
+        - "if LEAP delta > 0.95, treat as deep ITM equity — close or roll deep"
+        - "log breach event + outcome for monthly review"
+
+    # ----- Off-criteria positions (non-black-sheep) -----
+    off_criteria_positions:
+      policy: "manage_to_completion_no_renewal"
+      description: |
+        Positions on symbols that don't match underlying_criteria but aren't
+        marked as black_sheep. Continue normal management until LEAP expiry
+        or the thesis breaks. Do NOT propose new PMCC setups on these names
+        after the existing one closes — rotate capital to compliant names.
+      flag_for_review: true
+      block_new_entries_on_symbol: true
+
+    # ----- Liquidity gates -----
+    liquidity:
+      max_bid_ask_spread_pct: 0.10
+      min_open_interest: 100
+      min_avg_volume: 50
+
+    # ----- Hedging -----
+    hedging:
+      vix_above_25: "consider_index_puts_not_individual"
+      btc_drawdown_trigger_pct: 0.15
+      correlation_warning: true
+
+    # ----- Position review priorities -----
+    review_priorities:
+      high:
+        - "any short showing -100% or worse open P/L (non-black-sheep)"
+        - "any short with delta > 0.60 (non-black-sheep)"
+        - "any short within 2 days of expiry and ITM"
+      medium:
+        - "shorts at 50%+ profit (close candidates)"
+        - "LEAPs down >40% from cost (thesis check, EXCLUDING black_sheep)"
+      black_sheep_specific:
+        - "any black_sheep LEAP with DTE < 90 (exercise/roll decision needed)"
+        - "any black_sheep short approaching ITM near expiry"
+
+    # ----- Hard rules -----
+    hard_rules:
+      - "respect max_risk_per_trade_pct on every entry"
+      - "always verify real-time pricing before recommending action"
+      - "always state full expiry date (YYYY-MM-DD) for every strike"
+      - "no new short premium within 7 DTE of underlying earnings"
+      - "on breach, evaluate combined PMCC P/L — never act on short leg alone"
+      - "black_sheep positions follow black_sheep rules, NOT standard breach policy"
+      - "off_criteria positions: manage to completion, no new entries on same symbol"
+      - "never accept assignment on any black_sheep position"
+      - "never close a black_sheep LEAP to fund a short buyback"
+      - "respect auto_execute_caps when auto_execute is true"
+
+
+fidelity_options:
+  enabled: true
+  auto_execute: false
+  auto_max_notional: 0
+
+  watchlist: [SPY, QQQ, IWM]    # symbols to scan each cycle
+
+  # Strategy selection thresholds
+  iv_rank_threshold: 0.50        # above = sell premium (condors/credit spreads), below = buy
+  short_strike_delta: 0.30       # target delta for short legs in spreads / condors
+  long_strike_delta: 0.15        # target delta for wing/protection legs
+
+  # DTE targeting
+  target_dte_low: 25             # minimum DTE to open a new position
+  target_dte_high: 50            # maximum DTE to open a new position
+  calendar_near_dte_low: 7       # near leg for calendar spreads
+  calendar_near_dte_high: 21     # near leg for calendar spreads
+
+  scan_schedule: "weekly_monday_pre_open"
+
+crypto_futures:
+  enabled: false                 # Phase 3
+  auto_execute: false
+  auto_max_notional: 0
+  venue: coinbase                # ccxt id
+  pairs: ["BTC/USD", "ETH/USD"]
+  strategies:
+    scalper: { enabled: false }
+    swing:   { enabled: false }
+    vwap:    { enabled: false }
+    quarter: { enabled: false }
+
+
+# ============================================================
+# LORD OTTER — TradingView-driven scalping strategy
+#
+# Receives webhook alerts from TradingView when the Lord Otter
+# indicator fires signals (Otter, Spoon, Pink Box, Water, Money
+# Bag, CVD flip, 90m bias). The agent maintains per-symbol state,
+# classifies the alert chain into a conviction tier (Diamond →
+# Premium → Standard → Solo Otter), and emits a ProposedOrder
+# sized by tier. All orders flow through the standard risk gate
+# + audit pipeline.
+#
+# Phase 1: spot longs only on Coinbase (buy → close → wait).
+# Phase 2 (future): leverage shorts via coinbase_futures.
+# ============================================================
+lord_otter:
+  # Disabled 2026-05-08: coinbase_spot pivots to the Donchian strategy
+  # (block below). Otter+Cypher confluence had no demonstrable edge in
+  # walk-forward (commit cd26a75). Files preserve for future BitUnix
+  # Futures wiring per `trading_corp_bitunix_vision.md`.
+  enabled: false
+  # auto_execute: when true, ProposedOrders fire through the risk
+  # gate straight to the broker (no HITL approval). Leave FALSE
+  # while you build trust in the strategy. When false, alerts are
+  # received + classified + audited but orders are NOT placed —
+  # they're logged as "would_have_placed" and pushed to Telegram
+  # for visibility.
+  auto_execute: false
+  # Webhook auth secret env-var name. Generate a random 32+ char
+  # string (e.g. `python -c "import secrets;print(secrets.token_urlsafe(32))"`)
+  # and put it in .env as LORD_OTTER_WEBHOOK_SECRET=...
+  webhook_secret_env: LORD_OTTER_WEBHOOK_SECRET
+
+  # Which division (account) orders route to. Phase 1: Coinbase Spot.
+  # Phase 2: also coinbase_futures once that broker is wired (Phase C
+  # of the Coinbase wiring work).
+  division: coinbase_spot
+
+  # Symbols this strategy operates on. Each symbol gets its own state
+  # machine. Phase 1: BTC only. Add ETH/FET when you're ready.
+  symbols:
+    - "BTC/USD"
+
+  # Direction policy. "long_only" = spot semantics (buy = open long;
+  # bear signals close existing longs but never open shorts).
+  # "both" = futures-style (open longs AND shorts). Set to "both"
+  # only after coinbase_futures is wired.
+  direction_policy: long_only
+
+  # Arming window: Pink Box / Spoon "arm" the agent for an Otter
+  # trigger within this many bars. After expiry, an Otter alone
+  # only qualifies for Solo / Standard tier.
+  arming_window_bars: 5
+
+  # Same-direction cooldown — drop duplicate alerts that fire within
+  # this many seconds of the last one. Prevents the same signal
+  # cluster from firing 3 orders in a row.
+  cooldown_seconds: 180
+
+  # Paper-trade replay window. Phase B/C of the would_have_placed
+  # enrichment (BACKLOG.md 2026-05-01): the replay job walks each
+  # `paper_trade_record` row forward from alert_ts checking whether spot
+  # touched the TP or SL price first. If neither hits within this many
+  # seconds, the trade is marked `result='expired'` instead of staying
+  # `open`. Otter is a 3m scalp; 24h is generous coverage. Frozen onto
+  # each record at write-time so changing this here doesn't retroactively
+  # alter past trades.
+  max_hold_seconds: 86400  # 24h
+
+  # ============================================================
+  # Tier sizing — % of equity at risk per trade.
+  # Diamond tier matches the lord_otter override in risk.yaml
+  # (per_trade_risk_pct: 0.05 = 5%). Lower tiers stay well
+  # under that cap. Risk gate will resize down if a tier ever
+  # exceeds the per-trade cap.
+  # ============================================================
+  tier_sizes:
+    diamond:    0.050   # 5.0% — max conviction (full setup chain + Money Bag or Large Water)
+    premium:    0.030   # 3.0% — bias + arming + Otter + CVD flip
+    water_large: 0.030  # 3.0% — Large Water multi-TF aligned
+    water_small: 0.020  # 2.0% — Small Water + Otter or Money Bag confirm
+    standard:   0.015   # 1.5% — bias + Otter + CVD flip (no prior arming)
+    money_bag:  0.015   # 1.5% — Money Bag with bias
+    solo_otter: 0.0075  # 0.75% — Otter alone, bias-aligned, no other confirms
+
+  # ============================================================
+  # Stop loss — Phase 1.5: trigger-bar stop with max-loss cap.
+  #
+  # The simplest reliable scalp stop is a few basis points beyond the
+  # trigger bar's swing extreme:
+  #   long  → stop = bar_low  × (1 - swing_buffer_pct)
+  #   short → stop = bar_high × (1 + swing_buffer_pct)
+  #
+  # Then enforce a HARD max-loss cap. If the technical stop distance
+  # would breach max_loss_pct_equity, we SHRINK qty (never widen the
+  # stop). The user's risk profile says 0.5% per-scalp dollar loss cap.
+  #
+  # Phase 1.6 will add real ATR(14) from broker.fetch_ohlcv + multi-bar
+  # swing-pivot detection. Until then, this single-bar stop works for
+  # the typical Lord Otter scalp setup because the trigger bar IS the
+  # structural pivot.
+  # ============================================================
+  stop_loss:
+    method: "trigger_bar"
+    swing_buffer_pct: 0.001         # 0.1% beyond the trigger bar's high/low
+    max_loss_pct_equity: 0.005      # 0.5% of equity max per trade — qty shrinks to fit
+    # Fallback if bar OHLC isn't in the alert payload (shouldn't happen
+    # but defensive): use a fixed % from entry price.
+    fallback_stop_distance_pct: 0.003   # 0.3% from entry
+
+  # ============================================================
+  # Take-profit targets (Phase A of the Otter/Cypher trade-spec
+  # enrichment, BACKLOG.md 2026-05-01). R-multiple of stop distance
+  # per tier — TP_price = entry ± stop_distance * r_multiple.
+  #
+  # Otter scalps 3-min bars and aims to capture quickly. Default 2R
+  # across all tiers; tune higher for max-conviction setups (Diamond
+  # can run further on a strong reversal) or lower for choppier tiers.
+  # No TP order is placed automatically yet — these values populate the
+  # `would_have_placed` push card and (Phase B) the paper_trade_record
+  # table for win/loss replay analysis.
+  # ============================================================
+  take_profit:
+    default_r_multiple: 2.0         # used when tier-specific value missing
+    tier_r_multiples:
+      diamond:    2.5               # max conviction — let it run a little
+      premium:    2.0
+      water_large: 2.0
+      water_small: 1.5
+      standard:   1.5
+      money_bag:  1.5
+      solo_otter: 1.5
+
+  # ============================================================
+  # Close-existing-longs (Phase 1.5).
+  # When in long_only mode and a bear signal fires, the agent now
+  # closes a fraction of the held position (instead of ignoring).
+  # Conviction-tiered: a Diamond bear is a stronger reversal call
+  # than a Solo Otter bear, so it closes more.
+  # ============================================================
+  tier_close_fractions:
+    diamond:    1.00     # max conviction reversal — full close
+    premium:    0.75     # strong reversal — most of the position
+    water_large: 0.75    # multi-TF aligned bear — most
+    water_small: 0.50    # half close
+    standard:   0.50
+    money_bag:  0.75     # precision top — most
+    solo_otter: 0.25     # weakest signal — small de-risk only
+
+  # ============================================================
+  # Profit target — scale out at 1R, trail the runner.
+  # ============================================================
+  profit_target:
+    scale_out_pct_at_1r: 0.50        # close 50% of position at 1R
+    final_target_r: 3.0              # close all at 3R
+    move_stop_to_breakeven_at_r: 0.5 # at 0.5R, move stop to entry
+
+  # ============================================================
+  # Halt conditions — deterministic shutdown rules.
+  # ============================================================
+  halt_conditions:
+    consecutive_losses: 3
+    consecutive_loss_pause_hours: 4
+    daily_loss_pct: 0.02             # 2% strategy daily loss → halt for the day
+    # Two opposite-direction alerts within this window = chop;
+    # ignore both. Indicator is showing noise.
+    chop_window_seconds: 60
+
+  # ============================================================
+  # Time-of-day modifiers — boost size during high-liquidity
+  # opens, shrink during weekend dead zones.
+  # All times in UTC. The agent applies these on top of tier_sizes.
+  # ============================================================
+  time_modifiers:
+    enabled: true
+    windows:
+      - name: "ny_open"
+        utc_hour: 13                 # 13:30 UTC = 9:30 ET (covers DST drift loosely)
+        utc_minute: 0
+        window_minutes: 90           # ±30min around 13:30
+        size_multiplier: 1.2
+      - name: "london_open"
+        utc_hour: 7
+        utc_minute: 0
+        window_minutes: 60
+        size_multiplier: 1.1
+    # Weekend liquidity drought (Fri 22:00 UTC → Sun 22:00 UTC)
+    weekend_size_multiplier: 0.5
+
+  # ============================================================
+  # News halt — pause trading around macro releases.
+  # Free macro calendar source pulled from config/macro_calendar.yaml.
+  # Real fetcher (FRED FOMC dates + ForexFactory CPI/NFP) lands in
+  # Phase 1.5; for now the calendar is hand-maintained YAML.
+  # ============================================================
+  news_halt:
+    enabled: true
+    halt_window_minutes: 30          # ±30min around each event
+    calendar_path: "config/macro_calendar.yaml"
+    halt_impact_levels: ["high"]     # only "high" impact halts (FOMC, CPI, NFP)
+
+
+# =============================================================================
+# Market Cypher — TradingView-driven SWING strategy on BTC/USD.
+# Independent of Lord Otter; can run alongside it. Different timescale (4h
+# primary triggers, 1D bias) catches regime-level moves Otter's 3m scalp
+# misses. See trading_corp/agents/strategies/market_cypher.py for full
+# strategy logic + the conversation history that birthed it on 2026-04-30.
+# =============================================================================
+market_cypher:
+  # Disabled 2026-05-08 alongside Otter — same rationale (Donchian pivot).
+  enabled: false
+  # `auto_execute=false` is the default for any new strategy. Flip to true
+  # only after Board (you) reviews enough paper-mode `would_have_placed`
+  # entries in the audit log to trust the tier classifier. HITL on every
+  # order until then.
+  auto_execute: false
+
+  # Webhook auth secret env var name. We set MARKET_CYPHER_WEBHOOK_SECRET
+  # in Key Vault on 2026-04-30 (separate from Lord Otter's secret per the
+  # design decision to run agents independently with rotatable creds).
+  webhook_secret_env: MARKET_CYPHER_WEBHOOK_SECRET
+
+  # Which division (account) orders route to. Phase 1: Coinbase Spot
+  # (long-only). Phase 2: maybe coinbase_futures for both-sided trading.
+  division: coinbase_spot
+
+  # Symbols this strategy operates on. Each gets its own state machine.
+  # Phase 1: BTC only (matches Lord Otter's symbol scope).
+  symbols:
+    - "BTC/USD"
+
+  # Direction policy — same as Otter on Spot. Bear signals close longs,
+  # never open shorts.
+  direction_policy: long_only
+
+  # Arming window: Bluetriangle on 4h chart arms long-side for this many
+  # bars (default 3 × 4h = 12 hours). After expiry, a follow-up Cipher B
+  # trigger gets BIG_CIRCLE / STANDARD tier instead of DIAMOND / PREMIUM.
+  arming_window_bars: 3
+
+  # Same-direction cooldown — much wider than Otter's because Cypher
+  # trades hold for hours/days. 4h = 14400 seconds. Don't fire two
+  # bullish entries within 4 hours of each other (would just be doubling
+  # down on the same setup).
+  cooldown_seconds: 14400
+
+  # Paper-trade replay window. See lord_otter.max_hold_seconds for the
+  # full rationale. Cypher is a 4h/1D swing; 7d covers typical hold
+  # before a stop or target gets hit on the 4h timeframe.
+  max_hold_seconds: 604800  # 7d
+
+  # ============================================================
+  # Tier sizing — % of equity at risk per trade.
+  # Wider than Otter because trades hold longer (hours-days vs minutes).
+  # Top tier (gold) goes higher than Otter's diamond because GOLD circle
+  # is the rarest, highest-conviction signal in the entire Cipher suite.
+  # ============================================================
+  tier_sizes:
+    gold:        0.075   # 7.5% — GOLD circle (RSI<30 + WT≤-80 + div, indicator-stacked)
+    diamond:     0.050   # 5.0% — Big green circle + Div + Cipher A confirm
+    premium:     0.040   # 4.0% — Big green circle + Div, no Cipher A confirm
+    big_circle:  0.030   # 3.0% — Big green circle + Cipher A confirm (no div)
+    standard:    0.020   # 2.0% — Big green circle alone, bias-aligned
+    ema_flip:    0.020   # 2.0% — Longema fires (catching the regime turn)
+    solo:        0.0075  # 0.75% — Small green dot, bias-aligned
+
+  # ============================================================
+  # Bear close fractions — what % of held position to close on each
+  # bear-tier signal. Mirrors Otter's pattern but tuned for swing
+  # holds (more decisive on high-conviction bear, lighter on noise).
+  # ============================================================
+  tier_close_fractions:
+    blood_diamond:  1.00     # full close — Red X + Red Diamond stacked
+    big_red_div:    1.00     # full close — Big red circle + divergence
+    big_red:        0.75     # most of position — Big red + bias=bear or Cipher A bear confirm
+    cipher_a_bear:  0.75     # most — Red Diamond + (RedX or YellowX) within 12h
+    standard_bear:  0.50     # half — Big red circle alone
+    caution:        0.25     # small de-risk — Red Diamond / RedX / YellowX alone
+    small_dot:      0.15     # minor de-risk — Small red dot
+
+  # ============================================================
+  # Stop loss — wider than Otter's because swing-hold trades need
+  # room to breathe through normal counter-bar movement.
+  # ============================================================
+  stop_loss:
+    method: "trigger_bar"
+    swing_buffer_pct: 0.005          # 0.5% beyond the trigger bar's high/low
+    max_loss_pct_equity: 0.02        # 2% of equity max per trade — qty shrinks to fit
+    fallback_stop_distance_pct: 0.02 # 2% from entry if bar OHLC missing
+
+  # ============================================================
+  # Take-profit targets (Phase A of the Otter/Cypher trade-spec
+  # enrichment, BACKLOG.md 2026-05-01). R-multiple of stop distance
+  # per tier — TP_price = entry ± stop_distance * r_multiple.
+  #
+  # Cypher swings 4h/1D bars — trades hold longer and have more room
+  # to extend, so default targets are higher than Otter (2.5R baseline,
+  # 3.0R+ for Gold / Diamond max-conviction setups). No TP order is
+  # placed automatically yet — these populate the `would_have_placed`
+  # push card and (Phase B) the paper_trade_record replay table.
+  # ============================================================
+  take_profit:
+    default_r_multiple: 2.5         # used when tier-specific value missing
+    tier_r_multiples:
+      gold:        3.0              # rarest signal in the suite — let it work
+      diamond:     3.0
+      premium:     2.5
+      big_circle:  2.5
+      standard:    2.0
+      ema_flip:    2.0
+      solo:        1.5
+
+  # ============================================================
+  # Halt conditions — wider than Otter (4% daily loss vs 2%) because
+  # Cypher's per-trade size is bigger and a single bad trade can
+  # legitimately move the daily P&L several %.
+  # ============================================================
+  halt_conditions:
+    consecutive_losses: 3
+    consecutive_loss_pause_hours: 12
+    daily_loss_pct: 0.04
+    # Opposite-direction signals within this window = chop. Wider than
+    # Otter's 60s because Cypher signals are slower (4h bars).
+    chop_window_seconds: 1800        # 30 minutes
+
+  # ============================================================
+  # Time-of-day modifiers — disabled by default for Cypher because
+  # swing trades aren't sensitive to session opens the way scalps are.
+  # Enable later if backtesting shows session-edge performance.
+  # ============================================================
+  time_modifiers:
+    enabled: false
+    weekend_size_multiplier: 1.0
+
+  # ============================================================
+  # News halt — same shape as Otter, also pauses around FOMC/CPI/NFP.
+  # ============================================================
+  news_halt:
+    enabled: true
+    halt_window_minutes: 60          # wider window than Otter (swing trades hold through release)
+    calendar_path: "config/macro_calendar.yaml"
+    halt_impact_levels: ["high"]
+
+
+# ============================================================
+# Coinbase BTC Donchian (LOCKED 2026-05-08 — replaces the earlier
+# Otter+Cypher confluence experiment, which failed walk-forward).
+#
+# Strategy: Donchian Channel Breakout on Coinbase BTC/USD 6h bars.
+#   - Long when current close > max(high) over last 20 bars (~5 days)
+#   - Flat when current close < min(low) over last 6 bars (~36 hours)
+#   - Trend filter: only enter long if close > SMA(168) (~42d trend)
+#
+# Validation history (see runbooks/deploy_log.md or commits 072a484+):
+#   - 24mo full corpus: +56.30% vs HODL +30.42% (+25.89% alpha)
+#   - 12mo walk-forward (6mo train + 6mo test): 8/10 top-train configs
+#     beat HODL out-of-sample, median test α +12.86%, best +27.21%.
+#   - 35 round-trips over 24mo, 49% win rate, max DD 16.49%, 25% time
+#     in BTC. Wins bigger than losses — typical trend-following profile.
+#
+# Implementation status:
+#   - Phase 1 (backtest infrastructure): SHIPPED (commit 072a484).
+#   - Phase 2 (live agent module + paper-mode wiring): NOT YET BUILT.
+#     Strategy is `enabled: false` until Phase 2 + Board approval lands.
+# ============================================================
+coinbase_btc_donchian:
+  enabled: true                      # Phase 2 wiring landed 2026-05-08
+  auto_execute: false                # paper-mode default per project HITL rules
+  division: coinbase_spot            # this strategy runs on the coinbase_spot division
+  symbol: "BTC/USD"
+  starting_state: auto               # auto = check broker snapshot at startup
+
+  donchian:
+    entry_lookback: 20               # bars-back for the breakout high
+    exit_lookback: 6                 # bars-back for the breakdown low
+    trend_filter_lookback: 168       # 6h * 168 = 42 days SMA filter
+    granularity_seconds: 21600       # 6h bars
+
+  audit:
+    log_skip_decisions: true         # write `donchian_skip` row for every
+                                     # bar the strategy evaluated and didn't
+                                     # fire on. Phase-1 finding: an audit
+                                     # paper-trail of "why we DIDN'T act" is
+                                     # gold for tuning.
+
+# ============================================================
+# Coinbase BTC Accumulator (DEPRECATED — confluence approach failed
+# walk-forward; see commit cd26a75 for the negative result that drove
+# the pivot to Donchian above).
+#
+# Block kept here as historical reference only — the YAML is parsed
+# but `enabled: false` so nothing wires up. Remove on a future cleanup
+# pass if the Donchian strategy is fully validated and the confluence
+# path is permanently abandoned.
+# ============================================================
+btc_accumulator:
+  enabled: false                     # Phase 1: backtest only, no live wiring
+  auto_execute: false                # paper-mode default per project HITL rules
+  division: coinbase_spot            # which division this strategy runs in
+  symbol: "BTC/USD"                  # single-instrument accumulator
+  starting_state: auto               # auto = check broker snapshot at startup;
+                                     # alternatives: cash | btc
+
+  confluence:
+    min_score_buy: 6                 # placeholder — backtest will tune
+    min_score_sell: 6                # placeholder — backtest will tune
+
+    # Per-signal weights. Factor keys are the EXACT `signal` field
+    # value from the TradingView webhook payload (verified against
+    # prod's audit_event log on 2026-05-08). `side: buy` adds to
+    # buy_score, `side: sell` adds to sell_score. `ttl_minutes` =
+    # how long the signal stays "live" in the rolling state after
+    # firing — Cypher HTF gets long persistence, Otter LTF expires
+    # fast.
+    #
+    # Initial weights are placeholders; the backtest harness at
+    # scripts/backtest_btc_accumulator.py reads this same block,
+    # so weight tuning is a YAML edit + re-run loop.
+    factors:
+      # ── Cypher A-panel (presumed 1D — heavy weight per Board direction) ──
+      mc_a_bluetriangle:    { weight: 3, side: buy,  ttl_minutes: 1440 }
+      mc_a_red_diamond:     { weight: 4, side: sell, ttl_minutes: 1440 }
+      mc_a_redx:            { weight: 2, side: sell, ttl_minutes: 1440 }
+
+      # ── Cypher B-panel (presumed 4h) ──
+      mc_b_gold_buy:        { weight: 4, side: buy,  ttl_minutes: 240 }
+      mc_b_buy_dot:         { weight: 3, side: buy,  ttl_minutes: 240 }
+      mc_b_sell_circle:     { weight: 3, side: sell, ttl_minutes: 240 }
+
+      # ── Otter 3m (entry timing — fast TTLs) ──
+      bias_bull:            { weight: 2, side: buy,  ttl_minutes: 90 }   # 90m HTF bias on Otter chart
+      spoon_bull:           { weight: 2, side: buy,  ttl_minutes: 30 }   # divergence arming
+      spoon_bear:           { weight: 2, side: sell, ttl_minutes: 30 }
+      cvd_bull_flip:        { weight: 2, side: buy,  ttl_minutes: 15 }   # CVD momentum flip
+      cvd_bear_flip:        { weight: 2, side: sell, ttl_minutes: 15 }
+      otter_buy:            { weight: 3, side: buy,  ttl_minutes: 15 }   # core Otter signal — tier carrier
+      otter_sell:           { weight: 3, side: sell, ttl_minutes: 15 }
+      money_bag_bottom:     { weight: 2, side: buy,  ttl_minutes: 30 }
+      money_bag_top:        { weight: 2, side: sell, ttl_minutes: 30 }
+      water_buy_large:      { weight: 2, side: buy,  ttl_minutes: 30 }
+      water_sell_large:     { weight: 2, side: sell, ttl_minutes: 30 }
+
+      # ── Price-action factors (computed from OHLCV by harness/agent) ──
+      # Enabled 2026-05-08 (Phase 1.5). Computed deterministically:
+      # - above/below_session_vwap: bar-mid vs session-VWAP since 00:00 UTC
+      # - higher_highs_4h / lower_lows_4h: most-recent COMPLETED 4h bar
+      #   vs prior completed 4h bar (excludes in-progress bar to avoid
+      #   look-ahead within the bucket)
+      # - volume_above_20bar_avg: current bar's volume vs trailing
+      #   20-bar avg (current bar excluded from the avg)
+      above_session_vwap:     { weight: 1, side: buy }
+      below_session_vwap:     { weight: 1, side: sell }
+      higher_highs_4h:        { weight: 2, side: buy }
+      lower_lows_4h:          { weight: 2, side: sell }
+      volume_above_20bar_avg: { weight: 1, side: directional }
+
+  # Symmetric "wait for stabilization" guards — applied as score
+  # penalties, NOT hard filters. So a strong-confluence sell (score
+  # 9) into a 4% rush (penalty -2) still fires at score 7; a weak
+  # sell (5) into the same rush (3) gets blocked. This lets the
+  # weight system express "don't sell on a heater unless conviction
+  # is overwhelming" without a binary veto.
+  guards:
+    sell_on_rush:                    # penalize sells when BTC just rose
+      window_minutes: 60
+      brackets:
+        - { upto_pct: 1.0, penalty: 0 }
+        - { upto_pct: 3.0, penalty: -1 }
+        - { upto_pct: 5.0, penalty: -2 }
+        - { upto_pct: 999, penalty: -3 }
+    buy_on_fall:                     # penalize buys when BTC just fell
+      window_minutes: 60
+      brackets:
+        - { upto_drop_pct: 1.0, penalty: 0 }
+        - { upto_drop_pct: 3.0, penalty: -1 }
+        - { upto_drop_pct: 5.0, penalty: -2 }
+        - { upto_drop_pct: 999, penalty: -3 }
+
+  # Audit hooks. Per Board direction, log confluence-NEGATIVE
+  # decisions too (review happened, score didn't clear) so we have
+  # a paper trail of "why we didn't act" for tuning.
+  audit:
+    log_confluence_negative: true
+
+
+# ── Polymarket Arbitrage (Phase 2a, 2026-05-09) ──
+# LLM-divergence detection on Polymarket prediction markets.
+#   - Pre-filter universe via risk.yaml polymarket.* (volume / spread / ttr)
+#   - Cap to K markets/cycle (Anthropic call ceiling)
+#   - Direct Anthropic call per survivor (NOT through Research firm —
+#     Path B chosen 2026-05-09; cross-division knowledge work isn't
+#     this strategy's question)
+#   - Emit ProposedOrder when |LLM prob - implied prob| × 100 ≥ min_divergence_pct
+#
+# Phase 2a ships with enabled:false. Flip to true after:
+#   1. Board funds the Polymarket wallet ($500 USDC)
+#   2. KV holds POLYMARKET-PRIVATE-KEY / POLYMARKET-FUNDER-ADDRESS / POLYGON-RPC-URL
+#   3. Phase 2.5 Backtester verdict cleared
+polymarket_arbitrage:
+  enabled: true                     # Board enabled 2026-05-10; paper-mode running
+  # `auto_execute` is irrelevant for Polymarket today — broker is
+  # ReadOnlyBroker (no place_order method). Per-trade HITL approval
+  # was REMOVED 2026-05-10 (Board direction): orders now flow
+  # directly to `would_have_placed` audit rows after passing the
+  # deterministic risk gate. Bounded blast radius ($1 sizing × $1K
+  # aggregate cap) made the per-click gate net-friction. Telegram
+  # pings remain as informational visibility (not gating). When
+  # Phase 3 ships live order placement, a separate execution path
+  # + daily kill switch + daily summary digest will replace HITL.
+  auto_execute: false               # see comment above; today moot until Phase 3
+  division: polymarket_arbitrage    # which division this strategy operates on
+  poll_interval_sec: 30             # scanner cycle cadence
+  # K=20 with warm-and-fan parallel LLM calls (Board direction
+  # 2026-05-10): cycle time ~10s vs sequential ~50s. First call serial
+  # (warms Anthropic prompt cache); remaining 19 fire via asyncio.gather.
+  k_markets_per_cycle: 20
+  market_cooldown_hours: 6          # don't re-evaluate the same market within 6h
+  min_divergence_pct: 10.0          # |LLM prob - implied prob| × 100 ≥ this → emit order
+  time_horizon_max_days: 14         # K2.4 retune 2026-05-11: lifted from 7d after observing 0 survivors per cycle. Kalshi LLM 15-30d bucket showed comparable signal quality (26% avg divergence).
+  # Phase K7 (2026-05-11): defensive cap on the K-1 parallel fan to bound
+  # this strategy's contribution to Anthropic's per-account concurrent-
+  # connections ceiling. Mirrors kalshi_llm_arbitrage's cap. See memory
+  # `anthropic_concurrent_connections.md`.
+  llm_concurrency: 8
+  # Per-condition_id position cap (Board-approved 2026-05-21 — see
+  # runbooks/board_memo_polymarket_dedupe_2026_05_21.md). Strategy-internal
+  # pre-emission check: limits how many open/unresolved would_have_placed
+  # entries we'll stack on a single condition_id. 1 = true dedupe (one open
+  # bet per market at a time). Set to 0 to disable the cap entirely
+  # (pre-2026-05-21 behavior; available for A/B or rollback). Does NOT
+  # touch the risk gate; the existing `single_market_max_usd` polymarket:
+  # cap in risk.yaml still applies independently.
+  max_open_per_condition_id: 1
+  sizing:
+    mode: "fixed_usdc"              # forward-compat: "pct_with_confidence" reserved
+    fixed_amount: 1.0               # $1 USDC per shakedown trade
+
+
+# ── BitUnix Futures (Phase 3.1 — paper-mode auto-execute with board-approved caps) ──
+# Documents the board-approved guardrails for the bitunix_futures division.
+# The actual logic lives in `trading_corp/agents/divisions/bitunix_futures_observer.py`
+# (class name preserved from Phase 3.0; functionally a full division agent).
+#
+# Per board direction 2026-05-10: NO per-trade HITL approval. Risk caps below
+# ARE the gate. When this flips from PAPER to LIVE in Phase 4, the same caps
+# apply — the only addition is real BitunixBroker.place_order() w/ leverage
+# + isolated margin.
+#
+# These values are mirrored in the agent's TIER_SIZING constants today;
+# moving them to YAML is a future refinement (not load-bearing for Phase 3.1).
+bitunix_futures:
+  enabled: true                     # Phase 3.1 paper-mode auto-execute live
+  auto_execute: true               # mtime-hot-reloaded runtime kill switch (per-order read)
+  execution_mode: paper             # "paper" | "live"  — Stage-1 N+1 commit 2; config-and-restart, no hot-reload
+  mode: halted                      # two-state collapse (2026-06-27): "trading" | "halted". HALTED = observer short-circuits before scoring/would_have_placed/paper_trade_record (fully inert, flip-ready). Fail-safe default is halted (main.py); no live account here.
+  snapshot_staleness_threshold_seconds: 60   # gate (a) sub-item 2 — halt order path if last successful snapshot is older than this. 2× per-bar cadence on the 1-min bar; mtime-cached on read.
+  # C (2026-06-16) — bar-interval-aware staleness-reject gate. Rejects an
+  # ENTRY whose originating bar is older than (bar_interval_seconds + margin),
+  # so a freeze- or webhook-retry-delayed alert can't open a stale, adverse
+  # entry (see reports/2026-06-16_entry_latency_investigation.md — the 00:38
+  # trade entered ~11.5 min late and stopped out). Interval-aware: 3m → 300s,
+  # 15m → 1020s. Entry-only (exits always act). Independent of the webhook
+  # 20-min anti-replay window. Shipped ON — it's a safety gate.
+  staleness_gate:
+    enabled: true                  # safety gate ON; set false to disable (current pre-C behavior)
+    margin_seconds: 120            # threshold = bar_interval_seconds + this; 3m bar → 180+120 = 300s
+  # D4 (2026-06-20) - concurrent-position guard (same-side, bot's-own).
+  # Blocks a NEW entry when the bot already holds an open same-symbol
+  # SAME-SIDE position it opened. Ships OFF; flip after 1 clean trade.
+  concurrent_position_guard:
+    enabled: true
+  division: bitunix_futures
+  symbol: "BTC/USDT.P"              # canonical perp symbol; whitelist BTC-only Phase 3
+  counter_tier_enabled: false       # COUNTER (fade-the-trend) defaults OFF
+  effective_risk_per_trade_pct: 0.005   # 0.5% account equity max per trade
+  daily_risk_kill_pct: 0.03             # 3% account equity per UTC day → halt
+  min_rr_ratio: 1.5                     # refuse trades below this R:R
+  default_tp_r_multiple: 2.0            # take-profit at 2R
+  stop_floor_pct: 0.003                 # 0.3% absolute stop floor
+  bias_decay:
+    timeframe_4h_seconds: 86400         # 24h
+    timeframe_1d_seconds: 604800        # 7d
+  cvd_decay_seconds: 1800               # 30 min — CVD direction stale after this
+  tier_sizing:
+    PREMIUM:  {size_pct: 0.015, leverage: 25.0}
+    STANDARD: {size_pct: 0.0075, leverage: 25.0}
+    WEAK:     {size_pct: 0.01, leverage: 2.0}
+    COUNTER:  {size_pct: 0.005, leverage: 2.0}
+
+  # ============================================================
+  # Phase 3.2 — Confluence Score Accumulator (NEW; off by default).
+  # Replaces the single-bar `_tier_for()` classifier with a multi-bar
+  # score accumulator. Signals contribute weights to bull_score /
+  # bear_score within their TTL. Dedupe is on by default: multiple
+  # fires of the SAME signal_name within TTL count once (most recent
+  # fire wins). Net score (winning side − losing side) maps to a tier.
+  # Below `min_score_to_fire`, return SKIP regardless of side.
+  #
+  # Cooldown prevents re-firing the same direction within a window
+  # — protects against stacking on a single setup.
+  #
+  # Weights below are STARTING values for backtest. The replay tool
+  # at scripts/backtest_bitunix_confluence.py reads this block and
+  # walks the historical audit stream + scalping DB to validate.
+  # Re-tune weights here based on backtest verdict, no code change
+  # required.
+  # ============================================================
+  scoring:
+    enabled: true                     # Phase 3.2 LIVE 2026-05-11; backtest verdict +0.29R/trade, 43% WR (21 trades, Apr 30-May 9)
+    # PR 3c cutover (2026-05-14) — three structural changes:
+    #
+    # 1. score_timeframes: ["3m","15m","30m"]
+    #    Only 3m / 15m / 30m chart fires score. Cypher 4H + 1D fires
+    #    still hit the ledger (visible in dashboard, audited) but
+    #    contribute 0 to score. The HTF regime gate (htf_regime block
+    #    below) replaces 4h/1d signals as the directional authority.
+    #
+    # 2. pa_factors_in_score: false
+    #    above_session_vwap / higher_highs_4h / volume_above_20bar_avg
+    #    no longer add to score. They become VALIDATORS in the new
+    #    pa_validation block below — binary pass/reject on the trade
+    #    rather than a score nudge. PA factor entries below are kept
+    #    in the dict to silence the unknown-factor warnings; weight
+    #    contribution is gated by `pa_factors_in_score`.
+    #
+    # 3. guards_in_score: false + lower thresholds
+    #    Old: 5pt heavy hitters from 4h/1D Cypher → premium 12 / std 8.
+    #    New (3m only, no PA boost): premium 10 / std 5 / min-fire 5.
+    #    sell_on_rush / buy_on_fall move to pa_validation as binary
+    #    hard-rejects at >5% (the old strongest tier).
+    #
+    # Per-TF TTLs (ttl_per_tf) on Cypher factors: 3m needs short
+    # validity windows (15-30 min ≈ 5-10 bars) to align with the
+    # 30-min cooldown; 15m and 30m chart fires get longer TTLs
+    # proportional to their bar duration.
+    #
+    # NOTE: this PR 3c calibration SUPERSEDES the 2026-05-14 "Fix #3"
+    # Cypher weight-cut tuning that lived on prod pre-cutover. The
+    # weight-cut approach solved the same "4h/1d signals overwhelming
+    # 3m" problem via reduced weights; PR 3c solves it via score_timeframes
+    # whitelist + binary PA validators. Once PR 3c lands, the weight
+    # cuts are moot — Cypher 4h/1d no longer score regardless of weight.
+    min_score_to_fire: 5              # PR 3c: net_score < this → SKIP
+    tier_thresholds:                  # net_score ≥ → tier
+      premium: 10                     # PR 3c (was 12)
+      standard: 5                     # PR 3c (was 8)
+      weak: 3                         # PR 3c (was 5)
+    cooldown_seconds: 1800            # same-direction cooldown (unchanged)
+    dedupe_within_ttl: true           # repeated fires of same signal count once
+    score_timeframes: ["3m", "15m", "30m"]    # PR 3c — chart-TF whitelist
+    pa_factors_in_score: false        # PR 3c — moved to pa_validation
+    guards_in_score: false            # PR 3c — moved to pa_validation
+    factors:
+      # ── Cypher A-panel (mc_a_* — structural / bias / EMA) ──
+      # Per-TF TTLs follow ~5-10 bars of the chart's own TF:
+      #   3m → 30 min, 15m → 90 min, 30m → 180 min.
+      # ttl_minutes left as a fallback for any TF not in score_timeframes
+      # (unused while score_timeframes is set — but documents intent).
+      mc_a_bluetriangle:
+        weight: 3
+        side: buy
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      mc_a_longema:
+        weight: 2
+        side: buy
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      # mc_a_yellow_x - INTENTIONALLY NOT a directional factor. It is a
+      # NON-DIRECTIONAL whale/manipulation / tape-anomaly flag (neither bull
+      # nor bear). Was miscategorized as side: buy (added spurious bull
+      # points); declassified 2026-06-19. Handled like the other
+      # non-directional signals: absent from factors -> the scorer ignores it
+      # (btc_accumulator.evaluate_confluence: unknown signal -> 0 score) while
+      # it still flows through the alert ledger / audit. Do NOT re-add it as a
+      # factor, and do NOT flip it to side: sell (the same error inverted).
+      mc_a_red_diamond:
+        weight: 4
+        side: sell
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      mc_a_blood_diamond:
+        weight: 5
+        side: sell
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      mc_a_redx:
+        weight: 2
+        side: sell
+        ttl_minutes: 30
+        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      # ── Cypher B-panel (mc_b_* — momentum / WT / MFI) ──
+      # Trigger-class on 3m → 15 min (5 bars); proportional on slower TFs.
+      mc_b_gold_buy:
+        weight: 5
+        side: buy
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_buy_circle_div:
+        weight: 4
+        side: buy
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_buy_circle:
+        weight: 3
+        side: buy
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_sell_circle_div:
+        weight: 4
+        side: sell
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_sell_circle:
+        weight: 3
+        side: sell
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_buy_dot:
+        weight: 2
+        side: buy
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      mc_b_sell_dot:
+        weight: 2
+        side: sell
+        ttl_minutes: 15
+        ttl_per_tf: {"3m": 15, "15m": 45, "30m": 90}
+      # ── Otter (3m chart only — TTLs unchanged from pre-PR-3c) ──
+      otter_buy:             {weight: 3, side: buy,  ttl_minutes: 15}
+      otter_sell:            {weight: 3, side: sell, ttl_minutes: 15}
+      money_bag_bottom:      {weight: 2, side: buy,  ttl_minutes: 30}
+      money_bag_top:         {weight: 2, side: sell, ttl_minutes: 30}
+      water_buy_large:       {weight: 2, side: buy,  ttl_minutes: 30}
+      water_sell_large:      {weight: 2, side: sell, ttl_minutes: 30}
+      water_buy_small:       {weight: 1, side: buy,  ttl_minutes: 30}
+      water_sell_small:      {weight: 1, side: sell, ttl_minutes: 30}
+      spoon_bull:            {weight: 2, side: buy,  ttl_minutes: 30}
+      spoon_bear:            {weight: 2, side: sell, ttl_minutes: 30}
+      cvd_bull_flip:         {weight: 2, side: buy,  ttl_minutes: 30}
+      cvd_bear_flip:         {weight: 2, side: sell, ttl_minutes: 30}
+      bias_bull:             {weight: 2, side: buy,  ttl_minutes: 30}   # 90→30 2026-05-23: match other directional factors on 3m engine
+      bias_bear:             {weight: 2, side: sell, ttl_minutes: 30}   # 90→30 2026-05-23: was suppressing opposite-side entries; restart required
+      pink_box_bull:         {weight: 1, side: buy,  ttl_minutes: 30}
+      pink_box_bear:         {weight: 1, side: sell, ttl_minutes: 30}
+      # ── Price-action factors — PRESERVED IN DICT, ZERO CONTRIBUTION ──
+      # `pa_factors_in_score: false` above means the score engine ignores
+      # these. They feed the pa_validation block instead. Kept as factor
+      # entries so future re-enable is one-line (flip the flag).
+      above_session_vwap:    {weight: 1, side: buy}
+      below_session_vwap:    {weight: 1, side: sell}
+      higher_highs_4h:       {weight: 2, side: buy}
+      lower_lows_4h:         {weight: 2, side: sell}
+      volume_above_20bar_avg: {weight: 1, side: directional}
+    guards:
+      # PR 3c: `guards_in_score: false` above means these brackets are
+      # not applied as score penalties. The pa_validation block uses
+      # the >5% threshold as a binary hard-reject instead. Brackets
+      # preserved here for future re-enable + replay reference.
+      sell_on_rush:
+        window_minutes: 60
+        brackets:
+          - {upto_pct: 1.0, penalty: 0}
+          - {upto_pct: 3.0, penalty: -1}
+          - {upto_pct: 5.0, penalty: -2}
+          - {upto_pct: 999, penalty: -3}
+      buy_on_fall:
+        window_minutes: 60
+        brackets:
+          - {upto_drop_pct: 1.0, penalty: 0}
+          - {upto_drop_pct: 3.0, penalty: -1}
+          - {upto_drop_pct: 5.0, penalty: -2}
+          - {upto_drop_pct: 999, penalty: -3}
+
+  # ============================================================
+  # PR 3c — PA validation gate (post-score, pre-HTF, binary).
+  # Runs after the score engine picks a winning side and tier.
+  # `require_all: true` means any failed validator → reject.
+  # rush_fall_guards are independent hard-rejects (don't catch
+  # falling knife / don't short into a rip).
+  # ============================================================
+  pa_validation:
+    enabled: true
+    require_all: false              # 2026-05-27: was true; loosen to >=2 of 3 per replay (9606b9f synthesis)
+    min_validators_passed: 2        # 2026-05-27: required when require_all=false (defaults to 0 = PA-disabled)
+    validators:
+      - vwap_alignment            # buy: above session VWAP; sell: below
+      - volume_confirmation       # current bar's volume > 20-bar avg
+      - structure_alignment       # buy: higher_highs_4h; sell: lower_lows_4h
+    rush_fall_guards:
+      enabled: true
+      reject_buy_on_60m_drop_pct: 5.0
+      reject_sell_on_60m_rise_pct: 5.0
+
+  # ============================================================
+  # PR 3c — HTF regime classifier config. Consumed by
+  # `bitunix_htf_regime.HTFRegimeConfig.from_dict` (when added);
+  # currently parsed via HTFRegimeConfig.defaults() with values
+  # inlined — but keeping the YAML block makes the contract
+  # explicit and tunable later. See:
+  #   trading_corp/agents/strategies/bitunix_htf_regime.md
+  # ============================================================
+  htf_regime:
+    ema_periods: [20, 50, 200]
+    adx_period: 14
+    adx_trend_threshold: 20.0
+    swing_lookback: 20
+    swing_n: 2
+    macd_periods: [12, 26, 9]
+    composite_weights:            # must sum to 1.0
+      d1: 0.5
+      h4: 0.3
+      h1: 0.2
+    regime_thresholds:
+      strong_bull: 0.7
+      bull: 0.3
+      bear: -0.3
+      strong_bear: -0.7
+    vol_tier_atr_pct:             # 1D ATR(14) as % of price
+      low: 0.5
+      normal: 1.5
+      high: 3.0
+      extreme: 5.0
+    funding_extreme_pct_per_8h: 0.05
+    proximity_block_pct: 0.3
+
+  # ============================================================
+  # PR 3c — Gate mode flag.
+  #   off     : gates dormant, observer behaves as pre-PR-3c
+  #   shadow  : audits written (`pa_validation_decision`,
+  #             `htf_gate_decision`) but no enforcement; trades
+  #             still place per pre-PR-3c logic. This is the
+  #             default — needs deliberate flip to enforce after
+  #             review of shadow audit data.
+  #   enforce : PA REJECT short-circuits trade; HTF
+  #             size_multiplier applied to qty before risk gate;
+  #             hard-zero conditions block placement.
+  # ============================================================
+  htf_gate:
+    mode: enforce
+
+  # ============================================================
+  # PR 4 — Adaptive entry/SL/TP plan (MVP + Option C trail).
+  # Decided 2026-05-15 — see trading_corp_bitunix_strategy_gaps.md.
+  # When `trade_plan.enabled: true`, the observer's score path uses
+  # `_build_proposal_v2` instead of the legacy geometric placement:
+  #   * SL: structure-preferred (recent fractal swing ± buffer) with
+  #     ATR fallback when swing distance is out of [min, max] × ATR.
+  #     swing_too_close → skip trade entirely.
+  #   * TP1: max(0.5R, 2 × round-trip fee × entry). 25% qty. Skips
+  #     trade if fee floor exceeds TP2 distance.
+  #   * TP2: 1R default; snap to HTF (15m) resistance/support if level
+  #     falls in [0.5R, 1.3R] band. 50% qty.
+  #   * TP3: fixed 2.5R. 25% qty. Trail handled by PR 5 reconciler
+  #     (move SL to BE after TP1 → to TP1-price after TP2 → Chandelier
+  #     trail post-TP2).
+  # Defaults preserve pre-PR-4 behavior (enabled: false).
+  # ============================================================
+  trade_plan:
+    enabled: true               # Phase 1E — v2 path active (2026-05-17)
+    # Stop-loss placement (ATR-multiple bounds for multi-symbol)
+    min_stop_atr_mult: 0.5
+    max_stop_atr_mult: 2.5
+    atr_multiplier: 1.5
+    swing_buffer_pct: 0.0005    # 0.05% beyond the swing point
+    swing_n: 2                  # fractal symmetry (bars each side)
+    swing_max_lookback: 30      # 3m bars (~90 min)
+    # Take-profit plan
+    tp1_r_target: 0.5
+    tp1_min_profit_multiplier: 3.75  # x1.875: preserves fee_floor (gate behavior) at the corrected taker; was 2.0
+    tp1_qty_fraction: 0.25
+    tp2_r_default: 1.0
+    tp2_qty_fraction: 0.50
+    tp3_r_target: 2.5
+    tp3_qty_fraction: 0.25
+    # HTF S/R level snap (TP2)
+    htf_minutes: 15
+    htf_lookback_bars: 40
+    resistance_min_r: 0.5
+    resistance_max_r: 1.3
+    resistance_buffer_pct: 0.0005
+    # PR 5 — position SL reconciler (post-TP2 Chandelier trail)
+    trail_atr_mult: 1.5         # SL = max_high_since_TP2 - 1.5×ATR (long)
+    reconciler_period_seconds: 60
+    reconciler_timeframe: "3m"
+
+  # ============================================================
+  # PR 4 — Fee schedule for trade-plan TP1 fee-floor math.
+  # Values are FRACTIONS (0.0004 == 0.04%) per codebase convention.
+  # Defaults are BitUnix Futures VIP3 + Experience Card as of
+  # 2026-05-15. ⚠ Experience Card may be time-limited — verify
+  # whether base VIP3 rate persists after expiry.
+  # ============================================================
+  fees:
+    taker_pct: 0.00019           # 0.019% venue-actual effective (Fee Discount Card; was 0.04% headline)
+    maker_pct: 0.00014          # 0.014%
+    slippage_pct: 0.00005       # 0.5 bps assumed
+    entry_is_taker: true        # market entry on signal bar
+    tp_is_maker: false          # MVP: market exits; revisit when limit fills mature
+    # B2 maker (POST_ONLY) entry execution — DEFAULT OFF (flip deliberately).
+    maker_entry_enabled: false
+    maker_entry_rest_timeout_s: 2.0
+    maker_entry_offset_pct: 0.0
+    maker_entry_fallback_mode: cross_to_taker
+
+
+# ── Polymarket Copy Trading (Phase 4+ placeholder; not yet implemented) ──
+# Documented here so future-Claude knows the slot exists. The
+# polymarket_copy_trading division uses broker:paper today as a
+# STANDBY placeholder. When the strategy lands, this block grows
+# into the real config and the division flips broker:paper → polymarket.
+# ── Kalshi Tail-Price Arbitrage (Phase K2.1) ──
+# Detects same-market YES+NO arb at tail prices (yes_mid ≤5¢ or ≥95¢)
+# where Kalshi's per-fill 1¢ rounding floor compresses round-trip cost
+# to ~2¢ (vs 3.5¢ at mid prices, where YES+NO arb is structurally dead).
+# Logic in `trading_corp/agents/strategies/kalshi_tail_price_arb.py`.
+# Discovery is category-targeted via `broker.list_markets()` (Kalshi's
+# bulk OPEN-markets endpoint returns ~all KXMVE* sports parlay noise
+# in the first many pages — `discover_open_markets` is documented dead
+# in `kalshi_market_map.py`).
+#
+# Phase K2.1 ships PAPER-ONLY. Each detection emits a PAIR of
+# ProposedOrders (BUY YES + BUY NO) linked via `kalshi_pair_id`.
+# Both legs flow through `risk_agent.evaluate()`. Approved orders log
+# `would_have_placed`. No live placement until Phase K5+.
+kalshi_tail_price_arb:
+  enabled: true                     # 2026-05-10 23:48 UTC — re-enabled after K2.0 cap fix landed
+  auto_execute: false               # Phase K5+ before this can flip
+  division: kalshi_arbitrage
+  poll_interval_sec: 300            # 5 min — tail prices don't churn
+  discovery:
+    # Category-targeted; empty list -> broker uses DEFAULT_DISCOVERY_CATEGORIES
+    categories:
+      - Politics
+      - Elections
+      - Economics
+      - Financials
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 600              # re-discover every 10 min
+  tail:
+    yes_max_for_yes_tail: 0.05      # mid YES ≤ this -> long-shot YES side
+    yes_min_for_no_tail: 0.95       # mid YES ≥ this -> long-shot NO side
+    min_edge_cents: 1.0             # ≥ 1¢ under $1 to consider
+  sizing:
+    fixed_usd_per_leg: 1.0          # $1 per leg -> $2 max risk per pair
+  per_cycle:
+    max_pairs: 5                    # cap pairs emitted per cycle
+    cooldown_minutes: 60            # don't re-emit same market within 60min
+
+
+# ── Kalshi Temporal + Bucket Arbitrage (Phase K2.2) ──
+# Two related intra-Kalshi arb patterns sharing one strategy class:
+#   TEMPORAL:  P("X by D1") > P("X by D2") with D2 > D1 -> arb position
+#              (BUY NO on early + BUY YES on late, locked $1 min payout)
+#   BUCKET:    sum(yes_ask) across all markets in event < $1 - threshold ->
+#              buy YES on every leg (guaranteed $1 payout)
+# Per K2 fee research (memory `trading_corp_kalshi.md`): temporal is the
+# single most attractive intra-Kalshi pattern — windows last minutes-to-hours,
+# no head-to-head bot competition documented, dislocations of tens of bps to
+# >1% are observable on related-market pairs. Bucket arb is structurally
+# clean but rarer (depends on N-bucket events with sloppy pricing).
+# Logic in `trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py`.
+# Phase K2.2 ships PAPER-ONLY. Each set emits 2 (temporal) or N (bucket)
+# legs linked via `kalshi_arb_set_id`.
+kalshi_temporal_bucket_arb:
+  enabled: true                     # 2026-05-10 23:48 UTC — Board-flipped for overnight audit data
+  auto_execute: false               # Phase K5+ before this can flip
+  division: kalshi_arbitrage
+  poll_interval_sec: 300            # 5 min — temporal/bucket arbs persist longer
+  discovery:
+    # Same default as kalshi_tail_price_arb; both strategies hit broker.list_markets()
+    # which is cache-aware so they don't double-fetch within ttl.
+    categories:
+      - Politics
+      - Elections
+      - Economics
+      - Financials
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 600
+  temporal:
+    enabled: true
+    min_edge_cents: 4               # clears 2-leg taker fees ~2-4c
+  bucket:
+    enabled: true
+    min_edge_cents: 5               # clears N-leg fees on multi-bucket events
+  sizing:
+    fixed_usd_per_leg: 1.0          # $1 per leg -> $2 (temporal) or $N (bucket) max risk
+  per_cycle:
+    max_sets: 5                     # cap arb sets emitted per cycle
+    cooldown_minutes: 60            # don't re-emit same event within 60min
+
+
+# ── Kalshi LLM Arbitrage (Phase K6.1) ──
+# LLM-divergence detector mirroring polymarket_arbitrage but pointed at
+# Kalshi. Reuses the polymarket analyst-persona prompt (generic enough
+# for cross-venue prediction-market work) and the warm-and-fan parallel
+# Anthropic call pattern (~10s/cycle vs ~50s sequential). Logic in
+# `trading_corp/agents/strategies/kalshi_llm_arbitrage.py`.
+#
+# Lives on its own division (kalshi_llm_arbitrage) — separate from
+# kalshi_arbitrage which houses the structural tail/temporal/bucket
+# strategies. Both divisions hit the same broker (read-only Kalshi).
+#
+# Phase K6.1 ships PAPER-ONLY. Approved orders log `would_have_placed`
+# audit rows. Phase K7+ adds the live order path.
+kalshi_llm_arbitrage:
+  enabled: true                     # 2026-05-11 01:08 UTC — re-enabled w/ Semaphore(8) cap on LLM fan
+  auto_execute: false               # Phase K7+ before this can flip
+  division: kalshi_llm_arbitrage
+  poll_interval_sec: 60             # match polymarket cadence; LLM divergence can move fast
+  discovery:
+    categories:
+      - Politics
+      - Elections
+      - Economics
+      - Financials
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 600
+  k_markets_per_cycle: 20           # warm-and-fan pattern; first call serial, K-1 parallel
+  llm_concurrency: 8                # cap concurrent Anthropic calls (Semaphore in strategy)
+  market_cooldown_hours: 6          # don't re-evaluate the same ticker within 6h
+  min_divergence_pct: 10.0          # |LLM prob - implied prob| × 100 ≥ this → emit order
+  time_horizon_max_days: 30         # broader than polymarket (7d) — Kalshi has many longer markets
+  filter:
+    min_implied_probability: 0.05   # skip extreme tails (handled by tail-arb division)
+    max_implied_probability: 0.95
+  sizing:
+    mode: fixed_usdc
+    fixed_amount: 1.0               # $1 per shakedown trade
+
+
+# ── Kalshi Copy Trader (Phase K3 — 2026-05-12) ──
+# Mirrors top Kalshi whales' positions at scaled $1/$2/$3 sizing. Selected
+# whales come from offline Wilson-LCB × ROI × category scoring (see
+# `trading_corp/data/kalshi_whale_stats.py`) and live in
+# `agent_state(selected_whales)`. Side detection uses Kalshi's free public
+# trade tape (KalshiBroker.get_market_trades). Apify Starter ($29/mo) is
+# the data source for whale open_positions polling. Default-off until
+# audit-mode confirms cold-start + delta-detection both fire cleanly.
+
+# ── Kalshi Weather Arbitrage (2026-05-14) ──
+# Forecast-driven strategy on Climate/Weather markets. Pulls NWS hourly
+# forecast for the market's lat/lon + target time; computes deterministic
+# P(YES) via Gaussian probability vs threshold; emits ProposedOrder when
+# divergence ≥ min_divergence_pct. No LLM in path (pure math).
+kalshi_weather_arb:
+  enabled: false                    # 2026-05-29: division effectively dead — silence telegrams + stop scan
+  auto_execute: false               # paper-mode until validation gate
+  division: kalshi_weather
+  poll_interval_sec: 300            # 5 min — weather markets don't churn
+  discovery:
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 600              # 10 min cache on Kalshi list_markets
+  k_markets_per_cycle: 30           # candidates evaluated per cycle
+  market_cooldown_hours: 4          # don't re-emit same ticker within 4h
+  min_divergence_pct: 10.0          # |P(YES) - implied| × 100 ≥ this → fire
+  max_horizon_hours: 72             # NWS forecast precision degrades past 72h
+  # ── Entry-price floor (2026-05-20) ─────────────────────────────────
+  # Skip proposals where the chosen-outcome ask is at or below the side
+  # floor. Post-cutoff data: YES <= $0.10 went 0/5 (-$37.50); NO < $0.50
+  # went 0/5 (-$37.50). YES comparator is inclusive (no observed trades
+  # at the boundary); NO comparator is strict so $0.50 itself stays in
+  # the live [0.50, 0.60) band rather than being suppressed.
+  min_yes_entry: 0.10
+  min_no_entry: 0.50
+  # ── Tier-1 upgrades (2026-05-15) ──────────────────────────────
+  # Open-Meteo cross-model ensemble for measured σ (GFS+ICON+ECMWF+...).
+  # When ≥3 model members are available, σ = max(ensemble_std, floor).
+  # Falls back to sigma_for_horizon heuristic if the API is unavailable.
+  open_meteo_enabled: true
+  ensemble_sigma_floor_f: 0.5       # never go below this even on tight ensembles
+  # METAR nowcast blend on sub-6h horizons. Weight w(t) ramps linearly:
+  #   w=0 at horizon=0 (pure nowcast); w=1 at horizon=horizon_cap (pure forecast).
+  # Daily HIGH/LOW markets are excluded — extrema aren't well-modelled by a
+  # linear trend off the current obs.
+  metar_enabled: true
+  nowcast_blend_horizon_hours: 6.0
+  # ── Item 1.1 (2026-05-24) — write-only HRRR logging ─────────────────
+  # Captures Open-Meteo `ncep_hrrr_conus` forecast alongside the existing
+  # NWS + ensemble blend at entry time. NOT fed into σ or decision logic.
+  # Observation-week corpus only — backtest input for the queued
+  # NBM-σ / horizon-weighting work. Flip to false to suppress without
+  # touching code (hot-reloadable). See
+  # plans/forecast-quality-improvements-for-kalshi-prancy-porcupine.md.
+  hrrr_enabled: true
+  sizing:
+    mode: kelly_fractional          # was fixed_usd; flipped 2026-05-15
+    kelly_fraction: 0.25            # quarter-Kelly — robust to misestimation
+    min_usd: 1.0                    # below this, skip — sub-$1 = fee-dominated
+    max_per_market_pct: 5.0         # per-order cap (% of bankroll)
+    max_per_day_pct: 120.0          # sum of today's weather $ ≤ this; raised 2026-05-15
+    max_per_city_pct: 15.0          # sum per city ≤ this (correlated bets)
+
+
+# ── Kalshi Crypto Arbitrage (2026-05-14) ──
+# Live-spot-driven strategy on Crypto-category markets. Pulls Coinbase
+# spot for BTC/ETH/SOL/DOGE/XRP, computes P(YES) vs threshold via
+# Gaussian probability with annualized vol. No LLM in path.
+kalshi_crypto_arb:
+  enabled: false                    # 2026-05-29: SHELVED per project_kalshi_crypto_shelved — silence telegrams + stop scan
+  auto_execute: false               # paper-mode until validation gate
+  division: kalshi_crypto
+  poll_interval_sec: 60             # crypto markets churn fast — short-window
+  # v2 (2026-05-20): realized vol from Coinbase 5m bars. On per-asset
+  # fetch error / insufficient coverage / staleness, falls back to the
+  # hardcoded ANNUAL_VOLS constants in crypto_spot_provider.py. PoC at
+  # 14d/5m measured realized 0.49-0.56x the constants across all 5
+  # assets; ETH 30d realized 0.43 lands in eyeball 40-60% band, so the
+  # math (annualization factor sqrt(105192)~=324.33 for 5m) is right and
+  # the old constants were stale (regime compression, not bug).
+  realized_vol:
+    enabled: true                   # 2026-05-20: paper validation per Backtester sign-off
+    lookback_days: 14               # ~2x longest Kalshi crypto horizon (7d)
+    bar_interval: "5m"              # 4032 bars/asset; fits Coinbase rate limit
+    refresh_interval_minutes: 60    # vol doesn't shift fast; hourly is plenty
+    min_bar_coverage_pct: 80        # require >=80% of expected bars
+    max_staleness_minutes: 30       # newest bar within 30min of now
+  discovery:
+    max_series_per_category: 30
+    max_markets_per_series: 50
+    cache_ttl_sec: 300              # 5 min cache on kalshi list_markets
+  k_markets_per_cycle: 30           # candidates evaluated per cycle
+  market_cooldown_hours: 1          # short cooldown — fast-churning markets
+  min_divergence_pct: 10.0          # |P(YES) - implied| × 100 ≥ this → fire
+  max_divergence_pct: 35.0          # 2026-05-20: cap tail/oracle-disagreement bleed; backtester showed 50%+ NO bin did NOT compress under realized vol (-$6.55 over 15 RTs in replay). Skip kind: kalshi_crypto_skipped_divergence_too_high.
+  max_horizon_hours: 168            # 7 days — vol model gets noisy past this
+  sizing:
+    mode: fixed_usd
+    fixed_amount: 1.0               # $1 per shakedown trade
+
+
+# ── Kalshi Sports Scout (2026-05-14) ──
+# Read-only observer. Pulls Kalshi Sports markets + bookmaker
+# implied probability from the-odds-api, logs divergence. NO
+# orders. 7-day observation pass to validate edge before deciding
+# whether to build a full trading division.
+kalshi_sports_scout:
+  enabled: true
+  poll_interval_sec: 3600            # 1h — quota-friendly; lift back to 900 if paid tier
+  discovery:
+    # 2026-05-23: bumped 50 → 100 with introduction of series_filter in
+    # discover_by_categories. The cap now counts only in-scope series
+    # (exact-set match on KXMLBGAME/KXNBAGAME/KXNHLGAME/KXMLSGAME — see
+    # _SCOUT_SERIES_FILTER in kalshi_sports_scout.py), so 100 is
+    # comfortably above the 4 in-scope series. Was binding hard before:
+    # Sports category has ~2000 series; the old 50-cap returned a
+    # rotating 2.5% slice and in-scope leagues landed only ~11% of scans.
+    max_series_per_category: 100
+    max_markets_per_series: 50
+    cache_ttl_sec: 900
+  # NFL excluded 2026-05-23: probe found no KXNFLGAME moneyline series
+  # in Sports (only props: KXNFLGAMETD/FG/SACK). Re-add as game-moneyline
+  # once that series is actually present — re-probe ~3-4 weeks before
+  # kick-off and check Sports + Football categories for the right ticker.
+  leagues: [MLB, NBA, NHL, MLS]
+  divergence_log_threshold_pct: 1.0  # only log markets w/ |div| >= 1pp
+
+# ── Kalshi Sports Arbitrage observer (2026-05-23, Phase 0) ──
+# Sibling of the scout above; separate division (kalshi_arbitrage).
+# Read-only — NEVER emits orders. Writes kalshi_sports_arb_observation
+# audit rows with raw Kalshi quotes + per-book sportsbook prices +
+# EV-at-fill for both Hypotheses A (cross-venue arb) and B (lead-lag
+# directional) at qty=10 contracts.
+#
+# DEFAULT enabled: false. Flip to true ONLY after the dev dry-run +
+# the first-cycle hand-verification gate (per Phase 0 plan Step 4).
+#
+# Quota: each in-scope league costs 3 markets/call × ~1 call/h = ~72
+# credits/day. Free tier (500/mo) is insufficient alongside the
+# scout's ~30-60/day; the Phase 0 plan recommends $30/mo paid tier
+# before flipping enabled.
+#
+# Pinnacle IS available on this account but only when explicitly
+# requested via bookmakers= filter (verified 2026-05-23 prod probe for
+# both basketball_nba AND baseball_mlb). sharp_book_preference below
+# drives the books= filter to get_lines; first list entry is preferred
+# for Hypothesis B model_prob, the rest are the soft-book fallback.
+#
+# League dispatch: observer reads `leagues` and routes via the
+# _PHASE0_LEAGUE_CLASSIFIERS dispatch table. Supported leagues today:
+# NBA (validated to-the-cent on 2026-05-23 against OKC-SAS row) and
+# MLB (added 2026-05-23; pre-flip audit confirmed parser/mapping/
+# market types/Pinnacle; first-cycle hand-verification still pending
+# operator flip).
+#
+# MLB-SPECIFIC GRADING CAVEATS (deferred to Phase 1 prereq matrix —
+# do NOT take Hypothesis A live without resolving these):
+#   - Rain-shortened / suspended games: when does Kalshi grade vs
+#     when does each sportsbook? Official-game rule (5 innings home
+#     ahead / 4.5 away ahead) differs from grading-by-final.
+#   - Pitcher-listed rule: most US books void or no-action MLB ML
+#     when listed starter doesn't pitch; Kalshi rules unverified.
+#   - Extra innings: should always count for both venues but verify.
+#   - Run-line pushes: not relevant here (Phase 0 is ML-only) but
+#     keep in mind if/when Kalshi adds run lines.
+kalshi_sports_arb_observer:
+  enabled: false                      # FLIPPED 2026-05-23 for MLB Phase 0
+  auto_execute: false                # always — observer never emits
+  division: kalshi_arbitrage
+  poll_interval_sec: 3600            # 1h
+  discovery:
+    max_series_per_category: 50
+    max_markets_per_series: 150
+    cache_ttl_sec: 900
+  # League scope — single value or list. Each league dispatches to
+  # its own classifier; NBA path is validated to-the-cent, MLB path
+  # is pre-flip-audited but awaiting first-cycle hand verification.
+  # MLB is current Phase 0 default because NBA Finals haven't tipped
+  # yet and MLB has ~20 games/day vs NBA's 1-2 right now.
+  leagues: [MLB]
+  sizing_for_ev_calc:
+    contracts: 10                    # qty assumption for fee math + EV
+  sharp_book_preference: [pinnacle, draftkings, fanduel, betmgm]
+
+kalshi_copy_trader:
+  enabled: true                    # Board-flip after audit-mode validation
+  auto_execute: false               # Phase K5+ before this can flip live
+  division: kalshi_copy_trading
+  # 2026-05-12: throttled 300s → 600s to fit Apify Starter's $200/mo hard
+  # cap. At 5min cadence the 26h observation burn extrapolated to ~$320/mo
+  # (above cap); 10min cadence halves Apify request volume to ~$160/mo,
+  # leaving ~$40/mo headroom for spikes / pool expansion.
+  poll_interval_sec: 600            # 10min — positions don't change fast on Kalshi
+  sizing:
+    # Whale-contract -> our-USD-copy tier breakpoints. Kalshi contracts
+    # trade in [$0.01, $0.99] so contract count is within ~100x of dollar
+    # exposure — coarse but preserves the conviction signal.
+    tier_boundaries_contracts: [100, 1000]
+    tier_sizes_usd: [1.0, 2.0, 3.0]
+  side_detection:
+    # Tolerance on contract-count match between whale's new position and
+    # public trade tape (±5% of whale's contracts, min 1). Higher = more
+    # forgiving match but risks picking up unrelated trades.
+    size_match_tolerance_pct: 5.0
+
+
+# ── Polymarket Copy Trading (Phase 4+ placeholder; deprioritized 2026-05-10) ──
+polymarket_copy_trading:
+  enabled: false                    # Phase 4+ — strategy not built yet
+  auto_execute: false
+  division: polymarket_copy_trading
+
+
+# ── Polymarket Copy Trader (2026-05-11) ──
+# Mirrors top Polymarket whales' positions at scaled USDC sizing. Selected
+# whales come from offline scoring (Wilson-LCB × ROI × category) via
+# `python -m trading_corp.scripts.refresh_polymarket_whales`, persisted to
+# `agent_state(polymarket_copy_trader.selected_whales)`. Data source is
+# Polymarket's free public Data API (`data-api.polymarket.com`) — no
+# Apify, no recurring cost. Activity rows carry explicit side+outcome so
+# no trade-tape-inference dance like Kalshi K3.
+polymarket_copy_trader:
+  enabled: true                    # Board-flip after audit-mode validation
+  auto_execute: false               # Phase 4+ before this can flip live
+  division: polymarket_copy_trading
+  poll_interval_sec: 60             # 60s; free API can sustain faster if needed
+  activity_limit_per_poll: 20
+  sizing:
+    # USDC bet size → our USDC copy size. Polymarket binaries clear in USDC;
+    # whale bet sizes vary 100× more than Kalshi contracts, so the upper
+    # tier is more aggressive ($5 vs Kalshi's $3).
+    tier_boundaries_usdc: [100.0, 1000.0]
+    tier_sizes_usdc: [1.0, 2.0, 5.0]
+
+# ── Robinhood Joint Iron Condor v1 ──
+robinhood_joint_iron_condor:
+  enabled: true
+  auto_execute: false
+  division: robinhood_joint
+
+  universe: [SPY, QQQ, IWM, GLD, TLT]
+
+  wing_widths:
+    SPY: 3.0
+    QQQ: 4.0
+    IWM: 2.0
+    GLD: 2.0
+    TLT: 2.0
+
+  entry:
+    target_dte: 45
+    short_delta: 0.16
+    min_credit_pct_of_width: 0.33
+    min_ivr: 30
+    min_ivp: 50
+    term_structure_max_diff: 0.05
+
+  portfolio_caps:
+    max_per_trade_pct: 0.05
+    max_bp_pct: 0.40
+    max_concurrent: 3
+    max_correlated: 2
+
+  management:
+    profit_target_pct: 0.50
+    force_close_dte: 21
+    short_dte_force_close: 7
+    hard_stop_credit_mult: 2.00
+    catastrophic_stop_account_pct: 0.10
+    tested_delta_warn: 0.25
+    tested_delta_adjust: 0.30
+    tested_delta_close_side: 0.35
+    tested_side_neutral_band: 0.05
+    max_adjustments: 1
+    min_dte_for_adjustment: 14
+    ex_div_force_close_within_trading_days: 3
+    ex_div_force_close_short_call_delta: 0.25
+    adjustment_roll_target_short_delta: 0.30
+
+  circuit_breaker:
+    consecutive_loss_pause: 3
+    drawdown_pct_pause: 0.15
+    pause_days: 5
+
+  paper_simulation:
+    per_leg_slippage_dollars: 0.03
+
+  notifications:
+    telegram_batch_window_sec: 60
+    telegram_bypass_tags:
+      - circuit_breaker_auto_repause
+      - catastrophic_stop
+      - startup_catchup
+      - late_dte_force_close
+
+  auto_execute_caps:
+    require_approval_for:
+      - any_neutral_strategy_open_or_close
+      - any_action_when_vix_above_30
+
+# ── Tasty Options Iron Condor v1 (added 2026-05-24) ──
+# Sibling of robinhood_joint_iron_condor. Identical decision tree and
+# thresholds; the only behavioral difference is the `watchlist` key
+# replacing `universe`. The watchlist is PERMISSIVE — the auto-scanner
+# scans only these symbols, but operators can paste any ticker into
+# the morning grader (/telemetry/iron_condor?division=tasty_options)
+# and trade it if it grades cleanly. Empty watchlist → scanner emits
+# `scan_skipped_empty_watchlist` audit row and short-circuits (pure
+# paste-driven entry path).
+tasty_options_iron_condor:
+  enabled: true
+  auto_execute: false
+  division: tasty_options
+
+  watchlist: [SPY, QQQ, IWM]
+
+  wing_widths:
+    SPY: 3.0
+    QQQ: 4.0
+    IWM: 2.0
+    GLD: 2.0     # included so operator can add GLD to watchlist without YAML edit
+    TLT: 2.0     # ditto for TLT
+
+  entry:
+    target_dte: 45
+    short_delta: 0.16
+    min_credit_pct_of_width: 0.33
+    min_ivr: 30
+    min_ivp: 50
+    term_structure_max_diff: 0.05
+
+  portfolio_caps:
+    max_per_trade_pct: 0.05
+    max_bp_pct: 0.40
+    max_concurrent: 3
+    max_correlated: 2
+
+  management:
+    profit_target_pct: 0.50
+    force_close_dte: 21
+    short_dte_force_close: 7
+    hard_stop_credit_mult: 2.00
+    catastrophic_stop_account_pct: 0.10
+    tested_delta_warn: 0.25
+    tested_delta_adjust: 0.30
+    tested_delta_close_side: 0.35
+    tested_side_neutral_band: 0.05
+    max_adjustments: 1
+    min_dte_for_adjustment: 14
+    ex_div_force_close_within_trading_days: 3
+    ex_div_force_close_short_call_delta: 0.25
+    adjustment_roll_target_short_delta: 0.30
+
+  circuit_breaker:
+    consecutive_loss_pause: 3
+    drawdown_pct_pause: 0.15
+    pause_days: 5
+
+  paper_simulation:
+    per_leg_slippage_dollars: 0.03
+
+  notifications:
+    telegram_batch_window_sec: 60
+    telegram_bypass_tags:
+      - circuit_breaker_auto_repause
+      - catastrophic_stop
+      - startup_catchup
+      - late_dte_force_close
+
+  auto_execute_caps:
+    require_approval_for:
+      - any_neutral_strategy_open_or_close
+      - any_action_when_vix_above_30
+
+# Post-Earnings-Announcement-Drift, long-only US equities on the agentic
+# Robinhood account (680725082). Autonomous (no per-trade approval) once the
+# Board blesses the strategy; paper-first. Division wiring lands in Phase 2.
+robinhood_pead:
+  enabled: true                  # declarative; divisions.yaml standby:true is the operative gate
+  auto_execute: true             # GO-LIVE 2026-06-24 (Board-authorized): PEAD trades autonomously, no HITL
+  division: robinhood_pead
+
+  # --- Universe screen — CONFIG-DRIVEN floors (retune without a code change) ---
+  # Floors LOOSENED to match the Nasdaq Composite small/mid-cap tail, where
+  # PEAD's edge concentrates. At THIS account size (tiny orders + fractional
+  # shares on Robinhood) the binding constraint is "can a tiny order fill", NOT
+  # "can I move size" — so the floors only screen out names too illiquid/dead
+  # to fill at all. The >$1B institutional PEAD floor (which dodges small-cap
+  # slippage-for-size) does NOT apply here and would delete the very tail the
+  # Nasdaq Composite was chosen to reach.
+  screen:
+    min_price: 5.0
+    min_avg_volume_30d: 200000      # 30d avg shares (was 1,000,000)
+    min_market_cap: 100000000       # $100M (was $1B)
+    min_days_to_next_earnings: 65   # trading days of drift room (unchanged)
+    excluded_sectors: [financial services, financials, financial, utilities, utility]
+
+  # --- SRW-SUE signal ---
+  signal:
+    lookback: 8           # trailing quarters of UE for the stdev denominator
+    sue_threshold: 1.5    # long candidate requires SUE above this (z)
+    top_quintile: true    # also require top-quintile SUE within the wave
+    quintile_pct: 0.80
+
+  # --- Phase-2 live wiring (2026-06-22): plumbing-validation values @ ~$75 ---
+  # OPERATIVE kill-switch is divisions.yaml standby:true (scan+manage no-op);
+  # auto_execute:false above keeps it paper even if standby is lifted. The
+  # intended ~20-25 name book needs funding; max_concurrent caps the plumbing book.
+  universe_file: "@config/nasdaq_composite.txt"   # 3,207-name Nasdaq Composite (anchored path)
+  position_pct: 0.10                # 10% of account value per name
+  max_concurrent_positions: 10      # plumbing book ceiling (~20-25 when funded)
+  entry_delay_days: 1               # enter 1 trading day post-announcement...
+  entry_max_delay_days: 2           # ...through 2 td (the PEAD entry window)
+  manage_cadence_sec: 300           # exit-engine poll cadence
+  scan_window_start_et: [8, 30]     # daily pre-open scan window (read at startup by main.py)
+  scan_window_end_et: [9, 25]
+  # --- Flag-2 deferred-fill reconcile (config-driven; defaults applied if absent) ---
+  # PEAD scans pre-open, so entries are placed as GFD fractional buys that QUEUE to
+  # the 9:30 open; a sibling reconcile loop confirms each fill at/after the open and
+  # promotes it to a record. The deadline is anchored at the 9:30 OPEN (not at
+  # placement) — an order still unfilled at open+deadline is the >5% collar miss
+  # (cancel the resting order, skip the name, log it).
+  reconcile_poll_interval_sec: 30          # reconcile-loop tick while pending orders exist
+  reconcile_deadline_after_open_sec: 300   # wait past the 9:30 ET open before collar-miss cancel
+  reconcile_partial_warn_frac: 0.90        # warn when realized $ < this fraction of requested
+
+bitunix_sfp:
+  enabled: true
+  auto_execute: true
+  execution_mode: live            # OPERATOR-SET paper|live at deploy
+  mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged.
+  division: bitunix_sfp
+  symbols: ["BTC/USDT.P"]
+  detection_tf: "15m"
+  pivot_len: 50
+  back_to_break: 4
+  stop_buffer_pct: 0.001
+  tp_r: 2.0
+  watch_hours: 12
+  side: long
+  risk_pct_real: 0.0025            # OPERATOR-SET 2026-06-25 (conservative, below 0.005 default)
+  risk_pct_considerable: 0.0025    # OPERATOR-SET 2026-06-25 (conservative)
+  leverage: 2.0                    # OPERATOR-SET 2026-06-25 (conservative, below 5.0 default)
+  max_hold_seconds: 604800
+  bar_cache_max_bars: 160
+  loop_settle_seconds: 20
