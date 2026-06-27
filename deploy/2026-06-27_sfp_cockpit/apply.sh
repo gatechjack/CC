@@ -11,7 +11,7 @@ BAK=/home/azureuser/p1_bak_2026-06-27
 
 echo "== 1/7 verify staged transfer integrity (LF md5) =="
 echo "4c37fa971698e600095163695feb30a0  $ST/routes.py"               | md5sum -c -
-echo "d967562d08361417a0086856bff37db4  $ST/sfp_cockpit_view.py"     | md5sum -c -
+echo "1259006577755fbefd49dadbaced4f09  $ST/sfp_cockpit_view.py"     | md5sum -c -
 echo "762fcb9283a31f5116278d3dd8d8c040  $ST/sfp_cockpit.html"        | md5sum -c -
 echo "c98dc790f185aaeae834e308f74ca7f8  $ST/sfp_cockpit/_header.html"   | md5sum -c -
 echo "461eac96cb543c99a184847d9cebb671  $ST/sfp_cockpit/_recon.html"    | md5sum -c -
@@ -67,7 +67,7 @@ cp "$ST/sfp_cockpit.css" "$ROOT/trading_corp/web/static/sfp_cockpit.css"
 
 echo "== 6/7 verify PLACED md5s == staged =="
 echo "4c37fa971698e600095163695feb30a0  $ROOT/trading_corp/web/routes.py"                             | md5sum -c -
-echo "d967562d08361417a0086856bff37db4  $ROOT/trading_corp/web/sfp_cockpit_view.py"                   | md5sum -c -
+echo "1259006577755fbefd49dadbaced4f09  $ROOT/trading_corp/web/sfp_cockpit_view.py"                   | md5sum -c -
 echo "762fcb9283a31f5116278d3dd8d8c040  $ROOT/trading_corp/web/templates/sfp_cockpit.html"            | md5sum -c -
 echo "c98dc790f185aaeae834e308f74ca7f8  $ROOT/trading_corp/web/templates/sfp_cockpit/_header.html"    | md5sum -c -
 echo "461eac96cb543c99a184847d9cebb671  $ROOT/trading_corp/web/templates/sfp_cockpit/_recon.html"     | md5sum -c -
