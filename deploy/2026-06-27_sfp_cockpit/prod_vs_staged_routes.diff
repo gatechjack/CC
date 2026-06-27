@@ -1,0 +1,11 @@
+--- "C:\\Users\\AA Incorporado\\cc\\.claude\\worktrees\\bitunix-sfp-2026-06-25\\_prodsnap\\routes.py.prod"	2026-06-27 03:30:34.575210900 -0400
++++ "C:\\Users\\AA Incorporado\\cc\\.claude\\worktrees\\bitunix-sfp-2026-06-25\\deploy\\2026-06-27_sfp_cockpit\\staged\\routes.py"	2026-06-27 03:34:23.864298900 -0400
+@@ -194,6 +194,8 @@
+     # them here keeps everything reachable on a single port.
+     from trading_corp.web import webhooks
+     webhooks.register(app)
++    from trading_corp.web import sfp_cockpit_view
++    sfp_cockpit_view.register(app)
+ 
+     # ── PWA: serve service worker + manifest at root scope ─────────────
+     # The service worker MUST be served from the root path (`/sw.js`),

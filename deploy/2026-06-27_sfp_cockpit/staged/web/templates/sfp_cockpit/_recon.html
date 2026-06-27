@@ -1,0 +1,40 @@
+<div class="panel" id="sfp-recon"
+     hx-get="/sfp/partials/recon" hx-trigger="every 5s" hx-swap="outerHTML">
+  <div class="phead">
+    <div><h3 class="ptitle">Live vs Backtest</h3><span class="psub">first-months reconciliation</span></div>
+    <span class="tier tier-mock">MOCK · BOS-confirm needs emit</span>
+  </div>
+  <div class="recon">
+    {# BOS-confirm rate — TIER B (needs the observer watch-state emit) #}
+    <div class="cell">
+      <div class="metric"><div class="lbl">BOS-confirm rate</div>
+        <div><span class="big">{{ bos.rate_pct }}%</span><span class="vs">vs {{ bos.band }}</span></div></div>
+      <span class="badge b-amber"><span class="dot" style="background:var(--amber)"></span>{{ bos.status }}</span>
+    </div>
+    {# Win @ 2R — TIER A (honest empty until closed trades exist) #}
+    <div class="cell">
+      <div class="metric"><div class="lbl">Win @ 2R</div>
+        {% if metrics.has_data %}
+          <div><span class="big">{{ metrics.win_pct }}%</span><span class="vs">vs 38% (bt)</span></div>
+        {% else %}<div><span class="big dim">—</span><span class="vs">awaiting closed trades</span></div>{% endif %}
+      </div>
+      {% if metrics.has_data %}
+        {% set trk = metrics.win_pct >= 33 %}
+        <span class="badge {{ 'b-green' if trk else 'b-amber' }}"><span class="dot" style="background:{{ 'var(--green)' if trk else 'var(--amber)' }}"></span>{{ 'tracking' if trk else 'diverging' }}</span>
+      {% else %}<span class="badge b-gray"><span class="dot"></span>no data</span>{% endif %}
+    </div>
+    {# Avg R / trade — TIER A #}
+    <div class="cell">
+      <div class="metric"><div class="lbl">Avg R / trade</div>
+        {% if metrics.has_data %}
+          <div><span class="big">{{ '%+.2f'|format(metrics.avg_r or 0) }}</span><span class="vs">vs +0.27 (bt)</span></div>
+        {% else %}<div><span class="big dim">—</span><span class="vs">awaiting closed trades</span></div>{% endif %}
+      </div>
+      {% if metrics.has_data %}
+        {% set trk = (metrics.avg_r or 0) >= 0.20 %}
+        <span class="badge {{ 'b-green' if trk else 'b-amber' }}"><span class="dot" style="background:{{ 'var(--green)' if trk else 'var(--amber)' }}"></span>{{ 'tracking' if trk else 'diverging' }}</span>
+      {% else %}<span class="badge b-gray"><span class="dot"></span>no data</span>{% endif %}
+    </div>
+  </div>
+  <div class="mock-note">Win@2R / Avg-R are TIER A (real) once SFP has closed trades; BOS-confirm stays MOCK until the observer watch-state emit ships. Backtest baselines (bt) from the validated research.</div>
+</div>
