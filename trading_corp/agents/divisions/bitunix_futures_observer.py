@@ -529,6 +529,15 @@ class BitunixFuturesObserver:
         # restart. The complementary kill-switch is `auto_execute` in
         # YAML (mtime-hot-reloaded; commit 3 reads it on each placement).
         execution_mode: str = "paper",
+        # Two-state collapse (2026-06-27) — HALTED-INERT gate. When True the
+        # observer short-circuits its public entries BEFORE scoring /
+        # would_have_placed / paper_trade_record (fully inert: no orders, no
+        # data side-effects, no ledger append). Default False = active, so
+        # existing tests/fixtures that construct the observer without this arg
+        # keep prior behavior. The FAIL-SAFE "default halted" policy lives at
+        # the orchestration layer (main.py reads strategies.yaml `mode` and
+        # passes halted=True unless mode == "trading").
+        halted: bool = False,
         # Stage-1 N+1 commit 4 — HITL approval registry. When wired AND
         # execution_mode=live AND auto_execute=true AND we're inside the
         # first-N window, the helper blocks placement until the operator
@@ -589,6 +598,9 @@ class BitunixFuturesObserver:
             )
             em = "paper"
         self.execution_mode = em
+        # Two-state collapse — HALTED-INERT flag (see ctor param). Consumed by
+        # the public-entry guards below; when True the observer is fully inert.
+        self._halted = bool(halted)
         # HITL approval registry — opaque to the observer; only
         # exercised when execution_mode=live AND auto_execute=true AND
         # the first-N counter is below the threshold.
@@ -665,6 +677,8 @@ class BitunixFuturesObserver:
         of order emission. For the full Phase 3.1 path, call the async
         `observe_and_decide` instead.
         """
+        if self._halted:
+            return None  # two-state collapse: HALTED-INERT — no classify, no state write
         try:
             return self._observe_alert_inner(payload, source=source)
         except Exception as e:
@@ -696,6 +710,10 @@ class BitunixFuturesObserver:
         with the audit row layout (`bitunix_observer_classified`). The
         score-path decision is captured in `bitunix_score_decided`.
         """
+        if self._halted:
+            # Two-state collapse: HALTED-INERT. Short-circuit BEFORE the ledger
+            # append + scoring + would_have_placed + paper_trade_record write.
+            return None
         verdict = self.observe_alert(payload, source=source)
 
         # Append every signal to the ledger regardless of feature flag —
@@ -1273,7 +1291,8 @@ class BitunixFuturesObserver:
         while True:
             try:
                 await asyncio.sleep(interval_s)
-                if self._pending_pa_payload is None:
+                if self._halted or self._pending_pa_payload is None:
+                    # two-state collapse: HALTED-INERT — never re-fire deferred PA
                     continue
                 payload = dict(self._pending_pa_payload)
                 await self._score_and_maybe_propose(

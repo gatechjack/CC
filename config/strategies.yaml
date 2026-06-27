@@ -1020,6 +1020,7 @@ bitunix_futures:
   enabled: true                     # Phase 3.1 paper-mode auto-execute live
   auto_execute: true                # mtime-hot-reloaded runtime kill switch (per-order read)
   execution_mode: paper             # "paper" | "live"  — Stage-1 N+1 commit 2; config-and-restart, no hot-reload
+  mode: halted                      # two-state collapse (2026-06-27): "trading" | "halted". HALTED = observer short-circuits before scoring/would_have_placed/paper_trade_record (fully inert, flip-ready). Fail-safe default is halted (main.py); no live account here.
   snapshot_staleness_threshold_seconds: 60   # gate (a) sub-item 2 — halt order path if last successful snapshot is older than this. 2× per-bar cadence on the 1-min bar; mtime-cached on read.
   # C (2026-06-16) — bar-interval-aware staleness-reject gate. Rejects an
   # ENTRY whose originating bar is older than (bar_interval_seconds + margin),
@@ -1932,6 +1933,7 @@ bitunix_sfp:
   enabled: true
   auto_execute: true
   execution_mode: paper            # OPERATOR-SET paper|live at deploy
+  mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged (mode read in main.py, not BitunixSfpConfig).
   division: bitunix_sfp
   symbols: ["BTC/USDT.P"]
   detection_tf: "15m"

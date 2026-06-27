@@ -431,6 +431,10 @@ async def run(argv: list[str] | None = None) -> int:
     _execution_mode = "paper"       # Stage-1 N+1 — fail-closed default if YAML load fails
     _staleness_enabled = False      # C — staleness-reject gate; OFF if YAML load fails
     _staleness_margin_s = 120.0     # C — additive margin (s) on top of the bar interval
+    # Two-state collapse (2026-06-27) — futures division mode gate. Fail-safe
+    # default HALTED: if the YAML load below fails OR `mode` != "trading"
+    # (incl. missing), the futures observer is constructed HALTED-INERT.
+    _futures_halted = True
     try:
         import yaml as _yaml
         from pathlib import Path as _Path
@@ -450,6 +454,9 @@ async def run(argv: list[str] | None = None) -> int:
         # paper. Observer's __init__ enforces final fail-closed
         # normalization; this is the YAML read site.
         _execution_mode = str(_bx_block.get("execution_mode", "paper")).lower()
+        # Two-state collapse — read the division mode (fail-safe halted). Only
+        # an explicit "trading" un-halts; anything else (incl. missing) halts.
+        _futures_halted = (str(_bx_block.get("mode", "halted")).lower() != "trading")
         # C — bar-interval-aware staleness-reject gate. Entry freshness:
         # reject an entry whose signal bar is older than (interval + margin).
         _stale_block = _bx_block.get("staleness_gate") or {}
@@ -513,6 +520,9 @@ async def run(argv: list[str] | None = None) -> int:
         # Stage-1 N+1 commit 2 — execution mode wiring. paper-default
         # everywhere; live requires explicit YAML edit + restart.
         execution_mode=_execution_mode,
+        # Two-state collapse (2026-06-27) — HALTED-INERT gate. Fail-safe
+        # default halted; only `bitunix_futures.mode: trading` un-halts.
+        halted=_futures_halted,
         # Stage-1 N+1 commit 4 — HITL gate for first-N live orders.
         # Wires the existing PendingApprovalRegistry singleton; the
         # observer only consults it when execution_mode=live AND
@@ -631,6 +641,15 @@ async def run(argv: list[str] | None = None) -> int:
     )
     from trading_corp.brokers.bitunix_symbols import to_wire_format as _to_wire
     _sfp_cfg = _BitunixSfpConfig.from_dict(_sfp_raw)
+    # Two-state collapse (2026-06-27) — SFP division mode gate, fail-safe HALTED.
+    # ★ The SFP observer file is BYTE-UNCHANGED: `mode` is read HERE (orchestration
+    # layer) from the raw YAML, NOT via BitunixSfpConfig, and gates only whether
+    # the live 15m loop is started below. bitunix_sfp ships `mode: trading`; if it
+    # were missing/non-trading the live BTC edge would stay halted on restart
+    # (the boot smoke asserts trading + loop spawned).
+    _sfp_mode = str(_sfp_raw.get("mode", "halted")).lower()
+    _sfp_trading = (_sfp_mode == "trading")
+    log.info("bitunix_sfp mode gate: mode=%s trading=%s", _sfp_mode, _sfp_trading)
     bitunix_sfp_observer = None
     if _sfp_cfg.enabled:
         try:
@@ -1623,12 +1642,23 @@ async def run(argv: list[str] | None = None) -> int:
             replay_pending_paper_trades_async,
             start_replay_loop,
         )
+        # Two-state collapse (2026-06-27): the paper-sim layer is RETIRED, so the
+        # replay loop + boot catch-up (the dominant Bitunix bot-footprint:
+        # paginated historical klines, ~15-23k/day — the IP-flag burst on egress
+        # restore) are gated OFF behind ONE flag. SFP (live) resolves via the
+        # reconciler, not replay; disabling replay also removes the latent
+        # live-exit fork that could race SFP's venue brackets. Code retained,
+        # ONE-LINE revert: set _REPLAY_ENABLED = True to restore prior behavior.
+        _REPLAY_ENABLED = False
         try:
             mark_pre_phase_a_rows(secrets.db_url)
-            startup_counts = await replay_pending_paper_trades_async(secrets.db_url)
-            # f-string (not %s) — RedactingFilter rewrites dict args
-            # into their keys, producing a TypeError on % formatting.
-            log.info(f"paper_trade_replay startup catch-up: {startup_counts}")
+            if _REPLAY_ENABLED:
+                startup_counts = await replay_pending_paper_trades_async(secrets.db_url)
+                # f-string (not %s) — RedactingFilter rewrites dict args
+                # into their keys, producing a TypeError on % formatting.
+                log.info(f"paper_trade_replay startup catch-up: {startup_counts}")
+            else:
+                log.info("paper_trade_replay boot catch-up SKIPPED (replay retired)")
         except Exception:
             log.exception("paper_trade_replay startup catch-up failed (continuing)")
         # Wire the bitunix lifecycle notifier AFTER the startup catch-up so
@@ -1659,14 +1689,19 @@ async def run(argv: list[str] | None = None) -> int:
         # unchanged). The registration is unconditional — the fork is
         # additionally gated inside _replay_tick_async on the row's
         # execution_mode tag, so paper rows always take the paper path.
-        try:
-            from trading_corp.agents.paper_trade_replay import (
-                set_live_exit_executor,
-            )
-            set_live_exit_executor(bitunix_observer)
-        except Exception:
-            log.exception("bitunix live-exit executor wiring failed (continuing)")
-        replay_task = start_replay_loop(secrets.db_url, interval_sec=900)
+        if _REPLAY_ENABLED:
+            try:
+                from trading_corp.agents.paper_trade_replay import (
+                    set_live_exit_executor,
+                )
+                set_live_exit_executor(bitunix_observer)
+            except Exception:
+                log.exception("bitunix live-exit executor wiring failed (continuing)")
+            replay_task = start_replay_loop(secrets.db_url, interval_sec=900)
+        else:
+            # Replay retired: no live-exit fork (removes the latent double-exit
+            # race vs SFP's venue brackets) and no periodic historical-kline loop.
+            replay_task = None
 
         # --- BitUnix 3m bar cache poll (Phase 3.2a) ---
         # Coinbase 3m OHLCV pulled every 60s, cached in-process. Powers the
@@ -1767,14 +1802,19 @@ async def run(argv: list[str] | None = None) -> int:
         # decays (cache cleared in SKIP path) or PA passes (cache cleared,
         # `pa_validation_redeem` audit row written). See observer
         # `run_pa_redeem_loop` for the lifecycle.
-        asyncio.create_task(
-            bitunix_observer.run_pa_redeem_loop(interval_s=60.0),
-            name="bitunix-pa-redeem",
-        )
+        if not _futures_halted:
+            asyncio.create_task(
+                bitunix_observer.run_pa_redeem_loop(interval_s=60.0),
+                name="bitunix-pa-redeem",
+            )
+        else:
+            # Two-state collapse: futures HALTED-INERT — deferred-PA redeem loop
+            # NOT started (the observer's entry guards also no-op it defensively).
+            log.info("bitunix_futures HALTED — pa-redeem loop NOT started")
 
         # bitunix_sfp — prime caches, warm-start detectors from history, spawn
         # the sequential 15m signal loop.
-        if bitunix_sfp_observer is not None:
+        if bitunix_sfp_observer is not None and _sfp_trading:
             try:
                 for _c in bitunix_sfp_observer.bar_caches.values():
                     await _c.refresh()
@@ -1784,6 +1824,13 @@ async def run(argv: list[str] | None = None) -> int:
                          len(bitunix_sfp_observer.bar_caches))
             except Exception:
                 log.exception("bitunix_sfp loop spawn failed (continuing)")
+        elif bitunix_sfp_observer is not None and not _sfp_trading:
+            # Two-state collapse: loaded but mode != trading → HALTED-INERT.
+            # 15m loop NOT started (no live BTC trading). Flip mode: trading to arm.
+            log.warning(
+                "bitunix_sfp loaded but mode=%s (not trading) — HALTED-INERT, "
+                "15m loop NOT spawned", _sfp_mode,
+            )
 
         # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5a): restart-resume ──
         # cases (a) match + (b) orphan + (c-deferred). Runs BEFORE the
@@ -2047,11 +2094,12 @@ async def run(argv: list[str] | None = None) -> int:
                 await tasty_position_manager_task
             except (asyncio.CancelledError, Exception):
                 pass
-            replay_task.cancel()
-            try:
-                await replay_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            if replay_task is not None:  # two-state collapse: None when replay retired
+                replay_task.cancel()
+                try:
+                    await replay_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             # Stop the web server cleanly
             if web_server is not None:
                 web_server.should_exit = True
