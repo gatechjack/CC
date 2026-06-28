@@ -1,0 +1,8 @@
+fb84f5aa1bda4418a14766b72c1515b3  trading_corp/web/templates/sfp_cockpit.html
+29be852f967cbbd2ff7cc259a0fbc9d1  trading_corp/web/templates/sfp_cockpit/_header.html
+402fb461241aaf97b2ef7ed4ae778884  trading_corp/web/templates/sfp_cockpit/_recon.html
+57de1f1756052ff5bff54551b45c6e30  trading_corp/web/templates/sfp_cockpit/_state_board.html
+3de9da6ce9dcf8e0cc9b32646d355892  trading_corp/web/templates/sfp_cockpit/_mode_split.html
+ce9dcf9b3e0dbe78c3de2daa14d9c62a  trading_corp/web/templates/sfp_cockpit/_near_miss.html
+6bb89544b61470921025fcca91ff340c  trading_corp/web/templates/sfp_cockpit/_equity.html
+40665c54999f1a5a4471cb36135aa7ff  trading_corp/web/static/sfp_cockpit.css
