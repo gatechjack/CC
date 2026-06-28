@@ -3,7 +3,7 @@
    (fired_bar_ts, mode, swept_level, status). Wire _mock_near_miss() to a real
    read when the emit ships. #}
 <div class="panel is-mock" id="sfp-nearmiss"
-     hx-get="/sfp/partials/near-miss" hx-trigger="every 5s" hx-swap="outerHTML">
+     hx-get="/sfp/partials/near-miss" hx-trigger="every 5s" hx-swap="morph:outerHTML" hx-indicator="#sfp-refresh">
   <div class="phead">
     <div><h3 class="ptitle">Near-Miss</h3><span class="psub">BOS filter working · {{ near_miss.convert_fail_pct }}% of armed never convert</span></div>
     <span class="tier tier-mock">MOCK</span>

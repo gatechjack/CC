@@ -126,3 +126,22 @@ body{background:radial-gradient(1200px 600px at 80% -10%,#0c1830 0%,transparent 
 .eqfoot{display:flex;justify-content:space-between;font-size:10.5px;color:var(--txt3);margin-top:4px}
 .empty{border:1px dashed var(--line2);border-radius:9px;padding:14px;text-align:center;color:var(--txt3);font-size:11px}
 .empty b{color:var(--txt2);display:block;font-size:13px;margin-bottom:3px;font-weight:600}
+
+/* ── top bar: back-to-Overview + live refresh indicator ───────────────────── */
+.topbar{display:flex;align-items:center;gap:12px}
+.topbar .home{font-family:var(--disp);font-weight:600;font-size:12px;letter-spacing:.02em;
+  color:var(--txt2);text-decoration:none;padding:6px 13px;border:1px solid var(--line2);
+  border-radius:9px;background:var(--panel2);transition:color .15s,border-color .15s,background .15s}
+.topbar .home:hover{color:var(--txt);border-color:#2dd4bf66;background:#2dd4bf12}
+/* REFRESH chip — idle = dim/static; lit (htmx-request) = teal + spinning glyph.
+   HTMX adds .htmx-request to #sfp-refresh while any panel poll is in flight and
+   removes it when settled, so the chip lights up and clears on its own. */
+.refresh{display:inline-flex;align-items:center;gap:7px;font-size:10px;font-weight:700;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--txt3);padding:5px 11px;
+  border:1px solid var(--line);border-radius:9px;background:var(--panel);
+  transition:color .2s,border-color .2s,box-shadow .2s,opacity .2s}
+.refresh .hg{font-size:14px;line-height:1;display:inline-block}
+.refresh.htmx-request{color:var(--teal);border-color:#2dd4bf66;box-shadow:0 0 14px #2dd4bf33}
+.refresh.htmx-request .hg{animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.refresh.htmx-request .hg{animation:none}}

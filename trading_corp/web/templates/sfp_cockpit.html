@@ -6,13 +6,29 @@
 <title>Bitunix SFP Cockpit</title>
 <link rel="stylesheet" href="/static/sfp_cockpit.css">
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
+{# idiomorph: morph fragments in place on each poll instead of replacing the DOM
+   node. The node persists, so the .panel entrance animation never replays and
+   only changed text/attrs update — kills the every-5s full-page flicker. #}
+<script src="https://unpkg.com/idiomorph@0.3.0/dist/idiomorph-ext.min.js"></script>
 </head>
 <body>
-<div class="wrap">
+<div class="wrap" hx-ext="morph">
 
-  {# Each fragment's ROOT element self-polls (hx-get + hx-trigger="every 5s",
-     outerHTML swap). Initial paint via {% include %}; thereafter HTMX refreshes
-     each panel independently so a slow query never blocks the others. #}
+  {# Top bar — back to the main menu (matches the other division dashboards' nav)
+     + a live REFRESH indicator that lights while any panel poll is in flight and
+     clears when idle (hx-indicator -> htmx-request class on #sfp-refresh). #}
+  <div class="topbar">
+    <a class="home" href="/">&larr; Trading Corp &middot; Overview</a>
+    <span class="spacer"></span>
+    <span id="sfp-refresh" class="refresh" title="Live data — lights while refreshing every ~5s, clears when idle">
+      <span class="hg">&#x27F3;</span><span class="rl">REFRESH</span>
+    </span>
+  </div>
+
+  {# Each fragment's ROOT element self-polls (hx-get + hx-trigger="every 5s").
+     hx-swap="morph:outerHTML" (idiomorph, hx-ext="morph" above) morphs the panel
+     in place so the entrance animation never replays — no flicker. Initial paint
+     via {% include %}; thereafter each panel refreshes independently. #}
 
   {% include "sfp_cockpit/_header.html" %}
   {% include "sfp_cockpit/_recon.html" %}
