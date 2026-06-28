@@ -50,6 +50,7 @@ from trading_corp.agents.strategies.bitunix_sfp import (
     SfpBar,
     SfpDetector,
     SfpEntrySignal,
+    SfpModeBDetector,
     compute_geometry,
 )
 from trading_corp.brokers.bitunix_symbols import to_wire_format
@@ -126,6 +127,21 @@ class BitunixSfpConfig:
     max_hold_seconds: int = 604_800
     bar_cache_max_bars: int = 160
     loop_settle_seconds: int = 20
+    # Mode B (15m SFP → 3m BOS). ``symbol_modes`` is OPTIONAL and BACKWARD-COMPAT:
+    # when empty, every symbol uses (bos_tf=detection_tf, arm="trading") — today's
+    # behavior exactly. Keyed by WIRE symbol → (bos_tf, arm) with
+    # bos_tf ∈ {"15m","3m"}, arm ∈ {"trading","watch"} ("watch" runs the detector
+    # but forces PAPER — a no-order forward-track).
+    watch_hours_3m: float = 12.0
+    symbol_modes: dict[str, tuple[str, str]] = field(default_factory=dict)
+
+    def mode_for(self, wire: str) -> tuple[str, str]:
+        """(bos_tf, arm) for a wire symbol; default (detection_tf, 'trading')."""
+        return self.symbol_modes.get(wire, (self.detection_tf, "trading"))
+
+    @property
+    def uses_mode_b(self) -> bool:
+        return any(bos_tf == "3m" for bos_tf, _arm in self.symbol_modes.values())
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "BitunixSfpConfig":
@@ -133,13 +149,28 @@ class BitunixSfpConfig:
         syms = raw.get("symbols") or ["BTC/USDT.P"]
         if isinstance(syms, str):
             syms = [syms]
+        detection_tf = str(raw.get("detection_tf", "15m"))
+        # Parse the optional per-symbol mode map (wire-keyed, validated).
+        symbol_modes: dict[str, tuple[str, str]] = {}
+        for disp, spec in (raw.get("symbol_modes") or {}).items():
+            spec = spec or {}
+            wire = to_wire_format(str(disp))
+            bos_tf = str(spec.get("bos_tf", detection_tf)).lower()
+            arm = str(spec.get("arm", "trading")).lower()
+            if bos_tf not in ("15m", "3m"):
+                raise ValueError(
+                    f"bitunix_sfp.symbol_modes[{disp}].bos_tf must be 15m|3m, got {bos_tf!r}")
+            if arm not in ("trading", "watch"):
+                raise ValueError(
+                    f"bitunix_sfp.symbol_modes[{disp}].arm must be trading|watch, got {arm!r}")
+            symbol_modes[wire] = (bos_tf, arm)
         return cls(
             enabled=bool(raw.get("enabled", False)),
             auto_execute=bool(raw.get("auto_execute", False)),
             execution_mode=str(raw.get("execution_mode", "paper")).lower(),
             division=str(raw.get("division", DIVISION)),
             symbols=tuple(str(s) for s in syms),
-            detection_tf=str(raw.get("detection_tf", "15m")),
+            detection_tf=detection_tf,
             pivot_len=int(raw.get("pivot_len", 50)),
             back_to_break=int(raw.get("back_to_break", 4)),
             stop_buffer_pct=float(raw.get("stop_buffer_pct", 0.001)),
@@ -152,6 +183,8 @@ class BitunixSfpConfig:
             max_hold_seconds=int(raw.get("max_hold_seconds", 604_800)),
             bar_cache_max_bars=int(raw.get("bar_cache_max_bars", 160)),
             loop_settle_seconds=int(raw.get("loop_settle_seconds", 20)),
+            watch_hours_3m=float(raw.get("watch_hours_3m", 12.0)),
+            symbol_modes=symbol_modes,
         )
 
 
@@ -167,6 +200,7 @@ class BitunixSfpObserver:
         logger_agent: Any,
         config: BitunixSfpConfig,
         bar_caches: dict[str, Any],        # wire symbol -> LiveBarCache (15m)
+        bar_caches_3m: dict[str, Any] | None = None,  # wire -> LiveBarCache (3m), Mode B
         strategies_yaml_path: str | None = None,
     ) -> None:
         self.db_url = db_url
@@ -175,23 +209,46 @@ class BitunixSfpObserver:
         self.logger_agent = logger_agent
         self.config = config
         self.bar_caches = bar_caches
+        self.bar_caches_3m = bar_caches_3m or {}
         self._strategies_yaml_path = strategies_yaml_path or str(
             Path(__file__).resolve().parents[3] / "config" / "strategies.yaml"
         )
         wb = _watch_bars_from_hours(config.watch_hours)
+        wb3 = int(config.watch_hours_3m * 60 / 3)
         # Two detectors per symbol (REAL + CONSIDERABLE), pooled — mirrors the
-        # oracle's two independent passes.
+        # oracle's two independent passes. Per symbol the BOS timeframe selects the
+        # detector class: 15m → Mode-A SfpDetector (unchanged path); 3m → Mode-B
+        # SfpModeBDetector. Backward-compat: an absent symbol_modes map leaves every
+        # symbol on Mode-A, so _detectors/_last_ts and the existing loop are byte-
+        # identical to today.
         self._detectors: dict[str, list[SfpDetector]] = {}
+        self._detectors_b: dict[str, list[SfpModeBDetector]] = {}
+        self._symbol_arm: dict[str, str] = {}
+        self._symbol_bos_tf: dict[str, str] = {}
         self._last_ts: dict[str, int] = {}
+        self._last_ts3: dict[str, int] = {}
         for sym in config.symbols:
             wire = to_wire_format(sym)
-            self._detectors[wire] = [
-                SfpDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
-                            back_to_break=config.back_to_break, watch_bars=wb),
-                SfpDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
-                            back_to_break=config.back_to_break, watch_bars=wb),
-            ]
+            bos_tf, arm = config.mode_for(wire)
+            self._symbol_arm[wire] = arm
+            self._symbol_bos_tf[wire] = bos_tf
             self._last_ts[wire] = 0
+            if bos_tf == "3m":
+                self._detectors_b[wire] = [
+                    SfpModeBDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                    SfpModeBDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                ]
+                self._last_ts3[wire] = 0
+            else:
+                self._detectors[wire] = [
+                    SfpDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
+                                back_to_break=config.back_to_break, watch_bars=wb),
+                    SfpDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
+                                back_to_break=config.back_to_break, watch_bars=wb),
+                ]
+        self.uses_mode_b = bool(self._detectors_b)
         # OBSERVE-ONLY: ensure the dashboard watch-state table exists (idempotent;
         # the gated migration also creates it). Fail-soft, never raises.
         self._ensure_watch_schema()
@@ -205,6 +262,9 @@ class BitunixSfpObserver:
         they are historical, already past their entry bar."""
         for sym in self.config.symbols:
             wire = to_wire_format(sym)
+            if self._symbol_bos_tf.get(wire) == "3m":
+                self._warm_start_b(wire)
+                continue
             cache = self.bar_caches.get(wire)
             if cache is None:
                 continue
@@ -217,6 +277,22 @@ class BitunixSfpObserver:
                 self._emit_watch_transitions(wire, det.drain_transitions(), recent_only=True)
             if bars:
                 self._last_ts[wire] = bars[-1].ts_ms
+
+    def _warm_start_b(self, wire: str) -> None:
+        """Mode-B warm-start: replay ALL cached 15m bars (arm watches) then ALL
+        cached 3m bars (bind + advance). The contiguity guard drops any 15m fire
+        whose t0 3m bar predates the (shallower) 3m cache."""
+        c15 = self.bar_caches.get(wire)
+        c3 = self.bar_caches_3m.get(wire)
+        bars15 = [self._to_sfp_bar(b) for b in getattr(c15, "bars", [])] if c15 else []
+        bars3 = [self._to_sfp_bar(b) for b in getattr(c3, "bars", [])] if c3 else []
+        for det in self._detectors_b[wire]:
+            det.warm_start(bars15, bars3)
+            self._emit_watch_transitions(wire, det.drain_transitions(), recent_only=True)
+        if bars15:
+            self._last_ts[wire] = bars15[-1].ts_ms
+        if bars3:
+            self._last_ts3[wire] = bars3[-1].ts_ms
 
     async def run_loop(self) -> None:
         """Sequential 15m-close-aligned loop. One pass per closed bar."""
@@ -265,6 +341,75 @@ class BitunixSfpObserver:
                 # CANNOT raise into the loop; a persist failure never affects trading.
                 self._emit_watch_transitions(wire, det.drain_transitions())
             self._last_ts[wire] = bar.ts_ms
+
+    # ------------------------------------------------------------------ #
+    # Mode B — ONE 3m-boundary master loop. Drives Mode-A symbols on their 15m
+    # bars AND Mode-B symbols (15m arm + 3m BOS) in a SINGLE sequential task, so
+    # two order-placement paths can never race the shared equity snapshot. The
+    # existing run_loop / process_once / _process_symbol stay byte-unchanged and
+    # are reused; main.py spawns run_loop_master iff any symbol is bos_tf=3m.
+    # ------------------------------------------------------------------ #
+    async def run_loop_master(self) -> None:
+        """3m-aligned master loop. Mode-A symbols only act on NEW 15m bars (the
+        _last_ts filter makes the extra ticks a no-op); Mode-B symbols arm on NEW
+        15m bars and confirm on NEW 3m bars."""
+        while True:
+            try:
+                await self._sleep_to_next_boundary(tf_seconds=180)
+                await self.process_once_master()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("bitunix_sfp master loop tick failed (continuing)")
+
+    async def process_once_master(self) -> None:
+        for sym in self.config.symbols:
+            wire = to_wire_format(sym)
+            if self._symbol_bos_tf.get(wire) == "3m":
+                c15 = self.bar_caches.get(wire)
+                c3 = self.bar_caches_3m.get(wire)
+                for c in (c15, c3):
+                    if c is None:
+                        continue
+                    try:
+                        await c.refresh()
+                    except Exception as e:
+                        log.warning("bitunix_sfp: %s 3m-path cache refresh failed: %s", wire, e)
+                await self._process_symbol_b(sym, wire, c15, c3)
+            else:
+                cache = self.bar_caches.get(wire)
+                if cache is None:
+                    continue
+                try:
+                    await cache.refresh()
+                except Exception as e:
+                    log.warning("bitunix_sfp: %s cache refresh failed: %s", wire, e)
+                await self._process_symbol(sym, wire, cache)
+        self._write_heartbeat()
+
+    async def _process_symbol_b(self, symbol_display: str, wire: str,
+                                c15: Any, c3: Any) -> None:
+        """Mode-B per-symbol pass: (1) feed NEW 15m bars to ARM watches, THEN
+        (2) feed NEW 3m bars to ADVANCE/CONFIRM. Arm-before-advance matches the
+        oracle and the parity test's interleaving. Entries fire only in step 2."""
+        if c15 is not None:
+            last15 = self._last_ts.get(wire, 0)
+            for raw in [b for b in getattr(c15, "bars", []) if int(b.ts_ms) > last15]:
+                bar15 = self._to_sfp_bar(raw)
+                for det in self._detectors_b[wire]:
+                    det.on_closed_15m_bar(bar15)        # arm only — returns []
+                    self._emit_watch_transitions(wire, det.drain_transitions())
+                self._last_ts[wire] = bar15.ts_ms
+        if c3 is not None:
+            last3 = self._last_ts3.get(wire, 0)
+            for raw in [b for b in getattr(c3, "bars", []) if int(b.ts_ms) > last3]:
+                bar3 = self._to_sfp_bar(raw)
+                for det in self._detectors_b[wire]:
+                    sigs = det.on_closed_3m_bar(bar3)
+                    for sig in sigs:
+                        await self._handle_signal(symbol_display, wire, sig, bar3)
+                    self._emit_watch_transitions(wire, det.drain_transitions())
+                self._last_ts3[wire] = bar3.ts_ms
 
     @staticmethod
     def _to_sfp_bar(b: Any) -> SfpBar:
@@ -346,7 +491,9 @@ class BitunixSfpObserver:
                 "entry_reference_price": entry_ref,
                 "reduce_only": False,
                 "leverage": self.config.leverage,
-                "source_signal": f"sfp_{sig.sfp_mode.lower()}",
+                "source_signal": (f"sfp_{sig.sfp_mode.lower()}"
+                                  + ("_3m_bos" if getattr(sig, "bos_tf", "15m") == "3m" else "")),
+                "bos_tf": getattr(sig, "bos_tf", "15m"),
                 "max_dollar_risk": max_dollar_risk,
                 "expected_gain_if_tp_hit": max_dollar_risk * self.config.tp_r,
             },
@@ -402,6 +549,14 @@ class BitunixSfpObserver:
                         "broker is paper/missing (slug not in --live-divisions?) — "
                         "routing PAPER to avoid a mislabeled-live record")
         is_live = cfg_live and broker_is_live
+        # Mode-B watch-only symbols forward-track in PAPER (never live) regardless
+        # of execution_mode — the detector runs and writes a paper record, but no
+        # real order is placed. Default arm is "trading" → a no-op for armed symbols.
+        if is_live and self._symbol_arm.get(to_wire_format(symbol_display)) == "watch":
+            is_live = False
+            self._audit("sfp_signal_watch_only", {
+                "symbol": symbol_display, "sfp_mode": sig.sfp_mode,
+                "order_id": order.id, "reason": "arm=watch_forward_track_paper"})
         intent = {
             "symbol": symbol_display, "side": order.side, "qty": order.qty,
             "sfp_mode": sig.sfp_mode, "order_id": order.id,

@@ -409,8 +409,11 @@ async def run(argv: list[str] | None = None) -> int:
         _w: LiveBarCache(symbol=_w, timeframe="15m", venue="bitunix", max_bars=160)
         for _w in ("BTCUSDT", "SOLUSDT", "ETHUSDT", "XRPUSDT")
     }
+    # max_bars=500 (matches BTC's bitunix_bar_cache): a Mode-B 3m BOS watch spans
+    # up to watch_hours_3m=12h = 240 3m bars + its swing-high lookback, so the 3m
+    # cache must hold >=~260 bars for a full watch to survive a restart warm-start.
     bitunix_capture_3m_caches = {
-        _w: LiveBarCache(symbol=_w, timeframe="3m", venue="bitunix", max_bars=200)
+        _w: LiveBarCache(symbol=_w, timeframe="3m", venue="bitunix", max_bars=500)
         for _w in ("SOLUSDT", "ETHUSDT", "XRPUSDT")  # BTC 3m already cached above
     }
     # Phase 3.2 — confluence score accumulator config (off by default;
@@ -666,13 +669,25 @@ async def run(argv: list[str] | None = None) -> int:
         try:
             _sfp_caches = {_to_wire(_s): bitunix_sfp_15m_caches[_to_wire(_s)]
                            for _s in _sfp_cfg.symbols}
+            # Mode B (3m BOS): per-symbol 3m cache — BTC via bitunix_bar_cache,
+            # SOL/ETH/XRP via bitunix_capture_3m_caches. All already WS-fed (no new
+            # channels). The observer uses these only for bos_tf=3m symbols.
+            _sfp_caches_3m = {}
+            for _s in _sfp_cfg.symbols:
+                _w = _to_wire(_s)
+                _c3 = bitunix_bar_cache if _w == "BTCUSDT" else bitunix_capture_3m_caches.get(_w)
+                if _c3 is not None:
+                    _sfp_caches_3m[_w] = _c3
             bitunix_sfp_observer = _BitunixSfpObserver(
                 db_url=secrets.db_url, risk_agent=risk_agent, data_exec=data_exec,
                 logger_agent=logger_agent, config=_sfp_cfg, bar_caches=_sfp_caches,
+                bar_caches_3m=_sfp_caches_3m,
             )
             log.info(
-                "bitunix_sfp observer wired: symbols=%s execution_mode=%s auto_execute=%s",
+                "bitunix_sfp observer wired: symbols=%s execution_mode=%s auto_execute=%s "
+                "mode_b=%s symbol_modes=%s",
                 list(_sfp_cfg.symbols), _sfp_cfg.execution_mode, _sfp_cfg.auto_execute,
+                _sfp_cfg.uses_mode_b, _sfp_cfg.symbol_modes,
             )
         except Exception:
             log.exception("bitunix_sfp observer wiring failed (continuing without it)")
@@ -1896,12 +1911,22 @@ async def run(argv: list[str] | None = None) -> int:
         # the sequential 15m signal loop.
         if bitunix_sfp_observer is not None and _sfp_trading:
             try:
-                for _c in bitunix_sfp_observer.bar_caches.values():
+                for _c in (list(bitunix_sfp_observer.bar_caches.values())
+                           + list(bitunix_sfp_observer.bar_caches_3m.values())):
                     await _c.refresh()
                 bitunix_sfp_observer.warm_start_from_cache()
-                asyncio.create_task(bitunix_sfp_observer.run_loop(), name="bitunix-sfp-loop")
-                log.info("bitunix_sfp 15m loop spawned (%d symbol cache(s) primed)",
-                         len(bitunix_sfp_observer.bar_caches))
+                if bitunix_sfp_observer.uses_mode_b:
+                    # Mode B: ONE 3m-boundary master loop (15m arm + 3m BOS + any
+                    # Mode-A symbols), so two order paths never race the snapshot.
+                    asyncio.create_task(bitunix_sfp_observer.run_loop_master(),
+                                        name="bitunix-sfp-loop")
+                    log.info("bitunix_sfp 3m-master loop spawned (Mode B; %d 15m + %d 3m cache(s))",
+                             len(bitunix_sfp_observer.bar_caches),
+                             len(bitunix_sfp_observer.bar_caches_3m))
+                else:
+                    asyncio.create_task(bitunix_sfp_observer.run_loop(), name="bitunix-sfp-loop")
+                    log.info("bitunix_sfp 15m loop spawned (%d symbol cache(s) primed)",
+                             len(bitunix_sfp_observer.bar_caches))
             except Exception:
                 log.exception("bitunix_sfp loop spawn failed (continuing)")
         elif bitunix_sfp_observer is not None and not _sfp_trading:
