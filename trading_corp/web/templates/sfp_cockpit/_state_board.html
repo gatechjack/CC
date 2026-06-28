@@ -101,7 +101,7 @@
 {% endmacro %}
 
 <div class="panel" id="sfp-board"
-     hx-get="/sfp/partials/state-board" hx-trigger="every 5s" hx-swap="outerHTML">
+     hx-get="/sfp/partials/state-board" hx-trigger="every 5s" hx-swap="morph:outerHTML" hx-indicator="#sfp-refresh">
   <div class="phead">
     <div><h3 class="ptitle">Per-coin state board</h3><span class="psub">BTC live · SOL / ETH / XRP monitor-only</span></div>
     <span class="tier tier-scoped">SFP-SCOPED · div='bitunix_sfp'</span>
