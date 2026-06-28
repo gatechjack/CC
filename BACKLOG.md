@@ -12,6 +12,27 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
+
+Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:trading`**, **SOL + XRP `arm:watch`
+(paper)**. Open work:
+- **Forward-track BTC/ETH to n≥30, THEN scale money.** Sizing is trivial by design (risk_pct 0.0025, lev 2.0);
+  the operator scales capital only after BTC/ETH 3m-BOS reach a verdict-grade sample. n=1 so far (ETH stop-out
+  −1.16R, 2026-06-28 20:15Z). Track win%/avgR per coin via the cockpit TIER-A / `paper_trade_record`
+  (`division='bitunix_sfp'`, `source_signal` like `sfp_*_3m_bos`).
+- **SOL/XRP stay watch-only (paper).** Backtest negative/thin (2026-06-26 reports). Revisit a live arm only if
+  forward-track paper data shows an edge. Arm = flip `strategies.yaml bitunix_sfp.symbol_modes.<coin>.arm`
+  `watch→trading` + restart (Board ack; not code-gated).
+- **BTC is now on 3m-BOS, OFF its validated 15m-BOS edge** (operator's 2026-06-28 choice). If 3m underperforms
+  on the forward-track, revert = `symbol_modes."BTC/USDT.P".bos_tf` `3m→15m` + restart (the Mode-A path is
+  byte-intact and still parity-tested).
+- **Cockpit TIER-B → real reads.** `sfp_watch_state` IS now populated live (Mode-B arms/confirms write it); the
+  cockpit's armed-watch overlay + near-miss/bos-confirm panels are still `_mock_*`. Wire them to real
+  `sfp_watch_state` reads (display-only).
+
+*(Carried, older, SEPARATE — Bitunix **confluence/futures** division, NOT SFP: P1-A silence-window + P1-B
+TP-structure backtests; fee/slippage levers; deeper high-vol 3m corpus ingest. See the 2026-06-14 entries below.)*
+
 ## P2 — `backtest_bitunix_confluence.py` five_factor/coinbase machinery MISSING from git (prod-vs-git drift) — ✅ RESOLVED 2026-06-20 (commit `2659c81`)
 
 **RESOLVED 2026-06-20 via surgical recovery — commit `2659c81` (merged to main this session).** Root cause was

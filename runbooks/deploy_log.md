@@ -11045,3 +11045,61 @@ prod==HEAD LF blobs all 8. Engine PID **3730922** UNCHANGED (hot, no restart); S
 origin (safety gate), then deleted 17/19 ephemeral Group-A branches (2 dirty+locked agent worktrees skipped).
 Branches 143→126, worktrees 86→75. Group B (held) + Group C (protected) untouched. Not a prod deploy —
 recorded here for completeness. Kill-list: `reports/2026-06-28_phase3_prune_candidate_killlist.md`.
+
+## 2026-06-28 (later) — Bitunix SFP **Mode B (15m SFP → 3m BOS)** GO-LIVE (4 coins) + cockpit display fixes
+
+**Mode B — 15m SFP arms the watch, BOS confirms on 3m closes (additive; SfpDetector byte-unchanged).**
+New `SfpModeBDetector` (bitunix_sfp.py) EMBEDS the validated `SfpDetector` as a 15m fire engine (consumes
+only its ARMED transition) and ports the p6 oracle `watch_B` (3m BOS confirm) + the 2026-06-26 contiguity
+guard (the 3m bar opening exactly at the 15m fire-close t0 must exist, else OUT-OF-RANGE). Observer gains a
+per-symbol `symbol_modes` config (bos_tf 15m|3m, arm trading|watch), a single 3m-boundary `run_loop_master`
+(so two order paths never race the equity snapshot), and arm:watch→forced-PAPER routing. **4 files deployed**
+(3 .py + strategies.yaml): bitunix_sfp.py `5c71a103→91fd7672`, bitunix_sfp_observer.py `18da45f2→8a916526`,
+main.py `2c1bb1dc→2ff188c7`, strategies.yaml `0cd6e45d→84001f67`. ExecStart UNCHANGED (in-division change).
+`scripts/bitunix_prod_surface_md5diff.py` MANIFEST gained both SFP modules (repo-only, NOT deployed).
+
+**Arming:** all 4 coins `bos_tf:3m`. **BTC + ETH = arm:trading (LIVE)** — operator chose to switch BTC OFF
+its validated 15m-BOS to 3m-BOS. **SOL + XRP = arm:watch (PAPER forward-track)** — negative/thin backtest;
+detector runs, no live orders. Sizing trivial (risk_pct 0.0025, lev 2.0). Operator scales money at n>30.
+
+**Features shipped:**
+- `bitunix_sfp` Mode B 15m-SFP/3m-BOS LIVE for BTC + ETH; SOL + XRP watch (paper).
+- Per-symbol `symbol_modes` (bos_tf/arm); `run_loop_master` 3m-boundary loop; watch→paper routing;
+  `source_signal` tagged `sfp_*_3m_bos`; alt 3m cache `max_bars` 200→500 (a 12h watch survives a restart).
+
+**Notable code changes (greppable):** `SfpModeBDetector`, `_WatchB`, `on_closed_15m_bar`/`on_closed_3m_bar`,
+`run_loop_master`/`process_once_master`/`_process_symbol_b`, `BitunixSfpConfig.symbol_modes`/`mode_for`/
+`uses_mode_b`, `SfpEntrySignal.bos_tf`, `_symbol_arm_map` (cockpit).
+
+**Gate (HARD parity — no live arm without it):** `tests/test_bitunix_sfp_mode_b_detector.py` — streaming
+Mode-B == vendored `watch_B`+contiguity bar-for-bar: synthetic 4-seed (warm-start + interleaved live-feed),
+both REAL/CONSIDERABLE, contiguity present/outrange, k=1, AND real-data parity over all 4
+`data/{btc,sol,eth,xrp}_scalping.db`. Mode-A parity still green ⇒ SfpDetector byte-unchanged (git diff
+182 add / **0 del**). Full suite == baseline (branch 28F == fresh clean-main 28F, IDENTICAL failure set).
+
+**Deploy:** branch `bitunix-sfp-mode-b-2026-06-28` (off main 80f2c43). Single restart (paper dry-run skipped
+per operator). Drift-gate PASSED (prod==main base for all 4). LF blobs via Latin1 CR-strip + scp + md5-gated
+remote apply (Gate-A base / staged target / Gate-B / py_compile). PID 3730922→3770061. Rollback
+`*.bak-pre-modeb-2026-06-28`. Pkg `deploy/2026-06-28_bitunix_sfp_mode_b/`.
+
+**Verify (GREEN):** boot — observer wired 4 symbols, `mode_b=True`, `3m-master loop spawned`, heartbeat ticks
+on the 3m boundary, boot-guard passed (one bitunix live), reconciler clean. **First live Mode-B trade
+VALIDATED end-to-end (ETH, 20:15 UTC):** `sfp_real_3m_bos`, `bos_tf=3m`, buy 0.0945 ETH @~1573, B1 stop
+1554.15 (=swept_low−0.1%), 2R venue `/tpsl/` leg 1607.88 (both resting at venue; screenshots confirm). Exit:
+venue stop-out → reconciler `position_state_divergence_detected` (22:53:44) → `auto_book_server_side_close`
+(22:54:45) → halt RELEASED two-clean-ticks (22:55:45). Booked **loss −1.16R** (B1 mark→market slip past −1R).
+P2 auto-book + self-resume validated on Mode-B.
+
+**SFP cockpit display fixes — 5 files, restart-load (view .py change).** (1) Live set now derived from
+`symbol_modes` arm:trading gated on division-live → **BTC+ETH LIVE, SOL+XRP MONITOR** (replaces hardcoded
+`LIVE_SYMBOL="BTC"` + static "BTC live"/"1 live"); header "2 live", state-board split dynamic; descriptor
+"15m SFP → 3m BOS". (2) `hx-preserve` on `#utc`/`#barclock` — kills the every-5s blank-flash on the header
+morph. (3) standalone cockpit nav replaced with the standard division header (TC mark + Command Center +
+Overview/Trades/Research/System). DISPLAY-ONLY (zero order-path). Files: sfp_cockpit_view.py
+`de8d90e3→2a6d0e56`, sfp_cockpit.html `fb84f5aa→7ad02ab0`, _header.html `29be852f→bf0a2380`,
+_state_board.html `57de1f17→39dcc5fb`, static/sfp_cockpit.css `40665c54→dd9d59d9`. Drift-gate PASSED. PID
+3770061→3777492. Verify: live `/sfp` renders topnav+Command Center+nav, 2× hx-preserve, "2 live",
+**2 LIVE + 2 MONITOR** exec tags. Rollback `*.bak-pre-cockpit-2026-06-28`.
+
+**★ Parity anchor:** branch `bitunix-sfp-mode-b-2026-06-28` merged → `main` (`--no-ff`) + pushed; main == prod
+== origin/main restored for all 9 deployed files.
