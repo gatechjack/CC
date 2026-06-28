@@ -11014,3 +11014,34 @@ sudo systemctl restart trading-corp
 **Rollback.** PEAD: restore `*.bak-pre-pead-2026-06-21` (routes.py, db.py) + remove the 5 new files. metrics: `web/data.py.bak-pre-metrics-epoch-2026-06-20` (+division.html). issue1: `paper_trade_replay.py.bak-pre-issue1-2026-06-21`. Then restart.
 
 > ⚠ **LOG WAS STALE before this entry** (prior entry 2026-05-29). The June bitunix/polymarket prod changes (D4 guard, P2 classifier, staleness gate, metrics/issue1 stagings, etc.) were applied to prod but never recorded here. This entry resumes the log; a fuller June reconciliation is still owed.
+
+---
+
+## 2026-06-28 — Repo↔prod RECONCILIATION (main == prod) + SFP cockpit nav/flicker (HOT)
+
+**Repo reconciliation (strategy A — bless prod as source-of-truth).** `main` advanced to **`7283cc1`** and
+now byte-matches **live prod runtime** for every deployed file (206 verified: 194 exact md5 + 11 empty
+`__init__.py` + 1 `_observer_test.py` CRLF-only/content-identical). Config snapshotted VERBATIM from prod
+(`strategies.yaml` 0cd6e45d / `divisions.yaml` 6dcbe16f / `risk.yaml` 02874fb2). **This is the partial
+answer to the "fuller June reconciliation owed" note above** — at the REPO level, `main`==prod is now the
+parity anchor (no per-deploy back-fill of 06-22→27 done; those remain in memory). No prod code changed by the
+reconciliation itself — it's a repo/git operation (`--no-ff` merges `ed1f338`→`7283cc1`, pushed origin/main).
+Test suite reconciled 52F+2E → **28F/0E/2726P** (28 baseline, 24 dead-feature tests removed, 2 D1/D3
+test-lag fixed, 0 regressions). Reports: `reports/2026-06-28_reconciliation_*`.
+
+**SFP cockpit nav + flicker fix — HOT (templates + static CSS only; NO restart).** 8 files (6 `sfp_cockpit/`
+partials + `sfp_cockpit.html` + `static/sfp_cockpit.css`). (1) added back-to-Overview nav bar; (2) killed the
+every-5s whole-page flicker — root cause `.panel{animation:rise .5s}` replaying on each `hx-swap=outerHTML`
+poll → fix = idiomorph (`hx-ext=morph` + `hx-swap=morph:outerHTML` on all 6 partials), nodes persist so the
+entrance animation never replays; added a REFRESH indicator chip (`#sfp-refresh`, lights while polling).
+Commit `6656edf`; pkg `deploy/2026-06-28_sfp_cockpit_nav_flicker/`. **Drift-gate PASSED** (prod==main for all
+8 pre-deploy). Deployed as forced-LF blobs (`git show HEAD:f | tr -d '\r' | ssh "cat > prod/f"` — `git
+archive` applied CRLF and broke LF parity on the first attempt; re-pushed LF, parity restored). **Verify
+(GREEN):** live `/sfp` HTTP 200 with topbar/home-link/refresh-chip/idiomorph + 6 morph swaps; CSS 200;
+prod==HEAD LF blobs all 8. Engine PID **3730922** UNCHANGED (hot, no restart); SFP feed live, account FLAT.
+**Rollback:** `~/cockpit_bak_2026-06-28/cockpit_pre.tgz` (untar over the 8 paths).
+
+**Phase 3 branch prune (Group A only, push-first).** Pushed SFP `16f2985` + 12 unpushed-unique branches to
+origin (safety gate), then deleted 17/19 ephemeral Group-A branches (2 dirty+locked agent worktrees skipped).
+Branches 143→126, worktrees 86→75. Group B (held) + Group C (protected) untouched. Not a prod deploy —
+recorded here for completeness. Kill-list: `reports/2026-06-28_phase3_prune_candidate_killlist.md`.
