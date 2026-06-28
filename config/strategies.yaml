@@ -1932,7 +1932,7 @@ bitunix_sfp:
   execution_mode: live            # OPERATOR-SET paper|live at deploy
   mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged.
   division: bitunix_sfp
-  symbols: ["BTC/USDT.P"]
+  symbols: ["BTC/USDT.P", "ETH/USDT.P", "SOL/USDT.P", "XRP/USDT.P"]
   detection_tf: "15m"
   pivot_len: 50
   back_to_break: 4
@@ -1946,3 +1946,12 @@ bitunix_sfp:
   max_hold_seconds: 604800
   bar_cache_max_bars: 160
   loop_settle_seconds: 20
+  # Mode B (15m SFP → 3m BOS), 2026-06-28. detection_tf stays 15m (SFP fires on
+  # 15m); bos_tf per symbol selects 3m BOS confirmation. arm: trading = live
+  # orders; arm: watch = detector runs but routes to PAPER (no-order forward-track).
+  watch_hours_3m: 12               # 3m BOS watch window = 240 3m bars
+  symbol_modes:
+    "BTC/USDT.P": { bos_tf: "3m", arm: "trading" }   # live Mode B (replaces 15m-BOS, operator 2026-06-28)
+    "ETH/USDT.P": { bos_tf: "3m", arm: "trading" }   # live Mode B, trivial size
+    "SOL/USDT.P": { bos_tf: "3m", arm: "watch" }     # PAPER forward-track (negative backtest)
+    "XRP/USDT.P": { bos_tf: "3m", arm: "watch" }     # PAPER forward-track (no edge)

@@ -14,16 +14,26 @@
 <body>
 <div class="wrap" hx-ext="morph">
 
-  {# Top bar — back to the main menu (matches the other division dashboards' nav)
-     + a live REFRESH indicator that lights while any panel poll is in flight and
-     clears when idle (hx-indicator -> htmx-request class on #sfp-refresh). #}
-  <div class="topbar">
-    <a class="home" href="/">&larr; Trading Corp &middot; Overview</a>
+  {# Standard division header — mirrors base.html's global nav (TC mark +
+     Trading Corp / COMMAND CENTER + Overview/Trades/Research/System) so the
+     cockpit is consistent with the other division pages. The live REFRESH chip
+     (hx-indicator -> .htmx-request) sits on the right, lit while any panel polls. #}
+  <header class="topnav">
+    <a class="brand" href="/">
+      <span class="tc">TC</span>
+      <span class="bt"><b>Trading Corp</b><small>Command Center</small></span>
+    </a>
+    <nav class="nav">
+      <a href="/">Overview</a>
+      <a href="/trades">Trades</a>
+      <a href="/research">Research</a>
+      <a href="/system">System</a>
+    </nav>
     <span class="spacer"></span>
     <span id="sfp-refresh" class="refresh" title="Live data — lights while refreshing every ~5s, clears when idle">
       <span class="hg">&#x27F3;</span><span class="rl">REFRESH</span>
     </span>
-  </div>
+  </header>
 
   {# Each fragment's ROOT element self-polls (hx-get + hx-trigger="every 5s").
      hx-swap="morph:outerHTML" (idiomorph, hx-ext="morph" above) morphs the panel

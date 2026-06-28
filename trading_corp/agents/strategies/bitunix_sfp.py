@@ -101,6 +101,7 @@ class SfpEntrySignal:
     bos_bar_index: int          # bar index where the BOS close confirmed
     entry_bar_index: int        # = bos_bar_index + 1 (enter at this bar's open)
     bos_bar_ts_ms: int          # ts_ms of the BOS-confirming bar
+    bos_tf: str = "15m"         # "15m" = Mode A (same-TF BOS); "3m" = Mode B (LTF BOS)
 
 
 @dataclass
@@ -346,6 +347,187 @@ class SfpDetector:
         """Most-recent two-candle swing high completed strictly before
         ``before_index`` (p6 mr() with j < w)."""
         for completed_at, value in reversed(self._swing_highs):
+            if completed_at < before_index:
+                return value
+        return None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Mode B — 15m SFP arms the watch, BOS confirmation advances on 3m closes.
+# ════════════════════════════════════════════════════════════════════════════
+# ADDITIVE: this path does NOT modify the validated Mode-A ``SfpDetector`` above.
+# It EMBEDS one as a 15m "fire engine" (its 15m BOS advancement still runs but its
+# returned signals are IGNORED — Mode B consumes only the ARMED transition, i.e.
+# the SFP fire) and re-implements BOS confirmation on the 3m stream as a faithful
+# port of the p6 oracle ``watch_B`` (confluence_exp6_p6_sfp_bos_percoin.py:161-179)
+# PLUS the 2026-06-26 contiguity guard: the 3m bar opening EXACTLY at the 15m
+# fire-close (t0) must exist, else the watch is dropped as OUT-OF-RANGE. On the
+# steady-state live feed the guard is a no-op (the t0 3m bar always exists); on a
+# shallow/gappy 3m warm-start it prevents binding a 15m fire to a non-contiguous
+# (months-later) 3m bar — the exact alignment bug the 4-coin report caught.
+
+WATCH_BARS_3M = 240          # int(WATCH_HOURS*60/3) = int(12*60/3) — watch_B ``wb``
+BOS_TF_SECONDS_3M = 180      # 3m bar duration in seconds
+_15M_MS = 900_000
+
+
+@dataclass
+class _WatchB:
+    """One armed Mode-B watch. Identity + invalidation come from the 15m SFP fire;
+    resolution advances on the 3m stream."""
+    lvl: float                   # 15m swept swing-low (invalidation line) = ev["lvl"]
+    swept: float                 # 15m swept wick low (stop reference)     = ev["swept"]
+    fired_15m_ts_ms: int         # arming 15m bar ts_ms (stable watch identity)
+    t0_ms: int                   # 15m close = fired_15m_ts_ms + 900_000 (3m bind anchor)
+    arm_index3: int | None = None    # 3m index where the watch bound (== watch_B w0)
+    bound: bool = False              # contiguity-resolved (bound XOR dropped)
+
+
+@dataclass
+class SfpModeBDetector:
+    """Streaming 15m-SFP → 3m-BOS detector for ONE symbol and ONE mode.
+
+    Feed CLOSED 15m bars via :meth:`on_closed_15m_bar` (arms watches; reuses the
+    validated :class:`SfpDetector` as the fire engine) and CLOSED 3m bars via
+    :meth:`on_closed_3m_bar` (advances / confirms / invalidates / times out each
+    watch per the oracle ``watch_B`` + the contiguity guard). Emits the same
+    :class:`SfpEntrySignal` (with ``bos_tf="3m"``) and the same write-only
+    :class:`SfpWatchTransition` buffer as Mode A. State is fully rebuildable by
+    replaying bars (see :meth:`warm_start`) — the bars ARE the state.
+    """
+    mode: str
+    pivot_len: int = PIVOT_LEN
+    back_to_break: int = BACK_TO_BREAK
+    watch_bars_3m: int = WATCH_BARS_3M
+
+    _fire: "SfpDetector" = field(init=False)
+    _bars3: list[SfpBar] = field(default_factory=list)
+    _swing_highs3: list[tuple[int, float]] = field(default_factory=list)
+    _watches3: list[_WatchB] = field(default_factory=list)
+    _transitions: list[SfpWatchTransition] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.mode not in (MODE_REAL, MODE_CONSIDERABLE):
+            raise ValueError(
+                f"SfpModeBDetector mode must be REAL|CONSIDERABLE, got {self.mode!r}")
+        # The fire engine's own 15m watch_bars is irrelevant — Mode B ignores its
+        # 15m watch outcomes and consumes only its ARMED transitions.
+        self._fire = SfpDetector(mode=self.mode, pivot_len=self.pivot_len,
+                                 back_to_break=self.back_to_break)
+
+    # ------------------------------------------------------------------ #
+    def warm_start(self, bars15: list[SfpBar], bars3: list[SfpBar]) -> list[SfpEntrySignal]:
+        """Replay history: ALL 15m bars (arm every watch), THEN ALL 3m bars in
+        order (bind + advance). Equivalent to the interleaved live feed because a
+        15m fire depends only on the 15m stream and a watch records only
+        (lvl, swept, t0) — it consumes no 3m bar until bound. Mirrors the oracle's
+        own structure (sfp_events over all 15m, then watch_B over all 3m). Replay
+        signals are normally discarded by the caller."""
+        for b in bars15:
+            self.on_closed_15m_bar(b)
+        out: list[SfpEntrySignal] = []
+        for b in bars3:
+            out.extend(self.on_closed_3m_bar(b))
+        return out
+
+    # ------------------------------------------------------------------ #
+    def on_closed_15m_bar(self, bar15: SfpBar) -> list[SfpEntrySignal]:
+        """Feed one CLOSED 15m bar to the fire engine and arm a Mode-B watch for
+        each SFP fire (the ARMED transition). Returns [] — Mode B never confirms on
+        15m. The fire engine's own 15m BOS / invalid / timeout transitions are
+        intentionally discarded here."""
+        self._fire.on_closed_bar(bar15)
+        for t in self._fire.drain_transitions():
+            if t.status != "ARMED":
+                continue
+            t0 = int(t.fired_bar_ts_ms) + _15M_MS
+            self._watches3.append(_WatchB(
+                lvl=float(t.swept_level), swept=float(t.swept_wick),
+                fired_15m_ts_ms=int(t.fired_bar_ts_ms), t0_ms=t0))
+            # OBSERVE-ONLY ARMED (bos_watch_level=None: the 3m BOS target is not
+            # known until a 3m swing high is broken at CONFIRM).
+            self._transitions.append(SfpWatchTransition(
+                status="ARMED", mode=self.mode, fired_bar_ts_ms=int(t.fired_bar_ts_ms),
+                swept_level=float(t.swept_level), swept_wick=float(t.swept_wick),
+                bos_watch_level=None, status_bar_ts_ms=int(t.fired_bar_ts_ms)))
+        return []
+
+    # ------------------------------------------------------------------ #
+    def on_closed_3m_bar(self, bar3: SfpBar) -> list[SfpEntrySignal]:
+        """Advance every active watch with one CLOSED 3m bar (port of ``watch_B``
+        + the contiguity guard). Per-bar order: bind+contiguity → timeout →
+        invalidate → BOS; record THIS bar's 3m two-candle swing high LAST so a
+        check at bar ``w`` only sees swings completed strictly before ``w`` (the
+        oracle ``mr`` j<w semantics)."""
+        self._bars3.append(bar3)
+        w = len(self._bars3) - 1
+        ts = int(bar3.ts_ms)
+        signals: list[SfpEntrySignal] = []
+        still: list[_WatchB] = []
+        for wt in self._watches3:
+            # (a) bind + contiguity — once, at the first 3m bar with open >= t0.
+            if not wt.bound:
+                if ts < wt.t0_ms:
+                    still.append(wt)               # t0 not reached yet — keep waiting
+                    continue
+                if ts != wt.t0_ms:
+                    # the exact-t0 3m bar is MISSING (gap) → OUT-OF-RANGE; drop.
+                    self._transitions.append(self._terminal(wt, "TIMED_OUT", ts))
+                    continue
+                wt.bound = True
+                wt.arm_index3 = w                  # == watch_B w0
+            # (b) timeout — window is [w0, w0+wb-1]; expire at w0+wb.
+            if (w - wt.arm_index3) >= self.watch_bars_3m:
+                self._transitions.append(self._terminal(wt, "TIMED_OUT", ts))
+                continue
+            # (c) invalidate — a 3m close back below the swept 15m level.
+            if bar3.close < wt.lvl:
+                self._transitions.append(self._terminal(wt, "INVALIDATED", ts))
+                continue
+            # (d) BOS confirm — 3m close above the most-recent 3m two-candle swing
+            #     high. Enter at the NEXT 3m open (entry_bar_index = w + 1).
+            ref = self._most_recent_swing_high3(before_index=w)
+            if ref is not None and bar3.close > ref:
+                signals.append(SfpEntrySignal(
+                    sfp_mode=self.mode, swept_low=wt.swept, swept_swing_level=wt.lvl,
+                    bos_ref_high=ref, fire_bar_index=int(wt.arm_index3),
+                    bos_bar_index=w, entry_bar_index=w + 1,
+                    bos_bar_ts_ms=ts, bos_tf="3m"))
+                self._transitions.append(SfpWatchTransition(
+                    status="CONFIRMED", mode=self.mode,
+                    fired_bar_ts_ms=wt.fired_15m_ts_ms, swept_level=wt.lvl,
+                    swept_wick=wt.swept, bos_watch_level=ref, status_bar_ts_ms=ts,
+                    bos_ref_high=ref, entry_bar_index=w + 1))
+                continue                            # resolved → drop
+            still.append(wt)
+        # record THIS 3m bar's two-candle swing high for FUTURE watch bars.
+        if w >= 2 and self._is_bearish3(w) and self._is_bearish3(w - 1):
+            self._swing_highs3.append((w, self._bars3[w - 2].high))
+        self._watches3 = still
+        return signals
+
+    # ------------------------------------------------------------------ #
+    def drain_transitions(self) -> list[SfpWatchTransition]:
+        """OBSERVE-ONLY: return + clear buffered lifecycle transitions (ARMED on
+        15m fire; CONFIRMED / INVALIDATED / TIMED_OUT on 3m). Never read back."""
+        out = self._transitions
+        self._transitions = []
+        return out
+
+    # ------------------------------------------------------------------ #
+    def _terminal(self, wt: _WatchB, status: str, status_ts_ms: int) -> SfpWatchTransition:
+        return SfpWatchTransition(
+            status=status, mode=self.mode, fired_bar_ts_ms=wt.fired_15m_ts_ms,
+            swept_level=wt.lvl, swept_wick=wt.swept, bos_watch_level=None,
+            status_bar_ts_ms=int(status_ts_ms))
+
+    def _is_bearish3(self, i: int) -> bool:
+        return self._bars3[i].close < self._bars3[i].open
+
+    def _most_recent_swing_high3(self, *, before_index: int) -> float | None:
+        """Most-recent 3m two-candle swing high completed strictly before
+        ``before_index`` (oracle ``mr`` on SWING3 with j < w)."""
+        for completed_at, value in reversed(self._swing_highs3):
             if completed_at < before_index:
                 return value
         return None

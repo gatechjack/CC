@@ -134,6 +134,36 @@ def runtime_badge(deps: Any) -> dict:
     }
 
 
+def _symbol_arm_map() -> dict[str, str]:
+    """Display symbol -> arm ('trading'|'watch') from bitunix_sfp.symbol_modes
+    (Mode B, 2026-06-28). Maps the YAML display key ('BTC/USDT.P') back to the
+    short display ('BTC'). Absent/unreadable -> {} (every coin renders MONITOR
+    until the config says otherwise). This is the SINGLE source of which coins
+    are armed live vs watch-only — no hardcoded coin list."""
+    try:
+        import yaml
+        with open(_STRAT_YAML, encoding="utf-8") as f:
+            raw = (yaml.safe_load(f) or {}).get(DIVISION) or {}
+        out: dict[str, str] = {}
+        for key, spec in (raw.get("symbol_modes") or {}).items():
+            short = str(key).split("/")[0].upper()
+            if short in SYMBOLS and isinstance(spec, dict):
+                arm = str(spec.get("arm", "watch")).lower()
+                out[short] = arm if arm in ("trading", "watch") else "watch"
+        return out
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("sfp_cockpit: symbol_modes read failed: %s", e)
+        return {}
+
+
+def _live_count(deps: Any) -> int:
+    """How many coins are ACTUALLY live: arm:trading AND the division runtime is
+    live (broker real + auto_execute). 0 if the division isn't live."""
+    if runtime_badge(deps).get("state") != "live":
+        return 0
+    return sum(1 for a in _symbol_arm_map().values() if a == "trading")
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # TIER A — closed-trade metrics (HONEST EMPTY until rows exist)
 # ──────────────────────────────────────────────────────────────────────────
@@ -490,12 +520,15 @@ def _chart_geom(bars: list[dict], levels: list | None = None,
     return {"candles": candles, "lines": lines, "marker": marker, "w": _CH_W, "h": _CH_H}
 
 
-def _coin_state(db_url: str, display: str, pos: dict | None) -> dict:
-    """Per-coin card context. The LIVE coin with an open position gets the
-    TIER-A R-journey + TIER-C chips; the rest get monitor-only bar strips. The
-    armed-watch overlay (if any) is TIER B mock until the emit ships."""
+def _coin_state(db_url: str, display: str, pos: dict | None,
+                arm: str = "watch", div_live: bool = False) -> dict:
+    """Per-coin card context. A coin is LIVE iff it's armed for live orders
+    (symbol_modes arm:trading) AND the division runtime is actually live; watch
+    coins are MONITOR (paper forward-track); an armed coin on a non-live division
+    shows PAPER. A live coin with an open position gets the TIER-A R-journey +
+    TIER-C chips; the rest get monitor-only bar strips."""
     wire = SYMBOLS[display]
-    is_live_coin = (display == LIVE_SYMBOL)
+    is_live_coin = (arm == "trading") and div_live
     has_pos = bool(pos) and (
         str(pos["symbol"]).upper().startswith(display) or pos["symbol"] == wire)
     card = {
@@ -503,7 +536,8 @@ def _coin_state(db_url: str, display: str, pos: dict | None) -> dict:
         "bars": _bar_strip(db_url, wire),
         "heartbeat": _loop_heartbeat(db_url, wire),
         "state": "in_trade" if has_pos else ("monitoring"),
-        "exec_tag": "LIVE" if is_live_coin else "MONITOR",
+        "exec_tag": ("LIVE" if is_live_coin
+                     else ("MONITOR" if arm == "watch" else "PAPER")),
     }
     if has_pos:
         rj = _r_journey(db_url, pos)                         # TIER A
@@ -546,6 +580,7 @@ def register(app: FastAPI) -> None:
         # Initial full paint — fragments then HTMX-poll themselves every ~5s.
         ctx = {
             "badge": runtime_badge(deps),
+            "live_count": _live_count(deps),
             "metrics": await _q(_closed_metrics, db_url),
             # _recon.html (and its partial route) read top-level `bos` + `metrics`;
             # the full-page paint must provide `bos` top-level too (was nested in
@@ -560,13 +595,17 @@ def register(app: FastAPI) -> None:
 
     async def _build_board() -> list[dict]:
         pos = await _q(_open_sfp_position, db_url)            # TIER C, scoped
-        return [await _q(_coin_state, db_url, d, pos) for d in SYMBOLS]
+        arm_map = _symbol_arm_map()
+        div_live = runtime_badge(deps).get("state") == "live"
+        return [await _q(_coin_state, db_url, d, pos, arm_map.get(d, "watch"), div_live)
+                for d in SYMBOLS]
 
     @app.get("/sfp/partials/header", response_class=HTMLResponse)
     async def sfp_header(request: Request):
         return templates.TemplateResponse(
             request, "sfp_cockpit/_header.html",
-            {"badge": runtime_badge(deps), "metrics": await _q(_closed_metrics, db_url)},
+            {"badge": runtime_badge(deps), "metrics": await _q(_closed_metrics, db_url),
+             "live_count": _live_count(deps)},
         )
 
     @app.get("/sfp/partials/recon", response_class=HTMLResponse)

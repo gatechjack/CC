@@ -127,12 +127,22 @@ body{background:radial-gradient(1200px 600px at 80% -10%,#0c1830 0%,transparent 
 .empty{border:1px dashed var(--line2);border-radius:9px;padding:14px;text-align:center;color:var(--txt3);font-size:11px}
 .empty b{color:var(--txt2);display:block;font-size:13px;margin-bottom:3px;font-weight:600}
 
-/* ── top bar: back-to-Overview + live refresh indicator ───────────────────── */
-.topbar{display:flex;align-items:center;gap:12px}
-.topbar .home{font-family:var(--disp);font-weight:600;font-size:12px;letter-spacing:.02em;
-  color:var(--txt2);text-decoration:none;padding:6px 13px;border:1px solid var(--line2);
-  border-radius:9px;background:var(--panel2);transition:color .15s,border-color .15s,background .15s}
-.topbar .home:hover{color:var(--txt);border-color:#2dd4bf66;background:#2dd4bf12}
+/* ── top nav: standard division header (mirrors base.html) + REFRESH chip ──── */
+.topnav{display:flex;align-items:center;gap:20px;padding:9px 14px;
+  border:1px solid var(--line);border-radius:12px;
+  background:linear-gradient(180deg,var(--panel),var(--bg2))}
+.topnav .brand{display:flex;align-items:center;gap:11px;text-decoration:none;flex-shrink:0}
+.topnav .tc{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;
+  justify-content:center;font-family:var(--disp);font-weight:800;font-size:13px;color:#06121f;
+  background:linear-gradient(135deg,var(--blue),var(--green))}
+.topnav .bt{display:flex;flex-direction:column;line-height:1.15}
+.topnav .bt b{font-family:var(--disp);font-weight:600;font-size:13.5px;color:var(--txt)}
+.topnav .bt small{font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--txt3);margin-top:1px}
+.topnav .nav{display:flex;gap:2px}
+.topnav .nav a{padding:6px 12px;border-radius:8px;font-size:13px;color:var(--txt2);
+  text-decoration:none;transition:color .15s,background .15s}
+.topnav .nav a:hover{color:var(--txt);background:var(--panel2)}
+@media(max-width:660px){.topnav .bt,.topnav .nav{display:none}}
 /* REFRESH chip — idle = dim/static; lit (htmx-request) = teal + spinning glyph.
    HTMX adds .htmx-request to #sfp-refresh while any panel poll is in flight and
    removes it when settled, so the chip lights up and clears on its own. */
