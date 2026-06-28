@@ -1,0 +1,23 @@
+{# TIER B — MOCK. The .is-mock class paints the dashed amber border + ribbon so
+   this can never read as live truth. BLOCKED on observer watch-state emit
+   (fired_bar_ts, mode, swept_level, status). Wire _mock_near_miss() to a real
+   read when the emit ships. #}
+<div class="panel is-mock" id="sfp-nearmiss"
+     hx-get="/sfp/partials/near-miss" hx-trigger="every 5s" hx-swap="outerHTML">
+  <div class="phead">
+    <div><h3 class="ptitle">Near-Miss</h3><span class="psub">BOS filter working · {{ near_miss.convert_fail_pct }}% of armed never convert</span></div>
+    <span class="tier tier-mock">MOCK</span>
+  </div>
+  <div class="nm">
+    {% for r in near_miss.rows %}
+      <div class="nmrow {{ 'inval' if r.status=='INVALIDATED' else 'timeout' }}">
+        <span class="tag {{ 'tag-real' if r.mode=='REAL' else 'tag-cons' }}">{{ r.mode }}</span>
+        <span class="sym">{{ r.symbol }}</span>
+        <span class="st">{{ r.status }}</span>
+        <span class="lv">{{ r.level }} <span class="tag tag-paper" style="margin-left:6px">{{ r.exec }}</span></span>
+        <span class="ago">{{ r.ago }}</span>
+      </div>
+    {% endfor %}
+  </div>
+  <div class="mock-note">BLOCKED on observer watch-state emit (fired_bar_ts, mode, swept_level, status). Wire when emit ships.</div>
+</div>

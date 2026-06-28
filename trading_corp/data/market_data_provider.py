@@ -16,10 +16,7 @@ import logging
 from abc import ABC
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from trading_corp.data.earnings_provider import QuarterlyEPS
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -162,32 +159,4 @@ class MarketDataProvider(ABC):
         """
         raise NotImplementedError(
             f"{self.__class__.__name__}.get_underlying_price not implemented"
-        )
-
-    def get_quarterly_eps(
-        self,
-        symbol: str,
-    ) -> "list[QuarterlyEPS] | None":
-        """Return >=8 most-recent quarterly EPS rows (oldest→newest), or None.
-
-        None means no data available — callers should treat as "don't block"
-        rather than fail-safe escalating (thinly-traded names often lack data).
-        Implemented by EarningsProvider; raises NotImplementedError on the base.
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__}.get_quarterly_eps not implemented"
-        )
-
-    def get_recent_announcements(
-        self,
-        on_date: date,
-        lookback_days: int = 1,
-    ) -> list[str]:
-        """Return symbols that reported earnings on/within lookback_days of on_date.
-
-        Returns empty list on any failure or if provider does not implement it.
-        Implemented by EarningsProvider; raises NotImplementedError on the base.
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__}.get_recent_announcements not implemented"
         )

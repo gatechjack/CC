@@ -143,3 +143,42 @@ class BitunixMakerEntryUnfilled(RuntimeError):
             f"BitUnix maker entry {order_id!r} unfilled within rest timeout; "
             f"fallback_mode=abandon — signal deliberately not entered"
         )
+
+
+class BitunixUntrackedTpslOrder(RuntimeError):
+    """A `/tpsl/place_order` POST was ACCEPTED by the venue (HTTP ok, code 0) but
+    no `orderId` could be extracted from the response, so the bot could not
+    capture the resting TP leg's id.
+
+    Raised by `BitunixBroker.place_tpsl_order` ONLY after the POST succeeded — an
+    API error or an idempotent-duplicate (30042) is handled separately and does
+    NOT raise this. The danger it guards: the leg has very likely RESTED on the
+    venue but is now UNTRACKED, and the position reconciler is position-level only
+    (it matches positions, not stray TP/SL orders) — so it will not detect it.
+    The caller (the bitunix observer) must FLAG it for reconciliation
+    (`bracket_tp_leg_untracked` audit), NEVER swallow it as "no leg placed".
+
+    Background — report `c8a426d` (Section-B verification, trade cb6b4d4a): the
+    original parse did `(data or {}).get("orderId")` assuming a dict, but the live
+    venue returned a LIST and the `AttributeError` fired AFTER the POST reached the
+    venue (all 3 legs failed, `legs_placed=0`). The parse is now defensive (dict +
+    list, see `_extract_tpsl_order_id`); this exception is the residual safety net
+    for any FUTURE unknown response shape, so an uncaptured-but-resting leg can
+    never again be silently dropped.
+
+    Fail-soft is preserved at the call site: the B1 entry-attached MARKET stop and
+    the managed Position SL still guard the position regardless.
+    """
+
+    def __init__(self, *, position_id, symbol, tp_price, tp_qty, raw_response) -> None:
+        self.position_id = position_id
+        self.symbol = symbol
+        self.tp_price = tp_price
+        self.tp_qty = tp_qty
+        self.raw_response = raw_response
+        super().__init__(
+            f"BitUnix tpsl/place_order accepted but no orderId extracted "
+            f"(positionId={position_id} {symbol} tpPrice={tp_price} "
+            f"tpQty={tp_qty} response={raw_response!r}) — TP leg may be resting "
+            f"untracked; reconcile required"
+        )

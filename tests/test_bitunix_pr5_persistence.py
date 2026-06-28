@@ -82,7 +82,9 @@ def bar_db_path(tmp_path: Path) -> str:
 
 def test_archiver_schema_init_idempotent(bar_db_path):
     """Running archive_once on an empty caches list still creates the
-    table without error; second call is a no-op."""
+    table without error; second call is a no-op.
+    New schema (2026-06-25): leading `symbol` column, PK (symbol, ts_ms, timeframe).
+    """
     arc = BitUnixBarArchiver(db_url=bar_db_path, caches=())
     arc.archive_once()
     arc.archive_once()
@@ -90,7 +92,7 @@ def test_archiver_schema_init_idempotent(bar_db_path):
         cols = {r[1] for r in conn.execute(
             "PRAGMA table_info(bitunix_bar_history)"
         ).fetchall()}
-    assert {"ts_ms", "timeframe", "open", "high", "low", "close",
+    assert {"symbol", "ts_ms", "timeframe", "open", "high", "low", "close",
             "volume", "inserted_at"} <= cols
 
 
@@ -101,10 +103,12 @@ def test_archiver_writes_all_bars_first_call(bar_db_path):
     assert n == 5
     with db.connect(bar_db_path) as conn:
         rows = conn.execute(
-            "SELECT ts_ms, timeframe FROM bitunix_bar_history "
+            "SELECT symbol, ts_ms, timeframe FROM bitunix_bar_history "
             "ORDER BY ts_ms"
         ).fetchall()
     assert len(rows) == 5
+    # New schema (2026-06-25): archiver writes cache.symbol into the symbol column.
+    assert all(r["symbol"] == "BTCUSDT" for r in rows)
     assert all(r["timeframe"] == "3m" for r in rows)
     # Sorted ascending
     ts_list = [r["ts_ms"] for r in rows]
@@ -141,10 +145,11 @@ def test_archiver_picks_up_new_bars_after_first_call(bar_db_path):
 
 def test_archiver_dedupes_across_caches_by_pk(bar_db_path):
     """Two caches with overlapping ts_ms but different timeframes both
-    persist (PK is composite). Same TF + same ts is the dedupe key."""
+    persist. New schema PK is (symbol, ts_ms, timeframe): same symbol+TF+ts
+    is the dedupe key; different TF lands as a separate row."""
     cache_3m = _filled_cache("3m", n=2)
     # Force-create a 1h cache with the same ts_ms — different TF, both
-    # rows should land.
+    # rows should land (PK differs on timeframe).
     cache_1h = LiveBarCache(symbol="BTCUSDT", timeframe="1h", max_bars=10)
     cache_1h.bars = [Bar(
         ts_ms=cache_3m.bars[0].ts_ms,

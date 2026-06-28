@@ -1,0 +1,28 @@
+<div class="panel hdr" id="sfp-header"
+     hx-get="/sfp/partials/header" hx-trigger="every 5s" hx-swap="outerHTML">
+  <div class="logo">BITUNIX <span class="sfp">SFP</span>
+    <small>Swing-Failure → Break-of-Structure · LONG-only futures bot · 15m bars · 4 coins · 1 live</small>
+  </div>
+  <div class="hstat"><span class="lbl">Next 15m bar</span><span class="v" id="barclock">—</span></div>
+  {# TIER A — honest empty until SFP has closed trades #}
+  <div class="hstat"><span class="lbl">Today · Week R</span>
+    {% if metrics.has_data %}
+      <span class="v {{ 'up' if (metrics.week_r or 0) >= 0 else 'down' }}">
+        {{ '%+.1fR'|format(metrics.today_r or 0) }} <span class="dim">/</span> {{ '%+.1fR'|format(metrics.week_r or 0) }}
+      </span>
+    {% else %}<span class="v dim">— / —</span>{% endif %}
+  </div>
+  <div class="hstat"><span class="lbl">Cum R · closed</span>
+    {% if metrics.has_data %}
+      <span class="v up">{{ '%+.1fR'|format(metrics.cum_r or 0) }} <span class="dim" style="font-size:11px">· {{ metrics.n }}</span></span>
+    {% else %}<span class="v dim">— <span style="font-size:11px">awaiting 1st close</span></span>{% endif %}
+  </div>
+  <div class="spacer"></div>
+  {# TIER C — ACTUAL runtime: broker.paper + auto_execute. Never a static label. #}
+  {% if badge.state == 'live' %}
+    <span class="badge b-live" title="broker.paper=False AND auto_execute=true"><span class="dot"></span>LIVE · REAL CAPITAL</span>
+  {% else %}
+    <span class="badge b-paper" title="{{ badge.sub }}"><span class="dot"></span>{{ badge.label }} · {{ badge.sub }}</span>
+  {% endif %}
+  <span class="clock" id="utc">— UTC</span>
+</div>

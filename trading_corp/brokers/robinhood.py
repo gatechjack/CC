@@ -60,6 +60,23 @@ _KNOWN_NON_EQUITY_INSTRUMENT_RE = re.compile(
 )
 
 
+class RobinhoodAccountBindError(RuntimeError):
+    """Raised when a NUMERIC account_filter cannot be bound (absent from
+    robin_stocks discovery AND not directly fetchable). We REFUSE to silently
+    fall back to another account — a numeric filter must hit exactly that
+    account or fail loud. This is the guard against the agentic cash account
+    680725082 silently routing to the main margin account 461391328."""
+
+
+class RobinhoodOrderError(RuntimeError):
+    """Raised when Robinhood does NOT accept an order — the response carries no
+    order id (an empty/None body, or an error dict like {'non_field_errors': …}
+    / {'detail': …}). The broker MUST surface this as a failure rather than
+    synthesize a FillEvent: a fabricated fill makes the engine book a PHANTOM
+    position for an order that never placed (e.g. the live HTTP-400 'answer your
+    investing-goals questions' compliance reject observed 2026-06-22)."""
+
+
 def _days_to_expiry(expiration_date: str) -> int:
     """Calendar days from today to expiration_date ('YYYY-MM-DD')."""
     try:
@@ -67,6 +84,23 @@ def _days_to_expiry(expiration_date: str) -> int:
         return max(0, (exp - date.today()).days)
     except (ValueError, TypeError):
         return 0
+
+
+def _rh_float(v) -> float:
+    """Tolerant float() for robin_stocks' string/None numeric fields (e.g.
+    cumulative_quantity='0.34710000', average_price=None)."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _rh_executed_notional(info: dict) -> float | None:
+    """RH `executed_notional` is {'amount': '..', 'currency_code': ..} or None."""
+    en = (info or {}).get("executed_notional")
+    if isinstance(en, dict):
+        return _rh_float(en.get("amount"))
+    return None
 
 
 class RobinhoodBroker(Broker):
@@ -90,6 +124,7 @@ class RobinhoodBroker(Broker):
         self._account_number: str = ""
         self._account_type: str = ""        # "individual"/"ira_roth"/"joint"
         self._account_label: str = ""       # human-readable, used in logs
+        self._frac_elig_cache: dict[str, bool] = {}   # per-symbol fractional eligibility
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -151,6 +186,9 @@ class RobinhoodBroker(Broker):
                     i + 1, num, acct_type,
                 )
 
+        # Hard-bind a numeric account_filter that discovery omits (e.g. the
+        # agentic cash account 680725082) via a direct fetch — or fail loud.
+        await self._ensure_numeric_filter_resolvable()
         # Resolve this instance's filter → account_number
         self._resolve_account_filter()
         self._connected = True
@@ -189,6 +227,46 @@ class RobinhoodBroker(Broker):
         except Exception as e:
             log.warning("RobinhoodBroker._fetch_accounts failed: %s", e)
         return []
+
+    @staticmethod
+    async def _fetch_account_by_number(num: str) -> dict | None:
+        """Direct GET /accounts/{num}/ — for accounts robin_stocks' discovery
+        list OMITS (cash accounts like the agentic 680725082). Returns the
+        account dict, or None on 404 / error. No fallback."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        try:
+            data = await asyncio.to_thread(
+                rs.helper.request_get,
+                f"https://api.robinhood.com/accounts/{num}/",
+            )
+            if isinstance(data, dict) and data.get("account_number"):
+                return data
+        except Exception as e:
+            log.warning(
+                "RobinhoodBroker._fetch_account_by_number(%s) failed: %s", num, e,
+            )
+        return None
+
+    async def _ensure_numeric_filter_resolvable(self) -> None:
+        """If account_filter is a NUMERIC account absent from the discovery
+        list, bind it via a direct /accounts/{n}/ fetch — and HARD-FAIL if that
+        returns nothing. Never let _resolve_account_filter fall back to the main
+        account for a numeric filter (the 680725082 silent-misroute bug)."""
+        global _ACCOUNT_LIST
+        f = self._account_filter or ""
+        if not f.isdigit():
+            return  # non-numeric (type-keyword) filter — unchanged path
+        if any(str(a.get("account_number") or "") == f for a in (_ACCOUNT_LIST or [])):
+            return  # already discoverable
+        acc = await self._fetch_account_by_number(f)
+        if acc is None:
+            raise RobinhoodAccountBindError(
+                f"account_filter={f!r}: absent from discovery AND direct "
+                f"/accounts/{f}/ returned nothing — refusing to fall back to "
+                f"another account"
+            )
+        _ACCOUNT_LIST = list(_ACCOUNT_LIST or []) + [acc]
+        log.info("RobinhoodBroker: bound numeric account %s via direct fetch", f)
 
     def _resolve_account_filter(self) -> None:
         """Pick the account matching `self._account_filter`."""
@@ -254,6 +332,15 @@ class RobinhoodBroker(Broker):
                         break
 
         if match is None:
+            if f.isdigit():
+                # A numeric account that didn't resolve must NEVER silently
+                # become the main account. _ensure_numeric_filter_resolvable
+                # should have bound or raised already — defense-in-depth.
+                raise RobinhoodAccountBindError(
+                    f"numeric account_filter={self._account_filter!r} unresolved "
+                    f"— refusing to fall back to "
+                    f"{_ACCOUNT_LIST[0].get('account_number')!r}"
+                )
             log.warning(
                 "RobinhoodBroker: no account matched filter=%r; falling back to default",
                 self._account_filter,
@@ -621,7 +708,52 @@ class RobinhoodBroker(Broker):
         self._require_connected()
         if (order.extra or {}).get("is_option"):
             return await self._place_option_order(order)
+        # ISOLATED fractional/notional path (robinhood_pead). Only orders that
+        # explicitly opt in (order.fractional) divert here; the whole-share market /
+        # limit / option / multi-leg paths below are reached unchanged for everything
+        # else (PMCC / robinhood_joint / IC never set order.fractional).
+        if getattr(order, "fractional", False):
+            return await self._place_fractional_stock_order(order)
         return await self._place_stock_order(order)
+
+    # ── shared fill construction: fail loud + carry RH's real id + account ──
+    @staticmethod
+    def _account_number_from(result: dict) -> str | None:
+        """The account number the order actually hit, parsed from RH's account
+        URL (…/accounts/<num>/). The routing-safety identity (Bug-2 fix)."""
+        acct = str((result or {}).get("account") or "").rstrip("/")
+        num = acct.rsplit("/", 1)[-1]
+        return num or None
+
+    def _fill_or_raise(self, result, order: ProposedOrder, price: float) -> FillEvent:
+        """Build a FillEvent from a robin_stocks order response — or RAISE
+        RobinhoodOrderError if the response is not a real accepted order.
+
+        A genuinely-placed order carries an 'id'. No id (empty/None, or an error
+        dict like {'non_field_errors': …}/{'detail': …}) means it did NOT place;
+        we raise with RH's verbatim reason instead of synthesizing a fill
+        (Bug-1 fix — a fake fill would book a phantom position). On success the
+        FillEvent carries RH's real order id + the account it hit (Bug-2 fix)."""
+        result = result or {}
+        rh_id = result.get("id")
+        if not rh_id:
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty response")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept {order.side} {order.symbol} "
+                f"x{int(order.qty)}: {reason}"
+            )
+        return FillEvent(
+            order_id=order.id,
+            symbol=order.symbol,
+            side=order.side,
+            qty=float(int(order.qty)),
+            price=float(price),
+            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            venue="robinhood",
+            broker_order_id=str(rh_id),
+            account=self._account_number_from(result),
+        )
 
     async def _place_stock_order(self, order: ProposedOrder) -> FillEvent:
         import robin_stocks.robinhood as rs  # type: ignore
@@ -633,8 +765,14 @@ class RobinhoodBroker(Broker):
                 if order.side == "buy"
                 else rs.orders.order_sell_market
             )
+            # timeInForce='gfd' (day) — a true market order CANNOT be GTC: RH
+            # rejects market sells placed GTC ("Invalid Good Til Canceled order").
+            # (robin_stocks converts a regular-hours market BUY to a collared
+            # limit so GTC slips through there, but a market SELL stays a real
+            # market order and is rejected. Use GFD for both. Observed live
+            # 2026-06-23.)
             result = await asyncio.to_thread(
-                fn, order.symbol, qty, account_number=acct,
+                fn, order.symbol, qty, account_number=acct, timeInForce="gfd",
             )
         else:
             fn = (
@@ -646,17 +784,181 @@ class RobinhoodBroker(Broker):
                 fn, order.symbol, qty, order.limit_price, account_number=acct,
             )
 
+        price = float((result or {}).get("average_price") or order.limit_price or 0)
+        return self._fill_or_raise(result, order, price)
+
+    # ── ISOLATED fractional / notional path (robinhood_pead) ───────────────────
+    # The whole-share market/limit + option + multi-leg paths above are UNCHANGED.
+    # BUY = by dollars (order_buy_fractional_by_price; robin_stocks converts $→shares
+    # CLIENT-SIDE via the ask, enforces a $1 minimum). SELL = by realized fractional
+    # quantity (order_sell_fractional_by_quantity). Both are market / regular-hours /
+    # gfd. We POLL the order to its terminal state and record the REALIZED
+    # cumulative_quantity + average fill price — never the (client-computed) request
+    # qty. RAISES on a non-accepted order (Bug-1 discipline) and on an unconfirmed
+    # fill (cancel first, then raise — no phantom record).
+    async def _poll_fractional_fill(self, rh_id, *, timeout_s: float = 90.0,
+                                    interval_s: float = 1.5):
+        """Poll get_stock_order_info(rh_id) until terminal. Returns
+        (realized_qty, avg_fill_price, executed_notional) on any non-zero fill, else
+        None (rejected/cancelled/failed with nothing filled, or timeout). A partial
+        that filled before termination is returned as the realized partial (decision
+        #2). On timeout the order is CANCELLED first (stop further fill), then the
+        final realized qty is read."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        iters = max(1, int(timeout_s / interval_s))
+        last: dict = {}
+        for _ in range(iters):
+            try:
+                info = await asyncio.to_thread(rs.orders.get_stock_order_info, rh_id) or {}
+            except Exception:  # noqa: BLE001
+                info = {}
+            last = info or last
+            state = str(info.get("state") or "").lower()
+            cum = _rh_float(info.get("cumulative_quantity"))
+            if state == "filled" and cum > 0:
+                return cum, _rh_float(info.get("average_price")), _rh_executed_notional(info)
+            if state in ("cancelled", "canceled", "rejected", "failed"):
+                if cum > 0:   # partial filled before terminating → accept the realized part
+                    return cum, _rh_float(info.get("average_price")), _rh_executed_notional(info)
+                return None
+            await asyncio.sleep(interval_s)
+        # timeout: cancel to stop any further fill, then record whatever actually filled
+        try:
+            await asyncio.to_thread(rs.orders.cancel_stock_order, rh_id)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            info = await asyncio.to_thread(rs.orders.get_stock_order_info, rh_id) or last
+        except Exception:  # noqa: BLE001
+            info = last
+        cum = _rh_float(info.get("cumulative_quantity"))
+        if cum > 0:
+            return cum, _rh_float(info.get("average_price")), _rh_executed_notional(info)
+        return None
+
+    async def _place_fractional_stock_order(self, order: ProposedOrder) -> FillEvent:
+        import robin_stocks.robinhood as rs  # type: ignore
+        acct = self._account_number or None
+        if order.side == "buy":
+            notional = float(order.notional_usd or 0.0)
+            if notional < 1.0:
+                raise RobinhoodOrderError(
+                    f"fractional buy {order.symbol}: notional ${notional:.2f} < $1 RH minimum")
+            result = await asyncio.to_thread(
+                rs.orders.order_buy_fractional_by_price, order.symbol, notional,
+                account_number=acct, timeInForce="gfd",
+            )
+        else:
+            qty = abs(float(order.qty))
+            if qty <= 0:
+                raise RobinhoodOrderError(f"fractional sell {order.symbol}: qty {qty} <= 0")
+            result = await asyncio.to_thread(
+                rs.orders.order_sell_fractional_by_quantity, order.symbol, qty,
+                account_number=acct, timeInForce="gfd",
+            )
+        # Bug-1: a real accepted order carries an id; None/empty/error dict → raise
+        # (order_buy_fractional_by_price returns None below $1 or on a price-fetch fail).
         result = result or {}
-        price = float(result.get("average_price") or order.limit_price or 0)
+        rh_id = result.get("id")
+        if not rh_id:
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty/None response (below $1, price-fetch fail, or rejected)")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept fractional {order.side} {order.symbol}: {reason}")
+        realized = await self._poll_fractional_fill(str(rh_id))
+        if realized is None:
+            raise RobinhoodOrderError(
+                f"fractional {order.side} {order.symbol} not confirmed filled (cancelled) id={rh_id}")
+        filled_qty, avg_price, exec_notional = realized
         return FillEvent(
-            order_id=order.id,
-            symbol=order.symbol,
-            side=order.side,
-            qty=float(qty),
-            price=price,
+            order_id=order.id, symbol=order.symbol, side=order.side,
+            qty=float(filled_qty), price=float(avg_price),
             ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            venue="robinhood",
+            venue="robinhood", broker_order_id=str(rh_id),
+            account=self._account_number_from(result), executed_notional=exec_notional,
         )
+
+    # ── Flag-2: deferred-fill reconcile (robinhood_pead) ───────────────────────
+    # PEAD scans PRE-OPEN (8:30-9:25 ET). A synchronous poll-to-fill would CANCEL a
+    # GFD order that queues to the 9:30 open before it ever fills, so the production
+    # entry must DEFER: place WITHOUT polling, store the order id, and reconcile the
+    # realized fill at/after the open. These three methods are the broker side of
+    # that flow — ADDITIVE, used only by pead_strategy's deferred path; the polling
+    # `_place_fractional_stock_order` above + whole-share/limit/option are UNTOUCHED.
+    async def place_fractional_pending(self, order: ProposedOrder) -> str:
+        """Submit a GFD fractional BUY and return RH's order id WITHOUT polling for
+        the fill (the reconcile loop confirms it at the open). RAISES on a non-
+        accepted order (Bug-1: no id → no phantom). Buy-only — the deferred path is
+        for entries; exits use the synchronous fractional sell."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        if order.side != "buy":
+            raise RobinhoodOrderError(
+                f"place_fractional_pending is buy-only (got {order.side} {order.symbol})")
+        notional = float(order.notional_usd or 0.0)
+        if notional < 1.0:
+            raise RobinhoodOrderError(
+                f"fractional buy {order.symbol}: notional ${notional:.2f} < $1 RH minimum")
+        acct = self._account_number or None
+        result = await asyncio.to_thread(
+            rs.orders.order_buy_fractional_by_price, order.symbol, notional,
+            account_number=acct, timeInForce="gfd",
+        )
+        result = result or {}
+        rh_id = result.get("id")
+        if not rh_id:
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty/None response (below $1, price-fetch fail, or rejected)")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept fractional buy {order.symbol}: {reason}")
+        return str(rh_id)
+
+    async def read_fractional_order(self, rh_id) -> dict:
+        """Single (non-blocking) read of a fractional order's state for the reconcile
+        loop — NEVER cancels. Returns the normalized terminal-truth fields
+        {state, filled_qty, avg_price, executed_notional, account}. `filled_qty` is
+        RH's realized `cumulative_quantity`; `account` is parsed from the order's
+        account URL for the routing-safety record."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        info = await asyncio.to_thread(rs.orders.get_stock_order_info, rh_id) or {}
+        return {
+            "state": str(info.get("state") or "").lower(),
+            "filled_qty": _rh_float(info.get("cumulative_quantity")),
+            "avg_price": _rh_float(info.get("average_price")),
+            "executed_notional": _rh_executed_notional(info),
+            "account": self._account_number_from(info),
+        }
+
+    async def cancel_fractional_order(self, rh_id) -> bool:
+        """Cancel a still-resting fractional order (the collar-miss branch — a GFD
+        order rests ALL DAY, so an un-cancelled miss could fill UNWATCHED later =
+        phantom position). Best-effort: returns False on a cancel hiccup rather than
+        raising (the reconcile loop logs + clears the pending row regardless)."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        try:
+            await asyncio.to_thread(rs.orders.cancel_stock_order, rh_id)
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("cancel_fractional_order(%s) failed: %s", rh_id, e)
+            return False
+
+    async def fractional_eligible(self, symbol: str) -> bool:
+        """RH per-symbol fractional eligibility (instrument.fractional_tradability ==
+        'tradable'), cached per-process. Fail-open on a lookup hiccup — the order
+        placement still surfaces a real reject (Bug-1)."""
+        sym = (symbol or "").upper()
+        if sym in self._frac_elig_cache:
+            return self._frac_elig_cache[sym]
+        import robin_stocks.robinhood as rs  # type: ignore
+        ok = True
+        try:
+            inst = await asyncio.to_thread(rs.stocks.get_instruments_by_symbols, sym) or []
+            ft = inst[0].get("fractional_tradability") if inst else None
+            ok = (ft == "tradable")
+        except Exception as e:  # noqa: BLE001
+            log.debug("RobinhoodBroker.fractional_eligible(%s) failed: %s — fail-open", sym, e)
+            ok = True
+        self._frac_elig_cache[sym] = ok
+        return ok
 
     async def _place_option_order(self, order: ProposedOrder) -> FillEvent:
         import robin_stocks.robinhood as rs  # type: ignore
@@ -699,19 +1001,12 @@ class RobinhoodBroker(Broker):
                 account_number=acct,
             )
 
-        result = result or {}
         fill_price = float(
-            result.get("processed_premium") or result.get("price") or price
+            (result or {}).get("processed_premium")
+            or (result or {}).get("price")
+            or price
         )
-        return FillEvent(
-            order_id=order.id,
-            symbol=order.symbol,
-            side=order.side,
-            qty=float(qty),
-            price=fill_price,
-            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            venue="robinhood",
-        )
+        return self._fill_or_raise(result, order, fill_price)
 
     async def cancel_order(self, order_id: str) -> bool:
         self._require_connected()
@@ -779,7 +1074,24 @@ class RobinhoodBroker(Broker):
             timeInForce="gfd",     # day-only — matches PMCC; no resting GTC
         )
 
+        # Combo accepted? A genuinely-placed combo carries an 'id' (single ref).
+        # No id (None / empty / error dict) means the whole combo did NOT place —
+        # RAISE, never synthesize per-leg fills (the same fake-fill bug, here on
+        # the LIVE iron-condor path: a fabricated fill books a PHANTOM IC). This
+        # is DISTINCT from a SUCCESSFUL combo that just didn't echo legs[] — that
+        # still has an id and legitimately falls back to limit_price below.
         result = result or {}
+        if not result.get("id"):
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty response")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept the {combo.direction} combo on "
+                f"{combo.underlying} x{combo.quantity}: {reason}"
+            )
+        rh_combo_id = str(result.get("id"))
+        # The account the combo hit: RH may not echo it on a spread, so fall back
+        # to the bound account_number we placed on (Bug-2 routing identity).
+        rh_account = self._account_number_from(result) or self._account_number or None
         legs_result = result.get("legs") or []
         fill_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         fills: list[FillEvent] = []
@@ -809,6 +1121,8 @@ class RobinhoodBroker(Broker):
                 price=price_f,
                 ts=fill_ts,
                 venue="robinhood",
+                broker_order_id=rh_combo_id,   # Bug-2: the combo's RH order id
+                account=rh_account,
             ))
         return fills
 

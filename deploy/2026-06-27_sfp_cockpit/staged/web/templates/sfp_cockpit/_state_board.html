@@ -1,0 +1,118 @@
+{% macro candles(ch) %}
+  <svg viewBox="0 0 {{ ch.w }} {{ ch.h }}" preserveAspectRatio="none">
+    {% for ln in ch.lines %}
+      <line x1="0" y1="{{ ln.y }}" x2="{{ ch.w }}" y2="{{ ln.y }}" stroke="{{ ln.color }}"
+            stroke-width="1" stroke-dasharray="{{ ln.dash }}" opacity=".65"/>
+    {% endfor %}
+    {% for c in ch.candles %}
+      {% set col = '#34d399' if c.up else '#fb5e6b' %}
+      <line x1="{{ c.x }}" y1="{{ c.yh }}" x2="{{ c.x }}" y2="{{ c.yl }}" stroke="{{ col }}" stroke-width="1.2"/>
+      <line x1="{{ c.x }}" y1="{{ [c.yo, c.yc]|min }}" x2="{{ c.x }}" y2="{{ [c.yo, c.yc]|max }}" stroke="{{ col }}" stroke-width="5"/>
+    {% endfor %}
+    {% if ch.marker %}
+      <circle class="rmark" cx="{{ ch.marker.x }}" cy="{{ ch.marker.y }}" r="5.5"
+              fill="{{ ch.marker.color }}" stroke="#0a0f1a" stroke-width="2"/>
+    {% endif %}
+  </svg>
+{% endmacro %}
+
+{% macro rail(state) %}
+  {% set seq = {'in_trade': ['done','done','done','active',''],
+                'armed':    ['done','armed','','',''],
+                'monitoring':['mon','','','','']} %}
+  {% set cls = seq.get(state, seq['monitoring']) %}
+  {% set names = ['MON','ARM','RES','TRD','CLS'] %}
+  <div class="rail">
+    {% for n in names %}
+      {% set k = cls[loop.index0] %}
+      <div class="node {{ 'done' if k=='done' else ('armed' if k=='armed' else ('active' if k=='active' else '')) }}">
+        {% if k=='mon' %}<span class="pip" style="background:var(--gray);border-color:var(--gray)"></span>
+        {% else %}<span class="pip"></span>{% endif %}
+        <span class="nlabel" {% if k=='mon' %}style="color:var(--gray)"{% endif %}>{{ n }}</span>
+      </div>
+      {% if not loop.last %}<div class="seg"></div>{% endif %}
+    {% endfor %}
+  </div>
+{% endmacro %}
+
+{% macro coincard(c) %}
+  <div class="panel coin {{ 'live' if c.rj else '' }}">
+    <div class="top">
+      <span class="sym">{{ c.symbol }}</span>
+      {% if c.rj %}<span class="badge b-green"><span class="dot" style="background:var(--green)"></span>live trade</span>
+      {% else %}<span class="badge b-gray"><span class="dot" style="background:var(--gray)"></span>monitor-only</span>{% endif %}
+      <span class="badges">
+        {% if c.rj %}<span class="badge {{ 'b-purple' if c.mode=='REAL' else 'b-teal' }}">{{ c.mode }}</span><span class="badge b-blue">in-trade</span>
+        {% elif c.armed %}<span class="badge b-teal">{{ c.armed.mode[:8] }}</span><span class="badge b-amber">SFP armed</span>
+        {% else %}<span class="badge b-gray">no setup</span>{% endif %}
+      </span>
+    </div>
+
+    {{ rail('in_trade' if c.rj else ('armed' if c.armed else 'monitoring')) }}
+
+    <div class="strip">
+      {{ candles(c.chart) }}
+      <span class="pxtag">{{ '%g'|format(c.bars[-1].c) if c.bars else '—' }}</span>
+    </div>
+
+    {% if c.rj %}
+      {# TIER A R-journey footer #}
+      <div class="cfoot">
+        <div class="m"><span class="lbl">Live price</span><span class="v">{{ '%g'|format(c.rj.current) if c.rj.current else '—' }}</span></div>
+        <div class="m"><span class="lbl">Peak MFE</span><span class="v up">{{ ('%+.2fR'|format(c.rj.mfe_r)) if c.rj.mfe_r is not none else '—' }}</span></div>
+        <div class="m"><span class="lbl">Unrealized R</span>
+          <span class="v big {{ 'up' if (c.rj.unreal_r or 0) >= 0 else 'down' }}">{{ ('%+.2fR'|format(c.rj.unreal_r)) if c.rj.unreal_r is not none else '—' }}</span></div>
+        <div class="m"><span class="lbl">To target / stop</span>
+          <span class="v" style="font-size:12px"><span class="up">{{ c.rj.to_target_pct }}%</span> · <span class="down">{{ c.rj.to_stop_pct }}%</span></span></div>
+      </div>
+      {# NEW chips: TP@venue, OCO/orphan, loop heartbeat #}
+      <div class="chips">
+        <span class="chip {{ c.tp_chip.state }}">{{ c.tp_chip.text }}</span>
+        <span class="chip {{ c.oco_chip.state }}">{{ c.oco_chip.text }}</span>
+        <span class="chip hb">loop ~{{ c.heartbeat.age_min if c.heartbeat.age_min is not none else '?' }}m (proxy)</span>
+        <span class="tag tag-livev">{{ c.exec_tag }}</span>
+      </div>
+
+    {% elif c.armed %}
+      {# TIER B armed-watch overlay (MOCK) #}
+      <div class="cfoot">
+        <div class="m"><span class="lbl">Swept wick</span><span class="v" style="font-size:14px">{{ c.armed.swept_wick }}</span></div>
+        <div class="m"><span class="lbl">BOS watch</span><span class="v" style="font-size:14px;color:var(--blue)">{{ c.armed.bos_watch_level }}</span></div>
+        <div class="m"><span class="lbl">Expires in</span><span class="v" style="font-size:14px;color:var(--amber)">{{ c.armed.expires_in }}</span></div>
+      </div>
+      <div class="chips">
+        <span class="chip warn">▨ armed-watch MOCK — needs observer emit (fired_bar_ts, swept_level, bos_watch_level, status)</span>
+        <span class="tag tag-paper">{{ c.exec_tag }}</span>
+      </div>
+
+    {% else %}
+      {# monitor-only footer #}
+      <div class="cfoot">
+        <div class="m"><span class="lbl">Last close</span><span class="v" style="font-size:14px">{{ '%g'|format(c.bars[-1].c) if c.bars else '—' }}</span></div>
+        <div class="m"><span class="lbl">Status</span><span class="v" style="font-size:13px;color:var(--gray)">no SFP</span></div>
+      </div>
+      <div class="chips">
+        <span class="chip hb">loop ~{{ c.heartbeat.age_min if c.heartbeat.age_min is not none else '?' }}m (proxy)</span>
+        {% if c.is_live_coin %}<span class="chip warn">no live SFP position (scoped to bitunix_sfp)</span>{% endif %}
+        <span class="tag tag-paper">{{ c.exec_tag }}</span>
+      </div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+<div class="panel" id="sfp-board"
+     hx-get="/sfp/partials/state-board" hx-trigger="every 5s" hx-swap="outerHTML">
+  <div class="phead">
+    <div><h3 class="ptitle">Per-coin state board</h3><span class="psub">BTC live · SOL / ETH / XRP monitor-only</span></div>
+    <span class="tier tier-scoped">SFP-SCOPED · div='bitunix_sfp'</span>
+  </div>
+  <div class="statelegend">
+    <span><span class="dot" style="background:var(--gray)"></span>Monitoring</span>
+    <span><span class="dot" style="background:var(--amber)"></span>SFP armed</span>
+    <span><span class="dot" style="background:var(--blue)"></span>In-trade</span>
+    <span><span class="dot" style="background:var(--red)"></span>No trade</span>
+  </div>
+  <div class="board" style="margin-top:14px">
+    {% for c in coins %}{{ coincard(c) }}{% endfor %}
+  </div>
+</div>

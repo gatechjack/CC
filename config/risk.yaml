@@ -68,6 +68,12 @@ kalshi:
 
 # Per-strategy overrides — leave empty to inherit `global`.
 overrides:
+  # TEMP 2026-06-15: relax bitunix DD cap for low-balance (~$265) live testing.
+  # 15% tripped on a $64 manual-trade loss (19.5% DD) -> false flatten + rejects.
+  # Per-strategy (risk.py:176, order.strategy=bitunix_futures); other divisions
+  # keep global 15%. Hot-reloads. REVERT (delete) when funded ~$15k. repo: affb7cc
+  bitunix_futures:
+    per_account_max_drawdown_pct: 0.99
   fidelity_options: {}
   crypto_scalper:
     per_trade_risk_pct: 0.005        # scalper trades smaller per trade, higher frequency
@@ -120,3 +126,29 @@ overrides:
   # strategies.yaml so portfolio-wide deployment stays bounded.
   robinhood_joint_iron_condor:
     per_trade_risk_pct: 0.05
+
+  # Robinhood PEAD — long-only post-earnings-announcement drift. DEFINED-RISK
+  # BY DESIGN: the PER-TRADE controls ARE the risk control and they are
+  # STRUCTURAL — ATR hard stop + post-earnings swing-low + 60-trading-day max
+  # hold per position; long-only, no leverage / margin / shorts. The book is
+  # bounded by position_pct × max_concurrent_positions (strategies.yaml), and
+  # the sleeve is risk-sized at the INVESTMENT level (a fixed amount in the
+  # account), not via per-trade or account halts.
+  #
+  # Account-level halts are deliberately OPTED OUT — they would HARM this
+  # strategy: a daily-loss / drawdown auto-flatten fires on a market down-day
+  # and force-exits the whole book mid-drift at the worst possible moment. A
+  # black swan tripping the per-trade STOPS is the strategy WORKING, not a
+  # failure for an account halt to interrupt. (The hard stops are verified by
+  # the adversarial exit suite + mutation test — that IS the risk control.)
+  #   - per_trade_risk_pct 1.0       → off (also inert for PEAD's MARKET orders,
+  #                                     which carry no limit_price to cap).
+  #   - per_strategy_daily_loss_pct 1.0 → float()-read, never fires (cf. donchian).
+  #   - max_drawdown_disabled: true  → opts out of the §4 account DD auto-flatten.
+  # This block MUST NOT be omitted: omitting falls back to the GLOBAL 15% DD /
+  # 3% daily-loss caps, which noise-trip the ~$75 account and halt the division
+  # on ordinary movement — the exact harm this override exists to prevent.
+  robinhood_pead:
+    per_trade_risk_pct: 1.0
+    per_strategy_daily_loss_pct: 1.0
+    max_drawdown_disabled: true

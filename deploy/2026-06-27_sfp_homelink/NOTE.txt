@@ -1,0 +1,5 @@
+Home-page bitunix_sfp tile -> /sfp (new cockpit). Targeted-hunk on prod home.html.
+PROD gate md5: edfdaf76b239d52fd977af4a31db5775  | STAGED md5: 251150b5f7183652848410db87ede811
+APPLIED to prod (placed + backed up ~/p1_bak_2026-06-27/home.html.bak-pre-sfplink-2026-06-27).
+PENDING: 1 restart to activate (Jinja2 caches templates). Restart NOT yet authorized for this change.
+Verified: compiles (paren-balanced) + routing (bitunix_sfp->/sfp, others unchanged) + render.

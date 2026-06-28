@@ -23,26 +23,17 @@ from dataclasses import dataclass, field
 
 from trading_corp.data.kalshi_whale_stats import (
     ScoredWhale, WhaleStats, _category_bonus, _edge_factor,
-    time_weighted_outcomes, wilson_lcb_95, wilson_lcb_95_weighted,
+    time_weighted_outcomes, wilson_lcb_95_weighted,
 )
 from trading_corp.data.polymarket_data_api_client import (
     ActivityRow, LeaderboardEntry,
 )
-from trading_corp.data.polymarket_whale_audit import WhaleAuditReport
 
 log = logging.getLogger(__name__)
 
 
 DEFAULT_HALF_LIFE_DAYS = 30.0
 DEFAULT_MIN_RESOLVED = 10
-
-# Aggregate inflation gate for the realized-basis selection scorer
-# (`score_whale_from_audit`, option (c) Phase 1). A whale whose headline PnL is
-# more than this fraction paper/churn (`pnl_inflation_ratio`) is excluded from
-# selection. STRICTLY greater than the threshold excludes; a ratio exactly at
-# the threshold is KEPT. Default pinned at 0.5 (scoping doc F-1); calibrate
-# against live data in Phase E before any merge.
-DEFAULT_INFLATION_RATIO_THRESHOLD = 0.5
 
 
 @dataclass
@@ -243,95 +234,4 @@ def score_polymarket_whale(
         composite_score=composite, target_category=target_category,
         excluded=excluded,
         exclusion_reason=f"resolved<{min_resolved}" if excluded else "",
-    )
-
-
-def score_whale_from_audit(
-    report: WhaleAuditReport,
-    *,
-    target_category: str | None = None,
-    whale_categories: tuple[str, ...] = (),
-    min_resolved: int = DEFAULT_MIN_RESOLVED,
-    inflation_threshold: float = DEFAULT_INFLATION_RATIO_THRESHOLD,
-    window_truncated: bool = False,
-) -> ScoredWhale:
-    """Selection score on the REDEEM-grounded realized basis (option (c), F-1).
-
-    Same composite SHAPE as `score_polymarket_whale` — Wilson LCB × edge ×
-    category bonus — but fed decision-unit, realized inputs:
-
-      - Wilson LCB over RESOLVED DECISIONS: `wilson_lcb_95(n_winning_decisions,
-        n_resolved_decisions)`. PLAIN (un-time-weighted) by design — the
-        decision unit already removes the per-fill clustering inflation that
-        motivated option (c); time-weighting is deferred to Phase 3 (the
-        refresh's `--half-life-days` flag does NOT affect this score).
-      - Edge factor from REALIZED ROI: `realized_pnl_usdc /
-        total_buy_usdc_resolved`, mapped through the shared `_edge_factor`
-        (1 + clip(roi, -0.5, +2.0)). Non-positive denominator → ROI 0.0
-        (edge 1.0).
-      - Category bonus: `_category_bonus(whale_categories, target_category)` —
-        unchanged mechanism, so Rule-B per-category selection is preserved
-        (the refresh passes `target_category=cat, whale_categories=(cat,)` per
-        category, and `target_category=None` for the global pass).
-
-    Exclusion gates (all surfaced in `exclusion_reason`, semicolon-joined):
-      - `window_truncated` — the activity window exceeded the fetch ceiling, so
-        cost basis is incomplete and realized PnL (and the inflation ratio
-        derived from it) cannot be trusted. HARD gate: not algorithmically
-        selectable regardless of score (an operator can still pin it manually).
-      - `n_resolved_decisions < min_resolved` (insufficient sample).
-      - `pnl_inflation_ratio > inflation_threshold` — STRICTLY greater excludes;
-        a ratio exactly at the threshold is KEPT. Headline PnL that's mostly
-        churn / paper. Default 0.5 (F-1); calibrated in Phase E. The composite
-        is still computed for excluded whales (not zeroed) so the dry-run
-        gated-out list can show their would-be score + ratio.
-
-    Returns a `ScoredWhale` carrying a SYNTHESIZED `WhaleStats` (wins = winning
-    decisions, closed = resolved decisions, total_pnl = realized, contracts ≈
-    cost basis) so the existing refresh print/details path renders unchanged.
-    """
-    n = report.n_resolved_decisions
-    wins = report.n_winning_decisions
-    buy_usdc = report.total_buy_usdc_resolved
-    realized = report.realized_pnl.realized_pnl_usdc
-    realized_roi = (realized / buy_usdc) if buy_usdc > 0 else 0.0
-
-    # Synthesized stats on the decision/realized basis so ScoredWhale.stats
-    # flows through the refresh's print/details path unchanged.
-    stats = WhaleStats(
-        nickname=report.user_name or report.proxy_wallet,
-        venue="polymarket",
-        closed_positions_count=n,
-        wins=wins,
-        losses=max(0, n - wins),
-        total_pnl=realized,
-        total_contracts=max(0, round(buy_usdc)),
-        top_categories=tuple(whale_categories),
-        lifetime_num_markets_traded=report.n_raw_rows_examined,
-    )
-
-    if n == 0:
-        return ScoredWhale(
-            stats=stats, wilson_lcb=0.0, edge_factor=1.0, category_bonus=1.0,
-            composite_score=0.0, target_category=target_category,
-            excluded=True, exclusion_reason="no_resolved_decisions",
-        )
-
-    wlcb = wilson_lcb_95(wins, n)
-    edge = _edge_factor(realized_roi)
-    cat_bonus = _category_bonus(tuple(whale_categories), target_category)
-    composite = wlcb * edge * cat_bonus
-
-    inflation_ratio = report.realized_pnl.pnl_inflation_ratio
-    reasons: list[str] = []
-    if window_truncated:
-        reasons.append("window_truncated")
-    if n < min_resolved:
-        reasons.append(f"resolved<{min_resolved}")
-    if inflation_ratio > inflation_threshold:
-        reasons.append(f"inflation>{inflation_threshold:g}({inflation_ratio:.2f})")
-    return ScoredWhale(
-        stats=stats, wilson_lcb=wlcb, edge_factor=edge, category_bonus=cat_bonus,
-        composite_score=composite, target_category=target_category,
-        excluded=bool(reasons), exclusion_reason=";".join(reasons),
     )

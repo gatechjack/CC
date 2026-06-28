@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+{% block title %}Command Center — Trading Corp{% endblock %}
+
+{% block content %}
+<!-- ── Market overview ribbon (top of page) ─────────────────────────── -->
+{% include "partials/market_ribbon.html" %}
+
+<!-- ── Stat cards row (intent-aware) ────────────────────────────────── -->
+<div id="stat-cards"
+     hx-get="/partials/stat-cards"
+     hx-trigger="every 10s"
+     hx-swap="outerHTML">
+  {% include "partials/stat_cards.html" %}
+</div>
+
+<!-- ── Stage 1 paper-mode monitoring row ────────────────────────────── -->
+{# Tiles for the bitunix_futures paper deployment (origin/main 7352f8f
+   landed 2026-05-31 05:36 UTC). The partial is HTMX-polled every 10s
+   for fresh counts; the initial render is inline so the user doesn't
+   see an empty box on first paint. #}
+<section class="mt-4">
+  <header class="flex items-baseline justify-between mb-2">
+    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
+      Stage 1 monitoring
+    </h2>
+    <span class="text-[11px] text-muted font-mono">
+      paper-mode since 2026-05-31 05:36 UTC
+    </span>
+  </header>
+  {% include "partials/stage1_monitoring.html" %}
+</section>
+
+<!-- ── Main grid: equity curve + division panels (lg) | trade flow rail (sm) ── -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
+  <div class="lg:col-span-2 flex flex-col gap-4">
+
+    <!-- Equity curve -->
+    <section class="bg-pane border border-edge rounded-lg p-4">
+      <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-mono text-sm font-semibold tracking-tight">Equity curve</h2>
+        <span class="text-[11px] text-muted font-mono uppercase tracking-wider hidden sm:inline">
+          last 30 days · all accounts
+        </span>
+      </div>
+      <div class="relative">
+        <div id="equity-chart" class="h-[220px] sm:h-[280px] lg:h-[320px] w-full"></div>
+        {# Stage 1 paper-mode redeploy marker (origin/main 7352f8f landed
+           2026-05-31 05:36 UTC). Positioned by equity_chart.js via
+           chart.timeScale().timeToCoordinate('2026-05-31'). Hidden when
+           the deploy date is outside the visible range. #}
+        <div id="equity-deploy-marker"
+             class="hidden absolute top-0 bottom-0 pointer-events-none z-10"
+             style="left: 0px;"
+             aria-hidden="true">
+          <div class="absolute top-0 bottom-0 w-px bg-warn/70"></div>
+          <div class="absolute top-1 left-1.5 px-1.5 py-0.5 rounded
+                      bg-warn/20 text-warn text-[9px] font-mono uppercase tracking-wider
+                      whitespace-nowrap border border-warn/40">
+            Stage 1 · 05:36Z
+          </div>
+        </div>
+      </div>
+      <div id="equity-empty" class="hidden text-center text-muted text-xs py-12">
+        Not enough account_state rows to draw a curve yet — equity history
+        accumulates from snapshot logs over time.
+      </div>
+    </section>
+
+    <!-- Divisions, grouped by investment type (Individual / Crypto / Retirement) -->
+    {% for grp in snap.investment_groups %}
+      <section>
+        <header class="flex items-baseline justify-between mb-2 mt-2">
+          <div class="flex items-baseline gap-3">
+            <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">{{ grp.label }}</h2>
+            <span class="text-[11px] text-muted font-mono">
+              {{ grp.divisions|length }} division{{ '' if grp.divisions|length == 1 else 's' }}
+            </span>
+          </div>
+          <div class="text-right hidden sm:block">
+            <div class="text-[11px] text-muted uppercase tracking-wider">aggregate</div>
+            <div class="text-sm font-mono font-semibold text-mono">
+              {{ grp.total_equity | money }}
+            </div>
+          </div>
+        </header>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+          {% for d in grp.divisions %}
+            {# Prediction-market tiles open the unified dashboard with the
+               division pre-selected; robinhood_joint and tasty_options
+               (both IC divisions) open the IC live view scoped to that
+               division via the ?division= query param; all other divisions
+               keep the per-division drill-down route. #}
+            {% set _href = ('/prediction-markets/' + d.slug)
+                            if grp.key == 'prediction_markets'
+                            else ('/telemetry/pead'
+                                    if d.slug == 'robinhood_pead'
+                                    else ('/telemetry/iron_condor'
+                                            if d.slug == 'robinhood_joint'
+                                            else ('/telemetry/iron_condor?division=tasty_options'
+                                                    if d.slug == 'tasty_options'
+                                                    else ('/sfp'
+                                                            if d.slug == 'bitunix_sfp'
+                                                            else ('/division/' + d.slug))))) %}
+            <a href="{{ _href }}"
+               class="group bg-pane border border-edge rounded-lg p-4
+                      hover:border-edge-2 hover:bg-pane-2 transition-colors block">
+              <!-- Header: name + intent + status -->
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0 flex-1">
+                  <div class="text-mono text-sm font-semibold truncate">{{ d.name }}</div>
+                  <div class="mt-1 flex items-center gap-1.5">
+                    {% set intent_color = {
+                      'aggressive': 'bg-loss/15 text-loss',
+                      'retirement': 'bg-accent/15 text-accent',
+                      'balanced':   'bg-warn/15 text-warn',
+                    } %}
+                    <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                                 {{ intent_color.get(d.intent, 'bg-edge text-muted') }}">
+                      {{ d.intent }}
+                    </span>
+                    {% if d.standby %}
+                      <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                                   bg-warn/15 text-warn">
+                        standby
+                      </span>
+                    {% else %}
+                      <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                        {% if d.status == 'online' %}bg-gain/15 text-gain
+                        {% elif d.status == 'not_wired' %}bg-edge text-muted/60
+                        {% else %}bg-edge text-muted{% endif %}">
+                        {{ d.status | replace('_',' ') }}
+                      </span>
+                    {% endif %}
+                    {# Donchian CASH/BTC badge — only on divisions running a
+                       Donchian strategy (today: coinbase_spot). #}
+                    {% if d.donchian %}
+                      <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                        {% if d.donchian.state == 'btc' %}bg-gain/15 text-gain{% else %}bg-edge text-muted{% endif %}">
+                        {% if d.donchian.state == 'btc' %}● BTC{% else %}○ CASH{% endif %}
+                      </span>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+
+              <!-- Equity -->
+              <div class="mt-3">
+                <div class="text-[11px] text-muted uppercase tracking-wider">equity</div>
+                <div class="text-2xl font-mono font-semibold text-mono mt-0.5">
+                  {{ d.equity | money if d.equity is not none else '—' }}
+                </div>
+              </div>
+
+              {# Donchian dial — Bear-left, Bull-right, needle at
+                 (close - low)/(high - low). State-aware "next signal"
+                 marker: CASH highlights the right edge (BUY fires here),
+                 BTC highlights the left edge (SELL fires here). Hides
+                 cleanly pre-first-eval when channel values are unknown. #}
+              {% if d.donchian and d.donchian.dial_position is not none %}
+                <div class="mt-3">
+                  <div class="flex items-center justify-between text-[10px] font-mono">
+                    <span class="{% if d.donchian.state == 'btc' %}text-loss font-semibold{% else %}text-muted{% endif %}">
+                      ◀ Bear
+                    </span>
+                    <span class="text-muted text-[9px] uppercase tracking-wider">Donchian</span>
+                    <span class="{% if d.donchian.state == 'cash' %}text-gain font-semibold{% else %}text-muted{% endif %}">
+                      Bull ▶
+                    </span>
+                  </div>
+                  <div class="relative h-3 mt-1 bg-gradient-to-r from-loss/20 via-edge to-gain/20 rounded-sm border border-edge">
+                    {# State-aware "fires here" edge marker #}
+                    {% if d.donchian.state == 'cash' %}
+                      <div class="absolute right-0 top-0 bottom-0 w-0.5 bg-gain"
+                           title="BUY fires when close breaks above the entry-channel high"></div>
+                    {% else %}
+                      <div class="absolute left-0 top-0 bottom-0 w-0.5 bg-loss"
+                           title="SELL fires when close breaks below the exit-channel low"></div>
+                    {% endif %}
+                    {# Needle — current close position in the channel #}
+                    <div class="absolute top-[-2px] bottom-[-2px] w-1 bg-mono rounded-sm shadow"
+                         style="left: {{ '%.1f' | format(d.donchian.dial_position * 100) }}%; transform: translateX(-50%);"
+                         title="close ${{ '%.2f' | format(d.donchian.current_close) }}"></div>
+                  </div>
+                  <div class="mt-1 flex items-center justify-between text-[10px] font-mono text-muted">
+                    <span>${{ '%.0f' | format(d.donchian.donchian_low) }}</span>
+                    <span class="text-mono">${{ '%.0f' | format(d.donchian.current_close) }}</span>
+                    <span>${{ '%.0f' | format(d.donchian.donchian_high) }}</span>
+                  </div>
+                </div>
+              {% elif d.donchian %}
+                {# Donchian active but no audit row yet — first 6h-bar boundary. #}
+                <div class="mt-3 text-[10px] font-mono text-muted italic text-center py-2 border border-dashed border-edge rounded-sm">
+                  awaiting first 6h-bar evaluation
+                </div>
+              {% endif %}
+
+              {# Prediction-market tile overview (K2.4): win rate + counts +
+                 realized P&L. Only renders on tiles whose division is in the
+                 prediction_markets group AND has had its pm_overview dict
+                 hydrated. Pre-first-resolve win_rate is None → tile shows
+                 only the pending count (which gives early visibility into
+                 paper-trade volume). #}
+              {% if d.pm_overview %}
+                {% set pm = d.pm_overview %}
+                <div class="mt-3 grid grid-cols-3 gap-2">
+                  <div>
+                    <div class="text-[10px] text-muted uppercase tracking-wider">win</div>
+                    <div class="text-sm font-mono font-semibold
+                      {% if pm.win_rate_pct is none %}text-muted/60
+                      {% elif pm.win_rate_pct >= 50 %}text-gain
+                      {% else %}text-loss{% endif %}">
+                      {% if pm.win_rate_pct is not none %}
+                        {{ '%.0f' | format(pm.win_rate_pct) }}%
+                      {% else %}—{% endif %}
+                    </div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] text-muted uppercase tracking-wider">resolved</div>
+                    <div class="text-sm font-mono font-semibold text-mono">{{ pm.n_resolved }}</div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] text-muted uppercase tracking-wider">pending</div>
+                    <div class="text-sm font-mono font-semibold text-mono">{{ pm.n_pending }}</div>
+                  </div>
+                </div>
+                <div class="mt-2 flex items-center justify-between text-[11px]">
+                  <span class="text-muted font-mono">realized</span>
+                  <span class="font-mono font-semibold
+                    {% if pm.total_realized_pnl > 0 %}text-gain
+                    {% elif pm.total_realized_pnl < 0 %}text-loss
+                    {% else %}text-muted{% endif %}">
+                    {{ pm.total_realized_pnl | money_signed }}
+                  </span>
+                </div>
+                {% if pm.cutoff_label %}
+                  <div class="mt-1 text-[10px] text-muted/70 font-mono"
+                       title="Pre-fix round-trips excluded. Rows remain in DB.">
+                    since {{ pm.cutoff_label }}
+                  </div>
+                {% endif %}
+              {% endif %}
+
+              <!-- Bottom row: positions only (benchmark moved to top ribbon) -->
+              <div class="mt-3 flex items-center text-[11px]">
+                <span class="text-muted font-mono">
+                  {{ d.position_count }} position{{ '' if d.position_count == 1 else 's' }}
+                </span>
+              </div>
+            </a>
+          {% endfor %}
+        </div>
+      </section>
+    {% endfor %}
+
+  </div>
+
+  <!-- Trade flow right rail -->
+  <aside class="lg:col-span-1 order-first lg:order-last">
+    <section class="bg-pane border border-edge rounded-lg p-4 lg:sticky lg:top-20">
+      <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-mono text-sm font-semibold tracking-tight">Live trade flow</h2>
+        <span class="text-[11px] text-muted font-mono uppercase tracking-wider flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-gain animate-pulse"></span>
+          live
+        </span>
+      </div>
+      {# The trade_flow.html partial owns the outer #trade-flow div +
+         polling. Including without an extra wrapper avoids the
+         double-#trade-flow-id from the original embed pattern. The
+         partial carries the Stage-1 filter toggle and preserves the
+         `?stage1=1` query state via its own hx-get URL. #}
+      {% include "partials/trade_flow.html" %}
+    </section>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/equity_chart.js"></script>
+<script src="/static/js/trade_flow_state.js"></script>
+{% endblock %}

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitunix SFP Cockpit</title>
+<link rel="stylesheet" href="/static/sfp_cockpit.css">
+<script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class="wrap">
+
+  {# Each fragment's ROOT element self-polls (hx-get + hx-trigger="every 5s",
+     outerHTML swap). Initial paint via {% include %}; thereafter HTMX refreshes
+     each panel independently so a slow query never blocks the others. #}
+
+  {% include "sfp_cockpit/_header.html" %}
+  {% include "sfp_cockpit/_recon.html" %}
+
+  <div class="main">
+    {% include "sfp_cockpit/_state_board.html" %}
+    <div class="side">
+      {% include "sfp_cockpit/_mode_split.html" %}
+      {% include "sfp_cockpit/_near_miss.html" %}
+      {% include "sfp_cockpit/_equity.html" %}
+    </div>
+  </div>
+
+  <div style="text-align:center;color:var(--txt3);font-size:10px;padding:6px 0 2px">
+    Bitunix SFP Cockpit · v2 · HTMX fragment-poll ~5s · CSS-transition easing, no JS animation loops
+  </div>
+</div>
+
+<script>
+// Only live JS: the UTC clock + 15m-bar countdown. No animation loops; panels
+// update via HTMX swaps and CSS transitions.
+function tick(){
+  var d=new Date();
+  var utc=document.getElementById('utc'); if(utc) utc.textContent=d.toISOString().substr(11,8)+' UTC';
+  var bc=document.getElementById('barclock');
+  if(bc){var s=d.getUTCMinutes()%15, secs=(14-s)*60+(59-d.getUTCSeconds());
+    bc.textContent=String(Math.floor(secs/60)).padStart(2,'0')+':'+String(secs%60).padStart(2,'0');}
+}
+tick(); setInterval(tick,1000);
+</script>
+</body>
+</html>

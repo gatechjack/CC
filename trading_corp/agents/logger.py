@@ -130,17 +130,54 @@ class LoggerAgent:
                 attempt += 1
 
     def log_proposed_order(self, order: ProposedOrder) -> None:
-        with db.connect(self.db_url) as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO proposed_order
+        """Upsert a proposed_order row. LOCK-RESILIENT (#3 orphan-prevention):
+        this write happens in `data_exec.place()` AFTER a broker fill is
+        confirmed, so a transient 'database is locked' here must NOT bubble up
+        and get mis-handled as an order rejection. Mirrors `log_event`: retry a
+        lock with jittered backoff, and on exhaustion log loudly + return
+        (never raise on a lock — the fill is real; the authoritative tracked
+        state is the downstream paper_trade_record write). A NON-lock
+        OperationalError still propagates (genuine bug)."""
+        sql = (
+            """INSERT OR REPLACE INTO proposed_order
                    (id, ts, strategy, symbol, side, qty, order_type, limit_price,
                     rationale, status, risk_reason, board_reason, fill_price, fill_ts, extra_json,
                     execution_mode)
                    VALUES(:id,:ts,:strategy,:symbol,:side,:qty,:order_type,:limit_price,
                           :rationale,:status,:risk_reason,:board_reason,:fill_price,:fill_ts,:extra_json,
-                          :execution_mode)""",
-                order.to_db_row(),
-            )
+                          :execution_mode)"""
+        )
+        db_row = order.to_db_row()
+        attempt = 0
+        while True:
+            try:
+                with db.connect(self.db_url) as conn:
+                    conn.execute(sql, db_row)
+                if attempt:
+                    log.warning(
+                        "[audit] log_proposed_order succeeded after %d retries: %s",
+                        attempt, order.id,
+                    )
+                return
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                if attempt >= len(_DB_LOCK_RETRY_DELAYS_SEC):
+                    log.error(
+                        "[audit] log_proposed_order FAILED after %d attempts "
+                        "(database locked): %s — NOT raising (fill is real; "
+                        "downstream paper_trade_record is the tracked state)",
+                        attempt + 1, order.id,
+                    )
+                    return
+                delay = _DB_LOCK_RETRY_DELAYS_SEC[attempt] * (0.5 + random.random())
+                log.warning(
+                    "[audit] log_proposed_order: database locked on attempt "
+                    "%d/%d; sleeping %.3fs: %s",
+                    attempt + 1, len(_DB_LOCK_RETRY_DELAYS_SEC) + 1, delay, order.id,
+                )
+                time.sleep(delay)
+                attempt += 1
 
     def log_brief(self, kind: str, body_md: str) -> None:
         """kind: 'morning' or 'eod_debate'."""

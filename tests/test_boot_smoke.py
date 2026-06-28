@@ -240,3 +240,40 @@ def test_strategies_yaml_phase1c_blocks_parse():
     )
     StrategyConfig.from_dict(bitunix.get("trade_plan") or {})
     FeeConfig.from_dict(bitunix.get("fees") or {})
+
+
+def test_two_state_sfp_comes_up_trading_and_replay_disabled():
+    """Two-state collapse (2026-06-27) boot guard.
+
+    ★ The fail-safe default is HALTED, so a missing/non-"trading" `mode` would
+    silently NOT start a division's loop. This test is the guard that the
+    fail-safe default did NOT kill the LIVE BTC (SFP) edge: it asserts the
+    shipped YAML + the EXACT main.py predicates resolve to "SFP trades, futures
+    is inert, replay is off", and that main.py actually gates on them.
+    """
+    import yaml
+    raw = yaml.safe_load((REPO_ROOT / "config" / "strategies.yaml").read_text(
+        encoding="utf-8"))
+    sfp = raw.get("bitunix_sfp") or {}
+    fut = raw.get("bitunix_futures") or {}
+
+    # (1) shipped config pins
+    assert sfp.get("mode") == "trading", "bitunix_sfp must ship mode: trading"
+    assert fut.get("mode") == "halted", "bitunix_futures must ship mode: halted"
+
+    # (2) the EXACT main.py predicates → SFP arms, futures halts (fail-safe)
+    sfp_trading = (str(sfp.get("mode", "halted")).lower() == "trading")
+    fut_halted = (str(fut.get("mode", "halted")).lower() != "trading")
+    assert sfp_trading is True, (
+        "the SFP 15m loop would NOT start — the live BTC edge would be halted")
+    assert fut_halted is True, "the futures observer must be HALTED-INERT"
+
+    # (3) main.py actually gates on these + disables replay
+    src = MAIN_PY.read_text(encoding="utf-8")
+    assert 'name="bitunix-sfp-loop"' in src, "SFP loop start vanished from main.py"
+    assert "and _sfp_trading" in src, (
+        "SFP loop start must be gated on _sfp_trading (mode==trading)")
+    assert "halted=_futures_halted" in src, (
+        "futures observer must be constructed with halted=_futures_halted")
+    assert "_REPLAY_ENABLED = False" in src, (
+        "replay must be disabled (one-flag revert) — _REPLAY_ENABLED = False")

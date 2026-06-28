@@ -336,16 +336,6 @@ class WhaleAuditReport:
     category: CategoryConcentrationReport
     realized_pnl: RealizedPnLReport
     partial_sell_threshold_used: float
-    n_winning_decisions: int = 0
-    """Σ is_winning_side over resolved decisions — the Wilson NUMERATOR for
-    the decision-unit selection score (`score_whale_from_audit`). Denominator
-    is `n_resolved_decisions`. Added for option (c) Phase 1; defaults to 0 so
-    pre-existing constructors/cache entries remain valid (a missing key in an
-    old cached dict misses → recompute, per the cache schema-drift valve)."""
-    total_buy_usdc_resolved: float = 0.0
-    """Σ sum_buy_usdc over resolved decisions — the realized-ROI DENOMINATOR
-    (`realized_pnl_usdc / total_buy_usdc_resolved`) for the edge factor in
-    `score_whale_from_audit`. Added for option (c) Phase 1; default 0.0."""
     verdict_narration: str | None = None
     verdict_null_reason: str | None = None
     """When `verdict_narration` is None, this carries the WHY. One of:
@@ -728,13 +718,7 @@ def build_audit_report(
                 user_name = r.name
                 break
 
-    resolved_decisions = [d for d in decisions.values() if d.is_resolved]
-    n_resolved = len(resolved_decisions)
-    # Decision-unit selection inputs (option (c) Phase 1). Computed here
-    # because `decisions` is only in scope inside this function — the scorer
-    # receives the report, not the decisions dict.
-    n_winning = sum(1 for d in resolved_decisions if d.is_winning_side)
-    total_buy_usdc_resolved = sum(d.sum_buy_usdc for d in resolved_decisions)
+    n_resolved = sum(1 for d in decisions.values() if d.is_resolved)
     return WhaleAuditReport(
         proxy_wallet=proxy_wallet.lower(),
         user_name=user_name,
@@ -748,6 +732,4 @@ def build_audit_report(
         category=category,
         realized_pnl=realized_pnl,
         partial_sell_threshold_used=partial_sell_threshold,
-        n_winning_decisions=n_winning,
-        total_buy_usdc_resolved=round(total_buy_usdc_resolved, 2),
     )

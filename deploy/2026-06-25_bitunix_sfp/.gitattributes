@@ -1,0 +1,3 @@
+staged/** -text
+staged_live/** -text
+*.sh -text

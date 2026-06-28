@@ -1,0 +1,26 @@
+<div class="panel" id="sfp-mode"
+     hx-get="/sfp/partials/mode-split" hx-trigger="every 5s" hx-swap="outerHTML">
+  <div class="phead">
+    <div><h3 class="ptitle">Mode Split</h3><span class="psub">REAL vs CONSIDERABLE · tracked separately</span></div>
+    <span class="tier tier-live">LIVE</span>
+  </div>
+  {% if not modes.has_data %}
+    <div class="empty"><b>Awaiting first closed SFP trade</b>REAL / CONSIDERABLE win% + avg-R populate from closed division='bitunix_sfp' rows (grouped by extra_json.sfp_mode).</div>
+  {% else %}
+    {% for key, css, label in [('REAL','real','REAL'), ('CONSIDERABLE','cons','CONSIDER.')] %}
+      {% set m = modes.modes[key] %}
+      <div class="mode {{ css }}">
+        <div class="mh"><span class="mname">{{ label }}</span><span class="n">n={{ m.n }}</span></div>
+        {% if m.n %}
+          <div class="win">{{ m.win_pct }}<small>win%</small></div>
+          <div class="bar"><i style="width:{{ m.win_pct }}%"></i></div>
+          <div class="avg"><span>avg-R</span><span class="{{ 'up' if (m.avg_r or 0) >= 0 else 'down' }}">{{ '%+.2f'|format(m.avg_r or 0) }}</span></div>
+        {% else %}
+          <div class="win dim">—<small>win%</small></div>
+          <div class="bar"><i style="width:0%"></i></div>
+          <div class="avg"><span>avg-R</span><span class="dim">— · no {{ label|lower }} trades yet</span></div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  {% endif %}
+</div>

@@ -236,6 +236,29 @@ def _parse_eodhd_earnings(history: dict) -> list[QuarterlyEPS]:
     return rows
 
 
+def _eodhd_next_earnings_date(history: dict, asof: date) -> date | None:
+    """Next FUTURE earnings announcement date from an EODHD Earnings.History
+    dict: the minimum ``reportDate`` strictly after ``asof``; None if none found.
+
+    EODHD includes the upcoming quarter as an unreported row (epsActual=null)
+    with its ``reportDate`` populated — verified live (AAPL.US → 2026-07-30,
+    epsActual=null, epsEstimate=1.9). We do NOT filter on epsActual: a future
+    reportDate is authoritative regardless of whether the actual has printed.
+    """
+    best: date | None = None
+    for item in (history or {}).values():
+        rd = item.get("reportDate") if isinstance(item, dict) else None
+        if not rd:
+            continue
+        try:
+            d = date.fromisoformat(str(rd)[:10])
+        except (ValueError, TypeError):
+            continue
+        if d > asof and (best is None or d < best):
+            best = d
+    return best
+
+
 def _parse_yfinance_quarterly(symbol: str) -> list[QuarterlyEPS] | None:
     """Extract QuarterlyEPS from yfinance quarterly_earnings DataFrame.
 
@@ -458,6 +481,27 @@ class EarningsProvider:
             sym, result["market_cap"], result["sector"],
         )
         return result
+
+    def get_next_earnings_date(
+        self, symbol: str, asof: date | None = None,
+    ) -> date | None:
+        """Next FUTURE earnings announcement date (EODHD ``reportDate``), or None.
+
+        PRIMARY source for ``utils/market_data.get_next_earnings`` — the
+        earnings-AVOIDANCE gate used by PMCC + the iron-condor strategies. Reuses
+        the shared 24h fundamentals cache (same single HTTP/symbol/day fetch as
+        ``get_quarterly_eps`` / ``get_company_facts``). EODHD-only here; the
+        labeled yfinance fallback lives in the market_data wrapper (no
+        auto-failover). None = no EODHD data → caller treats as "no earnings
+        filter, don't block" (same contract as the legacy function).
+        """
+        if not symbol:
+            return None
+        data = self._get_fundamentals(symbol.upper())
+        if not data:
+            return None
+        history = (data.get("Earnings") or {}).get("History") or {}
+        return _eodhd_next_earnings_date(history, asof or date.today())
 
     def get_recent_announcements(
         self,

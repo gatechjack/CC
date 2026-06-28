@@ -113,7 +113,12 @@ _NOW = "2026-06-15T23:51:30+00:00"
 
 def test_aggregate_single_fill():
     a = _aggregate_close_fills([{"price": 100.0, "qty": 2.0, "fee": 0.1}])
-    assert a == {"vwap_price": 100.0, "total_fee": 0.1, "total_qty": 2.0, "n_fills": 1}
+    # D3 role-fix (deployed) ADDED keys to the aggregate (close_order_ids,
+    # exit_role, fee_implied_role, role_fee_mismatch, maker_taker_mix). Assert the
+    # 4 economic keys rather than exact-dict equality so the deployed superset
+    # stays green; the role keys are covered by the D3 tests.
+    assert (a["vwap_price"], a["total_fee"], a["total_qty"], a["n_fills"]) \
+        == (100.0, 0.1, 2.0, 1)
 
 
 def test_aggregate_multi_fill_vwap():
@@ -181,9 +186,13 @@ async def test_real_per_fill_fee_is_summed_not_assumed_rate(db_url):
     """A maker-fee fill + a taker-fee fill → the booked exit fee is the SUM of
     the two REAL per-fill fees, never a single assumed rate × notional."""
     _seed_short(db_url)
+    # Close fills sum to the tracked position qty (0.0007528) so the deployed D1
+    # netted-close guard (exit_fee = Σfee × closed_qty/q_close) leaves the ratio
+    # at 1.0 — isolating THIS test's concern (real summed fee, not assumed rate)
+    # from D1's proration, which has its own coverage.
     broker = _FillBroker([
-        {"price": 66300.0, "qty": 0.0004, "fee": 0.001},   # maker-ish (small fee)
-        {"price": 66320.0, "qty": 0.0004, "fee": 0.005},   # taker-ish (larger fee)
+        {"price": 66300.0, "qty": 0.0003764, "fee": 0.001},   # maker-ish (small fee)
+        {"price": 66320.0, "qty": 0.0003764, "fee": 0.005},   # taker-ish (larger fee)
     ])
     await _autobook_missing_close_real(broker, db_url, "ord", _NOW)
     _, extra = _row(db_url)

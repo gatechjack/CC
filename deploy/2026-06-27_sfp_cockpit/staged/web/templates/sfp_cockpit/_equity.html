@@ -1,0 +1,21 @@
+<div class="panel" id="sfp-equity"
+     hx-get="/sfp/partials/equity" hx-trigger="every 5s" hx-swap="outerHTML">
+  <div class="phead">
+    <div><h3 class="ptitle">Division Equity</h3><span class="psub">closed SFP trades · cumulative R</span></div>
+    <span class="tier tier-live">LIVE</span>
+  </div>
+  {% if not equity.has_data %}
+    <div class="empty"><b>Awaiting first closed SFP trade</b>cumulative-R curve renders from closed division='bitunix_sfp' rows. (Dollar equity is intentionally NOT shown from the shared broker snapshot — that cross-division bleed is the bug we avoid.)</div>
+  {% else %}
+    <div class="eqhead"><span class="dim lbl">bitunix_sfp · cum R</span>
+      <span class="eqval {{ 'up' if (equity.cum_r or 0) >= 0 else 'down' }}">{{ '%+.1fR'|format(equity.cum_r or 0) }}</span></div>
+    <svg viewBox="0 0 340 90" style="width:100%;height:84px;margin-top:6px">
+      <defs><linearGradient id="eg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#34d399" stop-opacity=".35"/><stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+      </linearGradient></defs>
+      {% if equity.area_d %}<path d="{{ equity.area_d }}" fill="url(#eg)"/>{% endif %}
+      {% if equity.line_d %}<path d="{{ equity.line_d }}" fill="none" stroke="#34d399" stroke-width="2.5" stroke-linejoin="round"/>{% endif %}
+    </svg>
+    <div class="eqfoot"><span>{{ '%+.1f'|format(equity.cum_r or 0) }} cum R</span><span>{{ equity.n_closed }} closed trade{{ '' if equity.n_closed==1 else 's' }}</span></div>
+  {% endif %}
+</div>
