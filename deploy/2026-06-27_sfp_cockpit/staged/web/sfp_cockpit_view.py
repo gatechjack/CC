@@ -518,7 +518,11 @@ def _coin_state(db_url: str, display: str, pos: dict | None) -> dict:
              (rj["stop"], "#fb5e6b", "3 4")],
             rj["current"], mk_color)
     else:
-        armed = _mock_armed_watch(display) if display == "ETH" else None
+        # Real armed-watch per coin: read the live sfp_watch_state emit (now
+        # deployed). No coin is hardcoded-armed — ETH was a demo mock whose
+        # static levels (2409/2441) distorted the chart y-scale and falsely lit
+        # ARM. None until the real sfp_watch_state read is wired (backlog).
+        armed = None
         card["armed"] = armed
         levels = ([(armed["bos_watch_level"], "#5b9dff", "2 4"),
                    (armed["swept_wick"], "#f5b53d", "5 4")] if armed else [])

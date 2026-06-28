@@ -6,7 +6,7 @@
 
 # === STAGED FILES (target after apply) ===
 4c37fa971698e600095163695feb30a0  staged/routes.py
-1259006577755fbefd49dadbaced4f09  staged/web/sfp_cockpit_view.py
+de8d90e380232755abc4f74b639c4c66  staged/web/sfp_cockpit_view.py
 762fcb9283a31f5116278d3dd8d8c040  staged/web/templates/sfp_cockpit.html
 c98dc790f185aaeae834e308f74ca7f8  staged/web/templates/sfp_cockpit/_header.html
 461eac96cb543c99a184847d9cebb671  staged/web/templates/sfp_cockpit/_recon.html
