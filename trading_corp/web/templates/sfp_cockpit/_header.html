@@ -1,9 +1,11 @@
 <div class="panel hdr" id="sfp-header"
      hx-get="/sfp/partials/header" hx-trigger="every 5s" hx-swap="morph:outerHTML" hx-indicator="#sfp-refresh">
   <div class="logo">BITUNIX <span class="sfp">SFP</span>
-    <small>Swing-Failure → Break-of-Structure · LONG-only futures bot · 15m bars · 4 coins · 1 live</small>
+    <small>Swing-Failure → Break-of-Structure · LONG-only · 15m SFP → 3m BOS · 4 coins · {{ live_count }} live</small>
   </div>
-  <div class="hstat"><span class="lbl">Next 15m bar</span><span class="v" id="barclock">—</span></div>
+  {# hx-preserve: the bar countdown + UTC clock are JS-updated every 1s; keep them
+     across the 5s header morph so they never blank-flash on each poll. #}
+  <div class="hstat"><span class="lbl">Next 15m bar</span><span class="v" id="barclock" hx-preserve="true">—</span></div>
   {# TIER A — honest empty until SFP has closed trades #}
   <div class="hstat"><span class="lbl">Today · Week R</span>
     {% if metrics.has_data %}
@@ -24,5 +26,5 @@
   {% else %}
     <span class="badge b-paper" title="{{ badge.sub }}"><span class="dot"></span>{{ badge.label }} · {{ badge.sub }}</span>
   {% endif %}
-  <span class="clock" id="utc">— UTC</span>
+  <span class="clock" id="utc" hx-preserve="true">— UTC</span>
 </div>

@@ -102,8 +102,15 @@
 
 <div class="panel" id="sfp-board"
      hx-get="/sfp/partials/state-board" hx-trigger="every 5s" hx-swap="morph:outerHTML" hx-indicator="#sfp-refresh">
+  {# live vs monitor split derived from each coin's is_live_coin (symbol_modes
+     arm:trading + division live) — no hardcoded coin list. #}
+  {% set _live = coins|selectattr('is_live_coin')|map(attribute='symbol')|list %}
+  {% set _mon = coins|rejectattr('is_live_coin')|map(attribute='symbol')|list %}
   <div class="phead">
-    <div><h3 class="ptitle">Per-coin state board</h3><span class="psub">BTC live · SOL / ETH / XRP monitor-only</span></div>
+    <div><h3 class="ptitle">Per-coin state board</h3><span class="psub">
+      {% if _live %}{{ _live|join(' / ') }} live{% endif %}
+      {%- if _live and _mon %} · {% endif %}
+      {%- if _mon %}{{ _mon|join(' / ') }} monitor-only{% endif %}</span></div>
     <span class="tier tier-scoped">SFP-SCOPED · div='bitunix_sfp'</span>
   </div>
   <div class="statelegend">
