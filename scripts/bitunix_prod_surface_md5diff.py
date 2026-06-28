@@ -5,9 +5,9 @@ P1 pre-deploy gate per architectural-review Finding #7 §6 + readiness-audit
 class for the bitunix order-path before the first prod-deploy of `main` that
 takes broker-write to prod.
 
-Surface (10 files today; Phase-4 place_order code adds when it exists):
+Surface (12 files today; Phase-4 place_order code adds when it exists):
 
-- 8 code files under trading_corp/
+- 10 code files under trading_corp/ (incl. the bitunix_sfp division order-path)
 - 2 config files: config/strategies.yaml, config/risk.yaml
 
 Local md5s are LF-normalized before comparison (Windows checkouts are CRLF;
@@ -48,6 +48,10 @@ MANIFEST: tuple[str, ...] = (
     "trading_corp/agents/strategies/bitunix_pa_validation.py",
     "trading_corp/agents/strategies/bitunix_htf_regime.py",
     "trading_corp/comms/bitunix_lifecycle_notifier.py",
+    # bitunix_sfp division (2026-06-28): the live SFP order-path surface, added to
+    # the drift gate so this real-money code is no longer ungated.
+    "trading_corp/agents/strategies/bitunix_sfp.py",
+    "trading_corp/agents/divisions/bitunix_sfp_observer.py",
     "config/strategies.yaml",
     "config/risk.yaml",
 )
