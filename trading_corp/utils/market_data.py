@@ -10,7 +10,7 @@ Caches:
   VIX           — yfinance ^VIX, 5-min TTL
   LEAP value    — populated by PMCCAgent during scan, 10-min TTL.
                   Read by the rolling_for_debit_above_5_pct_of_long auto-exec gate.
-  Earnings      — yfinance Ticker.earnings_dates, 24-hour TTL
+  Earnings      — EODHD reportDate (primary) / yfinance fallback, 24-hour TTL
 """
 from __future__ import annotations
 
@@ -153,21 +153,56 @@ def get_next_earnings(symbol: str, force_refresh: bool = False) -> datetime | No
             if time.time() - ts < _EARNINGS_CACHE_TTL_SEC:
                 return cached_val
 
+    # PRIMARY: EODHD reportDate (authoritative next-announcement date).
+    # FALLBACK: yfinance .earnings_dates (unreliable — the reason EODHD is now
+    # primary), used ONLY when EODHD returns None (key absent / no data). No
+    # auto-failover within a succeeded EODHD call.
+    next_dt: datetime | None = _eodhd_next_earnings(sym)
+    if next_dt is None:
+        next_dt = _yfinance_next_earnings(sym)
+
+    with _EARNINGS_LOCK:
+        _EARNINGS_CACHE[sym] = (next_dt, time.time())
+    return next_dt
+
+
+def _eodhd_next_earnings(sym: str) -> datetime | None:
+    """EODHD primary: next future reportDate as a UTC datetime, or None.
+
+    Convention: the EODHD reportDate is a calendar date (no BMO/AMC time). We
+    return it at the END of the announcement day UTC (23:59:59) so a downstream
+    'days to earnings' AVOIDANCE gate stays active through the ENTIRE report day
+    — covering both before-open and after-close prints (the conservative choice
+    for not holding into a print). FLAGGED for operator confirmation: change the
+    time-of-day here if a different earnings-window convention is preferred.
+
+    Reuses EarningsProvider's shared 24h fundamentals cache. Never raises.
+    """
+    try:
+        from trading_corp.data.earnings_provider import EarningsProvider
+        d = EarningsProvider().get_next_earnings_date(sym)
+    except Exception as e:  # never let the EODHD path break the gate
+        log.debug("get_next_earnings: EODHD path failed for %s: %s", sym, e)
+        return None
+    if d is None:
+        return None
+    return datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc)
+
+
+def _yfinance_next_earnings(sym: str) -> datetime | None:
+    """Labeled yfinance fallback — the prior implementation, used only when the
+    EODHD path returns None. yfinance .earnings_dates is unreliable (the reason
+    for the EODHD primary); kept under the ABC as a last resort, no auto-failover.
+    """
     next_dt: datetime | None = None
-    # Outer import: catches "yfinance not installed" specifically.
     try:
         import yfinance as yf  # type: ignore
     except ImportError:
         log.warning("get_next_earnings: yfinance not installed")
-        with _EARNINGS_LOCK:
-            _EARNINGS_CACHE[sym] = (None, time.time())
         return None
-    # Inner fetch: yfinance internals can raise ImportError on lazy-loaded
-    # sub-deps (pandas plugins, scrapers) AND yfinance ERROR-logs "No
-    # earnings dates found" on its own logger when a symbol has no data.
-    # Both should degrade silently — earnings filtering treats None as
-    # "no data, treat as clear" per this function's contract. Don't
-    # re-emit a misleading "yfinance not installed" warning here.
+    # yfinance internals can raise on lazy-loaded sub-deps AND ERROR-log "No
+    # earnings dates found" on their own logger when a symbol has no data —
+    # both degrade silently to None per this function's "no data = don't block".
     try:
         ticker = yf.Ticker(sym)
         df = ticker.earnings_dates    # may be None or DataFrame
@@ -186,12 +221,7 @@ def get_next_earnings(symbol: str, force_refresh: bool = False) -> datetime | No
                 except Exception:
                     continue
     except Exception as e:
-        log.debug(
-            "get_next_earnings: %s for %s: %s", type(e).__name__, sym, e,
-        )
-
-    with _EARNINGS_LOCK:
-        _EARNINGS_CACHE[sym] = (next_dt, time.time())
+        log.debug("get_next_earnings: yfinance %s for %s: %s", type(e).__name__, sym, e)
     return next_dt
 
 

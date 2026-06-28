@@ -431,6 +431,7 @@ async def run(argv: list[str] | None = None) -> int:
     _execution_mode = "paper"       # Stage-1 N+1 — fail-closed default if YAML load fails
     _staleness_enabled = False      # C — staleness-reject gate; OFF if YAML load fails
     _staleness_margin_s = 120.0     # C — additive margin (s) on top of the bar interval
+    _concurrent_guard_enabled = False  # D4 — concurrent-position guard; OFF if YAML load fails
     # Two-state collapse (2026-06-27) — futures division mode gate. Fail-safe
     # default HALTED: if the YAML load below fails OR `mode` != "trading"
     # (incl. missing), the futures observer is constructed HALTED-INERT.
@@ -462,6 +463,10 @@ async def run(argv: list[str] | None = None) -> int:
         _stale_block = _bx_block.get("staleness_gate") or {}
         _staleness_enabled = bool(_stale_block.get("enabled", False))
         _staleness_margin_s = float(_stale_block.get("margin_seconds", 120.0))
+        # D4 — concurrent-position guard. Blocks a new entry while the bot
+        # already holds a same-symbol same-side position it opened. Default OFF.
+        _cpg_block = _bx_block.get("concurrent_position_guard") or {}
+        _concurrent_guard_enabled = bool(_cpg_block.get("enabled", False))
         # PR 4 — adaptive trade plan + fees. Activated only when
         # `bitunix_futures.trade_plan.enabled: true` in YAML. Default
         # (block missing or enabled=false) leaves the legacy geometric
@@ -501,6 +506,9 @@ async def run(argv: list[str] | None = None) -> int:
         "BitUnix staleness-reject gate (C): enabled=%s margin_s=%.0f",
         _staleness_enabled, _staleness_margin_s,
     )
+    log.info(
+        "BitUnix concurrent-position guard (D4): enabled=%s", _concurrent_guard_enabled,
+    )
     bitunix_observer = BitunixFuturesObserver(
         db_url=secrets.db_url,
         risk_agent=risk_agent,
@@ -532,6 +540,9 @@ async def run(argv: list[str] | None = None) -> int:
         # Shipped ON via strategies.yaml; rejects entries on a too-old bar.
         staleness_gate_enabled=_staleness_enabled,
         staleness_margin_seconds=_staleness_margin_s,
+        # D4 — concurrent-position guard (same-side, bot's-own). Ships OFF;
+        # flip ON via strategies.yaml after one clean validation trade.
+        concurrent_position_guard_enabled=_concurrent_guard_enabled,
         # telegram_channel attached after channel is constructed (below)
     )
 
@@ -1501,6 +1512,55 @@ async def run(argv: list[str] | None = None) -> int:
             name="tasty-position-manager",
         )
 
+        # --- Robinhood PEAD v1 (Phase 2, 2026-06-22) — long-only post-earnings
+        # drift on the agentic RH account (680725082). Posture mirrors bitunix:
+        # NO HITL, RiskAgent.evaluate is the only gate. live-vs-paper =
+        # execution_mode ("live" ONLY when robinhood_pead is opted into
+        # --live-divisions AND the robinhood family is live-capable) AND
+        # strategies.yaml auto_execute. divisions.yaml standby:true makes BOTH
+        # loops below no-ops until standby is deliberately lifted (the live test).
+        from trading_corp.agents.divisions.robinhood_pead import RobinhoodPEADAgent
+        from trading_corp.agents.strategies.pead_strategy import PEADStrategy
+        from trading_corp.data.earnings_provider import EarningsProvider as _PEADEarnings
+
+        pead_execution_mode = (
+            "live" if ("robinhood_pead" in live_divisions
+                       and mode == "LIVE"
+                       and "robinhood" in (args.brokers or []))
+            else "paper"
+        )
+        pead_division = RobinhoodPEADAgent()
+        pead_strategy = PEADStrategy(
+            db_url=secrets.db_url,
+            risk_agent=risk_agent,
+            data_exec=data_exec,
+            logger_agent=logger_agent,
+            earnings_provider=_PEADEarnings(
+                api_key=secrets.eodhd_api_key, db_url=secrets.db_url,
+            ),
+            execution_mode=pead_execution_mode,
+        )
+        pead_division.attach_strategy(pead_strategy)
+        _pead_cfg = pead_strategy._cfg()
+        pead_scan_task = asyncio.create_task(
+            _scheduled_pead_scan_loop(
+                pead_division, data_exec, logger_agent,
+                scan_window_start_et=tuple(_pead_cfg.get("scan_window_start_et", (8, 30))),
+                scan_window_end_et=tuple(_pead_cfg.get("scan_window_end_et", (9, 25))),
+            ),
+            name="pead-scan",
+        )
+        pead_manage_task = asyncio.create_task(
+            _scheduled_pead_manage_loop(pead_division, data_exec, logger_agent),
+            name="pead-manage",
+        )
+        pead_reconcile_task = asyncio.create_task(
+            _scheduled_pead_reconcile_loop(pead_division, data_exec, logger_agent),
+            name="pead-reconcile",
+        )
+        log.info("Robinhood PEAD wired (execution_mode=%s; standby-gated).",
+                 pead_execution_mode)
+
 
         # --- Polymarket round-trip resolver + equity snapshot writer ---
         # Closes the data gaps for the betmoar-style portfolio dashboard:
@@ -2114,6 +2174,16 @@ async def run(argv: list[str] | None = None) -> int:
                 await tasty_position_manager_task
             except (asyncio.CancelledError, Exception):
                 pass
+            pead_scan_task.cancel()
+            try:
+                await pead_scan_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            pead_manage_task.cancel()
+            try:
+                await pead_manage_task
+            except (asyncio.CancelledError, Exception):
+                pass
             if replay_task is not None:  # two-state collapse: None when replay retired
                 replay_task.cancel()
                 try:
@@ -2559,6 +2629,112 @@ async def _scheduled_pmcc_scan_loop(
         except Exception as e:
             log.exception("Scheduler loop error (continuing): %s", e)
             await asyncio.sleep(poll_interval_sec)
+
+
+async def _scheduled_pead_scan_loop(
+    division, data_exec, logger_agent,
+    *,
+    scan_window_start_et=(8, 30),
+    scan_window_end_et=(9, 25),
+    poll_interval_sec: int = 300,
+) -> None:
+    """Daily pre-open PEAD entry scan — fires division.scan(broker) once per US
+    trading weekday inside the ET window, deduped on calendar date. division.scan
+    is a no-op while standby/disabled (the live test = lifting divisions.yaml
+    standby). Broker resolved fresh each fire (None-safe). Holidays ignored —
+    scan bails cleanly when no fresh earnings wave exists."""
+    from datetime import datetime, time
+    try:
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+    except Exception:
+        log.warning("zoneinfo unavailable; PEAD scan scheduler using local time as ET")
+        et = None
+    win_start = time(*scan_window_start_et)
+    win_end = time(*scan_window_end_et)
+    last_scan_date = None
+    log.info("PEAD scan scheduler online: weekdays %02d:%02d-%02d:%02d ET",
+             scan_window_start_et[0], scan_window_start_et[1],
+             scan_window_end_et[0], scan_window_end_et[1])
+    while True:
+        try:
+            now = datetime.now(et) if et is not None else datetime.now()
+            if (now.weekday() < 5 and win_start <= now.time() <= win_end
+                    and last_scan_date != now.date()):
+                last_scan_date = now.date()
+                broker = data_exec.brokers.get(division.slug)
+                if broker is None:
+                    log.info("PEAD scan: no broker for %s — skipping", division.slug)
+                else:
+                    try:
+                        orders = await division.scan(broker)
+                        logger_agent.log_event(
+                            "scheduler", "pead_scan_done",
+                            {"date": str(now.date()), "entered": len(orders)})
+                    except Exception as e:
+                        log.exception("PEAD scheduled scan failed: %s", e)
+                        logger_agent.log_event(
+                            "scheduler", "pead_scan_error",
+                            {"date": str(now.date()), "error": str(e)})
+            await asyncio.sleep(poll_interval_sec)
+        except asyncio.CancelledError:
+            log.info("PEAD scan scheduler cancelled.")
+            return
+        except Exception as e:
+            log.exception("PEAD scan scheduler loop error (continuing): %s", e)
+            await asyncio.sleep(poll_interval_sec)
+
+
+async def _scheduled_pead_manage_loop(division, data_exec, logger_agent) -> None:
+    """Dynamic-cadence PEAD exit engine — fires division.manage(broker) and
+    sleeps the cadence it returns. division.manage is a no-op (returns [], idle
+    cadence) while standby/disabled. Broker resolved fresh each tick (None-safe)."""
+    log.info("PEAD position manager online.")
+    while True:
+        try:
+            broker = data_exec.brokers.get(division.slug)
+            if broker is None:
+                await asyncio.sleep(1800)
+                continue
+            exits, cadence = await division.manage(broker)
+            if exits:
+                logger_agent.log_event(
+                    "scheduler", "pead_manage_exits", {"exits": len(exits)})
+            await asyncio.sleep(int(cadence) if cadence else 1800)
+        except asyncio.CancelledError:
+            log.info("PEAD position manager cancelled.")
+            return
+        except Exception as e:
+            log.exception("PEAD manage loop error (continuing): %s", e)
+            await asyncio.sleep(300)
+
+
+async def _scheduled_pead_reconcile_loop(division, data_exec, logger_agent) -> None:
+    """Flag-2 deferred-fill reconciler — fires division.reconcile(broker) and sleeps
+    the cadence it returns (a short poll while pending entries exist; idle while
+    standby / none). PEAD scans pre-open, so its entries are placed as GFD fractional
+    buys that QUEUE to the 9:30 open; this loop confirms each at/after the open and
+    promotes it to a real record (or cancels the >5% collar miss past open+deadline).
+    No-op while standby/disabled — ships INERT. Broker resolved fresh each tick
+    (None-safe)."""
+    log.info("PEAD deferred-fill reconciler online.")
+    while True:
+        try:
+            broker = data_exec.brokers.get(division.slug)
+            if broker is None:
+                await asyncio.sleep(300)
+                continue
+            promoted, cadence = await division.reconcile(broker)
+            if promoted:
+                logger_agent.log_event(
+                    "scheduler", "pead_reconcile_promoted", {"promoted": len(promoted)})
+            await asyncio.sleep(int(cadence) if cadence else 300)
+        except asyncio.CancelledError:
+            log.info("PEAD deferred-fill reconciler cancelled.")
+            return
+        except Exception as e:
+            log.exception("PEAD reconcile loop error (continuing): %s", e)
+            await asyncio.sleep(300)
 
 
 def _seconds_until_next_6h_boundary(now, *, post_close_buffer_sec: int = 120) -> float:

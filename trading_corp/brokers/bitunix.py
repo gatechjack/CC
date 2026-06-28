@@ -88,6 +88,7 @@ from trading_corp.brokers.bitunix_exceptions import (
     BitunixStaleSnapshot,
     BitunixStuckOrderCancelFailed,
     BitunixStuckOrderCancelled,
+    BitunixUntrackedTpslOrder,
 )
 from trading_corp.brokers.bitunix_symbols import to_wire_format
 from trading_corp.persistence import db
@@ -342,6 +343,37 @@ def _to_float(v) -> float:
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _extract_tpsl_order_id(data) -> str:
+    """Extract the venue order id from a `/tpsl/...` place response, tolerating
+    BOTH shapes the venue has been observed to use.
+
+    The BitUnix docs show `data` as a single dict `{"orderId": "..."}`, but the
+    LIVE `/tpsl/place_order` endpoint returned a LIST `[{"orderId": "..."}]`
+    (report c8a426d / trade cb6b4d4a — the old `(data or {}).get("orderId")`
+    crashed with "'list' object has no attribute 'get'", failing all 3 TP legs).
+    Since the documented shape and the live shape disagree — and an exchange that
+    contradicts its own docs can change again — this parses defensively rather
+    than assume one form: dict, list-of-dicts, and bare scalar / list-of-scalars
+    id forms are all accepted. Returns "" when no id is present.
+    """
+    if not data:
+        return ""
+    if isinstance(data, dict):
+        oid = data.get("orderId") or data.get("id")
+        return str(oid) if oid else ""
+    if isinstance(data, list):
+        for el in data:
+            if isinstance(el, dict):
+                oid = el.get("orderId") or el.get("id")
+                if oid:
+                    return str(oid)
+            elif el:  # bare scalar id in a list
+                return str(el)
+        return ""
+    # bare scalar id (str / int)
+    return str(data)
 
 
 class BitunixBroker(Broker):
@@ -1050,13 +1082,17 @@ class BitunixBroker(Broker):
                 "credentials). In PAPER mode orders route to PaperBroker via "
                 "PaperExecutionBroker — if you see this, the wrapping was bypassed."
             )
-        if self._halt_new_orders:
+        # Determine reduce_only FIRST so the halt latch can exempt exits. #5-B:
+        # a halt blocks NEW ENTRIES only — a reduce_only EXIT must always be
+        # allowed to close an existing position ("exits are never halted",
+        # Phase 1a §9c). The B1 catastrophic stop is a separate slPrice
+        # attachment, not a reduce_only order, so it is unaffected.
+        extra = order.extra or {}
+        reduce_only = bool(extra.get("reduce_only", False))
+        if self._halt_new_orders and not reduce_only:
             raise RuntimeError(
                 f"BitunixBroker halted, refusing new orders: {self._halt_reason}"
             )
-
-        extra = order.extra or {}
-        reduce_only = bool(extra.get("reduce_only", False))
         # B2 maker-entry dispatch: ENTRIES only (never exits/reduce-only, and
         # never the B1 catastrophic stop, which is a separate slPrice attachment
         # that stays MARK_PRICE+MARKET taker). Absent extra["maker_entry"] this is
@@ -1099,9 +1135,22 @@ class BitunixBroker(Broker):
             reduce_only, order.id,
         )
 
-        status, filled_qty, avg_price, fee = await self._observe_fill(
+        status, filled_qty, avg_price, fee, entry_role = await self._observe_fill(
             order_id=venue_order_id, client_id=client_id,
             fill_timeout_s=fill_timeout_s,
+        )
+
+        # D3 (2026-06-23): derive the recorded role from ORDER SEMANTICS — the
+        # order TYPE the bot actually placed — NOT the unreliable venue roleType
+        # that `_observe_fill` returns (`entry_role`, proven to report MAKER for
+        # economically-taker fills). A POST_ONLY limit (the B2 `_maker_clone`
+        # entry, which sets body["effect"]=="POST_ONLY") rests as a guaranteed
+        # maker; anything else (market/MARK entry, or the maker→taker fallback
+        # which re-enters place_order with a non-POST_ONLY body) is a taker.
+        placed_role = (
+            "maker"
+            if str(body.get("effect") or "").upper() == "POST_ONLY"
+            else "taker"
         )
 
         # Encode non-terminal status in the venue suffix (mirrors coinbase):
@@ -1124,6 +1173,9 @@ class BitunixBroker(Broker):
             ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             venue=venue,
             fee=fee,
+            # D3: order-semantics role (placed_role) supersedes the roleType-
+            # derived entry_role from _observe_fill (now vestigial for role).
+            role=placed_role,
         )
 
     async def _place_maker_entry(self, order: ProposedOrder) -> FillEvent:
@@ -1350,6 +1402,7 @@ class BitunixBroker(Broker):
                     "unrealizedPNL": p.get("unrealizedPNL"),
                     "liqPrice": p.get("liqPrice"),
                     "side": side,
+                    "positionId": p.get("positionId"),
                 },
             ))
         return positions
@@ -1526,10 +1579,10 @@ class BitunixBroker(Broker):
                 order_id=resolved_id, status=status,
             )
 
-        avg_price, fee, hist_qty = await self._fill_price_from_history(resolved_id)
+        avg_price, fee, hist_qty, role = await self._fill_price_from_history(resolved_id)
         if filled_qty <= 0 and hist_qty > 0:
             filled_qty = hist_qty
-        return status, filled_qty, avg_price, fee
+        return status, filled_qty, avg_price, fee, role
 
     async def _handle_stuck_order(self, *, order_id, status) -> None:
         """Cancel a stuck order; emit audit + telegram; raise unless the
@@ -1618,19 +1671,34 @@ class BitunixBroker(Broker):
         # the partial fill tuple normally.
 
     async def _fill_price_from_history(self, order_id):
-        """VWAP fill price + summed fee + filled qty from trade history."""
+        """VWAP fill price + summed fee + filled qty + dominant maker/taker role
+        from trade history. role: 'maker'|'taker'|'mixed'|'' (no roleType)."""
         if not order_id:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, ""
         trades = await self.get_history_trades(order_id=order_id)
         notional = qty = fee = 0.0
+        maker_qty = taker_qty = 0.0
         for t in trades:
             q = _to_float(t.get("qty"))
             p = _to_float(t.get("price"))
             notional += q * p
             qty += q
             fee += _to_float(t.get("fee"))
+            role = str(t.get("roleType") or "").upper()
+            if role == "MAKER":
+                maker_qty += q
+            elif role == "TAKER":
+                taker_qty += q
         avg = (notional / qty) if qty > 0 else 0.0
-        return avg, fee, qty
+        if maker_qty <= 0 and taker_qty <= 0:
+            role_tag = ""
+        elif taker_qty <= 0:
+            role_tag = "maker"
+        elif maker_qty <= 0:
+            role_tag = "taker"
+        else:
+            role_tag = "mixed"
+        return avg, fee, qty, role_tag
 
     async def get_recent_close_fills(
         self, *, symbol: str, exit_side: str, since_ms: float | None = None,
@@ -1683,6 +1751,11 @@ class BitunixBroker(Broker):
                 "price": _to_float(t.get("price")),
                 "qty": _to_float(t.get("qty")),
                 "fee": _to_float(t.get("fee")),
+                # roleType is "MAKER" | "TAKER" (BitUnix trade-history doc); the
+                # order id lets the reconciler classify tp-vs-stop. Both absent →
+                # "" so the role mix / exit-kind logic degrades gracefully.
+                "role": str(t.get("roleType") or "").upper(),
+                "order_id": str(t.get("orderId") or ""),
             })
         return out
 
@@ -1837,6 +1910,308 @@ class BitunixBroker(Broker):
                 opened_ts=r["ts"] or "",
             ))
         return out
+
+    async def place_resting_reduce_only_limit(self, order: ProposedOrder) -> str:
+        """Place a REDUCE-ONLY LIMIT that RESTS on the book (a bracket TP leg) and
+        return its venue orderId WITHOUT observing the fill.
+
+        Unlike `place_order`, this does NOT poll for a fill — a TP rests until the
+        market reaches it (or native OCO cancels it on the final close). reduce_only
+        is FORCED True, so it is exit-exempt from the halt latch (#5-B). The caller
+        stores the returned orderId so the bot can identify its own resting orders
+        (OCO verify + #4 orphan ID).
+
+        VERIFY-ON-LIVE (Phase-C validation): that a reduce-only LIMIT rests as a
+        maker at the TP price, that 3 legs + the attached SL coexist (no 30038
+        TPSL_EXCEEDS_POSITION), and that native OCO / SL-auto-reduce behave as in
+        the manual UI — the open question this build's validation answers.
+        """
+        if self._stub or not self._client:
+            raise NotImplementedError(
+                "BitunixBroker.place_resting_reduce_only_limit: STUB mode (no creds)"
+            )
+        extra = dict(order.extra or {})
+        extra["reduce_only"] = True
+        order = dataclasses.replace(order, order_type="limit", extra=extra)
+        wire = to_wire_format(order.symbol)
+        # reduce-only on an existing position: verify ONE_WAY (never set/leverage).
+        await self._assert_position_mode_one_way(allow_set=False)
+        body = self._build_order_body(order, wire, reduce_only=True)
+        client_id = body["clientId"]
+        try:
+            data = await self._request(
+                "POST", "/api/v1/futures/trade/place_order", body=body,
+            )
+        except BitunixAPIError as e:
+            if e.code in _IDEMPOTENT_OK_CODES:
+                data = {"clientId": client_id}
+            else:
+                raise
+        venue_order_id = (data or {}).get("orderId")
+        log.info(
+            "BitUnix resting reduce-only LIMIT placed: venue_order_id=%s "
+            "clientId=%s %s %s qty=%s price=%s [order_id=%s]",
+            venue_order_id, client_id, body["side"], wire, body["qty"],
+            body.get("price"), order.id,
+        )
+        return str(venue_order_id) if venue_order_id else ""
+
+    async def place_tpsl_order(
+        self,
+        *,
+        symbol: str,
+        position_id: str,
+        tp_price: float,
+        tp_qty: float,
+        tp_stop_type: str = "MARK_PRICE",
+        tp_order_type: str = "LIMIT",
+    ) -> str:
+        """Place ONE partial-qty TP leg via the native `/tpsl/place_order` endpoint.
+
+        Builds a position-tied TP/SL order with a partial `tpQty` — call N times
+        to build the TP ladder (0.25/0.50/0.25 splits). The `tpOrderPrice` is set
+        equal to `tp_price` to preserve the maker-LIMIT-at-price behaviour (LIMIT
+        TP fills at `tpOrderPrice` when the mark hits `tpPrice`).
+
+        Unlike `place_resting_reduce_only_limit` (standalone reduce-only LIMIT via
+        `/futures/trade/place_order`), this uses the native venue TP/SL order family
+        which gives: native OCO with the attached B1 SL, auto-reducing SL qty as
+        legs fill, and clean fill-tracking via `get_pending_tpsl_orders`.
+
+        Returns the venue tp-order id string. Empty string ONLY on the idempotent
+        duplicate path (the leg is already resting from a prior attempt; logged).
+        Raises `BitunixAPIError` on non-idempotent errors. Raises
+        `BitunixUntrackedTpslOrder` when the POST was accepted (code 0) but no
+        orderId could be parsed — the leg likely rested but is now untracked, so
+        the caller MUST flag it (never silently treat it as not-placed).
+
+        Response shape (CONFIRMED live, report c8a426d): the docs show a dict
+        `{"orderId": ...}` but the live `/tpsl/place_order` returned a LIST
+        `[{"orderId": ...}]`. `_extract_tpsl_order_id` parses both defensively.
+        """
+        if self._stub or not self._client:
+            raise NotImplementedError(
+                "BitunixBroker.place_tpsl_order: STUB mode (no creds)"
+            )
+        try:
+            wire = to_wire_format(symbol)
+        except Exception:
+            wire = symbol
+        body: dict = {
+            "symbol": wire,
+            "positionId": str(position_id),
+            "tpPrice": _amount_str(tp_price),
+            "tpQty": _amount_str(tp_qty),
+            "tpStopType": tp_stop_type,
+            "tpOrderType": tp_order_type,
+            "tpOrderPrice": _amount_str(tp_price),
+        }
+        idempotent_dup = False
+        try:
+            data = await self._request(
+                "POST", "/api/v1/futures/tpsl/place_order", body=body,
+            )
+        except BitunixAPIError as e:
+            if e.code in _IDEMPOTENT_OK_CODES:
+                # Duplicate of an already-resting leg (prior attempt). Known to be
+                # on the venue — not a surprise order; no untracked risk.
+                data = {}
+                idempotent_dup = True
+            else:
+                raise
+        # Defensive parse: docs show a dict {"orderId": ...} but the LIVE endpoint
+        # returned a LIST [{"orderId": ...}] (report c8a426d). Tolerate both.
+        venue_order_id = _extract_tpsl_order_id(data)
+        if venue_order_id:
+            log.info(
+                "BitUnix tpsl/place_order: venue_order_id=%s positionId=%s "
+                "%s tpPrice=%s tpQty=%s",
+                venue_order_id, position_id, wire,
+                body["tpPrice"], body["tpQty"],
+            )
+            return venue_order_id
+        if idempotent_dup:
+            log.warning(
+                "BitUnix tpsl/place_order: idempotent duplicate accepted (leg "
+                "already resting from a prior attempt) positionId=%s %s tpPrice=%s "
+                "tpQty=%s — no orderId returned",
+                position_id, wire, body["tpPrice"], body["tpQty"],
+            )
+            return ""
+        # POST was ACCEPTED (code 0) but no orderId could be extracted from an
+        # unexpected response shape. The leg has very likely RESTED on the venue
+        # but we could not capture its id. Do NOT return "" as if nothing was
+        # placed — the reconciler is position-level and will not catch a stray TP
+        # order. Log loudly + RAISE so the caller flags it for reconciliation.
+        log.error(
+            "BitUnix tpsl/place_order: POST accepted but NO orderId in response "
+            "%r — TP leg may be RESTING UNTRACKED (positionId=%s %s tpPrice=%s "
+            "tpQty=%s); flagging for reconciliation",
+            data, position_id, wire, body["tpPrice"], body["tpQty"],
+        )
+        raise BitunixUntrackedTpslOrder(
+            position_id=str(position_id), symbol=wire,
+            tp_price=body["tpPrice"], tp_qty=body["tpQty"], raw_response=data,
+        )
+
+    async def place_position_tpsl(
+        self,
+        *,
+        symbol: str,
+        position_id: str,
+        sl_price: float,
+        sl_stop_type: str = "MARK_PRICE",
+        sl_order_type: str = "MARKET",
+    ) -> str:
+        """Place the auto-reducing whole-position STOP-LOSS via the native
+        `/tpsl/position/place_order` endpoint.
+
+        This is the ONE position-level SL (NO qty) — it "closes based on the
+        position quantity AT THAT TIME", so it auto-shrinks as the partial TP
+        legs (`place_tpsl_order`) fill. It mirrors the BitUnix UI's *Position
+        TP/SL* tab (one SL, no size box) — confirmed by the operator's UI
+        network capture. It is the SL the trail (`modify_position_sl` ->
+        `/tpsl/position/modify_order`) moves price-only to breakeven / TP1.
+
+        HARD RULE: NO `slQty` — this is position-level and auto-reducing; a qty
+        would defeat the auto-reduce. The SL stays a guaranteed-fill MARKET stop
+        (`slOrderType=MARKET`, `slStopType=MARK_PRICE`), matching B1's behaviour.
+
+        Coexists with the B1 entry-attached `slPrice` MARKET stop (the always-on
+        catastrophic backstop — UNCHANGED). This managed Position SL is the
+        trail-able one; B1 is the immutable price-only backstop. Fail-soft at the
+        call site: if this placement fails, the TP legs + the B1 entry stop still
+        protect the position.
+
+        Returns the venue sl-order id string (empty string on success with no
+        id). Raises `BitunixAPIError` on non-idempotent errors; idempotent
+        duplicate codes (_IDEMPOTENT_OK_CODES) are silently accepted (same
+        positionId+price already resting). STUB mode raises NotImplementedError.
+
+        VERIFY-ON-LIVE: the exact response shape (`orderId` field) and the
+        coexistence with the B1 entry stop (no `30038`) are grounded against the
+        docs + the UI capture; confirm on the first real multi-leg placement.
+        """
+        if self._stub or not self._client:
+            raise NotImplementedError(
+                "BitunixBroker.place_position_tpsl: STUB mode (no creds)"
+            )
+        try:
+            wire = to_wire_format(symbol)
+        except Exception:
+            wire = symbol
+        body: dict = {
+            "symbol": wire,
+            "positionId": str(position_id),
+            "slPrice": _amount_str(sl_price),
+            "slStopType": sl_stop_type,
+            "slOrderType": sl_order_type,
+        }
+        try:
+            data = await self._request(
+                "POST", "/api/v1/futures/tpsl/position/place_order", body=body,
+            )
+        except BitunixAPIError as e:
+            if e.code in _IDEMPOTENT_OK_CODES:
+                data = {}
+            else:
+                raise
+        venue_order_id = (data or {}).get("orderId")
+        log.info(
+            "BitUnix tpsl/position/place_order: venue_order_id=%s positionId=%s "
+            "%s slPrice=%s (auto-reducing, no qty)",
+            venue_order_id, position_id, wire, body["slPrice"],
+        )
+        return str(venue_order_id) if venue_order_id else ""
+
+    async def get_pending_orders(self, symbol: str | None = None) -> list[dict]:
+        """Return the venue's currently-RESTING (unfilled) orders — for the OCO
+        light-verify (no stale SL/TP lingers after a terminal close). Read-only;
+        returns [] (never raises) on stub/creds/transient error so callers can
+        treat it as 'unknown, skip the verify this tick'.
+
+        VERIFY-ON-LIVE: the exact endpoint/response shape is grounded against the
+        BitUnix futures docs but unconfirmed read-only (Phase-C validation).
+        """
+        if self._stub or not self._client or not self._api_key:
+            return []
+        query: dict = {}
+        if symbol:
+            try:
+                query["symbol"] = to_wire_format(symbol)
+            except Exception:
+                query["symbol"] = symbol
+        try:
+            data = await self._request(
+                "GET", "/api/v1/futures/trade/get_pending_orders", query=query,
+            )
+        except Exception as e:
+            log.warning("BitUnix get_pending_orders failed: %s", e)
+            return []
+        if isinstance(data, dict):
+            data = data.get("orderList") or data.get("list") or []
+        return list(data or [])
+
+    async def modify_position_sl(
+        self,
+        symbol: str,
+        new_sl_price: float,
+        *,
+        position_id: str | None = None,
+        sl_stop_type: str = "MARK_PRICE",
+        sl_order_type: str = "MARKET",
+    ) -> bool:
+        """Move the attached position STOP-LOSS to `new_sl_price` IN PLACE (no
+        cancel-replace naked window). PRICE-ONLY — the venue auto-reduces SL qty
+        as TPs fill, so the bot never sets SL qty (hard rule). The SL stays a
+        guaranteed-fill MARKET stop (slOrderType=MARKET).
+
+        `position_id` is MANDATORY: if absent or empty, this method returns
+        False immediately without calling the venue (a positionId-less SL-move
+        would 404 or silently target the wrong position). The caller (reconciler)
+        must thread positionId from broker Position.extra.
+
+        Fail-soft: returns True on success, False on any failure or absent
+        positionId (NEVER raises) — the SL-move is failure-tolerant (a missed
+        move leaves the SL at its prior, still-protective price; the TP already
+        filled on-exchange).
+
+        Path fix: uses the correct `/api/v1/futures/tpsl/position/modify_order`
+        (the previously used `/tpsl/modify_position_tp_sl_order` returned 404).
+        """
+        if self._stub or not self._client or not self._api_key:
+            return False
+        if not position_id:
+            log.warning(
+                "BitUnix modify_position_sl: positionId absent for %s — "
+                "skipping (fail-soft; SL stays at prior price)", symbol,
+            )
+            return False
+        try:
+            wire = to_wire_format(symbol)
+        except Exception:
+            wire = symbol
+        body: dict = {
+            "symbol": wire,
+            "positionId": str(position_id),
+            "slPrice": _amount_str(new_sl_price),
+            "slStopType": sl_stop_type,
+            "slOrderType": sl_order_type,
+        }
+        try:
+            await self._request(
+                "POST",
+                "/api/v1/futures/tpsl/position/modify_order",
+                body=body,
+            )
+            log.info("BitUnix SL moved (price-only) %s -> %s", wire, body["slPrice"])
+            return True
+        except Exception as e:
+            log.warning(
+                "BitUnix modify_position_sl failed (%s -> %s): %s — SL stays at "
+                "prior price (failure-tolerant)", wire, body["slPrice"], e,
+            )
+            return False
 
     async def modify_position_tp_sl_order(
         self,

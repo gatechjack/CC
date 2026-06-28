@@ -99,7 +99,13 @@ def mark_pre_phase_a_rows(
     with _db.connect(db_url) as conn:
         cur = conn.execute(
             "UPDATE paper_trade_record SET result='pre_phase_a' "
-            "WHERE result IS NULL AND (tp_price IS NULL OR stop_price IS NULL)"
+            "WHERE result IS NULL AND (tp_price IS NULL OR stop_price IS NULL) "
+            # robinhood_pead self-manages exits via its manage() pressure engine
+            # and has NO tp_price (no take-profit) — the replay must NOT stamp its
+            # live rows pre_phase_a, which would drop them from the open book
+            # before manage() exits them. (Mirrors the bitunix bracket-managed
+            # replay suppression.)
+            "AND division != 'robinhood_pead'"
         )
         return cur.rowcount or 0
 
@@ -939,6 +945,20 @@ async def _replay_tick_async(
             # stays the default for Otter / Cypher / Donchian / pre-PR-4
             # bitunix trades.
             extra = _parse_extra(row.extra_json)
+            # phantom-legs fix (2026-06-22): a bracket-managed LIVE row is owned
+            # by the venue bracket + the reconciler (venue-truth fills + SL trail
+            # + auto-book). The paper bar-walk must NOT run for it — simulating tp
+            # fills wrote PHANTOM `filled_legs` that stalled the auto-book
+            # (partial_tp_ambiguous → hours-long stuck/halted engine: 89966d01 &
+            # 2a53de19, 2026-06-22) and emitted false `would_call_broker:false` SL
+            # telemetry. Skip entirely; the reconciler owns this row's lifecycle.
+            if extra.get("execution_mode") == "live" and (
+                extra.get("bracket_tp_order_ids")
+                or extra.get("bracket_position_sl_order_id")
+            ):
+                counts.setdefault("skipped_bracket_managed_live", 0)
+                counts["skipped_bracket_managed_live"] += 1
+                continue
             is_v2 = (
                 row.division == "bitunix_futures"
                 and bool(extra.get("tp_plan"))
@@ -984,8 +1004,34 @@ async def _replay_tick_async(
             # behavior). The position-state reconciler at startup will
             # detect any stranded live rows on the next process start.
             is_live_row = extra.get("execution_mode") == "live"
+            # Issue #1 (2026-06-21): a live row whose exit is owned by the
+            # server-side /tpsl/ bracket (resting TP legs + position SL + the
+            # entry-attached B1 stop, since the 2026-06-18 rebuild) must NOT
+            # also be driven by this pre-bracket replay-loop managed virtual-
+            # exit. The two collide: the managed path placed a reduce-only exit
+            # for the FULL entry qty against a bracket-REDUCED venue position →
+            # BitUnix 20008 'Insufficient amount', retried every tick (0% ever
+            # succeeded live). The bracket + the reconciler auto-book own the
+            # exit AND the booking (proven on 48b5adf9). For a bracket-managed
+            # live row: persist any lifecycle delta and leave `result` NULL for
+            # the reconciler to auto-book from real fills — do NOT dispatch the
+            # managed exit, and do NOT fall through to the paper `_update_row`
+            # write (which would book a LIVE row off bar-classification).
+            bracket_managed = is_live_row and bool(
+                extra.get("bracket_tp_order_ids")
+                or extra.get("bracket_position_sl_order_id")
+            )
             live_executor = _LIVE_EXIT_EXECUTOR.get("observer")
-            if (
+            if bracket_managed:
+                if verdict.extra_json_updates:
+                    delta = _extra_json_delta(extra, verdict.extra_json_updates)
+                    if delta is not None:
+                        _persist_extra_json(db_url, row.order_id, delta)
+                        if delta.get("filled_legs"):
+                            counts["v2_partial_progress"] += 1
+                counts.setdefault("suppressed_bracket_managed", 0)
+                counts["suppressed_bracket_managed"] += 1
+            elif (
                 is_live_row
                 and live_executor is not None
                 and hasattr(live_executor, "_execute_live_exits")
@@ -1274,7 +1320,10 @@ def _load_pending(db_url: str) -> list[_PendingRow]:
             "       stop_price, tp_price, tp_r_multiple, "
             "       entry_reference_price, expected_loss, "
             "       expected_gain, max_hold_seconds, extra_json "
+            # robinhood_pead self-manages exits (manage()/pressures, no TP) — the
+            # paper-trade replay simulator must not touch its rows.
             "FROM paper_trade_record WHERE result IS NULL "
+            "AND division != 'robinhood_pead' "
             "ORDER BY ts ASC"
         ).fetchall()
     return [

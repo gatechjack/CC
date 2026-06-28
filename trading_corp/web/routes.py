@@ -194,6 +194,8 @@ def register(app: FastAPI) -> None:
     # them here keeps everything reachable on a single port.
     from trading_corp.web import webhooks
     webhooks.register(app)
+    from trading_corp.web import sfp_cockpit_view
+    sfp_cockpit_view.register(app)
 
     # ── PWA: serve service worker + manifest at root scope ─────────────
     # The service worker MUST be served from the root path (`/sw.js`),

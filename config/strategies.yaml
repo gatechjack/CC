@@ -1018,7 +1018,7 @@ polymarket_arbitrage:
 # moving them to YAML is a future refinement (not load-bearing for Phase 3.1).
 bitunix_futures:
   enabled: true                     # Phase 3.1 paper-mode auto-execute live
-  auto_execute: true                # mtime-hot-reloaded runtime kill switch (per-order read)
+  auto_execute: true               # mtime-hot-reloaded runtime kill switch (per-order read)
   execution_mode: paper             # "paper" | "live"  — Stage-1 N+1 commit 2; config-and-restart, no hot-reload
   mode: halted                      # two-state collapse (2026-06-27): "trading" | "halted". HALTED = observer short-circuits before scoring/would_have_placed/paper_trade_record (fully inert, flip-ready). Fail-safe default is halted (main.py); no live account here.
   snapshot_staleness_threshold_seconds: 60   # gate (a) sub-item 2 — halt order path if last successful snapshot is older than this. 2× per-bar cadence on the 1-min bar; mtime-cached on read.
@@ -1032,6 +1032,11 @@ bitunix_futures:
   staleness_gate:
     enabled: true                  # safety gate ON; set false to disable (current pre-C behavior)
     margin_seconds: 120            # threshold = bar_interval_seconds + this; 3m bar → 180+120 = 300s
+  # D4 (2026-06-20) - concurrent-position guard (same-side, bot's-own).
+  # Blocks a NEW entry when the bot already holds an open same-symbol
+  # SAME-SIDE position it opened. Ships OFF; flip after 1 clean trade.
+  concurrent_position_guard:
+    enabled: true
   division: bitunix_futures
   symbol: "BTC/USDT.P"              # canonical perp symbol; whitelist BTC-only Phase 3
   counter_tier_enabled: false       # COUNTER (fade-the-trend) defaults OFF
@@ -1129,11 +1134,14 @@ bitunix_futures:
         side: buy
         ttl_minutes: 30
         ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
-      mc_a_yellow_x:
-        weight: 2
-        side: buy
-        ttl_minutes: 30
-        ttl_per_tf: {"3m": 30, "15m": 90, "30m": 180}
+      # mc_a_yellow_x - INTENTIONALLY NOT a directional factor. It is a
+      # NON-DIRECTIONAL whale/manipulation / tape-anomaly flag (neither bull
+      # nor bear). Was miscategorized as side: buy (added spurious bull
+      # points); declassified 2026-06-19. Handled like the other
+      # non-directional signals: absent from factors -> the scorer ignores it
+      # (btc_accumulator.evaluate_confluence: unknown signal -> 0 score) while
+      # it still flows through the alert ledger / audit. Do NOT re-add it as a
+      # factor, and do NOT flip it to side: sell (the same error inverted).
       mc_a_red_diamond:
         weight: 4
         side: sell
@@ -1327,7 +1335,7 @@ bitunix_futures:
     swing_max_lookback: 30      # 3m bars (~90 min)
     # Take-profit plan
     tp1_r_target: 0.5
-    tp1_min_profit_multiplier: 2.0
+    tp1_min_profit_multiplier: 3.75  # x1.875: preserves fee_floor (gate behavior) at the corrected taker; was 2.0
     tp1_qty_fraction: 0.25
     tp2_r_default: 1.0
     tp2_qty_fraction: 0.50
@@ -1352,23 +1360,16 @@ bitunix_futures:
   # whether base VIP3 rate persists after expiry.
   # ============================================================
   fees:
-    taker_pct: 0.0004           # 0.04%
+    taker_pct: 0.00019           # 0.019% venue-actual effective (Fee Discount Card; was 0.04% headline)
     maker_pct: 0.00014          # 0.014%
     slippage_pct: 0.00005       # 0.5 bps assumed
     entry_is_taker: true        # market entry on signal bar
     tp_is_maker: false          # MVP: market exits; revisit when limit fills mature
-    # ── B2 maker (POST_ONLY) entry execution ──────────────────────────────
-    # DEFAULT OFF — the deploy ships maker-off (behavior-preserving); flip
-    # enabled→true DELIBERATELY (like execution_mode) to start capturing maker
-    # economics live at real size. When ON, the entry is placed as a POST_ONLY
-    # limit (guaranteed-maker; rejected if it would cross); if it doesn't fill
-    # within rest_timeout_s OR is rejected, it crosses to a taker market entry
-    # (the signal is never dropped). The B1 catastrophic STOP always stays
-    # MARK_PRICE+MARKET taker — never maker.
+    # B2 maker (POST_ONLY) entry execution — DEFAULT OFF (flip deliberately).
     maker_entry_enabled: false
-    maker_entry_rest_timeout_s: 2.0      # short rest, to not worsen the PA-redeem late-entry drag
-    maker_entry_offset_pct: 0.0          # passive offset from signal price (0 = at ref)
-    maker_entry_fallback_mode: cross_to_taker   # cross_to_taker | abandon
+    maker_entry_rest_timeout_s: 2.0
+    maker_entry_offset_pct: 0.0
+    maker_entry_fallback_mode: cross_to_taker
 
 
 # ── Polymarket Copy Trading (Phase 4+ placeholder; not yet implemented) ──
@@ -1665,7 +1666,7 @@ kalshi_sports_scout:
 #   - Run-line pushes: not relevant here (Phase 0 is ML-only) but
 #     keep in mind if/when Kalshi adds run lines.
 kalshi_sports_arb_observer:
-  enabled: false                     # SHELVED 2026-06-14 — Phase-0 SHELVE_LATENCY_THESIS_CLOSED (reports/2026-06-14_kalshi_sports_arb_observer_shelve.md)
+  enabled: false                      # FLIPPED 2026-05-23 for MLB Phase 0
   auto_execute: false                # always — observer never emits
   division: kalshi_arbitrage
   poll_interval_sec: 3600            # 1h
@@ -1726,34 +1727,12 @@ polymarket_copy_trader:
   division: polymarket_copy_trading
   poll_interval_sec: 60             # 60s; free API can sustain faster if needed
   activity_limit_per_poll: 20
-  # ── Execution tif (E2·2) → moved to config/divisions.yaml [polymarket_copy_trading] (E5a) ──
-  #   order_type (fak_synth|gtc|fok|gtd) + fak_poll_seconds are consumed by
-  #   PolymarketLiveBroker, NOT the strategy, so they now live on the division
-  #   and are read at broker construction (main.py _build_broker_for_division).
-  # ── Copy sizing (E2·3, D4) — REPLACED the v1 tier ladder ──
-  # size = clamp(bankroll_usdc * per_trade_fraction * conviction_mult, min_size, max_size)
-  # DEFAULT = flat ≈$1/order, conviction OFF. Arithmetic of the default:
-  #   120.0 * 0.00833 * 1.0 = 0.9996 ≈ $1.00, inside [0.50, 2.00] → ~$1.00.
-  # Copy size no longer scales with the whale's bet size (the old $1/$2/$5 tiers);
-  # the full proportional/conviction schema is present but inert by config.
-  # NOT wired to live placement here (emission still feeds paper would_have_placed);
-  # E2·6 routes it to the live broker.
   sizing:
-    bankroll_usdc: 120.0            # static funded USDC.e balance (PCT ~119.98).
-                                    #   NOTE: when proportional sizing is turned on,
-                                    #   revisit reading the LIVE balance vs this static
-                                    #   constant (deferred — not E2·3).
-    per_trade_fraction: 0.00833     # 120.0 * 0.00833 = 0.9996 ≈ $1.00 default per order
-    min_size: 0.50                  # clamp floor (USDC) — tight (0.5×) around the ~$1 default
-    max_size: 2.00                  # clamp ceiling (USDC) — tight (2×) around the ~$1 default
-    conviction:
-      enabled: false                # OFF → conviction_mult = 1.0 (inert). Flip to true to
-                                    #   scale by whale conviction — NO code change. PREREQ:
-                                    #   a copy-roster review of the pinned whales first
-                                    #   (several truncated/untrustworthy) — operator concern.
-      signal: composite_score       # whale_meta key used when enabled (or decision_win_rate)
-      floor: 0.5                    # clamp on the derived multiplier
-      cap: 2.0
+    # USDC bet size → our USDC copy size. Polymarket binaries clear in USDC;
+    # whale bet sizes vary 100× more than Kalshi contracts, so the upper
+    # tier is more aggressive ($5 vs Kalshi's $3).
+    tier_boundaries_usdc: [100.0, 1000.0]
+    tier_sizes_usdc: [1.0, 2.0, 5.0]
 
 # ── Robinhood Joint Iron Condor v1 ──
 robinhood_joint_iron_condor:
@@ -1899,8 +1878,8 @@ tasty_options_iron_condor:
 # Robinhood account (680725082). Autonomous (no per-trade approval) once the
 # Board blesses the strategy; paper-first. Division wiring lands in Phase 2.
 robinhood_pead:
-  enabled: false
-  auto_execute: false            # Board flips true to bless (HITL rules)
+  enabled: true                  # declarative; divisions.yaml standby:true is the operative gate
+  auto_execute: true             # GO-LIVE 2026-06-24 (Board-authorized): PEAD trades autonomously, no HITL
   division: robinhood_pead
 
   # --- Universe screen — CONFIG-DRIVEN floors (retune without a code change) ---
@@ -1925,15 +1904,33 @@ robinhood_pead:
     top_quintile: true    # also require top-quintile SUE within the wave
     quintile_pct: 0.80
 
-  # NOTE: live sizing / exit-rule / max_concurrent params land in Phase 2 (2E)
-  # when the division is wired. position_pct + max_concurrent there will be
-  # PLUMBING-VALIDATION values at $75 (the intended ~20-25 name book needs funding).
+  # --- Phase-2 live wiring (2026-06-22): plumbing-validation values @ ~$75 ---
+  # OPERATIVE kill-switch is divisions.yaml standby:true (scan+manage no-op);
+  # auto_execute:false above keeps it paper even if standby is lifted. The
+  # intended ~20-25 name book needs funding; max_concurrent caps the plumbing book.
+  universe_file: "@config/nasdaq_composite.txt"   # 3,207-name Nasdaq Composite (anchored path)
+  position_pct: 0.10                # 10% of account value per name
+  max_concurrent_positions: 10      # plumbing book ceiling (~20-25 when funded)
+  entry_delay_days: 1               # enter 1 trading day post-announcement...
+  entry_max_delay_days: 2           # ...through 2 td (the PEAD entry window)
+  manage_cadence_sec: 300           # exit-engine poll cadence
+  scan_window_start_et: [8, 30]     # daily pre-open scan window (read at startup by main.py)
+  scan_window_end_et: [9, 25]
+  # --- Flag-2 deferred-fill reconcile (config-driven; defaults applied if absent) ---
+  # PEAD scans pre-open, so entries are placed as GFD fractional buys that QUEUE to
+  # the 9:30 open; a sibling reconcile loop confirms each fill at/after the open and
+  # promotes it to a record. The deadline is anchored at the 9:30 OPEN (not at
+  # placement) — an order still unfilled at open+deadline is the >5% collar miss
+  # (cancel the resting order, skip the name, log it).
+  reconcile_poll_interval_sec: 30          # reconcile-loop tick while pending orders exist
+  reconcile_deadline_after_open_sec: 300   # wait past the 9:30 ET open before collar-miss cancel
+  reconcile_partial_warn_frac: 0.90        # warn when realized $ < this fraction of requested
 
 bitunix_sfp:
   enabled: true
   auto_execute: true
-  execution_mode: paper            # OPERATOR-SET paper|live at deploy
-  mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged (mode read in main.py, not BitunixSfpConfig).
+  execution_mode: live            # OPERATOR-SET paper|live at deploy
+  mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged.
   division: bitunix_sfp
   symbols: ["BTC/USDT.P"]
   detection_tf: "15m"

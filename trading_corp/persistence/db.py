@@ -392,6 +392,37 @@ CREATE TABLE IF NOT EXISTS scan_evaluation (
     created_ts   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_scan_evaluation_session ON scan_evaluation(session_ts);
+
+-- ── robinhood_pead Flag-2: deferred-fill reconcile (PENDING != open position) ──
+-- A PENDING fractional ENTRY: placed PRE-OPEN (8:30-9:25 ET) as a GFD fractional
+-- buy that RH queues to the 9:30 open, NOT yet filled. This is a SEPARATE state
+-- from the position book (paper_trade_record): a pending order is NOT an open
+-- position and must never be counted as one. The reconcile loop is the only
+-- reader — at/after the open it polls the broker order and, on a CONFIRMED fill,
+-- promotes the row into a paper_trade_record (REALIZED qty) reusing the same
+-- order_id (idempotent INSERT OR IGNORE), then deletes it; on a >5% collar miss
+-- (still unfilled past open+deadline) it cancels the resting order and deletes the
+-- row (no record). Keeping PENDING out of paper_trade_record makes the invariant
+-- STRUCTURAL — no book/dashboard/manage query can accidentally count it. Rows are
+-- transient (deleted on resolution); a restart mid-window drains survivors on boot.
+CREATE TABLE IF NOT EXISTS pending_order (
+    order_id         TEXT PRIMARY KEY,        -- = proposed_order.id; promoted record reuses it
+    ts               TEXT NOT NULL,           -- placed_ts (ISO UTC, pre-open)
+    strategy         TEXT NOT NULL,
+    division         TEXT NOT NULL,
+    symbol           TEXT NOT NULL,
+    side             TEXT NOT NULL,
+    order_type       TEXT NOT NULL DEFAULT 'market',
+    notional_usd     REAL,                    -- requested $ (realized read back at reconcile)
+    broker_order_id  TEXT,                    -- RH order id the reconcile loop polls
+    trading_date     TEXT NOT NULL,           -- session whose 9:30 ET open reconciles it (YYYY-MM-DD)
+    max_hold_seconds INTEGER,                 -- frozen at placement so promote writes the same hold
+    rationale        TEXT,
+    state            TEXT NOT NULL DEFAULT 'pending',
+    extra_json       TEXT                     -- 6 locked PEAD keys + entry_reference_price/stop_price/etc.
+);
+CREATE INDEX IF NOT EXISTS ix_pending_order_division_state
+    ON pending_order(division, state);
 """
 
 

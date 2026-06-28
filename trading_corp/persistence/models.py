@@ -69,6 +69,14 @@ class ProposedOrder:
     # E2·5: 'paper' | 'live'. None until a placement path sets it (data_exec.place()
     # derives it from broker.paper); to_db_row resolves None → extra tag → 'paper'.
     execution_mode: str | None = None
+    # ── PEAD fractional / notional sizing (additive; default None/False so EVERY
+    # existing constructor across all divisions is byte-for-byte unaffected). On a
+    # fractional BUY, `notional_usd` is the dollar amount (the broker's isolated
+    # fractional path converts $→shares) and `qty` starts 0.0 (the REALIZED qty is
+    # read back from the fill). `fractional=True` routes the order through that
+    # isolated path; whole-share / limit / option orders never set these.
+    notional_usd: float | None = None
+    fractional: bool = False
 
     def to_db_row(self) -> dict:
         return {
@@ -112,6 +120,25 @@ class FillEvent:
     # `_fill_price_from_history` which sums per-fill fee from
     # `get_history_trades`. Layer 2 funding accrual is N+3 scope.
     fee: float = 0.0
+    # Maker/taker liquidity role of the fill: 'maker' | 'taker' | 'mixed' | ''.
+    # Default '' so non-BitUnix constructors (paper, robinhood, tasty, coinbase,
+    # fidelity) don't break. BitUnix populates it from `_fill_price_from_history`
+    # (the trade-history `roleType`). Forward-only telemetry — recorded as
+    # `entry_role` on the trade record (and `exit_role` from the close fills).
+    role: str = ""
+    # ── Bug-2 fix (PEAD STEP 3): the broker's REAL order id + the account the
+    # order actually hit. Default None so existing constructors (paper, tasty,
+    # coinbase, fidelity, bitunix) don't break — they leave both None. The
+    # Robinhood broker populates them from the order response so routing safety
+    # ("did this fill hit the bound account?") is first-class, read on every
+    # fill, not fished out of a dict.
+    broker_order_id: str | None = None
+    account: str | None = None
+    # ── PEAD fractional/notional (additive, default None): the dollars actually
+    # executed, from RH's `executed_notional` on a polled fractional fill. `qty` and
+    # `price` already carry the REALIZED filled quantity + avg fill price — the broker
+    # populates them from the polled fill on the fractional path, not from the request.
+    executed_notional: float | None = None
 
 
 @dataclass

@@ -37,6 +37,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from trading_corp.agents.divisions.bitunix_bracket import (
+    classify_exit_kind,
+    classify_result,
+)
 from trading_corp.brokers.bitunix_symbols import (
     UnknownSymbolError,
     to_wire_format,
@@ -70,6 +74,26 @@ POSITION_STATE_DIVERGENCE_KIND = "position_state_divergence_detected"
 AUTO_BOOK_SERVER_SIDE_CLOSE_KIND = "auto_book_server_side_close"
 AUTO_BOOK_DEFERRED_KIND = "auto_book_deferred"
 POSITION_STATE_HALT_RELEASED_KIND = "position_state_halt_released"
+
+# ── D1 netted-close double-booking (2026-06-21) ─────────────────────────────
+# When several stacked records share ONE server-side netted close, each record's
+# auto-book must attribute only ITS share of the close, not the full netted qty —
+# otherwise the PnL/fee are booked N times over. The real-fill auto-book books
+# `min(record_qty, netted_close_qty)`: for a single record where the recorded qty
+# ~ the closed qty (incl. a normal ~5% fill gap), min() == the close qty and the
+# economics are BYTE-UNCHANGED vs the prior full-qty booking. A record qty that
+# GROSSLY exceeds the netted close (>= this ratio) is a real data error (stale or
+# duplicate record), not a fill gap — min() still caps it safely, but we FLAG it
+# (log.warning, never defer/crash) so the anomaly is surfaced for review.
+D1_QTY_ANOMALY_RATIO = 1.5
+
+# ── D3 role-recording (2026-06-23) ──────────────────────────────────────────
+# D3 fee-corroboration reference rates (venue-effective, mirror strategies.yaml
+# bitunix_futures.fees taker_pct/maker_pct). Used ONLY to (1) classify a close
+# fill that matches NEITHER a TP nor the SL order-id, and (2) flag role/fee
+# disagreement — NEVER to derive the primary role (keeps role+fee independent).
+D3_TAKER_FEE_REF = 0.00019
+D3_MAKER_FEE_REF = 0.00014
 
 
 def _utc_now_iso() -> str:
@@ -522,6 +546,27 @@ def _latest_position_state_payload(db_url: str) -> dict[str, Any] | None:
         return None
 
 
+def _resolve_entry_price(extra: dict, ref_price: Any) -> Any:
+    """ref-vs-fill (2026-06-22): PnL must book from the ACTUAL entry fill price,
+    not the alert/reference price (a systematic per-trade error — e.g. 125b6f9e
+    booked at ref 63465.3 vs the real fill 63413.6, 52pt off).
+
+    The real entry fill (broker-observed VWAP) is captured at fill-time on the
+    observer path and stored in `extra['actual_entry_fill_price']`. Prefer it
+    here. FALLBACK to `ref_price` (entry_reference_price) for records that
+    predate this fix OR have no real fill (paper rows book at the signal price by
+    design) — never crashes, never mis-books a historical. Orthogonal to D1: D1
+    fixes the QTY term (min(qty, q_close)); this fixes the ENTRY-PRICE term. They
+    compose as pnl = (actual_entry_fill - vwap) * min(qty, q_close)."""
+    aefp = extra.get("actual_entry_fill_price")
+    try:
+        if aefp is not None and float(aefp) > 0:
+            return float(aefp)
+    except (TypeError, ValueError):
+        pass
+    return ref_price
+
+
 def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
     """Auto-book a bot-owned position that closed broker-side, at the KNOWN stop
     level (the B1 server-side stop). Returns 'booked' | 'deferred' | 'skipped'.
@@ -555,7 +600,7 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
             filled_legs = extra.get("filled_legs") or []
             side = (r["side"] or "").lower()
             qty = float(r["qty"] or 0.0)
-            entry = r["entry_reference_price"]
+            entry = _resolve_entry_price(extra, r["entry_reference_price"])
             level = r["stop_price"] if r["stop_price"] is not None \
                 else extra.get("stop_price")
 
@@ -590,9 +635,14 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
             except (TypeError, ValueError, ZeroDivisionError):
                 r_mult = None
             exit_side = "buy" if side == "sell" else "sell"
+            # result from the PnL SIGN (no fees on the estimate → gross basis),
+            # never a literal. exit_kind = 'stop': this path books AT the known
+            # stop LEVEL by construction (filled_legs empty, no real fill).
+            result_str = classify_result(net_pnl=None, gross_pnl=pnl)
+            exit_kind = "stop"
             conn.execute(
                 "UPDATE paper_trade_record SET "
-                "  result = 'loss', result_ts = ?, result_price = ?, "
+                "  result = ?, result_ts = ?, result_price = ?, "
                 "  actual_pnl_dollars = ?, actual_r_multiple = ?, "
                 "  bars_to_resolution = NULL, "
                 "  extra_json = json_set(extra_json, "
@@ -600,10 +650,11 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
                 "    '$.pnl_basis', 'known_level_estimate', "
                 "    '$.slippage_unreconciled', json('true'), "
                 "    '$.exit_method', 'server_side_sl_B1', "
-                "    '$.exit_side', ?, '$.autobook_level_type', 'stop', "
-                "    '$.autobook_ts', ?) "
+                "    '$.exit_side', ?, '$.autobook_level_type', ?, "
+                "    '$.exit_kind', ?, '$.autobook_ts', ?) "
                 "WHERE order_id = ? AND result IS NULL",
-                (now, level, pnl, r_mult, exit_side, now, order_id),
+                (result_str, now, level, pnl, r_mult, exit_side, exit_kind,
+                 exit_kind, now, order_id),
             )
             conn.execute(
                 "INSERT INTO audit_event (ts, actor, kind, payload_json) "
@@ -611,7 +662,8 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
                 (now, RECONCILER_ACTOR, AUTO_BOOK_SERVER_SIDE_CLOSE_KIND,
                  json.dumps({"order_id": order_id, "side": side, "entry": entry,
                              "stop_level": level, "qty": qty,
-                             "pnl_estimate": pnl, "result": "loss",
+                             "pnl_estimate": pnl, "result": result_str,
+                             "exit_kind": exit_kind,
                              "pnl_basis": "known_level_estimate",
                              "slippage_unreconciled": True})),
             )
@@ -636,7 +688,21 @@ def _iso_to_ms(ts: str | None) -> float | None:
         return None
 
 
-def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
+def _role_summary(maker_qty: float, taker_qty: float) -> str:
+    """One-word role tag from POSITIVE per-fill evidence only. No positive
+    maker/taker evidence → 'unknown' (NEVER a maker default — D3 fix)."""
+    if maker_qty > 0 and taker_qty > 0:
+        return "mixed"
+    if taker_qty > 0:
+        return "taker"
+    if maker_qty > 0:
+        return "maker"
+    return "unknown"
+
+
+def _aggregate_close_fills(
+    fills: list[dict], *, tp_order_ids=None, sl_order_id=None,
+) -> dict[str, Any]:
     """Volume-weighted aggregate of N close fills — B2-aware: any number of
     partial fills, each carrying its REAL per-fill fee. Returns:
       vwap_price  — Σ(price·qty)/Σqty (the real exit price, multi-fill VWAP)
@@ -644,8 +710,24 @@ def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
                     maker/taker mix — never computed from an assumed rate
       total_qty   — Σqty (the actual closed quantity)
       n_fills     — count of valid fills aggregated
+      close_order_ids — venue order-ids of the close fills (for tp-vs-stop match)
+      exit_role   — 'maker'|'taker'|'mixed'|'unknown' from ORDER SEMANTICS (which
+                    order the bot placed: a resting POST_ONLY TP leg = maker, the
+                    B1 stop / market reduce = taker), NOT the unreliable venue
+                    roleType (D3 fix). A close fill matching neither TP nor SL
+                    order-id is corroborated by its fee rate, never defaulted maker.
+      fee_implied_role — 'maker'|'taker'|'unknown' from the AGGREGATE fee rate
+                    (independent corroboration of exit_role; role+fee stay
+                    independent so a fee-model error remains detectable).
+      role_fee_mismatch — True iff exit_role and fee_implied_role are both
+                    decisive (maker/taker) and disagree.
+      maker_taker_mix — {maker_qty, taker_qty, maker_fraction}
     Pure — no I/O. Skips malformed / non-positive fills."""
+    tp_ids = set(str(x) for x in (tp_order_ids or []))
+    sl = str(sl_order_id) if sl_order_id else None
     notional = total_qty = total_fee = 0.0
+    maker_qty = taker_qty = 0.0
+    order_ids: list[str] = []
     n = 0
     for f in (fills or []):
         try:
@@ -659,10 +741,57 @@ def _aggregate_close_fills(fills: list[dict]) -> dict[str, Any]:
         notional += p * q
         total_qty += q
         total_fee += fee
+        # D3: role from the ORDER the bot placed, not the venue roleType.
+        oid = str(f.get("order_id") or "")
+        if oid and oid in tp_ids:
+            # resting POST_ONLY limit TP leg → maker
+            maker_qty += q
+        elif oid and sl and oid == sl:
+            # B1 stop / market reduce → taker
+            taker_qty += q
+        else:
+            # NO order-id match (manual close / unknown order): corroborate by
+            # fee rate, NEVER default maker. Fee/price/qty unavailable → neither
+            # bucket (stays 'unknown').
+            if p > 0 and q > 0 and fee > 0:
+                rate = fee / (p * q)
+                if abs(rate - D3_TAKER_FEE_REF) <= abs(rate - D3_MAKER_FEE_REF):
+                    taker_qty += q
+                else:
+                    maker_qty += q
+        if oid:
+            order_ids.append(oid)
         n += 1
     vwap = (notional / total_qty) if total_qty > 0 else 0.0
+    role_qty = maker_qty + taker_qty
+    exit_role = _role_summary(maker_qty, taker_qty)
+    # Independent aggregate fee-implied role (corroboration only — never feeds
+    # the primary exit_role above, so a fee-model error surfaces as a mismatch).
+    if total_fee > 0 and notional > 0:
+        agg_rate = total_fee / notional
+        fee_implied_role = (
+            "taker"
+            if abs(agg_rate - D3_TAKER_FEE_REF) <= abs(agg_rate - D3_MAKER_FEE_REF)
+            else "maker"
+        )
+    else:
+        fee_implied_role = "unknown"
+    role_fee_mismatch = (
+        exit_role in ("maker", "taker")
+        and fee_implied_role in ("maker", "taker")
+        and exit_role != fee_implied_role
+    )
     return {"vwap_price": vwap, "total_fee": total_fee,
-            "total_qty": total_qty, "n_fills": n}
+            "total_qty": total_qty, "n_fills": n,
+            "close_order_ids": order_ids,
+            "exit_role": exit_role,
+            "fee_implied_role": fee_implied_role,
+            "role_fee_mismatch": role_fee_mismatch,
+            "maker_taker_mix": {
+                "maker_qty": round(maker_qty, 7),
+                "taker_qty": round(taker_qty, 7),
+                "maker_fraction": (maker_qty / role_qty) if role_qty > 0 else None,
+            }}
 
 
 async def _autobook_missing_close_real(
@@ -701,7 +830,7 @@ async def _autobook_missing_close_real(
         filled_legs = extra.get("filled_legs") or []
         side = (r["side"] or "").lower()
         qty = float(r["qty"] or 0.0)
-        entry = r["entry_reference_price"]
+        entry = _resolve_entry_price(extra, r["entry_reference_price"])
         level = r["stop_price"] if r["stop_price"] is not None \
             else extra.get("stop_price")
 
@@ -725,18 +854,48 @@ async def _autobook_missing_close_real(
                         "falling back to known-level estimate", order_id, e)
             return _autobook_missing_close(db_url, order_id, now)
 
-        agg = _aggregate_close_fills(fills)
+        # D3: the bracket order-ids classify each close fill by the ORDER the bot
+        # placed (TP legs = maker, B1 stop = taker) — computed here so the same
+        # ids feed both the role aggregation and the classify_exit_kind call below
+        # (no duplicate compute).
+        tp_ids = list((extra.get("bracket_tp_order_ids") or {}).values())
+        sl_id = extra.get("bracket_position_sl_order_id")
+        agg = _aggregate_close_fills(
+            fills, tp_order_ids=tp_ids, sl_order_id=sl_id,
+        )
         if agg["n_fills"] <= 0 or agg["vwap_price"] <= 0 or agg["total_qty"] <= 0:
             return _autobook_missing_close(db_url, order_id, now)  # safety net
 
         entry = float(entry)
         level = float(level)
         vwap = float(agg["vwap_price"])
-        fqty = float(agg["total_qty"])
-        exit_fee = float(agg["total_fee"])
-        # Gross price PnL on the REAL fill (same convention as the estimate, which
-        # used the stop level): a short loses when the fill is above entry.
-        pnl = ((entry - vwap) if side == "sell" else (vwap - entry)) * fqty
+        # D1 (netted-close double-booking): `q_close` is the TOTAL qty closed by
+        # the real netted fill(s); `closed_qty` is THIS record's attributed share,
+        # capped at the close qty. When stacked records share one netted close,
+        # each books min(its_qty, q_close) so the per-record PnL/fee sum to the
+        # netted close ONCE, not N times. For a single record where recorded qty ~
+        # the closed qty (incl. a normal fill gap), min() == q_close → BYTE-
+        # UNCHANGED vs the prior full-qty booking.
+        q_close = float(agg["total_qty"])
+        closed_qty = min(qty, q_close)
+        # FLAG (do not defer/crash) a record qty that grossly exceeds the netted
+        # close: a real data error (stale/duplicate record), not a normal ~5% fill
+        # gap. min() above still caps the booked economics safely.
+        if qty > q_close * D1_QTY_ANOMALY_RATIO:
+            log.warning(
+                "reconciler D1: record qty %.10g grossly exceeds netted close "
+                "qty %.10g (ratio %.3f >= %.2f) for order_id=%s — capping at "
+                "close qty; possible stale/duplicate record or fill-history gap",
+                qty, q_close, (qty / q_close) if q_close > 0 else float("inf"),
+                D1_QTY_ANOMALY_RATIO, order_id,
+            )
+        # Exit fee is the proportional share of the netted close fee for THIS
+        # record's attributed qty (== the full fee when closed_qty == q_close).
+        exit_fee = float(agg["total_fee"]) * (closed_qty / q_close)
+        # Gross price PnL on the REAL fill, attributed to THIS record's closed
+        # share (same convention as the estimate, which used the stop level): a
+        # short loses when the fill is above entry.
+        pnl = ((entry - vwap) if side == "sell" else (vwap - entry)) * closed_qty
         # Observed slippage of the real fill vs the RECORDED stop level (signed:
         # positive = adverse / filled worse than the trigger).
         slip_pts = (vwap - level) if side == "sell" else (level - vwap)
@@ -751,10 +910,29 @@ async def _autobook_missing_close_real(
             entry_fee = 0.0
         net = pnl - entry_fee - exit_fee
 
+        # result from the NET PnL sign; exit_kind from the ACTUAL fill (order-id
+        # match → tp/stop, else price-vs-levels, else 'unknown' — NEVER a literal
+        # 'loss'/'stop'). Fixes the P2 mis-sign (report 2026-06-19_p2_classifier).
+        tp_prices = [extra.get("tp1_price"), extra.get("tp2_price"),
+                     extra.get("tp3_price")]
+        # tp_ids / sl_id already computed above the _aggregate_close_fills call
+        # (D3) — reuse them here (no duplicate compute).
+        result_str = classify_result(net_pnl=net, gross_pnl=pnl)
+        exit_kind = classify_exit_kind(
+            side=side, vwap_fill=vwap, stop_level=level, tp_prices=tp_prices,
+            close_order_ids=agg.get("close_order_ids"),
+            tp_order_ids=tp_ids, sl_order_id=sl_id,
+        )
+        exit_role = agg.get("exit_role", "unknown")
+        mix_json = json.dumps(agg.get("maker_taker_mix") or {})
+        # D3: independent fee-vs-order-semantics corroboration. Recorded as a bool
+        # so a fee-model error (role and fee disagreeing) stays detectable.
+        role_fee_mismatch = bool(agg.get("role_fee_mismatch"))
+
         with db.connect(db_url) as conn:
             conn.execute(
                 "UPDATE paper_trade_record SET "
-                "  result = 'loss', result_ts = ?, result_price = ?, "
+                "  result = ?, result_ts = ?, result_price = ?, "
                 "  actual_pnl_dollars = ?, actual_r_multiple = ?, "
                 "  bars_to_resolution = NULL, "
                 "  extra_json = json_set(extra_json, "
@@ -762,12 +940,18 @@ async def _autobook_missing_close_real(
                 "    '$.pnl_basis', 'real_fill', "
                 "    '$.slippage_unreconciled', json('false'), "
                 "    '$.exit_method', 'server_side_sl_B1', "
-                "    '$.exit_side', ?, '$.autobook_level_type', 'stop', "
+                "    '$.exit_side', ?, '$.autobook_level_type', ?, "
+                "    '$.exit_kind', ?, '$.exit_role', ?, "
+                "    '$.maker_taker_mix', json(?), "
+                "    '$.fee_implied_role', ?, '$.role_fee_mismatch', json(?), "
                 "    '$.exit_fee_usd', ?, '$.net_realized_usd', ?, "
                 "    '$.close_fill_count', ?, '$.observed_slippage_pts', ?, "
                 "    '$.autobook_ts', ?) "
                 "WHERE order_id = ? AND result IS NULL",
-                (now, vwap, pnl, r_mult, exit_side, exit_fee, net,
+                (result_str, now, vwap, pnl, r_mult, exit_side, exit_kind,
+                 exit_kind, exit_role, mix_json,
+                 agg.get("fee_implied_role", "unknown"),
+                 json.dumps(role_fee_mismatch), exit_fee, net,
                  agg["n_fills"], slip_pts, now, order_id),
             )
             conn.execute(
@@ -775,9 +959,15 @@ async def _autobook_missing_close_real(
                 "VALUES (?, ?, ?, ?)",
                 (now, RECONCILER_ACTOR, AUTO_BOOK_SERVER_SIDE_CLOSE_KIND,
                  json.dumps({"order_id": order_id, "side": side, "entry": entry,
-                             "stop_level": level, "vwap_fill": vwap, "qty": fqty,
+                             "stop_level": level, "vwap_fill": vwap,
+                             "qty": closed_qty, "netted_close_qty": q_close,
                              "n_fills": agg["n_fills"], "exit_fee": exit_fee,
-                             "pnl": pnl, "net_realized_usd": net, "result": "loss",
+                             "pnl": pnl, "net_realized_usd": net,
+                             "result": result_str, "exit_kind": exit_kind,
+                             "exit_role": exit_role,
+                             "fee_implied_role": agg.get(
+                                 "fee_implied_role", "unknown"),
+                             "role_fee_mismatch": role_fee_mismatch,
                              "pnl_basis": "real_fill",
                              "slippage_unreconciled": False,
                              "observed_slippage_pts": slip_pts})),
@@ -1000,6 +1190,14 @@ async def reconcile_position_state(
                 "reconcile_position_state: halt-release failed: %s", e,
             )
 
+    # ── Bracket SL-move-on-TP-fill (price-only; venue auto-reduces qty) ──
+    # Runs on the same 60s cadence; bracket-managed rows only; failure-tolerant;
+    # never blocks the reconcile (a missed move leaves the SL at its prior price).
+    try:
+        await move_bracket_sls(broker, db_url)
+    except Exception as e:
+        log.warning("reconcile_position_state: bracket SL-move failed: %s", e)
+
     return result
 
 
@@ -1020,6 +1218,133 @@ class RestartResumeSummary:
     @property
     def has_orphan_or_case_c(self) -> bool:
         return bool(self.orphan_on_broker or self.case_c_deferred)
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+async def move_bracket_sls(broker: Any, db_url: str) -> None:
+    """Bracket SL-move-on-TP-fill (the only ongoing bot exit logic in the
+    exchange-resting bracket design).
+
+    Detects a TP fill as a REDUCTION in the broker position qty vs the recorded
+    entry qty, decides the new SL price per the (b)+(c) hybrid
+    (`bitunix_bracket.decide_sl_move`), and moves it via
+    `broker.modify_position_sl` (PRICE-ONLY — the venue auto-reduces SL qty).
+    Fail-soft / failure-tolerant: a missed move leaves the SL at its prior,
+    still-protective price and retries next tick (the TP already filled
+    on-exchange, so no profit is lost). Acts ONLY on bracket-managed live rows
+    (extra_json has `bracket_entry_qty`); all other positions are untouched.
+    """
+    from trading_corp.agents.divisions.bitunix_bracket import decide_sl_move
+
+    try:
+        with db.connect(db_url) as conn:
+            rows = conn.execute(
+                "SELECT order_id, symbol, side, qty, stop_price, "
+                "entry_reference_price, extra_json FROM paper_trade_record "
+                "WHERE result IS NULL AND extra_json IS NOT NULL"
+            ).fetchall()
+    except Exception as e:
+        log.warning("bracket SL-move: tracked-row read failed: %s", e)
+        return
+
+    bracket_rows: list[tuple[Any, dict]] = []
+    for r in rows:
+        try:
+            extra = json.loads(r["extra_json"])
+        except (TypeError, ValueError):
+            continue
+        if extra.get("execution_mode") != "live":
+            continue
+        if "bracket_entry_qty" not in extra:
+            continue
+        bracket_rows.append((r, extra))
+    if not bracket_rows:
+        return
+
+    try:
+        positions = await broker.get_pending_positions()
+    except Exception as e:
+        log.warning("bracket SL-move: get_pending_positions failed: %s", e)
+        return
+    pos_qty: dict[tuple[str, str], float] = {}
+    pos_id: dict[tuple[str, str], str] = {}
+    for p in positions:
+        key = (_match_symbol_key(p.symbol), _broker_side(p.qty))
+        pos_qty[key] = abs(float(p.qty))
+        pid = (p.extra or {}).get("positionId")
+        if pid:
+            pos_id[key] = str(pid)
+
+    for r, extra in bracket_rows:
+        side = r["side"]
+        entry_qty = _safe_float(extra.get("bracket_entry_qty"), _safe_float(r["qty"]))
+        if entry_qty <= 0:
+            continue
+        current_qty = pos_qty.get((_match_symbol_key(r["symbol"]), side), 0.0)
+        if current_qty >= entry_qty - 1e-12:
+            continue  # no TP fill detected this tick
+        current_sl = _safe_float(extra.get("current_sl"), _safe_float(r["stop_price"]))
+        entry_price = _safe_float(
+            extra.get("entry_reference_price"), _safe_float(r["entry_reference_price"])
+        )
+        tp1 = _safe_float(extra.get("tp1_price"))
+        if tp1 <= 0:
+            # fall back to the first bracket leg's price
+            legs = extra.get("bracket_legs") or []
+            if legs:
+                tp1 = _safe_float(legs[0].get("price"))
+        new_sl, why = decide_sl_move(
+            side=side, entry_price=entry_price, current_sl=current_sl,
+            tp1_price=tp1, entry_qty=entry_qty, current_qty=current_qty,
+        )
+        if new_sl is None:
+            continue
+        # Thread positionId from the broker Position.extra (required by the
+        # corrected modify_position_sl; absent → fail-soft no-op inside the method).
+        pos_key = (_match_symbol_key(r["symbol"]), side)
+        broker_position_id: str | None = pos_id.get(pos_key)
+        moved = False
+        if hasattr(broker, "modify_position_sl"):
+            try:
+                moved = await broker.modify_position_sl(
+                    r["symbol"], new_sl, position_id=broker_position_id,
+                )
+            except Exception as e:  # belt-and-suspenders — modify is fail-soft
+                log.warning("bracket SL-move: modify raised: %s", e)
+                moved = False
+        # Persist the new SL only if it actually moved (so a failed move retries
+        # next tick). Always audit (moved True/False) so the operator sees it.
+        if moved:
+            try:
+                extra["current_sl"] = new_sl
+                with db.connect(db_url) as conn:
+                    conn.execute(
+                        "UPDATE paper_trade_record SET extra_json=? WHERE order_id=?",
+                        (json.dumps(extra, default=str), r["order_id"]),
+                    )
+            except Exception as e:
+                log.warning("bracket SL-move: persist failed: %s", e)
+        try:
+            with db.connect(db_url) as conn:
+                conn.execute(
+                    "INSERT INTO audit_event(ts, actor, kind, payload_json) "
+                    "VALUES(?, ?, ?, ?)",
+                    (_utc_now_iso(), RECONCILER_ACTOR, "position_sl_update",
+                     json.dumps({
+                         "order_id": r["order_id"], "symbol": r["symbol"],
+                         "new_sl": new_sl, "prev_sl": current_sl, "moved": moved,
+                         "reason": why, "entry_qty": entry_qty,
+                         "current_qty": current_qty, "source": "bracket_sl_move",
+                     }, default=str)),
+                )
+        except Exception as e:
+            log.warning("bracket SL-move: audit failed: %s", e)
 
 
 async def resume_live_positions(

@@ -43,6 +43,7 @@ from trading_corp.brokers.bitunix_exceptions import (
     BitunixStaleSnapshot,
     BitunixStuckOrderCancelFailed,
     BitunixStuckOrderCancelled,
+    BitunixUntrackedTpslOrder,
 )
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
@@ -556,6 +557,13 @@ class BitunixFuturesObserver:
         # strategies.yaml + main.py wiring. ENTRY-ONLY (exits never gated).
         staleness_gate_enabled: bool = False,
         staleness_margin_seconds: float = 120.0,
+        # D4 (2026-06-20) — concurrent-position guard. When enabled, blocks a
+        # NEW entry if the bot already holds an open same-symbol SAME-SIDE
+        # position IT opened (the netting root cause). Default OFF so every
+        # existing caller/test keeps current behavior; ships OFF via
+        # strategies.yaml until validated. Same-side only (a close-and-reverse
+        # or any reduce-only/flatten is never gated).
+        concurrent_position_guard_enabled: bool = False,
     ) -> None:
         self.db_url = db_url
         self.risk_agent = risk_agent
@@ -577,6 +585,10 @@ class BitunixFuturesObserver:
         # C — staleness-reject gate (entry freshness). Defaults OFF.
         self.staleness_gate_enabled = bool(staleness_gate_enabled)
         self.staleness_margin_seconds = float(staleness_margin_seconds)
+        # D4 — concurrent-position guard (same-side, bot's-own). Defaults OFF.
+        self.concurrent_position_guard_enabled = bool(
+            concurrent_position_guard_enabled
+        )
         # Normalize the gate mode to one of the three known values.
         self.htf_gate_mode = (
             htf_gate_mode.lower() if isinstance(htf_gate_mode, str) else "off"
@@ -1734,6 +1746,28 @@ class BitunixFuturesObserver:
             return
         if risk_verdict.verdict == "resize" and risk_verdict.new_qty is not None:
             order.qty = float(risk_verdict.new_qty)
+
+        # ── D4: concurrent-position guard (same-side, bot's-own) ──
+        # Block PLACEMENT of a new entry when the bot already holds an open
+        # same-symbol SAME-SIDE position IT opened (netting root cause,
+        # 2026-06-20). Placed AFTER the risk gate + flatten dispatch (a
+        # drawdown-flatten still fires) and BEFORE _record_placement_outcome →
+        # _place_live, so B1/bracket are never reached when blocked. VENUE-
+        # authoritative + engine-corroborated, fail-closed on unknown venue.
+        # Dormant unless enabled via strategies.yaml. Same-side only → a
+        # close-and-reverse (opposite side) and reduce-only/flatten are
+        # unaffected; the manual/not-bot-opened case is the orphan-halt's job.
+        _cpg_blocked, _cpg_info = self._concurrent_position_guard_verdict(
+            snap, order.symbol, order.side,
+        )
+        if _cpg_blocked:
+            self._log_score_decision(
+                payload, verdict_score, "blocked_concurrent_position",
+                note=_cpg_info.get("reason", "concurrent_position_guard"),
+                order_id=order.id,
+            )
+            await self._notify_concurrent_position_block(order, _cpg_info)
+            return
 
         # ── paper-mode placement ──
         # Pre-helper mutations on the order so the canonical helper sees
@@ -3205,12 +3239,71 @@ class BitunixFuturesObserver:
             # fee from broker truth. Default 0.0 when FillEvent.fee not
             # populated (paper broker / non-bitunix venues).
             record.extra["entry_fee_usd"] = float(fill.fee or 0.0)
+            # Maker/taker role of the entry fill (forward-only telemetry; '' when
+            # the venue/role is unknown, e.g. paper or pre-roleType fills).
+            record.extra["entry_role"] = str(getattr(fill, "role", "") or "")
+            # ref-vs-fill (2026-06-22): stamp the ACTUAL entry fill price (the
+            # broker-observed VWAP from the signed fill, NOT the alert/reference
+            # price) so close-side PnL books from the real fill. Only when known
+            # (>0); else omit so the PnL reader falls back to
+            # entry_reference_price (paper rows / unknown fills book at the ref).
+            _aefp = float(getattr(fill, "price", 0.0) or 0.0)
+            if _aefp > 0:
+                record.extra["actual_entry_fill_price"] = _aefp
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
+            _registered = True
         except Exception as e:
-            log.warning(
-                "bitunix_observer: live-path paper_trade_record write failed "
-                "(broker placed; replay-loop won't track): %s", e,
+            _registered = False
+            # #3: insert_paper_trade_record already retries a transient lock;
+            # reaching here means registration FAILED for real → the broker holds
+            # a REAL live position the bot cannot track (an orphan). Do NOT swallow
+            # silently: emit a loud audit + operator alert so it's reconciled,
+            # never hidden. (The fill was NOT a rejection — data_exec returned it.)
+            log.error(
+                "bitunix_observer: live-path paper_trade_record write FAILED after "
+                "retries — UNTRACKED LIVE POSITION (broker placed; manual "
+                "reconcile): %s", e,
             )
+            try:
+                self.logger_agent.log_event(
+                    actor="bitunix_futures",
+                    kind="live_position_registration_failed",
+                    payload={
+                        **intent_payload,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "broker_order_id": getattr(fill, "order_id", None),
+                    },
+                )
+            except Exception as ae:
+                log.error(
+                    "bitunix_observer: live_position_registration_failed audit "
+                    "also failed: %s", ae,
+                )
+            await self._push_with_confirmed_delivery(
+                order_id=order.id,
+                message=(
+                    f"⚠ BTC-PERP UNTRACKED LIVE POSITION (registration failed)\n"
+                    f"side: {order.side.upper()}  qty: {order.qty}\n"
+                    f"position is REAL on the venue but the bot can't track it — "
+                    f"MANUAL RECONCILE\norder_id={order.id}"
+                ),
+                failure_channel="live_registration_failed_alert",
+            )
+
+        # ── Bracket exits (exchange-resting): the SL is already attached at
+        # entry (B1, market-stop, UNCHANGED). Now REST the TP ladder as
+        # reduce-only LIMIT orders — only when the position registered (else it
+        # was alerted as an untracked orphan above). Fail-soft: a TP-leg failure
+        # leaves the position protected by the SL. Rides #5-B/C (reduce-only).
+        if _registered:
+            try:
+                await self._place_bracket_exits(order=order, record=record)
+            except Exception as be:
+                log.error(
+                    "bitunix_observer: bracket placement raised (SL still "
+                    "protects; position registered): %s", be,
+                )
 
         # data_exec.place wrote its own `filled` audit row + set
         # order.status='filled' + order.fill_price/fill_ts. Just emit
@@ -3308,6 +3401,208 @@ class BitunixFuturesObserver:
                 )
 
     # ── live-exit path: data_exec.place(reduce_only=True) + record ──
+
+    async def _place_bracket_exits(
+        self, *, order: ProposedOrder, record: "PaperTradeRecord",
+    ) -> None:
+        """Rest the TP ladder via the native `/tpsl/place_order` endpoint after a
+        live entry fills. The B1 SL (atomic attached market-stop) is UNCHANGED.
+        Splits entry qty by the tp_plan fractions under the Board min-leg rule
+        (0.0003 BTC) — degrading to fewer, larger legs rather than placing a
+        sub-min leg. Each leg is placed as a position-tied partial-qty TP/SL order
+        (`place_tpsl_order`) which gives native OCO + auto-reducing SL.
+
+        positionId sourcing: after the entry fill, calls `get_pending_positions`
+        on the broker to match the just-opened symbol/side and read the positionId
+        from Position.extra. Fail-soft: if positionId cannot be resolved, NO TP
+        legs are placed (the B1 SL still guards) and a `bracket_tp_skipped` audit
+        is emitted. Fail-soft per leg — the SL protects regardless.
+
+        Captures the venue order-ids into paper_trade_record.extra (SL-move
+        monitor + OCO verify + #4 orphan-ID). KEEP: `bracket_placed` audit shape
+        + `build_bracket_legs` degrade (3/2/1-leg) UNCHANGED.
+        """
+        from trading_corp.agents.divisions.bitunix_bracket import build_bracket_legs
+
+        extra = order.extra or {}
+        tp_plan = extra.get("tp_plan") or []
+        entry_qty = float(order.qty)
+        legs, note = build_bracket_legs(entry_qty, tp_plan)
+        broker = (
+            self.data_exec.brokers.get("bitunix_futures")
+            if self.data_exec is not None else None
+        )
+        if not legs or broker is None or not hasattr(broker, "place_tpsl_order"):
+            self.logger_agent.log_event(
+                actor="bitunix_futures", kind="bracket_tp_skipped",
+                payload={"order_id": order.id, "entry_qty": entry_qty,
+                         "reason": note or "no broker / no tpsl support"},
+            )
+            return
+
+        # ── Resolve positionId from the just-opened position ──────────────────
+        position_id: str | None = None
+        try:
+            from trading_corp.brokers.bitunix_symbols import (
+                UnknownSymbolError as _UnknownSymbolError,
+                to_wire_format as _to_wire_fmt,
+            )
+            try:
+                order_wire = _to_wire_fmt(order.symbol or "")
+            except _UnknownSymbolError:
+                order_wire = (order.symbol or "").upper()
+
+            open_positions = await broker.get_pending_positions()
+            entry_side_norm = (order.side or "").lower()
+            for p in open_positions:
+                # Match symbol via wire form (P1 pattern — BTCUSDT == BTC/USDT.P).
+                try:
+                    p_wire = _to_wire_fmt(p.symbol or "")
+                except _UnknownSymbolError:
+                    p_wire = (p.symbol or "").upper()
+                p_side = (p.extra or {}).get("side", "").upper()
+                p_side_norm = "buy" if p_side in ("LONG", "BUY") else "sell"
+                if p_wire == order_wire and p_side_norm == entry_side_norm:
+                    pid = (p.extra or {}).get("positionId")
+                    if pid:
+                        position_id = str(pid)
+                        break
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: get_pending_positions for positionId failed: %s", e,
+            )
+
+        if not position_id:
+            log.error(
+                "bitunix_observer: positionId unresolved for %s — skipping TP "
+                "legs (B1 SL still guards)", order.id,
+            )
+            self.logger_agent.log_event(
+                actor="bitunix_futures", kind="bracket_tp_skipped",
+                payload={"order_id": order.id, "entry_qty": entry_qty,
+                         "reason": "positionId unresolved — skipping TP legs (B1 guards)"},
+            )
+            return
+
+        # ── Place each TP leg via the native tpsl endpoint ───────────────────
+        # Record each leg's venue id IMMEDIATELY on placement. Three outcomes:
+        #   * id returned         → tracked in tp_order_ids.
+        #   * clean failure       → bracket_tp_leg_failed (POST did NOT rest an
+        #                           order; B1 + Position SL still guard).
+        #   * POST hit the venue  → bracket_tp_leg_untracked: the leg may be
+        #     but id uncaptured     RESTING UNTRACKED — flagged LOUDLY for
+        #                           reconciliation, NEVER silently swallowed (the
+        #                           reconciler is position-level and won't catch a
+        #                           stray TP order). This is the Section-B hardening.
+        tp_order_ids: dict[str, str] = {}
+        for leg in legs:
+            try:
+                vid = await broker.place_tpsl_order(
+                    symbol=order.symbol,
+                    position_id=position_id,
+                    tp_price=leg.price,
+                    tp_qty=leg.qty,
+                )
+            except BitunixUntrackedTpslOrder as e:
+                log.error(
+                    "bitunix_observer: bracket %s leg may be RESTING UNTRACKED "
+                    "(POST reached venue, id uncaptured) — reconcile needed: %s",
+                    leg.leg, e,
+                )
+                self.logger_agent.log_event(
+                    actor="bitunix_futures", kind="bracket_tp_leg_untracked",
+                    payload={"order_id": order.id, "leg": leg.leg,
+                             "price": leg.price, "qty": leg.qty,
+                             "position_id": position_id,
+                             "error": str(e), "error_type": type(e).__name__},
+                )
+                continue
+            except Exception as e:
+                log.error(
+                    "bitunix_observer: bracket %s leg place FAILED (SL still "
+                    "protects): %s", leg.leg, e,
+                )
+                self.logger_agent.log_event(
+                    actor="bitunix_futures", kind="bracket_tp_leg_failed",
+                    payload={"order_id": order.id, "leg": leg.leg,
+                             "price": leg.price, "qty": leg.qty,
+                             "error": str(e), "error_type": type(e).__name__},
+                )
+                continue
+            if vid:
+                tp_order_ids[leg.leg] = vid
+            else:
+                # Empty id WITHOUT an exception = idempotent duplicate (the leg is
+                # already resting from a prior attempt; the broker logged it). Not
+                # a new order — don't count it, but don't silently lose it either.
+                log.warning(
+                    "bitunix_observer: bracket %s leg returned no id (idempotent "
+                    "duplicate / already resting) — not counted as a new leg",
+                    leg.leg,
+                )
+
+        # ── Place the managed auto-reducing whole-position SL ────────────────
+        # The native `/tpsl/position/place_order` SL (no qty) auto-shrinks as the
+        # TP legs fill and is the SL the trail (`modify_position_sl` ->
+        # `/tpsl/position/modify_order`) moves to breakeven/TP1. The B1
+        # entry-attached MARKET stop is UNCHANGED and always guards, so this is
+        # fail-soft: a failure here leaves the TP legs + the B1 stop protecting
+        # the position. NO slQty (position-level, auto-reducing).
+        position_sl_order_id: str = ""
+        structural_sl = float(extra.get("stop_price") or 0.0)
+        if structural_sl > 0.0 and hasattr(broker, "place_position_tpsl"):
+            try:
+                position_sl_order_id = await broker.place_position_tpsl(
+                    symbol=order.symbol,
+                    position_id=position_id,
+                    sl_price=structural_sl,
+                )
+            except Exception as e:
+                log.error(
+                    "bitunix_observer: managed position SL place FAILED (B1 entry "
+                    "stop + TP legs still protect): %s", e,
+                )
+                self.logger_agent.log_event(
+                    actor="bitunix_futures", kind="bracket_position_sl_failed",
+                    payload={"order_id": order.id, "sl_price": structural_sl,
+                             "error": str(e), "error_type": type(e).__name__},
+                )
+        elif structural_sl <= 0.0:
+            log.warning(
+                "bitunix_observer: no structural stop_price for %s — managed "
+                "position SL not placed (B1 entry stop still guards)", order.id,
+            )
+
+        # Persist bracket state for the SL-move monitor + OCO verify + #4.
+        # MUST be an UPDATE: insert_paper_trade_record is INSERT-OR-IGNORE and the
+        # row already exists (written at entry), so a re-insert would be a no-op.
+        try:
+            record.extra["bracket_tp_order_ids"] = tp_order_ids
+            record.extra["bracket_legs"] = [
+                {"leg": l.leg, "price": l.price, "qty": l.qty} for l in legs
+            ]
+            record.extra["bracket_entry_qty"] = entry_qty
+            record.extra["current_sl"] = float(extra.get("stop_price") or 0.0)
+            record.extra["bracket_position_id"] = position_id
+            record.extra["bracket_position_sl_order_id"] = position_sl_order_id
+            if note:
+                record.extra["bracket_degrade_note"] = note
+            with db.connect(self.db_url) as conn:
+                conn.execute(
+                    "UPDATE paper_trade_record SET extra_json=? WHERE order_id=?",
+                    (json.dumps(record.extra, default=str), order.id),
+                )
+        except Exception as e:
+            log.error("bitunix_observer: bracket-state persist failed: %s", e)
+
+        self.logger_agent.log_event(
+            actor="bitunix_futures", kind="bracket_placed",
+            payload={"order_id": order.id, "legs_placed": len(tp_order_ids),
+                     "legs_planned": len(legs), "tp_order_ids": tp_order_ids,
+                     "degrade_note": note, "entry_qty": entry_qty,
+                     "structural_sl": float(extra.get("stop_price") or 0.0),
+                     "position_sl_order_id": position_sl_order_id},
+        )
 
     async def _execute_live_exits(
         self,
@@ -3616,6 +3911,20 @@ class BitunixFuturesObserver:
         if verdict_risk.verdict == "resize" and verdict_risk.new_qty is not None:
             order.qty = float(verdict_risk.new_qty)
 
+        # ── D4: concurrent-position guard (same-side, bot's-own) — see the
+        # score path for the full rationale. AFTER risk+flatten, BEFORE place. ──
+        _cpg_blocked, _cpg_info = self._concurrent_position_guard_verdict(
+            snap, order.symbol, order.side,
+        )
+        if _cpg_blocked:
+            self._log_decision(
+                verdict, original_payload, "blocked_concurrent_position",
+                note=_cpg_info.get("reason", "concurrent_position_guard"),
+                order_id=order.id,
+            )
+            await self._notify_concurrent_position_block(order, _cpg_info)
+            return
+
         # ── Place (paper-mode auto-execute via data_exec) ────────────
         # No HITL approval gate per board direction (memory
         # `trading_corp_bitunix_phase3_confluence_model`). Risk caps are
@@ -3666,6 +3975,133 @@ class BitunixFuturesObserver:
                 await self.telegram_channel.push(msg)
             except Exception as e:
                 log.warning("bitunix_observer: telegram push failed: %s", e)
+
+    def _concurrent_position_guard_verdict(
+        self, snap: Any, new_symbol: str, new_side: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """D4 concurrent-position guard — block a new SAME-SIDE entry the bot
+        would STACK onto its own open position (the 2026-06-20 netting root
+        cause). Returns ``(blocked, info)``.
+
+        Rule (Board-ruled): block iff the VENUE shows an open same-symbol
+        SAME-SIDE position (authoritative, necessary) AND the bot holds a
+        tracked open same-side live row (corroborates it is the bot's OWN — the
+        manual / not-bot-opened case is owned by the reconciler orphan-halt,
+        NOT D4). Same-side only → a close-and-reverse (opposite side) and any
+        reduce-only/flatten are never blocked.
+
+        Fail-CLOSED: an unknown/incomplete VENUE read (no snapshot, equity not
+        complete, positions unavailable) BLOCKS — it never inherits the
+        ``get_pending_positions`` error->[] "looks flat" convention. A complete
+        venue read showing no same-side position never blocks, even if the
+        engine DB row still lags ``result IS NULL`` after a manual close.
+
+        Dormant (returns not-blocked) when disabled — the default.
+        """
+        if not self.concurrent_position_guard_enabled:
+            return (False, {})
+        # Reuse the reconciler's exact (symbol, side) normalization so D4 and
+        # the orphan-halt partition the space identically. Local import avoids
+        # any import cycle in the reconciler ↔ observer wiring.
+        from trading_corp.agents.divisions.bitunix_position_reconciler import (
+            _load_tracked_live_rows,
+            _broker_side,
+            _match_symbol_key,
+        )
+        sym_key = _match_symbol_key(new_symbol or "")
+        # ── Fail-closed: the VENUE read must be complete + trustworthy. The
+        # BitUnix snapshot NEVER caches a partial (an errored position read is
+        # incomplete), and the entry path already abstained on an incomplete
+        # equity read upstream — so this is belt-and-suspenders. equity_complete
+        # defaults True for snapshot types that don't carry it (paper) so paper
+        # is not spuriously blocked; positions=None / snap=None ⇒ UNKNOWN ⇒ block.
+        positions = getattr(snap, "positions", None)
+        if (
+            snap is None
+            or positions is None
+            or not getattr(snap, "equity_complete", True)
+        ):
+            return (True, {
+                "reason": "venue_state_unknown_fail_closed",
+                "symbol": new_symbol, "side": new_side, "source": "unknown",
+            })
+        # ── Authoritative: VENUE same-symbol SAME-SIDE open position? ──
+        venue_match = None
+        for p in positions:
+            try:
+                p_qty = float(getattr(p, "qty", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if p_qty == 0.0:
+                continue
+            if _match_symbol_key(getattr(p, "symbol", "")) != sym_key:
+                continue
+            if _broker_side(p_qty) != new_side:
+                continue
+            venue_match = p
+            break
+        if venue_match is None:
+            # Venue flat for this (symbol, side) → never block (covers the
+            # post-manual-close lag where the engine row may still read open).
+            return (False, {})
+        # ── Corroborate: is the venue position the bot's OWN? A venue-open
+        # same-side position with NO tracked bot row is a manual/orphan case
+        # owned by the reconciler orphan-halt (reactive) — D4 does NOT
+        # duplicate it. (If the engine read transiently fails it returns [], so
+        # D4 defers to the orphan-halt here; never a permanent fail-open.)
+        bot_owns = False
+        for t in _load_tracked_live_rows(self.db_url):
+            if _match_symbol_key(t.get("symbol", "")) != sym_key:
+                continue
+            if t.get("side") != new_side:
+                continue
+            bot_owns = True
+            break
+        if not bot_owns:
+            return (False, {})
+        return (True, {
+            "reason": "bot_own_same_side_position_open",
+            "symbol": new_symbol, "side": new_side, "source": "venue+engine",
+            "venue_qty": abs(float(getattr(venue_match, "qty", 0.0) or 0.0)),
+        })
+
+    async def _notify_concurrent_position_block(
+        self, order: Any, info: dict[str, Any],
+    ) -> None:
+        """Emit the dedicated guard audit + a Telegram notify when D4 blocks an
+        entry (ruling 4 — a silent block is indistinguishable from no-signal).
+        Both best-effort; failures are logged, never raised."""
+        try:
+            self.logger_agent.log_event(
+                actor="bitunix_futures",
+                kind="concurrent_position_guard_blocked",
+                payload={
+                    "strategy": "bitunix_futures",
+                    "division": "bitunix_futures",
+                    "order_id": getattr(order, "id", None),
+                    "symbol": info.get("symbol"),
+                    "side": info.get("side"),
+                    "reason": info.get("reason"),
+                    "source": info.get("source"),
+                    "venue_qty": info.get("venue_qty"),
+                },
+            )
+        except Exception as e:
+            log.warning(
+                "bitunix_observer: concurrent_position_guard audit failed: %s", e,
+            )
+        if self.telegram_channel is not None:
+            try:
+                await self.telegram_channel.push(
+                    "⛔ BTC-PERP entry BLOCKED — concurrent-position guard\n"
+                    f"reason: {info.get('reason')}\n"
+                    f"already holding {info.get('side')} {info.get('symbol')}"
+                    f" (venue qty {info.get('venue_qty')}); same-side stack skipped."
+                )
+            except Exception as e:
+                log.warning(
+                    "bitunix_observer: concurrent_position_guard notify failed: %s", e,
+                )
 
     @staticmethod
     def _format_telegram_message(

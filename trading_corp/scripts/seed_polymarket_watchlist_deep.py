@@ -11,17 +11,14 @@ Pipeline:
   1. Pull `/v1/leaderboard?category=<C>` for each working category +
      global, paginated to `candidates_per_category` rows per key. Dedupe
      wallets.
-  2. Per candidate wallet, walk `/activity` to EXHAUSTION (bounded by
-     `max_pages_per_wallet`). REDEEM-grounded realized PnL (option (c)
-     Phase 2) needs every fill of a decision together, so the legacy
-     `target_buy_rows` early-stop is DISABLED by default — a fixed N just
-     moves the truncation cliff. Termination, whichever fires first:
-       - `/activity` returns an empty/partial page (feed exhausted).
+  2. Per candidate wallet, walk `/activity` with three termination
+     conditions, whichever fires first:
+       - Accumulated BUY-trade row count >= `target_buy_rows` (default
+         150, a buffer above the 100-window so unresolveds don't starve
+         it).
+       - `/activity` returns an empty page (feed exhausted).
        - Page index reaches `max_pages_per_wallet` (default 10, → 5000
-         activity rows ceiling at activity_limit=500) -> the whale is
-         flagged `window_truncated` (realized is a floor-bounded estimate).
-       - Accumulated BUY rows >= `target_buy_rows` IF explicitly set
-         (legacy early-stop; default unset).
+         activity rows ceiling at activity_limit=500).
      Record the termination reason for telemetry.
   3. Batch-fetch market resolutions for every unique condition_id seen
      across all wallets' BUY activity (gamma-api /markets).
@@ -36,8 +33,7 @@ Pipeline:
        - `n >= min_resolved_buys` (default 10, hard noise floor)
        - `last_trade_iso` of ANY side <= recency_days old (default 60)
        - windowed WR >= min_windowed_wr (default 0.62)
-       - windowed REDEEM-grounded realized PnL >= min_windowed_pnl
-         (default 5000.0 USDC)
+       - windowed realized PnL >= min_windowed_pnl (default 5000.0 USDC)
      Note: the PnL floor sits at $5,000 — high enough to filter capital-
      driven favorite-farmers (winning at $0.95 contracts earns $0.05/win
      per contract, so $5k+ requires sharp edge OR very deep capital).
@@ -83,8 +79,7 @@ Options:
     --provisional-threshold N  Mark provisional iff n < this (default 50)
     --activity-limit N       /activity rows per call (default 500, max 1000)
     --max-pages-per-wallet N Ceiling on /activity pages per wallet (default 10)
-    --target-buy-rows N      Legacy early-stop after N BUYs (default: unset ->
-                             walk to exhaustion; ceiling -> window_truncated)
+    --target-buy-rows N      Stop paging when this many BUYs seen (default 150)
     --merge                  Union with existing watchlist (weekly-refresh mode)
     --max-total N            Cap merged list size (only with --merge)
     --dry-run                Print results; don't write to agent_state
@@ -107,15 +102,63 @@ from trading_corp.data.polymarket_data_api_client import (
     PolymarketDataAPIClient,
     PolymarketDataAPIError,
 )
-from trading_corp.data.polymarket_whale_audit import build_audit_report
-from trading_corp.data.polymarket_whale_stats import score_whale_from_audit
-from trading_corp.data.whale_screening import fetch_activity_window_for_candidates
+from trading_corp.data.polymarket_whale_stats import compute_polymarket_stats
 from trading_corp.persistence.db import load_agent_state, set_agent_state
 from trading_corp.utils.secrets import load_secrets
 
 log = logging.getLogger(__name__)
 
 _LEADERBOARD_PAGE = 50  # data-api caps /v1/leaderboard at 50 rows per call
+
+
+async def _fetch_wallet_activity_windowed(
+    client: PolymarketDataAPIClient,
+    wallet: str,
+    *,
+    activity_limit: int,
+    max_pages: int,
+    target_buy_rows: int,
+) -> tuple[list[ActivityRow], int, str]:
+    """Walk `/activity` until enough BUY trades or feed exhausted or ceiling.
+
+    Three explicit stop conditions, whichever fires first:
+      - Cumulative TRADE+BUY row count >= target_buy_rows
+        (a buffer above the eventual window_size to account for some BUYs
+        being unresolved when we batch-fetch resolutions)
+      - A page returns 0 rows (feed exhausted)
+      - page index reaches max_pages (the hard ceiling on examined rows)
+
+    Returns (rows, pages_fetched, termination_reason). The
+    termination_reason is one of {"target_buys_reached", "exhausted",
+    "max_pages_hit", "fetch_error"}.
+    """
+    out: list[ActivityRow] = []
+    buy_count = 0
+    pages_fetched = 0
+    for page_idx in range(max_pages):
+        offset = page_idx * activity_limit
+        try:
+            page = await client.fetch_activity(
+                wallet, limit=activity_limit, offset=offset,
+            )
+        except PolymarketDataAPIError as e:
+            log.warning(
+                "activity fetch failed at offset=%d for %s: %s",
+                offset, wallet[:10], e,
+            )
+            return out, pages_fetched, "fetch_error"
+        pages_fetched += 1
+        if not page:
+            return out, pages_fetched, "exhausted"
+        out.extend(page)
+        for a in page:
+            if a.type == "TRADE" and a.side == "BUY":
+                buy_count += 1
+        if buy_count >= target_buy_rows:
+            return out, pages_fetched, "target_buys_reached"
+        if len(page) < activity_limit:
+            return out, pages_fetched, "exhausted"
+    return out, pages_fetched, "max_pages_hit"
 
 
 def _select_resolved_buys_window(
@@ -241,44 +284,6 @@ def _aggregate_window_to_decisions(
     return out
 
 
-def _rows_for_window(
-    activity: list[ActivityRow],
-    window_keys: set[tuple[str, int]],
-) -> list[ActivityRow]:
-    """Raw fills for exactly the windowed decisions, for REDEEM-grounded
-    realized PnL (option (c) Phase 2).
-
-    `build_audit_report` re-groups raw fills into decisions itself and needs
-    every fill of a decision together: all BUY/SELL TRADE rows on each
-    windowed `(condition_id, outcome_index)` PLUS the market-level REDEEM
-    rows (Polymarket emits these at sentinel `outcome_index=999`, keyed per
-    condition_id). A REDEEM is attributed by `group_fills_by_decision` only
-    to the winning-side decision, so including a REDEEM whose winning side is
-    out-of-window is harmless — it goes unused. The BUY-only aggregated
-    `window` cannot feed the audit: it carries no SELL/REDEEM legs, which is
-    exactly why the prior `compute_polymarket_stats` path was naive
-    held-to-resolution rather than realized.
-    """
-    window_cids = {cid for (cid, _oi) in window_keys}
-    out: list[ActivityRow] = []
-    for a in activity:
-        if a.type == "REDEEM":
-            if a.condition_id in window_cids:
-                out.append(a)
-            continue
-        if a.type != "TRADE" or not a.condition_id:
-            continue
-        if a.side not in ("BUY", "SELL"):
-            continue
-        try:
-            oi = int(a.outcome_index)
-        except (TypeError, ValueError):
-            continue
-        if (a.condition_id, oi) in window_keys:
-            out.append(a)
-    return out
-
-
 def _merge_watchlists(
     existing: list[dict[str, Any]] | None,
     fresh: list[dict[str, Any]],
@@ -348,7 +353,7 @@ async def seed_polymarket_watchlist_deep(
     provisional_threshold: int = 50,
     activity_limit: int = 500,
     max_pages_per_wallet: int = 10,
-    target_buy_rows: int | None = None,
+    target_buy_rows: int = 150,
     categories: tuple[str, ...] = POLYMARKET_LEADERBOARD_CATEGORIES,
     dry_run: bool = False,
     merge: bool = False,
@@ -462,44 +467,25 @@ async def seed_polymarket_watchlist_deep(
             len(candidates), len(list(categories)) + 1,
         )
 
-        # 2. Walk /activity per candidate via the shared whale_screening
-        #    helper. REDEEM-grounded realized PnL (option (c) Phase 2) needs
-        #    every fill of a decision together, so by default we walk to
-        #    EXHAUSTION bounded by max_pages — a fixed target_buy_rows just
-        #    moves the truncation cliff (the Phase E reconciliation finding
-        #    behind the refresh's b44e3ed). Whales that STILL hit the page
-        #    ceiling (or error) are flagged window_truncated so their realized
-        #    is read as a floor-bounded estimate (surfaced, not silently
-        #    trusted). --target-buy-rows restores the legacy early-stop. seed
-        #    records per-wallet termination + with_activity telemetry via the
-        #    on_termination callback (refresh does not).
-        def _record_termination(
-            wallet: str, term_reason: str, acts: list[ActivityRow],
-        ) -> None:
+        # 2. Walk /activity per candidate with the windowed termination spec.
+        all_condition_ids: set[str] = set()
+        activity_by_wallet: dict[str, list[ActivityRow]] = {}
+        for wallet in candidates:
+            acts, pages_fetched, term_reason = await _fetch_wallet_activity_windowed(
+                client, wallet,
+                activity_limit=activity_limit,
+                max_pages=max_pages_per_wallet,
+                target_buy_rows=target_buy_rows,
+            )
+            activity_by_wallet[wallet] = acts
             summary["termination_reasons"][term_reason] = (
                 summary["termination_reasons"].get(term_reason, 0) + 1
             )
             if acts:
                 summary["with_activity"] += 1
-
-        activity_by_wallet, truncated_by_wallet, all_condition_ids = (
-            await fetch_activity_window_for_candidates(
-                client, candidates,
-                activity_limit=activity_limit,
-                max_pages=max_pages_per_wallet,
-                target_buy_rows=target_buy_rows,
-                on_termination=_record_termination,
-            )
-        )
-        n_truncated = sum(1 for t in truncated_by_wallet.values() if t)
-        summary["window_truncated_count"] = n_truncated
-        if n_truncated:
-            log.warning(
-                "%d/%d candidates have an incomplete activity window (page "
-                "ceiling or fetch error -> window_truncated; realized PnL is a "
-                "floor-bounded estimate)",
-                n_truncated, len(candidates),
-            )
+            for a in acts:
+                if a.type == "TRADE" and a.side == "BUY" and a.condition_id:
+                    all_condition_ids.add(a.condition_id)
         log.info(
             "seed_polymarket_watchlist_deep: %d wallets with activity, "
             "%d unique condition_ids across all BUYs; termination=%s",
@@ -545,38 +531,16 @@ async def seed_polymarket_watchlist_deep(
             # reports/2026-05-26_polymarket_pnl_aggregation_fix_plan.md.
             window = _aggregate_window_to_decisions(activity, window)
 
-            # REDEEM-grounded realized PnL over the windowed decisions
-            # (option (c) Phase 2). build_audit_report re-groups RAW fills, so
-            # it needs every BUY/SELL leg plus the market-level REDEEM rows of
-            # each windowed (cid, oi) — the BUY-only aggregated `window` above
-            # (used only for avg-entry / span below) cannot feed it.
-            window_keys = {
-                (s.condition_id, int(s.outcome_index)) for s in window
-            }
-            windowed_raw = _rows_for_window(activity, window_keys)
-            report = build_audit_report(
+            # half_life_days=36500.0 → effectively no half-life weighting. The
+            # fixed-size window IS the recency mechanism; applying a 30-day
+            # half-life on top would double-count and let the most-recent ~30
+            # trades dominate a slice we deliberately sized at 100.
+            stats, _outcomes = compute_polymarket_stats(
                 leaderboard_entry=entry,
-                activity_rows=windowed_raw,
-                resolutions=resolutions,
-                proxy_wallet=wallet,
+                activity_rows=window,
+                market_resolutions=resolutions,
+                half_life_days=36500.0,
             )
-            wt = truncated_by_wallet.get(wallet, False)
-            # Reuse the Phase 1 scorer ONLY for its synthesized decision-unit,
-            # realized-basis WhaleStats (closed=resolved decisions, wins=winning
-            # decisions, total_pnl=realized, contracts=cost basis), so the floor
-            # logic below is unchanged. Its exclusion gate is intentionally NOT
-            # a roster filter: watch_only is observation-only, so window_truncated
-            # / inflation are surfaced as flags and membership stays governed by
-            # the explicit floors. No audit cache here — its key (wallet,
-            # activity_max_ts) is scope-blind and would collide with the
-            # refresh's full-activity report (cache unification is Phase 3).
-            scored = score_whale_from_audit(
-                report, min_resolved=min_resolved_buys, window_truncated=wt,
-            )
-            stats = scored.stats
-            inflation_ratio = report.realized_pnl.pnl_inflation_ratio
-            buy_usdc = report.total_buy_usdc_resolved
-            realized_roi = stats.total_pnl / buy_usdc if buy_usdc > 0 else 0.0
             closed = stats.closed_positions_count
             if closed != n_resolved:
                 # Defensive: the slice and stats should agree on n. If they
@@ -644,10 +608,6 @@ async def seed_polymarket_watchlist_deep(
                 "provisional": provisional,
                 "avg_entry_price": avg_entry_price,
                 "share_below_70": share_below_70,
-                "window_truncated": wt,
-                "pnl_inflation_ratio": inflation_ratio,
-                "realized_roi": realized_roi,
-                "n_resolved_decisions": closed,
             })
             log.info(
                 "quality gate PASS: %s (%s) n=%d wr=%.2f pnl=%.2f span=%.0fd "
@@ -690,10 +650,6 @@ async def seed_polymarket_watchlist_deep(
             "provisional": s["provisional"],
             "avg_entry_price": round(s["avg_entry_price"], 4),
             "share_below_70": round(s["share_below_70"], 4),
-            "window_truncated": s["window_truncated"],
-            "pnl_inflation_ratio": round(s["pnl_inflation_ratio"], 4),
-            "realized_roi": round(s["realized_roi"], 4),
-            "n_resolved_decisions": s["n_resolved_decisions"],
         })
 
     final_payload = watch_only_payload
@@ -876,12 +832,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Ceiling on /activity pages per wallet (default 10).",
     )
     parser.add_argument(
-        "--target-buy-rows", type=int, default=None,
+        "--target-buy-rows", type=int, default=150,
         help=(
-            "Legacy early-stop after N BUY-trade rows. DEFAULT: unset -> walk "
-            "to exhaustion (bounded by --max-pages-per-wallet); whales that hit "
-            "the ceiling are flagged window_truncated. Set to restore the "
-            "legacy fixed-N early-stop."
+            "Stop paging once accumulated BUY-trade rows reach this count "
+            "(default 150; buffer above window_size for unresolveds)."
         ),
     )
     parser.add_argument(
