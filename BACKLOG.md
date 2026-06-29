@@ -563,20 +563,38 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
-## E2 — route the copy loop to the live broker (SCOPED 2026-06-14; branch `e2-scoping-2026-06-14`, unmerged)
+## E2 — route the copy loop to the live broker — ✅ E2·1–E2·6 MERGED (loop wiring complete); E2·7 live-enablement + OP·E shakedown = remaining operator gate
 
-E1 done + merged (`72e8dc6`); PCT wallet `0x2160…9F82` fully provisioned (OP·A/B/C ✓, 6/6 approvals, 119.98 USDC.e). E2 routes the **PCT** copy loop `would_have_placed` → `data_exec.place()` → `PolymarketLiveBroker` → `FillEvent` (arb stays paper). Full scope + verified path-map: [`reports/2026-06-14_polymarket_e2_scoping.md`](reports/2026-06-14_polymarket_e2_scoping.md). Operator decisions baked in: token_id via `activity.asset`; **synthesized-FAK** order type (0.17.5 has no native FAK/IOC — GTC+poll+cancel-remainder, configurable); **no HITL** (whale-promotion is the approval); **flat ≈$1** sizing default (full schema, conviction off); per-division live isolation; DB `execution_mode` column.
+**Reconcile 2026-06-29 (read-only git audit).** Header previously read "SCOPED 2026-06-14; branch
+`e2-scoping-2026-06-14`, unmerged" — **STALE.** All agent-buildable E2 increments (E2·1–E2·6) plus the
+exit-side E5 work are on **main AND origin/main (`f57ef35`)**; only the OPERATOR-gated E2·7 (live
+enablement + $1 shakedown) remains.
 
-Thin increments, fundless-first, live LAST (one branch each, E1·1–7 cadence):
-- **E2·1** `token_id` → `extra` (`_emit_entry`/`_emit_exit`) + main.py base_payload. *(agent)*
-- **E2·2** `order_type` config (`fak_synth` default) + `fak_poll_seconds`; broker synthesized-FAK (GTC→poll→cancel remainder→filled-portion FillEvent). *(agent)*
-- **E2·3** replace `_size_tier_usdc` with clamp formula + schema; flat ≈$1 default, conviction off. *(agent)*
-- **E2·4** per-division live select (`--live-divisions`); `is_live_division` by slug — division-level anti-half-flip (PCT live, arb paper). *(agent)*
-- **E2·5** add `execution_mode TEXT DEFAULT 'paper'` to `proposed_order` + `paper_trade_record` (idempotent migration); written at placement. *(agent)*
-- **E2·6** PCT loop wiring: two-level gate (`execution_mode`+`auto_execute`, fail-closed) **no HITL**; `data_exec.place(...,"polymarket_copy_trading")` + record FillEvent with ACTUAL filled qty. *(agent, mocked)*
-- **E2·7** live enablement + **OP·E $1 shakedown**. *(OPERATOR-only; prereq: deps deploy — the `setuptools<81` lock fix on main still needs a linux `--require-hashes` smoke + `e1_lock_input.txt` update; deploy via `deploy_e1_lock.sh`)*
+E1 done + merged (`72e8dc6`); PCT wallet `0x2160…9F82` fully provisioned (OP·A/B/C ✓, 6/6 approvals,
+119.98 USDC.e). E2 routes the **PCT** copy loop `would_have_placed` → `data_exec.place()` →
+`PolymarketLiveBroker` → `FillEvent` (arb stays paper). Full scope + verified path-map:
+[`reports/2026-06-14_polymarket_e2_scoping.md`](reports/2026-06-14_polymarket_e2_scoping.md). Operator
+decisions baked in: token_id via `activity.asset`; **synthesized-FAK** order type (0.17.5 has no native
+FAK/IOC — GTC+poll+cancel-remainder, configurable); **no HITL** (whale-promotion is the approval);
+**flat ≈$1** sizing default (full schema, conviction off); per-division live isolation; DB
+`execution_mode` column.
 
-Carry-forward: partial-fill reconciliation = **E5**; dashboard paper/live filter UI = backlog (DB column ships in E2·5).
+Increments (all ✅ merged to main+origin `f57ef35` unless noted):
+- **E2·1** ✅ `3016513` — `token_id` → `extra` (`_emit_entry`/`_emit_exit`) + main.py base_payload.
+- **E2·2** ✅ `3b47c16` — `order_type` config (`fak_synth` default) + `fak_poll_seconds`; broker synthesized-FAK (GTC→poll→cancel remainder→filled-portion FillEvent).
+- **E2·3** ✅ `fa42f2c` — replace `_size_tier_usdc` with clamp formula + schema; flat ≈$1 default, conviction off.
+- **E2·4** ✅ `062186d` — per-division live select (`--live-divisions`); `is_live_division` by slug — division-level anti-half-flip (PCT live, arb paper).
+- **E2·5** ✅ `f692fa2` — add `execution_mode TEXT DEFAULT 'paper'` to `proposed_order` + `paper_trade_record` (idempotent migration); written at placement.
+- **E2·6** ✅ `7b2b70e` — PCT loop wiring: gated live placement (`isinstance(broker, Broker)`), `NoFillInWindow` no-fill handling, partial-fill write-back (records ACTUAL filled qty). *(mocked/fundless)*
+- **E2·7** ⏳ **OPERATOR-only — live enablement + OP·E $1 shakedown.** Deps prep DONE: `setuptools<81`
+  lock fix on main + `--require-hashes` smoke GREEN (`7530ccc`); step-3 install/cutover runbook
+  (`21d3f59`, `reports/2026-06-15_polymarket_e2-7_step3_install_cutover_runbook.md`). Remaining = the
+  prod deps install + `systemctl restart` (bounces ALL live divisions → flat window) + flip PCT
+  `broker:paper→polymarket` / `--live-divisions polymarket_copy_trading`, then the $1 shakedown.
+
+Exit-side **E5** ✅ merged: E5a `64a93df` (execution config relocated to the Division), E5b
+`5ff8f1a`/`17c3e19` (exit escalating-chase + reconciliation; **mechanism inert / off by default**).
+Carry-forward: dashboard paper/live filter UI = backlog (DB column ships in E2·5).
 
 ## P1 — Polymarket copy-trader SELL-pairing → option (c) — ✅ FIX MERGED (Phases 1–4 all on main+origin `f57ef35`); inert until a deliberate prod refresh run
 
