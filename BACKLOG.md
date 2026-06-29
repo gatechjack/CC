@@ -578,23 +578,33 @@ Thin increments, fundless-first, live LAST (one branch each, E1·1–7 cadence):
 
 Carry-forward: partial-fill reconciliation = **E5**; dashboard paper/live filter UI = backlog (DB column ships in E2·5).
 
-## P1 — Polymarket copy-trader SELL-pairing → option (c) (Phase 1 MERGED 2026-06-10, NOT run on prod; phases 2-4 pending)
+## P1 — Polymarket copy-trader SELL-pairing → option (c) — ✅ FIX MERGED (Phases 1–4 all on main+origin `f57ef35`); inert until a deliberate prod refresh run
 
-**Phase 1 status (2026-06-10): MERGED to main, NOT DEPLOYED / not run against prod.**
-Branch `polymarket-option-c-phase1-2026-06-10` (stays on origin as audit trail — not deleted).
-`refresh_polymarket_whales.py` now screens on REDEEM-grounded realized P&L (`build_audit_report`
-+ `score_whale_from_audit`): decision-unit Wilson WR × realized ROI × category bonus, a
-`pnl_inflation_ratio` exclusion gate (default 0.5), a window-truncation gate (excluded from algo
-selection, observable, pin-overridable), and an `/activity` walk-to-exhaustion. **Refresh defaults
-to PINS-ONLY** (writes only pinned whales); `--algo-select` is an explicit opt-in — a default
-refresh never auto-expands the copy roster. New compute is **inert until a deliberate operator
-refresh run.** Validation:
-[`reports/2026-06-10_polymarket_option_c_phase1_validation.md`](reports/2026-06-10_polymarket_option_c_phase1_validation.md)
-(realized reconciles to Polymarket `/closed-positions` to the dollar on complete windows; 2256
-tests pass / 28 pre-existing). **Phases 2-4 UNSTARTED:** P2 observation roster (`seed_*_deep`),
-P3 unify both onto shared compute, P4 cleanup (remove the legacy held-to-resolution path).
-NOTE: F-4's `auto_paused_whales` key (mentioned in the SCOPED paragraph below) was **SUPERSEDED —
-not built**; refresh stays manual/unscheduled, so scheduling creates no flap.
+**Reconcile 2026-06-29 (read-only git audit).** This entry previously read "Phase 1 merged, phases 2-4
+UNSTARTED" — that was **STALE.** Git truth: option (c) is **fully implemented; all four phases are on
+main AND origin/main (`f57ef35`, in sync):**
+- **Phase 1** (copy roster `refresh_polymarket_whales.py`) — merge `b137c03`, 2026-06-10. Screens on
+  REDEEM-grounded realized P&L (`build_audit_report` + `score_whale_from_audit`): decision-unit Wilson
+  WR × realized ROI × category bonus, `pnl_inflation_ratio` exclusion gate (default 0.5),
+  window-truncation gate (pin-overridable), `/activity` walk-to-exhaustion.
+- **Phase 2** (observation roster `seed_polymarket_watchlist_deep.py`, the Sunday `watch_only_whales`
+  job) — merge `1c0b52e`, 2026-06-10. Same REDEEM-grounded compute.
+- **Phase 3** (unify) — merge `3d8cc1a`, 2026-06-13. Extracted shared `trading_corp/data/whale_screening.py`
+  + removed the refresh→seed coupling (byte-identical, 54 tests green).
+- **Phase 4** (cleanup) — merge `1327764`, 2026-06-13. Dropped the seed re-export shim.
+
+**What this closes:** the screening layer now identifies "winning traders" from accurate REDEEM-grounded
+realized P&L over the activity feed — sidestepping the copy SELL/BUY-pairing path that produced the
+~99.86% `skipped_no_entry` rate. **Screening-accuracy blocker = resolved in code.**
+
+**⚠ One operational step remains (operator-gated, NOT code): the compute is inert on prod until a
+deliberate `refresh_polymarket_whales` run.** A default run is **PINS-ONLY** (writes only pinned whales,
+never auto-expands the roster); `--algo-select` is the explicit opt-in that surfaces the new algo picks
+for manual promotion. Until that run, the live roster still reflects the pre-option-(c) screen. Phase-1
+validation: [`reports/2026-06-10_polymarket_option_c_phase1_validation.md`](reports/2026-06-10_polymarket_option_c_phase1_validation.md)
+(realized reconciles to Polymarket `/closed-positions` to the dollar on complete windows; 2256 tests pass
+/ 28 pre-existing). The SELL-pairing resolver / `round_trips` display path (structural-causes detail
+below) is a SEPARATE accounting concern, not the screening blocker — retained as historical context.
 
 **Known autopause-pin flap (benign):** a pins-only refresh rewrites the full pinned set, which
 currently includes the 2 autopaused whales (Johnnyboy42069, damed21 — still pinned) →
@@ -668,10 +678,21 @@ algorithmic work.
 - (c) Algorithm change: compute whale P&L via net position + entry/exit average
   prices without trade-pair matching (probably large scope).
 
-**Why this is the highest-impact open item:** the copy-trader can't go live
-until whale P&L attribution is accurate. The current 99.86% skip rate means
-the "winning trader" identification is unreliable. This is the structural
-blocker for Priority 2.
+**Why this WAS the highest-impact open item (RESOLVED IN CODE 2026-06-29):** the copy-trader couldn't go
+live until whale P&L attribution was accurate; the 99.86% skip rate made "winning trader" identification
+unreliable. Option (c) (Phases 1–4, above) fixes this at the screening layer. Realizing it on the live
+roster = the operator `refresh_polymarket_whales` run noted above. **No longer the structural blocker for
+Priority 2** — the remaining live-execution gates are operational:
+1. **Deps lockfile prod-deploy** — `setuptools<81` fix on main, `--require-hashes` smoke went green;
+   needs the install + a `systemctl restart` that bounces ALL live divisions (Bitunix + PEAD) → run at a
+   flat window. (E2·7 prereq.)
+2. **E2·7 live enablement** — flip PCT `broker:paper→polymarket` + `--live-divisions polymarket_copy_trading`;
+   the loop wiring E2·1–6 is merged (`PolymarketLiveBroker` built; PCT wallet provisioned, 6/6 approvals,
+   ~120 USDC.e).
+3. **OP·E $1 shakedown** — first real-money order; also the ONLY test that closes the order-submission
+   geo/jurisdiction residual (`runbooks/eu_proxy_smoke_test.md` task #31 + `reports/2026-05-29_polymarket_live_prep_groupB_spike.md`
+   Track 1a: reads + authed surface reach the US Azure IP fine; EU-proxy NOT needed; only signed-order POST
+   jurisdiction is unproven, provable only here).
 
 ## P3 — Polymarket whale demotion transparency in dashboard (filed 2026-06-10 via workflow verification)
 
