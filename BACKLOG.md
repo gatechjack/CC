@@ -849,6 +849,29 @@ status on next audit run.
 
 # Other Open Items (not in priority list above)
 
+## P3 (NOT urgent) — Fold BTC/ETH downside-violence asymmetry into SFP/BOS side/size/stop logic (filed 2026-06-29 via OU/momentum diagnostic)
+
+**Origin:** the 2026-06-29 OU/mean-reversion + momentum diagnostic arc (verdict: reversion DEAD 5 ways for
+BTC/ETH/SOL/XRP at 1H/3m/15m; the 2.5σ momentum *trigger* = marginal skew, NOT certifiable serial momentum →
+**no standalone build**). The ONE certified, null-surviving residue: **BTC/ETH downside extremes are
+structurally more violent than upside** (short follow-through fatter than long; beats the direction-randomized
+sign-flip null for ETH both anchors + BTC VWAP; SOL/XRP not certifiable). This is a **risk/side bias, not a
+new system.**
+
+**Possible enhancement (scope deliberately — do NOT build off this note):** in the existing SFP/BOS path
+([[bitunix-sfp-mode-b]]), let the asymmetry inform **side/size/stop** — e.g. fatter expected follow-through on
+SHORT continuation setups vs LONG (asymmetric target/trail or size), tighter assumptions on long-side
+follow-through. Confined to BTC/ETH (the coins where the asymmetry is certified).
+
+**Discipline gates (mandatory before any code):** §4 strategy-parameter change → Backtester approval first;
+WALK-FORWARD + full TWO-leg fees+funding (in-sample only so far); HARD parity/drift gate vs prod (SfpDetector
+byte-unchanged discipline); targeted-hunk deploys (branch diverges from prod). In-sample diagnostic only — the
+magnitude edge is NOT certified, so this is a *bias/sizing* refinement, not an entry trigger.
+
+**Priority: P3, NOT urgent.** SFP Mode B is live and working; this is a deliberate, low-priority refinement.
+**Reference:** `reports/2026-06-29_ou_meanreversion_diagnostic/OU_diagnostic_summary.md` (§6–7), memory
+[[ou-meanreversion-dead-momentum-skew]].
+
 ## P3 — Remove `yfinance` from all use — free/undependable service (filed 2026-06-14 via Bitunix first-fill investigation)
 
 Goal: eliminate dependence on `yfinance` (free, unofficial Yahoo endpoint — rate-limited, schema-drifts, returns empty/"delisted" with no warning).
