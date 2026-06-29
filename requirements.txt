@@ -25,6 +25,14 @@ pandas>=2.2.0
 numpy>=1.26.0
 pandas-market-calendars>=4.4.0   # NYSE schedule incl. half-days/holidays for 0-DTE deadline gates
 
+# Mean-reversion (OU) backtest toolkit — BACKTEST-ONLY, not imported by the live
+# engine / SFP path (no prod impact). Pinned 2026-06-29 to the versions that
+# resolved on the local py3.14/Windows backtest env (cp314 wheels). scipy = OU MLE;
+# statsmodels = ADF / Engle-Granger coint + coint_johansen. patsy is a statsmodels
+# transitive (1.0.2), pinned by the lockfile not hand-pinned here.
+scipy==1.18.0
+statsmodels==0.14.6
+
 # Testing
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
