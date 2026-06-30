@@ -705,6 +705,66 @@ class KalshiCopyTraderAgent:
             self.name, _AGENT_STATE_LAST_POLL_TS, ts.isoformat(), db_url=self._db_url,
         )
 
+    # ── K5·3: live-fill write-back (entry reconcile / discard / exit residual) ──
+    # Mirror the polymarket E2·6 hooks but fitted to the kalshi per-whale snapshot
+    # model. run_scan_cycle writes the entry lot OPTIMISTICALLY (intended dollars +
+    # whale price) before placement; these reconcile it against the ACTUAL fill so a
+    # later exit sells what we really hold.
+
+    def record_entry_fill(self, order, fill) -> None:
+        """Reconcile a whale-snapshot ENTRY lot with the ACTUAL live fill: overwrite
+        the optimistic intended size/price with the realized fill (entry_price =
+        fill.price, copy_size_usd = fill.qty * fill.price) so the later exit sells
+        the ACTUAL exposure. No-op if the lot is already gone."""
+        ext = getattr(order, "extra", None) or {}
+        whale = ext.get("whale_handle")
+        ticker = ext.get("ticker")
+        if not whale or not ticker:
+            return
+        snap = self._load_whale_snapshot(whale)
+        if not snap or ticker not in snap:
+            return
+        qty = float(getattr(fill, "qty", 0.0) or 0.0)
+        price = float(getattr(fill, "price", 0.0) or 0.0)
+        rec = dict(snap[ticker])
+        rec["our_side"] = ext.get("outcome") or rec.get("our_side") or ""
+        rec["entry_price"] = price
+        rec["copy_size_usd"] = qty * price
+        rec["actual_fill_qty"] = qty
+        snap[ticker] = rec
+        self._save_whale_snapshot_raw(whale, snap)
+
+    def discard_entry(self, order) -> None:
+        """Drop the optimistic ENTRY lot when a live entry did NOT fill, so a later
+        exit never tries to sell a lot we never acquired."""
+        ext = getattr(order, "extra", None) or {}
+        whale = ext.get("whale_handle")
+        ticker = ext.get("ticker")
+        if not whale or not ticker:
+            return
+        snap = self._load_whale_snapshot(whale)
+        if snap and ticker in snap:
+            snap.pop(ticker, None)
+            self._save_whale_snapshot_raw(whale, snap)
+
+    def record_exit_fill(self, order, fill) -> float:
+        """Report the un-cleared residual (USD) for a live EXIT. The snapshot lot was
+        already dropped by run_scan_cycle when the whale closed, and exits are placed
+        reduce_only so the venue cannot over-sell — so there is nothing to decrement
+        here; this just reports the residual for the LOUD manual-reconcile flag (full
+        intended size on a no-fill, intended-minus-filled on a partial, 0 on a full
+        fill). Auto re-reconciliation of an un-closed live position is E5-class, out
+        of K5·3 scope."""
+        ext = getattr(order, "extra", None) or {}
+        intended = float(ext.get("copy_size_usd") or getattr(order, "qty", 0.0) or 0.0)
+        if fill is None:
+            return intended
+        filled_usd = (
+            float(getattr(fill, "qty", 0.0) or 0.0)
+            * float(getattr(fill, "price", 0.0) or 0.0)
+        )
+        return max(0.0, intended - filled_usd)
+
 
 def force_close_whale_positions(
     handle: str,

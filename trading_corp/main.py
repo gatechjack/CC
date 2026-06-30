@@ -3771,6 +3771,18 @@ async def _scheduled_kalshi_copy_trader_loop(
                     len(orders),
                 )
 
+                # ── K5·3: live-arming gate, computed once per cycle. A division is
+                # ARMED only when its broker can place REAL Kalshi orders
+                # (KalshiLiveBroker: a Broker with paper=False). The INERT paper
+                # deploy (`broker: paper` -> PaperExecutionBroker, a Broker but
+                # paper=True) and the read-only KalshiBroker both resolve NOT-armed.
+                # selected_whales is the Board roster (membership = per-whale approval).
+                is_live_armed = _kalshi_is_live_armed(broker)
+                selected_whales = (
+                    set(agent._load_selected_whales())
+                    if (is_live_armed and agent.auto_execute) else set()
+                )
+
                 for order in orders:
                     logger_agent.log_proposed_order(order)
                     ext = order.extra or {}
@@ -3801,6 +3813,28 @@ async def _scheduled_kalshi_copy_trader_loop(
                         "first_seen_iso": ext.get("first_seen_iso"),
                     }
 
+                    # ── K5·3: live placement gate — armed broker + auto_execute +
+                    # whale on the Board-approved roster (selected_whales membership
+                    # IS the per-whale approval). PER-TRADE RISK BYPASS (operator
+                    # directive): the live path does NOT call risk_agent.evaluate /
+                    # _evaluate_kalshi — approval = auto_execute + roster, and fixed
+                    # $1-3/leg sizing means there is nothing for a per-trade gate to
+                    # resize. Residual (operator-accepted): no automated account cap —
+                    # exposure is bounded by roster x sizing; the kill-switch is the
+                    # halt (auto_execute:false hot-reload / systemctl stop).
+                    whale_handle = ext.get("whale_handle")
+                    if (
+                        is_live_armed and agent.auto_execute
+                        and whale_handle and whale_handle in selected_whales
+                    ):
+                        await _handle_kalshi_copy_order_placement(
+                            agent=agent, order=order, data_exec=data_exec,
+                            logger_agent=logger_agent, channel=channel,
+                            base_payload=base_payload,
+                        )
+                        continue
+
+                    # ── PAPER branch (UNCHANGED): per-trade risk gate + would_have_placed ──
                     verdict = risk_agent.evaluate(
                         order, account, strategy_state, db_url=db_url,
                     )
@@ -3849,6 +3883,103 @@ async def _scheduled_kalshi_copy_trader_loop(
             except Exception as e:
                 log.exception("Kalshi copy trader loop error (continuing): %s", e)
                 await asyncio.sleep(30)
+
+
+def _kalshi_is_live_armed(broker) -> bool:
+    """K5·3 — True iff `broker` can place REAL Kalshi orders. `isinstance(Broker)`
+    ALONE is insufficient for kalshi: the paper config (`broker: paper`) yields a
+    PaperExecutionBroker (a Broker with paper=True), and the read-only KalshiBroker
+    is not a Broker at all — so gate on BOTH placement-legality AND not-paper.
+    (KalshiLiveBroker: Broker + paper False -> armed.)"""
+    from trading_corp.brokers.base import Broker
+    return isinstance(broker, Broker) and not getattr(broker, "paper", True)
+
+
+async def _push_kalshi_copy_card(channel, order, ext, *, tag: str) -> None:
+    """Informational Telegram card for one Kalshi copy order. Never raises."""
+    try:
+        whale = ext.get("whale_handle") or "?"
+        action = "ENTRY" if ext.get("is_entry") else "EXIT"
+        await channel.push(
+            f"🐋 Kalshi copy {action} {order.side.upper()} {order.symbol} "
+            f"(@{whale}, ${float(order.qty):.2f}) — {tag}."
+        )
+    except Exception as e:
+        log.warning("Kalshi copy channel push failed: %s", e)
+
+
+async def _handle_kalshi_copy_order_placement(
+    *, agent, order, data_exec, logger_agent, channel, base_payload: dict,
+) -> None:
+    """K5·3 — place one Kalshi copy order LIVE (the loop gate already decided to arm).
+
+    Mirrors `_handle_copy_order_placement` (polymarket). Routes through
+    `data_exec.place()` (sets execution_mode='live', logs proposed_order + fill,
+    E2·5). A benign `KalshiNoFill` (IOC matched nothing) is SKIPPED — an ENTRY drops
+    its optimistic snapshot lot; an EXIT logs a LOUD residual + manual-reconcile flag.
+    A real fill writes the ACTUAL filled qty/price back into the whale snapshot
+    (entry). REAL placement failures (plain OrderPlacementError / anything else)
+    PROPAGATE to the loop's loud outer handler — NOT swallowed here.
+
+    EXIT-residual scope (mirrors E2·6): run_scan_cycle already dropped the closed
+    ticker from the snapshot, and exits are placed reduce_only so the venue cannot
+    over-sell — an exit that doesn't fully clear is FLAGGED for manual reconcile
+    (auto re-reconciliation of an un-closed live position is E5-class).
+    """
+    from trading_corp.brokers.kalshi_live import KalshiNoFill
+
+    ext = order.extra or {}
+    is_entry = bool(ext.get("is_entry"))
+    try:
+        fill = await data_exec.place(order, division=agent.division)
+    except KalshiNoFill as e:
+        if is_entry:
+            agent.discard_entry(order)
+            logger_agent.log_event(
+                agent.name, "kalshi_copy_no_fill",
+                {**base_payload, "qty": order.qty, "reason": str(e)},
+            )
+            log.info("Kalshi copy: benign no-fill on %s — skipped (%s)", order.symbol, e)
+        else:
+            residual = agent.record_exit_fill(order, None)
+            logger_agent.log_event(
+                agent.name, "kalshi_copy_exit_residual",
+                {**base_payload, "residual_usd": residual, "reason": "exit_no_fill"},
+            )
+            log.warning(
+                "Kalshi copy: EXIT no-fill on %s — residual $%.2f retained, MANUAL RECONCILE",
+                order.symbol, residual,
+            )
+            await _push_kalshi_copy_card(
+                channel, order, ext,
+                tag=f"EXIT NO-FILL residual ${residual:.2f} — MANUAL RECONCILE",
+            )
+        return
+    # Real fill (full or IOC partial). data_exec.place already logged
+    # proposed_order[status=filled] + the 'filled' audit + execution_mode='live'.
+    if is_entry:
+        agent.record_entry_fill(order, fill)
+    else:
+        residual = agent.record_exit_fill(order, fill)
+        if residual > 0.0:
+            logger_agent.log_event(
+                agent.name, "kalshi_copy_exit_residual",
+                {**base_payload, "residual_usd": residual, "reason": "exit_partial"},
+            )
+            log.warning(
+                "Kalshi copy: PARTIAL EXIT on %s — residual $%.2f retained, MANUAL RECONCILE",
+                order.symbol, residual,
+            )
+    fill_px = float(getattr(fill, "price", 0.0) or 0.0)
+    fill_qty = float(getattr(fill, "qty", 0.0) or 0.0)
+    logger_agent.log_event(
+        agent.name, "kalshi_copy_placed_live",
+        {**base_payload, "fill_price": fill_px, "fill_qty": fill_qty,
+         "fee": float(getattr(fill, "fee", 0.0) or 0.0)},
+    )
+    await _push_kalshi_copy_card(
+        channel, order, ext, tag=f"PLACED LIVE @ ${fill_px:.2f} x{fill_qty:g}",
+    )
 
 
 async def _push_copy_card(channel, order, ext, *, tag: str) -> None:
