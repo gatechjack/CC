@@ -619,7 +619,8 @@
         </thead>
         <tbody>
           {% for w in view.whales %}
-          <tr class="border-t border-edge hover:bg-pane-2/40" id="whale-row-{{ w.venue }}-{{ w.actor_id or w.handle }}">
+          <tr class="border-t border-edge hover:bg-pane-2/40" id="whale-row-{{ w.venue }}-{{ w.actor_id or w.handle }}"
+              {% if w.venue == "kalshi" and w.handle %}data-whale-id="{{ w.handle|e }}"{% endif %}>
             <td class="px-3 py-2 text-mono font-semibold">
               @{{ w.handle }}
               {% if w.is_pinned %}<span class="text-accent text-[10px] ml-1" title="Manually promoted via dashboard">📌</span>{% endif %}
@@ -655,13 +656,21 @@
                  class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1 mr-1">
                 View ↗
               </a>
-              <button hx-post="/api/kalshi/whales/demote/{{ w.handle }}"
-                      hx-target="#whale-row-kalshi-{{ w.actor_id or w.handle }}"
+              {# Guard: empty or special-char handles would produce broken URL
+                 paths (/demote// or /demote/john.doe) and invalid CSS id
+                 selectors. URL-encode handle in hx-post; switch hx-target
+                 to attribute selector so handles with "." "#" "/" etc. work. #}
+              {% if w.handle %}
+              <button hx-post="/api/kalshi/whales/demote/{{ w.handle | urlencode }}"
+                      hx-target="[data-whale-id='{{ w.handle|e }}']"
                       hx-swap="outerHTML"
                       hx-confirm="Demote @{{ w.handle }}? Synthetic SELLs will close any tracked open positions and copy-trading stops on the next poll."
                       class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-loss/60 text-loss/80 hover:bg-loss/10 hover:text-loss">
                 Demote
               </button>
+              {% else %}
+              <span class="text-muted/40 text-[10px]" title="handle missing — cannot demote">—</span>
+              {% endif %}
               {% elif w.venue == "polymarket" %}
               <a href="https://polymarket.com/profile/{{ w.actor_id or w.handle }}"
                  target="_blank" rel="noopener noreferrer"
@@ -690,34 +699,72 @@
   {% endif %}
 
   {% if view.kalshi_watch_only %}
+  {# Sortable-header macro for the Kalshi Watch List. Server-side sort:
+     clicking a header triggers an HTMX swap of #pm-content with
+     `?kalshi_watch_sort=<key>&kalshi_watch_desc=<0|1>` and pushes the
+     URL so refresh + back/forward preserve the sort. The active column
+     shows ↓/↑; clicking it again flips direction. `default_key` marks
+     the column treated as active when no `?kalshi_watch_sort` is set —
+     the default sort is tier asc + total_pnl desc. #}
+  {% macro kalshi_watch_sort_link(key, label, default_key=False) %}
+    {%- if view.kalshi_watch_sort -%}
+      {%- set is_active = (view.kalshi_watch_sort == key) -%}
+      {%- set active_desc = view.kalshi_watch_desc -%}
+    {%- else -%}
+      {%- set is_active = default_key -%}
+      {%- set active_desc = True -%}
+    {%- endif -%}
+    {%- if is_active -%}
+      {%- set next_desc = (0 if active_desc else 1) -%}
+      {%- set arrow = '↓' if active_desc else '↑' -%}
+    {%- else -%}
+      {%- set next_desc = 1 -%}
+      {%- set arrow = '' -%}
+    {%- endif -%}
+    {%- set slug = view.selected or 'kalshi_copy_trading' -%}
+    <a class="cursor-pointer select-none hover:text-mono {% if is_active %}text-mono{% endif %}"
+       hx-get="/partials/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}"
+       hx-target="#pm-content"
+       hx-swap="innerHTML"
+       hx-push-url="/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}">
+      {{ label }}{% if arrow %}<span class="ml-0.5">{{ arrow }}</span>{% endif %}
+    </a>
+  {% endmacro %}
   <div class="bg-pane border border-edge rounded-lg overflow-hidden {% if view.whales %}mt-6{% endif %}">
     <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
       <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
         Watch list — observation only
       </h2>
-      <div class="text-[11px] font-mono text-muted">
-        {{ view.kalshi_watch_only | length }} whales · self-reported stats from Apify · NOT copy-traded
+      <div class="flex items-center gap-3">
+        <div class="text-[11px] font-mono text-muted">
+          {{ view.kalshi_watch_only | length }} whales · self-reported stats from Apify · NOT copy-traded
+        </div>
+        {# Run Discovery button — right-side slot (see Addition D) #}
+        <div id="kalshi-discovery-control">
+          {% include "partials/_kalshi_discovery_control.html" ignore missing %}
+        </div>
       </div>
     </header>
     <div class="overflow-x-auto">
       <table class="w-full text-[12px] font-mono">
         <thead class="bg-pane-2/40 text-muted uppercase tracking-wider text-[10px]">
           <tr>
-            <th class="text-left px-3 py-2 font-medium">Whale</th>
-            <th class="text-center px-3 py-2 font-medium">Tier</th>
-            <th class="text-right px-3 py-2 font-medium">Resolved</th>
-            <th class="text-right px-3 py-2 font-medium">WR%</th>
-            <th class="text-right px-3 py-2 font-medium">PnL ($)</th>
-            <th class="text-right px-3 py-2 font-medium">PnL/contract</th>
-            <th class="text-right px-3 py-2 font-medium">Open</th>
-            <th class="text-left px-3 py-2 font-medium">Top Cat</th>
-            <th class="text-left px-3 py-2 font-medium">Last Refresh</th>
+            <th class="text-left px-3 py-2 font-medium">{{ kalshi_watch_sort_link("handle", "Whale") }}</th>
+            <th class="text-center px-3 py-2 font-medium">{{ kalshi_watch_sort_link("tier", "Tier") }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ kalshi_watch_sort_link("resolved", "Resolved") }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ kalshi_watch_sort_link("wr", "WR%") }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ kalshi_watch_sort_link("pnl", "PnL ($)", default_key=True) }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ kalshi_watch_sort_link("pnl_contract", "PnL/contract") }}</th>
+            <th class="text-right px-3 py-2 font-medium">{{ kalshi_watch_sort_link("open", "Open") }}</th>
+            <th class="text-left px-3 py-2 font-medium">{{ kalshi_watch_sort_link("top_category", "Top Cat") }}</th>
+            <th class="text-left px-3 py-2 font-medium">{{ kalshi_watch_sort_link("last_refresh", "Last Refresh") }}</th>
             <th class="text-right px-3 py-2 font-medium">Action</th>
           </tr>
         </thead>
         <tbody>
           {% for w in view.kalshi_watch_only %}
           <tr class="border-t border-edge hover:bg-pane-2/40"
+              {% if w.handle %}data-whale-id="{{ w.handle|e }}"{% endif %}
               {% if w.notes %}title="{{ w.notes }}"{% endif %}>
             <td class="px-3 py-2 text-mono font-semibold">
               {% if w.source_x_handle %}{{ w.source_x_handle }}{% else %}@{{ w.handle }}{% endif %}
@@ -766,13 +813,20 @@
                  class="text-[10px] font-mono uppercase tracking-wider border border-edge text-accent/70 hover:text-accent px-2 py-1 mr-1">
                 View ↗
               </a>
-              <button hx-post="/api/kalshi/watchlist/promote/{{ w.handle }}"
+              {# Guard: empty or special-char handles (containing "." "/" "#")
+                 produce broken URL paths and invalid hx-post URLs. URL-encode
+                 the handle; fall back to "—" when empty. #}
+              {% if w.handle %}
+              <button hx-post="/api/kalshi/watchlist/promote/{{ w.handle | urlencode }}"
                       hx-target="closest tr"
                       hx-swap="outerHTML"
                       hx-confirm="Promote @{{ w.handle }} to the live copy-trade roster? Copy-trading starts on the next 10-minute poll."
                       class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider border border-accent/60 text-accent/80 hover:bg-accent/10 hover:text-accent">
                 Promote
               </button>
+              {% else %}
+              <span class="text-muted/40 text-[10px]" title="handle missing — cannot promote">—</span>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}

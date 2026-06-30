@@ -3725,6 +3725,9 @@ class PMDashboardView:
     # these to render the active-column arrow + compute the toggle URL.
     pm_watch_sort: str | None = None  # whitelisted user-facing key (e.g. "avg_entry_price")
     pm_watch_desc: bool = True
+    # Kalshi Watch List sort state (server-side sort, same pattern as polymarket).
+    kalshi_watch_sort: str | None = None  # whitelisted user-facing key
+    kalshi_watch_desc: bool = True
     # Polymarket metrics-epoch (None when unset). Read from
     # agent_state(polymarket_copy_trader, metrics_epoch). Surfaced on the
     # view so the template can render a "metrics since {epoch}" badge.
@@ -4784,6 +4787,9 @@ def _query_pm_whales(
 
 def _query_kalshi_watch_only_rows(
     db_url: str, target_slugs: list[str],
+    *,
+    sort_key: str | None = None,
+    sort_desc: bool = True,
 ) -> list[KalshiWatchOnlyRow]:
     """Render the K3 Watch List panel from `agent_state(watch_only_whales)`.
 
@@ -4866,9 +4872,44 @@ def _query_kalshi_watch_only_rows(
             lifetime_markets_traded=int(s.get("lifetime_markets_traded") or 0),
             last_refresh_iso=s.get("last_refresh_iso") or w.get("included_iso"),
         ))
-    out.sort(key=lambda w: (w.tier or 99, -w.total_pnl))
+    # Sort by the requested key (or default to tier asc + total_pnl desc,
+    # which matches the seed's tier-grouped-by-PnL ordering).
+    attr = _KALSHI_WATCH_SORT_KEYS.get((sort_key or "").lower(), None)
+    if attr is None:
+        out.sort(key=lambda w: (w.tier or 99, -w.total_pnl))
+    else:
+        # Split None/non-None and concat None-trailing AFTER sorting non-Nones.
+        with_val = [w for w in out if getattr(w, attr, None) is not None]
+        without_val = [w for w in out if getattr(w, attr, None) is None]
+        with_val.sort(key=lambda w: getattr(w, attr), reverse=sort_desc)
+        out = with_val + without_val
     return out
 
+
+# Whitelist of sort keys the Kalshi Watch List panel will honor from the
+# URL query param `?kalshi_watch_sort=`. The string the user provides is
+# mapped to the KalshiWatchOnlyRow attribute the sort runs on. Anything
+# not in this dict falls back to the default sort (tier asc + total_pnl desc).
+# String keys are case-insensitive on lookup.
+_KALSHI_WATCH_SORT_KEYS: dict[str, str] = {
+    "handle": "handle",
+    "tier": "tier",
+    "resolved": "resolved_count",
+    "resolved_count": "resolved_count",
+    "wr": "win_rate_pct",
+    "win_rate_pct": "win_rate_pct",
+    "pnl": "total_pnl",
+    "total_pnl": "total_pnl",
+    "pnl_contract": "avg_pnl_per_contract",
+    "avg_pnl_per_contract": "avg_pnl_per_contract",
+    "open": "n_open",
+    "n_open": "n_open",
+    "top_category": "top_category",
+    "last_refresh": "last_refresh_iso",
+    "last_refresh_iso": "last_refresh_iso",
+}
+
+_KALSHI_WATCH_DEFAULT_SORT_KEY = None  # default = tier asc + total_pnl desc
 
 # Whitelist of sort keys the Polymarket Watch List panel will honor from
 # the URL query param `?pm_watch_sort=`. The string the user provides is
@@ -5067,6 +5108,8 @@ async def build_prediction_market_view(
     equity_curve_days: int = 30,
     pm_watch_sort: str | None = None,
     pm_watch_desc: bool = True,
+    kalshi_watch_sort: str | None = None,
+    kalshi_watch_desc: bool = True,
 ) -> PMDashboardView | None:
     """Build the dashboard view for /prediction-markets/ and
     /prediction-markets/{division}.
@@ -5109,7 +5152,10 @@ async def build_prediction_market_view(
         asyncio.to_thread(_query_pm_equity_curve, db_url, target_slugs, equity_curve_days, pm_epoch=pm_epoch),
         asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200, pm_epoch=pm_epoch),
         asyncio.to_thread(_query_pm_whales, db_url, target_slugs, pm_epoch=pm_epoch),
-        asyncio.to_thread(_query_kalshi_watch_only_rows, db_url, target_slugs),
+        asyncio.to_thread(
+            _query_kalshi_watch_only_rows, db_url, target_slugs,
+            sort_key=kalshi_watch_sort, sort_desc=kalshi_watch_desc,
+        ),
         asyncio.to_thread(
             _query_polymarket_watch_only_rows, db_url, target_slugs,
             sort_key=pm_watch_sort, sort_desc=pm_watch_desc,
@@ -5145,6 +5191,8 @@ async def build_prediction_market_view(
         polymarket_watch_only=polymarket_watch_only,
         pm_watch_sort=(pm_watch_sort or "").lower() or None,
         pm_watch_desc=pm_watch_desc,
+        kalshi_watch_sort=(kalshi_watch_sort or "").lower() or None,
+        kalshi_watch_desc=kalshi_watch_desc,
         pm_metrics_epoch=pm_epoch,
         vol_v2_block=vol_v2_block,
     )
