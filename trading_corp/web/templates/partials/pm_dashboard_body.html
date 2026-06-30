@@ -739,10 +739,17 @@
         <div class="text-[11px] font-mono text-muted">
           {{ view.kalshi_watch_only | length }} whales · self-reported stats from Apify · NOT copy-traded
         </div>
-        {# Run Discovery button — right-side slot (see Addition D) #}
-        <div id="kalshi-discovery-control">
-          {% include "partials/_kalshi_discovery_control.html" ignore missing %}
-        </div>
+        {# Run Discovery button — right-side slot (Addition D).
+           Bootstrapped via hx-get on load so the route's _discovery_control_html
+           renders the correct initial state (idle + last-run telemetry, or
+           running if a previous task is still in flight). The route returns a
+           self-contained <div id="kalshi-discovery-control"> that replaces this
+           wrapper; subsequent status polls are triggered by the returned fragment. #}
+        <div id="kalshi-discovery-control"
+             hx-get="/api/kalshi/watchlist/discover/status"
+             hx-trigger="load"
+             hx-target="this"
+             hx-swap="outerHTML"></div>
       </div>
     </header>
     <div class="overflow-x-auto">
