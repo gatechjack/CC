@@ -53,6 +53,21 @@ log = logging.getLogger(__name__)
 POSITION_SL_UPDATE_KIND = "position_sl_update"
 RECONCILER_ACTOR = "bitunix_position_reconciler"
 
+
+def _recon_actor(division: str | None = None) -> str:
+    """Audit actor for the position-state reconciler, scoped per division when
+    two bitunix accounts run live (Phase 1, 2026-06-29).
+
+    ``division=None`` → the legacy single actor ``bitunix_position_reconciler``
+    (byte-identical to pre-multi-account behavior; the only path used while one
+    bitunix division is live). A non-None division → ``…:<division>`` so each
+    account's two-consecutive-tick confirm (`_latest_position_state_payload`)
+    and audit trail are isolated — a futures tick can never reset an SFP
+    confirm, and vice versa. The WRITE and the READ use this same function, so
+    they always agree.
+    """
+    return f"{RECONCILER_ACTOR}:{division}" if division else RECONCILER_ACTOR
+
 # ── position-state reconciliation (Phase 3 Session A, separate concern) ─
 # The SL lifecycle reconciler above (`reconciler_tick`) decides per-leg
 # stop-loss moves on already-open positions. The position-state reconciler
@@ -461,19 +476,33 @@ class PositionStateReconciliation:
         }
 
 
-def _load_tracked_live_rows(db_url: str) -> list[dict[str, Any]]:
+def _load_tracked_live_rows(
+    db_url: str, division: str | None = None
+) -> list[dict[str, Any]]:
     """Read paper_trade_record rows where:
       * result IS NULL (position still open per bot)
       * extra_json.execution_mode == "live"  (Path C tag)
+      * division == ``division`` when provided (per-account isolation, 2026-06-29)
     Returns parsed dicts; rows with malformed extra_json are skipped.
+
+    ``division=None`` selects ALL live rows (legacy single-account behavior).
+    A non-None division scopes to that division's rows ONLY — so a reconciler
+    bound to one bitunix account never sees the other account's open rows
+    (both observers already tag the `division` column: bitunix_sfp /
+    bitunix_futures).
     """
+    sql = (
+        "SELECT order_id, symbol, side, qty, extra_json "
+        "FROM paper_trade_record "
+        "WHERE result IS NULL AND extra_json IS NOT NULL"
+    )
+    params: tuple[Any, ...] = ()
+    if division is not None:
+        sql += " AND division = ?"
+        params = (division,)
     try:
         with db.connect(db_url) as conn:
-            rows = conn.execute(
-                "SELECT order_id, symbol, side, qty, extra_json "
-                "FROM paper_trade_record "
-                "WHERE result IS NULL AND extra_json IS NOT NULL"
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
     except Exception as e:
         log.warning("reconciler: tracked-row read failed: %s", e)
         return []
@@ -521,7 +550,9 @@ def _match_symbol_key(symbol: str) -> str:
         return raw.upper()
 
 
-def _latest_position_state_payload(db_url: str) -> dict[str, Any] | None:
+def _latest_position_state_payload(
+    db_url: str, division: str | None = None
+) -> dict[str, Any] | None:
     """The most recent position-state reconcile audit payload (reconciled OR
     divergence), parsed. Used to confirm a state across TWO consecutive ticks
     before auto-booking or releasing the halt — keeps the reconciler stateless
@@ -532,7 +563,7 @@ def _latest_position_state_payload(db_url: str) -> dict[str, Any] | None:
             row = conn.execute(
                 "SELECT payload_json FROM audit_event "
                 "WHERE actor = ? AND kind IN (?, ?) ORDER BY id DESC LIMIT 1",
-                (RECONCILER_ACTOR, POSITION_STATE_RECONCILED_KIND,
+                (_recon_actor(division), POSITION_STATE_RECONCILED_KIND,
                  POSITION_STATE_DIVERGENCE_KIND),
             ).fetchone()
     except Exception as e:
@@ -987,6 +1018,7 @@ async def reconcile_position_state(
     db_url: str,
     *,
     halt_on_divergence: bool = True,
+    division: str | None = None,
 ) -> PositionStateReconciliation:
     """Compare bot-tracked live positions against broker truth.
 
@@ -1026,7 +1058,7 @@ async def reconcile_position_state(
         )
         broker_positions = []
 
-    tracked = _load_tracked_live_rows(db_url)
+    tracked = _load_tracked_live_rows(db_url, division=division)
 
     matches: list[PositionStateMatch] = []
     missing: list[PositionStateMissingOnBroker] = []
@@ -1085,7 +1117,7 @@ async def reconcile_position_state(
     # books exact price/PnL/fee, falling back to the known-level estimate if the
     # fetch fails. Booked rows drop out of `missing` this tick, so the audit +
     # halt decision below reflect the post-book state.
-    prev = _latest_position_state_payload(db_url)
+    prev = _latest_position_state_payload(db_url, division=division)
     prev_missing_ids = {
         m.get("order_id") for m in (prev.get("missing_on_broker") or [])
     } if prev else set()
@@ -1128,7 +1160,7 @@ async def reconcile_position_state(
                 "VALUES (?, ?, ?, ?)",
                 (
                     _utc_now_iso(),
-                    RECONCILER_ACTOR,
+                    _recon_actor(division),
                     audit_kind,
                     json.dumps(result.to_payload(), default=str),
                 ),
@@ -1171,7 +1203,7 @@ async def reconcile_position_state(
                         conn.execute(
                             "INSERT INTO audit_event "
                             "(ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
-                            (now, RECONCILER_ACTOR,
+                            (now, _recon_actor(division),
                              POSITION_STATE_HALT_RELEASED_KIND,
                              json.dumps(
                                  {"reason": "two_consecutive_clean_ticks"})),
@@ -1194,7 +1226,7 @@ async def reconcile_position_state(
     # Runs on the same 60s cadence; bracket-managed rows only; failure-tolerant;
     # never blocks the reconcile (a missed move leaves the SL at its prior price).
     try:
-        await move_bracket_sls(broker, db_url)
+        await move_bracket_sls(broker, db_url, division=division)
     except Exception as e:
         log.warning("reconcile_position_state: bracket SL-move failed: %s", e)
 
@@ -1227,7 +1259,9 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
-async def move_bracket_sls(broker: Any, db_url: str) -> None:
+async def move_bracket_sls(
+    broker: Any, db_url: str, division: str | None = None
+) -> None:
     """Bracket SL-move-on-TP-fill (the only ongoing bot exit logic in the
     exchange-resting bracket design).
 
@@ -1242,13 +1276,18 @@ async def move_bracket_sls(broker: Any, db_url: str) -> None:
     """
     from trading_corp.agents.divisions.bitunix_bracket import decide_sl_move
 
+    _sql = (
+        "SELECT order_id, symbol, side, qty, stop_price, "
+        "entry_reference_price, extra_json FROM paper_trade_record "
+        "WHERE result IS NULL AND extra_json IS NOT NULL"
+    )
+    _params: tuple[Any, ...] = ()
+    if division is not None:
+        _sql += " AND division = ?"
+        _params = (division,)
     try:
         with db.connect(db_url) as conn:
-            rows = conn.execute(
-                "SELECT order_id, symbol, side, qty, stop_price, "
-                "entry_reference_price, extra_json FROM paper_trade_record "
-                "WHERE result IS NULL AND extra_json IS NOT NULL"
-            ).fetchall()
+            rows = conn.execute(_sql, _params).fetchall()
     except Exception as e:
         log.warning("bracket SL-move: tracked-row read failed: %s", e)
         return
@@ -1335,7 +1374,7 @@ async def move_bracket_sls(broker: Any, db_url: str) -> None:
                 conn.execute(
                     "INSERT INTO audit_event(ts, actor, kind, payload_json) "
                     "VALUES(?, ?, ?, ?)",
-                    (_utc_now_iso(), RECONCILER_ACTOR, "position_sl_update",
+                    (_utc_now_iso(), _recon_actor(division), "position_sl_update",
                      json.dumps({
                          "order_id": r["order_id"], "symbol": r["symbol"],
                          "new_sl": new_sl, "prev_sl": current_sl, "moved": moved,
@@ -1353,6 +1392,7 @@ async def resume_live_positions(
     *,
     halt_on_orphan_or_case_c: bool = True,
     notifier: Any = None,
+    division: str | None = None,
 ) -> RestartResumeSummary:
     """Restart-resume cases (a) + (b) + (c-defer) per Phase 1b §4.
 
@@ -1380,7 +1420,7 @@ async def resume_live_positions(
 
     # Reconcile by (symbol, side) first — reuse Session A logic.
     recon = await reconcile_position_state(
-        broker, db_url, halt_on_divergence=False,
+        broker, db_url, halt_on_divergence=False, division=division,
     )
 
     # Case (a): matches → already-tracked; one per match.
@@ -1400,7 +1440,7 @@ async def resume_live_positions(
                     "VALUES (?, ?, ?, ?)",
                     (
                         _utc_now_iso(),
-                        RECONCILER_ACTOR,
+                        _recon_actor(division),
                         RESTART_RESUME_EXECUTED_KIND,
                         json.dumps(record, default=str),
                     ),
@@ -1426,7 +1466,7 @@ async def resume_live_positions(
                     "VALUES (?, ?, ?, ?)",
                     (
                         _utc_now_iso(),
-                        RECONCILER_ACTOR,
+                        _recon_actor(division),
                         ORPHAN_BROKER_POSITION_ON_RESTART_KIND,
                         json.dumps(record, default=str),
                     ),
@@ -1457,7 +1497,7 @@ async def resume_live_positions(
                     "VALUES (?, ?, ?, ?)",
                     (
                         _utc_now_iso(),
-                        RECONCILER_ACTOR,
+                        _recon_actor(division),
                         RESTART_RESUME_CASE_C_DEFERRED_KIND,
                         json.dumps(record, default=str),
                     ),
@@ -1504,6 +1544,7 @@ async def run_position_state_sanity_poll_loop(
     *,
     interval_s: float = 60.0,
     notifier: Any = None,
+    division: str | None = None,
 ) -> None:
     """Forever-loop calling `reconcile_position_state` every `interval_s`.
 
@@ -1526,7 +1567,7 @@ async def run_position_state_sanity_poll_loop(
     )
     while True:
         try:
-            result = await reconcile_position_state(broker, db_url)
+            result = await reconcile_position_state(broker, db_url, division=division)
             if result.has_divergence and notifier is not None:
                 if hasattr(notifier, "notify_reconciliation_divergence"):
                     for m in result.missing_on_broker:

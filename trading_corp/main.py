@@ -599,18 +599,24 @@ async def run(argv: list[str] | None = None) -> int:
     from trading_corp.utils.divisions import load_divisions
     divisions = load_divisions()
 
-    # Boot-guard (2026-06-25): the Bitunix account runs ONE live division at a
-    # time (ONE_WAY netting + symbol+side reconciler). Refuse to start if two
-    # bitunix divisions are both execution_mode:live — a misconfig that would let
-    # two strategies place real orders on the same account and net into one
-    # position. Key-separation makes this unreachable in practice (only one holds
-    # live keys); this is belt-and-suspenders.
+    # Boot-guard (2026-06-25; relaxed to per-secret_ref 2026-06-29): two bitunix
+    # divisions MAY both be execution_mode:live — but ONLY if they use DISTINCT
+    # account keys (different `secret_ref`). Two live divisions sharing a
+    # secret_ref = two strategies placing real orders on the SAME account, which
+    # ONE_WAY netting collides into one position. We key on the secret_ref STRING,
+    # NOT the resolved key VALUE: during the Phase-2 cutover window `bitunix_sfp`
+    # and `bitunix_futures` transiently resolve to the SAME original account
+    # (BITUNIX-SFP-* and BITUNIX-FUTURES-* both hold its key) — distinct refs MUST
+    # pass so the cutover proceeds; the per-account reconciler isolation
+    # (division-scoped rows + audit) covers the transient shared-account window.
     _live_bx = _live_bitunix_divisions(divisions)
-    if len(_live_bx) >= 2:
+    _shared_ref = _bitunix_live_secret_ref_conflicts(divisions, _live_bx)
+    if _shared_ref:
         raise SystemExit(
-            "REFUSING TO START: bitunix divisions both execution_mode:live "
-            f"{_live_bx}; only ONE may be live on the shared account "
-            "(ONE_WAY netting). Set all but one to execution_mode: paper."
+            "REFUSING TO START: live bitunix divisions share a secret_ref "
+            f"(same account): {_shared_ref}. Two live divisions on ONE account "
+            "net into one position under ONE_WAY. Give each a DISTINCT secret_ref "
+            "(distinct account), or set all but one to execution_mode: paper."
         )
 
     # 'default' division always uses PaperBroker (demo / fallback fills).
@@ -1041,16 +1047,26 @@ async def run(argv: list[str] | None = None) -> int:
     # (audit + telegram are local to the broker because PART_FILLED stuck
     # orders can't raise — they return a partial-fill tuple to place_order).
     # Same TelegramChannel singleton as data_exec — no parallel instance.
-    # Per-account reconciler binding (2026-06-25): the position-state reconciler
-    # / auto-book / divergence-halt must follow the LIVE bitunix division (whose
-    # broker holds the account creds), NOT a hardcoded slug. The boot-guard
-    # guarantees <=1 bitunix division is execution_mode:live, so this resolves to
-    # exactly that division's broker (or None → reconciler stays off).
-    _live_bx_slug = _live_bx[0] if _live_bx else None
-    _recon_exec_mode = "live" if _live_bx_slug else "paper"
-    _bx_broker = data_exec.brokers.get(_live_bx_slug) if _live_bx_slug else None
-    if _bx_broker is not None and hasattr(_bx_broker, "safety_notifier"):
-        _bx_broker.safety_notifier = channel
+    # Per-account reconciler targets (2026-06-25; multi-account 2026-06-29). Each
+    # LIVE bitunix division gets its OWN reconciler set, bound to its OWN broker
+    # and scoped to its OWN division (rows + audit), so one account's reconciler
+    # never sees the other's positions/rows. ≤1 live → the legacy SINGLE path with
+    # division=None (byte-identical to pre-2026-06-29 behavior: the Phase-1
+    # SFP-undisturbed case). ≥2 live (Phase 2: two distinct accounts) → one
+    # (slug, broker, division) target per live slug.
+    if len(_live_bx) <= 1:
+        _slug0 = _live_bx[0] if _live_bx else None
+        _recon_targets = (
+            [(_slug0, data_exec.brokers.get(_slug0), None)] if _slug0 else []
+        )
+    else:
+        _recon_targets = [
+            (_s, data_exec.brokers.get(_s), _s) for _s in _live_bx
+        ]
+    _recon_exec_mode = "live" if _recon_targets else "paper"
+    for _rt_slug, _rt_broker, _rt_div in _recon_targets:
+        if _rt_broker is not None and hasattr(_rt_broker, "safety_notifier"):
+            _rt_broker.safety_notifier = channel
 
     await channel.start()
     await channel.push(
@@ -1937,96 +1953,74 @@ async def run(argv: list[str] | None = None) -> int:
                 "15m loop NOT spawned", _sfp_mode,
             )
 
-        # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5a): restart-resume ──
-        # cases (a) match + (b) orphan + (c-deferred). Runs BEFORE the
-        # position-state reconciler so the broker_order_id-aware match
-        # pass happens first; reconcile_position_state's startup sweep
-        # is then redundant but cheap (idempotent).
-        if (
-            _recon_exec_mode == "live"
-            and _bx_broker is not None
-            and hasattr(_bx_broker, "get_pending_positions")
-        ):
+        # ── Per-account reconciler facilities (looped 2026-06-29). For EACH
+        # live bitunix division, bound to its OWN broker + division-scoped:
+        #   (5a) restart-resume cases (a)/(b)/(c-defer) — runs FIRST so the
+        #        broker_order_id-aware match pass precedes the startup sweep;
+        #   (3)  position-state reconcile one-shot — compares THIS division's
+        #        live rows (paper_trade_record division=<slug>, result NULL,
+        #        execution_mode=live) vs its broker truth; on divergence writes
+        #        the (scoped-actor) audit + sets that broker's _halt_new_orders.
+        #        Awaited so the halt latch sets BEFORE downstream tasks;
+        #   (5b) 60s sanity poll — catches post-startup drift.
+        # With ≤1 live division the loop runs once with division=None — BYTE-
+        # IDENTICAL to the pre-2026-06-29 single path (Phase-1 SFP-undisturbed).
+        # Paper brokers lack get_pending_positions → skipped (no spurious halts).
+        for _rt_slug, _bx_broker, _bx_div in _recon_targets:
+            if not (
+                _bx_broker is not None
+                and hasattr(_bx_broker, "get_pending_positions")
+            ):
+                continue
             try:
                 from trading_corp.agents.divisions.bitunix_position_reconciler import (
                     resume_live_positions as _resume_live_positions,
                 )
-                # Lifecycle notifier may not yet be wired (it lands later
-                # in startup); pass None for now — restart-resume telegram
-                # is best-effort. The audit kinds carry the operator-facing
-                # detail regardless.
                 _resume_summary = await _resume_live_positions(
-                    _bx_broker, secrets.db_url, notifier=None,
+                    _bx_broker, secrets.db_url, notifier=None, division=_bx_div,
                 )
                 log.info(
-                    "bitunix restart-resume at startup: matched=%d "
+                    "bitunix restart-resume [%s] at startup: matched=%d "
                     "orphan=%d case_c_deferred=%d",
+                    _rt_slug,
                     len(_resume_summary.matched),
                     len(_resume_summary.orphan_on_broker),
                     len(_resume_summary.case_c_deferred),
                 )
             except Exception:
                 log.exception(
-                    "bitunix restart-resume at startup failed (continuing)"
+                    "bitunix restart-resume [%s] at startup failed (continuing)",
+                    _rt_slug,
                 )
 
-        # ── Stage-1 N+2 Phase 3 Session B Commit 3: position-state ──
-        # reconciler one-shot at startup. Compares bot-tracked live rows
-        # (paper_trade_record WHERE result IS NULL AND
-        # extra.execution_mode='live') against broker.get_pending_positions()
-        # truth. On divergence: writes position_state_divergence_detected
-        # audit + sets _bx_broker._halt_new_orders=True (entries halt;
-        # exits flow per Phase 1a §9c). Awaited (not create_task) so the
-        # halt latch is set BEFORE any downstream tasks start.
-        #
-        # Gated to execution_mode=live: paper mode brokers (PaperExecutionBroker,
-        # PaperBroker) don't implement get_pending_positions and have no
-        # live-tagged rows to reconcile — skipping avoids spurious paper-mode
-        # halts and AttributeError noise. The reconciler itself catches all
-        # broker exceptions; the gate is belt-and-suspenders + clarity.
-        if (
-            _recon_exec_mode == "live"
-            and _bx_broker is not None
-            and hasattr(_bx_broker, "get_pending_positions")
-        ):
             try:
                 from trading_corp.agents.divisions.bitunix_position_reconciler import (
                     reconcile_position_state as _reconcile_position_state,
                 )
                 _recon_result = await _reconcile_position_state(
-                    _bx_broker, secrets.db_url,
+                    _bx_broker, secrets.db_url, division=_bx_div,
                 )
                 if _recon_result.has_divergence:
                     log.warning(
-                        "bitunix position-state reconciler at startup: "
+                        "bitunix position-state reconciler [%s] at startup: "
                         "DIVERGENCE — %d missing_on_broker, %d orphan_on_broker; "
                         "broker._halt_new_orders=True (entries halted)",
+                        _rt_slug,
                         len(_recon_result.missing_on_broker),
                         len(_recon_result.orphan_on_broker),
                     )
                 else:
                     log.info(
-                        "bitunix position-state reconciler at startup: clean "
-                        "(%d matched live rows)", len(_recon_result.matches),
+                        "bitunix position-state reconciler [%s] at startup: "
+                        "clean (%d matched live rows)",
+                        _rt_slug, len(_recon_result.matches),
                     )
             except Exception:
-                # Reconciler failure must not crash startup. The audit-of-
-                # nothing is the operator's signal that the check didn't run.
                 log.exception(
-                    "bitunix position-state reconciler at startup failed "
-                    "(continuing; halt latch unchanged)"
+                    "bitunix position-state reconciler [%s] at startup failed "
+                    "(continuing; halt latch unchanged)", _rt_slug,
                 )
 
-        # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5b): 60s sanity poll ──
-        # Background task running `reconcile_position_state` every 60s.
-        # Catches drift that develops AFTER the startup check passed
-        # (broker auto-close during idle, operator UI changes, etc.).
-        # Notifier is passed in lazily — wired below as soon as it lands.
-        if (
-            _recon_exec_mode == "live"
-            and _bx_broker is not None
-            and hasattr(_bx_broker, "get_pending_positions")
-        ):
             try:
                 from trading_corp.agents.divisions.bitunix_position_reconciler import (
                     run_position_state_sanity_poll_loop as
@@ -2036,14 +2030,15 @@ async def run(argv: list[str] | None = None) -> int:
                     _run_position_state_sanity_poll_loop(
                         _bx_broker, secrets.db_url,
                         interval_s=60.0,
-                        notifier=None,  # set after lifecycle notifier wires below
+                        notifier=None,  # best-effort; lifecycle notifier optional
+                        division=_bx_div,
                     ),
-                    name="bitunix-position-state-sanity-poll",
+                    name=f"bitunix-position-state-sanity-poll-{_rt_slug or 'none'}",
                 )
             except Exception:
                 log.exception(
-                    "bitunix position-state sanity poll wiring failed "
-                    "(continuing)"
+                    "bitunix position-state sanity poll [%s] wiring failed "
+                    "(continuing)", _rt_slug,
                 )
 
         # trade-plan PR 5 — position SL reconciler. Stateless 60s loop
@@ -2266,6 +2261,27 @@ def _live_bitunix_divisions(divisions, strategies_yaml_path=None) -> list[str]:
         if str(block.get("execution_mode", "paper")).lower() == "live":
             out.append(d.slug)
     return out
+
+
+def _bitunix_live_secret_ref_conflicts(
+    divisions, live_slugs,
+) -> dict[str, list[str]]:
+    """Map secret_ref → [live slugs] for any secret_ref shared by ≥2 LIVE
+    bitunix divisions — the boot-guard's refuse condition (2026-06-29).
+
+    Two live divisions on ONE account (same secret_ref) net into one position
+    under ONE_WAY. Keys on the secret_ref STRING (mirroring
+    `_resolve_bitunix_creds`'s `secret_ref or "bitunix_futures"` default), NOT
+    the resolved key VALUE: distinct refs that transiently resolve to the same
+    account during the Phase-2 cutover are intentionally ALLOWED. Empty dict =
+    no conflict (0, 1, or N live divisions on distinct refs)."""
+    refs: dict[str, list[str]] = {}
+    live = set(live_slugs)
+    for d in divisions:
+        if getattr(d, "slug", None) in live:
+            ref = getattr(d, "secret_ref", None) or "bitunix_futures"
+            refs.setdefault(ref, []).append(d.slug)
+    return {ref: slugs for ref, slugs in refs.items() if len(slugs) >= 2}
 
 
 def _build_broker_for_division(

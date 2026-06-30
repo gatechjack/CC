@@ -30,6 +30,12 @@ _SECRET_KEY_NAMES = (
     "COINBASE_FUTURES_PASSPHRASE",
     "BITUNIX_FUTURES_API_KEY",
     "BITUNIX_FUTURES_API_SECRET",
+    # BitUnix SFP — second key-separation seam (Phase 1, 2026-06-29). A
+    # DEDICATED key for the bitunix_sfp division so it can be cut over off the
+    # shared bitunix_futures key (Phase 2), freeing bitunix_futures for the new
+    # funded account. See divisions.yaml secret_ref + _resolve_bitunix_creds.
+    "BITUNIX_SFP_API_KEY",
+    "BITUNIX_SFP_API_SECRET",
     "FIDELITY_PASSWORD",
     # Polymarket / Polygon — Phase 0 of the Polymarket Arbitrage division.
     # Private key is the most sensitive (signs USDC-spending transactions);
@@ -146,6 +152,14 @@ class Secrets:
     # initializes as a stub returning $0 / no positions.
     bitunix_futures_api_key: str | None
     bitunix_futures_api_secret: str | None
+    # BitUnix SFP — dedicated keys for the bitunix_sfp division (Phase 1,
+    # 2026-06-29). Resolved via `secret_ref: bitunix_sfp` →
+    # `_resolve_bitunix_creds` → `{ref}_api_key/secret`. Until the Phase 2
+    # cutover, SFP still resolves `bitunix_futures` (secret_ref unchanged); these
+    # are populated + redacted now so the cutover is a one-line config flip.
+    # Unset → resolves to None (the SFP broker would stub — caught at cutover).
+    bitunix_sfp_api_key: str | None
+    bitunix_sfp_api_secret: str | None
     # Polymarket / Polygon — per-division wallets (item 6, 2026-05-29).
     # Each Polymarket division gets its own EOA (signer key + funder
     # address), keyed by division slug; see _POLYMARKET_WALLET_ENV for the
@@ -281,6 +295,8 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "COINBASE_FUTURES_PASSPHRASE",
         "BITUNIX_FUTURES_API_KEY",
         "BITUNIX_FUTURES_API_SECRET",
+        "BITUNIX_SFP_API_KEY",
+        "BITUNIX_SFP_API_SECRET",
         "POLYMARKET_PRIVATE_KEY",
         "POLYMARKET_FUNDER_ADDRESS",
         "POLYMARKET_COPY_PRIVATE_KEY",
@@ -362,6 +378,8 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         coinbase_futures_passphrase=_env("COINBASE_FUTURES_PASSPHRASE"),
         bitunix_futures_api_key=_env("BITUNIX_FUTURES_API_KEY"),
         bitunix_futures_api_secret=_env("BITUNIX_FUTURES_API_SECRET"),
+        bitunix_sfp_api_key=_env("BITUNIX_SFP_API_KEY"),
+        bitunix_sfp_api_secret=_env("BITUNIX_SFP_API_SECRET"),
         polymarket_wallets={
             slug: PolymarketWallet(
                 private_key=_env(pk_env),
@@ -416,6 +434,10 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     # wouldn't catch a header-form log line — register the literal values too.
     register_redact_literal(secrets.bitunix_futures_api_key)
     register_redact_literal(secrets.bitunix_futures_api_secret)
+    # BitUnix SFP creds (Phase 1, 2026-06-29) — same header-form redaction as
+    # the futures keys above (api_key rides in the `api-key` request header).
+    register_redact_literal(secrets.bitunix_sfp_api_key)
+    register_redact_literal(secrets.bitunix_sfp_api_secret)
     # Finnhub API key — bearer token in every request URL query string (legacy).
     register_redact_literal(secrets.finnhub_api_key)
     # EODHD API key — api_token query param in every EODHD fundamentals request.
