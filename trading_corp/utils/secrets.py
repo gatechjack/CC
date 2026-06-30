@@ -486,6 +486,12 @@ def assert_live_ready(secrets: Secrets, brokers_required: tuple[str, ...]) -> No
                 complete += 1
         if complete == 0:
             missing.append("POLYMARKET (no division wallet has both key+funder set)")
+    if "kalshi" in brokers_required:
+        # Kalshi live placement (K5) needs the RSA keypair — the SAME pair used
+        # for the proven read path. Presence-only: a funded-balance preflight is
+        # done loudly in KalshiLiveBroker.connect(), not here.
+        if not (secrets.kalshi_api_key_id and secrets.kalshi_private_key_pem):
+            missing.append("KALSHI_API_KEY_ID/PRIVATE_KEY_PEM")
     if missing:
         raise RuntimeError(
             "LIVE mode requested but missing credentials for: "

@@ -72,6 +72,15 @@ log = logging.getLogger(__name__)
 _CENTS_PER_DOLLAR = 100
 
 
+def _to_float(value: object) -> float:
+    """Coerce a pykalshi numeric field (often a string like '10.00') to float;
+    0.0 on None / empty / non-numeric."""
+    try:
+        return float(value or 0)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class KalshiBroker(ReadOnlyBroker):
     """Read-only Kalshi broker (Phase K1).
 
@@ -225,22 +234,31 @@ class KalshiBroker(ReadOnlyBroker):
         out: list[Position] = []
         for p in df_list:
             try:
-                # PositionModel fields (per pykalshi docs): ticker, position
-                # (signed contract count, FP-encoded), market_exposure (cents),
-                # realized_pnl (cents), total_traded (cents), resting_orders_count.
+                # PositionModel fields (pykalshi 1.0.6): ticker, position_fp
+                # (signed contract count, fixed-point STRING), market_exposure_dollars
+                # (dollar STRING — NOT cents), realized_pnl_dollars,
+                # total_traded_dollars, fees_paid_dollars, resting_orders_count,
+                # last_updated_ts. (The prior code read `position`/`market_exposure`
+                # — nonexistent on 1.0.6 — and built Position with nonexistent
+                # `avg_entry_price`/`market_value` kwargs while omitting the required
+                # `account`/`opened_ts`; the bare except swallowed the TypeError so
+                # this returned [] for every funded account. K5·1 fixes all three.)
                 ticker = getattr(p, "ticker", "") or ""
-                # `position` in pykalshi is fixed-point encoded — divide by FP scalar
-                # if present. Defensive default: treat as integer count.
-                raw_pos = getattr(p, "position", 0) or 0
-                qty = float(raw_pos) / 100.0 if isinstance(raw_pos, int) and raw_pos > 1000 else float(raw_pos)
+                qty = _to_float(getattr(p, "position_fp", 0))
                 if qty == 0:
                     continue
-                exposure_cents = getattr(p, "market_exposure", 0) or 0
+                exposure = _to_float(getattr(p, "market_exposure_dollars", 0))
+                avg_price = (exposure / abs(qty)) if qty else 0.0
                 out.append(Position(
+                    account="kalshi",
                     symbol=ticker,
                     qty=qty,
-                    avg_entry_price=(exposure_cents / _CENTS_PER_DOLLAR / qty) if qty else 0.0,
-                    market_value=exposure_cents / _CENTS_PER_DOLLAR,
+                    avg_price=avg_price,
+                    opened_ts="",  # PositionModel exposes last_updated_ts, not an open ts
+                    extra={
+                        "market_exposure_dollars": exposure,
+                        "realized_pnl_dollars": _to_float(getattr(p, "realized_pnl_dollars", 0)),
+                    },
                 ))
             except Exception as e:
                 log.debug("Failed to map Kalshi position %r: %s", p, e)
