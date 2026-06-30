@@ -167,7 +167,7 @@ divisions:
     name: BitUnix SFP
     broker: bitunix
     account_filter: futures
-    secret_ref: bitunix_futures   # key-separation: reuse the existing account keys
+    secret_ref: bitunix_sfp   # Phase 2 cutover 2026-06-30: SFP on own key (BITUNIX-SFP-*, original account)
     intent: aggressive
     benchmark: BTC-USD
     target_annual_return: 0.50
