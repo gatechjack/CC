@@ -3747,6 +3747,19 @@ async def _scheduled_kalshi_copy_trader_loop(
                     log.exception("Kalshi copy trader: run_scan_cycle failed: %s", e)
                     continue
 
+                # K5·4: surface any feed-health anomalies the scan suppressed. Drained
+                # BEFORE the `if not orders` early-out so a cycle that suppressed every
+                # exit (and thus emitted nothing) still raises the alarm.
+                for alarm in agent.drain_feed_alarms():
+                    try:
+                        who = alarm.get("whale") or "feed"
+                        await channel.push(
+                            f"⚠️ Kalshi copy FEED ANOMALY ({alarm.get('reason')}) — "
+                            f"{who}: synthetic exits SUPPRESSED. Check Apify feed health."
+                        )
+                    except Exception as e:
+                        log.warning("Kalshi copy feed-anomaly push failed: %s", e)
+
                 if not orders:
                     continue
 

@@ -183,6 +183,9 @@ class KalshiCopyTraderAgent:
         self._risk_mtime: float = 0.0
         self._strat_cfg: dict[str, Any] = {}
         self._risk_cfg: dict[str, Any] = {}
+        # K5·4 feed-health / mass-exit circuit-breaker state.
+        self._consecutive_fetch_failures = 0
+        self._pending_feed_alarms: list[dict[str, Any]] = []
         self._reload()
 
     # ── Config (mtime-cached, hot-reloadable) ─────────────────────────
@@ -256,7 +259,13 @@ class KalshiCopyTraderAgent:
             current_positions = await apify_client.fetch_open_positions(selected)
         except Exception as e:
             log.warning("kalshi_copy_trader: apify open_positions fetch failed: %s", e)
+            # K5·4: a single failure stays a benign return []; a STREAK is a feed
+            # outage that must be surfaced (else a silent multi-cycle gap, as on
+            # 06-08->06-10, goes unnoticed).
+            self._record_fetch_failure(logger_agent)
             return []
+        # Feed healthy this cycle — reset the consecutive-failure counter.
+        self._consecutive_fetch_failures = 0
 
         # Group current positions by whale nickname for delta calc.
         by_whale: dict[str, dict[str, WhalePosition]] = {w: {} for w in selected}
@@ -298,6 +307,20 @@ class KalshiCopyTraderAgent:
             new_tickers = curr_tickers - prev_tickers
             removed_tickers = prev_tickers - curr_tickers
             carryover_tickers = curr_tickers - new_tickers
+
+            # ── K5·4 feed-health / mass-exit circuit breaker (REQUIRED before live
+            # capital). A real whale rarely closes a large fraction of positions in
+            # one ~10-min cycle; a suspicious mass-disappearance (an empty/partial
+            # Apify payload for this whale) would otherwise synthesize false mass
+            # EXITS — dangerous in live mode. Suppress ALL emission for the whale this
+            # cycle, RETAIN the prior snapshot (don't lose track), audit + queue a
+            # Telegram alarm. The next healthy cycle re-evaluates a real payload. ──
+            if self._is_mass_disappearance(prev_tickers, removed_tickers):
+                self._queue_feed_anomaly(
+                    logger_agent, whale=whale, n_prev=len(prev_tickers),
+                    n_removed=len(removed_tickers), n_curr=len(curr_tickers),
+                )
+                continue   # prev snapshot left unchanged (retained)
 
             new_snapshot: dict[str, dict[str, Any]] = {}
 
@@ -764,6 +787,77 @@ class KalshiCopyTraderAgent:
             * float(getattr(fill, "price", 0.0) or 0.0)
         )
         return max(0.0, intended - filled_usd)
+
+    # ── K5·4: feed-health / mass-exit circuit breaker ──────────────────────────
+
+    def _feed_cfg(self) -> dict[str, Any]:
+        return self._strat_cfg.get("feed_health") or {}
+
+    def _is_mass_disappearance(self, prev_tickers: set, removed_tickers: set) -> bool:
+        """True when a suspicious fraction of a whale's tracked positions vanished in
+        one cycle (an empty/partial feed) — the signal to SUPPRESS synthetic exits.
+        Tunable via strategies.yaml `kalshi_copy_trader.feed_health`
+        (mass_exit_threshold_pct default 60, min_positions_for_check default 2 so a
+        1-position whale's close is never treated as a 'mass' exit)."""
+        cfg = self._feed_cfg()
+        min_n = int(cfg.get("min_positions_for_check", 2))
+        thresh = float(cfg.get("mass_exit_threshold_pct", 60.0))
+        n_prev = len(prev_tickers)
+        n_removed = len(removed_tickers)
+        if n_prev < min_n or n_removed == 0:
+            return False
+        return (n_removed / n_prev) * 100.0 >= thresh
+
+    def _queue_feed_anomaly(
+        self, logger_agent, *, whale, n_prev, n_removed, n_curr,
+        reason: str = "mass_disappearance",
+    ) -> None:
+        pct = round((n_removed / n_prev) * 100.0, 1) if n_prev else 0.0
+        payload = {
+            "strategy": self.name, "division": self.division, "whale": whale,
+            "reason": reason, "n_prev_tracked": n_prev, "n_removed": n_removed,
+            "n_current": n_curr, "pct_removed": pct,
+        }
+        if logger_agent is not None:
+            try:
+                logger_agent.log_event(self.name, "kalshi_copy_feed_anomaly", payload)
+            except Exception as e:
+                log.warning("kalshi_copy_trader: feed-anomaly audit failed: %s", e)
+        self._pending_feed_alarms.append(payload)
+        log.warning(
+            "kalshi_copy_trader: FEED ANOMALY — suppressed exits for %s (%d/%d removed, "
+            "%.0f%%); feed glitch suspected", whale, n_removed, n_prev, pct,
+        )
+
+    def _record_fetch_failure(self, logger_agent) -> None:
+        """Track CONSECUTIVE Apify fetch failures; alarm + audit once the streak
+        crosses the threshold (default 3) so a multi-cycle feed outage is surfaced
+        rather than swallowed by the benign return []."""
+        self._consecutive_fetch_failures += 1
+        maxf = int(self._feed_cfg().get("max_consecutive_fetch_failures", 3))
+        if self._consecutive_fetch_failures < maxf:
+            return
+        payload = {
+            "strategy": self.name, "division": self.division,
+            "reason": "consecutive_fetch_failures",
+            "consecutive_failures": self._consecutive_fetch_failures,
+        }
+        if logger_agent is not None:
+            try:
+                logger_agent.log_event(self.name, "kalshi_copy_feed_anomaly", payload)
+            except Exception as e:
+                log.warning("kalshi_copy_trader: fetch-failure audit failed: %s", e)
+        self._pending_feed_alarms.append(payload)
+        log.error(
+            "kalshi_copy_trader: %d consecutive Apify open_positions failures — FEED DOWN",
+            self._consecutive_fetch_failures,
+        )
+
+    def drain_feed_alarms(self) -> list[dict[str, Any]]:
+        """Pop + return queued feed-health alarms for the loop to push to Telegram."""
+        alarms = self._pending_feed_alarms
+        self._pending_feed_alarms = []
+        return alarms
 
 
 def force_close_whale_positions(
