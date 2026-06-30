@@ -2123,11 +2123,28 @@ def register(app: FastAPI) -> None:
         pinned: list[str] = list(pin_rec[0]) if pin_rec and isinstance(pin_rec[0], list) else []
         pinned_after = [h for h in pinned if h != handle]
 
-        # We intentionally do NOT mutate watch_only_whales here. The watch
-        # list panel includes anyone in watch_only_whales who is NOT in
-        # selected_whales. By only updating selected_whales/pinned_whales,
-        # a previously-promoted whale falls back to its original watch
-        # list entry (with original Apify-scraped stats) automatically.
+        # Ensure the demoted whale appears in watch_only_whales. Auto-selected
+        # finalists may never have been in watch_only_whales (they were seeded
+        # directly into selected_whales by the seed script), so removing them
+        # from selected_whales would make them vanish from BOTH panels. We add
+        # a stub entry if absent so they reappear in the Watch List panel.
+        # If they were already in watch_only_whales (previously promoted from
+        # there), the existing entry is preserved with its Apify-scraped stats.
+        wo_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "watch_only_whales", db_url=db_url,
+        )
+        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
+        if not any(isinstance(w, dict) and w.get("handle") == handle for w in watch_only):
+            watch_only.append({
+                "handle": handle,
+                "tier": None,
+                "source_x_handle": None,
+                "notes": "demoted_via_dashboard",
+                "included_iso": _now_iso(),
+            })
+            _db_mod.set_agent_state(
+                "kalshi_copy_trader", "watch_only_whales", watch_only, db_url=db_url,
+            )
 
         _db_mod.set_agent_state("kalshi_copy_trader", "selected_whales", selected_after, db_url=db_url)
         _db_mod.set_agent_state("kalshi_copy_trader", "pinned_whales", pinned_after, db_url=db_url)
