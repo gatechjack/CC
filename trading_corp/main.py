@@ -2442,17 +2442,41 @@ def _build_broker_for_division(
         )
 
     if family == "kalshi":
-        # Phase K1 read-only Kalshi adapter. KalshiBroker subclasses
-        # ReadOnlyBroker (same pattern as Polymarket) — no place_order on
-        # the type. Live order placement is Phase K5+ work, gated on
-        # observed paper PnL > 0 across Phase K2 arb + Phase K3 copy
-        # trading. Demo mode toggle via KALSHI_USE_DEMO=1 env var (defaults
-        # to production / kalshi.com).
+        # Phase K1 read-only KalshiBroker (ReadOnlyBroker) for PAPER/non-selected;
+        # K5 KalshiLiveBroker (Broker, placement-legal) when LIVE + selected
+        # (--brokers kalshi AND slug in --live-divisions). Demo toggle via
+        # KALSHI_USE_DEMO=1 (defaults to production / kalshi.com).
+        #
+        # ANTI-HALF-FLIP (mirror E1·6 polymarket): the live branch is REQUIRED.
+        # Without it a LIVE+selected kalshi division would silently resolve the
+        # READ-ONLY adapter and never place — the Bitunix half-flip failure mode.
+        # kalshi_copy_trading goes live via divisions.yaml `broker: paper→kalshi`
+        # + mode LIVE + `--brokers kalshi` + slug in `--live-divisions`.
+        _kalshi_demo = os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")
+        if is_live_division:
+            from trading_corp.brokers.kalshi_live import KalshiLiveBroker
+            # Execution discipline sourced from THIS division's config
+            # (config/divisions.yaml). Omit each kwarg when unset so the broker
+            # ctor default applies — the locked design (order_type='ioc',
+            # max_slippage_cents=2) is the default, so an unconfigured division
+            # is already correct.
+            exec_kwargs = {}
+            _ot = getattr(division, "order_type", None)
+            if _ot is not None:
+                exec_kwargs["order_type"] = _ot
+            _slip = getattr(division, "max_slippage_cents", None)
+            if _slip is not None:
+                exec_kwargs["max_slippage_cents"] = _slip
+            return KalshiLiveBroker(
+                api_key_id=secrets.kalshi_api_key_id,
+                private_key_pem=secrets.kalshi_private_key_pem,
+                demo=_kalshi_demo, **exec_kwargs,
+            )
         from trading_corp.brokers.kalshi import KalshiBroker
         return KalshiBroker(
             api_key_id=secrets.kalshi_api_key_id,
             private_key_pem=secrets.kalshi_private_key_pem,
-            demo=os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True"),
+            demo=_kalshi_demo,
         )
 
     if family == "tastytrade":
