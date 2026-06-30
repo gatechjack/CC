@@ -18,9 +18,11 @@ feed-health/mass-exit circuit breaker; demo-smoke script.
 
 3 commits (`82be137`, `dd48ff9`, `92f676b`) — touches ONLY `web/routes.py`, `web/data.py`,
 `web/templates/partials/pm_dashboard_body.html` (+345/−22). Independently shippable (web
-reload, no engine restart). **Verified by the orchestrator** (the sub-agent committed its
-work + passed but did not emit its own report; verified independently): compiles, 85
-web/dashboard tests pass, valid imports (`deep_seed_watchlist` exists), in-scope.
+reload, no engine restart). **Verified two ways** — orchestrator independently (compiles,
+85 web tests pass, valid imports incl. `deep_seed_watchlist`, in-scope) AND the sub-agent's
+own final report (117 dashboard/kalshi tests pass, 0 new failures; full-suite 30 failures
+ALL pre-existing at base 9bfd7ff = 0 new regressions). Sub-agent report:
+`cc-kalshi-k5-b-wt/reports/2026-06-30_k5_workstream_b.md` (+ Desktop copy).
 
 - **Defect A** — demote now re-adds the whale to `watch_only_whales` (auto-finalists that
   were never in it no longer vanish from both panels). (`routes.py:2144`)
