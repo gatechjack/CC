@@ -96,10 +96,17 @@ class KalshiBroker(ReadOnlyBroker):
         api_key_id: str | None = None,
         private_key_pem: str | None = None,
         demo: bool = False,
+        api_base: str | None = None,
     ) -> None:
         self._api_key_id = api_key_id
         self._private_key_pem = private_key_pem
         self._demo = demo
+        # api_base override (K5·1b): None -> pykalshi's built-in default
+        # (api.elections.kalshi.com prod / demo-api.kalshi.co demo). The live
+        # broker passes the recommended dedicated host (external-api.kalshi.com /
+        # external-api.demo.kalshi.co). Existing read-only adapters pass None ->
+        # byte-identical behavior.
+        self._api_base = api_base
         self.name = "kalshi"
         self._stub = not bool(api_key_id and private_key_pem)
         self._client = None  # AsyncKalshiClient | None
@@ -133,6 +140,7 @@ class KalshiBroker(ReadOnlyBroker):
                 api_key_id=self._api_key_id,
                 private_key_path=str(self._key_path),
                 demo=self._demo,
+                api_base=self._api_base,
             )
 
             # Smoke-check: surface auth errors at startup but don't raise —
