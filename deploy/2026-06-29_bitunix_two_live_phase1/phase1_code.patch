@@ -1,0 +1,558 @@
+diff --git a/trading_corp/agents/divisions/bitunix_position_reconciler.py b/trading_corp/agents/divisions/bitunix_position_reconciler.py
+index 506f535..865e8bc 100644
+--- a/trading_corp/agents/divisions/bitunix_position_reconciler.py
++++ b/trading_corp/agents/divisions/bitunix_position_reconciler.py
+@@ -53,6 +53,21 @@ log = logging.getLogger(__name__)
+ POSITION_SL_UPDATE_KIND = "position_sl_update"
+ RECONCILER_ACTOR = "bitunix_position_reconciler"
+ 
++
++def _recon_actor(division: str | None = None) -> str:
++    """Audit actor for the position-state reconciler, scoped per division when
++    two bitunix accounts run live (Phase 1, 2026-06-29).
++
++    ``division=None`` → the legacy single actor ``bitunix_position_reconciler``
++    (byte-identical to pre-multi-account behavior; the only path used while one
++    bitunix division is live). A non-None division → ``…:<division>`` so each
++    account's two-consecutive-tick confirm (`_latest_position_state_payload`)
++    and audit trail are isolated — a futures tick can never reset an SFP
++    confirm, and vice versa. The WRITE and the READ use this same function, so
++    they always agree.
++    """
++    return f"{RECONCILER_ACTOR}:{division}" if division else RECONCILER_ACTOR
++
+ # ── position-state reconciliation (Phase 3 Session A, separate concern) ─
+ # The SL lifecycle reconciler above (`reconciler_tick`) decides per-leg
+ # stop-loss moves on already-open positions. The position-state reconciler
+@@ -461,19 +476,33 @@ class PositionStateReconciliation:
+         }
+ 
+ 
+-def _load_tracked_live_rows(db_url: str) -> list[dict[str, Any]]:
++def _load_tracked_live_rows(
++    db_url: str, division: str | None = None
++) -> list[dict[str, Any]]:
+     """Read paper_trade_record rows where:
+       * result IS NULL (position still open per bot)
+       * extra_json.execution_mode == "live"  (Path C tag)
++      * division == ``division`` when provided (per-account isolation, 2026-06-29)
+     Returns parsed dicts; rows with malformed extra_json are skipped.
++
++    ``division=None`` selects ALL live rows (legacy single-account behavior).
++    A non-None division scopes to that division's rows ONLY — so a reconciler
++    bound to one bitunix account never sees the other account's open rows
++    (both observers already tag the `division` column: bitunix_sfp /
++    bitunix_futures).
+     """
++    sql = (
++        "SELECT order_id, symbol, side, qty, extra_json "
++        "FROM paper_trade_record "
++        "WHERE result IS NULL AND extra_json IS NOT NULL"
++    )
++    params: tuple[Any, ...] = ()
++    if division is not None:
++        sql += " AND division = ?"
++        params = (division,)
+     try:
+         with db.connect(db_url) as conn:
+-            rows = conn.execute(
+-                "SELECT order_id, symbol, side, qty, extra_json "
+-                "FROM paper_trade_record "
+-                "WHERE result IS NULL AND extra_json IS NOT NULL"
+-            ).fetchall()
++            rows = conn.execute(sql, params).fetchall()
+     except Exception as e:
+         log.warning("reconciler: tracked-row read failed: %s", e)
+         return []
+@@ -521,7 +550,9 @@ def _match_symbol_key(symbol: str) -> str:
+         return raw.upper()
+ 
+ 
+-def _latest_position_state_payload(db_url: str) -> dict[str, Any] | None:
++def _latest_position_state_payload(
++    db_url: str, division: str | None = None
++) -> dict[str, Any] | None:
+     """The most recent position-state reconcile audit payload (reconciled OR
+     divergence), parsed. Used to confirm a state across TWO consecutive ticks
+     before auto-booking or releasing the halt — keeps the reconciler stateless
+@@ -532,7 +563,7 @@ def _latest_position_state_payload(db_url: str) -> dict[str, Any] | None:
+             row = conn.execute(
+                 "SELECT payload_json FROM audit_event "
+                 "WHERE actor = ? AND kind IN (?, ?) ORDER BY id DESC LIMIT 1",
+-                (RECONCILER_ACTOR, POSITION_STATE_RECONCILED_KIND,
++                (_recon_actor(division), POSITION_STATE_RECONCILED_KIND,
+                  POSITION_STATE_DIVERGENCE_KIND),
+             ).fetchone()
+     except Exception as e:
+@@ -987,6 +1018,7 @@ async def reconcile_position_state(
+     db_url: str,
+     *,
+     halt_on_divergence: bool = True,
++    division: str | None = None,
+ ) -> PositionStateReconciliation:
+     """Compare bot-tracked live positions against broker truth.
+ 
+@@ -1026,7 +1058,7 @@ async def reconcile_position_state(
+         )
+         broker_positions = []
+ 
+-    tracked = _load_tracked_live_rows(db_url)
++    tracked = _load_tracked_live_rows(db_url, division=division)
+ 
+     matches: list[PositionStateMatch] = []
+     missing: list[PositionStateMissingOnBroker] = []
+@@ -1085,7 +1117,7 @@ async def reconcile_position_state(
+     # books exact price/PnL/fee, falling back to the known-level estimate if the
+     # fetch fails. Booked rows drop out of `missing` this tick, so the audit +
+     # halt decision below reflect the post-book state.
+-    prev = _latest_position_state_payload(db_url)
++    prev = _latest_position_state_payload(db_url, division=division)
+     prev_missing_ids = {
+         m.get("order_id") for m in (prev.get("missing_on_broker") or [])
+     } if prev else set()
+@@ -1128,7 +1160,7 @@ async def reconcile_position_state(
+                 "VALUES (?, ?, ?, ?)",
+                 (
+                     _utc_now_iso(),
+-                    RECONCILER_ACTOR,
++                    _recon_actor(division),
+                     audit_kind,
+                     json.dumps(result.to_payload(), default=str),
+                 ),
+@@ -1171,7 +1203,7 @@ async def reconcile_position_state(
+                         conn.execute(
+                             "INSERT INTO audit_event "
+                             "(ts, actor, kind, payload_json) VALUES (?, ?, ?, ?)",
+-                            (now, RECONCILER_ACTOR,
++                            (now, _recon_actor(division),
+                              POSITION_STATE_HALT_RELEASED_KIND,
+                              json.dumps(
+                                  {"reason": "two_consecutive_clean_ticks"})),
+@@ -1194,7 +1226,7 @@ async def reconcile_position_state(
+     # Runs on the same 60s cadence; bracket-managed rows only; failure-tolerant;
+     # never blocks the reconcile (a missed move leaves the SL at its prior price).
+     try:
+-        await move_bracket_sls(broker, db_url)
++        await move_bracket_sls(broker, db_url, division=division)
+     except Exception as e:
+         log.warning("reconcile_position_state: bracket SL-move failed: %s", e)
+ 
+@@ -1227,7 +1259,9 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
+         return default
+ 
+ 
+-async def move_bracket_sls(broker: Any, db_url: str) -> None:
++async def move_bracket_sls(
++    broker: Any, db_url: str, division: str | None = None
++) -> None:
+     """Bracket SL-move-on-TP-fill (the only ongoing bot exit logic in the
+     exchange-resting bracket design).
+ 
+@@ -1242,13 +1276,18 @@ async def move_bracket_sls(broker: Any, db_url: str) -> None:
+     """
+     from trading_corp.agents.divisions.bitunix_bracket import decide_sl_move
+ 
++    _sql = (
++        "SELECT order_id, symbol, side, qty, stop_price, "
++        "entry_reference_price, extra_json FROM paper_trade_record "
++        "WHERE result IS NULL AND extra_json IS NOT NULL"
++    )
++    _params: tuple[Any, ...] = ()
++    if division is not None:
++        _sql += " AND division = ?"
++        _params = (division,)
+     try:
+         with db.connect(db_url) as conn:
+-            rows = conn.execute(
+-                "SELECT order_id, symbol, side, qty, stop_price, "
+-                "entry_reference_price, extra_json FROM paper_trade_record "
+-                "WHERE result IS NULL AND extra_json IS NOT NULL"
+-            ).fetchall()
++            rows = conn.execute(_sql, _params).fetchall()
+     except Exception as e:
+         log.warning("bracket SL-move: tracked-row read failed: %s", e)
+         return
+@@ -1335,7 +1374,7 @@ async def move_bracket_sls(broker: Any, db_url: str) -> None:
+                 conn.execute(
+                     "INSERT INTO audit_event(ts, actor, kind, payload_json) "
+                     "VALUES(?, ?, ?, ?)",
+-                    (_utc_now_iso(), RECONCILER_ACTOR, "position_sl_update",
++                    (_utc_now_iso(), _recon_actor(division), "position_sl_update",
+                      json.dumps({
+                          "order_id": r["order_id"], "symbol": r["symbol"],
+                          "new_sl": new_sl, "prev_sl": current_sl, "moved": moved,
+@@ -1353,6 +1392,7 @@ async def resume_live_positions(
+     *,
+     halt_on_orphan_or_case_c: bool = True,
+     notifier: Any = None,
++    division: str | None = None,
+ ) -> RestartResumeSummary:
+     """Restart-resume cases (a) + (b) + (c-defer) per Phase 1b §4.
+ 
+@@ -1380,7 +1420,7 @@ async def resume_live_positions(
+ 
+     # Reconcile by (symbol, side) first — reuse Session A logic.
+     recon = await reconcile_position_state(
+-        broker, db_url, halt_on_divergence=False,
++        broker, db_url, halt_on_divergence=False, division=division,
+     )
+ 
+     # Case (a): matches → already-tracked; one per match.
+@@ -1400,7 +1440,7 @@ async def resume_live_positions(
+                     "VALUES (?, ?, ?, ?)",
+                     (
+                         _utc_now_iso(),
+-                        RECONCILER_ACTOR,
++                        _recon_actor(division),
+                         RESTART_RESUME_EXECUTED_KIND,
+                         json.dumps(record, default=str),
+                     ),
+@@ -1426,7 +1466,7 @@ async def resume_live_positions(
+                     "VALUES (?, ?, ?, ?)",
+                     (
+                         _utc_now_iso(),
+-                        RECONCILER_ACTOR,
++                        _recon_actor(division),
+                         ORPHAN_BROKER_POSITION_ON_RESTART_KIND,
+                         json.dumps(record, default=str),
+                     ),
+@@ -1457,7 +1497,7 @@ async def resume_live_positions(
+                     "VALUES (?, ?, ?, ?)",
+                     (
+                         _utc_now_iso(),
+-                        RECONCILER_ACTOR,
++                        _recon_actor(division),
+                         RESTART_RESUME_CASE_C_DEFERRED_KIND,
+                         json.dumps(record, default=str),
+                     ),
+@@ -1504,6 +1544,7 @@ async def run_position_state_sanity_poll_loop(
+     *,
+     interval_s: float = 60.0,
+     notifier: Any = None,
++    division: str | None = None,
+ ) -> None:
+     """Forever-loop calling `reconcile_position_state` every `interval_s`.
+ 
+@@ -1526,7 +1567,7 @@ async def run_position_state_sanity_poll_loop(
+     )
+     while True:
+         try:
+-            result = await reconcile_position_state(broker, db_url)
++            result = await reconcile_position_state(broker, db_url, division=division)
+             if result.has_divergence and notifier is not None:
+                 if hasattr(notifier, "notify_reconciliation_divergence"):
+                     for m in result.missing_on_broker:
+diff --git a/trading_corp/main.py b/trading_corp/main.py
+index c48f1ba..95d64af 100644
+--- a/trading_corp/main.py
++++ b/trading_corp/main.py
+@@ -599,18 +599,24 @@ async def run(argv: list[str] | None = None) -> int:
+     from trading_corp.utils.divisions import load_divisions
+     divisions = load_divisions()
+ 
+-    # Boot-guard (2026-06-25): the Bitunix account runs ONE live division at a
+-    # time (ONE_WAY netting + symbol+side reconciler). Refuse to start if two
+-    # bitunix divisions are both execution_mode:live — a misconfig that would let
+-    # two strategies place real orders on the same account and net into one
+-    # position. Key-separation makes this unreachable in practice (only one holds
+-    # live keys); this is belt-and-suspenders.
++    # Boot-guard (2026-06-25; relaxed to per-secret_ref 2026-06-29): two bitunix
++    # divisions MAY both be execution_mode:live — but ONLY if they use DISTINCT
++    # account keys (different `secret_ref`). Two live divisions sharing a
++    # secret_ref = two strategies placing real orders on the SAME account, which
++    # ONE_WAY netting collides into one position. We key on the secret_ref STRING,
++    # NOT the resolved key VALUE: during the Phase-2 cutover window `bitunix_sfp`
++    # and `bitunix_futures` transiently resolve to the SAME original account
++    # (BITUNIX-SFP-* and BITUNIX-FUTURES-* both hold its key) — distinct refs MUST
++    # pass so the cutover proceeds; the per-account reconciler isolation
++    # (division-scoped rows + audit) covers the transient shared-account window.
+     _live_bx = _live_bitunix_divisions(divisions)
+-    if len(_live_bx) >= 2:
++    _shared_ref = _bitunix_live_secret_ref_conflicts(divisions, _live_bx)
++    if _shared_ref:
+         raise SystemExit(
+-            "REFUSING TO START: bitunix divisions both execution_mode:live "
+-            f"{_live_bx}; only ONE may be live on the shared account "
+-            "(ONE_WAY netting). Set all but one to execution_mode: paper."
++            "REFUSING TO START: live bitunix divisions share a secret_ref "
++            f"(same account): {_shared_ref}. Two live divisions on ONE account "
++            "net into one position under ONE_WAY. Give each a DISTINCT secret_ref "
++            "(distinct account), or set all but one to execution_mode: paper."
+         )
+ 
+     # 'default' division always uses PaperBroker (demo / fallback fills).
+@@ -1041,16 +1047,26 @@ async def run(argv: list[str] | None = None) -> int:
+     # (audit + telegram are local to the broker because PART_FILLED stuck
+     # orders can't raise — they return a partial-fill tuple to place_order).
+     # Same TelegramChannel singleton as data_exec — no parallel instance.
+-    # Per-account reconciler binding (2026-06-25): the position-state reconciler
+-    # / auto-book / divergence-halt must follow the LIVE bitunix division (whose
+-    # broker holds the account creds), NOT a hardcoded slug. The boot-guard
+-    # guarantees <=1 bitunix division is execution_mode:live, so this resolves to
+-    # exactly that division's broker (or None → reconciler stays off).
+-    _live_bx_slug = _live_bx[0] if _live_bx else None
+-    _recon_exec_mode = "live" if _live_bx_slug else "paper"
+-    _bx_broker = data_exec.brokers.get(_live_bx_slug) if _live_bx_slug else None
+-    if _bx_broker is not None and hasattr(_bx_broker, "safety_notifier"):
+-        _bx_broker.safety_notifier = channel
++    # Per-account reconciler targets (2026-06-25; multi-account 2026-06-29). Each
++    # LIVE bitunix division gets its OWN reconciler set, bound to its OWN broker
++    # and scoped to its OWN division (rows + audit), so one account's reconciler
++    # never sees the other's positions/rows. ≤1 live → the legacy SINGLE path with
++    # division=None (byte-identical to pre-2026-06-29 behavior: the Phase-1
++    # SFP-undisturbed case). ≥2 live (Phase 2: two distinct accounts) → one
++    # (slug, broker, division) target per live slug.
++    if len(_live_bx) <= 1:
++        _slug0 = _live_bx[0] if _live_bx else None
++        _recon_targets = (
++            [(_slug0, data_exec.brokers.get(_slug0), None)] if _slug0 else []
++        )
++    else:
++        _recon_targets = [
++            (_s, data_exec.brokers.get(_s), _s) for _s in _live_bx
++        ]
++    _recon_exec_mode = "live" if _recon_targets else "paper"
++    for _rt_slug, _rt_broker, _rt_div in _recon_targets:
++        if _rt_broker is not None and hasattr(_rt_broker, "safety_notifier"):
++            _rt_broker.safety_notifier = channel
+ 
+     await channel.start()
+     await channel.push(
+@@ -1937,96 +1953,74 @@ async def run(argv: list[str] | None = None) -> int:
+                 "15m loop NOT spawned", _sfp_mode,
+             )
+ 
+-        # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5a): restart-resume ──
+-        # cases (a) match + (b) orphan + (c-deferred). Runs BEFORE the
+-        # position-state reconciler so the broker_order_id-aware match
+-        # pass happens first; reconcile_position_state's startup sweep
+-        # is then redundant but cheap (idempotent).
+-        if (
+-            _recon_exec_mode == "live"
+-            and _bx_broker is not None
+-            and hasattr(_bx_broker, "get_pending_positions")
+-        ):
++        # ── Per-account reconciler facilities (looped 2026-06-29). For EACH
++        # live bitunix division, bound to its OWN broker + division-scoped:
++        #   (5a) restart-resume cases (a)/(b)/(c-defer) — runs FIRST so the
++        #        broker_order_id-aware match pass precedes the startup sweep;
++        #   (3)  position-state reconcile one-shot — compares THIS division's
++        #        live rows (paper_trade_record division=<slug>, result NULL,
++        #        execution_mode=live) vs its broker truth; on divergence writes
++        #        the (scoped-actor) audit + sets that broker's _halt_new_orders.
++        #        Awaited so the halt latch sets BEFORE downstream tasks;
++        #   (5b) 60s sanity poll — catches post-startup drift.
++        # With ≤1 live division the loop runs once with division=None — BYTE-
++        # IDENTICAL to the pre-2026-06-29 single path (Phase-1 SFP-undisturbed).
++        # Paper brokers lack get_pending_positions → skipped (no spurious halts).
++        for _rt_slug, _bx_broker, _bx_div in _recon_targets:
++            if not (
++                _bx_broker is not None
++                and hasattr(_bx_broker, "get_pending_positions")
++            ):
++                continue
+             try:
+                 from trading_corp.agents.divisions.bitunix_position_reconciler import (
+                     resume_live_positions as _resume_live_positions,
+                 )
+-                # Lifecycle notifier may not yet be wired (it lands later
+-                # in startup); pass None for now — restart-resume telegram
+-                # is best-effort. The audit kinds carry the operator-facing
+-                # detail regardless.
+                 _resume_summary = await _resume_live_positions(
+-                    _bx_broker, secrets.db_url, notifier=None,
++                    _bx_broker, secrets.db_url, notifier=None, division=_bx_div,
+                 )
+                 log.info(
+-                    "bitunix restart-resume at startup: matched=%d "
++                    "bitunix restart-resume [%s] at startup: matched=%d "
+                     "orphan=%d case_c_deferred=%d",
++                    _rt_slug,
+                     len(_resume_summary.matched),
+                     len(_resume_summary.orphan_on_broker),
+                     len(_resume_summary.case_c_deferred),
+                 )
+             except Exception:
+                 log.exception(
+-                    "bitunix restart-resume at startup failed (continuing)"
++                    "bitunix restart-resume [%s] at startup failed (continuing)",
++                    _rt_slug,
+                 )
+ 
+-        # ── Stage-1 N+2 Phase 3 Session B Commit 3: position-state ──
+-        # reconciler one-shot at startup. Compares bot-tracked live rows
+-        # (paper_trade_record WHERE result IS NULL AND
+-        # extra.execution_mode='live') against broker.get_pending_positions()
+-        # truth. On divergence: writes position_state_divergence_detected
+-        # audit + sets _bx_broker._halt_new_orders=True (entries halt;
+-        # exits flow per Phase 1a §9c). Awaited (not create_task) so the
+-        # halt latch is set BEFORE any downstream tasks start.
+-        #
+-        # Gated to execution_mode=live: paper mode brokers (PaperExecutionBroker,
+-        # PaperBroker) don't implement get_pending_positions and have no
+-        # live-tagged rows to reconcile — skipping avoids spurious paper-mode
+-        # halts and AttributeError noise. The reconciler itself catches all
+-        # broker exceptions; the gate is belt-and-suspenders + clarity.
+-        if (
+-            _recon_exec_mode == "live"
+-            and _bx_broker is not None
+-            and hasattr(_bx_broker, "get_pending_positions")
+-        ):
+             try:
+                 from trading_corp.agents.divisions.bitunix_position_reconciler import (
+                     reconcile_position_state as _reconcile_position_state,
+                 )
+                 _recon_result = await _reconcile_position_state(
+-                    _bx_broker, secrets.db_url,
++                    _bx_broker, secrets.db_url, division=_bx_div,
+                 )
+                 if _recon_result.has_divergence:
+                     log.warning(
+-                        "bitunix position-state reconciler at startup: "
++                        "bitunix position-state reconciler [%s] at startup: "
+                         "DIVERGENCE — %d missing_on_broker, %d orphan_on_broker; "
+                         "broker._halt_new_orders=True (entries halted)",
++                        _rt_slug,
+                         len(_recon_result.missing_on_broker),
+                         len(_recon_result.orphan_on_broker),
+                     )
+                 else:
+                     log.info(
+-                        "bitunix position-state reconciler at startup: clean "
+-                        "(%d matched live rows)", len(_recon_result.matches),
++                        "bitunix position-state reconciler [%s] at startup: "
++                        "clean (%d matched live rows)",
++                        _rt_slug, len(_recon_result.matches),
+                     )
+             except Exception:
+-                # Reconciler failure must not crash startup. The audit-of-
+-                # nothing is the operator's signal that the check didn't run.
+                 log.exception(
+-                    "bitunix position-state reconciler at startup failed "
+-                    "(continuing; halt latch unchanged)"
++                    "bitunix position-state reconciler [%s] at startup failed "
++                    "(continuing; halt latch unchanged)", _rt_slug,
+                 )
+ 
+-        # ── Stage-1 N+2 Phase 3 Session B Commit 5 (5b): 60s sanity poll ──
+-        # Background task running `reconcile_position_state` every 60s.
+-        # Catches drift that develops AFTER the startup check passed
+-        # (broker auto-close during idle, operator UI changes, etc.).
+-        # Notifier is passed in lazily — wired below as soon as it lands.
+-        if (
+-            _recon_exec_mode == "live"
+-            and _bx_broker is not None
+-            and hasattr(_bx_broker, "get_pending_positions")
+-        ):
+             try:
+                 from trading_corp.agents.divisions.bitunix_position_reconciler import (
+                     run_position_state_sanity_poll_loop as
+@@ -2036,14 +2030,15 @@ async def run(argv: list[str] | None = None) -> int:
+                     _run_position_state_sanity_poll_loop(
+                         _bx_broker, secrets.db_url,
+                         interval_s=60.0,
+-                        notifier=None,  # set after lifecycle notifier wires below
++                        notifier=None,  # best-effort; lifecycle notifier optional
++                        division=_bx_div,
+                     ),
+-                    name="bitunix-position-state-sanity-poll",
++                    name=f"bitunix-position-state-sanity-poll-{_rt_slug or 'none'}",
+                 )
+             except Exception:
+                 log.exception(
+-                    "bitunix position-state sanity poll wiring failed "
+-                    "(continuing)"
++                    "bitunix position-state sanity poll [%s] wiring failed "
++                    "(continuing)", _rt_slug,
+                 )
+ 
+         # trade-plan PR 5 — position SL reconciler. Stateless 60s loop
+@@ -2268,6 +2263,27 @@ def _live_bitunix_divisions(divisions, strategies_yaml_path=None) -> list[str]:
+     return out
+ 
+ 
++def _bitunix_live_secret_ref_conflicts(
++    divisions, live_slugs,
++) -> dict[str, list[str]]:
++    """Map secret_ref → [live slugs] for any secret_ref shared by ≥2 LIVE
++    bitunix divisions — the boot-guard's refuse condition (2026-06-29).
++
++    Two live divisions on ONE account (same secret_ref) net into one position
++    under ONE_WAY. Keys on the secret_ref STRING (mirroring
++    `_resolve_bitunix_creds`'s `secret_ref or "bitunix_futures"` default), NOT
++    the resolved key VALUE: distinct refs that transiently resolve to the same
++    account during the Phase-2 cutover are intentionally ALLOWED. Empty dict =
++    no conflict (0, 1, or N live divisions on distinct refs)."""
++    refs: dict[str, list[str]] = {}
++    live = set(live_slugs)
++    for d in divisions:
++        if getattr(d, "slug", None) in live:
++            ref = getattr(d, "secret_ref", None) or "bitunix_futures"
++            refs.setdefault(ref, []).append(d.slug)
++    return {ref: slugs for ref, slugs in refs.items() if len(slugs) >= 2}
++
++
+ def _build_broker_for_division(
+     division,
+     secrets,
+diff --git a/trading_corp/utils/secrets.py b/trading_corp/utils/secrets.py
+index 7723005..46ff9ef 100644
+--- a/trading_corp/utils/secrets.py
++++ b/trading_corp/utils/secrets.py
+@@ -30,6 +30,12 @@ _SECRET_KEY_NAMES = (
+     "COINBASE_FUTURES_PASSPHRASE",
+     "BITUNIX_FUTURES_API_KEY",
+     "BITUNIX_FUTURES_API_SECRET",
++    # BitUnix SFP — second key-separation seam (Phase 1, 2026-06-29). A
++    # DEDICATED key for the bitunix_sfp division so it can be cut over off the
++    # shared bitunix_futures key (Phase 2), freeing bitunix_futures for the new
++    # funded account. See divisions.yaml secret_ref + _resolve_bitunix_creds.
++    "BITUNIX_SFP_API_KEY",
++    "BITUNIX_SFP_API_SECRET",
+     "FIDELITY_PASSWORD",
+     # Polymarket / Polygon — Phase 0 of the Polymarket Arbitrage division.
+     # Private key is the most sensitive (signs USDC-spending transactions);
+@@ -146,6 +152,14 @@ class Secrets:
+     # initializes as a stub returning $0 / no positions.
+     bitunix_futures_api_key: str | None
+     bitunix_futures_api_secret: str | None
++    # BitUnix SFP — dedicated keys for the bitunix_sfp division (Phase 1,
++    # 2026-06-29). Resolved via `secret_ref: bitunix_sfp` →
++    # `_resolve_bitunix_creds` → `{ref}_api_key/secret`. Until the Phase 2
++    # cutover, SFP still resolves `bitunix_futures` (secret_ref unchanged); these
++    # are populated + redacted now so the cutover is a one-line config flip.
++    # Unset → resolves to None (the SFP broker would stub — caught at cutover).
++    bitunix_sfp_api_key: str | None
++    bitunix_sfp_api_secret: str | None
+     # Polymarket / Polygon — per-division wallets (item 6, 2026-05-29).
+     # Each Polymarket division gets its own EOA (signer key + funder
+     # address), keyed by division slug; see _POLYMARKET_WALLET_ENV for the
+@@ -281,6 +295,8 @@ def _populate_from_keyvault(vault_uri: str) -> None:
+         "COINBASE_FUTURES_PASSPHRASE",
+         "BITUNIX_FUTURES_API_KEY",
+         "BITUNIX_FUTURES_API_SECRET",
++        "BITUNIX_SFP_API_KEY",
++        "BITUNIX_SFP_API_SECRET",
+         "POLYMARKET_PRIVATE_KEY",
+         "POLYMARKET_FUNDER_ADDRESS",
+         "POLYMARKET_COPY_PRIVATE_KEY",
+@@ -362,6 +378,8 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
+         coinbase_futures_passphrase=_env("COINBASE_FUTURES_PASSPHRASE"),
+         bitunix_futures_api_key=_env("BITUNIX_FUTURES_API_KEY"),
+         bitunix_futures_api_secret=_env("BITUNIX_FUTURES_API_SECRET"),
++        bitunix_sfp_api_key=_env("BITUNIX_SFP_API_KEY"),
++        bitunix_sfp_api_secret=_env("BITUNIX_SFP_API_SECRET"),
+         polymarket_wallets={
+             slug: PolymarketWallet(
+                 private_key=_env(pk_env),
+@@ -416,6 +434,10 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
+     # wouldn't catch a header-form log line — register the literal values too.
+     register_redact_literal(secrets.bitunix_futures_api_key)
+     register_redact_literal(secrets.bitunix_futures_api_secret)
++    # BitUnix SFP creds (Phase 1, 2026-06-29) — same header-form redaction as
++    # the futures keys above (api_key rides in the `api-key` request header).
++    register_redact_literal(secrets.bitunix_sfp_api_key)
++    register_redact_literal(secrets.bitunix_sfp_api_secret)
+     # Finnhub API key — bearer token in every request URL query string (legacy).
+     register_redact_literal(secrets.finnhub_api_key)
+     # EODHD API key — api_token query param in every EODHD fundamentals request.
