@@ -597,8 +597,38 @@
       <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
         Selected whales — paper performance
       </h2>
-      <div class="text-[11px] font-mono text-muted">
-        {{ view.whales | length }} whales · sorted by realized P&amp;L
+      <div class="flex items-center gap-3">
+        <div class="text-[11px] font-mono text-muted">
+          {{ view.whales | length }} whales
+        </div>
+        {# Filter toggles for the Selected panel — Kalshi only.
+           Independence: links also carry current Watch List state. #}
+        {% if view.selected == 'kalshi_copy_trading' %}
+        <div class="flex items-center gap-1 text-[10px] font-mono">
+          {%- set slug = view.selected or 'kalshi_copy_trading' -%}
+          {%- set watch_qs = ('&kalshi_watch_sort=' ~ view.kalshi_watch_sort ~ '&kalshi_watch_desc=' ~ (1 if view.kalshi_watch_desc else 0)) if view.kalshi_watch_sort else '' -%}
+          {%- set watch_qs = watch_qs ~ '&kalshi_hide_uncopyable=' ~ (1 if view.kalshi_hide_uncopyable else 0) ~ '&kalshi_hide_net_neg=' ~ (1 if view.kalshi_hide_net_neg else 0) -%}
+          {%- set sel_sort_qs = ('&kalshi_selected_sort=' ~ view.kalshi_selected_sort ~ '&kalshi_selected_desc=' ~ (1 if view.kalshi_selected_desc else 0)) if view.kalshi_selected_sort else '' -%}
+          {%- set next_sel_uc = 0 if view.kalshi_sel_hide_uncopyable else 1 -%}
+          <a class="border border-edge px-2 py-0.5 hover:text-mono {% if view.kalshi_sel_hide_uncopyable %}text-mono bg-pane-2/60{% else %}text-muted/60{% endif %}"
+             hx-get="/partials/prediction-markets/{{ slug }}?kalshi_sel_hide_uncopyable={{ next_sel_uc }}&kalshi_sel_hide_net_neg={{ 1 if view.kalshi_sel_hide_net_neg else 0 }}{{ sel_sort_qs }}{{ watch_qs }}"
+             hx-target="#pm-content"
+             hx-swap="innerHTML"
+             hx-push-url="/prediction-markets/{{ slug }}?kalshi_sel_hide_uncopyable={{ next_sel_uc }}&kalshi_sel_hide_net_neg={{ 1 if view.kalshi_sel_hide_net_neg else 0 }}{{ sel_sort_qs }}{{ watch_qs }}"
+             title="Hide selected whales with copyability &lt; 5%">
+            Hide uncopyable
+          </a>
+          {%- set next_sel_nn = 0 if view.kalshi_sel_hide_net_neg else 1 -%}
+          <a class="border border-edge px-2 py-0.5 hover:text-mono {% if view.kalshi_sel_hide_net_neg %}text-mono bg-pane-2/60{% else %}text-muted/60{% endif %}"
+             hx-get="/partials/prediction-markets/{{ slug }}?kalshi_sel_hide_uncopyable={{ 1 if view.kalshi_sel_hide_uncopyable else 0 }}&kalshi_sel_hide_net_neg={{ next_sel_nn }}{{ sel_sort_qs }}{{ watch_qs }}"
+             hx-target="#pm-content"
+             hx-swap="innerHTML"
+             hx-push-url="/prediction-markets/{{ slug }}?kalshi_sel_hide_uncopyable={{ 1 if view.kalshi_sel_hide_uncopyable else 0 }}&kalshi_sel_hide_net_neg={{ next_sel_nn }}{{ sel_sort_qs }}{{ watch_qs }}"
+             title="Hide selected whales with net P&amp;L &lt; $0 (n &#8805; 30 resolved)">
+            Hide net-neg
+          </a>
+        </div>
+        {% endif %}
       </div>
     </header>
     <div class="overflow-x-auto">
@@ -615,14 +645,14 @@
             <th class="text-right px-3 py-2 font-medium">Open</th>
             <th class="text-left px-3 py-2 font-medium">Last entry</th>
             {# ── Our copy-intel columns (Kalshi rows only; Polymarket rows show —) ── #}
-            <th class="text-right px-3 py-2 font-medium" title="Our would_have_placed copies">Copies</th>
-            <th class="text-right px-3 py-2 font-medium" title="Total detections (copies + no_side + sports skips)">Detected</th>
-            <th class="text-right px-3 py-2 font-medium" title="Skipped — no copy side found">No-side</th>
-            <th class="text-right px-3 py-2 font-medium" title="Skipped — sports market">Sports</th>
-            <th class="text-right px-3 py-2 font-medium" title="Copies ÷ detections">Copy%</th>
-            <th class="text-right px-3 py-2 font-medium" title="Our net P&amp;L after fees + slip">Net PnL</th>
-            <th class="text-right px-3 py-2 font-medium" title="Days since our last copy entry">Days ago</th>
-            <th class="text-right px-3 py-2 font-medium" title="% of our copies in crypto tickers">Crypto%</th>
+            <th class="text-right px-3 py-2 font-medium" title="Our would_have_placed copies">{{ kalshi_selected_sort_link("copies", "Copies") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Total detections (copies + no_side + sports skips)">{{ kalshi_selected_sort_link("detections", "Detected") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Skipped — no copy side found">{{ kalshi_selected_sort_link("no_side", "No-side") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Skipped — sports market">{{ kalshi_selected_sort_link("sports", "Sports") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Copies ÷ detections">{{ kalshi_selected_sort_link("copyability", "Copy%") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Our net P&amp;L after fees + slip">{{ kalshi_selected_sort_link("net_pnl", "Net PnL", default_key=True) }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Days since our last copy entry">{{ kalshi_selected_sort_link("days_since", "Days ago") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="% of our copies in crypto tickers">{{ kalshi_selected_sort_link("crypto_pct", "Crypto%") }}</th>
             <th class="text-right px-3 py-2 font-medium">Action</th>
           </tr>
         </thead>
@@ -753,7 +783,9 @@
      URL so refresh + back/forward preserve the sort. The active column
      shows ↓/↑; clicking it again flips direction. `default_key` marks
      the column treated as active when no `?kalshi_watch_sort` is set —
-     the default sort is tier asc + total_pnl desc. #}
+     the default sort is tier asc + total_pnl desc.
+     Independence: all links also carry current Selected panel state so
+     clicking a Watch sort/filter never resets the Selected panel. #}
   {% macro kalshi_watch_sort_link(key, label, default_key=False) %}
     {%- if view.kalshi_watch_sort -%}
       {%- set is_active = (view.kalshi_watch_sort == key) -%}
@@ -772,11 +804,48 @@
     {%- set slug = view.selected or 'kalshi_copy_trading' -%}
     {%- set hide_uc = 1 if view.kalshi_hide_uncopyable else 0 -%}
     {%- set hide_nn = 1 if view.kalshi_hide_net_neg else 0 -%}
+    {%- set sel_qs = ('&kalshi_selected_sort=' ~ view.kalshi_selected_sort ~ '&kalshi_selected_desc=' ~ (1 if view.kalshi_selected_desc else 0)) if view.kalshi_selected_sort else '' -%}
+    {%- set sel_qs = sel_qs ~ '&kalshi_sel_hide_uncopyable=' ~ (1 if view.kalshi_sel_hide_uncopyable else 0) ~ '&kalshi_sel_hide_net_neg=' ~ (1 if view.kalshi_sel_hide_net_neg else 0) -%}
     <a class="cursor-pointer select-none hover:text-mono {% if is_active %}text-mono{% endif %}"
-       hx-get="/partials/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}&kalshi_hide_uncopyable={{ hide_uc }}&kalshi_hide_net_neg={{ hide_nn }}"
+       hx-get="/partials/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}&kalshi_hide_uncopyable={{ hide_uc }}&kalshi_hide_net_neg={{ hide_nn }}{{ sel_qs }}"
        hx-target="#pm-content"
        hx-swap="innerHTML"
-       hx-push-url="/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}&kalshi_hide_uncopyable={{ hide_uc }}&kalshi_hide_net_neg={{ hide_nn }}">
+       hx-push-url="/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}&kalshi_hide_uncopyable={{ hide_uc }}&kalshi_hide_net_neg={{ hide_nn }}{{ sel_qs }}">
+      {{ label }}{% if arrow %}<span class="ml-0.5">{{ arrow }}</span>{% endif %}
+    </a>
+  {% endmacro %}
+
+  {# Sortable-header macro for the Kalshi Selected Whales panel.
+     Mirrors kalshi_watch_sort_link but reads view.kalshi_selected_sort /
+     view.kalshi_selected_desc. Default sort column: net_pnl (set
+     default_key=True on that call).
+     Independence: all links also carry current Watch List state so
+     clicking a Selected sort/filter never resets the Watch panel. #}
+  {% macro kalshi_selected_sort_link(key, label, default_key=False) %}
+    {%- if view.kalshi_selected_sort -%}
+      {%- set is_active = (view.kalshi_selected_sort == key) -%}
+      {%- set active_desc = view.kalshi_selected_desc -%}
+    {%- else -%}
+      {%- set is_active = default_key -%}
+      {%- set active_desc = True -%}
+    {%- endif -%}
+    {%- if is_active -%}
+      {%- set next_desc = (0 if active_desc else 1) -%}
+      {%- set arrow = '↓' if active_desc else '↑' -%}
+    {%- else -%}
+      {%- set next_desc = 1 -%}
+      {%- set arrow = '' -%}
+    {%- endif -%}
+    {%- set slug = view.selected or 'kalshi_copy_trading' -%}
+    {%- set sel_uc = 1 if view.kalshi_sel_hide_uncopyable else 0 -%}
+    {%- set sel_nn = 1 if view.kalshi_sel_hide_net_neg else 0 -%}
+    {%- set watch_qs = ('&kalshi_watch_sort=' ~ view.kalshi_watch_sort ~ '&kalshi_watch_desc=' ~ (1 if view.kalshi_watch_desc else 0)) if view.kalshi_watch_sort else '' -%}
+    {%- set watch_qs = watch_qs ~ '&kalshi_hide_uncopyable=' ~ (1 if view.kalshi_hide_uncopyable else 0) ~ '&kalshi_hide_net_neg=' ~ (1 if view.kalshi_hide_net_neg else 0) -%}
+    <a class="cursor-pointer select-none hover:text-mono {% if is_active %}text-mono{% endif %}"
+       hx-get="/partials/prediction-markets/{{ slug }}?kalshi_selected_sort={{ key }}&kalshi_selected_desc={{ next_desc }}&kalshi_sel_hide_uncopyable={{ sel_uc }}&kalshi_sel_hide_net_neg={{ sel_nn }}{{ watch_qs }}"
+       hx-target="#pm-content"
+       hx-swap="innerHTML"
+       hx-push-url="/prediction-markets/{{ slug }}?kalshi_selected_sort={{ key }}&kalshi_selected_desc={{ next_desc }}&kalshi_sel_hide_uncopyable={{ sel_uc }}&kalshi_sel_hide_net_neg={{ sel_nn }}{{ watch_qs }}">
       {{ label }}{% if arrow %}<span class="ml-0.5">{{ arrow }}</span>{% endif %}
     </a>
   {% endmacro %}
@@ -789,25 +858,28 @@
         <div class="text-[11px] font-mono text-muted">
           {{ view.kalshi_watch_only | length }} whales · self-reported stats from Apify · NOT copy-traded
         </div>
-        {# Filter toggles: hide uncopyable / hide net-negative whales. #}
+        {# Filter toggles: hide uncopyable / hide net-negative whales.
+           Independence: links also carry current Selected panel state. #}
         <div class="flex items-center gap-1 text-[10px] font-mono">
           {%- set slug = view.selected or 'kalshi_copy_trading' -%}
           {%- set sort_qs = ('&kalshi_watch_sort=' ~ view.kalshi_watch_sort ~ '&kalshi_watch_desc=' ~ (1 if view.kalshi_watch_desc else 0)) if view.kalshi_watch_sort else '' -%}
+          {%- set sel_qs = ('&kalshi_selected_sort=' ~ view.kalshi_selected_sort ~ '&kalshi_selected_desc=' ~ (1 if view.kalshi_selected_desc else 0)) if view.kalshi_selected_sort else '' -%}
+          {%- set sel_qs = sel_qs ~ '&kalshi_sel_hide_uncopyable=' ~ (1 if view.kalshi_sel_hide_uncopyable else 0) ~ '&kalshi_sel_hide_net_neg=' ~ (1 if view.kalshi_sel_hide_net_neg else 0) -%}
           {%- set next_uc = 0 if view.kalshi_hide_uncopyable else 1 -%}
           <a class="border border-edge px-2 py-0.5 hover:text-mono {% if view.kalshi_hide_uncopyable %}text-mono bg-pane-2/60{% else %}text-muted/60{% endif %}"
-             hx-get="/partials/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ next_uc }}&kalshi_hide_net_neg={{ 1 if view.kalshi_hide_net_neg else 0 }}{{ sort_qs }}"
+             hx-get="/partials/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ next_uc }}&kalshi_hide_net_neg={{ 1 if view.kalshi_hide_net_neg else 0 }}{{ sort_qs }}{{ sel_qs }}"
              hx-target="#pm-content"
              hx-swap="innerHTML"
-             hx-push-url="/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ next_uc }}&kalshi_hide_net_neg={{ 1 if view.kalshi_hide_net_neg else 0 }}{{ sort_qs }}"
+             hx-push-url="/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ next_uc }}&kalshi_hide_net_neg={{ 1 if view.kalshi_hide_net_neg else 0 }}{{ sort_qs }}{{ sel_qs }}"
              title="Hide whales with copyability &lt; 5%">
             Hide uncopyable
           </a>
           {%- set next_nn = 0 if view.kalshi_hide_net_neg else 1 -%}
           <a class="border border-edge px-2 py-0.5 hover:text-mono {% if view.kalshi_hide_net_neg %}text-mono bg-pane-2/60{% else %}text-muted/60{% endif %}"
-             hx-get="/partials/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ 1 if view.kalshi_hide_uncopyable else 0 }}&kalshi_hide_net_neg={{ next_nn }}{{ sort_qs }}"
+             hx-get="/partials/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ 1 if view.kalshi_hide_uncopyable else 0 }}&kalshi_hide_net_neg={{ next_nn }}{{ sort_qs }}{{ sel_qs }}"
              hx-target="#pm-content"
              hx-swap="innerHTML"
-             hx-push-url="/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ 1 if view.kalshi_hide_uncopyable else 0 }}&kalshi_hide_net_neg={{ next_nn }}{{ sort_qs }}"
+             hx-push-url="/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ 1 if view.kalshi_hide_uncopyable else 0 }}&kalshi_hide_net_neg={{ next_nn }}{{ sort_qs }}{{ sel_qs }}"
              title="Hide whales with net P&amp;L &lt; $0 (n &#8805; 30 resolved)">
             Hide net-neg
           </a>

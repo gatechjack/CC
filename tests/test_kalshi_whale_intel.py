@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 
 from trading_corp.persistence import db as _db
-from trading_corp.web.data import _query_kalshi_whale_intel
+from trading_corp.web.data import _query_kalshi_whale_intel, _query_pm_whales
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -463,3 +463,272 @@ def test_round_trips_no_whale_handle_excluded(db_url):
     # This whale name is not referenced anywhere
     result = _query_kalshi_whale_intel(db_url, ["unknown.whale.x"])
     assert result["unknown.whale.x"]["n_resolved"] == 0
+
+
+# ── _query_pm_whales — Selected Whales sort + filter ─────────────────────────
+#
+# These tests verify the SORT + FILTER machinery added to _query_pm_whales for
+# the Kalshi Selected Whales panel (independent of the Watch List).
+#
+# Fixtures seed:
+#   - agent_state(kalshi_copy_trader, selected_whales) — 3 Kalshi handles
+#   - kalshi_round_trips — gives each whale their n_resolved base count
+#   - audit_event — gives each whale their intel fields (copies, no_side, etc.)
+#   - For the polymarket isolation test: agent_state(polymarket_copy_trader, ...)
+#
+# All tests are read-only + network-free.
+
+def _seed_selected_pm_whales(db_url: str) -> None:
+    """Seed 3 Kalshi selected whales with distinct intel profiles.
+
+    whale.alpha  — copyability 100%  (10 detections all copies), net_pnl > 0  (10 wins)
+    whale.beta   — copyability 0%    (20 no_side, 0 copies),     net_pnl = 0.0 (0 resolved)
+    whale.gamma  — copyability 50%   (4 copies / 8 detections),  net_pnl < 0   (31 losses, net-neg)
+    """
+    _db.set_agent_state(
+        "kalshi_copy_trader", "selected_whales",
+        ["whale.alpha", "whale.beta", "whale.gamma"],
+        db_url=db_url,
+    )
+
+    now = datetime.now(timezone.utc)
+
+    with _db.connect(db_url) as conn:
+        # alpha: 10 copies (would_have_placed buy)
+        for _ in range(10):
+            _insert_audit(conn, _iso(now), "kalshi_copy_trader",
+                          "would_have_placed",
+                          {"whale_handle": "whale.alpha", "side": "buy"})
+        # beta: 20 no_side skips, 0 copies
+        for _ in range(20):
+            _insert_audit(conn, _iso(now), "kalshi_copy_trader",
+                          "kalshi_copy_entry_skipped_no_side",
+                          {"whale_handle": "whale.beta"})
+        # gamma: 4 copies + 4 no_side → copyability 50%
+        for _ in range(4):
+            _insert_audit(conn, _iso(now), "kalshi_copy_trader",
+                          "would_have_placed",
+                          {"whale_handle": "whale.gamma", "side": "buy"})
+        for _ in range(4):
+            _insert_audit(conn, _iso(now), "kalshi_copy_trader",
+                          "kalshi_copy_entry_skipped_no_side",
+                          {"whale_handle": "whale.gamma"})
+        # alpha: 10 winning round-trips, positive net PnL
+        c_a, ep_a = 5, 0.5
+        for i in range(10):
+            _insert_rt(conn, f"alpha-rt-{i}", "KXBTC-001", c_a, ep_a, 2.0, 1,
+                       "kalshi_copy_trading", whale_handle="whale.alpha")
+        # beta: 0 round-trips (intel_net_pnl stays None)
+        # gamma: 31 losing round-trips → n_resolved=31 ≥ 30, net PnL < 0
+        c_g, ep_g = 2, 0.5
+        for i in range(31):
+            _insert_rt(conn, f"gamma-rt-{i}", "KXBTC-001", c_g, ep_g, -1.0, 0,
+                       "kalshi_copy_trading", whale_handle="whale.gamma")
+        conn.commit()
+
+
+def test_pm_whales_sort_by_intel_copies_desc(db_url):
+    """sort by intel_copies descending: alpha(10) > gamma(4) > beta(0)."""
+    _seed_selected_pm_whales(db_url)
+
+    rows = _query_pm_whales(
+        db_url, ["kalshi_copy_trading"],
+        selected_sort="copies", selected_desc=True,
+    )
+    kalshi_rows = [w for w in rows if w.venue == "kalshi"]
+    handles = [w.handle for w in kalshi_rows]
+    # alpha has most copies; beta has 0 → appended after (None-trailing logic
+    # doesn't apply since 0 is not None, but alpha > gamma > beta by count)
+    assert handles.index("whale.alpha") < handles.index("whale.gamma"), (
+        f"Expected alpha before gamma, got {handles}"
+    )
+    assert handles.index("whale.gamma") < handles.index("whale.beta"), (
+        f"Expected gamma before beta, got {handles}"
+    )
+
+
+def test_pm_whales_sort_by_intel_copies_asc(db_url):
+    """sort ascending: beta(0) or gamma(4) first, alpha(10) last."""
+    _seed_selected_pm_whales(db_url)
+
+    rows = _query_pm_whales(
+        db_url, ["kalshi_copy_trading"],
+        selected_sort="copies", selected_desc=False,
+    )
+    kalshi_rows = [w for w in rows if w.venue == "kalshi"]
+    handles = [w.handle for w in kalshi_rows]
+    assert handles.index("whale.alpha") > handles.index("whale.gamma"), (
+        f"Expected alpha after gamma in ASC order, got {handles}"
+    )
+    assert handles.index("whale.gamma") > handles.index("whale.beta"), (
+        f"Expected gamma after beta in ASC order, got {handles}"
+    )
+
+
+def test_pm_whales_sort_by_net_pnl_desc(db_url):
+    """sort by net_pnl descending: alpha (positive) > beta (0.0) > gamma (negative).
+
+    Note: _query_kalshi_whale_intel defaults net_pnl to 0.0 (not None) for
+    whales with no resolved round-trips, so beta (no round-trips) sorts between
+    alpha and gamma rather than trailing-None."""
+    _seed_selected_pm_whales(db_url)
+
+    rows = _query_pm_whales(
+        db_url, ["kalshi_copy_trading"],
+        selected_sort="net_pnl", selected_desc=True,
+    )
+    kalshi_rows = [w for w in rows if w.venue == "kalshi"]
+    handles = [w.handle for w in kalshi_rows]
+    # alpha net_pnl > 0; beta net_pnl = 0.0; gamma net_pnl < 0
+    # DESC order: alpha → beta → gamma
+    assert handles.index("whale.alpha") < handles.index("whale.beta"), (
+        f"Expected alpha before beta in net_pnl DESC, got {handles}"
+    )
+    assert handles.index("whale.beta") < handles.index("whale.gamma"), (
+        f"Expected beta before gamma in net_pnl DESC, got {handles}"
+    )
+
+
+def test_pm_whales_hide_uncopyable_drops_low_copyability_kalshi(db_url):
+    """hide_uncopyable removes kalshi rows with copyability < 5% (beta: 0%)."""
+    _seed_selected_pm_whales(db_url)
+
+    rows_without = _query_pm_whales(db_url, ["kalshi_copy_trading"])
+    rows_with = _query_pm_whales(
+        db_url, ["kalshi_copy_trading"],
+        hide_uncopyable=True,
+    )
+    without_handles = {w.handle for w in rows_without if w.venue == "kalshi"}
+    with_handles = {w.handle for w in rows_with if w.venue == "kalshi"}
+
+    assert "whale.beta" in without_handles, "beta should appear without filter"
+    assert "whale.beta" not in with_handles, (
+        "beta (0% copyability, detections>0) should be hidden by hide_uncopyable"
+    )
+    # alpha and gamma remain (alpha=100%, gamma=50% — both ≥ 5%)
+    assert "whale.alpha" in with_handles
+    assert "whale.gamma" in with_handles
+
+
+def test_pm_whales_hide_uncopyable_keeps_zero_detection_rows(db_url):
+    """Rows with intel_detections==0 are NOT dropped by hide_uncopyable.
+    (no detections at all ≠ structurally uncopyable; it's just silent.)"""
+    _db.set_agent_state(
+        "kalshi_copy_trader", "selected_whales",
+        ["silent.whale"],
+        db_url=db_url,
+    )
+    # silent.whale has no audit_event entries → detections=0, copyability=None
+
+    rows = _query_pm_whales(
+        db_url, ["kalshi_copy_trading"],
+        hide_uncopyable=True,
+    )
+    handles = {w.handle for w in rows if w.venue == "kalshi"}
+    assert "silent.whale" in handles, (
+        "silent whale (0 detections) must NOT be hidden by hide_uncopyable"
+    )
+
+
+def test_pm_whales_hide_net_neg_drops_confirmed_loser(db_url):
+    """hide_net_neg removes kalshi rows with n_resolved>=30 and net_pnl<0."""
+    _seed_selected_pm_whales(db_url)
+
+    rows_without = _query_pm_whales(db_url, ["kalshi_copy_trading"])
+    rows_with = _query_pm_whales(
+        db_url, ["kalshi_copy_trading"],
+        hide_net_neg=True,
+    )
+    without_handles = {w.handle for w in rows_without if w.venue == "kalshi"}
+    with_handles = {w.handle for w in rows_with if w.venue == "kalshi"}
+
+    assert "whale.gamma" in without_handles, "gamma should appear without filter"
+    assert "whale.gamma" not in with_handles, (
+        "gamma (n_resolved=31, net_pnl<0) should be hidden by hide_net_neg"
+    )
+    # alpha (net_pnl > 0) and beta (n_resolved=0 < 30) remain
+    assert "whale.alpha" in with_handles
+    assert "whale.beta" in with_handles
+
+
+def test_pm_whales_hide_net_neg_keeps_insufficient_sample(db_url):
+    """n_resolved < 30 → not dropped even if net_pnl < 0."""
+    _db.set_agent_state(
+        "kalshi_copy_trader", "selected_whales",
+        ["small.sample"],
+        db_url=db_url,
+    )
+    # 5 losing round-trips → n_resolved=5 < 30; net_pnl < 0
+    with _db.connect(db_url) as conn:
+        for i in range(5):
+            _insert_rt(conn, f"ss-rt-{i}", "KXBTC-001", 1, 0.5, -1.0, 0,
+                       "kalshi_copy_trading", whale_handle="small.sample")
+        conn.commit()
+
+    rows = _query_pm_whales(
+        db_url, ["kalshi_copy_trading"],
+        hide_net_neg=True,
+    )
+    handles = {w.handle for w in rows if w.venue == "kalshi"}
+    assert "small.sample" in handles, (
+        "small.sample (n_resolved=5 < 30) must NOT be hidden by hide_net_neg"
+    )
+
+
+def test_pm_whales_filters_kalshi_only_polymarket_untouched(db_url):
+    """hide_uncopyable + hide_net_neg affect ONLY kalshi rows.
+    Polymarket rows pass through unchanged regardless of their (absent) intel."""
+    # Seed kalshi selected
+    _db.set_agent_state(
+        "kalshi_copy_trader", "selected_whales",
+        ["uncopyable.ks"],
+        db_url=db_url,
+    )
+    # Seed 20 no_side for the kalshi whale → copyability=0, should be hidden
+    with _db.connect(db_url) as conn:
+        for _ in range(20):
+            _insert_audit(conn, "2026-01-01T00:00:00+00:00", "kalshi_copy_trader",
+                          "kalshi_copy_entry_skipped_no_side",
+                          {"whale_handle": "uncopyable.ks"})
+        conn.commit()
+
+    # Seed polymarket selected + a round-trip so the PM whale gets a real row
+    _db.set_agent_state(
+        "polymarket_copy_trader", "selected_whales",
+        [{"wallet": "0xpm001", "user_name": "poly.whale",
+          "category": "Politics", "promoted_iso": "2026-01-01T00:00:00+00:00",
+          "source": "seed"}],
+        db_url=db_url,
+    )
+
+    rows = _query_pm_whales(
+        db_url, ["kalshi_copy_trading", "polymarket_copy_trading"],
+        hide_uncopyable=True,
+        hide_net_neg=True,
+    )
+    ks_handles = {w.handle for w in rows if w.venue == "kalshi"}
+    pm_handles = {w.handle for w in rows if w.venue == "polymarket"}
+
+    assert "uncopyable.ks" not in ks_handles, (
+        "uncopyable.ks should be hidden by hide_uncopyable"
+    )
+    assert "poly.whale" in pm_handles, (
+        "polymarket whale must survive kalshi filters"
+    )
+
+
+def test_pm_whales_no_sort_preserves_default_order(db_url):
+    """With no selected_sort kwarg, kalshi rows use the existing default sort
+    (n_resolved==0 last, then highest total_realized_pnl first)."""
+    _seed_selected_pm_whales(db_url)
+
+    rows_default = _query_pm_whales(db_url, ["kalshi_copy_trading"])
+    rows_explicit_none = _query_pm_whales(
+        db_url, ["kalshi_copy_trading"],
+        selected_sort=None,
+    )
+    ks_default = [(w.handle, w.n_resolved) for w in rows_default if w.venue == "kalshi"]
+    ks_none = [(w.handle, w.n_resolved) for w in rows_explicit_none if w.venue == "kalshi"]
+    assert ks_default == ks_none, (
+        "selected_sort=None must produce same order as omitting the kwarg"
+    )
