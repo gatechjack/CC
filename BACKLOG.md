@@ -1430,3 +1430,19 @@ open items._
 _Convention: completed work moves to `runbooks/deploy_log.md` + memory entries.
 This file tracks open items only. EOS snapshots and DONE entries do NOT
 accumulate here._
+
+## PZ (low) — `KalshiBroker.quote()` / orderbook field-name mismatch — OPEN (filed 2026-06-30)
+
+`brokers/kalshi.py` `quote()` (and `_best_price`) read `ob.yes_bids` / `ob.yes_asks` off the
+pykalshi orderbook, but pykalshi 1.0.6's `OrderbookResponse` exposes **`orderbook.yes_dollars` /
+`orderbook.no_dollars`** (arrays of `(price_str, size_str)`) plus the computed properties
+**`best_yes_ask` / `best_yes_bid` / `mid`**. So `quote()` returns **0.0** for every real market
+(confirmed on demo `KXALIENS-27-29`: real book present, `quote()` -> 0.0). Fix: read
+`ob.best_yes_ask`/`best_yes_bid`/`mid` (or parse `yes_dollars`/`no_dollars`; note NO-side asks come
+from `no_dollars` via the `1 - price` complement).
+
+**Non-blocking for K5 go-live** — the live order path uses `ProposedOrder.limit_price`, not
+`quote()`; and `kalshi_copy_trader._emit_exit` falls back gracefully when quote is 0 (records a
+0-PnL round-trip). **Must fix before any future Kalshi-quote-dependent analysis** (exit
+mark-to-market, mid-based sizing, dashboards). Low priority. Surfaced during the K5.1b demo
+validation (2026-06-30).
