@@ -1488,3 +1488,21 @@ entry-trigger logic in `agents/strategies/kalshi_copy_trader.py` and confirm ent
 surgically zero `our_side`/`copy_size_usd`/`entry_price` on the phantom cached positions **while
 keeping the position keys** (so holdings stay "seen" and don't re-enter). Until verified, **leave it** —
 it converges on its own within days. Low priority (cosmetic/operational, not a money or safety issue).
+
+## P3 — kalshi_copy_trader cheap-contract sizing precision: worst-case spend ~2× the tier $ on sub-2¢ contracts (filed 2026-07-01 via first-live-copy review)
+
+Copy contract count is `usd_to_contracts = floor(copy_usd / no_leg_price)` sized at the whale's
+outcome-leg price, but the live order carries the fixed **2¢ slip ceiling** (`max_slippage_cents=2`).
+On a sub-2¢ contract, 2¢ of slip is a huge % move, so the actual fill can cost up to
+`count × (base_price + $0.02)` ≈ **~2× the intended tier dollars** (e.g. a $3 copy of a $0.018 NO =
+166 contracts; worst-case fill at $0.038 = ~$6.3). Observed live 2026-07-01: the BTC-15m NO copy
+actually filled *cheaper* ($0.013 < $0.018 base) so no overspend occurred — but the precision is
+coarse and the ceiling is one-sided on cheap legs. Bounded (~$6 worst case at current $1-3 tiers), so
+**NOT blocking** — count/sizing logic itself is correct (the 166 count was $3 of a 1.8¢ contract, not
+a bug; only the fill-price *recording* was wrong, fixed in the 2026-07-01 copy fixes).
+
+**Options (operator to choose when prioritized):** (1) a **percentage-based slip cap** on sub-2¢
+contracts (e.g. `min(2¢, N% of price)`) so the % move is bounded; or (2) a **hard sub-2¢ skip** (don't
+copy contracts priced below ~2¢, where slip precision is unavoidable). Low priority. Surfaced during
+the first-live-copy accounting review (the same review that produced the NO-leg / recording / filter
+fixes on branch `kalshi-copy-recording-shortfilter-2026-07-01`).
