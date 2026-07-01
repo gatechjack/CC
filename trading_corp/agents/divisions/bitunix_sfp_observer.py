@@ -639,6 +639,18 @@ class BitunixSfpObserver:
         self, symbol_display: str, wire: str, sig: SfpEntrySignal, bar: SfpBar,
         side: str = "long",
     ) -> None:
+        # config.side kill-switch (operator lever; HOT — config-flippable, NO restart /
+        # redeploy). Pure SUPPRESSION on top of the regime gate — never widens it.
+        # regime = bidirectional; long = long-only (maiden-short rollback: shorts stop,
+        # longs keep collecting); short = short-only. `side` = the DETECTOR-fired side.
+        cfg_side = self._yaml_side()
+        allowed = {"regime": ("long", "short"), "long": ("long",),
+                   "short": ("short",)}[cfg_side]
+        if side not in allowed:
+            self._audit("sfp_skip_side_disabled", {
+                "symbol": symbol_display, "side": side, "config_side": cfg_side,
+                "sfp_mode": sig.sfp_mode})
+            return
         # Entry reference = the BOS bar close (real; the fill is the live anchor).
         # Geometry BY SIDE: long from the swept wick low (vendored compute_geometry,
         # unchanged); short from the un-reflected swept HIGH (M2=0: real = -reflected)
@@ -1150,6 +1162,22 @@ class BitunixSfpObserver:
         except Exception as e:
             log.warning("bitunix_sfp: auto_execute read failed (fail-closed): %s", e)
             return False
+
+    def _yaml_side(self) -> str:
+        """Fresh-read ``bitunix_sfp.side`` (the operator side kill-switch:
+        ``regime`` | ``long`` | ``short``). HOT — flipping it in strategies.yaml applies
+        WITHOUT a restart (mirrors _yaml_auto_execute). Fail-SAFE to 'long' (shorts
+        suppressed, longs keep collecting) on any read/parse error or unknown value —
+        never leaves shorts on under uncertainty. Always returns one of the three."""
+        try:
+            import yaml
+            with open(self._strategies_yaml_path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            s = str((raw.get(DIVISION) or {}).get("side", "long")).lower()
+            return s if s in ("regime", "long", "short") else "long"
+        except Exception as e:
+            log.warning("bitunix_sfp: side read failed (fail-safe to long): %s", e)
+            return "long"
 
     # ------------------------------------------------------------------ #
     # OBSERVE-ONLY emit: watch-state + heartbeat (dashboard Tier-B).
