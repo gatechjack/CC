@@ -11312,3 +11312,35 @@ prod, no real divergence). Verification LF-normalized (line-ending-agnostic); al
 row for `kalshi_copy_trading` with sane PnL and NO −$163 phantom for the pre-fix trades. Filter enable
 (30/60) deferred to operator's post-fix dashboard read. **Parity: `main == origin == prod-content`.**
 Related: BACKLOG P3 cheap-contract sizing precision (~2× tier $ on sub-2¢); P3 phantom-cache noise.
+
+---
+
+## 2026-07-01 ~22:52 UTC — Kalshi copy dashboard Paper/Live/All stats toggle — DEPLOYED + VERIFIED LIVE (web-only)
+
+**STATE VERB: DEPLOYED + LOADED + VERIFIED LIVE.** Operator-executed (§4). Merged `main` `4238a7b`
+(branch `kalshi-copy-dash-toggle-2026-07-01`). Web-only, no live-money code.
+
+**What:** a `wr_mode` toggle (Paper / Live / All, default LIVE) on the `kalshi_copy_trading`
+prediction-markets page. LIVE = round-trips since go-live epoch `2026-07-01T14:08:58Z` (overridable via
+`agent_state(kalshi_copy_trader,'metrics_epoch')`); PAPER = pre-go-live; ALL = both. Scopes summary
+stats + round-trip history + open list; **guarded to the copy division only** (other divisions + the
+All view force mode=all, byte-identical). Mirrors the polymarket epoch/cutoff pattern.
+
+**Files (3):** `web/data.py` (`KALSHI_COPY_LIVE_EPOCH` + `_get_kalshi_copy_live_epoch` +
+`_kalshi_copy_mode_clause`; threaded through `_query_pm_round_trips`/`_query_pm_open_trades`/
+`_query_pm_resolved_stats`; `PMDashboardView.wr_mode`/`wr_live_epoch`), `web/routes.py` (`wr_mode`
+query param, whitelisted), `web/templates/partials/pm_dashboard_body.html` (3-button toggle;
+`_wr_qs` is a `{% set %}` before use — no macro-ordering trap). 58 tests pass.
+
+**Deploy:** `Desktop\deploy_dashtoggle.ps1` (backup `*.bak-pre-dashtoggle-2026-07-01` + scp-to-`.new`+`mv`
++ LF-normalized verify, all 3 == target md5) → `sudo -n systemctl restart trading-corp` (templates NOT
+hot-reloaded → restart required) → PID **46994** active. Drift-gate: prod content == main base for all
+3 (CRLF-only drift, azureuser-owned). Runners: `deploy/2026-07-01_kalshi_dash_toggle/`.
+
+**Verified live (read-only):** `GET /prediction-markets/kalshi_copy_trading?wr_mode=live` → **HTTP 200**,
+all 3 toggle buttons render (`wr_mode=paper/live/all`), "since 2026-07-01" label, **no
+Traceback/UndefinedError** (no repeat of the earlier macro-ordering 500). Engine boot clean.
+
+**Known v1 limits (BACKLOG-able, non-blocking):** Open *tile count* + equity curve not mode-scoped;
+sort/filter controls don't carry `wr_mode` (sorting resets scope to LIVE). **Parity: `main == origin
+== prod-content`.** (Live view may show 0 resolved until the first post-fix copy settles — expected.)
