@@ -156,6 +156,37 @@ def compute_regime_label(closes: list[float]) -> str | None:
     return "range"
 
 
+# ── Short side (M2=0 reflection; 2026-07-01 bidirectional deploy) ──────────────
+# The vendored detector is long-only; SHORT SFPs are detected by feeding the SAME
+# byte-identical SfpModeBDetector a REFLECTED bar stream. M2=0 (reflected = -real,
+# high/low swapped) is a UNIVERSAL constant that CANNOT drift — the one silent-
+# failure mode (M2 drift corrupting stored reflected-coordinate pivot/swing/watch
+# state) is impossible by construction. The detector is fully order-based so negative
+# coords are fine and the fed path makes no positivity assumption. Un-reflect a
+# reflected level L to real via (0 - L) = -L. Affine-invariance vs the research
+# max+min midpoint reflection is PROVEN in short_parity_test.py (identical fires).
+def reflect_neg(bars: list[SfpBar]) -> list[SfpBar]:
+    """M2=0 reflection: reflected = -real, high/low swapped (reflected_high =
+    -real_low, reflected_low = -real_high). A LONG SFP on the reflected series ==
+    a SHORT SFP on the real series."""
+    return [SfpBar(b.ts_ms, -b.open, -b.low, -b.high, -b.close) for b in bars]
+
+
+def geometry_short(entry_ref: float, swept_high: float, *,
+                   stop_buffer_pct: float, tp_r: float):
+    """Short-side geometry in REAL space (mirror of the vendored long-only
+    ``compute_geometry``, which stays byte-identical). stop = swept_high +
+    stop_buffer_pct*entry (ABOVE entry); r = stop - entry; tp = entry - tp_r*r
+    (BELOW entry). Returns (stop, tp, r) or None if r<=0 (degenerate: entry >=
+    swept_high — never for a valid sweep-above-and-reclaim-down)."""
+    stop = swept_high + stop_buffer_pct * entry_ref
+    r = stop - entry_ref
+    if r <= 0:
+        return None
+    tp = entry_ref - tp_r * r
+    return stop, tp, r
+
+
 @dataclass
 class BitunixSfpConfig:
     """Parsed ``bitunix_sfp`` block from strategies.yaml. p6 ports
@@ -275,6 +306,10 @@ class BitunixSfpObserver:
         # identical to today.
         self._detectors: dict[str, list[SfpDetector]] = {}
         self._detectors_b: dict[str, list[SfpModeBDetector]] = {}
+        # SHORT SFP detectors: SAME byte-identical SfpModeBDetector, fed a REFLECTED
+        # (M2=0) bar stream by the side-gate (Piece 3). Instantiated here; inert (not
+        # fed) until then. Long detectors above are byte-unchanged.
+        self._detectors_b_short: dict[str, list[SfpModeBDetector]] = {}
         self._symbol_arm: dict[str, str] = {}
         self._symbol_bos_tf: dict[str, str] = {}
         self._last_ts: dict[str, int] = {}
@@ -290,6 +325,13 @@ class BitunixSfpObserver:
             self._last_ts[wire] = 0
             if bos_tf == "3m":
                 self._detectors_b[wire] = [
+                    SfpModeBDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                    SfpModeBDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                ]
+                # SHORT engine (reflected-fed in Piece 3; inert now). Same params.
+                self._detectors_b_short[wire] = [
                     SfpModeBDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
                                      back_to_break=config.back_to_break, watch_bars_3m=wb3),
                     SfpModeBDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
