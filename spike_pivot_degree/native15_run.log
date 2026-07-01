@@ -1,0 +1,106 @@
+==============================================================================
+REGIME-CONDITIONAL SFP on NATIVE 15m (~230d) -- thesis test, 15m proxy entry
+==============================================================================
+
+[LOAD] native bars_15m (ts sec -> ms):
+  BTCUSDT: n=22086  2025-11-01 00:00 -> 2026-06-19 01:15  gaps(non-900s)=0
+  ETHUSDT: n=22831  2025-11-01 00:00 -> 2026-06-26 19:30  gaps(non-900s)=0
+  SOLUSDT: n=22831  2025-11-01 00:00 -> 2026-06-26 19:30  gaps(non-900s)=0
+  XRPUSDT: n=22830  2025-11-01 00:00 -> 2026-06-26 19:15  gaps(non-900s)=0
+
+[SELF-CHECK GATE] native bars_15m vs resample_15m(bars_3m) over overlap:
+  BTCUSDT: [OK] overlap=2026-03-30 00:00->2026-06-19 00:30 bars=7779 match=100.000% worst_rel=0.00e+00 | fires nat=397 res=397 identical=True
+  ETHUSDT: [OK] overlap=2026-05-11 00:00->2026-06-26 19:00 bars=4493 match=100.000% worst_rel=0.00e+00 | fires nat=262 res=262 identical=True | known-fire(1555.72) detected=True
+  SOLUSDT: [OK] overlap=2026-05-11 00:00->2026-06-26 18:45 bars=4492 match=100.000% worst_rel=0.00e+00 | fires nat=227 res=227 identical=True | known-fire(69.68) detected=True
+  XRPUSDT: [OK] overlap=2026-05-11 00:00->2026-06-26 19:00 bars=4493 match=100.000% worst_rel=0.00e+00 | fires nat=259 res=259 identical=True
+  --> SELF-CHECK PASSED. Native 15m is trustworthy; proceeding to 230d analysis.
+
+==============================================================================
+REGIME DEF: ema200_pos_slope   15m-bar regime distribution: {'up': 33931, 'range': 11362, 'down': 45157}  <<< PRIMARY (task-specified)
+==============================================================================
+  NET of fees (taker 0.019% x2 legs + 2bp slip x2 = 0.078% notional/round-trip)
+                                 UP                  RANGE                   DOWN
+  Long SFP   n= 476 WR~31.5% -0.148R n= 120 WR~38.3% +0.079R n= 845 WR~27.3% -0.269R
+  Short SFP  n= 554 WR~36.3% -0.002R n= 158 WR~42.4% +0.204R n= 612 WR~35.1% -0.030R
+
+  NULL-GATE (200x within-side regime-shuffle, beats = obs >= 95th pct):
+    Long-range: +0.079R (n=120) null_p95=-0.001 -> BEATS
+    Short-range: +0.204R (n=158) null_p95=+0.183 -> BEATS
+
+  AGGREGATES (net R):
+    TREND-ALIGNED (long-up + short-down): n=1088 WR~33.5% -0.082R  null_p95=-0.026 -> no
+    COUNTER-TREND (long-down + short-up): n=1399 WR~30.9% -0.163R
+    unconditional long : n=1441 WR~29.6% -0.200R
+    unconditional short: n=1324 WR~36.5% +0.010R
+    [fee drag applied per-trade; gross omitted -- see cost note above]
+
+  --- PER-COIN (primary, net R, pivots {5,8,10} pooled) ---
+  coin             L-up        L-rng         L-dn         S-up        S-rng         S-dn
+  BTCUSDT    -0.41(125)    -0.15(29)   -0.19(180)   -0.32(143)    -0.18(39)   +0.00(134)
+  ETHUSDT    -0.01(127)    -0.21(28)   -0.26(224)   +0.16(159)    -0.16(25)   +0.00(141)
+  SOLUSDT    -0.11(148)    +0.43(28)   -0.25(201)   -0.28(144)    +0.25(41)   -0.05(140)
+  XRPUSDT     -0.03(76)    +0.22(35)   -0.35(240)   +0.56(108)    +0.63(53)   -0.06(197)
+
+==============================================================================
+REGIME DEF: mom5d   15m-bar regime distribution: {'down': 51826, 'up': 36832}
+==============================================================================
+  NET of fees (taker 0.019% x2 legs + 2bp slip x2 = 0.078% notional/round-trip)
+                                 UP                  RANGE                   DOWN
+  Long SFP   n= 588 WR~30.1% -0.186R   n=   0            -- n= 820 WR~29.4% -0.207R
+  Short SFP  n= 543 WR~35.9% -0.008R   n=   0            -- n= 753 WR~35.3% -0.025R
+
+  NULL-GATE (200x within-side regime-shuffle, beats = obs >= 95th pct):
+
+  AGGREGATES (net R):
+    TREND-ALIGNED (long-up + short-down): n=1341 WR~33.0% -0.096R  null_p95=-0.052 -> no
+    COUNTER-TREND (long-down + short-up): n=1363 WR~32.0% -0.127R
+    unconditional long : n=1408 WR~29.7% -0.198R
+    unconditional short: n=1296 WR~35.6% -0.018R
+    [fee drag applied per-trade; gross omitted -- see cost note above]
+
+==============================================================================
+REGIME DEF: sma100_slope12h   15m-bar regime distribution: {'up': 41493, 'down': 48497}
+==============================================================================
+  NET of fees (taker 0.019% x2 legs + 2bp slip x2 = 0.078% notional/round-trip)
+                                 UP                  RANGE                   DOWN
+  Long SFP   n= 555 WR~28.5% -0.237R   n=   0            -- n= 874 WR~29.7% -0.194R
+  Short SFP  n= 642 WR~37.9% +0.050R   n=   0            -- n= 673 WR~34.8% -0.041R
+
+  NULL-GATE (200x within-side regime-shuffle, beats = obs >= 95th pct):
+    Short-up   : +0.050R (n=642) null_p95=+0.074 -> no
+
+  AGGREGATES (net R):
+    TREND-ALIGNED (long-up + short-down): n=1228 WR~31.9% -0.130R  null_p95=-0.050 -> no
+    COUNTER-TREND (long-down + short-up): n=1516 WR~33.2% -0.090R
+    unconditional long : n=1429 WR~29.3% -0.211R
+    unconditional short: n=1315 WR~36.3% +0.003R
+    [fee drag applied per-trade; gross omitted -- see cost note above]
+
+==============================================================================
+DETECTOR-CONTROLLED WINDOW ISOLATION (primary ema200; Mode-A proxy BOTH sides)
+  Same detector; only the data window changes -> isolates regime-SAMPLE effect.
+==============================================================================
+  cell                     46d-overlap (bear-heavy)        230d (multi-regime)
+  Short-UP                  n= 146 WR~36.3% -0.015R    n= 554 WR~36.3% -0.002R
+  Short (all)               n= 319 WR~38.9% +0.077R    n=1324 WR~36.5% +0.010R
+  Short-DOWN                n= 128 WR~37.5% +0.056R    n= 612 WR~35.1% -0.030R
+  Long-UP                   n= 116 WR~27.6% -0.275R    n= 476 WR~31.5% -0.148R
+  Long-DOWN                 n= 216 WR~22.2% -0.445R    n= 845 WR~27.3% -0.269R
+  TREND-ALIGNED             n= 244 WR~32.8% -0.101R    n=1088 WR~33.5% -0.082R
+  46d-overlap regime dist: {'up': 7550, 'range': 2378, 'down': 11205}
+  230d regime dist:        {'up': 33931, 'range': 11362, 'down': 45157}
+
+==============================================================================
+ENTRY-MECHANISM ISOLATION on 46d-overlap (GROSS R, no fees) -- Mode-A vs live Mode-B
+  Same 15m SFP fires; differ ONLY in BOS/entry timeframe (15m proxy vs live 3m).
+==============================================================================
+  short cell             Mode-A 15m-proxy     Mode-B live 3m-BOS
+  Short-up         n= 146 WR~36.3% +0.089R n= 273 WR~38.1% +0.143R
+  Short-range      n=  45 WR~51.1% +0.533R n=  46 WR~43.5% +0.304R
+  Short-down       n= 128 WR~37.5% +0.159R n= 177 WR~46.9% +0.398R
+  Short (all)      n= 319 WR~38.9% +0.180R n= 496 WR~41.7% +0.249R
+  (prior regime doc, Mode-B 46d pooled: Short-UP ~+0.55R -> this row validates it)
+
+==============================================================================
+CRITICAL READOUT: compare Short-UP net expR above (230d, real up-legs included) against the 46d bear-only +0.55R. Flip to negative = short leg was bear-beta; stays positive = evidence of genuine short-SFP alpha.
+==============================================================================
