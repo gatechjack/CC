@@ -92,6 +92,53 @@ def _parse(ts):
     return None
 
 
+# ── Regime-flip watch (read-only monitor; change-only) ────────────────────────
+FLIP_TABLE = "bitunix_sfp_regime_flip"
+_FLIP_DDL = (
+    f"CREATE TABLE IF NOT EXISTS {FLIP_TABLE} ("
+    " id INTEGER PRIMARY KEY,"
+    " ts TEXT, coin TEXT NOT NULL,"
+    " old_regime TEXT, new_regime TEXT,"    # both non-NULL (label->label only)
+    " ema200 REAL, slope REAL"
+    ")"
+)
+# Index new_regime first so 'any coin -> UP' (the missing bull) is a cheap query.
+_FLIP_IX = (f"CREATE INDEX IF NOT EXISTS {FLIP_TABLE}_newregime_ts "
+            f"ON {FLIP_TABLE}(new_regime, ts)")
+
+
+def is_regime_flip(old, new) -> bool:
+    """A real regime FLIP is a label->label change. Warmup (None->label), teardown
+    (label->None), and no-change (label==label) are NOT flips."""
+    return old is not None and new is not None and old != new
+
+
+def ensure_flip_schema(db_url: str) -> None:
+    try:
+        with db.connect(db_url) as conn:
+            conn.execute(_FLIP_DDL)
+            conn.execute(_FLIP_IX)
+    except Exception as e:                                   # fail-soft
+        log.warning("%s ensure_flip_schema failed: %s", FLIP_TABLE, e)
+
+
+def log_flip(db_url: str, *, ts, coin, old_regime, new_regime, ema200, slope) -> bool:
+    """Fail-soft INSERT of one regime-flip row. Caller must have already checked
+    is_regime_flip(old,new)."""
+    try:
+        with db.connect(db_url) as conn:
+            conn.execute(
+                f"INSERT INTO {FLIP_TABLE} (ts, coin, old_regime, new_regime, ema200, slope) "
+                f"VALUES (?,?,?,?,?,?)",
+                (str(ts), coin, old_regime, new_regime, ema200, slope),
+            )
+        return True
+    except Exception as e:                                   # fail-soft
+        log.warning("%s log_flip failed (coin=%s %s->%s): %s",
+                    FLIP_TABLE, coin, old_regime, new_regime, e)
+        return False
+
+
 def log_exit(db_url: str, order_id: str, *, exit_ts, exit_px, realized_r,
              closing_leg) -> bool:
     """Fail-soft UPDATE-by-order_id of the exit fields + duration_sec (from the row's

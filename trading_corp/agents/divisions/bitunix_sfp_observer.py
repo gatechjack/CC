@@ -318,6 +318,7 @@ class BitunixSfpObserver:
         # Engine-native regime buffer: bitunix_bar_history boot seed + live appends.
         self._regime_closes: dict[str, list[float]] = {}
         self._regime_last_ts: dict[str, int] = {}
+        self._last_regime: dict[str, str | None] = {}   # flip-watch state (change-only)
         for sym in config.symbols:
             wire = to_wire_format(sym)
             bos_tf, arm = config.mode_for(wire)
@@ -351,6 +352,7 @@ class BitunixSfpObserver:
         # the gated migration also creates it). Fail-soft, never raises.
         self._ensure_watch_schema()
         research_log.ensure_schema(self.db_url)   # isolated research catalog (fail-soft)
+        research_log.ensure_flip_schema(self.db_url)   # regime-flip watch (fail-soft)
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -518,6 +520,7 @@ class BitunixSfpObserver:
                     det.drain_transitions()             # discard (short dashboard = Piece 5+)
                 self._last_ts[wire] = bar15.ts_ms
                 self._extend_regime(wire, [bar15])      # engine-native regime, inline
+            self._check_regime_flip(wire, symbol_display)   # flip-watch (read-only)
         if c3 is not None:
             last3 = self._last_ts3.get(wire, 0)
             for raw in [b for b in getattr(c3, "bars", []) if int(b.ts_ms) > last3]:
@@ -595,6 +598,35 @@ class BitunixSfpObserver:
         if len(closes) < REGIME_SEED_MIN:
             return None
         return compute_regime_label(closes)
+
+    def _check_regime_flip(self, wire: str, symbol_display: str) -> None:
+        """Flip-watch (read-only monitor; NO trading logic). Uses the SAME
+        _compute_regime the side-gate uses (single source — never a 2nd/different
+        regime). Emits a flip row ONLY on a label->label change; warmup (None->label),
+        teardown (label->None) and no-change do NOT emit. Fail-soft — a flip-logging
+        error can never reach the trade path. Highest-value flip = -> UP (missing bull)."""
+        try:
+            new = self._compute_regime(wire)
+            old = self._last_regime.get(wire)
+            self._last_regime[wire] = new                    # always update (incl None)
+            if not research_log.is_regime_flip(old, new):
+                return
+            # row metadata (ema200 + 32-bar slope) from the SAME buffer — not a 2nd regime.
+            closes = self._regime_closes.get(wire) or []
+            ema200 = slope = None
+            if len(closes) >= REGIME_MIN_BARS:
+                em = _regime_ema200(closes)
+                ema200 = em[-1]
+                ref = em[-(REGIME_SLOPE_BARS + 1)]
+                if ref:
+                    slope = (em[-1] - ref) / ref
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            research_log.log_flip(self.db_url, ts=ts, coin=wire, old_regime=old,
+                                  new_regime=new, ema200=ema200, slope=slope)
+            self._audit("sfp_regime_flip", {"symbol": symbol_display, "coin": wire,
+                        "old_regime": old, "new_regime": new, "to_up": new == "up"})
+        except Exception as e:                               # never into the trade path
+            log.warning("bitunix_sfp regime-flip check failed (%s): %s", wire, e)
 
     # ------------------------------------------------------------------ #
     # Signal → order → risk → place

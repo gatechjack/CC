@@ -45,6 +45,7 @@
         {% if c.rj %}<span class="badge {{ 'b-purple' if c.mode=='REAL' else 'b-teal' }}">{{ c.mode }}</span><span class="badge b-blue">in-trade</span>
         {% elif c.armed %}<span class="badge b-teal">{{ c.armed.mode[:8] }}</span><span class="badge b-amber">SFP armed</span>
         {% else %}<span class="badge b-gray">no setup</span>{% endif %}
+        {% if c.regime and c.regime.label != '-' %}<span class="badge {{ 'b-green' if c.regime.to_up else 'b-gray' }}" title="last flip {{ c.regime.last_flip_ts }}">regime:{{ c.regime.label }}</span>{% endif %}
       </span>
     </div>
 

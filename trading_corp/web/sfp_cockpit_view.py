@@ -520,6 +520,23 @@ def _chart_geom(bars: list[dict], levels: list | None = None,
     return {"candles": candles, "lines": lines, "marker": marker, "w": _CH_W, "h": _CH_H}
 
 
+def _regime_state(db_url: str, wire: str) -> dict:
+    """Flip-watch chip (READ-ONLY): current 15m regime (= the newest flip's
+    new_regime) + last-flip ts, from bitunix_sfp_regime_flip (the observer's
+    single-source emits — never recomputed here). Fail-soft; label '-' until the
+    coin's first label->label flip is observed."""
+    try:
+        with db.connect(db_url) as conn:
+            r = conn.execute(
+                "SELECT new_regime, ts FROM bitunix_sfp_regime_flip "
+                "WHERE coin=? ORDER BY id DESC LIMIT 1", (wire,)).fetchone()
+        if r is None:
+            return {"label": "-", "last_flip_ts": None, "to_up": False}
+        return {"label": r[0], "last_flip_ts": r[1], "to_up": r[0] == "up"}
+    except Exception:
+        return {"label": "-", "last_flip_ts": None, "to_up": False}
+
+
 def _coin_state(db_url: str, display: str, pos: dict | None,
                 arm: str = "watch", div_live: bool = False) -> dict:
     """Per-coin card context. A coin is LIVE iff it's armed for live orders
@@ -539,6 +556,7 @@ def _coin_state(db_url: str, display: str, pos: dict | None,
         "exec_tag": ("LIVE" if is_live_coin
                      else ("MONITOR" if arm == "watch" else "PAPER")),
     }
+    card["regime"] = _regime_state(db_url, wire)            # flip-watch chip (read-only)
     if has_pos:
         rj = _r_journey(db_url, pos)                         # TIER A
         card["rj"] = rj
