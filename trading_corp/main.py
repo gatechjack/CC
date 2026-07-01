@@ -3988,7 +3988,12 @@ async def _handle_kalshi_copy_order_placement(
     logger_agent.log_event(
         agent.name, "kalshi_copy_placed_live",
         {**base_payload, "fill_price": fill_px, "fill_qty": fill_qty,
-         "fee": float(getattr(fill, "fee", 0.0) or 0.0)},
+         "fee": float(getattr(fill, "fee", 0.0) or 0.0),
+         # leg_priced: fill_price is the OUTCOME-LEG per-contract cost (kalshi_live
+         # FIX-1 YES->leg inversion). The resolver books a round-trip ONLY for rows
+         # carrying this flag — pre-fix live rows had a YES-centric fill_price that
+         # would mis-book (the NO 166@0.987 = $163.84 phantom vs real ~$2.16).
+         "leg_priced": True},
     )
     await _push_kalshi_copy_card(
         channel, order, ext, tag=f"PLACED LIVE @ ${fill_px:.2f} x{fill_qty:g}",

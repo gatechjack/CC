@@ -180,12 +180,24 @@ def build_v2_event_order(
     return body, count, price
 
 
-def fill_event_from_v2_response(resp: dict, *, symbol, side, fallback_price: float, fallback_order_id: str) -> FillEvent:
+def fill_event_from_v2_response(
+    resp: dict, *, symbol, side, fallback_price: float, fallback_order_id: str,
+    outcome: str | None = None,
+) -> FillEvent:
     """Map a V2 create-order response dict -> FillEvent for the FILLED portion.
     Raises KalshiNoFill if nothing matched. `average_fee_paid` is treated as a
     PER-CONTRACT average (total = avg_fee * filled); for the 1-contract validation
     cases this is exact regardless. (DEMO-VERIFY the per-contract-vs-total fee
-    convention against the balance delta.)"""
+    convention against the balance delta.)
+
+    YES-centric -> outcome-leg conversion: the V2 single book quotes everything
+    from the YES side, so `average_fill_price` (and `fallback_price`) are YES-side
+    prices even for a NO fill. For a NO leg the per-contract cost of the contract
+    we actually hold is `1 - yes_price`; YES is unchanged. Without this, a NO copy
+    at yes_price 0.987 records price 0.987 instead of the real 0.013 cost — the
+    prod $163.84 bug (166 NO contracts booked at 166×0.987 = $163.84 instead of
+    166×0.013 ≈ $2.16). `outcome` is the resolved leg ('yes'/'no'); when omitted we
+    fall back to parsing it out of the FillEvent symbol."""
     resp = resp or {}
     filled = parse_fp(resp.get("fill_count"))
     if filled <= 0:
@@ -194,7 +206,9 @@ def fill_event_from_v2_response(resp: dict, *, symbol, side, fallback_price: flo
             f"contracts (remaining={resp.get('remaining_count')}); no fill recorded"
         )
     avg = resp.get("average_fill_price")
-    price = float(avg) if avg not in (None, "") else float(fallback_price)
+    yes_price = float(avg) if avg not in (None, "") else float(fallback_price)
+    leg = (str(outcome).strip().lower() if outcome else _outcome_from_symbol(symbol))
+    price = (1.0 - yes_price) if leg == "no" else yes_price
     fee_avg = resp.get("average_fee_paid")
     total_fee = (float(fee_avg) * filled) if fee_avg not in (None, "") else 0.0
     order_id = str(resp.get("order_id") or fallback_order_id)
@@ -369,6 +383,7 @@ class KalshiLiveBroker(Broker):
             resp, symbol=getattr(order, "symbol", ticker),
             side=getattr(order, "side", "buy" if is_buy else "sell"),
             fallback_price=yes_price, fallback_order_id=coid,
+            outcome=outcome,
         )
 
     async def cancel_order(self, order_id: str) -> bool:

@@ -194,6 +194,49 @@ def test_fill_event_missing_avg_uses_fallback():
     assert fe.price == 0.52 and fe.fee == 0.0 and fe.qty == 2.0
 
 
+def test_fill_event_no_leg_inverts_yes_centric_price():
+    # V2 single book is YES-centric: a NO fill's average_fill_price is the
+    # YES-side price (0.987). The FillEvent must carry the NO-leg cost
+    # 1-0.987 = 0.013, NOT 0.987 — the prod $163.84 bug (166 NO contracts
+    # booked at 166×0.987 instead of 166×0.013). qty (filled count) unchanged.
+    fe = fill_event_from_v2_response(
+        _resp(fill="166.00", price="0.9870", fee="0.0000"),
+        symbol="T:no", side="buy", fallback_price=0.987, fallback_order_id="c",
+    )
+    assert fe.price == pytest.approx(0.013)
+    assert fe.qty == 166.0
+
+
+def test_fill_event_no_leg_inverts_via_outcome_kwarg():
+    # Leg resolved from the explicit `outcome` kwarg (symbol carries no leg).
+    fe = fill_event_from_v2_response(
+        _resp(fill="10.00", price="0.9870"),
+        symbol="T", side="buy", fallback_price=0.987, fallback_order_id="c",
+        outcome="no",
+    )
+    assert fe.price == pytest.approx(0.013)
+    assert fe.qty == 10.0
+
+
+def test_fill_event_yes_leg_price_unchanged():
+    fe = fill_event_from_v2_response(
+        _resp(fill="10.00", price="0.9870"),
+        symbol="T:yes", side="buy", fallback_price=0.52, fallback_order_id="c",
+    )
+    assert fe.price == pytest.approx(0.987)
+    assert fe.qty == 10.0
+
+
+def test_fill_event_no_leg_inverts_fallback_price_too():
+    # When average_fill_price is missing the YES-centric fallback_price is
+    # also inverted for a NO leg.
+    fe = fill_event_from_v2_response(
+        _resp(fill="4.00", price=None, fee=None),
+        symbol="T:no", side="buy", fallback_price=0.987, fallback_order_id="c",
+    )
+    assert fe.price == pytest.approx(0.013)
+
+
 def test_nofill_is_orderplacementerror_subclass():
     assert issubclass(KalshiNoFill, OrderPlacementError)
 

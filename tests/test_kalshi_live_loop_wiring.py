@@ -141,6 +141,24 @@ def test_record_entry_fill_overwrites_with_actual(agent_db):
     assert rec["actual_fill_qty"] == pytest.approx(4.0)
 
 
+def test_record_entry_fill_no_leg_uses_leg_price_not_yes_price(agent_db):
+    # Prod $163.84 bug: a NO copy (166 contracts, whale NO price ~0.013) was
+    # recorded at copy_size_usd = 166 × 0.987 (YES-centric) = $163.84. Post-FIX-1
+    # the broker hands record_entry_fill the LEG price 0.013, so copy_size_usd is
+    # the true 166 × 0.013 ≈ $2.16, not $163.84.
+    agent, db_url = agent_db
+    _seed_lot(db_url, outcome="no", copy_usd=2.0, entry_price=0.013)
+    agent.record_entry_fill(_order(outcome="no", copy_usd=2.0),
+                            _fill(qty=166.0, price=0.013, side="buy"))
+    snap = _db.load_agent_state("kalshi_copy_trader", "positions:alice", db_url=db_url)[0]
+    rec = snap["KXBTC-T1"]
+    assert rec["our_side"] == "no"
+    assert rec["entry_price"] == pytest.approx(0.013)
+    assert rec["copy_size_usd"] == pytest.approx(166.0 * 0.013)  # ≈ 2.158
+    assert rec["copy_size_usd"] < 3.0                            # NOT the $163.84 bug
+    assert rec["actual_fill_qty"] == pytest.approx(166.0)
+
+
 def test_discard_entry_removes_lot(agent_db):
     agent, db_url = agent_db
     _seed_lot(db_url)

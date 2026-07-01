@@ -321,6 +321,87 @@ def test_resolve_void_writes_zero_pnl_row(fresh_db):
     assert rows == [("void", 0, 0.0)]
 
 
+# ── live copy placement booking (kalshi_copy_placed_live) ──────────────
+
+
+def test_resolve_books_live_copy_placed_live_row(fresh_db):
+    """Live copies emit kind='kalshi_copy_placed_live' (not 'would_have_placed')
+    and carry fill_qty + fill_price (the outcome-leg cost after the kalshi_live
+    FIX-1 YES->leg inversion). They must be scanned and booked into
+    kalshi_round_trips on settlement with contract-correct PnL — a winning and a
+    losing NO outcome. The wrong-units top-level qty/limit_price (the prod
+    $163.84-bug fields) must be IGNORED in favor of fill_qty/fill_price."""
+    db_url, db_path = fresh_db
+    # NO 166 contracts @ leg-cost 0.013 (the corrected prod position).
+    _insert_audit_event(
+        db_url, "kalshi_copy_trader", "kalshi_copy_placed_live",
+        {"order_id": "live-win", "ticker": "KXWIN-1", "outcome": "no",
+         "side": "buy", "division": "kalshi_copy_trading",
+         "fill_qty": 166.0, "fill_price": 0.013, "leg_priced": True,
+         "qty": 163.84, "limit_price": 0.987},   # wrong-units — must be ignored
+    )
+    _insert_audit_event(
+        db_url, "kalshi_copy_trader", "kalshi_copy_placed_live",
+        {"order_id": "live-loss", "ticker": "KXLOSS-1", "outcome": "no",
+         "side": "buy", "division": "kalshi_copy_trading",
+         "fill_qty": 166.0, "fill_price": 0.013, "leg_priced": True,
+         "qty": 163.84, "limit_price": 0.987},
+    )
+    broker = _StubKalshiBroker({
+        "KXWIN-1": {"status": "resolved", "result": "no",
+                    "ticker": "KXWIN-1", "close_time": ""},
+        "KXLOSS-1": {"status": "resolved", "result": "yes",
+                     "ticker": "KXLOSS-1", "close_time": ""},
+    })
+    counts = asyncio.run(kr.resolve_pending_round_trips(db_url, broker))
+    assert counts["resolved"] == 2, counts
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = {r["order_id"]: r for r in conn.execute(
+            "SELECT order_id, qty, entry_price, notional, won, realized_pnl, "
+            "division, strategy, arb_type FROM kalshi_round_trips"
+        )}
+    assert set(rows) == {"live-win", "live-loss"}
+
+    win = rows["live-win"]
+    assert win["qty"] == pytest.approx(166.0)             # contracts, not USD 163.84
+    assert win["entry_price"] == pytest.approx(0.013)     # leg cost, not 0.987
+    assert win["won"] == 1
+    assert win["realized_pnl"] == pytest.approx(166.0 * (1.0 - 0.013))  # NO wins
+    assert win["notional"] == pytest.approx(166.0 * 0.013)
+    assert win["division"] == "kalshi_copy_trading"
+    assert win["strategy"] == "kalshi_copy_trader"
+    assert win["arb_type"] == "copy_trade"
+
+    loss = rows["live-loss"]
+    assert loss["won"] == 0
+    assert loss["realized_pnl"] == pytest.approx(-166.0 * 0.013)  # ≈ -2.16, not -163.84
+    assert loss["notional"] == pytest.approx(166.0 * 0.013)
+
+
+def test_pre_fix_live_copy_without_leg_priced_is_skipped(fresh_db):
+    """A pre-FIX live copy row (no `leg_priced` flag) carries a YES-centric
+    fill_price (e.g. NO @ 0.987) that would mis-book as a $163.84 phantom. Such
+    rows must be SKIPPED entirely — not booked with the poisoned price — so the
+    resolver never backfills the 4 pre-fix prod trades wrong."""
+    db_url, db_path = fresh_db
+    _insert_audit_event(
+        db_url, "kalshi_copy_trader", "kalshi_copy_placed_live",
+        {"order_id": "prefix-no", "ticker": "KXPRE-1", "outcome": "no",
+         "side": "buy", "division": "kalshi_copy_trading",
+         "fill_qty": 166.0, "fill_price": 0.987},   # YES-centric, no leg_priced flag
+    )
+    broker = _StubKalshiBroker({
+        "KXPRE-1": {"status": "resolved", "result": "yes",
+                    "ticker": "KXPRE-1", "close_time": ""},
+    })
+    asyncio.run(kr.resolve_pending_round_trips(db_url, broker))
+    with sqlite3.connect(db_path) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM kalshi_round_trips").fetchone()[0]
+    assert n == 0   # skipped, NOT booked as a -$163.84 phantom
+
+
 # ── equity snapshot ────────────────────────────────────────────────────
 
 

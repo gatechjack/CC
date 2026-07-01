@@ -314,10 +314,12 @@ class KalshiBroker(ReadOnlyBroker):
 
         Returns dict:
             {
-              "status":     "resolved" | "pending" | "void" | "not_found",
-              "result":     "yes" | "no" | "void" | None,
-              "ticker":     str,
-              "close_time": str,           # ISO; '' if unknown
+              "status":          "resolved" | "pending" | "void" | "not_found",
+              "result":          "yes" | "no" | "void" | None,
+              "ticker":          str,
+              "close_time":      str,      # ISO; '' if unknown
+              "expiration_time": str,      # ISO; '' if unknown (expected
+                                           # expiration, else scheduled expiration)
             }
 
         Kalshi resolution decoding: a settled market exposes a non-empty
@@ -333,7 +335,7 @@ class KalshiBroker(ReadOnlyBroker):
         """
         if self._stub or self._client is None:
             return {"status": "not_found", "result": None,
-                    "ticker": ticker, "close_time": ""}
+                    "ticker": ticker, "close_time": "", "expiration_time": ""}
         try:
             m = await self._client.get_market(ticker)
         except Exception as e:
@@ -342,18 +344,27 @@ class KalshiBroker(ReadOnlyBroker):
                 ticker, e,
             )
             return {"status": "not_found", "result": None,
-                    "ticker": ticker, "close_time": ""}
+                    "ticker": ticker, "close_time": "", "expiration_time": ""}
 
         raw_result = (getattr(m, "result", "") or "").strip().lower()
         close_time = getattr(m, "close_time", "") or ""
+        # Expected (probabilistic) expiration when the market carries one, else
+        # the scheduled expiration. Surfaced so the copy-trader can skip
+        # ultra-short markets it can't exit on a 10-min poll. Additive —
+        # existing callers ignore it.
+        exp_time = (getattr(m, "expected_expiration_time", "")
+                    or getattr(m, "expiration_time", "") or "")
         if raw_result in ("yes", "no"):
             return {"status": "resolved", "result": raw_result,
-                    "ticker": ticker, "close_time": close_time}
+                    "ticker": ticker, "close_time": close_time,
+                    "expiration_time": exp_time}
         if raw_result == "void":
             return {"status": "void", "result": "void",
-                    "ticker": ticker, "close_time": close_time}
+                    "ticker": ticker, "close_time": close_time,
+                    "expiration_time": exp_time}
         return {"status": "pending", "result": None,
-                "ticker": ticker, "close_time": close_time}
+                "ticker": ticker, "close_time": close_time,
+                "expiration_time": exp_time}
 
 
     async def list_markets(
