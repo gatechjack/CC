@@ -69,6 +69,21 @@ _PROD_API_BASE = "https://external-api.kalshi.com/trade-api/v2"
 _DEMO_API_BASE = "https://external-api.demo.kalshi.co/trade-api/v2"
 _V2_ORDERS_PATH = "/portfolio/events/orders"
 _SELF_TRADE_PREVENTION = "taker_at_cross"
+# A FOK order that can't fill IMMEDIATELY + IN FULL returns this exchange code (HTTP
+# 409). That is the "kill" half of fill-or-kill — a BENIGN no-fill, NOT a placement
+# failure — so it maps to KalshiNoFill (same benign path as an IOC 0-fill). ONLY this
+# specific code is treated as benign; every other KalshiError stays loud. (Demo
+# validation 2026-06-30 surfaced this: a FOK on a crossed/thin book 409'd.)
+_FOK_NOFILL_ERROR_CODES = ("fill_or_kill_insufficient_resting_volume",)
+
+
+def _is_benign_fok_nofill(err: object) -> bool:
+    """True iff `err` is the specific FOK-couldn't-fill exchange code (-> KalshiNoFill).
+    Matches the pykalshi error message AND any structured code attribute; conservative
+    — anything else is a genuine failure and stays loud."""
+    text = str(err).lower()
+    code = str(getattr(err, "code", "") or getattr(err, "error_code", "") or "").lower()
+    return any(c in text or c in code for c in _FOK_NOFILL_ERROR_CODES)
 
 
 class OrderPlacementError(RuntimeError):
@@ -336,6 +351,15 @@ class KalshiLiveBroker(Broker):
         try:
             resp = await self._client().post(_V2_ORDERS_PATH, body)
         except KalshiError as e:
+            # K5.1c: a FOK that couldn't fill (insufficient resting volume) is a BENIGN
+            # no-fill (the kill half of fill-or-kill), same as an IOC 0-fill -> skip. Every
+            # OTHER KalshiError (auth / bad-request / unknown-ticker / 5xx / etc.) is a
+            # genuine failure and PROPAGATES loud. Nothing else is swallowed.
+            if _is_benign_fok_nofill(e):
+                raise KalshiNoFill(
+                    f"kalshi FOK order for {ticker} ({body['side']} x{count} @ {body['price']}) "
+                    f"did not fill (insufficient resting volume); killed, no fill recorded"
+                ) from e
             raise OrderPlacementError(
                 f"kalshi V2 place_order rejected for {ticker} ({outcome} {body['side']} "
                 f"x{count} @ {body['price']}): {e}"

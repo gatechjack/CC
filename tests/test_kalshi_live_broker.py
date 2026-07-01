@@ -268,6 +268,41 @@ async def test_place_unresolvable_outcome_loud():
         await lb.place_order(bad)
 
 
+# ── K5.1c: FOK insufficient-resting-volume 409 -> benign KalshiNoFill ─────────
+
+
+async def test_fok_insufficient_volume_is_benign_nofill():
+    from pykalshi.exceptions import KalshiError
+    c = FakeClient(post_exc=KalshiError(
+        "409: fill or kill insufficient resting volume "
+        "(fill_or_kill_insufficient_resting_volume) [POST /portfolio/events/orders]"))
+    lb = _connected(c, order_type="fok")
+    with pytest.raises(KalshiNoFill):
+        await lb.place_order(_order())
+
+
+@pytest.mark.parametrize("msg", [
+    "401: authentication_error (authentication_error)",
+    "400: invalid order (invalid_order)",
+    "404: market not found (market_not_found)",
+    "500: internal server error",
+    "409: some other conflict (order_group_conflict)",  # a DIFFERENT 409 stays loud
+])
+async def test_genuine_errors_still_loud_not_swallowed(msg):
+    from pykalshi.exceptions import KalshiError
+    c = FakeClient(post_exc=KalshiError(msg))
+    lb = _connected(c)
+    with pytest.raises(OrderPlacementError) as ei:
+        await lb.place_order(_order())
+    assert not isinstance(ei.value, KalshiNoFill)
+
+
+def test_is_benign_fok_nofill_helper():
+    assert kl._is_benign_fok_nofill("409: (fill_or_kill_insufficient_resting_volume)") is True
+    assert kl._is_benign_fok_nofill("401: authentication_error") is False
+    assert kl._is_benign_fok_nofill("409: order_group_conflict") is False
+
+
 async def test_place_base_price_from_quote():
     c = FakeClient(post_resp=_resp(fill="3.00"))
     lb = _connected(c)
