@@ -19,6 +19,29 @@ Locked design honored: marketable **IOC**, ceiling = whale price ± `max_slippag
 path (approval = `auto_execute` + Board roster `selected_whales`); no automated account
 cap (kill-switch = the halt); feed-health/mass-exit guard ON by default.
 
+## Post-shakedown: V2 order-endpoint rebuild + demo validation (2026-06-30)
+
+The 2026-06-30 prod $1 shakedown found pykalshi 1.0.6 POSTs the now-DEPRECATED v1
+`/portfolio/orders` (HTTP 410). Rebuilt onto Kalshi's V2 endpoint:
+
+| Slice | What | Commit |
+|---|---|---|
+| K5·1b | order path → V2 `POST /portfolio/events/orders` (single-book YES-centric bid/ask) via pykalshi's signed low-level `client.post`/`delete`; `api_base` → `external-api.*` hosts; cancel = `DELETE /portfolio/events/orders/{id}`; V2 response → FillEvent directly; demo-validate script | `e91c8aa` |
+| K5·1c | FOK `409 fill_or_kill_insufficient_resting_volume` → benign `KalshiNoFill` (only that code; every other error stays loud) | `ca871ae` |
+
+**Mapping (grounded in docs; UI-verified):** `bid`=buy YES, `ask`=sell YES; **buy NO = `ask` @ (1−P)**, sell NO = `bid` @ (1−P); slip in the fill-ensuring direction; price 4-dp string, count `str(int)`.
+
+**DEMO VALIDATION 2026-06-30 (demo.kalshi.co keypair, funded $125, market `KXALIENS-27-29`):**
+- ✅ **410 blocker RESOLVED** — V2 orders accepted (a GTC rested, the buy-NO filled).
+- ✅ **NO-mapping UI-VERIFIED** — the demo UI showed a **NO** holding at ~71¢ (the load-bearing, money-if-wrong check).
+- ✅ **3-bug positions read validated on a NON-zero position** (first real-data proof): `position_fp` / `market_exposure_dollars` read correctly.
+- ✅ cancel (V2 DELETE) works; `count` as `str(int)` accepted (**open item #2 resolved**).
+- ✅ **K5·1c** FOK-no-fill now benign — unit-verified against the exact 409 error string seen on demo. (Live demo re-verify was blocked: the demo key **401'd** — revoked/expired after the run — not a code issue.)
+- **Fee open item:** **resolved at N=1** (1-contract NO cost ~$0.71 + ~$0.01 fee); the multi-contract per-contract-vs-total convention is **assumed, and will be confirmed on the first live multi-contract fill.**
+- buy-YES fill not exercised (this demo market's book was crossed); the fill path is proven via the identical-code-path NO fill.
+
+**Tests:** V2 broker 47 + K5·1c 7 + adjacent suites — all green. Reads (balance/markets/positions) unchanged on pykalshi. `quote()`/orderbook field-name fix filed **BACKLOG PZ** (low, non-blocking — order path uses `limit_price`, not `quote()`).
+
 ## Deviations from the plan (flagged)
 
 1. **Live-arm gate is `isinstance(broker, Broker) AND not broker.paper`** (not isinstance
