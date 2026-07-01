@@ -104,6 +104,48 @@ def _watch_bars_from_hours(watch_hours: float, tf_minutes: int = 15) -> int:
     return int(watch_hours * 60 / tf_minutes)
 
 
+# ── Regime component (engine-native; 2026-07-01 bidirectional deploy) ──────────
+# 15m EMA-200 + 32-bar slope, PARITY-LOCKED to the research `regime_filter.py`
+# `ema200_pos_slope`: FIRST-CLOSE-seeded streaming EMA (deliberately NOT
+# `_ta_helpers.ema_series`, which is SMA-seeded + differently indexed and would
+# break label parity), rising = em[-1] > em[-33]. Computed inline from the
+# observer's own 15m bar cache (single source of truth). Fail-safe: returns None
+# (→ side-gate skips, never fires without a regime) until >=232 closed 15m bars.
+REGIME_ENGINE = "15m_ema200_slope"
+REGIME_EMA_PERIOD = 200
+REGIME_SLOPE_BARS = 32
+REGIME_MIN_BARS = REGIME_EMA_PERIOD + REGIME_SLOPE_BARS   # 232
+
+
+def _regime_ema200(closes: list[float]) -> list[float]:
+    """First-close-seeded streaming EMA-200 (== research `regime_filter.ema`).
+    One value per input close (out[0] == closes[0])."""
+    a = 2.0 / (REGIME_EMA_PERIOD + 1.0)
+    e: float | None = None
+    out: list[float] = []
+    for c in closes:
+        e = c if e is None else a * c + (1.0 - a) * e
+        out.append(e)
+    return out
+
+
+def compute_regime_label(closes: list[float]) -> str | None:
+    """UP / DOWN / RANGE from 15m EMA-200 + 32-bar slope, or None if
+    < REGIME_MIN_BARS (warmup fail-safe). k=1 causal: closes[-1] is the last
+    CLOSED 15m bar; em[-33] is the slope reference 32 bars back."""
+    if len(closes) < REGIME_MIN_BARS:
+        return None
+    em = _regime_ema200(closes)
+    c = closes[-1]
+    e = em[-1]
+    rising = em[-1] > em[-(REGIME_SLOPE_BARS + 1)]
+    if c > e and rising:
+        return "up"
+    if c < e and not rising:
+        return "down"
+    return "range"
+
+
 @dataclass
 class BitunixSfpConfig:
     """Parsed ``bitunix_sfp`` block from strategies.yaml. p6 ports
@@ -415,6 +457,16 @@ class BitunixSfpObserver:
     def _to_sfp_bar(b: Any) -> SfpBar:
         return SfpBar(ts_ms=int(b.ts_ms), open=float(b.open), high=float(b.high),
                       low=float(b.low), close=float(b.close))
+
+    def _compute_regime(self, wire: str) -> str | None:
+        """Engine-native 15m regime for ``wire`` from THIS observer's own 15m bar
+        cache (single source of truth — the same cache the detector feeds from).
+        Returns 'up'|'down'|'range', or None until the cache holds >=232 closed
+        15m bars (warmup fail-safe). Cache bars are ascending, so closes[-1] is the
+        last CLOSED 15m bar — k=1 causal."""
+        cache = self.bar_caches.get(wire)
+        bars = getattr(cache, "bars", None) or []
+        return compute_regime_label([float(b.close) for b in bars])
 
     # ------------------------------------------------------------------ #
     # Signal → order → risk → place
