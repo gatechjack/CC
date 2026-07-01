@@ -336,10 +336,25 @@ def register(app: FastAPI) -> None:
         request: Request,
         pm_watch_sort: str | None = None,
         pm_watch_desc: int = 1,
+        kalshi_watch_sort: str | None = None,
+        kalshi_watch_desc: int = 1,
+        kalshi_hide_uncopyable: int = 0,
+        kalshi_hide_net_neg: int = 0,
+        kalshi_selected_sort: str = "",
+        kalshi_selected_desc: int = 1,
+        kalshi_sel_hide_uncopyable: int = 0,
+        kalshi_sel_hide_net_neg: int = 0,
     ):
         return await _render_pm_dashboard(
             request, division=None,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
+            kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=bool(kalshi_watch_desc),
+            kalshi_hide_uncopyable=bool(kalshi_hide_uncopyable),
+            kalshi_hide_net_neg=bool(kalshi_hide_net_neg),
+            kalshi_selected_sort=kalshi_selected_sort or None,
+            kalshi_selected_desc=bool(kalshi_selected_desc),
+            kalshi_sel_hide_uncopyable=bool(kalshi_sel_hide_uncopyable),
+            kalshi_sel_hide_net_neg=bool(kalshi_sel_hide_net_neg),
         )
 
     @app.get("/prediction-markets/{division}", response_class=HTMLResponse)
@@ -347,10 +362,25 @@ def register(app: FastAPI) -> None:
         request: Request, division: str,
         pm_watch_sort: str | None = None,
         pm_watch_desc: int = 1,
+        kalshi_watch_sort: str | None = None,
+        kalshi_watch_desc: int = 1,
+        kalshi_hide_uncopyable: int = 0,
+        kalshi_hide_net_neg: int = 0,
+        kalshi_selected_sort: str = "",
+        kalshi_selected_desc: int = 1,
+        kalshi_sel_hide_uncopyable: int = 0,
+        kalshi_sel_hide_net_neg: int = 0,
     ):
         return await _render_pm_dashboard(
             request, division=division,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
+            kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=bool(kalshi_watch_desc),
+            kalshi_hide_uncopyable=bool(kalshi_hide_uncopyable),
+            kalshi_hide_net_neg=bool(kalshi_hide_net_neg),
+            kalshi_selected_sort=kalshi_selected_sort or None,
+            kalshi_selected_desc=bool(kalshi_selected_desc),
+            kalshi_sel_hide_uncopyable=bool(kalshi_sel_hide_uncopyable),
+            kalshi_sel_hide_net_neg=bool(kalshi_sel_hide_net_neg),
         )
 
     async def _render_pm_dashboard(
@@ -358,12 +388,27 @@ def register(app: FastAPI) -> None:
         *,
         pm_watch_sort: str | None = None,
         pm_watch_desc: bool = True,
+        kalshi_watch_sort: str | None = None,
+        kalshi_watch_desc: bool = True,
+        kalshi_hide_uncopyable: bool = False,
+        kalshi_hide_net_neg: bool = False,
+        kalshi_selected_sort: str | None = None,
+        kalshi_selected_desc: bool = True,
+        kalshi_sel_hide_uncopyable: bool = False,
+        kalshi_sel_hide_net_neg: bool = False,
     ):
         cmd_snap, view = await asyncio.gather(
             data.build_command_center(deps),
             data.build_prediction_market_view(
                 deps, division,
                 pm_watch_sort=pm_watch_sort, pm_watch_desc=pm_watch_desc,
+                kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=kalshi_watch_desc,
+                kalshi_hide_uncopyable=kalshi_hide_uncopyable,
+                kalshi_hide_net_neg=kalshi_hide_net_neg,
+                kalshi_selected_sort=kalshi_selected_sort,
+                kalshi_selected_desc=kalshi_selected_desc,
+                kalshi_sel_hide_uncopyable=kalshi_sel_hide_uncopyable,
+                kalshi_sel_hide_net_neg=kalshi_sel_hide_net_neg,
             ),
         )
         if view is None:
@@ -388,10 +433,25 @@ def register(app: FastAPI) -> None:
         request: Request,
         pm_watch_sort: str | None = None,
         pm_watch_desc: int = 1,
+        kalshi_watch_sort: str | None = None,
+        kalshi_watch_desc: int = 1,
+        kalshi_hide_uncopyable: int = 0,
+        kalshi_hide_net_neg: int = 0,
+        kalshi_selected_sort: str = "",
+        kalshi_selected_desc: int = 1,
+        kalshi_sel_hide_uncopyable: int = 0,
+        kalshi_sel_hide_net_neg: int = 0,
     ):
         return await _render_pm_partial(
             request, division=None,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
+            kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=bool(kalshi_watch_desc),
+            kalshi_hide_uncopyable=bool(kalshi_hide_uncopyable),
+            kalshi_hide_net_neg=bool(kalshi_hide_net_neg),
+            kalshi_selected_sort=kalshi_selected_sort or None,
+            kalshi_selected_desc=bool(kalshi_selected_desc),
+            kalshi_sel_hide_uncopyable=bool(kalshi_sel_hide_uncopyable),
+            kalshi_sel_hide_net_neg=bool(kalshi_sel_hide_net_neg),
         )
 
     @app.get("/partials/prediction-markets/{division}", response_class=HTMLResponse)
@@ -399,10 +459,25 @@ def register(app: FastAPI) -> None:
         request: Request, division: str,
         pm_watch_sort: str | None = None,
         pm_watch_desc: int = 1,
+        kalshi_watch_sort: str | None = None,
+        kalshi_watch_desc: int = 1,
+        kalshi_hide_uncopyable: int = 0,
+        kalshi_hide_net_neg: int = 0,
+        kalshi_selected_sort: str = "",
+        kalshi_selected_desc: int = 1,
+        kalshi_sel_hide_uncopyable: int = 0,
+        kalshi_sel_hide_net_neg: int = 0,
     ):
         return await _render_pm_partial(
             request, division=division,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
+            kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=bool(kalshi_watch_desc),
+            kalshi_hide_uncopyable=bool(kalshi_hide_uncopyable),
+            kalshi_hide_net_neg=bool(kalshi_hide_net_neg),
+            kalshi_selected_sort=kalshi_selected_sort or None,
+            kalshi_selected_desc=bool(kalshi_selected_desc),
+            kalshi_sel_hide_uncopyable=bool(kalshi_sel_hide_uncopyable),
+            kalshi_sel_hide_net_neg=bool(kalshi_sel_hide_net_neg),
         )
 
     async def _render_pm_partial(
@@ -410,10 +485,25 @@ def register(app: FastAPI) -> None:
         *,
         pm_watch_sort: str | None = None,
         pm_watch_desc: bool = True,
+        kalshi_watch_sort: str | None = None,
+        kalshi_watch_desc: bool = True,
+        kalshi_hide_uncopyable: bool = False,
+        kalshi_hide_net_neg: bool = False,
+        kalshi_selected_sort: str | None = None,
+        kalshi_selected_desc: bool = True,
+        kalshi_sel_hide_uncopyable: bool = False,
+        kalshi_sel_hide_net_neg: bool = False,
     ):
         view = await data.build_prediction_market_view(
             deps, division,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=pm_watch_desc,
+            kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=kalshi_watch_desc,
+            kalshi_hide_uncopyable=kalshi_hide_uncopyable,
+            kalshi_hide_net_neg=kalshi_hide_net_neg,
+            kalshi_selected_sort=kalshi_selected_sort,
+            kalshi_selected_desc=kalshi_selected_desc,
+            kalshi_sel_hide_uncopyable=kalshi_sel_hide_uncopyable,
+            kalshi_sel_hide_net_neg=kalshi_sel_hide_net_neg,
         )
         if view is None:
             raise HTTPException(
@@ -2123,11 +2213,28 @@ def register(app: FastAPI) -> None:
         pinned: list[str] = list(pin_rec[0]) if pin_rec and isinstance(pin_rec[0], list) else []
         pinned_after = [h for h in pinned if h != handle]
 
-        # We intentionally do NOT mutate watch_only_whales here. The watch
-        # list panel includes anyone in watch_only_whales who is NOT in
-        # selected_whales. By only updating selected_whales/pinned_whales,
-        # a previously-promoted whale falls back to its original watch
-        # list entry (with original Apify-scraped stats) automatically.
+        # Ensure the demoted whale appears in watch_only_whales. Auto-selected
+        # finalists may never have been in watch_only_whales (they were seeded
+        # directly into selected_whales by the seed script), so removing them
+        # from selected_whales would make them vanish from BOTH panels. We add
+        # a stub entry if absent so they reappear in the Watch List panel.
+        # If they were already in watch_only_whales (previously promoted from
+        # there), the existing entry is preserved with its Apify-scraped stats.
+        wo_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "watch_only_whales", db_url=db_url,
+        )
+        watch_only: list[dict] = list(wo_rec[0]) if wo_rec and isinstance(wo_rec[0], list) else []
+        if not any(isinstance(w, dict) and w.get("handle") == handle for w in watch_only):
+            watch_only.append({
+                "handle": handle,
+                "tier": None,
+                "source_x_handle": None,
+                "notes": "demoted_via_dashboard",
+                "included_iso": _now_iso(),
+            })
+            _db_mod.set_agent_state(
+                "kalshi_copy_trader", "watch_only_whales", watch_only, db_url=db_url,
+            )
 
         _db_mod.set_agent_state("kalshi_copy_trader", "selected_whales", selected_after, db_url=db_url)
         _db_mod.set_agent_state("kalshi_copy_trader", "pinned_whales", pinned_after, db_url=db_url)
@@ -2150,6 +2257,185 @@ def register(app: FastAPI) -> None:
         n = close_summary.get("n_closed", 0)
         suffix = f" · closed {n} position{'s' if n != 1 else ''}" if n else ""
         return _render_action_pill(f"@{handle} demoted{suffix}")
+
+    # ── Kalshi whale discovery (cost-controlled, async / SUNDAY SEED) ───
+    #
+    # COST NOTE: The daily `trading-corp-watchlist-stats.timer` (runs at
+    # 12:00 UTC, refreshes ALL watch_only handles unconditionally via
+    # refresh_kalshi_watchlist_stats.py) is the DOMINANT Apify cost sink
+    # (~$196/period, ~135k events).  This button covers only the SUNDAY
+    # SEED (`seed_kalshi_watchlist_deep.py`), which is the smaller driver
+    # (~$3-5/run, warm-cache even less).  The paired ops step —
+    # `systemctl disable --now trading-corp-watchlist-deep.timer` (root)
+    # — is operator-only once this button is live.  The daily stats timer
+    # is the bigger lever and has been DEFERRED per operator decision:
+    # address `trading-corp-watchlist-stats.timer` before raising the
+    # Apify spend cap.
+
+    def _discovery_control_html(*, running: bool, last_run: dict | None) -> str:
+        """Render the Run Discovery button + status fragment.
+
+        Returns a self-contained `<div id="kalshi-discovery-control">` that
+        either polls (when running) or shows last-run telemetry + a ready
+        button (when idle).
+        """
+        if running:
+            return (
+                '<div id="kalshi-discovery-control"'
+                ' hx-get="/api/kalshi/watchlist/discover/status"'
+                ' hx-trigger="every 3s"'
+                ' hx-target="this"'
+                ' hx-swap="outerHTML">'
+                '<button disabled'
+                ' class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider'
+                ' border border-muted/40 text-muted/40 cursor-not-allowed">'
+                'Discovery running…'
+                '</button>'
+                '</div>'
+            )
+        # Idle / complete
+        btn = (
+            '<button'
+            ' hx-post="/api/kalshi/watchlist/discover"'
+            ' hx-target="#kalshi-discovery-control"'
+            ' hx-swap="outerHTML"'
+            ' hx-confirm="Run whale discovery? Triggers a paid Apify scrape (~$3-5 warm, ~$5-15 cold)."'
+            ' class="px-2 py-1 text-[10px] font-mono uppercase tracking-wider'
+            ' border border-warn/60 text-warn/80 hover:bg-warn/10 hover:text-warn">'
+            'Run Discovery'
+            '</button>'
+        )
+        if last_run:
+            ts = last_run.get("ts", "")[:19].replace("T", " ") if last_run.get("ts") else "—"
+            cost = last_run.get("est_cost_usd")
+            found = last_run.get("whales_found", 0)
+            cost_str = f"~${cost:.2f}" if cost is not None else "?"
+            telemetry = (
+                f'<span class="text-[10px] font-mono text-muted/60 ml-2">'
+                f'last: {ts} · {found} found · {cost_str}'
+                f'</span>'
+            )
+        else:
+            telemetry = ""
+        return (
+            f'<div id="kalshi-discovery-control" class="flex items-center gap-1">'
+            f'{btn}{telemetry}'
+            f'</div>'
+        )
+
+    @app.post("/api/kalshi/watchlist/discover", response_class=HTMLResponse)
+    async def kalshi_watchlist_discover():
+        """Launch whale discovery as a background task (Sunday seed, async).
+
+        Immediately returns the 'running' fragment so the page stays
+        responsive. The discovery coroutine runs in the background and
+        writes `discovery_run_status` + `discovery_last_run` to agent_state
+        when complete.
+
+        Cost: ~$3-5 per run with warm 30-day cache; ~$5-15 cold.
+        NOTE: the dominant cost sink is the DAILY stats refresh timer
+        (trading-corp-watchlist-stats.timer) — see comment above this block.
+        """
+        from trading_corp.utils.secrets import load_secrets
+        from trading_corp.scripts.seed_kalshi_watchlist_deep import deep_seed_watchlist
+
+        db_url = deps.db_url
+
+        # Idempotency: if a run is already in-flight, return the running
+        # fragment without launching another task.
+        existing = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "discovery_run_status", db_url=db_url,
+        )
+        if existing is not None and isinstance(existing[0], dict):
+            if existing[0].get("state") == "running":
+                log.info("kalshi_discovery: already running — returning in-flight fragment")
+                return HTMLResponse(_discovery_control_html(running=True, last_run=None))
+
+        secrets = load_secrets()
+        if not secrets.apify_api_token:
+            log.warning("kalshi_discovery: APIFY_API_TOKEN not set — cannot run")
+            return HTMLResponse(
+                '<div id="kalshi-discovery-control">'
+                '<span class="text-[10px] font-mono text-loss/80">'
+                'Error: APIFY_API_TOKEN not set'
+                '</span></div>'
+            )
+
+        # Mark as running BEFORE launching the task so the status endpoint
+        # returns "running" even if the task yields immediately.
+        _db_mod.set_agent_state(
+            "kalshi_copy_trader", "discovery_run_status",
+            {"state": "running", "started_iso": _now_iso()},
+            db_url=db_url,
+        )
+
+        async def _run_discovery():
+            try:
+                summary = await deep_seed_watchlist(
+                    apify_token=secrets.apify_api_token,
+                    db_url=db_url,
+                )
+                # Compute cost telemetry from summary.
+                lb_events = sum(
+                    int(lb.get("rows") or 0)
+                    for lb in summary.get("leaderboards_pulled", [])
+                    if not lb.get("error")
+                )
+                # Profile actor: estimate 30 rows/probe (20 profile + 10 closed
+                # position floor; actual varies by handle).
+                profile_events = summary.get("newly_probed", 0) * 30
+                est_cost = round(profile_events * 0.0015 + lb_events * 0.001, 4)
+                _db_mod.set_agent_state(
+                    "kalshi_copy_trader", "discovery_last_run",
+                    {
+                        "ts": _now_iso(),
+                        "profile_events": profile_events,
+                        "leaderboard_events": lb_events,
+                        "est_cost_usd": est_cost,
+                        "whales_found": summary.get("found_count", 0),
+                    },
+                    db_url=db_url,
+                )
+                _db_mod.set_agent_state(
+                    "kalshi_copy_trader", "discovery_run_status",
+                    {"state": "complete", "finished_iso": _now_iso()},
+                    db_url=db_url,
+                )
+                log.info(
+                    "kalshi_discovery: complete — %d whales found, ~$%.4f est cost",
+                    summary.get("found_count", 0), est_cost,
+                )
+            except Exception as exc:
+                log.error("kalshi_discovery background task failed: %s", exc, exc_info=True)
+                _db_mod.set_agent_state(
+                    "kalshi_copy_trader", "discovery_run_status",
+                    {"state": "error", "error": str(exc), "finished_iso": _now_iso()},
+                    db_url=db_url,
+                )
+
+        asyncio.create_task(_run_discovery())
+        log.info("kalshi_discovery: background task launched")
+        return HTMLResponse(_discovery_control_html(running=True, last_run=None))
+
+    @app.get("/api/kalshi/watchlist/discover/status", response_class=HTMLResponse)
+    async def kalshi_watchlist_discover_status():
+        """Poll endpoint for the Run Discovery button.
+
+        Returns the running fragment (with hx-trigger polling) when a
+        discovery is in-flight, or the idle fragment (button enabled +
+        last-run telemetry) when complete/idle.
+        """
+        db_url = deps.db_url
+        status_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "discovery_run_status", db_url=db_url,
+        )
+        last_run_rec = _db_mod.load_agent_state(
+            "kalshi_copy_trader", "discovery_last_run", db_url=db_url,
+        )
+        status = (status_rec[0] if status_rec and isinstance(status_rec[0], dict) else {})
+        last_run = (last_run_rec[0] if last_run_rec and isinstance(last_run_rec[0], dict) else None)
+        running = status.get("state") == "running"
+        return HTMLResponse(_discovery_control_html(running=running, last_run=last_run))
 
     @app.post("/api/polymarket/watchlist/promote/{proxy_wallet}", response_class=HTMLResponse)
     async def polymarket_watchlist_promote(proxy_wallet: str):

@@ -3640,6 +3640,16 @@ class PMWhaleRow:
     # badge so the user can tell algorithm-picked vs manually-managed
     # entries apart.
     is_pinned: bool = False
+    # Per-whale copy-quality intel from our own audit_event + kalshi_round_trips.
+    # Zero/None defaults. Kalshi rows only; Polymarket rows stay at defaults.
+    intel_copies: int = 0                        # would_have_placed entry count
+    intel_detections: int = 0                    # copies + no_side + sports skips
+    intel_no_side: int = 0                       # kalshi_copy_entry_skipped_no_side count
+    intel_sports: int = 0                        # kalshi_copy_entry_skipped_sports count
+    intel_copyability_pct: float | None = None   # 100 * copies / detections
+    intel_net_pnl: float | None = None           # fee+slip adjusted PnL (vs gross total_realized_pnl)
+    intel_days_since_last_copy: float | None = None  # days since last entry copy
+    intel_crypto_pct: float | None = None        # % of our resolved copies in crypto tickers
 
 
 @dataclass
@@ -3666,6 +3676,19 @@ class KalshiWatchOnlyRow:
     n_open: int                      # whale's currently-open positions
     lifetime_markets_traded: int
     last_refresh_iso: str | None
+    # Per-whale copy-quality intel from our own audit_event + kalshi_round_trips.
+    # Zero/None defaults so old code paths that don't call _query_kalshi_whale_intel
+    # still render cleanly. Populated by _query_kalshi_watch_only_rows.
+    intel_copies: int = 0                        # would_have_placed entry count
+    intel_detections: int = 0                    # copies + no_side + sports skips
+    intel_no_side: int = 0                       # kalshi_copy_entry_skipped_no_side count
+    intel_sports: int = 0                        # kalshi_copy_entry_skipped_sports count
+    intel_copyability_pct: float | None = None   # 100 * copies / detections
+    intel_net_pnl: float | None = None           # fee+slip adjusted PnL on our resolved copies
+    intel_n_resolved: int = 0                    # our resolved round-trips for this whale
+    intel_hit_rate_pct: float | None = None      # win rate on our resolved copies
+    intel_days_since_last_copy: float | None = None  # days since last entry copy
+    intel_crypto_pct: float | None = None        # % of our resolved copies in crypto tickers
 
 
 @dataclass
@@ -3725,6 +3748,17 @@ class PMDashboardView:
     # these to render the active-column arrow + compute the toggle URL.
     pm_watch_sort: str | None = None  # whitelisted user-facing key (e.g. "avg_entry_price")
     pm_watch_desc: bool = True
+    # Kalshi Watch List sort state (server-side sort, same pattern as polymarket).
+    kalshi_watch_sort: str | None = None  # whitelisted user-facing key
+    kalshi_watch_desc: bool = True
+    # Kalshi Watch List active filter toggles (URL query params; default off).
+    kalshi_hide_uncopyable: bool = False  # hide rows where copyability_pct < 5%
+    kalshi_hide_net_neg: bool = False     # hide rows where net_pnl < 0 at n_resolved >= 30
+    # Kalshi Selected Whales panel sort + filter state (independent of Watch List).
+    kalshi_selected_sort: str | None = None  # whitelisted intel key (e.g. "net_pnl")
+    kalshi_selected_desc: bool = True
+    kalshi_sel_hide_uncopyable: bool = False
+    kalshi_sel_hide_net_neg: bool = False
     # Polymarket metrics-epoch (None when unset). Read from
     # agent_state(polymarket_copy_trader, metrics_epoch). Surfaced on the
     # view so the template can render a "metrics since {epoch}" badge.
@@ -4491,6 +4525,10 @@ def _query_pm_whales(
     db_url: str, target_slugs: list[str],
     *,
     pm_epoch: str | None = None,
+    selected_sort: str | None = None,
+    selected_desc: bool = True,
+    hide_uncopyable: bool = False,
+    hide_net_neg: bool = False,
 ) -> list[PMWhaleRow]:
     """Per-whale aggregates for the Whales tab.
 
@@ -4701,6 +4739,29 @@ def _query_pm_whales(
         except Exception as e:
             log.debug("_query_pm_whales kalshi selected-placeholder failed: %s", e)
 
+    # Merge per-whale copy-quality intel for Kalshi selected-whale rows.
+    # Placed AFTER the placeholder block so that freshly-promoted whales
+    # (no round_trips yet) still get their audit_event intel populated.
+    if "kalshi_copy_trading" in target_slugs:
+        kalshi_handles = [w.handle for w in out if w.venue == "kalshi"]
+        if kalshi_handles:
+            try:
+                intel = _query_kalshi_whale_intel(db_url, kalshi_handles)
+                for w in out:
+                    if w.venue != "kalshi":
+                        continue
+                    d = intel.get(w.handle, {})
+                    w.intel_copies = d.get("copies", 0)
+                    w.intel_detections = d.get("detections", 0)
+                    w.intel_no_side = d.get("no_side", 0)
+                    w.intel_sports = d.get("sports", 0)
+                    w.intel_copyability_pct = d.get("copyability_pct")
+                    w.intel_net_pnl = d.get("net_pnl")
+                    w.intel_days_since_last_copy = d.get("days_since_last_copy")
+                    w.intel_crypto_pct = d.get("crypto_pct")
+            except Exception as e:
+                log.warning("_query_pm_whales: intel merge failed: %s", e)
+
     if "polymarket_copy_trading" in target_slugs:
         try:
             rec = db.load_agent_state(
@@ -4779,11 +4840,53 @@ def _query_pm_whales(
 
     # Sort: highest realized PnL first; silent whales (n_resolved=0) at end.
     out.sort(key=lambda w: (w.n_resolved == 0, -w.total_realized_pnl))
+
+    # Apply sort + quality filters to the Kalshi Selected subset only,
+    # mirroring the equivalent logic in _query_kalshi_watch_only_rows.
+    if "kalshi_copy_trading" in target_slugs:
+        k = [w for w in out if w.venue == "kalshi"]
+        other = [w for w in out if w.venue != "kalshi"]
+        # "Hide uncopyable": kalshi rows where detections>0 but copyability<5%.
+        if hide_uncopyable:
+            k = [
+                w for w in k
+                if not (
+                    w.intel_detections > 0
+                    and (
+                        w.intel_copyability_pct is None
+                        or w.intel_copyability_pct < 5.0
+                    )
+                )
+            ]
+        # "Hide net-negative": kalshi rows with credible sample (n>=30) and
+        # fee+slip adjusted PnL below zero.
+        if hide_net_neg:
+            k = [
+                w for w in k
+                if not (
+                    w.n_resolved >= 30
+                    and (w.intel_net_pnl or 0.0) < 0.0
+                )
+            ]
+        # Sort by the requested intel key, None-trailing.
+        attr = _KALSHI_SELECTED_SORT_KEYS.get((selected_sort or "").lower())
+        if attr is not None:
+            with_val = [w for w in k if getattr(w, attr, None) is not None]
+            without_val = [w for w in k if getattr(w, attr, None) is None]
+            with_val.sort(key=lambda w: getattr(w, attr), reverse=selected_desc)
+            k = with_val + without_val
+        out = k + other
+
     return out
 
 
 def _query_kalshi_watch_only_rows(
     db_url: str, target_slugs: list[str],
+    *,
+    sort_key: str | None = None,
+    sort_desc: bool = True,
+    hide_uncopyable: bool = False,
+    hide_net_neg: bool = False,
 ) -> list[KalshiWatchOnlyRow]:
     """Render the K3 Watch List panel from `agent_state(watch_only_whales)`.
 
@@ -4866,8 +4969,316 @@ def _query_kalshi_watch_only_rows(
             lifetime_markets_traded=int(s.get("lifetime_markets_traded") or 0),
             last_refresh_iso=s.get("last_refresh_iso") or w.get("included_iso"),
         ))
-    out.sort(key=lambda w: (w.tier or 99, -w.total_pnl))
+    # Merge per-whale copy-quality intel BEFORE sorting so intel-keyed sorts work.
+    if out:
+        try:
+            intel = _query_kalshi_whale_intel(db_url, [w.handle for w in out])
+            for w in out:
+                d = intel.get(w.handle, {})
+                w.intel_copies = d.get("copies", 0)
+                w.intel_detections = d.get("detections", 0)
+                w.intel_no_side = d.get("no_side", 0)
+                w.intel_sports = d.get("sports", 0)
+                w.intel_copyability_pct = d.get("copyability_pct")
+                w.intel_net_pnl = d.get("net_pnl")
+                w.intel_n_resolved = d.get("n_resolved", 0)
+                w.intel_hit_rate_pct = d.get("hit_rate_pct")
+                w.intel_days_since_last_copy = d.get("days_since_last_copy")
+                w.intel_crypto_pct = d.get("crypto_pct")
+        except Exception as e:
+            log.warning("_query_kalshi_watch_only_rows: intel merge failed: %s", e)
+
+    # Sort by the requested key (or default to tier asc + total_pnl desc,
+    # which matches the seed's tier-grouped-by-PnL ordering).
+    attr = _KALSHI_WATCH_SORT_KEYS.get((sort_key or "").lower(), None)
+    if attr is None:
+        out.sort(key=lambda w: (w.tier or 99, -w.total_pnl))
+    else:
+        # Split None/non-None and concat None-trailing AFTER sorting non-Nones.
+        with_val = [w for w in out if getattr(w, attr, None) is not None]
+        without_val = [w for w in out if getattr(w, attr, None) is None]
+        with_val.sort(key=lambda w: getattr(w, attr), reverse=sort_desc)
+        out = with_val + without_val
+
+    # Apply quality filters (URL toggle params; both default OFF).
+    # "Hide uncopyable": remove whales where copyability < 5% (the
+    # lengthy.starfish problem — many no_side skips, almost no real copies).
+    if hide_uncopyable:
+        out = [
+            w for w in out
+            if not (
+                w.intel_detections > 0
+                and (
+                    w.intel_copyability_pct is None
+                    or w.intel_copyability_pct < 5.0
+                )
+            )
+        ]
+    # "Hide net-negative": remove whales where fee+slip adjusted PnL is negative
+    # at a credible sample (n_resolved >= 30 — the strategy's own auto-pause floor).
+    if hide_net_neg:
+        out = [
+            w for w in out
+            if not (
+                w.intel_n_resolved >= 30
+                and (w.intel_net_pnl or 0.0) < 0.0
+            )
+        ]
+
     return out
+
+
+# Whitelist of sort keys the Kalshi Watch List panel will honor from the
+# URL query param `?kalshi_watch_sort=`. The string the user provides is
+# mapped to the KalshiWatchOnlyRow attribute the sort runs on. Anything
+# not in this dict falls back to the default sort (tier asc + total_pnl desc).
+# String keys are case-insensitive on lookup.
+_KALSHI_WATCH_SORT_KEYS: dict[str, str] = {
+    "handle": "handle",
+    "tier": "tier",
+    "resolved": "resolved_count",
+    "resolved_count": "resolved_count",
+    "wr": "win_rate_pct",
+    "win_rate_pct": "win_rate_pct",
+    "pnl": "total_pnl",
+    "total_pnl": "total_pnl",
+    "pnl_contract": "avg_pnl_per_contract",
+    "avg_pnl_per_contract": "avg_pnl_per_contract",
+    "open": "n_open",
+    "n_open": "n_open",
+    "top_category": "top_category",
+    "last_refresh": "last_refresh_iso",
+    "last_refresh_iso": "last_refresh_iso",
+    # Intel sort keys (per-whale copy-quality metrics)
+    "copies": "intel_copies",
+    "intel_copies": "intel_copies",
+    "detections": "intel_detections",
+    "intel_detections": "intel_detections",
+    "no_side": "intel_no_side",
+    "intel_no_side": "intel_no_side",
+    "sports": "intel_sports",
+    "intel_sports": "intel_sports",
+    "copyability": "intel_copyability_pct",
+    "copyability_pct": "intel_copyability_pct",
+    "intel_copyability_pct": "intel_copyability_pct",
+    "net_pnl": "intel_net_pnl",
+    "copy_net_pnl": "intel_net_pnl",
+    "intel_net_pnl": "intel_net_pnl",
+    "intel_n_resolved": "intel_n_resolved",
+    "hit_rate": "intel_hit_rate_pct",
+    "intel_hit_rate_pct": "intel_hit_rate_pct",
+    "days_since": "intel_days_since_last_copy",
+    "intel_days_since": "intel_days_since_last_copy",
+    "intel_days_since_last_copy": "intel_days_since_last_copy",
+    "crypto_pct": "intel_crypto_pct",
+    "intel_crypto_pct": "intel_crypto_pct",
+}
+
+_KALSHI_WATCH_DEFAULT_SORT_KEY = None  # default = tier asc + total_pnl desc
+
+# Sort keys for the Selected Whales panel (PMWhaleRow). Only the 8 intel
+# columns + handle are sortable here — the base whale metrics (tier,
+# resolved_count, win_rate_pct, etc.) don't exist on PMWhaleRow.
+_KALSHI_SELECTED_SORT_KEYS: dict[str, str] = {
+    "handle": "handle",
+    "copies": "intel_copies",
+    "intel_copies": "intel_copies",
+    "detections": "intel_detections",
+    "intel_detections": "intel_detections",
+    "no_side": "intel_no_side",
+    "intel_no_side": "intel_no_side",
+    "sports": "intel_sports",
+    "intel_sports": "intel_sports",
+    "copyability": "intel_copyability_pct",
+    "copyability_pct": "intel_copyability_pct",
+    "intel_copyability_pct": "intel_copyability_pct",
+    "net_pnl": "intel_net_pnl",
+    "copy_net_pnl": "intel_net_pnl",
+    "intel_net_pnl": "intel_net_pnl",
+    "days_since": "intel_days_since_last_copy",
+    "intel_days_since": "intel_days_since_last_copy",
+    "intel_days_since_last_copy": "intel_days_since_last_copy",
+    "crypto_pct": "intel_crypto_pct",
+    "intel_crypto_pct": "intel_crypto_pct",
+}
+
+
+def _query_kalshi_whale_intel(
+    db_url: str,
+    whale_handles: list[str],
+    division: str = "kalshi_copy_trading",
+) -> dict[str, dict]:
+    """Read-only per-whale copy-quality intel from audit_event + kalshi_round_trips.
+
+    Returns a dict keyed by whale handle:
+      {copies, detections, no_side, sports, copyability_pct,
+       net_pnl, n_resolved, hit_rate_pct, days_since_last_copy, crypto_pct}
+
+    Cost model mirrors kanalysis.py (2026-06-21):
+      fee = ceil(0.07 * C * P * (1-P)) per traded side (entry always; exit only
+      when pre-resolution, i.e. 0 < exit_price < 1).
+      slippage = $0.01/contract per traded side (entry always; exit same gate).
+    Crypto tickers: KXBTC/KXETH/KXSOL/KXDOGE/KXXRP/KXBNB/KXHYPE prefixes.
+
+    READ-ONLY — SELECT only, no writes to any table.
+    """
+    import math
+
+    if not whale_handles:
+        return {}
+
+    result: dict[str, dict] = {
+        h: {
+            "copies": 0,
+            "no_side": 0,
+            "sports": 0,
+            "detections": 0,
+            "copyability_pct": None,
+            "net_pnl": 0.0,
+            "n_resolved": 0,
+            "hit_rate_pct": None,
+            "days_since_last_copy": None,
+            "crypto_pct": None,
+        }
+        for h in whale_handles
+    }
+
+    now = datetime.now(timezone.utc)
+    _SLIP = 0.01  # $/contract adverse per traded side
+    _CRYPTO_PREFIXES = ("KXBTC", "KXETH", "KXSOL", "KXDOGE", "KXXRP", "KXBNB", "KXHYPE")
+
+    def _fee(c: float, p: float | None) -> float:
+        """Kalshi general-trading fee: ceil(0.07*C*P*(1-P)), per side."""
+        if p is None or c <= 0:
+            return 0.0
+        p = max(0.0, min(1.0, float(p)))
+        return math.ceil(0.07 * c * p * (1.0 - p) * 100.0) / 100.0
+
+    try:
+        with db.connect(db_url) as conn:
+            # 1. Entry copies (would_have_placed, side='buy') per whale handle.
+            rows = conn.execute(
+                "SELECT json_extract(payload_json,'$.whale_handle') AS h, "
+                "       COUNT(*) AS n, MAX(ts) AS last_ts "
+                "FROM audit_event "
+                "WHERE actor='kalshi_copy_trader' "
+                "  AND kind='would_have_placed' "
+                "  AND json_extract(payload_json,'$.side')='buy' "
+                "  AND json_extract(payload_json,'$.whale_handle') IS NOT NULL "
+                "GROUP BY h"
+            ).fetchall()
+            for r in rows:
+                h = r[0]
+                if h and h in result:
+                    result[h]["copies"] = int(r[1])
+                    try:
+                        last_ts = r[2]
+                        if last_ts:
+                            dt = datetime.fromisoformat(
+                                last_ts.replace("Z", "+00:00")
+                            )
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            result[h]["days_since_last_copy"] = (
+                                now - dt
+                            ).total_seconds() / 86400.0
+                    except Exception:
+                        pass
+
+            # 2. no_side skips per whale (payload uses whale_handle or whale).
+            rows = conn.execute(
+                "SELECT COALESCE(json_extract(payload_json,'$.whale_handle'),"
+                "                json_extract(payload_json,'$.whale')) AS h, "
+                "       COUNT(*) AS n "
+                "FROM audit_event "
+                "WHERE actor='kalshi_copy_trader' "
+                "  AND kind='kalshi_copy_entry_skipped_no_side' "
+                "GROUP BY h"
+            ).fetchall()
+            for r in rows:
+                h = r[0]
+                if h and h in result:
+                    result[h]["no_side"] = int(r[1])
+
+            # 3. Sports skips per whale (payload uses whale or whale_handle).
+            rows = conn.execute(
+                "SELECT COALESCE(json_extract(payload_json,'$.whale'),"
+                "                json_extract(payload_json,'$.whale_handle')) AS h, "
+                "       COUNT(*) AS n "
+                "FROM audit_event "
+                "WHERE actor='kalshi_copy_trader' "
+                "  AND kind='kalshi_copy_entry_skipped_sports' "
+                "GROUP BY h"
+            ).fetchall()
+            for r in rows:
+                h = r[0]
+                if h and h in result:
+                    result[h]["sports"] = int(r[1])
+
+            # 4. Net-of-fee PnL from resolved round-trips per whale.
+            rows = conn.execute(
+                "SELECT json_extract(extra_json,'$.whale_handle') AS h, "
+                "       ticker, qty, entry_price, realized_pnl, won, "
+                "       json_extract(extra_json,'$.exit_price') AS exit_price "
+                "FROM kalshi_round_trips "
+                "WHERE division=? "
+                "  AND json_extract(extra_json,'$.whale_handle') IS NOT NULL",
+                (division,),
+            ).fetchall()
+            # Accumulate per handle.
+            accum: dict[str, dict] = {}
+            for r in rows:
+                h = r[0]
+                if not h or h not in result:
+                    continue
+                c = float(r[2] or 0)
+                ep = float(r[3] or 0)
+                xp_raw = r[6]
+                xp = float(xp_raw) if xp_raw is not None else None
+                settled = xp is None or xp <= 0.0 or xp >= 1.0
+                ef = _fee(c, ep)
+                xf = 0.0 if settled else _fee(c, xp)
+                # Slippage: entry always; exit only on pre-resolution exits.
+                sl = _SLIP * c * (1 if settled else 2)
+                net = float(r[4] or 0) - ef - xf - sl
+                won = int(r[5] or 0)
+                ticker = str(r[1] or "").upper()
+                is_crypto = any(ticker.startswith(p) for p in _CRYPTO_PREFIXES)
+                acc = accum.setdefault(
+                    h, {"n": 0, "wins": 0, "net": 0.0, "crypto": 0}
+                )
+                acc["n"] += 1
+                acc["wins"] += won
+                acc["net"] += net
+                if is_crypto:
+                    acc["crypto"] += 1
+
+            for h, acc in accum.items():
+                if h not in result:
+                    continue
+                n = acc["n"]
+                result[h]["n_resolved"] = n
+                result[h]["net_pnl"] = round(acc["net"], 2)
+                if n > 0:
+                    result[h]["hit_rate_pct"] = round(
+                        100.0 * acc["wins"] / n, 1
+                    )
+                    result[h]["crypto_pct"] = round(
+                        100.0 * acc["crypto"] / n, 1
+                    )
+
+    except Exception as e:
+        log.warning("_query_kalshi_whale_intel failed: %s", e)
+
+    # Compute derived detection + copyability fields.
+    for d in result.values():
+        det = d["copies"] + d["no_side"] + d["sports"]
+        d["detections"] = det
+        d["copyability_pct"] = (
+            round(100.0 * d["copies"] / det, 1) if det > 0 else None
+        )
+
+    return result
 
 
 # Whitelist of sort keys the Polymarket Watch List panel will honor from
@@ -5067,6 +5478,14 @@ async def build_prediction_market_view(
     equity_curve_days: int = 30,
     pm_watch_sort: str | None = None,
     pm_watch_desc: bool = True,
+    kalshi_watch_sort: str | None = None,
+    kalshi_watch_desc: bool = True,
+    kalshi_hide_uncopyable: bool = False,
+    kalshi_hide_net_neg: bool = False,
+    kalshi_selected_sort: str | None = None,
+    kalshi_selected_desc: bool = True,
+    kalshi_sel_hide_uncopyable: bool = False,
+    kalshi_sel_hide_net_neg: bool = False,
 ) -> PMDashboardView | None:
     """Build the dashboard view for /prediction-markets/ and
     /prediction-markets/{division}.
@@ -5108,8 +5527,17 @@ async def build_prediction_market_view(
         asyncio.to_thread(_query_pm_round_trips, db_url, target_slugs, history_limit, pm_epoch=pm_epoch),
         asyncio.to_thread(_query_pm_equity_curve, db_url, target_slugs, equity_curve_days, pm_epoch=pm_epoch),
         asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200, pm_epoch=pm_epoch),
-        asyncio.to_thread(_query_pm_whales, db_url, target_slugs, pm_epoch=pm_epoch),
-        asyncio.to_thread(_query_kalshi_watch_only_rows, db_url, target_slugs),
+        asyncio.to_thread(
+            _query_pm_whales, db_url, target_slugs, pm_epoch=pm_epoch,
+            selected_sort=kalshi_selected_sort, selected_desc=kalshi_selected_desc,
+            hide_uncopyable=kalshi_sel_hide_uncopyable, hide_net_neg=kalshi_sel_hide_net_neg,
+        ),
+        asyncio.to_thread(
+            _query_kalshi_watch_only_rows, db_url, target_slugs,
+            sort_key=kalshi_watch_sort, sort_desc=kalshi_watch_desc,
+            hide_uncopyable=kalshi_hide_uncopyable,
+            hide_net_neg=kalshi_hide_net_neg,
+        ),
         asyncio.to_thread(
             _query_polymarket_watch_only_rows, db_url, target_slugs,
             sort_key=pm_watch_sort, sort_desc=pm_watch_desc,
@@ -5145,6 +5573,14 @@ async def build_prediction_market_view(
         polymarket_watch_only=polymarket_watch_only,
         pm_watch_sort=(pm_watch_sort or "").lower() or None,
         pm_watch_desc=pm_watch_desc,
+        kalshi_watch_sort=(kalshi_watch_sort or "").lower() or None,
+        kalshi_watch_desc=kalshi_watch_desc,
+        kalshi_hide_uncopyable=kalshi_hide_uncopyable,
+        kalshi_hide_net_neg=kalshi_hide_net_neg,
+        kalshi_selected_sort=(kalshi_selected_sort or "").lower() or None,
+        kalshi_selected_desc=kalshi_selected_desc,
+        kalshi_sel_hide_uncopyable=kalshi_sel_hide_uncopyable,
+        kalshi_sel_hide_net_neg=kalshi_sel_hide_net_neg,
         pm_metrics_epoch=pm_epoch,
         vol_v2_block=vol_v2_block,
     )
