@@ -18,6 +18,40 @@
   <div id="pm-swap-ts" class="text-[10px] text-muted/40 font-mono"></div>
 </div>
 
+{# ── Paper / Live / All stats scope toggle — kalshi_copy_trading only ─
+   LIVE = copies since the go-live epoch; PAPER = pre-go-live historical
+   paper copies; ALL = everything. Mirrors the sort/filter controls' HTMX
+   pattern (hx-get partial swap + hx-push-url) and carries the other Kalshi
+   panel query params so switching scope doesn't reset them. #}
+{% if view.selected == 'kalshi_copy_trading' %}
+  {%- set _wr_qs = '' -%}
+  {%- if view.kalshi_watch_sort -%}{%- set _wr_qs = _wr_qs ~ '&kalshi_watch_sort=' ~ view.kalshi_watch_sort ~ '&kalshi_watch_desc=' ~ (1 if view.kalshi_watch_desc else 0) -%}{%- endif -%}
+  {%- set _wr_qs = _wr_qs ~ '&kalshi_hide_uncopyable=' ~ (1 if view.kalshi_hide_uncopyable else 0) ~ '&kalshi_hide_net_neg=' ~ (1 if view.kalshi_hide_net_neg else 0) -%}
+  {%- if view.kalshi_selected_sort -%}{%- set _wr_qs = _wr_qs ~ '&kalshi_selected_sort=' ~ view.kalshi_selected_sort ~ '&kalshi_selected_desc=' ~ (1 if view.kalshi_selected_desc else 0) -%}{%- endif -%}
+  {%- set _wr_qs = _wr_qs ~ '&kalshi_sel_hide_uncopyable=' ~ (1 if view.kalshi_sel_hide_uncopyable else 0) ~ '&kalshi_sel_hide_net_neg=' ~ (1 if view.kalshi_sel_hide_net_neg else 0) -%}
+  <div class="flex items-center gap-2 mb-4 text-[11px] font-mono">
+    <span class="text-[10px] text-muted/60 uppercase tracking-wider">Stats</span>
+    <div class="inline-flex items-center rounded-md border border-edge overflow-hidden">
+      {% for _m, _lbl in [('paper', 'Paper'), ('live', 'Live'), ('all', 'All')] %}
+      <a class="px-2.5 py-0.5 cursor-pointer select-none hover:text-mono border-l border-edge first:border-l-0
+                {% if view.wr_mode == _m %}text-mono bg-pane-2/60{% else %}text-muted/60{% endif %}"
+         hx-get="/partials/prediction-markets/kalshi_copy_trading?wr_mode={{ _m }}{{ _wr_qs }}"
+         hx-target="#pm-content"
+         hx-swap="innerHTML"
+         hx-push-url="/prediction-markets/kalshi_copy_trading?wr_mode={{ _m }}{{ _wr_qs }}">
+        {{ _lbl }}
+      </a>
+      {% endfor %}
+    </div>
+    {% if view.wr_live_epoch %}
+    <span class="text-[10px] text-muted/70"
+          title="Live = copies since go-live; earlier copies are paper.">
+      since {{ view.wr_live_epoch[:10] }}
+    </span>
+    {% endif %}
+  </div>
+{% endif %}
+
 {# ── Summary cards row ────────────────────────────────────────────── #}
 <div class="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-4">
   <div class="bg-pane border border-edge rounded-lg p-4">

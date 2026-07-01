@@ -3770,6 +3770,13 @@ class PMDashboardView:
     # Owns the vol-v2 paper-validation cards; see
     # `web/kalshi_crypto_vol_v2.py` for the module.
     vol_v2_block: "PMVolV2Block | None" = None
+    # Paper/Live/All stats toggle state — kalshi_copy_trading only. `wr_mode`
+    # is the active slice ('live' default; 'paper'|'all'); `wr_live_epoch` is
+    # the go-live ISO boundary used for the "since <date>" label. On every
+    # other division the template doesn't render the toggle, so these are
+    # inert UI signals.
+    wr_mode: str = "live"
+    wr_live_epoch: str = ""
 
 
 _POLYMARKET_PREFIX = "polymarket_"
@@ -3810,6 +3817,57 @@ def _kalshi_cutoff_clause(ts_col: str) -> str:
             f" AND NOT (division='{div}' AND {ts_col} < '{cutoff}')"
         )
     return "".join(parts)
+
+
+# ── Kalshi copy-trading Paper/Live/All go-live epoch ────────────────────
+#
+# kalshi_round_trips has NO paper/live discriminator column — the split is
+# purely temporal. Copies with `entry_ts >= epoch` are LIVE (real fills
+# since go-live); earlier copies are historical PAPER copies. The dashboard's
+# Paper|Live|All toggle scopes the summary / history / open lists to one
+# slice (default LIVE). The epoch defaults to the constant below so the
+# toggle works out-of-the-box, but an operator can override it at runtime
+# (no redeploy) via agent_state(kalshi_copy_trader, metrics_epoch) — the
+# same ISO-validated slot `_get_metrics_epoch` reads; clearing that row
+# falls back to the constant.
+KALSHI_COPY_LIVE_EPOCH = "2026-07-01T14:08:58+00:00"
+
+
+def _get_kalshi_copy_live_epoch(db_url: str) -> str:
+    """Go-live epoch for the kalshi_copy_trading Paper/Live split.
+
+    Returns the operator override in agent_state(kalshi_copy_trader,
+    metrics_epoch) when set (ISO-validated by `_get_metrics_epoch`), else the
+    hardcoded `KALSHI_COPY_LIVE_EPOCH` constant. Always returns a usable ISO
+    string (never None) so the toggle has a stable boundary out-of-the-box.
+    """
+    return _get_metrics_epoch(db_url, "kalshi_copy_trader") or KALSHI_COPY_LIVE_EPOCH
+
+
+def _kalshi_copy_mode_clause(
+    mode: str, epoch_iso: str, ts_col: str = "entry_ts",
+) -> str:
+    """SQL fragment scoping kalshi_copy_trading rows to a Paper/Live/All
+    slice by timestamp. Returns a string starting with a leading space so it
+    concatenates after an existing WHERE clause; '' for the 'all' slice (or
+    when no epoch is available — the no-op / reversibility path).
+
+      - 'live':  AND {ts_col} >= '{epoch}'   (copies since go-live)
+      - 'paper': AND {ts_col} <  '{epoch}'   (historical paper copies)
+      - else:    ''                          (no scoping)
+
+    `mode` is whitelisted upstream to {'all','paper','live'} and `epoch_iso`
+    is a validated ISO constant (never user input), so the inline literal is
+    injection-safe — same pattern as `_kalshi_cutoff_clause` /
+    `_polymarket_cutoff_clause`.
+    """
+    if not epoch_iso:
+        return ""
+    if mode == "live":
+        return f" AND {ts_col} >= '{epoch_iso}'"
+    if mode == "paper":
+        return f" AND {ts_col} < '{epoch_iso}'"
+    return ""
 
 
 # ── Polymarket per-division metrics-epoch reset ─────────────────────────
@@ -3917,6 +3975,8 @@ def _query_pm_round_trips(
     db_url: str, division_slugs: list[str], limit: int,
     *,
     pm_epoch: str | None = None,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
 ) -> list[PMRoundTrip]:
     """Pull round-trip rows from both venue tables, filter to the selected
     divisions, normalize, sort by resolved_ts DESC, cap to `limit`.
@@ -4029,6 +4089,7 @@ def _query_pm_round_trips(
             f"FROM kalshi_round_trips "
             f"WHERE division IN ({kalshi_ph})"
             + _kalshi_cutoff_clause("entry_ts")
+            + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
             + " "
             f"ORDER BY resolved_ts DESC LIMIT ?",
             (*kalshi_slugs, limit),
@@ -4162,6 +4223,8 @@ def _query_pm_open_trades(
     db_url: str, division_slugs: list[str], limit: int = 200,
     *,
     pm_epoch: str | None = None,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
 ) -> list[PMOpenTrade]:
     """Pull would_have_placed audit rows that have no round-trip resolution
     yet, normalize across venues, sort by emit ts DESC, cap to `limit`.
@@ -4286,7 +4349,8 @@ def _query_pm_open_trades(
             f"  AND a.kind = 'would_have_placed' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "
-            f"  AND r.order_id IS NULL "
+            + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "a.ts")
+            + f"  AND r.order_id IS NULL "
             f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
             f"    SELECT entry_order_id FROM kalshi_round_trips "
             f"    WHERE entry_order_id IS NOT NULL"
@@ -4442,6 +4506,8 @@ def _query_pm_resolved_stats(
     db_url: str, division_slugs: list[str],
     *,
     pm_epoch: str | None = None,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
 ) -> dict:
     """Aggregate stats over ALL resolved round-trips (no LIMIT), cross-venue.
 
@@ -4493,7 +4559,8 @@ def _query_pm_resolved_stats(
             f"       COALESCE(SUM(realized_pnl), 0.0) AS total_pnl "
             f"FROM kalshi_round_trips "
             f"WHERE division IN ({kalshi_ph})"
-            + _kalshi_cutoff_clause("entry_ts"),
+            + _kalshi_cutoff_clause("entry_ts")
+            + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts"),
             tuple(kalshi_slugs),
         )
         if rows:
@@ -5486,6 +5553,7 @@ async def build_prediction_market_view(
     kalshi_selected_desc: bool = True,
     kalshi_sel_hide_uncopyable: bool = False,
     kalshi_sel_hide_net_neg: bool = False,
+    wr_mode: str = "live",
 ) -> PMDashboardView | None:
     """Build the dashboard view for /prediction-markets/ and
     /prediction-markets/{division}.
@@ -5523,10 +5591,17 @@ async def build_prediction_market_view(
     # live in DASHBOARD_RT_CUTOFFS.
     pm_epoch = await asyncio.to_thread(_get_polymarket_metrics_epoch, db_url)
 
+    # Kalshi copy-trading Paper/Live/All scoping. Resolve the go-live epoch
+    # once; only the kalshi_copy_trading single-division view is scoped by
+    # `wr_mode` — every other division (and the All view) forces mode='all'
+    # so their stats stay byte-identical regardless of the query param.
+    kalshi_copy_epoch = await asyncio.to_thread(_get_kalshi_copy_live_epoch, db_url)
+    kalshi_copy_mode = wr_mode if division == "kalshi_copy_trading" else "all"
+
     round_trips, equity_curve, open_trades, whales, kalshi_watch_only, polymarket_watch_only, pending_count, resolved_stats = await asyncio.gather(
-        asyncio.to_thread(_query_pm_round_trips, db_url, target_slugs, history_limit, pm_epoch=pm_epoch),
+        asyncio.to_thread(_query_pm_round_trips, db_url, target_slugs, history_limit, pm_epoch=pm_epoch, kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch),
         asyncio.to_thread(_query_pm_equity_curve, db_url, target_slugs, equity_curve_days, pm_epoch=pm_epoch),
-        asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200, pm_epoch=pm_epoch),
+        asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200, pm_epoch=pm_epoch, kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch),
         asyncio.to_thread(
             _query_pm_whales, db_url, target_slugs, pm_epoch=pm_epoch,
             selected_sort=kalshi_selected_sort, selected_desc=kalshi_selected_desc,
@@ -5543,7 +5618,7 @@ async def build_prediction_market_view(
             sort_key=pm_watch_sort, sort_desc=pm_watch_desc,
         ),
         asyncio.to_thread(_query_pm_pending_count, db_url, target_slugs, pm_epoch=pm_epoch),
-        asyncio.to_thread(_query_pm_resolved_stats, db_url, target_slugs, pm_epoch=pm_epoch),
+        asyncio.to_thread(_query_pm_resolved_stats, db_url, target_slugs, pm_epoch=pm_epoch, kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch),
     )
 
     # Tiles must show TRUE totals, not list lengths. open_trades/round_trips
@@ -5583,6 +5658,8 @@ async def build_prediction_market_view(
         kalshi_sel_hide_net_neg=kalshi_sel_hide_net_neg,
         pm_metrics_epoch=pm_epoch,
         vol_v2_block=vol_v2_block,
+        wr_mode=wr_mode,
+        wr_live_epoch=kalshi_copy_epoch,
     )
 
 
