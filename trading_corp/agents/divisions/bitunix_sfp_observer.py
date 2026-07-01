@@ -394,6 +394,11 @@ class BitunixSfpObserver:
         for det in self._detectors_b[wire]:
             det.warm_start(bars15, bars3)
             self._emit_watch_transitions(wire, det.drain_transitions(), recent_only=True)
+        # SHORT engine warm-start on reflected bars (M2=0); transitions discarded.
+        n15, n3 = reflect_neg(bars15), reflect_neg(bars3)
+        for det in self._detectors_b_short[wire]:
+            det.warm_start(n15, n3)
+            det.drain_transitions()
         if bars15:
             self._last_ts[wire] = bars15[-1].ts_ms
         if bars3:
@@ -441,7 +446,7 @@ class BitunixSfpObserver:
             for det in self._detectors[wire]:
                 sigs = det.on_closed_bar(bar)        # decision path UNCHANGED
                 for sig in sigs:
-                    await self._handle_signal(symbol_display, wire, sig, bar)
+                    await self._handle_signal(symbol_display, wire, sig, bar, side="long")
                 # OBSERVE-ONLY: drain + persist lifecycle transitions. Fail-soft —
                 # CANNOT raise into the loop; a persist failure never affects trading.
                 self._emit_watch_transitions(wire, det.drain_transitions())
@@ -505,6 +510,10 @@ class BitunixSfpObserver:
                 for det in self._detectors_b[wire]:
                     det.on_closed_15m_bar(bar15)        # arm only — returns []
                     self._emit_watch_transitions(wire, det.drain_transitions())
+                bar15_neg = reflect_neg([bar15])[0]     # M2=0 reflection for the SHORT arm
+                for det in self._detectors_b_short[wire]:
+                    det.on_closed_15m_bar(bar15_neg)    # arm short watch (returns [])
+                    det.drain_transitions()             # discard (short dashboard = Piece 5+)
                 self._last_ts[wire] = bar15.ts_ms
                 self._extend_regime(wire, [bar15])      # engine-native regime, inline
         if c3 is not None:
@@ -514,8 +523,15 @@ class BitunixSfpObserver:
                 for det in self._detectors_b[wire]:
                     sigs = det.on_closed_3m_bar(bar3)
                     for sig in sigs:
-                        await self._handle_signal(symbol_display, wire, sig, bar3)
+                        await self._handle_signal(symbol_display, wire, sig, bar3, side="long")
                     self._emit_watch_transitions(wire, det.drain_transitions())
+                # SHORT: same real bar reflected (M2=0); route with the REAL bar3 as the
+                # entry anchor. Watch transitions drained+discarded (short dash = Piece 5+).
+                bar3_neg = reflect_neg([bar3])[0]
+                for det in self._detectors_b_short[wire]:
+                    for sig in det.on_closed_3m_bar(bar3_neg):
+                        await self._handle_signal(symbol_display, wire, sig, bar3, side="short")
+                    det.drain_transitions()
                 self._last_ts3[wire] = bar3.ts_ms
 
     @staticmethod
@@ -582,22 +598,44 @@ class BitunixSfpObserver:
     # Signal → order → risk → place
     # ------------------------------------------------------------------ #
     async def _handle_signal(
-        self, symbol_display: str, wire: str, sig: SfpEntrySignal, bar: SfpBar
+        self, symbol_display: str, wire: str, sig: SfpEntrySignal, bar: SfpBar,
+        side: str = "long",
     ) -> None:
-        # Entry reference = the BOS bar close (best estimate of next-bar open;
-        # the real fill is the live anchor — the reconciler's ref-vs-fill
-        # captures it). Geometry from the swept wick low.
+        # Entry reference = the BOS bar close (real; the fill is the live anchor).
+        # Geometry BY SIDE: long from the swept wick low (vendored compute_geometry,
+        # unchanged); short from the un-reflected swept HIGH (M2=0: real = -reflected)
+        # via geometry_short (stop ABOVE entry, tp BELOW). `sig` for a short comes from
+        # the reflected detector, but `bar` is the REAL 3m BOS bar (real entry_ref).
         entry_ref = bar.close
-        geo = compute_geometry(
-            entry_ref, sig.swept_low,
-            stop_buffer_pct=self.config.stop_buffer_pct, tp_r=self.config.tp_r,
-        )
+        if side == "short":
+            geo = geometry_short(
+                entry_ref, -sig.swept_low,
+                stop_buffer_pct=self.config.stop_buffer_pct, tp_r=self.config.tp_r)
+        else:
+            geo = compute_geometry(
+                entry_ref, sig.swept_low,
+                stop_buffer_pct=self.config.stop_buffer_pct, tp_r=self.config.tp_r)
         if geo is None:
             self._audit("sfp_skip_invalid_geometry", {
-                "symbol": symbol_display, "sfp_mode": sig.sfp_mode,
-                "entry_ref": entry_ref, "swept_low": sig.swept_low})
+                "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                "entry_ref": entry_ref, "swept": sig.swept_low})
             return
         stop_price, tp_price, r_unit = geo
+
+        # ── REGIME SIDE-GATE (Piece 3): the 15m regime PICKS the side; never counter-
+        # trend. regime None (buffer < REGIME_SEED_MIN / unconverged) => never fire.
+        regime = self._compute_regime(wire)
+        if regime is None:
+            self._audit("sfp_skip_regime_warmup", {
+                "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode})
+            return
+        aligned = ((regime in ("up", "range")) if side == "long"
+                   else (regime in ("down", "range")))
+        if not aligned:
+            self._audit("sfp_skip_counter_trend", {
+                "symbol": symbol_display, "side": side, "regime": regime,
+                "sfp_mode": sig.sfp_mode})
+            return
 
         broker = self.data_exec.brokers.get(DIVISION) if hasattr(self.data_exec, "brokers") else None
         if broker is None:
@@ -623,21 +661,25 @@ class BitunixSfpObserver:
                 "risk_pct": risk_pct, "r_unit": r_unit})
             return
 
-        # Per-(symbol,side) concurrent-position guard (the symbol-aware D4).
-        if self._has_open_live_same_side(symbol_display, "buy"):
+        # One-position-per-coin guard: block a new entry (EITHER side) if ANY live
+        # position is open on this symbol. On the one-way venue a short-while-long
+        # would REDUCE the long (net), not open a short — so RANGE both-sides can
+        # NEVER open simultaneous opposite positions. Subsumes the per-(symbol,side) D4.
+        order_side = "buy" if side == "long" else "sell"
+        if self._has_open_live_position(symbol_display):
             self._audit("sfp_concurrent_position_blocked", {
-                "symbol": symbol_display, "side": "buy", "sfp_mode": sig.sfp_mode,
-                "reason": "bot_own_same_side_position_open"})
+                "symbol": symbol_display, "side": order_side, "sfp_mode": sig.sfp_mode,
+                "reason": "position_open_this_coin"})
             return
 
         max_dollar_risk = equity * risk_pct
         order = ProposedOrder(
             strategy=DIVISION,
             symbol=symbol_display,
-            side="buy",
+            side=order_side,
             qty=qty,
             order_type="market",
-            rationale=(f"SFP-{sig.sfp_mode} BOS long {symbol_display}; "
+            rationale=(f"SFP-{sig.sfp_mode} BOS {side} {symbol_display} [{regime}]; "
                        f"swept={sig.swept_low:.4f} lvl={sig.swept_swing_level:.4f} "
                        f"stop={stop_price:.4f} tp2R={tp_price:.4f}"),
             extra={
@@ -653,6 +695,8 @@ class BitunixSfpObserver:
                 "entry_reference_price": entry_ref,
                 "reduce_only": False,
                 "leverage": self.config.leverage,
+                "regime_label": regime,            # side-gate stamp (research-log, Piece 4)
+                "side_semantic": side,             # "long" | "short"
                 "source_signal": (f"sfp_{sig.sfp_mode.lower()}"
                                   + ("_3m_bos" if getattr(sig, "bos_tf", "15m") == "3m" else "")),
                 "bos_tf": getattr(sig, "bos_tf", "15m"),
@@ -932,9 +976,16 @@ class BitunixSfpObserver:
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
-    def _has_open_live_same_side(self, symbol_display: str, side: str) -> bool:
-        """True if this division already holds an OPEN live position on the same
-        (symbol, side). Symbol-agnostic — keyed purely on the row's symbol+side."""
+    def _has_open_live_position(self, symbol_display: str) -> bool:
+        """True if this division holds ANY open live position on ``symbol`` (either
+        side). One-position-per-coin: on the one-way venue an opposite-side entry
+        would net against the open position, so RANGE both-sides must not stack."""
+        return self._has_open_live_same_side(symbol_display, None)
+
+    def _has_open_live_same_side(self, symbol_display: str, side: str | None) -> bool:
+        """True if this division already holds an OPEN live position on ``symbol``
+        matching ``side`` (``side=None`` matches ANY side). Keyed on the row's
+        symbol (+ side unless None)."""
         try:
             with db.connect(self.db_url) as conn:
                 rows = conn.execute(
@@ -955,7 +1006,7 @@ class BitunixSfpObserver:
                 continue
             if extra.get("execution_mode") != "live":
                 continue
-            if str(r["symbol"]) == symbol_display and str(r["side"]) == side:
+            if str(r["symbol"]) == symbol_display and (side is None or str(r["side"]) == side):
                 return True
         return False
 
