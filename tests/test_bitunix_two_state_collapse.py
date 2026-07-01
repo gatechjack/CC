@@ -155,14 +155,19 @@ def test_sfp_mode_predicate_failsafe(block, expected_trading):
 # ─── shipped strategies.yaml contract ───────────────────────────────────────
 
 
-def test_shipped_yaml_futures_halted_sfp_trading():
-    """The fail-safe default must NOT silently kill the live BTC edge: the
-    shipped YAML pins futures: halted and sfp: trading explicitly."""
+def test_shipped_yaml_both_bitunix_divisions_trading():
+    """Two-live reality (2026-06-30): bitunix_sfp AND bitunix_futures are both
+    live divisions on distinct accounts, so the shipped YAML pins BOTH to
+    mode: trading explicitly. (Pre-two-live, futures shipped halted-inert; that
+    premise is retired.) The fail-safe default is halted, so a missing/
+    non-"trading" mode would silently NOT start a division's loop — these
+    explicit pins guard both live edges."""
     import yaml
     raw = yaml.safe_load(
         (REPO_ROOT / "config" / "strategies.yaml").read_text(encoding="utf-8"))
-    assert raw["bitunix_futures"].get("mode") == "halted", (
-        "bitunix_futures must ship mode: halted")
+    assert raw["bitunix_futures"].get("mode") == "trading", (
+        "bitunix_futures must ship mode: trading — it is its own live division "
+        "under two-live (2026-06-30)")
     assert raw["bitunix_sfp"].get("mode") == "trading", (
         "bitunix_sfp MUST ship mode: trading or the live BTC 15m loop won't "
         "start on restart (fail-safe default is halted)")

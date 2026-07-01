@@ -243,13 +243,17 @@ def test_strategies_yaml_phase1c_blocks_parse():
 
 
 def test_two_state_sfp_comes_up_trading_and_replay_disabled():
-    """Two-state collapse (2026-06-27) boot guard.
+    """Two-state collapse (2026-06-27) boot guard, updated for two-live (2026-06-30).
 
     ★ The fail-safe default is HALTED, so a missing/non-"trading" `mode` would
-    silently NOT start a division's loop. This test is the guard that the
-    fail-safe default did NOT kill the LIVE BTC (SFP) edge: it asserts the
-    shipped YAML + the EXACT main.py predicates resolve to "SFP trades, futures
-    is inert, replay is off", and that main.py actually gates on them.
+    silently NOT start a division's loop. This test guards that the fail-safe
+    default did NOT kill either live bitunix edge: it asserts the shipped YAML +
+    the EXACT main.py predicates resolve to "SFP trades, futures trades (both
+    live on distinct accounts), replay is off", and that main.py actually gates
+    on them. (Pre-two-live this pinned futures HALTED-INERT; two-live retired
+    that — futures is now its own live division. The main.py `halted=`
+    mechanism still exists and is still asserted below; the YAML simply no
+    longer trips it.)
     """
     import yaml
     raw = yaml.safe_load((REPO_ROOT / "config" / "strategies.yaml").read_text(
@@ -257,16 +261,18 @@ def test_two_state_sfp_comes_up_trading_and_replay_disabled():
     sfp = raw.get("bitunix_sfp") or {}
     fut = raw.get("bitunix_futures") or {}
 
-    # (1) shipped config pins
+    # (1) shipped config pins — two-live: BOTH divisions ship trading
     assert sfp.get("mode") == "trading", "bitunix_sfp must ship mode: trading"
-    assert fut.get("mode") == "halted", "bitunix_futures must ship mode: halted"
+    assert fut.get("mode") == "trading", (
+        "bitunix_futures must ship mode: trading — its own live division now")
 
-    # (2) the EXACT main.py predicates → SFP arms, futures halts (fail-safe)
+    # (2) the EXACT main.py predicates → both loops arm (both live)
     sfp_trading = (str(sfp.get("mode", "halted")).lower() == "trading")
-    fut_halted = (str(fut.get("mode", "halted")).lower() != "trading")
+    fut_trading = (str(fut.get("mode", "halted")).lower() == "trading")
     assert sfp_trading is True, (
         "the SFP 15m loop would NOT start — the live BTC edge would be halted")
-    assert fut_halted is True, "the futures observer must be HALTED-INERT"
+    assert fut_trading is True, (
+        "the futures loop would NOT start — the live futures edge would be halted")
 
     # (3) main.py actually gates on these + disables replay
     src = MAIN_PY.read_text(encoding="utf-8")

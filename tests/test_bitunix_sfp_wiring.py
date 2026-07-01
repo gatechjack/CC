@@ -137,7 +137,17 @@ def test_divisions_yaml_has_bitunix_sfp():
     from trading_corp.utils.divisions import load_divisions
     divs = load_divisions()
     sfp = next((d for d in divs if d.slug == "bitunix_sfp"), None)
+    fut = next((d for d in divs if d.slug == "bitunix_futures"), None)
     assert sfp is not None, "bitunix_sfp not found in divisions.yaml"
-    assert sfp.secret_ref == "bitunix_futures"
+    assert fut is not None, "bitunix_futures not found in divisions.yaml"
+    # Two-live (2026-06-30): SFP and futures are DISTINCT live divisions on
+    # separate accounts, so each resolves its OWN secret. bitunix_sfp points at
+    # its own 'bitunix_sfp' secret (NOT the shared futures secret, as the
+    # pre-two-live single-account world had it); bitunix_futures defaults its
+    # secret_ref to its slug (secret_ref or slug -> 'bitunix_futures').
+    assert sfp.secret_ref == "bitunix_sfp"
+    assert (fut.secret_ref or fut.slug) == "bitunix_futures"
+    assert sfp.secret_ref != (fut.secret_ref or fut.slug), (
+        "SFP and futures must resolve DISTINCT secret_refs (isolated accounts)")
     assert sfp.broker == "bitunix"
     assert sfp.enabled is True

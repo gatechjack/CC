@@ -133,20 +133,21 @@ def test_yaml_block_uppercase_live_normalizes():
     assert str(bx_block.get("execution_mode", "paper")).lower() == "live"
 
 
-def test_prod_strategies_yaml_ships_paper_default():
-    """Belt-and-suspenders: the actual prod YAML on this commit must
-    have `execution_mode: paper` in the bitunix_futures block. If
-    someone accidentally bumps it to `live` in a refactor PR, this
-    test fails. To flip live for a live-trading session, the operator
-    edits the YAML *deliberately* + restarts — that diff is separate
-    from the code change."""
+def test_prod_strategies_yaml_futures_ships_live():
+    """Two-live reality (2026-06-30): bitunix_futures is now its OWN live
+    division on a distinct account, so the shipped prod YAML pins its
+    bitunix_futures block to `execution_mode: live`. (The pre-two-live
+    single-account world shipped futures paper/halted-inert; that premise is
+    retired.) If someone accidentally reverts it to `paper` in a refactor PR,
+    this test fails. Flipping a division live/paper is a deliberate
+    operator-approved deploy — that diff is separate from a code change."""
     import yaml as _yaml
     strat_path = Path(__file__).resolve().parent.parent / "config" / "strategies.yaml"
     with strat_path.open() as f:
         raw = _yaml.safe_load(f)
     bx = raw.get("bitunix_futures", {})
-    assert bx.get("execution_mode") == "paper", (
-        "prod strategies.yaml's bitunix_futures.execution_mode must be 'paper' "
-        "on this branch — live flip is a separate operator-approved deploy. "
+    assert bx.get("execution_mode") == "live", (
+        "prod strategies.yaml's bitunix_futures.execution_mode must be 'live' "
+        "under two-live — futures is its own live division on a distinct account. "
         f"Got: {bx.get('execution_mode')!r}"
     )
