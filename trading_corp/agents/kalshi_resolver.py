@@ -101,7 +101,8 @@ def _detect_side(row: dict) -> str | None:
 def _fetch_unresolved_orders(
     db_url: str, *, max_per_actor: int = 50,
 ) -> list[dict]:
-    """Return Kalshi `would_have_placed` audit rows without a
+    """Return Kalshi `would_have_placed` (paper) and
+    `kalshi_copy_placed_live` (live copy placement) audit rows without a
     kalshi_round_trips entry. Each dict is the parsed payload plus
     `_ts` and `_actor` carrying audit-event metadata.
 
@@ -138,7 +139,7 @@ def _fetch_unresolved_orders(
                 "LEFT JOIN kalshi_round_trips r "
                 "  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
                 "WHERE a.actor = ? "
-                "  AND a.kind = 'would_have_placed' "
+                "  AND a.kind IN ('would_have_placed', 'kalshi_copy_placed_live') "
                 "  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
                 "  AND r.order_id IS NULL "
                 "  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
@@ -172,8 +173,32 @@ def _compute_round_trip_row(row: dict, res: dict) -> dict | None:
     side = _detect_side(row)
     if side not in ("yes", "no"):
         return None
-    qty = float(row.get("qty") or 0.0)
-    price = float(row.get("limit_price") or 0.0)
+    # Live copy placements (kind='kalshi_copy_placed_live') carry `fill_qty`
+    # (actual contracts filled) + `fill_price` (the outcome-leg per-contract
+    # cost, correct after the kalshi_live FIX-1 YES->leg inversion), while their
+    # top-level `qty` is the USD copy size (wrong units for the contract math).
+    # Prefer those when present so the round-trip is dimensionally correct — e.g.
+    # a NO 166-contract copy @ 0.013 books loss -$2.16 if YES wins / gain
+    # 166×0.987 if NO wins, NOT the bogus 166×0.987 = $163.84. Paper rows keep
+    # qty=contracts / price=limit_price.
+    # NOTE: this books on SETTLEMENT assuming the copy is held to resolution. A
+    # live copy whose exit actually FILLED before resolution would be booked
+    # slightly off — acceptable v1 (exits almost always no-fill on the fast
+    # markets this targets); `_pair_pending_exits` is deliberately left untouched.
+    fill_qty = row.get("fill_qty")
+    fill_price = row.get("fill_price")
+    if fill_qty is not None and fill_price is not None:
+        # Live copy placement — book only if flagged `leg_priced` (set by main.py
+        # after the kalshi_live FIX-1 broker inversion). Pre-fix live rows carry a
+        # YES-centric fill_price that would mis-book (NO 166 @ 0.987 → phantom
+        # $163.84 vs the real ~$2.16), so they are SKIPPED, not booked wrong.
+        if not row.get("leg_priced"):
+            return None
+        qty = float(fill_qty)
+        price = float(fill_price)
+    else:
+        qty = float(row.get("qty") or 0.0)
+        price = float(row.get("limit_price") or 0.0)
     if qty <= 0 or price <= 0 or price >= 1.0:
         return None
 

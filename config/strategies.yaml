@@ -1693,6 +1693,12 @@ kalshi_copy_trader:
   # (above cap); 10min cadence halves Apify request volume to ~$160/mo,
   # leaving ~$40/mo headroom for spikes / pool expansion.
   poll_interval_sec: 600            # 10min — positions don't change fast on Kalshi
+  # Skip copying a whale entry if the market resolves within N minutes (we can't
+  # exit fast markets on a 10-min poll). Hot-reloads. 0 = filter OFF.
+  # Ships OFF (0) = correctness-only deploy, no behavior change. Enable by editing
+  # to 30 or 60 (hot-reload, no restart). Impact @60: filters ~77% of pritz786's
+  # copies (avg 55m markets), ~17-19% of MaggieTheEagle/AI.EDGE. @30: ~50% pritz786.
+  min_minutes_to_resolution: 0
   sizing:
     # Whale-contract -> our-USD-copy tier breakpoints. Kalshi contracts
     # trade in [$0.01, $0.99] so contract count is within ~100x of dollar

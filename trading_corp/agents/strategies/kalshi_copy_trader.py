@@ -104,6 +104,24 @@ def _trade_price_for_side(trade: KalshiPublicTrade) -> float | None:
     return None
 
 
+def _parse_iso(ts: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp -> tz-aware UTC datetime, or None.
+
+    Tolerant of the trailing 'Z' (UTC) that Kalshi timestamps carry and of
+    naive datetimes (assumed UTC). Returns None on anything unparseable so
+    callers can fail open.
+    """
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).strip().replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 @runtime_checkable
 class TradeTapeFetcher(Protocol):
     """Structural Protocol matched by `KalshiBroker.get_market_trades`.
@@ -417,6 +435,37 @@ class KalshiCopyTraderAgent:
                      "reason": "side_detection_low_confidence"},
                 )
             return None
+
+        # Ultra-short-market filter: skip copying a whale entry into a market
+        # that resolves within `min_minutes_to_resolution`. On a 10-min poll we
+        # can't exit fast (e.g. 15-min) markets, so a copy there is effectively
+        # hold-to-resolution with no exit control. Fail-open: any missing config,
+        # missing fetcher capability, lookup error, or unparseable timestamp
+        # ALLOWS the entry (we never block on our own inability to check).
+        min_minutes = float(self._strat_cfg.get("min_minutes_to_resolution", 60) or 0)
+        if min_minutes > 0 and hasattr(trade_fetcher, "get_market_resolution"):
+            resolve_at: datetime | None = None
+            try:
+                meta = await trade_fetcher.get_market_resolution(position.market_ticker)
+                for key in ("close_time", "expiration_time"):
+                    cand = _parse_iso((meta or {}).get(key))
+                    if cand is not None and (resolve_at is None or cand < resolve_at):
+                        resolve_at = cand
+            except Exception:
+                resolve_at = None  # fail-open on any lookup error
+            if resolve_at is not None:
+                minutes_left = (resolve_at - until).total_seconds() / 60.0
+                if minutes_left < min_minutes:
+                    if logger_agent is not None:
+                        logger_agent.log_event(
+                            self.name, "kalshi_copy_entry_skipped_ultra_short",
+                            {"strategy": self.name, "division": self.division,
+                             "whale": whale, "ticker": position.market_ticker,
+                             "minutes_to_resolution": round(minutes_left, 1),
+                             "min_minutes": min_minutes,
+                             "reason": "market_resolves_too_soon"},
+                        )
+                    return None
 
         copy_usd = self._size_tier_usd(position.contracts)
         price_str = f" @ ${entry_price:.2f}" if entry_price is not None else ""

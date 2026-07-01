@@ -255,13 +255,32 @@ def strategy(tmp_path):
 
 
 class _StubFetcher:
-    def __init__(self, trades: list[KalshiPublicTrade]):
+    def __init__(
+        self,
+        trades: list[KalshiPublicTrade],
+        *,
+        resolve_in_minutes: float | None = None,
+    ):
         self._trades = trades
+        # When set, get_market_resolution reports a close_time this many minutes
+        # from now (call-time relative) so the ultra-short filter can be exercised
+        # deterministically. Default None -> empty close_time -> filter fails open.
+        self._resolve_in_minutes = resolve_in_minutes
 
     async def get_market_trades(
         self, ticker: str, *, since: datetime, until: datetime, limit: int = 100,
     ) -> list[KalshiPublicTrade]:
         return [t for t in self._trades if t.ticker == ticker]
+
+    async def get_market_resolution(self, ticker: str) -> dict:
+        close_time = ""
+        if self._resolve_in_minutes is not None:
+            close_time = (
+                datetime.now(timezone.utc)
+                + timedelta(minutes=self._resolve_in_minutes)
+            ).isoformat()
+        return {"status": "pending", "result": None, "ticker": ticker,
+                "close_time": close_time, "expiration_time": ""}
 
 
 @pytest.mark.asyncio
@@ -433,6 +452,75 @@ async def test_entry_detected_on_second_poll_with_side(strategy):
     assert order.extra["whale_handle"] == "alice"
     assert order.extra["is_entry"] is True
     assert order.extra["side_detection_confidence"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_entry_skipped_when_market_resolves_too_soon(strategy):
+    """Ultra-short-market filter: a whale entry into a market that resolves
+    within min_minutes_to_resolution (default 60) is skipped — we can't exit
+    fast (e.g. 15-min) markets on a 10-min poll. Emits
+    kalshi_copy_entry_skipped_ultra_short."""
+    agent, db_url = strategy
+    _db.set_agent_state(
+        "kalshi_copy_trader", "selected_whales", ["alice"], db_url=db_url,
+    )
+    apify = _StubApifyClient([
+        [_wp("alice", "T1", 0.0, 100, is_open=True)],
+        [
+            _wp("alice", "T1", 0.0, 100, is_open=True),
+            _wp("alice", "T2", 0.0, 50, is_open=True),   # new entry
+        ],
+    ])
+    # High-confidence side detect for T2, but the market resolves in ~5 min.
+    fetcher = _StubFetcher(
+        [KalshiPublicTrade("T2", 50, 0.40, 0.60, "yes", datetime.now(timezone.utc))],
+        resolve_in_minutes=5,
+    )
+    logger = _StubLogger()
+
+    await agent.run_scan_cycle(               # cold start
+        apify_client=apify, trade_tape_fetcher=fetcher, logger_agent=logger,
+    )
+    orders = await agent.run_scan_cycle(      # entry cycle -> filtered
+        apify_client=apify, trade_tape_fetcher=fetcher, logger_agent=logger,
+    )
+    assert orders == []
+    kinds = [k for _, k, _ in logger.events]
+    assert "kalshi_copy_entry_skipped_ultra_short" in kinds
+    assert "kalshi_copy_entry_skipped_no_side" not in kinds  # side WAS detected
+
+
+@pytest.mark.asyncio
+async def test_entry_allowed_when_market_resolves_far_out(strategy):
+    """The same entry is NOT filtered when the market resolves well beyond
+    min_minutes_to_resolution (5 hours out)."""
+    agent, db_url = strategy
+    _db.set_agent_state(
+        "kalshi_copy_trader", "selected_whales", ["alice"], db_url=db_url,
+    )
+    apify = _StubApifyClient([
+        [_wp("alice", "T1", 0.0, 100, is_open=True)],
+        [
+            _wp("alice", "T1", 0.0, 100, is_open=True),
+            _wp("alice", "T2", 0.0, 50, is_open=True),
+        ],
+    ])
+    fetcher = _StubFetcher(
+        [KalshiPublicTrade("T2", 50, 0.40, 0.60, "yes", datetime.now(timezone.utc))],
+        resolve_in_minutes=300,   # 5h out -> allowed
+    )
+    logger = _StubLogger()
+
+    await agent.run_scan_cycle(
+        apify_client=apify, trade_tape_fetcher=fetcher, logger_agent=logger,
+    )
+    orders = await agent.run_scan_cycle(
+        apify_client=apify, trade_tape_fetcher=fetcher, logger_agent=logger,
+    )
+    assert len(orders) == 1
+    assert orders[0].symbol == "T2:yes"
+    kinds = [k for _, k, _ in logger.events]
+    assert "kalshi_copy_entry_skipped_ultra_short" not in kinds
 
 
 @pytest.mark.asyncio
