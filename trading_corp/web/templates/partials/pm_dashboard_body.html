@@ -614,6 +614,15 @@
             <th class="text-right px-3 py-2 font-medium">Realized P&amp;L</th>
             <th class="text-right px-3 py-2 font-medium">Open</th>
             <th class="text-left px-3 py-2 font-medium">Last entry</th>
+            {# ── Our copy-intel columns (Kalshi rows only; Polymarket rows show —) ── #}
+            <th class="text-right px-3 py-2 font-medium" title="Our would_have_placed copies">Copies</th>
+            <th class="text-right px-3 py-2 font-medium" title="Total detections (copies + no_side + sports skips)">Detected</th>
+            <th class="text-right px-3 py-2 font-medium" title="Skipped — no copy side found">No-side</th>
+            <th class="text-right px-3 py-2 font-medium" title="Skipped — sports market">Sports</th>
+            <th class="text-right px-3 py-2 font-medium" title="Copies ÷ detections">Copy%</th>
+            <th class="text-right px-3 py-2 font-medium" title="Our net P&amp;L after fees + slip">Net PnL</th>
+            <th class="text-right px-3 py-2 font-medium" title="Days since our last copy entry">Days ago</th>
+            <th class="text-right px-3 py-2 font-medium" title="% of our copies in crypto tickers">Crypto%</th>
             <th class="text-right px-3 py-2 font-medium">Action</th>
           </tr>
         </thead>
@@ -648,6 +657,45 @@
             </td>
             <td class="px-3 py-2 text-muted/80">
               {% if w.last_entry_ts %}{{ w.last_entry_ts[:19] | replace("T", " ") }}{% else %}—{% endif %}
+            </td>
+            {# ── Our copy-intel cells (Kalshi rows only; Polymarket rows stay at defaults=0/None) ── #}
+            <td class="px-3 py-2 text-right {% if w.intel_copies > 0 %}text-mono{% else %}text-muted/40{% endif %}">
+              {% if w.venue == "kalshi" %}{{ w.intel_copies if w.intel_copies else '—' }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right {% if w.intel_detections > 0 %}text-mono{% else %}text-muted/40{% endif %}">
+              {% if w.venue == "kalshi" %}{{ w.intel_detections if w.intel_detections else '—' }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right {% if w.intel_no_side > 0 %}text-loss/70{% else %}text-muted/40{% endif %}">
+              {% if w.venue == "kalshi" %}{{ w.intel_no_side if w.intel_no_side else '—' }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right {% if w.intel_sports > 0 %}text-muted/60{% else %}text-muted/40{% endif %}">
+              {% if w.venue == "kalshi" %}{{ w.intel_sports if w.intel_sports else '—' }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.venue != 'kalshi' or w.intel_copyability_pct is none %}text-muted/40
+              {% elif w.intel_copyability_pct < 5 %}text-loss
+              {% elif w.intel_copyability_pct < 30 %}text-mono/70
+              {% else %}text-gain{% endif %}">
+              {% if w.venue == "kalshi" and w.intel_copyability_pct is not none %}{{ '%.0f'|format(w.intel_copyability_pct) }}%{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.venue != 'kalshi' or w.intel_net_pnl is none %}text-muted/40
+              {% elif w.intel_net_pnl > 0 %}text-gain
+              {% elif w.intel_net_pnl < 0 %}text-loss
+              {% else %}text-mono/70{% endif %}">
+              {% if w.venue == "kalshi" and w.intel_net_pnl is not none %}{{ w.intel_net_pnl | money_signed }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.venue != 'kalshi' or w.intel_days_since_last_copy is none %}text-muted/40
+              {% elif w.intel_days_since_last_copy > 30 %}text-muted/60
+              {% else %}text-mono{% endif %}">
+              {% if w.venue == "kalshi" and w.intel_days_since_last_copy is not none %}{{ '%.0f'|format(w.intel_days_since_last_copy) }}d{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.venue != 'kalshi' or w.intel_crypto_pct is none %}text-muted/40
+              {% elif w.intel_crypto_pct >= 50 %}text-accent/80
+              {% else %}text-mono/70{% endif %}">
+              {% if w.venue == "kalshi" and w.intel_crypto_pct is not none %}{{ '%.0f'|format(w.intel_crypto_pct) }}%{% else %}—{% endif %}
             </td>
             <td class="px-3 py-2 text-right whitespace-nowrap">
               {% if w.venue == "kalshi" %}
@@ -722,11 +770,13 @@
       {%- set arrow = '' -%}
     {%- endif -%}
     {%- set slug = view.selected or 'kalshi_copy_trading' -%}
+    {%- set hide_uc = 1 if view.kalshi_hide_uncopyable else 0 -%}
+    {%- set hide_nn = 1 if view.kalshi_hide_net_neg else 0 -%}
     <a class="cursor-pointer select-none hover:text-mono {% if is_active %}text-mono{% endif %}"
-       hx-get="/partials/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}"
+       hx-get="/partials/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}&kalshi_hide_uncopyable={{ hide_uc }}&kalshi_hide_net_neg={{ hide_nn }}"
        hx-target="#pm-content"
        hx-swap="innerHTML"
-       hx-push-url="/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}">
+       hx-push-url="/prediction-markets/{{ slug }}?kalshi_watch_sort={{ key }}&kalshi_watch_desc={{ next_desc }}&kalshi_hide_uncopyable={{ hide_uc }}&kalshi_hide_net_neg={{ hide_nn }}">
       {{ label }}{% if arrow %}<span class="ml-0.5">{{ arrow }}</span>{% endif %}
     </a>
   {% endmacro %}
@@ -738,6 +788,29 @@
       <div class="flex items-center gap-3">
         <div class="text-[11px] font-mono text-muted">
           {{ view.kalshi_watch_only | length }} whales · self-reported stats from Apify · NOT copy-traded
+        </div>
+        {# Filter toggles: hide uncopyable / hide net-negative whales. #}
+        <div class="flex items-center gap-1 text-[10px] font-mono">
+          {%- set slug = view.selected or 'kalshi_copy_trading' -%}
+          {%- set sort_qs = ('&kalshi_watch_sort=' ~ view.kalshi_watch_sort ~ '&kalshi_watch_desc=' ~ (1 if view.kalshi_watch_desc else 0)) if view.kalshi_watch_sort else '' -%}
+          {%- set next_uc = 0 if view.kalshi_hide_uncopyable else 1 -%}
+          <a class="border border-edge px-2 py-0.5 hover:text-mono {% if view.kalshi_hide_uncopyable %}text-mono bg-pane-2/60{% else %}text-muted/60{% endif %}"
+             hx-get="/partials/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ next_uc }}&kalshi_hide_net_neg={{ 1 if view.kalshi_hide_net_neg else 0 }}{{ sort_qs }}"
+             hx-target="#pm-content"
+             hx-swap="innerHTML"
+             hx-push-url="/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ next_uc }}&kalshi_hide_net_neg={{ 1 if view.kalshi_hide_net_neg else 0 }}{{ sort_qs }}"
+             title="Hide whales with copyability &lt; 5%">
+            Hide uncopyable
+          </a>
+          {%- set next_nn = 0 if view.kalshi_hide_net_neg else 1 -%}
+          <a class="border border-edge px-2 py-0.5 hover:text-mono {% if view.kalshi_hide_net_neg %}text-mono bg-pane-2/60{% else %}text-muted/60{% endif %}"
+             hx-get="/partials/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ 1 if view.kalshi_hide_uncopyable else 0 }}&kalshi_hide_net_neg={{ next_nn }}{{ sort_qs }}"
+             hx-target="#pm-content"
+             hx-swap="innerHTML"
+             hx-push-url="/prediction-markets/{{ slug }}?kalshi_hide_uncopyable={{ 1 if view.kalshi_hide_uncopyable else 0 }}&kalshi_hide_net_neg={{ next_nn }}{{ sort_qs }}"
+             title="Hide whales with net P&amp;L &lt; $0 (n &#8805; 30 resolved)">
+            Hide net-neg
+          </a>
         </div>
         {# Run Discovery button — right-side slot (Addition D).
            Bootstrapped via hx-get on load so the route's _discovery_control_html
@@ -765,6 +838,17 @@
             <th class="text-right px-3 py-2 font-medium">{{ kalshi_watch_sort_link("open", "Open") }}</th>
             <th class="text-left px-3 py-2 font-medium">{{ kalshi_watch_sort_link("top_category", "Top Cat") }}</th>
             <th class="text-left px-3 py-2 font-medium">{{ kalshi_watch_sort_link("last_refresh", "Last Refresh") }}</th>
+            {# ── Our copy-intel columns (from audit_event + kalshi_round_trips) ── #}
+            <th class="text-right px-3 py-2 font-medium" title="Our would_have_placed copies (side=buy)">{{ kalshi_watch_sort_link("copies", "Copies") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Total detections (copies + no_side + sports skips)">{{ kalshi_watch_sort_link("detections", "Detected") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Skipped — no copy side found">{{ kalshi_watch_sort_link("no_side", "No-side") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Skipped — sports market">{{ kalshi_watch_sort_link("sports", "Sports") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Copies ÷ detections — low = structurally uncopyable">{{ kalshi_watch_sort_link("copyability", "Copy%") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Our net P&amp;L after Kalshi fees + $0.01/contract slip">{{ kalshi_watch_sort_link("net_pnl", "Net PnL") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Our resolved copies for this whale">{{ kalshi_watch_sort_link("intel_n_resolved", "Res (us)") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Hit rate on our resolved copies">{{ kalshi_watch_sort_link("hit_rate", "HR%") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Days since our last copy entry">{{ kalshi_watch_sort_link("days_since", "Days ago") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="% of our copies in crypto tickers">{{ kalshi_watch_sort_link("crypto_pct", "Crypto%") }}</th>
             <th class="text-right px-3 py-2 font-medium">Action</th>
           </tr>
         </thead>
@@ -813,6 +897,55 @@
             </td>
             <td class="px-3 py-2 text-muted/80">
               {% if w.last_refresh_iso %}{{ w.last_refresh_iso[:19] | replace("T", " ") }}{% else %}—{% endif %}
+            </td>
+            {# ── Our copy-intel cells ── #}
+            <td class="px-3 py-2 text-right {% if w.intel_copies > 0 %}text-mono{% else %}text-muted/40{% endif %}">
+              {{ w.intel_copies if w.intel_copies else '—' }}
+            </td>
+            <td class="px-3 py-2 text-right {% if w.intel_detections > 0 %}text-mono{% else %}text-muted/40{% endif %}">
+              {{ w.intel_detections if w.intel_detections else '—' }}
+            </td>
+            <td class="px-3 py-2 text-right {% if w.intel_no_side > 0 %}text-loss/70{% else %}text-muted/40{% endif %}">
+              {{ w.intel_no_side if w.intel_no_side else '—' }}
+            </td>
+            <td class="px-3 py-2 text-right {% if w.intel_sports > 0 %}text-muted/60{% else %}text-muted/40{% endif %}">
+              {{ w.intel_sports if w.intel_sports else '—' }}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.intel_copyability_pct is none %}text-muted/40
+              {% elif w.intel_copyability_pct < 5 %}text-loss
+              {% elif w.intel_copyability_pct < 30 %}text-mono/70
+              {% else %}text-gain{% endif %}">
+              {% if w.intel_copyability_pct is none %}—{% else %}{{ '%.0f'|format(w.intel_copyability_pct) }}%{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.intel_net_pnl is none %}text-muted/40
+              {% elif w.intel_net_pnl > 0 %}text-gain
+              {% elif w.intel_net_pnl < 0 %}text-loss
+              {% else %}text-mono/70{% endif %}">
+              {% if w.intel_net_pnl is none %}—{% else %}{{ w.intel_net_pnl | money_signed }}{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right {% if w.intel_n_resolved > 0 %}text-mono{% else %}text-muted/40{% endif %}">
+              {{ w.intel_n_resolved if w.intel_n_resolved else '—' }}
+            </td>
+            <td class="px-3 py-2 text-right font-semibold
+              {% if w.intel_hit_rate_pct is none %}text-muted/40
+              {% elif w.intel_hit_rate_pct >= 60 %}text-gain
+              {% elif w.intel_hit_rate_pct >= 40 %}text-mono
+              {% else %}text-loss{% endif %}">
+              {% if w.intel_hit_rate_pct is none %}—{% else %}{{ '%.0f'|format(w.intel_hit_rate_pct) }}%{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.intel_days_since_last_copy is none %}text-muted/40
+              {% elif w.intel_days_since_last_copy > 30 %}text-muted/60
+              {% else %}text-mono{% endif %}">
+              {% if w.intel_days_since_last_copy is none %}—{% else %}{{ '%.0f'|format(w.intel_days_since_last_copy) }}d{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right
+              {% if w.intel_crypto_pct is none %}text-muted/40
+              {% elif w.intel_crypto_pct >= 50 %}text-accent/80
+              {% else %}text-mono/70{% endif %}">
+              {% if w.intel_crypto_pct is none %}—{% else %}{{ '%.0f'|format(w.intel_crypto_pct) }}%{% endif %}
             </td>
             <td class="px-3 py-2 text-right whitespace-nowrap">
               <a href="https://kalshi.com/social/profile/{{ w.handle }}"

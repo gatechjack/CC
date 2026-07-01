@@ -338,11 +338,15 @@ def register(app: FastAPI) -> None:
         pm_watch_desc: int = 1,
         kalshi_watch_sort: str | None = None,
         kalshi_watch_desc: int = 1,
+        kalshi_hide_uncopyable: int = 0,
+        kalshi_hide_net_neg: int = 0,
     ):
         return await _render_pm_dashboard(
             request, division=None,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
             kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=bool(kalshi_watch_desc),
+            kalshi_hide_uncopyable=bool(kalshi_hide_uncopyable),
+            kalshi_hide_net_neg=bool(kalshi_hide_net_neg),
         )
 
     @app.get("/prediction-markets/{division}", response_class=HTMLResponse)
@@ -352,11 +356,15 @@ def register(app: FastAPI) -> None:
         pm_watch_desc: int = 1,
         kalshi_watch_sort: str | None = None,
         kalshi_watch_desc: int = 1,
+        kalshi_hide_uncopyable: int = 0,
+        kalshi_hide_net_neg: int = 0,
     ):
         return await _render_pm_dashboard(
             request, division=division,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
             kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=bool(kalshi_watch_desc),
+            kalshi_hide_uncopyable=bool(kalshi_hide_uncopyable),
+            kalshi_hide_net_neg=bool(kalshi_hide_net_neg),
         )
 
     async def _render_pm_dashboard(
@@ -366,6 +374,8 @@ def register(app: FastAPI) -> None:
         pm_watch_desc: bool = True,
         kalshi_watch_sort: str | None = None,
         kalshi_watch_desc: bool = True,
+        kalshi_hide_uncopyable: bool = False,
+        kalshi_hide_net_neg: bool = False,
     ):
         cmd_snap, view = await asyncio.gather(
             data.build_command_center(deps),
@@ -373,6 +383,8 @@ def register(app: FastAPI) -> None:
                 deps, division,
                 pm_watch_sort=pm_watch_sort, pm_watch_desc=pm_watch_desc,
                 kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=kalshi_watch_desc,
+                kalshi_hide_uncopyable=kalshi_hide_uncopyable,
+                kalshi_hide_net_neg=kalshi_hide_net_neg,
             ),
         )
         if view is None:
@@ -399,11 +411,15 @@ def register(app: FastAPI) -> None:
         pm_watch_desc: int = 1,
         kalshi_watch_sort: str | None = None,
         kalshi_watch_desc: int = 1,
+        kalshi_hide_uncopyable: int = 0,
+        kalshi_hide_net_neg: int = 0,
     ):
         return await _render_pm_partial(
             request, division=None,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
             kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=bool(kalshi_watch_desc),
+            kalshi_hide_uncopyable=bool(kalshi_hide_uncopyable),
+            kalshi_hide_net_neg=bool(kalshi_hide_net_neg),
         )
 
     @app.get("/partials/prediction-markets/{division}", response_class=HTMLResponse)
@@ -413,11 +429,15 @@ def register(app: FastAPI) -> None:
         pm_watch_desc: int = 1,
         kalshi_watch_sort: str | None = None,
         kalshi_watch_desc: int = 1,
+        kalshi_hide_uncopyable: int = 0,
+        kalshi_hide_net_neg: int = 0,
     ):
         return await _render_pm_partial(
             request, division=division,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=bool(pm_watch_desc),
             kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=bool(kalshi_watch_desc),
+            kalshi_hide_uncopyable=bool(kalshi_hide_uncopyable),
+            kalshi_hide_net_neg=bool(kalshi_hide_net_neg),
         )
 
     async def _render_pm_partial(
@@ -427,11 +447,15 @@ def register(app: FastAPI) -> None:
         pm_watch_desc: bool = True,
         kalshi_watch_sort: str | None = None,
         kalshi_watch_desc: bool = True,
+        kalshi_hide_uncopyable: bool = False,
+        kalshi_hide_net_neg: bool = False,
     ):
         view = await data.build_prediction_market_view(
             deps, division,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=pm_watch_desc,
             kalshi_watch_sort=kalshi_watch_sort, kalshi_watch_desc=kalshi_watch_desc,
+            kalshi_hide_uncopyable=kalshi_hide_uncopyable,
+            kalshi_hide_net_neg=kalshi_hide_net_neg,
         )
         if view is None:
             raise HTTPException(
