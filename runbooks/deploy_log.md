@@ -11103,3 +11103,30 @@ _state_board.html `57de1f17→39dcc5fb`, static/sfp_cockpit.css `40665c54→dd9d
 
 **★ Parity anchor:** branch `bitunix-sfp-mode-b-2026-06-28` merged → `main` (`--no-ff`) + pushed; main == prod
 == origin/main restored for all 9 deployed files.
+
+---
+
+## 2026-06-30 — BitUnix TWO-LIVE-DIVISION architecture (Phase 1 + Phase 2 cutover) — backlog #27
+
+**Phase 1 (code, additive; operator-deployed, then hard reboot).** 3 files: `trading_corp/utils/secrets.py`
+(+`bitunix_sfp` KV account), `trading_corp/agents/divisions/bitunix_position_reconciler.py` (optional
+`division=` → per-account row+audit isolation; `None`=byte-identical legacy),
+`trading_corp/main.py` (boot-guard count→**per-secret_ref distinctness**; reconciler ≤1 live=legacy single,
+≥2 live=per-division loop). SFP observer+strategy BYTE-UNCHANGED (`8a916526` / `91fd7672`). TARGET md5:
+secrets `6230e351`, reconciler `68f969d6`, main `f4f08806`. Full suite 28F baseline + 13 new tests. Merged
+`main` `5424ecb` (--no-ff). Verified live: PID 583, boot-guard PASS (1 live), reconciler clean, futures HALTED.
+
+**Phase 2 (cutover; key-separation swap).** 2a `divisions.yaml` bitunix_sfp `secret_ref bitunix_futures→
+bitunix_sfp` (account-neutral) → SFP on `BITUNIX-SFP-*` (original acct, $653.61) verified. 2b operator
+repointed `BITUNIX-FUTURES-*` KV → NEW funded account (Azure portal, IP-bound 168.62.60.79). 2c
+`strategies.yaml` bitunix_futures `mode halted→trading` + `execution_mode paper→live`; unit ExecStart
+`--live-divisions += bitunix_futures` (root, Azure Run Command). **Both divisions LIVE on DISTINCT accounts:**
+SFP $653.61 orig / futures $118.05 NEW; two isolated scoped reconcilers (`:bitunix_sfp` / `:bitunix_futures`);
+no 403. Engine PID 13679/NRestarts=0. Config committed to `main`: `3534e71` (cutover) + `9bfd7ff`
+(bitunix_sfp DD-cap 0.99 sync); main config blob md5 == prod (divisions `b2ac87cf` / strategies `740d1a02`).
+Includes Board-approved SFP scale-up (risk_pct 0.10/0.20, leverage 25.0).
+
+**★ Parity anchor:** `main == origin == prod-runtime == 9bfd7ff`. Unit `--live-divisions` is prod-only
+(not git-tracked, expected). Runners: `deploy/2026-06-30_two_live_cutover/`. Prod backups
+`*.bak-pre-2a-2026-06-30`, `*.bak-pre-2c-2026-06-30`. **Isolation VALIDATED LIVE 2026-06-30** (4 futures
+stop-outs → divergence/auto-book/halt-release all scoped `:bitunix_futures`; SFP clean).

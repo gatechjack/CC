@@ -1,0 +1,8 @@
+$ErrorActionPreference = 'Continue'
+$h = 'azureuser@trading.jacksumner.com'
+Write-Host '=== Phase 2a: SFP secret_ref bitunix_futures -> bitunix_sfp (account-neutral) + flat-guarded restart ==='
+$cmd = @'
+cd /home/azureuser/trading_corp || { echo PKGMISS; exit 9; }; DIV=config/divisions.yaml; DB=/home/azureuser/trading_corp/data/trading_corp.db; grep -q "secret_ref: bitunix_futures" "$DIV" || { echo "PRECOND FAIL: 'secret_ref: bitunix_futures' not in divisions.yaml (already swapped/drifted) - ABORT"; exit 2; }; open=$(sqlite3 "$DB" "SELECT COUNT(*) FROM paper_trade_record WHERE division='bitunix_sfp' AND result IS NULL AND (extra_json LIKE '%\"execution_mode\": \"live\"%' OR extra_json LIKE '%\"execution_mode\":\"live\"%')" 2>&1); [ "$open" = "0" ] || { echo "SFP NOT FLAT (open live rows: [$open]) - ABORT, no edit/restart"; exit 3; }; echo "flat-guard OK (0 open live SFP rows)"; cp "$DIV" "$DIV.bak-pre-2a-2026-06-30"; sed -i "s@secret_ref: bitunix_futures.*@secret_ref: bitunix_sfp   # Phase 2 cutover 2026-06-30: SFP on own key (BITUNIX-SFP-*, original account)@" "$DIV"; if grep -q "secret_ref: bitunix_sfp" "$DIV" && ! grep -q "secret_ref: bitunix_futures" "$DIV"; then echo "secret_ref swapped -> bitunix_sfp"; else echo "SWAP VERIFY FAIL - restoring"; cp "$DIV.bak-pre-2a-2026-06-30" "$DIV"; exit 4; fi; echo "restarting trading-corp (flat confirmed)..."; sudo -n systemctl restart trading-corp && sleep 4 && echo "RESTART ISSUED - is-active: $(systemctl is-active trading-corp)" || { echo "RESTART FAILED (exit nonzero)"; exit 5; }
+'@
+$cmd | ssh $h "tr -d '\r'|bash"
+Write-Host "ssh exit: $LASTEXITCODE  (0=swapped+restarted; 2=precond,3=not-flat,4=verify,5=restart - all abort safe, no partial)"

@@ -909,6 +909,31 @@ status on next audit run.
 
 # Other Open Items (not in priority list above)
 
+## P2 — Kill paper-trade path: remove SOL/XRP from bitunix_sfp config + expire stuck SOL paper row (filed 2026-06-30, operator-decided)
+
+**Operator decision 2026-06-30:** do NOT build a paper resolver; KILL the paper-trade path instead. The
+paper-sim/replay was RETIRED in the two-state collapse (`main.py:1743 _REPLAY_ENABLED=False`) and the reconciler
+resolves LIVE rows only (execution_mode=live filter) — so `arm:watch` paper rows (SOL/XRP) get written on entry
+but have NO resolver → sit open forever. All-time: 1 SFP paper fire, 0 resolved (SOL/XRP forward-track is inert).
+
+**Do:** (1) drop SOL + XRP from `bitunix_sfp.symbol_modes` in strategies.yaml (BTC + ETH STAY `arm:trading`/live
+— untouched); no more paper rows get written → the resolver gap becomes moot. (2) Expire/clean the 1 stuck SOL
+paper row (`e450302a-a7b0-4181-9d06-eb722c201fbb`, SOL/USDT.P buy, entry 71.01 / SL 69.609 / TP 73.812,
+`sfp_real_3m_bos`, opened 2026-06-28). (3) Prune dead `agents/paper_trade_replay.py` whenever.
+
+**How:** strategies.yaml edit (azureuser-editable) + flat-guarded restart via runner; row cleanup via sqlite
+(one-off). Then commit config to main for parity (like the Phase 2 cutover). Ref [[bitunix-two-live-phase1]].
+
+## P2 — Tune SOL SFP (carefully, no overfit) → add live per-coin (filed 2026-06-30)
+
+SOL SFPs are visually clean and the Mode-B detector fires them correctly (06-28 `sfp_real_3m_bos` 2R bracket
+that would've hit TP) — detection is NOT the gap. But that is n=1/eye-selected; the backtest showed **no clear
+SOL edge**. Revisit via a systematic SOL SFP backtest with **beats-null / no-overfit** discipline (see the
+2026-06-29 OU/momentum diagnostic arc `reports/2026-06-29_ou_meanreversion_diagnostic/` for the method —
+honest denominator, null gate, don't fit to the beautiful example). Add SOL (then XRP) to LIVE config ONLY
+when a robust, non-overfit edge is confirmed. **Go-forward gate: add coins one at a time, each individually
+tuned.** Own focused session. Ref [[bitunix-sfp-mode-b]], [[ou-meanreversion-dead-momentum-skew]].
+
 ## P3 — Remove `yfinance` from all use — free/undependable service (filed 2026-06-14 via Bitunix first-fill investigation)
 
 Goal: eliminate dependence on `yfinance` (free, unofficial Yahoo endpoint — rate-limited, schema-drifts, returns empty/"delisted" with no warning).
