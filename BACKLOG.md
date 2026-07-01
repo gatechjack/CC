@@ -1506,3 +1506,33 @@ contracts (e.g. `min(2¢, N% of price)`) so the % move is bounded; or (2) a **ha
 copy contracts priced below ~2¢, where slip precision is unavoidable). Low priority. Surfaced during
 the first-live-copy accounting review (the same review that produced the NO-leg / recording / filter
 fixes on branch `kalshi-copy-recording-shortfilter-2026-07-01`).
+
+## P3 — kalshi_copy_trader mass-disappearance guard false-fires on high-churn whales (filed 2026-07-01 via pritz786 feed-anomaly)
+
+The K5·4 feed-health / mass-exit guard (`_is_mass_disappearance` in
+`agents/strategies/kalshi_copy_trader.py`) fires `kalshi_copy_feed_anomaly reason=mass_disappearance`
+when a high % of a whale's previously-tracked positions vanish between polls — designed to catch a
+BROKEN feed (scraper returned empty). But a whale trading **ultra-short markets** (pritz786: 15-min BTC,
+live cricket) legitimately turns over **100% of positions between 10-min polls** (they all resolve +
+reopen), which is indistinguishable from a feed break to the current logic → it fired every poll →
+**Telegram spam** (2026-07-01, feed was HEALTHY at 17–22 rows). Workaround applied: pritz786 dropped
+from `selected_whales` (agent_state; prod-only). The ultra-short FILTER does NOT fix this — the guard
+tracks the WHALE's positions regardless of whether we copy.
+
+**Fix:** only trip the guard on a genuinely broken feed — e.g. gate on the TOTAL feed row count being
+~0 (all whales empty), or verify the "removed" positions didn't actually resolve (cross-check
+`get_market_resolution`), rather than firing on one whale's legit 100% churn. Consider a per-whale
+churn baseline. Low priority (workaround holds; benign — guard abstains, no money at risk).
+
+## P3 — kalshi copy dashboard Paper/Live/All toggle: v1 scoping gaps (filed 2026-07-01 via toggle build)
+
+The `wr_mode` toggle (deployed 2026-07-01, `main` `9218997`) scopes the summary stats + round-trip
+history + open LIST, but two surfaces were left unscoped for a surgical v1:
+1. **Open *tile count*** (`_query_pm_pending_count`) + **equity curve** (`_query_pm_equity_curve`) are
+   NOT mode-scoped — so in Paper/Live mode those two show all-time. No visible mismatch at launch
+   (go-live just happened → pending rows are post-epoch anyway); thread `kalshi_copy_mode`/
+   `kalshi_copy_epoch` into both to close it.
+2. **Sort/filter controls don't carry `wr_mode`** — clicking a Kalshi sort/filter after choosing a mode
+   resets scope to the default (LIVE). Add `wr_mode` to those link/query-string builders in
+   `pm_dashboard_body.html` for full cross-control persistence.
+Low priority (cosmetic; the toggle itself works + preserves other params).
