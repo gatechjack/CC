@@ -1939,7 +1939,7 @@ bitunix_sfp:
   stop_buffer_pct: 0.001
   tp_r: 2.0
   watch_hours: 12
-  side: regime                     # regime-aware bidirectional (2026-07-01, Board-approved)
+  side: regime                     # kill-switch (HOT, no restart): regime|long|short. regime=bidirectional; long=long-only (maiden-short rollback, shorts off + longs continue); short=short-only
   risk_pct_real: 0.05              # learn-account 2026-07-01 (Board-approved)
   risk_pct_considerable: 0.10      # learn-account 2026-07-01 (Board-approved)
   leverage: 10.0                   # learn-account 2026-07-01 (strategies.yaml scalar = SFP live leverage, NOT futures TIER_SIZING)

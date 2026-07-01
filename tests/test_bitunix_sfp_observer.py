@@ -95,6 +95,11 @@ def _mk(tmp_path, *, execution_mode="live", risk=None, broker=None,
         config=cfg, bar_caches={},
     )
     obs._yaml_auto_execute = lambda: True  # bypass strategies.yaml read in tests
+    obs._yaml_side = lambda: "regime"      # bidirectional (side-gate else reads real yaml)
+    # Seed the engine-native regime buffer -> 'up' (rising ramp) so the long tests
+    # exercise real regime-gated fires (long allowed in up/range), not warmup-skips.
+    for _w in obs._symbol_bos_tf:
+        obs._regime_closes[_w] = [100.0 + i * 0.1 for i in range(801)]
     return obs, de, risk, logger, db_url
 
 
