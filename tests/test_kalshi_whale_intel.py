@@ -732,3 +732,27 @@ def test_pm_whales_no_sort_preserves_default_order(db_url):
     assert ks_default == ks_none, (
         "selected_sort=None must produce same order as omitting the kwarg"
     )
+
+
+# ── Regression: dashboard macros must be defined BEFORE first use (Jinja doesn't
+# hoist macros). A 2026-07-01 prod 500 was caused by kalshi_selected_sort_link being
+# defined AFTER the Selected-Whales table used it (and inside the Watch-List
+# conditional). The synthetic dashboard tests missed it because they never render the
+# template with selected whales. ──
+def test_kalshi_selected_sort_link_macro_defined_before_use():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1]
+           / "trading_corp/web/templates/partials/pm_dashboard_body.html").read_text(encoding="utf-8")
+    assert src.count("{% macro kalshi_selected_sort_link") == 1, "expected exactly one macro definition"
+    def_idx = src.index("{% macro kalshi_selected_sort_link")
+    first_call_idx = src.index('kalshi_selected_sort_link("')  # a call uses "quoted" args
+    assert def_idx < first_call_idx, "kalshi_selected_sort_link is used before it is defined (Jinja UndefinedError)"
+
+
+def test_kalshi_watch_sort_link_macro_defined_before_use():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1]
+           / "trading_corp/web/templates/partials/pm_dashboard_body.html").read_text(encoding="utf-8")
+    def_idx = src.index("{% macro kalshi_watch_sort_link")
+    first_call_idx = src.index('kalshi_watch_sort_link("')
+    assert def_idx < first_call_idx

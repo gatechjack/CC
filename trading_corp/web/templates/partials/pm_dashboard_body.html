@@ -589,6 +589,39 @@
 </section>
 
 {# ── Whales tab — populated only for copy_trading divisions ─────────── #}
+{# Sortable-header macro for the Kalshi Selected Whales panel. Defined BEFORE the
+   whales section (and outside the Watch-List conditional) so it is in scope for the
+   Selected table headers regardless of whether the Watch List renders. Mirrors
+   kalshi_watch_sort_link; reads view.kalshi_selected_sort / view.kalshi_selected_desc.
+   Independence: every link also carries the current Watch List state. #}
+  {% macro kalshi_selected_sort_link(key, label, default_key=False) %}
+    {%- if view.kalshi_selected_sort -%}
+      {%- set is_active = (view.kalshi_selected_sort == key) -%}
+      {%- set active_desc = view.kalshi_selected_desc -%}
+    {%- else -%}
+      {%- set is_active = default_key -%}
+      {%- set active_desc = True -%}
+    {%- endif -%}
+    {%- if is_active -%}
+      {%- set next_desc = (0 if active_desc else 1) -%}
+      {%- set arrow = '↓' if active_desc else '↑' -%}
+    {%- else -%}
+      {%- set next_desc = 1 -%}
+      {%- set arrow = '' -%}
+    {%- endif -%}
+    {%- set slug = view.selected or 'kalshi_copy_trading' -%}
+    {%- set sel_uc = 1 if view.kalshi_sel_hide_uncopyable else 0 -%}
+    {%- set sel_nn = 1 if view.kalshi_sel_hide_net_neg else 0 -%}
+    {%- set watch_qs = ('&kalshi_watch_sort=' ~ view.kalshi_watch_sort ~ '&kalshi_watch_desc=' ~ (1 if view.kalshi_watch_desc else 0)) if view.kalshi_watch_sort else '' -%}
+    {%- set watch_qs = watch_qs ~ '&kalshi_hide_uncopyable=' ~ (1 if view.kalshi_hide_uncopyable else 0) ~ '&kalshi_hide_net_neg=' ~ (1 if view.kalshi_hide_net_neg else 0) -%}
+    <a class="cursor-pointer select-none hover:text-mono {% if is_active %}text-mono{% endif %}"
+       hx-get="/partials/prediction-markets/{{ slug }}?kalshi_selected_sort={{ key }}&kalshi_selected_desc={{ next_desc }}&kalshi_sel_hide_uncopyable={{ sel_uc }}&kalshi_sel_hide_net_neg={{ sel_nn }}{{ watch_qs }}"
+       hx-target="#pm-content"
+       hx-swap="innerHTML"
+       hx-push-url="/prediction-markets/{{ slug }}?kalshi_selected_sort={{ key }}&kalshi_selected_desc={{ next_desc }}&kalshi_sel_hide_uncopyable={{ sel_uc }}&kalshi_sel_hide_net_neg={{ sel_nn }}{{ watch_qs }}">
+      {{ label }}{% if arrow %}<span class="ml-0.5">{{ arrow }}</span>{% endif %}
+    </a>
+  {% endmacro %}
 {% if view.whales or view.kalshi_watch_only or view.polymarket_watch_only %}
 <section id="pm-tab-whales" class="pm-tab-panel hidden">
   {% if view.whales %}
@@ -815,40 +848,6 @@
     </a>
   {% endmacro %}
 
-  {# Sortable-header macro for the Kalshi Selected Whales panel.
-     Mirrors kalshi_watch_sort_link but reads view.kalshi_selected_sort /
-     view.kalshi_selected_desc. Default sort column: net_pnl (set
-     default_key=True on that call).
-     Independence: all links also carry current Watch List state so
-     clicking a Selected sort/filter never resets the Watch panel. #}
-  {% macro kalshi_selected_sort_link(key, label, default_key=False) %}
-    {%- if view.kalshi_selected_sort -%}
-      {%- set is_active = (view.kalshi_selected_sort == key) -%}
-      {%- set active_desc = view.kalshi_selected_desc -%}
-    {%- else -%}
-      {%- set is_active = default_key -%}
-      {%- set active_desc = True -%}
-    {%- endif -%}
-    {%- if is_active -%}
-      {%- set next_desc = (0 if active_desc else 1) -%}
-      {%- set arrow = '↓' if active_desc else '↑' -%}
-    {%- else -%}
-      {%- set next_desc = 1 -%}
-      {%- set arrow = '' -%}
-    {%- endif -%}
-    {%- set slug = view.selected or 'kalshi_copy_trading' -%}
-    {%- set sel_uc = 1 if view.kalshi_sel_hide_uncopyable else 0 -%}
-    {%- set sel_nn = 1 if view.kalshi_sel_hide_net_neg else 0 -%}
-    {%- set watch_qs = ('&kalshi_watch_sort=' ~ view.kalshi_watch_sort ~ '&kalshi_watch_desc=' ~ (1 if view.kalshi_watch_desc else 0)) if view.kalshi_watch_sort else '' -%}
-    {%- set watch_qs = watch_qs ~ '&kalshi_hide_uncopyable=' ~ (1 if view.kalshi_hide_uncopyable else 0) ~ '&kalshi_hide_net_neg=' ~ (1 if view.kalshi_hide_net_neg else 0) -%}
-    <a class="cursor-pointer select-none hover:text-mono {% if is_active %}text-mono{% endif %}"
-       hx-get="/partials/prediction-markets/{{ slug }}?kalshi_selected_sort={{ key }}&kalshi_selected_desc={{ next_desc }}&kalshi_sel_hide_uncopyable={{ sel_uc }}&kalshi_sel_hide_net_neg={{ sel_nn }}{{ watch_qs }}"
-       hx-target="#pm-content"
-       hx-swap="innerHTML"
-       hx-push-url="/prediction-markets/{{ slug }}?kalshi_selected_sort={{ key }}&kalshi_selected_desc={{ next_desc }}&kalshi_sel_hide_uncopyable={{ sel_uc }}&kalshi_sel_hide_net_neg={{ sel_nn }}{{ watch_qs }}">
-      {{ label }}{% if arrow %}<span class="ml-0.5">{{ arrow }}</span>{% endif %}
-    </a>
-  {% endmacro %}
   <div class="bg-pane border border-edge rounded-lg overflow-hidden {% if view.whales %}mt-6{% endif %}">
     <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
       <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
