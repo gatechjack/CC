@@ -1,0 +1,124 @@
+====================================================================================
+PER-COIN PERSONALIZATION BAKE-OFF -- regime-aware SFP (GROSS R, no fees)
+IS/OOS = 60/40 by entry time; selection on OOS (optimistic -- IS shown for consistency)
+====================================================================================
+  BTCUSDT: sigs=241 (long 118/short 123), 3m 2026-03-30 00:00->2026-06-19 00:54, IS/OOS cut=2026-05-17 14:56
+  ETHUSDT: sigs=141 (long 78/short 63), 3m 2026-05-11 00:00->2026-06-26 19:18, IS/OOS cut=2026-06-08 01:58
+  SOLUSDT: sigs=124 (long 70/short 54), 3m 2026-05-11 00:00->2026-06-26 19:09, IS/OOS cut=2026-06-08 01:53
+  XRPUSDT: sigs=136 (long 65/short 71), 3m 2026-05-11 00:00->2026-06-26 19:21, IS/OOS cut=2026-06-08 02:00
+
+====================================================================================
+STEP 1 -- regime-engine bake-off (side-by-regime, fixed 2R). GROSS OOS.
+====================================================================================
+
+  BTCUSDT  (base OOS +0.138R):
+    base15  IS n= 50 +0.020R | OOS n= 29 +0.138R  <BASE>
+    1H      IS n= 60 +0.100R | OOS n= 34 +0.324R
+    4H      IS n= 57 +0.053R | OOS n= 36 +0.333R
+    struct  IS n= 67 -0.104R | OOS n= 37 -0.189R
+      -> 1H: OOS +0.324 vs base +0.138, null_p95 +0.286 -> ADOPT
+      -> 4H: OOS +0.333 vs base +0.138, null_p95 +0.243 -> ADOPT
+    ==> BTCUSDT regime engine: 4H  (4H OOS +0.333 > base +0.138, null_p95 +0.243)
+
+  ETHUSDT  (base OOS -0.073R):
+    base15  IS n= 34 +0.147R | OOS n= 27 -0.073R  <BASE>
+    1H      IS n= 31 +0.258R | OOS n= 29 -0.241R
+    4H      IS n= 33 +0.091R | OOS n= 23 +0.479R
+    struct  IS n= 37 +0.054R | OOS n= 33 -0.091R
+      -> 4H: OOS +0.479 vs base -0.073, null_p95 +0.683 -> reject(null)
+    ==> ETHUSDT regime engine: base15  (no non-base engine beat base OOS + null)
+
+  SOLUSDT  (base OOS +0.364R):
+    base15  IS n= 29 +0.241R | OOS n= 22 +0.364R  <BASE>
+    1H      IS n= 26 +0.038R | OOS n= 32 -0.062R
+    4H      IS n= 29 +0.138R | OOS n= 24 +0.375R
+    struct  IS n= 43 -0.093R | OOS n= 31 +0.355R
+      -> 4H: OOS +0.375 vs base +0.364, null_p95 +0.626 -> reject(null)
+    ==> SOLUSDT regime engine: base15  (no non-base engine beat base OOS + null)
+
+  XRPUSDT  (base OOS +0.925R):
+    base15  IS n= 30 +0.300R | OOS n= 16 +0.925R  <BASE>
+    1H      IS n= 35 +0.543R | OOS n= 21 +0.467R
+    4H      IS n= 36 +0.333R | OOS n= 21 +0.752R
+    struct  IS n= 43 +0.186R | OOS n= 17 +0.765R
+    ==> XRPUSDT regime engine: base15  (no non-base engine beat base OOS + null)
+
+====================================================================================
+STEP 2 -- R:R per active cell (chosen engine fixed). GROSS OOS. Adopt vs 2R.
+====================================================================================
+
+  BTCUSDT (engine 4H):
+    long-up    [THIN n<20]: 1:n=  2 +0.000R  1.5:n=  2 -1.000R  2:n=  0    --  2.5:n=  0    --  3:n=  0    --  trail:n=  2 -0.500R
+        -> 2R OOS n=  0    --; best=1(+0.000); keep 2R
+    long-range [THIN n<20]: 1:n=  6 +0.000R  1.5:n=  5 +0.000R  2:n=  5 +0.200R  2.5:n=  5 -0.300R  3:n=  4 +0.000R  trail:n=  5 -0.200R
+        -> 2R OOS n=  5 +0.200R; best=2(+0.200); keep 2R
+    short-range [THIN n<20]: 1:n=  4 +0.500R  1.5:n=  4 +0.875R  2:n=  4 +1.250R  2.5:n=  3 +0.167R  3:n=  3 +0.333R  trail:n=  4 +0.750R
+        -> 2R OOS n=  4 +1.250R; best=2(+1.250); keep 2R
+    short-down : 1:n= 34 +0.118R  1.5:n= 32 +0.250R  2:n= 28 +0.179R  2.5:n= 28 +0.250R  3:n= 28 +0.286R  trail:n= 25 +0.226R
+        -> 2R OOS n= 28 +0.179R; best=3(+0.286); ADOPT
+
+  ETHUSDT (engine base15):
+    long-up    [THIN n<20]: 1:n= 17 -0.059R  1.5:n= 16 -0.375R  2:n= 15 -0.400R  2.5:n= 15 -0.533R  3:n= 15 -0.467R  trail:n= 17 -0.294R
+        -> 2R OOS n= 15 -0.400R; best=1(-0.059); best=1 but n=17<20 -> PROVISIONAL (keep 2R)
+    long-range [THIN n<20]: 1:n=  2 +0.000R  1.5:n=  2 +0.250R  2:n=  2 +0.500R  2.5:n=  2 +0.750R  3:n=  2 -1.000R  trail:n=  2 -0.500R
+        -> 2R OOS n=  2 +0.500R; best=2.5(+0.750); best=2.5 but n=2<20 -> PROVISIONAL (keep 2R)
+    short-range [THIN n<20]: 1:n=  1 +1.000R  1.5:n=  1 +1.500R  2:n=  1 +2.000R  2.5:n=  1 +2.500R  3:n=  1 +3.000R  trail:n=  1 +2.000R
+        -> 2R OOS n=  1 +2.000R; best=3(+3.000); best=3 but n=1<20 -> PROVISIONAL (keep 2R)
+    short-down  [THIN n<20]: 1:n= 10 -0.098R  1.5:n=  9 -0.053R  2:n=  9 +0.114R  2.5:n=  6 +0.337R  3:n=  6 +0.504R  trail:n= 10 +0.202R
+        -> 2R OOS n=  9 +0.114R; best=3(+0.504); best=3 but n=6<20 -> PROVISIONAL (keep 2R)
+
+  SOLUSDT (engine base15):
+    long-up    [THIN n<20]: 1:n= 12 -0.167R  1.5:n= 12 -0.167R  2:n= 12 +0.000R  2.5:n= 12 +0.167R  3:n= 12 +0.333R  trail:n= 12 -0.083R
+        -> 2R OOS n= 12 +0.000R; best=3(+0.333); best=3 but n=12<20 -> PROVISIONAL (keep 2R)
+    long-range [THIN n<20]: 1:n=  2 +0.000R  1.5:n=  2 +0.250R  2:n=  2 +0.500R  2.5:n=  2 +0.750R  3:n=  2 +1.000R  trail:n=  2 +1.000R
+        -> 2R OOS n=  2 +0.500R; best=3(+1.000); best=3 but n=2<20 -> PROVISIONAL (keep 2R)
+    short-range [THIN n<20]: 1:n=  2 +1.000R  1.5:n=  2 +1.500R  2:n=  2 +2.000R  2.5:n=  2 +2.500R  3:n=  2 +3.000R  trail:n=  2 +1.000R
+        -> 2R OOS n=  2 +2.000R; best=3(+3.000); best=3 but n=2<20 -> PROVISIONAL (keep 2R)
+    short-down  [THIN n<20]: 1:n=  6 +0.000R  1.5:n=  6 +0.250R  2:n=  6 +0.500R  2.5:n=  6 +0.750R  3:n=  6 +1.000R  trail:n=  6 +1.167R
+        -> 2R OOS n=  6 +0.500R; best=trail(+1.167); best=trail but n=6<20 -> PROVISIONAL (keep 2R)
+
+  XRPUSDT (engine base15):
+    long-up    [THIN n<20]: 1:n=  5 +0.200R  1.5:n=  5 +0.000R  2:n=  5 +0.200R  2.5:n=  5 -0.300R  3:n=  5 -0.200R  trail:n=  5 +0.400R
+        -> 2R OOS n=  5 +0.200R; best=trail(+0.400); best=trail but n=5<20 -> PROVISIONAL (keep 2R)
+    long-range [THIN n<20]: 1:n=  1 +1.000R  1.5:n=  1 +1.500R  2:n=  1 +2.000R  2.5:n=  1 +2.500R  3:n=  1 +3.000R  trail:n=  1 +1.000R
+        -> 2R OOS n=  1 +2.000R; best=3(+3.000); best=3 but n=1<20 -> PROVISIONAL (keep 2R)
+    short-range [THIN n<20]: 1:n=  4 +1.000R  1.5:n=  3 +0.667R  2:n=  3 +1.000R  2.5:n=  3 +1.333R  3:n=  3 +1.667R  trail:n=  4 +0.000R
+        -> 2R OOS n=  3 +1.000R; best=3(+1.667); best=3 but n=3<20 -> PROVISIONAL (keep 2R)
+    short-down  [THIN n<20]: 1:n=  8 +0.350R  1.5:n=  8 +0.662R  2:n=  8 +0.975R  2.5:n=  8 +0.850R  3:n=  8 +1.100R  trail:n=  8 +0.350R
+        -> 2R OOS n=  8 +0.975R; best=3(+1.100); best=3 but n=8<20 -> PROVISIONAL (keep 2R)
+
+====================================================================================
+STEP 3 -- regime threshold probe (light; slope cutoff). GROSS OOS.
+====================================================================================
+  BTCUSDT (engine 4H, base OOS +0.333R):
+    slope_thr=0.000: OOS n= 36 +0.333R  (= base thr=0)
+    slope_thr=0.002: OOS n= 36 +0.250R
+    slope_thr=0.005: OOS n= 40 +0.050R
+    -> keep base thresholds unless a shift CLEARLY beats OOS (sample is thin; do not over-tune)
+  ETHUSDT (engine base15, base OOS -0.073R):
+    slope_thr=0.000: OOS n= 27 -0.073R  (= base thr=0)
+    slope_thr=0.002: OOS n= 32 -0.406R
+    slope_thr=0.005: OOS n= 39 -0.205R
+    -> keep base thresholds unless a shift CLEARLY beats OOS (sample is thin; do not over-tune)
+  SOLUSDT (engine base15, base OOS +0.364R):
+    slope_thr=0.000: OOS n= 22 +0.364R  (= base thr=0)
+    slope_thr=0.002: OOS n= 25 +0.200R
+    slope_thr=0.005: OOS n= 28 +0.393R  BEATS base
+    -> keep base thresholds unless a shift CLEARLY beats OOS (sample is thin; do not over-tune)
+  XRPUSDT (engine base15, base OOS +0.925R):
+    slope_thr=0.000: OOS n= 16 +0.925R  (= base thr=0)
+    slope_thr=0.002: OOS n= 15 +1.053R  BEATS base
+    slope_thr=0.005: OOS n= 21 +0.609R
+    -> keep base thresholds unless a shift CLEARLY beats OOS (sample is thin; do not over-tune)
+
+====================================================================================
+FINAL -- base vs personalized, GROSS OOS, per coin
+====================================================================================
+  coin     engine     base-2R OOS   personalized OOS  null_p95 beats_null  per-cell targets
+  BTCUSDT  4H       n= 29 +0.138R      n= 36 +0.417R +0.258        YES   Sdo=3.0
+  ETHUSDT  base15   n= 27 -0.073R      n= 27 -0.073R +0.551         no   all 2R
+  SOLUSDT  base15   n= 22 +0.364R      n= 22 +0.364R +0.600         no   all 2R
+  XRPUSDT  base15   n= 16 +0.925R      n= 16 +0.925R +1.257         no   all 2R
+
+  (personalized OOS is UPWARD-BIASED: targets/engine were SELECTED on OOS. Trust
+   only configs that also win IS and beat null; treat thin-cell adoptions as provisional.)
