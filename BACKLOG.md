@@ -14,15 +14,23 @@ lines; post-grooming organized around three operator priorities + open items.**
 
 ## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
 
-Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:trading`**, **SOL + XRP `arm:watch`
-(paper)**. Open work:
-- **Forward-track BTC/ETH to n≥30, THEN scale money.** Sizing is trivial by design (risk_pct 0.0025, lev 2.0);
-  the operator scales capital only after BTC/ETH 3m-BOS reach a verdict-grade sample. n=1 so far (ETH stop-out
-  −1.16R, 2026-06-28 20:15Z). Track win%/avgR per coin via the cockpit TIER-A / `paper_trade_record`
-  (`division='bitunix_sfp'`, `source_signal` like `sfp_*_3m_bos`).
-- **SOL/XRP stay watch-only (paper).** Backtest negative/thin (2026-06-26 reports). Revisit a live arm only if
-  forward-track paper data shows an edge. Arm = flip `strategies.yaml bitunix_sfp.symbol_modes.<coin>.arm`
-  `watch→trading` + restart (Board ack; not code-gated).
+Mode B is LIVE: **BTC + ETH `arm:trading`** only. **★ SOL + XRP REMOVED 2026-07-01** (kill-paper — dropped
+from `symbols` AND `symbol_modes`, stuck SOL paper row expired; prod strategies.yaml `740d1a02→1ec7832b`; see
+`deploy_log.md` 2026-07-01 + `deploy/2026-06-30_kill_paper_sol_xrp/`). Open work:
+- **Forward-track BTC/ETH to n≥30, THEN scale money.** (Live sizing is 0.10/0.20 risk_pct, lev 25 — see memory
+  [[bitunix-sfp-live-sizing-2026-06-30]], NOT the old 0.0025/lev2.) Track win%/avgR per coin via
+  `paper_trade_record` (`division='bitunix_sfp'`, `source_signal` like `sfp_*_3m_bos`).
+- **★ THE LEAD — REGIME-AWARE SFP (side selected by regime).** 2026-07-01 research (spikes 1–4,
+  `spike_pivot_degree/` harness on branch `sfp-regime-research-2026-07-01`; writeup
+  `Desktop/bitunix_reports/revised_sfp_strategy_lead_2026-07-01.md`): the current LONG-ONLY SFP is negative
+  in-regime (bear) + near-inert (pivot-50 fires ~5×/46d). Findings: pivot-degree=data-thin/null-fail; longs'
+  2:1 target is the worst end; SHORT SFPs flip positive in the bear (bear-beta) + want bigger targets; **REGIME
+  conditioning cleanly separates — trend-aligned +0.29R vs counter-trend ~0; longs bleed ONLY in downtrends.**
+  Proposed build: a regime classifier (candidate 15m EMA-200 + slope: UP/DOWN/RANGE) picks the side — long SFP
+  in up/range, short SFP in down/range, never counter-trend. **Caveats:** 46d ONE regime (bear), short leg is
+  partly bear-beta (untested in a real bull), not yet null/OOS-hardened, no fees/slippage. Gate: forward-validate
+  across regimes (weekly review; first regime-flip = make-or-break). **Under external-agent review before the
+  next build step.** SOL tuning is subsumed by this (same knobs).
 - **BTC is now on 3m-BOS, OFF its validated 15m-BOS edge** (operator's 2026-06-28 choice). If 3m underperforms
   on the forward-track, revert = `symbol_modes."BTC/USDT.P".bos_tf` `3m→15m` + restart (the Mode-A path is
   byte-intact and still parity-tested).

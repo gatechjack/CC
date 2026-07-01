@@ -11130,3 +11130,28 @@ Includes Board-approved SFP scale-up (risk_pct 0.10/0.20, leverage 25.0).
 (not git-tracked, expected). Runners: `deploy/2026-06-30_two_live_cutover/`. Prod backups
 `*.bak-pre-2a-2026-06-30`, `*.bak-pre-2c-2026-06-30`. **Isolation VALIDATED LIVE 2026-06-30** (4 futures
 stop-outs → divergence/auto-book/halt-release all scoped `:bitunix_futures`; SFP clean).
+
+## 2026-07-01 03:23 UTC — Bitunix SFP KILL-PAPER (drop SOL/XRP) + RH-pickle incident/recovery
+
+**Kill-paper (config-only, targeted hunk).** `config/strategies.yaml` `bitunix_sfp`: dropped SOL + XRP from
+BOTH `symbols` and `symbol_modes` (BTC/ETH stay `arm:trading`/live). ★ Removing from `symbols` too is REQUIRED
+— `SfpConfig.mode_for()` defaults an absent symbol to `arm="trading"` (LIVE), so symbol_modes-only would flip
+them live (handoff said symbol_modes-only; corrected). Expired the 1 stuck SOL paper row `e450302a` (paper-sim
+retired → no resolver; `result=NULL→expired`). Drift-gated apply (prod md5 `740d1a027da6…` → **`1ec7832bab86…`**),
+backup `strategies.yaml.bak-pre-killpaper-2026-06-30`. Verified live: boot log `bitunix_sfp observer wired:
+symbols=['BTC/USDT.P','ETH/USDT.P']`. Package `deploy/2026-06-30_kill_paper_sol_xrp/` (RUNBOOK + kp_apply/
+kp_restart/kp_bootsmoke.sh). Runners cc\kp_apply.ps1 / kp_restart.ps1. Config staged on branch
+`session-wrap-2026-07-01` (+ `kill-paper-sol-xrp-2026-06-30`); **main-parity merge DEFERRED** — a concurrent
+session held `main` (`cc-merge-wt`, advanced to `a73044e` w/ Kalshi V2). **Prod strategies.yaml is AHEAD of
+`main` until that merge lands** — do NOT deploy `main`→prod config before merging, or the kill reverts.
+
+**⚠ INCIDENT — full-engine outage (~20 min), agent-caused.** The kill-paper `systemctl restart` (03:23) hung
+the WHOLE engine mid-boot: RH session pickle expired → PEAD RobinhoodBroker fell to interactive `rs.login()` →
+device-approval challenge → blocked on a 2FA `input()` a non-interactive service can't answer; boot froze BEFORE
+bitunix/Kalshi/reconcilers wired. Exposure LOW (0 engine-managed live positions anywhere; manual trades = safe
+orphans). **Recovery (option A):** operator ran `rh_pickle_refresh.ps1` (interactive `ssh -t`
+`pickle_refresh.py`, device-approved) → fresh `~/.tokens/robinhood.pickle` → restart 03:42 (PID 34501) booted
+CLEAN past RH. Verified: SFP wired BTC+ETH only, two scoped reconcilers, SFP acct clean (manual BTC closed),
+futures acct 1 orphan (halted, NOT flattened), 0 tracebacks. Lesson → memory [[prod-restart-rh-pickle-hazard]]:
+**verify RH pickle freshness (>~20h = refresh first) before ANY full-unit restart.** Real pickle =
+`~/.tokens/robinhood.pickle` (`~/robinhood.pickle` = 0-byte red herring).
