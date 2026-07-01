@@ -1,0 +1,89 @@
+================================================================================
+TWO-LAYER REGIME-AWARE SFP -- deploy-candidate backtest (live 15m SFP -> 3m BOS)
+================================================================================
+
+[LOAD] 3m entry window (gaps must be 0) + 230d 15m context:
+  BTCUSDT: 3m n=38899 2026-03-30 00:00->2026-06-19 00:54 (11.6w) gaps=0 | 15m 22086 bars
+  ETHUSDT: 3m n=22467 2026-05-11 00:00->2026-06-26 19:18 (6.7w) gaps=0 | 15m 22831 bars
+  SOLUSDT: 3m n=22464 2026-05-11 00:00->2026-06-26 19:09 (6.7w) gaps=0 | 15m 22831 bars
+  XRPUSDT: 3m n=22468 2026-05-11 00:00->2026-06-26 19:21 (6.7w) gaps=0 | 15m 22830 bars
+
+[BUILD] Layer-1-gated candidates + HTF strength tiers (1H/4H/1D):
+  BTCUSDT: candidates long=63 short=37 (post Layer-1 side gate, pre one-open)
+  ETHUSDT: candidates long=31 short=40 (post Layer-1 side gate, pre one-open)
+  SOLUSDT: candidates long=26 short=26 (post Layer-1 side gate, pre one-open)
+  XRPUSDT: candidates long=14 short=47 (post Layer-1 side gate, pre one-open)
+
+[NULL PREP] ungated long/short @2R regime-tagged (for aligned-edge null)...
+  aligned (ungated, @2R, net): n= 211 WR  39% +0.005R  null_p95=-0.024 -> BEATS
+
+================================================================================
+CONFIG: BASELINE-2R   (no Layer 2 -- 2R everywhere)
+================================================================================
+  OVERALL net: n= 237 WR  40% +0.038R  (gross avg +0.198R)  totR=+9.1
+  P&L illustration (sum net R x risk, 10x lev enables size): @0.05risk=+45.5%eq  @0.10risk=+91.0%eq  [pooled over 4 coins' ~7-12wk windows]
+  side x regime (net)                      UP                RANGE                 DOWN
+    long                 n=  83 WR  34% -0.156R n=  28 WR  36% -0.089R     n=   0        --
+    short                    n=   0        -- n=  30 WR  40% +0.058R n=  96 WR  46% +0.237R
+  per-coin     net expR (n)  fires/wk  side x regime net (L:up/rng | S:rng/dn)
+  BTCUSDT  -0.113( 79)       6.82   L:+0.12(37)/-0.36(11) | S:-0.35(11)/-0.28(20)
+  ETHUSDT  -0.113( 61)       9.12   L:-0.67(18)/-0.38(8) | S:+0.33(4)/+0.22(31)
+  SOLUSDT  +0.159( 51)       7.63   L:-0.20(19)/+0.56(7) | S:+0.68(5)/+0.23(20)
+  XRPUSDT  +0.366( 46)       6.88   L:-0.18(9)/+0.32(2) | S:+0.08(10)/+0.68(25)
+
+================================================================================
+CONFIG: 1H   (Layer 2 tier by 1H EMA-200 strength)
+================================================================================
+  OVERALL net: n= 248 WR  50% -0.011R  (gross avg +0.149R)  totR=-2.6
+  P&L illustration (sum net R x risk, 10x lev enables size): @0.05risk=-13.2%eq  @0.10risk=-26.4%eq  [pooled over 4 coins' ~7-12wk windows]
+  side x regime (net)                      UP                RANGE                 DOWN
+    long                 n=  88 WR  48% -0.120R n=  28 WR  43% -0.250R     n=   0        --
+    short                    n=   0        -- n=  32 WR  50% -0.046R n= 100 WR  53% +0.164R
+  by R:R tier (net)           strong/2.0R    moderate/1.5R       mild/1.25R        weak/1.0R
+    expectancy           n=  41 WR  39% +0.081R n=  56 WR  52% +0.130R n=  53 WR  51% -0.010R n=  98 WR  52% -0.130R
+  TIER SEPARATION: strong>weak=True  monotonic(strong>=mod>=mild>=weak)=False | strong-2R null_p95=+0.297 -> no
+  per-coin     net expR (n)  fires/wk  side x regime net (L:up/rng | S:rng/dn)
+  BTCUSDT  -0.114( 83)       7.17   L:+0.07(39)/-0.34(11) | S:-0.47(12)/-0.14(21)
+  ETHUSDT  -0.114( 64)       9.57   L:-0.27(20)/-0.63(8) | S:-0.17(4)/+0.12(32)
+  SOLUSDT  +0.046( 51)       7.63   L:-0.25(19)/+0.02(7) | S:+0.83(5)/+0.14(20)
+  XRPUSDT  +0.236( 50)       7.48   L:-0.33(10)/+0.82(2) | S:+0.06(11)/+0.48(27)
+
+================================================================================
+CONFIG: 4H   (Layer 2 tier by 4H EMA-200 strength)
+================================================================================
+  OVERALL net: n= 245 WR  50% -0.010R  (gross avg +0.150R)  totR=-2.4
+  P&L illustration (sum net R x risk, 10x lev enables size): @0.05risk=-11.9%eq  @0.10risk=-23.9%eq  [pooled over 4 coins' ~7-12wk windows]
+  side x regime (net)                      UP                RANGE                 DOWN
+    long                 n=  87 WR  47% -0.170R n=  28 WR  43% -0.232R     n=   0        --
+    short                    n=   0        -- n=  31 WR  52% +0.030R n=  99 WR  55% +0.182R
+  by R:R tier (net)           strong/2.0R    moderate/1.5R       mild/1.25R        weak/1.0R
+    expectancy           n=  42 WR  33% -0.087R n=  54 WR  57% +0.270R n=  34 WR  53% +0.042R n= 115 WR  52% -0.128R
+  TIER SEPARATION: strong>weak=True  monotonic(strong>=mod>=mild>=weak)=False | strong-2R null_p95=+0.283 -> no
+  per-coin     net expR (n)  fires/wk  side x regime net (L:up/rng | S:rng/dn)
+  BTCUSDT  -0.151( 83)       7.17   L:-0.03(39)/-0.27(11) | S:-0.40(12)/-0.17(21)
+  ETHUSDT  -0.058( 63)       9.42   L:-0.17(20)/-0.63(8) | S:-0.05(4)/+0.16(31)
+  SOLUSDT  +0.056( 51)       7.63   L:-0.30(19)/-0.01(7) | S:+1.23(5)/+0.13(20)
+  XRPUSDT  +0.228( 48)       7.18   L:-0.51(9)/+0.82(2) | S:-0.02(10)/+0.52(27)
+
+================================================================================
+CONFIG: 1D   (Layer 2 tier by 1D EMA-200 strength)
+================================================================================
+  OVERALL net: n= 244 WR  50% -0.015R  (gross avg +0.145R)  totR=-3.6
+  P&L illustration (sum net R x risk, 10x lev enables size): @0.05risk=-18.2%eq  @0.10risk=-36.4%eq  [pooled over 4 coins' ~7-12wk windows]
+  side x regime (net)                      UP                RANGE                 DOWN
+    long                 n=  88 WR  50% -0.169R n=  28 WR  46% -0.232R     n=   0        --
+    short                    n=   0        -- n=  31 WR  48% +0.070R n=  97 WR  52% +0.160R
+  by R:R tier (net)           strong/2.0R    moderate/1.5R       mild/1.25R        weak/1.0R
+    expectancy           n=  58 WR  47% +0.288R n=  23 WR  57% +0.286R n=   0        -- n= 163 WR  50% -0.165R
+  TIER SEPARATION: strong>weak=True  monotonic(strong>=mod>=mild>=weak)=False | strong-2R null_p95=+0.333 -> no
+  ** 1D FLAG: 92/244 trades fell in the EMA-200 UNWARMED region (forced weak/1R) -- 1D tiering is unreliable on this window. **
+  per-coin     net expR (n)  fires/wk  side x regime net (L:up/rng | S:rng/dn)
+  BTCUSDT  -0.147( 83)       7.17   L:-0.03(40)/-0.27(11) | S:-0.28(12)/-0.23(20)
+  ETHUSDT  -0.076( 64)       9.57   L:-0.17(20)/-0.63(8) | S:-0.05(4)/+0.12(32)
+  SOLUSDT  +0.119( 51)       7.63   L:-0.30(19)/-0.01(7) | S:+1.38(5)/+0.25(20)
+  XRPUSDT  +0.160( 46)       6.88   L:-0.51(9)/+0.82(2) | S:-0.12(10)/+0.46(25)
+
+================================================================================
+READOUT: pick the HTF config whose tiers are MONOTONIC (strong-2R > weak-1R) and
+whose strong-2R beats the null. Fire rate = accepted trades/week per coin above.
+================================================================================
