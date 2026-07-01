@@ -609,9 +609,7 @@ class BitunixSfpObserver:
             new = self._compute_regime(wire)
             old = self._last_regime.get(wire)
             self._last_regime[wire] = new                    # always update (incl None)
-            if not research_log.is_regime_flip(old, new):
-                return
-            # row metadata (ema200 + 32-bar slope) from the SAME buffer — not a 2nd regime.
+            # ema200 + 32-bar slope from the SAME buffer — metadata, not a 2nd regime.
             closes = self._regime_closes.get(wire) or []
             ema200 = slope = None
             if len(closes) >= REGIME_MIN_BARS:
@@ -621,10 +619,16 @@ class BitunixSfpObserver:
                 if ref:
                     slope = (em[-1] - ref) / ref
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            research_log.log_flip(self.db_url, ts=ts, coin=wire, old_regime=old,
-                                  new_regime=new, ema200=ema200, slope=slope)
-            self._audit("sfp_regime_flip", {"symbol": symbol_display, "coin": wire,
-                        "old_regime": old, "new_regime": new, "to_up": new == "up"})
+            # Always-current mirror (read-only display; the SAME `new`, single-source).
+            if new is not None:
+                research_log.upsert_regime_state(self.db_url, coin=wire, regime=new,
+                                                 ema200=ema200, slope=slope, ts=ts)
+            # Flip row + audit ONLY on a real label->label change.
+            if research_log.is_regime_flip(old, new):
+                research_log.log_flip(self.db_url, ts=ts, coin=wire, old_regime=old,
+                                      new_regime=new, ema200=ema200, slope=slope)
+                self._audit("sfp_regime_flip", {"symbol": symbol_display, "coin": wire,
+                            "old_regime": old, "new_regime": new, "to_up": new == "up"})
         except Exception as e:                               # never into the trade path
             log.warning("bitunix_sfp regime-flip check failed (%s): %s", wire, e)
 

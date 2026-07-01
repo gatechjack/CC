@@ -521,20 +521,21 @@ def _chart_geom(bars: list[dict], levels: list | None = None,
 
 
 def _regime_state(db_url: str, wire: str) -> dict:
-    """Flip-watch chip (READ-ONLY): current 15m regime (= the newest flip's
-    new_regime) + last-flip ts, from bitunix_sfp_regime_flip (the observer's
-    single-source emits — never recomputed here). Fail-soft; label '-' until the
-    coin's first label->label flip is observed."""
+    """Flip-watch chip (READ-ONLY): CURRENT 15m regime from the single-source
+    bitunix_sfp_regime_state mirror (the observer's _compute_regime value — never
+    recomputed here) + last-flip ts from bitunix_sfp_regime_flip. Always-current from
+    day one; fail-soft; '-' only during the pre-convergence warmup."""
     try:
         with db.connect(db_url) as conn:
-            r = conn.execute(
-                "SELECT new_regime, ts FROM bitunix_sfp_regime_flip "
-                "WHERE coin=? ORDER BY id DESC LIMIT 1", (wire,)).fetchone()
-        if r is None:
-            return {"label": "-", "last_flip_ts": None, "to_up": False}
-        return {"label": r[0], "last_flip_ts": r[1], "to_up": r[0] == "up"}
+            s = conn.execute("SELECT regime, updated_ts FROM bitunix_sfp_regime_state "
+                             "WHERE coin=?", (wire,)).fetchone()
+            f = conn.execute("SELECT ts FROM bitunix_sfp_regime_flip WHERE coin=? "
+                             "ORDER BY id DESC LIMIT 1", (wire,)).fetchone()
+        label = (s[0] if s and s[0] else "-")
+        return {"label": label, "last_flip_ts": (f[0] if f else None),
+                "updated_ts": (s[1] if s else None), "to_up": label == "up"}
     except Exception:
-        return {"label": "-", "last_flip_ts": None, "to_up": False}
+        return {"label": "-", "last_flip_ts": None, "updated_ts": None, "to_up": False}
 
 
 def _coin_state(db_url: str, display: str, pos: dict | None,

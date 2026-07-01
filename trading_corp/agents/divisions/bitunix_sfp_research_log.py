@@ -106,6 +106,15 @@ _FLIP_DDL = (
 _FLIP_IX = (f"CREATE INDEX IF NOT EXISTS {FLIP_TABLE}_newregime_ts "
             f"ON {FLIP_TABLE}(new_regime, ts)")
 
+# Always-current per-coin regime mirror (read-only display; single-source — stores the
+# SAME _compute_regime value the observer already computed each pass, never recomputed).
+STATE_TABLE = "bitunix_sfp_regime_state"
+_STATE_DDL = (
+    f"CREATE TABLE IF NOT EXISTS {STATE_TABLE} ("
+    " coin TEXT PRIMARY KEY, regime TEXT, ema200 REAL, slope REAL, updated_ts TEXT"
+    ")"
+)
+
 
 def is_regime_flip(old, new) -> bool:
     """A real regime FLIP is a label->label change. Warmup (None->label), teardown
@@ -118,8 +127,26 @@ def ensure_flip_schema(db_url: str) -> None:
         with db.connect(db_url) as conn:
             conn.execute(_FLIP_DDL)
             conn.execute(_FLIP_IX)
+            conn.execute(_STATE_DDL)
     except Exception as e:                                   # fail-soft
         log.warning("%s ensure_flip_schema failed: %s", FLIP_TABLE, e)
+
+
+def upsert_regime_state(db_url: str, *, coin, regime, ema200, slope, ts) -> bool:
+    """Fail-soft UPSERT of the current per-coin regime (read-only display mirror).
+    Caller passes the SAME _compute_regime value it already has — no 2nd computation."""
+    try:
+        with db.connect(db_url) as conn:
+            conn.execute(
+                f"INSERT INTO {STATE_TABLE} (coin, regime, ema200, slope, updated_ts) "
+                f"VALUES (?,?,?,?,?) ON CONFLICT(coin) DO UPDATE SET "
+                f"regime=excluded.regime, ema200=excluded.ema200, slope=excluded.slope, "
+                f"updated_ts=excluded.updated_ts",
+                (coin, regime, ema200, slope, str(ts)))
+        return True
+    except Exception as e:                                   # fail-soft
+        log.warning("%s upsert_regime_state failed (coin=%s): %s", STATE_TABLE, coin, e)
+        return False
 
 
 def log_flip(db_url: str, *, ts, coin, old_regime, new_regime, ema200, slope) -> bool:
