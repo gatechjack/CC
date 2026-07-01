@@ -176,7 +176,13 @@ def main(argv=None) -> int:
     ap.add_argument("--ticker", required=True, help="A tradeable DEMO market ticker.")
     ap.add_argument("--price", type=float, default=0.50, help="Current YES ask (dollars); used for marketable orders.")
     ap.add_argument("--slippage", type=int, default=2, help="max_slippage_cents (default 2).")
-    return asyncio.run(run(ap.parse_args(argv)))
+    ap.add_argument("--env-file", default=None,
+                    help="dotenv file with the DEMO KALSHI_API_KEY_ID/PEM to load before reading env.")
+    args = ap.parse_args(argv)
+    if args.env_file:
+        from dotenv import load_dotenv
+        load_dotenv(args.env_file, override=True)
+    return asyncio.run(run(args))
 
 
 if __name__ == "__main__":
