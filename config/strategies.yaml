@@ -1932,17 +1932,17 @@ bitunix_sfp:
   execution_mode: live            # OPERATOR-SET paper|live at deploy
   mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged.
   division: bitunix_sfp
-  symbols: ["BTC/USDT.P", "ETH/USDT.P"]
+  symbols: ["BTC/USDT.P", "ETH/USDT.P", "SOL/USDT.P", "XRP/USDT.P"]
   detection_tf: "15m"
   pivot_len: 50
   back_to_break: 4
   stop_buffer_pct: 0.001
   tp_r: 2.0
   watch_hours: 12
-  side: long
-  risk_pct_real: 0.1000            # OPERATOR-SET 2026-06-25 (conservative, below 0.005 default)
-  risk_pct_considerable: 0.200    # OPERATOR-SET 2026-06-25 (conservative)
-  leverage: 25.0                    # OPERATOR-SET 2026-06-25 (conservative, below 5.0 default)
+  side: regime                     # regime-aware bidirectional (2026-07-01, Board-approved)
+  risk_pct_real: 0.05              # learn-account 2026-07-01 (Board-approved)
+  risk_pct_considerable: 0.10      # learn-account 2026-07-01 (Board-approved)
+  leverage: 10.0                   # learn-account 2026-07-01 (strategies.yaml scalar = SFP live leverage, NOT futures TIER_SIZING)
   max_hold_seconds: 604800
   bar_cache_max_bars: 160
   loop_settle_seconds: 20
@@ -1953,3 +1953,5 @@ bitunix_sfp:
   symbol_modes:
     "BTC/USDT.P": { bos_tf: "3m", arm: "trading" }   # live Mode B (replaces 15m-BOS, operator 2026-06-28)
     "ETH/USDT.P": { bos_tf: "3m", arm: "trading" }   # live Mode B, trivial size
+    "SOL/USDT.P": { bos_tf: "3m", arm: "trading" }   # re-armed 2026-07-01 (regime-aware)
+    "XRP/USDT.P": { bos_tf: "3m", arm: "trading" }   # re-armed 2026-07-01 (regime-aware)
