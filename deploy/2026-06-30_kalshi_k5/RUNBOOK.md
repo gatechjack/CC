@@ -3,17 +3,21 @@
 Branch: `kalshi-k5-golive-2026-06-30` (off main `9bfd7ff`). Workstream B (dashboard)
 ships separately on `kalshi-k5-dashboard-2026-06-30`.
 
-> **STATUS 2026-07-01 — ✅ DEPLOYED INERT to prod + VERIFIED LIVE.** Both workstreams merged
-> to `main` (B `3bf4446` → A `f3f150c` → post-deploy dashboard-500 fix `7614b01` →
-> `a73044e`, `main == origin`). The **INERT deploy** section below is DONE: 8 files byte-exact
-> on prod (PID **34501**), division still `broker: paper` / `auto_execute: false` / kalshi NOT
-> in `--brokers`+`--live-divisions` → `KalshiLiveBroker` never constructed, **zero live
-> orders**. Dashboard 200 (a post-deploy 500 from a Jinja macro-ordering bug was caught +
-> fixed-forward, `7614b01`; template md5 `c8bcea57`). Full record: `runbooks/deploy_log.md`
-> (2026-07-01 entry). Rollback backups: `*.bak-pre-k5-inert-2026-06-30`.
-> **⏸ LIVE FLIP (the "Live flip" section below) remains DEFERRED** pending operator roster
-> review on the new dashboard + the go-live gates (Apify live feed restored + budget-isolated
-> is the hard blocker).
+> **STATUS 2026-07-01 ~14:09 UTC — 🟢 LIVE (real money). Go-live COMPLETE.** The division
+> `kalshi_copy_trading` is now trading live on roster `["MaggieTheEagle","pritz786","AI.EDGE"]`.
+> PID **39646**; `Registered kalshi-live broker … (paper=False)`; `KalshiLiveBroker connected
+> host=external-api.kalshi.com/trade-api/v2 balance=$532.07 ioc slip=2c`. First live poll
+> (14:19:22) fed cleanly on the NEW Apify token (zero 403), **no order filled — account flat
+> $532.07**. Both go-live blockers cleared before the flip: Apify **cap raised** (feed recovered
+> 13:43) + **fresh token in KV**. Config edits (`broker→kalshi`, `standby→false`,
+> `auto_execute→true`) are on `main` with **byte-parity to prod verified**; unit `--brokers`/
+> `--live-divisions` edited via `runprod.ps1 golive_kalshi_unit.sh` (root, prod-only). Full
+> record + the benign paper-cache `exit_residual` behavior: `runbooks/deploy_log.md` (2026-07-01
+> ~14:09 entry). Kill-switch: `auto_execute: false` (hot-reload ≤1 poll). Rollback backups:
+> config + unit `*.bak-pre-k5-golive-2026-07-01`.
+>
+> *(History: DEPLOYED INERT earlier 2026-07-01 — 8 files byte-exact, PID 34501, dashboard-500
+> caught + fixed-forward `7614b01`, `main==origin==a73044e`; then flipped live per below.)*
 
 ## What was built (Workstream A — live execution path)
 
@@ -114,7 +118,7 @@ do it at a flat window. Rollback: keep `*.bak-pre-k5-2026-06-30` + restart.
 - [ ] **Kill-switch tested** (below).
 - [ ] **§4 Backtester / Board sign-off** on the net-new live code.
 
-## Live flip (flat window) — config + root unit edit — ⏸ DEFERRED (operator roster review pending)
+## Live flip (flat window) — config + root unit edit — ✅ DONE 2026-07-01 ~14:09 (PID 39646)
 
 1. `config/divisions.yaml` `kalshi_copy_trading.broker: paper -> kalshi` (azureuser-owned; no sudo).
 2. `config/strategies.yaml` `kalshi_copy_trader.auto_execute: false -> true` (owned; hot-reloads, but the broker arms at restart).

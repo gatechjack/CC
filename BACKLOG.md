@@ -1469,3 +1469,22 @@ from `no_dollars` via the `1 - price` complement).
 0-PnL round-trip). **Must fix before any future Kalshi-quote-dependent analysis** (exit
 mark-to-market, mid-based sizing, dashboards). Low priority. Surfaced during the K5.1b demo
 validation (2026-06-30).
+
+## P3 — kalshi_copy_trader phantom position-cache: paper-era `our_side` holdings emit one-time exit-residual noise on live (filed 2026-07-01 via K5 go-live)
+
+At the 2026-07-01 live flip, the `agent_state kalshi_copy_trader positions:*` cache carried months of
+**PAPER-era phantom holdings** (`our_side`/`copy_size_usd`/`entry_price` set on positions never
+actually held live). Now that the division is LIVE, when a whale **closes** such a cached position the
+bot places a `reduce_only` sell to mirror the exit → nothing to reduce → `exit_no_fill` →
+`kalshi_copy_exit_residual` audit + Telegram, then the cache self-clears (verified: `positions:pritz786
+→ {}` after the first one; won't repeat per position). **$0-risk** (`reduce_only` cannot create a
+position) and **self-healing** (drains as the phantom positions close; real copies accrue from new
+entries). The only cost is **residual-flag Telegram noise** during the drain.
+
+**Do NOT "fix" by clearing/zeroing the whole cache** — that would make every whale's *current* holding
+look brand-new → **live mass-entry burst**. If the noise is worth suppressing: (1) FIRST read the
+entry-trigger logic in `agents/strategies/kalshi_copy_trader.py` and confirm entries fire on
+**event/`first_seen`** (new position appearing), NOT on state (`whale holds & we don't`); (2) only then
+surgically zero `our_side`/`copy_size_usd`/`entry_price` on the phantom cached positions **while
+keeping the position keys** (so holdings stay "seen" and don't re-enter). Until verified, **leave it** —
+it converges on its own within days. Low priority (cosmetic/operational, not a money or safety issue).

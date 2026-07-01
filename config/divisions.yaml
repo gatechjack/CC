@@ -273,10 +273,10 @@ divisions:
 
   - slug: kalshi_copy_trading
     name: Kalshi Copy Trading
-    broker: paper    # placeholder until Phase K3 wires the copy-trader strategy
+    broker: kalshi    # LIVE Phase K5 go-live 2026-07-01 (was: paper)
     account_filter: main
     intent: aggressive
     benchmark: SPY
     target_annual_return: 0.50
-    standby: true
+    standby: false
     enabled: true

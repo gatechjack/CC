@@ -1686,7 +1686,7 @@ kalshi_sports_arb_observer:
 
 kalshi_copy_trader:
   enabled: true                    # Board-flip after audit-mode validation
-  auto_execute: false               # Phase K5+ before this can flip live
+  auto_execute: true                # LIVE Phase K5 go-live 2026-07-01 (was: false)
   division: kalshi_copy_trading
   # 2026-05-12: throttled 300s → 600s to fit Apify Starter's $200/mo hard
   # cap. At 5min cadence the 26h observation burn extrapolated to ~$320/mo

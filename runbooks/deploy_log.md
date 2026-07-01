@@ -11211,3 +11211,62 @@ as a real failure.
 **Rollback:** restore `*.bak-pre-k5-inert-2026-06-30` (7 files) + `rm` the new `kalshi_live.py` +
 restart. No config to revert — the deploy never touched divisions/strategies/systemd; the division
 was already `paper`.
+
+---
+
+## 2026-07-01 ~14:09 UTC — Kalshi Copy-Trading (Phase K5) **LIVE FLIP** — kalshi_copy_trading now trading real money (roster of 3)
+
+**STATE VERB: DEPLOYED + LOADED + VERIFIED LIVE (real money).** `kalshi_copy_trading` is now a
+live-execution division. Roster (Board-narrowed via the new dashboard): **`selected_whales =
+["MaggieTheEagle","pritz786","AI.EDGE"]`**.
+
+**Triggered by:** operator "go" after clearing the two go-live blockers — (a) Apify **spending cap
+raised** (the feed's `HTTP 403` was a cap-block surfaced as 403, not a bad token; feed recovered
+2026-07-01 13:43 UTC), and (b) a **fresh Apify token rotated into Key Vault** (`kv-tc-vtwbowt3wtkpy`,
+loads at the flip-restart). Roster finalized on the INERT dashboard over the prior hours.
+
+**Backup tags:** config `*.bak-pre-k5-golive-2026-07-01` (divisions.yaml, strategies.yaml); unit
+`/etc/systemd/system/trading-corp.service.bak-pre-k5-golive-2026-07-01`.
+
+**Changes (all now on `main`, config byte-parity with prod verified):**
+- `config/divisions.yaml` — `kalshi_copy_trading` `broker: paper → kalshi`, `standby: true → false`
+  (agent, guarded SSH python patch, count==1 asserted, YAML-parse-validated).
+- `config/strategies.yaml` — `kalshi_copy_trader` `auto_execute: false → true` (same).
+- systemd unit `ExecStart` (ROOT, operator via `runprod.ps1 golive_kalshi_unit.sh` = `az vm
+  run-command`, RG-SHARED-PROD): `--brokers += kalshi`, `--live-divisions += kalshi_copy_trading`
+  (guarded sed; unit is prod-only, NOT git-tracked — expected). Runner committed at
+  `deploy/2026-06-30_kalshi_k5/golive_kalshi_unit.sh`.
+
+**Go-live moment = `daemon-reload && restart trading-corp`** → new **PID 39646** (active,
+NRestarts=0, boot 14:08:58). This is what arms the live broker (built at startup).
+
+**Verification (read-only, post-restart):**
+- `Registered kalshi-live broker for division=kalshi_copy_trading (paper=False)` ✅
+- `KalshiLiveBroker connected (host=external-api.kalshi.com/trade-api/v2, balance=$532.07,
+  order_type=ioc, slip=2c)` ✅ — **real prod host, real balance, IOC + 2¢ ceiling.**
+- `RobinhoodBroker logged in … 3 accounts` ✅ — RH pickle re-authed silently on the restart (no
+  device-approval hang); PEAD fine. bitunix_sfp + futures + polymarket all `paper=False`. No tracebacks.
+- **First live poll 14:19:22:** feed **succeeded on the NEW Apify token** (positions freshened,
+  **zero 403 anomalies**). **No real order filled — account flat $532.07, 0 positions** (entry/fill
+  audit EMPTY since boot).
+
+**Expected benign behavior — paper-era position-cache carryover (NOT a bug, self-healing):** the
+first poll emitted one `kalshi_copy_exit_residual` (`reason=exit_no_fill`, `residual_usd 2.0`, $0
+moved). Cause: the `agent_state positions:*` cache carried months of PAPER-era phantom holdings
+(`our_side`/`copy_size_usd` set on positions never actually held live). When `@pritz786` **closed**
+KXT20MATCH (which we only paper-held at 13:43), the bot placed a `reduce_only` sell to mirror the
+exit → nothing to reduce → no-fill → flagged residual, then the cache **self-cleared**
+(`positions:pritz786 → {}`, won't repeat). **`reduce_only` structurally cannot create a position**,
+so this is $0-risk noise. As whales close other cached positions we'll see similar **one-time**
+harmless residual flags; real copies fire only on **new** whale entries going forward. **DO NOT
+clear/zero the cache** — that would make every whale's current holding look new and trigger a live
+mass-entry burst. It converges to reality within days.
+
+**Kill-switch:** `strategies.yaml kalshi_copy_trader.auto_execute: false` → hot-reloads within ≤1
+poll, live placement stops (no restart). **Rollback:** restore the 3 config lines (`.bak-pre-k5-
+golive-2026-07-01`) + unit `.bak-pre-k5-golive-2026-07-01` + `daemon-reload && restart`.
+
+**Parity anchor:** `main == origin` includes these go-live config edits (divisions/strategies config
+byte-identical to prod, LF-diff verified) + the merged `kill-paper-sol-xrp` SOL/XRP removal (was
+deployed-to-prod-but-unmerged; merged this session for parity). Unit `--brokers`/`--live-divisions`
+is prod-only (not git-tracked, expected).
