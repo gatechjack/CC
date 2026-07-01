@@ -46,6 +46,7 @@ from trading_corp.brokers.bitunix_symbols import (
     to_wire_format,
 )
 from trading_corp.persistence import db
+from trading_corp.agents.divisions import bitunix_sfp_research_log as research_log
 from trading_corp.persistence.models import OpenPosition
 
 log = logging.getLogger(__name__)
@@ -698,6 +699,9 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
                              "pnl_basis": "known_level_estimate",
                              "slippage_unreconciled": True})),
             )
+        # Research-log EXIT stamp (isolated, fail-soft; estimate = book AT stop level).
+        research_log.log_exit(db_url, order_id, exit_ts=now, exit_px=level,
+                              realized_r=r_mult, closing_leg=exit_kind)
         return "booked"
     except Exception as e:
         log.warning("reconciler: auto-book failed for order_id=%s: %s",
@@ -1003,6 +1007,9 @@ async def _autobook_missing_close_real(
                              "slippage_unreconciled": False,
                              "observed_slippage_pts": slip_pts})),
             )
+        # Research-log EXIT stamp (isolated, fail-soft; real-fill VWAP).
+        research_log.log_exit(db_url, order_id, exit_ts=now, exit_px=vwap,
+                              realized_r=r_mult, closing_leg=exit_kind)
         return "booked"
     except Exception as e:
         log.warning("reconciler: real auto-book failed for order_id=%s: %s — "

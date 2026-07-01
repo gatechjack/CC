@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_corp.persistence import db
+from trading_corp.agents.divisions import bitunix_sfp_research_log as research_log
 from trading_corp.persistence.models import (
     AccountState,
     PaperTradeRecord,
@@ -349,6 +350,7 @@ class BitunixSfpObserver:
         # OBSERVE-ONLY: ensure the dashboard watch-state table exists (idempotent;
         # the gated migration also creates it). Fail-soft, never raises.
         self._ensure_watch_schema()
+        research_log.ensure_schema(self.db_url)   # isolated research catalog (fail-soft)
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -738,6 +740,68 @@ class BitunixSfpObserver:
 
         await self._place(order, symbol_display, sig)
 
+    def _htf_diagnostics(self, wire: str) -> dict:
+        """LOGGED-NOT-ACTED HTF context for the research log: 1H/4H/1D EMA-200 + slope
+        + a raw strength magnitude, read OUT-OF-BAND from bitunix_bar_history (fine —
+        diagnostic only, NOT the trading regime). Each timeframe is fail-soft and NULL
+        when < EMA_PERIOD closes (today: 1H feasible ~333/coin; 4H ~121 and 1D ~62 ->
+        NULL until the append-only capture deepens)."""
+        out: dict = {}
+        for tf, px in (("1h", "htf_1h"), ("4h", "htf_4h"), ("1d", "htf_1d")):
+            ema = slope = strength = None
+            try:
+                with db.connect(self.db_url) as conn:
+                    rows = conn.execute(
+                        "SELECT close FROM bitunix_bar_history WHERE symbol=? AND "
+                        "timeframe=? AND close IS NOT NULL ORDER BY ts_ms DESC LIMIT 300",
+                        (wire, tf)).fetchall()
+                closes = [float(r[0]) for r in reversed(rows)]
+                if len(closes) >= REGIME_EMA_PERIOD:
+                    em = _regime_ema200(closes)
+                    ema = em[-1]
+                    if len(em) > 10 and em[-11]:
+                        slope = (em[-1] - em[-11]) / em[-11]
+                        dist = (closes[-1] - em[-1]) / em[-1] if em[-1] else 0.0
+                        strength = abs(slope) + abs(dist)
+            except Exception as e:                          # fail-soft per timeframe
+                log.warning("bitunix_sfp htf-diag %s %s failed: %s", wire, tf, e)
+            out[f"{px}_ema200"], out[f"{px}_slope"], out[f"{px}_strength"] = ema, slope, strength
+        return out
+
+    def _research_log_entry(self, order: ProposedOrder, fill: Any, symbol_display: str) -> None:
+        """Fail-soft ENTRY stamp into the isolated research catalog. Belt-and-suspenders
+        (research_log.log_entry is itself fail-soft) — a logging error NEVER reaches the
+        trade path. Real swept/bos levels are un-reflected for shorts (M2=0: real = -x)."""
+        try:
+            import json
+            e = order.extra or {}
+            side = e.get("side_semantic", "long")
+            swept = e.get("swept_low")
+            bosref = e.get("bos_ref_high")
+            wire = to_wire_format(symbol_display)
+            row = {
+                "order_id": order.id, "division": DIVISION, "coin": symbol_display,
+                "side": side, "regime_label": e.get("regime_label"),
+                "regime_engine": REGIME_ENGINE,
+                "rr_target": e.get("tp_r_multiple", self.config.tp_r),
+                "sfp_mode": e.get("sfp_mode"), "bos_tf": e.get("bos_tf"),
+                "entry_ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "entry_px": e.get("entry_reference_price"),
+                "stop_px": e.get("stop_price"), "target_px": e.get("take_profit_price"),
+                "sfp_sweep_px": (swept if side == "long"
+                                 else (-swept if swept is not None else None)),
+                "bos_confirm_px": (bosref if side == "long"
+                                   else (-bosref if bosref is not None else None)),
+                "broker_order_id": getattr(fill, "order_id", None),
+                "extra_json": json.dumps({"swept_swing_level": e.get("swept_swing_level"),
+                                          "leverage": e.get("leverage")}),
+            }
+            row.update(self._htf_diagnostics(wire))
+            research_log.log_entry(self.db_url, row)
+        except Exception as ex:                             # never into the trade path
+            log.warning("bitunix_sfp research-log entry failed (order_id=%s): %s",
+                        getattr(order, "id", None), ex)
+
     async def _place(self, order: ProposedOrder, symbol_display: str, sig: SfpEntrySignal) -> None:
         """Slim placement writer. Paper → would_have_placed (never touches the
         broker). Live → data_exec.place + Path-C live row.
@@ -788,6 +852,7 @@ class BitunixSfpObserver:
                                                 "error_type": type(e).__name__})
             return
         self._write_record(order, live=True, fill=fill)
+        self._research_log_entry(order, fill, symbol_display)   # isolated catalog (fail-soft)
         # ── Post-fill TP placement ──────────────────────────────────────────
         # The entry + atomic B1 stop are now live. place_order does NOT submit a
         # TP, so rest the real /tpsl/ reduce-only TP leg here. Fail-soft + LOUD:
