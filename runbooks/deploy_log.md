@@ -11130,3 +11130,84 @@ Includes Board-approved SFP scale-up (risk_pct 0.10/0.20, leverage 25.0).
 (not git-tracked, expected). Runners: `deploy/2026-06-30_two_live_cutover/`. Prod backups
 `*.bak-pre-2a-2026-06-30`, `*.bak-pre-2c-2026-06-30`. **Isolation VALIDATED LIVE 2026-06-30** (4 futures
 stop-outs → divergence/auto-book/halt-release all scoped `:bitunix_futures`; SFP clean).
+
+---
+
+## 2026-07-01 — Kalshi Copy-Trading (Phase K5) V2 live-broker + dashboard DEPLOYED **INERT** (code live, division stays paper — zero live orders)
+
+**STATE VERB: DEPLOYED + LOADED + VERIFIED LIVE (INERT).** The net-new live-execution code is on
+prod and loaded, but `kalshi_copy_trading` stays `broker: paper`, `auto_execute: false`, and kalshi
+is NOT in `--brokers`/`--live-divisions` → `KalshiLiveBroker` is never constructed and the loop's
+`is_live_armed` is False. The copy loop runs + feeds the dashboard exactly as before (the
+`would_have_placed` paper path is byte-unchanged). **No live order can be placed until the separate,
+operator-gated live flip.**
+
+**Commits (main):** Workstream B dashboard merge `3bf4446`, then Workstream A live-path merge
+`f3f150c`; post-deploy dashboard-500 fix `7614b01` → final main `a73044e`. `main == origin`. Build
+detail + go-live gates + kill-switch/rollback: `deploy/2026-06-30_kalshi_k5/RUNBOOK.md` (+
+`CLOSE_OUT.md`, `SHAKEDOWN_FINDING.md`).
+
+**Triggered by:** operator go for an INERT prod deploy (loop feeds the new dashboard for roster
+review; live flip deferred). Build was the K5 IOC/pykalshi go-live, rebuilt onto Kalshi V2 after the
+2026-06-30 $1 prod shakedown found the 410 deprecated-v1-endpoint bug.
+
+**Backup tag:** `.bak-pre-k5-inert-2026-06-30` (7 files; `kalshi_live.py` is new = no backup).
+
+**Files deployed (8; byte-exact via git-archive LF stream):**
+- `trading_corp/brokers/kalshi_live.py` (NEW) — `KalshiLiveBroker` over pykalshi 1.0.6, V2
+  `POST /portfolio/events/orders` (single-book YES-centric bid/ask), marketable IOC, ceiling =
+  whale ± 2¢, `reduce_only` exits, FOK-insufficient-volume `409` → benign `KalshiNoFill`.
+- `trading_corp/brokers/kalshi.py` — `api_base` override (external-api.* hosts) + 3-bug positions
+  field read fix (`position_fp`/`market_exposure_dollars` + correct `Position` ctor).
+- `trading_corp/utils/secrets.py` — `assert_live_ready` kalshi branch.
+- `trading_corp/main.py` — factory kalshi live-branch (anti-half-flip); loop gated live placement
+  (`_kalshi_is_live_armed` = `isinstance(broker, Broker) AND not broker.paper`) + per-trade risk
+  BYPASS + entry/exit write-back.
+- `trading_corp/agents/strategies/kalshi_copy_trader.py` — `record_entry_fill`/`discard_entry`/
+  `record_exit_fill` + K5·4 feed-health / mass-exit circuit breaker.
+- `trading_corp/web/routes.py`, `trading_corp/web/data.py`,
+  `trading_corp/web/templates/partials/pm_dashboard_body.html` — dashboard defects A/B/C +
+  Run-Discovery button + per-whale copy-intel columns + Selected-panel sort/filter (web-only,
+  hot-reloads; no restart needed for these).
+
+**Drift gate:** prod base == main `9bfd7ff` for ALL 7 pre-existing changed files — **ZERO
+divergence** (the standing "prod web/data.py newer than worktree" caveat from memory NO LONGER HELD
+at this deploy; both matched clean). Targeted-hunk reconstruction was therefore not required this
+time; the byte-exact stream was safe.
+
+**Restart:** flat window (account flat, position table empty) → `sudo -n systemctl restart
+trading-corp` → PID **34501**. (Bounces all live divisions bitunix_sfp + bitunix_futures +
+robinhood_pead — done deliberately at a flat window.)
+
+**Latent bug caught + fixed (post-deploy):** dashboard **HTTP 500** on any page rendering SELECTED
+whales — `jinja2 UndefinedError: 'kalshi_selected_sort_link'` (macro USED at ~line 648 but DEFINED
+later, inside the `{% if view.kalshi_watch_only %}` conditional). Synthetic dashboard tests never
+render with selected whales, so CI missed it. **Fix `7614b01` (merged `a73044e`):** moved the macro
+definition BEFORE the whales section + added 2 def-before-use regression tests; redeployed only the
+template (hot-reload, NO restart). Post-fix template md5 `c8bcea57`.
+
+**Verification (read-only, post-deploy):**
+- Dashboard **HTTP 200**; all whale copy-intel columns + both filters + the Selected-panel sort
+  links render (the exact path that 500'd).
+- `kalshi_copy_trader` loop **online, `auto_execute=False`** (paper `would_have_placed`).
+- INERT config intact: `broker: paper`; kalshi NOT in `--brokers`/`--live-divisions`;
+  `KalshiLiveBroker` NOT constructed.
+- Engine PID 34501, NRestarts steady.
+
+**Inert / dormant on current traffic:** the ENTIRE V2 live-execution path (`KalshiLiveBroker`, the
+factory live-branch, loop live placement, entry/exit write-back) is deployed but NOT exercised —
+gated off by `broker: paper` + `is_live_armed`=False. What would trigger it = the live flip
+(divisions.yaml `broker: kalshi` + strategies `auto_execute: true` + systemd
+`--brokers`/`--live-divisions` root edit + restart), **DEFERRED** pending operator roster review on
+the new dashboard + the RUNBOOK go-live gates (Apify live `open_positions` feed restored +
+budget-isolated is the hard blocker — bot has nothing to copy until healthy).
+
+**Gotchas for the next restart (heads-up; filed BACKLOG):** (1) a restart triggers a Robinhood
+pickle re-auth device-approval challenge that can block boot (~3-min timeout, or hang) and silently
+drop `robinhood_pead` to paper — operator owns the RH pickle clear/refresh. (2) the dashboard curl
+can transiently return HTTP 000 during a bitunix event-loop-freeze window — retry before treating it
+as a real failure.
+
+**Rollback:** restore `*.bak-pre-k5-inert-2026-06-30` (7 files) + `rm` the new `kalshi_live.py` +
+restart. No config to revert — the deploy never touched divisions/strategies/systemd; the division
+was already `paper`.

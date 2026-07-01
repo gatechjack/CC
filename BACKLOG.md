@@ -1300,6 +1300,29 @@ fragility).
 **Not gating:** any active development. PMCC / IRA / joint are
 read-only divisions in paper-mode.
 
+## P2 — Robinhood pickle stale-state on restart silently drops `robinhood_pead` to paper (filed 2026-07-01 via Kalshi K5 INERT deploy)
+
+**Symptom / risk.** `robinhood_pead` is a LIVE division. Every `trading-corp` restart re-auths
+Robinhood from the on-disk session pickle; when that pickle is stale/expired the boot either **hangs
+on a device-approval challenge** (~3-min timeout, sometimes indefinitely) or falls through to
+`broker_fallback_to_paper` — so a restart done for an unrelated reason (e.g. the K5 INERT deploy,
+2026-07-01) can leave the live PEAD division silently **paper** until an operator notices. Flagged as
+a heads-up during the 2026-07-01 Kalshi INERT deploy (operator cleared/refreshed the pickle by hand
+that time — same manual step as the 2026-06-09 re-login; see `deploy_log.md`).
+
+**Ask (either is acceptable).**
+1. **Document** the pickle clear/refresh as an explicit pre-restart step in the restart runbook (and
+   in the K5 live-flip RUNBOOK, whose restart bounces PEAD), so it's never left to memory; OR
+2. **Add a startup guard** that, when the RH pickle is missing/expired at boot, emits a loud
+   Telegram/audit alert (and does NOT silently paper-fall-through the live PEAD division without
+   surfacing it) — turning a silent degrade into an observable one.
+
+Related class: the resolved 2026-06-09 RH session-auth item above + `## P3 — Fidelity startup login
+flakiness on trading-corp restart` (broker session-cache fragility on restart) + `## P3 —
+Differentiate "expected" vs "real" broker_fallback_to_paper audit rows` (which this would feed).
+Operator currently owns the RH pickle manually. **P2** because it can silently un-arm a live
+money division on any restart.
+
 ## P3 — Robinhood IRA drilldown: not a LEAP / PMCC strategy
 
 Filed 2026-05-03. UX clarification.
