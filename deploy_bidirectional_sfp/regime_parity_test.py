@@ -1,34 +1,35 @@
-"""Piece-1 regime parity gate (GROSS/label-only; read-only).
+"""Piece-1 regime SEED re-gate (GROSS/label-only; read-only).
 
-Proves the DEPLOYED engine-native regime (bitunix_sfp_observer.compute_regime_label)
-reproduces the RESEARCH regime (regime_filter.regime_series 'ema200_pos_slope'),
-label-for-label, on the native 15m bars for all 4 coins.
+Proves the DEPLOYED engine-native regime (bitunix_sfp_observer.compute_regime_label
+over the seeded closes buffer) reproduces the RESEARCH regime (regime_filter
+'ema200_pos_slope'), label-for-label, per coin.
 
-  (A) FORMULA parity  : compute_regime_label(closes[:i+1]) == research label[i]
-      (same first-close-seeded EMA, same input) -> must be exact. Catches any wiring
-      bug (em[-33], comparison direction).
-  (B) LIVE-260-WINDOW : compute_regime_label(closes[i-259:i+1]) == research label[i]
-      -> the real live fidelity. EMA-200 has ~260-bar memory, so a truncated live
-      window can diverge from the full-history research EMA near label boundaries.
-      Reported per coin with the truncation delta; this is the number that decides
-      whether the live regime == the researched regime.
+Seed design (Option A, gate 800): at boot the buffer is seeded from the append-only
+`bitunix_bar_history` 15m capture (venue-independent), gated OFF (None) below
+REGIME_SEED_MIN, capped at REGIME_SEED_BARS, extended inline by live closes.
+
+  (A) FORMULA parity : compute_regime_label(closes[:i+1]) == research label[i] — EXACT.
+  (B) SEED parity    : compute_regime_label over the last-N buffer vs research, at
+      N = REGIME_SEED_MIN (the gate FLOOR — the worst case we ever trade at) and
+      N = REGIME_SEED_BARS (CONVERGED working set). The live buffer rides between the
+      two as it deepens from the current seed depth toward the cap.
 """
 import os, sqlite3, sys
 
 DEPLOY   = r"C:\Users\AA Incorporado\cc-sfp-deploy-wt"
 RESEARCH = r"C:\Users\AA Incorporado\cc-sfp-research-wt\spike_pivot_degree"
 DATA     = r"C:\Users\AA Incorporado\cc\data"
-sys.path.insert(0, RESEARCH)   # regime_filter, bitunix_sfp (SfpBar)
-sys.path.insert(0, DEPLOY)     # trading_corp.* (the deployed observer)
+sys.path.insert(0, RESEARCH)
+sys.path.insert(0, DEPLOY)
 
 from trading_corp.agents.divisions.bitunix_sfp_observer import (
-    compute_regime_label, _regime_ema200, REGIME_MIN_BARS,
+    compute_regime_label, REGIME_MIN_BARS, REGIME_SEED_MIN, REGIME_SEED_BARS,
 )
 import regime_filter as rf
 from bitunix_sfp import SfpBar
 
 COINS = {"BTCUSDT": "btc", "ETHUSDT": "eth", "SOLUSDT": "sol", "XRPUSDT": "xrp"}
-WIN = 1200   # == main.py:409 live 15m cache max_bars (EMA-200 converged; see sweep)
+CURRENT_SEED_DEPTH = 788   # bitunix_bar_history 15m rows/coin today (SSH-confirmed)
 
 
 def load15(coin):
@@ -40,62 +41,46 @@ def load15(coin):
             for t, o, h, l, c in rows]
 
 
+def parity_at(closes, ts, gt, win):
+    n = m = 0
+    for i in range(win - 1, len(closes)):
+        g = gt.get(ts[i])
+        if g is None:
+            continue
+        lab = compute_regime_label(closes[max(0, i - (win - 1)): i + 1])
+        n += 1; m += (lab == g)
+    return m, n
+
+
 def main():
-    print(f"REGIME PARITY GATE  (min_bars={REGIME_MIN_BARS}, live_window={WIN})")
-    print("=" * 78)
-    all_A_ok = True; all_B_pct = []
+    print(f"REGIME SEED RE-GATE  (gate={REGIME_SEED_MIN}, cap={REGIME_SEED_BARS}, "
+          f"formula_min={REGIME_MIN_BARS})")
+    print(f"Current bitunix_bar_history seed depth/coin: {CURRENT_SEED_DEPTH} "
+          f"({'BELOW' if CURRENT_SEED_DEPTH < REGIME_SEED_MIN else 'ABOVE'} gate "
+          f"{REGIME_SEED_MIN} -> {'~3h live-warmup then trades' if CURRENT_SEED_DEPTH < REGIME_SEED_MIN else 'trades at boot'}; append-only, self-heals)")
+    print("=" * 80)
+    aok = True
     for coin in COINS:
-        bars = load15(coin)
-        closes = [b.close for b in bars]; ts = [b.ts_ms for b in bars]
-        gt = rf.regime_series(bars, "ema200_pos_slope")     # {ts_ms: label}, i>=32
-        em_full = _regime_ema200(closes)                    # research EMA (once)
-
-        # (A) formula parity on a sample of full-prefix indices (exact expected)
+        bars = load15(coin); closes = [b.close for b in bars]; ts = [b.ts_ms for b in bars]
+        gt = rf.regime_series(bars, "ema200_pos_slope")
+        # (A) formula sample (exact expected)
         idxs = list(range(REGIME_MIN_BARS - 1, len(bars)))
-        sample = idxs[:: max(1, len(idxs) // 50)][:50]
         aN = aM = 0
-        for i in sample:
+        for i in idxs[:: max(1, len(idxs) // 50)][:50]:
             g = gt.get(ts[i])
-            if g is None:
-                continue
-            aN += 1; aM += (compute_regime_label(closes[: i + 1]) == g)
-        A_ok = (aN > 0 and aM == aN)
-        all_A_ok &= A_ok
-
-        # (B) live-260-window sweep vs research full-history label
-        bN = bM = tN = tM = fN = fM = 0
-        mism = []
-        for i in idxs:
-            g = gt.get(ts[i])
-            if g is None:
-                continue
-            w = closes[max(0, i - (WIN - 1)): i + 1]
-            lab = compute_regime_label(w)
-            ok = (lab == g)
-            bN += 1; bM += ok
-            if i < WIN:                       # window == full prefix (no truncation)
-                fN += 1; fM += ok
-            else:                             # sliding 260-window (truncation region)
-                tN += 1; tM += ok
-                if not ok and len(mism) < 6:
-                    emw = _regime_ema200(w)[-1]
-                    mism.append((ts[i], lab, g, closes[i], emw, em_full[i]))
-        Bpct = 100 * bM / bN if bN else float("nan")
-        all_B_pct.append((coin, Bpct, tN, tM))
-
-        print(f"\n{coin}: bars={len(bars)}  comparable={bN}")
-        print(f"  (A) formula parity  : {aM}/{aN} sampled  {'EXACT' if A_ok else '*** FAIL ***'}")
-        print(f"  (B) live-260-window : {bM}/{bN} = {Bpct:.3f}%")
-        print(f"      non-truncated(i<260): {fM}/{fN}   truncated(i>=260): {tM}/{tN} "
-              f"= {100*tM/tN if tN else float('nan'):.3f}%")
-        for ts_, lab, g, c, emw, emf in mism:
-            print(f"      MISMATCH ts={ts_} live={lab} research={g} close={c:.4f} "
-                  f"em_win={emw:.4f} em_full={emf:.4f} d={emw-emf:+.4f}")
-
-    print("\n" + "=" * 78)
-    print(f"(A) FORMULA parity all coins EXACT: {all_A_ok}")
-    for coin, p, tN, tM in all_B_pct:
-        print(f"(B) {coin} live-window match: {p:.3f}%  (truncated region {tM}/{tN})")
+            if g is not None:
+                aN += 1; aM += (compute_regime_label(closes[: i + 1]) == g)
+        A_ok = (aN > 0 and aM == aN); aok &= A_ok
+        # (B) seed parity at gate floor + converged
+        fM, fN = parity_at(closes, ts, gt, REGIME_SEED_MIN)
+        cM, cN = parity_at(closes, ts, gt, REGIME_SEED_BARS)
+        print(f"{coin}: (A) formula {aM}/{aN} {'EXACT' if A_ok else '*FAIL*'}  |  "
+              f"(B) gate-floor({REGIME_SEED_MIN}): {100*fM/fN:.3f}%  "
+              f"converged({REGIME_SEED_BARS}): {100*cM/cN:.3f}%")
+    print("=" * 80)
+    print(f"(A) FORMULA parity all coins EXACT: {aok}")
+    print("(B) live buffer rides gate-floor -> converged as it deepens from the "
+          f"{CURRENT_SEED_DEPTH}-bar seed toward the {REGIME_SEED_BARS} cap.")
 
 
 if __name__ == "__main__":

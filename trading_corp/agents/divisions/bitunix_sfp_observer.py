@@ -114,7 +114,17 @@ def _watch_bars_from_hours(watch_hours: float, tf_minutes: int = 15) -> int:
 REGIME_ENGINE = "15m_ema200_slope"
 REGIME_EMA_PERIOD = 200
 REGIME_SLOPE_BARS = 32
-REGIME_MIN_BARS = REGIME_EMA_PERIOD + REGIME_SLOPE_BARS   # 232
+REGIME_MIN_BARS = REGIME_EMA_PERIOD + REGIME_SLOPE_BARS   # 232 (formula minimum)
+
+# Boot seed (2026-07-01, Option A): converge the EMA-200 from the APPEND-ONLY
+# bitunix_bar_history 15m capture at boot (independent of the venue kline-fetch
+# depth), then maintain inline from live closes. REGIME_SEED_BARS = working-set cap;
+# the regime is gated OFF (None -> side-gate SKIPs, audit sfp_skip_regime_warmup)
+# below REGIME_SEED_MIN so it NEVER fires on an unconverged EMA-200. Parity vs the
+# research regime: 788 closes=99.96%, 1000=99.99%, 1500=100%.
+REGIME_SEED_BARS = 1500
+REGIME_SEED_MIN = 800    # operator-set gate (trade-from-minute-one; ~99.96% floor
+                         # today, self-heals to ~100% as the capture deepens)
 
 
 def _regime_ema200(closes: list[float]) -> list[float]:
@@ -269,6 +279,9 @@ class BitunixSfpObserver:
         self._symbol_bos_tf: dict[str, str] = {}
         self._last_ts: dict[str, int] = {}
         self._last_ts3: dict[str, int] = {}
+        # Engine-native regime buffer: bitunix_bar_history boot seed + live appends.
+        self._regime_closes: dict[str, list[float]] = {}
+        self._regime_last_ts: dict[str, int] = {}
         for sym in config.symbols:
             wire = to_wire_format(sym)
             bos_tf, arm = config.mode_for(wire)
@@ -319,6 +332,14 @@ class BitunixSfpObserver:
                 self._emit_watch_transitions(wire, det.drain_transitions(), recent_only=True)
             if bars:
                 self._last_ts[wire] = bars[-1].ts_ms
+        # Engine-native regime: seed from bitunix_bar_history (deep, venue-independent)
+        # THEN extend with any fresher cache bars so the first tick has a converged EMA.
+        self._seed_regime_from_history()
+        for sym in self.config.symbols:
+            w = to_wire_format(sym)
+            c15 = self.bar_caches.get(w)
+            if c15 is not None:
+                self._extend_regime(w, [self._to_sfp_bar(b) for b in getattr(c15, "bars", [])])
 
     def _warm_start_b(self, wire: str) -> None:
         """Mode-B warm-start: replay ALL cached 15m bars (arm watches) then ALL
@@ -383,6 +404,7 @@ class BitunixSfpObserver:
                 # CANNOT raise into the loop; a persist failure never affects trading.
                 self._emit_watch_transitions(wire, det.drain_transitions())
             self._last_ts[wire] = bar.ts_ms
+            self._extend_regime(wire, [bar])            # engine-native regime, inline
 
     # ------------------------------------------------------------------ #
     # Mode B — ONE 3m-boundary master loop. Drives Mode-A symbols on their 15m
@@ -442,6 +464,7 @@ class BitunixSfpObserver:
                     det.on_closed_15m_bar(bar15)        # arm only — returns []
                     self._emit_watch_transitions(wire, det.drain_transitions())
                 self._last_ts[wire] = bar15.ts_ms
+                self._extend_regime(wire, [bar15])      # engine-native regime, inline
         if c3 is not None:
             last3 = self._last_ts3.get(wire, 0)
             for raw in [b for b in getattr(c3, "bars", []) if int(b.ts_ms) > last3]:
@@ -458,15 +481,60 @@ class BitunixSfpObserver:
         return SfpBar(ts_ms=int(b.ts_ms), open=float(b.open), high=float(b.high),
                       low=float(b.low), close=float(b.close))
 
+    def _seed_regime_from_history(self) -> None:
+        """Boot seed: fill each traded symbol's regime closes buffer from the
+        APPEND-ONLY bitunix_bar_history 15m capture, so the EMA-200 is converged
+        WITHOUT depending on the venue kline-fetch depth. One-time; live 15m closes
+        extend it inline thereafter (single source of truth going forward). Fail-soft
+        — never raises into boot; a failed/empty seed leaves the regime None (skip)
+        until live bars accrue past REGIME_SEED_MIN."""
+        for sym in self.config.symbols:
+            wire = to_wire_format(sym)
+            try:
+                with db.connect(self.db_url) as conn:
+                    rows = conn.execute(
+                        "SELECT ts_ms, close FROM bitunix_bar_history "
+                        "WHERE symbol=? AND timeframe='15m' AND close IS NOT NULL "
+                        "ORDER BY ts_ms DESC LIMIT ?",
+                        (wire, REGIME_SEED_BARS),
+                    ).fetchall()
+                rows = sorted(rows, key=lambda r: int(r[0]))          # -> ascending
+                self._regime_closes[wire] = [float(r[1]) for r in rows]
+                self._regime_last_ts[wire] = int(rows[-1][0]) if rows else 0
+                log.info("bitunix_sfp regime seed %s: %d 15m closes (gate=%d)",
+                         wire, len(self._regime_closes[wire]), REGIME_SEED_MIN)
+            except Exception as e:                                    # fail-soft
+                self._regime_closes.setdefault(wire, [])
+                self._regime_last_ts.setdefault(wire, 0)
+                log.warning("bitunix_sfp regime seed %s FAILED (regime None until live "
+                            "accrues): %s", wire, e)
+
+    def _extend_regime(self, wire: str, bars15: list[SfpBar]) -> None:
+        """Append NEW closed 15m closes (ts beyond the last seeded/applied) from the
+        observer's own live cache and trim the working set — keeps the regime
+        engine-native in steady state. Uses its OWN last-ts (independent of the
+        detector's) so it dedups against the history seed."""
+        buf = self._regime_closes.setdefault(wire, [])
+        last = self._regime_last_ts.get(wire, 0)
+        changed = False
+        for b in bars15:
+            if int(b.ts_ms) > last:
+                buf.append(float(b.close)); last = int(b.ts_ms); changed = True
+        if changed:
+            self._regime_last_ts[wire] = last
+            if len(buf) > REGIME_SEED_BARS:
+                del buf[: len(buf) - REGIME_SEED_BARS]
+
     def _compute_regime(self, wire: str) -> str | None:
-        """Engine-native 15m regime for ``wire`` from THIS observer's own 15m bar
-        cache (single source of truth — the same cache the detector feeds from).
-        Returns 'up'|'down'|'range', or None until the cache holds >=232 closed
-        15m bars (warmup fail-safe). Cache bars are ascending, so closes[-1] is the
-        last CLOSED 15m bar — k=1 causal."""
-        cache = self.bar_caches.get(wire)
-        bars = getattr(cache, "bars", None) or []
-        return compute_regime_label([float(b.close) for b in bars])
+        """Engine-native 15m regime from the seeded+maintained closes buffer
+        (bitunix_bar_history boot seed + inline live appends; single source of truth).
+        Returns 'up'|'down'|'range', or None until the buffer holds >= REGIME_SEED_MIN
+        closes (convergence fail-safe: NEVER fire on an unconverged EMA-200). The
+        buffer is ascending, so closes[-1] is the last CLOSED 15m bar — k=1 causal."""
+        closes = self._regime_closes.get(wire) or []
+        if len(closes) < REGIME_SEED_MIN:
+            return None
+        return compute_regime_label(closes)
 
     # ------------------------------------------------------------------ #
     # Signal → order → risk → place
