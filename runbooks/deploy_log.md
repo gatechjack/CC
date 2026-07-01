@@ -11270,3 +11270,45 @@ golive-2026-07-01`) + unit `.bak-pre-k5-golive-2026-07-01` + `daemon-reload && r
 byte-identical to prod, LF-diff verified) + the merged `kill-paper-sol-xrp` SOL/XRP removal (was
 deployed-to-prod-but-unmerged; merged this session for parity). Unit `--brokers`/`--live-divisions`
 is prod-only (not git-tracked, expected).
+
+---
+
+## 2026-07-01 ~19:35 UTC — Kalshi copy-trader FIXES (NO-leg price + live round-trip recording + ultra-short filter OFF) — DEPLOYED + VERIFIED LIVE
+
+**STATE VERB: DEPLOYED + LOADED + VERIFIED LIVE.** Operator-executed (§4) after the first live copies
+exposed 3 issues. Merged `main` `29844b8` (branch `kalshi-copy-recording-shortfilter-2026-07-01`).
+
+**Triggered by:** first 4 live copies (all pritz786, ultra-short BTC-15m + cricket) — sized correctly
+($3/$0.018 = 166 NO contracts; count logic sound), account bled −$3.58, but surfaced: a $163.84 phantom
+NO residual, zero PnL recording, and un-copyable fast markets.
+
+**Fixes (5 code files + config):**
+- `brokers/kalshi_live.py` — `fill_event_from_v2_response` converts the YES-centric V2 `average_fill_price`
+  to the **outcome leg** (NO = 1−yes). A NO fill records 0.013, not 0.987 → kills the $163.84 phantom.
+- `agents/kalshi_resolver.py` — settlement scan broadened to `kind IN ('would_have_placed',
+  'kalshi_copy_placed_live')`; live rows use `fill_qty`/`fill_price`. **GATED on a `leg_priced` marker**
+  (`main.py`) so the 4 pre-fix poisoned rows are SKIPPED, not backfilled as −$163 phantoms.
+- `agents/strategies/kalshi_copy_trader.py` + `brokers/kalshi.py` — ultra-short-market filter
+  (`min_minutes_to_resolution`); `get_market_resolution` now returns `expiration_time`. **SHIPS OFF
+  (config `0`)** — correctness-only deploy, no behavior change; hot-reload to enable (30/60) when the
+  operator decides from post-fix dashboard intel.
+- `config/strategies.yaml` — `min_minutes_to_resolution: 0`. 117 tests pass.
+
+**Backups:** `*.bak-pre-copyfix-2026-07-01` (6 files). **Note:** `kalshi_resolver.py` was root-owned/
+read-only on prod (old May-16 root deploy) → deployed via scp-to-`.new` + `mv` (dir is azureuser-
+writable; now azureuser-owned like the rest). Deploy runners: `deploy/2026-07-01_kalshi_copy_fixes/`
+(operator ran the PowerShell scp variant `Desktop\deploy_copyfix.ps1` + `redo_resolver.ps1`).
+
+**Drift gate:** prod content == main base for all 6 files pre-deploy (CRLF-only line-ending drift on
+prod, no real divergence). Verification LF-normalized (line-ending-agnostic); all 6 == target md5.
+
+**Restart:** `sudo -n systemctl restart trading-corp` → PID **45170** (active, NRestarts=0, 19:35:24).
+
+**Verified live (read-only):** `Registered kalshi-live broker for division=kalshi_copy_trading
+(paper=False)`; `KalshiLiveBroker connected … balance=$525.73`; `RobinhoodBroker logged in — 3 accounts`;
+**no Traceback/ImportError** (all 5 new files loaded). Filter OFF (`min_minutes_to_resolution: 0`).
+
+**Pending live-validation:** on the next NEW post-fix copy that settles, expect a `kalshi_round_trips`
+row for `kalshi_copy_trading` with sane PnL and NO −$163 phantom for the pre-fix trades. Filter enable
+(30/60) deferred to operator's post-fix dashboard read. **Parity: `main == origin == prod-content`.**
+Related: BACKLOG P3 cheap-contract sizing precision (~2× tier $ on sub-2¢); P3 phantom-cache noise.
