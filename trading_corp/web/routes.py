@@ -370,6 +370,7 @@ def register(app: FastAPI) -> None:
         kalshi_selected_desc: int = 1,
         kalshi_sel_hide_uncopyable: int = 0,
         kalshi_sel_hide_net_neg: int = 0,
+        wr_mode: str = "live",
     ):
         return await _render_pm_dashboard(
             request, division=division,
@@ -381,6 +382,7 @@ def register(app: FastAPI) -> None:
             kalshi_selected_desc=bool(kalshi_selected_desc),
             kalshi_sel_hide_uncopyable=bool(kalshi_sel_hide_uncopyable),
             kalshi_sel_hide_net_neg=bool(kalshi_sel_hide_net_neg),
+            wr_mode=wr_mode,
         )
 
     async def _render_pm_dashboard(
@@ -396,7 +398,10 @@ def register(app: FastAPI) -> None:
         kalshi_selected_desc: bool = True,
         kalshi_sel_hide_uncopyable: bool = False,
         kalshi_sel_hide_net_neg: bool = False,
+        wr_mode: str = "live",
     ):
+        # Paper/Live/All stats scope — whitelist; anything else → 'live'.
+        wr_mode = wr_mode if wr_mode in ("all", "paper", "live") else "live"
         cmd_snap, view = await asyncio.gather(
             data.build_command_center(deps),
             data.build_prediction_market_view(
@@ -409,6 +414,7 @@ def register(app: FastAPI) -> None:
                 kalshi_selected_desc=kalshi_selected_desc,
                 kalshi_sel_hide_uncopyable=kalshi_sel_hide_uncopyable,
                 kalshi_sel_hide_net_neg=kalshi_sel_hide_net_neg,
+                wr_mode=wr_mode,
             ),
         )
         if view is None:
@@ -467,6 +473,7 @@ def register(app: FastAPI) -> None:
         kalshi_selected_desc: int = 1,
         kalshi_sel_hide_uncopyable: int = 0,
         kalshi_sel_hide_net_neg: int = 0,
+        wr_mode: str = "live",
     ):
         return await _render_pm_partial(
             request, division=division,
@@ -478,6 +485,7 @@ def register(app: FastAPI) -> None:
             kalshi_selected_desc=bool(kalshi_selected_desc),
             kalshi_sel_hide_uncopyable=bool(kalshi_sel_hide_uncopyable),
             kalshi_sel_hide_net_neg=bool(kalshi_sel_hide_net_neg),
+            wr_mode=wr_mode,
         )
 
     async def _render_pm_partial(
@@ -493,7 +501,10 @@ def register(app: FastAPI) -> None:
         kalshi_selected_desc: bool = True,
         kalshi_sel_hide_uncopyable: bool = False,
         kalshi_sel_hide_net_neg: bool = False,
+        wr_mode: str = "live",
     ):
+        # Paper/Live/All stats scope — whitelist; anything else → 'live'.
+        wr_mode = wr_mode if wr_mode in ("all", "paper", "live") else "live"
         view = await data.build_prediction_market_view(
             deps, division,
             pm_watch_sort=pm_watch_sort, pm_watch_desc=pm_watch_desc,
@@ -504,6 +515,7 @@ def register(app: FastAPI) -> None:
             kalshi_selected_desc=kalshi_selected_desc,
             kalshi_sel_hide_uncopyable=kalshi_sel_hide_uncopyable,
             kalshi_sel_hide_net_neg=kalshi_sel_hide_net_neg,
+            wr_mode=wr_mode,
         )
         if view is None:
             raise HTTPException(

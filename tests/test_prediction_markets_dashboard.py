@@ -877,3 +877,165 @@ def test_summary_no_cutoff_in_combined_view(fresh_db, monkeypatch):
     assert view is not None
     assert view.summary.cutoff_label is None
     assert view.summary.cutoff_ts is None
+
+
+# ── Kalshi copy-trading Paper/Live/All mode toggle ─────────────────────
+
+
+def test_kalshi_copy_mode_clause_fragments():
+    """The 3 slice fragments + custom ts_col + no-epoch no-op."""
+    epoch = "2026-07-01T14:08:58+00:00"
+    assert wd._kalshi_copy_mode_clause("live", epoch) == f" AND entry_ts >= '{epoch}'"
+    assert wd._kalshi_copy_mode_clause("paper", epoch) == f" AND entry_ts < '{epoch}'"
+    assert wd._kalshi_copy_mode_clause("all", epoch) == ""
+    # Open-trades path scopes on the audit-event ts column.
+    assert wd._kalshi_copy_mode_clause("live", epoch, "a.ts") == f" AND a.ts >= '{epoch}'"
+    # No epoch → no-op regardless of mode (reversibility path).
+    assert wd._kalshi_copy_mode_clause("live", "") == ""
+
+
+def test_get_kalshi_copy_live_epoch_defaults_to_constant(fresh_db):
+    """No agent_state override → the hardcoded go-live constant."""
+    db_url, _ = fresh_db
+    assert wd._get_kalshi_copy_live_epoch(db_url) == wd.KALSHI_COPY_LIVE_EPOCH
+
+
+def test_get_kalshi_copy_live_epoch_honors_override(fresh_db):
+    """An ISO override in agent_state(kalshi_copy_trader, metrics_epoch)
+    wins over the constant."""
+    db_url, _ = fresh_db
+    _db.set_agent_state(
+        "kalshi_copy_trader", "metrics_epoch",
+        "2026-08-01T00:00:00+00:00", db_url=db_url,
+    )
+    assert wd._get_kalshi_copy_live_epoch(db_url) == "2026-08-01T00:00:00+00:00"
+
+
+def _seed_copy_straddle(db_url):
+    """Two PRE-epoch (paper) + two POST-epoch (live) kalshi_copy_trading
+    round-trips straddling KALSHI_COPY_LIVE_EPOCH (2026-07-01T14:08:58Z)."""
+    # PRE-epoch (paper): 1 win, 1 loss
+    _insert_kalshi_round_trip(
+        db_url, order_id="cp-pre-W", division="kalshi_copy_trading",
+        strategy="kalshi_copy_trader",
+        entry_ts="2026-06-20T12:00:00+00:00",
+        resolved_ts="2026-06-20T14:00:00+00:00",
+        won=1, realized_pnl=6.0, market_result="yes",
+    )
+    _insert_kalshi_round_trip(
+        db_url, order_id="cp-pre-L", division="kalshi_copy_trading",
+        strategy="kalshi_copy_trader",
+        entry_ts="2026-06-21T12:00:00+00:00",
+        resolved_ts="2026-06-21T14:00:00+00:00",
+        won=0, realized_pnl=-4.0, market_result="no",
+    )
+    # POST-epoch (live): 1 win, 1 loss
+    _insert_kalshi_round_trip(
+        db_url, order_id="cp-post-W", division="kalshi_copy_trading",
+        strategy="kalshi_copy_trader",
+        entry_ts="2026-07-02T12:00:00+00:00",
+        resolved_ts="2026-07-02T14:00:00+00:00",
+        won=1, realized_pnl=8.0, market_result="yes",
+    )
+    _insert_kalshi_round_trip(
+        db_url, order_id="cp-post-L", division="kalshi_copy_trading",
+        strategy="kalshi_copy_trader",
+        entry_ts="2026-07-03T12:00:00+00:00",
+        resolved_ts="2026-07-03T14:00:00+00:00",
+        won=0, realized_pnl=-2.0, market_result="no",
+    )
+
+
+def _stub_copy_division(monkeypatch):
+    fake = SimpleNamespace(
+        slug="kalshi_copy_trading", name="Kalshi Copy Trading", pm_overview=None,
+    )
+    monkeypatch.setattr(wd, "_pm_divisions_all", lambda: [fake])
+
+
+def test_wr_mode_live_counts_only_post_epoch(fresh_db, monkeypatch):
+    db_url, _ = fresh_db
+    _seed_copy_straddle(db_url)
+    _stub_copy_division(monkeypatch)
+    deps = SimpleNamespace(db_url=db_url)
+
+    view = asyncio.run(wd.build_prediction_market_view(
+        deps, "kalshi_copy_trading", wr_mode="live",
+    ))
+    assert view is not None
+    assert view.wr_mode == "live"
+    assert view.wr_live_epoch == wd.KALSHI_COPY_LIVE_EPOCH
+    assert view.summary.n_resolved == 2
+    assert {rt.order_id for rt in view.round_trips} == {"cp-post-W", "cp-post-L"}
+    assert view.summary.total_realized_pnl == pytest.approx(6.0)   # 8 - 2
+
+
+def test_wr_mode_paper_counts_only_pre_epoch(fresh_db, monkeypatch):
+    db_url, _ = fresh_db
+    _seed_copy_straddle(db_url)
+    _stub_copy_division(monkeypatch)
+    deps = SimpleNamespace(db_url=db_url)
+
+    view = asyncio.run(wd.build_prediction_market_view(
+        deps, "kalshi_copy_trading", wr_mode="paper",
+    ))
+    assert view is not None
+    assert view.wr_mode == "paper"
+    assert view.summary.n_resolved == 2
+    assert {rt.order_id for rt in view.round_trips} == {"cp-pre-W", "cp-pre-L"}
+    assert view.summary.total_realized_pnl == pytest.approx(2.0)   # 6 - 4
+
+
+def test_wr_mode_all_counts_both(fresh_db, monkeypatch):
+    db_url, _ = fresh_db
+    _seed_copy_straddle(db_url)
+    _stub_copy_division(monkeypatch)
+    deps = SimpleNamespace(db_url=db_url)
+
+    view = asyncio.run(wd.build_prediction_market_view(
+        deps, "kalshi_copy_trading", wr_mode="all",
+    ))
+    assert view is not None
+    assert view.wr_mode == "all"
+    assert view.summary.n_resolved == 4
+    assert {rt.order_id for rt in view.round_trips} == {
+        "cp-pre-W", "cp-pre-L", "cp-post-W", "cp-post-L",
+    }
+    assert view.summary.total_realized_pnl == pytest.approx(8.0)
+
+
+def test_wr_mode_does_not_affect_non_kalshi_division(fresh_db, monkeypatch):
+    """A polymarket division is byte-identical regardless of wr_mode — the
+    mode clause is kalshi_copy_trading-only."""
+    db_url, _ = fresh_db
+    _insert_poly_round_trip(
+        db_url, order_id="p-pre", division="polymarket_copy_trading",
+        won=1, realized_pnl=3.0,
+        entry_ts="2026-06-20T00:00:00+00:00",
+        resolved_ts="2026-06-20T01:00:00+00:00",
+    )
+    _insert_poly_round_trip(
+        db_url, order_id="p-post", division="polymarket_copy_trading",
+        won=0, realized_pnl=-1.0,
+        entry_ts="2026-07-02T00:00:00+00:00",
+        resolved_ts="2026-07-02T01:00:00+00:00",
+    )
+    fake = SimpleNamespace(
+        slug="polymarket_copy_trading", name="Polymarket Copy", pm_overview=None,
+    )
+    monkeypatch.setattr(wd, "_pm_divisions_all", lambda: [fake])
+    deps = SimpleNamespace(db_url=db_url)
+
+    seen = {}
+    for mode in ("live", "paper", "all"):
+        view = asyncio.run(wd.build_prediction_market_view(
+            deps, "polymarket_copy_trading", wr_mode=mode,
+        ))
+        assert view is not None
+        seen[mode] = (
+            view.summary.n_resolved,
+            view.summary.n_wins,
+            round(view.summary.total_realized_pnl, 6),
+        )
+    # All three modes identical for the polymarket division.
+    assert seen["live"] == seen["paper"] == seen["all"] == (2, 1, 2.0)
