@@ -1,0 +1,6 @@
+# prod-derived targeted-hunk blobs (main_hybrid.py, strat_hybrid.yaml).
+# Regenerable via ../build_hybrids.py (fetch prod live files -> apply hunk). NOT committed:
+# they embed prod's current bytes + are CRLF (autocrlf would mangle them in git). The
+# drift-gate guards that prod still matches what they were built from at apply time.
+*
+!.gitignore

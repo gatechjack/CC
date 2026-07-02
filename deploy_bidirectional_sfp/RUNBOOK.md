@@ -12,19 +12,32 @@ The operator runs EVERY prod write/restart; each `.ps1` is self-gating and abort
 red gate. Base = **a9fb8c6b** (prod==main==`79cbbef`; Kalshi-drift-aware — config drift
 is Kalshi-only, the bitunix_sfp block was byte-unchanged pre-deploy `9be416eb`).
 
-## Touched files → target LF md5 (installed, CR-stripped)
-| file | target md5 |
-|---|---|
-| `trading_corp/main.py` | `fda60c98864cd58b6fc75ee215a46e53` |
-| `trading_corp/agents/divisions/bitunix_sfp_observer.py` | `1eb85d572674e6a05a6b0fd1ff93ab1f` |
-| `trading_corp/agents/divisions/bitunix_position_reconciler.py` | `f54665e8335bb76fd28171c94e3a6dc1` |
-| `trading_corp/agents/divisions/bitunix_sfp_research_log.py` **(NEW)** | `b6b1b4469d11e35d5d2d6a42379b878d` |
-| `trading_corp/web/sfp_cockpit_view.py` | `143773b74ad60818311e9511aa9cecc9` |
-| `trading_corp/web/templates/sfp_cockpit/_state_board.html` | `1cce2d72c38902db3f6b9543b2cd95be` |
-| `config/strategies.yaml` (bitunix_sfp block only; block `805f6b0c`) | `a916ade03f13d76a9e168845e86357bc` |
-| `trading_corp/agents/strategies/bitunix_sfp.py` **(UNCHANGED — asserted)** | `91fd76726364331c8083aaaa68fce199` |
+## Touched files → installed target md5
+Prod DIVERGES from the branch base, so `main.py` + `strategies.yaml` are **targeted-hunk
+CRLF hybrids** (prod's exact bytes with ONLY the bitunix_sfp hunk swapped in; built by
+`build_hybrids.py`, verified by `verify_hybrids.py`, installed byte-exact — NO `tr`). The
+other 5 are prod==base, installed from the worktree CR-stripped to LF. **md5s below are the
+INSTALLED-file md5s** (raw for the two hybrids, LF for the five).
+
+| file | install | target md5 |
+|---|---|---|
+| `trading_corp/main.py` | raw hybrid (prod + cache hunk; +Kalshi leg_priced preserved) | `d0d382cbffcb6ebfbf50372fcc9175dd` |
+| `trading_corp/agents/divisions/bitunix_sfp_observer.py` | LF | `1eb85d572674e6a05a6b0fd1ff93ab1f` |
+| `trading_corp/agents/divisions/bitunix_position_reconciler.py` | LF | `f54665e8335bb76fd28171c94e3a6dc1` |
+| `trading_corp/agents/divisions/bitunix_sfp_research_log.py` **(NEW)** | LF | `b6b1b4469d11e35d5d2d6a42379b878d` |
+| `trading_corp/web/sfp_cockpit_view.py` | LF | `143773b74ad60818311e9511aa9cecc9` |
+| `trading_corp/web/templates/sfp_cockpit/_state_board.html` | LF | `1cce2d72c38902db3f6b9543b2cd95be` |
+| `config/strategies.yaml` | raw hybrid (prod + bitunix_sfp block; +polymarket lines & CRLF preserved) | `12fd6c3f67fe2ec48a59009c7d855679` |
+| `trading_corp/agents/strategies/bitunix_sfp.py` **(UNCHANGED — asserted)** | — | `91fd76726364331c8083aaaa68fce199` |
 
 `divisions.yaml` **NOT touched** (SOL/XRP arming is via strategies.yaml symbols+symbol_modes).
+
+> **Hybrids are prod-derived + regenerable** (`build_hybrids.py` fetches prod's live
+> main.py/strategies.yaml, applies the hunk, writes `hybrids/`). They are git-ignored (the
+> recipe is committed, the blobs are not — rebuild if prod moves; the drift-gate then guards
+> that prod still matches what they were built from). Base bug (2026-07-01 first apply): the
+> package originally file-copied all 7 → clobbered prod's Kalshi leg_priced fix + polymarket
+> lines + CRLF. Caught read-only at the config-diff gate, no restart, restored clean.
 
 ## Deploy sequence (operator paste, one line each — ≤100 chars)
 ```
