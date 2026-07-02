@@ -1,0 +1,194 @@
+================================================================================================
+WICK-TEST SPIKE - GROSS R - 3-candle momentum continuation (3m). See PRE_REGISTRATION.md
+================================================================================================
+[BTCUSDT] 3m n=38899 (81.0d, gaps=0) | 15m n=22086 (gaps=0) | swings H=5260 L=5265 | 3m-regime(causal)={'down': 16034, 'range': 4525, 'up': 18340}
+[ETHUSDT] 3m n=22467 (46.8d, gaps=0) | 15m n=22831 (gaps=0) | swings H=5403 L=5249 | 3m-regime(causal)={'up': 6474, 'range': 2720, 'down': 13273}
+[SOLUSDT] 3m n=22464 (46.8d, gaps=0) | 15m n=22831 (gaps=0) | swings H=5266 L=5228 | 3m-regime(causal)={'up': 7969, 'range': 2285, 'down': 12210}
+[XRPUSDT] 3m n=22468 (46.8d, gaps=0) | 15m n=22830 (gaps=0) | swings H=5490 L=5062 | 3m-regime(causal)={'up': 6124, 'range': 2745, 'down': 13599}
+
+================================================================================================
+RAW PATTERN FREQUENCY (pre-regime-filter) & FILL RATE (honest limit, target-independent)
+================================================================================================
+  BTCUSDT long  L1_swing : raw= 642 ( 55.5/wk) fill= 376 (58.6%) skip=266
+  BTCUSDT long  L2_vwap  : raw= 701 ( 60.6/wk) fill= 442 (63.1%) skip=259
+  BTCUSDT short L1_swing : raw= 590 ( 51.0/wk) fill= 361 (61.2%) skip=229
+  BTCUSDT short L2_vwap  : raw= 660 ( 57.0/wk) fill= 397 (60.2%) skip=263
+  ETHUSDT long  L1_swing : raw= 277 ( 41.4/wk) fill= 160 (57.8%) skip=117
+  ETHUSDT long  L2_vwap  : raw= 323 ( 48.3/wk) fill= 209 (64.7%) skip=114
+  ETHUSDT short L1_swing : raw= 241 ( 36.0/wk) fill= 164 (68.0%) skip=77
+  ETHUSDT short L2_vwap  : raw= 329 ( 49.2/wk) fill= 205 (62.3%) skip=124
+  SOLUSDT long  L1_swing : raw= 191 ( 28.6/wk) fill= 120 (62.8%) skip=71
+  SOLUSDT long  L2_vwap  : raw= 230 ( 34.4/wk) fill= 153 (66.5%) skip=77
+  SOLUSDT short L1_swing : raw= 193 ( 28.9/wk) fill= 120 (62.2%) skip=73
+  SOLUSDT short L2_vwap  : raw= 212 ( 31.7/wk) fill= 139 (65.6%) skip=73
+  XRPUSDT long  L1_swing : raw= 202 ( 30.2/wk) fill= 122 (60.4%) skip=80
+  XRPUSDT long  L2_vwap  : raw= 237 ( 35.4/wk) fill= 153 (64.6%) skip=84
+  XRPUSDT short L1_swing : raw= 217 ( 32.5/wk) fill= 139 (64.1%) skip=78
+  XRPUSDT short L2_vwap  : raw= 239 ( 35.7/wk) fill= 155 (64.9%) skip=84
+
+================================================================================================
+MAIN GRID - GROSS R  (filter=withtrend: long-up/short-down only; control=all regimes)
+================================================================================================
+
+coin    side  level     tgt  filter        n     WR    avgR     totR  null_p95  beats
+  BTCUSDT long  L1_swing  1.0  withtrend   153   54.2  +0.085   +13.00    +0.098    no 
+  BTCUSDT long  L1_swing  1.0  control     290   59.0  +0.180   +52.25    +0.083   YES 
+  BTCUSDT long  L1_swing  1.5  withtrend   143   42.7  +0.066    +9.50    +0.154    no 
+  BTCUSDT long  L1_swing  1.5  control     271   46.9  +0.173   +46.86    +0.108   YES 
+  BTCUSDT long  L1_swing  2.0  withtrend   140   34.3  +0.029    +4.00    +0.223    no 
+  BTCUSDT long  L1_swing  2.0  control     262   36.3  +0.089   +23.36    +0.145    no 
+  BTCUSDT long  L2_vwap   1.0  withtrend   172   55.2  +0.105   +18.00    +0.081   YES 
+  BTCUSDT long  L2_vwap   1.0  control     333   56.2  +0.123   +41.00    +0.069   YES 
+  BTCUSDT long  L2_vwap   1.5  withtrend   156   46.2  +0.154   +24.00    +0.154    no 
+  BTCUSDT long  L2_vwap   1.5  control     301   43.5  +0.088   +26.50    +0.121    no 
+  BTCUSDT long  L2_vwap   2.0  withtrend   147   34.0  +0.020    +3.00    +0.204    no 
+  BTCUSDT long  L2_vwap   2.0  control     284   32.4  -0.028    -8.00       --      - 
+  BTCUSDT short L1_swing  1.0  withtrend   124   51.6  +0.032    +4.00    +0.129    no 
+  BTCUSDT short L1_swing  1.0  control     272   52.9  +0.059   +16.00    +0.074    no 
+  BTCUSDT short L1_swing  1.5  withtrend   123   40.7  +0.016    +2.00    +0.179    no 
+  BTCUSDT short L1_swing  1.5  control     261   40.6  +0.015    +4.00    +0.121    no 
+  BTCUSDT short L1_swing  2.0  withtrend   119   35.3  +0.059    +7.00    +0.237    no 
+  BTCUSDT short L1_swing  2.0  control     255   33.7  +0.012    +3.00    +0.141    no 
+  BTCUSDT short L2_vwap   1.0  withtrend   133   55.6  +0.113   +15.00    +0.114    no 
+  BTCUSDT short L2_vwap   1.0  control     313   56.5  +0.131   +41.00    +0.061   YES 
+  BTCUSDT short L2_vwap   1.5  withtrend   126   44.4  +0.111   +14.00    +0.190    no 
+  BTCUSDT short L2_vwap   1.5  control     300   44.3  +0.108   +32.50    +0.117    no 
+  BTCUSDT short L2_vwap   2.0  withtrend   120   39.2  +0.175   +21.00    +0.226    no 
+  BTCUSDT short L2_vwap   2.0  control     288   37.5  +0.125   +36.00    +0.157    no 
+  ETHUSDT long  L1_swing  1.0  withtrend    38   42.1  -0.158    -6.00       --      - 
+  ETHUSDT long  L1_swing  1.0  control     124   53.2  +0.065    +8.00    +0.065   YES 
+  ETHUSDT long  L1_swing  1.5  withtrend    37   40.5  +0.014    +0.50    +0.284    no 
+  ETHUSDT long  L1_swing  1.5  control     120   44.2  +0.122   +14.58    +0.146    no 
+  ETHUSDT long  L1_swing  2.0  withtrend    36   30.6  -0.083    -3.00       --      - 
+  ETHUSDT long  L1_swing  2.0  control     117   35.0  +0.069    +8.08    +0.179    no 
+  ETHUSDT long  L2_vwap   1.0  withtrend    62   50.0  +0.000    +0.00       --      - 
+  ETHUSDT long  L2_vwap   1.0  control     161   53.4  +0.068   +11.00    +0.056   YES 
+  ETHUSDT long  L2_vwap   1.5  withtrend    60   35.0  -0.125    -7.50       --      - 
+  ETHUSDT long  L2_vwap   1.5  control     155   38.1  -0.048    -7.50       --      - 
+  ETHUSDT long  L2_vwap   2.0  withtrend    56   26.8  -0.196   -11.00       --      - 
+  ETHUSDT long  L2_vwap   2.0  control     146   30.8  -0.075   -11.00       --      - 
+  ETHUSDT short L1_swing  1.0  withtrend    79   46.8  -0.063    -5.00       --      - 
+  ETHUSDT short L1_swing  1.0  control     131   52.7  +0.053    +7.00    +0.100    no 
+  ETHUSDT short L1_swing  1.5  withtrend    78   38.5  -0.038    -3.00       --      - 
+  ETHUSDT short L1_swing  1.5  control     130   44.6  +0.115   +15.00    +0.193    no 
+  ETHUSDT short L1_swing  2.0  withtrend    77   33.8  +0.013    +1.00    +0.286    no 
+  ETHUSDT short L1_swing  2.0  control     128   39.1  +0.172   +22.00    +0.267    no 
+  ETHUSDT short L2_vwap   1.0  withtrend    93   54.8  +0.097    +9.00    +0.161    no 
+  ETHUSDT short L2_vwap   1.0  control     166   57.2  +0.145   +24.00    +0.084   YES 
+  ETHUSDT short L2_vwap   1.5  withtrend    90   44.4  +0.111   +10.00    +0.194    no 
+  ETHUSDT short L2_vwap   1.5  control     161   46.6  +0.165   +26.50    +0.165   YES 
+  ETHUSDT short L2_vwap   2.0  withtrend    86   39.5  +0.186   +16.00    +0.291    no 
+  ETHUSDT short L2_vwap   2.0  control     152   39.5  +0.184   +28.00    +0.225    no 
+  SOLUSDT long  L1_swing  1.0  withtrend    45   57.8  +0.156    +7.00    +0.156   YES 
+  SOLUSDT long  L1_swing  1.0  control     100   61.0  +0.220   +22.00    +0.080   YES 
+  SOLUSDT long  L1_swing  1.5  withtrend    45   48.9  +0.222   +10.00    +0.225    no 
+  SOLUSDT long  L1_swing  1.5  control      98   49.0  +0.224   +22.00    +0.148   YES 
+  SOLUSDT long  L1_swing  2.0  withtrend    43   41.9  +0.256   +11.00    +0.326    no 
+  SOLUSDT long  L1_swing  2.0  control      96   42.7  +0.281   +27.00    +0.156   YES 
+  SOLUSDT long  L2_vwap   1.0  withtrend    52   55.8  +0.115    +6.00    +0.154    no 
+  SOLUSDT long  L2_vwap   1.0  control     131   61.1  +0.221   +29.00    +0.024   YES 
+  SOLUSDT long  L2_vwap   1.5  withtrend    51   41.2  +0.029    +1.50    +0.225    no 
+  SOLUSDT long  L2_vwap   1.5  control     129   47.3  +0.182   +23.50    +0.124   YES 
+  SOLUSDT long  L2_vwap   2.0  withtrend    50   34.0  +0.020    +1.00    +0.380    no 
+  SOLUSDT long  L2_vwap   2.0  control     128   39.8  +0.195   +25.00    +0.196    no 
+  SOLUSDT short L1_swing  1.0  withtrend    60   66.7  +0.333   +20.00    +0.133   YES 
+  SOLUSDT short L1_swing  1.0  control     103   64.1  +0.282   +29.00    +0.050   YES 
+  SOLUSDT short L1_swing  1.5  withtrend    58   55.2  +0.379   +22.00    +0.293   YES 
+  SOLUSDT short L1_swing  1.5  control      99   51.5  +0.288   +28.50    +0.187   YES 
+  SOLUSDT short L1_swing  2.0  withtrend    58   53.4  +0.603   +35.00    +0.345   YES 
+  SOLUSDT short L1_swing  2.0  control      99   46.5  +0.394   +39.00    +0.333   YES 
+  SOLUSDT short L2_vwap   1.0  withtrend    66   59.1  +0.182   +12.00    +0.123   YES 
+  SOLUSDT short L2_vwap   1.0  control     127   57.5  +0.150   +19.00    +0.071   YES 
+  SOLUSDT short L2_vwap   1.5  withtrend    65   50.8  +0.269   +17.50    +0.231   YES 
+  SOLUSDT short L2_vwap   1.5  control     125   43.2  +0.080   +10.00    +0.141    no 
+  SOLUSDT short L2_vwap   2.0  withtrend    64   43.8  +0.312   +20.00    +0.359    no 
+  SOLUSDT short L2_vwap   2.0  control     124   37.1  +0.113   +14.00    +0.258    no 
+  XRPUSDT long  L1_swing  1.0  withtrend    38   55.3  +0.105    +4.00    +0.158    no 
+  XRPUSDT long  L1_swing  1.0  control     104   60.6  +0.212   +22.00    +0.059   YES 
+  XRPUSDT long  L1_swing  1.5  withtrend    37   40.5  +0.014    +0.50    +0.284    no 
+  XRPUSDT long  L1_swing  1.5  control     100   45.0  +0.125   +12.50    +0.175    no 
+  XRPUSDT long  L1_swing  2.0  withtrend    37   32.4  -0.027    -1.00       --      - 
+  XRPUSDT long  L1_swing  2.0  control      99   33.3  +0.000    +0.00       --      - 
+  XRPUSDT long  L2_vwap   1.0  withtrend    39   59.0  +0.179    +7.00    +0.179   YES 
+  XRPUSDT long  L2_vwap   1.0  control     133   52.6  +0.053    +7.00    +0.053   YES 
+  XRPUSDT long  L2_vwap   1.5  withtrend    38   44.7  +0.118    +4.50    +0.184    no 
+  XRPUSDT long  L2_vwap   1.5  control     131   39.7  -0.008    -1.00       --      - 
+  XRPUSDT long  L2_vwap   2.0  withtrend    38   36.8  +0.105    +4.00    +0.342    no 
+  XRPUSDT long  L2_vwap   2.0  control     129   33.3  +0.000    +0.00       --      - 
+  XRPUSDT short L1_swing  1.0  withtrend    79   58.2  +0.165   +13.00    +0.139   YES 
+  XRPUSDT short L1_swing  1.0  control     116   59.5  +0.190   +22.00    +0.103   YES 
+  XRPUSDT short L1_swing  1.5  withtrend    76   47.4  +0.184   +14.00    +0.217    no 
+  XRPUSDT short L1_swing  1.5  control     112   50.0  +0.250   +28.00    +0.205   YES 
+  XRPUSDT short L1_swing  2.0  withtrend    74   43.2  +0.297   +22.00    +0.297   YES 
+  XRPUSDT short L1_swing  2.0  control     110   45.5  +0.364   +40.00    +0.282   YES 
+  XRPUSDT short L2_vwap   1.0  withtrend    72   52.8  +0.056    +4.00    +0.111    no 
+  XRPUSDT short L2_vwap   1.0  control     133   54.9  +0.098   +13.00    +0.098   YES 
+  XRPUSDT short L2_vwap   1.5  withtrend    69   37.7  -0.058    -4.00       --      - 
+  XRPUSDT short L2_vwap   1.5  control     129   42.6  +0.066    +8.50    +0.202    no 
+  XRPUSDT short L2_vwap   2.0  withtrend    66   34.8  +0.045    +3.00    +0.320    no 
+  XRPUSDT short L2_vwap   2.0  control     126   38.1  +0.143   +18.00    +0.286    no 
+
+================================================================================================
+REGIME SPLIT OF CONTROL (avgR by regime; target=2.0, L1_swing) - does counter-trend bleed?
+================================================================================================
+  coin    side      L-up/S-dn(aligned)           range         counter
+  BTCUSDT long            n=140 +0.029     n=12 +0.000    n=110 +0.176
+  BTCUSDT short           n=118 +0.068     n=22 -0.182    n=115 -0.009
+  ETHUSDT long             n=36 -0.083     n=10 -0.400     n=71 +0.212
+  ETHUSDT short            n=77 +0.013     n=19 +0.263     n=32 +0.500
+  SOLUSDT long             n=43 +0.256      n=4 -0.250     n=49 +0.347
+  SOLUSDT short            n=58 +0.603      n=6 -0.500     n=35 +0.200
+  XRPUSDT long             n=37 -0.027      n=3 +1.000     n=59 -0.034
+  XRPUSDT short            n=74 +0.297     n=17 +0.588     n=19 +0.421
+
+================================================================================================
+STOP-DISTANCE DISTRIBUTION (rp) & WICK-PIERCED-BODY-HELD (materiality of body-close rule)
+  rp%-of-price is constant 0.1% BY CONSTRUCTION (entry=c3 extreme, stop=extreme-0.001*entry).
+================================================================================================
+  BTCUSDT: rp %ofprice q25/med/q75 = 0.100/0.100/0.100%  | rp$ = 68.211/74.961/77.856  | stop-losses=707 body-held-wickthrough=20 (2.8%)
+           PATH-AMBIGUOUS (resolving bar held BOTH stop & tp -> OHLC can't order them; stop-first assumed): 14/1088 (1.3%)
+  ETHUSDT: rp %ofprice q25/med/q75 = 0.100/0.100/0.100%  | rp$ = 1.6938/1.9823/2.1171  | stop-losses=346 body-held-wickthrough=20 (5.8%)
+           PATH-AMBIGUOUS (resolving bar held BOTH stop & tp -> OHLC can't order them; stop-first assumed): 12/542 (2.2%)
+  SOLUSDT: rp %ofprice q25/med/q75 = 0.100/0.100/0.100%  | rp$ = 0.06885/0.08087/0.08496  | stop-losses=263 body-held-wickthrough=26 (9.9%)
+           PATH-AMBIGUOUS (resolving bar held BOTH stop & tp -> OHLC can't order them; stop-first assumed): 25/447 (5.6%)
+  XRPUSDT: rp %ofprice q25/med/q75 = 0.100/0.100/0.100%  | rp$ = 0.0011451/0.0012876/0.0013633  | stop-losses=290 body-held-wickthrough=18 (6.2%)
+           PATH-AMBIGUOUS (resolving bar held BOTH stop & tp -> OHLC can't order them; stop-first assumed): 12/464 (2.6%)
+
+================================================================================================
+HEADLINE - cells that BEAT the null (avgR >= null p95), n>=30 unless flagged *
+================================================================================================
+  BTCUSDT long L1_swing tgt=1.0 [control]: n=290 WR=59.0% avgR=+0.180 totR=+52.25 (null_p95=+0.083)
+  BTCUSDT long L1_swing tgt=1.5 [control]: n=271 WR=46.9% avgR=+0.173 totR=+46.86 (null_p95=+0.108)
+  BTCUSDT long L2_vwap tgt=1.0 [withtrend]: n=172 WR=55.2% avgR=+0.105 totR=+18.00 (null_p95=+0.081)
+  BTCUSDT long L2_vwap tgt=1.0 [control]: n=333 WR=56.2% avgR=+0.123 totR=+41.00 (null_p95=+0.069)
+  BTCUSDT short L2_vwap tgt=1.0 [control]: n=313 WR=56.5% avgR=+0.131 totR=+41.00 (null_p95=+0.061)
+  ETHUSDT long L1_swing tgt=1.0 [control]: n=124 WR=53.2% avgR=+0.065 totR=+8.00 (null_p95=+0.065)
+  ETHUSDT long L2_vwap tgt=1.0 [control]: n=161 WR=53.4% avgR=+0.068 totR=+11.00 (null_p95=+0.056)
+  ETHUSDT short L2_vwap tgt=1.0 [control]: n=166 WR=57.2% avgR=+0.145 totR=+24.00 (null_p95=+0.084)
+  ETHUSDT short L2_vwap tgt=1.5 [control]: n=161 WR=46.6% avgR=+0.165 totR=+26.50 (null_p95=+0.165)
+  SOLUSDT long L1_swing tgt=1.0 [withtrend]: n=45 WR=57.8% avgR=+0.156 totR=+7.00 (null_p95=+0.156)
+  SOLUSDT long L1_swing tgt=1.0 [control]: n=100 WR=61.0% avgR=+0.220 totR=+22.00 (null_p95=+0.080)
+  SOLUSDT long L1_swing tgt=1.5 [control]: n=98 WR=49.0% avgR=+0.224 totR=+22.00 (null_p95=+0.148)
+  SOLUSDT long L1_swing tgt=2.0 [control]: n=96 WR=42.7% avgR=+0.281 totR=+27.00 (null_p95=+0.156)
+  SOLUSDT long L2_vwap tgt=1.0 [control]: n=131 WR=61.1% avgR=+0.221 totR=+29.00 (null_p95=+0.024)
+  SOLUSDT long L2_vwap tgt=1.5 [control]: n=129 WR=47.3% avgR=+0.182 totR=+23.50 (null_p95=+0.124)
+  SOLUSDT short L1_swing tgt=1.0 [withtrend]: n=60 WR=66.7% avgR=+0.333 totR=+20.00 (null_p95=+0.133)
+  SOLUSDT short L1_swing tgt=1.0 [control]: n=103 WR=64.1% avgR=+0.282 totR=+29.00 (null_p95=+0.050)
+  SOLUSDT short L1_swing tgt=1.5 [withtrend]: n=58 WR=55.2% avgR=+0.379 totR=+22.00 (null_p95=+0.293)
+  SOLUSDT short L1_swing tgt=1.5 [control]: n=99 WR=51.5% avgR=+0.288 totR=+28.50 (null_p95=+0.187)
+  SOLUSDT short L1_swing tgt=2.0 [withtrend]: n=58 WR=53.4% avgR=+0.603 totR=+35.00 (null_p95=+0.345)
+  SOLUSDT short L1_swing tgt=2.0 [control]: n=99 WR=46.5% avgR=+0.394 totR=+39.00 (null_p95=+0.333)
+  SOLUSDT short L2_vwap tgt=1.0 [withtrend]: n=66 WR=59.1% avgR=+0.182 totR=+12.00 (null_p95=+0.123)
+  SOLUSDT short L2_vwap tgt=1.0 [control]: n=127 WR=57.5% avgR=+0.150 totR=+19.00 (null_p95=+0.071)
+  SOLUSDT short L2_vwap tgt=1.5 [withtrend]: n=65 WR=50.8% avgR=+0.269 totR=+17.50 (null_p95=+0.231)
+  XRPUSDT long L1_swing tgt=1.0 [control]: n=104 WR=60.6% avgR=+0.212 totR=+22.00 (null_p95=+0.059)
+  XRPUSDT long L2_vwap tgt=1.0 [withtrend]: n=39 WR=59.0% avgR=+0.179 totR=+7.00 (null_p95=+0.179)
+  XRPUSDT long L2_vwap tgt=1.0 [control]: n=133 WR=52.6% avgR=+0.053 totR=+7.00 (null_p95=+0.053)
+  XRPUSDT short L1_swing tgt=1.0 [withtrend]: n=79 WR=58.2% avgR=+0.165 totR=+13.00 (null_p95=+0.139)
+  XRPUSDT short L1_swing tgt=1.0 [control]: n=116 WR=59.5% avgR=+0.190 totR=+22.00 (null_p95=+0.103)
+  XRPUSDT short L1_swing tgt=1.5 [control]: n=112 WR=50.0% avgR=+0.250 totR=+28.00 (null_p95=+0.205)
+  XRPUSDT short L1_swing tgt=2.0 [withtrend]: n=74 WR=43.2% avgR=+0.297 totR=+22.00 (null_p95=+0.297)
+  XRPUSDT short L1_swing tgt=2.0 [control]: n=110 WR=45.5% avgR=+0.364 totR=+40.00 (null_p95=+0.282)
+  XRPUSDT short L2_vwap tgt=1.0 [control]: n=133 WR=54.9% avgR=+0.098 totR=+13.00 (null_p95=+0.098)
+
+DONE.
