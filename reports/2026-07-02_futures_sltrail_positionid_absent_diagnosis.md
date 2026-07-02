@@ -165,3 +165,28 @@ prod writes** — deploy timing is the operator's call (can ride to the next fut
   (`modify_calls` gets `{new_sl: 99.0, position_id: None}` — the exact bug) and PASSES post-fix; the genuine
   partial-TP-fill test passes on BOTH (no open-position behavior change). Reconciler+SFP subsets green, 0
   regressions.
+
+## Deploy record — DEPLOYED + VERIFIED LIVE 2026-07-02 ~16:23 UTC (Board-authorized, agent-driven, no operator)
+
+Single targeted change: `bitunix_position_reconciler.py` full-file replace (prod pre-deploy md5 `f54665e8…` ==
+pre-fix blob cf506fe → **zero drift**; deployed LF blob md5 `25833c1eade56c4574a0244eca5d481b` == commit `701a9fb`,
+diff vs live = exactly the two fix hunks). `py_compile` OK before restart. Backup on prod:
+`bitunix_position_reconciler.py.bak-pre-sltrailfix-2026-07-02` (`f54665e8…`). No config/unit/db writes.
+
+Restart in the flat window (guarded: open=0 && unresolved=0). VERIFY ALL GREEN:
+- New PID **60341** (was 53372), NRestarts=0, active/running, boot 16:23:27 UTC.
+- `execution_mode=live`; `bitunix_futures` + `bitunix_sfp` + `robinhood_pead` + `kalshi_copy_trading` all
+  `paper=False`. SFP observer wired 4 coins, `auto_execute=True`, `mode_b=True`, all `trading`.
+- Reconciler started clean 16:24:48 (my modified component; no error). **restart-resume matched=0 orphan=0
+  case_c_deferred=0 for BOTH bitunix_futures and bitunix_sfp.**
+- SFP regime seed ran for all 4 coins (874 15m closes, gate 800), `htf_regime_snapshot` fired, regime=up
+  (long-only, unchanged). Flat: 0 open / 0 unresolved / 0 fills since boot.
+- No `positionId absent`, no bracket SL-move error, no traceback. Pre-existing fidelity/Playwright paper-fallback
+  ERRORs are unrelated + chronic.
+- Branch `futures-sltrail-diag-2026-07-02` pushed to origin (UNMERGED; main stays untouched per the CRLF
+  merge-debt note — main.py/strategies.yaml reconcile is a separate rebase-onto-prod follow-up).
+
+**Live-behavior validation pending:** the new post-close INFO breadcrumb (replacing the `positionId absent`
+WARNING) will confirm on the NEXT futures bracket close. Code is proven by the regression (fails pre-fix, passes
+post-fix). **Rollback:** restore the `.bak-pre-sltrailfix-2026-07-02` file + `sudo -n systemctl restart
+trading-corp`.
