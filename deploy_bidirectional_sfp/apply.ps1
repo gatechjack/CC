@@ -20,19 +20,28 @@ $files = [ordered]@{
 Write-Host "=== APPLY (bidirectional SFP) ==="
 if (-not (Test-Path .\preflight_prod_snapshot.txt)) { Write-Host "ABORT: run preflight.ps1 first"; exit 1 }
 
-# 0) DRIFT-GATE: prod md5s must equal the preflight snapshot (abort if prod moved)
-$mfiles = ($files.Keys -join " ")
-$now = (@("cd $D; md5sum $mfiles") | ssh $H "tr -d '\r'|bash")
-$base = (Get-Content .\preflight_prod_snapshot.txt | Select-String "  (trading_corp|config)/" | ForEach-Object { $_.ToString().Trim() })
-$nowN = ($now | ForEach-Object { $_.Trim() } | Sort-Object)
+# 0) DRIFT-GATE: prod md5s of the EXISTING touched files must equal the preflight
+#    snapshot. Exclude the NEW file (research_log -- not on prod yet; md5-gated at
+#    install below) so md5sum does not error, AND exclude the detector line from the
+#    snapshot filter (the "  (trading_corp|config)/" pattern also matches the detector
+#    path bitunix_sfp.py -> would read as phantom drift). Compare 6-vs-6.
+$new = "trading_corp/agents/divisions/bitunix_sfp_research_log.py"
+$det = "trading_corp/agents/strategies/bitunix_sfp.py"
+$existing = @($files.Keys | Where-Object { $_ -ne $new })
+$now = (@("cd $D; md5sum $($existing -join ' ')") | ssh $H "tr -d '\r'|bash")
+$base = (Get-Content .\preflight_prod_snapshot.txt | Select-String "  (trading_corp|config)/" | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ -notmatch [regex]::Escape($det) -and $_ -notmatch [regex]::Escape($new) })
+$nowN = ($now | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object)
 $baseN = ($base | Sort-Object)
 if (Compare-Object $nowN $baseN) { Write-Host "ABORT: prod DRIFTED since preflight:"; Compare-Object $nowN $baseN; exit 1 }
-Write-Host "OK  drift-gate: prod == preflight snapshot"
+Write-Host "OK  drift-gate: prod == preflight snapshot (6 existing touched files)"
 
 # 1) INSTALL: backup + scp byte-copy + tr -d CR (LF) + md5-gate == target
 foreach ($f in $files.GetEnumerator()) {
   $p = $f.Key; $t = $f.Value
-  scp $p "${H}:/tmp/dep_blob"
+  # source blobs live at the WORKTREE ROOT (one level up from this deploy folder);
+  # keep the local path RELATIVE + colon-free ('..\') so Windows scp treats it as a
+  # local file (an absolute 'C:\' path would be misread as host:path).
+  scp "..\$($p.Replace('/','\'))" "${H}:/tmp/dep_blob"
   $inst = "cd $D; [ -f '$p' ] && cp '$p' '$p.$TAG'; tr -d '\r' < /tmp/dep_blob > '$p'; md5sum '$p' | cut -d' ' -f1"
   $got = ((@($inst) | ssh $H "tr -d '\r'|bash") | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Last 1)
   if ($got -ne $t) { Write-Host "ABORT: $p installed md5 $got != target $t (RUN rollback.ps1)"; exit 1 }
