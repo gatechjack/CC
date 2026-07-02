@@ -11344,3 +11344,38 @@ Traceback/UndefinedError** (no repeat of the earlier macro-ordering 500). Engine
 **Known v1 limits (BACKLOG-able, non-blocking):** Open *tile count* + equity curve not mode-scoped;
 sort/filter controls don't carry `wr_mode` (sorting resets scope to LIVE). **Parity: `main == origin
 == prod-content`.** (Live view may show 0 resolved until the first post-fix copy settles — expected.)
+
+---
+
+## 2026-07-02 — bitunix_futures SL-trail `positionId absent` fix (caller-only, DEPLOYED+VERIFIED)
+
+**What & why.** `bitunix_position_reconciler.py` `move_bracket_sls`: a fully-closed bracket position is gone
+from `get_pending_positions()`, so `pos_qty.get(key,0.0)` defaulted to `0.0`, was mis-read as "TP1+TP2 filled",
+and drove a positionId-less `modify_position_sl` no-op that logged `BitUnix modify_position_sl: positionId
+absent for BTC/USDT.P` — a WARNING that read like a live-risk protection failure (cost an investigation cycle).
+It was a **post-close cosmetic no-op, $0 risk, long-standing since Jun 19** (diagnosis:
+`reports/2026-07-02_futures_sltrail_positionid_absent_diagnosis.md`). **Fix A:** skip when
+`pos_key not in pos_qty or pos_qty[pos_key] <= 0` BEFORE the TP-fill test. **Fix B:** reduced-severity INFO
+"post-close no-op" breadcrumb replacing the misleading WARNING. `modify_position_sl` + its mandatory-positionId
+guard UNTOUCHED. Caller-only; no open-position behavior change (regression fails pre-fix, passes post-fix).
+
+**File (1):** `trading_corp/agents/divisions/bitunix_position_reconciler.py`.
+Deployed LF blob md5 **`25833c1eade56c4574a0244eca5d481b`** (== commit `701a9fb`); prod pre-deploy md5
+`f54665e8335bb76fd28171c94e3a6dc1` (== pre-fix, ZERO drift). Regression test added
+`tests/test_bitunix_bracket_sl_move_post_close.py` (2 tests). Diff vs live = exactly the two fix hunks.
+
+**Deploy (agent-driven, Board-authorized, no operator).** scp-STDIN LF blob → temp → md5 verify +
+`py_compile` OK → backup `bitunix_position_reconciler.py.bak-pre-sltrailfix-2026-07-02` (`f54665e8…`) → swap →
+live md5 == `25833c1e…` → guarded restart in flat window (`sudo -n systemctl restart trading-corp`). No
+config/unit/db writes.
+
+**Verified live 2026-07-02 ~16:23 UTC.** New PID **60341** (was 53372), active, `execution_mode=live`;
+`bitunix_futures` + `bitunix_sfp` + `robinhood_pead` + `kalshi_copy_trading` all `paper=False`. Reconciler
+started clean 16:24:48; **restart-resume matched=0 orphan=0 case_c=0 for both bitunix_futures and bitunix_sfp**;
+SFP regime seed ran all 4 coins; flat (0 open / 0 unresolved / 0 fills since boot); no `positionId absent`, no
+traceback. Rollback = restore `.bak-pre-sltrailfix-2026-07-02` + restart.
+
+**Parity note:** branch `futures-sltrail-diag-2026-07-02` PUSHED to origin, **UNMERGED** (main stays untouched
+per the CRLF merge-debt). **Prod reconciler now = commit `701a9fb`; main/origin reconciler = pre-fix** → a
+future main reconcile must include this hunk. **Live-behavior validation pending:** the new post-close INFO
+breadcrumb (vs old WARNING) confirms on the NEXT futures bracket close.

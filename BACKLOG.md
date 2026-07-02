@@ -1535,4 +1535,25 @@ history + open LIST, but two surfaces were left unscoped for a surgical v1:
 2. **Sort/filter controls don't carry `wr_mode`** — clicking a Kalshi sort/filter after choosing a mode
    resets scope to the default (LIVE). Add `wr_mode` to those link/query-string builders in
    `pm_dashboard_body.html` for full cross-control persistence.
+
+## P3 — bitunix_futures: pre-TP1 price/ATR trail (strategy question, filed 2026-07-02 via SL-trail diag)
+
+The futures bracket SL-ratchet only acts on TP fills (breakeven after TP1, SL-to-TP1 after TP2, Chandelier
+after TP2) — there is **no trail before TP1**. On 2026-07-02 both losing BTC/USDT.P shorts (`4f9fa339` STANDARD,
+`565c5381` PREMIUM) stopped at their **initial** stop with no TP fill → no trail ever engaged. Whether a
+pre-TP1 price/ATR trail would cut such losers is a **strategy decision needing its own backtest arc** — NOT the
+positionId-absent fix (that shipped 2026-07-02, see `deploy_log.md`). Low priority; needs a multi-trade sample.
+
+## RESEARCH LEDGER — wick-test scalp: **RETIRED (do not re-explore without new data)** 2026-07-02
+
+Six independent constructions (v1–v6) on branch `wick-test-spike-2026-07-02` (pushed, unmerged;
+`spike_wick_test/` + `reports/2026-07-02_wick_test_v*.md`). **No tradeable, net-positive, OOS-stable, both-sides
+gross edge on BTC/ETH/SOL/XRP.** v5 (breakout-continuation "runner-capture" BC-stop entry + break-strength
+filter) produced the arc's only non-beta signal (long-only, +0.06R gross, sub-fee); v6 **killed it** — the 3m
+signal did not survive 15m TF-transfer + a fee model + IS/OOS (0 cells beat the net-null). **Do not re-run the
+wick test.** Reusable learnings: (1) retest-into-the-wick is anti-selective for continuation (discards the
+runners); (2) a constant-%/too-tight stop makes a strategy fee-dominated; (3) bear-window shorts must clear a
+**drift-embedding** null (never did) — the LONG side in a bear window is the bear-proof alpha tell. Data limit:
+3m only spans 47–81d bear; 15m spans ~230d but is still net-bear (−42%…−60%). A genuinely multi-regime (incl.
+bull) 3m dataset would be the only reason to revisit continuation-scalp ideas here.
 Low priority (cosmetic; the toggle itself works + preserves other params).
