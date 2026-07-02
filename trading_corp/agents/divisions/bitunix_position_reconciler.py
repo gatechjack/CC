@@ -1332,7 +1332,23 @@ async def move_bracket_sls(
         entry_qty = _safe_float(extra.get("bracket_entry_qty"), _safe_float(r["qty"]))
         if entry_qty <= 0:
             continue
-        current_qty = pos_qty.get((_match_symbol_key(r["symbol"]), side), 0.0)
+        pos_key = (_match_symbol_key(r["symbol"]), side)
+        # Fix A (2026-07-02 diag): a fully-closed / absent position is GONE from the
+        # venue `get_pending_positions()` list, so `pos_qty.get(key, 0.0)` would
+        # default to 0.0 and be mis-read below as "TP1+TP2 filled" — driving a
+        # positionId-less `modify_position_sl` that fail-soft-skips and logged a
+        # WARNING reading like a live-risk protection failure. It is a post-close
+        # no-op (nothing to trail; the close is booked by the auto-book path). Skip
+        # cleanly BEFORE the TP-fill test so the false positive never fires.
+        if pos_key not in pos_qty or pos_qty[pos_key] <= 0:
+            # Fix B: reduced-severity, unambiguous breadcrumb (was a WARNING that
+            # masqueraded as a protection failure and cost an investigation cycle).
+            log.info(
+                "bracket SL-move: %s absent/closed at SL-modify time — "
+                "post-close no-op, skipping (no open position to trail)", r["symbol"],
+            )
+            continue
+        current_qty = pos_qty[pos_key]
         if current_qty >= entry_qty - 1e-12:
             continue  # no TP fill detected this tick
         current_sl = _safe_float(extra.get("current_sl"), _safe_float(r["stop_price"]))
@@ -1353,7 +1369,7 @@ async def move_bracket_sls(
             continue
         # Thread positionId from the broker Position.extra (required by the
         # corrected modify_position_sl; absent → fail-soft no-op inside the method).
-        pos_key = (_match_symbol_key(r["symbol"]), side)
+        # `pos_key` is computed once at the top of the loop (Fix A) and reused here.
         broker_position_id: str | None = pos_id.get(pos_key)
         moved = False
         if hasattr(broker, "modify_position_sl"):
