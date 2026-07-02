@@ -1,0 +1,92 @@
+============================================================================================================
+WICK-TEST v6 - OOS+FEE validation of BC-long+strength on 15m multi-regime. See PRE_REGISTRATION_v6.md
+  fee model NET base COST_FRAC=0.00058 (2 taker + 2 slip); taker-only=0.00038
+============================================================================================================
+[BTCUSDT] 15m n=22086 (230d, gaps=0) drift=-42.4% regime={up:8811,down:10517,range:2726}
+[ETHUSDT] 15m n=22831 (238d, gaps=0) drift=-58.9% regime={up:8908,down:11288,range:2603}
+[SOLUSDT] 15m n=22831 (238d, gaps=0) drift=-60.4% regime={up:8792,down:11033,range:2974}
+[XRPUSDT] 15m n=22830 (238d, gaps=0) drift=-58.2% regime={up:7420,down:12319,range:3059}
+
+============================================================================================================
+BC-LONG on 15m - GROSS vs NET avgR, net-null gate  (2R, body-close; filter none vs strength)
+============================================================================================================
+  coin   filt        k     n     WR   grossR netR@taker  netR@base  net-null  beats
+  BTCUSDTnone      1.0  711   36.0   -0.164     -0.307     -0.382       --      no
+  BTCUSDTnone      1.5  544   34.7   -0.110     -0.199     -0.246       --      no
+  BTCUSDTnone      2.0  417   32.6   -0.079     -0.143     -0.177       --      no
+  BTCUSDTstrength  1.0  176   39.2   -0.144     -0.293     -0.372       --      no
+  BTCUSDTstrength  1.5  164   38.4   -0.063     -0.164     -0.217       --      no
+  BTCUSDTstrength  2.0  153   33.3   -0.175     -0.251     -0.291       --      no
+  ETHUSDTnone      1.0  627   39.4   -0.071     -0.179     -0.235       --      no
+  ETHUSDTnone      1.5  502   36.5   -0.073     -0.140     -0.176       --      no
+  ETHUSDTnone      2.0  406   35.2   +0.006     -0.042     -0.068       --      no
+  ETHUSDTstrength  1.0  143   42.7   +0.033     -0.067     -0.120       --      no
+  ETHUSDTstrength  1.5  132   42.4   +0.120     +0.052     +0.017    +0.056     no
+  ETHUSDTstrength  2.0  123   30.9   -0.209     -0.260     -0.287       --      no
+  SOLUSDTnone      1.0  694   36.7   -0.146     -0.236     -0.283       --      no
+  SOLUSDTnone      1.5  581   35.3   -0.094     -0.153     -0.184       --      no
+  SOLUSDTnone      2.0  469   34.1   -0.060     -0.103     -0.125       --      no
+  SOLUSDTstrength  1.0  169   45.6   +0.085     -0.005     -0.052       --      no
+  SOLUSDTstrength  1.5  162   37.7   -0.054     -0.114     -0.146       --      no
+  SOLUSDTstrength  2.0  154   40.3   +0.081     +0.036     +0.012    +0.065     no
+  XRPUSDTnone      1.0  690   39.1   -0.073     -0.178     -0.233       --      no
+  XRPUSDTnone      1.5  548   35.8   -0.108     -0.177     -0.213       --      no
+  XRPUSDTnone      2.0  457   34.6   -0.051     -0.102     -0.128       --      no
+  XRPUSDTstrength  1.0  199   40.2   -0.098     -0.199     -0.253       --      no
+  XRPUSDTstrength  1.5  182   36.8   -0.081     -0.149     -0.184       --      no
+  XRPUSDTstrength  2.0  175   37.7   -0.007     -0.058     -0.085       --      no
+
+============================================================================================================
+IN-SAMPLE / OUT-OF-SAMPLE (60/40 chrono) - BC-long+strength NET@base avgR (sign-stability)
+============================================================================================================
+  coin      k         IS n/netR        OOS n/netR  stable(both>0)
+  BTCUSDT 1.0      n=110 -0.468       n=66 -0.211           False
+  BTCUSDT 1.5      n=105 -0.270       n=59 -0.123           False
+  BTCUSDT 2.0       n=96 -0.362       n=57 -0.172           False
+  ETHUSDT 1.0       n=91 -0.181       n=52 -0.013           False
+  ETHUSDT 1.5       n=85 -0.024       n=47 +0.091           False
+  ETHUSDT 2.0       n=79 -0.162       n=44 -0.511           False
+  SOLUSDT 1.0       n=97 -0.135       n=72 +0.060           False
+  SOLUSDT 1.5       n=92 -0.158       n=70 -0.129           False
+  SOLUSDT 2.0       n=86 -0.114       n=68 +0.171           False
+  XRPUSDT 1.0      n=122 -0.206       n=77 -0.326           False
+  XRPUSDT 1.5      n=113 -0.065       n=69 -0.379           False
+  XRPUSDT 2.0      n=108 +0.011       n=67 -0.239           False
+
+============================================================================================================
+REGIME SPLIT (informational) - BC-long+strength k=1.5 NET@base avgR by 15m regime
+============================================================================================================
+  coin                 up           range            down
+  BTCUSDT     n=74 -0.210     n=52 -0.173     n=38 -0.293
+  ETHUSDT     n=70 +0.029     n=29 +0.190     n=33 -0.162
+  SOLUSDT     n=73 -0.182     n=45 +0.062     n=44 -0.299
+  XRPUSDT     n=75 -0.196     n=49 -0.139     n=58 -0.208
+
+============================================================================================================
+BC-SHORT+strength REFERENCE (bear-beta sanity, NOT in gate) - NET@base avgR + beats
+============================================================================================================
+  BTCUSDT short k=1.5: n=213 netR=-0.205 null=na -> no
+  BTCUSDT short k=2.0: n=192 netR=-0.201 null=na -> no
+  ETHUSDT short k=1.5: n=189 netR=-0.197 null=na -> no
+  ETHUSDT short k=2.0: n=171 netR=-0.072 null=na -> no
+  SOLUSDT short k=1.5: n=214 netR=-0.073 null=na -> no
+  SOLUSDT short k=2.0: n=199 netR=-0.015 null=na -> no
+  XRPUSDT short k=1.5: n=200 netR=-0.176 null=na -> no
+  XRPUSDT short k=2.0: n=184 netR=+0.022 null=0.29832789003043536 -> no
+
+============================================================================================================
+SUCCESS GATE (pre-registered) - NET, OOS-stable, multi-coin
+============================================================================================================
+  BTCUSDT: k-cells n>=100=3, netR>0 in 0/3, beats-null in 0 -> coin fail
+  ETHUSDT: k-cells n>=100=3, netR>0 in 1/3, beats-null in 0 -> coin fail
+  SOLUSDT: k-cells n>=100=3, netR>0 in 1/3, beats-null in 0 -> coin fail
+  XRPUSDT: k-cells n>=100=3, netR>0 in 0/3, beats-null in 0 -> coin fail
+
+  passing coins: [] [need>=2] -> False
+  IS&OOS both net>0 for each passing coin: True -> False
+  pooled NET avgR of beats-null cells: +nan [need>=+0.05] -> False
+
+  >>> v6 VERDICT: FAIL <<<
+  -> v5 3m signal did NOT survive TF-transfer + OOS + fees -> WICK TEST RETIRED for good.
+
+DONE.
