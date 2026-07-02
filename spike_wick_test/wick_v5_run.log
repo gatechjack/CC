@@ -1,0 +1,186 @@
+==============================================================================================================
+WICK-TEST v5 - Runner-Capture (BC stop) vs DR limit - GROSS R. See PRE_REGISTRATION_v5.md
+==============================================================================================================
+[BTCUSDT] 3m n=38899 (81.0d) drift=-4.5% mean_bar_ret=-0.01bp
+[ETHUSDT] 3m n=22467 (46.8d) drift=-33.4% mean_bar_ret=-0.17bp
+[SOLUSDT] 3m n=22464 (46.8d) drift=-24.4% mean_bar_ret=-0.11bp
+[XRPUSDT] 3m n=22468 (46.8d) drift=-29.3% mean_bar_ret=-0.14bp
+
+==============================================================================================================
+FILL RATES on triggered setups: DR (pullback) vs BC (continuation)
+==============================================================================================================
+  BTCUSDT long : triggered=2746 | DR-fill=1824 (66.4%, 157.6/wk) BC-fill=2116 (77.1%, 182.8/wk) both=1271
+  BTCUSDT short: triggered=2783 | DR-fill=1916 (68.8%, 165.5/wk) BC-fill=2173 (78.1%, 187.7/wk) both=1381
+  ETHUSDT long : triggered=1476 | DR-fill= 998 (67.6%, 149.3/wk) BC-fill=1121 (75.9%, 167.7/wk) both= 688
+  ETHUSDT short: triggered=1636 | DR-fill=1171 (71.6%, 175.1/wk) BC-fill=1234 (75.4%, 184.6/wk) both= 805
+  SOLUSDT long : triggered=1393 | DR-fill= 954 (68.5%, 142.7/wk) BC-fill=1117 (80.2%, 167.1/wk) both= 714
+  SOLUSDT short: triggered=1460 | DR-fill=1044 (71.5%, 156.2/wk) BC-fill=1145 (78.4%, 171.3/wk) both= 749
+  XRPUSDT long : triggered=1466 | DR-fill= 988 (67.4%, 147.8/wk) BC-fill=1155 (78.8%, 172.7/wk) both= 709
+  XRPUSDT short: triggered=1585 | DR-fill=1096 (69.1%, 163.9/wk) BC-fill=1260 (79.5%, 188.4/wk) both= 804
+
+==============================================================================================================
+FILL-MATRIX DIAGNOSTIC (k=1.5 none, raw per-fill BODY avgR) - are continuation-fills the winners?
+==============================================================================================================
+  coin   side      DR-fills avgR     BC-fills avgR          BOTH: DR vs BC
+  BTCUSDTlong      n=1824 -0.072     n=2116 +0.007        +0.082 vs -0.302
+  BTCUSDTshort     n=1916 +0.019     n=2173 +0.039        +0.186 vs -0.225
+  ETHUSDTlong       n=998 -0.169     n=1121 -0.037        -0.011 vs -0.320
+  ETHUSDTshort     n=1171 +0.012     n=1234 +0.042        +0.191 vs -0.210
+  SOLUSDTlong       n=954 -0.207     n=1117 -0.107        -0.117 vs -0.369
+  SOLUSDTshort     n=1044 +0.085     n=1145 +0.100        +0.251 vs -0.112
+  XRPUSDTlong       n=988 -0.194     n=1155 -0.059        -0.053 vs -0.412
+  XRPUSDTshort     n=1096 -0.048     n=1260 +0.041        +0.088 vs -0.266
+
+==============================================================================================================
+MAIN GRID - GROSS R (2R; BODY=record, HARD=contrast). entry DR=limit@L / BC=stop@confirm-extreme
+==============================================================================================================
+  coin   side entry stop   filt         n |    BODY WR/avgR/tot/alpha beats(null)    | HARD avgR  |  shk% 
+  BTCUSDTlong DR    atr1.0 none     1365 | WR40.1 -0.091 -123.7 a-0.086    -( ref)  |   -0.024   |  7.5 
+  BTCUSDTlong DR    atr1.0 strength  180 | WR35.6 -0.288  -51.9 a-0.284    -( ref)  |   -0.217   |  9.4 
+  BTCUSDTlong DR    atr1.5 none     1084 | WR38.3 -0.036  -39.1 a-0.029    -( ref)  |   -0.015   |  5.9 
+  BTCUSDTlong DR    atr1.5 strength  178 | WR34.8 -0.208  -37.1 a-0.202    -( ref)  |   -0.170   |  7.3 
+  BTCUSDTlong DR    atr2.0 none      861 | WR34.7 -0.045  -39.2 a-0.037    -( ref)  |   -0.026   |  4.2 
+  BTCUSDTlong DR    atr2.0 strength  171 | WR33.9 -0.150  -25.6 a-0.142    -( ref)  |   -0.215   |  8.2 
+  BTCUSDTlong DR    struct none     1397 | WR40.7 -0.100 -139.1 a-0.095    -( ref)  |   -0.051   |  9.0 
+  BTCUSDTlong BC    atr1.0 none     1374 | WR41.2 -0.025  -34.7 a-0.021    -( ref)  |   -0.090   | 10.8 
+  BTCUSDTlong BC    atr1.0 strength  384 | WR39.6 -0.058  -22.4 a-0.055    -( ref)  |   -0.141   | 10.9 
+  BTCUSDTlong BC    atr1.5 none     1094 | WR39.4 +0.011  +12.6 a+0.018   no(+0.031) |   +0.000   |  6.3 
+  BTCUSDTlong BC    atr1.5 strength  363 | WR38.3 -0.054  -19.6 a-0.048    -( ref)  |   +0.021   |  4.4 
+  BTCUSDTlong BC    atr2.0 none      849 | WR37.0 +0.046  +39.0 a+0.054 PASS(+0.032) |   +0.027   |  4.5 
+  BTCUSDTlong BC    atr2.0 strength  337 | WR35.6 -0.053  -17.8 a-0.046    -( ref)  |   -0.053   |  4.7 
+  BTCUSDTlong BC    struct none     1217 | WR40.4 -0.040  -48.7 a-0.035    -( ref)  |   -0.007   |  7.6 
+  BTCUSDTshortDR    atr1.0 none     1405 | WR43.4 +0.022  +30.7 a+0.017   no(+0.048) |   +0.034   |  9.0 
+  BTCUSDTshortDR    atr1.0 strength  231 | WR43.3 -0.018   -4.2 a-0.022    -( ref)  |   +0.091   |  6.9 
+  BTCUSDTshortDR    atr1.5 none     1123 | WR42.0 +0.068  +76.3 a+0.062   no(+0.090) |   +0.101   |  5.7 
+  BTCUSDTshortDR    atr1.5 strength  224 | WR42.9 +0.080  +17.9 a+0.074   no(+0.197) |   +0.051   |  8.0 
+  BTCUSDTshortDR    atr2.0 none      892 | WR40.2 +0.110  +98.2 a+0.102   no(+0.119) |   +0.086   |  5.8 
+  BTCUSDTshortDR    atr2.0 strength  213 | WR39.9 +0.064  +13.6 a+0.057   no(+0.236) |   +0.068   |  5.2 
+  BTCUSDTshortDR    struct none     1442 | WR43.6 -0.000   -0.0 a-0.004    -( ref)  |   -0.008   | 10.5 
+  BTCUSDTshortBC    atr1.0 none     1407 | WR41.5 -0.031  -43.3 a-0.035    -( ref)  |   -0.079   | 10.8 
+  BTCUSDTshortBC    atr1.0 strength  421 | WR40.9 -0.059  -24.8 a-0.062    -( ref)  |   -0.102   | 10.9 
+  BTCUSDTshortBC    atr1.5 none     1125 | WR39.3 -0.002   -2.3 a-0.008    -( ref)  |   +0.012   |  6.0 
+  BTCUSDTshortBC    atr1.5 strength  390 | WR41.3 +0.046  +17.8 a+0.041   no(+0.137) |   +0.056   |  6.2 
+  BTCUSDTshortBC    atr2.0 none      919 | WR37.6 +0.015  +14.2 a+0.008   no(+0.099) |   +0.015   |  5.2 
+  BTCUSDTshortBC    atr2.0 strength  366 | WR37.4 -0.005   -2.0 a-0.012    -( ref)  |   +0.000   |  5.2 
+  BTCUSDTshortBC    struct none     1256 | WR40.6 -0.029  -36.0 a-0.034    -( ref)  |   -0.049   |  9.2 
+  ETHUSDTlong DR    atr1.0 none      730 | WR38.1 -0.116  -84.4 a-0.029    -( ref)  |   -0.043   |  6.4 
+  ETHUSDTlong DR    atr1.0 strength   84*| WR32.1 -0.356  -29.9 a-0.275    -( ref)  |   -0.107   |  2.4 
+  ETHUSDTlong DR    atr1.5 none      581 | WR35.5 -0.102  -59.3 a+0.023    -( ref)  |   -0.046   |  4.3 
+  ETHUSDTlong DR    atr1.5 strength   82*| WR19.5 -0.612  -50.2 a-0.501    -( ref)  |   -0.415   |  0.0 
+  ETHUSDTlong DR    atr2.0 none      460 | WR31.1 -0.116  -53.4 a+0.033    -( ref)  |   -0.061   |  2.6 
+  ETHUSDTlong DR    atr2.0 strength   81*| WR21.0 -0.499  -40.4 a-0.361    -( ref)  |   -0.446   |  3.7 
+  ETHUSDTlong DR    struct none      805 | WR40.4 -0.129 -103.6 a-0.053    -( ref)  |   -0.039   |  8.3 
+  ETHUSDTlong BC    atr1.0 none      732 | WR41.5 -0.004   -2.9 a+0.079    -( ref)  |   -0.071   | 10.7 
+  ETHUSDTlong BC    atr1.0 strength  189 | WR37.6 -0.155  -29.3 a-0.087    -( ref)  |   -0.175   | 10.1 
+  ETHUSDTlong BC    atr1.5 none      576 | WR36.6 -0.047  -26.8 a+0.073    -( ref)  |   -0.019   |  4.7 
+  ETHUSDTlong BC    atr1.5 strength  174 | WR35.1 -0.144  -25.1 a-0.045    -( ref)  |   -0.062   |  4.0 
+  ETHUSDTlong BC    atr2.0 none      456 | WR31.6 -0.091  -41.3 a+0.058    -( ref)  |   -0.083   |  3.9 
+  ETHUSDTlong BC    atr2.0 strength  161 | WR29.8 -0.173  -27.8 a-0.042    -( ref)  |   -0.175   |  3.1 
+  ETHUSDTlong BC    struct none      679 | WR38.9 -0.103  -69.8 a-0.014    -( ref)  |   -0.062   |  8.1 
+  ETHUSDTshortDR    atr1.0 none      863 | WR44.7 +0.094  +81.3 a+0.008   no(+0.166) |   +0.060   |  9.5 
+  ETHUSDTshortDR    atr1.0 strength  127 | WR47.2 +0.191  +24.3 a+0.121   no(+0.322) |   +0.110   | 10.2 
+  ETHUSDTshortDR    atr1.5 none      675 | WR42.2 +0.116  +78.6 a-0.009   no(+0.211) |   +0.100   |  6.2 
+  ETHUSDTshortDR    atr1.5 strength  123 | WR47.2 +0.216  +26.6 a+0.108   no(+0.363) |   +0.244   |  5.7 
+  ETHUSDTshortDR    atr2.0 none      516 | WR43.2 +0.243 +125.4 a+0.097   no(+0.285) |   +0.195   |  5.2 
+  ETHUSDTshortDR    atr2.0 strength  118 | WR46.6 +0.256  +30.2 a+0.125   no(+0.405) |   +0.261   |  5.1 
+  ETHUSDTshortDR    struct none      926 | WR47.0 +0.070  +64.7 a-0.004    -( ref)  |   +0.015   | 13.2 
+  ETHUSDTshortBC    atr1.0 none      846 | WR39.8 -0.082  -69.0 a-0.160    -( ref)  |   -0.121   | 10.5 
+  ETHUSDTshortBC    atr1.0 strength  217 | WR39.6 -0.088  -19.1 a-0.150    -( ref)  |   -0.198   | 12.9 
+  ETHUSDTshortBC    atr1.5 none      677 | WR41.5 +0.082  +55.8 a-0.026   no(+0.230) |   +0.007   |  8.3 
+  ETHUSDTshortBC    atr1.5 strength  206 | WR45.6 +0.217  +44.8 a+0.135   no(+0.315) |   +0.092   |  9.2 
+  ETHUSDTshortBC    atr2.0 none      524 | WR41.2 +0.146  +76.6 a-0.002   no(+0.278) |   +0.121   |  5.2 
+  ETHUSDTshortBC    atr2.0 strength  197 | WR44.7 +0.243  +47.8 a+0.137   no(+0.342) |   +0.186   |  5.6 
+  ETHUSDTshortBC    struct none      776 | WR41.5 -0.016  -12.1 a-0.101    -( ref)  |   -0.045   | 10.2 
+  SOLUSDTlong DR    atr1.0 none      716 | WR40.2 -0.069  -49.3 a-0.022    -( ref)  |   -0.011   |  7.3 
+  SOLUSDTlong DR    atr1.0 strength   88*| WR37.5 -0.123  -10.8 a-0.084    -( ref)  |   -0.080   |  6.8 
+  SOLUSDTlong DR    atr1.5 none      574 | WR34.7 -0.139  -79.9 a-0.075    -( ref)  |   -0.024   |  3.0 
+  SOLUSDTlong DR    atr1.5 strength   87*| WR32.2 -0.185  -16.1 a-0.134    -( ref)  |   -0.086   |  2.3 
+  SOLUSDTlong DR    atr2.0 none      465 | WR31.8 -0.145  -67.3 a-0.070    -( ref)  |   -0.062   |  2.4 
+  SOLUSDTlong DR    atr2.0 strength   84*| WR28.6 -0.223  -18.7 a-0.158    -( ref)  |   -0.188   |  2.4 
+  SOLUSDTlong DR    struct none      779 | WR43.4 -0.122  -95.4 a-0.086    -( ref)  |   -0.022   | 10.8 
+  SOLUSDTlong BC    atr1.0 none      734 | WR38.7 -0.112  -82.2 a-0.070    -( ref)  |   -0.106   |  9.0 
+  SOLUSDTlong BC    atr1.0 strength  191 | WR41.4 -0.011   -2.1 a+0.024    -( ref)  |   -0.105   | 11.5 
+  SOLUSDTlong BC    atr1.5 none      585 | WR35.4 -0.122  -71.4 a-0.063    -( ref)  |   -0.045   |  4.1 
+  SOLUSDTlong BC    atr1.5 strength  175 | WR40.6 +0.065  +11.3 a+0.115 PASS(+0.020) |   +0.057   |  5.7 
+  SOLUSDTlong BC    atr2.0 none      474 | WR32.1 -0.112  -53.0 a-0.042    -( ref)  |   -0.048   |  2.7 
+  SOLUSDTlong BC    atr2.0 strength  167 | WR38.3 +0.028   +4.7 a+0.090 PASS(+0.018) |   +0.062   |  3.6 
+  SOLUSDTlong BC    struct none      722 | WR39.5 -0.129  -93.1 a-0.087    -( ref)  |   -0.089   |  9.4 
+  SOLUSDTshortDR    atr1.0 none      781 | WR42.8 +0.034  +26.9 a-0.005   no(+0.171) |   +0.040   |  8.2 
+  SOLUSDTshortDR    atr1.0 strength  136 | WR41.9 -0.018   -2.5 a-0.050    -( ref)  |   +0.015   |  8.1 
+  SOLUSDTshortDR    atr1.5 none      647 | WR41.1 +0.067  +43.1 a+0.012   no(+0.233) |   +0.114   |  4.2 
+  SOLUSDTshortDR    atr1.5 strength  133 | WR42.1 +0.109  +14.5 a+0.065   no(+0.327) |   +0.105   |  5.3 
+  SOLUSDTshortDR    atr2.0 none      510 | WR37.3 +0.071  +36.4 a+0.003   no(+0.276) |   +0.068   |  3.9 
+  SOLUSDTshortDR    atr2.0 strength  130 | WR36.2 -0.019   -2.5 a-0.075    -( ref)  |   -0.033   |  4.6 
+  SOLUSDTshortDR    struct none      844 | WR47.6 +0.055  +46.8 a+0.023    -( ref)  |   +0.063   | 12.2 
+  SOLUSDTshortBC    atr1.0 none      794 | WR41.4 -0.015  -12.2 a-0.049    -( ref)  |   -0.110   | 11.8 
+  SOLUSDTshortBC    atr1.0 strength  236 | WR39.8 -0.106  -24.9 a-0.133    -( ref)  |   -0.161   | 11.9 
+  SOLUSDTshortBC    atr1.5 none      654 | WR40.5 +0.057  +37.3 a+0.008   no(+0.204) |   +0.060   |  5.7 
+  SOLUSDTshortBC    atr1.5 strength  228 | WR39.0 -0.008   -1.8 a-0.048    -( ref)  |   -0.013   |  6.1 
+  SOLUSDTshortBC    atr2.0 none      528 | WR39.2 +0.095  +50.3 a+0.032   no(+0.260) |   +0.082   |  4.4 
+  SOLUSDTshortBC    atr2.0 strength  215 | WR38.1 +0.022   +4.7 a-0.032   no(+0.334) |   +0.012   |  4.7 
+  SOLUSDTshortBC    struct none      766 | WR43.2 +0.009   +6.8 a-0.026    -( ref)  |   -0.052   | 11.7 
+  XRPUSDTlong DR    atr1.0 none      748 | WR39.2 -0.089  -66.6 a-0.023    -( ref)  |   -0.045   |  7.4 
+  XRPUSDTlong DR    atr1.0 strength  101 | WR39.6 -0.137  -13.9 a-0.080    -( ref)  |   -0.050   |  7.9 
+  XRPUSDTlong DR    atr1.5 none      601 | WR35.4 -0.119  -71.3 a-0.028    -( ref)  |   -0.073   |  5.0 
+  XRPUSDTlong DR    atr1.5 strength   97*| WR34.0 -0.195  -18.9 a-0.115    -( ref)  |   -0.058   |  3.1 
+  XRPUSDTlong DR    atr2.0 none      494 | WR32.0 -0.139  -68.6 a-0.034    -( ref)  |   -0.114   |  3.6 
+  XRPUSDTlong DR    atr2.0 strength   95*| WR28.4 -0.258  -24.5 a-0.164    -( ref)  |   -0.182   |  2.1 
+  XRPUSDTlong DR    struct none      793 | WR42.6 -0.139 -110.4 a-0.086    -( ref)  |   +0.016   |  8.8 
+  XRPUSDTlong BC    atr1.0 none      700 | WR41.7 -0.008   -5.4 a+0.053    -( ref)  |   +0.007   |  8.1 
+  XRPUSDTlong BC    atr1.0 strength  223 | WR45.3 +0.097  +21.6 a+0.149 PASS(+0.052) |   +0.090   |  9.0 
+  XRPUSDTlong BC    atr1.5 none      590 | WR37.1 -0.034  -20.3 a+0.048    -( ref)  |   -0.002   |  4.2 
+  XRPUSDTlong BC    atr1.5 strength  210 | WR37.6 -0.030   -6.2 a+0.040    -( ref)  |   +0.012   |  4.3 
+  XRPUSDTlong BC    atr2.0 none      480 | WR32.7 -0.115  -55.2 a-0.014    -( ref)  |   -0.052   |  2.7 
+  XRPUSDTlong BC    atr2.0 strength  197 | WR33.5 -0.115  -22.6 a-0.021    -( ref)  |   -0.063   |  3.0 
+  XRPUSDTlong BC    struct none      689 | WR41.7 -0.048  -33.2 a+0.013    -( ref)  |   +0.032   |  7.4 
+  XRPUSDTshortDR    atr1.0 none      818 | WR42.4 +0.019  +15.3 a-0.040   no(+0.179) |   +0.042   |  7.7 
+  XRPUSDTshortDR    atr1.0 strength  136 | WR42.6 +0.020   +2.7 a-0.031   no(+0.340) |   +0.059   |  7.4 
+  XRPUSDTshortDR    atr1.5 none      647 | WR41.0 +0.056  +36.3 a-0.030   no(+0.212) |   +0.063   |  6.2 
+  XRPUSDTshortDR    atr1.5 strength  130 | WR40.0 +0.044   +5.7 a-0.025   no(+0.365) |   +0.060   |  5.4 
+  XRPUSDTshortDR    atr2.0 none      522 | WR39.3 +0.099  +51.7 a-0.002   no(+0.244) |   +0.115   |  4.2 
+  XRPUSDTshortDR    atr2.0 strength  127 | WR40.2 +0.091  +11.6 a+0.007   no(+0.381) |   +0.101   |  4.7 
+  XRPUSDTshortDR    struct none      866 | WR44.2 -0.065  -56.5 a-0.114    -( ref)  |   +0.032   |  9.8 
+  XRPUSDTshortBC    atr1.0 none      834 | WR41.1 -0.046  -38.1 a-0.102    -( ref)  |   -0.079   | 10.4 
+  XRPUSDTshortBC    atr1.0 strength  259 | WR40.9 -0.044  -11.4 a-0.093    -( ref)  |   -0.120   | 11.6 
+  XRPUSDTshortBC    atr1.5 none      672 | WR42.7 +0.110  +74.1 a+0.030   no(+0.218) |   +0.065   |  7.4 
+  XRPUSDTshortBC    atr1.5 strength  242 | WR43.8 +0.126  +30.6 a+0.059   no(+0.304) |   +0.029   |  9.5 
+  XRPUSDTshortBC    atr2.0 none      526 | WR41.1 +0.126  +66.4 a+0.029   no(+0.256) |   +0.158   |  3.8 
+  XRPUSDTshortBC    atr2.0 strength  226 | WR43.8 +0.172  +38.8 a+0.089   no(+0.327) |   +0.151   |  5.8 
+  XRPUSDTshortBC    struct none      802 | WR42.0 -0.009   -6.9 a-0.066    -( ref)  |   -0.011   |  9.4 
+
+==============================================================================================================
+REGIME SPLIT (INFORMATIONAL) - BC entry, BODY avgR by 15m regime, k=1.5 none
+==============================================================================================================
+  coin   side               up           range            down
+  BTCUSDTlong     n=497 +0.094    n=144 -0.038    n=453 -0.063
+  BTCUSDTshort    n=528 +0.032    n=115 -0.365    n=482 +0.048
+  ETHUSDTlong     n=154 -0.048     n=70 -0.125    n=352 -0.030
+  ETHUSDTshort    n=186 +0.107     n=81 +0.152    n=410 +0.058
+  SOLUSDTlong     n=199 -0.091     n=55 -0.085    n=331 -0.147
+  SOLUSDTshort    n=222 +0.014     n=62 +0.312    n=370 +0.040
+  XRPUSDTlong     n=160 -0.015     n=71 -0.208    n=359 -0.009
+  XRPUSDTshort    n=182 +0.116     n=83 +0.616    n=407 +0.005
+
+==============================================================================================================
+BEAR-BETA CONTEXT - drift per coin (null embeds it; long-alpha is the bear-proof)
+==============================================================================================================
+  BTCUSDT: drift=-4.5%
+  ETHUSDT: drift=-33.4%
+  SOLUSDT: drift=-24.4%
+  XRPUSDT: drift=-29.3%
+
+==============================================================================================================
+SUCCESS GATE (pre-registered) - explicit PASS/FAIL (+ long-alpha requirement)
+==============================================================================================================
+  passing cells (avgR>0 & >=null_p95, n>=100): 4 [need>=3] -> True
+      BTCUSDT long BC atr2.0 none: n=849 avgR=+0.046 alpha=+0.054 null=+0.032
+      SOLUSDT long BC atr1.5 strength: n=175 avgR=+0.065 alpha=+0.115 null=+0.020
+      SOLUSDT long BC atr2.0 strength: n=167 avgR=+0.028 alpha=+0.090 null=+0.018
+      XRPUSDT long BC atr1.0 strength: n=223 avgR=+0.097 alpha=+0.149 null=+0.052
+  coins spanned: ['BTCUSDT', 'SOLUSDT', 'XRPUSDT'] [need>=2] -> True
+  both sides: ['long'] -> False   | LONG-alpha (>=1 long passes): True
+  pooled avgR of passers: +0.059 [need>=+0.15] -> False
+
+  >>> v5 VERDICT: FAIL <<<
+
+DONE.
