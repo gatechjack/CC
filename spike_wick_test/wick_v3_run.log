@@ -1,0 +1,139 @@
+============================================================================================================
+WICK-TEST v3 - GROSS R - DR entry + k*ATR stop + body-close of record. See PRE_REGISTRATION_v3.md
+============================================================================================================
+[BTCUSDT] 3m n=38899 (81.0d) drift(close-close)=-4.5% medR-unit(1.5ATR)=0.157%ofpx
+[ETHUSDT] 3m n=22467 (46.8d) drift(close-close)=-33.4% medR-unit(1.5ATR)=0.215%ofpx
+[SOLUSDT] 3m n=22464 (46.8d) drift(close-close)=-24.4% medR-unit(1.5ATR)=0.267%ofpx
+[XRPUSDT] 3m n=22468 (46.8d) drift(close-close)=-29.3% medR-unit(1.5ATR)=0.229%ofpx
+
+============================================================================================================
+DR FILL SELECTIVITY  (triggered = impulse+confirm; filled = retest to L within bars 4-6)
+============================================================================================================
+  BTCUSDT long : triggered=2746 filled=1824 (66.4%, 157.6/wk) disp-pass= 445 skip=922
+  BTCUSDT short: triggered=2783 filled=1916 (68.8%, 165.5/wk) disp-pass= 493 skip=867
+  ETHUSDT long : triggered=1476 filled= 998 (67.6%, 149.3/wk) disp-pass= 205 skip=478
+  ETHUSDT short: triggered=1636 filled=1171 (71.6%, 175.1/wk) disp-pass= 308 skip=465
+  SOLUSDT long : triggered=1393 filled= 954 (68.5%, 142.7/wk) disp-pass= 249 skip=439
+  SOLUSDT short: triggered=1460 filled=1044 (71.5%, 156.2/wk) disp-pass= 313 skip=416
+  XRPUSDT long : triggered=1466 filled= 988 (67.4%, 147.8/wk) disp-pass= 255 skip=478
+  XRPUSDT short: triggered=1585 filled=1096 (69.1%, 163.9/wk) disp-pass= 316 skip=489
+
+============================================================================================================
+MAIN GRID - GROSS R  (2R; n=identical fills; BODY=record, HARD=contrast) + shakeout
+============================================================================================================
+  coin   side stop   filt      n |   BODY WR/avgR/tot beats(null)   |    HARD WR/avgR/tot    |  shake %/net  
+  BTCUSDTlong atr1.0 none  1365 | WR40.1 -0.091 -123.7    -(  ref) |  WR32.5 -0.024  -33.0  |   7.5% +309.0 
+  BTCUSDTlong atr1.0 disp   414 | WR41.8 -0.037  -15.3    -(  ref) |  WR31.4 -0.058  -24.0  |  10.4% +129.0 
+  BTCUSDTlong atr1.5 none  1084 | WR38.3 -0.036  -39.1    -(  ref) |  WR32.4 -0.015  -16.3  |   5.9% +192.0 
+  BTCUSDTlong atr1.5 disp   394 | WR40.4 +0.024   +9.4   no(+0.097) |  WR35.0 +0.057  +22.3  |   5.3%  +63.0 
+  BTCUSDTlong atr2.0 none   861 | WR34.7 -0.045  -39.2    -(  ref) |  WR30.5 -0.026  -22.2  |   4.2% +108.0 
+  BTCUSDTlong atr2.0 disp   361 | WR35.7 -0.025   -8.9    -(  ref) |  WR31.6 -0.007   -2.5  |   4.2%  +45.0 
+  BTCUSDTlong LITrl  none  1397 | WR40.7 -0.100 -139.1    -(  ref) |  WR31.6 -0.051  -71.0  |   9.0% +378.0 
+  BTCUSDTshortatr1.0 none  1405 | WR43.4 +0.022  +30.7   no(+0.056) |  WR34.4 +0.034  +47.7  |   9.0% +378.0 
+  BTCUSDTshortatr1.0 disp   449 | WR40.5 -0.056  -24.9    -(  ref) |  WR33.9 +0.019   +8.4  |   6.7%  +90.0 
+  BTCUSDTshortatr1.5 none  1123 | WR42.0 +0.068  +76.3   no(+0.095) |  WR36.3 +0.101 +112.9  |   5.7% +192.0 
+  BTCUSDTshortatr1.5 disp   427 | WR40.5 +0.052  +22.3   no(+0.138) |  WR32.3 -0.026  -11.1  |   8.2% +105.0 
+  BTCUSDTshortatr2.0 none   892 | WR40.2 +0.110  +98.2   no(+0.120) |  WR34.4 +0.086  +76.4  |   5.8% +156.0 
+  BTCUSDTshortatr2.0 disp   386 | WR39.1 +0.076  +29.5   no(+0.157) |  WR33.4 +0.028  +10.6  |   5.7%  +66.0 
+  BTCUSDTshortLITrl  none  1442 | WR43.6 -0.000   -0.0    -(  ref) |  WR33.1 -0.008  -11.0  |  10.5% +456.0 
+  ETHUSDTlong atr1.0 none   730 | WR38.1 -0.116  -84.4    -(  ref) |  WR31.6 -0.043  -31.6  |   6.4% +141.0 
+  ETHUSDTlong atr1.0 disp   197 | WR40.1 -0.034   -6.7    -(  ref) |  WR35.5 +0.077  +15.2  |   4.6%  +27.0 
+  ETHUSDTlong atr1.5 none   581 | WR35.5 -0.102  -59.3    -(  ref) |  WR31.2 -0.046  -26.7  |   4.3%  +75.0 
+  ETHUSDTlong atr1.5 disp   185 | WR40.0 +0.041   +7.6   no(+0.063) |  WR34.1 +0.042   +7.7  |   5.9%  +33.0 
+  ETHUSDTlong atr2.0 none   460 | WR31.1 -0.116  -53.4    -(  ref) |  WR28.5 -0.061  -28.1  |   2.6%  +36.0 
+  ETHUSDTlong atr2.0 disp   170 | WR35.3 +0.000   +0.1   no(+0.040) |  WR33.5 +0.077  +13.0  |   1.8%   +9.0 
+  ETHUSDTlong LITrl  none   805 | WR40.4 -0.129 -103.6    -(  ref) |  WR32.0 -0.039  -31.0  |   8.3% +201.0 
+  ETHUSDTshortatr1.0 none   863 | WR44.7 +0.094  +81.3   no(+0.151) |  WR35.2 +0.060  +51.4  |   9.5% +246.0 
+  ETHUSDTshortatr1.0 disp   284 | WR45.8 +0.146  +41.4   no(+0.227) |  WR37.3 +0.120  +34.0  |   8.5%  +72.0 
+  ETHUSDTshortatr1.5 none   675 | WR42.2 +0.116  +78.6   no(+0.200) |  WR36.0 +0.100  +67.4  |   6.2% +126.0 
+  ETHUSDTshortatr1.5 disp   266 | WR45.1 +0.174  +46.4   no(+0.280) |  WR38.7 +0.162  +43.0  |   6.4%  +51.0 
+  ETHUSDTshortatr2.0 none   516 | WR43.2 +0.243 +125.4   no(+0.290) |  WR38.0 +0.195 +100.6  |   5.2%  +81.0 
+  ETHUSDTshortatr2.0 disp   242 | WR46.3 +0.289  +70.0   no(+0.329) |  WR40.9 +0.248  +59.9  |   5.4%  +39.0 
+  ETHUSDTshortLITrl  none   926 | WR47.0 +0.070  +64.7    -(  ref) |  WR33.8 +0.015  +13.7  |  13.2% +366.0 
+  SOLUSDTlong atr1.0 none   716 | WR40.2 -0.069  -49.3    -(  ref) |  WR33.0 -0.011   -8.0  |   7.3% +156.0 
+  SOLUSDTlong atr1.0 disp   233 | WR42.1 -0.036   -8.3    -(  ref) |  WR36.5 +0.094  +22.0  |   5.6%  +39.0 
+  SOLUSDTlong atr1.5 none   574 | WR34.7 -0.139  -79.9    -(  ref) |  WR31.7 -0.024  -13.5  |   3.0%  +51.0 
+  SOLUSDTlong atr1.5 disp   221 | WR38.0 -0.047  -10.4    -(  ref) |  WR35.7 +0.080  +17.7  |   2.3%  +15.0 
+  SOLUSDTlong atr2.0 none   465 | WR31.8 -0.145  -67.3    -(  ref) |  WR29.5 -0.062  -28.7  |   2.4%  +33.0 
+  SOLUSDTlong atr2.0 disp   200 | WR34.0 -0.064  -12.7    -(  ref) |  WR31.5 -0.047   -9.4  |   2.5%  +15.0 
+  SOLUSDTlong LITrl  none   779 | WR43.4 -0.122  -95.4    -(  ref) |  WR32.6 -0.022  -17.0  |  10.8% +252.0 
+  SOLUSDTshortatr1.0 none   781 | WR42.8 +0.034  +26.9   no(+0.170) |  WR34.6 +0.040  +30.9  |   8.2% +192.0 
+  SOLUSDTshortatr1.0 disp   285 | WR43.9 +0.066  +18.8   no(+0.242) |  WR35.8 +0.074  +21.0  |   8.1%  +69.0 
+  SOLUSDTshortatr1.5 none   647 | WR41.1 +0.067  +43.1   no(+0.198) |  WR36.9 +0.114  +73.8  |   4.2%  +81.0 
+  SOLUSDTshortatr1.5 disp   277 | WR40.4 +0.018   +5.0   no(+0.259) |  WR34.7 +0.048  +13.2  |   5.8%  +48.0 
+  SOLUSDTshortatr2.0 none   510 | WR37.3 +0.071  +36.4   no(+0.256) |  WR33.3 +0.068  +34.6  |   3.9%  +60.0 
+  SOLUSDTshortatr2.0 disp   253 | WR37.2 +0.036   +9.1   no(+0.329) |  WR31.6 +0.007   +1.7  |   5.5%  +42.0 
+  SOLUSDTshortLITrl  none   844 | WR47.6 +0.055  +46.8    -(  ref) |  WR35.4 +0.063  +53.0  |  12.2% +309.0 
+  XRPUSDTlong atr1.0 none   748 | WR39.2 -0.089  -66.6    -(  ref) |  WR31.8 -0.045  -34.0  |   7.4% +165.0 
+  XRPUSDTlong atr1.0 disp   239 | WR37.7 -0.165  -39.4    -(  ref) |  WR31.8 -0.046  -11.0  |   5.9%  +42.0 
+  XRPUSDTlong atr1.5 none   601 | WR35.4 -0.119  -71.3    -(  ref) |  WR30.4 -0.073  -44.0  |   5.0%  +90.0 
+  XRPUSDTlong atr1.5 disp   226 | WR35.8 -0.095  -21.5    -(  ref) |  WR30.1 -0.094  -21.2  |   5.8%  +39.0 
+  XRPUSDTlong atr2.0 none   494 | WR32.0 -0.139  -68.6    -(  ref) |  WR28.3 -0.114  -56.2  |   3.6%  +54.0 
+  XRPUSDTlong atr2.0 disp   211 | WR32.2 -0.158  -33.3    -(  ref) |  WR29.9 -0.082  -17.2  |   2.4%  +15.0 
+  XRPUSDTlong LITrl  none   793 | WR42.6 -0.139 -110.4    -(  ref) |  WR33.8 +0.016  +12.4  |   8.8% +210.0 
+  XRPUSDTshortatr1.0 none   818 | WR42.4 +0.019  +15.3   no(+0.172) |  WR34.7 +0.042  +34.0  |   7.7% +189.0 
+  XRPUSDTshortatr1.0 disp   290 | WR40.3 -0.064  -18.5    -(  ref) |  WR32.1 -0.038  -11.0  |   8.3%  +72.0 
+  XRPUSDTshortatr1.5 none   647 | WR41.0 +0.056  +36.3   no(+0.224) |  WR34.8 +0.063  +40.7  |   6.2% +120.0 
+  XRPUSDTshortatr1.5 disp   275 | WR41.8 +0.028   +7.7   no(+0.290) |  WR34.9 +0.054  +14.8  |   6.9%  +57.0 
+  XRPUSDTshortatr2.0 none   522 | WR39.3 +0.099  +51.7   no(+0.252) |  WR35.1 +0.115  +60.2  |   4.2%  +66.0 
+  XRPUSDTshortatr2.0 disp   249 | WR35.3 -0.073  -18.2    -(  ref) |  WR33.7 +0.055  +13.8  |   1.6%  +12.0 
+  XRPUSDTshortLITrl  none   866 | WR44.2 -0.065  -56.5    -(  ref) |  WR34.4 +0.032  +28.0  |   9.8% +255.0 
+
+============================================================================================================
+DR-SKIP DIAGNOSTIC - triggered-but-unfilled setups: would-have-been R at bar-3 close (BODY, 2R)
+  Does DR filter WINNERS (would-have-been >0 -> v1 problem) or NOISE (<=0 -> DR helps)?
+============================================================================================================
+  k=1.0: skips=4553 would-have-been avgR(body)=+0.7602  (pooled all coins/sides)
+  k=1.5: skips=4553 would-have-been avgR(body)=+0.5846  (pooled all coins/sides)
+  k=2.0: skips=4553 would-have-been avgR(body)=+0.4471  (pooled all coins/sides)
+  per coin x side (k=1.5):
+    BTCUSDT long : skips= 922 would-have avgR=+0.5487
+    BTCUSDT short: skips= 866 would-have avgR=+0.5950
+    ETHUSDT long : skips= 478 would-have avgR=+0.5554
+    ETHUSDT short: skips= 465 would-have avgR=+0.6515
+    SOLUSDT long : skips= 439 would-have avgR=+0.4499
+    SOLUSDT short: skips= 416 would-have avgR=+0.6473
+    XRPUSDT long : skips= 478 would-have avgR=+0.5517
+    XRPUSDT short: skips= 489 would-have avgR=+0.6989
+
+============================================================================================================
+BODY-CLOSE REALIZED-LOSS DISTRIBUTION (R) - per coin, k=1.5 none (HARD loss=-1R)
+============================================================================================================
+  BTCUSDT: body-losses=1290 q25/med/q75=-1.45/-1.21/-1.08 worst=-6.07
+  ETHUSDT: body-losses=737 q25/med/q75=-1.42/-1.21/-1.09 worst=-5.42
+  SOLUSDT: body-losses=738 q25/med/q75=-1.40/-1.19/-1.08 worst=-5.19
+  XRPUSDT: body-losses=751 q25/med/q75=-1.45/-1.21/-1.09 worst=-7.34
+
+============================================================================================================
+REGIME COLUMN SPLIT (INFORMATIONAL) - BODY avgR by 15m regime, k=1.5 none
+============================================================================================================
+  coin   side               up           range            down
+  BTCUSDTlong     n=517 -0.048    n=136 +0.103    n=431 -0.066
+  BTCUSDTshort    n=507 +0.112    n=118 -0.202    n=498 +0.087
+  ETHUSDTlong     n=169 -0.151     n=67 -0.164    n=345 -0.066
+  ETHUSDTshort    n=169 +0.216     n=84 +0.083    n=422 +0.083
+  SOLUSDTlong     n=209 -0.088     n=53 -0.279    n=312 -0.150
+  SOLUSDTshort    n=209 +0.041     n=64 +0.497    n=374 +0.007
+  XRPUSDTlong     n=165 -0.045     n=68 -0.280    n=368 -0.122
+  XRPUSDTshort    n=181 -0.027     n=80 +0.485    n=386 +0.006
+
+============================================================================================================
+BEAR-BETA CONTEXT - window drift + passive-short R-equiv (null p95 embeds drift; both-sides gate)
+============================================================================================================
+  BTCUSDT: drift=-4.5%  passive-short whole-window ~+28.4R (1.5ATR units)  -> shorts inherit drift; must beat direction-matched null
+  ETHUSDT: drift=-33.4%  passive-short whole-window ~+155.7R (1.5ATR units)  -> shorts inherit drift; must beat direction-matched null
+  SOLUSDT: drift=-24.4%  passive-short whole-window ~+91.3R (1.5ATR units)  -> shorts inherit drift; must beat direction-matched null
+  XRPUSDT: drift=-29.3%  passive-short whole-window ~+128.0R (1.5ATR units)  -> shorts inherit drift; must beat direction-matched null
+
+============================================================================================================
+SUCCESS GATE (pre-registered) - explicit PASS/FAIL
+============================================================================================================
+  passing cells (avgR>0 & >=null_p95, n>=100): 0  [need >=3]  -> False
+  coins spanned: []  [need >=2]  -> False
+  both sides represented: long=False short=False  -> False
+  pooled avgR of passers: +nan  [need >=+0.15]  -> False
+
+  >>> v3 VERDICT: FAIL <<<
+  Ledger: WICK TEST RETIRED - three independent strikes (v1 no edge, v2 gross-negative, v3 fail).
+
+DONE.
