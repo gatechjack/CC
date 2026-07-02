@@ -147,3 +147,21 @@ The handoff's premise — "SL trail is NOT updating; the stop stays parked while
 risk-management degradation on live money" — is **not supported.** This trail only ratchets on TP fills (+ a
 post-TP2 Chandelier), not continuously on price; it worked correctly on the one trade with a TP fill (#2, +1.66R),
 and all three warnings are post-close no-ops. There is **no live-money risk** from this symptom.
+
+## Futures backlog (flagged, no code)
+**pre-TP1 price/ATR trail — strategy question (2026-07-02 diag).** Trades #1 (4f9fa339) and #3 (565c5381) each
+stopped at their *initial* stop with no trail before TP1 — this ratchet only acts on TP fills (breakeven after
+TP1, SL-to-TP1 after TP2, Chandelier after TP2). Whether to add a pre-TP1 price/ATR trail to cut such losers is a
+strategy decision that needs its **own backtest arc**; it is NOT part of this positionId-absent fix.
+
+## Fix status (2026-07-02)
+Both parts **BUILT** on branch `futures-sltrail-diag-2026-07-02` (commit `701a9fb`), **caller-only, UNPUSHED, no
+prod writes** — deploy timing is the operator's call (can ride to the next futures touch).
+- **Fix A** — skip fully-closed/absent positions (`pos_key not in pos_qty or pos_qty[pos_key] <= 0`) *before* the
+  TP-fill test, so a full close is never mis-read as "TP1+TP2 filled".
+- **Fix B** — replace the misleading broker WARNING path with a reduced-severity, unambiguous `post-close no-op`
+  breadcrumb in the caller. `modify_position_sl` and its mandatory-positionId guard are **untouched**.
+- **Proof** — `tests/test_bitunix_bracket_sl_move_post_close.py`: the post-close test FAILS against pre-fix code
+  (`modify_calls` gets `{new_sl: 99.0, position_id: None}` — the exact bug) and PASSES post-fix; the genuine
+  partial-TP-fill test passes on BOTH (no open-position behavior change). Reconciler+SFP subsets green, 0
+  regressions.
