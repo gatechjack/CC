@@ -1,0 +1,154 @@
+========================================================================================================
+WICK-TEST v2 - GROSS R - pre-positioned limit + body-close exit. See PRE_REGISTRATION_v2.md
+========================================================================================================
+[BTCUSDT] 3m n=38899 (81.0d) regime(info)={'down': 16034, 'range': 4525, 'up': 18340}
+[ETHUSDT] 3m n=22467 (46.8d) regime(info)={'up': 6474, 'range': 2720, 'down': 13273}
+[SOLUSDT] 3m n=22464 (46.8d) regime(info)={'up': 7969, 'range': 2285, 'down': 12210}
+[XRPUSDT] 3m n=22468 (46.8d) regime(info)={'up': 6124, 'range': 2745, 'down': 13599}
+
+========================================================================================================
+TRIGGER/FILL FREQUENCY  (fill rate on TRIGGERED setups; vs v1 58-68%)
+========================================================================================================
+  BTCUSDT long : triggered=5332 filled=5332 (100.0%, 460.6/wk) mom-pass=1123 ambig(samebar stop+fill)=1134 bar4-would-fill=  0
+  BTCUSDT short: triggered=5325 filled=5325 (100.0%, 460.0/wk) mom-pass=1161 ambig(samebar stop+fill)=1170 bar4-would-fill=  0
+  ETHUSDT long : triggered=2971 filled=2971 (100.0%, 444.3/wk) mom-pass= 562 ambig(samebar stop+fill)=999 bar4-would-fill=  0
+  ETHUSDT short: triggered=3175 filled=3175 (100.0%, 474.9/wk) mom-pass= 683 ambig(samebar stop+fill)=1136 bar4-would-fill=  0
+  SOLUSDT long : triggered=2775 filled=2775 (100.0%, 415.1/wk) mom-pass= 605 ambig(samebar stop+fill)=1249 bar4-would-fill=  0
+  SOLUSDT short: triggered=2823 filled=2823 (100.0%, 422.3/wk) mom-pass= 669 ambig(samebar stop+fill)=1315 bar4-would-fill=  0
+  XRPUSDT long : triggered=2806 filled=2806 (100.0%, 419.6/wk) mom-pass= 602 ambig(samebar stop+fill)=971 bar4-would-fill=  0
+  XRPUSDT short: triggered=2929 filled=2929 (100.0%, 438.0/wk) mom-pass= 678 ambig(samebar stop+fill)=1084 bar4-would-fill=  0
+
+========================================================================================================
+MAIN GRID - GROSS R  (n = identical fills for both modes; HARD vs BODY-CLOSE)
+========================================================================================================
+  coin   side tgt filt        n  |   HARD WR/avgR/totR beats(null)    |    BODY WR/avgR/totR beats(null)    
+  BTCUSDTlong 1.0 mom       928  | WR43.5 avgR-0.129 tot-120.0   -(  -- ) | WR57.1 avgR-0.109 tot-101.6   -(  -- )
+  BTCUSDTlong 1.0 control  3487  | WR41.8 avgR-0.165 tot-575.0   -(  -- ) | WR56.9 avgR-0.108 tot-378.3   -(  -- )
+  BTCUSDTlong 1.5 mom       900  | WR36.8 avgR-0.081 tot -72.5   -(  -- ) | WR49.2 avgR-0.059 tot -52.8   -(  -- )
+  BTCUSDTlong 1.5 control  3198  | WR35.0 avgR-0.125 tot-400.5   -(  -- ) | WR49.3 avgR-0.063 tot-201.3   -(  -- )
+  BTCUSDTlong 2.0 mom       878  | WR30.9 avgR-0.072 tot -63.0   -(  -- ) | WR42.8 avgR-0.041 tot -36.0   -(  -- )
+  BTCUSDTlong 2.0 control  2942  | WR30.0 avgR-0.099 tot-291.1   -(  -- ) | WR43.7 avgR-0.025 tot -74.0   -(  -- )
+  BTCUSDTshort1.0 mom       966  | WR41.1 avgR-0.178 tot-172.0   -(  -- ) | WR54.9 avgR-0.182 tot-175.6   -(  -- )
+  BTCUSDTshort1.0 control  3499  | WR42.0 avgR-0.160 tot-559.6   -(  -- ) | WR57.2 avgR-0.110 tot-385.2   -(  -- )
+  BTCUSDTshort1.5 mom       937  | WR35.1 avgR-0.122 tot-114.5   -(  -- ) | WR48.5 avgR-0.102 tot -95.6   -(  -- )
+  BTCUSDTshort1.5 control  3219  | WR35.5 avgR-0.112 tot-360.1   -(  -- ) | WR50.5 avgR-0.040 tot-128.6   -(  -- )
+  BTCUSDTshort2.0 mom       916  | WR28.5 avgR-0.145 tot-133.0   -(  -- ) | WR40.5 avgR-0.128 tot-116.9   -(  -- )
+  BTCUSDTshort2.0 control  3025  | WR29.6 avgR-0.111 tot-334.8   -(  -- ) | WR43.9 avgR-0.019 tot -56.6   -(  -- )
+  ETHUSDTlong 1.0 mom       501  | WR35.1 avgR-0.297 tot-149.0   -(  -- ) | WR55.5 avgR-0.239 tot-119.5   -(  -- )
+  ETHUSDTlong 1.0 control  2168  | WR35.9 avgR-0.281 tot-610.0   -(  -- ) | WR55.6 avgR-0.199 tot-431.5   -(  -- )
+  ETHUSDTlong 1.5 mom       495  | WR31.3 avgR-0.217 tot-107.5   -(  -- ) | WR49.9 avgR-0.156 tot -77.1   -(  -- )
+  ETHUSDTlong 1.5 control  2044  | WR30.3 avgR-0.243 tot-496.5   -(  -- ) | WR48.3 avgR-0.164 tot-334.5   -(  -- )
+  ETHUSDTlong 2.0 mom       485  | WR26.8 avgR-0.196 tot -95.0   -(  -- ) | WR46.2 avgR-0.041 tot -20.0   -(  -- )
+  ETHUSDTlong 2.0 control  1957  | WR25.1 avgR-0.247 tot-484.0   -(  -- ) | WR42.9 avgR-0.118 tot-231.1   -(  -- )
+  ETHUSDTshort1.0 mom       599  | WR33.6 avgR-0.329 tot-197.0   -(  -- ) | WR55.3 avgR-0.369 tot-220.9   -(  -- )
+  ETHUSDTshort1.0 control  2345  | WR35.3 avgR-0.294 tot-689.0   -(  -- ) | WR57.7 avgR-0.215 tot-504.6   -(  -- )
+  ETHUSDTshort1.5 mom       590  | WR29.8 avgR-0.254 tot-150.0   -(  -- ) | WR50.2 avgR-0.261 tot-153.8   -(  -- )
+  ETHUSDTshort1.5 control  2233  | WR29.9 avgR-0.252 tot-563.0   -(  -- ) | WR51.3 avgR-0.136 tot-303.9   -(  -- )
+  ETHUSDTshort2.0 mom       581  | WR26.9 avgR-0.194 tot-113.0   -(  -- ) | WR45.4 avgR-0.183 tot-106.6   -(  -- )
+  ETHUSDTshort2.0 control  2138  | WR25.8 avgR-0.225 tot-482.0   -(  -- ) | WR46.2 avgR-0.082 tot-175.5   -(  -- )
+  SOLUSDTlong 1.0 mom       533  | WR30.0 avgR-0.400 tot-213.0   -(  -- ) | WR52.5 avgR-0.387 tot-206.5   -(  -- )
+  SOLUSDTlong 1.0 control  2195  | WR33.1 avgR-0.338 tot-741.0   -(  -- ) | WR56.1 avgR-0.284 tot-622.6   -(  -- )
+  SOLUSDTlong 1.5 mom       531  | WR24.9 avgR-0.379 tot-201.0   -(  -- ) | WR46.3 avgR-0.329 tot-174.8   -(  -- )
+  SOLUSDTlong 1.5 control  2141  | WR28.6 avgR-0.285 tot-611.0   -(  -- ) | WR50.9 avgR-0.184 tot-393.9   -(  -- )
+  SOLUSDTlong 2.0 mom       527  | WR23.5 avgR-0.294 tot-155.0   -(  -- ) | WR43.3 avgR-0.215 tot-113.1   -(  -- )
+  SOLUSDTlong 2.0 control  2076  | WR25.3 avgR-0.240 tot-498.0   -(  -- ) | WR45.8 avgR-0.133 tot-275.3   -(  -- )
+  SOLUSDTshort1.0 mom       592  | WR32.9 avgR-0.341 tot-202.0   -(  -- ) | WR58.3 avgR-0.363 tot-215.0   -(  -- )
+  SOLUSDTshort1.0 control  2274  | WR30.7 avgR-0.387 tot-880.0   -(  -- ) | WR58.5 avgR-0.258 tot-586.0   -(  -- )
+  SOLUSDTshort1.5 mom       588  | WR29.8 avgR-0.256 tot-150.5   -(  -- ) | WR54.6 avgR-0.195 tot-114.9   -(  -- )
+  SOLUSDTshort1.5 control  2230  | WR27.1 avgR-0.323 tot-720.0   -(  -- ) | WR53.9 avgR-0.120 tot-268.2   -(  -- )
+  SOLUSDTshort2.0 mom       581  | WR27.5 avgR-0.174 tot-101.0   -(  -- ) | WR50.8 avgR-0.073 tot -42.3   -(  -- )
+  SOLUSDTshort2.0 control  2152  | WR24.5 avgR-0.264 tot-568.0   -(  -- ) | WR49.5 avgR-0.022 tot -48.4   -(  -- )
+  XRPUSDTlong 1.0 mom       519  | WR37.8 avgR-0.245 tot-127.0   -(  -- ) | WR57.6 avgR-0.222 tot-115.3   -(  -- )
+  XRPUSDTlong 1.0 control  2109  | WR38.5 avgR-0.231 tot-487.0   -(  -- ) | WR58.1 avgR-0.174 tot-367.7   -(  -- )
+  XRPUSDTlong 1.5 mom       510  | WR32.5 avgR-0.186 tot -95.0   -(  -- ) | WR52.5 avgR-0.095 tot -48.6   -(  -- )
+  XRPUSDTlong 1.5 control  2023  | WR32.7 avgR-0.183 tot-370.5   -(  -- ) | WR51.0 avgR-0.111 tot-225.1   -(  -- )
+  XRPUSDTlong 2.0 mom       504  | WR28.8 avgR-0.137 tot -69.0   -(  -- ) | WR48.0 avgR+0.007 tot  +3.7 YES(-0.052)
+  XRPUSDTlong 2.0 control  1936  | WR28.0 avgR-0.160 tot-310.0   -(  -- ) | WR45.6 avgR-0.063 tot-121.0   -(  -- )
+  XRPUSDTshort1.0 mom       580  | WR34.5 avgR-0.310 tot-180.0   -(  -- ) | WR56.4 avgR-0.329 tot-190.8   -(  -- )
+  XRPUSDTshort1.0 control  2225  | WR37.0 avgR-0.259 tot-577.0   -(  -- ) | WR58.9 avgR-0.195 tot-433.9   -(  -- )
+  XRPUSDTshort1.5 mom       577  | WR31.2 avgR-0.220 tot-127.0   -(  -- ) | WR51.5 avgR-0.212 tot-122.5   -(  -- )
+  XRPUSDTshort1.5 control  2150  | WR33.4 avgR-0.164 tot-352.5   -(  -- ) | WR54.0 avgR-0.071 tot-152.5   -(  -- )
+  XRPUSDTshort2.0 mom       572  | WR28.3 avgR-0.150 tot -86.0   -(  -- ) | WR46.9 avgR-0.132 tot -75.4   -(  -- )
+  XRPUSDTshort2.0 control  2061  | WR29.3 avgR-0.121 tot-249.0   -(  -- ) | WR48.9 avgR-0.004 tot  -8.2   -(  -- )
+
+========================================================================================================
+SHAKEOUT-SURVIVAL - trades HARD-stopped that reach TARGET under BODY-CLOSE (+net R value)
+  net value = sum(bodyR - hardR) over survivors = the direct payoff of the body-close discipline
+========================================================================================================
+  coin   side tgt filt        n  shakeout   %ofn survR(body)   netVal  HARDtot  BODYtot
+  BTCUSDTlong 1.0 mom       928       126  13.6%      +126.0   +252.0   -120.0   -101.6
+  BTCUSDTlong 1.0 control  3487       527  15.1%      +527.0  +1054.0   -575.0   -378.3
+  BTCUSDTlong 1.5 mom       900       112  12.4%      +168.0   +280.0    -72.5    -52.8
+  BTCUSDTlong 1.5 control  3198       458  14.3%      +687.0  +1145.0   -400.5   -201.3
+  BTCUSDTlong 2.0 mom       878       105  12.0%      +210.0   +315.0    -63.0    -36.0
+  BTCUSDTlong 2.0 control  2942       403  13.7%      +806.0  +1209.0   -291.1    -74.0
+  BTCUSDTshort1.0 mom       966       133  13.8%      +133.0   +266.0   -172.0   -175.6
+  BTCUSDTshort1.0 control  3499       534  15.3%      +534.0  +1068.0   -559.6   -385.2
+  BTCUSDTshort1.5 mom       937       125  13.3%      +187.5   +312.5   -114.5    -95.6
+  BTCUSDTshort1.5 control  3219       481  14.9%      +721.5  +1202.5   -360.1   -128.6
+  BTCUSDTshort2.0 mom       916       110  12.0%      +220.0   +330.0   -133.0   -116.9
+  BTCUSDTshort2.0 control  3025       431  14.2%      +862.0  +1293.0   -334.8    -56.6
+  ETHUSDTlong 1.0 mom       501       102  20.4%      +102.0   +204.0   -149.0   -119.5
+  ETHUSDTlong 1.0 control  2168       427  19.7%      +427.0   +854.0   -610.0   -431.5
+  ETHUSDTlong 1.5 mom       495        92  18.6%      +138.0   +230.0   -107.5    -77.1
+  ETHUSDTlong 1.5 control  2044       369  18.1%      +553.5   +922.5   -496.5   -334.5
+  ETHUSDTlong 2.0 mom       485        94  19.4%      +188.0   +282.0    -95.0    -20.0
+  ETHUSDTlong 2.0 control  1957       348  17.8%      +696.0  +1044.0   -484.0   -231.1
+  ETHUSDTshort1.0 mom       599       130  21.7%      +130.0   +260.0   -197.0   -220.9
+  ETHUSDTshort1.0 control  2345       524  22.3%      +524.0  +1048.0   -689.0   -504.6
+  ETHUSDTshort1.5 mom       590       120  20.3%      +180.0   +300.0   -150.0   -153.8
+  ETHUSDTshort1.5 control  2233       478  21.4%      +717.0  +1195.0   -563.0   -303.9
+  ETHUSDTshort2.0 mom       581       108  18.6%      +216.0   +324.0   -113.0   -106.6
+  ETHUSDTshort2.0 control  2138       435  20.3%      +870.0  +1305.0   -482.0   -175.5
+  SOLUSDTlong 1.0 mom       533       120  22.5%      +120.0   +240.0   -213.0   -206.5
+  SOLUSDTlong 1.0 control  2195       504  23.0%      +504.0  +1008.0   -741.0   -622.6
+  SOLUSDTlong 1.5 mom       531       114  21.5%      +171.0   +285.0   -201.0   -174.8
+  SOLUSDTlong 1.5 control  2141       477  22.3%      +715.5  +1192.5   -611.0   -393.9
+  SOLUSDTlong 2.0 mom       527       104  19.7%      +208.0   +312.0   -155.0   -113.1
+  SOLUSDTlong 2.0 control  2076       424  20.4%      +848.0  +1272.0   -498.0   -275.3
+  SOLUSDTshort1.0 mom       592       150  25.3%      +150.0   +300.0   -202.0   -215.0
+  SOLUSDTshort1.0 control  2274       634  27.9%      +634.0  +1268.0   -880.0   -586.0
+  SOLUSDTshort1.5 mom       588       146  24.8%      +219.0   +365.0   -150.5   -114.9
+  SOLUSDTshort1.5 control  2230       598  26.8%      +897.0  +1495.0   -720.0   -268.2
+  SOLUSDTshort2.0 mom       581       135  23.2%      +270.0   +405.0   -101.0    -42.3
+  SOLUSDTshort2.0 control  2152       538  25.0%     +1076.0  +1614.0   -568.0    -48.4
+  XRPUSDTlong 1.0 mom       519       103  19.8%      +103.0   +206.0   -127.0   -115.3
+  XRPUSDTlong 1.0 control  2109       414  19.6%      +414.0   +828.0   -487.0   -367.7
+  XRPUSDTlong 1.5 mom       510       102  20.0%      +153.0   +255.0    -95.0    -48.6
+  XRPUSDTlong 1.5 control  2023       370  18.3%      +555.0   +925.0   -370.5   -225.1
+  XRPUSDTlong 2.0 mom       504        97  19.2%      +194.0   +291.0    -69.0     +3.7
+  XRPUSDTlong 2.0 control  1936       341  17.6%      +682.0  +1023.0   -310.0   -121.0
+  XRPUSDTshort1.0 mom       580       127  21.9%      +127.0   +254.0   -180.0   -190.8
+  XRPUSDTshort1.0 control  2225       487  21.9%      +487.0   +974.0   -577.0   -433.9
+  XRPUSDTshort1.5 mom       577       117  20.3%      +175.5   +292.5   -127.0   -122.5
+  XRPUSDTshort1.5 control  2150       442  20.6%      +663.0  +1105.0   -352.5   -152.5
+  XRPUSDTshort2.0 mom       572       106  18.5%      +212.0   +318.0    -86.0    -75.4
+  XRPUSDTshort2.0 control  2061       403  19.6%      +806.0  +1209.0   -249.0     -8.2
+
+========================================================================================================
+BODY-CLOSE REALIZED-LOSS DISTRIBUTION (R) - pooled per coin, tgt=2.0 control (HARD loss is always -1R)
+========================================================================================================
+  BTCUSDT: body-losses=3346 R q25/med/q75=-1.77/-1.37/-1.15 worst=-12.47  | tp-would-fill-first(loss bars)=51/5959
+  ETHUSDT: body-losses=2269 R q25/med/q75=-1.99/-1.46/-1.19 worst=-24.76  | tp-would-fill-first(loss bars)=62/4095
+  SOLUSDT: body-losses=2212 R q25/med/q75=-2.20/-1.60/-1.24 worst=-19.43  | tp-would-fill-first(loss bars)=104/4228
+  XRPUSDT: body-losses=2107 R q25/med/q75=-2.13/-1.56/-1.21 worst=-14.27  | tp-would-fill-first(loss bars)=75/3997
+
+========================================================================================================
+REGIME COLUMN SPLIT (INFORMATIONAL, not a filter) - BODY avgR by 15m regime, tgt=2.0 control
+========================================================================================================
+  coin   side               up           range            down
+  BTCUSDTlong    n=1354 -0.001    n=388 -0.012   n=1200 -0.057
+  BTCUSDTshort   n=1351 +0.024    n=352 -0.296   n=1322 +0.012
+  ETHUSDTlong     n=524 -0.227    n=208 -0.160   n=1225 -0.064
+  ETHUSDTshort    n=541 -0.022    n=256 +0.051   n=1341 -0.132
+  SOLUSDTlong     n=735 -0.114    n=188 -0.074   n=1153 -0.154
+  SOLUSDTshort    n=740 -0.056    n=201 +0.165   n=1211 -0.033
+  XRPUSDTlong     n=528 -0.144    n=214 -0.015   n=1194 -0.035
+  XRPUSDTshort    n=552 -0.133    n=224 +0.124   n=1285 +0.029
+
+========================================================================================================
+HEADLINE - cells that BEAT the null (avgR >= null p95), n>=30
+========================================================================================================
+  XRPUSDT long tgt=2.0 mom     [body]: n=504 WR=48.0% avgR=+0.007 totR=+3.7 (null_p95=-0.052)
+
+DONE.
