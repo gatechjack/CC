@@ -183,3 +183,46 @@ short misses are auditable).
 3. Strategy-design review of the regime side-gate vs operator's counter-trend reads (BTC 7/3, XRP 7/3).
 4. Strategy-design review of `pivot(50,50)` sensitivity vs the swings the operator actually trades
    (the Bucket-B root cause).
+
+---
+
+## ADDENDUM 2026-07-06 — Bucket-(I) ETH 07-01 21:45 RESOLVED → "engine not live" (NOT a miss)
+
+**Q1 — When did the bidirectional short engine go live on prod? Answer: 2026-07-02 02:10:04 UTC (not 07-01).**
+The `2026-07-01` in the code comment / report F3 is the COMMIT date, not the prod-deploy date. Evidence:
+
+| Evidence | Value |
+|---|---|
+| Short-feeding code commit (`on_closed_15m_bar(bar15_neg)`) | **`aec6c78`, authored 2026-07-01 19:45 UTC** ("piece3 sfp-bidir") |
+| Prod observer file mtime (when the code landed on prod) | **2026-07-02 01:55 UTC** |
+| Restart that LOADED it (journal) | **2026-07-02 02:10:04 UTC**, `xvfb-run[53387]` (≈ plan PID 53372) |
+| That restart's wired line | first to show **4 coins** (`['BTC,ETH,SOL,XRP']`); prior restarts = `['BTC,ETH']` |
+| Engine actually running at 07-01 21:45 | **`xvfb-run[45183]`** from the **07-01 19:35:27** restart — wired `['BTC,ETH']`, **long-only** |
+| Intervening 07-01 22:52 restart | still `['BTC,ETH']`, still pre-01:55-mtime → also pre-bidirectional |
+| Earliest short audit event ANYWHERE | **2026-07-03 11:03:20** — zero short activity 07-01/07-02 |
+
+So at **07-01 21:45 the reflected/short engine did not exist on prod** (it shipped ~4h25m later, 07-02 02:10).
+The setup was a SHORT (swept pivot-HIGH 1637.17); the long-only engine that WAS running arms on pivot-LOWS
+and fires on low-sweeps — it is structurally incapable of a high-sweep. **Doubly not-detected.**
+
+**Q2 (full end-to-end trace) is moot** — the engine wasn't live. For completeness: the bars were present and
+on time (15m 21:45 `H1637.88 C1631.33`; 3m fall to 1614.78 — all in `bitunix_bar_history`, F1), but no short
+engine consumed them. The absence of any audit/side-effect for ETH 07-01 is fully explained by "no engine,"
+not by "arm fired but absorbed silently."
+
+**Delta vs Setup 2 (BTC 07-03 13:45, which DID trace):** BTC 07-03 ran under the **07-02 02:10+ observer**
+(short engine live) → its short fire reached the regime gate → `sfp_skip_counter_trend` audit. ETH 07-01 ran
+under the **07-01 19:35 observer** (no short engine) → nothing to fire, nothing to log. The audit-trail delta
+is the deploy boundary, not a silent drop.
+
+**VERDICT: (I) → "engine not live (DROP)."** NOT a detector-level miss. No mechanism bug here. Report F3
+should read: *short SFP prod-live since 2026-07-02 02:10* (commit 07-01 19:45).
+
+**Short-watch persistence scope (reported, NOT proposed/written):** the gap is deliberate — short detector
+transitions are `drain_transitions()` **discarded** (observer lines 520 + 537, comment "short dashboard =
+Piece 5+"), whereas longs call `self._emit_watch_transitions(...)` (lines 514/518, → `sfp_watch_state`).
+Closing it is a **simple additive mirror**: route the short drains through `_emit_watch_transitions` with a
+side token. Two real considerations: (a) short levels are reflected coords → **un-reflect** (`real = -x`)
+before storing — the un-reflection already exists in `_handle_signal` (line 822); (b) `watch_id` needs a
+**side discriminator** to avoid colliding with the same-symbol/mode/ts long watch. Bounded, observer-only,
+mirrors existing long persistence. This is its own follow-up regardless of ETH 07-01's resolution.
