@@ -216,9 +216,9 @@ def test_untracked_tpsl_flagged_loud(tmp_path):
 def test_min_leg_too_small_sl_only(tmp_path):
     # The VENUE position qty (not the requested qty) drives the leg; make it sub-min.
     broker = FakeBroker(positions=[SimpleNamespace(
-        symbol="BTCUSDT", qty=0.0001, extra={"positionId": "pos-123", "side": "LONG"})])
+        symbol="BTCUSDT", qty=0.00005, extra={"positionId": "pos-123", "side": "LONG"})])
     obs, broker, notifier, db_url = _mk(tmp_path, broker=broker)
-    order = _order(qty=0.0001)                            # < 0.0003 BTC min leg
+    order = _order(qty=0.00005)                           # < 0.0001 BTC min leg (Board 2026-07-06)
     _seed_entry_row(db_url, order)
     asyncio.run(obs._place_tp_leg(order, "BTC/USDT.P"))
     assert broker.tpsl_calls == []                       # no sub-min leg placed
