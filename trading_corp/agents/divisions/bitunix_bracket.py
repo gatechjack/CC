@@ -15,8 +15,10 @@ live validation):
   * Native OCO: a TP fill leaves the SL (auto-reduced); the final close cancels
     the rest. The bot does NOT cancel counter-orders — it only moves the SL.
 
-Board min-leg rule: every PLACED leg must be >= MIN_LEG_QTY_BTC (0.0003 BTC).
+Board min-leg rule: every PLACED leg must be >= MIN_LEG_QTY_BTC (0.0001 BTC).
 Too-small positions DEGRADE to fewer, larger legs — never a sub-min leg.
+When only ONE leg fits, it rests at the FULL-PROFIT target (farthest tp), not
+a near fee-covering TP (Board 2026-07-06).
 
 SL-move hybrid ((b)+(c), tp_plan default stop_action): TP1 filled -> SL to
 breakeven; TP1+TP2 filled -> SL to TP1; never loosened (tighten-only).
@@ -25,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-MIN_LEG_QTY_BTC: float = 0.0003  # Board rule: no placed leg below this.
+MIN_LEG_QTY_BTC: float = 0.0001  # Board rule 2026-07-06: venue min order size (was 0.0003).
 
 
 @dataclass(frozen=True)
@@ -58,7 +60,7 @@ def build_bracket_legs(
     legs (need qty >= min/0.25 = 4*min for 3 full legs); below that we degrade:
       qty >= 4*min  -> 3 legs (tp1 .25 / tp2 .50 / tp3 .25)
       qty >= 2*min  -> 2 legs (tp1 .50 / tp3 .50)   [keep nearest + farthest]
-      qty >= 1*min  -> 1 leg  (tp1, full qty)        [bank the win reliably]
+      qty >= 1*min  -> 1 leg  (FULL-PROFIT tp, full qty)  [Board 2026-07-06]
       else          -> 0 legs (position too small; SL-only)
     """
     q = _round_qty(float(entry_qty))
@@ -89,9 +91,13 @@ def build_bracket_legs(
             f"degraded to 2 legs (qty {q} < 4*min {4*min_leg}): tp1+tp3 half each"
         )
 
-    # 1 leg: full qty at tp1 (closest → highest fill probability → banks a win).
-    return [BracketLeg(leg="tp1", price=float(tp1["price"]), qty=q)], (
-        f"degraded to 1 leg (qty {q} < 2*min {2*min_leg}): full qty at tp1"
+    # 1 leg: full qty at the FARTHEST available target (full profit) — Board
+    # 2026-07-06: when only one leg fits, bank at FULL profit, never a near
+    # fee-covering TP. Prefer tp3, then tp2, then tp1. SFP passes only tp1 (its
+    # own full-profit price) so SFP is unchanged; futures gets tp3.
+    full = tp3 or tp2 or tp1
+    return [BracketLeg(leg=str(full["leg"]), price=float(full["price"]), qty=q)], (
+        f"degraded to 1 leg (qty {q} < 2*min {2*min_leg}): full qty at {full['leg']} (full-profit)"
     )
 
 

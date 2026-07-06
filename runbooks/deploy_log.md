@@ -116,6 +116,41 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-06 03:28 UTC — Bitunix bracket: min-leg 0.0003->0.0001 + 1-leg full-profit DEPLOYED (single-file; both bitunix divisions; agent-driven under explicit Board approval)
+
+**STATE VERB: DEPLOYED + LOADED + VERIFIED (agent drove file-write + restart over SSH under explicit per-session Board approval; disclosure per CLAUDE.md read-only-SSH rule).**
+
+**Commit:** `7dfad2b` (branch `bitunix-bracket-minleg-fullprofit-2026-07-06`, UNMERGED at deploy time)
+**Triggered by:** live futures SL-only incident — an active short (0.0002135 BTC) shipped with NO take-profit because position < old 0.0003 min-leg. Board: "a trade should never be SL-only" + "smallest order 0.0001" + "if <2 legs, one full-profit TP (no fee-covering TP)".
+**Backup tag:** `.bak-pre-minleg-20260706` (on prod, same dir)
+
+**Files deployed (1):**
+- `trading_corp/agents/divisions/bitunix_bracket.py` — pure module; md5 `f4be4e9b` -> `7794622f`
+
+**Features shipped:**
+- `MIN_LEG_QTY_BTC` 0.0003 -> **0.0001** (venue min order size). SHARED constant → affects BOTH `bitunix_futures` and `bitunix_sfp`. Positions >= 0.0001 BTC now always carry >=1 TP leg (no more SL-only at current sizing; the live 0.0002135 short would now get a 2-leg TP).
+- 1-leg degrade now rests the single full-qty leg at the FARTHEST target (`tp3 or tp2 or tp1` = full profit), not the nearest fee-covering tp1. Futures→tp3; SFP (single-tp1 plan) unchanged.
+
+**Notable code changes:**
+- Only `build_bracket_legs` changed; `decide_sl_move`/`classify_result`/`classify_exit_kind` byte-unchanged. Observers (`bitunix_futures_observer._place_bracket_exits`, `bitunix_sfp_observer._place_tp_leg`) call it unchanged.
+
+**Verification:**
+- PID `60341 -> 81690`, ActiveState=active, NRestarts=0, boot clean (no ImportError/traceback); `final_bracket_md5=7794622f`. Both bitunix divisions registered live (paper=False). Only boot errors = pre-existing Fidelity Playwright fallback (chronic, unrelated). Post-restart futures observer cycling (`htf_regime_snapshot` 03:29:18).
+- Base guard confirmed prod pre-state == `f4be4e9b` before apply; auto-rollback armed on md5 mismatch (not triggered).
+
+**Tests:** 21/21 via run_capped (new `tests/test_bitunix_bracket_minleg_fullprofit.py` 14 cases + adapted `test_bitunix_sfp_tp_placement.py` sub-min qty 0.0001->0.00005).
+
+**Inert / dormant:** change affects NEW entries only; the current open SL-only position is NOT retro-fixed (operator manually setting its TP).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "F=/home/azureuser/trading_corp/trading_corp/agents/divisions/bitunix_bracket.py; cp -p \$F.bak-pre-minleg-20260706 \$F; sudo -n systemctl restart trading-corp"
+```
+
+**Follow-ups (not done here):** (1) merge `7dfad2b` to main; (2) deploy_log.md on main is STALE — missing all deploys 2026-06-16..07-02 (SFP, two-live, SL-trail) which were tracked in memory only — needs backfill; (3) open size/leverage decision.
+
+---
+
 ## 2026-06-15 ~00:02 UTC — Bitunix P2 auto-book + latch-release DEPLOYED (single-file reconciler; clears stuck latch + installs self-recovery)
 
 **STATE VERB: DEPLOYED + LOADED + VERIFIED (operator-supervised; §4 gate lifted for the sequence).**
