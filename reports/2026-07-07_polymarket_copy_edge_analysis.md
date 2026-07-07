@@ -103,3 +103,44 @@ cheap and paper-side:
 
 **Data pulled read-only via Azure Run Command** (`pm_copy_edge.sh`, `pm_copy_edge2.sh`), prod
 `polymarket_round_trips`, 2026-07-07.
+
+---
+
+## UPDATE 2026-07-07 — reframe: the ROSTER was mis-selected; evidence-based reassignment
+
+Operator correctly pushed back: the NO-GO above is about the *current manually-pinned roster*, not
+whether a *properly-selected* roster has an edge. Re-ran the analysis around selection.
+
+**Anomaly:** the prod copy-roster scorer (`refresh_polymarket_whales.py`) is still the **naïve
+pre-option-c** version — its `selection_details` emit `avg_pnl_per_contract_usdc` / `closed_positions_count`,
+NOT the REDEEM-grounded realized fields. Option-c Phase 1 is merged but **not deployed to prod**. So the
+algo top-12 it produces (Jsram, FootballFan98, LlamaLoco0000…) is ranked by the *same discredited metric*
+that once put Latina #1 at +$366k when she was −$326k. **Not used for selection.** Trustworthy realized
+(REDEEM-grounded) data lives in the *watchlist* seed stats + the copy round-trips — reassignment built from those.
+
+**Reassignment (board-authorized "remove losers, add winners"), evidence-based:**
+
+REMOVE from copy roster (losers / unrankable / no-evidence): damed21 (copy −100%, 1 mkt), jtwyslljy
+(−82.5%), mohahaha (−31.8%), slimjoe (−26.8%), 0x4ca135… (−13.6%), Johnnyboy42069 (−7.4%, autopaused),
+(blank) (−100%), AdrianCronauer + BigodinSagaz (realized window-truncated / unrankable), abracadabr
+(+3.4% on 5 rows = noise), aekghas (no data).
+
+KEEP (copy-positive or dollar-verified): superbeter007 (+50.2%), 0x594d… (+16.2%), 4gibg4i3o (+17.7%),
+kitten147 (+8.0%), llllllIIIIIIlIllll (+4.2%, n=1290 largest sample), TimmyTurner123 (+90.8% but only
+8 mkts — noisy), Magamyman (realized $806k dollar-verified, low copy vol).
+
+ADD (winners — REDEEM-grounded realized edge, moderate volume = copyable directional, NOT makers):
+digitalnomad85 (Sports, n=82, WR66%, ROI31%, non-prov), Hakei. (Tech, n=71, WR78%, ROI38%, non-prov),
+Civic-Static (Crypto, n=96, WR63%, ROI28%, non-prov), ChadStarmer (Tech, n=32, ROI88%), Moond (Politics,
+n=35, ROI43%), potatobrahh (Tech, n=36, ROI46%), LJa7io23MCv954j (Politics, n=37, ROI35%), monkeybar
+(Sports, n=18, ROI86%). Excluded maker traps: cnyek ($2.8M vol), CandleHammerDrum ($965k), VBQZSXZ7
+(avgpx 0.94). New roster = 7 keep + 8 add = 15.
+
+**Caveat (load-bearing):** these ADDs have strong *whale* realized edge; whether it survives *copying*
+is what the forward paper window measures. Item-1 (`copy_quote_price` logging, branch
+`polymarket-copy-quote-price-2026-07-07`, built+tested) makes slippage measurable once deployed. Apply
+script `Desktop/pm_apply_roster.sh` (backs up current roster to `/tmp/pm_roster_backup.json`, hot-reloads
+in ~60s, paper). **Latency note:** current copy lag = 60s poll + 10–60s feed lag (self-imposed throttle,
+not a blockchain floor); Polymarket matches OFF-chain (hybrid CLOB) then batch-settles on Polygon, so the
+near-real-time source is the data-API / CLOB websocket, not the chain — tightening this is a real
+edge-preservation lever.
