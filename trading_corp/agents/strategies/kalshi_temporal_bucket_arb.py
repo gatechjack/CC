@@ -221,24 +221,56 @@ def _detect_temporal_violations(
     return out
 
 
+def _parse_expiration_date(value) -> date | None:
+    """Parse a Kalshi expected_expiration_time (ISO-8601 str) to a date."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except (ValueError, TypeError):
+        return None
+
+
 def _detect_bucket_violations(
     event,
     min_edge_cents: float,
+    horizon_cutoff: date | None = None,
+    now_date: date | None = None,
 ) -> _BucketOpportunity | None:
     """If sum(yes_ask) across all markets in event < 1 - threshold, emit.
 
     Returns one opportunity (or None) — the entire event is one arb set
     (buy YES on every leg).
     """
+    markets = list(event.markets)
+    # Guard 1: a single-leg "bucket" is not an arb -- require a real partition.
+    if len(markets) < 2:
+        return None
     legs: list[tuple[str, float]] = []
     sum_y = 0.0
-    for m in event.markets:
+    latest_exp: date | None = None
+    for m in markets:
         if m.yes_ask <= 0:
             return None  # one-sided book on any leg -> no arb
+        # Guard 2: real resolution horizon from expected_expiration_time (NOT
+        # the subtitle/category label). Every leg must carry a parseable
+        # expiration or we cannot verify the horizon.
+        exp = _parse_expiration_date(getattr(m, "expected_expiration_time", None))
+        if exp is None:
+            return None
+        latest_exp = exp if latest_exp is None else max(latest_exp, exp)
         legs.append((m.ticker, m.yes_ask))
         sum_y += m.yes_ask
     if not legs:
         return None
+    if horizon_cutoff is not None and latest_exp is not None:
+        # Whole set must resolve within (now, cutoff]: drops future-long
+        # partitions AND stale/never-resolving ones (e.g. NBER recession
+        # quarters whose expiration is far-future or already past).
+        if latest_exp > horizon_cutoff:
+            return None
+        if now_date is not None and latest_exp < now_date:
+            return None
     edge = 1.0 - sum_y
     min_edge_dollars = min_edge_cents / 100.0
     if edge < min_edge_dollars:
@@ -388,6 +420,7 @@ class KalshiTemporalBucketArbAgent:
         temporal_max_horizon_days = int(temporal_cfg.get("max_horizon_days", 60))
         bucket_enabled = bool(bucket_cfg.get("enabled", True))
         bucket_min_edge_cents = float(bucket_cfg.get("min_edge_cents", 5.0))
+        bucket_max_horizon_days = int(bucket_cfg.get("max_horizon_days", 60))
 
         fixed_usd = float(sizing_cfg.get("fixed_usd_per_leg", 1.0))
         max_sets = int(per_cycle.get("max_sets", 5))
@@ -401,6 +434,10 @@ class KalshiTemporalBucketArbAgent:
         horizon_cutoff = (
             now.date() + timedelta(days=temporal_max_horizon_days)
             if temporal_max_horizon_days > 0 else None
+        )
+        bucket_cutoff = (
+            now.date() + timedelta(days=bucket_max_horizon_days)
+            if bucket_max_horizon_days > 0 else None
         )
         need_refresh = (
             self._discovery_cache is None
@@ -497,7 +534,7 @@ class KalshiTemporalBucketArbAgent:
                         })
             elif bucket_enabled and event.event_type == EventType.BUCKET:
                 n_bucket_events += 1
-                opp = _detect_bucket_violations(event, bucket_min_edge_cents)
+                opp = _detect_bucket_violations(event, bucket_min_edge_cents, bucket_cutoff, now.date())
                 if opp is not None:
                     bucket_opps.append(opp)
                 # Per-event audit data regardless of violation.

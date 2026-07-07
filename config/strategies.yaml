@@ -1454,6 +1454,7 @@ kalshi_temporal_bucket_arb:
   bucket:
     enabled: true
     min_edge_cents: 5               # clears N-leg fees on multi-bucket events
+    max_horizon_days: 60            # 2026-07-07: require >=2 legs + latest expected_expiration_time within 60d (drops NBER-style never-resolvers)
   sizing:
     fixed_usd_per_leg: 1.0          # $1 per leg -> $2 (temporal) or $N (bucket) max risk
   per_cycle:
