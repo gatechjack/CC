@@ -625,3 +625,84 @@ def test_conviction_mult_missing_or_bad_signal_is_neutral(strategy):
     assert agent._conviction_mult(None) == 1.0
     assert agent._conviction_mult({}) == 1.0
     assert agent._conviction_mult({"composite_score": "n/a"}) == 1.0
+
+
+# ── copy_quote_price: post-lag quote stored on taken entries ─────────────────
+
+
+class _StubQuoteFetcher:
+    """Minimal market_state_fetcher stub that only implements quote()."""
+    def __init__(self, price: float):
+        self._price = price
+
+    async def quote(self, slug_outcome: str) -> float:
+        return self._price
+
+
+class _StubQuoteFetcherFailing:
+    """market_state_fetcher whose quote() always raises."""
+    async def quote(self, slug_outcome: str) -> float:
+        raise RuntimeError("quote fetch failed")
+
+
+@pytest.mark.asyncio
+async def test_entry_extra_carries_copy_quote_price_when_fetcher_available(strategy):
+    """A taken entry with a working quote fetcher stores copy_quote_price == the
+    fetched price so post-hoc slippage vs whale_entry_price is measurable."""
+    agent, db_url = strategy
+    set_agent_state(
+        "polymarket_copy_trader", "selected_whales",
+        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
+        db_url=db_url,
+    )
+    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
+
+    quote_fetcher = _StubQuoteFetcher(price=0.45)  # current market price at poll time
+    orders = await agent.run_scan_cycle(
+        data_api_client=_StubDataAPI({"0xW": [
+            _act("cid2", 0, price=0.40, size=1250, ts=2000),
+        ]}),
+        market_state_fetcher=quote_fetcher,
+    )
+    assert len(orders) == 1
+    o = orders[0]
+    assert o.side == "buy"
+    # copy_quote_price is the real post-lag price, NOT the whale's fill price
+    assert o.extra["copy_quote_price"] == pytest.approx(0.45)
+    # whale_entry_price and limit_price remain the whale's original fill — unchanged
+    assert o.extra["whale_entry_price"] == pytest.approx(0.40)
+    assert o.limit_price == pytest.approx(0.40)
+
+
+@pytest.mark.asyncio
+async def test_entry_extra_copy_quote_price_is_none_without_fetcher(strategy):
+    """A taken entry with no quote fetcher (or a failing one) has copy_quote_price=None
+    and still emits the order — additive and non-blocking."""
+    agent, db_url = strategy
+    set_agent_state(
+        "polymarket_copy_trader", "selected_whales",
+        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
+        db_url=db_url,
+    )
+    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
+
+    # Case A: no fetcher at all (market_state_fetcher=None, the default)
+    orders_no_fetcher = await agent.run_scan_cycle(
+        data_api_client=_StubDataAPI({"0xW": [
+            _act("cid3", 0, price=0.50, size=100, ts=3000),
+        ]}),
+    )
+    assert len(orders_no_fetcher) == 1
+    assert orders_no_fetcher[0].extra["copy_quote_price"] is None
+
+    # Case B: fetcher present but quote() raises — order still emitted, price=None
+    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # reset seen
+    failing_fetcher = _StubQuoteFetcherFailing()
+    orders_failing = await agent.run_scan_cycle(
+        data_api_client=_StubDataAPI({"0xW": [
+            _act("cid4", 0, price=0.55, size=200, ts=4000),
+        ]}),
+        market_state_fetcher=failing_fetcher,
+    )
+    assert len(orders_failing) == 1
+    assert orders_failing[0].extra["copy_quote_price"] is None
