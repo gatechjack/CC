@@ -33,6 +33,30 @@ to "after the dashboard reorg":**
 - One-time backfill sweep of the existing residue.
 - Root-cause report: `reports/2026-07-07_approvals_count_split_brain.md`.
 
+## SFP ref-vs-fill: entry / R / P&L use the SIGNAL reference, not the actual fill — OPEN (found 2026-07-07)
+
+`bitunix_sfp` books `entry_reference_price` (the 3m-BOS-confirmation *signal* price) as the
+entry, NOT the actual venue fill. Live SOL long 2026-07-07: recorded entry `80.96`, real
+BitUnix fill `80.90` (6¢ favorable). The fill is stored NOWHERE — not in
+`paper_trade_record.extra_json`, not in any `bitunix_sfp` audit kind (`live_order_placed`,
+`sfp_bracket_placed`, … none carry a fill/avg price). So unrealized-R and closed-trade
+R/P&L for the SFP division all carry the entry-slippage error. Stop/TP ARE correct (real
+bracket orders at the venue: `bracket_tp_order_id` / `bracket_position_id`).
+
+Fix (extends the "#1 signed-fetch auto-book" work to the ENTRY side): fetch the actual
+entry fill from BitUnix via `extra_json.broker_order_id` (signed trade/order-history API)
+and use it for entry + R/P&L. Two depth levels:
+- **A1 read-layer** — the `/sfp` cockpit fetches the fill (cached per position) for the
+  entry line + cockpit-R display only. Isolated to the read path, lower risk; does NOT fix
+  recorded P&L.
+- **A2 correct-at-source** — capture the fill at open (or first reconcile), store it on the
+  record, use everywhere (entry + R + P&L); backfill open positions. Touches the LIVE SFP
+  trade path — careful design/testing (Board-grade).
+Cockpit chart line-labels + 2dp truncation already shipped 2026-07-07 (branch
+`dashboard-tile-reorg-2026-07-07`). Operator wants the entry correct ("A — fix it
+correct"); A1-vs-A2 depth + flat-restart timing TBD. Either level needs a one-time backfill
+fetch to correct the currently-open SOL position.
+
 ## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
 
 Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:trading`**, **SOL + XRP `arm:watch`
