@@ -10988,3 +10988,46 @@ sudo systemctl restart trading-corp
 **Rollback:** `cp config/risk.yaml.pre-cap-interim-2026-05-28 config/risk.yaml` on prod (hot-reloads back to $1K within ~60s).
 
 **Addendum (same session, 2026-05-29):** the notional cap raise unblocked the open-NOTIONAL gate but exposed a SECOND binding gate — `max_open_positions: 10` (added in Group A #2) rejected every PCT entry because PCT holds 1,771 open (>>10). Root: a flat per-division count cap is architecturally wrong for a copy-trader (hundreds of concurrent open BY DESIGN). **DISABLED interim** (`max_open_positions: 0`); backup `config/risk.yaml.pre-count-cap-disable-2026-05-28`; hot-reload, no restart. Step 4 decides the final count-cap policy (keep disabled for PCT, or per-division). NB: the $4k notional cap gives **~17h runway** (resolver leaks ~$60/hr), so Step 3 (resolver fairness fix) is the IMMEDIATE next thing.
+
+---
+
+## 2026-07-07 — Polymarket copy-trading: roster reassignment + option-c Phase 1 + item-1 slippage logging + dashboard epoch reset
+
+**Context:** measured the copy edge (NO tradeable edge on the OLD manually-pinned roster — report
+`reports/2026-07-07_polymarket_copy_edge_analysis.md`), then board-authorized an evidence-based roster
+reassignment + deployed the two supporting fixes. Copy division stays PAPER throughout (`auto_execute:false`,
+0 live fills ever verified). Deploy driven via Azure Run Command (`runprod.ps1 <script>`), prod is NOT a git
+checkout (file overlay, targeted per prod-diverges-from-repo rule). Open positions = 0 at restart.
+
+**1. Roster reassignment (agent_state, hot-reload ~30s, no restart) — 19:13 UTC.** Wrote
+`agent_state(polymarket_copy_trader, selected_whales + pinned_whales)` = 15 whales (7 kept winners + 8
+realized-edge adds; 11 losers/unrankable removed) via `set_agent_state` (autocommit WAL). Script
+`Desktop/pm_apply_roster.sh`. Old roster (13 sel / 18 pin) backed up `/tmp/pm_roster_backup.json`. Engine
+cold-started the 8 new whales cleanly, 0 errors.
+
+**2. option-c Phase 1 realized scorer (4 files, NO restart) — ~19:35 UTC.** Overlaid c14e786 versions onto prod
+(prod was byte==base 7c33bb6, clean). md5 targets: `polymarket_whale_audit.py`=df1ebed9,
+`polymarket_whale_stats.py`=235b7612, `polymarket_whale_audit_cache.py`=dce46918,
+`refresh_polymarket_whales.py`=fcb79bc9. seed NOT changed (prod already had `_fetch_wallet_activity_windowed`).
+Isolated import chain — NOT imported by the live engine (refresh script + dashboard only), so no restart.
+Verified via `refresh --dry-run`: emits realized fields, naive `avg_pnl_per_contract` gone. Backup
+`*.bak-pre-optc-2026-07-07`. Script `Desktop/pm_deploy_optc.sh` (base64 bundle).
+
+**3. item-1 copy_quote_price (1 file, RESTART) — 19:42 UTC.** Overlaid `polymarket_copy_trader.py` md5 2f92049a
+(prod base 4786c872 == exact item-1 base, clean surgical). commit d1a874f. `systemctl restart trading-corp`
+(Azure Run Command = root, no sudo needed). Post-restart: MainPID 94116→**97179**, NRestarts=0, no tracebacks.
+★ LIVE divisions preserved paper=False: bitunix_sfp (execution_mode=live auto_execute=True), bitunix_futures,
+robinhood_pead. Backup `*.bak-pre-item1-2026-07-07`. Script `Desktop/pm_deploy_item1.sh`.
+
+**4. Dashboard metrics_epoch reset — 20:00:54 UTC.** `agent_state(polymarket_copy_trader, metrics_epoch)` =
+`2026-07-07T20:00:54+00:00` (was 2026-05-23). Scopes ALL pm dashboard panels (tiles/History/Open/Whales/equity)
+to entries from now (filters entry_ts). Non-destructive: 6,281 pre-epoch RTs preserved/hidden. Script
+`Desktop/pm_set_epoch.sh`. Revert = restore prior epoch or delete key.
+
+**★ REPO STATE / DIVERGENCE:** `main`==`origin/main`==f0c6224 has NEITHER option-c NOR item-1 (main never got the
+polymarket E-series/option-c line). Everything deployed lives on branch `polymarket-copy-quote-price-2026-07-07`
+(pushed to origin; contains E-series + option-c + item-1 d1a874f + the 2026-07-07 reports). Reconciling main↔prod
+for the polymarket line is a SEPARATE larger task, NOT done here.
+
+**Rollback:** roster→`/tmp/pm_roster_backup.json`; option-c→`.bak-pre-optc-2026-07-07`; item-1→`.bak-pre-item1-2026-07-07`
++ restart; epoch→restore `2026-05-23T15:30:15.042822+00:00` (or delete key).

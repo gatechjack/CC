@@ -542,6 +542,61 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
+## ★ 2026-07-07 SESSION UPDATE — edge measured, roster reassigned, option-c + item-1 DEPLOYED, dashboard reset
+
+**Edge verdict (resolution-grounded from `polymarket_round_trips`, report `reports/2026-07-07_polymarket_copy_edge_analysis.md`):**
+The OLD manually-pinned roster had **NO tradeable copy edge**: +0.54% blended dollar ROI (and that's the
+OPTIMISTIC zero-slippage number — RTs record the whale's price, not our post-lag fill); trustworthy
+settle-derived subset (90% of capital) = −0.66%; NOT stable (May +13.7% / June −26.6% / July −8.2%);
+WR 53.6% < avg entry price 55.9% → no gross skill. Whale edge is real+dollar-verified (option-c) but does
+NOT survive copying on that roster. **This is roster-dependent, not a verdict on the strategy** — hence the
+reassignment below. Do NOT stand up EU egress / go live until a *properly-selected* roster shows positive
+forward copy edge.
+
+**Roster reassignment APPLIED (board-authorized, paper, 2026-07-07 19:13 UTC):** `agent_state(polymarket_copy_trader,
+selected_whales + pinned_whales)` = 15 whales. REMOVED 11 losers/unrankable (damed21 −100%, jtwyslljy −82%,
+mohahaha −32%, slimjoe −27%, 0x4ca −14%, Johnnyboy42069 −7%, blank −100%, AdrianCronauer+BigodinSagaz
+window-truncated, abracadabr+aekghas no-evidence). KEPT 7 (superbeter007, 0x594d, kitten147, llllll,
+4gibg4i3o, TimmyTurner123, Magamyman). ADDED 8 realized-edge copyable directional whales (digitalnomad85,
+Hakei., Civic-Static, ChadStarmer, Moond, potatobrahh, LJa7io23MCv954j, monkeybar; makers cnyek/CandleHammerDrum/
+VBQZSXZ7 excluded). Old roster backed up `/tmp/pm_roster_backup.json`. ⚠ whale realized edge ≠ copy edge —
+the forward paper window is the real test.
+
+**DEPLOYED to prod 2026-07-07 (see deploy_log 2026-07-07):**
+- **option-c Phase 1 realized scorer** — 4 files at commit **c14e786** (md5 df1ebed9/235b7612/dce46918/fcb79bc9),
+  NO restart (script-only, isolated import chain). Verified: `refresh --dry-run` now emits realized fields
+  (realized_pnl_usdc/realized_roi/pnl_inflation_ratio/n_resolved_decisions), naive `avg_pnl_per_contract` gone.
+  ★ NOTE: the algo's realized ranking STILL surfaces makers (cnyek $1.36M vol) + a net-loser (Vanquish) high
+  (Wilson-WR-dominated w/ ROI floor) → do NOT blindly `refresh --algo-select`; hand-curate with copy-survival +
+  maker-exclusion overlays. Roster was hand-picked, NOT algo-written.
+- **item-1 `copy_quote_price`** — logs real post-lag market price on taken entries so slippage becomes measurable.
+  Commit **d1a874f** (branch `polymarket-copy-quote-price-2026-07-07`), deployed md5 2f92049a, engine RESTARTED
+  (PID 97179, clean boot, LIVE divisions preserved paper=False: bitunix_sfp/futures/pead).
+- **metrics_epoch RESET** to `2026-07-07T20:00:54+00:00` (`agent_state(polymarket_copy_trader, metrics_epoch)`;
+  was 2026-05-23). Dashboard RESOLVED/WIN-RATE/REALIZED/History/Open/Whales all scoped to entries from now
+  (filters on entry_ts). Non-destructive: 6,281 pre-epoch RTs preserved/hidden; delete key or restore old value
+  to revert.
+
+**★★ REPO/PROD DIVERGENCE ANOMALY (next session, read carefully):** `main`==`origin/main`==**f0c6224** has
+NEITHER option-c NOR item-1 — main never received the entire polymarket E-series/option-c line (this backlog's
+older "option-c Phase 1 MERGED to main" claim below is WRONG; main lacks the realized scorer). Prod runs
+c14e786(option-c)+2f92049a(item-1). All that work lives on branch `polymarket-copy-quote-price-2026-07-07`
+(pushed to origin) which is a long-lived feature branch diverged from main at 3ec9b85. Reconciling main↔prod for
+the polymarket line is a SEPARATE, larger task — NOT done this session. copy sizing on prod still OLD tier
+ladder ($1/$2/$5, strategies.yaml:1739); E2.3 flat-$1 clamp NOT deployed.
+
+**Execution gate still CLOSED/paper (verified):** `auto_execute: false`, `standby: true`, 0 `filled` events ever.
+Roster change did NOT arm real money.
+
+**Latency (operator Q, confirmed):** copy lag = 60s poll (`poll_interval_sec`) + 10–60s feed lag — a self-imposed
+free-API throttle, NOT a blockchain floor. Polymarket matches OFF-chain (hybrid CLOB) then batch-settles on
+Polygon, so the chain is LAGGIER than the data-API; near-real-time source = data-API `/activity` or CLOB
+websocket. Faster poll / websocket = a real edge-preservation lever (lag = the slippage the 30%-drift filter fights).
+
+**NEXT SESSION:** let the new roster run a forward paper window, then re-measure forward copy P&L
+(slippage-instrumented via item-1 `copy_quote_price`) — the clean test of whether a properly-selected roster has
+a real copy edge. Only if clearly positive does the EU/go-live question reopen.
+
 ## E2 — route the copy loop to the live broker (SCOPED 2026-06-14; branch `e2-scoping-2026-06-14`, unmerged)
 
 E1 done + merged (`72e8dc6`); PCT wallet `0x2160…9F82` fully provisioned (OP·A/B/C ✓, 6/6 approvals, 119.98 USDC.e). E2 routes the **PCT** copy loop `would_have_placed` → `data_exec.place()` → `PolymarketLiveBroker` → `FillEvent` (arb stays paper). Full scope + verified path-map: [`reports/2026-06-14_polymarket_e2_scoping.md`](reports/2026-06-14_polymarket_e2_scoping.md). Operator decisions baked in: token_id via `activity.asset`; **synthesized-FAK** order type (0.17.5 has no native FAK/IOC — GTC+poll+cancel-remainder, configurable); **no HITL** (whale-promotion is the approval); **flat ≈$1** sizing default (full schema, conviction off); per-division live isolation; DB `execution_mode` column.
