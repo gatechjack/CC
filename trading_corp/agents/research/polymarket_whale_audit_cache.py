@@ -206,6 +206,7 @@ def _dict_to_report(value: Any) -> WhaleAuditReport:
         for k in (
             "proxy_wallet", "user_name", "activity_max_ts", "activity_min_ts",
             "n_raw_rows_examined", "n_resolved_decisions",
+            "n_winning_decisions", "total_buy_usdc_resolved",
             "partial_sell_threshold_used", "verdict_narration",
             "verdict_null_reason", "llm_cost_usd", "llm_tokens_in",
             "llm_tokens_out",

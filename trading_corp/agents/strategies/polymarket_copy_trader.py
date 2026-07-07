@@ -413,6 +413,12 @@ class PolymarketCopyTraderAgent:
         # minutes. We were paper-trading at whale's stale fill price, which
         # over-states our actual entry. Skip when our outcome's current
         # price has dropped >threshold%% below whale's fill — alpha is gone.
+        #
+        # copy_quote_price: the real post-lag market price at our poll time.
+        # Stored on taken entries so slippage (whale_entry_price vs our
+        # actual fill) becomes measurable retrospectively. None when no
+        # quote fetcher is available.
+        copy_quote_price: float | None = None
         if market_state_fetcher is not None and hasattr(
             market_state_fetcher, 'quote'
         ):
@@ -421,6 +427,8 @@ class PolymarketCopyTraderAgent:
                     f'{activity.slug}:{activity.outcome}'
                 )
                 if 0.0 < current_price < 1.0:
+                    # Capture for taken entries; enables post-hoc slippage analysis.
+                    copy_quote_price = current_price
                     drift = (current_price - activity.price) / max(
                         activity.price, 0.01
                     )
@@ -494,6 +502,12 @@ class PolymarketCopyTraderAgent:
                 "whale_usdc_size": activity.usdc_size,
                 "whale_contracts": activity.size,
                 "copy_size_usdc": copy_usdc,
+                # Real post-lag market price at our poll time (vs whale's fill
+                # price above). Enables slippage measurement: compare
+                # whale_entry_price to copy_quote_price to see how much the
+                # market moved between the whale's fill and our copy. None
+                # when no quote fetcher is configured.
+                "copy_quote_price": copy_quote_price,
                 "first_seen_ts": activity.timestamp,
                 "market_title": activity.title,
                 "market_slug": activity.slug,
