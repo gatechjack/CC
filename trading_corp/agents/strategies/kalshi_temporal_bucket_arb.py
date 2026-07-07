@@ -167,6 +167,7 @@ class _BucketOpportunity:
 def _detect_temporal_violations(
     event,
     min_edge_cents: float,
+    horizon_cutoff: date | None = None,
 ) -> list[_TemporalOpportunity]:
     """Find pair-wise constraint violations on a TEMPORAL event.
 
@@ -178,6 +179,11 @@ def _detect_temporal_violations(
     for m in event.markets:
         d = parse_subtitle_date(m.subtitle)
         if d is None:
+            continue
+        # 60-day horizon cap: drop markets resolving beyond the cutoff so no
+        # temporal pair's late leg locks capital too long. Both legs end up
+        # <= cutoff since late >= early. See temporal.max_horizon_days.
+        if horizon_cutoff is not None and d > horizon_cutoff:
             continue
         if m.yes_ask <= 0:
             continue
@@ -379,6 +385,7 @@ class KalshiTemporalBucketArbAgent:
 
         temporal_enabled = bool(temporal_cfg.get("enabled", True))
         temporal_min_edge_cents = float(temporal_cfg.get("min_edge_cents", 4.0))
+        temporal_max_horizon_days = int(temporal_cfg.get("max_horizon_days", 60))
         bucket_enabled = bool(bucket_cfg.get("enabled", True))
         bucket_min_edge_cents = float(bucket_cfg.get("min_edge_cents", 5.0))
 
@@ -388,6 +395,13 @@ class KalshiTemporalBucketArbAgent:
 
         # Refresh discovery if cache stale.
         now = datetime.now(timezone.utc)
+        # 60-day horizon cap on temporal pairs (0 disables). Applied in
+        # detection AND the parallel per-pair audit walk below, so the rail
+        # and the emitted opps agree.
+        horizon_cutoff = (
+            now.date() + timedelta(days=temporal_max_horizon_days)
+            if temporal_max_horizon_days > 0 else None
+        )
         need_refresh = (
             self._discovery_cache is None
             or self._discovery_ts is None
@@ -445,12 +459,14 @@ class KalshiTemporalBucketArbAgent:
                     pass
             if temporal_enabled and event.event_type == EventType.TEMPORAL:
                 n_temporal_events += 1
-                temporal_opps.extend(_detect_temporal_violations(event, temporal_min_edge_cents))
+                temporal_opps.extend(_detect_temporal_violations(event, temporal_min_edge_cents, horizon_cutoff))
                 # Walk same pairs to build per-pair audit data (positive OR negative edge).
                 dated = []
                 for m in event.markets:
                     d = parse_subtitle_date(m.subtitle)
                     if d is None or m.yes_ask <= 0:
+                        continue
+                    if horizon_cutoff is not None and d > horizon_cutoff:
                         continue
                     dated.append((d, m))
                 dated.sort(key=lambda x: x[0])

@@ -1450,6 +1450,7 @@ kalshi_temporal_bucket_arb:
   temporal:
     enabled: true
     min_edge_cents: 4               # clears 2-leg taker fees ~2-4c
+    max_horizon_days: 60            # 2026-07-07: drop pairs whose late leg resolves >60d out (capital-lock cap); code default is also 60
   bucket:
     enabled: true
     min_edge_cents: 5               # clears N-leg fees on multi-bucket events
