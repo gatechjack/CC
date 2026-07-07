@@ -12,6 +12,27 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## PMCC `risk_approved` lifecycle leak — proposed_order rows never resolved — OPEN (found 2026-07-07)
+
+`robinhood_pmcc` writes opening/rolling order legs to `proposed_order` at
+`status='risk_approved'` (`ceo_graph.py:361`) that never advance to a terminal status →
+steady ~0.8/day accumulation (59 rows as of 2026-07-07, spanning May 1–Jul 7). Harmless
+to trading but pollutes every DB-count of "pending approvals": `_query_pending_approvals`
+(`web/data.py`) and Telegram `/pending` (`telegram_commands.py:337`) both count them,
+showing e.g. "59 pending" while `/approvals` (registry-backed) is correctly empty (the
+"59 but blank screen" bug).
+
+Dashboard tile already fixed 2026-07-07 (commit `7f641d8`, branch
+`dashboard-tile-reorg-2026-07-07`): the Pending Approvals stat card now reads the registry
+`pending_count()`, not the DB residue. **This item = the DB-side fix — operator deferred it
+to "after the dashboard reorg":**
+- Investigate WHY PMCC orphans the legs (the web execute path builds *fresh* orders and
+  marks those `board_approved`; the original `risk_approved` rows are never touched).
+- Decide the correct terminal status (superseded / expired / cancelled / filled) and
+  advance the rows in the PMCC pipeline when executed/superseded so they stop accruing.
+- One-time backfill sweep of the existing residue.
+- Root-cause report: `reports/2026-07-07_approvals_count_split_brain.md`.
+
 ## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
 
 Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:trading`**, **SOL + XRP `arm:watch`
