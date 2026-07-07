@@ -1479,11 +1479,16 @@ kalshi_llm_arbitrage:
   division: kalshi_llm_arbitrage
   poll_interval_sec: 60             # match polymarket cadence; LLM divergence can move fast
   discovery:
+    # 2026-07-07: narrowed to the only two net-positive paper categories.
+    # Paper window (n=2508, 2026-05-11 -> 07-01) gross P&L by category:
+    # Economics +$108, Elections +$33 (positive) — kept. Dropped: Politics
+    # -$111, Financials -$48 (net-negative), plus legacy Sci/Tech -$282,
+    # World -$42, Weather/Crypto (already carved out to their own divisions).
+    # Economics retains the strict 30pp+extreme gate (strict_categories);
+    # Elections uses the baseline min_divergence_pct.
     categories:
-      - Politics
-      - Elections
       - Economics
-      - Financials
+      - Elections
     max_series_per_category: 30
     max_markets_per_series: 50
     cache_ttl_sec: 600
