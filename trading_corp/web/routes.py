@@ -1795,6 +1795,16 @@ def register(app: FastAPI) -> None:
         closed = _icv.recent_closed_combos(db_url=deps.db_url, limit=10)
         from datetime import datetime as _dt, timezone as _tz
         now_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
+        # Tasty activation tile (relocated from the retired home-page Stage-1
+        # monitoring row) — only meaningful on the tasty_options division.
+        # Reads the tastytrade broker session state + scanner-tick rate.
+        tasty = None
+        if ctx["division_slug"] == "tasty_options":
+            brokers_map = (
+                getattr(deps.data_exec, "brokers", None)
+                if deps.data_exec is not None else None
+            )
+            tasty = data.tasty_activation_status(brokers_map)
         return templates.TemplateResponse(
             request, "iron_condor_live.html",
             {
@@ -1807,6 +1817,7 @@ def register(app: FastAPI) -> None:
                 "closed": closed,
                 "division_slug": ctx["division_slug"],
                 "division_name": ctx["division_name"],
+                "tasty": tasty,
             },
         )
 
