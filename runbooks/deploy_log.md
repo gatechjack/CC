@@ -11024,10 +11024,13 @@ robinhood_pead. Backup `*.bak-pre-item1-2026-07-07`. Script `Desktop/pm_deploy_i
 to entries from now (filters entry_ts). Non-destructive: 6,281 pre-epoch RTs preserved/hidden. Script
 `Desktop/pm_set_epoch.sh`. Revert = restore prior epoch or delete key.
 
-**★ REPO STATE / DIVERGENCE:** `main`==`origin/main`==f0c6224 has NEITHER option-c NOR item-1 (main never got the
-polymarket E-series/option-c line). Everything deployed lives on branch `polymarket-copy-quote-price-2026-07-07`
-(pushed to origin; contains E-series + option-c + item-1 d1a874f + the 2026-07-07 reports). Reconciling main↔prod
-for the polymarket line is a SEPARATE larger task, NOT done here.
+**★ REPO STATE — RECONCILED (commit e70af23 on main, pushed).** Snapshotted the deployed polymarket files into
+main via the existing `3f60f9d` "bless-prod-as-truth" pattern: 4 option-c Phase 1 files (@ c14e786) + copy_trader
+(item-1 @ d1a874f); index blobs byte-identical to prod (refresh fcb79bc9, copytrader 2f92049a). Only
+polymarket-specific files, zero shared-infra. Prior state was `main` f0c6224 lacking both (its 2026-06-27
+bless had reverted main's refresh to naive when option-c wasn't yet deployed). Fuller option-c Phase 2-4 stays
+undeployed in history until a future deploy+reconcile (prod + main both run Phase 1). Full session work + reports
+also on branch `polymarket-copy-quote-price-2026-07-07` (pushed).
 
 **Rollback:** roster→`/tmp/pm_roster_backup.json`; option-c→`.bak-pre-optc-2026-07-07`; item-1→`.bak-pre-item1-2026-07-07`
 + restart; epoch→restore `2026-05-23T15:30:15.042822+00:00` (or delete key).

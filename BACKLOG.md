@@ -577,13 +577,15 @@ the forward paper window is the real test.
   (filters on entry_ts). Non-destructive: 6,281 pre-epoch RTs preserved/hidden; delete key or restore old value
   to revert.
 
-**★★ REPO/PROD DIVERGENCE ANOMALY (next session, read carefully):** `main`==`origin/main`==**f0c6224** has
-NEITHER option-c NOR item-1 — main never received the entire polymarket E-series/option-c line (this backlog's
-older "option-c Phase 1 MERGED to main" claim below is WRONG; main lacks the realized scorer). Prod runs
-c14e786(option-c)+2f92049a(item-1). All that work lives on branch `polymarket-copy-quote-price-2026-07-07`
-(pushed to origin) which is a long-lived feature branch diverged from main at 3ec9b85. Reconciling main↔prod for
-the polymarket line is a SEPARATE, larger task — NOT done this session. copy sizing on prod still OLD tier
-ladder ($1/$2/$5, strategies.yaml:1739); E2.3 flat-$1 clamp NOT deployed.
+**REPO/PROD RECONCILED 2026-07-07 (commit `e70af23` on main, pushed):** main now carries prod's deployed
+polymarket code — the 4 option-c Phase 1 files (@ c14e786) + item-1 copy_quote_price (copy_trader @ d1a874f),
+index blobs byte-identical to what's live on prod (refresh fcb79bc9, copytrader 2f92049a, etc.). Followed the
+existing `3f60f9d` "bless-prod-as-truth" reconcile pattern (main's refresh had been snapshotted back to naive on
+2026-06-27 when option-c wasn't yet deployed; now that it IS deployed, main re-reflects it). Surgical: only
+polymarket-specific files, zero shared-infra. NOTE: the fuller option-c **Phase 2-4** (whale_screening extraction
+etc.) is MORE than what's deployed — it stays in history/branch until a future deploy+reconcile; prod + main both
+run Phase 1 only. copy sizing on prod still OLD tier ladder ($1/$2/$5, strategies.yaml:1739); E2.3 flat-$1 clamp
+NOT deployed. Session work + reports also on branch `polymarket-copy-quote-price-2026-07-07` (pushed).
 
 **Execution gate still CLOSED/paper (verified):** `auto_execute: false`, `standby: true`, 0 `filled` events ever.
 Roster change did NOT arm real money.
