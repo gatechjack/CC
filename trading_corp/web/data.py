@@ -669,6 +669,12 @@ class DivisionViewSnapshot:
     # `trade_plan.enabled: false` (today's prod state) so the panel is
     # visible-but-empty pre-flip and starts populating post-flip.
     bitunix_trade_plan: dict | None = None
+    # Gate (a) REST/exec resilience — 24h counts of rest_request_retried /
+    # snapshot_stale_halt / stuck_order_cancelled / stuck_order_cancel_failed.
+    # Only populated for `bitunix_futures` (the division whose bitunix.py +
+    # data_exec.py REST layer emits these). Shape: gate_a_resilience_24h().
+    # Relocated here from the retired home-page Stage-1 monitoring row.
+    gate_a: dict | None = None
 
 
 @dataclass
@@ -3441,6 +3447,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     bitunix_decision_flow_view: dict | None = None
     bitunix_pending_pa_view: dict | None = None
     bitunix_trade_plan_view: dict | None = None
+    gate_a_view: dict | None = None
     if slug == "bitunix_futures":
         try:
             bitunix_score_view = build_bitunix_score_view(deps.db_url, deps)
@@ -3466,6 +3473,10 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
             bitunix_trade_plan_view = build_bitunix_trade_plan_view(deps.db_url, deps)
         except Exception as e:
             log.warning("bitunix trade_plan view for %s failed: %s", slug, e)
+        try:
+            gate_a_view = gate_a_resilience_24h(deps.db_url)
+        except Exception as e:
+            log.warning("gate_a view for %s failed: %s", slug, e)
 
     # Robinhood IRA dashboard — group shares + short calls into covered
     # calls, identify pure assets (shares without calls), surface short
@@ -3499,6 +3510,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         bitunix_decision_flow=bitunix_decision_flow_view,
         bitunix_pending_pa=bitunix_pending_pa_view,
         bitunix_trade_plan=bitunix_trade_plan_view,
+        gate_a=gate_a_view,
     )
 
 

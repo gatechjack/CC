@@ -202,6 +202,51 @@
       {% include "partials/donchian_trades.html" %}
     {% endif %}
 
+    <!-- Gate (a) REST/exec resilience — relocated here from the retired
+         home-page Stage-1 monitoring row. bitunix_futures only: 24h counts
+         of the four bitunix.py + data_exec.py audit kinds, colored by the
+         worst signal present. Sits atop the gate-chain panels as the
+         "is the data/exec layer healthy" signal. -->
+    {% if view.division.slug == 'bitunix_futures' and view.gate_a %}
+      {% set _ga = view.gate_a %}
+      {% set _ga_ring = {
+        'green':  'border-edge',
+        'yellow': 'border-warn/40 ring-1 ring-warn/20',
+        'red':    'border-loss/60 ring-1 ring-loss/30',
+      } %}
+      {% set _ga_total_text = {
+        'green':  'text-mono',
+        'yellow': 'text-warn',
+        'red':    'text-loss',
+      } %}
+      <div class="bg-pane border {{ _ga_ring[_ga.severity] }} rounded-lg p-4 sm:max-w-xs"
+           title="Gate (a) — REST retry / stale-snapshot halt / stuck-order cancel events in the last 24h. Severity surfaces the worst signal present.">
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="text-[11px] text-muted uppercase tracking-wider">Gate (a) resilience</div>
+          <div class="text-2xl font-mono font-semibold {{ _ga_total_text[_ga.severity] }}">{{ _ga.total }}</div>
+        </div>
+        <div class="text-[10px] text-muted/70 mt-0.5 font-mono">last 24h</div>
+        {% set _ga_kinds = [
+          ('rest_request_retried',     'rest retried',  'yellow'),
+          ('snapshot_stale_halt',      'snapshot stale','red'),
+          ('stuck_order_cancelled',    'stuck → cancel','yellow'),
+          ('stuck_order_cancel_failed','cancel failed', 'red'),
+        ] %}
+        <div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] font-mono">
+          {% for kind_key, label, severity_when_nonzero in _ga_kinds %}
+            {% set _n = _ga.by_kind[kind_key] %}
+            <div class="flex justify-between items-baseline">
+              <span class="{% if _n == 0 %}text-muted/50{% else %}text-muted{% endif %}">{{ label }}</span>
+              <span class="font-semibold
+                {% if _n == 0 %}text-muted/50
+                {% elif severity_when_nonzero == 'red' %}text-loss
+                {% else %}text-warn{% endif %}">{{ _n }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+
     <!-- BitUnix gate-chain panels render top-to-bottom in
          "decide → audit → outcome" reading order:
            1. HTF regime  (macro context — what's the regime?)
