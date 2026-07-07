@@ -11409,3 +11409,39 @@ Traceback/UndefinedError** (no repeat of the earlier macro-ordering 500). Engine
 **Known v1 limits (BACKLOG-able, non-blocking):** Open *tile count* + equity curve not mode-scoped;
 sort/filter controls don't carry `wr_mode` (sorting resets scope to LIVE). **Parity: `main == origin
 == prod-content`.** (Live view may show 0 resolved until the first post-fix copy settles — expected.)
+
+---
+
+## 2026-07-07 — Polymarket copy-trading: roster reassignment + option-c Phase 1 + item-1 slippage logging + dashboard epoch reset + main reconcile
+
+**Context:** measured the copy edge (NO tradeable edge on OLD roster — `reports/2026-07-07_polymarket_copy_edge_analysis.md`),
+board-authorized an evidence-based roster reassignment, deployed the two supporting fixes, reset dashboard metrics,
+and reconciled main. Copy division stays PAPER (`auto_execute:false`, 0 live fills ever). Deploy via Azure Run
+Command (`runprod.ps1 <script>`); prod is NOT a git checkout (file overlay). Open positions = 0 at restart.
+
+**1. Roster reassignment (agent_state, hot-reload ~30s, no restart) — 19:13.** `selected_whales + pinned_whales`
+= 15 whales (7 keep + 8 realized-edge adds; 11 losers removed) via `set_agent_state`. Old roster →
+`/tmp/pm_roster_backup.json`. Script `Desktop/pm_apply_roster.sh`.
+
+**2. option-c Phase 1 realized scorer (4 files, NO restart) — ~19:35.** Overlaid c14e786 (prod was byte==base
+7c33bb6). md5: whale_audit df1ebed9, whale_stats 235b7612, audit_cache dce46918, refresh fcb79bc9. Isolated
+import chain (not in live engine). Verified via `refresh --dry-run` (realized fields emitted). Backup
+`*.bak-pre-optc-2026-07-07`. Script `Desktop/pm_deploy_optc.sh`.
+
+**3. item-1 copy_quote_price (1 file, RESTART) — 19:42.** copy_trader md5 2f92049a (base 4786c872 = exact item-1
+base). commit d1a874f. `systemctl restart trading-corp` (Run Command = root). MainPID 94116→97179, NRestarts=0,
+no tracebacks. LIVE divisions preserved paper=False (bitunix_sfp execution_mode=live, bitunix_futures,
+robinhood_pead). Backup `*.bak-pre-item1-2026-07-07`. Script `Desktop/pm_deploy_item1.sh`.
+
+**4. Dashboard metrics_epoch reset — 20:00:54.** `agent_state(polymarket_copy_trader, metrics_epoch)` =
+`2026-07-07T20:00:54+00:00` (was 2026-05-23). Scopes ALL pm panels to entries-from-now (entry_ts). Non-destructive:
+6,281 pre-epoch RTs preserved. Script `Desktop/pm_set_epoch.sh`.
+
+**5. main RECONCILE (commit e70af23, pushed) — bless-prod-as-truth.** Snapshotted the deployed polymarket files
+into main (mirrors 3f60f9d): 4 option-c files @ c14e786 + copy_trader @ d1a874f; index blobs byte-identical to
+prod. Only polymarket-specific files, zero shared-infra. Prior gap: main's 2026-06-27 bless (3f60f9d) had reverted
+main's refresh to naive when option-c wasn't deployed. Fuller option-c Phase 2-4 stays undeployed (prod + main run
+Phase 1). Full session work + reports also on branch `polymarket-copy-quote-price-2026-07-07` (pushed).
+
+**Rollback:** roster→`/tmp/pm_roster_backup.json`; option-c→`.bak-pre-optc-2026-07-07`; item-1→`.bak-pre-item1-2026-07-07`
++ restart; epoch→restore `2026-05-23T15:30:15.042822+00:00` or delete key.

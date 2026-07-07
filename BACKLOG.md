@@ -563,6 +563,40 @@ trades after enough live PREMIUM fires accumulate. Needs ≥30 sample size.
 
 # Priority 2 — Polymarket Copy Trading path to live trading
 
+## ★ 2026-07-07 SESSION — edge measured, roster reassigned, option-c + item-1 DEPLOYED, dashboard reset, main reconciled
+
+**Edge (report `reports/2026-07-07_polymarket_copy_edge_analysis.md`):** OLD manually-pinned roster had NO
+tradeable copy edge (+0.54% blended dollar ROI = OPTIMISTIC zero-slippage; trustworthy settle-subset −0.66%;
+May +13.7% / June −26.6% / July −8.2%; WR 53.6% < avg entry px 55.9% = no gross skill). Whale edge real +
+dollar-verified but does NOT survive copying on that roster. Roster-dependent → reassigned (below). Do NOT stand
+up EU/go-live until a properly-selected roster shows positive FORWARD copy edge.
+
+**Roster reassignment APPLIED (board-auth, paper, 19:13 UTC):** `agent_state(polymarket_copy_trader, selected_whales
++ pinned_whales)` = 15 whales (removed 11 losers/unrankable incl damed21/jtwyslljy/slimjoe/AdrianCronauer/
+BigodinSagaz; kept 7 copy-positive; added 8 realized-edge copyable directional whales — digitalnomad85, Hakei.,
+Civic-Static, ChadStarmer, Moond, potatobrahh, LJa7io23MCv954j, monkeybar; makers cnyek/CandleHammerDrum/VBQZSXZ7
+excluded). Hand-curated — do NOT blindly `refresh --algo-select` (the realized algo STILL ranks makers + a
+net-loser Vanquish high: Wilson-WR-dominated w/ ROI floor). Old roster → `/tmp/pm_roster_backup.json`.
+
+**DEPLOYED to prod + RECONCILED to main (deploy_log 2026-07-07; main commit e70af23):**
+- option-c Phase 1 realized scorer (4 files @ c14e786, md5 df1ebed9/235b7612/dce46918/fcb79bc9), no restart
+  (script-only isolated import chain). Verified: `refresh --dry-run` emits realized fields, naive
+  `avg_pnl_per_contract` gone.
+- item-1 `copy_quote_price` — logs real post-lag price on taken entries so slippage is measurable (copy_trader
+  @ d1a874f md5 2f92049a; engine RESTARTED PID 97179, LIVE divisions preserved paper=False).
+- dashboard `metrics_epoch` reset → `2026-07-07T20:00:54+00:00` (all pm panels scoped from now; non-destructive,
+  6,281 pre-epoch RTs preserved).
+- **main reconciled** e70af23 (bless-prod-as-truth, mirrors 3f60f9d): main now carries the deployed files. Fuller
+  option-c Phase 2-4 stays undeployed in history — prod + main run Phase 1 ONLY.
+
+**Execution gate CLOSED/paper (verified):** `auto_execute:false`, `standby:true`, 0 `filled` events ever — roster
+change did NOT arm real money. Prod copy sizing still OLD tier ladder ($1/$2/$5); E2.3 flat-$1 clamp not deployed.
+
+**NEXT:** let the new roster run a forward paper window → re-measure forward copy P&L (now slippage-instrumented
+via item-1) — the clean test of whether a properly-selected roster has real copy edge. Only if clearly positive
+does EU/go-live reopen. Latency lever: CLOB websocket / faster poll (feed lag = the slippage source; not
+blockchain-limited). Full handoff: `reports/2026-07-07_next_session_prompt.md`.
+
 ## E2 — route the copy loop to the live broker — ✅ E2·1–E2·6 MERGED (loop wiring complete); E2·7 live-enablement + OP·E shakedown = remaining operator gate
 
 **Reconcile 2026-06-29 (read-only git audit).** Header previously read "SCOPED 2026-06-14; branch
