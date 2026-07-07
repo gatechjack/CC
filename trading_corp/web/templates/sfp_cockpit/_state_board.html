@@ -64,7 +64,7 @@
                       else (c.rj.entry if ln.color == '#f5b53d'
                             else (c.rj.stop if ln.color == '#fb5e6b' else None)) %}
           {% if _p %}
-          <span style="position:absolute;left:6px;top:{{ '%.1f'|format(6 + 120 * ln.y / c.chart.h) }}px;transform:translateY(-50%);font-size:10px;line-height:1;font-weight:600;color:{{ ln.color }};background:rgba(8,12,20,.82);padding:1px 4px;border-radius:3px;pointer-events:none;white-space:nowrap;">{{ '%g'|format(_p) }}</span>
+          <span style="position:absolute;left:6px;top:{{ '%.1f'|format(6 + 120 * ln.y / c.chart.h) }}px;transform:translateY(-50%);font-size:10px;line-height:1;font-weight:600;color:{{ ln.color }};background:rgba(8,12,20,.82);padding:1px 4px;border-radius:3px;pointer-events:none;white-space:nowrap;">{{ '%.2f'|format(_p) }}</span>
           {% endif %}
         {% endfor %}
       {% endif %}
