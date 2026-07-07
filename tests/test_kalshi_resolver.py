@@ -444,6 +444,42 @@ def test_fetch_orders_past_expiration_first(fresh_db):
     )
 
 
+def test_fetch_orders_falls_back_to_leg_date_when_no_expires_at(fresh_db):
+    """Temporal/bucket arb proposals carry `leg_date` (the leg's resolution
+    date) but NO `expires_at`. Before the COALESCE fix they all tied at
+    (expires_at IS NULL) and fell back to `ts ASC`, so oldest-audit
+    indefinite-horizon legs (mergers/IPOs that never settle) permanently
+    occupied the per-actor budget and matured legs were never scanned --
+    the kalshi_arbitrage temporal book booked 0 round-trips for ~2 months.
+    The resolver must fall back to `leg_date` so past-dated (matured) legs
+    sort first, DESPITE having a newer audit ts.
+    """
+    db_url, _ = fresh_db
+    # OLDER audit ts, FAR-FUTURE leg_date (indefinite-horizon market):
+    _insert_audit_event(
+        db_url, "kalshi_temporal_bucket_arb", "would_have_placed",
+        {"order_id": "temporal-future", "ticker": "KXMERGE-1",
+         "leg": "no_early", "qty": 33.0, "limit_price": 0.03,
+         "kalshi_arb_type": "temporal", "leg_date": "2027-12-31"},
+        ts="2026-05-11T00:00:00+00:00",
+    )
+    # NEWER audit ts, PAST leg_date (a matured leg that should resolve now):
+    _insert_audit_event(
+        db_url, "kalshi_temporal_bucket_arb", "would_have_placed",
+        {"order_id": "temporal-past", "ticker": "KXFDA-1",
+         "leg": "yes_late", "qty": 33.0, "limit_price": 0.80,
+         "kalshi_arb_type": "temporal", "leg_date": "2026-06-01"},
+        ts="2026-05-20T00:00:00+00:00",
+    )
+    rows = kr._fetch_unresolved_orders(db_url, max_per_actor=10)
+    order_ids = [r.get("order_id") for r in rows]
+    # leg_date ASC: matured (2026-06-01) before indefinite (2027-12-31),
+    # even though temporal-past has the NEWER audit ts.
+    assert order_ids == ["temporal-past", "temporal-future"], (
+        f"Expected leg_date ordering (matured first); got {order_ids}"
+    )
+
+
 def test_resolve_per_actor_budget_prevents_starvation(fresh_db):
     """A strategy with a large stuck-pending backlog must not starve
     newer/lower-volume strategies. Pre-fix, _fetch_unresolved_orders used
