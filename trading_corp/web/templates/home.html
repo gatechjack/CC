@@ -13,22 +13,6 @@
   {% include "partials/stat_cards.html" %}
 </div>
 
-<!-- ── Stage 1 paper-mode monitoring row ────────────────────────────── -->
-{# Tiles for the bitunix_futures paper deployment (origin/main 7352f8f
-   landed 2026-05-31 05:36 UTC). The partial is HTMX-polled every 10s
-   for fresh counts; the initial render is inline so the user doesn't
-   see an empty box on first paint. #}
-<section class="mt-4">
-  <header class="flex items-baseline justify-between mb-2">
-    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
-      Stage 1 monitoring
-    </h2>
-    <span class="text-[11px] text-muted font-mono">
-      paper-mode since 2026-05-31 05:36 UTC
-    </span>
-  </header>
-  {% include "partials/stage1_monitoring.html" %}
-</section>
 
 <!-- ── Operations dashboards (direct-link read-layers) ──────────────────
      Static tiles for read-layer ops decks that aren't (yet) funded
@@ -58,9 +42,8 @@
   </div>
 </section>
 
-<!-- ── Main grid: equity curve + division panels (lg) | trade flow rail (sm) ── -->
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
-  <div class="lg:col-span-2 flex flex-col gap-4">
+<!-- ── Equity curve + division panels (full width); trade flow moved to a bottom strip ── -->
+<div class="flex flex-col gap-4 mt-4">
 
     <!-- Equity curve -->
     <section class="bg-pane border border-edge rounded-lg p-4">
@@ -277,27 +260,21 @@
       </section>
     {% endfor %}
 
-  </div>
-
-  <!-- Trade flow right rail -->
-  <aside class="lg:col-span-1 order-first lg:order-last">
-    <section class="bg-pane border border-edge rounded-lg p-4 lg:sticky lg:top-20">
-      <div class="flex items-baseline justify-between mb-3">
-        <h2 class="text-mono text-sm font-semibold tracking-tight">Live trade flow</h2>
-        <span class="text-[11px] text-muted font-mono uppercase tracking-wider flex items-center gap-1.5">
-          <span class="w-1.5 h-1.5 rounded-full bg-gain animate-pulse"></span>
-          live
-        </span>
-      </div>
-      {# The trade_flow.html partial owns the outer #trade-flow div +
-         polling. Including without an extra wrapper avoids the
-         double-#trade-flow-id from the original embed pattern. The
-         partial carries the Stage-1 filter toggle and preserves the
-         `?stage1=1` query state via its own hx-get URL. #}
-      {% include "partials/trade_flow.html" %}
-    </section>
-  </aside>
 </div>
+
+<!-- Live trade flow - full-width bottom strip. Moved off the right rail so the
+     Overview is mostly tiles. The trade_flow.html partial owns the #trade-flow
+     div, polling, and the Stage-1 filter toggle. -->
+<section class="bg-pane border border-edge rounded-lg p-4 mt-4">
+  <div class="flex items-baseline justify-between mb-3">
+    <h2 class="text-mono text-sm font-semibold tracking-tight">Live trade flow</h2>
+    <span class="text-[11px] text-muted font-mono uppercase tracking-wider flex items-center gap-1.5">
+      <span class="w-1.5 h-1.5 rounded-full bg-gain animate-pulse"></span>
+      live
+    </span>
+  </div>
+  {% include "partials/trade_flow.html" %}
+</section>
 {% endblock %}
 
 {% block scripts %}

@@ -2,7 +2,7 @@
      hx-get="/partials/trade-flow{% if stage1_only %}?stage1=1{% endif %}"
      hx-trigger="every 5s"
      hx-swap="outerHTML"
-     class="space-y-2 max-h-[640px] overflow-y-auto pr-1 custom-scroll">
+     class="space-y-2">
 
   {# Stage-1 filter toggle. Defaults off so the rail behaves byte-
      identically when untouched. Click pushes URL state (back-button
@@ -34,6 +34,9 @@
     </a>
   </div>
 
+  {# Events lay out as a horizontal-scroll strip (this partial now lives in a
+     full-width panel at the bottom of the Overview, not the old right rail). #}
+  <div class="flex gap-2 overflow-x-auto pb-2 custom-scroll">
   {% if not flow %}
     <div class="text-muted text-xs text-center py-8 italic">
       {% if stage1_only %}
@@ -47,7 +50,8 @@
   {% for evt in flow %}
     <details data-tile-id="{{ evt.id }}"
              class="bg-pane-2/40 border border-edge rounded-md px-3 py-2
-                    hover:bg-pane-2 transition-colors group">
+                    hover:bg-pane-2 transition-colors group
+                    min-w-[240px] max-w-[300px] shrink-0 self-start">
       <summary class="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <div class="flex items-center gap-2 text-[11px] font-mono">
           {% if evt.event_title %}
@@ -87,4 +91,5 @@
       <pre class="mt-2 text-mono whitespace-pre overflow-x-auto bg-pane border border-edge rounded px-2 py-1.5 text-[10px] leading-relaxed">{{ evt.payload_pretty }}</pre>
     </details>
   {% endfor %}
+  </div>
 </div>
