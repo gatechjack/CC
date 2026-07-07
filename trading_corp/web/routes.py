@@ -254,7 +254,7 @@ def register(app: FastAPI) -> None:
         # the toggle is untouched.
         stage1_only = bool(stage1)
         snap = await data.build_command_center(deps)
-        flow = data.trade_flow(deps.db_url, limit=20, stage1_only=stage1_only)
+        flow = data.trade_flow(deps.db_url, limit=100, stage1_only=stage1_only)
         return templates.TemplateResponse(
             request, "home.html",
             {
@@ -266,7 +266,7 @@ def register(app: FastAPI) -> None:
     @app.get("/partials/trade-flow", response_class=HTMLResponse)
     async def partial_trade_flow(request: Request, stage1: int = 0):
         stage1_only = bool(stage1)
-        flow = data.trade_flow(deps.db_url, limit=20, stage1_only=stage1_only)
+        flow = data.trade_flow(deps.db_url, limit=100, stage1_only=stage1_only)
         return templates.TemplateResponse(
             request, "partials/trade_flow.html",
             {"flow": flow, "stage1_only": stage1_only},
