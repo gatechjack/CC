@@ -690,6 +690,11 @@ class CommandCenterSnapshot:
     # Dry-run mode: LIVE pipeline runs end-to-end but broker.place_order() is
     # skipped. Templates render an extra badge to flag this.
     dry_run: bool = False
+    # HITL activity (registry-backed pending count + 24h board decisions +
+    # autonomous-live invariant), merged into the Pending Approvals stat card
+    # so the count matches /approvals (actionable) rather than the all-time
+    # proposed_order.status='risk_approved' DB residue. Shape: hitl_activity_24h().
+    hitl: dict | None = None
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────
@@ -720,7 +725,9 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
     # Run parallel data fetches
     db_results = await asyncio.gather(
         asyncio.to_thread(_query_open_orders, db_url),
-        asyncio.to_thread(_query_pending_approvals, db_url),
+        asyncio.to_thread(
+            hitl_activity_24h, db_url, pending_registry=deps.pending_registry,
+        ),
         asyncio.to_thread(_query_recent_audit, db_url, 10),
         asyncio.to_thread(_query_equity_curve, db_url, 30),
         asyncio.to_thread(_safe_get_vix),
@@ -728,11 +735,11 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         _build_market_ribbon(),
         return_exceptions=True,
     )
-    open_orders, pending, recent_audit, eq_curve, vix, regime, ribbon = (
+    open_orders, hitl, recent_audit, eq_curve, vix, regime, ribbon = (
         r if not isinstance(r, Exception) else None for r in db_results
     )
     open_orders = open_orders or []
-    pending = pending or []
+    hitl = hitl if isinstance(hitl, dict) else {}
     recent_audit = recent_audit or []
     eq_curve = eq_curve or []
     ribbon = ribbon or []
@@ -784,7 +791,7 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         mode=deps.mode,
         total_equity=total_equity,
         open_positions=open_positions,
-        pending_approvals=len(pending),
+        pending_approvals=int(hitl.get("pending", 0)),
         vix=vix if isinstance(vix, (int, float)) else None,
         regime=regime if isinstance(regime, str) else "unknown",
         buckets=buckets,
@@ -794,6 +801,7 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         market_ribbon=ribbon,
         btc_owned=0.0,           # stub — wire to live feed in Phase 1.5c+
         dry_run=bool(getattr(deps, "dry_run", False)),
+        hitl=hitl,
     )
 
 
