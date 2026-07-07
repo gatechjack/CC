@@ -145,3 +145,81 @@ non-edge with more fires.
 **Caveat on generality:** this is a **single strong-bear window** — the short=beta / long=negative
 split is regime-specific. The pre-registered bar is not met *here*; a bull/chop window could differ.
 That's a "re-run in a different regime" follow-up, not a reason to swap pivot(50) now.
+
+---
+
+## PART 3 — gate variants × two pivot degrees (does the gate earn its place?)
+
+**6 configs:** `pivot_len ∈ {50,25}` × `gate ∈ {hard, soft, none}`. Detector md5 `91fd7672`
+**asserted OK start+end.** Data: Coinbase INTX 15m 230d + Bitunix 3m (~47d). Drift-embedding
+null is **gate-aware** (pool + target per variant), 200×, p95. Same strong-bear window
+(BTC −27% / ETH −30% / SOL −19% / XRP −28%). **k=1 upgrade:** regime = *last-closed* 15m bar
+before each 3m entry (prod-accurate; Part 2 used the containing candle — a 1-candle lookahead —
+so p50-hard n differs slightly from Part 2; regime is slow so it's ~immaterial, applied uniformly).
+
+Gate semantics: **hard** = live (counter-trend refused); **soft** = trade all, target 2R except
+counter-trend (long-DOWN / short-UP) → 1R; **none** = trade all at 2R, regime logged only.
+
+### ★ The 5 apples-to-apples comparisons (pooled totalR / n)
+
+| # | Comparison | Result | Read |
+|--|--|--|--|
+| 1 | p50 **hard** vs **none** | **+1.0 (n5)** vs **−4.0 (n46)** | **Gate HELPS at p50** — removing it loses money |
+| 2 | p50 **hard** vs **soft** | +1.0 (n5) vs +1.0 (n47) | Soft = same totalR spread over 9× trades → diluted, lower avgR |
+| 3 | p25 **hard** vs **none** | **+3.0 (n30)** vs **−5.0 (n101)** | **Gate HELPS at p25 too** (larger n → robust) |
+| 4 | p25 **none** vs p50 **none** | −5.0 (n101) vs −4.0 (n46) | **Shorter pivot does NOT earn once freed** — slightly worse, more fires |
+
+**Comparison 5 — Bucket-A (the trades the gate refuses: long-DOWN + short-UP), n≥30 null test:**
+
+| config | bucket | n | avgR | null_p95 | clears? |
+|--|--|--|--|--|--|
+| p50 soft | long-DOWN | 21 | −0.048 | +0.200 | no |
+| p50 soft | short-UP | 21 | +0.048 | +0.400 | no |
+| p50 none | long-DOWN | 20 | −0.400 | +0.253 | no |
+| p50 none | short-UP | 21 | +0.143 | +0.500 | no |
+| p25 soft | long-DOWN | 47 | −0.064 | +0.136 | no |
+| p25 soft | short-UP | 27 | +0.111 | +0.417 | no |
+| p25 none | long-DOWN | 46 | −0.283 | +0.159 | no |
+| p25 none | short-UP | 27 | +0.222 | +0.625 | no |
+
+**None clear.** long-DOWN is **negative** (gate correctly refuses); short-UP is **mildly positive
+but bear-beta** (doesn't beat passive-short). So the class the gate refuses is **not a systematic
+edge** — the 2 profitable counter-trend shorts in the forensic (BTC 7/3, XRP 7/3) were **anecdotal
+winners inside a bear-beta class**, not a mechanism. → **The forensic-answer question resolves the
+gate's way: its refusals are aggregate-correct.** (No "gate refuses real trades" finding to flag.)
+
+### Regime split (avgR by bucket, pooled) — the "why"
+Longs **negative in every bucket at both pivots** (Lup −0.40, Ldn −0.06…−0.40). Only positives are
+**short-in-downtrend** (Sdn +0.62 at p25) and a weak short-UP — both **bear-beta**, stripped by the null.
+
+### 5-PART SUCCESS BAR — verdict: **NONE adopt → keep pivot(50) hard-gate**
+
+Baseline **p50-hard: n=5, totalR +1.0, beats-cells=1** (the 1 beat is BTC-short n=1, meaningless).
+
+| config | ①≥2 coins | ②both sides | ③totR≥1.5×base @n≥100 | ④>1 regime | ⑤beats≥base | verdict |
+|--|--|--|--|--|--|--|
+| p50 soft | 0 ❌ | ❌ | +1.0/n47 ❌ | ❌ | 0 ❌ | **no** |
+| p50 none | 0 ❌ | ❌ | −4.0 ❌ | ❌ | 0 ❌ | **no** |
+| p25 hard | 1 ❌ | ❌ | +3.0/n30<100 ❌ | ✓ | 1 ✓ | **no** |
+| p25 soft | 0 ❌ | ❌ | +4.0/n103 ✓ | ❌ | 0 ❌ | **no** |
+| p25 none | 1 ❌ | ❌ | −5.0 ❌ | ✓ | 1 ✓ | **no** |
+
+**No variant meets all 5.** Every one fails on ≥2 conditions (chiefly ①<2 coins and ②not both sides).
+
+### Answers to the two motivating questions
+1. **Does the gate earn its place?** **Yes.** At both pivots, removing it turns profit into loss
+   (Comp 1: +1→−4; Comp 3: +3→−5). Soft doesn't beat hard (Comp 2). The gate is **vindicated** —
+   it's screening out net-negative counter-trend longs + bear-beta counter-shorts.
+2. **Does a shorter pivot earn once freed?** **No.** p25-none is worse than p50-none (Comp 4);
+   no p25 variant clears the bar. The "chop-market shorter-pivot" hypothesis is **refuted here.**
+
+**LEDGER:** *gate + pivot(50) JOINTLY certified vs pivot(25) and vs soft/no-gate on 230d +
+drift-null (Coinbase-INTX 15m / Bitunix-3m, ~47d, strong-bear). The gate earns its place
+(removing it loses money at both degrees); the refused counter-trend class does not clear the
+null at n≥30. Re-validate in a non-bear window before treating the gate's value as regime-general.*
+
+**Caveats (not buried):** (a) **strong-bear window** — the gate's value here is partly "keeps you
+out of counter-trend longs that lose in a bear"; a bull/chop window could shift the balance.
+(b) **Small baseline n** (p50-hard n=5) — the p50 comparisons are small-sample, but the gate-helps
+direction repeats at p25 with n=30/101, so it's not a single-cell artifact. (c) GROSS; live-deploy
+re-validates on Bitunix.
