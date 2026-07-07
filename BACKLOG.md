@@ -33,6 +33,39 @@ Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:tradin
 *(Carried, older, SEPARATE — Bitunix **confluence/futures** division, NOT SFP: P1-A silence-window + P1-B
 TP-structure backtests; fee/slippage levers; deeper high-vol 3m corpus ingest. See the 2026-06-14 entries below.)*
 
+---
+
+## 2026-07-06 — SFP forensic + pivot-sensitivity + gate-variants arc (findings + follow-ups)
+
+Full detail: `reports/2026-07-06_pivot_sensitivity_spike.md` + the forensic report (branch
+`sfp-missed-setup-forensic-2026-07-06` @`5aa2937`, pushed unmerged). Prod unchanged (no writes this session).
+
+- **[P3 — CERTIFIED, ledger] SFP mechanism + hard regime gate + pivot(50) JOINTLY certified** on 230d
+  Coinbase-INTX 15m + Bitunix-3m + drift-embedding null. Gate earns its place (removing it loses money at both
+  pivots: p50 +1→−4, p25 +3→−5); **"gate refuses real trades" REFUTED at n≥30** (counter-trend class = bear-beta,
+  doesn't clear the null); **"shorter pivot helps in chop" REFUTED** (pivot(25) < pivot(50); {5,10,20,50} also no
+  beat). ALL conditioned on a strong-bear window (BTC −27 / ETH −30 / SOL −19 / XRP −28%). Memory:
+  `bitunix-sfp-mechanism-certified-2026-07-06`.
+- **[RESOLVED] Regime-gate design conversation** (forensic asked: does the gate refuse profitable counter-trend
+  shorts?) → **VINDICATED** by the gate-variants spike; the refused class doesn't clear the null. No action.
+- **[P3 — OPEN, not urgent] Bucket-B non-SFP pattern.** Operator's 3 missed chart-reads (BTC 7/2 13:15,
+  SOL 6/29 17:15, SOL 6/28 19:45) are NOT SFP-shaped at any pivot degree on prod Bitunix — a different pattern
+  (breakout / HTF-level / order-block?). **FUTURE DIVISION candidate**, own characterization + backtest arc —
+  NOT an SFP tuning. Memory: `bucket-b-non-sfp-pattern-2026-07-06`.
+- **[P4 — small fix] Short-watch transition persistence.** SFP short/reflected watch transitions are
+  `drain_transitions()`-discarded (observer ~lines 520/537, "short dashboard = Piece 5+") → short
+  arm-but-unconfirmed misses are invisible in the DB (forensic hit this on ETH 7/1). Additive **observer-only**
+  mirror of the long path (route short drains through `_emit_watch_transitions` w/ a side token; un-reflect levels
+  `real=−x`; side discriminator on `watch_id`). Ride until the next SFP touch.
+- **[P4 — passive] Futures SL-trail INFO breadcrumb validation** — still open (tracked separately); confirm on
+  the next futures SL-trail event.
+- **[★ HIGHEST-VALUE FORWARD EVENT] Live regime-flip watch.** All findings are bear-window-conditioned;
+  regime-generality is only answerable by live time through a flip. **2026-07-07: prod regime seed flipped all 4
+  coins → RANGE** (from the earlier up-bias) — SFP now permits both sides; watch for first fires + first-fill A/B.
+- **[Merge debt — open, not urgent] main.py + strategies.yaml CRLF hybrid** from the 07-02 SFP bidirectional
+  deploy (branch `b849964` not md5-equal to prod; targeted-hunk CRLF hybrids). Needs a deliberate rebase-onto-prod
+  session; don't merge as-is. (Carried from `bitunix-sfp-bidirectional-live`.)
+
 ## P2 — `backtest_bitunix_confluence.py` five_factor/coinbase machinery MISSING from git (prod-vs-git drift) — ✅ RESOLVED 2026-06-20 (commit `2659c81`)
 
 **RESOLVED 2026-06-20 via surgical recovery — commit `2659c81` (merged to main this session).** Root cause was
