@@ -17,7 +17,7 @@
  * change a strategy.
  */
 
-const CACHE_VERSION = "tc-v1";
+const CACHE_VERSION = "tc-v2";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const PAGE_CACHE   = `${CACHE_VERSION}-pages`;
 
@@ -83,9 +83,16 @@ self.addEventListener("fetch", (event) => {
         if (url.pathname.startsWith(prefix)) return;
     }
 
-    // Static assets: cache-first, populate on first hit.
-    if (url.pathname.startsWith("/static/") || url.pathname === "/sw.js") {
-        event.respondWith(cacheFirst(req, STATIC_CACHE));
+    // /sw.js must always be fresh (it's how SW updates ship) — never mediate it.
+    if (url.pathname === "/sw.js") return;
+
+    // Static assets: stale-while-revalidate — serve the cached copy instantly
+    // for speed, but ALWAYS refetch in the background and update the cache, so
+    // an updated CSS/JS lands within one navigation. (The old cache-first here
+    // never revalidated, which pinned a stale /static/sfp_cockpit.css and left
+    // the SFP cockpit's top nav unstyled until a hard refresh.)
+    if (url.pathname.startsWith("/static/")) {
+        event.respondWith(staleWhileRevalidate(req, STATIC_CACHE));
         return;
     }
 
@@ -110,6 +117,19 @@ async function cacheFirst(request, cacheName) {
         // browser doesn't pretend everything's fine.
         return new Response("offline (uncached asset)", { status: 504 });
     }
+}
+
+// Stale-while-revalidate: return the cached copy immediately if present, and
+// refresh the cache in the background from the network. Falls back to the
+// network (then a 504) when nothing is cached yet.
+async function staleWhileRevalidate(request, cacheName) {
+    const cache = await caches.open(cacheName);
+    const cached = await cache.match(request);
+    const networked = fetch(request).then((fresh) => {
+        if (fresh && fresh.ok) cache.put(request, fresh.clone());
+        return fresh;
+    }).catch(() => null);
+    return cached || (await networked) || new Response("offline (uncached asset)", { status: 504 });
 }
 
 async function networkFirst(request) {
