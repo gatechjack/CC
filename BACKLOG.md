@@ -1536,3 +1536,29 @@ history + open LIST, but two surfaces were left unscoped for a surgical v1:
    resets scope to the default (LIVE). Add `wr_mode` to those link/query-string builders in
    `pm_dashboard_body.html` for full cross-control persistence.
 Low priority (cosmetic; the toggle itself works + preserves other params).
+
+---
+
+## P3 — Kalshi arb divisions: fee-model + forward-track (filed 2026-07-07)
+
+Session 2026-07-07 assessed **Kalshi LLM Arbitrage** (`kalshi_llm_arbitrage`) + **Kalshi
+Arbitrage** (`kalshi_arbitrage`) for a live edge — **neither has one; both stay paper/standby.**
+Deployed paper-refinements (LLM discovery → Economics+Elections; resolver `leg_date` starvation
+fix; temporal/bucket 60-day horizon caps) + backlog cleanup. Full detail:
+`runbooks/deploy_log.md` 2026-07-07 + memory `kalshi-arb-divisions-2026-07-07`. Open:
+
+1. **★ Add Kalshi fees to `kalshi_resolver.py` P&L.** Paper P&L is GROSS — the Kalshi taker fee
+   (`ceil(0.07·p·(1-p)·qty)` per fill) is not modeled, so every `kalshi_round_trips`/dashboard
+   number overstates net. This gates ANY live-edge judgment on ANY Kalshi division (llm, arb,
+   weather, crypto, copy). Highest-value follow-up.
+2. **Monitor un-blinded `kalshi_arbitrage` NET.** The resolver fix un-blinded temporal arb
+   (0 → 50+ round-trips, draining ~50/hr). The first-tick +$674 gross is a ONE-SIDED partial
+   (early legs only; offsetting late legs + fees pending) — compute true net (both legs,
+   post-fee) after a few days' drain before believing any temporal edge.
+3. **LLM Economics+Elections forward test.** The narrowed slice is the only remaining LLM thread;
+   if it is net-positive AFTER fees out-of-sample over the coming weeks, only THEN discuss
+   auto_execute — which needs the built-but-unmerged `KalshiLiveBroker`
+   (`kalshi-k5-golive-2026-06-30`) wired in + an auto_execute branch.
+
+Priority P3: all paper, no live money, no urgency. #1 (fees) is the prerequisite for everything
+downstream.
