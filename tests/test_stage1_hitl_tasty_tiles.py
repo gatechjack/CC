@@ -1,7 +1,9 @@
-"""Tests for the Stage-1 HITL + tasty_options monitoring tiles.
+"""Tests for the HITL + tasty_options monitoring data functions.
 
-The two tiles share the polled `/partials/stage1-monitoring` endpoint
-with Gate (a). These tests pin:
+Post 2026-07-07 tile reorg these back the HITL merge into the Pending
+Approvals stat card and the tasty_options activation tile on the IC live
+page (they previously fed the retired /partials/stage1-monitoring row).
+These tests pin:
   • hitl_activity_24h — pending count, board decisions in window,
     autonomous-live invariant (must be 0 in Stage 1)
   • tasty_activation_status — broker session inference + scanner-tick
