@@ -116,6 +116,36 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-07 ~16:40 UTC — Kalshi arb divisions: LLM narrowed to Economics+Elections + resolver leg_date starvation fix + temporal/bucket 60-day horizon caps + backlog cleanup (agent-driven, autonomous under explicit Board approval; account FLAT)
+
+**Commits:** `b5eb93f` (llm categories), `d1f5ea6` (resolver leg_date fix), `aa06498` (temporal 60d cap), `0f79b22` (bucket guards) — all MERGED, main==origin/main==`0f79b22`.
+**Triggered by:** session — assess "Kalshi LLM Arbitrage" (`kalshi_llm_arbitrage`) + "Kalshi Arbitrage" (`kalshi_arbitrage`) paper divisions for a live edge. **Verdict: NEITHER has a demonstrated live edge; both stay standby + auto_execute:false (paper).** Work below is paper-refinement + a resolver integrity fix, NOT a go-live.
+**Backup tags (on prod):** DB snapshots `.bak-pre-llm-catpurge-2026-07-07`, `.bak-pre-temporal60del-2026-07-07`, `.bak-pre-bucketdel-2026-07-07` (sqlite3 `.backup`); config `config/strategies.yaml.bak-pre-llm-cat-2026-07-07`; code `kalshi_temporal_bucket_arb.py.bak-pre-horizon60-2026-07-07` + `.bak-pre-bucketguard-2026-07-07` (resolver had no .bak — full-file swap, prior md5 `6d7b85cc`).
+
+**Files deployed:**
+- `trading_corp/agents/kalshi_resolver.py` — ORDER BY now `COALESCE(expires_at, leg_date)`. md5 `6d7b85cc`->`cc658dbb`. Restart-required (code).
+- `trading_corp/agents/strategies/kalshi_temporal_bucket_arb.py` — 60d horizon caps. md5 `81fbd4d9`->`afea06aa` (temporal cap)->`5bd03e6e` (bucket guard). Restart-required (code).
+- `config/strategies.yaml` — `kalshi_llm_arbitrage.discovery.categories` = `[Economics, Elections]` (was Politics/Elections/Economics/Financials). Surgical block replace; **hot-reloaded, no restart**. NOTE: `temporal.max_horizon_days:60` + `bucket.max_horizon_days:60` are in repo main but NOT applied to prod strategies.yaml — prod relies on the code default 60 (identical behavior).
+
+**Features shipped (load-bearing for "is X done?"):**
+- `kalshi_llm_arbitrage`: discovery narrowed to the only 2 net-positive paper categories (lifetime paper: Economics +$108, Elections +$33 gross; dropped Politics -$111, Financials -$48; legacy Sci/Tech -$282 etc. already carved out). Division lifetime was **net -$518 / 2508 trades / 40.7% WR** — no edge; econ/elections is a forward paper test only.
+- `kalshi_resolver`: leg_date fallback UN-BLINDS `kalshi_arbitrage`. Was 0 round-trips in 2mo — **starvation**: temporal/bucket rows carry `leg_date`/no date, not `expires_at`, so the expires_at-ASC starvation-avoidance ordering fell back to ts-ASC and indefinite-horizon rows (mergers/IPOs) permanently occupied the 50/tick per-actor budget. First post-deploy tick resolved 100 (50 temporal); `kalshi_arbitrage` round_trips 0->50+.
+- `kalshi_temporal_bucket_arb`: temporal pairs dropped when late-leg resolves >60d out; bucket now requires >=2 legs AND latest `expected_expiration_time` within (now, now+60d] — drops NBER-recession-quarter never-resolvers (NBER declares 6-18mo late) + single-leg pseudo-arbs.
+
+**Data ops (paper audit rows; DB backed up before each; other divisions verified unchanged):**
+- `kalshi_llm_arbitrage`: deleted 1,563 non-Economics/Elections rows from `kalshi_round_trips` (RESULTS table only; audit_event + equity_history kept). 2508->945.
+- `kalshi_temporal_bucket_arb`: deleted 3,627 unresolved >60d temporal `would_have_placed` rows + 2,026 bucket `would_have_placed` rows. temporal_bucket would_have_placed 6,140->487 (near-term <=60d only).
+
+**Verification:** resolver PID 93413 + tick {scanned 107, resolved 100, errors 0}; temporal-cap PID 93770 md5 afea06aa; bucket-guard PID 94116 md5 5bd03e6e; NRestarts 0; all deploys syntax-checked pre-restart + boot-smoke clean.
+
+**Still paper / inert:** both kalshi divisions standby:true + auto_execute:false; `KalshiBroker` is still `ReadOnlyBroker` (no `place_order`); NO live order path. Go-live needs KalshiLiveBroker + auto_execute branch + FEES in resolver P&L (paper P&L is still GROSS).
+
+**Open follow-ups:** (1) un-blinded `kalshi_arbitrage` temporal early-leg gross was +$674 — a ONE-SIDED partial (late legs + fees pending), NOT net edge; watch as resolver drains 50/tick. (2) Kalshi paper P&L excludes fees — must add before any live-edge call. (3) bucket guard live-effect confirm on next scans.
+
+**Rollback:** restore the listed `.bak` code/config files + `systemctl restart trading-corp`; for DB, stop engine, restore the relevant `.bak-pre-*` snapshot, restart.
+
+---
+
 ## 2026-07-06 03:28 UTC — Bitunix bracket: min-leg 0.0003->0.0001 + 1-leg full-profit DEPLOYED (single-file; both bitunix divisions; agent-driven under explicit Board approval)
 
 **STATE VERB: DEPLOYED + LOADED + VERIFIED (agent drove file-write + restart over SSH under explicit per-session Board approval; disclosure per CLAUDE.md read-only-SSH rule).**
