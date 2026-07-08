@@ -1329,8 +1329,17 @@ async def move_bracket_sls(
         if current_qty >= entry_qty - 1e-12:
             continue  # no TP fill detected this tick
         current_sl = _safe_float(extra.get("current_sl"), _safe_float(r["stop_price"]))
+        # ref-vs-fill (2026-07-08): breakeven must be the ACTUAL entry fill, not
+        # the signal reference — else the "breakeven" stop sits off by the entry
+        # slippage (a stop-out after TP1 then books a small loss, not breakeven).
+        # Prefer extra['actual_entry_fill_price'] (present on live futures rows,
+        # already trusted by _resolve_entry_price for close P&L); fall back to the
+        # reference for paper / pre-fix rows. Tighten-only guard downstream keeps
+        # the move safe (long: up; short: down).
         entry_price = _safe_float(
-            extra.get("entry_reference_price"), _safe_float(r["entry_reference_price"])
+            extra.get("actual_entry_fill_price"),
+            _safe_float(extra.get("entry_reference_price"),
+                        _safe_float(r["entry_reference_price"])),
         )
         tp1 = _safe_float(extra.get("tp1_price"))
         if tp1 <= 0:
