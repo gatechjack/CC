@@ -12,6 +12,20 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## Merge debt (07-02+ CRLF hybrid + 4 deploys) - RESOLVED 2026-07-08
+
+Prod had diverged from main since 2026-07-02 (SFP bidirectional deployed as targeted
+hunks onto prod's Kalshi-CRLF tree, never wholesale-copied); 4+ subsequent deploys
+widened the gap. **RESOLVED 2026-07-08:** reconcile branch `main-prod-reconcile-2026-07-08`
+(C1 `b9de6c5` + C2 `7b642f8` + C3 `829ebdf`) merged `--no-ff` to main as **`be1d809`**,
+pushed origin. 17/17 files byte-exact (triple md5-verified; origin/main == local main ==
+prod). Report `reports/2026-07-08_main_prod_reconciliation.md`; deploy_log 2026-07-08 entry.
+
+**Honest scope of the restored invariant:** main == prod restored 2026-07-08 for deployed
+executable content; **6 CRLF-cosmetic files + 1 docstring-lag file (`kalshi_resolver.py`,
+main leads) + 7 dev-only files are documented exclusions** - see the 2026-07-08 reconciliation
+report for per-file rationale.
+
 ## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
 
 Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:trading`**, **SOL + XRP `arm:watch`
