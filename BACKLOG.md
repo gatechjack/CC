@@ -57,10 +57,11 @@ Cockpit chart line-labels + 2dp truncation already shipped 2026-07-07 (branch
 correct"); A1-vs-A2 depth + flat-restart timing TBD. Either level needs a one-time backfill
 fetch to correct the currently-open SOL position.
 
-**Update 2026-07-07:** operator chose **A2**; ✅ BUILT (commit `c960dc0`): the observer persists
-`actual_entry_fill_price=fill.price`; cockpit + reconciler read it. STAGED for the next
-flat-restart. TODO: backfill the currently-open SOL's fill (real 80.90). SFP does NOT scale out —
-leave its single TP/stop as-is (the break-even ask below is a FUTURES item).
+**Update 2026-07-08:** operator chose **A2**; ✅ DEPLOYED LIVE 2026-07-08 (commit `c960dc0`, prod
+PID 108070): the observer persists `actual_entry_fill_price=fill.price`; cockpit + reconciler read
+it. The then-open SOL was corrected in the prod DB (fill 80.90; gross −33.17 / −0.985R). Effect
+VERIFY-PENDING on the next live SFP trade (cockpit entry line == fill; close P&L from fill). SFP
+does NOT scale out — leave its single TP/stop as-is (the break-even item below is a FUTURES item).
 
 ## Bitunix FUTURES break-even / SL-move-to-entry on TP1 — ALREADY LIVE; ref-vs-fill FIXED — ✅ RESOLVED 2026-07-08
 
