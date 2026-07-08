@@ -57,6 +57,23 @@ Cockpit chart line-labels + 2dp truncation already shipped 2026-07-07 (branch
 correct"); A1-vs-A2 depth + flat-restart timing TBD. Either level needs a one-time backfill
 fetch to correct the currently-open SOL position.
 
+**Update 2026-07-07:** operator chose **A2**; ✅ BUILT (commit `c960dc0`): the observer persists
+`actual_entry_fill_price=fill.price`; cockpit + reconciler read it. STAGED for the next
+flat-restart. TODO: backfill the currently-open SOL's fill (real 80.90). SFP does NOT scale out —
+leave its single TP/stop as-is (the break-even ask below is a FUTURES item).
+
+## Bitunix FUTURES break-even / SL-move-to-entry on TP1 — finish Phase-4 wiring — OPEN (2026-07-07, do AFTER SFP)
+
+For **bitunix_futures** (which IS multi-TP: tp1/tp2/tp3), NOT sfp. Want: on TP1 fill, move the SL
+to entry (breakeven), hold to TP2, then trail. The **decision logic already exists** —
+`decide_sl_action()` / `decide_sl_move()` in `bitunix_position_reconciler.py` compute "tp1 filled
+-> SL to entry (breakeven)" and "tp2 -> trail", and the reconciler LOGS it (`position_sl_update`
+audit, `would_call_broker=False`). **Missing = execution wiring:**
+`BitunixBroker.modify_position_tp_sl_order()` is a Phase-1 STUB that raises `NotImplementedError`
+(Phase 4: call BitUnix `/api/v1/futures/tpsl/modify_position_tp_sl_order`). Work: implement + test
+that broker call against live BitUnix, then flip the reconciler to call it — careful live-money
+testing (it moves a real stop on an open position). Do after the SFP items land.
+
 ## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
 
 Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:trading`**, **SOL + XRP `arm:watch`
