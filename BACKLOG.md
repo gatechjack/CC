@@ -12,6 +12,40 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## PMCC go-live: approval-vs-autonomous decision + submission-idempotency gate — OPEN (filed 2026-07-08)
+
+Two-part pre-go-live decision, IN ORDER. **NOT a current risk** (`robinhood_pmcc` is paper-only
+today). Context: memory `pmcc-lifecycle-fix-2026-07-08` + `runbooks/deploy_log.md` 2026-07-08 PMCC
+entry (the lifecycle fix that motivates this).
+
+**PART 1 (decide FIRST) — approval flow, or autonomous?** PMCC today = paper + Board approval
+(agent proposes → operator approves via Telegram/web → graph resumes → executes). Live-go must
+first choose:
+- **Autonomous** ELIMINATES the entire orphaning failure class this session fixed (no approval
+  wait, no interrupt/resume, no lifecycle coupling). Fix A / Fix B / canary become **moot for
+  PMCC** (retained as belt-and-suspenders + reference architecture for any other division on the
+  same LangGraph approval pattern).
+- **Approval flow** adds a human safety layer but keeps the failure surface the reconciler now
+  guards.
+- Trust / risk-appetite call, not technical — both defensible. Operator decides at go-live based
+  on comfort with the agent's decision quality.
+
+**PART 2 (ONLY if PART 1 = keep the approval flow → then a HARD pre-go-live gate) — verify the
+approval-decision → broker-submission path is idempotent under recovery.**
+- Recovery restores the audit TRUTH ("Board approved this"); it does NOT automatically recover the
+  EXECUTION. The graph submission (`execute_node` → `data_exec.place`) is a single-shot side effect
+  that was lost with the original failed resume `ainvoke`.
+- Paper-mode visible bug was cosmetic. LIVE-mode INVISIBLE bug would be: **approved trades that
+  never execute** (capital reservation released, no broker order, no position).
+- ★ Current-impl clarification: **Fix A is REJECT-ONLY** — it recovers reject→`board_rejected` and
+  deliberately SKIPS recorded-approve rows (warns + leaves them `risk_approved` for the canary →
+  human handles). So the silent-unexecuted-approve bug does NOT occur via Fix A today; but the
+  underlying non-idempotent submission path IS this gate.
+- Resolution options if the flow is kept: (a) reconciler submission-retry when it recovers an
+  approved row; (b) require manual review of recovered-approved rows before submission; (c) make
+  the graph submission step itself idempotent + retryable so the reconciler's status fix alone
+  triggers correct downstream execution.
+
 ## Merge debt (07-02+ CRLF hybrid + 4 deploys) - RESOLVED 2026-07-08
 
 Prod had diverged from main since 2026-07-02 (SFP bidirectional deployed as targeted
