@@ -360,11 +360,24 @@ def _open_sfp_position(db_url: str) -> dict | None:
         ).fetchone()
     if not r:
         return None
+    # ref-vs-fill (2026-07-07): prefer the ACTUAL entry fill VWAP (persisted by
+    # the observer as extra['actual_entry_fill_price']) so the entry line + R
+    # reflect the real fill, not the 3m-BOS signal reference. Fall back to the
+    # reference for pre-fix / paper rows (matches the reconciler's
+    # _resolve_entry_price). Stop + TP stay the real venue bracket levels.
+    _extra = _loads(r["extra_json"])
+    _fill = _extra.get("actual_entry_fill_price")
+    try:
+        _entry = float(_fill) if (_fill is not None and float(_fill) > 0) \
+            else r["entry_reference_price"]
+    except (TypeError, ValueError):
+        _entry = r["entry_reference_price"]
     return {
         "order_id": r["order_id"], "symbol": r["symbol"], "side": r["side"],
-        "qty": r["qty"], "entry": r["entry_reference_price"], "stop": r["stop_price"],
+        "qty": r["qty"], "entry": _entry, "entry_ref": r["entry_reference_price"],
+        "stop": r["stop_price"],
         "tp": r["tp_price"], "tp_r": r["tp_r_multiple"], "ts": r["ts"],
-        "execution_mode": r["execution_mode"], "extra": _loads(r["extra_json"]),
+        "execution_mode": r["execution_mode"], "extra": _extra,
     }
 
 

@@ -601,6 +601,18 @@ class BitunixSfpObserver:
                 if fill is not None:
                     record.extra["broker_order_id"] = getattr(fill, "order_id", None)
                     record.extra["entry_fee_usd"] = float(getattr(fill, "fee", 0.0) or 0.0)
+                    # ref-vs-fill (2026-07-07): persist the ACTUAL entry fill VWAP
+                    # (observed by place_order) so R/P&L book from the real fill,
+                    # not the signal reference. The reconciler's _resolve_entry_price
+                    # already prefers extra['actual_entry_fill_price']; the /sfp
+                    # cockpit uses it for the entry line + R. Reference stays the
+                    # fallback for paper rows / any fill without a price.
+                    _fp = getattr(fill, "price", None)
+                    try:
+                        if _fp is not None and float(_fp) > 0:
+                            record.extra["actual_entry_fill_price"] = float(_fp)
+                    except (TypeError, ValueError):
+                        pass
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
         except Exception as e:
             log.warning("bitunix_sfp: paper_trade_record write failed "
