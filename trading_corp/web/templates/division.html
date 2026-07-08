@@ -202,6 +202,51 @@
       {% include "partials/donchian_trades.html" %}
     {% endif %}
 
+    <!-- Gate (a) REST/exec resilience - relocated here from the retired
+         home-page Stage-1 monitoring row. bitunix_futures only: 24h counts
+         of the four bitunix.py + data_exec.py audit kinds, colored by the
+         worst signal present. Sits atop the gate-chain panels as the
+         "is the data/exec layer healthy" signal. -->
+    {% if view.division.slug == 'bitunix_futures' and view.gate_a %}
+      {% set _ga = view.gate_a %}
+      {% set _ga_ring = {
+        'green':  'border-edge',
+        'yellow': 'border-warn/40 ring-1 ring-warn/20',
+        'red':    'border-loss/60 ring-1 ring-loss/30',
+      } %}
+      {% set _ga_total_text = {
+        'green':  'text-mono',
+        'yellow': 'text-warn',
+        'red':    'text-loss',
+      } %}
+      <div class="bg-pane border {{ _ga_ring[_ga.severity] }} rounded-lg p-4 sm:max-w-xs"
+           title="Gate (a) - REST retry / stale-snapshot halt / stuck-order cancel events in the last 24h. Severity surfaces the worst signal present.">
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="text-[11px] text-muted uppercase tracking-wider">Gate (a) resilience</div>
+          <div class="text-2xl font-mono font-semibold {{ _ga_total_text[_ga.severity] }}">{{ _ga.total }}</div>
+        </div>
+        <div class="text-[10px] text-muted/70 mt-0.5 font-mono">last 24h</div>
+        {% set _ga_kinds = [
+          ('rest_request_retried',     'rest retried',  'yellow'),
+          ('snapshot_stale_halt',      'snapshot stale','red'),
+          ('stuck_order_cancelled',    'stuck -> cancel','yellow'),
+          ('stuck_order_cancel_failed','cancel failed', 'red'),
+        ] %}
+        <div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] font-mono">
+          {% for kind_key, label, severity_when_nonzero in _ga_kinds %}
+            {% set _n = _ga.by_kind[kind_key] %}
+            <div class="flex justify-between items-baseline">
+              <span class="{% if _n == 0 %}text-muted/50{% else %}text-muted{% endif %}">{{ label }}</span>
+              <span class="font-semibold
+                {% if _n == 0 %}text-muted/50
+                {% elif severity_when_nonzero == 'red' %}text-loss
+                {% else %}text-warn{% endif %}">{{ _n }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+
     <!-- BitUnix gate-chain panels render top-to-bottom in
          "decide → audit → outcome" reading order:
            1. HTF regime  (macro context — what's the regime?)
@@ -255,44 +300,152 @@
       {% include "partials/bitunix_score_panel.html" %}
     {% endif %}
 
-    <!-- Paper-trade win rate (Phase C of would_have_placed enrichment) -->
-    {% if view.paper_trade_summary and view.paper_trade_summary.totals.all.n %}
-    <section class="bg-pane border border-edge rounded-lg p-4">
+    <!-- Win rate — Paper/Live toggle (2026-06-23). ONE panel; the toggle
+         switches between the PAPER slice (execution_mode != live, unbounded
+         signal-replay) and the LIVE slice (execution_mode = live, scoped
+         forward from the division metrics_epoch via result_ts). Both slices
+         are precomputed in data.py:paper_trade_summary and arrive in the one
+         view.paper_trade_summary dict, so the toggle is client-side only.
+         The toggle activates only for divisions with a live dimension
+         (has_live or metrics_epoch) — bitunix_futures today; paper-only
+         divisions render exactly as before (single panel, no toggle). -->
+    {% set ps = view.paper_trade_summary %}
+    {% if ps and (ps.totals.all.n or ps.has_live or ps.metrics_epoch) %}
+    {% set has_live_dim = ps.has_live or ps.metrics_epoch %}
+    <section class="bg-pane border border-edge rounded-lg p-4"{% if has_live_dim %} data-wr-panel{% endif %}>
       <header class="flex items-baseline justify-between mb-3">
-        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Paper-trade win rate</h2>
-        <span class="text-[11px] text-muted font-mono">
-          would-have-placed alerts replayed against post-alert price action
-        </span>
-      </header>
-      <div class="grid grid-cols-3 gap-3">
-        {% for window in ['7d', '30d', 'all'] %}
-          {% set t = view.paper_trade_summary.totals[window] %}
-          <div class="bg-pane-2/40 border border-edge rounded-md p-3">
-            <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
-              {{ window }}
-            </div>
-            <div class="text-2xl font-mono font-semibold
-                  {% if t.win_rate_pct is none %}text-muted
-                  {% elif t.win_rate_pct >= 50 %}text-gain
-                  {% else %}text-loss{% endif %}">
-              {% if t.win_rate_pct is none %}—{% else %}{{ '%.0f'|format(t.win_rate_pct) }}%{% endif %}
-            </div>
-            <div class="text-[11px] text-muted font-mono mt-1">
-              {{ t.wins }}W / {{ t.losses }}L / {{ t.expired }}E
-              {% if t.open %}({{ t.open }} open){% endif %}
-            </div>
-            <div class="text-[11px] font-mono mt-2
-                  {% if t.sim_pnl > 0 %}text-gain{% elif t.sim_pnl < 0 %}text-loss{% else %}text-muted{% endif %}">
-              sim P&amp;L: ${{ '%.2f'|format(t.sim_pnl) }}
-            </div>
+        <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">{% if has_live_dim %}Win rate{% else %}Paper-trade win rate{% endif %}</h2>
+        {% if has_live_dim %}
+          <div class="inline-flex rounded-md border border-edge overflow-hidden text-[11px] font-mono" role="tablist" aria-label="win-rate slice">
+            <button type="button" data-wr-tab="live" aria-selected="true"
+                    class="px-2.5 py-1 uppercase tracking-wider transition-colors bg-pane-2 text-gain">Live</button>
+            <button type="button" data-wr-tab="paper" aria-selected="false"
+                    class="px-2.5 py-1 uppercase tracking-wider transition-colors border-l border-edge text-muted">Paper</button>
           </div>
-        {% endfor %}
+        {% else %}
+          <span class="text-[11px] text-muted font-mono">
+            would-have-placed alerts replayed against post-alert price action
+          </span>
+        {% endif %}
+      </header>
+
+      {% if has_live_dim %}
+      <!-- LIVE slice — real exchange fills, result_ts >= metrics_epoch -->
+      <div data-wr-slice="live">
+        {% if ps.live_totals.all.n %}
+          <div class="grid grid-cols-3 gap-3">
+            {% for window in ['7d', '30d', 'all'] %}
+              {% set t = ps.live_totals[window] %}
+              <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+                <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+                  {{ window }}
+                </div>
+                <div class="text-2xl font-mono font-semibold
+                      {% if t.win_rate_pct is none %}text-muted
+                      {% elif t.win_rate_pct >= 50 %}text-gain
+                      {% else %}text-loss{% endif %}">
+                  {% if t.win_rate_pct is none %}—{% else %}{{ '%.0f'|format(t.win_rate_pct) }}%{% endif %}
+                </div>
+                <div class="text-[11px] text-muted font-mono mt-1">
+                  {{ t.wins }}W / {{ t.losses }}L / {{ t.expired }}E
+                  {% if t.open %}({{ t.open }} open){% endif %}
+                </div>
+                <div class="text-[11px] font-mono mt-2
+                      {% if t.sim_pnl > 0 %}text-gain{% elif t.sim_pnl < 0 %}text-loss{% else %}text-muted{% endif %}">
+                  realized P&amp;L: ${{ '%.2f'|format(t.sim_pnl) }}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="bg-pane-2/40 border border-edge rounded-md p-4 text-center text-[12px] text-muted font-mono">
+            No live trades resolved{% if ps.metrics_epoch %} since {{ ps.metrics_epoch.split('T')[0] }}{% endif %} yet.
+          </div>
+        {% endif %}
+        {% if ps.metrics_epoch %}
+          <div class="text-[10px] text-muted/70 font-mono mt-3"
+               title="Live metrics scoped forward from the post-fix epoch. Pre-epoch rows remain in the DB, excluded from this slice.">
+            since {{ ps.metrics_epoch.split('T')[0] }} · current logic only
+          </div>
+        {% else %}
+          <div class="text-[10px] text-amber-400/80 font-mono mt-3"
+               title="No metrics epoch set yet — live numbers still include pre-fix bookings (D1 double-book, P2 mislabels). The epoch is set at the D1 cutover.">
+            all-time · epoch not set (includes pre-fix bookings)
+          </div>
+        {% endif %}
       </div>
-      {% if view.paper_trade_summary.totals.all.n_pre_phase_a %}
-        <div class="text-[10px] text-muted/70 font-mono mt-3 italic">
-          {{ view.paper_trade_summary.totals.all.n_pre_phase_a }} pre-Phase-A row(s)
-          excluded from win-rate math (no TP/SL recorded at alert time).
-        </div>
+      {% endif %}
+
+      <!-- PAPER slice — execution_mode != live, unbounded signal replay -->
+      <div data-wr-slice="paper"{% if has_live_dim %} hidden{% endif %}>
+        {% if ps.totals.all.n %}
+          <div class="grid grid-cols-3 gap-3">
+            {% for window in ['7d', '30d', 'all'] %}
+              {% set t = ps.totals[window] %}
+              <div class="bg-pane-2/40 border border-edge rounded-md p-3">
+                <div class="text-muted text-[11px] font-mono uppercase tracking-wider mb-1">
+                  {{ window }}
+                </div>
+                <div class="text-2xl font-mono font-semibold
+                      {% if t.win_rate_pct is none %}text-muted
+                      {% elif t.win_rate_pct >= 50 %}text-gain
+                      {% else %}text-loss{% endif %}">
+                  {% if t.win_rate_pct is none %}—{% else %}{{ '%.0f'|format(t.win_rate_pct) }}%{% endif %}
+                </div>
+                <div class="text-[11px] text-muted font-mono mt-1">
+                  {{ t.wins }}W / {{ t.losses }}L / {{ t.expired }}E
+                  {% if t.open %}({{ t.open }} open){% endif %}
+                </div>
+                <div class="text-[11px] font-mono mt-2
+                      {% if t.sim_pnl > 0 %}text-gain{% elif t.sim_pnl < 0 %}text-loss{% else %}text-muted{% endif %}">
+                  sim P&amp;L: ${{ '%.2f'|format(t.sim_pnl) }}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+          {% if has_live_dim %}
+            <div class="text-[10px] text-muted/70 font-mono mt-3 italic">
+              all-time · signal replay, not epoch-scoped
+            </div>
+          {% endif %}
+          {% if ps.totals.all.n_pre_phase_a %}
+            <div class="text-[10px] text-muted/70 font-mono mt-3 italic">
+              {{ ps.totals.all.n_pre_phase_a }} pre-Phase-A row(s)
+              excluded from win-rate math (no TP/SL recorded at alert time).
+            </div>
+          {% endif %}
+        {% endif %}
+      </div>
+
+      {% if has_live_dim %}
+      <script>
+      (function () {
+        var s = document.currentScript;
+        var panel = s ? s.closest('[data-wr-panel]') : null;
+        if (!panel) return;
+        var tabs = panel.querySelectorAll('[data-wr-tab]');
+        var slices = panel.querySelectorAll('[data-wr-slice]');
+        function show(which) {
+          slices.forEach(function (el) {
+            el.hidden = (el.getAttribute('data-wr-slice') !== which);
+          });
+          tabs.forEach(function (b) {
+            var on = b.getAttribute('data-wr-tab') === which;
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+            b.classList.toggle('bg-pane-2', on);
+            b.classList.toggle('text-gain', on);
+            b.classList.toggle('text-muted', !on);
+          });
+          try { localStorage.setItem('bitunix_wr_slice', which); } catch (e) {}
+        }
+        tabs.forEach(function (b) {
+          b.addEventListener('click', function () { show(b.getAttribute('data-wr-tab')); });
+        });
+        var saved = 'live';
+        try { saved = localStorage.getItem('bitunix_wr_slice') || 'live'; } catch (e) {}
+        show(saved);
+      })();
+      </script>
       {% endif %}
     </section>
     {% endif %}

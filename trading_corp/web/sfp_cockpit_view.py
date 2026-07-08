@@ -360,11 +360,24 @@ def _open_sfp_position(db_url: str) -> dict | None:
         ).fetchone()
     if not r:
         return None
+    # ref-vs-fill (2026-07-07): prefer the ACTUAL entry fill VWAP (persisted by
+    # the observer as extra['actual_entry_fill_price']) so the entry line + R
+    # reflect the real fill, not the 3m-BOS signal reference. Fall back to the
+    # reference for pre-fix / paper rows (matches the reconciler's
+    # _resolve_entry_price). Stop + TP stay the real venue bracket levels.
+    _extra = _loads(r["extra_json"])
+    _fill = _extra.get("actual_entry_fill_price")
+    try:
+        _entry = float(_fill) if (_fill is not None and float(_fill) > 0) \
+            else r["entry_reference_price"]
+    except (TypeError, ValueError):
+        _entry = r["entry_reference_price"]
     return {
         "order_id": r["order_id"], "symbol": r["symbol"], "side": r["side"],
-        "qty": r["qty"], "entry": r["entry_reference_price"], "stop": r["stop_price"],
+        "qty": r["qty"], "entry": _entry, "entry_ref": r["entry_reference_price"],
+        "stop": r["stop_price"],
         "tp": r["tp_price"], "tp_r": r["tp_r_multiple"], "ts": r["ts"],
-        "execution_mode": r["execution_mode"], "extra": _loads(r["extra_json"]),
+        "execution_mode": r["execution_mode"], "extra": _extra,
     }
 
 
@@ -520,6 +533,24 @@ def _chart_geom(bars: list[dict], levels: list | None = None,
     return {"candles": candles, "lines": lines, "marker": marker, "w": _CH_W, "h": _CH_H}
 
 
+def _regime_state(db_url: str, wire: str) -> dict:
+    """Flip-watch chip (READ-ONLY): CURRENT 15m regime from the single-source
+    bitunix_sfp_regime_state mirror (the observer's _compute_regime value — never
+    recomputed here) + last-flip ts from bitunix_sfp_regime_flip. Always-current from
+    day one; fail-soft; '-' only during the pre-convergence warmup."""
+    try:
+        with db.connect(db_url) as conn:
+            s = conn.execute("SELECT regime, updated_ts FROM bitunix_sfp_regime_state "
+                             "WHERE coin=?", (wire,)).fetchone()
+            f = conn.execute("SELECT ts FROM bitunix_sfp_regime_flip WHERE coin=? "
+                             "ORDER BY id DESC LIMIT 1", (wire,)).fetchone()
+        label = (s[0] if s and s[0] else "-")
+        return {"label": label, "last_flip_ts": (f[0] if f else None),
+                "updated_ts": (s[1] if s else None), "to_up": label == "up"}
+    except Exception:
+        return {"label": "-", "last_flip_ts": None, "updated_ts": None, "to_up": False}
+
+
 def _coin_state(db_url: str, display: str, pos: dict | None,
                 arm: str = "watch", div_live: bool = False) -> dict:
     """Per-coin card context. A coin is LIVE iff it's armed for live orders
@@ -539,6 +570,7 @@ def _coin_state(db_url: str, display: str, pos: dict | None,
         "exec_tag": ("LIVE" if is_live_coin
                      else ("MONITOR" if arm == "watch" else "PAPER")),
     }
+    card["regime"] = _regime_state(db_url, wire)            # flip-watch chip (read-only)
     if has_pos:
         rj = _r_journey(db_url, pos)                         # TIER A
         card["rj"] = rj

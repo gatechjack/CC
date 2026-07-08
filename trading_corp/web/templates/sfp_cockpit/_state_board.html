@@ -45,6 +45,7 @@
         {% if c.rj %}<span class="badge {{ 'b-purple' if c.mode=='REAL' else 'b-teal' }}">{{ c.mode }}</span><span class="badge b-blue">in-trade</span>
         {% elif c.armed %}<span class="badge b-teal">{{ c.armed.mode[:8] }}</span><span class="badge b-amber">SFP armed</span>
         {% else %}<span class="badge b-gray">no setup</span>{% endif %}
+        {% if c.regime and c.regime.label != '-' %}<span class="badge {{ 'b-green' if c.regime.to_up else 'b-gray' }}" title="last flip {{ c.regime.last_flip_ts }}">regime:{{ c.regime.label }}</span>{% endif %}
       </span>
     </div>
 
@@ -52,7 +53,22 @@
 
     <div class="strip">
       {{ candles(c.chart) }}
-      <span class="pxtag">{{ '%g'|format(c.bars[-1].c) if c.bars else '—' }}</span>
+      {# Price labels on the entry/target/stop lines (live trade only). The
+         chart already draws the 3 dashed lines; label each with its price,
+         matched by line COLOR (green=target, amber=entry, red=stop) so it's
+         robust to line order/filtering. Left edge = price axis; the current-
+         price marker (dot) stays on the right. The redundant last-close tag
+         was removed — "Live price" already shows in the footer below. #}
+      {% if c.rj %}
+        {% for ln in c.chart.lines %}
+          {% set _p = c.rj.target if ln.color == '#34d399'
+                      else (c.rj.entry if ln.color == '#f5b53d'
+                            else (c.rj.stop if ln.color == '#fb5e6b' else None)) %}
+          {% if _p %}
+          <span style="position:absolute;left:6px;top:{{ '%.1f'|format(6 + 120 * ln.y / c.chart.h) }}px;transform:translateY(-50%);font-size:10px;line-height:1;font-weight:600;color:{{ ln.color }};background:rgba(8,12,20,.82);padding:1px 4px;border-radius:3px;pointer-events:none;white-space:nowrap;">{% set _ps = '%.6f'|format(_p) %}{{ _ps.split('.')[0] }}.{{ _ps.split('.')[1][:2] }}</span>
+          {% endif %}
+        {% endfor %}
+      {% endif %}
     </div>
 
     {% if c.rj %}

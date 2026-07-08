@@ -60,11 +60,30 @@
     true,
   );
 
-  // Re-apply state after htmx replaces #trade-flow's outerHTML.
+  // Preserve the panel's scroll position across the 5s outerHTML swap.
+  // #trade-flow IS the scroll container, and htmx rebuilds it whole on every
+  // poll — which otherwise snaps the list back to the top mid-scroll. Save
+  // scrollTop just before the swap and restore it just after.
+  let savedScrollTop = null;
+  document.addEventListener("htmx:beforeSwap", (e) => {
+    const tgt = (e.detail && e.detail.target) || e.target;
+    if (tgt && tgt.id === PANEL_ID) {
+      const el = document.getElementById(PANEL_ID);
+      savedScrollTop = el ? el.scrollTop : null;
+    }
+  });
+
+  // Re-apply <details> state + restore scroll after htmx replaces
+  // #trade-flow's outerHTML.
   document.addEventListener("htmx:afterSwap", (e) => {
     const tgt = (e.detail && e.detail.target) || e.target;
     if (tgt && tgt.id === PANEL_ID) {
       applyOpenState();
+      if (savedScrollTop != null) {
+        const el = document.getElementById(PANEL_ID);
+        if (el) el.scrollTop = savedScrollTop;
+        savedScrollTop = null;
+      }
     }
   });
 
