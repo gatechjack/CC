@@ -122,6 +122,7 @@ def main() -> int:
             return 0
 
         touched = []
+        committed_by_term = {}
         for r, term, cause, audit_kind, dec in classified:
             reason = f"{BACKFILL_MARKER} (cause={cause}) - approval never resumed"
             cur = conn.execute(
@@ -149,10 +150,12 @@ def main() -> int:
                              "recorded_source": (dec or {}).get("source")})),
             )
             touched.append(r["id"])
+            committed_by_term[term] = committed_by_term.get(term, 0) + 1
 
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write("\n".join(touched) + ("\n" if touched else ""))
-        print(f"[backfill] COMMITTED {len(touched)} row(s) -> {TERMINAL}. Touched ids -> {args.out}")
+        summary = " / ".join(f"{v} -> {k}" for k, v in sorted(committed_by_term.items())) or "0 rows"
+        print(f"[backfill] COMMITTED {len(touched)} row(s): {summary}. Touched ids -> {args.out}")
         print(
             f"[backfill] inverse (rollback): UPDATE proposed_order SET status='risk_approved', "
             f"board_reason=NULL WHERE strategy='{STRATEGY}' AND status IN ('board_rejected','cancelled') "
