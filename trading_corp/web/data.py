@@ -730,7 +730,6 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
 
     # Run parallel data fetches
     db_results = await asyncio.gather(
-        asyncio.to_thread(_query_open_orders, db_url),
         asyncio.to_thread(
             hitl_activity_24h, db_url, pending_registry=deps.pending_registry,
         ),
@@ -741,10 +740,9 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         _build_market_ribbon(),
         return_exceptions=True,
     )
-    open_orders, hitl, recent_audit, eq_curve, vix, regime, ribbon = (
+    hitl, recent_audit, eq_curve, vix, regime, ribbon = (
         r if not isinstance(r, Exception) else None for r in db_results
     )
-    open_orders = open_orders or []
     hitl = hitl if isinstance(hitl, dict) else {}
     recent_audit = recent_audit or []
     eq_curve = eq_curve or []
@@ -1153,26 +1151,11 @@ def _aggregate_intent_buckets(divisions: list[Division]) -> list[IntentBucket]:
 
 
 # ── DB queries ────────────────────────────────────────────────────────────
-
-def _query_open_orders(db_url: str) -> list[dict]:
-    return _query(
-        db_url,
-        """SELECT id, ts, strategy, symbol, side, qty, status, rationale
-           FROM proposed_order
-           WHERE status IN ('proposed','risk_approved','board_approved')
-           ORDER BY ts DESC LIMIT 50""",
-    )
-
-
-def _query_pending_approvals(db_url: str) -> list[dict]:
-    return _query(
-        db_url,
-        """SELECT id, ts, strategy, symbol, side, qty, rationale
-           FROM proposed_order
-           WHERE status='risk_approved'
-           ORDER BY ts DESC""",
-    )
-
+# NOTE: the old `_query_open_orders` (3-status in-flight; its result was computed then
+# discarded) and `_query_pending_approvals` (all-time status='risk_approved' — the DB-residue
+# count) were removed 2026-07-08. The Overview stat card + Telegram /pending now read the
+# in-process PendingApprovalRegistry (commit 7f641d8 + the PMCC lifecycle fix), so any query
+# counting raw `risk_approved` is stale-residue-prone. See reports/2026-07-08_pmcc_*.md.
 
 def _query_recent_audit(db_url: str, limit: int) -> list[dict]:
     return _query(
