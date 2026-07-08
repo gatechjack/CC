@@ -116,6 +116,99 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-08 11:47 UTC — PMCC `risk_approved` lifecycle fix + backfill DEPLOYED + VERIFIED LIVE (agent-driven under explicit Board authorization; SFP+futures flat-guarded restart)
+
+**STATE VERB: DEPLOYED + VERIFIED. 5 files (2 NEW + 3 targeted-hunk), 1 flat-guarded restart, 1 operator-authorized DB backfill.**
+
+**Commits:** merge `72d0f87` (branch `pmcc-lifecycle-forensic-2026-07-08`, `64cad15`→`1e47317`).
+**Triggered by:** BACKLOG **B2** — the 59 stale `robinhood_pmcc` `proposed_order` rows stuck at
+`status='risk_approved'` (the "59 pending but blank /approvals" split-brain).
+**Backup tag:** `.bak-pre-pmcc-orphan-fix-2026-07-08` on the 3 edited engine files (prod).
+**PID:** 108070 → **119679** (start 11:47:35 UTC; NRestarts=0; active).
+
+**Root cause (forensic `reports/2026-07-08_pmcc_risk_approved_forensic.md`):** `proposed_order.status`
+for HITL-gated PMCC orders is advanced out of `risk_approved` ONLY as a live side-effect of
+`_run_order`'s in-process graph resume, with no external recovery. Two manifestations:
+(A) resume-after-decision fails (checkpointer `database is locked`, `main.py:1097`) — a
+`board_decision_received` audit exists but the row was never written back (42 rows); (B) the
+up-to-1h approval wait is cancelled by a restart, thread left suspended in the checkpointer with
+no boot recovery (17 rows).
+
+**Files deployed (5):**
+- `trading_corp/agents/pmcc_approval_reconciler.py` — **NEW** (`e8d8fc7c`). External recovery,
+  scoped strictly to `robinhood_pmcc`: shared idempotent `expire_pmcc_approval()` writer; Fix A
+  `reconcile_pmcc_approvals()` (periodic audit-triggered sweep, manifestation A); Fix B
+  `recover_orphaned_pmcc_threads_on_boot()` (boot checkpointer-thread recovery, direct-write +
+  `adelete_thread`, manifestation B); `pmcc_orphan_canary()` (180-min regression tripwire);
+  `run_pmcc_approval_reconcile_loop()`.
+- `trading_corp/main.py` — `d0d382cb`→`5a5eb7b5` (CRLF). Boot-recovery one-shot + reconcile-loop
+  task wired inside the `make_checkpointer` block, before the scheduler starts new approval waits.
+- `trading_corp/comms/telegram_commands.py` — `3b31baba`→`654c218a`. `/pending` reads the
+  `PendingApprovalRegistry` (not the `risk_approved` DB residue) — same pattern as `7f641d8`.
+- `trading_corp/web/data.py` — `6eeda43b`→`bac9fe54`. Deleted the dead `_query_pending_approvals`
+  (0 callers post-`7f641d8`) + `_query_open_orders` (result was discarded).
+- `deploy/2026-07-08_pmcc_lifecycle_fix/backfill_pmcc_risk_approved.py` — **NEW** (`46668d88`),
+  standalone one-shot (not engine-loaded).
+
+**Audit kinds shipped (6-month regression trail):** `pmcc_orphan_boot_recovered` (Fix B),
+`pmcc_orphan_reconciler_recovered` (Fix A), `pmcc_orphan_backfilled` (backfill),
+`pmcc_orphan_detected` (canary).
+
+**★ DEPLOY-MECHANICS FINDING (root, azureuser SSH deploy was BLOCKED):** the `trading_corp/`
+package dir + `trading_corp/agents/` were owned by a phantom Windows-mapped UID **`197609:197121`**
+(mode 755) since Jul 7 19:40 — azureuser (uid 1000) could not create/rename files there (blocked
+the NEW reconciler + main.py atomic-mv). Fixed by a **targeted root chown** of exactly those 2
+dirs → `azureuser:azureuser` via **Azure Run Command** (`RG-SHARED-PROD`/`tc-prod-vm`, classic
+`run-command invoke` as root — the `runprod.ps1` path; NOT `chown -R` the tree). Local ext4, no
+mount, no git on prod → chown was the correct + safe fix (engine kept running, no restart from
+it). **The rest of `trading_corp/` may still be 197609-owned — any future azureuser-SSH deploy
+touching those dirs will hit the same wall; fix wholesale + investigate the cause (likely a
+Windows-origin tar/rsync extracted as root during a recent deploy).**
+
+**Deploy sequence (drift-gated targeted-hunk):** Gate A (prod==origin/main baseline for the 3
+edited files — confirmed) → `.bak` → root chown (Gate 1-2) → stage all 5 via `git cat-file` →
+ssh `cat` (correct EOL, no scp-smudge) → Gate B (staged md5 == target + `py_compile` on prod
+venv, all 5 pass) → atomic-mv → GATE 4 pre-restart re-verify (both bitunix divisions FLAT,
+reconciler matched=0/orphan=0, 0 tracebacks, no md5 drift) → flat-guarded `sudo -n systemctl
+restart trading-corp` (re-checks flat atomically).
+
+**Evidence-gate (reconciled cleanly before backfill):** boot-recovery cleared **17** orphaned
+suspended-thread approvals (journal `pmcc: boot-recovered 17`; `pmcc_orphan_boot_recovered`
+audits since restart == 17; each `thread_cleared=True`); remaining `risk_approved` > 90 min ==
+**42**; reconciler acted == **0** (deploy-date cutoff `RECONCILE_MIN_TS=2026-07-08` correctly
+excludes the pre-existing rows — case (i)); canary == **0**. bitunix SFP/futures undisturbed
+(`matched=0 orphan=0`).
+
+**Backfill (operator-authorized, Option 2):** dry-run showed 42 rows → `--commit` →
+**41 → `board_rejected`** (recorded reject/timeout) + **1 → `cancelled`** (`311b6eb7` CIFR, recorded
+approve/web, never executed → `cause=resume_write_failed_approved_stranded`; "cancelled" is
+truthful vs "rejected" for a system-stranded approval). Idempotent (`WHERE status='risk_approved'`
+guard); per-row `pmcc_orphan_backfilled` audit with cause + `terminal_status` + `recorded_decision`;
+touched ids → `deploy/2026-07-08_pmcc_lifecycle_fix/backfilled_ids.txt`.
+
+**Post-backfill verify:** stuck PMCC `risk_approved` = **0**; status matrix `board_rejected` 173 /
+`cancelled` 1 / `risk_rejected` 15 / `filled` 11 / `board_approved` 3 (total 203 conserved);
+`pmcc_orphan_backfilled` audits = 41 board_rejected + 1 cancelled; canary silent.
+
+**Total resolution: 17 boot-recovered + 42 backfilled = 59 orphans cleared; 0 remaining.**
+
+**Rollback:** restore the 3 `.bak-pre-pmcc-orphan-fix-2026-07-08` files + delete the new reconciler
+module + restart (external recovery, so removing it just stops recovering). Backfill inverse
+(marker-guarded, covers both statuses): `UPDATE proposed_order SET status='risk_approved',
+board_reason=NULL WHERE strategy='robinhood_pmcc' AND status IN ('board_rejected','cancelled') AND
+board_reason LIKE 'orphan backfill 2026-07-08%';`.
+
+**BACKLOG B2 = RESOLVED** by this deploy (merge `72d0f87`). Per BACKLOG's convention (open items
+only; completed → deploy_log + memory), B2 is recorded here + in memory `pmcc-lifecycle-fix-2026-07-08`,
+NOT re-added to BACKLOG. NOTE: the unmerged `dashboard-tile-reorg-2026-07-07` branch still lists
+B2 as open in its BACKLOG — drop it if/when that branch merges.
+
+**Standing passive verifications UNDISTURBED** (bitunix futures BE ref-vs-fill, SFP A2 fill,
+SL-trail breadcrumb — no bitunix code touched). **main==prod HOLDS** for the 4 deployed engine
+files post-merge (blob md5 == prod: `5a5eb7b5`/`654c218a`/`bac9fe54`/`e8d8fc7c`).
+
+---
+
 ## 2026-07-08 - main-to-prod reconciliation: restore main==prod for 17 deployed files (repo-only; NO prod change)
 
 **STATE VERB: RECONCILED (repo-only; NO prod write, NO restart, NO deploy - read-only SSH cat/md5sum/tar throughout).**
