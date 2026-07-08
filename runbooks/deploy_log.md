@@ -116,6 +116,25 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-08 - main-to-prod reconciliation: restore main==prod for 17 deployed files (repo-only; NO prod change)
+
+**STATE VERB: RECONCILED (repo-only; NO prod write, NO restart, NO deploy - read-only SSH cat/md5sum/tar throughout).**
+
+**What.** main had diverged from prod since the 2026-07-02 SFP bidirectional deploy (targeted-hunk pattern onto prod's Kalshi-CRLF-drifted tree, never wholesale-copied); 4+ subsequent deploys widened the gap. This entry records the reconciliation that blesses prod's live bytes (PID 108070) as truth on main for all deployed executable files. Full report: `reports/2026-07-08_main_prod_reconciliation.md`.
+
+**Branch/commits.** `main-prod-reconcile-2026-07-08` off `origin/main 1d2a714`, 3 last-touch commits, merged `--no-ff` to main as **`be1d809`** (pushed origin):
+- C1 `b9de6c5` SFP bidirectional (2026-07-02): `strategies.yaml`, `main.py` (CRLF `d0d382cb`), `bitunix_sfp_research_log.py` (new)
+- C2 `7b642f8` dashboard reorg + SFP cockpit + A2 (2026-07-07/08): 9 dashboard web files + `stage1_monitoring.html` DELETE + `_state_board.html` + `bitunix_sfp_observer.py` + `sfp_cockpit_view.py`
+- C3 `829ebdf` futures BE ref-vs-fill (2026-07-08): `bitunix_position_reconciler.py` (final state = 07-02 SFP-exit + 07-02 SL-trail + 07-08 BE)
+
+**Deploys retroactively recorded (were memory-only, no prior deploy_log entry):** 2026-07-02 SFP bidirectional; 2026-07-02 SL-trail fix. Also folds in 2026-07-07/08 dashboard+A2 and 2026-07-08 futures BE (branches unmerged until now). 2026-07-06 bracket min-leg was already merged (`a866377`, md5 `7794622f`) - at parity, not re-reconciled.
+
+**Parity verification.** Byte-exact md5, triple-verified (after tar transfer, after each commit, post-merge vs a FRESH prod fetch). **17/17 match**; origin/main == local main == prod. Method: completeness sweep of all 284 main-tracked `trading_corp/`+`config/` files first; `tar`-over-ssh byte transfer; `git -c core.autocrlf=false` staging (preserves `main.py` CRLF).
+
+**Revised scope of the restored invariant (honest boundary):** main == prod restored 2026-07-08 for deployed executable content. Documented exclusions, NOT reconciled: **6 CRLF-only cosmetic files** (`kalshi.py`, `kalshi_live.py`, `kalshi_copy_trader.py`, `pm_dashboard_body.html`, `_observer_test.py`, `secrets.py` - content-identical, prod CRLF vs main LF; not reconciled to avoid polluting main with mixed EOLs); **1 docstring-lag file** (`kalshi_resolver.py` - code byte-identical, docstring drift where MAIN leads with the accurate K5 leg_date-fallback wording; not reconciled as it would downgrade main's docs); **7 dev-only files** (main-has/prod-lacks: `_ta_helpers`, `bitunix_confluence_gate`, `pead_backtest`, `pead_backtest_driver`, `whale_screening`, `kalshi_demo_smoke`, `kalshi_demo_validate` - deployment-subset boundary, expected). See report for per-file rationale.
+
+---
+
 ## 2026-07-07 ~16:40 UTC — Kalshi arb divisions: LLM narrowed to Economics+Elections + resolver leg_date starvation fix + temporal/bucket 60-day horizon caps + backlog cleanup (agent-driven, autonomous under explicit Board approval; account FLAT)
 
 **Commits:** `b5eb93f` (llm categories), `d1f5ea6` (resolver leg_date fix), `aa06498` (temporal 60d cap), `0f79b22` (bucket guards) — all MERGED, main==origin/main==`0f79b22`.
