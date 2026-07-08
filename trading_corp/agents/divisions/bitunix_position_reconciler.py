@@ -46,6 +46,7 @@ from trading_corp.brokers.bitunix_symbols import (
     to_wire_format,
 )
 from trading_corp.persistence import db
+from trading_corp.agents.divisions import bitunix_sfp_research_log as research_log
 from trading_corp.persistence.models import OpenPosition
 
 log = logging.getLogger(__name__)
@@ -698,6 +699,9 @@ def _autobook_missing_close(db_url: str, order_id: str, now: str) -> str:
                              "pnl_basis": "known_level_estimate",
                              "slippage_unreconciled": True})),
             )
+        # Research-log EXIT stamp (isolated, fail-soft; estimate = book AT stop level).
+        research_log.log_exit(db_url, order_id, exit_ts=now, exit_px=level,
+                              realized_r=r_mult, closing_leg=exit_kind)
         return "booked"
     except Exception as e:
         log.warning("reconciler: auto-book failed for order_id=%s: %s",
@@ -1003,6 +1007,9 @@ async def _autobook_missing_close_real(
                              "slippage_unreconciled": False,
                              "observed_slippage_pts": slip_pts})),
             )
+        # Research-log EXIT stamp (isolated, fail-soft; real-fill VWAP).
+        research_log.log_exit(db_url, order_id, exit_ts=now, exit_px=vwap,
+                              realized_r=r_mult, closing_leg=exit_kind)
         return "booked"
     except Exception as e:
         log.warning("reconciler: real auto-book failed for order_id=%s: %s — "
@@ -1325,12 +1332,37 @@ async def move_bracket_sls(
         entry_qty = _safe_float(extra.get("bracket_entry_qty"), _safe_float(r["qty"]))
         if entry_qty <= 0:
             continue
-        current_qty = pos_qty.get((_match_symbol_key(r["symbol"]), side), 0.0)
+        pos_key = (_match_symbol_key(r["symbol"]), side)
+        # Fix A (2026-07-02 diag): a fully-closed / absent position is GONE from the
+        # venue `get_pending_positions()` list, so `pos_qty.get(key, 0.0)` would
+        # default to 0.0 and be mis-read below as "TP1+TP2 filled" — driving a
+        # positionId-less `modify_position_sl` that fail-soft-skips and logged a
+        # WARNING reading like a live-risk protection failure. It is a post-close
+        # no-op (nothing to trail; the close is booked by the auto-book path). Skip
+        # cleanly BEFORE the TP-fill test so the false positive never fires.
+        if pos_key not in pos_qty or pos_qty[pos_key] <= 0:
+            # Fix B: reduced-severity, unambiguous breadcrumb (was a WARNING that
+            # masqueraded as a protection failure and cost an investigation cycle).
+            log.info(
+                "bracket SL-move: %s absent/closed at SL-modify time — "
+                "post-close no-op, skipping (no open position to trail)", r["symbol"],
+            )
+            continue
+        current_qty = pos_qty[pos_key]
         if current_qty >= entry_qty - 1e-12:
             continue  # no TP fill detected this tick
         current_sl = _safe_float(extra.get("current_sl"), _safe_float(r["stop_price"]))
+        # ref-vs-fill (2026-07-08): breakeven must be the ACTUAL entry fill, not
+        # the signal reference — else the "breakeven" stop sits off by the entry
+        # slippage (a stop-out after TP1 then books a small loss, not breakeven).
+        # Prefer extra['actual_entry_fill_price'] (present on live futures rows,
+        # already trusted by _resolve_entry_price for close P&L); fall back to the
+        # reference for paper / pre-fix rows. Tighten-only guard downstream keeps
+        # the move safe (long: up; short: down).
         entry_price = _safe_float(
-            extra.get("entry_reference_price"), _safe_float(r["entry_reference_price"])
+            extra.get("actual_entry_fill_price"),
+            _safe_float(extra.get("entry_reference_price"),
+                        _safe_float(r["entry_reference_price"])),
         )
         tp1 = _safe_float(extra.get("tp1_price"))
         if tp1 <= 0:
@@ -1346,7 +1378,7 @@ async def move_bracket_sls(
             continue
         # Thread positionId from the broker Position.extra (required by the
         # corrected modify_position_sl; absent → fail-soft no-op inside the method).
-        pos_key = (_match_symbol_key(r["symbol"]), side)
+        # `pos_key` is computed once at the top of the loop (Fix A) and reused here.
         broker_position_id: str | None = pos_id.get(pos_key)
         moved = False
         if hasattr(broker, "modify_position_sl"):
