@@ -26,6 +26,19 @@ executable content; **6 CRLF-cosmetic files + 1 docstring-lag file (`kalshi_reso
 main leads) + 7 dev-only files are documented exclusions** - see the 2026-07-08 reconciliation
 report for per-file rationale.
 
+## MEMORY.md grooming pass - ~60KB -> ~25KB target - OPEN (filed 2026-07-08)
+
+MEMORY.md is ~59KB vs the ~24KB soft limit (only part loads into context otherwise). Groom:
+- **Compress entries** - overlong index lines down to one-line hooks (<~200 chars); the detail
+  already lives in the topic files.
+- **Consolidate the related SFP-arc entries** (`bitunix-sfp-division-build-spec`,
+  `bitunix-sfp-mode-b`, `bitunix-sfp-bidirectional-live`, `dashboard-reorg-2026-07-07`) into a
+  tighter set.
+- **Mark superseded entries as historical** (or delete truly-dead ones) so recall surfaces
+  current state.
+
+Low priority; non-destructive to topic-file content; do between deploy-adjacent work.
+
 ## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
 
 Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:trading`**, **SOL + XRP `arm:watch`
