@@ -1158,6 +1158,36 @@ async def run(argv: list[str] | None = None) -> int:
         if args.demo:
             await _run_demo_order(graph, channel, logger_agent)
 
+        # --- PMCC approval-lifecycle recovery (STEP 3 fix for the risk_approved leak) ---
+        # Fix B: at boot, expire every orphaned robinhood_pmcc approval whose LangGraph
+        # thread is still suspended in the checkpointer (a restart cancelled its <=1h wait
+        # before the timeout could auto-reject). Runs HERE — after the graph/checkpointer
+        # are ready and BEFORE the scheduler starts any new approval waits, so every
+        # suspended thread it sees is provably orphaned. Best-effort; never crashes boot.
+        # Scoped strictly to robinhood_pmcc. See reports/2026-07-08_pmcc_*.md.
+        try:
+            from trading_corp.agents.pmcc_approval_reconciler import (
+                recover_orphaned_pmcc_threads_on_boot,
+                run_pmcc_approval_reconcile_loop,
+            )
+            _pmcc_boot_recovered = await recover_orphaned_pmcc_threads_on_boot(
+                secrets.db_url, logger_agent, saver,
+            )
+            if _pmcc_boot_recovered:
+                log.info(
+                    "pmcc: boot-recovered %d orphaned risk_approved approval(s)",
+                    _pmcc_boot_recovered,
+                )
+            # Fix A + canary: periodic reconciler for manifestation-A orphans (a board
+            # decision was recorded but the in-process resume failed to write it back) +
+            # a 180-min regression tripwire emitting `pmcc_orphan_detected`.
+            pmcc_approval_reconcile_task = asyncio.create_task(
+                run_pmcc_approval_reconcile_loop(secrets.db_url, logger_agent, saver),
+                name="pmcc-approval-reconcile",
+            )
+        except Exception as e:
+            log.exception("pmcc approval-recovery wiring failed (continuing): %s", e)
+
         # --- Daily pre-open PMCC scan scheduler (weekday mornings, 8:30 ET) ---
         scheduler_task = asyncio.create_task(
             _scheduled_pmcc_scan_loop(_on_scan, channel, logger_agent)

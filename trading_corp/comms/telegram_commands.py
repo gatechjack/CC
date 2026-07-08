@@ -325,35 +325,37 @@ class TelegramCommands:
     # ── /pending ─────────────────────────────────────────────────────────
 
     async def pending(self) -> str:
-        if self.deps.logger_agent is None:
-            return "Logger not configured."
-        from trading_corp.persistence import db
-        rows = []
-        try:
-            with db.connect(self.deps.db_url) as conn:
-                rs = conn.execute(
-                    """SELECT id, ts, strategy, symbol, side, qty, rationale
-                       FROM proposed_order
-                       WHERE status='risk_approved'
-                       ORDER BY ts DESC LIMIT 25"""
-                ).fetchall()
-            rows = [dict(r) for r in rs]
-        except Exception as e:
-            return f"Query failed: {e}"
-
-        if not rows:
+        # Source from the in-process PendingApprovalRegistry (the SAME source the web
+        # /approvals page + the Overview stat card read), NOT a proposed_order DB count.
+        # A DB count of status='risk_approved' includes stale residue that is not actually
+        # pending anything (the "59 pending but blank screen" split-brain); the registry
+        # holds only genuinely-live approval waits. See reports/2026-07-07_approvals_*.md
+        # + reports/2026-07-08_pmcc_*.md.
+        registry = getattr(self.deps, "pending_registry", None)
+        if registry is None:
+            return "Approval registry not wired."
+        entries = registry.list_pending()   # newest-first; live waits only
+        if not entries:
             return "✅ No pending approvals."
 
-        lines = [f"⏳ *Pending approvals* ({len(rows)})", ""]
-        for r in rows[:15]:
-            ts_short = (r.get("ts") or "")[:16]
+        lines = [f"⏳ *Pending approvals* ({len(entries)})", ""]
+        for e in entries[:15]:
+            o = (e.request.detail or {}).get("order", {}) if e.request else {}
+            sym = o.get("symbol", "?")
+            side = str(o.get("side", "")).upper()
+            try:
+                qty = float(o.get("qty", 0) or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            strat = o.get("strategy", "?")
+            oid = (e.request.order_id if e.request else "") or ""
+            ts_short = e.added_at.isoformat()[:16] if e.added_at else ""
             lines.append(
-                f"  `{r['symbol']}` {r['side'].upper()} ×{r['qty']:g} "
-                f"({r.get('strategy', '?')})\n"
-                f"      `{r['id'][:10]}` · {ts_short}"
+                f"  `{sym}` {side} ×{qty:g} ({strat})\n"
+                f"      `{oid[:10]}` · {ts_short}"
             )
-        if len(rows) > 15:
-            lines.append(f"  …and {len(rows) - 15} more")
+        if len(entries) > 15:
+            lines.append(f"  …and {len(entries) - 15} more")
         return "\n".join(lines)
 
     # ── /mode ────────────────────────────────────────────────────────────
