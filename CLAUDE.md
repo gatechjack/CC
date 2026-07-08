@@ -400,6 +400,15 @@ value; protect it from re-expansion.
   catches transfer-set composition defects. See
   `scripts/bitunix_prod_surface_md5diff.py` for the sweep tool.
   Required before any prod deploy.
+  **CRLF/autocrlf trap (2026-07-08):** repo is `core.autocrlf=true` with
+  no `.gitattributes`, so a naive `git archive`/checkout CRLF-mangles the
+  whole tree and a sweep reads it as hundreds of false "drifts." Use
+  `git show` / `git -c core.autocrlf=false` for main-side md5, and compare
+  content separately from line-endings (`main.py` is genuinely CRLF on
+  prod). Reconcile pattern + the current `main==prod` scope (deployed
+  content parity; named cosmetic/dev-only exclusions):
+  `reports/2026-07-08_main_prod_reconciliation.md` + memory
+  `main-prod-reconciled-2026-07-08`.
 
 ---
 
