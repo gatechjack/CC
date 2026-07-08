@@ -1450,11 +1450,9 @@ kalshi_temporal_bucket_arb:
   temporal:
     enabled: true
     min_edge_cents: 4               # clears 2-leg taker fees ~2-4c
-    max_horizon_days: 60            # 2026-07-07: drop pairs whose late leg resolves >60d out (capital-lock cap); code default is also 60
   bucket:
     enabled: true
     min_edge_cents: 5               # clears N-leg fees on multi-bucket events
-    max_horizon_days: 60            # 2026-07-07: require >=2 legs + latest expected_expiration_time within 60d (drops NBER-style never-resolvers)
   sizing:
     fixed_usd_per_leg: 1.0          # $1 per leg -> $2 (temporal) or $N (bucket) max risk
   per_cycle:
@@ -1481,14 +1479,8 @@ kalshi_llm_arbitrage:
   division: kalshi_llm_arbitrage
   poll_interval_sec: 60             # match polymarket cadence; LLM divergence can move fast
   discovery:
-    # 2026-07-07: narrowed to the only two net-positive paper categories.
-    # Paper window (n=2508, 2026-05-11 -> 07-01) gross P&L by category:
-    # Economics +$108, Elections +$33 (positive) — kept. Dropped: Politics
-    # -$111, Financials -$48 (net-negative), plus legacy Sci/Tech -$282,
-    # World -$42, Weather/Crypto (already carved out to their own divisions).
-    # Economics retains the strict 30pp+extreme gate (strict_categories);
-    # Elections uses the baseline min_divergence_pct.
     categories:
+      # 2026-07-07: narrowed to Economics+Elections (only net-positive paper cats)
       - Economics
       - Elections
     max_series_per_category: 30
@@ -1945,17 +1937,17 @@ bitunix_sfp:
   execution_mode: live            # OPERATOR-SET paper|live at deploy
   mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged.
   division: bitunix_sfp
-  symbols: ["BTC/USDT.P", "ETH/USDT.P"]
+  symbols: ["BTC/USDT.P", "ETH/USDT.P", "SOL/USDT.P", "XRP/USDT.P"]
   detection_tf: "15m"
   pivot_len: 50
   back_to_break: 4
   stop_buffer_pct: 0.001
   tp_r: 2.0
   watch_hours: 12
-  side: long
-  risk_pct_real: 0.1000            # OPERATOR-SET 2026-06-25 (conservative, below 0.005 default)
-  risk_pct_considerable: 0.200    # OPERATOR-SET 2026-06-25 (conservative)
-  leverage: 25.0                    # OPERATOR-SET 2026-06-25 (conservative, below 5.0 default)
+  side: regime                     # kill-switch (HOT, no restart): regime|long|short. regime=bidirectional; long=long-only (maiden-short rollback, shorts off + longs continue); short=short-only
+  risk_pct_real: 0.05              # learn-account 2026-07-01 (Board-approved)
+  risk_pct_considerable: 0.10      # learn-account 2026-07-01 (Board-approved)
+  leverage: 10.0                   # learn-account 2026-07-01 (strategies.yaml scalar = SFP live leverage, NOT futures TIER_SIZING)
   max_hold_seconds: 604800
   bar_cache_max_bars: 160
   loop_settle_seconds: 20
@@ -1966,3 +1958,5 @@ bitunix_sfp:
   symbol_modes:
     "BTC/USDT.P": { bos_tf: "3m", arm: "trading" }   # live Mode B (replaces 15m-BOS, operator 2026-06-28)
     "ETH/USDT.P": { bos_tf: "3m", arm: "trading" }   # live Mode B, trivial size
+    "SOL/USDT.P": { bos_tf: "3m", arm: "trading" }   # re-armed 2026-07-01 (regime-aware)
+    "XRP/USDT.P": { bos_tf: "3m", arm: "trading" }   # re-armed 2026-07-01 (regime-aware)

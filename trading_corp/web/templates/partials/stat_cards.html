@@ -55,13 +55,21 @@
     </div>
   </div>
 
-  <!-- Pending approvals — clickable, routes to /approvals index -->
+  {# Pending approvals + HITL activity (merged tile) — clickable, routes to
+     /approvals. The count is registry-backed (actionable, matches the
+     /approvals list), NOT the all-time proposed_order risk_approved DB
+     residue. Board decisions (24h) + the autonomous-live Stage-1 invariant
+     fold in from the retired standalone HITL tile. Ring severity: red iff an
+     autonomous live order bypassed HITL, else warn iff anything is pending. #}
+  {% set _h = snap.hitl or {} %}
   <a href="/approvals"
-     title="Open pending approvals"
-     class="bg-pane border border-edge rounded-lg p-4 block
+     title="Pending approvals (actionable) · board decisions 24h · autonomous live orders (Stage-1 invariant: 0)"
+     class="bg-pane border rounded-lg p-4 block
             hover:bg-pane-2 hover:border-edge-2 transition-colors
             focus:outline-none focus-visible:ring-2 focus-visible:ring-accent
-            {% if snap.pending_approvals > 0 %}ring-1 ring-warn/40 hover:ring-warn/60{% endif %}">
+            {% if _h.get('autonomous_live_24h', 0) > 0 %}border-loss/60 ring-1 ring-loss/30
+            {% elif snap.pending_approvals > 0 %}border-edge ring-1 ring-warn/40 hover:ring-warn/60
+            {% else %}border-edge{% endif %}">
     <div class="text-[11px] text-muted uppercase tracking-wider flex items-center gap-1">
       <span>Pending approvals</span>
       <span class="ml-auto text-muted/60 text-[10px]" aria-hidden="true">→</span>
@@ -69,6 +77,23 @@
     <div class="text-2xl font-mono font-semibold mt-1
       {% if snap.pending_approvals > 0 %}text-warn{% else %}text-mono{% endif %}">
       {{ snap.pending_approvals }}
+    </div>
+    <div class="mt-2 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] font-mono">
+      <div class="flex justify-between items-baseline">
+        <span class="{% if _h.get('approved_24h', 0) == 0 %}text-muted/50{% else %}text-muted{% endif %}">appr 24h</span>
+        <span class="font-semibold {% if _h.get('approved_24h', 0) > 0 %}text-gain{% else %}text-muted/50{% endif %}">{{ _h.get('approved_24h', 0) }}</span>
+      </div>
+      <div class="flex justify-between items-baseline">
+        <span class="{% if _h.get('rejected_24h', 0) == 0 %}text-muted/50{% else %}text-muted{% endif %}">rej 24h</span>
+        <span class="font-semibold {% if _h.get('rejected_24h', 0) > 0 %}text-loss{% else %}text-muted/50{% endif %}">{{ _h.get('rejected_24h', 0) }}</span>
+      </div>
+    </div>
+    <div class="mt-1.5 pt-1.5 border-t border-edge/50 flex justify-between items-baseline text-[10px] font-mono"
+         title="Live orders placed with hitl_gate=monitor_mode (HITL bypassed). Stage-1 invariant: 0.">
+      <span class="{% if _h.get('autonomous_live_24h', 0) > 0 %}text-loss{% else %}text-muted{% endif %}">auto-live 24h</span>
+      <span class="font-bold {% if _h.get('autonomous_live_24h', 0) > 0 %}text-loss{% else %}text-gain{% endif %}">
+        {% if _h.get('autonomous_live_24h', 0) > 0 %}{{ _h.get('autonomous_live_24h', 0) }} ⚠{% else %}0 ✓{% endif %}
+      </span>
     </div>
   </a>
 

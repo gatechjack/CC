@@ -669,6 +669,12 @@ class DivisionViewSnapshot:
     # `trade_plan.enabled: false` (today's prod state) so the panel is
     # visible-but-empty pre-flip and starts populating post-flip.
     bitunix_trade_plan: dict | None = None
+    # Gate (a) REST/exec resilience — 24h counts of rest_request_retried /
+    # snapshot_stale_halt / stuck_order_cancelled / stuck_order_cancel_failed.
+    # Only populated for `bitunix_futures` (the division whose bitunix.py +
+    # data_exec.py REST layer emits these). Shape: gate_a_resilience_24h().
+    # Relocated here from the retired home-page Stage-1 monitoring row.
+    gate_a: dict | None = None
 
 
 @dataclass
@@ -690,6 +696,11 @@ class CommandCenterSnapshot:
     # Dry-run mode: LIVE pipeline runs end-to-end but broker.place_order() is
     # skipped. Templates render an extra badge to flag this.
     dry_run: bool = False
+    # HITL activity (registry-backed pending count + 24h board decisions +
+    # autonomous-live invariant), merged into the Pending Approvals stat card
+    # so the count matches /approvals (actionable) rather than the all-time
+    # proposed_order.status='risk_approved' DB residue. Shape: hitl_activity_24h().
+    hitl: dict | None = None
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────
@@ -720,7 +731,9 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
     # Run parallel data fetches
     db_results = await asyncio.gather(
         asyncio.to_thread(_query_open_orders, db_url),
-        asyncio.to_thread(_query_pending_approvals, db_url),
+        asyncio.to_thread(
+            hitl_activity_24h, db_url, pending_registry=deps.pending_registry,
+        ),
         asyncio.to_thread(_query_recent_audit, db_url, 10),
         asyncio.to_thread(_query_equity_curve, db_url, 30),
         asyncio.to_thread(_safe_get_vix),
@@ -728,11 +741,11 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         _build_market_ribbon(),
         return_exceptions=True,
     )
-    open_orders, pending, recent_audit, eq_curve, vix, regime, ribbon = (
+    open_orders, hitl, recent_audit, eq_curve, vix, regime, ribbon = (
         r if not isinstance(r, Exception) else None for r in db_results
     )
     open_orders = open_orders or []
-    pending = pending or []
+    hitl = hitl if isinstance(hitl, dict) else {}
     recent_audit = recent_audit or []
     eq_curve = eq_curve or []
     ribbon = ribbon or []
@@ -784,7 +797,7 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         mode=deps.mode,
         total_equity=total_equity,
         open_positions=open_positions,
-        pending_approvals=len(pending),
+        pending_approvals=int(hitl.get("pending", 0)),
         vix=vix if isinstance(vix, (int, float)) else None,
         regime=regime if isinstance(regime, str) else "unknown",
         buckets=buckets,
@@ -794,6 +807,7 @@ async def build_command_center(deps) -> CommandCenterSnapshot:
         market_ribbon=ribbon,
         btc_owned=0.0,           # stub — wire to live feed in Phase 1.5c+
         dry_run=bool(getattr(deps, "dry_run", False)),
+        hitl=hitl,
     )
 
 
@@ -1521,12 +1535,14 @@ def trade_flow(
             "color": _color_for(r["kind"]),
             # Human-readable title for the row header. Prefer the
             # prediction-market event title (Kalshi: event_title,
-            # Polymarket: market_question) — repeating "WOULD HAVE
-            # PLACED" on every row is not useful when there are 6+ rows.
-            # Falls back to None so the template can render the kind.
+            # Polymarket: market_question, copy-trading: market_title) —
+            # repeating "WOULD HAVE PLACED" on every row is not useful when
+            # there are 6+ rows. Falls back to None so the template renders
+            # the kind.
             "event_title": (
                 payload.get("event_title")
                 or payload.get("market_question")
+                or payload.get("market_title")
                 or None
             ),
             "payload_pretty": json.dumps(payload, indent=2, default=str, sort_keys=True),
@@ -3433,6 +3449,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     bitunix_decision_flow_view: dict | None = None
     bitunix_pending_pa_view: dict | None = None
     bitunix_trade_plan_view: dict | None = None
+    gate_a_view: dict | None = None
     if slug == "bitunix_futures":
         try:
             bitunix_score_view = build_bitunix_score_view(deps.db_url, deps)
@@ -3458,6 +3475,10 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
             bitunix_trade_plan_view = build_bitunix_trade_plan_view(deps.db_url, deps)
         except Exception as e:
             log.warning("bitunix trade_plan view for %s failed: %s", slug, e)
+        try:
+            gate_a_view = gate_a_resilience_24h(deps.db_url)
+        except Exception as e:
+            log.warning("gate_a view for %s failed: %s", slug, e)
 
     # Robinhood IRA dashboard — group shares + short calls into covered
     # calls, identify pure assets (shares without calls), surface short
@@ -3491,6 +3512,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         bitunix_decision_flow=bitunix_decision_flow_view,
         bitunix_pending_pa=bitunix_pending_pa_view,
         bitunix_trade_plan=bitunix_trade_plan_view,
+        gate_a=gate_a_view,
     )
 
 

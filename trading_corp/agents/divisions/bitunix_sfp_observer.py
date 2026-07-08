@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_corp.persistence import db
+from trading_corp.agents.divisions import bitunix_sfp_research_log as research_log
 from trading_corp.persistence.models import (
     AccountState,
     PaperTradeRecord,
@@ -102,6 +103,89 @@ _WATCH_RECENT_WINDOW_SEC = 24 * 3600   # warm-start (b): only persist last 24h
 
 def _watch_bars_from_hours(watch_hours: float, tf_minutes: int = 15) -> int:
     return int(watch_hours * 60 / tf_minutes)
+
+
+# ── Regime component (engine-native; 2026-07-01 bidirectional deploy) ──────────
+# 15m EMA-200 + 32-bar slope, PARITY-LOCKED to the research `regime_filter.py`
+# `ema200_pos_slope`: FIRST-CLOSE-seeded streaming EMA (deliberately NOT
+# `_ta_helpers.ema_series`, which is SMA-seeded + differently indexed and would
+# break label parity), rising = em[-1] > em[-33]. Computed inline from the
+# observer's own 15m bar cache (single source of truth). Fail-safe: returns None
+# (→ side-gate skips, never fires without a regime) until >=232 closed 15m bars.
+REGIME_ENGINE = "15m_ema200_slope"
+REGIME_EMA_PERIOD = 200
+REGIME_SLOPE_BARS = 32
+REGIME_MIN_BARS = REGIME_EMA_PERIOD + REGIME_SLOPE_BARS   # 232 (formula minimum)
+
+# Boot seed (2026-07-01, Option A): converge the EMA-200 from the APPEND-ONLY
+# bitunix_bar_history 15m capture at boot (independent of the venue kline-fetch
+# depth), then maintain inline from live closes. REGIME_SEED_BARS = working-set cap;
+# the regime is gated OFF (None -> side-gate SKIPs, audit sfp_skip_regime_warmup)
+# below REGIME_SEED_MIN so it NEVER fires on an unconverged EMA-200. Parity vs the
+# research regime: 788 closes=99.96%, 1000=99.99%, 1500=100%.
+REGIME_SEED_BARS = 1500
+REGIME_SEED_MIN = 800    # operator-set gate (trade-from-minute-one; ~99.96% floor
+                         # today, self-heals to ~100% as the capture deepens)
+
+
+def _regime_ema200(closes: list[float]) -> list[float]:
+    """First-close-seeded streaming EMA-200 (== research `regime_filter.ema`).
+    One value per input close (out[0] == closes[0])."""
+    a = 2.0 / (REGIME_EMA_PERIOD + 1.0)
+    e: float | None = None
+    out: list[float] = []
+    for c in closes:
+        e = c if e is None else a * c + (1.0 - a) * e
+        out.append(e)
+    return out
+
+
+def compute_regime_label(closes: list[float]) -> str | None:
+    """UP / DOWN / RANGE from 15m EMA-200 + 32-bar slope, or None if
+    < REGIME_MIN_BARS (warmup fail-safe). k=1 causal: closes[-1] is the last
+    CLOSED 15m bar; em[-33] is the slope reference 32 bars back."""
+    if len(closes) < REGIME_MIN_BARS:
+        return None
+    em = _regime_ema200(closes)
+    c = closes[-1]
+    e = em[-1]
+    rising = em[-1] > em[-(REGIME_SLOPE_BARS + 1)]
+    if c > e and rising:
+        return "up"
+    if c < e and not rising:
+        return "down"
+    return "range"
+
+
+# ── Short side (M2=0 reflection; 2026-07-01 bidirectional deploy) ──────────────
+# The vendored detector is long-only; SHORT SFPs are detected by feeding the SAME
+# byte-identical SfpModeBDetector a REFLECTED bar stream. M2=0 (reflected = -real,
+# high/low swapped) is a UNIVERSAL constant that CANNOT drift — the one silent-
+# failure mode (M2 drift corrupting stored reflected-coordinate pivot/swing/watch
+# state) is impossible by construction. The detector is fully order-based so negative
+# coords are fine and the fed path makes no positivity assumption. Un-reflect a
+# reflected level L to real via (0 - L) = -L. Affine-invariance vs the research
+# max+min midpoint reflection is PROVEN in short_parity_test.py (identical fires).
+def reflect_neg(bars: list[SfpBar]) -> list[SfpBar]:
+    """M2=0 reflection: reflected = -real, high/low swapped (reflected_high =
+    -real_low, reflected_low = -real_high). A LONG SFP on the reflected series ==
+    a SHORT SFP on the real series."""
+    return [SfpBar(b.ts_ms, -b.open, -b.low, -b.high, -b.close) for b in bars]
+
+
+def geometry_short(entry_ref: float, swept_high: float, *,
+                   stop_buffer_pct: float, tp_r: float):
+    """Short-side geometry in REAL space (mirror of the vendored long-only
+    ``compute_geometry``, which stays byte-identical). stop = swept_high +
+    stop_buffer_pct*entry (ABOVE entry); r = stop - entry; tp = entry - tp_r*r
+    (BELOW entry). Returns (stop, tp, r) or None if r<=0 (degenerate: entry >=
+    swept_high — never for a valid sweep-above-and-reclaim-down)."""
+    stop = swept_high + stop_buffer_pct * entry_ref
+    r = stop - entry_ref
+    if r <= 0:
+        return None
+    tp = entry_ref - tp_r * r
+    return stop, tp, r
 
 
 @dataclass
@@ -223,10 +307,18 @@ class BitunixSfpObserver:
         # identical to today.
         self._detectors: dict[str, list[SfpDetector]] = {}
         self._detectors_b: dict[str, list[SfpModeBDetector]] = {}
+        # SHORT SFP detectors: SAME byte-identical SfpModeBDetector, fed a REFLECTED
+        # (M2=0) bar stream by the side-gate (Piece 3). Instantiated here; inert (not
+        # fed) until then. Long detectors above are byte-unchanged.
+        self._detectors_b_short: dict[str, list[SfpModeBDetector]] = {}
         self._symbol_arm: dict[str, str] = {}
         self._symbol_bos_tf: dict[str, str] = {}
         self._last_ts: dict[str, int] = {}
         self._last_ts3: dict[str, int] = {}
+        # Engine-native regime buffer: bitunix_bar_history boot seed + live appends.
+        self._regime_closes: dict[str, list[float]] = {}
+        self._regime_last_ts: dict[str, int] = {}
+        self._last_regime: dict[str, str | None] = {}   # flip-watch state (change-only)
         for sym in config.symbols:
             wire = to_wire_format(sym)
             bos_tf, arm = config.mode_for(wire)
@@ -235,6 +327,13 @@ class BitunixSfpObserver:
             self._last_ts[wire] = 0
             if bos_tf == "3m":
                 self._detectors_b[wire] = [
+                    SfpModeBDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                    SfpModeBDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                ]
+                # SHORT engine (reflected-fed in Piece 3; inert now). Same params.
+                self._detectors_b_short[wire] = [
                     SfpModeBDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
                                      back_to_break=config.back_to_break, watch_bars_3m=wb3),
                     SfpModeBDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
@@ -252,6 +351,8 @@ class BitunixSfpObserver:
         # OBSERVE-ONLY: ensure the dashboard watch-state table exists (idempotent;
         # the gated migration also creates it). Fail-soft, never raises.
         self._ensure_watch_schema()
+        research_log.ensure_schema(self.db_url)   # isolated research catalog (fail-soft)
+        research_log.ensure_flip_schema(self.db_url)   # regime-flip watch (fail-soft)
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -277,6 +378,14 @@ class BitunixSfpObserver:
                 self._emit_watch_transitions(wire, det.drain_transitions(), recent_only=True)
             if bars:
                 self._last_ts[wire] = bars[-1].ts_ms
+        # Engine-native regime: seed from bitunix_bar_history (deep, venue-independent)
+        # THEN extend with any fresher cache bars so the first tick has a converged EMA.
+        self._seed_regime_from_history()
+        for sym in self.config.symbols:
+            w = to_wire_format(sym)
+            c15 = self.bar_caches.get(w)
+            if c15 is not None:
+                self._extend_regime(w, [self._to_sfp_bar(b) for b in getattr(c15, "bars", [])])
 
     def _warm_start_b(self, wire: str) -> None:
         """Mode-B warm-start: replay ALL cached 15m bars (arm watches) then ALL
@@ -289,6 +398,11 @@ class BitunixSfpObserver:
         for det in self._detectors_b[wire]:
             det.warm_start(bars15, bars3)
             self._emit_watch_transitions(wire, det.drain_transitions(), recent_only=True)
+        # SHORT engine warm-start on reflected bars (M2=0); transitions discarded.
+        n15, n3 = reflect_neg(bars15), reflect_neg(bars3)
+        for det in self._detectors_b_short[wire]:
+            det.warm_start(n15, n3)
+            det.drain_transitions()
         if bars15:
             self._last_ts[wire] = bars15[-1].ts_ms
         if bars3:
@@ -336,11 +450,12 @@ class BitunixSfpObserver:
             for det in self._detectors[wire]:
                 sigs = det.on_closed_bar(bar)        # decision path UNCHANGED
                 for sig in sigs:
-                    await self._handle_signal(symbol_display, wire, sig, bar)
+                    await self._handle_signal(symbol_display, wire, sig, bar, side="long")
                 # OBSERVE-ONLY: drain + persist lifecycle transitions. Fail-soft —
                 # CANNOT raise into the loop; a persist failure never affects trading.
                 self._emit_watch_transitions(wire, det.drain_transitions())
             self._last_ts[wire] = bar.ts_ms
+            self._extend_regime(wire, [bar])            # engine-native regime, inline
 
     # ------------------------------------------------------------------ #
     # Mode B — ONE 3m-boundary master loop. Drives Mode-A symbols on their 15m
@@ -399,7 +514,13 @@ class BitunixSfpObserver:
                 for det in self._detectors_b[wire]:
                     det.on_closed_15m_bar(bar15)        # arm only — returns []
                     self._emit_watch_transitions(wire, det.drain_transitions())
+                bar15_neg = reflect_neg([bar15])[0]     # M2=0 reflection for the SHORT arm
+                for det in self._detectors_b_short[wire]:
+                    det.on_closed_15m_bar(bar15_neg)    # arm short watch (returns [])
+                    det.drain_transitions()             # discard (short dashboard = Piece 5+)
                 self._last_ts[wire] = bar15.ts_ms
+                self._extend_regime(wire, [bar15])      # engine-native regime, inline
+            self._check_regime_flip(wire, symbol_display)   # flip-watch (read-only)
         if c3 is not None:
             last3 = self._last_ts3.get(wire, 0)
             for raw in [b for b in getattr(c3, "bars", []) if int(b.ts_ms) > last3]:
@@ -407,8 +528,15 @@ class BitunixSfpObserver:
                 for det in self._detectors_b[wire]:
                     sigs = det.on_closed_3m_bar(bar3)
                     for sig in sigs:
-                        await self._handle_signal(symbol_display, wire, sig, bar3)
+                        await self._handle_signal(symbol_display, wire, sig, bar3, side="long")
                     self._emit_watch_transitions(wire, det.drain_transitions())
+                # SHORT: same real bar reflected (M2=0); route with the REAL bar3 as the
+                # entry anchor. Watch transitions drained+discarded (short dash = Piece 5+).
+                bar3_neg = reflect_neg([bar3])[0]
+                for det in self._detectors_b_short[wire]:
+                    for sig in det.on_closed_3m_bar(bar3_neg):
+                        await self._handle_signal(symbol_display, wire, sig, bar3, side="short")
+                    det.drain_transitions()
                 self._last_ts3[wire] = bar3.ts_ms
 
     @staticmethod
@@ -416,26 +544,148 @@ class BitunixSfpObserver:
         return SfpBar(ts_ms=int(b.ts_ms), open=float(b.open), high=float(b.high),
                       low=float(b.low), close=float(b.close))
 
+    def _seed_regime_from_history(self) -> None:
+        """Boot seed: fill each traded symbol's regime closes buffer from the
+        APPEND-ONLY bitunix_bar_history 15m capture, so the EMA-200 is converged
+        WITHOUT depending on the venue kline-fetch depth. One-time; live 15m closes
+        extend it inline thereafter (single source of truth going forward). Fail-soft
+        — never raises into boot; a failed/empty seed leaves the regime None (skip)
+        until live bars accrue past REGIME_SEED_MIN."""
+        for sym in self.config.symbols:
+            wire = to_wire_format(sym)
+            try:
+                with db.connect(self.db_url) as conn:
+                    rows = conn.execute(
+                        "SELECT ts_ms, close FROM bitunix_bar_history "
+                        "WHERE symbol=? AND timeframe='15m' AND close IS NOT NULL "
+                        "ORDER BY ts_ms DESC LIMIT ?",
+                        (wire, REGIME_SEED_BARS),
+                    ).fetchall()
+                rows = sorted(rows, key=lambda r: int(r[0]))          # -> ascending
+                self._regime_closes[wire] = [float(r[1]) for r in rows]
+                self._regime_last_ts[wire] = int(rows[-1][0]) if rows else 0
+                log.info("bitunix_sfp regime seed %s: %d 15m closes (gate=%d)",
+                         wire, len(self._regime_closes[wire]), REGIME_SEED_MIN)
+            except Exception as e:                                    # fail-soft
+                self._regime_closes.setdefault(wire, [])
+                self._regime_last_ts.setdefault(wire, 0)
+                log.warning("bitunix_sfp regime seed %s FAILED (regime None until live "
+                            "accrues): %s", wire, e)
+
+    def _extend_regime(self, wire: str, bars15: list[SfpBar]) -> None:
+        """Append NEW closed 15m closes (ts beyond the last seeded/applied) from the
+        observer's own live cache and trim the working set — keeps the regime
+        engine-native in steady state. Uses its OWN last-ts (independent of the
+        detector's) so it dedups against the history seed."""
+        buf = self._regime_closes.setdefault(wire, [])
+        last = self._regime_last_ts.get(wire, 0)
+        changed = False
+        for b in bars15:
+            if int(b.ts_ms) > last:
+                buf.append(float(b.close)); last = int(b.ts_ms); changed = True
+        if changed:
+            self._regime_last_ts[wire] = last
+            if len(buf) > REGIME_SEED_BARS:
+                del buf[: len(buf) - REGIME_SEED_BARS]
+
+    def _compute_regime(self, wire: str) -> str | None:
+        """Engine-native 15m regime from the seeded+maintained closes buffer
+        (bitunix_bar_history boot seed + inline live appends; single source of truth).
+        Returns 'up'|'down'|'range', or None until the buffer holds >= REGIME_SEED_MIN
+        closes (convergence fail-safe: NEVER fire on an unconverged EMA-200). The
+        buffer is ascending, so closes[-1] is the last CLOSED 15m bar — k=1 causal."""
+        closes = self._regime_closes.get(wire) or []
+        if len(closes) < REGIME_SEED_MIN:
+            return None
+        return compute_regime_label(closes)
+
+    def _check_regime_flip(self, wire: str, symbol_display: str) -> None:
+        """Flip-watch (read-only monitor; NO trading logic). Uses the SAME
+        _compute_regime the side-gate uses (single source — never a 2nd/different
+        regime). Emits a flip row ONLY on a label->label change; warmup (None->label),
+        teardown (label->None) and no-change do NOT emit. Fail-soft — a flip-logging
+        error can never reach the trade path. Highest-value flip = -> UP (missing bull)."""
+        try:
+            new = self._compute_regime(wire)
+            old = self._last_regime.get(wire)
+            self._last_regime[wire] = new                    # always update (incl None)
+            # ema200 + 32-bar slope from the SAME buffer — metadata, not a 2nd regime.
+            closes = self._regime_closes.get(wire) or []
+            ema200 = slope = None
+            if len(closes) >= REGIME_MIN_BARS:
+                em = _regime_ema200(closes)
+                ema200 = em[-1]
+                ref = em[-(REGIME_SLOPE_BARS + 1)]
+                if ref:
+                    slope = (em[-1] - ref) / ref
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            # Always-current mirror (read-only display; the SAME `new`, single-source).
+            if new is not None:
+                research_log.upsert_regime_state(self.db_url, coin=wire, regime=new,
+                                                 ema200=ema200, slope=slope, ts=ts)
+            # Flip row + audit ONLY on a real label->label change.
+            if research_log.is_regime_flip(old, new):
+                research_log.log_flip(self.db_url, ts=ts, coin=wire, old_regime=old,
+                                      new_regime=new, ema200=ema200, slope=slope)
+                self._audit("sfp_regime_flip", {"symbol": symbol_display, "coin": wire,
+                            "old_regime": old, "new_regime": new, "to_up": new == "up"})
+        except Exception as e:                               # never into the trade path
+            log.warning("bitunix_sfp regime-flip check failed (%s): %s", wire, e)
+
     # ------------------------------------------------------------------ #
     # Signal → order → risk → place
     # ------------------------------------------------------------------ #
     async def _handle_signal(
-        self, symbol_display: str, wire: str, sig: SfpEntrySignal, bar: SfpBar
+        self, symbol_display: str, wire: str, sig: SfpEntrySignal, bar: SfpBar,
+        side: str = "long",
     ) -> None:
-        # Entry reference = the BOS bar close (best estimate of next-bar open;
-        # the real fill is the live anchor — the reconciler's ref-vs-fill
-        # captures it). Geometry from the swept wick low.
+        # config.side kill-switch (operator lever; HOT — config-flippable, NO restart /
+        # redeploy). Pure SUPPRESSION on top of the regime gate — never widens it.
+        # regime = bidirectional; long = long-only (maiden-short rollback: shorts stop,
+        # longs keep collecting); short = short-only. `side` = the DETECTOR-fired side.
+        cfg_side = self._yaml_side()
+        allowed = {"regime": ("long", "short"), "long": ("long",),
+                   "short": ("short",)}[cfg_side]
+        if side not in allowed:
+            self._audit("sfp_skip_side_disabled", {
+                "symbol": symbol_display, "side": side, "config_side": cfg_side,
+                "sfp_mode": sig.sfp_mode})
+            return
+        # Entry reference = the BOS bar close (real; the fill is the live anchor).
+        # Geometry BY SIDE: long from the swept wick low (vendored compute_geometry,
+        # unchanged); short from the un-reflected swept HIGH (M2=0: real = -reflected)
+        # via geometry_short (stop ABOVE entry, tp BELOW). `sig` for a short comes from
+        # the reflected detector, but `bar` is the REAL 3m BOS bar (real entry_ref).
         entry_ref = bar.close
-        geo = compute_geometry(
-            entry_ref, sig.swept_low,
-            stop_buffer_pct=self.config.stop_buffer_pct, tp_r=self.config.tp_r,
-        )
+        if side == "short":
+            geo = geometry_short(
+                entry_ref, -sig.swept_low,
+                stop_buffer_pct=self.config.stop_buffer_pct, tp_r=self.config.tp_r)
+        else:
+            geo = compute_geometry(
+                entry_ref, sig.swept_low,
+                stop_buffer_pct=self.config.stop_buffer_pct, tp_r=self.config.tp_r)
         if geo is None:
             self._audit("sfp_skip_invalid_geometry", {
-                "symbol": symbol_display, "sfp_mode": sig.sfp_mode,
-                "entry_ref": entry_ref, "swept_low": sig.swept_low})
+                "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                "entry_ref": entry_ref, "swept": sig.swept_low})
             return
         stop_price, tp_price, r_unit = geo
+
+        # ── REGIME SIDE-GATE (Piece 3): the 15m regime PICKS the side; never counter-
+        # trend. regime None (buffer < REGIME_SEED_MIN / unconverged) => never fire.
+        regime = self._compute_regime(wire)
+        if regime is None:
+            self._audit("sfp_skip_regime_warmup", {
+                "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode})
+            return
+        aligned = ((regime in ("up", "range")) if side == "long"
+                   else (regime in ("down", "range")))
+        if not aligned:
+            self._audit("sfp_skip_counter_trend", {
+                "symbol": symbol_display, "side": side, "regime": regime,
+                "sfp_mode": sig.sfp_mode})
+            return
 
         broker = self.data_exec.brokers.get(DIVISION) if hasattr(self.data_exec, "brokers") else None
         if broker is None:
@@ -461,21 +711,25 @@ class BitunixSfpObserver:
                 "risk_pct": risk_pct, "r_unit": r_unit})
             return
 
-        # Per-(symbol,side) concurrent-position guard (the symbol-aware D4).
-        if self._has_open_live_same_side(symbol_display, "buy"):
+        # One-position-per-coin guard: block a new entry (EITHER side) if ANY live
+        # position is open on this symbol. On the one-way venue a short-while-long
+        # would REDUCE the long (net), not open a short — so RANGE both-sides can
+        # NEVER open simultaneous opposite positions. Subsumes the per-(symbol,side) D4.
+        order_side = "buy" if side == "long" else "sell"
+        if self._has_open_live_position(symbol_display):
             self._audit("sfp_concurrent_position_blocked", {
-                "symbol": symbol_display, "side": "buy", "sfp_mode": sig.sfp_mode,
-                "reason": "bot_own_same_side_position_open"})
+                "symbol": symbol_display, "side": order_side, "sfp_mode": sig.sfp_mode,
+                "reason": "position_open_this_coin"})
             return
 
         max_dollar_risk = equity * risk_pct
         order = ProposedOrder(
             strategy=DIVISION,
             symbol=symbol_display,
-            side="buy",
+            side=order_side,
             qty=qty,
             order_type="market",
-            rationale=(f"SFP-{sig.sfp_mode} BOS long {symbol_display}; "
+            rationale=(f"SFP-{sig.sfp_mode} BOS {side} {symbol_display} [{regime}]; "
                        f"swept={sig.swept_low:.4f} lvl={sig.swept_swing_level:.4f} "
                        f"stop={stop_price:.4f} tp2R={tp_price:.4f}"),
             extra={
@@ -491,6 +745,8 @@ class BitunixSfpObserver:
                 "entry_reference_price": entry_ref,
                 "reduce_only": False,
                 "leverage": self.config.leverage,
+                "regime_label": regime,            # side-gate stamp (research-log, Piece 4)
+                "side_semantic": side,             # "long" | "short"
                 "source_signal": (f"sfp_{sig.sfp_mode.lower()}"
                                   + ("_3m_bos" if getattr(sig, "bos_tf", "15m") == "3m" else "")),
                 "bos_tf": getattr(sig, "bos_tf", "15m"),
@@ -531,6 +787,68 @@ class BitunixSfpObserver:
             order.qty = float(verdict.new_qty)
 
         await self._place(order, symbol_display, sig)
+
+    def _htf_diagnostics(self, wire: str) -> dict:
+        """LOGGED-NOT-ACTED HTF context for the research log: 1H/4H/1D EMA-200 + slope
+        + a raw strength magnitude, read OUT-OF-BAND from bitunix_bar_history (fine —
+        diagnostic only, NOT the trading regime). Each timeframe is fail-soft and NULL
+        when < EMA_PERIOD closes (today: 1H feasible ~333/coin; 4H ~121 and 1D ~62 ->
+        NULL until the append-only capture deepens)."""
+        out: dict = {}
+        for tf, px in (("1h", "htf_1h"), ("4h", "htf_4h"), ("1d", "htf_1d")):
+            ema = slope = strength = None
+            try:
+                with db.connect(self.db_url) as conn:
+                    rows = conn.execute(
+                        "SELECT close FROM bitunix_bar_history WHERE symbol=? AND "
+                        "timeframe=? AND close IS NOT NULL ORDER BY ts_ms DESC LIMIT 300",
+                        (wire, tf)).fetchall()
+                closes = [float(r[0]) for r in reversed(rows)]
+                if len(closes) >= REGIME_EMA_PERIOD:
+                    em = _regime_ema200(closes)
+                    ema = em[-1]
+                    if len(em) > 10 and em[-11]:
+                        slope = (em[-1] - em[-11]) / em[-11]
+                        dist = (closes[-1] - em[-1]) / em[-1] if em[-1] else 0.0
+                        strength = abs(slope) + abs(dist)
+            except Exception as e:                          # fail-soft per timeframe
+                log.warning("bitunix_sfp htf-diag %s %s failed: %s", wire, tf, e)
+            out[f"{px}_ema200"], out[f"{px}_slope"], out[f"{px}_strength"] = ema, slope, strength
+        return out
+
+    def _research_log_entry(self, order: ProposedOrder, fill: Any, symbol_display: str) -> None:
+        """Fail-soft ENTRY stamp into the isolated research catalog. Belt-and-suspenders
+        (research_log.log_entry is itself fail-soft) — a logging error NEVER reaches the
+        trade path. Real swept/bos levels are un-reflected for shorts (M2=0: real = -x)."""
+        try:
+            import json
+            e = order.extra or {}
+            side = e.get("side_semantic", "long")
+            swept = e.get("swept_low")
+            bosref = e.get("bos_ref_high")
+            wire = to_wire_format(symbol_display)
+            row = {
+                "order_id": order.id, "division": DIVISION, "coin": symbol_display,
+                "side": side, "regime_label": e.get("regime_label"),
+                "regime_engine": REGIME_ENGINE,
+                "rr_target": e.get("tp_r_multiple", self.config.tp_r),
+                "sfp_mode": e.get("sfp_mode"), "bos_tf": e.get("bos_tf"),
+                "entry_ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "entry_px": e.get("entry_reference_price"),
+                "stop_px": e.get("stop_price"), "target_px": e.get("take_profit_price"),
+                "sfp_sweep_px": (swept if side == "long"
+                                 else (-swept if swept is not None else None)),
+                "bos_confirm_px": (bosref if side == "long"
+                                   else (-bosref if bosref is not None else None)),
+                "broker_order_id": getattr(fill, "order_id", None),
+                "extra_json": json.dumps({"swept_swing_level": e.get("swept_swing_level"),
+                                          "leverage": e.get("leverage")}),
+            }
+            row.update(self._htf_diagnostics(wire))
+            research_log.log_entry(self.db_url, row)
+        except Exception as ex:                             # never into the trade path
+            log.warning("bitunix_sfp research-log entry failed (order_id=%s): %s",
+                        getattr(order, "id", None), ex)
 
     async def _place(self, order: ProposedOrder, symbol_display: str, sig: SfpEntrySignal) -> None:
         """Slim placement writer. Paper → would_have_placed (never touches the
@@ -582,6 +900,7 @@ class BitunixSfpObserver:
                                                 "error_type": type(e).__name__})
             return
         self._write_record(order, live=True, fill=fill)
+        self._research_log_entry(order, fill, symbol_display)   # isolated catalog (fail-soft)
         # ── Post-fill TP placement ──────────────────────────────────────────
         # The entry + atomic B1 stop are now live. place_order does NOT submit a
         # TP, so rest the real /tpsl/ reduce-only TP leg here. Fail-soft + LOUD:
@@ -601,6 +920,18 @@ class BitunixSfpObserver:
                 if fill is not None:
                     record.extra["broker_order_id"] = getattr(fill, "order_id", None)
                     record.extra["entry_fee_usd"] = float(getattr(fill, "fee", 0.0) or 0.0)
+                    # ref-vs-fill (2026-07-07): persist the ACTUAL entry fill VWAP
+                    # (observed by place_order) so R/P&L book from the real fill,
+                    # not the signal reference. The reconciler's _resolve_entry_price
+                    # already prefers extra['actual_entry_fill_price']; the /sfp
+                    # cockpit uses it for the entry line + R. Reference stays the
+                    # fallback for paper rows / any fill without a price.
+                    _fp = getattr(fill, "price", None)
+                    try:
+                        if _fp is not None and float(_fp) > 0:
+                            record.extra["actual_entry_fill_price"] = float(_fp)
+                    except (TypeError, ValueError):
+                        pass
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
         except Exception as e:
             log.warning("bitunix_sfp: paper_trade_record write failed "
@@ -770,9 +1101,16 @@ class BitunixSfpObserver:
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
-    def _has_open_live_same_side(self, symbol_display: str, side: str) -> bool:
-        """True if this division already holds an OPEN live position on the same
-        (symbol, side). Symbol-agnostic — keyed purely on the row's symbol+side."""
+    def _has_open_live_position(self, symbol_display: str) -> bool:
+        """True if this division holds ANY open live position on ``symbol`` (either
+        side). One-position-per-coin: on the one-way venue an opposite-side entry
+        would net against the open position, so RANGE both-sides must not stack."""
+        return self._has_open_live_same_side(symbol_display, None)
+
+    def _has_open_live_same_side(self, symbol_display: str, side: str | None) -> bool:
+        """True if this division already holds an OPEN live position on ``symbol``
+        matching ``side`` (``side=None`` matches ANY side). Keyed on the row's
+        symbol (+ side unless None)."""
         try:
             with db.connect(self.db_url) as conn:
                 rows = conn.execute(
@@ -793,7 +1131,7 @@ class BitunixSfpObserver:
                 continue
             if extra.get("execution_mode") != "live":
                 continue
-            if str(r["symbol"]) == symbol_display and str(r["side"]) == side:
+            if str(r["symbol"]) == symbol_display and (side is None or str(r["side"]) == side):
                 return True
         return False
 
@@ -836,6 +1174,22 @@ class BitunixSfpObserver:
         except Exception as e:
             log.warning("bitunix_sfp: auto_execute read failed (fail-closed): %s", e)
             return False
+
+    def _yaml_side(self) -> str:
+        """Fresh-read ``bitunix_sfp.side`` (the operator side kill-switch:
+        ``regime`` | ``long`` | ``short``). HOT — flipping it in strategies.yaml applies
+        WITHOUT a restart (mirrors _yaml_auto_execute). Fail-SAFE to 'long' (shorts
+        suppressed, longs keep collecting) on any read/parse error or unknown value —
+        never leaves shorts on under uncertainty. Always returns one of the three."""
+        try:
+            import yaml
+            with open(self._strategies_yaml_path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            s = str((raw.get(DIVISION) or {}).get("side", "long")).lower()
+            return s if s in ("regime", "long", "short") else "long"
+        except Exception as e:
+            log.warning("bitunix_sfp: side read failed (fail-safe to long): %s", e)
+            return "long"
 
     # ------------------------------------------------------------------ #
     # OBSERVE-ONLY emit: watch-state + heartbeat (dashboard Tier-B).

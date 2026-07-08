@@ -13,54 +13,9 @@
   {% include "partials/stat_cards.html" %}
 </div>
 
-<!-- ── Stage 1 paper-mode monitoring row ────────────────────────────── -->
-{# Tiles for the bitunix_futures paper deployment (origin/main 7352f8f
-   landed 2026-05-31 05:36 UTC). The partial is HTMX-polled every 10s
-   for fresh counts; the initial render is inline so the user doesn't
-   see an empty box on first paint. #}
-<section class="mt-4">
-  <header class="flex items-baseline justify-between mb-2">
-    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
-      Stage 1 monitoring
-    </h2>
-    <span class="text-[11px] text-muted font-mono">
-      paper-mode since 2026-05-31 05:36 UTC
-    </span>
-  </header>
-  {% include "partials/stage1_monitoring.html" %}
-</section>
 
-<!-- ── Operations dashboards (direct-link read-layers) ──────────────────
-     Static tiles for read-layer ops decks that aren't (yet) funded
-     divisions in snap.investment_groups. PEAD ships its dashboard ahead
-     of the Phase-2 division wiring, so it's surfaced here by direct link. -->
-<section class="mt-4">
-  <header class="flex items-baseline justify-between mb-2">
-    <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">Operations</h2>
-    <span class="text-[11px] text-muted font-mono">read-layer dashboards</span>
-  </header>
-  <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-    <a href="/telemetry/pead"
-       class="group bg-pane border border-edge rounded-lg p-4
-              hover:border-edge-2 hover:bg-pane-2 transition-colors block">
-      <div class="flex items-start justify-between gap-2">
-        <div class="min-w-0 flex-1">
-          <div class="text-mono text-sm font-semibold">PEAD Engine</div>
-          <div class="text-[11px] text-muted mt-0.5">Post-earnings-announcement drift · ops deck</div>
-        </div>
-        <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
-                     bg-warn/15 text-warn shrink-0">paper · v1</span>
-      </div>
-      <div class="mt-3 flex items-center gap-1.5 text-[11px] font-mono text-accent group-hover:underline">
-        <span>/telemetry/pead</span><span aria-hidden="true">&rarr;</span>
-      </div>
-    </a>
-  </div>
-</section>
-
-<!-- ── Main grid: equity curve + division panels (lg) | trade flow rail (sm) ── -->
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
-  <div class="lg:col-span-2 flex flex-col gap-4">
+<!-- ── Equity curve + division panels (full width); trade flow moved to a bottom strip ── -->
+<div class="flex flex-col gap-4 mt-4">
 
     <!-- Equity curve -->
     <section class="bg-pane border border-edge rounded-lg p-4">
@@ -121,11 +76,15 @@
                keep the per-division drill-down route. #}
             {% set _href = ('/prediction-markets/' + d.slug)
                             if grp.key == 'prediction_markets'
-                            else ('/telemetry/iron_condor'
-                                    if d.slug == 'robinhood_joint'
-                                    else ('/telemetry/iron_condor?division=tasty_options'
-                                            if d.slug == 'tasty_options'
-                                            else ('/division/' + d.slug))) %}
+                            else ('/telemetry/pead'
+                                    if d.slug == 'robinhood_pead'
+                                    else ('/telemetry/iron_condor'
+                                            if d.slug == 'robinhood_joint'
+                                            else ('/telemetry/iron_condor?division=tasty_options'
+                                                    if d.slug == 'tasty_options'
+                                                    else ('/sfp'
+                                                            if d.slug == 'bitunix_sfp'
+                                                            else ('/division/' + d.slug))))) %}
             <a href="{{ _href }}"
                class="group bg-pane border border-edge rounded-lg p-4
                       hover:border-edge-2 hover:bg-pane-2 transition-colors block">
@@ -277,27 +236,21 @@
       </section>
     {% endfor %}
 
-  </div>
-
-  <!-- Trade flow right rail -->
-  <aside class="lg:col-span-1 order-first lg:order-last">
-    <section class="bg-pane border border-edge rounded-lg p-4 lg:sticky lg:top-20">
-      <div class="flex items-baseline justify-between mb-3">
-        <h2 class="text-mono text-sm font-semibold tracking-tight">Live trade flow</h2>
-        <span class="text-[11px] text-muted font-mono uppercase tracking-wider flex items-center gap-1.5">
-          <span class="w-1.5 h-1.5 rounded-full bg-gain animate-pulse"></span>
-          live
-        </span>
-      </div>
-      {# The trade_flow.html partial owns the outer #trade-flow div +
-         polling. Including without an extra wrapper avoids the
-         double-#trade-flow-id from the original embed pattern. The
-         partial carries the Stage-1 filter toggle and preserves the
-         `?stage1=1` query state via its own hx-get URL. #}
-      {% include "partials/trade_flow.html" %}
-    </section>
-  </aside>
 </div>
+
+<!-- Live trade flow - full-width bottom strip. Moved off the right rail so the
+     Overview is mostly tiles. The trade_flow.html partial owns the #trade-flow
+     div, polling, and the Stage-1 filter toggle. -->
+<section class="bg-pane border border-edge rounded-lg p-4 mt-4">
+  <div class="flex items-baseline justify-between mb-3">
+    <h2 class="text-mono text-sm font-semibold tracking-tight">Live trade flow</h2>
+    <span class="text-[11px] text-muted font-mono uppercase tracking-wider flex items-center gap-1.5">
+      <span class="w-1.5 h-1.5 rounded-full bg-gain animate-pulse"></span>
+      live
+    </span>
+  </div>
+  {% include "partials/trade_flow.html" %}
+</section>
 {% endblock %}
 
 {% block scripts %}

@@ -403,10 +403,16 @@ async def run(argv: list[str] | None = None) -> int:
     )
     # bitunix_sfp (2026-06-25) — engine-side 15m signal caches (BTC traded) +
     # 4-coin 15m/3m RECORD-ONLY capture (fed to the archiver below). Capture !=
-    # trade: only symbols in the bitunix_sfp `symbols:` list are traded (BTC
-    # today). pivot(50) needs >=101 closed 15m bars → max_bars=160 with margin.
+    # trade: only symbols in the bitunix_sfp `symbols:` list are traded. pivot(50)
+    # needs >=101 closed 15m bars (detector only needs ~160); kept at 1200 as a
+    # generous working set (operator, 2026-07-01) that also feeds fresh closes to the
+    # engine-native regime's inline append. The regime EMA-200 CONVERGENCE no longer
+    # depends on this venue fetch — it SEEDS from the append-only bitunix_bar_history
+    # 15m capture at boot (bitunix_sfp_observer._seed_regime_from_history), so a short
+    # venue kline fetch can no longer silently drop regime parity. NB: config
+    # `bar_cache_max_bars` is NOT read anywhere — THIS is the live cache knob.
     bitunix_sfp_15m_caches = {
-        _w: LiveBarCache(symbol=_w, timeframe="15m", venue="bitunix", max_bars=160)
+        _w: LiveBarCache(symbol=_w, timeframe="15m", venue="bitunix", max_bars=1200)
         for _w in ("BTCUSDT", "SOLUSDT", "ETHUSDT", "XRPUSDT")
     }
     # max_bars=500 (matches BTC's bitunix_bar_cache): a Mode-B 3m BOS watch spans
