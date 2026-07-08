@@ -44,9 +44,25 @@ TERMINAL = "board_rejected"
 GRACE_MIN = 90
 BACKFILL_MARKER = "orphan backfill 2026-07-08"
 KIND_BACKFILL = "pmcc_orphan_backfilled"
-CAUSE_A = "resume_write_failed_or_registry_race"   # a board_decision_received audit exists
+CAUSE_A = "resume_write_failed_or_registry_race"   # recorded reject, resume never wrote back
 CAUSE_B = "wait_cancelled_by_restart"              # no decision recorded
+CAUSE_APPROVED_STRANDED = "resume_write_failed_approved_stranded"  # recorded approve/modify, never executed
 ACTOR = "pmcc_reconciler"
+
+
+def _disposition(dec):
+    """Per-row (terminal_status, cause, board_audit_kind) from the recorded decision.
+    reject / no-decision -> board_rejected; a recorded approve|modify that never executed
+    (system-stranded) -> cancelled ('cancelled' is closer to truthful than 'rejected' for
+    that specific case, per Board Option 2 on 2026-07-08). Uniform board_rejected was
+    steer #1's intent for mechanism simplicity; the one-row deviation earns a more honest
+    audit trail."""
+    if dec is None:
+        return ("board_rejected", CAUSE_B, "board_rejected")
+    d = (dec.get("decision") or "").lower()
+    if d == "reject":
+        return ("board_rejected", CAUSE_A, "board_rejected")
+    return ("cancelled", CAUSE_APPROVED_STRANDED, "cancelled")
 
 
 def _decision_detail(conn, order_id):
@@ -86,43 +102,41 @@ def main() -> int:
         classified = []
         for r in rows:
             dec = _decision_detail(conn, r["id"])
-            cause = CAUSE_A if dec is not None else CAUSE_B
-            classified.append((r, cause, dec))
+            term, cause, audit_kind = _disposition(dec)
+            classified.append((r, term, cause, audit_kind, dec))
 
         n = len(classified)
-        n_a = sum(1 for _, c, _ in classified if c == CAUSE_A)
+        by_term = {}
+        for _, term, _, _, _ in classified:
+            by_term[term] = by_term.get(term, 0) + 1
         print(f"[backfill] strategy={STRATEGY} status=risk_approved ts<{before}")
-        print(f"[backfill] would touch {n} row(s): {n_a} cause=A(decision-recorded) / {n - n_a} cause=B(no-decision)")
-        for r, cause, dec in classified:
-            rec = f" recorded={dec.get('decision')}/{dec.get('source')}" if dec else ""
-            print(f"    {r['id'][:8]} {r['ts']} {r['symbol']:<6} {r['side']:<4} x{r['qty']:g} cause={cause}{rec}")
-
-        odd = [r for r, c, d in classified if d and (d.get("decision") or "").lower() != "reject"]
-        if odd:
-            print(
-                f"[backfill] [WARN] {len(odd)} row(s) have a recorded decision that is NOT 'reject'; "
-                f"they will still be set {TERMINAL} per Board steer #1: {[r['id'][:8] for r in odd]}"
-            )
+        print(f"[backfill] would touch {n} row(s): "
+              + " / ".join(f"{v} -> {k}" for k, v in sorted(by_term.items())))
+        for r, term, cause, _, dec in classified:
+            rec = f" recorded={dec.get('decision')}/{dec.get('source')}" if dec else " recorded=none"
+            print(f"    {r['id'][:8]} {r['ts']} {r['symbol']:<6} {r['side']:<4} x{r['qty']:g} "
+                  f"-> {term} cause={cause}{rec}")
 
         if not args.commit:
             print("[backfill] DRY-RUN — no changes written. Re-run with --commit to apply.")
             return 0
 
         touched = []
-        for r, cause, dec in classified:
+        for r, term, cause, audit_kind, dec in classified:
             reason = f"{BACKFILL_MARKER} (cause={cause}) - approval never resumed"
             cur = conn.execute(
                 "UPDATE proposed_order SET status=?, board_reason=? "
                 "WHERE id=? AND strategy=? AND status='risk_approved'",
-                (TERMINAL, reason, r["id"], STRATEGY),
+                (term, reason, r["id"], STRATEGY),
             )
             if cur.rowcount != 1:
                 print(f"    SKIP {r['id'][:8]} - not risk_approved anymore (idempotent)")
                 continue
             ts_now = iso(now_utc())
+            recorded_decision = f"{dec.get('decision')}_{dec.get('source')}" if dec else "none"
             conn.execute(
                 "INSERT INTO audit_event(ts, actor, kind, payload_json) VALUES(?,?,?,?)",
-                (ts_now, "board", "board_rejected",
+                (ts_now, "board", audit_kind,
                  json.dumps({"order_id": r["id"], "reason": reason, "recovered_by": KIND_BACKFILL})),
             )
             conn.execute(
@@ -130,8 +144,8 @@ def main() -> int:
                 (ts_now, ACTOR, KIND_BACKFILL,
                  json.dumps({"order_id": r["id"], "strategy": STRATEGY, "division": STRATEGY,
                              "cause": cause, "reason": reason, "row_ts": r["ts"],
-                             "recovered_ts": ts_now,
-                             "recorded_decision": (dec or {}).get("decision"),
+                             "terminal_status": term, "recovered_ts": ts_now,
+                             "recorded_decision": recorded_decision,
                              "recorded_source": (dec or {}).get("source")})),
             )
             touched.append(r["id"])
@@ -141,7 +155,7 @@ def main() -> int:
         print(f"[backfill] COMMITTED {len(touched)} row(s) -> {TERMINAL}. Touched ids -> {args.out}")
         print(
             f"[backfill] inverse (rollback): UPDATE proposed_order SET status='risk_approved', "
-            f"board_reason=NULL WHERE strategy='{STRATEGY}' AND status='{TERMINAL}' "
+            f"board_reason=NULL WHERE strategy='{STRATEGY}' AND status IN ('board_rejected','cancelled') "
             f"AND board_reason LIKE '{BACKFILL_MARKER}%';"
         )
         return 0

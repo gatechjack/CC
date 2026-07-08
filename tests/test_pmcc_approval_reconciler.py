@@ -250,23 +250,26 @@ def test_canary_silent_when_within_grace(tmp_db):
 def test_backfill_dryrun_then_commit_idempotent(tmp_db, monkeypatch, capsys, tmp_path):
     db.init_db(tmp_db)
     logger = LoggerAgent(tmp_db)
-    a1 = _seed_stuck(logger, symbol="ASTS")
-    a2 = _seed_stuck(logger, symbol="CIFR", side="buy")
-    b1 = _seed_stuck(logger, symbol="OPEN")
+    a1 = _seed_stuck(logger, symbol="ASTS")                 # reject   -> board_rejected
+    a2 = _seed_stuck(logger, symbol="CIFR", side="buy")     # reject   -> board_rejected
+    b1 = _seed_stuck(logger, symbol="OPEN")                 # no-dec   -> board_rejected (cause B)
+    a3 = _seed_stuck(logger, symbol="TSLA", side="buy")     # APPROVE  -> cancelled (Option 2)
     fresh = _seed_stuck(logger, symbol="RIOT", side="buy", minutes_old=10)
     nonpmcc = _seed_stuck(logger, strategy="bitunix_futures", symbol="BTC", side="buy")
     _seed_decision(logger, a1.id)
     _seed_decision(logger, a2.id)
+    _seed_decision(logger, a3.id, decision="approve", source="web")
     mod = _load_backfill()
 
-    # dry-run: reports the 3 (a1,a2,b1); fresh excluded by age, nonpmcc by strategy.
+    # dry-run: 4 rows (a1,a2,b1,a3): 3 -> board_rejected, 1 -> cancelled; fresh/nonpmcc excluded.
     monkeypatch.setattr("sys.argv", ["backfill", "--db-url", tmp_db])
     assert mod.main() == 0
     out = capsys.readouterr().out
-    assert "would touch 3 row(s): 2 cause=A" in out
+    assert "would touch 4 row(s): 3 -> board_rejected / 1 -> cancelled" in out
+    assert a3.id[:8] in out and "-> cancelled" in out
     with db.connect(tmp_db) as conn:
         assert conn.execute(
-            "SELECT COUNT(*) c FROM proposed_order WHERE status='board_rejected'"
+            "SELECT COUNT(*) c FROM proposed_order WHERE status IN ('board_rejected','cancelled')"
         ).fetchone()["c"] == 0                     # dry-run changed nothing
 
     # commit
@@ -276,21 +279,29 @@ def test_backfill_dryrun_then_commit_idempotent(tmp_db, monkeypatch, capsys, tmp
     with db.connect(tmp_db) as conn:
         rej = {r["id"] for r in conn.execute(
             "SELECT id FROM proposed_order WHERE status='board_rejected'").fetchall()}
+        canc = {r["id"] for r in conn.execute(
+            "SELECT id FROM proposed_order WHERE status='cancelled'").fetchall()}
         assert rej == {a1.id, a2.id, b1.id}
+        assert canc == {a3.id}
         assert _status(tmp_db, fresh.id)[0] == "risk_approved"
         assert _status(tmp_db, nonpmcc.id)[0] == "risk_approved"
-        nkind = conn.execute(
+        assert conn.execute(
             "SELECT COUNT(*) c FROM audit_event WHERE kind=?", (mod.KIND_BACKFILL,)
-        ).fetchone()["c"]
-        assert nkind == 3
+        ).fetchone()["c"] == 4
+        # the cancelled row's backfill audit carries the stranded cause + terminal_status
+        payload = conn.execute(
+            "SELECT payload_json FROM audit_event WHERE kind=? "
+            "AND json_extract(payload_json,'$.order_id')=?",
+            (mod.KIND_BACKFILL, a3.id)).fetchone()["payload_json"]
+        assert "resume_write_failed_approved_stranded" in payload and "cancelled" in payload
 
     # idempotent — re-commit touches nothing new.
     monkeypatch.setattr("sys.argv", ["backfill", "--db-url", tmp_db, "--commit", "--out", outfile])
     assert mod.main() == 0
     with db.connect(tmp_db) as conn:
         assert conn.execute(
-            "SELECT COUNT(*) c FROM proposed_order WHERE status='board_rejected'"
-        ).fetchone()["c"] == 3
+            "SELECT COUNT(*) c FROM proposed_order WHERE status IN ('board_rejected','cancelled')"
+        ).fetchone()["c"] == 4
 
 
 def test_backfill_constants_parity_with_module():
