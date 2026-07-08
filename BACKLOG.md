@@ -62,17 +62,19 @@ fetch to correct the currently-open SOL position.
 flat-restart. TODO: backfill the currently-open SOL's fill (real 80.90). SFP does NOT scale out —
 leave its single TP/stop as-is (the break-even ask below is a FUTURES item).
 
-## Bitunix FUTURES break-even / SL-move-to-entry on TP1 — finish Phase-4 wiring — OPEN (2026-07-07, do AFTER SFP)
+## Bitunix FUTURES break-even / SL-move-to-entry on TP1 — ALREADY LIVE; ref-vs-fill FIXED — ✅ RESOLVED 2026-07-08
 
-For **bitunix_futures** (which IS multi-TP: tp1/tp2/tp3), NOT sfp. Want: on TP1 fill, move the SL
-to entry (breakeven), hold to TP2, then trail. The **decision logic already exists** —
-`decide_sl_action()` / `decide_sl_move()` in `bitunix_position_reconciler.py` compute "tp1 filled
--> SL to entry (breakeven)" and "tp2 -> trail", and the reconciler LOGS it (`position_sl_update`
-audit, `would_call_broker=False`). **Missing = execution wiring:**
-`BitunixBroker.modify_position_tp_sl_order()` is a Phase-1 STUB that raises `NotImplementedError`
-(Phase 4: call BitUnix `/api/v1/futures/tpsl/modify_position_tp_sl_order`). Work: implement + test
-that broker call against live BitUnix, then flip the reconciler to call it — careful live-money
-testing (it moves a real stop on an open position). Do after the SFP items land.
+**CORRECTION (2026-07-08): this was filed on a WRONG premise.** The break-even / SL-move-on-TP1 is
+ALREADY implemented + running live via `move_bracket_sls` (`bitunix_position_reconciler.py`, 60s loop,
+`main.py` ~2024-2037) → real `broker.modify_position_sl` → BitUnix `/tpsl/position/modify_order` (515+
+`position_sl_update` audit rows, `moved:true`). The `modify_position_tp_sl_order` NotImplementedError
+stub + the `decide_sl_action` / `would_call_broker=False` path are DEAD scaffolding, NOT the live path.
+The ONLY real issue (operator-caught) was **ref-vs-fill**: the breakeven stop used
+`entry_reference_price`, not the actual fill (prod: filled 63608.2, BE stop set to 63602.3 → 5.9pt below
+the true long entry → a small loss on a post-TP1 stop-out, not breakeven). **FIXED 2026-07-08** (branch
+`futures-be-ref-vs-fill-2026-07-08`, commit `f4d1863`, deployed live PID 108070; report
+`reports/2026-07-08_futures_breakeven_ref_vs_fill.md`; memory `bitunix-futures-sltrail-fix`).
+Effect-verify pending the next futures TP1 fill.
 
 ## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
 
