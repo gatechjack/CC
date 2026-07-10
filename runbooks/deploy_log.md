@@ -116,6 +116,49 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-10 18:57 UTC — DB lock-storm fix: LangGraph checkpointer isolated onto its own DB + shared-conn `synchronous=NORMAL` (agent-driven autonomous deploy under explicit Board authorization; live-window restart)
+
+**Commits:** `06c6f30` (fix + `tests/test_checkpointer_isolation.py`), `fc0479e` (deploy runner + template), plus this deploy-log commit. Branch `db-lock-contention-fix-2026-07-10`, rebased on `d9c32de`; ff-merged to main (see origin/main HEAD in session report).
+**Triggered by:** 2026-07-10 shared-DB lock-storm diagnosis (`reports/2026-07-10_db_lock_storm_diagnosis.md`). Board-approved autonomous deploy; dry-run + Phase-1-transfer + restart-timing all human-gated.
+**Backup tag:** `.pre-db-lock-fix-20260710` (3 files on prod).
+
+**Files deployed (3):**
+- `trading_corp/persistence/checkpointer.py` (content md5 `953ce717`→`f33b896e`) — saver now binds to a dedicated sibling `data/checkpoints.db` (new `checkpoint_db_path` helper) + `WAL`/`busy_timeout=30000`/`synchronous=NORMAL` on the saver's own connection. Removes it as a writer on the shared DB.
+- `trading_corp/persistence/db.py` (`9cb0f654`→`bc3df1c8`) — `synchronous=NORMAL` on the shared `connect()` (WAL-safe, ~2x cheaper commits). `busy_timeout` LEFT at 5s deliberately (blocking retry sleep would lengthen event-loop freezes if raised — deferred to fix #5).
+- `trading_corp/main.py` (`b741e95f`→`b80dc6ce`) — checkpointer call site (~line 1103) now `make_checkpointer(checkpoint_db_path(db_path))`, i.e. its OWN file, not shared `trading_corp.db`.
+
+**Features shipped (root-cause fix for the storms):**
+- **Checkpointer is no longer a competing writer on the shared DB.** The 2026-07-10 storms were the AsyncSqliteSaver holding the single WAL write slot during PMCC HITL interrupt/resume bursts (~45s holds, 100% retry-exhaustion for 40 days). It now writes to `data/checkpoints.db`. main.py's own Phase-1a note already prescribed this.
+- **Shared DB `synchronous=NORMAL`** shortens write-lock holds.
+
+**Verification (Phase 2 restart, 18:57 UTC):**
+- PID `164454`→`167830`; `systemctl is-active` = active (since 18:57:00).
+- Shared DB via the app's own `connect()`: `journal_mode=wal` / `synchronous=1 (NORMAL)` / `busy_timeout=5000`.
+- `data/checkpoints.db` created at boot, `journal_mode=wal` (proves the saver's PRAGMA block ran on a fresh file); prod `checkpointer.py` content md5 = `f33b896e` (target).
+- Boot clean: `0` `database is locked`; no division tracebacks (fidelity paper-broker ENOENT + pre-existing BTC/USD earnings-provider noise excepted — both confirmed identical on the pre-deploy 16:03 boot).
+- Phase 1 (transfer) 18:33 UTC: 3 files md5-verified baseline→target, tri-state guard passed, 3 backups created.
+- Pickle: 71h old at deploy; refresh SKIPPED per operator decision (they own that call; same pickle booted clean at 15:22 + 16:03 UTC). `-SkipPickleGate` used.
+
+**72h EMPIRICAL VERIFICATION GATE — through 2026-07-13 (observation only; does NOT gate the merge — the fix is merged because it deployed clean, marked SHIPPED at 72h):**
+- Watch `data/audit_event_write_failed.jsonl` (hourly drain cron drains it) + journal `database is locked` count/day + `data/*.replayed-*` archives not growing.
+- Pre-deploy baseline: ~4–18 lock events/day, 100% exhaustion (40-day trend).
+- **empty/trickle → fix worked → mark SHIPPED.** **accumulating at pre-deploy rate → fix incomplete →** escalate to fix #5 (offload blocking writes off the event loop; cleaner diagnosis post-#3).
+- Deferred follow-ups (SEPARATE ships, gated on this 72h result, NOT bundled): #4 `set_agent_state`/`delete_agent_state` retry; #5 write-off-loop.
+
+**Inert / dormant:** none — both changes active on restart.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; cd \$BASE; \
+for f in trading_corp/persistence/checkpointer.py trading_corp/persistence/db.py trading_corp/main.py; do mv \$f.pre-db-lock-fix-20260710 \$f; done; \
+systemctl restart trading-corp.service
+"
+```
+(`data/checkpoints.db` may be left in place — harmless — or removed when the engine is flat. Reverting `main.py` re-points the saver at the shared DB.)
+
+---
+
 ## 2026-07-08 11:47 UTC — PMCC `risk_approved` lifecycle fix + backfill DEPLOYED + VERIFIED LIVE (agent-driven under explicit Board authorization; SFP+futures flat-guarded restart)
 
 **STATE VERB: DEPLOYED + VERIFIED. 5 files (2 NEW + 3 targeted-hunk), 1 flat-guarded restart, 1 operator-authorized DB backfill.**
