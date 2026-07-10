@@ -42,6 +42,10 @@ log = logging.getLogger(__name__)
 # ── construct constants (retargeted) ───────────────────────────────────────
 TP_R = 3.0                      # construct target (was 2.0)
 BASELINE_AVG_R = 0.182          # in-sample pooled backtest benchmark (GROSS, Binance proxy)
+# ★closed-trade performance reads paper_trade_record (the reconciler/server-side-stop close record —
+# SAME source /sfp uses), NOT research_log.realized_r (which never populates on a live close). Scoped
+# to construct trades since go-live so both cockpits AGREE.
+CONSTRUCT_SINCE = "2026-07-10T00:00:00+00:00"
 SIG_N = 30                      # fills needed before a live-vs-backtest verdict is meaningful
 EXPECTED_SETUPS_WK = 3          # ~157 booked/yr across 4 coins ≈ 3/wk (healthy, not stalled)
 RD_LEN = 20                     # LuxAlgo Range Detector window (bars)
@@ -201,13 +205,16 @@ def _setups_this_week(db_url: str) -> dict:
 # ── PANEL 5 — LIVE vs BACKTEST (gated behind n>=30) ──
 def _live_vs_backtest(db_url: str) -> dict:
     """Construct realized-R vs the +0.182 backtest baseline — but the diverging/on-track VERDICT is
-    GATED behind n>=30 fills. Below that: 'accumulating n/30 — not yet significant'."""
+    GATED behind n>=30 fills. Below that: 'accumulating n/30 — not yet significant'. Reads
+    paper_trade_record (the authoritative reconciler/server-side-stop close record — SAME source /sfp
+    uses); research_log.realized_r never populates on a live close."""
     with db.connect(db_url) as conn:
         rows = conn.execute(
-            "SELECT realized_r FROM bitunix_sfp_research_log "
-            "WHERE division=? AND rr_target=? AND realized_r IS NOT NULL", (DIVISION, TP_R),
+            "SELECT actual_r_multiple AS r FROM paper_trade_record "
+            "WHERE division=? AND result IN ('win','loss') AND result_ts >= ? "
+            "AND actual_r_multiple IS NOT NULL", (DIVISION, CONSTRUCT_SINCE),
         ).fetchall()
-    rs = [float(r["realized_r"]) for r in rows]
+    rs = [float(r["r"]) for r in rows]
     n = len(rs)
     avg = round(sum(rs) / n, 3) if n else None
     if n < SIG_N:
@@ -220,18 +227,19 @@ def _live_vs_backtest(db_url: str) -> dict:
             "note": f"accumulating {n}/{SIG_N} — not yet significant" if not significant else ""}
 
 
-# ── PANEL 6 — DIVISION EQUITY (construct cum-R, from research_log realized_r) ──
+# ── PANEL 6 — DIVISION EQUITY (construct cum-R, from paper_trade_record) ──
 def _construct_equity(db_url: str) -> dict:
-    """Cumulative realized-R for the construct (rr_target=3R) from research_log, time-ordered. Honest
-    empty until the first fill closes."""
+    """Cumulative realized-R for the construct from paper_trade_record (same authoritative close record
+    /sfp uses), construct-scoped + time-ordered. Honest empty until the first fill closes."""
     with db.connect(db_url) as conn:
         rows = conn.execute(
-            "SELECT realized_r FROM bitunix_sfp_research_log WHERE division=? AND rr_target=? "
-            "AND realized_r IS NOT NULL ORDER BY COALESCE(exit_ts, entry_ts) ASC", (DIVISION, TP_R),
+            "SELECT actual_r_multiple AS r FROM paper_trade_record WHERE division=? "
+            "AND result IN ('win','loss') AND result_ts >= ? AND actual_r_multiple IS NOT NULL "
+            "ORDER BY result_ts ASC", (DIVISION, CONSTRUCT_SINCE),
         ).fetchall()
     cum, pts = 0.0, []
     for r in rows:
-        cum += float(r["realized_r"]); pts.append(round(cum, 3))
+        cum += float(r["r"]); pts.append(round(cum, 3))
     return {"has_data": bool(pts), "n_closed": len(pts), "cum_r": round(cum, 2) if pts else None,
             "points": pts}
 
