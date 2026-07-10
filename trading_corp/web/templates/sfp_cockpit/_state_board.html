@@ -40,6 +40,7 @@
     <div class="top">
       <span class="sym">{{ c.symbol }}</span>
       {% if c.rj %}<span class="badge b-green"><span class="dot" style="background:var(--green)"></span>live trade</span>
+      {% elif c.is_live_coin %}<span class="badge b-blue"><span class="dot" style="background:var(--blue)"></span>live · no setup</span>
       {% else %}<span class="badge b-gray"><span class="dot" style="background:var(--gray)"></span>monitor-only</span>{% endif %}
       <span class="badges">
         {% if c.rj %}<span class="badge {{ 'b-purple' if c.mode=='REAL' else 'b-teal' }}">{{ c.mode }}</span><span class="badge b-blue">in-trade</span>
