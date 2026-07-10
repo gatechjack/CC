@@ -39,6 +39,7 @@ from typing import Any
 
 from trading_corp.persistence import db
 from trading_corp.agents.divisions import bitunix_sfp_research_log as research_log
+from trading_corp.agents.strategies.bitunix_inst_levels import InstLevels
 from trading_corp.persistence.models import (
     AccountState,
     PaperTradeRecord,
@@ -198,13 +199,16 @@ class BitunixSfpConfig:
     execution_mode: str = "paper"           # "paper" | "live"
     division: str = DIVISION
     symbols: tuple[str, ...] = ("BTC/USDT.P",)
-    detection_tf: str = "15m"
+    detection_tf: str = "15m"            # "15m" (today) | "1h" (L4: SFP fires on 1h)
+    swing_mode: str = "pivot50"          # "pivot50" (p6, today) | "two_candle" (L0: degree-2 fractal = validated construct)
     pivot_len: int = 50
     back_to_break: int = 4
     stop_buffer_pct: float = 0.001
     tp_r: float = 2.0
     watch_hours: float = 12.0
     side: str = "long"
+    with_trend: bool = False             # L2: true = with-trend only (drop range; ema200 up/down)
+    fresh_inst: bool = False             # L3: true = require the swept level at a FRESH institutional level (BTC-first)
     risk_pct_real: float = 0.005
     risk_pct_considerable: float = 0.005
     leverage: float = 5.0
@@ -255,12 +259,15 @@ class BitunixSfpConfig:
             division=str(raw.get("division", DIVISION)),
             symbols=tuple(str(s) for s in syms),
             detection_tf=detection_tf,
+            swing_mode=str(raw.get("swing_mode", "pivot50")).lower(),
             pivot_len=int(raw.get("pivot_len", 50)),
             back_to_break=int(raw.get("back_to_break", 4)),
             stop_buffer_pct=float(raw.get("stop_buffer_pct", 0.001)),
             tp_r=float(raw.get("tp_r", 2.0)),
             watch_hours=float(raw.get("watch_hours", 12.0)),
             side=str(raw.get("side", "long")).lower(),
+            with_trend=bool(raw.get("with_trend", False)),
+            fresh_inst=bool(raw.get("fresh_inst", False)),
             risk_pct_real=float(raw.get("risk_pct_real", 0.005)),
             risk_pct_considerable=float(raw.get("risk_pct_considerable", 0.005)),
             leverage=float(raw.get("leverage", 5.0)),
@@ -285,6 +292,8 @@ class BitunixSfpObserver:
         config: BitunixSfpConfig,
         bar_caches: dict[str, Any],        # wire symbol -> LiveBarCache (15m)
         bar_caches_3m: dict[str, Any] | None = None,  # wire -> LiveBarCache (3m), Mode B
+        d1_caches: dict[str, Any] | None = None,      # wire -> LiveBarCache (1d), L3 fresh-inst (BTC-first)
+        bar_caches_1h: dict[str, Any] | None = None,  # wire -> LiveBarCache (1h), L4 1h detection fire-feed
         strategies_yaml_path: str | None = None,
     ) -> None:
         self.db_url = db_url
@@ -294,11 +303,15 @@ class BitunixSfpObserver:
         self.config = config
         self.bar_caches = bar_caches
         self.bar_caches_3m = bar_caches_3m or {}
+        self.d1_caches = d1_caches or {}
+        self.bar_caches_1h = bar_caches_1h or {}
         self._strategies_yaml_path = strategies_yaml_path or str(
             Path(__file__).resolve().parents[3] / "config" / "strategies.yaml"
         )
         wb = _watch_bars_from_hours(config.watch_hours)
         wb3 = int(config.watch_hours_3m * 60 / 3)
+        # L4: detection_tf drives the SFP-fire -> 3m-BOS bind anchor (15m=900_000, 1h=3_600_000).
+        _htf_ms = 3_600_000 if config.detection_tf == "1h" else 900_000
         # Two detectors per symbol (REAL + CONSIDERABLE), pooled — mirrors the
         # oracle's two independent passes. Per symbol the BOS timeframe selects the
         # detector class: 15m → Mode-A SfpDetector (unchanged path); 3m → Mode-B
@@ -315,6 +328,7 @@ class BitunixSfpObserver:
         self._symbol_bos_tf: dict[str, str] = {}
         self._last_ts: dict[str, int] = {}
         self._last_ts3: dict[str, int] = {}
+        self._last_ts1h: dict[str, int] = {}   # L4: 1h fire-feed high-water (detection_tf=1h)
         # Engine-native regime buffer: bitunix_bar_history boot seed + live appends.
         self._regime_closes: dict[str, list[float]] = {}
         self._regime_last_ts: dict[str, int] = {}
@@ -328,16 +342,20 @@ class BitunixSfpObserver:
             if bos_tf == "3m":
                 self._detectors_b[wire] = [
                     SfpModeBDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
-                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3,
+                                     swing_mode=config.swing_mode, htf_ms=_htf_ms),
                     SfpModeBDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
-                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3,
+                                     swing_mode=config.swing_mode, htf_ms=_htf_ms),
                 ]
                 # SHORT engine (reflected-fed in Piece 3; inert now). Same params.
                 self._detectors_b_short[wire] = [
                     SfpModeBDetector(mode=MODE_REAL, pivot_len=config.pivot_len,
-                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3,
+                                     swing_mode=config.swing_mode, htf_ms=_htf_ms),
                     SfpModeBDetector(mode=MODE_CONSIDERABLE, pivot_len=config.pivot_len,
-                                     back_to_break=config.back_to_break, watch_bars_3m=wb3),
+                                     back_to_break=config.back_to_break, watch_bars_3m=wb3,
+                                     swing_mode=config.swing_mode, htf_ms=_htf_ms),
                 ]
                 self._last_ts3[wire] = 0
             else:
@@ -395,16 +413,26 @@ class BitunixSfpObserver:
         c3 = self.bar_caches_3m.get(wire)
         bars15 = [self._to_sfp_bar(b) for b in getattr(c15, "bars", [])] if c15 else []
         bars3 = [self._to_sfp_bar(b) for b in getattr(c3, "bars", [])] if c3 else []
+        # L4: the fire engine replays the DETECTION-TF bars (1h when detection_tf=1h, else 15m);
+        # the 15m high-water/regime still track bars15. detection_tf=15m => fire_bars is bars15 (unchanged).
+        fire_on_15m = (self.config.detection_tf != "1h")
+        if fire_on_15m:
+            fire_bars = bars15
+        else:
+            c1h = self.bar_caches_1h.get(wire)
+            fire_bars = [self._to_sfp_bar(b) for b in getattr(c1h, "bars", [])] if c1h else []
         for det in self._detectors_b[wire]:
-            det.warm_start(bars15, bars3)
+            det.warm_start(fire_bars, bars3)
             self._emit_watch_transitions(wire, det.drain_transitions(), recent_only=True)
         # SHORT engine warm-start on reflected bars (M2=0); transitions discarded.
-        n15, n3 = reflect_neg(bars15), reflect_neg(bars3)
+        nfire, n3 = reflect_neg(fire_bars), reflect_neg(bars3)
         for det in self._detectors_b_short[wire]:
-            det.warm_start(n15, n3)
+            det.warm_start(nfire, n3)
             det.drain_transitions()
         if bars15:
             self._last_ts[wire] = bars15[-1].ts_ms
+        if not fire_on_15m and fire_bars:
+            self._last_ts1h[wire] = fire_bars[-1].ts_ms
         if bars3:
             self._last_ts3[wire] = bars3[-1].ts_ms
 
@@ -483,14 +511,15 @@ class BitunixSfpObserver:
             if self._symbol_bos_tf.get(wire) == "3m":
                 c15 = self.bar_caches.get(wire)
                 c3 = self.bar_caches_3m.get(wire)
-                for c in (c15, c3):
+                c1h = self.bar_caches_1h.get(wire) if self.config.detection_tf == "1h" else None
+                for c in (c15, c3, c1h):
                     if c is None:
                         continue
                     try:
                         await c.refresh()
                     except Exception as e:
                         log.warning("bitunix_sfp: %s 3m-path cache refresh failed: %s", wire, e)
-                await self._process_symbol_b(sym, wire, c15, c3)
+                await self._process_symbol_b(sym, wire, c15, c3, c1h)
             else:
                 cache = self.bar_caches.get(wire)
                 if cache is None:
@@ -503,24 +532,41 @@ class BitunixSfpObserver:
         self._write_heartbeat()
 
     async def _process_symbol_b(self, symbol_display: str, wire: str,
-                                c15: Any, c3: Any) -> None:
-        """Mode-B per-symbol pass: (1) feed NEW 15m bars to ARM watches, THEN
-        (2) feed NEW 3m bars to ADVANCE/CONFIRM. Arm-before-advance matches the
-        oracle and the parity test's interleaving. Entries fire only in step 2."""
+                                c15: Any, c3: Any, c1h: Any = None) -> None:
+        """Mode-B per-symbol pass. (0) NEW 15m bars ARM watches (detection_tf=15m) AND
+        ALWAYS extend the 15m ema200 regime; (1) L4: when detection_tf=1h, NEW 1h bars ARM
+        watches instead (the regime stays 15m); (2) NEW 3m bars ADVANCE/CONFIRM (entries
+        fire only here). detection_tf=15m keeps step 0 byte-identical to the prior behavior."""
+        fire_on_15m = (self.config.detection_tf != "1h")
         if c15 is not None:
             last15 = self._last_ts.get(wire, 0)
             for raw in [b for b in getattr(c15, "bars", []) if int(b.ts_ms) > last15]:
                 bar15 = self._to_sfp_bar(raw)
-                for det in self._detectors_b[wire]:
-                    det.on_closed_15m_bar(bar15)        # arm only — returns []
-                    self._emit_watch_transitions(wire, det.drain_transitions())
-                bar15_neg = reflect_neg([bar15])[0]     # M2=0 reflection for the SHORT arm
-                for det in self._detectors_b_short[wire]:
-                    det.on_closed_15m_bar(bar15_neg)    # arm short watch (returns [])
-                    det.drain_transitions()             # discard (short dashboard = Piece 5+)
+                if fire_on_15m:
+                    for det in self._detectors_b[wire]:
+                        det.on_closed_15m_bar(bar15)        # arm only — returns []
+                        self._emit_watch_transitions(wire, det.drain_transitions())
+                    bar15_neg = reflect_neg([bar15])[0]     # M2=0 reflection for the SHORT arm
+                    for det in self._detectors_b_short[wire]:
+                        det.on_closed_15m_bar(bar15_neg)    # arm short watch (returns [])
+                        det.drain_transitions()             # discard (short dashboard = Piece 5+)
                 self._last_ts[wire] = bar15.ts_ms
-                self._extend_regime(wire, [bar15])      # engine-native regime, inline
+                self._extend_regime(wire, [bar15])      # engine-native regime, inline (ALWAYS 15m)
             self._check_regime_flip(wire, symbol_display)   # flip-watch (read-only)
+        # L4: detection_tf=1h -> ARM watches on NEW 1h bars (fire engine consumes 1h; the 15m
+        # regime above is untouched). htf_ms=3_600_000 binds the 3m BOS window to the 1h close.
+        if not fire_on_15m and c1h is not None:
+            last1h = self._last_ts1h.get(wire, 0)
+            for raw in [b for b in getattr(c1h, "bars", []) if int(b.ts_ms) > last1h]:
+                bar1h = self._to_sfp_bar(raw)
+                for det in self._detectors_b[wire]:
+                    det.on_closed_15m_bar(bar1h)            # arm on the 1h bar — returns []
+                    self._emit_watch_transitions(wire, det.drain_transitions())
+                bar1h_neg = reflect_neg([bar1h])[0]
+                for det in self._detectors_b_short[wire]:
+                    det.on_closed_15m_bar(bar1h_neg)
+                    det.drain_transitions()
+                self._last_ts1h[wire] = bar1h.ts_ms
         if c3 is not None:
             last3 = self._last_ts3.get(wire, 0)
             for raw in [b for b in getattr(c3, "bars", []) if int(b.ts_ms) > last3]:
@@ -679,13 +725,48 @@ class BitunixSfpObserver:
             self._audit("sfp_skip_regime_warmup", {
                 "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode})
             return
-        aligned = ((regime in ("up", "range")) if side == "long"
-                   else (regime in ("down", "range")))
+        if self.config.with_trend:
+            # L2 with-trend: fire ONLY with the 15m ema200 regime (drop range-neutral).
+            # NOTE deviation: research with-trend used macro60 daily PS/BB, not ema200.
+            aligned = ((regime == "up") if side == "long"
+                       else (regime == "down"))
+        else:
+            aligned = ((regime in ("up", "range")) if side == "long"
+                       else (regime in ("down", "range")))
         if not aligned:
             self._audit("sfp_skip_counter_trend", {
                 "symbol": symbol_display, "side": side, "regime": regime,
                 "sfp_mode": sig.sfp_mode})
             return
+
+        # L3 fresh-institutional gate (armed via config.fresh_inst; BTC-first — needs a 1d cache).
+        # Require the swept swing level at a FRESH major institutional level (PDH/PDL/PWH/PWL/
+        # PMH/PML/session) within 0.15xATR15. Fail-CLOSED: a coin with no 1d source SKIPS.
+        if self.config.fresh_inst:
+            c15 = self.bar_caches.get(wire)
+            cd1 = self.d1_caches.get(wire)
+            bars15 = list(getattr(c15, "bars", []) or [])
+            bars1d = list(getattr(cd1, "bars", []) or [])
+            if not bars15 or not bars1d:
+                self._audit("sfp_skip_no_inst_source", {
+                    "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                    "has_15m": bool(bars15), "has_1d": bool(bars1d)})
+                return
+            level_real = (sig.swept_swing_level if side == "long"
+                          else -sig.swept_swing_level)
+            entry_ts = int(bar.ts_ms) + 180_000   # entry bar = the 3m AFTER the BOS bar
+            try:
+                tg = InstLevels(wire, bars15, bars1d).tag(level_real, entry_ts, side)
+            except Exception as e:
+                self._audit("sfp_skip_inst_error", {
+                    "symbol": symbol_display, "side": side, "error": str(e)})
+                return
+            if not (tg["at_institutional"] and tg["freshness"] == "fresh"):
+                self._audit("sfp_skip_not_fresh_inst", {
+                    "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                    "at_institutional": tg["at_institutional"], "freshness": tg["freshness"],
+                    "tier": tg["tier"], "kinds": tg["kinds"]})
+                return
 
         broker = self.data_exec.brokers.get(DIVISION) if hasattr(self.data_exec, "brokers") else None
         if broker is None:

@@ -401,6 +401,18 @@ async def run(argv: list[str] | None = None) -> int:
     bitunix_d1_cache = LiveBarCache(
         symbol="BTCUSDT", timeframe="1d", venue="bitunix", max_bars=250,
     )
+    # L3/L4 4-coin (2026-07-10): per-coin 1h (detection_tf=1h fire-feed) + 1d
+    # (fresh-inst institutional levels) caches for the SFP observer. BTC reuses the
+    # HTF caches above (no double-poll); ETH/SOL/XRP get their own. Same max_bars=250
+    # (EMA/level warmup margin; D/W/M levels need only ~30+ daily bars). Primed at boot
+    # + polled below (h1 5min / d1 30min), exactly like BTC.
+    bitunix_sfp_h1_caches = {"BTCUSDT": bitunix_h1_cache}
+    bitunix_sfp_d1_caches = {"BTCUSDT": bitunix_d1_cache}
+    for _w in ("ETHUSDT", "SOLUSDT", "XRPUSDT"):
+        bitunix_sfp_h1_caches[_w] = LiveBarCache(
+            symbol=_w, timeframe="1h", venue="bitunix", max_bars=250)
+        bitunix_sfp_d1_caches[_w] = LiveBarCache(
+            symbol=_w, timeframe="1d", venue="bitunix", max_bars=250)
     # bitunix_sfp (2026-06-25) — engine-side 15m signal caches (BTC traded) +
     # 4-coin 15m/3m RECORD-ONLY capture (fed to the archiver below). Capture !=
     # trade: only symbols in the bitunix_sfp `symbols:` list are traded. pivot(50)
@@ -694,6 +706,8 @@ async def run(argv: list[str] | None = None) -> int:
                 db_url=secrets.db_url, risk_agent=risk_agent, data_exec=data_exec,
                 logger_agent=logger_agent, config=_sfp_cfg, bar_caches=_sfp_caches,
                 bar_caches_3m=_sfp_caches_3m,
+                d1_caches=bitunix_sfp_d1_caches,        # L3 fresh-inst, all 4 coins
+                bar_caches_1h=bitunix_sfp_h1_caches,    # L4 1h detection fire-feed, all 4 coins
             )
             log.info(
                 "bitunix_sfp observer wired: symbols=%s execution_mode=%s auto_execute=%s "
@@ -1865,6 +1879,19 @@ async def run(argv: list[str] | None = None) -> int:
                 _cache.run_poll_loop(interval_s=_interval),
                 name=_name,
             )
+        # L3/L4 4-coin (2026-07-10): prime + poll ETH/SOL/XRP SFP 1h/1d caches
+        # (BTC's are primed/polled in the loop above). Same cadence: h1 5min, d1 30min.
+        for _w in ("ETHUSDT", "SOLUSDT", "XRPUSDT"):
+            for _c, _iv, _nm in (
+                (bitunix_sfp_h1_caches[_w], 300.0, f"sfp-h1-{_w}"),
+                (bitunix_sfp_d1_caches[_w], 1800.0, f"sfp-d1-{_w}"),
+            ):
+                try:
+                    await _c.refresh()
+                    log.info(f"{_nm} primed: {_c.status()}")
+                except Exception:
+                    log.exception(f"{_nm} prime failed (continuing)")
+                asyncio.create_task(_c.run_poll_loop(interval_s=_iv), name=_nm)
         try:
             await bitunix_htf_provider.refresh_funding_rate()
             log.info(
