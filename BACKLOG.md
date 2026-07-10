@@ -1418,6 +1418,36 @@ Differentiate "expected" vs "real" broker_fallback_to_paper audit rows` (which t
 Operator currently owns the RH pickle manually. **P2** because it can silently un-arm a live
 money division on any restart.
 
+## P3 (LOW) — PEAD signal-funnel observability: populate `scan_evaluation` (filed 2026-07-10 via PEP first-live signal-side verification)
+
+**Problem.** `scan_evaluation` is 0 rows (DARK) on prod. Now that `robinhood_pead` trades real
+money, a live entry's signal-side reasoning is not auditable after the fact — we can confirm HOW a
+trade executed (RH-authoritative round-trip) but not WHY that name was selected over others. On the
+2026-07-10 PEP entry we could confirm universe=3,207, PEP SUE=2.202, entered=1, but NOT the wave size
+(the top-quintile denominator) nor how many names cleared each gate.
+
+**Fix (forward only).** Persist the per-scan funnel each run into `scan_evaluation`: universe count →
+screened (screen_ok) → SUE>1.5 → top-quintile → entered, with per-name SUEs, the wave size, and the
+quintile cutoff. Gives every live entry a provable signal trail. Note the structural finding from the
+PEP verification: the wave's max-SUE name is never gated by top-quintile (cutoff ≤ max for any n; n=1
+→ cutoff = own SUE), so **persisting the wave size is what makes "was the quintile gate binding?"
+answerable per entry.**
+
+**Constraints.**
+- `.py` change (`pead_strategy.py` scan() write-path) → **restart-gated**. BATCH into ONE coordinated
+  restart with the other deferred PEAD/dashboard display fixes (paper-vs-live dashboard rendering,
+  homepage crypto-count card, `/telemetry/pead` UI tile-repoint verification) — do NOT bounce the
+  live engine piecemeal per fix. Pre-restart, refresh the RH pickle (see the P2 pickle item above +
+  [[prod-restart-rh-pickle-hazard]]) so the restart doesn't silently drop PEAD to paper or hang.
+- **DO NOT reconstruct past waves** by re-running `get_quarterly_eps`+screen across the 3,207-name
+  universe — that is the synchronous blocking sweep that caused the 6/26 ~51-min event-loop freeze.
+  Fix forward only (new scans persist; historical waves stay unrecoverable).
+
+**Priority: LOW.** Not blocking — PEAD is live and working as designed (2026-07-10 PEP entry verified
+end-to-end, RH==DB exact). This is auditability, not a defect. Evidence:
+`Desktop\bitunix_reports\2026-07-10_pead_PEP_signal_side_verification.md`; memory
+`pead-first-live-entry-pep-2026-07-10`.
+
 ## P3 — Robinhood IRA drilldown: not a LEAP / PMCC strategy
 
 Filed 2026-05-03. UX clarification.
