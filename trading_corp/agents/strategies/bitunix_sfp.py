@@ -371,6 +371,23 @@ BOS_TF_SECONDS_3M = 180      # 3m bar duration in seconds
 _15M_MS = 900_000
 
 
+class TwoCandleSfpDetector(SfpDetector):
+    """Degree-2 (two-candle fractal) SFP fire engine — the swing rule of the
+    VALIDATED construct (+0.182 1h / +0.137 15m). Overrides ONLY the pivot-low
+    test and runs at ``pivot_len=2`` so the parent evaluates ``_is_pivot_low(b-2)``.
+    Mirror of the two-candle swing-HIGH rule recorded at :262."""
+
+    def _is_pivot_low(self, p: int) -> bool:
+        # Swing LOW at bars[p] iff the two bars AFTER it (p+1, p+2) are both
+        # BULLISH (mirror of the two-bearish-bar swing-HIGH rule at :262). With
+        # pivot_len=2 the parent calls _is_pivot_low(b-2) -> checks bars[b-1], bars[b].
+        b1, b2 = p + 1, p + 2
+        if b2 >= len(self.bars):
+            return False
+        return (self.bars[b1].close > self.bars[b1].open and
+                self.bars[b2].close > self.bars[b2].open)
+
+
 @dataclass
 class _WatchB:
     """One armed Mode-B watch. Identity + invalidation come from the 15m SFP fire;
@@ -399,6 +416,8 @@ class SfpModeBDetector:
     pivot_len: int = PIVOT_LEN
     back_to_break: int = BACK_TO_BREAK
     watch_bars_3m: int = WATCH_BARS_3M
+    swing_mode: str = "pivot50"          # "pivot50" (p6 pivotlow 50,50) | "two_candle" (degree-2 fractal — the validated construct)
+    htf_ms: int = _15M_MS                # SFP-fire -> BOS bind anchor: 900_000 (15m detect) | 3_600_000 (1h detect)
 
     _fire: "SfpDetector" = field(init=False)
     _bars3: list[SfpBar] = field(default_factory=list)
@@ -410,10 +429,19 @@ class SfpModeBDetector:
         if self.mode not in (MODE_REAL, MODE_CONSIDERABLE):
             raise ValueError(
                 f"SfpModeBDetector mode must be REAL|CONSIDERABLE, got {self.mode!r}")
+        if self.swing_mode not in ("pivot50", "two_candle"):
+            raise ValueError(
+                f"SfpModeBDetector swing_mode must be pivot50|two_candle, got {self.swing_mode!r}")
         # The fire engine's own 15m watch_bars is irrelevant — Mode B ignores its
-        # 15m watch outcomes and consumes only its ARMED transitions.
-        self._fire = SfpDetector(mode=self.mode, pivot_len=self.pivot_len,
-                                 back_to_break=self.back_to_break)
+        # 15m watch outcomes and consumes only its ARMED transitions. swing_mode
+        # selects the engine: two_candle = degree-2 fractal (forces pivot_len=2, the
+        # validated +0.182 construct); pivot50 = the p6 pivotlow(50,50) rollback.
+        if self.swing_mode == "two_candle":
+            self._fire = TwoCandleSfpDetector(mode=self.mode, pivot_len=2,
+                                              back_to_break=self.back_to_break)
+        else:
+            self._fire = SfpDetector(mode=self.mode, pivot_len=self.pivot_len,
+                                     back_to_break=self.back_to_break)
 
     # ------------------------------------------------------------------ #
     def warm_start(self, bars15: list[SfpBar], bars3: list[SfpBar]) -> list[SfpEntrySignal]:
@@ -440,7 +468,7 @@ class SfpModeBDetector:
         for t in self._fire.drain_transitions():
             if t.status != "ARMED":
                 continue
-            t0 = int(t.fired_bar_ts_ms) + _15M_MS
+            t0 = int(t.fired_bar_ts_ms) + self.htf_ms
             self._watches3.append(_WatchB(
                 lvl=float(t.swept_level), swept=float(t.swept_wick),
                 fired_15m_ts_ms=int(t.fired_bar_ts_ms), t0_ms=t0))

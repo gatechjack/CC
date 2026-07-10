@@ -1938,11 +1938,14 @@ bitunix_sfp:
   mode: trading                    # two-state collapse (2026-06-27): REQUIRED for the LIVE BTC edge. Fail-safe default is halted, so this must be explicit "trading" or main.py will NOT start the 15m SFP loop on restart. Gates loop start only; SFP observer file is byte-unchanged.
   division: bitunix_sfp
   symbols: ["BTC/USDT.P", "ETH/USDT.P", "SOL/USDT.P", "XRP/USDT.P"]
-  detection_tf: "15m"
+  detection_tf: "1h"
+  swing_mode: two_candle               # L0: pivot50 (p6, today) | two_candle (validated +0.182 construct). ARM=two_candle
   pivot_len: 50
   back_to_break: 4
   stop_buffer_pct: 0.001
-  tp_r: 2.0
+  tp_r: 3.0
+  with_trend: true                # L2: true = with-trend only (ema200 up/down). ARM=true
+  fresh_inst: true                # L3: true = require a FRESH institutional level (BTC-first). ARM=true
   watch_hours: 12
   side: regime                     # kill-switch (HOT, no restart): regime|long|short. regime=bidirectional; long=long-only (maiden-short rollback, shorts off + longs continue); short=short-only
   risk_pct_real: 0.05              # learn-account 2026-07-01 (Board-approved)
