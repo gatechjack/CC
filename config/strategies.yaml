@@ -1950,7 +1950,7 @@ bitunix_sfp:
   side: regime                     # kill-switch (HOT, no restart): regime|long|short. regime=bidirectional; long=long-only (maiden-short rollback, shorts off + longs continue); short=short-only
   risk_pct_real: 0.05              # learn-account 2026-07-01 (Board-approved)
   risk_pct_considerable: 0.10      # learn-account 2026-07-01 (Board-approved)
-  leverage: 10.0                   # learn-account 2026-07-01 (strategies.yaml scalar = SFP live leverage, NOT futures TIER_SIZING)
+  leverage: 30.0                   # learn-account 2026-07-01 (strategies.yaml scalar = SFP live leverage, NOT futures TIER_SIZING)
   max_hold_seconds: 604800
   bar_cache_max_bars: 160
   loop_settle_seconds: 20
