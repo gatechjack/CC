@@ -99,7 +99,7 @@ from trading_corp.comms.pending_registry import PendingApprovalRegistry
 from trading_corp.comms.telegram_bot import TelegramChannel
 from trading_corp.graph.ceo_graph import build_trade_graph
 from trading_corp.persistence import db
-from trading_corp.persistence.checkpointer import make_checkpointer
+from trading_corp.persistence.checkpointer import make_checkpointer, checkpoint_db_path
 from trading_corp.persistence.models import ProposedOrder
 from trading_corp.utils.secrets import (
     RedactingFilter, Secrets, assert_live_ready, load_secrets,
@@ -1100,7 +1100,10 @@ async def run(argv: list[str] | None = None) -> int:
     # the graph with `Command(resume=...)`.
 
     # --- Build trade graph with checkpointer ---
-    async with make_checkpointer(db_path) as saver:
+    # The saver binds to a DEDICATED checkpoints.db (sibling of the main DB), NOT
+    # the shared trading_corp.db — isolating it as a writer so its HITL
+    # interrupt/resume writes never starve other divisions (2026-07-10 lock storm).
+    async with make_checkpointer(checkpoint_db_path(db_path)) as saver:
         graph = build_trade_graph(risk_agent, data_exec, logger_agent, checkpointer=saver)
         _graph_holder[0] = graph   # now _on_scan / _on_message can use it
 

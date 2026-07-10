@@ -521,6 +521,14 @@ def connect(db_url: str = "sqlite:///data/trading_corp.db") -> Iterator[sqlite3.
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
+        # WAL-safe durability with ~2x cheaper commits -> shorter write-lock holds
+        # under contention (2026-07-10 lock-storm mitigation). NORMAL only risks the
+        # last transaction on OS/power loss (never corruption); the broker + external
+        # reconcilers are the source of truth for anything that matters. busy_timeout
+        # is left at 5s DELIBERATELY: the log_event/log_proposed_order retry layer uses
+        # a BLOCKING time.sleep, so raising it would lengthen event-loop freezes on a
+        # contended write. Raising it belongs with the write-off-the-loop work.
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         yield conn
     finally:
