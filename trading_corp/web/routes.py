@@ -196,6 +196,10 @@ def register(app: FastAPI) -> None:
     webhooks.register(app)
     from trading_corp.web import sfp_cockpit_view
     sfp_cockpit_view.register(app)
+    # SFP CONSTRUCT cockpit (situational-awareness view for the live construct) at /sfp/construct.
+    # Display layer only; REVIEW build mounted alongside the live /sfp cockpit (no cutover yet).
+    from trading_corp.web import sfp_construct_cockpit_view
+    sfp_construct_cockpit_view.register(app)
 
     # ── PWA: serve service worker + manifest at root scope ─────────────
     # The service worker MUST be served from the root path (`/sw.js`),

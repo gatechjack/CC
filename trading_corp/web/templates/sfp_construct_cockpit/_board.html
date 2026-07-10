@@ -1,0 +1,81 @@
+{% macro lrail(state) %}
+  {% set seq = {'MON':['mon','','','',''],'ARM':['done','armed','','',''],
+                'RES':['done','done','active','',''],'CLS':['done','done','done','','done']} %}
+  {% set cls = seq.get(state, seq['MON']) %}
+  {% set names = ['MON','ARM','RES','TRD','CLS'] %}
+  <div class="rail">
+    {% for n in names %}{% set k = cls[loop.index0] %}
+      <div class="node {{ 'done' if k=='done' else ('armed' if k=='armed' else ('active' if k=='active' else '')) }}">
+        {% if k=='mon' %}<span class="pip" style="background:var(--gray);border-color:var(--gray)"></span>
+        {% else %}<span class="pip"></span>{% endif %}
+        <span class="nlabel" {% if k=='mon' %}style="color:var(--gray)"{% endif %}>{{ n }}</span>
+      </div>{% if not loop.last %}<div class="seg"></div>{% endif %}
+    {% endfor %}
+  </div>
+{% endmacro %}
+
+{% macro coincard(c) %}
+  {% set f = c.funnel %}{% set r = c.regime %}{% set lc = c.lifecycle %}
+  {% set fmax = (f.stages|map(attribute='n')|max) or 1 %}
+  <div class="panel coin {{ 'live' if c.is_live_coin else '' }}">
+    <div class="top">
+      <span class="sym">{{ c.symbol }}</span>
+      <span class="badges">
+        {% if r.regime and r.regime != '-' %}<span class="badge {{ 'b-green' if r.to_up else ('b-amber' if r.regime=='range' else 'b-gray') }}"
+          title="15m ema200 regime — the LIVE construct gate">regime:{{ r.regime }}</span>{% endif %}
+        {% if r.rd_state %}<span class="rdchip" title="LuxAlgo Range Detector — VIEW-COMPUTED overlay, not the live gate">RD:{{ r.rd_state }}·view</span>{% endif %}
+        <span class="tag {{ 'tag-livev' if c.is_live_coin else 'tag-paper' }}">{{ c.exec_tag }}</span>
+      </span>
+    </div>
+
+    {# position-in-range (view-computed from real 15m bars) #}
+    {% if r.pir is not none %}
+    <div style="font-size:10px;color:var(--txt3);margin-top:6px">position in range · {{ r.pir }}% <span style="float:right">{{ '%g'|format(c.price) if c.price else '—' }}</span></div>
+    <div class="pir"><span class="mk" style="left:calc({{ r.pir }}% - 2px)"></span></div>
+    {% endif %}
+
+    {# ★ QUALITY-GATE FUNNEL — the star panel (reconstructed from REAL engine data) #}
+    <div style="font-size:10px;color:var(--txt3);margin-top:8px;display:flex;justify-content:space-between">
+      <span>quality-gate funnel · this week</span><span class="tier tier-scoped" style="font-size:9px">REAL · watch-state + audit</span>
+    </div>
+    {% if f.has_data %}
+    <div class="funnel">
+      {% for s in f.stages %}
+        <div class="fstage {{ 'drop' if s.key in ('trend','fresh') else '' }}">
+          <span class="fn">{{ s.n }}</span>
+          <span class="fbar" style="width:{{ (100 * s.n / fmax)|round(0,'floor') }}%"></span>
+          <span class="fl">{{ s.label }}</span>
+        </div>
+      {% endfor %}
+    </div>
+    {% if f.rejected %}<div style="font-size:10px;color:var(--red)">⚠ {{ f.rejected }} placed-but-rejected (broker) — see balance/leverage</div>{% endif %}
+    {% else %}
+    <div style="font-size:11px;color:var(--txt3);margin:8px 0">— no setups this week (quality-gated; expected between the rare trades)</div>
+    {% endif %}
+
+    {# lifecycle rail — REAL sfp_watch_state (MON→ARM→RES→TRD→CLS) #}
+    {{ lrail(lc.state) }}
+    <div class="chips">
+      {% if lc.has_data %}
+        <span class="chip {{ 'ok' if lc.raw_status=='CONFIRMED' else ('warn' if lc.raw_status=='ARMED' else '') }}">
+          latest watch: {{ lc.raw_status }}</span>
+        <span class="chip">live: {{ lc.armed_live }} armed · {{ lc.confirmed_live }} confirmed</span>
+      {% else %}
+        <span class="chip">no watch yet (MON)</span>
+      {% endif %}
+      {% if r.last_flip_ts %}<span class="chip hb" title="{{ r.last_flip_ts }}">last regime flip logged</span>{% endif %}
+    </div>
+  </div>
+{% endmacro %}
+
+<div class="panel" id="sfp-c-board"
+     hx-get="/sfp/construct/partials/board" hx-trigger="every 5s" hx-swap="morph:outerHTML" hx-indicator="#sfp-refresh">
+  <div class="phead">
+    <div><h3 class="ptitle">Where is each coin now — and what is the construct seeing?</h3>
+      <span class="psub">per-coin: regime (live gate) · RD + position-in-range (view) · ★quality-gate funnel · watch lifecycle</span></div>
+    <span class="tier tier-scoped">REAL engine data · view-computed overlays labelled</span>
+  </div>
+  <div class="board" style="margin-top:12px">
+    {% for c in coins %}{{ coincard(c) }}{% endfor %}
+  </div>
+</div>

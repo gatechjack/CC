@@ -1,0 +1,61 @@
+<div class="panel" id="sfp-c-summary"
+     hx-get="/sfp/construct/partials/summary" hx-trigger="every 5s" hx-swap="morph:outerHTML" hx-indicator="#sfp-refresh">
+  <div class="phead">
+    <div><h3 class="ptitle">Construct status
+      <span class="badge {{ 'b-green' if badge.state=='live' else 'b-gray' }}">{{ badge.label }}</span>
+      <span class="psub">{{ badge.sub }} · {{ live_count }} coin(s) live · target {{ '%gR'|format(tp_r) }}</span></h3></div>
+    <span class="tier tier-scoped">div='bitunix_sfp' · REAL data or honest-empty</span>
+  </div>
+
+  <div class="board" style="grid-template-columns:repeat(3,1fr);margin-top:10px">
+
+    {# ── PANEL 4 — SETUPS THIS WEEK vs EXPECTED (healthy low-freq framing) ── #}
+    <div class="panel coin">
+      <div class="top"><span class="sym" style="font-size:15px">Setups this week</span></div>
+      <div style="display:flex;align-items:baseline;gap:10px;margin:8px 0">
+        <span style="font-size:34px;font-weight:800;color:var(--green)">{{ setups.setups }}</span>
+        <span style="color:var(--txt3)">/ ~{{ setups.expected }} expected</span>
+      </div>
+      <div style="font-size:11px;color:var(--txt3)">
+        {{ setups.raw_fires }} raw 2-candle fires → gated down to {{ setups.setups }} qualified.
+        <b style="color:var(--amber)">low frequency is the design</b> — quality-gated, not stalled.
+      </div>
+    </div>
+
+    {# ── PANEL 5 — LIVE vs BACKTEST (verdict GATED behind n>=30) ── #}
+    <div class="panel coin">
+      <div class="top"><span class="sym" style="font-size:15px">Live vs backtest</span>
+        <span class="badge b-gray">baseline +{{ '%.3f'|format(baseline) }}R</span></div>
+      {% if lvb.significant %}
+        <div style="display:flex;align-items:baseline;gap:10px;margin:8px 0">
+          <span style="font-size:30px;font-weight:800;color:{{ 'var(--green)' if lvb.verdict=='on-track' else 'var(--red)' }}">
+            {{ '%+.3f'|format(lvb.avg_r) }}R</span>
+          <span class="badge {{ 'b-green' if lvb.verdict=='on-track' else 'b-red' }}">{{ lvb.verdict }}</span>
+        </div>
+        <div style="font-size:11px;color:var(--txt3)">n={{ lvb.n }} realized fills vs the +{{ '%.3f'|format(baseline) }}R in-sample baseline (GROSS).</div>
+      {% else %}
+        <div style="margin:12px 0"><span class="acc">accumulating {{ lvb.n }}/{{ lvb.need }} fills — not yet significant</span></div>
+        <div style="font-size:11px;color:var(--txt3)">
+          No divergence verdict on a small sample. At ~3 setups/wk, {{ lvb.need }} fills ≈ ~10 weeks.
+          {% if lvb.n == 0 %}<b>0 fills so far</b> — first construct fill still pending.{% endif %}
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── PANEL 6 — DIVISION EQUITY (construct cum-R, honest-empty) ── #}
+    <div class="panel coin">
+      <div class="top"><span class="sym" style="font-size:15px">Division equity</span>
+        <span class="psub">cum-R · construct (3R)</span></div>
+      {% if equity.has_data %}
+        <div style="display:flex;align-items:baseline;gap:10px;margin:8px 0">
+          <span style="font-size:30px;font-weight:800;color:{{ 'var(--green)' if (equity.cum_r or 0)>=0 else 'var(--red)' }}">
+            {{ '%+.2fR'|format(equity.cum_r) }}</span>
+          <span style="color:var(--txt3)">over {{ equity.n_closed }} closed</span>
+        </div>
+      {% else %}
+        <div style="margin:12px 0"><span class="acc">— no closed construct trades yet</span></div>
+        <div style="font-size:11px;color:var(--txt3)">Honest empty. The curve draws from the first real fill (never fabricated).</div>
+      {% endif %}
+    </div>
+  </div>
+</div>

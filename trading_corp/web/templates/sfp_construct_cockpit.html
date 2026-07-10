@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SFP Construct Cockpit</title>
+<link rel="stylesheet" href="/static/sfp_cockpit.css">
+<script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/idiomorph@0.3.0/dist/idiomorph-ext.min.js"></script>
+<style>
+/* construct-cockpit-only additions (situational-awareness widgets); base look inherits sfp_cockpit.css */
+.funnel{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.fstage{display:flex;align-items:center;gap:7px;font-size:11px}
+.fstage .fbar{height:12px;border-radius:3px;background:linear-gradient(90deg,#5b9dff,#34d399);min-width:2px;transition:width .4s ease}
+.fstage .fn{font-weight:700;min-width:22px;text-align:right}
+.fstage .fl{color:var(--txt3);min-width:118px}
+.fstage.drop .fbar{background:linear-gradient(90deg,#f5b53d,#fb5e6b)}
+.pir{position:relative;height:10px;border-radius:5px;background:linear-gradient(90deg,#fb5e6b22,#33415555,#34d39922);margin:6px 0}
+.pir .mk{position:absolute;top:-3px;width:4px;height:16px;border-radius:2px;background:#e8eef7;box-shadow:0 0 4px #000}
+.rdchip{font-size:10px;padding:1px 6px;border-radius:3px;border:1px dashed #5b9dff;color:#9cc4ff}
+.acc{display:inline-block;padding:2px 8px;border-radius:4px;border:1px dashed var(--amber);color:var(--amber);font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap" hx-ext="morph">
+  <header class="topnav">
+    <a class="brand" href="/"><span class="tc">TC</span>
+      <span class="bt"><b>Trading Corp</b><small>SFP Construct · situational awareness</small></span></a>
+    <nav class="nav">
+      <a href="/">Overview</a><a href="/sfp">SFP (live cockpit)</a>
+      <a href="/research">Research</a><a href="/system">System</a>
+    </nav>
+    <span class="spacer"></span>
+    <span id="sfp-refresh" class="refresh" title="Live — lights while refreshing every ~5s">
+      <span class="hg">&#x27F3;</span><span class="rl">REFRESH</span></span>
+  </header>
+
+  {# WHERE IS EACH COIN NOW + WHAT IS THE CONSTRUCT SEEING — the between-trades view. #}
+  {% include "sfp_construct_cockpit/_summary.html" %}
+  {% include "sfp_construct_cockpit/_board.html" %}
+
+  <div style="text-align:center;color:var(--txt3);font-size:10px;padding:6px 0 2px">
+    SFP Construct Cockpit · REVIEW BUILD (not the live /sfp) · two-candle + fresh-inst + with-trend + 1h + 3R ·
+    HTMX ~5s · all data REAL engine data or honest-empty · RD/position-in-range are view-computed overlays
+  </div>
+</div>
+<script>
+function tick(){var d=new Date();var u=document.getElementById('utc');if(u)u.textContent=d.toISOString().substr(11,8)+' UTC';}
+tick();setInterval(tick,1000);
+</script>
+</body>
+</html>
