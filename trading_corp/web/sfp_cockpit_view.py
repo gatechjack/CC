@@ -48,7 +48,14 @@ from trading_corp.persistence import db
 log = logging.getLogger(__name__)
 
 DIVISION = "bitunix_sfp"
-TP_R = 2.0                                   # fixed 2R target (build spec)
+TP_R = 3.0                                   # construct target (retargeted from 2.0, 2026-07-10)
+# ── construct performance retarget (2026-07-10) ──
+# The construct went live 2026-07-10; closed-trade metrics are SCOPED to construct trades only
+# (result_ts >= this) so the old pre-construct pivot-50/2R trades never pollute the performance view.
+CONSTRUCT_SINCE = "2026-07-10T00:00:00+00:00"
+BASELINE_AVG_R = 0.182                        # in-sample pooled backtest benchmark (GROSS)
+BASELINE_WIN_PCT = 30                         # backtest win-rate @3R (pooled flat-3R)
+SIG_N = 30                                    # verdict (tracking/diverging) only meaningful at n>=30
 # Display symbol -> bitunix_bar_history.symbol (wire) key. Keep in one place.
 SYMBOLS: dict[str, str] = {
     "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT",
@@ -188,8 +195,8 @@ def _closed_metrics(db_url: str) -> dict:
             "AVG(actual_r_multiple) AS avg_r, "
             "SUM(actual_r_multiple) AS cum_r "
             "FROM paper_trade_record "
-            "WHERE division=? AND result IN ('win','loss')",
-            (DIVISION,),
+            "WHERE division=? AND result IN ('win','loss') AND result_ts >= ?",
+            (DIVISION, CONSTRUCT_SINCE),
         ).fetchone()
         today_r = conn.execute(
             "SELECT SUM(actual_r_multiple) AS r FROM paper_trade_record "
@@ -204,11 +211,13 @@ def _closed_metrics(db_url: str) -> dict:
     n = int(agg["n"] or 0)
     return {
         "tier": "A", "has_data": n > 0, "n": n,
+        "significant": n >= SIG_N, "need": SIG_N,            # verdict gate — no cry-wolf below n=30
         "win_pct": (round(100 * (agg["wins"] or 0) / n) if n else None),
         "avg_r": (round(agg["avg_r"], 2) if agg["avg_r"] is not None else None),
         "cum_r": (round(agg["cum_r"], 1) if agg["cum_r"] is not None else None),
         "today_r": (round(today_r["r"], 1) if today_r["r"] is not None else None),
         "week_r": (round(week_r["r"], 1) if week_r["r"] is not None else None),
+        "baseline_avg_r": BASELINE_AVG_R, "baseline_win_pct": BASELINE_WIN_PCT, "tp_r": TP_R,
     }
 
 
@@ -231,8 +240,8 @@ def _mode_split(db_url: str) -> dict:
             "SUM(CASE WHEN result='win' THEN 1 ELSE 0 END) AS wins, "
             "AVG(actual_r_multiple) AS avg_r "
             "FROM paper_trade_record "
-            "WHERE division=? AND result IN ('win','loss') GROUP BY mode",
-            (DIVISION,),
+            "WHERE division=? AND result IN ('win','loss') AND result_ts >= ? GROUP BY mode",
+            (DIVISION, CONSTRUCT_SINCE),
         ).fetchall()
     for r in rows:
         mode = (r["mode"] or "").upper()
@@ -257,9 +266,9 @@ def _equity_curve(db_url: str) -> dict:
     with db.connect(db_url) as conn:
         rows = conn.execute(
             "SELECT result_ts, actual_r_multiple AS r FROM paper_trade_record "
-            "WHERE division=? AND result IN ('win','loss') "
+            "WHERE division=? AND result IN ('win','loss') AND result_ts >= ? "
             "AND actual_r_multiple IS NOT NULL ORDER BY result_ts ASC",
-            (DIVISION,),
+            (DIVISION, CONSTRUCT_SINCE),
         ).fetchall()
     cum, pts = 0.0, []
     for r in rows:
@@ -473,24 +482,65 @@ def _mock_armed_watch(symbol: str) -> dict:
     }
 
 
-def _mock_near_miss() -> dict:
-    """MOCK — near-miss list (armed setups that invalidated / timed out)."""
-    return {
-        "tier": "B", "mock": True, "convert_fail_pct": 58,
-        "rows": [
-            {"mode": "REAL", "symbol": "XRP", "status": "INVALIDATED", "level": "0.5120", "ago": "14m ago", "exec": "PAPER"},
-            {"mode": "CONS", "symbol": "BTC", "status": "TIMED OUT", "level": "63,640", "ago": "2h ago", "exec": "PAPER"},
-            {"mode": "REAL", "symbol": "SOL", "status": "INVALIDATED", "level": "136.90", "ago": "3h ago", "exec": "PAPER"},
-            {"mode": "CONS", "symbol": "ETH", "status": "TIMED OUT", "level": "2,388.0", "ago": "5h ago", "exec": "PAPER"},
-            {"mode": "REAL", "symbol": "BTC", "status": "INVALIDATED", "level": "62,910", "ago": "7h ago", "exec": "PAPER"},
-        ],
-    }
+def _ago(ts_iso) -> str:
+    """'14m ago' / '2h ago' / '3d ago' from an ISO ts. '' if unparseable."""
+    if not ts_iso:
+        return ""
+    try:
+        t = datetime.fromisoformat(str(ts_iso).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        m = int((_utc_now() - t).total_seconds() // 60)
+    except Exception:                                        # noqa: BLE001
+        return ""
+    if m < 60:
+        return f"{m}m ago"
+    h = m // 60
+    return f"{h}h ago" if h < 24 else f"{h // 24}d ago"
 
 
-def _mock_bos_confirm() -> dict:
-    """MOCK — BOS-confirm rate vs backtest band (needs the watch-state emit to
-    count armed→confirmed)."""
-    return {"tier": "B", "mock": True, "rate_pct": 31, "band": "27–65th", "status": "diverging"}
+def _bos_confirm_rate(db_url: str) -> dict:
+    """TIER A (REAL now, was MOCK) — armed→confirmed conversion from sfp_watch_state (the fraction of
+    raw two-candle fires that reach a 3m BOS). Honest-empty until watches exist; the tracking verdict is
+    GATED behind n>=SIG_N so a handful of watches never fires a divergence alarm."""
+    with db.connect(db_url) as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) n FROM sfp_watch_state WHERE armed_ts >= ? GROUP BY status",
+            (CONSTRUCT_SINCE,),
+        ).fetchall()
+    by = {(r["status"] or "").upper(): int(r["n"]) for r in rows}
+    total = sum(by.values())
+    confirmed = by.get("CONFIRMED", 0)
+    return {"tier": "A", "has_data": total > 0, "n": total, "confirmed": confirmed,
+            "rate_pct": (round(100 * confirmed / total) if total else None),
+            "significant": total >= SIG_N, "need": SIG_N, "band": "27–65th (bt)"}
+
+
+def _near_miss(db_url: str, limit: int = 6) -> dict:
+    """TIER A (REAL now, was MOCK) — armed watches that INVALIDATED or TIMED_OUT (never converted to a
+    trade), from sfp_watch_state. Reconstructed, not demo data."""
+    with db.connect(db_url) as conn:
+        rows = conn.execute(
+            "SELECT symbol, mode, status, swept_wick, bos_watch_level, status_ts "
+            "FROM sfp_watch_state WHERE status IN ('INVALIDATED','TIMED_OUT') AND armed_ts >= ? "
+            "ORDER BY COALESCE(status_ts, armed_ts) DESC LIMIT ?",
+            (CONSTRUCT_SINCE, limit),
+        ).fetchall()
+        tot = conn.execute("SELECT COUNT(*) n FROM sfp_watch_state WHERE armed_ts >= ?",
+                           (CONSTRUCT_SINCE,)).fetchone()
+        nc = conn.execute("SELECT COUNT(*) n FROM sfp_watch_state WHERE status IN "
+                          "('INVALIDATED','TIMED_OUT') AND armed_ts >= ?", (CONSTRUCT_SINCE,)).fetchone()
+    total = int(tot["n"] or 0)
+    out = []
+    for r in rows:
+        short = str(r["symbol"] or "").replace("USDT", "")[:3].upper()
+        lvl = r["swept_wick"] if r["swept_wick"] is not None else r["bos_watch_level"]
+        out.append({"mode": (str(r["mode"] or "")[:4]).upper() or "REAL", "symbol": short,
+                    "status": str(r["status"] or "").replace("_", " "),
+                    "level": ("%g" % lvl) if lvl is not None else "—",
+                    "ago": _ago(r["status_ts"]), "exec": "LIVE"})
+    return {"tier": "A", "has_data": bool(out), "rows": out,
+            "convert_fail_pct": (round(100 * int(nc["n"] or 0) / total) if total else 0)}
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -617,10 +667,10 @@ def register(app: FastAPI) -> None:
             # _recon.html (and its partial route) read top-level `bos` + `metrics`;
             # the full-page paint must provide `bos` top-level too (was nested in
             # an unused `recon` dict -> UndefinedError 'bos' on the full page).
-            "bos": _mock_bos_confirm(),
+            "bos": await _q(_bos_confirm_rate, db_url),
             "modes": await _q(_mode_split, db_url),
             "equity": await _q(_equity_curve, db_url),
-            "near_miss": _mock_near_miss(),
+            "near_miss": await _q(_near_miss, db_url),
             "coins": await _build_board(),
         }
         return templates.TemplateResponse(request, "sfp_cockpit.html", ctx)
@@ -645,7 +695,7 @@ def register(app: FastAPI) -> None:
         m = await _q(_closed_metrics, db_url)
         return templates.TemplateResponse(
             request, "sfp_cockpit/_recon.html",
-            {"metrics": m, "bos": _mock_bos_confirm()},     # A + B
+            {"metrics": m, "bos": await _q(_bos_confirm_rate, db_url)},     # both TIER A now
         )
 
     @app.get("/sfp/partials/state-board", response_class=HTMLResponse)
@@ -663,7 +713,7 @@ def register(app: FastAPI) -> None:
     @app.get("/sfp/partials/near-miss", response_class=HTMLResponse)
     async def sfp_near_miss(request: Request):
         return templates.TemplateResponse(
-            request, "sfp_cockpit/_near_miss.html", {"near_miss": _mock_near_miss()},
+            request, "sfp_cockpit/_near_miss.html", {"near_miss": await _q(_near_miss, db_url)},
         )
 
     @app.get("/sfp/partials/equity", response_class=HTMLResponse)

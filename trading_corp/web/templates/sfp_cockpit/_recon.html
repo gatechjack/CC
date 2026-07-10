@@ -1,40 +1,47 @@
 <div class="panel" id="sfp-recon"
      hx-get="/sfp/partials/recon" hx-trigger="every 5s" hx-swap="morph:outerHTML" hx-indicator="#sfp-refresh">
   <div class="phead">
-    <div><h3 class="ptitle">Live vs Backtest</h3><span class="psub">first-months reconciliation</span></div>
-    <span class="tier tier-mock">MOCK · BOS-confirm needs emit</span>
+    <div><h3 class="ptitle">Live vs Backtest</h3>
+      <span class="psub">construct performance · verdict gated at n&ge;{{ metrics.need }} fills (no cry-wolf on a small sample)</span></div>
+    <span class="tier tier-scoped">TIER A · construct-scoped (since go-live)</span>
   </div>
+  {% macro verdict(has, sig, ok, n, need) %}
+    {% if not has %}<span class="badge b-gray"><span class="dot"></span>accumulating 0/{{ need }}</span>
+    {% elif not sig %}<span class="badge b-gray" title="not yet significant"><span class="dot"></span>accumulating {{ n }}/{{ need }}</span>
+    {% else %}<span class="badge {{ 'b-green' if ok else 'b-amber' }}"><span class="dot" style="background:{{ 'var(--green)' if ok else 'var(--amber)' }}"></span>{{ 'on-track' if ok else 'diverging' }}</span>{% endif %}
+  {% endmacro %}
   <div class="recon">
-    {# BOS-confirm rate — TIER B (needs the observer watch-state emit) #}
+    {# BOS-confirm rate — TIER A now (reconstructed from sfp_watch_state armed->confirmed) #}
     <div class="cell">
       <div class="metric"><div class="lbl">BOS-confirm rate</div>
-        <div><span class="big">{{ bos.rate_pct }}%</span><span class="vs">vs {{ bos.band }}</span></div></div>
-      <span class="badge b-amber"><span class="dot" style="background:var(--amber)"></span>{{ bos.status }}</span>
-    </div>
-    {# Win @ 2R — TIER A (honest empty until closed trades exist) #}
-    <div class="cell">
-      <div class="metric"><div class="lbl">Win @ 2R</div>
-        {% if metrics.has_data %}
-          <div><span class="big">{{ metrics.win_pct }}%</span><span class="vs">vs 38% (bt)</span></div>
-        {% else %}<div><span class="big dim">—</span><span class="vs">awaiting closed trades</span></div>{% endif %}
+        {% if bos.has_data %}
+          <div><span class="big">{{ bos.rate_pct }}%</span><span class="vs">vs {{ bos.band }} · n={{ bos.n }}</span></div>
+        {% else %}<div><span class="big dim">—</span><span class="vs">no armed watches yet</span></div>{% endif %}
       </div>
-      {% if metrics.has_data %}
-        {% set trk = metrics.win_pct >= 33 %}
-        <span class="badge {{ 'b-green' if trk else 'b-amber' }}"><span class="dot" style="background:{{ 'var(--green)' if trk else 'var(--amber)' }}"></span>{{ 'tracking' if trk else 'diverging' }}</span>
+      {% if bos.has_data and not bos.significant %}
+        <span class="badge b-gray" title="lifecycle rate — needs n&ge;{{ bos.need }} watches for a verdict"><span class="dot"></span>{{ bos.confirmed }}/{{ bos.n }} confirmed</span>
+      {% elif bos.has_data %}
+        <span class="badge b-blue"><span class="dot" style="background:var(--blue)"></span>{{ bos.rate_pct }}% convert</span>
       {% else %}<span class="badge b-gray"><span class="dot"></span>no data</span>{% endif %}
     </div>
-    {# Avg R / trade — TIER A #}
+    {# Win @ 3R — TIER A, construct-scoped, verdict gated at n>=30 #}
+    <div class="cell">
+      <div class="metric"><div class="lbl">Win @ 3R</div>
+        {% if metrics.has_data %}
+          <div><span class="big">{{ metrics.win_pct }}%</span><span class="vs">vs {{ metrics.baseline_win_pct }}% (bt)</span></div>
+        {% else %}<div><span class="big dim">—</span><span class="vs">awaiting closed construct trades</span></div>{% endif %}
+      </div>
+      {{ verdict(metrics.has_data, metrics.significant, (metrics.win_pct or 0) >= metrics.baseline_win_pct, metrics.n, metrics.need) }}
+    </div>
+    {# Avg R / trade — TIER A, vs the +0.182 construct baseline, gated #}
     <div class="cell">
       <div class="metric"><div class="lbl">Avg R / trade</div>
         {% if metrics.has_data %}
-          <div><span class="big">{{ '%+.2f'|format(metrics.avg_r or 0) }}</span><span class="vs">vs +0.27 (bt)</span></div>
-        {% else %}<div><span class="big dim">—</span><span class="vs">awaiting closed trades</span></div>{% endif %}
+          <div><span class="big">{{ '%+.2f'|format(metrics.avg_r or 0) }}</span><span class="vs">vs +{{ '%.3f'|format(metrics.baseline_avg_r) }} (bt)</span></div>
+        {% else %}<div><span class="big dim">—</span><span class="vs">awaiting closed construct trades</span></div>{% endif %}
       </div>
-      {% if metrics.has_data %}
-        {% set trk = (metrics.avg_r or 0) >= 0.20 %}
-        <span class="badge {{ 'b-green' if trk else 'b-amber' }}"><span class="dot" style="background:{{ 'var(--green)' if trk else 'var(--amber)' }}"></span>{{ 'tracking' if trk else 'diverging' }}</span>
-      {% else %}<span class="badge b-gray"><span class="dot"></span>no data</span>{% endif %}
+      {{ verdict(metrics.has_data, metrics.significant, (metrics.avg_r or 0) >= metrics.baseline_avg_r, metrics.n, metrics.need) }}
     </div>
   </div>
-  <div class="mock-note">Win@2R / Avg-R are TIER A (real) once SFP has closed trades; BOS-confirm stays MOCK until the observer watch-state emit ships. Backtest baselines (bt) from the validated research.</div>
+  <div class="mock-note">All TIER A (real engine data). Metrics are scoped to CONSTRUCT trades (since go-live) — the old pre-construct 2R trades are excluded. BOS-confirm is reconstructed from sfp_watch_state (armed&rarr;confirmed). Win@3R + Avg-R only render an on-track/diverging verdict at n&ge;{{ metrics.need }} fills (~10wk at ~3/wk); below that it stays "accumulating". Backtest baseline +{{ '%.3f'|format(metrics.baseline_avg_r) }}R / {{ metrics.baseline_win_pct }}% from the validated research (GROSS).</div>
 </div>
