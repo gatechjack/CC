@@ -1953,7 +1953,7 @@ bitunix_sfp:
   # SOL=ema200) is the RD-gate deploy; a later ps_trail30 ARM (sfp_ps_arm.ps1) flips ONLY BTC rd->ps_trail30
   # (ETH/SOL/XRP untouched). ps_trail30 is INERT until that arm — code present but unreached while BTC=rd.
   # Only consulted when with_trend:true; the loose up/range side-gate is unchanged regardless.
-  trend_mode: { BTCUSDT: rd, ETHUSDT: rd, SOLUSDT: ema200, XRPUSDT: rd }
+  trend_mode: { BTCUSDT: ps_trail30, ETHUSDT: rd, SOLUSDT: ema200, XRPUSDT: rd }
   fresh_inst: true                # L3: true = require a FRESH institutional level (BTC-first). ARM=true
   watch_hours: 12
   side: regime                     # kill-switch (HOT, no restart): regime|long|short. regime=bidirectional; long=long-only (maiden-short rollback, shorts off + longs continue); short=short-only
