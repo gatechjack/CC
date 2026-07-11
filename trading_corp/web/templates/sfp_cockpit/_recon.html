@@ -3,7 +3,7 @@
   <div class="phead">
     <div><h3 class="ptitle">Live vs Backtest</h3>
       <span class="psub">construct performance · verdict gated at n&ge;{{ metrics.need }} fills (no cry-wolf on a small sample)</span></div>
-    <span class="tier tier-scoped">TIER A · construct-scoped (since go-live)</span>
+    <span class="tier tier-scoped">TIER A · stats since {{ metrics.stats_since_label }}</span>
   </div>
   {% macro verdict(has, sig, ok, n, need) %}
     {% if not has %}<span class="badge b-gray"><span class="dot"></span>accumulating 0/{{ need }}</span>
@@ -43,5 +43,5 @@
       {{ verdict(metrics.has_data, metrics.significant, (metrics.avg_r or 0) >= metrics.baseline_avg_r, metrics.n, metrics.need) }}
     </div>
   </div>
-  <div class="mock-note">All TIER A (real engine data). Metrics are scoped to CONSTRUCT trades (since go-live) — the old pre-construct 2R trades are excluded. BOS-confirm is reconstructed from sfp_watch_state (armed&rarr;confirmed). Win@3R + Avg-R only render an on-track/diverging verdict at n&ge;{{ metrics.need }} fills (~10wk at ~3/wk); below that it stays "accumulating". Backtest baseline +{{ '%.3f'|format(metrics.baseline_avg_r) }}R / {{ metrics.baseline_win_pct }}% from the validated research (GROSS).</div>
+  <div class="mock-note">All TIER A (real engine data). Metrics count only closes since <b>{{ metrics.stats_since_label }}</b> (the forward scoreboard) — earlier trades, incl. the pre-epoch &minus;1.07R, REMAIN in history but are excluded from this count (a "count from T" filter, not deleted data). BOS-confirm is reconstructed from sfp_watch_state (armed&rarr;confirmed). Win@3R + Avg-R only render an on-track/diverging verdict at n&ge;{{ metrics.need }} fills (~10wk at ~3/wk); below that it stays "accumulating". Backtest baseline +{{ '%.3f'|format(metrics.baseline_avg_r) }}R / {{ metrics.baseline_win_pct }}% from the validated research (GROSS).</div>
 </div>

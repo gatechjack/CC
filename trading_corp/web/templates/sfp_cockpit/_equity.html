@@ -1,7 +1,7 @@
 <div class="panel" id="sfp-equity"
      hx-get="/sfp/partials/equity" hx-trigger="every 5s" hx-swap="morph:outerHTML" hx-indicator="#sfp-refresh">
   <div class="phead">
-    <div><h3 class="ptitle">Division Equity</h3><span class="psub">closed SFP trades · cumulative R</span></div>
+    <div><h3 class="ptitle">Division Equity</h3><span class="psub">closed SFP trades · cumulative R · since {{ equity.stats_since_label }}</span></div>
     <span class="tier tier-live">LIVE</span>
   </div>
   {% if not equity.has_data %}

@@ -35,7 +35,7 @@ from trading_corp.persistence import db
 from trading_corp.web.sfp_cockpit_view import (
     DIVISION, SYMBOLS, runtime_badge, _live_count, _symbol_arm_map,
     _regime_state, _bar_strip, _latest_close, _week_start_iso, _utc_now,
-    _STRAT_YAML,
+    _STRAT_YAML, COCKPIT_STATS_SINCE, COCKPIT_STATS_SINCE_LABEL,
 )
 
 log = logging.getLogger(__name__)
@@ -45,8 +45,9 @@ TP_R = 3.0                      # construct target (was 2.0)
 BASELINE_AVG_R = 0.182          # in-sample pooled backtest benchmark (GROSS, Binance proxy)
 # ★closed-trade performance reads paper_trade_record (the reconciler/server-side-stop close record —
 # SAME source /sfp uses), NOT research_log.realized_r (which never populates on a live close). Scoped
-# to construct trades since go-live so both cockpits AGREE.
-CONSTRUCT_SINCE = "2026-07-10T00:00:00+00:00"
+# to the SHARED forward-scoreboard epoch (imported from sfp_cockpit_view = RD-gate go-live) so BOTH
+# cockpits reset to the SAME T and stay in agreement. Pre-epoch closes remain in the DB, just uncounted.
+CONSTRUCT_SINCE = COCKPIT_STATS_SINCE
 SIG_N = 30                      # fills needed before a live-vs-backtest verdict is meaningful
 EXPECTED_SETUPS_WK = 3          # ~157 booked/yr across 4 coins ≈ 3/wk (healthy, not stalled)
 RD_LEN = 20                     # LuxAlgo Range Detector window (bars)
@@ -180,7 +181,7 @@ def _gate_funnel(db_url: str, wire: str, since_iso: str) -> dict:
         {"key": "placed", "label": "placed (broker)", "n": placed, "src": "audit_event"},
     ]
     return {"stages": stages, "rejected": rejected, "counter_trend": trend_sk, "fresh_skip": fresh_sk,
-            "has_data": raw > 0 or bool(ac)}
+            "has_data": raw > 0 or bool(ac), "stats_since_label": COCKPIT_STATS_SINCE_LABEL}
 
 
 # ── PANEL 3 — LIFECYCLE (MON→ARM→RES→TRD→CLS) from real sfp_watch_state ──
@@ -213,7 +214,7 @@ def _watch_lifecycle(db_url: str, wire: str) -> dict:
 def _setups_this_week(db_url: str) -> dict:
     """Count real armed setups this week (all coins) vs the ~3/wk backtest expectation. Reframes 'no
     setup' as quality-gated + EXPECTED, not stalled."""
-    wk = _week_start_iso()
+    wk = max(_week_start_iso(), COCKPIT_STATS_SINCE)   # floored at the reset epoch (clean slate)
     with db.connect(db_url) as conn:
         raw = conn.execute(
             "SELECT COUNT(*) n FROM sfp_watch_state WHERE armed_ts >= ?", (wk,),
@@ -227,7 +228,8 @@ def _setups_this_week(db_url: str) -> dict:
     setups = int(placed["n"] or 0)
     raw_fires = int(raw["n"] or 0)
     return {"setups": setups, "raw_fires": raw_fires, "expected": EXPECTED_SETUPS_WK,
-            "healthy": True, "note": "quality-gated — low frequency is the design, not a stall"}
+            "healthy": True, "note": "quality-gated — low frequency is the design, not a stall",
+            "stats_since_label": COCKPIT_STATS_SINCE_LABEL}
 
 
 # ── PANEL 5 — LIVE vs BACKTEST (gated behind n>=30) ──
@@ -252,7 +254,8 @@ def _live_vs_backtest(db_url: str) -> dict:
         verdict = "on-track" if avg is not None and avg >= BASELINE_AVG_R * 0.5 else "diverging"
     return {"n": n, "need": SIG_N, "avg_r": avg, "baseline": BASELINE_AVG_R,
             "significant": significant, "verdict": verdict,
-            "note": f"accumulating {n}/{SIG_N} — not yet significant" if not significant else ""}
+            "note": f"accumulating {n}/{SIG_N} — not yet significant" if not significant else "",
+            "stats_since_label": COCKPIT_STATS_SINCE_LABEL}
 
 
 # ── PANEL 6 — DIVISION EQUITY (construct cum-R, from paper_trade_record) ──
@@ -269,13 +272,15 @@ def _construct_equity(db_url: str) -> dict:
     for r in rows:
         cum += float(r["r"]); pts.append(round(cum, 3))
     return {"has_data": bool(pts), "n_closed": len(pts), "cum_r": round(cum, 2) if pts else None,
-            "points": pts}
+            "points": pts, "stats_since_label": COCKPIT_STATS_SINCE_LABEL}
 
 
 # ── per-coin card + board ──
 def _construct_coin(db_url: str, display: str, arm: str, div_live: bool) -> dict:
     wire = SYMBOLS[display]
-    since = _week_start_iso()
+    # funnel window = this week, but FLOORED at the reset epoch so pre-epoch fires never bleed into the
+    # clean-slate funnel. Epoch is very recent (this week) => floors to the epoch now; rolls weekly after.
+    since = max(_week_start_iso(), COCKPIT_STATS_SINCE)
     return {
         "symbol": display, "wire": wire,
         "is_live_coin": (arm == "trading") and div_live,

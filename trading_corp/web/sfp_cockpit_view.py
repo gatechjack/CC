@@ -49,10 +49,16 @@ log = logging.getLogger(__name__)
 
 DIVISION = "bitunix_sfp"
 TP_R = 3.0                                   # construct target (retargeted from 2.0, 2026-07-10)
-# ── construct performance retarget (2026-07-10) ──
-# The construct went live 2026-07-10; closed-trade metrics are SCOPED to construct trades only
-# (result_ts >= this) so the old pre-construct pivot-50/2R trades never pollute the performance view.
-CONSTRUCT_SINCE = "2026-07-10T00:00:00+00:00"
+# ── forward scoreboard epoch (RD-gate go-live, 2026-07-11 01:45 UTC) ──
+# The forward scoreboard — W-L record, realized-R / equity curve, the n/30 verdict gate, and the
+# quality-gate funnel counts — is scoped to closes/events AT OR AFTER this epoch so it measures the
+# RD-gated era CLEANLY. Pre-epoch trades (incl. the -1.07R BTC construct close) REMAIN in
+# paper_trade_record / research_log — they are EXCLUDED from the forward count, NOT deleted. This is a
+# "count from T" filter, never fabricated data. Defined ONCE here; sfp_construct_cockpit_view IMPORTS
+# it so BOTH cockpits scope to the SAME epoch and can never drift out of agreement.
+COCKPIT_STATS_SINCE = "2026-07-11T01:45:00+00:00"
+COCKPIT_STATS_SINCE_LABEL = "2026-07-11 · RD-gate epoch"
+CONSTRUCT_SINCE = COCKPIT_STATS_SINCE         # back-compat alias (was construct go-live 2026-07-10)
 BASELINE_AVG_R = 0.182                        # in-sample pooled backtest benchmark (GROSS)
 BASELINE_WIN_PCT = 30                         # backtest win-rate @3R (pooled flat-3R)
 SIG_N = 30                                    # verdict (tracking/diverging) only meaningful at n>=30
@@ -198,15 +204,17 @@ def _closed_metrics(db_url: str) -> dict:
             "WHERE division=? AND result IN ('win','loss') AND result_ts >= ?",
             (DIVISION, CONSTRUCT_SINCE),
         ).fetchone()
+        # today/week rolling-R are ALSO floored at the epoch (max with the day/week start) so a
+        # pre-epoch close in the current day/week (e.g. the -1.07R) never leaks into the reset scoreboard.
         today_r = conn.execute(
             "SELECT SUM(actual_r_multiple) AS r FROM paper_trade_record "
             "WHERE division=? AND result IN ('win','loss') AND result_ts >= ?",
-            (DIVISION, _day_start_iso()),
+            (DIVISION, max(_day_start_iso(), COCKPIT_STATS_SINCE)),
         ).fetchone()
         week_r = conn.execute(
             "SELECT SUM(actual_r_multiple) AS r FROM paper_trade_record "
             "WHERE division=? AND result IN ('win','loss') AND result_ts >= ?",
-            (DIVISION, _week_start_iso()),
+            (DIVISION, max(_week_start_iso(), COCKPIT_STATS_SINCE)),
         ).fetchone()
     n = int(agg["n"] or 0)
     return {
@@ -218,6 +226,7 @@ def _closed_metrics(db_url: str) -> dict:
         "today_r": (round(today_r["r"], 1) if today_r["r"] is not None else None),
         "week_r": (round(week_r["r"], 1) if week_r["r"] is not None else None),
         "baseline_avg_r": BASELINE_AVG_R, "baseline_win_pct": BASELINE_WIN_PCT, "tp_r": TP_R,
+        "stats_since_label": COCKPIT_STATS_SINCE_LABEL,
     }
 
 
@@ -277,7 +286,8 @@ def _equity_curve(db_url: str) -> dict:
     line_d, area_d = _spark_paths(pts)
     return {"tier": "A", "has_data": bool(pts), "n_closed": len(pts),
             "cum_r": round(cum, 1) if pts else None, "points": pts,
-            "line_d": line_d, "area_d": area_d}
+            "line_d": line_d, "area_d": area_d,
+            "stats_since_label": COCKPIT_STATS_SINCE_LABEL}
 
 
 def _spark_paths(pts: list[float], w: float = 340.0, h: float = 90.0) -> tuple[str, str]:

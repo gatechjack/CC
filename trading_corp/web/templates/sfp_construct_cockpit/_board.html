@@ -38,7 +38,7 @@
 
     {# ★ QUALITY-GATE FUNNEL — the star panel (reconstructed from REAL engine data) #}
     <div style="font-size:10px;color:var(--txt3);margin-top:8px;display:flex;justify-content:space-between">
-      <span>quality-gate funnel · this week</span><span class="tier tier-scoped" style="font-size:9px">REAL · watch-state + audit</span>
+      <span>quality-gate funnel · since {{ f.stats_since_label }}</span><span class="tier tier-scoped" style="font-size:9px">REAL · watch-state + audit</span>
     </div>
     {% if f.has_data %}
     <div class="funnel">

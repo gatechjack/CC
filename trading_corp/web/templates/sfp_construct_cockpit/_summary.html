@@ -4,7 +4,7 @@
     <div><h3 class="ptitle">Construct status
       <span class="badge {{ 'b-green' if badge.state=='live' else 'b-gray' }}">{{ badge.label }}</span>
       <span class="psub">{{ badge.sub }} · {{ live_count }} coin(s) live · target {{ '%gR'|format(tp_r) }}</span></h3></div>
-    <span class="tier tier-scoped">div='bitunix_sfp' · REAL data or honest-empty</span>
+    <span class="tier tier-scoped">div='bitunix_sfp' · stats since {{ lvb.stats_since_label }}</span>
   </div>
 
   <div class="board" style="grid-template-columns:repeat(3,1fr);margin-top:10px">
