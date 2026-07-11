@@ -144,8 +144,11 @@ def _gate_funnel(db_url: str, wire: str, since_iso: str) -> dict:
     root = wire.replace("USDT", "")
     # terminal audit kinds — each BOS-confirmed signal reaching _handle_signal emits EXACTLY ONE of
     # these, so their SUM = signals that reached handling (internally consistent, monotonic funnel).
+    # with-trend rejections — includes the L5 RD-gate skips (sfp_skip_rd_range/no_data) so an RD-gated
+    # coin's with-trend drops are accounted for in the funnel exactly like the ema200 counter_trend skip.
     TREND_SKIPS = ("sfp_skip_counter_trend", "sfp_skip_regime_warmup",
-                   "sfp_skip_side_disabled", "sfp_skip_invalid_geometry")
+                   "sfp_skip_side_disabled", "sfp_skip_invalid_geometry",
+                   "sfp_skip_rd_range", "sfp_skip_rd_no_data")
     FRESH_SKIPS = ("sfp_skip_not_fresh_inst", "sfp_skip_no_inst_source", "sfp_skip_inst_error")
     # placement ATTEMPTS (one per confirmed signal). live_order_rejected + sfp_bracket_placed are
     # FOLLOW-ON events on an already-counted attempt → excluded from the terminal/reached sum.
@@ -165,14 +168,19 @@ def _gate_funnel(db_url: str, wire: str, since_iso: str) -> dict:
             (DIVISION, since_iso, f"%{root}%"),
         ).fetchall()
         ac = {r["kind"]: int(r["n"]) for r in ac}
-    raw = int(armed["n"] or 0)                        # raw two-candle fires (pre-BOS armed watches)
-    reached = sum(ac.get(k, 0) for k in terminal)     # BOS-confirmed = reached _handle_signal
+    raw = int(armed["n"] or 0)                        # raw two-candle fires = the since-epoch cohort
+    # raw is watch-state (armed_ts-based); reached/trend/fresh/placed are audit_event (ts-based). Across
+    # the reset epoch those two clocks can disagree — a watch armed PRE-epoch can emit its BOS/skip audit
+    # POST-epoch, which would render a NON-MONOTONIC funnel (BOS confirmed > raw fires, the BTC "1 BOS /
+    # 0 raw" artifact). The funnel is a strict subset chain by definition, so clamp each stage to <= the
+    # previous. When raw==0 (no fires since the epoch) the whole funnel collapses to 0 = the clean slate.
+    reached = min(sum(ac.get(k, 0) for k in terminal), raw)   # BOS-confirmed, capped at the fire cohort
     trend_sk = sum(ac.get(k, 0) for k in TREND_SKIPS)
     fresh_sk = sum(ac.get(k, 0) for k in FRESH_SKIPS)
-    placed = sum(ac.get(k, 0) for k in PLACED_KINDS)  # reached the broker (incl. rejected)
     rejected = ac.get("live_order_rejected", 0)
-    passed_trend = max(0, reached - trend_sk)
-    passed_fresh = max(0, passed_trend - fresh_sk)
+    passed_trend = min(max(0, reached - trend_sk), reached)
+    passed_fresh = min(max(0, passed_trend - fresh_sk), passed_trend)
+    placed = min(sum(ac.get(k, 0) for k in PLACED_KINDS), passed_fresh)  # <= passed_fresh
     stages = [
         {"key": "fired", "label": "raw 2-candle SFP", "n": raw, "src": "sfp_watch_state"},
         {"key": "bos", "label": "BOS confirmed", "n": reached, "src": "audit_event"},
@@ -180,8 +188,10 @@ def _gate_funnel(db_url: str, wire: str, since_iso: str) -> dict:
         {"key": "fresh", "label": "passed fresh-inst", "n": passed_fresh, "src": "audit_event"},
         {"key": "placed", "label": "placed (broker)", "n": placed, "src": "audit_event"},
     ]
+    # has_data keys off the FIRE COHORT (raw), not raw-or-any-audit: a lone pre-epoch-armed watch's
+    # post-epoch skip audit must NOT light the funnel — no fires since epoch => "no setups", clean slate.
     return {"stages": stages, "rejected": rejected, "counter_trend": trend_sk, "fresh_skip": fresh_sk,
-            "has_data": raw > 0 or bool(ac), "stats_since_label": COCKPIT_STATS_SINCE_LABEL}
+            "has_data": raw > 0, "stats_since_label": COCKPIT_STATS_SINCE_LABEL}
 
 
 # ── PANEL 3 — LIFECYCLE (MON→ARM→RES→TRD→CLS) from real sfp_watch_state ──
@@ -190,15 +200,21 @@ def _watch_lifecycle(db_url: str, wire: str) -> dict:
     latest watch's status + the live ARMED/CONFIRMED counts. MON=no active watch, ARM=armed pending
     BOS, RES=confirmed/resolving, and closed states are TIMED_OUT/INVALIDATED."""
     root = wire.replace("USDT", "")
+    # BOTH the current-state read and the armed/confirmed live COUNTS are scoped to the reset epoch, so the
+    # lifecycle rail + "N armed · M confirmed" chip reflect only the RD-gated era (clean slate). A watch
+    # armed before the epoch is pre-reset activity: it collapses the rail to MON and the counts to 0 (it
+    # is NOT deleted — sfp_watch_state keeps every row; this is the same "count from T" filter).
     with db.connect(db_url) as conn:
         cur = conn.execute(
             "SELECT status, fired_bar_ts, swept_wick, bos_watch_level, armed_ts, status_ts "
-            "FROM sfp_watch_state WHERE symbol LIKE ? ORDER BY COALESCE(status_ts, armed_ts) DESC LIMIT 1",
-            (f"%{root}%",),
+            "FROM sfp_watch_state WHERE symbol LIKE ? AND armed_ts >= ? "
+            "ORDER BY COALESCE(status_ts, armed_ts) DESC LIMIT 1",
+            (f"%{root}%", COCKPIT_STATS_SINCE),
         ).fetchone()
         live = conn.execute(
             "SELECT SUM(status='ARMED') armed, SUM(status='CONFIRMED') confirmed "
-            "FROM sfp_watch_state WHERE symbol LIKE ?", (f"%{root}%",),
+            "FROM sfp_watch_state WHERE symbol LIKE ? AND armed_ts >= ?",
+            (f"%{root}%", COCKPIT_STATS_SINCE),
         ).fetchone()
     if not cur:
         return {"has_data": False, "state": "MON", "armed_live": 0, "confirmed_live": 0}
