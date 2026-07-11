@@ -23,9 +23,9 @@
       <span class="badges">
         {% if r.regime and r.regime != '-' %}<span class="badge {{ 'b-green' if r.to_up else ('b-amber' if r.regime=='range' else 'b-gray') }}"
           title="15m ema200 regime — the loose up/range side-gate + (when gate=ema200) the tight with-trend gate">regime:{{ r.regime }}</span>{% endif %}
-        {% if r.gate %}<span class="badge {{ 'b-green' if r.gate=='rd' else 'b-gray' }}"
-          title="LIVE tight with-trend gate SOURCE for this coin (from bitunix_sfp.trend_mode). rd = LuxAlgo Range-Detector 1h break-state os; ema200 = 15m regime up/down.">gate:{{ r.gate }}</span>{% endif %}
-        {% if r.rd_state %}<span class="rdchip" title="{{ 'LuxAlgo Range Detector — this coin is gated on RD (tight gate reads the 1h break-state); this 15m box is a proxy overlay' if r.rd_is_live_gate else 'LuxAlgo Range Detector — VIEW-COMPUTED overlay, not the live gate here (gate=ema200)' }}">RD:{{ r.rd_state }}·{{ 'gate' if r.rd_is_live_gate else 'view' }}</span>{% endif %}
+        {% if r.gate %}<span class="badge {{ 'b-green' if r.gate=='rd' else ('b-amber' if r.gate=='ps_trail30' else 'b-gray') }}"
+          title="{% if r.gate=='ps_trail30' %}causal one-sided Pagan-Sossounov daily trend (the causal-macro60 winner){% elif r.gate=='rd' %}LIVE tight with-trend gate SOURCE (from bitunix_sfp.trend_mode). rd = LuxAlgo Range-Detector 1h break-state os.{% else %}LIVE tight with-trend gate SOURCE (from bitunix_sfp.trend_mode). ema200 = 15m regime up/down.{% endif %}">GATE:{{ 'PS-TRAIL30' if r.gate=='ps_trail30' else r.gate|upper }}</span>{% endif %}
+        {% if r.rd_state %}<span class="rdchip" title="{{ 'LuxAlgo Range Detector — this coin is gated on RD (tight gate reads the 1h break-state); this 15m box is a proxy overlay' if r.rd_is_live_gate else 'LuxAlgo Range Detector — VIEW-COMPUTED overlay, not the live gate here (gate=' ~ r.gate ~ ')' }}">RD:{{ r.rd_state }}·{{ 'gate' if r.rd_is_live_gate else 'view' }}</span>{% endif %}
         <span class="tag {{ 'tag-livev' if c.is_live_coin else 'tag-paper' }}">{{ c.exec_tag }}</span>
       </span>
     </div>

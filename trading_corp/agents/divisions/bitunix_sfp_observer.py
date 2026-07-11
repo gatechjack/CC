@@ -41,6 +41,7 @@ from trading_corp.persistence import db
 from trading_corp.agents.divisions import bitunix_sfp_research_log as research_log
 from trading_corp.agents.strategies.bitunix_inst_levels import InstLevels
 from trading_corp.agents.strategies import bitunix_rd_trend as rd_trend
+from trading_corp.agents.strategies import bitunix_ps_trail_trend as ps_trail_trend
 from trading_corp.persistence.models import (
     AccountState,
     PaperTradeRecord,
@@ -211,9 +212,11 @@ class BitunixSfpConfig:
     with_trend: bool = False             # L2: true = with-trend only (drop range; ema200 up/down)
     # L5 per-coin tight with-trend SOURCE (wire-keyed): 'ema200' (the live tight gate: 15m regime
     # up-only long / down-only short) | 'rd' (LuxAlgo Range-Detector 1h break-state os: os==+1 long,
-    # os==-1 short, os==0/None sit out). Default 'ema200' for EVERY coin => behavior-identical until an
-    # explicit arm flips a coin to 'rd'. Only consulted when with_trend is True; the LOOSE ema200
-    # up/range side-gate (the base opportunity set) is UNCHANGED regardless of trend_mode.
+    # os==-1 short, os==0/None sit out) | 'ps_trail30' (causal one-sided Pagan-Sossounov DAILY trend,
+    # the causal-macro60 winner: prior-day st_ps_trail(30) state == 'bull' long / 'bear' short / None
+    # sit out). Default 'ema200' for EVERY coin => behavior-identical until an explicit arm flips a coin.
+    # Only consulted when with_trend is True; the LOOSE ema200 up/range side-gate (the base opportunity
+    # set) is UNCHANGED regardless of trend_mode.
     trend_mode: dict[str, str] = field(default_factory=dict)
     fresh_inst: bool = False             # L3: true = require the swept level at a FRESH institutional level (BTC-first)
     risk_pct_real: float = 0.005
@@ -236,8 +239,9 @@ class BitunixSfpConfig:
 
     def trend_mode_for(self, wire: str) -> str:
         """Tight with-trend gate SOURCE for a wire symbol; default 'ema200' (behavior-identical).
-        NOTE the LIVE decision path fresh-reads the YAML per signal (``_yaml_trend_mode``) so an arm
-        is HOT; this dataclass value is the boot-time default / fallback if the YAML read fails."""
+        One of 'ema200'|'rd'|'ps_trail30'. NOTE the LIVE decision path fresh-reads the YAML per signal
+        (``_yaml_trend_mode``) so an arm is HOT; this dataclass value is the boot-time default /
+        fallback if the YAML read fails."""
         return self.trend_mode.get(wire, "ema200")
 
     @property
@@ -271,9 +275,9 @@ class BitunixSfpConfig:
         trend_mode: dict[str, str] = {}
         for disp, val in (raw.get("trend_mode") or {}).items():
             mode = str(val).lower()
-            if mode not in ("ema200", "rd"):
+            if mode not in ("ema200", "rd", "ps_trail30"):
                 raise ValueError(
-                    f"bitunix_sfp.trend_mode[{disp}] must be ema200|rd, got {mode!r}")
+                    f"bitunix_sfp.trend_mode[{disp}] must be ema200|rd|ps_trail30, got {mode!r}")
             try:
                 wire = to_wire_format(str(disp))
             except Exception:
@@ -772,6 +776,11 @@ class BitunixSfpObserver:
             #             os==+1 long, os==-1 short (os==0/None = ranging/insufficient -> sit out).
             #             RD won the with-trend gate bake-off on BTC/ETH/XRP (+0.095 pooled); a LEAD,
             #             not a null-cleared edge (66th pctile of its own drift-null).
+            #   'ps_trail30'       -> fire ONLY with the causal one-sided Pagan-Sossounov DAILY trend
+            #             (st_ps_trail(30) prior-day state == 'bull' long / 'bear' short; None -> sit
+            #             out). The DAILY analog of the RD 1h gate + the causal WINNER of the causal-
+            #             macro60 study (pooled +0.128; BTC +0.067) — the live-recoverable part of the
+            #             non-causal macro60 gate. A LEAD, not a null-cleared edge.
             tmode = self._yaml_trend_mode(wire)
             if tmode == "rd":
                 # entry_ts = the 3m bar AFTER the BOS bar (== the fresh-inst gate's convention); RD
@@ -800,6 +809,35 @@ class BitunixSfpObserver:
                 self._audit("sfp_rd_gate_pass", {
                     "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
                     "trend_mode": "rd", "rd_os": os_v, "regime": regime})
+            elif tmode == "ps_trail30":
+                # DAILY analog of the RD gate: causal one-sided Pagan-Sossounov trend (the causal-macro60
+                # winner). entry_ts_ps = the 3m bar AFTER the BOS bar (== the RD/fresh-inst convention);
+                # ps_trail30_label_at maps it to its own day bar and returns the PRIOR day's confirmed
+                # st_ps_trail(30) state (strictly stale, no same-day peek). 'bull' long / 'bear' short.
+                entry_ts_ps = int(bar.ts_ms) + 180_000
+                lab = None
+                try:
+                    lab = ps_trail_trend.ps_trail30_label_at(self.db_url, wire, entry_ts_ps)
+                except Exception as e:                       # fail-soft -> sit out, never fire blind
+                    log.warning("bitunix_sfp: ps_trail30_label_at failed for %s (sit out): %s", wire, e)
+                    lab = None
+                if lab is None:
+                    self._audit("sfp_skip_ps_no_data", {
+                        "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                        "trend_mode": "ps_trail30", "reason": "label_none_warmup_or_error"})
+                    return
+                aligned = ((lab == "bull") if side == "long" else (lab == "bear"))
+                if not aligned:
+                    # opposite daily trend (or the coin-vs-side mismatch) -> counter-trend for ps_trail30;
+                    # sit out. Log the ps label so live-vs-backtest ps agreement is checkable per fire.
+                    self._audit("sfp_skip_ps_counter", {
+                        "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                        "trend_mode": "ps_trail30", "ps_label": lab})
+                    return
+                # log the passing ps label too (audit payload) — live-vs-backtest checkable at each fire
+                self._audit("sfp_ps_gate_pass", {
+                    "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                    "trend_mode": "ps_trail30", "ps_label": lab, "regime": regime})
             else:
                 # ema200 tight gate (default) — BYTE-EQUIVALENT to the prior with_trend path.
                 aligned = ((regime == "up") if side == "long"
@@ -1345,10 +1383,10 @@ class BitunixSfpObserver:
 
     def _yaml_trend_mode(self, wire: str) -> str:
         """Fresh-read ``bitunix_sfp.trend_mode[<wire>]`` — the per-coin tight with-trend SOURCE
-        ('ema200' | 'rd'). HOT: flipping it in strategies.yaml applies WITHOUT a restart (mirrors
-        _yaml_side). Keys may be display or wire form; normalized to wire. Fail-SAFE to 'ema200'
-        (the leaking-but-safe live gate — never silently swaps to RD under uncertainty) on any
-        read/parse error, unknown value, or missing key; falls back to the boot config default."""
+        ('ema200' | 'rd' | 'ps_trail30'). HOT: flipping it in strategies.yaml applies WITHOUT a restart
+        (mirrors _yaml_side). Keys may be display or wire form; normalized to wire. Fail-SAFE to 'ema200'
+        (the leaking-but-safe live gate — never silently swaps to another source under uncertainty) on
+        any read/parse error, unknown value, or missing key; falls back to the boot config default."""
         try:
             import yaml
             with open(self._strategies_yaml_path, encoding="utf-8") as f:
@@ -1362,7 +1400,7 @@ class BitunixSfpObserver:
                     w = str(disp)
                 norm[w] = str(val).lower()
             mode = norm.get(wire, self.config.trend_mode_for(wire))
-            return mode if mode in ("ema200", "rd") else "ema200"
+            return mode if mode in ("ema200", "rd", "ps_trail30") else "ema200"
         except Exception as e:
             log.warning("bitunix_sfp: trend_mode read failed for %s (fail-safe to ema200): %s",
                         wire, e)

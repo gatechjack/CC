@@ -67,10 +67,11 @@ def _loads(s):
 
 # ── L5 tight with-trend gate SOURCE (display-only; honest read of the LIVE config) ──
 def _trend_mode_map() -> dict:
-    """WIRE symbol -> live tight with-trend gate source ('ema200'|'rd') from bitunix_sfp.trend_mode.
-    DISPLAY-ONLY — this is exactly the map the engine hot-reads per signal, so the cockpit shows the
-    gate that IS live. Absent/unreadable -> {} (every coin renders the ema200 default = the inert
-    state). Keys in the YAML may be display or wire form; normalized to wire (BTC->BTCUSDT)."""
+    """WIRE symbol -> live tight with-trend gate source ('ema200'|'rd'|'ps_trail30') from
+    bitunix_sfp.trend_mode. DISPLAY-ONLY — this is exactly the map the engine hot-reads per signal, so
+    the cockpit shows the gate that IS live. Absent/unreadable -> {} (every coin renders the ema200
+    default = the inert state). Keys in the YAML may be display or wire form; normalized to wire
+    (BTC->BTCUSDT)."""
     try:
         import yaml
         with open(_STRAT_YAML, encoding="utf-8") as f:
@@ -80,7 +81,7 @@ def _trend_mode_map() -> dict:
             k = str(key).upper()
             wire = SYMBOLS.get(str(key)) or (k if k.endswith("USDT") else f"{k.split('/')[0]}USDT")
             mode = str(val).lower()
-            out[wire] = mode if mode in ("ema200", "rd") else "ema200"
+            out[wire] = mode if mode in ("ema200", "rd", "ps_trail30") else "ema200"
         return out
     except Exception as e:                                    # noqa: BLE001
         log.warning("sfp_construct_cockpit: trend_mode read failed: %s", e)
@@ -118,9 +119,10 @@ def _regime_panel(db_url: str, wire: str) -> dict:
         w_lo = min(lows[-PIR_WIN:]); w_hi = max(highs[-PIR_WIN:]); cur = closes[-1]
         span = (w_hi - w_lo) or 1.0
         pir = max(0, min(100, round(100 * (cur - w_lo) / span)))
-    # L5: the LIVE tight with-trend gate SOURCE for this coin (ema200|rd) — honest read of the
-    # config the engine hot-reads. When 'rd' the RD break-state IS the live gate (not just a view
-    # overlay); when 'ema200' the RD chip stays a view-computed situational overlay.
+    # L5: the LIVE tight with-trend gate SOURCE for this coin (ema200|rd|ps_trail30) — honest read of
+    # the config the engine hot-reads. When 'rd' the RD break-state IS the live gate (not just a view
+    # overlay); when 'ema200' or 'ps_trail30' the RD chip stays a view-computed situational overlay
+    # (ps_trail30 gates on the DAILY PS trend, so RD is NOT the live gate — rd_is_live_gate stays False).
     gate = _trend_mode_map().get(wire, "ema200")
     return {
         "regime": reg["label"], "to_up": reg["to_up"], "last_flip_ts": reg.get("last_flip_ts"),
@@ -144,11 +146,13 @@ def _gate_funnel(db_url: str, wire: str, since_iso: str) -> dict:
     root = wire.replace("USDT", "")
     # terminal audit kinds — each BOS-confirmed signal reaching _handle_signal emits EXACTLY ONE of
     # these, so their SUM = signals that reached handling (internally consistent, monotonic funnel).
-    # with-trend rejections — includes the L5 RD-gate skips (sfp_skip_rd_range/no_data) so an RD-gated
-    # coin's with-trend drops are accounted for in the funnel exactly like the ema200 counter_trend skip.
+    # with-trend rejections — includes the L5 RD-gate skips (sfp_skip_rd_range/no_data) AND the
+    # ps_trail30-gate skips (sfp_skip_ps_counter/no_data) so an RD- or ps_trail30-gated coin's with-trend
+    # drops are accounted for in the funnel exactly like the ema200 counter_trend skip.
     TREND_SKIPS = ("sfp_skip_counter_trend", "sfp_skip_regime_warmup",
                    "sfp_skip_side_disabled", "sfp_skip_invalid_geometry",
-                   "sfp_skip_rd_range", "sfp_skip_rd_no_data")
+                   "sfp_skip_rd_range", "sfp_skip_rd_no_data",
+                   "sfp_skip_ps_counter", "sfp_skip_ps_no_data")
     FRESH_SKIPS = ("sfp_skip_not_fresh_inst", "sfp_skip_no_inst_source", "sfp_skip_inst_error")
     # placement ATTEMPTS (one per confirmed signal). live_order_rejected + sfp_bracket_placed are
     # FOLLOW-ON events on an already-counted attempt → excluded from the terminal/reached sum.
