@@ -40,6 +40,7 @@ from typing import Any
 from trading_corp.persistence import db
 from trading_corp.agents.divisions import bitunix_sfp_research_log as research_log
 from trading_corp.agents.strategies.bitunix_inst_levels import InstLevels
+from trading_corp.agents.strategies import bitunix_rd_trend as rd_trend
 from trading_corp.persistence.models import (
     AccountState,
     PaperTradeRecord,
@@ -208,6 +209,12 @@ class BitunixSfpConfig:
     watch_hours: float = 12.0
     side: str = "long"
     with_trend: bool = False             # L2: true = with-trend only (drop range; ema200 up/down)
+    # L5 per-coin tight with-trend SOURCE (wire-keyed): 'ema200' (the live tight gate: 15m regime
+    # up-only long / down-only short) | 'rd' (LuxAlgo Range-Detector 1h break-state os: os==+1 long,
+    # os==-1 short, os==0/None sit out). Default 'ema200' for EVERY coin => behavior-identical until an
+    # explicit arm flips a coin to 'rd'. Only consulted when with_trend is True; the LOOSE ema200
+    # up/range side-gate (the base opportunity set) is UNCHANGED regardless of trend_mode.
+    trend_mode: dict[str, str] = field(default_factory=dict)
     fresh_inst: bool = False             # L3: true = require the swept level at a FRESH institutional level (BTC-first)
     risk_pct_real: float = 0.005
     risk_pct_considerable: float = 0.005
@@ -226,6 +233,12 @@ class BitunixSfpConfig:
     def mode_for(self, wire: str) -> tuple[str, str]:
         """(bos_tf, arm) for a wire symbol; default (detection_tf, 'trading')."""
         return self.symbol_modes.get(wire, (self.detection_tf, "trading"))
+
+    def trend_mode_for(self, wire: str) -> str:
+        """Tight with-trend gate SOURCE for a wire symbol; default 'ema200' (behavior-identical).
+        NOTE the LIVE decision path fresh-reads the YAML per signal (``_yaml_trend_mode``) so an arm
+        is HOT; this dataclass value is the boot-time default / fallback if the YAML read fails."""
+        return self.trend_mode.get(wire, "ema200")
 
     @property
     def uses_mode_b(self) -> bool:
@@ -252,6 +265,20 @@ class BitunixSfpConfig:
                 raise ValueError(
                     f"bitunix_sfp.symbol_modes[{disp}].arm must be trading|watch, got {arm!r}")
             symbol_modes[wire] = (bos_tf, arm)
+        # L5 per-coin tight with-trend source map (wire-keyed, validated). Optional + backward-compat:
+        # an absent/empty map => every coin defaults to 'ema200' = today's behavior exactly. Keys may be
+        # display ("BTC/USDT.P") or already-wire ("BTCUSDT") — normalized to wire.
+        trend_mode: dict[str, str] = {}
+        for disp, val in (raw.get("trend_mode") or {}).items():
+            mode = str(val).lower()
+            if mode not in ("ema200", "rd"):
+                raise ValueError(
+                    f"bitunix_sfp.trend_mode[{disp}] must be ema200|rd, got {mode!r}")
+            try:
+                wire = to_wire_format(str(disp))
+            except Exception:
+                wire = str(disp)          # already-wire key (e.g. 'BTCUSDT') passes through
+            trend_mode[wire] = mode
         return cls(
             enabled=bool(raw.get("enabled", False)),
             auto_execute=bool(raw.get("auto_execute", False)),
@@ -267,6 +294,7 @@ class BitunixSfpConfig:
             watch_hours=float(raw.get("watch_hours", 12.0)),
             side=str(raw.get("side", "long")).lower(),
             with_trend=bool(raw.get("with_trend", False)),
+            trend_mode=trend_mode,
             fresh_inst=bool(raw.get("fresh_inst", False)),
             risk_pct_real=float(raw.get("risk_pct_real", 0.005)),
             risk_pct_considerable=float(raw.get("risk_pct_considerable", 0.005)),
@@ -725,19 +753,62 @@ class BitunixSfpObserver:
             self._audit("sfp_skip_regime_warmup", {
                 "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode})
             return
-        if self.config.with_trend:
-            # L2 with-trend: fire ONLY with the 15m ema200 regime (drop range-neutral).
-            # NOTE deviation: research with-trend used macro60 daily PS/BB, not ema200.
-            aligned = ((regime == "up") if side == "long"
-                       else (regime == "down"))
-        else:
-            aligned = ((regime in ("up", "range")) if side == "long"
-                       else (regime in ("down", "range")))
-        if not aligned:
+        # LOOSE ema200 side-gate — the BASE opportunity set, ALWAYS-ON for every arm (never widened
+        # by the tight filter below). A coin gated to RD must STILL pass this: RD tightens, never
+        # loosens. Identical to the bake-off's always-on loose side-gate.
+        loose_ok = ((regime in ("up", "range")) if side == "long"
+                    else (regime in ("down", "range")))
+        if not loose_ok:
             self._audit("sfp_skip_counter_trend", {
                 "symbol": symbol_display, "side": side, "regime": regime,
                 "sfp_mode": sig.sfp_mode})
             return
+        if self.config.with_trend:
+            # L2/L5 with-trend: the TIGHT direction filter. Its SOURCE is per-coin (HOT-read):
+            #   'ema200' (default) -> fire ONLY with the 15m ema200 regime (up-only long / down-only
+            #             short). = the live tight gate. NOTE: research with-trend used macro60 daily
+            #             PS/BB, not ema200 (Deviation #1) — ema200 captures ~13% of that edge.
+            #   'rd'               -> fire ONLY with the LuxAlgo Range-Detector 1h break-state os:
+            #             os==+1 long, os==-1 short (os==0/None = ranging/insufficient -> sit out).
+            #             RD won the with-trend gate bake-off on BTC/ETH/XRP (+0.095 pooled); a LEAD,
+            #             not a null-cleared edge (66th pctile of its own drift-null).
+            tmode = self._yaml_trend_mode(wire)
+            if tmode == "rd":
+                # entry_ts = the 3m bar AFTER the BOS bar (== the fresh-inst gate's convention); RD
+                # looks up the last 1h bar CLOSED strictly before it (causal, no peek).
+                entry_ts_rd = int(bar.ts_ms) + 180_000
+                os_v = None
+                try:
+                    os_v = rd_trend.rd_os_at(self.db_url, wire, entry_ts_rd)
+                except Exception as e:                       # fail-soft -> sit out, never fire blind
+                    log.warning("bitunix_sfp: rd_os_at failed for %s (sit out): %s", wire, e)
+                    os_v = None
+                if os_v is None:
+                    self._audit("sfp_skip_rd_no_data", {
+                        "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                        "trend_mode": "rd", "reason": "os_none_insufficient_1h_or_error"})
+                    return
+                aligned = ((os_v == 1) if side == "long" else (os_v == -1))
+                if not aligned:
+                    # os==0 (range/fresh) or opposite break -> counter-trend for RD; sit out. Log the
+                    # RD os so live-vs-backtest RD agreement is checkable from the audit stream.
+                    self._audit("sfp_skip_rd_range", {
+                        "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                        "trend_mode": "rd", "rd_os": os_v})
+                    return
+                # log the passing RD os too (audit payload) — live-vs-backtest checkable at each fire
+                self._audit("sfp_rd_gate_pass", {
+                    "symbol": symbol_display, "side": side, "sfp_mode": sig.sfp_mode,
+                    "trend_mode": "rd", "rd_os": os_v, "regime": regime})
+            else:
+                # ema200 tight gate (default) — BYTE-EQUIVALENT to the prior with_trend path.
+                aligned = ((regime == "up") if side == "long"
+                           else (regime == "down"))
+                if not aligned:
+                    self._audit("sfp_skip_counter_trend", {
+                        "symbol": symbol_display, "side": side, "regime": regime,
+                        "sfp_mode": sig.sfp_mode, "trend_mode": "ema200"})
+                    return
 
         # L3 fresh-institutional gate (armed via config.fresh_inst; BTC-first — needs a 1d cache).
         # Require the swept swing level at a FRESH major institutional level (PDH/PDL/PWH/PWL/
@@ -1271,6 +1342,31 @@ class BitunixSfpObserver:
         except Exception as e:
             log.warning("bitunix_sfp: side read failed (fail-safe to long): %s", e)
             return "long"
+
+    def _yaml_trend_mode(self, wire: str) -> str:
+        """Fresh-read ``bitunix_sfp.trend_mode[<wire>]`` — the per-coin tight with-trend SOURCE
+        ('ema200' | 'rd'). HOT: flipping it in strategies.yaml applies WITHOUT a restart (mirrors
+        _yaml_side). Keys may be display or wire form; normalized to wire. Fail-SAFE to 'ema200'
+        (the leaking-but-safe live gate — never silently swaps to RD under uncertainty) on any
+        read/parse error, unknown value, or missing key; falls back to the boot config default."""
+        try:
+            import yaml
+            with open(self._strategies_yaml_path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            tm = (raw.get(DIVISION) or {}).get("trend_mode") or {}
+            norm: dict[str, str] = {}
+            for disp, val in tm.items():
+                try:
+                    w = to_wire_format(str(disp))
+                except Exception:
+                    w = str(disp)
+                norm[w] = str(val).lower()
+            mode = norm.get(wire, self.config.trend_mode_for(wire))
+            return mode if mode in ("ema200", "rd") else "ema200"
+        except Exception as e:
+            log.warning("bitunix_sfp: trend_mode read failed for %s (fail-safe to ema200): %s",
+                        wire, e)
+            return self.config.trend_mode_for(wire)
 
     # ------------------------------------------------------------------ #
     # OBSERVE-ONLY emit: watch-state + heartbeat (dashboard Tier-B).

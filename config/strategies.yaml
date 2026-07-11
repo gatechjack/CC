@@ -1945,6 +1945,13 @@ bitunix_sfp:
   stop_buffer_pct: 0.001
   tp_r: 3.0
   with_trend: true                # L2: true = with-trend only (ema200 up/down). ARM=true
+  # L5 per-coin TIGHT with-trend gate SOURCE (HOT — re-read per signal, no restart): ema200|rd.
+  # ema200 = the live tight gate (15m regime up-only long/down-only short). rd = LuxAlgo Range-Detector
+  # 1h break-state os (os==+1 long / os==-1 short / os==0 sit out). DEFAULT ema200 for ALL 4 = INERT
+  # (behavior-identical to today). STEP-B ARM flips BTC/ETH/XRP -> rd (RD won the bake-off there),
+  # SOL stays ema200 (ema200 won SOL). Only consulted when with_trend:true; the loose up/range
+  # side-gate is unchanged regardless. See sfp_rd_arm.ps1 for the armed diff.
+  trend_mode: { BTCUSDT: ema200, ETHUSDT: ema200, SOLUSDT: ema200, XRPUSDT: ema200 }
   fresh_inst: true                # L3: true = require a FRESH institutional level (BTC-first). ARM=true
   watch_hours: 12
   side: regime                     # kill-switch (HOT, no restart): regime|long|short. regime=bidirectional; long=long-only (maiden-short rollback, shorts off + longs continue); short=short-only

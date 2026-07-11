@@ -598,11 +598,16 @@ async def run(argv: list[str] | None = None) -> int:
         db_url=secrets.db_url,
         caches=(
             bitunix_bar_cache,    # 3m
-            bitunix_h1_cache,
+            bitunix_h1_cache,     # 1h BTC (== bitunix_sfp_h1_caches["BTCUSDT"])
             bitunix_h4_cache,
             bitunix_d1_cache,
             *bitunix_sfp_15m_caches.values(),     # 15m BTC/SOL/ETH/XRP (record)
             *bitunix_capture_3m_caches.values(),  # 3m SOL/ETH/XRP (record)
+            # L5 RD-trend gate PREREQ 1(b): archive 1h for ETH/SOL/XRP too, so the RD break-state gate
+            # (bitunix_rd_trend.rd_os_at) reads a PERSISTENT, never-staling 1h series for all 4 coins.
+            # BTC 1h is already archived via bitunix_h1_cache above; without these three the RD gate
+            # would warmup-stuck (~8d) as the ETH/SOL/XRP 1h backfill ages out of the live cache.
+            *(bitunix_sfp_h1_caches[_w] for _w in ("ETHUSDT", "SOLUSDT", "XRPUSDT")),
         ),
     )
     # PR 3c — attach the provider to the observer after construction

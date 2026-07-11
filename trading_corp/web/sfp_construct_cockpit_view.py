@@ -35,6 +35,7 @@ from trading_corp.persistence import db
 from trading_corp.web.sfp_cockpit_view import (
     DIVISION, SYMBOLS, runtime_badge, _live_count, _symbol_arm_map,
     _regime_state, _bar_strip, _latest_close, _week_start_iso, _utc_now,
+    _STRAT_YAML,
 )
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,28 @@ def _loads(s):
     try:
         return json.loads(s)
     except (TypeError, ValueError):
+        return {}
+
+
+# ── L5 tight with-trend gate SOURCE (display-only; honest read of the LIVE config) ──
+def _trend_mode_map() -> dict:
+    """WIRE symbol -> live tight with-trend gate source ('ema200'|'rd') from bitunix_sfp.trend_mode.
+    DISPLAY-ONLY — this is exactly the map the engine hot-reads per signal, so the cockpit shows the
+    gate that IS live. Absent/unreadable -> {} (every coin renders the ema200 default = the inert
+    state). Keys in the YAML may be display or wire form; normalized to wire (BTC->BTCUSDT)."""
+    try:
+        import yaml
+        with open(_STRAT_YAML, encoding="utf-8") as f:
+            raw = (yaml.safe_load(f) or {}).get(DIVISION) or {}
+        out: dict = {}
+        for key, val in (raw.get("trend_mode") or {}).items():
+            k = str(key).upper()
+            wire = SYMBOLS.get(str(key)) or (k if k.endswith("USDT") else f"{k.split('/')[0]}USDT")
+            mode = str(val).lower()
+            out[wire] = mode if mode in ("ema200", "rd") else "ema200"
+        return out
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("sfp_construct_cockpit: trend_mode read failed: %s", e)
         return {}
 
 
@@ -94,9 +117,14 @@ def _regime_panel(db_url: str, wire: str) -> dict:
         w_lo = min(lows[-PIR_WIN:]); w_hi = max(highs[-PIR_WIN:]); cur = closes[-1]
         span = (w_hi - w_lo) or 1.0
         pir = max(0, min(100, round(100 * (cur - w_lo) / span)))
+    # L5: the LIVE tight with-trend gate SOURCE for this coin (ema200|rd) — honest read of the
+    # config the engine hot-reads. When 'rd' the RD break-state IS the live gate (not just a view
+    # overlay); when 'ema200' the RD chip stays a view-computed situational overlay.
+    gate = _trend_mode_map().get(wire, "ema200")
     return {
         "regime": reg["label"], "to_up": reg["to_up"], "last_flip_ts": reg.get("last_flip_ts"),
         "rd_state": rd_state, "rd_view_computed": True, "pir": pir, "tf": GATE_TF,
+        "gate": gate, "rd_is_live_gate": (gate == "rd"),
         "has_bars": len(closes) >= RD_LEN + 1,
     }
 
