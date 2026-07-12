@@ -184,7 +184,19 @@ def _gate_funnel(db_url: str, wire: str, since_iso: str) -> dict:
     rejected = ac.get("live_order_rejected", 0)
     passed_trend = min(max(0, reached - trend_sk), reached)
     passed_fresh = min(max(0, passed_trend - fresh_sk), passed_trend)
-    placed = min(sum(ac.get(k, 0) for k in PLACED_KINDS), passed_fresh)  # <= passed_fresh
+    # FIX (2026-07-12, funnel-vs-equity discrepancy): a REAL placement passed EVERY gate, so it must NEVER
+    # render as 0 placed. The clamp above subtracts with-trend/fresh-inst SKIP audits that come from OTHER
+    # signals (NOT bounded to the raw armed-watch cohort); when those skips exceed the raw-capped `reached`,
+    # the subtraction underflowed and buried a real placement (the BTC/SOL 2026-07-12 shorts: reached 2 -
+    # trend-skips 3 -> 0). Floor `placed` at the authoritative placement-audit count (what paper_trade_record
+    # — the equity panel's source — records), then lift the upstream stages to keep the funnel monotonic
+    # (fired >= bos >= trend >= fresh >= placed). Only a real PLACEMENT lifts the chain (skips alone never
+    # bump raw), so the "skips must not light the funnel" intent below is preserved.
+    placed = sum(ac.get(k, 0) for k in PLACED_KINDS)
+    passed_fresh = max(passed_fresh, placed)
+    passed_trend = max(passed_trend, passed_fresh)
+    reached = max(reached, passed_trend)
+    raw = max(raw, reached)
     stages = [
         {"key": "fired", "label": "raw 2-candle SFP", "n": raw, "src": "sfp_watch_state"},
         {"key": "bos", "label": "BOS confirmed", "n": reached, "src": "audit_event"},
