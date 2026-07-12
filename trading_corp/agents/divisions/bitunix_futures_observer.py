@@ -3510,15 +3510,30 @@ class BitunixFuturesObserver:
         #                           reconciler is position-level and won't catch a
         #                           stray TP order). This is the Section-B hardening.
         tp_order_ids: dict[str, str] = {}
-        for leg in legs:
+        # FIX-1 (2026-07-11 audit): a cleanly-rejected TP leg must NOT silently drop
+        # coverage. FOLD its qty FORWARD into the next leg — the dominant reject is
+        # 30021 (the nearest TP's trigger already crossed mark in the fill->placement
+        # race), and the farther legs are still valid, so folding preserves full TP
+        # coverage at a farther target. Total placed qty never exceeds the position
+        # (legs sum to it post-FIX-3; reduce-only), so folding cannot create a new
+        # 30038. If the LAST leg is unrecoverable, the residual is surfaced LOUDLY
+        # after the loop (never a silent gap). The B1 full-size SL guards throughout.
+        carry_qty = 0.0
+        uncovered_qty = 0.0
+        placed_qty_by_leg: dict[str, float] = {}
+        n_legs = len(legs)
+        for i, leg in enumerate(legs):
+            attempt_qty = round(float(leg.qty) + carry_qty, 7)
             try:
                 vid = await broker.place_tpsl_order(
                     symbol=order.symbol,
                     position_id=position_id,
                     tp_price=leg.price,
-                    tp_qty=leg.qty,
+                    tp_qty=attempt_qty,
                 )
             except BitunixUntrackedTpslOrder as e:
+                # POST may have RESTED (id uncaptured) -> do NOT fold (would double-
+                # cover -> 30038). Flag loudly for reconciliation; carry unchanged.
                 log.error(
                     "bitunix_observer: bracket %s leg may be RESTING UNTRACKED "
                     "(POST reached venue, id uncaptured) — reconcile needed: %s",
@@ -3527,25 +3542,38 @@ class BitunixFuturesObserver:
                 self.logger_agent.log_event(
                     actor="bitunix_futures", kind="bracket_tp_leg_untracked",
                     payload={"order_id": order.id, "leg": leg.leg,
-                             "price": leg.price, "qty": leg.qty,
+                             "price": leg.price, "qty": attempt_qty,
                              "position_id": position_id,
                              "error": str(e), "error_type": type(e).__name__},
                 )
                 continue
             except Exception as e:
+                # FIX-1: clean rejection (POST did NOT rest) -> fold this qty forward
+                # into the next leg rather than silently continuing. On the LAST leg
+                # the residual is unrecoverable -> loud coverage-gap alert below.
+                is_last = (i == n_legs - 1)
                 log.error(
                     "bitunix_observer: bracket %s leg place FAILED (SL still "
-                    "protects): %s", leg.leg, e,
+                    "protects) — %s %.7f: %s", leg.leg,
+                    "UNRECOVERABLE (last leg)" if is_last else "folding qty forward",
+                    attempt_qty, e,
                 )
                 self.logger_agent.log_event(
                     actor="bitunix_futures", kind="bracket_tp_leg_failed",
                     payload={"order_id": order.id, "leg": leg.leg,
-                             "price": leg.price, "qty": leg.qty,
+                             "price": leg.price, "qty": attempt_qty,
+                             "recovery": "unrecoverable" if is_last else "folded_forward",
                              "error": str(e), "error_type": type(e).__name__},
                 )
+                if is_last:
+                    uncovered_qty = attempt_qty
+                else:
+                    carry_qty = attempt_qty
                 continue
             if vid:
                 tp_order_ids[leg.leg] = vid
+                placed_qty_by_leg[leg.leg] = attempt_qty
+                carry_qty = 0.0  # FIX-1: carried qty absorbed into this placed leg
             else:
                 # Empty id WITHOUT an exception = idempotent duplicate (the leg is
                 # already resting from a prior attempt; the broker logged it). Not
@@ -3555,6 +3583,33 @@ class BitunixFuturesObserver:
                     "duplicate / already resting) — not counted as a new leg",
                     leg.leg,
                 )
+
+        if uncovered_qty > 0.0:
+            # FIX-1: fold-forward could NOT restore coverage -> surface LOUDLY so the
+            # gap is never silent. The B1 full-size SL still guards the downside; this
+            # fraction merely lacks a TP profit-exit until the operator/Board acts.
+            log.error(
+                "bitunix_observer: TP COVERAGE GAP for %s — %.7f uncovered by any TP "
+                "leg after fold-forward (B1 SL still protects): operator review",
+                order.id, uncovered_qty,
+            )
+            self.logger_agent.log_event(
+                actor="bitunix_futures", kind="bracket_tp_coverage_gap",
+                payload={"order_id": order.id, "uncovered_qty": uncovered_qty,
+                         "entry_qty": entry_qty, "position_id": position_id},
+            )
+            try:
+                await self._push_with_confirmed_delivery(
+                    order_id=order.id,
+                    message=(
+                        f"⚠ BTC-PERP TP COVERAGE GAP (live)\n"
+                        f"{uncovered_qty} uncovered by TP after fold — rides the SL "
+                        f"(still protected)\norder_id={order.id}"
+                    ),
+                    failure_channel="bracket_coverage_gap_alert",
+                )
+            except Exception as pe:
+                log.error("bitunix_observer: coverage-gap alert push failed: %s", pe)
 
         # ── Place the managed auto-reducing whole-position SL ────────────────
         # The native `/tpsl/position/place_order` SL (no qty) auto-shrinks as the
@@ -3597,6 +3652,11 @@ class BitunixFuturesObserver:
                 {"leg": l.leg, "price": l.price, "qty": l.qty} for l in legs
             ]
             record.extra["bracket_entry_qty"] = entry_qty
+            # FIX-1: record the ACTUAL placed qty per leg (fold-aware) + any residual
+            # uncovered qty, so a folded/uncovered bracket is never silently opaque.
+            record.extra["bracket_placed_qty_by_leg"] = placed_qty_by_leg
+            if uncovered_qty > 0.0:
+                record.extra["bracket_uncovered_qty"] = uncovered_qty
             record.extra["current_sl"] = float(extra.get("stop_price") or 0.0)
             record.extra["bracket_position_id"] = position_id
             record.extra["bracket_position_sl_order_id"] = position_sl_order_id
@@ -3614,6 +3674,8 @@ class BitunixFuturesObserver:
             actor="bitunix_futures", kind="bracket_placed",
             payload={"order_id": order.id, "legs_placed": len(tp_order_ids),
                      "legs_planned": len(legs), "tp_order_ids": tp_order_ids,
+                     "placed_qty_by_leg": placed_qty_by_leg,
+                     "uncovered_qty": uncovered_qty,
                      "degrade_note": note, "entry_qty": entry_qty,
                      "structural_sl": float(extra.get("stop_price") or 0.0),
                      "position_sl_order_id": position_sl_order_id},

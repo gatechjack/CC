@@ -789,3 +789,88 @@ async def test_place_bracket_exits_sizes_legs_off_real_fill_qty_fix3(wired_obser
     assert all(q <= real_fill_qty + 1e-9 for q in placed_tp_qty)
     # bracket_entry_qty persisted must be the real fill, not the intent.
     assert record.extra["bracket_entry_qty"] == pytest.approx(real_fill_qty, abs=1e-9)
+
+
+def _fix1_setup(wired_observer, tpsl_side_effect):
+    """Shared FIX-1 bracket fixture: a 3-leg short at a 0.0004 real fill, with a
+    caller-supplied place_tpsl_order side_effect (to inject leg rejections)."""
+    from trading_corp.persistence.models import ProposedOrder, PaperTradeRecord, Position
+    obs, _risk, data_exec, logger_agent, telegram = wired_observer
+    broker = data_exec.brokers["bitunix_futures"]
+    real_fill = 0.0004
+    broker.place_tpsl_order = AsyncMock(side_effect=tpsl_side_effect)
+    broker.place_position_tpsl = AsyncMock(return_value="slid")
+    broker.get_pending_positions = AsyncMock(return_value=[
+        Position(account="bitunix-futures", symbol="BTC/USDT.P", qty=-real_fill,
+                 avg_price=63000.0, opened_ts="2026-07-11T00:00:00+00:00",
+                 extra={"side": "SHORT", "positionId": "pos_1"})])
+    tp_plan = [{"leg": "tp1", "fraction": 0.25, "price": 62900.0},
+               {"leg": "tp2", "fraction": 0.50, "price": 62800.0},
+               {"leg": "tp3", "fraction": 0.25, "price": 62500.0}]
+    order = ProposedOrder(id="fix1", ts="2026-07-11T00:00:00+00:00",
+                          strategy="bitunix_futures", symbol="BTC/USDT.P", side="sell",
+                          qty=real_fill, order_type="market",
+                          extra={"tp_plan": tp_plan, "stop_price": 63200.0})
+    record = PaperTradeRecord.from_order(order, strategy="bitunix_futures",
+                                         division="bitunix_futures", max_hold_seconds=None)
+    record.qty = real_fill
+    record.extra = {}
+    return obs, order, record, logger_agent, telegram, real_fill
+
+
+def _audit_kinds(logger_agent):
+    return [c.kwargs.get("kind") for c in logger_agent.log_event.call_args_list]
+
+
+def _audit_payloads(logger_agent, kind):
+    return [c.kwargs.get("payload", {}) for c in logger_agent.log_event.call_args_list
+            if c.kwargs.get("kind") == kind]
+
+
+@pytest.mark.asyncio
+async def test_place_bracket_exits_folds_rejected_leg_forward_fix1(wired_observer):
+    """FIX-1: a cleanly-rejected TP leg is FOLDED FORWARD into the next leg so full
+    coverage is preserved — NOT a silent continue. Reject the first (nearest) leg
+    (30021-style); the placed legs must still sum to the full position, with no gap."""
+    placed: list[float] = []
+    calls = {"n": 0}
+
+    async def _tpsl(*, symbol, position_id, tp_price, tp_qty):
+        calls["n"] += 1
+        if calls["n"] == 1:  # reject the nearest leg (price ran through it)
+            raise RuntimeError("Trigger price for TP should be lower than mark price")
+        placed.append(float(tp_qty))
+        return f"tpid_{calls['n']}"
+
+    obs, order, record, logger_agent, _tg, real_fill = _fix1_setup(wired_observer, _tpsl)
+    await obs._place_bracket_exits(order=order, record=record)
+
+    # rejected tp1 qty folded into tp2 -> placed legs still sum to the full position
+    assert round(sum(placed), 7) == pytest.approx(real_fill, abs=1e-9)
+    assert record.extra.get("bracket_uncovered_qty") is None          # no residual gap
+    assert "bracket_tp_coverage_gap" not in _audit_kinds(logger_agent)
+    # the rejection was recorded as folded_forward, NOT silently skipped
+    assert any(p.get("recovery") == "folded_forward"
+               for p in _audit_payloads(logger_agent, "bracket_tp_leg_failed"))
+
+
+@pytest.mark.asyncio
+async def test_place_bracket_exits_last_leg_gap_alerts_loudly_fix1(wired_observer):
+    """FIX-1: an unrecoverable LAST-leg rejection surfaces the uncovered qty LOUDLY
+    (coverage-gap audit + operator telegram), never a silent drop."""
+    calls = {"n": 0}
+
+    async def _tpsl(*, symbol, position_id, tp_price, tp_qty):
+        calls["n"] += 1
+        if calls["n"] == 3:  # reject the LAST leg -> unrecoverable
+            raise RuntimeError("30038 TPSL_EXCEEDS_POSITION")
+        return f"tpid_{calls['n']}"
+
+    obs, order, record, logger_agent, telegram, _rf = _fix1_setup(wired_observer, _tpsl)
+    await obs._place_bracket_exits(order=order, record=record)
+
+    assert "bracket_tp_coverage_gap" in _audit_kinds(logger_agent)     # LOUD audit
+    assert record.extra.get("bracket_uncovered_qty") == pytest.approx(0.0001, abs=1e-9)
+    assert telegram.push.called                                        # operator telegram
+    assert any(p.get("recovery") == "unrecoverable"
+               for p in _audit_payloads(logger_agent, "bracket_tp_leg_failed"))
