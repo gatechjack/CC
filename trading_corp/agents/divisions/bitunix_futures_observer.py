@@ -3250,6 +3250,16 @@ class BitunixFuturesObserver:
             _aefp = float(getattr(fill, "price", 0.0) or 0.0)
             if _aefp > 0:
                 record.extra["actual_entry_fill_price"] = _aefp
+            # FIX-3 (2026-07-11 audit): record the ACTUAL venue-filled qty, not the
+            # intended order.qty. The venue lot-floors to 0.0001, so the intended qty
+            # ran ~6% high — which inflated the recorded size AND (via bracket sizing)
+            # oversized the TP legs vs the real position (the latent 30038 feeder).
+            # FillEvent.qty is the observed fill (bitunix.py: _observe_fill tradeQty).
+            # Forward-only: pre-fix rows are NOT rewritten. Fallback to order.qty when
+            # the fill qty is unobserved (<=0), preserving prior behavior.
+            _filled_qty = float(getattr(fill, "qty", 0.0) or 0.0)
+            if _filled_qty > 0:
+                record.qty = _filled_qty
             db.insert_paper_trade_record(record.to_db_row(), db_url=self.db_url)
             _registered = True
         except Exception as e:
@@ -3426,7 +3436,12 @@ class BitunixFuturesObserver:
 
         extra = order.extra or {}
         tp_plan = extra.get("tp_plan") or []
-        entry_qty = float(order.qty)
+        # FIX-3 (2026-07-11 audit): size TP legs off the REAL venue fill, not the
+        # intended order.qty. `record.qty` carries the actual filled qty (set in
+        # _place_live from FillEvent.qty; falls back to order.qty when unobserved),
+        # so the legs sum to the ACTUAL position — closing the 30038 over-sizing gap
+        # where legs summed to ~6% more than the venue-floored position.
+        entry_qty = float(record.qty)
         legs, note = build_bracket_legs(entry_qty, tp_plan)
         broker = (
             self.data_exec.brokers.get("bitunix_futures")

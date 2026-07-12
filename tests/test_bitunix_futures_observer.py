@@ -727,3 +727,65 @@ async def test_observe_and_decide_handles_bar_cache_error(wired_observer):
             "SELECT * FROM paper_trade_record WHERE strategy = 'bitunix_futures'"
         ).fetchall()
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_place_bracket_exits_sizes_legs_off_real_fill_qty_fix3(wired_observer):
+    """FIX-3 (2026-07-11 audit): TP legs must be sized off the ACTUAL venue fill
+    (record.qty), NOT the intended order.qty. The venue lot-floors to 0.0001, so the
+    intended qty runs ~6% high; sizing legs off it over-sizes them vs the real
+    position (the latent 30038 TPSL_EXCEEDS_POSITION feeder). This sims the qty path:
+    order.qty is the inflated intent, record.qty is the real venue fill, and the sum
+    of tp_qty placed must equal record.qty (the real position), never order.qty."""
+    from trading_corp.persistence.models import (
+        ProposedOrder, PaperTradeRecord, Position,
+    )
+    obs, _risk, data_exec, logger_agent, _tg = wired_observer
+    broker = data_exec.brokers["bitunix_futures"]
+
+    intended_qty = 0.00042621   # pre-floor intent (what order.qty carries)
+    real_fill_qty = 0.0004      # venue lot-floored fill (what record.qty carries)
+
+    placed_tp_qty: list[float] = []
+
+    async def _capture_tpsl(*, symbol, position_id, tp_price, tp_qty):
+        placed_tp_qty.append(float(tp_qty))
+        return f"tpid_{len(placed_tp_qty)}"
+
+    broker.place_tpsl_order = AsyncMock(side_effect=_capture_tpsl)
+    broker.place_position_tpsl = AsyncMock(return_value="slid_1")
+    broker.get_pending_positions = AsyncMock(return_value=[
+        Position(account="bitunix-futures", symbol="BTC/USDT.P",
+                 qty=-real_fill_qty, avg_price=63000.0, opened_ts="2026-07-11T00:00:00+00:00",
+                 extra={"side": "SHORT", "positionId": "pos_1"}),
+    ])
+
+    tp_plan = [
+        {"leg": "tp1", "fraction": 0.25, "price": 62900.0},
+        {"leg": "tp2", "fraction": 0.50, "price": 62800.0},
+        {"leg": "tp3", "fraction": 0.25, "price": 62500.0},
+    ]
+    order = ProposedOrder(
+        id="fix3-test-order", ts="2026-07-11T00:00:00+00:00", strategy="bitunix_futures",
+        symbol="BTC/USDT.P", side="sell", qty=intended_qty, order_type="market",
+        extra={"tp_plan": tp_plan, "stop_price": 63200.0},
+    )
+    record = PaperTradeRecord.from_order(
+        order, strategy="bitunix_futures", division="bitunix_futures",
+        max_hold_seconds=None,
+    )
+    record.qty = real_fill_qty   # what FIX-3 Hunk A writes in _place_live
+    record.extra = {}
+
+    await obs._place_bracket_exits(order=order, record=record)
+
+    # The TP legs must sum to the REAL fill (record.qty), not the inflated intent.
+    total = round(sum(placed_tp_qty), 7)
+    assert total == pytest.approx(real_fill_qty, abs=1e-9), (
+        f"TP legs summed to {total}, expected real fill {real_fill_qty}"
+    )
+    assert total < intended_qty, "must NOT size off the inflated order.qty (30038 feeder)"
+    # No single leg exceeds the real position (per-leg over-size guard).
+    assert all(q <= real_fill_qty + 1e-9 for q in placed_tp_qty)
+    # bracket_entry_qty persisted must be the real fill, not the intent.
+    assert record.extra["bracket_entry_qty"] == pytest.approx(real_fill_qty, abs=1e-9)
