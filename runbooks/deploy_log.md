@@ -116,6 +116,54 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-12 ~19:22 UTC — NEW: Market-Context Recorder side-process DEPLOYED + LIVE + both Key Vault keys VERIFIED HOT (isolated; own DB; engine READ-ONLY, byte-untouched, NOT restarted; agent-driven, autonomous under explicit Board authorization)
+
+**Commits:** NONE to the engine — the recorder is a NON-git-tracked isolated side-process (source `Desktop\market_context\box\`, deployed to prod `~/market_context/`), the same pattern as `sfp-card-watcher`. This deploy_log entry is the ONLY git change (docs-only). **Engine `main == origin == prod == `fe83784`` UNCHANGED** by this deploy.
+**Triggered by:** approved plan `.claude/plans/toasty-nibbling-hearth.md` (Market-Context Recorder Phase 0 harness + Phase 1 hard-data streams) — capture exogenous market context per SFP construct trade fire + on a heartbeat, for a capture-now-analyze-later (context → outcome) dataset. Board provisioned the 2 Key Vault keys.
+**Backup tag:** `n/a` — additive (new dir + new systemd unit; nothing overwritten). Rollback = disable+stop the unit (recipe below).
+
+**Files deployed (4, NON-git, to prod `~/market_context/`):**
+- `market_context_recorder.py` — the poller: RO cursor-tail of `paper_trade_record` (division=`bitunix_sfp`, execution_mode=`live`) on `ts` for trade-fire snapshots + a 15-min heartbeat; writes ONLY its own DB; daily in-loop outcome-backfill (pairs closed trades RO); modes `--check`/`--test-once`/`--once`/`--backfill`/run-loop.
+- `context_db.py` — own-DB schema (key-value): `context_snapshot`(snapshot_id, snapshot_ts, snapshot_type{trade_fire|heartbeat}, linked_trade_id, coin, created_ts) + `context_kv`(snapshot_id, stream, field, coin, value_num, value_text, source, fetch_ts, is_stale, PK(snapshot_id,stream,field,coin)) + `trade_outcome`(order_id PK, result, actual_r_multiple, actual_pnl_dollars, result_ts, booked_ts). Future LLM/news streams = new `context_kv` ROWS, no migration. `connect_rw` (WAL) to own DB; `connect_engine_ro` (mode=ro) to trading_corp.db.
+- `context_sources.py` — the 4 hard-data fetchers (stdlib urllib only; keys read from Key Vault at runtime via managed identity — NO engine import) with per-source cache TTL + exponential backoff + fallback + honest gap.
+- `market-context-recorder.service` — systemd unit (User=azureuser, Restart=on-failure, WorkingDirectory=/home/azureuser/market_context, `Environment=KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/`). **NOT `WantedBy`/`PartOf` trading-corp.service** on purpose.
+
+**Own DB (isolation-critical):** `~/market_context/market_context.db` — a SEPARATE file, NOT `trading_corp.db`. The 2026-07-10 lock-storm is exactly why a 2nd writer must never touch the engine DB (SQLite WAL = single writer). The recorder is the ONLY writer to its own DB; it opens the engine DB `mode=ro` (a write physically raises `attempt to write a readonly database`).
+
+**4 hard-data streams + sources (all free tiers):**
+- `funding` — Bitunix `/futures/market/funding_rate` **NO-KEY** (venue truth, per coin BTC/ETH/SOL/XRP). TTL 5m.
+- `oi` (open interest) — **Coinalyze** cross-exchange **AGGREGATE** (KEYED, symbols `{COIN}USDT_PERP.A&convert_to_usd=true`, `api_key` header) → **OKX** single-venue labeled fallback (`source=okx_oi_ref`, `is_stale=1`) → honest gap (`source=UNAVAILABLE`). TTL 15m.
+- `fear_greed` — alternative.me `/fng/` **NO-KEY** (value + classification). TTL 6h.
+- `btc_dominance` / `usdt_dominance` / `total_mcap` — CoinGecko `/global` (**Demo key**, header `x-cg-demo-api-key`; keyless fallback). TTL 15m.
+- Heartbeat 15m → ~1 call/min aggregate, comfortably under every free-tier limit.
+
+**Two Key Vault keys (via managed identity at runtime, NEVER hardcoded/in-git) — BOARD-PROVISIONED + VERIFIED HOT this session:**
+- `coinalyze-api-key` → upgrades OI from the OKX single-venue fallback to the **TRUE cross-exchange aggregate** (`source=coinalyze`, `is_stale=0`). This is the load-bearing one — before the key, OI was `okx_oi_ref` is_stale=1.
+- `coingecko-demo-key` → upgrades dominance/USDT.D/mcap from keyless to the **stable Demo tier** (100/min) — same `source=coingecko`, but no longer rate-fragile.
+- Both are **hot-upgrades**: `_kv_secret()` re-reads Key Vault on each fetch, so the keys take effect on the next heartbeat — **no restart / redeploy**.
+
+**Isolation proof (zero engine impact):** writes ONLY `market_context.db`; engine `trading_corp.db` opened `mode=ro` (write physically raises); NO engine/observer/trade import (`context_sources` is stdlib + azure SDK only); engine byte-UNTOUCHED (observer md5 `b6e9bdd5…` / reconciler `7e688bdb…` identical before+after), PID 199156 NOT restarted, reconcilers ticking clean, no lock contention. The recorder unit: `systemctl show -p PartOf` **empty** (not coupled), `enabled` (survives reboot), PID 200657.
+
+**Rate-limit / resilience config:** per-source in-memory cache with TTL (funding 5m / OI 15m / F&G 6h / CoinGecko 15m); exponential backoff base 30s → cap 30m, serving last cache with `is_stale=1` while backed off (never hammer on error); per-stream try/except so one dead source never crashes the poller or blocks the others; total failure with no cache → `value NULL, source=UNAVAILABLE, is_stale=1` (an honest GAP, never fabricated).
+
+**Verification:**
+- Recorder unit `active`, PID 200657, `NRestarts=0` (healthy, no crash-loop); heartbeats writing every 15 min across all 4 streams with real `source`/`fetch_ts`/`is_stale`.
+- **Key pickup CONFIRMED (isolated fresh-fetch diagnostic + live heartbeat):** `oi` → `source=coinalyze`, `is_stale=0`, market-wide aggregate (BTC ≈ $6.5B aggregate vs ≈ $2.0B OKX single-venue = genuinely cross-exchange; ETH ≈ $4.2B, SOL ≈ $0.69B, XRP ≈ $0.36B). `btc_dominance` → `source=coingecko`, `is_stale=0`. **Zero `SecretNotFound` remaining** (both keys resolve). Graceful-degradation paths unchanged and still armed (Coinalyze → okx_oi_ref → gap; CoinGecko demo → keyless).
+- Engine unaffected: PID 199156 unchanged, md5s identical, reconcilers clean, no lock pressure on `trading_corp.db`.
+
+**Inert / dormant on current traffic:** trade-fire snapshots accumulate only when the SFP construct fires (a handful/week); the paired (context → outcome) dataset builds over months. LLM shadow-logger + news streams are later phases (add `context_kv` rows, no schema change).
+
+**Rollback recipe (additive + isolated — removal never touches the engine):**
+```bash
+# stop + disable the recorder unit (root, via Azure Run Command); its DB is inert.
+az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript \
+  --scripts "systemctl disable --now market-context-recorder; rm -f /etc/systemd/system/market-context-recorder.service; systemctl daemon-reload"
+# optional, to also remove the captured data + code (engine untouched throughout):
+ssh azureuser@trading.jacksumner.com "rm -rf ~/market_context"
+```
+
+---
+
 ## 2026-07-12 ~16:42 UTC — SFP display-only fixes: cockpit funnel clamp (FIX A, git) + card swept-sign & ET-times/strike-through (FIX B/C, isolated side-process) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; SFP+futures FLAT; flat-guarded engine restart, pickle-risk accepted)
 
 **Commits:** `fe83784` (FIX A cockpit) merged to main. FIX B/C are the NON-git card side-process (source `Desktop\sfp_cards\box\` == prod `~/card_assets/`). **main == origin == prod == `fe83784`** (executable engine content).
