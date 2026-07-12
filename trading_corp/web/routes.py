@@ -200,6 +200,11 @@ def register(app: FastAPI) -> None:
     # Display layer only; REVIEW build mounted alongside the live /sfp cockpit (no cutover yet).
     from trading_corp.web import sfp_construct_cockpit_view
     sfp_construct_cockpit_view.register(app)
+    # SFP LLM Trade Analysis (the 3rd SFP screen) at /sfp/llm. Display-only; reads the Market-Context
+    # Recorder's market_context.db READ-ONLY (engine is not a writer of it) — shows the blind LLM
+    # shadow-logger rows + news sentiment + outcome per trade. Honest-empty; verdict gated at n>=30.
+    from trading_corp.web import sfp_llm_analysis_view
+    sfp_llm_analysis_view.register(app)
 
     # ── PWA: serve service worker + manifest at root scope ─────────────
     # The service worker MUST be served from the root path (`/sw.js`),

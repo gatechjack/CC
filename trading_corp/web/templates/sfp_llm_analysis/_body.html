@@ -1,0 +1,74 @@
+{# LLM Trade Analysis body — real recorder rows or honest-empty. The LLM is a LOGGED challenger. #}
+<div class="llm-banner">🧪 LLM shadow-logger — a LOGGED challenger to the mechanical spine. It does NOT gate any
+  trade; this screen is capture-and-compare only. Grade→outcome verdict is gated at n≥{{ v.sig_n }}.</div>
+
+{% if v.news %}
+<div class="panel">
+  <div class="ptitle">News / sentiment
+    <span class="muted">· {{ v.news.ts }} UTC{% if v.news.model %} · {{ v.news.model }}{% endif %}{% if v.news.stale %} · STALE{% endif %}</span>
+  </div>
+  <span class="skew skew-{{ v.news.skew or 'neutral' }}">{{ (v.news.skew or 'n/a')|upper }}{% if v.news.magnitude is not none %} · {{ v.news.magnitude }}{% endif %}</span>
+  {% if v.news.narrative %}<span class="muted" style="margin-left:8px">{{ v.news.narrative }}</span>{% endif %}
+  {% if v.news.catalysts %}<div class="muted" style="font-size:11px;margin-top:4px">catalysts: {{ v.news.catalysts }}</div>{% endif %}
+  <div class="coinrow">
+    {% for c, s in v.news.per_coin.items() %}<span class="cchip cchip-{{ s or 'neutral' }}">{{ c }} · {{ s or '—' }}</span>{% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if v.agg %}
+<div class="panel">
+  <div class="ptitle">Shadow aggregate <span class="muted">(display only — the LLM does not gate trades)</span></div>
+  <div class="aggrow">
+    <span>graded fires: <b>{{ v.agg.n_graded }}</b></span>
+    <span>avg grade: <b>{{ v.agg.avg_grade }}</b></span>
+    <span>agrees w/ detector: <b>{{ v.agg.agree_pct }}%</b></span>
+    <span>paired w/ outcome: <b>{{ v.agg.n_paired }}/{{ v.agg.sig_n }}</b></span>
+  </div>
+  {% if v.agg.significant %}
+    <div class="aggrow">
+      <span>high-grade avg R: <b>{{ v.agg.hi_grade_avg_r }}</b></span>
+      <span>low-grade avg R: <b>{{ v.agg.lo_grade_avg_r }}</b></span>
+    </div>
+  {% else %}
+    <div class="acc">{{ v.agg.verdict_note }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if not v.has_data %}
+<div class="empty">{{ v.note }}{% if v.db_missing %} · (recorder db not found yet){% endif %}<br>
+  <span class="muted" style="font-size:11px">Each live SFP construct fire will add a blind LLM review here (~3 setups/wk).</span></div>
+{% else %}
+<div class="cards">
+{% for c in v.cards %}
+  <div class="card {{ 'win' if c.result == 'win' else ('loss' if c.result == 'loss' else '') }}">
+    <div class="chead">
+      <span class="coin">{{ c.coin }} · {{ c.side }}</span>
+      <span class="ts muted">{{ c.ts }} UTC</span>
+      {% if c.graded %}<span class="grade grade-{{ 'hi' if c.grade >= 60 else ('mid' if c.grade >= 40 else 'lo') }}">{{ c.grade }}</span>
+      {% else %}<span class="grade grade-na">n/a</span>{% endif %}
+    </div>
+    {% if c.graded %}
+    <div class="regrow">
+      <span class="tag">detector: {{ c.detector_regime }}{% if c.detector_gate and c.detector_gate != 'unknown' %} ({{ c.detector_gate }}){% endif %}</span>
+      <span class="tag">LLM: {{ c.llm_regime }}</span>
+      {% if c.agrees is not none %}<span class="tag {{ 'agree' if c.agrees else 'disagree' }}">{{ 'AGREE' if c.agrees else 'DISAGREE' }}</span>{% endif %}
+    </div>
+    {% if c.reasoning %}<div class="reason">{{ c.reasoning }}</div>{% endif %}
+    {% if c.caution %}<div class="caution">⚠ {{ c.caution }}</div>{% endif %}
+    <div class="ctx muted">
+      {% if c.coin_sentiment %}news({{ c.coin }}): {{ c.coin_sentiment }} · {% elif c.news_skew %}news: {{ c.news_skew }} · {% endif %}
+      outcome: {% if c.result %}<b>{{ c.result }} {{ c.r }}R</b>{% else %}pending{% endif %}
+      · {{ c.model }}/{{ c.prompt_version }}
+    </div>
+    {% else %}
+    <div class="reason muted">LLM did not produce a grade for this fire (reason: {{ c.unavailable_reason }}).
+      Honest gap — the mechanical trade fired normally.</div>
+    {% endif %}
+  </div>
+{% endfor %}
+</div>
+<div class="foot muted">LLM Trade Analysis · reads the recorder's market_context.db read-only ·
+  grade→outcome verdict gated at n≥{{ v.sig_n }} · display-only, the LLM does not gate trades</div>
+{% endif %}

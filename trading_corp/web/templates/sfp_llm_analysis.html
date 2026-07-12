@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SFP · LLM Trade Analysis</title>
+<link rel="stylesheet" href="/static/sfp_cockpit.css">
+<script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
+<style>
+/* LLM-analysis-only widgets; base look inherits sfp_cockpit.css */
+.llm-banner{margin:8px 0;padding:7px 10px;border-radius:5px;border:1px dashed var(--amber);
+  color:var(--amber);font-size:11px;background:rgba(245,181,61,.06)}
+.panel{margin:10px 0;padding:10px 12px;border:1px solid var(--edge,#2a3550);border-radius:7px;
+  background:rgba(255,255,255,.02)}
+.panel .ptitle{font-size:12px;font-weight:700;margin-bottom:6px}
+.muted{color:var(--txt3,#8a96ab)}
+.aggrow{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;margin:3px 0}
+.acc{display:inline-block;padding:2px 8px;border-radius:4px;border:1px dashed var(--amber);
+  color:var(--amber);font-size:11px}
+.skew{display:inline-block;padding:2px 9px;border-radius:4px;font-weight:700;font-size:12px}
+.skew-bull{background:#12351f;color:#5fdc9b}.skew-bear{background:#3a1620;color:#fb7b88}
+.skew-neutral{background:#26314a;color:#9fb0cc}
+.coinrow{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+.cchip{font-size:10px;padding:1px 7px;border-radius:3px;border:1px solid var(--edge,#2a3550)}
+.cchip-bull{color:#5fdc9b}.cchip-bear{color:#fb7b88}.cchip-neutral{color:#9fb0cc}
+.cards{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.card{padding:9px 11px;border:1px solid var(--edge,#2a3550);border-radius:7px;
+  background:rgba(255,255,255,.015);border-left:3px solid #46506b}
+.card.win{border-left-color:#34d399}.card.loss{border-left-color:#fb5e6b}
+.chead{display:flex;align-items:center;gap:10px;font-size:12px}
+.chead .coin{font-weight:700}.chead .ts{font-size:10px}
+.grade{margin-left:auto;font-weight:800;font-size:13px;padding:1px 9px;border-radius:4px}
+.grade-hi{background:#12351f;color:#5fdc9b}.grade-mid{background:#3a3016;color:#f5c451}
+.grade-lo{background:#3a1620;color:#fb7b88}.grade-na{background:#26314a;color:#9fb0cc}
+.regrow{display:flex;gap:6px;flex-wrap:wrap;margin:5px 0}
+.tag{font-size:10px;padding:1px 7px;border-radius:3px;border:1px solid var(--edge,#2a3550);color:var(--txt3,#8a96ab)}
+.tag.agree{border-color:#34d399;color:#5fdc9b}.tag.disagree{border-color:#fb5e6b;color:#fb7b88}
+.reason{font-size:12px;margin:3px 0}.caution{font-size:11px;color:var(--amber);margin:2px 0}
+.ctx{font-size:10px;margin-top:3px}
+.empty{margin:26px 0;text-align:center;color:var(--txt3,#8a96ab);font-size:13px}
+.foot{text-align:center;font-size:10px;padding:8px 0 2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="topnav">
+    <a class="brand" href="/"><span class="tc">TC</span>
+      <span class="bt"><b>Trading Corp</b><small>SFP · LLM Trade Analysis</small></span></a>
+    <nav class="nav">
+      <a href="/">Overview</a><a href="/sfp">SFP (live cockpit)</a><a href="/sfp/construct">SFP Construct</a>
+      <a href="/research">Research</a><a href="/system">System</a>
+    </nav>
+    <span class="spacer"></span>
+    <span id="sfp-refresh" class="refresh" title="Live — refreshes every ~10s">
+      <span class="hg">&#x27F3;</span><span class="rl">REFRESH</span></span>
+  </header>
+
+  {# LLM shadow rows + news + outcome — polled ~10s (LLM streams update slowly). #}
+  <div hx-get="/sfp/llm/partials/body" hx-trigger="load, every 10s" hx-swap="innerHTML">
+    {% include "sfp_llm_analysis/_body.html" %}
+  </div>
+</div>
+</body>
+</html>
