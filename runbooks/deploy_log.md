@@ -116,6 +116,45 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-12 ~21:44 UTC — Market-Context Recorder: LLM SHADOW-LOGGER + NEWS streams (D1+D2) DEPLOYED + LIVE (recorder-side only; engine NOT touched; D3 dashboard HELD; agent-driven, autonomous under explicit Board authorization)
+
+**Commits:** NONE to the engine — recorder is a NON-git side-process (source `Desktop\market_context\box\`, prod `~/market_context/`). This deploy_log entry is the only git change (docs-only). **Engine `main == origin == prod == fe83784` UNCHANGED.** Board authorized D1+D2 now, **held D3** (the `/sfp/llm` dashboard — it's the only piece needing an engine flat-guarded restart).
+**Triggered by:** the LLM-half build package `Desktop\market_context\LLM_STREAMS_DEPLOY_PACKAGE.md` (validate-not-gate: the LLM LOGS a challenger to the mechanical spine; it does NOT gate any trade).
+**Backup tag:** `context_sources.py.bak_llm_predeploy` + `market_context_recorder.py.bak_llm_predeploy` on prod (`~/market_context/`). The 2 new files (`llm_client.py`/`llm_streams.py`) rollback = delete.
+
+**Files deployed (4, NON-git, to `~/market_context/`, LF, md5-gated byte-exact):**
+- `llm_client.py` (NEW `e79132e4`) — Anthropic wrapper: key via the recorder's existing `_kv_secret("ANTHROPIC-API-KEY")` Key Vault path (★engine-import-free — deliberately NOT `load_secrets`), per-UTC-day COST CEILING, graceful-None never raises.
+- `llm_streams.py` (NEW `758aac19`) — `shadow_rows()` (blind per-fire review, versioned `shadow_v1`) + `news_rows()` (daily-cached, `news_v1`).
+- `context_sources.py` (MOD `34eb2432`, was `9c153598`) — added `news_headlines()` (stdlib-XML RSS: Cointelegraph + Bitcoin Magazine, no key/scraping). Coinalyze/CoinGecko code byte-unchanged (drift-checked: diff = news additions ONLY).
+- `market_context_recorder.py` (MOD `8966a3a9`, was `dc9b3147`) — fire path passes the full row → shadow + news; heartbeat attaches news on the daily boundary; `poll_once`/`--once`/`--test-once` updated.
+
+**Streams shipped (new `context_kv` ROWS — NO schema migration):**
+- `llm_shadow` (D1) — on each SFP construct FIRE: LLM regime AGREE/DISAGREE vs detector gate + 0-100 grade + caution, BLIND (bars closed-by-entry, entry-time fields only — never the outcome), temp 0, versioned (prompt_version+model+temp+call_ts). Nightly backfill pairs to booked R. **ARMED — first live shadow row lands on the next SFP fire** (~3 setups/wk).
+- `llm_news` (D2) — DAILY structured sentiment: skew/magnitude/narrative/catalysts/per-coin.
+
+**Deploy mechanics:** pre-flight (dir `azureuser`-owned, no phantom-UID; prod↔local drift = intended additions only) → md5-gated scp to `.stage_llm/` → backup + atomic swap → **compile-check under the prod venv (abort-before-restart gate)** → restart the recorder unit as ROOT via Azure Run Command (a signal won't respawn an on-failure unit). No RH-pickle pre-flight needed — the recorder unit is isolated from the engine/PEAD (pickle hazard is engine-restart-only).
+
+**Verification (LIVE):** recorder restarted PID 200657→**202648**, NRestarts=0, active. Startup log: `LLM streams: enabled=True shadow=claude-sonnet-4-6 news=claude-haiku-4-5-20251001 cost_guard={ceiling $2.00}`. First heartbeat (`snapshot 12 (+news)`) drove a live Anthropic call — `POST api.anthropic.com/v1/messages 200 OK` (key resolved via `_kv_secret`, **zero SecretNotFound**) → real `llm_news` rows landed (skew=bull, mag 62, per-coin BTC/ETH bull·SOL/XRP neutral, 30 headlines from both feeds, `is_stale=0`). No tracebacks/ERROR. Cost guard armed. anthropic 0.97.0 already in venv + `ANTHROPIC-API-KEY` already in Key Vault = no new dep/secret.
+
+**Isolation intact:** recorder writes ONLY `market_context.db` (0 engine-DB handles held); engine `trading_corp.db` opened mode=ro; engine PID **199156 UNCHANGED / not restarted**; no `audit_event_write_failed` (no lock storm); own unit (`PartOf` empty). `test_phase0_imports_no_engine_path` now covers `llm_client.py`+`llm_streams.py` (no engine import, no `load_secrets`). Verified LOCAL 32/32 pytest before deploy.
+
+**Held for a later Board go — D3 `/sfp/llm` dashboard:** the only piece that touches the engine (a route add → flat-guarded restart). Staged at `Desktop\market_context\box\dashboard\` with exact patches in the package doc.
+
+**Rollback recipe (recorder — never touches the engine):**
+```bash
+# fastest — disable ALL LLM calls HOT (hard-data streams keep flowing), then restart the unit:
+#   set MCTX_LLM_ENABLED=0 in the unit env  → az ... "systemctl restart market-context-recorder"
+# full file rollback:
+ssh azureuser@trading.jacksumner.com "cd ~/market_context && \
+  mv context_sources.py.bak_llm_predeploy context_sources.py && \
+  mv market_context_recorder.py.bak_llm_predeploy market_context_recorder.py && \
+  rm -f llm_client.py llm_streams.py"
+az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript \
+  --scripts "systemctl restart market-context-recorder"
+```
+
+---
+
 ## 2026-07-12 ~19:22 UTC — NEW: Market-Context Recorder side-process DEPLOYED + LIVE + both Key Vault keys VERIFIED HOT (isolated; own DB; engine READ-ONLY, byte-untouched, NOT restarted; agent-driven, autonomous under explicit Board authorization)
 
 **Commits:** NONE to the engine — the recorder is a NON-git-tracked isolated side-process (source `Desktop\market_context\box\`, deployed to prod `~/market_context/`), the same pattern as `sfp-card-watcher`. This deploy_log entry is the ONLY git change (docs-only). **Engine `main == origin == prod == `fe83784`` UNCHANGED** by this deploy.
