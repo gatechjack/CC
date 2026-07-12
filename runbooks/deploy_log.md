@@ -116,6 +116,53 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-11 — SFP per-coin `trend_mode` gate (RD armed → ps_trail30 added + armed on BTC) + cockpit forward-epoch reset + NEW Failed-Swing card notifier (agent-driven, autonomous under explicit per-step Board authorization; SFP flat; gate ARMS were HOT / no restart)
+
+**Commits (git-tracked engine/config/web):** `a2cc41d` (RD gate INERT) → `688d1b0` (RD ARM) → `ed2068f` + `ea18723` (cockpit forward-epoch reset + monotonic funnel) → `612e713` (ps_trail30 gate INERT) → `220495c` (ps_trail30 ARM on BTC). **main == origin == prod == `220495c`.**
+**Triggered by:** Board directives — deploy the with-trend gate bake-off winner (RD), then the tie-breaker winner (ps_trail30) on BTC; reset the cockpits to a clean forward scoreboard; add autonomous Telegram card delivery on closes.
+**Backup tag:** n/a (git-tracked; rollback = HOT `trend_mode` flip, below).
+
+**Files deployed (git):**
+- `config/strategies.yaml` — `bitunix_sfp.trend_mode` is now a **3-way per-coin map** `{ BTCUSDT: ps_trail30, ETHUSDT: rd, SOLUSDT: ema200, XRPUSDT: rd }` (HOT — observer re-reads per signal; no restart to change a coin's gate).
+- `trading_corp/agents/divisions/bitunix_sfp_observer.py` — 3-way tight with-trend gate dispatch (`ema200|rd|ps_trail30`). **rd + ema200 branches BYTE-UNCHANGED; detector/entry/exit byte-unchanged.**
+- NEW `trading_corp/agents/strategies/bitunix_rd_trend.py` — LuxAlgo Range-Detector 1h break-state gate (`rd_os_at`, reads `bitunix_bar_history` 1h ≥520 bars, causal no-peek).
+- NEW `trading_corp/agents/strategies/bitunix_ps_trail_trend.py` — causal one-sided Pagan-Sossounov DAILY trend gate (`ps_trail30_label_at`, reads `bitunix_bar_history` 1d, returns prior-day `st_ps_trail(30)` state, strictly D-1 stale).
+- `trading_corp/main.py` — bar archiver extended to persist 1h for ETH/SOL/XRP (RD's ATR(500) prereq).
+- `trading_corp/web/sfp_cockpit_view.py` + `sfp_construct_cockpit_view.py` + `templates/sfp_construct_cockpit/_board.html` — cockpit forward-epoch reset + 3-way GATE badge (GATE:PS-TRAIL30 / GATE:RD / GATE:EMA200).
+
+**Features shipped (load-bearing for "is X done?"):**
+- **Per-coin `trend_mode` gate, 3-way (`ema200|rd|ps_trail30`), HOT-swappable per coin.** LIVE: **BTC=ps_trail30, ETH=rd, SOL=ema200, XRP=rd.** /sfp/construct shows the live gate per coin.
+- **Cockpit forward scoreboard**: both /sfp + /sfp/construct count only closes/events **≥ `2026-07-11T01:45:00+00:00`** (`COCKPIT_STATS_SINCE`, shared constant in `sfp_cockpit_view.py`). Pre-epoch trades stay in the DB, excluded from the forward count; "stats since 2026-07-11 · RD-gate epoch" label on reset panels; watch-lifecycle + funnel also epoch-scoped + monotonic.
+
+**Notable code changes:** the tight with-trend gate SOURCE is the ONLY thing swapped across the whole arc — `bitunix_sfp.py` (detector/entry/exit) + `bitunix_inst_levels.py` byte-unchanged throughout. Gate is HOT-read (`_yaml_trend_mode`, fail-safe to ema200).
+
+**★HONESTY:** RD (66th pctile own drift-null) + ps_trail30 (66th) are **LEADS, not p95-cleared edges**. Armed in-sample pooled ≈ **+0.146** (ps_trail30 fixes RD's −0.089 BTC). GROSS, in-sample Binance-proxy. The **live SFP log is the arbiter**. Research forks in memory: [[sfp-gate-tiebreaker-2026-07-11]] (dadx co-winner, RESEARCH only, not deployed), [[sfp-causal-macro60-2026-07-11]].
+
+**Verification:** parity gates reproduced each arm EXACTLY (RD BTC n158/−0.089…pooled n634/+0.095; ps_trail30 BTC n129/+0.067, pooled n534/+0.128; controls unchanged; ps_trail30 depth PROOF-B prod-257-day 1d == full-corpus labels 0 diffs). Arms HOT (engine PID unchanged); the two INERT code deploys used flat-guarded restarts. main==origin==prod LF-md5 byte-exact at each step.
+
+**Inert / dormant:** none in the gate (all armed). ps_trail30's `bear`/`bull`/`None` sit-out fires only when consulted (BTC only).
+
+**Rollback:** flip a coin's `trend_mode` back to `rd` (or `ema200`) in `strategies.yaml` — **HOT, no restart** — and mirror to `main` to hold the invariant.
+
+---
+
+## 2026-07-11 — NEW: SFP "Failed Swing" trade-card notifier — isolated box side-process (NOT git-tracked; lives in `~/card_assets/`)
+
+**Commits:** n/a (deliberately OUTSIDE the engine/git path — display/notification side-process). Local mirror `Desktop\sfp_cards\`; box install via `Desktop\sfp_card_deploy_step1.ps1` (azureuser scp) + `Desktop\sfp_card_enable.sh` (root systemd via `runprod.ps1`).
+**Triggered by:** Board directive — autonomously deliver a branded card to operator Telegram on every construct close.
+
+**What's now live:** systemd unit **`sfp-card-watcher.service`** (User=azureuser, `enabled`, `Restart=on-failure`, **SEPARATE** from `trading-corp.service`; PID 187142). Polls `paper_trade_record` every 20s for NEW CLOSED `bitunix_sfp` rows → renders a 1080×1460 "Failed Swing" card (Pillow; Anton + Barlow Condensed fonts; slots-spec.json layout) → delivers to operator Telegram via the app's **"buzz"** bot (`sendPhoto`). Token/chat_id pulled from **Azure Key Vault** via `trading_corp.utils.secrets.load_secrets()` + VM managed identity (`KEY_VAULT_URI` set in the unit env; token never on disk / never printed).
+
+**Isolation (verified):** reads the shared DB **`mode=ro`**; writes ONLY `~/card_assets/cursor.txt` + `out/*.png`; never imports the engine/observer/trade path; **engine NOT restarted** (PID 182633 untouched through the whole deploy). Scoped `division='bitunix_sfp'` (ignores futures 225 / pead 1).
+
+**Idempotency:** cursor = last-sent `result_ts`, persisted per-send (crash-safe). **Seeded to NOW (max closed = `2026-07-10T20:27:29`) on first start → no historical backfire** (poll returns 0 rows now). `--test-once` sends a card WITHOUT touching the cursor.
+
+**Card fields:** pair/side/leverage, R + leveraged ROI%, TARGET/STOPPED pill, 5 funnel chips (Pattern=Two-Candle SFP / swept-level / WITH-TREND=live `trend_mode` / FRESH-INST / BOS-tf), entry/TP/stop. ★A closed trade PLACED → cleared every gate, so the funnel is ALWAYS all-passed (loss = the stop-out, not a broken stage); no near-miss card by design.
+
+**Rollback:** `sudo systemctl disable --now sfp-card-watcher` (engine + card files untouched). Memory [[sfp-card-notifier-2026-07-11]].
+
+---
+
 ## 2026-07-10 18:57 UTC — DB lock-storm fix: LangGraph checkpointer isolated onto its own DB + shared-conn `synchronous=NORMAL` (agent-driven autonomous deploy under explicit Board authorization; live-window restart)
 
 **Commits:** `06c6f30` (fix + `tests/test_checkpointer_isolation.py`), `fc0479e` (deploy runner + template), plus this deploy-log commit. Branch `db-lock-contention-fix-2026-07-10`, rebased on `d9c32de`; ff-merged to main (see origin/main HEAD in session report).

@@ -1687,3 +1687,51 @@ fix; temporal/bucket 60-day horizon caps) + backlog cleanup. Full detail:
 
 Priority P3: all paper, no live money, no urgency. #1 (fees) is the prerequisite for everything
 downstream.
+
+---
+
+# Research / Future
+
+## LLM Shadow-Logger  (proposed 2026-07-11 · status: BACKLOG, not built)
+
+**Premise:** Can an LLM improve the SFP strategy over time? We can't backtest it today — there's no
+history of LLM decisions to test against. So the goal of THIS item is to CAPTURE that data now, so it
+becomes backtestable later. Log-now, evaluate-later.
+
+**Architecture (reuse the trade-card watcher pattern — proven isolated):**
+- A standalone side-process on the box, SEPARATE from the trading engine (own service). Reads bars +
+  paper_trade_record READ-ONLY. Writes ONLY to its own new table. Never imports the engine/observer/trade
+  path. Zero trading impact — pure data capture, like the card watcher.
+- Anthropic API key: already in Azure Key Vault, loaded via trading_corp.utils.secrets.load_secrets()
+  (same managed-identity path as the Telegram token — the process never sees the raw key).
+
+**What it logs — new prod table `llm_shadow_log`, one row per decision:**
+- ts, coin, tf, decision_type
+- the OHLCV window fed to the LLM (stored so the call is reproducible)
+- the MECHANICAL answer (the RD / ps-trail30 regime label, or the funnel state at fire)
+- the LLM answer + confidence + full reasoning + prompt_version + model string + temperature
+- OUTCOME (backfilled nightly): what the regime actually did next / what R the trade booked
+
+**When it fires:** at each regime classification and each construct fire. Call the LLM with a FIXED,
+VERSIONED prompt at temperature 0 (determinism matters — see risks).
+
+**★VALIDATE, don't build.** The LLM's job is to AGREE or DISAGREE with RD's mechanical label (a challenger
+to the deterministic spine), NOT to invent the range from scratch. Build-mode (LLM as primary classifier)
+trusts a non-deterministic model with no baseline = unsafe and untestable. Validate-mode keeps RD as the
+spine and produces a clean RD-vs-LLM disagreement set to score. Candidate decision types: (1) regime-
+validate (agree/disagree with RD), (2) setup-grade 0-100 at fire, (3) veto-flag.
+
+**How it gets tested (later, ~3-6 months of rows):** does the LLM label beat RD on the DISAGREEMENT set
+(when they differ, who was right about forward returns)? Does the LLM setup-score predict booked R? Scored
+with the standard drift-null discipline — same bar as everything else.
+
+**⚠Skeptic priors (log these honestly, they're the point of shadow mode):**
+- The LLM sees the SAME bars as the detectors — it may just re-derive RD with added latency/cost and no
+  real edge. Shadow data is how we find out empirically, not on faith.
+- Non-determinism is disqualifying for a trading input — log at temp 0 and treat answer-variance on the
+  same setup as a data point (if it can't answer consistently, that alone kills it).
+- This is exactly the seductive-sounding idea the "report evidence, don't rule in on faith" rule exists
+  for. The logged paired history is the thing that keeps it honest.
+
+**Graduation path:** shadow-log → (if paired data shows signal) a logged funnel stage → (only then, maybe)
+a live gate. Never straight to a gate. Log-now, gate-later.
