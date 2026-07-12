@@ -116,6 +116,44 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-12 ~16:42 UTC — SFP display-only fixes: cockpit funnel clamp (FIX A, git) + card swept-sign & ET-times/strike-through (FIX B/C, isolated side-process) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; SFP+futures FLAT; flat-guarded engine restart, pickle-risk accepted)
+
+**Commits:** `fe83784` (FIX A cockpit) merged to main. FIX B/C are the NON-git card side-process (source `Desktop\sfp_cards\box\` == prod `~/card_assets/`). **main == origin == prod == `fe83784`** (executable engine content).
+**Triggered by:** `2026-07-12_sfp_funnel_vs_equity_discrepancy.md` (cockpit funnel showed "0 placed" vs equity "2 closed -1.91R") + operator card-render feedback (swept level negative, no timestamps).
+**Backup tag:** `.bak_cockpitfix` (cockpit) + `.bak_carddeploy` (3 card files) on prod.
+
+**Files deployed (4):**
+- `trading_corp/web/sfp_construct_cockpit_view.py` (git; in-process web) — FIX A `_gate_funnel`: floor `placed` at the real placement-audit count + lift upstream stages monotonic (fired>=bos>=trend>=fresh>=placed). prod md5 `bee89c57`.
+- `~/card_assets/card_data.py` (NON-git side-process) — FIX B `_fmt_swept`->abs (swept is a price; SFP stores it negated for shorts). FIX C `_fmt_et` (UTC->America/New_York) + entry/close times + which-exit-hit. md5 `922ef359`.
+- `~/card_assets/card_gen.py` — FIX C time-line + strike-through render. md5 `f9993828`.
+- `~/card_assets/assets/slots-spec.json` — FIX C `time_xy` per price box. md5 `7ee5dc7c`.
+
+**Features shipped:**
+- `/sfp/construct` funnel now reconciles with the equity panel — a real `live_order_placed` can never render as 0 placed (BTC/SOL show placed=1, matching the -1.91R equity).
+- Failed-Swing cards: swept level positive; ENTRY shows the fill time and the exit that HIT shows the close time (US Eastern, EST/EDT auto); the exit that MISSED is struck-through.
+
+**Notable code changes:** trading logic / config / order path / `paper_trade_record` BYTE-UNCHANGED — display/notification only. Card files are intentionally NOT git-tracked (source `Desktop\sfp_cards\box\`).
+
+**Latent bug caught + fixed:** the funnel clamp subtracted with-trend/fresh SKIP audits from OTHER signals (unbounded to the armed-watch cohort) off a raw-capped `reached` -> underflow buried a real placement.
+
+**Verification:**
+- FIX A: read-only reproduced vs the 2 known 07-12 shorts -> both `placed=1` (was 0), monotonic; engine restart PID `196123->199156`, `NRestarts=0`, `/sfp/construct` route registered, futures+sfp reconcilers clean, no pickle hang (PEAD standby-gated), flat.
+- FIX B/C: `--test-once` re-render of both real shorts from a sandbox -> Telegram `sendPhoto OK` (swept positive, ET times, TP struck); watcher restarted (root via Azure Run Command), cursor intact (0 backfire), PID `198010`.
+
+**Ops trap (learned this deploy):** `sfp-card-watcher` restart NEEDS ROOT via Azure Run Command — it is NOT NOPASSWD (only `trading-corp` is) and a plain `kill`/SIGTERM is a CLEAN stop that will NOT respawn an `on-failure` unit (took the watcher down once). Use:
+`az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts "systemctl restart sfp-card-watcher"`.
+
+**Rollback recipe:**
+```bash
+# cockpit (FIX A): restore + flat-guarded engine restart
+ssh azureuser@trading.jacksumner.com "D=/home/azureuser/trading_corp/trading_corp/web; cp -p \$D/sfp_construct_cockpit_view.py.bak_cockpitfix \$D/sfp_construct_cockpit_view.py; sudo -n systemctl restart trading-corp"
+# cards (FIX B/C): restore then ROOT restart the watcher (Azure Run Command, NOT a signal)
+ssh azureuser@trading.jacksumner.com "A=/home/azureuser/card_assets; for f in card_data.py card_gen.py assets/slots-spec.json; do cp -p \$A/\$f.bak_carddeploy \$A/\$f; done"
+az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts "systemctl restart sfp-card-watcher"
+```
+
+---
+
 ## 2026-07-12 ~15:00 UTC — bitunix_futures TP-coverage audit fixes (FIX3 size-truth + FIX1 TP-leg-reject recovery + FIX4 net-basis booking) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; division FLAT; flat-guarded restart)
 
 **Commits:** `6dfccfc` (FIX3) → `5bb4581` (FIX1) → `ca9498e` (FIX4), rebased onto `65b73b6` (docs/tooling). **main == origin == prod == `ca9498e`.**
