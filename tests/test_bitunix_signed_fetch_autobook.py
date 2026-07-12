@@ -153,7 +153,10 @@ async def test_real_book_single_fill(db_url):
     r, extra = _row(db_url)
     assert r["result"] == "loss"
     assert r["result_price"] == pytest.approx(66310.0)            # REAL fill, not the 66291 stop
-    assert r["actual_pnl_dollars"] == pytest.approx((66150.1 - 66310.0) * 0.0007528)
+    # FIX-4: actual_pnl_dollars now books NET (gross price PnL - entry fee - exit fee)
+    # to match the net-based result label; equals extra.net_realized_usd.
+    assert r["actual_pnl_dollars"] == pytest.approx((66150.1 - 66310.0) * 0.0007528 - 0.0185 - 0.0052)
+    assert r["actual_pnl_dollars"] == pytest.approx(extra["net_realized_usd"])
     assert extra["result_source"] == "auto_booked_from_real_fill"
     assert extra["pnl_basis"] == "real_fill"
     assert extra["slippage_unreconciled"] is False               # CLEARED (reconciled)
@@ -178,7 +181,30 @@ async def test_real_book_multi_fill_vwap(db_url):
     assert r["result_price"] == pytest.approx(vwap)              # VWAP, not a single fill
     assert extra["exit_fee_usd"] == pytest.approx(0.005)         # summed
     assert extra["close_fill_count"] == 2
-    assert r["actual_pnl_dollars"] == pytest.approx((66150.1 - vwap) * 0.0007528)
+    # FIX-4: NET basis (gross - entry_fee 0.0185 - summed exit_fee 0.005).
+    assert r["actual_pnl_dollars"] == pytest.approx((66150.1 - vwap) * 0.0007528 - 0.0185 - 0.005)
+    assert r["actual_pnl_dollars"] == pytest.approx(extra["net_realized_usd"])
+
+
+@pytest.mark.asyncio
+async def test_real_book_fee_flip_gross_positive_books_net_loss_fix4(db_url):
+    """FIX-4 (2026-07-11 audit): a close whose GROSS price PnL is positive but whose
+    NET (after entry+exit fees) is negative must book result='loss' AND
+    actual_pnl_dollars = the NET (<=0) — never 'loss' alongside a positive pnl (the
+    exact mismatch the audit flagged)."""
+    _seed_short(db_url, entry_fee=0.0185)                 # entry 66150.1, qty 0.0007528
+    # close slightly BELOW entry -> small GROSS profit for the short; fees flip it net-negative.
+    broker = _FillBroker([{"price": 66130.0, "qty": 0.0007528, "fee": 0.005}])
+    assert await _autobook_missing_close_real(broker, db_url, "ord", _NOW) == "booked"
+    r, extra = _row(db_url)
+    gross = (66150.1 - 66130.0) * 0.0007528
+    net = gross - 0.0185 - 0.005
+    assert gross > 0                                       # the fee-flip precondition
+    assert net < 0
+    assert r["result"] == "loss"                          # labeled on NET
+    assert r["actual_pnl_dollars"] == pytest.approx(net)  # FIX-4: booked NET, not gross
+    assert r["actual_pnl_dollars"] < 0                     # never 'loss' with a positive pnl
+    assert extra["net_realized_usd"] == pytest.approx(net)
 
 
 @pytest.mark.asyncio

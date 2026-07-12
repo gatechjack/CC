@@ -934,16 +934,20 @@ async def _autobook_missing_close_real(
         # Observed slippage of the real fill vs the RECORDED stop level (signed:
         # positive = adverse / filled worse than the trigger).
         slip_pts = (vwap - level) if side == "sell" else (level - vwap)
-        mdr = extra.get("max_dollar_risk")
-        try:
-            r_mult = (pnl / float(mdr)) if mdr else None
-        except (TypeError, ValueError, ZeroDivisionError):
-            r_mult = None
         try:
             entry_fee = float(extra.get("entry_fee_usd") or 0.0)
         except (TypeError, ValueError):
             entry_fee = 0.0
         net = pnl - entry_fee - exit_fee
+        mdr = extra.get("max_dollar_risk")
+        try:
+            # FIX-4 (2026-07-11 audit): R on the NET (post-fee) PnL, matching the
+            # net-based result label AND the net actual_pnl_dollars written below, so
+            # result / actual_pnl_dollars / actual_r_multiple share ONE basis and a
+            # fee-eroded gross-positive never books 'loss' with a positive pnl.
+            r_mult = (net / float(mdr)) if mdr else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            r_mult = None
 
         # result from the NET PnL sign; exit_kind from the ACTUAL fill (order-id
         # match → tp/stop, else price-vs-levels, else 'unknown' — NEVER a literal
@@ -983,7 +987,9 @@ async def _autobook_missing_close_real(
                 "    '$.close_fill_count', ?, '$.observed_slippage_pts', ?, "
                 "    '$.autobook_ts', ?) "
                 "WHERE order_id = ? AND result IS NULL",
-                (result_str, now, vwap, pnl, r_mult, exit_side, exit_kind,
+                # FIX-4: actual_pnl_dollars books NET (post-fee) to match the
+                # net-based result label; gross is preserved in the audit event.
+                (result_str, now, vwap, net, r_mult, exit_side, exit_kind,
                  exit_kind, exit_role, mix_json,
                  agg.get("fee_implied_role", "unknown"),
                  json.dumps(role_fee_mismatch), exit_fee, net,
