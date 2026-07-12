@@ -116,6 +116,47 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-12 ~15:00 UTC — bitunix_futures TP-coverage audit fixes (FIX3 size-truth + FIX1 TP-leg-reject recovery + FIX4 net-basis booking) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; division FLAT; flat-guarded restart)
+
+**Commits:** `6dfccfc` (FIX3) → `5bb4581` (FIX1) → `ca9498e` (FIX4), rebased onto `65b73b6` (docs/tooling). **main == origin == prod == `ca9498e`.**
+**Triggered by:** the 2026-07-11 bitunix_futures TP-coverage audit (`Desktop\bitunix_reports\2026-07-11_bitunix_futures_tp_coverage_audit.md`); Board authorized full autonomous deploy+restart.
+**Backup tag:** `.bak_predeploy` (both files) on prod — rollback below.
+
+**Files deployed (2):**
+- `trading_corp/agents/divisions/bitunix_futures_observer.py` — FIX3 (`record.qty` = real `FillEvent.qty`; TP legs sized off `record.qty`) + FIX1 (rejected TP leg folds forward into next valid leg; last-leg → loud `bracket_tp_coverage_gap` audit + telegram). prod LF-md5 `b6e9bdd51471a5f5514f66d4a4594b3e`.
+- `trading_corp/agents/divisions/bitunix_position_reconciler.py` — FIX4 (`actual_pnl_dollars` + `actual_r_multiple` booked on NET post-fee, matching the net-based result label). prod LF-md5 `7e688bdbbcc55a67fef1430fd94847ee`.
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- Size-truth: recorded qty + bracket legs now use the venue's lot-floored fill (was the ~6%-high intended qty) → removes the latent 30038 TPSL_EXCEEDS_POSITION over-sizing feeder.
+- TP-coverage recovery: a rejected TP leg (e.g. 30021 fill→placement race) folds forward instead of silently dropping; unrecoverable last-leg surfaces a loud audit + operator telegram (`bracket_tp_coverage_gap`).
+- Net-basis booking: closed rows no longer show `loss` alongside a positive `actual_pnl_dollars`.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- FORWARD-ONLY: pre-fix `paper_trade_record` rows NOT rewritten (pre-fix qty/R read ~6% high on this division).
+- FIX2 (fill→bracket placement race) DEFERRED to Board — architectural (see report §8); FIX1 makes the race benign.
+- `max_dollar_risk` (R denominator) is a risk budget (equity×risk%), intentionally NOT qty-derived → left unchanged.
+- SL-at-entry (B1 full-size attached market-stop) + position-SL path BYTE-UNCHANGED.
+
+**Latent bugs caught + fixed:** see the 3 FIX items above (all from the 2026-07-11 audit; DB-vs-venue reconciled — realized PnL/closure exact, only entry-qty drifted by the lot-floor).
+
+**Verification:**
+- Pre-deploy: 150/150 tests green (4 new fix tests + 2 updated to net basis); drift-gate CR-stripped local==prod baseline; SL/entry/signal/detector byte-check clean.
+- Post-deploy: PID `182633→196123`, `NRestarts=0`, `active`, flat; prod md5 == main; futures reconciler clean (0 matched); SFP division fully primed + unaffected; no bitunix tracebacks.
+- ★Restart done on a ~5-day-STALE RH pickle by explicit operator consent — did NOT hang (`PEAD wired … standby-gated`). Pickle never refreshed this session.
+
+**Inert / dormant on current traffic:** the fixes activate on the NEXT live bitunix_futures entry/close (4-point verification owed: recorded qty==venue fill; TP-leg reject folds/alerts; closed rows net pnl/R; SL full-size).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp/trading_corp/agents/divisions; \
+for f in bitunix_futures_observer.py bitunix_position_reconciler.py; do cp -p \$BASE/\$f.bak_predeploy \$BASE/\$f; done; \
+sudo -n systemctl restart trading-corp
+"
+```
+
+---
+
 ## 2026-07-11 — SFP per-coin `trend_mode` gate (RD armed → ps_trail30 added + armed on BTC) + cockpit forward-epoch reset + NEW Failed-Swing card notifier (agent-driven, autonomous under explicit per-step Board authorization; SFP flat; gate ARMS were HOT / no restart)
 
 **Commits (git-tracked engine/config/web):** `a2cc41d` (RD gate INERT) → `688d1b0` (RD ARM) → `ed2068f` + `ea18723` (cockpit forward-epoch reset + monotonic funnel) → `612e713` (ps_trail30 gate INERT) → `220495c` (ps_trail30 ARM on BTC). **main == origin == prod == `220495c`.**
