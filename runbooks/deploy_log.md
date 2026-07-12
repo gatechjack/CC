@@ -116,6 +116,35 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-12 ~23:48 UTC — SFP "LLM Trade Analysis" dashboard (D3) at /sfp/llm DEPLOYED + VERIFIED LIVE (engine-served; flat-guarded restart ×2, pickle-risk accepted; agent-driven, autonomous under explicit Board authorization)
+
+**Commits:** `0775fb0` (D3 dashboard) — engine git code. **main == origin == prod == `0775fb0`.** This completes the LLM half (D1+D2 recorder-side shipped ~21:44; D3 was HELD, now deployed on a separate Board go).
+**Triggered by:** operator "now do the dashboard with the flat-guarded restart" (then "restart no pickle refresh needed").
+**Backup tag:** `routes.py.bak_d3predeploy` + `templates/sfp_cockpit.html.bak_d3predeploy` + `templates/sfp_construct_cockpit.html.bak_d3predeploy` on prod (`~/trading_corp/trading_corp/web/`).
+
+**Files deployed (6, to `~/trading_corp/trading_corp/web/`, LF, md5-gated):**
+- NEW `sfp_llm_analysis_view.py` (`7bde19ef`) — reads the recorder's `market_context.db` **READ-ONLY** (engine is not a writer of it → adds a reader, never a 2nd writer; isolation intact). `build_llm_analysis_view()` = pure read-only data layer (honest-empty; grade→R verdict gated at n≥30).
+- NEW `templates/sfp_llm_analysis.html` + `templates/sfp_llm_analysis/_body.html` — page + HTMX-polled body (per-trade: detector-vs-LLM regime, grade, reasoning, caution, news-at-fire, outcome).
+- MOD `routes.py` — wire `sfp_llm_analysis_view.register(app)`. MOD `sfp_cockpit.html` + `sfp_construct_cockpit.html` — 3rd nav link `/sfp/llm` (all 3 SFP dashboards now one click apart).
+
+**★Restart needed (engine-served):** the web app is IN-PROCESS with the engine (uvicorn on :8000), so a route add needs a restart. Done **flat-guarded** (both bitunix divisions FLAT — 0 open live trades + 0 open positions, re-checked immediately pre-restart) via `sudo -n systemctl restart trading-corp --no-block` (NOPASSWD). **Pickle-risk accepted** (operator; RH pickle ~5d stale) — **no hang** (booted ~6s each; PEAD standby-gated). Web server binds ~18s post-boot.
+
+**★Two restarts — a 422 caught + fixed between them (a future Claude should note):** restart #1 → `/sfp/llm` returned **422** (`query.request missing`). Cause: the view had `from __future__ import annotations` (annotations = strings) **and** imported `Request` lazily inside `register()`, so FastAPI's `get_type_hints()` couldn't resolve the string `"Request"` against module globals → treated `request` as a required query param. **Fix:** import `Request`/`HTMLResponse`/`FastAPI` at MODULE TOP (mirrors `sfp_construct_cockpit_view` exactly). Added a **route-level TestClient regression test** (`_test_dashboard.py::test_route_serves_200_not_422`) — the data-layer + jinja tests could not catch a route-injection bug. Restart #2 → 200. **Lesson: any new engine web route needs a TestClient 200 check, not just a data/template test.**
+
+**Verification (LIVE, localhost:8000):** `/sfp/llm` → **200** (4650 B), renders honest-empty cards ("accumulating · no LLM-reviewed fires yet" — no SFP shadow fire yet) + the **live news panel** (BULL, from the recorder's 21:44 `llm_news` heartbeat = proof it reads market_context.db) + the challenger banner. 3-way nav present in all three SFP pages. `/sfp` + `/sfp/construct` still 200. Engine active PID 199156→204237→**204993**, NRestarts=0; **trading resumed clean** (bitunix_sfp reconciler: matched=0 orphan=0, 0 live rows = flat), 0 tracebacks. Recorder unaffected (PID 202648). Verified LOCAL first: dashboard suite 5/5 incl the 422 regression.
+
+**Rollback recipe (display-only; a flat-guarded restart reverts it):**
+```bash
+ssh azureuser@trading.jacksumner.com "cd ~/trading_corp/trading_corp/web && \
+  mv routes.py.bak_d3predeploy routes.py && \
+  mv templates/sfp_cockpit.html.bak_d3predeploy templates/sfp_cockpit.html && \
+  mv templates/sfp_construct_cockpit.html.bak_d3predeploy templates/sfp_construct_cockpit.html && \
+  rm -f sfp_llm_analysis_view.py templates/sfp_llm_analysis.html templates/sfp_llm_analysis/_body.html"
+# then flat-guarded: sudo -n systemctl restart trading-corp   (the /sfp/llm route + nav links disappear)
+```
+
+---
+
 ## 2026-07-12 ~21:44 UTC — Market-Context Recorder: LLM SHADOW-LOGGER + NEWS streams (D1+D2) DEPLOYED + LIVE (recorder-side only; engine NOT touched; D3 dashboard HELD; agent-driven, autonomous under explicit Board authorization)
 
 **Commits:** NONE to the engine — recorder is a NON-git side-process (source `Desktop\market_context\box\`, prod `~/market_context/`). This deploy_log entry is the only git change (docs-only). **Engine `main == origin == prod == fe83784` UNCHANGED.** Board authorized D1+D2 now, **held D3** (the `/sfp/llm` dashboard — it's the only piece needing an engine flat-guarded restart).
