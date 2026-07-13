@@ -310,9 +310,12 @@ def _construct_equity(db_url: str) -> dict:
 # ── per-coin card + board ──
 def _construct_coin(db_url: str, display: str, arm: str, div_live: bool) -> dict:
     wire = SYMBOLS[display]
-    # funnel window = this week, but FLOORED at the reset epoch so pre-epoch fires never bleed into the
-    # clean-slate funnel. Epoch is very recent (this week) => floors to the epoch now; rolls weekly after.
-    since = max(_week_start_iso(), COCKPIT_STATS_SINCE)
+    # funnel window = SINCE THE RD-GATE EPOCH (matches the card's "since 2026-07-11 · RD-gate epoch"
+    # label + the lifecycle/live counts, which also key off the epoch). ★Was max(week_start, epoch): that
+    # silently narrowed to the current Mon-week once a week rolled past the epoch — so on the first Monday
+    # after go-live every coin with no new-week fire (SOL/ETH) blanked to "no setups this week" under a
+    # "since epoch" label. The epoch IS the clean-slate reset; no second weekly floor is wanted here.
+    since = COCKPIT_STATS_SINCE
     return {
         "symbol": display, "wire": wire,
         "is_live_coin": (arm == "trading") and div_live,
