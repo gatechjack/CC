@@ -116,6 +116,29 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-13 ~23:29 UTC — SFP card ROI% + recorder funding-units display fixes (two isolated side-processes; engine UNTOUCHED; display-only; agent-driven under explicit operator authorization)
+
+**Commits:** NONE to the engine — both are NON-git side-processes. This deploy_log entry is the only git change (docs-only). **Engine `main == origin == prod == 36bc6dd` UNCHANGED.**
+**Triggered by:** operator: SFP card ROI% "dividing by the wrong number" + funding "0.5%" looked 100× off on the shadow-logger's first live fire (the XRP short).
+
+**FIX 1 — SFP card ROI% (sfp-card-watcher, `~/card_assets/card_data.py`, md5 922ef359→`a715167`, LF):**
+- ROI% is now **return on CAPITAL COMMITTED (margin posted)**: `roi = net_realized_usd / ((qty * entry_fill_price) / leverage) * 100`. Numerator = `net_realized_usd` (real $ after fees); denominator = margin = notional/leverage (NOT a stored field — derived from qty×fill/lev).
+- ★NOT R and NOT `expected_loss`/`max_dollar_risk` (the theoretical stop-risk — a different number; ROI ≠ R). The OLD formula `R*|stop-entry|/entry*lev*100` reduced to PnL/margin on GROSS pnl.
+- VERIFIED (2 real maiden shorts, operator ground truth): **SOL −$22.43 / $93.85 = −23.9%**; BTC −$20.71 / $191.09 = −10.8%. Single location — `card_gen.py`/`sfp_card.py` only render `roi_pct`; SFP dashboards don't show ROI%.
+- Deploy: backup `.bak_roifix` → md5-gated scp → compile-check → **root restart via Azure Run Command** (the card-watcher's known root-restart requirement — a signal won't respawn it). Watcher PID 198010→**213934**, NRestarts=0, clean poll-loop, cursor intact (resumes; does NOT re-fire already-sent cards). Future closed-trade cards get the corrected ROI; the 2 already-sent cards are unchanged unless re-rendered via `--test-once`.
+
+**FIX 2 — recorder funding 100× overstatement (market-context-recorder, `~/market_context/llm_streams.py`, `758aac19`→`61fc6af7`):**
+- `_hard_ctx_summary` did `funding_value*100`, but Bitunix `/market/funding_rate` returns fundingRate ALREADY as percent-per-8h (XRP 0.005422 = 0.0054%/8h ≈ OKX cross-check). It fed the LLM shadow prompt "0.54%/8h" for a 0.0054% funding. Fix = drop the ×100; +regression test.
+- Deploy: backup `.bak_fundingfix` → scp → compile → recorder unit restart (root, no flat-guard — isolated). PID 208184, NRestarts=0. Applies to the next SFP fire's shadow (prompt-only; not a stored field).
+
+**Isolation:** both are isolated side-processes reading `mode=ro`; engine PID 204993 UNTOUCHED / not restarted; no lock contention.
+
+**★Still HELD (not deployed) — SFP construct cockpit funnel week-rollover fix** (commit `ab8e61f`, worktree `cc-solfix-wt`): `_construct_coin` windows the funnel on `max(week_start, epoch)` → blanks SOL/ETH to "no setups this week" every Monday. Fix = window on the epoch. Its flat-guarded engine restart is BLOCKED by the still-open XRP short (flat-guard aborted). Deploy when the division goes flat.
+
+**Rollback:** card ROI = restore `~/card_assets/card_data.py.bak_roifix` + root restart. funding = restore `~/market_context/llm_streams.py.bak_fundingfix` + recorder restart (or `MCTX_LLM_ENABLED=0`). Neither touches the engine.
+
+---
+
 ## 2026-07-12 ~23:48 UTC — SFP "LLM Trade Analysis" dashboard (D3) at /sfp/llm DEPLOYED + VERIFIED LIVE (engine-served; flat-guarded restart ×2, pickle-risk accepted; agent-driven, autonomous under explicit Board authorization)
 
 **Commits:** `0775fb0` (D3 dashboard) — engine git code. **main == origin == prod == `0775fb0`.** This completes the LLM half (D1+D2 recorder-side shipped ~21:44; D3 was HELD, now deployed on a separate Board go).
