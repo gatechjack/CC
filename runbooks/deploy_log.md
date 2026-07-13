@@ -382,6 +382,7 @@ sudo -n systemctl restart trading-corp
 - Pickle: 71h old at deploy; refresh SKIPPED per operator decision (they own that call; same pickle booted clean at 15:22 + 16:03 UTC). `-SkipPickleGate` used.
 
 **72h EMPIRICAL VERIFICATION GATE — through 2026-07-13 (observation only; does NOT gate the merge — the fix is merged because it deployed clean, marked SHIPPED at 72h):**
+- **>>> OUTCOME 2026-07-13 18:57 UTC: SHIPPED <<<** — **0** `database is locked` over the full 72h (0 contention `locked on attempt`, 0 `FAILED after` exhaustions, fallback file stayed empty; journald complete back to 5/26). PROVEN UNDER LOAD: the Mon 7/13 PMCC approval-timeout burst (STRC sell-call-to-open + TSLA roll; `board_rejected` via `approval timeout`/source=timeout at 13:36 UTC — the SAME checkpointer interrupt/resume scenario that caused the 7/10 storm) drove the checkpointer to write ~782KB into its ISOLATED `data/checkpoints.db-wal` with **0 locks in the 12:00–14:00 UTC window**. Root-cause fix CONFIRMED; #4/#5 NOT needed (remain deferred). 24h/48h/72h cumulative locks = 0 / 0 / 0.
 - Watch `data/audit_event_write_failed.jsonl` (hourly drain cron drains it) + journal `database is locked` count/day + `data/*.replayed-*` archives not growing.
 - Pre-deploy baseline: ~4–18 lock events/day, 100% exhaustion (40-day trend).
 - **empty/trickle → fix worked → mark SHIPPED.** **accumulating at pre-deploy rate → fix incomplete →** escalate to fix #5 (offload blocking writes off the event loop; cleaner diagnosis post-#3).
