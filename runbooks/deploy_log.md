@@ -116,6 +116,20 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-14 ~13:39 UTC — SFP construct-cockpit funnel window fix (SOL/ETH un-blanked) DEPLOYED + VERIFIED LIVE (engine-served; flat-guarded restart; agent-driven under explicit operator authorization)
+
+**Commits:** `1f2903b` (was `ab8e61f`, rebased onto origin/main). **main == origin == prod == `1f2903b`.** This is the fix that was noted HELD in the 07-13 entry below — now shipped once the division went flat (the XRP short closed) + the RH pickle was fresh (refreshed 07-14 13:34).
+**Triggered by:** operator "we are now flat and can restart."
+**Backup tag:** `sfp_construct_cockpit_view.py.bak_solfix` on prod.
+
+**File:** `trading_corp/web/sfp_construct_cockpit_view.py` (`3d999e39`). `_construct_coin` now windows the gate-funnel on `COCKPIT_STATS_SINCE` (the RD-gate epoch, matching the card's "since 2026-07-11" label + the lifecycle counts) instead of `max(_week_start_iso(), epoch)` — which, once a week rolled past the epoch, narrowed to the current Mon-week and blanked any coin with no new-week fire (SOL/ETH → "no setups this week"). Display-only; the "Setups this week" panel stays correctly weekly.
+
+**Deploy:** prod==origin pre-check → md5-gated scp → compile → **flat-guarded restart** (`sudo -n systemctl restart trading-corp --no-block`; both divisions FLAT re-checked; pickle FRESH — no hang; PID 204993→**217983**, NRestarts=0, ~6s boot).
+**Verified LIVE (`localhost:8000/sfp/construct`):** all 4 coins now render a funnel (`raw 2-candle SFP` ×4, was ×2), `no setups this week` = 0 (was 2 = SOL+ETH). Trading resumed clean (`bitunix_sfp restart-resume matched=0 orphan=0`, reconcilers clean), 0 tracebacks. `/sfp` + `/sfp/construct` 200.
+**Rollback:** restore `sfp_construct_cockpit_view.py.bak_solfix` + flat-guarded restart.
+
+---
+
 ## 2026-07-13 ~23:29 UTC — SFP card ROI% + recorder funding-units display fixes (two isolated side-processes; engine UNTOUCHED; display-only; agent-driven under explicit operator authorization)
 
 **Commits:** NONE to the engine — both are NON-git side-processes. This deploy_log entry is the only git change (docs-only). **Engine `main == origin == prod == 36bc6dd` UNCHANGED.**
