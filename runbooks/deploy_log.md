@@ -116,6 +116,21 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-15 ~14:04 UTC — SFP card ROI% re-defined to RETURN ON RISK (supersedes 07-13 net/margin) DEPLOYED + LIVE (isolated card-watcher; engine UNTOUCHED; display-only)
+
+**Commits:** NONE to the engine — sfp-card-watcher is a NON-git side-process. This deploy_log entry is the only git change (docs-only). **Engine `main == origin == prod == c34f40d` UNCHANGED.**
+**Triggered by:** operator — after seeing 07-14/07-15 trade cards, the net/margin ROI "looked wrong" across trades.
+
+**File:** `~/card_assets/card_data.py` (md5 a715167→**d8a4e26**, LF). ROI% is now **RETURN ON RISK = `actual_r_multiple * 100`** (a −1R loss = −100%, a +3R win = +300%; equiv realized_pnl/|expected_loss|×100). Backup `.bak_roi_returnonrisk`.
+
+**Why the 07-13 net/margin was superseded:** ROI = net_realized/margin made the % swing with **stop width** (wide stop → small position → small margin), so it stopped tracking the trade — across the recent live trades a −1.0R XRP loss read **−47%** while a −1.2R BTC loss read **−12.8%**, and the −1R loss out-magnitude'd the +3R SOL wins (+38.8%/+39.5%). Return-on-risk is consistent + matches the R already on the card.
+
+**Verified (re-rendered the 4 recent live trades through the card code):** BTC −1.24R→−123.9%, XRP −1.02R→−101.6%, SOL WIN +3.05R→+305.2%, SOL WIN +3.11R→+311.1%. Unit test asserts R×100 + rejects net/margin. Deploy: md5-gated scp + compile → **root restart** (Azure Run Command). Watcher PID 213934→**228521**, NRestarts=0, clean poll-loop, cursor intact (07-15 13:03 — future cards only; the 4 already-sent cards showed the superseded net/margin unless re-rendered via `--test-once`).
+
+**Rollback:** restore `~/card_assets/card_data.py.bak_roi_returnonrisk` (= the net/margin build) + root restart.
+
+---
+
 ## 2026-07-14 ~13:39 UTC — SFP construct-cockpit funnel window fix (SOL/ETH un-blanked) DEPLOYED + VERIFIED LIVE (engine-served; flat-guarded restart; agent-driven under explicit operator authorization)
 
 **Commits:** `1f2903b` (was `ab8e61f`, rebased onto origin/main). **main == origin == prod == `1f2903b`.** This is the fix that was noted HELD in the 07-13 entry below — now shipped once the division went flat (the XRP short closed) + the RH pickle was fresh (refreshed 07-14 13:34).
