@@ -73,6 +73,26 @@ MEMORY.md is ~59KB vs the ~24KB soft limit (only part loads into context otherwi
 
 Low priority; non-destructive to topic-file content; do between deploy-adjacent work.
 
+## Momentum (FriendOfTheTrend) vs real bitunix_futures trades - DIAGNOSTIC-only; range-only-veto CANDIDATE - OPEN (filed 2026-07-08, research)
+
+Read-only GROSS analysis (no deploy, no prod writes). FriendOfTheTrend momentum (`mom = close - close[length]`,
+len 10/15/20) on native BTCUSDT 3m bars vs the 221 REAL `bitunix_futures` entries (211 short / 10 long, all BTC).
+Full detail: memory `momentum-vs-futures-trades-2026-07-08` + report
+`Desktop\bitunix_reports\2026-07-08_momentum_vs_futures_trades.txt` (script `.\momentum_analysis\analyze.py`).
+
+**Finding:** momentum is a real DIAGNOSTIC ranker (falling shorts ~76% / +0.40R >> up_but_bearish ~52% / ~0R,
+consistent across all 3 lengths) but NOT a tradeable blanket filter here: a hard veto is net-NEGATIVE (it also
+blocks still-profitable bull/trend_down shorts), and redeem/hold does NOT beat blocking (N=5 -13/+2/-2R at
+len 10/15/20; redeemed win-rate ~= the 2R breakeven -> reconfirms `bitunix-redeem-cap-goal`). The one convertible
+edge is regime-conditional: at the MICRO(15m) level up_but_bearish shorts are +0.43R in trend_down but -0.13R in
+RANGE (sign flips at all 3 lengths) - confirms the operator's 2026-07-08 09:18 range-flip read.
+
+**CANDIDATE (do NOT deploy yet):** a RANGE-only veto / de-size on up_but_bearish shorts (NOT a blanket veto, NOT
+redeem/hold). **Blocked on:** (1) whole window is MACRO bear (corpus single-regime) so the confirmation is
+MICRO-only -> needs a NON-bear window to promote; (2) GROSS only (fees worsen the range / up_but_bearish cells);
+(3) not drift-null'd - the trend_down bail-out is partly bear-beta, so run the direction-matched drift null before
+trusting it as ALPHA. P3 / research - pick up when a non-bear live window has accrued.
+
 ## P1 — Bitunix SFP **Mode-B (15m SFP / 3m BOS)** forward-track + scale gate — OPEN (deployed live 2026-06-28)
 
 Mode B is LIVE (see `deploy_log.md` 2026-06-28 (later)): **BTC + ETH `arm:trading`**, **SOL + XRP `arm:watch`
