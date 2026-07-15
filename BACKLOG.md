@@ -260,7 +260,7 @@ on crash; B1 **VALIDATED on first real fill 2026-06-14** (was the dropped unvali
   `_DB_LOCK_RETRY_DELAYS_SEC` retry exhausting 8× per 23.5h on `hitl/*` writes
   (pre-existing `agents/logger.py` path, not Decision 6.2's new path). Decision 6.2's
   `insert_paper_trade_record` retry: zero firings (silent). Audit at
-  `reports/2026-06-02_phase3_day2_audit.md`.
+  `reports/2026-06-02_phase3_day2_audit.md`. **(2026-07-13: this `hitl/*` db-lock retry-exhaustion baseline is now ROOT-CAUSE FIXED + SHIPPED — checkpointer isolated off the shared WAL writer, 0 locks over 72h+; see the P3 event-loop DB-lock cross-ref + `deploy_log.md` 2026-07-10.)**
 - **Day 4 mid-window probe:** scheduled 2026-06-04. Same query set; compare
   8-count db-lock baseline + bitunix trade distribution + bitunix win rate.
 - **Day 7 close-out:** scheduled 2026-06-09. Full window aggregate; verdict on
@@ -423,6 +423,18 @@ Likely contributors: live BitUnix broker load + the 10006 bursts (see the P2 100
 item) + always-busy copy-trader batches. Action: profile event-loop blocking under
 live load (sync/CPU-bound calls in the loop; the BitUnix snapshot/account path is a
 candidate). P3 unless a TV-driven strategy is slated to go live.
+
+> **2026-07-13 cross-ref — DB-lock-storm fix (SHIPPED):** the checkpointer-isolation fix
+> (LangGraph saver moved off the shared `trading_corp.db` onto its own `data/checkpoints.db` +
+> `synchronous=NORMAL`; `deploy_log.md` 2026-07-10 entry, verdict SHIPPED 2026-07-13, 0 locks / 72h+
+> incl. a live Mon PMCC burst) removed one event-loop stall source relevant HERE — the blocking
+> `time.sleep` db-lock retries in `log_event`/`log_proposed_order` that froze the loop ~16s/victim
+> during PMCC approval bursts. Two deferred hardenings (built NEITHER — not needed post-#3, kept as
+> options): **#5 = offload those blocking retries off the loop (thread executor) then raise the
+> shared `busy_timeout`** — a DIRECT candidate for this P3 item if a TV-driven strategy goes live;
+> **#4 = lock-retry wrapper on `set_agent_state`/`delete_agent_state`** (bucket-D no-retry sites).
+> Detail + the ready two-phase deploy runner: `reports/2026-07-10_db_lock_storm_diagnosis.md`,
+> `scripts/deploy/deploy_db_lock_fix.ps1`.
 
 ## P3 — `assert_live_ready` has no `bitunix` branch → creds gate is a no-op for the live bitunix path (filed 2026-06-13 at go-live)
 
