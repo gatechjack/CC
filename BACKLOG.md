@@ -1692,46 +1692,28 @@ downstream.
 
 # Research / Future
 
-## LLM Shadow-Logger  (proposed 2026-07-11 · status: BACKLOG, not built)
+## LLM Shadow-Logger — BUILT + DEPLOYED LIVE 2026-07-13/15 (log-now phase DONE; the OPEN item is now evaluate-later)
 
-**Premise:** Can an LLM improve the SFP strategy over time? We can't backtest it today — there's no
-history of LLM decisions to test against. So the goal of THIS item is to CAPTURE that data now, so it
-becomes backtestable later. Log-now, evaluate-later.
+**★DELIVERED** as the LLM half of the Market-Context Recorder — the exact isolated-side-process
+architecture this item proposed. See `runbooks/deploy_log.md` (2026-07-12 recorder LIVE + D1/D2/D3 entries)
++ memory `market-context-recorder-phase0-2026-07-12`. What shipped:
+- **D1 `llm_shadow` stream** — on each SFP construct FIRE, a BLIND (outcome-free) LLM review: regime
+  AGREE/DISAGREE vs the detector's live gate (rd/ps_trail30/ema200) + setup-grade 0-100 + caution flag,
+  temp 0, FIXED versioned prompt (`shadow_v1`), model + prompt_version logged per row. Nightly
+  outcome-backfill pairs it to booked R. Written as `context_kv` rows (stream='llm_shadow') in the
+  recorder's OWN `market_context.db` — NOT a new engine table (stronger isolation; engine untouched).
+  Anthropic key via the recorder's `_kv_secret` Key Vault path (engine-import-free). VALIDATE-not-gate:
+  logs a challenger, gates nothing. First live fire (XRP 2026-07-13) verified end-to-end (blind grade 28
+  + non-mechanical reasoning). ⚠ scoped to construct FIRES (not every regime classification, per the
+  original "each fire" option — regime-classification logging would be a later extension if wanted).
+- **D2 `llm_news`** (daily sentiment) + **D3 `/sfp/llm` dashboard** also live.
 
-**Architecture (reuse the trade-card watcher pattern — proven isolated):**
-- A standalone side-process on the box, SEPARATE from the trading engine (own service). Reads bars +
-  paper_trade_record READ-ONLY. Writes ONLY to its own new table. Never imports the engine/observer/trade
-  path. Zero trading impact — pure data capture, like the card watcher.
-- Anthropic API key: already in Azure Key Vault, loaded via trading_corp.utils.secrets.load_secrets()
-  (same managed-identity path as the Telegram token — the process never sees the raw key).
-
-**What it logs — new prod table `llm_shadow_log`, one row per decision:**
-- ts, coin, tf, decision_type
-- the OHLCV window fed to the LLM (stored so the call is reproducible)
-- the MECHANICAL answer (the RD / ps-trail30 regime label, or the funnel state at fire)
-- the LLM answer + confidence + full reasoning + prompt_version + model string + temperature
-- OUTCOME (backfilled nightly): what the regime actually did next / what R the trade booked
-
-**When it fires:** at each regime classification and each construct fire. Call the LLM with a FIXED,
-VERSIONED prompt at temperature 0 (determinism matters — see risks).
-
-**★VALIDATE, don't build.** The LLM's job is to AGREE or DISAGREE with RD's mechanical label (a challenger
-to the deterministic spine), NOT to invent the range from scratch. Build-mode (LLM as primary classifier)
-trusts a non-deterministic model with no baseline = unsafe and untestable. Validate-mode keeps RD as the
-spine and produces a clean RD-vs-LLM disagreement set to score. Candidate decision types: (1) regime-
-validate (agree/disagree with RD), (2) setup-grade 0-100 at fire, (3) veto-flag.
-
-**How it gets tested (later, ~3-6 months of rows):** does the LLM label beat RD on the DISAGREEMENT set
-(when they differ, who was right about forward returns)? Does the LLM setup-score predict booked R? Scored
-with the standard drift-null discipline — same bar as everything else.
-
-**⚠Skeptic priors (log these honestly, they're the point of shadow mode):**
-- The LLM sees the SAME bars as the detectors — it may just re-derive RD with added latency/cost and no
-  real edge. Shadow data is how we find out empirically, not on faith.
-- Non-determinism is disqualifying for a trading input — log at temp 0 and treat answer-variance on the
-  same setup as a data point (if it can't answer consistently, that alone kills it).
-- This is exactly the seductive-sounding idea the "report evidence, don't rule in on faith" rule exists
-  for. The logged paired history is the thing that keeps it honest.
-
-**Graduation path:** shadow-log → (if paired data shows signal) a logged funnel stage → (only then, maybe)
-a live gate. Never straight to a gate. Log-now, gate-later.
+**OPEN — the evaluate-later phase (the original "test it in ~3-6 months" step):** the paired
+(LLM-judgment → booked R) dataset is now ACCUMULATING (~3 SFP fires/wk). Do NOT evaluate on small n. When
+**n≥~30 paired rows** (~3-6 mo): does the LLM beat the detector on the DISAGREEMENT set (when they differ,
+who's right on forward R)? Does the setup-grade predict booked R? Is it CONSISTENT at temp 0
+(answer-variance on the same setup = a disqualifying data point)? Score with the standard drift-null
+discipline. The `/sfp/llm` dashboard already gates its verdict at n≥30. Skeptic priors still hold: the LLM
+sees the same bars — it may just re-derive the detector (the 2-trade feel-test hinted it CAN add a
+non-mechanical read, but n=2 proved nothing). **Graduation path unchanged:** shadow-log → (if signal) a
+logged funnel stage → (only then, maybe) a live gate. Never straight to a gate.
