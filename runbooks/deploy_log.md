@@ -116,6 +116,24 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-18 ~23:01 UTC — RH-AUTH RESILIENCE (ITEMS 1/2/3) DEPLOYED + VERIFIED LIVE (engine-source hot-patch; flat-guarded restart; agent-driven, autonomous under explicit Board authorization)
+
+**What & why:** the engine's Robinhood session was 401 Unauthorized broker-wide 2026-07-14→18 (all 4 RH accts share ONE robin_stocks module session; hid 4 days as 848 generic `float()..NoneType` warnings because robin_stocks SWALLOWS the 401). Deployed a self-healing layer. Root cause of the 4-day hide + the recovery lever: **FINDING B — refreshing the pickle FILE does NOT recover a RUNNING engine** (in-mem singleton + `_LOGIN_DONE` latch; proven: 20:55 file-refresh → 21:31 still-401 → 21:33 RESTART fixed) → needed an IN-PROCESS reload.
+
+**Engine files patched ON PROD (additive, via drift-gated idempotent patcher; `.bak_rhauth` per file):** `utils/secrets.py` (ITEM 1: +ROBINHOOD_* in KV list + KV-authoritative-with-unit-env-FALLBACK), `brokers/robinhood.py` (ITEM 3: active 401 sentinel + guarded in-proc re-login + latch + `RobinhoodAuthError`), `agents/data_exec.py` (ITEM 3: `_on_rh_auth_change` audit+telegram hook), `web/routes.py` (ITEM 2: `/api/rh/session-health` + `/api/rh/refresh-session`), `main.py` (ITEM 3: 2-line hook wiring), `web/templates/rh_session_panel.html` (new) + `home.html` (panel stub). **GUARD 1** reauth ≤1/300s (no 429); **GUARD 2** `wait_for(15s)` + stdin-null (no hang); snapshot() never raises.
+
+**★ prod-ahead-of-git:** these engine-source edits were applied PROD-DIRECT (prod has no git). The exact, replayable record is the committed patcher `deploy_rh_auth/apply_rh_auth_batch.py` (base md5s in `deploy_rh_auth/MANIFEST.md`). Local `main` trading_corp source is NOT synced to prod (also behind on the 2026-07-18 SFP ROI/epoch prod-direct edits — see memory `sfp-roi-denominator-audit-2026-07-18` / `rh-auth-resilience-deployed-2026-07-18`). Full git↔prod source reconciliation remains a separate task.
+
+**ITEM 1 timer:** standalone `rh-relogin.timer` INSTALLED (root, Azure Run Command) — daily 13:00 UTC, gentle-on-expiry (pushes only when token actually expired; no forced-daily → avoids new-device escalation on this no-MFA acct). Verify-run PASSED ("session still valid — no push").
+
+**Deploy sequence (Board-auth autonomous):** pre-flight (Bitunix FLAT 0/0, pickle valid 0×401, no in-flight PMCC) → `-Apply` (.bak + py_compile + IMPORT OK) → `sudo systemctl restart` (booted + RH login in 10s, no pickle hang) → boot-smoke.
+
+**Verified LIVE (engine PID 253942→261332, NRestarts=0):** boot "loaded **35** secrets" (was 33 = +2 RH from KV), RH `user=jrsumner@yahoo.com` + 4 accounts bound, **0×401**, `/api/rh/session-health`→**200** (panel "valid" + button, on Command Center homepage), 0 batch tracebacks (the fidelity playwright errors are PRE-EXISTING), 848-warning storm GONE, Bitunix unaffected. (No MFA on this acct — `mfa_secret=None` handled everywhere.)
+
+**Rollback:** `powershell -ep bypass -f .\deploy_rh_auth\rollback_rh_auth_batch.ps1` (restores `.bak_rhauth` on prod + removes template) + restart. Timer removal: `systemctl disable --now rh-relogin.timer` (root). Artifacts: `deploy_rh_auth/` (patcher, runners, boot-smoke, manifest, timer). Reports: `Desktop\bitunix_reports\2026-07-18_*`.
+
+---
+
 ## 2026-07-15 ~14:04 UTC — SFP card ROI% re-defined to RETURN ON RISK (supersedes 07-13 net/margin) DEPLOYED + LIVE (isolated card-watcher; engine UNTOUCHED; display-only)
 
 **Commits:** NONE to the engine — sfp-card-watcher is a NON-git side-process. This deploy_log entry is the only git change (docs-only). **Engine `main == origin == prod == c34f40d` UNCHANGED.**

@@ -1,0 +1,75 @@
+{# ITEM 2 scaffold — RH session-health panel + "Refresh RH Pickle" button.
+   HOT (Jinja auto_reload) once integrated, BUT the two routes it calls are RESTART-gated
+   (batch): GET /api/rh/session-health and POST /api/rh/refresh-session. Until those land
+   the button 404s — integrate the template WITH the batch, or ship the read-only health
+   strip first and enable the button after the restart.
+
+   Patterns mirrored from prod: HALT button (routes.py:1896 — hx-post + hx-confirm) and the
+   background-task self-poll (routes.py:2274-2437 — a fragment that hx-get polls a status GET
+   every 3s). State is read from agent_state key ("robinhood_session","refresh_status").
+
+   Data contract expected from GET /api/rh/session-health (JSON or rendered fragment):
+     auth_state:   "valid" | "down"          (from ITEM 3's _RH_AUTH_FAILED latch)
+     down_since:   iso ts | null
+     last_good:    iso ts | null
+     pickle_age_s: int                       (os.stat mtime of ~/.tokens/robinhood.pickle)
+     refresh:      "idle" | "running" | "push_sent" | "valid" | "failed"
+     refresh_msg:  human string (reason on failed)
+#}
+<div id="rh-session-panel"
+     class="rounded-xl border border-white/10 bg-black/20 p-4"
+     hx-get="/api/rh/session-health" hx-trigger="load, every 15s" hx-swap="outerHTML">
+
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      {% if health.auth_state == 'valid' %}
+        <span class="h-2.5 w-2.5 rounded-full bg-gain"></span>
+        <span class="text-sm font-medium">Robinhood session · <span class="text-gain">valid</span></span>
+      {% else %}
+        <span class="h-2.5 w-2.5 rounded-full bg-loss animate-pulse"></span>
+        <span class="text-sm font-medium">Robinhood session · <span class="text-loss">DOWN</span>
+          {% if health.down_since %}<span class="text-white/50">since {{ health.down_since }}</span>{% endif %}
+        </span>
+      {% endif %}
+    </div>
+    <span class="text-xs text-white/50">
+      pickle {{ (health.pickle_age_s // 3600) }}h old
+      {% if health.last_good %}· last good {{ health.last_good }}{% endif %}
+    </span>
+  </div>
+
+  {# severity line — auth down = NO entries AND NO exits on live positions, broker-wide #}
+  {% if health.auth_state != 'valid' %}
+    <p class="mt-2 text-xs text-loss/90">
+      Auth down affects ALL Robinhood accounts (PEAD / PMCC / IRA / joint): no new entries
+      AND no exits on live positions until refreshed.
+    </p>
+  {% endif %}
+
+  {# the button + its self-polling status region #}
+  <div id="rh-refresh-region" class="mt-3">
+    {% if health.refresh == 'running' or health.refresh == 'push_sent' %}
+      <div hx-get="/api/rh/session-health" hx-trigger="every 3s" hx-target="#rh-session-panel"
+           hx-swap="outerHTML" class="text-sm text-white/80">
+        <span class="inline-block animate-pulse">●</span>
+        Refresh requested — APPROVE THE PUSH ON YOUR PHONE (~60s)…
+      </div>
+    {% elif health.refresh == 'failed' %}
+      <div class="text-sm text-loss">✗ Refresh failed — {{ health.refresh_msg }}</div>
+      <button hx-post="/api/rh/refresh-session" hx-swap="none"
+              hx-confirm="Re-login to Robinhood? A device push will be sent to your phone to approve."
+              class="mt-2 rounded-lg bg-loss/15 px-3 py-1.5 text-sm font-medium text-loss hover:bg-loss/25">
+        ↻ Retry RH refresh
+      </button>
+    {% else %}
+      {% if health.refresh == 'valid' %}
+        <div class="mb-2 text-sm text-gain">✓ Session valid</div>
+      {% endif %}
+      <button hx-post="/api/rh/refresh-session" hx-swap="none"
+              hx-confirm="Re-login to Robinhood? A device push will be sent to your phone to approve."
+              class="rounded-lg bg-white/10 px-3 py-1.5 text-sm font-medium hover:bg-white/20">
+        ↻ Refresh RH pickle
+      </button>
+    {% endif %}
+  </div>
+</div>

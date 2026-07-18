@@ -12,6 +12,23 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## RH-auth resilience follow-ups — OPEN (filed 2026-07-18, all LOW/optional)
+
+RH-auth self-heal (ITEMS 1/2/3) DEPLOYED+LIVE 2026-07-18 — see `runbooks/deploy_log.md`
+2026-07-18 + memory `rh-auth-resilience-deployed-2026-07-18`. Remaining, all optional:
+- **P3 — Timer "1B" refresh-token renewal** (avoid the daily/expiry device push entirely by
+  renewing the access token from the stored refresh_token before expiry). Needs verifying
+  robin_stocks supports a refresh_token grant; current timer is gentle-on-expiry (pushes only
+  on real expiry). Better if real; not blocking (ITEM 3 in-proc reload + button carry recovery).
+- **P3 — Strip ROBINHOOD_* from root `/etc/trading-corp/tastytrade.env`** — OPTIONAL: we
+  deliberately KEPT unit-env as a break-glass FALLBACK (KV is authoritative). Strip only if you
+  want strict KV single-source; a KV/MI boot blip then has no fallback. Do NOT strip before the
+  secrets.py patch is confirmed live (it is, as of 2026-07-18 restart).
+- **P3 — git↔prod source reconciliation** — the 2026-07-18 RH-auth (+ SFP ROI/epoch) engine
+  edits were applied prod-direct; local `main` trading_corp source is behind prod. The exact
+  RH-auth changes are replayable from `deploy_rh_auth/apply_rh_auth_batch.py`. Reconcile when
+  convenient (drift-gate first).
+
 ## PMCC go-live: approval-vs-autonomous decision + submission-idempotency gate — OPEN (filed 2026-07-08)
 
 Two-part pre-go-live decision, IN ORDER. **NOT a current risk** (`robinhood_pmcc` is paper-only

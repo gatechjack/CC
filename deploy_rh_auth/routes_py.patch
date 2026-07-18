@@ -1,0 +1,79 @@
+# ITEM 2 — web/routes.py: "Refresh RH pickle" button + session-health panel. Two routes,
+# added INSIDE register(app) (so `templates`, `deps`, `_db_mod`, `_now_iso`, `asyncio` are
+# in scope — same as the HALT route at 1896 and the discovery-control block at 2325).
+# RESTART-gated (batch). Template templates/rh_session_panel.html (HOT) renders these.
+#
+# Idioms verified against prod routes.py:
+#   - templates = app.state.templates ; TemplateResponse(request, "name.html", {ctx})  [REQUEST FIRST]
+#   - db_url = deps.db_url
+#   - _db_mod.load_agent_state(agent,key,db_url=)  -> (value, updated_at) | None  [TUPLE]
+#   - _db_mod.set_agent_state(agent,key,value_dict,db_url=)
+#   - asyncio.create_task(...) ; import asyncio already at top (line 20)
+#
+# Needs the robinhood.py signature bump: _attempt_reauth(self,*,force=False,timeout=_REAUTH_TIMEOUT_S)
+# (see mainwiring_and_signature_notes.md). Button = force=True (skip GUARD-1 backoff),
+# timeout=90 (a device push takes ~60s). GUARD 2 (timeout + stdin-null) still applies.
+# Button value (Finding B): forces an IN-PROCESS reload -> recovers the RUNNING engine's
+# in-memory session without a restart.
+
+=== add inside register(app), placed near the HALT route (~after line 1935) ===
+
++    # ---- ITEM 2: RH session health + refresh button ---------------------------------
++    _RH_AGENT, _RH_KEY = "robinhood_session", "refresh_status"
++    _BUTTON_REAUTH_TIMEOUT_S = 90   # operator approves a device push (~60s poll)
++
++    def _rh_health_ctx():
++        import os, time
++        from trading_corp.brokers import robinhood as _rh
++        pickle = os.path.expanduser("~/.tokens/robinhood.pickle")
++        try:
++            age_s = int(time.time() - os.stat(pickle).st_mtime)
++        except OSError:
++            age_s = -1
++        rec = _db_mod.load_agent_state(_RH_AGENT, _RH_KEY, db_url=deps.db_url)
++        st = rec[0] if (rec and isinstance(rec[0], dict)) else {}
++        return {
++            "auth_state": "down" if getattr(_rh, "_auth_down", False) else "valid",
++            "down_since": getattr(_rh, "_auth_down_since", None),
++            "last_good": getattr(_rh, "_auth_last_good", None),
++            "pickle_age_s": age_s,
++            "refresh": st.get("state", "idle"),
++            "refresh_msg": st.get("msg", ""),
++        }
++
++    @app.get("/api/rh/session-health", response_class=HTMLResponse)
++    async def rh_session_health(request: Request):
++        return templates.TemplateResponse(
++            request, "rh_session_panel.html", {"health": _rh_health_ctx()})
++
++    @app.post("/api/rh/refresh-session", response_class=HTMLResponse)
++    async def rh_refresh_session(request: Request):
++        db_url = deps.db_url
++        rec = _db_mod.load_agent_state(_RH_AGENT, _RH_KEY, db_url=db_url)
++        if rec and isinstance(rec[0], dict) and rec[0].get("state") in ("running", "push_sent"):
++            return templates.TemplateResponse(          # idempotency: already in flight
++                request, "rh_session_panel.html", {"health": _rh_health_ctx()})
++        broker = deps.data_exec.brokers.get("robinhood_pead") or next(
++            (b for k, b in deps.data_exec.brokers.items() if k.startswith("robinhood")), None)
++
++        async def _run():
++            try:
++                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
++                    {"state": "push_sent", "msg": "approve the push on your phone", "ts": _now_iso()},
++                    db_url=db_url)
++                ok = False
++                if broker is not None and hasattr(broker, "_attempt_reauth"):
++                    ok = await broker._attempt_reauth(force=True, timeout=_BUTTON_REAUTH_TIMEOUT_S)
++                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
++                    {"state": "valid" if ok else "failed",
++                     "msg": "" if ok else "login not confirmed (push not approved / sms-email challenge / creds)",
++                     "ts": _now_iso()}, db_url=db_url)
++            except Exception as e:  # noqa: BLE001
++                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
++                    {"state": "failed", "msg": str(e), "ts": _now_iso()}, db_url=db_url)
++
++        _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
++            {"state": "running", "msg": "", "ts": _now_iso()}, db_url=db_url)
++        asyncio.create_task(_run())
++        return templates.TemplateResponse(              # returns the self-polling "running" panel
++            request, "rh_session_panel.html", {"health": _rh_health_ctx()})

@@ -1,0 +1,26 @@
+[Unit]
+Description=RH daily re-login (refresh robin_stocks pickle; ITEM 1, standalone)
+Documentation=file:/home/azureuser/deploy_rh_auth/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=azureuser
+WorkingDirectory=/home/azureuser/trading_corp
+# load_secrets() pulls ROBINHOOD-* from KV. KEY_VAULT_URI must match the engine unit's
+# value (root-owned; install script copies it in). Requires the secrets.py patch on
+# disk (ROBINHOOD_* added to expected_env_vars) + the VM managed identity.
+Environment=PYTHONPATH=/home/azureuser/trading_corp
+Environment=KEY_VAULT_URI=__COPY_FROM_ENGINE_UNIT__
+# Finding A: no TTY -> an unexpected sms/email challenge input() raises EOFError (clean
+# fail) instead of hanging.
+StandardInput=null
+TimeoutStartSec=180
+ExecStart=/home/azureuser/trading_corp/venv/bin/python /home/azureuser/rh_daily_relogin.py
+# Optional: alert on failure (a missed/failed daily push). Wire to a telegram oneshot
+# or rely on ITEM 3's engine-side 401 alert as the backstop.
+# OnFailure=rh-relogin-alert.service
+
+[Install]
+WantedBy=multi-user.target

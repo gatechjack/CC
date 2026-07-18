@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily RH re-login timer (ITEM 1) — keeps ~/.tokens/robinhood.pickle fresh
+Documentation=file:/home/azureuser/deploy_rh_auth/README.md
+
+[Timer]
+# Fire once daily. Time chosen for when the operator is reliably free to approve the
+# push on the phone. 13:00 UTC (~9am ET) = well before the 8:30 ET PEAD scan window so a
+# fresh token is in place for the trading day. Adjust to operator preference.
+OnCalendar=*-*-* 13:00:00 UTC
+# If the box was asleep/off at 13:00, run at next boot so a day is never silently skipped.
+Persistent=true
+AccuracySec=1min
+Unit=rh-relogin.service
+
+[Install]
+WantedBy=timers.target
