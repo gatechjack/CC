@@ -29,6 +29,18 @@ RH-auth self-heal (ITEMS 1/2/3) DEPLOYED+LIVE 2026-07-18 — see `runbooks/deplo
   RH-auth changes are replayable from `deploy_rh_auth/apply_rh_auth_batch.py`. Reconcile when
   convenient (drift-gate first).
 
+## PEAD EODHD calendar pre-filter + false-comment fix — OPEN (filed 2026-07-20, P3 LOW)
+
+`trading_corp/data/earnings_provider.py` `get_recent_announcements()` returns `[]` claiming "EODHD has no
+cross-symbol calendar endpoint." **That claim is FALSE** — `GET /api/calendar/earnings?from=&to=` works on
+our key (Calendar add-on enabled; verified live 2026-07-20: HTTP 200, a 7-day window = ONE API call
+returning all US rows). Today the PEAD scan discovers earnings names via per-symbol `/api/fundamentals`
+sweeps across the 3,207-name universe. **Opportunity:** use the calendar to PRE-FILTER which names actually
+report soon so only those need a fundamentals fetch — shrinking the same sweep that caused the 6/26
+~51-56 min event-loop freeze — and fix the false comment. Forward-only; fold into the PEAD observability
+build if convenient. Full context: `planning/2026-07-20_pead_upcoming_earnings_panel_scope.md`. Do NOT
+build reactively.
+
 ## PMCC go-live: approval-vs-autonomous decision + submission-idempotency gate — OPEN (filed 2026-07-08)
 
 Two-part pre-go-live decision, IN ORDER. **NOT a current risk** (`robinhood_pmcc` is paper-only
