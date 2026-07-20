@@ -12,6 +12,44 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## Coinbase BTC HODL (coinbase_spot / Donchian) — audit + Binance-4Y re-backtest — OPEN (filed 2026-07-19)
+
+Full analysis: `reports/2026-07-19_donchian_binance_revalidation.md` (Phases 0-7) +
+`reports/2026-07-18_coinbase_btc_hodl_audit.md` + `reports/2026-07-18_coinbase_spot_ownership_investigation.md`.
+Harnesses `scripts/donchian_binance_*.py`. Memory `coinbase-donchian-revalidation-2026-07-19`.
+**ALL READ-ONLY — nothing deployed / applied / committed to prod this session.**
+
+**Division state (verified prod 2026-07-18):** `coinbase_spot` runs `coinbase_btc_donchian` = a binary
+CASH<->BTC 6h Donchian trend-follower (NOT accumulate despite the "HODL" name). enabled:true + 6h
+scheduler running + evaluating every bar, BUT structurally CANNOT fill: `coinbase` not in engine
+`--brokers`, `coinbase_spot` not in `--live-divisions`, auto_execute:false. 0 real fills in ~10 weeks;
+only signal 2026-07-15 board_rejected (approval timeout). ~$85K real cash idle, 0 BTC.
+
+**Open DECISIONS (operator):**
+- **P2 — Division purpose:** activate / repurpose the ~$85K / decommission (0 fills in 10 weeks).
+- **P2 — BLOCKER for any activation = account isolation.** Strategy sizes off the WHOLE commingled
+  account (BUY=100% acct cash, SELL=100% acct BTC); risk gate evaluates a SYNTHETIC $100K equity
+  (ceo_graph risk_node fallback, blind to real balance); account commingled with Board treasury.
+  auto_execute CANNOT be safely enabled without a dedicated Coinbase sub-account/portfolio + real
+  equity into the risk gate. See ownership report verdict.
+- **P3 — Naming:** "Coinbase BTC HODL" is a misnomer for a full-exit swing trend-follower.
+
+**Backtest verdict (Binance 4Y, survivorship-corrected):** modest, real, NON-TUNABLE, timeframe-invariant
+DRAWDOWN-CONTROL overlay. Survivorship-free ~1.0 Calmar OOS (vs HODL 0.46); LAGS HODL on return in bulls;
+decline-concentrated. Deployed 20/168/6's +25.89%-alpha / ~2.0-Calmar headline is IN-SAMPLE SURVIVORSHIP
+(top-3% draw) — do NOT rely. DO NOT re-optimize (89% overfit tax, unstable params). 6h is the best
+interval (Phase 7 null). If kept, hold 20/168/6 FIXED.
+
+**Highest-certainty action (independent of the above):** yield-ify the ~74% idle cash
+(money-market/T-bill/USDC-yield swept when flat) = ~+3.3%/yr (~$2,800/yr on $85K) at ~0 risk; doable
+whether or not the strategy ever activates.
+
+**STAGED, not applied — `config/strategies.yaml` comment diff (2 hunks):** (a) replace the L822-827
+"+25.89% alpha" in-sample headline with the corrected drawdown-overlay expectation; (b) fix the L829-832
+implementation-status block which wrongly says "Phase 2 NOT YET BUILT / enabled:false" (it's
+built+enabled+running-but-cannot-fill). Diff in session chat + report §6.3. Same stale +25.89% headline
+also lives in `runbooks/deploy_log.md` (2026-05-09 entry) — update those when the diff is applied.
+
 ## RH-auth resilience follow-ups — OPEN (filed 2026-07-18, all LOW/optional)
 
 RH-auth self-heal (ITEMS 1/2/3) DEPLOYED+LIVE 2026-07-18 — see `runbooks/deploy_log.md`
