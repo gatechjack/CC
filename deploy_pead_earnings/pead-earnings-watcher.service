@@ -1,0 +1,20 @@
+# /etc/systemd/system/pead-earnings-watcher.service
+[Unit]
+Description=PEAD Upcoming-Earnings Watcher (ISOLATED oneshot; READ-ONLY on the engine DB, sole writer of its OWN earnings_watch.db; pulls the EODHD earnings calendar + screens/SUE-profiles upcoming reporters for the /telemetry/pead dashboard). SEPARATE from trading-corp.service - a crash/hang here has ZERO effect on the trading engine.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=azureuser
+WorkingDirectory=/home/azureuser/pead_earnings
+# PYTHONPATH imports the PROD pure modules (pead_signal / earnings_provider) so the screen + SUE are
+# byte-identical to the engine. KEY_VAULT_URI lets the watcher pull EODHD-API-KEY via managed identity.
+Environment=PYTHONPATH=/home/azureuser/trading_corp
+Environment=PYTHONUNBUFFERED=1
+Environment=KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/
+ExecStart=/home/azureuser/trading_corp/venv/bin/python /home/azureuser/pead_earnings/pead_earnings_watcher.py --once
+
+# NO [Install]: this oneshot is triggered by pead-earnings-watcher.timer, not by multi-user boot.
+# Enable/start of the TIMER requires root (Azure Run Command). NOT WantedBy/PartOf trading-corp.service
+# on purpose - full isolation from the engine.
