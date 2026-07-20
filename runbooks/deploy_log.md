@@ -116,7 +116,7 @@ when prod observation warrants a tuning loop.
 
 ---
 
-## 2026-07-20 ~22:00 UTC — PEAD Upcoming-Earnings watcher (STEP 1, HOT, ISOLATED) DEPLOYED + VERIFIED; dashboard panel + scan_evaluation write-path (STEP 2, restart-gated) HELD for the batch
+## 2026-07-20 — PEAD Upcoming-Earnings observability: watcher (STEP 1, HOT) DEPLOYED + dashboard panel + scan_evaluation write-path (STEP 2, restart-gated) DEPLOYED + VERIFIED LIVE ~23:14 UTC (timer auto-schedule still pending manual root install)
 
 NOTE: prod (`/home/azureuser/trading_corp`) has NO `runbooks/deploy_log.md` (runbooks are not deployed to
 prod). This entry is recorded on branch `pead-earnings-panel-scope` (git, NOT main) — the durable record,
@@ -167,10 +167,23 @@ only the 2x/day trigger is pending a working root path. Enable later (root):
 && systemctl enable --now pead-earnings-watcher.timer`. Until then it can be run manually with the GATE
 command in `deploy_pead_earnings/DEPLOY.md`.
 
-**STEP 2 (HELD — restart-gated, do NOT start until operator go + root path):** dashboard panel
-(`pead_view.py` + `partials/pead_live_sections.html`, reads earnings_watch.db mode=ro) + the
-`scan_evaluation` write-path in `pead_strategy.scan()`. One coordinated flat-guarded restart; refresh RH
-pickle + confirm Bitunix flat first; edit all three files from prod copies.
+**STEP 2 — DEPLOYED + VERIFIED LIVE ~23:14 UTC (single flat-guarded restart, Board-approved).** Dashboard
+panel (`pead_view.query_upcoming_earnings` reads earnings_watch.db mode=ro via to_thread + Upcoming-Earnings
+section) + `scan_evaluation` write-path (`pead_strategy._log_scan_funnel`, forward-only, never breaks scan).
+All 3 files edited from PROD copies (`.bak_peadpanel_20260720` backups); routes.py UNTOUCHED (rides the
+existing `/telemetry/pead/partials/live` fragment). Pre-restart render-harness PASSED; single
+`sudo -n systemctl restart trading-corp` (PID 261332->281693, NRestarts=0, web ready ~96s).
+★ Board approved the restart on the KNOWN-STALE 07-18 20:55 pickle (refresh was not re-run; flagged +
+authorized) — it authenticated cleanly on boot. 5-check EMPIRICAL verification (not logs/self-report):
+(1) live-engine panel render 84KB, Upcoming section + "SUE plausibility" label + live rows (DPZ/GOOGL/…),
+Just-reported exact-SUE rows; (2) RH API direct 680725082 = JBHT 0.786200 sh (NO resting stop — PEAD uses
+a SYNTHETIC pressure stop 272.38 in extra_json, preserved); (3) ExecStart `--live --brokers bitunix
+robinhood kalshi --live-divisions … robinhood_pead …`, auto_execute:true, execution_mode=live; (4) RH auth
+post-boot — panel equity $2,329.30 (real snapshot) + session-health "valid" last-good 23:18:51 (raw RH
+request_get); (5) Bitunix FLAT, NRestarts=0, 3m bars all 4 coins 23:15 UTC age 5m (feed live post-boot).
+Forward-only: scan_evaluation stays 0 rows until the next pre-market scan WITH an in-window wave.
+Rollback: restore the 3 `.bak_peadpanel_20260720` + restart. Source on branch `pead-earnings-panel-scope`
+(`deploy_pead_earnings/prod_edits/` + MANIFEST).
 
 **Rollback (STEP 1):** `rm -rf ~/pead_earnings` (+ if the timer was later installed: `systemctl disable --now
 pead-earnings-watcher.timer` and remove the units). Engine is unaffected either way (no shared state; engine
