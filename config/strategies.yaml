@@ -1687,6 +1687,12 @@ kalshi_copy_trader:
   enabled: true                    # Board-flip after audit-mode validation
   auto_execute: true                # LIVE Phase K5 go-live 2026-07-01 (was: false)
   division: kalshi_copy_trading
+  # Auto-pause circuit-breaker mode (hot-reload). 'shadow' = evaluate the
+  # epoch-scoped forward window and emit kalshi_whale_would_auto_pause WITHOUT
+  # removing whales (observe-only); 'active' = also remove + emit
+  # kalshi_whale_auto_paused. Ships 'shadow' for the 2026-07-20 window-fix
+  # deploy; flip to 'active' (hot, no restart) once verified.
+  autopause_mode: shadow
   # 2026-05-12: throttled 300s → 600s to fit Apify Starter's $200/mo hard
   # cap. At 5min cadence the 26h observation burn extrapolated to ~$320/mo
   # (above cap); 10min cadence halves Apify request volume to ~$160/mo,
@@ -1730,6 +1736,13 @@ polymarket_copy_trader:
   enabled: true                    # Board-flip after audit-mode validation
   auto_execute: false               # Phase 4+ before this can flip live
   division: polymarket_copy_trading
+  # Auto-pause circuit-breaker mode (hot-reload). 'shadow' = evaluate the
+  # epoch-scoped forward window (entry_ts >= metrics_epoch) and emit
+  # polymarket_whale_would_auto_pause WITHOUT removing whales; 'active' = also
+  # remove + emit polymarket_whale_auto_paused. Ships 'shadow' for the
+  # 2026-07-20 window-fix deploy; flip to 'active' (hot, no restart) once
+  # verified (superbeter007 is the expected first would-pause).
+  autopause_mode: shadow
   poll_interval_sec: 60             # 60s; free API can sustain faster if needed
   activity_limit_per_poll: 20
   sizing:

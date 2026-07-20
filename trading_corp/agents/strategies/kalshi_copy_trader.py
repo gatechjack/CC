@@ -64,9 +64,11 @@ from typing import Any, Protocol, runtime_checkable
 import yaml
 
 from trading_corp.agents.strategies._whale_autopause import (
+    KALSHI_COPY_LIVE_EPOCH,
     MAX_TOTAL_PNL,
     MAX_WIN_RATE_PCT,
     MIN_RESOLVED_TRADES,
+    resolve_epoch,
     should_autopause,
     sqlite_path_from_db_url,
 )
@@ -660,10 +662,24 @@ class KalshiCopyTraderAgent:
         if not db_path:
             return selected
 
+        # Evaluate the SAME forward window the operator dashboard shows
+        # (entry_ts >= agent_state metrics_epoch; Kalshi falls back to the
+        # go-live epoch so paper history doesn't mask live performance).
+        # `autopause_mode: shadow` observes-only: it emits
+        # `kalshi_whale_would_auto_pause` without removing the whale.
+        shadow = (
+            str(self._strat_cfg.get("autopause_mode", "active")).strip().lower()
+            == "shadow"
+        )
+        since_ts: str | None = None
         keep: list[str] = []
         paused: list[tuple[str, dict[str, Any]]] = []
+        shadow_hits: list[tuple[str, dict[str, Any]]] = []
         try:
             with sqlite3.connect(db_path) as conn:
+                since_ts = resolve_epoch(
+                    conn, self.name, default=KALSHI_COPY_LIVE_EPOCH,
+                )
                 for whale in selected:
                     triggered, stats = should_autopause(
                         conn,
@@ -671,8 +687,12 @@ class KalshiCopyTraderAgent:
                         table="kalshi_round_trips",
                         name_field="whale_handle",
                         division=self.division,
+                        since_ts=since_ts,
                     )
-                    if triggered:
+                    if triggered and shadow:
+                        shadow_hits.append((whale, stats))
+                        keep.append(whale)
+                    elif triggered:
                         paused.append((whale, stats))
                     else:
                         keep.append(whale)
@@ -681,6 +701,30 @@ class KalshiCopyTraderAgent:
                 "kalshi_copy_trader: autopause filter errored: %s", e,
             )
             return selected
+
+        for whale, stats in shadow_hits:
+            log.warning(
+                "kalshi_copy_trader: [shadow] WOULD auto-pause %s "
+                "(%d RT, %.1f%% WR, $%.2f) since=%s",
+                whale, stats["n_resolved"], stats["win_rate_pct"] or 0.0,
+                stats["total_realized_pnl"], since_ts,
+            )
+            if logger_agent is not None:
+                logger_agent.log_event(
+                    self.name, "kalshi_whale_would_auto_pause",
+                    {
+                        "strategy": self.name,
+                        "division": self.division,
+                        "whale_handle": whale,
+                        "since_ts": since_ts,
+                        "thresholds": {
+                            "min_trades": MIN_RESOLVED_TRADES,
+                            "max_wr_pct": MAX_WIN_RATE_PCT,
+                            "max_pnl": MAX_TOTAL_PNL,
+                        },
+                        **stats,
+                    },
+                )
 
         if not paused:
             return keep
@@ -710,6 +754,7 @@ class KalshiCopyTraderAgent:
                         "strategy": self.name,
                         "division": self.division,
                         "whale_handle": whale,
+                        "since_ts": since_ts,
                         "thresholds": {
                             "min_trades": MIN_RESOLVED_TRADES,
                             "max_wr_pct": MAX_WIN_RATE_PCT,
