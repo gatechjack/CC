@@ -23,7 +23,10 @@ byte-identical to the engine. Universe parse + `business_days` are replicated ve
 3. GATE 2 — bounded live smoke (few names, real calendar+screen+SUE+DB write):
    `... PEAD_MAX_NAMES=8 python pead_earnings_watcher.py --once`  → summary JSON, rows upserted.
 4. Full refresh: `... python pead_earnings_watcher.py --once` (processes all in-universe reporters).
-5. Install units (ROOT via Azure Run Command):
+5. Install units (ROOT). The service now carries `TimeoutStartSec=900` (the full run is ~5 min; systemd's
+   90s oneshot default would SIGKILL it). If the copy source predates this fix, add the line to the
+   INSTALLED unit before daemon-reload (e.g. `sed -i '/^ExecStart=/a TimeoutStartSec=900' \
+   /etc/systemd/system/pead-earnings-watcher.service`):
    `cp ~/pead_earnings/pead-earnings-watcher.{service,timer} /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now pead-earnings-watcher.timer`
 6. Verify: `systemctl list-timers pead-earnings-watcher.timer` (next fire), and
    `sqlite3 ~/pead_earnings/earnings_watch.db "select phase,count(*) from earnings_watch group by phase;"`.

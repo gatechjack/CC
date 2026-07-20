@@ -14,6 +14,10 @@ Environment=PYTHONPATH=/home/azureuser/trading_corp
 Environment=PYTHONUNBUFFERED=1
 Environment=KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/
 ExecStart=/home/azureuser/trading_corp/venv/bin/python /home/azureuser/pead_earnings/pead_earnings_watcher.py --once
+# The full run screens ~250-270 in-universe reporters (yfinance bars + EODHD fundamentals per name) and
+# takes ~4-5 min. Type=oneshot uses TimeoutStartSec for the ExecStart; systemd's 90s default would SIGKILL
+# the run mid-way. Raise it well above the observed runtime so a timer-triggered run always completes.
+TimeoutStartSec=900
 
 # NO [Install]: this oneshot is triggered by pead-earnings-watcher.timer, not by multi-user boot.
 # Enable/start of the TIMER requires root (Azure Run Command). NOT WantedBy/PartOf trading-corp.service
