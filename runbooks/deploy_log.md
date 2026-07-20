@@ -116,6 +116,68 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-20 ~22:00 UTC — PEAD Upcoming-Earnings watcher (STEP 1, HOT, ISOLATED) DEPLOYED + VERIFIED; dashboard panel + scan_evaluation write-path (STEP 2, restart-gated) HELD for the batch
+
+NOTE: prod (`/home/azureuser/trading_corp`) has NO `runbooks/deploy_log.md` (runbooks are not deployed to
+prod). This entry is recorded on branch `pead-earnings-panel-scope` (git, NOT main) — the durable record,
+which also honors the "not git main" instruction. Reproducible from `deploy_pead_earnings/` on that branch.
+
+**Scope + branch.** Discovery + scope for a PEAD "Upcoming Earnings" candidate-anticipation panel on
+`/telemetry/pead`, merged with the backlogged `scan_evaluation` funnel. Branch `pead-earnings-panel-scope`
+(off origin/main 6afe2cd, pushed): `0a9c8c7` scope doc (`planning/2026-07-20_pead_upcoming_earnings_panel_scope.md`),
+`03cbb6d` the watcher (`deploy_pead_earnings/`). Operator forks resolved: **#1** fractional-eligibility
+OMITTED from the panel (handled at entry-time); **#2** MERGE confirmed (one build, one restart, forward-only);
+**#3** universe path — prod `@config/nasdaq_composite.txt` -> `/home/azureuser/trading_corp/config/nasdaq_composite.txt`,
+content byte-identical to local (CRLF-only md5 diff, parsed set+order identical); **#4** SUE semantics =
+PLAUSIBILITY (own-noise stdev + recent UE), labelled "SUE plausibility" in UI, exact SUE only post-report.
+
+**EODHD calendar (verified live 2026-07-20, read-only).** The Calendar add-on IS enabled (the code's
+`get_recent_announcements()` "no cross-symbol calendar endpoint" comment is FALSE — filed in BACKLOG).
+`GET /api/calendar/earnings?from=&to=` = HTTP 200; a 7-day window = ONE API call (all US rows in one
+response). Account dailyRateLimit 100k, ~32k used. 9 fields/row: code, report_date, date(fiscal end),
+**before_after_market (BMO/AMC)**, currency, actual, estimate, difference, percent. NO analyst-count / NO
+revision fields. actual/difference/percent populate post-report (proven: PENG +44.9%).
+
+**Prod-vs-git drift (md5, local vs prod; all dashboard/engine edit targets are PROD-AHEAD — edit from prod):**
+`web/routes.py` fc0d3389 vs bacec02b (DRIFTED); `web/pead_view.py` 081e2805 vs bc7e1b58 (DRIFTED);
+`main.py` b2fbc342 vs dbffae20 (DRIFTED); `pead_strategy.py` b5b08053 vs ecd1cad7 (DRIFTED);
+`pead_signal.py` abd2ca3b vs a02e1a3e (DRIFTED); `config/nasdaq_composite.txt` 60993af9(CRLF) vs
+38b82853(LF) = cosmetic only. -> STEP 2 must edit `pead_view.py` + `routes.py` + `pead_strategy.py` from
+the PROD copies. The watcher (STEP 1) rides its OWN systemd unit and imports the PROD pure modules via
+PYTHONPATH, so it is unaffected by the drift.
+
+**STEP 1 — pead-earnings-watcher (HOT, isolated; engine NOT touched).** New side-process at
+`~/pead_earnings/` (mirrors market-context-recorder): `pead_earnings_watcher.py` + `earnings_watch_db.py`,
+writes ONLY its own `~/pead_earnings/earnings_watch.db`, engine DB `mode=ro` (already-held only), imports
+the PROD `pead_signal` (screen+SUE) + `earnings_provider` via `PYTHONPATH=/home/azureuser/trading_corp`
+(byte-identical screen/SUE); universe parse + `business_days` replicated verbatim (confirmed vs prod).
+Verified on prod: GATE1 `--check` (schema ready, engine mode=ro, held=1, universe=3207, EODHD key via
+ManagedIdentity 200); GATE2 bounded `--once` (8 names, 0 no_bars); FULL `--once` = **267 in-universe
+reporters, 255 upcoming / 12 reported, 66 screen-pass, 0 no_bars, 267 upserted, exit 0** (screen reasons
+distribute sensibly: volume 92 / sector 73 / ok 66 / price 34 / mktcap 2; upcoming top-plausibility slice
+incl GOOGL/SSNC/ENSG/FFIV/CDNS; reported rows carry actual-vs-est + exact computed_sue). Timer/service
+files staged at `~/pead_earnings/` (Type=oneshot + 2x/day timer, 11:00/21:00 UTC).
+
+**★ BLOCKER (STEP 1 auto-schedule): systemd timer NOT yet installed — needs root.** Azure Run Command
+`az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm` returns `NotFound` (even trivially) right now;
+`sudo -n` is scoped to `trading-corp*` + `daemon-reload` + `sqlite3` only (cannot `cp` into
+`/etc/systemd/system` nor `enable` a non-trading-corp unit). The watcher RUNS correctly on demand (proven);
+only the 2x/day trigger is pending a working root path. Enable later (root):
+`cp ~/pead_earnings/pead-earnings-watcher.{service,timer} /etc/systemd/system/ && systemctl daemon-reload
+&& systemctl enable --now pead-earnings-watcher.timer`. Until then it can be run manually with the GATE
+command in `deploy_pead_earnings/DEPLOY.md`.
+
+**STEP 2 (HELD — restart-gated, do NOT start until operator go + root path):** dashboard panel
+(`pead_view.py` + `partials/pead_live_sections.html`, reads earnings_watch.db mode=ro) + the
+`scan_evaluation` write-path in `pead_strategy.scan()`. One coordinated flat-guarded restart; refresh RH
+pickle + confirm Bitunix flat first; edit all three files from prod copies.
+
+**Rollback (STEP 1):** `rm -rf ~/pead_earnings` (+ if the timer was later installed: `systemctl disable --now
+pead-earnings-watcher.timer` and remove the units). Engine is unaffected either way (no shared state; engine
+DB was read-only).
+
+---
+
 ## 2026-07-18 ~23:01 UTC — RH-AUTH RESILIENCE (ITEMS 1/2/3) DEPLOYED + VERIFIED LIVE (engine-source hot-patch; flat-guarded restart; agent-driven, autonomous under explicit Board authorization)
 
 **What & why:** the engine's Robinhood session was 401 Unauthorized broker-wide 2026-07-14→18 (all 4 RH accts share ONE robin_stocks module session; hid 4 days as 848 generic `float()..NoneType` warnings because robin_stocks SWALLOWS the 401). Deployed a self-healing layer. Root cause of the 4-day hide + the recovery lever: **FINDING B — refreshing the pickle FILE does NOT recover a RUNNING engine** (in-mem singleton + `_LOGIN_DONE` latch; proven: 20:55 file-refresh → 21:31 still-401 → 21:33 RESTART fixed) → needed an IN-PROCESS reload.
