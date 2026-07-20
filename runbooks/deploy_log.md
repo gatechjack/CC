@@ -116,7 +116,7 @@ when prod observation warrants a tuning loop.
 
 ---
 
-## 2026-07-20 — PEAD Upcoming-Earnings observability: watcher (STEP 1, HOT) DEPLOYED + dashboard panel + scan_evaluation write-path (STEP 2, restart-gated) DEPLOYED + VERIFIED LIVE ~23:14 UTC (timer auto-schedule still pending manual root install)
+## 2026-07-20 — PEAD Upcoming-Earnings observability: watcher (STEP 1, HOT) + dashboard panel + scan_evaluation write-path (STEP 2) DEPLOYED + VERIFIED LIVE ~23:14 UTC; STEP 1 timer INSTALLED + VERIFIED ~23:52 UTC (root via Azure Run Command / RunShellScript)
 
 NOTE: prod (`/home/azureuser/trading_corp`) has NO `runbooks/deploy_log.md` (runbooks are not deployed to
 prod). This entry is recorded on branch `pead-earnings-panel-scope` (git, NOT main) — the durable record,
@@ -158,14 +158,17 @@ distribute sensibly: volume 92 / sector 73 / ok 66 / price 34 / mktcap 2; upcomi
 incl GOOGL/SSNC/ENSG/FFIV/CDNS; reported rows carry actual-vs-est + exact computed_sue). Timer/service
 files staged at `~/pead_earnings/` (Type=oneshot + 2x/day timer, 11:00/21:00 UTC).
 
-**★ BLOCKER (STEP 1 auto-schedule): systemd timer NOT yet installed — needs root.** Azure Run Command
-`az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm` returns `NotFound` (even trivially) right now;
-`sudo -n` is scoped to `trading-corp*` + `daemon-reload` + `sqlite3` only (cannot `cp` into
-`/etc/systemd/system` nor `enable` a non-trading-corp unit). The watcher RUNS correctly on demand (proven);
-only the 2x/day trigger is pending a working root path. Enable later (root):
-`cp ~/pead_earnings/pead-earnings-watcher.{service,timer} /etc/systemd/system/ && systemctl daemon-reload
-&& systemctl enable --now pead-earnings-watcher.timer`. Until then it can be run manually with the GATE
-command in `deploy_pead_earnings/DEPLOY.md`.
+**STEP 1 timer — INSTALLED + ENABLED + VERIFIED ~23:52 UTC (root via Azure Run Command).** Root path =
+`az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts "..."`
+(runs as ROOT; operator has NO sudo password — [[prod-sudo-constraint-no-password]] documents exactly this
++ names `RunShellScript`). ★ CORRECTION: my earlier "Run Command returns NotFound" was a WRONG command-id
+(`RunShellCommand` does not exist for a Linux VM) — NOT an outage; the VM agent was "Ready" throughout, and
+`RunShellScript` works. Installed both units to `/etc/systemd/system/`, added `TimeoutStartSec=900` to the
+service (systemd's 90s oneshot default would SIGKILL the ~5min run — caught pre-install), daemon-reload,
+`enable --now`. Verified: timer active+enabled, next fire **Tue 2026-07-21 11:00:00 UTC**; a manual
+`systemctl start` completed clean under systemd (`Result=success`, ExecMainStatus=0, upserted 267, DB
+rewritten 23:54). Panel now auto-refreshes 2x/day (11:00/21:00 UTC); no more stale-badge. Lesson: hand the
+operator only NOPASSWD systemctl/journalctl/sqlite3 — NEVER `sudo cp/sed`; root file ops go via Run Command.
 
 **STEP 2 — DEPLOYED + VERIFIED LIVE ~23:14 UTC (single flat-guarded restart, Board-approved).** Dashboard
 panel (`pead_view.query_upcoming_earnings` reads earnings_watch.db mode=ro via to_thread + Upcoming-Earnings
