@@ -12,6 +12,36 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## Dashboard Today's-P&L / equity day-change % is x100 too large — OPEN (filed 2026-07-21, LOW-pri display bug)
+
+Pre-existing display artifact (NOT caused by the 2026-07-21 kalshi_llm epoch/OPEN deploys). The Prediction-Markets division cards render `todays_pnl_pct` as roughly **x100 too large** — e.g. kalshi_llm_arbitrage showed **-17.24%** when the true day-change is **~-0.17%** (Today's P&L -$0.92 on ~$533.76 prior equity = -0.001724 = -0.17%). The same wrong % shows on both the Equity card and the Today's P&L card (they share `todays_pnl_pct`). Source: `_approx_todays_pnl` (web/data.py:6025) returns `pct = pnl/yesterday` as a FRACTION; a downstream x100 (view or template) is applied such that the fraction is multiplied by 100 twice. Fix: render `pct` as a percentage exactly once (audit `_approx_todays_pnl` consumers + the card template). Affects all PM division cards, not just kalshi_llm. **Priority: P3 / low** (cosmetic; dollar figures are correct).
+
+## kalshi_arbitrage paper-fill model overstates on extreme-cheap legs — OPEN (filed 2026-07-21, P3 observability)
+
+kalshi_arbitrage (temporal-bucket arb) paper P&L is **dominated by fills at $0.01-0.02** (e.g. a $1 stake = 100 contracts of a NO @ $0.01 -> +$99 when it resolves in-the-money; the +$3,040 backlog-drain total is driven by a handful of such long-shots). **Paper mode fills at midpoint with infinite depth**; live Kalshi at the extreme tick has a **thin book -> likely partial or no fill** at that price/size. Therefore the paper number is a **best-case CEILING, not a live projection**. Not a code bug — an interpretation caveat. **File for context when any live-mode conversation about this strategy arises.** Load-bearing sanity check at the forward-edge trigger = a paper-vs-live realistic-fill projection using thin-book assumptions for sub-$0.05 legs (see memory [[kalshi-arbitrage-followup-and-commingling-2026-07-21]] + report reports/2026-07-21_kalshi_arbitrage_data_review.md). **Priority: P3 / low.**
+
+## RECEIPT (refuted, do-not-reopen) — kalshi_arbitrage "sub-$0.05 legs are fee-negative" — CLOSED (P4, 2026-07-21)
+
+- **Hypothesis (raised 2026-07-21):** the strategy enters legs at $0.01–0.02 where per-contract-per-side `ceil(0.07·C·P·(1−P))` rounds to $0.01, making round-trip fees ~100% of leg cost at $0.02 / ~40% at $0.05 → sub-$0.05 trades structurally losing regardless of hit rate.
+- **Investigation:** confirmed against all **260 resolved trades** in kalshi_arbitrage (read-only).
+- **REFUTED:** Kalshi's fee is a **per-ORDER ceil** — `ceil(0.07·C·P·(1−P))` applied once to the whole order, **not** per-contract. At this strategy's **~$1/leg sizing (many contracts)** the fee is **~$0.07 flat per $1 stake (~7% of stake), independent of leg price** (C=1/P and P cancel). The "100%" figure only appears under a per-contract-ceil model that is not the real schedule. The sub-$0.05 subset is **net-positive** (85 RT, 75 winners; +$2,867 net at the real per-order fee, and still +$2,839 even under the inflated per-contract worst case) — it holds essentially the entire recorded P&L. "Losing regardless of hit rate" is backwards: hit rate is the engine (a $1 stake on a $0.02 leg that hits returns ~+$49 vs a ~$0.07 fee).
+- **The correct fee gate already exists:** `kalshi_temporal_bucket_arb` gates on `min_edge_cents` (temporal **4¢**, bucket **5¢**) = edge **net of fees**, which is the right economic gate for an arb. A `min_leg_price` floor would be **economically backwards** — it would reject the cheap winners (~−$2,867).
+- **DO NOT re-raise as a finding. DO NOT propose a min_leg_price floor.** Recorded so future sessions don't re-open this loop.
+- **Still open (separate, not this):** the sub-$0.05 legs hit ~88% vs their 2–5% implied price — validated only by the forward-edge trigger (post-fix n≥30 OR 2026-09-15) once post-fix positions resolve; do not investigate before then. See [[kalshi-arbitrage-followup-and-commingling-2026-07-21]] + the distinct P3 paper-fill/liquidity note above (thin book on cheap legs — that one is NOT refuted).
+
+## kalshi_llm resolver backlog: ~602 past-expiration legacy positions un-booked — OPEN (filed 2026-07-21, observability, P4/low)
+
+As of 2026-07-21, kalshi_llm_arbitrage has ~1,317 open `would_have_placed` positions, of which **~602 are already PAST expiration** (May+June expiry) but not yet resolved in `kalshi_round_trips` — the resolver is still draining the pre-07-07 `leg_date` backlog. They will book as further realized P&L (the dropped-category book) as the resolver reaches them, so the current realized figure carries a **known un-booked overhang**. Not a bug (mechanical settlement lag) — observability note so the drain isn't mistaken for new-logic performance. See [[kalshi-llm-dashboard-epoch-2026-07-21]] + report `reports/2026-07-21_kalshi_llm_arbitrage_data_review.md`. **Priority: P4/low.**
+
+## Copy-trading feed-health observability — OPEN (filed 2026-07-20, LOW-pri instrumentation)
+
+Surfaced in the 2026-07-20 copy-trading review / autopause window-fix session (Finding #3). Two related gaps in copy-trading safety observability; neither is gating, both are instrumentation-only:
+
+- **No operator-facing feed-health panel.** `kalshi_copy_feed_anomaly` (mass-disappearance + consecutive-fetch-failure) and Apify HTTP errors land only in `audit_event` + the Telegram alert queue — no dashboard widget aggregates them. The operator has no at-a-glance feed-health view for the copy divisions.
+- **Feed-breaker counter is in-process and resets on restart.** `kalshi_copy_trader._consecutive_fetch_failures` is a plain instance int reset to 0 on any successful fetch AND on engine restart. A multi-day Apify outage spanning a restart would never cross the ≥3 threshold (cf. the 06-08→06-10 silent copy-emission gap). Consider persisting the streak (agent_state) and/or a time-window (last-N-cycles) basis.
+
+Other copy-trading safety guards were audited this session and are NOT window-mismatched: mass-exit suppressor (cycle-local snapshot delta), residual/`leg_priced` guard (per-row boolean), drift filter (instantaneous), cold-start (one-shot). The auto-pause window mismatch (the one real bug) is fixed on branch `kalshi-poly-autopause-epoch-2026-07-20` (SHADOW, pending deploy). **Priority: P3 / low.** Not urgent.
+
 ## Coinbase BTC HODL (coinbase_spot / Donchian) — audit + Binance-4Y re-backtest — OPEN (filed 2026-07-19)
 
 Full analysis: `reports/2026-07-19_donchian_binance_revalidation.md` (Phases 0-7) +
