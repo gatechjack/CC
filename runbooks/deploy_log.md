@@ -116,6 +116,52 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-21 ~00:13 UTC — PEAD Upcoming-Earnings observability: SESSION WRAP (division COMPLETE + LIVE; carry-forward for the next session)
+
+**COMPLETE + LIVE.** Watcher: `pead-earnings-watcher.timer` enabled + active, fires 11:00/21:00 UTC,
+service `TimeoutStartSec=900`; next fire 2026-07-21 11:00 UTC. Panel (`/telemetry/pead` Upcoming-Earnings
+section, reads earnings_watch.db mode=ro) + `scan_evaluation` write-path LIVE, 5-check verified after a
+single Board-approved restart (engine PID 281693, NRestarts=0). Branch `pead-earnings-panel-scope` (NOT
+merged to main - drift preserved). Commits: `0a9c8c7` scope, `811d7da` watcher, `cb0f5c6` step1-deploy_log,
+`f58e1d3` step2, `5069294` timer-installed (+ `7eb3c14` timeout fix, `767282e` step2-verified).
+
+**Leave-it-running snapshot (2026-07-21 00:13 UTC, actual output):** trading-corp active(running) since
+23:14:39, NRestarts=0, SubState=running; pead-earnings-watcher.timer next 11:00 UTC (10h); Bitunix FLAT +
+3m feed fresh (BTC/ETH/SOL/XRP all 00:09 UTC, age 4m); PEAD JBHT 0.7862 sh, synthetic stop 272.382 (NO
+resting RH order - pressure-based by design), execution_mode=live, auto_execute:true; RH acct 680725082 =
+JBHT 0.7862 sh (RH == ledger, zero pending/stop orders).
+
+**★ LESSON (root access on prod).** Azure Run Command on a LINUX VM requires `--command-id RunShellScript`
+- `RunShellCommand` DOES NOT EXIST (returns "NotFound", which is NOT an outage). Operator has NO sudo
+password (NOPASSWD = systemctl/journalctl/sqlite3 for `trading-corp*` only), so NEVER hand the operator
+`sudo cp/sed` - all root file ops go via Run Command. On ANY root wall, consult memory
+`prod-sudo-constraint-no-password` BEFORE concluding a path is unavailable (it names RunShellScript). This
+mis-diagnosis cost several turns this session.
+
+**CARRY-FORWARD (next session inherits):**
+1. **prod<->git drift UNRECONCILED - grew this build.** PROD-AHEAD of git main: `pead_strategy.py`,
+   `pead_view.py`, `main.py`, `routes.py` (+ `pead_signal.py`). Base/deployed md5s in
+   `deploy_pead_earnings/prod_edits/MANIFEST.md`. ANY git->prod deploy MUST be drift-gated (md5 prod vs
+   local first; edit FROM prod copies). Minor: staged `~/pead_earnings/pead-earnings-watcher.service`
+   still lacks TimeoutStartSec (the installed /etc copy has it) - reconcile the staged file to git
+   (md5 d83135ce) so a future re-copy isn't broken.
+2. **RH 401 sentinel + in-process auto-relogin: ARMED but UNTESTED against a real 401**
+   ([[rh-auth-resilience-deployed-2026-07-18]]). The 2-day-old pickle authed clean on THIS boot, but the
+   active-401 recovery path has not fired for real. Pickle FILE still 07-18 20:55 (in-proc re-login does
+   NOT rewrite it - FINDING B). Watch on the next real 401.
+3. **scan_evaluation funnel: forward-only** - 0 rows until the next pre-market PEAD scan WITH an in-window
+   wave; persists from then (`pead_strategy._log_scan_funnel`, wrapped so it can never break the scan).
+4. **BACKLOG (filed): EODHD calendar pre-filter** for the per-symbol fundamentals sweep -
+   `get_recent_announcements()` "no cross-symbol calendar endpoint" comment is FALSE (the Calendar add-on
+   works). Using the calendar to pre-filter which names need a fundamentals fetch shrinks the 6/26-freeze
+   sweep. Do NOT build reactively.
+5. **Deferred PEAD/dashboard display fixes** (batch into a future coordinated restart): paper-vs-live
+   dashboard rendering, homepage crypto-count card, `/telemetry/pead` UI tile-repoint verification.
+
+NEXT: handing off to Kalshi work - PEAD division untouched from here.
+
+---
+
 ## 2026-07-20 — PEAD Upcoming-Earnings observability: watcher (STEP 1, HOT) + dashboard panel + scan_evaluation write-path (STEP 2) DEPLOYED + VERIFIED LIVE ~23:14 UTC; STEP 1 timer INSTALLED + VERIFIED ~23:52 UTC (root via Azure Run Command / RunShellScript)
 
 NOTE: prod (`/home/azureuser/trading_corp`) has NO `runbooks/deploy_log.md` (runbooks are not deployed to
