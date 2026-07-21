@@ -67,9 +67,12 @@ Codify the audit's pathology detectors as a reusable test utility and snapshot t
 
 ## Phase 1 — Leg integrity + HOLD contradiction + holiday guard (B4, B1, B11)  · ~2 sessions
 
-Highest-severity, fully structural, zero external dependencies. **B4 placed first: it is the
-only finding with live-money impact (a close leg with no re-open = naked long call exposed to
-expiration), and it concentrates on the names running hardest (64% on CIFR).**
+Highest-severity for CORRECTNESS, fully structural, zero external dependencies. **B4 placed
+first: it is the highest-frequency leg-integrity gap — a close leg with no re-open leaves the
+position without its covering short (uncovered long) or collapses the roll to a full close.**
+Severity annotation (Phase-0 drill): **naked_short = 0** — no rec ever sold the LEAP while
+leaving a short open, so B4 is a coverage/bookkeeping-integrity finding, NOT a live
+unbounded-risk one. It stays Phase-1 first for correctness, not because of open risk.
 - **B4** — `_find_best_weekly` (:3221) / `_find_best_leap` (:3195) return None on sparse
   chains and the assembly silently `continue`s, emitting a close with no matching open
   (`_propose_roll_short`:3170-3189; scan roll_leap :2213; scan roll :3189). Fix makes
