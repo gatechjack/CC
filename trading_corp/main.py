@@ -1067,6 +1067,8 @@ async def run(argv: list[str] | None = None) -> int:
     # slot was re-added in commit 7a so this assignment is type-safe
     # right now, before the safety branch lands.
     data_exec.safety_notifier = channel
+    from trading_corp.brokers import robinhood as _rh_mod  # ITEM3-WIRE
+    _rh_mod._auth_alert_hook = data_exec._on_rh_auth_change
     # gate (a) sub-item 3 (2026-05-30): the bitunix broker's stuck-order
     # cancel-on-exhaustion path emits `safety_alert` telegrams directly
     # (audit + telegram are local to the broker because PART_FILLED stuck
@@ -2560,6 +2562,16 @@ def _build_broker_for_division(
         # kalshi_copy_trading goes live via divisions.yaml `broker: paper→kalshi`
         # + mode LIVE + `--brokers kalshi` + slug in `--live-divisions`.
         _kalshi_demo = os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")
+        # Per-division Kalshi credentials via secret_ref (mirrors bitunix).
+        # secret_ref: kalshi_karen -> the KALSHI-KAREN-* KV keypair (isolated
+        # account); unset -> the shared KALSHI-* keypair.
+        _k_ref = getattr(division, "secret_ref", None)
+        if _k_ref == "kalshi_karen":
+            _k_api_key_id = secrets.kalshi_karen_api_key_id
+            _k_private_key_pem = secrets.kalshi_karen_private_key_pem
+        else:
+            _k_api_key_id = secrets.kalshi_api_key_id
+            _k_private_key_pem = secrets.kalshi_private_key_pem
         if is_live_division:
             from trading_corp.brokers.kalshi_live import KalshiLiveBroker
             # Execution discipline sourced from THIS division's config
@@ -2575,14 +2587,14 @@ def _build_broker_for_division(
             if _slip is not None:
                 exec_kwargs["max_slippage_cents"] = _slip
             return KalshiLiveBroker(
-                api_key_id=secrets.kalshi_api_key_id,
-                private_key_pem=secrets.kalshi_private_key_pem,
+                api_key_id=_k_api_key_id,
+                private_key_pem=_k_private_key_pem,
                 demo=_kalshi_demo, **exec_kwargs,
             )
         from trading_corp.brokers.kalshi import KalshiBroker
         return KalshiBroker(
-            api_key_id=secrets.kalshi_api_key_id,
-            private_key_pem=secrets.kalshi_private_key_pem,
+            api_key_id=_k_api_key_id,
+            private_key_pem=_k_private_key_pem,
             demo=_kalshi_demo,
         )
 
