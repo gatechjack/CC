@@ -1947,6 +1947,19 @@ def test_b1e_deterministic_roll_allowed_precedence(agent):
     assert agent._deterministic_roll_allowed(mk("roll_leap")) is True
 
 
+# ---- B1 (f): analysis present but action empty/missing -> NOT an explicit
+#      HOLD/WATCH, so the deterministic roll is ALLOWED (only an explicit
+#      hold/watch suppresses it; an absent verdict must not silently block a
+#      DTE<=2 roll). This pins the fall-through behavior. ----
+def test_b1f_deterministic_roll_allowed_empty_or_missing_action(agent):
+    def mk(action):
+        return PMCCAnalysis(symbol="X", action=action, confidence=0.5,
+                            urgency="routine", summary="", rationale="")
+    assert agent._deterministic_roll_allowed(mk("")) is True       # empty string
+    assert agent._deterministic_roll_allowed(mk(None)) is True     # missing/None
+    assert agent._deterministic_roll_allowed(mk("HOLD")) is False  # case-insensitive guard
+
+
 # ---- B11: holiday guard skips full closures; calendar None fires (guard off) ----
 def test_b11_scan_should_fire_skips_full_closure():
     from datetime import time as _t

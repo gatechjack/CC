@@ -3016,7 +3016,19 @@ Action reference:
             return [], "earnings_within_buffer"
 
         # B4 (atomic open): both legs must resolve or we open NOTHING — never a
-        # LEAP without its covering short. Abort + audit on either miss.
+        # LEAP without its covering short (nor a short without its LEAP = a naked
+        # short). Abort + audit on either miss.
+        #
+        # SEMANTIC CHANGE (Phase 1, 2026-07-21): a PARTIAL open (exactly one leg
+        # found) previously returned that 1-leg order with skip_reason=None and
+        # was classified `research_candidate_acted_on`; it now returns ([], reason)
+        # and classifies `research_candidate_skipped`. Consumers: scan new-opens
+        # (reason discarded — no partial order emitted), propose_opening_orders /
+        # scout-execute route (returns [] not a partial), and
+        # _run_research_on_demand_new_opens (acted_on -> skipped) + the research
+        # dashboard (web/routes.py). The last two are DORMANT in prod
+        # (universe_source: positions). Recording a partial as acted_on / routing
+        # it to the Board was the pre-B4 bug.
         leap_call = await self._find_best_leap(symbol, broker)
         if not leap_call:
             self._audit_roll_abort(
