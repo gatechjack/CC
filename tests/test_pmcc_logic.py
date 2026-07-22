@@ -181,6 +181,23 @@ def agent(strategies_yaml: Path, risk_yaml: Path) -> PMCCAgent:
     return PMCCAgent(strategies_yaml=strategies_yaml, risk_yaml=risk_yaml)
 
 
+@pytest.fixture
+def clear_earnings(monkeypatch):
+    """B9 (2026-07-21): pin the earnings gate to CLEAR (a far-future earnings date,
+    well outside the buffer) so roll-MECHANICS tests assert roll behavior without
+    coupling to the LIVE earnings calendar — `_earnings_gate_state` →
+    `get_next_earnings` hits yfinance, which would otherwise flake a roll test ~4×/yr
+    if that real symbol happened to have earnings within the buffer at run time.
+    Scoped to roll tests that request it; the OPEN-path tests are intentionally left
+    untouched. The dedicated B9 tests below patch `get_next_earnings` directly to
+    inject a within-buffer date / None instead of using this fixture."""
+    from datetime import datetime, timezone, timedelta as _td
+    monkeypatch.setattr(
+        "trading_corp.utils.market_data.get_next_earnings",
+        lambda symbol, *a, **k: datetime.now(timezone.utc) + _td(days=90),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Strike selection helpers
 # ---------------------------------------------------------------------------
@@ -337,15 +354,28 @@ def _broker_with_chains(
     opt_positions: list[dict],
     equity: float = 100_000.0,
 ) -> MockOptionBroker:
-    """Build a mock broker that returns a LEAP chain and a weekly chain for each stock symbol."""
+    """Build a mock broker that returns a LEAP chain and TWO weekly chains for
+    each stock symbol.
+
+    B7 (2026-07-21) added a second, strictly-later weekly at 35 DTE alongside the
+    original 14-DTE weekly. Rationale: several roll tests here hold a short at
+    14–30 DTE and expect a roll to be PROPOSED. Under B7's roll-out rule the new
+    short must expire strictly later than the current short, so a chain whose only
+    weekly is 14 DTE cannot satisfy a roll of a 14–30-DTE short. The 35-DTE weekly
+    is the roll-out target; the 14-DTE weekly is retained so the OPEN path (which
+    picks the nearest in-window weekly, after_dte=None) behaves exactly as before.
+    Both weeklies share strike 175 / 0.28 delta so no test's strike assertion
+    shifts — only a later expiry is now available for rolls."""
     leap_expiry = _future(400)
     weekly_expiry = _future(14)
+    rollout_weekly_expiry = _future(35)  # B7: strictly-later roll-out target
     stock_positions = [_stock_pos(s) for s in stock_syms]
-    expiry_dates = {s: [_future(14), _future(400)] for s in stock_syms}
+    expiry_dates = {s: [_future(14), _future(35), _future(400)] for s in stock_syms}
     calls = {}
     for s in stock_syms:
         calls[(s, leap_expiry)] = [_call(130.0, 0.85, 25.0, dte=400)]
         calls[(s, weekly_expiry)] = [_call(175.0, 0.28, 1.50, dte=14)]
+        calls[(s, rollout_weekly_expiry)] = [_call(175.0, 0.28, 1.50, dte=35)]
     return MockOptionBroker(
         option_positions=opt_positions,
         stock_positions=stock_positions,
@@ -402,7 +432,7 @@ async def test_scan_proposes_weekly_for_uncovered_leap(agent: PMCCAgent):
 
 
 @pytest.mark.asyncio
-async def test_scan_proposes_roll_at_21_dte(agent: PMCCAgent):
+async def test_scan_proposes_roll_at_21_dte(agent: PMCCAgent, clear_earnings):
     """Existing PMCC with short call at 21 DTE → buy-to-close + new sell (2 orders)."""
     opt_positions = [
         _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
@@ -422,17 +452,23 @@ async def test_scan_proposes_roll_at_21_dte(agent: PMCCAgent):
 
 
 @pytest.mark.asyncio
-async def test_scan_proposes_roll_at_50pct_profit(agent: PMCCAgent):
+async def test_scan_proposes_roll_at_50pct_profit(agent: PMCCAgent, clear_earnings):
     """50% credit captured → roll triggered even with healthy DTE."""
     opt_positions = [
         _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0, delta=0.82),
         _opt_position("AAPL", expiry_days=30,  strike=175.0, qty=-1.0,
                       delta=0.28, avg_price=1.45, mark_price=0.72),   # ~50.3% captured
     ]
+    # B7: 30-DTE short rolls OUT to the shared helper's 35-DTE weekly (the
+    # 14-DTE weekly is correctly refused as a roll-IN). Intent unchanged — a
+    # 50%-captured short still triggers a roll.
     broker = _broker_with_chains(stock_syms=["AAPL"], opt_positions=opt_positions)
     orders = await agent.scan(broker)
-    actions = {o.extra["action"] for o in orders}
-    assert "roll_short_call_close" in actions
+    # B7 tighten (was lenient `close in actions`): assert exact leg count +
+    # both named legs so a dropped open leg can't slip through.
+    assert len(orders) == 2, [o.extra.get("action") for o in orders]
+    actions = [o.extra["action"] for o in orders]
+    assert set(actions) == {"roll_short_call_close", "roll_short_call_open"}
 
 
 @pytest.mark.asyncio
@@ -589,7 +625,7 @@ async def test_universe_skips_hodl_crypto_positions(agent: PMCCAgent):
 
 
 @pytest.mark.asyncio
-async def test_scan_rolls_existing_pmcc_in_options_only_account(agent: PMCCAgent):
+async def test_scan_rolls_existing_pmcc_in_options_only_account(agent: PMCCAgent, clear_earnings):
     """Options-only account with a PMCC needing a roll → 2 roll orders."""
     opt_positions = [
         _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
@@ -598,21 +634,28 @@ async def test_scan_rolls_existing_pmcc_in_options_only_account(agent: PMCCAgent
                       delta=0.28, avg_price=1.45, mark_price=1.20),
     ]
     leap_expiry = _future(400)
-    weekly_expiry = _future(14)
+    # B7 (2026-07-21): the current short is 21 DTE, so the roll target must
+    # expire strictly later. Added a 35-DTE weekly (was: only a 14-DTE weekly,
+    # which is a roll-IN and is now correctly refused). Intent unchanged — a
+    # 21-DTE short still rolls; it just rolls OUT to 35 DTE instead of in to 14.
+    rollout_weekly_expiry = _future(35)
     broker = MockOptionBroker(
         option_positions=opt_positions,
         stock_positions=[],   # options-only account
         equity=100_000.0,
-        expiry_dates={"AAPL": [_future(14), _future(400)]},
+        expiry_dates={"AAPL": [_future(35), _future(400)]},
         calls={
             ("AAPL", leap_expiry): [_call(130.0, 0.85, 25.0, dte=400)],
-            ("AAPL", weekly_expiry): [_call(175.0, 0.28, 1.50, dte=14)],
+            ("AAPL", rollout_weekly_expiry): [_call(175.0, 0.28, 1.50, dte=35)],
         },
     )
     orders = await agent.scan(broker)
-    actions = {o.extra["action"] for o in orders}
-    assert "roll_short_call_close" in actions
-    assert "roll_short_call_open" in actions
+    # B7 tighten (was lenient `in actions` subset): assert exact leg count +
+    # named actions so a future structural regression can't hide behind a
+    # loose membership check.
+    assert len(orders) == 2, [o.extra.get("action") for o in orders]
+    actions = [o.extra["action"] for o in orders]
+    assert set(actions) == {"roll_short_call_close", "roll_short_call_open"}
 
 
 # ---------------------------------------------------------------------------
@@ -1400,7 +1443,12 @@ async def test_roll_leap_propose_emits_4_legs(agent: PMCCAgent):
     today = date.today()
     leap_expiry = (today + timedelta(days=400)).isoformat()
     new_leap_expiry = (today + timedelta(days=500)).isoformat()
-    new_weekly_expiry = (today + timedelta(days=7)).isoformat()
+    # B7 (2026-07-21): current short is 7 DTE, so the new weekly must expire
+    # strictly later. Was 7 DTE (a same-expiry roll, now correctly refused);
+    # moved to 14 DTE (+ target_dte 7→14). Intent unchanged — a roll_leap with a
+    # qualifying new LEAP and new weekly still emits all 4 legs; it just rolls the
+    # short OUT (7→14) as a real roll_leap does, instead of onto the same expiry.
+    new_weekly_expiry = (today + timedelta(days=14)).isoformat()
 
     broker = MockOptionBroker(
         option_positions=[
@@ -1415,14 +1463,14 @@ async def test_roll_leap_propose_emits_4_legs(agent: PMCCAgent):
                 _liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500),
             ],
             ("MSTR", new_weekly_expiry): [
-                _liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=7),
+                _liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=14),
             ],
         },
     )
     analysis = PMCCAnalysis(
         symbol="MSTR", action="roll_leap", confidence=0.92,
         urgency="elevated", summary="...", rationale="...",
-        target_delta=0.30, target_dte=7,
+        target_delta=0.30, target_dte=14,
     )
 
     orders = await agent.propose_orders_for_pair(broker, "MSTR", analysis)
@@ -1445,11 +1493,22 @@ async def test_roll_leap_propose_emits_4_legs(agent: PMCCAgent):
 
 
 @pytest.mark.asyncio
-async def test_roll_leap_emits_3_legs_when_no_qualifying_weekly(agent: PMCCAgent):
-    """If no qualifying weekly chain for the new short, the 4th leg is
-    skipped — the 3-leg compound still ships and the next scan picks
-    up the uncovered LEAP via the open_short branch. Documents the
-    fallback behavior."""
+async def test_roll_leap_aborts_when_no_qualifying_weekly(agent_logged, cap_logger):
+    """A roll_leap whose only future expiry is a LEAP-DTE contract (no true
+    weekly) ABORTS atomically — 0 legs proposed + a pmcc_roll_aborted audit
+    with reason sparse_chain_no_weekly_for_new_leap.
+
+    HISTORY (why this is a corrected test, not a loosened one): before Phase 2
+    this test was named `test_roll_leap_emits_3_legs_when_no_qualifying_weekly`
+    and asserted that a 3-leg compound (close short + close LEAP + open new LEAP)
+    still SHIPPED when no weekly existed, leaving the fresh LEAP uncovered. Its
+    own docstring documented that `_find_best_weekly`'s fallback would "pick the
+    LEAP date as the only future expiry" — i.e. it encoded the LEAP-as-weekly
+    fallback pathology as expected behavior, and its lenient `in actions` assert
+    (accept 3 OR 4 legs) masked it. Phase-1 B4 made roll_leap atomic (no partial
+    ship) and Phase-2 B7's DTE-ceiling fallback (`_WEEKLY_FALLBACK_MAX_DTE`)
+    stopped a 500-DTE LEAP from being taken as a "weekly". The correct behavior
+    is now an atomic abort, which this rewrite pins exactly."""
     today = date.today()
     new_leap_expiry = (today + timedelta(days=500)).isoformat()
 
@@ -1460,7 +1519,7 @@ async def test_roll_leap_emits_3_legs_when_no_qualifying_weekly(agent: PMCCAgent
             _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30,
                           avg_price=2.50, mark_price=1.50),
         ],
-        expiry_dates={"MSTR": [new_leap_expiry]},  # no weekly expiry
+        expiry_dates={"MSTR": [new_leap_expiry]},  # ONLY a LEAP-DTE expiry
         calls={
             ("MSTR", new_leap_expiry): [
                 _liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500),
@@ -1471,17 +1530,17 @@ async def test_roll_leap_emits_3_legs_when_no_qualifying_weekly(agent: PMCCAgent
         symbol="MSTR", action="roll_leap", confidence=0.92,
         urgency="elevated", summary="...", rationale="...",
     )
-    orders = await agent.propose_orders_for_pair(broker, "MSTR", analysis)
+    orders = await agent_logged.propose_orders_for_pair(broker, "MSTR", analysis)
 
-    actions = [o.extra.get("action") for o in orders]
-    # 3-leg fallback: close short + close LEAP + open new LEAP. The new
-    # weekly fallback in _find_best_weekly will pick the LEAP date as the
-    # only future expiry and likely fail liquidity / not be desired —
-    # accept either 3 (no weekly fallback fired) or 4 (weekly used the
-    # LEAP date as its target) but verify the close+close+open are present.
-    assert "roll_leap_close_short" in actions
-    assert "roll_leap_close" in actions
-    assert "roll_leap_open" in actions
+    # Atomic abort: nothing ships (never a close-only "roll" leaving the LEAP
+    # uncovered, never the 500-DTE LEAP taken as a weekly).
+    assert orders == [], [o.extra.get("action") for o in orders]
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "sparse_chain_no_weekly_for_new_leap"
+    assert ev["payload"]["missing_leg"] == "new_short_on_new_leap"
+    # The abort reason distinguishes "dates exist but none is a rollout weekly"
+    # from an empty chain — here the only date is a LEAP, beyond the ceiling.
+    assert ev["payload"]["chain_state"]["reason"] == "no_rollout_weekly"
 
 
 # ---------------------------------------------------------------------------
@@ -1499,7 +1558,11 @@ async def test_propose_orders_promotes_roll_short_to_roll_leap_via_hard_rule(
     the 4-leg roll_leap compound, not the 2-leg roll_short."""
     today = date.today()
     new_leap_expiry = (today + timedelta(days=500)).isoformat()
-    new_weekly_expiry = (today + timedelta(days=7)).isoformat()
+    # B7 (2026-07-21): current short is 7 DTE; the new weekly must expire strictly
+    # later. Was 7 DTE (same-expiry, now refused); moved to 14 DTE (+ target_dte
+    # 7→14). Intent unchanged — Hard-Rule still promotes roll_short → 4-leg
+    # roll_leap; the new short just rolls OUT (7→14) as a real roll does.
+    new_weekly_expiry = (today + timedelta(days=14)).isoformat()
 
     broker = MockOptionBroker(
         option_positions=[
@@ -1514,7 +1577,7 @@ async def test_propose_orders_promotes_roll_short_to_roll_leap_via_hard_rule(
                 _liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500),
             ],
             ("MSTR", new_weekly_expiry): [
-                _liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=7),
+                _liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=14),
             ],
         },
     )
@@ -1522,7 +1585,7 @@ async def test_propose_orders_promotes_roll_short_to_roll_leap_via_hard_rule(
     analysis = PMCCAnalysis(
         symbol="MSTR", action="roll_short", confidence=0.85,
         urgency="elevated", summary="...", rationale="...",
-        target_delta=0.30, target_dte=7,
+        target_delta=0.30, target_dte=14,
     )
     orders = await agent.propose_orders_for_pair(broker, "MSTR", analysis)
 
@@ -1666,11 +1729,18 @@ async def test_find_best_weekly_threads_target_strike_through(agent: PMCCAgent):
 
 
 @pytest.mark.asyncio
-async def test_propose_roll_short_uses_target_strike_when_set(agent: PMCCAgent):
+async def test_propose_roll_short_uses_target_strike_when_set(agent: PMCCAgent, clear_earnings):
     """End-to-end through _propose_roll_short: when analysis.target_strike
     is set (e.g. LLM cited halfway midpoint $169.00), the open leg is
     sold at the listed strike closest to $169.00 — not the 0.30-delta
-    default. Mirrors the BACKLOG-cited MSTR symptom."""
+    default. Mirrors the BACKLOG-cited MSTR symptom.
+
+    This test asserts strike SELECTION. The fixture's marks (buy back a deep-ITM
+    short @17.80, sell the new short @~10.5) make the roll a NET DEBIT, which is
+    incidental to what's asserted — so the analysis carries a `net_debit_justified`
+    override (B9→B7→B2 gate order; B2 would otherwise block the debit). This models
+    the real halfway-roll-on-breach path: the LLM prescribes an ITM midpoint AND
+    authorizes the debit. The strike assertion is unchanged."""
     today = date.today()
     new_weekly_expiry = (today + timedelta(days=7)).isoformat()
     broker = MockOptionBroker(
@@ -1698,6 +1768,9 @@ async def test_propose_roll_short_uses_target_strike_when_set(agent: PMCCAgent):
         summary="Major Breach — halfway roll to ~$169",
         rationale="...", target_delta=0.30, target_dte=7,
         target_strike=169.0,
+        # B2: this deep-breach halfway roll is a net debit by construction; the
+        # LLM authorizes it (the designed valve). Incidental to the strike assert.
+        override={"kind": "net_debit_justified", "reason": "halfway roll on deep breach"},
     )
     orders = await agent._propose_roll_short("MSTR", pos, broker, analysis)
     open_leg = next(o for o in orders if o.extra.get("action") == "roll_short_call_open")
@@ -1709,10 +1782,13 @@ async def test_propose_roll_short_uses_target_strike_when_set(agent: PMCCAgent):
 
 @pytest.mark.asyncio
 async def test_propose_roll_short_falls_back_to_delta_when_target_strike_none(
-    agent: PMCCAgent,
+    agent: PMCCAgent, clear_earnings,
 ):
     """No target_strike set → original delta-distance behavior. Pin
-    backwards-compat so existing recommendations don't shift."""
+    backwards-compat so existing recommendations don't shift.
+
+    Same deep-ITM breached fixture → net-debit roll → `net_debit_justified`
+    override (see the sibling test). Asserts the delta-distance PICK is unchanged."""
     today = date.today()
     new_weekly_expiry = (today + timedelta(days=7)).isoformat()
     broker = MockOptionBroker(
@@ -1739,10 +1815,168 @@ async def test_propose_roll_short_falls_back_to_delta_when_target_strike_none(
         urgency="elevated", summary="...", rationale="...",
         target_delta=0.30, target_dte=7,
         # target_strike NOT set
+        # B2: same deep-breach net-debit fixture — authorize the debit (see sibling).
+        override={"kind": "net_debit_justified", "reason": "halfway roll on deep breach"},
     )
     orders = await agent._propose_roll_short("MSTR", pos, broker, analysis)
     open_leg = next(o for o in orders if o.extra.get("action") == "roll_short_call_open")
     assert open_leg.extra["strike"] == 187.5  # delta-distance pick
+
+
+# ===========================================================================
+# Phase 2 — B2 (credit gate) + B9 (earnings gate) on the roll path.
+# Gate order in `_propose_roll_short`: B9 earnings → B7 selection → B2 credit.
+# B9/B2 are overridable via the PMCCAnalysis.override contract
+# (earnings_override / net_debit_justified); B7 is hard-enforced.
+# ===========================================================================
+
+
+def _credit_roll_broker() -> MockOptionBroker:
+    """AAPL PMCC (short 14 DTE @175, mark 1.20) with a credit-positive, rolled-out
+    weekly at 21 DTE (@175, bid 1.75 → +0.55 conservative net credit). Used by the
+    B9 tests where the ONLY variable under test is the earnings gate."""
+    later = _future(21)
+    return MockOptionBroker(
+        option_positions=[
+            _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
+                          delta=0.82, avg_price=22.50),
+            _opt_position("AAPL", expiry_days=14, strike=175.0, qty=-1.0,
+                          delta=0.28, avg_price=1.45, mark_price=1.20),
+        ],
+        expiry_dates={"AAPL": [_future(14), later, _future(400)]},
+        calls={
+            ("AAPL", _future(14)): [
+                _liquid_call(strike=175.0, delta=0.28, mark=1.20, dte=14)],
+            ("AAPL", later): [_liquid_call(strike=175.0, delta=0.28, mark=1.80, dte=21)],
+            ("AAPL", _future(400)): [
+                _liquid_call(strike=130.0, delta=0.85, mark=25.0, dte=400)],
+        },
+    )
+
+
+def _deep_itm_breach_broker() -> MockOptionBroker:
+    """MSTR with a deep-ITM breached short (@162.50, mark 17.80) rolling up to a
+    lower-premium weekly — a NET DEBIT roll by construction (buy back 17.80, sell
+    ~10.5). Shared by the B2 authorized/unauthorized pair. Mirrors the target_strike
+    fixture above."""
+    weekly = _future(7)
+    return MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 400, 160.0, qty=1.0, delta=0.85,
+                          avg_price=23.80, mark_price=58.05),
+            _opt_position("MSTR", 0, 162.50, qty=-1.0, delta=0.95,
+                          avg_price=15.83, mark_price=17.80),
+        ],
+        expiry_dates={"MSTR": [weekly]},
+        calls={("MSTR", weekly): [
+            _liquid_call(strike=170.0, delta=0.45, mark=10.5, dte=7),
+            _liquid_call(strike=180.0, delta=0.35, mark=6.50, dte=7),
+            _liquid_call(strike=187.5, delta=0.30, mark=4.50, dte=7),
+        ]},
+    )
+
+
+@pytest.mark.asyncio
+async def test_b2_unauthorized_net_debit_roll_blocks(agent_logged, cap_logger, clear_earnings):
+    """B2: the SAME deep-ITM breach fixture as the target_strike tests, but with NO
+    override → the net-debit roll ABORTS atomically (0 legs) + a `pmcc_roll_aborted`
+    audit reason `net_debit_roll`, carrying BOTH conservative_net and mark_net. This
+    is the pathology B2 exists for (37 historical net-debit rolls). Paired with the
+    override'd target_strike tests (authorized ships / unauthorized blocks, same
+    fixture) it is the behavioral proof B2 blocks rather than merely not-firing."""
+    broker = _deep_itm_breach_broker()
+    legs = await agent_logged.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "MSTR")
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_short", confidence=0.85, urgency="elevated",
+        summary="Major Breach — halfway roll", rationale="...",
+        target_delta=0.30, target_dte=7, target_strike=169.0,
+        # NO override → B2 must block.
+    )
+    orders = await agent_logged._propose_roll_short("MSTR", pos, broker, analysis)
+    assert orders == [], [o.extra.get("action") for o in orders]
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "net_debit_roll"
+    assert ev["payload"]["conservative_net"] < 0
+    assert "mark_net" in ev["payload"]                     # both figures recorded
+    assert ev["payload"]["fees_included"] is False         # pre-fee, stated
+    # gate order + map: earnings & selection passed, credit blocked
+    assert ev["payload"]["gates"] == {
+        "earnings": "clear", "selection": "ok", "credit": "blocked"}
+
+
+@pytest.mark.asyncio
+async def test_b2_net_credit_roll_ships(agent, clear_earnings):
+    """B2: a credit-positive, rolled-out roll ships BOTH legs — the gate does not
+    over-block a normal credit roll."""
+    broker = _credit_roll_broker()
+    legs = await agent.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "AAPL")
+    orders = await agent._propose_roll_short("AAPL", pos, broker)
+    assert len(orders) == 2
+    assert {o.extra["action"] for o in orders} == {
+        "roll_short_call_close", "roll_short_call_open"}
+
+
+@pytest.mark.asyncio
+async def test_b9_roll_blocked_within_earnings_buffer(agent_logged, cap_logger, monkeypatch):
+    """B9: a roll inside the earnings buffer aborts (0 legs) + `pmcc_roll_aborted`
+    reason `earnings_window`, gates.earnings == 'blocked'. B9 runs FIRST, so it
+    aborts before selection/credit are even evaluated (skill HARD RULE L257: no new
+    short premium within the earnings buffer)."""
+    from datetime import datetime, timezone, timedelta as _td
+    monkeypatch.setattr("trading_corp.utils.market_data.get_next_earnings",
+                        lambda symbol, *a, **k: datetime.now(timezone.utc) + _td(days=3))
+    broker = _credit_roll_broker()
+    legs = await agent_logged.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "AAPL")
+    orders = await agent_logged._propose_roll_short("AAPL", pos, broker)
+    assert orders == [], [o.extra.get("action") for o in orders]
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "earnings_window"
+    assert ev["payload"]["gates"]["earnings"] == "blocked"
+    assert "selection" not in ev["payload"]["gates"]   # aborted before selection
+
+
+@pytest.mark.asyncio
+async def test_b9_roll_ships_with_earnings_override(agent, monkeypatch):
+    """B9: `earnings_override` lets a within-buffer roll proceed (a black-sheep
+    perpetual roll that must not let a breached short run into earnings). Ships."""
+    from datetime import datetime, timezone, timedelta as _td
+    monkeypatch.setattr("trading_corp.utils.market_data.get_next_earnings",
+                        lambda symbol, *a, **k: datetime.now(timezone.utc) + _td(days=3))
+    broker = _credit_roll_broker()
+    legs = await agent.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "AAPL")
+    analysis = PMCCAnalysis(
+        symbol="AAPL", action="roll_short", confidence=0.8, urgency="routine",
+        summary="", rationale="",
+        override={"kind": "earnings_override",
+                  "reason": "perpetual roll — breached short must not run into earnings"},
+    )
+    orders = await agent._propose_roll_short("AAPL", pos, broker, analysis)
+    assert len(orders) == 2
+    assert {o.extra["action"] for o in orders} == {
+        "roll_short_call_close", "roll_short_call_open"}
+
+
+@pytest.mark.asyncio
+async def test_b9_data_unavailable_recorded_on_shipped_roll(agent_logged, cap_logger, monkeypatch):
+    """B9 fail-open observability (amendment 4): when the earnings source returns no
+    data, the roll SHIPS (fail-open) but the shipped-roll `pmcc_roll_gates` audit
+    records gates.earnings == 'data_unavailable' — so a roll that shipped because the
+    source was DOWN is distinguishable from one that shipped because earnings were
+    genuinely clear."""
+    monkeypatch.setattr("trading_corp.utils.market_data.get_next_earnings",
+                        lambda symbol, *a, **k: None)
+    broker = _credit_roll_broker()
+    legs = await agent_logged.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "AAPL")
+    orders = await agent_logged._propose_roll_short("AAPL", pos, broker)
+    assert len(orders) == 2                                  # fail-open: shipped
+    gate_ev = next(e for e in cap_logger.events if e["kind"] == "pmcc_roll_gates")
+    assert gate_ev["payload"]["gates"]["earnings"] == "data_unavailable"
+    assert gate_ev["payload"]["gates"]["credit"] == "clear"
 
 
 def test_select_weekly_strike_handles_calls_without_strike():
@@ -1751,6 +1985,104 @@ def test_select_weekly_strike_handles_calls_without_strike():
     calls = [{"delta": 0.30, "mark_price": 1.0}]  # no strike_price
     best = _select_weekly_strike(calls, target_strike=170.0)
     assert best is None
+
+
+# ===========================================================================
+# Phase 2 — B7 (roll-out enforcement): the new short must expire STRICTLY LATER
+# than the current short. `after_dte` carries the current short's DTE on roll
+# paths (opens pass None). The DTE-ceiling fallback (_WEEKLY_FALLBACK_MAX_DTE)
+# additionally blocks a LEAP-DTE contract from being taken as a "weekly".
+# B7 has NO override — it is hard-enforced.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_b7_find_best_weekly_selects_strictly_later_on_roll(agent: PMCCAgent):
+    """A chain offering a same-DTE weekly (== current short) AND a strictly
+    later one: the roll path (after_dte set) skips the same-DTE expiry and picks
+    the later one, while the open path (after_dte=None) still picks the nearest.
+    Proves the roll-out constraint is exactly what shifts the selection."""
+    today = date.today()
+    same = (today + timedelta(days=14)).isoformat()   # == current short DTE
+    later = (today + timedelta(days=21)).isoformat()  # strictly later
+    broker = MockOptionBroker(
+        expiry_dates={"AAPL": [same, later, _future(400)]},
+        calls={
+            ("AAPL", same): [_liquid_call(strike=175.0, delta=0.28, mark=1.50, dte=14)],
+            ("AAPL", later): [_liquid_call(strike=175.0, delta=0.28, mark=1.80, dte=21)],
+            ("AAPL", _future(400)): [
+                _liquid_call(strike=130.0, delta=0.85, mark=25.0, dte=400)],
+        },
+    )
+    # Open path (after_dte=None): nearest in-window weekly.
+    opened = await agent._find_best_weekly("AAPL", broker)
+    assert opened is not None and opened["expiration_date"] == same
+    # Roll path (after_dte=14): same-DTE refused, strictly-later selected.
+    rolled = await agent._find_best_weekly("AAPL", broker, after_dte=14)
+    assert rolled is not None and rolled["expiration_date"] == later
+
+
+@pytest.mark.asyncio
+async def test_b7_propose_roll_short_opens_strictly_later(agent: PMCCAgent, clear_earnings):
+    """End-to-end: the roll's OPEN leg expires strictly later than the short it
+    closes (never a same-expiry roll)."""
+    today = date.today()
+    later = (today + timedelta(days=21)).isoformat()
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
+                      delta=0.82, avg_price=22.50),
+        _opt_position("AAPL", expiry_days=14, strike=175.0, qty=-1.0,
+                      delta=0.28, avg_price=1.45, mark_price=1.20),
+    ]
+    broker = MockOptionBroker(
+        option_positions=opt_positions,
+        expiry_dates={"AAPL": [_future(14), later, _future(400)]},
+        calls={
+            ("AAPL", _future(14)): [
+                _liquid_call(strike=175.0, delta=0.28, mark=1.20, dte=14)],
+            ("AAPL", later): [_liquid_call(strike=175.0, delta=0.28, mark=1.80, dte=21)],
+            ("AAPL", _future(400)): [
+                _liquid_call(strike=130.0, delta=0.85, mark=25.0, dte=400)],
+        },
+    )
+    legs = await agent.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "AAPL")
+    orders = await agent._propose_roll_short("AAPL", pos, broker)
+    assert len(orders) == 2
+    close_leg = next(o for o in orders if o.extra["action"] == "roll_short_call_close")
+    open_leg = next(o for o in orders if o.extra["action"] == "roll_short_call_open")
+    assert open_leg.extra["expiration"] > close_leg.extra["expiration"]  # rolled OUT
+    assert open_leg.extra["expiration"] == later
+
+
+@pytest.mark.asyncio
+async def test_b7_same_expiry_only_chain_aborts(agent_logged, cap_logger, clear_earnings):
+    """When the ONLY weekly in the chain sits at the current short's expiry (a
+    roll-IN / same-expiry), the roll aborts atomically rather than rolling to an
+    equal-or-earlier expiry — and the LEAP (400 DTE) is NOT taken as a weekly."""
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
+                      delta=0.82, avg_price=22.50),
+        _opt_position("AAPL", expiry_days=14, strike=175.0, qty=-1.0,
+                      delta=0.28, avg_price=1.45, mark_price=1.20),
+    ]
+    broker = MockOptionBroker(
+        option_positions=opt_positions,
+        expiry_dates={"AAPL": [_future(14), _future(400)]},   # only same-DTE weekly + LEAP
+        calls={
+            ("AAPL", _future(14)): [
+                _liquid_call(strike=175.0, delta=0.28, mark=1.20, dte=14)],
+            ("AAPL", _future(400)): [
+                _liquid_call(strike=130.0, delta=0.85, mark=25.0, dte=400)],
+        },
+    )
+    legs = await agent_logged.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "AAPL")
+    orders = await agent_logged._propose_roll_short("AAPL", pos, broker)
+    assert orders == [], [o.extra.get("action") for o in orders]
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "sparse_chain_no_weekly"
+    assert ev["payload"]["chain_state"]["reason"] == "no_rollout_weekly"
 
 
 # ===========================================================================
@@ -1788,7 +2120,7 @@ def _abort_event(cap_logger):
 
 # ---- B4 (a): roll_short aborts when no re-open weekly (no close-only) ----
 @pytest.mark.asyncio
-async def test_b4a_roll_short_aborts_when_no_weekly(agent_logged, cap_logger):
+async def test_b4a_roll_short_aborts_when_no_weekly(agent_logged, cap_logger, clear_earnings):
     leg = _pmcc_with_short(dte=2, pnl_pct=0.10)   # AAPL
     broker = MockOptionBroker()                    # empty chains
     orders = await agent_logged._propose_roll_short("AAPL", leg, broker)
@@ -1857,7 +2189,7 @@ async def test_b4d_open_pmcc_aborts_when_no_weekly(agent_logged, cap_logger):
 
 # ---- B4: a scheduled scan on a sparse chain aborts rather than close-only ----
 @pytest.mark.asyncio
-async def test_b4_scan_roll_aborts_on_sparse_chain(agent_logged, cap_logger):
+async def test_b4_scan_roll_aborts_on_sparse_chain(agent_logged, cap_logger, clear_earnings):
     opt_positions = [
         _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0, delta=0.82),
         _opt_position("AAPL", expiry_days=2, strike=175.0, qty=-1.0,
@@ -1905,7 +2237,7 @@ async def test_b1b_hold_not_overridden_at_profit(agent, monkeypatch):
 
 # ---- B1 (c): with NO LLM verdict (unavailable), the deterministic roll fires ----
 @pytest.mark.asyncio
-async def test_b1c_deterministic_roll_fires_when_llm_unavailable(agent):
+async def test_b1c_deterministic_roll_fires_when_llm_unavailable(agent, clear_earnings):
     opt_positions = [
         _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0, delta=0.82),
         _opt_position("AAPL", expiry_days=2, strike=175.0, qty=-1.0,
@@ -1919,7 +2251,7 @@ async def test_b1c_deterministic_roll_fires_when_llm_unavailable(agent):
 
 # ---- B1 (d): an LLM early roll still rolls (unchanged) ----
 @pytest.mark.asyncio
-async def test_b1d_llm_early_roll_still_rolls(agent, monkeypatch):
+async def test_b1d_llm_early_roll_still_rolls(agent, monkeypatch, clear_earnings):
     async def _fake_early(pos, price, regime, vix=None):
         return PMCCAnalysis(symbol=pos.symbol, action="roll_short_early",
                             confidence=0.8, urgency="routine", summary="", rationale="")
@@ -1929,9 +2261,14 @@ async def test_b1d_llm_early_roll_still_rolls(agent, monkeypatch):
         _opt_position("AAPL", expiry_days=30, strike=175.0, qty=-1.0,  # healthy DTE
                       delta=0.28, avg_price=1.45, mark_price=1.30),
     ]
+    # B7: 30-DTE short rolls OUT to the shared helper's 35-DTE weekly.
     broker = _broker_with_chains(["AAPL"], opt_positions)
     orders = await agent.scan(broker)
-    assert {"roll_short_call_close", "roll_short_call_open"} <= {o.extra["action"] for o in orders}
+    # B7 tighten (was lenient subset `<=`): assert exact leg count + both named
+    # legs. An early roll must produce the full close+open pair, nothing extra.
+    assert len(orders) == 2, [o.extra.get("action") for o in orders]
+    assert set(o.extra["action"] for o in orders) == {
+        "roll_short_call_close", "roll_short_call_open"}
 
 
 # ---- B1 (e): precedence rule (0-DTE HOLD is handled upstream by the time gate,
@@ -1958,6 +2295,35 @@ def test_b1f_deterministic_roll_allowed_empty_or_missing_action(agent):
     assert agent._deterministic_roll_allowed(mk("")) is True       # empty string
     assert agent._deterministic_roll_allowed(mk(None)) is True     # missing/None
     assert agent._deterministic_roll_allowed(mk("HOLD")) is False  # case-insensitive guard
+
+
+# ---- Phase-2 override contract (gate 0) ----
+def test_override_kind_validation(agent):
+    def mk(ov):
+        return PMCCAnalysis(symbol="X", action="hold", confidence=0.5,
+                            urgency="routine", summary="", rationale="", override=ov)
+    assert agent._override_kind(mk({"kind": "hold_override", "reason": "MR play"})) == "hold_override"
+    assert agent._override_kind(mk({"kind": "net_debit_justified", "reason": "x"})) == "net_debit_justified"
+    assert agent._override_kind(mk({"kind": "earnings_override", "reason": "x"})) == "earnings_override"
+    assert agent._override_kind(mk(None)) is None
+    assert agent._override_kind(mk({"kind": "bogus", "reason": "x"})) is None            # unknown kind
+    assert agent._override_kind(mk({"kind": "hold_override"})) is None                   # missing reason
+    assert agent._override_kind(mk({"kind": "hold_override", "reason": "  "})) is None   # blank reason
+    assert agent._override_kind(mk("not a dict")) is None                               # malformed
+    assert agent._override_kind(None) is None
+
+
+def test_hold_override_permits_deterministic_roll(agent):
+    base = dict(symbol="X", action="hold", confidence=0.5, urgency="routine",
+                summary="", rationale="")
+    assert agent._deterministic_roll_allowed(PMCCAnalysis(**base)) is False
+    assert agent._deterministic_roll_allowed(
+        PMCCAnalysis(**base, override={"kind": "hold_override", "reason": "accel past prior range"})
+    ) is True
+    # a NON-hold override on a HOLD does not unblock it (wrong kind)
+    assert agent._deterministic_roll_allowed(
+        PMCCAnalysis(**base, override={"kind": "net_debit_justified", "reason": "x"})
+    ) is False
 
 
 # ---- B11: holiday guard skips full closures; calendar None fires (guard off) ----

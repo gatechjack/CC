@@ -113,3 +113,22 @@ def test_from_legs_normalizes_code_output_for_phase1():
     ], llm_action="ROLL_SHORT")
     assert D.close_without_recover(healthy) is False
     assert D.same_expiry_roll(healthy) is False
+
+
+def test_same_expiry_roll_detector_and_b7_acceptance():
+    # Detector sanity: a roll whose open leg shares the closed short's expiry IS
+    # a same-expiry roll (the B7 pathology). This is the shape the code must NEVER
+    # emit post-B7.
+    same_exp = D.RecRecord.from_legs([
+        {"action": "roll_short_call_close", "strike": 175.0, "expiration": "2026-07-24"},
+        {"action": "roll_short_call_open", "strike": 175.0, "expiration": "2026-07-24"},
+    ], llm_action="ROLL_SHORT")
+    assert D.same_expiry_roll(same_exp) is True
+    # B7 acceptance (post-fix corpus): the code either rolls strictly OUT (open
+    # expiry > close expiry) or aborts (0 legs). Both drive same_expiry_roll to 0.
+    rolled_out = D.RecRecord.from_legs([
+        {"action": "roll_short_call_close", "strike": 175.0, "expiration": "2026-07-24"},
+        {"action": "roll_short_call_open", "strike": 175.0, "expiration": "2026-07-31"},
+    ], llm_action="ROLL_SHORT")
+    aborted = D.RecRecord.from_legs([], llm_action="ROLL_SHORT")   # atomic abort → no legs
+    assert D.count_over([rolled_out, aborted], D.same_expiry_roll) == 0

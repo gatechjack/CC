@@ -110,7 +110,19 @@ unbounded-risk one. It stays Phase-1 first for correctness, not because of open 
   HOLD-overridden rolls, **0** holiday scans on the synthetic corpus; all Phase-0 detectors
   + existing 80 tests green.
 
-## Phase 2 — Roll-quality cluster (B2, B6, B7, B9)  · ~2 sessions
+## Phase 2 — Roll-quality cluster (B2, B7, B9 — B6 WITHDRAWN)  · ~2 sessions
+
+**Detailed build spec (approved 2026-07-21): `planning/pmcc_phase2_plan.md`** — the
+`PMCCAnalysis.override={kind,reason}` contract, B2 conservative (bid/mark) pre-fee credit gate,
+B7 roll-out (+ `_WEEKLY_FALLBACK_MAX_DTE` ceiling), B9 earnings gate + fail-open observability,
+the gate evaluation order, tests, and acceptance gates.
+
+> **B6 WITHDRAWN 2026-07-21.** The `target_strike` "OTM guard" was a mischaracterized finding —
+> the ITM target_strike is the intentional halfway-roll mechanism (skill L103-104/L111/L135-141;
+> `_select_weekly_strike` docstring L523-527). B6's fallback would have silently defeated every
+> halfway roll. Third finding to collapse under "an unenforced rule is only a defect if
+> enforcement was intended" (after STRC/held-stock and position-discovery). See
+> `memory/pmcc-logic-audit-2026-07-21.md`.
 
 All constrain the short-roll path (`_propose_roll_short` / `_find_best_weekly` /
 `_select_weekly_strike`), so they land together to avoid churn.
@@ -118,9 +130,9 @@ All constrain the short-roll path (`_propose_roll_short` / `_find_best_weekly` /
   sign. Fix adds a credit/EV gate on the assembled roll (net = open credit − close debit);
   a net-debit roll is blocked/flagged unless `override.kind == "net_debit_justified"` (see
   Justification contract below).
-- **B6** — `_select_weekly_strike` (:519-527) honors an LLM `target_strike` with **no OTM
-  guard**, letting an ITM strike through. Fix constrains the target_strike path to the same
-  OTM/liquidity bounds the delta path enforces.
+- **B6 — WITHDRAWN** (see banner above): ITM `target_strike` is the intentional halfway-roll
+  mechanism, not a bypass. No code change; `itm_target_strike_bypass` dropped as an acceptance
+  gate; the two target_strike tests are correct and untouched.
 - **B7** — `_find_best_weekly` (:3242-3259) picks the **earliest** qualifying expiry and
   `max(3, target_dte-7)` collapses the floor to 3, so the current expiry re-qualifies (18
   same-expiry rolls). Fix enforces "roll OUT": the new expiry must be strictly later than
@@ -139,12 +151,11 @@ All constrain the short-roll path (`_propose_roll_short` / `_find_best_weekly` /
   HOLD→roll occurs ONLY when the LLM sets `override.kind == "hold_override"` — this finalizes
   B1's exit metric.
 - **Tests:** behavioral synthetics — net-debit roll blocked/flagged unless
-  `override.kind == "net_debit_justified"`; ITM target_strike rejected; same-expiry roll
-  rejected (new > current expiry); roll inside earnings buffer gated; HOLD→roll only with
-  `override.kind == "hold_override"`.
+  `override.kind == "net_debit_justified"`; same-expiry roll rejected (new > current expiry);
+  roll inside earnings buffer gated; HOLD→roll only with `override.kind == "hold_override"`.
 - **Acceptance:** regression detectors report **0** unjustified net-debit rolls, **0**
-  unjustified HOLD overrides, **0** same-expiry rolls, **0** ITM target_strike bypass;
-  earnings-window rolls gated.
+  unjustified HOLD overrides, **0** same-expiry rolls; earnings-window rolls gated.
+  (`itm_target_strike_bypass` removed — B6 withdrawn.)
 
 ## Phase 3 — LEAP cluster (B8, B3)  · ~1-2 sessions
 
@@ -212,8 +223,9 @@ where a B fix needs it" rule).
 - **B5 ⇐ A3** — delta-vs-IV needs an IV feed; A3 wires it. Sequenced Phase 4, A3 first.
 - **B1 + B2 ⇐ Justification contract (Phase 2)** — both "unjustified" exit metrics key off
   the `PMCCAnalysis.override.kind` structured field introduced in Phase 2.
-- **B2 / B6 / B7 co-located** — all mutate the short-roll path; landing them together avoids
-  three separate rewrites of `_propose_roll_short`/`_find_best_weekly`.
+- **B2 / B7 co-located** — both mutate the short-roll path; landing them together avoids
+  separate rewrites of `_propose_roll_short`/`_find_best_weekly`. (B6 was the third here — now
+  withdrawn.)
 - **B8 / B3 independent** — co-located by area (LEAP), not by dependency (see Phase 3).
 - **B10 ⇉ C1 seam** — see below.
 
@@ -245,7 +257,7 @@ All 11 B fixes landed + tested, and the regression re-run hits these targets:
 | Short delta outside configured band | 24 ≥0.40 | **0** outside band |
 | LEAP-roll cost recorded | 0/38 (33 @0.0 + 5 no-leg) | **100%** of roll_leaps |
 | Holiday scans | 6 (3 dates) | **0** |
-| ITM target_strike bypass | present | **0** |
+| ~~ITM target_strike bypass~~ | ~~present~~ | **B6 WITHDRAWN 2026-07-21** — ITM target_strike is the intentional halfway-roll mechanism; no longer an exit gate |
 
 Plus: `pmcc_paper_run_readiness.py` returns exit 0; **auto_execute STILL false** (no
 automation flip is part of this plan's exit — that is a separate future decision).

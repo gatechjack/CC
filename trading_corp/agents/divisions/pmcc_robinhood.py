@@ -47,6 +47,17 @@ _LEAP_DTE_FLOOR = 180
 # Weekly target DTE range: 7–21 days.
 _WEEKLY_MIN_DTE = 7
 _WEEKLY_MAX_DTE = 21
+# B7 fallback ceiling (2026-07-21): the sparse-chain fallback may only accept an
+# expiry that is a plausible weekly by DTE. Legit short-roll DTEs top ~45
+# (strategies.yaml short_leg.dte_extended); LEAPs are 365+. 60 gives margin above
+# the roll ceiling while excluding LEAP-DTE contracts from being taken as a
+# "weekly" (the future[0] LEAP-as-weekly pathology closed by B7 — a latent
+# hazard that never realized in the 157-row history, all short-opens <= 59 DTE).
+_WEEKLY_FALLBACK_MAX_DTE = 60
+
+# Phase-2 override contract: the LLM's structured escape hatch (kind + reason)
+# authorizing a deterministic gate to permit what it would otherwise block.
+_OVERRIDE_KINDS = ("hold_override", "net_debit_justified", "earnings_override")
 
 # Urgency display emoji
 _URGENCY_EMOJI = {"routine": "🟢", "elevated": "🟡", "urgent": "🔴"}
@@ -400,6 +411,12 @@ class PMCCAnalysis:
     # delta-only picker would miss. None = fall back to delta-distance
     # ranking (original behavior).
     target_strike: float | None = None
+    # Phase-2 override contract (2026-07-21): structured escape hatch letting the
+    # LLM authorize a deterministic gate to permit what it would otherwise block.
+    # {"kind": "hold_override"|"net_debit_justified"|"earnings_override",
+    #  "reason": <str>} or None. Read via `_override_kind`; a malformed value is
+    # treated as no override (fail-safe — the gate applies).
+    override: dict | None = None
 
     def format_brief(self) -> str:
         """Single-line summary for scan preamble messages."""
@@ -815,30 +832,52 @@ class PMCCAgent:
         crit = self._strategy_cfg.get("underlying_criteria", {}) or {}
         return int(crit.get("earnings_buffer_days", 7))
 
+    def _earnings_gate_state(self, symbol: str) -> tuple[str, str]:
+        """B9 (Phase 2): TRI-STATE earnings read — distinguishes a genuinely-clear
+        window from missing data so a fail-open roll (one that shipped only because
+        the data source was DOWN) is visible in the abort/audit payload.
+          - "blocked"          : earnings within the buffer window → gate blocks.
+          - "clear"            : earnings data present, none within the buffer
+                                 (also returned when the gate is config-disabled).
+          - "data_unavailable" : no earnings date from the source → FAIL-OPEN
+                                 (thinly-traded names commonly lack earnings dates;
+                                 we don't silently kill the universe).
+        Returns (state, reason). Single source of truth for both the roll gate and
+        `_blocked_by_earnings` (open path), so the two can never drift.
+        """
+        buffer_days = self._earnings_buffer_days
+        if buffer_days <= 0:
+            return "clear", ""
+
+        from trading_corp.utils.market_data import get_next_earnings
+        nxt = get_next_earnings(symbol)
+        if nxt is None:
+            return "data_unavailable", "no earnings date from data source"
+
+        from datetime import datetime, timezone
+        delta = nxt - datetime.now(timezone.utc)
+        days = delta.days  # truncates toward negative; for future dates, this is days_until rounded down
+        if 0 <= days <= buffer_days:
+            return "blocked", (
+                f"earnings on {nxt.date().isoformat()} ({days}d away, "
+                f"buffer={buffer_days}d)"
+            )
+        return "clear", ""
+
     def _blocked_by_earnings(self, symbol: str) -> tuple[bool, str]:
         """Return (blocked, reason) honoring `earnings_buffer_days`.
 
         None from yfinance is treated as "no data — don't block" rather than
         fail-safe-escalate, because thinly-traded names commonly lack earnings
         dates in yfinance and we don't want to silently kill the universe.
+
+        Delegates to `_earnings_gate_state` (blocked iff state == "blocked") so the
+        open path and the B9 roll gate share one implementation. Behavior is
+        byte-identical to the pre-Phase-2 version.
         """
-        buffer_days = self._earnings_buffer_days
-        if buffer_days <= 0:
-            return False, ""
-
-        from trading_corp.utils.market_data import get_next_earnings
-        nxt = get_next_earnings(symbol)
-        if nxt is None:
-            return False, ""
-
-        from datetime import datetime, timezone
-        delta = nxt - datetime.now(timezone.utc)
-        days = delta.days  # truncates toward negative; for future dates, this is days_until rounded down
-        if 0 <= days <= buffer_days:
-            return True, (
-                f"earnings on {nxt.date().isoformat()} ({days}d away, "
-                f"buffer={buffer_days}d)"
-            )
+        state, reason = self._earnings_gate_state(symbol)
+        if state == "blocked":
+            return True, reason
         return False, ""
 
     def _filter_liquid(self, opts: list[dict], symbol: str) -> list[dict]:
@@ -1019,7 +1058,8 @@ Respond with ONLY this JSON (no other text, no markdown):
   "warnings": ["<specific risk>", "<specific risk>"],
   "target_delta": <recommended short call delta as float, or null>,
   "target_dte": <recommended short call DTE target as integer, or null>,
-  "target_strike": <recommended short call STRIKE as float, or null — set this when a rule prescribes a specific strike (e.g. halfway-roll midpoint per BREACH HANDLING). When set, the strike picker honors this directly, overriding delta-distance ranking. Leave null when delta-targeting is correct (standard cycles).>
+  "target_strike": <recommended short call STRIKE as float, or null — set this when a rule prescribes a specific strike (e.g. halfway-roll midpoint per BREACH HANDLING). When set, the strike picker honors this directly, overriding delta-distance ranking. Leave null when delta-targeting is correct (standard cycles).>,
+  "override": <null, OR {{"kind": "hold_override"|"net_debit_justified"|"earnings_override", "reason": "<one clause>"}} — set ONLY when a rule you cite explicitly permits an action a deterministic guard would otherwise block (a HOLD you want rolled, a small net-debit roll, or a roll inside the earnings buffer); otherwise null.>
 }}
 
 Action reference:
@@ -1061,6 +1101,7 @@ Action reference:
                 target_delta=float(data["target_delta"]) if data.get("target_delta") is not None else None,
                 target_dte=int(data["target_dte"]) if data.get("target_dte") is not None else None,
                 target_strike=float(data["target_strike"]) if data.get("target_strike") is not None else None,
+                override=data.get("override") if isinstance(data.get("override"), dict) else None,
             )
         except Exception as e:
             log.warning("PMCCAgent: LLM analysis failed for %s: %s", pos.symbol, e)
@@ -1193,6 +1234,7 @@ Action reference:
                 target_delta=analysis.target_delta if analysis else None,
                 target_dte=analysis.target_dte if analysis else None,
                 target_strike=analysis.target_strike if analysis else None,
+                after_dte=pos.short_leg_dte,  # B7: new short must roll OUT
             )
             if not new_weekly:
                 self._audit_roll_abort(
@@ -2142,6 +2184,7 @@ Action reference:
                         target_delta=analysis.target_delta if analysis else None,
                         target_dte=analysis.target_dte if analysis else None,
                         target_strike=analysis.target_strike if analysis else None,
+                        after_dte=leg.short_leg_dte,  # B7: new short must roll OUT
                     )
                     if not new_weekly:
                         self._audit_roll_abort(
@@ -2314,7 +2357,27 @@ Action reference:
         0-DTE positions; this governs only the DTE 1-2 / profit fallback."""
         if analysis is None:
             return True
-        return (analysis.action or "").lower() not in ("hold", "watch")
+        if (analysis.action or "").lower() not in ("hold", "watch"):
+            return True
+        # B1/Phase-2: an explicit LLM `hold_override` authorizes the deterministic
+        # roll despite the HOLD verdict (the escape hatch Phase-1 reserved).
+        return self._override_kind(analysis) == "hold_override"
+
+    def _override_kind(self, analysis: "PMCCAnalysis | None") -> str | None:
+        """Phase-2 override contract: return the VALIDATED override kind, or None.
+        A malformed value (not a dict / unknown kind / missing-or-blank reason) is
+        treated as NO override — fail-safe so the gate applies. Every gate
+        (B1 hold, B2 credit, B9 earnings) consults this."""
+        if analysis is None:
+            return None
+        ov = getattr(analysis, "override", None)
+        if not isinstance(ov, dict):
+            return None
+        kind = ov.get("kind")
+        reason = ov.get("reason")
+        if kind in _OVERRIDE_KINDS and isinstance(reason, str) and reason.strip():
+            return kind
+        return None
 
     # -- Terminal-DTE wall-clock time gate (Board direction 2026-05-01) ------
     #
@@ -3151,35 +3214,100 @@ Action reference:
         broker: Broker,
         analysis: PMCCAnalysis | None = None,
     ) -> list[ProposedOrder]:
-        """Roll short call: buy-to-close existing + sell-to-open new weekly."""
+        """Roll short call: buy-to-close existing + sell-to-open new weekly.
+
+        Phase-2 gate order (pmcc_phase2_plan §5): B9 earnings → B7 selection (in
+        `_find_best_weekly`) → B2 credit. Abort on the FIRST failing gate; the
+        `pmcc_roll_aborted` payload carries a `gates` map of every gate evaluated
+        up to the abort. B9/B2 are overridable via the LLM override contract
+        (earnings_override / net_debit_justified); B7 is hard-enforced.
+        """
         if not leg.short_leg_expiry or leg.short_leg_strike is None:
             return []
 
         contracts = max(1, int(abs(leg.short_leg_qty or 1)))
         close_mark = leg.short_leg_mark or 0.0
         pnl_pct = (leg.short_leg_pnl_pct or 0) * 100
+        override_kind = self._override_kind(analysis)
+        gates: dict = {}
 
         roll_reason = (
             f"DTE={leg.short_leg_dte}" if (leg.short_leg_dte or 0) <= self._roll_dte
             else f"profit={pnl_pct:.0f}%"
         )
 
-        # B4 (atomic roll): resolve the re-open leg BEFORE proposing the close.
-        # If no qualifying weekly exists, abort the WHOLE roll (propose nothing)
-        # + audit — never ship a close-only "roll" that leaves the LEAP
-        # uncovered. A deliberate bare close is the LLM's explicit close_short.
+        # ── B9 (earnings gate) ── skill HARD RULE (L257): "No new short premium
+        # within 7 DTE of earnings" — a roll OPENS a new short. Overridable via
+        # earnings_override (e.g. a black-sheep perpetual roll that must not let a
+        # breached short run into earnings). FAIL-OPEN on missing data, but the
+        # state (blocked/clear/data_unavailable) is recorded so a roll that shipped
+        # only because the data source was DOWN is distinguishable from one that
+        # shipped because earnings were genuinely clear.
+        earnings_state, earnings_reason = self._earnings_gate_state(symbol)
+        gates["earnings"] = earnings_state
+        if earnings_state == "blocked" and override_kind != "earnings_override":
+            self._audit_roll_abort(
+                reason="earnings_window", symbol=symbol,
+                extra={"gates": dict(gates), "earnings_reason": earnings_reason},
+            )
+            return []
+
+        # B4 (atomic roll) + B7 (roll-out): resolve the re-open leg BEFORE
+        # proposing the close. No qualifying roll-out weekly → abort the WHOLE roll
+        # (propose nothing) + audit — never ship a close-only "roll" that leaves the
+        # LEAP uncovered. A deliberate bare close is the LLM's explicit close_short.
         new_weekly = await self._find_best_weekly(
             symbol, broker,
             target_delta=analysis.target_delta if analysis else None,
             target_dte=analysis.target_dte if analysis else None,
             target_strike=analysis.target_strike if analysis else None,
+            after_dte=leg.short_leg_dte,  # B7: new short must roll OUT
         )
         if not new_weekly:
+            gates["selection"] = "blocked"
             self._audit_roll_abort(
                 reason="sparse_chain_no_weekly", symbol=symbol,
                 missing_leg="new_short", diag=self._last_weekly_diag,
+                extra={"gates": dict(gates)},
             )
             return []
+        gates["selection"] = "ok"
+
+        # ── B2 (credit gate) ── skill HARD RULE: rolls are for credit (BS L102
+        # "Always for credit"; STANDARD Major breach L199 "MUST credit"; FORBIDDEN
+        # L170 "Roll for debit to chase OTM"). STANDARD permits a small debit
+        # (≤8% LEAP, L255) — that latitude flows through the net_debit_justified
+        # override. CONSERVATIVE basis (amendment 2): sell the new weekly at BID,
+        # buy the old short back at MARK (the existing short exposes mark only, no
+        # ask). PRE-FEE (amendment 3): no fee data exists at proposal time (RH
+        # broker: none; FillEvent.fee is post-fill only) — the conservative net
+        # captures SPREAD, not fees. Both the conservative net and the card's mark
+        # net go in the audit so a blocked roll is understandable without re-derive.
+        open_bid = new_weekly.get("bid")
+        open_credit_conservative = (
+            open_bid if open_bid is not None else (new_weekly.get("mark_price") or 0.0)
+        )
+        conservative_net = open_credit_conservative - close_mark
+        mark_net = (
+            (new_weekly.get("mark_price") or new_weekly.get("bid") or 0.0) - close_mark
+        )
+        if conservative_net < 0 and override_kind != "net_debit_justified":
+            gates["credit"] = "blocked"
+            self._audit_roll_abort(
+                reason="net_debit_roll", symbol=symbol,
+                extra={
+                    "gates": dict(gates),
+                    "conservative_net": round(conservative_net, 4),
+                    "mark_net": round(mark_net, 4),
+                    "close_mark": round(close_mark, 4),
+                    "open_bid": open_bid,
+                    "fees_included": False,
+                    "fee_gap": ("pre-fee: RH per-contract regulatory/exchange "
+                                "fees excluded; net captures spread only"),
+                },
+            )
+            return []
+        gates["credit"] = "clear"
 
         orders: list[ProposedOrder] = []
         pair_id = str(uuid.uuid4())[:8]
@@ -3221,6 +3349,18 @@ Action reference:
             position_context=position_context,  # same context as the close leg
             leap_lifetime_key=leap_key,
         ))
+        # Amendment 4 (fail-open observability): record the gate states — incl. the
+        # earnings-data state — on every SHIPPED roll, as a SEPARATE audit so the
+        # order legs stay byte-identical to pre-Phase-2. Distinguishes a roll that
+        # shipped because earnings were genuinely CLEAR from one that shipped only
+        # because the earnings source was DOWN (`gates.earnings == data_unavailable`).
+        self._audit_division("pmcc_roll_gates", {
+            "symbol": symbol,
+            "gates": dict(gates),
+            "conservative_net": round(conservative_net, 4),
+            "mark_net": round(mark_net, 4),
+            "override_kind": override_kind,
+        })
         return orders
 
     # -- Option chain queries ------------------------------------------------
@@ -3270,6 +3410,7 @@ Action reference:
         target_delta: float | None = None,
         target_dte: int | None = None,
         target_strike: float | None = None,
+        after_dte: int | None = None,
     ) -> dict | None:
         """Find the best weekly short call, optionally using LLM-suggested
         delta / DTE / strike.
@@ -3281,6 +3422,14 @@ Action reference:
         strike that the delta-only picker would miss. None = original
         delta-distance behavior.
 
+        `after_dte` (B7 — 2026-07-21): on roll paths, the new short must expire
+        STRICTLY LATER than the current short. Callers pass the current short's
+        DTE; every candidate expiry must satisfy `_days_to(d) > after_dte`. None
+        on open paths (no prior short to roll out of) = original behavior. This
+        enforces "roll OUT" and, together with the DTE-ceiling fallback below,
+        blocks the same-expiry re-qualification (B7) and the LEAP-as-weekly
+        sparse-chain fallback.
+
         Stashes `self._last_weekly_diag` (chain state) so a B4 abort can audit
         WHY no weekly was found."""
         if not isinstance(broker, OptionBroker):
@@ -3288,23 +3437,55 @@ Action reference:
             return None
         dates = await broker.get_expiration_dates(symbol)
 
+        # B7 roll-out predicate: opens (after_dte=None) accept any expiry; rolls
+        # require a strictly-later expiry than the current short.
+        def _rolls_out(d: str) -> bool:
+            return after_dte is None or _days_to(d) > after_dte
+
         # Use LLM-suggested DTE window if provided, otherwise default 7–21d range
         if target_dte is not None:
             dte_lo = max(3, target_dte - 7)
             dte_hi = target_dte + 14
-            weekly_dates = [d for d in dates if dte_lo <= _days_to(d) <= dte_hi]
+            weekly_dates = [
+                d for d in dates if dte_lo <= _days_to(d) <= dte_hi and _rolls_out(d)
+            ]
         else:
             weekly_dates = [
-                d for d in dates if _WEEKLY_MIN_DTE <= _days_to(d) <= _WEEKLY_MAX_DTE
+                d for d in dates
+                if _WEEKLY_MIN_DTE <= _days_to(d) <= _WEEKLY_MAX_DTE and _rolls_out(d)
             ]
 
         if not weekly_dates:
-            future = [d for d in dates if _days_to(d) > 0]
-            if not future:
-                self._last_weekly_diag = {"reason": "no_future_expiry_dates", "considered": 0}
-                log.warning("PMCCAgent: no future expiry dates for %s", symbol)
+            # Fallback refinement (B7, 2026-07-21): only accept a fallback expiry
+            # that is (a) a plausible weekly by DTE ceiling and (b) rolls out past
+            # the current short. This blocks the LEAP-as-weekly pathology where the
+            # old fallback (`future[0]`) could return a 365+ DTE LEAP call as the
+            # "weekly" when the chain is sparse. No qualifying fallback → abort
+            # (return None) so the caller's B4 path audits + proposes nothing.
+            fallback = [
+                d for d in dates
+                if 0 < _days_to(d) <= _WEEKLY_FALLBACK_MAX_DTE and _rolls_out(d)
+            ]
+            if not fallback:
+                # Distinguish an empty/expired chain (no future dates at all)
+                # from a chain that has dates but none that roll out past the
+                # current short — so a B4 abort audit says WHICH.
+                any_future = any(_days_to(d) > 0 for d in dates)
+                if not any_future:
+                    reason = "no_future_expiry_dates"
+                elif after_dte is not None:
+                    reason = "no_rollout_weekly"
+                else:
+                    reason = "no_weekly_within_ceiling"
+                self._last_weekly_diag = {
+                    "reason": reason, "considered": 0, "after_dte": after_dte,
+                }
+                log.warning(
+                    "PMCCAgent: no qualifying weekly for %s (reason=%s after_dte=%s)",
+                    symbol, reason, after_dte,
+                )
                 return None
-            weekly_dates = [future[0]]
+            weekly_dates = [fallback[0]]
 
         target_date = weekly_dates[0]
         calls = await broker.get_calls_for_expiry(symbol, target_date)
@@ -3815,21 +3996,29 @@ Action reference:
         except Exception as e:
             log.warning("robinhood_pmcc audit write failed (%s): %s", kind, e)
 
-    def _audit_roll_abort(self, *, reason: str, symbol: str, missing_leg: str,
-                          diag: dict | None) -> None:
+    def _audit_roll_abort(self, *, reason: str, symbol: str, missing_leg: str = "",
+                          diag: dict | None = None, extra: dict | None = None) -> None:
         """B4 (Phase 1): record an aborted roll/open so `b4 -> 0` is
         distinguishable from 'chains are thin and we now do nothing'. Writes a
         structured `pmcc_roll_aborted` division audit + a loud log line. NO order
-        is proposed when this fires (atomic-roll invariant)."""
+        is proposed when this fires (atomic-roll invariant).
+
+        Phase-2 (B9/B2): also used for proceed-gate aborts (earnings/credit),
+        which pass `missing_leg=""` and an `extra` dict carrying the `gates` map
+        (every gate evaluated up to the abort) + the gate's figures."""
         payload = {
             "reason": reason,
             "symbol": symbol,
             "missing_leg": missing_leg,
             "chain_state": diag or {},
         }
+        if extra:
+            payload.update(extra)
         log.warning(
-            "PMCCAgent: ABORTED roll/open on %s -- %s (missing %s); chain=%s",
-            symbol, reason, missing_leg, payload["chain_state"],
+            "PMCCAgent: ABORTED roll/open on %s -- %s%s; chain=%s",
+            symbol, reason,
+            f" (missing {missing_leg})" if missing_leg else "",
+            payload["chain_state"],
         )
         self._audit_division("pmcc_roll_aborted", payload)
 
