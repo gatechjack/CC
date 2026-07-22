@@ -588,6 +588,12 @@ class PMCCAgent:
         self._last_successful_engagement_id: str | None = None
         self._outage_alerted: bool = False
 
+        # B4 (Phase 1): last chain-pick diagnostics, stashed by the finders so an
+        # aborted roll/open can audit WHY no re-open leg was found (distinguish
+        # "the fix works" from "chains are thin and we now do nothing").
+        self._last_weekly_diag: dict | None = None
+        self._last_leap_diag: dict | None = None
+
         self._reload()
 
     def attach_research_firm(
@@ -1173,6 +1179,29 @@ Action reference:
 
         # ── Roll the LEAP (close existing pair, open new LEAP) ──
         if action == "roll_leap":
+            # B4 (atomic roll_leap): resolve BOTH new legs BEFORE proposing any
+            # close; abort the whole roll + audit if either is missing.
+            new_leap = await self._find_best_leap(symbol, broker)
+            if not new_leap:
+                self._audit_roll_abort(
+                    reason="sparse_chain_no_leap", symbol=symbol,
+                    missing_leg="new_leap", diag=self._last_leap_diag,
+                )
+                return []
+            new_weekly = await self._find_best_weekly(
+                symbol, broker,
+                target_delta=analysis.target_delta if analysis else None,
+                target_dte=analysis.target_dte if analysis else None,
+                target_strike=analysis.target_strike if analysis else None,
+            )
+            if not new_weekly:
+                self._audit_roll_abort(
+                    reason="sparse_chain_no_weekly_for_new_leap",
+                    symbol=symbol, missing_leg="new_short_on_new_leap",
+                    diag=self._last_weekly_diag,
+                )
+                return []
+
             orders: list[ProposedOrder] = []
             pair_id = str(uuid.uuid4())[:8]
             # 1. Close the short (if any)
@@ -1209,65 +1238,46 @@ Action reference:
                 pair_id=pair_id,
             ))
             # 3. Open new LEAP
-            new_leap = await self._find_best_leap(symbol, broker)
-            if new_leap:
-                orders.append(self._make_option_order(
-                    underlying=symbol, side="buy", contracts=contracts,
-                    expiry=new_leap["expiration_date"],
-                    strike=new_leap["strike_price"],
-                    mark_price=new_leap.get("mark_price") or new_leap.get("ask") or 0,
-                    bid=new_leap.get("bid"), ask=new_leap.get("ask"),
-                    position_effect="open",
-                    action="roll_leap_open",
-                    delta=new_leap.get("delta"),
-                    dte=new_leap.get("dte"),
-                    rationale=self._build_rationale(
-                        f"Roll LEAP: buy new {symbol} {new_leap['expiration_date']} "
-                        f"C{new_leap['strike_price']:.2f}",
-                        analysis,
-                    ),
-                    pair_id=pair_id,
-                ))
-                # 4. Open new short on the new LEAP (Item 2 — 2026-05-02).
-                # Prevents the 3-leg compound from leaving the user with a
-                # fresh LEAP and no income leg. Skipped if no qualifying
-                # weekly chain — the next scan cycle will catch the
-                # uncovered LEAP via the open_short branch.
-                new_weekly = await self._find_best_weekly(
-                    symbol, broker,
-                    target_delta=analysis.target_delta if analysis else None,
-                    target_dte=analysis.target_dte if analysis else None,
-                    target_strike=analysis.target_strike if analysis else None,
-                )
-                if new_weekly:
-                    orders.append(self._make_option_order(
-                        underlying=symbol, side="sell", contracts=contracts,
-                        expiry=new_weekly["expiration_date"],
-                        strike=new_weekly["strike_price"],
-                        mark_price=(
-                            new_weekly.get("mark_price")
-                            or new_weekly.get("bid") or 0
-                        ),
-                        bid=new_weekly.get("bid"), ask=new_weekly.get("ask"),
-                        position_effect="open",
-                        action="roll_leap_open_short",
-                        delta=new_weekly.get("delta"),
-                        dte=new_weekly.get("dte"),
-                        rationale=self._build_rationale(
-                            f"Roll LEAP: sell new short on the fresh LEAP "
-                            f"{symbol} {new_weekly['expiration_date']} "
-                            f"C{new_weekly['strike_price']:.2f}",
-                            analysis,
-                        ),
-                        pair_id=pair_id,
-                    ))
-                else:
-                    log.info(
-                        "PMCCAgent: roll_leap on %s — new LEAP selected but "
-                        "no qualifying weekly for the income leg; the next "
-                        "scan will cover the uncovered LEAP",
-                        symbol,
-                    )
+            orders.append(self._make_option_order(
+                underlying=symbol, side="buy", contracts=contracts,
+                expiry=new_leap["expiration_date"],
+                strike=new_leap["strike_price"],
+                mark_price=new_leap.get("mark_price") or new_leap.get("ask") or 0,
+                bid=new_leap.get("bid"), ask=new_leap.get("ask"),
+                position_effect="open",
+                action="roll_leap_open",
+                delta=new_leap.get("delta"),
+                dte=new_leap.get("dte"),
+                rationale=self._build_rationale(
+                    f"Roll LEAP: buy new {symbol} {new_leap['expiration_date']} "
+                    f"C{new_leap['strike_price']:.2f}",
+                    analysis,
+                ),
+                pair_id=pair_id,
+            ))
+            # 4. Open new short on the new LEAP (guaranteed present — atomic
+            # invariant checked above).
+            orders.append(self._make_option_order(
+                underlying=symbol, side="sell", contracts=contracts,
+                expiry=new_weekly["expiration_date"],
+                strike=new_weekly["strike_price"],
+                mark_price=(
+                    new_weekly.get("mark_price")
+                    or new_weekly.get("bid") or 0
+                ),
+                bid=new_weekly.get("bid"), ask=new_weekly.get("ask"),
+                position_effect="open",
+                action="roll_leap_open_short",
+                delta=new_weekly.get("delta"),
+                dte=new_weekly.get("dte"),
+                rationale=self._build_rationale(
+                    f"Roll LEAP: sell new short on the fresh LEAP "
+                    f"{symbol} {new_weekly['expiration_date']} "
+                    f"C{new_weekly['strike_price']:.2f}",
+                    analysis,
+                ),
+                pair_id=pair_id,
+            ))
             return orders
 
         # ── Close everything on this underlying ──
@@ -2116,6 +2126,31 @@ Action reference:
 
                 # ── LLM-detected roll_leap (not in deterministic rules) ──
                 if analysis and analysis.action == "roll_leap":
+                    # B4 (atomic roll_leap): resolve BOTH new legs BEFORE
+                    # proposing any close. If either is missing, abort the whole
+                    # roll (propose nothing) + audit — never dismantle the long
+                    # or close the short and leave a fresh LEAP uncovered.
+                    new_leap = await self._find_best_leap(symbol, broker)
+                    if not new_leap:
+                        self._audit_roll_abort(
+                            reason="sparse_chain_no_leap", symbol=symbol,
+                            missing_leg="new_leap", diag=self._last_leap_diag,
+                        )
+                        continue
+                    new_weekly = await self._find_best_weekly(
+                        symbol, broker,
+                        target_delta=analysis.target_delta if analysis else None,
+                        target_dte=analysis.target_dte if analysis else None,
+                        target_strike=analysis.target_strike if analysis else None,
+                    )
+                    if not new_weekly:
+                        self._audit_roll_abort(
+                            reason="sparse_chain_no_weekly_for_new_leap",
+                            symbol=symbol, missing_leg="new_short_on_new_leap",
+                            diag=self._last_weekly_diag,
+                        )
+                        continue
+
                     log.info("PMCCAgent: LLM recommends roll_leap for %s", symbol)
                     pair_id = str(uuid.uuid4())[:8]
                     # Step 1: close short call if exists
@@ -2152,72 +2187,48 @@ Action reference:
                         pair_id=pair_id,
                     ))
                     # Step 3: buy new LEAP
-                    new_leap = await self._find_best_leap(symbol, broker)
-                    if new_leap:
-                        orders.append(self._make_option_order(
-                            underlying=symbol, side="buy", contracts=contracts,
-                            expiry=new_leap["expiration_date"],
-                            strike=new_leap["strike_price"],
-                            mark_price=new_leap.get("mark_price") or new_leap.get("ask") or 0,
-                            position_effect="open",
-                            action="roll_leap_open",
-                            delta=new_leap.get("delta"),
-                            dte=new_leap.get("dte"),
-                            rationale=self._build_rationale(
-                                f"Roll LEAP (3/4): buy new LEAP {symbol} "
-                                f"{new_leap['expiration_date']} C{new_leap['strike_price']:.2f}",
-                                analysis,
-                            ),
-                            pair_id=pair_id,
-                        ))
-                        # Step 4: sell new short on the fresh LEAP (Item 2 —
-                        # 2026-05-02). Skipped if no qualifying weekly chain;
-                        # next scan cycle covers the uncovered LEAP.
-                        new_weekly = await self._find_best_weekly(
-                            symbol, broker,
-                            target_delta=(
-                                analysis.target_delta if analysis else None
-                            ),
-                            target_dte=(
-                                analysis.target_dte if analysis else None
-                            ),
-                            target_strike=(
-                                analysis.target_strike if analysis else None
-                            ),
-                        )
-                        if new_weekly:
-                            orders.append(self._make_option_order(
-                                underlying=symbol, side="sell",
-                                contracts=contracts,
-                                expiry=new_weekly["expiration_date"],
-                                strike=new_weekly["strike_price"],
-                                mark_price=(
-                                    new_weekly.get("mark_price")
-                                    or new_weekly.get("bid") or 0
-                                ),
-                                bid=new_weekly.get("bid"),
-                                ask=new_weekly.get("ask"),
-                                position_effect="open",
-                                action="roll_leap_open_short",
-                                delta=new_weekly.get("delta"),
-                                dte=new_weekly.get("dte"),
-                                rationale=self._build_rationale(
-                                    f"Roll LEAP (4/4): sell new short on "
-                                    f"fresh LEAP {symbol} "
-                                    f"{new_weekly['expiration_date']} "
-                                    f"C{new_weekly['strike_price']:.2f}",
-                                    analysis,
-                                ),
-                                pair_id=pair_id,
-                            ))
-                        else:
-                            log.info(
-                                "PMCCAgent: roll_leap scan on %s — new LEAP "
-                                "selected but no qualifying weekly for the "
-                                "income leg; next scan will cover the "
-                                "uncovered LEAP",
-                                symbol,
-                            )
+                    orders.append(self._make_option_order(
+                        underlying=symbol, side="buy", contracts=contracts,
+                        expiry=new_leap["expiration_date"],
+                        strike=new_leap["strike_price"],
+                        mark_price=new_leap.get("mark_price") or new_leap.get("ask") or 0,
+                        position_effect="open",
+                        action="roll_leap_open",
+                        delta=new_leap.get("delta"),
+                        dte=new_leap.get("dte"),
+                        rationale=self._build_rationale(
+                            f"Roll LEAP (3/4): buy new LEAP {symbol} "
+                            f"{new_leap['expiration_date']} C{new_leap['strike_price']:.2f}",
+                            analysis,
+                        ),
+                        pair_id=pair_id,
+                    ))
+                    # Step 4: sell new short on the fresh LEAP (guaranteed
+                    # present — atomic invariant checked above).
+                    orders.append(self._make_option_order(
+                        underlying=symbol, side="sell",
+                        contracts=contracts,
+                        expiry=new_weekly["expiration_date"],
+                        strike=new_weekly["strike_price"],
+                        mark_price=(
+                            new_weekly.get("mark_price")
+                            or new_weekly.get("bid") or 0
+                        ),
+                        bid=new_weekly.get("bid"),
+                        ask=new_weekly.get("ask"),
+                        position_effect="open",
+                        action="roll_leap_open_short",
+                        delta=new_weekly.get("delta"),
+                        dte=new_weekly.get("dte"),
+                        rationale=self._build_rationale(
+                            f"Roll LEAP (4/4): sell new short on "
+                            f"fresh LEAP {symbol} "
+                            f"{new_weekly['expiration_date']} "
+                            f"C{new_weekly['strike_price']:.2f}",
+                            analysis,
+                        ),
+                        pair_id=pair_id,
+                    ))
                     continue  # skip normal deterministic block
 
                 # ── LLM-detected early roll (before DTE/profit trigger) ──
@@ -2238,7 +2249,7 @@ Action reference:
                     orders.extend(await self._propose_sell_weekly(
                         symbol, broker, contracts, analysis=analysis, leg=leg,
                     ))
-                elif self._should_roll(leg):
+                elif self._should_roll(leg) and self._deterministic_roll_allowed(analysis):
                     log.info(
                         "PMCCAgent: %s roll triggered (DTE=%s, PnL=%.0f%%)",
                         symbol, leg.short_leg_dte, (leg.short_leg_pnl_pct or 0) * 100,
@@ -2294,6 +2305,16 @@ Action reference:
         if leg.short_leg_pnl_pct is not None and leg.short_leg_pnl_pct >= self._roll_profit_pct:
             return True
         return False
+
+    def _deterministic_roll_allowed(self, analysis: "PMCCAnalysis | None") -> bool:
+        """B1 (Phase 1): the deterministic DTE<=2 / >=50%-profit roll trigger
+        yields to an explicit LLM HOLD/WATCH verdict. Returns True only when the
+        LLM did NOT say hold/watch (or is unavailable). The 0-DTE terminal-DTE
+        guard runs upstream and may already have rewritten HOLD->roll/close for
+        0-DTE positions; this governs only the DTE 1-2 / profit fallback."""
+        if analysis is None:
+            return True
+        return (analysis.action or "").lower() not in ("hold", "watch")
 
     # -- Terminal-DTE wall-clock time gate (Board direction 2026-05-01) ------
     #
@@ -2994,71 +3015,65 @@ Action reference:
             )
             return [], "earnings_within_buffer"
 
+        # B4 (atomic open): both legs must resolve or we open NOTHING — never a
+        # LEAP without its covering short. Abort + audit on either miss.
         leap_call = await self._find_best_leap(symbol, broker)
+        if not leap_call:
+            self._audit_roll_abort(
+                reason="sparse_chain_no_leap_for_open", symbol=symbol,
+                missing_leg="leap", diag=self._last_leap_diag,
+            )
+            log.warning("PMCCAgent: no qualifying LEAP found for %s", symbol)
+            return [], "leap_unavailable"
         weekly_call = await self._find_best_weekly(
             symbol, broker,
             target_delta=analysis.target_delta if analysis else None,
             target_dte=analysis.target_dte if analysis else None,
             target_strike=analysis.target_strike if analysis else None,
         )
+        if not weekly_call:
+            self._audit_roll_abort(
+                reason="sparse_chain_no_weekly_for_open", symbol=symbol,
+                missing_leg="short", diag=self._last_weekly_diag,
+            )
+            log.warning("PMCCAgent: no qualifying weekly call found for %s", symbol)
+            return [], "weekly_unavailable"
 
         orders: list[ProposedOrder] = []
         pair_id = str(uuid.uuid4())[:8]
-
-        if leap_call:
-            orders.append(self._make_option_order(
-                underlying=symbol, side="buy", contracts=contracts,
-                expiry=leap_call["expiration_date"],
-                strike=leap_call["strike_price"],
-                mark_price=leap_call.get("mark_price") or leap_call.get("ask") or 0,
-                bid=leap_call.get("bid"), ask=leap_call.get("ask"),
-                position_effect="open", action="open_leap",
-                delta=leap_call.get("delta"), dte=leap_call.get("dte"),
-                rationale=self._build_rationale(
-                    f"Open PMCC LEAP: {symbol} {leap_call['expiration_date']} "
-                    f"C{leap_call['strike_price']:.2f} "
-                    f"delta={leap_call.get('delta', '?'):.2f}",
-                    analysis,
-                ),
-                pair_id=pair_id,
-            ))
-        else:
-            log.warning("PMCCAgent: no qualifying LEAP found for %s", symbol)
-
-        if weekly_call:
-            orders.append(self._make_option_order(
-                underlying=symbol, side="sell", contracts=contracts,
-                expiry=weekly_call["expiration_date"],
-                strike=weekly_call["strike_price"],
-                mark_price=weekly_call.get("mark_price") or weekly_call.get("bid") or 0,
-                bid=weekly_call.get("bid"), ask=weekly_call.get("ask"),
-                position_effect="open", action="open_short_call",
-                delta=weekly_call.get("delta"), dte=weekly_call.get("dte"),
-                rationale=self._build_rationale(
-                    f"Open PMCC short call: {symbol} {weekly_call['expiration_date']} "
-                    f"C{weekly_call['strike_price']:.2f} "
-                    f"delta={weekly_call.get('delta', '?'):.2f}",
-                    analysis,
-                ),
-                pair_id=pair_id,
-            ))
-        else:
-            log.warning("PMCCAgent: no qualifying weekly call found for %s", symbol)
-
-        # Skip-reason for empty / partial results. If at least one leg
-        # produced an order we still return None — the caller can check
-        # `len(orders) < 2` if it needs to know about partial fills, but
-        # for research-on-demand auditing "we got at least one leg" counts
-        # as acted_on, not skipped.
-        skip_reason: str | None = None
-        if not orders:
-            if leap_call is None:
-                skip_reason = "leap_unavailable"
-            elif weekly_call is None:
-                skip_reason = "weekly_unavailable"
-            else:
-                skip_reason = "no_qualifying_chain"
-        return orders, skip_reason
+        orders.append(self._make_option_order(
+            underlying=symbol, side="buy", contracts=contracts,
+            expiry=leap_call["expiration_date"],
+            strike=leap_call["strike_price"],
+            mark_price=leap_call.get("mark_price") or leap_call.get("ask") or 0,
+            bid=leap_call.get("bid"), ask=leap_call.get("ask"),
+            position_effect="open", action="open_leap",
+            delta=leap_call.get("delta"), dte=leap_call.get("dte"),
+            rationale=self._build_rationale(
+                f"Open PMCC LEAP: {symbol} {leap_call['expiration_date']} "
+                f"C{leap_call['strike_price']:.2f} "
+                f"delta={leap_call.get('delta', '?'):.2f}",
+                analysis,
+            ),
+            pair_id=pair_id,
+        ))
+        orders.append(self._make_option_order(
+            underlying=symbol, side="sell", contracts=contracts,
+            expiry=weekly_call["expiration_date"],
+            strike=weekly_call["strike_price"],
+            mark_price=weekly_call.get("mark_price") or weekly_call.get("bid") or 0,
+            bid=weekly_call.get("bid"), ask=weekly_call.get("ask"),
+            position_effect="open", action="open_short_call",
+            delta=weekly_call.get("delta"), dte=weekly_call.get("dte"),
+            rationale=self._build_rationale(
+                f"Open PMCC short call: {symbol} {weekly_call['expiration_date']} "
+                f"C{weekly_call['strike_price']:.2f} "
+                f"delta={weekly_call.get('delta', '?'):.2f}",
+                analysis,
+            ),
+            pair_id=pair_id,
+        ))
+        return orders, None
 
     @staticmethod
     def _compute_leap_lifetime_key(leg: PMCCPosition | None) -> str | None:
@@ -3128,8 +3143,6 @@ Action reference:
         if not leg.short_leg_expiry or leg.short_leg_strike is None:
             return []
 
-        orders: list[ProposedOrder] = []
-        pair_id = str(uuid.uuid4())[:8]
         contracts = max(1, int(abs(leg.short_leg_qty or 1)))
         close_mark = leg.short_leg_mark or 0.0
         pnl_pct = (leg.short_leg_pnl_pct or 0) * 100
@@ -3139,6 +3152,25 @@ Action reference:
             else f"profit={pnl_pct:.0f}%"
         )
 
+        # B4 (atomic roll): resolve the re-open leg BEFORE proposing the close.
+        # If no qualifying weekly exists, abort the WHOLE roll (propose nothing)
+        # + audit — never ship a close-only "roll" that leaves the LEAP
+        # uncovered. A deliberate bare close is the LLM's explicit close_short.
+        new_weekly = await self._find_best_weekly(
+            symbol, broker,
+            target_delta=analysis.target_delta if analysis else None,
+            target_dte=analysis.target_dte if analysis else None,
+            target_strike=analysis.target_strike if analysis else None,
+        )
+        if not new_weekly:
+            self._audit_roll_abort(
+                reason="sparse_chain_no_weekly", symbol=symbol,
+                missing_leg="new_short", diag=self._last_weekly_diag,
+            )
+            return []
+
+        orders: list[ProposedOrder] = []
+        pair_id = str(uuid.uuid4())[:8]
         # Phase 2 Telegram approval enrichment: build position context once
         # and attach to BOTH legs of the roll. The formatter renders the
         # same block on each, so approving close OR open shows the LEAP
@@ -3160,52 +3192,48 @@ Action reference:
             position_context=position_context,
             leap_lifetime_key=leap_key,
         ))
-
-        new_weekly = await self._find_best_weekly(
-            symbol, broker,
-            target_delta=analysis.target_delta if analysis else None,
-            target_dte=analysis.target_dte if analysis else None,
-            target_strike=analysis.target_strike if analysis else None,
-        )
-        if new_weekly:
-            orders.append(self._make_option_order(
-                underlying=symbol, side="sell", contracts=contracts,
-                expiry=new_weekly["expiration_date"],
-                strike=new_weekly["strike_price"],
-                mark_price=new_weekly.get("mark_price") or new_weekly.get("bid") or 0,
-                bid=new_weekly.get("bid"), ask=new_weekly.get("ask"),
-                position_effect="open", action="roll_short_call_open",
-                delta=new_weekly.get("delta"), dte=new_weekly.get("dte"),
-                rationale=self._build_rationale(
-                    f"Roll open: sell {symbol} {new_weekly['expiration_date']} "
-                    f"C{new_weekly['strike_price']:.2f}",
-                    analysis,
-                ),
-                pair_id=pair_id,
-                position_context=position_context,  # same context as the close leg
-                leap_lifetime_key=leap_key,
-            ))
-        else:
-            log.warning("PMCCAgent: no new weekly found for roll on %s", symbol)
-
+        orders.append(self._make_option_order(
+            underlying=symbol, side="sell", contracts=contracts,
+            expiry=new_weekly["expiration_date"],
+            strike=new_weekly["strike_price"],
+            mark_price=new_weekly.get("mark_price") or new_weekly.get("bid") or 0,
+            bid=new_weekly.get("bid"), ask=new_weekly.get("ask"),
+            position_effect="open", action="roll_short_call_open",
+            delta=new_weekly.get("delta"), dte=new_weekly.get("dte"),
+            rationale=self._build_rationale(
+                f"Roll open: sell {symbol} {new_weekly['expiration_date']} "
+                f"C{new_weekly['strike_price']:.2f}",
+                analysis,
+            ),
+            pair_id=pair_id,
+            position_context=position_context,  # same context as the close leg
+            leap_lifetime_key=leap_key,
+        ))
         return orders
 
     # -- Option chain queries ------------------------------------------------
 
     async def _find_best_leap(self, symbol: str, broker: Broker) -> dict | None:
         """Find the best LEAP call: DTE >= leap_min_dte, delta >= leap_min_delta,
-        passes liquidity gate."""
+        passes liquidity gate. Stashes `self._last_leap_diag` (chain state) so a
+        B4 abort can audit WHY no LEAP was found."""
         if not isinstance(broker, OptionBroker):
+            self._last_leap_diag = {"reason": "broker_not_option", "considered": 0}
             return None
         dates = await broker.get_expiration_dates(symbol)
         leap_dates = [d for d in dates if _days_to(d) >= self._leap_min_dte]
         if not leap_dates:
+            self._last_leap_diag = {"reason": "no_leap_expiry_dates",
+                                    "considered": 0, "min_dte": self._leap_min_dte}
             log.warning("PMCCAgent: no expiry dates >= %d days for %s", self._leap_min_dte, symbol)
             return None
         target_date = leap_dates[0]
         calls = await broker.get_calls_for_expiry(symbol, target_date)
         liquid = self._filter_liquid(calls, symbol)
         if not liquid:
+            self._last_leap_diag = {"reason": "no_liquid_leap_contracts",
+                                    "considered": len(calls), "liquid": 0,
+                                    "target_date": target_date}
             log.warning(
                 "PMCCAgent: no liquid LEAP contracts for %s on %s "
                 "(%d candidates, all failed liquidity gate)",
@@ -3213,9 +3241,14 @@ Action reference:
             )
             return None
         best = _select_leap_strike(liquid)
-        if best:
-            best["expiration_date"] = target_date
-            best["dte"] = _days_to(target_date)
+        if not best:
+            self._last_leap_diag = {"reason": "no_qualifying_leap_strike",
+                                    "considered": len(liquid), "target_date": target_date}
+            return None
+        best["expiration_date"] = target_date
+        best["dte"] = _days_to(target_date)
+        self._last_leap_diag = {"reason": "ok", "considered": len(liquid),
+                                "target_date": target_date}
         return best
 
     async def _find_best_weekly(
@@ -3234,8 +3267,12 @@ Action reference:
         liquidity gate), overriding the delta-distance ranking. Used when
         a rule (e.g. Major Breach halfway-roll) prescribes a specific
         strike that the delta-only picker would miss. None = original
-        delta-distance behavior."""
+        delta-distance behavior.
+
+        Stashes `self._last_weekly_diag` (chain state) so a B4 abort can audit
+        WHY no weekly was found."""
         if not isinstance(broker, OptionBroker):
+            self._last_weekly_diag = {"reason": "broker_not_option", "considered": 0}
             return None
         dates = await broker.get_expiration_dates(symbol)
 
@@ -3252,6 +3289,7 @@ Action reference:
         if not weekly_dates:
             future = [d for d in dates if _days_to(d) > 0]
             if not future:
+                self._last_weekly_diag = {"reason": "no_future_expiry_dates", "considered": 0}
                 log.warning("PMCCAgent: no future expiry dates for %s", symbol)
                 return None
             weekly_dates = [future[0]]
@@ -3260,6 +3298,9 @@ Action reference:
         calls = await broker.get_calls_for_expiry(symbol, target_date)
         liquid = self._filter_liquid(calls, symbol)
         if not liquid:
+            self._last_weekly_diag = {"reason": "no_liquid_weekly_contracts",
+                                      "considered": len(calls), "liquid": 0,
+                                      "target_date": target_date}
             log.warning(
                 "PMCCAgent: no liquid weekly contracts for %s on %s "
                 "(%d candidates, all failed liquidity gate)",
@@ -3272,9 +3313,14 @@ Action reference:
         # see the helper's docstring.
         delta = target_delta if target_delta is not None else self._short_target_delta
         best = _select_weekly_strike(liquid, delta, target_strike=target_strike)
-        if best:
-            best["expiration_date"] = target_date
-            best["dte"] = _days_to(target_date)
+        if not best:
+            self._last_weekly_diag = {"reason": "no_qualifying_weekly_strike",
+                                      "considered": len(liquid), "target_date": target_date}
+            return None
+        best["expiration_date"] = target_date
+        best["dte"] = _days_to(target_date)
+        self._last_weekly_diag = {"reason": "ok", "considered": len(liquid),
+                                  "target_date": target_date}
         return best
 
     # -- ProposedOrder factory -----------------------------------------------
@@ -3756,6 +3802,24 @@ Action reference:
             )
         except Exception as e:
             log.warning("robinhood_pmcc audit write failed (%s): %s", kind, e)
+
+    def _audit_roll_abort(self, *, reason: str, symbol: str, missing_leg: str,
+                          diag: dict | None) -> None:
+        """B4 (Phase 1): record an aborted roll/open so `b4 -> 0` is
+        distinguishable from 'chains are thin and we now do nothing'. Writes a
+        structured `pmcc_roll_aborted` division audit + a loud log line. NO order
+        is proposed when this fires (atomic-roll invariant)."""
+        payload = {
+            "reason": reason,
+            "symbol": symbol,
+            "missing_leg": missing_leg,
+            "chain_state": diag or {},
+        }
+        log.warning(
+            "PMCCAgent: ABORTED roll/open on %s -- %s (missing %s); chain=%s",
+            symbol, reason, missing_leg, payload["chain_state"],
+        )
+        self._audit_division("pmcc_roll_aborted", payload)
 
     async def _record_research_unavailable(
         self, *, engagement_id: str | None, reason: str,

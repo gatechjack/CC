@@ -43,6 +43,9 @@ BASELINE = {
     "holiday_scan": 6,                  # 3 dates (Phase 1: 0)
     "short_delta_ge_040": 24,           # (Phase 4: 0 outside band)
     "itm_target_strike_bypass": None,   # not persisted; synthetic-only (Phase 2)
+    "roll_aborted": None,               # Phase-1 MONITORED metric, NOT an exit
+                                        # criterion; no historical baseline (the
+                                        # abort behavior did not exist pre-fix).
 }
 
 

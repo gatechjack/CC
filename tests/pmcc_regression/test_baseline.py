@@ -70,6 +70,17 @@ def test_itm_target_strike_bypass_has_no_historical_baseline():
     assert BASELINE["itm_target_strike_bypass"] is None
 
 
+def test_roll_aborted_is_a_post_fix_monitored_metric():
+    # No historical row is an abort (the behavior didn't exist pre-fix). This is
+    # a MONITORED metric read after paper runs, not an exit criterion.
+    assert D.count_over(load_records(), D.roll_aborted) == 0
+    assert BASELINE["roll_aborted"] is None
+    # A synthetic post-fix abort record trips the detector.
+    aborted = D.RecRecord(rec_type="roll_short", aborted=True,
+                          abort_reason="sparse_chain_no_weekly")
+    assert D.roll_aborted(aborted) is True
+
+
 def test_override_field_suppresses_hold_and_debit_detectors():
     # Forward-compat guard: a rec the LLM explicitly authorized via the Phase-2
     # override field must NOT count as a pathology.

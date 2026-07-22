@@ -1751,3 +1751,244 @@ def test_select_weekly_strike_handles_calls_without_strike():
     calls = [{"delta": 0.30, "mark_price": 1.0}]  # no strike_price
     best = _select_weekly_strike(calls, target_strike=170.0)
     assert best is None
+
+
+# ===========================================================================
+# Phase 1 — B4 (atomic rolls/opens) + B1 (HOLD precedence) + B11 (holiday guard)
+# ===========================================================================
+
+class _CaptureLogger:
+    """Fake LoggerAgent capturing log_event(actor, kind, payload) calls."""
+    def __init__(self):
+        self.events = []
+
+    def log_event(self, actor=None, kind=None, payload=None):
+        self.events.append({"actor": actor, "kind": kind, "payload": payload})
+
+
+@pytest.fixture
+def cap_logger():
+    return _CaptureLogger()
+
+
+@pytest.fixture
+def agent_logged(strategies_yaml: Path, risk_yaml: Path, cap_logger) -> PMCCAgent:
+    return PMCCAgent(strategies_yaml=strategies_yaml, risk_yaml=risk_yaml,
+                     logger_agent=cap_logger)
+
+
+def _roll_leap_analysis(symbol="AAPL"):
+    return PMCCAnalysis(symbol=symbol, action="roll_leap", confidence=0.8,
+                        urgency="routine", summary="", rationale="")
+
+
+def _abort_event(cap_logger):
+    return next(e for e in cap_logger.events if e["kind"] == "pmcc_roll_aborted")
+
+
+# ---- B4 (a): roll_short aborts when no re-open weekly (no close-only) ----
+@pytest.mark.asyncio
+async def test_b4a_roll_short_aborts_when_no_weekly(agent_logged, cap_logger):
+    leg = _pmcc_with_short(dte=2, pnl_pct=0.10)   # AAPL
+    broker = MockOptionBroker()                    # empty chains
+    orders = await agent_logged._propose_roll_short("AAPL", leg, broker)
+    assert orders == []                            # aborted, NOT a close-only roll
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "sparse_chain_no_weekly"
+    assert ev["payload"]["missing_leg"] == "new_short"
+    assert ev["payload"]["chain_state"]["reason"] == "no_future_expiry_dates"
+
+
+# ---- B4 (b): roll_leap aborts when no new LEAP ----
+@pytest.mark.asyncio
+async def test_b4b_roll_leap_aborts_when_no_leap(agent_logged, cap_logger):
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
+                      delta=0.82, avg_price=22.50),
+        _opt_position("AAPL", expiry_days=14, strike=175.0, qty=-1.0,
+                      delta=0.28, avg_price=1.45, mark_price=1.20),
+    ]
+    # weekly chain present but NO leap-eligible expiry (>=365 DTE)
+    broker = MockOptionBroker(
+        option_positions=opt_positions,
+        expiry_dates={"AAPL": [_future(14)]},
+        calls={("AAPL", _future(14)): [_call(175.0, 0.28, 1.50, dte=14)]},
+    )
+    orders = await agent_logged.propose_orders_for_pair(
+        broker, "AAPL", _roll_leap_analysis())
+    assert orders == []
+    assert _abort_event(cap_logger)["payload"]["reason"] == "sparse_chain_no_leap"
+
+
+# ---- B4 (c): roll_leap aborts when LEAP found but no weekly for the new short ----
+@pytest.mark.asyncio
+async def test_b4c_roll_leap_aborts_when_no_weekly_for_new_leap(agent_logged, cap_logger):
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
+                      delta=0.82, avg_price=22.50),
+        _opt_position("AAPL", expiry_days=14, strike=175.0, qty=-1.0,
+                      delta=0.28, avg_price=1.45, mark_price=1.20),
+    ]
+    # leap chain present; the weekly-window expiry exists but has NO calls
+    broker = MockOptionBroker(
+        option_positions=opt_positions,
+        expiry_dates={"AAPL": [_future(14), _future(400)]},
+        calls={("AAPL", _future(400)): [_call(130.0, 0.85, 25.0, dte=400)]},
+    )
+    orders = await agent_logged.propose_orders_for_pair(
+        broker, "AAPL", _roll_leap_analysis())
+    assert orders == []
+    assert _abort_event(cap_logger)["payload"]["reason"] == \
+        "sparse_chain_no_weekly_for_new_leap"
+
+
+# ---- B4 (d): open_pmcc aborts when no weekly (never a LEAP without a short) ----
+@pytest.mark.asyncio
+async def test_b4d_open_pmcc_aborts_when_no_weekly(agent_logged, cap_logger):
+    broker = MockOptionBroker(
+        expiry_dates={"TESTX": [_future(14), _future(400)]},
+        calls={("TESTX", _future(400)): [_call(130.0, 0.85, 25.0, dte=400)]},
+    )
+    orders, reason = await agent_logged._propose_open_pmcc("TESTX", broker, contracts=1)
+    assert orders == []
+    assert reason == "weekly_unavailable"
+    assert _abort_event(cap_logger)["payload"]["reason"] == "sparse_chain_no_weekly_for_open"
+
+
+# ---- B4: a scheduled scan on a sparse chain aborts rather than close-only ----
+@pytest.mark.asyncio
+async def test_b4_scan_roll_aborts_on_sparse_chain(agent_logged, cap_logger):
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0, delta=0.82),
+        _opt_position("AAPL", expiry_days=2, strike=175.0, qty=-1.0,
+                      delta=0.28, avg_price=1.45, mark_price=1.20),
+    ]
+    broker = MockOptionBroker(option_positions=opt_positions)  # no chains
+    orders = await agent_logged.scan(broker)
+    assert orders == []                                        # no close-only leg shipped
+    assert any(e["kind"] == "pmcc_roll_aborted" for e in cap_logger.events)
+
+
+# ---- B1 (a): LLM HOLD is NOT overridden by the DTE<=2 trigger ----
+@pytest.mark.asyncio
+async def test_b1a_hold_not_overridden_at_terminal_dte(agent, monkeypatch):
+    async def _fake_hold(pos, price, regime, vix=None):
+        return PMCCAnalysis(symbol=pos.symbol, action="hold", confidence=0.8,
+                            urgency="routine", summary="", rationale="")
+    monkeypatch.setattr(agent, "_llm_analyze_position", _fake_hold)
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0, delta=0.82),
+        _opt_position("AAPL", expiry_days=2, strike=175.0, qty=-1.0,
+                      delta=0.28, avg_price=1.45, mark_price=1.20),
+    ]
+    broker = _broker_with_chains(["AAPL"], opt_positions)   # complete chain (COULD roll)
+    orders = await agent.scan(broker)
+    assert orders == []                                     # HOLD respected
+
+
+# ---- B1 (b): LLM HOLD is NOT overridden by the >=50%-profit trigger ----
+@pytest.mark.asyncio
+async def test_b1b_hold_not_overridden_at_profit(agent, monkeypatch):
+    async def _fake_hold(pos, price, regime, vix=None):
+        return PMCCAnalysis(symbol=pos.symbol, action="hold", confidence=0.8,
+                            urgency="routine", summary="", rationale="")
+    monkeypatch.setattr(agent, "_llm_analyze_position", _fake_hold)
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0, delta=0.82),
+        _opt_position("AAPL", expiry_days=30, strike=175.0, qty=-1.0,
+                      delta=0.28, avg_price=1.45, mark_price=0.72),  # ~50% captured
+    ]
+    broker = _broker_with_chains(["AAPL"], opt_positions)
+    orders = await agent.scan(broker)
+    assert orders == []
+
+
+# ---- B1 (c): with NO LLM verdict (unavailable), the deterministic roll fires ----
+@pytest.mark.asyncio
+async def test_b1c_deterministic_roll_fires_when_llm_unavailable(agent):
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0, delta=0.82),
+        _opt_position("AAPL", expiry_days=2, strike=175.0, qty=-1.0,
+                      delta=0.28, avg_price=1.45, mark_price=1.20),
+    ]
+    broker = _broker_with_chains(["AAPL"], opt_positions)  # LLM stays None in tests
+    orders = await agent.scan(broker)
+    actions = {o.extra["action"] for o in orders}
+    assert "roll_short_call_close" in actions and "roll_short_call_open" in actions
+
+
+# ---- B1 (d): an LLM early roll still rolls (unchanged) ----
+@pytest.mark.asyncio
+async def test_b1d_llm_early_roll_still_rolls(agent, monkeypatch):
+    async def _fake_early(pos, price, regime, vix=None):
+        return PMCCAnalysis(symbol=pos.symbol, action="roll_short_early",
+                            confidence=0.8, urgency="routine", summary="", rationale="")
+    monkeypatch.setattr(agent, "_llm_analyze_position", _fake_early)
+    opt_positions = [
+        _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0, delta=0.82),
+        _opt_position("AAPL", expiry_days=30, strike=175.0, qty=-1.0,  # healthy DTE
+                      delta=0.28, avg_price=1.45, mark_price=1.30),
+    ]
+    broker = _broker_with_chains(["AAPL"], opt_positions)
+    orders = await agent.scan(broker)
+    assert {"roll_short_call_close", "roll_short_call_open"} <= {o.extra["action"] for o in orders}
+
+
+# ---- B1 (e): precedence rule (0-DTE HOLD is handled upstream by the time gate,
+#      which rewrites HOLD->roll_short; _deterministic_roll_allowed then permits it) ----
+def test_b1e_deterministic_roll_allowed_precedence(agent):
+    def mk(action):
+        return PMCCAnalysis(symbol="X", action=action, confidence=0.5,
+                            urgency="routine", summary="", rationale="")
+    assert agent._deterministic_roll_allowed(None) is True         # LLM down -> fallback
+    assert agent._deterministic_roll_allowed(mk("hold")) is False  # HOLD respected
+    assert agent._deterministic_roll_allowed(mk("watch")) is False
+    assert agent._deterministic_roll_allowed(mk("roll_short")) is True   # 0-DTE gate rewrite
+    assert agent._deterministic_roll_allowed(mk("roll_leap")) is True
+
+
+# ---- B11: holiday guard skips full closures; calendar None fires (guard off) ----
+def test_b11_scan_should_fire_skips_full_closure():
+    from datetime import time as _t
+    from trading_corp.main import _scan_should_fire
+    win_s, win_e = _t(8, 30), _t(9, 25)
+    dt = _et(9, 0)   # Friday 2026-05-01 09:00 ET, in window
+    assert _scan_should_fire(dt, None, win_s, win_e, _FakeCalendar(closed=False)) is True
+    assert _scan_should_fire(dt, None, win_s, win_e, _FakeCalendar(closed=True)) is False
+    assert _scan_should_fire(dt, None, win_s, win_e, None) is True  # guard off = original
+
+
+class _HolidayCal:
+    """Date-aware calendar: close_time_et -> None on listed holidays, else 4pm ET."""
+    def __init__(self, holidays):
+        self.h = set(holidays)
+
+    def close_time_et(self, when):
+        from datetime import datetime as _dt
+        from trading_corp.utils.time import ET
+        d = when.date() if hasattr(when, "date") else when
+        if d.isoformat() in self.h:
+            return None
+        return _dt(d.year, d.month, d.day, 16, 0, tzinfo=ET)
+
+
+def test_b11_strict_tightening_over_a_month():
+    """Walk every day of May 2026 (contains Memorial Day 05-25) through the OLD
+    predicate and the new _scan_should_fire; assert the new one NEVER adds a
+    fire-day and only ever removes full-closure weekdays."""
+    from datetime import date as _d, datetime as _dtm, time as _t, timedelta as _td
+    from trading_corp.utils.time import ET
+    from trading_corp.main import _scan_should_fire
+    win_s, win_e = _t(8, 30), _t(9, 25)
+    cal = _HolidayCal({"2026-05-25"})   # Memorial Day (Monday)
+    removed = []
+    x = _d(2026, 5, 1)
+    while x <= _d(2026, 5, 31):
+        now = _dtm(x.year, x.month, x.day, 9, 0, tzinfo=ET)  # 09:00 ET, in window
+        old = (now.weekday() < 5) and (win_s <= now.time() <= win_e) and (None != now.date())
+        new = _scan_should_fire(now, None, win_s, win_e, cal)
+        assert not (new and not old), f"{x}: new predicate ADDED a fire-day"
+        if old and not new:
+            removed.append(x.isoformat())
+        x += _td(days=1)
+    assert removed == ["2026-05-25"]   # the ONLY removed fire-day is the closure

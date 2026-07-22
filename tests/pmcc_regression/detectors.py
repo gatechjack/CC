@@ -77,6 +77,8 @@ class RecRecord:
     sold_leap: bool | None = None      # old LEAP sold (roll_leap_close) proposed?
     closed_short: bool | None = None   # existing short bought back?
     b4_subtype: str = ""               # "uncovered" | "fully_naked" | "" (precomputed hint)
+    aborted: bool = False              # B4 abort: an intended roll/open produced no orders
+    abort_reason: str = ""             # structured reason code (sparse_chain_no_weekly, ...)
 
     @classmethod
     def from_row(cls, row: dict) -> "RecRecord":
@@ -100,6 +102,8 @@ class RecRecord:
             sold_leap=_b(row.get("sold_leap")),
             closed_short=_b(row.get("closed_short")),
             b4_subtype=row.get("b4_subtype") or "",
+            aborted=bool(_b(row.get("aborted"))),
+            abort_reason=row.get("abort_reason") or "",
         )
 
     @classmethod
@@ -224,6 +228,16 @@ def itm_target_strike_bypass(r: RecRecord) -> bool:
     return r.target_strike <= r.spot
 
 
+# --- B4 abort (Phase-1 monitored metric, NOT an exit criterion) ------------
+# An intended roll/open that produced no orders because a re-open leg couldn't
+# be found (atomic-roll abort). No historical baseline — the behavior did not
+# exist pre-fix. Read after paper runs to distinguish "fix works" from "chains
+# are thin and we now do nothing"; the structured reason lives in the
+# `pmcc_roll_aborted` audit + `abort_reason`.
+def roll_aborted(r: RecRecord) -> bool:
+    return r.aborted is True
+
+
 def count_over(records, detector) -> int:
     """Count records tripping a detector — the phase-gate assertion primitive."""
     return sum(1 for r in records if detector(r))
@@ -241,4 +255,5 @@ ALL_DETECTORS = {
     "holiday_scan": holiday_scan,
     "short_delta_ge_040": short_delta_ge_040,
     "itm_target_strike_bypass": itm_target_strike_bypass,
+    "roll_aborted": roll_aborted,
 }

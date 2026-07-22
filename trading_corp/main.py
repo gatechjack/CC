@@ -2684,6 +2684,30 @@ async def _start_web_server(
     return server, task
 
 
+def _scan_should_fire(now, last_scan_date, win_start, win_end, calendar) -> bool:
+    """Whether the daily pre-open PMCC scan should fire at `now`.
+
+    STRICT TIGHTENING of the original predicate `is_weekday and in_window and
+    not already_scanned`: every (day, time) that fired before still fires,
+    EXCEPT full market closures (holidays), now skipped (B11). A calendar
+    failure fails OPEN (fires) to preserve the original behaviour — the guard
+    only ever REMOVES a fire-day, never adds one.
+    """
+    is_weekday = now.weekday() < 5
+    in_window = win_start <= now.time() <= win_end
+    already_scanned = (last_scan_date == now.date())
+    if not (is_weekday and in_window and not already_scanned):
+        return False
+    # B11: skip full market closures (close_time_et -> None on closed days).
+    if calendar is not None:
+        try:
+            if calendar.close_time_et(now) is None:
+                return False
+        except Exception:
+            pass  # fail open: never add a fire-day the old predicate wouldn't
+    return True
+
+
 async def _scheduled_pmcc_scan_loop(
     on_scan_callback,
     channel,
@@ -2716,6 +2740,15 @@ async def _scheduled_pmcc_scan_loop(
     win_start = time(*scan_window_start_et)
     win_end = time(*scan_window_end_et)
     last_scan_date = None
+    # B11: NYSE calendar for the holiday guard — reuse the existing dependency
+    # already used by pmcc terminal-DTE logic (close_time_et -> None on closed
+    # days). None (unavailable) leaves the guard off = original behaviour.
+    try:
+        from trading_corp.utils.market_hours import default_calendar
+        _cal = default_calendar()
+    except Exception as _cal_err:
+        log.warning("PMCC scheduler: calendar unavailable (%s); holiday guard off", _cal_err)
+        _cal = None
 
     log.info(
         "PMCC scan scheduler online: weekdays %02d:%02d–%02d:%02d ET",
@@ -2726,11 +2759,7 @@ async def _scheduled_pmcc_scan_loop(
     while True:
         try:
             now = datetime.now(et) if et is not None else datetime.now()
-            is_weekday = now.weekday() < 5
-            in_window = win_start <= now.time() <= win_end
-            already_scanned = (last_scan_date == now.date())
-
-            if is_weekday and in_window and not already_scanned:
+            if _scan_should_fire(now, last_scan_date, win_start, win_end, _cal):
                 last_scan_date = now.date()
                 log.info("Scheduler firing daily pre-open PMCC scan...")
                 try:
