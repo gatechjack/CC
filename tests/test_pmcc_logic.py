@@ -2646,3 +2646,83 @@ async def test_b2_scan_roll_leap_net_credit_ships_and_audits(agent_logged, cap_l
     gate_ev = next(e for e in cap_logger.events if e["kind"] == "pmcc_roll_gates")
     assert gate_ev["payload"]["gates"] == {
         "earnings": "clear", "selection": "ok", "credit": "clear"}
+
+
+# ============================================================================
+# Final phase (2026-07-22) — B3: record the old-LEAP sell mark (data fix),
+# DECOUPLED from execution on the urgent path via `preserve_market_sell`.
+# roll_leap_close -> real mark + limit-at-mark; close_leap_urgent -> record the
+# mark for cost visibility BUT keep the 0.0 market-sell so an urgent close fills.
+# ============================================================================
+
+def _roll_leap_none_leapmark_broker() -> MockOptionBroker:
+    """A roll_leap where the held LEAP has NO mark (`long_leg_mark` None) — the
+    old-LEAP sell must record `mark_unavailable`, NOT a silent 0.0."""
+    today = date.today()
+    leap_exp = (today + timedelta(days=500)).isoformat()
+    wk = (today + timedelta(days=14)).isoformat()
+    return MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 100, 160.0, qty=1.0, delta=0.97, avg_price=23.80),  # mark_price None
+            _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30, avg_price=2.50, mark_price=1.50),
+        ],
+        expiry_dates={"MSTR": [wk, leap_exp]},
+        calls={
+            ("MSTR", leap_exp): [_liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500)],
+            ("MSTR", wk): [_liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=14)],
+        },
+    )
+
+
+def _close_all_broker() -> MockOptionBroker:
+    """A held MSTR PMCC pair (LEAP mark 58.05) for action=close_all → close_short
+    + close_leap_urgent (a market sell)."""
+    return MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 400, 160.0, qty=1.0, delta=0.97, avg_price=23.80, mark_price=58.05),
+            _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30, avg_price=2.50, mark_price=1.50),
+        ],
+    )
+
+
+def _leg_by_action(orders, action):
+    return next(o for o in orders if o.extra.get("action") == action)
+
+
+@pytest.mark.asyncio
+async def test_b3_roll_leap_close_records_real_mark_limit_at_mark(agent, clear_earnings):
+    """B3: the roll_leap_close (old-LEAP sell) records the real held-LEAP mark
+    (`pos.long_leg_mark` = 58.05) as mark_per_share AND prices the leg limit-at-mark
+    (58.05) — consistent with every other roll leg (was 0.0 for both)."""
+    orders = await agent.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR", _rl_analysis())
+    close_leap = _leg_by_action(orders, "roll_leap_close")
+    assert close_leap.extra["mark_per_share"] == 58.05          # recorded, not 0.0
+    assert close_leap.limit_price == 58.05                      # limit-at-mark
+    assert "mark_unavailable" not in close_leap.extra
+
+
+@pytest.mark.asyncio
+async def test_b3_unavailable_mark_records_flag_not_zero(agent, clear_earnings):
+    """B3: when the held LEAP has no mark, the roll_leap_close leg records
+    mark_unavailable=True + mark_per_share None (DISTINGUISHABLE) — never a silent 0.0."""
+    orders = await agent.propose_orders_for_pair(
+        _roll_leap_none_leapmark_broker(), "MSTR", _rl_analysis())
+    close_leap = _leg_by_action(orders, "roll_leap_close")
+    assert close_leap.extra["mark_unavailable"] is True
+    assert close_leap.extra["mark_per_share"] is None           # not 0.0
+    assert close_leap.limit_price is None                       # no phantom 0.0 limit
+
+
+@pytest.mark.asyncio
+async def test_b3_close_leap_urgent_records_mark_but_keeps_market_sell(agent):
+    """B3 decoupling (the whole point of the split): close_leap_urgent RECORDS the
+    real mark (cost visibility) BUT PRESERVES the market-sell (limit_price 0.0) so
+    an urgent structural close still fills. Assert BOTH."""
+    orders = await agent.propose_orders_for_pair(
+        _close_all_broker(), "MSTR",
+        PMCCAnalysis(symbol="MSTR", action="close_all", confidence=0.9,
+                     urgency="urgent", summary="", rationale=""))
+    close_leap = _leg_by_action(orders, "close_leap_urgent")
+    assert close_leap.extra["mark_per_share"] == 58.05          # recorded for cost visibility
+    assert close_leap.limit_price == 0.0                        # market-sell PRESERVED (must fill)

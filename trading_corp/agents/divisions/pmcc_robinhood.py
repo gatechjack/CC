@@ -755,19 +755,12 @@ class PMCCAgent:
             return int(v)
         return int(self._pmcc_cfg.get("long_call_min_dte", 365))
 
-    @property
-    def _leap_min_delta(self) -> float:
-        v = self._long_leg_cfg.get("delta_min")
-        if v is not None:
-            return float(v)
-        return float(self._pmcc_cfg.get("long_call_min_delta", 0.80))
-
-    @property
-    def _leap_max_delta(self) -> float:
-        v = self._long_leg_cfg.get("delta_max")
-        if v is not None:
-            return float(v)
-        return 0.95
+    # B8 (2026-07-22): the LEAP delta-band properties (_leap_min_delta /
+    # _leap_max_delta) were RETIRED — no code path read them. LEAP strike selection
+    # is a hard delta >= 0.80 (deepest qualifying ITM) in `_select_leap_strike`,
+    # which is INTENTIONAL (module docstring; skill "0.55-0.80" band, deep end) and
+    # NOT config-driven. The long_leg.delta_min/delta_max config keys were retired
+    # with them. `_leap_min_dte` above IS still used (the DTE floor).
 
     @property
     def _short_target_delta(self) -> float:
@@ -1318,7 +1311,7 @@ Action reference:
                 underlying=symbol, side="sell", contracts=contracts,
                 expiry=pos.long_leg_expiry,
                 strike=pos.long_leg_strike,
-                mark_price=0.0,
+                mark_price=(float(pos.long_leg_mark) if pos.long_leg_mark is not None else None),  # B3
                 position_effect="close",
                 action="roll_leap_close",
                 dte=pos.long_leg_dte,
@@ -1399,7 +1392,10 @@ Action reference:
                 underlying=symbol, side="sell", contracts=contracts,
                 expiry=pos.long_leg_expiry,
                 strike=pos.long_leg_strike,
-                mark_price=0.0,
+                # B3: record the real mark for cost visibility; the execution agent
+                # will price it — keep the market-sell (0.0 limit) so an URGENT close fills.
+                mark_price=(float(pos.long_leg_mark) if pos.long_leg_mark is not None else None),
+                preserve_market_sell=True,
                 position_effect="close",
                 action="close_leap_urgent",
                 dte=pos.long_leg_dte,
@@ -2208,7 +2204,10 @@ Action reference:
                             underlying=symbol, side="sell", contracts=contracts,
                             expiry=leg.long_leg_expiry,
                             strike=leg.long_leg_strike,
-                            mark_price=0.0,   # execution agent will price it
+                            # B3: record the real mark for cost visibility; the execution agent
+                            # will price it — keep the market-sell (0.0 limit) so an URGENT close fills.
+                            mark_price=(float(leg.long_leg_mark) if leg.long_leg_mark is not None else None),
+                            preserve_market_sell=True,
                             position_effect="close",
                             action="close_leap_urgent",
                             dte=leg.long_leg_dte,
@@ -2300,7 +2299,7 @@ Action reference:
                         underlying=symbol, side="sell", contracts=contracts,
                         expiry=leg.long_leg_expiry,
                         strike=leg.long_leg_strike,
-                        mark_price=0.0,
+                        mark_price=(float(leg.long_leg_mark) if leg.long_leg_mark is not None else None),  # B3
                         position_effect="close",
                         action="roll_leap_close",
                         dte=leg.long_leg_dte,
@@ -3446,9 +3445,11 @@ Action reference:
     # -- Option chain queries ------------------------------------------------
 
     async def _find_best_leap(self, symbol: str, broker: Broker) -> dict | None:
-        """Find the best LEAP call: DTE >= leap_min_dte, delta >= leap_min_delta,
-        passes liquidity gate. Stashes `self._last_leap_diag` (chain state) so a
-        B4 abort can audit WHY no LEAP was found."""
+        """Find the best LEAP call: DTE >= leap_min_dte (config), delta >= 0.80
+        (deepest qualifying ITM, hard-coded in `_select_leap_strike` — NOT
+        config-driven; B8 2026-07-22), passes liquidity gate. Stashes
+        `self._last_leap_diag` (chain state) so a B4 abort can audit WHY no LEAP
+        was found."""
         if not isinstance(broker, OptionBroker):
             self._last_leap_diag = {"reason": "broker_not_option", "considered": 0}
             return None
@@ -3605,7 +3606,7 @@ Action reference:
         contracts: int,
         expiry: str,
         strike: float,
-        mark_price: float,
+        mark_price: float | None,
         position_effect: str,
         action: str,
         rationale: str,
@@ -3616,6 +3617,7 @@ Action reference:
         ask: float | None = None,
         position_context: dict | None = None,
         leap_lifetime_key: str | None = None,
+        preserve_market_sell: bool = False,
     ) -> ProposedOrder:
         extra: dict = {
             "is_option": True,
@@ -3627,6 +3629,10 @@ Action reference:
             "action": action,
             "mark_per_share": mark_price,    # for "anticipated cost" math in UI
         }
+        if mark_price is None:
+            # B3: an unresolvable mark must be DISTINGUISHABLE from a genuine 0.0 —
+            # never silently priced at zero (an unrecorded cost would look free).
+            extra["mark_unavailable"] = True
         if delta is not None:
             extra["delta"] = delta
         if dte is not None:
@@ -3653,13 +3659,24 @@ Action reference:
         if position_context:
             extra["position_context"] = position_context
 
+        # B3 decoupling: `preserve_market_sell` keeps the 0.0 sell-limit (a 0.0
+        # sell-limit fills at market — used by URGENT structural closes that MUST
+        # fill) while the real mark is STILL recorded in extra["mark_per_share"]
+        # above for cost visibility. Otherwise the limit is the mark (every normal
+        # PMCC leg is limit-at-mark); an unresolvable mark yields no limit.
+        if preserve_market_sell:
+            limit_price = 0.0
+        elif mark_price is not None:
+            limit_price = round(mark_price, 2)
+        else:
+            limit_price = None
         return ProposedOrder(
             strategy="robinhood_pmcc",
             symbol=underlying,
             side=side,                    # type: ignore[arg-type]
             qty=float(contracts),
             order_type="limit",
-            limit_price=round(mark_price, 2),
+            limit_price=limit_price,
             rationale=rationale,
             extra=extra,
         )

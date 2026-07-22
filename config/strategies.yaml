@@ -291,10 +291,12 @@ robinhood_pmcc:
     long_leg:
       dte_min: 365
       dte_max: 720
-      delta_min: 0.55
-      delta_max: 0.80
-      delta_high_conviction: 0.70
-      delta_speculative: 0.55
+      # LEAP delta selection is a hard `delta >= 0.80` (deepest qualifying ITM) in
+      # code (_select_leap_strike) — INTENTIONAL (module docstring; skill "0.55-0.80"
+      # band, deep end), NOT config-driven. The delta_min/delta_max/
+      # delta_high_conviction/delta_speculative keys were DEAD (read by no code path)
+      # and were RETIRED 2026-07-22 (B8) so config doesn't advertise a knob that does
+      # nothing. Do NOT re-add them expecting them to shallow the LEAP.
       roll_down_trigger_delta: 0.40
       roll_out_trigger_dte: 120
 
