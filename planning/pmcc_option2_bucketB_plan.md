@@ -15,6 +15,22 @@ any LLM/prompt/strategy/universe redesign, the auto_execute flip, and any prod d
 **auto_execute stays false at plan exit.** Implementation happens in separate authorized
 sessions; this document is the build spec.
 
+## Note — open-path leg-integrity (STRC), CLOSED by B4; account-scanning is endorsed design
+
+The earlier "position-discovery scope failure" framing is RETRACTED (a wrong inference).
+Scanning every held stock (`get_universe`, `pmcc_robinhood.py:1769`) and adopting any long+short
+call pair (`detect_existing_legs`, `:1836`) are INTENTIONAL — the division deliberately manages
+sold calls against held assets; the absent allowlist is by design and `position_exclude` (empty)
+is the valid opt-out. AMD/NVDA new-opens and adopted roll pairs are normal activity, not
+anomalies; the Phase-0 baseline stands frozen (no provenance re-cut); **no scope-filter phase is
+needed.** The narrow remaining STRC defect — `_propose_open_pmcc` shipped a lone short when
+`_find_best_leap` returned None without verifying backing — is a leg-integrity gap already
+**CLOSED by Phase-1 B4** (aborts `leap_unavailable`). Coverage note: there is no stock-share
+coverage check; the PMCC short is LEAP-covered 1:1 (B4-enforced), and `position_min_shares`
+(:1806) / sizing `max(1, int(stock_qty/100))` (scan:2276) are lower bounds, not coverage
+guarantees. NOTE: approval/rejection counts are NOT evidence of trade quality (operator ignored
+most recs, approved some to test the UI) — do not treat the rejection rate as a control.
+
 ## Testing philosophy (no labeling)
 
 Labeling is dropped entirely. The LLM's judgment is trusted; retrospective labeling was
