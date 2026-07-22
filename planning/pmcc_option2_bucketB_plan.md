@@ -422,8 +422,9 @@ BUILT + REMAINING data/structural-integrity items only; WITHDRAWN endorsed-desig
 | ~~LEAP-roll cost/benefit auto-gate (B3 gate)~~ | ~~n/a~~ | **WITHDRAWN 2026-07-22** — endorsed design; pre-empts the HITL accept/reject the promote guard surfaces |
 | ~~Force LEAP delta to config 0.55 (B8)~~ | ~~n/a~~ | **WITHDRAWN 2026-07-22** — 0.80 deepest-ITM intended; B8 reduced to docstring + dead-config decision |
 
-Plus: `pmcc_paper_run_readiness.py` returns exit 0; **auto_execute STILL false** (no
-automation flip is part of this plan's exit — that is a separate future decision).
+Plus: `pmcc_paper_run_readiness.py` **BUILT 2026-07-22 → returns exit 0** (11/11 blocking checks green;
+report-only, NOT a promotion gate; tests in `tests/test_pmcc_paper_run_readiness.py`); **auto_execute
+STILL false** (no automation flip is part of this plan's exit — that is a separate future decision).
 
 ## Verification (how to run)
 - Unit + regression: `pytest tests/test_pmcc_logic.py tests/pmcc_regression/ -q` (per phase).
