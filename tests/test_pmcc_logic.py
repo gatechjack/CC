@@ -1430,7 +1430,10 @@ def _liquid_call(strike: float, delta: float, mark: float, dte: int = 14) -> dic
 
 
 @pytest.mark.asyncio
-async def test_roll_leap_propose_emits_4_legs(agent: PMCCAgent):
+async def test_roll_leap_propose_emits_4_legs(agent: PMCCAgent, clear_earnings):
+    # clear_earnings (Phase 2.5): B9 now runs on the roll_leap path (site 1) — pin the
+    # earnings gate CLEAR so this asserts roll_leap MECHANICS without a live
+    # get_next_earnings/yfinance call and the ~4x/yr flake when MSTR earnings ∈ 7d.
     """When propose_orders_for_pair gets action=roll_leap and the broker
     has both a qualifying new LEAP and a qualifying new weekly,
     4 ProposedOrders are emitted (vs the prior 3-leg compound):
@@ -1493,7 +1496,10 @@ async def test_roll_leap_propose_emits_4_legs(agent: PMCCAgent):
 
 
 @pytest.mark.asyncio
-async def test_roll_leap_aborts_when_no_qualifying_weekly(agent_logged, cap_logger):
+async def test_roll_leap_aborts_when_no_qualifying_weekly(agent_logged, cap_logger, clear_earnings):
+    # clear_earnings (Phase 2.5): B9 now runs FIRST on the roll_leap path — pin earnings
+    # CLEAR so the assertion reaches the B4/B7 abort reason instead of a live-earnings
+    # flake flipping it to earnings_window (removes a live get_next_earnings call).
     """A roll_leap whose only future expiry is a LEAP-DTE contract (no true
     weekly) ABORTS atomically — 0 legs proposed + a pmcc_roll_aborted audit
     with reason sparse_chain_no_weekly_for_new_leap.
@@ -1550,8 +1556,10 @@ async def test_roll_leap_aborts_when_no_qualifying_weekly(agent_logged, cap_logg
 
 @pytest.mark.asyncio
 async def test_propose_orders_promotes_roll_short_to_roll_leap_via_hard_rule(
-    agent: PMCCAgent,
+    agent: PMCCAgent, clear_earnings,
 ):
+    # clear_earnings (Phase 2.5): Hard-Rule promotion routes into the roll_leap path where
+    # B9 now runs — pin earnings CLEAR to avoid a live get_next_earnings call / ~4x/yr flake.
     """End-to-end: LLM emits action=roll_short on a position with a
     deep-ITM LEAP (delta 0.96). propose_orders_for_pair applies the
     Hard-Rule promotion before dispatch, so the resulting orders are
@@ -2133,7 +2141,10 @@ async def test_b4a_roll_short_aborts_when_no_weekly(agent_logged, cap_logger, cl
 
 # ---- B4 (b): roll_leap aborts when no new LEAP ----
 @pytest.mark.asyncio
-async def test_b4b_roll_leap_aborts_when_no_leap(agent_logged, cap_logger):
+async def test_b4b_roll_leap_aborts_when_no_leap(agent_logged, cap_logger, clear_earnings):
+    # clear_earnings (Phase 2.5): B9 now runs FIRST on the roll_leap path — pin earnings
+    # CLEAR so the B4 abort reason is reached, not a live-earnings flake (removes a live
+    # get_next_earnings/yfinance call, ~4x/yr flake window).
     opt_positions = [
         _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
                       delta=0.82, avg_price=22.50),
@@ -2154,7 +2165,10 @@ async def test_b4b_roll_leap_aborts_when_no_leap(agent_logged, cap_logger):
 
 # ---- B4 (c): roll_leap aborts when LEAP found but no weekly for the new short ----
 @pytest.mark.asyncio
-async def test_b4c_roll_leap_aborts_when_no_weekly_for_new_leap(agent_logged, cap_logger):
+async def test_b4c_roll_leap_aborts_when_no_weekly_for_new_leap(agent_logged, cap_logger, clear_earnings):
+    # clear_earnings (Phase 2.5): B9 now runs FIRST on the roll_leap path — pin earnings
+    # CLEAR so the B4 abort reason is reached, not a live-earnings flake (removes a live
+    # get_next_earnings/yfinance call, ~4x/yr flake window).
     opt_positions = [
         _opt_position("AAPL", expiry_days=400, strike=150.0, qty=1.0,
                       delta=0.82, avg_price=22.50),
@@ -2371,3 +2385,264 @@ def test_b11_strict_tightening_over_a_month():
             removed.append(x.isoformat())
         x += _td(days=1)
     assert removed == ["2026-05-25"]   # the ONLY removed fire-day is the closure
+
+
+# ============================================================================
+# Phase 2.5 — B9 earnings + B2 short-leg credit gates on the roll_leap path.
+# B7 (roll-out) + B4 (atomic legs) already covered roll_leap; these add the two
+# gates that Phase 2 built into `_propose_roll_short` ONLY. Covered on BOTH
+# sites: site 1 = propose_orders_for_pair, site 2 = the scan loop (which had NO
+# prior roll_leap emit coverage — not assumed to parity site 1). The credit
+# basis is the close-old-short / open-new-short pair ONLY; the LEAP legs (2+3)
+# are B3's domain and are never part of this net.
+# ============================================================================
+
+def _roll_leap_credit_broker() -> MockOptionBroker:
+    """MSTR roll_leap: old short mark 1.50, new weekly bid 1.95 (mark 2.00) →
+    +0.45 conservative net CREDIT; qualifying new LEAP (delta 0.85, 500 DTE).
+    Ships all 4 legs when the B9/B2 gates clear."""
+    today = date.today()
+    leap_exp = (today + timedelta(days=500)).isoformat()
+    wk = (today + timedelta(days=14)).isoformat()
+    return MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 100, 160.0, qty=1.0, delta=0.97,
+                          avg_price=23.80, mark_price=58.05),
+            _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30,
+                          avg_price=2.50, mark_price=1.50),
+        ],
+        expiry_dates={"MSTR": [wk, leap_exp]},
+        calls={
+            ("MSTR", leap_exp): [_liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500)],
+            ("MSTR", wk): [_liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=14)],
+        },
+    )
+
+
+def _roll_leap_debit_broker() -> MockOptionBroker:
+    """Same MSTR roll_leap but the old short is expensive to buy back (mark 5.00)
+    vs a cheap new weekly (bid 1.95) → conservative_net = 1.95 - 5.00 < 0 = a
+    NET-DEBIT short leg. B2 must block unless net_debit_justified. (The LEAP swap
+    legs are irrelevant to this net — that is B3's domain.)"""
+    today = date.today()
+    leap_exp = (today + timedelta(days=500)).isoformat()
+    wk = (today + timedelta(days=14)).isoformat()
+    return MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 100, 160.0, qty=1.0, delta=0.97,
+                          avg_price=23.80, mark_price=58.05),
+            _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30,
+                          avg_price=2.50, mark_price=5.00),
+        ],
+        expiry_dates={"MSTR": [wk, leap_exp]},
+        calls={
+            ("MSTR", leap_exp): [_liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500)],
+            ("MSTR", wk): [_liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=14)],
+        },
+    )
+
+
+def _roll_leap_no_short_broker() -> MockOptionBroker:
+    """An uncovered LEAP (NO short leg) rolled to a new LEAP + fresh short. With
+    no old short to buy back, close_mark=0 → conservative_net = new bid ≥ 0 =
+    always a credit, so B2 passes without special-casing (the short_leg_expiry-
+    is-None edge). Ships 3 legs (no close-short leg)."""
+    today = date.today()
+    leap_exp = (today + timedelta(days=500)).isoformat()
+    wk = (today + timedelta(days=14)).isoformat()
+    return MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 100, 160.0, qty=1.0, delta=0.97,
+                          avg_price=23.80, mark_price=58.05),
+        ],
+        expiry_dates={"MSTR": [wk, leap_exp]},
+        calls={
+            ("MSTR", leap_exp): [_liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500)],
+            ("MSTR", wk): [_liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=14)],
+        },
+    )
+
+
+def _rl_analysis(override=None, symbol="MSTR"):
+    return PMCCAnalysis(symbol=symbol, action="roll_leap", confidence=0.9,
+                        urgency="elevated", summary="", rationale="",
+                        target_delta=0.30, target_dte=14, override=override)
+
+
+def _patch_earnings(monkeypatch, days):
+    """days=int → earnings that many days out (within-buffer if <=7); days=None →
+    no data (fail-open / data_unavailable)."""
+    from datetime import datetime, timezone, timedelta as _td
+    fn = ((lambda symbol, *a, **k: None) if days is None
+          else (lambda symbol, *a, **k: datetime.now(timezone.utc) + _td(days=days)))
+    monkeypatch.setattr("trading_corp.utils.market_data.get_next_earnings", fn)
+
+
+def _inject_roll_leap(monkeypatch, agent, override=None):
+    """Scan (site 2) obtains its per-leg verdict from `_llm_analyze_position`;
+    stub it to a roll_leap analysis so the scan roll_leap branch fires without an
+    LLM call."""
+    async def _fake(leg, price, regime, vix=None):
+        return PMCCAnalysis(symbol=leg.symbol, action="roll_leap", confidence=0.9,
+                            urgency="elevated", summary="", rationale="",
+                            target_delta=0.30, target_dte=14, override=override)
+    monkeypatch.setattr(agent, "_llm_analyze_position", _fake)
+
+
+_RL_4 = ["roll_leap_close_short", "roll_leap_close", "roll_leap_open", "roll_leap_open_short"]
+
+
+# ---- Site 1: propose_orders_for_pair ----
+
+@pytest.mark.asyncio
+async def test_b9_roll_leap_blocked_within_earnings_buffer(agent_logged, cap_logger, monkeypatch):
+    """B9 (roll_leap, site 1): a LEAP roll inside the earnings buffer aborts (0
+    legs) + reason earnings_window, gates.earnings == 'blocked'. B9 runs FIRST —
+    before the LEAP is resolved (skill L257: the roll_leap's 4th leg opens new
+    short premium)."""
+    _patch_earnings(monkeypatch, 3)
+    orders = await agent_logged.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR", _rl_analysis())
+    assert orders == [], [o.extra.get("action") for o in orders]
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "earnings_window"
+    assert ev["payload"]["gates"]["earnings"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_b9_roll_leap_ships_with_earnings_override(agent, monkeypatch):
+    """B9 (roll_leap): earnings_override lets a within-buffer LEAP roll proceed."""
+    _patch_earnings(monkeypatch, 3)
+    orders = await agent.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR",
+        _rl_analysis(override={"kind": "earnings_override", "reason": "perpetual roll"}))
+    assert [o.extra.get("action") for o in orders] == _RL_4
+
+
+@pytest.mark.asyncio
+async def test_b9_roll_leap_data_unavailable_recorded(agent_logged, cap_logger, monkeypatch):
+    """B9 fail-open (roll_leap): no earnings data → the roll SHIPS but the
+    shipped-roll pmcc_roll_gates audit records gates.earnings == 'data_unavailable'
+    (distinguishable from a genuinely-clear ship)."""
+    _patch_earnings(monkeypatch, None)
+    orders = await agent_logged.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR", _rl_analysis())
+    assert len(orders) == 4
+    gate_ev = next(e for e in cap_logger.events if e["kind"] == "pmcc_roll_gates")
+    assert gate_ev["payload"]["gates"]["earnings"] == "data_unavailable"
+    assert gate_ev["payload"]["gates"]["credit"] == "clear"
+
+
+@pytest.mark.asyncio
+async def test_b2_roll_leap_net_debit_blocks(agent_logged, cap_logger, clear_earnings):
+    """B2 (roll_leap, site 1): a net-debit new short (buy back old @5.00, sell new
+    @~1.95) aborts (0 legs) + reason net_debit_roll; gates = earnings clear /
+    selection ok / credit blocked."""
+    orders = await agent_logged.propose_orders_for_pair(
+        _roll_leap_debit_broker(), "MSTR", _rl_analysis())
+    assert orders == [], [o.extra.get("action") for o in orders]
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "net_debit_roll"
+    assert ev["payload"]["conservative_net"] < 0
+    assert ev["payload"]["gates"] == {
+        "earnings": "clear", "selection": "ok", "credit": "blocked"}
+
+
+@pytest.mark.asyncio
+async def test_b2_roll_leap_ships_with_net_debit_justified(agent, clear_earnings):
+    """B2 (roll_leap): net_debit_justified authorizes the net-debit LEAP roll."""
+    orders = await agent.propose_orders_for_pair(
+        _roll_leap_debit_broker(), "MSTR",
+        _rl_analysis(override={"kind": "net_debit_justified", "reason": "<=8% LEAP debit"}))
+    assert [o.extra.get("action") for o in orders] == _RL_4
+
+
+@pytest.mark.asyncio
+async def test_b2_roll_leap_net_credit_ships_and_audits(agent_logged, cap_logger, clear_earnings):
+    """B2 (roll_leap): a credit LEAP roll ships all 4 legs AND writes a
+    pmcc_roll_gates audit with all-clear gates + the conservative/mark nets."""
+    orders = await agent_logged.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR", _rl_analysis())
+    assert [o.extra.get("action") for o in orders] == _RL_4
+    gate_ev = next(e for e in cap_logger.events if e["kind"] == "pmcc_roll_gates")
+    assert gate_ev["payload"]["gates"] == {
+        "earnings": "clear", "selection": "ok", "credit": "clear"}
+    assert gate_ev["payload"]["conservative_net"] > 0
+
+
+@pytest.mark.asyncio
+async def test_b2_roll_leap_no_old_short_passes(agent, clear_earnings):
+    """B2 short_leg_expiry-is-None edge (roll_leap): an uncovered LEAP rolled to a
+    new LEAP + fresh short has NO old short to buy back → close_mark=0 →
+    conservative_net = new bid ≥ 0 = always a credit → B2 passes (3 legs, no
+    close-short)."""
+    orders = await agent.propose_orders_for_pair(
+        _roll_leap_no_short_broker(), "MSTR", _rl_analysis())
+    assert [o.extra.get("action") for o in orders] == [
+        "roll_leap_close", "roll_leap_open", "roll_leap_open_short"]
+
+
+@pytest.mark.asyncio
+async def test_roll_leap_two_gate_interaction_earnings_first(agent_logged, cap_logger, monkeypatch):
+    """Interaction (roll_leap): within-buffer earnings AND net-debit both trip, but
+    B9 runs FIRST → aborts earnings_window with only `earnings` in the gates map
+    (selection/credit not yet evaluated). A single net_debit_justified override
+    can't unblock earnings → the conservative fail-safe abort still fires."""
+    _patch_earnings(monkeypatch, 3)
+    orders = await agent_logged.propose_orders_for_pair(
+        _roll_leap_debit_broker(), "MSTR",
+        _rl_analysis(override={"kind": "net_debit_justified", "reason": "..."}))
+    assert orders == []
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "earnings_window"
+    assert "selection" not in ev["payload"]["gates"]
+
+
+# ---- Site 2: the scan loop (fresh coverage — no prior roll_leap scan tests) ----
+
+@pytest.mark.asyncio
+async def test_b9_scan_roll_leap_blocked_within_earnings_buffer(agent_logged, cap_logger, monkeypatch):
+    """B9 (roll_leap, site 2 = scan): parity with site 1 — a within-buffer LEAP
+    roll surfaced by the scan aborts + earnings_window; no roll_leap legs ship."""
+    _patch_earnings(monkeypatch, 3)
+    _inject_roll_leap(monkeypatch, agent_logged)
+    orders = await agent_logged.scan(_roll_leap_credit_broker())
+    assert not any(str(o.extra.get("action", "")).startswith("roll_leap") for o in orders)
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "earnings_window"
+
+
+@pytest.mark.asyncio
+async def test_b9_scan_roll_leap_ships_with_override(agent_logged, monkeypatch):
+    """B9 (roll_leap, site 2): earnings_override lets the scan-surfaced within-buffer
+    LEAP roll ship all 4 legs."""
+    _patch_earnings(monkeypatch, 3)
+    _inject_roll_leap(monkeypatch, agent_logged,
+                      override={"kind": "earnings_override", "reason": "x"})
+    orders = await agent_logged.scan(_roll_leap_credit_broker())
+    assert [o.extra.get("action") for o in orders] == _RL_4
+
+
+@pytest.mark.asyncio
+async def test_b2_scan_roll_leap_net_debit_blocks(agent_logged, cap_logger, monkeypatch, clear_earnings):
+    """B2 (roll_leap, site 2 = scan): a net-debit LEAP roll surfaced by the scan
+    aborts + net_debit_roll; gates = earnings clear / selection ok / credit blocked."""
+    _inject_roll_leap(monkeypatch, agent_logged)
+    orders = await agent_logged.scan(_roll_leap_debit_broker())
+    assert not any(str(o.extra.get("action", "")).startswith("roll_leap") for o in orders)
+    ev = _abort_event(cap_logger)
+    assert ev["payload"]["reason"] == "net_debit_roll"
+    assert ev["payload"]["gates"] == {
+        "earnings": "clear", "selection": "ok", "credit": "blocked"}
+
+
+@pytest.mark.asyncio
+async def test_b2_scan_roll_leap_net_credit_ships_and_audits(agent_logged, cap_logger, monkeypatch, clear_earnings):
+    """B2 (roll_leap, site 2 = scan): a credit LEAP roll ships all 4 legs AND writes
+    the pmcc_roll_gates audit with all-clear gates."""
+    _inject_roll_leap(monkeypatch, agent_logged)
+    orders = await agent_logged.scan(_roll_leap_credit_broker())
+    assert [o.extra.get("action") for o in orders] == _RL_4
+    gate_ev = next(e for e in cap_logger.events if e["kind"] == "pmcc_roll_gates")
+    assert gate_ev["payload"]["gates"] == {
+        "earnings": "clear", "selection": "ok", "credit": "clear"}

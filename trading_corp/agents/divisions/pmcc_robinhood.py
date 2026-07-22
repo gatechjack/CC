@@ -513,6 +513,29 @@ def _select_leap_strike(calls: list[dict]) -> dict | None:
     return None
 
 
+def _short_roll_credit(
+    new_weekly: dict, close_mark: float,
+) -> tuple[float, float, float | None]:
+    """Conservative + mark net credit of a short roll's short-leg pair.
+
+    Sell the new weekly at BID (conservative — the existing short exposes mark
+    only, no ask); buy the old short back at MARK. Returns
+    (conservative_net, mark_net, open_bid). Pure; PRE-FEE (captures spread, not
+    fees). Shared by `_propose_roll_short` (B2) and both roll_leap sites (Phase
+    2.5) so the credit basis can't drift across the three when fees or a
+    configurable floor land.
+    """
+    open_bid = new_weekly.get("bid")
+    open_credit_conservative = (
+        open_bid if open_bid is not None else (new_weekly.get("mark_price") or 0.0)
+    )
+    conservative_net = open_credit_conservative - close_mark
+    mark_net = (
+        (new_weekly.get("mark_price") or new_weekly.get("bid") or 0.0) - close_mark
+    )
+    return conservative_net, mark_net, open_bid
+
+
 def _select_weekly_strike(
     calls: list[dict],
     target_delta: float = 0.30,
@@ -1220,6 +1243,17 @@ Action reference:
 
         # ── Roll the LEAP (close existing pair, open new LEAP) ──
         if action == "roll_leap":
+            # B9 (earnings) — a roll_leap's 4th leg opens new short premium (Phase 2.5).
+            rl_override = self._override_kind(analysis)
+            rl_gates: dict = {}
+            rl_estate, rl_ereason = self._earnings_gate_state(symbol)
+            rl_gates["earnings"] = rl_estate
+            if rl_estate == "blocked" and rl_override != "earnings_override":
+                self._audit_roll_abort(
+                    reason="earnings_window", symbol=symbol,
+                    extra={"gates": dict(rl_gates), "earnings_reason": rl_ereason},
+                )
+                return []
             # B4 (atomic roll_leap): resolve BOTH new legs BEFORE proposing any
             # close; abort the whole roll + audit if either is missing.
             new_leap = await self._find_best_leap(symbol, broker)
@@ -1243,6 +1277,22 @@ Action reference:
                     diag=self._last_weekly_diag,
                 )
                 return []
+            rl_gates["selection"] = "ok"
+            # B2 (short-leg credit) — close-old-short vs open-new-short pair ONLY;
+            # the LEAP legs (2+3) are B3's domain (do NOT re-derive compound cost).
+            rl_close_mark = pos.short_leg_mark or 0.0
+            rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark)
+            if rl_cons_net < 0 and rl_override != "net_debit_justified":
+                rl_gates["credit"] = "blocked"
+                self._audit_roll_abort(
+                    reason="net_debit_roll", symbol=symbol,
+                    extra={"gates": dict(rl_gates), "conservative_net": round(rl_cons_net, 4),
+                           "mark_net": round(rl_mark_net, 4), "close_mark": round(rl_close_mark, 4),
+                           "open_bid": rl_open_bid, "fees_included": False,
+                           "fee_gap": "pre-fee: spread only"},
+                )
+                return []
+            rl_gates["credit"] = "clear"
 
             orders: list[ProposedOrder] = []
             pair_id = str(uuid.uuid4())[:8]
@@ -1320,6 +1370,11 @@ Action reference:
                 ),
                 pair_id=pair_id,
             ))
+            self._audit_division("pmcc_roll_gates", {
+                "symbol": symbol, "gates": dict(rl_gates),
+                "conservative_net": round(rl_cons_net, 4),
+                "mark_net": round(rl_mark_net, 4), "override_kind": rl_override,
+            })
             return orders
 
         # ── Close everything on this underlying ──
@@ -2168,6 +2223,17 @@ Action reference:
 
                 # ── LLM-detected roll_leap (not in deterministic rules) ──
                 if analysis and analysis.action == "roll_leap":
+                    # B9 (earnings) — a roll_leap's 4th leg opens new short premium (Phase 2.5).
+                    rl_override = self._override_kind(analysis)
+                    rl_gates: dict = {}
+                    rl_estate, rl_ereason = self._earnings_gate_state(symbol)
+                    rl_gates["earnings"] = rl_estate
+                    if rl_estate == "blocked" and rl_override != "earnings_override":
+                        self._audit_roll_abort(
+                            reason="earnings_window", symbol=symbol,
+                            extra={"gates": dict(rl_gates), "earnings_reason": rl_ereason},
+                        )
+                        continue
                     # B4 (atomic roll_leap): resolve BOTH new legs BEFORE
                     # proposing any close. If either is missing, abort the whole
                     # roll (propose nothing) + audit — never dismantle the long
@@ -2193,6 +2259,22 @@ Action reference:
                             diag=self._last_weekly_diag,
                         )
                         continue
+                    rl_gates["selection"] = "ok"
+                    # B2 (short-leg credit) — close-old-short vs open-new-short pair ONLY;
+                    # LEAP legs (2+3) are B3's domain (do NOT re-derive compound cost).
+                    rl_close_mark = leg.short_leg_mark or 0.0
+                    rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark)
+                    if rl_cons_net < 0 and rl_override != "net_debit_justified":
+                        rl_gates["credit"] = "blocked"
+                        self._audit_roll_abort(
+                            reason="net_debit_roll", symbol=symbol,
+                            extra={"gates": dict(rl_gates), "conservative_net": round(rl_cons_net, 4),
+                                   "mark_net": round(rl_mark_net, 4), "close_mark": round(rl_close_mark, 4),
+                                   "open_bid": rl_open_bid, "fees_included": False,
+                                   "fee_gap": "pre-fee: spread only"},
+                        )
+                        continue
+                    rl_gates["credit"] = "clear"
 
                     log.info("PMCCAgent: LLM recommends roll_leap for %s", symbol)
                     pair_id = str(uuid.uuid4())[:8]
@@ -2272,6 +2354,11 @@ Action reference:
                         ),
                         pair_id=pair_id,
                     ))
+                    self._audit_division("pmcc_roll_gates", {
+                        "symbol": symbol, "gates": dict(rl_gates),
+                        "conservative_net": round(rl_cons_net, 4),
+                        "mark_net": round(rl_mark_net, 4), "override_kind": rl_override,
+                    })
                     continue  # skip normal deterministic block
 
                 # ── LLM-detected early roll (before DTE/profit trigger) ──
@@ -3283,14 +3370,7 @@ Action reference:
         # broker: none; FillEvent.fee is post-fill only) — the conservative net
         # captures SPREAD, not fees. Both the conservative net and the card's mark
         # net go in the audit so a blocked roll is understandable without re-derive.
-        open_bid = new_weekly.get("bid")
-        open_credit_conservative = (
-            open_bid if open_bid is not None else (new_weekly.get("mark_price") or 0.0)
-        )
-        conservative_net = open_credit_conservative - close_mark
-        mark_net = (
-            (new_weekly.get("mark_price") or new_weekly.get("bid") or 0.0) - close_mark
-        )
+        conservative_net, mark_net, open_bid = _short_roll_credit(new_weekly, close_mark)
         if conservative_net < 0 and override_kind != "net_debit_justified":
             gates["credit"] = "blocked"
             self._audit_roll_abort(
