@@ -1,8 +1,47 @@
-# PMCC Bucket-B — handoff (Phase 2 complete) — 2026-07-22
+# PMCC Bucket-B — handoff — 2026-07-22
 
-Written for a fresh agent with zero prior context. Everything you need to pick up at
-Phase 3 (or to audit Phases 0–2) is here. Line numbers are approximate (they drift as
-the file changes) — trust the **function names**.
+## ★★ BUCKET B CLOSED — 2026-07-22 (final state; supersedes the Phase-2 framing below)
+
+**The entire Bucket-B arc is closed — nothing remains to build.** `auto_execute` stays **false**;
+nothing is live; all paper; nothing pushed. Plan of record: `planning/pmcc_option2_bucketB_plan.md`
+(top STATUS table). Final branch `pmcc-bucketb-final-2026-07-22` (off Phase 2.5 → Phase 2).
+
+**Final tally:**
+- **BUILT — 10 fixes, every one a data- or structural-integrity fix:** B1 HOLD-precedence, B2
+  credit-gate, B4 atomic-legs, B7 roll-out, B9 earnings-gate, B11 holiday-guard (Phases 1–2); **B9 + B2
+  on the roll_leap path** (Phase 2.5); **B3** old-LEAP-price fix (all 4 LEAP-sell legs; the urgent path
+  records the mark but PRESERVES the market-sell; unresolvable mark → a distinguishable flag, never
+  0.0), **B8** docstring fix + dead delta-config retirement, **B10** calendar-anchored 15:00-ET (close−60m)
+  0-DTE-only terminal-DTE pass (Final).
+- **WITHDRAWN — endorsed design (6 collapses; A3 falls with B5):** B5 IV-conditioned delta (a *selected*
+  delta ≥0.40 is impossible on the target_delta path — OTM<0.40 clamp — so all 24 came from endorsed
+  strike-targeting), B6 target_strike OTM guard, B3's cost/benefit auto-gate, B8's force-delta-to-0.55,
+  + STRC/held-stock adoption and position-discovery (unnumbered). A3 IV-wiring falls with B5 (its only
+  consumer; the division reads no IV).
+- **THE PATTERN:** every survivor is a data/structural-integrity fix; every collapse was an
+  automatic-behavior change that would pre-empt a human or LLM decision (auto-block a LEAP roll, force a
+  delta, reject an LLM-chosen strike). Pure gap-detection produced a ~45% false-positive rate on the
+  numbered findings (Method-lesson in the plan).
+
+**Readiness gate — `trading_corp/scripts/pmcc_paper_run_readiness.py` (→ exit 0; report-only, NOT a
+promotion gate):**
+- **COVERS:** divisions/strategies/risk wiring; **auto_execute=false**; PMCCAgent instantiates;
+  agent_state r/w + audit_event; gate-WIRING resolves (gate-0/B1/B2/B4/B7/B9/B10/B11 symbols +
+  `after_dte`/`zero_dte_only`/`skip_symbols` signatures); gate-BEHAVIOR clean (a synthetic credit
+  roll_leap → 0 Phase-0-detector pathologies incl. B3 old_leap_px≠0; a sparse chain → atomic abort);
+  config-sanity (retired delta keys ABSENT, earnings_buffer present, block intact); NYSE calendar. SOFT
+  (skippable): VIX + yfinance-earnings reachability.
+- **KNOWN LIMITATIONS (surfaced every run):** B10's `_scheduled_pmcc_scan_loop` while-loop +
+  `_on_terminal_scan` glue are COMPILE-VERIFIED ONLY (the predicates `_terminal_should_fire` /
+  `_pmcc_pending_symbols` + the scan subset filter ARE unit-tested) — verify via boot-smoke + the FIRST
+  live 15:00 fire (`terminal_dte_pass_done` audit + any `terminal_dte_order_result` rows); B2 is
+  PRE-FEE; B9 FAILS OPEN on missing yfinance data.
+
+---
+
+_Below: the Phase-2 handoff, retained for the Phases 0–2 build detail. "Pick up at Phase 3" is
+superseded — there is no Phase 3; Bucket B is closed._ Line numbers are approximate (they drift) —
+trust the **function names**.
 
 ## Branch & state
 - **Branch:** `pmcc-bucketb-phase2-2026-07-21`

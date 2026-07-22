@@ -2,6 +2,10 @@
 
 ## STATUS — restated exit criteria (2026-07-22)
 
+**★ BUCKET B CLOSED 2026-07-22.** Every item is terminal (BUILT or WITHDRAWN); nothing remains. The
+readiness gate is green (`pmcc_paper_run_readiness.py` → exit 0); auto_execute still false. Full
+built-vs-collapsed tally in `planning/pmcc_phase2_handoff_2026-07-22.md`.
+
 The original spec below treated all 11 Bucket-B items as defects. That is no longer true: several
 findings have collapsed under the endorsed-design test (a gap is a defect only if enforcement was
 INTENDED — not if the behavior is deliberately delegated to a human or the LLM). This table is the
@@ -16,10 +20,11 @@ authoritative view of what is actually left; the per-phase detail below is retai
 | B2 credit gate (short-roll) | **BUILT** (P2) | net-debit roll = 0 unless `net_debit_justified` |
 | B9 earnings gate (short-roll) | **BUILT** (P2) | earnings-window roll = 0 unless `earnings_override` |
 | B9 + B2 on the roll_leap path | **BUILT** (P2.5) | roll_leap net-debit short = 0 unless `net_debit_justified`; roll_leap earnings-window = 0 unless `earnings_override` |
-| B3 old-LEAP-price fix (data integrity) | **REMAINING** (Final) | LEAP-roll cost recorded on 100% of roll_leaps |
-| B8(a) docstring consistency | **REMAINING** (Final) | `_find_best_leap` docstring matches code (no phantom `leap_min_delta` filter) |
-| B8(b) dead-config | **RESOLVED → RETIRE** (Final) | retire `long_leg.delta_min/max` + document 0.80 as intended (operator decision 2026-07-22) |
-| B10 afternoon terminal-DTE seam | **REMAINING** (Final) | 15:00-ET scan fires idempotent `_terminal_dte_time_release` |
+| B3 old-LEAP-price fix (all 4 LEAP-sell legs) | **BUILT** (Final) | LEAP-roll cost recorded (old_leap_px ≠ 0); close_leap_urgent decoupled (market-sell preserved); unresolvable mark → flag not 0.0 |
+| B8(a) docstring consistency | **BUILT** (Final) | `_find_best_leap` docstring matches the real hard-coded 0.80 |
+| B8(b) dead-config | **BUILT — RETIRED** (Final) | `long_leg.delta_min/max/high_conviction/speculative` removed + `_leap_min/max_delta` props retired; 0.80 documented as intended |
+| B10 afternoon terminal-DTE seam | **BUILT** (Final) | calendar-anchored (close−60m) 0-DTE-only pass: LLM-call → UNCHANGED release; suppress-pending. Scheduler-loop glue compile-only (see handoff) |
+| Readiness gate | **BUILT** (Final) | `pmcc_paper_run_readiness.py` → exit 0 (11/11 blocking; report-only, not a promotion gate) |
 | A3 IV wiring | **WITHDRAWN — no consumer** | — B5 was its only consumer; `pmcc_robinhood.py` reads no IV (`iv_filters` declared-but-unread); falls with B5 |
 | B5 IV-conditioned short delta | **WITHDRAWN — endorsed design** | — delta targeting is the LLM's (`_BLACK_SHEEP_RULES` L100/L108, `_STANDARD_RULES` L193-196/L198-199); a *selected* delta ≥0.40 is impossible on the `target_delta` path (OTM<0.40 clamp `_select_weekly_strike` :559-571), so all 24 came from endorsed strike-targeting; static 0.25 is fallback-only (`:3587`) |
 | B3 cost/benefit auto-gate | **WITHDRAWN — endorsed design** | — pre-empts the HITL accept/reject the promote guard exists to surface (`_BLACK_SHEEP_RULES` L178-184, `_STANDARD_RULES` L259-266, `_promote_to_roll_leap_if_hard_rule` docstring L2539-2545) |
