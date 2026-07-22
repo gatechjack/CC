@@ -2726,3 +2726,135 @@ async def test_b3_close_leap_urgent_records_mark_but_keeps_market_sell(agent):
     close_leap = _leg_by_action(orders, "close_leap_urgent")
     assert close_leap.extra["mark_per_share"] == 58.05          # recorded for cost visibility
     assert close_leap.limit_price == 0.0                        # market-sell PRESERVED (must fill)
+
+
+# ============================================================================
+# Final phase (2026-07-22) — B10: the 15:00-ET terminal-DTE pass evaluates ONLY
+# 0-DTE positions (a subset filter, not a second full scan). The scheduler wiring
+# lives in main.py (compile-verified); these cover the scan-level subset filter.
+# ============================================================================
+
+def _mixed_dte_broker() -> MockOptionBroker:
+    """AAPL short is 0-DTE (terminal); MSTR short is 7-DTE (non-terminal). Both are
+    covered pairs held in the account."""
+    return MockOptionBroker(option_positions=[
+        _opt_position("AAPL", 400, 150.0, qty=1.0, delta=0.82, avg_price=22.5, mark_price=30.0),
+        _opt_position("AAPL", 0, 175.0, qty=-1.0, delta=0.30, avg_price=1.45, mark_price=1.20),
+        _opt_position("MSTR", 400, 160.0, qty=1.0, delta=0.85, avg_price=23.8, mark_price=58.05),
+        _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30, avg_price=2.50, mark_price=1.50),
+    ])
+
+
+@pytest.mark.asyncio
+async def test_b10_scan_zero_dte_only_filters_to_terminal(agent_logged, monkeypatch):
+    """B10: scan(zero_dte_only=True) evaluates ONLY 0-DTE positions — the non-0-DTE
+    leg (MSTR, 7 DTE) is never even analyzed. Subset filter, not a full scan."""
+    analyzed = []
+    async def _fake(leg, price, regime, vix=None):
+        analyzed.append(leg.symbol)
+        return PMCCAnalysis(symbol=leg.symbol, action="hold", confidence=0.8,
+                            urgency="routine", summary="", rationale="")
+    monkeypatch.setattr(agent_logged, "_llm_analyze_position", _fake)
+    await agent_logged.scan(_mixed_dte_broker(), zero_dte_only=True)
+    assert analyzed == ["AAPL"]   # MSTR (7-DTE) never evaluated at 15:00
+
+
+@pytest.mark.asyncio
+async def test_b10_scan_skip_symbols_suppresses_pending(agent_logged, monkeypatch):
+    """B10: skip_symbols (positions already in the HITL queue) are suppressed — not
+    re-analyzed and not re-proposed at 15:00."""
+    analyzed = []
+    async def _fake(leg, price, regime, vix=None):
+        analyzed.append(leg.symbol)
+        return PMCCAnalysis(symbol=leg.symbol, action="hold", confidence=0.8,
+                            urgency="routine", summary="", rationale="")
+    monkeypatch.setattr(agent_logged, "_llm_analyze_position", _fake)
+    orders = await agent_logged.scan(
+        _mixed_dte_broker(), zero_dte_only=True, skip_symbols={"AAPL"})
+    assert analyzed == []          # AAPL (the only 0-DTE) suppressed as pending
+    assert orders == []
+
+
+@pytest.mark.asyncio
+async def test_b10_scan_zero_dte_only_no_new_opens(agent_logged, monkeypatch):
+    """B10: the terminal pass never proposes NEW opens — with a held 0-DTE leg but a
+    non-empty stock universe, zero_dte_only evaluates only the 0-DTE leg (no opens)."""
+    analyzed = []
+    async def _fake(leg, price, regime, vix=None):
+        analyzed.append(leg.symbol)
+        return PMCCAnalysis(symbol=leg.symbol, action="hold", confidence=0.8,
+                            urgency="routine", summary="", rationale="")
+    monkeypatch.setattr(agent_logged, "_llm_analyze_position", _fake)
+    # A stock position (would normally seed a new-open in a full scan) + a 0-DTE leg.
+    broker = _mixed_dte_broker()
+    broker._stock_positions = [_stock_pos("NVDA", qty=100)]
+    await agent_logged.scan(broker, zero_dte_only=True)
+    assert "NVDA" not in analyzed  # no new-open evaluation at 15:00
+    assert analyzed == ["AAPL"]
+
+
+def test_b10_pmcc_pending_symbols_real_detail_shape():
+    """B10 suppress: `_pmcc_pending_symbols` extracts the symbol from the REAL
+    ApprovalRequest.detail shape — ceo_graph builds `detail['order'] = order.to_db_row()`,
+    so the symbol is at detail['order']['symbol'] (NOT a top-level detail['symbol']). Built
+    from real objects, not a hand-shaped dict that matches a guess. A non-pmcc pending entry
+    is ignored."""
+    from trading_corp.main import _pmcc_pending_symbols
+    from trading_corp.graph.interrupts import ApprovalRequest
+    from trading_corp.comms.pending_registry import PendingEntry
+    from trading_corp.persistence.models import ProposedOrder
+    pmcc_order = ProposedOrder(strategy="robinhood_pmcc", symbol="AAPL", side="buy", qty=1.0)
+    pmcc_entry = PendingEntry(
+        request=ApprovalRequest(
+            order_id=pmcc_order.id, summary="roll",
+            detail={"order": pmcc_order.to_db_row(), "risk_verdict": {},
+                    "division": "robinhood_pmcc"}),
+        future=object(), division="robinhood_pmcc")
+    other_order = ProposedOrder(strategy="bitunix_futures", symbol="BTCUSDT", side="buy", qty=1.0)
+    other_entry = PendingEntry(
+        request=ApprovalRequest(
+            order_id=other_order.id, summary="x",
+            detail={"order": other_order.to_db_row(), "division": "bitunix_futures"}),
+        future=object(), division="bitunix_futures")
+    assert _pmcc_pending_symbols([pmcc_entry, other_entry]) == {"AAPL"}
+
+
+def _weekday_on_or_after(d):
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+
+def test_b10_terminal_should_fire_normal_day():
+    """B10: on a 4pm-close day the terminal pass opens at 15:00 ET (close-60m), stays open
+    until 16:00, and dedups — identical to a wall-clock 15:00 but DERIVED from the calendar."""
+    from trading_corp.main import _terminal_should_fire
+    from trading_corp.utils.time import ET
+    from datetime import datetime
+    cal = _FakeCalendar(close_hour=16)
+    d = _weekday_on_or_after(date(2026, 7, 20))
+    def at(h, m):
+        return datetime(d.year, d.month, d.day, h, m, tzinfo=ET)
+    assert _terminal_should_fire(at(14, 59), None, cal) is False   # too early
+    assert _terminal_should_fire(at(15, 0), None, cal) is True     # opens at close-60m
+    assert _terminal_should_fire(at(15, 30), None, cal) is True    # still inside the window
+    assert _terminal_should_fire(at(16, 0), None, cal) is False    # at/after close
+    assert _terminal_should_fire(at(15, 0), d, cal) is False       # dedup: already fired today
+
+
+def test_b10_terminal_should_fire_half_day():
+    """B10: on a 1pm-close HALF-DAY the window opens at 12:00 ET (close-60m), NOT wall-clock
+    15:00 — a fixed 15:00 would run post-close and no-fire (the B11-shaped bug). Closed day
+    never fires."""
+    from trading_corp.main import _terminal_should_fire
+    from trading_corp.utils.time import ET
+    from datetime import datetime
+    cal = _FakeCalendar(close_hour=13)
+    d = _weekday_on_or_after(date(2026, 7, 20))
+    def at(h, m):
+        return datetime(d.year, d.month, d.day, h, m, tzinfo=ET)
+    assert _terminal_should_fire(at(11, 59), None, cal) is False
+    assert _terminal_should_fire(at(12, 0), None, cal) is True     # opens at close-60m = 12:00
+    assert _terminal_should_fire(at(13, 0), None, cal) is False    # at/after the 1pm close
+    assert _terminal_should_fire(at(15, 0), None, cal) is False    # wall-clock 15:00 = post-close: NO fire
+    assert _terminal_should_fire(at(12, 0), None, _FakeCalendar(closed=True)) is False

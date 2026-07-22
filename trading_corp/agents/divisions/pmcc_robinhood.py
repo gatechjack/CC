@@ -2031,6 +2031,9 @@ Action reference:
         self,
         broker: Broker,
         regime: str = "unknown",
+        *,
+        zero_dte_only: bool = False,
+        skip_symbols: "set[str] | None" = None,
     ) -> list[ProposedOrder]:
         """Scan existing PMCC legs; propose rolls / new setups.
 
@@ -2053,6 +2056,23 @@ Action reference:
         # management regardless of universe shape.
         existing = await self.detect_existing_legs(broker)
         legs_by_symbol: dict[str, PMCCPosition] = {leg.symbol: leg for leg in existing}
+
+        # B10: the 15:00-ET terminal-DTE pass evaluates ONLY 0-DTE positions — a SUBSET
+        # filter, never a second full scan (no new-opens, no non-0-DTE legs). `skip_symbols`
+        # drops positions already in the HITL approval queue (no duplicate proposals). The LLM
+        # is still called on the surviving 0-DTE legs; the unchanged
+        # `_terminal_dte_time_release` then overrides a REAL HOLD/WATCH (not a fabricated one).
+        if zero_dte_only:
+            # `== 0` (NOT `or -1`): short_leg_dte 0 is falsy, so `x or -1` would wrongly
+            # drop the very 0-DTE legs we want. None (uncovered LEAP) != 0 → excluded.
+            legs_by_symbol = {
+                s: lg for s, lg in legs_by_symbol.items() if lg.short_leg_dte == 0
+            }
+            universe = []
+        if skip_symbols:
+            legs_by_symbol = {
+                s: lg for s, lg in legs_by_symbol.items() if s not in skip_symbols
+            }
 
         # Phase 1a-2: empty universe is OK when research_on_demand is
         # active — new-opens come from the research firm, not from

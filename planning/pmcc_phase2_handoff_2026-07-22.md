@@ -234,6 +234,13 @@ item number**. Do NOT build it before that decision. (Filed to `BACKLOG.md` and
 - **Open-path tests still call `get_next_earnings` live** (the open path has always earnings-gated;
   the `clear_earnings` stub was scoped to roll tests only, by operator instruction). Full hermeticity
   is a separate cleanup.
+- **B10 (final phase) scheduler half is COMPILE-VERIFIED ONLY — known verification gap (2026-07-22).**
+  The 15:00-ET terminal-DTE pass's testable pieces ARE unit-tested (`scan(zero_dte_only/skip_symbols)`,
+  `_terminal_should_fire` normal+half-day, `_pmcc_pending_symbols` vs the real `detail['order']['symbol']`
+  shape). But the `_scheduled_pmcc_scan_loop` while-loop + `_on_terminal_scan` glue (broker resolution,
+  `_run_order` routing) are NOT exercisable in the pmcc test harness. VERIFY via boot-smoke + the first
+  live 15:00 fire (`terminal_dte_pass_done` audit + `terminal_dte_order_result` rows). Do not treat B10
+  as fully tested.
 
 ## Standing operator rules (do not violate)
 - **Fork rule:** if any test cannot be made valid without changing WHAT IT ASSERTS, STOP and report

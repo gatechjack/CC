@@ -329,6 +329,30 @@ for reference:
   `_terminal_dte_time_release` decides. **If the narrow pass would require refactoring the scan so the
   full-scan path is the only reachable one, STOP and report — do not widen scope to ease the plumbing.**
   A future phase may revisit the full-scan variant as a distinct decision.
+- **★ IMPLEMENTATION DECISION (operator, 2026-07-22): OPTION (b) — LLM-call the 0-DTE subset.** Three ways
+  to feed the release were weighed. **synthesize-HOLD** (fabricate a HOLD baseline per 0-DTE leg, then
+  apply the release) was CONSIDERED and DELIBERATELY NOT TAKEN: at 15:00 the P0 time gate fires on EVERY
+  0-DTE HOLD, so it forces a roll on every 0-DTE short (incl. ones a fresh read would let expire) and makes
+  `close_all` structurally UNREACHABLE — an automatic behavior overriding an LLM decision, the SAME shape
+  as the six collapsed items. **reuse-morning-verdict** (option c) was rejected on staleness (a ~6h-old
+  verdict defeats the reason a 15:00 look exists). **CHOSEN: (b)** — LLM-call ONLY the 0-DTE subset at
+  15:00, then apply the UNCHANGED `_terminal_dte_time_release` to the real verdict; it overrides a genuine
+  HOLD/WATCH (its designed role) while non-HOLD verdicts (`close_all`/`roll_leap`) pass through as the LLM
+  decided. Cost is a Friday-clustered subset (book ≈16 names) of the already-daily pre-open LLM call.
+- **★ P1 (cycle-continuity) confirmed SAFE:** P1 (`short_leg_mark ≤ $0.15` → roll_short, no time cond.) is
+  subsumed by the P0 time gate at 15:00 (both → roll_short); the window is anchored at 15:00 (= release
+  threshold) so P1 never fires "early." No new P1 schedule; `_terminal_dte_time_release` decision logic
+  UNTOUCHED. Implemented as a `scan(zero_dte_only=True, skip_symbols=…)` subset filter + a second scheduler
+  window; pending suppressed via `PendingApprovalRegistry.list_pending()`.
+- **★ COVERAGE BOUNDARY (known verification gap, 2026-07-22).** UNIT-TESTED: the three pure/extractable
+  pieces — `scan(zero_dte_only=…, skip_symbols=…)` subset filter, `_terminal_should_fire` (the
+  calendar-anchored WHEN, tested on a normal 4pm day AND a 1pm half-day), and `_pmcc_pending_symbols`
+  (the pending extraction, tested against the REAL ceo_graph `detail['order']['symbol']` shape).
+  COMPILE-VERIFIED ONLY (NOT unit-tested — not exercisable in the pmcc test harness): the
+  `_scheduled_pmcc_scan_loop` while-loop wiring and `_on_terminal_scan`'s broker-resolution + `_run_order`
+  routing glue. VERIFICATION PATH: boot-smoke (import/wiring) + the FIRST live 15:00 fire (watch for the
+  `terminal_dte_pass_done` audit and any `terminal_dte_order_result` rows). **Do NOT claim B10 is fully
+  tested — the scheduler half is not.**
 - **B10 test coverage — pending-proposal interaction.** The B10 suite MUST include a case
   where a pending PMCC proposal is already in the HITL approval queue when the 15:00 ET scan
   fires, and assert the chosen behavior is intentional — either the pending proposal

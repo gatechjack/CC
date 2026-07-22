@@ -1210,9 +1210,45 @@ async def run(argv: list[str] | None = None) -> int:
         except Exception as e:
             log.exception("pmcc approval-recovery wiring failed (continuing): %s", e)
 
-        # --- Daily pre-open PMCC scan scheduler (weekday mornings, 8:30 ET) ---
+        # --- B10: 15:00-ET terminal-DTE pass (0-DTE positions only) ---
+        async def _on_terminal_scan() -> str:
+            # LLM-evaluate ONLY 0-DTE positions, then the UNCHANGED
+            # _terminal_dte_time_release overrides a REAL HOLD/WATCH — non-HOLD verdicts
+            # (close_all/roll_leap) pass through as the LLM decided. Suppress positions
+            # already in the HITL queue (no duplicate proposals). NOT a full scan.
+            if _graph_holder[0] is None:
+                return "System still initializing."
+            scan_broker = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                regime = trend_agent.read().regime
+            except Exception:
+                regime = "unknown"
+            pending_syms = _pmcc_pending_symbols(pending_registry.list_pending())
+            orders = await pmcc_agent.scan(
+                scan_broker, regime=regime,
+                zero_dte_only=True, skip_symbols=pending_syms,
+            )
+            if not orders:
+                return "no 0-DTE actions."
+            for group in _group_orders_by_pair_id(orders):
+                statuses = await asyncio.gather(*(
+                    _run_order(_graph_holder[0], channel, logger_agent, o,
+                               division="robinhood_pmcc")
+                    for o in group
+                ))
+                for o, s in zip(group, statuses):
+                    logger_agent.log_event(
+                        "pmcc", "terminal_dte_order_result",
+                        {"order_id": o.id, "symbol": o.symbol, "status": s},
+                    )
+            return f"{len(orders)} order(s) proposed."
+
+        # --- Daily pre-open PMCC scan scheduler (8:30 ET) + 15:00-ET terminal-DTE pass ---
         scheduler_task = asyncio.create_task(
-            _scheduled_pmcc_scan_loop(_on_scan, channel, logger_agent)
+            _scheduled_pmcc_scan_loop(
+                _on_scan, channel, logger_agent,
+                on_terminal_callback=_on_terminal_scan,
+            )
         )
 
         # --- Coinbase BTC Donchian 6h-bar scheduler (00/06/12/18 UTC) ---
@@ -2708,6 +2744,51 @@ def _scan_should_fire(now, last_scan_date, win_start, win_end, calendar) -> bool
     return True
 
 
+def _pmcc_pending_symbols(entries) -> set[str]:
+    """B10 suppress-pending: symbols with an OPEN robinhood_pmcc approval in the HITL
+    queue, so the 15:00 pass never re-proposes a position already awaiting a decision.
+    The approval detail is built by exactly ONE producer (ceo_graph
+    `request_board_approval`): `detail = {"order": order.to_db_row(), "risk_verdict":
+    ..., "division": ...}`, so the symbol lives at `detail["order"]["symbol"]` — a
+    single, confirmed access (the `or {}` only guards a missing/None order, NOT a shape
+    variant; there is no other producer)."""
+    syms: set[str] = set()
+    for e in entries:
+        if getattr(e, "division", None) != "robinhood_pmcc":
+            continue
+        detail = getattr(getattr(e, "request", None), "detail", None) or {}
+        sym = (detail.get("order") or {}).get("symbol")
+        if sym:
+            syms.add(sym)
+    return syms
+
+
+def _terminal_should_fire(now, last_terminal_date, calendar, release_offset_min: int = 60) -> bool:
+    """Whether the B10 terminal-DTE afternoon pass should fire at `now`.
+
+    ANCHORED TO THE CALENDAR CLOSE — release_time = close - release_offset_min, matching
+    `_terminal_dte_time_release`'s own P0 release_threshold. So it opens at 15:00 on a
+    4pm-close day and 12:00 on a 1pm half-day (correct by construction, not a wall-clock
+    15:00 constant). Fires once per trading day (dedup on `last_terminal_date`), only
+    inside the window [close - offset, close). Needs the calendar to derive the close; a
+    closed day (`close_time_et` -> None) never fires."""
+    if now.weekday() >= 5:
+        return False
+    if last_terminal_date == now.date():
+        return False
+    if calendar is None:
+        return False
+    try:
+        close_dt = calendar.close_time_et(now)
+    except Exception:
+        return False
+    if close_dt is None:
+        return False
+    from datetime import timedelta
+    release_time = close_dt - timedelta(minutes=release_offset_min)
+    return release_time <= now < close_dt
+
+
 async def _scheduled_pmcc_scan_loop(
     on_scan_callback,
     channel,
@@ -2716,6 +2797,8 @@ async def _scheduled_pmcc_scan_loop(
     scan_window_start_et: tuple[int, int] = (8, 30),
     scan_window_end_et: tuple[int, int] = (9, 25),
     poll_interval_sec: int = 300,
+    on_terminal_callback=None,
+    terminal_release_offset_min: int = 60,
 ) -> None:
     """Daily pre-open PMCC scan scheduler.
 
@@ -2739,7 +2822,14 @@ async def _scheduled_pmcc_scan_loop(
 
     win_start = time(*scan_window_start_et)
     win_end = time(*scan_window_end_et)
+    # B10: independent second daily invocation for the terminal-DTE pass, with its OWN
+    # per-day dedup (separate from the pre-open scan's). The fire time is CALENDAR-ANCHORED
+    # (close - release_offset_min) via _terminal_should_fire — 15:00 on a 4pm close, 12:00
+    # on a 1pm half-day — matching _terminal_dte_time_release's release threshold, so the P0
+    # time gate governs and P1 never fires early. Stays a daily scheduler with a fixed
+    # second invocation, NOT an intraday loop (the C1 attach surface is the release logic).
     last_scan_date = None
+    last_terminal_date = None
     # B11: NYSE calendar for the holiday guard — reuse the existing dependency
     # already used by pmcc terminal-DTE logic (close_time_et -> None on closed
     # days). None (unavailable) leaves the guard off = original behaviour.
@@ -2783,6 +2873,30 @@ async def _scheduled_pmcc_scan_loop(
                     log.exception("Scheduled PMCC scan failed: %s", e)
                     logger_agent.log_event(
                         "scheduler", "scheduled_scan_error",
+                        {"date": str(now.date()), "error": str(e)},
+                    )
+
+            # B10: second daily invocation — calendar-anchored terminal-DTE pass (0-DTE only).
+            if (
+                on_terminal_callback is not None
+                and _terminal_should_fire(now, last_terminal_date, _cal, terminal_release_offset_min)
+            ):
+                last_terminal_date = now.date()
+                log.info("Scheduler firing 15:00-ET terminal-DTE PMCC pass...")
+                try:
+                    result = await on_terminal_callback()
+                    logger_agent.log_event(
+                        "scheduler", "terminal_dte_pass_done",
+                        {"date": str(now.date()), "result": result},
+                    )
+                    try:
+                        await channel.push(f"✅ Terminal-DTE 15:00 pass: {result}")
+                    except Exception:
+                        pass
+                except Exception as e:
+                    log.exception("Terminal-DTE 15:00 pass failed: %s", e)
+                    logger_agent.log_event(
+                        "scheduler", "terminal_dte_pass_error",
                         {"date": str(now.date()), "error": str(e)},
                     )
 
