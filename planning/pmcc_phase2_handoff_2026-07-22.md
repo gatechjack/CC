@@ -190,6 +190,33 @@ item; at most a monitor-only metric.**
   `test_b9_data_unavailable_recorded_on_shipped_roll`); +1 detector acceptance in
   `tests/pmcc_regression/test_baseline.py` (`test_same_expiry_roll_detector_and_b7_acceptance`).
 
+## ★★ OPEN ITEM — B9/B2 do NOT gate the roll_leap path (coverage hole, needs operator decision)
+**Mechanism.** The B9 earnings gate and the B2 credit gate live ONLY in `_propose_roll_short`. The
+**roll_leap** path assembles a 4-leg compound (close short + close old LEAP + open new LEAP + **open
+new short on the new LEAP**) in two other places — `propose_orders_for_pair` roll_leap (~L1234) and
+scan roll_leap (~L2187) — and neither runs B9 or B2. Its **4th leg opens a new short**, so a LEAP
+roll can currently ship a **net-debit short** or a **short into an earnings window** with **neither
+gate firing.**
+
+**Why this is promoted from "known gap" to open item.** This is a coverage hole of the SAME CLASS
+as B4's original close-without-recover: a correctness rule applied to one path (`_propose_roll_short`)
+but not its sibling (roll_leap), where the sibling does the same risky thing (opens a short). It is
+not merely "out of scope"; it is an inconsistency that a LEAP roll silently exploits.
+
+**What DOES cover roll_leap today (verified read-only 2026-07-22):**
+| Gate | roll_leap new short covered? | How |
+|---|---|---|
+| B4 atomic legs (Phase 1) | **YES** | both new legs resolved before proposing any close; aborts if either missing |
+| B7 roll-out filter + `_WEEKLY_FALLBACK_MAX_DTE=60` ceiling | **YES** | `after_dte` wired at all 3 roll-path `_find_best_weekly` calls incl. both roll_leap sites (L1237, L2187) |
+| Gate-0 override contract | field present, but **moot** on roll_leap (B9/B2 don't run) |
+| **B9 earnings gate** | **NO** | `_earnings_gate_state` called only in `_propose_roll_short` (L3246) |
+| **B2 credit gate** | **NO** | `conservative_net` logic only in `_propose_roll_short` (L3290+) |
+
+**Needs an OPERATOR DECISION on sequencing:** fold the B9/B2 extension to the roll_leap path into
+**Phase 3** (LEAP cluster — natural home, roll_leap is a LEAP operation), OR give it its **own Bucket-B
+item number**. Do NOT build it before that decision. (Filed to `BACKLOG.md` and
+`planning/pmcc_option2_bucketB_plan.md` so it's visible outside this handoff.)
+
 ## Known gaps (carry forward)
 - **B2 is PRE-FEE** (`fees_included: false`): no fee data exists at proposal time (RH broker: none;
   `FillEvent.fee` post-fill only; `ProposedOrder`: none). The conservative net captures SPREAD, not
@@ -199,10 +226,6 @@ item; at most a monitor-only metric.**
 - **Open-path tests still call `get_next_earnings` live** (the open path has always earnings-gated;
   the `clear_earnings` stub was scoped to roll tests only, by operator instruction). Full hermeticity
   is a separate cleanup.
-- **B9/B2 are scoped to `_propose_roll_short` only.** The **roll_leap** paths
-  (`propose_orders_for_pair` roll_leap, scan roll_leap) get B7 (via `after_dte`) but are NOT
-  earnings-gated (B9) or credit-gated (B2). A roll_leap also opens a new short — extending B9/B2 to
-  the roll_leap paths is a candidate follow-up (was outside the approved Phase-2 scope).
 
 ## Standing operator rules (do not violate)
 - **Fork rule:** if any test cannot be made valid without changing WHAT IT ASSERTS, STOP and report

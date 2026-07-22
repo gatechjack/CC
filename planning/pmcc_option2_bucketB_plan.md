@@ -157,6 +157,18 @@ All constrain the short-roll path (`_propose_roll_short` / `_find_best_weekly` /
   unjustified HOLD overrides, **0** same-expiry rolls; earnings-window rolls gated.
   (`itm_target_strike_bypass` removed — B6 withdrawn.)
 
+## ★★ OPEN ITEM (discovered in Phase 2) — B9/B2 do NOT gate the roll_leap path
+**Coverage hole, needs an operator decision on sequencing.** The B9 earnings gate and the B2 credit
+gate were built into `_propose_roll_short` only. The **roll_leap** path assembles its 4-leg compound
+in `propose_orders_for_pair` roll_leap and scan roll_leap, and its **4th leg opens a new short** — so
+a LEAP roll can currently ship a **net-debit short** or a **short into an earnings window** with
+neither gate firing. This is the SAME CLASS of bug as B4's original close-without-recover: a rule
+applied to one path but not its sibling that does the same risky thing. **What already covers
+roll_leap:** B4 atomic legs (Phase 1) + B7 roll-out filter & the 60-DTE ceiling (`after_dte` is wired
+at both roll_leap `_find_best_weekly` calls). **What does NOT:** B9, B2. **Decision needed:** fold the
+B9/B2 extension into **Phase 3** (LEAP cluster — natural home) OR give it its own Bucket-B number. Do
+NOT build before that decision. Also filed to `BACKLOG.md` + `planning/pmcc_phase2_handoff_2026-07-22.md`.
+
 ## Phase 3 — LEAP cluster (B8, B3)  · ~1-2 sessions
 
 **B8 and B3 are independent** — co-located only because both touch LEAP paths. B8 (long-leg
