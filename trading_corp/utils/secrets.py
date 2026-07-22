@@ -57,6 +57,8 @@ _SECRET_KEY_NAMES = (
     # `ODDS_API_KEY=<value>` env-style log lines.
     "ODDS_API_KEY",
     "KALSHI_PRIVATE_KEY_PEM",
+    "KALSHI_KAREN_API_KEY_ID",
+    "KALSHI_KAREN_PRIVATE_KEY_PEM",
     # Apify (Phase K3 — Kalshi Copy Trading). Token authenticates calls to
     # the saswave Kalshi leaderboard + profile actors used for whale
     # discovery and position monitoring. Free/Starter tier; pulled from KV.
@@ -181,6 +183,8 @@ class Secrets:
     # fields) so the next prod redeploy is a no-op diff for this region.
     odds_api_key: str | None
     kalshi_private_key_pem: str | None
+    kalshi_karen_api_key_id: str | None
+    kalshi_karen_private_key_pem: str | None
     # Apify (Phase K3 — Kalshi Copy Trading). Token authorizes calls to
     # the saswave leaderboard + profile actors for whale discovery and
     # ongoing position monitoring. If unset, the Apify client initializes
@@ -304,6 +308,8 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "POLYGON_RPC_URL",
         "KALSHI_API_KEY_ID",
         "KALSHI_PRIVATE_KEY_PEM",
+        "KALSHI_KAREN_API_KEY_ID",
+        "KALSHI_KAREN_PRIVATE_KEY_PEM",
         "ODDS_API_KEY",
         "APIFY_API_TOKEN",
         "TASTYTRADE_PROVIDER_SECRET",
@@ -313,6 +319,9 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "FIDELITY_USERNAME",
         "FIDELITY_PASSWORD",
         "FIDELITY_ACCOUNT",
+        "ROBINHOOD_USERNAME",  # ITEM1-RH-KV
+        "ROBINHOOD_PASSWORD",
+        "ROBINHOOD_MFA_SECRET",
         "TRADING_CORP_DB_URL",
         "LORD_OTTER_WEBHOOK_SECRET",
         "LORD_OTTER_DISABLE_IP_CHECK",
@@ -321,9 +330,13 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "ENABLE_TRADINGVIEW",
     )
 
+    # ITEM1-KV-AUTHORITATIVE: KV wins for RH creds; unit-env is the break-glass fallback
+    # (a KV/MI blip must not strand RH auth). All other secrets keep env-precedence.
+    _KV_AUTHORITATIVE = frozenset({"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_MFA_SECRET"})
     loaded = 0
     for env_name in expected_env_vars:
-        if os.getenv(env_name):
+        _authoritative = env_name in _KV_AUTHORITATIVE
+        if os.getenv(env_name) and not _authoritative:
             # Already set — env takes precedence so local overrides work
             continue
         kv_name = env_name.replace("_", "-")
@@ -391,6 +404,8 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         kalshi_api_key_id=_env("KALSHI_API_KEY_ID"),
         odds_api_key=_env("ODDS_API_KEY"),
         kalshi_private_key_pem=_env("KALSHI_PRIVATE_KEY_PEM"),
+        kalshi_karen_api_key_id=_env("KALSHI_KAREN_API_KEY_ID"),
+        kalshi_karen_private_key_pem=_env("KALSHI_KAREN_PRIVATE_KEY_PEM"),
         apify_api_token=_env("APIFY_API_TOKEN"),
         tastytrade_provider_secret=_env("TASTYTRADE_PROVIDER_SECRET"),
         tastytrade_refresh_token=_env("TASTYTRADE_REFRESH_TOKEN"),
@@ -420,6 +435,7 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     # Kalshi RSA private key — signs every Kalshi request. Same defense
     # as the polymarket wallet keys above.
     register_redact_literal(secrets.kalshi_private_key_pem)
+    register_redact_literal(secrets.kalshi_karen_private_key_pem)
     # Apify token — auth bearer for all saswave Kalshi actor calls. K3.
     register_redact_literal(secrets.apify_api_token)
     # Tastytrade OAuth secrets — both sensitive and BOTH long-lived (the SDK

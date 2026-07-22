@@ -213,6 +213,7 @@ divisions:
     name: Kalshi Arbitrage
     broker: kalshi
     account_filter: main
+    secret_ref: kalshi_karen  # isolated onto KALSHI-KAREN-* KV keypair (own account) 2026-07-21; other kalshi divisions stay on shared KALSHI-* keys
     intent: aggressive
     benchmark: SPY    # placeholder — prediction-market alpha doesn't have a clean benchmark
     target_annual_return: 0.50
