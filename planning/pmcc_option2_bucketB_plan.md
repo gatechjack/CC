@@ -277,6 +277,12 @@ no delta behavior change, no auto-decision.** B8 and B3 remain independent (co-l
     parallel-session edits to that file live near L1690/L1739 (copy-trader blocks) and MUST stay
     untouched — show the full `strategies.yaml` diff and confirm ONLY the PMCC `long_leg` keys changed
     before commit.
+- **★ KNOWN-DEAD-CONFIG FOLLOW-UP (found 2026-07-22, NOT retired — outside the approved B8b DELTA scope):**
+  `long_leg.dte_max` (720) and `long_leg.roll_out_trigger_dte` (120) are ALSO dead — no code path reads
+  them (`_leap_min_dte` reads `dte_min`; the 120-DTE promote threshold is HARD-CODED in
+  `_promote_to_roll_leap_if_hard_rule`, not config). Left in place this phase (B8b was scoped to the DELTA
+  keys); a future config-hygiene pass can retire them. `dte_min` (used) and `roll_down_trigger_delta` (read
+  by `web/data.py`) are LIVE — keep.
 - **Tests:** synthetic — both old-LEAP sell legs record a non-zero mark (B3 price); `_find_best_leap`
   docstring matches the 0.80 hard-code (B8a). No cost/benefit-gate test (withdrawn); no delta-band test
   unless Option 2 is chosen.
