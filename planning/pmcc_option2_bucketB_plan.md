@@ -1,5 +1,49 @@
 # PMCC Division — Option 2: Bucket B Fixes (phased build plan)
 
+## STATUS — restated exit criteria (2026-07-22)
+
+The original spec below treated all 11 Bucket-B items as defects. That is no longer true: several
+findings have collapsed under the endorsed-design test (a gap is a defect only if enforcement was
+INTENDED — not if the behavior is deliberately delegated to a human or the LLM). This table is the
+authoritative view of what is actually left; the per-phase detail below is retained for history.
+
+| Item | Status | Measurable gate |
+|---|---|---|
+| B4 atomic legs | **BUILT** (P1) | close-without-recover = 0 (each subtype) |
+| B1 HOLD precedence | **BUILT** (P1) | HOLD→roll = 0 unless `override.kind=="hold_override"` |
+| B11 holiday guard | **BUILT** (P1) | holiday scans = 0 |
+| B7 roll-out enforcement | **BUILT** (P2) | same-expiry rolls = 0 |
+| B2 credit gate (short-roll) | **BUILT** (P2) | net-debit roll = 0 unless `net_debit_justified` |
+| B9 earnings gate (short-roll) | **BUILT** (P2) | earnings-window roll = 0 unless `earnings_override` |
+| B9 + B2 on the roll_leap path | **REMAINING** (P2.5) | roll_leap net-debit short = 0 unless `net_debit_justified`; roll_leap earnings-window = 0 unless `earnings_override` |
+| B3 old-LEAP-price fix (data integrity) | **REMAINING** (P3) | LEAP-roll cost recorded on 100% of roll_leaps |
+| B8 docstring consistency | **REMAINING** (P3) | `_find_best_leap` docstring matches code (no phantom `leap_min_delta` filter) |
+| B8 dead-config decision | **OPERATOR DECISION** (deferred) | none — retire+document-0.80 OR wire-config-to-drive; see Phase 3 |
+| B10 afternoon terminal-DTE seam | **REMAINING** (P5) | 15:00-ET scan fires idempotent `_terminal_dte_time_release` |
+| A3 IV wiring | **REMAINING** (P4, supports B5) | IV feed reaches the picker |
+| B5 IV-conditioned short delta | **REMAINING — ⚠ likely WITHDRAW** (P4) | 0 deltas outside band, IF it survives the endorsed-design check |
+| B3 cost/benefit auto-gate | **WITHDRAWN — endorsed design** | — pre-empts the HITL accept/reject the promote guard exists to surface (`_BLACK_SHEEP_RULES` L178-184, `_STANDARD_RULES` L259-266, `_promote_to_roll_leap_if_hard_rule` docstring L2539-2545) |
+| B8 force-LEAP-delta-to-config (0.55) | **WITHDRAWN — endorsed design** | — 0.80 deepest-ITM is intended conservatism at the top of the skill band (`_STANDARD_RULES` L270) |
+| B6 target_strike OTM guard | **WITHDRAWN — endorsed design** | — intentional halfway-roll mechanism (skill L103-104/L111/L135-141) |
+| STRC / held-stock adoption (outside numbering) | **WITHDRAWN — endorsed design** | — division deliberately manages sold calls vs held assets |
+| position-discovery / `get_universe` scope (outside numbering) | **WITHDRAWN — endorsed design** | — scanning every held stock is intended; empty `position_exclude` is the opt-out |
+
+**The pattern:** every item that SURVIVED is a data- or structural-integrity fix (atomic legs,
+credit/earnings gates, a real recorded price, an honest docstring); every item that COLLAPSED was an
+automatic-behavior change that would pre-empt a human or LLM decision (auto-block a LEAP roll, force a
+delta, reject an LLM-chosen strike). Apply this lens when B5 and B10 come up: B5 forces a delta the LLM
+is already told to set (likely collapses); B10 only re-fires an already-deterministic release on a new
+seam (likely survives).
+
+## Method lesson — why the audit produced these (the transferable takeaway)
+
+The 2026-07-21 audit's method was to map YAML and rule-block text against Python enforcement and flag
+every gap. That method cannot distinguish an unenforced rule from a rule deliberately delegated to the
+LLM or to the operator. In this system a substantial share of behavior lives in those layers by design,
+so gap-detection alone produced a **~45% false-positive rate on the numbered items**. Any future audit
+of this or another division should establish, per finding, **whether enforcement was INTENDED before
+classifying a gap as a defect.**
+
 ## Context
 
 The 2026-07-21 read-only audit of the `robinhood_pmcc` division (memory:
@@ -170,28 +214,63 @@ nuance):** B9 ports cleanly; B2's short-leg credit (`open_bid - close_mark`) por
 close-old-short/open-new-short pair — but roll_leap also swaps the LEAP (legs 2+3), so the full
 4-leg compound cost is **B3's** domain. A B2-on-roll_leap fix should gate the short-leg credit +
 earnings only and must NOT re-derive the compound cost (avoid double-counting with B3).
-**Decision needed:** fold the
-B9/B2 extension into **Phase 3** (LEAP cluster — natural home) OR give it its own Bucket-B number. Do
-NOT build before that decision. Also filed to `BACKLOG.md` + `planning/pmcc_phase2_handoff_2026-07-22.md`.
+**DECISION (operator, 2026-07-22): its own PHASE 2.5, ahead of Phase 3** — B2-on-roll_leap must
+deliberately NOT re-derive compound cost while B3 is specifically about compound cost, so building them
+together invites the double-counting flagged above. Scope: port B9 + B2-**short-leg-only** to both
+roll_leap sites. Build spec: `planning/pmcc_phase2_5_plan.md`. Also filed to `BACKLOG.md` +
+`planning/pmcc_phase2_handoff_2026-07-22.md`.
 
-## Phase 3 — LEAP cluster (B8, B3)  · ~1-2 sessions
+## Phase 3 — LEAP cluster, RE-SCOPED 2026-07-22 (B3 price-fix + B8 doc/config)  · ~1 session
 
-**B8 and B3 are independent** — co-located only because both touch LEAP paths. B8 (long-leg
-strike selection) does NOT gate B3 (LEAP-roll cost/benefit gate); listing "B8" first is
-scheduling convenience only — they may land in either order or in parallel within the phase.
-B3's ONLY dependency is its own internal old-LEAP-mark-0.0 fix.
-- **B8** — `_select_leap_strike` (:486) hard-codes delta≥0.80; config
-  `long_leg.delta_min:0.55`/`delta_high_conviction:0.70` (strategies.yaml:294-296) are
-  unused. Fix reads the configured range. Files: `_select_leap_strike:486`,
-  `_find_best_leap:3195`.
-- **B3** — **internal dependency: the old-LEAP sell leg is stored at mark 0.0** (scan:2143,
-  `propose_orders_for_pair`:1200), so any cost/benefit gate would be blind. Fix that first
-  (populate the real old-LEAP mark), **then** add the cost/benefit gate on
-  `_promote_to_roll_leap_if_hard_rule` (:2443) so a negative-value LEAP roll is caught.
-- **Tests:** synthetic — LEAP strike lands in configured range; roll_leap records non-zero
-  old-LEAP cost; cost/benefit gate blocks a manufactured negative-EV LEAP roll.
-- **Acceptance:** LEAP-roll cost recorded on **100%** of roll_leaps (from 0 today = 33 priced 0.0 + 5 no sell-leg); LEAP strike
-  within config band.
+**Re-checked against the skill before authorization (endorsed-design test). Both items shrank; the two
+automatic-behavior halves did not survive.** B8 and B3 remain **independent** (co-located by LEAP area
+only). What is actually left is a data-integrity fix (B3 price) + a documentation/consistency fix (B8) —
+no new deterministic gate, no delta behavior change.
+
+- **B3 — old-LEAP-price fix ONLY (data integrity). The auto-blocking cost/benefit gate is WITHDRAWN.**
+  - **Price fix (REMAINING, unambiguous):** the old-LEAP **sell** leg is emitted at `mark_price=0.0`
+    (`propose_orders_for_pair` roll_leap `pmcc_robinhood.py:1271`; scan roll_leap `:2221`). The system
+    records $0 for what it sells the old LEAP for, so the compound roll cost is unknowable after the
+    fact. Fix: populate the real old-LEAP mark on both sell legs. Nobody intends 0.0.
+  - **Cost/benefit auto-gate — WITHDRAWN (endorsed design).** An automatic block on
+    `_promote_to_roll_leap_if_hard_rule` would pre-empt the operator accept/reject the guard exists to
+    SURFACE: `_BLACK_SHEEP_RULES` L178-184 ("surface a 4-leg compound … they can still reject the LEAP
+    roll and approve only the short roll"), `_STANDARD_RULES` L259-266 ("the promotion ensures the
+    recommendation card INCLUDES the LEAP roll legs"), and the `_promote_to_roll_leap_if_hard_rule`
+    docstring (`:2539-2545`). Same category as B6. **★ Note the direction:** the price fix and the
+    withdrawn gate point OPPOSITE ways — they are not merely independent. The price fix is what ENABLES
+    the human decision (you cannot accept/reject a compound whose cost is recorded as 0); the gate would
+    have PRE-EMPTED that same decision. Fixing the data serves the HITL design; gating it defeats it.
+- **B8 — doc/config-consistency, NOT a behavior change.** `_find_best_leap` (`:3395`) calls the
+  module-level `_select_leap_strike` (`:503`), which hard-codes `delta >= 0.80` (deepest qualifying ITM)
+  and never reads config. The 0.80 choice is INTENDED and documented (module docstring L4,
+  `_select_leap_strike` docstring L504, skill `_STANDARD_RULES` L270 "range 0.55-0.80" = the deep end,
+  `_leap_min_delta` fallback default 0.80) — so "force it to 0.55" is WITHDRAWN (see STATUS table). Two
+  sub-items remain:
+  - **(a) Docstring fix (REMAINING — do regardless of the config decision).** `_find_best_leap`'s
+    docstring (`:3369`) claims it filters "delta >= leap_min_delta", but **no code path reads
+    `_leap_min_delta`** — the property (`:736`) is referenced only inside that docstring. A docstring
+    asserting behavior the code does not have is exactly the failure mode that made this audit misfire
+    repeatedly; correct it to describe the real 0.80 hard-code.
+  - **(b) Dead-config decision (OPERATOR DECISION — do NOT decide or implement here).**
+    `long_leg.delta_min:0.55` / `delta_max:0.80` / `delta_high_conviction:0.70` / `delta_speculative:0.55`
+    (`strategies.yaml:294-297`) are read into `_leap_min_delta`/`_leap_max_delta` (`:736`/`:743`) but
+    **consumed by no code path** — dead for LEAP selection. Two options, each with its implication:
+    - **Option 1 — retire the dead config + document 0.80 as intended.** Delete/annotate the unused
+      `long_leg` delta keys; keep the hard-coded deepest-ITM selection. Implication: NO behavior change;
+      config stops advertising a knob that does nothing; the strategy stays "deepest-ITM LEAP".
+    - **Option 2 — wire config to drive selection.** Make `_select_leap_strike` read the configured band
+      (e.g. accept `delta_min..delta_max`, rank by `delta_high_conviction`). Implication: a genuine
+      BEHAVIOR change — LEAPs could be selected shallower than 0.80 (down to 0.55), less stock-like, more
+      extrinsic paid; needs its own synthetic tests + a byte-equivalence review of every existing LEAP
+      selection. This is the only part of B8 that touches behavior, so it is gated on an explicit
+      operator call.
+- **Tests:** synthetic — both old-LEAP sell legs record a non-zero mark (B3 price); `_find_best_leap`
+  docstring matches the 0.80 hard-code (B8a). No cost/benefit-gate test (withdrawn); no delta-band test
+  unless Option 2 is chosen.
+- **Acceptance:** LEAP-roll cost recorded on **100%** of roll_leaps (from 0 today = 33 priced 0.0 + 5 no
+  sell-leg); `_find_best_leap` docstring no longer claims a `leap_min_delta` filter. **No auto-gate
+  ships; no delta behavior changes** without a separate operator decision (B8 Option 2).
 
 ## Phase 4 — Delta-vs-IV wiring (A3 → B5)  · ~1-2 sessions
 
@@ -235,15 +314,18 @@ where a B fix needs it" rule).
 ---
 
 ## Explicit dependencies
-- **B3 ⇐ old-LEAP-price-0.0 fix (internal to B3)** — the cost/benefit gate is meaningless
-  until the LEAP-roll legs carry a real mark. Sequenced inside Phase 3, price-fix first.
+- **B3 = old-LEAP-price fix ONLY (re-scoped 2026-07-22)** — the cost/benefit auto-gate is WITHDRAWN
+  (endorsed design; it would pre-empt the HITL accept/reject the promote guard exists to surface). The
+  price fix is what ENABLES that human decision, so it is the whole of B3 now — not a precursor to a
+  gate. See Phase 3.
 - **B5 ⇐ A3** — delta-vs-IV needs an IV feed; A3 wires it. Sequenced Phase 4, A3 first.
 - **B1 + B2 ⇐ Justification contract (Phase 2)** — both "unjustified" exit metrics key off
   the `PMCCAnalysis.override.kind` structured field introduced in Phase 2.
 - **B2 / B7 co-located** — both mutate the short-roll path; landing them together avoids
   separate rewrites of `_propose_roll_short`/`_find_best_weekly`. (B6 was the third here — now
   withdrawn.)
-- **B8 / B3 independent** — co-located by area (LEAP), not by dependency (see Phase 3).
+- **B8 / B3 independent** — co-located by area (LEAP), not by dependency; both RE-SCOPED 2026-07-22 to
+  integrity/doc fixes with their automatic-behavior halves withdrawn (see Phase 3).
 - **B10 ⇉ C1 seam** — see below.
 
 ## Phase-2 (C1) seam — do not paint into a corner
@@ -263,7 +345,9 @@ second fixed 15:00 invocation. The release logic is the C1 attach surface; the l
   LEAP roll, holiday date, IV×regime sweep) — not from labeled history.
 
 ## Exit criteria (completion of this plan)
-All 11 B fixes landed + tested, and the regression re-run hits these targets:
+**See the top STATUS table for the authoritative BUILT / REMAINING / WITHDRAWN view — the original
+"all 11 are defects" framing is superseded.** The measurable regression targets below apply to the
+BUILT + REMAINING data/structural-integrity items only; WITHDRAWN endorsed-design items have no target.
 
 | Pathology | Baseline | Target |
 |---|---|---|
@@ -271,10 +355,14 @@ All 11 B fixes landed + tested, and the regression re-run hits these targets:
 | Analysis-vs-execution (HOLD→roll) | 32% (50/157) | **0** with `override.kind != "hold_override"` |
 | Net-debit rolls | 37 | **0** with `override.kind != "net_debit_justified"` |
 | Same-expiry rolls | 18 | **0** |
-| Short delta outside configured band | 24 ≥0.40 | **0** outside band |
-| LEAP-roll cost recorded | 0/38 (33 @0.0 + 5 no-leg) | **100%** of roll_leaps |
+| Short delta outside configured band (B5) | 24 ≥0.40 | **0** outside band — ⚠ B5 likely WITHDRAWN (endorsed design; the LLM sets `target_delta`); revisit Phase 4 |
+| LEAP-roll cost recorded (B3 price fix) | 0/38 (33 @0.0 + 5 no-leg) | **100%** of roll_leaps |
+| roll_leap net-debit short (Phase 2.5) | not gated today | **0** unless `net_debit_justified` |
+| roll_leap earnings-window (Phase 2.5) | not gated today | **0** unless `earnings_override` |
 | Holiday scans | 6 (3 dates) | **0** |
-| ~~ITM target_strike bypass~~ | ~~present~~ | **B6 WITHDRAWN 2026-07-21** — ITM target_strike is the intentional halfway-roll mechanism; no longer an exit gate |
+| ~~ITM target_strike bypass (B6)~~ | ~~present~~ | **WITHDRAWN 2026-07-21** — intentional halfway-roll mechanism |
+| ~~LEAP-roll cost/benefit auto-gate (B3 gate)~~ | ~~n/a~~ | **WITHDRAWN 2026-07-22** — endorsed design; pre-empts the HITL accept/reject the promote guard surfaces |
+| ~~Force LEAP delta to config 0.55 (B8)~~ | ~~n/a~~ | **WITHDRAWN 2026-07-22** — 0.80 deepest-ITM intended; B8 reduced to docstring + dead-config decision |
 
 Plus: `pmcc_paper_run_readiness.py` returns exit 0; **auto_execute STILL false** (no
 automation flip is part of this plan's exit — that is a separate future decision).
