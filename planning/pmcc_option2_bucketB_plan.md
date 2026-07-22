@@ -165,7 +165,12 @@ a LEAP roll can currently ship a **net-debit short** or a **short into an earnin
 neither gate firing. This is the SAME CLASS of bug as B4's original close-without-recover: a rule
 applied to one path but not its sibling that does the same risky thing. **What already covers
 roll_leap:** B4 atomic legs (Phase 1) + B7 roll-out filter & the 60-DTE ceiling (`after_dte` is wired
-at both roll_leap `_find_best_weekly` calls). **What does NOT:** B9, B2. **Decision needed:** fold the
+at both roll_leap `_find_best_weekly` calls). **What does NOT:** B9, B2. **B2/B3 boundary (fix
+nuance):** B9 ports cleanly; B2's short-leg credit (`open_bid - close_mark`) ports to the
+close-old-short/open-new-short pair — but roll_leap also swaps the LEAP (legs 2+3), so the full
+4-leg compound cost is **B3's** domain. A B2-on-roll_leap fix should gate the short-leg credit +
+earnings only and must NOT re-derive the compound cost (avoid double-counting with B3).
+**Decision needed:** fold the
 B9/B2 extension into **Phase 3** (LEAP cluster — natural home) OR give it its own Bucket-B number. Do
 NOT build before that decision. Also filed to `BACKLOG.md` + `planning/pmcc_phase2_handoff_2026-07-22.md`.
 

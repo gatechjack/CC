@@ -212,6 +212,14 @@ not merely "out of scope"; it is an inconsistency that a LEAP roll silently expl
 | **B9 earnings gate** | **NO** | `_earnings_gate_state` called only in `_propose_roll_short` (L3246) |
 | **B2 credit gate** | **NO** | `conservative_net` logic only in `_propose_roll_short` (L3290+) |
 
+**Implementation nuance (B2/B3 boundary — for whoever scopes the fix).** B9 ports cleanly to
+roll_leap: the 4th leg opens new short premium, so the skill's "no new short premium within 7 DTE of
+earnings" applies identically. B2's short-leg credit basis (`open_bid - close_mark`) also ports to
+the close-old-short (leg 1) vs open-new-short (leg 4) pair. BUT roll_leap also swaps the LEAP (legs
+2+3), so the FULL 4-leg compound cost is **B3's** domain (the LEAP-roll cost/benefit gate), not B2's.
+A B2-on-roll_leap fix should gate the **short-leg credit + earnings only** and must NOT re-derive the
+compound cost — doing so would double-count with B3.
+
 **Needs an OPERATOR DECISION on sequencing:** fold the B9/B2 extension to the roll_leap path into
 **Phase 3** (LEAP cluster — natural home, roll_leap is a LEAP operation), OR give it its **own Bucket-B
 item number**. Do NOT build it before that decision. (Filed to `BACKLOG.md` and
