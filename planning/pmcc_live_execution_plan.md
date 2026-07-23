@@ -33,6 +33,114 @@ from it.** So the expensive part of this build is NOT the atomic plumbing (it's 
 
 ---
 
+## ★ AMENDMENT — 2026-07-22 (operator decisions: roll_leap is permanently MANUAL; Phase A = roll_short only)
+
+**This amendment SUPERSEDES the roll_leap portions of §b/§c/§e below. The original investigation text is
+retained for history. `auto_execute` stays FALSE; no code / branch / build is authorized by this amendment.**
+
+### A. roll_leap is permanently MANUAL (RESOLVED — removes work, adds none)
+The agent RECOMMENDS a LEAP roll; if the operator approves, **the operator executes it manually.** The
+agent **never places LEAP legs.** Rationale (recorded): a roll_leap is a **capital-reallocation** decision.
+The operator's real option set includes keeping the LEAP, or closing it and redeploying to a **different
+asset entirely** — options the system cannot see, because it does not know what else the operator is
+considering. The operator opens all LEAPs manually and selects the asset. The agent's job is managing short
+calls against LEAPs and held assets — not allocating capital across assets.
+
+**Consequences:**
+- **Phase A-2 (roll_leap atomicity) is DELETED.** No sequenced sub-combos, no 4-leg combo, no live probe of
+  multi-expiration RH acceptance. The agent does not execute roll_leap, so there is **no fill-layer risk to
+  close** on that path — the former decompose-vs-quarantine fork (old §e Phase A open decision) is moot.
+- **Phase A is now SOLELY the 2-leg atomic roll_short path** — buy-to-close the current short + sell-to-open
+  a strictly-later short; a single-underlying diagonal, RH-combo-legal (a recognized spread). All of §e
+  Phase A's "combo-tag + `place_combo` + combo-level HITL" work applies to roll_short only.
+- **auto_execute (Phase D), if ever flipped, is scoped to roll_short ONLY.** Recorded explicitly: this is a
+  materially smaller and more defensible flip than "PMCC runs autonomously" — the agent would auto-execute
+  short-call management only; every capital-reallocation (LEAP) decision stays with the operator, always HITL.
+
+### B. Executable vs advisory becomes a STRUCTURAL distinction (design answer — read-only, NOT built)
+roll_short proposals are **EXECUTABLE** (agent places on approval); roll_leap proposals are **ADVISORY**
+(operator acts; the agent places nothing). Today both flow through the same HITL surface and look identical —
+the ONLY discriminator is the `action` string (`roll_short_*` vs `roll_leap_*` in each leg's `extra["action"]`).
+Investigation 2026-07-22 (no code):
+
+- **(a) Make it structural, not string-inferred. ★ DECIDED 2026-07-22 — a TYPED FIELD on `ProposedOrder`,
+  NOT an `extra` key.** Add `dispatch: Literal["executable","advisory"] = "executable"` to `ProposedOrder`
+  (`persistence/models.py:51-103`), set at assembly time in `pmcc_robinhood.py` (the roll_leap leg factory
+  calls), not inferred downstream. Safe default keeps every other division executable untouched; persisted
+  via `to_db_row`; readable at every chokepoint and by the web surface. **Rationale:** this field IS the
+  guard that prevents LEAP legs from ever executing — the `extra` dict is where things get forgotten, but a
+  typed field appears in signatures, is visible to anyone reading the dataclass, and is reachable by static
+  analysis. Structural guards belong in the type. The fail-closed guard (c) keys off this typed value, with
+  the `action`-string prefix as defense-in-depth. (Rejected alternative: an `extra["proposal_kind"]` key —
+  lower-touch but freeform / less discoverable / easier to drop in a refactor.)
+- **(b) How the approval surface renders an ADVISORY proposal (unmistakably not an execution request).**
+  Today every card (`web/templates/approval_detail.html`, coalesced by
+  `comms/position_context.py:coalesce_paired_view`) shows **Approve / Reject / Modify** buttons that all fire
+  `data_exec.place()`; there is NO advisory concept anywhere (confirmed: no `advisory` / `informational` /
+  `display_only` field on `ProposedOrder` / `ApprovalRequest`; decisions are only `approve|reject|modify`,
+  `graph/interrupts.py`). An advisory card must branch on the (a) field and: replace the execution buttons
+  with a **non-placing** action set (e.g. **Acknowledge / Dismiss**) that records the operator's decision as
+  an audit event and clears the queue entry — **no Future resolves into a placement**; carry an explicit
+  **"ADVISORY — you execute this manually; the agent will NOT place any order"** banner + distinct
+  color/icon; and show the recommended legs as **information** the operator needs to place it themselves
+  (strikes / expirations / deltas / net cost), presented as a recommendation, not as order rows.
+- **(c) Fail-closed dispatch refusal (so no code path or auto_execute flip can execute a roll_leap).** The
+  refusal belongs at the DISPATCH CHOKEPOINTS every real placement flows through: **`data_exec.place()`**
+  (guard BEFORE the broker call at `data_exec.py:193`) AND **`data_exec.place_combo()`** (BEFORE
+  `data_exec.py:702`). Any order/leg whose (a) value is `advisory` (defense-in-depth: OR whose `action`
+  matches a `roll_leap_*` pattern) → **RAISE**, never place. This mirrors the EXISTING fail-closed precedent
+  — `_place_option_order` (`robinhood.py:1084-1096`) already raises if a combo leg reaches the single-leg
+  path ("fail fast instead" of partial exposure). Fails **CLOSED**: an advisory-or-ambiguous roll_leap order
+  at any dispatch gate raises rather than executing, so a future caller, a refactor, OR an
+  `auto_execute: true` flip cannot place LEAP legs. (Belt-and-suspenders: roll_leap legs are never
+  combo-tagged, so they cannot ride `place_combo` either.)
+- **(d) 4-leg compound presentation. ★ DECIDED 2026-07-22 — KEEP the 4-leg presentation for advisory
+  roll_leap** (render the existing 4-leg compound as an advisory card per (b); minimal change to what is
+  assembled). roll_leap currently emits a 4-leg compound so the operator sees all legs (endorsed HITL design,
+  `_BLACK_SHEEP_RULES` L178-184). **Rationale:** the operator needs all four legs to evaluate the
+  recommendation — what is being closed, what would replace it, at what prices. That is the information the
+  decision rests on, and it is also what the operator hand-executes if they approve; prose would make the
+  recommendation harder to act on. The advisory distinction is carried by the **banner and the non-placing
+  buttons** (per (b)), NOT by removing information. (Rejected: collapsing to a prose summary or "suggested
+  legs" — either would strip detail the operator needs.) `_BLACK_SHEEP_RULES` / `_STANDARD_RULES` / the skill
+  are NOT changed — the LLM still produces the same recommendation; only how the deterministic layer
+  tags/renders/dispatches it changes.
+
+### C. NEW FAILURE MODE — position-state drift (known consequence of the manual-LEAP design)
+When the operator manually rolls a LEAP after approving an advisory recommendation, the agent learns of it
+only at the **next `detect_existing_legs` scan.** In between, the agent believes it is managing a short
+against a LEAP that no longer exists.
+- **Why it drifts:** PMCC persists **no** position belief — it re-derives fresh from the broker every scan
+  (`detect_existing_legs` → live `get_option_positions_detail`, `pmcc_robinhood.py:1929`); there is **no
+  intraday manage / position-poll loop** (the only PMCC scheduled tasks are the 2-pass daily scheduler and
+  the orphan-approval reconciler, which does not refresh positions). Position view is fresh ONLY at scan-fire
+  time.
+- **Window (bounded by the daily cadence):** the view refreshes at most twice per trading day — the pre-open
+  scan (~08:30-09:25 ET) and the 15:00-ET terminal-DTE pass (`_scheduled_pmcc_scan_loop`, `main.py`).
+  **Worst case:** operator rolls just AFTER the pre-open scan → stale until the 15:00 pass (~5.5h) and not
+  fully refreshed until next pre-open (~23h). **Best case:** rolls just before a scan → near-zero.
+- **What the exposure ACTUALLY is (low, non-naked, self-healing):** during the window the agent's belief is
+  "short covered by the OLD LEAP"; the real state is "short covered by the NEW LEAP" — **the short is still
+  covered** (the operator's manual roll keeps 1:1 coverage), so this is a **belief drift, not a
+  position-integrity / naked risk.** The only bite is if the agent, on the stale belief, proposes a
+  short-management action keyed off the old LEAP's parameters — but (1) `auto_execute` is FALSE so it is HITL
+  and the operator who just rolled is in the loop, (2) roll_short concerns the SHORT leg, unchanged by a LEAP
+  swap, so most actions remain valid, and (3) the next scan re-derives from the broker → **self-heals within
+  ≤1 trading day.**
+- **Cheap ways to shorten it (report only — NOT authorized to build):** **(i)** on operator **acknowledge**
+  of an advisory roll_leap, trigger a **targeted `detect_existing_legs` refresh for that symbol** on the next
+  300s scheduler tick (reuses existing machinery) → shrinks worst-case drift from hours/~1 day to ~minutes;
+  or **(ii)** mark the symbol **"operator-roll-pending"** and suppress further proposals on it until a fresh
+  scan confirms the new LEAP (fail-safe: don't act on a symbol you know just changed). Both reuse existing
+  scan code. **Recorded as a known design consequence; no fix built.**
+
+### D. Rules UNCHANGED
+`_BLACK_SHEEP_RULES` and `_STANDARD_RULES` stay exactly as they are — no change to either or to the uploaded
+skill. This amendment changes only how the DETERMINISTIC layer tags (executable/advisory), renders, and
+dispatches a proposal; the LLM's recommendation content is untouched.
+
+---
+
 ## a. What PEAD already solved (`robinhood_pead` — genuinely live since 2026-06-24)
 
 - **Path (fractional equity):** pre-open `scan` writes an *intent* row only (no broker call — RH
@@ -93,8 +201,10 @@ from it.** So the expensive part of this build is NOT the atomic plumbing (it's 
   `net_limit_price`/`ratio_quantity`/`option_id`); (2) combo dispatch for PMCC (route the grouped
   roll to `data_exec.place_combo` — `_group_orders_by_pair_id` is UI/parallelism only today);
   (3) combo-level approval for PMCC; (4) **assignment/exercise handling**; (5) options BP/margin
-  pre-check; (6) order-path 401/429 handling; (7) the **4-leg `roll_leap`** decomposition/quarantine
-  (see §e); (8) slippage cap on the `0.0` urgent sell; (9) live options fill reconciliation.
+  pre-check; (6) order-path 401/429 handling; (7) ~~4-leg `roll_leap` decomposition/quarantine~~
+  **SUPERSEDED 2026-07-22 — roll_leap is advisory-manual (AMENDMENT §A); no atomicity work. Replaced by
+  structural executable-vs-advisory tagging + a fail-closed dispatch refusal (AMENDMENT §B)**; (8)
+  slippage cap on the `0.0` urgent sell; (9) live options fill reconciliation.
 
 ## d. The risk surface paper mode hid (post-submission — no Bucket B gate covers it)
 
@@ -116,14 +226,16 @@ the two legs through separate graph invocations).
   main.py fork happened; that risk is now retired for the engine layer. *(Remaining: the RH-auth
   **web** layer — `web/routes.py` + `home.html` + `rh_session_panel.html` — is still un-reconciled,
   non-boot-critical; separate lower-priority BACKLOG item.)*
-- **Phase A — Atomic roll plumbing (`auto_execute` stays FALSE).** Combo-tag PMCC roll legs, route
-  through `data_exec.place_combo` → `place_multi_leg`, add a combo-level HITL approval. **★ Open
-  design decision: the 4-leg `roll_leap` does NOT map to one RH combo** — whether it decomposes into
-  sub-combos (e.g. the short roll as one 2-leg diagonal + the LEAP swap as another) or is quarantined
-  (kept multi-order with its own atomicity story) is a **Phase-A design decision, not an
-  implementation detail**. *Exit evidence:* a real 2-leg diagonal roll fires as one atomic combo via
-  HITL on the live account, fills-or-rejects all-or-nothing (venue-reconciled), zero naked-leg
-  outcomes across N HITL rolls; the 4-leg roll_leap explicitly decomposed or quarantined.
+- **Phase A — Atomic roll_short plumbing (`auto_execute` stays FALSE). SCOPE NARROWED 2026-07-22 to the
+  2-leg roll_short ONLY — see AMENDMENT §A.** Combo-tag the two roll_short legs, route through
+  `data_exec.place_combo` → `place_multi_leg`, add a combo-level HITL approval. Also (AMENDMENT §B) tag
+  proposals executable-vs-advisory structurally and add the fail-closed dispatch refusal so a roll_leap can
+  never be placed. **★ The former "4-leg `roll_leap` decompose-vs-quarantine" open decision is DELETED:
+  roll_leap is permanently advisory-manual (the agent executes nothing), so there is no roll_leap atomicity
+  work.** *Exit evidence:* a real 2-leg diagonal roll_short fires as one atomic combo via HITL on the live
+  account, fills-or-rejects all-or-nothing (venue-reconciled), zero naked-leg outcomes across N HITL rolls;
+  an advisory roll_leap renders as a non-executable recommendation and is refused at both dispatch
+  chokepoints (a seeded advisory order RAISES rather than placing).
 - **Phase B — Post-submission safety (`auto_execute` stays FALSE).** Assignment/exercise monitoring
   (0-DTE ITM short), options-position reconciliation, BP/margin pre-check, order-path 401/429
   handling, slippage cap on the urgent sell. *Exit evidence:* a 0-DTE ITM assignment handled cleanly
