@@ -13,6 +13,11 @@
   {% include "partials/stat_cards.html" %}
 </div>
 
+<!-- RH-SESSION-PANEL-STUB (ITEM 2): bootstraps the RH session health + refresh panel -->
+<div hx-get="/api/rh/session-health" hx-trigger="load" hx-swap="outerHTML" class="mt-4">
+  <div class="text-[11px] text-muted font-mono">Robinhood session...</div>
+</div>
+
 
 <!-- ── Equity curve + division panels (full width); trade flow moved to a bottom strip ── -->
 <div class="flex flex-col gap-4 mt-4">

@@ -2032,6 +2032,58 @@ def register(app: FastAPI) -> None:
         log.info("pead_halt_initiated: reason=%s closed=%d", reason, closed)
         return _render_action_pill(f"PEAD HALTED · {closed} closed")
 
+    # ITEM2-RH-ROUTES: RH session health + refresh button ------------------------------
+    _RH_AGENT, _RH_KEY = "robinhood_session", "refresh_status"
+    _BUTTON_REAUTH_TIMEOUT_S = 90
+
+    def _rh_health_ctx():
+        import os, time
+        from trading_corp.brokers import robinhood as _rh
+        pickle = os.path.expanduser("~/.tokens/robinhood.pickle")
+        try:
+            age_s = int(time.time() - os.stat(pickle).st_mtime)
+        except OSError:
+            age_s = -1
+        rec = _db_mod.load_agent_state(_RH_AGENT, _RH_KEY, db_url=deps.db_url)
+        st = rec[0] if (rec and isinstance(rec[0], dict)) else {}
+        return {"auth_state": "down" if getattr(_rh, "_auth_down", False) else "valid",
+                "down_since": getattr(_rh, "_auth_down_since", None),
+                "last_good": getattr(_rh, "_auth_last_good", None),
+                "pickle_age_s": age_s, "refresh": st.get("state", "idle"),
+                "refresh_msg": st.get("msg", "")}
+
+    @app.get("/api/rh/session-health", response_class=HTMLResponse)
+    async def rh_session_health(request: Request):
+        return templates.TemplateResponse(request, "rh_session_panel.html", {"health": _rh_health_ctx()})
+
+    @app.post("/api/rh/refresh-session", response_class=HTMLResponse)
+    async def rh_refresh_session(request: Request):
+        db_url = deps.db_url
+        rec = _db_mod.load_agent_state(_RH_AGENT, _RH_KEY, db_url=db_url)
+        if rec and isinstance(rec[0], dict) and rec[0].get("state") in ("running", "push_sent"):
+            return templates.TemplateResponse(request, "rh_session_panel.html", {"health": _rh_health_ctx()})
+        broker = deps.data_exec.brokers.get("robinhood_pead") or next(
+            (b for k, b in deps.data_exec.brokers.items() if k.startswith("robinhood")), None)
+
+        async def _run():
+            try:
+                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
+                    {"state": "push_sent", "msg": "approve the push on your phone", "ts": _now_iso()}, db_url=db_url)
+                ok = False
+                if broker is not None and hasattr(broker, "_attempt_reauth"):
+                    ok = await broker._attempt_reauth(force=True, timeout=_BUTTON_REAUTH_TIMEOUT_S)
+                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
+                    {"state": "valid" if ok else "failed",
+                     "msg": "" if ok else "login not confirmed (push not approved / sms-email / creds)",
+                     "ts": _now_iso()}, db_url=db_url)
+            except Exception as e:  # noqa: BLE001
+                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
+                    {"state": "failed", "msg": str(e), "ts": _now_iso()}, db_url=db_url)
+
+        _db_mod.set_agent_state(_RH_AGENT, _RH_KEY, {"state": "running", "msg": "", "ts": _now_iso()}, db_url=db_url)
+        asyncio.create_task(_run())
+        return templates.TemplateResponse(request, "rh_session_panel.html", {"health": _rh_health_ctx()})
+
     @app.get("/approvals/{order_id}", response_class=HTMLResponse)
     async def approval_detail(request: Request, order_id: str):
         """Detail page for a single pending approval. 404 when the
