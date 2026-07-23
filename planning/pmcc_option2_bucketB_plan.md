@@ -53,6 +53,13 @@ Bucket-A/B findings were endorsed design or automatic-behavior mischaracterizati
 this or another division should establish, per finding, **whether enforcement was INTENDED before
 classifying a gap as a defect.**
 
+**★ Cross-division corollary (2026-07-22):** the same discipline applies to CROSS-DIVISION observations, not
+only rule-vs-code gaps within a division. A finding was filed against another division (`robinhood_pead`) by
+reading config values (`per_trade_risk_pct: 1.0`, `max_drawdown_disabled: true`) as latent defects without
+establishing INTENT or OWNERSHIP — the mechanism traced correctly (market orders → `ref_price=0` → cap
+skipped) but the framing did not: the posture was deliberate, owned by another session. **Establish ownership +
+intent before classifying ANY gap as a defect — in your division or someone else's.**
+
 ## Context
 
 The 2026-07-21 read-only audit of the `robinhood_pmcc` division (memory:
