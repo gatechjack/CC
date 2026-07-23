@@ -1124,6 +1124,30 @@ async def run(argv: list[str] | None = None) -> int:
             _rt_broker.safety_notifier = channel
 
     await channel.start()
+
+    # Observability: wire the REUSED Board bot as the execution-alert transport
+    # (one channel per process). emit_exec_alert() (place_combo terminal states,
+    # roll-abort, post-dispatch integrity) fans out through channel.push. Optional
+    # config in strategies.yaml `execution_alerts: {chat_id, tiers: {FILLED: true,
+    # ABORTED: false, ...}}`; absent → all tiers on, reused Board chat. Non-fatal.
+    try:
+        from trading_corp.comms import exec_alert as _exec_alert_mod
+        if hasattr(channel, "push"):
+            _exec_alert_mod.set_exec_alert_sender(channel.push)
+        _ea_cfg: dict = {}
+        try:
+            import yaml as _yaml_ea
+            with open("config/strategies.yaml", "r", encoding="utf-8") as _f_ea:
+                _ea_cfg = (_yaml_ea.safe_load(_f_ea) or {}).get("execution_alerts") or {}
+        except Exception:
+            _ea_cfg = {}
+        _exec_alert_mod.configure(chat_id=_ea_cfg.get("chat_id"),
+                                  tiers=_ea_cfg.get("tiers"))
+        log.info("Execution alerts wired to Telegram (tiers=%s)",
+                 _ea_cfg.get("tiers") or "all-on")
+    except Exception as _e_ea:
+        log.warning("exec_alert wiring failed (non-fatal): %s", _e_ea)
+
     await channel.push(
         f"CEO online. Mode: *{mode}*. DB: `{db_path}`. "
         f"{'Telegram' if secrets.has_telegram else 'CLI'} channel active."

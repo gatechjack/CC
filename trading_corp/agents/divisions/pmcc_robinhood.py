@@ -4301,6 +4301,25 @@ Action reference:
         )
         self._audit_division("pmcc_roll_aborted", payload)
 
+        # Observability: 🟡 ABORTED — self-blocked at build; nothing sent to broker.
+        # Deduped on (tier, symbol, reason) so the 08:30–09:25 scan can't spam the
+        # same abort every cycle. Double-isolated; never affects the build path.
+        try:
+            from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+            d = diag or {}
+            _r = reason
+            if d.get("considered") is not None:
+                _r += (f" (considered={d.get('considered')}, "
+                       f"liquid={d.get('liquid', 0)}, target={d.get('target_date', '?')})")
+            elif missing_leg:
+                _r += f" (missing {missing_leg})"
+            emit_exec_alert(ExecOutcome(
+                tier="ABORTED", symbol=symbol, strategy="robinhood_pmcc",
+                reason=_r, position_changed=False,
+            ))
+        except Exception:
+            pass
+
     async def _record_research_unavailable(
         self, *, engagement_id: str | None, reason: str,
     ) -> None:

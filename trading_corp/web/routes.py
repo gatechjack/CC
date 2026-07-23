@@ -1006,6 +1006,14 @@ def register(app: FastAPI) -> None:
         for clean web UX (loading spinner → result inline).
         """
         sym = symbol.upper()
+        # Dashboard Approve = USER-INITIATED: mark the origin so exec-alerts
+        # (build-abort + place_combo outcome) BYPASS dedupe — every click gets a
+        # guaranteed ping even if identical to a prior one in-window.
+        try:
+            from trading_corp.comms.exec_alert import mark_user_origin
+            mark_user_origin()
+        except Exception:
+            pass
         if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
             return HTMLResponse(_exec_error_html(sym, "Approve & Execute is wired for Robinhood PMCC only."))
         broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
@@ -1320,6 +1328,12 @@ def register(app: FastAPI) -> None:
         first short) instead of the manage-existing-pair pipeline.
         """
         sym = symbol.upper()
+        # Scout Approve = USER-INITIATED (see execute_pair_orders) — bypass dedupe.
+        try:
+            from trading_corp.comms.exec_alert import mark_user_origin
+            mark_user_origin()
+        except Exception:
+            pass
         if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
             return HTMLResponse(_exec_error_html(sym, "Scout is wired for Robinhood PMCC only."))
         broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None

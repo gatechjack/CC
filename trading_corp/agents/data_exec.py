@@ -707,6 +707,29 @@ class DataExecAgent:
         from trading_corp.agents.strategies._pmcc_combo import combo_ref_id
         _ref_id = combo_ref_id(str(combo_id))
 
+        def _exec_alert(tier, reason, *, filled_price=None, changed=False,
+                        broker_error=None):
+            """Fire the observability alert for this combo's terminal outcome.
+            Double-isolated (this try/except + emit_exec_alert's own)."""
+            try:
+                from trading_corp.comms.exec_alert import (
+                    ExecOutcome, emit_exec_alert,
+                )
+                emit_exec_alert(ExecOutcome(
+                    tier=tier,
+                    symbol=(orders[0].symbol if orders else "?"),
+                    strategy=strategy, reason=reason, combo_id=str(combo_id),
+                    legs=[{"side": o.side,
+                           "expiration": (o.extra or {}).get("expiration"),
+                           "strike": (o.extra or {}).get("strike")} for o in orders],
+                    attempted_price=(float(net_limit) if net_limit is not None else None),
+                    filled_price=filled_price,
+                    qty=(float(orders[0].qty) if orders else None),
+                    broker_error=broker_error, position_changed=changed,
+                ))
+            except Exception:
+                pass
+
         broker = self.brokers.get(division) or self.brokers.get("default")
         if broker is None:
             raise RuntimeError(f"No broker registered for division={division!r}")
@@ -775,6 +798,11 @@ class DataExecAgent:
                              "broker_order_id": getattr(e, "order_id", None),
                              "reason": str(e)},
                 )
+                _exec_alert("NO_FILL", "pending/unconfirmed after poll — booked nothing",
+                            broker_error=str(e))
+            else:
+                _exec_alert("EXEC_FAIL", "combo rejected / API error at broker",
+                            broker_error=str(e))
             raise
 
         if not fills:
@@ -795,11 +823,17 @@ class DataExecAgent:
                 "combo_unfilled combo=%s strategy=%s division=%s",
                 combo_id, strategy, division,
             )
+            _exec_alert("NO_FILL", "combo did not fill (limit not marketable) — position unchanged")
             return []
 
         if len(fills) != len(orders):
             # Should not happen — broker is contractually all-or-nothing.
             # Surface loudly rather than silently mis-aligning.
+            _exec_alert(
+                "NAKED_LEG",
+                f"combo booked {len(fills)}/{len(orders)} legs — integrity breach",
+                changed=True,
+            )
             raise RuntimeError(
                 f"broker.place_multi_leg returned {len(fills)} fills for "
                 f"{len(orders)} legs in combo {combo_id!r}"
@@ -873,6 +907,11 @@ class DataExecAgent:
             "actual=%.4f limit=%s legs=%d",
             combo_id, strategy, division, direction,
             actual, net_limit, len(fills),
+        )
+        _exec_alert(
+            "FILLED",
+            f"{direction or 'combo'} filled {actual:g} @ {getattr(fills[0], 'venue', '?')}",
+            filled_price=actual, changed=True,
         )
         return fills
 

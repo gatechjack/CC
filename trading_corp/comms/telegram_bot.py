@@ -200,12 +200,17 @@ class TelegramChannel(BoardChannel):
         *,
         audit_path: str = "other",
         audit_context: dict | None = None,
+        chat_id: int | None = None,
     ) -> bool:
         """Send a Telegram message and write a success/failure audit row.
 
         Never raises — callers await push() and rely on it returning a bool.
         Returns True on confirmed delivery (HTTP 2xx + ok:true), False otherwise.
+
+        `chat_id` overrides the default Board chat (e.g. a dedicated exec-alert
+        chat); None = the reused Board chat this channel was constructed with.
         """
+        _dest = int(chat_id) if chat_id is not None else self._chat_id
         if self._app is None:
             log.warning("push called before start; dropping message")
             self._write_send_audit(
@@ -219,7 +224,7 @@ class TelegramChannel(BoardChannel):
         try:
             # Telegram messages are limited to ~4096 chars.
             msg = await self._app.bot.send_message(
-                chat_id=self._chat_id,
+                chat_id=_dest,
                 text=text[:4000],
                 parse_mode="Markdown",
             )
@@ -238,7 +243,7 @@ class TelegramChannel(BoardChannel):
             # 400s (e.g. the '[PAPER]' brackets in lifecycle close-outs).
             try:
                 msg = await self._app.bot.send_message(
-                    chat_id=self._chat_id,
+                    chat_id=_dest,
                     text=text[:4000],
                 )
                 self._write_send_audit(

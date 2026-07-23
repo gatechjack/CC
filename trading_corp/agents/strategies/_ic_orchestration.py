@@ -268,6 +268,13 @@ async def dispatch_approved_ic_combo(
     """
     if not combo:
         return []
+    # Board-approved HITL dispatch = USER-INITIATED — exec-alerts for this combo's
+    # terminal outcome bypass dedupe (see comms/exec_alert).
+    try:
+        from trading_corp.comms.exec_alert import mark_user_origin
+        mark_user_origin()
+    except Exception:
+        pass
     combo_id = (combo[0].extra or {}).get("combo_id")
     # Re-price from LIVE quotes at DISPATCH (not the stale proposal-time mid),
     # IDENTICAL to the dashboard route — one helper (strategy.reprice_combo), both
