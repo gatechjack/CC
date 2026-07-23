@@ -28,6 +28,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import os  # ITEM3-RH-AUTH
+import sys
+import time
 from datetime import date, datetime, timezone
 from threading import Lock
 
@@ -42,6 +45,20 @@ log = logging.getLogger(__name__)
 _LOGIN_LOCK = Lock()
 _LOGIN_DONE = False
 _ACCOUNT_LIST: list[dict] = []   # cached account list from /accounts/ endpoint
+
+# ITEM3-RH-AUTH: process-wide RH auth-health state (shared across all RH divisions)
+_AUTH_LOCK = Lock()
+_auth_down = False
+_auth_down_since = None
+_auth_last_good = None
+_reauth_last_ts = 0.0
+_REAUTH_MIN_INTERVAL_S = 300   # GUARD 1: >= a real outage cools before we hit /login again (429 guard)
+_REAUTH_TIMEOUT_S = 15         # GUARD 2: fresh-file validate <1s; a stale-file challenge exceeds this
+_auth_alert_hook = None        # set by main.py wiring -> data_exec._on_rh_auth_change
+
+
+class RobinhoodAuthError(Exception):
+    """Marker only; snapshot() self-heals and does NOT raise."""
 
 # Robinhood's `instrument` URL on a position can point to non-equity
 # instruments — most commonly crypto holdings under
@@ -197,6 +214,94 @@ class RobinhoodBroker(Broker):
             self._account_filter, self._account_number or "default",
             self._account_label or "default",
         )
+
+    # ITEM3-REAUTH: active 401 sentinel + guarded in-process re-login + latch -----------
+    async def _auth_is_401(self) -> bool:
+        """ACTIVE sentinel — robin_stocks swallows a 401 (returns None/0, no raise); read the
+        status ourselves via a raw request (mirrors robin_stocks' own pickle validation)."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        try:
+            res = await asyncio.to_thread(
+                rs.helper.request_get,
+                rs.urls.positions_url(self._account_number or None),
+                "pagination", {"nonzero": "true"}, False,
+            )
+        except Exception:
+            return False
+        return getattr(res, "status_code", None) == 401
+
+    def _login_input_neutered(self, mfa_code) -> None:
+        """rs.login with stdin -> /dev/null so an sms/email challenge input() raises EOFError
+        immediately (GUARD 2 belt-and-suspenders; engine stdin is already systemd-null)."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        old = sys.stdin
+        try:
+            sys.stdin = open(os.devnull)
+            rs.login(self._username, self._password, mfa_code=mfa_code, store_session=True)
+        finally:
+            try:
+                sys.stdin.close()
+            except Exception:
+                pass
+            sys.stdin = old
+
+    async def _attempt_reauth(self, *, force: bool = False, timeout: float = _REAUTH_TIMEOUT_S) -> bool:
+        """ONE guarded in-process re-login off the pickle file. GUARD 1 backoff (auto path) +
+        GUARD 2 timeout. force=True (ITEM 2 button) skips backoff, uses a longer timeout."""
+        global _LOGIN_DONE, _reauth_last_ts
+        now = time.monotonic()
+        if not force:
+            with _AUTH_LOCK:
+                if now - _reauth_last_ts < _REAUTH_MIN_INTERVAL_S:
+                    return False   # GUARD 1: don't hammer /login (429 hazard)
+                _reauth_last_ts = now
+        mfa_code = None
+        if self._mfa_secret:
+            try:
+                import pyotp  # type: ignore
+                mfa_code = pyotp.TOTP(self._mfa_secret).now()
+            except ImportError:
+                pass
+        with _LOGIN_LOCK:
+            _LOGIN_DONE = False
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._login_input_neutered, mfa_code),
+                timeout=timeout,   # GUARD 2
+            )
+        except Exception as e:  # TimeoutError / EOFError / login error
+            log.warning("RH in-process reauth did not complete (%s: %s) — file likely stale, escalating",
+                        type(e).__name__, e)
+            return False
+        if await self._auth_is_401():
+            return False
+        with _LOGIN_LOCK:
+            _LOGIN_DONE = True
+        return True
+
+    def _note_auth_state(self, *, down: bool, reason: str) -> None:
+        """Update the shared latch; fire the alert hook ONLY on a down/recovered TRANSITION."""
+        global _auth_down, _auth_down_since, _auth_last_good
+        _ts = datetime.now(timezone.utc).isoformat()
+        transition = None
+        with _AUTH_LOCK:
+            was = _auth_down
+            if down and not was:
+                _auth_down = True; _auth_down_since = _ts; transition = "down"
+            elif (not down) and was:
+                _auth_down = False; _auth_last_good = _ts; transition = "recovered"
+            elif not down:
+                _auth_last_good = _ts
+        if transition == "down":
+            log.error("rh_auth_failed: Robinhood session DOWN (reason=%s) — NO entries and NO exits on live positions, all RH accounts", reason)
+        elif transition == "recovered":
+            log.info("rh_auth_recovered: Robinhood session restored (reason=%s)", reason)
+        if transition and _auth_alert_hook is not None:
+            try:
+                asyncio.get_running_loop().create_task(
+                    _auth_alert_hook(down, {"reason": reason, "since": _auth_down_since, "last_good": _auth_last_good}))
+            except RuntimeError:
+                pass
 
     async def disconnect(self) -> None:
         # Don't actually log out unless this is the last instance — robin_stocks
@@ -366,6 +471,19 @@ class RobinhoodBroker(Broker):
             self._account_number or None,
         )
         profile = profile or {}
+        # ITEM3-SNAPSHOT: empty profile on a real RH account = the 401 signature. Confirm
+        # actively, then try ONE guarded in-process reload (silent recover if the file is fresh).
+        if not profile and await self._auth_is_401():
+            import robin_stocks.robinhood as rs  # type: ignore
+            if await self._attempt_reauth():
+                profile = await asyncio.to_thread(
+                    rs.profiles.load_portfolio_profile, self._account_number or None) or {}
+                self._note_auth_state(down=False, reason="in_process_reauth_ok")
+            else:
+                self._note_auth_state(down=True, reason="reauth_failed_or_stale_file")
+                # fall through: empty profile -> equity 0 / positions [] (existing), NO raise
+        elif profile:
+            self._note_auth_state(down=False, reason="snapshot_ok")
         equity = float(profile.get("equity") or profile.get("extended_hours_equity") or 0)
         buying_power = float(
             profile.get("margin_buying_power")

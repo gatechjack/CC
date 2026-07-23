@@ -329,6 +329,31 @@ class DataExecAgent:
                 },
             )
 
+    async def _on_rh_auth_change(self, down: bool, info: dict) -> None:
+        # ITEM3-AUTH-HOOK: RobinhoodBroker auth-state hook, fired ONCE per transition (latch de-dups).
+        kind = "rh_auth_failed" if down else "rh_auth_recovered"
+        ts = iso(now_utc())
+        payload = {"reason": info.get("reason"), "since": info.get("since"),
+                   "last_good": info.get("last_good"),
+                   "accounts": ["680725082", "461391328", "934310442", "116637293063"], "ts": ts}
+        audit_id = self.logger.log_event(actor="data_exec", kind=kind, payload=payload)
+        if audit_id is not None:
+            try:
+                with db.connect(self.logger.db_url) as conn:
+                    if conn.execute("SELECT 1 FROM audit_event WHERE id=?", (audit_id,)).fetchone() is None:
+                        log.error("%s audit_id=%s could NOT be re-read", kind, audit_id)
+            except Exception as e:
+                log.warning("audit re-read after %s failed: %s", kind, e)
+        if down:
+            text = ("RH SESSION DOWN — Robinhood auth failing (401). NO new entries AND NO exits "
+                    "on live positions; broker-wide (PEAD / PMCC / IRA / joint). "
+                    f"since {info.get('since')}. In-process reload could not recover (pickle likely "
+                    "stale) — approve a refresh: dashboard 'Refresh RH pickle' button.")
+        else:
+            text = f"RH session RECOVERED (auth restored). last good {info.get('last_good')}."
+        await self._safety_push(text, audit_path="safety_alert",
+                                audit_context={"division": "robinhood", "kind": kind})
+
     async def _handle_stale_snapshot(
         self,
         exc: BitunixStaleSnapshot,
