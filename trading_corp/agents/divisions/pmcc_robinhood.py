@@ -163,6 +163,22 @@ This symbol is designated BLACK SHEEP. Apply these rules INSTEAD of standard PMC
        AND short_leg_dte == 0, force roll_short regardless of time.
    LLM should narrate the override when it fires; the override
    warning is appended to analysis.warnings.
+   DEEP-OTM NEAR-WORTHLESS EXCEPTION (distinct from the ATM-zone HOLD
+   above): when the short is worth only a few cents AND sits well outside
+   the underlying's typical overnight move — clearly, safely
+   out-of-the-money, not merely cheap because it is a near-expiry
+   at-the-money contract — do NOT default to HOLD. Prefer rolling it early
+   (buy-to-close the near-worthless short, sell a fresh short) to capture
+   next-cycle premium rather than waiting for the last day. A cheap mark
+   alone does NOT qualify: an at-the-money short near expiry can also mark a
+   few cents while still carrying real overnight assignment risk. Only the
+   clearly deep-OTM case qualifies.
+   NOTE: a deterministic Python guard (`_deep_otm_early_release`, invoked by
+   `_terminal_dte_time_release`) enforces the exact "deeply out-of-the-money"
+   distance and "near-worthless" mark from config, releases this roll on the
+   penultimate day for eligible names, and EXCLUDES the highest-overnight-
+   volatility names (which keep 0-DTE-only behavior). Narrate the exception
+   when it applies; the release warning is appended to analysis.warnings.
 8. FORBIDDEN ACTIONS (recommend "watch" or "roll_short_early" instead):
    - Buy back fully at a loss then resell OTM (locks in loss before MR whipsaw).
    - Close full PMCC to recover a short loss (abandons long thesis).
@@ -251,6 +267,22 @@ _STANDARD_RULES = """\
        AND short_leg_dte == 0, force roll_short regardless of time.
    LLM should narrate the override when it fires; the override
    warning is appended to analysis.warnings.
+   DEEP-OTM NEAR-WORTHLESS EXCEPTION (distinct from the ATM-zone HOLD
+   above): when the short is worth only a few cents AND sits well outside
+   the underlying's typical overnight move — clearly, safely
+   out-of-the-money, not merely cheap because it is a near-expiry
+   at-the-money contract — do NOT default to HOLD. Prefer rolling it early
+   (buy-to-close the near-worthless short, sell a fresh short) to capture
+   next-cycle premium rather than waiting for the last day. A cheap mark
+   alone does NOT qualify: an at-the-money short near expiry can also mark a
+   few cents while still carrying real overnight assignment risk. Only the
+   clearly deep-OTM case qualifies.
+   NOTE: a deterministic Python guard (`_deep_otm_early_release`, invoked by
+   `_terminal_dte_time_release`) enforces the exact "deeply out-of-the-money"
+   distance and "near-worthless" mark from config, releases this roll on the
+   penultimate day for eligible names, and EXCLUDES the highest-overnight-
+   volatility names (which keep 0-DTE-only behavior). Narrate the exception
+   when it applies; the release warning is appended to analysis.warnings.
 5. HARD RULES:
    - Never roll for debit > 8% of LEAP value.
    - If LEAP delta > 0.95, treat as deep ITM equity — close or roll deep.
@@ -1174,7 +1206,14 @@ Action reference:
         # Apply 0-DTE wall-clock time gate. No-op when pos is None or
         # the position isn't 0-DTE; otherwise may rewrite hold/watch →
         # roll_short (15:00–15:30 ET) or close_short urgent (>= 15:30 ET).
-        analysis = self._terminal_dte_time_release(analysis, pos)
+        # The deep-OTM early-release moneyness gate needs a Robinhood spot
+        # (matching the band's evidence source) — quote only when `pos` is an
+        # early-roll candidate; 0.0 / failure → None → gate fails safe (no fire).
+        _early_spot = None
+        if pos is not None and self._early_release_needs_spot(pos, analysis):
+            _q = await broker.quote(symbol)
+            _early_spot = _q if _q and _q > 0 else None
+        analysis = self._terminal_dte_time_release(analysis, pos, spot=_early_spot)
         # Apply LEAP Hard Rule promotion (Item 2 — 2026-05-02). When LEAP
         # delta>=0.95 OR long_leg_dte<120, promote roll_short → roll_leap
         # so the recommendation includes the LEAP roll legs, not just
@@ -2156,8 +2195,17 @@ Action reference:
         # path and the scheduled-scan path apply the same overrides.
         for sym in list(analyses.keys()):
             if sym in legs_by_symbol:
+                _leg = legs_by_symbol[sym]
+                # The deep-OTM early-release moneyness gate MUST evaluate against
+                # a Robinhood spot — the source its band was derived from — NOT
+                # the yfinance `prices` dict. Quote ONLY early-roll candidates
+                # (0–2 per scan); 0.0 / failure → None → gate fails safe (no fire).
+                _early_spot = None
+                if self._early_release_needs_spot(_leg, analyses[sym]):
+                    _q = await broker.quote(sym)
+                    _early_spot = _q if _q and _q > 0 else None
                 a = self._terminal_dte_time_release(
-                    analyses[sym], legs_by_symbol[sym],
+                    analyses[sym], _leg, spot=_early_spot,
                 )
                 a = self._promote_to_roll_leap_if_hard_rule(
                     a, legs_by_symbol[sym],
@@ -2520,6 +2568,7 @@ Action reference:
         *,
         now_et_dt: datetime | None = None,
         calendar: Any = None,
+        spot: float | None = None,
     ) -> "PMCCAnalysis | None":
         """Override action when 0-DTE release conditions fire.
 
@@ -2551,12 +2600,24 @@ Action reference:
         Returns a possibly-modified PMCCAnalysis (dataclasses.replace).
         Adds a warning explaining the override so the audit trail and
         Telegram approval message render the reason.
+
+        `spot` (optional) enables an ADDITIVE pre-0-DTE branch — the
+        deep-OTM near-worthless early release (see
+        `_deep_otm_early_release`). When `spot` is None, or the branch is
+        ineligible, this function's original 0-DTE behavior below is
+        byte-unchanged.
         """
         import dataclasses
         from trading_corp.utils.time import ET, now_et as _now_et
 
         if analysis is None or leg is None:
             return analysis
+        # Deep-OTM near-worthless EARLY release (2026-07-23) — additive,
+        # strictly pre-0-DTE. Returns a modified analysis ONLY when it fires;
+        # otherwise None, and the existing 0-DTE path below runs unchanged.
+        _early = self._deep_otm_early_release(analysis, leg, spot=spot)
+        if _early is not None:
+            return _early
         if leg.short_leg_dte != 0:
             return analysis
 
@@ -2637,6 +2698,119 @@ Action reference:
                 f"overridden to 'roll_short' to start the cycle before "
                 f"the {hard_deadline.strftime('%H:%M ET')} hard close "
                 f"deadline."
+            ],
+        )
+
+    # -- Deep-OTM near-worthless early release (2026-07-23) ------------------
+
+    def _early_release_needs_spot(
+        self,
+        leg: "PMCCPosition | None",
+        analysis: "PMCCAnalysis | None",
+    ) -> bool:
+        """True iff `leg`/`analysis` clear every deep-OTM near-worthless
+        EARLY-release gate that does NOT require spot (config enabled, action
+        HOLD/WATCH, penultimate-day window, name not excluded, near-worthless
+        mark). Callers use this to decide whether to fetch a Robinhood spot for
+        the moneyness gate — quoting only real candidates. `_deep_otm_early_release`
+        calls the SAME predicate before applying the spot-dependent moneyness
+        check, so the two cannot drift."""
+        if analysis is None or leg is None:
+            return False
+        cfg = (self._cfg.get("near_worthless_early_roll") or {}) \
+            if hasattr(self, "_cfg") else {}
+        if not cfg.get("enabled", False):
+            return False
+        if (analysis.action or "").lower() not in ("hold", "watch"):
+            return False
+        # Penultimate-day window only. 0-DTE is owned by the time/cycle gates.
+        dte = leg.short_leg_dte
+        max_dte = int(cfg.get("max_dte", 1))
+        if dte is None or dte < 1 or dte > max_dte:
+            return False
+        exclude = {str(s).upper() for s in (cfg.get("exclude") or [])}
+        if (leg.symbol or "").upper() in exclude:
+            return False
+        # Near-worthless: reuse the 0-DTE cycle-continuity threshold so there is
+        # ONE definition of near-worthless across the early and 0-DTE paths.
+        zd = (self._cfg.get("zero_dte") or {}) if hasattr(self, "_cfg") else {}
+        mark_thr = float(
+            cfg.get("near_worthless_mark_threshold",
+                    zd.get("cycle_continuity_extrinsic_threshold", 0.15)) or 0.0
+        )
+        mark = leg.short_leg_mark
+        if mark_thr <= 0 or mark is None or float(mark) > mark_thr:
+            return False
+        return True
+
+    def _deep_otm_early_release(
+        self,
+        analysis: "PMCCAnalysis | None",
+        leg: "PMCCPosition | None",
+        *,
+        spot: float | None = None,
+    ) -> "PMCCAnalysis | None":
+        """Pre-0-DTE early theta-capture release.
+
+        Additive companion to `_terminal_dte_time_release`'s 0-DTE gates:
+        on the penultimate day(s), promote HOLD/WATCH → roll_short when the
+        short is BOTH near-worthless AND clearly deep out-of-the-money
+        relative to the underlying's typical overnight move, for eligible
+        names. All numbers come from config
+        (`robinhood_pmcc.near_worthless_early_roll`); the LLM rule text is
+        qualitative.
+
+        Returns a modified PMCCAnalysis, or None to leave the caller's
+        existing logic untouched. FAIL-SAFE: returns None unless EVERY
+        condition is satisfiable with the data in hand — config enabled,
+        action HOLD/WATCH, 1 <= short_leg_dte <= max_dte, name not excluded,
+        mark <= near-worthless threshold, spot present, and the spot-relative
+        OTM distance >= the name's band. Any missing input ⇒ no fire.
+        """
+        import dataclasses
+        # Pre-spot eligibility (config enabled, action HOLD/WATCH, penultimate-day
+        # window, not excluded, near-worthless mark) is the SHARED predicate — the
+        # SAME one the call sites use to decide whether to fetch a Robinhood spot,
+        # so the gate and the callers cannot drift.
+        if not self._early_release_needs_spot(leg, analysis):
+            return None
+        cfg = self._cfg.get("near_worthless_early_roll") or {}
+        zd = self._cfg.get("zero_dte") or {}
+        action = (analysis.action or "").lower()
+        dte = leg.short_leg_dte
+        max_dte = int(cfg.get("max_dte", 1))
+        symbol = (leg.symbol or "").upper()
+        mark_thr = float(
+            cfg.get("near_worthless_mark_threshold",
+                    zd.get("cycle_continuity_extrinsic_threshold", 0.15)) or 0.0
+        )
+        mark = leg.short_leg_mark
+
+        # Deep-OTM: SPOT-relative distance (strike - spot)/spot, directly
+        # comparable to the overnight up-gap the band was derived from — NOT
+        # the display code's strike-normalized (spot - strike)/strike.
+        strike = leg.short_leg_strike
+        if spot is None or float(spot) <= 0 or strike is None:
+            return None
+        otm = (float(strike) - float(spot)) / float(spot)
+        tame = {str(s).upper() for s in (cfg.get("tame_allowlist") or [])}
+        band = (float(cfg.get("moneyness_band_tame", 0.05)) if symbol in tame
+                else float(cfg.get("moneyness_band_default", 0.08)))
+        if otm < band:
+            return None
+
+        return dataclasses.replace(
+            analysis,
+            action="roll_short",
+            warnings=list(analysis.warnings) + [
+                f"Deep-OTM near-worthless early release: short_leg_mark "
+                f"${float(mark):.2f}/sh <= ${mark_thr:.2f}/sh AND spot "
+                f"${float(spot):.2f} is {otm*100:.1f}% below strike "
+                f"${float(strike):.2f} (>= {band*100:.1f}% band) AND "
+                f"short_leg_dte={dte} (<= {max_dte}). Original action "
+                f"'{action}' overridden to 'roll_short' to capture next-cycle "
+                f"premium early; the band exceeds this name's typical overnight "
+                f"up-gap so the short stays OTM overnight."
             ],
         )
 

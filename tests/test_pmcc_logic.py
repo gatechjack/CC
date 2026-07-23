@@ -946,6 +946,242 @@ def test_time_gate_dst_aware_uses_local_eastern_clock():
 
 
 # ---------------------------------------------------------------------------
+# Deep-OTM near-worthless EARLY release (2026-07-23) — pre-0-DTE theta capture
+# ---------------------------------------------------------------------------
+
+# Config mirror of config/strategies.yaml:robinhood_pmcc.near_worthless_early_roll.
+_EARLY_CFG = {
+    "near_worthless_early_roll": {
+        "enabled": True,
+        "max_dte": 1,
+        "near_worthless_mark_threshold": 0.15,
+        "moneyness_band_default": 0.08,
+        "moneyness_band_tame": 0.05,
+        "tame_allowlist": ["TSLA"],
+        "exclude": ["CIFR", "IREN", "OPEN"],
+    },
+    "zero_dte": {"cycle_continuity_extrinsic_threshold": 0.15},
+}
+
+
+@pytest.fixture
+def early_agent(agent: PMCCAgent) -> PMCCAgent:
+    """Agent with the deep-OTM near-worthless early-roll config enabled."""
+    agent._cfg = {**agent._cfg, **_EARLY_CFG}
+    return agent
+
+
+def _early_leg(symbol: str = "TSLA", *, dte: int = 1,
+               strike: float = 100.0, mark: float = 0.04) -> PMCCPosition:
+    """A short that is (by default) near-worthless and on the penultimate day.
+    Spot is supplied separately at the call to control the OTM distance."""
+    return PMCCPosition(
+        symbol=symbol,
+        long_leg_expiry=_future(400), long_leg_strike=strike * 0.5,
+        long_leg_delta=0.85, long_leg_dte=400, long_leg_qty=1.0,
+        long_leg_avg_price=strike * 0.5, long_leg_symbol=f"{symbol} LEAP",
+        short_leg_expiry=_future(dte), short_leg_strike=strike,
+        short_leg_dte=dte, short_leg_pnl_pct=0.95,
+        short_leg_qty=-1.0, short_leg_mark=mark,
+        short_leg_avg_price=0.80, short_leg_symbol=f"{symbol} C {strike:.2f}",
+    )
+
+
+def _early_analysis(symbol: str = "TSLA", action: str = "hold") -> PMCCAnalysis:
+    return PMCCAnalysis(
+        symbol=symbol, action=action, confidence=0.9, urgency="routine",
+        summary="...", rationale="...",
+    )
+
+
+def test_early_release_fires_tame_deep_otm(early_agent: PMCCAgent):
+    """TSLA (tame, 5% band), 1 DTE, mark $0.04, spot 6.4% below strike →
+    HOLD promoted to roll_short with the early-release warning."""
+    leg = _early_leg("TSLA", dte=1, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=94.0,   # otm = 6.38% > 5%
+    )
+    assert out.action == "roll_short"
+    assert any("Deep-OTM near-worthless early release" in w for w in out.warnings)
+
+
+def test_early_release_promotes_watch_too(early_agent: PMCCAgent):
+    leg = _early_leg("TSLA", dte=1, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA", action="watch"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=94.0,
+    )
+    assert out.action == "roll_short"
+
+
+def test_early_release_no_fire_inside_band(early_agent: PMCCAgent):
+    """TSLA 1 DTE near-worthless but only 4.2% OTM (< 5% tame band) → HOLD."""
+    leg = _early_leg("TSLA", dte=1, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=96.0,   # otm = 4.17% < 5%
+    )
+    assert out.action == "hold"
+
+
+def test_early_release_default_band_wider_than_tame(early_agent: PMCCAgent):
+    """A default-tier name (RKLB, 8% band): 6.4% OTM does NOT fire (would
+    have on TSLA's 5% band), 11.1% OTM does."""
+    leg = _early_leg("RKLB", dte=1, strike=100.0, mark=0.04)
+    held = early_agent._terminal_dte_time_release(
+        _early_analysis("RKLB"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=94.0,   # otm 6.38% < 8%
+    )
+    assert held.action == "hold"
+    fired = early_agent._terminal_dte_time_release(
+        _early_analysis("RKLB"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=90.0,   # otm 11.1% > 8%
+    )
+    assert fired.action == "roll_short"
+
+
+def test_early_release_atm_cheap_mark_does_not_fire(early_agent: PMCCAgent):
+    """The incompleteness the moneyness gate closes: a 1-DTE at-the-money
+    short can mark a few cents with zero intrinsic. Cheap mark alone must
+    NOT trigger the early roll — otm ~0 is inside every band → HOLD."""
+    leg = _early_leg("TSLA", dte=1, strike=100.0, mark=0.10)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=100.0,   # otm 0%
+    )
+    assert out.action == "hold"
+
+
+def test_early_release_excluded_name_does_not_fire(early_agent: PMCCAgent):
+    """IREN is on the exclusion list (up99 too fat for a band). Even deep-OTM
+    near-worthless at 1 DTE it stays HOLD — no early release."""
+    leg = _early_leg("IREN", dte=1, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("IREN"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=85.0,   # otm 17.6% — huge, still excluded
+    )
+    assert out.action == "hold"
+
+
+def test_early_release_excluded_name_still_rolls_at_0dte(early_agent: PMCCAgent):
+    """Exclusion only removes the PRE-0-DTE early release. At 0 DTE an excluded
+    name still rolls via the existing cycle-continuity path (byte-unchanged)."""
+    leg = _early_leg("IREN", dte=0, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("IREN"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=85.0,
+    )
+    assert out.action == "roll_short"
+    assert any("Cycle-continuity release" in w for w in out.warnings)
+
+
+def test_early_release_mark_above_threshold_does_not_fire(early_agent: PMCCAgent):
+    """Not near-worthless (mark $0.50 > $0.15) → HOLD even when deep-OTM."""
+    leg = _early_leg("TSLA", dte=1, strike=100.0, mark=0.50)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=90.0,
+    )
+    assert out.action == "hold"
+
+
+def test_early_release_dte_outside_window_does_not_fire(early_agent: PMCCAgent):
+    """max_dte=1: a 2-DTE deep-OTM near-worthless short is outside the
+    single-night window → HOLD."""
+    leg = _early_leg("TSLA", dte=2, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=90.0,
+    )
+    assert out.action == "hold"
+
+
+def test_early_release_requires_spot(early_agent: PMCCAgent):
+    """Fail-safe: no spot (the manual reproposal path) ⇒ no early release,
+    even for an otherwise-eligible 1-DTE deep-OTM near-worthless short."""
+    leg = _early_leg("TSLA", dte=1, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL,   # spot defaults to None
+    )
+    assert out.action == "hold"
+
+
+def test_early_release_disabled_by_config(agent: PMCCAgent):
+    """With the feature absent from config (the default `agent` fixture),
+    the branch is inert even when spot is supplied and all else is eligible."""
+    leg = _early_leg("TSLA", dte=1, strike=100.0, mark=0.04)
+    out = agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=90.0,
+    )
+    assert out.action == "hold"
+
+
+def test_early_release_does_not_alter_0dte_path(early_agent: PMCCAgent):
+    """0-DTE byte-equivalence: even with spot supplied and the feature on, a
+    0-DTE short routes through the EXISTING cycle-continuity path (its warning),
+    not the new early-release path."""
+    leg = _early_leg("TSLA", dte=0, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=90.0,
+    )
+    assert out.action == "roll_short"
+    assert any("Cycle-continuity release" in w for w in out.warnings)
+    assert not any("early release" in w for w in out.warnings)
+
+
+def test_early_release_needs_spot_predicate(early_agent: PMCCAgent):
+    """The shared pre-spot predicate: True for a candidate, False for each
+    disqualifier. Call sites use it to decide whether to fetch a Robinhood
+    spot, and `_deep_otm_early_release` reuses it — so they cannot drift."""
+    cand_leg = _early_leg("TSLA", dte=1, mark=0.04)
+    cand_an = _early_analysis("TSLA", action="hold")
+    assert early_agent._early_release_needs_spot(cand_leg, cand_an) is True
+    # watch also qualifies
+    assert early_agent._early_release_needs_spot(
+        cand_leg, _early_analysis("TSLA", action="watch")) is True
+    # roll_short (not hold/watch) → False
+    assert early_agent._early_release_needs_spot(
+        cand_leg, _early_analysis("TSLA", action="roll_short")) is False
+    # dte outside the [1, max_dte] window → False (2-DTE and 0-DTE)
+    assert early_agent._early_release_needs_spot(
+        _early_leg("TSLA", dte=2, mark=0.04), cand_an) is False
+    assert early_agent._early_release_needs_spot(
+        _early_leg("TSLA", dte=0, mark=0.04), cand_an) is False
+    # mark above the near-worthless threshold → False
+    assert early_agent._early_release_needs_spot(
+        _early_leg("TSLA", dte=1, mark=0.50), cand_an) is False
+    # excluded name → False
+    assert early_agent._early_release_needs_spot(
+        _early_leg("IREN", dte=1, mark=0.04), _early_analysis("IREN")) is False
+    # None guards
+    assert early_agent._early_release_needs_spot(None, cand_an) is False
+    assert early_agent._early_release_needs_spot(cand_leg, None) is False
+
+
+def test_early_release_needs_spot_false_when_disabled(agent: PMCCAgent):
+    """Without the feature in config (default `agent`), the predicate is False
+    even for a perfect candidate — so the call sites fetch NO quote."""
+    leg = _early_leg("TSLA", dte=1, mark=0.04)
+    assert agent._early_release_needs_spot(leg, _early_analysis("TSLA")) is False
+
+
+def test_early_release_zero_spot_no_fire(early_agent: PMCCAgent):
+    """A Robinhood quote of 0.0 (failure / no data) is mapped to None by the
+    call sites; even if 0.0 reaches the gate directly it must NOT fire (the
+    spot<=0 guard), identical to spot=None."""
+    leg = _early_leg("TSLA", dte=1, strike=100.0, mark=0.04)
+    out = early_agent._terminal_dte_time_release(
+        _early_analysis("TSLA"), leg, now_et_dt=_et(11, 0),
+        calendar=_REGULAR_CAL, spot=0.0,
+    )
+    assert out.action == "hold"
+
+
+# ---------------------------------------------------------------------------
 # Item 2 (2026-05-02) — LEAP Hard Rule promotion
 #   Promotes roll_short / roll_short_early → roll_leap when LEAP delta>=0.95
 #   OR long_leg_dte<120. Standard Rule 5 / LEAP Management Rule.

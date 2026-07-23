@@ -41,6 +41,54 @@ robinhood_pmcc:
     # immediate next-cycle premium and no post-expiry coverage gap.
     cycle_continuity_extrinsic_threshold: 0.15  # $/share
 
+  # ============================================================
+  # Deep-OTM near-worthless EARLY roll (theta capture) — 2026-07-23.
+  # Additive to the 0-DTE gates above. On the penultimate day, a short
+  # that is BOTH near-worthless AND clearly deep out-of-the-money can be
+  # rolled early to capture next-cycle premium instead of waiting for
+  # 0-DTE. The rule text the LLM sees is QUALITATIVE; the exact numbers
+  # live HERE (single source of truth — do not restate them in the prompt).
+  #
+  # BAND EVIDENCE — measured, not assumed; RE-DERIVE, do not inherit:
+  #   Overnight close-to-next-open % moves, per symbol, window
+  #   2025-07 → 2026-07, via Robinhood get_equity_historicals (interval
+  #   day, bounds regular / RTH, split-adjusted). A short CALL is only
+  #   threatened by UP gaps, so bands are set off the up-gap tail (the
+  #   fatter tail for this momentum-prone universe). Membership in the
+  #   lists below is empirical AND regime-dependent — a future session
+  #   must re-derive it against a fresh window, not read it as fixed.
+  #   Full method + the v2 (per-symbol trailing band) upgrade:
+  #   planning/pmcc_live_execution_plan.md.
+  # ============================================================
+  near_worthless_early_roll:
+    enabled: true
+    # Penultimate day ONLY. up95/up99 are SINGLE-night statistics, so the
+    # band justifies exactly one overnight until expiry. Raising this
+    # REQUIRES re-deriving the band over an N-night horizon — it is not a
+    # free config tweak.
+    max_dte: 1
+    # "Near-worthless" mark ceiling ($/share). Defaults to the 0-DTE
+    # cycle-continuity threshold above so there is ONE definition of
+    # near-worthless across the early and 0-DTE paths.
+    near_worthless_mark_threshold: 0.15
+    # Deep-OTM distance required, measured SPOT-relative: (strike-spot)/spot,
+    # so it is directly comparable to the overnight up-gap the band was
+    # derived from (NOT the display code's strike-normalized form).
+    moneyness_band_default: 0.08   # up99 <= ~8.9% for every included default name
+    moneyness_band_tame:    0.05   # tame allowlist only
+    # Tame allowlist — a name is here because of its DATA, not its ticker:
+    # up99 = 4.2% on the window above, so a 5% band keeps overnight breach < 1%.
+    tame_allowlist:
+      - "TSLA"                     # up99 4.2% (measured 2025-07 → 2026-07)
+    # Excluded — ceiling: up99 >= 10%. A band alone cannot make these
+    # overnight-safe (an 8% band still breaches IREN 2.8% of nights), so
+    # they get NO early release and keep the 0-DTE-only behavior. Re-derive
+    # membership on the same ceiling.
+    exclude:                       # up99 measured 2025-07 → 2026-07:
+      - "CIFR"                     #   up99 13.2%
+      - "IREN"                     #   up99 17.4%
+      - "OPEN"                     #   up99 17.4%
+
   # Halfway-roll cooldown (Item 1 — 2026-05-02). Backstop guard that
   # downgrades roll_short → hold when a recent roll-up was executed
   # and the conditions below all hold. Prevents back-to-back halfway
