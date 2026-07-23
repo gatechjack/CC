@@ -240,7 +240,13 @@ robinhood_pmcc:
 
       eligibility_criteria:
         min_options_iv: 0.70
-        min_avg_options_volume: 10000
+        # min_avg_options_volume: 10000   # UNIMPLEMENTED (2026-07-23). Intended as an
+        #   UNDERLYING eligibility screen (does the NAME trade >=10k options/day on
+        #   average) but no code ever read it that way — it was mis-applied per-contract
+        #   in the liquidity gate, where no OTM weekly trades 10k/day, so it silently
+        #   blocked every normal black-sheep roll for ~2.7 months. Removed from the gate
+        #   2026-07-23. Left here commented as documentation of intent — do NOT wire it
+        #   into any per-contract path; an underlying-volume screen is a separate feature.
         min_underlying_avg_volume: 5_000_000
         mean_reversion_history: true
         early_assignment_risk: "low"
@@ -449,6 +455,12 @@ robinhood_pmcc:
       max_bid_ask_spread_pct: 0.10
       min_open_interest: 100
       min_avg_volume: 50
+      # 1(b) 2026-07-23: liveness = OI >= min_open_interest OR volume >= this.
+      # OI accumulates over a contract's life; a fresh near-dated expiry with
+      # real volume + tight spreads (observed TSLA 07-27 roll targets: ~5k-8k)
+      # was rejected by the OI-only floor. Set above phantom-strike noise so an
+      # untraded strike (volume ~0) still cannot clear it.
+      oi_bypass_min_volume: 500
 
     # ----- Hedging -----
     hedging:

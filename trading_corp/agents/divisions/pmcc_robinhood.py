@@ -831,33 +831,49 @@ class PMCCAgent:
     def _min_avg_volume(self) -> int:
         return int(self._liquidity_cfg.get("min_avg_volume", 50))
 
+    @property
+    def _oi_bypass_min_volume(self) -> int:
+        # 1(b) 2026-07-23: today's volume at/above which a contract clears the
+        # liveness gate DESPITE low open interest. OI accumulates over a
+        # contract's life; a genuinely-traded FRESH near-dated expiry hasn't had
+        # time to build OI, so an OI-only floor wrongly rejects it. Set high
+        # enough that a phantom/untraded strike (which trades ~0) cannot clear
+        # it — the observed fresh-daily roll targets traded ~5k-8k.
+        return int(self._liquidity_cfg.get("oi_bypass_min_volume", 500))
+
     def _passes_liquidity(self, opt: dict, *, symbol: str | None = None) -> tuple[bool, str]:
-        """Return (passes, reason). Uses strategies.yaml liquidity gates.
+        """Return (passes, reason). Uses the strategies.yaml liquidity gates.
 
-        Black-sheep symbols use the tighter `eligibility_criteria` from the
-        black_sheep block (min_avg_options_volume defaults to 10000) when
-        available; otherwise the standard gate applies.
+        Liveness = established OR actively-traded: pass when open interest >=
+        `min_open_interest` OR today's volume >= `oi_bypass_min_volume` (1(b)).
+        OI is a stock that accumulates over a contract's life while volume is the
+        live signal, so a FRESH near-dated expiry with real volume + tight
+        spreads — which an OI-only floor wrongly rejected — still qualifies. A
+        modest per-contract volume floor (`min_avg_volume`) and the bid-ask
+        spread cap then apply to every contract.
+
+        `symbol` is retained for API stability (callers pass it) but no longer
+        selects the gate. 1(a) 2026-07-23: the black-sheep `min_avg_options_volume`
+        (10000) formerly read here was an UNDERLYING eligibility screen mis-applied
+        per-contract — no OTM weekly trades 10k/day, so it silently blocked every
+        normal black-sheep roll for ~2.7 months. Removed; black-sheep contracts now
+        use the same per-contract floor as everything else.
         """
-        # Pick the right gate set
-        is_bs = bool(symbol and self.is_black_sheep(symbol))
-        if is_bs:
-            elig = self._black_sheep_block.get("eligibility_criteria") or {}
-            min_volume = int(elig.get("min_avg_options_volume", self._min_avg_volume))
-        else:
-            min_volume = self._min_avg_volume
-
         bid = float(opt.get("bid") or 0)
         ask = float(opt.get("ask") or 0)
         oi = int(opt.get("open_interest") or 0)
         vol = int(opt.get("volume") or 0)
 
-        # Open interest
-        if oi < self._min_open_interest:
-            return False, f"OI={oi} < {self._min_open_interest}"
+        # Liveness: established (open interest) OR actively-traded today (volume).
+        if oi < self._min_open_interest and vol < self._oi_bypass_min_volume:
+            return False, (
+                f"OI={oi} < {self._min_open_interest} AND "
+                f"vol={vol} < {self._oi_bypass_min_volume}"
+            )
 
-        # Volume
-        if vol < min_volume:
-            return False, f"vol={vol} < {min_volume}"
+        # Basic per-contract volume floor (traded at all today).
+        if vol < self._min_avg_volume:
+            return False, f"vol={vol} < {self._min_avg_volume}"
 
         # Bid-ask spread (skip if no bid — can't compute meaningfully)
         if bid > 0 and ask > 0:

@@ -1037,6 +1037,16 @@ def register(app: FastAPI) -> None:
             return HTMLResponse(_exec_error_html(sym, str(e)[:160]))
 
         if not orders:
+            # A roll/close action that yields NO orders is a B4 atomic abort
+            # (e.g. no liquid weekly to roll into) — NOT "no action needed".
+            # Surface the actual reason from the agent's in-memory diag (set by
+            # `_find_best_weekly`/`_find_best_leap` on abort) instead of the
+            # misleading "action requires no orders" message.
+            act = (analysis.action or "").lower()
+            if act not in ("hold", "watch") and deps.pmcc_agent is not None:
+                diag = (getattr(deps.pmcc_agent, "_last_weekly_diag", None)
+                        or getattr(deps.pmcc_agent, "_last_leap_diag", None))
+                return HTMLResponse(_exec_abort_html(sym, analysis, diag))
             return HTMLResponse(_exec_no_action_html(sym, analysis))
 
         # Account snapshot for the Risk Agent
@@ -4688,6 +4698,28 @@ def _exec_no_action_html(symbol: str, analysis) -> str:
         f'ℹ️  {symbol} · no orders to place</div>'
         f'<div class="text-xs text-muted">Action <code>{action_str}</code> '
         'does not require any orders. Position remains as-is.</div>'
+        '</div>'
+    )
+
+
+def _exec_abort_html(symbol: str, analysis, diag: dict | None) -> str:
+    """Render an ABORTED roll/close — `propose_orders_for_pair` returned no
+    orders because a B4 atomic gate refused it (e.g. no liquid weekly). Shows the
+    ACTUAL reason from the agent's `_last_weekly_diag`/`_last_leap_diag`, distinct
+    from `_exec_no_action_html`'s genuine "no orders needed" (hold/watch)."""
+    action_str = (analysis.action or "—").upper().replace("_", " ")
+    d = diag or {}
+    reason = d.get("reason") or "unknown"
+    bits = [f"{k}={d[k]}" for k in ("considered", "liquid", "target_date", "after_dte")
+            if d.get(k) is not None]
+    detail = reason + (f" ({', '.join(bits)})" if bits else "")
+    return (
+        '<div class="space-y-2 p-3 rounded-md bg-warn/10 border border-warn/40">'
+        '<div class="text-warn font-mono font-semibold text-sm">'
+        f'⚠️  {symbol} · {action_str} aborted — no order placed</div>'
+        f'<div class="text-xs text-muted">The roll could not be built '
+        f'(atomic abort; nothing was sent to the broker): <code>{detail}</code>. '
+        'Position is unchanged.</div>'
         '</div>'
     )
 

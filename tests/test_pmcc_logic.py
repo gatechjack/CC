@@ -385,6 +385,83 @@ def _broker_with_chains(
     )
 
 
+# ---------------------------------------------------------------------------
+# Liquidity gate — regression for the 2026-07-23 fixes:
+#   1(a) removed the mis-set black-sheep per-contract 10k volume floor
+#   1(b) OI-OR-volume liveness so fresh near-dated (low-OI, high-volume) passes
+# These reproduce the real TSLA 2026-07-27 shape that silently 0-liquid-aborted
+# every near-dated / black-sheep roll. Without the fixes, all four fail.
+# ---------------------------------------------------------------------------
+
+def _fresh_call(strike, delta, mark, dte, oi=11, volume=5000):
+    """A FRESH near-dated call: low OI (not yet accumulated), real volume, tight
+    ~$0.04 spread — the observed TSLA 2026-07-27 shape that was silently rejected."""
+    return {"strike_price": strike, "delta": delta, "mark_price": mark,
+            "bid": round(mark - 0.02, 2), "ask": round(mark + 0.02, 2), "dte": dte,
+            "open_interest": oi, "volume": volume, "option_id": f"fresh_{strike}_{dte}"}
+
+
+def test_liquidity_fresh_daily_passes_on_volume_despite_low_oi(agent: PMCCAgent):
+    """1(b): a fresh contract (OI 11, volume 5k, 2c spread) passes on the volume
+    side of the OI-OR-volume gate; a phantom (0 OI, 0 volume) still does not."""
+    ok, reason = agent._passes_liquidity(_fresh_call(340.0, 0.20, 1.85, 4), symbol="TSLA")
+    assert ok, reason
+    passed, why = agent._passes_liquidity(
+        {"open_interest": 0, "volume": 0, "bid": 0.0, "ask": 0.0}, symbol="TSLA")
+    assert not passed and "vol=0" in why
+
+
+def test_liquidity_black_sheep_sub_10k_volume_passes(agent: PMCCAgent):
+    """1(a): a black-sheep 0.25-delta OTM target with realistic volume (5k, below
+    the removed 10k floor) passes. OI is high here so the pass is via the volume
+    floor — isolating the 10k removal, not the OI-OR-volume bypass."""
+    agent._cfg = {**agent._cfg, "strategy": {
+        **(agent._cfg.get("strategy") or {}),
+        "black_sheep": {"symbols": [{"symbol": "TSLA"}]}}}
+    assert agent.is_black_sheep("TSLA")
+    ok, reason = agent._passes_liquidity(
+        _fresh_call(340.0, 0.25, 1.85, 8, oi=5000, volume=5000), symbol="TSLA")
+    assert ok, reason
+
+
+@pytest.mark.asyncio
+async def test_find_best_weekly_selects_fresh_daily_low_oi_high_volume(agent: PMCCAgent):
+    """1(b) end-to-end: a fresh near-dated expiry (low OI, high volume, tight
+    spreads) must YIELD a selectable weekly — the OI-only floor returned None."""
+    d = _future(4)   # fresh 4-DTE daily (the 2026-07-27 analog)
+    broker = MockOptionBroker(
+        expiry_dates={"TSLA": [d]},
+        calls={("TSLA", d): [_fresh_call(335.0, 0.29, 2.87, 4),
+                             _fresh_call(340.0, 0.20, 1.85, 4)]})
+    best = await agent._find_best_weekly(
+        "TSLA", broker, target_delta=0.25, target_dte=7, after_dte=1)
+    assert best is not None
+    assert best["expiration_date"] == d
+
+
+@pytest.mark.asyncio
+async def test_black_sheep_normal_roll_produces_legs(agent: PMCCAgent, clear_earnings):
+    """1(a) end-to-end: a black-sheep name (TSLA) with a normal 0.25-delta OTM
+    target and realistic sub-10k volume must PRODUCE a roll, not silently abort."""
+    agent._cfg = {**agent._cfg, "strategy": {
+        **(agent._cfg.get("strategy") or {}),
+        "black_sheep": {"symbols": [{"symbol": "TSLA"}]}}}
+    assert agent.is_black_sheep("TSLA")
+    broker = MockOptionBroker(
+        option_positions=[
+            _opt_position("TSLA", 400, 250.0, 1.0, delta=0.90, mark_price=80.0),   # LEAP
+            _opt_position("TSLA", 1, 405.0, -1.0, delta=0.01,
+                          avg_price=2.5, mark_price=0.04),                          # near-worthless short
+        ],
+        expiry_dates={"TSLA": [_future(1), _future(8), _future(400)]},
+        calls={("TSLA", _future(8)): [_fresh_call(340.0, 0.25, 1.85, 8, volume=5000)]})
+    pos = next(p for p in await agent.detect_existing_legs(broker) if p.symbol == "TSLA")
+    legs = await agent._propose_roll_short("TSLA", pos, broker)
+    assert legs, "black-sheep normal roll should produce legs, not a B4 abort"
+    actions = [(o.extra or {}).get("action") or "" for o in legs]
+    assert any("close" in a for a in actions) and any("open" in a for a in actions)
+
+
 @pytest.mark.asyncio
 async def test_scan_empty_universe_no_orders(agent: PMCCAgent):
     broker = MockOptionBroker()   # no positions
