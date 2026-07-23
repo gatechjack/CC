@@ -18,6 +18,8 @@ rolls) and is refused by the fail-closed `data_exec` dispatch guard.
 from __future__ import annotations
 
 import logging
+import uuid
+from collections import Counter, defaultdict
 from typing import Any
 
 from trading_corp.persistence.models import (
@@ -29,6 +31,155 @@ from trading_corp.persistence.models import (
 log = logging.getLogger(__name__)
 
 _PMCC_SLUG = "robinhood_pmcc"
+
+# Fixed namespace so a combo's ref_id is deterministic (uuid5, no randomness) —
+# a transient retry of the SAME combo produces the SAME ref_id and dedupes at
+# Robinhood instead of double-placing.
+_COMBO_REF_NS = uuid.NAMESPACE_URL
+
+
+def combo_ref_id(combo_id: str) -> str:
+    """Deterministic Robinhood ref_id for a combo. order_option_spread otherwise
+    mints a fresh uuid4 per call, so a retry would double-place; this keys the
+    ref_id off the combo_id so the venue dedupes."""
+    return str(uuid.uuid5(_COMBO_REF_NS, f"pmcc-combo:{combo_id}"))
+
+
+def partition_combo_orders(
+    orders: list[ProposedOrder],
+) -> tuple[dict[str, list[ProposedOrder]], list[ProposedOrder]]:
+    """Split a batch of ProposedOrders into combo groups (keyed by combo_id) and
+    single-leg orders — the general case, not one special-cased combo.
+
+    A leg joins a combo group iff it carries BOTH `extra.combo_id` AND
+    `extra.is_multi_leg`. Everything else is a single.
+
+    Raises ValueError (place NOTHING) on a malformed batch:
+      - a combo group with < 2 legs (a combo_id that lost its partner), or
+      - >1 untagged OPTION single SHARING AN UNDERLYING (looks like an un-tagged
+        combo — the interim backstop that refuses to leg-in close_all / Scout OPEN
+        until their legs are combo-tagged). Independent single-leg option actions
+        on DIFFERENT underlyings in one batch are legitimate and pass through.
+    """
+    combo_groups: dict[str, list[ProposedOrder]] = defaultdict(list)
+    singles: list[ProposedOrder] = []
+    for o in orders:
+        ex = o.extra or {}
+        cid = ex.get("combo_id")
+        if cid and ex.get("is_multi_leg"):
+            combo_groups[cid].append(o)
+        else:
+            singles.append(o)
+    for cid, legs in combo_groups.items():
+        if len(legs) < 2:
+            raise ValueError(
+                f"malformed combo group {cid!r}: {len(legs)} leg(s); a combo "
+                "needs >= 2 legs — refusing to place a partial combo"
+            )
+    # Narrowed backstop: only refuse when >1 untagged option single shares an
+    # underlying (an un-tagged combo). Independent singles (distinct underlyings)
+    # pass to the per-leg loop.
+    by_underlying = Counter(
+        ((o.extra or {}).get("underlying") or o.symbol)
+        for o in singles if (o.extra or {}).get("is_option")
+    )
+    dup = [u for u, n in by_underlying.items() if n > 1]
+    if dup:
+        raise ValueError(
+            f"{by_underlying[dup[0]]} untagged option legs share underlying "
+            f"{dup[0]!r} — looks like an un-tagged combo; refusing to leg-in via "
+            "the single-leg path (combo-tag them to route through place_combo)"
+        )
+    return dict(combo_groups), singles
+
+
+def _net_tick_for_price(leg_quotes: list, price: float, *, def_above: float,
+                        def_below: float, def_cutoff: float) -> float:
+    """Determine the min tick governing the NET spread price. RH validates the net
+    against a tick rule and the two legs' `min_ticks` can differ — pick the
+    COARSEST tick any leg requires at this price magnitude, so the net is valid for
+    every leg (a too-fine net is rejected). Each leg quote may carry
+    `below_tick`/`above_tick`/`cutoff`; missing → the standard 0.05≥$3 / 0.01 rule.
+    Deterministic on mismatch (max of the per-leg applicable ticks).
+
+    ★ Live-validation checklist item: confirm RH's exact net-tick rule for a
+    diagonal spread against a real reject."""
+    ticks = []
+    for q in (leg_quotes or [{}]):
+        q = q or {}
+        below = q.get("below_tick") or def_below
+        above = q.get("above_tick") or def_above
+        cut = q.get("cutoff") or def_cutoff
+        ticks.append(above if abs(price) >= cut else below)
+    return max(ticks) if ticks else def_below
+
+
+async def reprice_combo_from_quotes(
+    legs: list[ProposedOrder], broker: Any, *, give_up: float,
+    above_tick: float = 0.05, below_tick: float = 0.01, cutoff: float = 3.00,
+) -> tuple[str, float]:
+    """Recompute the combo's marketable net limit from LIVE quotes AT DISPATCH —
+    the proposal-time mid (`_propose_roll_short` tags ~1.30 mark) is stale and
+    non-marketable by approval, so submitted as-is it rests and never fills.
+
+    natural = Σ bid(sell legs) − Σ ask(buy legs)   (what you'd get crossing the spread)
+      credit (natural >= 0): limit = natural − give_up
+      debit  (natural <  0): limit = |natural| + give_up
+    ★ A large give_up (urgent close_all) can push a credit natural BELOW zero — the
+    order then flips to a small DEBIT (you PAY to get out) rather than resting as a
+    too-optimistic credit. Then rounded to the NET min tick, floored at one tick.
+
+    Mutates each leg's `extra.combo_direction` / `extra.net_limit_price` and
+    returns (direction, limit). FAIL-SAFE: if any leg quote is missing, it leaves
+    the proposal-time tags untouched and returns them unchanged.
+    """
+    quotes: dict[str, tuple[float, float, dict]] = {}
+    for o in legs:
+        ex = o.extra or {}
+        try:
+            q = await broker.get_option_quote(
+                ex.get("underlying") or o.symbol, ex.get("expiration"),
+                float(ex.get("strike")), ex.get("option_type", "call"),
+            )
+        except Exception as e:      # noqa: BLE001 — any quote failure is fail-safe
+            log.warning("reprice_combo: get_option_quote raised for %s: %s", o.symbol, e)
+            q = None
+        bid = (q or {}).get("bid")
+        ask = (q or {}).get("ask")
+        if bid is None or ask is None:
+            first = legs[0].extra or {}
+            log.warning(
+                "reprice_combo: missing quote for %s leg — keeping proposal-time "
+                "net_limit %s (%s)", o.symbol, first.get("net_limit_price"),
+                first.get("combo_direction"),
+            )
+            return first.get("combo_direction"), first.get("net_limit_price")
+        quotes[o.id] = (float(bid), float(ask), q or {})
+
+    net = 0.0
+    for o in legs:
+        bid, ask, _ = quotes[o.id]
+        ratio = int((o.extra or {}).get("ratio_quantity", 1))
+        net += (bid if o.side == "sell" else -ask) * ratio
+
+    # Direction + limit, allowing give_up to cross a credit into a debit.
+    if net >= 0:
+        signed = net - give_up
+        direction, limit = ("credit", signed) if signed >= 0 else ("debit", -signed)
+    else:
+        direction, limit = "debit", (-net) + give_up
+
+    # Round to the NET tick (coarsest across legs at this price magnitude).
+    leg_quotes = [q for (_, _, q) in quotes.values()]
+    tick = _net_tick_for_price(leg_quotes, limit, def_above=above_tick,
+                               def_below=below_tick, def_cutoff=cutoff)
+    limit = round(round(limit / tick) * tick, 2)
+    if limit < tick:
+        limit = tick
+    for o in legs:
+        (o.extra or {})["combo_direction"] = direction
+        (o.extra or {})["net_limit_price"] = limit
+    return direction, limit
 
 
 async def propose_pmcc_combo(

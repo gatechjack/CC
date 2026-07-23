@@ -128,7 +128,10 @@ async def test_place_combo_happy_path_emits_fill_and_persists_positions(tmp_db):
 
     # Returns the broker's fills, unmodified.
     assert out == fills
-    broker.place_multi_leg.assert_awaited_once_with(legs)
+    # place_combo now threads a deterministic ref_id (uuid5 of the combo_id) so a
+    # retry dedupes at the venue.
+    from trading_corp.agents.strategies._pmcc_combo import combo_ref_id
+    broker.place_multi_leg.assert_awaited_once_with(legs, ref_id=combo_ref_id("combo-1"))
 
     # All 4 orders marked filled.
     assert all(o.status == "filled" for o in legs)

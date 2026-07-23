@@ -15,7 +15,12 @@ import pytest
 
 import robin_stocks.robinhood as rs  # type: ignore
 
-from trading_corp.brokers.robinhood import RobinhoodBroker
+from trading_corp.brokers.base import validate_combo_cohesion
+from trading_corp.brokers.robinhood import (
+    RobinhoodBroker,
+    RobinhoodComboPending,
+    RobinhoodOrderError,
+)
 from trading_corp.persistence.models import ProposedOrder
 
 
@@ -174,7 +179,7 @@ async def test_place_multi_leg_synthesizes_fill_prices_when_legs_missing():
     legs = _standard_ic_legs()
 
     with patch.object(rs.orders, "order_option_spread",
-                      return_value={"id": "RH-ORD", "state": "queued"}):
+                      return_value={"id": "RH-ORD", "state": "filled"}):
         fills = await b.place_multi_leg(legs)
 
     assert len(fills) == 4
@@ -189,7 +194,7 @@ async def test_place_multi_leg_handles_partial_legs_array():
     legs = _standard_ic_legs()
 
     with patch.object(rs.orders, "order_option_spread",
-                      return_value={"id": "RH-ORD",
+                      return_value={"id": "RH-ORD", "state": "filled",
                                     "legs": [{"price": "0.55"}, {"price": "0.20"}]}):
         fills = await b.place_multi_leg(legs)
 
@@ -207,6 +212,7 @@ async def test_place_multi_leg_handles_executions_shape():
     legs = _standard_ic_legs()
     rh_response = {
         "id": "RH-ORD",
+        "state": "filled",
         "legs": [
             {"executions": [{"price": "0.57"}]},
             {"executions": [{"price": "0.22"}]},
@@ -226,6 +232,7 @@ async def test_place_multi_leg_handles_malformed_price_strings():
     legs = _standard_ic_legs()
     rh_response = {
         "id": "RH-ORD",
+        "state": "filled",
         "legs": [
             {"price": "0.55"},
             {"price": None},
@@ -243,13 +250,70 @@ async def test_place_multi_leg_handles_malformed_price_strings():
 
 @pytest.mark.asyncio
 async def test_place_multi_leg_handles_none_response():
-    """RH returns None entirely (auth failure mid-call). Fills synthesize."""
+    """RH returns None (no id) → FAIL CLOSED: raise, book nothing. Never
+    synthesize a phantom fill for an order whose placement is unconfirmed —
+    this IS the ambiguous 'did it place?' state on the hot combo path."""
     b = _make_broker()
     legs = _standard_ic_legs()
     with patch.object(rs.orders, "order_option_spread", return_value=None):
+        with pytest.raises(RobinhoodOrderError):
+            await b.place_multi_leg(legs)
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_resting_confirmed_times_out_pending():
+    """Submit acknowledged (`confirmed`) but never fills → RobinhoodComboPending;
+    books NOTHING (no fills). This is today's failure mode, now gated."""
+    b = _make_broker()
+    b._COMBO_FILL_TIMEOUT_S = 0.05
+    b._COMBO_FILL_POLL_S = 0.01
+    legs = _standard_ic_legs()
+    with patch.object(rs.orders, "order_option_spread",
+                      return_value={"id": "RH-ORD", "state": "confirmed"}), \
+         patch.object(rs.orders, "get_option_order_info",
+                      return_value={"id": "RH-ORD", "state": "confirmed"}):
+        with pytest.raises(RobinhoodComboPending):
+            await b.place_multi_leg(legs)
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_polls_confirmed_to_filled_then_books():
+    """Submit `confirmed`, poll returns `filled` → book from the TERMINAL order."""
+    b = _make_broker()
+    b._COMBO_FILL_TIMEOUT_S = 1.0
+    b._COMBO_FILL_POLL_S = 0.01
+    legs = _standard_ic_legs()
+    filled = {"id": "RH-ORD", "state": "filled",
+              "legs": [{"price": "0.55"}, {"price": "0.20"},
+                       {"price": "0.60"}, {"price": "0.15"}]}
+    with patch.object(rs.orders, "order_option_spread",
+                      return_value={"id": "RH-ORD", "state": "confirmed"}), \
+         patch.object(rs.orders, "get_option_order_info", return_value=filled):
         fills = await b.place_multi_leg(legs)
-    assert len(fills) == 4
-    assert all(f.price == 0.50 for f in fills)
+    assert [f.price for f in fills] == [0.55, 0.20, 0.60, 0.15]
+    assert all(f.broker_order_id == "RH-ORD" for f in fills)
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_rejected_state_raises_books_nothing():
+    """Terminal `rejected` → RobinhoodOrderError; book NOTHING."""
+    b = _make_broker()
+    legs = _standard_ic_legs()
+    with patch.object(rs.orders, "order_option_spread",
+                      return_value={"id": "RH-ORD", "state": "rejected"}):
+        with pytest.raises(RobinhoodOrderError, match="rejected"):
+            await b.place_multi_leg(legs)
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_partial_fill_raises_books_nothing():
+    """Terminal `partially_filled` on an atomic spread → anomaly; raise, no book."""
+    b = _make_broker()
+    legs = _standard_ic_legs()
+    with patch.object(rs.orders, "order_option_spread",
+                      return_value={"id": "RH-ORD", "state": "partially_filled"}):
+        with pytest.raises(RobinhoodOrderError, match="PARTIALLY_FILLED"):
+            await b.place_multi_leg(legs)
 
 
 @pytest.mark.asyncio
@@ -264,6 +328,63 @@ async def test_place_multi_leg_propagates_network_failure():
     with patch.object(rs.orders, "order_option_spread", new=boom):
         with pytest.raises(ConnectionError, match="robinhood unreachable"):
             await b.place_multi_leg(legs)
+
+
+# ---------------------------------------------------------------------------
+# place_multi_leg — deterministic-ref_id payload parity (library-drift guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_spread_ref_id_payload_parity_with_library():
+    """_submit_spread_with_ref_id forks order_option_spread's payload build — this
+    guards against robin_stocks drift: the two POSTed payloads must be key-for-key
+    identical except ref_id. Pins the version so a bump that changes the payload
+    fails HERE, not in production."""
+    import importlib.metadata as _md
+
+    import robin_stocks.robinhood.helper as _H
+    import robin_stocks.robinhood.orders as O
+    assert _md.version("robin_stocks") == "3.4.0"
+
+    b = _make_broker()
+    legs = _standard_ic_legs()
+    combo = validate_combo_cohesion(legs)
+    spread = [
+        {"expirationDate": (o.extra or {})["expiration"],
+         "strike": float((o.extra or {})["strike"]),
+         "optionType": (o.extra or {})["option_type"],
+         "effect": (o.extra or {})["position_effect"],
+         "action": o.side,
+         "ratio_quantity": int((o.extra or {}).get("ratio_quantity", 1))}
+        for o in legs
+    ]
+
+    captured: list[dict] = []
+
+    def fake_post(url, payload, json=True, jsonify_data=True):
+        captured.append(dict(payload))
+        return {"id": "X", "state": "filled"}
+
+    with patch.object(_H, "LOGGED_IN", True), \
+         patch.object(O, "request_post", new=fake_post), \
+         patch.object(O, "id_for_option", new=lambda *a, **k: "OPT"), \
+         patch.object(O, "option_instruments_url", new=lambda i: f"iurl/{i}"), \
+         patch.object(O, "load_account_profile", new=lambda **k: "acct/url"), \
+         patch.object(O, "option_orders_url", new=lambda **k: "orders/url"):
+        O.order_option_spread("credit", combo.net_limit, combo.underlying,
+                              combo.quantity, spread, account_number="ACCT-123",
+                              timeInForce="gfd")
+        b._submit_spread_with_ref_id(spread, combo, "ACCT-123", "REF-123")
+
+    lib_payload, our_payload = captured[0], captured[1]
+    assert set(lib_payload) == set(our_payload), "payload key drift vs library"
+    for k in lib_payload:
+        if k == "ref_id":
+            continue
+        assert lib_payload[k] == our_payload[k], f"payload drift at {k!r}"
+    assert our_payload["ref_id"] == "REF-123"          # ours: deterministic
+    assert lib_payload["ref_id"] != "REF-123"          # library: its own uuid4
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +509,8 @@ async def test_get_option_greeks_happy_path_dict_response():
         "vega":  "0.12",
         "implied_volatility": "0.23",
         "adjusted_mark_price": "1.47",
+        "bid_price": "1.45",
+        "ask_price": "1.49",
     }
     with patch.object(rs.options, "get_option_market_data_by_id", return_value=md):
         out = await b.get_option_greeks("opt-id-1")
@@ -398,6 +521,9 @@ async def test_get_option_greeks_happy_path_dict_response():
         "vega":  0.12,
         "iv":    0.23,
         "mark_price": 1.47,
+        # bid/ask added 2026-07-23 for combo re-pricing (additive).
+        "bid": 1.45,
+        "ask": 1.49,
     }
 
 

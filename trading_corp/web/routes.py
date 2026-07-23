@@ -1062,9 +1062,109 @@ def register(app: FastAPI) -> None:
         )
         strat_state = StrategyState.from_persistence("robinhood_pmcc", db_url=deps.db_url)
 
-        # Per-order: risk → execute → log
+        # execution_mode reflects the REAL registered broker, stamped BEFORE any
+        # dispatch so the persisted proposed_order row is accurate even when
+        # placement raises (fixes the stale 'paper' label on live-rejected rows).
+        _live_mode = "paper" if getattr(broker, "paper", True) else "live"
+
+        # ── Dispatch: partition into combo groups + single-leg actions ────────
+        # A PMCC roll (and any combo-tagged action) is ONE multi-leg SPREAD via
+        # data_exec.place_combo -> place_multi_leg (a single all-or-nothing POST);
+        # it never legs in. The single-leg loop is for genuine single-leg actions
+        # ONLY — a combo leg sent down it trips _place_option_order's fail-closed
+        # guard, which STAYS as the backstop. partition_combo_orders RAISES on a
+        # malformed batch (a lone combo leg, or >1 untagged option leg) → place
+        # NOTHING (the interim backstop for close_all / Scout OPEN until tagged).
+        from trading_corp.agents.strategies._pmcc_combo import partition_combo_orders
+        try:
+            combo_groups, singles = partition_combo_orders(orders)
+        except ValueError as e:
+            for o in orders:
+                o.status = "risk_rejected"
+                o.execution_mode = _live_mode
+                deps.logger_agent.log_proposed_order(o)
+            deps.logger_agent.log_event(
+                actor="data_exec", kind="combo_partition_refused",
+                payload={"symbol": sym, "reason": str(e), "via": "web_button"},
+            )
+            return HTMLResponse(_render_execute_results(sym, analysis, [
+                {"order": o, "outcome": "execute_error",
+                 "detail": f"Refused (multi-leg safety): {str(e)[:150]}"}
+                for o in orders
+            ]))
+
         results: list[dict] = []
-        for order in orders:
+
+        # Each combo group → risk all-or-nothing (a `reject` aborts the whole
+        # combo; `resize` ignored, can't resize one leg), re-price from live
+        # quotes at dispatch (proposal-time mid is stale/non-marketable by
+        # approval), then place as ONE spread.
+        for _cid, _legs in combo_groups.items():
+            _rej = None
+            for order in _legs:
+                order.execution_mode = _live_mode
+                v = deps.risk_agent.evaluate(order, account, strat_state, regime, None)
+                order.risk_reason = v.reason
+                if v.verdict == "reject":
+                    _rej = (order, v)
+                    break
+            if _rej is not None:
+                order, v = _rej
+                for o in _legs:
+                    o.status = "risk_rejected"
+                    deps.logger_agent.log_proposed_order(o)
+                deps.logger_agent.log_event(
+                    actor="risk", kind="combo_rejected_by_risk",
+                    payload={"combo_id": _cid, "symbol": sym, "rejected_leg": order.id,
+                             "reason": v.reason, "via": "web_button"},
+                )
+                results.extend({
+                    "order": o, "outcome": "risk_rejected",
+                    "detail": (f"Combo aborted (all-or-nothing): leg "
+                               f"{(order.extra or {}).get('action')} rejected — {v.reason}")}
+                    for o in _legs)
+                continue
+            try:
+                await deps.pmcc_agent.reprice_combo(_legs, broker)
+            except Exception as e:
+                log.warning("execute_pair: reprice_combo(%s) failed: %s "
+                            "— keeping proposal-time limit", _cid, e)
+            for order in _legs:
+                order.status = "board_approved"
+                order.board_reason = "approved via web button (combo)"
+                deps.logger_agent.log_proposed_order(order)
+                deps.logger_agent.log_event(
+                    actor="board", kind="board_approved",
+                    payload={"order_id": order.id, "symbol": sym, "via": "web_button",
+                             "qty": order.qty, "combo_id": _cid},
+                )
+            try:
+                fills = await deps.data_exec.place_combo(_legs, division=slug)
+            except Exception as e:
+                log.warning("execute_pair: place_combo(%s) raised: %s", _cid, e)
+                deps.logger_agent.log_event(
+                    actor="data_exec", kind="execution_error",
+                    payload={"symbol": sym, "combo_id": _cid, "error": str(e)},
+                )
+                results.extend({"order": o, "outcome": "execute_error",
+                                "detail": str(e)[:160]} for o in _legs)
+                continue
+            if not fills:
+                results.extend({
+                    "order": o, "outcome": "execute_error",
+                    "detail": "combo did not fill (limit not marketable) — nothing placed; no naked leg"}
+                    for o in _legs)
+                continue
+            _fbi = {f.order_id: f for f in fills}
+            for o in _legs:
+                f = _fbi.get(o.id)
+                results.append({"order": o, "outcome": "filled",
+                                "fill_price": f.price if f else None,
+                                "venue": f.venue if f else None})
+
+        # ── single-leg actions (genuine single-leg only; combos handled above) ─
+        for order in singles:
+            order.execution_mode = _live_mode
             verdict = deps.risk_agent.evaluate(
                 order, account, strat_state, regime, None,
             )

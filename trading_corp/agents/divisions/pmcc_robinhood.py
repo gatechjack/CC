@@ -1313,6 +1313,26 @@ Action reference:
                 ),
                 pair_id=pair_id,
             ))
+            # Route the exit as ONE atomic diagonal spread (sell LEAP +
+            # buy-to-close short) when BOTH legs are present — net CREDIT (the LEAP
+            # is worth more than the near-worthless short). Placeholder net from
+            # marks; the dispatch path re-prices from live quotes. This SUPERSEDES
+            # the per-leg 0.0 market-sell on the LEAP: the combo net limit governs,
+            # so there is no uncapped single-leg market order. A lone leg (no short)
+            # stays a single-leg close.
+            if len(orders) == 2:
+                _leap_m = float(pos.long_leg_mark) if pos.long_leg_mark is not None else 0.0
+                _short_m = float(pos.short_leg_mark) if pos.short_leg_mark is not None else 0.0
+                _ca_net = _leap_m - _short_m          # sell LEAP (+), buy short (−)
+                _ca_dir = "credit" if _ca_net >= 0 else "debit"
+                for _leg in orders:
+                    _leg.extra.update({
+                        "is_multi_leg": True,
+                        "combo_id": pair_id,
+                        "combo_direction": _ca_dir,
+                        "net_limit_price": round(abs(_ca_net), 2) or 0.01,
+                        "ratio_quantity": 1,
+                    })
             return orders
 
         log.warning(
@@ -3303,6 +3323,23 @@ Action reference:
             ),
             pair_id=pair_id,
         ))
+        # Route the OPEN as ONE atomic diagonal spread (buy LEAP + sell short) —
+        # net DEBIT (the LEAP costs more than the short's credit). Placeholder net
+        # from marks; the dispatch path re-prices from live quotes. B4 guarantees
+        # both legs here, but guard on len for safety.
+        if len(orders) == 2:
+            _leap_mark = float(leap_call.get("mark_price") or leap_call.get("ask") or 0)
+            _short_mark = float(weekly_call.get("mark_price") or weekly_call.get("bid") or 0)
+            _open_net = _short_mark - _leap_mark      # sell short (+), buy LEAP (−)
+            _open_dir = "credit" if _open_net >= 0 else "debit"
+            for _leg in orders:
+                _leg.extra.update({
+                    "is_multi_leg": True,
+                    "combo_id": pair_id,
+                    "combo_direction": _open_dir,
+                    "net_limit_price": round(abs(_open_net), 2) or 0.01,
+                    "ratio_quantity": 1,
+                })
         return orders, None
 
     @staticmethod
@@ -3790,6 +3827,46 @@ Action reference:
             })
         except Exception:
             log.exception("PMCC on_combo_filled audit failed for combo %s", combo_id)
+
+    @property
+    def _combo_give_up_dollars(self) -> float:
+        """Marketable give-up ($/share) shaved off (credit) / added to (debit) the
+        NATURAL when re-pricing a ROLL/OPEN combo at dispatch, so it fills instead
+        of resting. Config `robinhood_pmcc.combo.give_up_dollars`; default $0.02."""
+        v = (self._cfg.get("combo") or {}).get("give_up_dollars")
+        try:
+            return float(v) if v is not None else 0.02
+        except (TypeError, ValueError):
+            return 0.02
+
+    @property
+    def _close_all_give_up_dollars(self) -> float:
+        """Give-up for close_all — its OWN, MUCH LARGER knob because close_all is a
+        'get out now' exit (it was a market-out / 0.0 sell). A big give_up crosses
+        decisively so the exit FILLS instead of resting as a too-optimistic credit
+        limit (and can flip to a small debit — pay to get out). Config
+        `robinhood_pmcc.combo.close_all_give_up_dollars`; default $0.25."""
+        v = (self._cfg.get("combo") or {}).get("close_all_give_up_dollars")
+        try:
+            return float(v) if v is not None else 0.25
+        except (TypeError, ValueError):
+            return 0.25
+
+    async def reprice_combo(self, legs: list["ProposedOrder"], broker: Broker):
+        """Re-price a combo from LIVE per-leg quotes at dispatch time (the
+        proposal-time mid is stale by approval). Mutates each leg's
+        combo_direction/net_limit_price; returns (direction, limit). Fail-safe:
+        keeps the proposal-time limit if any quote is unavailable. close_all uses
+        its own (larger) give_up so an urgent exit stays marketable-through, not a
+        resting limit."""
+        from trading_corp.agents.strategies._pmcc_combo import (
+            reprice_combo_from_quotes,
+        )
+        _actions = {(l.extra or {}).get("action") for l in legs}
+        _is_close_all = bool(_actions & {"close_short_urgent", "close_leap_urgent"})
+        give_up = (self._close_all_give_up_dollars if _is_close_all
+                   else self._combo_give_up_dollars)
+        return await reprice_combo_from_quotes(legs, broker, give_up=give_up)
 
     # ------------------------------------------------------------------
     # Scout — survey the market for NEW PMCC opening candidates

@@ -178,3 +178,52 @@ def test_propose_pmcc_combo_aborts_whole_combo_on_reject():
     ))
     assert ok is False
     assert reg.get("cid1") is None               # no partial state queued
+
+
+# ── place_combo: routes to ONE multi-leg call + stamps live (2026-07-23) ──────
+
+class _FakeComboBroker:
+    """Live-like broker: implements place_multi_leg (the atomic spread path) and
+    records whether the single-leg path is ever touched."""
+    name = "rh-fake"
+    paper = False
+
+    def __init__(self):
+        self.multi_leg_calls = []
+        self.single_calls = []
+
+    async def place_multi_leg(self, orders, *, ref_id=None):
+        self.multi_leg_calls.append(list(orders))
+        return [
+            FillEvent(order_id=o.id, symbol=o.symbol, side=o.side, qty=o.qty,
+                      price=(o.limit_price or 0.0), ts="2026-07-24T00:00:00+00:00",
+                      venue="robinhood")
+            for o in orders
+        ]
+
+    async def place_order(self, order):
+        self.single_calls.append(order)
+        return FillEvent(order_id=order.id, symbol=order.symbol, side=order.side,
+                         qty=order.qty, price=order.limit_price or 0.0,
+                         ts="2026-07-24T00:00:00+00:00", venue="robinhood")
+
+
+def test_place_combo_routes_to_multi_leg_and_stamps_live():
+    """The roll must go to Robinhood as ONE spread (place_multi_leg), never the
+    per-leg single path, and the legs must be stamped execution_mode='live' from
+    the real (paper=False) broker — even before the fill returns."""
+    de = DataExecAgent(_FakeLogger())
+    broker = _FakeComboBroker()
+    de.register_broker("robinhood_pmcc", broker)
+    # Isolate the DISPATCH/routing assertion from DB persistence (position rows
+    # are covered by test_place_combo.py; _FakeLogger carries no db_url).
+    de._persist_combo_positions = lambda *a, **k: None
+    legs = _combo_pair()
+    fills = asyncio.run(de.place_combo(legs, division="robinhood_pmcc"))
+    assert len(broker.multi_leg_calls) == 1          # ONE spread order
+    assert len(broker.multi_leg_calls[0]) == 2       # both legs in it
+    assert broker.single_calls == []                 # never legged in single
+    assert len(fills) == 2
+    assert all(f.venue == "robinhood" for f in fills)
+    assert all(o.execution_mode == "live" for o in legs)   # item #3 stamp
+    assert all(o.status == "filled" for o in legs)

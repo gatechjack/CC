@@ -269,6 +269,26 @@ async def dispatch_approved_ic_combo(
     if not combo:
         return []
     combo_id = (combo[0].extra or {}).get("combo_id")
+    # Re-price from LIVE quotes at DISPATCH (not the stale proposal-time mid),
+    # IDENTICAL to the dashboard route — one helper (strategy.reprice_combo), both
+    # call sites. Gated to strategies that expose it (PMCC); the IC path has no
+    # reprice_combo and is untouched. Fail-safe: any error → dispatch at the
+    # proposal-time limit.
+    _reprice = getattr(strategy, "reprice_combo", None)
+    if callable(_reprice):
+        try:
+            _broker = (data_exec.brokers.get(division)
+                       or data_exec.brokers.get("default"))
+        except Exception:
+            _broker = None
+        if _broker is not None and hasattr(_broker, "get_option_quote"):
+            try:
+                await _reprice(combo, _broker)
+            except Exception as e:
+                log.warning(
+                    "dispatch_approved_ic_combo: reprice_combo failed for %s: %s "
+                    "— dispatching at proposal-time limit", combo_id, e,
+                )
     fills = await data_exec.place_combo(combo, division=division)
     if fills:
         # State-update callback — synchronous with the action.

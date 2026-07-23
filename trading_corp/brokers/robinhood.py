@@ -94,6 +94,18 @@ class RobinhoodOrderError(RuntimeError):
     investing-goals questions' compliance reject observed 2026-06-22)."""
 
 
+class RobinhoodComboPending(RuntimeError):
+    """A combo order was ACCEPTED (has an id) but did NOT reach a terminal
+    `filled` state inside the poll window — its fate is unconfirmed. Callers MUST
+    book NOTHING; the position is not real yet. The next scan reconciles the true
+    state from the broker (and the resting day-order expires or the operator
+    cancels it). Distinct from RobinhoodOrderError (a hard reject / no-id)."""
+
+    def __init__(self, message: str, *, order_id: str | None = None):
+        super().__init__(message)
+        self.order_id = order_id
+
+
 def _days_to_expiry(expiration_date: str) -> int:
     """Calendar days from today to expiration_date ('YYYY-MM-DD')."""
     try:
@@ -1137,7 +1149,7 @@ class RobinhoodBroker(Broker):
     # ------------------------------------------------------------------
 
     async def place_multi_leg(
-        self, orders: list[ProposedOrder]
+        self, orders: list[ProposedOrder], *, ref_id: str | None = None,
     ) -> list[FillEvent]:
         """Submit a multi-leg option combo via robin_stocks.order_option_spread.
 
@@ -1181,16 +1193,25 @@ class RobinhoodBroker(Broker):
         import robin_stocks.robinhood as rs  # type: ignore
         acct = self._account_number or None
 
-        result = await asyncio.to_thread(
-            rs.orders.order_option_spread,
-            combo.direction,
-            combo.net_limit,
-            combo.underlying,
-            combo.quantity,
-            spread,
-            account_number=acct,
-            timeInForce="gfd",     # day-only — matches PMCC; no resting GTC
-        )
+        if ref_id is None:
+            # Legacy path (iron condor): robin_stocks mints its own uuid4 ref_id.
+            result = await asyncio.to_thread(
+                rs.orders.order_option_spread,
+                combo.direction,
+                combo.net_limit,
+                combo.underlying,
+                combo.quantity,
+                spread,
+                account_number=acct,
+                timeInForce="gfd",     # day-only — matches PMCC; no resting GTC
+            )
+        else:
+            # Deterministic-ref_id path: replicate order_option_spread's payload
+            # build (SAME rs internals) but stamp OUR ref_id so a transient retry
+            # of the same combo dedupes at Robinhood instead of double-placing.
+            result = await asyncio.to_thread(
+                self._submit_spread_with_ref_id, spread, combo, acct, ref_id,
+            )
 
         # Combo accepted? A genuinely-placed combo carries an 'id' (single ref).
         # No id (None / empty / error dict) means the whole combo did NOT place —
@@ -1210,7 +1231,37 @@ class RobinhoodBroker(Broker):
         # The account the combo hit: RH may not echo it on a spread, so fall back
         # to the bound account_number we placed on (Bug-2 routing identity).
         rh_account = self._account_number_from(result) or self._account_number or None
-        legs_result = result.get("legs") or []
+
+        # ── STATE-INTEGRITY GATE (2026-07-23) ─────────────────────────────────
+        # Book positions ONLY on a TERMINAL `filled` state — NEVER on the submit
+        # acknowledgement. A resting/`confirmed` spread booked as filled desyncs
+        # the position tracker from the broker (today's failure). Poll to terminal,
+        # then branch. Applies to the IC path too (shared code).
+        final = await self._await_terminal_option_order(result, rh_combo_id)
+        state = str((final or {}).get("state") or "").lower()
+        if state in ("rejected", "cancelled", "canceled", "failed", "voided"):
+            raise RobinhoodOrderError(
+                f"combo {rh_combo_id} reached terminal state {state!r} — booked "
+                f"NOTHING ({combo.direction} {combo.underlying} x{combo.quantity})"
+            )
+        if state == "partially_filled":
+            # An atomic spread should not partial-fill; surface loudly and book
+            # NOTHING. PMCC/IC re-derive positions from the broker each scan, which
+            # reconciles the true state — never book a half position here.
+            raise RobinhoodOrderError(
+                f"combo {rh_combo_id} PARTIALLY_FILLED — anomaly on an atomic "
+                "spread; booked NOTHING, needs reconciliation"
+            )
+        if state != "filled":
+            # Timed out while still queued/confirmed/unconfirmed → NOT confirmed.
+            raise RobinhoodComboPending(
+                f"combo {rh_combo_id} still {state or 'unknown'!r} after "
+                f"{self._COMBO_FILL_TIMEOUT_S:.0f}s poll — pending/unconfirmed; "
+                "booked NOTHING",
+                order_id=rh_combo_id,
+            )
+
+        legs_result = (final or {}).get("legs") or []
         fill_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         fills: list[FillEvent] = []
         for i, o in enumerate(orders):
@@ -1243,6 +1294,120 @@ class RobinhoodBroker(Broker):
                 account=rh_account,
             ))
         return fills
+
+    # Terminal-fill poll (item-1 state integrity). Instance-overridable so tests
+    # can shrink the window; PMCC re-prices marketable so fills land in < 1s.
+    _COMBO_FILL_TIMEOUT_S: float = 20.0
+    _COMBO_FILL_POLL_S: float = 1.0
+    _TERMINAL_OPTION_STATES: frozenset = frozenset({
+        "filled", "partially_filled", "rejected", "cancelled", "canceled",
+        "failed", "voided",
+    })
+
+    async def _await_terminal_option_order(self, submit_result: dict,
+                                           order_id: str) -> dict:
+        """Poll an option order to a TERMINAL state (bounded). Returns the latest
+        order dict. If the submit response is already terminal (fast fills /
+        offline tests) it returns immediately without polling. On timeout it
+        returns the last non-terminal dict — the caller treats a non-`filled`
+        result as pending and books nothing."""
+        st = str((submit_result or {}).get("state") or "").lower()
+        if st in self._TERMINAL_OPTION_STATES:
+            return submit_result or {}
+        import robin_stocks.robinhood as rs  # type: ignore
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._COMBO_FILL_TIMEOUT_S
+        last = submit_result or {}
+        while loop.time() < deadline:
+            await asyncio.sleep(self._COMBO_FILL_POLL_S)
+            try:
+                info = await asyncio.to_thread(
+                    rs.orders.get_option_order_info, order_id)
+            except Exception as e:      # transient poll failure — keep trying
+                log.warning("combo %s poll get_option_order_info failed: %s",
+                            order_id, e)
+                continue
+            if info:
+                last = info
+                if str(info.get("state") or "").lower() in self._TERMINAL_OPTION_STATES:
+                    return info
+        return last
+
+    def _submit_spread_with_ref_id(self, spread, combo, acct, ref_id):
+        """Build + POST an option-spread order with a caller-supplied ref_id.
+
+        The pinned `rs.orders.order_option_spread` mints its own `uuid4` ref_id
+        (no param), so a retry double-places. This replicates its exact payload
+        build using the SAME rs internals (`id_for_option` /
+        `option_instruments_url` / `load_account_profile` / `option_orders_url` /
+        `request_post`) but stamps OUR deterministic ref_id. Runs on a worker
+        thread (network I/O). `spread` already carries per-leg expirationDate/
+        strike/optionType/effect/action/ratio_quantity.
+        """
+        import robin_stocks.robinhood.orders as O  # type: ignore
+        legs = []
+        for leg in spread:
+            option_id = O.id_for_option(
+                combo.underlying, leg["expirationDate"], leg["strike"],
+                leg["optionType"],
+            )
+            legs.append({
+                "position_effect": leg["effect"],
+                "side": leg["action"],
+                "ratio_quantity": leg["ratio_quantity"],
+                "option": O.option_instruments_url(option_id),
+            })
+        payload = {
+            "account": O.load_account_profile(account_number=acct, info="url"),
+            "direction": combo.direction,
+            "time_in_force": "gfd",
+            "legs": legs,
+            "type": "limit",
+            "trigger": "immediate",
+            "price": combo.net_limit,
+            "quantity": combo.quantity,
+            "override_day_trade_checks": False,
+            "override_dtbp_checks": False,
+            "ref_id": ref_id,
+        }
+        url = O.option_orders_url(account_number=acct)
+        return O.request_post(url, payload, json=True, jsonify_data=True)
+
+    async def get_option_quote(
+        self, symbol: str, expiration: str, strike: float, option_type: str,
+    ) -> dict[str, float | None]:
+        """Live {bid, ask, mark} for one contract by (symbol, expiration, strike,
+        type) — used by the combo dispatch to re-price a spread from the natural.
+        Wraps rs.options.get_option_market_data (which returns a nested list)."""
+        self._require_connected()
+        import robin_stocks.robinhood as rs  # type: ignore
+        raw = await asyncio.to_thread(
+            rs.options.get_option_market_data, symbol, expiration,
+            str(strike), option_type,
+        )
+        md = raw
+        while isinstance(md, list) and md:
+            md = md[0]
+        md = md if isinstance(md, dict) else {}
+
+        def _f(v) -> float | None:
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        # min_ticks (for the NET-price tick rule): RH echoes {above_tick,
+        # below_tick, cutoff_price} on the instrument/market-data. May be absent →
+        # the re-pricer falls back to the standard 0.05≥$3 / 0.01 rule.
+        mt = md.get("min_ticks") or {}
+        return {
+            "bid": _f(md.get("bid_price")),
+            "ask": _f(md.get("ask_price")),
+            "mark": _f(md.get("adjusted_mark_price") or md.get("mark_price")),
+            "below_tick": _f(mt.get("below_tick")),
+            "above_tick": _f(mt.get("above_tick")),
+            "cutoff": _f(mt.get("cutoff_price")),
+        }
 
     async def get_option_greeks(
         self, option_id: str
@@ -1288,6 +1453,8 @@ class RobinhoodBroker(Broker):
             "mark_price": _f(
                 md.get("adjusted_mark_price") or md.get("mark_price")
             ),
+            "bid": _f(md.get("bid_price")),
+            "ask": _f(md.get("ask_price")),
         }
 
     # ------------------------------------------------------------------

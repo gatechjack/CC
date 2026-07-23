@@ -701,10 +701,22 @@ class DataExecAgent:
         first_extra = orders[0].extra or {}
         direction = first_extra.get("combo_direction")
         net_limit = first_extra.get("net_limit_price")
+        # Deterministic client ref_id so a transient retry of THIS combo dedupes
+        # at the venue instead of double-placing (order_option_spread otherwise
+        # mints a fresh uuid4 per call).
+        from trading_corp.agents.strategies._pmcc_combo import combo_ref_id
+        _ref_id = combo_ref_id(str(combo_id))
 
         broker = self.brokers.get(division) or self.brokers.get("default")
         if broker is None:
             raise RuntimeError(f"No broker registered for division={division!r}")
+
+        # Tag every leg with the REAL broker's execution mode (mirrors place()'s
+        # single-leg line) so combo rows are labelled live/paper accurately even
+        # if placement raises below.
+        _combo_mode = "paper" if getattr(broker, "paper", True) else "live"
+        for _o in orders:
+            _o.execution_mode = _combo_mode
 
         # Dry-run short-circuit. Synthesise 4 FillEvents at each leg's
         # limit_price so downstream consumers (web result panel, audit
@@ -748,7 +760,22 @@ class DataExecAgent:
             )
             return fills
 
-        fills = await broker.place_multi_leg(orders)
+        try:
+            fills = await broker.place_multi_leg(orders, ref_id=_ref_id)
+        except Exception as e:
+            # A combo that submitted but did not confirm `filled` in the poll
+            # window (RobinhoodComboPending) must book NOTHING — record it as
+            # pending/unconfirmed and re-raise so the route surfaces it. Any hard
+            # error (reject / no-id) also re-raises; neither books a position.
+            if type(e).__name__ == "RobinhoodComboPending":
+                self.logger.log_event(
+                    actor="data_exec", kind="combo_pending_unconfirmed",
+                    payload={"combo_id": combo_id, "strategy": strategy,
+                             "division": division,
+                             "broker_order_id": getattr(e, "order_id", None),
+                             "reason": str(e)},
+                )
+            raise
 
         if not fills:
             self.logger.log_event(
@@ -829,6 +856,10 @@ class DataExecAgent:
                 "combo_id": combo_id,
                 "strategy": strategy,
                 "division": division,
+                # The ONE Robinhood spread-order id both legs share (all FillEvents
+                # carry the same broker_order_id from order_option_spread's response).
+                "broker_order_id": getattr(fills[0], "broker_order_id", None),
+                "ref_id": _ref_id,
                 "direction": direction,
                 "net_limit_price": net_limit,
                 "net_actual": actual,
