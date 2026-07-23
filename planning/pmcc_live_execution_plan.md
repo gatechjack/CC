@@ -139,6 +139,19 @@ against a LEAP that no longer exists.
 skill. This amendment changes only how the DETERMINISTIC layer tags (executable/advisory), renders, and
 dispatches a proposal; the LLM's recommendation content is untouched.
 
+### E. Known pre-existing gap surfaced during the build — FABRICATED risk-gate balance (Phase-B candidate)
+The PMCC risk gate — single-leg AND the new Phase-A roll_short combo — evaluates each order against a
+hardcoded `AccountState(equity=100_000)`, NOT the real Robinhood balance. `main._run_order`
+(`main.py:4593-4595`) supplies no `account` key to the graph state, so `ceo_graph.risk_node`
+(`ceo_graph.py:334-336`) falls back to its default $100k account; equity-relative caps are therefore not
+binding on the real balance. **Pre-existing** (the single-leg path already does this); **inherited faithfully
+by Phase A** — `propose_pmcc_combo` replicates the exact same basis for byte-equivalence — **NOT a
+regression.** Fix shape: feed a real `AccountState` from `broker.snapshot()`, as the IC path does via
+`_ic_account_factory` (`main.py:1528-1529`); PMCC has no equivalent on either path. **This is a PHASE-B item
+(post-submission live safety), NOT Phase-A (atomicity)** — a gate that cannot see real equity belongs with the
+live-safety work. Filed to `BACKLOG.md` alongside the PEAD notional-cap no-op (both = risk caps structurally
+unreachable on live paths — worth reviewing as a pair, not separately).
+
 ---
 
 ## a. What PEAD already solved (`robinhood_pead` — genuinely live since 2026-06-24)

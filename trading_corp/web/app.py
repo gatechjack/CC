@@ -100,6 +100,7 @@ class WebDeps:
     tasty_strategy: Any = None             # TastyOptionsIronCondorAgent | None
     tasty_telegram_batcher: Any = None     # TelegramBatcher | None
     tasty_pending_combo_registry: Any = None  # PendingComboRegistry | None
+    pmcc_pending_combo_registry: Any = None   # PendingComboRegistry | None — PMCC roll_short atomic combos (Phase A)
 
 
 def create_app(deps: WebDeps) -> FastAPI:

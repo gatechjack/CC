@@ -1496,6 +1496,41 @@ async def test_roll_leap_propose_emits_4_legs(agent: PMCCAgent, clear_earnings):
 
 
 @pytest.mark.asyncio
+async def test_phase_a_roll_leap_legs_are_advisory(agent: PMCCAgent, clear_earnings):
+    """Phase A: every roll_leap leg is dispatch='advisory' (the operator executes
+    the LEAP roll manually; the agent never places these) and is NOT combo-tagged
+    (roll_leap never rides the atomic combo path)."""
+    today = date.today()
+    new_leap_expiry = (today + timedelta(days=500)).isoformat()
+    new_weekly_expiry = (today + timedelta(days=14)).isoformat()
+    broker = MockOptionBroker(
+        option_positions=[
+            _opt_position("MSTR", 100, 160.0, qty=1.0, delta=0.97,
+                          avg_price=23.80, mark_price=58.05),   # LEAP
+            _opt_position("MSTR", 7, 175.0, qty=-1.0, delta=0.30,
+                          avg_price=2.50, mark_price=1.50),      # short
+        ],
+        expiry_dates={"MSTR": [new_weekly_expiry, new_leap_expiry]},
+        calls={
+            ("MSTR", new_leap_expiry): [
+                _liquid_call(strike=180.0, delta=0.85, mark=20.0, dte=500)],
+            ("MSTR", new_weekly_expiry): [
+                _liquid_call(strike=190.0, delta=0.30, mark=2.00, dte=14)],
+        },
+    )
+    analysis = PMCCAnalysis(
+        symbol="MSTR", action="roll_leap", confidence=0.92,
+        urgency="elevated", summary="...", rationale="...",
+        target_delta=0.30, target_dte=14,
+    )
+    orders = await agent.propose_orders_for_pair(broker, "MSTR", analysis)
+    assert len(orders) == 4
+    for o in orders:
+        assert o.dispatch == "advisory", o.extra.get("action")
+        assert not o.extra.get("is_multi_leg")
+
+
+@pytest.mark.asyncio
 async def test_roll_leap_aborts_when_no_qualifying_weekly(agent_logged, cap_logger, clear_earnings):
     # clear_earnings (Phase 2.5): B9 now runs FIRST on the roll_leap path — pin earnings
     # CLEAR so the assertion reaches the B4/B7 abort reason instead of a live-earnings
@@ -1924,6 +1959,29 @@ async def test_b2_net_credit_roll_ships(agent, clear_earnings):
     assert len(orders) == 2
     assert {o.extra["action"] for o in orders} == {
         "roll_short_call_close", "roll_short_call_open"}
+
+
+@pytest.mark.asyncio
+async def test_phase_a_roll_short_legs_are_combo_tagged(agent, clear_earnings):
+    """Phase A: the two roll_short legs carry atomic-combo tags so they dispatch
+    through place_combo (one all-or-nothing order); validate_combo_cohesion
+    accepts the pair. dispatch stays 'executable' (the agent DOES place these)."""
+    from trading_corp.brokers.base import validate_combo_cohesion
+    broker = _credit_roll_broker()
+    legs = await agent.detect_existing_legs(broker)
+    pos = next(p for p in legs if p.symbol == "AAPL")
+    orders = await agent._propose_roll_short("AAPL", pos, broker)
+    assert len(orders) == 2
+    for o in orders:
+        assert o.extra["is_multi_leg"] is True
+        assert o.extra["combo_id"] == o.extra["pmcc_pair_id"]
+        assert o.extra["combo_direction"] in ("credit", "debit")
+        assert isinstance(o.extra["net_limit_price"], float)
+        assert o.extra["ratio_quantity"] == 1
+        assert o.dispatch == "executable"
+    assert len({o.extra["combo_id"] for o in orders}) == 1
+    combo = validate_combo_cohesion(orders)          # the place_multi_leg validator
+    assert combo.combo_id == orders[0].extra["combo_id"]
 
 
 @pytest.mark.asyncio

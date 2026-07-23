@@ -26,6 +26,33 @@ from trading_corp.utils.time import iso, now_utc
 log = logging.getLogger(__name__)
 
 
+class AdvisoryOrderError(RuntimeError):
+    """Raised when an ADVISORY order reaches a dispatch chokepoint.
+
+    Fail-closed guard: a roll_leap / LEAP-roll leg is a capital-reallocation the
+    operator executes MANUALLY — the agent must NEVER place it. Mirrors the
+    single-leg-path guard in RobinhoodBroker._place_option_order (never partially
+    act on something that must not execute). Detection checks BOTH the typed
+    `dispatch` field AND the `extra["action"]` prefix: the action survives
+    ceo_graph's `_order_from_state` reconstruction (which drops typed fields but
+    preserves `extra`), so it is the load-bearing signal on the single-leg path.
+    """
+
+
+def _is_advisory_order(order: ProposedOrder) -> bool:
+    """True if `order` must never be placed by the agent (fail-closed).
+
+    Checks the typed dispatch marker first (authoritative where the original
+    object flows, e.g. the combo path) then the action prefix (load-bearing on
+    the ceo_graph single-leg path, which reconstructs the order without the typed
+    field). Either condition ⇒ advisory.
+    """
+    if getattr(order, "dispatch", "executable") == "advisory":
+        return True
+    action = str((order.extra or {}).get("action") or "")
+    return action.startswith("roll_leap")
+
+
 class DataExecAgent:
     def __init__(
         self,
@@ -97,6 +124,18 @@ class DataExecAgent:
         return await self.brokers[division].snapshot()
 
     async def place(self, order: ProposedOrder, division: str = "default") -> FillEvent:
+        # Phase A fail-closed guard: an ADVISORY order (roll_leap / LEAP-roll leg)
+        # is operator-executed MANUALLY — refuse it BEFORE any broker call, dry-run,
+        # or staleness gate. Cannot be bypassed by a future caller, refactor, or an
+        # auto_execute flip.
+        if _is_advisory_order(order):
+            raise AdvisoryOrderError(
+                f"refusing to place ADVISORY order {order.id} "
+                f"(dispatch={getattr(order, 'dispatch', '?')!r}, "
+                f"action={(order.extra or {}).get('action')!r}) — roll_leap / "
+                "LEAP-roll legs are executed MANUALLY by the operator; the agent "
+                "never places them."
+            )
         broker = self.brokers.get(division) or self.brokers.get("default")
         if broker is None:
             raise RuntimeError(f"No broker registered for division={division!r}")
@@ -638,6 +677,16 @@ class DataExecAgent:
     ) -> list[FillEvent]:
         if not orders:
             return []
+
+        # Phase A fail-closed guard: no ADVISORY leg may ride the combo path
+        # either (roll_leap is never combo-tagged, but guard belt-and-braces).
+        for _o in orders:
+            if _is_advisory_order(_o):
+                raise AdvisoryOrderError(
+                    f"refusing to place ADVISORY combo leg {_o.id} "
+                    f"(action={(_o.extra or {}).get('action')!r}) — roll_leap legs "
+                    "are executed MANUALLY by the operator; the agent never places them."
+                )
 
         # Defense-in-depth: confirm a single combo_id is present on every
         # leg. The broker-level validator will catch deeper mismatches.

@@ -1368,6 +1368,12 @@ Action reference:
                 "conservative_net": round(rl_cons_net, 4),
                 "mark_net": round(rl_mark_net, 4), "override_kind": rl_override,
             })
+            # Phase A: roll_leap legs are ADVISORY — the operator executes the LEAP
+            # roll MANUALLY; the agent never places them. (Fresh local `orders`
+            # holds only the 4 roll_leap legs here.) The fail-closed dispatch guard
+            # also refuses any advisory / roll_leap order.
+            for _rl_leg in orders:
+                _rl_leg.dispatch = "advisory"
             return orders
 
         # ── Close everything on this underlying ──
@@ -2373,6 +2379,12 @@ Action reference:
                         ),
                         pair_id=pair_id,
                     ))
+                    # Phase A: roll_leap legs are ADVISORY — operator executes the
+                    # LEAP roll MANUALLY; the agent never places them. Scoped to
+                    # this batch via pair_id (orders here is the scan accumulator).
+                    for _rl_leg in orders:
+                        if (_rl_leg.extra or {}).get("pmcc_pair_id") == pair_id:
+                            _rl_leg.dispatch = "advisory"
                     self._audit_division("pmcc_roll_gates", {
                         "symbol": symbol, "gates": dict(rl_gates),
                         "conservative_net": round(rl_cons_net, 4),
@@ -3460,6 +3472,23 @@ Action reference:
             "mark_net": round(mark_net, 4),
             "override_kind": override_kind,
         })
+        # Phase A: tag the two roll_short legs as ONE atomic combo so they dispatch
+        # through place_combo -> place_multi_leg (a single all-or-nothing POST)
+        # instead of two independent single-leg orders — closing the naked-leg fill
+        # window B4 fixed only at the proposal layer. combo_direction + net_limit_price
+        # REUSE mark_net from _short_roll_credit above (computed for the B2 gate) — no
+        # re-derivation: net credit -> "credit", net debit -> "debit"; the limit is the
+        # mark-based net, matching today's per-leg mark limits.
+        _combo_direction = "credit" if mark_net >= 0 else "debit"
+        _combo_net = round(abs(mark_net), 2)
+        for _leg in orders:
+            _leg.extra.update({
+                "is_multi_leg": True,
+                "combo_id": pair_id,
+                "combo_direction": _combo_direction,
+                "net_limit_price": _combo_net,
+                "ratio_quantity": 1,
+            })
         return orders
 
     # -- Option chain queries ------------------------------------------------
@@ -3700,6 +3729,30 @@ Action reference:
             rationale=rationale,
             extra=extra,
         )
+
+    def on_combo_filled(self, combo_id: str, fills: list) -> None:
+        """State-update callback after an HITL-approved roll_short combo fills
+        (contract required by dispatch_approved_ic_combo). PMCC re-derives all
+        positions from the broker on every scan (no persistent position belief),
+        so there is no in-memory book to mutate — we AUDIT the atomic fill and let
+        the next scan pick up the new short. Must not raise (the dispatcher
+        re-raises on failure)."""
+        try:
+            self._audit_division("pmcc_combo_filled", {
+                "combo_id": combo_id,
+                "leg_count": len(fills or []),
+                "fills": [
+                    {"order_id": getattr(f, "order_id", None),
+                     "symbol": getattr(f, "symbol", None),
+                     "side": getattr(f, "side", None),
+                     "qty": getattr(f, "qty", None),
+                     "price": getattr(f, "price", None),
+                     "broker_order_id": getattr(f, "broker_order_id", None)}
+                    for f in (fills or [])
+                ],
+            })
+        except Exception:
+            log.exception("PMCC on_combo_filled audit failed for combo %s", combo_id)
 
     # ------------------------------------------------------------------
     # Scout — survey the market for NEW PMCC opening candidates

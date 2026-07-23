@@ -817,8 +817,36 @@ async def run(argv: list[str] | None = None) -> int:
         # ONE Approve button (eliminating the "approve close, reject
         # open → naked short" failure mode). Solo orders (no pair_id)
         # remain sequential — same blast-radius bound as pre-B.3.
+        from trading_corp.agents.strategies._pmcc_combo import propose_pmcc_combo
         groups = _group_orders_by_pair_id(orders)
         for group in groups:
+            # Phase A: a combo-tagged group (roll_short) is ONE atomic combo —
+            # route it to the combo HITL path (place_combo on approve), NOT the
+            # per-leg single-leg path. roll_leap groups are NOT combo-tagged: they
+            # fall through to the existing per-leg path (advisory; the fail-closed
+            # data_exec guard refuses to place them).
+            if len(group) > 1 and all((o.extra or {}).get("is_multi_leg") for o in group):
+                combo_id = (group[0].extra or {}).get("combo_id")
+                queued = await propose_pmcc_combo(
+                    group,
+                    risk_agent=risk_agent,
+                    logger_agent=logger_agent,
+                    pending_combo_registry=pmcc_pending_combo_registry,
+                    division="robinhood_pmcc",
+                    db_url=secrets.db_url,
+                )
+                if queued:
+                    await channel.push(
+                        f"PMCC roll_short combo `{str(combo_id)[:8]}` "
+                        f"({group[0].symbol}) proposed — open web app to approve "
+                        "(atomic: both legs fill or neither)."
+                    )
+                logger_agent.log_event(
+                    "pmcc", "scan_combo_result",
+                    {"combo_id": combo_id, "symbol": group[0].symbol,
+                     "queued": bool(queued), "leg_count": len(group)},
+                )
+                continue
             if len(group) == 1:
                 order = group[0]
                 status = await _run_order(
@@ -1517,6 +1545,10 @@ async def run(argv: list[str] | None = None) -> int:
         # strategy re-proposes on the next manage() tick if conditions
         # still hold.
         pending_combo_registry = PendingComboRegistry(logger_agent=logger_agent)
+        # PMCC roll_short atomic combos (Phase A) — its own registry, mirroring
+        # the per-division pattern (IC + tasty each have one). Read + resolved by
+        # the /approvals/pmcc-combos/{id} routes; proposed by `_on_scan`.
+        pmcc_pending_combo_registry = PendingComboRegistry(logger_agent=logger_agent)
 
         # Broker for the robinhood_joint division. Falls back to the
         # process paper_broker if the RH connect failed at startup
@@ -2203,6 +2235,7 @@ async def run(argv: list[str] | None = None) -> int:
             tasty_strategy=tasty_strategy,
             tasty_telegram_batcher=tasty_telegram_batcher,
             tasty_pending_combo_registry=tasty_pending_combo_registry,
+            pmcc_pending_combo_registry=pmcc_pending_combo_registry,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -2675,6 +2708,7 @@ async def _start_web_server(
     tasty_strategy: Any = None,
     tasty_telegram_batcher: Any = None,
     tasty_pending_combo_registry: Any = None,
+    pmcc_pending_combo_registry: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -2715,6 +2749,7 @@ async def _start_web_server(
         tasty_strategy=tasty_strategy,
         tasty_telegram_batcher=tasty_telegram_batcher,
         tasty_pending_combo_registry=tasty_pending_combo_registry,
+        pmcc_pending_combo_registry=pmcc_pending_combo_registry,
     )
     app = create_app(deps)
     config = uvicorn.Config(
