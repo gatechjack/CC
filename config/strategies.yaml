@@ -155,7 +155,6 @@ robinhood_pmcc:
       weekly_yield_pct: 1.00       # primary signal
       delta_distance_to_target: 0.30  # closer to target delta = better
       earnings_distance_days: 0.10    # more days from earnings = safer
-      black_sheep_penalty: 0.15       # slight de-prioritization (not exclusion)
 
   # ============================================================
   # Auto-execution caps (apply when auto_execute is flipped to true)
@@ -172,9 +171,15 @@ robinhood_pmcc:
     max_daily_total_debit_dollars: 1500   # cumulative debits across all actions per day
     max_daily_actions: 10                 # max number of orders per day
 
+    # Symbols whose EVERY action always requires Board approval, independent of any
+    # strategy taxonomy — the board flags specific higher-risk names for mandatory
+    # eyes. Inert while auto_execute:false (every action is HITL already); this is
+    # the guardrail for a future auto_execute:true.
+    approval_required_symbols: ["TSLA", "MSTR"]
+
     # Required approval triggers (always require approval, regardless of dollar amount)
     require_approval_for:
-      - "any_action_on_black_sheep_symbols"   # TSLA, MSTR always need eyes
+      - "any_action_on_approval_required_symbols"  # names in approval_required_symbols
       - "closing_any_leap"                     # closing longs is consequential
       - "opening_new_pmcc_on_new_symbol"       # new underlying = thesis decision
       - "any_action_when_vix_above_30"         # high-vol regime needs human judgment
@@ -224,124 +229,7 @@ robinhood_pmcc:
       dividend_yield_max: 0.01
       earnings_buffer_days: 7
 
-    # ============================================================
-    # BLACK SHEEP — high-IV names where assignment is not an option
-    # Strategy: roll halfway, never buy back fully, ride mean reversion
-    # Cash-constrained: cannot accept 100-share assignment
-    # ============================================================
-    black_sheep:
-      symbols:
-        - symbol: "TSLA"
-          rationale: "long-term conviction; high IV mean-reverts reliably"
-          intent: "perpetual_roll_no_assignment"
-        - symbol: "MSTR"
-          rationale: "core BTC-leverage; high IV mean-reverts reliably"
-          intent: "perpetual_roll_no_assignment"
-
-      eligibility_criteria:
-        min_options_iv: 0.70
-        # min_avg_options_volume: 10000   # UNIMPLEMENTED (2026-07-23). Intended as an
-        #   UNDERLYING eligibility screen (does the NAME trade >=10k options/day on
-        #   average) but no code ever read it that way — it was mis-applied per-contract
-        #   in the liquidity gate, where no OTM weekly trades 10k/day, so it silently
-        #   blocked every normal black-sheep roll for ~2.7 months. Removed from the gate
-        #   2026-07-23. Left here commented as documentation of intent — do NOT wire it
-        #   into any per-contract path; an underlying-volume screen is a separate feature.
-        min_underlying_avg_volume: 5_000_000
-        mean_reversion_history: true
-        early_assignment_risk: "low"
-
-      management_rules:
-        cash_available_for_assignment: false
-        never_allow_assignment: true
-        leap_exercise_allowed: false
-        leap_protection: "preserve_at_all_costs"
-        leap_drawdown_close_threshold: null
-        leap_thesis_check_only: true
-        short_leg_required: true
-        short_leg_dte_target: 7
-        short_leg_initial_delta: [0.20, 0.35]
-
-      rolling_rules:
-        philosophy: |
-          NEVER buy back fully and re-sell OTM at a loss.
-          ALWAYS roll, always for credit, always to a higher strike.
-          Use "halfway roll" when stock has moved aggressively against you.
-          Trust mean reversion on high-IV names within 1-3 weekly cycles.
-
-        roll_trigger_dte: 2
-        roll_trigger_dte_otm: 1
-        roll_trigger_itm_intraday: false
-
-        halfway_roll:
-          when_to_use: "short_strike_breached_by_more_than_3_pct"
-          new_strike_logic: "halfway_between_current_short_strike_and_underlying_price"
-          new_dte: 7
-          require_credit: true
-          minimum_credit: 0.05
-          fallback_extend_dte: 14
-          fallback_extend_dte_max: 21
-
-        standard_roll:
-          when_to_use: "short_within_3_pct_of_underlying"
-          new_strike_logic: "match_or_slightly_above_underlying_price"
-          new_dte: 7
-          require_credit: true
-
-        otm_roll:
-          when_to_use: "short_otm_at_50_pct_profit_or_more"
-          action: "close_at_70_pct_profit_then_open_new_7dte"
-          new_strike_delta: [0.20, 0.30]
-
-        forbidden_actions:
-          - action: "buy_back_short_fully_at_loss_then_resell_otm"
-            reason: "locks in loss right before mean-reversion whipsaw"
-          - action: "close_full_pmcc_to_recover_short_loss"
-            reason: "abandons the long thesis to fix a short — backwards"
-          - action: "accept_assignment"
-            reason: "no cash to fund 100 shares; would force LEAP exercise at loss"
-          - action: "roll_for_debit_to_chase_otm"
-            reason: "high IV means credit rolls are nearly always available"
-
-        mean_reversion:
-          expected_pullback_window: "1_to_3_weekly_cycles"
-          expected_pullback_pct: 0.05
-          do_not_panic_within: "2_weekly_cycles"
-
-      black_sheep_breach:
-        philosophy: |
-          High-IV names breach constantly. The breach is not the problem —
-          panic management is. Roll halfway, collect credit, wait for MR.
-
-        minor_breach:
-          definition: "underlying 0-3% above short strike"
-          preferred_action: "standard_roll_at_2_dte"
-          alternate_action: "let_expire_if_at_strike_and_dte_0"
-
-        major_breach:
-          definition: "underlying 3-10% above short strike"
-          preferred_action: "halfway_roll"
-          require_credit: true
-
-        runaway_breach:
-          definition: "underlying 10%+ above short strike"
-          preferred_action: "halfway_roll_with_extended_dte"
-          new_dte: 14
-          require_credit: true
-          forbidden: ["close_leap", "buy_back_at_full_loss", "accept_assignment"]
-
-      exit_when:
-        - "underlying_thesis_explicitly_broken"
-        - "leap_dte < 90 AND no_roll_available_for_credit"
-        - "fundamental_deterioration_confirmed"
-        - "roll_no_longer_yields_credit_after_3_attempts"
-
-      leap_management:
-        roll_out_trigger_dte: 180
-        roll_out_method: "diagonal_credit_or_minimum_debit"
-        max_debit_pct_of_position: 0.15
-
-    # ----- LEAP (long leg) — for non-black-sheep positions -----
+    # ----- LEAP (long leg) -----
     long_leg:
       dte_min: 365
       dte_max: 720
@@ -354,7 +242,7 @@ robinhood_pmcc:
       roll_down_trigger_delta: 0.40
       roll_out_trigger_dte: 120
 
-    # ----- Weekly short (short leg) — for non-black-sheep positions -----
+    # ----- Weekly short (short leg) -----
     short_leg:
       dte_target: 7
       dte_secondary: 14
@@ -394,7 +282,7 @@ robinhood_pmcc:
           (b) realized overnight gap exceeds 1σ implied move
           (c) account cannot tolerate assignment risk
 
-    # ----- Breach policy (standard, for non-black-sheep) -----
+    # ----- Breach policy (standard) -----
     breach_policy:
       philosophy: "breaches are expected, not emergencies — evaluate combined P/L"
       classification:
@@ -439,14 +327,14 @@ robinhood_pmcc:
         - "if LEAP delta > 0.95, treat as deep ITM equity — close or roll deep"
         - "log breach event + outcome for monthly review"
 
-    # ----- Off-criteria positions (non-black-sheep) -----
+    # ----- Off-criteria positions -----
     off_criteria_positions:
       policy: "manage_to_completion_no_renewal"
       description: |
-        Positions on symbols that don't match underlying_criteria but aren't
-        marked as black_sheep. Continue normal management until LEAP expiry
-        or the thesis breaks. Do NOT propose new PMCC setups on these names
-        after the existing one closes — rotate capital to compliant names.
+        Positions on symbols that don't match underlying_criteria. Continue
+        normal management until LEAP expiry or the thesis breaks. Do NOT propose
+        new PMCC setups on these names after the existing one closes — rotate
+        capital to compliant names.
       flag_for_review: true
       block_new_entries_on_symbol: true
 
@@ -471,15 +359,12 @@ robinhood_pmcc:
     # ----- Position review priorities -----
     review_priorities:
       high:
-        - "any short showing -100% or worse open P/L (non-black-sheep)"
-        - "any short with delta > 0.60 (non-black-sheep)"
+        - "any short showing -100% or worse open P/L"
+        - "any short with delta > 0.60"
         - "any short within 2 days of expiry and ITM"
       medium:
         - "shorts at 50%+ profit (close candidates)"
-        - "LEAPs down >40% from cost (thesis check, EXCLUDING black_sheep)"
-      black_sheep_specific:
-        - "any black_sheep LEAP with DTE < 90 (exercise/roll decision needed)"
-        - "any black_sheep short approaching ITM near expiry"
+        - "LEAPs down >40% from cost (thesis check)"
 
     # ----- Hard rules -----
     hard_rules:
@@ -488,10 +373,7 @@ robinhood_pmcc:
       - "always state full expiry date (YYYY-MM-DD) for every strike"
       - "no new short premium within 7 DTE of underlying earnings"
       - "on breach, evaluate combined PMCC P/L — never act on short leg alone"
-      - "black_sheep positions follow black_sheep rules, NOT standard breach policy"
       - "off_criteria positions: manage to completion, no new entries on same symbol"
-      - "never accept assignment on any black_sheep position"
-      - "never close a black_sheep LEAP to fund a short buyback"
       - "respect auto_execute_caps when auto_execute is true"
 
 

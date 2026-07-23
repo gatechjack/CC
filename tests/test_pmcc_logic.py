@@ -411,14 +411,11 @@ def test_liquidity_fresh_daily_passes_on_volume_despite_low_oi(agent: PMCCAgent)
     assert not passed and "vol=0" in why
 
 
-def test_liquidity_black_sheep_sub_10k_volume_passes(agent: PMCCAgent):
-    """1(a): a black-sheep 0.25-delta OTM target with realistic volume (5k, below
-    the removed 10k floor) passes. OI is high here so the pass is via the volume
-    floor — isolating the 10k removal, not the OI-OR-volume bypass."""
-    agent._cfg = {**agent._cfg, "strategy": {
-        **(agent._cfg.get("strategy") or {}),
-        "black_sheep": {"symbols": [{"symbol": "TSLA"}]}}}
-    assert agent.is_black_sheep("TSLA")
+def test_liquidity_sub_10k_volume_passes(agent: PMCCAgent):
+    """A 0.25-delta OTM target with realistic volume (5k) passes — a regression
+    guard against a per-contract volume floor set above real chain volumes (the
+    since-removed black-sheep 10k floor blocked exactly this shape). OI is high
+    here so the pass is via the volume floor, not the OI-OR-volume bypass."""
     ok, reason = agent._passes_liquidity(
         _fresh_call(340.0, 0.25, 1.85, 8, oi=5000, volume=5000), symbol="TSLA")
     assert ok, reason
@@ -440,13 +437,10 @@ async def test_find_best_weekly_selects_fresh_daily_low_oi_high_volume(agent: PM
 
 
 @pytest.mark.asyncio
-async def test_black_sheep_normal_roll_produces_legs(agent: PMCCAgent, clear_earnings):
-    """1(a) end-to-end: a black-sheep name (TSLA) with a normal 0.25-delta OTM
-    target and realistic sub-10k volume must PRODUCE a roll, not silently abort."""
-    agent._cfg = {**agent._cfg, "strategy": {
-        **(agent._cfg.get("strategy") or {}),
-        "black_sheep": {"symbols": [{"symbol": "TSLA"}]}}}
-    assert agent.is_black_sheep("TSLA")
+async def test_normal_roll_produces_legs_on_realistic_chain(agent: PMCCAgent, clear_earnings):
+    """1(a) end-to-end: a normal 0.25-delta OTM target with realistic sub-10k
+    volume must PRODUCE a roll, not silently abort (the since-removed per-contract
+    10k floor aborted exactly this)."""
     broker = MockOptionBroker(
         option_positions=[
             _opt_position("TSLA", 400, 250.0, 1.0, delta=0.90, mark_price=80.0),   # LEAP
@@ -457,7 +451,7 @@ async def test_black_sheep_normal_roll_produces_legs(agent: PMCCAgent, clear_ear
         calls={("TSLA", _future(8)): [_fresh_call(340.0, 0.25, 1.85, 8, volume=5000)]})
     pos = next(p for p in await agent.detect_existing_legs(broker) if p.symbol == "TSLA")
     legs = await agent._propose_roll_short("TSLA", pos, broker)
-    assert legs, "black-sheep normal roll should produce legs, not a B4 abort"
+    assert legs, "a normal roll on a realistic chain should produce legs, not a B4 abort"
     actions = [(o.extra or {}).get("action") or "" for o in legs]
     assert any("close" in a for a in actions) and any("open" in a for a in actions)
 
@@ -2319,8 +2313,8 @@ async def test_b9_roll_blocked_within_earnings_buffer(agent_logged, cap_logger, 
 
 @pytest.mark.asyncio
 async def test_b9_roll_ships_with_earnings_override(agent, monkeypatch):
-    """B9: `earnings_override` lets a within-buffer roll proceed (a black-sheep
-    perpetual roll that must not let a breached short run into earnings). Ships."""
+    """B9: `earnings_override` lets a within-buffer roll proceed (a deliberate
+    roll that must not let a breached short run into earnings). Ships."""
     from datetime import datetime, timezone, timedelta as _td
     monkeypatch.setattr("trading_corp.utils.market_data.get_next_earnings",
                         lambda symbol, *a, **k: datetime.now(timezone.utc) + _td(days=3))

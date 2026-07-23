@@ -352,6 +352,22 @@ new early-release warning inherits today's rationale-fine-print rendering; the c
 
 ---
 
+## AMENDMENT 2026-07-23 — Black-sheep taxonomy RETIRED (obsolete workflow)
+
+The black-sheep designation existed when the SYSTEM selected LEAP assets and culled anything failing its criteria; black-sheep marked names the board wanted KEPT despite not fitting. That workflow no longer runs — the board opens/manages all LEAPs manually and selects the assets; the division only manages short calls against held positions (STRC demonstrates it: not black-sheep, not pre-approved, works fine). The 1(a) liquidity defect (a black-sheep-only per-contract 10k volume gate that silently blocked every normal TSLA/MSTR roll for ~2.7 months) was that obsolescence surfacing as a bug.
+
+**Removed (one diff):** `_BLACK_SHEEP_RULES` (TSLA/MSTR now use `_STANDARD_RULES`, verified byte-unchanged); the `_roll_dte_for` BS branch; `is_black_sheep`/`_black_sheep_*` accessors; the `strategy.black_sheep` config block + all advisory black-sheep config (review_priorities / hard_rules / off_criteria references); scout `black_sheep_penalty` + its scoring + `ScoutCandidate.is_black_sheep`; the Telegram display tag + scout-template badge; prompt scaffolding (designation line, system-preamble bullet, action-reference qualifiers).
+
+**Re-homed:** the ceo_graph "TSLA/MSTR always need eyes" approval guardrail is NOT a black-sheep concept — the board flags two higher-risk names for mandatory approval. Replaced `any_action_on_black_sheep_symbols` with `any_action_on_approval_required_symbols`, reading a plain `auto_execute_caps.approval_required_symbols: [TSLA, MSTR]` list. Inert under `auto_execute:false` (as before); a guardrail for a future `auto_execute:true`.
+
+**Merge decision — nothing merged (deliberate).** Both universal candidates in `_BLACK_SHEEP_RULES` were considered and NOT merged into `_STANDARD_RULES`: (1) assignment-avoidance is already enforced by the terminal-DTE guard; (2) no-debit-chasing by the B2 credit gate. Restating them as prompt text would repeat the B8 docstring-divergence mistake (rule text asserting what code already enforces). `_STANDARD_RULES` kept lean. Do NOT re-raise.
+
+**Halfway-roll dropped.** The black-sheep halfway-roll (roll to the strike-vs-spot midpoint on a >3% breach) was removed with `_BLACK_SHEEP_RULES`. It fired 3× in the audit window (2 produced no new short, 1 landed at the wrong delta) — a mechanic that never worked as designed. ★ This removes the **only breach response distinct from up-and-out rolling**; a future session can revisit a distinct breach mechanic DELIBERATELY. Related: `roll_short_early` is no longer explicitly prescribed by any rule (black-sheep was the only block naming it) — it stays handled in code + describable via the action-reference (defensive breach roll), so it is discretionary, not orphaned.
+
+**Precondition confirmed before the fold** (why "never close" was safe to drop): no LLM close (close_all/close_short) can execute without human approval on any path — `auto_execute:false` → ceo_graph HITL interrupt (`_run_order`); dashboard "Approve & Execute" = an explicit human click; and close_all/close_leap force Board approval even under `auto_execute:true` (`_LEAP_CLOSE_ACTIONS`/`closing_any_leap`). And no deterministic guard closes on a runaway breach — the only deterministic close is the 0-DTE terminal hard-deadline (time-based, not breach). So "never close" only ever constrained a RECOMMENDATION.
+
+---
+
 *Investigation basis: three read-only code traces 2026-07-22 (PEAD live path; RH broker
 session/401/options; PMCC order routing). Key files: `trading_corp/brokers/robinhood.py`,
 `trading_corp/agents/data_exec.py`, `trading_corp/agents/divisions/pmcc_robinhood.py`,

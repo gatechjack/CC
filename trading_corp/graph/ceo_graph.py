@@ -140,11 +140,11 @@ def _check_auto_execute(
     # ── 1. require_approval_for triggers (always escalate) ──
     require = set(caps.get("require_approval_for") or [])
 
-    if "any_action_on_black_sheep_symbols" in require:
-        bs = _black_sheep_set(strategy_cfg)
-        if order.symbol.upper() in bs:
+    if "any_action_on_approval_required_symbols" in require:
+        approval_syms = {str(s).upper() for s in (caps.get("approval_required_symbols") or [])}
+        if order.symbol.upper() in approval_syms:
             return False, (
-                f"black sheep symbol {order.symbol} requires Board approval"
+                f"{order.symbol} is on the mandatory-approval list; Board approval required"
             )
 
     if "closing_any_leap" in require and action in _LEAP_CLOSE_ACTIONS:
@@ -265,17 +265,6 @@ def _check_auto_execute(
         f"{'debit' if is_debit else 'credit'} ${notional:,.2f}, "
         f"strategy='{order.strategy}')"
     )
-
-
-def _black_sheep_set(strategy_cfg: dict) -> set[str]:
-    """Pull the black-sheep symbol set from a strategy config block."""
-    bs = (strategy_cfg.get("strategy") or {}).get("black_sheep") or {}
-    out: set[str] = set()
-    for entry in (bs.get("symbols") or []):
-        sym = entry.get("symbol") if isinstance(entry, dict) else entry
-        if isinstance(sym, str):
-            out.add(sym.upper())
-    return out
 
 
 class TradeFlowState(TypedDict, total=False):

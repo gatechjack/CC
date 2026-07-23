@@ -71,138 +71,21 @@ High-Beta / Crypto-Levered Names" PMCC book. The thesis:
 - Acceptable underlyings: crypto miners (MARA/RIOT/CIFR/IREN/BULL),
   crypto proxies (MSTR/HOOD/BLSH), high-beta momentum (ASTS/RKLB/SMR),
   high-IV specialty.
-- Some symbols are designated BLACK SHEEP and follow special rules
-  (perpetual roll, never accept assignment, halfway-roll on breach, trust
-  mean reversion within 1-3 weekly cycles).
 
 You have deep expertise in:
 - Options Greeks (delta, theta, gamma, vega) and their evolution
 - IV rank/percentile and premium-selling environments
-- Rolling mechanics: standard, halfway, OTM, defensive
+- Rolling mechanics: standard up-and-out, OTM, defensive
 - Assignment risk on cash-constrained accounts
 - Mean-reversion timing on high-IV names
 
-The user message will tell you whether the position is BLACK SHEEP or STANDARD
-and give you the specific rules that apply. Apply ONLY those rules — do not
-mix the two regimes.
+The user message gives you the specific rules that apply to this position.
+Apply them exactly.
 
 Respond ONLY with valid JSON. No markdown fences, no preamble, no explanation outside the JSON object.
 """
 
 # Concise rule blocks injected into the user prompt
-_BLACK_SHEEP_RULES = """\
-## RULES: BLACK SHEEP — {symbol}
-This symbol is designated BLACK SHEEP. Apply these rules INSTEAD of standard PMCC management:
-
-1. PERPETUAL ROLL — never accept assignment, never close LEAP to fund a short buyback.
-2. CASH NOT AVAILABLE for assignment. LEAP exercise is NOT permitted.
-3. ROLL TRIGGER: 2 DTE (1 DTE if OTM). NEVER let a breached short run to expiry.
-4. SHORT LEG: 7-DTE target, delta 0.20-0.35.
-5. ROLLING PHILOSOPHY (high-IV mean reversion is the edge):
-   - Always for credit. Always to a higher strike.
-   - "Halfway roll" when stock has moved >3% above short strike:
-       new strike = halfway between current short strike and underlying price.
-       7 DTE preferred. If no credit available, extend DTE to 14 (max 21).
-   - "Standard roll" when within 3% of strike: roll to slightly above
-       underlying, 7 DTE, must be credit.
-   - "OTM roll" at 50%+ profit: close at 70%, open new 7-DTE delta 0.20-0.30.
-6. BREACH HANDLING:
-   - Minor (0-3% above strike): standard roll at 2 DTE.
-   - Major (3-10% above strike): halfway roll, must collect credit.
-   - Runaway (10%+ above strike): halfway roll with 14-DTE extension.
-   COOLDOWN (back-to-back halfway-roll guard): When ROLL HISTORY
-   shows a recent halfway roll (positive strike_change >= $1 within
-   `cooldown_days`, default 7) AND the current short_leg_dte > 2
-   AND extrinsic > `extrinsic_floor` ($0.50/sh default) — choose
-   `hold` directly. The expectation after a halfway roll is "collect
-   theta + wait for whipsaw"; back-to-back halfway rolls in one
-   weekly cycle compound slippage and lock in losses.
-   Override `hold` and choose roll_short ONLY if the breach has
-   ACCELERATED past the prior roll's projected range — concretely:
-   spot now > prior_short_strike_after + |prior_strike_change|. (i.e.
-   the underlying has moved at least as far again as the prior
-   roll caught it, so the prior roll's "new range" is already
-   breached.)
-   BACKSTOP: deterministic Python guard (`_recent_halfway_roll_cooldown`)
-   downgrades roll_short → hold when the cooldown conditions hold,
-   regardless of LLM judgment. If the LLM picks roll_short despite
-   the conditions, the guard rewrites the action and the
-   recommendation card shows a HOLD with a cooldown warning — but
-   the LLM's rationale text will read as "roll", which is
-   confusing. So: HONOR the cooldown directly when ROLL HISTORY
-   shows a recent halfway roll; let the backstop catch only the
-   genuine acceleration-override-vs-cooldown edge cases.
-   STRIKE TARGETING: when prescribing a halfway roll, ALSO populate
-   `target_strike` in the JSON response with the computed midpoint
-   (rounded to the nearest listed strike). Without `target_strike`
-   the picker falls back to `target_delta` ranking, which on a
-   high-IV underlying typically picks a strike well above the
-   halfway midpoint and silently breaks the rule. Setting
-   `target_strike` makes the strike picker honor the rule directly.
-7. TERMINAL-DTE OVERRIDE (CRITICAL — applies before breach rules above):
-   When the short has ≤2 DTE AND the underlying is within ±1.5% of the strike
-   (the "ATM zone"), DEFAULT TO HOLD. The mark is almost entirely extrinsic
-   premium that decays to zero by expiration. Rolling at this stage locks in
-   theta you would otherwise collect for free.
-   Override HOLD and roll/close ONLY if any are true:
-     (a) Underlying is more than 1.5% above strike (genuine breach)
-     (b) Overnight gap risk is unacceptable for this account size
-     (c) IV pricing suggests a >1σ implied move before expiration
-   When in doubt with ≤2 DTE ATM short: HOLD and re-evaluate at next session.
-   NOTE: deterministic Python guard (`_terminal_dte_time_release`)
-   overrides this rule for 0-DTE positions regardless of LLM judgment.
-   Two release paths, both calendar- and config-aware:
-     - **Time gate.** Anchored to the actual session close from
-       NYSE calendar. release = close - release_offset_min (default
-       60m); hard_deadline = close - hard_deadline_offset_min (30m).
-       On 16:00 close that's 15:00/15:30 ET; on 13:00 half-days
-       12:00/12:30 ET. Inside the release window: forces roll_short.
-       Past hard_deadline: forces close_short with urgency='urgent'.
-     - **Cycle-continuity.** If short_leg_mark <=
-       cycle_continuity_extrinsic_threshold ($/share, default $0.15)
-       AND short_leg_dte == 0, force roll_short regardless of time.
-   LLM should narrate the override when it fires; the override
-   warning is appended to analysis.warnings.
-   DEEP-OTM NEAR-WORTHLESS EXCEPTION (distinct from the ATM-zone HOLD
-   above): when the short is worth only a few cents AND sits well outside
-   the underlying's typical overnight move — clearly, safely
-   out-of-the-money, not merely cheap because it is a near-expiry
-   at-the-money contract — do NOT default to HOLD. Prefer rolling it early
-   (buy-to-close the near-worthless short, sell a fresh short) to capture
-   next-cycle premium rather than waiting for the last day. A cheap mark
-   alone does NOT qualify: an at-the-money short near expiry can also mark a
-   few cents while still carrying real overnight assignment risk. Only the
-   clearly deep-OTM case qualifies.
-   NOTE: a deterministic Python guard (`_deep_otm_early_release`, invoked by
-   `_terminal_dte_time_release`) enforces the exact "deeply out-of-the-money"
-   distance and "near-worthless" mark from config, releases this roll on the
-   penultimate day for eligible names, and EXCLUDES the highest-overnight-
-   volatility names (which keep 0-DTE-only behavior). Narrate the exception
-   when it applies; the release warning is appended to analysis.warnings.
-8. FORBIDDEN ACTIONS (recommend "watch" or "roll_short_early" instead):
-   - Buy back fully at a loss then resell OTM (locks in loss before MR whipsaw).
-   - Close full PMCC to recover a short loss (abandons long thesis).
-   - Accept assignment.
-   - Roll for debit to chase OTM.
-9. EXIT ONLY when: thesis explicitly broken, LEAP DTE < 90 with no credit roll
-   available, fundamental deterioration, or 3 attempts yielded no credit.
-   NOTE: a deterministic Python guard
-   (`_promote_to_roll_leap_if_hard_rule`) promotes any roll_short →
-   roll_leap when LEAP delta >= 0.95 OR long_leg_dte < 120, regardless
-   of regime. For BLACK SHEEP this guard fires more aggressively than
-   BS philosophy normally would (BS defers LEAP exit until DTE < 90
-   with no credit roll). The guard's intent is to surface a 4-leg
-   compound recommendation (close short + close LEAP + open new LEAP +
-   open new short) so the user sees ALL the legs — they can still
-   reject the LEAP roll and approve only the short roll if BS perpetual-
-   roll philosophy applies. To AVOID the guard firing on a BS position
-   you don't want to roll deep, choose `hold` or `watch` instead of
-   `roll_short` until DTE crosses below the BS exit threshold.
-
-For BLACK SHEEP: prefer "roll_short_early" or "roll_short" over "close_short".
-Use "close_all" only as a last resort when exit conditions are met.
-"""
-
 _STANDARD_RULES = """\
 ## RULES: STANDARD PMCC — {symbol}
 1. ROLL TRIGGER: 2 DTE OR 50%+ profit captured (whichever first).
@@ -485,7 +368,6 @@ class ScoutCandidate:
     """
     symbol: str
     spot_price: float | None
-    is_black_sheep: bool
 
     # Concrete legs (None when the chain didn't yield a qualifying contract)
     leap_leg: TradeLegDetail | None
@@ -742,23 +624,6 @@ class PMCCAgent:
         return self._strategy_cfg.get("management", {}) or {}
 
     @property
-    def _black_sheep_block(self) -> dict:
-        return self._strategy_cfg.get("black_sheep", {}) or {}
-
-    @property
-    def _black_sheep_symbols(self) -> set[str]:
-        entries = (self._black_sheep_block.get("symbols") or [])
-        out: set[str] = set()
-        for e in entries:
-            sym = e.get("symbol") if isinstance(e, dict) else e
-            if isinstance(sym, str):
-                out.add(sym.upper())
-        return out
-
-    def is_black_sheep(self, symbol: str) -> bool:
-        return symbol.upper() in self._black_sheep_symbols
-
-    @property
     def _roll_dte(self) -> int:
         # Prefer strategies.yaml strategy.management.roll_dte_trigger
         v = self._management_cfg.get("roll_dte_trigger")
@@ -767,10 +632,7 @@ class PMCCAgent:
         return int(self._pmcc_cfg.get("short_call_roll_dte", 21))
 
     def _roll_dte_for(self, leg: PMCCPosition) -> int:
-        """Effective roll-DTE trigger for a leg (black sheep get tighter rule)."""
-        if self.is_black_sheep(leg.symbol):
-            rules = self._black_sheep_block.get("rolling_rules", {}) or {}
-            return int(rules.get("roll_trigger_dte", 2))
+        """Effective roll-DTE trigger for a leg."""
         return self._roll_dte
 
     @property
@@ -853,11 +715,11 @@ class PMCCAgent:
         spread cap then apply to every contract.
 
         `symbol` is retained for API stability (callers pass it) but no longer
-        selects the gate. 1(a) 2026-07-23: the black-sheep `min_avg_options_volume`
-        (10000) formerly read here was an UNDERLYING eligibility screen mis-applied
-        per-contract — no OTM weekly trades 10k/day, so it silently blocked every
-        normal black-sheep roll for ~2.7 months. Removed; black-sheep contracts now
-        use the same per-contract floor as everything else.
+        selects the gate. 1(a) 2026-07-23: a per-contract volume floor of 10000
+        (from the since-retired black_sheep `eligibility_criteria`) was mis-applied
+        here — no OTM weekly trades 10k/day, so it silently blocked every normal
+        roll on the affected names for ~2.7 months. Removed; all contracts use the
+        same per-contract volume floor.
         """
         bid = float(opt.get("bid") or 0)
         ask = float(opt.get("ask") or 0)
@@ -1070,19 +932,8 @@ class PMCCAgent:
                 f"{theta_block}"
             )
 
-        # Inject the rule block that applies to this position
-        is_bs = self.is_black_sheep(pos.symbol)
-        if is_bs:
-            rules_block = _BLACK_SHEEP_RULES.format(symbol=pos.symbol)
-            entry = next(
-                (e for e in (self._black_sheep_block.get("symbols") or [])
-                 if isinstance(e, dict) and e.get("symbol", "").upper() == pos.symbol.upper()),
-                {},
-            )
-            bs_thesis = entry.get("rationale") or "core conviction; high-IV mean-reverts reliably"
-            rules_block += f"\n## Black-sheep thesis for {pos.symbol}: {bs_thesis}\n"
-        else:
-            rules_block = _STANDARD_RULES.format(symbol=pos.symbol)
+        # Inject the rule block that applies to this position (all names: STANDARD).
+        rules_block = _STANDARD_RULES.format(symbol=pos.symbol)
 
         # ROLL HISTORY block — tell the LLM what just happened to this LEAP
         # so it doesn't recommend back-to-back halfway rolls. The
@@ -1099,7 +950,6 @@ class PMCCAgent:
 - Current underlying price: {price_str}
 - Market regime: {regime}
 - VIX (spot): {vix_str}
-- Designation: {"BLACK SHEEP" if is_bs else "STANDARD"}
 
 ## LEAP (Long Call — synthetic stock replacement)
 - Contract: {pos.long_leg_symbol}
@@ -1122,21 +972,19 @@ Respond with ONLY this JSON (no other text, no markdown):
   "warnings": ["<specific risk>", "<specific risk>"],
   "target_delta": <recommended short call delta as float, or null>,
   "target_dte": <recommended short call DTE target as integer, or null>,
-  "target_strike": <recommended short call STRIKE as float, or null — set this when a rule prescribes a specific strike (e.g. halfway-roll midpoint per BREACH HANDLING). When set, the strike picker honors this directly, overriding delta-distance ranking. Leave null when delta-targeting is correct (standard cycles).>,
+  "target_strike": <recommended short call STRIKE as float, or null — set this when a rule prescribes a specific strike (e.g. a cited resistance level). When set, the strike picker honors this directly, overriding delta-distance ranking. Leave null when delta-targeting is correct (standard cycles).>,
   "override": <null, OR {{"kind": "hold_override"|"net_debit_justified"|"earnings_override", "reason": "<one clause>"}} — set ONLY when a rule you cite explicitly permits an action a deterministic guard would otherwise block (a HOLD you want rolled, a small net-debit roll, or a roll inside the earnings buffer); otherwise null.>
 }}
 
 Action reference:
 - hold: all criteria healthy, manage at next scheduled trigger
-- roll_short: normal roll (BLACK SHEEP: <=2 DTE / STANDARD: <=2 DTE OR >=50% profit captured)
-- roll_short_early: roll before normal trigger (defensive on a breached short, or
-    halfway-roll for black sheep)
+- roll_short: normal roll (<=2 DTE OR >=50% profit captured)
+- roll_short_early: roll before the normal trigger (defensive on a breached short)
 - roll_leap: LEAP needs to be rolled (delta drift below 0.40, DTE < 120, or strike compromised)
-- close_short: close/buy-back the short call. AVOID for BLACK SHEEP unless OTM at expiry —
-    prefer roll_short_early. For STANDARD: appropriate for assignment/earnings risk.
+- close_short: close/buy-back the short call — appropriate for assignment / earnings risk
 - open_short: LEAP is uncovered — sell a new weekly call
 - watch: no action but flag for close monitoring next cycle
-- close_all: STANDARD only. NEVER for black sheep unless exit conditions strictly met.
+- close_all: close the full PMCC (exit the position)
 """
 
         try:
@@ -1879,8 +1727,7 @@ Action reference:
 
         for pos, analysis in zip(positions, analyses):
             price_str = f"${prices[pos.symbol]:.2f}" if pos.symbol in prices else "N/A"
-            tag = " 🐑 _BLACK SHEEP_" if self.is_black_sheep(pos.symbol) else ""
-            lines.append(f"**{pos.symbol}** @ {price_str}{tag}")
+            lines.append(f"**{pos.symbol}** @ {price_str}")
 
             # LEAP line
             lines.append(
@@ -2522,8 +2369,8 @@ Action reference:
     # -- Roll condition ------------------------------------------------------
 
     def _should_roll(self, leg: PMCCPosition) -> bool:
-        # Black sheep use a tighter (typically 2-DTE) trigger; standard uses
-        # the global setting (defaults to 21, but strategies.yaml now overrides).
+        # Roll-DTE trigger from the global setting (defaults to 21;
+        # strategies.yaml management.roll_dte_trigger overrides).
         roll_dte = self._roll_dte_for(leg)
         if leg.short_leg_dte is not None and leg.short_leg_dte <= roll_dte:
             return True
@@ -3546,7 +3393,7 @@ Action reference:
 
         # ── B9 (earnings gate) ── skill HARD RULE (L257): "No new short premium
         # within 7 DTE of earnings" — a roll OPENS a new short. Overridable via
-        # earnings_override (e.g. a black-sheep perpetual roll that must not let a
+        # earnings_override (e.g. a deliberate roll that must not let a
         # breached short run into earnings). FAIL-OPEN on missing data, but the
         # state (blocked/clear/data_unavailable) is recorded so a roll that shipped
         # only because the data source was DOWN is distinguishable from one that
@@ -4209,8 +4056,6 @@ Action reference:
             annualized = weekly_yield * 52.0
 
         # Notes
-        if self.is_black_sheep(symbol):
-            notes.append("Black Sheep — high-IV, perpetual-roll regime")
         if leap and (leap.get("delta") or 0) >= 0.85:
             notes.append("Deep ITM LEAP (delta ≥ 0.85)")
         if weekly_yield is not None and weekly_yield >= 0.025:
@@ -4221,7 +4066,6 @@ Action reference:
         return ScoutCandidate(
             symbol=symbol,
             spot_price=spot,
-            is_black_sheep=self.is_black_sheep(symbol),
             leap_leg=leap_leg,
             short_leg=short_leg,
             leap_debit_dollars=leap_debit,
@@ -4253,8 +4097,6 @@ Action reference:
             target = self._short_target_delta
             dist = abs(c.short_leg.delta - target)
             score -= float(weights.get("delta_distance_to_target", 0.30)) * (dist * 10.0)
-        if c.is_black_sheep:
-            score -= float(weights.get("black_sheep_penalty", 0.15))
         return score
 
     async def propose_opening_orders(
