@@ -30,6 +30,7 @@ from trading_corp.agents.strategies import pead_pressures as pp
 from trading_corp.agents.strategies.pead_signal import (
     ScreenInputs,
     _percentile,
+    confirmation_verdict,
     passes_screen,
     rank_wave,
     screen_params_from_config,
@@ -206,7 +207,8 @@ class PEADStrategy:
     def _held_symbols(self) -> set[str]:
         return {r["symbol"] for r in self._open_rows()}
 
-    def _log_scan_funnel(self, session_ts, eps_by, screens, ranked, sue_params, screen_params) -> None:
+    def _log_scan_funnel(self, session_ts, eps_by, screens, ranked, sue_params, screen_params,
+                         gate_verdicts=None) -> None:
         """Persist this scan's per-name signal funnel into scan_evaluation (FORWARD-ONLY, side-effect
         only). verdict='passed' for names in `ranked` (cleared screen + SUE>threshold + top-quintile);
         else 'rejected' with the earliest failing gate as reason_code. Records per-name SUE + the wave
@@ -226,9 +228,18 @@ class PEADStrategy:
                     wave_sues.append(sue)
             cutoff = (_percentile(sorted(wave_sues), sue_params.quintile_pct)
                       if (sue_params.top_quintile and wave_sues) else None)
+            gv_map = gate_verdicts or {}
             for sym, (sue, ok, reason) in info.items():
                 if sym in passed:
-                    verdict, rcode = "passed", None
+                    gv = gv_map.get(sym)
+                    if gate_verdicts is None or gv == "pass":
+                        verdict, rcode = "passed", None
+                    elif gv == "reject_gate":
+                        verdict, rcode = "rejected", "rejected_by_gate"
+                    elif gv == "reject_no_slot":
+                        verdict, rcode = "rejected", "rejected_no_slot"
+                    else:  # reject_no_bar / unexpected
+                        verdict, rcode = "rejected", "rejected_no_bar"
                 elif not ok:
                     verdict, rcode = "rejected", reason
                 elif sue is None:
@@ -241,7 +252,8 @@ class PEADStrategy:
                     session_ts, sym, verdict, reason_code=rcode,
                     metrics={"sue": sue, "screen_ok": ok, "screen_reason": reason,
                              "wave_size": len(wave_sues), "quintile_cutoff": cutoff,
-                             "sue_threshold": sue_params.sue_threshold},
+                             "sue_threshold": sue_params.sue_threshold,
+                             "gate_verdict": gv_map.get(sym)},
                     db_url=self.db_url)
             log.info("pead_strategy.scan: logged funnel — %d evaluated / %d passed / wave=%d cutoff=%s",
                      len(info), len(passed), len(wave_sues),
@@ -380,9 +392,26 @@ class PEADStrategy:
 
         ranked = rank_wave(eps_by, screens, sue_params=sue_params,
                            screen_params=screen_params)
+        # ── post-reaction CONFIRMATION GATE (config-gated; DEFAULT OFF) ──
+        # Enter only if the post-reaction session closed above the pre-earnings
+        # close (reaction = day a for BeforeMarket, a+1 for AfterMarket; no slot
+        # -> excluded). Pure computation on already-fetched bars — NO new HTTP in
+        # scan(). IDENTICAL rule as the backtest (shared confirmation_verdict).
+        gate_on = bool(cfg.get("confirmation_gate", False))
+        gate_verdicts: dict[str, str] = {}
+        if gate_on:
+            for c in ranked:
+                _bars = bars_by[c.symbol]
+                _a = self._index_on_or_after(_bars, ann_by[c.symbol])
+                gate_verdicts[c.symbol] = confirmation_verdict(
+                    slot_by.get(c.symbol), [b.close for b in _bars], _a)
+            gated = [c for c in ranked if gate_verdicts.get(c.symbol) == "pass"]
+        else:
+            gated = ranked
         # persist the per-name signal funnel (forward-only, side-effect only; never breaks the scan)
         self._log_scan_funnel(datetime.now(timezone.utc).isoformat(),
-                              eps_by, screens, ranked, sue_params, screen_params)
+                              eps_by, screens, ranked, sue_params, screen_params,
+                              gate_verdicts=(gate_verdicts if gate_on else None))
         if not ranked:
             log.info("pead_strategy.scan: no candidates cleared screen+SUE")
             return []
@@ -394,7 +423,7 @@ class PEADStrategy:
         max_hold_seconds = pp.MAX_HOLD_TRADING_DAYS * 24 * 3600  # informational; live TIME rule uses trading-day count
 
         placed: list[ProposedOrder] = []
-        for cand in ranked:
+        for cand in gated:
             if capacity <= 0:
                 break
             bars = bars_by[cand.symbol]

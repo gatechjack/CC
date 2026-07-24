@@ -41,6 +41,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
+from trading_corp.agents.strategies.pead_signal import reaction_index
+
 
 # ---------------------------------------------------------------------------
 # Inputs / params
@@ -77,6 +79,8 @@ class EventSignal:
 class BacktestParams:
     # entry
     entry_delay_days: int = 1            # trading days after announcement (skip Day 0); 1-2
+    confirmation_gate: bool = False      # post-reaction confirmation gate; DEFAULT OFF. When ON,
+    #                                      entry is slot-aware (a+1 BMO / a+2 AMC) — see simulate_trade.
     # exits
     atr_period: int = 14
     hard_stop_atr_mult: float = 2.5
@@ -166,7 +170,16 @@ def simulate_trade(signal: EventSignal, p: BacktestParams) -> TradeResult | None
     a = _index_on_or_after(bars, signal.announcement_date)
     if a is None or a < 1:
         return None  # need a pre-earnings close
-    e = a + p.entry_delay_days
+    if p.confirmation_gate:
+        # gate ON: enter at the OPEN after the post-reaction session CLOSES —
+        # a+1 for BeforeMarket, a+2 for AfterMarket. Matches the live entry and
+        # avoids look-ahead. Un-slotted names are excluded upstream (build_signals).
+        ri = reaction_index(signal.report_time, a)
+        if ri is None:
+            return None  # no slot -> not tradeable (defensive; excluded upstream)
+        e = ri + 1
+    else:
+        e = a + p.entry_delay_days
     if e >= len(bars):
         return None  # no entry bar available
     atr = compute_atr(bars, e, p.atr_period)

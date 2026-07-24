@@ -249,6 +249,45 @@ def rank_wave(
 
 
 # ---------------------------------------------------------------------------
+# Post-reaction CONFIRMATION GATE — SHARED by the live scan AND the backtest so
+# the two paths cannot diverge (the whole point: validate the rule the engine
+# actually runs). Pure; no bar-inference of the slot; None slot => not tradeable.
+# ---------------------------------------------------------------------------
+
+def reaction_index(report_time: str | None, ann_idx: int | None) -> int | None:
+    """Index of the POST-REACTION session: `ann_idx` for BeforeMarket (reaction
+    is the announcement-day bar), `ann_idx + 1` for AfterMarket (reaction is the
+    next session). None if the slot is unknown (report_time not BMO/AMC) — an
+    un-slotted name is NOT tradeable. No inference from bars."""
+    if report_time == "BeforeMarket":
+        return ann_idx
+    if report_time == "AfterMarket":
+        return None if ann_idx is None else ann_idx + 1
+    return None
+
+
+def confirmation_verdict(
+    report_time: str | None, closes: Sequence[float], ann_idx: int | None,
+) -> str:
+    """The confirmation gate: enter long only if the POST-REACTION session CLOSES
+    ABOVE the pre-earnings close.
+
+    `closes`: session closes oldest->newest. `ann_idx`: index of the first bar
+    on/after the announcement date. Returns exactly one of:
+      'pass'           — reaction close > pre_earnings_close (enter)
+      'reject_gate'    — reaction close <= pre_earnings_close (declined)
+      'reject_no_slot' — report_time unknown -> EXCLUDED (no fallback/inference)
+      'reject_no_bar'  — the pre-earnings or the reaction session is unavailable
+    """
+    if report_time not in ("BeforeMarket", "AfterMarket"):
+        return "reject_no_slot"
+    ri = reaction_index(report_time, ann_idx)
+    if ann_idx is None or ann_idx < 1 or ri is None or ri >= len(closes):
+        return "reject_no_bar"
+    return "pass" if closes[ri] > closes[ann_idx - 1] else "reject_gate"
+
+
+# ---------------------------------------------------------------------------
 # Config builders — let strategies.yaml drive the params (retune w/o code change)
 # ---------------------------------------------------------------------------
 

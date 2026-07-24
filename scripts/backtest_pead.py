@@ -134,6 +134,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--lookback", type=int, default=None)
     p.add_argument("--sue-threshold", type=float, default=None)
     p.add_argument("--no-quintile", action="store_true")
+    p.add_argument("--confirmation-gate", action="store_true",
+                   help="enable the post-reaction confirmation gate (default OFF)")
     # exits / friction / sizing
     p.add_argument("--exit-mode", choices=["pure_hold", "partial_trail"], default="pure_hold")
     p.add_argument("--max-hold", type=int, default=60)
@@ -199,13 +201,14 @@ def main(argv: list[str] | None = None) -> int:
         atr_period=14, max_hold_trading_days=args.max_hold,
         slippage_bps=args.slippage_bps, half_spread_bps=args.half_spread_bps,
         position_pct=args.position_pct, max_concurrent=args.max_concurrent,
-        exit_mode=args.exit_mode,
+        exit_mode=args.exit_mode, confirmation_gate=args.confirmation_gate,
     )
 
     signals = build_signals(
         eps_by, bars_by, info_by,
         sue_params=sue_params, screen_params=screen_params,
         window_start=args.start, window_end=args.end,
+        confirmation_gate=args.confirmation_gate,
     )
     log.info("built %d signals", len(signals))
 
