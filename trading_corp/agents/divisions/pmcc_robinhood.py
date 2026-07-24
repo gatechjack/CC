@@ -4116,6 +4116,131 @@ Action reference:
             log.debug("PMCC options-tier check failed: %s", e)
 
     # ------------------------------------------------------------------
+    # B-AE assignment/exercise monitoring (2026-07-24) — MONITORING ONLY
+    # ------------------------------------------------------------------
+
+    @property
+    def _assignment_risk_dte(self) -> int:
+        """Short-leg DTE at/under which an ITM short is flagged for assignment RISK
+        (0 = expiring today, 1 = expiring tomorrow -> alert EOD *before* expiry).
+        Config `robinhood_pmcc.scan.assignment_risk_dte`; default 1."""
+        v = (self._cfg.get("scan") or {}).get("assignment_risk_dte")
+        try:
+            return int(v) if v is not None else 1
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _assignment_risk_items(shorts, spots, within_dte) -> "list[dict]":
+        """PRE-event risk: SHORT calls at DTE<=within_dte that are ITM (spot>=strike).
+        `shorts` = option-position dicts; `spots` = {symbol: spot|None}. Pure."""
+        out: list[dict] = []
+        for p in (shorts or []):
+            if (p.get("option_type") or "call") != "call":
+                continue                          # PMCC shorts are calls
+            dte = p.get("dte")
+            if dte is None or int(dte) > int(within_dte):
+                continue
+            strike = float(p.get("strike_price") or 0)
+            sym = (p.get("chain_symbol") or "").upper()
+            spot = (spots or {}).get(sym)
+            if spot is None or float(spot) < strike:
+                continue                          # not ITM, or spot unknown -> don't escalate
+            out.append({"symbol": sym, "strike": strike, "dte": int(dte),
+                        "spot": float(spot), "itm": True})
+        return out
+
+    @staticmethod
+    def _assignment_event_items(shorts) -> "list[dict]":
+        """EVENTS: any short with a non-zero pending assignment/exercise/expiration."""
+        out: list[dict] = []
+        for p in (shorts or []):
+            pa = float(p.get("pending_assignment_quantity") or 0)
+            pe = float(p.get("pending_exercise_quantity") or 0)
+            px = float(p.get("pending_expiration_quantity") or 0)
+            if pa or pe or px:
+                out.append({
+                    "symbol": (p.get("chain_symbol") or "").upper(),
+                    "strike": float(p.get("strike_price") or 0),
+                    "expiration": p.get("expiration_date"),
+                    "pending_assignment": pa, "pending_exercise": pe,
+                    "pending_expiration": px,
+                })
+        return out
+
+    @staticmethod
+    def _format_assignment_alert(items, kind: str) -> str:
+        """Urgent assignment alert body. STATES the manual remedy options — this is
+        HITL; the engine does NOT auto-act."""
+        if not items:
+            return ""
+        if kind == "event":
+            head = f"ASSIGNMENT/EXERCISE PENDING on {len(items)} PMCC short(s)"
+            rows = [f"  - {i['symbol']} {i['strike']:g}C exp {i.get('expiration')} "
+                    f"(assign={i['pending_assignment']:g} exer={i['pending_exercise']:g} "
+                    f"exp={i['pending_expiration']:g})" for i in items]
+        else:
+            head = f"ASSIGNMENT RISK: {len(items)} ITM PMCC short(s) near expiry"
+            rows = [f"  - {i['symbol']} {i['strike']:g}C {i['dte']}DTE, spot {i['spot']:g} (ITM)"
+                    for i in items]
+        remedy = ("Manual remedy (HITL): EXERCISE THE LEAP to cover delivery, OR "
+                  "BUY-TO-CLOSE the assigned short-stock position. Engine does NOT auto-act.")
+        return "\n".join([head, *rows, "", remedy])
+
+    @staticmethod
+    def _emit_assignment_exec_alert(tier, reason, *, symbol) -> None:
+        try:
+            from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+            emit_exec_alert(ExecOutcome(
+                tier=tier, symbol=str(symbol), strategy="robinhood_pmcc",
+                reason=reason, position_changed=(tier == "NAKED_LEG")))
+        except Exception:
+            pass
+
+    def _emit_assignment_alerts(self, risk, events) -> None:
+        """Audit + urgent exec-alert for events (NAKED_LEG) and risk (EXEC_FAIL). Both
+        tiers are no-dedupe so assignment alerts are never swallowed. Never raises."""
+        try:
+            if events:
+                self._audit_division("pmcc_assignment_detected", {"items": events})
+                self._emit_assignment_exec_alert(
+                    "NAKED_LEG", self._format_assignment_alert(events, "event"),
+                    symbol=(events[0].get("symbol") or "?"))
+            if risk:
+                self._audit_division("pmcc_assignment_risk", {"items": risk})
+                self._emit_assignment_exec_alert(
+                    "EXEC_FAIL", self._format_assignment_alert(risk, "risk"),
+                    symbol=(risk[0].get("symbol") or "?"))
+        except Exception as e:
+            log.debug("assignment alert emit failed: %s", e)
+
+    async def assignment_watch(self, broker) -> "dict":
+        """B-AE MONITORING: detect near-expiry ITM PMCC shorts (assignment RISK) and
+        non-zero pending_* signals (assignment/exercise EVENTS); alert + audit; surface
+        for HITL action. Monitoring ONLY — never auto-closes, never raises."""
+        try:
+            positions = await broker.get_option_positions_detail()
+        except Exception as e:
+            log.warning("assignment_watch: get_option_positions_detail failed: %s", e)
+            return {"risk": 0, "events": 0}
+        shorts = [p for p in (positions or []) if float(p.get("quantity") or 0) < 0]
+        events = self._assignment_event_items(shorts)
+        near = [p for p in shorts
+                if p.get("dte") is not None and int(p.get("dte")) <= self._assignment_risk_dte]
+        spots: dict = {}
+        for p in near:
+            sym = (p.get("chain_symbol") or "").upper()
+            if sym and sym not in spots:
+                try:
+                    q = await broker.quote(sym)
+                    spots[sym] = float(q) if q else None
+                except Exception:
+                    spots[sym] = None
+        risk = self._assignment_risk_items(near, spots, self._assignment_risk_dte)
+        self._emit_assignment_alerts(risk, events)
+        return {"risk": len(risk), "events": len(events)}
+
+    # ------------------------------------------------------------------
     # Scout — survey the market for NEW PMCC opening candidates
     # ------------------------------------------------------------------
 

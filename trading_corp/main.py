@@ -1325,12 +1325,25 @@ async def run(argv: list[str] | None = None) -> int:
             except Exception as e:
                 return False, f"liveness probe error: {e}"
 
+        async def _on_assignment_watch() -> str:
+            """B-AE EOD monitoring: alert on near-expiry ITM shorts + pending_* events."""
+            if _graph_holder[0] is None:
+                return "System still initializing."
+            _b = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                res = await pmcc_agent.assignment_watch(_b)
+            except Exception as e:
+                log.warning("assignment_watch failed: %s", e)
+                return f"assignment-watch error: {e}"
+            return f"assignment-watch: {res.get('risk', 0)} risk, {res.get('events', 0)} events."
+
         scheduler_task = asyncio.create_task(
             _scheduled_pmcc_scan_loop(
                 _on_scan, channel, logger_agent,
                 on_terminal_callback=_on_terminal_scan,
                 on_triage_callback=_on_triage,
                 liveness_probe=_pmcc_liveness_probe,
+                on_eod_callback=_on_assignment_watch,
             )
         )
 
@@ -2927,6 +2940,8 @@ async def _scheduled_pmcc_scan_loop(
     settle_window_start_et: tuple[int, int] = (9, 38),
     settle_backstop_et: tuple[int, int] = (9, 50),
     settle_window_end_et: tuple[int, int] = (10, 30),
+    on_eod_callback=None,
+    eod_release_offset_min: int = 20,
 ) -> None:
     """Daily PMCC scan scheduler — split into a pre-open TRIAGE pass and a
     post-open (settled-quotes) ACTIONABLE pass (2026-07-24 scan-split).
@@ -2974,6 +2989,7 @@ async def _scheduled_pmcc_scan_loop(
     win_settle_end = time(*settle_window_end_et)
     last_settle_date = None
     last_settle_defer_date = None
+    last_eod_date = None
     # B11: NYSE calendar for the holiday guard — reuse the existing dependency
     # already used by pmcc terminal-DTE logic (close_time_et -> None on closed
     # days). None (unavailable) leaves the guard off = original behaviour.
@@ -3109,6 +3125,21 @@ async def _scheduled_pmcc_scan_loop(
                         "scheduler", "terminal_dte_pass_error",
                         {"date": str(now.date()), "error": str(e)},
                     )
+
+            # B-AE EOD assignment-watch (close-20min) — fires BEFORE expiry so an ITM
+            # short expiring today/tomorrow is surfaced end-of-day; separate dedup.
+            if (on_eod_callback is not None
+                    and _terminal_should_fire(now, last_eod_date, _cal, eod_release_offset_min)):
+                last_eod_date = now.date()
+                log.info("Scheduler firing EOD assignment-watch...")
+                try:
+                    result = await on_eod_callback()
+                    logger_agent.log_event("scheduler", "eod_assignment_watch_done",
+                                           {"date": str(now.date()), "result": result})
+                except Exception as e:
+                    log.exception("EOD assignment-watch failed: %s", e)
+                    logger_agent.log_event("scheduler", "eod_assignment_watch_error",
+                                           {"date": str(now.date()), "error": str(e)})
 
             await asyncio.sleep(poll_interval_sec)
 

@@ -769,6 +769,10 @@ class RobinhoodBroker(Broker):
                 "mark_price": mark,
                 "dte": _days_to_expiry(expiry) if expiry else None,
                 "option_id": option_id,
+                # B-AE: pending assignment/exercise/expiration signals (0 when none).
+                "pending_assignment_quantity": float(op.get("pending_assignment_quantity") or 0),
+                "pending_exercise_quantity": float(op.get("pending_exercise_quantity") or 0),
+                "pending_expiration_quantity": float(op.get("pending_expiration_quantity") or 0),
             })
 
         return detailed
