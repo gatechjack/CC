@@ -806,24 +806,45 @@ class PMCCAgent:
             return True, reason
         return False, ""
 
+    @staticmethod
+    def _classify_liquidity_reason(reason: str) -> str:
+        """Bucket a _passes_liquidity reason into the sub-gate that bound:
+        liveness (OI-and-volume), volume, spread, no_ask. Observability for the
+        abort diagnostics (2026-07-24: 'all failed liquidity gate' hid WHICH gate,
+        so the opening-rotation volume/spread cause wasn't visible)."""
+        r = reason or ""
+        if "no ask" in r:
+            return "no_ask"
+        if "OI=" in r:                       # "OI=.. < .. AND vol=.. < .." (liveness)
+            return "liveness"
+        if "spread=" in r:
+            return "spread"
+        if "vol=" in r:                      # volume-only floor
+            return "volume"
+        return "other"
+
     def _filter_liquid(self, opts: list[dict], symbol: str) -> list[dict]:
-        """Drop illiquid contracts. Logs each rejection at debug level."""
+        """Drop illiquid contracts. Logs each rejection at debug level and
+        aggregates which sub-gate bound (liveness / volume / spread / no_ask),
+        stored on self._last_liquidity_breakdown for the abort diagnostics."""
         out: list[dict] = []
-        rejected = 0
+        breakdown: dict[str, int] = {}
         for o in opts:
             ok, reason = self._passes_liquidity(o, symbol=symbol)
             if ok:
                 out.append(o)
             else:
-                rejected += 1
+                b = self._classify_liquidity_reason(reason)
+                breakdown[b] = breakdown.get(b, 0) + 1
                 log.debug(
                     "PMCCAgent liquidity gate dropped %s C%.0f (%s): %s",
                     symbol, o.get("strike_price", 0), o.get("expiration_date"), reason,
                 )
-        if rejected:
+        self._last_liquidity_breakdown = dict(breakdown)
+        if breakdown:
             log.info(
-                "PMCCAgent liquidity: %s — %d/%d contracts passed gate",
-                symbol, len(out), len(opts),
+                "PMCCAgent liquidity: %s — %d/%d passed; failed by sub-gate: %s",
+                symbol, len(out), len(opts), dict(breakdown),
             )
         return out
 
@@ -3697,7 +3718,9 @@ Action reference:
         if not liquid:
             self._last_weekly_diag = {"reason": "no_liquid_weekly_contracts",
                                       "considered": len(calls), "liquid": 0,
-                                      "target_date": target_date}
+                                      "target_date": target_date,
+                                      "failed_by_gate": getattr(
+                                          self, "_last_liquidity_breakdown", {})}
             log.warning(
                 "PMCCAgent: no liquid weekly contracts for %s on %s "
                 "(%d candidates, all failed liquidity gate)",
@@ -4369,12 +4392,22 @@ Action reference:
         try:
             from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
             d = diag or {}
-            _r = reason
+            # Reassuring wording: an ABORT means the engine chose NOT to act — no
+            # order was sent and the position is untouched. The old alarming
+            # "sparse_chain_no_weekly ... missing new_short" body triggered a
+            # panic manual roll (2026-07-24). Keep a short diagnostic tail with
+            # the sub-gate that bound so it's still actionable.
+            _detail = f" [{reason}"
             if d.get("considered") is not None:
-                _r += (f" (considered={d.get('considered')}, "
-                       f"liquid={d.get('liquid', 0)}, target={d.get('target_date', '?')})")
+                _detail += f": considered={d.get('considered')}, liquid={d.get('liquid', 0)}"
+                _fbg = d.get("failed_by_gate")
+                if _fbg:
+                    _detail += f", failed_by={_fbg}"
             elif missing_leg:
-                _r += f" (missing {missing_leg})"
+                _detail += f": missing {missing_leg}"
+            _detail += "]"
+            _r = ("no action - no order sent, position unchanged; "
+                  "will retry next scan." + _detail)
             emit_exec_alert(ExecOutcome(
                 tier="ABORTED", symbol=symbol, strategy="robinhood_pmcc",
                 reason=_r, position_changed=False,
