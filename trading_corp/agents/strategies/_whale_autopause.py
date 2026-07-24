@@ -20,12 +20,60 @@ trigger) as a judgment call for the operator.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 MIN_RESOLVED_TRADES = 30
 MAX_WIN_RATE_PCT = 40.0
 MAX_TOTAL_PNL = -5.0
+
+# Kalshi copy-trading go-live epoch — the forward-window boundary the operator
+# dashboard uses for the Paper/Live split (entry_ts >= epoch = LIVE). Mirror of
+# trading_corp/web/data.py:KALSHI_COPY_LIVE_EPOCH — KEEP THE TWO IN SYNC. Used
+# as the default autopause window for Kalshi when no agent_state override is set,
+# so the circuit breaker evaluates the SAME rows the operator sees rather than
+# full, paper-contaminated history. See resolve_epoch().
+KALSHI_COPY_LIVE_EPOCH = "2026-07-01T14:08:58+00:00"
+
+
+def resolve_epoch(
+    conn: sqlite3.Connection, agent: str, *, default: str | None = None,
+) -> str | None:
+    """Return agent_state(<agent>, 'metrics_epoch') as an ISO-8601 string, else
+    `default` — the operator-visible forward window.
+
+    This reads the exact slot web/data.py `_get_metrics_epoch` reads and the
+    dashboard scopes per-whale P&L to (`entry_ts >= epoch`). Validation mirrors
+    `_get_metrics_epoch`: the value is bound as a SQL parameter downstream, and
+    we ISO-round-trip it as cheap defense so a garbage row can't silently scope
+    the window to nothing. Any read/parse failure falls back to `default`.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT value_json FROM agent_state "
+            "WHERE agent = ? AND key = 'metrics_epoch'",
+            (agent,),
+        )
+        row = cur.fetchone()
+    except sqlite3.Error:
+        return default
+    if not row or row[0] is None:
+        return default
+    raw = row[0]
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        val = raw
+    if not isinstance(val, str) or not val:
+        return default
+    try:
+        datetime.fromisoformat(val)
+    except (TypeError, ValueError):
+        return default
+    return val
 
 
 def _query_whale_stats(
@@ -35,7 +83,17 @@ def _query_whale_stats(
     name_field: str,
     division: str,
     whale_name: str,
+    since_ts: str | None = None,
 ) -> dict[str, Any]:
+    # `since_ts` scopes the aggregate to the operator's forward window
+    # (entry_ts >= epoch) so the breaker sees exactly the rows the dashboard
+    # shows per whale. None = all-time (pre-fix behavior / no epoch set).
+    # Bound as a parameter, never interpolated.
+    since_clause = "AND entry_ts >= ?" if since_ts else ""
+    params: list[Any] = [division]
+    if since_ts:
+        params.append(since_ts)
+    params.append(whale_name)
     cur = conn.cursor()
     cur.execute(
         f"""
@@ -47,9 +105,10 @@ def _query_whale_stats(
         FROM {table}
         WHERE division = ?
           AND won IS NOT NULL
+          {since_clause}
           AND json_extract(extra_json, '$.{name_field}') = ?
         """,
-        (division, whale_name),
+        params,
     )
     row = cur.fetchone() or (0, 0, 0, 0.0)
     n_resolved = int(row[0] or 0)
@@ -73,6 +132,7 @@ def should_autopause(
     table: str,
     name_field: str,
     division: str,
+    since_ts: str | None = None,
     min_trades: int = MIN_RESOLVED_TRADES,
     max_wr_pct: float = MAX_WIN_RATE_PCT,
     max_pnl: float = MAX_TOTAL_PNL,
@@ -82,6 +142,9 @@ def should_autopause(
     `table` = "polymarket_round_trips" or "kalshi_round_trips".
     `name_field` = JSON key in `extra_json` carrying the whale handle
     ("whale_user_name" for PCT, "whale_handle" for K3).
+    `since_ts` = ISO-8601 forward-window boundary (entry_ts >= since_ts). When
+    set, the breaker evaluates the SAME window the operator dashboard shows;
+    None = all-time. Resolve it with `resolve_epoch(conn, agent)`.
 
     Returns (triggered, stats). Stats are returned regardless so callers
     can log them when desired.
@@ -92,6 +155,7 @@ def should_autopause(
         name_field=name_field,
         division=division,
         whale_name=whale_name,
+        since_ts=since_ts,
     )
     triggered = (
         stats["n_resolved"] >= min_trades

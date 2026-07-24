@@ -14,7 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from trading_corp.agents.strategies.pead_pressures import (
     RULE_COLORS,
@@ -179,6 +182,62 @@ def _exit_attribution(db_url: str, division: str = DIVISION) -> dict:
     return {"by_rule": by_rule, "total": total, "empty": total == 0}
 
 
+# ── Upcoming-Earnings anticipation panel (front half of the funnel) ──────────
+# Reads the ISOLATED pead-earnings-watcher DB STRICTLY read-only (mode=ro). That DB is written ONLY by
+# the separate `pead-earnings-watcher` side-process; the engine never writes it and this open handle
+# physically cannot. Fully graceful: absent DB/table (watcher not deployed / first run) -> available:False.
+def _watch_db_path() -> str:
+    return os.environ.get(
+        "PEAD_WATCH_DB", str(Path.home() / "pead_earnings" / "earnings_watch.db"))
+
+
+def query_upcoming_earnings(max_watch: int = 60) -> dict:
+    """SYNC read of earnings_watch.db (caller wraps in asyncio.to_thread so the event loop never blocks —
+    the 6/26 lesson). Returns the watchlist (upcoming screen-passers we do NOT already hold, soonest
+    first) + a recent-reported tail (post-announcement: actual vs est + EXACT computed SUE) + the
+    anticipation-funnel stats. NEVER writes; NEVER raises to the caller."""
+    p = _watch_db_path()
+    if not os.path.exists(p):
+        return {"available": False, "reason": "no_db"}
+    try:
+        conn = sqlite3.connect(f"file:{Path(p).as_posix()}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return {"available": False, "reason": "open_failed"}
+    conn.row_factory = sqlite3.Row
+    try:
+        meta = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM watch_meta")}
+        try:
+            stats = json.loads(meta.get("last_stats") or "{}")
+        except (ValueError, TypeError):
+            stats = {}
+        watch = [dict(r) for r in conn.execute(
+            "SELECT * FROM earnings_watch WHERE phase='upcoming' AND screen_ok=1 "
+            "AND COALESCE(already_held,0)=0 "
+            "ORDER BY report_date ASC, COALESCE(sue_plausible,0) DESC, "
+            "COALESCE(sue_hitrate,0) DESC LIMIT ?", (max_watch,))]
+        reported = [dict(r) for r in conn.execute(
+            "SELECT * FROM earnings_watch WHERE phase='reported' "
+            "ORDER BY report_date DESC, code ASC LIMIT 40")]
+        fails = {r["screen_reason"]: r["n"] for r in conn.execute(
+            "SELECT screen_reason, COUNT(*) n FROM earnings_watch "
+            "WHERE screen_ok=0 GROUP BY screen_reason ORDER BY n DESC")}
+    except sqlite3.Error:
+        conn.close()
+        return {"available": False, "reason": "query_failed"}
+    conn.close()
+    last = meta.get("last_refresh_ts")
+    stale = True
+    if last:
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
+            stale = age > 18 * 3600  # watcher runs 2x/day; older than ~18h => not on schedule
+        except (ValueError, TypeError):
+            stale = True
+    return {"available": True, "last_refresh": last, "window": meta.get("last_window"),
+            "stats": stats, "stale": stale, "watchlist": watch, "reported": reported,
+            "screen_fail_counts": fails}
+
+
 async def build_pead_view(deps, *, today: date | None = None) -> dict:
     """Assemble the full PEAD dashboard view dict. Graceful + read-only:
     every block degrades to an empty state if its data isn't present yet."""
@@ -241,6 +300,10 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
     rejections = {"by_reason": tally["by_reason"], "rejected": tally["rejected"],
                   "reconciles": (tally["scanned"] - tally["qualified"]) == tally["rejected"]}
 
+    # Upcoming-Earnings anticipation panel (front half): read the isolated watcher DB mode=ro OFF the
+    # event loop (never a sync fetch on render — the 6/26 lesson). Graceful empty if the watcher is absent.
+    upcoming = await asyncio.to_thread(query_upcoming_earnings)
+
     return {
         "mode": mode,
         "rule_colors": dict(RULE_COLORS),     # stop/drift/guard/time -> hex (4-cell strip)
@@ -248,6 +311,7 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
         "health": health,
         "funnel": funnel,
         "rejections": rejections,
+        "upcoming": upcoming,                 # front-half anticipation panel (isolated watcher DB, ro)
         "exit_queue": [],                     # populated by Phase-2 routing (graceful empty)
         "book": book,
         "attribution": _exit_attribution(db_url),

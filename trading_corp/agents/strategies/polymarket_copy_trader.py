@@ -57,6 +57,7 @@ from trading_corp.agents.strategies._whale_autopause import (
     MAX_TOTAL_PNL,
     MAX_WIN_RATE_PCT,
     MIN_RESOLVED_TRADES,
+    resolve_epoch,
     should_autopause,
     sqlite_path_from_db_url,
 )
@@ -643,10 +644,21 @@ class PolymarketCopyTraderAgent:
         if not db_path:
             return selected_whales
 
+        # Evaluate the SAME forward window the operator dashboard shows
+        # (entry_ts >= agent_state metrics_epoch; None = all-time when unset).
+        # `autopause_mode: shadow` observes-only: it emits
+        # `polymarket_whale_would_auto_pause` without removing the whale.
+        shadow = (
+            str(self._strat_cfg.get("autopause_mode", "active")).strip().lower()
+            == "shadow"
+        )
+        since_ts: str | None = None
         keep: list[dict[str, Any]] = []
         paused: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        shadow_hits: list[tuple[dict[str, Any], dict[str, Any]]] = []
         try:
             with sqlite3.connect(db_path) as conn:
+                since_ts = resolve_epoch(conn, self.name)
                 for w in selected_whales:
                     user_name = (w.get("user_name") or "").strip()
                     if not user_name:
@@ -658,8 +670,12 @@ class PolymarketCopyTraderAgent:
                         table="polymarket_round_trips",
                         name_field="whale_user_name",
                         division=self.division,
+                        since_ts=since_ts,
                     )
-                    if triggered:
+                    if triggered and shadow:
+                        shadow_hits.append((w, stats))
+                        keep.append(w)
+                    elif triggered:
                         paused.append((w, stats))
                     else:
                         keep.append(w)
@@ -668,6 +684,34 @@ class PolymarketCopyTraderAgent:
                 "polymarket_copy_trader: autopause filter errored: %s", e,
             )
             return selected_whales
+
+        for w, stats in shadow_hits:
+            log.warning(
+                "polymarket_copy_trader: [shadow] WOULD auto-pause %s "
+                "(%d RT, %.1f%% WR, $%.2f) since=%s",
+                w.get("user_name"), stats["n_resolved"],
+                stats["win_rate_pct"] or 0.0, stats["total_realized_pnl"],
+                since_ts,
+            )
+            if logger_agent is not None:
+                logger_agent.log_event(
+                    self.name, "polymarket_whale_would_auto_pause",
+                    {
+                        "strategy": self.name,
+                        "division": self.division,
+                        "wallet": w.get("wallet"),
+                        "whale_user_name": w.get("user_name"),
+                        "category": w.get("category"),
+                        "rank": w.get("rank"),
+                        "since_ts": since_ts,
+                        "thresholds": {
+                            "min_trades": MIN_RESOLVED_TRADES,
+                            "max_wr_pct": MAX_WIN_RATE_PCT,
+                            "max_pnl": MAX_TOTAL_PNL,
+                        },
+                        **stats,
+                    },
+                )
 
         if not paused:
             return keep
@@ -700,6 +744,7 @@ class PolymarketCopyTraderAgent:
                         "whale_user_name": w.get("user_name"),
                         "category": w.get("category"),
                         "rank": w.get("rank"),
+                        "since_ts": since_ts,
                         "thresholds": {
                             "min_trades": MIN_RESOLVED_TRADES,
                             "max_wr_pct": MAX_WIN_RATE_PCT,

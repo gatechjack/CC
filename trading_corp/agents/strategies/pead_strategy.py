@@ -29,11 +29,14 @@ import yaml
 from trading_corp.agents.strategies import pead_pressures as pp
 from trading_corp.agents.strategies.pead_signal import (
     ScreenInputs,
+    _percentile,
+    passes_screen,
     rank_wave,
     screen_params_from_config,
     standardized_ue,
     sue_params_from_config,
 )
+from trading_corp.persistence.pead_observability import insert_scan_evaluation
 from trading_corp.data.earnings_provider import EarningsProvider
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
@@ -203,6 +206,49 @@ class PEADStrategy:
     def _held_symbols(self) -> set[str]:
         return {r["symbol"] for r in self._open_rows()}
 
+    def _log_scan_funnel(self, session_ts, eps_by, screens, ranked, sue_params, screen_params) -> None:
+        """Persist this scan's per-name signal funnel into scan_evaluation (FORWARD-ONLY, side-effect
+        only). verdict='passed' for names in `ranked` (cleared screen + SUE>threshold + top-quintile);
+        else 'rejected' with the earliest failing gate as reason_code. Records per-name SUE + the wave
+        size + the quintile cutoff in metrics so 'was the quintile gate binding?' is answerable per
+        entry. Observability MUST NEVER break the scan — every failure is swallowed."""
+        try:
+            passed = {c.symbol for c in ranked}
+            info: dict[str, tuple] = {}
+            wave_sues: list[float] = []
+            for sym in eps_by:
+                sue = standardized_ue(eps_by[sym], lookback=sue_params.lookback)
+                inp = screens.get(sym)
+                ok, reason = (passes_screen(inp, screen_params) if inp is not None
+                              else (False, "missing_screen_inputs"))
+                info[sym] = (sue, ok, reason)
+                if ok and sue is not None:
+                    wave_sues.append(sue)
+            cutoff = (_percentile(sorted(wave_sues), sue_params.quintile_pct)
+                      if (sue_params.top_quintile and wave_sues) else None)
+            for sym, (sue, ok, reason) in info.items():
+                if sym in passed:
+                    verdict, rcode = "passed", None
+                elif not ok:
+                    verdict, rcode = "rejected", reason
+                elif sue is None:
+                    verdict, rcode = "rejected", "insufficient_sue_history"
+                elif sue <= sue_params.sue_threshold:
+                    verdict, rcode = "rejected", "below_sue_threshold"
+                else:
+                    verdict, rcode = "rejected", "below_top_quintile"
+                insert_scan_evaluation(
+                    session_ts, sym, verdict, reason_code=rcode,
+                    metrics={"sue": sue, "screen_ok": ok, "screen_reason": reason,
+                             "wave_size": len(wave_sues), "quintile_cutoff": cutoff,
+                             "sue_threshold": sue_params.sue_threshold},
+                    db_url=self.db_url)
+            log.info("pead_strategy.scan: logged funnel — %d evaluated / %d passed / wave=%d cutoff=%s",
+                     len(info), len(passed), len(wave_sues),
+                     ("%.3f" % cutoff) if cutoff is not None else "n/a")
+        except Exception as e:  # noqa: BLE001 — observability must NEVER break the scan
+            log.warning("pead_strategy.scan: scan_evaluation logging failed (non-fatal): %s", e)
+
     # ── risk gate (the ONLY gate; no HITL) ───────────────────────────────
     def _risk_ok(self, order: ProposedOrder, equity: float) -> bool:
         self._peak_equity = max(self._peak_equity, equity)
@@ -331,6 +377,9 @@ class PEADStrategy:
 
         ranked = rank_wave(eps_by, screens, sue_params=sue_params,
                            screen_params=screen_params)
+        # persist the per-name signal funnel (forward-only, side-effect only; never breaks the scan)
+        self._log_scan_funnel(datetime.now(timezone.utc).isoformat(),
+                              eps_by, screens, ranked, sue_params, screen_params)
         if not ranked:
             log.info("pead_strategy.scan: no candidates cleared screen+SUE")
             return []
