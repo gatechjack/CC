@@ -785,6 +785,13 @@ async def run(argv: list[str] | None = None) -> int:
         # aggressive RH account). Other RH divisions (IRA, Joint) follow
         # different strategies and aren't part of this scan command.
         scan_broker = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+        # #4: real buying-power for the combo risk gate (the carve-out inside
+        # propose_pmcc_combo exempts defensive/credit rolls + protective closes).
+        try:
+            _snap = await scan_broker.snapshot()
+            _scan_equity = float(getattr(_snap, "equity", 0.0) or 0.0) or None
+        except Exception:
+            _scan_equity = None
 
         # Grab current regime for LLM context
         try:
@@ -834,6 +841,7 @@ async def run(argv: list[str] | None = None) -> int:
                     pending_combo_registry=pmcc_pending_combo_registry,
                     division="robinhood_pmcc",
                     db_url=secrets.db_url,
+                    account_equity=_scan_equity,
                 )
                 if queued:
                     await channel.push(

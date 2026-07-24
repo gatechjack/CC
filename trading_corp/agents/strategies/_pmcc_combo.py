@@ -271,6 +271,20 @@ def assess_combo_reprice_consent(
     return True, ""
 
 
+def _combo_is_bp_consuming(combo: "list[ProposedOrder]") -> bool:
+    """A combo consumes NEW buying power only if it OPENS a net-DEBIT position with no
+    offsetting close (a fresh long/opening buy). A roll_short (buy-to-close +
+    sell-to-open, net credit, covered by the LEAP) and any protective close are NOT
+    BP-consuming and must not be blocked by low BP (the #4 carve-out)."""
+    if not combo:
+        return False
+    first = combo[0].extra or {}
+    direction = first.get("combo_direction")
+    has_close = any((o.extra or {}).get("position_effect") == "close" for o in combo)
+    has_open = any((o.extra or {}).get("position_effect") == "open" for o in combo)
+    return bool(has_open and not has_close and direction == "debit")
+
+
 async def propose_pmcc_combo(
     combo: list[ProposedOrder],
     *,
@@ -279,6 +293,7 @@ async def propose_pmcc_combo(
     pending_combo_registry: Any | None = None,
     division: str = "robinhood_pmcc",
     db_url: str | None = None,
+    account_equity: float | None = None,
 ) -> bool:
     """Risk-gate a combo-tagged PMCC roll_short pair and register it for HITL.
 
@@ -300,10 +315,24 @@ async def propose_pmcc_combo(
         log.warning("propose_pmcc_combo: missing combo_id on leg 0 — skipping")
         return False
 
-    # Same risk basis as ceo_graph.risk_node's no-account default (main._run_order
-    # passes no account/strategy_state to the graph for PMCC single-leg orders).
-    account = AccountState(account="paper", equity=100_000.0, peak_equity=100_000.0)
+    # #4 (2026-07-24): the risk gate must see REAL buying power for a genuinely
+    # BP-consuming OPEN (so an oversized order on a thin account is caught), but a
+    # defensive/credit roll or protective close must NOT be blocked by low BP —
+    # they're covered / net-credit. CARVE-OUT: real equity only for a BP-consuming
+    # open; permissive 100k otherwise (preserves the prior roll_short behaviour).
+    _bp_consuming = _combo_is_bp_consuming(combo)
+    _gate_equity = (float(account_equity)
+                    if (_bp_consuming and account_equity is not None) else 100_000.0)
+    account = AccountState(account="paper", equity=_gate_equity, peak_equity=_gate_equity)
     strategy_state = StrategyState.from_persistence(_PMCC_SLUG, db_url=db_url)
+    try:
+        logger_agent.log_event(
+            "pmcc", "combo_risk_basis",
+            {"combo_id": combo_id, "division": division, "bp_consuming": _bp_consuming,
+             "gate_equity": _gate_equity, "real_equity": account_equity},
+        )
+    except Exception:
+        pass
 
     for leg in combo:
         try:
