@@ -292,6 +292,7 @@ class PEADStrategy:
                         # level the engine fires at (which already recomputes from entry).
                         rp = float(fill.price)
                         order.extra["entry_reference_price"] = rp
+                        order.extra["earnings_gap_top"] = rp   # re-anchor DRIFT gap to the REALIZED fill (entry_open), like the stop
                         _pr = pp.primitives_from_extra(order.extra, rp)
                         if _pr is not None:
                             order.extra["stop_price"] = pp.stop_level(_pr)
@@ -492,7 +493,7 @@ class PEADStrategy:
         if atr is None:
             return None
         pre_earnings_close = bars[a - 1].close
-        earnings_gap_top = bars[a].close
+        earnings_gap_top = entry_price   # DRIFT anchor = entry_open (validated backtest semantics); re-anchored to the realized fill at both fill sites (was bars[a].close = pre-reaction announcement-day close)
         swing_low = min(b.low for b in bars[a:last_idx + 1])
         stop_level = max(entry_price - 2.5 * atr, swing_low)
         return {
@@ -895,6 +896,7 @@ class PEADStrategy:
             order.extra["executed_notional"] = float(en)
         if avg > 0:
             order.extra["entry_reference_price"] = avg
+            order.extra["earnings_gap_top"] = avg   # re-anchor DRIFT gap to the REALIZED fill (entry_open), like the stop
             _pr = pp.primitives_from_extra(order.extra, avg)
             if _pr is not None:
                 order.extra["stop_price"] = pp.stop_level(_pr)
