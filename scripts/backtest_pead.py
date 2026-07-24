@@ -3,7 +3,7 @@
 
 Thin network layer over the tested orchestration in
 `trading_corp.agents.strategies.pead_backtest_driver`: fetches daily bars
-(yfinance) + quarterly EPS history + company facts (EarningsProvider: EODHD
+(Robinhood, split-adjusted, via data.rh_bars) + quarterly EPS history + company facts (EarningsProvider: EODHD
 primary), builds the ranked `EventSignal`s, runs the backtest with explicit
 friction, and prints in-sample / out-of-sample reports.
 
@@ -17,8 +17,9 @@ REQUIRES (to run on real data):
     Falls back to yfinance for EPS actuals only if key is absent.
   - A universe of tickers (--universe AAPL,MSFT,... or --universe @nasdaq_composite.txt).
 
-NOTE: daily OHLCV bars stay on yfinance/Tastytrade — only the EPS + company
-facts layer moved to EODHD.
+NOTE: daily OHLCV bars come from Robinhood (SPLIT-ADJUSTED, via the shared
+data.rh_bars fetcher — IDENTICAL to the live engine's bars, no yfinance). Only
+the EPS + company facts layer is EODHD.
 
 This is a VALIDATION tool — it places no orders and touches no broker.
 """
@@ -44,6 +45,7 @@ from trading_corp.agents.strategies.pead_signal import (
 )
 from trading_corp.data.earnings_provider import EarningsProvider
 from trading_corp.utils.secrets import load_secrets
+from trading_corp.data.rh_bars import RHBarsError, fetch_rh_daily_bars
 
 log = logging.getLogger("backtest_pead")
 
@@ -68,34 +70,17 @@ def load_universe(spec: str) -> list[str]:
 
 
 def fetch_bars(symbol: str, start: date, end: date) -> list[Bar]:
-    """Daily OHLCV bars via yfinance, oldest -> newest. [] on failure."""
+    """Daily SPLIT-ADJUSTED OHLCV bars via Robinhood (the shared data.rh_bars
+    fetcher — IDENTICAL to the live engine's bars, no yfinance), filtered to
+    [start, end], oldest -> newest. [] on failure; the fetcher raises rather than
+    fall back to a banned source."""
     try:
-        import yfinance as yf  # type: ignore
-        df = yf.download(
-            symbol, start=start.isoformat(), end=end.isoformat(),
-            progress=False, auto_adjust=False,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.warning("fetch_bars(%s) failed: %s", symbol, e)
+        rows = fetch_rh_daily_bars(symbol, span="5year", bounds="regular")
+    except RHBarsError as e:
+        log.warning("fetch_bars(%s): Robinhood fetch failed — skipping (%s)", symbol, e)
         return []
-    if df is None or getattr(df, "empty", True):
-        return []
-
-    def _cell(row, col):
-        v = row[col]
-        return float(v.iloc[0]) if hasattr(v, "iloc") else float(v)
-
-    bars: list[Bar] = []
-    for idx, row in df.iterrows():
-        try:
-            d = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-            bars.append(Bar(
-                d, _cell(row, "Open"), _cell(row, "High"),
-                _cell(row, "Low"), _cell(row, "Close"), _cell(row, "Volume"),
-            ))
-        except Exception:  # noqa: BLE001
-            continue
-    return bars
+    return [Bar(r["date"], r["open"], r["high"], r["low"], r["close"], r["volume"])
+            for r in rows if start <= r["date"] <= end]
 
 
 def fetch_info(symbol: str, provider: "EarningsProvider") -> dict:
@@ -180,6 +165,25 @@ def main(argv: list[str] | None = None) -> int:
             "no company facts). Add the KV secret and run where the vault is "
             "reachable (KEY_VAULT_URI + Azure auth)."
         )
+
+    # Robinhood auth for SPLIT-ADJUSTED daily bars (data.rh_bars.fetch_rh_daily_bars).
+    # Offline/backtest-side: rs.login REUSES the shared session pickle — creds/MFA are
+    # used only if the pickle is stale. Separate from the LIVE engine's in-process
+    # session (a backtest process cannot share it). Bars NEVER fall back to yfinance;
+    # a stale/absent RH session simply yields empty bars for the affected symbols.
+    import robin_stocks.robinhood as rs  # noqa: E402
+    _mfa = None
+    if secrets.robinhood_mfa_secret:
+        try:
+            import pyotp
+            _mfa = pyotp.TOTP(secrets.robinhood_mfa_secret).now()
+        except ImportError:
+            log.warning("pyotp not installed — RH MFA skipped (valid-pickle reuse still works)")
+    try:
+        rs.login(secrets.robinhood_username, secrets.robinhood_password,
+                 mfa_code=_mfa, store_session=True)
+    except Exception as e:  # noqa: BLE001
+        log.error("Robinhood login failed (%s) — bars will be empty; NOT falling back to yfinance", e)
 
     fetch_start = args.start - timedelta(days=_LEAD_DAYS)
     fetch_end = args.end + timedelta(days=_TRAIL_DAYS)

@@ -11,7 +11,8 @@ Posture = the bitunix posture (inline-placed, no HITL):
 The exit engine IMPORTS `pead_pressures` — it never re-implements the math, so a
 position fires at the exact price the dashboard shows it approaching.
 
-Daily OHLC bars stay on yfinance (the code-safety / backtest source); the live
+Daily OHLC bars come from Robinhood (SPLIT-ADJUSTED, via the shared
+`data.rh_bars` fetcher — IDENTICAL to the backtest source, no yfinance); the live
 `last` quote for exits comes from the broker.
 """
 from __future__ import annotations
@@ -38,6 +39,7 @@ from trading_corp.agents.strategies.pead_signal import (
     sue_params_from_config,
 )
 from trading_corp.persistence.pead_observability import insert_scan_evaluation
+from trading_corp.data.rh_bars import RHBarsError, fetch_rh_daily_bars
 from trading_corp.data.earnings_provider import EarningsProvider
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
@@ -133,34 +135,25 @@ class PEADStrategy:
                 log.warning("pead_strategy: universe load failed (%s): %s", spec, e)
         return []
 
-    # ── daily bars (yfinance) + ATR ──────────────────────────────────────
+    # ── daily bars (Robinhood, SPLIT-ADJUSTED, shared with the backtest) + ATR ──
     @staticmethod
     def _fetch_daily_bars(symbol: str, lookback_days: int = _BARS_LOOKBACK_DAYS) -> list[_Bar]:
+        # SPLIT-ADJUSTED daily bars from Robinhood via the shared data.rh_bars fetcher,
+        # so live and backtest see IDENTICAL bars. Called by scan() through
+        # asyncio.to_thread — the HTTP + pacing run OFF the event loop. Reuses the
+        # engine's existing robin_stocks session (no login here). NO yfinance / banned
+        # fallback: the fetcher raises on failure; we log and skip the symbol.
+        from datetime import timedelta
+        cutoff = date.today() - timedelta(days=lookback_days)
+        span = "year" if lookback_days <= 340 else "5year"
         try:
-            import yfinance as yf  # type: ignore
-            from datetime import timedelta
-            end = date.today()
-            start = end - timedelta(days=lookback_days)
-            dfr = yf.download(symbol, start=start.isoformat(), end=end.isoformat(),
-                              progress=False, auto_adjust=False)
-        except Exception as e:  # noqa: BLE001
-            log.debug("pead_strategy._fetch_daily_bars(%s) failed: %s", symbol, e)
+            rows = fetch_rh_daily_bars(symbol, span=span, bounds="regular")
+        except RHBarsError as e:
+            log.warning("pead_strategy._fetch_daily_bars(%s): Robinhood fetch failed — skipping (%s)",
+                        symbol, e)
             return []
-        if dfr is None or getattr(dfr, "empty", True):
-            return []
-
-        def _cell(row, col):
-            v = row[col]
-            return float(v.iloc[0]) if hasattr(v, "iloc") else float(v)
-        bars: list[_Bar] = []
-        for idx, row in dfr.iterrows():
-            try:
-                d = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                bars.append(_Bar(d, _cell(row, "Open"), _cell(row, "High"),
-                                 _cell(row, "Low"), _cell(row, "Close"), _cell(row, "Volume")))
-            except Exception:  # noqa: BLE001
-                continue
-        return bars
+        return [_Bar(r["date"], r["open"], r["high"], r["low"], r["close"], r["volume"])
+                for r in rows if r["date"] >= cutoff]
 
     @staticmethod
     def _atr14(bars: list[_Bar], upto_idx: int, period: int = 14) -> float | None:
