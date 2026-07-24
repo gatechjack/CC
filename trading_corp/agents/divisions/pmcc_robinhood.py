@@ -3866,7 +3866,69 @@ Action reference:
         _is_close_all = bool(_actions & {"close_short_urgent", "close_leap_urgent"})
         give_up = (self._close_all_give_up_dollars if _is_close_all
                    else self._combo_give_up_dollars)
-        return await reprice_combo_from_quotes(legs, broker, give_up=give_up)
+        return await reprice_combo_from_quotes(
+            legs, broker, give_up=give_up,
+            max_spread_pct=self._reprice_max_spread_pct,
+            min_sell_bid=self._reprice_min_sell_bid,
+            min_spread_abs=self._reprice_min_spread_abs,
+        )
+
+    @property
+    def _reprice_max_spread_pct(self) -> float:
+        """Max per-leg bid/ask spread as a fraction of mid before reprice HOLDs
+        (opening-rotation garbage). Config
+        `robinhood_pmcc.combo.reprice_max_spread_pct`; default 0.60 (60% of mid)."""
+        v = (self._cfg.get("combo") or {}).get("reprice_max_spread_pct")
+        try:
+            return float(v) if v is not None else 0.60
+        except (TypeError, ValueError):
+            return 0.60
+
+    @property
+    def _reprice_min_sell_bid(self) -> float:
+        """Min sell-leg bid before reprice HOLDs (a 0-bid sell leg is garbage).
+        Config `robinhood_pmcc.combo.reprice_min_sell_bid`; default 0.0."""
+        v = (self._cfg.get("combo") or {}).get("reprice_min_sell_bid")
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
+    def _reprice_min_spread_abs(self) -> float:
+        """Absolute $ spread floor that a leg must ALSO exceed (in addition to
+        reprice_max_spread_pct) before reprice HOLDs — so a 1-tick spread on a
+        cheap leg doesn't false-trigger. Config
+        `robinhood_pmcc.combo.reprice_min_spread_abs`; default 0.10."""
+        v = (self._cfg.get("combo") or {}).get("reprice_min_spread_abs")
+        try:
+            return float(v) if v is not None else 0.10
+        except (TypeError, ValueError):
+            return 0.10
+
+    @property
+    def _combo_max_adverse_net_deviation(self) -> float:
+        """Max $/share the dispatch credit may fall BELOW the approved credit
+        before the consent guard bails. Config
+        `robinhood_pmcc.combo.max_adverse_net_deviation_dollars`; default 0.25."""
+        v = (self._cfg.get("combo") or {}).get("max_adverse_net_deviation_dollars")
+        try:
+            return float(v) if v is not None else 0.25
+        except (TypeError, ValueError):
+            return 0.25
+
+    def assess_combo_consent(self, legs, snapshot):
+        """Defense-in-depth: compare the dispatch-repriced combo to the approved
+        `snapshot`; return (ok, reason). Called by dispatch_approved_ic_combo after
+        reprice, before place_combo — a bail books nothing and re-surfaces for
+        re-approval. See _pmcc_combo.assess_combo_reprice_consent."""
+        from trading_corp.agents.strategies._pmcc_combo import (
+            assess_combo_reprice_consent,
+        )
+        return assess_combo_reprice_consent(
+            legs, snapshot,
+            max_adverse_net_deviation=self._combo_max_adverse_net_deviation,
+        )
 
     # ------------------------------------------------------------------
     # Scout — survey the market for NEW PMCC opening candidates

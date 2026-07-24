@@ -117,6 +117,8 @@ def _net_tick_for_price(leg_quotes: list, price: float, *, def_above: float,
 async def reprice_combo_from_quotes(
     legs: list[ProposedOrder], broker: Any, *, give_up: float,
     above_tick: float = 0.05, below_tick: float = 0.01, cutoff: float = 3.00,
+    max_spread_pct: float | None = None, min_sell_bid: float = 0.0,
+    min_spread_abs: float = 0.10,
 ) -> tuple[str, float]:
     """Recompute the combo's marketable net limit from LIVE quotes AT DISPATCH —
     the proposal-time mid (`_propose_roll_short` tags ~1.30 mark) is stale and
@@ -156,6 +158,35 @@ async def reprice_combo_from_quotes(
             return first.get("combo_direction"), first.get("net_limit_price")
         quotes[o.id] = (float(bid), float(ask), q or {})
 
+    # Stale/wide-quote guard: opening-rotation quotes can be implausibly wide, or
+    # zero-bid on the sell leg. Repricing off that garbage yields a nonsense limit,
+    # so HOLD (keep the proposal-time tag) and mark the legs so the dispatch
+    # consent guard bails instead of placing. (2026-07-24 opening rotation.)
+    hold_reason = None
+    for o in legs:
+        bid, ask, _q = quotes[o.id]
+        mid = (bid + ask) / 2.0
+        if o.side == "sell" and bid <= float(min_sell_bid):
+            hold_reason = f"{o.symbol} sell-leg bid {bid:.2f} <= {float(min_sell_bid):.2f}"
+            break
+        if (max_spread_pct is not None and mid > 0
+                and (ask - bid) > float(min_spread_abs)
+                and (ask - bid) / mid > float(max_spread_pct)):
+            hold_reason = (
+                f"{o.symbol} leg spread {ask - bid:.2f} = "
+                f"{(ask - bid) / mid * 100:.0f}% of mid > {float(max_spread_pct) * 100:.0f}%"
+            )
+            break
+    if hold_reason is not None:
+        first = legs[0].extra or {}
+        log.warning(
+            "reprice_combo: HOLD (%s) — keeping proposal-time net_limit %s (%s)",
+            hold_reason, first.get("net_limit_price"), first.get("combo_direction"),
+        )
+        for o in legs:
+            (o.extra or {})["reprice_hold"] = hold_reason
+        return first.get("combo_direction"), first.get("net_limit_price")
+
     net = 0.0
     for o in legs:
         bid, ask, _ = quotes[o.id]
@@ -180,6 +211,64 @@ async def reprice_combo_from_quotes(
         (o.extra or {})["combo_direction"] = direction
         (o.extra or {})["net_limit_price"] = limit
     return direction, limit
+
+
+def snapshot_combo_for_consent(legs: list[ProposedOrder]) -> dict:
+    """Capture the operator-APPROVED combo shape BEFORE dispatch reprice mutates
+    it, so the consent guard can detect an adverse drift at dispatch time."""
+    first = (legs[0].extra or {}) if legs else {}
+    return {
+        "direction": first.get("combo_direction"),
+        "net_limit_price": first.get("net_limit_price"),
+        "strikes": {o.id: (o.extra or {}).get("strike") for o in legs},
+    }
+
+
+def assess_combo_reprice_consent(
+    legs: list[ProposedOrder], snapshot: dict, *,
+    max_adverse_net_deviation: float,
+) -> tuple[bool, str]:
+    """Defense-in-depth consent check comparing the DISPATCH-repriced combo to the
+    operator-APPROVED `snapshot`. Returns (ok, reason); ok=False => do NOT place —
+    re-surface for re-approval (the next scan re-proposes). Guards:
+      - stale/wide quotes  (reprice set extra['reprice_hold'])
+      - sign flip          (credit approval repriced to a debit limit)
+      - strike drift       (strike changed vs approved; defensive)
+      - credit collapse    (credit worse than approved by > max_adverse_net_deviation)
+    """
+    if not legs:
+        return False, "empty combo"
+    first = legs[0].extra or {}
+
+    hold = first.get("reprice_hold")
+    if hold:
+        return False, f"stale/wide quotes: {hold}"
+
+    snap_dir = snapshot.get("direction")
+    cur_dir = first.get("combo_direction")
+    if snap_dir == "credit" and cur_dir == "debit":
+        return False, "credit proposal repriced to a DEBIT limit"
+
+    snap_strikes = snapshot.get("strikes") or {}
+    for o in legs:
+        if o.id in snap_strikes and (o.extra or {}).get("strike") != snap_strikes[o.id]:
+            return False, (
+                f"strike changed vs approved on leg {o.id}: "
+                f"{snap_strikes[o.id]} -> {(o.extra or {}).get('strike')}"
+            )
+
+    try:
+        snap_net = float(snapshot.get("net_limit_price"))
+        cur_net = float(first.get("net_limit_price"))
+    except (TypeError, ValueError):
+        return True, ""           # incomparable -> do not block on missing data
+    if snap_dir == "credit" and (snap_net - cur_net) > float(max_adverse_net_deviation):
+        return False, (
+            f"credit collapsed vs approved: approved {snap_net:.2f}, dispatch "
+            f"{cur_net:.2f} (drop {snap_net - cur_net:.2f} > "
+            f"{float(max_adverse_net_deviation):.2f})"
+        )
+    return True, ""
 
 
 async def propose_pmcc_combo(

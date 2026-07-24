@@ -245,6 +245,34 @@ async def propose_ic_combo(
     return True
 
 
+def _dispatch_consent_bail(combo, combo_id, division, snapshot, reason, data_exec):
+    """Audit + calmly alert a consent BAIL (combo NOT placed). Never raises."""
+    first = (combo[0].extra or {}) if combo else {}
+    symbol = first.get("underlying") or (combo[0].symbol if combo else "?")
+    try:
+        data_exec.logger.log_event(
+            actor="data_exec", kind="combo_reprice_bail",
+            payload={
+                "combo_id": combo_id, "division": division, "reason": reason,
+                "approved": snapshot,
+                "dispatch_direction": first.get("combo_direction"),
+                "dispatch_net_limit_price": first.get("net_limit_price"),
+            },
+        )
+    except Exception:
+        log.exception("consent bail: audit failed for combo %s", combo_id)
+    try:
+        from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+        emit_exec_alert(ExecOutcome(
+            tier="ABORTED", symbol=str(symbol), strategy=str(division),
+            reason=(f"held (not placed) — {reason}. No order sent, position "
+                    "unchanged; re-approve on next scan."),
+            combo_id=combo_id,
+        ))
+    except Exception:
+        log.exception("consent bail: exec-alert failed for combo %s", combo_id)
+
+
 async def dispatch_approved_ic_combo(
     combo: list[ProposedOrder],
     *,
@@ -289,6 +317,17 @@ async def dispatch_approved_ic_combo(
         except Exception:
             _broker = None
         if _broker is not None and hasattr(_broker, "get_option_quote"):
+            # Snapshot the operator-APPROVED shape BEFORE reprice mutates it, so
+            # the consent guard can bail if dispatch drifts adversely from what
+            # was approved (sign flip, credit collapse, stale/wide quotes).
+            _snapshot = None
+            try:
+                from trading_corp.agents.strategies._pmcc_combo import (
+                    snapshot_combo_for_consent,
+                )
+                _snapshot = snapshot_combo_for_consent(combo)
+            except Exception:
+                _snapshot = None
             try:
                 await _reprice(combo, _broker)
             except Exception as e:
@@ -296,6 +335,21 @@ async def dispatch_approved_ic_combo(
                     "dispatch_approved_ic_combo: reprice_combo failed for %s: %s "
                     "— dispatching at proposal-time limit", combo_id, e,
                 )
+            # CONSENT / adverse-deviation guard (defense-in-depth; PMCC exposes
+            # assess_combo_consent, IC does not). A bail books NOTHING and lets
+            # the next scan re-propose for fresh re-approval — never silently
+            # place a credit approval as a debit / off garbage quotes / worse.
+            _consent = getattr(strategy, "assess_combo_consent", None)
+            if callable(_consent) and _snapshot is not None:
+                try:
+                    _ok, _reason = _consent(combo, _snapshot)
+                except Exception:
+                    _ok, _reason = True, ""     # never block on guard failure
+                if not _ok:
+                    _dispatch_consent_bail(
+                        combo, combo_id, division, _snapshot, _reason, data_exec,
+                    )
+                    return []
     fills = await data_exec.place_combo(combo, division=division)
     if fills:
         # State-update callback — synchronous with the action.
