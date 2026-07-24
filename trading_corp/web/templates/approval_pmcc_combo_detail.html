@@ -12,6 +12,18 @@
       <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
         PMCC {{ view.intent_label }} · {{ view.symbol or '—' }}
       </h2>
+      {% if combo_is_live %}
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider
+                   bg-loss/20 text-loss border border-loss/40 font-semibold"
+            title="This division is live — Approve will place REAL orders on a live brokerage account">
+        ● LIVE — real money
+      </span>
+      {% else %}
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider
+                   bg-edge text-muted">
+        PAPER
+      </span>
+      {% endif %}
     </div>
     <span class="text-[11px] text-muted font-mono uppercase tracking-wider whitespace-nowrap">
       combo {{ view.short_id }} · {{ view.added_at | et_hms }}

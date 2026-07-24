@@ -1887,9 +1887,15 @@ def register(app: FastAPI) -> None:
             )
         view = build_combo_card_payload(entry)
         snap = await data.build_command_center(deps)
+        _combo_broker = (
+            getattr(deps.data_exec, "brokers", {}).get(entry.division)
+            if deps.data_exec is not None
+            else None
+        )
+        combo_is_live = data._division_is_live(_combo_broker)
         return templates.TemplateResponse(
             request, "approval_pmcc_combo_detail.html",
-            {"snap": snap, "view": view, "entry": entry},
+            {"snap": snap, "view": view, "entry": entry, "combo_is_live": combo_is_live},
         )
 
     @app.post("/approvals/pmcc-combos/{combo_id}/decide", response_class=HTMLResponse)

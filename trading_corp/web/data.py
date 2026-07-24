@@ -675,6 +675,27 @@ class DivisionViewSnapshot:
     # data_exec.py REST layer emits these). Shape: gate_a_resilience_24h().
     # Relocated here from the retired home-page Stage-1 monitoring row.
     gate_a: dict | None = None
+    # True when the division's broker is NOT a paper/sim broker — i.e. orders
+    # placed via Approve will hit a real-money account. Default False so that
+    # any division whose broker is unknown/None stays conservatively "paper".
+    # Purely observability; no order-placement logic reads this field.
+    is_live: bool = False
+
+
+def _division_is_live(broker) -> bool:
+    """Return True when *broker* is a live (non-paper) broker instance.
+
+    Reads the ``paper`` attribute that every broker exposes:
+      - ``paper=True``  → simulation / paper-execution broker → returns False
+      - ``paper=False`` → live real-money broker              → returns True
+      - broker is None or attribute missing → conservatively False
+
+    Pure function; no I/O.  Extracted so tests can cover it without spinning
+    up the full async build_division_view stack.
+    """
+    if broker is None:
+        return False
+    return not bool(getattr(broker, "paper", True))
 
 
 @dataclass
@@ -3496,6 +3517,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         bitunix_pending_pa=bitunix_pending_pa_view,
         bitunix_trade_plan=bitunix_trade_plan_view,
         gate_a=gate_a_view,
+        is_live=_division_is_live(broker),
     )
 
 
