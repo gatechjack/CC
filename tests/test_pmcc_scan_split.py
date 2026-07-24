@@ -153,3 +153,27 @@ def test_digest_two_registers():
 
 def test_digest_empty():
     assert "no shorts near expiry" in PMCCAgent._format_triage_digest([])
+
+
+# --------------------------------------------------------------------------- #
+# scheduler gate: _settle_should_attempt (post-settle window)
+# --------------------------------------------------------------------------- #
+
+
+def test_settle_should_attempt_window_and_dedup():
+    from datetime import date, datetime, time
+    from zoneinfo import ZoneInfo
+
+    from trading_corp.main import _settle_should_attempt
+    et = ZoneInfo("America/New_York")
+    start, end = time(9, 38), time(10, 30)
+
+    def dt(h, m, day="2026-07-24"):              # 2026-07-24 is a Friday
+        y, mo, d = map(int, day.split("-"))
+        return datetime(y, mo, d, h, m, tzinfo=et)
+
+    assert _settle_should_attempt(dt(9, 35), None, start, end, None) is False   # before window
+    assert _settle_should_attempt(dt(9, 40), None, start, end, None) is True    # in window
+    assert _settle_should_attempt(dt(10, 45), None, start, end, None) is False  # after window
+    assert _settle_should_attempt(dt(9, 45), date(2026, 7, 24), start, end, None) is False  # fired
+    assert _settle_should_attempt(dt(9, 40, "2026-07-25"), None, start, end, None) is False  # Sat

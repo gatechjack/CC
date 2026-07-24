@@ -1297,11 +1297,40 @@ async def run(argv: list[str] | None = None) -> int:
                     )
             return f"{len(orders)} order(s) proposed."
 
-        # --- Daily pre-open PMCC scan scheduler (8:30 ET) + 15:00-ET terminal-DTE pass ---
+        # --- PMCC scan-split (2026-07-24): pre-open TRIAGE + post-settle
+        #     liveness-gated ACTIONABLE scan + 15:00-ET terminal-DTE pass ---
+        async def _on_triage() -> str:
+            """Pre-open Phase-A triage -> calm two-register morning digest. No cards,
+            no ABORTED alerts (option quotes are last night's stale marks pre-market)."""
+            if _graph_holder[0] is None:
+                return "System still initializing."
+            _b = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                report = await pmcc_agent.triage(_b)
+            except Exception as e:
+                log.warning("PMCC triage failed: %s", e)
+                return f"triage error: {e}"
+            try:
+                await channel.push(pmcc_agent._format_triage_digest(report))
+            except Exception:
+                pass
+            _breach = sum(1 for r in report if r.get("register") == "breach")
+            return f"triage: {len(report)} near-DTE, {_breach} breach/assignment."
+
+        async def _pmcc_liveness_probe():
+            """GLOBAL SPY/QQQ two-sided-quote probe gating the post-settle scan."""
+            _b = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                return await pmcc_agent.reference_quotes_live(_b)
+            except Exception as e:
+                return False, f"liveness probe error: {e}"
+
         scheduler_task = asyncio.create_task(
             _scheduled_pmcc_scan_loop(
                 _on_scan, channel, logger_agent,
                 on_terminal_callback=_on_terminal_scan,
+                on_triage_callback=_on_triage,
+                liveness_probe=_pmcc_liveness_probe,
             )
         )
 
@@ -2815,6 +2844,29 @@ def _scan_should_fire(now, last_scan_date, win_start, win_end, calendar) -> bool
     return True
 
 
+def _settle_should_attempt(now, last_settle_date, settle_start, settle_end, calendar) -> bool:
+    """Whether the post-settle ACTIONABLE PMCC scan should ATTEMPT at `now` (a
+    separate quote-liveness gate in the loop then decides whether to actually fire).
+
+    Fires once per trading day inside the window [settle_start, settle_end]; skips
+    weekends and full market closures. The window's earliest edge (~9:38 ET) holds
+    the actionable scan past the 9:30-9:35 opening rotation (same-day volume starts
+    at 0, spreads wide); the liveness gate then confirms quotes are real before any
+    strike selection / card. Mirrors `_scan_should_fire`'s weekday/holiday logic."""
+    is_weekday = now.weekday() < 5
+    in_window = settle_start <= now.time() <= settle_end
+    already = (last_settle_date == now.date())
+    if not (is_weekday and in_window and not already):
+        return False
+    if calendar is not None:
+        try:
+            if calendar.close_time_et(now) is None:
+                return False
+        except Exception:
+            pass  # fail open, same as _scan_should_fire
+    return True
+
+
 def _pmcc_pending_symbols(entries) -> set[str]:
     """B10 suppress-pending: symbols with an OPEN robinhood_pmcc approval in the HITL
     queue, so the 15:00 pass never re-proposes a position already awaiting a decision.
@@ -2870,17 +2922,31 @@ async def _scheduled_pmcc_scan_loop(
     poll_interval_sec: int = 300,
     on_terminal_callback=None,
     terminal_release_offset_min: int = 60,
+    on_triage_callback=None,
+    liveness_probe=None,
+    settle_window_start_et: tuple[int, int] = (9, 38),
+    settle_backstop_et: tuple[int, int] = (9, 50),
+    settle_window_end_et: tuple[int, int] = (10, 30),
 ) -> None:
-    """Daily pre-open PMCC scan scheduler.
+    """Daily PMCC scan scheduler — split into a pre-open TRIAGE pass and a
+    post-open (settled-quotes) ACTIONABLE pass (2026-07-24 scan-split).
 
-    Runs `on_scan_callback` once per US trading day during the pre-open window
-    (default 8:30–9:25 AM Eastern, weekdays only). Designed for the
-    `scan_schedule: "daily_pre_open"` setting in strategies.yaml. Skips
-    weekends and the same trading day if a scan has already fired.
+    When `on_triage_callback` is provided (the split is active):
+      - **Pre-open window** (8:30–9:25 ET) fires `on_triage_callback` — Phase-A
+        triage ONLY (near-DTE / breach / assignment digest). NO strike selection,
+        credit math, cards, or ABORTED alerts (equity options are closed pre-market,
+        so any option quote would be last night's stale mark).
+      - **Post-settle window** ([9:38, 10:30] ET) fires `on_scan_callback` (the
+        actionable scan → Approve cards off LIVE marks), but ONLY once `liveness_probe`
+        reports quotes live (SPY/QQQ two-sided + sane spread). If not live by the
+        backstop (~9:50) it emits ONE calm "deferred" notice and keeps retrying on the
+        poll cadence — never force-scans on opening-rotation garbage, never hangs.
 
-    Note: this does NOT honor US market holidays — yfinance `is_holiday` would
-    require an extra dep. The Risk/Data agents will simply find no fresh prices
-    on those days; the scan is harmless and bails out cleanly.
+    When `on_triage_callback` is None (legacy): the pre-open window fires
+    `on_scan_callback` directly and there is no post-settle pass (original behaviour).
+
+    The terminal-DTE afternoon pass (0-DTE only) is unchanged. Weekends and full
+    market closures (calendar) are skipped; a calendar failure fails open.
     """
     from datetime import datetime, time
     try:
@@ -2901,6 +2967,13 @@ async def _scheduled_pmcc_scan_loop(
     # second invocation, NOT an intraday loop (the C1 attach surface is the release logic).
     last_scan_date = None
     last_terminal_date = None
+    # 2026-07-24 scan-split state: pre-open TRIAGE + post-settle liveness-gated pass.
+    _split = on_triage_callback is not None
+    win_settle_start = time(*settle_window_start_et)
+    win_settle_backstop = time(*settle_backstop_et)
+    win_settle_end = time(*settle_window_end_et)
+    last_settle_date = None
+    last_settle_defer_date = None
     # B11: NYSE calendar for the holiday guard — reuse the existing dependency
     # already used by pmcc terminal-DTE logic (close_time_et -> None on closed
     # days). None (unavailable) leaves the guard off = original behaviour.
@@ -2920,7 +2993,23 @@ async def _scheduled_pmcc_scan_loop(
     while True:
         try:
             now = datetime.now(et) if et is not None else datetime.now()
-            if _scan_should_fire(now, last_scan_date, win_start, win_end, _cal):
+            # Pre-open TRIAGE (split): Phase-A only; the callback pushes its own
+            # calm digest. No cards, no ABORTED alerts pre-market (options closed).
+            if _split and _scan_should_fire(now, last_scan_date, win_start, win_end, _cal):
+                last_scan_date = now.date()
+                log.info("Scheduler firing daily pre-open PMCC triage...")
+                try:
+                    result = await on_triage_callback()
+                    logger_agent.log_event("scheduler", "scheduled_triage_done",
+                                           {"date": str(now.date()), "result": result})
+                except Exception as e:
+                    log.exception("Scheduled PMCC triage failed: %s", e)
+                    logger_agent.log_event("scheduler", "scheduled_scan_error",
+                                           {"date": str(now.date()), "error": str(e),
+                                            "pass": "triage"})
+
+            # Pre-open ACTIONABLE scan — LEGACY only (no triage callback wired).
+            if (not _split) and _scan_should_fire(now, last_scan_date, win_start, win_end, _cal):
                 last_scan_date = now.date()
                 log.info("Scheduler firing daily pre-open PMCC scan...")
                 try:
@@ -2946,6 +3035,56 @@ async def _scheduled_pmcc_scan_loop(
                         "scheduler", "scheduled_scan_error",
                         {"date": str(now.date()), "error": str(e)},
                     )
+
+            # Post-settle ACTIONABLE pass (split): fire the actionable scan off LIVE
+            # marks, but ONLY once quotes are live (liveness_probe). Holds past the
+            # 9:30-9:35 opening rotation; never force-scans on garbage, never hangs.
+            if _split and _settle_should_attempt(
+                now, last_settle_date, win_settle_start, win_settle_end, _cal
+            ):
+                live, reason = (True, "no probe")
+                if liveness_probe is not None:
+                    try:
+                        live, reason = await liveness_probe()
+                    except Exception as e:
+                        live, reason = False, f"liveness probe error: {e}"
+                if live:
+                    last_settle_date = now.date()
+                    log.info("Scheduler firing post-settle PMCC actionable scan (%s)...", reason)
+                    try:
+                        result = await on_scan_callback()
+                        logger_agent.log_event(
+                            "scheduler", "scheduled_scan_done",
+                            {"date": str(now.date()), "result": result,
+                             "pass": "post_settle", "liveness": reason},
+                        )
+                        try:
+                            await channel.push(f"Post-settle PMCC scan: {result}")
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        log.exception("Post-settle PMCC scan failed: %s", e)
+                        logger_agent.log_event(
+                            "scheduler", "scheduled_scan_error",
+                            {"date": str(now.date()), "error": str(e), "pass": "post_settle"},
+                        )
+                elif (now.time() >= win_settle_backstop
+                      and last_settle_defer_date != now.date()):
+                    # Past the backstop and still not live: emit ONE calm defer notice,
+                    # then keep retrying on the poll cadence within the window.
+                    last_settle_defer_date = now.date()
+                    log.info("Post-settle actionable scan deferred: %s", reason)
+                    logger_agent.log_event(
+                        "scheduler", "scheduled_scan_deferred",
+                        {"date": str(now.date()), "reason": reason},
+                    )
+                    try:
+                        await channel.push(
+                            "PMCC actionable scan deferred: quotes not live yet "
+                            f"({reason}) - no cards, position unchanged; retrying next cadence."
+                        )
+                    except Exception:
+                        pass
 
             # B10: second daily invocation — calendar-anchored terminal-DTE pass (0-DTE only).
             if (
