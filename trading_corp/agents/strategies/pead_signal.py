@@ -269,8 +269,11 @@ def reaction_index(report_time: str | None, ann_idx: int | None) -> int | None:
 def confirmation_verdict(
     report_time: str | None, closes: Sequence[float], ann_idx: int | None,
 ) -> str:
-    """The confirmation gate: enter long only if the POST-REACTION session CLOSES
-    ABOVE the pre-earnings close.
+    """The confirmation gate: enter long only if BAR 1 (the reaction session)
+    CLOSES ABOVE BAR 0 (the last full session with NO earnings info). BAR 0 =
+    BAR 1 - 1 for BOTH slots (AMC baseline = day a; BMO baseline = day a-1); the
+    slot only fixes WHICH days these are, not the logic. Entry is BAR 2's open
+    (reaction_index + 1).
 
     `closes`: session closes oldest->newest. `ann_idx`: index of the first bar
     on/after the announcement date. Returns exactly one of:
@@ -281,10 +284,11 @@ def confirmation_verdict(
     """
     if report_time not in ("BeforeMarket", "AfterMarket"):
         return "reject_no_slot"
-    ri = reaction_index(report_time, ann_idx)
-    if ann_idx is None or ann_idx < 1 or ri is None or ri >= len(closes):
+    bar1 = reaction_index(report_time, ann_idx)      # first session trading ON the news (reaction)
+    if bar1 is None or bar1 < 1 or bar1 >= len(closes):
         return "reject_no_bar"
-    return "pass" if closes[ri] > closes[ann_idx - 1] else "reject_gate"
+    bar0 = bar1 - 1                                   # last full session with NO earnings info (baseline)
+    return "pass" if closes[bar1] > closes[bar0] else "reject_gate"
 
 
 # ---------------------------------------------------------------------------
