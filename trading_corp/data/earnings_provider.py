@@ -170,6 +170,15 @@ def reset_earnings_provider_cache() -> None:
 # Low-level HTTP helpers
 # ---------------------------------------------------------------------------
 
+class EodhdApiError(RuntimeError):
+    """EODHD returned a non-200 HTTP status (e.g. 402 Payment Required = quota
+    exhausted). A HARD API failure, NOT a data gap: RAISED so a quota/API failure
+    stops the scan loudly instead of returning None and silently falling back to
+    yfinance or handing null into the SUE calculation. Missing DATA (HTTP 200 with
+    an empty/parseable-but-empty body) still returns None -> the accepted yfinance
+    fallback; only a non-200 RESPONSE raises."""
+
+
 def _eodhd_get_fundamentals(symbol: str, api_key: str) -> dict | None:
     """GET EODHD /api/fundamentals/{symbol}.{exchange}  Returns parsed JSON or None."""
     ticker = f"{symbol.upper()}.{_EODHD_EXCHANGE_SUFFIX}"
@@ -184,8 +193,13 @@ def _eodhd_get_fundamentals(symbol: str, api_key: str) -> dict | None:
             return None
         return data
     except HTTPError as e:
-        log.warning("EODHD HTTP %s for %s: %s", e.code, ticker, e)
-        return None
+        # Non-200 (e.g. 402 quota exhausted) is a HARD FAILURE, not a data gap:
+        # RAISE so the scan stops loudly instead of returning None -> yfinance
+        # fallback / null into SUE. Missing DATA (HTTP 200 with an empty body) is
+        # handled above and still returns None (the accepted EODHD->yfinance path).
+        log.error("EODHD HTTP %s for %s: %s -- RAISING (quota/API failure, not a data gap)",
+                  e.code, ticker, e)
+        raise EodhdApiError(f"EODHD fundamentals HTTP {e.code} for {ticker}: {e}") from e
     except (URLError, OSError) as e:
         log.warning("EODHD network error for %s: %s", ticker, e)
         return None
