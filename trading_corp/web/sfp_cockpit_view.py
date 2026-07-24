@@ -49,15 +49,19 @@ log = logging.getLogger(__name__)
 
 DIVISION = "bitunix_sfp"
 TP_R = 3.0                                   # construct target (retargeted from 2.0, 2026-07-10)
-# ── forward scoreboard epoch (RD-gate go-live, 2026-07-11 01:45 UTC) ──
-# The forward scoreboard — W-L record, realized-R / equity curve, the n/30 verdict gate, and the
-# quality-gate funnel counts — is scoped to closes/events AT OR AFTER this epoch so it measures the
-# RD-gated era CLEANLY. Pre-epoch trades (incl. the -1.07R BTC construct close) REMAIN in
-# paper_trade_record / research_log — they are EXCLUDED from the forward count, NOT deleted. This is a
-# "count from T" filter, never fabricated data. Defined ONCE here; sfp_construct_cockpit_view IMPORTS
-# it so BOTH cockpits scope to the SAME epoch and can never drift out of agreement.
-COCKPIT_STATS_SINCE = "2026-07-11T01:45:00+00:00"
-COCKPIT_STATS_SINCE_LABEL = "2026-07-11 · RD-gate epoch"
+# ── forward scoreboard epoch (net-basis boundary, 2026-07-13 00:00 UTC) ──
+# Moved forward from the 2026-07-11 RD-gate epoch to the 2026-07-13 net-basis boundary: at the
+# 2026-07-12->13 seam actual_pnl_dollars / actual_r_multiple switched GROSS->NET (net-post-fee booking),
+# so a pre-boundary close books on gross and a post-boundary close on net — non-comparable. The forward
+# scoreboard — W-L record, realized-R / equity curve, the n/30 verdict gate, and the quality-gate funnel
+# counts — is scoped to closes/events AT OR AFTER this epoch so every counted trade shares ONE (net)
+# accounting basis. Pre-epoch trades (incl. the two 2026-07-12 gross closes + the -1.07R BTC construct
+# close) REMAIN in paper_trade_record / research_log — EXCLUDED from the forward count, NOT deleted (a
+# "count from T" filter, never fabricated data). Defined ONCE here; sfp_construct_cockpit_view IMPORTS
+# it so BOTH cockpits scope to the SAME epoch and can never drift out of agreement. (No SFP close exists
+# between 2026-07-12 14:47 and 2026-07-14 12:25, so the exact 07-13 time is invariant for the counts.)
+COCKPIT_STATS_SINCE = "2026-07-13T00:00:00+00:00"
+COCKPIT_STATS_SINCE_LABEL = "2026-07-13 · net-basis epoch (PnL/R switched gross→net; ROI% now on margin)"
 CONSTRUCT_SINCE = COCKPIT_STATS_SINCE         # back-compat alias (was construct go-live 2026-07-10)
 BASELINE_AVG_R = 0.182                        # in-sample pooled backtest benchmark (GROSS)
 BASELINE_WIN_PCT = 30                         # backtest win-rate @3R (pooled flat-3R)

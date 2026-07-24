@@ -120,15 +120,8 @@ def _fetch_unresolved_orders(
     the global ts-ASC cap meant kalshi_weather_arb + kalshi_crypto_arb
     rows never made the top-N cut.
 
-    Ordering: resolution-date proxy ASC NULLS LAST, where the proxy is
-    `COALESCE(expires_at, leg_date)` -- `expires_at` for llm/weather/crypto,
-    `leg_date` for temporal/bucket arb (which carry NO expires_at). NULLs
-    synthesized via `(... IS NULL)` since SQLite NULLS LAST is
-    version-conditional. Temporal/bucket arb rows (no expires_at) previously
-    ALL tied at NULL and fell back to `ts ASC`, so indefinite-horizon legs
-    (mergers/IPOs that never settle) permanently occupied the per-actor
-    budget -- the entire kalshi_arbitrage temporal book booked 0 round-trips
-    for ~2 months until this leg_date fallback landed (2026-07-07).
+    Ordering: `expires_at ASC NULLS LAST` (NULLs synthesized via
+    `(expires_at IS NULL)` since SQLite NULLS LAST is version-conditional).
     Past-expiration rows scanned first — they're the ones most likely to
     have a final resolution on Kalshi. The original `ts ASC` ordering
     prioritized OLDEST audit rows, but oldest-audit ≠ most-likely-resolved

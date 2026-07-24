@@ -3826,6 +3826,7 @@ DASHBOARD_RT_CUTOFFS: dict[str, str] = {
     # filtered out of dashboard aggregates.
     "kalshi_weather": "2026-05-26T01:08:00+00:00",  # bias-offset v1 deploy (22 cells, magnitude-filtered ≥1.0°F, 9 spring fully-validated + 13 non-spring nbm-only watch-items). Advanced from 2026-05-22T16:25 (P3 xref deploy). First attempt 2026-05-26 00:24 UTC crash-looped on missing residual_logic dependency (rolled back 00:44); successful re-deploy at 2026-05-26 01:10:33 UTC after inlining derive_season. cutoff pre-picked at 01:08 (2.5 min before actual restart) — minor sliver of 01:08-01:10 pre-bias rows passes the dashboard filter. See deploy_log.md 2026-05-26 01:10 UTC.
     "kalshi_crypto":  "2026-05-20T05:52:09+00:00",  # vol-v2 + max_divergence_pct live — see deploy_log.md 2026-05-20 05:52 UTC (matches KALSHI_CRYPTO_VOL_V2_CUTOFF in web/kalshi_crypto_vol_v2.py)
+    "kalshi_llm_arbitrage": "2026-07-07T16:40:00+00:00",  # discovery narrowed to [Economics, Elections] + resolver leg_date fix (deploy_log 2026-07-07 16:40 UTC; commits b5eb93f/d1f5ea6). Scopes dashboard round-trip metrics to post-change entries; the OPEN tab honors the same cutoff via _query_pm_open_trades (_llm_cut).
 }
 
 
@@ -4366,6 +4367,10 @@ def _query_pm_open_trades(
     kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
     if kalshi_slugs:
         kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+        # Scope the OPEN tab to a kalshi division's dashboard cutoff (entry
+        # epoch), mirroring _kalshi_cutoff_clause but against the audit
+        # payload's division + a.ts. Empty => the clause self-disables.
+        _llm_cut = DASHBOARD_RT_CUTOFFS.get("kalshi_llm_arbitrage", "")
         rows = _query(
             db_url,
             f"SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
@@ -4377,6 +4382,7 @@ def _query_pm_open_trades(
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "
             + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "a.ts")
+            + f"  AND NOT (json_extract(a.payload_json, '$.division') = 'kalshi_llm_arbitrage' AND a.ts < '{_llm_cut}') "
             + f"  AND r.order_id IS NULL "
             f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
             f"    SELECT entry_order_id FROM kalshi_round_trips "
@@ -4507,6 +4513,9 @@ def _query_pm_pending_count(
     kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
     if kalshi_slugs:
         kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+        # Match _query_pm_open_trades: scope the pending COUNT to a kalshi
+        # division cutoff (entry epoch) so the OPEN badge equals the OPEN list.
+        _llm_cut = DASHBOARD_RT_CUTOFFS.get("kalshi_llm_arbitrage", "")
         rows = _query(
             db_url,
             f"SELECT COUNT(*) AS n FROM audit_event a "
@@ -4516,6 +4525,7 @@ def _query_pm_pending_count(
             f"  AND a.kind = 'would_have_placed' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "
+            f"  AND NOT (json_extract(a.payload_json, '$.division') = 'kalshi_llm_arbitrage' AND a.ts < '{_llm_cut}') "
             f"  AND r.order_id IS NULL "
             f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
             f"    SELECT entry_order_id FROM kalshi_round_trips "
