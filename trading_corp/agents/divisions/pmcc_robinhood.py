@@ -3954,6 +3954,125 @@ Action reference:
         )
 
     # ------------------------------------------------------------------
+    # Scan split (2026-07-24): pre-open TRIAGE + post-settle liveness probe
+    # ------------------------------------------------------------------
+
+    @property
+    def _triage_near_dte_days(self) -> int:
+        """Short-leg DTE at/under which a leg enters the morning triage watchlist
+        ('expiring today/this week'). Config
+        `robinhood_pmcc.scan.triage_near_dte_days`; default 5."""
+        v = (self._cfg.get("scan") or {}).get("triage_near_dte_days")
+        try:
+            return int(v) if v is not None else 5
+        except (TypeError, ValueError):
+            return 5
+
+    @property
+    def _liveness_ref_symbols(self) -> list:
+        """Broadly-liquid reference underlyings for the GLOBAL post-settle liveness
+        probe (NOT thin single names). Config
+        `robinhood_pmcc.scan.liveness_ref_symbols`; default [SPY, QQQ]."""
+        v = (self._cfg.get("scan") or {}).get("liveness_ref_symbols")
+        if isinstance(v, (list, tuple)) and v:
+            return [str(s) for s in v]
+        return ["SPY", "QQQ"]
+
+    @property
+    def _liveness_max_spread_pct(self) -> float:
+        """Max reference-chain bid/ask spread (fraction of mid) that still counts
+        as 'quotes live'. Config `robinhood_pmcc.scan.liveness_max_spread_pct`;
+        default 0.15."""
+        v = (self._cfg.get("scan") or {}).get("liveness_max_spread_pct")
+        try:
+            return float(v) if v is not None else 0.15
+        except (TypeError, ValueError):
+            return 0.15
+
+    async def triage(self, broker: Broker) -> "list[dict]":
+        """Pre-open TRIAGE (Phase A only). Which shorts are near-DTE / breached /
+        assignment-risk, using ONLY static data + live-underlying spot
+        (broker.quote). NO option-chain reads, NO strike selection, NO credit/greek
+        math, NO Approve cards, NO ABORTED alerts. Writes a `pmcc_morning_triage`
+        audit and returns per-short-leg triage dicts (register: breach|routine)."""
+        self._reload()
+        existing = await self.detect_existing_legs(broker)
+        near = self._triage_near_dte_days
+        out: list[dict] = []
+        for leg in existing:
+            if leg.short_leg_strike is None or leg.short_leg_dte is None:
+                continue                       # uncovered LEAP — no short to triage
+            dte = int(leg.short_leg_dte)
+            if dte > near:
+                continue                       # not near-term
+            strike = float(leg.short_leg_strike)
+            spot = None
+            try:
+                q = await broker.quote(leg.symbol)
+                spot = float(q) if q else None
+            except Exception as e:              # noqa: BLE001 — spot is best-effort
+                log.debug("triage: quote(%s) failed: %s", leg.symbol, e)
+            itm = bool(spot is not None and spot >= strike)
+            out.append({
+                "symbol": leg.symbol, "short_strike": strike, "short_dte": dte,
+                "spot": spot, "itm": itm,
+                "register": "breach" if itm else "routine",
+            })
+        self._audit_division("pmcc_morning_triage",
+                             {"near_dte_days": near, "legs": out})
+        return out
+
+    async def reference_quotes_live(self, broker: Broker) -> "tuple[bool, str]":
+        """GLOBAL liveness probe for the post-settle actionable pass: a broadly-
+        liquid reference (SPY/QQQ) returns two-sided option quotes with a sane
+        spread. Returns (live, reason). Never raises. Per-name thin-ness is handled
+        downstream by the existing liquidity gate, not here."""
+        for sym in self._liveness_ref_symbols:
+            try:
+                dates = await broker.get_expiration_dates(sym)
+                if not dates:
+                    continue
+                calls = await broker.get_calls_for_expiry(sym, dates[0])
+                for c in (calls or []):
+                    bid = float(c.get("bid") or 0)
+                    ask = float(c.get("ask") or 0)
+                    if bid > 0 and ask > 0:
+                        mid = (bid + ask) / 2.0
+                        if mid > 0 and (ask - bid) / mid <= self._liveness_max_spread_pct:
+                            return True, f"{sym} live (bid {bid:.2f}/ask {ask:.2f})"
+            except Exception as e:              # noqa: BLE001 — probe is best-effort
+                log.debug("liveness probe %s failed: %s", sym, e)
+        return False, "no reference chain returned sane two-sided quotes"
+
+    @staticmethod
+    def _format_triage_digest(report: "list") -> str:
+        """Calm two-register morning digest. Routine near-DTE -> reassuring +
+        'cards after open'; breach/assignment -> escalated. No per-name aborts."""
+        rep = report or []
+        breach = [r for r in rep if r.get("register") == "breach"]
+        routine = [r for r in rep if r.get("register") == "routine"]
+        if not breach and not routine:
+            return "PMCC morning triage: no shorts near expiry. Nothing to do pre-open."
+        lines = ["PMCC morning triage"]
+        if breach:
+            lines.append("")
+            lines.append(f"** BREACH / ASSIGNMENT RISK ({len(breach)}) — needs eyes:")
+            for r in breach:
+                spot_txt = f" (spot {r['spot']:g})" if r.get("spot") is not None else ""
+                lines.append(f"  - {r['symbol']} short {r['short_strike']:g}C, "
+                             f"{r['short_dte']}DTE, ITM{spot_txt}")
+        if routine:
+            lines.append("")
+            lines.append(f"Routine near-DTE ({len(routine)}):")
+            for r in routine:
+                spot_txt = f", spot {r['spot']:g}" if r.get("spot") is not None else ""
+                lines.append(f"  - {r['symbol']} short {r['short_strike']:g}C, "
+                             f"{r['short_dte']}DTE, OTM{spot_txt}")
+            lines.append("The engine will present roll cards after the open — "
+                         "no manual action needed before then.")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
     # Scout — survey the market for NEW PMCC opening candidates
     # ------------------------------------------------------------------
 
