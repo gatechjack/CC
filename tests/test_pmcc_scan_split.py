@@ -45,6 +45,7 @@ class _TriageStub:
 
 _TriageStub.triage = PMCCAgent.triage
 _TriageStub._triage_near_dte_days = PMCCAgent._triage_near_dte_days
+_TriageStub._check_options_tier_once = PMCCAgent._check_options_tier_once
 
 
 class _QuoteBroker:

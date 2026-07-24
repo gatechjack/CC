@@ -2004,6 +2004,7 @@ Action reference:
         # that excludes those underlyings). Legs always need
         # management regardless of universe shape.
         existing = await self.detect_existing_legs(broker)
+        self._check_options_tier_once(broker)
         legs_by_symbol: dict[str, PMCCPosition] = {leg.symbol: leg for leg in existing}
 
         # B10: the 15:00-ET terminal-DTE pass evaluates ONLY 0-DTE positions — a SUBSET
@@ -3997,6 +3998,7 @@ Action reference:
         audit and returns per-short-leg triage dicts (register: breach|routine)."""
         self._reload()
         existing = await self.detect_existing_legs(broker)
+        self._check_options_tier_once(broker)
         near = self._triage_near_dte_days
         out: list[dict] = []
         for leg in existing:
@@ -4071,6 +4073,47 @@ Action reference:
             lines.append("The engine will present roll cards after the open — "
                          "no manual action needed before then.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _option_level_int(level: str) -> "int | None":
+        """Parse an RH options tier ('option_level_3') to its int (3), else None."""
+        try:
+            s = str(level or "").strip().lower()
+            if s.startswith("option_level_"):
+                return int(s.rsplit("_", 1)[1])
+            return int(s) if s.isdigit() else None
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _check_options_tier_once(self, broker) -> None:
+        """B-ARM #6: once per process, verify a LIVE PMCC broker's options tier is
+        spread-capable (level_3 — roll_short is a multi-leg spread). Below that, or
+        unverifiable, log + audit so it's visible at startup instead of only
+        surfacing as a live order reject. Never blocks; never raises."""
+        if getattr(self, "_options_tier_checked", False):
+            return
+        self._options_tier_checked = True
+        try:
+            if getattr(broker, "paper", True):
+                return                       # paper handle — tier is not exercised
+            level = getattr(broker, "option_level", "")
+            lvl = self._option_level_int(level)
+            if lvl is None:
+                log.warning("PMCC options-tier UNVERIFIED (option_level=%r) — cannot "
+                            "confirm spread eligibility", level)
+                self._audit_division("pmcc_options_tier_check",
+                                     {"ok": False, "verified": False, "level": str(level)})
+            elif lvl < 3:
+                log.warning("PMCC options-tier INSUFFICIENT: option_level_%d < 3 "
+                            "(spreads/roll_short need level_3) — live rolls will REJECT", lvl)
+                self._audit_division("pmcc_options_tier_check",
+                                     {"ok": False, "verified": True, "level": lvl, "required": 3})
+            else:
+                log.info("PMCC options-tier OK: option_level_%d (>= 3)", lvl)
+                self._audit_division("pmcc_options_tier_check",
+                                     {"ok": True, "verified": True, "level": lvl})
+        except Exception as e:               # never let a diagnostic break the scan
+            log.debug("PMCC options-tier check failed: %s", e)
 
     # ------------------------------------------------------------------
     # Scout — survey the market for NEW PMCC opening candidates

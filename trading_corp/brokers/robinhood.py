@@ -153,6 +153,7 @@ class RobinhoodBroker(Broker):
         self._account_number: str = ""
         self._account_type: str = ""        # "individual"/"ira_roth"/"joint"
         self._account_label: str = ""       # human-readable, used in logs
+        self._option_level: str = ""        # e.g. "option_level_3"; captured at bind
         self._frac_elig_cache: dict[str, bool] = {}   # per-symbol fractional eligibility
 
     # ------------------------------------------------------------------
@@ -467,10 +468,23 @@ class RobinhoodBroker(Broker):
         self._account_number = str(match.get("account_number") or "")
         self._account_type = _label_of(match)
         self._account_label = self._account_type or self._account_number or "default"
+        # B-ARM #6: capture the account's options approval tier so a spread-trading
+        # division can verify it (level_3) at startup instead of only discovering it
+        # via a live order reject.
+        self._option_level = str(match.get("option_level") or "")
+        log.info("RobinhoodBroker bound account %s (type=%s, option_level=%s)",
+                 self._account_number or "default", self._account_type or "?",
+                 self._option_level or "unknown")
 
     # ------------------------------------------------------------------
     # Account data
     # ------------------------------------------------------------------
+
+    @property
+    def option_level(self) -> str:
+        """Options approval tier bound at connect (e.g. 'option_level_3'), or ''
+        if unresolved. Used by option-spread divisions for a startup tier check."""
+        return self._option_level
 
     async def snapshot(self) -> AccountSnapshot:
         self._require_connected()
