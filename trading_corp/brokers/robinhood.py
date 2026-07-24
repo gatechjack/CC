@@ -1235,6 +1235,40 @@ class RobinhoodBroker(Broker):
         # still has an id and legitimately falls back to limit_price below.
         result = result or {}
         if not result.get("id"):
+            # No id: RH rejected the combo, OR the submit hit a 401/429 whose response
+            # was swallowed and the order may ACTUALLY have placed. Fail-closed:
+            #   401 (session dead) -> re-auth, then reconcile;
+            #   429 (rate limited) -> back off, then reconcile;
+            #   genuine reject     -> raise (as before).
+            # NEVER blind-retry the submit (double-place); NEVER synthesize a fill.
+            _auth_dead = False
+            try:
+                _auth_dead = await self._auth_is_401()
+            except Exception:
+                _auth_dead = False
+            _rate_limited = self._looks_rate_limited(result)
+            if _auth_dead or _rate_limited:
+                if _auth_dead:
+                    log.warning("place_multi_leg: 401 on submit (session dead) — re-authing "
+                                "then reconciling combo=%s ref_id=%s", combo.combo_id, ref_id)
+                    try:
+                        await self._attempt_reauth(force=True)
+                    except Exception as _e:
+                        log.warning("place_multi_leg: reauth raised: %s", _e)
+                else:
+                    log.warning("place_multi_leg: 429 on submit (rate limited) — backing off "
+                                "%.1fs then reconciling combo=%s ref_id=%s",
+                                self._RATE_LIMIT_BACKOFF_S, combo.combo_id, ref_id)
+                    await asyncio.sleep(self._RATE_LIMIT_BACKOFF_S)
+                _recon = await self._reconcile_after_submit_failure(orders, ref_id)
+                if _recon:
+                    return _recon                       # confirmed terminal fill -> book
+                raise RobinhoodComboPending(
+                    f"combo {combo.combo_id!r} submit hit "
+                    f"{'401 (session dead)' if _auth_dead else '429 (rate limited)'}; "
+                    "reconcile found no placed/filled order — booked NOTHING",
+                    order_id=ref_id,
+                )
             reason = (result.get("non_field_errors") or result.get("detail")
                       or result or "empty response")
             raise RobinhoodOrderError(
@@ -1275,24 +1309,22 @@ class RobinhoodBroker(Broker):
                 order_id=rh_combo_id,
             )
 
+        return self._build_fills_from_result(final, orders, rh_combo_id, rh_account)
+
+    def _build_fills_from_result(self, final, orders, rh_combo_id, rh_account):
+        """Build per-leg FillEvents from a TERMINAL RH spread order, matching each
+        submitted leg to its result leg by OPTION IDENTITY (option_type+expiration+
+        strike), NOT by list position — Robinhood returns spread legs in its own
+        order; positional pairing swaps per-leg fills and sign-flips the combo net
+        (2026-07-24 fix). Shared by place_multi_leg AND the 401/429 reconcile path so
+        both attribute fills identically."""
         legs_result = (final or {}).get("legs") or []
         fill_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        # Map each SUBMITTED leg to its Robinhood result leg by OPTION IDENTITY
-        # (option_type + expiration + strike), NOT by list position: Robinhood
-        # returns the spread's legs in ITS OWN order, which need not match our
-        # `orders`. A positional legs_result[i] pairing lands one leg's fill on
-        # another -> per-leg fills swap and the combo net sign-flips to a phantom
-        # debit (2026-07-24: RKLB +$117 credit was self-read as -$117). Falls
-        # back to positional only when RH omits identity fields.
-        matched_legs = self._match_result_legs_to_orders(
-            orders, legs_result, rh_combo_id,
-        )
+        matched_legs = self._match_result_legs_to_orders(orders, legs_result, rh_combo_id)
         fills: list[FillEvent] = []
         for o, leg in zip(orders, matched_legs):
-            # Best-effort per-leg fill price. Sources, in priority order:
-            #  1. leg["price"]                   - if RH echoes per leg
-            #  2. leg["executions"][0]["price"]  - alt shape
-            #  3. order.limit_price              - fallback
+            # Per-leg fill price: leg["price"], else leg["executions"][0]["price"],
+            # else the order's limit_price.
             leg = leg or {}
             leg_price = leg.get("price")
             if leg_price is None:
@@ -1303,7 +1335,6 @@ class RobinhoodBroker(Broker):
                 price_f = float(leg_price) if leg_price is not None else float(o.limit_price or 0)
             except (TypeError, ValueError):
                 price_f = float(o.limit_price or 0)
-
             fills.append(FillEvent(
                 order_id=o.id,
                 symbol=o.symbol,
@@ -1316,6 +1347,126 @@ class RobinhoodBroker(Broker):
                 account=rh_account,
             ))
         return fills
+
+    # ── 401/429 fail-closed reconcile (B-ARM #2) ──────────────────────────
+    _RATE_LIMIT_BACKOFF_S: float = 2.0
+    _RECONCILE_WINDOW_S: float = 120.0
+
+    @staticmethod
+    def _looks_rate_limited(result) -> bool:
+        """Best-effort 429 detection from a robin_stocks submit result (it may return
+        an error dict/string rather than raise)."""
+        try:
+            blob = str(result).lower()
+        except Exception:
+            return False
+        return ("429" in blob or "throttl" in blob or "too many requests" in blob
+                or "rate limit" in blob)
+
+    async def _recent_option_orders(self, limit: int = 40) -> list:
+        """Recent option orders (newest first) for reconcile. Best-effort; [] on error."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        try:
+            orders = await asyncio.to_thread(rs.orders.get_all_option_orders)
+        except Exception as e:
+            log.warning("_recent_option_orders: %s", e)
+            return []
+        return list(orders or [])[:limit]
+
+    @staticmethod
+    def _order_created_within(order, now, window_s: float) -> bool:
+        ts = (order or {}).get("created_at") or (order or {}).get("updated_at")
+        if not ts:
+            return False
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            return abs((now - dt).total_seconds()) <= float(window_s)
+        except Exception:
+            return False
+
+    def _match_recent_order(self, recent, orders, ref_id):
+        """Match a recent RH option order to our just-submitted combo WITHOUT
+        re-submitting. Prefer our deterministic ref_id (if RH surfaces it on the
+        payload); else fall back to (leg-identity set + quantity + a tight created-at
+        window). Returns the order dict or None."""
+        recent = recent or []
+        # 1. ref_id match (exact) — only if RH actually surfaces ref_id.
+        if ref_id:
+            for o in recent:
+                if str((o or {}).get("ref_id") or "") == str(ref_id):
+                    return o
+        # 2. Fallback: leg identity + quantity + recency.
+        want_keys = set()
+        for od in orders:
+            ex = od.extra or {}
+            k = self._option_identity_key(
+                ex.get("option_type"), ex.get("expiration"), ex.get("strike"))
+            if k is not None:
+                want_keys.add(k)
+        if not want_keys:
+            return None
+        try:
+            want_qty = float(orders[0].qty) if orders else None
+        except (TypeError, ValueError):
+            want_qty = None
+        now = datetime.now(timezone.utc)
+        for o in recent:
+            o = o or {}
+            if not self._order_created_within(o, now, self._RECONCILE_WINDOW_S):
+                continue
+            have_keys = set()
+            for leg in (o.get("legs") or []):
+                lk = self._option_identity_key(
+                    (leg or {}).get("option_type"),
+                    (leg or {}).get("expiration_date"),
+                    (leg or {}).get("strike_price"),
+                )
+                if lk is not None:
+                    have_keys.add(lk)
+            if not (want_keys <= have_keys):
+                continue
+            if want_qty is not None:
+                try:
+                    if abs(float(o.get("quantity") or 0) - want_qty) > 1e-6:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            return o
+        return None
+
+    async def _reconcile_after_submit_failure(self, orders, ref_id):
+        """After a 401/429 on submit, determine whether the combo ACTUALLY placed —
+        without re-submitting. Match a recent order (ref_id or fallback key), poll it
+        to terminal, and return fills ONLY on a confirmed `filled`; else None (caller
+        books nothing + raises pending). Never synthesizes; never raises. Fail-closed:
+        a missed order is picked up by the next scan's broker re-derivation."""
+        try:
+            recent = await self._recent_option_orders()
+        except Exception as e:
+            log.warning("reconcile: list recent orders failed: %s", e)
+            return None
+        match = self._match_recent_order(recent, orders, ref_id)
+        if match is None:
+            log.warning("reconcile: NO recent order matched ref_id=%s (%d legs) — "
+                        "treating as NOT placed (book nothing)", ref_id, len(orders))
+            return None
+        order_id = str((match or {}).get("id") or "")
+        if not order_id:
+            return None
+        try:
+            final = await self._await_terminal_option_order(match, order_id)
+        except Exception as e:
+            log.warning("reconcile: poll of matched order %s raised: %s", order_id, e)
+            return None
+        state = str((final or {}).get("state") or "").lower()
+        if state != "filled":
+            log.warning("reconcile: matched order %s is %r (not filled) — book nothing",
+                        order_id, state)
+            return None
+        rh_account = self._account_number_from(final) or self._account_number or None
+        log.warning("reconcile: matched order %s CONFIRMED filled after a submit auth/rate "
+                    "failure — booking it (no re-submit)", order_id)
+        return self._build_fills_from_result(final, orders, order_id, rh_account)
 
     @staticmethod
     def _option_identity_key(option_type, expiration, strike):

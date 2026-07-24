@@ -9,7 +9,7 @@ planning/broker_multi_leg_interface_design.md.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -346,7 +346,11 @@ async def test_place_multi_leg_handles_none_response():
     this IS the ambiguous 'did it place?' state on the hot combo path."""
     b = _make_broker()
     legs = _standard_ic_legs()
-    with patch.object(rs.orders, "order_option_spread", return_value=None):
+    # Session ALIVE (auth ok) → a None response is a genuine reject → RobinhoodOrderError.
+    # (A None response while the session is DEAD takes the 401 reconcile path — see
+    # test_robinhood_order_reconcile.py.)
+    with patch.object(rs.orders, "order_option_spread", return_value=None), \
+         patch.object(b, "_auth_is_401", new=AsyncMock(return_value=False)):
         with pytest.raises(RobinhoodOrderError):
             await b.place_multi_leg(legs)
 
