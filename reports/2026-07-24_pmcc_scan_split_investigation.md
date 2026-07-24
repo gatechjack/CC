@@ -60,3 +60,20 @@ LLM context — contrary to the brokerage-first policy. Not part of this redesig
 
 **Deploy:** its own Stage-2 (separate from Build A) — it's an orchestration change and benefits from
 independent review. Build A (money/observability fix) should deploy first.
+
+## LOCKED design decisions (operator, 2026-07-24)
+
+- **Post-settle trigger = liveness-gated + bounds.** Market-live probe = a broadly-liquid **reference
+  (SPY/QQQ)**, NOT a thin single name; then the existing **per-name liquidity gate** filters thin names
+  (no card) without blocking others. Earliest-start **~9:38 ET**, backstop **~9:50 ET**, all config.
+  **Backstop behavior: if not clean at backstop, DO NOT force-scan** — defer, emit a calm
+  *"actionable scan deferred: quotes not live, retrying next cadence"*, retry on the normal interval.
+  Never hang, never fire on garbage.
+- **Triage output = calm digest, two registers.** Routine near-DTE → calm, with an explicit line
+  *"the engine will present roll cards after the open — no manual action needed before then."* Genuine
+  breach/assignment risk → escalate clearly (the one pre-open-valid actionable). **No per-name aborts**
+  from the triage pass either way.
+- **Manual `/scan` and dashboard paths** stay operator on-demand overrides (unguarded) in this build —
+  they run immediately with item-4 calm aborts + item-2 consent guard as backstops. Guarding them is a
+  noted follow-up, deliberately out of scope to preserve operator override.
+- **Liveness probe is GLOBAL** (SPY/QQQ gates the whole pass); per-name liquidity is the existing gate.
