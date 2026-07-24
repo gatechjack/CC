@@ -345,6 +345,7 @@ class PEADStrategy:
         bars_by: dict[str, list[_Bar]] = {}
         ann_by: dict[str, date] = {}
         nxt_by: dict[str, date | None] = {}
+        slot_by: dict[str, str | None] = {}   # BMO/AMC reporting slot per symbol (None = unknown)
         for sym in universe:
             if sym in held:
                 continue
@@ -375,6 +376,7 @@ class PEADStrategy:
             bars_by[sym] = bars
             ann_by[sym] = ann
             nxt_by[sym] = nxt
+            slot_by[sym] = getattr(latest, "report_time", None)   # carry BMO/AMC slot (from calendar via QuarterlyEPS)
 
         ranked = rank_wave(eps_by, screens, sue_params=sue_params,
                            screen_params=screen_params)
@@ -427,6 +429,7 @@ class PEADStrategy:
                     "earnings_gap_top": prim["earnings_gap_top"],
                     "next_earnings_date": nxt.isoformat() if nxt else None,
                     "entry_sue": float(cand.sue),
+                    "report_time": slot_by.get(cand.symbol),   # BMO/AMC slot carried for a future confirmation gate; None = unknown (do NOT default)
                     "name": cand.symbol,
                     # ledger trade-card fields
                     "entry_reference_price": entry_price,  # overwritten with realized fill (live)

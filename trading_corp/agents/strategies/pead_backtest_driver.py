@@ -105,23 +105,24 @@ def build_signals(
                 days_to_next_earnings=_trading_days_between(bars, d, next_report),
             )
             wave_sue[d][sym] = sue
-            wave_meta[d][sym] = (screen, next_report)
+            wave_meta[d][sym] = (screen, next_report, r.report_time)   # carry BMO/AMC slot from QuarterlyEPS
 
     signals: list[EventSignal] = []
     for d in sorted(wave_sue):
         candidates: list[PeadCandidate] = []
         for sym, sue in wave_sue[d].items():
-            screen, _ = wave_meta[d][sym]
+            screen, _, _ = wave_meta[d][sym]
             ok, reason = passes_screen(screen, screen_params)
             candidates.append(PeadCandidate(sym, sue, ok, reason))
         for c in select_candidates(candidates, sue_params):
-            _, next_report = wave_meta[d][c.symbol]
+            _, next_report, report_time = wave_meta[d][c.symbol]
             signals.append(EventSignal(
                 symbol=c.symbol,
                 announcement_date=d,
                 sue=float(c.sue),  # type: ignore[arg-type]
                 bars=bars_by_symbol[c.symbol],
                 next_earnings_date=next_report,
+                report_time=report_time,   # BMO/AMC slot carried for the confirmation-gate backtest
             ))
     return signals
 

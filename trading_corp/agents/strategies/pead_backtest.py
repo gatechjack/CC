@@ -70,6 +70,7 @@ class EventSignal:
     sue: float
     bars: Sequence[Bar]
     next_earnings_date: date | None = None
+    report_time: str | None = None   # 'BeforeMarket' | 'AfterMarket' | None (BMO/AMC slot; None = unknown)
 
 
 @dataclass(frozen=True)
