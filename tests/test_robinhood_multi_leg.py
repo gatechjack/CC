@@ -157,6 +157,97 @@ async def test_place_multi_leg_submits_one_combo_with_correct_shape():
     assert all(f.qty == 1.0 for f in fills)
 
 
+# ---------------------------------------------------------------------------
+# place_multi_leg — per-leg fill attribution by OPTION IDENTITY (2026-07-24)
+# Robinhood returns spread legs in ITS OWN order; pairing by list index lands
+# one leg's fill on another and sign-flips the combo net. Match by identity.
+# ---------------------------------------------------------------------------
+
+
+def _roll_short_legs(combo_id: str = "roll-1") -> list[ProposedOrder]:
+    """2-leg PMCC roll_short: buy-to-close 74C (limit 0.03) + sell-to-open 75C
+    (limit 1.25), net credit 1.14. Order list is [buy_close, sell_open]."""
+    def _leg(side, effect, strike, exp, limit):
+        return ProposedOrder(
+            strategy="robinhood_pmcc",
+            symbol="RKLB",
+            side=side,  # type: ignore[arg-type]
+            qty=1.0,
+            order_type="limit",
+            limit_price=limit,
+            extra={
+                "is_option": True, "is_multi_leg": True,
+                "combo_id": combo_id, "combo_direction": "credit",
+                "net_limit_price": 1.14, "underlying": "RKLB",
+                "expiration": exp, "strike": strike, "option_type": "call",
+                "position_effect": effect, "ratio_quantity": 1,
+            },
+        )
+    return [
+        _leg("buy", "close", 74.0, "2026-07-24", 0.03),
+        _leg("sell", "open", 75.0, "2026-07-31", 1.25),
+    ]
+
+
+def _rh_filled(legs_in_response):
+    return {"id": "RH-ORD", "state": "filled", "legs": legs_in_response}
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_attributes_fills_by_identity_when_rh_reorders():
+    """RH returns legs REVERSED (sell-leg data first) with identity fields.
+    The buy leg must get 0.03 and the sell leg 1.20 — NOT the positional swap
+    that would put 1.20 on the buy leg (the 2026-07-24 phantom-debit bug)."""
+    b = _make_broker()
+    legs = _roll_short_legs()
+    reversed_resp = _rh_filled([
+        {"option_type": "call", "expiration_date": "2026-07-31",
+         "strike_price": "75.0000", "price": "1.20"},   # sell-leg fill, first
+        {"option_type": "call", "expiration_date": "2026-07-24",
+         "strike_price": "74.0000", "price": "0.03"},   # buy-leg fill, second
+    ])
+    with patch.object(rs.orders, "order_option_spread", return_value=reversed_resp):
+        fills = await b.place_multi_leg(legs)
+
+    by_side = {f.side: f.price for f in fills}
+    assert by_side["buy"] == 0.03      # buy-to-close 74C, NOT 1.20
+    assert by_side["sell"] == 1.20     # sell-to-open 75C, NOT 0.03
+    # fills stay parallel to `orders`; net = sell - buy = +1.17 (a credit).
+    assert fills[0].side == "buy" and fills[0].price == 0.03
+    assert fills[1].side == "sell" and fills[1].price == 1.20
+    assert fills[1].price - fills[0].price == pytest.approx(1.17)
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_identity_match_is_order_independent():
+    """Same attribution whether RH echoes legs in submitted or reversed order."""
+    b = _make_broker()
+    sell_leg = {"option_type": "call", "expiration_date": "2026-07-31",
+                "strike_price": "75.0000", "price": "1.20"}
+    buy_leg = {"option_type": "call", "expiration_date": "2026-07-24",
+               "strike_price": "74.0000", "price": "0.03"}
+    for resp_legs in ([buy_leg, sell_leg], [sell_leg, buy_leg]):
+        with patch.object(rs.orders, "order_option_spread",
+                          return_value=_rh_filled(resp_legs)):
+            fills = await b.place_multi_leg(_roll_short_legs())
+        by_side = {f.side: f.price for f in fills}
+        assert by_side == {"buy": 0.03, "sell": 1.20}
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_falls_back_to_positional_without_identity_fields():
+    """When RH omits identity fields (strike/expiration/type), attribution
+    falls back to positional index (legacy). Response legs [sell_price,
+    buy_price] then map positionally to orders [buy, sell]."""
+    b = _make_broker()
+    resp = _rh_filled([{"price": "1.20"}, {"price": "0.03"}])  # no identity keys
+    with patch.object(rs.orders, "order_option_spread", return_value=resp):
+        fills = await b.place_multi_leg(_roll_short_legs())
+    # Positional: orders[0]=buy gets legs[0]=1.20, orders[1]=sell gets legs[1]=0.03.
+    assert fills[0].price == 1.20
+    assert fills[1].price == 0.03
+
+
 @pytest.mark.asyncio
 async def test_place_multi_leg_returns_empty_for_empty_input():
     b = _make_broker()

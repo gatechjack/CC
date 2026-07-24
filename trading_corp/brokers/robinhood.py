@@ -1263,20 +1263,28 @@ class RobinhoodBroker(Broker):
 
         legs_result = (final or {}).get("legs") or []
         fill_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # Map each SUBMITTED leg to its Robinhood result leg by OPTION IDENTITY
+        # (option_type + expiration + strike), NOT by list position: Robinhood
+        # returns the spread's legs in ITS OWN order, which need not match our
+        # `orders`. A positional legs_result[i] pairing lands one leg's fill on
+        # another -> per-leg fills swap and the combo net sign-flips to a phantom
+        # debit (2026-07-24: RKLB +$117 credit was self-read as -$117). Falls
+        # back to positional only when RH omits identity fields.
+        matched_legs = self._match_result_legs_to_orders(
+            orders, legs_result, rh_combo_id,
+        )
         fills: list[FillEvent] = []
-        for i, o in enumerate(orders):
+        for o, leg in zip(orders, matched_legs):
             # Best-effort per-leg fill price. Sources, in priority order:
-            #  1. legs_result[i]["price"]                — if RH echoes per leg
-            #  2. legs_result[i]["executions"][0]["price"]  — alt shape
-            #  3. order.limit_price                      — fallback
-            leg_price = None
-            if i < len(legs_result):
-                leg = legs_result[i] or {}
-                leg_price = leg.get("price")
-                if leg_price is None:
-                    execs = leg.get("executions") or []
-                    if execs and isinstance(execs, list):
-                        leg_price = (execs[0] or {}).get("price")
+            #  1. leg["price"]                   - if RH echoes per leg
+            #  2. leg["executions"][0]["price"]  - alt shape
+            #  3. order.limit_price              - fallback
+            leg = leg or {}
+            leg_price = leg.get("price")
+            if leg_price is None:
+                execs = leg.get("executions") or []
+                if execs and isinstance(execs, list):
+                    leg_price = (execs[0] or {}).get("price")
             try:
                 price_f = float(leg_price) if leg_price is not None else float(o.limit_price or 0)
             except (TypeError, ValueError):
@@ -1294,6 +1302,66 @@ class RobinhoodBroker(Broker):
                 account=rh_account,
             ))
         return fills
+
+    @staticmethod
+    def _option_identity_key(option_type, expiration, strike):
+        """Normalized (type, expiration, strike) identity for one option leg.
+        Returns None if any component is missing/unparseable."""
+        if option_type is None or expiration is None or strike is None:
+            return None
+        try:
+            return (str(option_type).strip().lower(),
+                    str(expiration).strip(),
+                    round(float(strike), 4))
+        except (TypeError, ValueError):
+            return None
+
+    def _match_result_legs_to_orders(self, orders, legs_result, combo_id):
+        """Map submitted `orders` -> Robinhood result legs by OPTION IDENTITY.
+
+        Returns a list parallel to `orders` (each order's matching RH leg, or a
+        positional fallback). Robinhood returns spread legs in its own order, so
+        pairing by list index mis-assigns per-leg fills and sign-flips the combo
+        net. We match on (option_type, expiration, strike). If RH omits those
+        fields, or the match is not a clean bijection, we FALL BACK to positional
+        index (legacy behavior, and what the offline test doubles rely on) and
+        log loudly -- never a half-identity / half-positional mix."""
+        n = len(orders)
+        positional = [legs_result[i] if i < len(legs_result) else None
+                      for i in range(n)]
+
+        rh_by_key: dict = {}
+        for rl in legs_result:
+            k = self._option_identity_key(
+                (rl or {}).get("option_type"),
+                (rl or {}).get("expiration_date"),
+                (rl or {}).get("strike_price"),
+            )
+            if k is None or k in rh_by_key:
+                return positional          # missing identity or dup -> positional
+            rh_by_key[k] = rl
+
+        matched = []
+        for o in orders:
+            ex = o.extra or {}
+            k = self._option_identity_key(
+                ex.get("option_type"), ex.get("expiration"), ex.get("strike"),
+            )
+            leg = rh_by_key.get(k) if k is not None else None
+            if leg is None:
+                log.warning(
+                    "combo %s: order leg (%s %s %s) matched no RH result leg by "
+                    "identity; using positional fill attribution",
+                    combo_id, ex.get("option_type"), ex.get("expiration"),
+                    ex.get("strike"),
+                )
+                return positional
+            matched.append(leg)
+
+        # Require a clean bijection (n result legs, each used once) else positional.
+        if len(legs_result) != n or len({id(m) for m in matched}) != n:
+            return positional
+        return matched
 
     # Terminal-fill poll (item-1 state integrity). Instance-overridable so tests
     # can shrink the window; PMCC re-prices marketable so fills land in < 1s.
