@@ -1855,6 +1855,7 @@ tasty_options_iron_condor:
 robinhood_pead:
   enabled: true                  # declarative; divisions.yaml standby:true is the operative gate
   auto_execute: true             # GO-LIVE 2026-06-24 (Board-authorized): PEAD trades autonomously, no HITL
+  confirmation_gate: true         # gate ON 2026-07-24 (post-reaction confirmation; pead_strategy.py:393)
   division: robinhood_pead
 
   # --- Universe screen — CONFIG-DRIVEN floors (retune without a code change) ---
