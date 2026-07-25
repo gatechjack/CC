@@ -52,18 +52,37 @@
       {{ struct_label }}
     </span>
 
-    <!-- Recommended action pill (deterministic preview; LLM refines on click) -->
-    {% set action_label, action_urgency = pair.recommended_action %}
-    {% set action_classes = {
-      'urgent':   'bg-loss/15 text-loss border border-loss/30',
-      'elevated': 'bg-warn/15 text-warn border border-warn/30',
-      'routine':  'bg-edge text-muted border border-edge',
-    }.get(action_urgency, 'bg-edge text-muted border border-edge') %}
-    <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
-                 px-1.5 py-0.5 rounded font-semibold {{ action_classes }}"
-          title="Recommended action ({{ action_urgency }}) — click row for full LLM analysis.">
-      {{ action_label }}
-    </span>
+    <!-- Unified decision status pill: ONE timestamped verdict per asset, shared
+         with the Expert panel. fresh (<Nh) shows the scan/expert badge; stale
+         (>Nh) mutes to "stale —"; no signal this session shows "awaiting scan"
+         (visually distinct so a blank morning tile reads as working, not broken).
+         Replaces the old deterministic recommended_action preview so the tile
+         and Expert panel can no longer disagree. -->
+    {% set us = pair.unified_status %}
+    {% if us and us.state == 'fresh' %}
+      {% set action_classes = {
+        'urgent':   'bg-loss/15 text-loss border border-loss/30',
+        'elevated': 'bg-warn/15 text-warn border border-warn/30',
+        'routine':  'bg-edge text-muted border border-edge',
+      }.get(us.urgency, 'bg-edge text-muted border border-edge') %}
+      <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+                   px-1.5 py-0.5 rounded font-semibold {{ action_classes }}"
+            title="Latest {{ us.source or 'scan' }} decision ({{ us.urgency }}){% if us.age_h is not none %} · {{ '%.0f' % us.age_h }}h ago{% endif %} — matches the Expert panel. Click row for full analysis.">
+        {{ us.status_label }}
+      </span>
+    {% elif us and us.state == 'stale' %}
+      <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+                   px-1.5 py-0.5 rounded border border-edge bg-transparent text-muted/50 italic"
+            title="Last {{ us.source or 'scan' }} decision{% if us.age_h is not none %} is {{ '%.0f' % us.age_h }}h old{% endif %} (past the staleness window) — the next post-open scan will refresh it. Click row to Re-analyze now.">
+        {{ us.stale_label }} —
+      </span>
+    {% else %}
+      <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+                   px-1.5 py-0.5 rounded border border-dashed border-edge/60 text-muted/40"
+            title="No decision produced this session yet (pre-open, or the post-open scan hasn't run / aborted on this name). Not an error — click row to Re-analyze.">
+        {{ (us.no_signal_label if us else 'awaiting scan') }}
+      </span>
+    {% endif %}
 
     <!-- Short-leg DTE — surfaces "how urgent is this roll?" on the collapsed row.
          Only renders when there's a short with a known DTE (uncovered_leap /

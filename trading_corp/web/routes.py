@@ -866,10 +866,17 @@ def register(app: FastAPI) -> None:
                     slug, sym, fresh=False, expires_at=expires_at,
                 ))
 
+        # Unified-record reader: the PMCC Expert panel reflects the ONE
+        # timestamped decision the tile shows (scan or manual expert). The LLM
+        # only re-runs on an explicit Re-analyze (?force=1) below — keeping the
+        # tile and panel in lockstep and cutting per-click Anthropic calls.
+        if slug == "robinhood_pmcc" and deps.pmcc_agent is not None and not force:
+            return HTMLResponse(_render_pmcc_record_panel(deps, slug, sym))
+
         key = (slug, sym)
         with _LLM_LOCK:
             entry = _pair_cache.get(key)
-            if entry is not None:
+            if entry is not None and not force:   # force=1 (Re-analyze) => fresh
                 html, ts = entry
                 if time.time() - ts < _PAIR_CACHE_TTL_SEC:
                     return HTMLResponse(html)
@@ -934,6 +941,22 @@ def register(app: FastAPI) -> None:
         if analysis is None:
             return HTMLResponse(_pair_unavailable_html(sym, "No matching open position found."))
 
+        # Manual Re-analyze -> persist a fresh source='expert' verdict to the
+        # unified decision record (expert ALWAYS overwrites) so the tile updates
+        # immediately and stays in sync with this panel. Best-effort.
+        try:
+            from trading_corp.agents.divisions import _pmcc_status
+            from datetime import datetime as _dt, timezone as _tz
+            _pmcc_status.record_pmcc_decision(
+                sym, status=analysis.action, source="expert",
+                computed_at=_dt.now(_tz.utc).isoformat(), db_url=deps.db_url,
+                urgency=analysis.urgency, confidence=analysis.confidence,
+                summary=analysis.summary, rationale=analysis.rationale,
+                warnings=analysis.warnings,
+            )
+        except Exception as e:
+            log.warning("pmcc expert record write(%s) failed: %s", sym, e)
+
         # Build the concrete trade recommendation (legs + costs + benefits).
         # Failure here is non-fatal — we still want the textual analysis.
         rec = None
@@ -942,7 +965,11 @@ def register(app: FastAPI) -> None:
         except Exception as e:
             log.warning("build_trade_recommendation(%s) raised: %s", sym, e)
 
-        html = _render_pair_analysis(analysis, recommendation=rec, slug=slug, symbol=sym)
+        html = _render_pair_analysis(
+            analysis, recommendation=rec, slug=slug, symbol=sym,
+            status_banner=_pmcc_status_banner(slug, sym, state="fresh",
+                                              age_h=0.0, source="expert"),
+        )
         with _LLM_LOCK:
             _pair_cache[key] = (html, time.time())
         return HTMLResponse(html)
@@ -4301,7 +4328,7 @@ def _render_ira_pair_analysis(cc) -> str:  # noqa: ANN001 — CoveredCallPositio
 
 def _render_pair_analysis(
     analysis, recommendation=None, slug: str = "", symbol: str = "",
-    show_execute_button: bool = True,
+    show_execute_button: bool = True, status_banner: str = "",
 ) -> str:
     """Render a PMCCAnalysis (+ optional TradeRecommendation) as dark-theme HTML.
 
@@ -4423,6 +4450,7 @@ def _render_pair_analysis(
 
     return (
         '<div class="space-y-3">'
+        f'{status_banner}'
         f'<div class="flex items-center gap-2 flex-wrap">'
         f'<span class="text-base">{urgency_emoji}</span>'
         f'<span class="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded font-mono '
@@ -4436,6 +4464,111 @@ def _render_pair_analysis(
         f'{params_html}'
         f'{button_html}'
         '</div>'
+    )
+
+
+# ── Unified tile/expert decision: Expert-panel-as-reader helpers ────────────
+# The Expert panel reads the SAME per-asset decision record the tile shows, so
+# the two can no longer disagree. The LLM only re-runs on an explicit Re-analyze
+# (?force=1), which writes a fresh source='expert' verdict.
+
+def _pmcc_reanalyze_button(slug: str, symbol: str, label: str = "↻ Re-analyze now") -> str:
+    """Explicit Re-analyze control — re-runs the LLM (?force=1) and writes a
+    fresh expert verdict to the unified decision record."""
+    return (
+        f'<button hx-get="/division/{slug}/pair-analysis/{symbol}?force=1"'
+        ' hx-target="#pair-analysis" hx-swap="innerHTML"'
+        ' class="w-full mt-1 px-3 py-1.5 rounded-md font-mono text-xs'
+        '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
+        '        transition-colors border border-edge">'
+        f'{label}</button>'
+    )
+
+
+def _pmcc_status_banner(slug: str, symbol: str, *, state: str, age_h, source) -> str:
+    """Freshness banner above a record-sourced Expert panel + a Re-analyze button.
+
+    fresh -> subtle "latest {source} decision · Xh ago · in sync"; stale -> a
+    muted "stale as of Xh" note (the tile shows the same 'stale' badge).
+    """
+    age_txt = f"{age_h:.0f}h ago" if isinstance(age_h, (int, float)) else "—"
+    src = source or "scan"
+    if state == "stale":
+        note = (
+            '<div class="flex items-center gap-2 text-[11px] font-mono text-muted/60 italic'
+            '            px-2 py-1 rounded border border-edge bg-transparent">'
+            f'<span>⏳ stale as of {age_txt}</span>'
+            f'<span class="text-muted/40">· last {src} verdict · a scan will refresh it</span>'
+            '</div>'
+        )
+    else:
+        note = (
+            '<div class="flex items-center gap-2 text-[11px] font-mono text-muted/60'
+            '            px-2 py-1 rounded border border-edge bg-pane-2/40">'
+            f'<span>latest {src} decision · {age_txt}</span>'
+            '<span class="text-muted/40 ml-auto">tile &amp; panel in sync</span>'
+            '</div>'
+        )
+    return note + _pmcc_reanalyze_button(slug, symbol)
+
+
+def _pmcc_no_signal_panel(slug: str, symbol: str, cfg: dict) -> str:
+    """Panel shown when no decision exists this session (pre-open / scan aborted).
+    Reads 'working, not broken' + a Re-analyze button to generate one now."""
+    label = (cfg or {}).get("no_signal_label", "awaiting scan")
+    return (
+        '<div class="space-y-3">'
+        '<div class="flex items-center gap-2 text-xs font-mono text-muted/60'
+        '            px-2 py-2 rounded border border-dashed border-edge/60">'
+        '<span class="text-base">🕓</span>'
+        f'<span>No decision this session yet — {label}.</span>'
+        '</div>'
+        '<div class="text-[11px] text-muted/50 leading-relaxed">'
+        'The post-open scan writes a verdict per position; pre-open (or if the '
+        'scan aborted on this name) the tile stays blank by design. Re-analyze to '
+        'generate a fresh expert verdict now.'
+        '</div>'
+        + _pmcc_reanalyze_button(slug, symbol)
+        + '</div>'
+    )
+
+
+def _pmcc_analysis_from_record(rec: dict):
+    """Duck-typed analysis object from a persisted decision record, for
+    `_render_pair_analysis` (reads .action/.urgency/.confidence/.summary/
+    .rationale/.warnings/.target_delta/.target_dte)."""
+    import types
+    return types.SimpleNamespace(
+        action=rec.get("status"),
+        urgency=rec.get("urgency") or "routine",
+        confidence=rec.get("confidence"),
+        summary=rec.get("summary"),
+        rationale=rec.get("rationale"),
+        warnings=rec.get("warnings") or [],
+        target_delta=None,
+        target_dte=None,
+    )
+
+
+def _render_pmcc_record_panel(deps, slug: str, symbol: str) -> str:
+    """Render the Expert panel from the UNIFIED decision record (no LLM call):
+    fresh/stale -> the persisted verdict + freshness banner; none -> awaiting-scan."""
+    from datetime import datetime as _dt, timezone as _tz
+    from trading_corp.agents.divisions import _pmcc_status
+    cfg = (getattr(deps.pmcc_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
+    stale_h = float(cfg.get("staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+    rec = _pmcc_status.load_decision(symbol, db_url=deps.db_url)
+    now = _dt.now(_tz.utc)
+    state = _pmcc_status.classify_freshness(rec, now, stale_h)
+    if state == "none":
+        return _pmcc_no_signal_panel(slug, symbol, cfg)
+    banner = _pmcc_status_banner(
+        slug, symbol, state=state,
+        age_h=_pmcc_status.age_hours(rec, now), source=rec.get("source"),
+    )
+    return _render_pair_analysis(
+        _pmcc_analysis_from_record(rec), recommendation=None,
+        slug=slug, symbol=symbol, status_banner=banner,
     )
 
 

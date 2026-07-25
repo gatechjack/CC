@@ -2,6 +2,16 @@ robinhood_pmcc:
   enabled: true
   auto_execute: false
   auto_max_notional: 0
+  # Unified tile/expert decision freshness (UI/status layer, 2026-07-24). ONE
+  # timestamped decision per asset drives BOTH the tile status badge and the
+  # Expert Analysis panel so they can't disagree. Past `staleness_hours` a
+  # verdict is "stale" and the next post-open scan may repopulate it (the window
+  # doubles as the daily "session" boundary). Labels are config so presentation
+  # can change without a code deploy.
+  tile_status:
+    staleness_hours: 8
+    stale_label: "stale"
+    no_signal_label: "awaiting scan"
   # combo dispatch re-pricing (2026-07-23): marketable give-up per share shaved off
   # the natural at dispatch so a spread FILLS instead of resting; close_all gets a
   # much larger urgency give-up. Code defaults 0.02 / 0.25 if absent.
