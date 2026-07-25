@@ -11913,3 +11913,27 @@ Phase 1). Full session work + reports also on branch `polymarket-copy-quote-pric
 
 **Rollback:** roster→`/tmp/pm_roster_backup.json`; option-c→`.bak-pre-optc-2026-07-07`; item-1→`.bak-pre-item1-2026-07-07`
 + restart; epoch→restore `2026-05-23T15:30:15.042822+00:00` or delete key.
+
+---
+
+## 2026-07-25 — PEAD fix stack (anchor/slot/confirmation-gate/BAR-0/RH-bars/402-raise) deployed + gate ON + unhalted; book & dashboard zeroed
+
+**Context:** deployed the staged PEAD fix stack from branch `pead-drift-anchor-fix-2026-07-24` HEAD `81a7c3f`, turned the confirmation gate ON, cleared the halt (go-live), and reset the book/dashboard to a clean epoch. **PEAD-FILES-ONLY** deploy — the branch's non-PEAD files are STALE behind prod (see DRIFT below). Single restart (~00:22 UTC). Deploy split by ownership: azureuser ssh for `config/` + `agents/strategies/`; **Azure Run Command** (RunShellScript, RG-SHARED-PROD/tc-prod-vm) for the uid-197609-owned `trading_corp/data/` files. **`az` via PowerShell, NOT git-bash** (MSYS mangles `/home/...` paths → first attempt placed files at `/`, cleaned up).
+
+**Files deployed (6, all git HEAD `81a7c3f`; prod md5 == committed branch, normalized-verified):** pead_strategy.py, pead_signal.py, pead_backtest.py, pead_backtest_driver.py (→ agents/strategies/); earnings_provider.py (incl 402→raise), rh_bars.py (→ data/, chown --reference dir owner 197609). Backups `.bak_pead_deploy_20260724`.
+
+**1. 402 fix (commit `81a7c3f`).** `_eodhd_get_fundamentals` RAISES `EodhdApiError` on any non-200 (402 quota) instead of returning None → no silent yfinance fallback / null-into-SUE. Missing-data (200-empty) path unchanged.
+
+**2. Config (PROD-DIRECT).** Added `confirmation_gate: true` to robinhood_pead block (strategies.yaml:1848). `auto_execute` left `true` (already since 06-24); `divisions.yaml standby` left `false`. Config edit is PROD-DIRECT, NOT committed to the branch (branch strategies.yaml is stale/prod-behind); **prod config is the truth.**
+
+**3. Ledger reconcile + dashboard zero (DB).** 7 phantom PEAD open rows (broker-flat but ledger-open; `manage()` has NO broker reconcile → would fire phantom sells on unhalt) closed; all 11 PEAD rows archived → `pead_trade_archive_20260724` + deleted from paper_trade_record; scan_evaluation (349) → `scan_evaluation_archive_20260724` + cleared. EXIT ATTRIBUTION/equity/P&L/funnel empty. Incident evidence (NVEC −$36.206 + anchor) preserved in archives + online DB backups `.bak_pead_reconcile_20260724` / `.bak_pead_dashzero_20260724`.
+
+**4. Restart + unhalt.** Bitunix DB-flat first (0 **system** positions; an exchange position present = MANUAL, out of scope). `sudo -n systemctl restart trading-corp`; MainPID 396702→402385, NRestarts=0. Verified code (gate/402/bars) while still halted, THEN deleted `agent_state(robinhood_pead, halt)` dashboard_kill_switch row = go-live.
+
+**Verified live:** engine active PID 402385; execution_mode=live; confirmation_gate=True (running config); 402→raise present; RH bars split-adjusted (NVDA 06-07=120.888 / 06-10=121.79); PEAD book=0; halt=None; dashboard /telemetry/pead 200 LIVE "No open". PMCC (`151e442`) untouched, re-armed on restart.
+
+**DRIFT STATE (authoritative, for next session):**
+- Prod == committed branch `81a7c3f` on the 6 deployed PEAD **code** files (md5 match — deployed from `git archive`, NOT prod-direct edits). `confirmation_gate` config is prod-direct (prod = truth for config).
+- The branch STILL carries STALE non-PEAD files BEHIND prod: main.py (prod **+189**), robinhood.py (**+184**), pmcc_robinhood.py (**+168**), _pmcc_combo.py (+32), routes.py (+7), approval_pmcc_combo template (+12). **NEVER deploy this branch wholesale — PEAD files ONLY.** PMCC prod truth = `151e442`.
+
+**Rollback:** files→`.bak_pead_deploy_20260724`; config→`strategies.yaml.bak_pead_deploy_20260724`; DB→`.bak_pead_reconcile_20260724` / `.bak_pead_dashzero_20260724` (or restore rows from `pead_trade_archive_20260724` / `scan_evaluation_archive_20260724`); re-halt→re-insert `agent_state(robinhood_pead, halt)` `{"halted":true}`; then restart.
