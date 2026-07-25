@@ -165,6 +165,10 @@ class PMCCPair:
     leap: OptionLeg | None
     short_call: OptionLeg | None
     extras: list[OptionLeg]
+    # Unified tile/expert decision status, attached by build_division_view for
+    # robinhood_pmcc: {state: fresh|stale|none, status_label, urgency, source,
+    # age_h, stale_label, no_signal_label}. None until attached / non-PMCC.
+    unified_status: dict | None = None
 
     @property
     def has_full_pair(self) -> bool:
@@ -3304,6 +3308,35 @@ async def build_donchian_chart_data(db_url: str, display_bars: int = 50) -> dict
     }
 
 
+def _build_pmcc_tile_status(symbol: str, *, db_url, now, cfg: dict) -> dict:
+    """Resolve the unified tile/expert decision status for one PMCC underlying.
+
+    Loads the single per-asset decision record (the SAME one the Expert panel
+    reads, so they can't disagree) and classifies it fresh|stale|none. Returns a
+    render-ready dict; never raises (a status read must not break the page).
+    """
+    from trading_corp.agents.divisions import _pmcc_status
+    cfg = cfg or {}
+    staleness_h = float(cfg.get("staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+    rec = _pmcc_status.load_decision(symbol, db_url=db_url)
+    state = _pmcc_status.classify_freshness(rec, now, staleness_h)
+    out = {
+        "state": state,
+        "stale_label": cfg.get("stale_label", "stale"),
+        "no_signal_label": cfg.get("no_signal_label", "awaiting scan"),
+        "status_label": None,
+        "urgency": "routine",
+        "source": None,
+        "age_h": None,
+    }
+    if state in ("fresh", "stale") and isinstance(rec, dict):
+        out["status_label"] = (rec.get("status") or "—").upper().replace("_", " ")
+        out["urgency"] = rec.get("urgency") or "routine"
+        out["source"] = rec.get("source")
+        out["age_h"] = _pmcc_status.age_hours(rec, now)
+    return out
+
+
 async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     """Fan out everything needed for the /division/{slug} page.
 
@@ -3411,6 +3444,21 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     # Group into PMCC pairs: per underlying, pick the longest-DTE long call
     # as the LEAP and the nearest-DTE short call as the short leg.
     pmcc_pairs, other_options = _group_pmcc_pairs(legs, prices)
+
+    # Attach the unified tile/expert decision status to each PMCC pair
+    # (robinhood_pmcc only) — one timestamped verdict per asset, shared with the
+    # Expert panel, classified fresh|stale|none. Best-effort; a status-read
+    # failure leaves the tile at NO SIGNAL rather than breaking the page.
+    if slug == "robinhood_pmcc" and pmcc_pairs:
+        _ts_cfg = {}
+        _agent = getattr(deps, "pmcc_agent", None)
+        if _agent is not None:
+            _ts_cfg = (getattr(_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
+        _ts_now = datetime.now(timezone.utc)
+        for _p in pmcc_pairs:
+            _p.unified_status = _build_pmcc_tile_status(
+                _p.underlying, db_url=deps.db_url, now=_ts_now, cfg=_ts_cfg,
+            )
 
     # Activity feed for this division
     activity = _query_division_activity(deps.db_url, slug, division.strategy, limit=20)

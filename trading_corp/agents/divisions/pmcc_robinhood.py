@@ -2120,6 +2120,29 @@ Action reference:
                 )
                 analyses[sym] = a
 
+        # ── Unified tile/expert decision record (scan writer) ──────────────
+        # Persist each analyzed symbol's FINAL verdict (source='scan') so the
+        # tile badge and the Expert panel read one timestamped decision instead
+        # of diverging. Precedence protects a still-fresh manual Expert; a symbol
+        # whose LLM analysis aborted (None) is left UNwritten -> tile NO SIGNAL.
+        # Best-effort — a status write never blocks the scan. (Pre-open triage()
+        # is a separate method and deliberately writes nothing here.)
+        if self._db_url and analyses:
+            from trading_corp.agents.divisions import _pmcc_status
+            _now_iso = now_utc().isoformat()
+            _stale_h = float((self._cfg.get("tile_status") or {}).get(
+                "staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+            for _sym, _a in analyses.items():
+                if _a is None:
+                    continue
+                _pmcc_status.record_pmcc_decision(
+                    _sym, status=_a.action, source="scan", computed_at=_now_iso,
+                    db_url=self._db_url, urgency=_a.urgency,
+                    confidence=_a.confidence, summary=_a.summary,
+                    rationale=_a.rationale, warnings=_a.warnings,
+                    staleness_hours=_stale_h,
+                )
+
         orders: list[ProposedOrder] = []
 
         # Iterate union of universe ∪ legs_by_symbol. Held legs always
