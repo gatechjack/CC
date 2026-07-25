@@ -394,6 +394,42 @@ def scan_filter_counters(
 # ---------------------------------------------------------------------------
 
 
+def normalized_net_actual(net_actual: Any, direction: Any) -> float | None:
+    """Direction-normalized `net_actual` for DISPLAY (credit +, debit −).
+
+    `combo_filled.net_actual` is stored as a signed magnitude with `direction`
+    the authoritative sign source. A pre-2026-07-24 leg-attribution bug (fixed in
+    `robinhood.py`) could store it with a FLIPPED sign when Robinhood returned the
+    combo legs reordered — e.g. the 2026-07-24 RKLB roll booked `-1.17` and OPEN
+    `-0.26` for genuine credits. We take the magnitude and re-apply the sign the
+    display convention implies, so a sign-flipped row renders correct. Pure /
+    read-only — the audit row is NEVER mutated. None-safe.
+    """
+    if net_actual is None:
+        return None
+    try:
+        mag = abs(float(net_actual))
+    except (TypeError, ValueError):
+        return None
+    return -mag if direction == "debit" else mag
+
+
+def slippage_vs_limit(net_actual: Any, net_limit: Any) -> float | None:
+    """Favorable actual-vs-limit slippage recomputed from MAGNITUDES.
+
+    The stored `actual_vs_limit_slippage_dollars` is `abs(actual - net_limit)`,
+    which inflates when `net_actual`'s sign is flipped (RKLB's stored slippage is
+    `abs(-1.17 - 1.14) = 2.31` vs the true `0.03`). Both operands are magnitudes,
+    so the sign-flip-immune gap is `abs(|actual| - |net_limit|)`. None-safe.
+    """
+    if net_actual is None or net_limit is None:
+        return None
+    try:
+        return abs(abs(float(net_actual)) - abs(float(net_limit)))
+    except (TypeError, ValueError):
+        return None
+
+
 def combo_slippage_stats(
     *,
     strategy: str | None = STRATEGY_SLUG_DEFAULT,
@@ -405,10 +441,11 @@ def combo_slippage_stats(
     """Distribution of actual-vs-limit slippage per filled combo.
 
     Pulls `combo_filled` audit rows emitted by `data_exec.place_combo`.
-    Each row's payload carries `actual_vs_limit_slippage_dollars`, which
-    is `abs(actual_net - net_limit_price)` — positive means we got a
-    better fill than our limit, zero means exact, negative isn't
-    possible because place_combo only fills at-or-better.
+    `net_actual` and `slippage_dollars` are DIRECTION-NORMALIZED at read time
+    (`normalized_net_actual` / `slippage_vs_limit`: credit positive, debit
+    negative; slippage from magnitudes) so rows written by the pre-2026-07-24
+    leg-attribution bug (a flipped `net_actual` sign) report the true credit and
+    the true `abs(|actual| - |limit|)` gap. The stored audit row is never mutated.
 
     Returns:
 
@@ -451,7 +488,10 @@ def combo_slippage_stats(
             continue
         if division is not None and p.get("division") != division:
             continue
-        slip = p.get("actual_vs_limit_slippage_dollars")
+        # Direction-normalized at read time (credit +, debit −; slippage from
+        # magnitudes) so pre-2026-07-24 sign-flipped rows report the true values.
+        # The stored audit row is untouched.
+        slip = slippage_vs_limit(p.get("net_actual"), p.get("net_limit_price"))
         if slip is None:
             continue
         events.append({
@@ -459,8 +499,8 @@ def combo_slippage_stats(
             "combo_id": p.get("combo_id"),
             "direction": p.get("direction"),
             "net_limit": p.get("net_limit_price"),
-            "net_actual": p.get("net_actual"),
-            "slippage_dollars": float(slip),
+            "net_actual": normalized_net_actual(p.get("net_actual"), p.get("direction")),
+            "slippage_dollars": slip,
             "intent": (
                 # The strategy module stamps combo_intent on every leg's
                 # extra; place_combo carries it through into the audit
