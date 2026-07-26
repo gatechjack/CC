@@ -12,6 +12,24 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## kalshi_arbitrage bucket audit `would_emit` overstates missed opportunities (ignores detector guards) — OPEN (filed 2026-07-26, P3 observability)
+
+The `kalshi_bucket_evaluated` audit field recomputes `would_emit = (1 − Σyes_ask) ≥
+min_edge_cents` **without** the detector's guards (`kalshi_temporal_bucket_arb.py:541-554`),
+while the real detector `_detect_bucket_violations` (`:266-273` — 60-day horizon + ≥2-leg +
+per-leg `expected_expiration` guards) correctly rejects the same event. Result: the audit
+logs `would_emit=true` for opportunities that are never tradeable. Observed 2026-07-26: the
+`KXNBERRECESSQ` recession event (6 legs, sum_yes_asks 0.784, edge 21.6¢) flagged
+`would_emit=true` on **77 consecutive scan cycles** (every 5 min) since 07-21, yet **0
+emissions** — the recession-quarter legs resolve far beyond the 60-day horizon, so the
+detector drops it (correctly). **Cosmetic only — do NOT fix without operator go.** Matters
+because it makes the audit overstate missed opportunity: a reviewer reading
+`bucket_evaluated would_emit=true` would wrongly infer a missed fat arb. Fix (when
+authorized) = compute the audit `would_emit` from the same guarded predicate the detector
+uses, or add a `rejected_by` reason field to the audit payload. **Priority: P3 /
+observability.** Not gating. Surfaced in
+`reports/2026-07-26_kalshi_arbitrage_entry_stoppage_diagnosis.md` (STEP 3).
+
 ## PMCC division — Bucket B fixes (Option 2) — ✅ CLOSED 2026-07-22 (off the open list)
 
 **CLOSED 2026-07-22 — nothing open.** 10 fixes BUILT (B1/B2/B3/B4/B7/B8/B9/B10/B11 + the roll_leap B9/B2 extension — all data/structural-integrity), 6 findings WITHDRAWN as endorsed design (B5, B6, B3 cost/benefit-gate, B8 force-0.55, STRC, position-discovery; A3 falls with B5), readiness gate green (`pmcc_paper_run_readiness.py` → exit 0), auto_execute still FALSE, nothing pushed. **Full history + tally:** `planning/pmcc_option2_bucketB_plan.md` (top STATUS table) + `planning/pmcc_phase2_handoff_2026-07-22.md` (BUCKET B CLOSED section); audit context memory [[pmcc-logic-audit-2026-07-21]]. The original queued-build detail is retained below for history.
