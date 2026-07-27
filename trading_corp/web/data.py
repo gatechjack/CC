@@ -4677,6 +4677,8 @@ def _query_pm_whales(
     db_url: str, target_slugs: list[str],
     *,
     pm_epoch: str | None = None,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
     selected_sort: str | None = None,
     selected_desc: bool = True,
     hide_uncopyable: bool = False,
@@ -4733,28 +4735,35 @@ def _query_pm_whales(
     # Kalshi K3
     if "kalshi_copy_trading" in target_slugs:
         try:
-            rows = _query(db_url, """
-              SELECT json_extract(extra_json, '$.whale_handle') AS handle,
-                     COUNT(*) AS n,
-                     SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) AS w,
-                     SUM(CASE WHEN won=0 THEN 1 ELSE 0 END) AS l,
-                     SUM(realized_pnl) AS pnl,
-                     MAX(entry_ts) AS last_ts
-              FROM kalshi_round_trips
-              WHERE division='kalshi_copy_trading' AND won IS NOT NULL
-              GROUP BY handle
-            """)
-            opens = _query(db_url, """
-              SELECT json_extract(payload_json,'$.whale_handle') AS handle,
-                     COUNT(*) AS n
-              FROM audit_event
-              WHERE actor='kalshi_copy_trader'
-                AND kind='would_have_placed'
-                AND json_extract(payload_json,'$.side')='buy'
-                AND json_extract(payload_json,'$.order_id') NOT IN
-                  (SELECT entry_order_id FROM kalshi_round_trips WHERE entry_order_id IS NOT NULL)
-              GROUP BY handle
-            """)
+            # S2 fix (c) 2026-07-26: epoch-scope the per-whale panel to match the
+            # tile (_query_pm_resolved_stats). Was full-history; now honors the
+            # Paper/Live/All slice via _kalshi_copy_mode_clause on entry_ts.
+            rows = _query(
+              db_url,
+              "SELECT json_extract(extra_json, '$.whale_handle') AS handle, "
+              "COUNT(*) AS n, "
+              "SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) AS w, "
+              "SUM(CASE WHEN won=0 THEN 1 ELSE 0 END) AS l, "
+              "SUM(realized_pnl) AS pnl, MAX(entry_ts) AS last_ts "
+              "FROM kalshi_round_trips "
+              "WHERE division='kalshi_copy_trading' AND won IS NOT NULL"
+              + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
+              + " GROUP BY handle"
+            )
+            # S2 fix (c): scope opens to the same epoch as the panel (on audit ts).
+            opens = _query(
+              db_url,
+              "SELECT json_extract(payload_json,'$.whale_handle') AS handle, "
+              "COUNT(*) AS n "
+              "FROM audit_event "
+              "WHERE actor='kalshi_copy_trader' "
+              "AND kind='would_have_placed' "
+              "AND json_extract(payload_json,'$.side')='buy' "
+              "AND json_extract(payload_json,'$.order_id') NOT IN "
+              "(SELECT entry_order_id FROM kalshi_round_trips WHERE entry_order_id IS NOT NULL)"
+              + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "ts")
+              + " GROUP BY handle"
+            )
             opens_map = {r.get("handle"): int(r.get("n") or 0) for r in opens}
             for r in rows:
                 handle = r.get("handle") or "(unknown)"
@@ -5308,13 +5317,16 @@ def _query_kalshi_whale_intel(
 
     try:
         with db.connect(db_url) as conn:
-            # 1. Entry copies (would_have_placed, side='buy') per whale handle.
+            # 1. Entry copies per whale handle. S2 fix (a) 2026-07-26: count BOTH
+            #    paper would_have_placed AND live kalshi_copy_placed_live (the live
+            #    kind froze the paper-only numerator at go-live). no_fill excluded
+            #    (liquidity, not copyability). side='buy' matches both kinds.
             rows = conn.execute(
                 "SELECT json_extract(payload_json,'$.whale_handle') AS h, "
                 "       COUNT(*) AS n, MAX(ts) AS last_ts "
                 "FROM audit_event "
                 "WHERE actor='kalshi_copy_trader' "
-                "  AND kind='would_have_placed' "
+                "  AND kind IN ('would_have_placed','kalshi_copy_placed_live') "
                 "  AND json_extract(payload_json,'$.side')='buy' "
                 "  AND json_extract(payload_json,'$.whale_handle') IS NOT NULL "
                 "GROUP BY h"
@@ -5689,6 +5701,7 @@ async def build_prediction_market_view(
         asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200, pm_epoch=pm_epoch, kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch),
         asyncio.to_thread(
             _query_pm_whales, db_url, target_slugs, pm_epoch=pm_epoch,
+            kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch,
             selected_sort=kalshi_selected_sort, selected_desc=kalshi_selected_desc,
             hide_uncopyable=kalshi_sel_hide_uncopyable, hide_net_neg=kalshi_sel_hide_net_neg,
         ),
