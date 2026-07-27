@@ -12,6 +12,21 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## Engine-wide `TypeError: not all arguments converted during string formatting` (malformed %-format logging call) — OPEN (filed 2026-07-26, P3)
+
+Recurring non-fatal logging error: a `log.<level>("...%s...", ...)` call somewhere in the engine
+has mismatched `%`-args, so Python's logging `getMessage()` raises inside `emit()`. Traceback is
+entirely in `/usr/lib/python3.12/logging/__init__.py` (emit -> format -> getMessage); logging
+swallows it (service unaffected, NRestarts=0). **Pre-existing, NOT an autopause regression** —
+first-ever occurrence **2026-06-26T13:45:58** (25 days before the 07-21 autopause shadow deploy);
+recent resurgence began 07-20 (before the deploy). Intermittent/condition-triggered: 0/day on
+07-15..07-19, then 196 (07-20) / 462 (07-21) / 168 / 124 / 642 (07-24) / 0 (07-25=restart) / 325
+(07-26). **0 occurrences are copy-division-related.** Next step (small): grep the journal for the
+caller frame ABOVE the logging internals to pin the exact `log(...)` call site, then fix the
+format string. **Priority: P3.** Non-gating; matters only because ~300/day of traceback spam
+obscures real errors in the journal. Surfaced in
+`reports/2026-07-26_kalshi_copy_S2_plan_and_followups.md` (follow-up 3).
+
 ## kalshi_arbitrage bucket audit `would_emit` overstates missed opportunities (ignores detector guards) — OPEN (filed 2026-07-26, P3 observability)
 
 The `kalshi_bucket_evaluated` audit field recomputes `would_emit = (1 − Σyes_ask) ≥
