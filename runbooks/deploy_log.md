@@ -116,6 +116,44 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-27 ~16:43 UTC — PMCC tile `structure_type` classifier fix DEPLOYED + VERIFIED LIVE — classify by COVER not LEAP-DTE (fixes "COVERED CALL" mislabel of aged LEAPs) (agent-driven autonomous deploy under explicit Board authorization; display/classifier layer; flat-window restart)
+
+**What & why:** the PMCC tile strategy badge (`PMCCPair.structure_type`, `web/data.py`) classified a long-call+short-call as `covered_call` when `leap.dte < 180` — a proxy for "is a LEAP" that BREAKS as a real LEAP ages. The 2027-01-15 LEAPs (~172 DTE) mislabeled TSLA/HOOD/MSTR/OPEN/BULL as COVERED CALL. Now classifies by WHAT COVERS THE SHORT: long call → `pmcc` (ANY DTE); equity shares ≥100/short-contract → `covered_call`; short no-cover → `short_only`; long-only → `uncovered_leap` (retires the `naked_call` DTE-flip). Threads `stock_holdings` → new `PMCCPair.underlying_shares` + optional `_group_pmcc_pairs(shares=)`. **DISPLAY-ONLY** (sole consumer `pmcc_pair.html`; engine roll / B-AE assignment / cover-naked / risk all bypass it — verified, so it never mis-handled assignment).
+
+**Commits:** `e97ebb0` (data.py + tests); branch `claude-structtype-2026-07-27`. **prod-live advanced d553a3e→e97ebb0** (FF-pushed).
+**Backup tag:** `.bak_pmcc_structtype_20260727` (data.py) on prod.
+
+**Files deployed (1):** `trading_corp/web/data.py` — cover-based `structure_type` + `underlying_shares` field + `_group_pmcc_pairs` shares arg. LF-md5 base→patched **636eeba8→07ee36ab**. (The +12-test file ran from `/tmp` on the prod venv, NOT deployed into the tree — deployed-tree diff = exactly data.py.)
+
+**Verify:** stop→mv→start via **Azure Run Command (root, no sudo)**. PID 433486→**435217** (16:43 UTC), NRestarts=0, 0 new tracebacks (2 known crypto-earnings ERRORs only). Dashboard `/division/robinhood_pmcc`: **all 10 tiles PMCC** (`COVERED_CALL_COUNT=0`) — TSLA/HOOD/MSTR/OPEN/BULL flipped from COVERED CALL. +12 structure_type tests **12 passed on prod venv 3.12** (`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` — web3 `pytest_ethereum` plugin is broken on the prod venv, crashes any pytest run). pmcc paper=False; auto_execute:false unchanged; no halt; nothing placed at boot; broker untouched.
+
+**Gate-A:** prod data.py LF-md5 636eeba8 == d553a3e baseline (NOT stale e4219b3) — no drift.
+
+**Rollback:** `mv trading_corp/web/data.py.bak_pmcc_structtype_20260727 trading_corp/web/data.py` + restart.
+
+---
+
+## 2026-07-27 ~15:49 UTC — PMCC stale-tile-after-execution fix DEPLOYED + VERIFIED LIVE — executed-source decision writer + hx-swap-oob tile propagation + killed false "in sync" banner (agent-driven autonomous deploy under explicit Board authorization; decision/render layer; flat-window restart)
+
+**What & why:** after a PMCC roll FILLED, the tile badge stayed "ROLL SHORT" with a live Approve button while the Re-analyzed panel showed HOLD, and a hardcoded "tile & panel in sync" banner lied. 3 render-layer defects: (1) execute never wrote the decision record; (2) the tile can't re-fetch (right-rail-only HTMX swap); (3) "in sync" was an unconditional string, not a check. (Tile & panel DO read the same record — divergence was TIME, not source.)
+
+**Commits:** `8b784b6` (fix). **DEPLOY_TIP `d553a3e`** = actual-prod `claude-2026-07-26` (`0bdc3e0`) + cherry-pick. Branches `claude-pmcc-tilefix-2026-07-27` / `deploy-pmcc-tilefix-2026-07-27`. **prod-live re-synced e4219b3→d553a3e.**
+**Backup tag:** `.bak_pmcc_tilefix_20260727` (3 code files) on prod.
+
+**Files deployed (6):** `agents/divisions/_pmcc_status.py` (NEW `executed` source precedence — always-wins incoming, scan-overwritable stored), `web/routes.py` (execute writes `executed`/hold on terminal fill + `_pmcc_tile_badge_oob` OOB on execute+Re-analyze + banner FIX3), `web/templates/partials/pmcc_pair.html` (badge → `#pmcc-badge-{SYM}` container), `web/templates/partials/_pmcc_badge.html` (NEW shared badge partial), `tests/test_pmcc_tile_status.py` + `tests/test_pmcc_tile_render.py` (NEW).
+
+**Features shipped:** a terminal fill consumes its own ROLL SHORT → HOLD (Approve self-disables; the next scan re-raises if the just-rolled position moves — **NO 8h blind spot**, unlike a sticky expert-hold); OOB tile-badge refresh with no page reload; factual "latest {source} decision" banner.
+
+**Verify:** stop→mv→start via Azure Run Command. PID 429030→**433486** (15:49 UTC), NRestarts=0, 0-tb. prod-venv suite **31 passed**; TSLA tile badge HOLD; pmcc paper=False, auto_execute:false, no halt, nothing placed. Broker untouched (one $335C short, order `6a676172`, no dup).
+
+**Gate-A:** 3 code files == `claude-2026-07-26` baseline; the 2 tests + badge were ABSENT on prod (additive).
+
+**★ prod-live had DRIFTED 16 commits behind actual prod before this** (`e4219b3..claude-2026-07-26` = kalshi copy S2 + P1/P2 dashboard, deployed prod-direct without advancing the pointer) — re-synced here; provenance audit filed in `BACKLOG.md`.
+
+**Rollback:** restore `.bak_pmcc_tilefix_20260727` ×3 + delete the 3 new files + restart.
+
+---
+
 ## 2026-07-27 ~12:11 UTC — Kalshi copy dashboard P1+P2 DEPLOYED + VERIFIED LIVE — Selected intel epoch-scoped (completes fix c) + mode-aware header + per-panel scope labels (agent-driven, autonomous under explicit Board authorization; web-only; flat-window restart)
 
 **What & why:** completes S2 fix (c) — fix (c) live-scoped the per-whale panel's *base* columns but the intel merge (`_query_kalshi_whale_intel`) stayed all-time, leaving `Copies/Copy%/Net PnL` all-time next to live-scoped `Resolved/WR%/Realized P&L` on the Selected row (the Sept re-selection sorts by Net PnL → would rank on paper backlog).

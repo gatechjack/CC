@@ -12,6 +12,10 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## `prod-live` drifted 16 commits behind actual prod — retro provenance audit — OPEN (filed 2026-07-27, P2)
+
+Before the 2026-07-27 PMCC tile-status deploy, the `prod-live` branch pointer (`e4219b3`, the 07-25 PMCC bundle) was **16 commits behind what prod was actually running** (`claude-2026-07-26` / `0bdc3e0`). Those 16 = the kalshi copy **S2 bundle (a+b+c)** + **P1/P2 dashboard** work, deployed prod-direct on 07-26/07-27 (see `deploy_log.md` entries) **without advancing `prod-live`**. The tile-status deploy re-synced `prod-live`→`d553a3e`, and the structure_type deploy advanced it→`e97ebb0` (== current prod). **So `prod-live` is truthful again as of 2026-07-27 ~16:43 UTC.** Follow-up: **audit the 16 commits** (`git log --oneline e4219b3..0bdc3e0`) to confirm (a) each shipped change is captured on a named branch + a `deploy_log.md` entry, and (b) no prod-direct edit went uncaptured (md5-diff the touched files: kalshi web/resolver — `web/data.py`, `web/routes.py`, kalshi resolver/copy modules — prod vs `0bdc3e0`). Root cause: the kalshi deploys updated prod + memory but not the `prod-live` pointer. **Priority: P2** — pointer is now correct; this is hygiene to guarantee no silent prod-direct drift remains. Detail: memory `pmcc-tile-fix-deployed-2026-07-27`.
+
 ## Kalshi copy_trading — post-deploy open loop: Sept re-selection + deferred P3 UI + autopause flip gate — OPEN (filed 2026-07-27, gated)
 
 S2 (a/b/c) + P1/P2 dashboard fixes **DEPLOYED + VERIFIED 2026-07-27** (deploy_log 2026-07-27 entries; prod PID 429030). Metrics now trustworthy; three follow-ups remain, all gated on sample maturity (current n: AI.EDGE 10 / Maggie 3 « 30):
