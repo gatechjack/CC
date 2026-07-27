@@ -12,6 +12,15 @@ backlog (with EOS snapshots + completed entries) is archived separately.
 **Last grooming pass: 2026-06-02 evening — pre-grooming this file was 8,881
 lines; post-grooming organized around three operator priorities + open items.**
 
+## Kalshi copy_trading — post-deploy open loop: Sept re-selection + deferred P3 UI + autopause flip gate — OPEN (filed 2026-07-27, gated)
+
+S2 (a/b/c) + P1/P2 dashboard fixes **DEPLOYED + VERIFIED 2026-07-27** (deploy_log 2026-07-27 entries; prod PID 429030). Metrics now trustworthy; three follow-ups remain, all gated on sample maturity (current n: AI.EDGE 10 / Maggie 3 « 30):
+- **Sept re-selection analysis (ARMED):** fires when any *Selected* whale hits **n≥30 epoch-scoped resolved round-trips OR 2026-09-01**. Produce per-whale net-of-fee copy P&L + hit-rate + copyability + recency across all observed whales; candidate roster = readable (≥75% copyability) ∩ net-positive (n≥30) ∩ recent. **Copyability ≠ profit** (the.hoff.85 99.4%-copyable but −$31.60/733RT). Full spec + trigger query in memory `kalshi-copy-s2-deployed-2026-07-27`.
+- **Autopause flip-to-active (GATED):** functional-but-SHADOW on Kalshi now. Do NOT flip until (1) a whale crosses n≥30 AND (2) shadow observed firing `would_auto_pause` correctly on real Kalshi rows. Separate operator decision.
+- **P3 UI (DEFERRED to the Sept/n≥30 trigger):** candidate flag, autopause shadow indicator, provisional/thin-sample badge — all render empty at n<30; the shadow indicator ships with the flip decision. PM-only features (Analyze button, entry-price cols) **SKIPPED** (not relevant). Detail: `reports/2026-07-27_p1p2_kalshi_copy_ui_deploy_runbook.md`.
+
+**Priority: gated — no action until the trigger.** Not urgent.
+
 ## Engine-wide `TypeError: not all arguments converted during string formatting` (malformed %-format logging call) — OPEN (filed 2026-07-26, P3)
 
 Recurring non-fatal logging error: a `log.<level>("...%s...", ...)` call somewhere in the engine
