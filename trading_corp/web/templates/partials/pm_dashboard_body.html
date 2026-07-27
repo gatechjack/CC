@@ -665,6 +665,7 @@
         Selected whales{% if view.selected == 'kalshi_copy_trading' %} — {{ view.wr_mode }} performance{% else %} — paper performance{% endif %}
       </h2>
       <div class="flex items-center gap-3">
+        {% if view.selected == 'kalshi_copy_trading' %}<div class="text-[10px] font-mono text-muted/60" title="Copy-intel columns (Copies/Copy%/Net PnL) are scoped to the selected Stats mode above">intel: {% if view.wr_mode == 'live' %}since {{ view.wr_live_epoch[:10] }} · live{% elif view.wr_mode == 'paper' %}pre-go-live · paper{% else %}all-time{% endif %}</div>{% endif %}
         <div class="text-[11px] font-mono text-muted">
           {{ view.whales | length }} whales
         </div>
@@ -888,6 +889,7 @@
         Watch list — observation only
       </h2>
       <div class="flex items-center gap-3">
+        <div class="text-[10px] font-mono text-muted/60" title="Copy-intel columns (Copies/Copy%/Net PnL) are all-time detection history — a discovery/readability signal, NOT live-scoped (these whales are not copied live)">intel: all-time · discovery</div>
         <div class="text-[11px] font-mono text-muted">
           {{ view.kalshi_watch_only | length }} whales · self-reported stats from Apify · NOT copy-traded
         </div>
