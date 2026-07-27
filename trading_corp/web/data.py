@@ -169,6 +169,10 @@ class PMCCPair:
     # robinhood_pmcc: {state: fresh|stale|none, status_label, urgency, source,
     # age_h, stale_label, no_signal_label}. None until attached / non-PMCC.
     unified_status: dict | None = None
+    # Equity shares held on this underlying (from stock_holdings), so the
+    # classifier can tell a real shares-backed covered call from a LEAP-covered
+    # PMCC. None = unknown (treated as no shares). Populated by _group_pmcc_pairs.
+    underlying_shares: float | None = None
 
     @property
     def has_full_pair(self) -> bool:
@@ -187,27 +191,40 @@ class PMCCPair:
                 parts.append(x.unrealized_pnl)
         return sum(parts) if parts else None
 
+    def _shares_cover_short(self) -> bool:
+        """True iff equity shares fully back the short call (>= 100 per short
+        contract). Shares are the *covered-call* cover; a PMCC uses a long call
+        instead (checked before this). None shares => not covered."""
+        if self.short_call is None or self.underlying_shares is None:
+            return False
+        needed = 100.0 * abs(self.short_call.qty or 0)
+        return needed > 0 and self.underlying_shares >= needed
+
     @property
     def structure_type(self) -> str:
-        """Classify the structure at a glance.
+        """Classify the structure by WHAT COVERS THE SHORT — never by the long
+        leg's remaining DTE. A real LEAP that has aged below any day-count still
+        covers its short and is still a PMCC (the 180-DTE discriminator was the
+        old covered-call mislabel bug: an aged LEAP flipped to 'covered_call').
 
         Returns one of:
-          'pmcc'           — LEAP (DTE >= 180, long call) + short call against it
-          'covered_call'   — long call (DTE < 180) + short call
-          'uncovered_leap' — LEAP only, no short
-          'naked_call'     — long call only, short DTE
-          'short_only'     — short call only (rare; usually leg of something else)
-          'other'          — unusual combination (extras only, or mixed)
+          'pmcc'           — long call (LEAP/diagonal) + short call: the long
+                             call covers the short, at ANY remaining DTE.
+          'covered_call'   — equity shares (>= 100 per short contract) + short
+                             call, NO long-call cover: the shares cover.
+          'uncovered_leap' — long call only, no short (any DTE).
+          'short_only'     — short call with no cover (no long call, no shares)
+                             = a naked short.
+          'other'          — no primary call legs (extras/puts only, or empty).
         """
-        if self.leap and self.short_call:
-            return "pmcc" if (self.leap.dte or 0) >= 180 else "covered_call"
-        if self.leap and not self.short_call:
-            return (
-                "uncovered_leap" if (self.leap.dte or 0) >= 180
-                else "naked_call"
-            )
-        if self.short_call and not self.leap:
-            return "short_only"
+        if self.short_call:
+            if self.leap:
+                return "pmcc"                    # long call covers the short (any DTE)
+            if self._shares_cover_short():
+                return "covered_call"            # equity-covered short
+            return "short_only"                  # naked short
+        if self.leap:
+            return "uncovered_leap"              # long call, no short (any DTE)
         return "other"
 
     @property
@@ -3442,8 +3459,11 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         ))
 
     # Group into PMCC pairs: per underlying, pick the longest-DTE long call
-    # as the LEAP and the nearest-DTE short call as the short leg.
-    pmcc_pairs, other_options = _group_pmcc_pairs(legs, prices)
+    # as the LEAP and the nearest-DTE short call as the short leg. Pass equity
+    # share counts so the classifier can tell a shares-backed covered call from
+    # a LEAP-covered PMCC (structure_type by cover, not by LEAP DTE).
+    _shares_by_sym = {(h.symbol or "").upper(): h.qty for h in stock_holdings}
+    pmcc_pairs, other_options = _group_pmcc_pairs(legs, prices, _shares_by_sym)
 
     # Attach the unified tile/expert decision status to each PMCC pair
     # (robinhood_pmcc only) — one timestamped verdict per asset, shared with the
@@ -5822,24 +5842,30 @@ async def _fetch_prices_async(symbols: list[str]) -> dict[str, float]:
 
 
 def _group_pmcc_pairs(
-    legs: list[OptionLeg], prices: dict[str, float]
+    legs: list[OptionLeg], prices: dict[str, float],
+    shares: dict[str, float] | None = None,
 ) -> tuple[list[PMCCPair], list[OptionLeg]]:
     """Group option legs into pairs by underlying.
 
     Every underlying with at least one option becomes a pair entry. The
     DTE-based "qualify as PMCC" filter has been removed — short-DTE long
     calls still appear as pairs, and `pair.structure_type` classifies them
-    ('pmcc' vs 'covered_call' vs 'uncovered_leap' etc.).
+    ('pmcc' vs 'covered_call' vs 'uncovered_leap' etc.) by WHAT COVERS THE
+    SHORT, not by the long leg's remaining DTE.
 
     For each underlying:
       - leap   = the long call with the highest DTE (longest-dated long)
       - short  = the short call with the lowest DTE (nearest expiry)
       - extras = everything else (puts, additional longs/shorts)
+      - underlying_shares = equity share qty (from `shares`), so a genuine
+        shares-backed covered call classifies as 'covered_call' while every
+        LEAP-covered position is 'pmcc'.
 
     Returns (pairs, other_options) where `other_options` is now always empty
     — kept in the return signature to avoid churn at call sites; will be
     removed once nothing reads it.
     """
+    shares = shares or {}
     by_und: dict[str, list[OptionLeg]] = {}
     for leg in legs:
         by_und.setdefault(leg.underlying, []).append(leg)
@@ -5864,6 +5890,7 @@ def _group_pmcc_pairs(
             leap=leap,
             short_call=short,
             extras=extras,
+            underlying_shares=shares.get(und),
         ))
 
     # Sort by priority (most urgent first), then alphabetically as tie-break
