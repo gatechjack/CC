@@ -269,6 +269,12 @@ def _compute_round_trip_row(row: dict, res: dict) -> dict | None:
                 "leg":            row.get("leg"),
                 "subtitle":       row.get("subtitle"),
                 "expires_at":     row.get("expires_at"),
+                # S2 fix (b) 2026-07-26: thread structured whale_handle into the
+                # settlement-path round-trip so autopause (_whale_autopause keys on
+                # extra_json.$.whale_handle) can see market-settlement rows — the
+                # majority of live copy P&L, previously invisible. None for non-copy
+                # actors (harmless). Pre-fix live rows covered by the one-time backfill.
+                "whale_handle":   row.get("whale_handle"),
             },
             default=str,
         ),
