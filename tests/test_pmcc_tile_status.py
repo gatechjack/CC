@@ -160,3 +160,59 @@ def test_tile_and_expert_read_same_record(db_url):
 
 def test_decision_key_normalizes_symbol():
     assert decision_key("aapl") == decision_key("AAPL") == "latest_decision:AAPL"
+
+
+# ── source='executed': terminal fill consumes its decision, scan-overwritable ─
+# A completed dashboard execution writes a HOLD so the acted-on ROLL SHORT is
+# consumed (tile flips, Approve self-disables). It must always win as an INCOMING
+# write (even over a fresh expert it just acted on) yet be freely overwritten by
+# a LATER scan — otherwise the position we just rolled would be blind for 8h.
+
+def test_executed_always_overwrites_as_incoming():
+    # Incoming 'executed' beats absent, scan, AND a still-fresh expert — the
+    # fill is a terminal fact that consumes whatever decision it acted on.
+    assert should_write(None, "executed", T0) is True
+    assert should_write({"source": "scan", "computed_at": T0}, "executed", T_1H) is True
+    assert should_write({"source": "expert", "computed_at": T0}, "executed", T_1H) is True
+
+
+def test_executed_record_is_scan_overwritable_within_window():
+    # THE critical requirement: a stored 'executed' hold is overwritten by a
+    # later scan the SAME as a scan-sourced record is — NOT sticky like a fresh
+    # expert. Proves no 8h blind spot on the just-rolled position.
+    executed = {"source": "executed", "computed_at": T0}
+    assert should_write(executed, "scan", T_1H) is True          # 1h < 8h, still overwritten
+
+
+def test_executed_hold_overwritten_by_later_scan_but_expert_is_not(db_url):
+    # Execution writes a scan-overwritable HOLD...
+    assert record_pmcc_decision("TSLA", status="hold", source="executed",
+                                computed_at=T0, db_url=db_url) is True
+    # ...a scan 1h later (well within the 8h window) MUST re-raise if the
+    # just-rolled position has moved — no blind spot.
+    assert record_pmcc_decision("TSLA", status="roll_short", source="scan",
+                                computed_at=T_1H, db_url=db_url) is True
+    r = load_decision("TSLA", db_url=db_url)
+    assert r["source"] == "scan" and r["status"] == "roll_short"
+
+    # CONTRAST (proves we didn't break expert stickiness): a fresh manual-expert
+    # HOLD is NOT overwritten by a scan within 8h.
+    assert record_pmcc_decision("MSTR", status="hold", source="expert",
+                                computed_at=T0, db_url=db_url) is True
+    assert record_pmcc_decision("MSTR", status="roll_short", source="scan",
+                                computed_at=T_1H, db_url=db_url) is False
+    assert load_decision("MSTR", db_url=db_url)["source"] == "expert"
+
+
+def test_executed_write_consumes_fresh_expert_roll_short(db_url):
+    # Re-analyze said ROLL SHORT (expert, fresh); the user then Approves and the
+    # roll fills. The 'executed' write must consume that fresh expert verdict so
+    # the tile stops showing ROLL SHORT + a live Approve button.
+    record_pmcc_decision("TSLA", status="roll_short", source="expert",
+                         computed_at=T0, db_url=db_url)
+    assert record_pmcc_decision("TSLA", status="hold", source="executed",
+                                computed_at=T_1H, db_url=db_url) is True
+    r = load_decision("TSLA", db_url=db_url)
+    assert r["status"] == "hold" and r["source"] == "executed"
+    # ...and is non-actionable, so the Approve button won't re-render.
+    assert classify_freshness(r, T_1H) == "fresh"

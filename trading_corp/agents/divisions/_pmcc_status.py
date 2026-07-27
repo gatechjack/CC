@@ -3,23 +3,31 @@
 ONE current-status record per underlying, persisted in `agent_state` under
 (agent="pmcc_robinhood", key="latest_decision:{SYMBOL}"):
 
-    {symbol, status, source: 'scan'|'expert', computed_at,
+    {symbol, status, source: 'scan'|'expert'|'executed', computed_at,
      urgency, confidence, summary, rationale, warnings}
 
 Both the tile status badge (web/data.py) and the Expert Analysis panel
-(web/routes.py) read this record so they can no longer disagree. The only
-writers are the POST-OPEN actionable scan (`source='scan'`, one per analyzed
-symbol) and a manual Expert "Re-analyze" (`source='expert'`). Pre-open triage
-writes NOTHING here.
+(web/routes.py) read this record so they can no longer disagree. The writers
+are the POST-OPEN actionable scan (`source='scan'`, one per analyzed symbol),
+a manual Expert "Re-analyze" (`source='expert'`), and a completed dashboard
+execution (`source='executed'` — a filled roll/close consuming its own
+decision). Pre-open triage writes NOTHING here.
 
 Precedence — the crux:
   - An 'expert' write ALWAYS overwrites (deliberate, trusted source).
-  - A 'scan' write overwrites ONLY if the current record is absent,
-    itself scan-sourced, or a STALE (>= staleness_hours) expert verdict —
-    so a scheduled scan (10:30 / 15:00 terminal / …) never clobbers a
-    still-fresh manual Expert. Past the staleness window the expert verdict
-    ages out and the next scan may repopulate it (the window doubles as the
-    "session" boundary).
+  - An 'executed' write ALSO always overwrites as an incoming write (a terminal
+    fact: the acted-on recommendation is DONE, so it consumes whatever it acted
+    on — even a fresh expert ROLL SHORT). BUT as a STORED record it is treated
+    exactly like a scan verdict, NOT like a sticky expert: a later scan freely
+    overwrites it. That asymmetry is the whole point — the tile flips to HOLD
+    immediately, yet the very next scan can re-raise a signal if the position we
+    just rolled moves, so there is no 8h blind spot on it.
+  - A 'scan' write overwrites the current record if it is absent, itself
+    scan-sourced, 'executed'-sourced, or a STALE (>= staleness_hours) expert
+    verdict — so a scheduled scan (10:30 / 15:00 terminal / …) never clobbers a
+    still-fresh manual Expert. Past the staleness window the expert verdict ages
+    out and the next scan may repopulate it (the window doubles as the "session"
+    boundary).
 
 Everything here is read-only w.r.t. execution/DB-position state — it only
 touches the generic `agent_state` key/value store. `classify_freshness` is a
@@ -125,9 +133,15 @@ def should_write(
     True iff a write with `source` at `computed_at` should overwrite `current`.
     """
     src = (source or "").lower()
-    if src == "expert":
-        return True            # trusted source always wins
-    # scan: overwrite absent / scan-sourced / stale-expert; protect fresh expert
+    if src in ("expert", "executed"):
+        # 'expert' = trusted manual source; 'executed' = a terminal fill that
+        # must consume the decision it acted on. Both always win as an INCOMING
+        # write. ('executed' is only scan-overwritable as a STORED record — see
+        # the non-expert branch below, which treats current.source=='executed'
+        # like 'scan', so a later scan re-raises with no blind spot.)
+        return True
+    # scan: overwrite absent / scan- or executed-sourced / stale-expert;
+    # protect only a still-fresh manual expert.
     if not isinstance(current, dict) or current.get("source") != "expert":
         return True
     return _is_stale(current.get("computed_at"), computed_at, staleness_hours)
