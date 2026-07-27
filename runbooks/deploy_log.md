@@ -116,6 +116,31 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-27 ~02:33 UTC — Kalshi copy S2 bundle (a+b+c) DEPLOYED + VERIFIED LIVE — copyability-counts-live + whale_handle→extra_json (+15-row backfill) + panel epoch-scope (agent-driven, autonomous under explicit Board authorization; flat-window restart; autopause STAYS SHADOW)
+
+**What & why:** three instrumentation fixes so the Kalshi copy dashboard reflects live reality and autopause is no longer structurally blind — prerequisites for the roster re-selection decision.
+- **(a)** `trading_corp/web/data.py::_query_kalshi_whale_intel` copies numerator → `kind IN ('would_have_placed','kalshi_copy_placed_live')` (was paper-only, frozen at go-live; `no_fill` excluded = liquidity, not copyability).
+- **(b)** `trading_corp/agents/kalshi_resolver.py::_compute_round_trip_row` writes structured `whale_handle` into extra_json so autopause (`_whale_autopause` keys on `extra_json.$.whale_handle`) can see market-SETTLEMENT rows — was blind to ALL live settlement history since go-live (whale-CLOSED pairs had it via `_pair_pending_exits`; settlement rows did not, both paper AND live). + one-time backfill of the 15 pre-fix live rows.
+- **(c)** `trading_corp/web/data.py::_query_pm_whales` epoch-scopes the per-whale panel (`_kalshi_copy_mode_clause` on round_trips.entry_ts + opens.ts) to match the tile (`_query_pm_resolved_stats`); was full-history.
+
+**Files (LF-md5 base→patched):** data.py `d12d4a07→14eeb84b`; kalshi_resolver.py `cc658dbb→d4a63eb1`. **Drift-gate:** prod==base for both (no prod-direct drift). Backups `~/trading_corp/.bak_s2_abc_20260726/{web,agents}/`.
+
+**Deploy:** scp LF-staged → /tmp, staged md5==patched verified, backup + `cat`-swap into place; restart via **Azure Run Command (root, no sudo)**. PID 404132→**424692** (start 02:33:28 UTC). Boot: 37 KV secrets, RobinhoodBroker logged in (3 accts, RH re-auth clean), all divisions registered incl. kalshi_copy_trading (kalshi-live, paper=False), **0 new tracebacks** (only pre-existing Fidelity-Playwright ENOENT→paper-fallback). Flat-window: US equity mkts closed (PMCC/PEAD idle), 0 exec events/20min, pending_order=0.
+
+**Backfill:** `scripts/backfill_s2b_kalshi_copy_whale_handle.py --apply` → 15/15 rows (AI.EDGE 11, MaggieTheEagle 3, pritz786 1), 0 unparseable. Idempotent.
+
+**4-way verify (all PASS):**
+- (a) copies OLD→NEW: AI.EDGE 16→28, Maggie 18→21 (live copies now counted).
+- (b) live rows w/ structured whale_handle: 0→**15**; resolver line deployed (grep=1) → new settlement rows will populate.
+- (c) panel full-hist→epoch: AI.EDGE 22→10, Maggie 18→3; = tile epoch-scoped total **13** (panel==tile).
+- autopause: now SEES epoch-scoped live rows (AI.EDGE 10/−$2.26, Maggie 3/−$3.54; was 0/blind). **STAYS SHADOW** (`autopause_mode: shadow` L1652); **0** real auto-pauses post-restart; the only 2 `kalshi_whale_auto_paused` are historical (reach.draft 2026-05-31, teafordong 2026-06-22, pre-shadow active-era). Whales n=10/3 « min_trades=30 → correctly flags nothing.
+
+**★ Autopause NOT flipped to active — remains SHADOW by design.** Flipping active is a SEPARATE operator decision after observing shadow fire correctly on real Kalshi rows.
+
+**Rollback:** restore `.bak_s2_abc_20260726/{web/data.py,agents/kalshi_resolver.py}` + restart; backfill is additive/idempotent.
+
+---
+
 ## 2026-07-18 ~23:01 UTC — RH-AUTH RESILIENCE (ITEMS 1/2/3) DEPLOYED + VERIFIED LIVE (engine-source hot-patch; flat-guarded restart; agent-driven, autonomous under explicit Board authorization)
 
 **What & why:** the engine's Robinhood session was 401 Unauthorized broker-wide 2026-07-14→18 (all 4 RH accts share ONE robin_stocks module session; hid 4 days as 848 generic `float()..NoneType` warnings because robin_stocks SWALLOWS the 401). Deployed a self-healing layer. Root cause of the 4-day hide + the recovery lever: **FINDING B — refreshing the pickle FILE does NOT recover a RUNNING engine** (in-mem singleton + `_LOGIN_DONE` latch; proven: 20:55 file-refresh → 21:31 still-401 → 21:33 RESTART fixed) → needed an IN-PROCESS reload.

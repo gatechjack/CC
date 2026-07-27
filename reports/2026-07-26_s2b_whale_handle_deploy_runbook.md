@@ -1,6 +1,6 @@
-# S2 BUNDLE (a + b + c) — DEPLOY RUNBOOK (STAGED, NOT DEPLOYED)
+# S2 BUNDLE (a + b + c) — DEPLOY RUNBOOK — ✅ DEPLOYED + VERIFIED LIVE 2026-07-27 ~02:33 UTC
 
-**Status:** PACKAGE STAGED on `claude-2026-07-26`. **Awaiting operator deploy-go — do NOT deploy without it.**
+**Status:** **DEPLOYED** to prod 2026-07-27 ~02:33 UTC (PID 404132→424692); drift-gate PASS, all 4 verify checks PASS, backfill 15/15 applied. Autopause now **functional on Kalshi but STAYS SHADOW** (NOT flipped — separate operator decision). Full record in `runbooks/deploy_log.md` (2026-07-27 entry). Runbook retained as the executed procedure.
 **Scope reversed 2026-07-26:** deploy all three S2 fixes as ONE bundle (they share a restart). Rationale: the per-whale copy-**profitability** analysis that gates the roster re-selection decision needs all three metrics trustworthy — (a) live copies counted, (b) autopause not blind, (c) panel epoch-scoped — so (a)+(c) are prerequisites, not polish.
 
 ## What ships (all committed to the branch; NOT applied to prod)
