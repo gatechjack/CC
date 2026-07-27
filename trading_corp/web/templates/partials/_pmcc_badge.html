@@ -1,0 +1,32 @@
+{# Unified PMCC decision status badge (the 3-state pill). Single source of
+   truth, shared by:
+     - the tile row (pmcc_pair.html, wrapped in #pmcc-badge-{SYMBOL}), and
+     - the out-of-band refresh emitted by execute / Re-analyze (routes.py
+       _pmcc_tile_badge_oob), which re-renders THIS partial so the two can't
+       drift.
+   Context: `us` = pair.unified_status dict {state, urgency, source, age_h,
+   status_label, stale_label, no_signal_label}. Render is pure (no I/O). #}
+{% if us and us.state == 'fresh' %}
+  {% set action_classes = {
+    'urgent':   'bg-loss/15 text-loss border border-loss/30',
+    'elevated': 'bg-warn/15 text-warn border border-warn/30',
+    'routine':  'bg-edge text-muted border border-edge',
+  }.get(us.urgency, 'bg-edge text-muted border border-edge') %}
+  <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+               px-1.5 py-0.5 rounded font-semibold {{ action_classes }}"
+        title="Latest {{ us.source or 'scan' }} decision ({{ us.urgency }}){% if us.age_h is not none %} · {{ '%.0f' % us.age_h }}h ago{% endif %} — matches the Expert panel. Click row for full analysis.">
+    {{ us.status_label }}
+  </span>
+{% elif us and us.state == 'stale' %}
+  <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+               px-1.5 py-0.5 rounded border border-edge bg-transparent text-muted/50 italic"
+        title="Last {{ us.source or 'scan' }} decision{% if us.age_h is not none %} is {{ '%.0f' % us.age_h }}h old{% endif %} (past the staleness window) — the next post-open scan will refresh it. Click row to Re-analyze now.">
+    {{ us.stale_label }} —
+  </span>
+{% else %}
+  <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+               px-1.5 py-0.5 rounded border border-dashed border-edge/60 text-muted/40"
+        title="No decision produced this session yet (pre-open, or the post-open scan hasn't run / aborted on this name). Not an error — click row to Re-analyze.">
+    {{ (us.no_signal_label if us else 'awaiting scan') }}
+  </span>
+{% endif %}

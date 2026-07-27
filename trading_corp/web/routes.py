@@ -972,7 +972,10 @@ def register(app: FastAPI) -> None:
         )
         with _LLM_LOCK:
             _pair_cache[key] = (html, time.time())
-        return HTMLResponse(html)
+        # Refresh the left-rail tile badge out-of-band (FIX 2) from the record
+        # this Re-analyze just wrote (line ~950), so tile + panel match with no
+        # full page reload.
+        return HTMLResponse(html + _pmcc_tile_badge_oob(templates, deps, sym))
 
     @app.post("/division/{slug}/pair/{symbol}/defer", response_class=HTMLResponse)
     async def defer_pair(slug: str, symbol: str):
@@ -1275,7 +1278,37 @@ def register(app: FastAPI) -> None:
         with _LLM_LOCK:
             _pair_cache.pop((slug, sym), None)
 
-        return HTMLResponse(_render_execute_results(sym, analysis, results))
+        # Consume the acted-on decision (FIX 1). A TERMINAL FILL means the
+        # standing ROLL/CLOSE recommendation is DONE, so record a HOLD. Written
+        # as source='executed': it always overwrites the record it acted on
+        # (even a fresh expert ROLL SHORT) so the tile flips to HOLD and the
+        # Approve button self-disables on the next read — but it is treated like
+        # a scan verdict for FUTURE precedence, so the next scan re-raises a
+        # signal if this just-rolled position moves (no 8h blind spot). Only on
+        # a genuine fill (not rest / no-fill / reject). Best-effort.
+        if any(r["outcome"] == "filled" for r in results):
+            try:
+                from trading_corp.agents.divisions import _pmcc_status
+                from datetime import datetime as _dt, timezone as _tz
+                _pmcc_status.record_pmcc_decision(
+                    sym, status="hold", source="executed",
+                    computed_at=_dt.now(_tz.utc).isoformat(), db_url=deps.db_url,
+                    urgency="routine",
+                    summary="Position rolled/closed — holding to collect theta.",
+                    rationale=("An approved action filled, so the prior actionable "
+                               "recommendation is consumed. The next scan re-evaluates "
+                               "and re-raises a signal if the position moves."),
+                )
+            except Exception as e:
+                log.warning("pmcc executed-decision write(%s) failed: %s", sym, e)
+
+        # Push the updated decision to the left-rail tile out-of-band (FIX 2) so
+        # the badge + Approve affordance refresh from the just-written record
+        # without a full page reload. Best-effort ('' on failure / no such row).
+        return HTMLResponse(
+            _render_execute_results(sym, analysis, results)
+            + _pmcc_tile_badge_oob(templates, deps, sym)
+        )
 
     # ── Scout — fresh PMCC opening candidates ───────────────────────────
 
@@ -4488,8 +4521,13 @@ def _pmcc_reanalyze_button(slug: str, symbol: str, label: str = "↻ Re-analyze 
 def _pmcc_status_banner(slug: str, symbol: str, *, state: str, age_h, source) -> str:
     """Freshness banner above a record-sourced Expert panel + a Re-analyze button.
 
-    fresh -> subtle "latest {source} decision · Xh ago · in sync"; stale -> a
-    muted "stale as of Xh" note (the tile shows the same 'stale' badge).
+    fresh -> subtle "latest {source} decision · Xh ago"; stale -> a muted
+    "stale as of Xh" note (the tile shows the same 'stale' badge).
+
+    NB: the banner no longer claims "tile & panel in sync" (FIX 3). That was an
+    unconditional string, not a check — and once the execute / Re-analyze
+    responses refresh the tile out-of-band (FIX 2) they ARE in sync, so the
+    claim is redundant. A claim that can be wrong is worse than none.
     """
     age_txt = f"{age_h:.0f}h ago" if isinstance(age_h, (int, float)) else "—"
     src = source or "scan"
@@ -4506,10 +4544,39 @@ def _pmcc_status_banner(slug: str, symbol: str, *, state: str, age_h, source) ->
             '<div class="flex items-center gap-2 text-[11px] font-mono text-muted/60'
             '            px-2 py-1 rounded border border-edge bg-pane-2/40">'
             f'<span>latest {src} decision · {age_txt}</span>'
-            '<span class="text-muted/40 ml-auto">tile &amp; panel in sync</span>'
             '</div>'
         )
     return note + _pmcc_reanalyze_button(slug, symbol)
+
+
+def _pmcc_tile_badge_oob(templates, deps, symbol: str) -> str:
+    """Render an out-of-band (hx-swap-oob) refresh of one pair's tile badge (FIX 2).
+
+    After an execute or Re-analyze writes the unified decision record, the
+    left-rail tile badge (in #pair-list) is stale until a full page reload — the
+    panel swap only touches #pair-analysis. Emitting this fragment in the SAME
+    response updates the badge (and thus the Approve affordance) from the
+    just-written record, no reload. Renders the SAME `_pmcc_badge.html` partial
+    the row uses, so the two can't drift. Best-effort: '' on any failure, or when
+    there's no #pmcc-badge-{symbol} in the DOM (HTMX silently no-ops).
+    """
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from trading_corp.web.data import _build_pmcc_tile_status
+        sym = (symbol or "").upper()
+        cfg = (getattr(getattr(deps, "pmcc_agent", None), "_cfg", {}) or {}).get(
+            "tile_status", {}) or {}
+        us = _build_pmcc_tile_status(
+            sym, db_url=deps.db_url, now=_dt.now(_tz.utc), cfg=cfg,
+        )
+        inner = templates.get_template("partials/_pmcc_badge.html").render(us=us)
+        return (
+            f'<span id="pmcc-badge-{sym}" hx-swap-oob="true" class="contents">'
+            f'{inner}</span>'
+        )
+    except Exception as e:  # noqa: BLE001 — an OOB refresh must never break the response
+        log.warning("pmcc tile-badge OOB(%s) failed: %s", symbol, e)
+        return ""
 
 
 def _pmcc_no_signal_panel(slug: str, symbol: str, cfg: dict) -> str:
