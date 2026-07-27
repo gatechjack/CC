@@ -4907,7 +4907,10 @@ def _query_pm_whales(
         kalshi_handles = [w.handle for w in out if w.venue == "kalshi"]
         if kalshi_handles:
             try:
-                intel = _query_kalshi_whale_intel(db_url, kalshi_handles)
+                intel = _query_kalshi_whale_intel(
+                    db_url, kalshi_handles,
+                    kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch,
+                )
                 for w in out:
                     if w.venue != "kalshi":
                         continue
@@ -5268,6 +5271,9 @@ def _query_kalshi_whale_intel(
     db_url: str,
     whale_handles: list[str],
     division: str = "kalshi_copy_trading",
+    *,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
 ) -> dict[str, dict]:
     """Read-only per-whale copy-quality intel from audit_event + kalshi_round_trips.
 
@@ -5315,6 +5321,14 @@ def _query_kalshi_whale_intel(
         p = max(0.0, min(1.0, float(p)))
         return math.ceil(0.07 * c * p * (1.0 - p) * 100.0) / 100.0
 
+    # P1 2026-07-27: epoch-scope the intel columns to match fix (c)'s base columns
+    # on the Selected panel (Paper/Live/All slice, same as the tile). Default 'all'
+    # = no scoping (Watch bench caller keeps all-time). audit_event scoped on `ts`,
+    # kalshi_round_trips on `entry_ts`. Keeps copies/no_side/sports (and thus
+    # copyability) + net_pnl consistently scoped so the row reads one scope.
+    _ts_clause = _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "ts")
+    _entry_clause = _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
+
     try:
         with db.connect(db_url) as conn:
             # 1. Entry copies per whale handle. S2 fix (a) 2026-07-26: count BOTH
@@ -5328,8 +5342,9 @@ def _query_kalshi_whale_intel(
                 "WHERE actor='kalshi_copy_trader' "
                 "  AND kind IN ('would_have_placed','kalshi_copy_placed_live') "
                 "  AND json_extract(payload_json,'$.side')='buy' "
-                "  AND json_extract(payload_json,'$.whale_handle') IS NOT NULL "
-                "GROUP BY h"
+                "  AND json_extract(payload_json,'$.whale_handle') IS NOT NULL"
+                + _ts_clause
+                + " GROUP BY h"
             ).fetchall()
             for r in rows:
                 h = r[0]
@@ -5356,8 +5371,9 @@ def _query_kalshi_whale_intel(
                 "       COUNT(*) AS n "
                 "FROM audit_event "
                 "WHERE actor='kalshi_copy_trader' "
-                "  AND kind='kalshi_copy_entry_skipped_no_side' "
-                "GROUP BY h"
+                "  AND kind='kalshi_copy_entry_skipped_no_side'"
+                + _ts_clause
+                + " GROUP BY h"
             ).fetchall()
             for r in rows:
                 h = r[0]
@@ -5371,8 +5387,9 @@ def _query_kalshi_whale_intel(
                 "       COUNT(*) AS n "
                 "FROM audit_event "
                 "WHERE actor='kalshi_copy_trader' "
-                "  AND kind='kalshi_copy_entry_skipped_sports' "
-                "GROUP BY h"
+                "  AND kind='kalshi_copy_entry_skipped_sports'"
+                + _ts_clause
+                + " GROUP BY h"
             ).fetchall()
             for r in rows:
                 h = r[0]
@@ -5386,7 +5403,8 @@ def _query_kalshi_whale_intel(
                 "       json_extract(extra_json,'$.exit_price') AS exit_price "
                 "FROM kalshi_round_trips "
                 "WHERE division=? "
-                "  AND json_extract(extra_json,'$.whale_handle') IS NOT NULL",
+                "  AND json_extract(extra_json,'$.whale_handle') IS NOT NULL"
+                + _entry_clause,
                 (division,),
             ).fetchall()
             # Accumulate per handle.
