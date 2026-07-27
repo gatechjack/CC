@@ -116,6 +116,25 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-27 ~12:11 UTC — Kalshi copy dashboard P1+P2 DEPLOYED + VERIFIED LIVE — Selected intel epoch-scoped (completes fix c) + mode-aware header + per-panel scope labels (agent-driven, autonomous under explicit Board authorization; web-only; flat-window restart)
+
+**What & why:** completes S2 fix (c) — fix (c) live-scoped the per-whale panel's *base* columns but the intel merge (`_query_kalshi_whale_intel`) stayed all-time, leaving `Copies/Copy%/Net PnL` all-time next to live-scoped `Resolved/WR%/Realized P&L` on the Selected row (the Sept re-selection sorts by Net PnL → would rank on paper backlog).
+- **P1:** thread `kalshi_copy_mode`/`kalshi_copy_epoch` into `_query_kalshi_whale_intel` + `_kalshi_copy_mode_clause` on all 4 component queries (copies/no_side/sports on `ts`; net-PnL on `entry_ts`); Selected caller (`_query_pm_whales`) passes them. **Watch caller stays 'all' BY DESIGN** (operator-confirmed — live-scoping zeroes its intel: teafordong 65→0 copies / 30→0 RT, wiping the ~1.5% copyability demote signal; 7 others external-Apify-only; Watch base cols are all-time external → all-time intel is the correct match).
+- **P2:** header `— paper performance` → mode-aware; copies tooltips note `kalshi_copy_placed_live`. + per-panel **scope labels** (Selected `intel: since {date}·live` / `pre-go-live·paper`; Watch `intel: all-time·discovery`) so the by-design cross-panel scope difference is legible, not silent (the actual residual risk).
+
+**Files (LF-md5 base→patched):** data.py `14eeb84b→636eeba8`; pm_dashboard_body.html `90750afe→4dad278c` (prod template was CRLF, backup raw `b4a4b6c4`; deployed LF — inert on a Jinja template). Drift-gate: prod==base both. Backups `~/trading_corp/.bak_p1p2_20260727/{web,tmpl}/`.
+
+**Deploy:** scp LF-staged→/tmp, staged md5==patched verified, backup + `cat`-swap; restart via **Azure Run Command (root, no sudo)**. PID 424692→**429030** (12:11:32 UTC). Boot: 37 secrets, RH re-auth OK (3 accts), 0 new tracebacks. Web-only; flat-window (equity mkts closed pre-market, pending_order=0, no live fills).
+
+**Verify — SCOPE-CONSISTENCY INVARIANT (each panel's intel matches ITS OWN base scope; rendered off :8000 + DB):**
+- Selected intel LIVE-scoped (matches live base): DB AI.EDGE n_resolved 22→**10**, Maggie 18→**3**; rendered `live performance` + `intel: since 2026-07-01 · live` (paper mode → `paper performance` + `intel: pre-go-live · paper`).
+- Watch intel ALL-TIME (matches external base, must NOT zero): DB teafordong copies=**65**; rendered `intel: all-time · discovery` (both modes).
+- Copies tooltips rendered `kalshi_copy_placed_live` ×2.
+
+**Rollback:** restore `.bak_p1p2_20260727/{web/data.py, tmpl/pm_dashboard_body.html}` + restart. Pure read-query + label changes; no data mutation.
+
+---
+
 ## 2026-07-27 ~02:33 UTC — Kalshi copy S2 bundle (a+b+c) DEPLOYED + VERIFIED LIVE — copyability-counts-live + whale_handle→extra_json (+15-row backfill) + panel epoch-scope (agent-driven, autonomous under explicit Board authorization; flat-window restart; autopause STAYS SHADOW)
 
 **What & why:** three instrumentation fixes so the Kalshi copy dashboard reflects live reality and autopause is no longer structurally blind — prerequisites for the roster re-selection decision.

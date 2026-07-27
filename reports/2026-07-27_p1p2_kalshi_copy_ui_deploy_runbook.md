@@ -1,6 +1,6 @@
-# P1+P2 — Kalshi copy dashboard scope + labels — DEPLOY RUNBOOK (STAGED, NOT DEPLOYED)
+# P1+P2 — Kalshi copy dashboard scope + labels — DEPLOY RUNBOOK — ✅ DEPLOYED + VERIFIED LIVE 2026-07-27 ~12:11 UTC
 
-**Status:** PACKAGE STAGED on `claude-2026-07-26`. **Awaiting operator deploy-go — do NOT deploy without it.**
+**Status:** **DEPLOYED** to prod 2026-07-27 ~12:11 UTC (PID 424692→429030); drift-gate PASS, scope-consistency invariant verified (Selected intel live-scoped = base, Watch intel all-time = base, both labeled — rendered off :8000 + DB-confirmed). Full record in `runbooks/deploy_log.md` (2026-07-27 12:11 entry). Runbook retained as the executed procedure.
 **Why:** completes tonight's S2 fix (c). Fix (c) epoch-scoped the per-whale panel's *base* columns (`_query_pm_whales`) but the *intel* merge (`_query_kalshi_whale_intel`, called inside it) was missed — leaving `Copies/Copy%/Net PnL` **all-time** next to live-scoped `Resolved/WR%/Realized P&L` on the same Selected row. Since the September re-selection **sorts by `Net PnL`**, that column MUST be live-scoped or the decision ranks whales by the paper-era backlog. P2 fixes two stale labels the S2 fixes left behind.
 
 ## What ships (all committed to the branch; NOT applied to prod)
