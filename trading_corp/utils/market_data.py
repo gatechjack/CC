@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone, date
 from threading import Lock
 
 log = logging.getLogger(__name__)
@@ -229,6 +230,146 @@ def reset_earnings_cache() -> None:
     """Clear the earnings cache. Useful for tests."""
     with _EARNINGS_LOCK:
         _EARNINGS_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Brokerage-first earnings resolution (2026-07-28)
+#
+# The EODHD/yfinance feed served a STALE date for RIOT (2025's 07-31 print)
+# that WRONGLY BLOCKED a liquid roll on 2026-07-28 while the broker-verified
+# date was 08-05 (outside the 7d buffer). The same staleness can also FALSELY
+# CLEAR a real upcoming print and let a short roll INTO earnings. The brokerage
+# the division trades on (Robinhood) publishes a VERIFIED next-earnings date —
+# the authoritative source per the brokerage-first data policy.
+#
+# resolve_earnings() prefers the broker date, falls back to the feed (flagged
+# UNVERIFIED), and — when NEITHER source has a confident future date — reports
+# that so the caller neither silently blocks a liquid name (the RIOT failure)
+# NOR silently clears into a possible print.
+#
+# get_broker_earnings() is cached per-symbol with a 24h TTL so per-scan
+# verification never hammers the API, and is INERT until the Robinhood broker
+# has logged in (returns (None, False) in tests / pre-login, so resolution
+# falls back to the feed with no network call).
+# ---------------------------------------------------------------------------
+
+_BROKER_EARN_CACHE: dict[str, tuple[datetime | None, bool, float]] = {}  # sym -> (dt, verified, ts)
+_BROKER_EARN_TTL_SEC = 86400                                             # 24h — rate-limit
+_BROKER_EARN_LOCK = Lock()
+
+
+@dataclass
+class EarningsResolution:
+    """Brokerage-first next-earnings resolution.
+
+    date         : chosen next FUTURE earnings datetime (UTC, end-of-day) or None
+                   when no source has one.
+    source       : "broker" | "feed" | "none".
+    verified     : True only when the broker CONFIRMED the date.
+    broker_date  : the broker's date (or None).
+    feed_date    : the EODHD/yfinance date (or None).
+    disagreement : broker and feed both present and differ by more than a day
+                   (stale-feed drift — logged; broker wins).
+    """
+    date: datetime | None
+    source: str
+    verified: bool
+    broker_date: datetime | None
+    feed_date: datetime | None
+    disagreement: bool
+
+
+def reset_broker_earnings_cache() -> None:
+    """Clear the broker-earnings cache. Useful for tests."""
+    with _BROKER_EARN_LOCK:
+        _BROKER_EARN_CACHE.clear()
+
+
+def _rh_next_earnings(sym: str) -> tuple[datetime | None, bool]:
+    """Robinhood get_earnings -> (earliest FUTURE not-yet-reported report as an
+    end-of-day UTC datetime, verified). Returns (None, False) on anything —
+    never raises. INERT unless the Robinhood broker has an authenticated session
+    (`_LOGIN_DONE`), so tests and pre-login callers make no network request."""
+    try:
+        import trading_corp.brokers.robinhood as _rh
+        if not getattr(_rh, "_LOGIN_DONE", False):
+            return None, False   # no authenticated session -> skip broker (feed fallback)
+    except Exception:
+        return None, False
+    try:
+        import robin_stocks.robinhood as rs  # global session established at broker login
+        rows = rs.get_earnings(sym) or []
+    except Exception as e:
+        log.debug("broker earnings: get_earnings failed for %s: %s", sym, e)
+        return None, False
+    today = datetime.now(timezone.utc).date()
+    best: date | None = None
+    best_verified = False
+    for row in rows:
+        try:
+            rep = (row or {}).get("report") or {}
+            eps = (row or {}).get("eps") or {}
+            ds = rep.get("date")
+            if not ds:
+                continue
+            # upcoming = not yet reported (actual EPS absent)
+            if eps.get("actual") not in (None, "", "null"):
+                continue
+            d = date.fromisoformat(str(ds)[:10])
+            if d < today:
+                continue
+            if best is None or d < best:
+                best = d
+                best_verified = bool(rep.get("verified"))
+        except Exception:
+            continue
+    if best is None:
+        return None, False
+    return datetime(best.year, best.month, best.day, 23, 59, 59, tzinfo=timezone.utc), best_verified
+
+
+def get_broker_earnings(symbol: str, force_refresh: bool = False) -> tuple[datetime | None, bool]:
+    """(next_future_earnings_dt_UTC, verified) from Robinhood, or (None, False).
+
+    Brokerage-first authoritative source. Cached per-symbol (24h TTL) so per-scan
+    verification never hammers the API. Never raises."""
+    sym = (symbol or "").upper()
+    if not sym:
+        return None, False
+    with _BROKER_EARN_LOCK:
+        entry = _BROKER_EARN_CACHE.get(sym)
+        if not force_refresh and entry is not None:
+            dt, ver, ts = entry
+            if time.time() - ts < _BROKER_EARN_TTL_SEC:
+                return dt, ver
+    dt, ver = _rh_next_earnings(sym)
+    with _BROKER_EARN_LOCK:
+        _BROKER_EARN_CACHE[sym] = (dt, ver, time.time())
+    return dt, ver
+
+
+def resolve_earnings(symbol: str) -> EarningsResolution:
+    """Brokerage-first next-earnings resolution (see EarningsResolution).
+
+    Broker date wins (authoritative/verified); the EODHD/yfinance feed is the
+    fallback (unverified); broker/feed drift over a day is logged. When neither
+    source has a future date the result carries date=None / source="none" so the
+    caller can fail-open WITHOUT silently blocking a liquid name and WITHOUT
+    silently clearing into a possible print."""
+    bdt, bver = get_broker_earnings(symbol)
+    fdt = get_next_earnings(symbol)
+    disagreement = bool(bdt is not None and fdt is not None and abs((bdt - fdt).days) > 1)
+    if disagreement:
+        log.warning(
+            "earnings source disagreement %s: broker=%s (verified=%s) feed=%s "
+            "-- using broker (stale-feed drift)",
+            symbol, bdt.date().isoformat(), bver, fdt.date().isoformat(),
+        )
+    if bdt is not None:
+        return EarningsResolution(bdt, "broker", bver, bdt, fdt, disagreement)
+    if fdt is not None:
+        return EarningsResolution(fdt, "feed", False, None, fdt, False)
+    return EarningsResolution(None, "none", False, None, None, False)
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -44,6 +44,10 @@ _TIER_META: dict[str, tuple[str, str, bool]] = {
     "NO_FILL":   ("\U0001F7E0", "NO FILL",   True),
     "EXEC_FAIL": ("\U0001F534", "EXEC FAIL", False),
     "NAKED_LEG": ("\U0001F6A8", "NAKED LEG", False),
+    # Observability (2026-07-28): a roll proceeded without a confident earnings
+    # date (neither broker nor feed) — may be selling premium into an unseen
+    # print. Deduped like the other yellow tiers so re-scans don't spam.
+    "EARN_UNVERIF": ("\U000026A0", "EARN UNVERIFIED", True),
 }
 _DEDUPE_WINDOW_S = 900.0                             # ~15 min
 

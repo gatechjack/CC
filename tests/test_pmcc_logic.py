@@ -3223,3 +3223,161 @@ def test_b10_terminal_should_fire_half_day():
     assert _terminal_should_fire(at(13, 0), None, cal) is False    # at/after the 1pm close
     assert _terminal_should_fire(at(15, 0), None, cal) is False    # wall-clock 15:00 = post-close: NO fire
     assert _terminal_should_fire(at(12, 0), None, _FakeCalendar(closed=True)) is False
+
+
+# ===========================================================================
+# Brokerage-first earnings resolution (2026-07-28) — RIOT false-block fix
+#
+# The EODHD/yfinance feed served a stale 2025 date for RIOT (07-30) that WRONGLY
+# BLOCKED a liquid roll while the broker-verified date was 08-05 (outside the 7d
+# buffer). resolve_earnings() prefers Robinhood's VERIFIED date, falls back to the
+# feed (UNVERIFIED), and fails open (with an alert) only when NEITHER has a date —
+# so it never silently blocks a liquid name NOR silently clears into a print.
+# ===========================================================================
+import trading_corp.utils.market_data as _md_mod
+import trading_corp.comms.exec_alert as _ea_mod
+
+
+def _earn_dt(days: int):
+    """End-of-day UTC `days` out — matches the resolver's date convention
+    (EODHD/RH dates are stored at 23:59:59) so day-count math mirrors production."""
+    from datetime import datetime, timezone, timedelta
+    d = (datetime.now(timezone.utc) + timedelta(days=days)).date()
+    return datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc)
+
+
+def _patch_earn_sources(monkeypatch, broker, feed):
+    """broker=(dt|None, verified); feed=dt|None. Patch both sources on the
+    market_data module so resolve_earnings() sees them (no network / robin_stocks)."""
+    bdt, bver = broker
+    monkeypatch.setattr(_md_mod, "get_broker_earnings", lambda s, *a, **k: (bdt, bver))
+    monkeypatch.setattr(_md_mod, "get_next_earnings", lambda s, *a, **k: feed)
+
+
+def test_resolve_earnings_broker_wins_over_stale_feed(monkeypatch):
+    """RIOT-class: broker verified (8d) beats a stale feed (2d); broker wins and the
+    disagreement is flagged so stale-feed drift is visible."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    broker_dt, feed_dt = now + timedelta(days=8), now + timedelta(days=2)
+    monkeypatch.setattr(_md_mod, "get_broker_earnings", lambda s, *a, **k: (broker_dt, True))
+    monkeypatch.setattr(_md_mod, "get_next_earnings", lambda s, *a, **k: feed_dt)
+    res = _md_mod.resolve_earnings("RIOT")
+    assert res.source == "broker"
+    assert res.verified is True
+    assert res.disagreement is True
+    assert res.date == broker_dt
+
+
+def test_resolve_earnings_feed_fallback_unverified(monkeypatch):
+    """Broker missing, feed present -> use feed, flagged unverified."""
+    fdt = _earn_dt(2)
+    monkeypatch.setattr(_md_mod, "get_broker_earnings", lambda s, *a, **k: (None, False))
+    monkeypatch.setattr(_md_mod, "get_next_earnings", lambda s, *a, **k: fdt)
+    res = _md_mod.resolve_earnings("X")
+    assert res.source == "feed"
+    assert res.verified is False
+    assert res.date == fdt
+
+
+def test_resolve_earnings_neither_source(monkeypatch):
+    """Neither source -> date None, source 'none' (caller fails open + alerts)."""
+    monkeypatch.setattr(_md_mod, "get_broker_earnings", lambda s, *a, **k: (None, False))
+    monkeypatch.setattr(_md_mod, "get_next_earnings", lambda s, *a, **k: None)
+    res = _md_mod.resolve_earnings("X")
+    assert res.date is None
+    assert res.source == "none"
+
+
+def test_gate_riot_broker_clears_stale_feed_block(agent, monkeypatch):
+    """RIOT: broker verified 8d out (clear) beats feed 2d (would block) -> NOT blocked."""
+    _patch_earn_sources(monkeypatch, (_earn_dt(10), True), _earn_dt(2))
+    state, reason = agent._earnings_gate_state("RIOT")
+    assert state == "clear", reason
+
+
+def test_gate_hood_broker_confirmed_blocks(agent, monkeypatch):
+    """HOOD-class: broker verified print 1 day out -> blocked, source=broker."""
+    _patch_earn_sources(monkeypatch, (_earn_dt(1), True), None)
+    state, reason = agent._earnings_gate_state("HOOD")
+    assert state == "blocked"
+    assert "source=broker" in reason
+    assert "UNVERIFIED" not in reason
+
+
+def test_gate_dangerous_feed_clear_broker_blocks(agent, monkeypatch):
+    """DANGEROUS reverse case: feed says NO earnings (None) but broker says 3 days
+    out -> broker wins -> BLOCKED (never roll INTO a print the feed missed)."""
+    _patch_earn_sources(monkeypatch, (_earn_dt(3), True), None)
+    state, reason = agent._earnings_gate_state("Z")
+    assert state == "blocked"
+    assert "source=broker" in reason
+
+
+def test_gate_feed_only_blocks_but_flags_unverified(agent, monkeypatch):
+    """Broker missing, feed 2d out -> block on the feed date, reason flags UNVERIFIED."""
+    _patch_earn_sources(monkeypatch, (None, False), _earn_dt(2))
+    state, reason = agent._earnings_gate_state("Z")
+    assert state == "blocked"
+    assert "source=feed" in reason and "UNVERIFIED" in reason
+
+
+def test_gate_both_unknown_fail_open(agent, monkeypatch):
+    """Neither source -> data_unavailable (fail-open; do NOT block a liquid name)."""
+    _patch_earn_sources(monkeypatch, (None, False), None)
+    state, reason = agent._earnings_gate_state("Z")
+    assert state == "data_unavailable"
+    assert "UNVERIFIED" in reason
+
+
+@pytest.mark.asyncio
+async def test_roll_ships_and_alerts_when_earnings_unverified(agent_logged, cap_logger, monkeypatch):
+    """Both sources unknown -> the roll SHIPS (fail-open) AND emits a deduped
+    EARN_UNVERIF alert + a pmcc_earnings_unverified audit, so it is never silent."""
+    import asyncio
+    _patch_earn_sources(monkeypatch, (None, False), None)
+    sent: list[str] = []
+    async def _sender(text, chat_id=None):
+        sent.append(text)
+        return True
+    _ea_mod.reset_dedupe()
+    _ea_mod.set_exec_alert_sender(_sender)
+    try:
+        broker = _credit_roll_broker()
+        legs = await agent_logged.detect_existing_legs(broker)
+        pos = next(p for p in legs if p.symbol == "AAPL")
+        orders = await agent_logged._propose_roll_short("AAPL", pos, broker)
+        for _ in range(30):                       # let the fire-and-forget send run
+            if sent:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        _ea_mod.set_exec_alert_sender(None)
+    assert len(orders) == 2                                          # fail-open: shipped
+    assert any(e["kind"] == "pmcc_earnings_unverified" for e in cap_logger.events)
+    assert any("EARN UNVERIFIED" in t for t in sent), sent
+
+
+@pytest.mark.asyncio
+async def test_roll_no_unverified_alert_when_broker_has_date(agent_logged, cap_logger, monkeypatch):
+    """Control: broker gives a clear future date -> roll ships with NO earnings-
+    unverified audit/alert (source is broker, not 'none')."""
+    import asyncio
+    _patch_earn_sources(monkeypatch, (_earn_dt(60), True), None)
+    sent: list[str] = []
+    async def _sender(text, chat_id=None):
+        sent.append(text)
+        return True
+    _ea_mod.reset_dedupe()
+    _ea_mod.set_exec_alert_sender(_sender)
+    try:
+        broker = _credit_roll_broker()
+        legs = await agent_logged.detect_existing_legs(broker)
+        pos = next(p for p in legs if p.symbol == "AAPL")
+        orders = await agent_logged._propose_roll_short("AAPL", pos, broker)
+        await asyncio.sleep(0.05)
+    finally:
+        _ea_mod.set_exec_alert_sender(None)
+    assert len(orders) == 2
+    assert not any(e["kind"] == "pmcc_earnings_unverified" for e in cap_logger.events)
+    assert not any("EARN UNVERIFIED" in t for t in sent)

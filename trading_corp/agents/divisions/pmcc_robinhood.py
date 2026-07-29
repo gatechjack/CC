@@ -547,6 +547,10 @@ class PMCCAgent:
         # "the fix works" from "chains are thin and we now do nothing").
         self._last_weekly_diag: dict | None = None
         self._last_leap_diag: dict | None = None
+        # Brokerage-first earnings (2026-07-28): last resolution stashed by
+        # `_earnings_gate_state` so the roll ship path can emit an "earnings
+        # unverified" alert when a roll proceeds with no confident earnings date.
+        self._last_earnings_resolution = None
 
         self._reload()
 
@@ -759,34 +763,48 @@ class PMCCAgent:
         return int(crit.get("earnings_buffer_days", 7))
 
     def _earnings_gate_state(self, symbol: str) -> tuple[str, str]:
-        """B9 (Phase 2): TRI-STATE earnings read — distinguishes a genuinely-clear
-        window from missing data so a fail-open roll (one that shipped only because
-        the data source was DOWN) is visible in the abort/audit payload.
+        """B9: TRI-STATE earnings read, now BROKERAGE-FIRST (2026-07-28).
+
+        Resolves the next-earnings date via `resolve_earnings` — Robinhood's
+        VERIFIED date is authoritative; the EODHD/yfinance feed is fallback
+        (flagged UNVERIFIED). Fixes the RIOT false-block (feed carried a stale
+        2025 date, broker said 08-05 = clear) AND the reverse danger (a stale
+        feed FALSELY CLEARING a real upcoming print), because the broker's
+        verified date wins in BOTH directions.
           - "blocked"          : earnings within the buffer window → gate blocks.
-          - "clear"            : earnings data present, none within the buffer
+          - "clear"            : a future date exists, none within the buffer
                                  (also returned when the gate is config-disabled).
-          - "data_unavailable" : no earnings date from the source → FAIL-OPEN
-                                 (thinly-traded names commonly lack earnings dates;
-                                 we don't silently kill the universe).
-        Returns (state, reason). Single source of truth for both the roll gate and
-        `_blocked_by_earnings` (open path), so the two can never drift.
+          - "data_unavailable" : NEITHER broker nor feed has a future date →
+                                 FAIL-OPEN (never silently block a liquid name);
+                                 the roll ship path emits an "earnings unverified"
+                                 alert so this is never silent.
+        Returns (state, reason). Stashes `self._last_earnings_resolution` (source /
+        verified / disagreement) for the ship path. Single source of truth for both
+        the roll gate and `_blocked_by_earnings` (open path), so the two can never
+        drift.
         """
         buffer_days = self._earnings_buffer_days
         if buffer_days <= 0:
+            self._last_earnings_resolution = None
             return "clear", ""
 
-        from trading_corp.utils.market_data import get_next_earnings
-        nxt = get_next_earnings(symbol)
-        if nxt is None:
-            return "data_unavailable", "no earnings date from data source"
+        from trading_corp.utils.market_data import resolve_earnings
+        res = resolve_earnings(symbol)
+        self._last_earnings_resolution = res
+
+        if res.date is None:
+            # Neither broker nor feed has a future date. Fail-open (do NOT block a
+            # liquid name — the RIOT failure), but never silently: the ship path
+            # emits an "earnings unverified" alert.
+            return "data_unavailable", "no earnings date from broker or feed (fail-open; UNVERIFIED)"
 
         from datetime import datetime, timezone
-        delta = nxt - datetime.now(timezone.utc)
-        days = delta.days  # truncates toward negative; for future dates, this is days_until rounded down
+        days = (res.date - datetime.now(timezone.utc)).days  # future date → days_until, floored
+        src = f"source={res.source}" + ("" if res.verified else "; UNVERIFIED")
         if 0 <= days <= buffer_days:
             return "blocked", (
-                f"earnings on {nxt.date().isoformat()} ({days}d away, "
-                f"buffer={buffer_days}d)"
+                f"earnings on {res.date.date().isoformat()} ({days}d away, "
+                f"buffer={buffer_days}d; {src})"
             )
         return "clear", ""
 
@@ -3488,6 +3506,29 @@ Action reference:
                 extra={"gates": dict(gates), "earnings_reason": earnings_reason},
             )
             return []
+
+        # 2026-07-28: a roll that PROCEEDS with no confident earnings date (neither
+        # broker nor feed) must not do so SILENTLY — it may sell new short premium
+        # into an unseen print. Emit a deduped "earnings unverified" alert + audit
+        # so the operator sees it. Fires ONLY for source="none" (the RIOT-class
+        # fail-open, == the data_unavailable state); a resolved broker/feed date is
+        # already handled by the block/clear decision above. Never blocks/raises.
+        _eres = getattr(self, "_last_earnings_resolution", None)
+        if _eres is not None and getattr(_eres, "source", None) == "none":
+            self._audit_division("pmcc_earnings_unverified", {
+                "symbol": symbol,
+                "reason": "no broker/feed earnings date; roll allowed (fail-open)",
+                "gate_state": earnings_state,
+            })
+            try:
+                from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+                emit_exec_alert(ExecOutcome(
+                    tier="EARN_UNVERIF", symbol=symbol, strategy="robinhood_pmcc",
+                    reason=("earnings unverified (no broker/feed date) — roll allowed; "
+                            "check for an upcoming print"),
+                ))
+            except Exception:
+                log.debug("earnings-unverified alert failed for %s (isolated)", symbol)
 
         # B4 (atomic roll) + B7 (roll-out): resolve the re-open leg BEFORE
         # proposing the close. No qualifying roll-out weekly → abort the WHOLE roll
