@@ -824,6 +824,63 @@ class PMCCAgent:
             return True, reason
         return False, ""
 
+    def earnings_card_state(
+        self, symbol: str, short_strike: float | None = None,
+        spot: float | None = None,
+    ) -> dict:
+        """DISPLAY-layer earnings state for the roll consent card (Enhancement A,
+        2026-07-28). Drives off the SAME `_earnings_gate_state` the backend roll
+        path uses (via `resolve_earnings`), so the UI and the gate can never
+        disagree. Read-only; no order/broker side effects.
+
+        Returns a dict:
+          kind         : "blocked" | "unverified" | "clear"
+          date         : ISO date of the next earnings (or None)
+          verified     : True only when the broker CONFIRMED the date
+          source       : "broker" | "feed" | "none" | None
+          recommendation: the "let it expire" text (blocked only), else None
+          flag         : the unverified-confirm text (unverified only), else None
+          caveat       : assignment-risk caveat (blocked AND short ITM), else None
+          offer_roll   : False iff blocked (card hides Approve); True otherwise
+
+        `short_strike` + `spot` are optional; when both are given and the short is
+        ITM (spot ≥ strike) under a BLOCKED state, a "let it expire risks
+        assignment" caveat is surfaced — but the operator's stated default ("let it
+        expire") is kept, not overridden."""
+        state, _reason = self._earnings_gate_state(symbol)
+        res = getattr(self, "_last_earnings_resolution", None)
+        date_iso = res.date.date().isoformat() if (res and res.date) else None
+        verified = bool(res.verified) if res else False
+        source = res.source if res else None
+        out = {
+            "kind": "clear", "date": date_iso, "verified": verified,
+            "source": source, "recommendation": None, "flag": None,
+            "caveat": None, "offer_roll": True,
+        }
+        if state == "blocked":
+            out["kind"] = "blocked"
+            out["offer_roll"] = False
+            out["recommendation"] = (
+                f"Earnings {date_iso} — let the current short call expire, then sell "
+                "a new call after earnings is announced and the stock has moved."
+            )
+            try:
+                itm = (spot is not None and short_strike is not None
+                       and float(spot) >= float(short_strike))
+            except (TypeError, ValueError):
+                itm = False
+            if itm:
+                out["caveat"] = (
+                    f"Short strike {short_strike:g} is in-the-money (spot {float(spot):g}) "
+                    "— letting it expire risks assignment; consider closing before the "
+                    "print. Default remains: let it expire."
+                )
+        elif state == "data_unavailable":
+            out["kind"] = "unverified"
+            out["offer_roll"] = True
+            out["flag"] = "earnings date unverified — confirm before rolling"
+        return out
+
     @staticmethod
     def _classify_liquidity_reason(reason: str) -> str:
         """Bucket a _passes_liquidity reason into the sub-gate that bound:

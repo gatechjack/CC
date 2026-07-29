@@ -1953,9 +1953,16 @@ def register(app: FastAPI) -> None:
             else None
         )
         combo_is_live = data._division_is_live(_combo_broker)
+        # Consent-card extras (2026-07-28): A = earnings-imminent state (off the
+        # same gate the roll path uses), B = live debit/credit/net estimate (off the
+        # same reprice source dispatch uses). Read-only; never breaks the card.
+        from trading_corp.web.pmcc_roll_card import build_pmcc_roll_card_extras
+        extras = await build_pmcc_roll_card_extras(entry, _combo_broker, deps.pmcc_agent)
         return templates.TemplateResponse(
             request, "approval_pmcc_combo_detail.html",
-            {"snap": snap, "view": view, "entry": entry, "combo_is_live": combo_is_live},
+            {"snap": snap, "view": view, "entry": entry, "combo_is_live": combo_is_live,
+             "earnings": extras["earnings"], "estimate": extras["estimate"],
+             "estimate_reason": extras["estimate_reason"]},
         )
 
     @app.post("/approvals/pmcc-combos/{combo_id}/decide", response_class=HTMLResponse)

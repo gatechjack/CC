@@ -213,6 +213,68 @@ async def reprice_combo_from_quotes(
     return direction, limit
 
 
+async def estimate_roll_from_quotes(
+    legs: list[ProposedOrder], broker: Any,
+) -> dict | None:
+    """Non-mutating LIVE-quote estimate of a roll_short's debit / credit / net for
+    the consent card (Enhancement B, 2026-07-28).
+
+    CONSENT INTEGRITY: sources from the SAME `broker.get_option_quote` and the SAME
+    natural formula (Σ bid(sell) − Σ ask(buy)) as `reprice_combo_from_quotes` uses
+    at DISPATCH, so the number shown is the pre-give_up natural the placed order
+    derives from — NOT a separate/independent calc that could diverge. The give_up
+    shave + net-tick rounding (the "actual fill will differ slightly") are applied
+    only at dispatch, not here.
+
+      DEBIT  = ask of the buy-to-close (current short) leg  — you pay the ask to close.
+      CREDIT = bid of the sell-to-open (new short) leg      — you collect the bid.
+      NET    = Σ bid(sell)·ratio − Σ ask(buy)·ratio         — credit if ≥0 else debit.
+
+    Returns None (→ caller shows the reworded abort/"no estimate" text) when either
+    leg is missing or any live quote is unavailable. Never raises. Does NOT mutate
+    the legs (the pending combo must reach dispatch untouched)."""
+    buy_leg = next((o for o in legs if o.side == "buy"), None)
+    sell_leg = next((o for o in legs if o.side == "sell"), None)
+    if buy_leg is None or sell_leg is None:
+        return None
+
+    async def _quote(o: ProposedOrder) -> dict | None:
+        ex = o.extra or {}
+        try:
+            return await broker.get_option_quote(
+                ex.get("underlying") or o.symbol, ex.get("expiration"),
+                float(ex.get("strike")), ex.get("option_type", "call"),
+            )
+        except Exception as e:      # noqa: BLE001 — any quote failure → no estimate
+            log.warning("estimate_roll: get_option_quote raised for %s: %s", o.symbol, e)
+            return None
+
+    bq = await _quote(buy_leg)
+    sq = await _quote(sell_leg)
+    debit = (bq or {}).get("ask")      # buy-to-close pays the ask
+    credit = (sq or {}).get("bid")     # sell-to-open collects the bid
+    if debit is None or credit is None:
+        return None
+    debit = float(debit)
+    credit = float(credit)
+    r_buy = int((buy_leg.extra or {}).get("ratio_quantity", 1) or 1)
+    r_sell = int((sell_leg.extra or {}).get("ratio_quantity", 1) or 1)
+    net = round(credit * r_sell - debit * r_buy, 2)     # == reprice natural
+    ce = buy_leg.extra or {}
+    oe = sell_leg.extra or {}
+    return {
+        "debit": round(debit, 2),
+        "credit": round(credit, 2),
+        "net": net,
+        "net_abs": round(abs(net), 2),
+        "direction": "credit" if net >= 0 else "debit",
+        "close_strike": ce.get("strike"),
+        "close_expiration": ce.get("expiration"),
+        "open_strike": oe.get("strike"),
+        "open_expiration": oe.get("expiration"),
+    }
+
+
 def snapshot_combo_for_consent(legs: list[ProposedOrder]) -> dict:
     """Capture the operator-APPROVED combo shape BEFORE dispatch reprice mutates
     it, so the consent guard can detect an adverse drift at dispatch time."""
