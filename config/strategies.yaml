@@ -1672,6 +1672,22 @@ kalshi_copy_trader:
     # public trade tape (±5% of whale's contracts, min 1). Higher = more
     # forgiving match but risks picking up unrelated trades.
     size_match_tolerance_pct: 5.0
+  # ── K5·4 feed-health / mass-exit circuit breaker (hot-reload) ──────────────
+  # A whale rarely closes >= mass_exit_threshold_pct of its tracked positions in
+  # one ~10-min cycle; when it does, decide whether that is REAL (markets settled
+  # / cancelled) or a feed glitch BEFORE synthesizing exits or alarming.
+  feed_health:
+    mass_exit_threshold_pct: 60      # trip at >= this % of a whale's positions removed in one cycle
+    min_positions_for_check: 2       # never treat a 1-position whale's close as "mass"
+    # R1 (2026-07-30): classify each vanished ticker via Kalshi resolution. A
+    # RESOLVED/VOID market is a legitimate settlement -> advance snapshot, NO alarm
+    # (e.g. the July FOMC KXFEDDECISION markets settling at the 2pm-ET announcement).
+    # true = check (recommended); false = every mass-disappearance is suspicious.
+    settlement_check_enabled: true
+    # R2: if a still-active (or unconfirmable) disappearance persists this many
+    # consecutive cycles, accept it as real, advance the book, and alarm ONCE more
+    # (not once per cycle). Guarantees a real removal can never latch the breaker.
+    anomaly_confirm_cycles: 3
 
 
 # ── Polymarket Copy Trading (Phase 4+ placeholder; deprioritized 2026-05-10) ──

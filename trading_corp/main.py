@@ -4210,16 +4210,40 @@ async def _scheduled_kalshi_copy_trader_loop(
                     log.exception("Kalshi copy trader: run_scan_cycle failed: %s", e)
                     continue
 
-                # K5·4: surface any feed-health anomalies the scan suppressed. Drained
-                # BEFORE the `if not orders` early-out so a cycle that suppressed every
-                # exit (and thus emitted nothing) still raises the alarm.
+                # K5·4: surface any feed-health anomalies the scan raised. Drained
+                # BEFORE the `if not orders` early-out so a cycle that emitted nothing
+                # still raises the alarm. Reason-aware (2026-07-30): SETTLEMENT-confirmed
+                # disappearances are legitimate and are NOT queued (silent, non-events);
+                # only genuinely suspicious/unconfirmed feed events reach this loop. This
+                # replaces the old blanket "FEED ANOMALY — check Apify feed health" text
+                # that mis-signalled a feed bug when markets had simply settled.
                 for alarm in agent.drain_feed_alarms():
                     try:
                         who = alarm.get("whale") or "feed"
-                        await channel.push(
-                            f"⚠️ Kalshi copy FEED ANOMALY ({alarm.get('reason')}) — "
-                            f"{who}: synthetic exits SUPPRESSED. Check Apify feed health."
-                        )
+                        reason = alarm.get("reason")
+                        if reason == "mass_disappearance":
+                            msg = (
+                                f"⚠️ Kalshi copy feed check — {who}: "
+                                f"{alarm.get('n_removed')}/{alarm.get('n_prev_tracked')} tracked "
+                                f"positions vanished while the market(s) are still ACTIVE on Kalshi "
+                                f"(or status unconfirmed). Copies retained, exits held pending "
+                                f"confirmation — possible Apify feed gap. (Settled/resolved markets "
+                                f"are handled silently and do NOT trigger this alert.)"
+                            )
+                        elif reason == "confirmed_real_after_n_cycles":
+                            msg = (
+                                f"Kalshi copy (auto-resolved) — {who}: a suspicious disappearance "
+                                f"persisted through the confirm window and was accepted as REAL; "
+                                f"book advanced ({alarm.get('n_removed')} position(s) dropped)."
+                            )
+                        elif reason == "consecutive_fetch_failures":
+                            msg = (
+                                f"⚠️ Kalshi copy FEED DOWN — Apify open_positions fetch failed "
+                                f"{alarm.get('consecutive_failures')}x consecutively. Check Apify feed health."
+                            )
+                        else:
+                            msg = f"⚠️ Kalshi copy feed anomaly ({reason}) — {who}."
+                        await channel.push(msg)
                     except Exception as e:
                         log.warning("Kalshi copy feed-anomaly push failed: %s", e)
 

@@ -323,3 +323,40 @@ NRestarts=0 (the PMCC e82a07d deploy — orthogonal to kalshi; feed files identi
 3. **Run R4 at deploy (instant clear) or let R1 self-heal (<=10 min)?** Recommend: skip R4, let R1 heal.
 4. **Alarm-once semantics:** warn on first suspicious cycle + one "confirmed" note at N. OK?
 5. **main.py alarm text tweak** (reason-aware wording) — include or defer (cosmetic)?
+
+---
+
+## 11. BUILD STATUS — COMPLETE & STAGED (2026-07-30)
+
+Built on branch `claude-2026-07-29` per approved decisions (N=3, agent_state counter, skip R4,
+two-alarm w/ zero-alarm on confirmed settlement, reason-aware main.py). **Not deployed. No DB write.**
+
+Files changed (`git diff --stat`):
+- `trading_corp/agents/strategies/kalshi_copy_trader.py`  +153/-17  (R1 `_classify_removed`, R2 streak
+  helpers, breaker rework, retained-suspicious re-insert, reason-aware internal warning)
+- `trading_corp/main.py`  +34/-4  (reason-aware Telegram text: settlement=silent, suspicious=feed-gap
+  wording, confirmed=auto-resolved note, fetch-fail=FEED DOWN)
+- `config/strategies.yaml`  +16  (new `feed_health:` block: threshold 60, min 2,
+  settlement_check_enabled true, anomaly_confirm_cycles 3)
+- `tests/test_kalshi_feed_health_guard.py`  +155  (6 new tests + `_StubResolver`)
+- `r4_clear_maggie_snapshot.py`  NEW  (reviewable DRY-RUN artifact; write line commented; NOT run)
+
+Validation (local Python 3.14.4 — deps present):
+- `py_compile` all 4 modified `.py` files: **OK**.
+- `pytest tests/test_kalshi_feed_health_guard.py`: **11 passed** (5 pre-existing + 6 new).
+- `pytest` feed-health + `test_kalshi_copy_trader.py` + `test_kalshi_copy_trader_sports_skip.py`:
+  **46 passed**, no regressions. (Existing `test_empty_feed_suppresses_exits_and_retains_snapshot`
+  still green — empty-feed/None-fetcher path still retains + alarms once.)
+
+New-test coverage map (matches the requested cases):
+- (a) `test_settled_disappearance_advances_snapshot_no_alarm` — settlement -> advance, ZERO alarms.
+- (b) `test_active_disappearance_alarms_as_suspicious` — active removal still alarms (safety preserved).
+- (c) `test_suspicious_persists_confirms_after_n_cycles` — persists N=3 -> 1 confirm alarm, advance;
+  exactly 2 alarms total (no per-cycle spam).
+- (d) `test_maggie_fed_settlement_self_heals` — the exact incident tickers self-heal to {-26SEP-H0}.
+- (e) `test_held_copy_settled_still_exits` — R1 doesn't swallow a real held exit ($1.00 priced).
+- (f) `test_disappearance_suspicious_when_resolution_unavailable` — no fetcher -> retain, safe direction.
+
+Deploy base still clean (re-verify at Gate-A): `kalshi_copy_trader.py 720df3d8`, `strategies.yaml 6af510f6`,
+`main.py 302c06e7`, `brokers/kalshi.py 18626cf0` all == prod (LF-md5). Restart required (code change);
+config hot-reloads. **Awaiting operator go to deploy.**

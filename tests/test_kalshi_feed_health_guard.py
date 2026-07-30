@@ -147,3 +147,158 @@ async def test_fetch_success_resets_failure_streak(agent):
     await a.run_scan_cycle(apify_client=fail, trade_tape_fetcher=None, logger_agent=lg)
     await a.run_scan_cycle(apify_client=fail, trade_tape_fetcher=None, logger_agent=lg)
     assert "kalshi_copy_feed_anomaly" not in lg.kinds()
+
+
+# ── R1 settlement-aware + R2 confirm-and-advance (2026-07-30) ─────────────────
+#
+# Root cause of the MaggieTheEagle latch: two KXFEDDECISION-26JUL markets SETTLED
+# at the Fed announcement, so 2/3 tracked positions vanished in one cycle (>=60%),
+# tripping the breaker. The old breaker retained the stale snapshot and re-fired
+# every cycle forever. R1 recognises a resolved/void market as a legitimate exit
+# (advance, no alarm); R2 gives a recovery path for still-active disappearances.
+
+
+class _StubResolver:
+    """Stub trade_tape_fetcher exposing get_market_resolution (R1) — maps
+    ticker -> Kalshi resolution status. Unlisted tickers default to 'pending'
+    (still-active / unconfirmed = suspicious), matching the production default.
+    Also usable as an exit quote_fetcher (get_market_resolution priced exits)."""
+
+    def __init__(self, statuses=None, raise_on=None):
+        self._statuses = dict(statuses or {})
+        self._raise_on = set(raise_on or ())
+
+    async def get_market_resolution(self, ticker):
+        if ticker in self._raise_on:
+            raise RuntimeError("kalshi api unreachable")
+        status = self._statuses.get(ticker, "pending")
+        result = {"resolved": "yes", "void": "void"}.get(status)
+        return {"status": status, "result": result, "ticker": ticker,
+                "close_time": "", "expiration_time": ""}
+
+
+async def test_settled_disappearance_advances_snapshot_no_alarm(agent):
+    """(a) R1: every vanished ticker resolved -> snapshot advances, ZERO alarms."""
+    a, db_url = agent
+    _seed_selected(db_url)
+    apify = _StubApify([
+        [_wp("alice", "T1"), _wp("alice", "T2"), _wp("alice", "T3")],  # cold start
+        [_wp("alice", "T3")],                                          # T1,T2 vanished (66%)
+    ])
+    resolver = _StubResolver({"T1": "resolved", "T2": "resolved", "T3": "pending"})
+    lg = _Logger()
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)
+    orders = await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)
+    assert orders == []                                            # unheld -> no-op exits
+    snap = _db.load_agent_state("kalshi_copy_trader", "positions:alice", db_url=db_url)[0]
+    assert set(snap.keys()) == {"T3"}                             # ADVANCED, T1/T2 dropped
+    assert "kalshi_copy_feed_anomaly" not in lg.kinds()           # settlement = non-event
+    assert a.drain_feed_alarms() == []
+    assert a._load_anomaly_streak("alice") == {}                  # no streak started
+
+
+async def test_active_disappearance_alarms_as_suspicious(agent):
+    """(b) The REAL feed-anomaly case still works: still-active tickers vanish ->
+    alarm once + retain (do not break the safety case while fixing false positives)."""
+    a, db_url = agent
+    _seed_selected(db_url)
+    apify = _StubApify([
+        [_wp("alice", "T1"), _wp("alice", "T2"), _wp("alice", "T3")],  # cold start
+        [_wp("alice", "T3")],                                          # T1,T2 vanished
+    ])
+    resolver = _StubResolver({"T1": "pending", "T2": "pending", "T3": "pending"})  # still active
+    lg = _Logger()
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)
+    snap = _db.load_agent_state("kalshi_copy_trader", "positions:alice", db_url=db_url)[0]
+    assert set(snap.keys()) == {"T1", "T2", "T3"}                 # suspicious tickers RETAINED
+    alarms = a.drain_feed_alarms()
+    assert len(alarms) == 1 and alarms[0]["reason"] == "mass_disappearance"
+    assert a._load_anomaly_streak("alice").get("count") == 1
+
+
+async def test_suspicious_persists_confirms_after_n_cycles(agent):
+    """(c) Inconclusive disappearance persists N=3 cycles -> accept + single
+    confirmed alarm; snapshot advances; exactly two alarms total (no per-cycle spam)."""
+    a, db_url = agent
+    _seed_selected(db_url)
+    apify = _StubApify([
+        [_wp("alice", "T1"), _wp("alice", "T2"), _wp("alice", "T3")],  # poll1 cold
+        [_wp("alice", "T3")],                                          # poll2+ T1,T2 gone, active
+    ])
+    resolver = _StubResolver({"T1": "pending", "T2": "pending", "T3": "pending"})
+    lg = _Logger()
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)  # cold
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)  # streak 1 -> alarm
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)  # streak 2 -> silent
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)  # streak 3=N -> confirm
+    snap = _db.load_agent_state("kalshi_copy_trader", "positions:alice", db_url=db_url)[0]
+    assert set(snap.keys()) == {"T3"}                             # advanced after confirm
+    reasons = [x["reason"] for x in a.drain_feed_alarms()]
+    assert reasons == ["mass_disappearance", "confirmed_real_after_n_cycles"]
+    assert a._load_anomaly_streak("alice") == {}                  # streak cleared on confirm
+
+
+async def test_maggie_fed_settlement_self_heals(agent):
+    """(d) The exact incident: MaggieTheEagle's two 26JUL Fed markets settle while
+    26SEP stays active -> latch self-heals to {26SEP} on the first post-fix cycle."""
+    a, db_url = agent
+    _seed_selected(db_url, ("MaggieTheEagle",))
+    jul0, jul25, sep = (
+        "KXFEDDECISION-26JUL-H0", "KXFEDDECISION-26JUL-H25", "KXFEDDECISION-26SEP-H0",
+    )
+    apify = _StubApify([
+        [_wp("MaggieTheEagle", jul0), _wp("MaggieTheEagle", jul25), _wp("MaggieTheEagle", sep)],
+        [_wp("MaggieTheEagle", sep)],
+    ])
+    resolver = _StubResolver({jul0: "resolved", jul25: "resolved", sep: "pending"})
+    lg = _Logger()
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)  # cold
+    orders = await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)
+    assert orders == []
+    snap = _db.load_agent_state("kalshi_copy_trader", "positions:MaggieTheEagle", db_url=db_url)[0]
+    assert set(snap.keys()) == {sep}                             # latch cleared silently
+    assert "kalshi_copy_feed_anomaly" not in lg.kinds()
+    assert a.drain_feed_alarms() == []
+
+
+async def test_held_copy_settled_still_exits(agent):
+    """(e) R1 must not swallow a REAL exit: a settled market we HELD a copy of
+    still emits a priced exit and advances out of the book."""
+    a, db_url = agent
+    _seed_selected(db_url)
+    _db.set_agent_state("kalshi_copy_trader", "positions:alice", {
+        "T1": {"contracts": 100, "pnl": 0.0, "first_seen_iso": "2026-01-01T00:00:00+00:00",
+               "our_side": "yes", "copy_size_usd": 2.0, "entry_price": 0.5},
+        "T2": {"contracts": 100, "pnl": 0.0, "first_seen_iso": "2026-01-01T00:00:00+00:00",
+               "our_side": "", "copy_size_usd": 0.0, "entry_price": None},
+        "T3": {"contracts": 100, "pnl": 0.0, "first_seen_iso": "2026-01-01T00:00:00+00:00",
+               "our_side": "", "copy_size_usd": 0.0, "entry_price": None},
+    }, db_url=db_url)
+    apify = _StubApify([[_wp("alice", "T3")]])                    # T1,T2 vanished; not cold (snap seeded)
+    resolver = _StubResolver({"T1": "resolved", "T2": "resolved", "T3": "pending"})
+    lg = _Logger()
+    orders = await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=resolver, logger_agent=lg)
+    assert len(orders) == 1 and orders[0].symbol.startswith("T1")  # our held T1 copy exits
+    assert orders[0].limit_price == 1.0                            # resolved YES win -> $1.00
+    snap = _db.load_agent_state("kalshi_copy_trader", "positions:alice", db_url=db_url)[0]
+    assert set(snap.keys()) == {"T3"}
+    assert "kalshi_copy_feed_anomaly" not in lg.kinds()
+
+
+async def test_disappearance_suspicious_when_resolution_unavailable(agent):
+    """(f) Safe direction: if settlement can't be confirmed (no fetcher), a
+    disappearance is treated as suspicious (retain + alarm), never auto-dropped."""
+    a, db_url = agent
+    _seed_selected(db_url)
+    apify = _StubApify([
+        [_wp("alice", "T1"), _wp("alice", "T2"), _wp("alice", "T3")],
+        [_wp("alice", "T3")],
+    ])
+    lg = _Logger()
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=None, logger_agent=lg)  # cold
+    await a.run_scan_cycle(apify_client=apify, trade_tape_fetcher=None, logger_agent=lg)
+    snap = _db.load_agent_state("kalshi_copy_trader", "positions:alice", db_url=db_url)[0]
+    assert set(snap.keys()) == {"T1", "T2", "T3"}                 # retained, NOT dropped
+    alarms = a.drain_feed_alarms()
+    assert len(alarms) == 1 and alarms[0]["reason"] == "mass_disappearance"
