@@ -1,0 +1,6 @@
+Set-Location "C:\Users\AA Incorporado\cc-2026-07-29-wt"
+$h = "azureuser@trading.jacksumner.com"
+Get-Content deploy_kct.b64  -Raw | ssh $h "cat > /tmp/r1r2_kct.b64"
+Get-Content deploy_main.b64 -Raw | ssh $h "cat > /tmp/r1r2_main.b64"
+Get-Content deploy_yaml.b64 -Raw | ssh $h "cat > /tmp/r1r2_yaml.b64"
+"transfer done"
