@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""R4 (OPTIONAL / DO-NOT-RUN-WITHOUT-GO) — one-time latch clear for MaggieTheEagle.
+"""R4 (REFERENCE-ONLY ARTIFACT — NOT RUN, NOT PENDING) — one-time latch clear for MaggieTheEagle.
+
+STATUS 2026-07-30: **NEVER RUN and NO LONGER NEEDED.** R1 self-healed the Maggie latch
+live on deploy (verified: snapshot advanced 3->1 = {KXFEDDECISION-26SEP-H0}, 3 scan cycles,
+0 anomalies/0 alarms). This file exists only as a documented fallback; it is NOT a pending
+task. Do not run it unless a future latch somehow fails to self-heal AND you explicitly decide to.
 
 Context: the R1 fix SELF-HEALS the current MaggieTheEagle mass_disappearance latch
 on the first post-deploy scan (both KXFEDDECISION-26JUL markets classify as
