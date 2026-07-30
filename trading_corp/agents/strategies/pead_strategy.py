@@ -34,6 +34,7 @@ from trading_corp.agents.strategies.pead_signal import (
     confirmation_verdict,
     passes_screen,
     rank_wave,
+    reaction_index,
     screen_params_from_config,
     standardized_ue,
     sue_params_from_config,
@@ -423,7 +424,8 @@ class PEADStrategy:
             entry_price = float(bars[-1].close)       # daily-scan entry reference (≈ next-open fill)
             if entry_price <= 0:
                 continue
-            prim = self._build_primitives(bars, ann_by[cand.symbol], entry_price)
+            prim = self._build_primitives(bars, ann_by[cand.symbol], entry_price,
+                                          slot_by.get(cand.symbol))
             if prim is None:
                 continue
             # ── equal-DOLLAR notional sizing (config-driven, same $ per candidate) ──
@@ -504,12 +506,14 @@ class PEADStrategy:
         log.info("pead_strategy.scan: entered %d position(s)", len(placed))
         return placed
 
-    def _build_primitives(self, bars: list[_Bar], announcement: date, entry_price: float) -> dict | None:
-        """The locked entry primitives. `earnings_gap_top` = close of the first
-        full-reaction session — the announcement-date bar `a`, the SAME bar the
-        backtest re-align uses, so dashboard/engine/backtest agree. ATR(14) and
-        the post-earnings swing-low run through the LATEST bar (the live entry
-        day); `entry_price` is the live entry reference (current price)."""
+    def _build_primitives(self, bars: list[_Bar], announcement: date, entry_price: float,
+                          report_time: str | None) -> dict | None:
+        """The locked entry primitives. `earnings_gap_top` = the entry_open
+        (re-anchored to the realized fill at both fill sites). `pre_earnings_close`
+        is SLOT-AWARE — the gate's own bar0 (AMC=a, BMO=a-1), so the drift gap is
+        measured from the SAME pre-earnings close the confirmation gate judges.
+        ATR(14) and the post-earnings swing-low run through the LATEST bar (the
+        live entry day); `entry_price` is the live entry reference (current price)."""
         a = self._index_on_or_after(bars, announcement)
         if a is None or a < 1:
             return None
@@ -517,8 +521,16 @@ class PEADStrategy:
         atr = self._atr14(bars, last_idx)
         if atr is None:
             return None
-        pre_earnings_close = bars[a - 1].close
-        earnings_gap_top = entry_price   # DRIFT anchor = entry_open (validated backtest semantics); re-anchored to the realized fill at both fill sites (was bars[a].close = pre-reaction announcement-day close)
+        # DRIFT baseline = the gate's slot-aware bar0, using the SAME reaction_index
+        # confirmation_verdict uses (bar0 = reaction_index - 1: AMC=a, BMO=a-1). One
+        # definition, both consumers — no second, drifting slot rule. Unknown slot
+        # -> a-1 (unchanged; entry behaviour for un-slotted names is untouched).
+        _bar1 = reaction_index(report_time, a)
+        _bar0 = (_bar1 - 1) if _bar1 is not None else (a - 1)
+        if _bar0 < 0:
+            return None
+        pre_earnings_close = bars[_bar0].close
+        earnings_gap_top = entry_price   # DRIFT anchor = entry_open (validated backtest semantics); re-anchored to the realized fill at both fill sites
         swing_low = min(b.low for b in bars[a:last_idx + 1])
         stop_level = max(entry_price - 2.5 * atr, swing_low)
         return {
@@ -555,9 +567,39 @@ class PEADStrategy:
             held = business_days(opened, today)
             nxt = self._parse_date(extra.get("next_earnings_date"))
             d2n = business_days(today, nxt) if nxt else None
+            # DRIFT is a DAILY-CLOSE rule: never on the entry day (held < 1) and at
+            # most once per newly-COMPLETED daily bar. Stop/guard/time are unchanged
+            # (stop reads the intraday quote `last`; guard/time read the calendar).
+            # The daily close comes from the SAME split-adjusted RH fetcher scan()
+            # uses, OFF the event loop via asyncio.to_thread — no HTTP on the loop.
+            drift_close: float | None = None
+            drift_evaluated = False
+            if held >= 1:
+                marker = extra.get("drift_last_daily")
+                # Cheap guard: only touch the RH daily fetcher when a new session may
+                # have completed since we last evaluated (marker != the most-recent
+                # weekday before today). Avoids a per-tick HTTP fetch in steady state.
+                if marker != self._prev_weekday(today).isoformat():
+                    dbars = await asyncio.to_thread(self._fetch_daily_bars, r["symbol"])
+                    lower = marker or opened.isoformat()   # never evaluate the entry day or earlier
+                    pending = [b for b in dbars
+                               if b.d < today and b.d.isoformat() > lower]   # completed, post-entry, not-yet-seen
+                    if pending:
+                        self._mark_drift_daily(r["order_id"], pending[-1].d.isoformat())
+                        # Fire drift on the FIRST completed close that crosses the
+                        # drift-dead level (parity with the backtest, which checks each
+                        # bar's CLOSE in order). No crossing close -> drift suppressed.
+                        level = pp.drift_dead_level(prim)
+                        if pp.earnings_gap_usd(prim) > 0:
+                            for b in pending:
+                                if b.close <= level:
+                                    drift_evaluated = True
+                                    drift_close = float(b.close)
+                                    break
             pr = pp.compute_pressures(prim, last, held_trading_days=held,
-                                      days_to_next_earnings=d2n)
-            rule = self._fired_rule(pr, d2n, held)
+                                      days_to_next_earnings=d2n,
+                                      drift_price=(drift_close if drift_evaluated else None))
+            rule = self._fired_rule(pr, d2n, held, drift_evaluated=drift_evaluated)
             if rule is None:
                 continue                              # no exit yet
             sell = ProposedOrder(
@@ -597,12 +639,16 @@ class PEADStrategy:
         return exits, cadence
 
     @staticmethod
-    def _fired_rule(pr: "pp.Pressures", days_to_next, held) -> str | None:
+    def _fired_rule(pr: "pp.Pressures", days_to_next, held,
+                    drift_evaluated: bool = True) -> str | None:
         """Top-down first-match-wins; fire when a pressure reaches 1.0 (stop /
-        drift / time) or the guard date arrives (≤ GUARD_LEAD_DAYS)."""
+        drift / time) or the guard date arrives (≤ GUARD_LEAD_DAYS). `drift_evaluated`
+        gates the DRIFT branch: drift is honoured ONLY on a completed-daily-bar tick
+        (manage() sets it False on the entry day and on intraday ticks with no new
+        completed daily bar), so a same-day intraday dip can never fire drift."""
         if pr.stop >= 1.0:
             return "stop"
-        if pr.drift >= 1.0:
+        if drift_evaluated and pr.drift >= 1.0:
             return "drift"
         if days_to_next is not None and days_to_next <= pp.GUARD_LEAD_DAYS:
             return "guard"
@@ -631,6 +677,32 @@ class PEADStrategy:
             conn.execute(
                 "UPDATE paper_trade_record SET qty=? WHERE order_id=? AND result IS NULL",
                 (float(residual_qty), order_id),
+            )
+
+    @staticmethod
+    def _prev_weekday(d: date) -> date:
+        """The most recent weekday strictly before `d` (Mon->Fri). Used only as a
+        cheap 'has a new session likely completed?' guard so manage() does not hit the
+        RH daily fetcher every 5-min tick. Holidays only cause an occasional harmless
+        EXTRA fetch (never a missed one — the fetched bars are still filtered to real
+        completed sessions strictly before today). Drift signals on session D's close
+        are therefore acted on from D+1's ticks: a ≤1-session pickup lag, immaterial
+        for a slow multi-day rule and safe (never fires on a still-forming bar)."""
+        from datetime import timedelta
+        x = d - timedelta(days=1)
+        while x.weekday() >= 5:   # Sat=5, Sun=6
+            x -= timedelta(days=1)
+        return x
+
+    def _mark_drift_daily(self, order_id: str, day_iso: str) -> None:
+        """Record (in the row's extra_json) the completed daily bar last evaluated for
+        DRIFT, so drift fires at most once per new daily close — not every manage tick."""
+        with db.connect(self.db_url) as conn:
+            conn.execute(
+                "UPDATE paper_trade_record SET "
+                "extra_json=json_set(COALESCE(extra_json,'{}'),'$.drift_last_daily',?) "
+                "WHERE order_id=? AND result IS NULL",
+                (day_iso, order_id),
             )
 
     # ── Flag-2 / Entry-fix: intent → at-open placement ───────────────────────────
