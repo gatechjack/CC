@@ -159,6 +159,9 @@ def record_pmcc_decision(
     summary: str | None = None,
     rationale: str | None = None,
     warnings: Any = None,
+    target_delta_low: float | None = None,
+    target_delta_high: float | None = None,
+    target_dte: int | None = None,
     staleness_hours: float = DEFAULT_STALENESS_HOURS,
 ) -> bool:
     """Persist the latest decision for `symbol`, honouring precedence.
@@ -166,6 +169,13 @@ def record_pmcc_decision(
     Returns True if written, False if skipped (a fresh manual Expert was
     protected from a scan clobber). Never raises — a status-persist failure
     must not break the scan or the render.
+
+    `target_delta_low`/`target_delta_high` (a δ BAND, not a point) + `target_dte`
+    (2026-07-31, P1): the JUDGMENT's consent envelope. Persisted so the free,
+    deterministic pricing refresh can select the concrete strike WITHIN the band
+    without re-running the LLM. Additive + backward-compatible — a record written
+    before this change simply lacks the keys, and `load_decision` readers fall
+    back to config defaults (`None` → default δ/DTE).
     """
     from trading_corp.persistence import db
     current = load_decision(symbol, db_url=db_url)
@@ -181,6 +191,9 @@ def record_pmcc_decision(
         "summary": summary,
         "rationale": rationale,
         "warnings": list(warnings) if warnings else [],
+        "target_delta_low": target_delta_low,
+        "target_delta_high": target_delta_high,
+        "target_dte": target_dte,
     }
     try:
         db.set_agent_state(_AGENT, decision_key(symbol), value, db_url=db_url)

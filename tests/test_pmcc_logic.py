@@ -3476,3 +3476,44 @@ async def test_preview_combo_identical_to_dispatch(agent, clear_earnings):
         _roll_leap_credit_broker(), "MSTR", _rl_analysis())
     assert len(prev) == 4
     assert _shape(prev) == _shape(disp)
+
+
+# ===========================================================================
+# 2026-07-31 (P1) — pricing from STORED judgment: deterministic, ZERO Anthropic.
+# `price_and_stash` rebuilds the roll from the persisted δ-band + DTE without the
+# LLM, and its combo == the deterministic builder's output for the same judgment.
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_price_and_stash_no_llm_and_matches_builder(agent, tmp_db, monkeypatch):
+    from trading_corp.persistence import db
+    db.init_db(tmp_db)
+    from trading_corp.agents.divisions import _pmcc_status
+    from trading_corp.agents.divisions.pmcc_robinhood import PMCCAnalysis
+    from trading_corp.web import pmcc_pricing
+    _patch_earn_sources(monkeypatch, (_earn_dt(60), True), None)     # earnings CLEAR → roll ships
+    # LLM tripwire — the pricing path must NEVER call Anthropic.
+    llm_calls = []
+    async def _boom(*a, **k):
+        llm_calls.append(1)
+        return None
+    monkeypatch.setattr(agent, "_llm_analyze_position", _boom)
+    _pmcc_status.record_pmcc_decision(
+        "AAPL", status="roll_short", source="scan",
+        computed_at="2026-07-31T13:00:00+00:00", db_url=tmp_db,
+        target_delta_low=0.25, target_delta_high=0.35, target_dte=14)
+    broker = _credit_roll_broker()
+    pr = await pmcc_pricing.price_and_stash(agent, broker, "robinhood_pmcc", "AAPL", tmp_db)
+    assert llm_calls == []                              # ZERO Anthropic
+    assert len(pr.orders) == 2                          # buy-to-close + sell-to-open built
+    # (the live debit/credit/net + stash need a quote-capable broker → market-hours
+    #  e2e; the combo SHAPE + zero-LLM is what this unit pins.)
+    # Same combo the deterministic builder produces from an equivalent judgment.
+    a = PMCCAnalysis(symbol="AAPL", action="roll_short", confidence=0.8, urgency="routine",
+                     summary="", rationale="", target_delta=0.30, target_dte=14,
+                     target_delta_low=0.25, target_delta_high=0.35)
+    pos = next(p for p in await agent.detect_existing_legs(broker) if p.symbol == "AAPL")
+    ref = await agent._propose_roll_short("AAPL", pos, broker, analysis=a, preview=True)
+    def _legs(os):
+        return [(o.side, o.extra.get("strike"), o.extra.get("expiration")) for o in os]
+    assert _legs(pr.orders) == _legs(ref)

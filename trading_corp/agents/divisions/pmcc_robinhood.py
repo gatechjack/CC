@@ -326,6 +326,13 @@ class PMCCAnalysis:
     # delta-only picker would miss. None = fall back to delta-distance
     # ranking (original behavior).
     target_strike: float | None = None
+    # δ BAND (P1, 2026-07-31): the consent ENVELOPE the deterministic pricing
+    # refresh selects the concrete strike within — persisted on the decision record
+    # so pricing can rebuild the roll WITHOUT re-running the LLM. Derived from
+    # `target_delta` ± a config half-width at judgment time (`_apply_delta_band`);
+    # None on both = fall back to the point/config-default selection.
+    target_delta_low: float | None = None
+    target_delta_high: float | None = None
     # Phase-2 override contract (2026-07-21): structured escape hatch letting the
     # LLM authorize a deterministic gate to permit what it would otherwise block.
     # {"kind": "hold_override"|"net_debit_justified"|"earnings_override",
@@ -454,6 +461,8 @@ def _select_weekly_strike(
     calls: list[dict],
     target_delta: float = 0.30,
     target_strike: float | None = None,
+    target_delta_low: float | None = None,
+    target_delta_high: float | None = None,
 ) -> dict | None:
     """Pick weekly short strike.
 
@@ -463,7 +472,14 @@ def _select_weekly_strike(
     delta-only ranking would miss. Caller is responsible for sanity —
     we don't second-guess (the LLM cited the strike per its rules).
 
-    When `target_strike` is None (default): pick the strike whose delta
+    δ BAND (P1, 2026-07-31): when `target_delta_low`/`target_delta_high` are BOTH
+    given (and `target_strike` is None), pick the best liquid strike whose delta
+    falls WITHIN [low, high] — the consent envelope — choosing the one closest to
+    the band midpoint (stable/predictable). If no listed strike's delta lands in
+    the band, fall through to point selection at the band MIDPOINT. Either bound
+    None = no band = the original point/default behavior below.
+
+    When `target_strike` is None and no band: pick the strike whose delta
     is closest to `target_delta` but below 0.40 (OTM only), falling
     back to the full delta pool if no OTM strikes exist. Original
     behavior, preserved for backwards-compat.
@@ -478,6 +494,18 @@ def _select_weekly_strike(
             with_strike,
             key=lambda c: abs(float(c["strike_price"]) - target_strike),
         )
+    if target_delta_low is not None and target_delta_high is not None:
+        lo, hi = min(target_delta_low, target_delta_high), max(target_delta_low, target_delta_high)
+        in_band = [
+            c for c in calls
+            if c.get("delta") is not None and lo <= c["delta"] <= hi
+        ]
+        if in_band:
+            mid = (lo + hi) / 2.0
+            return min(in_band, key=lambda c: abs(c["delta"] - mid))
+        # No liquid strike lands in the band — price at the band midpoint so the
+        # roll still builds (the panel/consent shows the actual selected strike).
+        target_delta = (lo + hi) / 2.0
     otm = [c for c in calls if c.get("delta") is not None and c["delta"] < 0.40]
     pool = otm if otm else [c for c in calls if c.get("delta") is not None]
     if not pool:
@@ -674,6 +702,34 @@ class PMCCAgent:
         if v is not None:
             return int(v)
         return _WEEKLY_MIN_DTE
+
+    @property
+    def _short_delta_band_half(self) -> float:
+        """Half-width of the δ consent BAND derived around the LLM's point target
+        (P1, 2026-07-31). The pricing refresh selects the concrete strike WITHIN
+        [target_delta − half, target_delta + half]. Tunable via strategies.yaml
+        `short_leg.delta_band_half` (falls back to 0.05)."""
+        v = self._short_leg_cfg.get("delta_band_half")
+        return float(v) if v is not None else 0.05
+
+    def _apply_delta_band(self, analysis: "PMCCAnalysis | None") -> "PMCCAnalysis | None":
+        """Derive + stamp the δ BAND on a fresh judgment (P1). low/high =
+        `target_delta` ± `_short_delta_band_half`, clamped to a sane OTM window
+        [0.10, 0.45]. No-op when the LLM gave no `target_delta` (band stays None →
+        pricing falls back to the config-default point) or a band is already set.
+        Mutates + returns `analysis` so the SAME band the operator consents to is
+        both used for the render AND persisted on the decision record."""
+        if analysis is None:
+            return analysis
+        if analysis.target_delta_low is not None or analysis.target_delta_high is not None:
+            return analysis
+        td = analysis.target_delta
+        if td is None:
+            return analysis
+        half = self._short_delta_band_half
+        analysis.target_delta_low = max(0.10, round(float(td) - half, 4))
+        analysis.target_delta_high = min(0.45, round(float(td) + half, 4))
+        return analysis
 
     @property
     def _contracts_per_25k(self) -> int:
@@ -1098,7 +1154,7 @@ Action reference:
                     raw = raw[4:]
                 raw = raw.strip()
             data = json.loads(raw)
-            return PMCCAnalysis(
+            _analysis = PMCCAnalysis(
                 symbol=pos.symbol,
                 action=str(data.get("action", "watch")),
                 confidence=float(data.get("confidence", 0.5)),
@@ -1111,6 +1167,9 @@ Action reference:
                 target_strike=float(data["target_strike"]) if data.get("target_strike") is not None else None,
                 override=data.get("override") if isinstance(data.get("override"), dict) else None,
             )
+            # Stamp the δ consent BAND (P1) so the SAME envelope is used for the
+            # render and persisted for the LLM-free pricing refresh.
+            return self._apply_delta_band(_analysis)
         except Exception as e:
             log.warning("PMCCAgent: LLM analysis failed for %s: %s", pos.symbol, e)
             return None
@@ -1272,6 +1331,8 @@ Action reference:
                 target_delta=analysis.target_delta if analysis else None,
                 target_dte=analysis.target_dte if analysis else None,
                 target_strike=analysis.target_strike if analysis else None,
+                target_delta_low=analysis.target_delta_low if analysis else None,
+                target_delta_high=analysis.target_delta_high if analysis else None,
                 after_dte=pos.short_leg_dte,  # B7: new short must roll OUT
             )
             if not new_weekly:
@@ -2250,6 +2311,9 @@ Action reference:
                     db_url=self._db_url, urgency=_a.urgency,
                     confidence=_a.confidence, summary=_a.summary,
                     rationale=_a.rationale, warnings=_a.warnings,
+                    target_delta_low=getattr(_a, "target_delta_low", None),
+                    target_delta_high=getattr(_a, "target_delta_high", None),
+                    target_dte=getattr(_a, "target_dte", None),
                     staleness_hours=_stale_h,
                 )
 
@@ -2361,6 +2425,8 @@ Action reference:
                         target_delta=analysis.target_delta if analysis else None,
                         target_dte=analysis.target_dte if analysis else None,
                         target_strike=analysis.target_strike if analysis else None,
+                        target_delta_low=analysis.target_delta_low if analysis else None,
+                        target_delta_high=analysis.target_delta_high if analysis else None,
                         after_dte=leg.short_leg_dte,  # B7: new short must roll OUT
                     )
                     if not new_weekly:
@@ -3642,6 +3708,8 @@ Action reference:
             target_delta=analysis.target_delta if analysis else None,
             target_dte=analysis.target_dte if analysis else None,
             target_strike=analysis.target_strike if analysis else None,
+            target_delta_low=analysis.target_delta_low if analysis else None,
+            target_delta_high=analysis.target_delta_high if analysis else None,
             after_dte=leg.short_leg_dte,  # B7: new short must roll OUT
         )
         if not new_weekly:
@@ -3808,6 +3876,8 @@ Action reference:
         target_dte: int | None = None,
         target_strike: float | None = None,
         after_dte: int | None = None,
+        target_delta_low: float | None = None,
+        target_delta_high: float | None = None,
     ) -> dict | None:
         """Find the best weekly short call, optionally using LLM-suggested
         delta / DTE / strike.
@@ -3904,7 +3974,10 @@ Action reference:
         # _select_weekly_strike honors it directly and ignores delta —
         # see the helper's docstring.
         delta = target_delta if target_delta is not None else self._short_target_delta
-        best = _select_weekly_strike(liquid, delta, target_strike=target_strike)
+        best = _select_weekly_strike(
+            liquid, delta, target_strike=target_strike,
+            target_delta_low=target_delta_low, target_delta_high=target_delta_high,
+        )
         if not best:
             self._last_weekly_diag = {"reason": "no_qualifying_weekly_strike",
                                       "considered": len(liquid), "target_date": target_date}

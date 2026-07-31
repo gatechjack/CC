@@ -45,6 +45,12 @@ _LLM_CACHE_TTL_SEC = 300
 _LLM_CACHE: dict[str, tuple[str, float]] = {}     # slug → (html, fetched_at)
 _LLM_LOCK = Lock()
 
+# P1 (2026-07-31): max adverse credit drift (per-share net) tolerated between the
+# APPROVED snapshot and the dispatch reprice before the division dispatch aborts +
+# re-surfaces (shown == fired). A hair above the reprice give_up (0.02) so normal
+# tick noise doesn't bail, but a real quote move does.
+_REPRICE_MAX_ADVERSE_NET = 0.05
+
 # Deferral: when the user clicks "Defer 24h" on a recommendation, we suppress
 # new analysis for that (slug, symbol) for this many hours. Stored as audit
 # events (kind=pair_deferred) so it survives restarts and is auditable.
@@ -953,6 +959,9 @@ def register(app: FastAPI) -> None:
                 urgency=analysis.urgency, confidence=analysis.confidence,
                 summary=analysis.summary, rationale=analysis.rationale,
                 warnings=analysis.warnings,
+                target_delta_low=getattr(analysis, "target_delta_low", None),
+                target_delta_high=getattr(analysis, "target_delta_high", None),
+                target_dte=getattr(analysis, "target_dte", None),
             )
         except Exception as e:
             log.warning("pmcc expert record write(%s) failed: %s", sym, e)
@@ -997,6 +1006,43 @@ def register(app: FastAPI) -> None:
         # Refresh the left-rail tile badge out-of-band (FIX 2) from the record
         # this Re-analyze just wrote (line ~950), so tile + panel match with no
         # full page reload.
+        return HTMLResponse(html + _pmcc_tile_badge_oob(templates, deps, sym))
+
+    @app.post("/division/{slug}/pair/{symbol}/refresh-pricing", response_class=HTMLResponse)
+    async def refresh_pricing(slug: str, symbol: str):
+        """LLM-FREE pricing refresh (P1) — re-price the roll from the STORED judgment's
+        δ band (NO Anthropic call), rewrite the consent stash from the same pull, and
+        re-render the panel. The judgment banner is unchanged (this doesn't re-judge)."""
+        sym = symbol.upper()
+        if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
+            return HTMLResponse(_pair_unavailable_html(sym, "Refresh pricing is wired for Robinhood PMCC only."))
+        broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
+        if broker is None:
+            return HTMLResponse(_pair_unavailable_html(sym, "Broker not registered."))
+        from trading_corp.web import pmcc_pricing
+        from trading_corp.agents.divisions import _pmcc_status
+        from datetime import datetime as _dt, timezone as _tz
+        rec = _pmcc_status.load_decision(sym, db_url=deps.db_url)
+        if not rec:
+            # No stored judgment to price against — send them to Re-analyze.
+            return HTMLResponse(_render_pmcc_record_panel(deps, slug, sym))
+        pr = await pmcc_pricing.price_and_stash(deps.pmcc_agent, broker, slug, sym, deps.db_url)
+        analysis = _pmcc_analysis_from_record(rec)
+        roll_extras = None
+        if pr.estimate is not None or pr.estimate_reason is not None or pr.earnings is not None:
+            roll_extras = {"earnings": pr.earnings, "estimate": pr.estimate,
+                           "estimate_reason": pr.estimate_reason}
+        cfg = (getattr(deps.pmcc_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
+        stale_h = float(cfg.get("staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+        _now = _dt.now(_tz.utc)
+        _state = _pmcc_status.classify_freshness(rec, _now, stale_h)
+        html = _render_pair_analysis(
+            analysis, recommendation=None, slug=slug, symbol=sym,
+            status_banner=_pmcc_status_banner(
+                slug, sym, state=_state,
+                age_h=_pmcc_status.age_hours(rec, _now), source=rec.get("source")),
+            roll_extras=roll_extras, preview_token=pr.stash_token,
+        )
         return HTMLResponse(html + _pmcc_tile_badge_oob(templates, deps, sym))
 
     @app.post("/division/{slug}/pair/{symbol}/defer", response_class=HTMLResponse)
@@ -1194,7 +1240,10 @@ def register(app: FastAPI) -> None:
         # guard, which STAYS as the backstop. partition_combo_orders RAISES on a
         # malformed batch (a lone combo leg, or >1 untagged option leg) → place
         # NOTHING (the interim backstop for close_all / Scout OPEN until tagged).
-        from trading_corp.agents.strategies._pmcc_combo import partition_combo_orders
+        from trading_corp.agents.strategies._pmcc_combo import (
+            partition_combo_orders, snapshot_combo_for_consent,
+            assess_combo_reprice_consent,
+        )
         try:
             combo_groups, singles = partition_combo_orders(orders)
         except ValueError as e:
@@ -1243,11 +1292,36 @@ def register(app: FastAPI) -> None:
                                f"{(order.extra or {}).get('action')} rejected — {v.reason}")}
                     for o in _legs)
                 continue
+            _consent_snap = snapshot_combo_for_consent(_legs)
             try:
                 await deps.pmcc_agent.reprice_combo(_legs, broker)
             except Exception as e:
                 log.warning("execute_pair: reprice_combo(%s) failed: %s "
                             "— keeping proposal-time limit", _cid, e)
+            # FINAL consent guard (P1, 2026-07-31): what fires must match what was
+            # shown. Abort the combo if the dispatch reprice drifted adversely vs the
+            # approved snapshot — sign flip, strike drift, credit collapse beyond
+            # tolerance, or a stale/wide-quote hold — placing NOTHING and
+            # re-surfacing for re-approval.
+            _consent_ok, _consent_why = assess_combo_reprice_consent(
+                _legs, _consent_snap,
+                max_adverse_net_deviation=_REPRICE_MAX_ADVERSE_NET,
+            )
+            if not _consent_ok:
+                for o in _legs:
+                    o.status = "risk_rejected"
+                    deps.logger_agent.log_proposed_order(o)
+                deps.logger_agent.log_event(
+                    actor="board", kind="pmcc_consent_reprice_drift",
+                    payload={"combo_id": _cid, "symbol": sym,
+                             "reason": _consent_why, "via": "web_button"},
+                )
+                results.extend({
+                    "order": o, "outcome": "risk_rejected",
+                    "detail": (f"Combo not placed — dispatch price drifted from what you "
+                               f"approved ({_consent_why}). Re-price and approve again.")}
+                    for o in _legs)
+                continue
             for order in _legs:
                 order.status = "board_approved"
                 order.board_reason = "approved via web button (combo)"
@@ -4622,7 +4696,12 @@ def _render_pair_analysis(
     # the short expire, not rolling — so the operator can only Defer.
     button_html = ""
     actionable = action_raw not in ("", "hold", "watch")
-    if actionable and slug and symbol and show_execute_button and offer_roll:
+    # P1 (2026-07-31): Approve is gated on a CONCRETE built estimate — closes the
+    # bare-Approve gap (a live Approve over "Target δ · DTE" with no numbers). When
+    # the roll can't be priced now (pre-market / illiquid / sparse chain), suppress
+    # Approve and say why.
+    _has_estimate = bool(estimate)
+    if actionable and slug and symbol and show_execute_button and offer_roll and _has_estimate:
         button_html = (
             '<div class="mt-4 pt-3 border-t border-edge space-y-2">'
             # Approve & Execute (primary)
@@ -4647,6 +4726,21 @@ def _render_pair_analysis(
             'Risk gates apply on Approve. Defer suppresses re-analysis for 24h.'
             '</div>'
             '</div>'
+        )
+    elif actionable and slug and symbol and show_execute_button and offer_roll and not _has_estimate:
+        # No concrete built estimate → do NOT show a priced Approve (the bare-Approve
+        # gap). Tell the operator why + how to get a number.
+        _why = _html.escape(str(estimate_reason)) if estimate_reason else (
+            "the roll can't be priced right now (market closed, illiquid, or a sparse chain)")
+        button_html = (
+            '<div class="mt-4 pt-3 border-t border-edge space-y-2">'
+            '<div class="w-full px-3 py-2 rounded-md font-mono text-xs text-center'
+            '            bg-edge text-muted border border-edge">'
+            f'Can\'t be priced right now — {_why}. Refresh pricing or Re-analyze in session.'
+            '</div>'
+            + _pmcc_refresh_pricing_button(slug, symbol)
+            + _pmcc_reanalyze_button(slug, symbol)
+            + '</div>'
         )
     elif actionable and slug and symbol and show_execute_button and not offer_roll:
         # Earnings within buffer — Approve suppressed; Defer only.
@@ -4691,6 +4785,20 @@ def _pmcc_reanalyze_button(slug: str, symbol: str, label: str = "↻ Re-analyze 
     fresh expert verdict to the unified decision record."""
     return (
         f'<button hx-get="/division/{slug}/pair-analysis/{symbol}?force=1"'
+        ' hx-target="#pair-analysis" hx-swap="innerHTML"'
+        ' class="w-full mt-1 px-3 py-1.5 rounded-md font-mono text-xs'
+        '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
+        '        transition-colors border border-edge">'
+        f'{label}</button>'
+    )
+
+
+def _pmcc_refresh_pricing_button(slug: str, symbol: str, label: str = "⟳ Refresh pricing") -> str:
+    """LLM-FREE pricing refresh (P1, 2026-07-31) — re-pulls the live chain, re-selects
+    the strike within the STORED δ band, recomputes debit/credit/net, and rewrites the
+    consent stash. NO Anthropic call (distinct from Re-analyze, which re-runs the LLM)."""
+    return (
+        f'<button hx-post="/division/{slug}/pair/{symbol}/refresh-pricing"'
         ' hx-target="#pair-analysis" hx-swap="innerHTML"'
         ' class="w-full mt-1 px-3 py-1.5 rounded-md font-mono text-xs'
         '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
@@ -4784,8 +4892,12 @@ def _pmcc_no_signal_panel(slug: str, symbol: str, cfg: dict) -> str:
 def _pmcc_analysis_from_record(rec: dict):
     """Duck-typed analysis object from a persisted decision record, for
     `_render_pair_analysis` (reads .action/.urgency/.confidence/.summary/
-    .rationale/.warnings/.target_delta/.target_dte)."""
+    .rationale/.warnings/.target_delta/.target_dte). P1: also surfaces the stored
+    δ BAND (low/high) + DTE so the panel/pricing can read the consent envelope."""
     import types
+    _lo = rec.get("target_delta_low")
+    _hi = rec.get("target_delta_high")
+    _mid = ((float(_lo) + float(_hi)) / 2.0) if (_lo is not None and _hi is not None) else None
     return types.SimpleNamespace(
         action=rec.get("status"),
         urgency=rec.get("urgency") or "routine",
@@ -4793,8 +4905,10 @@ def _pmcc_analysis_from_record(rec: dict):
         summary=rec.get("summary"),
         rationale=rec.get("rationale"),
         warnings=rec.get("warnings") or [],
-        target_delta=None,
-        target_dte=None,
+        target_delta=_mid,
+        target_dte=rec.get("target_dte"),
+        target_delta_low=_lo,
+        target_delta_high=_hi,
     )
 
 

@@ -165,7 +165,11 @@ def test_panel_earnings_blocked_hides_approve_shows_rec():
     assert "let the current short call expire" in html
 
 
-def test_panel_earnings_unverified_keeps_approve_with_flag_and_reason():
+def test_panel_earnings_unverified_no_estimate_suppresses_approve():
+    """P1 (2026-07-31): the Approve-gate now suppresses a bare Approve when NO
+    concrete estimate is built — even in the earnings-unverified case (previously
+    this rendered a live Approve over 'Target δ/DTE'; that gap is now closed). The
+    unverified flag + the no-estimate reason still show."""
     extras = {
         "earnings": {"kind": "unverified", "offer_roll": True, "date": None,
                      "verified": False, "source": "none", "recommendation": None,
@@ -176,7 +180,8 @@ def test_panel_earnings_unverified_keeps_approve_with_flag_and_reason():
     }
     html = _render_pair_analysis(
         _analysis(), slug="robinhood_pmcc", symbol="AAPL", roll_extras=extras)
-    assert "Approve &amp; Execute" in html
+    assert "Approve &amp; Execute" not in html                # bare Approve suppressed
+    assert "Can't be priced right now" in html
     assert "unverified" in html and "confirm before rolling" in html
     assert "Live estimate unavailable" in html
     assert "Roll estimate" not in html                        # no estimate block, only the reason
