@@ -1,5 +1,22 @@
 # OptiTrade AI -- signal-transplant probe (entries into optitrade_bt bracket)
 
+> **SPACING CORRECTION (2026-07-31) -- read before quoting anything below.**
+> The CONTINUATION-mode numbers in this file used the **emission-clock** spacing,
+> which emits ~13-15% more signals than the vendor-exact `ta.barssince(buy2[1])>30`
+> (clock on every fresh event). See `SPEC_DIFF.md` for the code-level diff. The
+> continuation figures in the tables below are the emission-clock variant, **not the
+> vendor's**. Vendor-exact recomputation of the three continuation best-config cells
+> (`corrected_rollup.py`, Binance):
+>
+> | continuation best-config | stale net06 (net06+/5) | VENDOR-EXACT n / gross / net06 / net04 / net06+ |
+> |---|--:|--:|
+> | ETH 1h Normal/cont/macd0/RR3.5 | +24.1 (3/5) | 335 / +28.4 / **+9.5** / +15.8 / 3/5 |
+> | ETH 4h VeryHigh/cont/macd0/RR1.5 | +10.4 (4/5) | 115 / +14.4 / **+11.0** / +12.1 / 4/5 |
+> | XRP 15m Normal/cont/macd1/RR3.5 | -28.1 (2/5) | 1023 / +47.2 / **-63.0** / -26.3 / 1/5 |
+>
+> Reversal-mode cells share the same class of residual (smaller effect, crossovers
+> are naturally spaced). Quote the vendor-exact numbers, not the emission tables below.
+
 ## Vendor-methodology note (source-pending line refs)
 
 The vendor's own backtest/label layer is NOT reproduced here, by design. Per the decoded logic it **repaints** -- entry markers are computed from ribbon-stack and crossover conditions that are only final at bar close yet are drawn on the forming bar, and its reported "wins" are labelled by comparing a later bar's **close to the signal bar's close** (a directional close-vs-close check), not by simulating a stop-loss / take-profit bracket with intrabar fills. That inflates apparent hit-rate (no stop can be hit between signal and evaluation, and favourable intrabar excursions are ignored) and is non-actionable. **NOTE:** exact line references are pending -- the vendor OptiTrade AI Pine source was not located on the box (searched the pine folder, Downloads, Desktop, Documents, paste-cache; only the in-house 5-EMA `seed1_ribbon_smabias.pine` was present). Provide the source file and I will cite precise lines. Here we transplant only the ENTRY signals into the honest bracket.

@@ -1,5 +1,13 @@
 # OptiTrade AI -- validation pass on the 3 candidate cells
 
+> **SPACING CORRECTION (2026-07-31).** The continuation cell here (ETH 1h) used the
+> **emission-clock** spacing; the vendor-exact `ta.barssince(buy2[1])>30` is stricter
+> (see `SPEC_DIFF.md`). Vendor-exact ETH 1h continuation: net06 Binance +9.5 (was
+> +24.1), Bybit +27.7 (was +43.0, 4/5 not 5/5); recomputed drift-controlled p in
+> `ITEM3.md` (vendor Binance p=0.125, vendor Bybit 0.035). Reversal cells (SOL/XRP)
+> share the same residual class with smaller effect. Read the numbers below as the
+> emission-clock variant.
+
 Cross-venue (Bybit replay of the exact Binance-selected config), Binance config-neighborhood (RR2.5 + adjacent preset), and a shuffled-entry permutation null. Bracket SL=2.5*ATR, sl-first, 5 equal windows, WARMUP=400. GROSS primary; net06/net04 = 0.06%/0.04% per side. Config selection never saw Bybit, so the Bybit replay is the true out-of-sample arbiter.
 
 ## SOLUSDT 15m Normal/reversal/RR3.5
