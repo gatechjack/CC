@@ -1,0 +1,81 @@
+====================================================================================================
+STUDY A -- RIBBON alignment as an SFP with-trend gate candidate
+Evaluated on the FROZEN fresh-inst base stream exactly as SFP_GATE_TIEBREAKER (arm=filter ->
+one-position booking -> per-coin+pooled avgR/sumR/n + own-bucket drift-null). 4 coins x 4.00 yr.
+GROSS, in-sample Binance-perp proxy (shares the live feed -> a LEAD, not OOS). Null=200x p5/p50/p95.
+RIBBON: 10 EMA(hlc3) [30..120]; BULL=all-10 rising 3 bars, BEAR=all falling, else NEUTRAL;
+long-in-BULL / short-in-BEAR / nothing-in-NEUTRAL; causal (last closed ribbon bar <= entry).
+HOUSE RULE: only the operator rules things out; negatives = 'no edge on THIS test', a lever = a lead.
+====================================================================================================
+
+### 0. STOP-GATE -- reproduce the incumbent anchors (n exact, avgR tol 0.004)
+  arm          coin           n       avgR   expN     expAvgR   verdict
+  --------------------------------------------------------------------------------
+  ema200       BTCUSDT      207     -0.119   207         -0.119 MATCH
+  ema200       ETHUSDT      205     +0.132   205         +0.132 MATCH
+  ema200       SOLUSDT      220     +0.139   220         +0.139 MATCH
+  ema200       XRPUSDT      226     -0.055   226         -0.055 MATCH
+  ema200       POOLED       858     +0.024   858         +0.024 MATCH
+  --------------------------------------------------------------------------------
+  RD-trend     BTCUSDT      158     -0.089   158         -0.089 MATCH
+  RD-trend     ETHUSDT      151     +0.286   151         +0.286 MATCH
+  RD-trend     SOLUSDT      176     +0.105   176         +0.105 MATCH
+  RD-trend     XRPUSDT      149     +0.085   149         +0.085 MATCH
+  RD-trend     POOLED       634     +0.095   634         +0.095 MATCH
+  --------------------------------------------------------------------------------
+  ps-trail30   BTCUSDT      129     +0.067   129         +0.067 MATCH
+  ps-trail30   ETHUSDT      142     +0.272   142         +0.272 MATCH
+  ps-trail30   SOLUSDT      127     +0.102   127         +0.102 MATCH
+  ps-trail30   XRPUSDT      136     +0.059   136         +0.059 MATCH
+  ps-trail30   POOLED       534     +0.128   534         +0.128 MATCH
+  --------------------------------------------------------------------------------
+  ==> MATCH -- base stream is the frozen construct; RIBBON is comparable to the incumbents.
+
+####################################################################################################
+### 1. ARMED avgR / sumR / n + own-bucket drift-null (200x, p5/p50/p95) -- per coin & pooled
+####################################################################################################
+  n<30 = UNDERPOWERED. 'CLEARS-p95' iff real sumR > null p95.
+
+  ema200  POOLED  n=858  avgR=+0.024  sumR=+20.4  WR=26.0%
+    coin          n       avgR       sumR      null p5/p50/p95       pctl flag
+    BTCUSDT     207     -0.119      -24.7    -50.9/-17.2/+22.8        38% neg
+    ETHUSDT     205     +0.132      +27.0    -21.0/+18.3/+54.6        66% POS
+    SOLUSDT     220     +0.139      +30.5    -20.0/+24.0/+66.5        59% POS
+    XRPUSDT     226     -0.055      -12.4    -58.0/-18.0/+26.0        64% neg
+    -> POOLED null p5/p50/p95 = -71.4/+9.4/+98.0  real sumR pctl=56%
+
+  RD-trend  POOLED  n=634  avgR=+0.095  sumR=+60.2  WR=27.8%
+    coin          n       avgR       sumR      null p5/p50/p95       pctl flag
+    BTCUSDT     158     -0.089      -14.1    -50.6/-18.7/+14.4        60% neg
+    ETHUSDT     151     +0.286      +43.2     -8.8/+30.1/+62.5        72% POS
+    SOLUSDT     176     +0.105      +18.5    -17.5/+20.0/+54.5        47% POS
+    XRPUSDT     149     +0.085      +12.6     -24.2/+8.6/+44.6        58% POS
+    -> POOLED null p5/p50/p95 = -36.4/+38.7/+108.4  real sumR pctl=70%
+
+  ps-trail30  POOLED  n=534  avgR=+0.128  sumR=+68.3  WR=28.7%
+    coin          n       avgR       sumR      null p5/p50/p95       pctl flag
+    BTCUSDT     129     +0.067       +8.7    -10.7/+20.1/+54.4        26% POS
+    ETHUSDT     142     +0.272      +38.6    -11.2/+20.9/+53.5        83% POS
+    SOLUSDT     127     +0.102      +13.0     -19.0/+9.0/+41.0        56% POS
+    XRPUSDT     136     +0.059       +8.0     -28.0/+0.0/+32.0        61% POS
+    -> POOLED null p5/p50/p95 = -4.8/+50.7/+123.5  real sumR pctl=67%
+
+  RIBBON-15m  POOLED  n=119  avgR=+0.073  sumR=+8.7  WR=28.6%
+    coin          n       avgR       sumR      null p5/p50/p95       pctl flag
+    BTCUSDT      43     -0.108       -4.7     -20.7/-6.5/+13.1        54% neg
+    ETHUSDT      31     +0.068       +2.1     -15.0/+2.1/+17.0        50% POS
+    SOLUSDT      22     +0.636      +14.0     +2.0/+14.0/+30.0        37% UNDERPOWERED
+    XRPUSDT      23     -0.120       -2.8      -13.4/-3.0/+9.2        51% UNDERPOWERED
+    -> POOLED null p5/p50/p95 = -19.9/+7.7/+43.5  real sumR pctl=52%
+
+  RIBBON-1h  POOLED  n=563  avgR=+0.031  sumR=+17.5  WR=26.1%
+    coin          n       avgR       sumR      null p5/p50/p95       pctl flag
+    BTCUSDT     142     -0.042       -6.0     -30.0/-2.0/+30.0        38% neg
+    ETHUSDT     131     +0.030       +3.9     -27.0/+2.1/+30.8        52% POS
+    SOLUSDT     149     +0.154      +23.0    -13.0/+19.0/+55.0        56% POS
+    XRPUSDT     141     -0.024       -3.4     -39.4/-7.4/+27.0        56% neg
+    -> POOLED null p5/p50/p95 = -51.2/+11.1/+75.3  real sumR pctl=60%
+
+  HONESTY: GROSS, no fees/slippage; in-sample Binance-perp proxy shares the live feed (a LEAD,
+  not OOS). Per-coin n<30 = UNDERPOWERED. Nothing is ruled out here -- leads only.
+====================================================================================================
