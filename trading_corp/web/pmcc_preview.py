@@ -24,9 +24,14 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
+from collections import namedtuple
 from typing import Any
 
 _TTL_SEC = 900  # 15 min — a rendered card older than this is re-rendered, not fired.
+
+# What `load_preview` returns on a HIT: the exact previewed legs + the approved
+# action label, so the dispatch view can be rendered WITHOUT re-running the LLM.
+PreviewHit = namedtuple("PreviewHit", ["orders", "action"])
 
 # (slug, SYMBOL) -> {"id", "fingerprint", "orders", "action", "ts"}
 _STASH: dict[tuple[str, str], dict] = {}
@@ -79,10 +84,13 @@ def stash_preview(
 def load_preview(
     slug: str, symbol: str, preview_id: str | None, fingerprint_: str | None,
     *, now: float | None = None,
-) -> list[Any] | None:
-    """Return the stashed orders IFF (id, fingerprint) match and the slot is not
-    expired. Consumes the slot on a hit (single-use). Any mismatch/expiry → None,
-    and the caller rebuilds live (fingerprint-guarded)."""
+) -> "PreviewHit | None":
+    """Return a `PreviewHit(orders, action)` IFF (id, fingerprint) match and the
+    slot is not expired. Consumes the slot on a hit (single-use). Any
+    mismatch/expiry → None, and the caller rebuilds live (fingerprint-guarded).
+
+    Carrying `action` lets the dispatch view be rendered from the stash — no LLM
+    re-analysis on the Approve click (FORK 2, 2026-07-30)."""
     if not preview_id or not fingerprint_:
         return None
     k = _key(slug, symbol)
@@ -96,4 +104,4 @@ def load_preview(
         _STASH.pop(k, None)
         return None
     _STASH.pop(k, None)   # single-use
-    return ent["orders"]
+    return PreviewHit(orders=ent["orders"], action=ent.get("action"))

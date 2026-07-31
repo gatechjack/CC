@@ -95,7 +95,8 @@ def test_stash_hit_then_single_use():
     pid, fp = pmcc_preview.stash_preview(
         "robinhood_pmcc", "AAPL", orders, action="roll_short")
     got = pmcc_preview.load_preview("robinhood_pmcc", "AAPL", pid, fp)
-    assert [o.id for o in got] == [o.id for o in orders]
+    assert [o.id for o in got.orders] == [o.id for o in orders]
+    assert got.action == "roll_short"        # action carried for the LLM-free view
     # single-use: the slot is consumed on a hit
     assert pmcc_preview.load_preview("robinhood_pmcc", "AAPL", pid, fp) is None
 

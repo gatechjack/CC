@@ -45,7 +45,7 @@ emit gated the same way.
 | C | `/approvals` IC combo pages | `approval_combo_detail.html` | n/a — IC, not PMCC roll (out of scope) |
 | D | Generic `/approvals/{id}` single-leg | `approval_detail.html:201` | not a PMCC roll combo surface (PMCC rolls are combo-tagged); unchanged |
 | E | PMCC Scout open | `pmcc_scout.html:173` | open (not a roll); unchanged |
-| F | Telegram `/pair` inline "✅ Approve & Execute" | `telegram_commands.py:265/:450` | **FORK — reported, not enriched**: CLAUDE.md pins Telegram as notification-only; routed through preview (Defect 1) so it emits no spurious alerts, but no estimate wired. Operator decision needed to either enrich or retire the keyboard. |
+| F | Telegram `/pair` inline "✅ Approve & Execute" | `telegram_commands.py` | **RETIRED 2026-07-30 (FORK 1)** — button removed + handler neutralized (no dispatch). No estimate wired because Telegram is notification-only; execution is dashboard-only. |
 
 ### Consent integrity (operator addition, 2026-07-30)
 
@@ -68,10 +68,34 @@ has no cache), so the strike shown could silently differ from the strike fired.
   shown == strike/legs fired.
 
 ### Residual gaps / observations (reported, out of scope)
-- Telegram approve callback (surface F) still rebuilds at dispatch with no estimate shown.
 - Surface B dispatch does not re-check earnings at decide-time (gate ran at scan build).
-- `routes.py:973` `_pair_cache` write on the PMCC force path is vestigial — non-force PMCC
-  GETs return the record panel at `:873-874` before the cache read; never served back.
+- `routes.py` `_pair_cache` write on the PMCC force path is vestigial — non-force PMCC
+  GETs return the record panel before the cache read; never served back.
+
+## Follow-ups resolved 2026-07-30 (FORK 1 + FORK 2)
+
+Both forks flagged at the end of the first pass are now closed on this same held branch.
+
+**FORK 1 — Telegram `/pair` execute keyboard retired (`telegram_commands.py`).**
+The `/pair` render's actionable row previously offered "✅ Approve & Execute" (callback
+`approve:SYM`), and the `execute_pair` handler was a FULL dispatch path — it called
+`propose_orders_for_pair` and `data_exec.place()` **per leg** (also the only non-atomic
+Telegram order path). Per CLAUDE.md (Telegram = notification-only), the Approve button
+is removed from the keyboard and `execute_pair` is neutralized to a dashboard-redirect
+stub with **no order path** (no build, no risk, no `place`), so even a stale `approve:`
+button from an old chat degrades to a redirect instead of dispatching. `data_exec.place`
+now appears **nowhere** in `telegram_commands.py`. The informational message + the
+non-dispatch Defer control stay; execution is dashboard-only.
+
+**FORK 2 — dispatch display synthesized from the stash; redundant LLM call dropped
+(`routes.py`, `pmcc_preview.py`).** On a stash HIT, `execute_pair_orders` no longer calls
+`analyze_symbol` (the LLM). `load_preview` now returns a `PreviewHit(orders, action)`;
+the dispatch view is synthesized from the stashed `action` (`_synth_analysis_from_stash`),
+so the Approve click carries no LLM latency and the post-execute view can't contradict the
+approved rec. The dispatch-time earnings re-check (blocked → ABORTED bail) and the
+fingerprint consent match are UNCHANGED, and a stash MISS still rebuilds via the LLM +
+fingerprint-bails on a drifted contract. `regime` stays a cheap trend read (never was the
+LLM). Display/consent + Telegram surface only — no order-path/auto_execute/halt/SQL change.
 
 ## Tests
 
@@ -99,6 +123,17 @@ the existing roll brokers/fixtures so it's apples-to-apples):
 
 Plus the pre-existing `tests/test_pmcc_roll_card.py` (15, Enhancement A/B + consent lock) still passes unchanged.
 
+**FORK 1 — Telegram** (`tests/test_telegram_pair_no_execute.py`, new, 3):
+- `/pair` render has NO `approve:` callback (execute button gone); Defer remains; no order build on render.
+- `execute_pair` handler returns the dashboard redirect ("notification-only") and touches no order path.
+- `handle_callback("approve:SYM")` degrades to the redirect — a stale button cannot dispatch.
+
+**FORK 2 — stash-hit dispatch** (`tests/test_pmcc_execute_dispatch.py`, new, 3; via `create_app`/`TestClient`):
+- stash HIT → `analyze_symbol` **not called** (assert `analyze_calls == 0`), no rebuild, the EXACT stashed legs fire (`place_combo` called with the stashed order ids), display populated from stash.
+- stash HIT + earnings blocked → still no LLM, nothing placed, `pmcc_consent_earnings_block` logged (ABORTED bail).
+- stash MISS (wrong fingerprint) → LLM rebuild path runs, then `pmcc_consent_fingerprint_mismatch` bail, nothing placed.
+- Updated the stash unit test to the `PreviewHit(orders, action)` return shape (asserts the carried action).
+
 ## Regression vs e82a07d (apples-to-apples)
 
 Ran the two pre-existing PMCC test files on a detached worktree at `e82a07d` and on
@@ -121,3 +156,14 @@ with `no such table: agent_state` / `audit_event` (the local sandbox has no
 initialized DB; environmental, pre-existing, not touched by this change).
 
 **Verdict: zero regression.** HELD for deploy — no prod push, no restart.
+
+### FORK 1 + FORK 2 regression (vs branch baseline `4c7662c`)
+
+Broad branch run (all `test_pmcc_*` + all `test_telegram_*` + `test_approvals_routes`
++ `test_exec_alert`): everything passes EXCEPT the same two
+`test_pmcc_paper_run_readiness` tests that already failed pre-fork (missing local
+`agent_state`/`audit_event` tables — environmental). +6 new fork tests
+(`test_telegram_pair_no_execute.py` 3, `test_pmcc_execute_dispatch.py` 3), all pass;
+the one modified stash test still passes. FORK 1/2 touched only
+`telegram_commands.py`, `routes.py`, `pmcc_preview.py` (display/consent + Telegram
+surface). **Zero regression.**

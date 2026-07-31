@@ -1089,27 +1089,23 @@ def register(app: FastAPI) -> None:
         except Exception:
             regime = "unknown"
 
-        # Fetch the current LLM analysis (uses cache if fresh)
-        analysis = None
-        try:
-            analysis = await deps.pmcc_agent.analyze_symbol(broker, sym, regime=regime)
-        except Exception as e:
-            log.warning("execute: analyze_symbol(%s) raised: %s", sym, e)
-
-        if analysis is None:
-            return HTMLResponse(_exec_error_html(sym, "Could not regenerate analysis."))
-
-        # ── Consent: dispatch the EXACT combo the operator saw at Re-analyze ──
-        # The Approve form carries the previewed combo's id + shape fingerprint. A
-        # stash HIT fires those exact legs (no re-analysis → the strike shown is the
-        # strike fired; the dispatch reprice still re-quotes the price). A MISS
-        # (expiry / restart / an approval that didn't come from a render) rebuilds
-        # live and fingerprint-guards against firing a different contract.
+        # ── Consent + display source (FORK 2, 2026-07-30) ────────────────────
+        # The Approve form carries the previewed combo's id + shape fingerprint.
+        #   HIT  → fire those exact legs AND synthesize the dispatch view from the
+        #          stash: NO analyze_symbol (LLM) call, so the Approve click carries
+        #          no LLM latency and the view can't contradict the approved rec.
+        #          The dispatch reprice still re-quotes the PRICE (strike/legs fixed).
+        #   MISS → a genuine from-scratch dispatch: regenerate the LLM analysis
+        #          (needed to rebuild the combo) and rebuild, fingerprint-guarding
+        #          against a drifted contract.
+        # `regime` above is a cheap trend read (not the LLM) and is kept for risk eval.
         from trading_corp.web import pmcc_preview
         orders = None
-        stashed = pmcc_preview.load_preview(slug, sym, preview_id, approved_fp)
-        if stashed is not None:
-            orders = stashed
+        analysis = None
+        hit = pmcc_preview.load_preview(slug, sym, preview_id, approved_fp)
+        if hit is not None:
+            orders = hit.orders
+            analysis = _synth_analysis_from_stash(hit.action)   # display only; no LLM
             # A clicked Approve IS a genuine dispatch attempt — re-check the earnings
             # gate here (the stash is up to 15 min old). Blocked → bail + ABORTED
             # alert (fires because this IS a dispatch), position untouched.
@@ -1136,6 +1132,12 @@ def register(app: FastAPI) -> None:
                 return HTMLResponse(_exec_abort_html(
                     sym, analysis, {"reason": "earnings within buffer at approval"}))
         if orders is None:
+            try:
+                analysis = await deps.pmcc_agent.analyze_symbol(broker, sym, regime=regime)
+            except Exception as e:
+                log.warning("execute: analyze_symbol(%s) raised: %s", sym, e)
+            if analysis is None:
+                return HTMLResponse(_exec_error_html(sym, "Could not regenerate analysis."))
             try:
                 orders = await deps.pmcc_agent.propose_orders_for_pair(broker, sym, analysis)
             except Exception as e:
@@ -5215,6 +5217,19 @@ def _exec_no_action_html(symbol: str, analysis) -> str:
         f'<div class="text-xs text-muted">Action <code>{action_str}</code> '
         'does not require any orders. Position remains as-is.</div>'
         '</div>'
+    )
+
+
+def _synth_analysis_from_stash(action: str | None):
+    """Minimal analysis stand-in for the dispatch view on a stash HIT (FORK 2,
+    2026-07-30). Carries the APPROVED action so the post-execute summary + any
+    earnings-block card render WITHOUT a fresh analyze_symbol (LLM) call. Only
+    `.action` is read downstream; the rest are inert defaults so no consumer
+    AttributeErrors if the render path changes."""
+    import types as _types
+    return _types.SimpleNamespace(
+        action=action or "roll_short", urgency="routine", confidence=None,
+        summary="", rationale="", warnings=[], target_delta=None, target_dte=None,
     )
 
 
