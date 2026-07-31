@@ -778,7 +778,11 @@ async def run(argv: list[str] | None = None) -> int:
     channel: Any  # set below; the scan callbacks reference it via closure
 
     # ── Shared scan callbacks (used by Telegram, CLI, and the scheduler) ──
-    async def _on_scan() -> str:
+    async def _on_scan(push_portfolio_digest: bool = True) -> str:
+        # `push_portfolio_digest` keeps the legacy markdown portfolio digest for the
+        # manual /scan command (default True). The P2 09:45 FULL judgment slot calls
+        # this with False and sends its own compact push_split digest instead — so
+        # the routing is UNCHANGED but the morning digest isn't double-sent.
         if _graph_holder[0] is None:
             return "System still initializing — try again in a moment."
         # PMCC scans run against the Robinhood PMCC division (the primary
@@ -802,13 +806,14 @@ async def run(argv: list[str] | None = None) -> int:
 
         # Push expert portfolio analysis BEFORE routing orders so the
         # Board sees the full picture alongside each approval request.
-        try:
-            analysis_md = await pmcc_agent.analyze_portfolio(
-                scan_broker, regime=scan_regime,
-            )
-            await channel.push(analysis_md)
-        except Exception as e:
-            log.warning("PMCC portfolio analysis failed: %s", e)
+        if push_portfolio_digest:
+            try:
+                analysis_md = await pmcc_agent.analyze_portfolio(
+                    scan_broker, regime=scan_regime,
+                )
+                await channel.push(analysis_md)
+            except Exception as e:
+                log.warning("PMCC portfolio analysis failed: %s", e)
 
         orders = await pmcc_agent.scan(scan_broker, regime=scan_regime)
         if not orders:
@@ -1345,6 +1350,54 @@ async def run(argv: list[str] | None = None) -> int:
                 return f"assignment-watch error: {e}"
             return f"assignment-watch: {res.get('risk', 0)} risk, {res.get('events', 0)} events."
 
+        async def _run_judgment_slot(due) -> "tuple[bool, str]":
+            """Execute the DUE P2 judgment slot: pick the judgment source (routing
+            full -> _on_scan WITHOUT the legacy digest; terminal -> _on_terminal_scan,
+            preserving _terminal_dte_time_release; delta -> judgment_pass, NO routing),
+            run the fresh-price + digest + push_split data path, persist the snapshot.
+            Returns (sent_ok, summary); the loop owns the per-slot marker. P2 places
+            NOTHING beyond the UNCHANGED routing already on the full/terminal passes."""
+            if _graph_holder[0] is None:
+                return False, "initializing"
+            _b = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                _regime = trend_agent.read().regime
+            except Exception:
+                _regime = "unknown"
+            _source = due.get("source")
+            if _source == "scan":
+                async def judge():
+                    await _on_scan(push_portfolio_digest=False)
+            elif _source == "terminal":
+                judge = _on_terminal_scan
+            else:
+                async def judge():
+                    await pmcc_agent.judgment_pass(_b, regime=_regime)
+            _prior_snapshot = None
+            try:
+                _loaded = db.load_agent_state(
+                    "pmcc_robinhood", "judgment_last_snapshot", db_url=secrets.db_url,
+                )
+                _prior_snapshot = _loaded[0] if _loaded else None
+            except Exception:
+                _prior_snapshot = None
+            _prev_label = (_prior_snapshot or {}).get("slot") or "prior"
+            _thresholds = dict(pmcc_agent._cfg.get("judgment_delta") or {})
+            _text, _sent, _snap = await _execute_judgment_slot(
+                pmcc_agent, _b, channel, secrets.db_url,
+                slot_id=due["id"], kind=due["kind"], label=due["label"],
+                prev_label=_prev_label, thresholds=_thresholds,
+                prior_snapshot=_prior_snapshot, judge=judge,
+            )
+            try:
+                db.set_agent_state(
+                    "pmcc_robinhood", "judgment_last_snapshot", _snap,
+                    db_url=secrets.db_url,
+                )
+            except Exception as e:
+                log.warning("judgment_last_snapshot persist failed: %s", e)
+            return _sent, f"slot {due['id']} kind={due['kind']} sent={_sent}"
+
         scheduler_task = asyncio.create_task(
             _scheduled_pmcc_scan_loop(
                 _on_scan, channel, logger_agent,
@@ -1352,6 +1405,9 @@ async def run(argv: list[str] | None = None) -> int:
                 on_triage_callback=_on_triage,
                 liveness_probe=_pmcc_liveness_probe,
                 on_eod_callback=_on_assignment_watch,
+                on_judgment_slot=_run_judgment_slot,
+                judgment_schedule=_judgment_schedule_cfg(pmcc_agent._cfg),
+                db_url=secrets.db_url,
             )
         )
 
@@ -2933,6 +2989,116 @@ def _terminal_should_fire(now, last_terminal_date, calendar, release_offset_min:
     return release_time <= now < close_dt
 
 
+# ── Phase 2 (2026-07-31): 4x/day judgment slots ────────────────────────────
+
+def _judgment_schedule_cfg(pmcc_cfg: dict) -> dict:
+    """Normalize robinhood_pmcc.judgment_schedule with safe defaults so a missing
+    config still yields the standard cadence."""
+    js = dict((pmcc_cfg or {}).get("judgment_schedule") or {})
+    js.setdefault("enabled", True)
+    js.setdefault("slots", [
+        {"id": "0945", "time": "09:45", "kind": "full", "liveness_gated": True, "route": True},
+        {"id": "1100", "time": "11:00", "kind": "delta", "liveness_gated": False, "route": False},
+        {"id": "1400", "time": "14:00", "kind": "delta", "liveness_gated": False, "route": False},
+    ])
+    js.setdefault("terminal", {"id": "terminal", "kind": "delta", "offset_min": 60})
+    js.setdefault("fire_window_min", 30)
+    js.setdefault("close_margin_min", 15)
+    return js
+
+
+def _slot_source(slot: dict) -> str:
+    """Judgment source for a slot: the close-anchored terminal -> 'terminal'; a
+    routing full slot -> 'scan'; a delta slot -> 'judgment_pass' (no routing)."""
+    if slot.get("id") == "terminal":
+        return "terminal"
+    return "scan" if slot.get("route") else "judgment_pass"
+
+
+def _due_judgment_slot(now, calendar, sched_cfg):
+    """Return the judgment slot DUE at `now` (dict id/kind/source/label/
+    liveness_gated) or None. PURE (no DB, no markers). Fixed slots fire within
+    [slot_time, slot_time + fire_window) and ONLY when they land >= close_margin
+    before the day's close — which drops BOTH afternoon slots on a half-day. The
+    terminal slot is close-anchored: [close - offset, close) -> 15:00 on a 16:00
+    close, 12:00 on a 13:00 half-day. A closed day (close_time_et -> None) or a
+    weekend yields None; a missed slot (window passed) simply never matches."""
+    from datetime import timedelta
+    if not sched_cfg.get("enabled", True):
+        return None
+    if now.weekday() >= 5:
+        return None
+    close = None
+    if calendar is not None:
+        try:
+            close = calendar.close_time_et(now)
+        except Exception:
+            close = None
+    if close is None:
+        return None
+    window = int(sched_cfg.get("fire_window_min", 30))
+    margin = int(sched_cfg.get("close_margin_min", 15))
+    for slot in sched_cfg.get("slots", []):
+        try:
+            hh, mm = str(slot["time"]).split(":")
+            slot_dt = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        except Exception:
+            continue
+        if slot_dt >= (close - timedelta(minutes=margin)):
+            continue  # at/after close-margin -> gated (half-day afternoon drop)
+        if slot_dt <= now < slot_dt + timedelta(minutes=window):
+            return {
+                "id": slot["id"], "kind": slot.get("kind", "delta"),
+                "source": _slot_source(slot), "label": str(slot["time"]),
+                "liveness_gated": bool(slot.get("liveness_gated", False)),
+            }
+    term = sched_cfg.get("terminal") or {}
+    offset = int(term.get("offset_min", 60))
+    if (close - timedelta(minutes=offset)) <= now < close:
+        return {
+            "id": term.get("id", "terminal"), "kind": term.get("kind", "delta"),
+            "source": "terminal", "label": now.strftime("%H:%M"),
+            "liveness_gated": False,
+        }
+    return None
+
+
+async def _execute_judgment_slot(
+    pmcc_agent, broker, channel, db_url, *, slot_id, kind, label, prev_label,
+    thresholds, prior_snapshot, judge,
+):
+    """Run ONE judgment slot's data path and send it. Captures the PRIOR decisions
+    (load_decision — the most-recent stored judgment of ANY kind, incl. a manual
+    Re-analyze) BEFORE `judge` overwrites them, awaits `judge` (LLM judgment+store,
+    plus routing for a routing slot), then compose_slot_digest (FRESH price +
+    build — correction B) and push_split. Returns (text, sent_ok, new_snapshot).
+    Placing/routing lives entirely inside `judge`: a dry-run passes a judgment_pass
+    -only `judge` (places nothing) + a buffer channel (no live send)."""
+    from trading_corp.agents.divisions import _pmcc_status
+    try:
+        holdings = await pmcc_agent.detect_existing_legs(broker)
+        syms = [h.symbol for h in holdings]
+    except Exception:      # noqa: BLE001
+        syms = []
+    prior_decisions = {}
+    for s in syms:
+        try:
+            prior_decisions[s] = _pmcc_status.load_decision(s, db_url=db_url)
+        except Exception:      # noqa: BLE001
+            prior_decisions[s] = None
+    if judge is not None:
+        try:
+            await judge()
+        except Exception as e:      # noqa: BLE001 — a routing hiccup must not drop the digest
+            log.exception("judgment slot %s judge() failed: %s", slot_id, e)
+    text, snapshot = await pmcc_agent.compose_slot_digest(
+        broker, db_url, kind=kind, slot_label=label, prev_slot_label=prev_label,
+        prior_decisions=prior_decisions, prior_snapshot=prior_snapshot, thresholds=thresholds,
+    )
+    sent = await channel.push_split(text)
+    return text, bool(sent), snapshot
+
+
 async def _scheduled_pmcc_scan_loop(
     on_scan_callback,
     channel,
@@ -2950,6 +3116,9 @@ async def _scheduled_pmcc_scan_loop(
     settle_window_end_et: tuple[int, int] = (10, 30),
     on_eod_callback=None,
     eod_release_offset_min: int = 20,
+    on_judgment_slot=None,
+    judgment_schedule=None,
+    db_url: str | None = None,
 ) -> None:
     """Daily PMCC scan scheduler — split into a pre-open TRIAGE pass and a
     post-open (settled-quotes) ACTIONABLE pass (2026-07-24 scan-split).
@@ -3008,6 +3177,13 @@ async def _scheduled_pmcc_scan_loop(
         log.warning("PMCC scheduler: calendar unavailable (%s); holiday guard off", _cal_err)
         _cal = None
 
+    # P2 (2026-07-31): 4x/day judgment slots with PERSISTED per-slot markers. When
+    # on_judgment_slot is wired, the new slots OWN the LLM judgment/digest AND fold in
+    # the old post-settle + terminal LLM passes (those blocks below are gated off);
+    # the 8:30 triage + EOD assignment-watch are untouched.
+    _judgment_sched = judgment_schedule or {}
+    from trading_corp.persistence import db as _db
+
     log.info(
         "PMCC scan scheduler online: weekdays %02d:%02d–%02d:%02d ET",
         scan_window_start_et[0], scan_window_start_et[1],
@@ -3060,10 +3236,72 @@ async def _scheduled_pmcc_scan_loop(
                         {"date": str(now.date()), "error": str(e)},
                     )
 
-            # Post-settle ACTIONABLE pass (split): fire the actionable scan off LIVE
-            # marks, but ONLY once quotes are live (liveness_probe). Holds past the
-            # 9:30-9:35 opening rotation; never force-scans on garbage, never hangs.
-            if _split and _settle_should_attempt(
+            # P2 JUDGMENT SLOTS (own the LLM judgment + digest; fold in the old
+            # post-settle + terminal LLM passes). Persisted per-slot markers dedupe
+            # the SEND across a mid-day restart; a completed slot is not re-run, a
+            # missed slot (window passed) is skipped. Routing is UNCHANGED (only the
+            # full slot routes, via _on_scan). P2 places NOTHING itself.
+            if on_judgment_slot is not None and _judgment_sched.get("enabled", True):
+                due = _due_judgment_slot(now, _cal, _judgment_sched)
+                if due is not None:
+                    _slot_id = due["id"]
+                    _mkey = f"judgment_run:{now.date().isoformat()}:{_slot_id}"
+                    _sent_already = False
+                    try:
+                        _m = _db.load_agent_state("pmcc_robinhood", _mkey, db_url=db_url)
+                        _sent_already = bool(_m and (_m[0] or {}).get("telegram_sent"))
+                    except Exception:
+                        _sent_already = False
+                    if not _sent_already:
+                        _live, _reason = (True, "no probe")
+                        if due.get("liveness_gated") and liveness_probe is not None:
+                            try:
+                                _live, _reason = await liveness_probe()
+                            except Exception as e:
+                                _live, _reason = False, f"liveness probe error: {e}"
+                        if _live:
+                            log.info("Scheduler firing PMCC judgment slot %s (%s)...",
+                                     _slot_id, _reason)
+                            try:
+                                _ok, _summary = await on_judgment_slot(due)
+                                # Dedupe the SEND: telegram_sent gates re-runs so a
+                                # completed slot never double-sends; a failed send
+                                # (False) retries on the next poll within the window.
+                                _db.set_agent_state(
+                                    "pmcc_robinhood", _mkey,
+                                    {"ran_at": now.isoformat(),
+                                     "telegram_sent": bool(_ok),
+                                     "slot": _slot_id, "kind": due["kind"]},
+                                    db_url=db_url,
+                                )
+                                logger_agent.log_event(
+                                    "scheduler", "pmcc_judgment_slot_done",
+                                    {"date": str(now.date()), "slot": _slot_id,
+                                     "sent": _ok, "summary": _summary})
+                            except Exception as e:
+                                log.exception("PMCC judgment slot %s failed: %s",
+                                              _slot_id, e)
+                                logger_agent.log_event(
+                                    "scheduler", "pmcc_judgment_slot_error",
+                                    {"date": str(now.date()), "slot": _slot_id,
+                                     "error": str(e)})
+                        elif (now.time() >= win_settle_backstop
+                              and last_settle_defer_date != now.date()):
+                            last_settle_defer_date = now.date()
+                            log.info("PMCC judgment full slot deferred: %s", _reason)
+                            try:
+                                await channel.push(
+                                    f"PMCC judgment slot deferred: quotes not live yet "
+                                    f"({_reason}) - retrying next cadence."
+                                )
+                            except Exception:
+                                pass
+
+            # Post-settle ACTIONABLE pass (LEGACY, pre-P2): fire the actionable scan
+            # off LIVE marks, but ONLY once quotes are live (liveness_probe). Holds
+            # past the 9:30-9:35 opening rotation; never force-scans, never hangs.
+            # Gated OFF whenever the P2 judgment slots are wired (on_judgment_slot).
+            if on_judgment_slot is None and _split and _settle_should_attempt(
                 now, last_settle_date, win_settle_start, win_settle_end, _cal
             ):
                 live, reason = (True, "no probe")
@@ -3110,9 +3348,13 @@ async def _scheduled_pmcc_scan_loop(
                     except Exception:
                         pass
 
-            # B10: second daily invocation — calendar-anchored terminal-DTE pass (0-DTE only).
+            # B10: second daily invocation — calendar-anchored terminal-DTE pass (0-DTE
+            # only). LEGACY (pre-P2): gated OFF when the P2 judgment slots are wired
+            # (the close-anchored terminal judgment slot folds this in, still preserving
+            # _terminal_dte_time_release via _on_terminal_scan).
             if (
-                on_terminal_callback is not None
+                on_judgment_slot is None
+                and on_terminal_callback is not None
                 and _terminal_should_fire(now, last_terminal_date, _cal, terminal_release_offset_min)
             ):
                 last_terminal_date = now.date()
