@@ -1,0 +1,61 @@
+cell,variant,window,n,gross,net06,net04
+SOLUSDT 15m,Binance-selected,0,168,18.56,6.07,10.24
+SOLUSDT 15m,Binance-selected,1,180,18.16,2.37,7.63
+SOLUSDT 15m,Binance-selected,2,169,26.09,12.98,17.35
+SOLUSDT 15m,Binance-selected,3,190,28.78,13.15,18.36
+SOLUSDT 15m,Binance-selected,4,167,10.91,-5.06,0.26
+SOLUSDT 15m,Bybit-replay,0,32,-3.12,-5.6,-4.77
+SOLUSDT 15m,Bybit-replay,1,25,-7.62,-10.2,-9.34
+SOLUSDT 15m,Bybit-replay,2,27,4.09,1.99,2.69
+SOLUSDT 15m,Bybit-replay,3,20,11.31,9.12,9.85
+SOLUSDT 15m,Bybit-replay,4,27,9.75,6.67,7.69
+SOLUSDT 15m,nbr RR2.5,0,186,17.09,3.63,8.12
+SOLUSDT 15m,nbr RR2.5,1,205,17.81,-0.24,5.78
+SOLUSDT 15m,nbr RR2.5,2,188,19.69,5.22,10.04
+SOLUSDT 15m,nbr RR2.5,3,213,11.62,-6.0,-0.12
+SOLUSDT 15m,nbr RR2.5,4,191,-5.16,-23.88,-17.64
+SOLUSDT 15m,nbr VeryHigh,0,121,23.03,13.59,16.74
+SOLUSDT 15m,nbr VeryHigh,1,96,25.19,17.98,20.38
+SOLUSDT 15m,nbr VeryHigh,2,107,25.19,16.42,19.34
+SOLUSDT 15m,nbr VeryHigh,3,112,9.09,0.14,3.12
+SOLUSDT 15m,nbr VeryHigh,4,114,-7.84,-19.39,-15.54
+ETHUSDT 1h,Binance-selected,0,75,-3.97,-7.86,-6.56
+ETHUSDT 1h,Binance-selected,1,79,-8.56,-14.45,-12.48
+ETHUSDT 1h,Binance-selected,2,71,18.12,14.29,15.57
+ETHUSDT 1h,Binance-selected,3,52,8.22,6.05,6.77
+ETHUSDT 1h,Binance-selected,4,75,30.01,26.07,27.39
+ETHUSDT 1h,Bybit-replay,0,46,13.38,10.69,11.59
+ETHUSDT 1h,Bybit-replay,1,39,8.19,6.14,6.82
+ETHUSDT 1h,Bybit-replay,2,36,4.5,3.08,3.56
+ETHUSDT 1h,Bybit-replay,3,42,4.41,2.31,3.01
+ETHUSDT 1h,Bybit-replay,4,39,22.79,20.76,21.43
+ETHUSDT 1h,nbr RR2.5,0,89,-3.0,-7.74,-6.16
+ETHUSDT 1h,nbr RR2.5,1,102,-12.59,-20.78,-18.05
+ETHUSDT 1h,nbr RR2.5,2,80,14.09,9.81,11.24
+ETHUSDT 1h,nbr RR2.5,3,61,11.38,8.75,9.63
+ETHUSDT 1h,nbr RR2.5,4,91,24.9,20.0,21.63
+ETHUSDT 1h,nbr VeryHigh,0,61,-8.88,-11.8,-10.82
+ETHUSDT 1h,nbr VeryHigh,1,66,-0.59,-5.84,-4.09
+ETHUSDT 1h,nbr VeryHigh,2,73,3.41,-0.51,0.79
+ETHUSDT 1h,nbr VeryHigh,3,63,-3.56,-6.58,-5.57
+ETHUSDT 1h,nbr VeryHigh,4,74,-9.69,-13.65,-12.33
+SOLUSDT 1h,Binance-selected,0,35,1.88,0.56,1.0
+SOLUSDT 1h,Binance-selected,1,26,4.16,3.15,3.48
+SOLUSDT 1h,Binance-selected,2,34,10.12,8.76,9.21
+SOLUSDT 1h,Binance-selected,3,24,15.91,14.87,15.22
+SOLUSDT 1h,Binance-selected,4,31,6.5,5.04,5.53
+SOLUSDT 1h,Bybit-replay,0,21,3.94,3.16,3.42
+SOLUSDT 1h,Bybit-replay,1,18,11.22,10.46,10.71
+SOLUSDT 1h,Bybit-replay,2,14,14.69,14.17,14.34
+SOLUSDT 1h,Bybit-replay,3,19,1.62,0.72,1.02
+SOLUSDT 1h,Bybit-replay,4,18,4.84,3.94,4.24
+SOLUSDT 1h,nbr RR2.5,0,35,1.78,0.47,0.91
+SOLUSDT 1h,nbr RR2.5,1,30,7.38,6.14,6.55
+SOLUSDT 1h,nbr RR2.5,2,35,9.28,7.87,8.34
+SOLUSDT 1h,nbr RR2.5,3,24,11.34,10.31,10.65
+SOLUSDT 1h,nbr RR2.5,4,35,5.97,4.3,4.85
+SOLUSDT 1h,nbr Normal,0,39,11.69,10.4,10.83
+SOLUSDT 1h,nbr Normal,1,41,1.25,-0.05,0.38
+SOLUSDT 1h,nbr Normal,2,29,4.84,3.86,4.19
+SOLUSDT 1h,nbr Normal,3,56,-3.47,-5.75,-4.99
+SOLUSDT 1h,nbr Normal,4,52,-14.38,-16.91,-16.07
