@@ -361,47 +361,58 @@ def _loop_heartbeat(db_url: str, wire: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────────
 # TIER C — open SFP position (STRICTLY division='bitunix_sfp'; no shared fallback)
 # ──────────────────────────────────────────────────────────────────────────
-def _open_sfp_position(db_url: str) -> dict | None:
-    """TIER C. The open SFP position — scoped HARD to division='bitunix_sfp'.
+def _open_sfp_positions(db_url: str) -> dict[str, dict]:
+    """TIER C. ALL open SFP positions, keyed by DISPLAY symbol (BTC/ETH/SOL/XRP)
+    — scoped HARD to division='bitunix_sfp'. The platform invariant is 1 open
+    trade PER COIN (max 4/division), so concurrent opens (e.g. XRP + ETH) are
+    VALID and must EACH render on their own coin card. The prior single-row
+    lookup (ORDER BY ts DESC LIMIT 1) collapsed the board to the newest open
+    position division-wide, so a second concurrent position dropped off; this
+    resolves ONE slot PER COIN instead (keyed by (division, symbol)).
 
         SELECT order_id, symbol, side, qty, entry_reference_price, stop_price,
                tp_price, tp_r_multiple, extra_json, ts, execution_mode
         FROM paper_trade_record
         WHERE division='bitunix_sfp' AND result IS NULL
-        ORDER BY ts DESC LIMIT 1;
+        ORDER BY ts DESC;                 -- newest-first; first row per coin wins
 
-    NO fallback to the shared bitunix account snapshot or corp-wide events. If
-    this returns None the caller renders an honest 'no SFP position' state.
+    NO fallback to the shared bitunix account snapshot or corp-wide events. A coin
+    absent from the returned map → the caller renders 'no SFP position' for it.
     """
     with db.connect(db_url) as conn:
-        r = conn.execute(
+        rows = conn.execute(
             "SELECT order_id, symbol, side, qty, entry_reference_price, stop_price, "
             "tp_price, tp_r_multiple, extra_json, ts, execution_mode "
             "FROM paper_trade_record "
-            "WHERE division=? AND result IS NULL ORDER BY ts DESC LIMIT 1",
+            "WHERE division=? AND result IS NULL ORDER BY ts DESC",
             (DIVISION,),
-        ).fetchone()
-    if not r:
-        return None
-    # ref-vs-fill (2026-07-07): prefer the ACTUAL entry fill VWAP (persisted by
-    # the observer as extra['actual_entry_fill_price']) so the entry line + R
-    # reflect the real fill, not the 3m-BOS signal reference. Fall back to the
-    # reference for pre-fix / paper rows (matches the reconciler's
-    # _resolve_entry_price). Stop + TP stay the real venue bracket levels.
-    _extra = _loads(r["extra_json"])
-    _fill = _extra.get("actual_entry_fill_price")
-    try:
-        _entry = float(_fill) if (_fill is not None and float(_fill) > 0) \
-            else r["entry_reference_price"]
-    except (TypeError, ValueError):
-        _entry = r["entry_reference_price"]
-    return {
-        "order_id": r["order_id"], "symbol": r["symbol"], "side": r["side"],
-        "qty": r["qty"], "entry": _entry, "entry_ref": r["entry_reference_price"],
-        "stop": r["stop_price"],
-        "tp": r["tp_price"], "tp_r": r["tp_r_multiple"], "ts": r["ts"],
-        "execution_mode": r["execution_mode"], "extra": _extra,
-    }
+        ).fetchall()
+    out: dict[str, dict] = {}
+    for r in rows:
+        # normalize wire ('ETHUSDT') or display ('ETH/USDT.P') symbol -> short 'ETH'
+        key = str(r["symbol"]).upper().split("/")[0].replace("USDT", "")
+        if key not in SYMBOLS or key in out:     # one-per-coin: keep first (newest ts)
+            continue
+        # ref-vs-fill (2026-07-07): prefer the ACTUAL entry fill VWAP (persisted by
+        # the observer as extra['actual_entry_fill_price']) so the entry line + R
+        # reflect the real fill, not the 3m-BOS signal reference. Fall back to the
+        # reference for pre-fix / paper rows (matches the reconciler's
+        # _resolve_entry_price). Stop + TP stay the real venue bracket levels.
+        _extra = _loads(r["extra_json"])
+        _fill = _extra.get("actual_entry_fill_price")
+        try:
+            _entry = float(_fill) if (_fill is not None and float(_fill) > 0) \
+                else r["entry_reference_price"]
+        except (TypeError, ValueError):
+            _entry = r["entry_reference_price"]
+        out[key] = {
+            "order_id": r["order_id"], "symbol": r["symbol"], "side": r["side"],
+            "qty": r["qty"], "entry": _entry, "entry_ref": r["entry_reference_price"],
+            "stop": r["stop_price"],
+            "tp": r["tp_price"], "tp_r": r["tp_r_multiple"], "ts": r["ts"],
+            "execution_mode": r["execution_mode"], "extra": _extra,
+        }
+    return out
 
 
 def _r_journey(db_url: str, pos: dict) -> dict:
@@ -690,10 +701,10 @@ def register(app: FastAPI) -> None:
         return templates.TemplateResponse(request, "sfp_cockpit.html", ctx)
 
     async def _build_board() -> list[dict]:
-        pos = await _q(_open_sfp_position, db_url)            # TIER C, scoped
+        positions = await _q(_open_sfp_positions, db_url)     # TIER C, scoped, per-coin
         arm_map = _symbol_arm_map()
         div_live = runtime_badge(deps).get("state") == "live"
-        return [await _q(_coin_state, db_url, d, pos, arm_map.get(d, "watch"), div_live)
+        return [await _q(_coin_state, db_url, d, positions.get(d), arm_map.get(d, "watch"), div_live)
                 for d in SYMBOLS]
 
     @app.get("/sfp/partials/header", response_class=HTMLResponse)
