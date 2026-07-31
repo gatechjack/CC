@@ -410,6 +410,32 @@ async def test_compose_delta_material_and_heartbeat(monkeypatch):
     assert "changes since 11:00" in text2 and "AAA - ROLL" in text2
 
 
+@pytest.mark.asyncio
+async def test_execute_judgment_slot_dry_run_places_nothing(monkeypatch):
+    """Full slot data path via a judgment-only `judge` (places NOTHING) + a buffer
+    channel (no live send): capture prior -> judge -> fresh price -> digest -> buffer."""
+    from trading_corp.web import pmcc_pricing
+    from trading_corp.agents.divisions import _pmcc_status
+    decisions = {"AAA": {"status": "roll_short", "confidence": 0.8, "urgency": "routine",
+                 "target_delta_low": 0.2, "target_delta_high": 0.4, "target_dte": 7, "warnings": []}}
+    async def fake_price(agent, broker, slug, sym, db_url, *, now=None):
+        return _priced(sym, 0.26, buildable=True)
+    monkeypatch.setattr(pmcc_pricing, "price_and_stash", fake_price)
+    monkeypatch.setattr(_pmcc_status, "load_decision", lambda s, *, db_url: decisions.get(s))
+    stub = _ComposeStub([_pos("AAA")])
+    ch = _BufferChannel()
+    judged = {"n": 0}
+    async def judge():                        # judgment-only -> NO routing, places nothing
+        judged["n"] += 1
+    text, sent, snap = await _execute_judgment_slot(
+        stub, object(), ch, "db", slot_id="0945", kind="full", label="09:45",
+        prev_label="prior", thresholds=THRESH, prior_snapshot=None, judge=judge,
+    )
+    assert judged["n"] == 1 and sent is True
+    assert ch.pushes and "AAA - ROLL" in "\n".join(ch.pushes)   # digest -> BUFFER, not live
+    assert snap["slot"] == "09:45"
+
+
 # --------------------------------------------------------------------------- #
 # PARITY: judgment_pass() vs scan()'s judgment step store the SAME verdict
 # --------------------------------------------------------------------------- #
