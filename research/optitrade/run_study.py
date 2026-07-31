@@ -164,10 +164,10 @@ def main():
     # write CSV
     keys = list(rows[0].keys())
     with open("results_full.csv","w",newline="") as fp:
-        w = csv.DictWriter(fp, fieldnames=keys); w.writeheader()
+        w = csv.DictWriter(fp, fieldnames=keys, lineterminator="\n"); w.writeheader()
         for r in rows: w.writerow(r)
-    with open("results_vendor.json","w") as fp:
-        json.dump(vendor, fp, indent=2, default=str)
+    with open("results_vendor.json","w",newline="\n") as fp:
+        json.dump(vendor, fp, indent=2, default=str); fp.write("\n")
     print(f"\nDONE {len(rows)} rows, {time.time()-t0:.1f}s total. "
           f"-> results_full.csv, results_vendor.json")
 

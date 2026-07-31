@@ -118,5 +118,5 @@ out.append("- **Parked Bybit cross-venue pass** would run only on the cells that
 out.append("\n## 5. Reproduce\n`python run_study.py` (25s) -> results_full.csv + results_vendor.json; "
            "`python mk_report.py` -> this file. Engine: `optitrade_bt.py` (`python t_unit.py`).")
 
-open("RESULTS.md","w").write("\n".join(out)+"\n")
+open("RESULTS.md","w",newline="\n").write("\n".join(out)+"\n")
 print("wrote RESULTS.md")
