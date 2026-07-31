@@ -15,6 +15,10 @@ everything else untracked-on-prod as REAL drift to reconcile.
 | `/home/azureuser/pead_earnings/pead-earnings-watcher.service` (dir copy, md5 `b2157ffe`) | stale benign copy | stale Jul-20 copy; systemd runs the `/etc` unit (tracked at `pead_earnings/pead-earnings-watcher.service`). Fix opportunistically on a future PEAD deploy — **never as a standalone prod touch** |
 | `config/Lets start Phase 1 — Plumbing now.txt` | scratch note | prod cleanup candidate (manual) |
 | `deploy/2026-07-08_pmcc_lifecycle_fix/backfilled_ids.txt` | deploy artifact | prod cleanup candidate (manual) |
+| `/home/azureuser/card_assets/cursor.txt` | runtime state | sfp-card-watcher cursor/offset marker — **never track** |
+| `/home/azureuser/card_assets/out/` | generated images | rendered trade-card PNGs — **never track** |
+| `/home/azureuser/card_assets/assets/`, `card_assets/fonts/` | static resources | not tracked (note-only) |
+| `/home/azureuser/card_assets/__pycache__/`, `card_assets/*.bak_*` | build/backup artifacts | **never track** |
 
 ## Path mappings — non-overlay deploy targets
 
@@ -25,7 +29,8 @@ These deploy OUTSIDE the overlay and must be mapped explicitly when sweeping:
 |---|---|
 | `pead_earnings/*.py` | `/home/azureuser/pead_earnings/` |
 | `pead_earnings/*.service`, `pead_earnings/*.timer` | `/etc/systemd/system/` (compare vs the **installed** units) |
-| `card_assets/card_data.py` | `/home/azureuser/card_assets/` |
+| `card_assets/*.py` | `/home/azureuser/card_assets/` |
+| `card_assets/*.service` | `/etc/systemd/system/` (compare vs the **installed** unit) |
 
 ## Standing rule
 
