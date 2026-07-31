@@ -1,0 +1,15 @@
+# /etc/systemd/system/pead-earnings-watcher.timer
+[Unit]
+Description=Run the PEAD Upcoming-Earnings Watcher 2x/day. Prod VM is TZ=Etc/UTC, so these UTC times are
+ ~pre-market (11:00 UTC = 07:00 EDT) and ~post-close (21:00 UTC = 17:00 EDT). A 7-day earnings calendar
+ does not change intraday; 2x/day keeps it fresh (AM: fresh estimates/BMO-AMC, PM: the day's actuals).
+ Isolated from trading-corp.service.
+
+[Timer]
+OnCalendar=*-*-* 11:00:00
+OnCalendar=*-*-* 21:00:00
+Persistent=true
+Unit=pead-earnings-watcher.service
+
+[Install]
+WantedBy=timers.target
