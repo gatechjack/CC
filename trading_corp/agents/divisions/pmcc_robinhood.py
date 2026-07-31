@@ -1977,6 +1977,142 @@ Action reference:
 
         return "\n".join(lines)
 
+    # -- Phase 2: judgment pass + digest ------------------------------------
+
+    async def judgment_pass(
+        self, broker: Broker, regime: str = "unknown",
+    ) -> "dict[str, PMCCAnalysis | None]":
+        """P2 judgment-ONLY pass over every HELD PMCC leg: LLM-analyze (bounded
+        concurrency), apply the SAME deterministic composition as scan() (0-DTE
+        terminal release -> LEAP hard-rule promotion -> halfway-roll cooldown), and
+        PERSIST each final verdict (source='scan', band+DTE). Builds NO orders and
+        does NO routing. Returns {symbol: PMCCAnalysis|None}.
+
+        This DUPLICATES scan()'s judgment+store block by design — scan() is left
+        byte-identical per the P2 decision. `test_pmcc_judgment_parity` asserts the
+        two paths produce the same verdict so the duplication cannot silently drift.
+        """
+        self._reload()
+        existing = await self.detect_existing_legs(broker)
+        legs_by_symbol: dict[str, PMCCPosition] = {leg.symbol: leg for leg in existing}
+        if not legs_by_symbol:
+            return {}
+        self._check_options_tier_once(broker)
+        prices = await self._fetch_prices(list(legs_by_symbol.keys()))
+        from trading_corp.utils.market_data import get_vix
+        vix = get_vix()
+
+        analyses: dict[str, PMCCAnalysis | None] = {}
+        syms = list(legs_by_symbol.keys())
+        llm_concurrency = max(1, int(self._cfg.get("llm_concurrency", 3)))
+        sem = asyncio.Semaphore(llm_concurrency)
+
+        async def _analyze_one(s: str):
+            async with sem:
+                return await self._llm_analyze_position(
+                    legs_by_symbol[s], prices.get(s), regime, vix=vix,
+                )
+
+        raw = await asyncio.gather(
+            *[_analyze_one(s) for s in syms], return_exceptions=True,
+        )
+        for sym, res in zip(syms, raw):
+            if isinstance(res, Exception):
+                log.warning("PMCCAgent.judgment_pass: LLM exception for %s: %s", sym, res)
+                analyses[sym] = None
+            else:
+                analyses[sym] = res  # type: ignore[assignment]
+
+        # SAME composition order as scan() / propose_orders_for_pair.
+        for sym in list(analyses.keys()):
+            if sym in legs_by_symbol:
+                _leg = legs_by_symbol[sym]
+                _early_spot = None
+                if self._early_release_needs_spot(_leg, analyses[sym]):
+                    _q = await broker.quote(sym)
+                    _early_spot = _q if _q and _q > 0 else None
+                a = self._terminal_dte_time_release(
+                    analyses[sym], _leg, spot=_early_spot,
+                )
+                a = self._promote_to_roll_leap_if_hard_rule(a, legs_by_symbol[sym])
+                a = self._recent_halfway_roll_cooldown(a, legs_by_symbol[sym])
+                analyses[sym] = a
+
+        # SAME persist as scan()'s unified tile/expert writer (source='scan').
+        if self._db_url and analyses:
+            from trading_corp.agents.divisions import _pmcc_status
+            _now_iso = now_utc().isoformat()
+            _stale_h = float((self._cfg.get("tile_status") or {}).get(
+                "staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+            for _sym, _a in analyses.items():
+                if _a is None:
+                    continue
+                _pmcc_status.record_pmcc_decision(
+                    _sym, status=_a.action, source="scan", computed_at=_now_iso,
+                    db_url=self._db_url, urgency=_a.urgency,
+                    confidence=_a.confidence, summary=_a.summary,
+                    rationale=_a.rationale, warnings=_a.warnings,
+                    target_delta_low=getattr(_a, "target_delta_low", None),
+                    target_delta_high=getattr(_a, "target_delta_high", None),
+                    target_dte=getattr(_a, "target_dte", None),
+                    staleness_hours=_stale_h,
+                )
+        return analyses
+
+    async def compose_slot_digest(
+        self, broker: Broker, db_url: str, *, kind: str, slot_label: str,
+        prev_slot_label: str, prior_decisions: dict, prior_snapshot: dict | None,
+        thresholds: dict,
+    ) -> "tuple[str, dict]":
+        """Fresh-price ALL held holdings (correction B: warm the cache at run time)
+        and build the slot's Telegram text. Returns (digest_text, new_snapshot).
+
+        Judgment must ALREADY be stored (this reads load_decision + prices — NO LLM).
+        kind='full' -> compact per-holding digest (never truncated by the caller's
+        push_split); kind='delta' -> material-changes-only digest, else a heartbeat.
+        The returned snapshot is persisted so the next slot can compute pricing move.
+        """
+        from trading_corp.web import pmcc_pricing
+        from trading_corp.agents.divisions import _pmcc_status
+        slug = PMCC_SLUG
+        holdings = await self.detect_existing_legs(broker)
+        syms = [h.symbol for h in holdings]
+        priced: dict[str, Any] = {}
+        for s in syms:
+            try:
+                priced[s] = await pmcc_pricing.price_and_stash(self, broker, slug, s, db_url)
+            except Exception as e:      # noqa: BLE001 — digest must never crash the loop
+                log.warning("compose_slot_digest: price(%s) failed: %s", s, e)
+                priced[s] = None
+        new_dec = {s: _pmcc_status.load_decision(s, db_url=db_url) for s in syms}
+
+        def _est(s):
+            pr = priced.get(s)
+            return pr.estimate if (pr is not None and getattr(pr, "buildable", False)) else None
+
+        new_snap = {s: holding_snapshot(new_dec.get(s), _est(s)) for s in syms}
+        rows = [digest_row(s, new_dec.get(s), priced.get(s)) for s in syms]
+
+        if kind == "full":
+            header = (
+                f"PMCC judgment {slot_label} - {now_utc().date().isoformat()} "
+                f"({len(rows)} holding(s))"
+            )
+            text = build_full_digest(header, rows)
+        else:
+            prior_map = (prior_snapshot or {}).get("holdings", {}) if prior_snapshot else {}
+            material: list = []
+            for s in syms:
+                prior_combined = _prior_combined(prior_decisions.get(s), prior_map.get(s))
+                d = judgment_delta(prior_combined, new_snap[s], thresholds)
+                if d["material"]:
+                    material.append((digest_row(s, new_dec.get(s), priced.get(s)), d["reasons"]))
+            closed = sorted(set(prior_map.keys()) - set(syms))
+            text = build_delta_digest(slot_label, prev_slot_label, material, closed)
+
+        snapshot = {"taken_at": now_utc().isoformat(), "slot": slot_label, "holdings": new_snap}
+        return text, snapshot
+
     # -- Universe ------------------------------------------------------------
 
     async def get_universe(self, broker: Broker) -> list[str]:
@@ -5177,3 +5313,180 @@ Action reference:
             spec.engagement_id[:8], len(rec.candidates), len(all_orders),
         )
         return all_orders
+
+
+# ── Phase 2 (2026-07-31): judgment-digest pure helpers ─────────────────────
+# Snapshot + delta + full/delta/heartbeat builders, kept at MODULE scope (no
+# `self`) so tests exercise them directly. compose_slot_digest() assembles the
+# rows/snapshots; the scheduler slot handler in main.py captures the prior and
+# persists the snapshot returned here.
+
+PMCC_SLUG = "robinhood_pmcc"
+
+_ACTION_LABEL = {
+    "hold": "HOLD", "watch": "WATCH", "roll_short": "ROLL",
+    "roll_short_early": "ROLL-EARLY", "roll_leap": "ROLL-LEAP",
+    "close_short": "CLOSE", "close_all": "CLOSE-ALL", "open_short": "OPEN",
+}
+
+
+def format_action(action) -> str:
+    a = (action or "none").lower()
+    return _ACTION_LABEL.get(a, a.upper())
+
+
+def mid_delta_from_record(rec) -> "float | None":
+    """Midpoint of a stored judgment's delta band, or None when absent."""
+    if not rec:
+        return None
+    lo, hi = rec.get("target_delta_low"), rec.get("target_delta_high")
+    if lo is None or hi is None:
+        return None
+    try:
+        return (float(lo) + float(hi)) / 2.0
+    except (TypeError, ValueError):
+        return None
+
+
+def holding_snapshot(decision, estimate) -> dict:
+    """Compact per-holding snapshot for delta comparison + persistence. `decision`
+    is a load_decision() dict (or None); `estimate` is a PricedRoll.estimate (or None)."""
+    return {
+        "action": (decision.get("status") if decision else None),
+        "mid_delta": mid_delta_from_record(decision),
+        "target_dte": (decision.get("target_dte") if decision else None),
+        "confidence": (decision.get("confidence") if decision else None),
+        "net": (estimate.get("net") if estimate else None),
+        "urgency": (decision.get("urgency") if decision else None),
+        "warnings": (decision.get("warnings") if decision else []) or [],
+    }
+
+
+def digest_row(symbol, decision, priced) -> dict:
+    """One holding's render row: symbol + action/conf/urgency (from the stored
+    decision) + the live estimate (from the fresh price pull, only when buildable)."""
+    est = None
+    if priced is not None and getattr(priced, "buildable", False):
+        est = priced.estimate
+    return {
+        "symbol": symbol,
+        "action": (decision.get("status") if decision else "none"),
+        "confidence": (decision.get("confidence") if decision else None),
+        "urgency": (decision.get("urgency") if decision else None),
+        "estimate": est,
+        "warnings": (decision.get("warnings") if decision else []) or [],
+    }
+
+
+def _fmt_strike(strike) -> str:
+    try:
+        return f"{float(strike):g}"
+    except (TypeError, ValueError):
+        return str(strike)
+
+
+def format_digest_line(row) -> str:
+    """`SYM - ACTION - BTC $0.12 / STO $0.38 - net +$0.26 - new 185C - 82%`; the
+    pricing segment is omitted when there is no buildable estimate (hold/watch). An
+    urgent row carries the D1 deep-link."""
+    sym = row["symbol"]
+    parts = [sym, format_action(row.get("action"))]
+    est = row.get("estimate")
+    if est:
+        seg = (
+            f"BTC ${float(est.get('debit', 0) or 0):.2f} / "
+            f"STO ${float(est.get('credit', 0) or 0):.2f}"
+        )
+        net = est.get("net")
+        if net is not None:
+            seg += f" - net {'+' if float(net) >= 0 else '-'}${abs(float(net)):.2f}"
+        strike = est.get("open_strike")
+        if strike is not None:
+            seg += f" - new {_fmt_strike(strike)}C"
+        parts.append(seg)
+    conf = row.get("confidence")
+    parts.append(f"{float(conf) * 100:.0f}%" if conf is not None else "--%")
+    line = " - ".join(parts)
+    if (row.get("urgency") or "").lower() == "urgent":
+        line += f"  -> /division/{PMCC_SLUG}?pair={sym}"
+    return line
+
+
+def build_full_digest(header, rows) -> str:
+    """Full slot digest: header + one compact line per holding (ALL holdings, no
+    truncation — the caller sends via push_split so nothing is dropped)."""
+    lines = [header]
+    if not rows:
+        lines.append("(no open PMCC holdings)")
+    else:
+        lines.extend(format_digest_line(r) for r in rows)
+    return "\n".join(lines)
+
+
+def build_delta_digest(slot_label, prev_slot_label, material, closed) -> str:
+    """Material-changes-only digest, or a heartbeat when nothing is material.
+    `material` = list of (row, reasons); `closed` = symbols gone since the prior slot
+    (added holdings surface inside `material` via a None-prior 'added' reason)."""
+    if not material and not closed:
+        return f"{slot_label} - scan ran - no changes since {prev_slot_label}"
+    lines = [f"PMCC {slot_label} - changes since {prev_slot_label}:"]
+    for row, reasons in material:
+        suffix = f"  [{', '.join(reasons)}]" if reasons else ""
+        lines.append(format_digest_line(row) + suffix)
+    for s in closed:
+        lines.append(f"- {s} closed")
+    return "\n".join(lines)
+
+
+def judgment_delta(prior, new, thresholds) -> dict:
+    """Is the change from `prior` to `new` MATERIAL? Returns {material, reasons}.
+    Material iff: prior is None (added); action flip; a new earnings/assignment
+    warning; |mid-delta| shift >= target_delta_shift; |target_dte| shift >=
+    target_dte_shift; OR a pricing move >= net_move_dollars or >= net_move_pct of
+    |prior net|. Confidence drift alone is NEVER material."""
+    if prior is None:
+        return {"material": True, "reasons": ["added"]}
+    reasons: list[str] = []
+    if (prior.get("action") or None) != (new.get("action") or None):
+        reasons.append(f"action {prior.get('action')}->{new.get('action')}")
+    pw = " ".join(prior.get("warnings") or []).lower()
+    nw = " ".join(new.get("warnings") or []).lower()
+    for kw in ("earning", "assign"):
+        if kw in nw and kw not in pw:
+            reasons.append(f"{kw} flag")
+    pmd, nmd = prior.get("mid_delta"), new.get("mid_delta")
+    if pmd is not None and nmd is not None and abs(float(nmd) - float(pmd)) >= float(
+        thresholds.get("target_delta_shift", 0.05)
+    ):
+        reasons.append(f"delta {float(pmd):.2f}->{float(nmd):.2f}")
+    pdte, ndte = prior.get("target_dte"), new.get("target_dte")
+    if pdte is not None and ndte is not None and abs(int(ndte) - int(pdte)) >= int(
+        thresholds.get("target_dte_shift", 2)
+    ):
+        reasons.append(f"dte {int(pdte)}->{int(ndte)}")
+    pnet, nnet = prior.get("net"), new.get("net")
+    if pnet is not None and nnet is not None:
+        move = abs(float(nnet) - float(pnet))
+        pct = float(thresholds.get("net_move_pct", 0.20))
+        if move >= float(thresholds.get("net_move_dollars", 0.10)) or (
+            abs(float(pnet)) > 0 and move >= pct * abs(float(pnet))
+        ):
+            reasons.append(f"net {float(pnet):+.2f}->{float(nnet):+.2f}")
+    return {"material": bool(reasons), "reasons": reasons}
+
+
+def _prior_combined(prior_decision, prior_snap) -> "dict | None":
+    """Merge the delta baseline: action/band/DTE/conf/warnings from the prior stored
+    DECISION (load_decision at slot start -> reflects a manual Re-analyze between
+    slots); the prior NET from the last slot's persisted snapshot. None only when
+    BOTH are absent (a brand-new holding -> 'added')."""
+    if not prior_decision and not prior_snap:
+        return None
+    base = dict(prior_snap or {})
+    if prior_decision:
+        base["action"] = prior_decision.get("status")
+        base["mid_delta"] = mid_delta_from_record(prior_decision)
+        base["target_dte"] = prior_decision.get("target_dte")
+        base["confidence"] = prior_decision.get("confidence")
+        base["warnings"] = prior_decision.get("warnings") or []
+    return base

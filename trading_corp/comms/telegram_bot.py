@@ -270,6 +270,55 @@ class TelegramChannel(BoardChannel):
                 )
                 return False
 
+    @staticmethod
+    def split_message_on_lines(text: str, max_chars: int = 3900) -> list[str]:
+        """Chunk `text` on LINE boundaries into messages each <= max_chars, so a
+        long roster is delivered in full instead of truncated at 4000. No line is
+        ever dropped: chunks re-joined with '\\n' reproduce the input exactly. A
+        single line longer than max_chars becomes its own (over-long) chunk rather
+        than being split mid-line — the per-holding digest lines are short so this
+        edge is only a pathological guard, never the normal path."""
+        if text is None:
+            return []
+        lines = text.split("\n")
+        chunks: list[str] = []
+        cur: list[str] = []
+        cur_len = 0
+        for line in lines:
+            add = len(line) + (1 if cur else 0)   # +1 for the joining newline
+            if cur and cur_len + add > max_chars:
+                chunks.append("\n".join(cur))
+                cur, cur_len = [line], len(line)
+            else:
+                cur.append(line)
+                cur_len += add
+        if cur or not chunks:
+            chunks.append("\n".join(cur))
+        return chunks
+
+    async def push_split(
+        self,
+        text: str,
+        *,
+        audit_path: str = "other",
+        audit_context: dict | None = None,
+        chat_id: int | None = None,
+        max_chars: int = 3900,
+    ) -> bool:
+        """Send `text` as one OR MORE Telegram messages, split on line boundaries so
+        nothing is truncated (fixes push()'s 4000-char cut). Sends chunks sequentially
+        via push(); returns True only if EVERY chunk delivered (never raises)."""
+        chunks = self.split_message_on_lines(text, max_chars=max_chars)
+        if not chunks:
+            return True
+        ok = True
+        for chunk in chunks:
+            sent = await self.push(
+                chunk, audit_path=audit_path, audit_context=audit_context, chat_id=chat_id,
+            )
+            ok = ok and bool(sent)
+        return ok
+
     def _write_send_audit(
         self,
         ok: bool,

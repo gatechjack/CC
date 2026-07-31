@@ -12,6 +12,52 @@ robinhood_pmcc:
     staleness_hours: 8
     stale_label: "stale"
     no_signal_label: "awaiting scan"
+  # ============================================================
+  # Phase-2 (2026-07-31): 4x/day ET LLM judgment scheduler + Telegram
+  # digest/delta/heartbeat. The scheduler runs LLM JUDGMENT on a fixed ET
+  # cadence and sends a compact per-holding digest; PRICING for the digest
+  # is the deterministic P1 price_and_stash (NO LLM). Times are ET wall-
+  # clock; the loop is DST + market-calendar aware. Half-days need no new
+  # constant: the fixed 14:00 slot self-drops (14:00 >= close - margin) and
+  # the close-anchored terminal slot moves to the morning-of-close window,
+  # so BOTH after-close afternoon slots are gated and a single pre-close
+  # terminal delta still fires the 0-DTE release. P2 places NOTHING
+  # (judgment + notification only; routing to /approvals is UNCHANGED and
+  # runs only on the 09:45 full slot, exactly as the old post-settle pass).
+  # ============================================================
+  judgment_schedule:
+    enabled: true
+    # Fixed ET slots. kind: full = compact per-holding digest (ALL holdings,
+    # never truncated); delta = material-change-only digest. The full slot is
+    # liveness_gated (holds for live SPY/QQQ quotes past the opening rotation).
+    # route: whether the slot's judgment ALSO runs the existing order routing
+    # (only the full slot routes = the post-settle fold; delta slots do not).
+    slots:
+      - {id: "0945", time: "09:45", kind: "full",  liveness_gated: true,  route: true}
+      - {id: "1100", time: "11:00", kind: "delta", liveness_gated: false, route: false}
+      - {id: "1400", time: "14:00", kind: "delta", liveness_gated: false, route: false}
+    # Close-anchored last slot: fires in [close - offset_min, close) -> 15:00 on
+    # a 16:00 close, 12:00 on a 13:00 half-day. Runs the existing terminal 0-DTE
+    # pass (preserving _terminal_dte_time_release) for routing, then a delta
+    # digest. offset_min mirrors zero_dte.release_offset_min; tunable.
+    terminal:
+      id: "terminal"
+      kind: "delta"
+      offset_min: 60
+    # Grace after a fixed slot's time during which a late start may still fire it;
+    # past this (marker absent) the slot is MISSED and skipped (never backfilled).
+    fire_window_min: 30
+    # A fixed slot is valid only if it lands at least this many minutes before the
+    # day's close (this is what gates BOTH afternoon slots on a half-day).
+    close_margin_min: 15
+  # Material-change thresholds for the DELTA digest (all tunable). A change below
+  # every threshold with an unchanged action -> heartbeat. Confidence drift alone
+  # is NEVER material.
+  judgment_delta:
+    target_delta_shift: 0.05    # |new mid-delta - prior mid-delta| >= -> material
+    target_dte_shift: 2         # |new target_dte - prior target_dte| >= days -> material
+    net_move_dollars: 0.10      # |new net - prior net| >= $/share -> material
+    net_move_pct: 0.20          # OR >= 20% of |prior net| -> material
   # combo dispatch re-pricing (2026-07-23): marketable give-up per share shaved off
   # the natural at dispatch so a spread FILLS instead of resting; close_all gets a
   # much larger urgency give-up. Code defaults 0.02 / 0.25 if absent.
