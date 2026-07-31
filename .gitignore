@@ -20,13 +20,8 @@ env/
 *.pem
 *.key
 
-# Runtime data — exclude DB / lock / browser-session artifacts but
-# keep checked-in starter universes (data/research_starter_universes/*)
-data/*.db
-data/*.db-journal
-data/*.pid
-data/fidelity_session/
-data_localtest/
+# Runtime data
+data/
 logs/
 *.db
 *.db-journal
@@ -38,46 +33,3 @@ logs/
 .idea/
 *.swp
 .DS_Store
-
-# Per-machine Claude Code state
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
-.claude/worktrees/
-
-# Backtest tooling outputs (large, regenerable)
-data/historical_alerts/cache_*.json
-data/backtest_runs/
-
-# Pending strategy specs — Board's research notes for future strategy work.
-# Tracked by memory entry `trading_corp_pending_strategy_specs.md`, not git.
-# These pull into the active session when Board greenlights the strategy.
-/# Bitcoin Leveraged Scalping Strate.txt
-/# Poor Man's Covered Call (PMCC) St.txt
-/config/Kalshi Crypto Prediction Market Edge.txt
-
-# Local deploy staging (md5-diff scratch dir; safe to delete anytime)
-.deploy_tmp/
-
-# Session-scratch artifacts in runbooks/ — dot-prefixed files that
-# Claude generates inline during a session for one-shot use (deploy
-# patch scripts, base64 transfer dumps, probe scripts). They have no
-# lasting value once the deploy completes; backups land in the
-# prod-VM's filesystem instead. The runbook .md files (session_start_*,
-# deploy_log) ARE tracked — only the dot-prefixed scratch is ignored.
-runbooks/.*.sh
-runbooks/.*.b64
-runbooks/.*.tmp
-
-# Per-run generated analysis artifacts. Append-only CSVs that the
-# weekly TV-CSV-ingest pipeline emits; regeneratable from the SQLite
-# DB so no need to track. If you want a historical snapshot, copy it
-# out and rename.
-data/scalping_3m_analysis_history.csv
-
-# Personal working notes — Board's session notes, prompts, goal docs.
-# Lives alongside the repo for convenience; never committed.
-notes/
-Goals/
-tree.txt
-data/*.bak-*
-tmp/
