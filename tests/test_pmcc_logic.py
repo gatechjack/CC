@@ -3381,3 +3381,98 @@ async def test_roll_no_unverified_alert_when_broker_has_date(agent_logged, cap_l
     assert len(orders) == 2
     assert not any(e["kind"] == "pmcc_earnings_unverified" for e in cap_logger.events)
     assert not any("EARN UNVERIFIED" in t for t in sent)
+
+
+# ===========================================================================
+# 2026-07-30 — preview mode. A card render / Re-analyze / estimate build is NOT a
+# dispatch attempt, so it emits NO exec-alert and writes NO audit. The proposed
+# legs are byte-identical to the dispatch build; only the side effects differ.
+# Invariant: exec-alerts fire ONLY on a genuine dispatch attempt.
+# ===========================================================================
+
+@pytest.fixture
+def _cap_alerts(monkeypatch):
+    """Capture emit_exec_alert(ExecOutcome) at the source, so a preview build can be
+    asserted to fire zero ABORTED / EARN_UNVERIF pings (deterministic — no sender)."""
+    calls = []
+    monkeypatch.setattr(_ea_mod, "emit_exec_alert", lambda outcome: calls.append(outcome))
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_preview_roll_short_abort_no_alert_no_audit(
+        agent_logged, cap_logger, clear_earnings, _cap_alerts):
+    """Preview roll_short that WOULD abort (empty chain) → [] with NO pmcc_roll_aborted
+    audit and NO ABORTED alert."""
+    leg = _pmcc_with_short(dte=2, pnl_pct=0.10)
+    orders = await agent_logged._propose_roll_short(
+        "AAPL", leg, MockOptionBroker(), preview=True)
+    assert orders == []
+    assert not any(e["kind"] == "pmcc_roll_aborted" for e in cap_logger.events)
+    assert _cap_alerts == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_roll_short_abort_still_fires(
+        agent_logged, cap_logger, clear_earnings, _cap_alerts):
+    """Parity: the SAME abort at DISPATCH (preview=False default) DOES audit + alert
+    — the suppression is preview-only, not a blanket silencing."""
+    leg = _pmcc_with_short(dte=2, pnl_pct=0.10)
+    orders = await agent_logged._propose_roll_short("AAPL", leg, MockOptionBroker())
+    assert orders == []
+    assert _abort_event(cap_logger)["payload"]["reason"] == "sparse_chain_no_weekly"
+    assert [o.tier for o in _cap_alerts] == ["ABORTED"]
+
+
+@pytest.mark.asyncio
+async def test_preview_roll_short_earn_unverified_no_alert_no_audit(
+        agent_logged, cap_logger, monkeypatch, _cap_alerts):
+    """Neither earnings source (source='none'): dispatch would ship 2 legs AND emit
+    EARN_UNVERIF; the PREVIEW ships the same 2 legs but writes NO audit / NO alert."""
+    _patch_earn_sources(monkeypatch, (None, False), None)
+    broker = _credit_roll_broker()
+    pos = next(p for p in await agent_logged.detect_existing_legs(broker)
+               if p.symbol == "AAPL")
+    orders = await agent_logged._propose_roll_short("AAPL", pos, broker, preview=True)
+    assert len(orders) == 2                                   # fail-open still ships
+    assert not any(e["kind"] == "pmcc_earnings_unverified" for e in cap_logger.events)
+    assert _cap_alerts == []
+
+
+@pytest.mark.asyncio
+async def test_preview_roll_leap_block_no_alert_no_audit(
+        agent_logged, cap_logger, monkeypatch, _cap_alerts):
+    """Preview roll_leap within the earnings buffer (site 1, propose_orders_for_pair):
+    aborts to [] with NO pmcc_roll_aborted audit and NO ABORTED alert."""
+    _patch_earnings(monkeypatch, 3)
+    orders = await agent_logged.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR", _rl_analysis(), preview=True)
+    assert orders == []
+    assert not any(e["kind"] == "pmcc_roll_aborted" for e in cap_logger.events)
+    assert _cap_alerts == []
+
+
+@pytest.mark.asyncio
+async def test_preview_roll_leap_ship_writes_no_gate_audit(
+        agent_logged, cap_logger, clear_earnings):
+    """Preview roll_leap that SHIPS 4 legs writes NO pmcc_roll_gates audit — a render
+    must leave no shipped-roll trail."""
+    orders = await agent_logged.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR", _rl_analysis(), preview=True)
+    assert len(orders) == 4
+    assert not any(e["kind"] == "pmcc_roll_gates" for e in cap_logger.events)
+
+
+@pytest.mark.asyncio
+async def test_preview_combo_identical_to_dispatch(agent, clear_earnings):
+    """The previewed combo == the dispatched combo (same sides/strikes/expiries/
+    effects) — the stash can carry it forward with zero contract drift."""
+    def _shape(os):
+        return [(o.side, o.extra.get("strike"), o.extra.get("expiration"),
+                 o.extra.get("position_effect")) for o in os]
+    prev = await agent.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR", _rl_analysis(), preview=True)
+    disp = await agent.propose_orders_for_pair(
+        _roll_leap_credit_broker(), "MSTR", _rl_analysis())
+    assert len(prev) == 4
+    assert _shape(prev) == _shape(disp)

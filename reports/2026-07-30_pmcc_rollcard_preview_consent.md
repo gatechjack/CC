@@ -74,7 +74,50 @@ has no cache), so the strike shown could silently differ from the strike fired.
   GETs return the record panel at `:873-874` before the cache read; never served back.
 
 ## Tests
-(to be filled with run evidence)
 
-## Regression vs e82a07d
-(to be filled — apples-to-apples: same suites, prod-venv flags)
+New/changed test files (run capped via `scripts\run_capped.ps1 python -m pytest`,
+interpreter Python 3.14.4, deps present locally):
+
+**Defect 1 — preview suppresses alerts/audit** (`tests/test_pmcc_logic.py`, +6, reuse
+the existing roll brokers/fixtures so it's apples-to-apples):
+- `test_preview_roll_short_abort_no_alert_no_audit` — preview roll_short abort → `[]`,
+  no `pmcc_roll_aborted` audit, no ABORTED emit.
+- `test_dispatch_roll_short_abort_still_fires` — parity: the SAME abort at dispatch
+  (preview=False) DOES audit + emit exactly one ABORTED (suppression is preview-only).
+- `test_preview_roll_short_earn_unverified_no_alert_no_audit` — source='none' preview
+  ships 2 legs but writes no `pmcc_earnings_unverified` audit and no EARN_UNVERIF emit.
+- `test_preview_roll_leap_block_no_alert_no_audit` — preview roll_leap earnings-block → `[]`, silent.
+- `test_preview_roll_leap_ship_writes_no_gate_audit` — preview roll_leap ship → 4 legs, no `pmcc_roll_gates` audit.
+- `test_preview_combo_identical_to_dispatch` — previewed legs == dispatched legs (same sides/strikes/expiries/effects) → the stash carries with zero drift.
+
+**Defect 2 — division panel + stash** (`tests/test_pmcc_rollcard_preview.py`, new, 12):
+- stash: fingerprint price-independent; changes with strike; hit→single-use; wrong id/fp/None miss; TTL expiry; empty→None.
+- division panel render: estimate strike/expiry/debit/credit/net + "actual fill will differ" + consent token hidden fields; earnings-blocked hides Approve + shows recommendation; earnings-unverified keeps Approve + flag + shows the no-estimate reason (no estimate block).
+- `test_panel_estimate_equals_dispatch_natural` — CONSENT LOCK: the net the panel prints == the natural `reprice_combo_from_quotes` derives the placed limit from (net − give_up = 0.58).
+- `test_record_panel_hides_approve_and_prompts_reanalyze` — stored-record panel renders NO Approve + the "approve that exact combo" re-analyze prompt.
+- `_exec_consent_mismatch_html` smoke.
+
+Plus the pre-existing `tests/test_pmcc_roll_card.py` (15, Enhancement A/B + consent lock) still passes unchanged.
+
+## Regression vs e82a07d (apples-to-apples)
+
+Ran the two pre-existing PMCC test files on a detached worktree at `e82a07d` and on
+the branch, same interpreter/flags:
+
+| File | e82a07d | branch | delta |
+|---|---|---|---|
+| test_pmcc_logic.py | 155 | 161 | +6 (preview-suppression) |
+| test_pmcc_roll_card.py | 15 | 15 | 0 (untouched) |
+| test_pmcc_rollcard_preview.py | — | 12 | +12 (new) |
+| **total** | **170 pass** | **188 pass** | **+18, 0 removed/modified** |
+
+All 170 baseline tests still pass on the branch (no existing test modified or dropped).
+
+Broader run (all `test_pmcc_*` + `test_approvals_routes` + `test_exec_alert` +
+telegram): everything passes on the branch EXCEPT
+`test_pmcc_paper_run_readiness.py::{all_blocking_pass_on_production_config,
+formatter_and_known_limitations_block}` — which fail **byte-identically on e82a07d**
+with `no such table: agent_state` / `audit_event` (the local sandbox has no
+initialized DB; environmental, pre-existing, not touched by this change).
+
+**Verdict: zero regression.** HELD for deploy — no prod push, no restart.
