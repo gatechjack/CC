@@ -74,7 +74,11 @@ from trading_corp.agents.strategies._whale_autopause import (
 )
 from trading_corp.brokers.kalshi import KalshiPublicTrade
 from trading_corp.data.kalshi_apify_client import KalshiApifyClient, WhalePosition
-from trading_corp.persistence.db import load_agent_state, set_agent_state
+from trading_corp.persistence.db import (
+    delete_agent_state,
+    load_agent_state,
+    set_agent_state,
+)
 from trading_corp.persistence.models import ProposedOrder
 
 import sqlite3
@@ -85,6 +89,14 @@ log = logging.getLogger(__name__)
 _AGENT_STATE_SELECTED_WHALES = "selected_whales"
 _AGENT_STATE_POSITIONS_PREFIX = "positions:"  # per-whale: positions:{nickname}
 _AGENT_STATE_LAST_POLL_TS = "last_poll_ts"
+# R2 (2026-07-30): per-whale confirm-and-advance counter for a persistent
+# suspicious (settlement-inconclusive) mass-disappearance. Keyed per whale;
+# value = {"sig": [sorted active-missing tickers], "count": int}.
+_AGENT_STATE_ANOMALY_STREAK_PREFIX = "feed_anomaly_streak:"
+# Kalshi market-resolution statuses that mean a vanished position is a
+# LEGITIMATE removal (settled / cancelled), not a feed anomaly. See
+# KalshiBroker.get_market_resolution (brokers/kalshi.py).
+_SETTLED_RESOLUTION_STATUSES = frozenset({"resolved", "void"})
 
 # Sizing tier breakpoints (Kalshi contracts -> USD per-leg copy size).
 _DEFAULT_TIER_BOUNDARIES = (100, 1000)
@@ -332,15 +344,62 @@ class KalshiCopyTraderAgent:
             # capital). A real whale rarely closes a large fraction of positions in
             # one ~10-min cycle; a suspicious mass-disappearance (an empty/partial
             # Apify payload for this whale) would otherwise synthesize false mass
-            # EXITS — dangerous in live mode. Suppress ALL emission for the whale this
-            # cycle, RETAIN the prior snapshot (don't lose track), audit + queue a
-            # Telegram alarm. The next healthy cycle re-evaluates a real payload. ──
+            # EXITS — dangerous in live mode.
+            #
+            # R1 (settlement-aware, 2026-07-30): a mass-disappearance is only a
+            # feed anomaly if the vanished markets are STILL ACTIVE on Kalshi. If
+            # they RESOLVED / VOID'd (e.g. the July FOMC KXFEDDECISION markets
+            # settling at the 2pm-ET announcement) the removal is LEGITIMATE —
+            # advance the snapshot + emit exits (no-ops unless we held a copy) with
+            # NO alarm. R2 (confirm-and-advance): tickers still active — or whose
+            # status can't be confirmed — are SUSPICIOUS; retain them and alarm
+            # ONCE. If the same suspicious set persists `anomaly_confirm_cycles`
+            # (N) cycles, accept it as real, advance, and alarm once more. This
+            # gives a recovery path so a real removal can never latch forever. ──
+            retained_suspicious: set[str] = set()
             if self._is_mass_disappearance(prev_tickers, removed_tickers):
-                self._queue_feed_anomaly(
-                    logger_agent, whale=whale, n_prev=len(prev_tickers),
-                    n_removed=len(removed_tickers), n_curr=len(curr_tickers),
+                settled_missing, active_missing = await self._classify_removed(
+                    removed_tickers, trade_tape_fetcher,
                 )
-                continue   # prev snapshot left unchanged (retained)
+                confirm_n = int(self._feed_cfg().get("anomaly_confirm_cycles", 3))
+                if not active_missing:
+                    # R1: every vanished ticker resolved/void — legitimate
+                    # settlement. Fall through to normal processing (settled
+                    # removals -> exits, no-ops unless held); snapshot advances
+                    # silently. NO alarm on a confirmed settlement.
+                    self._clear_anomaly_streak(whale)
+                else:
+                    streak = self._bump_anomaly_streak(whale, active_missing)
+                    if streak < confirm_n:
+                        # Still suspicious. Alarm ONCE (first cycle of this
+                        # signature) and RETAIN only the still-active vanished
+                        # tickers; advance everything else (settled removals ->
+                        # exits, new entries, carryovers).
+                        if streak == 1:
+                            self._queue_feed_anomaly(
+                                logger_agent, whale=whale,
+                                n_prev=len(prev_tickers),
+                                n_removed=len(active_missing),
+                                n_curr=len(curr_tickers),
+                                reason="mass_disappearance",
+                            )
+                        removed_tickers = removed_tickers - active_missing
+                        retained_suspicious = active_missing
+                    else:
+                        # R2: persisted N cycles, settlement inconclusive ->
+                        # accept as real. One confirmed-note alarm, then advance
+                        # (active_missing flow through the exit loop + drop).
+                        self._queue_feed_anomaly(
+                            logger_agent, whale=whale,
+                            n_prev=len(prev_tickers),
+                            n_removed=len(active_missing),
+                            n_curr=len(curr_tickers),
+                            reason="confirmed_real_after_n_cycles",
+                        )
+                        self._clear_anomaly_streak(whale)
+            else:
+                # Healthy cycle for this whale — reset any stale suspicion streak.
+                self._clear_anomaly_streak(whale)
 
             new_snapshot: dict[str, dict[str, Any]] = {}
 
@@ -404,6 +463,11 @@ class KalshiCopyTraderAgent:
                 if proposal is not None:
                     proposals.append(proposal)
 
+            # R2: keep suspicious-but-unconfirmed tickers in the book so we don't
+            # lose track while the confirm window elapses (they are NOT in the
+            # feed, so they never enter the new/carryover loops above).
+            for ticker in retained_suspicious:
+                new_snapshot[ticker] = prev_snapshot.get(ticker) or {}
             self._save_whale_snapshot_raw(whale, new_snapshot)
 
         self._set_last_poll(now)
@@ -919,9 +983,95 @@ class KalshiCopyTraderAgent:
                 log.warning("kalshi_copy_trader: feed-anomaly audit failed: %s", e)
         self._pending_feed_alarms.append(payload)
         log.warning(
-            "kalshi_copy_trader: FEED ANOMALY — suppressed exits for %s (%d/%d removed, "
-            "%.0f%%); feed glitch suspected", whale, n_removed, n_prev, pct,
+            "kalshi_copy_trader: FEED ANOMALY [%s] %s — %d/%d tracked vanished (%.0f%%)",
+            reason, whale, n_removed, n_prev, pct,
         )
+
+    # ── R1: settlement-aware classification of a mass-disappearance ─────────────
+
+    async def _classify_removed(
+        self, removed_tickers: set, fetcher: Any | None,
+    ) -> tuple[set[str], set[str]]:
+        """Split removed tickers into (settled, active_missing).
+
+        A vanished ticker whose Kalshi market has RESOLVED or VOID'd is a
+        legitimate exit (settlement) — NOT a feed anomaly. Everything else
+        (still trading, or a status we couldn't confirm) is treated as
+        active_missing = suspicious, deferred to the R2 confirm counter.
+        Conservative by design: we only auto-accept a disappearance as
+        legitimate on a CONFIRMED terminal status, never on ambiguity.
+
+        Reuses `fetcher.get_market_resolution` — the same read the exit path
+        uses for pricing (brokers/kalshi.py). It is a Kalshi read ($0, not
+        Apify). If settlement checking is disabled, the fetcher is absent, or
+        a lookup fails, the ticker falls to active_missing (safe direction).
+        """
+        settled: set[str] = set()
+        active: set[str] = set()
+        check_on = bool(self._feed_cfg().get("settlement_check_enabled", True))
+        can_check = (
+            check_on and fetcher is not None
+            and hasattr(fetcher, "get_market_resolution")
+        )
+        for ticker in removed_tickers:
+            if not can_check:
+                active.add(ticker)
+                continue
+            try:
+                res = await fetcher.get_market_resolution(ticker)
+                status = (res or {}).get("status")
+            except Exception as e:
+                log.warning(
+                    "kalshi_copy_trader: resolution check failed for %s: %s",
+                    ticker, e,
+                )
+                status = None
+            if status in _SETTLED_RESOLUTION_STATUSES:
+                settled.add(ticker)
+            else:
+                active.add(ticker)
+        return settled, active
+
+    # ── R2: confirm-and-advance streak counter (persistent, per whale) ─────────
+
+    def _anomaly_streak_key(self, whale: str) -> str:
+        return f"{_AGENT_STATE_ANOMALY_STREAK_PREFIX}{whale}"
+
+    def _load_anomaly_streak(self, whale: str) -> dict[str, Any]:
+        if not self._db_url:
+            return {}
+        rec = load_agent_state(
+            self.name, self._anomaly_streak_key(whale), db_url=self._db_url,
+        )
+        return rec[0] if rec and isinstance(rec[0], dict) else {}
+
+    def _bump_anomaly_streak(self, whale: str, active_missing: set) -> int:
+        """Increment (or reset) the per-whale suspicious-disappearance streak.
+
+        The streak is keyed by the SIGNATURE (sorted active-missing tickers):
+        a changed set means a different anomaly, so the counter resets to 1.
+        Returns the new count. Persisted in agent_state so it survives a
+        process restart (an in-memory counter would restart the countdown)."""
+        if not self._db_url:
+            return 1
+        sig = sorted(active_missing)
+        rec = self._load_anomaly_streak(whale)
+        count = int(rec.get("count", 0)) + 1 if rec.get("sig") == sig else 1
+        set_agent_state(
+            self.name, self._anomaly_streak_key(whale),
+            {"sig": sig, "count": count}, db_url=self._db_url,
+        )
+        return count
+
+    def _clear_anomaly_streak(self, whale: str) -> None:
+        """Drop the streak row (no-op if none exists — avoids a write on every
+        healthy cycle)."""
+        if not self._db_url:
+            return
+        if self._load_anomaly_streak(whale):
+            delete_agent_state(
+                self.name, self._anomaly_streak_key(whale), db_url=self._db_url,
+            )
 
     def _record_fetch_failure(self, logger_agent) -> None:
         """Track CONSECUTIVE Apify fetch failures; alarm + audit once the streak
