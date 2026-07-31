@@ -811,7 +811,12 @@ async def run(argv: list[str] | None = None) -> int:
                 analysis_md = await pmcc_agent.analyze_portfolio(
                     scan_broker, regime=scan_regime,
                 )
-                await channel.push(analysis_md)
+                # push_split (not push) so the manual /scan digest is delivered in
+                # full — the old push() truncated at 4000 chars, dropping holdings.
+                # Chunking is on LINE boundaries and analyze_portfolio balances every
+                # Markdown entity within its own line, so no bold/italic/link is split
+                # across a chunk boundary (each chunk parses independently).
+                await channel.push_split(analysis_md)
             except Exception as e:
                 log.warning("PMCC portfolio analysis failed: %s", e)
 
@@ -3099,6 +3104,74 @@ async def _execute_judgment_slot(
     return text, bool(sent), snapshot
 
 
+async def _judgment_tick(
+    now, calendar, sched_cfg, *, db, db_url, on_judgment_slot, liveness_probe,
+    backstop_time, defer_holder, logger_agent, channel,
+) -> dict:
+    """Evaluate + (maybe) run the judgment slot DUE at `now`. Returns a small result
+    dict {fired, slot, sent, deferred, reason}. PERSISTED per-slot marker dedupes the
+    SEND: a completed slot (telegram_sent True) is NOT re-run, so a mid-day restart
+    can't double-send; a missed slot (window passed -> no slot due) is skipped; a
+    liveness-gated full slot emits ONE defer notice past the backstop then retries.
+    Extracted from the loop so idempotency/missed-slot/half-day are unit-testable."""
+    if on_judgment_slot is None or not sched_cfg.get("enabled", True):
+        return {"fired": False, "reason": "disabled"}
+    due = _due_judgment_slot(now, calendar, sched_cfg)
+    if due is None:
+        return {"fired": False, "reason": "no slot due"}
+    slot_id = due["id"]
+    mkey = f"judgment_run:{now.date().isoformat()}:{slot_id}"
+    try:
+        m = db.load_agent_state("pmcc_robinhood", mkey, db_url=db_url)
+    except Exception:
+        m = None
+    if bool(m and (m[0] or {}).get("telegram_sent")):
+        return {"fired": False, "slot": slot_id, "reason": "already sent"}
+    live, reason = (True, "no probe")
+    if due.get("liveness_gated") and liveness_probe is not None:
+        try:
+            live, reason = await liveness_probe()
+        except Exception as e:      # noqa: BLE001
+            live, reason = False, f"liveness probe error: {e}"
+    if not live:
+        if (backstop_time is not None and now.time() >= backstop_time
+                and defer_holder.get("date") != now.date()):
+            defer_holder["date"] = now.date()
+            log.info("PMCC judgment full slot deferred: %s", reason)
+            try:
+                await channel.push(
+                    f"PMCC judgment slot deferred: quotes not live yet ({reason}) "
+                    "- retrying next cadence."
+                )
+            except Exception:
+                pass
+            return {"fired": False, "slot": slot_id, "deferred": True, "reason": reason}
+        return {"fired": False, "slot": slot_id, "reason": f"not live ({reason})"}
+    log.info("Scheduler firing PMCC judgment slot %s (%s)...", slot_id, reason)
+    try:
+        ok, summary = await on_judgment_slot(due)
+        # Dedupe the SEND: telegram_sent gates re-runs so a completed slot never
+        # double-sends; a failed send (False) retries on the next poll within window.
+        db.set_agent_state(
+            "pmcc_robinhood", mkey,
+            {"ran_at": now.isoformat(), "telegram_sent": bool(ok),
+             "slot": slot_id, "kind": due["kind"]},
+            db_url=db_url,
+        )
+        if logger_agent is not None:
+            logger_agent.log_event(
+                "scheduler", "pmcc_judgment_slot_done",
+                {"date": str(now.date()), "slot": slot_id, "sent": ok, "summary": summary})
+        return {"fired": True, "slot": slot_id, "sent": bool(ok)}
+    except Exception as e:      # noqa: BLE001
+        log.exception("PMCC judgment slot %s failed: %s", slot_id, e)
+        if logger_agent is not None:
+            logger_agent.log_event(
+                "scheduler", "pmcc_judgment_slot_error",
+                {"date": str(now.date()), "slot": slot_id, "error": str(e)})
+        return {"fired": False, "slot": slot_id, "error": str(e)}
+
+
 async def _scheduled_pmcc_scan_loop(
     on_scan_callback,
     channel,
@@ -3182,6 +3255,7 @@ async def _scheduled_pmcc_scan_loop(
     # the old post-settle + terminal LLM passes (those blocks below are gated off);
     # the 8:30 triage + EOD assignment-watch are untouched.
     _judgment_sched = judgment_schedule or {}
+    _judg_defer = {"date": None}   # once-per-day liveness-defer notice for the full slot
     from trading_corp.persistence import db as _db
 
     log.info(
@@ -3237,65 +3311,16 @@ async def _scheduled_pmcc_scan_loop(
                     )
 
             # P2 JUDGMENT SLOTS (own the LLM judgment + digest; fold in the old
-            # post-settle + terminal LLM passes). Persisted per-slot markers dedupe
-            # the SEND across a mid-day restart; a completed slot is not re-run, a
-            # missed slot (window passed) is skipped. Routing is UNCHANGED (only the
-            # full slot routes, via _on_scan). P2 places NOTHING itself.
-            if on_judgment_slot is not None and _judgment_sched.get("enabled", True):
-                due = _due_judgment_slot(now, _cal, _judgment_sched)
-                if due is not None:
-                    _slot_id = due["id"]
-                    _mkey = f"judgment_run:{now.date().isoformat()}:{_slot_id}"
-                    _sent_already = False
-                    try:
-                        _m = _db.load_agent_state("pmcc_robinhood", _mkey, db_url=db_url)
-                        _sent_already = bool(_m and (_m[0] or {}).get("telegram_sent"))
-                    except Exception:
-                        _sent_already = False
-                    if not _sent_already:
-                        _live, _reason = (True, "no probe")
-                        if due.get("liveness_gated") and liveness_probe is not None:
-                            try:
-                                _live, _reason = await liveness_probe()
-                            except Exception as e:
-                                _live, _reason = False, f"liveness probe error: {e}"
-                        if _live:
-                            log.info("Scheduler firing PMCC judgment slot %s (%s)...",
-                                     _slot_id, _reason)
-                            try:
-                                _ok, _summary = await on_judgment_slot(due)
-                                # Dedupe the SEND: telegram_sent gates re-runs so a
-                                # completed slot never double-sends; a failed send
-                                # (False) retries on the next poll within the window.
-                                _db.set_agent_state(
-                                    "pmcc_robinhood", _mkey,
-                                    {"ran_at": now.isoformat(),
-                                     "telegram_sent": bool(_ok),
-                                     "slot": _slot_id, "kind": due["kind"]},
-                                    db_url=db_url,
-                                )
-                                logger_agent.log_event(
-                                    "scheduler", "pmcc_judgment_slot_done",
-                                    {"date": str(now.date()), "slot": _slot_id,
-                                     "sent": _ok, "summary": _summary})
-                            except Exception as e:
-                                log.exception("PMCC judgment slot %s failed: %s",
-                                              _slot_id, e)
-                                logger_agent.log_event(
-                                    "scheduler", "pmcc_judgment_slot_error",
-                                    {"date": str(now.date()), "slot": _slot_id,
-                                     "error": str(e)})
-                        elif (now.time() >= win_settle_backstop
-                              and last_settle_defer_date != now.date()):
-                            last_settle_defer_date = now.date()
-                            log.info("PMCC judgment full slot deferred: %s", _reason)
-                            try:
-                                await channel.push(
-                                    f"PMCC judgment slot deferred: quotes not live yet "
-                                    f"({_reason}) - retrying next cadence."
-                                )
-                            except Exception:
-                                pass
+            # post-settle + terminal LLM passes). Extracted to _judgment_tick so the
+            # marker/idempotency/liveness logic is unit-testable in isolation. Routing
+            # is UNCHANGED (only the full slot routes, via _on_scan). Places NOTHING.
+            if on_judgment_slot is not None:
+                await _judgment_tick(
+                    now, _cal, _judgment_sched, db=_db, db_url=db_url,
+                    on_judgment_slot=on_judgment_slot, liveness_probe=liveness_probe,
+                    backstop_time=win_settle_backstop, defer_holder=_judg_defer,
+                    logger_agent=logger_agent, channel=channel,
+                )
 
             # Post-settle ACTIONABLE pass (LEGACY, pre-P2): fire the actionable scan
             # off LIVE marks, but ONLY once quotes are live (liveness_probe). Holds

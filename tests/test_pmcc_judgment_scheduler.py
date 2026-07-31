@@ -80,6 +80,45 @@ async def test_push_split_returns_false_but_still_sends_all_on_failure():
     assert "\n".join(ch.pushes) == text                  # nothing dropped regardless
 
 
+def _entities_balanced(chunk: str) -> bool:
+    """Telegram legacy-Markdown sanity for ONE chunk of analyze_portfolio output:
+    bold ** paired and italic _ (after removing **) paired. Because push_split cuts
+    ONLY on line boundaries and analyze_portfolio balances every entity within its
+    own line, each chunk stays balanced -> no bold/italic split across a chunk edge."""
+    if chunk.count("**") % 2 != 0:
+        return False
+    return chunk.replace("**", "").count("_") % 2 == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_markdown_digest_splits_no_drop_each_chunk_parses():
+    """The manual /scan digest (analyze_portfolio Markdown) routed through push_split:
+    a >4000-char roster splits with NO holding dropped, each chunk within the limit,
+    and every chunk keeps its Markdown entities intact (whole-line chunking)."""
+    # analyze_portfolio-shaped lines: bold symbol header + italic rationale (the two
+    # entity kinds it emits), one entity per line, no underscores in content.
+    holdings = [
+        f"**SYM{i:03d}** @ $12.34\n"
+        f"  ROLL ({70 + i % 30}% conf) - roll the short up and out for a credit\n"
+        f"  _healthy leap, short decaying nicely, take the next cycle_"
+        for i in range(120)
+    ]
+    digest = "📊 **PMCC Portfolio Analysis**\n" + "\n".join(holdings)
+    assert len(digest) > 4000                            # would truncate under old push()
+    ch = _BufferChannel()
+    ok = await ch.push_split(digest, max_chars=3900)
+    assert ok is True and len(ch.pushes) >= 2
+    assert "\n".join(ch.pushes) == digest                # boundaries are EXACTLY on \n
+    assert all(len(c) <= 3900 for c in ch.pushes)        # each chunk within limit
+    assert all(_entities_balanced(c) for c in ch.pushes)  # no entity split mid-chunk
+    orig_lines = set(digest.split("\n"))
+    for c in ch.pushes:                                  # whole-line chunking (no partial line)
+        assert all(ln in orig_lines for ln in c.split("\n"))
+    joined = "\n".join(ch.pushes)
+    for i in range(120):                                 # no holding dropped
+        assert f"SYM{i:03d}" in joined
+
+
 # --------------------------------------------------------------------------- #
 # digest formatting
 # --------------------------------------------------------------------------- #
