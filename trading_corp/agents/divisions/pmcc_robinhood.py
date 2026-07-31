@@ -5455,8 +5455,8 @@ def judgment_delta(prior, new, thresholds) -> dict:
         if kw in nw and kw not in pw:
             reasons.append(f"{kw} flag")
     pmd, nmd = prior.get("mid_delta"), new.get("mid_delta")
-    if pmd is not None and nmd is not None and abs(float(nmd) - float(pmd)) >= float(
-        thresholds.get("target_delta_shift", 0.05)
+    if pmd is not None and nmd is not None and abs(float(nmd) - float(pmd)) >= (
+        float(thresholds.get("target_delta_shift", 0.05)) - 1e-9   # float-boundary safe
     ):
         reasons.append(f"delta {float(pmd):.2f}->{float(nmd):.2f}")
     pdte, ndte = prior.get("target_dte"), new.get("target_dte")
@@ -5468,8 +5468,8 @@ def judgment_delta(prior, new, thresholds) -> dict:
     if pnet is not None and nnet is not None:
         move = abs(float(nnet) - float(pnet))
         pct = float(thresholds.get("net_move_pct", 0.20))
-        if move >= float(thresholds.get("net_move_dollars", 0.10)) or (
-            abs(float(pnet)) > 0 and move >= pct * abs(float(pnet))
+        if move >= (float(thresholds.get("net_move_dollars", 0.10)) - 1e-9) or (
+            abs(float(pnet)) > 0 and move >= pct * abs(float(pnet)) - 1e-9
         ):
             reasons.append(f"net {float(pnet):+.2f}->{float(nnet):+.2f}")
     return {"material": bool(reasons), "reasons": reasons}
