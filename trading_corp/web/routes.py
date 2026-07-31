@@ -957,22 +957,40 @@ def register(app: FastAPI) -> None:
         except Exception as e:
             log.warning("pmcc expert record write(%s) failed: %s", sym, e)
 
-        # Build the concrete trade recommendation (legs + costs + benefits).
+        # Build the concrete combo ONCE (preview=True: a Re-analyze render is NOT a
+        # dispatch attempt → no ABORTED/earnings exec-alert or audit; invariant
+        # 2026-07-30). Derive the recommendation, the live debit/credit/net consent
+        # estimate, AND the dispatch stash from the SAME order list, so the strike
+        # shown, the estimate shown, and the strike fired are guaranteed identical.
         # Failure here is non-fatal — we still want the textual analysis.
         rec = None
+        roll_extras = None
+        preview_token = None
         try:
-            # preview=True: a Re-analyze render is NOT a dispatch attempt, so this
-            # build emits no ABORTED / earnings-unverified exec-alert or audit row
-            # (invariant 2026-07-30 — alerts fire only on a genuine Approve→place).
-            rec = await deps.pmcc_agent.build_trade_recommendation(
+            orders = await deps.pmcc_agent.propose_orders_for_pair(
                 broker, sym, analysis, preview=True)
+            if orders:
+                rec = await deps.pmcc_agent.build_trade_recommendation(
+                    broker, sym, analysis, prebuilt_orders=orders)
+                import types as _types
+                from trading_corp.web.pmcc_roll_card import build_pmcc_roll_card_extras
+                from trading_corp.web import pmcc_preview
+                roll_extras = await build_pmcc_roll_card_extras(
+                    _types.SimpleNamespace(orders=orders, underlying=sym),
+                    broker, deps.pmcc_agent,
+                )
+                # Carry the exact previewed combo forward to the Approve dispatch.
+                preview_token = pmcc_preview.stash_preview(
+                    slug, sym, orders, action=analysis.action,
+                )
         except Exception as e:
-            log.warning("build_trade_recommendation(%s) raised: %s", sym, e)
+            log.warning("pmcc consent build(%s) raised: %s", sym, e)
 
         html = _render_pair_analysis(
             analysis, recommendation=rec, slug=slug, symbol=sym,
             status_banner=_pmcc_status_banner(slug, sym, state="fresh",
                                               age_h=0.0, source="expert"),
+            roll_extras=roll_extras, preview_token=preview_token,
         )
         with _LLM_LOCK:
             _pair_cache[key] = (html, time.time())
@@ -1027,7 +1045,7 @@ def register(app: FastAPI) -> None:
         return await division_pair_analysis(slug, symbol, request)
 
     @app.post("/division/{slug}/pair/{symbol}/execute", response_class=HTMLResponse)
-    async def execute_pair_orders(slug: str, symbol: str):
+    async def execute_pair_orders(slug: str, symbol: str, request: Request):
         """Approve & execute the LLM-recommended action for one pair.
 
         Translates the cached analysis into ProposedOrders, runs each through
@@ -1046,6 +1064,16 @@ def register(app: FastAPI) -> None:
         try:
             from trading_corp.comms.exec_alert import mark_user_origin
             mark_user_origin()
+        except Exception:
+            pass
+        # Consent token from the Approve form (present when the operator approved a
+        # Re-analyze render): the previewed combo's id + shape fingerprint.
+        preview_id = None
+        approved_fp = None
+        try:
+            _form = await request.form()
+            preview_id = _form.get("preview_id") or None
+            approved_fp = _form.get("fingerprint") or None
         except Exception:
             pass
         if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
@@ -1071,12 +1099,59 @@ def register(app: FastAPI) -> None:
         if analysis is None:
             return HTMLResponse(_exec_error_html(sym, "Could not regenerate analysis."))
 
-        # Build the concrete orders
-        try:
-            orders = await deps.pmcc_agent.propose_orders_for_pair(broker, sym, analysis)
-        except Exception as e:
-            log.warning("execute: propose_orders_for_pair(%s) raised: %s", sym, e)
-            return HTMLResponse(_exec_error_html(sym, str(e)[:160]))
+        # ── Consent: dispatch the EXACT combo the operator saw at Re-analyze ──
+        # The Approve form carries the previewed combo's id + shape fingerprint. A
+        # stash HIT fires those exact legs (no re-analysis → the strike shown is the
+        # strike fired; the dispatch reprice still re-quotes the price). A MISS
+        # (expiry / restart / an approval that didn't come from a render) rebuilds
+        # live and fingerprint-guards against firing a different contract.
+        from trading_corp.web import pmcc_preview
+        orders = None
+        stashed = pmcc_preview.load_preview(slug, sym, preview_id, approved_fp)
+        if stashed is not None:
+            orders = stashed
+            # A clicked Approve IS a genuine dispatch attempt — re-check the earnings
+            # gate here (the stash is up to 15 min old). Blocked → bail + ABORTED
+            # alert (fires because this IS a dispatch), position untouched.
+            try:
+                _earn = deps.pmcc_agent.earnings_card_state(sym)
+            except Exception:
+                _earn = None
+            if _earn is not None and _earn.get("kind") == "blocked":
+                try:
+                    from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+                    emit_exec_alert(ExecOutcome(
+                        tier="ABORTED", symbol=sym, strategy="robinhood_pmcc",
+                        reason=("earnings within buffer at approval — roll not placed; "
+                                "let the short expire, roll after the print"),
+                        position_changed=False,
+                    ))
+                except Exception:
+                    pass
+                deps.logger_agent.log_event(
+                    actor="board", kind="pmcc_consent_earnings_block",
+                    payload={"symbol": sym, "via": "web_button",
+                             "date": _earn.get("date")},
+                )
+                return HTMLResponse(_exec_abort_html(
+                    sym, analysis, {"reason": "earnings within buffer at approval"}))
+        if orders is None:
+            try:
+                orders = await deps.pmcc_agent.propose_orders_for_pair(broker, sym, analysis)
+            except Exception as e:
+                log.warning("execute: propose_orders_for_pair(%s) raised: %s", sym, e)
+                return HTMLResponse(_exec_error_html(sym, str(e)[:160]))
+            # If the operator approved a SPECIFIC combo (fingerprint present) but the
+            # live rebuild differs (chain moved, stale page), do NOT silently fire a
+            # different contract — bail + re-surface with the fresh estimate.
+            if approved_fp and orders and pmcc_preview.fingerprint(orders) != approved_fp:
+                deps.logger_agent.log_event(
+                    actor="board", kind="pmcc_consent_fingerprint_mismatch",
+                    payload={"symbol": sym, "via": "web_button",
+                             "approved_fp": approved_fp,
+                             "rebuilt_fp": pmcc_preview.fingerprint(orders)},
+                )
+                return HTMLResponse(_exec_consent_mismatch_html(sym))
 
         if not orders:
             # A roll/close action that yields NO orders is a B4 atomic abort
@@ -4373,6 +4448,7 @@ def _render_ira_pair_analysis(cc) -> str:  # noqa: ANN001 — CoveredCallPositio
 def _render_pair_analysis(
     analysis, recommendation=None, slug: str = "", symbol: str = "",
     show_execute_button: bool = True, status_banner: str = "",
+    roll_extras: dict | None = None, preview_token: tuple | None = None,
 ) -> str:
     """Render a PMCCAnalysis (+ optional TradeRecommendation) as dark-theme HTML.
 
@@ -4447,15 +4523,104 @@ def _render_pair_analysis(
             + '</div></div>'
         )
 
+    # Consent extras (2026-07-30) — earnings-imminent state + the live
+    # debit/credit/net estimate, sourced from the SAME orders the Approve will fire
+    # (roll_extras is built once from the previewed combo). Only present on the
+    # division-panel Re-analyze roll path; every other caller passes roll_extras=None.
+    earnings = (roll_extras or {}).get("earnings")
+    estimate = (roll_extras or {}).get("estimate")
+    estimate_reason = (roll_extras or {}).get("estimate_reason")
+    offer_roll = earnings is None or earnings.get("offer_roll", True)
+
+    earnings_html = ""
+    if earnings and earnings.get("kind") == "blocked":
+        _date = _html.escape(str(earnings.get("date") or "—"))
+        _ver = "verified" if earnings.get("verified") else "unverified"
+        _rec = _html.escape(str(earnings.get("recommendation") or ""))
+        _cav = earnings.get("caveat")
+        earnings_html = (
+            '<div class="mt-3 rounded-md border border-loss/40 bg-loss/10 p-3">'
+            '<div class="text-[10px] uppercase tracking-wider text-loss font-semibold mb-1">'
+            f'Earnings {_date} · {_ver}</div>'
+            f'<div class="text-xs text-mono">{_rec}</div>'
+            + (f'<div class="text-xs text-warn mt-1">⚠ {_html.escape(str(_cav))}</div>' if _cav else '')
+            + '<div class="text-[10px] text-muted mt-1">Roll not offered while earnings '
+              'is within the buffer — the current short is left to expire.</div>'
+            '</div>'
+        )
+    elif earnings and earnings.get("kind") == "unverified":
+        _flag = _html.escape(str(earnings.get("flag") or "earnings date unverified"))
+        earnings_html = (
+            '<div class="mt-3 rounded-md border border-warn/40 bg-warn/10 p-2">'
+            f'<div class="text-xs text-warn font-mono">⚠ {_flag}</div>'
+            '</div>'
+        )
+
+    estimate_html = ""
+    if estimate:
+        _ce = "" if estimate.get("close_strike") is None else f"{estimate['close_strike']:.2f}"
+        _oe = "" if estimate.get("open_strike") is None else f"{estimate['open_strike']:.2f}"
+        _dir = estimate.get("direction", "credit")
+        _dir_cls = "text-gain" if _dir == "credit" else "text-loss"
+        estimate_html = (
+            '<div class="mt-3 pt-3 border-t border-edge">'
+            '<div class="text-[10px] uppercase tracking-wider text-muted font-semibold mb-1.5">'
+            'Roll estimate <span class="normal-case tracking-normal text-muted/70">'
+            '— est., actual fill will differ slightly</span></div>'
+            '<div class="space-y-1 text-xs font-mono">'
+            f'<div class="flex justify-between gap-2"><span class="text-muted">'
+            f'Debit · buy to close {_ce} C {_html.escape(str(estimate.get("close_expiration") or ""))}</span>'
+            f'<span class="private-money">${estimate.get("debit", 0):.2f}</span></div>'
+            f'<div class="flex justify-between gap-2"><span class="text-muted">'
+            f'Credit · sell to open {_oe} C {_html.escape(str(estimate.get("open_expiration") or ""))}</span>'
+            f'<span class="private-money">${estimate.get("credit", 0):.2f}</span></div>'
+            f'<div class="flex justify-between gap-2 font-semibold"><span class="text-muted">Net {_dir}</span>'
+            f'<span class="private-money {_dir_cls}">${estimate.get("net_abs", 0):.2f}</span></div>'
+            '</div></div>'
+        )
+    elif estimate_reason:
+        estimate_html = (
+            '<div class="mt-3 pt-3 border-t border-edge">'
+            f'<div class="text-xs text-muted font-mono">{_html.escape(str(estimate_reason))}</div>'
+            '</div>'
+        )
+
+    # Hidden consent token — carries the previewed combo's id + shape fingerprint
+    # into the Approve POST so dispatch fires the EXACT combo shown (not a fresh
+    # re-analysis). Present only on the Re-analyze roll path.
+    hidden_consent = ""
+    if preview_token:
+        _pid, _fp = preview_token
+        hidden_consent = (
+            f'<input type="hidden" name="preview_id" value="{_html.escape(str(_pid))}">'
+            f'<input type="hidden" name="fingerprint" value="{_html.escape(str(_fp))}">'
+        )
+
+    _defer_form = (
+        '<form'
+        f' hx-post="/division/{slug}/pair/{symbol}/defer"'
+        ' hx-target="#pair-analysis"'
+        ' hx-swap="innerHTML">'
+        '<button type="submit"'
+        ' class="w-full px-3 py-1.5 rounded-md font-mono text-xs'
+        '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
+        '        transition-colors border border-edge">'
+        '⏸ Defer 24 hours · let theta work / re-evaluate later'
+        '</button>'
+        '</form>'
+    )
+
     # Approve & Execute (primary) + Defer 24h (secondary) buttons.
     # Only render when the action is something we can actually translate
     # into orders. For 'hold' / 'watch' there's nothing to approve/defer.
     # Callers that have no automation pipeline (e.g. IRA dashboard which
     # is read-only — user executes manually in Robinhood) pass
     # show_execute_button=False to hide the buttons.
+    # Earnings-imminent (offer_roll False): Approve is HIDDEN — we recommend letting
+    # the short expire, not rolling — so the operator can only Defer.
     button_html = ""
     actionable = action_raw not in ("", "hold", "watch")
-    if actionable and slug and symbol and show_execute_button:
+    if actionable and slug and symbol and show_execute_button and offer_roll:
         button_html = (
             '<div class="mt-4 pt-3 border-t border-edge space-y-2">'
             # Approve & Execute (primary)
@@ -4466,6 +4631,7 @@ def _render_pair_analysis(
             ' hx-indicator="#approve-spinner"'
             ' hx-confirm="Approve and execute this trade now? '
             f'(Action: {action_str} on {symbol})">'
+            f'{hidden_consent}'
             '<button type="submit"'
             ' class="w-full px-3 py-2 rounded-md font-mono text-sm font-semibold'
             '        bg-accent text-white hover:bg-accent/85 transition-colors'
@@ -4474,21 +4640,21 @@ def _render_pair_analysis(
             f'<span>Approve &amp; Execute · {action_str}</span>'
             '</button>'
             '</form>'
-            # Defer 24h (secondary)
-            '<form'
-            f' hx-post="/division/{slug}/pair/{symbol}/defer"'
-            ' hx-target="#pair-analysis"'
-            ' hx-swap="innerHTML">'
-            '<button type="submit"'
-            ' class="w-full px-3 py-1.5 rounded-md font-mono text-xs'
-            '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
-            '        transition-colors border border-edge">'
-            '⏸ Defer 24 hours · let theta work / re-evaluate later'
-            '</button>'
-            '</form>'
+            + _defer_form +
             '<div class="text-[10px] text-muted/60 font-mono text-center pt-1">'
             'Risk gates apply on Approve. Defer suppresses re-analysis for 24h.'
             '</div>'
+            '</div>'
+        )
+    elif actionable and slug and symbol and show_execute_button and not offer_roll:
+        # Earnings within buffer — Approve suppressed; Defer only.
+        button_html = (
+            '<div class="mt-4 pt-3 border-t border-edge space-y-2">'
+            '<div class="w-full px-3 py-2 rounded-md font-mono text-xs text-center'
+            '            bg-edge text-muted border border-edge">'
+            'Approve disabled — earnings within buffer; let the short expire, roll after the print'
+            '</div>'
+            + _defer_form +
             '</div>'
         )
 
@@ -4505,6 +4671,8 @@ def _render_pair_analysis(
         f'<div class="text-xs text-muted leading-relaxed">{rationale}</div>'
         f'{warnings_html}'
         f'{trade_html}'
+        f'{estimate_html}'
+        f'{earnings_html}'
         f'{params_html}'
         f'{button_html}'
         '</div>'
@@ -4644,10 +4812,27 @@ def _render_pmcc_record_panel(deps, slug: str, symbol: str) -> str:
         slug, symbol, state=state,
         age_h=_pmcc_status.age_hours(rec, now), source=rec.get("source"),
     )
-    return _render_pair_analysis(
+    # Consent rule (2026-07-30): a STORED verdict has no live strike/debit/credit/net,
+    # so Approve is NOT offered here — the operator must Re-analyze (button in the
+    # banner) to build a fresh combo + live estimate and approve THAT exact combo.
+    # This guarantees every visible Approve carries an estimate, and the estimate
+    # shown is the combo fired. show_execute_button=False hides Approve on this panel.
+    panel = _render_pair_analysis(
         _pmcc_analysis_from_record(rec), recommendation=None,
         slug=slug, symbol=symbol, status_banner=banner,
+        show_execute_button=False,
     )
+    action = (rec.get("status") or "").lower()
+    if action not in ("", "hold", "watch"):
+        panel += (
+            '<div class="mt-3 rounded-md border border-edge bg-pane-2/40 p-3">'
+            '<div class="text-[11px] font-mono text-muted leading-relaxed">'
+            'Approve isn\'t shown on a stored verdict — it needs a live strike, '
+            'debit, credit &amp; net first. <span class="text-mono">Re-analyze</span> '
+            '(above) to build the live estimate, then approve that exact combo.'
+            '</div></div>'
+        )
+    return panel
 
 
 def _render_recommendation(rec) -> str:
@@ -5029,6 +5214,24 @@ def _exec_no_action_html(symbol: str, analysis) -> str:
         f'ℹ️  {symbol} · no orders to place</div>'
         f'<div class="text-xs text-muted">Action <code>{action_str}</code> '
         'does not require any orders. Position remains as-is.</div>'
+        '</div>'
+    )
+
+
+def _exec_consent_mismatch_html(symbol: str) -> str:
+    """Render a CONSENT MISMATCH — the operator approved a specific combo (from a
+    Re-analyze render) but the stash was gone (expiry/restart) and the live rebuild
+    picked DIFFERENT contracts (the chain moved), so nothing was placed. The panel
+    tells them to Re-analyze and approve the fresh combo (2026-07-30 consent rule:
+    never fire a contract other than the one shown)."""
+    return (
+        '<div class="space-y-2 p-3 rounded-md bg-warn/10 border border-warn/40">'
+        '<div class="text-warn font-mono font-semibold text-sm">'
+        f'⚠️  {symbol} · not placed — the combo changed since you looked</div>'
+        '<div class="text-xs text-muted">The live option chain moved after this card '
+        'was rendered, so approving now would fire a different contract than the one '
+        'you saw. Nothing was sent. <span class="text-mono">Re-analyze</span> to see '
+        'the current strike / debit / credit / net, then approve that.</div>'
         '</div>'
     )
 

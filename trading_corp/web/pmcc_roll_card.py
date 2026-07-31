@@ -74,10 +74,19 @@ async def build_pmcc_roll_card_extras(
 
     estimate: dict | None = None
     estimate_reason: str | None = None
+    # The debit/credit/net estimate is only meaningful for a 2-leg roll (one
+    # buy-to-close + one sell-to-open). A 4-leg roll_leap or a single-leg close would
+    # make `estimate_roll_from_quotes` pair the wrong legs, so guard on the shape —
+    # this lets the division panel call this helper for ANY action without showing a
+    # nonsense estimate (2026-07-30). The /approvals/pmcc-combos combos are always
+    # 2-leg rolls, so this is a no-op for the original caller.
+    n_buy = sum(1 for o in orders if getattr(o, "side", None) == "buy")
+    n_sell = sum(1 for o in orders if getattr(o, "side", None) == "sell")
+    is_two_leg_roll = len(orders) == 2 and n_buy == 1 and n_sell == 1
     # No estimate for a BLOCKED card (Approve is hidden — we're recommending "let it
     # expire", not a roll). Otherwise compute the live estimate from the SAME source
     # dispatch uses.
-    if earnings.get("offer_roll", True) and broker is not None and orders:
+    if is_two_leg_roll and earnings.get("offer_roll", True) and broker is not None and orders:
         try:
             from trading_corp.agents.strategies._pmcc_combo import (
                 estimate_roll_from_quotes,

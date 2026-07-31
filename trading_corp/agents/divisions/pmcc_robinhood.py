@@ -1460,6 +1460,7 @@ Action reference:
         analysis: PMCCAnalysis,
         *,
         preview: bool = False,
+        prebuilt_orders: list[ProposedOrder] | None = None,
     ) -> TradeRecommendation | None:
         """Build a concrete TradeRecommendation (dollar-priced legs + benefits).
 
@@ -1471,6 +1472,13 @@ Action reference:
         attempt, so the underlying `propose_orders_for_pair` build suppresses its
         abort/earnings exec-alerts + audit rows. The returned recommendation
         (legs, strikes, prices) is identical to the non-preview build.
+
+        `prebuilt_orders` (2026-07-30): pass an already-built order list to derive
+        the recommendation from WITHOUT re-proposing. The web Re-analyze handler
+        builds the combo once, then feeds the SAME list here (display), to the
+        consent estimate, and to the dispatch stash — so the strike shown, the
+        estimate shown, and the strike fired are guaranteed identical (one build,
+        no re-quote drift between them).
         """
         action = (analysis.action or "").lower()
         if action in ("", "hold", "watch"):
@@ -1478,8 +1486,11 @@ Action reference:
 
         # Reuse the existing order-proposal logic. These ProposedOrders carry
         # mark_per_share / bid / ask / delta / dte in extra (we just made them).
-        orders = await self.propose_orders_for_pair(
-            broker, symbol, analysis, preview=preview)
+        orders = (
+            prebuilt_orders if prebuilt_orders is not None
+            else await self.propose_orders_for_pair(
+                broker, symbol, analysis, preview=preview)
+        )
         if not orders:
             return None
 
