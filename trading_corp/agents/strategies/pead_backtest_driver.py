@@ -28,6 +28,7 @@ from trading_corp.agents.strategies.pead_signal import (
     ScreenInputs,
     ScreenParams,
     SueParams,
+    confirmation_verdict,
     passes_screen,
     select_candidates,
     standardized_ue,
@@ -62,6 +63,7 @@ def build_signals(
     screen_params: ScreenParams = ScreenParams(),
     window_start: date | None = None,
     window_end: date | None = None,
+    confirmation_gate: bool = False,
 ) -> list[EventSignal]:
     """Build the ranked list of `EventSignal`s to backtest.
 
@@ -105,23 +107,31 @@ def build_signals(
                 days_to_next_earnings=_trading_days_between(bars, d, next_report),
             )
             wave_sue[d][sym] = sue
-            wave_meta[d][sym] = (screen, next_report)
+            wave_meta[d][sym] = (screen, next_report, r.report_time)   # carry BMO/AMC slot from QuarterlyEPS
 
     signals: list[EventSignal] = []
     for d in sorted(wave_sue):
         candidates: list[PeadCandidate] = []
         for sym, sue in wave_sue[d].items():
-            screen, _ = wave_meta[d][sym]
+            screen, _, _ = wave_meta[d][sym]
             ok, reason = passes_screen(screen, screen_params)
             candidates.append(PeadCandidate(sym, sue, ok, reason))
         for c in select_candidates(candidates, sue_params):
-            _, next_report = wave_meta[d][c.symbol]
+            _, next_report, report_time = wave_meta[d][c.symbol]
+            if confirmation_gate:
+                # EXCLUDE non-confirming + un-slotted names — IDENTICAL rule as the
+                # live scan (shared confirmation_verdict). No bar-inference of slot.
+                cbars = bars_by_symbol[c.symbol]
+                if confirmation_verdict(report_time, [b.close for b in cbars],
+                                        _index_on_or_after(cbars, d)) != "pass":
+                    continue
             signals.append(EventSignal(
                 symbol=c.symbol,
                 announcement_date=d,
                 sue=float(c.sue),  # type: ignore[arg-type]
                 bars=bars_by_symbol[c.symbol],
                 next_earnings_date=next_report,
+                report_time=report_time,   # BMO/AMC slot carried for the confirmation-gate backtest
             ))
     return signals
 

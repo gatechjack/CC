@@ -14,11 +14,12 @@ a buy fills higher, a sell fills lower. Returns are therefore net of friction.
 FILL CONVENTIONS (conservative, documented so the methodology is auditable):
   - Entry: at the OPEN of the bar `entry_delay_days` trading days after the
     announcement bar (Day 0 skipped), plus buy-side friction.
-  - Intrabar stop / drift-dead (triggered by a bar's low): fill at the trigger
-    level, BUT if the bar gapped through it (open already below), fill at the
-    open — models gap-through slippage. Then sell-side friction.
-  - Date-based exits (next-earnings guard, time): fill at that bar's close,
-    plus sell-side friction.
+  - Intrabar STOP (triggered by a bar's low): fill at the stop level, BUT if the
+    bar gapped through it (open already below), fill at the open — models
+    gap-through slippage. Then sell-side friction.
+  - CLOSE-based exits (drift-dead, next-earnings guard, time): fill at that bar's
+    close, plus sell-side friction. (Drift is a daily-CLOSE rule — parity with the
+    live engine — so it never fires on an intrabar low.)
 
 EXIT PRECEDENCE — evaluated each bar top-down, FIRST MATCH WINS:
   (1) HARD STOP   price ≤ max(entry − atr_mult·ATR14, post-earnings swing low)
@@ -40,6 +41,8 @@ import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
+
+from trading_corp.agents.strategies.pead_signal import reaction_index
 
 
 # ---------------------------------------------------------------------------
@@ -70,12 +73,15 @@ class EventSignal:
     sue: float
     bars: Sequence[Bar]
     next_earnings_date: date | None = None
+    report_time: str | None = None   # 'BeforeMarket' | 'AfterMarket' | None (BMO/AMC slot; None = unknown)
 
 
 @dataclass(frozen=True)
 class BacktestParams:
     # entry
     entry_delay_days: int = 1            # trading days after announcement (skip Day 0); 1-2
+    confirmation_gate: bool = False      # post-reaction confirmation gate; DEFAULT OFF. When ON,
+    #                                      entry is slot-aware (a+1 BMO / a+2 AMC) — see simulate_trade.
     # exits
     atr_period: int = 14
     hard_stop_atr_mult: float = 2.5
@@ -165,7 +171,16 @@ def simulate_trade(signal: EventSignal, p: BacktestParams) -> TradeResult | None
     a = _index_on_or_after(bars, signal.announcement_date)
     if a is None or a < 1:
         return None  # need a pre-earnings close
-    e = a + p.entry_delay_days
+    if p.confirmation_gate:
+        # gate ON: enter at the OPEN after the post-reaction session CLOSES —
+        # a+1 for BeforeMarket, a+2 for AfterMarket. Matches the live entry and
+        # avoids look-ahead. Un-slotted names are excluded upstream (build_signals).
+        ri = reaction_index(signal.report_time, a)
+        if ri is None:
+            return None  # no slot -> not tradeable (defensive; excluded upstream)
+        e = ri + 1
+    else:
+        e = a + p.entry_delay_days
     if e >= len(bars):
         return None  # no entry bar available
     atr = compute_atr(bars, e, p.atr_period)
@@ -176,7 +191,12 @@ def simulate_trade(signal: EventSignal, p: BacktestParams) -> TradeResult | None
     entry_price = _friction(entry_raw, "buy", p)
     entry_date = bars[e].trade_date
 
-    pre_earnings_close = bars[a - 1].close
+    # DRIFT baseline: slot-aware bar0 (AMC=a, BMO=a-1) via the SAME reaction_index the
+    # gate uses — identical to the live _build_primitives fix, so live and backtest
+    # measure the drift gap from the same pre-earnings close. Unknown slot -> a-1.
+    _bar1 = reaction_index(signal.report_time, a)
+    _bar0 = (_bar1 - 1) if _bar1 is not None else (a - 1)
+    pre_earnings_close = bars[_bar0].close
     earnings_gap = entry_raw - pre_earnings_close            # the reaction we entered after
     # post-earnings swing low = lowest low from announcement through entry
     swing_low = min(bars[i].low for i in range(a, e + 1))
@@ -226,10 +246,12 @@ def simulate_trade(signal: EventSignal, p: BacktestParams) -> TradeResult | None
         if bar.low <= stop_level:
             fill = bar.open if bar.open <= stop_level else stop_level
             return _record_exit(fill, i, "hard_stop")
-        # (2) DRIFT-DEAD
-        if drift_dead_level is not None and bar.low <= drift_dead_level:
-            fill = bar.open if bar.open <= drift_dead_level else drift_dead_level
-            return _record_exit(fill, i, "drift_dead")
+        # (2) DRIFT-DEAD — CLOSE-only, daily-bar granularity (parity with the live
+        # engine: drift evaluates a completed daily bar's CLOSE, never an intrabar
+        # low, and never on the entry day — the loop already starts at e+1). The
+        # STOP above stays low-triggered (the intraday risk layer).
+        if drift_dead_level is not None and bar.close <= drift_dead_level:
+            return _record_exit(bar.close, i, "drift_dead")
         # (3) NEXT-EARNINGS GUARD
         if next_earn_idx is not None and (next_earn_idx - i) <= p.next_earnings_guard_days:
             return _record_exit(bar.close, i, "next_earnings_guard")

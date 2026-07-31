@@ -116,18 +116,26 @@ def compute_pressures(
     last: float,
     held_trading_days: int,
     days_to_next_earnings: int | None,
+    drift_price: float | None = None,
 ) -> Pressures:
-    """The locked pressure computation. `last` = live price; `held_trading_days`
-    and `days_to_next_earnings` are supplied by the caller (they need 'now' / a
-    trading-day calendar — keep this function pure)."""
-    # STOP — distance closed from entry toward the stop level.
+    """The locked pressure computation. `last` = live INTRADAY price (drives STOP);
+    `held_trading_days` and `days_to_next_earnings` are supplied by the caller (they
+    need 'now' / a trading-day calendar — keep this function pure).
+
+    `drift_price`, when provided, is the price DRIFT is measured against instead of
+    `last`: the live exit engine passes the latest COMPLETED daily-bar close, so
+    DRIFT is a daily-close rule while STOP stays intraday. Backward-compatible —
+    omit it and DRIFT falls back to `last` (the dashboard's display is unchanged)."""
+    # STOP — distance closed from entry toward the stop level (always intraday `last`).
     sl = stop_level(p)
     denom = p.entry_price - sl
     stop = _clamp01((p.entry_price - last) / denom) if denom > 0 else 0.0
 
-    # DRIFT — give-back of the earnings-day gap, measured from the GAP TOP.
+    # DRIFT — give-back of the earnings-day gap, from the GAP TOP. Measured against
+    # `drift_price` (the completed daily close, live engine) when given, else `last`.
+    drift_ref = last if drift_price is None else drift_price
     gap = earnings_gap_usd(p)
-    drift = _clamp01(((p.earnings_gap_top - last) / gap) / DRIFT_GIVEBACK) if gap > 0 else 0.0
+    drift = _clamp01(((p.earnings_gap_top - drift_ref) / gap) / DRIFT_GIVEBACK) if gap > 0 else 0.0
 
     # GUARD — proximity to (next earnings − GUARD_LEAD_DAYS).
     if days_to_next_earnings is None:

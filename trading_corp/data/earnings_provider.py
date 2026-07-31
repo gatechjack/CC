@@ -33,7 +33,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from threading import Lock
 from typing import Optional
@@ -64,12 +64,16 @@ class QuarterlyEPS:
     actual_eps     — reported EPS (float)
     estimate_eps   — consensus estimate at time of report; None if unavailable
     surprise_pct   — (actual - estimate) / |estimate| * 100; None if no estimate
+    report_time    — 'BeforeMarket' | 'AfterMarket' | None (BMO/AMC reporting slot,
+                     sourced from /api/calendar/earnings — NOT fundamentals — and
+                     joined on report_date). None = unknown; NEVER defaulted/guessed.
     """
     fiscal_period: str
     report_date: date
     actual_eps: float
     estimate_eps: float | None
     surprise_pct: float | None
+    report_time: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +86,8 @@ _FUND_CACHE: dict[str, tuple[dict, float]] = {}
 _EPS_CACHE: dict[str, tuple[list[QuarterlyEPS] | None, float]] = {}
 # Announcement calendar cache: (on_date, lookback_days) -> (result, timestamp)
 _ANN_CACHE: dict[tuple[date, int], tuple[list[str], float]] = {}
+# Calendar BMO/AMC slot cache: symbol.upper() -> ({report_date_str: 'BeforeMarket'|'AfterMarket'|None}, ts)
+_SLOT_CACHE: dict[str, tuple[dict, float]] = {}
 _CACHE_LOCK = Lock()
 
 
@@ -119,6 +125,22 @@ def _eps_cache_set(symbol: str, val: list[QuarterlyEPS] | None) -> None:
         _EPS_CACHE[symbol.upper()] = (val, time.time())
 
 
+def _slot_cache_get(symbol: str) -> tuple[bool, dict]:
+    with _CACHE_LOCK:
+        entry = _SLOT_CACHE.get(symbol.upper())
+    if entry is None:
+        return False, {}
+    val, ts = entry
+    if time.time() - ts < _CACHE_TTL_SEC:
+        return True, val
+    return False, {}
+
+
+def _slot_cache_set(symbol: str, val: dict) -> None:
+    with _CACHE_LOCK:
+        _SLOT_CACHE[symbol.upper()] = (val, time.time())
+
+
 def _ann_cache_get(key: tuple[date, int]) -> tuple[bool, list[str]]:
     with _CACHE_LOCK:
         entry = _ANN_CACHE.get(key)
@@ -141,11 +163,21 @@ def reset_earnings_provider_cache() -> None:
         _FUND_CACHE.clear()
         _EPS_CACHE.clear()
         _ANN_CACHE.clear()
+        _SLOT_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
 # Low-level HTTP helpers
 # ---------------------------------------------------------------------------
+
+class EodhdApiError(RuntimeError):
+    """EODHD returned a non-200 HTTP status (e.g. 402 Payment Required = quota
+    exhausted). A HARD API failure, NOT a data gap: RAISED so a quota/API failure
+    stops the scan loudly instead of returning None and silently falling back to
+    yfinance or handing null into the SUE calculation. Missing DATA (HTTP 200 with
+    an empty/parseable-but-empty body) still returns None -> the accepted yfinance
+    fallback; only a non-200 RESPONSE raises."""
+
 
 def _eodhd_get_fundamentals(symbol: str, api_key: str) -> dict | None:
     """GET EODHD /api/fundamentals/{symbol}.{exchange}  Returns parsed JSON or None."""
@@ -161,14 +193,59 @@ def _eodhd_get_fundamentals(symbol: str, api_key: str) -> dict | None:
             return None
         return data
     except HTTPError as e:
-        log.warning("EODHD HTTP %s for %s: %s", e.code, ticker, e)
-        return None
+        # Non-200 (e.g. 402 quota exhausted) is a HARD FAILURE, not a data gap:
+        # RAISE so the scan stops loudly instead of returning None -> yfinance
+        # fallback / null into SUE. Missing DATA (HTTP 200 with an empty body) is
+        # handled above and still returns None (the accepted EODHD->yfinance path).
+        log.error("EODHD HTTP %s for %s: %s -- RAISING (quota/API failure, not a data gap)",
+                  e.code, ticker, e)
+        raise EodhdApiError(f"EODHD fundamentals HTTP {e.code} for {ticker}: {e}") from e
     except (URLError, OSError) as e:
         log.warning("EODHD network error for %s: %s", ticker, e)
         return None
     except Exception as e:
         log.warning("EODHD unexpected error for %s: %s", ticker, e)
         return None
+
+
+def _eodhd_get_calendar_slots(symbol: str, api_key: str, dfrom: str, dto: str) -> dict:
+    """GET EODHD /api/calendar/earnings for ONE symbol over [dfrom, dto].
+
+    Returns {report_date_str: before_after_market}, value 'BeforeMarket' |
+    'AfterMarket' | None. ADDITIONAL lookup for the BMO/AMC slot ONLY — the
+    EPS/fundamentals path is untouched. {} on any failure. NULL
+    before_after_market (~19% of rows, skewed foreign/OTC) is carried through as
+    None (unknown) — never filled or guessed.
+    """
+    ticker = f"{symbol.upper()}.{_EODHD_EXCHANGE_SUFFIX}"
+    url = (f"{_EODHD_BASE}/calendar/earnings?api_token={api_key}&fmt=json"
+           f"&symbols={ticker}&from={dfrom}&to={dto}")
+    req = Request(url, headers={"User-Agent": "trading-corp/1.0"})
+    try:
+        with urlopen(req, timeout=_HTTP_TIMEOUT_SEC) as resp:
+            data = json.loads(resp.read())
+    except HTTPError as e:
+        log.warning("EODHD calendar HTTP %s for %s", e.code, ticker)
+        return {}
+    except (URLError, OSError) as e:
+        log.warning("EODHD calendar network error for %s: %s", ticker, e)
+        return {}
+    except Exception as e:
+        log.warning("EODHD calendar unexpected error for %s: %s", ticker, e)
+        return {}
+    rows = data.get("earnings", []) if isinstance(data, dict) else []
+    out: dict = {}
+    tgt = symbol.upper()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or "").upper()
+        if code.split(".")[0] != tgt:      # calendar 'code' carries the .US suffix
+            continue
+        rd = str(row.get("report_date") or "")[:10]
+        if rd:
+            out[rd] = row.get("before_after_market")  # 'BeforeMarket'|'AfterMarket'|None
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +524,35 @@ class EarningsProvider:
             return cached
 
         result = self._fetch_quarterly_eps(sym)
+        result = self._enrich_report_time(sym, result)  # ADDITIONAL calendar lookup for BMO/AMC slot (EPS path unchanged)
         _eps_cache_set(sym, result)
         return result
+
+    def _enrich_report_time(
+        self, sym: str, rows: "list[QuarterlyEPS] | None",
+    ) -> "list[QuarterlyEPS] | None":
+        """ADDITIONAL calendar lookup: set QuarterlyEPS.report_time (BMO/AMC) by
+        joining /api/calendar/earnings on report_date (both sides bare ticker +
+        YYYY-MM-DD). Cached per symbol (24h). Does NOT touch EPS values or the
+        fundamentals path; on any gap the slot stays None (unknown). Called from
+        get_quarterly_eps, which the strategy runs via asyncio.to_thread — so
+        this HTTP never blocks the event loop.
+        """
+        if not rows or not self._api_key:
+            return rows
+        hit, slots = _slot_cache_get(sym)
+        if not hit:
+            dfrom = min(r.report_date for r in rows).isoformat()
+            dto = max(r.report_date for r in rows).isoformat()
+            slots = _eodhd_get_calendar_slots(sym, self._api_key, dfrom, dto)
+            _slot_cache_set(sym, slots)
+        if not slots:
+            return rows
+        out: list[QuarterlyEPS] = []
+        for r in rows:
+            slot = slots.get(r.report_date.isoformat())  # None if absent OR NULL in calendar
+            out.append(replace(r, report_time=slot) if slot is not None else r)
+        return out
 
     def get_company_facts(self, symbol: str) -> dict | None:
         """Return {"market_cap": float|None, "sector": str|None} for `symbol`.
