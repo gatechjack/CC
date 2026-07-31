@@ -1,0 +1,5 @@
+coin,b_trades,c_trades,overlap_pct,collision_pct,daily_R_corr
+SOL,205,175,2.4,3.4,0.002
+BTC,216,154,5.2,5.6,0.018
+ETH,237,151,6.0,4.2,0.007
+XRP,186,149,5.0,3.8,-0.028
