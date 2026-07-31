@@ -262,8 +262,12 @@ class TelegramCommands:
         actionable = action_raw not in ("", "hold", "watch")
         if actionable:
             try:
+                # preview=True: rendering the /pair card is NOT a dispatch attempt,
+                # so this build emits no ABORTED / earnings-unverified exec-alert or
+                # audit row (invariant 2026-07-30). The actual Approve callback
+                # (_handle_pair_approve) rebuilds with preview=False before placing.
                 rec = await self.deps.pmcc_agent.build_trade_recommendation(
-                    broker, sym, analysis,
+                    broker, sym, analysis, preview=True,
                 )
             except Exception as e:
                 log.warning("/pair %s: build_trade_recommendation failed: %s", sym, e)

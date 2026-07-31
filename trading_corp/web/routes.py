@@ -961,7 +961,11 @@ def register(app: FastAPI) -> None:
         # Failure here is non-fatal — we still want the textual analysis.
         rec = None
         try:
-            rec = await deps.pmcc_agent.build_trade_recommendation(broker, sym, analysis)
+            # preview=True: a Re-analyze render is NOT a dispatch attempt, so this
+            # build emits no ABORTED / earnings-unverified exec-alert or audit row
+            # (invariant 2026-07-30 — alerts fire only on a genuine Approve→place).
+            rec = await deps.pmcc_agent.build_trade_recommendation(
+                broker, sym, analysis, preview=True)
         except Exception as e:
             log.warning("build_trade_recommendation(%s) raised: %s", sym, e)
 

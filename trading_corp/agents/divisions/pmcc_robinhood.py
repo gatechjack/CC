@@ -1145,6 +1145,8 @@ Action reference:
         broker: Broker,
         symbol: str,
         analysis: PMCCAnalysis,
+        *,
+        preview: bool = False,
     ) -> list[ProposedOrder]:
         """Translate an LLM action recommendation into concrete ProposedOrders.
 
@@ -1155,6 +1157,13 @@ Action reference:
         Reuses the existing _propose_* helpers so the rationale + sizing logic
         stays consistent with the scheduled scan path. Actions that need no
         order ('hold', 'watch') return [].
+
+        `preview=True` (2026-07-30): this call is a card render / Re-analyze /
+        estimate build, NOT a dispatch attempt. It still resolves the concrete
+        target strikes + prices (so the consent card can show them), but every
+        abort gate suppresses its `pmcc_roll_aborted` audit row and its exec-alert
+        (see `_audit_roll_abort(preview=...)`) and the earnings-unverified alert is
+        withheld. Exec-alerts fire ONLY on a genuine dispatch attempt.
         """
         # Detect position FIRST so the 0-DTE wall-clock gate can override
         # action="hold"/"watch" before the early-return below (Board
@@ -1203,7 +1212,8 @@ Action reference:
 
         # ── Roll short (with or without "early" trigger) ──
         if action in ("roll_short", "roll_short_early"):
-            return await self._propose_roll_short(symbol, pos, broker, analysis=analysis)
+            return await self._propose_roll_short(
+                symbol, pos, broker, analysis=analysis, preview=preview)
 
         # ── Open a new short on an uncovered LEAP ──
         if action == "open_short":
@@ -1244,6 +1254,7 @@ Action reference:
                 self._audit_roll_abort(
                     reason="earnings_window", symbol=symbol,
                     extra={"gates": dict(rl_gates), "earnings_reason": rl_ereason},
+                    preview=preview,
                 )
                 return []
             # B4 (atomic roll_leap): resolve BOTH new legs BEFORE proposing any
@@ -1253,6 +1264,7 @@ Action reference:
                 self._audit_roll_abort(
                     reason="sparse_chain_no_leap", symbol=symbol,
                     missing_leg="new_leap", diag=self._last_leap_diag,
+                    preview=preview,
                 )
                 return []
             new_weekly = await self._find_best_weekly(
@@ -1267,6 +1279,7 @@ Action reference:
                     reason="sparse_chain_no_weekly_for_new_leap",
                     symbol=symbol, missing_leg="new_short_on_new_leap",
                     diag=self._last_weekly_diag,
+                    preview=preview,
                 )
                 return []
             rl_gates["selection"] = "ok"
@@ -1282,6 +1295,7 @@ Action reference:
                            "mark_net": round(rl_mark_net, 4), "close_mark": round(rl_close_mark, 4),
                            "open_bid": rl_open_bid, "fees_included": False,
                            "fee_gap": "pre-fee: spread only"},
+                    preview=preview,
                 )
                 return []
             rl_gates["credit"] = "clear"
@@ -1362,11 +1376,13 @@ Action reference:
                 ),
                 pair_id=pair_id,
             ))
-            self._audit_division("pmcc_roll_gates", {
-                "symbol": symbol, "gates": dict(rl_gates),
-                "conservative_net": round(rl_cons_net, 4),
-                "mark_net": round(rl_mark_net, 4), "override_kind": rl_override,
-            })
+            if not preview:
+                # preview: don't write a shipped-roll audit for a mere card render.
+                self._audit_division("pmcc_roll_gates", {
+                    "symbol": symbol, "gates": dict(rl_gates),
+                    "conservative_net": round(rl_cons_net, 4),
+                    "mark_net": round(rl_mark_net, 4), "override_kind": rl_override,
+                })
             # Phase A: roll_leap legs are ADVISORY — the operator executes the LEAP
             # roll MANUALLY; the agent never places them. (Fresh local `orders`
             # holds only the 4 roll_leap legs here.) The fail-closed dispatch guard
@@ -1442,12 +1458,19 @@ Action reference:
         broker: Broker,
         symbol: str,
         analysis: PMCCAnalysis,
+        *,
+        preview: bool = False,
     ) -> TradeRecommendation | None:
         """Build a concrete TradeRecommendation (dollar-priced legs + benefits).
 
         Used by the dashboard's expert-analysis panel to show specifically what
         will happen if the user clicks Approve & Execute. Returns None for
         actions that don't require any orders (hold/watch).
+
+        `preview=True` (2026-07-30): the panel/Re-analyze render is NOT a dispatch
+        attempt, so the underlying `propose_orders_for_pair` build suppresses its
+        abort/earnings exec-alerts + audit rows. The returned recommendation
+        (legs, strikes, prices) is identical to the non-preview build.
         """
         action = (analysis.action or "").lower()
         if action in ("", "hold", "watch"):
@@ -1455,7 +1478,8 @@ Action reference:
 
         # Reuse the existing order-proposal logic. These ProposedOrders carry
         # mark_per_share / bid / ask / delta / dte in extra (we just made them).
-        orders = await self.propose_orders_for_pair(broker, symbol, analysis)
+        orders = await self.propose_orders_for_pair(
+            broker, symbol, analysis, preview=preview)
         if not orders:
             return None
 
@@ -3525,6 +3549,8 @@ Action reference:
         leg: PMCCPosition,
         broker: Broker,
         analysis: PMCCAnalysis | None = None,
+        *,
+        preview: bool = False,
     ) -> list[ProposedOrder]:
         """Roll short call: buy-to-close existing + sell-to-open new weekly.
 
@@ -3533,6 +3559,12 @@ Action reference:
         `pmcc_roll_aborted` payload carries a `gates` map of every gate evaluated
         up to the abort. B9/B2 are overridable via the LLM override contract
         (earnings_override / net_debit_justified); B7 is hard-enforced.
+
+        `preview=True` (2026-07-30): render/estimate build, not a dispatch attempt.
+        Selection still runs (so the card shows the real target strike + prices),
+        but every abort audit/alert and the earnings-unverified alert are withheld
+        — exec-alerts fire only on a genuine dispatch. The proposed legs are
+        identical to the non-preview build.
         """
         if not leg.short_leg_expiry or leg.short_leg_strike is None:
             return []
@@ -3561,6 +3593,7 @@ Action reference:
             self._audit_roll_abort(
                 reason="earnings_window", symbol=symbol,
                 extra={"gates": dict(gates), "earnings_reason": earnings_reason},
+                preview=preview,
             )
             return []
 
@@ -3571,7 +3604,9 @@ Action reference:
         # fail-open, == the data_unavailable state); a resolved broker/feed date is
         # already handled by the block/clear decision above. Never blocks/raises.
         _eres = getattr(self, "_last_earnings_resolution", None)
-        if _eres is not None and getattr(_eres, "source", None) == "none":
+        if _eres is not None and getattr(_eres, "source", None) == "none" and not preview:
+            # preview: a render must not emit the unverified-earnings audit/alert —
+            # it fires only when a real roll is being dispatched (invariant 2026-07-30).
             self._audit_division("pmcc_earnings_unverified", {
                 "symbol": symbol,
                 "reason": "no broker/feed earnings date; roll allowed (fail-open)",
@@ -3604,6 +3639,7 @@ Action reference:
                 reason="sparse_chain_no_weekly", symbol=symbol,
                 missing_leg="new_short", diag=self._last_weekly_diag,
                 extra={"gates": dict(gates)},
+                preview=preview,
             )
             return []
         gates["selection"] = "ok"
@@ -3633,6 +3669,7 @@ Action reference:
                     "fee_gap": ("pre-fee: RH per-contract regulatory/exchange "
                                 "fees excluded; net captures spread only"),
                 },
+                preview=preview,
             )
             return []
         gates["credit"] = "clear"
@@ -3682,13 +3719,15 @@ Action reference:
         # order legs stay byte-identical to pre-Phase-2. Distinguishes a roll that
         # shipped because earnings were genuinely CLEAR from one that shipped only
         # because the earnings source was DOWN (`gates.earnings == data_unavailable`).
-        self._audit_division("pmcc_roll_gates", {
-            "symbol": symbol,
-            "gates": dict(gates),
-            "conservative_net": round(conservative_net, 4),
-            "mark_net": round(mark_net, 4),
-            "override_kind": override_kind,
-        })
+        if not preview:
+            # preview: don't write a shipped-roll audit for a mere card render.
+            self._audit_division("pmcc_roll_gates", {
+                "symbol": symbol,
+                "gates": dict(gates),
+                "conservative_net": round(conservative_net, 4),
+                "mark_net": round(mark_net, 4),
+                "override_kind": override_kind,
+            })
         # Phase A: tag the two roll_short legs as ONE atomic combo so they dispatch
         # through place_combo -> place_multi_leg (a single all-or-nothing POST)
         # instead of two independent single-leg orders — closing the naked-leg fill
@@ -4769,7 +4808,8 @@ Action reference:
             log.warning("robinhood_pmcc audit write failed (%s): %s", kind, e)
 
     def _audit_roll_abort(self, *, reason: str, symbol: str, missing_leg: str = "",
-                          diag: dict | None = None, extra: dict | None = None) -> None:
+                          diag: dict | None = None, extra: dict | None = None,
+                          preview: bool = False) -> None:
         """B4 (Phase 1): record an aborted roll/open so `b4 -> 0` is
         distinguishable from 'chains are thin and we now do nothing'. Writes a
         structured `pmcc_roll_aborted` division audit + a loud log line. NO order
@@ -4777,7 +4817,14 @@ Action reference:
 
         Phase-2 (B9/B2): also used for proceed-gate aborts (earnings/credit),
         which pass `missing_leg=""` and an `extra` dict carrying the `gates` map
-        (every gate evaluated up to the abort) + the gate's figures."""
+        (every gate evaluated up to the abort) + the gate's figures.
+
+        `preview=True` (2026-07-30): the caller is a side-effect-free card render /
+        Re-analyze / estimate build, NOT a dispatch attempt. The invariant is that
+        exec-alerts (ABORTED &c.) fire ONLY on a genuine dispatch attempt — never a
+        render — so in preview we resolve the reason for on-screen display but
+        write NO `pmcc_roll_aborted` audit row and emit NO Telegram alert. The log
+        drops to debug so a mere preview can't read as a real abort in the logs."""
         payload = {
             "reason": reason,
             "symbol": symbol,
@@ -4786,12 +4833,17 @@ Action reference:
         }
         if extra:
             payload.update(extra)
-        log.warning(
-            "PMCCAgent: ABORTED roll/open on %s -- %s%s; chain=%s",
+        log.log(
+            logging.DEBUG if preview else logging.WARNING,
+            "PMCCAgent: %sABORTED roll/open on %s -- %s%s; chain=%s",
+            "PREVIEW " if preview else "",
             symbol, reason,
             f" (missing {missing_leg})" if missing_leg else "",
             payload["chain_state"],
         )
+        if preview:
+            # Render-only path: no audit row, no exec-alert (invariant above).
+            return
         self._audit_division("pmcc_roll_aborted", payload)
 
         # Observability: 🟡 ABORTED — self-blocked at build; nothing sent to broker.
