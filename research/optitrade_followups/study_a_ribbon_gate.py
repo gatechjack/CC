@@ -187,7 +187,7 @@ def main():
         for coin in COINS:
             sub = [t for t in booked[g] if t["coin"] == coin]
             cn, csr, cwr, cav = H2H.agg(sub)
-            nl = null200(sub, opp_coin[g][coin], seed=4200 + hash((g, coin)) % 1000)
+            nl = null200(sub, opp_coin[g][coin], seed=4200 + ARMS.index(g) * 10 + COINS.index(coin))
             if nl:
                 p5, p50, p95, pct, rsum = nl
                 nstr = "%+.1f/%+.1f/%+.1f" % (p5, p50, p95)
@@ -201,7 +201,7 @@ def main():
         for coin in COINS:
             for k, v in opp_coin[g][coin].items():
                 merged[k].extend(v)
-        nlp = null200(booked[g], merged, seed=9100 + hash(g) % 1000)
+        nlp = null200(booked[g], merged, seed=9100 + ARMS.index(g))
         if nlp:
             p5, p50, p95, pct, rsum = nlp
             W("    -> POOLED null p5/p50/p95 = %+.1f/%+.1f/%+.1f  real sumR pctl=%.0f%%%s"

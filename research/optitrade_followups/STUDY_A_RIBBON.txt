@@ -38,43 +38,43 @@ HOUSE RULE: only the operator rules things out; negatives = 'no edge on THIS tes
 
   ema200  POOLED  n=858  avgR=+0.024  sumR=+20.4  WR=26.0%
     coin          n       avgR       sumR      null p5/p50/p95       pctl flag
-    BTCUSDT     207     -0.119      -24.7    -50.9/-17.2/+22.8        38% neg
-    ETHUSDT     205     +0.132      +27.0    -21.0/+18.3/+54.6        66% POS
-    SOLUSDT     220     +0.139      +30.5    -20.0/+24.0/+66.5        59% POS
-    XRPUSDT     226     -0.055      -12.4    -58.0/-18.0/+26.0        64% neg
-    -> POOLED null p5/p50/p95 = -71.4/+9.4/+98.0  real sumR pctl=56%
+    BTCUSDT     207     -0.119      -24.7    -58.9/-18.5/+23.3        40% neg
+    ETHUSDT     205     +0.132      +27.0    -26.8/+15.4/+59.7        68% POS
+    SOLUSDT     220     +0.139      +30.5    -16.0/+28.0/+73.0        53% POS
+    XRPUSDT     226     -0.055      -12.4    -58.0/-14.8/+25.2        58% neg
+    -> POOLED null p5/p50/p95 = -75.8/+6.7/+89.9  real sumR pctl=62%
 
   RD-trend  POOLED  n=634  avgR=+0.095  sumR=+60.2  WR=27.8%
     coin          n       avgR       sumR      null p5/p50/p95       pctl flag
-    BTCUSDT     158     -0.089      -14.1    -50.6/-18.7/+14.4        60% neg
-    ETHUSDT     151     +0.286      +43.2     -8.8/+30.1/+62.5        72% POS
-    SOLUSDT     176     +0.105      +18.5    -17.5/+20.0/+54.5        47% POS
-    XRPUSDT     149     +0.085      +12.6     -24.2/+8.6/+44.6        58% POS
-    -> POOLED null p5/p50/p95 = -36.4/+38.7/+108.4  real sumR pctl=70%
+    BTCUSDT     158     -0.089      -14.1    -50.0/-15.4/+13.9        52% neg
+    ETHUSDT     151     +0.286      +43.2     -3.0/+30.5/+62.1        74% POS
+    SOLUSDT     176     +0.105      +18.5    -13.5/+20.0/+57.0        48% POS
+    XRPUSDT     149     +0.085      +12.6     -25.0/+7.0/+40.6        64% POS
+    -> POOLED null p5/p50/p95 = -26.0/+40.6/+112.4  real sumR pctl=66%
 
   ps-trail30  POOLED  n=534  avgR=+0.128  sumR=+68.3  WR=28.7%
     coin          n       avgR       sumR      null p5/p50/p95       pctl flag
-    BTCUSDT     129     +0.067       +8.7    -10.7/+20.1/+54.4        26% POS
-    ETHUSDT     142     +0.272      +38.6    -11.2/+20.9/+53.5        83% POS
-    SOLUSDT     127     +0.102      +13.0     -19.0/+9.0/+41.0        56% POS
-    XRPUSDT     136     +0.059       +8.0     -28.0/+0.0/+32.0        61% POS
-    -> POOLED null p5/p50/p95 = -4.8/+50.7/+123.5  real sumR pctl=67%
+    BTCUSDT     129     +0.067       +8.7    -18.1/+16.7/+52.8        36% POS
+    ETHUSDT     142     +0.272      +38.6     -7.7/+24.2/+59.1        79% POS
+    SOLUSDT     127     +0.102      +13.0    -27.0/+13.0/+41.0        50% POS
+    XRPUSDT     136     +0.059       +8.0     -28.0/+0.0/+32.0        62% POS
+    -> POOLED null p5/p50/p95 = -27.1/+48.9/+118.2  real sumR pctl=69%
 
   RIBBON-15m  POOLED  n=119  avgR=+0.073  sumR=+8.7  WR=28.6%
     coin          n       avgR       sumR      null p5/p50/p95       pctl flag
-    BTCUSDT      43     -0.108       -4.7     -20.7/-6.5/+13.1        54% neg
-    ETHUSDT      31     +0.068       +2.1     -15.0/+2.1/+17.0        50% POS
-    SOLUSDT      22     +0.636      +14.0     +2.0/+14.0/+30.0        37% UNDERPOWERED
-    XRPUSDT      23     -0.120       -2.8      -13.4/-3.0/+9.2        51% UNDERPOWERED
-    -> POOLED null p5/p50/p95 = -19.9/+7.7/+43.5  real sumR pctl=52%
+    BTCUSDT      43     -0.108       -4.7     -20.7/-5.9/+12.6        57% neg
+    ETHUSDT      31     +0.068       +2.1     -13.9/+2.1/+17.0        54% POS
+    SOLUSDT      22     +0.636      +14.0     +2.0/+14.0/+30.0        35% UNDERPOWERED
+    XRPUSDT      23     -0.120       -2.8      -13.4/-3.0/+8.7        51% UNDERPOWERED
+    -> POOLED null p5/p50/p95 = -20.7/+7.4/+39.1  real sumR pctl=54%
 
   RIBBON-1h  POOLED  n=563  avgR=+0.031  sumR=+17.5  WR=26.1%
     coin          n       avgR       sumR      null p5/p50/p95       pctl flag
-    BTCUSDT     142     -0.042       -6.0     -30.0/-2.0/+30.0        38% neg
-    ETHUSDT     131     +0.030       +3.9     -27.0/+2.1/+30.8        52% POS
-    SOLUSDT     149     +0.154      +23.0    -13.0/+19.0/+55.0        56% POS
-    XRPUSDT     141     -0.024       -3.4     -39.4/-7.4/+27.0        56% neg
-    -> POOLED null p5/p50/p95 = -51.2/+11.1/+75.3  real sumR pctl=60%
+    BTCUSDT     142     -0.042       -6.0     -30.0/+2.0/+34.0        33% neg
+    ETHUSDT     131     +0.030       +3.9     -27.7/+2.1/+33.7        54% POS
+    SOLUSDT     149     +0.154      +23.0    -13.0/+19.0/+55.0        55% POS
+    XRPUSDT     141     -0.024       -3.4     -37.8/-1.0/+24.6        49% neg
+    -> POOLED null p5/p50/p95 = -49.2/+18.0/+81.0  real sumR pctl=50%
 
   HONESTY: GROSS, no fees/slippage; in-sample Binance-perp proxy shares the live feed (a LEAD,
   not OOS). Per-coin n<30 = UNDERPOWERED. Nothing is ruled out here -- leads only.
