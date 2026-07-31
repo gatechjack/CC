@@ -1,0 +1,18 @@
+[Unit]
+Description=SFP Failed-Swing trade-card notifier (isolated; READ-ONLY on paper_trade_record; sends cards to Telegram via buzz). SEPARATE from trading-corp.service - cannot affect the engine.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=azureuser
+Group=azureuser
+WorkingDirectory=/home/azureuser/card_assets
+Environment=KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/
+Environment=PYTHONPATH=/home/azureuser/trading_corp
+ExecStart=/home/azureuser/trading_corp/venv/bin/python /home/azureuser/card_assets/card_watcher.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
