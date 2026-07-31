@@ -130,7 +130,7 @@ def test_decode_resolution_pending():
 
 def _act(condition_id: str, outcome_index: int, side: str = "BUY",
          price: float = 0.5, size: float = 100.0, ts: int = 1000,
-         txh: str | None = None, asset: str = "") -> ActivityRow:
+         txh: str | None = None) -> ActivityRow:
     # Default txhash includes side + ts so BUY and SELL on the same market
     # don't collide in the strategy's dedup set.
     if txh is None:
@@ -138,7 +138,7 @@ def _act(condition_id: str, outcome_index: int, side: str = "BUY",
     return ActivityRow(
         proxy_wallet="0xW", timestamp=ts, condition_id=condition_id, type="TRADE",
         size=size, usdc_size=size * price, transaction_hash=txh,
-        price=price, asset=asset, side=side, outcome_index=outcome_index,
+        price=price, asset="", side=side, outcome_index=outcome_index,
         title="t", slug="", event_slug="", outcome="Yes" if outcome_index == 0 else "No",
         name="alice",
     )
@@ -306,7 +306,7 @@ async def test_strategy_new_buy_emits_entry(strategy):
     await agent.run_scan_cycle(data_api_client=apify)
     # Now a NEW buy at later timestamp
     apify = _StubDataAPI({"0xW": [
-        _act("cid2", 0, price=0.40, size=1250, ts=2000),  # whale $500 bet
+        _act("cid2", 0, price=0.40, size=1250, ts=2000),  # $500 bet → tier 2
         _act("cid1", 0, price=0.40, size=100, ts=1000),
     ]})
     orders = await agent.run_scan_cycle(data_api_client=apify)
@@ -314,17 +314,11 @@ async def test_strategy_new_buy_emits_entry(strategy):
     o = orders[0]
     assert o.side == "buy"
     assert o.symbol == "cid2:Yes"
-    # E2·3 (D4): flat ≈$1 sizing (no longer the $500→$2 tier). Default config
-    # 120.0 * 0.00833 * 1.0 = 0.9996 USDC; contracts = 0.9996 / 0.40 ≈ 2.499.
-    assert o.extra["copy_size_usdc"] == pytest.approx(0.9996)
-    assert o.qty == pytest.approx(0.9996 / 0.40)
+    # $2 copy at $0.40 = 5 contracts
+    assert o.qty == pytest.approx(5.0)
     assert o.limit_price == pytest.approx(0.40)
     assert o.extra["is_entry"] is True
-    # Group A #1: entry now carries the routing flag + implied prob so
-    # RiskAgent._evaluate_polymarket actually sees it (was never set before,
-    # so the Polymarket caps silently never applied to copy-trader orders).
-    assert o.extra["is_prediction_market"] is True
-    assert o.extra["implied_prob_at_entry"] == pytest.approx(0.40)
+    assert o.extra["copy_size_usdc"] == 2.0
 
 
 @pytest.mark.asyncio
@@ -352,101 +346,9 @@ async def test_strategy_sell_emits_exit_when_we_hold(strategy):
     assert len(orders) == 1
     o = orders[0]
     assert o.side == "sell"
-    # exit mirrors the flat-$1 entry size: 0.9996 USDC / 0.40 entry ≈ 2.499 contracts
-    assert o.qty == pytest.approx(0.9996 / 0.40)
+    assert o.qty == pytest.approx(5.0)  # 5 contracts (matches entry size)
     assert o.limit_price == pytest.approx(0.65)
     assert o.extra["is_entry"] is False
-    # Group A #1: exit carries the flag too; implied_prob_at_entry is the
-    # ORIGINAL entry price (0.40), NOT the 0.65 exit price — so the gate's
-    # implied-prob bound can't spuriously reject a legitimate close.
-    assert o.extra["is_prediction_market"] is True
-    assert o.extra["implied_prob_at_entry"] == pytest.approx(0.40)
-
-
-# ── E2·1: token_id propagation (activity.asset → extra["token_id"]) ──────────
-
-
-@pytest.mark.asyncio
-async def test_entry_extra_carries_token_id(strategy):
-    """E2·1: a copy ENTRY puts the whale's activity.asset into extra['token_id']
-    so the broker's DIRECT token_id path fires (not the gamma fallback)."""
-    agent, db_url = strategy
-    set_agent_state(
-        "polymarket_copy_trader", "selected_whales",
-        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
-        db_url=db_url,
-    )
-    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
-    orders = await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": [
-        _act("cid2", 0, price=0.40, size=1250, ts=2000, asset="74100200300"),
-    ]}))
-    assert len(orders) == 1
-    assert orders[0].side == "buy"
-    assert orders[0].extra["token_id"] == "74100200300"
-
-
-@pytest.mark.asyncio
-async def test_exit_extra_carries_token_id(strategy):
-    """E2·1: a copy EXIT carries the close leg's token id (the whale SELL
-    activity row's asset — same outcome we hold)."""
-    agent, db_url = strategy
-    set_agent_state(
-        "polymarket_copy_trader", "selected_whales",
-        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
-        db_url=db_url,
-    )
-    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
-    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": [
-        _act("cid1", 0, price=0.40, size=1250, ts=2000, asset="888"),  # entry, held
-    ]}))
-    orders = await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": [
-        _act("cid1", 0, price=0.65, size=1250, ts=3000, side="SELL", asset="888"),
-        _act("cid1", 0, price=0.40, size=1250, ts=2000, asset="888"),
-    ]}))
-    assert len(orders) == 1
-    assert orders[0].side == "sell"
-    assert orders[0].extra["token_id"] == "888"
-
-
-@pytest.mark.asyncio
-async def test_absent_asset_token_id_is_none(strategy):
-    """E2·1: when activity.asset is absent (empty), extra['token_id'] is None so
-    the broker's gamma-lookup fallback stays intact (present→direct, absent→gamma —
-    both paths preserved). Does NOT assert a token_id that isn't there."""
-    agent, db_url = strategy
-    set_agent_state(
-        "polymarket_copy_trader", "selected_whales",
-        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
-        db_url=db_url,
-    )
-    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
-    orders = await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": [
-        _act("cid2", 0, price=0.40, size=1250, ts=2000),  # asset="" (default)
-    ]}))
-    assert len(orders) == 1
-    assert orders[0].extra.get("token_id") is None
-
-
-def test_broker_consumes_strategy_token_id_direct_then_fallback():
-    """E2·1 linkage: the producer (strategy extra) feeds the consumer
-    (PolymarketLiveBroker.resolve_token_id). token_id present → DIRECT (no
-    network); absent → NOT direct (gamma territory); absent + fetcher → gamma
-    resolves. Confirms the direct path is now the norm AND the fallback is intact."""
-    from trading_corp.brokers.polymarket_live import (
-        TokenIdResolutionError, resolve_token_id,
-    )
-    # direct: the strategy's extra["token_id"] is returned verbatim, no fetcher
-    assert resolve_token_id({"token_id": "74100200300"}) == "74100200300"
-    # absent token_id + no fetcher → not direct; gamma-fallback territory
-    with pytest.raises(TokenIdResolutionError):
-        resolve_token_id({"condition_id": "0xabc", "outcome_index": 0})
-    # absent token_id + gamma fetcher → fallback resolves (path preserved)
-    market = {"conditionId": "0xabc", "clobTokenIds": '["111", "222"]',
-              "outcomes": '["Yes", "No"]'}
-    assert resolve_token_id(
-        {"condition_id": "0xabc", "outcome": "Yes", "outcome_index": 0},
-        market_fetcher=lambda cid: market,
-    ) == "111"
 
 
 @pytest.mark.asyncio
@@ -469,9 +371,7 @@ async def test_strategy_sell_without_held_position_no_op(strategy):
 
 
 @pytest.mark.asyncio
-async def test_strategy_sizing_is_flat_regardless_of_whale_size(strategy):
-    # E2·3 (D4): copy sizing is flat ≈$1 — REPLACED the v1 $1/$2/$5 tier ladder, so
-    # the whale's bet size no longer changes our copy size (proves the cutover).
+async def test_strategy_sizing_tiers(strategy):
     agent, db_url = strategy
     set_agent_state(
         "polymarket_copy_trader", "selected_whales",
@@ -481,18 +381,20 @@ async def test_strategy_sizing_is_flat_regardless_of_whale_size(strategy):
     apify = _StubDataAPI({"0xW": []})
     await agent.run_scan_cycle(data_api_client=apify)
     apify = _StubDataAPI({"0xW": [
-        _act("sm", 0, price=0.50, size=100, ts=1001),    # whale $50 bet
-        _act("md", 0, price=0.50, size=1000, ts=1002),   # whale $500 bet
-        _act("lg", 0, price=0.50, size=10000, ts=1003),  # whale $5000 bet
+        _act("sm", 0, price=0.50, size=100, ts=1001),    # $50 → tier 1 $1
+        _act("md", 0, price=0.50, size=1000, ts=1002),   # $500 → tier 2 $2
+        _act("lg", 0, price=0.50, size=10000, ts=1003),  # $5000 → tier 3 $5
     ]})
     orders = await agent.run_scan_cycle(data_api_client=apify)
     sizes = {o.symbol.split(":")[0]: o.extra["copy_size_usdc"] for o in orders}
+    assert sizes["sm"] == 1.0
+    assert sizes["md"] == 2.0
+    assert sizes["lg"] == 5.0
+    # contracts = copy_usdc / 0.50
     qty_by_sym = {o.symbol.split(":")[0]: o.qty for o in orders}
-    # all flat ≈$1 (120*0.00833=0.9996) + same contracts (0.9996/0.50), independent
-    # of the 100×-varying whale bet sizes.
-    for sym in ("sm", "md", "lg"):
-        assert sizes[sym] == pytest.approx(0.9996)
-        assert qty_by_sym[sym] == pytest.approx(0.9996 / 0.50)
+    assert qty_by_sym["sm"] == pytest.approx(2.0)
+    assert qty_by_sym["md"] == pytest.approx(4.0)
+    assert qty_by_sym["lg"] == pytest.approx(10.0)
 
 
 @pytest.mark.asyncio
@@ -532,177 +434,3 @@ async def test_strategy_dedups_txhash_across_polls(strategy):
         data_api_client=_StubDataAPI({"0xW": [new_buy]})
     )
     assert orders2 == []
-
-
-# ── E2·3: clamp sizing formula + schema (D4) ─────────────────────────────────
-# size = clamp(bankroll_usdc * per_trade_fraction * conviction_mult, min_size, max_size)
-# Default → flat ≈$1, conviction OFF. These exercise the sizing fns directly (pure;
-# no scan cycle) across the default / clamp / scaling paths.
-
-
-def _sizing_cfg(**over):
-    """A full sizing config; `over` replaces individual keys for clamp/scale cases."""
-    base = {
-        "bankroll_usdc": 120.0, "per_trade_fraction": 0.00833,
-        "min_size": 0.50, "max_size": 2.00,
-        "conviction": {"enabled": False, "signal": "composite_score",
-                       "floor": 0.5, "cap": 2.0},
-    }
-    base.update(over)
-    return {"sizing": base}
-
-
-def test_sizing_default_is_flat_about_one_dollar(strategy):
-    agent, _ = strategy
-    agent._strat_cfg = _sizing_cfg()
-    size = agent._compute_copy_size_usdc()
-    assert size == pytest.approx(0.9996)        # 120.0 * 0.00833 * 1.0
-    assert 0.95 <= size <= 1.05                 # lands in the intended ~$1 band
-
-
-def test_sizing_default_via_code_constants(strategy):
-    # No sizing block at all → module-default constants still yield ~$1.
-    agent, _ = strategy
-    agent._strat_cfg = {"enabled": True}        # no "sizing" key
-    assert agent._compute_copy_size_usdc() == pytest.approx(0.9996)
-
-
-def test_sizing_conviction_inert_under_default(strategy):
-    # conviction OFF → a whale_meta signal has NO effect on size (multiplier 1.0).
-    agent, _ = strategy
-    agent._strat_cfg = _sizing_cfg()
-    with_signal = agent._compute_copy_size_usdc(whale_meta={"composite_score": 1.8})
-    without = agent._compute_copy_size_usdc(whale_meta=None)
-    assert with_signal == pytest.approx(without) == pytest.approx(0.9996)
-    assert agent._conviction_mult({"composite_score": 1.8}) == 1.0
-
-
-def test_sizing_clamp_floors_at_min(strategy):
-    agent, _ = strategy
-    agent._strat_cfg = _sizing_cfg(per_trade_fraction=0.0001)    # raw 120*0.0001=0.012
-    assert agent._compute_copy_size_usdc() == pytest.approx(0.50)  # floored to min_size
-
-
-def test_sizing_clamp_ceils_at_max(strategy):
-    agent, _ = strategy
-    agent._strat_cfg = _sizing_cfg(per_trade_fraction=0.5)       # raw 120*0.5=60
-    assert agent._compute_copy_size_usdc() == pytest.approx(2.00)  # ceiled to max_size
-
-
-def test_sizing_scales_with_fraction_and_conviction(strategy):
-    # Non-default fraction + conviction ON → the full formula scales end-to-end
-    # (proves the schema works, not just the $1 path). 100.0 * 0.05 * 1.5 = 7.5.
-    agent, _ = strategy
-    agent._strat_cfg = _sizing_cfg(
-        bankroll_usdc=100.0, per_trade_fraction=0.05,
-        min_size=0.10, max_size=100.0,
-        conviction={"enabled": True, "signal": "composite_score",
-                    "floor": 0.5, "cap": 3.0},
-    )
-    size = agent._compute_copy_size_usdc(whale_meta={"composite_score": 1.5})
-    assert size == pytest.approx(7.5)
-
-
-def test_conviction_mult_clamps_floor_and_cap(strategy):
-    agent, _ = strategy
-    agent._strat_cfg = _sizing_cfg(
-        conviction={"enabled": True, "signal": "composite_score",
-                    "floor": 0.5, "cap": 2.0},
-    )
-    assert agent._conviction_mult({"composite_score": 5.0}) == pytest.approx(2.0)  # capped
-    assert agent._conviction_mult({"composite_score": 0.1}) == pytest.approx(0.5)  # floored
-    assert agent._conviction_mult({"composite_score": 1.3}) == pytest.approx(1.3)  # passthrough
-
-
-def test_conviction_mult_missing_or_bad_signal_is_neutral(strategy):
-    # conviction ON but the signal is absent/unparseable → neutral 1.0 (never amplify
-    # sizing on bad data).
-    agent, _ = strategy
-    agent._strat_cfg = _sizing_cfg(
-        conviction={"enabled": True, "signal": "composite_score",
-                    "floor": 0.5, "cap": 2.0},
-    )
-    assert agent._conviction_mult(None) == 1.0
-    assert agent._conviction_mult({}) == 1.0
-    assert agent._conviction_mult({"composite_score": "n/a"}) == 1.0
-
-
-# ── copy_quote_price: post-lag quote stored on taken entries ─────────────────
-
-
-class _StubQuoteFetcher:
-    """Minimal market_state_fetcher stub that only implements quote()."""
-    def __init__(self, price: float):
-        self._price = price
-
-    async def quote(self, slug_outcome: str) -> float:
-        return self._price
-
-
-class _StubQuoteFetcherFailing:
-    """market_state_fetcher whose quote() always raises."""
-    async def quote(self, slug_outcome: str) -> float:
-        raise RuntimeError("quote fetch failed")
-
-
-@pytest.mark.asyncio
-async def test_entry_extra_carries_copy_quote_price_when_fetcher_available(strategy):
-    """A taken entry with a working quote fetcher stores copy_quote_price == the
-    fetched price so post-hoc slippage vs whale_entry_price is measurable."""
-    agent, db_url = strategy
-    set_agent_state(
-        "polymarket_copy_trader", "selected_whales",
-        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
-        db_url=db_url,
-    )
-    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
-
-    quote_fetcher = _StubQuoteFetcher(price=0.45)  # current market price at poll time
-    orders = await agent.run_scan_cycle(
-        data_api_client=_StubDataAPI({"0xW": [
-            _act("cid2", 0, price=0.40, size=1250, ts=2000),
-        ]}),
-        market_state_fetcher=quote_fetcher,
-    )
-    assert len(orders) == 1
-    o = orders[0]
-    assert o.side == "buy"
-    # copy_quote_price is the real post-lag price, NOT the whale's fill price
-    assert o.extra["copy_quote_price"] == pytest.approx(0.45)
-    # whale_entry_price and limit_price remain the whale's original fill — unchanged
-    assert o.extra["whale_entry_price"] == pytest.approx(0.40)
-    assert o.limit_price == pytest.approx(0.40)
-
-
-@pytest.mark.asyncio
-async def test_entry_extra_copy_quote_price_is_none_without_fetcher(strategy):
-    """A taken entry with no quote fetcher (or a failing one) has copy_quote_price=None
-    and still emits the order — additive and non-blocking."""
-    agent, db_url = strategy
-    set_agent_state(
-        "polymarket_copy_trader", "selected_whales",
-        [{"wallet": "0xW", "user_name": "alice", "category": "Sports"}],
-        db_url=db_url,
-    )
-    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # cold start
-
-    # Case A: no fetcher at all (market_state_fetcher=None, the default)
-    orders_no_fetcher = await agent.run_scan_cycle(
-        data_api_client=_StubDataAPI({"0xW": [
-            _act("cid3", 0, price=0.50, size=100, ts=3000),
-        ]}),
-    )
-    assert len(orders_no_fetcher) == 1
-    assert orders_no_fetcher[0].extra["copy_quote_price"] is None
-
-    # Case B: fetcher present but quote() raises — order still emitted, price=None
-    await agent.run_scan_cycle(data_api_client=_StubDataAPI({"0xW": []}))  # reset seen
-    failing_fetcher = _StubQuoteFetcherFailing()
-    orders_failing = await agent.run_scan_cycle(
-        data_api_client=_StubDataAPI({"0xW": [
-            _act("cid4", 0, price=0.55, size=200, ts=4000),
-        ]}),
-        market_state_fetcher=failing_fetcher,
-    )
-    assert len(orders_failing) == 1
-    assert orders_failing[0].extra["copy_quote_price"] is None

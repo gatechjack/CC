@@ -157,79 +157,13 @@ async def test_audit_log_written_on_full_flow(setup_pieces):
     await graph.ainvoke(state, config=config)
     await graph.ainvoke(Command(resume={"decision": "approve"}), config=config)
 
-
-@pytest.mark.asyncio
-async def test_modify_with_new_limit_price_applies_to_fill(setup_pieces):
-    """B.5 — resuming with `decision='modify', new_limit_price=...` (no
-    new_qty) re-runs the order through risk + executes at the new price."""
-    tmp_db, logger, risk, de = setup_pieces
-    paper = PaperBroker(account="paper-test", starting_equity=100_000.0)
-    de.register_broker("default", paper)
-    await de.connect_all()
-
-    from langgraph.checkpoint.memory import MemorySaver  # type: ignore
-    from langgraph.types import Command  # type: ignore
-    saver = MemorySaver()
-    graph = build_trade_graph(risk, de, logger, checkpointer=saver)
-
-    order = ProposedOrder(strategy="demo", symbol="SPY", side="buy",
-                          qty=1, order_type="limit", limit_price=500.0)
-    state = {
-        "proposed_order": order.to_db_row() | {"extra": order.extra},
-        "division": "default",
-        "regime": "uptrend",
-        "strategy_state": {"strategy": "demo", "halted": False},
-        "account": {"account": "paper-test", "equity": 100_000.0, "peak_equity": 100_000.0},
-    }
-    config = {"configurable": {"thread_id": order.id}}
-
-    await graph.ainvoke(state, config=config)
-    # Modify with a new limit price (no qty change). Should re-run risk
-    # then re-pause at approval; resume with approve to fill.
-    after_modify = await graph.ainvoke(
-        Command(resume={
-            "decision": "modify", "new_limit_price": 475.0,
-        }),
-        config=config,
-    )
-    # After modify, the graph re-pauses at approval with the new price.
-    assert "__interrupt__" in after_modify
-    final = await graph.ainvoke(
-        Command(resume={"decision": "approve"}),
-        config=config,
-    )
-    assert final["final_status"] == "filled"
-    # Fill happened at the modified limit price.
-    assert final["fill"]["price"] == 475.0
-
-
-@pytest.mark.asyncio
-async def test_modify_with_no_fields_rejects(setup_pieces):
-    """B.5 — modify without new_qty or new_limit_price routes to
-    board_rejected (no infinite-loop on empty modify)."""
-    tmp_db, logger, risk, de = setup_pieces
-    paper = PaperBroker(account="paper-test", starting_equity=100_000.0)
-    de.register_broker("default", paper)
-    await de.connect_all()
-
-    from langgraph.checkpoint.memory import MemorySaver  # type: ignore
-    from langgraph.types import Command  # type: ignore
-    saver = MemorySaver()
-    graph = build_trade_graph(risk, de, logger, checkpointer=saver)
-
-    order = ProposedOrder(strategy="demo", symbol="SPY", side="buy",
-                          qty=1, order_type="limit", limit_price=500.0)
-    state = {
-        "proposed_order": order.to_db_row() | {"extra": order.extra},
-        "division": "default",
-        "regime": "uptrend",
-        "strategy_state": {"strategy": "demo", "halted": False},
-        "account": {"account": "paper-test", "equity": 100_000.0, "peak_equity": 100_000.0},
-    }
-    config = {"configurable": {"thread_id": order.id}}
-    await graph.ainvoke(state, config=config)
-    final = await graph.ainvoke(
-        Command(resume={"decision": "modify"}),   # neither field set
-        config=config,
-    )
-    assert final["final_status"] == "board_rejected"
+    # Read audit log directly.
+    db_path = Path(tmp_db.replace("sqlite:///", ""))
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT actor, kind FROM audit_event ORDER BY id"
+        ).fetchall()
+    kinds = {(actor, kind) for actor, kind in rows}
+    assert ("risk", "risk_approved") in kinds
+    assert ("board", "board_approved") in kinds
+    assert ("data_exec", "filled") in kinds

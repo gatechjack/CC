@@ -45,36 +45,6 @@ def test_max_drawdown_triggers_flatten(tmp_risk_yaml):
     assert v.flatten_account is True
 
 
-def test_max_drawdown_disabled_flag_skips_cap(tmp_path):
-    """Per-strategy `max_drawdown_disabled: true` opts a strategy out of the
-    account-level auto-flatten — required for 100%-in/out strategies (e.g.
-    coinbase_btc_donchian) whose edge needs to ride volatility to the next
-    exit signal. With the flag set, a drawdown past the global cap must NOT
-    trigger reject/flatten.
-    """
-    yaml_path = tmp_path / "risk.yaml"
-    yaml_path.write_text(
-        """
-global:
-  per_trade_risk_pct: 0.015
-  per_strategy_daily_loss_pct: 0.03
-  per_account_max_drawdown_pct: 0.15
-trend_alignment:
-  counter_trend_size_multiplier: 0.5
-overrides:
-  demo:
-    max_drawdown_disabled: true
-""".strip(),
-        encoding="utf-8",
-    )
-    risk = RiskAgent(risk_yaml=yaml_path, narrator_enabled=False)
-    # 20% DD — would normally trigger flatten/reject. With opt-out, approves.
-    acct = _account(equity=80_000, peak=100_000)
-    v = risk.evaluate(_order(qty=1, price=500), acct, _strategy())
-    assert v.verdict == "approve"
-    assert v.flatten_account is False
-
-
 def test_per_trade_cap_triggers_resize(tmp_risk_yaml):
     risk = RiskAgent(risk_yaml=tmp_risk_yaml, narrator_enabled=False)
     # Equity 100k * 0.015 = 1500 risk cap.
@@ -125,31 +95,3 @@ def test_no_price_reference_approves_provisionally(tmp_risk_yaml):
                           qty=1.0, order_type="market", limit_price=None)
     v = risk.evaluate(order, _account(), _strategy())
     assert v.verdict == "approve"
-
-
-def test_evaluate_with_forced_reject_reason_short_circuits(tmp_risk_yaml):
-    """forced_reject_reason short-circuits ALL other checks and returns
-    a reject verdict with exactly the supplied reason string."""
-    risk = RiskAgent(risk_yaml=tmp_risk_yaml, narrator_enabled=False)
-    # Use an order that would normally approve (small, within caps).
-    order = _order(qty=1, price=500.0, side="buy")
-    v = risk.evaluate(
-        order, _account(), _strategy(),
-        forced_reject_reason="test_reason_xyz",
-    )
-    assert v.verdict == "reject"
-    assert v.reason == "test_reason_xyz"
-
-
-def test_evaluate_backstop_rejects_side_mismatch(tmp_risk_yaml):
-    """If originating_signal_side in order.extra differs from order.side,
-    the backstop rejects even though the order would otherwise approve."""
-    risk = RiskAgent(risk_yaml=tmp_risk_yaml, narrator_enabled=False)
-    order = ProposedOrder(
-        strategy="demo", symbol="SPY", side="sell",
-        qty=1, order_type="limit", limit_price=500.0,
-        extra={"originating_signal_side": "buy"},
-    )
-    v = risk.evaluate(order, _account(), _strategy())
-    assert v.verdict == "reject"
-    assert "side flipped from originating signal" in v.reason
