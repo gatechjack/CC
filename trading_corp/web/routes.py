@@ -1045,6 +1045,39 @@ def register(app: FastAPI) -> None:
         )
         return HTMLResponse(html + _pmcc_tile_badge_oob(templates, deps, sym))
 
+    @app.get("/division/{slug}/pmcc-pricing", response_class=HTMLResponse)
+    async def division_pmcc_pricing(slug: str):
+        """45s interval pricing refresh (P1) — re-price all cached PMCC tiles (RH-only,
+        NO LLM, market-hours-gated inside refresh_division → no pull off-hours) and
+        rewrite their stashes, returning per-symbol hx-swap-oob spans that update each
+        tile's pricing chip in place. Empty response when off-hours-idle or nothing is
+        cached (nothing to swap; the interval keeps firing cheaply)."""
+        if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
+            return HTMLResponse("")
+        broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
+        if broker is None:
+            return HTMLResponse("")
+        from trading_corp.web import pmcc_pricing
+        syms = pmcc_pricing.symbols_for(slug)
+        if not syms:
+            return HTMLResponse("")
+        try:
+            await pmcc_pricing.refresh_division(
+                deps.pmcc_agent, broker, slug, syms, deps.db_url)
+        except Exception as e:      # noqa: BLE001 — an OOB refresh must never 500
+            log.warning("division_pmcc_pricing(%s) refresh failed: %s", slug, e)
+        parts = []
+        for s in syms:
+            try:
+                pricing = pmcc_pricing.tile_pricing_view(pmcc_pricing.cached(slug, s))
+                inner = templates.get_template("partials/_pmcc_pricing.html").render(pricing=pricing)
+                parts.append(
+                    f'<span id="pmcc-pricing-{s}" hx-swap-oob="true" class="contents">'
+                    f'{inner}</span>')
+            except Exception as e:  # noqa: BLE001
+                log.warning("division_pmcc_pricing(%s) render %s failed: %s", slug, s, e)
+        return HTMLResponse("".join(parts))
+
     @app.post("/division/{slug}/pair/{symbol}/defer", response_class=HTMLResponse)
     async def defer_pair(slug: str, symbol: str):
         """Record a 24h deferral on this pair's recommendation.

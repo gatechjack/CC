@@ -3479,6 +3479,24 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
             _p.unified_status = _build_pmcc_tile_status(
                 _p.underlying, db_url=deps.db_url, now=_ts_now, cfg=_ts_cfg,
             )
+        # P1 (2026-07-31): live pricing for ALL tiles — RH-only, NO LLM. Serve the
+        # display cache (< TTL) else price (staggered, market-hours-gated inside
+        # refresh_division → no pull pre/after-hours). Never blocks the page on a
+        # pricing failure; a failure leaves _p.pricing = None (tile shows nothing new).
+        for _p in pmcc_pairs:
+            _p.pricing = None
+        if _agent is not None and broker is not None:
+            try:
+                from trading_corp.web import pmcc_pricing
+                await pmcc_pricing.refresh_division(
+                    _agent, broker, slug,
+                    [_p.underlying for _p in pmcc_pairs], deps.db_url,
+                )
+                for _p in pmcc_pairs:
+                    _p.pricing = pmcc_pricing.tile_pricing_view(
+                        pmcc_pricing.cached(slug, _p.underlying))
+            except Exception as e:      # noqa: BLE001 — pricing must never break the page
+                log.warning("pmcc tile pricing failed for %s: %s", slug, e)
 
     # Activity feed for this division
     activity = _query_division_activity(deps.db_url, slug, division.strategy, limit=20)

@@ -199,3 +199,75 @@ def test_pricing_age_state_market_closed_and_none():
     prc = pmcc_pricing.PricedRoll(slug="s", symbol="A", priced_at=1000.0, market_closed=True)
     assert pmcc_pricing.pricing_age_state(prc)["state"] == "closed"
     assert pmcc_pricing.pricing_age_state(None)["state"] == "none"
+
+
+# ==========================================================================
+# #1 — build_division_view tile pricing: cache reuse, market-closed, tile view + partial
+# ==========================================================================
+
+@pytest.mark.asyncio
+async def test_refresh_division_reuses_fresh_cache(monkeypatch):
+    pmcc_pricing._CACHE.clear()
+    monkeypatch.setattr(pmcc_pricing, "market_regular_open", lambda now=None: True)
+    calls = []
+    async def _spy(agent, broker, slug, symbol, db_url, *, now=None):
+        calls.append(symbol)
+        return pmcc_pricing.PricedRoll(slug=slug, symbol=symbol, priced_at=now or 0.0)
+    monkeypatch.setattr(pmcc_pricing, "price_and_stash", _spy)
+    pmcc_pricing._CACHE[("robinhood_pmcc", "AAPL")] = pmcc_pricing.PricedRoll(
+        slug="robinhood_pmcc", symbol="AAPL", priced_at=1000.0, buildable=True)
+    await pmcc_pricing.refresh_division(None, None, "robinhood_pmcc", ["AAPL"], "db",
+                                        ttl=45, now=1010.0)
+    assert calls == []                                   # age 10 < TTL 45 → NO re-pull
+
+
+@pytest.mark.asyncio
+async def test_refresh_division_off_hours_no_pull_marks_closed(monkeypatch):
+    pmcc_pricing._CACHE.clear()
+    monkeypatch.setattr(pmcc_pricing, "market_regular_open", lambda now=None: False)
+    calls = []
+    async def _spy(*a, **k):
+        calls.append(1)
+    monkeypatch.setattr(pmcc_pricing, "price_and_stash", _spy)
+    pmcc_pricing._CACHE[("robinhood_pmcc", "AAPL")] = pmcc_pricing.PricedRoll(
+        slug="robinhood_pmcc", symbol="AAPL", priced_at=1000.0, buildable=True)
+    await pmcc_pricing.refresh_division(None, None, "robinhood_pmcc", ["AAPL"], "db", now=9e9)
+    assert calls == []                                   # off-hours → NO RH pull
+    assert pmcc_pricing.cached("robinhood_pmcc", "AAPL").market_closed is True
+
+
+def test_tile_pricing_view_maps_estimate_and_coloring():
+    pmcc_pricing._CACHE.clear()
+    est = {"net_abs": 0.26, "direction": "credit", "open_strike": 185.0}
+    pr = pmcc_pricing.PricedRoll(slug="s", symbol="A", priced_at=1000.0,
+                                 buildable=True, estimate=est)
+    v = pmcc_pricing.tile_pricing_view(pr, ttl=45, now=1010.0)
+    assert v["state"] == "green" and v["buildable"]
+    assert v["net_abs"] == 0.26 and v["direction"] == "credit" and v["strike"] == 185.0
+    assert pmcc_pricing.tile_pricing_view(pr, ttl=45, now=1200.0)["state"] == "red"
+    prc = pmcc_pricing.PricedRoll(slug="s", symbol="A", priced_at=1000.0, market_closed=True)
+    assert pmcc_pricing.tile_pricing_view(prc)["market_closed"] is True
+    assert pmcc_pricing.tile_pricing_view(None)["state"] == "none"
+
+
+def _render_pricing_partial(pricing):
+    from pathlib import Path
+    from jinja2 import Environment, FileSystemLoader
+    import trading_corp.web.routes as routes_mod
+    tdir = Path(routes_mod.__file__).parent / "templates"
+    env = Environment(loader=FileSystemLoader(str(tdir)))
+    env.filters["strike"] = lambda v: ("%.2f" % v) if v is not None else "—"
+    return env.get_template("partials/_pmcc_pricing.html").render(pricing=pricing)
+
+
+def test_pricing_partial_renders_all_states():
+    buildable = {"state": "green", "label": "12s", "net_abs": 0.26, "direction": "credit",
+                 "strike": 185.0, "buildable": True, "market_closed": False}
+    html = _render_pricing_partial(buildable)
+    assert "+$0.26" in html and "185.00C" in html and "12s" in html
+    closed = {"state": "closed", "label": "market closed", "net_abs": 0.26,
+              "direction": "credit", "strike": 185.0, "buildable": False, "market_closed": True}
+    assert "market closed" in _render_pricing_partial(closed)
+    cant = {"state": "amber", "label": "", "net_abs": None, "direction": None,
+            "strike": None, "buildable": False, "market_closed": False}
+    assert "can't price" in _render_pricing_partial(cant)

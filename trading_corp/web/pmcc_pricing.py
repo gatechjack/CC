@@ -181,6 +181,28 @@ async def refresh_division(
         await asyncio.sleep(_STAGGER_SEC)
 
 
+def symbols_for(slug: str) -> list[str]:
+    """Symbols currently in the pricing cache for `slug` (populated on the last
+    division-page load). The interval refresh re-prices exactly what's on screen."""
+    return [k[1] for k in list(_CACHE.keys()) if k[0] == slug]
+
+
+def tile_pricing_view(pr: "PricedRoll | None", *, ttl: float = _TTL_SEC, now: float | None = None) -> dict:
+    """Flatten a `PricedRoll` into the compact dict the tile template renders:
+    {state, label, net_abs, direction, strike, buildable, market_closed}."""
+    age = pricing_age_state(pr, ttl=ttl, now=now)
+    est = (pr.estimate or {}) if pr is not None else {}
+    return {
+        "state": age["state"],
+        "label": age["label"],
+        "net_abs": est.get("net_abs"),
+        "direction": est.get("direction"),
+        "strike": est.get("open_strike"),
+        "buildable": bool(pr.buildable) if pr is not None else False,
+        "market_closed": bool(pr.market_closed) if pr is not None else False,
+    }
+
+
 def pricing_age_state(pr: "PricedRoll | None", *, ttl: float = _TTL_SEC, now: float | None = None) -> dict:
     """Two-clock PRICING sub-badge: green < ttl, amber < 2×ttl, red beyond — or
     'closed' when the market-hours gate is off. Returns {state,label,age_s}."""

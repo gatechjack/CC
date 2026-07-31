@@ -68,6 +68,22 @@
       {% include "partials/_pmcc_badge.html" %}
     </span>
 
+    <!-- Two clocks (P1, 2026-07-31): JUDGMENT age (calm/neutral, amber only when the
+         last verdict is past the staleness window — never red on age alone) +
+         PRICING age (live green/amber/red or "market closed"). The judgment clock is
+         the LLM decision's freshness; the pricing clock is the RH-only live number. -->
+    {% if us and us.state != 'none' and us.age_h is not none %}
+      <span class="hidden lg:inline-block text-[10px] font-mono
+                   {% if us.state == 'stale' %}text-warn/70{% else %}text-muted/50{% endif %}"
+            title="Judgment age — last {{ us.source or 'scan' }} verdict {{ '%.0f' % us.age_h }}h ago{% if us.state == 'stale' %} (a scan will refresh it){% endif %}.">
+        ⧗{{ '%.0f' % us.age_h }}h
+      </span>
+    {% endif %}
+    {% set pricing = pair.pricing %}
+    <span id="pmcc-pricing-{{ pair.underlying }}" class="contents">
+      {% include "partials/_pmcc_pricing.html" %}
+    </span>
+
     <!-- Short-leg DTE — surfaces "how urgent is this roll?" on the collapsed row.
          Only renders when there's a short with a known DTE (uncovered_leap /
          naked_call structures don't have one). Color tracks the same urgency
