@@ -11976,3 +11976,5 @@ Phase 1). Full session work + reports also on branch `polymarket-copy-quote-pric
 **First market-level forward data (n=15, NOT a verdict):** 8W/7L. 2Y-Treasury -T10/-T8 no/win; BoK yes/loss; SK-exports mixed. 08-05 Treasury resolved EARLY (outcome fixed at FOMC 07-30).
 
 **Rollback:** restore `.bak_llm_dedup_20260801/{kalshi_resolver.py,data.py}` + `DELETE FROM kalshi_round_trips WHERE division='kalshi_llm_arbitrage' AND id>10434` + restart.
+
+**Inversion-test observation (2026-08-01, RECORD-ONLY / OPEN QUESTION — NOT a conclusion, NOT edge-memory, n=15):** the single HIGHEST-divergence bet (BoK, 85% div) LOST — consistent with the pre-epoch "higher divergence → lower win-rate" inversion. BUT other high-divergence Economics bets (2Y-Treasury -T10/-T8, 45-56% div) WON. So on n=15 the inversion NEITHER held nor broke cleanly. The ELECTIONS half (Michigan turnout, LOWER divergence 11-25%, resolves ~08-11) is the cleaner test of whether low-divergence behaves differently — deferred to the ~22-market combined read (trigger re-pointed: Elections resolve OR 2026-08-19). Open question, not a division verdict.
