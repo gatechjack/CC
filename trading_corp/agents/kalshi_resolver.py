@@ -133,6 +133,21 @@ def _fetch_unresolved_orders(
     rows: list[dict] = []
     with _db.connect(db_url) as conn:
         for actor in _KALSHI_ACTORS:
+            # Epoch-scope kalshi_llm_arbitrage resolution to post-2026-07-07
+            # entries, consistent with DASHBOARD_RT_CUTOFFS['kalshi_llm_arbitrage'].
+            # Pre-epoch kalshi_llm rows are long-horizon/backlog markets whose
+            # fake-early stored expires_at (e.g. KXSPACEDATACENTER stored 06-03
+            # but really closing 2035) sorts them to the front of the
+            # expires_at-ASC budget and permanently starves genuinely-settled
+            # post-epoch markets. Excluding them un-starves post-epoch settlement
+            # WITHOUT mass-booking the pre-epoch backlog (which stays unresolved
+            # by design — it's epoch-scoped out of the dashboard too). Hardcoded
+            # ISO literal, no injection surface. Other actors are unaffected.
+            epoch_clause = (
+                "  AND a.ts >= '2026-07-07T16:40:00+00:00' "
+                if actor == "kalshi_llm_arbitrage"
+                else ""
+            )
             cur = conn.execute(
                 "SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
                 "FROM audit_event a "
@@ -142,6 +157,7 @@ def _fetch_unresolved_orders(
                 "  AND a.kind IN ('would_have_placed', 'kalshi_copy_placed_live') "
                 "  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
                 "  AND r.order_id IS NULL "
+                + epoch_clause +
                 "  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
                 "        SELECT entry_order_id FROM kalshi_round_trips "
                 "        WHERE entry_order_id IS NOT NULL"

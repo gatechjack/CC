@@ -413,34 +413,38 @@ def test_fetch_orders_past_expiration_first(fresh_db):
     a final result on Kalshi) were starved.
     """
     db_url, _ = fresh_db
-    # OLD audit ts but FUTURE expiration (a long-horizon bet placed early):
+    # kalshi_llm resolution is epoch-scoped to entry_ts >= 2026-07-07T16:40
+    # (see _fetch_unresolved_orders), so all entries here are post-epoch; the
+    # ordering-by-expiry (not audit-ts) invariant is asserted among them.
+    # OLDER audit ts but FAR-FUTURE expiration (a long-horizon bet placed early):
     _insert_audit_event(
         db_url, "kalshi_llm_arbitrage", "would_have_placed",
         {"order_id": "old-future", "ticker": "KXFUTURE-1", "outcome": "yes",
          "qty": 1.0, "limit_price": 0.30,
          "expires_at": "2027-12-31T00:00:00+00:00"},
-        ts="2026-05-01T00:00:00+00:00",
+        ts="2026-07-08T00:00:00+00:00",
     )
-    # NEW audit ts but PAST expiration (a short-horizon bet placed recently):
+    # NEWER audit ts but NEAR-TERM expiration (a short-horizon bet placed later):
     _insert_audit_event(
         db_url, "kalshi_llm_arbitrage", "would_have_placed",
         {"order_id": "new-past", "ticker": "KXPAST-1", "outcome": "yes",
          "qty": 1.0, "limit_price": 0.30,
-         "expires_at": "2026-05-10T00:00:00+00:00"},
-        ts="2026-05-08T00:00:00+00:00",
+         "expires_at": "2026-07-25T00:00:00+00:00"},
+        ts="2026-07-20T00:00:00+00:00",
     )
-    # NEW audit ts with NO expires_at (e.g. legacy payload):
+    # NEWER audit ts with NO expires_at (e.g. legacy payload):
     _insert_audit_event(
         db_url, "kalshi_llm_arbitrage", "would_have_placed",
         {"order_id": "no-exp", "ticker": "KXNOEXP-1", "outcome": "yes",
          "qty": 1.0, "limit_price": 0.30},
-        ts="2026-05-09T00:00:00+00:00",
+        ts="2026-07-15T00:00:00+00:00",
     )
     rows = kr._fetch_unresolved_orders(db_url, max_per_actor=10)
     order_ids = [r.get("order_id") for r in rows]
-    # past-expiration first, then future-expiration, then no-expires_at.
+    # earliest-expiration first, then far-future, then no-expires_at --
+    # ordered by expires_at ASC regardless of audit ts.
     assert order_ids == ["new-past", "old-future", "no-exp"], (
-        f"Expected past-expiration first; got {order_ids}"
+        f"Expected earliest-expiration first; got {order_ids}"
     )
 
 

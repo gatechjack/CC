@@ -3714,6 +3714,18 @@ class PMSummary:
     # cutoff_ts: full ISO; cutoff_label: YYYY-MM-DD for the tile badge.
     cutoff_ts: str | None = None
     cutoff_label: str | None = None
+    # Option-B (distinct-market) aggregates for Kalshi divisions only.
+    # One row per distinct ticker (canonical = earliest entry_ts emission).
+    # None for non-kalshi divisions (or the All view mixing venues).
+    # n_resolved_markets / n_wins_markets / total_realized_markets_pnl /
+    # win_rate_markets_pct are additive siblings of the per-emission fields;
+    # the existing per-emission (Option-A) fields are UNCHANGED.
+    # TODO(display): wire these into the prediction-markets tile template.
+    n_resolved_markets: int | None = None
+    n_wins_markets: int | None = None
+    n_voids_markets: int | None = None
+    total_realized_markets_pnl: float | None = None
+    win_rate_markets_pct: float | None = None
 
 
 @dataclass
@@ -4692,6 +4704,71 @@ def _query_pm_resolved_stats(
             out["n_voids"] += int(rows[0].get("n_voids") or 0)
             out["total_realized_pnl"] += float(rows[0].get("total_pnl") or 0.0)
 
+    return out
+
+
+def _query_kalshi_distinct_market_stats(
+    db_url: str, division_slugs: list[str],
+    *,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
+) -> dict:
+    """Option-B distinct-market headline aggregation for Kalshi divisions.
+
+    Option A (per-emission) is the raw `kalshi_round_trips` table — every
+    re-emission of the same market signal creates a separate row.
+    Option B (per-market) is this read-layer aggregation: one canonical row
+    per distinct `ticker`, chosen as the EARLIEST entry_ts emission (tie-
+    broken by rowid/id).  Canonical = earliest because it models the
+    idealized case where the division entered once on first signal fire and
+    held to resolution.
+
+    Dedup key is the full market `ticker` (NOT `event_ticker`, which
+    over-collapses distinct strikes — e.g. Treasury T10 / T8 share one
+    event_ticker but are separate markets with independent results).
+
+    Only handles kalshi slugs (division_slugs filtered by `_KALSHI_PREFIX`);
+    returns the zero dict if none are present — does NOT touch polymarket
+    data.  Applies `_kalshi_cutoff_clause` and `_kalshi_copy_mode_clause`
+    identically to `_query_pm_resolved_stats`'s kalshi branch.
+
+    Returns {n_resolved, n_wins, n_voids, total_realized_pnl} where counts
+    are over DISTINCT markets, not emissions — n_resolved will be lower than
+    or equal to the per-emission Option-A count.
+    """
+    out: dict = {"n_resolved": 0, "n_wins": 0, "n_voids": 0, "total_realized_pnl": 0.0}
+    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    if not kalshi_slugs:
+        return out
+
+    kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+    # Window-function CTE: rank emissions per ticker by entry_ts ASC (earliest
+    # first), tie-break by id ASC (rowid proxy for insertion order).  The
+    # outer SELECT filters to rn=1 so each ticker contributes exactly one row.
+    sql = (
+        f"WITH ranked AS ("
+        f"  SELECT ticker, won, market_result, realized_pnl, "
+        f"         ROW_NUMBER() OVER ("
+        f"           PARTITION BY ticker ORDER BY entry_ts ASC, id ASC"
+        f"         ) AS rn "
+        f"  FROM kalshi_round_trips "
+        f"  WHERE division IN ({kalshi_ph})"
+        + _kalshi_cutoff_clause("entry_ts")
+        + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
+        + f") "
+        f"SELECT COUNT(*) AS n_resolved, "
+        f"       COALESCE(SUM(won), 0) AS n_wins, "
+        f"       COALESCE(SUM(CASE WHEN COALESCE(market_result,'') = 'void' "
+        f"                         THEN 1 ELSE 0 END), 0) AS n_voids, "
+        f"       COALESCE(SUM(realized_pnl), 0.0) AS total_pnl "
+        f"FROM ranked WHERE rn = 1"
+    )
+    rows = _query(db_url, sql, tuple(kalshi_slugs))
+    if rows:
+        out["n_resolved"] = int(rows[0].get("n_resolved") or 0)
+        out["n_wins"] = int(rows[0].get("n_wins") or 0)
+        out["n_voids"] = int(rows[0].get("n_voids") or 0)
+        out["total_realized_pnl"] = float(rows[0].get("total_pnl") or 0.0)
     return out
 
 
@@ -5784,6 +5861,30 @@ async def build_prediction_market_view(
     if division is not None and division in DASHBOARD_RT_CUTOFFS:
         summary.cutoff_ts = DASHBOARD_RT_CUTOFFS[division]
         summary.cutoff_label = summary.cutoff_ts.split("T", 1)[0]
+
+    # Option-B (distinct-market) aggregates — Kalshi single-division only.
+    # Scoped to single-division pages so the metric is unambiguous; the All
+    # view mixes venues and the per-market dedup only makes sense per-division.
+    # Non-kalshi (polymarket) single-division pages leave the fields as None.
+    if division is not None and division.startswith(_KALSHI_PREFIX):
+        dm = await asyncio.to_thread(
+            _query_kalshi_distinct_market_stats,
+            db_url, [division],
+            kalshi_copy_mode=kalshi_copy_mode,
+            kalshi_copy_epoch=kalshi_copy_epoch,
+        )
+        n_res_m = dm["n_resolved"]
+        n_win_m = dm["n_wins"]
+        n_voi_m = dm["n_voids"]
+        n_loss_m = n_res_m - n_win_m - n_voi_m
+        decisive_m = n_win_m + n_loss_m
+        summary.n_resolved_markets = n_res_m
+        summary.n_wins_markets = n_win_m
+        summary.n_voids_markets = n_voi_m
+        summary.total_realized_markets_pnl = dm["total_realized_pnl"]
+        summary.win_rate_markets_pct = (
+            100.0 * n_win_m / decisive_m if decisive_m > 0 else None
+        )
 
     vol_v2_block = None
     if division == "kalshi_crypto":
