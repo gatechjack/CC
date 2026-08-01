@@ -1,2 +1,4 @@
 # Large read-only prod export (~11 MB, reproducible via kc2_pull.ps1) — do not commit.
 bitunix_bars_export.csv
+# Kalshi Karen creds drop (operator-delivered) — NEVER commit.
+.karen_creds.json
