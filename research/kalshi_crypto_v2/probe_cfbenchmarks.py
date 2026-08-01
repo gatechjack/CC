@@ -1,9 +1,15 @@
 """Phase-1 first authenticated task: PROBE the Kalshi cfbenchmarks_value WS feed.
 
-Pattern 1 (operator-run one-shot): reads KALSHI_KAREN_API_KEY_ID and
-KALSHI_KAREN_PRIVATE_KEY_PEM from PROCESS ENV ONLY (no file fallback; fails
-loudly if absent). The operator fetches Karen creds from Azure Key Vault and
-runs this; creds never touch repo, disk, or agent session env.
+Creds (house pattern, reuses trading_corp/utils/secrets.py mechanism): fetched
+at runtime from Azure Key Vault via azure-identity DefaultAzureCredential (the
+machine's existing Azure context — Managed Identity on prod, `az login` locally)
++ azure-keyvault-secrets SecretClient against $KEY_VAULT_URI. Secret names use
+the underscore->hyphen convention: KALSHI-KAREN-API-KEY-ID /
+KALSHI-KAREN-PRIVATE-KEY-PEM. In-process memory ONLY; nothing written to disk,
+env files, or gitignore. The env vars KALSHI_KAREN_API_KEY_ID /
+KALSHI_KAREN_PRIVATE_KEY_PEM are honored as an override (prod/systemd). Fails
+LOUDLY if the vault fetch fails; NEVER falls back to files. Secret values are
+never logged or printed (only key ids/values redacted).
 
 Output is self-contained and VERDICT-FIRST on stdout:
   line 1  = VERDICT: GO | STOP - <reason>
@@ -16,18 +22,21 @@ is wrong, auth fails, zero ticks arrive, or ANY of BTC/ETH/SOL/XRP has no index
 (SOL/XRP unconfirmed in docs). The synthetic-composite fallback is the
 operator's decision, not the agent's.
 
-Spec (docs.kalshi.com/websockets/cfbenchmarks-value, verified 2026-08-01):
-  base    = wss://external-api-ws.kalshi.com/cfbenchmarks_value  (DEDICATED base,
-            NOT trade-api/ws/v2; pykalshi AsyncFeed cannot reach it)
-  channel = cfbenchmarks_value ; subscribe param = index_ids
-  msg     = {type, sid, seq, msg:{index_id, received_at, data,
-            avg_60s_data:{value,window_size,...}, last_60s_windowed_average_15min?}}
-  auth    = signed headers KALSHI-ACCESS-KEY/SIGNATURE/TIMESTAMP,
-            RSA-PSS(SHA256, salt=digest) over f"{ts}{method}{path}" (pykalshi _base).
-
-TWO EMPIRICAL UNKNOWNS (undocumented client schema) — adjust from the live log:
-  * SIGN_PATH   : path signed for the handshake (best guess "/cfbenchmarks_value").
-  * command envelope for subscribe/indexlist (best guess trade-api {id,cmd,params}).
+RESOLVED PROTOCOL (empirically verified 2026-08-01, verdict GO on 4/4 assets):
+  endpoint  = wss://external-api-ws.kalshi.com/trade-api/ws/v2   (the docs'
+              "/cfbenchmarks_value" base 404s on the ELB; the feed is a CHANNEL
+              on the standard trade-api ws path, also served on this host).
+  auth      = RSA-PSS signed KALSHI-ACCESS-KEY/SIGNATURE/TIMESTAMP over
+              f"{ts}GET/trade-api/ws/v2" (pykalshi _base scheme). NOT "apiKey in
+              user field" (a docs red herring).
+  subscribe = {"id":N,"cmd":"subscribe","params":{"channels":["cfbenchmarks_value"],
+              "index_ids":[...]}}  ->  {"type":"subscribed","msg":{"channel":...,"sid":1}}
+              ("indexlist" is rejected code=5 Unknown command; unused since the 4
+              index_ids are known: BRTI, ETHUSD_RTI, SOLUSD_RTI, XRPUSD_RTI).
+  msg       = {type:"cfbenchmarks_value", sid, seq, msg:{index_id, received_at(ms),
+              data:"<raw CF JSON frame str>", avg_60s_data:{value,window_size,
+              window_start_ts_ms,window_end_ts_exclusive},
+              last_60s_windowed_average_15min? (only at :00/:15/:30/:45)}}.
 
 READ-ONLY: pure WS read. No order imports, no placement, no prod DB.
 Usage:  run_capped python research/kalshi_crypto_v2/probe_cfbenchmarks.py
@@ -42,16 +51,66 @@ import sys
 import time
 from collections import defaultdict
 
-ENDPOINT = "wss://external-api-ws.kalshi.com/cfbenchmarks_value"
-SIGN_PATH = "/cfbenchmarks_value"          # EMPIRICAL — adjust if handshake 401s
+# RESOLVED empirically 2026-08-01 (verdict GO on BTC/ETH/SOL/XRP). The docs'
+# dedicated "/cfbenchmarks_value" base 404s (AWS ELB); the feed is the
+# cfbenchmarks_value CHANNEL on the standard trade-api ws PATH, served on the
+# external host, with ordinary RSA-PSS signed headers (NOT "apiKey in user
+# field"). Env overrides retained for future iteration.
+ENDPOINT = os.getenv("CF_WS_ENDPOINT", "wss://external-api-ws.kalshi.com/trade-api/ws/v2")
+SIGN_PATH = os.getenv("CF_WS_SIGN_PATH", "/trade-api/ws/v2")
+USE_USERINFO = os.getenv("CF_WS_USERINFO", "0") not in ("0", "false", "")
 DEFAULT_INDEX_IDS = ["BRTI", "ETHUSD_RTI", "SOLUSD_RTI", "XRPUSD_RTI"]
 ASSET_OF = {"BRTI": "BTC", "ETHUSD_RTI": "ETH", "SOLUSD_RTI": "SOL", "XRPUSD_RTI": "XRP"}
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 RUN_SECONDS = 45
 
 
+_SECRETS: list[str] = []
+
+
+def _scrub(s: str) -> str:
+    """Remove any known secret substrings (api key id, pem) from output. The
+    redaction guardrail: secret values never reach stdout/stderr."""
+    for sec in _SECRETS:
+        if sec and len(sec) >= 6:
+            s = s.replace(sec, "<redacted>")
+    return s
+
+
 def _log(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
+    print(_scrub(msg), file=sys.stderr, flush=True)
+
+
+class CredError(Exception):
+    """Vault/env credential failure — surfaced as a verdict-first STOP, redacted."""
+
+
+def load_creds() -> tuple[str, str, str]:
+    """Return (api_key_id, private_key_pem, source). In-process only; never
+    written to disk. Order: (1) env override (prod/systemd), (2) Azure Key Vault
+    via DefaultAzureCredential + SecretClient (house pattern, secrets.py:245).
+    Fails LOUDLY (CredError) — no file fallback. Never returns/logs values."""
+    kid = os.getenv("KALSHI_KAREN_API_KEY_ID")
+    pem = os.getenv("KALSHI_KAREN_PRIVATE_KEY_PEM")
+    if kid and pem:
+        return kid, pem.replace("\\n", "\n"), "env-override"
+    vault_uri = os.getenv("KEY_VAULT_URI")
+    if not vault_uri:
+        raise CredError("KEY_VAULT_URI not set and KALSHI_KAREN_* not in env")
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+    except ImportError as e:
+        raise CredError(f"azure SDK missing: {e}")
+    try:
+        client = SecretClient(vault_url=vault_uri, credential=DefaultAzureCredential())
+        kid = client.get_secret("KALSHI-KAREN-API-KEY-ID").value
+        pem = client.get_secret("KALSHI-KAREN-PRIVATE-KEY-PEM").value
+    except Exception as e:  # auth / forbidden / not-found — message has no secret value
+        raise CredError(f"Key Vault fetch failed ({type(e).__name__}: {str(e)[:160]})")
+    if not kid or not pem:
+        raise CredError("Key Vault returned empty KALSHI-KAREN secret(s)")
+    return kid, pem.replace("\\n", "\n"), "keyvault"
 
 
 def make_signer(pem: str):
@@ -72,7 +131,7 @@ def make_signer(pem: str):
 
 def report(verdict: str, per_asset: dict, diagnostics: list[str]) -> None:
     """Print the self-contained, verdict-first report to stdout."""
-    print(f"VERDICT: {verdict}")
+    print(f"VERDICT: {_scrub(verdict)}")
     print("\n=== per-asset detail ===")
     hdr = f"{'asset':5} {'index_id':14} {'resolved':9} {'rate/s':>7} {'trailing60s':>11}"
     print(hdr + "\n" + "-" * len(hdr))
@@ -83,19 +142,17 @@ def report(verdict: str, per_asset: dict, diagnostics: list[str]) -> None:
     if diagnostics:
         print("\n=== diagnostics ===")
         for line in diagnostics:
-            print(line)
+            print(_scrub(line))
     print(f"\nendpoint={ENDPOINT}  sign_path={SIGN_PATH}  run_seconds={RUN_SECONDS}")
 
 
 async def run() -> int:
-    kid = os.getenv("KALSHI_KAREN_API_KEY_ID")
-    pem = os.getenv("KALSHI_KAREN_PRIVATE_KEY_PEM")
-    if not kid or not pem:
-        report("STOP - creds absent (KALSHI_KAREN_API_KEY_ID / "
-               "KALSHI_KAREN_PRIVATE_KEY_PEM not in process env; no file fallback by design)",
-               {}, [])
+    try:
+        kid, pem, source = load_creds()
+    except CredError as e:
+        report(f"STOP - creds unavailable ({e}). Never falls back to files.", {}, [])
         return 2
-    pem = pem.replace("\\n", "\n")
+    _SECRETS.extend([kid, pem])  # scrub these from all subsequent output
 
     try:
         import websockets
@@ -106,7 +163,12 @@ async def run() -> int:
     ts, sig = make_signer(pem)("GET", SIGN_PATH)
     headers = {"KALSHI-ACCESS-KEY": kid, "KALSHI-ACCESS-SIGNATURE": sig,
                "KALSHI-ACCESS-TIMESTAMP": ts}
-    _log(f"connecting {ENDPOINT} (key_id={kid[:6]}..., sign_path={SIGN_PATH})")
+    # apiKey-in-user (AsyncAPI apiKey/in:user): Basic auth, username=api_key_id,
+    # empty password (websockets rejects bare userinfo without a password).
+    if USE_USERINFO:
+        headers["Authorization"] = "Basic " + base64.b64encode(f"{kid}:".encode()).decode()
+    _log(f"creds source={source}; connecting {ENDPOINT} "
+         f"(sign_path={SIGN_PATH}, basic_apikey={'on' if USE_USERINFO else 'off'})")
 
     try:
         try:
@@ -120,9 +182,8 @@ async def run() -> int:
                "Check SIGN_PATH / auth scheme before any T2 design.", {}, [])
         return 2
 
-    _log("connected; sending indexlist + subscribe (best-guess envelope)")
-    await ws.send(json.dumps({"id": 1, "cmd": "indexlist"}))
-    await ws.send(json.dumps({"id": 2, "cmd": "subscribe",
+    _log("connected; subscribing to cfbenchmarks_value for BTC/ETH/SOL/XRP")
+    await ws.send(json.dumps({"id": 1, "cmd": "subscribe",
                               "params": {"channels": ["cfbenchmarks_value"],
                                          "index_ids": DEFAULT_INDEX_IDS}}))
 

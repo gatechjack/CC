@@ -141,3 +141,46 @@ alternative confirmations of the SAME fire pool (different entry timestamps), no
 windows). The retro-test is therefore a STRUCTURAL SCREEN (rank signals, expose gross mis-prediction),
 NOT a statistically-powered EV verdict. Canonical EV comes from the T2 forward corpus per the metrics
 discipline above. T4 alignment to Kalshi settled windows is pending Kalshi API access (creds).
+
+---
+
+## 7. cfbenchmarks_value channel verification — VERDICT: GO (2026-08-01)
+
+**All four settlement indices stream live**, ~1/sec, with the trailing-60s average present:
+
+| asset | index_id | tick rate | trailing-60s (`avg_60s_data`) |
+|---|---|---|---|
+| BTC | `BRTI` | ~1.00/s | yes |
+| ETH | `ETHUSD_RTI` | ~1.00/s | yes |
+| SOL | `SOLUSD_RTI` | ~1.00/s | yes |
+| XRP | `XRPUSD_RTI` | ~1.00/s | yes |
+
+The SOL/XRP missing-asset STOP-condition did NOT trigger. Probe: `research/kalshi_crypto_v2/probe_cfbenchmarks.py`.
+
+**Creds (house pattern):** fetched at runtime from Azure Key Vault (`kv-tc-vtwbowt3wtkpy`) via
+`azure-identity` `DefaultAzureCredential` (local `az login` context) + `SecretClient`, reusing the
+`trading_corp/utils/secrets.py:245` mechanism scoped to `KALSHI-KAREN-*`. In-process only; env-var override
+retained for prod/systemd; fail-loud, no file fallback. Gated on `KEY_VAULT_URI`.
+
+**RESOLVED protocol (empirical — the docs were misleading):**
+- endpoint = `wss://external-api-ws.kalshi.com/trade-api/ws/v2`. The docs' dedicated
+  `/cfbenchmarks_value` base **404s** (AWS ELB). A plain-GET path probe (`probe_paths.py`) showed every
+  candidate 404 EXCEPT `/trade-api/ws/v2` (401 `token_authentication_failure`) -> the feed is the
+  `cfbenchmarks_value` CHANNEL on the standard trade-api ws path, also served on the external host.
+- auth = ordinary RSA-PSS signed `KALSHI-ACCESS-KEY/SIGNATURE/TIMESTAMP` over `/trade-api/ws/v2` (the
+  docs' "apiKey in user field" was a red herring; Basic-auth attempt also 404'd — it was a path, not auth, issue).
+- subscribe = `{"id":N,"cmd":"subscribe","params":{"channels":["cfbenchmarks_value"],"index_ids":[...]}}`
+  -> `{"type":"subscribed","msg":{"channel":"cfbenchmarks_value","sid":1}}`. `indexlist` is rejected
+  (code 5 Unknown command); unused since the 4 index_ids are known.
+- message = `{type:"cfbenchmarks_value", sid, seq, msg:{index_id, received_at(ms), data:"<raw CF frame>",
+  avg_60s_data:{value, window_size, window_start_ts_ms, window_end_ts_exclusive},
+  last_60s_windowed_average_15min? (only at :00/:15/:30/:45)}}`. `window_size` warms 0->60 over a minute.
+
+**Implication for T2:** the forward logger connects to this endpoint + subscribes the 4 index_ids, logging
+`received_at` + parsed `data.value` + `avg_60s_data` (the settlement TWAP). pykalshi's `AsyncFeed` still
+can't be reused directly (hardcoded channel set + no `index_ids` param), but the hand-rolled `websockets`
+client is proven. Kalshi market quotes (both-sided) + candlesticks for T1/T4 remain to be probed next.
+
+**Guardrail note:** during protocol iteration the Karen **api_key_id** (a UUID identifier, not the private
+key) appeared once in a tool-output error before output-redaction was added; the private key PEM never
+appeared, and the key id is unusable without the private key. Redaction now scrubs all creds from stdout/stderr.
