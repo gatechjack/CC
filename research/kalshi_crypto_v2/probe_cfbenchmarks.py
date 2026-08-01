@@ -1,19 +1,28 @@
 """Phase-1 first authenticated task: PROBE the Kalshi cfbenchmarks_value WS feed.
 
-Operator directive: prove it with a real subscribe. Report (1) WS base reachable
-+ auth accepted, (2) which index_ids resolve for BTC/ETH/SOL/XRP, (3) tick rate,
-(4) whether the trailing-60s average field is present per asset. If the channel
-is absent / wrong-base / missing an asset -> this prints a STOP verdict; the
-operator (not the agent) decides any synthetic-composite fallback.
+Pattern 1 (operator-run one-shot): reads KALSHI_KAREN_API_KEY_ID and
+KALSHI_KAREN_PRIVATE_KEY_PEM from PROCESS ENV ONLY (no file fallback; fails
+loudly if absent). The operator fetches Karen creds from Azure Key Vault and
+runs this; creds never touch repo, disk, or agent session env.
+
+Output is self-contained and VERDICT-FIRST on stdout:
+  line 1  = VERDICT: GO | STOP - <reason>
+  then    = per-asset detail (index_id resolved y/n, tick rate, trailing-60s y/n)
+  then    = diagnostics (indexlist, raw samples, server errors, endpoint/sign path)
+Progress goes to stderr so pasted stdout is the clean report.
+
+Operator directive: prove the channel with a real subscribe. STOP if the base
+is wrong, auth fails, zero ticks arrive, or ANY of BTC/ETH/SOL/XRP has no index
+(SOL/XRP unconfirmed in docs). The synthetic-composite fallback is the
+operator's decision, not the agent's.
 
 Spec (docs.kalshi.com/websockets/cfbenchmarks-value, verified 2026-08-01):
   base    = wss://external-api-ws.kalshi.com/cfbenchmarks_value  (DEDICATED base,
             NOT trade-api/ws/v2; pykalshi AsyncFeed cannot reach it)
-  channel = cfbenchmarks_value ; subscribe param = index_ids (e.g. "BRTI",
-            "ETHUSD_RTI"; ["all"] for all; indexlist action lists them)
+  channel = cfbenchmarks_value ; subscribe param = index_ids
   msg     = {type, sid, seq, msg:{index_id, received_at, data,
             avg_60s_data:{value,window_size,...}, last_60s_windowed_average_15min?}}
-  auth    = signed API-key headers (KALSHI-ACCESS-KEY/SIGNATURE/TIMESTAMP),
+  auth    = signed headers KALSHI-ACCESS-KEY/SIGNATURE/TIMESTAMP,
             RSA-PSS(SHA256, salt=digest) over f"{ts}{method}{path}" (pykalshi _base).
 
 TWO EMPIRICAL UNKNOWNS (undocumented client schema) — adjust from the live log:
@@ -37,38 +46,12 @@ ENDPOINT = "wss://external-api-ws.kalshi.com/cfbenchmarks_value"
 SIGN_PATH = "/cfbenchmarks_value"          # EMPIRICAL — adjust if handshake 401s
 DEFAULT_INDEX_IDS = ["BRTI", "ETHUSD_RTI", "SOLUSD_RTI", "XRPUSD_RTI"]
 ASSET_OF = {"BRTI": "BTC", "ETHUSD_RTI": "ETH", "SOLUSD_RTI": "SOL", "XRPUSD_RTI": "XRP"}
+ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 RUN_SECONDS = 45
-HERE = os.path.dirname(os.path.abspath(__file__))
-CRED_FILE = os.path.join(HERE, ".karen_creds.json")
 
 
-def load_creds() -> tuple[str, str]:
-    """Karen creds from env (preferred) or a local gitignored file.
-
-    File shape: {"api_key_id": "...", "private_key_pem": "-----BEGIN..."}.
-    The file path exists so the operator can deliver creds even when session
-    env vars do not propagate into spawned tool subprocesses.
-    """
-    kid = os.getenv("KALSHI_KAREN_API_KEY_ID") or os.getenv("KALSHI_API_KEY_ID")
-    pem = os.getenv("KALSHI_KAREN_PRIVATE_KEY_PEM") or os.getenv("KALSHI_PRIVATE_KEY_PEM")
-    if kid and pem:
-        return kid, pem.replace("\\n", "\n")
-    # Easiest operator drop: raw .pem file (real newlines, no escaping) + id file.
-    pem_file = os.path.join(HERE, ".karen_key.pem")
-    keyid_file = os.path.join(HERE, ".karen_key_id.txt")
-    if os.path.exists(pem_file) and (kid or os.path.exists(keyid_file)):
-        with open(pem_file) as f:
-            pem2 = f.read()
-        kid2 = kid or open(keyid_file).read().strip()
-        return kid2, pem2
-    if os.path.exists(CRED_FILE):
-        with open(CRED_FILE) as f:
-            d = json.load(f)
-        return d["api_key_id"], d["private_key_pem"]
-    raise SystemExit(
-        "No Karen creds. Provide ONE of: (a) env KALSHI_KAREN_API_KEY_ID + "
-        "KALSHI_KAREN_PRIVATE_KEY_PEM; (b) files .karen_key.pem + .karen_key_id.txt "
-        f"in {HERE}; (c) {CRED_FILE} = {{'api_key_id','private_key_pem'}}. All gitignored.")
+def _log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
 
 
 def make_signer(pem: str):
@@ -87,32 +70,57 @@ def make_signer(pem: str):
     return sign
 
 
+def report(verdict: str, per_asset: dict, diagnostics: list[str]) -> None:
+    """Print the self-contained, verdict-first report to stdout."""
+    print(f"VERDICT: {verdict}")
+    print("\n=== per-asset detail ===")
+    hdr = f"{'asset':5} {'index_id':14} {'resolved':9} {'rate/s':>7} {'trailing60s':>11}"
+    print(hdr + "\n" + "-" * len(hdr))
+    for a in ASSETS:
+        d = per_asset.get(a, {})
+        print(f"{a:5} {d.get('index_id', '-'):14} {('yes' if d.get('resolved') else 'no'):9} "
+              f"{d.get('rate', 0.0):>7.2f} {('yes' if d.get('trailing60s') else 'no'):>11}")
+    if diagnostics:
+        print("\n=== diagnostics ===")
+        for line in diagnostics:
+            print(line)
+    print(f"\nendpoint={ENDPOINT}  sign_path={SIGN_PATH}  run_seconds={RUN_SECONDS}")
+
+
 async def run() -> int:
+    kid = os.getenv("KALSHI_KAREN_API_KEY_ID")
+    pem = os.getenv("KALSHI_KAREN_PRIVATE_KEY_PEM")
+    if not kid or not pem:
+        report("STOP - creds absent (KALSHI_KAREN_API_KEY_ID / "
+               "KALSHI_KAREN_PRIVATE_KEY_PEM not in process env; no file fallback by design)",
+               {}, [])
+        return 2
+    pem = pem.replace("\\n", "\n")
+
     try:
         import websockets
     except ImportError:
-        print("MISSING dep: pip install websockets")
+        report("STOP - missing dep 'websockets' (pip install websockets)", {}, [])
         return 3
-    kid, pem = load_creds()
+
     ts, sig = make_signer(pem)("GET", SIGN_PATH)
     headers = {"KALSHI-ACCESS-KEY": kid, "KALSHI-ACCESS-SIGNATURE": sig,
                "KALSHI-ACCESS-TIMESTAMP": ts}
-    print(f"connecting: {ENDPOINT}\n  key_id={kid[:6]}... sign_path={SIGN_PATH}")
+    _log(f"connecting {ENDPOINT} (key_id={kid[:6]}..., sign_path={SIGN_PATH})")
 
     try:
         try:
             ws = await websockets.connect(ENDPOINT, additional_headers=headers,
                                           ping_interval=20, ping_timeout=10)
-        except TypeError:  # older websockets uses extra_headers
+        except TypeError:
             ws = await websockets.connect(ENDPOINT, extra_headers=headers,
                                           ping_interval=20, ping_timeout=10)
     except Exception as e:
-        print(f"HANDSHAKE FAILED ({type(e).__name__}): {e}")
-        print("VERDICT: STOP — cannot connect/auth to cfbenchmarks base. "
-              "Check SIGN_PATH / auth scheme before T2 design.")
+        report(f"STOP - handshake/auth failed ({type(e).__name__}: {e}). "
+               "Check SIGN_PATH / auth scheme before any T2 design.", {}, [])
         return 2
 
-    print("connected. sending indexlist + subscribe (best-guess envelope) ...")
+    _log("connected; sending indexlist + subscribe (best-guess envelope)")
     await ws.send(json.dumps({"id": 1, "cmd": "indexlist"}))
     await ws.send(json.dumps({"id": 2, "cmd": "subscribe",
                               "params": {"channels": ["cfbenchmarks_value"],
@@ -122,7 +130,6 @@ async def run() -> int:
     first_ts: dict[str, int] = {}
     last_ts: dict[str, int] = {}
     has_avg60: dict[str, bool] = defaultdict(bool)
-    has_q15: dict[str, bool] = defaultdict(bool)
     avail_index_ids: list[str] = []
     raw_samples: list[str] = []
     errors: list[str] = []
@@ -130,7 +137,7 @@ async def run() -> int:
     deadline = time.time() + RUN_SECONDS
     while time.time() < deadline:
         try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=deadline - time.time())
+            raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
         except asyncio.TimeoutError:
             break
         except Exception as e:
@@ -155,45 +162,48 @@ async def run() -> int:
                 last_ts[iid] = rat
             if isinstance(inner.get("avg_60s_data"), dict):
                 has_avg60[iid] = True
-            if inner.get("last_60s_windowed_average_15min") is not None:
-                has_q15[iid] = True
-        elif mtype in ("error", "subscribed", "unsubscribed") or "error" in str(mtype):
+        elif mtype and ("error" in str(mtype) or mtype in ("error", "subscribed", "unsubscribed")):
             errors.append(raw if isinstance(raw, str) else str(raw))
 
-    await ws.close()
+    try:
+        await ws.close()
+    except Exception:
+        pass
 
-    print("\n=== raw sample messages (first few) ===")
-    for s in raw_samples:
-        print("  " + (s[:300] + ("..." if len(s) > 300 else "")))
-    if errors:
-        print("\n=== server errors / control frames ===")
-        for e in errors[:10]:
-            print("  " + e[:300])
-    print(f"\n=== indexlist available index_ids: {avail_index_ids or '(none received)'} ===")
-    print("\n=== per-index tick summary ===")
-    hdr = f"{'index_id':14} {'asset':5} {'ticks':>6} {'rate/s':>7} {'avg60s':>7} {'q15':>5}"
-    print(hdr + "\n" + "-" * len(hdr))
-    for iid in DEFAULT_INDEX_IDS + [k for k in counts if k not in DEFAULT_INDEX_IDS]:
+    per_asset: dict[str, dict] = {}
+    for iid, asset in ASSET_OF.items():
         n = counts.get(iid, 0)
         span = (last_ts.get(iid, 0) - first_ts.get(iid, 0)) / 1000 if n > 1 else 0
-        rate = (n - 1) / span if span > 0 else 0.0
-        print(f"{iid:14} {ASSET_OF.get(iid, '?'):5} {n:>6} {rate:>7.2f} "
-              f"{str(has_avg60.get(iid, False)):>7} {str(has_q15.get(iid, False)):>5}")
+        per_asset[asset] = {
+            "index_id": iid, "resolved": n > 0,
+            "rate": (n - 1) / span if span > 0 else 0.0,
+            "trailing60s": has_avg60.get(iid, False),
+        }
+    resolved = {a for a in ASSETS if per_asset[a]["resolved"]}
+    missing = [a for a in ASSETS if a not in resolved]
 
-    resolved = {ASSET_OF[i] for i in DEFAULT_INDEX_IDS if counts.get(i, 0) > 0}
-    missing = [a for a in ("BTC", "ETH", "SOL", "XRP") if a not in resolved]
-    print("\n=== VERDICT ===")
     if not counts:
-        print("STOP — connected but received ZERO cfbenchmarks_value ticks. "
-              "Command envelope or subscribe params likely wrong (see raw/errors above).")
-        return 2
-    if missing:
-        print(f"STOP-RISK — no ticks for {missing}. Confirm SOL/XRP have a CF index "
-              "(indexlist) before T2 design; missing-asset fallback is an operator call.")
-        return 1
-    print("OK — all four assets stream cfbenchmarks_value with trailing-60s data. "
-          "T2 logger can build on this base. (Confirm tick rate ~1/s above.)")
-    return 0
+        verdict = ("STOP - connected + authed but ZERO cfbenchmarks_value ticks in "
+                   f"{RUN_SECONDS}s. Command envelope / subscribe params likely wrong "
+                   "(see raw samples + errors below).")
+        rc = 2
+    elif missing:
+        verdict = (f"STOP - no ticks for {missing}. Confirm these have a CF index via "
+                   "indexlist; missing-asset fallback is an operator decision.")
+        rc = 1
+    else:
+        verdict = ("GO - all four assets stream cfbenchmarks_value with trailing-60s data. "
+                   "T2 logger can build on this base (confirm ~1/s rate below).")
+        rc = 0
+
+    diags = [f"indexlist available_index_ids: {avail_index_ids or '(none received)'}"]
+    if errors:
+        diags.append("server errors / control frames:")
+        diags += ["  " + e[:300] for e in errors[:8]]
+    diags.append("raw sample messages (first few):")
+    diags += ["  " + (s[:280] + ("..." if len(s) > 280 else "")) for s in raw_samples] or ["  (none)"]
+    report(verdict, per_asset, diags)
+    return rc
 
 
 if __name__ == "__main__":
