@@ -789,13 +789,6 @@ async def run(argv: list[str] | None = None) -> int:
         # aggressive RH account). Other RH divisions (IRA, Joint) follow
         # different strategies and aren't part of this scan command.
         scan_broker = data_exec.brokers.get("robinhood_pmcc") or paper_broker
-        # #4: real buying-power for the combo risk gate (the carve-out inside
-        # propose_pmcc_combo exempts defensive/credit rolls + protective closes).
-        try:
-            _snap = await scan_broker.snapshot()
-            _scan_equity = float(getattr(_snap, "equity", 0.0) or 0.0) or None
-        except Exception:
-            _scan_equity = None
 
         # Grab current regime for LLM context
         try:
@@ -834,37 +827,26 @@ async def run(argv: list[str] | None = None) -> int:
         # ONE Approve button (eliminating the "approve close, reject
         # open → naked short" failure mode). Solo orders (no pair_id)
         # remain sequential — same blast-radius bound as pre-B.3.
-        from trading_corp.agents.strategies._pmcc_combo import propose_pmcc_combo
         groups = _group_orders_by_pair_id(orders)
         for group in groups:
-            # Phase A: a combo-tagged group (roll_short) is ONE atomic combo —
-            # route it to the combo HITL path (place_combo on approve), NOT the
-            # per-leg single-leg path. roll_leap groups are NOT combo-tagged: they
-            # fall through to the existing per-leg path (advisory; the fail-closed
-            # data_exec guard refuses to place them).
-            if len(group) > 1 and all((o.extra or {}).get("is_multi_leg") for o in group):
-                combo_id = (group[0].extra or {}).get("combo_id")
-                queued = await propose_pmcc_combo(
-                    group,
-                    risk_agent=risk_agent,
-                    logger_agent=logger_agent,
-                    pending_combo_registry=pmcc_pending_combo_registry,
-                    division="robinhood_pmcc",
-                    db_url=secrets.db_url,
-                    account_equity=_scan_equity,
-                )
-                if queued:
-                    await channel.push(
-                        f"PMCC roll_short combo `{str(combo_id)[:8]}` "
-                        f"({group[0].symbol}) proposed — open web app to approve "
-                        "(atomic: both legs fill or neither)."
-                    )
+            # P3a: SHORT-SIDE groups (roll_short combo now; close_short/open_short at
+            # P3b) are UNHOOKED from /approvals + ceo_graph/Telegram. The verdict is
+            # already stored by scan() and surfaces on the division PANEL (the sole
+            # approval surface) + the P2 digest deep-link — NOT routed here, and NEVER
+            # per-leg (so a roll can't half-fill into a naked short). Mandate-safe: a
+            # group with any LEAP-touching leg is NOT short-side and falls through.
+            if _is_pmcc_short_side_group(group):
                 logger_agent.log_event(
-                    "pmcc", "scan_combo_result",
-                    {"combo_id": combo_id, "symbol": group[0].symbol,
-                     "queued": bool(queued), "leg_count": len(group)},
+                    "pmcc", "scan_short_side_panel_only",
+                    {"symbol": group[0].symbol,
+                     "actions": sorted({
+                         (o.extra or {}).get("action") for o in group
+                         if (o.extra or {}).get("action")}),
+                     "leg_count": len(group)},
                 )
                 continue
+            # roll_leap (advisory; data_exec refuses to place) + close_all (out-of-
+            # mandate; see the close_all investigation) keep the existing path.
             if len(group) == 1:
                 order = group[0]
                 status = await _run_order(
@@ -1680,10 +1662,6 @@ async def run(argv: list[str] | None = None) -> int:
         # strategy re-proposes on the next manage() tick if conditions
         # still hold.
         pending_combo_registry = PendingComboRegistry(logger_agent=logger_agent)
-        # PMCC roll_short atomic combos (Phase A) — its own registry, mirroring
-        # the per-division pattern (IC + tasty each have one). Read + resolved by
-        # the /approvals/pmcc-combos/{id} routes; proposed by `_on_scan`.
-        pmcc_pending_combo_registry = PendingComboRegistry(logger_agent=logger_agent)
 
         # Broker for the robinhood_joint division. Falls back to the
         # process paper_broker if the RH connect failed at startup
@@ -2370,7 +2348,6 @@ async def run(argv: list[str] | None = None) -> int:
             tasty_strategy=tasty_strategy,
             tasty_telegram_batcher=tasty_telegram_batcher,
             tasty_pending_combo_registry=tasty_pending_combo_registry,
-            pmcc_pending_combo_registry=pmcc_pending_combo_registry,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -2843,7 +2820,6 @@ async def _start_web_server(
     tasty_strategy: Any = None,
     tasty_telegram_batcher: Any = None,
     tasty_pending_combo_registry: Any = None,
-    pmcc_pending_combo_registry: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -2884,7 +2860,6 @@ async def _start_web_server(
         tasty_strategy=tasty_strategy,
         tasty_telegram_batcher=tasty_telegram_batcher,
         tasty_pending_combo_registry=tasty_pending_combo_registry,
-        pmcc_pending_combo_registry=pmcc_pending_combo_registry,
     )
     app = create_app(deps)
     config = uvicorn.Config(
@@ -5046,6 +5021,32 @@ async def _make_morning_brief(trend_agent, portfolio, ceo, logger_agent) -> str:
     brief = await ceo.morning_brief(regime, snap, pending_approvals=0, recent_events=events)
     logger_agent.log_brief("morning", brief.body_md)
     return brief.body_md
+
+
+# P3 (2026-07-31): SHORT-SIDE actions the PMCC division manages are unhooked from
+# the global /approvals + ceo_graph/Telegram approval and surface ONLY on the
+# division panel (the sole approval surface) + the P2 digest deep-link. A group is
+# "short-side" only when EVERY leg is a short-call action — so any LEAP-touching leg
+# (open_leap / close_leap / roll_leap_*) keeps the group OUT of the panel-only path
+# (mandate-safe: the panel can never drive a LEAP order). roll_short adds its two
+# tags (P3a); close_short_urgent (P3b) and open_short_call (P3b) are added with their
+# panel affordances so a skipped action is always actionable on the panel.
+# Grows per independently-deployable unit: P3a=roll_short; P3b-close adds
+# close_short_urgent (with the panel buy-to-close affordance); P3b-open adds
+# open_short_call (with the panel sell-cover affordance). An action is only added
+# here once it is actionable on the panel, so a skipped action is never stranded.
+_PMCC_SHORT_SIDE_ACTIONS = frozenset({
+    "roll_short_call_close",   # roll: buy-to-close the current short (short-side)
+    "roll_short_call_open",    # roll: sell-to-open the new short (short-side)
+})
+
+
+def _is_pmcc_short_side_group(group: "list[ProposedOrder]") -> bool:
+    """True iff EVERY leg in `group` is a short-side action (see set above). Empty
+    tags or any non-short-side (LEAP-touching) leg -> False, so the group falls
+    through to the existing routing instead of the panel-only path."""
+    tags = {(o.extra or {}).get("action") for o in group}
+    return bool(tags) and None not in tags and tags.issubset(_PMCC_SHORT_SIDE_ACTIONS)
 
 
 def _group_orders_by_pair_id(
