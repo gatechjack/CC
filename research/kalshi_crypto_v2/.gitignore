@@ -1,2 +1,5 @@
 # Large read-only prod export (~11 MB, reproducible via kc2_pull.ps1) — do not commit.
 bitunix_bars_export.csv
+# Local T2 smoke-test sqlite (temp; never prod).
+*.db
+_smoke.db

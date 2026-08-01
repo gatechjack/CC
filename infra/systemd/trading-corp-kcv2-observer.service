@@ -1,0 +1,30 @@
+[Unit]
+Description=Trading Corp - kalshi_crypto_v2 READ-ONLY forward logger (Phase 1 research observer)
+After=network-online.target trading-corp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=azureuser
+Group=azureuser
+WorkingDirectory=/home/azureuser/trading_corp
+# KV fallback: the VM managed identity (Key Vault Secrets User) resolves
+# KALSHI-KAREN-* when KALSHI_KAREN_* env is not set. Read-only observer.
+Environment="KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/"
+Environment="PYTHONIOENCODING=utf-8"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PATH=/home/azureuser/trading_corp/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp.agents.strategies.kalshi_crypto_v2_observer
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=10
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/home/azureuser/trading_corp/data
+
+[Install]
+WantedBy=multi-user.target
