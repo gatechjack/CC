@@ -1,3 +1,2 @@
-kc2_pull.ps1
-research/kalshi_crypto_v2/bitunix_bars_export.csv
-*.csv
+# Large read-only prod export (~11 MB, reproducible via kc2_pull.ps1) — do not commit.
+bitunix_bars_export.csv

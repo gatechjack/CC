@@ -102,3 +102,42 @@ EV-at-fill in the JSON payload; never emits orders. This is the exact shape to c
 **Metrics discipline (non-negotiable):** EV-at-fill is the only decision metric; pseudo-EV(candle) is
 trade-price-based and ranks only; flat-window bucket reported separately; validation gate = positive mean
 EV-at-fill on winners AND losers on the forward corpus, fees in, realistic size.
+
+---
+
+## 6. Phase-1 findings: bar depth + T3a signal census (2026-08-01)
+
+**Data source resolved.** The local DB copy has NO bar table; `bitunix_bar_history` is archived on prod
+only. Pulled read-only via `kc2_pull.ps1` (operator-run; `sqlite3 -readonly`, no prod writes) ->
+`research/kalshi_crypto_v2/bitunix_bars_export.csv` (172,142 rows, 11.3 MB). Operator declined a blanket
+SSH grant; if repeated prod reads become friction, the agreed path is a forced-command authorized_keys
+key restricted to a whitelisted read-only script (enforced, not behavioral) — design when needed.
+
+### Bar depth (retro corpus)
+| asset | 15m rows | 15m window (UTC) | 3m rows | 1h | 4h | 1d |
+|---|---|---|---|---|---|---|
+| BTCUSDT | 3,759 | 2026-06-23 -> 2026-08-01 (39.2d) | 37,384 | 86.4d | 111.3d | 277.0d |
+| ETHUSDT | 3,759 | 2026-06-23 -> 2026-08-01 (39.2d) | 37,580 | 55.0d | - | - |
+| SOLUSDT | 3,759 | same | 37,579 | 55.0d | - | - |
+| XRPUSDT | 3,759 | same | 37,580 | 55.0d | - | - |
+
+15m coverage ~100% (3,759 bars == 39.16d x 96). Full multi-TF regime (h1+h4+d1) is **BTC-only**;
+ETH/SOL/XRP have 1h only -> regime for those runs partial/SAFE_MODE. Funding-rate history is NOT in the
+bar table, so retro regime runs with `funding_rate=None` (handled).
+
+### T3a SFP signal census (lifted AS-IS, default constants, long-only)
+26 raw SFP fires (ARMED) over the 39d window; BOS-confirmed entries by path:
+
+| path | BTC | ETH | SOL | XRP | total |
+|---|---|---|---|---|---|
+| Mode-A (15m BOS) | 1 | 2 | 5 | 2 | 10 |
+| Mode-B (3m BOS)  | 2 | 3 | 7 | 1 | 13 |
+
+Signal span 2026-07-12 -> 2026-07-29. Full list: `research/kalshi_crypto_v2/signals_retro.csv`
+(asset, sfp_mode, bos_tf, entry_ts_ms, entry_utc, swept levels, bos_ref_high). Mode-A and Mode-B are
+alternative confirmations of the SAME fire pool (different entry timestamps), not additive opportunities.
+
+**Load-bearing read:** the signal is RARE (~10-23 UP entries / 39d / 4 assets ~= 0.1% of Kalshi 15-min
+windows). The retro-test is therefore a STRUCTURAL SCREEN (rank signals, expose gross mis-prediction),
+NOT a statistically-powered EV verdict. Canonical EV comes from the T2 forward corpus per the metrics
+discipline above. T4 alignment to Kalshi settled windows is pending Kalshi API access (creds).
