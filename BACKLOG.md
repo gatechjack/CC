@@ -8,6 +8,26 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## 🔬 kalshi_crypto_v2 — Kalshi crypto reopen, Phase 1 RESEARCH  *(2026-08-01)*
+
+Does the Bitunix SFP/regime signal carry EV on Kalshi crypto binaries? Reopen of the SHELVED
+`kalshi_crypto` under its new-signal-source condition. NEW **read-only** observer scaffold (actor
+`kalshi_crypto_v2`); old division untouched. Branch `claude-2026-08-01b` off prod-live `dafe60b`.
+Full state + handoff in memory `kalshi-crypto-v2-phase1-2026-08-01`.
+
+- **Done:** T1 census + depth + hand-verify; cfbenchmarks_value channel VERIFIED (GO, 4/4 assets,
+  ~1/s + trailing-60s); T3a signal extraction (23 UP signals); T4 retro-test report (STRUCTURAL, n=23,
+  NO verdict — skill +0.02..0.03 inside noise, UP base rate ~0.50, not anti-predictive).
+- **T2 forward logger:** built + smoke-validated + packaged (`158aaa5`); **operator deploying** to
+  tc-prod-vm paper systemd. Runbook `research/kalshi_crypto_v2/T2_DEPLOY_RUNBOOK.md`; 4 `kcv2_*` tables.
+- **GATED — do not start early:** T5 basis report at **≥1 week** of forward `kcv2_*` data (Bitunix↔BRTI
+  divergence; empirically calibrate the flat threshold). D5 Phase-2 verdict draft after T5 + forward
+  **EV-at-fill** on the canonical corpus (positive mean on winners AND losers, fees in, realistic size).
+- **Standing:** agent read-only on prod; no order/placement surface (grep-enforced every commit);
+  deploys operator-gated; creds env→Key Vault fallback, in-memory, redacted.
+
+---
+
 ## ⏸ PAUSED — Lord Otter + Market Cypher feature work  *(2026-05-02 — Board direction)*
 
 Both crypto strategies are in **maintenance mode** until the PMCC
