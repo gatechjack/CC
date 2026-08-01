@@ -275,6 +275,57 @@ async def estimate_roll_from_quotes(
     }
 
 
+async def estimate_single_leg_from_quote(
+    order: ProposedOrder, broker: Any,
+) -> dict | None:
+    """LIVE-quote estimate for a SINGLE-leg PMCC SHORT-side action, in the same dict
+    shape (debit/credit/net/direction/strikes) `estimate_roll_from_quotes` returns:
+
+      buy-to-close (close_short) -> DEBIT  = ask · ratio  (you pay the ask to close)
+      sell-to-open (open_short)  -> CREDIT = bid · ratio  (you collect the bid)
+
+    Same `broker.get_option_quote` source + same ask/bid convention as the roll
+    estimate, so the panel number matches what dispatch prices. Per-share (× contracts
+    × 100 = total $, applied at display/notional, exactly as the roll card does).
+    Returns None on a missing quote; never raises; NON-mutating (the order reaches
+    dispatch untouched). LEAP-mandate: only ever called on short-call legs — it reads
+    the leg's own strike/expiration and never constructs a LEAP order."""
+    if order is None or getattr(order, "side", None) not in ("buy", "sell"):
+        return None
+    ex = order.extra or {}
+    try:
+        q = await broker.get_option_quote(
+            ex.get("underlying") or order.symbol, ex.get("expiration"),
+            float(ex.get("strike")), ex.get("option_type", "call"),
+        )
+    except Exception as e:      # noqa: BLE001 — any quote failure → no estimate
+        log.warning("estimate_single_leg: get_option_quote raised for %s: %s", order.symbol, e)
+        return None
+    q = q or {}
+    ratio = int(ex.get("ratio_quantity", 1) or 1)
+    if order.side == "buy":                     # buy-to-close → DEBIT (pay the ask)
+        ask = q.get("ask")
+        if ask is None:
+            return None
+        debit = round(float(ask) * ratio, 2)
+        return {
+            "debit": debit, "credit": 0.0, "net": round(-debit, 2), "net_abs": debit,
+            "direction": "debit",
+            "close_strike": ex.get("strike"), "close_expiration": ex.get("expiration"),
+            "open_strike": None, "open_expiration": None,
+        }
+    bid = q.get("bid")                          # sell-to-open cover → CREDIT (collect the bid)
+    if bid is None:
+        return None
+    credit = round(float(bid) * ratio, 2)
+    return {
+        "debit": 0.0, "credit": credit, "net": credit, "net_abs": credit,
+        "direction": "credit",
+        "open_strike": ex.get("strike"), "open_expiration": ex.get("expiration"),
+        "close_strike": None, "close_expiration": None,
+    }
+
+
 def snapshot_combo_for_consent(legs: list[ProposedOrder]) -> dict:
     """Capture the operator-APPROVED combo shape BEFORE dispatch reprice mutates
     it, so the consent guard can detect an adverse drift at dispatch time."""

@@ -1137,6 +1137,15 @@ def register(app: FastAPI) -> None:
         for clean web UX (loading spinner → result inline).
         """
         sym = symbol.upper()
+        # AUTONOMY SEAM (P3b, source-parameterized): this handler is the HITL panel
+        # gate — the operator's click IS the approval, so source='board'. The dispatch
+        # cores below (single-leg place / combo place_combo) thread `source` and hard-
+        # code NO HITL, so a future autonomous loop can call the same cores with
+        # source='auto' after applying _check_auto_execute's caps (max_close_debit /
+        # VIX — RETAINED in ceo_graph as the AUTO-path safety layer, DORMANT on this
+        # HITL path). Flipping auto_execute:true + moving the trigger from click to loop
+        # is then the only change — no execution re-plumbing.
+        source = "board"
         # Dashboard Approve = USER-INITIATED: mark the origin so exec-alerts
         # (build-abort + place_combo outcome) BYPASS dedupe — every click gets a
         # guaranteed ping even if identical to a prior one in-window.
@@ -1357,7 +1366,7 @@ def register(app: FastAPI) -> None:
                 continue
             for order in _legs:
                 order.status = "board_approved"
-                order.board_reason = "approved via web button (combo)"
+                order.board_reason = f"approved via panel combo (source={source})"
                 deps.logger_agent.log_proposed_order(order)
                 deps.logger_agent.log_event(
                     actor="board", kind="board_approved",
@@ -1437,8 +1446,13 @@ def register(app: FastAPI) -> None:
                 continue
             if verdict.verdict == "resize" and verdict.new_qty is not None:
                 order.qty = float(verdict.new_qty)
+            # SINGLE-LEG dispatch core (close_short buy-to-close / open_short sell-
+            # cover). Source-parameterized: no HITL hardcoded here — an auto loop would
+            # reach this same risk-eval + place with source='auto'. RiskAgent.evaluate
+            # (real-equity BP, halt, caps) already ran above; place() applies the
+            # advisory guard. LEAP-mandate: these orders are short-call only.
             order.status = "board_approved"
-            order.board_reason = "approved via web button"
+            order.board_reason = f"approved via panel (source={source})"
             deps.logger_agent.log_proposed_order(order)
             deps.logger_agent.log_event(
                 actor="board", kind="board_approved",

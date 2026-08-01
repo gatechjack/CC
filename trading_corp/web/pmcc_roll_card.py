@@ -74,24 +74,36 @@ async def build_pmcc_roll_card_extras(
 
     estimate: dict | None = None
     estimate_reason: str | None = None
-    # The debit/credit/net estimate is only meaningful for a 2-leg roll (one
-    # buy-to-close + one sell-to-open). A 4-leg roll_leap or a single-leg close would
-    # make `estimate_roll_from_quotes` pair the wrong legs, so guard on the shape —
-    # this lets the division panel call this helper for ANY action without showing a
-    # nonsense estimate (2026-07-30). The /approvals/pmcc-combos combos are always
-    # 2-leg rolls, so this is a no-op for the original caller.
+    # The debit/credit/net estimate depends on the action's SHAPE:
+    #   - 2-leg roll (1 buy-to-close + 1 sell-to-open)  -> estimate_roll_from_quotes
+    #   - single short-side leg (P3b: close_short buy-to-close / open_short sell-cover)
+    #     -> estimate_single_leg_from_quote (DEBIT=ask / CREDIT=bid, same source)
+    # A 4-leg roll_leap or any LEAP-touching action would pair the wrong legs, so we
+    # guard on the shape — the division panel calls this helper for ANY action without
+    # a nonsense estimate. (The removed /approvals combos were always 2-leg rolls.)
+    _single_action = (orders[0].extra or {}).get("action") if len(orders) == 1 else None
     n_buy = sum(1 for o in orders if getattr(o, "side", None) == "buy")
     n_sell = sum(1 for o in orders if getattr(o, "side", None) == "sell")
     is_two_leg_roll = len(orders) == 2 and n_buy == 1 and n_sell == 1
-    # No estimate for a BLOCKED card (Approve is hidden — we're recommending "let it
-    # expire", not a roll). Otherwise compute the live estimate from the SAME source
-    # dispatch uses.
-    if is_two_leg_roll and earnings.get("offer_roll", True) and broker is not None and orders:
+    is_single_short_side = _single_action in ("close_short_urgent", "open_short_call")
+    # A 2-leg roll is suppressed on a BLOCKED earnings card (we're recommending "let it
+    # expire", not roll). A single short-side leg is priced REGARDLESS of the earnings
+    # roll-block — an urgent buy-to-close must never be suppressed, and the panel shows
+    # the earnings state informationally alongside it.
+    if broker is not None and orders and (
+        (is_two_leg_roll and earnings.get("offer_roll", True)) or is_single_short_side
+    ):
         try:
-            from trading_corp.agents.strategies._pmcc_combo import (
-                estimate_roll_from_quotes,
-            )
-            estimate = await estimate_roll_from_quotes(orders, broker)
+            if is_two_leg_roll:
+                from trading_corp.agents.strategies._pmcc_combo import (
+                    estimate_roll_from_quotes,
+                )
+                estimate = await estimate_roll_from_quotes(orders, broker)
+            else:
+                from trading_corp.agents.strategies._pmcc_combo import (
+                    estimate_single_leg_from_quote,
+                )
+                estimate = await estimate_single_leg_from_quote(orders[0], broker)
         except Exception as e:      # noqa: BLE001 — degrade to "no estimate"
             log.warning("roll-card: estimate failed for %s: %s", symbol, e)
             estimate = None

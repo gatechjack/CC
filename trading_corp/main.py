@@ -5036,8 +5036,10 @@ async def _make_morning_brief(trend_agent, portfolio, ceo, logger_agent) -> str:
 # open_short_call (with the panel sell-cover affordance). An action is only added
 # here once it is actionable on the panel, so a skipped action is never stranded.
 _PMCC_SHORT_SIDE_ACTIONS = frozenset({
-    "roll_short_call_close",   # roll: buy-to-close the current short (short-side)
-    "roll_short_call_open",    # roll: sell-to-open the new short (short-side)
+    "roll_short_call_close",   # roll: buy-to-close the current short (short-side) [P3a]
+    "roll_short_call_open",    # roll: sell-to-open the new short (short-side)     [P3a]
+    "close_short_urgent",      # single-leg buy-to-close the short (short-side)  [P3b-close]
+    "open_short_call",         # single-leg sell-to-open a fresh weekly cover    [P3b-open]
 })
 
 
