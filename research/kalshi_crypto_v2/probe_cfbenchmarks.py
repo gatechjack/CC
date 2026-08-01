@@ -53,13 +53,22 @@ def load_creds() -> tuple[str, str]:
     pem = os.getenv("KALSHI_KAREN_PRIVATE_KEY_PEM") or os.getenv("KALSHI_PRIVATE_KEY_PEM")
     if kid and pem:
         return kid, pem.replace("\\n", "\n")
+    # Easiest operator drop: raw .pem file (real newlines, no escaping) + id file.
+    pem_file = os.path.join(HERE, ".karen_key.pem")
+    keyid_file = os.path.join(HERE, ".karen_key_id.txt")
+    if os.path.exists(pem_file) and (kid or os.path.exists(keyid_file)):
+        with open(pem_file) as f:
+            pem2 = f.read()
+        kid2 = kid or open(keyid_file).read().strip()
+        return kid2, pem2
     if os.path.exists(CRED_FILE):
         with open(CRED_FILE) as f:
             d = json.load(f)
         return d["api_key_id"], d["private_key_pem"]
     raise SystemExit(
-        "No Karen creds. Set KALSHI_KAREN_API_KEY_ID + KALSHI_KAREN_PRIVATE_KEY_PEM, "
-        f"or write {CRED_FILE} = {{'api_key_id','private_key_pem'}}.")
+        "No Karen creds. Provide ONE of: (a) env KALSHI_KAREN_API_KEY_ID + "
+        "KALSHI_KAREN_PRIVATE_KEY_PEM; (b) files .karen_key.pem + .karen_key_id.txt "
+        f"in {HERE}; (c) {CRED_FILE} = {{'api_key_id','private_key_pem'}}. All gitignored.")
 
 
 def make_signer(pem: str):
