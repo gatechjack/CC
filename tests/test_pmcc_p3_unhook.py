@@ -194,3 +194,82 @@ def test_close_all_stays_excluded_from_short_side():
     # existing ceo_graph route (flagged separately as out-of-mandate).
     assert _is_pmcc_short_side_group(
         [_o("close_short_urgent"), _o("close_leap_urgent")]) is False
+
+
+# ── ADDENDUM 1: close_all removed from the PMCC action space ──────────────
+
+def test_close_all_removed_from_valid_actions():
+    from trading_corp.agents.divisions.pmcc_robinhood import _PMCC_VALID_ACTIONS
+    assert "close_all" not in _PMCC_VALID_ACTIONS
+    assert _PMCC_VALID_ACTIONS == frozenset({
+        "hold", "roll_short", "roll_short_early", "roll_leap",
+        "close_short", "open_short", "watch"})
+
+
+def test_no_pmcc_source_builds_close_leap_urgent():
+    # The order-BUILDING paths (propose_orders_for_pair + scan) no longer construct a
+    # close_leap_urgent leg. Only a reprice READER may mention the tag (never builds it).
+    import inspect
+    from trading_corp.agents.divisions import pmcc_robinhood as P
+    for fn in (P.PMCCAgent.propose_orders_for_pair, P.PMCCAgent.scan):
+        src = inspect.getsource(fn)
+        assert 'action="close_leap_urgent"' not in src, fn.__name__
+
+
+# ── ADDENDUM 3: LLM-free priced urgent close on the stored-verdict panel ──
+
+@pytest.mark.asyncio
+async def test_record_panel_prices_close_short_llm_free(tmp_db, monkeypatch):
+    from trading_corp.web import routes as _routes
+    from trading_corp.web import pmcc_pricing
+    from trading_corp.web.pmcc_pricing import PricedRoll
+    from trading_corp.agents.divisions import _pmcc_status
+    db.init_db(tmp_db)
+    _pmcc_status.record_pmcc_decision(
+        "RKLB", status="close_short", source="scan",
+        computed_at="2026-07-31T20:00:00+00:00", db_url=tmp_db, urgency="urgent",
+        confidence=0.9, summary="assignment risk", rationale="ITM short",
+        target_delta_low=0.2, target_delta_high=0.4, target_dte=7)
+
+    async def _boom_llm(*a, **k):
+        raise AssertionError("record panel must NOT call the LLM")
+    agent = types.SimpleNamespace(_cfg={}, _llm_analyze_position=_boom_llm, analyze_symbol=_boom_llm)
+
+    async def _fake_price(pmcc_agent, broker, slug, symbol, db_url, *, now=None):
+        return PricedRoll(
+            slug=slug, symbol=symbol, priced_at=0.0, buildable=True,
+            estimate={"debit": 0.38, "credit": 0.0, "net": -0.38, "net_abs": 0.38,
+                      "direction": "debit", "close_strike": 30.0},
+            stash_token=("pid-1", "fp-1"))
+    monkeypatch.setattr(pmcc_pricing, "price_and_stash", _fake_price)
+    deps = types.SimpleNamespace(
+        pmcc_agent=agent, db_url=tmp_db,
+        data_exec=types.SimpleNamespace(brokers={"robinhood_pmcc": object()}))
+
+    html = await _routes._render_pmcc_record_panel(deps, "robinhood_pmcc", "RKLB")
+    assert "pid-1" in html and "preview_id" in html          # consent stash wired into Approve
+    assert "hidden" in html.lower()                          # the Approve form exists
+    # (no _llm call — _boom_llm would have raised; the stored close_short is priced LLM-free)
+
+
+@pytest.mark.asyncio
+async def test_record_panel_no_approve_for_stale_close_all(tmp_db, monkeypatch):
+    from trading_corp.web import routes as _routes
+    from trading_corp.web import pmcc_pricing
+    from trading_corp.agents.divisions import _pmcc_status
+    db.init_db(tmp_db)
+    _pmcc_status.record_pmcc_decision(
+        "RKLB", status="close_all", source="scan",           # a STALE removed-action verdict
+        computed_at="2026-07-31T20:00:00+00:00", db_url=tmp_db, urgency="urgent",
+        confidence=0.9, summary="x", rationale="y")
+
+    async def _boom_price(*a, **k):
+        raise AssertionError("stale close_all must NOT be priced")
+    monkeypatch.setattr(pmcc_pricing, "price_and_stash", _boom_price)
+    deps = types.SimpleNamespace(
+        pmcc_agent=types.SimpleNamespace(_cfg={}), db_url=tmp_db,
+        data_exec=types.SimpleNamespace(brokers={"robinhood_pmcc": object()}))
+
+    html = await _routes._render_pmcc_record_panel(deps, "robinhood_pmcc", "RKLB")
+    assert "preview_id" not in html                          # NO priced Approve for close_all
+    assert "Re-analyze" in html                              # stored-verdict note instead

@@ -309,7 +309,7 @@ class PMCCAnalysis:
     """LLM expert analysis result for one PMCC position."""
     symbol: str
     # hold | roll_short | roll_short_early | roll_leap | close_short |
-    # open_short | watch | close_all
+    # open_short | watch   (close_all REMOVED — division is short-side only)
     action: str
     confidence: float           # 0.0–1.0
     urgency: str                # routine | elevated | urgent
@@ -523,6 +523,17 @@ def _days_to(expiry: str) -> int:
 # ---------------------------------------------------------------------------
 # PMCCAgent
 # ---------------------------------------------------------------------------
+
+# Allowed PMCC actions (SHORT-side + hold/watch). close_all is REMOVED: the division
+# manages the short weekly calls ONLY and never sells/closes the LEAP. Enforced at the
+# LLM parse boundary — any non-allowed action (incl. a hallucinated close_all) is
+# normalized to "watch" (no actionable order), belt-and-suspenders with the removed
+# prompt option + the removed propose/scan branches.
+_PMCC_VALID_ACTIONS = frozenset({
+    "hold", "roll_short", "roll_short_early", "roll_leap",
+    "close_short", "open_short", "watch",
+})
+
 
 class PMCCAgent:
     def __init__(
@@ -1116,7 +1127,7 @@ class PMCCAgent:
 {history_block}
 Respond with ONLY this JSON (no other text, no markdown):
 {{
-  "action": "<hold|roll_short|roll_short_early|roll_leap|close_short|open_short|watch|close_all>",
+  "action": "<hold|roll_short|roll_short_early|roll_leap|close_short|open_short|watch>",
   "confidence": <float 0.0-1.0>,
   "urgency": "<routine|elevated|urgent>",
   "summary": "<one clear sentence: situation + recommended action>",
@@ -1136,7 +1147,9 @@ Action reference:
 - close_short: close/buy-back the short call — appropriate for assignment / earnings risk
 - open_short: LEAP is uncovered — sell a new weekly call
 - watch: no action but flag for close monitoring next cycle
-- close_all: close the full PMCC (exit the position)
+
+This division manages the SHORT weekly calls ONLY. NEVER recommend selling or closing
+the LEAP; there is no "close the whole position" action — an exit is an operator action.
 """
 
         try:
@@ -1154,9 +1167,17 @@ Action reference:
                     raw = raw[4:]
                 raw = raw.strip()
             data = json.loads(raw)
+            # ACTION ALLOWLIST (2026-07-31): reject any non-allowed action — a stale or
+            # hallucinated close_all (or anything outside _PMCC_VALID_ACTIONS) becomes
+            # "watch" so no LEAP-touching / close-all order can ever be built.
+            _action = str(data.get("action", "watch"))
+            if _action.strip().lower() not in _PMCC_VALID_ACTIONS:
+                log.warning("PMCCAgent: LLM returned non-allowed action %r for %s -> watch",
+                            _action, pos.symbol)
+                _action = "watch"
             _analysis = PMCCAnalysis(
                 symbol=pos.symbol,
-                action=str(data.get("action", "watch")),
+                action=_action,
                 confidence=float(data.get("confidence", 0.5)),
                 urgency=str(data.get("urgency", "routine")),
                 summary=str(data.get("summary", "")),
@@ -1452,62 +1473,6 @@ Action reference:
                 _rl_leg.dispatch = "advisory"
             return orders
 
-        # ── Close everything on this underlying ──
-        if action == "close_all":
-            orders: list[ProposedOrder] = []
-            pair_id = str(uuid.uuid4())[:8]
-            if pos.short_leg_expiry and pos.short_leg_strike is not None:
-                orders.append(self._make_option_order(
-                    underlying=symbol, side="buy", contracts=contracts,
-                    expiry=pos.short_leg_expiry,
-                    strike=pos.short_leg_strike,
-                    mark_price=pos.short_leg_mark or 0.0,
-                    position_effect="close",
-                    action="close_short_urgent",
-                    dte=pos.short_leg_dte,
-                    rationale=self._build_rationale(
-                        f"CLOSE ALL: short {symbol}", analysis,
-                    ),
-                    pair_id=pair_id,
-                ))
-            orders.append(self._make_option_order(
-                underlying=symbol, side="sell", contracts=contracts,
-                expiry=pos.long_leg_expiry,
-                strike=pos.long_leg_strike,
-                # B3: record the real mark for cost visibility; the execution agent
-                # will price it — keep the market-sell (0.0 limit) so an URGENT close fills.
-                mark_price=(float(pos.long_leg_mark) if pos.long_leg_mark is not None else None),
-                preserve_market_sell=True,
-                position_effect="close",
-                action="close_leap_urgent",
-                dte=pos.long_leg_dte,
-                rationale=self._build_rationale(
-                    f"CLOSE ALL: LEAP {symbol}", analysis,
-                ),
-                pair_id=pair_id,
-            ))
-            # Route the exit as ONE atomic diagonal spread (sell LEAP +
-            # buy-to-close short) when BOTH legs are present — net CREDIT (the LEAP
-            # is worth more than the near-worthless short). Placeholder net from
-            # marks; the dispatch path re-prices from live quotes. This SUPERSEDES
-            # the per-leg 0.0 market-sell on the LEAP: the combo net limit governs,
-            # so there is no uncapped single-leg market order. A lone leg (no short)
-            # stays a single-leg close.
-            if len(orders) == 2:
-                _leap_m = float(pos.long_leg_mark) if pos.long_leg_mark is not None else 0.0
-                _short_m = float(pos.short_leg_mark) if pos.short_leg_mark is not None else 0.0
-                _ca_net = _leap_m - _short_m          # sell LEAP (+), buy short (−)
-                _ca_dir = "credit" if _ca_net >= 0 else "debit"
-                for _leg in orders:
-                    _leg.extra.update({
-                        "is_multi_leg": True,
-                        "combo_id": pair_id,
-                        "combo_direction": _ca_dir,
-                        "net_limit_price": round(abs(_ca_net), 2) or 0.01,
-                        "ratio_quantity": 1,
-                    })
-            return orders
-
         log.warning(
             "propose_orders_for_pair: action=%r not yet handled for %s",
             action, symbol,
@@ -1646,8 +1611,7 @@ Action reference:
     def _wait_alternative_relevant(action: str, existing: PMCCPosition | None) -> bool:
         """True if the wait-vs-roll comparison would be meaningful for this action."""
         closing_actions = {
-            "roll_short", "roll_short_early", "close_short",
-            "roll_leap", "close_all",
+            "roll_short", "roll_short_early", "close_short", "roll_leap",
         }
         if action not in closing_actions or existing is None:
             return False
@@ -1834,15 +1798,6 @@ Action reference:
                         f"Strike change: ${old_leap.strike:,.2f} → ${new_leap.strike:,.2f} "
                         f"({'+' if strike_change > 0 else ''}${strike_change:,.2f})"
                     )
-
-        elif action == "close_all":
-            b.append("Closes both legs — no further premium accrual")
-            if existing:
-                cost_basis_leap = existing.long_leg_avg_price * abs(existing.long_leg_qty)
-                b.append(
-                    f"Original LEAP cost basis: ${cost_basis_leap:,.2f} "
-                    "— compare to expected close proceeds for realized P&L"
-                )
 
         if not b:
             b.append("Result depends on fill prices — see legs above")
@@ -2298,7 +2253,6 @@ Action reference:
           - roll_leap: LEAP delta has drifted, needs to be rolled
           - roll_short_early: opportunistic early roll before DTE/profit trigger
           - close_short (urgent): ITM short call requiring immediate attention
-          - close_all (urgent): structural failure, close full position
         """
         self._reload()
 
@@ -2493,44 +2447,6 @@ Action reference:
                         ))
                         continue
 
-                    if analysis.action == "close_all":
-                        log.warning("PMCCAgent: URGENT close_all for %s: %s", symbol, analysis.summary)
-                        pair_id = str(uuid.uuid4())[:8]
-                        if leg.short_leg_expiry:
-                            orders.append(self._make_option_order(
-                                underlying=symbol, side="buy", contracts=contracts,
-                                expiry=leg.short_leg_expiry,
-                                strike=leg.short_leg_strike or 0.0,
-                                mark_price=leg.short_leg_mark or 0.0,
-                                position_effect="close",
-                                action="close_short_urgent",
-                                dte=leg.short_leg_dte,
-                                rationale=self._build_rationale(
-                                    f"CLOSE ALL (1/2): close short {symbol} "
-                                    f"{leg.short_leg_expiry} C{leg.short_leg_strike:.2f}",
-                                    analysis,
-                                ),
-                                pair_id=pair_id,
-                            ))
-                        orders.append(self._make_option_order(
-                            underlying=symbol, side="sell", contracts=contracts,
-                            expiry=leg.long_leg_expiry,
-                            strike=leg.long_leg_strike,
-                            # B3: record the real mark for cost visibility; the execution agent
-                            # will price it — keep the market-sell (0.0 limit) so an URGENT close fills.
-                            mark_price=(float(leg.long_leg_mark) if leg.long_leg_mark is not None else None),
-                            preserve_market_sell=True,
-                            position_effect="close",
-                            action="close_leap_urgent",
-                            dte=leg.long_leg_dte,
-                            rationale=self._build_rationale(
-                                f"CLOSE ALL (2/2): sell LEAP {symbol} "
-                                f"{leg.long_leg_expiry} C{leg.long_leg_strike:.2f}",
-                                analysis,
-                            ),
-                            pair_id=pair_id,
-                        ))
-                        continue
 
                 # ── LLM-detected roll_leap (not in deterministic rules) ──
                 if analysis and analysis.action == "roll_leap":
@@ -5326,7 +5242,7 @@ PMCC_SLUG = "robinhood_pmcc"
 _ACTION_LABEL = {
     "hold": "HOLD", "watch": "WATCH", "roll_short": "ROLL",
     "roll_short_early": "ROLL-EARLY", "roll_leap": "ROLL-LEAP",
-    "close_short": "CLOSE", "close_all": "CLOSE-ALL", "open_short": "OPEN",
+    "close_short": "CLOSE", "open_short": "OPEN",
 }
 
 

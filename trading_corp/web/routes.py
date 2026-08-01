@@ -877,7 +877,7 @@ def register(app: FastAPI) -> None:
         # only re-runs on an explicit Re-analyze (?force=1) below — keeping the
         # tile and panel in lockstep and cutting per-click Anthropic calls.
         if slug == "robinhood_pmcc" and deps.pmcc_agent is not None and not force:
-            return HTMLResponse(_render_pmcc_record_panel(deps, slug, sym))
+            return HTMLResponse(await _render_pmcc_record_panel(deps, slug, sym))
 
         key = (slug, sym)
         with _LLM_LOCK:
@@ -1025,7 +1025,7 @@ def register(app: FastAPI) -> None:
         rec = _pmcc_status.load_decision(sym, db_url=deps.db_url)
         if not rec:
             # No stored judgment to price against — send them to Re-analyze.
-            return HTMLResponse(_render_pmcc_record_panel(deps, slug, sym))
+            return HTMLResponse(await _render_pmcc_record_panel(deps, slug, sym))
         pr = await pmcc_pricing.price_and_stash(deps.pmcc_agent, broker, slug, sym, deps.db_url)
         analysis = _pmcc_analysis_from_record(rec)
         roll_extras = None
@@ -4848,9 +4848,16 @@ def _pmcc_analysis_from_record(rec: dict):
     )
 
 
-def _render_pmcc_record_panel(deps, slug: str, symbol: str) -> str:
-    """Render the Expert panel from the UNIFIED decision record (no LLM call):
-    fresh/stale -> the persisted verdict + freshness banner; none -> awaiting-scan."""
+async def _render_pmcc_record_panel(deps, slug: str, symbol: str) -> str:
+    """Render the Expert panel from the UNIFIED decision record (NO LLM call):
+    fresh/stale -> the persisted verdict + freshness banner; none -> awaiting-scan.
+
+    P3 ADDITION 3: an actionable SHORT-side SINGLE-leg verdict (urgent close_short /
+    open_short) gets a PRICED Approve straight from the LLM-FREE `price_and_stash`
+    path — NO Re-analyze, NO _llm_analyze_position — routed through the SAME consent
+    stash+fingerprint machinery as rolls (displayed == Approve-fires). Rolls + any
+    unpriceable verdict keep the stored-only 'Re-analyze to build a live estimate' note.
+    """
     from datetime import datetime as _dt, timezone as _tz
     from trading_corp.agents.divisions import _pmcc_status
     cfg = (getattr(deps.pmcc_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
@@ -4864,17 +4871,41 @@ def _render_pmcc_record_panel(deps, slug: str, symbol: str) -> str:
         slug, symbol, state=state,
         age_h=_pmcc_status.age_hours(rec, now), source=rec.get("source"),
     )
-    # Consent rule (2026-07-30): a STORED verdict has no live strike/debit/credit/net,
-    # so Approve is NOT offered here — the operator must Re-analyze (button in the
-    # banner) to build a fresh combo + live estimate and approve THAT exact combo.
-    # This guarantees every visible Approve carries an estimate, and the estimate
-    # shown is the combo fired. show_execute_button=False hides Approve on this panel.
+    action = (rec.get("status") or "").lower()
+
+    # P3 ADDITION 3 — LLM-FREE priced Approve for a SHORT-side single-leg action.
+    # The urgent close is the most time-critical action; requiring an LLM Re-analyze
+    # just to see the buy-back price re-introduces the waste P1 killed. Price it cheap
+    # + instant via price_and_stash (reconstructs PMCCAnalysis from the stored record —
+    # NO _llm_analyze_position) and write the consent stash from the SAME pull.
+    if action in ("close_short", "open_short"):
+        _broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
+        pr = None
+        if _broker is not None:
+            try:
+                from trading_corp.web import pmcc_pricing
+                pr = await pmcc_pricing.price_and_stash(
+                    deps.pmcc_agent, _broker, slug, symbol, deps.db_url)
+            except Exception as e:      # noqa: BLE001 — pricing must never break the panel
+                log.warning("record-panel: LLM-free price_and_stash(%s) failed: %s", symbol, e)
+                pr = None
+        if pr is not None and pr.buildable and pr.stash_token is not None:
+            return _render_pair_analysis(
+                _pmcc_analysis_from_record(rec), recommendation=None,
+                slug=slug, symbol=symbol, status_banner=banner,
+                roll_extras={"earnings": pr.earnings, "estimate": pr.estimate,
+                             "estimate_reason": pr.estimate_reason},
+                preview_token=pr.stash_token, show_execute_button=True,
+            )
+        # Unpriceable right now (illiquid / market closed) -> fall through to the note.
+
+    # Stored verdict with no live estimate -> Approve NOT offered; the estimate a
+    # visible Approve carries is guaranteed to be the combo fired.
     panel = _render_pair_analysis(
         _pmcc_analysis_from_record(rec), recommendation=None,
         slug=slug, symbol=symbol, status_banner=banner,
         show_execute_button=False,
     )
-    action = (rec.get("status") or "").lower()
     if action not in ("", "hold", "watch"):
         panel += (
             '<div class="mt-3 rounded-md border border-edge bg-pane-2/40 p-3">'

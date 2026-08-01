@@ -12,8 +12,10 @@ import pytest
 
 from trading_corp.agents.data_exec import (
     AdvisoryOrderError,
+    LeapMandateError,
     DataExecAgent,
     _is_advisory_order,
+    _pmcc_touches_leap,
 )
 from trading_corp.agents.strategies._pmcc_combo import propose_pmcc_combo
 from trading_corp.comms.pending_combo_registry import PendingComboRegistry
@@ -227,3 +229,67 @@ def test_place_combo_routes_to_multi_leg_and_stamps_live():
     assert all(f.venue == "robinhood" for f in fills)
     assert all(o.execution_mode == "live" for o in legs)   # item #3 stamp
     assert all(o.status == "filled" for o in legs)
+
+
+# ── PMCC LEAP-mandate guard (P3 ADDITION 2) — fail-CLOSED, PMCC-scoped ─────
+
+def test_pmcc_leap_sell_refused_before_broker():
+    de = DataExecAgent(_FakeLogger())
+    broker = _FakeBroker()
+    de.register_broker("robinhood_pmcc", broker)
+    o = _order(action="close_leap_urgent", side="sell",
+               position_effect="close", dte=540, strike=30.0)   # long-dated sell = LEAP
+    with pytest.raises(LeapMandateError):
+        asyncio.run(de.place(o, division="robinhood_pmcc"))
+    assert broker.placed == []                       # refused BEFORE any broker call
+
+
+def test_pmcc_short_side_actions_not_refused():
+    de = DataExecAgent(_FakeLogger())
+    broker = _FakeBroker()
+    de.register_broker("robinhood_pmcc", broker)
+    for o in (
+        _order(action="close_short_urgent", side="buy", position_effect="close", dte=5, strike=30.0),
+        _order(action="open_short_call", side="sell", position_effect="open", dte=7, strike=32.0),
+        _order(action="roll_short_call_open", side="sell", position_effect="open", dte=7, strike=32.0),
+    ):
+        fill = asyncio.run(de.place(o, division="robinhood_pmcc"))
+        assert fill.order_id == o.id
+    assert len(broker.placed) == 3                    # every short-side order placed
+
+
+def test_non_pmcc_leap_order_not_refused():
+    # PMCC-SCOPING PROOF: the SAME long-dated sell on ANOTHER division places normally.
+    de = DataExecAgent(_FakeLogger())
+    broker = _FakeBroker()
+    de.register_broker("tasty_options", broker)
+    o = _order(action="close_leap_urgent", side="sell",
+               position_effect="close", dte=540, strike=30.0)
+    fill = asyncio.run(de.place(o, division="tasty_options"))
+    assert fill.order_id == o.id and len(broker.placed) == 1
+
+
+def test_pmcc_leap_refused_on_combo_path():
+    de = DataExecAgent(_FakeLogger())
+    broker = _FakeBroker()
+    de.register_broker("robinhood_pmcc", broker)
+    short = _order(action="close_short_urgent", side="buy", position_effect="close",
+                   dte=5, strike=30.0, combo_id="c1")
+    leap = _order(action="close_leap_urgent", side="sell", position_effect="close",
+                  dte=540, strike=25.0, combo_id="c1")
+    with pytest.raises(LeapMandateError):
+        asyncio.run(de.place_combo([short, leap], division="robinhood_pmcc"))
+    assert broker.placed == []
+
+
+def test_pmcc_touches_leap_structural_signal():
+    def o(side, effect, dte, action):
+        import types
+        return types.SimpleNamespace(
+            side=side, extra={"is_option": True, "position_effect": effect,
+                              "dte": dte, "action": action})
+    assert _pmcc_touches_leap(o("sell", "close", 540, "close_leap_urgent")) is True   # DTE
+    assert _pmcc_touches_leap(o("sell", "close", None, "close_leap_urgent")) is True  # belt
+    assert _pmcc_touches_leap(o("buy", "close", 5, "close_short_urgent")) is False    # weekly short
+    assert _pmcc_touches_leap(o("sell", "open", 7, "open_short_call")) is False       # weekly short
+    assert _pmcc_touches_leap(o("buy", "open", 540, "open_leap")) is False            # new-open BUY, not touching

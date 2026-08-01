@@ -53,6 +53,58 @@ def _is_advisory_order(order: ProposedOrder) -> bool:
     return action.startswith("roll_leap")
 
 
+class LeapMandateError(RuntimeError):
+    """Raised when a robinhood_pmcc order would SELL or CLOSE the LEAP. The PMCC
+    division manages the SHORT weekly calls ONLY and must never touch the LEAP — the
+    mandate enforced at the EXECUTION boundary (fail-CLOSED). Belt-and-suspenders with
+    the removed close_all action + propose/scan branches; the floor that must exist
+    before autonomy (an auto loop that ever emits a PMCC LEAP order is refused here)."""
+
+
+# A PMCC short is weekly (DTE ~7-45); the LEAP is long-dated (~365-720). Anything at
+# or beyond this floor, being SOLD/CLOSED, is the LEAP.
+_PMCC_LEAP_DTE_FLOOR = 180
+
+
+def _pmcc_touches_leap(order: ProposedOrder) -> bool:
+    """STRUCTURAL (no broker fetch): True if this robinhood_pmcc order would SELL or
+    CLOSE the LEAP. The division holds exactly one long-dated call (the LEAP) + weekly
+    shorts, so a long-dated (DTE >= floor) option being SOLD or CLOSED is the LEAP.
+    ONLY sell/close is caught — a legitimate new-open LEAP BUY is not 'touching' the
+    existing LEAP and stays unaffected. Primary signal is the option's DTE; a
+    'leap'-named action tag is the belt for the rare path where dte is absent."""
+    ex = order.extra or {}
+    if not ex.get("is_option"):
+        return False
+    # Only a reduction of the position touches the existing LEAP: a sell, or a close.
+    if not (getattr(order, "side", None) == "sell" or ex.get("position_effect") == "close"):
+        return False
+    dte = ex.get("dte")
+    if dte is not None:
+        try:
+            if int(dte) >= _PMCC_LEAP_DTE_FLOOR:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return "leap" in str(ex.get("action") or "").lower()
+
+
+def _emit_pmcc_leap_block_alert(order: ProposedOrder) -> None:
+    """A PMCC LEAP-placement attempt is a SAFETY event the operator must see."""
+    try:
+        from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+        emit_exec_alert(ExecOutcome(
+            tier="EXEC_FAIL",
+            symbol=getattr(order, "symbol", "?"),
+            strategy=getattr(order, "strategy", "robinhood_pmcc"),
+            reason=("PMCC LEAP-mandate: REFUSED an order that would sell/close the LEAP "
+                    f"(action={(order.extra or {}).get('action')!r})"),
+            order_id=getattr(order, "id", None),
+        ))
+    except Exception:      # noqa: BLE001 — the guard must refuse even if alerting fails
+        log.exception("PMCC LEAP-block alert emit failed")
+
+
 class DataExecAgent:
     def __init__(
         self,
@@ -135,6 +187,23 @@ class DataExecAgent:
                 f"action={(order.extra or {}).get('action')!r}) — roll_leap / "
                 "LEAP-roll legs are executed MANUALLY by the operator; the agent "
                 "never places them."
+            )
+        # PMCC LEAP-mandate (fail-CLOSED, PMCC-SCOPED): the robinhood_pmcc division
+        # manages the SHORT weekly calls ONLY and must never sell/close the LEAP. This
+        # is scoped to division == robinhood_pmcc, so NO non-PMCC order is affected —
+        # other divisions'/strategies' legitimate LEAP orders place normally. Refuse +
+        # alert (a PMCC LEAP-placement attempt is a safety event). Belt-and-suspenders
+        # with close_all removal; the mandate floor before autonomy.
+        if division == "robinhood_pmcc" and _pmcc_touches_leap(order):
+            _emit_pmcc_leap_block_alert(order)
+            raise LeapMandateError(
+                f"refusing PMCC LEAP-touching order {order.id} "
+                f"(action={(order.extra or {}).get('action')!r}, "
+                f"side={getattr(order, 'side', None)!r}, "
+                f"dte={(order.extra or {}).get('dte')!r}, "
+                f"strike={(order.extra or {}).get('strike')!r}) — the robinhood_pmcc "
+                "division manages the SHORT weekly calls ONLY and never sells/closes the "
+                "LEAP; a LEAP action is executed MANUALLY by the operator."
             )
         broker = self.brokers.get(division) or self.brokers.get("default")
         if broker is None:
@@ -686,6 +755,18 @@ class DataExecAgent:
                     f"refusing to place ADVISORY combo leg {_o.id} "
                     f"(action={(_o.extra or {}).get('action')!r}) — roll_leap legs "
                     "are executed MANUALLY by the operator; the agent never places them."
+                )
+
+        # PMCC LEAP-mandate on the combo path (fail-CLOSED, PMCC-SCOPED): refuse the
+        # WHOLE combo if ANY leg would sell/close the LEAP. Non-PMCC combos unaffected.
+        if division == "robinhood_pmcc":
+            _leap_leg = next((o for o in orders if _pmcc_touches_leap(o)), None)
+            if _leap_leg is not None:
+                _emit_pmcc_leap_block_alert(_leap_leg)
+                raise LeapMandateError(
+                    f"refusing PMCC combo — leg {_leap_leg.id} would sell/close the LEAP "
+                    f"(action={(_leap_leg.extra or {}).get('action')!r}); the robinhood_pmcc "
+                    "division manages the SHORT weekly calls ONLY."
                 )
 
         # Defense-in-depth: confirm a single combo_id is present on every
