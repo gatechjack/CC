@@ -2065,3 +2065,41 @@ HTMX/HTML routes. Skip unless committed to native build.
 
 _Last updated: 2026-04-29. Prepend new items at the top of the appropriate
 section. Mark items DONE rather than deleting so we have a record._
+
+---
+
+## P3 — Kalshi resolver + kalshi_arbitrage measurement items  *(NEW — 2026-08-01)*
+
+Filed during the 2026-08-01 kalshi_llm resolver session; #1/#2 were previously
+noted only in reports/memory, never in BACKLOG.
+
+1. **kalshi_arbitrage bucket `would_emit` audit overstatement (cosmetic).**
+   `kalshi_temporal_bucket_arb.examined_buckets` recomputes
+   `would_emit = (1 - Sum(yes_ask)) >= threshold` WITHOUT the detector's guards
+   (>=2 legs / parseable expected_expiration / 60-day horizon), so it logs phantom
+   `would_emit=true` rows (e.g. ~77 NBER-recession rows that `_detect_bucket_violations`
+   correctly drops). Audit-field only; the emission path is correct. Fix = apply the
+   detector guards in the audit path (or drop the field).
+   Ref: `reports/2026-07-26_kalshi_arbitrage_entry_stoppage_diagnosis.md`.
+
+2. **kalshi_arbitrage cheap-contract sizing-precision / paper-fill ceiling.**
+   Division P&L is driven by $0.01-0.06 NO legs (flat ~$1 stake -> high contract
+   counts). Paper fills at midpoint/infinite-depth; the live Kalshi book at the
+   extreme tick is thin, so the +$99-type wins assume fills a live book may not
+   provide. Before any live flip: model realistic thin-book fills + crossing cost on
+   sub-$0.05 legs (the paper number is a CEILING, not realized money).
+   Ref: `reports/2026-07-21_kalshi_arbitrage_data_review.md` +
+   `reports/2026-08-01_kalshi_arbitrage_forward_edge_review.md`.
+
+3. *** Kalshi resolver-path audit (PROACTIVE, recommended before 2026-08-11).**
+   After 5 resolver fixes this session + 2 newly-surfaced load-bearing properties:
+   (a) **fake-early stored `expires_at`** — long-horizon markets carry a wrong early
+   expiry (e.g. KXSPACEDATACENTER stored 06-03 / real close 2035) that drove the
+   starvation; and (b) **re-emission touches EVERY layer** — open-book count,
+   resolution booking, AND P&L are all ~9.5x inflated unless deduped (A vs B). Do one
+   deliberate pass over every Kalshi resolver assumption: expiry / ticker / event /
+   dedup / re-emission / early-finalization.
+   Ref: `reports/2026-08-01_kalshi_resolver_finalized-not-settled_gap.md` +
+   `runbooks/deploy_log.md` (2026-08-01).
+
+(Engine-wide RedactingFilter `TypeError` already filed above as P4, 2026-05-02.)
