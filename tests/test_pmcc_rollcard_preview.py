@@ -206,10 +206,12 @@ async def test_panel_estimate_equals_dispatch_natural():
 
 
 # ==========================================================================
-# stored-record panel — hides Approve, prompts Re-analyze
+# stored-record panel — a ROLL still hides Approve + prompts Re-analyze.
+# (P3 addendum: close_short/open_short now price LLM-free with a direct Approve —
+#  covered in test_pmcc_p3_unhook.test_record_panel_prices_close_short_llm_free.)
 # ==========================================================================
 
-def test_record_panel_hides_approve_and_prompts_reanalyze(monkeypatch):
+async def test_record_panel_hides_approve_and_prompts_reanalyze(monkeypatch):
     from trading_corp.agents.divisions import _pmcc_status
     rec = {"status": "roll_short", "urgency": "elevated", "confidence": 0.8,
            "summary": "roll up-and-out", "rationale": "ITM", "warnings": [],
@@ -219,8 +221,8 @@ def test_record_panel_hides_approve_and_prompts_reanalyze(monkeypatch):
     monkeypatch.setattr(_pmcc_status, "age_hours", lambda r, now: 1.0)
     deps = types.SimpleNamespace(
         pmcc_agent=types.SimpleNamespace(_cfg={}), db_url=None)
-    html = _render_pmcc_record_panel(deps, "robinhood_pmcc", "AAPL")
-    assert "Approve &amp; Execute" not in html                # no Approve on a stored verdict
+    html = await _render_pmcc_record_panel(deps, "robinhood_pmcc", "AAPL")
+    assert "Approve &amp; Execute" not in html                # no Approve on a stored ROLL verdict
     assert "Re-analyze" in html                               # banner + prompt point to it
     assert "approve that exact combo" in html
 
