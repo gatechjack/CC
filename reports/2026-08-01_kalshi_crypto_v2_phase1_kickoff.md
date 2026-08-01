@@ -184,3 +184,43 @@ client is proven. Kalshi market quotes (both-sided) + candlesticks for T1/T4 rem
 **Guardrail note:** during protocol iteration the Karen **api_key_id** (a UUID identifier, not the private
 key) appeared once in a tool-output error before output-redaction was added; the private key PEM never
 appeared, and the key id is unusable without the private key. Redaction now scrubs all creds from stdout/stderr.
+
+---
+
+## 8. T1 — market census + history-depth probe + hand-verify (2026-08-01)
+
+Live crypto series discovered via `/series?category=Crypto` (272 total; tickers NOT hardcoded).
+Census via signed REST (`_kalshi_auth.py`, in-memory creds); scripts `t1_explore.py` / `t1_census.py`.
+
+| series | cadence | asset | open | settled | earliest settled | candle granularity |
+|---|---|---|---|---|---|---|
+| `KXBTC15M` | 15-min up/down | BTC | 1 | **6,503** | 2026-05-25 | 1m (16/mkt) |
+| `KXETH15M` | 15-min up/down | ETH | 1 | **6,503** | 2026-05-25 | 1m |
+| `KXSOL15M` | 15-min up/down | SOL | 1 | **6,503** | 2026-05-25 | 1m |
+| `KXXRP15M` | 15-min up/down | XRP | 1 | **6,503** | 2026-05-25 | 1m |
+| `KXBTC` | hourly ladder | BTC | 318 | >=10,000 (capped) | older than sample | 1m |
+| `KXETH` | hourly ladder | ETH | 390 | >=10,000 (capped) | older than sample | 1m |
+| `KXSOLE` | hourly ladder | SOL | 425 | >=10,000 (capped) | older than sample | 1m |
+| `KXXRP` | hourly ladder | XRP | 165 | >=10,000 (capped) | older than sample | 1m |
+
+- **`KXSOL` (SOL "range") is inactive (0/0); SOL's active hourly ladder is `KXSOLE`.** Secondary hourly
+  above/below directional series are all active: `KXBTCD` 318, `KXETHD` 390, `KXSOLD` 425, `KXXRPD` 165.
+- **15-min up/down = the retro-test's Kalshi window:** 6,503 settled per asset back to **2026-05-25**
+  (~69d), exact (not capped). Bitunix 15m bars start 2026-06-23, so the T4 overlap is **2026-06-23 ->
+  2026-08-01 (~39d, Bitunix-limited)** — and all 23 SFP signals (2026-07-12 -> 07-29) fall inside both
+  windows, so every signal is alignable.
+- **Candlesticks:** 1-minute granularity confirmed (`/series/{s}/markets/{tkr}/candlesticks?period_interval=1`,
+  epoch `start_ts`/`end_ts`); **5,000-candle/request cap** -> chunk longer ranges. Candle price fields are
+  `yes_bid`/`yes_ask` OHLC in dollars.
+- **Settlement mechanic (confirmed):** an up/down market settles YES iff the 60-second BRTI average at
+  close >= `floor_strike` (the reference set at open). `rules_primary` states the CF Benchmarks 60s window.
+- **Field notes for T2:** prices are `*_dollars` (0-1 OK); on SETTLED markets the book is degenerate
+  (`yes_ask`+`no_ask` can = 2.0) so the sum-to-1 guard applies to LIVE quotes only; `floor_strike` +
+  `expiration_value` give the resolution; `event_ticker` encodes date/time (`KXBTC15M-26AUG011500`).
+
+### Hand-verified settled market (end-to-end, to the cent)
+`KXBTC15M-26AUG011500-00` (event `KXBTC15M-26AUG011500`; page `kalshi.com/markets/kxbtc15m`):
+- strike_type `greater_or_equal`, `floor_strike` 62344.15, close 2026-08-01 19:00Z, `result` "yes".
+- **BRTI check:** settled `expiration_value` 62522.81 >= strike 62344.15 -> "yes" == result "yes" **[MATCH]**.
+- Last 1m candle (of 16): `yes_bid` high/close 0.9990/0.0000, `yes_ask` 1.0000, `last_price` 0.9990 -->
+  consistent to the cent (near-certain-yes book collapsing at settlement). Prices in dollars 0-1 confirmed.
