@@ -31,6 +31,14 @@ CREATE TABLE IF NOT EXISTS lab_kalshi_markets (
   open_ts INTEGER, close_ts INTEGER, expiration_ts INTEGER,
   result TEXT, settlement_value REAL, last_price REAL, status TEXT,
   candles_pulled INTEGER DEFAULT 0);
+-- ladder snapshot: all strikes of a SAMPLED hourly event at window-open (S5
+-- Breeden-Litzenberger density source). ref_ts = the event open reference.
+CREATE TABLE IF NOT EXISTS lab_kalshi_ladder_snap (
+  asset TEXT, series TEXT, event_ticker TEXT, market_ticker TEXT,
+  floor_strike REAL, cap_strike REAL, ref_ts INTEGER, snap_ts INTEGER,
+  yes_bid REAL, yes_ask REAL, price_mean REAL, volume REAL, open_interest REAL,
+  result TEXT, settlement_value REAL,
+  PRIMARY KEY(market_ticker, ref_ts));
 -- per-settled-market kalshi 1m candles (raw yes bid/ask OHLC + price/vol/oi)
 CREATE TABLE IF NOT EXISTS lab_kalshi_candles (
   series TEXT, market_ticker TEXT, end_period_ts INTEGER,
@@ -64,6 +72,7 @@ CREATE INDEX IF NOT EXISTS lab_labels_ts ON lab_labels(asset, window_ts);
 def connect(path: str = LAB_DB) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=60000")   # tolerate a concurrent writer
     return conn
 
 
