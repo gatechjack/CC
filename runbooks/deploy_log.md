@@ -12006,3 +12006,43 @@ execution_mode LIVE (paper=False), confirmation_gate TRUE, standby false, halt n
 **Rollback.** Restore the `.bak_*` files (delete the 2 NEW files pead_sizing.py + pead_dial.html); revert base.py to
 its `.bak`; restore the earnings root file via a RunShellScript from `*.bak_ep_20260802`; `sudo -n systemctl restart
 trading-corp`.
+
+---
+
+## 2026-08-02 (b) — PEAD company-name backfill (data) + position card (Part 2, RESTART)
+
+**Branch** `claude-2026-08-02c` off prod-live `6326a36`. Two pieces.
+
+**PART 1 — company-name backfill (DATA, no restart, no code deploy).** The company-name feature only populated NEW
+entries, so the 8 open positions showed bare tickers. Backfilled `extra_json["company_name"]` (EODHD `General::Name`)
+into all 8 open `robinhood_pead` rows via `scripts/pead_name_backfill.py`. SURGICAL: only `company_name` added, every
+trading field byte-preserved (unit-proven + dry-run listed unchanged keys). Ran via **Azure RunShellScript**: root
+reads `KEY_VAULT_URI` from the engine `/proc/<pid>/environ` (EODHD_API_KEY is KV-loaded at runtime, NOT in any env
+file), then `runuser -u azureuser` runs the fetch+write AS azureuser (so DB/-wal/-shm ownership is untouched — root
+must NOT write the live SQLite). Applied 8 rows; all 8 render company names live. Names: Automatic Data Processing
+Inc / AtriCure Inc / Bel Fuse A Inc / The Cheesecake Factory / The Chefs Warehouse Inc / FormFactor Inc / Huron
+Consulting Group Inc / Lam Research Corp.
+
+**PART 2 — position card (display, RESTART-REQUIRED).** Expand-on-click price-ladder card per open position
+(entry → NOW → drift-dead → pre-earnings → stop, price-proportional NOW marker, distance callouts, 60-day TIME bar).
+`pead_view._position_card` (display-only from stored primitives) + `partials/_pead_card.html` (NEW) + click-toggle
+detail rows in `pead_live_sections.html` + persistence JS in `pead_live.html`. Compact pressure strip unchanged (no
+dup viz). Drift-disabled (gap<=0, e.g. ADP) renders "drift n/a — stop-managed only". **drift-dead == the engine's
+`drift_dead_level` on the SAME stored slot-aware `pre_earnings_close`** (verified live: LRCX $283.98 == engine, drift
+pressure 0.715 governing).
+**★ LIVE ENGINE PID `546159` → `550263`** (`sudo -n systemctl restart trading-corp`, board-authorized; NRestarts=0,
+clean boot). prod-live `6326a36` → advanced to `claude-2026-08-02c`.
+- ★★ **RESTART WAS REQUIRED** and this is why: a first no-restart attempt FAILED — Jinja templates auto-reload on
+  next request but `pead_view.py` is cached in `sys.modules` and does NOT reload, so the cards rendered the empty
+  "no ladder yet" placeholder (rolled back). **Any pead_view/view-logic change needs a restart; template-only can go
+  no-restart; DB backfill is data (always live).**
+- 4 display files (all azureuser-owned `web/` paths, no root/data path): pead_view.py, pead_live_sections.html,
+  pead_live.html, + _pead_card.html (NEW). Target LF-md5 5cad432f823b / f06ef364af44 / bc20333fe1f0 / 6407bd59bb22;
+  Gate-A base db2c10a4/c1541966/fb4506d0. Backups `*.bak_pead_card_20260802` (removed after each clean verify).
+
+**Verified live.** 22 prod-venv PEAD tests pass (`-p no:pytest_ethereum`); md5 all == target; card renders LRCX
+drift-dead $283.98 + ADP "stop-managed only" + 16 detail rows + compact strip intact + 0 empty placeholders; company
+names render; **PID 550263 stable, SFP restart-resume matched=2 / reconciler clean, PMCC 18 untouched, PEAD book 8,
+pending 0, nothing placed, 0 tracebacks.**
+**Rollback.** Card: `*.bak_pead_card_20260802` restore (delete _pead_card.html) + restart. Backfill (if ever): the
+row-level `company_name` is additive/harmless; a targeted UPDATE could strip it, but there is no reason to.
