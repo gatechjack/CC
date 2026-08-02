@@ -49,6 +49,13 @@ class AccountSnapshot:
     # than act on a phantom (under-reported) drawdown. See
     # runbooks/2026-06-15_breaker_abstain_on_partial_equity_scoping.md.
     equity_complete: bool = True
+    # SETTLED, PLACEABLE cash — the cash that can actually fund a NEW order right
+    # now, EXCLUDING unsettled proceeds (T+1 on a cash account) and cash already
+    # held for open orders. None => the broker does not expose it (paper/stub and
+    # every non-RH adapter keep None, so nothing changes for them). Currently only
+    # RobinhoodBroker populates it (from load_account_profile); consumed by the
+    # PEAD derived, self-balancing sizer. Additive/optional by design.
+    settled_cash: float | None = None
 
 
 class ReadOnlyBroker(ABC):

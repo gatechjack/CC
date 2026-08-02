@@ -519,6 +519,42 @@ class RobinhoodBroker(Broker):
             or 0
         )
 
+        # SETTLED, PLACEABLE cash (live pull) — the portfolio profile above does
+        # NOT carry cash-settlement fields; those live on the ACCOUNT profile
+        # (/accounts/). Read it and derive what can actually fund a NEW order now:
+        #   settled_cash = cash - unsettled_funds - cash_held_for_orders
+        # i.e. EXCLUDING unsettled proceeds (T+1) and cash reserved by open orders,
+        # then clamped to RH's own reported buying_power (belt-and-suspenders) and
+        # floored at 0. None if the account profile can't be read (no guessing —
+        # the sizer then treats it as no settled-cash source). Additive; the
+        # existing equity/buying_power above are unchanged.
+        settled_cash: float | None = None
+        try:
+            acct = await asyncio.to_thread(
+                rs.profiles.load_account_profile, self._account_number or None
+            ) or {}
+
+            def _num(key):
+                try:
+                    v = acct.get(key)
+                    return float(v) if v is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            acct_cash = _num("cash")
+            unsettled = _num("unsettled_funds") or 0.0
+            held_for_orders = _num("cash_held_for_orders") or 0.0
+            acct_bp = _num("buying_power")
+            if acct_cash is not None:
+                placeable = acct_cash - unsettled - held_for_orders
+                if acct_bp is not None:
+                    placeable = min(placeable, acct_bp)
+                settled_cash = max(0.0, placeable)
+            elif acct_bp is not None:
+                settled_cash = max(0.0, acct_bp)
+        except Exception as e:  # noqa: BLE001 — settled-cash is best-effort; never break the snapshot
+            log.debug("RobinhoodBroker: settled-cash read failed: %s", e)
+
         positions: list[Position] = []
         account_label = f"{self._username}#{self._account_label}" if self._account_label else self._username
 
@@ -653,6 +689,7 @@ class RobinhoodBroker(Broker):
             buying_power=buying_power,
             cash=buying_power,
             positions=positions,
+            settled_cash=settled_cash,
         )
 
     async def quote(self, symbol: str) -> float:
