@@ -96,14 +96,22 @@ def load(conn, key: str, asset: str, interval: str, frm: int, to: int, refresh: 
 
 def main() -> int:
     refresh = "--refresh" in sys.argv
+    # --fine-only: rolling-archive mode (Rider A). Skips 1hour (already full/
+    # stable) and pulls only the retention-limited fine intervals, ALWAYS with
+    # refresh so each scheduled run captures the freshest tail before it drops.
+    fine_only = "--fine-only" in sys.argv
+    intervals = ["1min", "5min", "15min"] if fine_only else INTERVALS
+    if fine_only:
+        refresh = True
     key = get_key()
     frm = common.PERIOD_START_MS // 1000
     to = common.now_ms() // 1000
     conn = common.connect()
-    print(f"Coinalyze  {common.iso(frm*1000)} -> {common.iso(to*1000)}  refresh={refresh}")
+    print(f"Coinalyze  {common.iso(frm*1000)} -> {common.iso(to*1000)}"
+          f"  refresh={refresh} intervals={intervals}")
     try:
         for asset in common.ASSETS:
-            for interval in INTERVALS:
+            for interval in intervals:
                 pm = load(conn, key, asset, interval, frm, to, refresh)
                 # coverage on the interval grid using price_c presence
                 ts = [r[0] for r in conn.execute(
