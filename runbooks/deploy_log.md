@@ -11957,3 +11957,52 @@ Phase 1). Full session work + reports also on branch `polymarket-copy-quote-pric
 
 **Rollback:** roster→`/tmp/pm_roster_backup.json`; option-c→`.bak-pre-optc-2026-07-07`; item-1→`.bak-pre-item1-2026-07-07`
 + restart; epoch→restore `2026-05-23T15:30:15.042822+00:00` or delete key.
+
+---
+
+## 2026-08-02 — PEAD derived settled-cash sizer + $50 floor + live max_concurrent dial + dashboard redesign (RESTART)
+
+**Branch** `claude-2026-08-02b` off prod-live `dafe60b`. Build commits `c02d904`→`f56129a`; Gate-A `6d69277`.
+**★ LIVE ENGINE PID `536666` → `546159`** (whole-engine `sudo -n systemctl restart trading-corp`, board-authorized
+2026-08-02 ~15:46 UTC; NRestarts=0, clean boot). Supersedes 536666 as the live PID in all anchors. Markets closed;
+first PEAD scan is pre-market next session (nothing placed at boot).
+
+**What shipped.** (A) Retired `position_pct × equity` sizer → **derived, self-balancing, FLOORED** sizer:
+`per_name = (settled_cash / open_slots_remaining) × safety_factor(0.95)`, recomputed per entry so the last slot is
+fundable by construction; **$50 per-name floor** (`size_min_usd`) funds FEWER names at >=$50 rather than many tiny
+ones (never opens a sub-$50 name). Single source of truth `pead_sizing.derive_wave_sizes` consumed by BOTH the scan
+and the dashboard readout (they cannot diverge). (B) **Settled cash** now read live from RH `load_account_profile`:
+`settled = cash - unsettled_funds - cash_held_for_orders`, clamped under `buying_power`, floored at 0 - EXCLUDES
+unsettled proceeds (T+1) so sizing is safe on the cash account. New optional `AccountSnapshot.settled_cash`. (C)
+**Live max_concurrent dial** - `POST /telemetry/pead/max_concurrent` writes `agent_state robinhood_pead/
+max_concurrent_override` (mirrors the halt write-surface); scan reads it fresh each cycle, falls back to yaml; the
+dashboard readout renders "funds ~N at ~$X (>=$50)" from the same sizer. (D) **Dashboard redesign** - operational-first
+(account strip + dial, then full-width Open Book with company names, then perf), Upcoming Earnings + Rejections in
+collapsed `<details>`. Company names from `General::Name` in the already-cached `get_company_facts` (no scan HTTP;
+renders on newly-entered rows, legacy rows show ticker).
+
+**Files (11).** 8 PEAD whole-copy (config/strategies.yaml, pead_sizing.py NEW, pead_strategy.py, pead_view.py,
+pead_dial.html NEW, pead_live_sections.html, pead_live.html, + earnings_provider.py) + 3 SHARED **additive hunks**
+(base.py, robinhood.py, routes.py). Target LF-md5 all verified `== target` post-deploy (manifest in
+runbooks/pead_derived_sizing_gate_a_2026-08-02.md). **prod-live advanced to this branch.**
+
+**Deploy mechanism (hard-won).** `trading_corp/data/` is owned by uid `197609` (Windows-mapped), mode 755 -
+**azureuser CANNOT write it**; `earnings_provider.py` lives there -> applied via **Azure `RunShellScript` Run Command
+(root, from operator side)**, NOT azureuser, NOT agent-sudo, NOT chown. All other dirs azureuser-writable (applied
+over ssh). `base.py` was **CRLF** (rest LF/mixed) -> normalized CRLF->LF (content-preserving) then LF-hunk applied;
+robinhood/routes LF via `patch -l`. Restart = `sudo -n` (operator NOPASSWD; board-authorized this run). `az` CLI is
+NOT on the prod box. Prod pytest needs `-p no:pytest_ethereum` (NOT `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, which drops
+pytest-asyncio -> config error). Gate-A drift runner: `cc/gate_a_pead_sizing.ps1`.
+
+**Verified live.** md5 all 11 == target; prod-venv PEAD tests 19 passed (`-p no:pytest_ethereum`); RH bound account
+680725082 on boot (non-interactive re-auth); **settled_cash = $542** (RH cash $955.91, BP $749.11 - engine excludes
+~$414 unsettled, correctly more conservative than RH BP); sizer preview 2 names @ $257.60-$270.48 (both >=$50, dial
+10 - 8 held = 2 slots); dial read+write round-trip OK (agent_state, HTTP 200, test override deleted); dashboard
+order Open-Book-first + earnings/rejections collapsed; **book of 8 survived + reconciled 1:1 to RH** (ATRC/HURN/CAKE/
+ADP/CHEF/LRCX/FORM/BELFA), 0 spurious exits; Bitunix futures FLAT / SFP re-attached (2) / PMCC untouched (18 legs);
+execution_mode LIVE (paper=False), confirmation_gate TRUE, standby false, halt none, pending_order 0.
+
+**Backups.** azureuser files -> `*.bak_pead_sizing_20260802`; earnings_provider -> `*.bak_ep_20260802` (root-owned).
+**Rollback.** Restore the `.bak_*` files (delete the 2 NEW files pead_sizing.py + pead_dial.html); revert base.py to
+its `.bak`; restore the earnings root file via a RunShellScript from `*.bak_ep_20260802`; `sudo -n systemctl restart
+trading-corp`.

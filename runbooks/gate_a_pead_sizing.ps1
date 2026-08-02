@@ -38,7 +38,7 @@ d=$(systemctl show -p WorkingDirectory --value trading-corp 2>/dev/null); [ -d "
 '@
 
 Write-Host "Gate-A drift check (read-only) -- prod vs prod-live baseline dafe60b"
-$out = $cmd | ssh $h "tr -d '\r'|bash"
+$out = $cmd | ssh $h "tr -d '\357\273\277\r'|bash"
 $stop = 0
 foreach ($ln in $out) {
   $sp = $ln.IndexOf(' ')
