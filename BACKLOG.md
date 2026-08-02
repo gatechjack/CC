@@ -8,7 +8,7 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## 🔬 kalshi_crypto_v2 — Kalshi crypto reopen  *(Phase 1 DONE; Phase 2 model lab underway — 2026-08-01)*
+## 🔬 kalshi_crypto_v2 — Kalshi crypto reopen  *(Phase 2 COMPLETE — D5 RULED 2026-08-02: 15m direction CLOSED, ladder distribution OPEN)*
 
 Does the Bitunix SFP/regime signal carry EV on Kalshi crypto binaries? Reopen of the SHELVED
 `kalshi_crypto` under its new-signal-source condition. NEW **read-only** observer scaffold (actor
@@ -39,11 +39,29 @@ Full state + handoff in memory `kalshi-crypto-v2-phase1-2026-08-01`.
   final 4-asset S4 report regenerated (benchmark/EV/artifact-caveat). **Ladder snapshots DONE** (operator chose
   DAILY): 280 events/34,098 strike-snaps at window-open in `lab_kalshi_ladder_snap` (S5 B-L source); full 1m
   ladder stays off. **S3 + S4 v1 + Fork 1/2 all complete.**
-- ★★**NEXT SESSION = EV FORENSIC:** rebuild the EV leg on traded-price OHLC (re-pull candles w/ price o/h/l/c;
-  only price_mean stored now) + an executable entry (not the ~1min-in open candle) + the real trade-through+1
-  tick fill model; report whether the +EV survives. Present evidence; operator rules. Then S5 baselines.
-- **Standing:** agent read-only on prod; no order/placement surface (grep-enforced every commit);
-  deploys operator-gated; creds env→Key Vault, in-memory, redacted.
+- **✅ 15m DIRECTION CHAPTER CLOSED (D5 ruled 2026-08-02, full accounting).** Model ≈ market (Brier, no
+  skill). Every apparent edge died once look-ahead + realistic frictions were removed: (1) taker "+EV" =
+  stale first-minute quote band; (2) continuation taker edge = intra-minute ordering (dead at m+1);
+  (3) ETH maker survivor = same-minute-close knowledge in the resting level (→ −0.002 t−0.2 once honest);
+  (4) maker "spread capture" refuted (was real signal, then died at #3). T5 label noise measured (8-10%
+  directional, ~3% big moves). Surviving DIAGNOSTIC (real, not tradeable): the mid-window UNDER-reaction
+  (calibration, t_clus 10-21, non-executable — catches up <1min). Reports 2026-08-02: `EV_forensic`,
+  `maker_resolution`, `midwindow_calibration`, `continuation_exec`/`_latency`, `maker_realism_gate`,
+  `T5_basis`, `D5_verdict_draft`. Modules in `research/kalshi_crypto_v2/s4/`.
+- **⏳ LADDER DISTRIBUTION OPEN (inconclusive on thin data, NOT negative).** S5 B-L on the 34k hourly ladder
+  snaps: internally consistent (overround ~1, 0 arbitrageable violations); density-vs-HAR a first read only
+  (coverage 21-40/70 events, open-tail σ bias, crude realized proxy). Report `S5_ladder_bl`. **STANDING
+  ACCRUAL: continue the DAILY ladder-snapshot capture (Rider-A pattern) + Rider-A fine-flow archive; run the
+  proper HAR-RV fit + tail handling when event coverage roughly DOUBLES.**
+- **🔒 PARKED/HELD:** maker-shadow (`MAKER_SHADOW_PROPOSAL.md` written+approved, OQs resolved, build PARKED —
+  its arbiter question died at the realism gate); fine-flow (HELD). T2 observer deploy = operator's clock
+  (RTI-tick path + corpus accrual, valuable regardless).
+- **REOPEN CONDITION (recorded):** a distribution-model premise on the ladder with thickened snapshot +
+  fine-flow data, OR a venue-structure change. Same forensic discipline applies.
+- **Durable assets banked:** lab DB (26,104 15m mkts w/ traded-price OHLC + Binance/Coinbase/Coinalyze +
+  34k ladder snaps) + S1 settlement engine + S2 harness + leakage-safe S4 pipeline + forensic-discipline
+  modules + evidence ledger. **Standing:** read-only, no order/placement surface (grep-enforced every
+  commit), deploys operator-gated, creds env→Key Vault in-memory.
 
 ---
 
