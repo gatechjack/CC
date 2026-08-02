@@ -46,6 +46,16 @@ def main() -> int:
     ap.add_argument("--db", default=_DEFAULT_DB)
     args = ap.parse_args()
 
+    # EODHD_API_KEY lives in Azure Key Vault (loaded at runtime, same as the engine),
+    # NOT a plain env file. Pull secrets into os.environ before building the provider.
+    # Needs KEY_VAULT_URI in env + the VM managed identity; degrades gracefully to
+    # whatever is already in os.environ if KV is unreachable.
+    try:
+        from trading_corp.utils.secrets import load_secrets
+        load_secrets()
+    except Exception as e:  # noqa: BLE001
+        print(f"  (load_secrets warning: {e})")
+
     provider = EarningsProvider(db_url=args.db)
     with db.connect(args.db) as conn:
         rows = conn.execute(
