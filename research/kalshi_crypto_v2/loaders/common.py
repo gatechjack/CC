@@ -112,23 +112,23 @@ def cache_put(key: str, data: object) -> None:
 
 
 # --- coverage / gaps ---------------------------------------------------------
-def minute_coverage(ts_ms_iter, start_ms: int, end_ms: int) -> dict:
-    """Coverage of a 1-minute grid over [start_ms, end_ms]. Snaps ts to minute.
-    Returns rows/min_ts/max_ts/expected/present/missing + gap ranges (list of
-    (gap_start_ms, gap_end_ms, missing_minutes)) for gaps within [min,max]."""
+def minute_coverage(ts_ms_iter, start_ms: int, end_ms: int, step_ms: int = MINUTE_MS) -> dict:
+    """Coverage of a fixed `step_ms` grid over [start_ms, end_ms] (default 1min).
+    Snaps ts to the grid. Returns rows/min_ts/max_ts/expected/present/missing +
+    gap ranges (list of (gap_start_ms, gap_end_ms, missing_buckets)) within [s,e]."""
     present = set()
     mn = mx = None
     for t in ts_ms_iter:
-        m = t - (t % MINUTE_MS)
+        m = t - (t % step_ms)
         present.add(m)
         mn = m if mn is None else min(mn, m)
         mx = m if mx is None else max(mx, m)
-    s = start_ms - (start_ms % MINUTE_MS)
-    e = end_ms - (end_ms % MINUTE_MS)
-    expected = (e - s) // MINUTE_MS + 1 if e >= s else 0
+    s = start_ms - (start_ms % step_ms)
+    e = end_ms - (end_ms % step_ms)
+    expected = (e - s) // step_ms + 1 if e >= s else 0
     present_in = {m for m in present if s <= m <= e}
     missing = expected - len(present_in)
-    # gap ranges over [min(present,s), max(present,e)] — walk the grid
+    # gap ranges over the requested grid [s, e]
     gaps = []
     if present_in:
         gap_start = None
@@ -142,15 +142,19 @@ def minute_coverage(ts_ms_iter, start_ms: int, end_ms: int) -> dict:
             else:
                 if gap_start is not None:
                     gaps.append((gap_start, prev_missing_end,
-                                 (prev_missing_end - gap_start) // MINUTE_MS + 1))
+                                 (prev_missing_end - gap_start) // step_ms + 1))
                     gap_start = None
-            t += MINUTE_MS
+            t += step_ms
         if gap_start is not None:
             gaps.append((gap_start, prev_missing_end,
-                         (prev_missing_end - gap_start) // MINUTE_MS + 1))
+                         (prev_missing_end - gap_start) // step_ms + 1))
     return {"rows": len(present), "min_ts": mn, "max_ts": mx,
             "expected": expected, "present": len(present_in), "missing": missing,
             "gap_frac": (missing / expected) if expected else 1.0, "gaps": gaps}
+
+
+INTERVAL_MS = {"1min": 60_000, "5min": 300_000, "15min": 900_000,
+               "30min": 1_800_000, "1hour": 3_600_000}
 
 
 def write_coverage(conn, source: str, asset: str, rows: int, min_ts: int | None,
