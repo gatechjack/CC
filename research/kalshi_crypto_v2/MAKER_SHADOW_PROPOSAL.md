@@ -36,4 +36,12 @@ Per tracked 15m window: at the **first in-window trade** (entry minute, variant 
 - **OQ-4 (key design decision) model inference in live:** the shadow needs `model_p` at T0−60s. **Recommend** adding an inference step to the observer's 30s `cycle()` that writes `model_p` to a small shared table the shadow reads (avoids the shadow holding the CatBoost model; avoids train/infer divergence) — vs serializing the model into the shadow process. Operator to choose before code.
 - **OQ-5** enumerate confirm: does `/markets status=open` consistently return the right near-money 15m set through the window lifecycle (a 14-min-old market may still be "open" but in terminal convergence)?
 
-**Nothing built. Awaiting approval + answers to §7 (esp. OQ-4) before any code.**
+## 8. Status & OQ resolutions (2026-08-02)
+**APPROVED by operator.** Build PARKED until the operator completes the T2 deploy + heartbeat verification (the §5 hard prerequisite). OQ resolutions (operator: adopt my recommendation where it follows already-ruled principles — isolation, read-only, verified-observer prereq, no new pulls; escalate only new scope/risk):
+- **OQ-4 (model inference) — CONFIRMED (operator):** the observer's 30s `cycle()` runs the S4 inference and writes `model_p` to a small shared table; the shadow reads it and never holds the CatBoost model.
+- **OQ-1 (WS isolation/limits) — ADOPTED:** second parallel WS connection (isolation principle). Empirically confirm subscription/connection limits under the KAREN key in soak week 1 (a check, not new scope).
+- **OQ-2 (orderbook_delta volume) — ADOPTED:** ship v1 trade-prints-only first; measure trade-channel + delta message rate; v2 (queue depth) gated at the 2-week checkpoint (no new scope beyond the approved two-tier design).
+- **OQ-5 (active-market enumeration) — ADOPTED:** reuse the observer's existing `/markets status=open` signed REST call (read-only, no new pull); verify the returned near-money set through the window lifecycle in week 1.
+- **OQ-3 (clock alignment) — week-1 verify:** assert `fill_ts_ms < window_close_ts_ms` on all fills.
+
+None of the above create new scope or risk beyond the approved design, so nothing was escalated. **No code until the operator's T2 verification is done.**
