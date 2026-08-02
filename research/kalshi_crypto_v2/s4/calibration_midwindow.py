@@ -112,12 +112,25 @@ def build_observations(asset: str, conn) -> pd.DataFrame:
 
 
 def _cell(g: pd.DataFrame) -> dict:
+    """gap = realized_YES_freq - mean(implied_p), with BOTH a naive per-observation
+    SE and a WINDOW-CLUSTERED (CR0) SE. Minutes within a 15m window share the same
+    outcome y and are serially correlated, so the per-obs SE is optimistic; the
+    clustered SE (cluster = window/ticker) is the honest one."""
     n = len(g)
+    if n == 0:
+        return {"n": 0, "n_win": 0, "mean_implied": np.nan, "yes_freq": np.nan,
+                "gap": np.nan, "gap_se": np.nan, "gap_se_cl": np.nan}
     mp = g["implied_p"].mean()
     yf = g["y"].mean()
     gap = yf - mp
-    se = (g["y"].std(ddof=1) / np.sqrt(n)) if n > 1 else np.nan
-    return {"n": n, "mean_implied": mp, "yes_freq": yf, "gap": gap, "gap_se": se}
+    d = (g["y"] - g["implied_p"]).to_numpy()                 # per-obs contribution
+    se_obs = (d.std(ddof=1) / np.sqrt(n)) if n > 1 else np.nan
+    # CR0 cluster-robust SE of the mean of d, clustering by window (ticker):
+    #   Var = (1/n^2) * sum_g ( sum_{i in g} (d_i - gap) )^2
+    csum = pd.Series(d - gap).groupby(g["ticker"].to_numpy()).sum().to_numpy()
+    se_cl = (np.sqrt((csum ** 2).sum()) / n) if n > 0 else np.nan
+    return {"n": n, "n_win": int(g["ticker"].nunique()), "mean_implied": mp,
+            "yes_freq": yf, "gap": gap, "gap_se": se_obs, "gap_se_cl": se_cl}
 
 
 def analyze(df: pd.DataFrame) -> dict:
@@ -145,18 +158,23 @@ def analyze(df: pd.DataFrame) -> dict:
 # report
 # ---------------------------------------------------------------------------
 
-def _g(c: dict) -> str:
-    """gap +/- se (t) from a cell dict."""
-    if not c or c.get("gap") is None or (isinstance(c.get("gap"), float) and np.isnan(c["gap"])):
+def _tcell(c: dict) -> str:
+    """t_clustered (OK if |t|>=2) with t_obs in parens."""
+    gap = c.get("gap")
+    if gap is None or (isinstance(gap, float) and np.isnan(gap)):
         return "n/a"
-    se = c.get("gap_se")
-    if se and not np.isnan(se):
-        return f"{c['gap']:+.4f}+/-{se:.4f} (t={c['gap']/se:+.1f})"
-    return f"{c['gap']:+.4f}"
+    se_cl, se_o = c.get("gap_se_cl"), c.get("gap_se")
+    tcl = (gap / se_cl) if (se_cl and not np.isnan(se_cl) and se_cl > 0) else float("nan")
+    tob = (gap / se_o) if (se_o and not np.isnan(se_o) and se_o > 0) else float("nan")
+    mark = " **OK**" if (not np.isnan(tcl) and abs(tcl) >= 2) else ""
+    tcl_s = f"{tcl:+.1f}{mark}" if not np.isnan(tcl) else "n/a"
+    tob_s = f"{tob:+.1f}" if not np.isnan(tob) else "n/a"
+    return f"{tcl_s} ({tob_s})"
 
 
 def _line(c: dict) -> str:
-    return (f"{c['n']} | {c['mean_implied']:.4f} | {c['yes_freq']:.4f} | {_g(c)}")
+    return (f"{c['n']} ({c['n_win']}w) | {c['mean_implied']:.4f} | "
+            f"{c['yes_freq']:.4f} | {c['gap']:+.4f} | {_tcell(c)}")
 
 
 def write_report(results: list[tuple], path: str) -> None:
@@ -176,7 +194,10 @@ def write_report(results: list[tuple], path: str) -> None:
              "that fades). Minutes 1-13 (open tick + settlement-convergence minute "
              "excluded). Move = signed underlying %move (Binance 1m) open→minute m. "
              "Directional windows only (|settlement move|≥0.05%) unless noted; t = "
-             "gap/SE.")
+             "t_clus (window-clustered CR0 SE, cluster=window - the honest SE; "
+             "**OK** marks |t_clus|>=2), with t_obs (per-observation) in parens = "
+             "OPTIMISTIC. **T5 basis caveat: move is Binance, settlement is "
+             "CF-Benchmarks RTI (proxy mismatch).**")
     L.append("")
     for asset, a in results:
         L.append(f"## {asset}")
@@ -186,8 +207,8 @@ def write_report(results: list[tuple], path: str) -> None:
         L.append("")
         L.append("### Calibration by time-into-window (directional)")
         L.append("")
-        L.append("| Time bucket | n | mean implied_p | realized YES-freq | gap (t) |")
-        L.append("|---|---|---|---|---|")
+        L.append("| Time bucket | n (win) | mean implied_p | YES-freq | gap | t_clus (t_obs) |")
+        L.append("|---|---|---|---|---|---|")
         for _lo, _hi, tb in TIME_BUCKETS:
             c = a["by_time"].get(tb)
             if c:
@@ -195,8 +216,8 @@ def write_report(results: list[tuple], path: str) -> None:
         L.append("")
         L.append("### Overreaction-fade: gap by time × signed move (directional)")
         L.append("")
-        L.append("| Time | Move bucket | n | mean implied_p | YES-freq | gap (t) |")
-        L.append("|---|---|---|---|---|---|")
+        L.append("| Time | Move bucket | n (win) | mean implied_p | YES-freq | gap | t_clus (t_obs) |")
+        L.append("|---|---|---|---|---|---|---|")
         for _lo, _hi, tb in TIME_BUCKETS:
             for mb in MOVE_LABELS:
                 c = a["overreaction"].get((tb, mb))
@@ -205,8 +226,8 @@ def write_report(results: list[tuple], path: str) -> None:
         L.append("")
         L.append("### By regime (prior-15m trend) and flat split")
         L.append("")
-        L.append("| Cut | n | mean implied_p | YES-freq | gap (t) |")
-        L.append("|---|---|---|---|---|")
+        L.append("| Cut | n (win) | mean implied_p | YES-freq | gap | t_clus (t_obs) |")
+        L.append("|---|---|---|---|---|---|")
         for rg in ("up", "down", "range"):
             c = a["by_regime"].get(rg)
             if c:
@@ -223,10 +244,10 @@ def write_report(results: list[tuple], path: str) -> None:
              "DOWN moves (implied overstated NO). A symmetric, time-decaying gap on the "
              "tails is the fade signal; a ~0 gap everywhere means the mid-window price "
              "is calibrated (no fade to harvest).")
-    L.append("- **|t|<~2 ⇒ indistinguishable from calibrated.** Gaps are per "
-             "observation (windows contribute multiple correlated minutes), so treat "
-             "SEs as OPTIMISTIC (serial correlation not adjusted) — a follow-up would "
-             "cluster by window.")
+    L.append("- **t_clus is the honest test** (CR0, cluster=window): minutes within a "
+             "window share the outcome and are serially correlated, so t_obs "
+             "(per-observation) overstates significance. Cells marked **OK** clear "
+             "|t_clus|>=2 after clustering; n (win) = observations (distinct windows).")
     L.append("- Flat windows (settlement move <0.05%) are ~coin-flip by construction; "
              "the directional split isolates the real moves. Regime conditions whether "
              "any fade is trend- or range-specific.")
