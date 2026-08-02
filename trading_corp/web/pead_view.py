@@ -22,6 +22,7 @@ from pathlib import Path
 from trading_corp.agents.strategies.pead_pressures import (
     RULE_COLORS,
     compute_pressures,
+    drift_dead_level,
     primitives_from_extra,
     stop_level,
 )
@@ -87,6 +88,45 @@ def query_open_positions(db_url: str, division: str = DIVISION) -> list[dict]:
     return out
 
 
+def _position_card(prim, entry: float, last: float, held: int) -> dict:
+    """Price-ladder card data (Part 2, DISPLAY ONLY) from stored primitives — no new
+    computation about exits. `drift_dead` is the EXACT level the exit engine's drift
+    rule measures against: `drift_dead_level(prim)` on the SAME stored, slot-aware
+    `pre_earnings_close` the engine reads (so the card can never show a line the
+    engine doesn't act on). `drift_dead` is None when drift is DISABLED (earnings-day
+    gap <= 0 — a down/flat reactor; the position is stop-managed only)."""
+    stop = stop_level(prim)
+    gap = prim.earnings_gap_top - prim.pre_earnings_close          # earnings-day gap ($)
+    drift_disabled = gap <= 0
+    drift_dead = None if drift_disabled else drift_dead_level(prim)
+    span = entry - stop                                           # ladder axis: entry (top) -> stop (bottom)
+
+    def _off(p):                                                 # % down the entry->stop axis, clamped 0..100
+        if p is None or span <= 0:
+            return None
+        return max(0.0, min(100.0, (entry - p) / span * 100.0))
+
+    room_stop = (last - stop) if last is not None else None
+    room_drift = (last - drift_dead) if (drift_dead is not None and last is not None) else None
+    # "close" to drift-dead: NOW is within the last 20% of the entry->drift-dead drop
+    close_to_drift = bool(drift_dead is not None and room_drift is not None
+                          and 0.0 <= room_drift <= 0.20 * max(1e-9, entry - drift_dead))
+    return {
+        "entry": entry, "now": last, "stop": stop, "drift_dead": drift_dead,
+        "pre_close": prim.pre_earnings_close, "gap_top": prim.earnings_gap_top,
+        "drift_disabled": drift_disabled,
+        "entry_off": _off(entry), "now_off": _off(last), "drift_off": _off(drift_dead),
+        "pre_off": _off(prim.pre_earnings_close), "stop_off": _off(stop),
+        "room_stop": room_stop,
+        "room_stop_pct": (room_stop / last) if (room_stop is not None and last) else None,
+        "room_drift": room_drift,
+        "room_drift_pct": (room_drift / last) if (room_drift is not None and last) else None,
+        "close_to_drift": close_to_drift,
+        "held_days": held, "max_days": 60,
+        "time_pct": max(0.0, min(100.0, held / 60.0 * 100.0)),
+    }
+
+
 def assemble_book(open_rows: list[dict], quotes: dict[str, float], today: date) -> list[dict]:
     """Pure book assembly: compute pressures per row (LOCKED contract) and sort
     by governing pressure descending. Rows missing the extra_json primitives or
@@ -120,7 +160,7 @@ def assemble_book(open_rows: list[dict], quotes: dict[str, float], today: date) 
             book.append({**base, "complete": False, "pressures": None,
                          "governing": None, "fuse_pct": None,
                          "fuse_color": None, "governing_color": None,
-                         "open_risk_usd": None})
+                         "open_risk_usd": None, "card": None})
             continue
         nxt = _parse_date(extra.get("next_earnings_date"))
         days_to_next = business_days(today, nxt) if nxt else None
@@ -131,7 +171,8 @@ def assemble_book(open_rows: list[dict], quotes: dict[str, float], today: date) 
                                    "guard": pr.guard, "time": pr.time},
                      "governing": pr.governing, "fuse_pct": pr.fuse_pct,
                      "fuse_color": pr.fuse_color, "governing_color": pr.governing_color,
-                     "open_risk_usd": max(0.0, (entry - stop_level(prim)) * r["qty"])})
+                     "open_risk_usd": max(0.0, (entry - stop_level(prim)) * r["qty"]),
+                     "card": _position_card(prim, entry, last, held)})
     # complete rows first, by governing pressure desc; then placeholders.
     book.sort(key=lambda b: (1 if b["complete"] else 0, b.get("fuse_pct") or 0.0),
               reverse=True)

@@ -173,12 +173,15 @@
         </thead>
         <tbody class="divide-y divide-edge/40">
           {% for row in v.book %}
-            <tr class="{% if row.fuse_color == 'red' and row.complete %}pead-row-danger{% endif %}
-                        hover:bg-pane-2/40 transition-colors">
+            <tr class="pead-book-row cursor-pointer {% if row.fuse_color == 'red' and row.complete %}pead-row-danger{% endif %}
+                        hover:bg-pane-2/40 transition-colors" data-sym="{{ row.symbol }}"
+                title="click for the position card">
 
               {# Ticker + company name #}
               <td class="py-2.5 pr-3 align-top">
-                <div class="text-mono font-bold text-sm">{{ row.symbol }}</div>
+                <div class="text-mono font-bold text-sm">
+                  <span class="pead-caret text-muted/50 text-[9px] inline-block transition-transform">▸</span>
+                  {{ row.symbol }}</div>
                 {% if row.company_name %}
                   <div class="text-muted text-[10px] leading-snug max-w-[160px] truncate"
                        title="{{ row.company_name }}">{{ row.company_name }}</div>
@@ -301,6 +304,12 @@
               </td>
 
             </tr>
+            {# expand-on-click position card (Part 2) — full-width detail row #}
+            <tr class="pead-detail" data-sym="{{ row.symbol }}" hidden>
+              <td colspan="7" class="p-0">
+                {% include "partials/_pead_card.html" %}
+              </td>
+            </tr>
           {% endfor %}
         </tbody>
       </table>
@@ -398,6 +407,15 @@
             </div>
             <div class="text-[10px] text-muted/40 italic">awaiting position metadata</div>
           {% endif %}
+
+          {# expand-on-click position card (Part 2) — mobile #}
+          <button type="button" class="pead-mobile-toggle mt-2 flex items-center gap-1
+                     text-[10px] font-mono text-accent/80" data-sym="{{ row.symbol }}">
+            <span class="pead-caret inline-block transition-transform">▸</span> position card
+          </button>
+          <div class="pead-detail" data-sym="{{ row.symbol }}" hidden>
+            {% include "partials/_pead_card.html" %}
+          </div>
 
         </article>
       {% endfor %}
