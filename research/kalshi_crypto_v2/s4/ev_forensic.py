@@ -455,6 +455,27 @@ def write_report(results: list[dict], path: str) -> None:
              "maker; no settlement fee). SE = standard error of the mean; t = "
              "mean/SE (|t|<~2 is indistinguishable from zero).")
     L.append("")
+    # --- at-a-glance summary ------------------------------------------------
+    L.append("## Summary — taker@traded (executable, guaranteed fill) vs "
+             "maker per-ATTEMPT (traded-close rest)")
+    L.append("")
+    L.append("| Asset | Var | Taker@traded $/ct (t) | Maker per-ATTEMPT $/ct (t) | "
+             "maker fill_rate | filled/unfilled win% |")
+    L.append("|---|---|---|---|---|---|")
+    for res in results:
+        for v in ("A", "B"):
+            r = res["variants"][v]
+            mk = r["maker"]
+            L.append(f"| {res['asset']} | {v} | {_cell(r['taker_traded'])} | "
+                     f"{_cell(mk['per_attempt'])} | {_pct(mk['fill_rate'])} | "
+                     f"{_pct(mk['filled_win_rate'])} / {_pct(mk['unfilled_win_rate'])} |")
+    L.append("")
+    L.append("_Maker per-ATTEMPT rides an OPTIMISTIC fill assumption (you fill at your "
+             "resting price whenever a later trade prints >=1 tick through it — no "
+             "queue position, no partial fills). Read it against that and the "
+             "adverse-selection views below; a realistic queue model is the obvious "
+             "next test._")
+    L.append("")
     for res in results:
         a = res["asset"]
         L.append(f"## {a}")
@@ -535,8 +556,22 @@ def write_report(results: list[dict], path: str) -> None:
              "a positive per-fill number with a negative/near-zero per-attempt number "
              "is not a tradeable edge.")
     L.append("- Consistent with the settled Brier result (model ~= market, skill "
-             "+/-0.02 noise): a real 5-9%/contract edge would beat the market Brier; "
-             "it does not.")
+             "+/-0.02 noise): a real directional 5-9%/contract edge would beat the "
+             "market Brier; it does not. So any positive maker number is NOT the "
+             "model's directional skill.")
+    L.append("- **What a positive maker per-attempt would be, if real:** spread/range "
+             "capture — the maker enters at the traded CLOSE while the taker pays the "
+             "HIGH; the gap is the intra-minute range. The model only picks which side "
+             "to rest on, and at ~coin-flip skill that side is ~random. **Open "
+             "diagnostic (not run):** re-run the maker with a fixed/random side — if "
+             "the positive persists, it is signal-INDEPENDENT microstructure capture, "
+             "not the SFP/model signal this study set out to test.")
+    L.append("- **Load-bearing assumption — the maker fill is OPTIMISTIC:** it books a "
+             "fill at your resting price whenever a later trade prints >=1 tick through "
+             "it, with NO queue position and NO partial fills. fill_rate 0.93-0.97 is "
+             "very high; a realistic queue/size model would lower fills (and the missed "
+             "ones are ~100% winners, View 2) and could erase the maker positive. This "
+             "is the make-or-break follow-up before any maker EV claim.")
     L.append("")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(L) + "\n")
@@ -546,6 +581,14 @@ def write_report(results: list[dict], path: str) -> None:
 def _pct(x): return "n/a" if x is None else f"{x*100:.1f}%"
 def _num(x): return "n/a" if x is None else f"{x:.4f}"
 def _money(a): return "n/a" if not a or a.get("mean") is None else f"${a['mean']:+.4f}"
+
+
+def _cell(a: dict) -> str:
+    """Compact table cell: 'mean (t=..)'."""
+    if not a or a.get("mean") is None:
+        return "n/a"
+    se = a.get("se")
+    return f"{a['mean']:+.4f} (t={a['mean']/se:+.1f})" if se else f"{a['mean']:+.4f}"
 
 
 def _rowmini(a: dict) -> str:

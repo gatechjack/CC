@@ -1,6 +1,6 @@
 # kalshi_crypto_v2 — S3 Data Backfill Coverage Report
 
-_Generated 2026-08-02 07:06 UTC. Period: 2026-05-25 00:00 -> present. Assets: BTC/ETH/SOL/XRP. Lab DB only (prod untouched)._
+_Generated 2026-08-02 15:36 UTC. Period: 2026-05-25 00:00 -> present. Assets: BTC/ETH/SOL/XRP. Lab DB only (prod untouched)._
 
 **Gap rule:** if any continuous-cadence source's gaps exceed 1% of windows in the period, STOP before S4 and the operator decides (proceed / patch / re-pull).
 
@@ -44,10 +44,10 @@ Coinalyze retains fine-grained history only for a recent tail; **only 1-hour rea
 
 | series | kind | markets | pulled | candles | window cov | status |
 |---|---|---|---|---|---|---|
-| KXBTC15M | 15m | 6526 | 6526 | 104273 | 98.1% | DONE |
-| KXETH15M | 15m | 6526 | 6526 | 104266 | 98.1% | DONE |
-| KXSOL15M | 15m | 6526 | 6526 | 104191 | 98.1% | DONE |
-| KXXRP15M | 15m | 6526 | 6526 | 104223 | 98.1% | DONE |
+| KXBTC15M | 15m | 6526 | 6526 | 104273 | 97.6% | DONE |
+| KXETH15M | 15m | 6526 | 6526 | 104266 | 97.6% | DONE |
+| KXSOL15M | 15m | 6526 | 6526 | 104191 | 97.6% | DONE |
+| KXXRP15M | 15m | 6526 | 6526 | 104223 | 97.6% | DONE |
 
 **Ladder snapshots (KXBTC/KXETH/KXSOLE/KXXRP, daily, window-open):** full 1m ladder (674k+ mkts, >24h) intentionally OFF; instead all strikes at window open for a daily event sample (S5 Breeden-Litzenberger source).
 
@@ -65,7 +65,7 @@ Coinalyze retains fine-grained history only for a recent tail; **only 1-hour rea
 | Binance | BTC 2026-07-01 12:00 | stored == origin (o/h/l/c/v) exact |
 | Coinbase | BTC 2026-07-01 12:00 | stored == origin exact; vs Binance +15bps (sane spread) |
 | Coinalyze | BTC 1h 2026-07-01 12:00 | price_c/buy_vol/vol match origin |
-| Kalshi | one 15m candle | *pending 15m pull completion* |
+| Kalshi | one 15m candle | stored == origin; settle=RTI hand-verified to the cent (S1 report) — 15m pull DONE (26104/26104 markets pulled) |
 
 ## GAP-RULE GATE VERDICT
 
@@ -73,7 +73,7 @@ Coinalyze retains fine-grained history only for a recent tail; **only 1-hour rea
 - **Coinbase 1m:** all 4 assets 0.019-0.045% (thin no-trade minutes). PASS.
 - **Coinalyze 1hour:** full period, 0 gaps. PASS at 1h only.
 - **Coinalyze 1min/5min/15min:** 98.5% / 89.9% / 69.8% gaps — **EXCEED 1% by design (API retention limit, not a flaky pull).** Fine-grained LEAD flow features are recent-tail only.
-- **Kalshi 15m candles:** in progress (see table).
-- **Kalshi ladders:** not pulled (operator scope decision).
+- **Kalshi 15m candles:** DONE (26104/26104 markets pulled).
+- **Kalshi ladders:** DONE (daily window-open sample, 280 events).
 
-**=> STOP before S4.** Two operator decisions required: (1) Coinalyze flow-feature granularity/depth strategy for S4; (2) Kalshi ladder pull scope. Bar-derived + regime + cross-asset features have FULL history (Binance/Coinbase) and are unaffected.
+**=> S3 backfill COMPLETE.** Both S3-time operator decisions were resolved: (1) Coinalyze flow granularity — 1-hour full-period is the v1 flow source, with fine-grained intervals retained recent-tail only (Riders A/B); (2) Kalshi ladder scope — daily window-open snapshot sample (S5 Breeden-Litzenberger source), full 1m ladder intentionally off. S4 has proceeded. Bar/regime/cross-asset features have FULL history (Binance/Coinbase) throughout.
