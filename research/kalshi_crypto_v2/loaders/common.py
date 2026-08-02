@@ -167,4 +167,6 @@ def write_coverage(conn, source: str, asset: str, rows: int, min_ts: int | None,
 
 def connect():
     labdb.migrate()          # idempotent DDL
-    return labdb.connect()
+    conn = labdb.connect()
+    conn.execute("PRAGMA busy_timeout=30000")   # tolerate concurrent reader/writer
+    return conn
