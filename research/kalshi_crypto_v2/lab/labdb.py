@@ -39,11 +39,14 @@ CREATE TABLE IF NOT EXISTS lab_kalshi_ladder_snap (
   yes_bid REAL, yes_ask REAL, price_mean REAL, volume REAL, open_interest REAL,
   result TEXT, settlement_value REAL,
   PRIMARY KEY(market_ticker, ref_ts));
--- per-settled-market kalshi 1m candles (raw yes bid/ask OHLC + price/vol/oi)
+-- per-settled-market kalshi 1m candles (raw yes bid/ask OHLC + traded-price
+-- OHLC + price mean/vol/oi). price_{open,high,low,close} = actual TRADED prints
+-- (added for the EV forensic 2026-08-02; earlier builds stored only price_mean).
 CREATE TABLE IF NOT EXISTS lab_kalshi_candles (
   series TEXT, market_ticker TEXT, end_period_ts INTEGER,
   yes_bid_open REAL, yes_bid_high REAL, yes_bid_low REAL, yes_bid_close REAL,
   yes_ask_open REAL, yes_ask_high REAL, yes_ask_low REAL, yes_ask_close REAL,
+  price_open REAL, price_high REAL, price_low REAL, price_close REAL,
   price_mean REAL, volume REAL, open_interest REAL,
   PRIMARY KEY(market_ticker, end_period_ts));
 -- engineered features (long)
@@ -91,6 +94,13 @@ def migrate(path: str = LAB_DB) -> list[str]:
                     f"lab_coinalyze has {n} rows on the pre-interval schema; "
                     "manual migration required (refusing to drop data)")
         conn.executescript(DDL)
+        # EV-forensic migration (2026-08-02): traded-price OHLC columns are
+        # additive; ADD COLUMN on an existing table is lossless (old rows get
+        # NULL until the market is re-pulled). Idempotent.
+        have = [r[1] for r in conn.execute("PRAGMA table_info(lab_kalshi_candles)")]
+        for col in ("price_open", "price_high", "price_low", "price_close"):
+            if col not in have:
+                conn.execute(f"ALTER TABLE lab_kalshi_candles ADD COLUMN {col} REAL")
         conn.commit()
         return [r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'lab_%' ORDER BY name")]

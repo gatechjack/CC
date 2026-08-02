@@ -93,12 +93,16 @@ def enumerate_markets(rest: KalshiRest, conn, kind_filter: str | None = None) ->
 def _candle_row(series: str, tkr: str, c: dict) -> tuple:
     # Kalshi candles report prices as *_dollars strings and vol/oi as *_fp
     # strings (with plain keys as an older-API fallback). Store raw dollars.
+    # price.{open,high,low,close} = actual TRADED prints in the minute (added
+    # for the EV forensic); price.mean = the minute's traded mean.
     yb, ya, pr = c.get("yes_bid") or {}, c.get("yes_ask") or {}, c.get("price") or {}
     return (series, tkr, c.get("end_period_ts"),
             _num(yb, "open_dollars", "open"), _num(yb, "high_dollars", "high"),
             _num(yb, "low_dollars", "low"), _num(yb, "close_dollars", "close"),
             _num(ya, "open_dollars", "open"), _num(ya, "high_dollars", "high"),
             _num(ya, "low_dollars", "low"), _num(ya, "close_dollars", "close"),
+            _num(pr, "open_dollars", "open"), _num(pr, "high_dollars", "high"),
+            _num(pr, "low_dollars", "low"), _num(pr, "close_dollars", "close"),
             _num(pr, "mean_dollars", "mean"),
             _num(c, "volume_fp", "volume"), _num(c, "open_interest_fp", "open_interest"))
 
@@ -134,8 +138,9 @@ def pull_candles(rest: KalshiRest, conn, only_series: str | None,
                     conn.executemany(
                         "INSERT OR REPLACE INTO lab_kalshi_candles(series,market_ticker,"
                         "end_period_ts,yes_bid_open,yes_bid_high,yes_bid_low,yes_bid_close,"
-                        "yes_ask_open,yes_ask_high,yes_ask_low,yes_ask_close,price_mean,"
-                        "volume,open_interest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "yes_ask_open,yes_ask_high,yes_ask_low,yes_ask_close,"
+                        "price_open,price_high,price_low,price_close,price_mean,"
+                        "volume,open_interest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         [_candle_row(series, tkr, c) for c in arr])
                     got += len(arr)
                 cur = chunk_end + 60
@@ -198,6 +203,17 @@ def main() -> int:
             kind = sys.argv[sys.argv.index("--kind") + 1]
         if "--fix-settle" in sys.argv:
             fix_settle(rest, conn, kind)
+            return 0
+        if "--reset-15m" in sys.argv:
+            # One-time: clear candles_pulled for the 4x 15m series so the next
+            # `--candles --kind 15m` RE-pulls them (now storing traded-price
+            # OHLC). Kept separate from the pull so re-running the pull RESUMES
+            # (does not re-reset already-repulled markets). Ladders untouched.
+            cur = conn.execute(
+                "UPDATE lab_kalshi_markets SET candles_pulled=0 WHERE series LIKE '%15M'")
+            conn.commit()
+            print(f"reset candles_pulled=0 for {cur.rowcount} 15m markets "
+                  f"(run `--candles --kind 15m` to re-pull, resumable)", flush=True)
             return 0
         do_enum = "--enumerate" in sys.argv or "--candles" not in sys.argv
         do_cand = "--candles" in sys.argv or "--enumerate" not in sys.argv
