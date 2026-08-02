@@ -131,6 +131,9 @@
     50%       { background-color: rgba(244, 63, 94, 0.08); }
   }
   .pead-row-danger { animation: row-danger 2s ease-in-out infinite; }
+  /* Collapsible reference panels: hide the native disclosure triangle cross-browser */
+  #pead-live details > summary { list-style: none; }
+  #pead-live details > summary::-webkit-details-marker { display: none; }
 </style>
 {% endblock %}
 
@@ -156,6 +159,27 @@
     }
     tick();
     setInterval(tick, 1000);
+  })();
+
+  // Remember collapsible (<details>) open state within the session so the 15s
+  // htmx poll (which re-renders #pead-live) does not re-collapse an opened panel.
+  // Default is collapsed on first load (empty store); PEAD-only, no server state.
+  (function () {
+    var KEY = 'pead_details_open';
+    function saved() { try { return JSON.parse(sessionStorage.getItem(KEY) || '{}'); } catch (e) { return {}; } }
+    function apply() {
+      var s = saved();
+      document.querySelectorAll('#pead-live details[id]').forEach(function (d) {
+        if (s[d.id]) { d.setAttribute('open', ''); }
+      });
+    }
+    document.addEventListener('toggle', function (e) {
+      var d = e.target;
+      if (!d || d.tagName !== 'DETAILS' || !d.id) return;
+      var s = saved(); s[d.id] = d.open; sessionStorage.setItem(KEY, JSON.stringify(s));
+    }, true);
+    document.body.addEventListener('htmx:afterSettle', apply);
+    apply();
   })();
 </script>
 {% endblock %}
