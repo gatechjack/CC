@@ -31,8 +31,11 @@ Calibrated via Platt (sklearn LogisticRegression on GBM raw probs).
 ### Missing Flow Values
 Coinalyze 1h flow NaN values left as NaN for the GBM to handle natively (CatBoost supports NaN). An `is_missing_flow_1h` flag column distinguishes true-zero from missing.
 
-### Flat-Bucket Caveat
-**FINDING:** `settlement_value` in `lab_kalshi_markets` is the Kalshi binary contract settlement (0.0=no, 1.0=yes), NOT the close-60s-avg RTI price. Computing `move_pct = (settle - strike) / |strike|` with a binary settle and RTI strike (~50k–80k) yields |move_pct| ≈ 1.0 for every window. The flat-bucket analysis is therefore trivially all-directional (n_flat=0 at all thresholds). To compute physically meaningful move_pct, the actual close-60s-avg RTI for each window would need to be derived from the cfbenchmarks feed or Binance bar averages — deferred to a future phase. The flat-bucket rows are reported as observed (all windows directional) for completeness.
+### Flat-Bucket Rule
+`settle` = the close-60s-avg RTI (`expiration_value`), corrected via `kalshi.py --fix-settle` (an earlier build wrongly stored the 0/1 binary payout, making move_pct trivially ±1). move_pct=(settle-strike)/|strike| is now physically meaningful; flat_sensitivity partitions at 0.02/0.05/0.10%. Flat (tiny-move) windows come out near coin-flip, as expected.
+
+### Market Benchmark + Dual EV
+market_p (implied P(up) at window open) = price_mean of the candle nearest open_ts (else the yes bid/ask mid). Brier_market vs Brier_model (compare_to_market) is the REAL bar. Dual EV (taker at ask; maker per the approved trade-through+1-tick fill model, WITH fill_rate) + realized P&L on edge-clearing windows. ★ The EV came out positive but is flagged a NON-EXECUTABLE ARTIFACT (see per-asset caveat); the trustworthy result is the Brier comparison (model ≈ market).
 
 ---
 
@@ -52,8 +55,16 @@ Coinalyze 1h flow NaN values left as NaN for the GBM to handle natively (CatBoos
 | Brier_const_0.5 | 0.25000 |
 | Brier_base_rate | 0.25005 |
 | Mean CV Brier (train_core) | 0.25708 |
-| Brier_market | TODO_MARKET_BENCHMARK |
-| Skill score vs market | TODO_MARKET_BENCHMARK |
+| **Brier_market (window-open)** | 0.23918 |
+| **Skill score vs market** | -0.0017  (>0 beats market) |
+
+#### Market Benchmark + Dual EV (holdout)
+
+- Benchmark coverage: 0.995398773006135; edge windows (|model_p−market_p| > half-spread+fee): 1062
+- Model-implied taker EV: {'n': 1062, 'mean_ev': 0.028348116760828625}
+- **REALIZED** taker mean P&L: 0.05698681732580036 $/contract; maker mean P&L on fills: 0.06724105461393595 $/contract (fill_rate 1.0)
+
+> ★ **The EV is a NON-EXECUTABLE ARTIFACT, not an edge.** Positive P&L is inconsistent with ~zero Brier skill, and fill_rate=1.0 is bogus; the entry uses the ~1-min-in open candle (thin/stale) with no real trade prints. To be ruled out in the next-session EV forensic (traded-price OHLC + executable entry + real fill model).
 
 #### Reliability Curve (holdout, 10 bins)
 
@@ -94,9 +105,9 @@ Coinalyze 1h flow NaN values left as NaN for the GBM to handle natively (CatBoos
 
 | Threshold | n_directional | n_flat | Brier_directional | Brier_flat |
 |-----------|---------------|--------|-------------------|------------|
-|     0.02% |          1304 |      0 |           0.23965 |       -    |
-|     0.05% |          1304 |      0 |           0.23965 |       -    |
-|     0.10% |          1304 |      0 |           0.23965 |       -    |
+|     0.02% |          1090 |    214 |           0.23697 |    0.25328 |
+|     0.05% |           812 |    492 |           0.23200 |    0.25228 |
+|     0.10% |           482 |    822 |           0.22621 |    0.24753 |
 
 #### Rider B (15m flow, ~last 21d)
 
@@ -106,7 +117,7 @@ Coinalyze 1h flow NaN values left as NaN for the GBM to handle natively (CatBoos
 |--------|-------|
 | Brier_model (Rider B) | 0.24514 |
 | Brier_const_0.5 | 0.25000 |
-| Brier_market | TODO_MARKET_BENCHMARK |
+| Brier_market | n/a (Rider B is a feature probe; benchmark on v1 only) |
 
 Rider B top 10 feature importances:
 
@@ -141,8 +152,16 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 | Brier_const_0.5 | 0.25000 |
 | Brier_base_rate | 0.25015 |
 | Mean CV Brier (train_core) | 0.25568 |
-| Brier_market | TODO_MARKET_BENCHMARK |
-| Skill score vs market | TODO_MARKET_BENCHMARK |
+| **Brier_market (window-open)** | 0.23837 |
+| **Skill score vs market** | 0.0236  (>0 beats market) |
+
+#### Market Benchmark + Dual EV (holdout)
+
+- Benchmark coverage: 0.995398773006135; edge windows (|model_p−market_p| > half-spread+fee): 1087
+- Model-implied taker EV: {'n': 1087, 'mean_ev': 0.048509015639374424}
+- **REALIZED** taker mean P&L: 0.09300551977920882 $/contract; maker mean P&L on fills: 0.1057663293468261 $/contract (fill_rate 1.0)
+
+> ★ **The EV is a NON-EXECUTABLE ARTIFACT, not an edge.** Positive P&L is inconsistent with ~zero Brier skill, and fill_rate=1.0 is bogus; the entry uses the ~1-min-in open candle (thin/stale) with no real trade prints. To be ruled out in the next-session EV forensic (traded-price OHLC + executable entry + real fill model).
 
 #### Reliability Curve (holdout, 10 bins)
 
@@ -183,9 +202,9 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 
 | Threshold | n_directional | n_flat | Brier_directional | Brier_flat |
 |-----------|---------------|--------|-------------------|------------|
-|     0.02% |          1304 |      0 |           0.23298 |       -    |
-|     0.05% |          1304 |      0 |           0.23298 |       -    |
-|     0.10% |          1304 |      0 |           0.23298 |       -    |
+|     0.02% |          1140 |    164 |           0.22887 |    0.26152 |
+|     0.05% |           913 |    391 |           0.22404 |    0.25386 |
+|     0.10% |           620 |    684 |           0.21625 |    0.24815 |
 
 #### Rider B (15m flow, ~last 21d)
 
@@ -195,7 +214,7 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 |--------|-------|
 | Brier_model (Rider B) | 0.23321 |
 | Brier_const_0.5 | 0.25000 |
-| Brier_market | TODO_MARKET_BENCHMARK |
+| Brier_market | n/a (Rider B is a feature probe; benchmark on v1 only) |
 
 Rider B top 10 feature importances:
 
@@ -230,8 +249,16 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 | Brier_const_0.5 | 0.25000 |
 | Brier_base_rate | 0.24996 |
 | Mean CV Brier (train_core) | 0.25965 |
-| Brier_market | TODO_MARKET_BENCHMARK |
-| Skill score vs market | TODO_MARKET_BENCHMARK |
+| **Brier_market (window-open)** | 0.2384 |
+| **Skill score vs market** | -0.0139  (>0 beats market) |
+
+#### Market Benchmark + Dual EV (holdout)
+
+- Benchmark coverage: 0.995398773006135; edge windows (|model_p−market_p| > half-spread+fee): 1066
+- Model-implied taker EV: {'n': 1066, 'mean_ev': 0.02444108818011257}
+- **REALIZED** taker mean P&L: 0.026253283302063772 $/contract; maker mean P&L on fills: 0.04067260787992494 $/contract (fill_rate 1.0)
+
+> ★ **The EV is a NON-EXECUTABLE ARTIFACT, not an edge.** Positive P&L is inconsistent with ~zero Brier skill, and fill_rate=1.0 is bogus; the entry uses the ~1-min-in open candle (thin/stale) with no real trade prints. To be ruled out in the next-session EV forensic (traded-price OHLC + executable entry + real fill model).
 
 #### Reliability Curve (holdout, 10 bins)
 
@@ -272,9 +299,9 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 
 | Threshold | n_directional | n_flat | Brier_directional | Brier_flat |
 |-----------|---------------|--------|-------------------|------------|
-|     0.02% |          1304 |      0 |           0.24191 |       -    |
-|     0.05% |          1304 |      0 |           0.24191 |       -    |
-|     0.10% |          1304 |      0 |           0.24191 |       -    |
+|     0.02% |          1167 |    137 |           0.24070 |    0.25221 |
+|     0.05% |           948 |    356 |           0.23800 |    0.25231 |
+|     0.10% |           682 |    622 |           0.23423 |    0.25033 |
 
 #### Rider B (15m flow, ~last 21d)
 
@@ -284,7 +311,7 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 |--------|-------|
 | Brier_model (Rider B) | 0.24452 |
 | Brier_const_0.5 | 0.25000 |
-| Brier_market | TODO_MARKET_BENCHMARK |
+| Brier_market | n/a (Rider B is a feature probe; benchmark on v1 only) |
 
 Rider B top 10 feature importances:
 
@@ -319,8 +346,16 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 | Brier_const_0.5 | 0.25000 |
 | Brier_base_rate | 0.25013 |
 | Mean CV Brier (train_core) | 0.25954 |
-| Brier_market | TODO_MARKET_BENCHMARK |
-| Skill score vs market | TODO_MARKET_BENCHMARK |
+| **Brier_market (window-open)** | 0.23701 |
+| **Skill score vs market** | -0.0217  (>0 beats market) |
+
+#### Market Benchmark + Dual EV (holdout)
+
+- Benchmark coverage: 0.995398773006135; edge windows (|model_p−market_p| > half-spread+fee): 1076
+- Model-implied taker EV: {'n': 1076, 'mean_ev': 0.03778828996282528}
+- **REALIZED** taker mean P&L: 0.030379182156133812 $/contract; maker mean P&L on fills: 0.04604182156133827 $/contract (fill_rate 1.0)
+
+> ★ **The EV is a NON-EXECUTABLE ARTIFACT, not an edge.** Positive P&L is inconsistent with ~zero Brier skill, and fill_rate=1.0 is bogus; the entry uses the ~1-min-in open candle (thin/stale) with no real trade prints. To be ruled out in the next-session EV forensic (traded-price OHLC + executable entry + real fill model).
 
 #### Reliability Curve (holdout, 10 bins)
 
@@ -361,9 +396,9 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 
 | Threshold | n_directional | n_flat | Brier_directional | Brier_flat |
 |-----------|---------------|--------|-------------------|------------|
-|     0.02% |          1304 |      0 |           0.24194 |       -    |
-|     0.05% |          1304 |      0 |           0.24194 |       -    |
-|     0.10% |          1304 |      0 |           0.24194 |       -    |
+|     0.02% |          1114 |    190 |           0.24003 |    0.25311 |
+|     0.05% |           910 |    394 |           0.23822 |    0.25052 |
+|     0.10% |           610 |    694 |           0.23282 |    0.24995 |
 
 #### Rider B (15m flow, ~last 21d)
 
@@ -373,7 +408,7 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 |--------|-------|
 | Brier_model (Rider B) | 0.24085 |
 | Brier_const_0.5 | 0.25000 |
-| Brier_market | TODO_MARKET_BENCHMARK |
+| Brier_market | n/a (Rider B is a feature probe; benchmark on v1 only) |
 
 Rider B top 10 feature importances:
 
@@ -394,46 +429,21 @@ _Interpretation note: if 15m flow features (cvd_15m, oi_delta_15m, ls_ratio_15m)
 
 ---
 
-## TODO Hooks (lead engineer — S5)
+## Next Steps
 
-### TODO_MARKET_BENCHMARK
-```python
-# Wire in from lab/calibration.py:
-from calibration import compare_to_market
-# market_p_list: list of Kalshi window-open candle implied probs
-# (e.g., yes_bid_close or (yes_bid+yes_ask)/2 at the 1m candle
-#  closest to but before window open, from lab_kalshi_candles)
-result = compare_to_market(model_p_list, market_p_list, y_holdout)
-# result keys: brier_model, brier_market, skill_score_vs_market, n
-```
-
-### TODO_DUAL_EV
-```python
-# Wire in from lab/ev.py:
-from ev import taker_ev, maker_ev, aggregate_maker, aggregate_taker
-# For each holdout window:
-#   side = 'yes' if cal_prob > 0.5 else 'no'
-#   taker_result = taker_ev(cal_prob, side, yes_ask, no_ask)
-#   post_candles = [{ts, yes_low, no_low, volume}, ...]
-#                  from lab_kalshi_candles after window open
-#   maker_result = maker_ev(cal_prob, side, bid, post_candles,
-#                           window_close_ts=close_ts)
-# Aggregation:
-#   agg_t = aggregate_taker(taker_results)
-#   agg_m = aggregate_maker(maker_results)
-#   # MUST report agg_m['fill_rate'] alongside agg_m['mean_ev_on_fills']
-```
+- **EV FORENSIC (next-session first action):** the positive dual-EV is flagged as a non-executable artifact. Rebuild the EV leg on **traded-price OHLC** (re-pull candles with price o/h/l/c — only price_mean is stored now), an **executable entry** (not the ~1-min-in open candle), and the **real trade-through+1-tick fill model** (fill_rate must be realistic <1). Report whether the positive EV survives. Evidence only; operator rules.
+- The Brier evidence (model ≈ market, skill ±0.02 noise) is settled and does NOT depend on the EV forensic.
 
 ---
 
 ## Summary Table
 
-| Asset | N total | N holdout | Base rate | Brier_model | Brier_const05 | CV Brier | Rider B Brier |
-|-------|---------|-----------|-----------|-------------|---------------|----------|---------------|
-| BTC | 6516 | 1304 | 0.492 | 0.23965 | 0.25000 | 0.25708 | 0.24514 |
-| ETH | 6517 | 1304 | 0.496 | 0.23298 | 0.25000 | 0.25568 | 0.23321 |
-| SOL | 6518 | 1304 | 0.495 | 0.24191 | 0.25000 | 0.25965 | 0.24452 |
-| XRP | 6516 | 1304 | 0.495 | 0.24194 | 0.25000 | 0.25954 | 0.24085 |
+| Asset | N total | N holdout | Brier_model | Brier_market | Skill vs mkt | CV Brier | Rider B Brier |
+|-------|---------|-----------|-------------|--------------|--------------|----------|---------------|
+| BTC | 6516 | 1304 | 0.23965 | 0.23918 | -0.0017 | 0.25708 | 0.24514 |
+| ETH | 6517 | 1304 | 0.23298 | 0.23837 | 0.0236 | 0.25568 | 0.23321 |
+| SOL | 6518 | 1304 | 0.24191 | 0.2384 | -0.0139 | 0.25965 | 0.24452 |
+| XRP | 6516 | 1304 | 0.24194 | 0.23701 | -0.0217 | 0.25954 | 0.24085 |
 
-_Distributions and leads only. No verdict on whether the model 'works' or 'beats the market' is drawn here — that gate requires brier_market (TODO) and real edge validation under live conditions. Accuracy is reported, never gates._
+_Distributions and leads only. **Evidence: Brier_model ≈ Brier_market (skill ±0.02 = noise) — the model does NOT robustly beat the market price.** The positive dual-EV is a flagged non-executable artifact (see per-asset caveats), not an edge. No verdict; accuracy is reported, never gates._
 

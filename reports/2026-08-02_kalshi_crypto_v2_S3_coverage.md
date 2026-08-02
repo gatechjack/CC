@@ -1,6 +1,6 @@
 # kalshi_crypto_v2 — S3 Data Backfill Coverage Report
 
-_Generated 2026-08-02 01:00 UTC. Period: 2026-05-25 00:00 -> present. Assets: BTC/ETH/SOL/XRP. Lab DB only (prod untouched)._
+_Generated 2026-08-02 03:33 UTC. Period: 2026-05-25 00:00 -> present. Assets: BTC/ETH/SOL/XRP. Lab DB only (prod untouched)._
 
 **Gap rule:** if any continuous-cadence source's gaps exceed 1% of windows in the period, STOP before S4 and the operator decides (proceed / patch / re-pull).
 
@@ -44,10 +44,10 @@ Coinalyze retains fine-grained history only for a recent tail; **only 1-hour rea
 
 | series | kind | markets | pulled | candles | window cov | status |
 |---|---|---|---|---|---|---|
-| KXBTC15M | 15m | 6526 | 500 | 7897 | 98.5% | IN PROGRESS (500/6526) |
-| KXETH15M | 15m | 6526 | 0 | 0 | 98.5% | IN PROGRESS (0/6526) |
-| KXSOL15M | 15m | 6526 | 0 | 0 | 98.5% | IN PROGRESS (0/6526) |
-| KXXRP15M | 15m | 6526 | 0 | 0 | 98.5% | IN PROGRESS (0/6526) |
+| KXBTC15M | 15m | 6526 | 6526 | 104273 | 98.3% | DONE |
+| KXETH15M | 15m | 6526 | 6526 | 104266 | 98.3% | DONE |
+| KXSOL15M | 15m | 6526 | 6526 | 104191 | 98.3% | DONE |
+| KXXRP15M | 15m | 6526 | 6526 | 104223 | 98.3% | DONE |
 
 **Ladder pull (KXBTC/KXETH/KXSOLE/KXXRP):** census counted 200k(capped)/194k/161k/119k = **674k+ settled markets** -> ~700k+ signed candlestick calls, **>24h**. Held for operator decision (S5 material); NOT pulled.
 

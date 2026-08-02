@@ -454,18 +454,24 @@ def write_report(results: list[dict], report_path: str):
         "true-zero from missing."
     )
     lines.append("")
-    lines.append("### Flat-Bucket Caveat")
+    lines.append("### Flat-Bucket Rule")
     lines.append(
-        "**FINDING:** `settlement_value` in `lab_kalshi_markets` is the Kalshi binary "
-        "contract settlement (0.0=no, 1.0=yes), NOT the close-60s-avg RTI price. "
-        "Computing `move_pct = (settle - strike) / |strike|` with a binary settle and "
-        "RTI strike (~50k–80k) yields |move_pct| ≈ 1.0 for every window. "
-        "The flat-bucket analysis is therefore trivially all-directional "
-        "(n_flat=0 at all thresholds). "
-        "To compute physically meaningful move_pct, the actual close-60s-avg RTI for "
-        "each window would need to be derived from the cfbenchmarks feed or Binance bar "
-        "averages — deferred to a future phase. The flat-bucket rows are reported as "
-        "observed (all windows directional) for completeness."
+        "`settle` = the close-60s-avg RTI (`expiration_value`), corrected via "
+        "`kalshi.py --fix-settle` (an earlier build wrongly stored the 0/1 binary "
+        "payout, making move_pct trivially ±1). move_pct=(settle-strike)/|strike| is "
+        "now physically meaningful; flat_sensitivity partitions at 0.02/0.05/0.10%. "
+        "Flat (tiny-move) windows come out near coin-flip, as expected."
+    )
+    lines.append("")
+    lines.append("### Market Benchmark + Dual EV")
+    lines.append(
+        "market_p (implied P(up) at window open) = price_mean of the candle nearest "
+        "open_ts (else the yes bid/ask mid). Brier_market vs Brier_model "
+        "(compare_to_market) is the REAL bar. Dual EV (taker at ask; maker per the "
+        "approved trade-through+1-tick fill model, WITH fill_rate) + realized P&L on "
+        "edge-clearing windows. ★ The EV came out positive but is flagged a "
+        "NON-EXECUTABLE ARTIFACT (see per-asset caveat); the trustworthy result is the "
+        "Brier comparison (model ≈ market)."
     )
     lines.append("")
 
@@ -494,8 +500,26 @@ def write_report(results: list[dict], report_path: str):
         lines.append(f"| Brier_const_0.5 | {r['brier_const05']:.5f} |")
         lines.append(f"| Brier_base_rate | {r['brier_base_rate']:.5f} |")
         lines.append(f"| Mean CV Brier (train_core) | {r['mean_cv_brier'] or 'N/A'} |")
-        lines.append(f"| Brier_market | TODO_MARKET_BENCHMARK |")
-        lines.append(f"| Skill score vs market | TODO_MARKET_BENCHMARK |")
+        bm, sk = r.get("brier_market"), r.get("skill_score")
+        lines.append(f"| **Brier_market (window-open)** | {bm if bm is not None else 'n/a (no candles)'} |")
+        lines.append(f"| **Skill score vs market** | {sk if sk is not None else 'n/a'}"
+                     f"{'  (>0 beats market)' if sk is not None else ''} |")
+        lines.append("")
+        # Market benchmark + dual EV (with the non-executable-artifact caveat)
+        emk = r.get("dual_ev_maker") or {}
+        lines.append("#### Market Benchmark + Dual EV (holdout)")
+        lines.append("")
+        lines.append(f"- Benchmark coverage: {r.get('bench_coverage')}; "
+                     f"edge windows (|model_p−market_p| > half-spread+fee): {r.get('n_edge')}")
+        lines.append(f"- Model-implied taker EV: {r.get('dual_ev_taker')}")
+        lines.append(f"- **REALIZED** taker mean P&L: {r.get('realized_taker')} $/contract; "
+                     f"maker mean P&L on fills: {r.get('realized_maker')} $/contract "
+                     f"(fill_rate {emk.get('fill_rate', 'n/a')})")
+        lines.append("")
+        lines.append("> ★ **The EV is a NON-EXECUTABLE ARTIFACT, not an edge.** Positive P&L is "
+                     "inconsistent with ~zero Brier skill, and fill_rate=1.0 is bogus; the entry uses the "
+                     "~1-min-in open candle (thin/stale) with no real trade prints. To be ruled out in the "
+                     "next-session EV forensic (traded-price OHLC + executable entry + real fill model).")
         lines.append("")
         lines.append("#### Reliability Curve (holdout, 10 bins)")
         lines.append("")
@@ -526,7 +550,7 @@ def write_report(results: list[dict], report_path: str):
             lines.append(f"|--------|-------|")
             lines.append(f"| Brier_model (Rider B) | {rb['brier_model']:.5f} |")
             lines.append(f"| Brier_const_0.5 | {rb['brier_const05']:.5f} |")
-            lines.append(f"| Brier_market | TODO_MARKET_BENCHMARK |")
+            lines.append(f"| Brier_market | n/a (Rider B is a feature probe; benchmark on v1 only) |")
             lines.append("")
             lines.append("Rider B top 10 feature importances:")
             lines.append("")
@@ -547,58 +571,41 @@ def write_report(results: list[dict], report_path: str):
         lines.append("---")
         lines.append("")
 
-    # --- TODO hooks ---
-    lines.append("## TODO Hooks (lead engineer — S5)")
+    # --- Next steps ---
+    lines.append("## Next Steps")
     lines.append("")
-    lines.append("### TODO_MARKET_BENCHMARK")
-    lines.append("```python")
-    lines.append("# Wire in from lab/calibration.py:")
-    lines.append("from calibration import compare_to_market")
-    lines.append("# market_p_list: list of Kalshi window-open candle implied probs")
-    lines.append("# (e.g., yes_bid_close or (yes_bid+yes_ask)/2 at the 1m candle")
-    lines.append("#  closest to but before window open, from lab_kalshi_candles)")
-    lines.append("result = compare_to_market(model_p_list, market_p_list, y_holdout)")
-    lines.append("# result keys: brier_model, brier_market, skill_score_vs_market, n")
-    lines.append("```")
-    lines.append("")
-    lines.append("### TODO_DUAL_EV")
-    lines.append("```python")
-    lines.append("# Wire in from lab/ev.py:")
-    lines.append("from ev import taker_ev, maker_ev, aggregate_maker, aggregate_taker")
-    lines.append("# For each holdout window:")
-    lines.append("#   side = 'yes' if cal_prob > 0.5 else 'no'")
-    lines.append("#   taker_result = taker_ev(cal_prob, side, yes_ask, no_ask)")
-    lines.append("#   post_candles = [{ts, yes_low, no_low, volume}, ...]")
-    lines.append("#                  from lab_kalshi_candles after window open")
-    lines.append("#   maker_result = maker_ev(cal_prob, side, bid, post_candles,")
-    lines.append("#                           window_close_ts=close_ts)")
-    lines.append("# Aggregation:")
-    lines.append("#   agg_t = aggregate_taker(taker_results)")
-    lines.append("#   agg_m = aggregate_maker(maker_results)")
-    lines.append("#   # MUST report agg_m['fill_rate'] alongside agg_m['mean_ev_on_fills']")
-    lines.append("```")
+    lines.append("- **EV FORENSIC (next-session first action):** the positive dual-EV is flagged "
+                 "as a non-executable artifact. Rebuild the EV leg on **traded-price OHLC** "
+                 "(re-pull candles with price o/h/l/c — only price_mean is stored now), an "
+                 "**executable entry** (not the ~1-min-in open candle), and the **real "
+                 "trade-through+1-tick fill model** (fill_rate must be realistic <1). Report "
+                 "whether the positive EV survives. Evidence only; operator rules.")
+    lines.append("- The Brier evidence (model ≈ market, skill ±0.02 noise) is settled and does "
+                 "NOT depend on the EV forensic.")
     lines.append("")
     lines.append("---")
     lines.append("")
     lines.append("## Summary Table")
     lines.append("")
-    lines.append("| Asset | N total | N holdout | Base rate | Brier_model | "
-                 "Brier_const05 | CV Brier | Rider B Brier |")
-    lines.append("|-------|---------|-----------|-----------|-------------|"
-                 "---------------|----------|---------------|")
+    lines.append("| Asset | N total | N holdout | Brier_model | Brier_market | "
+                 "Skill vs mkt | CV Brier | Rider B Brier |")
+    lines.append("|-------|---------|-----------|-------------|--------------|"
+                 "--------------|----------|---------------|")
     for r in results:
         rb_brier = (f"{r['rider_b']['brier_model']:.5f}"
                     if r.get("rider_b") else "N/A")
+        bm = r.get("brier_market"); sk = r.get("skill_score")
         lines.append(
             f"| {r['asset']} | {r['n_total']} | {r['n_holdout']} | "
-            f"{r['label_balance']['base_rate']:.3f} | {r['brier_model']:.5f} | "
-            f"{r['brier_const05']:.5f} | {r['mean_cv_brier'] or 'N/A'} | {rb_brier} |"
+            f"{r['brier_model']:.5f} | {bm if bm is not None else 'n/a'} | "
+            f"{sk if sk is not None else 'n/a'} | {r['mean_cv_brier'] or 'N/A'} | {rb_brier} |"
         )
     lines.append("")
     lines.append(
-        "_Distributions and leads only. No verdict on whether the model 'works' or "
-        "'beats the market' is drawn here — that gate requires brier_market (TODO) "
-        "and real edge validation under live conditions. Accuracy is reported, never gates._"
+        "_Distributions and leads only. **Evidence: Brier_model ≈ Brier_market (skill ±0.02 "
+        "= noise) — the model does NOT robustly beat the market price.** The positive dual-EV "
+        "is a flagged non-executable artifact (see per-asset caveats), not an edge. No verdict; "
+        "accuracy is reported, never gates._"
     )
     lines.append("")
 
