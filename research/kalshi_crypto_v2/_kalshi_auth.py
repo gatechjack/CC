@@ -79,21 +79,32 @@ class KalshiRest:
         self.kid, pem, self.source = load_creds(prefix)
         self._sign = make_signer(pem)
 
-    def get(self, endpoint: str, params: dict | None = None) -> dict:
+    def get(self, endpoint: str, params: dict | None = None, retries: int = 4) -> dict:
         path = _API_PATH + endpoint                      # signed path (no query)
-        ts, sig = self._sign("GET", path)
         clean = {k: v for k, v in (params or {}).items() if v is not None}
         qs = ("?" + urllib.parse.urlencode(clean)) if clean else ""
-        req = urllib.request.Request(
-            REST_BASE + endpoint + qs, method="GET",
-            headers={"KALSHI-ACCESS-KEY": self.kid, "KALSHI-ACCESS-SIGNATURE": sig,
-                     "KALSHI-ACCESS-TIMESTAMP": ts, "Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=25, context=_CTX) as r:
-                return json.loads(r.read().decode())
-        except urllib.error.HTTPError as e:
-            body = e.read(300).decode("utf-8", "replace")
-            raise KalshiAuthError(f"GET {endpoint} -> {e.code} {e.reason}: {body[:200]}")
+        last = ""
+        for attempt in range(retries):
+            ts, sig = self._sign("GET", path)            # fresh signature each attempt
+            req = urllib.request.Request(
+                REST_BASE + endpoint + qs, method="GET",
+                headers={"KALSHI-ACCESS-KEY": self.kid, "KALSHI-ACCESS-SIGNATURE": sig,
+                         "KALSHI-ACCESS-TIMESTAMP": ts, "Accept": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=25, context=_CTX) as r:
+                    return json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                if e.code == 429 or 500 <= e.code < 600:     # transient: retry
+                    last = f"HTTP {e.code} {e.reason}"
+                    time.sleep(1.6 ** attempt + 0.5)
+                    continue
+                body = e.read(300).decode("utf-8", "replace")
+                raise KalshiAuthError(f"GET {endpoint} -> {e.code} {e.reason}: {body[:200]}")
+            except OSError as e:  # URLError/TimeoutError/ConnectionError (all OSError) -> retry
+                last = f"{type(e).__name__}: {str(e)[:80]}"
+                time.sleep(1.6 ** attempt + 0.5)
+                continue
+        raise KalshiAuthError(f"GET {endpoint} exhausted {retries} retries: {last}")
 
     def paginated(self, endpoint: str, key: str, params: dict | None = None,
                   max_pages: int = 50) -> list[dict]:
