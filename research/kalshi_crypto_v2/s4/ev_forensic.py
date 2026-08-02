@@ -32,15 +32,20 @@ TAKER (guaranteed fill, conservative, real prints only):
   stale-quote artifact magnitude.
 
 MAKER (operator-approved trade-through + >=1 tick model, REAL trades):
-  rest on the model's side at the entry minute's quote (YES: yes_bid_close;
-  NO: 1 - yes_ask_close). FILLED iff a LATER in-window minute trades THROUGH by
-  >= 1 tick on TRADED price: YES fill iff some later price_low <= bid - tick
-  (vol>0); NO fill iff some later price_high >= ask + tick (vol>0). Fill price =
-  the resting quote. fill_rate = fills/attempts is reported BESIDE every maker
-  figure (a maker number without its fill rate is not a reportable result).
-  Note the adverse-selection realism: a resting YES bid only fills when price
-  ticks DOWN through it (i.e. when YES is losing) -- the honest maker dynamic
-  the fill_rate=1.0 artifact hid.
+  rest on the model's side at the entry-minute TRADED CLOSE (price_close, a real
+  print -- operator ruling 2026-08-02; NOT the stale first-minute bid quote).
+  FILLED iff a LATER in-window minute trades THROUGH by >= 1 tick on TRADED
+  price: YES fill iff some later price_low <= rest - tick (vol>0); NO fill iff
+  some later price_high >= rest + tick (vol>0). Fill price = the resting level on
+  the bet's own side. fill_rate = fills/attempts is reported BESIDE every maker
+  figure (a maker number without its fill rate is not a reportable result). The
+  bid/ask-QUOTE resting level is computed too but only as a non-executable
+  resting-level sensitivity contrast (same stale-quote family as taker@quote).
+  Three adverse-selection views make this the make-or-break maker scrutiny:
+    1. fill-timing distribution + early/late conditional P&L;
+    2. filled-vs-unfilled would-have-won rates (a resting bid that NEVER fills
+       means price ran away in your favor -> unfilled skew to winners);
+    3. per-ATTEMPT EV (fills@realized, no-fills@$0) = what a strategy earns.
 
 FEES: kalshi_fee(contracts, price) = ceil(0.07*c*p*(1-p)) per fill, applied to
   BOTH taker and maker entries (Kalshi charges the same schedule; conservative).
@@ -184,24 +189,38 @@ def taker_price(side: str, entry_c: dict, kind: str) -> float | None:
     return (1.0 - yb) if yb is not None else None
 
 
-def maker_fill(side: str, entry_c: dict, later: list[dict], tick: float = TICK):
-    """Returns (filled, fill_price, fill_ts) under trade-through+1-tick.
-    fill_ts = end_period_ts of the FIRST later candle that traded through the
-    resting quote (for the fill-timing / adverse-selection analysis)."""
-    if side == "yes":
-        b = entry_c.get("yes_bid_close")
-        if not _valid_price(b):
+def _rest_level(side: str, entry_c: dict, rest_kind: str) -> float | None:
+    """YES-side resting price level for a maker order.
+      'traded' (PRIMARY, approved spec): the entry-minute TRADED close
+               (price_close) — a real print, both sides rest on it.
+      'quote'  (contrast only): the entry-minute bid/ask QUOTE — same
+               stale-first-minute-quote family that inflates taker@quote;
+               reported as a resting-level sensitivity, never primary."""
+    if rest_kind == "traded":
+        return entry_c.get("price_close")
+    return entry_c.get("yes_bid_close") if side == "yes" else entry_c.get("yes_ask_close")
+
+
+def maker_fill(side: str, entry_c: dict, later: list[dict],
+               tick: float = TICK, rest_kind: str = "traded"):
+    """Returns (filled, fill_price, fill_ts). Rest on the model's side at the
+    YES-side resting level (see _rest_level); FILLED iff a later REAL trade
+    prints THROUGH by >= 1 tick. fill_price is on the bet's own side; fill_ts =
+    end_period_ts of the trade-through candle (for the fill-timing analysis)."""
+    lvl = _rest_level(side, entry_c, rest_kind)
+    if side == "yes":                       # rest a YES bid at lvl; fill on down-through
+        if not _valid_price(lvl):
             return False, None, None
-        thr = b - tick
+        thr = lvl - tick
         for c in later:
             if (c.get("volume") or 0) > 0 and c.get("price_low") is not None and c["price_low"] <= thr:
-                return True, b, c["ts"]
-        return False, b, None
-    a = entry_c.get("yes_ask_close")
-    if a is None or not (0.0 <= a < 1.0):
+                return True, lvl, c["ts"]
+        return False, lvl, None
+    # no side: rest a YES ask at lvl -> buy NO at 1-lvl; fill on up-through
+    if lvl is None or not (0.0 <= lvl < 1.0):
         return False, None, None
-    n = 1.0 - a
-    thr = a + tick
+    n = 1.0 - lvl
+    thr = lvl + tick
     for c in later:
         if (c.get("volume") or 0) > 0 and c.get("price_high") is not None and c["price_high"] >= thr:
             return True, n, c["ts"]
@@ -243,16 +262,59 @@ def _quantiles(xs: list[float]) -> dict | None:
             "median": q(0.5), "p75": q(0.75), "min": s[0], "max": s[-1]}
 
 
+def _new_macc() -> dict:
+    return {"real": [], "ev": [], "per_attempt": [], "fill_min": [],
+            "fill_won": [], "unfill_won": [], "n_attempt": 0, "n_fill": 0}
+
+
+def _acc_maker(m: dict, side: str, ec: dict, later: list[dict], won: bool,
+               p: float, ot: int, rest_kind: str) -> None:
+    filled, fprice, fts = maker_fill(side, ec, later, rest_kind=rest_kind)
+    if not _valid_price(fprice):            # no valid resting level == not a real attempt
+        return
+    m["n_attempt"] += 1
+    if filled:
+        m["n_fill"] += 1
+        pnl = realized(fprice, won)
+        m["real"].append(pnl)
+        m["per_attempt"].append(pnl)
+        m["fill_won"].append(1 if won else 0)
+        m["fill_min"].append((fts - ot) / 60.0 if fts is not None else float("nan"))
+        ev = model_ev(p, side, fprice)
+        if ev is not None:
+            m["ev"].append(ev)
+    else:
+        m["per_attempt"].append(0.0)        # no-fill booked at $0 (per-attempt EV)
+        m["unfill_won"].append(1 if won else 0)
+
+
+def _finalize_maker(m: dict) -> dict:
+    HALF = 7.5
+    early = [pnl for pnl, mm in zip(m["real"], m["fill_min"])
+             if not math.isnan(mm) and mm <= HALF]
+    late = [pnl for pnl, mm in zip(m["real"], m["fill_min"])
+            if not math.isnan(mm) and mm > HALF]
+    fwr = (sum(m["fill_won"]) / len(m["fill_won"])) if m["fill_won"] else None
+    uwr = (sum(m["unfill_won"]) / len(m["unfill_won"])) if m["unfill_won"] else None
+    return {
+        "n_attempt": m["n_attempt"], "n_fill": m["n_fill"],
+        "fill_rate": (m["n_fill"] / m["n_attempt"]) if m["n_attempt"] else None,
+        "per_fill": _agg(m["real"]), "per_attempt": _agg(m["per_attempt"]),
+        "model_ev_on_fills": _agg(m["ev"]),
+        "fill_timing": _quantiles([x for x in m["fill_min"] if not math.isnan(x)]),
+        "pnl_early": _agg(early), "pnl_late": _agg(late),
+        "filled_win_rate": fwr, "unfilled_win_rate": uwr,
+        "n_unfill": len(m["unfill_won"]),
+    }
+
+
 def run_variant(df_holdout, model_p, cand: dict, variant: str) -> dict:
     """One entry variant across the holdout. Bet the model's side per window."""
     taker_traded, taker_quote = [], []       # realized P&L, ALL covered windows
     taker_traded_ev = []                     # model-implied EV @ traded price
     taker_gated = []                         # realized, model-implied +EV subset
-    maker_real, maker_ev_fills = [], []      # realized / model-EV on FILLS
-    maker_per_attempt = []                   # per ATTEMPT: realized if filled else 0
-    maker_fill_min = []                      # minutes-into-window at fill (fills only)
-    maker_fill_won, maker_unfill_won = [], []  # side-won flags, filled vs unfilled
-    n_attempt = n_fill = 0
+    mk_traded = _new_macc()                  # PRIMARY maker: rest at traded close
+    mk_quote = _new_macc()                   # contrast maker: rest at bid/ask quote
     edges, mps, mkts = [], [], []            # |model-market|, model_p, market_p
     win_taker = 0
     for i, row in df_holdout.reset_index(drop=True).iterrows():
@@ -285,35 +347,10 @@ def run_variant(df_holdout, model_p, cand: dict, variant: str) -> dict:
         tq = taker_price(side, ec, "quote")
         if _valid_price(tq):
             taker_quote.append(realized(tq, won))
-        # --- maker (rest at quote, real trade-through) + adverse-selection views ---
+        # --- maker: both resting levels (traded-close PRIMARY, quote CONTRAST) ---
         later = [c for c in cs if ec["ts"] < c["ts"] <= ct]
-        filled, fprice, fill_ts = maker_fill(side, ec, later)
-        if _valid_price(fprice):                 # valid resting price == a real attempt
-            n_attempt += 1
-            if filled:
-                n_fill += 1
-                pnl = realized(fprice, won)
-                maker_real.append(pnl)
-                maker_per_attempt.append(pnl)    # per-attempt: fill -> realized
-                maker_fill_won.append(1 if won else 0)
-                # index-aligned with maker_real (both length == n_fill)
-                maker_fill_min.append((fill_ts - ot) / 60.0 if fill_ts is not None
-                                      else float("nan"))
-                ev = model_ev(p, side, fprice)
-                if ev is not None:
-                    maker_ev_fills.append(ev)
-            else:
-                maker_per_attempt.append(0.0)    # per-attempt: no-fill -> $0
-                maker_unfill_won.append(1 if won else 0)
-    # View 1: fill-timing conditional P&L (split at the 15m window midpoint)
-    HALF = 7.5
-    early = [pnl for pnl, m in zip(maker_real, maker_fill_min)
-             if not math.isnan(m) and m <= HALF]
-    late = [pnl for pnl, m in zip(maker_real, maker_fill_min)
-            if not math.isnan(m) and m > HALF]
-    # View 2: outcome win-rate, filled vs unfilled attempt populations
-    filled_wr = (sum(maker_fill_won) / len(maker_fill_won)) if maker_fill_won else None
-    unfilled_wr = (sum(maker_unfill_won) / len(maker_unfill_won)) if maker_unfill_won else None
+        _acc_maker(mk_traded, side, ec, later, won, p, ot, "traded")
+        _acc_maker(mk_quote, side, ec, later, won, p, ot, "quote")
     return {
         "variant": variant,
         "n_covered": len(taker_traded),
@@ -325,19 +362,8 @@ def run_variant(df_holdout, model_p, cand: dict, variant: str) -> dict:
         "taker_traded_model_ev": _agg(taker_traded_ev),
         "taker_quote": _agg(taker_quote),
         "taker_gated_posEV": _agg(taker_gated),
-        "maker_n_attempt": n_attempt,
-        "maker_n_fill": n_fill,
-        "maker_fill_rate": (n_fill / n_attempt) if n_attempt else None,
-        "maker_realized_on_fills": _agg(maker_real),       # per-FILL
-        "maker_model_ev_on_fills": _agg(maker_ev_fills),
-        # --- adverse-selection views (the make-or-break maker scrutiny) ---
-        "maker_per_attempt": _agg(maker_per_attempt),      # View 3: fills@realized, no-fills@0
-        "maker_fill_timing": _quantiles([m for m in maker_fill_min if not math.isnan(m)]),
-        "maker_pnl_early": _agg(early),                    # View 1: fill in 1st half
-        "maker_pnl_late": _agg(late),                      # View 1: fill in 2nd half
-        "maker_filled_win_rate": filled_wr,                # View 2
-        "maker_unfilled_win_rate": unfilled_wr,            # View 2
-        "maker_n_unfill": len(maker_unfill_won),
+        "maker": _finalize_maker(mk_traded),        # PRIMARY: traded-close resting level
+        "maker_quote": _finalize_maker(mk_quote),   # CONTRAST: bid/ask-quote resting level
     }
 
 
@@ -358,14 +384,16 @@ def run_asset(asset: str) -> dict:
         tt, tq = r["taker_traded"], r["taker_quote"]
         print(f"  [{v}] covered={r['n_covered']} "
               f"taker@traded={_fmt(tt)} taker@quote={_fmt(tq)}", flush=True)
-        tm = r["maker_fill_timing"]
+        mk = r["maker"]                        # PRIMARY (traded-close resting level)
+        tm = mk["fill_timing"]
         med = f"{tm['median']:.1f}" if tm else "n/a"
-        print(f"        maker fill_rate={r['maker_fill_rate']:.3f} "
-              f"per-fill={_fmt(r['maker_realized_on_fills'])} "
-              f"per-attempt={_fmt(r['maker_per_attempt'])} | "
-              f"win% filled={_pct(r['maker_filled_win_rate'])} "
-              f"unfilled={_pct(r['maker_unfilled_win_rate'])} | "
-              f"fill-min median={med}", flush=True)
+        print(f"        maker(traded-close) fill_rate={mk['fill_rate']:.3f} "
+              f"per-fill={_fmt(mk['per_fill'])} per-attempt={_fmt(mk['per_attempt'])} | "
+              f"win% filled={_pct(mk['filled_win_rate'])} "
+              f"unfilled={_pct(mk['unfilled_win_rate'])} | fill-min median={med}", flush=True)
+        mq = r["maker_quote"]                  # CONTRAST (bid/ask-quote resting level)
+        print(f"        maker(quote,contrast) fill_rate={mq['fill_rate']:.3f} "
+              f"per-attempt={_fmt(mq['per_attempt'])}", flush=True)
     return out
 
 
@@ -413,11 +441,14 @@ def write_report(results: list[dict], path: str) -> None:
              "(`price_high` for YES / `1-price_low` for NO), fee included. "
              "`taker@quote` (the entry ask) is shown alongside — the gap is the "
              "stale-quote artifact.")
-    L.append("- **Maker** rests at the entry quote and fills ONLY on a real "
-             "trade-through by >=1 tick (traded `price_low<=bid-tick` / "
-             "`price_high>=ask+tick`), so **fill_rate is realistic (<1)** and is "
-             "reported beside every maker figure. (The v1 fill_rate=1.0 came from "
-             "counting bid-QUOTE wiggles as fills.)")
+    L.append("- **Maker** rests at the entry-minute **TRADED CLOSE** (`price_close`, "
+             "approved spec — a real print, not the stale first-minute bid quote) and "
+             "fills ONLY on a real trade-through by >=1 tick (traded "
+             "`price_low<=rest-tick` for YES / `price_high>=rest+tick` for NO), so "
+             "**fill_rate is realistic (<1)** and is reported beside every maker "
+             "figure. (The v1 fill_rate=1.0 came from counting bid-QUOTE wiggles as "
+             "fills.) The bid/ask-quote resting level is shown only as a non-executable "
+             "resting-level sensitivity contrast.")
     L.append("")
     L.append("Realized P&L/contract = `(1 if win else 0) - fill_price - kalshi_fee`. "
              "`kalshi_fee = ceil(0.07*p*(1-p))` applied to every entry (taker AND "
@@ -443,43 +474,52 @@ def write_report(results: list[dict], path: str) -> None:
                      f"(entry price_mean) {_num(r['mean_market_p'])}, mean |edge| "
                      f"{_num(r['mean_abs_edge'])}.")
             L.append("")
+            mk = r["maker"]            # PRIMARY maker (traded-close resting level)
+            mq = r["maker_quote"]      # CONTRAST maker (bid/ask-quote resting level)
             L.append("| Leg | mean $/contract | SE | t |")
             L.append("|---|---|---|---|")
             L.append(f"| **Taker @ traded** (primary, all covered) | {_row(r['taker_traded'])} |")
             L.append(f"| Taker @ quote (artifact contrast) | {_row(r['taker_quote'])} |")
             L.append(f"| Taker @ traded, model-implied +EV subset (n={r['taker_gated_posEV']['n']}) "
                      f"| {_row(r['taker_gated_posEV'])} |")
-            L.append(f"| **Maker @ fills** (fill_rate "
-                     f"{_pct(r['maker_fill_rate'])}, {r['maker_n_fill']}/{r['maker_n_attempt']}) "
-                     f"| {_row(r['maker_realized_on_fills'])} |")
+            L.append(f"| **Maker per-ATTEMPT** (traded-close rest, fill_rate "
+                     f"{_pct(mk['fill_rate'])}, {mk['n_fill']}/{mk['n_attempt']}) "
+                     f"| {_row(mk['per_attempt'])} |")
+            L.append(f"| Maker per-fill (traded-close rest, fills only) | {_row(mk['per_fill'])} |")
             L.append("")
             L.append(f"_Model-implied EV (not realized): taker@traded "
                      f"{_money(r['taker_traded_model_ev'])}, maker@fills "
-                     f"{_money(r['maker_model_ev_on_fills'])}._")
+                     f"{_money(mk['model_ev_on_fills'])}._")
             L.append("")
-            # --- maker adverse-selection views (the make-or-break scrutiny) ---
-            L.append("**Maker adverse-selection views**")
+            # --- maker adverse-selection views (PRIMARY = traded-close rest) ---
+            L.append("**Maker adverse-selection views** (resting level = entry-minute "
+                     "TRADED CLOSE, approved spec)")
             L.append("")
-            tm = r["maker_fill_timing"]
+            tm = mk["fill_timing"]
             if tm:
                 L.append(f"- *View 1 — fill timing:* minutes-into-window at fill "
                          f"(15m window) p25 **{tm['p25']:.1f}** / median "
                          f"**{tm['median']:.1f}** / p75 **{tm['p75']:.1f}** "
                          f"(mean {tm['mean']:.1f}, range {tm['min']:.1f}-{tm['max']:.1f}). "
-                         f"P&L by fill half: early (<=7.5m, n={r['maker_pnl_early']['n']}) "
-                         f"{_rowmini(r['maker_pnl_early'])}; late (>7.5m, "
-                         f"n={r['maker_pnl_late']['n']}) {_rowmini(r['maker_pnl_late'])}.")
+                         f"P&L by fill half: early (<=7.5m, n={mk['pnl_early']['n']}) "
+                         f"{_rowmini(mk['pnl_early'])}; late (>7.5m, "
+                         f"n={mk['pnl_late']['n']}) {_rowmini(mk['pnl_late'])}.")
             else:
                 L.append("- *View 1 — fill timing:* no fills.")
             L.append(f"- *View 2 — filled vs unfilled win-rate:* filled attempts "
-                     f"won **{_pct(r['maker_filled_win_rate'])}** "
-                     f"(n={r['maker_n_fill']}); unfilled attempts would have won "
-                     f"**{_pct(r['maker_unfilled_win_rate'])}** (n={r['maker_n_unfill']}). "
+                     f"won **{_pct(mk['filled_win_rate'])}** "
+                     f"(n={mk['n_fill']}); unfilled attempts would have won "
+                     f"**{_pct(mk['unfilled_win_rate'])}** (n={mk['n_unfill']}). "
                      f"If unfilled >> filled, the per-fill P&L is selection, not edge.")
             L.append(f"- *View 3 — per-ATTEMPT EV* (fills@realized, no-fills@$0, the "
-                     f"number a strategy actually earns): **{_rowmini(r['maker_per_attempt'])}** "
-                     f"(n={r['maker_per_attempt']['n']} attempts) vs per-FILL "
-                     f"{_rowmini(r['maker_realized_on_fills'])} (n={r['maker_n_fill']}).")
+                     f"number a strategy actually earns): **{_rowmini(mk['per_attempt'])}** "
+                     f"(n={mk['per_attempt']['n']} attempts) vs per-FILL "
+                     f"{_rowmini(mk['per_fill'])} (n={mk['n_fill']}).")
+            L.append(f"- *Resting-level sensitivity (contrast, non-executable):* resting "
+                     f"at the entry-minute BID/ASK QUOTE instead (stale-first-minute-quote "
+                     f"family) gives fill_rate {_pct(mq['fill_rate'])}, per-ATTEMPT "
+                     f"{_rowmini(mq['per_attempt'])}, per-fill {_rowmini(mq['per_fill'])} — "
+                     f"shown only to size how much the resting-level choice moves the result.")
             L.append("")
     L.append("## Reading this (evidence, not verdict)")
     L.append("")
