@@ -205,9 +205,11 @@ Both Selected whales are below the n≥30 decision floor (AI.EDGE 13, Maggie 3);
 
 ---
 
-## Appendix — Housekeeping actions (operator-run, drafted 2026-08-02)
+## Appendix — Housekeeping actions
 
-Two pin-cleanup actions the operator requested drafting. **Read-only until the operator runs them; not executed by the reviewer.** Both targets are in `pinned_whales` but NOT in `selected_whales`, so this is a pure un-pin — no live positions, no copy behaviour change. The engine never reads `pinned_whales` (only `_load_selected_whales` is read each scan, fresh from the DB), so there is no in-memory clobber risk. `pinned_whales` is read fresh per request by the dashboard, so the change takes effect immediately. DB is `azureuser:azureuser`, WAL, directly writable by azureuser (no sudo). Run in a quiet window (not during a PMCC approval burst); `busy_timeout` guards transient WAL write-lock.
+**STATUS: EXECUTED 2026-08-02T18:48:37Z — board-authorized atomic execution.** Both un-pins were applied in a **single atomic `UPDATE`** (one `BEGIN IMMEDIATE` transaction, both handles or neither). Verified: `pinned_whales` `["MaggieTheEagle","reach.draft","AI.EDGE","teafordong"]` → **`["MaggieTheEagle","AI.EDGE"]`**; `selected_whales` unchanged; engine PID 550263 unchanged (no restart needed); `PRAGMA quick_check = ok`. The as-drafted commands and rollback are retained below for the record.
+
+Both targets were in `pinned_whales` but NOT in `selected_whales`, so this was a pure un-pin — no live positions, no copy behaviour change. The engine never reads `pinned_whales` (only `_load_selected_whales` is read each scan, fresh from the DB), so there is no in-memory clobber risk. `pinned_whales` is read fresh per request by the dashboard, so the change takes effect immediately. DB is `azureuser:azureuser`, WAL, directly writable by azureuser (no sudo). Run in a quiet window (not during a PMCC approval burst); `busy_timeout` guards transient WAL write-lock.
 
 **Current state (verified 2026-08-02T18:39Z):**
 `pinned_whales` = `["MaggieTheEagle","reach.draft","AI.EDGE","teafordong"]` · `selected_whales` = `["MaggieTheEagle","AI.EDGE"]`
