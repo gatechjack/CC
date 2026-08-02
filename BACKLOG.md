@@ -27,14 +27,18 @@ Full state + handoff in memory `kalshi-crypto-v2-phase1-2026-08-01`.
   (Session 3, branch `claude-2026-08-01c` off `dafe60b`, pushed): loaders in `research/kalshi_crypto_v2/
   loaders/` -> lab DB. Binance 1m (data-api.binance.vision) 99,378 rows/asset 0 gaps; Coinbase 1m (Exchange
   REST) 0.02-0.05%; Coinalyze 616k rows (★retention: 1min ~26h/5min ~7d/15min ~21d/1hour full); Kalshi 15m
-  candles pulling (~end of session); all hand-verified to cent/satoshi. S4 v1 (`s4/`, CatBoost+Platt,
-  leakage-safe) holdout Brier<0.25 but CV=no robust skill; cvd_1h #1 feature; Brier_market=TODO.
-- **Forks resolved (operator):** F1 = 1h-flow full-period for v1 + Rider A (12h fine-flow archive,
-  `coinalyze.py --fine-only`, runbook) + Rider B (21d/15min-flow probe); aggTrades reconstruction deferred.
-  F2 = ladder snapshots (event-sampled; 674k ladder mkts = full-pull unless sampled), run AFTER 15m pull.
-- **POST-PULL TODO (next session):** finish/confirm 15m pull; `kalshi.py --fix-settle` (settle stored 0/1
-  payout not RTI); Kalshi hand-verify; regenerate coverage report; wire Brier_market + dual EV (fill-rate)
-  into `s4/run_s4.py` + full re-run; run ladder snapshots; S5 baselines. T5/D5 downstream.
+  candles pulled (26,104 mkts); all 4 sources hand-verified to cent/satoshi.
+- **S4 v1 EVIDENCE (no verdict):** `s4/` CatBoost+Platt+benchmark, leakage-safe. **Model ~= market at open** —
+  Brier_model ~= Brier_market ~0.238-0.241, skill_vs_market ±0.02 NOISE (consistent w/ T4). cvd_1h = top
+  feature but does NOT beat the market price. Dual-EV came out +$0.03-0.09/contract BUT **flagged as a
+  NON-EXECUTABLE ARTIFACT** (fill_rate=1.0 bogus; ~1min-in open-candle entry; no real trade prints) - unverified.
+- **Forks resolved (operator):** F1 = 1h-flow full-period v1 + Rider A (12h fine-flow archive, `coinalyze.py
+  --fine-only`, runbook) + Rider B (21d/15min-flow probe; no clear fine-flow uplift at this n); aggTrades
+  reconstruction deferred. F2 = ladder snapshots (event-sampled; 674k ladder mkts = full-pull unless sampled).
+- ★★**NEXT SESSION = EV FORENSIC:** rebuild the EV leg on traded-price OHLC (re-pull candles w/ price o/h/l/c;
+  only price_mean stored now) + an executable entry (not the ~1min-in open candle) + the real trade-through+1
+  tick fill model; report whether the +EV survives. Present evidence; operator rules. Then leftover mechanical
+  (fix-settle re-run for flat buckets, coverage/S4 report refresh, launch ladder snapshots) + S5 baselines.
 - **Standing:** agent read-only on prod; no order/placement surface (grep-enforced every commit);
   deploys operator-gated; creds env→Key Vault, in-memory, redacted.
 

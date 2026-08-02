@@ -25,8 +25,14 @@ data/
 logs/
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite-journal
+
+# Research scratch (kcv2 loaders/S4 run logs + catboost artifacts)
+_*.log
+catboost_info/
 
 # IDE
 .vscode/
