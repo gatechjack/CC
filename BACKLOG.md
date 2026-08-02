@@ -35,10 +35,12 @@ Full state + handoff in memory `kalshi-crypto-v2-phase1-2026-08-01`.
 - **Forks resolved (operator):** F1 = 1h-flow full-period v1 + Rider A (12h fine-flow archive, `coinalyze.py
   --fine-only`, runbook) + Rider B (21d/15min-flow probe; no clear fine-flow uplift at this n); aggTrades
   reconstruction deferred. F2 = ladder snapshots (event-sampled; 674k ladder mkts = full-pull unless sampled).
+- **Post-pull mechanical ALL DONE** (`ee768f0`): 15m pull finished (26,104/0-err), `--fix-settle` (settle=RTI),
+  coverage report + final 4-asset S4 report regenerated (renders benchmark/EV/artifact-caveat). ONLY the
+  ladder-snapshot RUN is deferred (density fork: daily ~7h vs 48h ~3.5h vs skip — operator's call).
 - ★★**NEXT SESSION = EV FORENSIC:** rebuild the EV leg on traded-price OHLC (re-pull candles w/ price o/h/l/c;
   only price_mean stored now) + an executable entry (not the ~1min-in open candle) + the real trade-through+1
-  tick fill model; report whether the +EV survives. Present evidence; operator rules. Then leftover mechanical
-  (fix-settle re-run for flat buckets, coverage/S4 report refresh, launch ladder snapshots) + S5 baselines.
+  tick fill model; report whether the +EV survives. Present evidence; operator rules. Then S5 baselines.
 - **Standing:** agent read-only on prod; no order/placement surface (grep-enforced every commit);
   deploys operator-gated; creds env→Key Vault, in-memory, redacted.
 
