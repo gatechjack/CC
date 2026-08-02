@@ -114,10 +114,21 @@ def main() -> int:
         status = "DONE" if npull >= nmk else f"IN PROGRESS ({npull}/{nmk})"
         w(f"| {series} | {kind} | {nmk} | {npull} | {ncand} | {wc} | {status} |")
     w("")
-    # ladder census note (from probe_kalshi_census; markets not necessarily enumerated)
-    w("**Ladder pull (KXBTC/KXETH/KXSOLE/KXXRP):** census counted 200k(capped)/"
-      "194k/161k/119k = **674k+ settled markets** -> ~700k+ signed candlestick "
-      "calls, **>24h**. Held for operator decision (S5 material); NOT pulled.")
+    # ladder snapshots (event-sampled window-open captures; full 1m ladder off)
+    snap = conn.execute(
+        "SELECT asset,COUNT(DISTINCT event_ticker),COUNT(*) FROM lab_kalshi_ladder_snap"
+        " GROUP BY asset ORDER BY asset").fetchall()
+    if snap:
+        w("**Ladder snapshots (KXBTC/KXETH/KXSOLE/KXXRP, daily, window-open):** "
+          "full 1m ladder (674k+ mkts, >24h) intentionally OFF; instead all strikes "
+          "at window open for a daily event sample (S5 Breeden-Litzenberger source).")
+        w("")
+        w("| asset | events | strike-snaps |")
+        w("|---|---|---|")
+        for a, ev, rw in snap:
+            w(f"| {a} | {ev} | {rw} |")
+    else:
+        w("**Ladder snapshots:** not pulled (full 1m ladder off; snapshot run pending).")
     w("")
 
     # --- hand-verify summary ----------------------------------------------
