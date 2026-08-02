@@ -25,6 +25,7 @@ from trading_corp.agents.strategies.pead_pressures import (
     primitives_from_extra,
     stop_level,
 )
+from trading_corp.agents.strategies import pead_sizing
 from trading_corp.persistence.db import connect, load_agent_state
 from trading_corp.persistence.pead_observability import (
     load_feed_status,
@@ -103,6 +104,7 @@ def assemble_book(open_rows: list[dict], quotes: dict[str, float], today: date) 
         base = {
             "symbol": sym,
             "name": extra.get("name") or sym,
+            "company_name": extra.get("company_name"),   # General::Name (display-only; None on legacy rows -> template falls back to ticker)
             "entry_date": opened.strftime("%b %d"),
             "last": last,
             "sue": extra.get("entry_sue"),
@@ -283,6 +285,32 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
         "open_count": len(book),
     }
 
+    # ── derived-sizing dial + fundable-count readout (Part B) ────────────────
+    # Uses the SAME pead_sizing math the scan uses, so the on-screen
+    # "funds ~N at ~$X" can never disagree with what the sizer would place.
+    # slots_remaining is proxied by the OPEN book count (pending/intent are
+    # transient across the pre-open→open gap; open records are the steady state).
+    eff_max_concurrent, override_active = pead_sizing.effective_max_concurrent(db_url)
+    _sc = getattr(snap, "settled_cash", None) if snap is not None else None
+    settled_cash = float(_sc) if _sc is not None else None
+    safety_factor = pead_sizing.yaml_safety_factor()
+    slots_remaining = max(0, eff_max_concurrent - len(book))
+    wave_sizes = (pead_sizing.derive_wave_sizes(settled_cash, slots_remaining,
+                                                safety_factor=safety_factor)
+                  if settled_cash is not None else [])
+    dial = {
+        "max_concurrent": eff_max_concurrent,
+        "override_active": override_active,
+        "held": len(book),
+        "slots_remaining": slots_remaining,
+        "settled_cash": settled_cash,
+        "safety_factor": safety_factor,
+        "fundable_count": len(wave_sizes),
+        "per_name_first": wave_sizes[0] if wave_sizes else None,
+        "per_name_last": wave_sizes[-1] if wave_sizes else None,
+        "total_deploy": sum(wave_sizes) if wave_sizes else 0.0,
+    }
+
     # Stage-0 health: feed tri-state (+ broker reachability)
     feeds = load_feed_status(db_url)
     health = {
@@ -308,6 +336,7 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
         "mode": mode,
         "rule_colors": dict(RULE_COLORS),     # stop/drift/guard/time -> hex (4-cell strip)
         "account": account,
+        "dial": dial,                         # Part B: live max_concurrent + fundable-count readout
         "health": health,
         "funnel": funnel,
         "rejections": rejections,

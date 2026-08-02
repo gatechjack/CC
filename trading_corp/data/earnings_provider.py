@@ -555,7 +555,7 @@ class EarningsProvider:
         return out
 
     def get_company_facts(self, symbol: str) -> dict | None:
-        """Return {"market_cap": float|None, "sector": str|None} for `symbol`.
+        """Return {"market_cap": float|None, "sector": str|None, "name": str|None} for `symbol`.
 
         Sourced from the same EODHD fundamentals JSON as get_quarterly_eps
         (shared 24h cache — one HTTP fetch serves both methods).
@@ -575,9 +575,11 @@ class EarningsProvider:
         general = data.get("General") or {}
         market_cap_raw = highlights.get("MarketCapitalization")
         sector_raw = general.get("Sector")
+        name_raw = general.get("Name")   # company name — already in the cached fundamentals dict (display-only; no extra HTTP)
         result = {
             "market_cap": float(market_cap_raw) if market_cap_raw is not None else None,
             "sector": str(sector_raw) if sector_raw is not None else None,
+            "name": str(name_raw) if name_raw is not None else None,
         }
         log.info(
             "EarningsProvider.get_company_facts(%s): served by EODHD "
