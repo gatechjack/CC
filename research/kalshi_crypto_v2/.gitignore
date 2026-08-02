@@ -3,3 +3,6 @@ bitunix_bars_export.csv
 # Local T2 smoke-test sqlite (temp; never prod).
 *.db
 _smoke.db
+# S3 raw-response cache (re-pullable; do not commit).
+_rawcache/
+loaders/_rawcache/
