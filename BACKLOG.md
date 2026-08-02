@@ -8,23 +8,28 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
-## 🔬 kalshi_crypto_v2 — Kalshi crypto reopen, Phase 1 RESEARCH  *(2026-08-01)*
+## 🔬 kalshi_crypto_v2 — Kalshi crypto reopen  *(Phase 1 DONE; Phase 2 model lab underway — 2026-08-01)*
 
 Does the Bitunix SFP/regime signal carry EV on Kalshi crypto binaries? Reopen of the SHELVED
 `kalshi_crypto` under its new-signal-source condition. NEW **read-only** observer scaffold (actor
 `kalshi_crypto_v2`); old division untouched. Branch `claude-2026-08-01b` off prod-live `dafe60b`.
 Full state + handoff in memory `kalshi-crypto-v2-phase1-2026-08-01`.
 
-- **Done:** T1 census + depth + hand-verify; cfbenchmarks_value channel VERIFIED (GO, 4/4 assets,
-  ~1/s + trailing-60s); T3a signal extraction (23 UP signals); T4 retro-test report (STRUCTURAL, n=23,
-  NO verdict — skill +0.02..0.03 inside noise, UP base rate ~0.50, not anti-predictive).
-- **T2 forward logger:** built + smoke-validated + packaged (`158aaa5`); **operator deploying** to
-  tc-prod-vm paper systemd. Runbook `research/kalshi_crypto_v2/T2_DEPLOY_RUNBOOK.md`; 4 `kcv2_*` tables.
-- **GATED — do not start early:** T5 basis report at **≥1 week** of forward `kcv2_*` data (Bitunix↔BRTI
-  divergence; empirically calibrate the flat threshold). D5 Phase-2 verdict draft after T5 + forward
-  **EV-at-fill** on the canonical corpus (positive mean on winners AND losers, fees in, realistic size).
+- **Phase 1 DONE:** T1 census + depth + hand-verify; cfbenchmarks_value VERIFIED (GO, 4/4 assets, ~1/s +
+  trailing-60s); T3a signal extraction (23 UP signals); T4 retro report (STRUCTURAL, n=23, no verdict,
+  skill +0.02..0.03 in noise); T2 forward logger built + packaged (`158aaa5`, operator deploying;
+  runbook `research/kalshi_crypto_v2/T2_DEPLOY_RUNBOOK.md`).
+- **Phase 2 model lab (locked S0–S5), UNDERWAY:** **S1 DONE** (`7e36277`) — settlement = SIMPLE 60s average
+  of CF Benchmarks RTI per asset (NOT the daily BRR, NOT trimmed — KT doc corrected); 3/3 hand-verifies to
+  the cent incl. boundary. **S2 DONE** (`873a7ee`, 11/11 tests) — harness in `research/kalshi_crypto_v2/lab/`:
+  dual-EV (taker + maker w/ mandatory fill-rate), calibration-vs-market, correlation-aware Kelly,
+  Breeden-Litzenberger, split/flat; separate lab sqlite (prod untouched). **S3 prereqs green, NOT started**
+  (Binance via `data-api.binance.vision` for the US HTTP-451 geoblock; Coinbase/ccxt; Coinalyze KV key;
+  Kalshi candles via signed REST).
+- **NEXT = S3** data backfill (coverage-instrumented loaders + per-source coverage report + one hand-verify
+  each), then S4 quant model v1, S5 baselines. T5/D5 (forward EV-at-fill on the kcv2 corpus) are downstream.
 - **Standing:** agent read-only on prod; no order/placement surface (grep-enforced every commit);
-  deploys operator-gated; creds env→Key Vault fallback, in-memory, redacted.
+  deploys operator-gated; creds env→Key Vault, in-memory, redacted.
 
 ---
 
