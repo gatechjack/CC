@@ -261,22 +261,25 @@ def run_asset(asset: str, data: dict) -> dict:
               f"flat={n_flt} Brier={b_flt:.5f}")
 
     # -----------------------------------------------------------------------
-    # TODO HOOKS (explicit placeholders for market-benchmark + EV)
+    # Market-implied benchmark + dual EV (reads lab_kalshi_candles, read-only).
+    # The bar to beat is Brier_market, not 0.25. EV only on edge-clearing windows.
     # -----------------------------------------------------------------------
-    # TODO_MARKET_BENCHMARK:
-    #   brier_market = brier(market_p_list, y_holdout.tolist())
-    #   skill_score = 1 - brier_model / brier_market
-    #   Requires: Kalshi window-open candle yes_bid_close / yes_ask_close per window
-    #   Source: lab_kalshi_candles (being written; not read here per spec)
-    #   Contact: lead engineer will wire this in S5 via calibration.compare_to_market()
-    #
-    # TODO_DUAL_EV:
-    #   taker_ev_results = [ev.taker_ev(p, side, yes_ask, no_ask) for each window]
-    #   maker_ev_results = [ev.maker_ev(p, side, bid, post_candles, close_ts) for each]
-    #   agg_maker = ev.aggregate_maker(maker_ev_results)  # MUST include fill_rate
-    #   agg_taker = ev.aggregate_taker(taker_ev_results)
-    #   Source: lab_kalshi_candles mid-window price + post-candles for maker fill model
-    #   import from lab/ev.py: taker_ev, maker_ev, aggregate_maker, aggregate_taker
+    bench = None
+    try:
+        from benchmark import benchmark_asset
+        from dataset import LAB_DB as _DB
+        bench = benchmark_asset(df_holdout, cal_probs, _DB)
+        print(f"  Brier_market={bench['brier_market']} "
+              f"(model_on_covered={bench['brier_model_on_covered']}) "
+              f"skill_vs_market={bench['skill_score_vs_market']} "
+              f"coverage={bench['coverage']:.1%} n_covered={bench['n_covered']}")
+        print(f"  Edge windows={bench['n_edge']} | model-implied taker={bench['taker_model_implied']}")
+        print(f"  REALIZED taker mean P&L=${bench['realized_taker_mean']}/contract "
+              f"(n={bench['realized_taker_n']}) | REALIZED maker mean P&L on fills="
+              f"${bench['realized_maker_mean_on_fills']}/contract (n={bench['realized_maker_n_fills']}, "
+              f"fill_rate={bench['maker_model_implied']['fill_rate']})")
+    except Exception as e:  # noqa: BLE001 - benchmark is optional if candles absent
+        print(f"  benchmark skipped: {type(e).__name__}: {str(e)[:120]}")
 
     # -----------------------------------------------------------------------
     # Rider B
@@ -350,11 +353,16 @@ def run_asset(asset: str, data: dict) -> dict:
         "flat_report":    flat_report,
         "leakage_ok":     data["leakage_ok"],
         "rider_b":        rider_b_result,
-        # TODO hooks (explicit; filled by lead engineer in S5):
-        "brier_market":   None,  # TODO_MARKET_BENCHMARK
-        "skill_score":    None,  # TODO_MARKET_BENCHMARK
-        "dual_ev_taker":  None,  # TODO_DUAL_EV
-        "dual_ev_maker":  None,  # TODO_DUAL_EV (must include fill_rate)
+        # Market benchmark + dual EV (None if candles absent for this asset):
+        "brier_market":   bench["brier_market"] if bench else None,
+        "skill_score":    bench["skill_score_vs_market"] if bench else None,
+        "bench_coverage": bench["coverage"] if bench else None,
+        "n_edge":         bench["n_edge"] if bench else None,
+        "dual_ev_taker":  bench["taker_model_implied"] if bench else None,
+        "dual_ev_maker":  bench["maker_model_implied"] if bench else None,  # incl. fill_rate
+        "realized_taker": bench["realized_taker_mean"] if bench else None,
+        "realized_maker": bench["realized_maker_mean_on_fills"] if bench else None,
+        "benchmark":      bench,
     }
 
 
