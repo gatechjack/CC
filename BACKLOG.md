@@ -8,6 +8,29 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## 🗓️ 2026-08-02 ops session — accrual automation + bitunix backlog burn-down
+
+Branch `claude-2026-08-02` (worktree `cc-2026-08-02-wt`); pushed. Report +
+proposals: `reports/2026-08-02_bitunix_ops_backlog/`.
+
+- ✅ **KCV2 accruals scheduled** (Task Scheduler, this machine): `\TradingCorp\kcv2-ladder-snap`
+  (daily 08:00) + `kcv2-fine-flow` (12h). Wrapper + heartbeat + health + runbook in
+  `research/kalshi_crypto_v2/schedule/`. Both verified end-to-end (ladder +843, fine +92k,
+  scheduler re-runs 0x0). Home = this worktree (holds the 228MB lab DB) — **do NOT prune it.**
+- ✅ **Worktrees pruned** 114→84 (30 clean+merged removed; 22 dirty listed for review).
+- ✅ **btc_scalping.db backup** verified + restore proven → OneDrive + `%LOCALAPPDATA%`
+  (`scripts/backup_corpus_db.py`). No Azure storage account exists (Blob = deploy-gated).
+- ⏳ **Corpus refresh DUE/overdue** (last 06-19) — operator-gated: needs fresh TV exports
+  (BYBIT_BTCUSDT.P 1m/3m/15m/30m/1h) → `ingest_tv_export.py`.
+- ⏳ **ETH freshness WATCH** — analysis + operator-runnable read-only query in REPORT.md;
+  loosening likely net-negative (ETH SFP is monitor-only). No change.
+- 🔧 **Futures 4-point verify** built (`scripts/bitunix_futures_next_entry_verify.py`) — run
+  read-only when the next entry fires.
+- 📋 **5 deploy-gated proposals AWAITING RULING** (PROPOSALS.md): DD-cap "to 0.99" (already
+  0.99 — clarify), B2 maker flip, pre-TP1 trail, VIX-gate (PMCC), RANGE veto up_but_bearish.
+
+---
+
 ## 🔬 kalshi_crypto_v2 — Kalshi crypto reopen  *(Phase 2 COMPLETE — D5 RULED 2026-08-02: 15m direction CLOSED, ladder distribution OPEN)*
 
 Does the Bitunix SFP/regime signal carry EV on Kalshi crypto binaries? Reopen of the SHELVED
