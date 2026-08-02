@@ -77,7 +77,9 @@ def enumerate_markets(rest: KalshiRest, conn, kind_filter: str | None = None) ->
                 epoch(m.get("open_time")), epoch(m.get("close_time")),
                 epoch(m.get("expected_expiration_time") or m.get("expiration_time")),
                 m.get("result"),
-                _num(m, "settlement_value_dollars", "settlement_value", "expiration_value"),
+                # settle = the close-60s-avg RTI (expiration_value), NOT the 0/1
+                # binary payout (settlement_value_dollars). Needed for move_pct.
+                _num(m, "expiration_value", "settlement_value"),
                 _num(m, "last_price_dollars", "last_price"), m.get("status")))
         conn.executemany(
             "INSERT OR IGNORE INTO lab_kalshi_markets"
@@ -147,6 +149,22 @@ def pull_candles(rest: KalshiRest, conn, only_series: str | None,
         print(f"  {series:10} DONE {done} markets, {total_c} candles, {errs} errs", flush=True)
 
 
+def fix_settle(rest: KalshiRest, conn, kind_filter: str | None = None) -> None:
+    """One-time correction: UPDATE settlement_value to expiration_value (close RTI)
+    for already-enumerated markets, preserving candles_pulled. Fixes rows written
+    before the enumerate mapping was corrected. Run AFTER the candle pull."""
+    print(f"== fix settle (kind={kind_filter or 'all'}) ==", flush=True)
+    for series, asset, kind in _series_for(kind_filter):
+        markets = rest.paginated("/markets", "markets",
+                                 {"series_ticker": series, "status": "settled", "limit": 1000},
+                                 max_pages=300)
+        upd = [(_num(m, "expiration_value", "settlement_value"), m.get("ticker")) for m in markets]
+        upd = [(v, t) for v, t in upd if v is not None and t]
+        conn.executemany("UPDATE lab_kalshi_markets SET settlement_value=? WHERE market_ticker=?", upd)
+        conn.commit()
+        print(f"  {series:10} updated {len(upd)} settle values", flush=True)
+
+
 def probe_one(rest: KalshiRest, conn) -> None:
     row = conn.execute(
         "SELECT series,market_ticker,open_ts,expiration_ts,close_ts FROM lab_kalshi_markets"
@@ -178,6 +196,9 @@ def main() -> int:
         kind = None
         if "--kind" in sys.argv:
             kind = sys.argv[sys.argv.index("--kind") + 1]
+        if "--fix-settle" in sys.argv:
+            fix_settle(rest, conn, kind)
+            return 0
         do_enum = "--enumerate" in sys.argv or "--candles" not in sys.argv
         do_cand = "--candles" in sys.argv or "--enumerate" not in sys.argv
         if do_enum:
