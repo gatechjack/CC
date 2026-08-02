@@ -1947,8 +1947,9 @@ robinhood_pead:
   # auto_execute:false above keeps it paper even if standby is lifted. The
   # intended ~20-25 name book needs funding; max_concurrent caps the plumbing book.
   universe_file: "@config/nasdaq_composite.txt"   # 3,207-name Nasdaq Composite (anchored path)
-  position_pct: 0.10                # 10% of account value per name
-  max_concurrent_positions: 10      # plumbing book ceiling (~20-25 when funded)
+  position_pct: 0.10                # RETIRED 2026-08-02 — no longer drives sizing (kept readable; position_notional still overrides)
+  size_safety_factor: 0.95          # derived sizer: per_name = settled_cash / open_slots_remaining * this
+  max_concurrent_positions: 10      # plumbing book ceiling; live-overridable from the dashboard dial (agent_state)
   entry_delay_days: 1               # enter 1 trading day post-announcement...
   entry_max_delay_days: 2           # ...through 2 td (the PEAD entry window)
   manage_cadence_sec: 300           # exit-engine poll cadence

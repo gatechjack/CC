@@ -28,6 +28,7 @@ from pathlib import Path
 import yaml
 
 from trading_corp.agents.strategies import pead_pressures as pp
+from trading_corp.agents.strategies import pead_sizing
 from trading_corp.agents.strategies.pead_signal import (
     ScreenInputs,
     _percentile,
@@ -55,8 +56,9 @@ from trading_corp.web.pead_view import business_days  # shared trading-day count
 log = logging.getLogger(__name__)
 
 _DEFAULT_MANAGE_CADENCE_SEC = 300       # few-min exit cadence
-_DEFAULT_POSITION_PCT = 0.10            # 10% of account value per trade
+_DEFAULT_POSITION_PCT = 0.10            # RETIRED as sizer (see _notional_budget); kept for the fixed-$ override path only
 _DEFAULT_MAX_CONCURRENT = 7
+_DEFAULT_SAFETY_FACTOR = 0.95           # derived sizer: per_name = settled_cash / open_slots * this
 _DEFAULT_ENTRY_DELAY_DAYS = 1           # enter 1-2 trading days post-announcement
 _DEFAULT_ENTRY_MAX_DELAY_DAYS = 2
 _BARS_LOOKBACK_DAYS = 180              # daily bars window for ATR / swing / gap-top
@@ -335,6 +337,11 @@ class PEADStrategy:
         screen_params = screen_params_from_config(cfg.get("screen", {}) or {})
         sue_params = sue_params_from_config(cfg.get("signal", {}) or {})
         max_concurrent = int(cfg.get("max_concurrent_positions", _DEFAULT_MAX_CONCURRENT))
+        # Live dashboard dial (Part B): an agent_state override wins over the yaml
+        # value; read fresh each scan (no restart), falls back to yaml when unset.
+        _mc_override = pead_sizing.read_max_concurrent_override(self.db_url)
+        if _mc_override is not None:
+            max_concurrent = _mc_override
         emin = int(cfg.get("entry_delay_days", _DEFAULT_ENTRY_DELAY_DAYS))
         emax = int(cfg.get("entry_max_delay_days", _DEFAULT_ENTRY_MAX_DELAY_DAYS))
         today = datetime.now(timezone.utc).date()
@@ -352,6 +359,7 @@ class PEADStrategy:
         ann_by: dict[str, date] = {}
         nxt_by: dict[str, date | None] = {}
         slot_by: dict[str, str | None] = {}   # BMO/AMC reporting slot per symbol (None = unknown)
+        name_by: dict[str, str | None] = {}   # ticker -> company name (General::Name, already-cached facts; display-only)
         for sym in universe:
             if sym in held:
                 continue
@@ -369,6 +377,7 @@ class PEADStrategy:
             if not bars:
                 continue
             facts = self._provider.get_company_facts(sym) or {}
+            name_by[sym] = facts.get("name")   # off the already-fetched 24h-cached facts — NO extra HTTP
             nxt = self._provider.get_next_earnings_date(sym, asof=today)
             d2n = business_days(today, nxt) if nxt else None
             last_close = bars[-1].close
@@ -412,8 +421,19 @@ class PEADStrategy:
 
         snap = await broker.snapshot()
         equity = float(getattr(snap, "equity", 0.0) or 0.0)
-        available_bp = getattr(snap, "buying_power", None)  # settled BP; None = no guard (paper/unknown)
-        notional_budget = self._notional_budget(cfg, equity)             # equal-$ per name
+        available_bp = getattr(snap, "buying_power", None)  # portfolio-profile BP (settled-cash fallback only)
+        # ── DERIVED, SELF-BALANCING SIZING (Part A) ──────────────────────────
+        # Size against SETTLED cash (RobinhoodBroker derives it from
+        # load_account_profile: cash − unsettled_funds − cash_held_for_orders),
+        # NOT the retired position_pct × equity. per_name is recomputed per entry
+        # inside the loop as cash + slots deplete, so the last slot is fundable by
+        # construction. `position_notional` (fixed $) remains an explicit equal-$
+        # override; position_pct no longer drives sizing.
+        _settled = getattr(snap, "settled_cash", None)
+        cash_remaining = (float(_settled) if _settled is not None
+                          else (float(available_bp) if available_bp is not None else 0.0))
+        safety_factor = float(cfg.get("size_safety_factor", _DEFAULT_SAFETY_FACTOR))
+        fixed_notional = cfg.get("position_notional")   # equal-$ escape hatch; None => derived
         max_hold_seconds = pp.MAX_HOLD_TRADING_DAYS * 24 * 3600  # informational; live TIME rule uses trading-day count
 
         placed: list[ProposedOrder] = []
@@ -428,22 +448,31 @@ class PEADStrategy:
                                           slot_by.get(cand.symbol))
             if prim is None:
                 continue
-            # ── equal-DOLLAR notional sizing (config-driven, same $ per candidate) ──
-            if notional_budget < 1.0:                 # below RH's $1 fractional minimum
-                log.info("pead_strategy: notional $%.2f < $1 — skip %s", notional_budget, cand.symbol)
+            # ── derived per-name size: settled_cash / remaining_slots × safety ──
+            # (recomputed each iteration against ACTUAL remaining cash + slots)
+            if fixed_notional is not None:            # explicit equal-$ override (position_notional)
+                try:
+                    per_name = max(0.0, float(fixed_notional))
+                except (TypeError, ValueError):
+                    per_name = 0.0
+            else:
+                per_name = (cash_remaining / capacity) * safety_factor if capacity > 0 else 0.0
+            if per_name < 1.0:                        # below RH's $1 fractional min — clean skip (every later slot too)
+                log.info("pead_strategy: derived size $%.2f < $1 (settled $%.2f / %d slots) — skip %s",
+                         per_name, cash_remaining, capacity, cand.symbol)
                 continue
             elig = getattr(broker, "fractional_eligible", None)   # #6 (cached on broker)
             if elig is not None and not await elig(cand.symbol):
                 log.info("pead_strategy: %s not fractional-eligible — skip", cand.symbol)
                 continue
-            if available_bp is not None and notional_budget > float(available_bp) + 1e-9:
-                log.info("pead_strategy: %s settled BP $%.2f < notional $%.2f — skip",  # #5
-                         cand.symbol, float(available_bp), notional_budget)
+            if per_name > cash_remaining + 1e-9:      # never size beyond settled placeable cash  # #5
+                log.info("pead_strategy: %s size $%.2f > settled cash $%.2f — skip",
+                         cand.symbol, per_name, cash_remaining)
                 continue
             nxt = nxt_by.get(cand.symbol)
             order = ProposedOrder(
                 strategy=self.SLUG, symbol=cand.symbol, side="buy", qty=0.0,
-                order_type="market", notional_usd=notional_budget, fractional=True,
+                order_type="market", notional_usd=per_name, fractional=True,
                 rationale=f"PEAD entry SUE={cand.sue:.2f}",
                 extra={
                     # the 6 LOCKED extra_json keys the dashboard + exit engine read
@@ -455,11 +484,12 @@ class PEADStrategy:
                     "entry_sue": float(cand.sue),
                     "report_time": slot_by.get(cand.symbol),   # BMO/AMC slot carried for a future confirmation gate; None = unknown (do NOT default)
                     "name": cand.symbol,
+                    "company_name": name_by.get(cand.symbol),   # General::Name (display-only; ticker stays the identity)
                     # ledger trade-card fields
                     "entry_reference_price": entry_price,  # overwritten with realized fill (live)
                     "stop_price": prim["stop_level"],
                     "source_signal": "srw_sue",
-                    "notional_usd": notional_budget,
+                    "notional_usd": per_name,
                 },
             )
             if not self._risk_ok(order, equity):
@@ -472,12 +502,11 @@ class PEADStrategy:
             # The PAPER path is UNCHANGED (no real order; estimate qty + record now).
             if self._is_live():
                 self._write_intent(order, max_hold_seconds=max_hold_seconds)
-                if available_bp is not None:             # RESERVE settled BP on the requested notional (#5)
-                    available_bp = float(available_bp) - notional_budget
+                cash_remaining -= per_name               # deplete settled cash so the next name resizes (#5)
                 self.logger_agent.log_event(
                     self.SLUG, "pead_intent",
                     {"strategy": self.SLUG, "division": self.SLUG, "symbol": cand.symbol,
-                     "notional": notional_budget,
+                     "notional": per_name,
                      "sue": round(float(cand.sue), 3),
                      "entry_reference_price": order.extra.get("entry_reference_price")},
                 )
@@ -490,12 +519,11 @@ class PEADStrategy:
             # (The record reflects the paper estimate; the live realized path is the
             # reconcile promote above, never the requested notional.)
             self._write_record(order, max_hold_seconds=max_hold_seconds)
-            if available_bp is not None:                 # decrement settled BP as we fill (#5)
-                available_bp = float(available_bp) - float(order.extra.get("executed_notional") or notional_budget)
+            cash_remaining -= float(order.extra.get("executed_notional") or per_name)  # deplete settled cash (#5)
             self.logger_agent.log_event(
                 self.SLUG, "pead_entry",
                 {"strategy": self.SLUG, "division": self.SLUG, "symbol": cand.symbol,
-                 "qty": order.qty, "notional": notional_budget,
+                 "qty": order.qty, "notional": per_name,
                  "executed_notional": order.extra.get("executed_notional"),
                  "sue": round(float(cand.sue), 3),
                  "entry": order.extra.get("entry_reference_price"),
@@ -1018,8 +1046,11 @@ class PEADStrategy:
 
     @staticmethod
     def _notional_budget(cfg: dict, equity: float) -> float:
-        """Equal-dollar notional per candidate (same value for every candidate in a
-        scan). `position_notional` (fixed $) overrides; else position_pct × equity."""
+        """RETIRED sizer (2026-08-02) — NO LONGER CALLED BY scan(), which now uses
+        the settled-cash derived sizer (see the DERIVED SIZING block in scan). Kept
+        only so `position_pct` / `position_notional` stay readable and for any
+        external/back-compat caller. `position_notional` (fixed $) overrides; else
+        the retired position_pct × equity."""
         fixed = cfg.get("position_notional")
         if fixed is not None:
             try:
