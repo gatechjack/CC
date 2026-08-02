@@ -23,11 +23,18 @@ Full state + handoff in memory `kalshi-crypto-v2-phase1-2026-08-01`.
   of CF Benchmarks RTI per asset (NOT the daily BRR, NOT trimmed — KT doc corrected); 3/3 hand-verifies to
   the cent incl. boundary. **S2 DONE** (`873a7ee`, 11/11 tests) — harness in `research/kalshi_crypto_v2/lab/`:
   dual-EV (taker + maker w/ mandatory fill-rate), calibration-vs-market, correlation-aware Kelly,
-  Breeden-Litzenberger, split/flat; separate lab sqlite (prod untouched). **S3 prereqs green, NOT started**
-  (Binance via `data-api.binance.vision` for the US HTTP-451 geoblock; Coinbase/ccxt; Coinalyze KV key;
-  Kalshi candles via signed REST).
-- **NEXT = S3** data backfill (coverage-instrumented loaders + per-source coverage report + one hand-verify
-  each), then S4 quant model v1, S5 baselines. T5/D5 (forward EV-at-fill on the kcv2 corpus) are downstream.
+  Breeden-Litzenberger, split/flat; separate lab sqlite (prod untouched). **S3 DONE + S4 v1 BUILT**
+  (Session 3, branch `claude-2026-08-01c` off `dafe60b`, pushed): loaders in `research/kalshi_crypto_v2/
+  loaders/` -> lab DB. Binance 1m (data-api.binance.vision) 99,378 rows/asset 0 gaps; Coinbase 1m (Exchange
+  REST) 0.02-0.05%; Coinalyze 616k rows (★retention: 1min ~26h/5min ~7d/15min ~21d/1hour full); Kalshi 15m
+  candles pulling (~end of session); all hand-verified to cent/satoshi. S4 v1 (`s4/`, CatBoost+Platt,
+  leakage-safe) holdout Brier<0.25 but CV=no robust skill; cvd_1h #1 feature; Brier_market=TODO.
+- **Forks resolved (operator):** F1 = 1h-flow full-period for v1 + Rider A (12h fine-flow archive,
+  `coinalyze.py --fine-only`, runbook) + Rider B (21d/15min-flow probe); aggTrades reconstruction deferred.
+  F2 = ladder snapshots (event-sampled; 674k ladder mkts = full-pull unless sampled), run AFTER 15m pull.
+- **POST-PULL TODO (next session):** finish/confirm 15m pull; `kalshi.py --fix-settle` (settle stored 0/1
+  payout not RTI); Kalshi hand-verify; regenerate coverage report; wire Brier_market + dual EV (fill-rate)
+  into `s4/run_s4.py` + full re-run; run ladder snapshots; S5 baselines. T5/D5 downstream.
 - **Standing:** agent read-only on prod; no order/placement surface (grep-enforced every commit);
   deploys operator-gated; creds env→Key Vault, in-memory, redacted.
 
