@@ -222,4 +222,46 @@ loss. Two operator paths, both advisory:
 - Roster source: `agent_state(polymarket_copy_trader, selected_whales)` (9 whales, written 2026-07-26 04:40 UTC).
 - Autopause thresholds (`_whale_autopause.py`): n≥30 **AND** WR<40% **AND** total PnL<−$5 (conjunctive).
 - Forward window: `entry_ts ≥ 2026-07-07T20:00:54Z` (`metrics_epoch`).
-- Queries staged as `tmp/q0…q6*.sql`; no writes issued to prod.
+- Queries staged as `tmp/q0…q10*.sql`. STEP 0–4 analysis was read-only; the roster demote below
+  (a separate, board-authorized action) was the only write issued to prod.
+
+---
+
+## ACTION LOG — Roster demote EXECUTED 2026-08-02 19:55:35 UTC (board-authorized)
+
+**What:** Removed **Moond** and **kitten147** from the PCT roster — atomic single-transaction
+(`BEGIN IMMEDIATE`) removal from **both** `agent_state(polymarket_copy_trader, selected_whales)`
+and `pinned_whales`. Deliberately the **light Kalshi-housekeeping pattern**: roster-set removal
+only, **no `force_close_whale_positions`** — positions/whale_state left intact (open paper
+positions resolve naturally at market settlement via the resolver). **No autopause flip**
+(still `shadow`). **No restart** — PCT reloads `selected_whales` every 60s poll (`routes.py:2588`;
+`_load_selected_whales` reads DB each cycle).
+
+**Before → After (verified, `PRAGMA quick_check = ok`):**
+
+| Key | Before | After | Removed | Retained |
+|---|---:|---:|---|---|
+| `selected_whales` | 9 | **7** | Moond, kitten147 | Hakei., llllllIIII…, CVCM, DegenKingBetter, ox1star84, potatobrahh, ChadStarmer |
+| `pinned_whales` | 10 | **8** | Moond, kitten147 | the 7 above + digitalnomad85 (pre-existing stale pin, untouched) |
+
+**Post-execution assertions (fresh read-only connection):** Moond/kitten147 absent from both
+keys (0/0); 7 survivors present; both keys `updated_ts=2026-08-02T19:55:35.319+00:00`; whale_state
+rows for both demoted whales still present and last-written by the engine's 19:54 poll (not by the
+demote); 0 synthetic-close audit rows; `auto_execute:false` and `autopause_mode:shadow` unchanged.
+**Live proof:** the copy loop's next poll fetched activity for exactly the 7 survivors and **0**
+fetches for Moond (`0x9dfe2f73`) / kitten147 (`0xbace5a5a`).
+
+**Rollback.** Before-state also saved on prod at
+`/home/azureuser/trading_corp/data/.bak_pct_roster_demote_20260802.txt` (`key=|=value_json`). To
+restore the pre-demote roster (re-adds both whales; they resume being copied next poll), run on the
+prod DB read-write:
+
+```sql
+BEGIN IMMEDIATE;
+UPDATE agent_state SET value_json='[{"wallet":"0xbace5a5a9e309d69164dc81788d353fed8d43429","user_name":"kitten147","category":"Crypto","promoted_iso":"2026-05-23T20:44:24.407219+00:00","source":"dashboard_button"},{"wallet":"0x7714c16f86bcfdba47bfcb161dc39a2a1ff2b814","user_name":"llllllIIIIIIlIllllllIIIIIIlIllllllIIIIIIlI","category":"Sports","promoted_iso":"2026-05-27T12:29:16.837822+00:00","source":"dashboard_button"},{"wallet":"0x97ead83eb0e6b7f142e63284791882f05ddf3363","user_name":"Hakei.","category":"Tech","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0x1f9f03e7ce52979b658b0bb75b483ff923fda025","user_name":"ChadStarmer","category":"Tech","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0x9dfe2f73d3c988a9d69df8fa0beb85651340b3dd","user_name":"Moond","category":"Politics","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0xf192501abae4c453cc15ddbe9543ed11e99a6ee2","user_name":"potatobrahh","category":"Tech","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0x27d2812fa0d04ca1b874cffedff7a15beb4ab0f8","user_name":"CVCM","category":"Sports","promoted_iso":"2026-07-26T03:41:11.772322+00:00","source":"dashboard_button"},{"wallet":"0x4a1b8e8d38aecdc9687bb0f601801d59fa44724f","user_name":"ox1star84","category":"Sports","promoted_iso":"2026-07-26T03:46:17.220647+00:00","source":"dashboard_button"},{"wallet":"0xb56db5215443706244b0af76b3daaad3066ad621","user_name":"DegenKingBetter","category":"Sports","promoted_iso":"2026-07-26T04:40:31.990621+00:00","source":"dashboard_button"}]' WHERE agent='polymarket_copy_trader' AND key='selected_whales';
+UPDATE agent_state SET value_json='[{"wallet":"0xbace5a5a9e309d69164dc81788d353fed8d43429","user_name":"kitten147","category":"Crypto","promoted_iso":"2026-05-23T20:44:24.407219+00:00","source":"dashboard_button"},{"wallet":"0x7714c16f86bcfdba47bfcb161dc39a2a1ff2b814","user_name":"llllllIIIIIIlIllllllIIIIIIlIllllllIIIIIIlI","category":"Sports","promoted_iso":"2026-05-27T12:29:16.837822+00:00","source":"dashboard_button"},{"wallet":"0x300b4292912c123066a380a344b505b0f353f636","user_name":"digitalnomad85","category":"Sports","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0x97ead83eb0e6b7f142e63284791882f05ddf3363","user_name":"Hakei.","category":"Tech","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0x1f9f03e7ce52979b658b0bb75b483ff923fda025","user_name":"ChadStarmer","category":"Tech","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0x9dfe2f73d3c988a9d69df8fa0beb85651340b3dd","user_name":"Moond","category":"Politics","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0xf192501abae4c453cc15ddbe9543ed11e99a6ee2","user_name":"potatobrahh","category":"Tech","promoted_iso":"2026-07-07T19:13:19.384301+00:00","source":"board_realized_reassign_2026-07-07"},{"wallet":"0x27d2812fa0d04ca1b874cffedff7a15beb4ab0f8","user_name":"CVCM","category":"Sports","promoted_iso":"2026-07-26T03:41:11.773506+00:00","source":"dashboard_button"},{"wallet":"0x4a1b8e8d38aecdc9687bb0f601801d59fa44724f","user_name":"ox1star84","category":"Sports","promoted_iso":"2026-07-26T03:46:17.221699+00:00","source":"dashboard_button"},{"wallet":"0xb56db5215443706244b0af76b3daaad3066ad621","user_name":"DegenKingBetter","category":"Sports","promoted_iso":"2026-07-26T04:40:31.991738+00:00","source":"dashboard_button"}]' WHERE agent='polymarket_copy_trader' AND key='pinned_whales';
+COMMIT;
+```
+
+**Roster after demote (live):** KEEP **Hakei.**, **llllllIIII…**; WATCH **CVCM, DegenKingBetter,
+ox1star84, potatobrahh, ChadStarmer** (n<30, accumulate). No promotions.
