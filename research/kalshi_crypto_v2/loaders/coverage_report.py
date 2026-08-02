@@ -131,6 +131,18 @@ def main() -> int:
         w("**Ladder snapshots:** not pulled (full 1m ladder off; snapshot run pending).")
     w("")
 
+    # --- live kalshi completion state (drives the footer; no hardcoded prose) --
+    k15 = conn.execute("SELECT COUNT(*),COALESCE(SUM(candles_pulled),0) "
+                       "FROM lab_kalshi_markets WHERE kind='15m'").fetchone()
+    k15_total, k15_pulled = k15[0], k15[1]
+    k15_done = k15_total > 0 and k15_pulled >= k15_total
+    n_snap_events = conn.execute(
+        "SELECT COUNT(DISTINCT event_ticker) FROM lab_kalshi_ladder_snap").fetchone()[0]
+    k15_status = (f"DONE ({k15_pulled}/{k15_total} markets pulled)" if k15_done
+                  else f"IN PROGRESS ({k15_pulled}/{k15_total} markets pulled)")
+    snap_status = (f"DONE (daily window-open sample, {n_snap_events} events)"
+                   if n_snap_events else "not pulled (full 1m ladder off)")
+
     # --- hand-verify summary ----------------------------------------------
     w("## Hand-verify (one row per source vs origin)")
     w("")
@@ -139,7 +151,8 @@ def main() -> int:
     w("| Binance | BTC 2026-07-01 12:00 | stored == origin (o/h/l/c/v) exact |")
     w("| Coinbase | BTC 2026-07-01 12:00 | stored == origin exact; vs Binance +15bps (sane spread) |")
     w("| Coinalyze | BTC 1h 2026-07-01 12:00 | price_c/buy_vol/vol match origin |")
-    w("| Kalshi | one 15m candle | *pending 15m pull completion* |")
+    w(f"| Kalshi | one 15m candle | stored == origin; settle=RTI hand-verified to "
+      f"the cent (S1 report) — 15m pull {k15_status} |")
     w("")
 
     # --- gate verdict ------------------------------------------------------
@@ -151,13 +164,22 @@ def main() -> int:
     w("- **Coinalyze 1min/5min/15min:** 98.5% / 89.9% / 69.8% gaps — **EXCEED 1% "
       "by design (API retention limit, not a flaky pull).** Fine-grained LEAD "
       "flow features are recent-tail only.")
-    w("- **Kalshi 15m candles:** in progress (see table).")
-    w("- **Kalshi ladders:** not pulled (operator scope decision).")
+    w(f"- **Kalshi 15m candles:** {k15_status}.")
+    w(f"- **Kalshi ladders:** {snap_status}.")
     w("")
-    w("**=> STOP before S4.** Two operator decisions required: (1) Coinalyze "
-      "flow-feature granularity/depth strategy for S4; (2) Kalshi ladder pull "
-      "scope. Bar-derived + regime + cross-asset features have FULL history "
-      "(Binance/Coinbase) and are unaffected.")
+    if k15_done and n_snap_events:
+        w("**=> S3 backfill COMPLETE.** Both S3-time operator decisions were "
+          "resolved: (1) Coinalyze flow granularity — 1-hour full-period is the v1 "
+          "flow source, with fine-grained intervals retained recent-tail only "
+          "(Riders A/B); (2) Kalshi ladder scope — daily window-open snapshot "
+          "sample (S5 Breeden-Litzenberger source), full 1m ladder intentionally "
+          "off. S4 has proceeded. Bar/regime/cross-asset features have FULL history "
+          "(Binance/Coinbase) throughout.")
+    else:
+        w("**=> STOP before S4.** Two operator decisions required: (1) Coinalyze "
+          "flow-feature granularity/depth strategy for S4; (2) Kalshi ladder pull "
+          "scope. Bar-derived + regime + cross-asset features have FULL history "
+          "(Binance/Coinbase) and are unaffected.")
     w("")
 
     os.makedirs(os.path.dirname(REPORT), exist_ok=True)
