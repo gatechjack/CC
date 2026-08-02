@@ -2320,6 +2320,38 @@ def register(app: FastAPI) -> None:
         log.info("pead_halt_initiated: reason=%s closed=%d", reason, closed)
         return _render_action_pill(f"PEAD HALTED · {closed} closed")
 
+    @app.post("/telemetry/pead/max_concurrent", response_class=HTMLResponse)
+    async def pead_set_max_concurrent(request: Request):
+        """PEAD dial (Part B): persist a max_concurrent override to
+        `agent_state robinhood_pead/max_concurrent_override`. The scan reads it
+        live each cycle (no restart) and falls back to strategies.yaml when unset.
+        Mirrors the halt write-surface; PEAD-scoped — affects no other division.
+        Re-renders the dial partial (with the recomputed fundable-count readout).
+        """
+        from trading_corp.web.pead_view import DIVISION, build_pead_view
+        form = await request.form()
+        try:
+            n = int(form.get("max_concurrent"))
+        except (TypeError, ValueError):
+            n = None
+        if n is not None and 1 <= n <= 100:
+            _db_mod.set_agent_state(
+                DIVISION, "max_concurrent_override",
+                {"max_concurrent": n, "ts": _now_iso(), "source": "dashboard_dial"},
+                db_url=deps.db_url,
+            )
+            if deps.logger_agent is not None:
+                deps.logger_agent.log_event(
+                    "pead_operations", "pead_max_concurrent_set",
+                    {"division": DIVISION, "max_concurrent": n,
+                     "source": "dashboard_dial", "ts": _now_iso()},
+                )
+            log.info("pead_max_concurrent_set: n=%d source=dashboard_dial", n)
+        else:
+            log.info("pead_set_max_concurrent: ignored invalid value %r", form.get("max_concurrent"))
+        view = await build_pead_view(deps)
+        return templates.TemplateResponse(request, "partials/pead_dial.html", {"v": view})
+
     # ITEM2-RH-ROUTES: RH session health + refresh button ------------------------------
     _RH_AGENT, _RH_KEY = "robinhood_session", "refresh_status"
     _BUTTON_REAUTH_TIMEOUT_S = 90
