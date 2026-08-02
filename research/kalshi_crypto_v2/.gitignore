@@ -6,3 +6,5 @@ _smoke.db
 # S3 raw-response cache (re-pullable; do not commit).
 _rawcache/
 loaders/_rawcache/
+# Scheduled-accrual runtime logs (heartbeat + last-run stdout; machine-local).
+schedule/logs/
