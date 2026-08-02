@@ -59,6 +59,7 @@ _DEFAULT_MANAGE_CADENCE_SEC = 300       # few-min exit cadence
 _DEFAULT_POSITION_PCT = 0.10            # RETIRED as sizer (see _notional_budget); kept for the fixed-$ override path only
 _DEFAULT_MAX_CONCURRENT = 7
 _DEFAULT_SAFETY_FACTOR = 0.95           # derived sizer: per_name = settled_cash / open_slots * this
+_DEFAULT_SIZE_MIN_USD = 50.0           # per-name $ floor: fund FEWER names at >= this, never sub-floor
 _DEFAULT_ENTRY_DELAY_DAYS = 1           # enter 1-2 trading days post-announcement
 _DEFAULT_ENTRY_MAX_DELAY_DAYS = 2
 _BARS_LOOKBACK_DAYS = 180              # daily bars window for ATR / swing / gap-top
@@ -422,18 +423,27 @@ class PEADStrategy:
         snap = await broker.snapshot()
         equity = float(getattr(snap, "equity", 0.0) or 0.0)
         available_bp = getattr(snap, "buying_power", None)  # portfolio-profile BP (settled-cash fallback only)
-        # ── DERIVED, SELF-BALANCING SIZING (Part A) ──────────────────────────
+        # ── DERIVED, SELF-BALANCING, FLOORED SIZING (Part A + $ floor) ───────
         # Size against SETTLED cash (RobinhoodBroker derives it from
         # load_account_profile: cash − unsettled_funds − cash_held_for_orders),
-        # NOT the retired position_pct × equity. per_name is recomputed per entry
-        # inside the loop as cash + slots deplete, so the last slot is fundable by
-        # construction. `position_notional` (fixed $) remains an explicit equal-$
-        # override; position_pct no longer drives sizing.
+        # NOT the retired position_pct × equity. The wave is computed ONCE by
+        # pead_sizing.derive_wave_sizes — the SAME function the dashboard readout
+        # consumes, so the on-screen fundable count can NEVER disagree with what
+        # scan places. It is self-balancing (each name sized against remaining
+        # cash+slots so the last slot is fundable) AND honours the $ floor
+        # (size_min_usd): fund FEWER names at >= the floor, never a sub-floor one.
+        # `position_notional` (fixed $) stays an explicit equal-$ override.
         _settled = getattr(snap, "settled_cash", None)
         cash_remaining = (float(_settled) if _settled is not None
                           else (float(available_bp) if available_bp is not None else 0.0))
         safety_factor = float(cfg.get("size_safety_factor", _DEFAULT_SAFETY_FACTOR))
+        size_min_usd = float(cfg.get("size_min_usd", _DEFAULT_SIZE_MIN_USD))
         fixed_notional = cfg.get("position_notional")   # equal-$ escape hatch; None => derived
+        wave = (pead_sizing.derive_wave_sizes(cash_remaining, capacity,
+                                              safety_factor=safety_factor,
+                                              size_min_usd=size_min_usd)
+                if fixed_notional is None else None)   # len(wave)=floored fundable count
+        placed_idx = 0                                  # index into `wave`; advances only on a real placement
         max_hold_seconds = pp.MAX_HOLD_TRADING_DAYS * 24 * 3600  # informational; live TIME rule uses trading-day count
 
         placed: list[ProposedOrder] = []
@@ -448,18 +458,20 @@ class PEADStrategy:
                                           slot_by.get(cand.symbol))
             if prim is None:
                 continue
-            # ── derived per-name size: settled_cash / remaining_slots × safety ──
-            # (recomputed each iteration against ACTUAL remaining cash + slots)
+            # ── per-name size: derived path pops the next FLOORED wave slot;
+            #    the fixed-$ override path uses position_notional as-is ──
             if fixed_notional is not None:            # explicit equal-$ override (position_notional)
                 try:
                     per_name = max(0.0, float(fixed_notional))
                 except (TypeError, ValueError):
                     per_name = 0.0
             else:
-                per_name = (cash_remaining / capacity) * safety_factor if capacity > 0 else 0.0
-            if per_name < 1.0:                        # below RH's $1 fractional min — clean skip (every later slot too)
-                log.info("pead_strategy: derived size $%.2f < $1 (settled $%.2f / %d slots) — skip %s",
-                         per_name, cash_remaining, capacity, cand.symbol)
+                if placed_idx >= len(wave):           # wave exhausted → floor + cash cap the count
+                    break
+                per_name = wave[placed_idx]           # >= size_min_usd by construction
+            if per_name < 1.0:                        # RH's $1 fractional min — hard skip beneath the $ floor
+                log.info("pead_strategy: size $%.2f < $1 (settled $%.2f, floor $%.0f) — skip %s",
+                         per_name, cash_remaining, size_min_usd, cand.symbol)
                 continue
             elig = getattr(broker, "fractional_eligible", None)   # #6 (cached on broker)
             if elig is not None and not await elig(cand.symbol):
@@ -512,6 +524,7 @@ class PEADStrategy:
                 )
                 placed.append(order)
                 capacity -= 1
+                placed_idx += 1
                 continue
             if not await self._place_or_paper(order):
                 continue
@@ -531,6 +544,7 @@ class PEADStrategy:
             )
             placed.append(order)
             capacity -= 1
+            placed_idx += 1
         log.info("pead_strategy.scan: entered %d position(s)", len(placed))
         return placed
 

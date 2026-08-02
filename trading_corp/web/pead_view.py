@@ -294,9 +294,13 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
     _sc = getattr(snap, "settled_cash", None) if snap is not None else None
     settled_cash = float(_sc) if _sc is not None else None
     safety_factor = pead_sizing.yaml_safety_factor()
+    size_min_usd = pead_sizing.yaml_size_min_usd()
     slots_remaining = max(0, eff_max_concurrent - len(book))
+    # SAME floored sizer the scan consumes -> the readout can't claim more names
+    # than the $ floor + settled cash actually support.
     wave_sizes = (pead_sizing.derive_wave_sizes(settled_cash, slots_remaining,
-                                                safety_factor=safety_factor)
+                                                safety_factor=safety_factor,
+                                                size_min_usd=size_min_usd)
                   if settled_cash is not None else [])
     dial = {
         "max_concurrent": eff_max_concurrent,
@@ -305,6 +309,7 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
         "slots_remaining": slots_remaining,
         "settled_cash": settled_cash,
         "safety_factor": safety_factor,
+        "size_min_usd": size_min_usd,
         "fundable_count": len(wave_sizes),
         "per_name_first": wave_sizes[0] if wave_sizes else None,
         "per_name_last": wave_sizes[-1] if wave_sizes else None,

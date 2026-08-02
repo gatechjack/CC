@@ -38,8 +38,8 @@
       <span class="text-muted/50">settled cash unavailable — readout hidden</span>
     {% elif v.dial.fundable_count == 0 %}
       <span class="text-warn">funds 0 names</span>
-      <span class="text-muted/60">— settled ${{ '%.0f' % v.dial.settled_cash }} too low for
-        {{ v.dial.slots_remaining }} open slot{{ 's' if v.dial.slots_remaining != 1 else '' }} (min $1/name)</span>
+      <span class="text-muted/60">— settled ${{ '%.0f' % v.dial.settled_cash }} below the
+        ${{ '%.0f' % v.dial.size_min_usd }}/name floor</span>
     {% else %}
       <span class="text-gain">funds ~{{ v.dial.fundable_count }} name{{ 's' if v.dial.fundable_count != 1 else '' }}</span>
       <span class="text-muted">at
@@ -52,7 +52,10 @@
         each</span>
       <div class="text-muted/50 mt-0.5">
         settled ${{ '%.0f' % v.dial.settled_cash }} · {{ v.dial.slots_remaining }} slot{{ 's' if v.dial.slots_remaining != 1 else '' }} open ·
-        ×{{ '%.2f' % v.dial.safety_factor }} safety · deploys ${{ '%.0f' % v.dial.total_deploy }}
+        ${{ '%.0f' % v.dial.size_min_usd }} floor · ×{{ '%.2f' % v.dial.safety_factor }} safety · deploys ${{ '%.0f' % v.dial.total_deploy }}
+        {% if v.dial.fundable_count < v.dial.slots_remaining %}
+          <span class="text-warn/80">· floor caps {{ v.dial.slots_remaining }}→{{ v.dial.fundable_count }}</span>
+        {% endif %}
       </div>
     {% endif %}
   </div>

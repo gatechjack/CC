@@ -85,5 +85,55 @@ def test_max_concurrent_never_leaked_into_the_exit_path():
     # max_concurrent is an ENTRY-only dial; the exit engine must never read it.
     assert "max_concurrent" not in inspect.getsource(pead_pressures)
     assert "max_concurrent" not in inspect.getsource(PEADStrategy.manage)
-    # ...and the derived sizer's settled-cash symbols are entry-only too.
-    assert "cash_remaining" not in inspect.getsource(PEADStrategy.manage)
+    # ...and the derived/floored sizer's symbols are entry-only too.
+    for token in ("cash_remaining", "size_min_usd", "derive_wave_sizes", "settled_cash"):
+        assert token not in inspect.getsource(PEADStrategy.manage), token
+
+
+def test_scan_consumes_the_shared_sizer_single_source_of_truth():
+    # The scan must SIZE via pead_sizing.derive_wave_sizes (same fn the dashboard
+    # readout uses) so the two can never diverge.
+    src = inspect.getsource(PEADStrategy.scan)
+    assert "derive_wave_sizes" in src
+    assert "size_min_usd" in src
+
+
+# ── $50 per-name floor (fund fewer, not smaller) ─────────────────────────────
+def test_floor_funds_fewer_at_or_above_the_floor():
+    # $213 settled, 10 slots, $50 floor -> ~4 names each >= $50 (NOT 10 at ~$20)
+    sizes = derive_wave_sizes(213.01, 10, safety_factor=0.95, size_min_usd=50.0)
+    assert len(sizes) == 4
+    assert all(s >= 50.0 for s in sizes)
+    assert sum(sizes) <= 213.01 + 1e-9
+
+
+def test_floor_not_binding_when_cash_is_ample():
+    # $2,713 settled, 20 slots, $50 floor -> all 20 fund (~$129); floor not binding
+    sizes = derive_wave_sizes(2713.01, 20, safety_factor=0.95, size_min_usd=50.0)
+    assert len(sizes) == 20
+    assert all(s >= 50.0 for s in sizes)
+
+
+def test_floor_dial_ceiling_does_not_inflate_the_count():
+    # dial 30 but $213 settled + $50 floor -> ~4, NOT 30 at ~$7
+    sizes = derive_wave_sizes(213.01, 30, safety_factor=0.95, size_min_usd=50.0)
+    assert len(sizes) == 4
+    assert all(s >= 50.0 for s in sizes)
+
+
+def test_floor_funds_zero_cleanly_when_cash_below_one_name():
+    # $30 can't fund even one $50 name -> zero, clean
+    assert derive_wave_sizes(30.0, 10, safety_factor=0.95, size_min_usd=50.0) == []
+
+
+def test_floor_never_opens_sub_floor_even_with_safety_haircut():
+    # $200/floor $50: a naive floor(200/50)=4 would make the first name $47.50 (< $50);
+    # the floor-guaranteeing count is 3, and every name is >= $50.
+    sizes = derive_wave_sizes(200.0, 10, safety_factor=0.95, size_min_usd=50.0)
+    assert len(sizes) == 3
+    assert all(s >= 50.0 for s in sizes)
+
+
+def test_default_call_has_no_floor_backcompat():
+    # No size_min_usd -> pre-floor behaviour preserved (10 names at ~$20).
+    assert len(derive_wave_sizes(213.01, 10)) == 10

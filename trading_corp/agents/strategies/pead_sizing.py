@@ -36,7 +36,8 @@ OVERRIDE_KEY = "max_concurrent_override"
 # Kept in lock-step with pead_strategy's module defaults.
 _DEFAULT_MAX_CONCURRENT = 7
 _DEFAULT_SAFETY_FACTOR = 0.95
-_MIN_NOTIONAL = 1.0          # RH fractional-order floor ($1)
+_DEFAULT_SIZE_MIN_USD = 50.0  # per-name $ floor: fund FEWER names, never a sub-floor one
+_MIN_NOTIONAL = 1.0          # RH fractional-order floor ($1) — hard skip beneath the $ floor
 _DEFAULT_STRATEGIES_YAML = "config/strategies.yaml"
 
 
@@ -46,16 +47,34 @@ def derive_wave_sizes(
     *,
     safety_factor: float = _DEFAULT_SAFETY_FACTOR,
     min_notional: float = _MIN_NOTIONAL,
+    size_min_usd: float = 0.0,
 ) -> list[float]:
     """Return the list of per-name notional $ the sizer would place for a wave of
-    ``slots_remaining`` empty slots against ``settled_cash``, recomputing per
-    entry. ``len(result)`` is the fundable count; each element is that name's $
-    (sizes rise slightly across the wave as the reserved sliver is redistributed).
-    Empty list => nothing fundable at this cash/slot combination."""
-    sizes: list[float] = []
+    ``slots_remaining`` empty slots against ``settled_cash``. ``len(result)`` is
+    the fundable count; each element is that name's $ (sizes rise slightly across
+    the wave as the reserved sliver is redistributed). Empty list => nothing
+    fundable.
+
+    THE SINGLE SOURCE OF TRUTH — both the live scan and the dashboard readout call
+    this, so the on-screen "funds ~N at ~$X" can never disagree with what is placed.
+
+    ``size_min_usd`` (the per-name $ FLOOR): fund FEWER names at >= the floor rather
+    than many tiny ones. We shrink the slot count until the derived wave's SMALLEST
+    (first) name meets the floor, so NO sub-floor name is ever opened. This is the
+    floor-guaranteeing count; because the 0.95 safety-factor haircut can pull the
+    first name below the floor, it is <= floor(settled_cash / size_min_usd) at some
+    cash values (always erring toward never-sub-floor). No-op when size_min_usd<=0,
+    which preserves the pre-floor behaviour. The ``min_notional`` ($1) hard skip
+    stays BENEATH the floor."""
     cash = max(0.0, float(settled_cash or 0.0))
     slots = int(slots_remaining or 0)
     sf = float(safety_factor)
+    floor_usd = float(size_min_usd or 0.0)
+    # POLICY floor: shrink slots until the smallest (first) derived name >= floor.
+    if floor_usd > 0.0:
+        while slots > 0 and (cash / slots) * sf < floor_usd:
+            slots -= 1
+    sizes: list[float] = []
     while slots > 0:
         per_name = (cash / slots) * sf
         if per_name < float(min_notional):
@@ -106,6 +125,14 @@ def yaml_safety_factor(strategies_yaml: str = _DEFAULT_STRATEGIES_YAML) -> float
             "size_safety_factor", _DEFAULT_SAFETY_FACTOR))
     except (TypeError, ValueError):
         return _DEFAULT_SAFETY_FACTOR
+
+
+def yaml_size_min_usd(strategies_yaml: str = _DEFAULT_STRATEGIES_YAML) -> float:
+    try:
+        return float(_pead_cfg(strategies_yaml).get(
+            "size_min_usd", _DEFAULT_SIZE_MIN_USD))
+    except (TypeError, ValueError):
+        return _DEFAULT_SIZE_MIN_USD
 
 
 def effective_max_concurrent(
