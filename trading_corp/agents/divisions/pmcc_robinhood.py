@@ -586,6 +586,11 @@ class PMCCAgent:
         # "the fix works" from "chains are thin and we now do nothing").
         self._last_weekly_diag: dict | None = None
         self._last_leap_diag: dict | None = None
+        # FIX 3 (2026-08-04): last roll/open ABORT (reason + chain_state), stashed by
+        # `_audit_roll_abort` on EVERY abort (preview included) so a card render can
+        # surface the SPECIFIC reason via `last_roll_abort_reason` instead of the
+        # conflated "market closed, illiquid, or a sparse chain" fallback.
+        self._last_roll_abort: dict | None = None
         # Brokerage-first earnings (2026-07-28): last resolution stashed by
         # `_earnings_gate_state` so the roll ship path can emit an "earnings
         # unverified" alert when a roll proceeds with no confident earnings date.
@@ -760,9 +765,11 @@ class PMCCAgent:
     def _min_open_interest(self) -> int:
         return int(self._liquidity_cfg.get("min_open_interest", 100))
 
-    @property
-    def _min_avg_volume(self) -> int:
-        return int(self._liquidity_cfg.get("min_avg_volume", 50))
+    # NOTE: the `min_avg_volume` config key is RETIRED (2026-08-04). The standalone
+    # per-contract volume floor it fed was removed from `_passes_liquidity` — it was
+    # subsumed by the Liveness gate and only ever wrongly rejected OI-established
+    # strikes with thin intraday prints (see `_passes_liquidity` docstring). No
+    # accessor remains so a live-looking knob can't silently gate selection.
 
     @property
     def _oi_bypass_min_volume(self) -> int:
@@ -777,20 +784,32 @@ class PMCCAgent:
     def _passes_liquidity(self, opt: dict, *, symbol: str | None = None) -> tuple[bool, str]:
         """Return (passes, reason). Uses the strategies.yaml liquidity gates.
 
-        Liveness = established OR actively-traded: pass when open interest >=
-        `min_open_interest` OR today's volume >= `oi_bypass_min_volume` (1(b)).
-        OI is a stock that accumulates over a contract's life while volume is the
-        live signal, so a FRESH near-dated expiry with real volume + tight
-        spreads — which an OI-only floor wrongly rejected — still qualifies. A
-        modest per-contract volume floor (`min_avg_volume`) and the bid-ask
-        spread cap then apply to every contract.
+        The bar is exactly two gates:
+          1. Liveness — established OR actively-traded: pass when open interest
+             >= `min_open_interest` (100) OR today's volume >= `oi_bypass_min_volume`
+             (500). OI is a stock that accumulates over a contract's life while
+             volume is the live signal, so a FRESH near-dated expiry with real
+             volume qualifies even before it builds OI, AND an ESTABLISHED strike
+             (high OI) qualifies even with zero intraday prints.
+          2. Spread — bid-ask <= `max_bid_ask_spread_pct` (10%) of mid, the
+             backstop against stale / untradeable strikes; "no ask" also fails.
 
         `symbol` is retained for API stability (callers pass it) but no longer
-        selects the gate. 1(a) 2026-07-23: a per-contract volume floor of 10000
-        (from the since-retired black_sheep `eligibility_criteria`) was mis-applied
-        here — no OTM weekly trades 10k/day, so it silently blocked every normal
-        roll on the affected names for ~2.7 months. Removed; all contracts use the
-        same per-contract volume floor.
+        selects the gate.
+
+        History:
+          1(a) 2026-07-23: a per-contract volume floor of 10000 (from the
+            since-retired black_sheep `eligibility_criteria`) was mis-applied here
+            — no OTM weekly trades 10k/day — silently blocking every normal roll on
+            the affected names for ~2.7 months. Reduced to `min_avg_volume`=50.
+          2026-08-04: the standalone `vol < min_avg_volume` (50) floor is REMOVED.
+            It was subsumed-and-harmful: any strike that clears Liveness already has
+            OI>=100 (established — needs no intraday volume) OR vol>=500 (>50 anyway),
+            so a surviving `vol < 50` could ONLY reject an OI-established, perfectly
+            -liquid strike that simply hadn't traded 50 lots yet today. That fired
+            off-hours (vol=0) and in the opening rotation on EVERY held name at once
+            (uniform "can't be priced"); OI is the correct liveness signal there,
+            exactly as gate 1 already asserts.
         """
         bid = float(opt.get("bid") or 0)
         ask = float(opt.get("ask") or 0)
@@ -804,9 +823,11 @@ class PMCCAgent:
                 f"vol={vol} < {self._oi_bypass_min_volume}"
             )
 
-        # Basic per-contract volume floor (traded at all today).
-        if vol < self._min_avg_volume:
-            return False, f"vol={vol} < {self._min_avg_volume}"
+        # (2026-08-04) The standalone `vol < min_avg_volume` (50) floor was REMOVED
+        # here — it is subsumed by Liveness above and only ever wrongly rejected
+        # OI-established strikes with thin intraday prints, firing uniformly on every
+        # held name off-hours / at the open (see docstring). Spread is the remaining
+        # per-contract backstop.
 
         # Bid-ask spread (skip if no bid — can't compute meaningfully)
         if bid > 0 and ask > 0:
@@ -964,6 +985,54 @@ class PMCCAgent:
         if "vol=" in r:                      # volume-only floor
             return "volume"
         return "other"
+
+    def last_roll_abort_reason(self, symbol: str | None = None) -> str | None:
+        """FIX 3 (2026-08-04): a plain-English reason for the MOST RECENT roll/open
+        abort on `symbol`, built from the `_last_roll_abort` stash that
+        `_audit_roll_abort` sets on EVERY abort (preview included). Lets a card render
+        say WHY a roll was unbuildable — "N candidate strikes, all failed the liquidity
+        gate" vs "chain empty / no roll-out expiry" vs earnings/credit — instead of the
+        conflated "market closed, illiquid, or a sparse chain" fallback.
+
+        Returns None when there's no abort matching `symbol` (→ the caller keeps its
+        own generic text). Symbol-scoped so a stale abort from another name can't leak
+        into this card."""
+        ab = getattr(self, "_last_roll_abort", None)
+        if not ab:
+            return None
+        if symbol is not None and str(ab.get("symbol") or "").upper() != symbol.upper():
+            return None
+        reason = ab.get("reason") or ""
+        chain = ab.get("chain_state") or {}
+        diag_reason = chain.get("reason") or ""
+        considered = chain.get("considered")
+        failed = chain.get("failed_by_gate") or {}
+        # Selection aborts (sparse chain) — surface the chain state that bound.
+        if diag_reason == "no_liquid_weekly_contracts":
+            n = considered if considered is not None else "the"
+            tail = f" (failed by {dict(failed)})" if failed else ""
+            return f"{n} candidate strike(s) fetched, all failed the liquidity gate{tail}"
+        if diag_reason in ("no_liquid_leap_contracts",):
+            return f"{considered} LEAP candidate(s), all failed the liquidity gate"
+        if diag_reason == "no_qualifying_weekly_strike":
+            return f"{considered} liquid strike(s), none matched the target δ / strike"
+        if diag_reason == "no_future_expiry_dates":
+            return "chain empty — no future expiry dates"
+        if diag_reason == "no_rollout_weekly":
+            return "no weekly expiry rolls out past the current short"
+        if diag_reason == "no_weekly_within_ceiling":
+            return "no weekly expiry within the target DTE window"
+        # Proceed-gate aborts (not a sparse chain).
+        if reason == "earnings_window":
+            return "earnings within the buffer — roll suppressed (let the short expire)"
+        if reason == "net_debit_roll":
+            return "roll would be a net debit — blocked (rolls must be for credit)"
+        if reason in ("sparse_chain_no_leap", "sparse_chain_no_weekly_for_new_leap"):
+            return "no qualifying LEAP/weekly for the roll — sparse chain"
+        # Fallback: the raw abort reason is still more specific than the conflated string.
+        if reason:
+            return f"roll unbuildable: {reason}"
+        return None
 
     def _filter_liquid(self, opts: list[dict], symbol: str) -> list[dict]:
         """Drop illiquid contracts. Logs each rejection at debug level and
@@ -1245,6 +1314,10 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
         (see `_audit_roll_abort(preview=...)`) and the earnings-unverified alert is
         withheld. Exec-alerts fire ONLY on a genuine dispatch attempt.
         """
+        # FIX 3 (2026-08-04): clear the last-abort stash so a stale reason from a prior
+        # build can't leak into this card. Re-set by _audit_roll_abort iff a gate fires.
+        self._last_roll_abort = None
+
         # Detect position FIRST so the 0-DTE wall-clock gate can override
         # action="hold"/"watch" before the early-return below (Board
         # direction 2026-05-01 — see _terminal_dte_time_release).
@@ -4969,8 +5042,16 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
         }
         if extra:
             payload.update(extra)
+        # FIX 3 (2026-08-04): ALWAYS stash the last abort — even in preview — so a card
+        # render can surface the SPECIFIC reason (`last_roll_abort_reason`). The
+        # investigation couldn't retrieve WHY a preview said "can't be priced" because
+        # preview wrote nothing; this in-process signal closes that gap. The full audit
+        # ROW stays preview-gated below; only the reason is retained.
+        self._last_roll_abort = dict(payload)
         log.log(
-            logging.DEBUG if preview else logging.WARNING,
+            # FIX 3: preview aborts now log at INFO (was DEBUG) — a forensic trail that
+            # still can't be mistaken for a real dispatch (the "PREVIEW " prefix marks it).
+            logging.INFO if preview else logging.WARNING,
             "PMCCAgent: %sABORTED roll/open on %s -- %s%s; chain=%s",
             "PREVIEW " if preview else "",
             symbol, reason,

@@ -24,13 +24,21 @@ def _future(days: int) -> str:
     return (date.today() + timedelta(days=days)).isoformat()
 
 
-def _call(strike: float, delta: float, mark: float, dte: int = 14) -> dict:
+def _call(strike: float, delta: float, mark: float, dte: int = 14,
+          oi: int = 1000, vol: int = 1000) -> dict:
+    # A realistic, liquid two-sided contract: real OI/volume + a tight (~2%) spread
+    # so it clears `_passes_liquidity` (liveness = OI>=100 OR vol>=500; spread <= 10%
+    # of mid). The prior helper set NO open_interest/volume (→ liveness always failed)
+    # and used mark +/- 0.10 (→ >10% spread on sub-$2 weeklies), so every scan-path
+    # test silently found "no liquid contracts" and proposed nothing.
     return {
         "strike_price": strike,
         "delta": delta,
         "mark_price": mark,
-        "bid": round(mark - 0.10, 2),
-        "ask": round(mark + 0.10, 2),
+        "bid": round(mark * 0.99, 2),
+        "ask": round(mark * 1.01, 2),
+        "open_interest": oi,
+        "volume": vol,
         "dte": dte,
         "option_id": f"opt_{strike}_{dte}",
     }
@@ -333,12 +341,18 @@ def _broker_with_chains(
     """Build a mock broker that returns a LEAP chain and a weekly chain for each stock symbol."""
     leap_expiry = _future(400)
     weekly_expiry = _future(14)
+    # A roll-OUT weekly (35 DTE) so the roll tests (short at 21/30 DTE) have a strictly
+    # later expiry to roll into (B7). It sits in the fallback band (<=60) and OUTSIDE the
+    # 7-21 open window, so open tests still select the 14-DTE weekly unchanged. Its 1.60
+    # mark credits against the 1.20/0.72 shorts (B2 credit gate).
+    rollout_expiry = _future(35)
     stock_positions = [_stock_pos(s) for s in stock_syms]
-    expiry_dates = {s: [_future(14), _future(400)] for s in stock_syms}
+    expiry_dates = {s: [_future(14), _future(35), _future(400)] for s in stock_syms}
     calls = {}
     for s in stock_syms:
         calls[(s, leap_expiry)] = [_call(130.0, 0.85, 25.0, dte=400)]
         calls[(s, weekly_expiry)] = [_call(175.0, 0.28, 1.50, dte=14)]
+        calls[(s, rollout_expiry)] = [_call(180.0, 0.30, 1.60, dte=35)]
     return MockOptionBroker(
         option_positions=opt_positions,
         stock_positions=stock_positions,
@@ -562,14 +576,16 @@ async def test_scan_rolls_existing_pmcc_in_options_only_account(agent: PMCCAgent
     ]
     leap_expiry = _future(400)
     weekly_expiry = _future(14)
+    rollout_expiry = _future(35)   # strictly later than the 21-DTE short (B7 roll-out)
     broker = MockOptionBroker(
         option_positions=opt_positions,
         stock_positions=[],   # options-only account
         equity=100_000.0,
-        expiry_dates={"AAPL": [_future(14), _future(400)]},
+        expiry_dates={"AAPL": [_future(14), _future(35), _future(400)]},
         calls={
             ("AAPL", leap_expiry): [_call(130.0, 0.85, 25.0, dte=400)],
             ("AAPL", weekly_expiry): [_call(175.0, 0.28, 1.50, dte=14)],
+            ("AAPL", rollout_expiry): [_call(180.0, 0.30, 1.60, dte=35)],
         },
     )
     orders = await agent.scan(broker)

@@ -975,25 +975,46 @@ def register(app: FastAPI) -> None:
         rec = None
         roll_extras = None
         preview_token = None
-        try:
-            orders = await deps.pmcc_agent.propose_orders_for_pair(
-                broker, sym, analysis, preview=True)
-            if orders:
-                rec = await deps.pmcc_agent.build_trade_recommendation(
-                    broker, sym, analysis, prebuilt_orders=orders)
-                import types as _types
-                from trading_corp.web.pmcc_roll_card import build_pmcc_roll_card_extras
-                from trading_corp.web import pmcc_preview
-                roll_extras = await build_pmcc_roll_card_extras(
-                    _types.SimpleNamespace(orders=orders, underlying=sym),
-                    broker, deps.pmcc_agent,
-                )
-                # Carry the exact previewed combo forward to the Approve dispatch.
-                preview_token = pmcc_preview.stash_preview(
-                    slug, sym, orders, action=analysis.action,
-                )
-        except Exception as e:
-            log.warning("pmcc consent build(%s) raised: %s", sym, e)
+        # FIX 2 (2026-08-04): the manual Re-analyze builds a priced roll directly via
+        # propose_orders_for_pair, bypassing the auto-refresh market-hours gate. Never
+        # build off stale off-hours quotes — guard the build with the SAME
+        # market_regular_open() the auto path uses. When closed, show the specific
+        # "market closed" state (no build → no stale estimate, no priced Approve); the
+        # judgment above already refreshed, only pricing defers to the open.
+        from trading_corp.web import pmcc_pricing
+        if not pmcc_pricing.market_regular_open():
+            roll_extras = pmcc_pricing.market_closed_extras()
+        else:
+            try:
+                orders = await deps.pmcc_agent.propose_orders_for_pair(
+                    broker, sym, analysis, preview=True)
+                if orders:
+                    rec = await deps.pmcc_agent.build_trade_recommendation(
+                        broker, sym, analysis, prebuilt_orders=orders)
+                    import types as _types
+                    from trading_corp.web.pmcc_roll_card import build_pmcc_roll_card_extras
+                    from trading_corp.web import pmcc_preview
+                    roll_extras = await build_pmcc_roll_card_extras(
+                        _types.SimpleNamespace(orders=orders, underlying=sym),
+                        broker, deps.pmcc_agent,
+                    )
+                    # Carry the exact previewed combo forward to the Approve dispatch.
+                    preview_token = pmcc_preview.stash_preview(
+                        slug, sym, orders, action=analysis.action,
+                    )
+            except Exception as e:
+                log.warning("pmcc consent build(%s) raised: %s", sym, e)
+            if roll_extras is None:
+                # FIX 3 (2026-08-04): empty build (a gate aborted) → surface the
+                # SPECIFIC reason instead of the conflated "market closed, illiquid,
+                # or a sparse chain" fallback. No estimate → no priced Approve.
+                try:
+                    _why = deps.pmcc_agent.last_roll_abort_reason(sym)
+                except Exception:      # noqa: BLE001 — reason is best-effort
+                    _why = None
+                if _why:
+                    roll_extras = {"earnings": None, "estimate": None,
+                                   "estimate_reason": _why}
 
         html = _render_pair_analysis(
             analysis, recommendation=rec, slug=slug, symbol=sym,
@@ -1026,12 +1047,21 @@ def register(app: FastAPI) -> None:
         if not rec:
             # No stored judgment to price against — send them to Re-analyze.
             return HTMLResponse(await _render_pmcc_record_panel(deps, slug, sym))
-        pr = await pmcc_pricing.price_and_stash(deps.pmcc_agent, broker, slug, sym, deps.db_url)
         analysis = _pmcc_analysis_from_record(rec)
-        roll_extras = None
-        if pr.estimate is not None or pr.estimate_reason is not None or pr.earnings is not None:
-            roll_extras = {"earnings": pr.earnings, "estimate": pr.estimate,
-                           "estimate_reason": pr.estimate_reason}
+        # FIX 2 (2026-08-04): refresh-pricing calls price_and_stash directly, bypassing
+        # the auto-refresh market-hours gate. When the options market is CLOSED, do NOT
+        # pull/price — that would build a priced Approve off stale overnight quotes.
+        # Short-circuit to the "market closed" state (no estimate, no stash).
+        if not pmcc_pricing.market_regular_open():
+            roll_extras = pmcc_pricing.market_closed_extras()
+            preview_token = None
+        else:
+            pr = await pmcc_pricing.price_and_stash(deps.pmcc_agent, broker, slug, sym, deps.db_url)
+            preview_token = pr.stash_token
+            roll_extras = None
+            if pr.estimate is not None or pr.estimate_reason is not None or pr.earnings is not None:
+                roll_extras = {"earnings": pr.earnings, "estimate": pr.estimate,
+                               "estimate_reason": pr.estimate_reason}
         cfg = (getattr(deps.pmcc_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
         stale_h = float(cfg.get("staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
         _now = _dt.now(_tz.utc)
@@ -1041,7 +1071,7 @@ def register(app: FastAPI) -> None:
             status_banner=_pmcc_status_banner(
                 slug, sym, state=_state,
                 age_h=_pmcc_status.age_hours(rec, _now), source=rec.get("source")),
-            roll_extras=roll_extras, preview_token=pr.stash_token,
+            roll_extras=roll_extras, preview_token=preview_token,
         )
         return HTMLResponse(html + _pmcc_tile_badge_oob(templates, deps, sym))
 

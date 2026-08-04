@@ -54,6 +54,24 @@ def market_regular_open(now: Any = None) -> bool:
         return False
 
 
+# FIX 2 (2026-08-04): the MANUAL build paths (refresh-pricing + Re-analyze) call
+# price_and_stash / propose_orders_for_pair directly, bypassing the auto-refresh
+# market-hours gate above. When the options market is CLOSED they must not build a
+# priced roll off stale overnight quotes — a priced Approve on stale prices is a
+# trap. They short-circuit to `market_closed_extras()` instead: a specific reason,
+# NO estimate (so no Approve renders), NO order build attempted.
+MARKET_CLOSED_REASON = (
+    "market closed — the roll will price at the 9:30 ET open"
+)
+
+
+def market_closed_extras() -> dict:
+    """roll_extras for a manual build path when the options market is closed. No
+    estimate (nothing was built → no stale-quote pricing), just the specific reason
+    so the panel says WHY and offers no priced Approve."""
+    return {"earnings": None, "estimate": None, "estimate_reason": MARKET_CLOSED_REASON}
+
+
 def _analysis_from_record(rec: dict, symbol: str):
     """Reconstruct a `PMCCAnalysis` from a stored judgment (NO LLM). The δ band →
     point (midpoint) + band bounds; a missing band → None → config-default
@@ -126,6 +144,15 @@ async def price_and_stash(
                 )
             except Exception as e:      # noqa: BLE001
                 log.warning("price_and_stash: stash(%s) failed: %s", symbol, e)
+    else:
+        # FIX 3 (2026-08-04): empty orders → a gate aborted the build. Surface the
+        # SPECIFIC reason the agent just stashed instead of leaving estimate_reason
+        # None (which renders the conflated "market closed, illiquid, or a sparse
+        # chain" fallback). No build ran; the roll re-prices at approval.
+        try:
+            pr.estimate_reason = pmcc_agent.last_roll_abort_reason(symbol)
+        except Exception as e:      # noqa: BLE001 — reason is best-effort
+            log.warning("price_and_stash: abort-reason(%s) failed: %s", symbol, e)
     _CACHE[_key(slug, symbol)] = pr
     return pr
 
