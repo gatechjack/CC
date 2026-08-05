@@ -8,6 +8,39 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## 🗓️ 2026-08-04→05 ops session 2 — 2026-08-02 rulings executed
+
+Branch `claude-2026-08-04` off `64c4831` (08-02 tip); read-only / research / proposals —
+**NOTHING deployed, no prod SSH.** Deliverables: `reports/2026-08-04_bitunix_ops_session2/`.
+
+**Rulings on the 5 proposals + B3/B4 (operator, 2026-08-05):**
+- ✅ **DD-cap "to 0.99" — CLOSED (no-op).** Already `0.99` on both bitunix divisions
+  (`config/risk.yaml`); stays 0.99 while accounts are micro. Proposal closed.
+- ⏸️ **B2 maker flip — HELD** to the SFP n≥30 OOS review ("change nothing structural" stands;
+  flipping now would contaminate the live OOS sample). A futures-only measured maker window
+  (TASK 4, does NOT touch the SFP sample) is proposed as the safe way to gather maker mechanics.
+- 🔬 **Pre-TP1 (pre-target) trail — design + backtest AUTHORIZED behind an OFF flag; no deploy.**
+  SFP scope (single-leg construct; "TP1" reads as the 3R target — operator conflated futures
+  BE-at-TP1 language, code-verified). → TASK 2 this session.
+- ✅ **VIX-gate (PMCC) — CLOSED for now** (deferred while PMCC is paper; already approval-required
+  at VIX>30).
+- 🔬 **RANGE-only veto (up_but_bearish shorts) — LIVE change deferred to the n≥30 review;
+  backtest-only exploration authorized.** → TASK 3 this session.
+- ⏳ **B3 corpus refresh + B4 ETH-freshness numbers — OPEN, pending operator inputs** (B3: fresh
+  TV exports; B4: run the read-only funnel query on prod). Not blocking; left open.
+
+**Deliverables (all proposal/evidence only — operator rules row by row):**
+- 🔎 **TASK 1 — B1 second-pass dirty-worktree audit** (22 rows, COMMIT/DISCARD/KEEP per row):
+  `reports/2026-08-04_bitunix_ops_session2/worktree_audit.md`.
+- 🔬 **TASK 2 — pre-target trail design + backtest** (OFF flag). Null hypothesis = the 2026-06-26
+  tight-stop finding (early stop-ratchet destroys the BOS wide-stop edge); the test asks whether
+  ANY trail config escapes it.
+- 🔬 **TASK 3 — RANGE-only veto definition + backtest** (1-2 computable defs from the existing
+  regime classifier + veto-lift evidence).
+- 📋 **TASK 4 — futures-only maker window proposal** (measured, micro-sized; feeds the n≥30 review).
+
+---
+
 ## 🗓️ 2026-08-02 ops session — accrual automation + bitunix backlog burn-down
 
 Branch `claude-2026-08-02` (worktree `cc-2026-08-02-wt`); pushed. Report +
@@ -26,8 +59,9 @@ proposals: `reports/2026-08-02_bitunix_ops_backlog/`.
   loosening likely net-negative (ETH SFP is monitor-only). No change.
 - 🔧 **Futures 4-point verify** built (`scripts/bitunix_futures_next_entry_verify.py`) — run
   read-only when the next entry fires.
-- 📋 **5 deploy-gated proposals AWAITING RULING** (PROPOSALS.md): DD-cap "to 0.99" (already
-  0.99 — clarify), B2 maker flip, pre-TP1 trail, VIX-gate (PMCC), RANGE veto up_but_bearish.
+- 📋 **5 deploy-gated proposals — RULED 2026-08-05** (see the session-2 section above): DD-cap
+  CLOSED (no-op), B2 maker flip HELD (n≥30 review), pre-TP1 trail → design+backtest (TASK 2),
+  VIX-gate CLOSED, RANGE veto → backtest-only (TASK 3). B3/B4 remain open (operator inputs).
 
 ---
 
