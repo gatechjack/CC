@@ -1,0 +1,243 @@
+﻿
+===== OS_SERVICE_HEALTH =====
+hostname: tc-prod-vm
+utc_now : 2026-08-05T21:35:05Z
+svc trading-corp is-active: active
+pgrep -af trading_corp:
+208184 /home/azureuser/trading_corp/venv/bin/python /home/azureuser/market_context/market_context_recorder.py
+251131 /home/azureuser/trading_corp/venv/bin/python /home/azureuser/card_assets/card_watcher.py
+573018 /bin/sh /usr/bin/xvfb-run --auto-servernum --server-args=-screen 0 1280x800x24 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc
+573032 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc
+573035 /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/playwright/driver/node /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/playwright/driver/package/cli.js run-driver
+ps python3 (pid/etimes/rss/cmd):
+PID ELAPSED   RSS CMD
+   3787 3175524 20248 /usr/bin/python3 -u /usr/sbin/waagent -daemon
+   4470 3175522 59640 /usr/bin/python3 -u bin/WALinuxAgent-2.15.2.1-py3.12.egg -run-exthandlers
+ 583872       0 12340 python3 -
+pidfile /home/azureuser/trading_corp/data/trading_corp.pid = 573032
+journalctl errors last 6h (may be perm-restricted):
+  error-ish lines: 39
+    arket_resolver tick: {'scanned': 56, 'resolved': 2, 'pending': 47, 'void': 4, 'not_found': 3, 'errors': 0, 'paired': 1, 'pair_scanned': 1184, 'pair_skipped_no_entry': 1183, 'pair_skipped_bad_data': 0}
+    Aug 05 18:46:23 tc-prod-vm xvfb-run[573032]: 2026-08-05 18:46:23,017 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 18:46:23 tc-prod-vm xvfb-run[573032]: 2026-08-05 18:46:23,045 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 18:46:23 tc-prod-vm xvfb-run[573032]: 2026-08-05 18:46:23,076 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 18:46:23 tc-prod-vm xvfb-run[573032]: 2026-08-05 18:46:23,109 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    kalshi_resolver tick: {'scanned': 109, 'resolved': 0, 'pending': 98, 'void': 0, 'not_found': 4, 'errors': 0, 'paired': 0, 'pair_scanned': 607, 'pair_skipped_no_entry': 607, 'pair_skipped_bad_data': 0}
+    arket_resolver tick: {'scanned': 55, 'resolved': 0, 'pending': 48, 'void': 4, 'not_found': 3, 'errors': 0, 'paired': 0, 'pair_scanned': 1184, 'pair_skipped_no_entry': 1184, 'pair_skipped_bad_data': 0}
+    Aug 05 19:46:46 tc-prod-vm xvfb-run[573032]: 2026-08-05 19:46:46,805 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 19:46:46 tc-prod-vm xvfb-run[573032]: 2026-08-05 19:46:46,834 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 19:46:46 tc-prod-vm xvfb-run[573032]: 2026-08-05 19:46:46,863 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 19:46:46 tc-prod-vm xvfb-run[573032]: 2026-08-05 19:46:46,892 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    kalshi_resolver tick: {'scanned': 109, 'resolved': 0, 'pending': 98, 'void': 0, 'not_found': 4, 'errors': 0, 'paired': 0, 'pair_scanned': 607, 'pair_skipped_no_entry': 607, 'pair_skipped_bad_data': 0}
+    arket_resolver tick: {'scanned': 59, 'resolved': 0, 'pending': 52, 'void': 4, 'not_found': 3, 'errors': 0, 'paired': 0, 'pair_scanned': 1184, 'pair_skipped_no_entry': 1184, 'pair_skipped_bad_data': 0}
+    Aug 05 20:24:27 tc-prod-vm xvfb-run[573032]: 2026-08-05 20:24:27,593 ERROR yfinance: $SUI-USD: possibly delisted; no price data found  (period=1d)
+    Aug 05 20:47:10 tc-prod-vm xvfb-run[573032]: 2026-08-05 20:47:10,743 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 20:47:10 tc-prod-vm xvfb-run[573032]: 2026-08-05 20:47:10,775 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 20:47:10 tc-prod-vm xvfb-run[573032]: 2026-08-05 20:47:10,806 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    Aug 05 20:47:10 tc-prod-vm xvfb-run[573032]: 2026-08-05 20:47:10,835 ERROR pykalshi._base: Response 404: Error body: {"error":{"code":"not_found","message":"not found"}}
+    kalshi_resolver tick: {'scanned': 109, 'resolved': 0, 'pending': 98, 'void': 0, 'not_found': 4, 'errors': 0, 'paired': 0, 'pair_scanned': 607, 'pair_skipped_no_entry': 607, 'pair_skipped_bad_data': 0}
+    arket_resolver tick: {'scanned': 59, 'resolved': 0, 'pending': 52, 'void': 4, 'not_found': 3, 'errors': 0, 'paired': 0, 'pair_scanned': 1184, 'pair_skipped_no_entry': 1184, 'pair_skipped_bad_data': 0}
+log files found: ['/home/azureuser/trading_corp/logs/audit_replay.log', '/home/azureuser/trading_corp/logs/divergence_monitor.log']
+
+===== DB_META =====
+DB_PATH: /home/azureuser/trading_corp/data/trading_corp.db  size_MB: 1808.05
+table kalshi_round_trips     rows=9071
+table audit_event            rows=1935747
+table kalshi_equity_history  rows=95126
+table agent_state            rows=194
+
+===== KRT_DIVISION_STRATEGY_MATRIX (all divisions) =====
+div=kalshi_arbitrage         strat=kalshi_temporal_bucket_arb   n=413  W=323 L=90 (void=0)  WR=78.2%  gross=$3736.32  fees=$16.98  net=$3719.34  entry_span[2026-05-16T13:29:51+00:00 .. 2026-07-11T06:05:41+00:00]
+div=kalshi_copy_trading      strat=kalshi_copy_trader           n=3691  W=1971 L=1720 (void=0)  WR=53.4%  gross=$-47.60  fees=$50.42  net=$-98.02  entry_span[2026-05-11T19:02:58+00:00 .. 2026-08-05T04:12:54+00:00]
+div=kalshi_crypto            strat=kalshi_crypto_arb            n=790  W=523 L=267 (void=0)  WR=66.2%  gross=$-69.58  fees=$21.43  net=$-91.01  entry_span[2026-05-15T16:30:20+00:00 .. 2026-05-30T00:59:14+00:00]
+div=kalshi_llm_arbitrage     strat=kalshi_llm_arbitrage         n=2955  W=1244 L=1711 (void=0)  WR=42.1%  gross=$-333.97  fees=$128.84  net=$-462.81  entry_span[2026-05-11T01:03:00+00:00 .. 2026-07-31T18:15:38+00:00]
+div=kalshi_weather           strat=kalshi_weather_arb           n=1222  W=802 L=420 (void=0)  WR=65.6%  gross=$-968.79  fees=$203.35  net=$-1172.14  entry_span[2026-05-15T14:33:06+00:00 .. 2026-05-30T01:03:44+00:00]
+
+===== RESOLVER_HEALTH =====
+kalshi_arbitrage: resolved n=413  earliest_resolved=2026-07-07T15:46:42+00:00  latest_resolved=2026-08-01T19:32:39+00:00
+   resolved-by-day (last 14 present days): 2026-07-07:242, 2026-07-14:12, 2026-07-15:4, 2026-07-18:2, 2026-08-01:153
+kalshi_llm_arbitrage: resolved n=2955  earliest_resolved=2026-05-11T15:25:01+00:00  latest_resolved=2026-08-04T14:40:34+00:00
+   resolved-by-day (last 14 present days): 2026-05-26:5, 2026-06-09:39, 2026-06-12:124, 2026-06-13:117, 2026-06-24:64, 2026-06-25:256, 2026-06-26:93, 2026-07-07:1006, 2026-07-08:557, 2026-07-11:22, 2026-07-20:130, 2026-07-21:138, 2026-08-01:152, 2026-08-04:5
+
+===== PENDING_UNRESOLVED_AUDIT_BY_ACTOR =====
+actor=polymarket_copy_trader       pending=8803   oldest=2026-05-11T20:23:15+00:00 newest=2026-08-05T21:08:03+00:00
+actor=kalshi_llm_arbitrage         pending=1385   oldest=2026-05-13T01:26:20+00:00 newest=2026-08-05T07:21:39+00:00
+actor=polymarket_arbitrage         pending=484    oldest=2026-05-10T02:07:46+00:00 newest=2026-08-05T21:02:44+00:00
+actor=kalshi_temporal_bucket_arb   pending=80     oldest=2026-05-16T22:51:05+00:00 newest=2026-07-28T08:22:40+00:00
+actor=bitunix_futures              pending=10     oldest=2026-05-12T00:36:02+00:00 newest=2026-05-28T04:00:02+00:00
+actor=kalshi_copy_trader           pending=9      oldest=2026-07-01T15:10:01+00:00 newest=2026-08-05T02:31:55+00:00
+actor=lord_otter                   pending=8      oldest=2026-04-30T17:41:50+00:00 newest=2026-05-24T20:56:44+00:00
+actor=bitunix_sfp                  pending=1      oldest=2026-06-28T23:30:20+00:00 newest=2026-06-28T23:30:20+00:00
+actor=market_cypher                pending=1      oldest=2026-04-30T22:52:36+00:00 newest=2026-04-30T22:52:36+00:00
+
+===== AUDIT_ENTRY_RATE_BY_ACTOR (would_have_placed / copy_placed_live) =====
+actor=kalshi_copy_trader           emissions=7364    span[2026-05-11T19:02:58+00:00 .. 2026-08-05T04:12:54+00:00]
+actor=kalshi_llm_arbitrage         emissions=4340    span[2026-05-11T01:03:00+00:00 .. 2026-08-05T07:21:39+00:00]
+actor=kalshi_weather_arb           emissions=1222    span[2026-05-15T14:33:06+00:00 .. 2026-05-30T01:03:44+00:00]
+actor=kalshi_crypto_arb            emissions=790     span[2026-05-15T16:30:20+00:00 .. 2026-05-30T00:59:14+00:00]
+actor=kalshi_temporal_bucket_arb   emissions=493     span[2026-05-16T13:29:51+00:00 .. 2026-07-28T08:22:40+00:00]
+
+===== ARB_ENTRY_RATE_BY_DAY (last 30 present days, arb actors) =====
+  2026-07-28  kalshi_temporal_bucket_arb   2
+  2026-07-12  kalshi_temporal_bucket_arb   2
+  2026-07-11  kalshi_temporal_bucket_arb   2
+  2026-07-07  kalshi_temporal_bucket_arb   8
+  2026-07-06  kalshi_temporal_bucket_arb   16
+  2026-07-01  kalshi_temporal_bucket_arb   3
+  2026-06-29  kalshi_temporal_bucket_arb   3
+  2026-06-26  kalshi_temporal_bucket_arb   15
+  2026-06-25  kalshi_temporal_bucket_arb   25
+  2026-06-24  kalshi_temporal_bucket_arb   28
+  2026-06-23  kalshi_temporal_bucket_arb   2
+  2026-06-22  kalshi_temporal_bucket_arb   3
+  2026-06-21  kalshi_temporal_bucket_arb   2
+  2026-06-19  kalshi_temporal_bucket_arb   2
+  2026-06-18  kalshi_temporal_bucket_arb   7
+  2026-06-17  kalshi_temporal_bucket_arb   30
+  2026-06-16  kalshi_temporal_bucket_arb   2
+  2026-06-15  kalshi_temporal_bucket_arb   3
+  2026-06-14  kalshi_temporal_bucket_arb   13
+  2026-06-13  kalshi_temporal_bucket_arb   3
+  2026-06-12  kalshi_temporal_bucket_arb   6
+  2026-06-11  kalshi_temporal_bucket_arb   4
+  2026-06-10  kalshi_temporal_bucket_arb   5
+  2026-06-09  kalshi_temporal_bucket_arb   9
+  2026-06-08  kalshi_temporal_bucket_arb   12
+  2026-06-07  kalshi_temporal_bucket_arb   13
+  2026-06-06  kalshi_temporal_bucket_arb   19
+  2026-06-05  kalshi_temporal_bucket_arb   5
+  2026-06-04  kalshi_temporal_bucket_arb   14
+  2026-06-03  kalshi_temporal_bucket_arb   16
+  2026-06-02  kalshi_temporal_bucket_arb   6
+  2026-06-01  kalshi_temporal_bucket_arb   4
+  2026-05-31  kalshi_temporal_bucket_arb   22
+  2026-05-30  kalshi_temporal_bucket_arb   2
+  2026-05-29  kalshi_temporal_bucket_arb   4
+  2026-05-28  kalshi_temporal_bucket_arb   1
+  2026-05-26  kalshi_temporal_bucket_arb   3
+  2026-05-25  kalshi_temporal_bucket_arb   10
+  2026-05-24  kalshi_temporal_bucket_arb   9
+  2026-05-23  kalshi_temporal_bucket_arb   14
+  2026-05-22  kalshi_temporal_bucket_arb   87
+  2026-05-21  kalshi_temporal_bucket_arb   16
+  2026-05-20  kalshi_temporal_bucket_arb   9
+  2026-05-19  kalshi_temporal_bucket_arb   10
+  2026-05-18  kalshi_temporal_bucket_arb   8
+  2026-05-17  kalshi_temporal_bucket_arb   4
+  2026-05-16  kalshi_temporal_bucket_arb   10
+
+===== BACKLOG_VS_FORWARD  kalshi_arbitrage  (cut entry_ts >= 2026-07-07) =====
+(a) BACKLOG (entry_ts <  2026-07-07): n=404  W=322 L=82 (void=0)  WR=79.7%  gross=$3744.12  fees=$16.40  net=$3727.72
+(b) FORWARD (entry_ts >= 2026-07-07): n=9  W=1 L=8 (void=0)  WR=11.1%  gross=$-7.80  fees=$0.58  net=$-8.38
+   entry_ts by month: 2026-05:159, 2026-06:229, 2026-07:25
+
+===== BACKLOG_VS_FORWARD  kalshi_llm_arbitrage  (cut entry_ts >= 2026-07-07T16:40) =====
+(a) BACKLOG (entry_ts <  2026-07-07T16:40): n=2802  W=1127 L=1675 (void=0)  WR=40.2%  gross=$-452.42  fees=$121.65  net=$-574.07
+(b) FORWARD (entry_ts >= 2026-07-07T16:40): n=153  W=117 L=36 (void=0)  WR=76.5%  gross=$118.45  fees=$7.19  net=$111.26
+   entry_ts by month: 2026-05:2702, 2026-06:100, 2026-07:153
+
+===== LLM_FORWARD_OPTION_A_PER_EMISSION =====
+Option A (every resolved emission counted): n=153  W=117 L=36 (void=0)  WR=76.5%  gross=$118.45  fees=$7.19  net=$111.26
+
+===== LLM_FORWARD_OPTION_B_DISTINCT_MARKET (canonical=MIN(entry_ts) per ticker) =====
+distinct markets=16  (from 153 emissions; re-emit factor=9.6x)
+Option B (distinct markets, canonical): n=16  W=8 L=8 (void=0)  WR=50.0%  gross=$0.76  fees=$0.76  net=$0.00
+
+===== LLM_FORWARD_OPTION_B_ECON_VS_ELECTIONS =====
+Economics: n=12  W=8 L=4 (void=0)  WR=66.7%  gross=$4.76  fees=$0.52  net=$4.24
+Elections: n=4  W=0 L=4 (void=0)  WR=0.0%  gross=$-4.00  fees=$0.24  net=$-4.24
+
+===== LLM_FORWARD_DISTINCT_MARKET_TABLE (canonical row per market) =====
+half | ticker | category | first_entry | outcome | result | won | div%% | llm_p | impl | qty | px | gross | fee | net
+Economics | KXCBDECISIONKOREA-26JUL15-H25 | Economics | 2026-07-07T18:15 | no | yes | 0 | 85.0 | 0.080 | 0.930 | 12.5 | 0.08 | -1.00 | 0.07 | -1.07
+Economics | KX2YFOMC-26JUL29-T8 | Economics | 2026-07-07T23:52 | no | no | 1 | 55.5 | 0.080 | 0.635 | 2.564102564102564 | 0.39 | 1.56 | 0.05 | 1.51
+Economics | KX2YFOMC-26JUL29-T10 | Economics | 2026-07-07T23:52 | no | no | 1 | 46.0 | 0.080 | 0.540 | 2.0408163265306123 | 0.49 | 1.04 | 0.04 | 1.00
+Economics | KXCBDSA-26JUL23-H25 | Economics | 2026-07-08T04:39 | no | no | 1 | 69.5 | 0.120 | 0.815 | 5.2631578947368425 | 0.19 | 4.26 | 0.06 | 4.20
+Economics | KXSKEXPYOY-26JULY31-T60.0 | Economics | 2026-07-09T07:54 | no | yes | 0 | 69.5 | 0.080 | 0.775 | 3.846153846153846 | 0.26 | -1.00 | 0.06 | -1.06
+Economics | KXSKEXPYOY-26JULY31-T55.0 | Economics | 2026-07-10T17:40 | no | yes | 0 | 79.5 | 0.080 | 0.875 | 6.25 | 0.16 | -1.00 | 0.06 | -1.06
+Economics | KXCPICOMBO-26JUN-0202 | Economics | 2026-07-13T05:27 | no | no | 1 | 38.0 | 0.080 | 0.460 | 1.4285714285714286 | 0.7 | 0.43 | 0.03 | 0.40
+Elections | KXSCRSENSRUN-26-26AUG11-RNOR | Elections | 2026-07-14T15:35 | no | yes | 0 | 10.5 | 0.720 | 0.825 | 5.555555555555555 | 0.18 | -1.00 | 0.06 | -1.06
+Economics | KXSKEXPYOY-26JULY31-T75.0 | Economics | 2026-07-15T02:05 | no | no | 1 | 34.5 | 0.040 | 0.385 | 1.5625 | 0.64 | 0.56 | 0.03 | 0.53
+Economics | KXITGDPQOQA-26JUL30-T0.7 | Economics | 2026-07-17T18:12 | no | no | 1 | 38.0 | 0.120 | 0.500 | 1.0309278350515465 | 0.97 | 0.03 | 0.01 | 0.02
+Economics | KXSKEXPYOY-26JULY31-T70.0 | Economics | 2026-07-17T19:23 | no | no | 1 | 35.0 | 0.080 | 0.430 | 1.7241379310344829 | 0.58 | 0.72 | 0.03 | 0.69
+Economics | KXSKEXPYOY-26JULY31-T50.0 | Economics | 2026-07-17T19:23 | no | yes | 0 | 85.5 | 0.080 | 0.935 | 11.11111111111111 | 0.09 | -1.00 | 0.07 | -1.07
+Elections | KXDARLINEENDORSE-26AUG11-AUG11 | Elections | 2026-07-17T20:16 | no | yes | 0 | 11.5 | 0.820 | 0.935 | 12.5 | 0.08 | -1.00 | 0.07 | -1.07
+Elections | KXSCRSENSRUN-26-26AUG11-DNOR | Elections | 2026-07-17T23:45 | no | yes | 0 | 13.0 | 0.720 | 0.850 | 6.25 | 0.16 | -1.00 | 0.06 | -1.06
+Economics | KXITGDPQOQA-26JUL30-T0.8 | Economics | 2026-07-21T10:56 | no | no | 1 | 42.5 | 0.120 | 0.545 | 1.1494252873563218 | 0.87 | 0.15 | 0.01 | 0.14
+Elections | KXMCMORROWENDORSE-26AUG04-NOONE | Elections | 2026-07-27T23:36 | no | yes | 0 | 19.5 | 0.520 | 0.715 | 3.4482758620689657 | 0.29 | -1.00 | 0.05 | -1.05
+
+===== LLM_INVERSION_TEST (distinct markets: WR by divergence bucket) =====
+[ALL]
+   div 40+%     n=8  W=4 L=4 (void=0)  WR=50.0%  gross=$3.02  fees=$0.42  net=$2.60
+   div 25-40%   n=4  W=4 L=0 (void=0)  WR=100.0%  gross=$1.75  fees=$0.10  net=$1.65
+   div 11-25%   n=3  W=0 L=3 (void=0)  WR=0.0%  gross=$-3.00  fees=$0.18  net=$-3.18
+   div <11%     n=1  W=0 L=1 (void=0)  WR=0.0%  gross=$-1.00  fees=$0.06  net=$-1.06
+[Economics]
+   div 40+%     n=8  W=4 L=4 (void=0)  WR=50.0%  gross=$3.02  fees=$0.42  net=$2.60
+   div 25-40%   n=4  W=4 L=0 (void=0)  WR=100.0%  gross=$1.75  fees=$0.10  net=$1.65
+[Elections]
+   div 11-25%   n=3  W=0 L=3 (void=0)  WR=0.0%  gross=$-3.00  fees=$0.18  net=$-3.18
+   div <11%     n=1  W=0 L=1 (void=0)  WR=0.0%  gross=$-1.00  fees=$0.06  net=$-1.06
+
+===== ARB_FORWARD_DETAIL (entry_ts >= 2026-07-07) =====
+ticker | event | arb_type | set_id | outcome | result | won | qty | px | gross | fee | net | entry_ts | resolved_ts
+KXFDAAPPROVE-GED-26AUG01 | KXFDAAPPROVE-GED | temporal | 2ca30c3338d5 | no | yes | 0 | 33.33333333333331 | 0.030000000000000027 | -1.00 | 0.07 | -1.07 | 2026-07-07T08:30 | 2026-08-01T18:31
+KXFDAAPPROVE-GED-26AUG01 | KXFDAAPPROVE-GED | temporal | e1716c1a30ba | no | yes | 0 | 33.33333333333331 | 0.030000000000000027 | -1.00 | 0.07 | -1.07 | 2026-07-07T08:30 | 2026-08-01T18:31
+KXFDAAPPROVE-GED-26AUG01 | KXFDAAPPROVE-GED | temporal | e8b7518813af | no | yes | 0 | 33.33333333333331 | 0.030000000000000027 | -1.00 | 0.07 | -1.07 | 2026-07-07T13:05 | 2026-08-01T18:31
+KXFDAAPPROVE-GED-26AUG01 | KXFDAAPPROVE-GED | temporal | 5281ee9c5628 | no | yes | 0 | 33.33333333333331 | 0.030000000000000027 | -1.00 | 0.07 | -1.07 | 2026-07-07T13:05 | 2026-08-01T18:31
+KXFDAAPPROVE-GED-26AUG01 | KXFDAAPPROVE-GED | temporal | aa2c5d19a9f0 | no | yes | 0 | 33.33333333333331 | 0.030000000000000027 | -1.00 | 0.07 | -1.07 | 2026-07-07T14:19 | 2026-08-01T18:31
+KXFDAAPPROVE-GED-26AUG01 | KXFDAAPPROVE-GED | temporal | 9a103cd65d52 | no | yes | 0 | 33.33333333333331 | 0.030000000000000027 | -1.00 | 0.07 | -1.07 | 2026-07-07T14:19 | 2026-08-01T18:31
+KXFDAAPPROVE-GED-26AUG01 | KXFDAAPPROVE-GED | temporal | ef3582fe36c1 | no | yes | 0 | 33.33333333333331 | 0.030000000000000027 | -1.00 | 0.07 | -1.07 | 2026-07-07T16:02 | 2026-08-01T18:31
+KXFDAAPPROVE-GED-26AUG01 | KXFDAAPPROVE-GED | temporal | c14382647dd4 | no | yes | 0 | 33.33333333333331 | 0.030000000000000027 | -1.00 | 0.07 | -1.07 | 2026-07-07T16:02 | 2026-08-01T18:31
+KXDIAZOUT-MDC-26AUG01 | KXDIAZOUT-MDC | temporal | 9ea46cf21608 | no | no | 1 | 1.2048192771084338 | 0.83 | 0.20 | 0.02 | 0.18 | 2026-07-11T06:05 | 2026-08-01T18:31
+
+===== CONCENTRATION ARB(all) (net-of-fee by <lambda>) =====
+total net=$3719.34 across 25 groups
+  KXFDAAPPROVE-GED                         n=110  net=$2156.76  share=58.0%
+  KXFARMBILL-26MAY                         n=14   net=$618.35  share=16.6%
+  KXBEEFTARIFF-26MAY                       n=16   net=$383.25  share=10.3%
+  KXFISAEXTEND-26MAY                       n=19   net=$222.49  share=6.0%
+  KXKNESSET-27                             n=6    net=$143.68  share=3.9%
+  KXIPOAPPSFLYER                           n=3    net=$71.79  share=1.9%
+  KXFDAAPPROVE-CAM                         n=7    net=$49.56  share=1.3%
+  KXFDAAPPROVE-CYT                         n=20   net=$30.67  share=0.8%
+  >>> top-3 groups net=$3158.36 (84.9% of total net)
+
+===== CONCENTRATION ARB(forward) (net-of-fee by <lambda>) =====
+total net=$-8.38 across 2 groups
+  KXFDAAPPROVE-GED                         n=8    net=$-8.56  share=102.2%
+  KXDIAZOUT-MDC                            n=1    net=$0.18  share=-2.2%
+  >>> top-3 groups net=$-8.38 (100.0% of total net)
+
+===== CONCENTRATION LLM(forward per-emission) (net-of-fee by <lambda>) =====
+total net=$111.26 across 16 groups
+  KX2YFOMC-26JUL29-T8                      n=45   net=$67.63  share=60.8%
+  KX2YFOMC-26JUL29-T10                     n=56   net=$55.68  share=50.0%
+  KXCBDSA-26JUL23-H25                      n=7    net=$24.31  share=21.8%
+  KXSKEXPYOY-26JULY31-T55.0                n=12   net=$-12.72  share=-11.4%
+  KXSKEXPYOY-26JULY31-T50.0                n=5    net=$-5.35  share=-4.8%
+  KXMCMORROWENDORSE-26AUG04-NOONE          n=5    net=$-5.29  share=-4.8%
+  KXSKEXPYOY-26JULY31-T60.0                n=5    net=$-5.25  share=-4.7%
+  KXDARLINEENDORSE-26AUG11-AUG11           n=3    net=$-3.20  share=-2.9%
+  >>> top-3 groups net=$147.61 (132.7% of total net)
+
+===== CONCENTRATION LLM(forward distinct) (net-of-fee by <lambda>) =====
+total net=$0.00 across 16 groups
+  KXCBDSA-26JUL23-H25                      n=1    net=$4.20  share=115494.6%
+  KX2YFOMC-26JUL29-T8                      n=1    net=$1.51  share=41604.6%
+  KXCBDECISIONKOREA-26JUL15-H25            n=1    net=$-1.07  share=-29401.5%
+  KXDARLINEENDORSE-26AUG11-AUG11           n=1    net=$-1.07  share=-29401.5%
+  KXSKEXPYOY-26JULY31-T50.0                n=1    net=$-1.07  share=-29401.5%
+  KXSKEXPYOY-26JULY31-T60.0                n=1    net=$-1.06  share=-29126.7%
+  KXSKEXPYOY-26JULY31-T55.0                n=1    net=$-1.06  share=-29126.7%
+  KXSCRSENSRUN-26-26AUG11-DNOR             n=1    net=$-1.06  share=-29126.7%
+  >>> top-3 groups net=$4.65 (127697.7% of total net)
+
+===== EQUITY_HISTORY (kalshi_arbitrage / Karen) =====
+   {'id': 95126, 'ts': '2026-08-05T21:34:52+00:00', 'division': 'kalshi_arbitrage', 'equity': 508.25, 'cash_usd': 505.84, 'positions_value': 2.410000000000025, 'n_positions': 2}
+   {'id': 95122, 'ts': '2026-08-05T21:29:52+00:00', 'division': 'kalshi_arbitrage', 'equity': 508.25, 'cash_usd': 505.84, 'positions_value': 2.410000000000025, 'n_positions': 2}
+   {'id': 95118, 'ts': '2026-08-05T21:24:52+00:00', 'division': 'kalshi_arbitrage', 'equity': 508.25, 'cash_usd': 505.84, 'positions_value': 2.410000000000025, 'n_positions': 2}
+   {'id': 95114, 'ts': '2026-08-05T21:19:52+00:00', 'division': 'kalshi_arbitrage', 'equity': 508.25, 'cash_usd': 505.84, 'positions_value': 2.410000000000025, 'n_positions': 2}
+   {'id': 95110, 'ts': '2026-08-05T21:14:52+00:00', 'division': 'kalshi_arbitrage', 'equity': 508.25, 'cash_usd': 505.84, 'positions_value': 2.410000000000025, 'n_positions': 2}
+
+===== PROBE_DONE =====
