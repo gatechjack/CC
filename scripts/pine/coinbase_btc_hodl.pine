@@ -62,15 +62,30 @@ trend_ok      = use_trend_filter ? (close > trend_sma_raw) : true
 long_signal = close > donchian_high and trend_ok
 exit_signal = close < donchian_low
 
-if long_signal and strategy.position_size == 0
-    strategy.entry("LONG", strategy.long, comment="BUY breakout")
+// Actual trade EVENTS: a BUY only fires when flat, a SELL only when long.
+// Hoisted to booleans (same guards as the entry/close calls) so the
+// orders, the chart markers, and the alerts all key off ONE source of
+// truth -- what plots is exactly what alerts, with no drift between them.
+buy_event  = long_signal and strategy.position_size == 0
+sell_event = exit_signal and strategy.position_size > 0
 
-if exit_signal and strategy.position_size > 0
+if buy_event
+    strategy.entry("LONG", strategy.long, comment="BUY breakout")
+    // Same bar as the order. process_orders_on_close=true => evaluated at
+    // bar close, so freq_once_per_bar_close matches that and won't repeat.
+    alert("BUY breakout: BTCUSD closed " + str.tostring(close) + " above Donchian high " + str.tostring(donchian_high), alert.freq_once_per_bar_close)
+
+if sell_event
     strategy.close("LONG", comment="SELL breakdown")
+    alert("SELL breakdown: BTCUSD closed " + str.tostring(close) + " below Donchian low " + str.tostring(donchian_low), alert.freq_once_per_bar_close)
 
 // ----- Visualization -------------------------------------------------
 plot(donchian_high, color=color.new(color.green, 30), linewidth=2, title="Donchian high (entry channel)")
 plot(donchian_low,  color=color.new(color.red,   30), linewidth=2, title="Donchian low (exit channel)")
 plot(use_trend_filter ? trend_sma_raw : na, color=color.new(color.blue, 50), linewidth=1, title="Trend filter SMA")
+
+// BUY / SELL markers -- the same events the alerts fire on, drawn on chart.
+plotshape(buy_event,  title="BUY signal",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.small, text="BUY")
+plotshape(sell_event, title="SELL signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), textcolor=color.white, size=size.small, text="SELL")
 
 bgcolor(strategy.position_size > 0 ? color.new(color.green, 92) : na, title="In-BTC zone")
