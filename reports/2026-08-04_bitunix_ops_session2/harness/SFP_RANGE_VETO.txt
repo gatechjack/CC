@@ -1,0 +1,52 @@
+====================================================================================================
+TASK 3 -- RANGE-ONLY VETO on up_but_bearish SHORTS -- current live SFP construct, backtest-only
+Longs untouched. NET = SFP fee model. 4.00 yr, in-sample Binance proxy. EVIDENCE not closure.
+====================================================================================================
+
+### 0. SHORT-BOOK baseline (no veto)
+  shorts n=341  grossAvgR=+0.142 WR=29.0%  netAvgR=+0.044  net R/yr=+3.75
+  (longs n=286  grossAvgR=+0.229  netAvgR=+0.135  -- shown for whole-book context, never vetoed)
+
+### 0b. SHORT composition by classifier
+  rd_os   : -1=195  0=98  1=48
+  macro60 : bear=341
+  reg15   : down=273  range=68
+
+####################################################################################################
+### DEF A (veto rd_os==+1)
+####################################################################################################
+  VETOED shorts: n=48 (14% of shorts)  grossAvgR=+0.009 WR=27.1%  netAvgR=-0.088  (net sumR removed=-4.20)
+  KEPT   shorts: n=293  grossAvgR=+0.164 WR=29.4%  netAvgR=+0.066  net R/yr=+4.80
+  SHORT-book net avgR: before +0.044 -> after-veto +0.066  (delta +0.022) ; net total-R +15.00 -> +19.20
+  WHOLE-book net avgR (longs+shorts): before +0.085 -> after +0.100  (delta +0.014)
+  per-coin vetoed / kept-net:
+    BTCUSDT   shorts= 62  vetoed= 11 (vet netAvgR=+0.157)  kept= 51 (kept netAvgR=-0.191)
+    ETHUSDT   shorts= 77  vetoed=  9 (vet netAvgR=+0.679)  kept= 68 (kept netAvgR=+0.205)
+    SOLUSDT   shorts= 88  vetoed= 10 (vet netAvgR=-0.296)  kept= 78 (kept netAvgR=+0.107)
+    XRPUSDT   shorts=114  vetoed= 18 (vet netAvgR=-0.504)  kept= 96 (kept netAvgR=+0.069)
+  IS  shorts n=170: vetoed=21  short-book net -0.221 -> -0.250 (delta -0.029)
+  OOS shorts n=171: vetoed=27  short-book net +0.307 -> +0.392 (delta +0.085)
+
+####################################################################################################
+### DEF B (veto macro60==bull AND rd_os!=0)
+####################################################################################################
+  VETOED shorts: n=0 (0% of shorts)  grossAvgR=+0.000 WR=0.0%  netAvgR=+0.000  (net sumR removed=+0.00)
+  KEPT   shorts: n=341  grossAvgR=+0.142 WR=29.0%  netAvgR=+0.044  net R/yr=+3.75
+  SHORT-book net avgR: before +0.044 -> after-veto +0.044  (delta +0.000) ; net total-R +15.00 -> +15.00
+  WHOLE-book net avgR (longs+shorts): before +0.085 -> after +0.085  (delta +0.000)
+  per-coin vetoed / kept-net:
+    BTCUSDT   shorts= 62  vetoed=  0 (vet netAvgR=+0.000)  kept= 62 (kept netAvgR=-0.130)
+    ETHUSDT   shorts= 77  vetoed=  0 (vet netAvgR=+0.000)  kept= 77 (kept netAvgR=+0.261)
+    SOLUSDT   shorts= 88  vetoed=  0 (vet netAvgR=+0.000)  kept= 88 (kept netAvgR=+0.062)
+    XRPUSDT   shorts=114  vetoed=  0 (vet netAvgR=+0.000)  kept=114 (kept netAvgR=-0.021)
+  IS  shorts n=170: vetoed=0  short-book net -0.221 -> -0.221 (delta +0.000)
+  OOS shorts n=171: vetoed=0  short-book net +0.307 -> +0.307 (delta +0.000)
+
+####################################################################################################
+### RECOMMENDATION
+####################################################################################################
+  DEF A: removes n=48 at netAvgR -0.088 ; short-book netAvgR lift +0.022 ; removes a losing subset -> candidate
+  DEF B: removes n=0 at netAvgR +0.000 ; short-book netAvgR lift +0.000 ; weak/insufficient
+  (A def wins if it removes a clearly-negative, adequately-sized short subset and lifts the kept
+   short-book net avgR, surviving the holdout. Longs are unaffected. Only the operator rules in.)
+====================================================================================================
