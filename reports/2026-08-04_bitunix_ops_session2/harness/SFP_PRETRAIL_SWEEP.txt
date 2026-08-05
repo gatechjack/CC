@@ -1,0 +1,110 @@
+====================================================================================================
+TASK 2b -- PRE-TARGET TRAIL SWEEP vs FLAT-3R -- current live SFP construct, exit-only, 3m replay
+Entries: two-candle SFP + fresh-inst + with-trend, 1h detect, 4 coins. NET of the SFP fee model
+(entry taker 0.000243; exit maker 0.00014 if 3R TP else taker 0.0004; slip 0.0001). 4.00 yr.
+H0 = 2026-06-26 tight-stop finding: early stop-ratchet destroys the BOS wide-stop edge.
+====================================================================================================
+
+### 0. SANITY -- flat-3R GROSS reproduces the deployed-construct parity
+  BTCUSDT   n=149 avgR=+0.085  expect 149/+0.085  OK
+  ETHUSDT   n=139 avgR=+0.397  expect 139/+0.397  OK
+  SOLUSDT   n=170 avgR=+0.073  expect 170/+0.073  OK
+  XRPUSDT   n=169 avgR=+0.199  expect 169/+0.199  OK
+  POOLED    n=627 avgR=+0.182  expect 627/+0.182  OK
+  (ATR-missing trade-configs falling back to flat: 0)
+
+### FLAT-3R NET baseline: n=627  netAvgR=+0.085  netR/yr=+13.40  WR=30.0%  (gross avgR=+0.182)
+
+### 1. POOLED NET avgR by (activation x ATR-mult) -- delta vs flat in parens; * = beats flat net
+  activation |     3.0x     2.5x     2.0x     1.5x     1.0x     0.5x
+  none       | +0.035(-0.051)   +0.004(-0.082)   -0.009(-0.095)   -0.070(-0.155)   -0.076(-0.161)   -0.119(-0.204) 
+  +1R        | +0.051(-0.034)   +0.023(-0.063)   -0.003(-0.088)   +0.007(-0.079)   -0.004(-0.089)   +0.002(-0.083) 
+  +1.5R      | +0.061(-0.024)   +0.049(-0.036)   +0.040(-0.045)   +0.043(-0.042)   +0.040(-0.046)   +0.051(-0.035) 
+  +2R        | +0.074(-0.012)   +0.070(-0.015)   +0.060(-0.026)   +0.049(-0.036)   +0.070(-0.015)   +0.066(-0.020) 
+  R-ladder (+1R->BE,+2R->lock1R): netAvgR=+0.038 (-0.047 vs flat)  netR/yr=+6.01
+
+### 2. TOP-5 configs by pooled NET avgR (vs flat net +0.085 / R/yr +13.40)
+  ('+2R', 3.0)     netAvgR=+0.074 (-0.012 vs flat)  netR/yr=+11.59  WR=36.5%
+  ('+2R', 2.5)     netAvgR=+0.070 (-0.015 vs flat)  netR/yr=+11.02  WR=37.2%
+  ('+2R', 1.0)     netAvgR=+0.070 (-0.015 vs flat)  netR/yr=+10.98  WR=38.3%
+  ('+2R', 0.5)     netAvgR=+0.066 (-0.020 vs flat)  netR/yr=+10.27  WR=38.3%
+  ('+1.5R', 3.0)   netAvgR=+0.061 (-0.024 vs flat)  netR/yr=+9.59  WR=39.9%
+  WORST: ('none', 0.5)    netAvgR=-0.119 (-0.204 vs flat)
+
+####################################################################################################
+### 3. HEADLINE CONFIGS -- per coin x regime, clustered SE, holdout
+####################################################################################################
+
+--- config ('+2R', 3.0) ---
+  POOLED netAvgR=+0.074 (-0.012 vs flat)  netR/yr=+11.59  WR=36.5%
+  dAvgR vs flat = -0.0115   clustered SE(coin x month) = 0.0317   z = -0.36
+  IS  (n=313): flat net +0.039  trail net +0.045  (delta +0.006)
+  OOS (n=314): flat net +0.132  trail net +0.103  (delta -0.029)
+  per coin x macro60 regime (net avgR trail vs flat):
+    BTCUSDT   bull     n= 87  flat +0.013  trail +0.030  (+0.017)
+    BTCUSDT   bear     n= 62  flat -0.130  trail +0.052  (+0.182)
+    ETHUSDT   bull     n= 62  flat +0.348  trail +0.050  (-0.298)
+    ETHUSDT   bear     n= 77  flat +0.261  trail +0.283  (+0.023)
+    SOLUSDT   bull     n= 82  flat -0.065  trail +0.011  (+0.076)
+    SOLUSDT   bear     n= 88  flat +0.062  trail -0.046  (-0.108)
+    XRPUSDT   bull     n= 55  flat +0.386  trail +0.419  (+0.032)
+    XRPUSDT   bear     n=114  flat -0.021  trail -0.037  (-0.016)
+  gross rescue (on 438 flat losers) = +91.8R ; gross tax (on 182 flat winners) = -99.1R ; net shift = -7.3R
+
+--- config ('none', 0.5) ---
+  POOLED netAvgR=-0.119 (-0.204 vs flat)  netR/yr=-18.65  WR=23.6%
+  dAvgR vs flat = -0.2045   clustered SE(coin x month) = 0.0671   z = -3.05
+  IS  (n=313): flat net +0.039  trail net -0.130  (delta -0.169)
+  OOS (n=314): flat net +0.132  trail net -0.108  (delta -0.240)
+  per coin x macro60 regime (net avgR trail vs flat):
+    BTCUSDT   bull     n= 87  flat +0.013  trail -0.188  (-0.201)
+    BTCUSDT   bear     n= 62  flat -0.130  trail -0.148  (-0.019)
+    ETHUSDT   bull     n= 62  flat +0.348  trail -0.142  (-0.490)
+    ETHUSDT   bear     n= 77  flat +0.261  trail -0.100  (-0.360)
+    SOLUSDT   bull     n= 82  flat -0.065  trail -0.058  (+0.007)
+    SOLUSDT   bear     n= 88  flat +0.062  trail -0.102  (-0.163)
+    XRPUSDT   bull     n= 55  flat +0.386  trail -0.119  (-0.505)
+    XRPUSDT   bear     n=114  flat -0.021  trail -0.109  (-0.087)
+  gross rescue (on 438 flat losers) = +417.8R ; gross tax (on 182 flat winners) = -533.6R ; net shift = -115.8R
+
+--- config ('+1R', 2.0) ---
+  POOLED netAvgR=-0.003 (-0.088 vs flat)  netR/yr=-0.41  WR=44.7%
+  dAvgR vs flat = -0.0881   clustered SE(coin x month) = 0.0507   z = -1.74
+  IS  (n=313): flat net +0.039  trail net -0.056  (delta -0.095)
+  OOS (n=314): flat net +0.132  trail net +0.051  (delta -0.081)
+  per coin x macro60 regime (net avgR trail vs flat):
+    BTCUSDT   bull     n= 87  flat +0.013  trail -0.104  (-0.117)
+    BTCUSDT   bear     n= 62  flat -0.130  trail -0.155  (-0.025)
+    ETHUSDT   bull     n= 62  flat +0.348  trail -0.126  (-0.474)
+    ETHUSDT   bear     n= 77  flat +0.261  trail +0.013  (-0.247)
+    SOLUSDT   bull     n= 82  flat -0.065  trail +0.094  (+0.159)
+    SOLUSDT   bear     n= 88  flat +0.062  trail +0.100  (+0.038)
+    XRPUSDT   bull     n= 55  flat +0.386  trail +0.204  (-0.182)
+    XRPUSDT   bear     n=114  flat -0.021  trail -0.035  (-0.013)
+  gross rescue (on 438 flat losers) = +220.4R ; gross tax (on 182 flat winners) = -270.2R ; net shift = -49.7R
+
+--- config ('+2R', 2.0) ---
+  POOLED netAvgR=+0.060 (-0.026 vs flat)  netR/yr=+9.33  WR=37.8%
+  dAvgR vs flat = -0.0260   clustered SE(coin x month) = 0.0372   z = -0.70
+  IS  (n=313): flat net +0.039  trail net +0.036  (delta -0.003)
+  OOS (n=314): flat net +0.132  trail net +0.083  (delta -0.049)
+  per coin x macro60 regime (net avgR trail vs flat):
+    BTCUSDT   bull     n= 87  flat +0.013  trail -0.033  (-0.045)
+    BTCUSDT   bear     n= 62  flat -0.130  trail +0.022  (+0.151)
+    ETHUSDT   bull     n= 62  flat +0.348  trail +0.096  (-0.252)
+    ETHUSDT   bear     n= 77  flat +0.261  trail +0.130  (-0.131)
+    SOLUSDT   bull     n= 82  flat -0.065  trail +0.014  (+0.079)
+    SOLUSDT   bear     n= 88  flat +0.062  trail +0.030  (-0.032)
+    XRPUSDT   bull     n= 55  flat +0.386  trail +0.346  (-0.040)
+    XRPUSDT   bear     n=114  flat -0.021  trail +0.001  (+0.022)
+  gross rescue (on 438 flat losers) = +118.3R ; gross tax (on 182 flat winners) = -134.4R ; net shift = -16.1R
+
+### 4. drift null (GROSS, own opportunity set): flat pct=55%  best(('+2R', 3.0)) pct=50%  (lift != better)
+
+####################################################################################################
+### 5. VERDICT (evidence, not closure -- operator rules out)
+####################################################################################################
+  configs beating flat on pooled NET avgR: 0 of 25
+    NONE. H0 not rejected: no trail configuration escapes the tight-stop tax on this construct.
+  NOTE: GROSS + in-sample Binance proxy; a beat must ALSO survive holdout + exceed its clustered SE.
+====================================================================================================
