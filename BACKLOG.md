@@ -8,6 +8,31 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## 🗓️ 2026-08-05 ops session 3 — close-out + Kalshi fee verification
+
+Branch `claude-2026-08-04` (continued); read-only. Report `reports/2026-08-05_kalshi_fee_verification/`.
+
+- ✅ **6 preservation commits PUSHED to origin** (durability): `cbc92d0/2b14b8d/9f590b6/5e2e15f/7179b06/
+  7f66e35` on their branches (4 fast-forward, 2 new remote branches).
+- ⏸️ **Discard 14 + prune — HELD (awaiting operator).** The `cc-2026-08-04b-wt` confirmation arrived as
+  an **unfilled** `[LIVE / NOT LIVE]` placeholder. Re-checked read-only: **clean, not locked, idle ~17h,
+  at prod-live tip `ef613e5`** (looks like the 08-04 PMCC-deploy leftover, not a live session). Second
+  fork: the 14 are **dirty + mostly unmerged**, so a no-`--force`/no-`clean` prune isn't directly
+  possible — need the operator's chosen mechanic (authorize `worktree remove --force` for the audited
+  scratch-only trees, or delete the named scratch first; and keep-branches vs `branch -D`). Nothing
+  removed.
+- ✅ **Kalshi fee verification (evidence-only; D5/closures/live config untouched).** Taker formula
+  **CONFIRMED** = `ceil(0.07·C·P·(1−P)·100)/100` (matches the harness `kalshi_fee`). Makers pay **25% of
+  taker** (2 schedule sources) but the lab harness charged makers the **full taker fee** → over-charge.
+  Re-score (parity-gated): **~+0.008/attempt lift but NO D5 reopen** — the ETH realism/latency gate goes
+  −0.002→+0.006 (t+0.5), decays negative by m+2, and **fails even at a zero maker fee**. The qty=1
+  ceil-roundup **floors the maker fee at 1¢ regardless of the crypto multiplier** (0.0175==0.035 columns)
+  → crypto-mult **moot at executable size**; harness EVs are per-contract worst-case, not volume-scale.
+  Official crypto multiplier unconfirmed (PDF bot-blocked); API real-fill check infeasible (KAREN has no
+  fills on these read-only series).
+
+---
+
 ## 🗓️ 2026-08-04→05 ops session 2 — 2026-08-02 rulings executed
 
 Branch `claude-2026-08-04` off `64c4831` (08-02 tip); read-only / research / proposals —
