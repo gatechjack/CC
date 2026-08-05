@@ -175,8 +175,8 @@ The operator's LLM figures **cannot be reproduced from the raw `kalshi_round_tri
 | net | +$5.87 | **$0.00** canonical-first · **+$111.26** sum-all-emissions |
 
 - No mixed-`won` tickers (no flipped bet / re-resolution); no new resolutions since 2026-08-04T14:40; no constructible per-market average equals +$5.87; no 17th market exists in the table.
-- **Most probable source of the verdict's numbers: the live dashboard's `_query_kalshi_distinct_market_stats`** (the Option-B read-view from commit `b10a010`), which is **drifted / absent from prod-live** (see §5) and cannot be audited from git this session. If so, **the live read-view is reporting distinct-market stats that differ from the raw table** — a *second facet* of the §5 drift and a candidate follow-up (audit the read-view against raw data).
-- **Operational conclusion is identical either way:** directional at best, far below any threshold, **not a go-live**; keep accumulating.
+- **[RESOLVED 2026-08-05 — read-view audit, see `2026-08-05_kalshi_llm_readview_audit.md`]** The hypothesis that the figure came from a *miscounting* dashboard read-view is **REFUTED.** The live `_query_kalshi_distinct_market_stats` is byte-identical to `b10a010` and, run against the live DB, returns **16/8W-8L/+$0.76 gross with a ZERO per-market diff vs the raw table** — it aggregates the raw table faithfully. The operator's 17/11W-6L/+$5.87 is **not reproducible** from the raw table or the deployed read-view under any tested scenario; origin appears external/manual, not a dashboard bug. The read-view is nonetheless *code-drifted* (live-not-in-prod-live) — reconciled by the **same single `b10a010` merge** as the resolver (§5) — but that is a deploy-gate hazard, **not** a data-correctness issue; the dashboard is trustworthy now.
+- **Operational conclusion is identical either way:** directional at best, far below any threshold, **not a go-live**; keep accumulating. **True forward distinct-market number = 16 / 8W-8L / $0.00 net-of-fee.**
 
 ### Arbitrage verdict — refined by follow-up probe
 Dormant is **opportunity-supply starvation, not a scanner fault** — both arb actors are confirmed live and error-free post-08-04 restart (§2c). No scanner-diagnosis follow-up is warranted.
@@ -184,7 +184,7 @@ Dormant is **opportunity-supply starvation, not a scanner fault** — both arb a
 ### Triggers (set/updated)
 1. **kalshi_llm forward-edge** — keep accumulating; **re-review at distinct-market n ≥ 30 OR 2026-08-19**, whichever first. Each review reports: Option B headline + Option A secondary + Economics/Elections split + inversion test.
 2. **kalshi_arbitrage** — *dormant (opportunity-starved), scanner healthy* → keep the opportunity-supply trigger: **`n_pairs`/qualifying opportunities recover OR a ≥5-entry day OR 2026-10-15.** No scanner-error diagnosis needed.
-3. **★ Drift reconciliation (carry-forward to-do, HAZARD)** — before **any** resolver-touching deploy, reconcile prod-live to reflect the deployed `b10a010` (kalshi_llm epoch fix + `_query_kalshi_distinct_market_stats`), else the drift-gate is untrustworthy (§5). Now **doubly important**: the read-view drift is the likely cause of the dashboard-vs-raw LLM number gap above.
+3. **★ Drift reconciliation (carry-forward to-do, HAZARD)** — before **any** resolver-touching deploy, reconcile prod-live to reflect the deployed `b10a010` (kalshi_llm epoch fix + `_query_kalshi_distinct_market_stats`), else the drift-gate is untrustworthy (§5). This is a **deploy-gate/code hazard, NOT a data bug** — the audit confirmed the deployed read-view computes correctly (the dashboard-vs-raw LLM number gap is *not* caused by the read-view). One `b10a010` merge covers both the resolver clause and the read-view function.
 
 ---
 
