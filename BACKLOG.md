@@ -34,16 +34,24 @@ Branch `claude-2026-08-04` off `64c4831` (08-02 tip); read-only / research / pro
   `reports/2026-08-04_bitunix_ops_session2/worktree_audit.md`. → 6 hold real work to COMMIT
   (#1 pine, #6 PEAD probes, #17 unsaved k5 report, #18/#20 utils, #22 wallet phase-2), 14 pure
   scratch DISCARD, 1 KEEP (#19). ⚠ `cc-2026-08-04b-wt` (clean, not mine) — confirm before prune.
-- 🔬 **TASK 2 — pre-target trail design + backtest** (OFF flag): `pre_tp1_trail_{design,backtest}.md`.
-  → **PARK. 0/25 configs beat flat-3R net avgR** (+0.085); best (+2R,3.0×ATR) −0.012R z=−0.36 (n.s.),
-  worse OOS; aggressive cells significant harm (z −3.05) on the ETH/XRP bull runner cells. H0 (tight-
-  stop finding) not rejected. Live SL-ratchet path is an unbuilt stub (`bitunix.py:2229`) anyway.
-- 🔬 **TASK 3 — RANGE-only veto definition + backtest**: `range_veto_definition.md`.
-  → **Pin DEF A** (up_but_bearish short := `rd_os==+1`; only non-empty operationalization — all shorts
-  are macro60-bear so DEF B is empty here). Veto lift small (+0.014 whole-book) but coin-inconsistent
-  (removes BTC/ETH winners) + holdout-inconsistent → **no live veto** (deferred to n≥30, as ruled).
-- 📋 **TASK 4 — futures-only maker window proposal** (measured, micro-sized; feeds the n≥30 review):
-  `futures_maker_window_proposal.md`. Isolated from SFP (maker flag is futures-scoped; SFP taker-only).
+- ✅ **TASK 2 — pre-target trail: CLOSED WITH EVIDENCE** (operator 2026-08-05; stronger than park):
+  `pre_tp1_trail_{design,backtest}.md`. 0/25 configs beat flat-3R net (+0.085); best (+2R,3.0×ATR)
+  −0.012R z=−0.36 (n.s.), worse OOS; aggressive cells significant harm (z −3.05) on ETH/XRP bull
+  runner cells. **H0 confirmed twice independently** (this sweep + the prior betrail −0.042R). Flag
+  never wired (`pre_tp1_trail.enabled` absent). **Reopen only on a material change to the live SFP
+  construct (stop logic or TP structure).** ⚠ Known unbuilt path: `modify_position_tp_sl_order` is a
+  `NotImplementedError` stub (`brokers/bitunix.py:2229`) — the live SL-ratchet mechanism; **no current
+  need** (would only be built if the trail is ever reopened).
+- ✅ **TASK 3 — RANGE-only veto: DEF A PINNED as the definition; NO live wiring** (operator 2026-08-05):
+  `range_veto_definition.md`. Definition of an up_but_bearish short = 1h range-detector `rd_os==+1`
+  (up-break); RANGE-only veto keeps shorts only when `rd_os∈{0,−1}`. Only non-empty operationalization
+  (all 341 construct shorts are macro60-bear; DEF B empty here). Veto not wired (lift +0.014 whole-book
+  but coin- + holdout-inconsistent). **Follow-up (explicit, n≥30 review): evaluate DEF B (macro60==bull
+  AND rd_os≠0) on the LIVE per-coin-gated construct** — untestable on the macro60 research harness.
+- ✅ **TASK 4 — futures-only maker window: APPROVED** (operator 2026-08-05, executes at their deploy
+  window; clock starts at flip): `futures_maker_window_proposal.md` + deploy-ready package
+  `futures_maker_window_deploy_package.md` (exact config diff, runbook, md5 pre/post recipe, abort
+  criteria + monitoring). Isolated from SFP (maker flag futures-scoped; SFP observer 0 maker refs).
 
 ---
 
