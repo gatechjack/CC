@@ -14,13 +14,15 @@ Branch `claude-2026-08-04` (continued); read-only. Report `reports/2026-08-05_ka
 
 - ✅ **6 preservation commits PUSHED to origin** (durability): `cbc92d0/2b14b8d/9f590b6/5e2e15f/7179b06/
   7f66e35` on their branches (4 fast-forward, 2 new remote branches).
-- ⏸️ **Discard 14 + prune — HELD (awaiting operator).** The `cc-2026-08-04b-wt` confirmation arrived as
-  an **unfilled** `[LIVE / NOT LIVE]` placeholder. Re-checked read-only: **clean, not locked, idle ~17h,
-  at prod-live tip `ef613e5`** (looks like the 08-04 PMCC-deploy leftover, not a live session). Second
-  fork: the 14 are **dirty + mostly unmerged**, so a no-`--force`/no-`clean` prune isn't directly
-  possible — need the operator's chosen mechanic (authorize `worktree remove --force` for the audited
-  scratch-only trees, or delete the named scratch first; and keep-branches vs `branch -D`). Nothing
-  removed.
+- ✅ **Prune EXECUTED 2026-08-05** (operator NOT-LIVE confirm + mechanic ii): deleted the audited
+  non-ignored scratch (**188 files**) then plain `git worktree remove` (no --force); **all 15 branches
+  KEPT** (no -D); **0 tracked mods** lost (verified before delete). **Worktree count 86 → 71 (15
+  removed).** ★Count correction: the audit TABLE marks **15** DISCARD (session-2 prose miscounted "14";
+  6 COMMIT + 15 DISCARD + 1 KEEP = 22). Itemized deleted list:
+  `reports/2026-08-04_bitunix_ops_session2/worktree_prune_deleted_2026-08-05.md`. `cc-2026-08-02-wt`
+  exempt (untouched); the 6 COMMIT worktrees + #19 `cc-p3` KEEP survive. ⚠ `cc-2026-08-04b-wt` + branch
+  removed **externally** (NOT by this session — operator cleaned their own leftover; branch-deletion
+  needs a `-D` never run here).
 - ✅ **Kalshi fee verification (evidence-only; D5/closures/live config untouched).** Taker formula
   **CONFIRMED** = `ceil(0.07·C·P·(1−P)·100)/100` (matches the harness `kalshi_fee`). Makers pay **25% of
   taker** (2 schedule sources) but the lab harness charged makers the **full taker fee** → over-charge.
