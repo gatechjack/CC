@@ -31,13 +31,19 @@ Branch `claude-2026-08-04` off `64c4831` (08-02 tip); read-only / research / pro
 
 **Deliverables (all proposal/evidence only — operator rules row by row):**
 - 🔎 **TASK 1 — B1 second-pass dirty-worktree audit** (22 rows, COMMIT/DISCARD/KEEP per row):
-  `reports/2026-08-04_bitunix_ops_session2/worktree_audit.md`.
-- 🔬 **TASK 2 — pre-target trail design + backtest** (OFF flag). Null hypothesis = the 2026-06-26
-  tight-stop finding (early stop-ratchet destroys the BOS wide-stop edge); the test asks whether
-  ANY trail config escapes it.
-- 🔬 **TASK 3 — RANGE-only veto definition + backtest** (1-2 computable defs from the existing
-  regime classifier + veto-lift evidence).
-- 📋 **TASK 4 — futures-only maker window proposal** (measured, micro-sized; feeds the n≥30 review).
+  `reports/2026-08-04_bitunix_ops_session2/worktree_audit.md`. → 6 hold real work to COMMIT
+  (#1 pine, #6 PEAD probes, #17 unsaved k5 report, #18/#20 utils, #22 wallet phase-2), 14 pure
+  scratch DISCARD, 1 KEEP (#19). ⚠ `cc-2026-08-04b-wt` (clean, not mine) — confirm before prune.
+- 🔬 **TASK 2 — pre-target trail design + backtest** (OFF flag): `pre_tp1_trail_{design,backtest}.md`.
+  → **PARK. 0/25 configs beat flat-3R net avgR** (+0.085); best (+2R,3.0×ATR) −0.012R z=−0.36 (n.s.),
+  worse OOS; aggressive cells significant harm (z −3.05) on the ETH/XRP bull runner cells. H0 (tight-
+  stop finding) not rejected. Live SL-ratchet path is an unbuilt stub (`bitunix.py:2229`) anyway.
+- 🔬 **TASK 3 — RANGE-only veto definition + backtest**: `range_veto_definition.md`.
+  → **Pin DEF A** (up_but_bearish short := `rd_os==+1`; only non-empty operationalization — all shorts
+  are macro60-bear so DEF B is empty here). Veto lift small (+0.014 whole-book) but coin-inconsistent
+  (removes BTC/ETH winners) + holdout-inconsistent → **no live veto** (deferred to n≥30, as ruled).
+- 📋 **TASK 4 — futures-only maker window proposal** (measured, micro-sized; feeds the n≥30 review):
+  `futures_maker_window_proposal.md`. Isolated from SFP (maker flag is futures-scoped; SFP taker-only).
 
 ---
 
