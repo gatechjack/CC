@@ -12120,3 +12120,4 @@ ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/trading_corp/config/
 Re-enables within ≤30s via mtime reload; no restart. **Reopening the division requires a NEW Board memo + new thesis** (memo §Closure) — this is not a routine toggle.
 
 **Note (NOT this deploy):** prod-live advanced `f9740fb → 480e591` (kalshi_llm re-estimate-on-movement gate) during this session with **no deploy_log entry** — flagged for that session to log. `config/strategies.yaml` was unaffected (ce2f1c0 baseline held through the advance).
+- 2026-08-06 ~20:52 UTC — PMCC credit/selection fix DEPLOYED LIVE (PID 607896->610172); prod-live f9740fb->tip; pmcc_robinhood.py 0d199b23->2a390124; self-gated az RunShellScript root; Gate-A pass, py_compile ok, bitunix futures+sfp matched=0 clean, 0 tracebacks, 0 placed, PMCC 18 legs, auto_execute:false held; rollback pmcc_creditfix_rollback_20260806.sh. See reports/2026-08-06_pmcc_riot_false_debit_block/DEPLOY_RECORD.md
