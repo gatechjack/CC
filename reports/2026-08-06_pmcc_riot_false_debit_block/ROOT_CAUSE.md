@@ -1,3 +1,10 @@
+> **⚠ SUPERSEDED (2026-08-06 mid-session).** The "zero opening bid / opening rotation"
+> root cause below is **DISPROVEN** by a live 15:17 ET reproduction — see
+> `ROOT_CAUSE_2_MIDSESSION.md`. The real mechanism is a **10% spread gate rejecting the
+> on-target δ chain → far-OTM low-bid strike substitution**, against a now real-premium
+> ($0.75) buyback, evaluated on a bid-vs-mark mismatched-timestamp basis. The selected
+> strike's bid is a healthy $0.75, not zero. Kept for history.
+
 # PMCC roll false "net debit" block on RIOT — root cause (READ-ONLY)
 
 - **Date:** 2026-08-06, event ~09:55 EDT (opening rotation)
