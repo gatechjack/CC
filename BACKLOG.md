@@ -1038,11 +1038,19 @@ Filed 2026-05-09. Open positions cache for paper-mode parity with live mode.
 Filed 2026-05-09. Division-reusable portfolio view. Lower priority than
 SELL-pairing.
 
-## P2 — Polymarket dedupe follow-up: underlying/series-level concentration cap
+## P2 — Polymarket dedupe follow-up: underlying/series-level concentration cap — ✅ CLOSED obsolete-by-closure (2026-08-06)
 
 Filed 2026-05-21. Blocked on per-`condition_id` cap ship (operator-approved
-2026-05-21) + post-cap data review. Verify ship status before working on
-this follow-up.
+2026-05-21) + post-cap data review.
+
+**CLOSED 2026-08-06 — obsolete by division closure.** The 2026-08-06 edge
+evaluation found no edge and refuted the premise
+(`reports/2026-08-06_polymarket_arb_edge_eval/ASSESSMENT.md`), and the Board
+CLOSED `polymarket_arbitrage`. The correlated-underlying pattern (crude-oil
+strikes / World Cup / Iran–Israel peace-deal deadlines) does persist in clean
+data (assessment §6), but a series-level cap is a risk-control refinement with
+no edge left to protect. Reopen only if a NEW Board memo revives the division
+on a new thesis.
 
 ---
 
@@ -1364,10 +1372,18 @@ drift.
 Filed 2026-05-21, operator-approved 2026-05-21. Verify ship status — may be
 complete.
 
-## P1 — Polymarket clean-data tracker
+## P1 — Polymarket clean-data tracker — ✅ COMPLETE (evaluation done 2026-08-06; division CLOSED)
 
 Filed 2026-05-21. Trades with `entry_ts` before 2026-05-21 12:28:07 UTC are
 pre-cap and excluded from the 50-trade floor.
+
+**DONE 2026-08-06.** Floor cleared (n=272 clean resolved) and edge evaluated:
+`reports/2026-08-06_polymarket_arb_edge_eval/ASSESSMENT.md`. Verdict = **no
+demonstrated edge, premise refuted** — +$6.30/272 (t=0.25, flat; 95% CI
+[−$43,+$56]); LLM Brier 0.254 vs market 0.185 (the market is the better
+estimator on the strategy's own selected trades). Board CLOSED
+`polymarket_arbitrage` 2026-08-06 (`config/strategies.yaml` `enabled:false`;
+memo Closure section). Tracker retired.
 
 ## P2 — bitunix dashboard full 5-panel rebuild
 
