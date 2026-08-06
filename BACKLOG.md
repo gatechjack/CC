@@ -12,6 +12,13 @@ Active session work lives in chat — not duplicated here.
 
 Branch `claude-2026-08-04` (continued); read-only. Report `reports/2026-08-05_kalshi_fee_verification/`.
 
+- ✅ **T2 kalshi_crypto_v2 forward observer DEPLOYED + VERIFIED LIVE 2026-08-06 01:34:37 UTC** (PID 587634;
+  managed-identity creds; deployed via `az run-command` root — **no sudo**; operator-run, agent read-only).
+  4 `kcv2_*` tables accruing at 30s; advance verified to **cycle 65** (idx=4 / ws=True / alarm=0 every
+  cycle, quotes ~100–108, signals=8; sum_to_1_ok==COUNT). Paste-sheet + runners at
+  `research/kalshi_crypto_v2/{T2_OPERATOR_PASTE_SHEET.md, t2_deploy/}`; deploy_log entry added. **This is
+  the T2 forward corpus the D5 ladder-distribution reopen was waiting on** — now collecting.
+
 - ✅ **6 preservation commits PUSHED to origin** (durability): `cbc92d0/2b14b8d/9f590b6/5e2e15f/7179b06/
   7f66e35` on their branches (4 fast-forward, 2 new remote branches).
 - ✅ **Prune EXECUTED 2026-08-05** (operator NOT-LIVE confirm + mechanic ii): deleted the audited

@@ -116,6 +116,29 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-08-06 01:34 UTC — kalshi_crypto_v2 READ-ONLY forward observer (T2) DEPLOYED + VERIFIED LIVE (paper/observation; operator-run via `az run-command` root — NO sudo; no order path)
+
+**Commits:** package `158aaa5` (built on the `claude-2026-08-01b`/`claude-2026-08-02` line); deployed via the paste-sheet + runners on `claude-2026-08-04` (`da3e01e`).
+**Triggered by:** operator ops session (2026-08-05→06) — stand up the T2 forward corpus the D5 ladder-distribution reopen was waiting on.
+**Backup tag:** `n/a` (first-shipment of 3 NEW files; no existing file modified).
+
+**Files deployed (3, all NEW; LF md5 verified on the VM):**
+- `trading_corp/agents/strategies/kalshi_crypto_v2_observer.py` — the observer (`dba46374b23a74fe9eaa333be61744cd`)
+- `scripts/migrate_kcv2_tables.py` — creates the 4 `kcv2_*` tables (`7a2dd43e46be0c57382a838f6b223b64`)
+- `/etc/systemd/system/trading-corp-kcv2-observer.service` — the unit (`bf0014618895921790c6423f4fbd2255`)
+
+**Features shipped (load-bearing for "is T2 live?"):**
+- systemd service `trading-corp-kcv2-observer` (User=azureuser; `venv/bin/python -m trading_corp.agents.strategies.kalshi_crypto_v2_observer`), 30s cadence → 4 new `kcv2_*` tables: cfbenchmarks_value index (BRTI/ETHUSD_RTI/SOLUSD_RTI/XRPUSD_RTI) + trailing-60s TWAP, near-money both-sided Kalshi quotes (KX*15M + hourly ladder/dir) with `band_pct` + `sum_to_1_ok` guard, lifted SFP state with `computed_bar_ts_ms`, and a per-cycle heartbeat with a zero-row `alarm`. READ-ONLY (no order path).
+- Creds via KV **managed identity** — `KALSHI-KAREN-*` from `kv-tc-vtwbowt3wtkpy` via `DefaultAzureCredential`, in memory only, **no secret on disk**.
+
+**Notable code changes:** deploy mechanism = `az vm run-command invoke ... RunShellScript` (root) — **NO sudo anywhere**; the DB migration ran via `runuser -u azureuser` so the live DB + wal/shm stay azureuser-owned; code files placed with `install -o azureuser`. Paste-sheet + runners live at `research/kalshi_crypto_v2/{T2_OPERATOR_PASTE_SHEET.md, t2_deploy/}`.
+
+**Verification:** PID **587634**, `active (running)` since **2026-08-06 01:34:37 UTC**. Managed-identity KV read = `KV_OK True True`. Advance confirmed to **cycle 65 (~32 min)**: every cycle `idx=4 ws=True alarm=0`, quotes ~100–108, signals=8; heartbeat `rows_index=4`/`rows_quotes>0`/`alarm=0` throughout; `kcv2_quotes` `sum_to_1_ok == COUNT`; `kcv2_signals` carry non-null `computed_bar_ts_ms`; logs show `cfbenchmarks WS connected`, no tracebacks / `KalshiAuthError`.
+
+**Rollback recipe:** `powershell -ep bypass -f .\t2_9_rollback.ps1` (disables + removes the unit + drop-in via `az run-command` root; the 4 `kcv2_*` tables are additive/harmless — left in place).
+
+---
+
 ## 2026-07-27 ~12:11 UTC — Kalshi copy dashboard P1+P2 DEPLOYED + VERIFIED LIVE — Selected intel epoch-scoped (completes fix c) + mode-aware header + per-panel scope labels (agent-driven, autonomous under explicit Board authorization; web-only; flat-window restart)
 
 **What & why:** completes S2 fix (c) — fix (c) live-scoped the per-whale panel's *base* columns but the intel merge (`_query_kalshi_whale_intel`) stayed all-time, leaving `Copies/Copy%/Net PnL` all-time next to live-scoped `Resolved/WR%/Realized P&L` on the Selected row (the Sept re-selection sorts by Net PnL → would rank on paper backlog).
