@@ -203,4 +203,17 @@ Recommended: **R1a if the research is done** (biggest, cleanest), else **R1b (24
 - **Biggest win:** decide kalshi_llm's fate — pause (~$235/mo) or cooldown+downgrade (~$200/mo). This single division is the whole audit.
 - **No runaway/error-loop spend, no unexpected Opus spend.** The system is well-behaved; the cost is a *policy* question (should paper strategies with no edge burn Sonnet tokens 1,300×/day?), not a bug.
 
-*All figures are estimates from real call counts × current pricing × measured prompt sizes; the two dominant lines (kalshi, polymarket) rest on empirical 7/30-day invocation counts. PMCC is flagged low-confidence pending instrumentation. Nothing in this report was executed — Jack decides all actions.*
+*All figures are estimates from real call counts × current pricing × measured prompt sizes; the two dominant lines (kalshi, polymarket) rest on empirical 7/30-day invocation counts. PMCC is flagged low-confidence pending instrumentation. Nothing in the original audit was executed — Jack decides all actions.*
+
+---
+
+## ADDENDUM 2026-08-06 19:43 UTC — R0 usage-logging DEPLOYED + prompt caching CONFIRMED
+
+Per Jack's directive, added `usage_metadata` logging to the kalshi_llm + polymarket LLM call path (additive only; helper `extract_usage_metadata` in the client wrapper `llm.py`, folded into the existing `*_probability_called` events). Deployed via **`az run-command` root (NO sudo)**, gated (pending_order=0), ownership-preserving, backed up.
+
+- Deploy: engine **PID 573018 → 605796**, `active` since 19:43:20 UTC, **0 tracebacks** since restart; kalshi (root:root 644) + llm/polymarket (azureuser 664) ownership preserved; py_compile OK. Branch `claude-usagelog-2026-08-06 @ f9740fb`; **`prod-live` advanced `ef613e5`→`f9740fb`** and pushed. Rollback: `~/rollback_usagelog_20260806.sh`.
+- **R0 RESULT — caching WORKS.** First 6 post-restart kalshi calls, raw `usage`:
+  `{"input_tokens":109-114, "cache_creation_input_tokens":0, "cache_read_input_tokens":3116, "output_tokens":254-323}`
+  The ~3,116-token system prompt is served at **cache-read (0.1×)** on every warm call (`cache_read=3116`, not 0). Confirms the **central estimate (~$235/mo), not the 2× no-cache ceiling.**
+- Refined per-call cost (kalshi, caching on): input = 3,116×$0.30/M (cache-read) + ~112×$3/M (uncached user) ≈ **$0.00128**; output ≈ 285×$15/M ≈ **$0.00428**; ≈ **$0.0056/call** → ~1,300/day ≈ **$7.2/day ≈ $220/mo** (very close to the audit's cache-on floor).
+- Pending: polymarket had no post-restart survivor/LLM call yet (low rate) — same code path, will confirm on next call. **Full $/mo recompute from ~1h of accrued usage data to follow** (window: ts ≥ 2026-08-06T19:43).
