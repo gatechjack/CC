@@ -972,7 +972,7 @@ btc_accumulator:
 #   2. KV holds POLYMARKET-PRIVATE-KEY / POLYMARKET-FUNDER-ADDRESS / POLYGON-RPC-URL
 #   3. Phase 2.5 Backtester verdict cleared
 polymarket_arbitrage:
-  enabled: true                     # Board enabled 2026-05-10; paper-mode running
+  enabled: false                    # Board CLOSED 2026-08-06: no edge, premise refuted (see Closure in runbooks/board_memo_polymarket_dedupe_2026_05_21.md); stops scan loop + LLM spend
   # `auto_execute` is irrelevant for Polymarket today — broker is
   # ReadOnlyBroker (no place_order method). Per-trade HITL approval
   # was REMOVED 2026-05-10 (Board direction): orders now flow
