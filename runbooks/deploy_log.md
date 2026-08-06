@@ -12092,6 +12092,22 @@ string absent. auto_execute:false + halt untouched throughout; nothing placed.
 
 ---
 
+## 2026-08-06 — kalshi_llm/polymarket LLM usage-logging (f9740fb) + kalshi_llm re-estimate-on-movement gate (480e591) — 2 RESTARTS [BACKFILLED]
+
+**Context:** log backfill for two deploys that were verified live before `prod-live` advanced but never got entries (flagged in the polymarket-close entry below). From the Anthropic token-spend audit session (`reports/2026-08-06_anthropic_spend_audit/anthropic_spend_audit.md`). Both via **Azure Run Command (RunShellScript, ROOT, NO sudo)** — gated `pending_order==0` + backup + staged-md5-verify + py_compile (prod venv) + restart + old→new PID. prod-live advanced `ef613e5 → f9740fb → 480e591`. Deploy evidence re-confirmed read-only 2026-08-06 (journal restart events + file mtimes + running-file LF-md5).
+
+**Deploy 1 — usage_metadata logging (commit `f9740fb`), ~19:43:20 UTC, PID 573018→605796.** Additive observability, no trading-path change: `extract_usage_metadata()` added to the client wrapper `agents/llm.py`; `kalshi_llm_arbitrage` + `polymarket_arbitrage` attach it to their probability estimate and fold the 4 counters (input / cache_creation / cache_read / output) into the existing `*_probability_called` audit events. 3 files: `llm.py` (LF-md5 `3e7721d8`, azureuser 664), `kalshi_llm_arbitrage.py` (`da949ce1`; later superseded by Deploy 2, root 644), `polymarket_arbitrage.py` (`a9c9eeae`, azureuser 664). Backup `~/usagelog_bak_20260806/`. **R0 result:** prompt caching CONFIRMED — warm kalshi calls log `cache_read_input_tokens=3116`, `cache_creation=0` (the ~3,116-tok analyst system prompt is served at cache-read), so the audit's central ~$220/mo estimate holds, not the 2× no-cache ceiling.
+
+**Deploy 2 — re-estimate-on-movement gate >3c (commit `480e591`), ~20:38:49 UTC, PID 605796→607896.** `kalshi_llm_arbitrage.py` only (LF-md5 `5917735a`, root 644, +112/−8). Skips the LLM call when `|implied − last-at-estimate| ≤ 3c` AND a prior estimate exists; first calls always run; skipped tickers get the SAME cooldown advance (cooldown logic untouched); last-estimate `{implied,ts}` co-stored in a NEW `agent_state` key `market_last_estimate` (45-day pruned); skips logged as `kalshi_llm_probability_skipped`. Estimation + parsing untouched. Backup `~/movegate_bak_20260806/` (holds the pre-gate `da949ce1` usagelog kalshi). **Sized lever:** ~783 redundant calls/day (73%) → ~$131/mo (post-fix run-rate ~$179 → ~$48/mo). **Verified:** first post-restart cycle 20 survivors → 20 estimates → 0 skips (correct — empty store = all first-calls); `market_last_estimate` populated with sane values; usage/caching intact. Skips begin ~6h post-deploy (first cooled tickers re-enter the gate); 24h call-rate verification pending.
+
+**Re-confirmation (read-only):** journal `Deactivated successfully` at 19:43:20 + 20:38:49; file mtimes `llm.py`/`polymarket_arbitrage.py` 19:43:20, `kalshi_llm_arbitrage.py` 20:38:49; running-file LF-md5 == commit targets (llm `3e7721d8` / poly `a9c9eeae` @ f9740fb; kalshi `5917735a` @ 480e591); both backup dirs present.
+
+**Rollback:** Deploy 2 → `rollback_movegate_az.ps1` (restores usagelog kalshi `da949ce1` from `~/movegate_bak_20260806/`); Deploy 1 → `rollback_usagelog_az.ps1` (restores pre-usagelog llm/kalshi/polymarket from `~/usagelog_bak_20260806/`). Both az run-command root, no sudo.
+
+**Cross-session note:** the CURRENT live PID is **610172** (not 607896) — the engine was restarted again at **20:52:34 UTC** by a SEPARATE parallel session's PMCC credit/selection-fix deploy (az run-command; documented at commit `eec833d`, "PID 610172"), which did not touch the llm/kalshi/polymarket files (their md5s are unchanged post-restart). `polymarket_arbitrage` was independently CLOSED (`enabled:false`, hot-reload, no restart) at 20:40:38 by that parallel work — see the next entry.
+
+---
+
 ## 2026-08-06 — Polymarket arbitrage division CLOSED (config-only, NO restart, NO code)
 
 **Commits:** prod-live branch `polymarket-arb-closure-prodlive-2026-08-06` (config `enabled:false`) + `main` `a6bb74c` (closure record: assessment + memo Closure section + BACKLOG P1/P2). See `runbooks/board_memo_polymarket_dedupe_2026_05_21.md` §Closure.
