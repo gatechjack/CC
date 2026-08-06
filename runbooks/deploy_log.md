@@ -12089,3 +12089,34 @@ SFP SOL REAL in-trade RESUMED** + reconciler TIER-A. **Fix smoke (non-placing):*
 pass (the exact failing case now builds), thin/wide-spread still reject; market closed → all 3 held symbols
 (TSLA/RKLB/HOOD) return the honest "market closed — prices at 9:30 ET open" via live HTTP refresh-pricing, old conflated
 string absent. auto_execute:false + halt untouched throughout; nothing placed.
+
+---
+
+## 2026-08-06 — Polymarket arbitrage division CLOSED (config-only, NO restart, NO code)
+
+**Commits:** prod-live branch `polymarket-arb-closure-prodlive-2026-08-06` (config `enabled:false`) + `main` `a6bb74c` (closure record: assessment + memo Closure section + BACKLOG P1/P2). See `runbooks/board_memo_polymarket_dedupe_2026_05_21.md` §Closure.
+**Triggered by:** Board decision 2026-08-06 to close `polymarket_arbitrage`. Basis: clean-data edge evaluation `reports/2026-08-06_polymarket_arb_edge_eval/ASSESSMENT.md` — n=272 clean resolved, no demonstrated edge (+$6.30/272, t=0.25, flat), premise refuted (LLM Brier 0.254 vs market-implied 0.185 vs coin-flip 0.250 — the market is the better estimator on the strategy's own selected trades).
+**Backup:** `config/strategies.yaml.bak_polyclose_20260806` (on prod; `cp -p`, azureuser-owned).
+
+**Files deployed (1):**
+- `config/strategies.yaml` — `polymarket_arbitrage.enabled: true → false` (one line + closure comment). `auto_execute` (false), `max_open_per_condition_id` (1), and every other strategy block UNCHANGED. Whole-file LF-md5 `ce2f1c0ee5fc074de98581143085fc3a → cc6791803b6562a18dd603fab88b2a4b` (prod == prod-live commit parity verified).
+
+**What this does (load-bearing for future "is polymarket_arbitrage running?" checks):**
+- Stops the `polymarket_arbitrage` scan loop and its per-cycle Anthropic/LLM spend. Hot-reload via mtime `_reload()` (gates at `main.py:3793` + `polymarket_arbitrage.py:204`) — **NO restart**, effect within ≤30s. Engine PID unchanged.
+- Shared `ANTHROPIC_API_KEY` **NOT** revoked (also used live by kalshi_llm_arbitrage / pmcc_robinhood / risk / ceo / research_firm) — `enabled:false` is the surgical stop for THIS strategy only.
+- **No code change.** Strategy logic, per-`condition_id` cap, and the risk gate untouched. `polymarket_copy_trader` (separate division) unaffected and still enabled.
+
+**Deploy mechanism.** Operator-run SSH (azureuser, **no sudo** — config is azureuser-owned). Surgical `venv/bin/python` one-line string replace (count==1 guarded), pre-write md5 drift gate (ce2f1c0), backup, YAML `safe_load` asserts, and `diff` verify. No file transfer, no root, no restart.
+
+**Verification (read-only, post-edit; server clock 20:43:29Z):**
+- File: `enabled:false`; asserts enabled=False / auto_execute=False / max_open=1 / copy_trader.enabled=True; diff = exactly 1 line; new md5 `cc6791…`.
+- **Flatline:** `polymarket_scan_cycle` STOPPED at 20:40:38 (= edit mtime) — zero cycles in the following ~3 min (baseline cadence ~30s / 116 per 60 min). `polymarket_llm_probability_called` pinned at **13,587** (no new Anthropic spend). `would_have_placed` 488 / `polymarket_dedupe_skipped` 2,091 unchanged.
+- **Engine healthy:** 6 other actors emitting post-edit (bitunix reconcilers, kalshi_llm_arbitrage 28 audits @20:42:40 — shared token intact, research_firm, telegram); journal shows no error/traceback on reload. `polymarket_resolver` still ticks (drains remaining ~66 pending historical would_have_placed rows into `polymarket_round_trips`, **NO LLM calls** — read-only, no spend).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/trading_corp/config/strategies.yaml.bak_polyclose_20260806 /home/azureuser/trading_corp/config/strategies.yaml"
+```
+Re-enables within ≤30s via mtime reload; no restart. **Reopening the division requires a NEW Board memo + new thesis** (memo §Closure) — this is not a routine toggle.
+
+**Note (NOT this deploy):** prod-live advanced `f9740fb → 480e591` (kalshi_llm re-estimate-on-movement gate) during this session with **no deploy_log entry** — flagged for that session to log. `config/strategies.yaml` was unaffected (ce2f1c0 baseline held through the advance).
