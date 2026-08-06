@@ -40,3 +40,59 @@ All LLM calls route through a single client: `trading_corp/agents/llm.py::build_
 **Research Firm — wired but mostly operator-triggered (evidence in `main.py`):** built on every start (`build_research_firm_deps`, main.py:1183); the only *automatic* LLM path is `prime_all_division_position_contexts` at startup (main.py:1215, fires `position_context` per Lord Otter / Market Cypher symbol). Everything else (candidate recs, debate, thesis) is operator-triggered via `/research` or PMCC scout `research_on_demand`. `thesis` Telegram is hardcoded "not wired"; `trade_confirmation` has no live trigger.
 
 > ⚠️ **These are CODE facts.** Prod runtime (which divisions are actually enabled, how often scans fire, real call counts) is verified separately in STEP 2 — prod config may differ from repo.
+
+---
+
+## STEP 2 — Actual prod runtime (empirical, `tc-prod-vm` SSH read-only, 2026-08-06)
+
+**Topology.** All Anthropic spend lives in ONE process: `trading-corp.service` (the engine, `/home/azureuser/trading_corp`, venv python). Other running services and all schedulers make **zero** Anthropic calls (verified: no `scripts/` file imports the LLM client; the kcv2 observer has no LLM import):
+
+| Runtime unit | Anthropic? | Evidence |
+|---|---|---|
+| `trading-corp.service` (engine) | **YES — all of it** | hosts every agent/strategy in STEP 1 |
+| `trading-corp-kcv2-observer.service` | No | no `build_chat_model`/`anthropic` import in its ExecStart script |
+| `market-context-recorder.service` | No | recorder, no LLM |
+| `sfp-card-watcher.service` | No | Telegram card notifier |
+| timers: pead-watcher, pct-pruner, watchlist-stats/-deep, pm-watchlist-deep | No | `grep -rl build_chat_model scripts/` → 0 hits |
+| cron: telegram_lifecycle_divergence_check, replay_audit_event_write_failed | No | monitors/replay, no LLM |
+
+Prod `config/agents.yaml` is **byte-identical to repo** (same model routing). **API key is live** — proven empirically: 8,991 kalshi LLM calls in 7d each carry freshly-generated reasoning text (not cache-replayed).
+
+**Real invocation counts** from `audit_event` (1.95M rows; the engine logs a `*_probability_called` event at each LLM call). Window ending 2026-08-06 19:07 UTC:
+
+| Actor | LLM-call event | 7-day count | 30-day count | ≈ calls/day |
+|---|---|---|---|---|
+| **kalshi_llm_arbitrage** | `kalshi_llm_probability_called` | 8,991 | 40,917 | **~1,300** |
+| **polymarket_arbitrage** | `polymarket_llm_probability_called` | 795 | 4,286 | **~140** |
+| research_firm | `research_position_context_emitted` (+expert narration) | ~40 | ~230 | ~5 |
+| PMCC (`robinhood_pmcc`/`pmcc`) | *(no LLM-call event emitted — not instrumented)* | n/a | n/a | ~30–70 est |
+| ceo / portfolio / risk / whale-analyst | — | 0 | ~0 | ~0 |
+
+Notes verified empirically:
+- **Scan cycles ≫ LLM calls.** polymarket ran 21,703 scan cycles/7d but only 795 LLM calls — the LLM fires only on post-filter *survivors* (`survivors_post_filter: 0` most cycles). kalshi: 10,446 cycles → 8,991 calls (Economics/Elections discovery keeps survivors high).
+- Both big spenders are **`enabled: true`, paper** (`auto_execute:false`; orders land as `would_have_placed` audit rows — 77 kalshi / 18 polymarket in 7d — nothing placed).
+- kalshi cadence `poll_interval_sec: 60`, `k_markets_per_cycle: 20`, `market_cooldown_hours: 6`, discovery narrowed to **Economics + Elections**. polymarket `poll_interval_sec: 30`, K=20, cooldown 6h.
+- PMCC's `pmcc_morning_triage` is **deterministic** (`register:"routine"`, rule-based) — NOT an LLM call. PMCC's LLM-judgment path (pmcc_robinhood.py:1013) emits no audit event, so its call volume is **not measurable from the DB** — flagged for instrumentation.
+- ceo/portfolio/whale are on-demand (Telegram `/brief`, dashboard buttons) and were **not invoked** in the window → $0. Risk narrator gated on an order flow that barely fired (3 approvals/7d).
+- backtester + eod_debate (Opus in config) = **dead** (no call site). No Opus spend except rare research_judge.
+
+---
+
+## STEP 3 — Estimated spend per call site (sorted by cost)
+
+**Token shape per call** (measured from real prompts/payloads):
+- kalshi & polymarket share the **same ~2,800-token `ANALYST_SYSTEM_PROMPT`** with `cache_control: ephemeral`. It clears Sonnet 4.6's 2,048-token cache minimum; with 30–60s cycles under a 5-min TTL the cache stays warm (warm-and-fan: 1 serial write, K−1 reads) → system prompt billed **mostly at cache-read ($0.30/M)**.
+- kalshi user prompt ~80 tok; polymarket user prompt ~300 tok (desc capped 1200 chars). Output ~300 tok both (measured: ~90-word reasoning + key_unknowns + JSON).
+
+| # | Call site | Model | calls/day | ~tok in/out per call | est $/day | est $/month | Confidence |
+|---|---|---|---|---|---|---|---|
+| 1 | **kalshi_llm_arbitrage** | sonnet-4-6 | ~1,300 | 2,880 in (2,800 cached) / 300 out | **$7.8** | **~$235** | High (real counts; caching assumed) |
+| 2 | **PMCC** judgment | sonnet-4-6 | ~30–70 | ~3,500 in (uncached) / ~800 out | $0.7–1.6 | **~$30** | **Low** (not instrumented) |
+| 3 | **polymarket_arbitrage** | sonnet-4-6 | ~140 | 3,100 in (2,800 cached) / 300 out | $0.94 | **~$28** | High (real counts) |
+| 4 | research_firm (synth+expert+judge) | sonnet-4-6 (+opus judge rare) | ~5 | 1–3k in / 1–2k out | $0.1–0.3 | **~$5** | Med |
+| 5 | ceo / portfolio / risk / whale | sonnet-4-6 / haiku | ~0 | — | ~$0 | **~$1** | High |
+| | **TOTAL** | | | | **~$10/day** | **≈ $300/month** | |
+
+**kalshi_llm dominates (~78% of spend).** Sensitivity on kalshi #1 (the only material number): all-cache-read floor ≈ **$218/mo**; caching-broken ceiling ≈ **$510/mo**. Central $235/mo assumes caching is working — **strongly implied by design but not yet verified** (the audit_event payload doesn't record `cache_read_input_tokens`). See recommendation R0.
+
+> Opus/Haiku spend is effectively zero: the only Opus-routed live path (research_judge) fires a handful of times/month; Haiku (whale-analyst) wasn't invoked. The $300/mo is ~99% Sonnet 4.6, ~80% of it one paper strategy.
