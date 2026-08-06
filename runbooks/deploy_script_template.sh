@@ -38,15 +38,41 @@ FILES=(
 # the engine while a movegate deploy was mid-verify). Semantics:
 #   - lock present AND < 30 min old  -> ABORT, report the holder (do NOT touch it)
 #   - lock absent OR >= 30 min stale -> ACQUIRE (write {session,timestamp,commit})
-# Released as the LAST step below (step 7) and in the rollback script. A deploy
-# that aborts AFTER acquiring (steps 1-6) intentionally leaves the lock until it
-# goes stale (>=30 min) or the next deploy steals it -- that is the recovery path.
+# Lock disposition on exit (via the EXIT trap armed right AFTER acquire):
+#   - success                                     -> release
+#   - abort BEFORE any file install (pending_order gate / staged-md5 verify /
+#     backup fail; prod untouched)                -> release
+#   - abort AFTER install begins (prod may be partially modified)
+#                                                 -> HOLD (operator rolls back,
+#                                                    which releases, or rm's the
+#                                                    lock after verifying prod)
+# The rollback script does NOT acquire; it releases the lock as its last step.
+# A held lock also self-recovers once it goes >= 30 min stale (next deploy steals).
 if [ -f "$LOCK" ] && [ -n "$(find "$LOCK" -mmin -30 2>/dev/null)" ]; then
   echo "ABORT: deploy lock held (< 30 min old) by:"; cat "$LOCK"; exit 3
 fi
 printf '{"session":"%s","timestamp":"%s","commit":"%s"}\n' \
   "$DEPLOY_SESSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$DEPLOY_COMMIT" > "$LOCK"
 echo "== 0. deploy lock ACQUIRED: $(cat "$LOCK")"
+
+# EXIT-trap lock disposition. Armed AFTER acquire so a step-0 abort on a lock
+# held by ANOTHER session never triggers it. INSTALL_STARTED flips to 1 at step 4;
+# before that, prod is untouched so an abort releases; after it, an abort HOLDS.
+INSTALL_STARTED=0
+_lock_disposition() {
+  rc=$?
+  if [ "$rc" -eq 0 ] || [ "$INSTALL_STARTED" -eq 0 ]; then
+    rm -f "$LOCK"
+    if [ "$rc" -eq 0 ]; then
+      echo "== deploy lock RELEASED (success). =="
+    else
+      echo "== deploy lock RELEASED (aborted before any file install; prod untouched). =="
+    fi
+  else
+    echo "== deploy.lock intentionally HELD -- deploy aborted after acquire, prod may be partially modified. Run rollback (which releases the lock) or rm /home/azureuser/deploy.lock after verifying prod state. =="
+  fi
+}
+trap _lock_disposition EXIT
 
 # ---- 1. gate: pending_order must be 0 --------------------------------------
 P=$(sqlite3 "$APP/data/trading_corp.db" "SELECT COUNT(*) FROM pending_order;")
@@ -68,6 +94,7 @@ for e in "${FILES[@]}"; do f="${e%%:*}"; cp -p "$APP/$f" "$BK/$(basename "$f").b
 echo "   backups -> $BK"
 
 # ---- 4. swap, preserving owner/group/mode ----------------------------------
+INSTALL_STARTED=1   # from here on, an abort HOLDS the lock (prod may be partial)
 for e in "${FILES[@]}"; do
   f="${e%%:*}"; b=$(basename "$f")
   own=$(stat -c "%U" "$APP/$f"); grp=$(stat -c "%G" "$APP/$f"); mod=$(stat -c "%a" "$APP/$f")
@@ -89,9 +116,8 @@ STt=$(systemctl is-active trading-corp || true)
 echo "   old MainPID=$OLD  new MainPID=$NEW  state=$STt"
 [ "$STt" = "active" ] || { echo "WARNING: not active - run the rollback script"; exit 2; }
 
-# ---- 7. release deploy mutex  (LAST step) ----------------------------------
-rm -f "$LOCK"
-echo "== DONE. deploy lock RELEASED. Rollback: bash /home/azureuser/rollback_<name>_<YYYYMMDD>.sh =="
+# ---- 7. done (the EXIT trap releases the deploy mutex on success) -----------
+echo "== DONE. Rollback: bash /home/azureuser/rollback_NAME_YYYYMMDD.sh =="
 
 # =============================================================================
 # ROLLBACK TEMPLATE (separate file: rollback_<name>_<YYYYMMDD>.sh)
