@@ -506,11 +506,23 @@ def _select_weekly_strike(
         # No liquid strike lands in the band — price at the band midpoint so the
         # roll still builds (the panel/consent shows the actual selected strike).
         target_delta = (lo + hi) / 2.0
-    otm = [c for c in calls if c.get("delta") is not None and c["delta"] < 0.40]
-    pool = otm if otm else [c for c in calls if c.get("delta") is not None]
-    if not pool:
+    withd = [c for c in calls if c.get("delta") is not None]
+    if not withd:
         return None
-    return min(pool, key=lambda c: abs(c["delta"] - target_delta))
+    otm = [c for c in withd if c["delta"] < 0.40]
+    # Prefer an OTM (delta < 0.40) strike nearest the target, BUT never let the OTM
+    # cutoff EXCLUDE a strike that is strictly CLOSER to the target than the best OTM
+    # candidate. On coarse-spaced low-priced names — and when the delta band is empty
+    # (Fix 3, 2026-08-06) — the nearest strike can sit just above 0.40 (e.g. a δ0.47
+    # next to a δ0.16); the old hard `<0.40` cutoff silently substituted the far-OTM
+    # low-delta strike. CLAMP to the nearest strike by delta instead; never abort.
+    best_all = min(withd, key=lambda c: abs(c["delta"] - target_delta))
+    if not otm:
+        return best_all
+    best_otm = min(otm, key=lambda c: abs(c["delta"] - target_delta))
+    if abs(best_all["delta"] - target_delta) < abs(best_otm["delta"] - target_delta):
+        return best_all
+    return best_otm
 
 
 def _days_to(expiry: str) -> int:
@@ -782,17 +794,18 @@ class PMCCAgent:
         return int(self._liquidity_cfg.get("oi_bypass_min_volume", 500))
 
     def _passes_liquidity(self, opt: dict, *, symbol: str | None = None) -> tuple[bool, str]:
-        """Return (passes, reason). Uses the strategies.yaml liquidity gates.
+        """Return (passes, reason). Tradeability floor from the strategies.yaml gates.
 
-        The bar is exactly two gates:
+        The bar is two gates:
           1. Liveness — established OR actively-traded: pass when open interest
              >= `min_open_interest` (100) OR today's volume >= `oi_bypass_min_volume`
-             (500). OI is a stock that accumulates over a contract's life while
-             volume is the live signal, so a FRESH near-dated expiry with real
-             volume qualifies even before it builds OI, AND an ESTABLISHED strike
-             (high OI) qualifies even with zero intraday prints.
-          2. Spread — bid-ask <= `max_bid_ask_spread_pct` (10%) of mid, the
-             backstop against stale / untradeable strikes; "no ask" also fails.
+             (500). OI accumulates over a contract's life; volume is the live signal,
+             so a FRESH near-dated expiry with real volume qualifies before it builds
+             OI, AND an ESTABLISHED strike (high OI) qualifies with zero intraday prints.
+          2. Two-sided market — a real bid AND a real ask (a sane, non-inverted
+             quote). A missing BID = nothing to sell a credit into; a missing ASK =
+             nothing to buy back at; an inverted (bid > ask) quote is stale/degenerate.
+             These are the genuinely-untradeable cases.
 
         `symbol` is retained for API stability (callers pass it) but no longer
         selects the gate.
@@ -802,44 +815,44 @@ class PMCCAgent:
             since-retired black_sheep `eligibility_criteria`) was mis-applied here
             — no OTM weekly trades 10k/day — silently blocking every normal roll on
             the affected names for ~2.7 months. Reduced to `min_avg_volume`=50.
-          2026-08-04: the standalone `vol < min_avg_volume` (50) floor is REMOVED.
-            It was subsumed-and-harmful: any strike that clears Liveness already has
-            OI>=100 (established — needs no intraday volume) OR vol>=500 (>50 anyway),
-            so a surviving `vol < 50` could ONLY reject an OI-established, perfectly
-            -liquid strike that simply hadn't traded 50 lots yet today. That fired
-            off-hours (vol=0) and in the opening rotation on EVERY held name at once
-            (uniform "can't be priced"); OI is the correct liveness signal there,
-            exactly as gate 1 already asserts.
+          2026-08-04: the standalone `vol < min_avg_volume` (50) floor was REMOVED —
+            subsumed by Liveness (any strike clearing Liveness already has OI>=100 or
+            vol>=500), it only ever wrongly rejected OI-established thin-print strikes.
+          2026-08-06: the raw bid/ask SPREAD-WIDTH rejection (`spread > 10% of mid`)
+            is REMOVED. The operator trades at MID and fills ~100%, so a wide-but-
+            two-sided market on an OI-liquid strike IS tradeable. The width gate was
+            rejecting RIOT's entire on-target delta chain (12-22% spreads are normal
+            for these weeklies) and silently substituting a far-OTM low-bid strike,
+            which then manufactured a false "net debit" block. Tradeability is a
+            two-sided market + Liveness — NOT spread width. The "is there a market at
+            all" checks (no bid / no ask / inverted) are PRESERVED below. `_select_
+            weekly_strike` also clamps to nearest-delta so no far-OTM substitution can
+            occur; if the WHOLE on-target chain is untradeable the caller defers with
+            an honest sparse-chain reason (never a misleading "net debit").
         """
         bid = float(opt.get("bid") or 0)
         ask = float(opt.get("ask") or 0)
         oi = int(opt.get("open_interest") or 0)
         vol = int(opt.get("volume") or 0)
 
-        # Liveness: established (open interest) OR actively-traded today (volume).
+        # 1. Liveness: established (open interest) OR actively-traded today (volume).
         if oi < self._min_open_interest and vol < self._oi_bypass_min_volume:
             return False, (
                 f"OI={oi} < {self._min_open_interest} AND "
                 f"vol={vol} < {self._oi_bypass_min_volume}"
             )
 
-        # (2026-08-04) The standalone `vol < min_avg_volume` (50) floor was REMOVED
-        # here — it is subsumed by Liveness above and only ever wrongly rejected
-        # OI-established strikes with thin intraday prints, firing uniformly on every
-        # held name off-hours / at the open (see docstring). Spread is the remaining
-        # per-contract backstop.
-
-        # Bid-ask spread (skip if no bid — can't compute meaningfully)
-        if bid > 0 and ask > 0:
-            mid = (bid + ask) / 2.0
-            spread_pct = (ask - bid) / mid if mid > 0 else 1.0
-            if spread_pct > self._max_bid_ask_spread_pct:
-                return False, (
-                    f"spread={spread_pct*100:.1f}% > "
-                    f"{self._max_bid_ask_spread_pct*100:.1f}%"
-                )
-        elif ask <= 0:
+        # 2. Two-sided-market tradeability floor (the raw spread-WIDTH gate was
+        # removed 2026-08-06 — see docstring). Reject ONLY the genuinely untradeable:
+        # no bid (can't collect a credit), no ask (can't buy back), or an inverted
+        # (stale/degenerate) quote. A wide-but-two-sided market on a liquid strike
+        # PASSES — the operator fills at mid.
+        if bid <= 0:
+            return False, "no bid"
+        if ask <= 0:
             return False, "no ask price"
+        if ask < bid:
+            return False, f"inverted bid={bid:.2f} > ask={ask:.2f}"
 
         return True, "ok"
 
@@ -972,17 +985,22 @@ class PMCCAgent:
     @staticmethod
     def _classify_liquidity_reason(reason: str) -> str:
         """Bucket a _passes_liquidity reason into the sub-gate that bound:
-        liveness (OI-and-volume), volume, spread, no_ask. Observability for the
-        abort diagnostics (2026-07-24: 'all failed liquidity gate' hid WHICH gate,
-        so the opening-rotation volume/spread cause wasn't visible)."""
+        liveness (OI-and-volume), no_bid, no_ask, inverted (and legacy spread/volume).
+        Observability for the abort diagnostics (2026-07-24: 'all failed liquidity
+        gate' hid WHICH gate). `spread`/`volume` buckets are retained for back-compat
+        though `_passes_liquidity` no longer emits them (2026-08-06 / 2026-08-04)."""
         r = reason or ""
+        if "no bid" in r:
+            return "no_bid"
         if "no ask" in r:
             return "no_ask"
+        if "inverted" in r:
+            return "inverted"
         if "OI=" in r:                       # "OI=.. < .. AND vol=.. < .." (liveness)
             return "liveness"
-        if "spread=" in r:
+        if "spread=" in r:                   # legacy (width gate removed 2026-08-06)
             return "spread"
-        if "vol=" in r:                      # volume-only floor
+        if "vol=" in r:                      # legacy volume-only floor
             return "volume"
         return "other"
 
@@ -3745,6 +3763,33 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
             leap_lifetime_key=leap_key,
         )]
 
+    async def _fresh_leg_mark(
+        self, broker: Broker, symbol: str, expiry: str | None,
+        strike: float | None, *, fallback: float,
+    ) -> tuple[float, str]:
+        """Fetch a FRESH build-time mid for one option leg so the credit gate can
+        compare BOTH legs at the same timestamp — not a fresh new-short quote against
+        a staler position-scan snapshot (the 2026-08-06 SECONDARY bug). Returns
+        (mark, source) where source is "fresh" or "scan". FAIL-SAFE: any missing quote
+        or error falls back to the scan mark. Read-only (a quote fetch); places nothing."""
+        if expiry is None or strike is None:
+            return fallback, "scan"
+        try:
+            q = await broker.get_option_quote(symbol, expiry, float(strike), "call")
+        except Exception as e:      # noqa: BLE001 — any quote failure is fail-safe
+            log.warning("_fresh_leg_mark: get_option_quote raised for %s %s C%s: %s",
+                        symbol, expiry, strike, e)
+            return fallback, "scan"
+        if not q:
+            return fallback, "scan"
+        mk = q.get("mark_price")
+        if mk is not None:
+            return float(mk), "fresh"
+        bid, ask = q.get("bid"), q.get("ask")
+        if bid is not None and ask is not None:
+            return (float(bid) + float(ask)) / 2.0, "fresh"
+        return fallback, "scan"
+
     async def _propose_roll_short(
         self,
         symbol: str,
@@ -3852,26 +3897,39 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
         # "Always for credit"; STANDARD Major breach L199 "MUST credit"; FORBIDDEN
         # L170 "Roll for debit to chase OTM"). STANDARD permits a small debit
         # (≤8% LEAP, L255) — that latitude flows through the net_debit_justified
-        # override. CONSERVATIVE basis (amendment 2): sell the new weekly at BID,
-        # buy the old short back at MARK (the existing short exposes mark only, no
-        # ask). PRE-FEE (amendment 3): no fee data exists at proposal time (RH
-        # broker: none; FillEvent.fee is post-fill only) — the conservative net
-        # captures SPREAD, not fees. Both the conservative net and the card's mark
-        # net go in the audit so a blocked roll is understandable without re-derive.
-        conservative_net, mark_net, open_bid = _short_roll_credit(new_weekly, close_mark)
-        if conservative_net < 0 and override_kind != "net_debit_justified":
+        # override.
+        #
+        # BASIS (amended 2026-08-06): evaluate on the SAME-TIMESTAMP MID net — sell
+        # the new weekly at its MARK, buy the old short back at a FRESH build-time MARK
+        # (fetched now, same snapshot as the new-weekly quote) — NOT the old
+        # `new.bid − stale-scan.mark`. The operator trades at MID and fills ~100%, so
+        # mid is the correct basis; the prior fresh-bid-vs-stale-scan-mark comparison
+        # false-blocked easily-fillable credit rolls (RIOT 2026-08-06: mid +$0.035 vs
+        # bid-vs-scan-mark $0.000 → blocked). PRE-FEE (RH exposes no fee at proposal
+        # time; the net captures SPREAD, not fees). The hard credit rule still fires on
+        # a genuine mid-to-mid debit, and DISPATCH re-checks the live reprice
+        # (net-drift guard). The bid-based conservative net is retained in the audit.
+        close_mark_fresh, _cm_src = await self._fresh_leg_mark(
+            broker, symbol, leg.short_leg_expiry, leg.short_leg_strike,
+            fallback=close_mark,
+        )
+        conservative_net, mid_net, open_bid = _short_roll_credit(new_weekly, close_mark_fresh)
+        if mid_net < 0 and override_kind != "net_debit_justified":
             gates["credit"] = "blocked"
             self._audit_roll_abort(
                 reason="net_debit_roll", symbol=symbol,
                 extra={
                     "gates": dict(gates),
+                    "mid_net": round(mid_net, 4),
                     "conservative_net": round(conservative_net, 4),
-                    "mark_net": round(mark_net, 4),
-                    "close_mark": round(close_mark, 4),
+                    "close_mark_fresh": round(close_mark_fresh, 4),
+                    "close_mark_scan": round(close_mark, 4),
+                    "close_mark_source": _cm_src,
                     "open_bid": open_bid,
+                    "new_mark": new_weekly.get("mark_price"),
                     "fees_included": False,
                     "fee_gap": ("pre-fee: RH per-contract regulatory/exchange "
-                                "fees excluded; net captures spread only"),
+                                "fees excluded; mid net captures spread only"),
                 },
                 preview=preview,
             )
@@ -3929,18 +3987,18 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
                 "symbol": symbol,
                 "gates": dict(gates),
                 "conservative_net": round(conservative_net, 4),
-                "mark_net": round(mark_net, 4),
+                "mid_net": round(mid_net, 4),
                 "override_kind": override_kind,
             })
         # Phase A: tag the two roll_short legs as ONE atomic combo so they dispatch
         # through place_combo -> place_multi_leg (a single all-or-nothing POST)
         # instead of two independent single-leg orders — closing the naked-leg fill
         # window B4 fixed only at the proposal layer. combo_direction + net_limit_price
-        # REUSE mark_net from _short_roll_credit above (computed for the B2 gate) — no
-        # re-derivation: net credit -> "credit", net debit -> "debit"; the limit is the
-        # mark-based net, matching today's per-leg mark limits.
-        _combo_direction = "credit" if mark_net >= 0 else "debit"
-        _combo_net = round(abs(mark_net), 2)
+        # REUSE mid_net from _short_roll_credit above (computed for the B2 gate, now on
+        # the same-timestamp MID basis) — no re-derivation: net credit -> "credit", net
+        # debit -> "debit"; the limit is the mid net, matching the per-leg mark limits.
+        _combo_direction = "credit" if mid_net >= 0 else "debit"
+        _combo_net = round(abs(mid_net), 2)
         for _leg in orders:
             _leg.extra.update({
                 "is_multi_leg": True,

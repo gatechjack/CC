@@ -105,12 +105,34 @@ def test_thin_strike_still_fails_liveness_not_loosened(agent: PMCCAgent):
     assert not ok0 and "OI=" in reason0
 
 
-def test_wide_spread_still_fails(agent: PMCCAgent):
-    """Spread is the remaining per-contract backstop: OI-established but a 40%
-    spread still fails (stale/untradeable)."""
+def test_wide_spread_now_passes_two_sided_liquid(agent: PMCCAgent):
+    """CHANGED 2026-08-06: the raw spread-WIDTH gate is REMOVED. A wide (40%) spread on
+    a two-sided, OI-established strike is now TRADEABLE (the operator fills at mid), so
+    it PASSES. Intended behavior change — it stops the silent far-OTM substitution and
+    the false 'net debit' block. (Was `test_wide_spread_still_fails`.)"""
     ok, reason = agent._passes_liquidity(_opt(bid=1.00, ask=1.50, oi=500, vol=1000))
+    assert ok, reason
+    # RIOT's live on-target strike ($24 8/21, 21.6% spread, OI 6475) now passes too.
+    ok2, _ = agent._passes_liquidity(
+        _opt(bid=0.91, ask=1.13, oi=6475, vol=2439, strike=24.0, delta=0.355))
+    assert ok2
+
+
+def test_no_bid_now_fails(agent: PMCCAgent):
+    """NEW tradeability floor (2026-08-06): a strike with NO bid is untradeable — you
+    can't collect a credit selling into nothing — so it REJECTS. This also closes the
+    original zero-opening-bid hole where a bid=0 strike used to PASS (the width check
+    was skipped when bid<=0) and then manufacture a phantom debit."""
+    ok, reason = agent._passes_liquidity(_opt(bid=0.0, ask=0.05, oi=10000, vol=500))
     assert not ok
-    assert "spread=" in reason
+    assert "no bid" in reason
+
+
+def test_inverted_market_fails(agent: PMCCAgent):
+    """A stale/degenerate inverted quote (bid > ask) is untradeable → REJECT."""
+    ok, reason = agent._passes_liquidity(_opt(bid=1.20, ask=1.00, oi=10000, vol=500))
+    assert not ok
+    assert "inverted" in reason
 
 
 def test_no_ask_still_fails(agent: PMCCAgent):
