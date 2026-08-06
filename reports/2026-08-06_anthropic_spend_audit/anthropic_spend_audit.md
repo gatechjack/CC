@@ -6,6 +6,20 @@
 
 ---
 
+## Executive summary
+
+- **Total Anthropic spend ≈ $300/month**, ~99% Claude Sonnet 4.6. Verified live via SSH to `tc-prod-vm` + real invocation counts from the engine's `audit_event` log (1.95M rows).
+- **All spend is inside one process** (`trading-corp.service`). Every scheduler, timer, cron, and the other 3 running services make **zero** Anthropic calls.
+- **One division is ~80% of the bill:** `kalshi_llm_arbitrage`, a **paper** forward-research observer firing **~1,300 LLM calls/day** (~$235/mo). Prior review found it at 8W/8L, **net $0.00 — no forward edge**. Its cost is a policy question, not a bug.
+- **One true zombie:** `polymarket_arbitrage` — on your "closed" list but empirically **`enabled: true`** and burning **~$28/mo** in paper mode (broker can't even place orders). Clean one-line kill.
+- **Everything else is ~$0:** ceo/portfolio/risk/whale on-demand & unused; research firm tiny; PMCC small but **not instrumented** (flagged). Backtester/eod_debate are wired to Opus but **dead** (no call site).
+- **No runaway spend:** no retry storms, no bursts, no debug-mode hammering, no unexpected Opus usage. Duplicate-call guards (cooldowns/dedupe) are in place.
+- **Caveat (R0):** the estimate assumes prompt caching is working (design strongly implies it, but `cache_read` tokens aren't logged — worth a 1-cycle verify; if broken, spend is up to ~2×).
+
+**Fastest safe win:** kill `polymarket_arbitrage` (~$28/mo, 1 line, zero impact). **Biggest win:** decide `kalshi_llm`'s fate — pause (~$235/mo) or cooldown+downgrade (~$200/mo).
+
+---
+
 ## STEP 1 — Anthropic call-site inventory (static, from code)
 
 All LLM calls route through a single client: `trading_corp/agents/llm.py::build_chat_model(agent_name, max_tokens)`, which resolves the model from `config/agents.yaml` (default `claude-sonnet-4-6`). Uses `langchain_anthropic.ChatAnthropic`. Prompt caching is per-message via `cache_control: {"type":"ephemeral"}` set by callers (only 2 call sites set it).
@@ -96,3 +110,97 @@ Notes verified empirically:
 **kalshi_llm dominates (~78% of spend).** Sensitivity on kalshi #1 (the only material number): all-cache-read floor ≈ **$218/mo**; caching-broken ceiling ≈ **$510/mo**. Central $235/mo assumes caching is working — **strongly implied by design but not yet verified** (the audit_event payload doesn't record `cache_read_input_tokens`). See recommendation R0.
 
 > Opus/Haiku spend is effectively zero: the only Opus-routed live path (research_judge) fires a handful of times/month; Haiku (whale-analyst) wasn't invoked. The $300/mo is ~99% Sonnet 4.6, ~80% of it one paper strategy.
+
+---
+
+## STEP 4 — Zombie spend
+
+**Method:** cross-checked the "believed CLOSED" list against (a) which modules actually import the LLM client and (b) live event counts. Only **3** strategy/division modules call Anthropic at all (`grep -rl build_chat_model`): `kalshi_llm_arbitrage`, `polymarket_arbitrage`, `pmcc_robinhood`.
+
+### The one true zombie: `polymarket_arbitrage`
+
+| | |
+|---|---|
+| Status believed | CLOSED |
+| Status **actual** | **LIVE** — `enabled: true` in prod `config/strategies.yaml`, firing **~140 LLM calls/day** (795/7d, 4,286/30d) |
+| Cost | **~$28/month** of Anthropic tokens, for a **paper** strategy (broker is `ReadOnlyBroker` — it literally cannot place orders; output goes to `would_have_placed` rows) |
+| Decommission candidate? | **Yes** — pure token burn, no execution path, on your closed list |
+
+**Exact change to kill it (NOT executed — your call):**
+```yaml
+# prod: /home/azureuser/trading_corp/config/strategies.yaml
+polymarket_arbitrage:
+  enabled: false        # was: true   ← flip this one line
+```
+Then restart the engine so it re-reads config (operator-run; agent is read-only, no sudo):
+`sudo -n systemctl restart trading-corp`  (short, paste-safe one-liner)
+Effect: strategy stops scanning + stops all LLM calls. Zero trading impact (paper-only, nothing placed). Reconcile intent first — it's *enabled with board-enable comments*, so verify whether "closed" was the decision that never got applied, or whether it's intentionally an open paper observer like kalshi_llm.
+
+### Verified NOT burning Anthropic tokens (compute only, if anything)
+
+| "Believed closed" division | Module | Anthropic? |
+|---|---|---|
+| Kalshi crypto 15m direction | kcv2 observer service + `kalshi_crypto_arb.py` | **No** — no LLM import; observer is a pure data logger |
+| Kalshi sports arbitrage/scout | `kalshi_sports_scout.py`, `kalshi_sports_arb_observer.py`, `_sports_math.py` | **No** — deterministic arb math |
+| Kalshi weather | `kalshi_weather_arb.py`, `_weather_math.py` | **No** — "pure math" (Gaussian P(YES)), confirmed in code + config comment |
+| Polymarket arbitrage | `polymarket_arbitrage.py` | **YES — see above** |
+| OptiTrade TP-SL | closest module `tasty_options_iron_condor.py`; copy-traders | **No** — no LLM import |
+
+These may consume CPU/API-quota on *other* venues, but **$0 Anthropic**. Out of scope to kill for this audit.
+
+### Other zombie categories — checked, all clean
+- **Retry loops / error paths hammering the API:** NONE. Zero `*error*`/`*fail*`/`*retry*` events for the LLM actors in 7d. langchain/SDK default retry (`max_retries=2`) is not firing pathologically.
+- **Bursts / debug-verbose storms:** NONE. Busiest single hour = 97 kalshi calls (~1.6/min) — steady-state, matches 60s cycles. No thousand-call spikes.
+- **Duplicate calls:** kalshi has a 6h `market_cooldown` (won't re-evaluate a ticker within 6h) and polymarket a per-`condition_id` dedupe cap — both already guard against duplicate LLM calls.
+- **Dead config (no spend, hygiene):** `backtester` + `eod_debate` are wired to **Opus 4.7** in `agents.yaml` but have **no call site** — never invoked. Harmless today, but a latent footgun (anyone who wires them lights up Opus at 5×/25× Sonnet pricing).
+
+---
+
+## STEP 5 — Recommendations (prioritized by $/month; NONE implemented)
+
+**R0 — VERIFY prompt caching is actually working (do this first; $0 risk).**
+The entire $300/mo estimate assumes the shared 2,800-token `ANALYST_SYSTEM_PROMPT` is being served from cache. If a silent invalidator is present (unlikely — the prompt is static — but unverified), real spend is up to **~2× higher (~$510/mo)**. The `audit_event` payload does **not** record `cache_read_input_tokens`, so this is currently unobservable. Cheapest check: log `response.usage_metadata` (langchain surfaces `cache_read`/`cache_creation`) for one cycle, or run a `max_tokens:0` warmup probe and read `usage`. **Action:** confirm `cache_read_input_tokens > 0`. Value: protects/corrects the whole model; if broken, fixing it saves up to ~$275/mo.
+
+**R1 — kalshi_llm_arbitrage (~$235/mo = 78% of all spend). The only number that matters.** It's a **paper** forward-research observer. Choose one:
+| Option | Lever | Est. saving | Trade-off |
+|---|---|---|---|
+| **R1a DECOMMISSION / PAUSE** | `enabled: false` if the forward corpus is "collected enough" | **~$235/mo** | Stops the research feed. Prior review ([[kalshi-postfix-review]]) found this paper strategy at **8W/8L, net $0.00 — no forward edge** — so the token spend may not be buying signal. **Your research-value call.** |
+| **R1b REDUCE FREQUENCY** (keep alive, cheaper) | `market_cooldown_hours: 6 → 24` | **~$160/mo** | Calls are cooldown-bound (1,149 unique tickers × ~4 evals/day today → ~1/day). Cuts re-evaluations ~4× at lower time-resolution. Safest "keep it" option. |
+| **R1c DOWNGRADE MODEL** | sonnet-4-6 → **haiku-4-5** for probability estimation | **~$150/mo** (3× cheaper) | Calibrated probability is a *reasoning* task; Haiku may be less calibrated. **A/B first** (run both a week on identical markets, compare `llm_prob` + divergence). Don't blind-switch. |
+| **R1d BATCH API** | route paper probability calls through Batches | **~$115/mo** (50% off) | Paper strategy has NO execution → the "divergence moves fast" latency concern is moot. But up-to-1h batch latency breaks the 60s real-time scan; non-trivial refactor. |
+| R1e caching | already ON | — | keep |
+
+Recommended: **R1a if the research is done** (biggest, cleanest), else **R1b (24h cooldown) + optional R1c A/B**. R1b+R1c stacked ≈ back-of-envelope ~$200/mo off while keeping a (cheaper, coarser) live feed.
+
+**R2 — polymarket_arbitrage (~$28/mo): DECOMMISSION.** Zombie (STEP 4). `enabled: false` + restart. Clean ~$28/mo with zero trading impact. (If you'd rather keep it as a paper observer, at minimum apply the same cooldown lever as R1b.)
+
+**R3 — PMCC (~$30/mo, LOW confidence): (a) INSTRUMENT, (b) ADD CACHING. KEEP the model.** PMCC is **live-trading real money** (LEAP mandate) → don't downgrade/decommission. Two fixes:
+- (a) It emits **no LLM-call audit event** → spend is currently unmeasurable. Add a `pmcc_llm_called` log so this line stops being an estimate.
+- (b) The large static `_PMCC_EXPERT_SYSTEM` prompt has **no `cache_control`** (unlike the kalshi/polymarket paths). Adding `cache_control: ephemeral` on the system block cuts the cached-input portion ~10× and reduces latency. Est. ~$10–15/mo + faster panels.
+
+**R4 — research_firm (~$5/mo): KEEP AS-IS.** Mostly operator-triggered, low volume; Opus only on the rare judge. Not worth touching. (Optional: cache the expert/synthesis system prompts — low ROI.)
+
+**R5 — ceo / portfolio / risk / whale-analyst (~$1/mo): KEEP AS-IS.** On-demand, near-zero. whale-analyst already has a **$1/day cost cap + Haiku** — good hygiene, leave it as the template for others.
+
+**R6 — Config hygiene ($0 saving, removes a footgun): delete the dead `backtester` + `eod_debate` Opus entries** from `agents.yaml`. No call site today; leaving Opus-wired dead entries invites accidental 5×/25× spend later.
+
+---
+
+## Bottom line
+
+| Action | $/mo saved | Effort | Risk |
+|---|---|---|---|
+| R1a pause kalshi_llm *(if research done)* | ~$235 | 1 line + restart | none (paper) — but ends a research feed |
+| — or R1b kalshi cooldown 6→24h | ~$160 | 1 line + restart | none (coarser feed) |
+| R1c/d Haiku A-B **or** Batch (if kept on Sonnet) | +$115–150 | med (A/B or refactor) | quality/latency to validate |
+| R2 kill polymarket_arbitrage (zombie) | ~$28 | 1 line + restart | none (paper) |
+| R0 verify caching | protects estimate; up to ~$275 if broken | tiny | none (read-only probe) |
+| R3 cache + instrument PMCC | ~$10–15 | small code change | low (live division — test) |
+| R6 delete dead Opus config | $0 | trivial | none |
+
+- **Current spend: ≈ $300/month**, ~99% Sonnet 4.6, ~80% one paper strategy (kalshi_llm) with no demonstrated forward edge.
+- **Fastest safe win:** kill the `polymarket_arbitrage` zombie (~$28/mo, one line, zero impact).
+- **Biggest win:** decide kalshi_llm's fate — pause (~$235/mo) or cooldown+downgrade (~$200/mo). This single division is the whole audit.
+- **No runaway/error-loop spend, no unexpected Opus spend.** The system is well-behaved; the cost is a *policy* question (should paper strategies with no edge burn Sonnet tokens 1,300×/day?), not a bug.
+
+*All figures are estimates from real call counts × current pricing × measured prompt sizes; the two dominant lines (kalshi, polymarket) rest on empirical 7/30-day invocation counts. PMCC is flagged low-confidence pending instrumentation. Nothing in this report was executed — Jack decides all actions.*
