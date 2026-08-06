@@ -241,6 +241,10 @@ def test_e2e_riot_roll_builds_credit_on_target(agent: PMCCAgent):
     assert len(sells) == 1 and len(buys) == 1
     # … on the ON-TARGET $24.0 8/21 strike — NOT the far-OTM $25.0 substitution.
     assert float((sells[0].extra or {}).get("strike")) == 24.0
+    # … tagged on the DISPATCH basis (natural − give_up = 0.91 − 0.84 − 0.02 = 0.05),
+    # so the operator-approved snapshot matches what the live reprice fires on.
+    assert (sells[0].extra or {}).get("combo_direction") == "credit"
+    assert (sells[0].extra or {}).get("net_limit_price") == 0.05
     # … and no net-debit abort was stashed.
     ab = agent._last_roll_abort
     assert ab is None or ab.get("reason") != "net_debit_roll"
@@ -265,4 +269,117 @@ def test_e2e_riot_genuine_debit_blocks_with_high_buyback(agent: PMCCAgent):
     assert orders == []                                   # blocked
     assert agent._last_roll_abort is not None
     assert agent._last_roll_abort.get("reason") == "net_debit_roll"
-    assert agent._last_roll_abort.get("mid_net") < 0
+    assert agent._last_roll_abort.get("dispatch_net") < 0
+
+
+def test_e2e_dispatch_alignment_blocks_mid_credit_but_dispatch_debit(agent: PMCCAgent):
+    """PART A item 2: a roll that is a CREDIT at mid but a DEBIT at the dispatch basis
+    (natural − give_up) is now blocked AT PROPOSAL — no 'approved then aborted at
+    dispatch' on the give_up margin. Buyback fresh bid 0.85 / ask 1.10 / mark 0.95 vs
+    new $24 (bid 0.91, mark 1.02): mid_net = +0.07 (credit) but
+    dispatch_net = 0.91 − 1.10 − 0.02 = −0.21 (debit) → BLOCKED."""
+    cur_short_exp = (date.today() + timedelta(days=8)).isoformat()
+    roll_exp = (date.today() + timedelta(days=15)).isoformat()
+
+    class _MarginBuyback(_FakeOptBroker):
+        async def get_option_quote(self, symbol, expiration, strike, option_type):
+            if abs(float(strike) - 23.5) < 1e-9 and expiration == self._cur_short_exp:
+                return {"bid": 0.85, "ask": 1.10, "mark_price": 0.95}
+            return {"bid": None, "ask": None, "mark_price": None}
+
+    broker = _MarginBuyback(roll_exp=roll_exp, cur_short_exp=cur_short_exp)
+    orders = asyncio.run(agent._propose_roll_short(
+        "RIOT", _riot_leg(cur_short_exp), broker, analysis=_analysis(), preview=True))
+    assert orders == []
+    ab = agent._last_roll_abort
+    assert ab is not None and ab.get("reason") == "net_debit_roll"
+    assert ab.get("mid_net") > 0                 # would have cleared on mid …
+    assert ab.get("dispatch_net") < 0            # … but blocked on the dispatch basis
+
+
+def test_roll_leap_gate_uses_mid_not_bid_basis():
+    """PART A item 1: the roll_leap short-leg gate now decides on the MID net
+    (`_short_roll_credit` mark_net, fresh buyback) — not the bid-based conservative.
+    Discriminating case (buyback fresh mid 0.95 vs new $24 bid 0.91 / mark 1.02):
+      conservative (bid) = 0.91 − 0.95 = −0.04  (old gate: BLOCK)
+      mid (mark)         = 1.02 − 0.95 = +0.07  (new gate: CLEAR).
+    (The roll_leap gate path itself is exercised by the existing roll_leap suite; this
+    pins the basis math the two sites now read via `rl_mark_net`.)"""
+    new = next(o for o in RIOT_821 if o["strike_price"] == 24.0)
+    cons, mid, _ob = _short_roll_credit(new, 0.95)   # fresh buyback mid 0.95
+    assert cons < 0 and mid > 0
+
+
+def test_fresh_mark_prefers_fresh_else_scan(agent: PMCCAgent):
+    assert agent._fresh_mark({"mark_price": 0.75}, fallback=1.23) == (0.75, "fresh")
+    assert agent._fresh_mark({"bid": 0.66, "ask": 0.84}, fallback=1.23) == (0.75, "fresh")
+    assert agent._fresh_mark(None, fallback=1.23) == (1.23, "scan")
+    assert agent._fresh_mark({}, fallback=1.23) == (1.23, "scan")
+
+
+# ---- roll_leap e2e (drives Site A via propose_orders_for_pair) -------------
+
+class _FakeRollLeapBroker:
+    """Covered RIOT PMCC (LEAP + $23.5 8/14 short) + a roll-out chain + a fresh
+    buyback quote whose MID clears but whose BID would block. Structural OptionBroker."""
+    name = "fake"
+    paper = True
+
+    def __init__(self):
+        t = date.today()
+        self.leap_exp = (t + timedelta(days=400)).isoformat()
+        self.cur_short_exp = (t + timedelta(days=8)).isoformat()
+        self.roll_exp = (t + timedelta(days=15)).isoformat()
+
+    async def quote(self, symbol):
+        return 21.5
+
+    async def get_option_positions_detail(self):
+        return [
+            {"option_type": "call", "chain_symbol": "RIOT", "quantity": 4, "dte": 400,
+             "expiration_date": self.leap_exp, "strike_price": 15.0, "avg_price": 8.0,
+             "delta": 0.96, "mark_price": 7.1, "option_id": "leap"},
+            {"option_type": "call", "chain_symbol": "RIOT", "quantity": -4, "dte": 8,
+             "expiration_date": self.cur_short_exp, "strike_price": 23.5,
+             "avg_price": 0.79, "delta": 0.35, "mark_price": 0.95, "option_id": "short"},
+        ]
+
+    async def get_expiration_dates(self, symbol):
+        t = date.today()
+        return [(t + timedelta(days=d)).isoformat() for d in (1, 8, 15, 22)] + [self.leap_exp]
+
+    async def get_calls_for_expiry(self, symbol, expiry):
+        if expiry == self.leap_exp:
+            return [_c(15.0, 7.0, 7.2, 7.10, 0.96, 500, 100)]   # deep-ITM LEAP (δ>=0.80)
+        if expiry == self.roll_exp:
+            return RIOT_821
+        return []
+
+    async def get_option_quote(self, symbol, expiration, strike, option_type):
+        # Fresh buyback for the current short: MID 0.95 clears vs new $24 (mark 1.02),
+        # but BID-based conservative (0.91 − 0.95 = −0.04) would have BLOCKED.
+        if abs(float(strike) - 23.5) < 1e-9 and expiration == self.cur_short_exp:
+            return {"bid": 0.90, "ask": 1.00, "mark_price": 0.95}
+        return {"bid": None, "ask": None, "mark_price": None}
+
+
+def test_e2e_roll_leap_gate_on_mid_basis_clears(agent: PMCCAgent):
+    """PART A item 1, path-level: a roll_leap whose short-leg pair is a CREDIT at mid
+    but a (small) DEBIT at the bid-based conservative now CLEARS — proving the gate
+    reads the same-timestamp MID net. It builds the multi-leg roll_leap on the on-target
+    $24 8/21 short (Fix 1 selection), with NO net-debit abort."""
+    broker = _FakeRollLeapBroker()
+    analysis = types.SimpleNamespace(
+        action="roll_leap", target_delta=0.35, target_dte=7, target_strike=None,
+        target_delta_low=None, target_delta_high=None, override=None, confidence=0.8,
+        urgency="attention", summary="roll leap", rationale="roll leap", warnings=[],
+        format_rich=lambda: "(expert)",
+    )
+    orders = asyncio.run(
+        agent.propose_orders_for_pair(broker, "RIOT", analysis, preview=True))
+    assert orders, "roll_leap should build (mid credit) — bid-basis would have blocked"
+    sells_open = [o for o in orders
+                  if o.side == "sell" and (o.extra or {}).get("position_effect") == "open"]
+    assert sells_open and float((sells_open[0].extra or {}).get("strike")) == 24.0
+    ab = agent._last_roll_abort
+    assert ab is None or ab.get("reason") != "net_debit_roll"

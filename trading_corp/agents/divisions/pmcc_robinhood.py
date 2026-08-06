@@ -1459,15 +1459,23 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
             # B2 (short-leg credit) — close-old-short vs open-new-short pair ONLY;
             # the LEAP legs (2+3) are B3's domain (do NOT re-derive compound cost).
             rl_close_mark = pos.short_leg_mark or 0.0
-            rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark)
-            if rl_cons_net < 0 and rl_override != "net_debit_justified":
+            # Extend the same-timestamp MID basis (Fix 2, 2026-08-06) to the roll_leap
+            # short-leg gate — off the stale bid-vs-scan-mark. Fresh buyback mark; gate
+            # on the mid net. (roll_leap is advisory-only; not dispatch-give_up-aligned.)
+            rl_close_q = await self._fresh_leg_quote(
+                broker, symbol, pos.short_leg_expiry, pos.short_leg_strike)
+            rl_close_mark_fresh, rl_cm_src = self._fresh_mark(rl_close_q, fallback=rl_close_mark)
+            rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark_fresh)
+            if rl_mark_net < 0 and rl_override != "net_debit_justified":
                 rl_gates["credit"] = "blocked"
                 self._audit_roll_abort(
                     reason="net_debit_roll", symbol=symbol,
-                    extra={"gates": dict(rl_gates), "conservative_net": round(rl_cons_net, 4),
-                           "mark_net": round(rl_mark_net, 4), "close_mark": round(rl_close_mark, 4),
-                           "open_bid": rl_open_bid, "fees_included": False,
-                           "fee_gap": "pre-fee: spread only"},
+                    extra={"gates": dict(rl_gates), "mid_net": round(rl_mark_net, 4),
+                           "conservative_net": round(rl_cons_net, 4),
+                           "close_mark_fresh": round(rl_close_mark_fresh, 4),
+                           "close_mark_scan": round(rl_close_mark, 4),
+                           "close_mark_source": rl_cm_src, "open_bid": rl_open_bid,
+                           "fees_included": False, "fee_gap": "pre-fee: spread only"},
                     preview=preview,
                 )
                 return []
@@ -2583,15 +2591,22 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
                     # B2 (short-leg credit) — close-old-short vs open-new-short pair ONLY;
                     # LEAP legs (2+3) are B3's domain (do NOT re-derive compound cost).
                     rl_close_mark = leg.short_leg_mark or 0.0
-                    rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark)
-                    if rl_cons_net < 0 and rl_override != "net_debit_justified":
+                    # Extend the same-timestamp MID basis (Fix 2, 2026-08-06) to the
+                    # roll_leap short-leg gate — off the stale bid-vs-scan-mark.
+                    rl_close_q = await self._fresh_leg_quote(
+                        broker, symbol, leg.short_leg_expiry, leg.short_leg_strike)
+                    rl_close_mark_fresh, rl_cm_src = self._fresh_mark(rl_close_q, fallback=rl_close_mark)
+                    rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark_fresh)
+                    if rl_mark_net < 0 and rl_override != "net_debit_justified":
                         rl_gates["credit"] = "blocked"
                         self._audit_roll_abort(
                             reason="net_debit_roll", symbol=symbol,
-                            extra={"gates": dict(rl_gates), "conservative_net": round(rl_cons_net, 4),
-                                   "mark_net": round(rl_mark_net, 4), "close_mark": round(rl_close_mark, 4),
-                                   "open_bid": rl_open_bid, "fees_included": False,
-                                   "fee_gap": "pre-fee: spread only"},
+                            extra={"gates": dict(rl_gates), "mid_net": round(rl_mark_net, 4),
+                                   "conservative_net": round(rl_cons_net, 4),
+                                   "close_mark_fresh": round(rl_close_mark_fresh, 4),
+                                   "close_mark_scan": round(rl_close_mark, 4),
+                                   "close_mark_source": rl_cm_src, "open_bid": rl_open_bid,
+                                   "fees_included": False, "fee_gap": "pre-fee: spread only"},
                         )
                         continue
                     rl_gates["credit"] = "clear"
@@ -3763,31 +3778,35 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
             leap_lifetime_key=leap_key,
         )]
 
-    async def _fresh_leg_mark(
-        self, broker: Broker, symbol: str, expiry: str | None,
-        strike: float | None, *, fallback: float,
-    ) -> tuple[float, str]:
-        """Fetch a FRESH build-time mid for one option leg so the credit gate can
-        compare BOTH legs at the same timestamp — not a fresh new-short quote against
-        a staler position-scan snapshot (the 2026-08-06 SECONDARY bug). Returns
-        (mark, source) where source is "fresh" or "scan". FAIL-SAFE: any missing quote
-        or error falls back to the scan mark. Read-only (a quote fetch); places nothing."""
+    async def _fresh_leg_quote(
+        self, broker: Broker, symbol: str, expiry: str | None, strike: float | None,
+    ) -> dict | None:
+        """Fetch a FRESH build-time quote (bid/ask/mark_price) for one option leg so a
+        credit gate can price BOTH legs at the same timestamp — not a fresh new-short
+        quote against a staler position-scan snapshot (the 2026-08-06 SECONDARY bug).
+        Returns the quote dict, or None on any missing quote / error (the caller falls
+        back to the scan mark). Read-only (a quote fetch); places nothing."""
         if expiry is None or strike is None:
-            return fallback, "scan"
+            return None
         try:
             q = await broker.get_option_quote(symbol, expiry, float(strike), "call")
         except Exception as e:      # noqa: BLE001 — any quote failure is fail-safe
-            log.warning("_fresh_leg_mark: get_option_quote raised for %s %s C%s: %s",
+            log.warning("_fresh_leg_quote: get_option_quote raised for %s %s C%s: %s",
                         symbol, expiry, strike, e)
-            return fallback, "scan"
-        if not q:
-            return fallback, "scan"
-        mk = q.get("mark_price")
-        if mk is not None:
-            return float(mk), "fresh"
-        bid, ask = q.get("bid"), q.get("ask")
-        if bid is not None and ask is not None:
-            return (float(bid) + float(ask)) / 2.0, "fresh"
+            return None
+        return q or None
+
+    @staticmethod
+    def _fresh_mark(q: dict | None, fallback: float) -> tuple[float, str]:
+        """Same-timestamp MID from a fresh leg quote (mark, else bid/ask midpoint),
+        falling back to the scan mark. Returns (mark, "fresh"|"scan")."""
+        if q:
+            mk = q.get("mark_price")
+            if mk is not None:
+                return float(mk), "fresh"
+            bid, ask = q.get("bid"), q.get("ask")
+            if bid is not None and ask is not None:
+                return (float(bid) + float(ask)) / 2.0, "fresh"
         return fallback, "scan"
 
     async def _propose_roll_short(
@@ -3899,37 +3918,48 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
         # (≤8% LEAP, L255) — that latitude flows through the net_debit_justified
         # override.
         #
-        # BASIS (amended 2026-08-06): evaluate on the SAME-TIMESTAMP MID net — sell
-        # the new weekly at its MARK, buy the old short back at a FRESH build-time MARK
-        # (fetched now, same snapshot as the new-weekly quote) — NOT the old
-        # `new.bid − stale-scan.mark`. The operator trades at MID and fills ~100%, so
-        # mid is the correct basis; the prior fresh-bid-vs-stale-scan-mark comparison
-        # false-blocked easily-fillable credit rolls (RIOT 2026-08-06: mid +$0.035 vs
-        # bid-vs-scan-mark $0.000 → blocked). PRE-FEE (RH exposes no fee at proposal
-        # time; the net captures SPREAD, not fees). The hard credit rule still fires on
-        # a genuine mid-to-mid debit, and DISPATCH re-checks the live reprice
-        # (net-drift guard). The bid-based conservative net is retained in the audit.
-        close_mark_fresh, _cm_src = await self._fresh_leg_mark(
-            broker, symbol, leg.short_leg_expiry, leg.short_leg_strike,
-            fallback=close_mark,
-        )
+        # BASIS (amended 2026-08-06, DISPATCH-aligned 2026-08-06b): evaluate the credit
+        # on the SAME net the live dispatch reprice fires on — sell the new weekly at its
+        # BID, buy the old short back at a FRESH build-time ASK, minus the dispatch
+        # `give_up` shave — so proposal == dispatch (approve == fires; no "credit
+        # repriced to a DEBIT" / "credit collapsed" consent abort on the give_up margin,
+        # `_pmcc_combo.assess_combo_reprice_consent`). BOTH legs are quoted at the same
+        # build timestamp (fixes the stale-scan-mark bug). Matches dispatch (slightly
+        # stricter, never looser); on real rolls (RIOT +$0.05 dispatch) it clears — it
+        # only filters trivial marginal rolls that would abort at dispatch anyway. The
+        # headline MID net (new mark − fresh buyback mark) is kept for display/audit. The
+        # hard credit rule still fires on a genuine debit; net_debit_justified overrides.
+        close_q = await self._fresh_leg_quote(
+            broker, symbol, leg.short_leg_expiry, leg.short_leg_strike)
+        close_mark_fresh, _cm_src = self._fresh_mark(close_q, fallback=close_mark)
+        # Dispatch buys the old short back at its ASK; fall back to the fresh/scan mark
+        # when no live ask (fail-safe — dispatch re-checks with real quotes).
+        _close_ask = (close_q or {}).get("ask")
+        close_ask = float(_close_ask) if _close_ask is not None else close_mark_fresh
+        give_up = self._combo_give_up_dollars
         conservative_net, mid_net, open_bid = _short_roll_credit(new_weekly, close_mark_fresh)
-        if mid_net < 0 and override_kind != "net_debit_justified":
+        natural = (float(open_bid) if open_bid is not None else 0.0) - close_ask
+        dispatch_net = natural - give_up          # what dispatch fires on (approve == fires)
+        if dispatch_net < 0 and override_kind != "net_debit_justified":
             gates["credit"] = "blocked"
             self._audit_roll_abort(
                 reason="net_debit_roll", symbol=symbol,
                 extra={
                     "gates": dict(gates),
+                    "dispatch_net": round(dispatch_net, 4),
+                    "natural": round(natural, 4),
+                    "give_up": round(give_up, 4),
                     "mid_net": round(mid_net, 4),
                     "conservative_net": round(conservative_net, 4),
                     "close_mark_fresh": round(close_mark_fresh, 4),
+                    "close_ask": round(close_ask, 4),
                     "close_mark_scan": round(close_mark, 4),
                     "close_mark_source": _cm_src,
                     "open_bid": open_bid,
                     "new_mark": new_weekly.get("mark_price"),
                     "fees_included": False,
                     "fee_gap": ("pre-fee: RH per-contract regulatory/exchange "
-                                "fees excluded; mid net captures spread only"),
+                                "fees excluded; dispatch net captures spread only"),
                 },
                 preview=preview,
             )
@@ -3986,19 +4016,21 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
             self._audit_division("pmcc_roll_gates", {
                 "symbol": symbol,
                 "gates": dict(gates),
-                "conservative_net": round(conservative_net, 4),
+                "dispatch_net": round(dispatch_net, 4),
                 "mid_net": round(mid_net, 4),
+                "conservative_net": round(conservative_net, 4),
                 "override_kind": override_kind,
             })
         # Phase A: tag the two roll_short legs as ONE atomic combo so they dispatch
         # through place_combo -> place_multi_leg (a single all-or-nothing POST)
         # instead of two independent single-leg orders — closing the naked-leg fill
         # window B4 fixed only at the proposal layer. combo_direction + net_limit_price
-        # REUSE mid_net from _short_roll_credit above (computed for the B2 gate, now on
-        # the same-timestamp MID basis) — no re-derivation: net credit -> "credit", net
-        # debit -> "debit"; the limit is the mid net, matching the per-leg mark limits.
-        _combo_direction = "credit" if mid_net >= 0 else "debit"
-        _combo_net = round(abs(mid_net), 2)
+        # are set on the DISPATCH basis (natural − give_up) computed for the B2 gate, so
+        # the operator-approved snapshot MATCHES what the live reprice fires on (no
+        # sign-flip / credit-collapse consent abort): net credit -> "credit", net debit
+        # -> "debit"; the limit is the dispatch net (reprice re-rounds to the net tick).
+        _combo_direction = "credit" if dispatch_net >= 0 else "debit"
+        _combo_net = round(abs(dispatch_net), 2)
         for _leg in orders:
             _leg.extra.update({
                 "is_multi_leg": True,
