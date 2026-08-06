@@ -12137,3 +12137,18 @@ Re-enables within ≤30s via mtime reload; no restart. **Reopening the division 
 
 **Note (NOT this deploy):** prod-live advanced `f9740fb → 480e591` (kalshi_llm re-estimate-on-movement gate) during this session with **no deploy_log entry** — flagged for that session to log. `config/strategies.yaml` was unaffected (ce2f1c0 baseline held through the advance).
 - 2026-08-06 ~20:52 UTC — PMCC credit/selection fix DEPLOYED LIVE (PID 607896->610172); prod-live f9740fb->tip; pmcc_robinhood.py 0d199b23->2a390124; self-gated az RunShellScript root; Gate-A pass, py_compile ok, bitunix futures+sfp matched=0 clean, 0 tracebacks, 0 placed, PMCC 18 legs, auto_execute:false held; rollback pmcc_creditfix_rollback_20260806.sh. See reports/2026-08-06_pmcc_riot_false_debit_block/DEPLOY_RECORD.md
+
+---
+
+## 2026-08-06 — CONVENTION: deploy-script mutex (`/home/azureuser/deploy.lock`) added to the standard template [TEMPLATE ONLY — no prod change]
+
+**Context:** the 20:52 UTC incident (a parallel PMCC deploy restarted the engine 607896->610172 while the movegate deploy was mid-verify) showed concurrent deploys can race the engine restart. Fix: a cross-session deploy mutex, baked into a now-canonical deploy-script template. **Template only; running prod untouched; retrofit into FUTURE deploy scripts.**
+
+**New file:** `runbooks/deploy_script_template.sh` — the canonical gated-deploy structure (mutex -> `pending_order==0` gate -> staged-LF-md5 verify -> backup -> owner/mode-preserving `install` -> py_compile(prod venv) -> restart -> release), plus a rollback template. Copy per deploy; `bash -n`-clean.
+
+**Mutex semantics** (`LOCK=/home/azureuser/deploy.lock` — absolute on purpose; `~` differs under az-root vs azureuser):
+- BEFORE the pending_order gate: lock present AND `< 30 min` old -> **ABORT + print holder** (`{session,timestamp,commit}`); absent OR `>= 30 min` stale -> **acquire**.
+- Released via `rm -f "$LOCK"` as the deploy's **LAST step**, and in the **rollback** (which does NOT acquire — it must recover from a deploy still holding the lock).
+- A deploy that aborts AFTER acquiring leaves the lock until `>= 30 min` stale (or the next deploy steals it) — that window is the crash-recovery path.
+
+**Not applied to prod:** existing on-prod scripts (`deploy_*_20260806.sh`) are unchanged; no `deploy.lock` file is created until the next template-authored deploy runs.
