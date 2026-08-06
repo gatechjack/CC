@@ -46,7 +46,7 @@ from typing import Any
 
 import yaml
 
-from trading_corp.agents.llm import build_chat_model, is_llm_available
+from trading_corp.agents.llm import build_chat_model, extract_usage_metadata, is_llm_available
 from trading_corp.agents.strategies._polymarket_prompts import ANALYST_SYSTEM_PROMPT
 from trading_corp.persistence.db import (
     delete_agent_state, load_agent_state, set_agent_state,
@@ -67,6 +67,10 @@ class _ProbabilityEstimate:
     confidence: str                # "low" | "medium" | "high"
     reasoning: str
     key_unknowns: list[str]
+    # Populated post-parse from the Anthropic response for cost / prompt-cache
+    # observability (input / cache-read / cache-creation / output tokens);
+    # None if extraction failed. Observational only — no effect on trading.
+    usage: dict | None = None
 
 
 class KalshiLLMArbitrageAgent:
@@ -426,6 +430,7 @@ class KalshiLLMArbitrageAgent:
                         "min_divergence_pct": min_div_pct,
                         "would_emit": divergence_pct >= min_div_pct,
                         "expires_at": m.get("expected_expiration_time"),
+                        "usage": est.usage or {},
                     },
                 )
 
@@ -584,7 +589,10 @@ class KalshiLLMArbitrageAgent:
             except Exception:
                 return None
 
-        return self._parse_probability_response(raw)
+        est = self._parse_probability_response(raw)
+        if est is not None:
+            est.usage = extract_usage_metadata(resp)
+        return est
 
     @staticmethod
     def _parse_probability_response(raw: str) -> _ProbabilityEstimate | None:

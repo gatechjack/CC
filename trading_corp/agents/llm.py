@@ -84,3 +84,42 @@ def is_llm_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def extract_usage_metadata(resp) -> dict:
+    """Best-effort Anthropic token-usage counters from a langchain response.
+
+    Returns a dict with input_tokens, cache_creation_input_tokens,
+    cache_read_input_tokens, output_tokens (missing values -> 0). Purely
+    observational (cost / prompt-cache hit-rate measurement); never raises,
+    so it cannot affect the LLM call path or any trading behavior.
+
+    Prefers the raw Anthropic ``usage`` block (``response_metadata['usage']``),
+    where ``input_tokens`` is the uncached-input count and the two cache
+    counters are separate/additive — matching Anthropic's native billing
+    semantics. Falls back to langchain's normalized ``usage_metadata``.
+    """
+    out = {
+        "input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 0,
+    }
+    try:
+        raw = (getattr(resp, "response_metadata", None) or {}).get("usage") or {}
+        if raw:
+            out["input_tokens"] = int(raw.get("input_tokens", 0) or 0)
+            out["output_tokens"] = int(raw.get("output_tokens", 0) or 0)
+            out["cache_creation_input_tokens"] = int(raw.get("cache_creation_input_tokens", 0) or 0)
+            out["cache_read_input_tokens"] = int(raw.get("cache_read_input_tokens", 0) or 0)
+            return out
+        um = getattr(resp, "usage_metadata", None) or {}
+        if um:
+            out["input_tokens"] = int(um.get("input_tokens", 0) or 0)
+            out["output_tokens"] = int(um.get("output_tokens", 0) or 0)
+            details = um.get("input_token_details") or {}
+            out["cache_creation_input_tokens"] = int(details.get("cache_creation", 0) or 0)
+            out["cache_read_input_tokens"] = int(details.get("cache_read", 0) or 0)
+    except Exception:
+        pass
+    return out
