@@ -217,3 +217,39 @@ Per Jack's directive, added `usage_metadata` logging to the kalshi_llm + polymar
   The ~3,116-token system prompt is served at **cache-read (0.1×)** on every warm call (`cache_read=3116`, not 0). Confirms the **central estimate (~$235/mo), not the 2× no-cache ceiling.**
 - Refined per-call cost (kalshi, caching on): input = 3,116×$0.30/M (cache-read) + ~112×$3/M (uncached user) ≈ **$0.00128**; output ≈ 285×$15/M ≈ **$0.00428**; ≈ **$0.0056/call** → ~1,300/day ≈ **$7.2/day ≈ $220/mo** (very close to the audit's cache-on floor).
 - Pending: polymarket had no post-restart survivor/LLM call yet (low rate) — same code path, will confirm on next call. **Full $/mo recompute from ~1h of accrued usage data to follow** (window: ts ≥ 2026-08-06T19:43).
+
+---
+
+## ADDENDUM 2026-08-06 — kalshi_llm call-reduction levers + gate decision (>3c)
+
+Post-fix baseline (08-01→08-06): **1,068 calls/day ≈ $179/mo** at $0.0056/call.
+
+**Lever A — residual re-emission (post un-starve fix): banked, ~$0 remaining.**
+| metric | pre-fix (07-20→31) | post-fix (08-01→06) |
+|---|---|---|
+| scan calls / distinct ticker | 14.28 | **7.64** (−47%) |
+| repeat-call share | 93.0% | **86.9%** |
+| entry (`would_have_placed`) / ticker | 7.64 | **3.73** (−51%) |
+| max calls/ticker/**day** | — | ≤5 (6h cooldown holds) |
+| sub-6h re-fires | — | 90 (1.4%) |
+The 08-01 fix halved re-emission and there is no per-day runaway; the remaining repeats are legitimate 6h re-scans (Lever B's surface). Re-firing path = the cooldown-gated re-scan in `kalshi_llm_arbitrage.py` (`_save/_load_cooldowns` ~L624-659; not a rogue resolver — `kalshi_resolver.py` is resolution-only).
+
+**Lever B — re-estimate-on-movement (implied move since prior estimate, post-fix):**
+| movement | calls/day | share |
+|---|---|---|
+| first call (must run) | 140 | 13.1% |
+| **<1c — price UNCHANGED** | 625 | 58.5% |
+| 1–3c | 159 | 14.8% |
+| >3c | 145 | 13.6% |
+
+**Combined A+B (not additive — same surface; B does the work):**
+| lever | calls/day removed | $/mo saved |
+|---|---|---|
+| A (beyond the 08-01 fix) | ~0 | ~$0 |
+| **B — >3c gate** | **~783 (73%)** | **~$131** |
+| run-rate after | ~285/day | ~$179 → **~$48/mo** |
+(Orthogonal event-family consolidation ~12× would compound → sub-$20/mo.)
+
+**GATE DECISION: >3c**, implemented on `kalshi_llm_arbitrage` (branch `claude-movegate-2026-08-06 @ 480e591`, +112/−8). Skip the LLM call when `|implied − last-at-estimate| ≤ 3c` and a prior estimate exists; first calls always run; last-estimate co-stored in `agent_state` key `market_last_estimate`; skips logged as `kalshi_llm_probability_skipped`. Cooldown/estimation/parsing untouched. Zero-risk floor (skip only the `<1c` unchanged-price bucket) would save ~$105/mo; **>3c chosen** for the fuller ~$131/mo (drops the 1–3c small-move band too). Deploy via az run-command root; 24h call-rate verification vs the ~285/day prediction to follow.
+
+**Forward-corpus context (why this is safe to gate):** since inception the corpus is net-negative deduped (−$112 across 895 distinct markets); the current Economics+Elections regime is ~breakeven on n=16 distinct markets; calibration on the traded subset is anti-predictive at both tails. The gate removes redundant re-scans of unmoved markets — it does not change first-estimate behavior or the (absent) edge.
