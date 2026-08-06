@@ -109,3 +109,21 @@ Flag as a known limitation to address in a follow-up (e.g. per-`series` or per-u
 **Known-limitation follow-up (Addendum §2):** Underlying/series-level cap to address correlated-underlying stacks tracked as separate BACKLOG P2 follow-up. Not in scope for this approval.
 
 **Post-cap clean-data tracker:** Count only trades placed AFTER the cap paper-deploys; report resolved n / WR / PnL by `llm_prob` bucket; flag when n hits 50. Do NOT characterize edge as established before n=50 regardless of interim PnL direction. Tracked as separate BACKLOG P1 entry; activates after cap ship.
+
+---
+
+## Closure — 2026-08-06
+
+**Division `polymarket_arbitrage` CLOSED by Board decision, 2026-08-06.** Basis of record: the clean-data edge evaluation — `reports/2026-08-06_polymarket_arb_edge_eval/ASSESSMENT.md`.
+
+**The §4B gate was reached and the strategy failed it — the premise is refuted, not merely unproven.** Clean cohort n=272 (well past the ≥50 floor): **+$6.30 over 272 trades (+$0.023/trade, WR 45.96%), statistically indistinguishable from zero** (t = 0.25, p ≈ 0.80; 95% CI on total PnL ≈ [−$43, +$56]). Decisive finding: the LLM signal is **worse-calibrated than the market it bets against** — Brier LLM **0.254** vs market-implied **0.185** vs coin-flip **0.250**. On the exact markets the strategy selects (|LLM − market| ≥ 10% divergence), the market price is the better estimator, so there is no edge mechanism — and more paper data would only tighten the CI around ~zero, not rescue a model worse than the market. No positive n≥30 category/band constitutes edge; the one coherent directional category signal is negative (geopolitics −$5.99). Full method, slices, and calibration table in the assessment.
+
+**Action taken (2026-08-06), scope-limited per Board direction:** `config/strategies.yaml` → `polymarket_arbitrage.enabled: false`. This stops the scan loop and its per-cycle LLM/Anthropic spend within ≤30s via the mtime-triggered `_reload()` (no restart required).
+- `auto_execute` **UNCHANGED** (`false`) — never flipped; there was never a basis for it.
+- **No code changes.** Strategy logic, the per-`condition_id` cap, and the risk gate are untouched.
+- **No credential change.** `ANTHROPIC_API_KEY` is a single shared key (also used live by `kalshi_llm_arbitrage`, `pmcc_robinhood`, the `risk` agent, `ceo`, and the research firm) — it was **NOT** revoked. `enabled: false` is the surgical action that stops only this strategy's spend.
+- No other strategy or division touched. The separate `polymarket_copy_trading` division is out of scope and unaffected.
+
+**Correlated-underlying follow-up (Addendum §2 / BACKLOG P2):** closed as obsolete-by-closure — a risk-control refinement with no edge left to protect (assessment §6).
+
+**Reopening requires a NEW Board memo with a NEW thesis.** This closure is on the LLM-divergence arbitrage premise as evaluated; a materially different (non-LLM, or demonstrably better-calibrated) signal would be a new proposal, not a resumption of this division.
