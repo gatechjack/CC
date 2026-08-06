@@ -1,6 +1,8 @@
 # T2 step 3: place files + md5-gate + migrate + install unit + md5-gate + enable, via az run-command
 # (root, NO sudo). Self-gated: an md5 mismatch aborts BEFORE migrating / before enabling. DB write is
 # done as azureuser (runuser) so the live DB + wal/shm stay azureuser-owned.
+# bash goes to a temp .sh and is passed with --scripts "@shortpath" (multi-line --scripts strings break
+# on az.cmd; the 8.3 short path avoids the space in %TEMP%).
 $ErrorActionPreference = 'Stop'
 $rg = 'RG-SHARED-PROD'; $vm = 'tc-prod-vm'
 $bash = @'
@@ -24,5 +26,9 @@ systemctl enable --now trading-corp-kcv2-observer
 systemctl status trading-corp-kcv2-observer --no-pager | head -5
 echo "=== DEPLOY_OK ==="
 '@
-$bash = $bash -replace "`r", ""
-(az vm run-command invoke -g $rg -n $vm --command-id RunShellScript --scripts $bash | ConvertFrom-Json).value[0].message
+$sh = Join-Path $env:TEMP 't2_kcv2_3.sh'
+[IO.File]::WriteAllText($sh, ($bash -replace "`r", ""), (New-Object System.Text.UTF8Encoding($false)))
+$short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($sh).ShortPath
+$raw = az vm run-command invoke -g $rg -n $vm --command-id RunShellScript --scripts "@$short"
+try { ($raw | ConvertFrom-Json).value[0].message } catch { $raw }
+Remove-Item $sh -ErrorAction SilentlyContinue

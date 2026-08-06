@@ -1,7 +1,7 @@
 # T2 Appendix B (FALLBACK - only if step 1's KV read failed, or you want explicit creds). NO sudo.
 # Secret path: az (your identity) fetches -> streamed to the VM over ssh STDIN only (never printed,
-# never in history) -> written to an azureuser-owned 600 file in ~/.config (no sudo needed there).
-# The /etc drop-in (no secret) is installed via az run-command (root).
+# never in history) -> written to an azureuser-owned 600 file in ~/.config. The /etc drop-in (no secret)
+# is installed via az run-command (root), passed with --scripts "@shortpath" (see step 1 note).
 $ErrorActionPreference = 'Stop'
 $h = 'azureuser@trading.jacksumner.com'
 $rg = 'RG-SHARED-PROD'; $vm = 'tc-prod-vm'; $vault = 'kv-tc-vtwbowt3wtkpy'
@@ -21,5 +21,9 @@ printf '[Service]\nEnvironmentFile=/home/azureuser/.config/kcv2-kalshi.env\n' > 
 systemctl daemon-reload
 echo DROPIN_DONE
 '@
-$drop = $drop -replace "`r", ""
-(az vm run-command invoke -g $rg -n $vm --command-id RunShellScript --scripts $drop | ConvertFrom-Json).value[0].message
+$sh = Join-Path $env:TEMP 't2_kcv2_B.sh'
+[IO.File]::WriteAllText($sh, ($drop -replace "`r", ""), (New-Object System.Text.UTF8Encoding($false)))
+$short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($sh).ShortPath
+$raw = az vm run-command invoke -g $rg -n $vm --command-id RunShellScript --scripts "@$short"
+try { ($raw | ConvertFrom-Json).value[0].message } catch { $raw }
+Remove-Item $sh -ErrorAction SilentlyContinue
