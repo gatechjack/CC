@@ -58,6 +58,11 @@ log = logging.getLogger(__name__)
 
 _LAST_SCAN_KEY = "last_scan_ts"
 _COOLDOWNS_KEY = "market_cooldowns"
+_LAST_ESTIMATE_KEY = "market_last_estimate"  # {ticker: {"implied": float, "ts": iso}} — movement gate
+# Re-estimate-on-movement gate: skip the LLM call for a ticker with a prior
+# estimate whose implied price has moved <= this (absolute YES prob) since
+# that estimate. 0.03 = 3 Kalshi cents. First calls (no prior) always run.
+_REESTIMATE_MIN_MOVE = 0.03
 
 
 @dataclass
@@ -245,6 +250,7 @@ class KalshiLLMArbitrageAgent:
         # by universe rules. Skip COLLECTION events (already non-tradeable).
         # Skip extreme-tail markets (handled by kalshi_tail_price_arb division).
         cooldowns = self._load_cooldowns()
+        last_estimate = self._load_last_estimate()
         survivors: list[dict] = []
         n_pre_filter = 0
         n_skipped_collection = 0
@@ -353,7 +359,48 @@ class KalshiLLMArbitrageAgent:
         # calls in parallel.
         orders: list[ProposedOrder] = []
         new_cooldowns = dict(cooldowns)
+        new_last_estimate = dict(last_estimate)
         cooldown_until = (now + timedelta(hours=cooldown_h)).isoformat(timespec="seconds")
+
+        # 2a. Re-estimate-on-movement gate. A ticker with a PRIOR estimate is
+        # skipped (no LLM call) when its implied price has moved <=
+        # _REESTIMATE_MIN_MOVE since that estimate. First calls (no prior)
+        # always run. Skipped tickers still get their cooldown advanced via the
+        # same `cooldown_until` used below (identical to the "always advance
+        # cooldown" path), so they are not retried every cycle; their stored
+        # last-estimate price/ts are left UNCHANGED so small moves accumulate
+        # across cooldown windows.
+        to_estimate: list[dict] = []
+        for m in survivors:
+            tk = m.get("ticker")
+            prior = last_estimate.get(tk) if tk else None
+            cur_impl = m.get("implied_prob_yes")
+            delta = None
+            if isinstance(prior, dict) and cur_impl is not None:
+                try:
+                    delta = abs(float(cur_impl) - float(prior.get("implied")))
+                except (TypeError, ValueError):
+                    delta = None
+            if delta is not None and delta <= _REESTIMATE_MIN_MOVE:
+                if tk:
+                    new_cooldowns[tk] = cooldown_until
+                if logger_agent is not None:
+                    logger_agent.log_event(
+                        self.name, "kalshi_llm_probability_skipped",
+                        {
+                            "strategy": self.name,
+                            "division": self.division,
+                            "ticker": tk,
+                            "implied_prob_yes": float(cur_impl),
+                            "last_implied_at_estimate": float(prior.get("implied")),
+                            "price_delta_cents": round(delta * 100.0, 2),
+                            "gate_cents": round(_REESTIMATE_MIN_MOVE * 100.0, 2),
+                            "last_estimate_ts": prior.get("ts"),
+                            "reason": "no_movement",
+                        },
+                    )
+                continue
+            to_estimate.append(m)
 
         # Concurrency cap on the LLM fan. Anthropic enforces a per-account
         # concurrent-connections limit (separate from RPM); when this
@@ -370,19 +417,19 @@ class KalshiLLMArbitrageAgent:
                 return await self._estimate_probability(m)
 
         estimates: list[_ProbabilityEstimate | None] = []
-        if survivors:
+        if to_estimate:
             try:
-                estimates.append(await _gated_estimate(survivors[0]))
+                estimates.append(await _gated_estimate(to_estimate[0]))
             except Exception as e:
-                t0 = survivors[0].get("ticker") or ""
+                t0 = to_estimate[0].get("ticker") or ""
                 log.warning("kalshi_llm_arbitrage: LLM call failed for %s: %s", t0, e)
                 estimates.append(None)
-            if len(survivors) > 1:
+            if len(to_estimate) > 1:
                 rest_results = await asyncio.gather(
-                    *(_gated_estimate(m) for m in survivors[1:]),
+                    *(_gated_estimate(m) for m in to_estimate[1:]),
                     return_exceptions=True,
                 )
-                for m, r in zip(survivors[1:], rest_results):
+                for m, r in zip(to_estimate[1:], rest_results):
                     if isinstance(r, BaseException):
                         log.warning(
                             "kalshi_llm_arbitrage: LLM call failed for %s: %s",
@@ -393,7 +440,7 @@ class KalshiLLMArbitrageAgent:
                         estimates.append(r)
 
         # Process all results sequentially.
-        for m, est in zip(survivors, estimates):
+        for m, est in zip(to_estimate, estimates):
             ticker = m["ticker"]
 
             # Always advance cooldown so a failing/non-divergent market
@@ -405,6 +452,12 @@ class KalshiLLMArbitrageAgent:
                 continue
 
             implied = float(m.get("implied_prob_yes") or 0.5)
+            # Record the price at this successful estimate for the movement gate.
+            if ticker:
+                new_last_estimate[ticker] = {
+                    "implied": implied,
+                    "ts": now.isoformat(timespec="seconds"),
+                }
             divergence = est.prob_yes - implied
             divergence_pct = abs(divergence) * 100.0
 
@@ -513,8 +566,9 @@ class KalshiLLMArbitrageAgent:
             )
             orders.append(order)
 
-        # 4. Persist updated cooldowns + last-scan ts.
+        # 4. Persist updated cooldowns + last-estimate prices + last-scan ts.
         self._save_cooldowns(new_cooldowns, now=now)
+        self._save_last_estimate(new_last_estimate, now=now)
         if self._db_url:
             set_agent_state(
                 self.name, _LAST_SCAN_KEY,
@@ -665,6 +719,56 @@ class KalshiLLMArbitrageAgent:
             )
         else:
             delete_agent_state(self.name, _COOLDOWNS_KEY, db_url=self._db_url)
+
+    def _load_last_estimate(self) -> dict[str, dict]:
+        """Returns {ticker: {"implied": float, "ts": iso}} for the movement
+        gate. Entries older than the max market horizon are pruned so the
+        store stays bounded to the active universe."""
+        if not self._db_url:
+            return {}
+        row = load_agent_state(self.name, _LAST_ESTIMATE_KEY, db_url=self._db_url)
+        if row is None:
+            return {}
+        value, _ = row
+        if not isinstance(value, dict):
+            return {}
+        cutoff = datetime.now(timezone.utc) - timedelta(days=45)
+        cleaned: dict[str, dict] = {}
+        for k, v in value.items():
+            if not isinstance(v, dict) or "implied" not in v or "ts" not in v:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(v["ts"]))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt > cutoff:
+                    cleaned[str(k)] = {"implied": float(v["implied"]), "ts": str(v["ts"])}
+            except (TypeError, ValueError):
+                continue
+        return cleaned
+
+    def _save_last_estimate(self, last_estimate: dict[str, dict], *, now: datetime) -> None:
+        if not self._db_url:
+            return
+        cutoff = now - timedelta(days=45)
+        cleaned: dict[str, dict] = {}
+        for k, v in last_estimate.items():
+            if not isinstance(v, dict) or "ts" not in v:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(v["ts"]))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt > cutoff:
+                    cleaned[str(k)] = v
+            except (TypeError, ValueError):
+                continue
+        if cleaned:
+            set_agent_state(
+                self.name, _LAST_ESTIMATE_KEY, cleaned, db_url=self._db_url,
+            )
+        else:
+            delete_agent_state(self.name, _LAST_ESTIMATE_KEY, db_url=self._db_url)
 
     @staticmethod
     def _is_future(iso: str, *, now: datetime) -> bool:
