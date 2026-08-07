@@ -45,6 +45,21 @@ def combo_ref_id(combo_id: str) -> str:
     return str(uuid.uuid5(_COMBO_REF_NS, f"pmcc-combo:{combo_id}"))
 
 
+def _mid_of_quote(q: Any) -> float | None:
+    """MID of a broker option quote dict: mark_price, else the bid/ask midpoint,
+    else None. The single MID convention shared by the dispatch reprice and the
+    consent-card estimate (FIX 1, 2026-08-07) so the two can't diverge."""
+    if not q:
+        return None
+    mk = q.get("mark_price")
+    if mk is not None:
+        return float(mk)
+    bid, ask = q.get("bid"), q.get("ask")
+    if bid is not None and ask is not None:
+        return (float(bid) + float(ask)) / 2.0
+    return None
+
+
 def partition_combo_orders(
     orders: list[ProposedOrder],
 ) -> tuple[dict[str, list[ProposedOrder]], list[ProposedOrder]]:
@@ -187,11 +202,22 @@ async def reprice_combo_from_quotes(
             (o.extra or {})["reprice_hold"] = hold_reason
         return first.get("combo_direction"), first.get("net_limit_price")
 
-    net = 0.0
+    # FIX 1 (2026-08-07): price the combo on the MID net — the operator fills ~100% at
+    # MID, so the worst-case natural (Σ bid(sell) − Σ ask(buy)) was resting/blocking rolls
+    # that ARE credits at mid. MID per leg = mark_price, else the bid/ask midpoint. The
+    # NATURAL is still computed and retained as a sanity reference (the wide/stale-quote
+    # HOLD guard above is the real garbage floor). A credit limit at the MID net rests just
+    # inside the market (a fill-rate tradeoff) but can NEVER fill worse than the tagged net:
+    # a credit fills only at >= that net, a debit only at <= that net (broker-enforced).
+    net = 0.0        # MID net — what the combo limit is set to
+    natural = 0.0    # worst-case crossing net — sanity reference only
     for o in legs:
-        bid, ask, _ = quotes[o.id]
+        bid, ask, q = quotes[o.id]
         ratio = int((o.extra or {}).get("ratio_quantity", 1))
-        net += (bid if o.side == "sell" else -ask) * ratio
+        mk = q.get("mark_price")
+        mid = float(mk) if mk is not None else (bid + ask) / 2.0
+        net += (mid if o.side == "sell" else -mid) * ratio
+        natural += (bid if o.side == "sell" else -ask) * ratio
 
     # Direction + limit, allowing give_up to cross a credit into a debit.
     if net >= 0:
@@ -199,6 +225,10 @@ async def reprice_combo_from_quotes(
         direction, limit = ("credit", signed) if signed >= 0 else ("debit", -signed)
     else:
         direction, limit = "debit", (-net) + give_up
+    log.debug(
+        "reprice_combo: MID net %.4f (natural %.4f, give_up %.2f) -> %s limit %.4f",
+        net, natural, give_up, direction, limit,
+    )
 
     # Round to the NET tick (coarsest across legs at this price magnitude).
     leg_quotes = [q for (_, _, q) in quotes.values()]
@@ -220,15 +250,15 @@ async def estimate_roll_from_quotes(
     the consent card (Enhancement B, 2026-07-28).
 
     CONSENT INTEGRITY: sources from the SAME `broker.get_option_quote` and the SAME
-    natural formula (Σ bid(sell) − Σ ask(buy)) as `reprice_combo_from_quotes` uses
-    at DISPATCH, so the number shown is the pre-give_up natural the placed order
-    derives from — NOT a separate/independent calc that could diverge. The give_up
-    shave + net-tick rounding (the "actual fill will differ slightly") are applied
-    only at dispatch, not here.
+    MID formula (Σ mark(sell) − Σ mark(buy)) as `reprice_combo_from_quotes` uses at
+    DISPATCH (FIX 1, 2026-08-07), so the number shown is the pre-give_up MID net the
+    placed order derives from — NOT a separate/independent calc that could diverge. The
+    give_up shave + net-tick rounding (the "actual fill will differ slightly") are
+    applied only at dispatch, not here.
 
-      DEBIT  = ask of the buy-to-close (current short) leg  — you pay the ask to close.
-      CREDIT = bid of the sell-to-open (new short) leg      — you collect the bid.
-      NET    = Σ bid(sell)·ratio − Σ ask(buy)·ratio         — credit if ≥0 else debit.
+      DEBIT  = ask of the buy-to-close (current short) leg  — worst-case buy-back bound.
+      CREDIT = bid of the sell-to-open (new short) leg      — worst-case collect bound.
+      NET    = Σ mark(sell)·ratio − Σ mark(buy)·ratio       — MID; credit if ≥0 else debit.
 
     Returns None (→ caller shows the reworded abort/"no estimate" text) when either
     leg is missing or any live quote is unavailable. Never raises. Does NOT mutate
@@ -251,15 +281,23 @@ async def estimate_roll_from_quotes(
 
     bq = await _quote(buy_leg)
     sq = await _quote(sell_leg)
-    debit = (bq or {}).get("ask")      # buy-to-close pays the ask
-    credit = (sq or {}).get("bid")     # sell-to-open collects the bid
+    debit = (bq or {}).get("ask")      # buy-to-close pays the ask (worst-case bound)
+    credit = (sq or {}).get("bid")     # sell-to-open collects the bid (worst-case bound)
     if debit is None or credit is None:
         return None
     debit = float(debit)
     credit = float(credit)
     r_buy = int((buy_leg.extra or {}).get("ratio_quantity", 1) or 1)
     r_sell = int((sell_leg.extra or {}).get("ratio_quantity", 1) or 1)
-    net = round(credit * r_sell - debit * r_buy, 2)     # == reprice natural
+    # FIX 1 (2026-08-07): the headline NET is the MID net (sell mark − buy mark) — the
+    # SAME basis the dispatch reprice + credit gate now fire on, so the card shows exactly
+    # what Approve attempts (displayed == approved == dispatched). debit/credit above stay
+    # as the worst-case bid/ask bounds for the card's "actual fill will differ" note.
+    _buy_mid = _mid_of_quote(bq)
+    _sell_mid = _mid_of_quote(sq)
+    if _buy_mid is None or _sell_mid is None:
+        return None
+    net = round(_sell_mid * r_sell - _buy_mid * r_buy, 2)     # == reprice MID net
     ce = buy_leg.extra or {}
     oe = sell_leg.extra or {}
     return {
@@ -348,6 +386,7 @@ def assess_combo_reprice_consent(
       - sign flip          (credit approval repriced to a debit limit)
       - strike drift       (strike changed vs approved; defensive)
       - credit collapse    (credit worse than approved by > max_adverse_net_deviation)
+      - debit worsened     (debit larger than approved by > max_adverse_net_deviation; FIX 3)
     """
     if not legs:
         return False, "empty combo"
@@ -379,6 +418,18 @@ def assess_combo_reprice_consent(
         return False, (
             f"credit collapsed vs approved: approved {snap_net:.2f}, dispatch "
             f"{cur_net:.2f} (drop {snap_net - cur_net:.2f} > "
+            f"{float(max_adverse_net_deviation):.2f})"
+        )
+    # FIX 3 (2026-08-07): debit rolls are now presentable/approvable (credit rule is
+    # advisory), so guard them symmetrically. A debit's net_limit_price is the debit
+    # MAGNITUDE; a LARGER dispatch debit than approved is adverse — the operator must not
+    # fill a −$0.25-approved roll at −$1.00. Abort + re-surface. (A debit that reprices to
+    # a credit, or to a SMALLER debit, is better-or-equal — allowed; a debit repriced to a
+    # credit direction also passes the credit-collapse check above since snap_dir=='debit'.)
+    if snap_dir == "debit" and cur_dir == "debit" and (cur_net - snap_net) > float(max_adverse_net_deviation):
+        return False, (
+            f"debit worsened vs approved: approved {snap_net:.2f}, dispatch "
+            f"{cur_net:.2f} (increase {cur_net - snap_net:.2f} > "
             f"{float(max_adverse_net_deviation):.2f})"
         )
     return True, ""
