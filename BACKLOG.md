@@ -2053,6 +2053,58 @@ HTMX/HTML routes. Skip unless committed to native build.
 
 ---
 
+## P3 — PMCC: detect + guard the inverted diagonal (short strike below the LEAP strike)  *(NEW — 2026-08-07)*
+
+Surfaced by the RKLB position (2026-08-07): the short $75C sat BELOW the long $85
+LEAP — a zero/negative-width diagonal ("broken PMCC"). In the $75–$85 "dead zone"
+the short caps upside at $75 while the LEAP gains no intrinsic until $85, so further
+upside in that band bleeds ~`(1 − leap_delta)` per dollar (~$0.28/$ for RKLB); above
+the LEAP strike the LEAP catches up and it is ~neutral, so the further-upside loss is
+BOUNDED by the inversion width (~$2.80/sh here), not runaway. Today the LLM prose
+flags it (panel warning: "ensure the new short strike is above $85 to restore a
+positive spread width") and it is HITL-gated, but there is NO deterministic guard.
+
+**Proposed:** detect `short_leg_strike < long_leg_strike` and, on a repair roll,
+constrain the best-net picker to strikes ≥ the LEAP strike (never re-cap below the
+long), or surface a distinct "inverted diagonal — roll the short above the LEAP
+strike" state instead of the generic roll. Belt-and-suspenders with the LLM flag.
+
+**Evidence:** the 2026-08-07 deep-research pass (Workflow `wf_cb8b7173-b60`; see
+`reports/2026-08-07_pmcc_net_debit_reproduction/`) found NO external best-practice
+source that addresses the inverted-diagonal case specifically — the only nearby
+guidance is Schwab's generic "close or roll the ITM short leg" for a spread. So this
+is a real gap in the published playbook, not a codified rule to copy.
+
+**Priority: P3** — rare edge case, already LLM-flagged + HITL-gated (nothing places
+autonomously; auto_execute:false). Do when PMCC structural-repair work comes up.
+
+---
+
+## P4 — PMCC: ex-dividend early-assignment guard (only if dividend-paying underlyings are added)  *(NEW — 2026-08-07)*
+
+The 2026-08-07 deep-research pass (Workflow `wf_cb8b7173-b60`) found the DOMINANT
+early-assignment driver on a short ITM call is the DIVIDEND: a long holder exercises
+early to capture the dividend when the dividend EXCEEDS the short call's remaining
+extrinsic value; peak risk is the day BEFORE ex-div, deep-ITM, near expiry. For a
+DIAGONAL/PMCC (no long stock — only a LEAP), assignment across ex-div leaves you
+SHORT stock and liable to pay the dividend. [Fidelity; Schwab (spread-specific);
+E*TRADE; tastytrade; CBOE; OIC]
+
+**Recommended remedy (per the sources):** close or roll the ITM short leg OUT in time
+(re-adds extrinsic so the put value again exceeds the dividend) BEFORE the ex-div date.
+
+**Current state:** `robinhood_pmcc` has NO ex-div guard — but this is IRRELEVANT to
+the current book: none of the live PMCC names (RKLB, TSLA, HOOD, MSTR, IREN, RIOT,
+OPEN, BLSH, SMR, BULL) pay a dividend, so there is nothing to protect against today.
+(An `ex_div_force_close_short_call_delta` knob exists in a DIFFERENT strategy block —
+NOT robinhood_pmcc.)
+
+**Priority: P4** — build a "close/roll the ITM short before ex-div when dividend >
+extrinsic" guard ONLY if/when a dividend-paying underlying is added to the PMCC
+universe. Until then, no action.
+
+---
+
 ## Items consciously excluded
 
 - Multi-region active-active deploy — overkill for personal trading
@@ -2063,5 +2115,5 @@ HTMX/HTML routes. Skip unless committed to native build.
 
 ---
 
-_Last updated: 2026-04-29. Prepend new items at the top of the appropriate
+_Last updated: 2026-08-07. Prepend new items at the top of the appropriate
 section. Mark items DONE rather than deleting so we have a record._
