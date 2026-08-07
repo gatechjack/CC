@@ -321,3 +321,45 @@ def test_consent_credit_to_debit_still_aborts():
     ok, why = assess_combo_reprice_consent(
         legs, _snap("credit", 0.30), max_adverse_net_deviation=0.05)
     assert ok is False and "DEBIT" in why
+
+
+# ===========================================================================
+# FIX 3b — the bounded-debit CAP is RETAINED on the AUTONOMOUS path (source='auto')
+# only. The board/HITL path (execute_pair_orders, source='board') does NOT call
+# _check_auto_execute, so it presents any debit. These pin the retained ceo_graph
+# 5%-of-LEAP gate that a debit roll now reaches (the B2 hard block was removed).
+# ===========================================================================
+
+def _auto_cfg():
+    return {"robinhood_pmcc": {"auto_execute": True, "auto_execute_caps": {
+        "require_approval_for": ["rolling_for_debit_above_5_pct_of_long"],
+        "max_roll_debit_dollars": 500}}}
+
+
+def _roll_buy_leg(limit):
+    return ProposedOrder(
+        strategy="robinhood_pmcc", symbol="RIOT", side="buy", qty=1, order_type="limit",
+        limit_price=limit,
+        extra={"is_option": True, "action": "roll_short_call_close"})
+
+
+def test_autonomous_cap_rejects_roll_debit_above_5pct_of_leap(monkeypatch):
+    """source='auto': a roll debit > 5% of LEAP value is REJECTED (needs Board). LEAP
+    value 5000/ct → 5% = 250; a $3.00 buy-to-close = $300/ct → blocked."""
+    from trading_corp.graph import ceo_graph
+    import trading_corp.utils.market_data as md
+    monkeypatch.setattr(ceo_graph, "_load_strategies_cfg", _auto_cfg)
+    monkeypatch.setattr(md, "get_cached_leap_value", lambda s: 5000.0)
+    ok, why = ceo_graph._check_auto_execute(_roll_buy_leg(3.00))
+    assert ok is False and "5%" in why
+
+
+def test_autonomous_cap_allows_roll_debit_within_5pct(monkeypatch):
+    """source='auto': a roll debit within 5% of LEAP passes the cap. $2.00 buy-to-close
+    = $200/ct = 4% of 5000 → allowed (and under max_roll_debit_dollars 500)."""
+    from trading_corp.graph import ceo_graph
+    import trading_corp.utils.market_data as md
+    monkeypatch.setattr(ceo_graph, "_load_strategies_cfg", _auto_cfg)
+    monkeypatch.setattr(md, "get_cached_leap_value", lambda s: 5000.0)
+    ok, _why = ceo_graph._check_auto_execute(_roll_buy_leg(2.00))
+    assert ok is True
