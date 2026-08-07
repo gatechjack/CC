@@ -525,6 +525,63 @@ def _select_weekly_strike(
     return best_otm
 
 
+def _mid_of(opt: dict) -> float | None:
+    """MID of an option quote: mark_price, else the bid/ask midpoint, else None.
+    Single source of the roll's MID convention (FIX 1, 2026-08-07) so selection,
+    the credit gate, and dispatch all price the same way."""
+    mk = opt.get("mark_price")
+    if mk is not None:
+        return float(mk)
+    bid, ask = opt.get("bid"), opt.get("ask")
+    if bid is not None and ask is not None:
+        return (float(bid) + float(ask)) / 2.0
+    return None
+
+
+def _select_best_net_weekly(
+    calls: list[dict],
+    close_buyback: float | None,
+    *,
+    target_delta: float = 0.35,
+    band_low: float = 0.28,
+    band_high: float = 0.42,
+) -> dict | None:
+    """Pick the roll's new weekly by BEST NET near the δ target (FIX 2, 2026-08-07).
+
+    Among liquid candidates whose delta lands in the window [band_low, band_high]
+    (default 0.28-0.42, i.e. ~δ0.35 +/- 0.07), choose the strike whose MID net vs
+    the buy-to-close price is BEST — the largest credit, or (if none is a credit)
+    the smallest debit (best-defensive). Net is measured at MID (sell the new
+    weekly at its mark, buy the old short back at `close_buyback`) so the ranking
+    matches the MID-based gate + dispatch (FIX 1). Ties break to the strike nearest
+    `target_delta` (deterministic).
+
+    WHY a window, not nearest-delta: the pre-fix picker took the strike nearest the
+    δ target regardless of net, landing on marginal rolls (TSLA $335 δ0.31 = +$0.03
+    when the adjacent $330 δ0.40 = +$1.43). The window brackets the target so the
+    best-net strike is chosen without walking arbitrarily far ITM (excludes an
+    over-ITM δ0.45 grab) or into far-OTM thin premium (excludes δ<0.28).
+
+    Falls back to `_select_weekly_strike` (nearest-delta) when `close_buyback` is
+    None (OPEN path — no old short to net against) or no candidate lands in the
+    window, so a build always happens. Pure; no I/O."""
+    if close_buyback is None:
+        return _select_weekly_strike(calls, target_delta)
+    lo, hi = min(band_low, band_high), max(band_low, band_high)
+    in_band = [
+        c for c in calls
+        if c.get("delta") is not None and lo <= c["delta"] <= hi
+        and _mid_of(c) is not None
+    ]
+    if not in_band:
+        return _select_weekly_strike(calls, target_delta)
+    # Best MID net (max); tie-break nearest delta to the target (stable).
+    return max(
+        in_band,
+        key=lambda c: (round(_mid_of(c) - close_buyback, 4), -abs(c["delta"] - target_delta)),
+    )
+
+
 def _days_to(expiry: str) -> int:
     try:
         return max(0, (date.fromisoformat(expiry) - date.today()).days)
@@ -723,6 +780,31 @@ class PMCCAgent:
         if isinstance(rng, list) and len(rng) == 2:
             return (float(rng[0]) + float(rng[1])) / 2.0
         return float(self._pmcc_cfg.get("short_call_target_delta", 0.30))
+
+    @property
+    def _short_roll_target_delta(self) -> float:
+        """δ target the ROLL best-net picker centres on + tie-breaks to (FIX 2,
+        2026-08-07). Distinct from the OPEN target (`_short_target_delta`, 0.30):
+        rolls aim a touch higher (0.35) so the best-net window brackets the credit-
+        bearing strikes. Config `short_leg.roll_target_delta` (default 0.35)."""
+        v = self._short_leg_cfg.get("roll_target_delta")
+        return float(v) if v is not None else 0.35
+
+    @property
+    def _roll_best_net_delta_low(self) -> float:
+        """Low delta bound of the ROLL best-net candidate window (FIX 2). Config
+        `short_leg.roll_best_net_delta_low` (default 0.28). Excludes far-OTM thin
+        strikes from the net ranking."""
+        v = self._short_leg_cfg.get("roll_best_net_delta_low")
+        return float(v) if v is not None else 0.28
+
+    @property
+    def _roll_best_net_delta_high(self) -> float:
+        """High delta bound of the ROLL best-net candidate window (FIX 2). Config
+        `short_leg.roll_best_net_delta_high` (default 0.42). Includes the δ~0.40
+        credit-bearing strike (e.g. TSLA $330) while excluding an over-ITM grab."""
+        v = self._short_leg_cfg.get("roll_best_net_delta_high")
+        return float(v) if v is not None else 0.42
 
     @property
     def _short_target_dte(self) -> int:
@@ -3892,6 +3974,18 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
         # proposing the close. No qualifying roll-out weekly → abort the WHOLE roll
         # (propose nothing) + audit — never ship a close-only "roll" that leaves the
         # LEAP uncovered. A deliberate bare close is the LLM's explicit close_short.
+        # FIX 2 (2026-08-07): fetch the FRESH buy-to-close quote BEFORE selection so the
+        # new-weekly picker can choose the BEST MID net vs this buyback. The SAME fresh
+        # quote feeds the credit gate below (one fetch, one build timestamp — preserves
+        # the 2026-08-06 same-timestamp / stale-scan-mark fix). Read-only; places nothing.
+        close_q = await self._fresh_leg_quote(
+            broker, symbol, leg.short_leg_expiry, leg.short_leg_strike)
+        close_mark_fresh, _cm_src = self._fresh_mark(close_q, fallback=close_mark)
+        # Dispatch buys the old short back at its ASK; fall back to the fresh/scan mark
+        # when no live ask (fail-safe — dispatch re-checks with real quotes).
+        _close_ask = (close_q or {}).get("ask")
+        close_ask = float(_close_ask) if _close_ask is not None else close_mark_fresh
+
         new_weekly = await self._find_best_weekly(
             symbol, broker,
             target_delta=analysis.target_delta if analysis else None,
@@ -3900,6 +3994,7 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
             target_delta_low=analysis.target_delta_low if analysis else None,
             target_delta_high=analysis.target_delta_high if analysis else None,
             after_dte=leg.short_leg_dte,  # B7: new short must roll OUT
+            close_buyback=close_mark_fresh,  # FIX 2: pick best MID net vs the buy-to-close
         )
         if not new_weekly:
             gates["selection"] = "blocked"
@@ -3912,59 +4007,26 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
             return []
         gates["selection"] = "ok"
 
-        # ── B2 (credit gate) ── skill HARD RULE: rolls are for credit (BS L102
-        # "Always for credit"; STANDARD Major breach L199 "MUST credit"; FORBIDDEN
-        # L170 "Roll for debit to chase OTM"). STANDARD permits a small debit
-        # (≤8% LEAP, L255) — that latitude flows through the net_debit_justified
-        # override.
+        # ── B2 (credit rule → ADVISORY) ── FIX 3 (2026-08-07): "rolls are for credit"
+        # (skill BS L102 / STANDARD L199) is now ADVISORY, not a hard block. The best
+        # available roll is ALWAYS built and presented — credit OR debit — with the net
+        # clearly labelled; the HITL operator decides. The bounded-debit CAP is enforced
+        # only on the AUTONOMOUS path (source='auto') downstream by ceo_graph
+        # `_check_auto_execute` (rolling_for_debit_above_5_pct_of_long +
+        # max_roll_debit_dollars); source='board' (the panel) presents any debit. The
+        # LEAP guard is unaffected — a roll is short-leg-only (buy-to-close + sell-to-open).
         #
-        # BASIS (amended 2026-08-06, DISPATCH-aligned 2026-08-06b): evaluate the credit
-        # on the SAME net the live dispatch reprice fires on — sell the new weekly at its
-        # BID, buy the old short back at a FRESH build-time ASK, minus the dispatch
-        # `give_up` shave — so proposal == dispatch (approve == fires; no "credit
-        # repriced to a DEBIT" / "credit collapsed" consent abort on the give_up margin,
-        # `_pmcc_combo.assess_combo_reprice_consent`). BOTH legs are quoted at the same
-        # build timestamp (fixes the stale-scan-mark bug). Matches dispatch (slightly
-        # stricter, never looser); on real rolls (RIOT +$0.05 dispatch) it clears — it
-        # only filters trivial marginal rolls that would abort at dispatch anyway. The
-        # headline MID net (new mark − fresh buyback mark) is kept for display/audit. The
-        # hard credit rule still fires on a genuine debit; net_debit_justified overrides.
-        close_q = await self._fresh_leg_quote(
-            broker, symbol, leg.short_leg_expiry, leg.short_leg_strike)
-        close_mark_fresh, _cm_src = self._fresh_mark(close_q, fallback=close_mark)
-        # Dispatch buys the old short back at its ASK; fall back to the fresh/scan mark
-        # when no live ask (fail-safe — dispatch re-checks with real quotes).
-        _close_ask = (close_q or {}).get("ask")
-        close_ask = float(_close_ask) if _close_ask is not None else close_mark_fresh
+        # BASIS (FIX 1, 2026-08-07): the net is the MID net minus the dispatch `give_up`
+        # shave — new.mark − old.mark − give_up — the SAME basis the dispatch reprice +
+        # the combo tag now use (proposal == dispatch; approve == fires). The operator
+        # fills ~100% at MID, so the prior worst-case bid/ask basis was wrongly blocking
+        # rolls that ARE credits at mid. `natural` (new.bid − old.ask) is retained as a
+        # sanity/HOLD reference only. Both legs are quoted at the same build timestamp.
         give_up = self._combo_give_up_dollars
         conservative_net, mid_net, open_bid = _short_roll_credit(new_weekly, close_mark_fresh)
         natural = (float(open_bid) if open_bid is not None else 0.0) - close_ask
-        dispatch_net = natural - give_up          # what dispatch fires on (approve == fires)
-        if dispatch_net < 0 and override_kind != "net_debit_justified":
-            gates["credit"] = "blocked"
-            self._audit_roll_abort(
-                reason="net_debit_roll", symbol=symbol,
-                extra={
-                    "gates": dict(gates),
-                    "dispatch_net": round(dispatch_net, 4),
-                    "natural": round(natural, 4),
-                    "give_up": round(give_up, 4),
-                    "mid_net": round(mid_net, 4),
-                    "conservative_net": round(conservative_net, 4),
-                    "close_mark_fresh": round(close_mark_fresh, 4),
-                    "close_ask": round(close_ask, 4),
-                    "close_mark_scan": round(close_mark, 4),
-                    "close_mark_source": _cm_src,
-                    "open_bid": open_bid,
-                    "new_mark": new_weekly.get("mark_price"),
-                    "fees_included": False,
-                    "fee_gap": ("pre-fee: RH per-contract regulatory/exchange "
-                                "fees excluded; dispatch net captures spread only"),
-                },
-                preview=preview,
-            )
-            return []
-        gates["credit"] = "clear"
+        mid_dispatch_net = mid_net - give_up      # MID basis — what dispatch fires on
+        gates["credit"] = "credit" if mid_dispatch_net >= 0 else "debit"
 
         orders: list[ProposedOrder] = []
         pair_id = str(uuid.uuid4())[:8]
@@ -4016,21 +4078,24 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
             self._audit_division("pmcc_roll_gates", {
                 "symbol": symbol,
                 "gates": dict(gates),
-                "dispatch_net": round(dispatch_net, 4),
+                "mid_dispatch_net": round(mid_dispatch_net, 4),
                 "mid_net": round(mid_net, 4),
+                "natural": round(natural, 4),
                 "conservative_net": round(conservative_net, 4),
+                "direction": gates["credit"],
                 "override_kind": override_kind,
             })
         # Phase A: tag the two roll_short legs as ONE atomic combo so they dispatch
         # through place_combo -> place_multi_leg (a single all-or-nothing POST)
         # instead of two independent single-leg orders — closing the naked-leg fill
         # window B4 fixed only at the proposal layer. combo_direction + net_limit_price
-        # are set on the DISPATCH basis (natural − give_up) computed for the B2 gate, so
-        # the operator-approved snapshot MATCHES what the live reprice fires on (no
-        # sign-flip / credit-collapse consent abort): net credit -> "credit", net debit
-        # -> "debit"; the limit is the dispatch net (reprice re-rounds to the net tick).
-        _combo_direction = "credit" if dispatch_net >= 0 else "debit"
-        _combo_net = round(abs(dispatch_net), 2)
+        # are set on the MID − give_up basis (FIX 1, 2026-08-07) computed for the B2
+        # advisory gate, so the operator-approved snapshot MATCHES what the live reprice
+        # fires on (no sign-flip / credit-collapse consent abort): net credit -> "credit",
+        # net debit -> "debit"; the limit is |mid_dispatch_net| (reprice re-rounds to tick,
+        # re-derives on live MID and the consent guard aborts an adverse drift EITHER way).
+        _combo_direction = "credit" if mid_dispatch_net >= 0 else "debit"
+        _combo_net = round(abs(mid_dispatch_net), 2)
         for _leg in orders:
             _leg.extra.update({
                 "is_multi_leg": True,
@@ -4093,9 +4158,16 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
         after_dte: int | None = None,
         target_delta_low: float | None = None,
         target_delta_high: float | None = None,
+        close_buyback: float | None = None,
     ) -> dict | None:
         """Find the best weekly short call, optionally using LLM-suggested
         delta / DTE / strike.
+
+        `close_buyback` (FIX 2 — 2026-08-07): the MID buy-to-close price of the
+        current short on a ROLL. When set (and no `target_strike` is prescribed),
+        strike selection switches to `_select_best_net_weekly` — best MID net vs
+        this buyback within the roll delta window — instead of nearest-delta. None
+        on OPEN paths (nothing to net against) = original nearest-delta behavior.
 
         `target_strike` (Item 3 — 2026-05-03): when set, the strike picker
         selects the listed strike CLOSEST to target_strike (subject to
@@ -4189,10 +4261,21 @@ the LEAP; there is no "close the whole position" action — an exit is an operat
         # _select_weekly_strike honors it directly and ignores delta —
         # see the helper's docstring.
         delta = target_delta if target_delta is not None else self._short_target_delta
-        best = _select_weekly_strike(
-            liquid, delta, target_strike=target_strike,
-            target_delta_low=target_delta_low, target_delta_high=target_delta_high,
-        )
+        if close_buyback is not None and target_strike is None:
+            # ROLL path (FIX 2): pick the BEST MID net vs the buy-to-close within the
+            # roll delta window, tie-broken to the roll δ target. A prescribed
+            # target_strike (halfway-roll rule) still overrides via the branch below.
+            best = _select_best_net_weekly(
+                liquid, close_buyback,
+                target_delta=self._short_roll_target_delta,
+                band_low=self._roll_best_net_delta_low,
+                band_high=self._roll_best_net_delta_high,
+            )
+        else:
+            best = _select_weekly_strike(
+                liquid, delta, target_strike=target_strike,
+                target_delta_low=target_delta_low, target_delta_high=target_delta_high,
+            )
         if not best:
             self._last_weekly_diag = {"reason": "no_qualifying_weekly_strike",
                                       "considered": len(liquid), "target_date": target_date}
