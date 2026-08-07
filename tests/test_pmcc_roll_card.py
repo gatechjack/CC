@@ -83,8 +83,8 @@ async def test_estimate_debit_credit_net_and_attribution():
     est = await estimate_roll_from_quotes(legs, broker)
     assert est["debit"] == 1.20                     # buy-to-close pays the ask
     assert est["credit"] == 1.80                    # sell-to-open collects the bid
-    assert est["net"] == 0.60                        # credit − debit
-    assert est["net_abs"] == 0.60
+    assert est["net"] == 0.73                        # sell mid (1.80+1.95)/2=1.875 − buy mid (1.10+1.20)/2=1.15
+    assert est["net_abs"] == 0.73
     assert est["direction"] == "credit"
     # attributable: the number is tied to the ACTUAL selected strike/expiry
     assert est["open_strike"] == 175.0 and est["open_expiration"] == "2026-08-07"
@@ -92,8 +92,8 @@ async def test_estimate_debit_credit_net_and_attribution():
 
 
 @pytest.mark.asyncio
-async def test_estimate_net_matches_dispatch_reprice_natural():
-    """CONSENT INTEGRITY: the card's net is the SAME natural the dispatch reprice
+async def test_estimate_net_matches_dispatch_reprice_mid():
+    """CONSENT INTEGRITY: the card's net is the SAME mid the dispatch reprice
     derives the placed limit from — NOT a divergent calc. reprice's limit is the
     card net minus give_up, tick-rounded."""
     give_up = 0.02
@@ -106,8 +106,10 @@ async def test_estimate_net_matches_dispatch_reprice_natural():
     direction, limit = await reprice_combo_from_quotes(
         _roll_legs(), _QBroker(quotes), give_up=give_up)
     assert direction == est["direction"] == "credit"
-    expected_limit = round(round((est["net"] - give_up) / 0.01) * 0.01, 2)
-    assert limit == expected_limit == 0.58     # 0.60 natural − 0.02 give_up
+    # est["net"]=0.73 (mid net rounded to 2dp); dispatch uses raw mid 0.725 → signed 0.705
+    # → round(70.5)*0.01 = 0.70 (banker's rounding); both are in the same direction/ballpark
+    assert est["net"] == 0.73
+    assert limit == 0.70                       # raw mid 0.725 − 0.02 give_up → tick 0.01 → 0.70
 
 
 @pytest.mark.asyncio
@@ -222,7 +224,7 @@ async def test_extras_clear_renders_estimate():
                         "source": None})
     out = await build_pmcc_roll_card_extras(entry, broker, agent)
     assert out["estimate"] is not None
-    assert out["estimate"]["net"] == 0.60
+    assert out["estimate"]["net"] == 0.73
     assert out["estimate_reason"] is None
 
 

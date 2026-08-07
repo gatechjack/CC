@@ -132,24 +132,24 @@ def test_net_tick_mismatched_legs_coarsest_wins():
 # ── item 4: close_all is marketable-THROUGH, and give_up can flip to debit ────
 
 def test_reprice_close_all_marketable_through_larger_giveup():
-    # sell LEAP @ bid 5.00, buy short @ ask 0.02 → natural credit 4.98; a big
-    # give_up (0.25) crosses decisively → 4.73 → nickel tick → 4.75 (NOT natural−0.02=4.96).
+    # sell LEAP @ mid 5.05, buy short @ mid 0.015 → mid credit 5.035; a big
+    # give_up (0.25) crosses decisively → 4.785 → nickel tick → 4.80 (NOT mid−0.02=5.015).
     legs = [_leg("sell", combo_id="ca", is_multi_leg=True, strike=310.0,
                  action="close_leap_urgent"),
             _leg("buy", combo_id="ca", is_multi_leg=True, strike=405.0,
                  action="close_short_urgent")]
     broker = _FakeQuoteBroker({310.0: (5.00, 5.10), 405.0: (0.01, 0.02)})
     d, l = asyncio.run(reprice_combo_from_quotes(legs, broker, give_up=0.25))
-    assert d == "credit" and l == 4.75 and l != 4.96
+    assert d == "credit" and l == 4.80 and l != 4.96
 
 
 def test_reprice_giveup_exceeds_credit_flips_to_debit():
-    # tiny natural credit 0.04, give_up 0.25 → signed −0.21 → DEBIT 0.21 (pay to exit).
+    # tiny mid credit 0.06 (sell mid 0.09 − buy mid 0.03), give_up 0.25 → signed −0.19 → DEBIT 0.19.
     legs = [_leg("sell", combo_id="cb", is_multi_leg=True, strike=100.0),
             _leg("buy", combo_id="cb", is_multi_leg=True, strike=101.0)]
     broker = _FakeQuoteBroker({100.0: (0.08, 0.10), 101.0: (0.02, 0.04)})
     d, l = asyncio.run(reprice_combo_from_quotes(legs, broker, give_up=0.25))
-    assert d == "debit" and l == 0.21
+    assert d == "debit" and l == 0.19
 
 
 # ── 4. pricing: limit == natural ∓ give_up, correct direction, tick-rounded ───
@@ -164,29 +164,29 @@ class _FakeQuoteBroker:
         return {"bid": bid, "ask": ask, "mark": (bid + ask) / 2}
 
 
-def test_reprice_credit_roll_natural_minus_giveup_tick_rounded():
-    # sell 337.5C @ bid 1.34, buy 405C @ ask 0.03 → natural credit 1.31 − 0.02 = 1.29
+def test_reprice_credit_roll_mid_minus_giveup_tick_rounded():
+    # sell 337.5C @ mid 1.36, buy 405C @ mid 0.02 → mid credit 1.34 − 0.02 give_up = 1.32
     legs = [_leg("buy", combo_id="c1", is_multi_leg=True, strike=405.0),
             _leg("sell", combo_id="c1", is_multi_leg=True, strike=337.5)]
     broker = _FakeQuoteBroker({405.0: (0.01, 0.03), 337.5: (1.34, 1.38)})
     direction, limit = asyncio.run(
         reprice_combo_from_quotes(legs, broker, give_up=0.02))
     assert direction == "credit"
-    assert limit == 1.29                                   # < $3 → 0.01 tick
-    assert all((o.extra["net_limit_price"] == 1.29
+    assert limit == 1.32                                   # < $3 → 0.01 tick
+    assert all((o.extra["net_limit_price"] == 1.32
                 and o.extra["combo_direction"] == "credit") for o in legs)
 
 
-def test_reprice_debit_open_natural_plus_giveup_tick_rounded():
-    # buy 310C @ ask 50.10, sell 405C @ bid 0.03 → natural −50.07 → debit 50.07 +
-    # 0.02 = 50.09 → 0.05 tick (>= $3) → 50.10
+def test_reprice_debit_open_mid_plus_giveup_tick_rounded():
+    # buy 310C @ mid 50.00, sell 405C @ mid 0.04 → mid −49.96 → debit 49.96 +
+    # 0.02 = 49.98 → 0.05 tick (>= $3) → 50.00
     legs = [_leg("buy", combo_id="c2", is_multi_leg=True, strike=310.0, direction="debit"),
             _leg("sell", combo_id="c2", is_multi_leg=True, strike=405.0, direction="debit")]
     broker = _FakeQuoteBroker({310.0: (49.90, 50.10), 405.0: (0.03, 0.05)})
     direction, limit = asyncio.run(
         reprice_combo_from_quotes(legs, broker, give_up=0.02))
     assert direction == "debit"
-    assert limit == 50.10
+    assert limit == 50.00
 
 
 def test_reprice_missing_quote_is_failsafe():

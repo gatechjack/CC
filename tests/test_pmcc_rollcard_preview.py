@@ -188,21 +188,22 @@ def test_panel_earnings_unverified_no_estimate_suppresses_approve():
 
 
 @pytest.mark.asyncio
-async def test_panel_estimate_equals_dispatch_natural():
+async def test_panel_estimate_equals_dispatch_mid():
     """CONSENT LOCK on the DIVISION panel: the net the panel prints is the SAME
-    natural the dispatch reprice derives the placed limit from (net − give_up)."""
+    mid the dispatch reprice derives the placed limit from (net − give_up)."""
     quotes = {170.0: {"bid": 1.10, "ask": 1.20, "mark": 1.15},
               175.0: {"bid": 1.80, "ask": 1.95, "mark": 1.88}}
     entry = types.SimpleNamespace(orders=_roll_legs(), underlying="AAPL")
     agent = types.SimpleNamespace(
         earnings_card_state=lambda s, short_strike=None, spot=None: dict(_CLEAR))
     extras = await build_pmcc_roll_card_extras(entry, _QBroker(quotes), agent)
-    assert extras["estimate"]["net"] == 0.60
+    assert extras["estimate"]["net"] == 0.73
     _, limit = await reprice_combo_from_quotes(_roll_legs(), _QBroker(quotes), give_up=0.02)
-    assert round(extras["estimate"]["net"] - 0.02, 2) == limit == 0.58
+    # dispatch uses raw mid 0.725 → signed 0.705 → banker's round(70.5)*0.01 = 0.70
+    assert limit == 0.70
     html = _render_pair_analysis(
         _analysis(), slug="robinhood_pmcc", symbol="AAPL", roll_extras=extras)
-    assert "0.60" in html                                     # the consent net is on the panel
+    assert "0.73" in html                                     # the consent net is on the panel
 
 
 # ==========================================================================

@@ -87,14 +87,15 @@ async def test_reprice_does_not_hold_cheap_leg_one_tick_spread():
 
 
 @pytest.mark.asyncio
-async def test_reprice_normal_credit_computes_natural_minus_giveup():
+async def test_reprice_normal_credit_computes_mid_minus_giveup():
     legs = _roll()
     broker = _FakeBroker({74.0: (0.02, 0.04), 75.0: (1.20, 1.29)})
     direction, limit = await reprice_combo_from_quotes(
         legs, broker, give_up=0.02, max_spread_pct=0.60)
-    # natural = bid(sell 1.20) - ask(buy 0.04) = 1.16; limit = 1.16 - 0.02 = 1.14
+    # mid = (bid+ask)/2; sell mid (1.20+1.29)/2=1.245, buy mid (0.02+0.04)/2=0.03
+    # mid net = 1.245 - 0.03 = 1.215; limit = 1.215 - 0.02 = 1.195 → tick 0.01 → 1.20
     assert direction == "credit"
-    assert limit == pytest.approx(1.14, abs=0.011)
+    assert limit == pytest.approx(1.20, abs=0.011)
 
 
 # --------------------------------------------------------------------------- #

@@ -164,9 +164,10 @@ def test_no_bid_no_ask_zero_oi_still_rejected(agent: PMCCAgent):
     assert not agent._passes_liquidity(_c(24, 0.50, 0.60, 0.55, 0.35, 5, 5))[0]        # liveness
 
 
-def test_genuine_mid_debit_still_blocks():
+def test_genuine_mid_debit_is_a_debit():
     """A REAL mid-to-mid debit (buy back a 0.80-mark short, sell a 0.50-mark new short)
-    still yields mid_net < 0 → the gate still blocks. The credit rule is preserved."""
+    yields mid_net < 0. Under FIX 3 this no longer BLOCKS — it is presented as a labeled
+    DEBIT for HITL — but the helper math (the debit direction) is unchanged."""
     new = _c(30.0, 0.45, 0.55, 0.50, 0.25, 1000, 1000)
     _cons, mid, _ob = _short_roll_credit(new, 0.80)      # fresh buyback mid 0.80
     assert mid < 0
@@ -226,6 +227,10 @@ def _analysis():
 
 
 def test_e2e_riot_roll_builds_credit_on_target(agent: PMCCAgent):
+    """FIX 2 best-net (2026-08-07): among the in-window (δ0.28-0.42) liquid strikes, the
+    picker now takes the BEST MID net vs the fresh buyback (mark 0.75), not the strike
+    nearest δ0.35. $23.5 (δ0.392, mark 1.170) nets +0.42 — richer than $24.0 (mark 1.020,
+    +0.27) — so it is selected. Still NO far-OTM $25.0 substitution."""
     cur_short_exp = (date.today() + timedelta(days=8)).isoformat()
     roll_exp = (date.today() + timedelta(days=15)).isoformat()
     broker = _FakeOptBroker(roll_exp=roll_exp, cur_short_exp=cur_short_exp)
@@ -234,50 +239,60 @@ def test_e2e_riot_roll_builds_credit_on_target(agent: PMCCAgent):
     orders = asyncio.run(
         agent._propose_roll_short("RIOT", leg, broker, analysis=_analysis(), preview=True))
 
-    # Built a 2-leg roll (credit NOT blocked) …
+    # Built a 2-leg roll (credit) …
     assert len(orders) == 2
     sells = [o for o in orders if o.side == "sell"]
     buys = [o for o in orders if o.side == "buy"]
     assert len(sells) == 1 and len(buys) == 1
-    # … on the ON-TARGET $24.0 8/21 strike — NOT the far-OTM $25.0 substitution.
-    assert float((sells[0].extra or {}).get("strike")) == 24.0
-    # … tagged on the DISPATCH basis (natural − give_up = 0.91 − 0.84 − 0.02 = 0.05),
-    # so the operator-approved snapshot matches what the live reprice fires on.
+    # … on the BEST-NET in-window $23.5 8/21 strike — NOT the far-OTM $25.0 substitution.
+    assert float((sells[0].extra or {}).get("strike")) == 23.5
+    assert float((sells[0].extra or {}).get("strike")) != 25.0
+    # … tagged on the MID − give_up basis (FIX 1): mid_net 1.170 − 0.75 = 0.42; minus
+    # give_up 0.02 = 0.40 credit; the operator-approved snapshot == what dispatch fires on.
     assert (sells[0].extra or {}).get("combo_direction") == "credit"
-    assert (sells[0].extra or {}).get("net_limit_price") == 0.05
-    # … and no net-debit abort was stashed.
+    assert (sells[0].extra or {}).get("net_limit_price") == 0.40
+    # … and (credit rule advisory) no net-debit abort exists any more.
     ab = agent._last_roll_abort
     assert ab is None or ab.get("reason") != "net_debit_roll"
 
 
-def test_e2e_riot_genuine_debit_blocks_with_high_buyback(agent: PMCCAgent):
-    """Same chain, but the fresh buyback mark is read HIGH (1.10 > every on-target
-    strike's mid) → the mid net IS a debit → the gate STILL blocks (credit rule kept)."""
+def test_e2e_riot_genuine_debit_builds_and_presents_labeled(agent: PMCCAgent):
+    """FIX 3 (2026-08-07): the credit rule is ADVISORY — a GENUINE debit no longer
+    BLOCKS; it BUILDS and is presented for HITL, tagged as a DEBIT. Buyback mark 1.35 is
+    above every in-window strike's mid, so best-net picks the LEAST-debit $23.5 (mark
+    1.170): mid_net = 1.170 − 1.35 = −0.18; minus give_up 0.02 = −0.20 → a $0.20 DEBIT."""
     cur_short_exp = (date.today() + timedelta(days=8)).isoformat()
     roll_exp = (date.today() + timedelta(days=15)).isoformat()
 
     class _HighBuyback(_FakeOptBroker):
         async def get_option_quote(self, symbol, expiration, strike, option_type):
             if abs(float(strike) - 23.5) < 1e-9 and expiration == self._cur_short_exp:
-                return {"bid": 1.00, "ask": 1.20, "mark_price": 1.10}
+                return {"bid": 1.25, "ask": 1.45, "mark_price": 1.35}
             return {"bid": None, "ask": None, "mark_price": None}
 
     broker = _HighBuyback(roll_exp=roll_exp, cur_short_exp=cur_short_exp)
     leg = _riot_leg(cur_short_exp)
     orders = asyncio.run(
         agent._propose_roll_short("RIOT", leg, broker, analysis=_analysis(), preview=True))
-    assert orders == []                                   # blocked
-    assert agent._last_roll_abort is not None
-    assert agent._last_roll_abort.get("reason") == "net_debit_roll"
-    assert agent._last_roll_abort.get("dispatch_net") < 0
+    # BUILDS (not blocked) — a 2-leg roll presented for HITL …
+    assert len(orders) == 2
+    sells = [o for o in orders if o.side == "sell"]
+    assert float((sells[0].extra or {}).get("strike")) == 23.5   # best-net = least-debit
+    # … tagged as a DEBIT of $0.20 (|mid_net − give_up|), so the operator sees the cost.
+    assert (sells[0].extra or {}).get("combo_direction") == "debit"
+    assert (sells[0].extra or {}).get("net_limit_price") == 0.20
+    # … and NO net-debit abort was stashed (the hard block is gone).
+    ab = agent._last_roll_abort
+    assert ab is None or ab.get("reason") != "net_debit_roll"
 
 
-def test_e2e_dispatch_alignment_blocks_mid_credit_but_dispatch_debit(agent: PMCCAgent):
-    """PART A item 2: a roll that is a CREDIT at mid but a DEBIT at the dispatch basis
-    (natural − give_up) is now blocked AT PROPOSAL — no 'approved then aborted at
-    dispatch' on the give_up margin. Buyback fresh bid 0.85 / ask 1.10 / mark 0.95 vs
-    new $24 (bid 0.91, mark 1.02): mid_net = +0.07 (credit) but
-    dispatch_net = 0.91 − 1.10 − 0.02 = −0.21 (debit) → BLOCKED."""
+def test_e2e_mid_credit_natural_debit_now_builds_credit(agent: PMCCAgent):
+    """FIX 1 (2026-08-07) — THE headline case: a roll that is a CREDIT at MID but a DEBIT
+    at the worst-case natural now BUILDS as a credit (was wrongly blocked). Buyback fresh
+    bid 0.85 / ask 1.10 / mark 0.95; best-net picks $23.5 (bid 1.04, mark 1.170):
+      MID net     = 1.170 − 0.95 = +0.22  (credit)  ← the operator's ~100% fill basis
+      natural     = 1.04  − 1.10 = −0.06  (debit)   ← old worst-case basis that blocked
+    Gate is now MID: mid_net − give_up = 0.22 − 0.02 = 0.20 credit → BUILDS."""
     cur_short_exp = (date.today() + timedelta(days=8)).isoformat()
     roll_exp = (date.today() + timedelta(days=15)).isoformat()
 
@@ -290,11 +305,14 @@ def test_e2e_dispatch_alignment_blocks_mid_credit_but_dispatch_debit(agent: PMCC
     broker = _MarginBuyback(roll_exp=roll_exp, cur_short_exp=cur_short_exp)
     orders = asyncio.run(agent._propose_roll_short(
         "RIOT", _riot_leg(cur_short_exp), broker, analysis=_analysis(), preview=True))
-    assert orders == []
+    # BUILDS as a credit (not blocked on the natural give_up margin) …
+    assert len(orders) == 2
+    sells = [o for o in orders if o.side == "sell"]
+    assert float((sells[0].extra or {}).get("strike")) == 23.5
+    assert (sells[0].extra or {}).get("combo_direction") == "credit"
+    assert (sells[0].extra or {}).get("net_limit_price") == 0.20
     ab = agent._last_roll_abort
-    assert ab is not None and ab.get("reason") == "net_debit_roll"
-    assert ab.get("mid_net") > 0                 # would have cleared on mid …
-    assert ab.get("dispatch_net") < 0            # … but blocked on the dispatch basis
+    assert ab is None or ab.get("reason") != "net_debit_roll"
 
 
 def test_roll_leap_gate_uses_mid_not_bid_basis():
