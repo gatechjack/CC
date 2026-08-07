@@ -12,6 +12,9 @@
 #     --scripts "bash /home/azureuser/deploy_<name>_<YYYYMMDD>.sh" \
 #     --query "value[0].message" --output tsv
 #
+# MANDATORY for all prod deploys per deploy_log note @ bf8fb4b -- hand-rolled
+# deploy scripts are non-compliant.
+#
 # RETROFIT FORWARD ONLY: use this for FUTURE deploy scripts. Do NOT edit deploy
 # scripts already run on prod, and this template touches nothing on running prod.
 # =============================================================================
@@ -27,12 +30,33 @@ DEPLOY_SESSION="<session-id-or-branch>"       # who is deploying, e.g. claude-mo
 DEPLOY_COMMIT="<short-sha>"                    # the commit being deployed
 ST="/home/azureuser/NAME_stage"               # staged-file dir (LF-normalized files pre-copied here)
 BK="/home/azureuser/NAME_bak_YYYYMMDD"        # backup dir for the pre-deploy runtime files
+PENDING=/home/azureuser/deploy_log_pending.md # machine-generated deploy-log stub target (step 7).
+                                              # The deploying session MERGES it into the repo
+                                              # runbooks/deploy_log.md post-deploy, then rm's it.
+                                              # Non-empty at step 0a of the NEXT deploy = a prior
+                                              # deploy's log was never committed (loud warning).
 # FILES: one "relpath:expected_lf_md5" per runtime file to swap
 FILES=(
   "trading_corp/agents/strategies/<file>.py:<lf_md5>"
 )
 
-# ---- 0. DEPLOY MUTEX  (BEFORE the pending_order gate) -----------------------
+# ---- 0a. PRE-FLIGHT: a prior deploy's log stub must already be committed ----
+# A non-empty $PENDING means the PREVIOUS deploy's step-7 stub was never merged
+# into the repo runbooks/deploy_log.md (and the pending file never deleted). Loud
+# warning (NOT an abort) so the deployer merges + clears it as part of THIS
+# deploy's post-deploy checklist.
+if [ -s "$PENDING" ]; then
+  echo "############################################################"
+  echo "# WARNING: $PENDING is NON-EMPTY -- a previous deploy's deploy_log"
+  echo "# stub was NEVER committed to the repo runbooks/deploy_log.md."
+  echo "# Merge it into deploy_log.md and 'rm $PENDING' as part of THIS"
+  echo "# deploy's post-deploy checklist. Pending contents:"
+  echo "# ----------------------------------------------------------"
+  cat "$PENDING"
+  echo "############################################################"
+fi
+
+# ---- 0b. DEPLOY MUTEX  (BEFORE the pending_order gate) ----------------------
 # Prevents two sessions deploying concurrently and racing the engine restart
 # (root cause of the 2026-08-06 20:52 incident: a parallel PMCC deploy restarted
 # the engine while a movegate deploy was mid-verify). Semantics:
@@ -55,7 +79,7 @@ printf '{"session":"%s","timestamp":"%s","commit":"%s"}\n' \
   "$DEPLOY_SESSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$DEPLOY_COMMIT" > "$LOCK"
 echo "== 0. deploy lock ACQUIRED: $(cat "$LOCK")"
 
-# EXIT-trap lock disposition. Armed AFTER acquire so a step-0 abort on a lock
+# EXIT-trap lock disposition. Armed AFTER acquire so a step-0b abort on a lock
 # held by ANOTHER session never triggers it. INSTALL_STARTED flips to 1 at step 4;
 # before that, prod is untouched so an abort releases; after it, an abort HOLDS.
 INSTALL_STARTED=0
@@ -116,7 +140,24 @@ STt=$(systemctl is-active trading-corp || true)
 echo "   old MainPID=$OLD  new MainPID=$NEW  state=$STt"
 [ "$STt" = "active" ] || { echo "WARNING: not active - run the rollback script"; exit 2; }
 
-# ---- 7. done (the EXIT trap releases the deploy mutex on success) -----------
+# ---- 7. emit deploy_log stub  (AFTER restart/PID print, BEFORE lock release) --
+# Machine-generated; appended to $PENDING. The deploying session MERGES this block
+# into the repo runbooks/deploy_log.md post-deploy, then deletes $PENDING. A
+# leftover (non-empty) $PENDING is caught by step 0a of the NEXT deploy. Non-fatal:
+# a stub-write failure must NOT fail an already-successful deploy.
+{
+  echo ""
+  echo "## $(date -u +%Y-%m-%dT%H:%M:%SZ) -- ${DEPLOY_SESSION} DEPLOY STUB [PENDING MERGE -> deploy_log.md]"
+  echo "- commit: ${DEPLOY_COMMIT}   (ref placeholder -- confirm at merge)"
+  echo "- method: az-run-command (RunShellScript, root, no sudo)"
+  echo "- restart: old MainPID=${OLD} -> new MainPID=${NEW}  state=${STt}"
+  echo "- backup dir: ${BK}"
+  echo "- files installed (path : installed md5):"
+  for e in "${FILES[@]}"; do f="${e%%:*}"; echo "  - ${f} : $(md5sum "$APP/$f" | cut -d" " -f1)"; done
+} >> "$PENDING" || echo "WARN: could not append stub to $PENDING (deploy succeeded; log it manually)"
+echo "== 7. deploy_log stub appended -> $PENDING  (MERGE into repo deploy_log.md, then: rm $PENDING) =="
+
+# ---- 8. done (the EXIT trap releases the deploy mutex on success) -----------
 echo "== DONE. Rollback: bash /home/azureuser/rollback_NAME_YYYYMMDD.sh =="
 
 # =============================================================================
