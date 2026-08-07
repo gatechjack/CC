@@ -26,24 +26,46 @@
   }
 
   list.querySelectorAll('details.pmcc-row').forEach((d) => {
-    // Single-open accordion: opening one row closes any other open row.
-    // We deliberately do NOT scroll-into-view here — the user wants the
-    // tile to expand in place, not jump to the top of the page (which
-    // can hide the tile behind the sticky page header).
+    const summary = d.querySelector('summary[data-symbol]');
+
+    // Single-open accordion + panel binding. `toggle` fires on ANY open —
+    // pointer click, keyboard (Enter/Space), or a programmatic open — so it
+    // is the reliable place to keep the analysis panel bound to the OPEN row.
+    // We deliberately do NOT scroll-into-view here — the user wants the tile
+    // to expand in place, not jump to the top of the page.
     d.addEventListener('toggle', () => {
       if (!d.open) return;
       list.querySelectorAll('details.pmcc-row').forEach((other) => {
         if (other !== d && other.open) other.removeAttribute('open');
       });
+      // FIX 4 (2026-08-07): the EXPERT ANALYSIS panel (symbol header + body) must
+      // ALWAYS reflect the open row, no matter HOW it was opened. A pointer click
+      // is handled by the summary click listener below (which fires HTMX's
+      // declarative hx-get); for every OTHER open path we drive the same load
+      // here, so the panel can never show a different asset than the open row.
+      if (!summary) return;
+      const symbol = summary.getAttribute('data-symbol');
+      if (symbol) showLoading(symbol);   // header + body always track the open row
+      if (d._pmccClickFetch) {
+        d._pmccClickFetch = false;       // the click already fired hx-get — no double-fetch
+        return;
+      }
+      const url = summary.getAttribute('hx-get');
+      if (url && window.htmx) {
+        window.htmx.ajax('GET', url, {
+          target: '#pair-analysis', swap: 'innerHTML', source: summary,
+        });
+      }
     });
 
-    // Immediate visual feedback: capture click on summary BEFORE HTMX
-    // dispatches its request, so the user always sees a responsive UI.
-    const summary = d.querySelector('summary[data-symbol]');
+    // Immediate visual feedback: capture click on summary BEFORE HTMX dispatches
+    // its request, so the user always sees a responsive UI. The flag lets the
+    // toggle handler above know the click path already fetched (avoids a double-fetch).
     if (summary) {
       summary.addEventListener('click', () => {
         const symbol = summary.getAttribute('data-symbol');
         if (symbol) showLoading(symbol);
+        d._pmccClickFetch = true;
       });
     }
   });
