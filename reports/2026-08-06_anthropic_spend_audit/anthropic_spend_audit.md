@@ -267,3 +267,38 @@ The 08-01 fix halved re-emission and there is no per-day runaway; the remaining 
 5. **Cooldowns / store / tracebacks ✓.** Cooldown advances on skip: **50/50 = 100%** of last-30-min skips are in `market_cooldowns` (`until = skip+6h`, sampled). Store bounded: `market_last_estimate` 615 tickers / 48 KB (45-day pruned); `market_cooldowns` ~272–281 (6h). **Zero tracebacks from kalshi_llm / the gate** — a `grep` for "traceback/exception" since epoch returns 14 hits but ALL are unrelated: transient Kalshi order-placement 409s (`MARKET_NOT_ACTIVE`/`market_closed`) from the live copy-trader division, plus benign PMCC INFO lines containing the word "exception". `grep kalshi_llm.*error` = empty. Engine PID 621536, active, NRestarts=0.
 
 **Bottom line:** the >3c movement gate cut kalshi_llm LLM calls **~1,068/day → ~151/day (−86%)**, saving **~$154/mo** (kalshi_llm ~$179/mo → ~$25/mo), with all deltas ≤3c, no store-overwrite on skip (drift-proven), cooldowns advancing 100% on skip, store bounded, and zero gate-attributable tracebacks.
+
+---
+
+## SESSION CLOSE — handoff (2026-08-09)
+
+### End state — Anthropic spend by line (~$300/mo → ~$61/mo, −80%)
+| division / call site | before | after | status |
+|---|---|---|---|
+| **kalshi_llm_arbitrage** | ~$179–235/mo | **~$25/mo** | >3c movement gate LIVE + 24h-verified (151 calls/day, −86%). commit `480e591`. |
+| **polymarket_arbitrage** | ~$28/mo | **~$0** | CLOSED `enabled:false` (parallel session, hot-reload 2026-08-06 20:40:38). *(zero-LLM confirmation open — below)* |
+| PMCC (judgment) | ~$30/mo | ~$30/mo | unchanged; NOT instrumented (low confidence — no LLM-call audit event). |
+| research_firm | ~$5/mo | ~$5/mo | unchanged. |
+| ceo / portfolio / risk / whale | ~$1/mo | ~$1/mo | on-demand, ~0. |
+| **TOTAL** | **~$300/mo** | **~$61/mo** | R0 (caching) + kalshi gate + polymarket close. |
+
+Prompt caching CONFIRMED live (kalshi warm calls `cache_read=3116`). All figures: real call counts × current pricing (Sonnet $3/$15, cache-read $0.30) × measured prompt sizes.
+
+### Deployed this session (all in prod-live history; running md5s verified 2026-08-09)
+- `f9740fb` usagelog (usage_metadata logging: `llm.py 3e7721d8`, `polymarket a9c9eeae`) — PID 573018→605796.
+- `480e591` movegate (>3c gate: `kalshi_llm_arbitrage.py 5917735a`) — PID 605796→607896.
+- `ee04747` deploy_log backfill + deploy-script mutex template (`runbooks/deploy_script_template.sh`, `/home/azureuser/deploy.lock`).
+- prod-live tip now `7d34d82` (parallel PMCC work layered on top; my files unchanged). Current engine PID 621536.
+
+### OPEN THREADS (not done)
+1. **Deploy-template step-7 `deploy_log_pending` amendment — NOT applied.** `runbooks/deploy_script_template.sh` step 7 (success) should also drop a deploy_log-pending marker/reminder so a deploy can't complete without an entry — the exact gap that forced the 2026-08-06 backfill. Not yet added to the template.
+2. **polymarket zero-LLM-calls confirmation — pending.** The close stopped `polymarket_scan_cycle` at 20:40:38 (verified), but a final check that `polymarket_llm_probability_called` has been flat (0) over a multi-day window since the close is outstanding. Query: `SELECT COUNT(*) FROM audit_event WHERE kind='polymarket_llm_probability_called' AND ts>'2026-08-06T20:40:38';` (expect 0).
+
+### DEFERRED DECISIONS (Jack's call)
+1. **kalshi_llm edge ruling — 2,955-obs corpus.** Full forward corpus since inception is net-negative deduped (−$112 across 895 distinct markets); current Economics+Elections regime ~breakeven on n=16; calibration anti-predictive at both tails. Now that it's cheap (~$25/mo), decide: keep as a paper research observer, or **decommission** (`enabled:false`) entirely. Data in this report (STEP 2–3 + forward-corpus addendum).
+2. **12× event-family consolidation → sub-$20/mo.** Orthogonal lever: one LLM call per *event* (emit the threshold-ladder distribution once) instead of ~12 calls per threshold-market. Would compound on the movement gate. Not built. Sizing in the Lever addendum (~10–15 calls/event).
+
+### Housekeeping (recommendations only — nothing deleted/pruned)
+- **Prod (`tc-prod-vm`, outside running tree):** KEEP `~/movegate_bak_20260806/` + `~/usagelog_bak_20260806/` and the two `rollback_*_20260806.sh` (rollback sources — retire after the next successful deploy of these files supersedes them). SAFE TO DELETE `~/usagelog_stage/` + `~/movegate_stage/` (staged copies, now == live) and the two `deploy_*_20260806.sh` (deploys recorded in deploy_log). No `deploy.lock` present (mutex is future-only).
+- **Local worktrees/branches:** report branch `claude-2026-08-06b` pushed to origin (KEEP). The 3 deploy branches (`claude-usagelog-2026-08-06`/`claude-movegate-2026-08-06`/`claude-deploylog-backfill-2026-08-06`) and their worktrees are fully in prod-live history → safe to prune. (`cc-2026-08-06-wt`/`claude-2026-08-06` is a PARALLEL session's — not this session's; leave it.)
+- **Nothing running or scheduled depends on this session:** no cron, no systemd timer, no scheduled agent, no background process, no `/loop` created. The deploys are self-contained in `trading-corp.service`.
