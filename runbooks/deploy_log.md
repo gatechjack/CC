@@ -12171,3 +12171,34 @@ Re-enables within ≤30s via mtime reload; no restart. **Reopening the division 
 **Backups / rollback:** 3× inline `*.bak_pmcc_bestprice_20260807` (one per runtime file) + `~/pmcc_bestprice_rollback_20260807.sh` (created 17:06 UTC; `.bak` presence check → `systemctl stop` → `cp -p` restore → per-file md5 verify → `systemctl start` → prints new MainPID).
 
 **Deploy mechanism note — did NOT use the mutex template / `deploy.lock`:** although `runbooks/deploy_script_template.sh` + the `/home/azureuser/deploy.lock` mutex were added to the repo the prior day (`bf8fb4b`/`ee04747`, 2026-08-06 17:18–17:22 EDT, TEMPLATE-ONLY), this deploy used the **older hand-rolled per-deploy gated pattern**, NOT the template. Evidence: (1) `deploy_script_template.sh` is **not present on the box** (repo-only; never retrofitted to prod); (2) **no** on-box deploy/rollback script references `deploy.lock` or the template (`grep` of `~/*.sh` = 0 hits); (3) the paired rollback (`pmcc_bestprice_rollback_20260807.sh`) has no lock acquire/release, whereas the template mandates the rollback release the lock; (4) `/home/azureuser/deploy.lock` is absent now and the journal shows no lock acquire/holder/ABORT lines. Net: the template's "retrofit into FUTURE deploy scripts" intent was **not yet realized** as of this deploy — the first template-authored deploy is still pending.
+
+---
+
+## 2026-08-09 — robinhood_joint_iron_condor DISABLED (config-only, NO restart, NO code) — MACE Phase-0 stage-B gate
+
+**Commits:** prod-live (this commit — config flip + this entry). Plan artifact: `planning/mace_v1_plan.md` @ `d553fcd` on `claude-2026-08-09` (MACE v1 approved plan, Amendment 8).
+**Triggered by:** Board authorization 2026-08-09 ("you can set joint IC to be disabled. there is no ui to disable"). MACE (Multi-Asset Condor Engine) takes over the JOINT account `116637293063` per plan Amendment 8; Phase-0 step-3 sequencing gate requires joint IC disabled/standby BEFORE the one unfillable GTC test condor (its HITL engine must not observe a foreign resting condor). Joint-IC migration to another account/strategy = separate workstream, out of scope.
+**Backup:** `config/strategies.yaml.bak_jointic_disable_20260809` (on prod; `cp -p`, ownership/mode preserved).
+
+**Files deployed (1):**
+- `config/strategies.yaml` — `robinhood_joint_iron_condor.enabled: true → false` (one line; binary-safe context replace). `auto_execute` (already false) and every other strategy block UNCHANGED. Whole-file LF-md5 `cc6791803b6562a18dd603fab88b2a4b → ee4c1f624608975d67b9b74e2e0c82a0` (size 101513→101514; prod == prod-live commit parity verified this session).
+
+**What this does (load-bearing for "is joint IC running?" checks):**
+- Joint IC goes dormant HOT: the `enabled` property mtime-checks + `_reload()`s on every access (`agents/strategies/robinhood_joint_iron_condor.py:314-316`); `scan()` (:380) and `manage()` (:670) early-return with INFO logs ("strategy disabled — … skipped"). **NO restart** — engine MainPID **621536** unchanged, NRestarts=0.
+- Nothing orphaned: Phase-0 stage-A inventory showed **0 open option positions / 0 open orders** on the Joint account, so `manage()` going dormant abandons nothing.
+- **No code change.** Frees the Joint account's `account_filter` for MACE's account-exclusivity assertion (fail-closed: MACE refuses to arm if any other enabled division carries the filter).
+
+**Deploy mechanism.** Azure Run Command (`RunShellScript`, **ROOT, no sudo** — az authed on the local box), agent-authored operator-run runner `cc\mace_p0b1.ps1` → `mace_p0b1.sh`: pre-edit md5 gate → `cp -p` backup → python3 binary-safe flip guarded by `count(context)==1` (CRLF or drift ⇒ ABORT, no edit) → post asserts (false-present/true-absent + md5) → `systemctl show` service health. No file transfer, no restart.
+
+**Verification (from the operator-pasted run output, 2026-08-09):**
+- `context occurrences: 1`; post: `enabled-false present: True | enabled-true present: False`; post md5 `ee4c1f62…` (matches this commit's LF-md5 exactly).
+- Service: `MainPID=621536 / NRestarts=0 / ActiveState=active` — unchanged across the edit (hot path, as designed).
+- Backup present, `-p` timestamps preserved.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/trading_corp/config/strategies.yaml.bak_jointic_disable_20260809 /home/azureuser/trading_corp/config/strategies.yaml"
+```
+Re-enables within one property access via mtime reload; no restart. **Re-enabling joint IC after MACE arms on this account violates the account-exclusivity assertion** (two engines, one account) — rollback is routine only BEFORE MACE go-live; after, it requires disarming MACE first.
+
+**Next:** MACE Phase-0 stage B — the ONE deliberately-unfillable GTC test condor (credit limit 0.95×width per Board ruling 1), self-gated on this disable; its order id will be recorded in the Phase-0 go-live entry. Stage-B run-2 note (2026-08-09): RH rejected placement with "not enough overnight buying power" — Joint account effectively unfunded (0 positions, BP < the ≤$500 spread requirement); rejection implicitly proves routing + payload acceptance; order-id/GTC/cancel proofs pend account funding (plan Phase-5 step-2 Monday item, pulled forward).

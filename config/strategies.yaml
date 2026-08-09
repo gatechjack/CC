@@ -1777,7 +1777,7 @@ polymarket_copy_trader:
 
 # ── Robinhood Joint Iron Condor v1 ──
 robinhood_joint_iron_condor:
-  enabled: true
+  enabled: false
   auto_execute: false
   division: robinhood_joint
 
