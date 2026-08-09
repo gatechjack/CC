@@ -26,7 +26,7 @@ New fully-atomic (zero-HITL) defined-risk options division: iron condors on liqu
 | V4 | ET helpers `utils/time.py` (`ET` :7, `now_et()` :14); PEAD window-loop pattern `main.py:3404-3455`; PMCC 4x/day at-time slots `main.py:2972+` | — |
 | V5 | `pending_order` table UNFIT for 4-leg combos (single-leg shape + PEAD-locked `extra_json` keys, db.py:408-425) ⇒ MACE-owned lifecycle in `mace_rung.status` | db.py |
 | V6 | `config/macro_calendar.yaml` holds 2026 FOMC(8)/CPI(12)/NFP(12); `MacroCalendar.load` mtime-hot, `is_within_halt_window` :142 — seed source for `economic_event` | data/macro_calendar.py |
-| V7 | tastytrade 13.2.2 **has** `get_market_metrics(session, symbols)` → `MarketMetricInfo.implied_volatility_index_rank` (+tos/tw variants) — net-new call, SDK-supported | tastytrade/metrics.py:67-128 |
+| V7 | tastytrade 13.2.2 **has** `get_market_metrics(session, symbols)` → `MarketMetricInfo.implied_volatility_index_rank` (+tos/tw variants) — net-new call, SDK-supported. **[P0 stage A] PROD venv runs 12.4.1, not 13.2.2** — call PROVEN LIVE on 12.4.1, all 7 symbols, model path clean (T10 NOT triggered). Local p2venv 13.2.2 skew noted for test fidelity. **Rank fields are 0–1 scale** (SPY 0.272 = IVR 27.2) → ivr_provider MUST normalize ×100 before the `ivr_floor: 25` compare. **Canonical field = `implied_volatility_index_rank` (== tos variant); `tw_` diverges wildly (USO tw=1.0 vs ivr=0.295) — never use tw** | tastytrade/metrics.py:67-128 + P0 probe 2026-08-09 |
 | V8 | **`config/ex_dividend_calendar.yaml` + `data/ex_dividend_calendar.py` already exist** (`next_ex_date`, `is_within_window`; used by joint IC :456,:757). SPY 2026 populated, TLT monthly rule, GLD empty. Missing: EWZ/FXI/USO/IBIT entries — config addition, not new code | — |
 | V9 | Test pattern: tmp strategies.yaml fixture + fake broker + `db.SCHEMA` executescript into tmp sqlite (`tests/test_iron_condor_strategy.py:1-90`); ALL local pytest via `.\scripts\run_capped.ps1` | — |
 | V10 | WebDeps `web/app.py:32-102` — new fields MUST default `None` (tg_deps constructor at `main.py:915-929` is defaults-reliant); cockpit pattern = view module `register(app)` from `routes.py:193-213`; home tile ladder `templates/home.html:82-92` | — |
@@ -84,7 +84,7 @@ entry:
   credit_floor_pct_of_width: 0.30
   risk_band_usd: [150, 250]             # (width - credit)*100 target band
   enforce_risk_band: true               # "where strike listings allow"
-  ivr_floor: 25
+  ivr_floor: 25                         # Tasty rank fields are 0-1 scale (P0-proven); ivr_provider normalizes x100 before this compare
   weekly_new_rungs_per_symbol: 1        # + refill: closures re-open budget from next session
   max_rungs_per_symbol: 4
   stop_cooldown_sessions: 2
@@ -117,7 +117,7 @@ breakers:                               # ALERT-ONLY at launch (Board memo)
   hwm_hard_pct: 0.75
   breaker_enforcement: "off"            # off | pause_entries | halt_flat (code exists, unit-tested, inert)
 data:
-  ivr_source: tastytrade_market_metrics
+  ivr_source: tastytrade_market_metrics # field: implied_volatility_index_rank (== tos variant; tw diverges e.g. USO tw=1.0 vs ivr=0.295 -- never tw)
   iv_snapshot_daily: true
   calendar_refresh_weekday: "SUN"
 notifications:
@@ -147,7 +147,7 @@ symbols:
 2. weekly budget: `entries_this_ISO_week(symbol) < weekly_new_rungs_per_symbol + closures_this_week_before_today(symbol)` (refill: replacement eligible from the session after a close)
 3. cooldown: no stop-loss exit within last 2 sessions (`stop_cooldown`)
 4. blackout: no `economic_event` matching symbol's `blackout_event_types` dated today OR next trading session
-5. IVR ≥ 25 (Tasty down ⇒ filter skipped + audit + non-urgent alert; credit floor + blackouts still gate)
+5. IVR ≥ 25 (Tasty rank ×100 — 0-1 scale, P0-proven). Unavailable/stale handling (**RATIFIED 2026-08-09**): Tasty down ⇒ filter skipped + audit + non-urgent alert; `updated_at` older than 2 sessions ⇒ same skip path for THAT symbol. **Audit skip-reason + alert must distinguish `ivr_stale` (include symbol + age) from `ivr_unavailable`** so per-symbol staleness patterns are visible in eval history. Credit floor + blackouts still gate in both cases.
 6. build: expiry = highest DTE in [30,45] (`no_expiry`); shorts nearest |Δ|=0.20 within [0.15,0.25] each side (`no_delta_strike`); wings exactly `width_dollars` beyond (FXI retries at `fallback_width_dollars: 1` if wing unlisted); risk-band `(width−credit_mid)*100 ∈ [150,250]` when `enforce_risk_band` (`risk_band`)
 7. credit floor: `credit_mid ≥ 0.30×width` (`credit_floor`)
 8. size: `contracts = min(floor(0.05·E / ((width−credit_mid)·100)), max_contracts)`; 0 ⇒ `budget`
@@ -254,6 +254,9 @@ Gate: md5 drift check of prod `brokers/robinhood.py` vs `git -c core.autocrlf=fa
 - **T4 ACCEPTED as specced:** emulated market-exit ladders are the required adaptation of the operator's market-order decision given V1 (limit-only API); residual stop-slip bounded by defined risk. No change.
 - **Ruling 1 (Phase 0):** test-order credit limit corrected to deliberately-unfillable 0.95×width (see Phase 0 step 3 + marketability-direction comment requirement).
 - **Ruling 7 (OQ-2 carry-forward):** universe must not expand beyond 2 symbols until entry-window serialization work is done — added to Phase 5 config review + expansion runbook line.
+- **Ruling 2026-08-09 (post-stage-A) — IVR staleness:** RATIFIED as proposed. `updated_at` older than 2 sessions ⇒ that symbol takes the Tasty-unavailable path (IVR filter skipped; credit floor + blackouts still gate; non-urgent alert). Refinement: skip-reason + alert distinguish `ivr_stale` (symbol + age) from `ivr_unavailable`.
+- **Ruling 2026-08-09 (post-stage-A) — version-skew constraint:** ivr_provider unit tests MUST be mock-based (version-independent); the stage-A p0a3 probe stands as the 12.4.1 integration proof. **Standing constraint: upgrading prod's tastytrade package is henceforth a deliberate, tested change (MACE IVR load-bears on its API surface) — never casual.**
+- **Confirmation 2026-08-09: Joint account `116637293063` CONFIRMED by operator** — Phase-1 numeric hard-bind ratified (`mace.yaml account_number` + `divisions.yaml robinhood_mace account_filter`).
 - **[A2026-08-09] Amendment 8 — account resolution:** new acct is L2-only ⇒ MACE takes over the JOINT account (margin + L3). Self-sourced from repo (`joint` keyword filter → Phase-0 numeric resolution + operator confirmation → Phase-1 numeric pin). New fail-closed assertions: account-exclusivity (refuse to arm if any other enabled division carries the filter; joint IC must be repointed/disabled by go-live) + foreign-position guard (`acknowledge_foreign_positions` flag, default false; entries disabled while foreign positions/orders exist). Phase-0 resequenced: drift/Tasty/EODHD/USO first; test order only after operator confirms joint IC disabled/standby on the account. L2/upgrade language deleted — assertion is simply `option_level >= 3` on Joint. Joint-IC migration = separate workstream, out of scope.
 Already-decided deviations, recorded: **T1** config hybrid (hot kill-switches in strategies.yaml; all else frozen mace.yaml) · **T2** `economic_event` unprefixed (spec names it) · **T3** Telegram fill detail follows PEAD/PMCC precedent · **T4** MARKET exits emulated as ladders (V1 limit-only; true stop can slip past 2.0× during a burst — bounded by defined-risk max loss) · **T7** divisions.yaml standby hot via shell re-stat; registration needs restart · **T8** Backtester gate superseded by Board decision 4 · **T9** GTC unproven until Phase 0 (fallback = synthetic PT manage-tick rule = spec deviation requiring operator note) · **T10** Tasty ETF `market_cap` parse risk (raw-GET fallback) · **T11** paper-mode PT divergence accepted · **T12** YAML remains FOMC/CPI master; weekly re-seed idempotent · **OQ-2** entry window fits ~2 symbols/day worst-case (5×60s ladders, 15:45–15:58) — fine at launch; shorten waits or parallelize before expanding past 2 symbols (future work, deliberately not built).
 
@@ -266,6 +269,21 @@ Seams: (a) `mace/domain.py` neutral types, zero broker leakage above `rh_broker.
 - Phase 2: `mace_shadow_eval` live-data dry run reviewed by operator.
 - Phase 4: paper-mode boot on scratch DB; loop/slot logs; dashboard + Telegram render checks.
 - Go-live: startup assertion, supervised first entry, resting GTC PT visible in RH app, 15:50 summary, deploy_log + Board memo appended, prod-live advanced same session.
+
+## Execution status (updated 2026-08-09 — Phase 0 stage A COMPLETE)
+
+**Stage A executed and COMPLETE** (operator ran `mace_p0a.ps1`, then `mace_p0a2.ps1` [KV route — disproved], then `mace_p0a3.ps1` [az run-command root — succeeded]; all runners staged in `C:\Users\AA Incorporado\cc`, ASCII/LF-validated). Results:
+
+1. **Drift gate: 11/11 MATCH, ZERO drift** (prod vs `7d34d82`, LF-md5). `brokers/robinhood.py` = `5862d2e8` both sides → additive pre-authorization condition (a) SATISFIED.
+2. **Account resolution: Joint = `116637293063`** — `joint_tenancy_with_ros`, `option_level_3`, margin_balances present, not deactivated. Assertions pass (`option_level >= 3`, margin). **AWAITING operator confirmation** → becomes Phase-1 numeric hard-bind (`mace.yaml account_number` + `divisions.yaml account_filter`).
+3. **Foreign-position baseline: CLEAN** — 0 open option positions, 0 open option orders on Joint. Takeover reduces to config repointing; no legacy-position migration blocker at this time.
+4. **ANOMALY (surfaced, unresolved):** the L2 "new account" did NOT enumerate — only 3 accounts returned (`461391328` individual L3, `934310442` ira_traditional L2, `116637293063` joint L3). Does not block MACE (Joint is the target per A2026-08-09); operator may want to check the new-account application status separately.
+5. **EODHD economic-events: AVAILABLE** — `/api/economic-events` HTTP 200 on the current plan (`/api/calendar/economic-events` → 422 wrong path). OQ-1 stands as ruled (launch on manual+seed+rule); feed integration remains deferred post-launch, now known-feasible.
+6. **USO: zero distributions on record** → `exdiv_guard: false` CONFIRMED.
+7. **Tasty IVR probe: COMPLETE (via `mace_p0a3` az run-command root).** Route history: `/etc/trading-corp/tastytrade.env` perm-denied for azureuser → KV probe (p0a2) 404 on both `TASTYTRADE-*` names = **KV route disproved, matching `secrets.py:204-206`** ("NOT KV — no TASTYTRADE-* secrets in KV, verified 2026-05-29") → root path (p0a3) sourced the env file, ran prod venv python. **Findings: (a) PROD SDK = tastytrade 12.4.1** (plan's V7 verified 13.2.2 locally — skew noted; call proven live on 12.4.1, model path clean, T10 pydantic risk NOT triggered); **(b) rank fields are 0–1 scale** (SPY 0.272132797 = IVR 27.2) → **ivr_provider must normalize ×100 vs `ivr_floor: 25` — the 25-vs-0.25 bug is now impossible to miss**; **(c) canonical field = `implied_volatility_index_rank` (== tos)**; `tw_` diverges (USO tw=1.0 vs ivr=0.295) — never tw; **(d)** SPY `updated_at` was ~31h stale (2026-08-08 10:10 vs others 2026-08-09 17:00) → PROPOSED (awaiting ruling): treat `updated_at` older than 2 sessions as "Tasty unavailable" for that symbol (existing filter-skip + non-urgent-alert path). Live IVR snapshot 2026-08-09: EWZ 30.3 / GLD 33.0 / SPY 27.2 / USO 29.5 / FXI 25.8 / TLT 19.6 / IBIT 9.1.
+8. **Operator directive (recorded, deferred — NOT MACE scope):** migrate Tasty creds to Azure Key Vault + rotate values later (infosec backlog; rotation runbook `runbooks/tastytrade_oauth_rotation.md` Pre-flight 1 already covers the multi-path update requirement).
+
+**Stage B remains GATED** on operator confirming joint IC disabled/standby (then: the one unfillable test order — SPY condor ~5Δ shorts, credit limit 0.95×width, GTC, cancel-poll). Checkpoint 0 completes after stage B → operator ratifies GTC-PT GO (else T9 fallback). Also awaiting: operator confirmation of Joint `116637293063` as the Phase-1 numeric hard-bind.
 
 ## Build-session execution notes
 - Worktree `cc-2026-08-09-wt` branch `claude-2026-08-09`; commit per phase (scoped commits, artifacts as-you-go); push with `-u origin claude-2026-08-09`.
