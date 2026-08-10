@@ -82,7 +82,8 @@ entry:
   short_delta_target: 0.20
   short_delta_band: [0.15, 0.25]
   credit_floor_pct_of_width: 0.30
-  risk_band_usd: [150, 250]             # (width - credit)*100 target band
+  risk_band_min_per_width_usd: 50       # min (width-credit)*100 = 50*width (w3=>150, w2=>100, w1=>50)
+  risk_band_max_usd: 250                # absolute max (width-credit)*100 ceiling
   enforce_risk_band: true               # "where strike listings allow"
   ivr_floor: 25                         # Tasty rank fields are 0-1 scale (P0-proven); ivr_provider normalizes x100 before this compare
   weekly_new_rungs_per_symbol: 1        # + refill: closures re-open budget from next session
@@ -148,7 +149,7 @@ symbols:
 3. cooldown: no stop-loss exit within last 2 sessions (`stop_cooldown`)
 4. blackout: no `economic_event` matching symbol's `blackout_event_types` dated today OR next trading session
 5. IVR ≥ 25 (Tasty rank ×100 — 0-1 scale, P0-proven). Unavailable/stale handling (**RATIFIED 2026-08-09**): Tasty down ⇒ filter skipped + audit + non-urgent alert; `updated_at` older than 2 sessions ⇒ same skip path for THAT symbol. **Audit skip-reason + alert must distinguish `ivr_stale` (include symbol + age) from `ivr_unavailable`** so per-symbol staleness patterns are visible in eval history. Credit floor + blackouts still gate in both cases.
-6. build: expiry = highest DTE in [30,45] (`no_expiry`); shorts nearest |Δ|=0.20 within [0.15,0.25] each side (`no_delta_strike`); wings exactly `width_dollars` beyond with an UNCONDITIONAL wing-listing check for ALL symbols — unlisted wing ⇒ `no_wing` skip (Board-accepted 2026-08-09 off the stage-B $5-grid finding; "where strike listings allow" is universal, not FXI-only; FXI additionally retries at `fallback_width_dollars: 1`); risk-band `(width−credit_mid)*100 ∈ [150,250]` when `enforce_risk_band` (`risk_band`)
+6. build: expiry = highest DTE in [30,45] (`no_expiry`); shorts nearest |Δ|=0.20 within [0.15,0.25] each side (`no_delta_strike`); wings exactly `width_dollars` beyond with an UNCONDITIONAL wing-listing check for ALL symbols — unlisted wing ⇒ `no_wing` skip (Board-accepted 2026-08-09 off the stage-B $5-grid finding; "where strike listings allow" is universal, not FXI-only; FXI additionally retries at `fallback_width_dollars: 1`); risk-band `(width−credit_mid)*100 ∈ [50·width_dollars, 250]` when `enforce_risk_band` (`risk_band`) — **WIDTH-SCALED per ruling risk-band-width-scaling 2026-08-09** (w3⇒[150,250] SPY-launch-identical, w2⇒[100,250], w1⇒[50,250] so the FXI fallback is viable; the prior fixed [150,250] made ALL width-2 names structurally unenterable)
 7. credit floor: `credit_mid ≥ 0.30×width` (`credit_floor`)
 8. size: `contracts = min(floor(0.05·E / ((width−credit_mid)·100)), max_contracts)`; 0 ⇒ `budget`
 9. reserve: `Σ open max_risk + candidate ≤ 0.80·E` (`reserve`)
@@ -254,6 +255,7 @@ Gate: md5 drift check of prod `brokers/robinhood.py` vs `git -c core.autocrlf=fa
 - **T4 ACCEPTED as specced:** emulated market-exit ladders are the required adaptation of the operator's market-order decision given V1 (limit-only API); residual stop-slip bounded by defined risk. No change.
 - **Ruling 1 (Phase 0):** test-order credit limit corrected to deliberately-unfillable 0.95×width (see Phase 0 step 3 + marketability-direction comment requirement).
 - **Ruling 7 (OQ-2 carry-forward):** universe must not expand beyond 2 symbols until entry-window serialization work is done — added to Phase 5 config review + expansion runbook line.
+- **Ruling risk-band-width-scaling (2026-08-09, Checkpoint 2):** the fixed `risk_band_usd: [150,250]` was a spec defect — it contradicted the design-phase per-symbol risk figures and made ALL width-2 names (TLT/USO/EWZ/FXI/IBIT) structurally unenterable (a $2-wide condor caps at $200 max-risk but the 0.30 credit floor forces max-risk ≤ $140 < 150). REPLACED with a width-scaled band: `risk_band_min_per_width_usd: 50` (min = 50·width_dollars) + `risk_band_max_usd: 250` (absolute). Consequences: w3⇒[150,250] (SPY launch byte-identical), w2⇒[100,250], w1⇒[50,250] (FXI fallback_width_dollars:1 becomes viable, not ceremonially dead). Implemented on the Phase-2 branch (strategy.py + config.py + mace.yaml + tests). The Phase-5 expansion config review still governs enabling any width-2 name.
 - **Ruling 2026-08-09 (post-stage-A) — IVR staleness:** RATIFIED as proposed. `updated_at` older than 2 sessions ⇒ that symbol takes the Tasty-unavailable path (IVR filter skipped; credit floor + blackouts still gate; non-urgent alert). Refinement: skip-reason + alert distinguish `ivr_stale` (symbol + age) from `ivr_unavailable`.
 - **Ruling 2026-08-09 (post-stage-A) — version-skew constraint:** ivr_provider unit tests MUST be mock-based (version-independent); the stage-A p0a3 probe stands as the 12.4.1 integration proof. **Standing constraint: upgrading prod's tastytrade package is henceforth a deliberate, tested change (MACE IVR load-bears on its API surface) — never casual.**
 - **Confirmation 2026-08-09: Joint account `116637293063` CONFIRMED by operator** — Phase-1 numeric hard-bind ratified (`mace.yaml account_number` + `divisions.yaml robinhood_mace account_filter`).

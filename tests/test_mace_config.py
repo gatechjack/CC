@@ -44,6 +44,8 @@ def test_shipped_config_loads():
     assert cfg.entry.ivr_floor == 25
     assert cfg.entry.dte_min == 30 and cfg.entry.dte_max == 45
     assert cfg.entry.overflow_max_per_symbol_session == 1
+    assert cfg.entry.risk_band_min_per_width_usd == 50       # width-scaled band
+    assert cfg.entry.risk_band_max_usd == 250
     assert cfg.management.pt_pct_of_credit == 0.50
     assert cfg.breakers.breaker_enforcement == "off"
     assert cfg.symbols["IBIT"].overflow_only is True

@@ -233,31 +233,57 @@ def test_risk_gate_approve():
     assert st.evaluate_entry("SPY", CFG, ctx(iv=ivr(30.0), risk_gate=lambda *a: True)).entered
 
 
-# ── FXI fallback width (build unit; enforce_risk_band off to isolate) ─────
+# ── width-scaled risk band (ruling risk-band-width-scaling 2026-08-09) ────
 
-def _cfg_no_riskband(tmp_path):
-    import yaml
-    d = yaml.safe_load(MACE_YAML.read_text(encoding="utf-8"))
-    d["entry"]["enforce_risk_band"] = False
-    p = tmp_path / "mace.yaml"
-    p.write_text(yaml.safe_dump(d), encoding="utf-8")
-    return load_mace_config(p, exdiv_calendar_path=EXDIV_YAML)
-
-
-def test_fxi_fallback_width(tmp_path):
-    cfg = _cfg_no_riskband(tmp_path)
-    fxi_cfg = cfg.symbols["FXI"]           # width 2, fallback 1
-    # shorts 30p/33c; width-2 wings (28p/35c) UNLISTED, width-1 wings (29p/34c) listed
+def _band_chain(sym, sp, sc, width, total_credit, spot):
+    """Symmetric condor whose net credit == total_credit -> max-risk =
+    (width - total_credit)*100. Wings at sp-width / sc+width."""
+    ce = total_credit / 2.0
+    sm, lm = 2.05, 2.05 - ce
     legs = [
-        ("put", 29, -0.15, 0.30, 0.35), ("put", 30, -0.20, 0.55, 0.60),
-        ("call", 33, 0.20, 0.55, 0.60), ("call", 34, 0.15, 0.30, 0.35),
+        ("put", sp - width, -0.15, lm - 0.05, lm + 0.05),
+        ("put", sp, -0.20, sm - 0.05, sm + 0.05),
+        ("call", sc, 0.20, sm - 0.05, sm + 0.05),
+        ("call", sc + width, 0.15, lm - 0.05, lm + 0.05),
+    ]
+    quotes = {(EXPIRY, o, float(k)): OptionQuote(sym, EXPIRY, float(k), o, b, a, delta=d)
+              for o, k, d, b, a in legs}
+    return st.ChainView(sym, spot, (EXPIRY,), quotes)
+
+
+def test_risk_band_width3_min_150():
+    gld = CFG.symbols["GLD"]               # width 3 -> min 50*3 = 150
+    assert st.build_condor("GLD", gld, _band_chain("GLD", 244, 256, 3, 1.50, 250.0),
+                           CFG, SESSION).skip_reason is None            # risk 150 -> ok
+    assert st.build_condor("GLD", gld, _band_chain("GLD", 244, 256, 3, 1.60, 250.0),
+                           CFG, SESSION).skip_reason == SKIP_RISK_BAND   # risk 140 -> below min
+
+
+def test_risk_band_width2_min_100():
+    tlt = CFG.symbols["TLT"]               # width 2 -> min 50*2 = 100
+    assert st.build_condor("TLT", tlt, _band_chain("TLT", 84, 96, 2, 1.00, 90.0),
+                           CFG, SESSION).skip_reason is None            # risk 100 -> ok
+    assert st.build_condor("TLT", tlt, _band_chain("TLT", 84, 96, 2, 1.10, 90.0),
+                           CFG, SESSION).skip_reason == SKIP_RISK_BAND   # risk 90 -> below min
+
+
+def test_fxi_fallback_width_viable_with_riskband():
+    # width-1 band is [50,250] -> FXI's fallback_width_dollars=1 is now VIABLE
+    # (not ceremonially dead). width-2 wings (28p/35c) UNLISTED -> build falls to
+    # width 1 (29p/34c) and prices under the REAL config (risk_band ON).
+    # credit 0.40 -> risk (1-0.4)*100 = 60 in [50,250]; floor 0.30*1 = 0.30.
+    fxi_cfg = CFG.symbols["FXI"]           # width 2, fallback 1
+    legs = [
+        ("put", 29, -0.15, 0.33, 0.37), ("put", 30, -0.20, 0.53, 0.57),
+        ("call", 33, 0.20, 0.53, 0.57), ("call", 34, 0.15, 0.33, 0.37),
     ]
     quotes = {(EXPIRY, o, float(k)): OptionQuote("FXI", EXPIRY, float(k), o, b, a, delta=d)
               for o, k, d, b, a in legs}
     ch = st.ChainView("FXI", spot=31.5, expiries=(EXPIRY,), quotes=quotes)
-    b = st.build_condor("FXI", fxi_cfg, ch, cfg, SESSION)
+    b = st.build_condor("FXI", fxi_cfg, ch, CFG, SESSION)
     assert b.skip_reason is None and b.width == 1.0
     assert b.spec.long_put == 29 and b.spec.long_call == 34
+    assert abs(b.credit_mid - 0.40) < 1e-9
 
 
 # ── overflow routing (T6) — mechanics tested with risk_band off ───────────

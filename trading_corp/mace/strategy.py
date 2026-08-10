@@ -277,7 +277,10 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
         credit_mid = (sp_q.mid - lp_q.mid) + (sc_q.mid - lc_q.mid)
         if e.enforce_risk_band:
             max_risk = (width - credit_mid) * 100.0
-            lo, hi = e.risk_band_usd
+            # Width-scaled band (Board ruling risk-band-width-scaling 2026-08-09):
+            # min = 50 * width (w3->150, w2->100, w1->50), max = 250 absolute.
+            lo = e.risk_band_min_per_width_usd * width
+            hi = e.risk_band_max_usd
             if not (lo <= max_risk <= hi):
                 return BuildResult(skip_reason=SKIP_RISK_BAND)
         spec = CondorSpec(symbol=symbol, expiry=expiry, short_put=short_put,

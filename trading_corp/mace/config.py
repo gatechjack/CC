@@ -35,7 +35,8 @@ class EntryConfig:
     short_delta_target: float
     short_delta_band: tuple[float, float]
     credit_floor_pct_of_width: float
-    risk_band_usd: tuple[float, float]
+    risk_band_min_per_width_usd: float   # min max-risk = this * width_dollars (width-scaled)
+    risk_band_max_usd: float             # absolute max-risk ceiling
     enforce_risk_band: bool
     ivr_floor: float
     weekly_new_rungs_per_symbol: int
@@ -258,7 +259,8 @@ def load_mace_config(
         )
     credit_floor = num(e, "credit_floor_pct_of_width", "entry", lo=0.0, hi=1.0,
                        lo_excl=True, hi_excl=True)
-    risk_band = pair(e, "risk_band_usd", "entry")
+    rb_min_per_width = num(e, "risk_band_min_per_width_usd", "entry", lo=0.0, lo_excl=True)
+    rb_max = num(e, "risk_band_max_usd", "entry", lo=0.0, lo_excl=True)
     enforce_rb = flag(e, "enforce_risk_band", "entry")
     ivr_floor = num(e, "ivr_floor", "entry", lo=0.0, hi=100.0)
     weekly = num(e, "weekly_new_rungs_per_symbol", "entry", typ=int, lo=1)
@@ -429,7 +431,8 @@ def load_mace_config(
             short_delta_target=float(delta_target),
             short_delta_band=delta_band,
             credit_floor_pct_of_width=float(credit_floor),
-            risk_band_usd=risk_band,
+            risk_band_min_per_width_usd=float(rb_min_per_width),
+            risk_band_max_usd=float(rb_max),
             enforce_risk_band=bool(enforce_rb),
             ivr_floor=float(ivr_floor),
             weekly_new_rungs_per_symbol=int(weekly),
