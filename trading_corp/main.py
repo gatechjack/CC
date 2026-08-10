@@ -1834,6 +1834,190 @@ async def run(argv: list[str] | None = None) -> int:
                  pead_execution_mode)
 
 
+        # --- Robinhood MACE v1 (Phase 4, 2026-08-10) — zero-HITL Multi-Asset
+        # Condor Engine on the JOINT account (takeover). Same posture as PEAD/
+        # bitunix: NO HITL, the per-leg RiskAgent gate (via the MaceRiskAdapter
+        # single-chokepoint) is the ONLY risk evaluator. divisions.yaml
+        # standby:true makes all four loops LOG ONLINE then no-op until standby
+        # is deliberately lifted; strategies.yaml auto_execute:false halts new
+        # placements even when active (exits still run). GO-LIVE remains BLOCKED
+        # on the RH programmatic-cancel fix (3b) regardless of this wiring — the
+        # cancel path 404s under the brokeback edge migration. The whole block is
+        # guarded so a MACE construction error can NEVER take down the other
+        # divisions (MACE fails safe by design).
+        mace_division = None
+        mace_manager = None
+        mace_daily_task = None
+        mace_manage_task = None
+        mace_reconcile_task = None
+        mace_calendar_task = None
+        try:
+            import sqlite3 as _mace_sqlite3
+            from trading_corp.agents.divisions.robinhood_mace import RobinhoodMaceAgent
+            from trading_corp.mace import loops as mace_loops
+            from trading_corp.mace.config import load_mace_config
+            from trading_corp.mace.exdiv import MaceExDiv
+            from trading_corp.mace.execution import MaceExecutor, RungStore
+            from trading_corp.mace.manager import MaceManager
+            from trading_corp.mace.notify import MaceNotifier
+            from trading_corp.mace.rh_broker import RobinhoodOptionsBroker
+            from trading_corp.mace.risk_adapter import MaceRiskAdapter
+            from trading_corp.persistence.db import resolve_db_path as _mace_resolve_db_path
+
+            # execution_mode triple-gate (PEAD-style): "live" ONLY when the slug
+            # is opted into --live-divisions AND the process is LIVE AND the
+            # robinhood family is live-capable. The BROKER binding is the actual
+            # enforcement (data_exec.brokers[robinhood_mace] is the real RH only
+            # under that same gate — else PaperExecutionBroker, snapshots real /
+            # fills simulated); this value is the observability label.
+            mace_execution_mode = (
+                "live" if ("robinhood_mace" in live_divisions
+                           and mode == "LIVE"
+                           and "robinhood" in (args.brokers or []))
+                else "paper"
+            )
+
+            # Frozen MaceConfig (fail-fast; boot gate refuses any enabled symbol
+            # whose exdiv guard is on with no ex-div dates). config_hash logged.
+            mace_cfg = load_mace_config()
+
+            # Persistent autocommit conn for the RungStore — LOOP-THREAD ONLY (the
+            # /mace web view reads through its OWN short-lived db.connect). The four
+            # mace_* tables are created by init_db(SCHEMA) at startup, so a fresh /
+            # scratch DB has them without the prod migration script.
+            mace_conn = _mace_sqlite3.connect(
+                _mace_resolve_db_path(secrets.db_url),
+                isolation_level=None, check_same_thread=False)
+            mace_conn.row_factory = _mace_sqlite3.Row
+            mace_conn.execute("PRAGMA journal_mode=WAL;")
+            mace_conn.execute("PRAGMA busy_timeout=5000;")
+            mace_conn.execute("PRAGMA synchronous=NORMAL;")
+            mace_store = RungStore(mace_conn)
+
+            # Neutral broker port over the robinhood_mace binding. Division-scoped
+            # tag never trips the PMCC LEAP guard (scoped to robinhood_pmcc).
+            mace_broker = data_exec.brokers.get("robinhood_mace") or paper_broker
+            mace_port = RobinhoodOptionsBroker(
+                mace_broker, dte_min=mace_cfg.entry.dte_min,
+                dte_max=mace_cfg.entry.dte_max, division="robinhood_mace")
+
+            # MACE notifier wants a SYNC `.push`; bridge onto the async process
+            # channel by scheduling on the running loop (T3 notifications only —
+            # zero HITL). Inert until go-live (standby + auto_execute:false).
+            class _MaceChannelBridge:
+                def __init__(self, ch):
+                    self._c = ch
+
+                def _fire(self, coro):
+                    try:
+                        asyncio.create_task(coro)
+                    except RuntimeError:      # no running loop (never at send-time)
+                        pass
+
+                def push(self, text):
+                    self._fire(self._c.push(text))
+
+                def push_split(self, text):
+                    fn = getattr(self._c, "push_split", None) or self._c.push
+                    self._fire(fn(text))
+
+            mace_notifier = MaceNotifier(channel=_MaceChannelBridge(channel), enabled=True)
+
+            def _mace_audit(kind, **payload):
+                try:
+                    logger_agent.log_event("robinhood_mace", kind, payload)
+                except Exception:             # noqa: BLE001 — audit must not break wiring
+                    log.exception("MACE audit log_event failed: %s", kind)
+
+            def _mace_equity():
+                # Latest settled-cash snapshot = the MACE sizing basis E. Audit-only
+                # for the risk gate (resize ignored), so a miss returns None safely.
+                try:
+                    row = mace_conn.execute(
+                        "SELECT equity FROM mace_equity_snapshot "
+                        "ORDER BY snap_date DESC LIMIT 1").fetchone()
+                    return float(row["equity"]) if row is not None else None
+                except Exception:             # noqa: BLE001
+                    return None
+
+            # The safety-critical per-leg RiskAgent adapter — ONE instance feeds
+            # BOTH chokepoint seams: the executor place-funnel (executor_gate) and
+            # the strategy entry-pipeline filter-10 (strategy_gate). Every condor
+            # leg is RiskAgent.evaluate()'d before any placement; any reject aborts.
+            mace_risk = MaceRiskAdapter(
+                risk_agent, account_number=mace_cfg.account_number,
+                equity_provider=_mace_equity, db_url=secrets.db_url, audit=_mace_audit)
+
+            mace_executor = MaceExecutor(
+                mace_cfg, mace_port, mace_store, mace_notifier,
+                risk_gate=mace_risk.executor_gate, audit=_mace_audit)
+
+            # Tasty IVR fetch closure (per shadow_eval: fresh Session per call from
+            # process secrets — token mgmt out of scope). FULLY GUARDED: any failure
+            # -> [] = the IVR-unavailable path (filter skipped; credit-floor +
+            # blackouts still gate). Prod Tasty SDK is 12.4.1 (rank fields 0-1;
+            # ivr_provider normalizes x100 — never the tw_ variant).
+            def _mace_fetch_metrics(symbols_list):
+                ps = getattr(secrets, "tastytrade_provider_secret", None)
+                rt = getattr(secrets, "tastytrade_refresh_token", None)
+                if not (ps and rt):
+                    return []
+                try:
+                    import inspect as _inspect
+                    from tastytrade import Session as _TTSession
+                    from tastytrade.metrics import get_market_metrics as _gmm
+                    session = _TTSession(provider_secret=ps, refresh_token=rt)
+                    syms = list(symbols_list)
+                    if _inspect.iscoroutinefunction(_gmm):
+                        return asyncio.run(_gmm(session, syms))
+                    return _gmm(session, syms)
+                except Exception as exc:       # noqa: BLE001 — IVR is soft-fail
+                    log.warning("MACE Tasty IVR fetch failed (IVR unavailable): %s", exc)
+                    return []
+
+            mace_exdiv = MaceExDiv.load("config/ex_dividend_calendar.yaml")
+
+            # Division shell FIRST so the manager's auto_execute closure resolves
+            # against a live object immediately (the hot kill-switch: auto_execute
+            # false halts placements; standby halts the loops entirely).
+            mace_division = RobinhoodMaceAgent(mace_cfg, notifier=mace_notifier)
+
+            mace_manager = MaceManager(
+                mace_cfg, mace_port, mace_store, mace_executor, mace_notifier,
+                risk_gate=mace_risk.strategy_gate, fetch_metrics=_mace_fetch_metrics,
+                exdiv=mace_exdiv,
+                auto_execute_fn=lambda: mace_division.auto_execute,
+                audit=_mace_audit)
+            mace_division.attach_manager(mace_manager)
+
+            # Four scheduled loops — ALL gate on division.active (enabled + not
+            # standby + manager attached), so they log online then no-op in standby.
+            mace_daily_task = asyncio.create_task(
+                mace_loops.mace_daily_slots_loop(mace_division, logger_agent),
+                name="mace-daily-slots")
+            mace_manage_task = asyncio.create_task(
+                mace_loops.mace_manage_loop(
+                    mace_division, logger_agent,
+                    interval_sec=mace_cfg.management.check_interval_sec),
+                name="mace-manage")
+            mace_reconcile_task = asyncio.create_task(
+                mace_loops.mace_reconcile_loop(mace_division, logger_agent),
+                name="mace-reconcile")
+            mace_calendar_task = asyncio.create_task(
+                mace_loops.mace_calendar_loop(mace_division, logger_agent),
+                name="mace-calendar")
+            log.info(
+                "Robinhood MACE wired (execution_mode=%s, config_hash=%s; "
+                "standby-gated, 4 loops online; go-live BLOCKED on cancel-path fix).",
+                mace_execution_mode, mace_cfg.config_hash[:12])
+        except Exception as _mace_exc:         # noqa: BLE001 — MACE must fail safe
+            log.exception(
+                "Robinhood MACE wiring FAILED — division unwired, other divisions "
+                "unaffected: %s", _mace_exc)
+            mace_division = None
+            mace_manager = None
+
+
         # --- Polymarket round-trip resolver + equity snapshot writer ---
         # Closes the data gaps for the betmoar-style portfolio dashboard:
         #   - resolver: hourly walk of `would_have_placed` rows whose
@@ -2348,6 +2532,8 @@ async def run(argv: list[str] | None = None) -> int:
             tasty_strategy=tasty_strategy,
             tasty_telegram_batcher=tasty_telegram_batcher,
             tasty_pending_combo_registry=tasty_pending_combo_registry,
+            mace_division=mace_division,
+            mace_manager=mace_manager,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -2458,6 +2644,15 @@ async def run(argv: list[str] | None = None) -> int:
                 await pead_manage_task
             except (asyncio.CancelledError, Exception):
                 pass
+            # MACE loops (None when wiring failed — guarded so shutdown is clean).
+            for _mace_task in (mace_daily_task, mace_manage_task,
+                               mace_reconcile_task, mace_calendar_task):
+                if _mace_task is not None:
+                    _mace_task.cancel()
+                    try:
+                        await _mace_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
             if replay_task is not None:  # two-state collapse: None when replay retired
                 replay_task.cancel()
                 try:
@@ -2820,6 +3015,8 @@ async def _start_web_server(
     tasty_strategy: Any = None,
     tasty_telegram_batcher: Any = None,
     tasty_pending_combo_registry: Any = None,
+    mace_division: Any = None,
+    mace_manager: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -2860,6 +3057,8 @@ async def _start_web_server(
         tasty_strategy=tasty_strategy,
         tasty_telegram_batcher=tasty_telegram_batcher,
         tasty_pending_combo_registry=tasty_pending_combo_registry,
+        mace_division=mace_division,
+        mace_manager=mace_manager,
     )
     app = create_app(deps)
     config = uvicorn.Config(

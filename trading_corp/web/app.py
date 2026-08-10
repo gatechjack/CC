@@ -101,6 +101,17 @@ class WebDeps:
     tasty_telegram_batcher: Any = None     # TelegramBatcher | None
     tasty_pending_combo_registry: Any = None  # PendingComboRegistry | None
 
+    # Robinhood MACE (Phase 4, 2026-08-10) — zero-HITL Multi-Asset Condor
+    # Engine on the JOINT account. The /mace cockpit view (web/mace_view.py)
+    # reads `mace_division` for the hot standby/enabled/auto_execute states +
+    # runtime badge and `mace_manager` for the frozen MaceConfig (config_hash +
+    # effective config) and the RungStore. Both default None so every existing
+    # WebDeps construction (incl. the Telegram tg_deps site) is unaffected, and
+    # the view degrades to an honest-empty page when MACE isn't wired (test env
+    # / MACE wiring failure). No approval surface — MACE is zero-HITL.
+    mace_division: Any = None              # RobinhoodMaceAgent | None
+    mace_manager: Any = None               # MaceManager | None
+
 
 def create_app(deps: WebDeps) -> FastAPI:
     """Build the FastAPI app and wire routes."""
