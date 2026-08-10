@@ -1,0 +1,65 @@
+PCT our-copied roster metrics (prod DB read-only, sqlite3 -readonly), NOW=2026-08-10 02:48:01 UTC
+Current roster = 7 wallets. Epoch EP = entry_ts >= 2026-05-21T12:28:07.
+
+=== C1 our-copied per-whale post-epoch: wh|fills|mkts|our_pnl|last_copy|days_ago|avgpx|sub70 ===
+Hakei.|624|187|210.87|2026-08-09|0|0.568|0.61
+llllllII|2796|522|201.54|2026-07-31|9|0.576|0.72
+DegenKingBetter|11|7|3.98|2026-08-09|0|0.584|1.0
+ox1star84|10|4|1.49|2026-08-08|1|0.738|0.1
+ChadStarmer|9|4|0.84|2026-07-24|16|0.394|1.0
+potatobrahh|5|3|0.55|2026-07-31|10|0.492|0.6
+CVCM|16|12|-3.81|2026-08-09|0|0.751|0.25
+
+=== C2 our-copied distinct-decision WR post-epoch: wh|decisions|dec_w|dec_wr|net ===
+Hakei.|213|163|0.765|210.87
+llllllII|549|313|0.57|201.54
+DegenKingBetter|8|7|0.875|3.98
+ox1star84|4|3|0.75|1.49
+ChadStarmer|4|3|0.75|0.84
+potatobrahh|3|2|0.667|0.55
+CVCM|12|8|0.667|-3.81
+
+=== C3 our-copied LAST-7d per-whale (entry): wh|fills|mkts|net|last_entry ===
+Hakei.|195|57|14.7|2026-08-09
+DegenKingBetter|5|4|-0.03|2026-08-09
+ox1star84|2|2|-0.59|2026-08-08
+CVCM|4|2|-4.0|2026-08-09
+(llllllII, ChadStarmer, potatobrahh: ZERO copies in last 7d)
+
+=== C3b our-copied LAST-7d RESOLVED: wh|n|net ===
+Hakei.|197|14.92
+DegenKingBetter|6|0.58
+ox1star84|2|-0.59
+CVCM|4|-4.0
+
+=== C4 our-copied FULL-history per-whale: wh|n|net|first|last ===
+Hakei.|624|210.87|2026-07-07|2026-08-09
+llllllII|2796|201.54|2026-05-27|2026-07-31
+DegenKingBetter|11|3.98|2026-07-31|2026-08-09
+ox1star84|10|1.49|2026-07-31|2026-08-08
+ChadStarmer|9|0.84|2026-07-08|2026-07-24
+potatobrahh|5|0.55|2026-07-18|2026-07-31
+CVCM|16|-3.81|2026-07-28|2026-08-09
+
+=== C5 roster aggregate post-epoch: total_net|total_notional|roi% ===
+415.46|4481.03|9.272
+
+=== C6 our-copied monthly per-whale: wh|mo|n|net ===
+CVCM 07:-0.34 08:-3.47
+ChadStarmer 07:0.84
+DegenKingBetter 07:0.64 08:3.34
+Hakei. 07:128.08 08:82.79
+llllllII 05:132.78 06:-22.76 07:91.52 (08: none - dormant)
+ox1star84 07:1.28 08:0.21
+potatobrahh 07:0.55
+
+=== C7 roster last-7d aggregate: n_entries|n_resolved|net_resolved ===
+206|209|10.91
+
+=== C8 non-roster whales still active (last 21d): wh|wallet|last_entry|n ===
+Moond|0x9dfe2f73d3c988a9d69df8fa0beb85651340b3dd|2026-08-01|63
+kitten147|0xbace5a5a9e309d69164dc81788d353fed8d43429|2026-08-01|28
+LJa7io23MCv954j|0x85a85805bcbdf2e629788adac1420b6b53949281|2026-07-25|8
+
+CONCENTRATION: Hakei(+210.87)+llllllII(+201.54)=412.41 of 415.46 = 99.3% of roster copied PnL.
+Promoted trio DegenKing/ox1star84/CVCM barely copied (8-16 decisions each) = ~$1.66 net combined.

@@ -1,0 +1,16 @@
+set -u
+DB=/home/azureuser/trading_corp/data/trading_corp.db
+RO="sqlite3 -readonly $DB"
+echo "=== agent_state keys + len + updated_ts (roster change history) ==="
+$RO "SELECT key, length(value_json) len, updated_ts FROM agent_state WHERE agent='polymarket_copy_trader' ORDER BY updated_ts DESC;"
+echo "=== selected_whales full JSON (CURRENT copy list) ==="
+$RO "SELECT value_json FROM agent_state WHERE agent='polymarket_copy_trader' AND key='selected_whales';"
+echo "=== pinned_whales full JSON (if present) ==="
+$RO "SELECT value_json FROM agent_state WHERE agent='polymarket_copy_trader' AND key='pinned_whales';"
+echo "=== watch_only_whales count ==="
+$RO "SELECT COUNT(*) FROM agent_state a, json_each(a.value_json) je WHERE a.agent='polymarket_copy_trader' AND a.key='watch_only_whales';"
+echo "=== watch_only_whales element[0] full structure ==="
+$RO "SELECT je.value FROM agent_state a, json_each(a.value_json) je WHERE a.agent='polymarket_copy_trader' AND a.key='watch_only_whales' LIMIT 1;"
+echo "=== selection_metadata (scorer/params, 1200) ==="
+$RO "SELECT substr(value_json,1,1200) FROM agent_state WHERE agent='polymarket_copy_trader' AND key='selection_metadata';"
+echo "=== DONE ==="
