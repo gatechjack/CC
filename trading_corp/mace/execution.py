@@ -72,6 +72,16 @@ from trading_corp.utils.time import now_et, now_utc, to_et
 
 _LOG = logging.getLogger("mace.execution")
 
+
+class MaceRiskRejected(Exception):
+    """Raised by the SINGLE place-funnel when the risk gate rejects (or is absent).
+    MACE's execution drives the broker port directly and bypasses data_exec /
+    ceo_graph, so the per-leg RiskAgent gate threaded through this funnel is MACE's
+    ONLY instance of the platform's single-risk-chokepoint invariant. An
+    unevaluated / rejected order RAISES here — it is never placed. Enforced
+    structurally (an AST test pins every port.place_condor / place_resting_close
+    call to the funnel), not by convention."""
+
 # Horizon (business sessions) past which an un-drained `submitting` anchor with
 # no fill and no working order is abandoned + alerted (plan § Reconcile loop).
 _ABANDON_HORIZON_SESSIONS = 2
@@ -338,6 +348,7 @@ class MaceExecutor:
         store: RungStore,
         notifier: MaceNotifier,
         *,
+        risk_gate: Optional[Callable[[CondorSpec, int, str], bool]] = None,
         audit: Optional[Callable[..., None]] = None,
         now_utc_fn: Callable[[], datetime] = now_utc,
         now_et_fn: Callable[[], datetime] = now_et,
@@ -348,6 +359,10 @@ class MaceExecutor:
         self.port = port
         self.store = store
         self.notifier = notifier
+        # The per-leg risk gate: risk_gate(spec, contracts, direction) -> bool.
+        # REQUIRED for any placement — None is fail-closed (see _require_risk).
+        # The manager builds it from RiskAgent.evaluate over every leg.
+        self._risk_gate = risk_gate
         self._audit_fn = audit
         self._now_utc = now_utc_fn
         self._now_et = now_et_fn
@@ -430,6 +445,42 @@ class MaceExecutor:
     def _floor_for(self, spec: CondorSpec) -> float:
         return self.cfg.entry.credit_floor_pct_of_width * spec.width_dollars
 
+    # -- SINGLE RISK CHOKEPOINT (every placement funnels through here) --------
+    def _require_risk(self, spec: CondorSpec, contracts: int, direction: str) -> None:
+        """The single-chokepoint guard. Fail-CLOSED: a missing gate raises (an
+        unevaluated order is never placed), and any leg the gate rejects raises.
+        Called by _place / _place_resting BEFORE any broker place — those are the
+        ONLY two methods that touch port.place_condor / port.place_resting_close
+        (pinned by the AST structural test)."""
+        if self._risk_gate is None:
+            raise MaceRiskRejected(
+                f"{spec.symbol}: no risk gate wired — the MACE single-chokepoint "
+                f"invariant refuses to place {direction} x{contracts}")
+        try:
+            approved = self._risk_gate(spec, contracts, direction)
+        except Exception as exc:  # noqa: BLE001 — a gate error is a rejection
+            raise MaceRiskRejected(
+                f"{spec.symbol}: risk gate raised ({exc}) — refusing to place") from exc
+        if not approved:
+            raise MaceRiskRejected(
+                f"{spec.symbol}: risk gate rejected {direction} x{contracts}")
+
+    async def _place(self, spec: CondorSpec, contracts: int, net_limit: float,
+                     combo_id: str, *, direction: str, time_in_force: str,
+                     fill_timeout_s: float) -> OrderResult:
+        """The ONLY method that calls port.place_condor. Risk-gates every leg first."""
+        self._require_risk(spec, contracts, direction)
+        return await self.port.place_condor(
+            spec, contracts, net_limit, combo_id, direction=direction,
+            time_in_force=time_in_force, fill_timeout_s=fill_timeout_s)
+
+    async def _place_resting(self, spec: CondorSpec, contracts: int,
+                             net_debit_limit: float, ref_id: str) -> str:
+        """The ONLY method that calls port.place_resting_close. Risk-gates first
+        (the resting PT is a net-debit close)."""
+        self._require_risk(spec, contracts, bp.DIR_DEBIT)
+        return await self.port.place_resting_close(spec, contracts, net_debit_limit, ref_id)
+
     # -- ENTRY LADDER ---------------------------------------------------------
     async def run_entry(self, ev, session_date: date) -> EntryOutcome:
         """Entry credit ladder (plan § Entry ladder). `ev` is a strategy
@@ -478,9 +529,16 @@ class MaceExecutor:
             self.store.set_pending_credit(rung_id, limit)
 
             try:
-                res = await self.port.place_condor(
+                res = await self._place(
                     spec, contracts, limit, combo_id, direction=bp.DIR_CREDIT,
                     time_in_force="gfd", fill_timeout_s=x.entry_fill_wait_sec)
+            except MaceRiskRejected as rej:
+                # Single-chokepoint catch: risk gate rejected -> NO order placed.
+                # Clean stand-down (every prior attempt was confirmed dead).
+                self._audit("mace_entry_risk_reject", rung_id=rung_id, attempt=k, detail=str(rej))
+                self.notifier.reject(symbol=spec.symbol, detail=f"entry risk-rejected: {rej}")
+                return self._entry_standdown(spec, rung_id, k - 1, last_price,
+                                             "risk_reject", clean=True)
             except Exception as exc:  # noqa: BLE001
                 # FAKE-FILL GUARD: an exception NEVER books. The order MIGHT exist
                 # at the broker (lost response) -> leave the anchor for reconcile
@@ -592,7 +650,7 @@ class MaceExecutor:
             pt_debit = self._pt_debit_for(credit)
         ref = f"{rung_id}-pt"
         try:
-            pt_id = await self.port.place_resting_close(spec, contracts, pt_debit, ref)
+            pt_id = await self._place_resting(spec, contracts, pt_debit, ref)
         except Exception as exc:  # noqa: BLE001
             self.notifier.reject(symbol=spec.symbol,
                                  detail=f"resting PT placement failed: {exc}; reconcile will retry")
@@ -655,9 +713,14 @@ class MaceExecutor:
             combo_id = f"{rung_id}-x{k}"
 
             try:
-                res = await self.port.place_condor(
+                res = await self._place(
                     spec, contracts, limit, combo_id, direction=bp.DIR_DEBIT,
                     time_in_force="gfd", fill_timeout_s=x.exit_fill_wait_sec)
+            except MaceRiskRejected as rej:
+                # Risk gate blocked the close (unexpected for a risk-reducing close);
+                # fail-safe -> stay CLOSING + URGENT, never place.
+                self._audit("mace_exit_risk_reject", rung_id=rung_id, attempt=k, detail=str(rej))
+                return self._exit_exhausted(spec, rung_id, reason, k)
             except Exception as exc:  # noqa: BLE001
                 # FAKE-FILL GUARD: never book. An in-flight order can't be safely
                 # superseded -> stay CLOSING + URGENT manual backstop.

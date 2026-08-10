@@ -170,11 +170,16 @@ def _exit_quotes(port: FakePort):
     }
 
 
-def _executor(port, store, chan, *, et_h=15, et_mi=45):
+def _executor(port, store, chan, *, et_h=15, et_mi=45, risk_gate=None):
     notifier = MaceNotifier(channel=chan, enabled=True)
+    # Default to an APPROVING gate — the place-funnel is fail-closed (no gate =>
+    # raises), so lifecycle tests inject a passing gate; the risk-chokepoint tests
+    # (test_mace_risk_chokepoint.py) inject rejecting / absent gates on purpose.
+    if risk_gate is None:
+        risk_gate = lambda spec, contracts, direction: True   # noqa: E731
     return ex.MaceExecutor(
         CFG, port, ex.RungStore(store) if isinstance(store, sqlite3.Connection) else store,
-        notifier,
+        notifier, risk_gate=risk_gate,
         now_utc_fn=lambda: datetime(2026, 8, 10, 19, 45, tzinfo=UTC),
         now_et_fn=lambda: datetime(2026, 8, 10, et_h, et_mi, tzinfo=ET),
         poll_interval_s=0.001, poll_timeout_s=0.01)
@@ -310,6 +315,19 @@ async def test_entry_exhausts_five_attempts_no_fill_is_no_trade():
     assert not out.filled and out.standdown_reason == "exhausted" and out.attempts == 5
     assert len(port.place_calls) == 5
     assert store.get(RUNG_ID) is None                          # no fill = no trade, anchor cleaned
+
+
+@pytest.mark.asyncio
+async def test_run_entry_risk_reject_never_places_clean_standdown():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [_res(bp.STATE_FILLED, "O1")]          # would fill IF it ever placed
+    out = await _executor(port, store, chan,
+                          risk_gate=lambda s, c, d: False).run_entry(_ev(), SESSION)
+    assert not out.filled and out.standdown_reason == "risk_reject"
+    assert port.place_calls == []                              # single-chokepoint: NEVER placed
+    assert store.get(RUNG_ID) is None                          # clean stand-down
+    assert chan.any("risk-rejected")
 
 
 # ── EXIT LADDER + PT-FIRST ─────────────────────────────────────────────────
