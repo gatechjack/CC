@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% block title %}MACE Engine — Condor Ops · Trading Corp{% endblock %}
+
+{% block content %}
+{# ── Robinhood MACE cockpit (plan § Dashboard v1). Plain + functional. Zero-HITL:
+     observability only, no approve/reject controls. Honest-empty until real rows
+     exist — MACE launches STANDBY with no open rungs. ─────────────────────────── #}
+
+{% set b = badge %}
+{% set badge_color = ('gain' if b.state == 'live'
+                      else 'warn' if b.state in ('paper','standby','disarmed')
+                      else 'muted') %}
+
+<div class="sticky top-[57px] z-20 bg-bg/95 backdrop-blur-sm border-b border-edge mb-4">
+  <div class="py-3 flex flex-wrap items-center gap-3">
+    <div class="flex items-baseline gap-2 min-w-0">
+      <h1 class="text-mono font-semibold text-sm tracking-tight uppercase whitespace-nowrap">
+        MACE Engine — Condor Ops
+      </h1>
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-mono tracking-wider
+                   bg-accent/15 text-accent border border-accent/30 shrink-0">v1</span>
+    </div>
+
+    {# runtime posture — LIVE only when broker real + active + auto #}
+    <span class="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-mono
+                 font-semibold uppercase tracking-wider
+                 bg-{{ badge_color }}/15 text-{{ badge_color }} border border-{{ badge_color }}/30">
+      {{ b.label }}
+      <span class="text-[10px] font-normal normal-case opacity-70">{{ b.sub }}</span>
+    </span>
+
+    <span class="text-[10px] font-mono px-2 py-1 rounded bg-edge text-muted">
+      process: {{ mode }}
+    </span>
+
+    <div class="ml-auto flex items-center gap-2">
+      {% for name, on in [('enabled', b.enabled), ('standby', b.standby), ('auto_execute', b.auto_execute)] %}
+        <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+          {% if (name == 'standby' and on) or (name != 'standby' and not on) %}bg-warn/15 text-warn
+          {% else %}bg-gain/15 text-gain{% endif %}">
+          {{ name }}: {{ 'yes' if on else 'no' }}
+        </span>
+      {% endfor %}
+      {% if config %}
+        <span class="text-[10px] font-mono px-2 py-1 rounded bg-edge text-muted"
+              title="sha256 of config/mace.yaml (frozen at boot)">
+          cfg {{ config.config_hash[:12] }}
+        </span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+
+  {# ── Equity / sizing basis ─────────────────────────────────────────────── #}
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider mb-2">Equity (sizing basis E)</div>
+    {% if equity %}
+      <div class="text-2xl font-mono font-semibold text-mono">{{ equity.equity | money }}</div>
+      <div class="mt-1 text-[11px] text-muted font-mono">
+        settled cash · snapshot {{ equity.snap_date }}
+      </div>
+      <div class="mt-2 grid grid-cols-2 gap-2 text-xs font-mono">
+        <div><span class="text-muted">cash</span> {{ equity.cash | money }}</div>
+        <div><span class="text-muted">mkt val</span>
+          {{ equity.market_value | money if equity.market_value is not none else '—' }}</div>
+        <div><span class="text-muted">HWM</span> —</div>
+      </div>
+    {% else %}
+      <div class="text-sm text-muted font-mono">— no equity snapshot yet
+        <div class="text-[11px] mt-1">the 15:40 ET snapshot slot writes E once active</div>
+      </div>
+    {% endif %}
+  </div>
+
+  {# ── IVR per symbol ────────────────────────────────────────────────────── #}
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider mb-2">IVR (Tasty, x100)</div>
+    {% if ivr %}
+      <table class="w-full text-xs font-mono">
+        <thead><tr class="text-muted text-left">
+          <th class="pb-1">sym</th><th class="pb-1 text-right">IVR</th>
+          <th class="pb-1 text-right">ATM IV</th><th class="pb-1 text-right">as of</th>
+        </tr></thead>
+        <tbody>
+        {% for r in ivr %}
+          <tr class="border-t border-edge/40">
+            <td class="py-1">{{ r.symbol }}</td>
+            <td class="py-1 text-right {% if r.ivr_tasty is not none and r.ivr_tasty >= 25 %}text-gain{% else %}text-muted{% endif %}">
+              {{ '%.1f' % r.ivr_tasty if r.ivr_tasty is not none else '—' }}</td>
+            <td class="py-1 text-right">{{ '%.3f' % r.atm_iv if r.atm_iv is not none else '—' }}</td>
+            <td class="py-1 text-right text-muted">{{ r.snap_date }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="text-sm text-muted font-mono">— no IVR snapshots yet
+        <div class="text-[11px] mt-1">written during the 15:45 ET eval</div>
+      </div>
+    {% endif %}
+  </div>
+
+  {# ── Calendar (next 7 sessions) ────────────────────────────────────────── #}
+  <div class="bg-pane border border-edge rounded-lg p-4">
+    <div class="text-[11px] text-muted uppercase tracking-wider mb-2">Blackout calendar · next 7d</div>
+    {% if events %}
+      <table class="w-full text-xs font-mono">
+        <tbody>
+        {% for e in events %}
+          <tr class="border-t border-edge/40">
+            <td class="py-1 font-semibold">{{ e.event_type }}</td>
+            <td class="py-1 text-muted">{{ e.symbol_scope }}</td>
+            <td class="py-1 text-right">{{ e.event_date }}</td>
+            <td class="py-1 text-right text-muted">
+              {{ 'today' if e.in_days == 0 else ('+%dd' % e.in_days) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="text-sm text-muted font-mono">— no events in the next 7 days</div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Open rungs (htmx-polled fragment; initial paint via include) ─────────── #}
+<div class="mt-4">
+  {% include "partials/mace_live_sections.html" %}
+</div>
+
+{# ── Recent closed rungs ──────────────────────────────────────────────────── #}
+<div class="mt-4 bg-pane border border-edge rounded-lg p-4">
+  <div class="text-[11px] text-muted uppercase tracking-wider mb-2">Recently closed</div>
+  {% if closed %}
+    <table class="w-full text-xs font-mono">
+      <thead><tr class="text-muted text-left">
+        <th class="pb-1">sym</th><th class="pb-1">expiry</th><th class="pb-1 text-right">x</th>
+        <th class="pb-1">reason</th><th class="pb-1 text-right">debit</th>
+        <th class="pb-1 text-right">P&amp;L</th><th class="pb-1 text-right">closed</th>
+      </tr></thead>
+      <tbody>
+      {% for r in closed %}
+        <tr class="border-t border-edge/40">
+          <td class="py-1">{{ r.symbol }}</td>
+          <td class="py-1">{{ r.expiry }}</td>
+          <td class="py-1 text-right">{{ r.contracts }}</td>
+          <td class="py-1 uppercase">{{ r.exit_reason }}</td>
+          <td class="py-1 text-right">{{ r.exit_debit | money if r.exit_debit is not none else '—' }}</td>
+          <td class="py-1 text-right {% if r.realized_pnl is not none and r.realized_pnl >= 0 %}text-gain{% else %}text-loss{% endif %}">
+            {{ r.realized_pnl | money if r.realized_pnl is not none else '—' }}</td>
+          <td class="py-1 text-right text-muted">{{ r.exit_ts }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="text-sm text-muted font-mono">— no closed rungs yet</div>
+  {% endif %}
+</div>
+
+{# ── Effective config (from the FROZEN MaceConfig, not the YAML file) ──────── #}
+<div class="mt-4 bg-pane border border-edge rounded-lg p-4">
+  <div class="flex items-baseline justify-between mb-3">
+    <div class="text-[11px] text-muted uppercase tracking-wider">Effective config (frozen)</div>
+    {% if config %}<div class="text-[10px] font-mono text-muted">sha256 {{ config.config_hash[:16] }}</div>{% endif %}
+  </div>
+  {% if config %}
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      {% for group_name, rows in config.groups %}
+        <div>
+          <div class="text-[11px] text-accent font-mono uppercase tracking-wider mb-1">{{ group_name }}</div>
+          <table class="w-full text-xs font-mono">
+            <tbody>
+            {% for k, v in rows %}
+              <tr class="border-t border-edge/30">
+                <td class="py-0.5 text-muted pr-2">{{ k }}</td>
+                <td class="py-0.5 text-right text-mono">{{ v }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endfor %}
+    </div>
+    <div class="mt-4">
+      <div class="text-[11px] text-accent font-mono uppercase tracking-wider mb-1">symbols</div>
+      <table class="w-full text-xs font-mono">
+        <thead><tr class="text-muted text-left">
+          <th class="pb-1">sym</th><th class="pb-1">enabled</th><th class="pb-1 text-right">width</th>
+          <th class="pb-1">exdiv guard</th><th class="pb-1">blackouts</th><th class="pb-1">overflow only</th>
+        </tr></thead>
+        <tbody>
+        {% for s in config.symbols %}
+          <tr class="border-t border-edge/30">
+            <td class="py-1 font-semibold">{{ s.symbol }}</td>
+            <td class="py-1 {% if s.enabled %}text-gain{% else %}text-muted{% endif %}">{{ 'yes' if s.enabled else 'no' }}</td>
+            <td class="py-1 text-right">${{ s.width | int }}</td>
+            <td class="py-1">{{ 'on' if s.exdiv_guard else 'off' }}</td>
+            <td class="py-1 text-muted">{{ s.blackouts }}</td>
+            <td class="py-1">{{ 'yes' if s.overflow_only else '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="text-sm text-muted font-mono">— MACE not wired (no frozen config available)</div>
+  {% endif %}
+</div>
+
+<div class="text-center text-muted text-[10px] font-mono py-3">
+  Robinhood MACE · v1 · zero-HITL · open-rungs HTMX-poll ~30s · go-live blocked on the RH cancel-path fix
+</div>
+{% endblock %}

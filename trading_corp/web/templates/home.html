@@ -87,9 +87,11 @@
                                             if d.slug == 'robinhood_joint'
                                             else ('/telemetry/iron_condor?division=tasty_options'
                                                     if d.slug == 'tasty_options'
-                                                    else ('/sfp'
-                                                            if d.slug == 'bitunix_sfp'
-                                                            else ('/division/' + d.slug))))) %}
+                                                    else ('/mace'
+                                                            if d.slug == 'robinhood_mace'
+                                                            else ('/sfp'
+                                                                    if d.slug == 'bitunix_sfp'
+                                                                    else ('/division/' + d.slug)))))) %}
             <a href="{{ _href }}"
                class="group bg-pane border border-edge rounded-lg p-4
                       hover:border-edge-2 hover:bg-pane-2 transition-colors block">
