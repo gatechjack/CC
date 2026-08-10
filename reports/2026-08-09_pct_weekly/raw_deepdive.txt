@@ -1,0 +1,44 @@
+llllllII + GreatestTrader deep-dive. Data pulled 2026-08-10 03:12 UTC. Read-only.
+
+=== llllllII (0x7714...b814) OWN activity, UNCAPPED (5500 fills, hit_cap=false = FULL 94d history) ===
+span 2026-04-28 -> 2026-07-31 (94 days).  open_gap_days = 9.42 (last own trade 07-31).
+gaps >=3 calendar days between active days: ONLY ONE -> [2026-06-21 -> 2026-06-27, 6 days].
+weekly [week_start, n_dec, realized, clean, cum_realized]:
+  2026-04-27  59   +33746.3  +32996.3  +33746.3
+  2026-05-04  33   +19078.8  +19078.8  +52825.0
+  2026-05-11  43   -95246.1 -102971.0  -42421.1
+  2026-05-18  47   +29805.4  +42714.9  -12615.7
+  2026-05-25  91   +74083.7  +81189.4  +61468.0
+  2026-06-01  87    -2885.6    -605.6  +58582.5
+  2026-06-08  40   -19034.1  -19231.7  +39548.4
+  2026-06-15  17    +5387.6   +5387.6  +44935.9
+  2026-06-22   7    +2135.9   +2135.9  +47071.8
+  2026-06-29  47    -8393.4   -8393.4  +38678.4
+  2026-07-06  85   -26987.7  -27128.5  +11690.7
+  2026-07-13  88   +14673.8  +14294.3  +26364.5
+  2026-07-20  77   +12183.7   +2828.2  +38548.2
+  2026-07-27  42   -33510.6  -34965.9   +5037.6   <- sharp final-week loss, then silence
+FULL-HISTORY realized = +$5,037.6 ; clean-hold cum ~ +$7,328.  (The Group-A -$36,081 was a 5000-fill CAP ARTIFACT
+  that dropped the profitable late-Apr/early-May weeks + truncated boundary decisions.)
+
+L-COPIED (our book) daily last 60d: heavy near-daily activity, 1-2d skips common; notable copied gap 06-21->06-27
+  (matches own gap). Copied first=2026-05-27 last=2026-07-31 n=2796, our net +201.54. No copies since 07-31.
+
+LoL calendar cross-ref (web): LEC Summer started 2026-07-24, 9 weeks NO breaks -> Sep 6; LCK regular thru Aug 23;
+  LPL active. => leagues ACTIVE during the 07-31->now silence (no break explains it). The June gap sat in the
+  spring->summer transition (calendar-driven; resumed when summer started).
+
+=== GreatestTrader (0x258c...7c23) durability second-time-point ===
+span 2026-06-19 -> 2026-08-09 = 51 days (NOT 7d; screen window_days_span=6.9 was only its sampling window).
+weekly [week_start, n_dec, realized, clean, cum_realized]:
+  2026-06-15  14   +7625.9   +7617.0    +7625.9
+  2026-06-22   4   +3060.9   +3060.9   +10686.7
+  2026-06-29  31  -20291.4  -20291.5    -9604.6   <- only down week, recovered
+  2026-07-06  25  +15839.6  +15590.0    +6234.9
+  2026-07-13  27  +35503.5  +35447.6   +41738.4
+  2026-07-20  36  +18225.4  +10291.4   +59963.8
+  2026-07-27  36  +29135.9  +28521.6   +89099.7
+  2026-08-03  65  +52823.1  +52344.9  +141922.8
+Positive in 7 of 8 weeks; clean-hold tracks realized each week (genuine holder). NOT a 7-day flash.
+Caveat: last 2 weeks (07-27 +29.1k, 08-03 +52.8k) = +81.9k = 58% of the +141.9k total => accelerating/hot.
+Verdict: durability CONFIRMED (51d, 7/8 weeks +), but running hot recently -> size conservatively.

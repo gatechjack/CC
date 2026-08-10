@@ -4,6 +4,8 @@
 **Method:** Every whale ranked on **`build_audit_report`** (REDEEM-grounded realized PnL over exhausted `/activity`), NOT the watchlist screen's held-basis `compute_polymarket_stats`. Held shown only as a secondary/inflation column. Copy-list also cross-checked against our **actual copied-trade record** (`polymarket_round_trips`, prod DB).
 **Reproducibility:** `viktorurolog16` re-audit reproduced its 07-25 figures to within noise (clean-hold −$11,131 vs −$10,287; realized +$27,192 vs +$27,996) — harness is faithful.
 
+> **⚠ CORRECTION (see `deepdive_llllllII_greatesttrader.md`):** llllllII's −$36,081/−$33,040 below is a **5,000-fill CAP ARTIFACT**. The uncapped full 94-day history is **realized +$5,038 / clean-hold +$7,328 (mildly positive)**. Its verdict is revised **REMOVE→DEMOTE-to-watch**. GreatestTrader durability is **CONFIRMED** (51-day span, positive 7/8 weeks; running hot recently).
+
 ---
 
 ## TL;DR
@@ -27,7 +29,7 @@ Own-whale `build_audit_report` (full recent window) + our actual copied record. 
 | **CVCM** | +13,702 | 11,348 | **−0.21** | +3,970 | +9,732 | 0.50 (338) | 0.51 / 0.08 | −3.81 (0.67, 12) | 0d | **KEEP #4** (cleanest signature; tiny copied n) |
 | **potatobrahh** | +14,624 | 46,341 | 0.68 | +1,693 | +12,932 | 0.60 (115) | 0.53 / 0.18 | +0.55 (0.67, 3) | 10d | **REMOVE** (edge in exits; no new entries this wk) |
 | **ChadStarmer** | +3,628 | 17,747 | 0.80 | +204 | +3,423 | 0.59 (85) | 0.49 / 0.16 | +0.84 (0.75, 4) | 16d | **REMOVE** (clean-hold ~$0; quiet) |
-| **llllllII** | **−36,081** | −2,434 | 13.83 | **−33,040** | −3,041 | 0.59 (694) | 0.57 / 0.03 | +201.54 (0.57, 549) | **9d dormant** | **REMOVE** (dormant + edge decayed) |
+| **llllllII** | −36,081* | −2,434 | 13.83 | −33,040* | −3,041 | 0.59 (694) | 0.57 / 0.03 | +201.54 (0.57, 549) | **9d dormant** | **DEMOTE→watch** (*cap artifact; full=+5,038/+7,328) |
 
 **Copy-list reads:**
 - **DegenKingBetter** — elite and improving. +$110k realized, +$64k from clean holds (58%), **0% favorite-farming**, sub-70 0.99 (sharpest in the whole set), active now. The best whale on the roster; copy captures its edge (holds make money).
@@ -73,7 +75,7 @@ Audited the 12 strongest non-favorite, non-artifact candidates (excluded lifetim
 4. **CVCM** — cleanest signature (negative inflation, no masking, 338 decisions, both legs positive), active. Small and only 12 copied decisions so far; keep and let the sample build.
 
 ### 2) REMOVE — cut, with the numbers
-1. **llllllII** — **dormant 9d** (no entries this week; can't copy silence) **AND** own realized decayed to −$36k / clean-holds −$33k. Was ~50% of our copied PnL — now frozen. *(Soft option: demote-to-watch to hedge the esports-schedule gap.)*
+1. **llllllII** → **DEMOTE-to-watch** (not hard-cut — revised by deep-dive). Edge is mildly *positive* (+$5,038 realized / +$7,328 clean over full 94d; the −$36k was a fetch-cap artifact), so don't delete it — but the copyable signal has **stopped 9.4d with no LoL-calendar excuse** (LEC/LCK/LPL all active), right after its worst week (−$33.5k). Demote off the copy list (free the slot), keep pinned on watch; hard-cut if not resumed by ~2026-08-17.
 2. **potatobrahh** — clean-holds +$1,693 (inflation 0.68, edge in exits copy can't capture); no new entries this week; our +$0.55 over 5 fills. No demonstrated copyable edge.
 3. **ChadStarmer** — clean-holds +$204 (~zero), inflation 0.80, quiet 16d. Nothing to capture.
 
@@ -81,7 +83,7 @@ Audited the 12 strongest non-favorite, non-artifact candidates (excluded lifetim
 **Tier 1 — genuine clean-holders (currently on the watchlist, no pinning needed):**
 1. **rollobravado** — +$91.5k realized, **+$85.4k clean-holds (93%)**, WR 0.70, 335 decisions, avg 0.69 (not fav-farmed), active, +$17.6k own this week. Most durable.
 2. **Kosherlocks** — +$76.2k realized, **+$75.7k clean-holds (99%!)**, sharp (avg 0.56 / 5% fav / sub-70 0.76), 190 decisions, active. **Purest copy fit** — edge almost entirely in holds.
-3. **GreatestTrader** — **+$142k realized, +$132.6k clean-holds (93%)**, WR 0.66, active, +$52.8k own this week. Biggest edge. ⚠ Screen `window_days_span` was only ~6.9d — its full 238-decision history audits clean, but confirm it isn't a single hot run before sizing up.
+3. **GreatestTrader** — **+$142k realized, +$132.6k clean-holds (93%)**, WR 0.66, active, +$52.8k own this week. Biggest edge. **Durability CONFIRMED** (deep-dive): real span 51 days, positive 7/8 weeks, clean tracks realized — NOT a hot flash. ⚠ But 58% of PnL landed in the last 2 weeks (accelerating) → **size conservatively; the +$142k is not a run-rate.**
 
 **Tier 2 — clean but smaller:**
 4. **olddirtyfighter** — +$9.0k realized, **+$11.6k clean-holds** (negative inflation), 589 decisions, clustering 1.32 (cleanest signal), not fav-farmed, active. Low-dollar but the most diversified, durable profile — a good breadth diversifier.
