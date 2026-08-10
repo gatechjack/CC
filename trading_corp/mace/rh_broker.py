@@ -215,23 +215,35 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
         return str(order_id)
 
     async def cancel(self, order_id: str) -> None:
-        """Resilient cancel (Checkpoint-0 cancel-path fix 2026-08-10). robin_stocks'
-        `cancel_option_order` POSTs to a CONSTRUCTED `.../options/orders/{id}/cancel/`
-        endpoint, which returned 404 LIVE on a spread order (order 6a79fe0a) — RH's
-        canonical cancel is the order's OWN server-provided `cancel_url`. Ordered
-        fallback, each rung confirmed by a TERMINAL state read-back:
-          (a) POST the order's `cancel_url`;
-          (b) if absent, short bounded re-poll for it to populate (the state may
-              only expose cancel_url once the order reaches a working state);
-          (c) last resort, robin_stocks' constructed endpoint (may be valid for
-              other states);
+        """Resilient cancel — root-caused + FIXED 2026-08-10 (operator devtools capture).
+
+        ── WHY THE BODY IS REQUIRED (capture 2026-08-10, RH web app, single-leg
+        subject order 6a7a3ffa, token-redacted; provenance in the plan's Checkpoint-0
+        section) ─────────────────────────────────────────────────────────────────
+        The endpoint NEVER MOVED. RH's web app POSTs the SAME constructed
+        `.../options/orders/{id}/cancel/` URL that robin_stocks builds — the
+        difference is the BODY: the web app sends `Content-Type: application/json`
+        with `{"account_number": <owning account>}`; robin_stocks POSTs it with NO
+        body. Under the brokeback edge sharding the service resolves the order via
+        the account CONTEXT and returns 404 (not 400) when the body is absent — which
+        is exactly why reads work, the app/web cancel works, and robin_stocks'
+        empty-body cancel 404s on BOTH gtc and gfd regardless of order state. Fix =
+        POST the constructed URL WITH the account_number body (rung 0 below).
+
+        Ordered fallback, each rung confirmed by a TERMINAL state read-back:
+          (0) PRIMARY: POST the constructed cancel URL WITH json body
+              {"account_number": <bound account>} — the captured web-app request;
+          (a) POST the order's own server-provided `cancel_url` (empty body — the
+              pre-fix path; retained as a fallback, harmless if it 404s);
+          (b) if cancel_url absent, short bounded re-poll for it to populate;
+          (c) last resort, robin_stocks' constructed endpoint (empty body);
           (d) all failing => raise loudly — NEVER silently give up.
 
-        FAKE-CANCEL GUARD: the caller (execution) independently re-reads to a
-        terminal state before it believes the cancellation; the per-rung confirm
-        here is only to sequence the fallback and to raise on genuine failure. No
-        HTTP response — including a 200 on the cancel POST — is ever treated as a
-        cancellation by itself."""
+        FAKE-CANCEL GUARD (unchanged, ABSOLUTE): the caller (execution) independently
+        re-reads to a terminal state before it believes the cancellation; the per-rung
+        confirm here only sequences the fallback + raises on genuine failure. NO HTTP
+        response — including a 200/204 on the cancel POST — is EVER treated as a
+        cancellation by itself; only a terminal `state` read-back is."""
         import robin_stocks.robinhood as rs  # type: ignore
         from robin_stocks.robinhood.helper import request_post  # type: ignore
 
@@ -267,19 +279,35 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
                     return True
             return False
 
-        # (a) the order's own server-provided cancel_url.
+        # (0) PRIMARY (2026-08-10 capture fix): the constructed cancel URL WITH the
+        # account_number JSON body. account_number is sourced from the broker's BOUND
+        # account (NEVER hardcoded) — MACE's bound account is the order's owning
+        # account. request_post(..., json=True) sets Content-Type: application/json +
+        # posts {"account_number": acct} as the body; it swallows the HTTP error and
+        # returns None, so the terminal read-back (not the POST result) is what
+        # confirms the cancel (fake-cancel guard).
+        acct = getattr(self._broker, "_account_number", "") or None
+        constructed_url = f"https://api.robinhood.com/options/orders/{order_id}/cancel/"
+        if acct and await _issue_then_confirm(
+                "constructed_json_body",
+                lambda: asyncio.to_thread(
+                    request_post, constructed_url, {"account_number": acct}, json=True)):
+            return
+        # (a) the order's own server-provided cancel_url (pre-fix path, empty body).
         if cancel_url and await _issue_then_confirm(
                 "cancel_url", lambda: asyncio.to_thread(request_post, cancel_url)):
             return
-        # (c) last resort: robin_stocks' constructed endpoint.
+        # (c) last resort: robin_stocks' constructed endpoint (empty body).
         if await _issue_then_confirm(
                 "constructed", lambda: asyncio.to_thread(rs.orders.cancel_option_order, order_id)):
             return
         # (d) all rungs failed to reach terminal -> raise loudly.
         final = await _read()
         raise RuntimeError(
-            f"cancel of {order_id} reached NO terminal state via cancel_url/constructed; "
-            f"last state={str(final.get('state'))!r} cancel_url_present={bool(cancel_url)}")
+            f"cancel of {order_id} reached NO terminal state via "
+            f"constructed_json_body/cancel_url/constructed; "
+            f"last state={str(final.get('state'))!r} cancel_url_present={bool(cancel_url)} "
+            f"account_bound={bool(acct)}")
 
     async def order_status(self, order_id: str) -> OrderResult:
         info = await self._broker.get_option_order_status(order_id) or {}

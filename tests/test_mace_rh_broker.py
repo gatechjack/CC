@@ -217,20 +217,28 @@ async def test_leg_quote_and_chain_bind_strikes():
     assert chain.listed(date(2026, 9, 18), "call", 615.0)
 
 
-# ── resilient cancel (Checkpoint-0 cancel-path fix) ──────────────────────
+# ── resilient cancel (Checkpoint-0 cancel-path fix — 2026-08-10 capture) ──
+# Reality model from the operator's devtools capture: a POST carrying the
+# {"account_number": ...} body cancels (the fix, rung 0); a BODYLESS POST to the
+# order's cancel_url 404s and does NOT cancel (the pre-fix path) unless a test opts
+# a legacy fallback in; the constructed no-body endpoint cancels only if opted in.
+
+CONSTRUCTED = "https://api.robinhood.com/options/orders/OID/cancel/"
+
 
 class _OrderSim:
     """Models one RH option order + the endpoints rh_broker.cancel drives."""
 
     def __init__(self, *, state="confirmed", cancel_url=None, cancel_url_after=0,
-                 post_cancels=True, constructed_cancels=False):
+                 body_cancels=True, cancel_url_cancels=False, constructed_cancels=False):
         self.state = state
         self._cancel_url = cancel_url
         self.cancel_url_after = cancel_url_after   # reads before cancel_url appears
-        self.post_cancels = post_cancels
+        self.body_cancels = body_cancels           # the {"account_number"} body-POST works
+        self.cancel_url_cancels = cancel_url_cancels  # legacy bodyless cancel_url works
         self.constructed_cancels = constructed_cancels
         self.reads = 0
-        self.post_urls = []
+        self.posts = []                            # [{url, payload, json}, ...]
         self.constructed_calls = 0
 
     def get_info(self, oid):
@@ -238,17 +246,29 @@ class _OrderSim:
         cu = self._cancel_url if self.reads > self.cancel_url_after else None
         return {"id": oid, "state": self.state, "cancel_url": cu}
 
-    def request_post(self, url, *a, **k):
-        self.post_urls.append(url)
-        if self.post_cancels:
-            self.state = "cancelled"        # RH accepted the cancel_url POST
-        return {"id": "x", "state": self.state}
+    def request_post(self, url, payload=None, *a, **k):
+        self.posts.append({"url": url, "payload": payload, "json": k.get("json")})
+        has_body = isinstance(payload, dict) and "account_number" in payload
+        if has_body and self.body_cancels:
+            self.state = "cancelled"               # the FIX: account-context POST cancels
+        elif (not has_body) and self.cancel_url_cancels:
+            self.state = "cancelled"
+        return {"id": "x", "state": self.state}    # a "200" — books NOTHING on its own
 
     def cancel_option_order(self, oid):
         self.constructed_calls += 1
         if self.constructed_cancels:
             self.state = "cancelled"
         return None
+
+    @property
+    def post_urls(self):
+        return [p["url"] for p in self.posts]
+
+    @property
+    def body_posts(self):
+        return [p for p in self.posts
+                if isinstance(p["payload"], dict) and "account_number" in p["payload"]]
 
 
 def _install(monkeypatch, sim):
@@ -260,45 +280,86 @@ def _install(monkeypatch, sim):
                         sim.request_post, raising=False)
 
 
-def _cancel_port():
-    return RobinhoodOptionsBroker(MockRHBroker(), cancel_url_polls=3, cancel_url_poll_s=0.0,
-                                  cancel_confirm_polls=3, cancel_confirm_poll_s=0.0)
+def _cancel_port(broker=None):
+    return RobinhoodOptionsBroker(broker or MockRHBroker(), cancel_url_polls=3,
+                                  cancel_url_poll_s=0.0, cancel_confirm_polls=3,
+                                  cancel_confirm_poll_s=0.0)
 
 
 @pytest.mark.asyncio
-async def test_cancel_uses_order_cancel_url_first(monkeypatch):
-    sim = _OrderSim(cancel_url="https://api.robinhood.com/options/orders/OID/cancel_v2/",
-                    post_cancels=True)
+async def test_cancel_primary_posts_constructed_url_with_account_body(monkeypatch):
+    """PRIMARY rung: the constructed cancel URL WITH the {"account_number"} json body
+    (the captured web-app request). Cancels on the first rung; legacy rungs untouched."""
+    sim = _OrderSim(body_cancels=True)
+    _install(monkeypatch, sim)
+    await _cancel_port().cancel("OID")
+    assert len(sim.posts) == 1
+    p = sim.posts[0]
+    assert p["url"] == CONSTRUCTED                 # SAME url robin_stocks builds
+    assert p["payload"] == {"account_number": "116637293063"}  # the required body
+    assert p["json"] is True                       # Content-Type: application/json
+    assert sim.constructed_calls == 0              # never reached the legacy fallbacks
+
+
+@pytest.mark.asyncio
+async def test_cancel_last_rung_records_primary(monkeypatch):
+    sim = _OrderSim(body_cancels=True)
     _install(monkeypatch, sim)
     port = _cancel_port()
     await port.cancel("OID")
-    assert sim.post_urls == ["https://api.robinhood.com/options/orders/OID/cancel_v2/"]
-    assert sim.constructed_calls == 0                 # never reached the constructed endpoint
+    assert port._last_cancel_rung == "constructed_json_body"
+
+
+@pytest.mark.asyncio
+async def test_cancel_body_uses_bound_account_never_hardcoded(monkeypatch):
+    """account_number is sourced from the broker's BOUND account — change the bound
+    account and the body follows it (nothing hardcoded)."""
+    broker = MockRHBroker()
+    broker._account_number = "999888777"
+    sim = _OrderSim(body_cancels=True)
+    _install(monkeypatch, sim)
+    await _cancel_port(broker).cancel("OID")
+    assert sim.posts[0]["payload"] == {"account_number": "999888777"}
+
+
+@pytest.mark.asyncio
+async def test_cancel_fake_guard_absolute_even_on_primary_200(monkeypatch):
+    """The body-POST returns a 200-shaped dict but the state read-back NEVER goes
+    terminal -> the cancel is NOT believed; it falls through and RAISES. A 200 on the
+    POST books nothing; only a terminal read-back confirms."""
+    sim = _OrderSim(body_cancels=False, cancel_url=None, constructed_cancels=False)
+    _install(monkeypatch, sim)
+    port = _cancel_port()
+    with pytest.raises(RuntimeError, match="NO terminal state"):
+        await port.cancel("OID")
+    assert sim.body_posts                          # the primary WAS issued
+    assert port._last_cancel_rung != "constructed_json_body"   # but never confirmed
+
+
+@pytest.mark.asyncio
+async def test_cancel_falls_to_cancel_url_when_primary_fails(monkeypatch):
+    """Fallback chain intact: primary tried first, then the legacy cancel_url rung."""
+    sim = _OrderSim(body_cancels=False, cancel_url="https://api/cu/", cancel_url_cancels=True)
+    _install(monkeypatch, sim)
+    port = _cancel_port()
+    await port.cancel("OID")
+    assert sim.posts[0]["url"] == CONSTRUCTED       # primary first
+    assert "https://api/cu/" in sim.post_urls       # then cancel_url
     assert port._last_cancel_rung == "cancel_url"
 
 
 @pytest.mark.asyncio
-async def test_cancel_polls_for_cancel_url_to_populate(monkeypatch):
-    sim = _OrderSim(cancel_url="https://api/cu/", cancel_url_after=2, post_cancels=True)
+async def test_cancel_falls_back_to_constructed_endpoint(monkeypatch):
+    sim = _OrderSim(body_cancels=False, cancel_url=None, constructed_cancels=True)
     _install(monkeypatch, sim)
     port = _cancel_port()
     await port.cancel("OID")
-    assert sim.post_urls == ["https://api/cu/"] and port._last_cancel_rung == "cancel_url"
-
-
-@pytest.mark.asyncio
-async def test_cancel_falls_back_to_constructed(monkeypatch):
-    sim = _OrderSim(cancel_url=None, constructed_cancels=True)
-    _install(monkeypatch, sim)
-    port = _cancel_port()
-    await port.cancel("OID")
-    assert sim.post_urls == []                        # no cancel_url -> never POSTed one
     assert sim.constructed_calls == 1 and port._last_cancel_rung == "constructed"
 
 
 @pytest.mark.asyncio
 async def test_cancel_raises_loudly_when_all_paths_fail(monkeypatch):
-    sim = _OrderSim(cancel_url=None, constructed_cancels=False)   # nothing cancels it
+    sim = _OrderSim(body_cancels=False, cancel_url=None, constructed_cancels=False)
     _install(monkeypatch, sim)
     port = _cancel_port()
     with pytest.raises(RuntimeError, match="NO terminal state"):
@@ -311,5 +372,5 @@ async def test_cancel_noop_when_already_terminal(monkeypatch):
     _install(monkeypatch, sim)
     port = _cancel_port()
     await port.cancel("OID")
-    assert sim.post_urls == [] and sim.constructed_calls == 0
+    assert sim.posts == [] and sim.constructed_calls == 0
     assert port._last_cancel_rung == "already_terminal"
