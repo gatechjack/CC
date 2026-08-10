@@ -1,0 +1,16 @@
+set -u
+DB=/home/azureuser/trading_corp/data/trading_corp.db
+RO="sqlite3 -readonly $DB"
+BASE="agent_state a, json_each(a.value_json) je WHERE a.agent='polymarket_copy_trader' AND a.key='watch_only_whales'"
+V="je.value"
+echo "=== SUMMARY ==="
+$RO "SELECT 'total='||COUNT(*) FROM $BASE;"
+$RO "SELECT 'n>=50='||COUNT(*) FROM $BASE AND CAST(json_extract($V,'\$.total_resolved_positions') AS INT)>=50;"
+$RO "SELECT 'n>=30_and_lt50='||COUNT(*) FROM $BASE AND CAST(json_extract($V,'\$.total_resolved_positions') AS INT)>=30 AND CAST(json_extract($V,'\$.total_resolved_positions') AS INT)<50;"
+$RO "SELECT 'thin_lt30='||COUNT(*) FROM $BASE AND CAST(json_extract($V,'\$.total_resolved_positions') AS INT)<30;"
+$RO "SELECT 'provisional_true='||COUNT(*) FROM $BASE AND json_extract($V,'\$.provisional')=1;"
+$RO "SELECT 'favfarmer_avg>0.85='||COUNT(*) FROM $BASE AND CAST(json_extract($V,'\$.avg_entry_price') AS REAL)>0.85;"
+$RO "SELECT 'last_trade<=7d='||COUNT(*) FROM $BASE AND json_extract($V,'\$.last_trade_iso')>=datetime('now','-7 days');"
+echo "=== TOP-10 promote-pool (n>=50 AND avg<=0.85) by screen realized: rank|user|wallet|n|wr|realized|lifetime|span_d|last|prov|avgpx|sub70 ==="
+$RO "SELECT json_extract($V,'\$.rank')||'|'||json_extract($V,'\$.user_name')||'|'||json_extract($V,'\$.proxy_wallet')||'|'||json_extract($V,'\$.total_resolved_positions')||'|'||json_extract($V,'\$.win_rate')||'|'||CAST(json_extract($V,'\$.realized_pnl_usdc') AS INT)||'|'||CAST(json_extract($V,'\$.lifetime_pnl_from_leaderboard') AS INT)||'|'||ROUND(json_extract($V,'\$.window_days_span'),1)||'|'||substr(json_extract($V,'\$.last_trade_iso'),1,10)||'|'||json_extract($V,'\$.provisional')||'|'||json_extract($V,'\$.avg_entry_price')||'|'||json_extract($V,'\$.share_below_70') FROM $BASE AND CAST(json_extract($V,'\$.total_resolved_positions') AS INT)>=50 AND CAST(json_extract($V,'\$.avg_entry_price') AS REAL)<=0.85 ORDER BY CAST(json_extract($V,'\$.realized_pnl_usdc') AS REAL) DESC LIMIT 10;"
+echo "=== DONE ==="
