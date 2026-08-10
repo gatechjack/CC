@@ -71,6 +71,25 @@ divisions:
     standby: false                  # GO-LIVE 2026-06-24 (Board-authorized): scan()+manage() ACTIVE
     enabled: true
 
+  # ── Robinhood MACE (Phase 4, 2026-08-10) — zero-HITL Multi-Asset Condor Engine
+  # on the JOINT account (takeover). standby:true is the OPERATIVE kill-switch: the
+  # division registers + wires, but all four loops no-op until standby is lifted at
+  # go-live. GO-LIVE IS BLOCKED until the RH programmatic-cancel path is fixed +
+  # live-proven (3b, 2026-08-10 — RH brokeback endpoint migration 404s the legacy
+  # options-cancel path). Exclusivity: at go-live robinhood_joint (account_filter:
+  # joint) must be disabled/repointed so this filter is MACE's alone (the startup
+  # assertion refuses to arm otherwise).
+  - slug: robinhood_mace
+    name: Robinhood MACE
+    broker: robinhood
+    account_filter: "116637293063"  # JOINT acct; numeric hard-bind (Phase-0 confirmed)
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.15      # reporting/tile label only — inert to the engine
+    strategy: robinhood_mace
+    standby: true                   # NOT go-live; all four loops no-op until lifted
+    enabled: true
+
   # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────
   - slug: fidelity_joint
     name: Fidelity Joint
