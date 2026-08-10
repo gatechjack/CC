@@ -125,20 +125,20 @@ class OptionsBrokerPort(abc.ABC):
 
     # ── market data ──────────────────────────────────────────────────────
     @abc.abstractmethod
-    def chain(self, symbol: str) -> "object":
+    async def chain(self, symbol: str) -> "object":
         """Return a neutral chain snapshot for `symbol` (mace.strategy.ChainView
         shape: expiries + per-(expiry,type,strike) OptionQuote + spot). Bounded
         to the strikes execution needs is an implementation choice."""
 
     @abc.abstractmethod
-    def leg_quote(self, symbol: str, expiry: date, opt_type: str,
+    async def leg_quote(self, symbol: str, expiry: date, opt_type: str,
                   strike: float) -> OptionQuote | None:
         """A single fresh leg quote (bid/ask/delta), or None if unlisted/no data.
         Used for fresh-mid re-pricing each ladder attempt + management marks."""
 
     # ── order placement ──────────────────────────────────────────────────
     @abc.abstractmethod
-    def place_condor(self, spec: CondorSpec, contracts: int, net_limit: float,
+    async def place_condor(self, spec: CondorSpec, contracts: int, net_limit: float,
                      combo_id: str, *, direction: str, time_in_force: str,
                      fill_timeout_s: float) -> OrderResult:
         """Atomically submit the 4-leg condor (single ref_id = combo_id). Polls to
@@ -147,32 +147,32 @@ class OptionsBrokerPort(abc.ABC):
         DIR_CREDIT (open) or DIR_DEBIT (close)."""
 
     @abc.abstractmethod
-    def place_resting_close(self, spec: CondorSpec, contracts: int,
+    async def place_resting_close(self, spec: CondorSpec, contracts: int,
                             net_debit_limit: float, ref_id: str) -> str:
         """Place the resting GTC buy-to-close (profit target) and return its
         order id WITHOUT polling (it rests). Net-debit close direction."""
 
     @abc.abstractmethod
-    def cancel(self, order_id: str) -> None:
+    async def cancel(self, order_id: str) -> None:
         """Request cancel of a working order (idempotent; caller polls to terminal)."""
 
     @abc.abstractmethod
-    def order_status(self, order_id: str) -> OrderResult:
+    async def order_status(self, order_id: str) -> OrderResult:
         """Fetch the current status of an order (reconcile + cancel-race polling)."""
 
     @abc.abstractmethod
-    def open_orders(self) -> list[OpenOrder]:
+    async def open_orders(self) -> list[OpenOrder]:
         """All working option orders on the MACE-bound account."""
 
     @abc.abstractmethod
-    def open_positions(self) -> list[OpenOptionPosition]:
+    async def open_positions(self) -> list[OpenOptionPosition]:
         """All open option positions on the account (foreign-position baseline)."""
 
     # ── account ──────────────────────────────────────────────────────────
     @abc.abstractmethod
-    def snapshot(self) -> PortSnapshot:
+    async def snapshot(self) -> PortSnapshot:
         """Account snapshot on the MACE-bound account (acct-scoped)."""
 
     @abc.abstractmethod
-    def account_assertions(self) -> AccountInfo:
+    async def account_assertions(self) -> AccountInfo:
         """Resolve account metadata for the fail-closed startup assertions."""
