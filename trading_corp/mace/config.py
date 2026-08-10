@@ -123,7 +123,33 @@ class MaceConfig:
     source_path: str
 
 
-def load_mace_config(path: str | Path = "config/mace.yaml") -> MaceConfig:
+def _symbols_with_ex_div_data(path: str | Path) -> set[str] | None:
+    """Symbols with >=1 entry in the ex-dividend calendar YAML (schema owned by
+    data/ex_dividend_calendar.py). Returns None if the file can't be read.
+
+    Feeds the boot gate below (Board ruling 2026-08-09, Checkpoint 1): a
+    zero-HITL engine must NEVER enable a symbol whose exdiv guard is on but has
+    no ex-div dates to close against — the guard would be silently inert (false
+    protection). EWZ/FXI are structured-empty until real dates are sourced, so
+    enabling either without dates fails the load."""
+    try:
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {
+        str(e["symbol"]).upper()
+        for e in (data.get("ex_dividends") or [])
+        if isinstance(e, dict) and e.get("symbol")
+    }
+
+
+def load_mace_config(
+    path: str | Path = "config/mace.yaml",
+    *,
+    exdiv_calendar_path: str | Path = "config/ex_dividend_calendar.yaml",
+) -> MaceConfig:
     """Load + validate. Raises ValueError listing EVERY violation."""
     p = Path(path)
     raw = p.read_bytes()
@@ -363,6 +389,28 @@ def load_mace_config(path: str | Path = "config/mace.yaml") -> MaceConfig:
             errs.append(
                 f"universe: {sym} is overflow_only and can NEVER be a primary "
                 f"(OQ-3 ratified — remove it from universe)"
+            )
+
+    # Ex-div guard boot gate (Board ruling 2026-08-09, Checkpoint 1): any symbol
+    # that is BOTH enabled and exdiv_guard-on must have real ex-div dates in the
+    # calendar — else the position-closing guard is silently inert. Applies to
+    # every enabled symbol (not just the universe). Sourcing dates for EWZ/FXI is
+    # an expansion-runbook prerequisite for enabling them.
+    exdiv_syms = _symbols_with_ex_div_data(exdiv_calendar_path)
+    for sym, sc in symbols.items():
+        if not (sc.enabled and sc.exdiv_guard):
+            continue
+        if exdiv_syms is None:
+            errs.append(
+                f"symbols.{sym}: enabled + exdiv_guard but the ex-div calendar "
+                f"{exdiv_calendar_path} is unreadable — cannot validate the guard"
+            )
+        elif sym not in exdiv_syms:
+            errs.append(
+                f"symbols.{sym}: enabled + exdiv_guard but the ex-div calendar has "
+                f"NO entries for {sym} — a zero-HITL engine must not run a "
+                f"position-closing guard with no dates; source real ex-div dates "
+                f"before enabling (expansion-runbook prerequisite)"
             )
 
     if errs:
