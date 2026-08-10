@@ -143,11 +143,15 @@ class CondorSpec:
         )
 
     def closing_legs(self) -> tuple[CondorLeg, ...]:
+        # Flattening reverses EVERY opening side: buy back the shorts, sell the
+        # longs. (The call side was inverted in the Phase-1 draft — sell/buy,
+        # which re-OPENS the call spread; corrected to buy/sell 2026-08-10,
+        # surfaced from Phase-3 rh_broker as the first consumer.)
         return (
             CondorLeg("put", self.short_put, "buy", "close"),
             CondorLeg("put", self.long_put, "sell", "close"),
-            CondorLeg("call", self.short_call, "sell", "close"),
-            CondorLeg("call", self.long_call, "buy", "close"),
+            CondorLeg("call", self.short_call, "buy", "close"),
+            CondorLeg("call", self.long_call, "sell", "close"),
         )
 
     def strikes_label(self) -> str:
