@@ -249,3 +249,40 @@ class MaceManager:
             (sd.isoformat(), snap.equity, snap.cash, snap.market_value, ts))
         self._audit("mace_equity_snapshot", snap_date=sd.isoformat(), equity=snap.equity)
         return snap
+
+    # ── daily summary (15:50 slot) ───────────────────────────────────────
+    async def daily_summary(self, session_date: Optional[date] = None):
+        sd = session_date or self._now_et().date()
+        rungs = self.store.load_all()
+        equity = self._load_equity()
+        open_rungs = [r for r in rungs if r.status in _MANAGED_STATUSES]
+        day_pnl = st.day_realized(rungs, sd)
+        week_pnl = st.week_realized(rungs, sd)
+        # TODO(go-live): persist HWM in agent_state; equity-as-HWM is a scaffolding stand-in.
+        hwm = equity
+        breakers = st.evaluate_breakers(day_pnl, week_pnl, equity, hwm, self.cfg)
+        open_lines = [
+            f"{r.symbol} {r.spec.strikes_label()} x{r.contracts} exp {r.expiry.isoformat()}"
+            for r in open_rungs
+        ]
+        breaker_states = [n for n, hit in (
+            ("day_loss", breakers.day_loss_hit), ("week_loss", breakers.week_loss_hit),
+            ("hwm_soft", breakers.hwm_soft_hit), ("hwm_hard", breakers.hwm_hard_hit)) if hit]
+        self.notifier.daily_summary(
+            session_date=sd.isoformat(), equity=equity, hwm=hwm, open_rungs=open_lines,
+            day_pnl=day_pnl, breaker_states=breaker_states, next_blackouts=[])
+        self._audit("mace_daily_summary", session_date=sd.isoformat(), equity=equity,
+                    open=len(open_rungs), day_pnl=day_pnl, breakers=breaker_states)
+        return breakers
+
+    # ── weekly calendar refresh (Sun slot) — idempotent re-seed ──────────
+    async def refresh_calendar(self, macro_path: str = "config/macro_calendar.yaml"):
+        from trading_corp.mace import calendar as mace_cal
+        try:
+            result = mace_cal.weekly_refresh(self.store.conn, macro_path,
+                                             today=self._now_et().date())
+            self._audit("mace_calendar_refresh", detail=str(result))
+            return result
+        except Exception as exc:  # noqa: BLE001 — never sink the loop
+            self._audit("mace_calendar_refresh_error", error=str(exc))
+            return None

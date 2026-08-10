@@ -123,6 +123,18 @@ class RobinhoodMaceAgent:
     def has_manager(self) -> bool:
         return self._manager is not None
 
+    @property
+    def manager(self):
+        """The attached MaceManager (None until wired). The Phase-4 loops read it."""
+        return self._manager
+
+    @property
+    def active(self) -> bool:
+        """True iff the division should run live work: enabled (both surfaces) AND
+        not standby AND a manager is attached. The four scheduled loops gate on this
+        — they log online but no-op until go-live lifts standby."""
+        return self._active()
+
     # ── config-derived properties (re-stat each read) ────────────────────
     @property
     def slug(self) -> str:

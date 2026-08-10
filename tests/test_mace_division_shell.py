@@ -164,3 +164,21 @@ async def test_foreign_open_order_disables_entries(tmp_path):
     d = await a.assert_startup(MockPort(_info(), orders=[order]))
     assert d.armed and not d.entries_enabled
     assert any("foreign" in r for r in d.reasons)
+
+
+# ── manager / active accessors (Phase-4 loop gate) ────────────────────────
+
+def test_manager_and_active_accessors(tmp_path):
+    a = _agent(tmp_path)                      # fixture is standby:true
+    assert a.manager is None and a.active is False
+    a.attach_manager(object())
+    assert a.manager is not None and a.active is False   # standby still gates it off
+
+
+def test_active_true_only_when_not_standby(tmp_path):
+    div, strat = _write(tmp_path)
+    div.write_text(div.read_text(encoding="utf-8").replace("standby: true", "standby: false"),
+                   encoding="utf-8")
+    cfg = SimpleNamespace(account_number=ACCT, acknowledge_foreign_positions=False)
+    a = RobinhoodMaceAgent(cfg, divisions_yaml=div, strategies_yaml=strat, manager=object())
+    assert a.active is True and a.manager is not None
