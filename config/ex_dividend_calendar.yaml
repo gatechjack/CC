@@ -35,6 +35,26 @@
 #          GLD holds physical gold bullion; the trust generates no
 #          dividend income or capital gains. Revisit if SSGA ever
 #          declares a special distribution.
+#
+# ── MACE universe additions (Phase 1) ───────────────────────────────────
+#   USO  — United States Oil Fund: a commodity-pool ETF that holds WTI
+#          futures; pays NO distributions (stage-A verified 2026-08-09).
+#          Intentionally empty — mace.yaml sets exdiv_guard: false.
+#   IBIT — iShares Bitcoin Trust: spot-BTC grantor trust, no income and no
+#          distributions. Intentionally empty — exdiv_guard: false
+#          (and IBIT is overflow-only). Revisit only on a special distribution.
+#   EWZ  — iShares MSCI Brazil: DOES distribute (historically semi-annual,
+#          ~June + December, amounts/dates variable and declared only weeks
+#          ahead, NOT a full year in advance). exdiv_guard: true in mace.yaml.
+#          *** STRUCTURED-EMPTY: no confirmed 2026 ex-div dates yet. The
+#          guard is INERT for EWZ until real issuer dates are populated here.
+#          EWZ is DISABLED at launch; SOURCE iShares' 2026 distribution dates
+#          before enabling it (gated expansion / Phase-5 config review). ***
+#   FXI  — iShares China Large-Cap: DOES distribute (historically semi-annual,
+#          ~June + December, variable). exdiv_guard: true in mace.yaml.
+#          *** STRUCTURED-EMPTY: same as EWZ — no confirmed 2026 dates yet,
+#          guard INERT until sourced; FXI is DISABLED at launch; SOURCE
+#          iShares' dates before enabling (gated expansion). ***
 
 ex_dividends:
   # ── SPY (SSGA, quarterly — all 4 confirmed) ─────────────────────────
@@ -167,3 +187,17 @@ ex_dividends:
 
   # ── GLD (World Gold Trust) ──────────────────────────────────────────
   # Intentionally empty — see preamble.
+
+  # ── USO (United States Oil Fund) ────────────────────────────────────
+  # Intentionally empty — pays no distributions (stage-A verified). guard off.
+
+  # ── IBIT (iShares Bitcoin Trust) ────────────────────────────────────
+  # Intentionally empty — spot-BTC trust, no income. guard off; overflow-only.
+
+  # ── EWZ (iShares MSCI Brazil) ───────────────────────────────────────
+  # STRUCTURED-EMPTY — semi-annual distributor; no confirmed 2026 dates yet.
+  # guard INERT until sourced. DISABLED at launch. Populate before enabling.
+
+  # ── FXI (iShares China Large-Cap) ───────────────────────────────────
+  # STRUCTURED-EMPTY — semi-annual distributor; no confirmed 2026 dates yet.
+  # guard INERT until sourced. DISABLED at launch. Populate before enabling.
