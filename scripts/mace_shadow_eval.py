@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import traceback
 from datetime import date
@@ -208,15 +209,21 @@ def _make_fetch_metrics():
 # ── DB readers (READ-ONLY; no INSERT/UPDATE/DELETE) ──────────────────────────
 
 def _load_rungs(conn) -> list[RungState]:
-    """Load open mace_rung rows (status IN submitting/open/closing)."""
-    rows = conn.execute(
-        "SELECT rung_id, symbol, status, expiry, legs_json, width_dollars, "
-        "       contracts, credit_actual, max_risk_usd, entry_ts, entry_order_id, "
-        "       pt_order_id, pt_debit, exit_ts, exit_reason, realized_pnl, "
-        "       entry_iso_week "
-        "FROM mace_rung "
-        "WHERE status IN ('submitting','open','closing')"
-    ).fetchall()
+    """Load open mace_rung rows (status IN submitting/open/closing). Returns []
+    quietly if the table doesn't exist yet (DB predates the MACE migration)."""
+    try:
+        rows = conn.execute(
+            "SELECT rung_id, symbol, status, expiry, legs_json, width_dollars, "
+            "       contracts, credit_actual, max_risk_usd, entry_ts, entry_order_id, "
+            "       pt_order_id, pt_debit, exit_ts, exit_reason, realized_pnl, "
+            "       entry_iso_week "
+            "FROM mace_rung "
+            "WHERE status IN ('submitting','open','closing')"
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        print(f"  [rungs] mace_rung unavailable ({exc}); using 0 open rungs "
+              f"(run scripts/migrate_mace_tables.py to create it)")
+        return []
 
     rungs: list[RungState] = []
     for r in rows:
@@ -286,10 +293,13 @@ def _spec_from_legs_json(legs_json_str: str | None, symbol: str,
 
 
 def _load_events(conn) -> list[dict]:
-    """Load all economic_event rows as plain dicts."""
-    rows = conn.execute(
-        "SELECT event_type, symbol_scope, event_date, source FROM economic_event"
-    ).fetchall()
+    """Load all economic_event rows as plain dicts. [] if the table is absent."""
+    try:
+        rows = conn.execute(
+            "SELECT event_type, symbol_scope, event_date, source FROM economic_event"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
     return [
         {"event_type": r["event_type"],
          "symbol_scope": r["symbol_scope"],
