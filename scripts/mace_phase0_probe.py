@@ -41,14 +41,25 @@ the test order runs ONLY after the operator confirms joint IC is disabled):
      (available); OQ-1 stands (launch on manual+seed+rule; feed deferred).
   6. USO distributions. RESULT: zero on record -> exdiv_guard: false confirmed.
 
-Stage-B run history (both clean aborts, NOTHING placed): run 1 = $5-grid finding
-(far-OTM SPY calls list $5 strikes only); run 2 = Joint UNFUNDED
-("not enough overnight buying power" — payload accept + routing implicitly proven;
-V11 GTC/cancel round-trip still pending funding).
+Stage-B run history: run 1 = $5-grid finding (far-OTM SPY calls list $5 strikes
+only); run 2 = Joint UNFUNDED ("not enough overnight buying power" — payload accept
++ routing implicitly proven). Both clean aborts, NOTHING placed. FINAL re-run
+(v3, post-funding) proves the last unknown: the LADDER cancel round-trip.
 
-Usage (on prod, as azureuser, prod venv python):
+CANCEL-PATH FIX (v3, operator devtools capture 2026-08-10 — finding CLOSED):
+Root cause = the RH web app POSTs the SAME constructed .../options/orders/{id}/cancel/
+URL robin_stocks builds, but WITH a json body {"account_number": <owning acct>};
+robin_stocks posts it with NO body -> 404 under the brokeback account-context
+sharding (proven on spread orders 6a79fe0a/6a7a0a1f/6a7a20f5, gtc + gfd, state-
+irrelevant). Fix = POST the constructed URL WITH the account_number body (stage_b's
+CANCEL section + rh_broker.cancel rung 0). The go-live gate "programmatic cancel
+proven live on a spread" flips GREEN only on THIS re-run's evidence, not the capture
+alone. Checkpoint 0 records GO on the T9 basis (LADDER cancel proven; no resting-GTC
+PT — the manage-loop synthetic PT is the mechanism).
+
+Usage (on prod, as azureuser, prod venv python — operator-run; places ONE live order):
     python scripts/mace_phase0_probe.py --stage a        # read-only battery
-    python scripts/mace_phase0_probe.py --stage b        # the one test order
+    python scripts/mace_phase0_probe.py --stage b        # the one unfillable GTC order (v3 cancel)
 """
 from __future__ import annotations
 
@@ -286,8 +297,19 @@ def stage_b(account: str = EXPECTED_ACCT, width: float = WIDTH,
     assert float(resp.get("processed_quantity") or 0) == 0.0, "NON-ZERO FILLS"
     print("ASSERTIONS PASS: id + joint routing + gtc echo + zero fills")
 
-    _sec("CANCEL + poll to terminal")
-    rs.orders.cancel_option_order(oid_)
+    _sec("CANCEL via the FIXED path (constructed URL + account_number body) + poll to terminal")
+    # v3 CANCEL FIX (operator devtools capture 2026-08-10): the RH web app POSTs the
+    # SAME constructed cancel URL that robin_stocks builds, WITH a json body
+    # {"account_number": <owning acct>}. robin_stocks' cancel_option_order posts it
+    # with NO body -> 404 under the brokeback account-context sharding (proven on
+    # orders 6a79fe0a/6a7a0a1f/6a7a20f5). This mirrors rh_broker.cancel rung 0 exactly.
+    # FAKE-CANCEL GUARD: the POST result is NOT trusted — ONLY a terminal `state`
+    # read-back confirms the cancel.
+    from robin_stocks.robinhood.helper import request_post as _rp
+    cancel_url = "https://api.robinhood.com/options/orders/%s/cancel/" % oid_
+    cancel_resp = _rp(cancel_url, {"account_number": account}, json=True)
+    print("cancel POST issued via FIXED body-path (result NOT trusted):",
+          str(cancel_resp)[:200])
     final = None
     deadline = time.time() + 45
     while time.time() < deadline:
@@ -299,10 +321,21 @@ def stage_b(account: str = EXPECTED_ACCT, width: float = WIDTH,
             final = info
             break
     if final is None:
-        raise SystemExit("ABORT: order %s not terminal after 45s — MANUAL CHECK" % oid_)
-    assert str(final.get("state") or "").lower() in ("cancelled", "canceled"), "not cancelled"
+        raise SystemExit(
+            "ABORT: order %s NOT terminal after 45s via the FIXED cancel path — "
+            "MANUAL CHECK + stop-and-report (gate stays RED)" % oid_)
+    assert str(final.get("state") or "").lower() in ("cancelled", "canceled"), \
+        "CANCEL did NOT reach terminal CANCELLED via the fixed path"
     assert float(final.get("processed_quantity") or 0) == 0.0, "fills on cancel race"
-    print("STAGE B COMPLETE: 4-leg + joint routing + GTC + cancel/status PROVEN")
+    # Full assertion set: 0 open option orders on the account after the cancel.
+    oo3 = rs.orders.get_all_open_option_orders(account_number=account) or []
+    assert len(oo3) == 0, "%d open option orders REMAIN after cancel — report" % len(oo3)
+    print("STAGE B v3 COMPLETE — full assertion set PASSED:")
+    print("  id round-trip + joint routing + GTC echo + zero resting fills")
+    print("  + CANCEL => TERMINAL CANCELLED via the FIXED body-POST path + 0 open orders after")
+    print("  => go-live gate 'programmatic cancel proven live on a spread' may flip GREEN")
+    print("     (Checkpoint 0 records GO on the T9 basis: the LADDER cancel path is proven;")
+    print("      resting-GTC PT stays OFF per ruling — the manage-loop synthetic PT is the mechanism)")
     print("Order id for deploy_log:", oid_)
 
 
