@@ -1,0 +1,17 @@
+set -u
+DB=/home/azureuser/trading_corp/data/trading_corp.db
+RO="sqlite3 -readonly $DB"
+B="agent_state a, json_each(a.value_json) je WHERE a.agent='polymarket_copy_trader'"
+echo "=== updated_ts all keys ==="
+$RO "SELECT key||' ts='||updated_ts FROM agent_state WHERE agent='polymarket_copy_trader' ORDER BY key;"
+echo "=== SELECTED clean (full) idx|user|wallet ==="
+$RO "SELECT je.key||'|'||json_extract(je.value,'\$.user_name')||'|'||json_extract(je.value,'\$.wallet') FROM $B AND a.key='selected_whales';"
+echo "=== is llllllII (0x7714) in watch_only? ==="
+$RO "SELECT 'llllllII_in_watch='||COUNT(*) FROM $B AND a.key='watch_only_whales' AND lower(json_extract(je.value,'\$.proxy_wallet'))='0x7714c16f86bcfdba47bfcb161dc39a2a1ff2b814';"
+echo "=== are potatobrahh/ChadStarmer in watch_only? (0xf192 / 0x1f9f) ==="
+$RO "SELECT lower(json_extract(je.value,'\$.proxy_wallet'))||' in_watch' FROM $B AND a.key='watch_only_whales' AND lower(json_extract(je.value,'\$.proxy_wallet')) IN ('0xf192501abae4c453cc15ddbe9543ed11e99a6ee2','0x1f9f03e7ce52979b658b0bb75b483ff923fda025');"
+echo "=== llllllII OPEN (unresolved) copied positions (demote-flatten impact) ==="
+$RO "SELECT 'open_unresolved='||COUNT(*) FROM polymarket_round_trips WHERE division='polymarket_copy_trading' AND json_extract(extra_json,'\$.whale_wallet')='0x7714c16f86bcfdba47bfcb161dc39a2a1ff2b814' AND resolved_ts IS NULL;"
+echo "=== schema: does selected_whales entry support a sizing/note field anywhere? (agent_state keys) ==="
+$RO "SELECT DISTINCT key FROM agent_state WHERE agent='polymarket_copy_trader' AND (key LIKE '%siz%' OR key LIKE '%config%' OR key LIKE '%weight%' OR key LIKE '%param%');"
+echo "=== DONE ==="

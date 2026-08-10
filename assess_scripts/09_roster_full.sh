@@ -1,0 +1,15 @@
+set -u
+DB=/home/azureuser/trading_corp/data/trading_corp.db
+RO="sqlite3 -readonly $DB"
+B="agent_state a, json_each(a.value_json) je WHERE a.agent='polymarket_copy_trader'"
+echo "=== updated_ts per key ==="
+$RO "SELECT key||'|len='||length(value_json)||'|ts='||updated_ts FROM agent_state WHERE agent='polymarket_copy_trader' ORDER BY key;"
+echo "=== SELECTED_WHALES (current) user|wallet|cat|source|promoted ==="
+$RO "SELECT json_extract(je.value,'\$.user_name')||'|'||json_extract(je.value,'\$.wallet')||'|'||json_extract(je.value,'\$.category')||'|'||json_extract(je.value,'\$.source')||'|'||json_extract(je.value,'\$.promoted_iso') FROM $B AND a.key='selected_whales';"
+echo "=== PINNED_WHALES (current) user|wallet|cat|source|promoted ==="
+$RO "SELECT json_extract(je.value,'\$.user_name')||'|'||json_extract(je.value,'\$.wallet')||'|'||json_extract(je.value,'\$.category')||'|'||json_extract(je.value,'\$.source')||'|'||json_extract(je.value,'\$.promoted_iso') FROM $B AND a.key='pinned_whales';"
+echo "=== WATCH entries for the 4 PROMOTE wallets (full json) ==="
+$RO "SELECT je.value FROM $B AND a.key='watch_only_whales' AND lower(json_extract(je.value,'\$.proxy_wallet')) IN ('0x3b62c64ebaee15478e8b21765b9f940458655cc8','0x82398835fe16616214d928ba87127e28fc1cd9a3','0x258c8a3ab3f9dd5c1e3bb05f54a9187247b77c23','0x48898de94e70ca0c06c62c57483b3a8d5890e2d8');"
+echo "=== watch_only count + whether promote wallets present ==="
+$RO "SELECT 'watch_count='||COUNT(*) FROM $B AND a.key='watch_only_whales';"
+echo "=== DONE ==="
