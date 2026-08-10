@@ -215,3 +215,101 @@ async def test_leg_quote_and_chain_bind_strikes():
     chain = await port.chain("SPY")
     assert chain.spot == 610.0 and date(2026, 9, 18) in chain.expiries
     assert chain.listed(date(2026, 9, 18), "call", 615.0)
+
+
+# ── resilient cancel (Checkpoint-0 cancel-path fix) ──────────────────────
+
+class _OrderSim:
+    """Models one RH option order + the endpoints rh_broker.cancel drives."""
+
+    def __init__(self, *, state="confirmed", cancel_url=None, cancel_url_after=0,
+                 post_cancels=True, constructed_cancels=False):
+        self.state = state
+        self._cancel_url = cancel_url
+        self.cancel_url_after = cancel_url_after   # reads before cancel_url appears
+        self.post_cancels = post_cancels
+        self.constructed_cancels = constructed_cancels
+        self.reads = 0
+        self.post_urls = []
+        self.constructed_calls = 0
+
+    def get_info(self, oid):
+        self.reads += 1
+        cu = self._cancel_url if self.reads > self.cancel_url_after else None
+        return {"id": oid, "state": self.state, "cancel_url": cu}
+
+    def request_post(self, url, *a, **k):
+        self.post_urls.append(url)
+        if self.post_cancels:
+            self.state = "cancelled"        # RH accepted the cancel_url POST
+        return {"id": "x", "state": self.state}
+
+    def cancel_option_order(self, oid):
+        self.constructed_calls += 1
+        if self.constructed_cancels:
+            self.state = "cancelled"
+        return None
+
+
+def _install(monkeypatch, sim):
+    monkeypatch.setattr("robin_stocks.robinhood.orders.get_option_order_info",
+                        sim.get_info, raising=False)
+    monkeypatch.setattr("robin_stocks.robinhood.orders.cancel_option_order",
+                        sim.cancel_option_order, raising=False)
+    monkeypatch.setattr("robin_stocks.robinhood.helper.request_post",
+                        sim.request_post, raising=False)
+
+
+def _cancel_port():
+    return RobinhoodOptionsBroker(MockRHBroker(), cancel_url_polls=3, cancel_url_poll_s=0.0,
+                                  cancel_confirm_polls=3, cancel_confirm_poll_s=0.0)
+
+
+@pytest.mark.asyncio
+async def test_cancel_uses_order_cancel_url_first(monkeypatch):
+    sim = _OrderSim(cancel_url="https://api.robinhood.com/options/orders/OID/cancel_v2/",
+                    post_cancels=True)
+    _install(monkeypatch, sim)
+    port = _cancel_port()
+    await port.cancel("OID")
+    assert sim.post_urls == ["https://api.robinhood.com/options/orders/OID/cancel_v2/"]
+    assert sim.constructed_calls == 0                 # never reached the constructed endpoint
+    assert port._last_cancel_rung == "cancel_url"
+
+
+@pytest.mark.asyncio
+async def test_cancel_polls_for_cancel_url_to_populate(monkeypatch):
+    sim = _OrderSim(cancel_url="https://api/cu/", cancel_url_after=2, post_cancels=True)
+    _install(monkeypatch, sim)
+    port = _cancel_port()
+    await port.cancel("OID")
+    assert sim.post_urls == ["https://api/cu/"] and port._last_cancel_rung == "cancel_url"
+
+
+@pytest.mark.asyncio
+async def test_cancel_falls_back_to_constructed(monkeypatch):
+    sim = _OrderSim(cancel_url=None, constructed_cancels=True)
+    _install(monkeypatch, sim)
+    port = _cancel_port()
+    await port.cancel("OID")
+    assert sim.post_urls == []                        # no cancel_url -> never POSTed one
+    assert sim.constructed_calls == 1 and port._last_cancel_rung == "constructed"
+
+
+@pytest.mark.asyncio
+async def test_cancel_raises_loudly_when_all_paths_fail(monkeypatch):
+    sim = _OrderSim(cancel_url=None, constructed_cancels=False)   # nothing cancels it
+    _install(monkeypatch, sim)
+    port = _cancel_port()
+    with pytest.raises(RuntimeError, match="NO terminal state"):
+        await port.cancel("OID")
+
+
+@pytest.mark.asyncio
+async def test_cancel_noop_when_already_terminal(monkeypatch):
+    sim = _OrderSim(state="cancelled")
+    _install(monkeypatch, sim)
+    port = _cancel_port()
+    await port.cancel("OID")
+    assert sim.post_urls == [] and sim.constructed_calls == 0
+    assert port._last_cancel_rung == "already_terminal"

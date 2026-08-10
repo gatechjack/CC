@@ -39,6 +39,13 @@ from trading_corp.utils.time import now_et
 
 _LOG = logging.getLogger("mace.rh_broker")
 
+# Terminal option-order states (lower-cased) — a cancel is believed ONLY on one of
+# these read back (the fake-cancel guard lives in execution; this is used here only
+# to sequence the cancel fallback chain + implement raise-on-all-fail).
+_TERMINAL_STATES_LC = frozenset(
+    {"filled", "partially_filled", "rejected", "cancelled", "canceled", "failed", "voided"}
+)
+
 
 def _f(v) -> float:
     try:
@@ -76,13 +83,20 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
 
     def __init__(self, broker: RobinhoodBroker, *, dte_min: int = 30, dte_max: int = 45,
                  strike_band_pct: float = 0.15, division: str = "robinhood_mace",
-                 now_et_fn=now_et) -> None:
+                 now_et_fn=now_et, cancel_url_polls: int = 3, cancel_url_poll_s: float = 1.0,
+                 cancel_confirm_polls: int = 6, cancel_confirm_poll_s: float = 1.0) -> None:
         self._broker = broker
         self._dte_min = dte_min
         self._dte_max = dte_max
         self._band = strike_band_pct
         self._division = division
         self._now_et = now_et_fn
+        # Resilient-cancel cadence (plan Checkpoint-0 cancel-path fix 2026-08-10).
+        self._cancel_url_polls = cancel_url_polls
+        self._cancel_url_poll_s = cancel_url_poll_s
+        self._cancel_confirm_polls = cancel_confirm_polls
+        self._cancel_confirm_poll_s = cancel_confirm_poll_s
+        self._last_cancel_rung: str | None = None   # diagnostic: which rung took
 
     def _today(self) -> date:
         return self._now_et().date()
@@ -201,9 +215,71 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
         return str(order_id)
 
     async def cancel(self, order_id: str) -> None:
-        # RobinhoodBroker.cancel_order wraps rs.orders.cancel_option_order (order-URL
-        # routed, no account param). Idempotent from the caller's view.
-        await self._broker.cancel_order(order_id)
+        """Resilient cancel (Checkpoint-0 cancel-path fix 2026-08-10). robin_stocks'
+        `cancel_option_order` POSTs to a CONSTRUCTED `.../options/orders/{id}/cancel/`
+        endpoint, which returned 404 LIVE on a spread order (order 6a79fe0a) — RH's
+        canonical cancel is the order's OWN server-provided `cancel_url`. Ordered
+        fallback, each rung confirmed by a TERMINAL state read-back:
+          (a) POST the order's `cancel_url`;
+          (b) if absent, short bounded re-poll for it to populate (the state may
+              only expose cancel_url once the order reaches a working state);
+          (c) last resort, robin_stocks' constructed endpoint (may be valid for
+              other states);
+          (d) all failing => raise loudly — NEVER silently give up.
+
+        FAKE-CANCEL GUARD: the caller (execution) independently re-reads to a
+        terminal state before it believes the cancellation; the per-rung confirm
+        here is only to sequence the fallback and to raise on genuine failure. No
+        HTTP response — including a 200 on the cancel POST — is ever treated as a
+        cancellation by itself."""
+        import robin_stocks.robinhood as rs  # type: ignore
+        from robin_stocks.robinhood.helper import request_post  # type: ignore
+
+        async def _read() -> dict:
+            return await asyncio.to_thread(rs.orders.get_option_order_info, order_id) or {}
+
+        def _terminal(info: dict) -> bool:
+            return str(info.get("state") or "").lower() in _TERMINAL_STATES_LC
+
+        info = await _read()
+        if _terminal(info):
+            self._last_cancel_rung = "already_terminal"
+            return
+        cancel_url = info.get("cancel_url") or info.get("cancel")
+
+        # (b) bounded re-poll for cancel_url to populate (state-transition case).
+        polls = 0
+        while not cancel_url and polls < self._cancel_url_polls:
+            await asyncio.sleep(self._cancel_url_poll_s)
+            polls += 1
+            info = await _read()
+            if _terminal(info):
+                self._last_cancel_rung = "terminal_during_poll"
+                return
+            cancel_url = info.get("cancel_url") or info.get("cancel")
+
+        async def _issue_then_confirm(rung: str, issue) -> bool:
+            await issue()
+            for _ in range(self._cancel_confirm_polls):
+                await asyncio.sleep(self._cancel_confirm_poll_s)
+                if _terminal(await _read()):
+                    self._last_cancel_rung = rung
+                    return True
+            return False
+
+        # (a) the order's own server-provided cancel_url.
+        if cancel_url and await _issue_then_confirm(
+                "cancel_url", lambda: asyncio.to_thread(request_post, cancel_url)):
+            return
+        # (c) last resort: robin_stocks' constructed endpoint.
+        if await _issue_then_confirm(
+                "constructed", lambda: asyncio.to_thread(rs.orders.cancel_option_order, order_id)):
+            return
+        # (d) all rungs failed to reach terminal -> raise loudly.
+        final = await _read()
+        raise RuntimeError(
+            f"cancel of {order_id} reached NO terminal state via cancel_url/constructed; "
+            f"last state={str(final.get('state'))!r} cancel_url_present={bool(cancel_url)}")
 
     async def order_status(self, order_id: str) -> OrderResult:
         info = await self._broker.get_option_order_status(order_id) or {}

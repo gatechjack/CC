@@ -17,6 +17,17 @@ Load-bearing invariants (plan § Behavior specifications):
   prove what the broker did, it leaves the durable `mace_rung` anchor for the
   reconcile loop and (for exits) escalates URGENT rather than guessing.
 
+  FAKE-CANCEL GUARD (absolute, sibling of the above). A cancellation is believed
+  ONLY on a confirmed TERMINAL state read back from `port.order_status` — never
+  on `port.cancel` returning, and never on any HTTP response (a 200 on the cancel
+  POST included). Before any exit, `close_rung` cancels the resting PT and then
+  `_poll_until_terminal` on it: a non-terminal / unconfirmable read-back ABORTS
+  the exit (it never places a closing order that could double up against a still-
+  live PT). The entry cancel-race and the reconcile drain apply the same rule.
+  The cancel-path fix (rh_broker cancels via the order's own server `cancel_url`)
+  changes HOW the request is issued; it does NOT relax this guard — the truth is
+  always the terminal read-back, not the request.
+
   MARKETABILITY DIRECTION (trap 6). A CREDIT (entry) order is more marketable at
   a LOWER limit — the entry ladder walks the credit DOWN (mid − offset − k·tick)
   toward marketability, never below the 0.30×width credit floor. A DEBIT (exit)

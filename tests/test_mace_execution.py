@@ -359,6 +359,23 @@ async def test_exit_aborts_when_pt_cancel_not_confirmed():
 
 
 @pytest.mark.asyncio
+async def test_fake_cancel_guard_requires_terminal_readback():
+    # FAKE-CANCEL GUARD: port.cancel "succeeds" (returns normally, no exception) but
+    # the PT never reads back terminal -> execution must NOT believe the cancellation:
+    # it issues the cancel REQUEST, then refuses to place any closing order and leaves
+    # the rung untouched. The truth is the terminal read-back, never the cancel call.
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _exit_quotes(port)
+    rung = _open_rung(store)
+    port.status_script = {"PT1": _res(bp.STATE_QUEUED, "PT1")}   # cancel returns; never terminal
+    out = await _executor(port, store, chan).close_rung(rung, EXIT_STOP)
+    assert "PT1" in port.cancel_calls          # the cancel REQUEST was issued...
+    assert out.aborted and not out.closed       # ...but the cancellation was NOT believed
+    assert port.place_calls == []               # no closing order placed against a maybe-live PT
+    assert store.get(RUNG_ID).status == RUNG_OPEN
+
+
+@pytest.mark.asyncio
 async def test_exit_ladder_exhausted_stays_closing_urgent():
     conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
     _exit_quotes(port)
